@@ -74,7 +74,7 @@ A12+ AIC is already in mainline (for Apple Silicon), but the older
 
 ## Background
 
-In May 2025, while looking for existing Linux ports for the iPad mini 1, 
+In May 2026, while looking for existing Linux ports for the iPad mini 1, 
 I found nothing. PostmarketOS stops at A8, Project Sandcastle targeted A10, 
 and the A5 had been completely ignored — likely because it's 32-bit, old, 
 and "not worth it".
