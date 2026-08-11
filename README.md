@@ -72,6 +72,23 @@ challenge — no mainline driver exists for this revision.
 A12+ AIC is already in mainline (for Apple Silicon), but the older 
 "aic,1" used in A5 is different and will require a custom driver.
 
+## Background
+
+In May 2025, while looking for existing Linux ports for the iPad mini 1, 
+I found nothing. PostmarketOS stops at A8, Project Sandcastle targeted A10, 
+and the A5 had been completely ignored — likely because it's 32-bit, old, 
+and "not worth it".
+
+That's exactly why it's interesting.
+
+The A5 (S5L8942X) is covered by checkm8, uses Samsung-derived IP blocks 
+with partial open documentation, and has PowerVR SGX543 GPU which has more 
+public info than Apple's custom silicon. It's arguably one of the more 
+approachable chips for a from-scratch Linux port.
+
+This project started as an experiment to see how far you can get. 
+Turns out — pretty far.
+
 ## Credits
 
 - **axi0mX** — checkm8 BootROM exploit, without which none of this is possible
