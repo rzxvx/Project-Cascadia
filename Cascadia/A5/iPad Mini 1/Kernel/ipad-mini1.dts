@@ -1,0 +1,72 @@
+/dts-v1/;
+
+/ {
+	model = "Apple iPad mini 1 (p105ap)";
+	compatible = "apple,s5l8942x", "samsung,exynos4210";
+	#address-cells = <1>;
+	#size-cells = <1>;
+
+	chosen {
+		bootargs = "earlycon=exynos4210,mmio32,0x32500000 console=ttySAC0,115200n8 console=tty0 loglevel=8 ignore_loglevel";
+		stdout-path = "serial0:115200n8";
+	};
+
+	memory@80000000 {
+		device_type = "memory";
+		reg = <0x80000000 0x20000000>;
+	};
+
+	framebuffer@9f6fc000 {
+		compatible = "simple-framebuffer";
+		reg = <0x9f6fc000 0x300000>;
+		width = <1024>;
+		height = <768>;
+		stride = <4096>;
+		format = "a8r8g8b8";
+		status = "okay";
+	};
+
+	cpus {
+		#address-cells = <1>;
+		#size-cells = <0>;
+		cpu0: cpu@0 {
+			device_type = "cpu";
+			compatible = "arm,cortex-a9";
+			reg = <0>;
+		};
+		cpu1: cpu@1 {
+			device_type = "cpu";
+			compatible = "arm,cortex-a9";
+			reg = <1>;
+		};
+	};
+
+	soc@30000000 {
+		compatible = "simple-bus";
+		#address-cells = <1>;
+		#size-cells = <1>;
+		ranges = <0x00000000 0x30000000 0x10000000>;
+
+		uart0: serial@2500000 {
+			compatible = "apple,s5l-uart", "samsung,exynos4210-uart";
+			reg = <0x02500000 0x1000>;
+			clock-frequency = <100000000>;
+			status = "okay";
+		};
+
+		l2cache: l2-cache-controller@3e000000 {
+			compatible = "arm,pl310-cache";
+			reg = <0x3e000000 0x1000>;
+			cache-unified;
+			cache-level = <2>;
+		};
+
+		aic: interrupt-controller@3f200000 {
+			compatible = "apple,aic1";
+			reg = <0x3f200000 0x10000>;
+			interrupt-controller;
+			#interrupt-cells = <1>;
+			status = "disabled";
+		};
+	};
+};
