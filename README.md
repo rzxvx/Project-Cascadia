@@ -1,7 +1,7 @@
-# Cascadia
+# Project Cascadia
 Native Linux on Apple A5 — the first step of the Cascadia project (A5 → A6 → A12/A13)
 
-# Cascadia — Native Linux on Apple A5
+# Project Cascadia — Native Linux on Apple A5
 
 > **Status: Work in Progress**
 
@@ -95,7 +95,6 @@ Turns out — pretty far.
 - **LukeZGD** — Legacy iOS Kit, EverPwnage, checkm8-a5 Pico firmware
 - **NyanSatan** — checkm8_bootkit, extensive iBoot research
 - **iH8sn0w** — iBoot32Patcher
-- **stacksmashing** — Tamarin firmware
 
 ## License
 
