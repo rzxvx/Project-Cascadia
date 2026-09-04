@@ -52,8 +52,8 @@ More devices planned as the project matures.
 - [ ] WiFi (BCM4334 via SDIO)
 - [ ] Touch input
 
-![Shell](imgs/boot.png)
-
+![Shell](imgs/boot.png) 
+![Shell](imgs/IMG_0907.heic)
 
 ## Roadmap
 
