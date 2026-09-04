@@ -1,0 +1,1 @@
+machine-$(CONFIG_ARCH_APPLE_S5L8942X) += apple5

@@ -1,0 +1,19 @@
+--- a/drivers/irqchip/Kconfig
++++ b/drivers/irqchip/Kconfig
+@@ -739,3 +739,16 @@
+ 	  the primary controller on C-Chip.
+ 
+ endmenu
++
++config APPLE_AIC1
++	bool "Apple aic,1 interrupt controller (32-bit S5L)"
++	depends on ARM && (ARCH_APPLE_S5L || COMPILE_TEST)
++	default ARCH_APPLE_S5L
++	select IRQ_DOMAIN
++	select GENERIC_IRQ_CHIP
++	select GENERIC_IRQ_IPI_MUX
++	help
++	  Support for the Apple Interrupt Controller revision 1 ("aic,1") found
++	  on 32-bit S5L SoCs (Apple A4 through A6X).  This is a separate driver
++	  from APPLE_AIC (arm64 Apple Silicon): different DT binding, EVENT format,
++	  and no integrated FIQ/IPI support.  Required to boot Linux on A5 devices.

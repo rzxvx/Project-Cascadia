@@ -1,0 +1,30 @@
+# SPDX-License-Identifier: GPL-2.0-only
+#
+# Deliberately NOT called ARCH_APPLE.  Kconfig symbol names are global, and
+# arm64 already uses ARCH_APPLE for Apple silicon Macs.  Reusing it here does
+# make SERIAL_SAMSUNG's existing "depends on ... ARCH_APPLE" apply for free,
+# but it also switches on every other driver that keys off it -- APPLE_DART,
+# the RTKit mailbox, ADMAC, apple-nvme -- all of which are arm64-only and fail
+# to build on ARMv7 (writeq_relaxed does not exist on 32-bit).  A separate
+# symbol plus two one-line dependency patches is much cheaper than fighting
+# that.
+menuconfig ARCH_APPLE_S5L
+	bool "Apple SoCs (32-bit S5L)"
+	depends on ARCH_MULTI_V7
+	select APPLE_AIC1
+	select ARM_GLOBAL_TIMER if !SMP
+	select CACHE_L2X0
+	select CLKSRC_MMIO
+	select COMMON_CLK
+	select GENERIC_IRQ_CHIP
+	select HAVE_ARM_TWD if SMP
+	help
+	  Support for Apple's 32-bit ARM application processors, as used in
+	  iOS devices from the A4 through the A6X.
+
+	  Only S5L8940X / S5L8942X (A5, e.g. iPad2,5 "iPad mini") is described
+	  today: interrupt controller, UART, framebuffer, and dual-core SMP via
+	  PMGR Core(n) + AIC IPI (see docs/p105-smp-bringup.md).  There is no
+	  NAND or GPU driver, and nothing here can write to the device's flash.
+
+	  Say N unless you are building a kernel for one of these devices.

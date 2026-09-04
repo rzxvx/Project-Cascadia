@@ -1,0 +1,11 @@
+--- a/drivers/tty/serial/Kconfig
++++ b/drivers/tty/serial/Kconfig
+@@ -238,7 +238,7 @@
+ 
+ config SERIAL_SAMSUNG
+ 	tristate "Samsung SoC serial support"
+-	depends on PLAT_SAMSUNG || ARCH_S5PV210 || ARCH_EXYNOS || ARCH_APPLE || ARCH_ARTPEC || COMPILE_TEST
++	depends on PLAT_SAMSUNG || ARCH_S5PV210 || ARCH_EXYNOS || ARCH_APPLE || ARCH_APPLE_S5L || ARCH_ARTPEC || COMPILE_TEST
+ 	select SERIAL_CORE
+ 	help
+ 	  Support for the on-chip UARTs on the Samsung

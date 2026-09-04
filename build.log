@@ -1,0 +1,49 @@
+  SYNC    include/config/auto.conf.cmd
+
+WARNING: unmet direct dependencies detected for GENERIC_IRQ_IPI_MUX
+  Depends on [n]: SMP [=n]
+  Selected by [y]:
+  - APPLE_AIC1 [=y] && ARM [=y] && (ARCH_APPLE_S5L [=y] || COMPILE_TEST [=n])
+
+WARNING: unmet direct dependencies detected for GENERIC_IRQ_IPI_MUX
+  Depends on [n]: SMP [=n]
+  Selected by [y]:
+  - APPLE_AIC1 [=y] && ARM [=y] && (ARCH_APPLE_S5L [=y] || COMPILE_TEST [=n])
+
+WARNING: unmet direct dependencies detected for GENERIC_IRQ_IPI_MUX
+  Depends on [n]: SMP [=n]
+  Selected by [y]:
+  - APPLE_AIC1 [=y] && ARM [=y] && (ARCH_APPLE_S5L [=y] || COMPILE_TEST [=n])
+  UPD     include/generated/compile.h
+  DTC     arch/arm/boot/dts/ipad-mini1.dtb
+  CALL    scripts/checksyscalls.sh
+  CC      init/version.o
+  AR      init/built-in.a
+  AR      built-in.a
+  AR      vmlinux.a
+  LD      vmlinux.o
+  OBJCOPY modules.builtin.modinfo
+  GEN     modules.builtin
+  MODPOST vmlinux.symvers
+  UPD     include/generated/utsversion.h
+  CC      init/version-timestamp.o
+  KSYMS   .tmp_vmlinux0.kallsyms.S
+  AS      .tmp_vmlinux0.kallsyms.o
+  LD      .tmp_vmlinux1
+  NM      .tmp_vmlinux1.syms
+  KSYMS   .tmp_vmlinux1.kallsyms.S
+  AS      .tmp_vmlinux1.kallsyms.o
+  LD      .tmp_vmlinux2
+  NM      .tmp_vmlinux2.syms
+  KSYMS   .tmp_vmlinux2.kallsyms.S
+  AS      .tmp_vmlinux2.kallsyms.o
+  LD      vmlinux
+  NM      System.map
+  SORTTAB vmlinux
+  OBJCOPY arch/arm/boot/Image
+  Kernel: arch/arm/boot/Image is ready
+  GZIP    arch/arm/boot/compressed/piggy_data
+  AS      arch/arm/boot/compressed/piggy.o
+  LD      arch/arm/boot/compressed/vmlinux
+  OBJCOPY arch/arm/boot/zImage
+  Kernel: arch/arm/boot/zImage is ready

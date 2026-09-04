@@ -1,0 +1,67 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/interrupt-controller/apple,aic1.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Apple Interrupt Controller revision 1 (aic,1)
+
+description: |
+  The first-generation Apple Interrupt Controller used on 32-bit S5L SoCs
+  (Apple A4 through A6X).  Found at 0x3f200000 on S5L894x (iPad mini 1 /
+  P105AP).
+
+  On aic,1 (P105 lab): per-CPU EVENT is at offset 0x5004 + (cpu << 7);
+  the shared 0x2004 view stays idle.  EVENT words are type<<16|num with
+  HW type=1.  Do not clock-gate PMGR id 0x4D while AIC must remain live.
+
+maintainers:
+  - Apple S5L Linux port <noreply@localhost>
+
+properties:
+  compatible:
+    oneOf:
+      - const: aic,1
+      - items:
+          - const: apple,aic1
+          - const: aic,1
+
+  reg:
+    maxItems: 1
+
+  interrupt-controller: true
+
+  "#interrupt-cells":
+    const: 1
+    description: Single cell is the hardware IRQ index.
+
+  apple,main-cpus:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    description: Number of CPU targets wired to the controller.
+
+  use-ldrex:
+    type: boolean
+    description: Present in Apple ADT; driver may use LDREX/STREX for masks.
+
+required:
+  - compatible
+  - reg
+  - interrupt-controller
+  - "#interrupt-cells"
+
+additionalProperties: false
+
+examples:
+  - |
+    soc {
+        #address-cells = <1>;
+        #size-cells = <1>;
+
+        aic: interrupt-controller@f200000 {
+            compatible = "aic,1";
+            reg = <0xf200000 0x10000>;
+            interrupt-controller;
+            #interrupt-cells = <1>;
+            apple,main-cpus = <2>;
+        };
+    };

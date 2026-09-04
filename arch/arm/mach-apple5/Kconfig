@@ -1,0 +1,14 @@
+config ARCH_APPLE_S5L8942X
+	bool "Apple S5L8942X (A5) based platforms"
+	depends on ARCH_MULTI_V7
+	select CPU_V7
+	select HAVE_ARM_SCU if SMP
+	select ARM_GIC
+	help
+	  Support for Apple A5 (S5L8942X) based devices,
+	  such as the iPad mini 1 (iPad2,5).
+
+	  ПРИМЕЧАНИЕ: строчка "select ARM_GIC" оставлена как заглушка —
+	  реально у нас proprietary AIC, не GIC. Как только появится
+	  отдельный AIC-драйвер (drivers/irqchip/irq-apple-aic1.c),
+	  эту строку нужно будет убрать/заменить на select для него.
