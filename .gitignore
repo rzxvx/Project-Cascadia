@@ -1,1 +1,6 @@
 ibootfiles/
+a13_boot/
+ibootfiles/
+ich_ramdisk/
+*.raw
+*.dmg
