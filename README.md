@@ -52,6 +52,9 @@ More devices planned as the project matures.
 - [ ] WiFi (BCM4334 via SDIO)
 - [ ] Touch input
 
+![Shell](imgs/boot.png)
+
+
 ## Roadmap
 
 **Phase 1 ✓:** Linux boots to interactive shell. Serial logs. Framebuffer console.
