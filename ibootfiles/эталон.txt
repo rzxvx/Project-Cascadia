@@ -1,0 +1,21 @@
+cd ~/Desktop/ipad-mini-linux/ibootfiles
+/Users/k/Legacy-iOS-Kit/bin/macos/arm64/primepwn pwnediBSS
+Sleep 1
+irecovery -f iBEC
+irecovery -c "go"
+Sleep 1
+irecovery -f Ramdisk.dmg
+irecovery -c ramdisk
+Sleep 1
+irecovery -f DeviceTree.dec
+irecovery -c devicetree
+irecovery -f ../output/adler_new/adler_unc_1.img3
+irecovery -c bootx
+
+
+
+irecovery -f Kernelcache.dec
+
+
+
+setenv boot-args serial=3 debug=0x14e earlycon=exynos4210,mmio32,0x32500000 console=ttySAC0,115200n8 loglevel=8 ignore_loglevel

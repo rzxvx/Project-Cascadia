@@ -1,0 +1,11 @@
+--- a/arch/arm/Kconfig
++++ b/arch/arm/Kconfig
+@@ -359,6 +359,8 @@
+ 
+ source "arch/arm/mach-alpine/Kconfig"
+ 
++source "arch/arm/mach-apple/Kconfig"
++
+ source "arch/arm/mach-artpec/Kconfig"
+ 
+ source "arch/arm/mach-aspeed/Kconfig"

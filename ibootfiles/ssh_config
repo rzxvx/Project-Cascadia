@@ -1,0 +1,8 @@
+Host *
+    AddKeysToAgent yes
+    IdentitiesOnly yes
+    StrictHostKeyChecking no
+    UserKnownHostsFile /dev/null
+    HostKeyAlgorithms +ssh-rsa
+    LogLevel ERROR
+    PubkeyAcceptedAlgorithms +ssh-rsa

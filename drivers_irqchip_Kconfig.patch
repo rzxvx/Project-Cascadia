@@ -1,0 +1,17 @@
+--- a/drivers/irqchip/Kconfig
++++ b/drivers/irqchip/Kconfig
+@@ -742,3 +742,14 @@
+ 	  the primary controller on C-Chip.
+ 
+ endmenu
++
++config APPLE_S5L_AIC
++	bool "Apple S5L AIC (32-bit)"
++	depends on ARM && (ARCH_APPLE_S5L || COMPILE_TEST)
++	default ARCH_APPLE_S5L
++	select IRQ_DOMAIN
++	select GENERIC_IRQ_CHIP
++	help
++	  Support for the Apple Interrupt Controller found on 32-bit S5L SoCs
++	  (A4 through A6X).  This is the predecessor of the AIC on Apple silicon
++	  Macs that APPLE_AIC drives, but 32-bit and without IPI or FIQ support.

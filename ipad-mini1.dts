@@ -1,0 +1,404 @@
+// SPDX-License-Identifier: GPL-2.0 OR MIT
+/*
+ * Apple iPad mini, 1st generation -- iPad2,5 / P105AP / S5L8942X (Apple A5).
+ *
+ * GENERATED FILE.  Do not edit by hand; edit scripts/gen_p105ap_dts.py and
+ * re-run "make dts".  Every reg/interrupt below was read out of the iBoot
+ * Apple Device Tree in src/adt-p105ap.bin, not transcribed from a datasheet.
+ *
+ * Scope: the minimum needed to bring Alpine + LXDE up on the glass, per
+ * alpine-lxde-ramdisk-buildplan.md -- UART console, interrupt controller,
+ * timer, simple-framebuffer, and an SPI transport for the touch controller.
+ * NAND, GPU, ISP, audio, cameras and the sensor I2C buses are deliberately
+ * absent; see DECISIONS.md.
+ *
+ * Address model
+ * -------------
+ * The ADT's "arm-io" node is a bus whose children use bus-local addresses:
+ *   ranges = <0x0 0x30000000 0x10000000>
+ * We keep that structure as /soc so unit addresses match the ADT one-for-one
+ * and cross-checking against a fresh dump stays trivial.  usb-complex is a
+ * second, nested bus; its children are flattened into /soc here because
+ * nothing in Linux needs the extra level.
+ *
+ * Boot protocol (32-bit ARM):
+ *   r0 = 0, r1 = ~0 (DT-only boot, no machine ID), r2 = <dtb physical address>
+ */
+
+/dts-v1/;
+
+/ {
+	compatible = "apple,p105ap", "apple,s5l8942x", "apple,s5l8940x", "apple,arm";
+	model = "Apple iPad mini (iPad2,5)";
+	#address-cells = <1>;
+	#size-cells = <1>;
+	interrupt-parent = <&aic>;
+
+	aliases {
+		serial0 = &uart0;
+	};
+
+	chosen {
+		/*
+		 * earlycon uses the Samsung s3c6400 driver: the S5L UART is a
+		 * Samsung derivative with an identical register file (ULCON 0x00,
+		 * UCON 0x04, UFCON 0x08, UTRSTAT 0x10, UTXH 0x20, URXH 0x24,
+		 * UBRDIV 0x28).  See DECISIONS.md #3.
+		 *
+		 * No baud rate is given to earlycon on purpose: that tells it to
+		 * keep whatever divisor iBoot already programmed, which avoids
+		 * needing a clock rate we do not know.
+		 *
+		 * keep_bootcon matters here.  The full ttySAC0 port needs a clock
+		 * provider; without keep_bootcon the kernel would drop earlycon
+		 * if UART probe/baud fails.
+		 *
+		 * console=tty0 only.  Do NOT set stdout-path to serial0 — OF
+		 * would still prefer ttySAC0 on probe (legacy console enabled)
+		 * and /dev/console open fails for init.  UART still probes for
+		 * /dev/ttySAC0; earlycon+keep_bootcon covers pre-fbcon printk.
+		 */
+		bootargs = "earlycon=s3c6400,0x32500000 keep_bootcon console=tty0 lpj=5000000 root=/dev/ram0 rw rootwait panic=10 loglevel=8";
+
+		/*
+		 * Placeholders.  The loader MUST overwrite both before jumping;
+		 * scripts/fdt_fixup.py and the pongoOS module in pongo/ do this.
+		 * Leaving them equal means "no initrd", which is a safe default.
+		 */
+		linux,initrd-start = <0x88000000>;
+		linux,initrd-end   = <0x88000000>;
+	};
+
+	/*
+	 * S5L894x maps DRAM at 0x80000000; iPad2,5 populates 512 MiB.
+	 * The static ADT /memory node is zeroed (iBoot fills it at runtime),
+	 * so this is a fixed constant rather than an extracted value.
+	 */
+	memory@80000000 {
+		device_type = "memory";
+		reg = <0x80000000 0x1f6fc000>;
+	};
+
+	reserved-memory {
+		#address-cells = <1>;
+		#size-cells = <1>;
+		ranges;
+
+		/*
+		 * iBoot's scanout buffer.  Must be no-map so the kernel never
+		 * hands these pages to the allocator while the CLCD is still
+		 * DMA-ing out of them.  Base is patched at boot together with
+		 * the framebuffer node below.
+		 */
+		fb_region: framebuffer@9f6fc000 {
+			reg = <0x9f6fc000 0x400000>;
+			no-map;
+		};
+	};
+
+	/*
+	 * simple-framebuffer over iBoot's already-running CLCD scanout.
+	 *
+	 * The static ADT's /vram node has reg = <0 0>: the base is assigned by
+	 * iBoot at runtime.  The loader reads the LIVE ADT's /vram (pongoOS
+	 * keeps iBoot's device tree in memory) and patches reg[0] here plus
+	 * fb_region above.  Portrait Recovery scanout: 768x1024, stride 3072.
+	 *
+	 * TODO: confirm the pixel order on hardware.  a8r8g8b8 is what iBoot
+	 * uses on every other A5-era device, but if the display comes up with
+	 * red and blue swapped, change this to "x8b8g8r8" -- it is the only
+	 * value here that cannot be checked without looking at the panel.
+	 */
+	framebuffer0: framebuffer@9f6fc000 {
+		compatible = "simple-framebuffer";
+		reg = <0x9f6fc000 0x400000>;
+		width = <768>;
+		height = <1024>;
+		stride = <3072>;
+		format = "a8r8g8b8";
+		memory-region = <&fb_region>;
+		status = "okay";
+	};
+
+	cpus {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		cpu0: cpu@0 {
+			device_type = "cpu";
+			compatible = "arm,cortex-a9";
+			reg = <0>;
+			enable-method = "apple,pmgr-core";
+		};
+
+		/*
+		 * Dual-core A5: cpu1 brought up via PMGR function-enable_core
+		 * ("Core", arg 2) + AIC IPI_SEND.  See docs/p105-smp-bringup.md.
+		 */
+		cpu1: cpu@1 {
+			device_type = "cpu";
+			compatible = "arm,cortex-a9";
+			reg = <1>;
+			enable-method = "apple,pmgr-core";
+		};
+	};
+
+	/*
+	 * Cortex-A9 private memory region (SCU + global timer + private timers).
+	 *
+	 * PERIPHBASE is NOT in the ADT.  The candidate below is the second reg
+	 * entry of the ADT "pl310" node -- 0x2000 long, which is exactly the
+	 * size of the A9 private memory map, so it is almost certainly right.
+	 * It is still a guess, so every consumer is disabled by default.
+	 *
+	 * Do not trust this file for it: Cortex-A9 exposes PERIPHBASE in the
+	 * CBAR register (mrc p15, 4, rX, c15, c0, 0).  docs/read-cbar.md shows
+	 * how to print it from a pongoOS shell; once confirmed, flip the three
+	 * nodes below to "okay" (or let the loader do it).
+	 *
+	 * The interrupt numbers are equally provisional: 135 is the middle
+	 * cell of the ADT cpu0 "interrupts" tuple <0xc0 0x87 0xc1>, which by Apple
+	 * convention is <ipi-self, timer, ipi-other>.  That the A9 private timer
+	 * output is what reaches the AIC on that line is an inference, not a fact.
+	 */
+	scu@3e100000 {
+		compatible = "arm,cortex-a9-scu";
+		reg = <0x3e100000 0x100>;
+		status = "disabled";
+	};
+
+	global_timer: timer@3e100200 {
+		compatible = "arm,cortex-a9-global-timer";
+		reg = <0x3e100200 0x20>;
+		interrupts = <135>;
+		clock-frequency = <500000000>;
+		/* Counter + udelay only. Comparator IRQ is not routed like a GIC PPI. */
+		clocksource-only;
+		status = "disabled";
+	};
+
+	twd_timer: timer@3e100600 {
+		compatible = "arm,cortex-a9-twd-timer";
+		reg = <0x3e100600 0x20>;
+		interrupts = <135>;
+		clock-frequency = <500000000>;
+		status = "disabled";
+	};
+
+	l2: cache-controller@3e000000 {
+		compatible = "arm,pl310-cache";
+		reg = <0x3e000000 0x1000>;
+		cache-unified;
+		cache-level = <2>;
+		/*
+		 * iBoot already enabled PL310. Driving it from Linux with
+		 * SCTLR.C=0 hangs in outer_cache / slab (stuck at mm_slab).
+		 * Leave the hardware on; do not register outer_cache ops.
+		 */
+		status = "disabled";
+	};
+
+	/*
+	 * Placeholder UART clock for samsung_tty probe (no PMGR yet).
+	 * Rate is invented; glass console uses tty0 and does not need it.
+	 */
+	uart_clk: clock-24000000 {
+		compatible = "fixed-clock";
+		#clock-cells = <0>;
+		clock-frequency = <24000000>;
+	};
+
+	soc: soc@30000000 {
+		compatible = "simple-bus";
+		#address-cells = <1>;
+		#size-cells = <1>;
+		ranges = <0x0 0x30000000 0x10000000>;
+
+		/*
+		 * Apple Interrupt Controller revision 1 ("aic,1"), per ADT.
+		 *
+		 * Custom driver: drivers/irqchip/irq-apple-aic1.c
+		 * Not compatible with arm64 drivers/irqchip/irq-apple-aic.c.
+		 *
+		 * #interrupt-cells = 1: bare hardware IRQ index (no type/flags).
+		 */
+		aic: interrupt-controller@f200000 {
+			compatible = "aic,1";
+			reg = <0xf200000 0x10000>;
+			interrupt-controller;
+			#interrupt-cells = <1>;
+			apple,main-cpus = <2>;
+		};
+
+		/*
+		 * GPIO block.  28 ports, 8 interrupt groups
+		 * multiplexed onto a single AIC line.  Needed here only because
+		 * the touch controller's attention line hangs off it.
+		 *
+		 * TODO: no upstream driver binds apple,s5l8940x-gpio.  Until one
+		 * exists the touchscreen child below cannot get a real interrupt
+		 * and the userspace daemon must poll.  Kept in the DT so the
+		 * wiring is recorded.
+		 */
+		gpio: gpio@fa00000 {
+			compatible = "apple,s5l8940x-gpio";
+			reg = <0xfa00000 0x1000>;
+			interrupts = <119>;
+			gpio-controller;
+			#gpio-cells = <2>;
+			interrupt-controller;
+			#interrupt-cells = <2>;
+			apple,gpio-ports = <28>;
+			apple,interrupt-groups = <8>;
+			status = "disabled";
+		};
+
+		/*
+		 * Boot console.  The ADT marks this node "boot-console" and gives
+		 * it a "debug-console" child, so iBoot has already configured the
+		 * pin muxing, the clock gate and 115200 8N1 -- we only have to
+		 * keep using it.  compatible lists the Samsung part second so the
+		 * stock samsung_tty driver binds even without our patch.
+		 *
+		 * clocks: samsung_tty requires clk_get("uart") + baud clk.
+		 * PMGR is unmodelled; a fixed 24 MHz placeholder lets the port
+		 * probe.  Baud may be wrong for USB-TTL until the real rate is
+		 * known — on-glass console=tty0 does not depend on it.
+		 */
+		uart0: serial@2500000 {
+			compatible = "apple,s5l-uart", "samsung,s3c6400-uart";
+			reg = <0x2500000 0x1000>;
+			interrupts = <21>;
+			clocks = <&uart_clk>, <&uart_clk>;
+			clock-names = "uart", "clk_uart_baud0";
+			status = "okay";
+		};
+
+		/*
+		 * SPI1 -- transport for the multi-touch controller.
+		 *
+		 * Exposed as spidev on purpose.  Per the build plan, v1 drives the
+		 * panel from a userspace daemon that speaks Apple's Z2 protocol
+		 * and injects events via uinput; writing a kernel multitouch
+		 * driver is explicitly out of scope for "LXDE on glass".
+		 *
+		 * TODO: no upstream driver binds apple,s5l8940x-spi either, so
+		 * this is disabled until patches/ grows one.  The ADT records DMA
+		 * channels 11/12 on the cdma controller if we ever want them.
+		 */
+		spi1: spi@2100000 {
+			compatible = "apple,s5l8940x-spi";
+			reg = <0x2100000 0x1000>;
+			interrupts = <29>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+			status = "disabled";
+
+			touchscreen@0 {
+				compatible = "apple,z2-multitouch", "linux,spidev";
+				reg = <0>;
+				/*
+				 * The ADT multi-touch "reg" is Apple-specific:
+				 *   <0x0 0x7c 0x8010000 0x1388 0x2710 0x0 0x0 0x0>
+				 * chip-select 0, then timing parameters.  The two
+				 * rate-looking cells are 5000 and 10000 kHz; we take
+				 * the lower as the conservative ceiling.
+				 */
+				spi-max-frequency = <5000000>;
+				interrupt-parent = <&gpio>;
+				interrupts = <22 0>;
+			};
+		};
+
+		/*
+		 * Watchdog.  Disabled: nothing pets it, and an armed watchdog
+		 * during a long kernel bring-up just resets the device mid-debug.
+		 */
+		wdt: watchdog@f103020 {
+			compatible = "apple,s5l8940x-wdt";
+			reg = <0xf103020 0x10>;
+			interrupts = <4>;
+			status = "disabled";
+		};
+
+		/*
+		 * Power/clock manager.  Modelled only so the address space is
+		 * documented -- we rely entirely on iBoot having left every clock
+		 * we use already ungated.  Enabling this without a driver that
+		 * understands the ADT device-clocks table would gate the UART.
+		 */
+		pmgr: power-management@f100000 {
+			compatible = "apple,s5l8940x-pmgr", "syscon";
+			reg = <0xf100000 0x7000>;
+			status = "disabled";
+		};
+
+		/*
+		 * Display pipeline, recorded but unused.  simplefb above reuses
+		 * the output of these blocks rather than reprogramming them; a
+		 * real CLCD + MIPI-DSI driver for S5L8940X does not exist and is
+		 * not needed to get a desktop on screen.
+		 */
+		clcd: display-controller@a100000 {
+			compatible = "apple,s5l8940x-clcd";
+			reg = <0xa100000 0x7000>;
+			interrupts = <43 42>;
+			status = "disabled";
+		};
+
+		dsim: dsi@9500000 {
+			compatible = "apple,s5l8940x-mipi-dsim", "samsung,mipi-dsim-1";
+			reg = <0x9500000 0x1000>;
+			interrupts = <41>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+			apple,lanes = <4>;
+			status = "disabled";
+
+			panel@0 {
+				compatible = "apple,lcd-pinot";
+				reg = <0>;
+				status = "disabled";
+			};
+		};
+
+		/*
+		 * USB.  Kept because the BCM4334 Wi-Fi part is USB-attached on
+		 * this board (ADT puts /wlan under usb-complex/usb-ehci, not
+		 * SDIO), so brcmfmac later needs a working EHCI.  Off for now:
+		 * the OTG PHY needs bringing up first and it is not on the
+		 * critical path to a desktop.
+		 *
+		 * Addresses are flattened through the usb-complex bus, whose own
+		 * ranges map child 0 to 0x6100000 within arm-io; EHCI's ADT reg of
+		 * 0x300000 therefore lands at 0x6400000 here, 0x36400000 physical.
+		 */
+		otgphy: phy@6000000 {
+			compatible = "apple,s5l8940x-otgphy";
+			reg = <0x6000000 0x1000>;
+			#phy-cells = <0>;
+			status = "disabled";
+		};
+
+		ehci: usb@6400000 {
+			compatible = "apple,s5l8940x-ehci", "generic-ehci";
+			reg = <0x6400000 0x10000>;
+			interrupts = <12>;
+			status = "disabled";
+		};
+
+		ohci0: usb@6500000 {
+			compatible = "apple,s5l8940x-ohci", "generic-ohci";
+			reg = <0x6500000 0x10000>;
+			interrupts = <13>;
+			status = "disabled";
+		};
+
+		ohci1: usb@6600000 {
+			compatible = "apple,s5l8940x-ohci", "generic-ohci";
+			reg = <0x6600000 0x10000>;
+			interrupts = <14>;
+			status = "disabled";
+		};
+	};
+};
