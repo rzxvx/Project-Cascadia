@@ -100,9 +100,16 @@ make -C "$TREE" olddefconfig >> "$LOGS/kernel-config.log" 2>&1
 # without by hand.
 echo "==> Verifying critical config symbols"
 missing=0
+# ARM_GLOBAL_TIMER used to be here.  It is gone on purpose: the A9 global
+# timer is dead on this SoC (PERIPHCLK is not supplied) and requiring it only
+# taught us to ignore this list.  What IS load-bearing now is the USB path --
+# the system tick rides on the dwc2 SOF interrupt, so a kernel without a
+# working peripheral-mode gadget is a kernel with frozen jiffies.
 for sym in CONFIG_ARCH_APPLE_S5L CONFIG_APPLE_AIC1 CONFIG_SERIAL_SAMSUNG \
            CONFIG_SERIAL_EARLYCON CONFIG_FB_SIMPLE CONFIG_BLK_DEV_INITRD \
-           CONFIG_ARM_GLOBAL_TIMER CONFIG_SPI_SPIDEV CONFIG_INPUT_UINPUT; do
+           CONFIG_SPI_SPIDEV CONFIG_INPUT_UINPUT CONFIG_DEVMEM \
+           CONFIG_USB_DWC2_PERIPHERAL CONFIG_PHY_APPLE_S5L_USB \
+           CONFIG_USB_CDC_COMPOSITE; do
     if ! grep -q "^${sym}=y" "$TREE/.config"; then
         echo "    MISSING: $sym"
         missing=$((missing + 1))
@@ -126,13 +133,19 @@ if grep -aFq 'rest_clone' "$VMLINUX"; then
     echo "error: vmlinux still contains rest_clone (stale bisect kernel)" >&2
     exit 1
 fi
-for need in pre_spawn umt_go aic1q34 irq_try; do
+# irq_rearm is the stamp for apple_aic1_rearm().  It is listed FIRST and it is
+# the one that matters: kernel_init() quiesces the AIC immediately before
+# do_initcalls(), so without the re-arm nothing in the system ever takes an
+# interrupt -- no USB, no tick, no touch.  apply-p105-boot-hacks.py installs it
+# by anchor match and skips silently when an anchor drifts, which is exactly how
+# a clean tree can build green and boot dead.  Fail the build instead.
+for need in irq_rearm pre_spawn umt_go aic1q34 irq_try; do
     if ! grep -aFq "$need" "$VMLINUX"; then
         echo "error: vmlinux missing stamp '$need' — boot hacks not applied?" >&2
         exit 1
     fi
 done
-echo "    ok: pre_spawn umt_go aic1q34 irq_try (no rest_clone)"
+echo "    ok: irq_rearm pre_spawn umt_go aic1q34 irq_try (no rest_clone)"
 
 echo "==> Done"
 ls -l "$OUT/zImage"

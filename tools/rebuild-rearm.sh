@@ -62,15 +62,34 @@ echo "==> 5/5 verify the changes are actually in the image"
 V="$TREE/vmlinux"
 CPIO="$TREE/usr/initramfs_data.cpio"
 rc=0
-for s in AIC1-REARM irq_rearm LATE-SMOKE ttyGS CALIB PMU-TIMER SOF-TIMER apple-usb-sof; do
+# Every string here was checked to exist verbatim in the source it comes from;
+# "CDC Composite Gadget" is cdc2.c's DRIVER_DESC and "CDC Ethernet Control
+# Model (ECM)" is f_ecm.c's string table, so their presence proves g_cdc and
+# its ECM half actually got linked in rather than silently dropped by kconfig.
+for s in AIC1-REARM irq_rearm LATE-SMOKE ttyGS CALIB PMU-TIMER SOF-TIMER apple-usb-sof \
+         "CDC Composite Gadget" "CDC Ethernet Control Model (ECM)"; do
     if LC_ALL=C grep -aFq "$s" "$V"; then echo "    ok: $s in vmlinux"; else echo "    FAIL: $s missing from vmlinux"; rc=1; fi
 done
 # /init lives in the initramfs archive, not as plain text in vmlinux -- check it there.
-for s in M-ACM getty ttyGS0; do
+for s in "P105: init start" getty ttyGS0 10.55.0.2; do
     if LC_ALL=C grep -aFq "$s" "$CPIO"; then echo "    ok: $s in initramfs"; else echo "    FAIL: $s missing from initramfs"; rc=1; fi
 done
-grep -q "^CONFIG_USB_G_SERIAL=y" "$TREE/.config" || { echo "    FAIL: g_serial not built in"; rc=1; }
-grep -q "^CONFIG_USB_ETH=y" "$TREE/.config" && { echo "    FAIL: USB_ETH still on -- two legacy gadgets fight for the UDC"; rc=1; } || echo "    ok: USB_ETH off"
+# Gadget: exactly ONE legacy gadget may be built in, and as of 2026-09-16 it is
+# g_cdc (ECM + ACM together).  g_serial and g_ether must both be off, or they
+# race for the UDC and whichever loses takes the console or the network with it.
+grep -q "^CONFIG_USB_CDC_COMPOSITE=y" "$TREE/.config" || { echo "    FAIL: g_cdc not built in"; rc=1; }
+grep -q "^CONFIG_USB_F_ECM=y" "$TREE/.config" || { echo "    FAIL: CDC ECM function not built in"; rc=1; }
+grep -q "^CONFIG_USB_F_ACM=y" "$TREE/.config" || { echo "    FAIL: CDC ACM function not built in"; rc=1; }
+# NOTE: `if`, not `grep && { }`.  Under `set -e` a bare AND-list whose left side
+# fails takes the whole script down, and here the left side failing is the GOOD
+# case -- that is a self-inflicted "build broke" with no error message.
+for bad in CONFIG_USB_G_SERIAL CONFIG_USB_ETH; do
+    if grep -q "^${bad}=y" "$TREE/.config"; then
+        echo "    FAIL: $bad still on -- two legacy gadgets fight for the UDC"; rc=1
+    else
+        echo "    ok: $bad off"
+    fi
+done
 LC_ALL=C grep -aFq initcall_debug output/zImage-dtb && { echo "    FAIL: initcall_debug in bundle"; rc=1; } || echo "    ok: no initcall_debug"
 [ "$rc" -eq 0 ] || { echo "VERIFY FAILED -- do not flash"; exit 1; }
 
