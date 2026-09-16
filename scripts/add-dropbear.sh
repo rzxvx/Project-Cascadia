@@ -53,7 +53,14 @@ for pkg in dropbear dropbear-scp; do
     [ -n \"\$file\" ] || { echo \"no \$pkg apk found in the index\"; exit 1; }
     echo \"    \$file\"
     curl -fsSL -o \"\$file\" \"$REPO/\$file\"
-    tar -xzf \"\$file\" -C extract 2>/dev/null || true
+    # An .apk is three gzip streams concatenated: signature, control, data.
+    # The first two tar segments deliberately omit their end-of-archive null
+    # records so a plain reader runs straight through into the data segment,
+    # which is why no apk tool is needed here.  --ignore-zeros makes that
+    # independent of whether a given package was built that way; the warning
+    # switch silences GNU tar complaining about apk's APK-TOOLS.checksum.SHA1
+    # PAX headers, which it has no reason to understand.
+    tar --ignore-zeros --warning=no-unknown-keyword -xzf \"\$file\" -C extract
 done
 
 # Package metadata is not part of the filesystem.
@@ -72,6 +79,42 @@ case "$(file -b "$EX/usr/sbin/dropbear")" in
     *) fail "dropbear is not a 32-bit ARM binary: $(file -b "$EX/usr/sbin/dropbear")" ;;
 esac
 echo "    ok: dropbear is 32-bit ARM"
+
+# An .apk carries its dependency list in .PKGINFO, and resolving it is exactly
+# what apk does and this script does not.  So instead of hoping, read what the
+# binary actually demands straight out of the ELF -- readelf is happy to parse a
+# foreign architecture, so this costs nothing and turns "Error loading shared
+# library" at boot, with no console to read it on, into a failure right here.
+echo "==> checking the ELF's dependencies against the rootfs"
+NEED=$(docker run --rm -v "$ROOT":/ibss "$IMAGE" bash -c "
+    readelf -dl /ibss/build/dropbear-apk/extract/usr/sbin/dropbear 2>/dev/null |
+    sed -n 's/.*Shared library: \[\(.*\)\]/\1/p;
+            s/.*program interpreter: \(.*\)\]/\1/p'" | tr -d '\r')
+
+missing=0
+for lib in $NEED; do
+    # `if`, never `[ ... ] && { ... }` -- under set -e a bare AND-list whose test
+    # fails takes the script down, and here a failing test is the case we want
+    # to report, not die on.
+    case "$lib" in
+        /*) if [ -e "$TREE$lib" ]; then
+                echo "    ok: $lib (ELF interpreter)"
+            else
+                echo "    MISSING: $lib (ELF interpreter)"; missing=$((missing + 1))
+            fi ;;
+        *)  found=0
+            for d in lib usr/lib; do
+                if [ -e "$TREE/$d/$lib" ]; then
+                    echo "    ok: $d/$lib"; found=1; break
+                fi
+            done
+            if [ "$found" -ne 1 ]; then
+                echo "    MISSING: $lib"; missing=$((missing + 1))
+            fi ;;
+    esac
+done
+[ "$missing" -eq 0 ] || fail "the rootfs is missing $missing dependency/dependencies above -- \
+fetch those .apk files from $REPO the same way and re-run"
 
 echo "==> installing into $TREE"
 ( cd "$EX" && find . -type f -o -type l | while read -r f; do
