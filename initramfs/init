@@ -1,0 +1,193 @@
+#!/bin/sh
+mount -t proc proc /proc
+mount -t sysfs sysfs /sys
+mount -t devtmpfs devtmpfs /dev 2>/dev/null || true
+
+msg() { echo "$*" > /dev/kmsg; }
+
+msg "M1: start"
+mount -t debugfs debugfs /sys/kernel/debug 2>/dev/null || true
+
+# busywait() was the backoff while jiffies were frozen and sleep() never
+# returned.  The USB-SOF clockevent fixed that on 2026-09-15; kept only in
+# case a build ever boots without a tick again.
+busywait() { bw_i=0; while [ $bw_i -lt 200000 ]; do bw_i=$((bw_i+1)); done; }
+
+# Проверим сразу IRQ+UDC state пока Mac ещё пробует enumerate первого захода
+msg "M1a: early IRQ50 state"
+grep "^ *50:" /proc/interrupts 2>/dev/null | while read x; do msg "  IRQ-early: $x"; done
+msg "M1b: early UDC state"
+for u in /sys/class/udc/*; do
+    [ -e "$u" ] || continue
+    N=$(basename "$u")
+    S=$(cat "$u/state" 2>/dev/null)
+    Sm=$(cat "$u/soft_connect" 2>/dev/null)
+    C=$(cat "$u/current_speed" 2>/dev/null)
+    msg "  UDC-early: $N state=$S soft=$Sm speed=$C"
+done
+
+# начальное состояние
+# Dump the LATE-SMOKE result (aic1_late_smoke printk from late_initcall)
+msg "M-SMOKE: kernel dmesg tail (LATE-SMOKE lines)"
+dmesg 2>/dev/null | grep -E "LATE-SMOKE|AIC1-REARM|AIC1-DIAG|WDT-TIMER|aic,1:" | while read x; do msg "  SMK: $x"; done
+
+msg "M2: initial ls /dev char"
+ls /dev/ 2>&1 | grep -iE "hx|touch|input" | while read x; do msg "  D: $x"; done
+msg "M2b: /proc/misc"
+cat /proc/misc 2>/dev/null | while read x; do msg "  MISC: $x"; done
+
+# Skip hx-touchd for USB focus — its 40-iter monitor loop eats
+# capture time before we get to USB diagnostics.
+msg "M3: SKIPPED hx-touchd (USB debug mode)"
+
+# Финальное состояние
+msg "M-USB: /sys/class/udc (initial state)"
+for u in /sys/class/udc/*; do
+    [ -e "$u" ] || continue
+    N=$(basename "$u")
+    S=$(cat "$u/state" 2>/dev/null)
+    F=$(cat "$u/function" 2>/dev/null)
+    C=$(cat "$u/current_speed" 2>/dev/null)
+    Sm=$(cat "$u/soft_connect" 2>/dev/null)
+    msg "  UDC-init: $N state=$S function=$F speed=$C soft_connect=$Sm"
+done
+
+msg "M-USB: FORCE clean disconnect -> reconnect (clear iBEC leftover state)"
+for u in /sys/class/udc/*/soft_connect; do
+    echo disconnect > "$u" 2>/dev/null
+    msg "  UDC-disconnect: $u result=$?"
+done
+busywait  # ~200ms so Mac notices device gone
+busywait  # another chunk, be sure
+for u in /sys/class/udc/*/soft_connect; do
+    echo connect > "$u" 2>/dev/null
+    msg "  UDC-connect: $u result=$?"
+done
+busywait
+busywait  # give Mac time to enumerate fresh
+
+msg "M-USB: dwc2 debugfs listing"
+ls /sys/kernel/debug/ 2>/dev/null | while read x; do msg "  DBG: $x"; done
+ls /sys/kernel/debug/usb/36100000.usb/ 2>/dev/null | while read x; do msg "  DBG-usb: $x"; done
+
+for f in /sys/kernel/debug/usb/36100000.usb/regs /sys/kernel/debug/usb/36100000.usb/state /sys/kernel/debug/usb/36100000.usb/mode; do
+    if [ -e "$f" ]; then
+        msg "  DWC2 $f:"
+        head -80 "$f" 2>/dev/null | while read x; do msg "    $x"; done
+    fi
+done
+
+msg "M-final: /proc/interrupts FULL"
+cat /proc/interrupts 2>/dev/null | while read x; do msg "  IRQ: $x"; done
+
+msg "M-final: /sys/class/regulator status"
+for r in /sys/class/regulator/*/name; do
+    N=$(cat "$r" 2>/dev/null)
+    D=$(dirname "$r")
+    S=$(cat "$D/state" 2>/dev/null)
+    U=$(cat "$D/use_count" 2>/dev/null)
+    msg "  REG: $N state=$S use=$U"
+done
+
+msg "M-final: ps"
+ps 2>&1 | while read x; do msg "  PS: $x"; done
+
+# ---- CDC ACM console on /dev/ttyGS0 (g_serial) --------------------------
+# On the Mac this shows up as /dev/cu.usbmodem*; screen into it for a real
+# interactive shell.  open() on ttyGS0 blocks until the host raises DTR, so
+# this lives in the background and respawns.  sleep() does not work (no
+# clockevent / jiffies frozen), so busywait is the backoff.
+# ---- CDC ACM console on /dev/ttyGS0 (g_serial) --------------------------
+# On the Mac this shows up as /dev/cu.usbmodem*; screen into it for a real
+# interactive shell.  open() on ttyGS0 blocks until the host raises DTR, so
+# this lives in the background and respawns.  sleep() does not work (no
+# clockevent / jiffies frozen), so busywait is the backoff.
+# ---- WDT v1 register layout probe ---------------------------------------
+# The 2026-09-15 clockevent failed with CTRL=0x0 after writing IRQ_EN=BIT(0) to
+# +0x0c: the bit does not stick, so the mainline (A7+) layout does not apply --
+# the ADT says wdt-version = <1>.  CUR_TIME at +0x00 IS writable (zeroing it
+# worked), so the block is alive; only the other three offsets are unknown.
+#
+# Write f0000000 to each in turn and read all four back.  Bits 0..2 are clear in
+# that value, so no enable or reset bit is armed under ANY layout, and it is
+# cleared again immediately.  A register that reads back exactly f0000000 is a
+# data/compare register; one that reads back masked or zero is CTRL.
+if [ -x /bin/peek ]; then
+    msg "M-WDT: probing v1 layout at 0x3f103020 (safe: bits 0-2 never set)"
+    for off in 24 28 2c; do
+        /bin/peek w 3f1030$off f0000000 >/dev/null 2>&1
+        /bin/peek r 3f103020 4 2>&1 | while read x; do msg "  WDTP[+$off]: $x"; done
+        /bin/peek w 3f1030$off 0 >/dev/null 2>&1
+    done
+    /bin/peek r 3f103020 4 2>&1 | while read x; do msg "  WDTP[clean]: $x"; done
+fi
+
+# ---- CDC ACM console ------------------------------------------------------
+# Previous design was: setsid (no -c) + respawn + busywait backoff.  Three
+# defects that compounded into "console sticks on a random letter and does not
+# come back":
+#
+#  1. setsid without -c gives the shell NO controlling terminal, so the kernel
+#     never sends it SIGHUP when the ACM carrier drops.  The old shell survives.
+#  2. The loop then spawned ANOTHER shell on the same /dev/ttyGS0.  Two (then
+#     three) processes read() the same fd and each keystroke goes to whichever
+#     wakes first -- half the input vanishes into an invisible sibling, and
+#     reconnecting screen only adds another reader.
+#  3. busywait is pure CPU.  With no clockevent there is no preemption, so a
+#     tight respawn loop starves the tty workqueue outright.
+#
+# getty is written for exactly this job: it opens the tty, makes it the
+# controlling terminal, and exits on hangup -- exactly one reader at a time.
+msg "M-ACM: ttyGS nodes: $(ls -d /dev/ttyGS* 2>/dev/null || echo none)"
+(
+    n=0
+    while : ; do
+        n=$((n+1))
+        if [ -e /dev/ttyGS0 ]; then
+            /sbin/getty -n -l /bin/sh 115200 ttyGS0 2>/dev/null \
+                || /usr/bin/setsid -c /bin/sh </dev/ttyGS0 >/dev/ttyGS0 2>&1
+        fi
+        sleep 1
+        if [ $n -gt 500 ]; then
+            msg "M-ACM: 500 respawns, stopping the loop to stop burning CPU"
+            break
+        fi
+    done
+) &
+msg "M-ACM: ttyGS0 console (getty) started"
+
+msg "M-END: entering event0 read"
+( dd if=/dev/input/event0 bs=16 2>/dev/null | \
+    od -An -tx1 -w16 -v | while read line; do msg "TOUCH: $line"; done
+) &
+
+# Периодические UDC + IRQ dump'ы, чтобы поймать момент когда Mac начнёт enumerate
+i=0
+while [ $i -lt 12 ]; do
+    i=$((i+1))
+    sleep 1
+    if [ $((i % 10)) -eq 0 ]; then
+        msg "M-idle: still alive iter=$i"
+        for u in /sys/class/udc/*; do
+            [ -e "$u" ] || continue
+            N=$(basename "$u")
+            S=$(cat "$u/state" 2>/dev/null)
+            C=$(cat "$u/current_speed" 2>/dev/null)
+            Sm=$(cat "$u/soft_connect" 2>/dev/null)
+            msg "  UDC-tick[$i]: $N state=$S speed=$C soft=$Sm"
+        done
+        IRQ50=$(grep "50:" /proc/interrupts 2>/dev/null | head -1)
+        IRQ49=$(grep "49:" /proc/interrupts 2>/dev/null | head -1)
+        IRQ51=$(grep "51:" /proc/interrupts 2>/dev/null | head -1)
+        ERR=$(grep "Err" /proc/interrupts 2>/dev/null | head -1)
+        msg "  IRQ-tick[$i]: 49=$IRQ49 50=$IRQ50 51=$IRQ51 err=$ERR"
+        # На каждой 20-й итерации дампим regs — увидим GINTSTS/DCTL/DSTS
+        if [ $((i % 20)) -eq 0 ] && [ -e /sys/kernel/debug/usb/36100000.usb/regs ]; then
+            msg "  M-USB-tick[$i]: dwc2 regs snapshot:"
+            head -50 /sys/kernel/debug/usb/36100000.usb/regs 2>/dev/null | while read x; do msg "    R: $x"; done
+        fi
+    fi
+done
+
+msg "M-DONE: shutting down"
+exec /bin/sh </dev/tty0 >/dev/tty0 2>&1

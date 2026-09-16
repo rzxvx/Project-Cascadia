@@ -1,6 +1,6 @@
 --- a/drivers/tty/serial/samsung_tty.c
 +++ b/drivers/tty/serial/samsung_tty.c
-@@ -2537,7 +2537,7 @@
+@@ -2529,7 +2529,7 @@
  #define GS101_SERIAL_DRV_DATA NULL
  #endif
  

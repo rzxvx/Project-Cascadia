@@ -1,6 +1,30 @@
-ibootfiles/
-a13_boot/
+# ---- Large binaries / stock firmware (never belongs in git) ----
+*.ipsw
+*.dmg
+*.raw
 ibootfiles/
 ich_ramdisk/
-*.raw
-*.dmg
+a13_boot/
+ghidra_kc/
+ghidra_project*/
+
+# ---- Build products ----
+# output/ is fully reproducible from patches/ + config/ + scripts/.
+output/
+*.img3
+*.complzss
+*.macho
+zImage
+zImage-dtb
+System.map
+build.log
+
+# ---- Raw capture logs from lab runs ----
+uart_*.txt
+
+# ---- Junk ----
+.DS_Store
+**/.DS_Store
+*.bak-*
+*.backup
+attic/_to_delete/

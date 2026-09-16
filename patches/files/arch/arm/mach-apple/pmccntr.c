@@ -17,7 +17,13 @@
 
 #include <asm/delay.h>
 
-#define PMCCNTR_RATE_HZ		1000000000UL
+/* Fallback only.  apple_s5l_pmccntr_init() is handed the rate measured against
+ * the watchdog's 24 MHz counter; this constant is what gets used if that
+ * calibration could not run.  It was the hardcoded guess that made wall-clock
+ * time wrong on this platform for the whole bring-up. */
+#define PMCCNTR_RATE_FALLBACK	1000000000UL
+
+static unsigned long apple_pmccntr_rate = PMCCNTR_RATE_FALLBACK;
 
 static u64 notrace apple_pmccntr_read(void)
 {
@@ -34,7 +40,10 @@ static u64 apple_pmccntr_cs_read(struct clocksource *cs)
 
 static struct clocksource apple_pmccntr_cs = {
 	.name	= "pmccntr",
-	.rating	= 300,
+	/* Below the 24 MHz watchdog counter (350) on purpose: this counts CPU
+	 * cycles and stops dead in WFI, so it is only a fallback for the case
+	 * where the watchdog node is missing. */
+	.rating	= 250,
 	.read	= apple_pmccntr_cs_read,
 	.mask	= CLOCKSOURCE_MASK(32),
 	.flags	= CLOCK_SOURCE_IS_CONTINUOUS,
@@ -47,7 +56,7 @@ static unsigned long apple_pmccntr_read_long(void)
 
 static struct delay_timer apple_pmccntr_delay = {
 	.read_current_timer = apple_pmccntr_read_long,
-	.freq = PMCCNTR_RATE_HZ,
+	.freq = PMCCNTR_RATE_FALLBACK,
 };
 
 static void __init apple_pmccntr_enable(void)
@@ -76,11 +85,27 @@ static void __init apple_pmccntr_enable(void)
 	isb();
 }
 
-void __init apple_s5l_pmccntr_init(void)
+/* Split in two so the caller can enable the counter, measure the real CPU
+ * frequency against the watchdog's 24 MHz reference, and only then register
+ * everything with a rate that is not a guess. */
+void __init apple_s5l_pmccntr_enable_counter(void)
 {
 	apple_pmccntr_enable();
+}
 
-	sched_clock_register(apple_pmccntr_read, 32, PMCCNTR_RATE_HZ);
-	clocksource_register_hz(&apple_pmccntr_cs, PMCCNTR_RATE_HZ);
+void __init apple_s5l_pmccntr_init(unsigned long rate)
+{
+	if (rate)
+		apple_pmccntr_rate = rate;
+	apple_pmccntr_delay.freq = apple_pmccntr_rate;
+
+	pr_info("pmccntr: clocksource at %lu Hz (%s)\n", apple_pmccntr_rate,
+		rate ? "measured against the 24 MHz watchdog counter" : "fallback guess");
+
+	/* sched_clock is registered by the watchdog clocksource instead.
+	 * sched_clock_register() keeps whichever rate is HIGHER, so registering
+	 * PMCCNTR's 1 GHz here would permanently shut out the 24 MHz counter --
+	 * and PMCCNTR freezes in idle, which is exactly what we are fixing. */
+	clocksource_register_hz(&apple_pmccntr_cs, apple_pmccntr_rate);
 	register_current_timer_delay(&apple_pmccntr_delay);
 }

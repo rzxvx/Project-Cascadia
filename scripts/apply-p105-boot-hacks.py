@@ -336,6 +336,49 @@ static noinline void __ref __noreturn rest_init(void)
         "main.c: release escape after thaw_on (lab I0 HOLD)",
     ),
     (
+        "init/main.c",
+        """\t\tapple_aic1_hw_quiesce_quiet();
+\t\tearly_boot_irqs_disabled = false;
+\t\tp105_fb_dbg("irq_thaw");
+""",
+        """\t\tapple_aic1_hw_quiesce_quiet();
+\t\t/* FIX (2026-09-14): both quiesce calls above clear CFG.ENABLE and zero
+\t\t * TARGET_CPU for all 192 lines.  Without this re-arm the AIC stays dead
+\t\t * for the whole of do_initcalls(), which is why every /proc/interrupts
+\t\t * counter (incl. IPIs) stayed at 0. */
+\t\tapple_aic1_rearm();
+\t\tp105_fb_dbg("irq_rearm");
+\t\tearly_boot_irqs_disabled = false;
+\t\tp105_fb_dbg("irq_thaw");
+""",
+        "main.c: re-arm AIC1 after the pre-initcall quiesce (CFG.ENABLE + TARGET=CPU0)",
+    ),
+    (
+        "drivers/usb/dwc2/core.c",
+        """\t\tusleep_range(1000, 2000);
+""",
+        """\t\t/* P105AP: no clockevent yet -> hrtimer sleeps never return.
+\t\t * This only ever passed because CONFIG_USB_DWC2_DEBUG made
+\t\t * dwc2_force_mode() spend ~10 ms on the 115200 UART, which was
+\t\t * enough settle time to skip the sleep entirely.  mdelay needs
+\t\t * no tick. */
+\t\tmdelay(1);
+""",
+        "dwc2: mdelay instead of usleep_range in dwc2_wait_for_mode (no clockevent)",
+    ),
+    (
+        "drivers/usb/dwc2/gadget.c",
+        "\t\tGINTSTS_USBSUSP | GINTSTS_WKUPINT |\n\t\tGINTSTS_LPMTRANRCVD;\n",
+        "\t\tGINTSTS_USBSUSP | GINTSTS_WKUPINT |\n\t\tGINTSTS_LPMTRANRCVD;\n\n#ifdef CONFIG_ARCH_APPLE_S5L\n\t/* P105AP has no usable timer peripheral at all -- see the file comment in\n\t * arch/arm/mach-apple/apple_sof_clkevt.c for the list of what was ruled\n\t * out.  The 125 us Start-of-Frame is the system tick there. */\n\tintmsk |= GINTSTS_SOF;\n#endif\n",
+        "dwc2: enable GINTSTS_SOF on P105AP (the SOF is the system tick)",
+    ),
+    (
+        "drivers/usb/dwc2/gadget.c",
+        "\tif (!dwc2_is_device_mode(hsotg))\n\t\treturn IRQ_NONE;\n\n\tspin_lock(&hsotg->lock);\n",
+        "\tif (!dwc2_is_device_mode(hsotg))\n\t\treturn IRQ_NONE;\n\n#ifdef CONFIG_ARCH_APPLE_S5L\n\t/* Handle SOF before taking hsotg->lock on purpose: this walks into the\n\t * clockevent handler, and from there into the timer and scheduler code.\n\t * Holding a USB driver lock across that is asking for a lock-order\n\t * surprise, and the tick path touches nothing in this driver. */\n\t{\n\t\tvoid apple_s5l_usb_sof_tick(void);\n\t\tu32 sof = dwc2_readl(hsotg, GINTSTS) & dwc2_readl(hsotg, GINTMSK);\n\n\t\tif (sof & GINTSTS_SOF) {\n\t\t\tdwc2_writel(hsotg, GINTSTS_SOF, GINTSTS);\n\t\t\tapple_s5l_usb_sof_tick();\n\t\t}\n\t}\n#endif\n\n\tspin_lock(&hsotg->lock);\n",
+        "dwc2: call the SOF tick hook outside hsotg->lock",
+    ),
+    (
         "arch/arm/mm/alignment.c",
         """\tif ((!LDST_P_BIT(instr) && LDST_W_BIT(instr)) || user_mode(regs))
 \t\tgoto trans;

@@ -1,2 +1,2 @@
-	.equ	DTB_PHYS, 0x80db2200
-	.equ	DTB_SIZE, 0x10c7
+	.equ	DTB_PHYS, 0x81125200
+	.equ	DTB_SIZE, 0x16b1

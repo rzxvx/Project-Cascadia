@@ -37,7 +37,7 @@ extern unsigned long p105_fb_stride;
 static int p105_fb_use_virt;
 static unsigned p105_dbg_row;
 /* Cleared before free_initmem — phys identity map is not safe once idle runs. */
-static bool p105_fb_dbg_alive = true;
+static bool p105_fb_dbg_alive = false;
 
 void p105_fb_dbg_shutdown(void)
 {

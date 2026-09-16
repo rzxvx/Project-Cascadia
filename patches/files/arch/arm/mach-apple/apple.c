@@ -40,7 +40,11 @@ void apple_aic1_hw_quiesce_quiet(void);
  */
 bool apple_aic1_early_irq_escape = true;
 
-void __init apple_s5l_pmccntr_init(void);
+void __init apple_s5l_pmccntr_enable_counter(void);
+void __init apple_s5l_pmccntr_init(unsigned long rate);
+unsigned long __init apple_s5l_calibrate_cpu_hz(void);
+void __init apple_s5l_wdt_clocksource_init(void);
+void __init apple_s5l_pmu_clkevt_init(unsigned long cpu_hz);
 
 /*
  * P105AP Recovery live scanout (confirmed): phys 0x9F6FC000, portrait
@@ -325,8 +329,26 @@ static void __init apple_s5l_init_irq(void)
 
 static void __init apple_s5l_init_time(void)
 {
+	unsigned long cpu_hz;
+
+	/* Enable the cycle counter first, then measure it against the watchdog's
+	 * exact 24 MHz reference, and only then register the clocksource -- its
+	 * rate used to be a hardcoded 1 GHz guess, which made all wall-clock time
+	 * wrong.  The same measured figure is what the PMU tick is scaled by. */
 	p105_fb_dbg("pmccntr_init");
-	apple_s5l_pmccntr_init();
+	apple_s5l_pmccntr_enable_counter();
+	cpu_hz = apple_s5l_calibrate_cpu_hz();
+
+	/* Wall time comes from the 24 MHz watchdog counter, NOT from PMCCNTR:
+	 * PMCCNTR stops in WFI, so with it as the clocksource ktime only advanced
+	 * while the CPU was busy and sleep(1) took ~13 real seconds. */
+	apple_s5l_wdt_clocksource_init();
+	apple_s5l_pmccntr_init(cpu_hz);
+
+	/* Tick from the PMU overflow interrupt; it self-tests at late_initcall and
+	 * leaves the system exactly as tickless as before if the IRQ never lands. */
+	p105_fb_dbg("pmu_timer");
+	apple_s5l_pmu_clkevt_init(cpu_hz);
 	p105_fb_dbg("pmccntr_done");
 }
 

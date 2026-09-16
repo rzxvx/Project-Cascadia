@@ -38,10 +38,14 @@ NEW_FILES = [
     "arch/arm/mach-apple/apple.c",
     "arch/arm/mach-apple/platsmp.c",
     "arch/arm/mach-apple/pmccntr.c",
+    "arch/arm/mach-apple/apple_wdt_clkevt.c",
+    "arch/arm/mach-apple/apple_pmu_clkevt.c",
+    "arch/arm/mach-apple/apple_sof_clkevt.c",
     "arch/arm/mach-apple/p105_fb_dbg.c",
     "arch/arm/mach-apple/p105_fb_dbg.h",
     "arch/arm/mach-apple/font8x8.h",
     "drivers/irqchip/irq-apple-aic1.c",
+    "drivers/phy/phy-apple-s5l-usb.c",
     "Documentation/devicetree/bindings/interrupt-controller/apple,aic1.yaml",
 ]
 
@@ -65,6 +69,11 @@ GLUE = [
         "drivers/irqchip/Makefile",
         "irq-owl-sirq.o",
         "obj-$(CONFIG_APPLE_AIC1)\t\t+= irq-apple-aic1.o\n",
+    ),
+    (
+        "drivers/phy/Makefile",
+        "obj-$(CONFIG_GENERIC_PHY)",
+        "obj-$(CONFIG_PHY_APPLE_S5L_USB)\t+= phy-apple-s5l-usb.o\n",
     ),
 ]
 
@@ -109,6 +118,25 @@ config APPLE_AIC1
 \t  on 32-bit S5L SoCs (Apple A4 through A6X).  This is a separate driver
 \t  from APPLE_AIC (arm64 Apple Silicon): different DT binding, EVENT format,
 \t  and no integrated FIQ/IPI support.  Required to boot Linux on A5 devices.
+"""
+
+# Appended verbatim to drivers/phy/Kconfig if PHY_APPLE_S5L_USB is not defined.
+#
+# Appended after the file's endmenu rather than inside it.  Kconfig accepts a
+# symbol defined outside a menu -- it just does not show up under "PHY
+# Subsystem" in menuconfig -- and anchoring inside the menu would mean guessing
+# at a source line that moves between releases.  config/p105ap.config sets the
+# symbol directly, so menu placement does not matter.
+PHY_KCONFIG = """
+config PHY_APPLE_S5L_USB
+\tbool "Apple S5L USB OTG PHY (32-bit)"
+\tdepends on ARCH_APPLE_S5L || COMPILE_TEST
+\tdefault ARCH_APPLE_S5L
+\tselect GENERIC_PHY
+\thelp
+\t  USB 2.0 OTG PHY found on 32-bit Apple S5L SoCs (A4 through A6X).
+\t  Required for the dwc2 controller to come out of reset.  On A5 this is
+\t  also what the system tick depends on -- see arch/arm/mach-apple.
 """
 
 
@@ -283,6 +311,25 @@ config APPLE_S5L_AIC
     return 1
 
 
+def apply_phy_kconfig(tree: str, revert: bool) -> int:
+    path = os.path.join(tree, "drivers/phy/Kconfig")
+    original = read(path)
+    if revert:
+        if PHY_KCONFIG not in original:
+            return 0
+        write(path, original.replace(PHY_KCONFIG, ""))
+        print("  reverted drivers/phy/Kconfig")
+        return 1
+    if PHY_KCONFIG in original:
+        return 0
+    if "PHY_APPLE_S5L_USB" in original:
+        fail("drivers/phy/Kconfig already defines PHY_APPLE_S5L_USB differently; "
+             "remove the stale block by hand")
+    write(path, original.rstrip("\n") + "\n" + PHY_KCONFIG)
+    print("  appended PHY_APPLE_S5L_USB to drivers/phy/Kconfig")
+    return 1
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Install Apple S5L kernel support")
     ap.add_argument("--tree", default=os.path.join(ROOT, "build", "linux"))
@@ -301,6 +348,7 @@ def main() -> int:
     changed += apply_glue(tree, args.revert)
     changed += apply_replacements(tree, args.revert)
     changed += apply_irqchip_kconfig(tree, args.revert)
+    changed += apply_phy_kconfig(tree, args.revert)
 
     print(f"{changed} change(s)" if changed else "already up to date")
     return 0

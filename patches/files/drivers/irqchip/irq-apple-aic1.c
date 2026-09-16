@@ -21,6 +21,7 @@
 
 #include <linux/bitfield.h>
 #include <linux/bits.h>
+#include <linux/delay.h>
 #include <linux/io.h>
 #include <linux/irq.h>
 #include <linux/irqchip.h>
@@ -83,6 +84,11 @@ struct apple_aic1 {
 };
 
 static struct apple_aic1 *apple_aic1;
+
+/* DIAG (2026-09-13): count every entry into aic1_handle_irq to prove
+ * whether the CPU ever takes an IRQ exception from AIC1's output line.
+ * Read by the late_initcall smoke-test at the bottom of the file. */
+static unsigned int aic1_handler_entries;
 
 void apple_a9_gic_drain(void);
 extern bool apple_aic1_early_irq_escape;
@@ -240,6 +246,52 @@ void apple_aic1_enable(void)
 	aic1_enable_hw(aic);
 }
 
+/**
+ * apple_aic1_rearm - bring AIC1 back to a live-but-quiet state
+ *
+ * kernel_init() quiesces AIC1 (mask all, TARGET=0, CFG.ENABLE=0) right before
+ * do_initcalls() and never turns it back on, so every driver that requests an
+ * IRQ afterwards gets a dead controller.  Call this at the end of that quiesce:
+ * every hardware line stays MASKED (drivers unmask through request_irq, so no
+ * sticky-line storm), but routing is restored to CPU0, IPIs are live again and
+ * CFG.ENABLE is set.
+ */
+void apple_aic1_rearm(void)
+{
+	struct apple_aic1 *aic = apple_aic1;
+	unsigned int i, nr_words;
+
+	if (!aic) {
+		pr_err("AIC1-REARM: no aic instance, skipping\n");
+		return;
+	}
+
+	nr_words = DIV_ROUND_UP(aic->nr_irq, 32);
+
+	/* Keep every HW line masked and free of stale SW triggers. */
+	for (i = 0; i < nr_words; i++) {
+		aic1_write(aic, AIC1_MASK_SET + i * 4, ~0U);
+		aic1_write(aic, AIC1_SW_CLR + i * 4, ~0U);
+	}
+
+	/* Route every line at CPU0 (quiesce zeroed all of them). */
+	for (i = 0; i < aic->nr_irq; i++)
+		aic1_write(aic, AIC1_TARGET_CPU + i * 4, BIT(0));
+
+	aic1_drain_events(aic);
+
+	/* IPIs back on for this CPU. */
+	aic1_write(aic, AIC1_IPI_MASK_CLR, AIC1_IPI_OTHER | AIC1_IPI_SELF);
+	aic1_write(aic, AIC1_CPU_IPI_MASK_CLR(0), ~0U);
+
+	aic1_enable_hw(aic);
+	dsb(sy);
+
+	pr_err("AIC1-REARM: CONFIG=%#x (ENABLE=%u) all lines masked, TARGET=CPU0, IPI live\n",
+	       aic1_read(aic, AIC1_CONFIG),
+	       !!(aic1_read(aic, AIC1_CONFIG) & AIC1_CONFIG_ENABLE));
+}
+
 #ifdef CONFIG_SMP
 static void aic1_handle_ipi(struct pt_regs *regs)
 {
@@ -341,6 +393,10 @@ static void aic1_irq_unmask(struct irq_data *d)
 	struct apple_aic1 *aic = irq_data_get_irq_chip_data(d);
 	irq_hw_number_t hw = irqd_to_hwirq(d);
 
+	/* FIX (2026-09-14): the kernel_init() quiesce zeroes TARGET_CPU for every
+	 * line, and nothing else restores it per line.  Unmasking without a target
+	 * leaves the IRQ routed to no CPU at all, so re-assert CPU0 here. */
+	aic1_write(aic, AIC1_TARGET_CPU + hw * 4, BIT(0));
 	aic1_write(aic, AIC1_MASK_CLR + (hw >> 5) * 4, BIT(hw & 31));
 }
 
@@ -363,6 +419,8 @@ static void __exception_irq_entry aic1_handle_irq(struct pt_regs *regs)
 	struct apple_aic1 *aic = apple_aic1;
 	unsigned int limit, n = 0;
 	u32 event;
+
+	aic1_handler_entries++;
 
 	if (apple_aic1_early_irq_escape)
 		regs->ARM_cpsr |= PSR_I_BIT;
@@ -471,12 +529,142 @@ static int __init aic1_of_init(struct device_node *node,
 
 	aic1_init_smp(aic);
 
-	pr_info("aic,1: %u IRQs, WHOAMI=%u, CONFIG=%#x (EVENT@0x5004)\n",
+	/* FIX (2026-09-13): aic1_clear_sticky_nirq() above cleared CONFIG.ENABLE,
+	 * so with no other caller AIC1 stays disabled and never delivers IRQs.
+	 * Turn it back on now that IPI/domain setup is done. */
+	aic1_enable_hw(aic);
+
+	/* FIX (2026-09-13): drop the early-IRQ escape (forces PSR.I on handler
+	 * return). Was intended to be cleared after "first enables" but the
+	 * caller was never wired up. Without this, CPU stays interrupt-blind. */
+	apple_aic1_early_irq_escape = false;
+
+	pr_info("aic,1: %u IRQs, WHOAMI=%u, CONFIG=%#x (EVENT@0x5004), escape=%d\n",
 		aic->nr_irq, aic1_read(aic, AIC1_WHOAMI),
-		aic1_read(aic, AIC1_CONFIG));
+		aic1_read(aic, AIC1_CONFIG), apple_aic1_early_irq_escape);
+
+	/* DIAG-2 (2026-09-13): bulk unmask ALL IRQs — MASK register semantics
+	 * are set/clr write-only (reading returns 0xffffffff on this HW),
+	 * so we can't tell if MASK_CLR actually worked from readback.
+	 * Just carpet-bomb: write ~0 to MASK_CLR for all banks. */
+	{
+		unsigned i, nr_words = DIV_ROUND_UP(aic->nr_irq, 32);
+		pr_err("AIC1-DIAG: bulk unmask ALL IRQs (%u banks)\n", nr_words);
+		for (i = 0; i < nr_words; i++)
+			aic1_write(aic, AIC1_MASK_CLR + i * 4, ~0U);
+		/* also target every IRQ at CPU 0 */
+		for (i = 0; i < aic->nr_irq; i++)
+			aic1_write(aic, AIC1_TARGET_CPU + i * 4, BIT(0));
+	}
+
+	/* DIAG (2026-09-13): dump CPU CPSR to check if IRQs are unmasked
+	 * at CPU level. If PSR.I bit (bit 7) is set, no IRQ exception
+	 * ever fires regardless of AIC1 state. */
+	{
+		u32 cpsr;
+		asm volatile("mrs %0, cpsr" : "=r"(cpsr));
+		pr_err("AIC1-DIAG: CPU CPSR=%#x  (I=%u  F=%u)\n",
+		       cpsr, !!(cpsr & 0x80), !!(cpsr & 0x40));
+	}
+
+	/* DIAG (2026-09-13): fire SW_SET on hwirq 0 for pipeline test
+	 * (nothing else uses IRQ 0). EVENT reg MUST show 0x10000 (type=HW num=0). */
+	pr_err("AIC1-DIAG: SW-firing hwirq 0 to test delivery pipeline\n");
+	{
+		u32 e_pre, e_post, cfg_pre, cfg_post;
+
+		cfg_pre = aic1_read(aic, AIC1_CONFIG);
+		e_pre = aic1_read(aic, aic1_cpu_event_off());
+
+		aic1_write(aic, AIC1_TARGET_CPU + 0 * 4, BIT(0));
+		aic1_write(aic, AIC1_MASK_CLR + 0 * 4, BIT(0));
+		aic1_write(aic, AIC1_SW_SET + 0 * 4, BIT(0));
+		udelay(100);
+
+		e_post = aic1_read(aic, aic1_cpu_event_off());
+		cfg_post = aic1_read(aic, AIC1_CONFIG);
+
+		pr_err("AIC1-DIAG: SW0 cfg pre=%#x post=%#x EVENT pre=%#x post=%#x\n",
+		       cfg_pre, cfg_post, e_pre, e_post);
+	}
 
 	return 0;
 }
+
+/*
+ * DIAG (2026-09-13): late_initcall smoke test — runs long after
+ * start_kernel()'s local_irq_enable(). Reads CPSR (I bit should be
+ * clear now), fires SW_SET on hwirq 0, waits, and reads EVENT +
+ * handler counter to prove whether the CPU ever took the exception.
+ *
+ * Interpretation:
+ *   - CPSR.I=1 late  -> local_irq_enable() didn't actually clear it
+ *                       (patched raw_local_irq_enable somewhere?)
+ *   - CPSR.I=0 late, handler_entries=0, EVENT stuck at 0x10000
+ *                    -> AIC1 output line never asserts CPU nIRQ pin
+ *                       (HW wiring / missing enable gate)
+ *   - CPSR.I=0 late, handler_entries>0 -> pipeline works;
+ *                    root cause of dead peripheral IRQs is elsewhere
+ *                    (MASK/TARGET readback lies; per-line enable missing)
+ */
+static int __init aic1_late_smoke(void)
+{
+	struct apple_aic1 *aic = apple_aic1;
+	u32 cpsr_before, cpsr_after, ev_before, ev_after;
+	unsigned int handler_before, handler_after;
+
+	if (!aic) {
+		pr_err("LATE-SMOKE: apple_aic1 not initialized\n");
+		return 0;
+	}
+
+	asm volatile("mrs %0, cpsr" : "=r"(cpsr_before));
+	handler_before = aic1_handler_entries;
+	ev_before = aic1_read(aic, aic1_cpu_event_off());
+
+	pr_err("LATE-SMOKE: CPSR=%#x (I=%u F=%u) CONFIG=%#x (ENABLE=%u) EVENT=%#x handler_entries=%u\n",
+	       cpsr_before, !!(cpsr_before & 0x80), !!(cpsr_before & 0x40),
+	       aic1_read(aic, AIC1_CONFIG),
+	       !!(aic1_read(aic, AIC1_CONFIG) & AIC1_CONFIG_ENABLE),
+	       ev_before, handler_before);
+
+	/* Make absolutely sure hwirq 0 is unmasked and targeted at CPU0 */
+	aic1_write(aic, AIC1_TARGET_CPU + 0 * 4, BIT(0));
+	aic1_write(aic, AIC1_MASK_CLR + 0 * 4, BIT(0));
+
+	pr_err("LATE-SMOKE: firing SW_SET hwirq 0\n");
+	aic1_write(aic, AIC1_SW_SET + 0 * 4, BIT(0));
+
+	/* Give plenty of time for an IRQ exception to fire + handler to run.
+	 * PMCCNTR clocksource means jiffies don't advance without timer IRQs,
+	 * so mdelay uses PMCCNTR loops and stays honest. */
+	mdelay(50);
+
+	asm volatile("mrs %0, cpsr" : "=r"(cpsr_after));
+	handler_after = aic1_handler_entries;
+	ev_after = aic1_read(aic, aic1_cpu_event_off());
+
+	pr_err("LATE-SMOKE: after SW_SET+50ms: CPSR=%#x (I=%u F=%u) EVENT=%#x handler_entries=%u (delta=%u)\n",
+	       cpsr_after, !!(cpsr_after & 0x80), !!(cpsr_after & 0x40),
+	       ev_after, handler_after, handler_after - handler_before);
+
+	if (handler_after > handler_before) {
+		pr_err("LATE-SMOKE: PASS -- CPU takes AIC1 IRQ exception. Look for per-line enable / MASK readback lying.\n");
+	} else if (cpsr_after & 0x80) {
+		pr_err("LATE-SMOKE: FAIL -- CPSR.I=1 late in boot; local_irq_enable() didn't take effect.\n");
+	} else if (ev_after == 0x10000 || ev_after == 0x10001) {
+		pr_err("LATE-SMOKE: FAIL -- CPSR.I=0 but AIC1 output line never reaches CPU nIRQ pin (HW gating).\n");
+	} else {
+		pr_err("LATE-SMOKE: WEIRD -- EVENT=%#x, needs deeper look.\n", ev_after);
+	}
+
+	/* Clean up: drain any residue so we don't leave state pending */
+	aic1_read(aic, aic1_cpu_event_off());
+	aic1_read(aic, AIC1_EVENT);
+
+	return 0;
+}
+late_initcall(aic1_late_smoke);
 
 IRQCHIP_DECLARE(apple_aic1, "aic,1", aic1_of_init);
 IRQCHIP_DECLARE(apple_aic1_vendor, "apple,aic1", aic1_of_init);
