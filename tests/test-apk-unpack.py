@@ -38,11 +38,14 @@ def load():
 
 
 def tar_bytes(files):
+    """files maps name -> bytes, or name -> (bytes, mode)."""
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w") as tf:
-        for name, data in files.items():
+        for name, entry in files.items():
+            data, mode = entry if isinstance(entry, tuple) else (entry, 0o644)
             ti = tarfile.TarInfo(name)
             ti.size = len(data)
+            ti.mode = mode
             tf.addfile(ti, io.BytesIO(data))
     return buf.getvalue()
 
@@ -58,8 +61,8 @@ def fake_apk():
     """signature || control || data, as three concatenated gzip members."""
     return (gz(tar_bytes({".SIGN.RSA.test.rsa.pub": b"sig"}))
             + gz(tar_bytes({".PKGINFO": b"pkgname = fake\n"}))
-            + gz(tar_bytes({"usr/sbin/dropbear": b"\x7fELFfake",
-                            "usr/lib/libx.so.1": b"lib"})))
+            + gz(tar_bytes({"usr/sbin/dropbear": (b"\x7fELFfake", 0o755),
+                            "usr/lib/libx.so.1": (b"lib", 0o644)})))
 
 
 def fake_index():
@@ -97,6 +100,14 @@ def main():
               os.path.exists("out/usr/sbin/dropbear"), True)
         check("package metadata is not installed as a file",
               os.path.exists("out/.PKGINFO"), False)
+        # tarfile's set_attrs=False drops the mode along with uid/gid, so an
+        # installed binary arrives at the umask default and is not executable.
+        # Everything downstream still "works" -- the file is there, the right
+        # size, the right bytes -- until the device refuses to run it.
+        check("executable bit survives extraction",
+              oct(os.stat("out/usr/sbin/dropbear").st_mode & 0o777), oct(0o755))
+        check("a non-executable file is not made executable",
+              oct(os.stat("out/usr/lib/libx.so.1").st_mode & 0o777), oct(0o644))
 
         by_name, by_soname = au.parse_index(fake_index())
         check("index: name -> filename",

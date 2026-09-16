@@ -71,6 +71,13 @@ def untar_apk(blob, dest):
             if ".." in m.name.split("/"):
                 continue          # never write outside dest
             tf.extract(m, dest, set_attrs=False)
+            # set_attrs=False on purpose: it would also try to apply uid/gid and
+            # mtime, and chown across a Docker bind mount from macOS is not
+            # something to depend on.  But the mode has to come across by hand or
+            # every extracted file lands at the umask default -- which silently
+            # strips the executable bit off the very binaries being installed.
+            if m.isfile():
+                os.chmod(os.path.join(dest, m.name), m.mode)
             if m.isfile() or m.issym():
                 names.append(m.name)
     return names
