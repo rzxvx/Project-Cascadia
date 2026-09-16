@@ -12,6 +12,16 @@ mount -t proc  proc  /proc
 mount -t sysfs sysfs /sys
 mount -t devtmpfs devtmpfs /dev 2>/dev/null || true
 
+# devpts is not optional once anything wants a terminal it did not inherit.
+# devtmpfs gives us /dev/ptmx, the master side, but the slave side lives in a
+# devpts instance, and without one mounted every pty allocation fails.  That is
+# what "PTY allocation request failed on channel 0" means on the ssh client:
+# not a dropbear problem, a missing filesystem.  gid=5 is Alpine's tty group.
+mkdir -p /dev/pts /dev/shm
+mount -t devpts -o gid=5,mode=620 devpts /dev/pts 2>/dev/null \
+    || mount -t devpts devpts /dev/pts 2>/dev/null || true
+mount -t tmpfs tmpfs /dev/shm 2>/dev/null || true
+
 msg() { echo "$*" > /dev/kmsg; }
 
 # READ THIS BEFORE ADDING A sleep ANYWHERE ABOVE THE USB DANCE.
@@ -136,7 +146,11 @@ msg "P105: ACM console started on ttyGS0"
 # or SSH will refuse on the mismatch.
 if [ -x /usr/sbin/dropbear ] && [ -d /sys/class/net/usb0 ]; then
     mkdir -p /etc/dropbear
-    /usr/sbin/dropbear -R -E -p "$IP_DEV:22" 2>/dev/null &
+    # -E logs to stderr, which is worth nothing if stderr goes nowhere: the
+    # first failure here cost a round trip precisely because dropbear had been
+    # explaining itself into /dev/null.  /dev/kmsg puts it in the UART capture
+    # and in dmesg, which is where every other verdict already is.
+    /usr/sbin/dropbear -R -E -p "$IP_DEV:22" 2>/dev/kmsg &
     msg "P105: dropbear on $IP_DEV:22"
 else
     msg "P105: dropbear not installed (run scripts/add-dropbear.sh)"
