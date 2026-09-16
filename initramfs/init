@@ -84,6 +84,14 @@ done
 IP_DEV=10.55.0.2
 IP_PFX=24
 
+# Loopback comes up DOWN in a bare initramfs -- nothing brings it up for us.
+# Anything that talks to 127.0.0.1 (and that is most daemons) fails until it is
+# up, and the failure looks like the daemon is broken rather than the interface.
+ip link set lo up 2>/dev/null || ifconfig lo up 2>/dev/null
+
+# "(none)" in the shell prompt and in uname is just an unset hostname.
+hostname p105 2>/dev/null
+
 msg "P105: net interfaces: $(ls /sys/class/net 2>/dev/null | tr '\n' ' ')"
 if [ -d /sys/class/net/usb0 ]; then
     ip link set usb0 up 2>/dev/null || ifconfig usb0 up 2>/dev/null
@@ -115,6 +123,24 @@ grep -E "^ *(50|51):" /proc/interrupts 2>/dev/null | while read x; do msg "  IRQ
     msg "P105: ACM respawn limit reached, giving up"
 ) &
 msg "P105: ACM console started on ttyGS0"
+
+# ----------------------------------------------------------- ssh (dropbear) --
+# Installed by scripts/add-dropbear.sh, which is a manual step: Alpine armhf
+# binaries cannot be executed on an Apple Silicon host (no AArch32 EL0), so the
+# .apk is unpacked rather than installed, and there is no way to run apk itself.
+# Absent dropbear this whole block is skipped and the nc shell below stands in.
+#
+# -R generates host keys on demand.  The rootfs is a ramfs, so those keys die
+# with the boot and the host key changes every time -- connect with
+#   ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@10.55.0.2
+# or SSH will refuse on the mismatch.
+if [ -x /usr/sbin/dropbear ] && [ -d /sys/class/net/usb0 ]; then
+    mkdir -p /etc/dropbear
+    /usr/sbin/dropbear -R -E -p "$IP_DEV:22" 2>/dev/null &
+    msg "P105: dropbear on $IP_DEV:22"
+else
+    msg "P105: dropbear not installed (run scripts/add-dropbear.sh)"
+fi
 
 # ------------------------------------------------- shell over the ECM link --
 # This busybox has no telnetd and no sshd (they are separate Alpine packages),

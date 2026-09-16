@@ -58,7 +58,21 @@
 		 * and /dev/console open fails for init.  UART still probes for
 		 * /dev/ttySAC0; earlycon+keep_bootcon covers pre-fbcon printk.
 		 */
-		bootargs = "earlycon=s3c6400,0x32500000 keep_bootcon lpj=5000000 root=/dev/ram0 rw rootwait panic=10 loglevel=8 ignore_loglevel";
+		/*
+		 * g_cdc.dev_addr / g_cdc.host_addr pin the two ends of the CDC
+		 * ECM link.  Without them u_ether picks a fresh random MAC on
+		 * every boot, and because macOS keys its interface names off the
+		 * MAC, the gadget lands on a NEW enN each time -- en10, en11,
+		 * en12 -- so the host-side ifconfig has to be redone every boot.
+		 * Observed directly: 6e:f1:1c:27:f4:65 on one boot and
+		 * da:5b:e0:9b:ef:1d on the next.
+		 *
+		 * Both are locally-administered unicast (low nibble of the first
+		 * octet is 2), so they cannot collide with a real vendor OUI.
+		 *   ...:01 = host side (the Mac's enN)
+		 *   ...:02 = device side (usb0 here)
+		 */
+		bootargs = "earlycon=s3c6400,0x32500000 keep_bootcon lpj=5000000 root=/dev/ram0 rw rootwait panic=10 loglevel=8 ignore_loglevel g_cdc.host_addr=02:10:5a:05:00:01 g_cdc.dev_addr=02:10:5a:05:00:02";
 
 		/*
 		 * Placeholders.  The loader MUST overwrite both before jumping;
