@@ -22,10 +22,21 @@ msg() { echo "$*" > /dev/kmsg; }
 # A "sleep 1" between the disconnect and the reconnect below is an instant,
 # silent hang with no console left to debug it from.
 #
-# settle() is a pure CPU spin -- roughly 200 ms at 1 GHz -- and is therefore the
-# only safe delay while the link is down.  Use sleep only after the UDC reports
-# "configured".
-settle() { s_i=0; while [ $s_i -lt 200000 ]; do s_i=$((s_i+1)); done; }
+# settle() is a pure CPU spin and is therefore the only safe delay while the
+# link is down.  Use sleep only after the UDC reports "configured".
+#
+# MEASURED, not guessed: the 2026-09-16 boot log timestamps the disconnect at
+# 2.88 s and "configured after 2 polls" at 26.77 s, so 200000 iterations of ash
+# arithmetic cost about 12 SECONDS on this 1 GHz A9 -- roughly 60 us each, not
+# the "~200 ms" an older comment claimed.  That one number was the entire slow
+# USB bring-up.  5000 iterations is about 300 ms, which is all the host needs
+# to notice the device went away.
+settle() { s_i=0; while [ $s_i -lt 5000 ]; do s_i=$((s_i+1)); done; }
+
+# Shorter spin for the poll loop: ~100 ms, so a normal enumeration costs a few
+# hundred milliseconds instead of half a minute, and the 150-poll ceiling still
+# bounds a failed one at ~15 s.
+blip() { b_i=0; while [ $b_i -lt 1700 ]; do b_i=$((b_i+1)); done; }
 
 msg "P105: init start"
 
@@ -46,12 +57,12 @@ for u in /sys/class/udc/*/soft_connect; do echo connect > "$u" 2>/dev/null; done
 # Poll for the host to finish configuring us.  Bounded, and spin-based rather
 # than sleep-based because the tick only comes back once this succeeds.
 n=0
-while [ $n -lt 40 ]; do
+while [ $n -lt 150 ]; do
     n=$((n+1))
     st=""
     for u in /sys/class/udc/*/state; do st=$(cat "$u" 2>/dev/null); done
     [ "$st" = "configured" ] && break
-    settle
+    blip
 done
 msg "P105: UDC state=$st after $n polls"
 
@@ -114,7 +125,10 @@ if [ -d /sys/class/net/usb0 ]; then
     (
         rm -f /tmp/ncsh; mkfifo /tmp/ncsh 2>/dev/null || exit 0
         while : ; do
-            nc -l -p 2323 < /tmp/ncsh 2>/dev/null | /bin/sh > /tmp/ncsh 2>&1
+            # -i matters: with stdin coming from a pipe rather than a tty, ash
+            # decides it is non-interactive and prints no prompt at all, so the
+            # client looks hung when it is actually fine.  -i forces the prompt.
+            nc -l -p 2323 < /tmp/ncsh 2>/dev/null | /bin/sh -i > /tmp/ncsh 2>&1
             sleep 1
         done
     ) &

@@ -52,6 +52,8 @@ including the parts that didn't work.
 - [x] Interactive shell on tty0 (framebuffer console)
 - [x] **USB gadget enumerates** — dwc2 peripheral mode, full SET_CONFIGURATION
 - [x] **Interactive shell over USB** — CDC ACM, `screen /dev/cu.usbmodem* 115200`
+- [x] **USB networking** — CDC ECM on the same port as the console (`g_cdc`),
+      10.55.0.2, ~0.7 ms RTT to the host
 - [x] `/bin/peek` — MMIO poke tool in the initramfs for live hardware probing
 - [ ] Touch input — blocked on the Cmwp touch clock
 - [ ] Wi-Fi (BCM4334 — HSIC, behind EHCI, not SDIO as initially assumed)
@@ -198,8 +200,33 @@ Boot chain: `primepwn` → patched `iBSS` → `iBEC.patched.autogo.lk.dfu` →
 `staging-bundle.bin` → `staging-loader.bin` → `zImage-dtb` at `0x80008000`.
 Built on teutekeune/iBSSloader.
 
-A gotcha worth recording: PMCCNTR is 32-bit at ~1 GHz, so printk timestamps
-wrap every ~4.3 s. A log that goes `4.32 → 0.03` is not a reboot.
+### The tick and the USB gadget are coupled
+
+This is the sharpest edge in the port, and it is not obvious from any one file.
+
+Because the tick is the SOF interrupt, and SOFs only arrive once the host has
+enumerated the device, and the host only enumerates once a gadget driver binds
+and pulls up D+ — **the gadget must bind before `apple_sof_clkevt` registers at
+`late_initcall`.** A legacy gadget (`g_cdc` here) binds from its own initcall
+and satisfies that. A configfs gadget is bound by userspace writing to
+`$GADGET/UDC`, which happens in `/init`, long after `late_initcall`: the tick
+would look for SOFs, find none, decline to register, and the machine would come
+up with frozen jiffies and no way to `sleep`. Do not port this to configfs
+without first making the clockevent registration deferrable.
+
+The same trap exists inside `/init`. Between a soft disconnect and the
+reconnect there are no SOFs, so there are no jiffies, so `sleep` never returns.
+That window has to be crossed with a CPU spin. Both facts are commented at the
+places where someone would otherwise "clean up" the code.
+
+Two more gotchas worth recording:
+
+- PMCCNTR is 32-bit at ~1 GHz, so printk timestamps wrap every ~4.3 s. A log
+  that goes `4.32 → 0.03` is not a reboot.
+- A shell arithmetic loop costs about 60 µs per iteration on this CPU. The spin
+  delays in `/init` are sized from that measurement, not from a guess — an
+  inherited "~200 ms" comment turned out to be 12 seconds and was, by itself,
+  the entire slow USB bring-up.
 
 ## Repo layout
 
@@ -225,8 +252,10 @@ Build products (`output/`) and stock firmware are not tracked; everything in
 ## Roadmap
 
 - **Phase 1 ✓** — Linux boots to an interactive shell. Serial logs. Framebuffer console.
-- **Phase 2 ✓** — USB gadget, CDC ACM shell, working tick, correct wall clock.
-- **Phase 3** — Touch (unblock the Cmwp clock) → Wi-Fi via HSIC/EHCI → networking.
+- **Phase 2 ✓** — USB gadget, CDC ACM shell, CDC ECM networking, working tick,
+  correct wall clock.
+- **Phase 3** — SSH over the ECM link → touch (unblock the Cmwp clock) →
+  Wi-Fi via HSIC/EHCI.
 - **Phase 4** — A6 port (iPhone 5 / iPad mini 2), on this foundation.
 - **Phase 5** — A12/A13, longer term.
 
