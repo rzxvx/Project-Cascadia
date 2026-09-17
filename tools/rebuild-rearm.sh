@@ -36,6 +36,12 @@ for s in g_cdc.host_addr g_cdc.dev_addr; do
 done
 echo "    ok: fresh dtb, gadget MACs pinned, no initcall_debug"
 
+# No RTC on this board: without a stamp the device boots at the epoch and every
+# TLS handshake fails on notBefore.  Written before the kernel build so it lands
+# inside the embedded initramfs rather than a build later.
+date -u "+%Y-%m-%d %H:%M:%S" > "$IBSS/build/initramfs-root/etc/build-date"
+echo "    stamped /etc/build-date = $(cat "$IBSS/build/initramfs-root/etc/build-date") UTC"
+
 echo "==> 2/6 kernel"
 # NOTE: pipefail INSIDE the container shell. Without it, `... | tail` returns tail's
 # status and a failed or lock-refused build silently leaves stale artifacts behind.

@@ -50,6 +50,19 @@ blip() { b_i=0; while [ $b_i -lt 1700 ]; do b_i=$((b_i+1)); done; }
 
 msg "P105: init start"
 
+# There is no RTC on this board, so the clock starts at the epoch.  That breaks
+# anything that validates a TLS certificate -- notably apk against the default
+# https:// mirrors, which fails with a certificate-not-yet-valid error that
+# looks nothing like a clock problem.  /etc/build-date is stamped by
+# tools/rebuild-rearm.sh at build time; it is not the real time, but it is
+# close enough to be in the right decade, and later than every certificate's
+# notBefore.  Set the real time over ssh if it ever matters.
+if [ -f /etc/build-date ]; then
+    date -u -s "$(cat /etc/build-date)" >/dev/null 2>&1 \
+        && msg "P105: clock set to build date $(cat /etc/build-date) UTC" \
+        || msg "P105: could not set clock from /etc/build-date"
+fi
+
 # ---------------------------------------------------------------- verdicts --
 # One line each from the three subsystems that have to be alive for anything
 # else to work.  If the box is dead, this is the first thing to read.
@@ -92,6 +105,7 @@ done
 #   device : 10.55.0.2
 #   host   : 10.55.0.1   <- set this on the Mac, see README
 IP_DEV=10.55.0.2
+IP_HOST=10.55.0.1
 IP_PFX=24
 
 # Loopback comes up DOWN in a bare initramfs -- nothing brings it up for us.
@@ -107,6 +121,14 @@ if [ -d /sys/class/net/usb0 ]; then
     ip link set usb0 up 2>/dev/null || ifconfig usb0 up 2>/dev/null
     ip addr add "$IP_DEV/$IP_PFX" dev usb0 2>/dev/null \
         || ifconfig usb0 "$IP_DEV" netmask 255.255.255.0 2>/dev/null
+    # Default route and DNS so apk can reach the Alpine mirrors.  This only
+    # goes anywhere if the host is forwarding and NAT-ing for us --
+    # tools/mac-share-internet.sh sets that up.  Harmless if it is not: the
+    # route just leads nowhere and the point-to-point link still works.
+    ip route add default via "$IP_HOST" dev usb0 2>/dev/null \
+        || route add default gw "$IP_HOST" 2>/dev/null || true
+    printf 'nameserver 1.1.1.1\nnameserver 8.8.8.8\n' > /etc/resolv.conf
+
     msg "  usb0: addr=$(ip -o -4 addr show usb0 2>/dev/null | awk '{print $4}')" \
         "carrier=$(cat /sys/class/net/usb0/carrier 2>/dev/null)" \
         "oper=$(cat /sys/class/net/usb0/operstate 2>/dev/null)" \
