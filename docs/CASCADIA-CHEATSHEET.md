@@ -54,11 +54,26 @@ output/                     staging-bundle.bin + staging-loader.bin
 
 ### Прошивка
 ```bash
-./cascadia flash                 # свежесобранный iBEC
+./cascadia flash                 # свежесобранный iBEC, checkm8 через primepwn
+./cascadia flash --kdfu          # то же, но БЕЗ Pico — через джейл
+./cascadia flash --skip-pwn      # устройство уже в pwned DFU
 ./cascadia flash --known-good    # августовский образ — отделить плохую сборку
                                  # от плохого стенда
 ./cascadia flash --no-uart       # без последовательного захвата
 ```
+
+### Два пути в pwned DFU
+**primepwn** — checkm8, нужен Pi Pico или Arduino с USB host shield: на A5
+эксплойт требует тайминга по USB, который обычный хост не выдаёт.
+
+**kDFU** — из джейлнутой iOS `kloader` грузит пропатченный iBSS напрямую,
+железа не нужно вообще. EverPwnage джейлит A5 на 7–9.3.6 **untethered**, то есть
+устройство поднимается джейлнутым каждый раз и шаг остаётся однокомандным.
+
+Оба реализованы в Legacy iOS Kit, мы их вызываем. Нюанс: kDFU отправляет **свой**
+pwned iBSS, не наш. Отличаются они только boot-args, которые вписал
+iBoot32Patcher; значим патч подписи, он есть у обоих, а boot-args всё равно
+задаёт iBEC.
 Порядок заливки и паузы не декоративны: `primepwn` выполняет checkm8 и оставляет
 работающий pwned iBSS; тот принимает неподписанный iBEC; autogo-хук в iBEC
 срабатывает на конце заливки бандла и запускает загрузчик — поэтому loader

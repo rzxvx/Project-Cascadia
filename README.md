@@ -283,6 +283,16 @@ Flashing needs the device, a Lightning cable, a way into pwned DFU, and
 ./cascadia flash      # iBSS -> iBEC -> bundle -> loader
 ```
 
+Reaching pwned DFU has two routes. checkm8 on A5 needs hardware that drives USB
+with tighter timing than a general-purpose host manages — a Raspberry Pi Pico,
+or an Arduino with a USB host shield. If you have neither, `./cascadia flash
+--kdfu` goes the other way: from a jailbroken iOS, `kloader` boots a patched
+iBSS directly, with no extra hardware.
+[EverPwnage](https://github.com/LukeZGD/EverPwnage) jailbreaks A5 on iOS
+7–9.3.6 untethered, so the device comes up jailbroken every time and this stays
+a one-command step. Both routes are Legacy iOS Kit's; Cascadia calls it rather
+than reimplementing either.
+
 No Apple firmware ships with this repository. `./cascadia firmware` derives the
 boot chain from an `iPad2,5_8.4.1_12H321_Restore.ipsw` you supply, and checks
 the result against reference hashes. The pin to that build is not arbitrary: the
