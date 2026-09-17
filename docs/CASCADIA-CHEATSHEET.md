@@ -5,152 +5,75 @@
 - 512MB RAM, dual Cortex-A9
 - Exploit: checkm8 через Raspberry Pi Pico (checkm8-a5, LukeZGD)
 - DCSD кабель: `/dev/cu.usbserial-A506VZ9Q`, 115200 baud, требует `sudo`. Кабель проводит и UART, и USB D+/D- одновременно.
-- iOS версия kernelcache в репо: **12H321** (iOS 8.4.1, "Donner")
+- Прошивка, к которой всё прибито: **12H321** (iOS 8.4.1, "Donner").
+  В репозитории её нет — `./cascadia firmware` выводит iBSS/iBEC из твоего IPSW.
+  Пин не произволен: autogo-хук патчит адрес внутри именно этой сборки iBEC.
 
-## Пути и структура
-```
-~/Desktop/ipad-mini-linux/          — наш рабочий репозиторий
-  ├── build-bundle.sh               — компилирует pongo/linux_boot.c + собирает staging-bundle.bin
-  ├── pongo/linux_boot.c            — bare-metal trampoline (framebuffer сцена "P105 linux-boot")
-  ├── drivers/phy-apple-s5l-usb.c   — НАШ Linux PHY-драйвер (мастер-копия)
-  ├── output/                       — собранные артефакты (zImage-dtb, staging-bundle.bin, staging-loader.bin)
-  └── ibootfiles/                   — iBSS.patched, iBEC.patched.autogo.lk.dfu
+## Всё делается через ./cascadia
 
-~/iBSSloader/                    — репо teutekeune (клонировать заново после ребута!)
-  git clone https://github.com/teutekeune/iBSSloader.git ~/iBSSloader
-  ├── dts/p105ap.dts                — ИСТОЧНИК ИСТИНЫ для DTS (не kernel-дерево!)
-  ├── dtb/p105ap.dtb                — скомпилированный DTB (пересобирать после правок dts!)
-  ├── config/p105ap.config          — Kconfig фрагмент, мерджится с multi_v7_defconfig
-  ├── patches/files/**              — МАСТЕР-КОПИИ .c/.h ФАЙЛОВ ЯДРА
-  │                                   (см. "ГРАБЛИ #3" ниже — apply-kernel-patches.py их копирует)
-  ├── patches/files-sandcastle-port/**  — МАСТЕР-КОПИИ hx-* драйверов
-  ├── build/initramfs-root/init     — стартовый /init скрипт initramfs
-  ├── scripts/apply-kernel-patches.py — копирует patches/files*/ → ~/Desktop/linux-kernel/
-  ├── scripts/apply-usb-phy.py      — патчит kernel-дерево (Kconfig/Makefile/копия .c)
-  ├── scripts/append-dtb.sh
-  └── kernelcache/kernelcache.release.p105  — зашифрованный kernelcache
+Репозиторий самодостаточен с 2026-09-17. `~/iBSSloader` больше НЕ нужен ни для
+чего: dts, config, patches, rootfs-оверлей и boot chain живут здесь.
 
-~/Desktop/linux-kernel/             — дерево ядра Linux 6.12, смонтировано в Docker как /kernel
-~/Desktop/ghidra_project/           — Ghidra-проект CascadiaKernel (headless)
-~/Desktop/ghidr/                    — Ghidra-проект CascadiaKernel2 (GUI, с C++ Class Analyzer)
-/tmp/kernelcache.macho              — расшифрованный+распакованный Mach-O kernelcache (см. ниже)
-```
-
-⚠️ **ГРАБЛИ #1**: `linux_boot.c` существует в ДВУХ местах — `~/iBSSloader/pongo/` и
-`~/Desktop/ipad-mini-linux/pongo/`. `build-bundle.sh` компилирует **только** из
-`~/Desktop/ipad-mini-linux/pongo/`. Всегда проверяй `grep -c "маркер" ПУТЬ` после правки.
-
-⚠️ **ГРАБЛИ #2**: DTB нужно пересобирать из `~/iBSSloader/dts/p105ap.dts` явно через `dtc`,
-kernel Kbuild может закэшировать старый `.dtb` и не пересобрать при `touch`.
-
-⚠️ **ГРАБЛИ #3 (КРИТИЧНО, 2026-09-13)**: `scripts/apply-kernel-patches.py` копирует **NEW_FILES**
-из `iBSSloader/patches/files/` в `~/Desktop/linux-kernel/` на КАЖДОМ вызове build-kernel.sh.
-Правки прямо в `~/Desktop/linux-kernel/drivers/irqchip/irq-apple-aic1.c`,
-`arch/arm/mach-apple/apple.c`, `apple_boot.h`, `apple,aic1.yaml` и т.п. **МОЛЧА ЗАТИРАЮТСЯ**
-на следующей сборке. Правильный edit-target:
-```
-iBSSloader/patches/files/drivers/irqchip/irq-apple-aic1.c
-iBSSloader/patches/files/arch/arm/mach-apple/apple.c
-iBSSloader/patches/files/arch/arm/mach-apple/p105_fb_dbg.c
-iBSSloader/patches/files-sandcastle-port/drivers/{spi,i2c,input,clk,pinctrl,mfd,regulator}/...
-```
-Файлы которых НЕТ в NEW_FILES (например наш `drivers/phy/phy-apple-s5l-usb.c` — он новый,
-но не через apply) можно править прямо в `~/Desktop/linux-kernel/` и они выживают.
-Правило: **grep -rn "имя_файла" ~/iBSSloader/patches/** перед правкой — если найдено, правь
-там; если нет — правь в kernel-дереве.
-
-## Полный boot chain
 ```bash
-cd ~/Desktop/ipad-mini-linux/ibootfiles
-sudo /Users/k/Legacy-iOS-Kit/bin/macos/arm64/primepwn iBSS.patched
-sleep 1
-sudo irecovery -f iBEC.patched.autogo.lk.dfu
-sleep 1
-sudo irecovery -f ../output/staging-bundle.bin
-sleep 1
-sudo irecovery -f ../output/staging-loader.bin
+./cascadia doctor      # чего не хватает на этой машине
+./cascadia kernel      # склонировать Linux на пине v6.12 в build/linux
+./cascadia rootfs      # собрать Alpine armhf для initramfs
+./cascadia build       # dtb + ядро + output/staging-bundle.bin
+./cascadia firmware    # iBSS/iBEC из своего IPSW (нужен Legacy iOS Kit + ipad25.ipsw)
+./cascadia flash       # прошить:  iBSS → iBEC → bundle → loader
 ```
 
-## Чтение UART (перед boot chain!)
+Уже есть дерево ядра и не хочется второго на 2.5 ГБ:
 ```bash
-python3 -c "
-import serial, time
-s = serial.Serial('/dev/cu.usbserial-A506VZ9Q', 115200, timeout=0.1)
-data = b''
-end = time.time() + 30
-while time.time() < end:
-    chunk = s.read(1024)
-    if chunk:
-        data += chunk
-        print(chunk.decode('utf-8', errors='replace'), end='', flush=True)
-s.close()
-with open('/tmp/uart_log.txt', 'wb') as f: f.write(data)
-"
+KERNEL_SRC=~/Desktop/linux-kernel ./cascadia kernel   # симлинк; build монтирует
+                                                      # цель внутрь контейнера
 ```
-UART earlycon работает только на 115200 baud. `earlycon=s3c6400,0x32500000` — статическая
-настройка через MMIO. **UART bandwidth = ~11 KB/s** — за 15 секунд захвата помещается ~165 KB.
-Реальные боот-логи с verbose printk легко получают truncation. Признак — файл обрывается
-на incomplete line типа `[   ` без timestamp.
 
-**Meры против truncation:**
-- `CONFIG_USB_DWC2_VERBOSE=n` — verbose ~20x многословнее чем DEBUG
-- **НЕ ставить `initcall_debug`** в bootargs — печатает "calling XXX" + "returned N" для ~400
-  initcalls, съедает 70+ KB
-- Раскопаться в fb-console (tty0) параллельно — она не имеет bandwidth-лимита
-- В `/init` использовать `dmesg | grep МЕТКА` чтобы вытащить ключевые строки повторно
+### Где что лежит
+```
+dts/p105ap.dts              ИСТОЧНИК ИСТИНЫ для DTS (не дерево ядра!)
+config/p105ap.config        фрагмент Kconfig, мерджится с multi_v7_defconfig
+patches/files/**            целые НОВЫЕ файлы ядра, копируются как есть
+patches/tree/*.patch        правки СУЩЕСТВУЮЩИХ файлов ядра, git apply
+initramfs/init              stage 1: монтирования, часы, USB, сеть, выбор корня
+initramfs/sbin/p105-stage2  stage 2: getty, dropbear — общий для обоих корней
+pongo/                      bare-metal трамплин linux-boot
+build/                      всё генерируемое: ядро, rootfs, прошивка
+output/                     staging-bundle.bin + staging-loader.bin
+```
 
-## Полный цикл пересборки (что реально работает)
+### Два механизма патчей, не путать
+**Новые файлы** — `patches/files/` копируются `apply-kernel-patches.py --files-only`.
+**Правки существующих** — один `patches/tree/0001-cascadia.patch`, накладывается
+`git apply` через `apply-kernel-edits.sh`, с reverse-check на идемпотентность.
+
+Раньше второе делалось подбором anchor-строк, и несовпавший anchor **пропускался
+молча** — первым пропадал вызов `apple_aic1_rearm()`, после чего ядро собиралось
+зелёным, грузилось и не брало ни одного прерывания. Патч либо ложится, либо
+объясняет почему. Это возможно только потому, что версия ядра запинена.
+
+### Прошивка
 ```bash
-# 1. Правки в мастер-копиях
-# правь ~/iBSSloader/patches/files*/... или ~/iBSSloader/dts/p105ap.dts
-# или ~/iBSSloader/config/p105ap.config или ~/iBSSloader/build/initramfs-root/init
-
-# 2. Пересобрать DTB (rm явно, kbuild может кэшировать)
-rm -f ~/iBSSloader/dtb/p105ap.dtb
-docker run --rm -v ~/iBSSloader:/ibss ipad-mini-linux bash -c \
-  "dtc -I dts -O dtb -f /ibss/dts/p105ap.dts -o /ibss/dtb/p105ap.dtb"
-
-# 3. Пересобрать ядро (apply-kernel-patches.py копирует patches/files*/, потом make)
-docker run --rm --privileged \
-  -v ~/iBSSloader:/ibss \
-  -v ~/Desktop/linux-kernel:/ibss/build/linux \
-  ipad-mini-linux bash -c "cd /ibss && bash scripts/build-kernel.sh 2>&1 | tail -15"
-
-# 4. Явно склеить fresh zImage + fresh DTB → zImage-dtb (build-bundle иначе возьмёт stale!)
-cd ~/Desktop/ipad-mini-linux
-cat ~/Desktop/linux-kernel/arch/arm/boot/zImage ~/iBSSloader/dtb/p105ap.dtb > output/zImage-dtb
-
-# 5. Собрать bundle + loader
-docker run --rm -v "$(pwd)":/work -v ~/Desktop/linux-kernel:/kernel \
-  ipad-mini-linux bash /work/build-bundle.sh 2>&1 | tail -5
-cp output/linux-boot.bin output/staging-loader.bin
-
-# 6. UART capture в фоне (ДО прошивки)
-python3 -c "
-import serial, time, sys
-s = serial.Serial('/dev/cu.usbserial-A506VZ9Q', 115200, timeout=0.2)
-end = time.time() + 90
-buf = b''
-while time.time() < end:
-    c = s.read(65536)
-    if c:
-        buf += c
-        try: sys.stdout.write(c.decode('utf-8','replace')); sys.stdout.flush()
-        except: pass
-open('/Users/k/Desktop/ipad-mini-linux/uart_boot.txt','wb').write(buf)
-s.close()" &
-
-# 7. Прошивка через checkm8
-cd ~/Desktop/ipad-mini-linux/ibootfiles
-sudo /Users/k/Legacy-iOS-Kit/bin/macos/arm64/primepwn iBSS.patched; sleep 1
-sudo irecovery -f iBEC.patched.autogo.lk.dfu; sleep 1
-sudo irecovery -f ../output/staging-bundle.bin; sleep 1
-sudo irecovery -f ../output/staging-loader.bin
+./cascadia flash                 # свежесобранный iBEC
+./cascadia flash --known-good    # августовский образ — отделить плохую сборку
+                                 # от плохого стенда
+./cascadia flash --no-uart       # без последовательного захвата
 ```
+Порядок заливки и паузы не декоративны: `primepwn` выполняет checkm8 и оставляет
+работающий pwned iBSS; тот принимает неподписанный iBEC; autogo-хук в iBEC
+срабатывает на конце заливки бандла и запускает загрузчик — поэтому loader
+отправляется последним и нигде нет `irecovery -c go`.
 
-⚠️ **build-bundle.sh стягивает stale zImage-dtb** — шаг 4 обязателен после ЛЮБОЙ правки.
-Признак что бутится stale: cmdline в `[    0.000000] Kernel command line:` не тот,
-который ты только что вписал в DTS.
+Порт UART определяется сам (`/dev/cu.usbserial-*`, `/dev/ttyUSB*`), захват
+необязателен. Ранний лог дублируется в фреймбуфер, а UART имеет привычку
+обрываться посреди загрузки — так что отсутствие переходника это неудобство,
+а не блокер.
+
+### Чтение вердиктов
+UART обрывается почти всегда, поэтому надёжнее забрать их с устройства:
+```bash
+ssh root@10.55.0.2 'dmesg | grep -E "AIC1-REARM|LATE-SMOKE|SOF-TIMER|P105:"'
+```
 
 ## Текущий статус ядра (Linux 6.12.0 на A5) — обновлено 2026-09-14
 ✅ Boot до interactive shell (framebuffer console, tty0), Alpine 3.24 initramfs
