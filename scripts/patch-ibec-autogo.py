@@ -56,6 +56,17 @@ def _link_bytes(ld: str, asm: str) -> bytes:
                 "arm-linux-gnueabihf-gcc",
                 "-nostdlib",
                 "-mthumb",
+                # Ubuntu's gcc enables --build-id by default, and the linker
+                # then places .note.gnu.build-id at the script's `.` -- exactly
+                # 36 bytes of it: 12 bytes of note header, "GNU\0", and a
+                # 20-byte SHA-1.  That pushes .text to hook_va + 0x24, so the
+                # assembler computes the branch from an origin 36 bytes past
+                # where these four bytes are actually written, and the hook ends
+                # up pointing 0x24 short of the trampoline.  It fails the
+                # verify, which is the only reason it was ever noticed.
+                # build-staging-bundle.sh already links with this for the same
+                # reason.
+                "-Wl,--build-id=none",
                 "-T",
                 str(root / "patch.ld"),
                 "-o",
