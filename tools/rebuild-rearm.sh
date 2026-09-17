@@ -1,4 +1,12 @@
 #!/usr/bin/env bash
+#
+# LEGACY PATH -- being replaced by ./cascadia build.
+#
+# This one assumes ~/Desktop/ipad-mini-linux, ~/Desktop/linux-kernel and
+# ~/iBSSloader, which is why nobody but its author can run it.  It is kept
+# working only until ./cascadia build is proven on both hosts; do not add
+# features here, add them there.
+#
 # Rebuild after the 2026-09-14 AIC1 re-arm fix + the 2026-09-15 CDC ACM swap.
 set -euo pipefail
 cd ~/Desktop/ipad-mini-linux

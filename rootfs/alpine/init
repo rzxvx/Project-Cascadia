@@ -1,0 +1,94 @@
+#!/bin/sh
+# PID 1 for Alpine minirootfs on P105AP (embedded initramfs).
+#
+# Alpine BusyBox usually lacks cttyhack and often lacks setsid -c. Without a
+# controlling TTY, ash gets SIGTTIN and exits 1 immediately. Use getty -n -l
+# (opens the line + TIOCSCTTY) or the bring-up busybox-p105 cttyhack binary.
+# Stay as PID 1 in a respawn loop so a shell exit cannot panic the kernel.
+export PATH=/sbin:/usr/sbin:/bin:/usr/bin
+export HOME=/root
+export TERM=linux
+
+mount -t proc proc /proc
+mount -t sysfs sysfs /sys
+mount -t devtmpfs dev /dev 2>/dev/null || mount -t tmpfs -o mode=0755 dev /dev
+
+mkdir -p /dev/pts /dev/shm /tmp /run /root
+mount -t devpts devpts /dev/pts 2>/dev/null || true
+mount -t tmpfs -o mode=1777 tmp /tmp
+mount -t tmpfs -o mode=0755 run /run
+
+[ -c /dev/null ] || mknod -m 666 /dev/null c 1 3 2>/dev/null || true
+[ -c /dev/tty ] || mknod -m 666 /dev/tty c 5 0 2>/dev/null || true
+[ -c /dev/tty0 ] || mknod -m 620 /dev/tty0 c 4 0 2>/dev/null || true
+[ -c /dev/tty1 ] || mknod -m 620 /dev/tty1 c 4 1 2>/dev/null || true
+[ -c /dev/console ] || mknod -m 600 /dev/console c 5 1 2>/dev/null || true
+
+banner() {
+	echo
+	echo "=============================================="
+	echo "  Alpine minirootfs on P105AP (S5L8942X)"
+	echo "=============================================="
+	if [ -r /etc/os-release ]; then
+		# shellcheck disable=SC1091
+		. /etc/os-release
+		echo "  $PRETTY_NAME"
+	fi
+	uname -a 2>/dev/null
+	echo "  apk ready when networking exists"
+	echo "=============================================="
+	echo
+}
+
+# Run an interactive shell on device node $1 (e.g. /dev/tty0).
+run_shell() {
+	dev="$1"
+	line="${dev#/dev/}"
+
+	# 1) getty: opens LINE, sets controlling TTY, execs ash (no login prompt).
+	if [ -x /sbin/getty ]; then
+		echo "try: getty -n -l /bin/ash $line" >"$dev"
+		# -L = local (ignore modem control); works for VTs and UART.
+		/sbin/getty -n -l /bin/ash -L "$line" 115200 vt100 && return 0
+		/sbin/getty -n -l /bin/ash "$line" 38400 vt100 && return 0
+	fi
+
+	# 2) Bring-up static busybox (from build/out/busybox-armhf) — has cttyhack.
+	if [ -x /bin/busybox-p105 ]; then
+		echo "try: busybox-p105 cttyhack ash" >"$dev"
+		setsid /bin/busybox-p105 cttyhack /bin/ash <"$dev" >"$dev" 2>&1 && return 0
+	fi
+
+	# 3) Last resorts (often exit 1 without CTTY — kept for diagnosis).
+	if command -v setsid >/dev/null 2>&1; then
+		echo "try: setsid -c ash" >"$dev"
+		setsid -c /bin/ash <>"$dev" 2>&1 && return 0
+	fi
+	echo "try: bare ash (likely fails)" >"$dev"
+	/bin/ash <>"$dev" 2>&1
+}
+
+DEV=
+if [ -c /dev/tty0 ]; then
+	DEV=/dev/tty0
+elif [ -c /dev/tty1 ]; then
+	DEV=/dev/tty1
+elif [ -c /dev/console ]; then
+	DEV=/dev/console
+fi
+
+if [ -n "$DEV" ]; then
+	banner >"$DEV" 2>&1
+	# Prove ash runs at all (no TTY needed).
+	/bin/ash -c 'echo ash-c: OK' >"$DEV" 2>&1 || echo "ash -c failed: $?" >"$DEV"
+	echo "shell on $DEV (PID1 respawn loop)" >"$DEV"
+	while true; do
+		run_shell "$DEV"
+		echo "shell exited ($?), restarting..." >"$DEV" 2>&1
+		sleep 1 2>/dev/null || true
+	done
+fi
+
+banner
+echo "no tty — dropping to ash (may panic on exit)"
+exec /bin/ash

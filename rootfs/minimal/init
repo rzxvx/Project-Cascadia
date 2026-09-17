@@ -1,0 +1,36 @@
+#!/bin/sh
+# Minimal bring-up initramfs for first Alpine/Linux boot on P105AP.
+export PATH=/bin:/sbin
+
+mount -t proc proc /proc
+mount -t sysfs sysfs /sys
+mount -t devtmpfs dev /dev 2>/dev/null || mount -t tmpfs dev /dev
+
+mkdir -p /dev/pts /tmp /run
+mount -t devpts devpts /dev/pts 2>/dev/null || true
+mount -t tmpfs tmp /tmp
+mount -t tmpfs run /run
+
+banner() {
+	echo
+	echo "=============================================="
+	echo "  Alpine/Linux minimal initramfs (P105AP)"
+	echo "  root=/dev/ram0 — CoolBooter-style RAM boot"
+	echo "=============================================="
+	echo
+	echo "Kernel reached userspace. Next: full Alpine rootfs."
+	echo
+}
+
+# Glass VT first — stdout-path=serial0 used to steal preferred console from
+# tty0 so /dev/console open failed and a bare shell had nowhere to print.
+if [ -c /dev/tty0 ]; then
+	banner >/dev/tty0 2>&1
+	exec setsid cttyhack sh </dev/tty0 >/dev/tty0 2>&1
+fi
+if [ -c /dev/console ]; then
+	banner >/dev/console 2>&1
+	exec setsid cttyhack sh </dev/console >/dev/console 2>&1
+fi
+banner
+exec sh

@@ -1,8 +1,12 @@
 #!/bin/bash
 set -e
 
-ROOT=/work
-OUT=/work/output
+# Self-locating, like every other script here.  This used to be ROOT=/work,
+# which only worked because one caller happened to mount the repository at
+# /work -- any other mount point, or running it outside a container at all,
+# silently read and wrote the wrong tree.
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+OUT="$ROOT/output"
 ZIMAGE="$OUT/zImage-dtb"
 BUNDLE="$OUT/staging-bundle.bin"
 

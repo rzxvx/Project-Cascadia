@@ -1,0 +1,136 @@
+#!/usr/bin/env bash
+#
+# Project Cascadia -- one entry point.
+#
+#   ./cascadia doctor      check that this machine has what the build needs
+#   ./cascadia kernel      fetch the pinned Linux source into build/linux
+#   ./cascadia rootfs      build the Alpine armhf rootfs for the initramfs
+#   ./cascadia build       dtb + kernel + staging bundle, with the safety checks
+#   ./cascadia flash       boot the device over USB            (macOS for now)
+#   ./cascadia net on|off  share the Mac's internet with it    (macOS for now)
+#   ./cascadia nfs on|off  export a root filesystem to it      (macOS for now)
+#
+# Everything is relative to this file, so the repository works wherever it is
+# cloned.  There is no ~/iBSSloader and no ~/Desktop anything.
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+IMAGE="${IMAGE:-cascadia-build}"
+cd "$ROOT"
+
+say()  { printf '==> %s\n' "$*"; }
+note() { printf '    %s\n' "$*"; }
+fail() { printf 'error: %s\n' "$*" >&2; exit 1; }
+have() { command -v "$1" >/dev/null 2>&1; }
+
+# stat's flags are the classic portability trap here: BSD wants -f%z and GNU
+# wants -c%s, and the wrong one prints an error that looks like a missing file.
+filesize() {
+    stat -f%z "$1" 2>/dev/null || stat -c%s "$1" 2>/dev/null \
+        || fail "cannot stat $1"
+}
+
+in_docker() {
+    have docker || fail "docker is not installed or not on PATH"
+    docker image inspect "$IMAGE" >/dev/null 2>&1 \
+        || { say "building the $IMAGE image (first run only)"; docker build -t "$IMAGE" "$ROOT"; }
+    docker run --rm -v "$ROOT":/cascadia -w /cascadia "$IMAGE" bash -c "$1"
+}
+
+cmd_doctor() {
+    rc=0
+    say "host"
+    note "uname: $(uname -srm)"
+    for t in git docker python3 rsync; do
+        if have "$t"; then note "ok:      $t"; else note "MISSING: $t"; rc=1; fi
+    done
+    case "$(uname -s)" in
+        Darwin) note "ok:      macOS -- flash/net/nfs are implemented for this host" ;;
+        Linux)  note "note:    Linux -- build works; flash/net/nfs are still macOS-only" ;;
+        *)      note "note:    $(uname -s) -- untested; build may work, the rest will not" ;;
+    esac
+    say "tree"
+    for p in build/linux/Makefile build/initramfs-root/init dtb/p105ap.dtb; do
+        if [ -e "$p" ]; then note "ok:      $p"
+        else note "missing: $p    ($(case $p in build/linux*) echo './cascadia kernel';; build/initramfs*) echo './cascadia rootfs';; *) echo './cascadia build';; esac))"; fi
+    done
+    [ "$rc" -eq 0 ] || fail "install what is missing above and re-run"
+    say "ready"
+}
+
+cmd_kernel() { bash "$ROOT/scripts/fetch-kernel.sh"; }
+
+cmd_rootfs() {
+    [ -x "$ROOT/scripts/build-alpine-rootfs.sh" ] || fail "scripts/build-alpine-rootfs.sh is missing"
+    bash "$ROOT/scripts/build-alpine-rootfs.sh"
+}
+
+cmd_build() {
+    [ -f "$ROOT/build/linux/Makefile" ] || fail "no kernel source -- run: ./cascadia kernel"
+    [ -d "$ROOT/build/initramfs-root" ] || fail "no rootfs -- run: ./cascadia rootfs"
+    mkdir -p "$ROOT/build/out" "$ROOT/output"
+
+    say "1/5 device tree"
+    # rm first: dtc is not a make target here, so a stale .dtb would just be
+    # reused and an edit to the .dts would silently never reach the device.
+    rm -f "$ROOT/dtb/p105ap.dtb"; mkdir -p "$ROOT/dtb"
+    in_docker "dtc -I dts -O dtb -f dts/p105ap.dts -o dtb/p105ap.dtb" 2>&1 | grep -v '^$' | tail -5 || true
+    [ -s "$ROOT/dtb/p105ap.dtb" ] || fail "dtc produced no dtb"
+    for s in g_cdc.host_addr g_cdc.dev_addr; do
+        LC_ALL=C grep -aFq "$s" "$ROOT/dtb/p105ap.dtb" || fail "$s missing from the dtb bootargs"
+    done
+    LC_ALL=C grep -aFq initcall_debug "$ROOT/dtb/p105ap.dtb" && fail "dtb has initcall_debug; drop it from bootargs"
+    note "ok: fresh dtb, gadget MACs pinned"
+
+    say "2/5 build date stamp"
+    # No RTC on this board: without a stamp it boots at the epoch and every TLS
+    # handshake fails on notBefore.  Written before the kernel build so it lands
+    # inside the embedded initramfs.
+    date -u "+%Y-%m-%d %H:%M:%S" > "$ROOT/build/initramfs-root/etc/build-date"
+    note "ok: $(cat "$ROOT/build/initramfs-root/etc/build-date") UTC"
+
+    say "3/5 kernel"
+    # set -o pipefail INSIDE the container shell: without it a failed build
+    # returns the status of whatever the output was piped into, and the stale
+    # artifacts from last time get shipped as if they were fresh.
+    in_docker "set -o pipefail; bash scripts/build-kernel.sh 2>&1 | tail -25"
+
+    say "4/5 freshness"
+    CPIO="$ROOT/build/linux/usr/initramfs_data.cpio"
+    [ -f "$CPIO" ] || fail "no $CPIO -- the kernel build did not embed an initramfs"
+    STALE=$(find "$ROOT/build/initramfs-root" -type f -newer "$CPIO" -print -quit 2>/dev/null || true)
+    [ -z "$STALE" ] || fail "the archive predates ${STALE#$ROOT/build/initramfs-root/} -- the build missed your change"
+    note "ok: the initramfs archive is newer than every input"
+
+    say "5/5 bundle"
+    cat "$ROOT/build/linux/arch/arm/boot/zImage" "$ROOT/dtb/p105ap.dtb" > "$ROOT/output/zImage-dtb"
+    want=$(( $(filesize "$ROOT/build/linux/arch/arm/boot/zImage") + $(filesize "$ROOT/dtb/p105ap.dtb") ))
+    got=$(filesize "$ROOT/output/zImage-dtb")
+    [ "$want" = "$got" ] || fail "zImage-dtb is $got bytes, expected $want"
+    in_docker "bash build-bundle.sh 2>&1 | tail -5"
+    cp "$ROOT/output/linux-boot.bin" "$ROOT/output/staging-loader.bin"
+    bs=$(filesize "$ROOT/output/staging-bundle.bin")
+    [ "$bs" = "$(( got + 32768 ))" ] || fail "staging-bundle.bin is $bs bytes, expected $(( got + 32768 ))"
+    note "ok: bundle = 32K loader + this exact zImage-dtb"
+
+    say "done"
+    ls -l "$ROOT/output/staging-bundle.bin" "$ROOT/output/staging-loader.bin"
+}
+
+host_only_macos() {
+    [ "$(uname -s)" = "Darwin" ] || fail "'$1' is implemented for macOS only so far.
+The build works everywhere; flashing and the host-side network and NFS helpers
+still speak networksetup/pfctl/nfsd.  Porting them is tracked work, not a
+limitation of the device."
+}
+
+case "${1:-}" in
+    doctor) cmd_doctor ;;
+    kernel) cmd_kernel ;;
+    rootfs) cmd_rootfs ;;
+    build)  cmd_build ;;
+    flash)  host_only_macos flash; shift; bash "$ROOT/tools/flash-rearm.sh" "$@" ;;
+    net)    host_only_macos net;   shift; bash "$ROOT/tools/mac-share-internet.sh" "$@" ;;
+    nfs)    host_only_macos nfs;   shift; bash "$ROOT/tools/mac-nfs-export.sh" "$@" ;;
+    *)      sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+esac

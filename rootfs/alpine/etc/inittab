@@ -1,0 +1,18 @@
+# /etc/inittab — BusyBox init for P105AP glass console (no OpenRC in minirootfs).
+#
+# /init already mounted proc/sys/dev; sysinit entries stay light.
+
+::sysinit:/bin/hostname -F /etc/hostname
+::sysinit:/bin/echo "P105AP Alpine minirootfs ready"
+
+# Glass VT (console=tty0 / simplefb). /init normally runs getty itself;
+# these entries matter if someone execs /sbin/init instead.
+tty0::respawn:/sbin/getty -L tty0 115200 vt100
+tty1::respawn:/sbin/getty -L tty1 115200 vt100
+
+# Optional serial if someone attaches USB-TTL later.
+ttySAC0::respawn:/sbin/getty -L ttySAC0 115200 vt100
+
+::ctrlaltdel:/sbin/reboot
+::shutdown:/bin/umount -a -r
+::restart:/sbin/init

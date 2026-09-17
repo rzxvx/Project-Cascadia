@@ -1,5 +1,10 @@
-# Нативный arm64-образ (без эмуляции на Apple Silicon)
-FROM --platform=linux/arm64 ubuntu:22.04
+# Build image for the cross-compiler and the host-side tooling.
+#
+# No --platform pin: it used to say linux/arm64 for an Apple Silicon host, which
+# forces qemu emulation on an x86_64 machine -- or fails outright.  Docker uses
+# the host architecture by default, and gcc-arm-linux-gnueabihf is packaged for
+# both amd64 and arm64 hosts, so the cross-compile works either way.
+FROM ubuntu:22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 

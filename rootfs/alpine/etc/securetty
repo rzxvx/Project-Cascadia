@@ -1,0 +1,8 @@
+# Consoles allowed for root login (BusyBox login / securetty).
+console
+tty0
+tty1
+tty2
+tty3
+ttySAC0
+ttySAC1

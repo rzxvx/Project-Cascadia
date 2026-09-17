@@ -1,0 +1,5 @@
+Welcome to Alpine on Apple iPad mini 1st gen (P105AP / S5L8942X).
+
+  Embedded minirootfs — apk is available once networking works.
+  LXDE/X11 is not included yet (touch + RAM sizing next).
+
