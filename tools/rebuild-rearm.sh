@@ -92,7 +92,7 @@ for s in AIC1-REARM irq_rearm LATE-SMOKE ttyGS CALIB PMU-TIMER SOF-TIMER apple-u
     if LC_ALL=C grep -aFq "$s" "$V"; then echo "    ok: $s in vmlinux"; else echo "    FAIL: $s missing from vmlinux"; rc=1; fi
 done
 # /init lives in the initramfs archive, not as plain text in vmlinux -- check it there.
-for s in "P105: init start" getty ttyGS0 10.55.0.2; do
+for s in "P105: stage1 start" p105-stage2 getty ttyGS0 10.55.0.2; do
     if LC_ALL=C grep -aFq "$s" "$CPIO"; then echo "    ok: $s in initramfs"; else echo "    FAIL: $s missing from initramfs"; rc=1; fi
 done
 # Gadget: exactly ONE legacy gadget may be built in, and as of 2026-09-16 it is
@@ -101,6 +101,8 @@ done
 grep -q "^CONFIG_USB_CDC_COMPOSITE=y" "$TREE/.config" || { echo "    FAIL: g_cdc not built in"; rc=1; }
 grep -q "^CONFIG_USB_F_ECM=y" "$TREE/.config" || { echo "    FAIL: CDC ECM function not built in"; rc=1; }
 grep -q "^CONFIG_USB_F_ACM=y" "$TREE/.config" || { echo "    FAIL: CDC ACM function not built in"; rc=1; }
+grep -q "^CONFIG_NFS_FS=y" "$TREE/.config" || { echo "    FAIL: NFS client not built in"; rc=1; }
+grep -q "^CONFIG_NFS_V3=y" "$TREE/.config" || { echo "    FAIL: NFSv3 not built in (macOS nfsd serves v2/v3 only)"; rc=1; }
 # NOTE: `if`, not `grep && { }`.  Under `set -e` a bare AND-list whose left side
 # fails takes the whole script down, and here the left side failing is the GOOD
 # case -- that is a self-inflicted "build broke" with no error message.

@@ -1,0 +1,56 @@
+#!/bin/sh
+#
+# P105AP stage 2: the services, and the shell of last resort.
+#
+# Split out of /init on 2026-09-17 so that the root filesystem can change
+# underneath it.  Stage 1 (/init in the initramfs) does everything that must
+# happen before a root is chosen -- mounts, clock, USB, network -- and then
+# execs this, either in the RAM rootfs or, after switch_root, on the NFS root.
+# Whichever root wins, this file is the one that starts the services, so there
+# is exactly one copy of that logic and both paths exercise it.
+#
+# Runs as PID 1.  It must never return: PID 1 exiting is a kernel panic.
+
+msg() { echo "$*" > /dev/kmsg; }
+
+IP_DEV="${IP_DEV:-10.55.0.2}"
+
+msg "P105: stage2 on $(cat /proc/mounts 2>/dev/null | awk '$2=="/"{print $3; exit}') root"
+
+# ------------------------------------------------------- ACM console (tty) --
+# getty, not a bare shell: it takes the tty as its controlling terminal and
+# exits on hangup, so there is exactly one reader on /dev/ttyGS0 at a time.
+# Two readers is what made the console eat every other keystroke.
+(
+    n=0
+    while [ $n -lt 500 ]; do
+        n=$((n+1))
+        [ -e /dev/ttyGS0 ] && /sbin/getty -n -l /bin/sh 115200 ttyGS0 2>/dev/null
+        sleep 1
+    done
+    msg "P105: ACM respawn limit reached, giving up"
+) &
+msg "P105: ACM console started on ttyGS0"
+
+# ----------------------------------------------------------- ssh (dropbear) --
+# -R generates host keys on demand.  On the RAM rootfs they die with the boot,
+# so the host key changes every time and ssh needs
+# -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null.  On an NFS root
+# they persist and that stops being necessary -- which is a decent way to tell
+# at a glance which root you actually booted.
+if [ -x /usr/sbin/dropbear ]; then
+    mkdir -p /etc/dropbear
+    # -E logs to stderr; /dev/kmsg puts that in dmesg and the UART capture,
+    # where every other verdict already is.  It used to go to /dev/null, which
+    # cost a whole flash cycle to diagnose a missing devpts.
+    /usr/sbin/dropbear -R -E -p "$IP_DEV:22" 2>/dev/kmsg &
+    msg "P105: dropbear on $IP_DEV:22"
+else
+    msg "P105: dropbear not installed (run scripts/add-dropbear.sh)"
+fi
+
+# --------------------------------------------------------- glass fallback ---
+# Always reached, and independent of USB: if the gadget never comes up this is
+# still a real shell on the panel.
+msg "P105: stage2 done, shell on tty0"
+exec /bin/sh </dev/tty0 >/dev/tty0 2>&1

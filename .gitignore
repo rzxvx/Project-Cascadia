@@ -25,6 +25,7 @@ uart_*.txt
 # ---- Junk ----
 .DS_Store
 **/.DS_Store
+__pycache__/
 *.bak-*
 *.backup
 attic/_to_delete/
