@@ -334,6 +334,13 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="Install Apple S5L kernel support")
     ap.add_argument("--tree", default=os.path.join(ROOT, "build", "linux"))
     ap.add_argument("--revert", action="store_true")
+    # The glue edits moved to patches/tree/0001-cascadia.patch, applied by
+    # scripts/apply-kernel-edits.sh, because anchor matching skips a stale
+    # anchor silently and the first one it skipped was the apple_aic1_rearm()
+    # call.  Copying whole new files has no such failure mode, so that stays
+    # here.  --files-only is what build-kernel.sh uses.
+    ap.add_argument("--files-only", action="store_true",
+                    help="copy patches/files/ only; skip the legacy anchor edits")
     args = ap.parse_args()
 
     tree = os.path.abspath(args.tree)
@@ -345,10 +352,11 @@ def main() -> int:
 
     changed = 0
     changed += copy_new_files(tree, args.revert)
-    changed += apply_glue(tree, args.revert)
-    changed += apply_replacements(tree, args.revert)
-    changed += apply_irqchip_kconfig(tree, args.revert)
-    changed += apply_phy_kconfig(tree, args.revert)
+    if not args.files_only:
+        changed += apply_glue(tree, args.revert)
+        changed += apply_replacements(tree, args.revert)
+        changed += apply_irqchip_kconfig(tree, args.revert)
+        changed += apply_phy_kconfig(tree, args.revert)
 
     print(f"{changed} change(s)" if changed else "already up to date")
     return 0

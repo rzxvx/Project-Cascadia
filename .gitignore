@@ -36,3 +36,5 @@ __pycache__/
 *.bak-*
 *.backup
 attic/_to_delete/
+# built by ./cascadia build from dts/p105ap.dts
+dtb/

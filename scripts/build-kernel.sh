@@ -45,8 +45,8 @@ if ! flock -n 9; then
 fi
 
 echo "==> Installing Apple S5L platform support"
-python3 "$ROOT/scripts/apply-kernel-patches.py" --tree "$TREE"
-python3 "$ROOT/scripts/apply-p105-boot-hacks.py" --tree "$TREE"
+python3 "$ROOT/scripts/apply-kernel-patches.py" --tree "$TREE" --files-only
+bash "$ROOT/scripts/apply-kernel-edits.sh" --tree "$TREE"
 
 # Copy sandcastle-port driver sources verbatim over the tree so master edits in
 # patches/files-sandcastle-port/ are actually picked up on every rebuild.

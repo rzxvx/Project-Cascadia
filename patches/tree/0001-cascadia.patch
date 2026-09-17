@@ -1,0 +1,751 @@
+Cascadia: every edit to an existing kernel file, as one patch.
+
+Generated from the working tree against the pinned v6.12 with:
+
+    git diff -- <the files below>      (excluding files corrupted by macOS's
+                                        case-insensitive filesystem -- see below)
+
+This replaces the anchor-matching that scripts/apply-p105-boot-hacks.py did.
+Anchors were a reasonable idea when the kernel version floated, and a liability
+once it was pinned: a missed anchor was SKIPPED, not reported, so a clean tree
+built green and booted with no interrupts at all -- init/main.c is where
+apple_aic1_rearm() lives, and it was the first thing to go missing.  A patch
+either applies or says why.
+
+Not included, deliberately: net/netfilter/xt_{DSCP,HL,TCPMSS,RATEEST}.c,
+include/uapi/linux/netfilter*/*.h and one litmus test.  Those show as modified
+in the author's tree because macOS's filesystem is case-insensitive and
+xt_DSCP.c and xt_dscp.c are the same name to it, so git checks one out over the
+other.  They are not our changes and none of them is built here.
+
+kernel/fork.c carries only p105_fb_dbg() stamps left from debugging the init
+hang.  They cost nothing and they are how that hang was found; drop them when
+the framebuffer debug path goes.
+
+diff --git a/arch/arm/Kconfig b/arch/arm/Kconfig
+index 202397be7..e925dc556 100644
+--- a/arch/arm/Kconfig
++++ b/arch/arm/Kconfig
+@@ -359,6 +359,8 @@ source "arch/arm/mach-actions/Kconfig"
+ 
+ source "arch/arm/mach-alpine/Kconfig"
+ 
++source "arch/arm/mach-apple/Kconfig"
++
+ source "arch/arm/mach-artpec/Kconfig"
+ 
+ source "arch/arm/mach-aspeed/Kconfig"
+diff --git a/arch/arm/Makefile b/arch/arm/Makefile
+index aafebf145..173205729 100644
+--- a/arch/arm/Makefile
++++ b/arch/arm/Makefile
+@@ -173,6 +173,7 @@ textofs-$(CONFIG_ARCH_AXXIA) := 0x00308000
+ # by CONFIG_* macro name.
+ machine-$(CONFIG_ARCH_ACTIONS)		+= actions
+ machine-$(CONFIG_ARCH_ALPINE)		+= alpine
++machine-$(CONFIG_ARCH_APPLE_S5L)	+= apple
+ machine-$(CONFIG_ARCH_ARTPEC)		+= artpec
+ machine-$(CONFIG_ARCH_ASPEED)           += aspeed
+ machine-$(CONFIG_ARCH_AT91)		+= at91
+diff --git a/arch/arm/boot/dts/Makefile b/arch/arm/boot/dts/Makefile
+index efe38eb25..4a49736c3 100644
+--- a/arch/arm/boot/dts/Makefile
++++ b/arch/arm/boot/dts/Makefile
+@@ -39,3 +39,4 @@ subdir-y += unisoc
+ subdir-y += vt8500
+ subdir-y += xen
+ subdir-y += xilinx
++dtb-$(CONFIG_ARCH_APPLE_S5L) += ipad-mini1.dtb
+diff --git a/arch/arm/kernel/entry-armv.S b/arch/arm/kernel/entry-armv.S
+index 1dfae1af8..e4084f15d 100644
+--- a/arch/arm/kernel/entry-armv.S
++++ b/arch/arm/kernel/entry-armv.S
+@@ -224,6 +224,15 @@ ENDPROC(__dabt_svc)
+ 	.align	5
+ __irq_svc:
+ 	svc_entry
++	@ P105 aic1q24: like lab IRQ stub — force SPSR.I, skip C irq_enter/exit.
++	ldr	r0, =apple_aic1_early_irq_escape
++	ldrb	r0, [r0]
++	cmp	r0, #0
++	beq	1001f
++	ldr	r5, [sp, #S_PSR]
++	orr	r5, r5, #PSR_I_BIT
++	svc_exit r5, irq = 1
++1001:
+ 	irq_handler from_user=0
+ 
+ #ifdef CONFIG_PREEMPTION
+@@ -235,6 +244,7 @@ __irq_svc:
+ 	blne	svc_preempt
+ #endif
+ 
++	ldr	r5, [sp, #S_PSR]
+ 	svc_exit r5, irq = 1			@ return from exception
+  UNWIND(.fnend		)
+ ENDPROC(__irq_svc)
+diff --git a/arch/arm/mm/alignment.c b/arch/arm/mm/alignment.c
+index 3c6ddb1af..c9e36089c 100644
+--- a/arch/arm/mm/alignment.c
++++ b/arch/arm/mm/alignment.c
+@@ -343,7 +343,7 @@ do_alignment_ldrhstrh(unsigned long addr, u32 instr, struct pt_regs *regs)
+ 
+ 	ai_half += 1;
+ 
+-	if (user_mode(regs))
++	if (user_mode(regs) || addr < TASK_SIZE)
+ 		goto user;
+ 
+ 	if (LDST_L_BIT(instr)) {
+@@ -405,7 +405,7 @@ do_alignment_ldrdstrd(unsigned long addr, u32 instr, struct pt_regs *regs)
+ 
+ 	ai_dword += 1;
+ 
+-	if (user_mode(regs))
++	if (user_mode(regs) || addr < TASK_SIZE)
+ 		goto user;
+ 
+ 	if (load) {
+@@ -454,7 +454,8 @@ do_alignment_ldrstr(unsigned long addr, u32 instr, struct pt_regs *regs)
+ 
+ 	ai_word += 1;
+ 
+-	if ((!LDST_P_BIT(instr) && LDST_W_BIT(instr)) || user_mode(regs))
++	if ((!LDST_P_BIT(instr) && LDST_W_BIT(instr)) || user_mode(regs) ||
++	    addr < TASK_SIZE)
+ 		goto trans;
+ 
+ 	if (LDST_L_BIT(instr)) {
+@@ -545,7 +546,7 @@ do_alignment_ldmstm(unsigned long addr, u32 instr, struct pt_regs *regs)
+ 	}
+ #endif
+ 
+-	if (user_mode(regs)) {
++	if (user_mode(regs) || addr < TASK_SIZE) {
+ 		unsigned int __ua_flags = uaccess_save_and_enable();
+ 		for (regbits = REGMASK_BITS(instr), rd = 0; regbits;
+ 		     regbits >>= 1, rd += 1)
+diff --git a/drivers/clk/Kconfig b/drivers/clk/Kconfig
+index 299bc678e..d67b9f1d5 100644
+--- a/drivers/clk/Kconfig
++++ b/drivers/clk/Kconfig
+@@ -546,4 +546,12 @@ config CLK_FD_KUNIT_TEST
+ 	help
+ 	  Kunit test for the clk-fractional-divider type.
+ 
++
++config S5L8940X_PMGR_CLK
++	tristate "Apple S5L8940X (A5) PMGR clock driver"
++	depends on OF
++	default y
++	help
++	  PMGR clock gate + touch-clock (Cmwp) controller for Apple A5 SoC.
++
+ endif
+diff --git a/drivers/clk/Makefile b/drivers/clk/Makefile
+index fb8878a5d..929d531e1 100644
+--- a/drivers/clk/Makefile
++++ b/drivers/clk/Makefile
+@@ -149,3 +149,4 @@ endif
+ obj-y					+= xilinx/
+ obj-$(CONFIG_ARCH_ZYNQ)			+= zynq/
+ obj-$(CONFIG_COMMON_CLK_ZYNQMP)         += zynqmp/
++obj-$(CONFIG_S5L8940X_PMGR_CLK)   += clk-s5l8940x-pmgr.o
+diff --git a/drivers/i2c/busses/Kconfig b/drivers/i2c/busses/Kconfig
+index 6b3ba7e57..df0338882 100644
+--- a/drivers/i2c/busses/Kconfig
++++ b/drivers/i2c/busses/Kconfig
+@@ -1530,4 +1530,8 @@ config I2C_VIRTIO
+           This driver can also be built as a module. If so, the module
+           will be called i2c-virtio.
+ 
++config I2C_S5L8940X
++	tristate "Apple S5L8940X (A5) I2C controller"
++	depends on OF
++	default y
+ endmenu
+diff --git a/drivers/i2c/busses/Makefile b/drivers/i2c/busses/Makefile
+index ecc07c50f..5f2327a8e 100644
+--- a/drivers/i2c/busses/Makefile
++++ b/drivers/i2c/busses/Makefile
+@@ -160,3 +160,4 @@ obj-$(CONFIG_I2C_FSI)		+= i2c-fsi.o
+ obj-$(CONFIG_I2C_VIRTIO)	+= i2c-virtio.o
+ 
+ ccflags-$(CONFIG_I2C_DEBUG_BUS) := -DDEBUG
++obj-$(CONFIG_I2C_S5L8940X)    += i2c-s5l8940x.o
+diff --git a/drivers/i2c/busses/i2c-s3c2410.c b/drivers/i2c/busses/i2c-s3c2410.c
+index 7698d9d59..dc856943c 100644
+--- a/drivers/i2c/busses/i2c-s3c2410.c
++++ b/drivers/i2c/busses/i2c-s3c2410.c
+@@ -139,6 +139,7 @@ static void i2c_s3c_irq_nextbyte(struct s3c24xx_i2c *i2c, unsigned long iicstat)
+ #ifdef CONFIG_OF
+ static const struct of_device_id s3c24xx_i2c_match[] = {
+ 	{ .compatible = "samsung,s3c2410-i2c", .data = (void *)0 },
++	{ .compatible = "apple,s5l8940x-samsung-i2c", .data = (void *)(QUIRK_NO_GPIO | QUIRK_POLL) },
+ 	{ .compatible = "samsung,s3c2440-i2c", .data = (void *)QUIRK_S3C2440 },
+ 	{ .compatible = "samsung,s3c2440-hdmiphy-i2c",
+ 	  .data = (void *)(QUIRK_S3C2440 | QUIRK_HDMIPHY | QUIRK_NO_GPIO) },
+@@ -224,7 +225,7 @@ static bool is_ack(struct s3c24xx_i2c *i2c)
+ 			 * Wait a bit for the bus to stabilize,
+ 			 * delay estimated experimentally.
+ 			 */
+-			usleep_range(100, 200);
++			udelay(200);
+ 			return true;
+ 		}
+ 		if (tmp & S3C2410_IICCON_IRQPEND) {
+@@ -232,7 +233,7 @@ static bool is_ack(struct s3c24xx_i2c *i2c)
+ 				& S3C2410_IICSTAT_LASTBIT))
+ 				return true;
+ 		}
+-		usleep_range(1000, 2000);
++		udelay(2000);
+ 	}
+ 	dev_err(i2c->dev, "ack was not received\n");
+ 	return false;
+@@ -621,7 +622,7 @@ static int s3c24xx_i2c_set_master(struct s3c24xx_i2c *i2c)
+ 		if (!(iicstat & S3C2410_IICSTAT_BUSBUSY))
+ 			return 0;
+ 
+-		msleep(1);
++		mdelay(1);
+ 	}
+ 
+ 	return -ETIMEDOUT;
+@@ -668,7 +669,7 @@ static void s3c24xx_i2c_wait_idle(struct s3c24xx_i2c *i2c)
+ 	delay = 1;
+ 	while ((iicstat & S3C2410_IICSTAT_START) &&
+ 	       ktime_us_delta(now, start) < S3C2410_IDLE_TIMEOUT) {
+-		usleep_range(delay, 2 * delay);
++		udelay(2 * delay);
+ 		if (delay < S3C2410_IDLE_TIMEOUT / 10)
+ 			delay <<= 1;
+ 		now = ktime_get();
+@@ -715,7 +716,19 @@ static int s3c24xx_i2c_doxfer(struct s3c24xx_i2c *i2c,
+ 				dev_err(i2c->dev, "deal with arbitration loss\n");
+ 		}
+ 	} else {
+-		time_left = wait_event_timeout(i2c->wait, i2c->msg_num == 0, HZ * 5);
++		/* HACK: hrtimer/jiffies broken on A5, use udelay poll (5 sec cap) */
++		{
++			unsigned long poll_ms = 5000;
++			time_left = 0;
++			while (poll_ms-- > 0) {
++				udelay(1000);
++				if (READ_ONCE(i2c->msg_num) == 0) {
++					time_left = 1;
++					break;
++				}
++			}
++		}
++		pr_err("S3C-I2C: udelay poll time_left=%ld ret=%d\n", time_left, ret);
+ 	}
+ 
+ 	ret = i2c->msg_idx;
+diff --git a/drivers/input/touchscreen/Kconfig b/drivers/input/touchscreen/Kconfig
+index 1ac26fc2e..9bde1a9fc 100644
+--- a/drivers/input/touchscreen/Kconfig
++++ b/drivers/input/touchscreen/Kconfig
+@@ -1388,4 +1388,9 @@ config TOUCHSCREEN_HIMAX_HX83112B
+ 	  To compile this driver as a module, choose M here: the
+ 	  module will be called himax_hx83112b.
+ 
++config TOUCHSCREEN_APPLE_Z2
++	tristate "Apple Z2 multi-touch (Cypress/Broadcom) via SPI"
++	depends on SPI && OF
++	select INPUT_MT
++	default y
+ endif
+diff --git a/drivers/input/touchscreen/Makefile b/drivers/input/touchscreen/Makefile
+index 82bc837ca..c4602d435 100644
+--- a/drivers/input/touchscreen/Makefile
++++ b/drivers/input/touchscreen/Makefile
+@@ -117,3 +117,4 @@ obj-$(CONFIG_TOUCHSCREEN_IQS5XX)	+= iqs5xx.o
+ obj-$(CONFIG_TOUCHSCREEN_IQS7211)	+= iqs7211.o
+ obj-$(CONFIG_TOUCHSCREEN_ZINITIX)	+= zinitix.o
+ obj-$(CONFIG_TOUCHSCREEN_HIMAX_HX83112B)	+= himax_hx83112b.o
++obj-$(CONFIG_TOUCHSCREEN_APPLE_Z2)    += apple-z2.o
+diff --git a/drivers/irqchip/Kconfig b/drivers/irqchip/Kconfig
+index d82bcab23..dc5ef3b6b 100644
+--- a/drivers/irqchip/Kconfig
++++ b/drivers/irqchip/Kconfig
+@@ -739,3 +739,16 @@ config SUNPLUS_SP7021_INTC
+ 	  the primary controller on C-Chip.
+ 
+ endmenu
++
++config APPLE_AIC1
++	bool "Apple aic,1 interrupt controller (32-bit S5L)"
++	depends on ARM && (ARCH_APPLE_S5L || COMPILE_TEST)
++	default ARCH_APPLE_S5L
++	select IRQ_DOMAIN
++	select GENERIC_IRQ_CHIP
++	select GENERIC_IRQ_IPI_MUX
++	help
++	  Support for the Apple Interrupt Controller revision 1 ("aic,1") found
++	  on 32-bit S5L SoCs (Apple A4 through A6X).  This is a separate driver
++	  from APPLE_AIC (arm64 Apple Silicon): different DT binding, EVENT format,
++	  and no integrated FIQ/IPI support.  Required to boot Linux on A5 devices.
+diff --git a/drivers/irqchip/Makefile b/drivers/irqchip/Makefile
+index e3679ec2b..6a91a4940 100644
+--- a/drivers/irqchip/Makefile
++++ b/drivers/irqchip/Makefile
+@@ -8,6 +8,7 @@ obj-$(CONFIG_ATH79)			+= irq-ath79-misc.o
+ obj-$(CONFIG_ARCH_BCM2835)		+= irq-bcm2835.o
+ obj-$(CONFIG_ARCH_BCM2835)		+= irq-bcm2836.o
+ obj-$(CONFIG_ARCH_ACTIONS)		+= irq-owl-sirq.o
++obj-$(CONFIG_APPLE_AIC1)		+= irq-apple-aic1.o
+ obj-$(CONFIG_DAVINCI_CP_INTC)		+= irq-davinci-cp-intc.o
+ obj-$(CONFIG_EXYNOS_IRQ_COMBINER)	+= exynos-combiner.o
+ obj-$(CONFIG_FARADAY_FTINTC010)		+= irq-ftintc010.o
+diff --git a/drivers/mfd/Kconfig b/drivers/mfd/Kconfig
+index f9325bcce..afe8fccdf 100644
+--- a/drivers/mfd/Kconfig
++++ b/drivers/mfd/Kconfig
+@@ -1481,6 +1481,11 @@ config STMPE_SPI
+ 	depends on SPI_MASTER
+ 	help
+ 	  This is used to enable SPI interface of STMPE
++config MFD_APPLE_PMU_I2C
++	tristate "Apple I2C PMU (Dialog D2333 / Chestnut)"
++	depends on I2C && OF
++	select REGMAP_I2C
++	default y
+ endmenu
+ 
+ config MFD_STA2X11
+@@ -2279,6 +2284,11 @@ config MCP_UCB1200_TS
+ 	tristate "Touchscreen interface support"
+ 	depends on MCP_UCB1200 && INPUT
+ 
++config MFD_APPLE_PMU_I2C
++	tristate "Apple I2C PMU (Dialog D2333 / Chestnut)"
++	depends on I2C && OF
++	select REGMAP_I2C
++	default y
+ endmenu
+ 
+ config MFD_CS40L50_CORE
+@@ -2402,5 +2412,10 @@ config MFD_RSMU_SPI
+ 	  Additional drivers must be enabled in order to use the functionality
+ 	  of the device.
+ 
++config MFD_APPLE_PMU_I2C
++	tristate "Apple I2C PMU (Dialog D2333 / Chestnut)"
++	depends on I2C && OF
++	select REGMAP_I2C
++	default y
+ endmenu
+ endif
+diff --git a/drivers/mfd/Makefile b/drivers/mfd/Makefile
+index 2a9f91e81..ca986f254 100644
+--- a/drivers/mfd/Makefile
++++ b/drivers/mfd/Makefile
+@@ -289,3 +289,4 @@ obj-$(CONFIG_MFD_ATC260X_I2C)	+= atc260x-i2c.o
+ 
+ obj-$(CONFIG_MFD_RSMU_I2C)	+= rsmu_i2c.o rsmu_core.o
+ obj-$(CONFIG_MFD_RSMU_SPI)	+= rsmu_spi.o rsmu_core.o
++obj-$(CONFIG_MFD_APPLE_PMU_I2C)    += apple-pmu-i2c.o
+diff --git a/drivers/phy/Kconfig b/drivers/phy/Kconfig
+index f73abff41..eee847c7e 100644
+--- a/drivers/phy/Kconfig
++++ b/drivers/phy/Kconfig
+@@ -112,3 +112,11 @@ source "drivers/phy/intel/Kconfig"
+ source "drivers/phy/xilinx/Kconfig"
+ 
+ endmenu
++
++config PHY_APPLE_S5L_USB
++	tristate "Apple S5L USB PHY"
++	depends on ARCH_APPLE_S5L
++	select GENERIC_PHY
++	help
++	  USB PHY driver for Apple S5L SoCs (A4/A5).
++
+diff --git a/drivers/phy/Makefile b/drivers/phy/Makefile
+index ebc399560..5c89aacbb 100644
+--- a/drivers/phy/Makefile
++++ b/drivers/phy/Makefile
+@@ -39,3 +39,4 @@ obj-y					+= allwinner/	\
+ 					   tegra/	\
+ 					   ti/		\
+ 					   xilinx/
++obj-$(CONFIG_PHY_APPLE_S5L_USB)	+= phy-apple-s5l-usb.o
+diff --git a/drivers/pinctrl/Kconfig b/drivers/pinctrl/Kconfig
+index 354536de5..acf77c49d 100644
+--- a/drivers/pinctrl/Kconfig
++++ b/drivers/pinctrl/Kconfig
+@@ -618,4 +618,11 @@ source "drivers/pinctrl/uniphier/Kconfig"
+ source "drivers/pinctrl/visconti/Kconfig"
+ source "drivers/pinctrl/vt8500/Kconfig"
+ 
++config PINCTRL_S5L8940X_GPIO
++	tristate "Apple S5L8940X (A5) GPIO/pinctrl driver"
++	depends on OF
++	select PINMUX
++	select PINCONF
++	select GENERIC_PINCONF
++	default y
+ endif
+diff --git a/drivers/pinctrl/Makefile b/drivers/pinctrl/Makefile
+index 97823f52b..c7ef983ad 100644
+--- a/drivers/pinctrl/Makefile
++++ b/drivers/pinctrl/Makefile
+@@ -87,3 +87,4 @@ obj-y				+= ti/
+ obj-$(CONFIG_PINCTRL_UNIPHIER)	+= uniphier/
+ obj-$(CONFIG_PINCTRL_VISCONTI)	+= visconti/
+ obj-$(CONFIG_ARCH_VT8500)	+= vt8500/
++obj-$(CONFIG_PINCTRL_S5L8940X_GPIO)  += pinctrl-s5l8940x-gpio.o
+diff --git a/drivers/regulator/Kconfig b/drivers/regulator/Kconfig
+index 39297f7d8..462888772 100644
+--- a/drivers/regulator/Kconfig
++++ b/drivers/regulator/Kconfig
+@@ -1720,4 +1720,8 @@ config REGULATOR_QCOM_LABIBB
+ 	  boost regulator and IBB can be used as a negative boost regulator
+ 	  for LCD display panel.
+ 
++config REGULATOR_APPLE_PMU_PWRSW
++	tristate "Apple PMU power switch"
++	depends on MFD_APPLE_PMU_I2C
++	default y
+ endif
+diff --git a/drivers/regulator/Makefile b/drivers/regulator/Makefile
+index 3d5a803dc..1bafbf11a 100644
+--- a/drivers/regulator/Makefile
++++ b/drivers/regulator/Makefile
+@@ -203,3 +203,4 @@ obj-$(CONFIG_REGULATOR_WM8400) += wm8400-regulator.o
+ obj-$(CONFIG_REGULATOR_WM8994) += wm8994-regulator.o
+ 
+ ccflags-$(CONFIG_REGULATOR_DEBUG) += -DDEBUG
++obj-$(CONFIG_REGULATOR_APPLE_PMU_PWRSW)    += apple-pmu-pwrsw.o
+diff --git a/drivers/spi/Kconfig b/drivers/spi/Kconfig
+index 823797217..159a59d71 100644
+--- a/drivers/spi/Kconfig
++++ b/drivers/spi/Kconfig
+@@ -1252,6 +1252,10 @@ config SPI_TLE62X0
+ # Add new SPI protocol masters in alphabetical order above this line
+ #
+ 
++config SPI_S5L8940X
++	tristate "Apple S5L8940X (A5) SPI controller"
++	depends on OF
++	default y
+ endif # SPI_MASTER
+ 
+ #
+@@ -1278,9 +1282,17 @@ config SPI_SLAVE_SYSTEM_CONTROL
+ 	  SPI slave handler to allow remote control of system reboot, power
+ 	  off, halt, and suspend.
+ 
++config SPI_S5L8940X
++	tristate "Apple S5L8940X (A5) SPI controller"
++	depends on OF
++	default y
+ endif # SPI_SLAVE
+ 
+ config SPI_DYNAMIC
+ 	def_bool ACPI || OF_DYNAMIC || SPI_SLAVE
+ 
++config SPI_S5L8940X
++	tristate "Apple S5L8940X (A5) SPI controller"
++	depends on OF
++	default y
+ endif # SPI
+diff --git a/drivers/spi/Makefile b/drivers/spi/Makefile
+index a9b1bc259..f4f860df5 100644
+--- a/drivers/spi/Makefile
++++ b/drivers/spi/Makefile
+@@ -160,3 +160,4 @@ obj-$(CONFIG_SPI_AMD)			+= spi-amd.o
+ # SPI slave protocol handlers
+ obj-$(CONFIG_SPI_SLAVE_TIME)		+= spi-slave-time.o
+ obj-$(CONFIG_SPI_SLAVE_SYSTEM_CONTROL)	+= spi-slave-system-control.o
++obj-$(CONFIG_SPI_S5L8940X)    += spi-s5l8940x.o
+diff --git a/drivers/tty/serial/Kconfig b/drivers/tty/serial/Kconfig
+index 28e4beeab..25e0c13e1 100644
+--- a/drivers/tty/serial/Kconfig
++++ b/drivers/tty/serial/Kconfig
+@@ -238,7 +238,7 @@ config SERIAL_CLPS711X_CONSOLE
+ 
+ config SERIAL_SAMSUNG
+ 	tristate "Samsung SoC serial support"
+-	depends on PLAT_SAMSUNG || ARCH_S5PV210 || ARCH_EXYNOS || ARCH_APPLE || ARCH_ARTPEC || COMPILE_TEST
++	depends on PLAT_SAMSUNG || ARCH_S5PV210 || ARCH_EXYNOS || ARCH_APPLE || ARCH_APPLE_S5L || ARCH_ARTPEC || COMPILE_TEST
+ 	select SERIAL_CORE
+ 	help
+ 	  Support for the on-chip UARTs on the Samsung
+diff --git a/drivers/tty/serial/samsung_tty.c b/drivers/tty/serial/samsung_tty.c
+index 0d184ee2f..bd419f788 100644
+--- a/drivers/tty/serial/samsung_tty.c
++++ b/drivers/tty/serial/samsung_tty.c
+@@ -1896,6 +1896,8 @@ static int s3c24xx_serial_init_port(struct s3c24xx_uart_port *ourport,
+ 	ret = s3c24xx_serial_enable_baudclk(ourport);
+ 	if (ret)
+ 		pr_warn("uart: failed to enable baudclk\n");
++	else if (ourport->baudclk_rate)
++		port->uartclk = ourport->baudclk_rate;
+ 
+ 	/* Keep all interrupts masked and cleared */
+ 	switch (ourport->info->type) {
+@@ -2537,7 +2539,7 @@ static const struct s3c24xx_serial_drv_data gs101_serial_drv_data = {
+ #define GS101_SERIAL_DRV_DATA NULL
+ #endif
+ 
+-#ifdef CONFIG_ARCH_APPLE
++#if defined(CONFIG_ARCH_APPLE) || defined(CONFIG_ARCH_APPLE_S5L)
+ static const struct s3c24xx_serial_drv_data s5l_serial_drv_data = {
+ 	.info = {
+ 		.name		= "Apple S5L UART",
+diff --git a/drivers/usb/dwc2/core.c b/drivers/usb/dwc2/core.c
+index 9919ab725..f0c547b78 100644
+--- a/drivers/usb/dwc2/core.c
++++ b/drivers/usb/dwc2/core.c
+@@ -318,7 +318,20 @@ static void dwc2_wait_for_mode(struct dwc2_hsotg *hsotg,
+ 			break;
+ 		}
+ 
+-		usleep_range(1000, 2000);
++		/*
++		 * P105AP: usleep_range() is an hrtimer sleep, and this platform
++		 * has no clockevent yet -- jiffies are frozen and the sleep never
++		 * returns, hanging the probe here.  It only ever booted past this
++		 * point by accident: with CONFIG_USB_DWC2_DEBUG=y the dev_dbg in
++		 * dwc2_force_mode() spent ~10 ms pushing characters out of a
++		 * 115200 UART, which was enough settle time that the mode check
++		 * above succeeded on the first pass and this sleep was never
++		 * reached.  Turning that logging off removed the delay and the
++		 * board hung.  mdelay busy-waits off the PMCCNTR delay timer and
++		 * needs no tick, so USB no longer depends on debug logging or on
++		 * the timer work being finished.
++		 */
++		mdelay(1);
+ 	}
+ }
+ 
+diff --git a/drivers/usb/dwc2/gadget.c b/drivers/usb/dwc2/gadget.c
+index e7bf9cc63..24689c3d6 100644
+--- a/drivers/usb/dwc2/gadget.c
++++ b/drivers/usb/dwc2/gadget.c
+@@ -3463,6 +3463,13 @@ void dwc2_hsotg_core_init_disconnected(struct dwc2_hsotg *hsotg,
+ 		GINTSTS_USBSUSP | GINTSTS_WKUPINT |
+ 		GINTSTS_LPMTRANRCVD;
+ 
++#ifdef CONFIG_ARCH_APPLE_S5L
++	/* P105AP has no usable timer peripheral at all -- see the file comment in
++	 * arch/arm/mach-apple/apple_sof_clkevt.c for the list of what was ruled
++	 * out.  The 125 us Start-of-Frame is the system tick there. */
++	intmsk |= GINTSTS_SOF;
++#endif
++
+ 	if (!using_desc_dma(hsotg))
+ 		intmsk |= GINTSTS_INCOMPL_SOIN | GINTSTS_INCOMPL_SOOUT;
+ 
+@@ -3715,6 +3722,22 @@ static irqreturn_t dwc2_hsotg_irq(int irq, void *pw)
+ 	if (!dwc2_is_device_mode(hsotg))
+ 		return IRQ_NONE;
+ 
++#ifdef CONFIG_ARCH_APPLE_S5L
++	/* Handle SOF before taking hsotg->lock on purpose: this walks into the
++	 * clockevent handler, and from there into the timer and scheduler code.
++	 * Holding a USB driver lock across that is asking for a lock-order
++	 * surprise, and the tick path touches nothing in this driver. */
++	{
++		void apple_s5l_usb_sof_tick(void);
++		u32 sof = dwc2_readl(hsotg, GINTSTS) & dwc2_readl(hsotg, GINTMSK);
++
++		if (sof & GINTSTS_SOF) {
++			dwc2_writel(hsotg, GINTSTS_SOF, GINTSTS);
++			apple_s5l_usb_sof_tick();
++		}
++	}
++#endif
++
+ 	spin_lock(&hsotg->lock);
+ irq_retry:
+ 	gintsts = dwc2_readl(hsotg, GINTSTS);
+diff --git a/init/main.c b/init/main.c
+index c4778edae..296545649 100644
+--- a/init/main.c
++++ b/init/main.c
+@@ -698,6 +698,12 @@ static void __init setup_command_line(char *command_line)
+ 
+ static __initdata DECLARE_COMPLETION(kthreadd_done);
+ 
++#ifdef CONFIG_ARCH_APPLE_S5L
++void p105_fb_dbg(const char *msg);
++pid_t __init apple_s5l_rest_spawn_init(int (*fn)(void *), void *arg,
++				       unsigned long flags);
++#endif
++
+ static noinline void __ref __noreturn rest_init(void)
+ {
+ 	struct task_struct *tsk;
+@@ -709,7 +715,13 @@ static noinline void __ref __noreturn rest_init(void)
+ 	 * the init task will end up wanting to create kthreads, which, if
+ 	 * we schedule it before we create kthreadd, will OOPS.
+ 	 */
++#ifdef CONFIG_ARCH_APPLE_S5L
++	p105_fb_dbg("rest_init");
++	p105_fb_dbg("pre_spawn");
++	pid = apple_s5l_rest_spawn_init(kernel_init, NULL, CLONE_FS);
++#else
+ 	pid = user_mode_thread(kernel_init, NULL, CLONE_FS);
++#endif
+ 	/*
+ 	 * Pin init on the boot CPU. Task migration is not properly working
+ 	 * until sched_init_smp() has been run. It will set the allowed
+@@ -1277,7 +1289,10 @@ int __init_or_module do_one_initcall(initcall_t fn)
+ 	}
+ 	if (irqs_disabled()) {
+ 		strlcat(msgbuf, "disabled interrupts ", sizeof(msgbuf));
+-		local_irq_enable();
++#ifdef CONFIG_ARCH_APPLE_S5L
++		if (!early_boot_irqs_disabled)
++#endif
++			local_irq_enable();
+ 	}
+ 	WARN(msgbuf[0], "initcall %pS returned with %s\n", fn, msgbuf);
+ 
+@@ -1466,6 +1481,64 @@ static int __ref kernel_init(void *unused)
+ 	 */
+ 	wait_for_completion(&kthreadd_done);
+ 
++	/*
++	 * P105AP: AIC bring-up before initcalls.
++	 */
++#ifdef CONFIG_ARCH_APPLE_S5L
++	{
++		void apple_aic1_quiesce(void);
++		void apple_aic1_hw_quiesce(void);
++		void apple_aic1_enable(void);
++		void apple_aic1_arm_cpu0(void);
++		extern bool apple_aic1_early_irq_escape;
++
++		p105_fb_dbg("irq_quiesce");
++		apple_aic1_quiesce();
++		apple_aic1_hw_quiesce();
++		/* CFG off; keep early_irq_escape for sticky nIRQ */
++		p105_fb_dbg("irq_try");
++		early_boot_irqs_disabled = false;
++		local_irq_enable();
++		p105_fb_dbg("irq_on");
++		local_irq_disable();
++		apple_aic1_enable();
++		apple_aic1_arm_cpu0();
++		local_irq_enable();
++		p105_fb_dbg("irq_arm");
++		local_irq_disable();
++		early_boot_irqs_disabled = true;
++		p105_fb_dbg("irq_frz");
++	}
++#else
++#endif
++	p105_fb_dbg("init_go");
++#ifdef CONFIG_ARCH_APPLE_S5L
++	{
++		void apple_aic1_release_escape(void);
++		void apple_aic1_quiesce(void);
++		void apple_aic1_hw_quiesce_quiet(void);
++		void apple_aic1_rearm(void);
++
++		p105_fb_dbg("init_go");
++		apple_aic1_quiesce();
++		apple_aic1_hw_quiesce_quiet();
++		/* FIX (2026-09-14): both quiesce calls above clear CFG.ENABLE and zero
++		 * TARGET_CPU for all 192 lines.  Without this re-arm the AIC stays dead
++		 * for the whole of do_initcalls(), which is why every /proc/interrupts
++		 * counter (incl. IPIs) stayed at 0. */
++		apple_aic1_rearm();
++		p105_fb_dbg("irq_rearm");
++		early_boot_irqs_disabled = false;
++		p105_fb_dbg("irq_thaw");
++		local_irq_enable();
++		p105_fb_dbg("thaw_on");
++		apple_aic1_release_escape();
++		p105_fb_dbg("esc_off");
++	}
++#endif
++#ifdef CONFIG_ARCH_APPLE_S5L
++	p105_fb_dbg("kt_done");
++#endif
+ 	kernel_init_freeable();
+ 	/* need to finish all async __init code before freeing the memory */
+ 	async_synchronize_full();
+@@ -1475,6 +1548,13 @@ static int __ref kernel_init(void *unused)
+ 	ftrace_free_init_mem();
+ 	kgdb_free_init_mem();
+ 	exit_boot_config();
++#ifdef CONFIG_ARCH_APPLE_S5L
++	{
++		void p105_fb_dbg_shutdown(void);
++
++		p105_fb_dbg_shutdown();
++	}
++#endif
+ 	free_initmem();
+ 	mark_readonly();
+ 
+@@ -1492,7 +1572,10 @@ static int __ref kernel_init(void *unused)
+ 	do_sysctl_args();
+ 
+ 	if (ramdisk_execute_command) {
+-		ret = run_init_process(ramdisk_execute_command);
++	#ifdef CONFIG_ARCH_APPLE_S5L
++	p105_fb_dbg("init_run");
++#endif
++	ret = run_init_process(ramdisk_execute_command);
+ 		if (!ret)
+ 			return 0;
+ 		pr_err("Failed to execute %s (error %d)\n",
+diff --git a/kernel/fork.c b/kernel/fork.c
+index 22f43721d..eb4f68a52 100644
+--- a/kernel/fork.c
++++ b/kernel/fork.c
+@@ -2814,7 +2814,14 @@ pid_t kernel_clone(struct kernel_clone_args *args)
+ 		task_unlock(p);
+ 	}
+ 
++#ifdef CONFIG_ARCH_APPLE_S5L
++void p105_fb_dbg(const char *msg);
++	p105_fb_dbg("kc_wake");
++#endif
+ 	wake_up_new_task(p);
++#ifdef CONFIG_ARCH_APPLE_S5L
++	p105_fb_dbg("kc_woke");
++#endif
+ 
+ 	/* forking complete and child started to run, tell ptracer */
+ 	if (unlikely(trace))
+@@ -2825,7 +2832,13 @@ pid_t kernel_clone(struct kernel_clone_args *args)
+ 			ptrace_event_pid(PTRACE_EVENT_VFORK_DONE, pid);
+ 	}
+ 
++#ifdef CONFIG_ARCH_APPLE_S5L
++	p105_fb_dbg("kc_put");
++#endif
+ 	put_pid(pid);
++#ifdef CONFIG_ARCH_APPLE_S5L
++	p105_fb_dbg("kc_out");
++#endif
+ 	return nr;
+ }
+ 
+@@ -2851,8 +2864,19 @@ pid_t kernel_thread(int (*fn)(void *), void *arg, const char *name,
+ /*
+  * Create a user mode thread.
+  */
++#ifdef CONFIG_ARCH_APPLE_S5L
++void p105_fb_dbg(const char *msg);
++#endif
++
+ pid_t user_mode_thread(int (*fn)(void *), void *arg, unsigned long flags)
+ {
++#ifdef CONFIG_ARCH_APPLE_S5L
++	static int apple_fork_fb_left = 32;
++	if (apple_fork_fb_left > 0) {
++		apple_fork_fb_left--;
++		p105_fb_dbg("umt_in");
++	}
++#endif
+ 	struct kernel_clone_args args = {
+ 		.flags		= ((lower_32_bits(flags) | CLONE_VM |
+ 				    CLONE_UNTRACED) & ~CSIGNAL),
