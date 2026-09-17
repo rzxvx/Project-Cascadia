@@ -48,9 +48,10 @@ BOOTARGS="${BOOTARGS:-cs_enforcement_disable=1 debug=0x14}"
 # pipeline is correct.  The plaintext hash does: it is what the author's own
 # current scripts produce, verified byte-for-byte.
 #
-# The consequence to be honest about: this build reproduces what the CURRENT
-# scripts generate, which is not the image that has been flashed.  No one has
-# booted it.
+# The .dfu this produces is not byte-identical to the preserved August image,
+# and that is expected rather than a problem: the auto-go script changed in
+# between.  This build has since been flashed and the device booted from it, so
+# it is the tested one now.
 KNOWN_IBEC_PLAIN_MD5="b7e502c0262660b68adac4fe4e764b1b"
 KNOWN_IBSS_MD5="8b6dcc510c0ab303d67495978f4eb523"
 
@@ -110,10 +111,10 @@ EOF
 else
     cat <<'EOF'
 
-    Note: the .dfu this produces is NOT byte-identical to the one the device
-    has been booting.  That file was preserved in August and the auto-go script
-    has changed since; the plaintext above is what the current scripts generate.
-    It has not been run on hardware.  Keep the old image until this one boots.
+    This differs from the preserved August .dfu, because the auto-go script
+    changed after that image was saved.  It has been flashed and the device
+    booted from it.  ./cascadia flash --known-good still sends the old one if
+    you ever need to tell a bad build from a bad bench.
 EOF
 fi
 

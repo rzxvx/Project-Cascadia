@@ -59,6 +59,9 @@ including the parts that didn't work.
 - [x] **NFS root** — the root filesystem lives on the host's disk, so installed
       packages survive a reboot and the disk is no longer 512 MB of RAM
 - [x] `/bin/peek` — MMIO poke tool in the initramfs for live hardware probing
+- [x] **The boot chain regenerates from a stock IPSW** — `./cascadia firmware`
+      decrypts and patches iBSS/iBEC from the user's own firmware, verified
+      byte-for-byte and booted on hardware. No Apple binaries in this repository
 - [ ] Touch input — blocked on the Cmwp touch clock
 - [ ] Wi-Fi (BCM4334 — HSIC, behind EHCI, not SDIO as initially assumed)
 - [ ] CPU1 / SMP bringup — **parked**, see *Negative results*
@@ -271,10 +274,22 @@ thing it skipped was the `apple_aic1_rearm()` call, so a clean tree built green
 and took no interrupts at all. `./cascadia build` re-checks both the config
 symbols and the boot stamps in `vmlinux` for that reason.
 
-Flashing needs the device, a Lightning cable and a way into pwned DFU, and is
-still macOS-only; `./cascadia flash` says so rather than pretending. The
-host-side network and NFS helpers (`./cascadia net`, `./cascadia nfs`) are in
-the same state.
+Flashing needs the device, a Lightning cable, a way into pwned DFU, and
+[Legacy iOS Kit](https://github.com/LukeZGD/Legacy-iOS-Kit) for `primepwn` and
+`irecovery`:
+
+```bash
+./cascadia firmware   # patch iBSS/iBEC out of your own IPSW
+./cascadia flash      # iBSS -> iBEC -> bundle -> loader
+```
+
+No Apple firmware ships with this repository. `./cascadia firmware` derives the
+boot chain from an `iPad2,5_8.4.1_12H321_Restore.ipsw` you supply, and checks
+the result against reference hashes. The pin to that build is not arbitrary: the
+auto-go hook patches an address inside that exact iBEC.
+
+The host-side network and NFS helpers (`./cascadia net`, `./cascadia nfs`) are
+still macOS-only and say so.
 
 ## Repo layout
 
