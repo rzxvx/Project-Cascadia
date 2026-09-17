@@ -149,6 +149,19 @@ cmd_build() {
     [ -d "$ROOT/build/initramfs-root" ] || fail "no rootfs -- run: ./cascadia rootfs"
     mkdir -p "$ROOT/build/out" "$ROOT/output"
 
+    # KERNEL_SRC= makes build/linux a symlink to a tree somewhere else, which is
+    # right for the host -- a kernel checkout is ~2.5 GB and nobody wants two --
+    # and useless inside the container, where that absolute path does not exist.
+    # Bind the target over the symlink so the path the build expects is a real
+    # directory on both sides.  realpath via python3 because BSD readlink has no
+    # -f and python3 is already a checked prerequisite.
+    if [ -L "$ROOT/build/linux" ]; then
+        KTREE=$(python3 -c 'import os,sys;print(os.path.realpath(sys.argv[1]))' "$ROOT/build/linux")
+        [ -f "$KTREE/Makefile" ] || fail "build/linux points at $KTREE, which is not a kernel tree"
+        note "kernel tree: $KTREE (mounted over the symlink)"
+        DOCKER_EXTRA=(-v "$KTREE":/cascadia/build/linux)
+    fi
+
     say "1/5 device tree"
     # rm first: dtc is not a make target here, so a stale .dtb would just be
     # reused and an edit to the .dts would silently never reach the device.
@@ -199,6 +212,7 @@ cmd_build() {
     [ "$bs" = "$(( got + 32768 ))" ] || fail "staging-bundle.bin is $bs bytes, expected $(( got + 32768 ))"
     note "ok: bundle = 32K loader + this exact zImage-dtb"
 
+    DOCKER_EXTRA=()
     say "done"
     ls -l "$ROOT/output/staging-bundle.bin" "$ROOT/output/staging-loader.bin"
 }
