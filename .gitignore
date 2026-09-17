@@ -38,3 +38,4 @@ __pycache__/
 attic/_to_delete/
 # built by ./cascadia build from dts/p105ap.dts
 dtb/
+ipad25.ipsw

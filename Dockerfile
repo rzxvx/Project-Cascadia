@@ -24,6 +24,11 @@ RUN apt-get update && apt-get install -y \
     wget \
     python3 \
     python3-pip \
+    # img3decrypt/img3encrypt need AES; patch-ibec-autogo disassembles Thumb to
+    # find the USB completion callback it hooks.  Distro packages rather than
+    # pip so the image builds without reaching pypi at run time.
+    python3-pycryptodome \
+    python3-capstone \
     libelf-dev \
     rsync \
     cpio \
@@ -33,6 +38,22 @@ RUN apt-get update && apt-get install -y \
 
 # Инструменты для работы с Apple firmware (xpwntool, img4tool и т.п. собираются отдельно,
 # т.к. некоторые требуют доп. библиотек — добавим по мере необходимости)
+
+# pycryptodome: the img3 decrypt/encrypt steps of the boot chain are pure
+# Python, which is why this image needs no xpwntool and no prebuilt binaries
+# from anyone's tree.
+RUN pip3 install --no-cache-dir pycryptodome
+
+# iBoot32Patcher, built from source rather than vendored or borrowed from a
+# Legacy iOS Kit checkout: third-party GPL code is better cloned at image build
+# time than copied into this repository, and it means the boot chain has no
+# dependency on a tool the user has to install separately.  Four .c files and
+# no libraries.
+RUN git clone --depth 1 https://github.com/iH8sn0w/iBoot32Patcher /tmp/ib32 \
+    && gcc /tmp/ib32/iBoot32Patcher/{iBoot32Patcher,finders,functions,patchers}.c \
+        -Wno-multichar -I/tmp/ib32/iBoot32Patcher -o /usr/local/bin/iBoot32Patcher \
+    && rm -rf /tmp/ib32 \
+    && iBoot32Patcher 2>&1 | head -2 || true
 
 ENV ARCH=arm
 ENV CROSS_COMPILE=arm-linux-gnueabihf-

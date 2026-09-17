@@ -6,6 +6,7 @@
 #   ./cascadia kernel      fetch the pinned Linux source into build/linux
 #   ./cascadia rootfs      build the Alpine armhf rootfs for the initramfs
 #   ./cascadia build       dtb + kernel + staging bundle, with the safety checks
+#   ./cascadia firmware    patch iBSS/iBEC out of a stock IPSW (needs Legacy iOS Kit)
 #   ./cascadia flash       boot the device over USB            (macOS for now)
 #   ./cascadia net on|off  share the Mac's internet with it    (macOS for now)
 #   ./cascadia nfs on|off  export a root filesystem to it      (macOS for now)
@@ -70,7 +71,34 @@ in_docker() {
     # afterwards, came out as the user.
     duser=()
     [ "$(uname -s)" = "Linux" ] && duser=(--user "$(id -u):$(id -g)")
-    docker run --rm "${duser[@]}" -v "$ROOT":/cascadia -w /cascadia "$IMAGE" bash -c "$1"
+    docker run --rm "${duser[@]}" "${DOCKER_EXTRA[@]}" \
+        -v "$ROOT":/cascadia -w /cascadia "$IMAGE" bash -c "$1"
+}
+
+DOCKER_EXTRA=()
+
+cmd_firmware() {
+    # Legacy iOS Kit is a real dependency here and saying so is better than
+    # vendoring a copy of iBoot32Patcher that then drifts.  Its Linux binaries
+    # are used even on a macOS host, because the work happens in the container
+    # and that makes the output identical on both.
+    LIK="${LIK:-$HOME/Legacy-iOS-Kit}"
+    [ -d "$LIK" ] || fail "no Legacy iOS Kit at $LIK
+It provides iBoot32Patcher, and --pwn/--kdfu for getting the device into pwned
+DFU.  Clone it, or set LIK=/path/to/it:
+    git clone https://github.com/LukeZGD/Legacy-iOS-Kit.git ~/Legacy-iOS-Kit"
+
+    IPSW_PATH="${IPSW:-$ROOT/ipad25.ipsw}"
+    [ -f "$IPSW_PATH" ] || fail "no IPSW at $IPSW_PATH
+This port is pinned to iPad2,5 on iOS 8.4.1 (12H321): the auto-go hook patches
+an address inside that exact iBEC and the keys are that build's.  Fetch
+iPad2,5_8.4.1_12H321_Restore.ipsw and pass IPSW=/path/to/it."
+
+    say "Legacy iOS Kit: $LIK"
+    say "IPSW: $IPSW_PATH"
+    DOCKER_EXTRA=(-v "$LIK":/lik:ro -v "$IPSW_PATH":/ipsw.ipsw:ro)
+    in_docker "IPSW=/ipsw.ipsw LIK=/lik bash scripts/build-firmware.sh"
+    DOCKER_EXTRA=()
 }
 
 cmd_doctor() {
@@ -94,6 +122,13 @@ cmd_doctor() {
         Linux)  note "note:    Linux -- build works; flash/net/nfs are still macOS-only" ;;
         *)      note "note:    $(uname -s) -- untested; build may work, the rest will not" ;;
     esac
+    say "firmware prerequisites (only needed for ./cascadia firmware and flash)"
+    LIKD="${LIK:-$HOME/Legacy-iOS-Kit}"
+    if [ -d "$LIKD" ]; then note "ok:      Legacy iOS Kit at $LIKD"
+    else note "missing: Legacy iOS Kit (git clone https://github.com/LukeZGD/Legacy-iOS-Kit.git ~/Legacy-iOS-Kit)"; fi
+    if [ -f "${IPSW:-$ROOT/ipad25.ipsw}" ]; then note "ok:      IPSW"
+    else note "missing: iPad2,5_8.4.1_12H321_Restore.ipsw (set IPSW=)"; fi
+
     say "tree"
     for p in build/linux/Makefile build/initramfs-root/init dtb/p105ap.dtb; do
         if [ -e "$p" ]; then note "ok:      $p"
@@ -181,6 +216,7 @@ case "${1:-}" in
     kernel) cmd_kernel ;;
     rootfs) cmd_rootfs ;;
     build)  cmd_build ;;
+    firmware) cmd_firmware ;;
     flash)  host_only_macos flash; shift; bash "$ROOT/tools/flash-rearm.sh" "$@" ;;
     net)    host_only_macos net;   shift; bash "$ROOT/tools/mac-share-internet.sh" "$@" ;;
     nfs)    host_only_macos nfs;   shift; bash "$ROOT/tools/mac-nfs-export.sh" "$@" ;;
