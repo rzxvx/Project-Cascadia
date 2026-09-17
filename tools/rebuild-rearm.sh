@@ -55,8 +55,16 @@ echo "==> 3/6 freshness"
 # ship something that predates the edits.
 [ "$TREE/arch/arm/boot/zImage" -nt "$TREE/.config" ] || fail "zImage is older than .config -- the build did not run"
 [ "$TREE/arch/arm/boot/zImage" -nt "$IBSS/config/p105ap.config" ] || fail "zImage is older than the config fragment"
-[ "$TREE/usr/initramfs_data.cpio" -nt "$IBSS/build/initramfs-root/init" ] || fail "initramfs archive is older than /init"
-echo "    ok: zImage and initramfs are newer than their inputs"
+# Compare the archive against EVERY file in the rootfs, not just /init.  The
+# initramfs stopped being one script a while ago -- it now carries
+# sbin/p105-stage2, sbin/mount.nfs and etc/nfsroot -- and a check that only
+# watches /init passes happily while shipping an image that has none of them.
+# That is exactly what happened on 2026-09-17: a flash without a rebuild put a
+# kernel from 16:42 on the device while the rootfs had been growing until 17:06,
+# and the device booted from RAM with no sign anything was wrong.
+STALE=$(find "$IBSS/build/initramfs-root" -type f -newer "$TREE/usr/initramfs_data.cpio" -print -quit 2>/dev/null)
+[ -z "$STALE" ] || fail "initramfs archive predates ${STALE#$IBSS/build/initramfs-root/} -- the build did not pick up your changes"
+echo "    ok: zImage and initramfs are newer than every input"
 
 echo "==> 4/6 splice fresh zImage + fresh DTB"
 cat "$TREE/arch/arm/boot/zImage" "$IBSS/dtb/p105ap.dtb" > output/zImage-dtb
