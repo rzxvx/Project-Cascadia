@@ -49,11 +49,23 @@ RUN pip3 install --no-cache-dir pycryptodome
 # time than copied into this repository, and it means the boot chain has no
 # dependency on a tool the user has to install separately.  Four .c files and
 # no libraries.
+# Four things were wrong with the first version of this, and the trailing
+# "|| true" hid all of them: the image built clean and the binary was simply
+# absent, which only surfaced when ./cascadia firmware went looking for it.
+#   - the .c files are at the repo root, not in an iBoot32Patcher/ subdirectory
+#   - the sources say #include <include/finders.h>, so -I is the root, not
+#     the include/ directory
+#   - RUN uses /bin/sh, which does not expand {a,b,c} braces -- the literal
+#     string was handed to gcc as a filename
+#   - "|| true" applies to the whole && chain, so a failed gcc still succeeded
+# No masking now: if this cannot build, the image does not build, and the last
+# line proves the result actually runs.
 RUN git clone --depth 1 https://github.com/iH8sn0w/iBoot32Patcher /tmp/ib32 \
-    && gcc /tmp/ib32/iBoot32Patcher/{iBoot32Patcher,finders,functions,patchers}.c \
-        -Wno-multichar -I/tmp/ib32/iBoot32Patcher -o /usr/local/bin/iBoot32Patcher \
-    && rm -rf /tmp/ib32 \
-    && iBoot32Patcher 2>&1 | head -2 || true
+    && cd /tmp/ib32 \
+    && gcc iBoot32Patcher.c finders.c functions.c patchers.c \
+        -Wno-multichar -I. -o /usr/local/bin/iBoot32Patcher \
+    && cd / && rm -rf /tmp/ib32 \
+    && iBoot32Patcher 2>&1 | head -1
 
 ENV ARCH=arm
 ENV CROSS_COMPILE=arm-linux-gnueabihf-
