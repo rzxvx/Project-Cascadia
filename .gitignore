@@ -28,6 +28,7 @@ pongo/staging-generated.inc
 
 # ---- Raw capture logs from lab runs ----
 uart_*.txt
+uart.txt
 
 # ---- Junk ----
 .DS_Store

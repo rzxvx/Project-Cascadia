@@ -14,3 +14,5 @@
 | Item | Why it's here and not in the tree |
 |---|---|
 | `apply-p105-boot-hacks.py` | Applied every edit to an existing kernel file by matching an anchor string and inserting near it. Superseded by `patches/tree/0001-cascadia.patch` + `scripts/apply-kernel-edits.sh`. Anchors made sense while the kernel version floated; once it was pinned they were only a liability, because `apply_replacements()` SKIPS a stale anchor silently. The first one it skipped was the `apple_aic1_rearm()` call in `init/main.c` — so a clean clone built green, booted, and took no interrupts at all. Kept for the record of which edits existed and why each was made; the reasoning in its comments is still the best explanation of the boot hacks. |
+
+| `flash-rearm.sh` | The flashing script before `tools/flash.sh`. It hard-coded `/Users/k/Legacy-iOS-Kit/bin/macos/arm64/primepwn`, a serial port by its adapter's serial number, and `~/Desktop/ipad-mini-linux`, so it ran on exactly one machine. Kept because its comments record the upload order and why each `sleep 1` is there. |

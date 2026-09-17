@@ -7,7 +7,7 @@
 #   ./cascadia rootfs      build the Alpine armhf rootfs for the initramfs
 #   ./cascadia build       dtb + kernel + staging bundle, with the safety checks
 #   ./cascadia firmware    patch iBSS/iBEC out of a stock IPSW (needs Legacy iOS Kit)
-#   ./cascadia flash       boot the device over USB            (macOS for now)
+#   ./cascadia flash       boot the device over USB (needs Legacy iOS Kit)
 #   ./cascadia net on|off  share the Mac's internet with it    (macOS for now)
 #   ./cascadia nfs on|off  export a root filesystem to it      (macOS for now)
 #
@@ -216,7 +216,7 @@ case "${1:-}" in
     rootfs) cmd_rootfs ;;
     build)  cmd_build ;;
     firmware) cmd_firmware ;;
-    flash)  host_only_macos flash; shift; bash "$ROOT/tools/flash-rearm.sh" "$@" ;;
+    flash)  shift; bash "$ROOT/tools/flash.sh" "$@" ;;
     net)    host_only_macos net;   shift; bash "$ROOT/tools/mac-share-internet.sh" "$@" ;;
     nfs)    host_only_macos nfs;   shift; bash "$ROOT/tools/mac-nfs-export.sh" "$@" ;;
     *)      sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
