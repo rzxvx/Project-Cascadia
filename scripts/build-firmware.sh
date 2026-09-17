@@ -6,9 +6,10 @@
 #                               alone so the host can still upload iBEC
 #   iBEC.patched.autogo.dfu     signature patch plus the auto-go hook
 #
-# Runs INSIDE the build container (see ./cascadia firmware), because it needs
-# pycryptodome and capstone, and because using Legacy iOS Kit's Linux
-# iBoot32Patcher there makes the result identical on a macOS and a Linux host.
+# Runs INSIDE the build container (see ./cascadia firmware): the image carries
+# pycryptodome, capstone and an iBoot32Patcher built from source, so the result
+# is identical on a macOS and a Linux host and nothing outside this repository
+# and the user's own IPSW is needed.
 #
 # Pinned to iOS 8.4.1 / 12H321 and to iPad2,5.  That is not laziness: the auto-go
 # hook patches a specific address inside this exact iBEC build
@@ -24,7 +25,6 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 IPSW="${IPSW:-$ROOT/ipad25.ipsw}"
-LIK="${LIK:-/lik}"
 OUT="$ROOT/build/firmware"
 
 # Public firmware keys for iPad2,5 / 12H321.  These are not secret: they are
@@ -48,11 +48,9 @@ md5of() { md5sum "$1" | cut -d' ' -f1; }
 
 [ -f "$IPSW" ] || fail "no IPSW at $IPSW -- pass IPSW=/path/to/iPad2,5_8.4.1_12H321_Restore.ipsw"
 
-ARCH=$(uname -m); case "$ARCH" in aarch64|arm64) LARCH=arm64 ;; *) LARCH=x86_64 ;; esac
-PATCHER="$LIK/bin/linux/$LARCH/iBoot32Patcher"
-[ -x "$PATCHER" ] || fail "no iBoot32Patcher at $PATCHER
-Legacy iOS Kit provides it.  Clone it and point ./cascadia at it:
-    git clone https://github.com/LukeZGD/Legacy-iOS-Kit.git ~/Legacy-iOS-Kit"
+PATCHER="${PATCHER:-/usr/local/bin/iBoot32Patcher}"
+command -v "$PATCHER" >/dev/null 2>&1 || [ -x "$PATCHER" ] \
+    || fail "no iBoot32Patcher at $PATCHER -- rebuild the image: docker rmi cascadia-build"
 
 mkdir -p "$OUT"
 

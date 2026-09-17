@@ -71,33 +71,30 @@ in_docker() {
     # afterwards, came out as the user.
     duser=()
     [ "$(uname -s)" = "Linux" ] && duser=(--user "$(id -u):$(id -g)")
-    docker run --rm "${duser[@]}" "${DOCKER_EXTRA[@]}" \
+    # ${arr[@]+"${arr[@]}"} and not plain "${arr[@]}": macOS ships bash 3.2,
+    # where expanding an EMPTY array under `set -u` is an unbound-variable
+    # error.  bash 4.4 and later made it fine, so this only ever breaks on the
+    # Mac -- and it broke on the Mac, after passing on Arch.
+    docker run --rm ${duser[@]+"${duser[@]}"} ${DOCKER_EXTRA[@]+"${DOCKER_EXTRA[@]}"} \
         -v "$ROOT":/cascadia -w /cascadia "$IMAGE" bash -c "$1"
 }
 
 DOCKER_EXTRA=()
 
 cmd_firmware() {
-    # Legacy iOS Kit is a real dependency here and saying so is better than
-    # vendoring a copy of iBoot32Patcher that then drifts.  Its Linux binaries
-    # are used even on a macOS host, because the work happens in the container
-    # and that makes the output identical on both.
-    LIK="${LIK:-$HOME/Legacy-iOS-Kit}"
-    [ -d "$LIK" ] || fail "no Legacy iOS Kit at $LIK
-It provides iBoot32Patcher, and --pwn/--kdfu for getting the device into pwned
-DFU.  Clone it, or set LIK=/path/to/it:
-    git clone https://github.com/LukeZGD/Legacy-iOS-Kit.git ~/Legacy-iOS-Kit"
-
+    # No Legacy iOS Kit needed here: the image builds iBoot32Patcher from source
+    # and the img3 decrypt/encrypt steps are pure Python, so the whole boot
+    # chain is derived from the user's own IPSW and nothing else.  LIK is still
+    # wanted for flashing, where --pwn and --kdfu get the device into pwned DFU.
     IPSW_PATH="${IPSW:-$ROOT/ipad25.ipsw}"
     [ -f "$IPSW_PATH" ] || fail "no IPSW at $IPSW_PATH
 This port is pinned to iPad2,5 on iOS 8.4.1 (12H321): the auto-go hook patches
 an address inside that exact iBEC and the keys are that build's.  Fetch
 iPad2,5_8.4.1_12H321_Restore.ipsw and pass IPSW=/path/to/it."
 
-    say "Legacy iOS Kit: $LIK"
     say "IPSW: $IPSW_PATH"
-    DOCKER_EXTRA=(-v "$LIK":/lik:ro -v "$IPSW_PATH":/ipsw.ipsw:ro)
-    in_docker "IPSW=/ipsw.ipsw LIK=/lik bash scripts/build-firmware.sh"
+    DOCKER_EXTRA=(-v "$IPSW_PATH":/ipsw.ipsw:ro)
+    in_docker "IPSW=/ipsw.ipsw bash scripts/build-firmware.sh"
     DOCKER_EXTRA=()
 }
 
@@ -122,12 +119,14 @@ cmd_doctor() {
         Linux)  note "note:    Linux -- build works; flash/net/nfs are still macOS-only" ;;
         *)      note "note:    $(uname -s) -- untested; build may work, the rest will not" ;;
     esac
-    say "firmware prerequisites (only needed for ./cascadia firmware and flash)"
+    say "boot chain (not needed to build a kernel)"
+    if [ -f "${IPSW:-$ROOT/ipad25.ipsw}" ]; then note "ok:      IPSW (./cascadia firmware)"
+    else note "missing: iPad2,5_8.4.1_12H321_Restore.ipsw for ./cascadia firmware (set IPSW=)"; fi
     LIKD="${LIK:-$HOME/Legacy-iOS-Kit}"
-    if [ -d "$LIKD" ]; then note "ok:      Legacy iOS Kit at $LIKD"
-    else note "missing: Legacy iOS Kit (git clone https://github.com/LukeZGD/Legacy-iOS-Kit.git ~/Legacy-iOS-Kit)"; fi
-    if [ -f "${IPSW:-$ROOT/ipad25.ipsw}" ]; then note "ok:      IPSW"
-    else note "missing: iPad2,5_8.4.1_12H321_Restore.ipsw (set IPSW=)"; fi
+    if [ -d "$LIKD" ]; then note "ok:      Legacy iOS Kit at $LIKD (./cascadia flash)"
+    else note "missing: Legacy iOS Kit for ./cascadia flash -- it is what gets the device"
+         note "         into pwned DFU, with a Pi Pico or with --kdfu and no extra hardware"
+         note "         git clone https://github.com/LukeZGD/Legacy-iOS-Kit.git ~/Legacy-iOS-Kit"; fi
 
     say "tree"
     for p in build/linux/Makefile build/initramfs-root/init dtb/p105ap.dtb; do
