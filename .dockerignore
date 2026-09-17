@@ -1,0 +1,10 @@
+# The build image installs packages and copies nothing, so it needs no context
+# at all.  Without this, `docker build .` tars the entire repository into the
+# daemon first -- on the author's machine that is a ~1 GB .git plus a ~1.5 GB
+# kernel clone under build/, which is slow at best and on Docker's legacy
+# builder fails outright with "Can't add file .../.git to tar: io: read/write
+# on closed pipe".
+#
+# If the Dockerfile ever gains a COPY, un-ignore exactly what it copies.
+*
+!Dockerfile

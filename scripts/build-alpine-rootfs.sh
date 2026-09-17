@@ -128,7 +128,9 @@ seed_node "$ALPINE_TREE/dev/tty1" 620 c 4 1 || true
 seed_node "$ALPINE_TREE/dev/null" 666 c 1 3 || true
 seed_node "$ALPINE_TREE/dev/zero" 666 c 1 5 || true
 if [ "$CONSOLE_OK" != 1 ]; then
-	echo "    note: mknod failed (need CAP_MKNOD); /init will create nodes after mount"
+	echo "    note: mknod needs CAP_MKNOD and this is not root -- harmless."
+	echo "          CONFIG_DEVTMPFS_MOUNT=y, so the kernel mounts devtmpfs on"
+	echo "          /dev before init runs and every node appears by itself."
 fi
 
 {
@@ -155,9 +157,6 @@ SIZE_CPIO=$(ls -lh "$OUT_CPIO" | awk '{print $5}')
 echo "    tree:  $OUTDIR ($SIZE_TREE)"
 echo "    cpio:  $OUT_CPIO ($SIZE_CPIO)"
 echo
-echo "Next:"
-echo "  bash scripts/build-kernel.sh"
-echo "  bash scripts/append-dtb.sh build/out/zImage dtb/p105ap.dtb build/out/zImage-dtb"
-echo "  bash scripts/build-staging-bundle.sh && bash scripts/deploy-linux-ace.sh"
+echo "Next:  ./cascadia build"
 echo
 echo "Minimal busybox instead: FORCE_MINIMAL=1 bash scripts/build-initramfs.sh"

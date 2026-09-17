@@ -30,8 +30,36 @@ filesize() {
         || fail "cannot stat $1"
 }
 
-in_docker() {
+# Having the docker BINARY says nothing about being able to use it: on a fresh
+# Arch install the daemon is not started and the user is not in the docker
+# group, and every call then fails with "dial unix /var/run/docker.sock: no
+# such file or directory" -- which doctor used to report as "ok: docker".
+docker_reachable() { have docker && docker info >/dev/null 2>&1; }
+
+require_docker() {
     have docker || fail "docker is not installed or not on PATH"
+    docker_reachable && return 0
+    {
+        echo "error: docker is installed but its daemon is not reachable."
+        echo "       (dial unix /var/run/docker.sock -- nothing listening there)"
+        echo
+        case "$(uname -s)" in
+            Linux)
+                echo "  Start it and allow your user to talk to it:"
+                echo "    sudo systemctl enable --now docker"
+                echo "    sudo usermod -aG docker \"$USER\" && newgrp docker"
+                echo
+                echo "  Rootless docker or podman also work; point IMAGE= and"
+                echo "  DOCKER= at them if you use those." ;;
+            Darwin)
+                echo "  Start Docker Desktop (or colima) and wait for it to settle." ;;
+        esac
+    } >&2
+    exit 1
+}
+
+in_docker() {
+    require_docker
     docker image inspect "$IMAGE" >/dev/null 2>&1 \
         || { say "building the $IMAGE image (first run only)"; docker build -t "$IMAGE" "$ROOT"; }
     docker run --rm -v "$ROOT":/cascadia -w /cascadia "$IMAGE" bash -c "$1"
@@ -41,9 +69,18 @@ cmd_doctor() {
     rc=0
     say "host"
     note "uname: $(uname -srm)"
-    for t in git docker python3 rsync; do
+    for t in git python3 rsync; do
         if have "$t"; then note "ok:      $t"; else note "MISSING: $t"; rc=1; fi
     done
+    # Reachability, not presence.  doctor exists to fail here rather than in the
+    # middle of a build, and reporting the binary was exactly the wrong check.
+    if ! have docker; then
+        note "MISSING: docker"; rc=1
+    elif docker_reachable; then
+        note "ok:      docker (daemon reachable)"
+    else
+        note "BROKEN:  docker is installed but its daemon is not reachable"; rc=1
+    fi
     case "$(uname -s)" in
         Darwin) note "ok:      macOS -- flash/net/nfs are implemented for this host" ;;
         Linux)  note "note:    Linux -- build works; flash/net/nfs are still macOS-only" ;;
@@ -74,8 +111,15 @@ cmd_build() {
     # rm first: dtc is not a make target here, so a stale .dtb would just be
     # reused and an edit to the .dts would silently never reach the device.
     rm -f "$ROOT/dtb/p105ap.dtb"; mkdir -p "$ROOT/dtb"
-    in_docker "dtc -I dts -O dtb -f dts/p105ap.dts -o dtb/p105ap.dtb" 2>&1 | grep -v '^$' | tail -5 || true
-    [ -s "$ROOT/dtb/p105ap.dtb" ] || fail "dtc produced no dtb"
+    # Capture rather than pipe: a pipeline hands back the last command's status,
+    # so a docker failure here used to surface as the far less useful "dtc
+    # produced no dtb" with the real error scrolled past.
+    if ! out=$(in_docker "dtc -I dts -O dtb -f dts/p105ap.dts -o dtb/p105ap.dtb" 2>&1); then
+        printf '%s\n' "$out" >&2
+        fail "dtc failed -- see above"
+    fi
+    printf '%s\n' "$out" | grep -v '^$' | tail -5 || true
+    [ -s "$ROOT/dtb/p105ap.dtb" ] || fail "dtc ran but produced no dtb"
     for s in g_cdc.host_addr g_cdc.dev_addr; do
         LC_ALL=C grep -aFq "$s" "$ROOT/dtb/p105ap.dtb" || fail "$s missing from the dtb bootargs"
     done
