@@ -68,6 +68,14 @@ if [ "$CLEAN" = 1 ]; then
     make -C "$TREE" mrproper >/dev/null
 fi
 
+# Before compiling anything: the fragment enables what this board needs in one
+# section and trims what multi_v7_defconfig drags in somewhere else, and the two
+# can contradict each other.  merge_config takes the last word, silently.
+echo "==> Checking the config fragment for self-contradictions"
+awk -f "$ROOT/scripts/check-config-fragment.awk" "$ROOT/config/p105ap.config" \
+    || { echo "config/p105ap.config contradicts itself; see above" >&2; exit 1; }
+echo "    ok: no symbol is both enabled and disabled"
+
 echo "==> Configuring (multi_v7_defconfig + config/p105ap.config)"
 make -C "$TREE" multi_v7_defconfig > "$LOGS/kernel-config.log" 2>&1
 "$TREE/scripts/kconfig/merge_config.sh" -m -O "$TREE" \
