@@ -36,11 +36,22 @@ IBEC_KEY="485ddb5f7e70cecfc25c036f812641b9e55bd97783de1488306e3a80abf6950b"
 
 BOOTARGS="${BOOTARGS:-cs_enforcement_disable=1 debug=0x14}"
 
-# The images that are known to boot this device, so a regenerated one can be
-# compared rather than trusted.  A mismatch is not automatically wrong -- a
-# different iBoot32Patcher build reorders padding -- but it is always worth
-# knowing before the device is asked to run it.
-KNOWN_IBEC_MD5="1937140671116d058713914d603585e6"
+# Reference hashes, so a regenerated image can be compared rather than trusted.
+#
+# The iBEC one is of the PLAINTEXT, before it is repacked into an img3, and that
+# is deliberate.  The .dfu that this device has actually been booting is a
+# binary preserved back in August by restore-known-good.sh, and the auto-go
+# script has changed since: its trampoline now differs from the one in that
+# file, starting two bytes in.  Everything downstream of that differs too,
+# because the img3 payload is AES-CBC and a single changed block poisons the
+# rest -- which is why comparing the .dfu says nothing useful about whether the
+# pipeline is correct.  The plaintext hash does: it is what the author's own
+# current scripts produce, verified byte-for-byte.
+#
+# The consequence to be honest about: this build reproduces what the CURRENT
+# scripts generate, which is not the image that has been flashed.  No one has
+# booted it.
+KNOWN_IBEC_PLAIN_MD5="b7e502c0262660b68adac4fe4e764b1b"
 KNOWN_IBSS_MD5="8b6dcc510c0ab303d67495978f4eb523"
 
 fail() { echo "error: $*" >&2; exit 1; }
@@ -80,21 +91,31 @@ python3 "$ROOT/scripts/img3encrypt.py" \
 
 echo
 rc=0
-for pair in "iBSS.patched:$KNOWN_IBSS_MD5" "iBEC.patched.autogo.dfu:$KNOWN_IBEC_MD5"; do
+for pair in "iBSS.patched:$KNOWN_IBSS_MD5" "iBEC.autogo:$KNOWN_IBEC_PLAIN_MD5"; do
     f=${pair%%:*}; want=${pair##*:}; got=$(md5of "$OUT/$f")
     if [ "$got" = "$want" ]; then
-        echo "    ok: $f matches the image known to boot this device"
+        echo "    ok: $f reproduces the reference byte for byte"
     else
-        echo "    NOTE: $f is $got, known-good is $want"
+        echo "    MISMATCH: $f is $got, expected $want"
         rc=1
     fi
 done
-[ "$rc" -eq 0 ] || cat <<'EOF'
+if [ "$rc" -ne 0 ]; then
+    cat <<'EOF'
 
-    A mismatch is not proof of breakage -- a different iBoot32Patcher build can
-    reorder padding without changing behaviour -- but nothing here has been run
-    on hardware yet.  Flash it knowing that, and keep a known-good copy.
+    Something in the chain changed.  The decrypted input, iBoot32Patcher's
+    output and the auto-go patch are each deterministic, so a mismatch here
+    points at one of them rather than at noise.
 EOF
+else
+    cat <<'EOF'
+
+    Note: the .dfu this produces is NOT byte-identical to the one the device
+    has been booting.  That file was preserved in August and the auto-go script
+    has changed since; the plaintext above is what the current scripts generate.
+    It has not been run on hardware.  Keep the old image until this one boots.
+EOF
+fi
 
 echo
 ls -l "$OUT/iBSS.patched" "$OUT/iBEC.patched.autogo.dfu"
