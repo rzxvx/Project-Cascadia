@@ -249,6 +249,33 @@ Two more gotchas worth recording:
   inherited "~200 ms" comment turned out to be 12 seconds and was, by itself,
   the entire slow USB bring-up.
 
+## Building
+
+Needs git, docker (with a running daemon), python3 and rsync.  Everything else
+happens inside the build image.  Verified on macOS/arm64 and Arch Linux/x86_64.
+
+```bash
+git clone https://github.com/rzxvx/Project-Cascadia.git
+cd Project-Cascadia
+./cascadia doctor     # says what this machine is missing
+./cascadia kernel     # clone Linux, pinned to v6.12
+./cascadia rootfs     # build the Alpine armhf rootfs for the initramfs
+./cascadia build      # dtb + kernel + output/staging-bundle.bin
+```
+
+The kernel pin matters. Every edit to an existing kernel file is one patch
+(`patches/tree/0001-cascadia.patch`) applied with `git apply`, so it either
+applies or says why. Whole new files are copied separately. This replaced
+anchor-matched insertion, which skipped a stale anchor silently — and the first
+thing it skipped was the `apple_aic1_rearm()` call, so a clean tree built green
+and took no interrupts at all. `./cascadia build` re-checks both the config
+symbols and the boot stamps in `vmlinux` for that reason.
+
+Flashing needs the device, a Lightning cable and a way into pwned DFU, and is
+still macOS-only; `./cascadia flash` says so rather than pretending. The
+host-side network and NFS helpers (`./cascadia net`, `./cascadia nfs`) are in
+the same state.
+
 ## Repo layout
 
 ```

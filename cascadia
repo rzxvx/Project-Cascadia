@@ -62,7 +62,15 @@ in_docker() {
     require_docker
     docker image inspect "$IMAGE" >/dev/null 2>&1 \
         || { say "building the $IMAGE image (first run only)"; docker build -t "$IMAGE" "$ROOT"; }
-    docker run --rm -v "$ROOT":/cascadia -w /cascadia "$IMAGE" bash -c "$1"
+    # Run as the calling user on Linux.  Docker Desktop on macOS maps ownership
+    # for you; a plain Linux daemon does not, so everything the build writes
+    # into the bind mount lands owned by root and the next `rm -rf build` or
+    # plain rebuild needs sudo.  Observed on the first clean-clone build: the
+    # bundle came out root:root while the loader, copied by the host shell
+    # afterwards, came out as the user.
+    duser=()
+    [ "$(uname -s)" = "Linux" ] && duser=(--user "$(id -u):$(id -g)")
+    docker run --rm "${duser[@]}" -v "$ROOT":/cascadia -w /cascadia "$IMAGE" bash -c "$1"
 }
 
 cmd_doctor() {
