@@ -41,20 +41,32 @@ on)
     [ -x "$SRC/sbin/p105-stage2" ] || fail "$SRC has no /sbin/p105-stage2 -- stage 1 would refuse it"
     [ -x "$SRC/sbin/mount.nfs" ] || echo "warning: no mount.nfs in the initramfs yet -- run: bash $IBSS/scripts/add-apk-packages.sh nfs-utils" >&2
 
-    echo "==> copying $SRC -> $DST"
-    sudo mkdir -p "$DST"
-    # Device nodes are excluded on purpose: stage 1 mount --moves devtmpfs onto
-    # the new root, so an empty /dev is all that is wanted, and macOS has no
-    # business trying to reproduce Linux major/minor numbers.  Same for the
-    # kernel's own filesystems.
-    sudo rsync -a --delete \
-        --exclude 'dev/*' --exclude 'proc/*' --exclude 'sys/*' --exclude 'newroot' \
-        "$SRC/" "$DST/"
-    # The source tree came out of a Docker bind mount and is owned by this user.
-    # The device runs as uid 0, and with -maproot=root its writes land as uid 0,
-    # so make the existing files agree rather than leaving a tree half-owned.
-    sudo chown -R root:wheel "$DST"
-    sudo mkdir -p "$DST/dev" "$DST/proc" "$DST/sys"
+    # Once the device has booted from $DST, that directory IS the live root
+    # filesystem: every `apk add` run over ssh lands there.  An rsync --delete
+    # from the initramfs tree would silently destroy all of it, and `on` is
+    # exactly the command someone re-runs to "refresh the export".  So seed it
+    # once, and refuse afterwards unless asked in so many words.
+    if [ -d "$DST" ] && [ -n "$(ls -A "$DST" 2>/dev/null)" ] && [ "${FORCE_SYNC:-0}" != "1" ]; then
+        echo "==> $DST already populated -- NOT overwriting it"
+        echo "    It is the device's live root now; anything installed there"
+        echo "    would be deleted.  To reseed it from the initramfs anyway:"
+        echo "      FORCE_SYNC=1 $0 on"
+    else
+        echo "==> copying $SRC -> $DST"
+        sudo mkdir -p "$DST"
+        # Device nodes are excluded on purpose: stage 1 mount --moves devtmpfs onto
+        # the new root, so an empty /dev is all that is wanted, and macOS has no
+        # business trying to reproduce Linux major/minor numbers.  Same for the
+        # kernel's own filesystems.
+        sudo rsync -a --delete \
+            --exclude 'dev/*' --exclude 'proc/*' --exclude 'sys/*' --exclude 'newroot' \
+            "$SRC/" "$DST/"
+        # The source tree came out of a Docker bind mount and is owned by this user.
+        # The device runs as uid 0, and with -maproot=root its writes land as uid 0,
+        # so make the existing files agree rather than leaving a tree half-owned.
+        sudo chown -R root:wheel "$DST"
+        sudo mkdir -p "$DST/dev" "$DST/proc" "$DST/sys"
+    fi
 
     echo "==> exporting to $LAN_NET/$LAN_MASK"
     # Rewrite only our own line, so anything else in /etc/exports survives.

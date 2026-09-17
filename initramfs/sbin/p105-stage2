@@ -15,7 +15,14 @@ msg() { echo "$*" > /dev/kmsg; }
 
 IP_DEV="${IP_DEV:-10.55.0.2}"
 
-msg "P105: stage2 on $(cat /proc/mounts 2>/dev/null | awk '$2=="/"{print $3; exit}') root"
+ROOTTYPE=$(awk '$2=="/"{print $3; exit}' /proc/mounts 2>/dev/null)
+msg "P105: stage2 on $ROOTTYPE root"
+
+# Lost when /init was split: the old one-file init set this and the new stage 1
+# did not inherit it, so the prompt went back to "(none)".  It lives here rather
+# than in stage 1 because it is a property of the system that booted, not of
+# choosing which one to boot.
+hostname -F /etc/hostname 2>/dev/null || hostname p105 2>/dev/null || true
 
 # ------------------------------------------------------- ACM console (tty) --
 # getty, not a bare shell: it takes the tty as its controlling terminal and

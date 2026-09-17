@@ -54,6 +54,10 @@ including the parts that didn't work.
 - [x] **Interactive shell over USB** — CDC ACM, `screen /dev/cu.usbmodem* 115200`
 - [x] **USB networking** — CDC ECM on the same port as the console (`g_cdc`),
       10.55.0.2, ~0.7 ms RTT to the host
+- [x] **SSH** — dropbear, key-only, over the ECM link
+- [x] **`apk` works on the device** — the whole Alpine repository, over the cable
+- [x] **NFS root** — the root filesystem lives on the host's disk, so installed
+      packages survive a reboot and the disk is no longer 512 MB of RAM
 - [x] `/bin/peek` — MMIO poke tool in the initramfs for live hardware probing
 - [ ] Touch input — blocked on the Cmwp touch clock
 - [ ] Wi-Fi (BCM4334 — HSIC, behind EHCI, not SDIO as initially assumed)
@@ -200,6 +204,23 @@ Boot chain: `primepwn` → patched `iBSS` → `iBEC.patched.autogo.lk.dfu` →
 `staging-bundle.bin` → `staging-loader.bin` → `zImage-dtb` at `0x80008000`.
 Built on teutekeune/iBSSloader.
 
+### apk runs on the device, not on the build host
+
+Worth stating because it caused a wrong turn here: an Alpine armhf `apk` cannot
+run on an Apple Silicon build host — there is no AArch32 EL0 on M-series, so no
+32-bit ARM code executes there at all, natively or under Docker. That is a fact
+about the host and only about the host. On the device `apk` is a native binary,
+and the Alpine minirootfs already ships it along with the signing keys and a CA
+bundle. Once there was a network, `apk add` simply worked.
+
+What genuinely cannot come from apk is anything needed *before* apk can run:
+dropbear (no network shell without it, no convenient apk without a shell) and
+`mount.nfs` (the root filesystem cannot be mounted by a binary that lives on the
+root filesystem). Those two are unpacked into the initramfs by
+`scripts/apk-unpack.py`, which resolves shared-library dependencies out of
+APKINDEX and the ELF headers without executing anything. Everything else is
+`apk add` over ssh.
+
 ### The tick and the USB gadget are coupled
 
 This is the sharpest edge in the port, and it is not obvious from any one file.
@@ -252,10 +273,10 @@ Build products (`output/`) and stock firmware are not tracked; everything in
 ## Roadmap
 
 - **Phase 1 ✓** — Linux boots to an interactive shell. Serial logs. Framebuffer console.
-- **Phase 2 ✓** — USB gadget, CDC ACM shell, CDC ECM networking, working tick,
-  correct wall clock.
-- **Phase 3** — SSH over the ECM link → touch (unblock the Cmwp clock) →
-  Wi-Fi via HSIC/EHCI.
+- **Phase 2 ✓** — USB gadget, CDC ACM shell, CDC ECM networking, SSH, working
+  tick, correct wall clock, `apk`, and an NFS root on the host's disk.
+- **Phase 3** — Touch (unblock the Cmwp clock) → a tick that does not depend on
+  USB device mode → Wi-Fi via HSIC/EHCI.
 - **Phase 4** — A6 port (iPhone 5 / iPad mini 2), on this foundation.
 - **Phase 5** — A12/A13, longer term.
 

@@ -827,3 +827,48 @@ EL0 вообще**: 32-битный ARM-код не исполняется ни 
 ```bash
 ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@10.55.0.2
 ```
+
+# ═══════════════════════════════════════════════════════════════
+# apk И NFS-ROOT (2026-09-17)
+# ═══════════════════════════════════════════════════════════════
+
+```
+10.55.0.1:/Users/k/cascadia-root on / type nfs (rw,vers=3,nolock,proto=tcp)
+df -h /   ->   926.3G, использовано 58%
+apk update -> OK: 25140 distinct packages available
+```
+
+## Ключевое заблуждение, которое стоило круга
+«apk против этого дерева не запустить никогда» — верно ТОЛЬКО про мак.
+На M-серии нет AArch32 EL0, 32-битный ARM там не исполняется вообще. Но
+устройство — это armv7-машина, и `/sbin/apk` в Alpine minirootfs лежит с
+самого начала, вместе с ключами подписи и CA-бандлом. Как только появилась
+сеть, `apk add` заработал сам.
+
+Через `apk-unpack.py` имеет смысл ставить только то, что нужно ДО apk:
+dropbear (без него нет шелла по сети) и `mount.nfs` (корень не смонтировать
+бинарём, который лежит на корне). Остальное — `apk add` по ssh.
+
+## Порядок поднятия
+```bash
+# один раз
+cd ~/iBSSloader && bash scripts/add-dropbear.sh
+bash scripts/add-apk-packages.sh nfs-utils
+cd ~/Desktop/ipad-mini-linux && ./tools/mac-nfs-export.sh on
+./tools/rebuild-rearm.sh && ./tools/flash-rearm.sh
+
+# каждый раз после прошивки
+sudo ifconfig enN 10.55.0.1 netmask 255.255.255.0 up
+./tools/mac-share-internet.sh on
+ssh root@10.55.0.2
+```
+
+## Грабли, собранные по дороге
+| что | почему |
+|---|---|
+| `flash` без `rebuild` | заливает старый бандл; uptime свежий, содержимое старое. Проверка свежести теперь обходит ВСЁ дерево initramfs, а не только `/init` |
+| `# CONFIG_NFS_FS is not set` в секции trim | merge_config берёт последнее слово, и трим двадцатью строками ниже отменял включение. Ловится `scripts/check-config-fragment.awk` |
+| маркер `# cascadia` в `/etc/exports` | у macOS комментарий — только целая строка; хвостовой текст парсится как имена хостов |
+| `PTY allocation request failed` | не смонтирован devpts. `/dev/ptmx` даёт devtmpfs, слейв-сторона живёт в devpts |
+| ключ хоста меняется каждый буст | `dropbear -R` пишет его на корень. На RAM — новый каждый раз, на NFS — постоянный. Заодно это индикатор, какой корень загрузился |
+| повторный `mac-nfs-export.sh on` | `~/cascadia-root` теперь ЖИВОЙ корень; `rsync --delete` снёс бы всё установленное. Скрипт отказывается перезаписывать непустой каталог без `FORCE_SYNC=1` |
