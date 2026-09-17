@@ -24,7 +24,13 @@ DST="${DST:-$HOME/cascadia-root}"          # deliberately not under Desktop/Docu
 LAN_NET="${LAN_NET:-10.55.0.0}"
 LAN_MASK="${LAN_MASK:-255.255.255.0}"
 IP_HOST="${IP_HOST:-10.55.0.1}"
-MARK="# cascadia"
+
+# Our line in /etc/exports is identified by the exported path and nothing else.
+# There is no marker comment because macOS cannot carry one: exports(5) says
+# "Lines that BEGIN with a # are considered comments", so a trailing "# cascadia"
+# is not a comment at all -- every field after the options is a host name, and
+# nfsd duly tried to resolve "#" and "cascadia" and rejected the whole export.
+ours() { awk -v p="$DST " 'index($0, p) != 1' "$1" 2>/dev/null || true; }
 
 [ "$(uname -s)" = "Darwin" ] || { echo "this one runs on the Mac, not the device" >&2; exit 1; }
 fail() { echo "error: $*" >&2; exit 1; }
@@ -55,15 +61,19 @@ on)
     sudo touch /etc/exports
     sudo cp /etc/exports "/etc/exports.cascadia-backup.$(date +%s)"
     TMP=$(mktemp)
-    grep -v "$MARK" /etc/exports > "$TMP" || true
-    echo "$DST -maproot=root:wheel -network $LAN_NET -mask $LAN_MASK $MARK" >> "$TMP"
+    ours /etc/exports > "$TMP"
+    echo "$DST -maproot=root:wheel -network $LAN_NET -mask $LAN_MASK" >> "$TMP"
     sudo cp "$TMP" /etc/exports; rm -f "$TMP"
 
     sudo nfsd enable  >/dev/null 2>&1 || true
     sudo nfsd start   >/dev/null 2>&1 || true
     sudo nfsd update  >/dev/null 2>&1 || true
     sleep 1
-    sudo nfsd checkexports || fail "nfsd rejected the export -- see the message above"
+    if ! sudo nfsd checkexports; then
+        echo "--- /etc/exports as written ---" >&2
+        cat -A /etc/exports >&2
+        fail "nfsd rejected the export; the file as it stands is above"
+    fi
     showmount -e localhost || true
 
     # Stage 1 reads this at boot; absent, it stays in RAM.  It goes in the
@@ -76,7 +86,7 @@ on)
     ;;
 off)
     TMP=$(mktemp)
-    grep -v "$MARK" /etc/exports > "$TMP" 2>/dev/null || true
+    ours /etc/exports > "$TMP"
     sudo cp "$TMP" /etc/exports; rm -f "$TMP"
     sudo nfsd update >/dev/null 2>&1 || true
     rm -f "$SRC/etc/nfsroot"
@@ -85,7 +95,8 @@ off)
     echo "    Rebuild and flash to go back to the RAM rootfs."
     ;;
 status)
-    echo "--- /etc/exports (ours) ---"; grep "$MARK" /etc/exports 2>/dev/null || echo "(none)"
+    echo "--- /etc/exports (ours) ---"
+    awk -v p="$DST " 'index($0, p) == 1' /etc/exports 2>/dev/null | grep . || echo "(none)"
     echo "--- nfsd ---"; sudo nfsd status 2>&1 | head -3 || true
     echo "--- exported now ---"; showmount -e localhost 2>&1 | head -5 || true
     echo "--- initramfs /etc/nfsroot ---"; cat "$SRC/etc/nfsroot" 2>/dev/null || echo "(none: device will boot from RAM)"
