@@ -179,6 +179,14 @@ answers sensibly. It's specifically the timers that are dead.
 SecureROM; ~20 lab iterations against PMGR `function-enable_core` and AIC
 `IPI_SEND` produced nothing. Details in `docs/research/p105-smp-bringup.md`.
 
+**The touch clock cannot be inherited from iOS.** Reaching DFU through
+`kloader`, from a jailbroken iOS where the digitizer is running, does not carry
+that state across: SPI1 (`0x32100000`) and the touch clock (`0x33500300`) read
+back `0xd00c3ccc` in every word, which is what the bus returns for an address
+nobody answers -- an address that is nothing at all returns the same, while
+PMGR, GPIO and UART0 read normally in the same boot. iBSS and iBEC reset the
+clocks whatever iOS had powered.
+
 **No free USB host port.** The ADT puts the Wi-Fi part (`wlan`) as a child node
 of `usb-ehci` — BCM4334 is HSIC-attached, not SDIO. So a USB keyboard would have
 to come from dwc2 in host mode, which is mutually exclusive with the ACM console

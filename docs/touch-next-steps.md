@@ -54,6 +54,18 @@ The user has ghidra_kc / ghidra_project set up; the decrypted macho is
 ibootfiles/kernelcache.macho with a full symbol table (AppleSamsungSPIController
 symbol present at ~0x489f49 string; find its vtable/start via Classes tree).
 
+## Ruled out since, so nobody spends a boot cycle on it twice
+
+**2026-09-18 -- kDFU does not inherit the touch power state.** Booting Linux
+through `kloader` from a live, jailbroken iOS, where the digitizer is running,
+leaves the blocks exactly as dead as a cold DFU boot does. `peek r 32100000 8`
+and `peek r 33500300 1` return `0xd00c3ccc` in every word -- which is simply
+what this bus hands back for an address nobody answers: `peek r 38000000 2`,
+which is nothing at all, returns the same, while PMGR, GPIO and UART0 read
+sensibly in that same boot. IRQ 50 (`32100000.spi`) and IRQ 52 (`apple-z2`)
+both stayed at 0. So iBSS and iBEC re-initialise the clocks regardless of what
+iOS had powered, and `Cmwp` still has to be understood rather than inherited.
+
 ## Complementary: Pi-Pico logic-analyzer snoop
 Probing the Z2 connector's SPI lines during a real iOS boot simultaneously:
 (a) identifies which pads are SCLK/MOSI/MISO (solves bit-bang pins physically),
