@@ -38,11 +38,22 @@ shopt -s nullglob
 patches=("$ROOT"/patches/tree/*.patch)
 [ ${#patches[@]} -gt 0 ] || fail "no patches in $ROOT/patches/tree/"
 
+# git inside the build container may see this repository as owned by someone
+# else (Docker Desktop maps ownership, a Linux daemon runs us as the caller),
+# and refuses to read a repository it thinks is not ours.
+rgit() { git -c safe.directory='*' -C "$ROOT" "$@"; }
+
+tmp=$(mktemp)
+trap 'rm -f "$tmp"' EXIT
+
 for p in "${patches[@]}"; do
     name=$(basename "$p")
+    # The version this script last applied, kept in the tree it applied it to.
+    record="$TREE/.cascadia-applied-$name"
     if [ "$REVERT" = 1 ]; then
         if git -C "$TREE" apply --reverse --check "$p" 2>/dev/null; then
             git -C "$TREE" apply --reverse "$p"; echo "  reverted $name"
+            rm -f "$record"
         else
             echo "  $name was not applied"
         fi
@@ -53,8 +64,36 @@ for p in "${patches[@]}"; do
     # the build idempotent instead of failing on the second run.
     if git -C "$TREE" apply --reverse --check "$p" 2>/dev/null; then
         echo "  already applied: $name"
+        cp "$p" "$record"
         continue
     fi
+
+    # Not applied as it stands.  If an OLDER version of it is, take that out
+    # first.  This patch changes as the port does, and without this a tree
+    # patched by last week's version refuses this week's -- the only way out
+    # being a 2.5 GB re-fetch of the kernel.  The record says which version
+    # went in; a tree patched before records existed is matched against this
+    # repository's own history of the file instead.
+    if ! git -C "$TREE" apply --check "$p" 2>/dev/null; then
+        old=""
+        if [ -f "$record" ] && git -C "$TREE" apply --reverse --check "$record" 2>/dev/null; then
+            old="$record"
+        elif rgit rev-parse --git-dir >/dev/null 2>&1; then
+            for rev in $(rgit log --format=%H -- "patches/tree/$name" 2>/dev/null); do
+                rgit show "$rev:patches/tree/$name" > "$tmp" 2>/dev/null || continue
+                if git -C "$TREE" apply --reverse --check "$tmp" 2>/dev/null; then
+                    old="$tmp"
+                    echo "  the tree carries $name as of ${rev:0:7}"
+                    break
+                fi
+            done
+        fi
+        if [ -n "$old" ]; then
+            git -C "$TREE" apply --reverse "$old"
+            echo "  reverted the older $name"
+        fi
+    fi
+
     if ! git -C "$TREE" apply --check "$p" 2>/dev/null; then
         echo "error: $name does not apply to $TREE" >&2
         echo >&2
@@ -66,5 +105,6 @@ for p in "${patches[@]}"; do
         exit 1
     fi
     git -C "$TREE" apply "$p"
+    cp "$p" "$record"
     echo "  applied $name"
 done
