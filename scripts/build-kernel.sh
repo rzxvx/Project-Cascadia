@@ -89,9 +89,18 @@ INITRAMFS_DIR="${INITRAMFS_DIR:-$ROOT/build/initramfs-root}"
 if [ -d "$INITRAMFS_DIR" ]; then
     echo "==> Embedding initramfs from $INITRAMFS_DIR"
     frag="$(mktemp)"
+    # ROOT_UID/GID -1: whoever runs this build becomes root in the image.
+    # gen_initramfs records each file's real owner, and on a Linux host the
+    # container runs as the caller, so without the mapping every file in the
+    # image belonged to uid 1000 -- and dropbear, correctly, refuses a root
+    # authorized_keys that root does not own, so ssh fell back to a password
+    # that does not exist.  On macOS Docker Desktop presents the bind mount as
+    # root's anyway, which is why the Mac never showed it.
     {
         echo "CONFIG_INITRAMFS_SOURCE=\"$INITRAMFS_DIR\""
         echo "CONFIG_INITRAMFS_COMPRESSION_GZIP=y"
+        echo "CONFIG_INITRAMFS_ROOT_UID=-1"
+        echo "CONFIG_INITRAMFS_ROOT_GID=-1"
     } > "$frag"
     "$TREE/scripts/kconfig/merge_config.sh" -m -O "$TREE" \
         "$TREE/.config" "$frag" >> "$LOGS/kernel-config.log" 2>&1

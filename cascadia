@@ -274,6 +274,21 @@ cmd_build() {
             || fail "the archive has no '$s' -- build/initramfs-root is not what ./cascadia rootfs builds"
     done
     note "ok: stage 1, stage 2, the ACM console and the pinned address are in the archive"
+    # Ownership, read out of the archive's own headers.  Every entry must be
+    # root's: the first build on a Linux host came out owned by uid 1000
+    # throughout, booted fine, and then dropbear refused root's key because
+    # /root/.ssh was not root's -- which surfaces as a password prompt for a
+    # password that does not exist.  A group other than 0 is only noted.
+    owners=$(python3 "$ROOT/scripts/cpio-owners.py" "$CPIO") \
+        || fail "could not read owners out of $CPIO"
+    bad_uid=$(printf '%s\n' "$owners" | sed -n 1p)
+    bad_gid=$(printf '%s\n' "$owners" | sed -n 2p)
+    [ "$bad_uid" = "-" ] || fail "files in the archive are not owned by root ($bad_uid).
+The kernel config maps the builder's uid to 0 (CONFIG_INITRAMFS_ROOT_UID=-1),
+so this is a file in build/initramfs-root owned by some third uid."
+    note "ok: every entry is owned by root"
+    [ "$bad_gid" = "-" ] || note "note: some entries keep a non-root group ($bad_gid) -- harmless; rootfs and build ran under different groups"
+
     # Not fatal: a tree without these still boots and still gives both consoles.
     for s in bin/peek usr/sbin/dropbear sbin/mount.nfs; do
         if LC_ALL=C grep -aFq "$s" "$CPIO"; then note "ok:      $s"
