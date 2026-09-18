@@ -37,10 +37,10 @@ grep -qi '^ID=alpine' "$TREE/etc/os-release" 2>/dev/null \
     || fail "rootfs arch is not $ALPINE_ARCH -- set ALPINE_ARCH to match"
 
 # In the build image, not on the host: this needs a network, python3 and
-# readelf, and readelf in particular is not something a Mac has.  Build the
-# image if this is the first thing to want it, exactly as ./cascadia does.
-docker image inspect "$IMAGE" >/dev/null 2>&1 \
-    || { echo "==> building the $IMAGE image (first run only)"; docker build -t "$IMAGE" "$ROOT"; }
+# readelf, and readelf in particular is not something a Mac has.  ./cascadia
+# image builds it if it is missing and rebuilds it if the Dockerfile changed,
+# so this script and ./cascadia can never disagree about what is in it.
+IMAGE="$IMAGE" bash "$ROOT/cascadia" image >/dev/null
 # Run as the caller on Linux, as ./cascadia does: a plain Linux daemon maps no
 # ownership, so everything the unpack writes into the bind mount would land
 # owned by root and the next rootfs rebuild would need sudo to clean it up.

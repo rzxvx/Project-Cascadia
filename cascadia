@@ -11,6 +11,7 @@
 #   ./cascadia link        give this host 10.55.0.1 on the device's link (flash does it)
 #   ./cascadia net on|off  share the Mac's internet with it    (macOS for now)
 #   ./cascadia nfs on|off  export a root filesystem to it      (macOS for now)
+#   ./cascadia image       rebuild the build image if the Dockerfile changed
 #
 # Everything is relative to this file, so the repository works wherever it is
 # cloned.  There is no ~/iBSSloader and no ~/Desktop anything.
@@ -60,10 +61,33 @@ require_docker() {
     exit 1
 }
 
-in_docker() {
+# The image is rebuilt whenever the Dockerfile changes, not only when it is
+# missing.  The first clean install on Arch found the gap: its image predated
+# the iBoot32Patcher step, so ./cascadia firmware failed on a tool the
+# Dockerfile plainly installs, and the only way out was knowing to `docker rmi`
+# it.  The image carries a label with a hash of the Dockerfile it came from.
+# Unchanged layers come from docker's cache, so a rebuild for an old image
+# that merely lacks the label takes seconds.
+dockerfile_hash() {
+    python3 -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest()[:16])' \
+        "$ROOT/Dockerfile"
+}
+
+ensure_image() {
     require_docker
-    docker image inspect "$IMAGE" >/dev/null 2>&1 \
-        || { say "building the $IMAGE image (first run only)"; docker build -t "$IMAGE" "$ROOT"; }
+    want=$(dockerfile_hash)
+    have=$(docker image inspect -f '{{ index .Config.Labels "cascadia.dockerfile" }}' "$IMAGE" 2>/dev/null || true)
+    if [ "$have" = "$want" ]; then return 0; fi
+    if docker image inspect "$IMAGE" >/dev/null 2>&1; then
+        say "$IMAGE does not match the current Dockerfile -- rebuilding it"
+    else
+        say "building the $IMAGE image (first run only)"
+    fi
+    docker build --label "cascadia.dockerfile=$want" -t "$IMAGE" "$ROOT"
+}
+
+in_docker() {
+    ensure_image
     # Run as the calling user on Linux.  Docker Desktop on macOS maps ownership
     # for you; a plain Linux daemon does not, so everything the build writes
     # into the bind mount lands owned by root and the next `rm -rf build` or
@@ -82,16 +106,40 @@ in_docker() {
 
 DOCKER_EXTRA=()
 
+# The one stock file the boot chain is derived from.  Apple still serves it;
+# the URL is Apple's own, nothing here redistributes the firmware.
+IPSW_NAME="iPad2,5_8.4.1_12H321_Restore.ipsw"
+IPSW_URL="https://secure-appldnld.apple.com/ios8.4.1/031-31249-20150812-75235CC6-3C8F-11E5-848D-BE1A3A53DB92/$IPSW_NAME"
+
+# IPSW= wins, and a wrong IPSW= is an error rather than a quiet fallback.
+# Otherwise the repository root is searched under both names: the one Apple
+# serves, so `curl -LO` followed by ./cascadia firmware just works, and the
+# short one this tree has always used.
+find_ipsw() {
+    if [ -n "${IPSW:-}" ]; then
+        if [ -f "$IPSW" ]; then echo "$IPSW"; return 0; fi
+        return 1
+    fi
+    for c in "$ROOT/$IPSW_NAME" "$ROOT/ipad25.ipsw"; do
+        if [ -f "$c" ]; then echo "$c"; return 0; fi
+    done
+    return 1
+}
+
 cmd_firmware() {
     # No Legacy iOS Kit needed here: the image builds iBoot32Patcher from source
     # and the img3 decrypt/encrypt steps are pure Python, so the whole boot
     # chain is derived from the user's own IPSW and nothing else.  LIK is still
     # wanted for flashing, where --pwn and --kdfu get the device into pwned DFU.
-    IPSW_PATH="${IPSW:-$ROOT/ipad25.ipsw}"
-    [ -f "$IPSW_PATH" ] || fail "no IPSW at $IPSW_PATH
+    IPSW_PATH=$(find_ipsw) || fail "no IPSW${IPSW:+ at $IPSW}
 This port is pinned to iPad2,5 on iOS 8.4.1 (12H321): the auto-go hook patches
-an address inside that exact iBEC and the keys are that build's.  Fetch
-iPad2,5_8.4.1_12H321_Restore.ipsw and pass IPSW=/path/to/it."
+an address inside that exact iBEC, and the keys are that build's.  Apple still
+serves it -- from the repository root:
+
+    curl -LO '$IPSW_URL'
+
+./cascadia firmware finds it there under that name.  Anywhere else, pass
+IPSW=/path/to/it."
 
     say "IPSW: $IPSW_PATH"
     DOCKER_EXTRA=(-v "$IPSW_PATH":/ipsw.ipsw:ro)
@@ -121,8 +169,9 @@ cmd_doctor() {
         *)      note "note:    $(uname -s) -- untested; build may work, the rest will not" ;;
     esac
     say "boot chain (not needed to build a kernel)"
-    if [ -f "${IPSW:-$ROOT/ipad25.ipsw}" ]; then note "ok:      IPSW (./cascadia firmware)"
-    else note "missing: iPad2,5_8.4.1_12H321_Restore.ipsw for ./cascadia firmware (set IPSW=)"; fi
+    if p=$(find_ipsw); then note "ok:      IPSW ${p#$ROOT/} (./cascadia firmware)"
+    else note "missing: $IPSW_NAME for ./cascadia firmware"
+         note "         curl -LO '$IPSW_URL'"; fi
     LIKD="${LIK:-$HOME/Legacy-iOS-Kit}"
     if [ -d "$LIKD" ]; then note "ok:      Legacy iOS Kit at $LIKD (./cascadia flash)"
     else note "missing: Legacy iOS Kit for ./cascadia flash -- it is what gets the device"
@@ -258,7 +307,8 @@ case "${1:-}" in
     firmware) cmd_firmware ;;
     flash)  shift; bash "$ROOT/tools/flash.sh" "$@" ;;
     link)   bash "$ROOT/tools/host-link.sh" ;;
+    image)  ensure_image; say "$IMAGE is current" ;;
     net)    host_only_macos net;   shift; bash "$ROOT/tools/mac-share-internet.sh" "$@" ;;
     nfs)    host_only_macos nfs;   shift; bash "$ROOT/tools/mac-nfs-export.sh" "$@" ;;
-    *)      sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+    *)      sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
 esac

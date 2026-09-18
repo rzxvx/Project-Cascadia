@@ -57,7 +57,9 @@ fi
 
 echo "==> cloning $KERNEL_URL at $KERNEL_TAG into build/linux"
 echo "    (shallow: one commit, no history -- still a few hundred MB)"
+echo "    git may warn that refs/tags/$KERNEL_TAG \"is not a commit\": the tag is"
+echo "    annotated, git checks out the commit it points to, and that is correct."
 mkdir -p "$ROOT/build"
-git clone --depth 1 --branch "$KERNEL_TAG" "$KERNEL_URL" "$TREE"
+git -c advice.detachedHead=false clone --depth 1 --branch "$KERNEL_TAG" "$KERNEL_URL" "$TREE"
 v=$(check_tree "$TREE") || fail "clone produced something that is not a kernel tree"
 echo "==> done: Linux $v at $TREE"

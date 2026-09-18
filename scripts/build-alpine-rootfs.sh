@@ -125,16 +125,6 @@ if [ -f "$ALPINE_TREE/etc/shadow" ]; then
 	rm -f "$ALPINE_TREE/etc/shadow.new"
 fi
 
-# Bring-up busybox with cttyhack (Alpine's busybox often lacks that applet).
-BB_HOST="$ROOT/build/out/busybox-armhf"
-if [ -x "$BB_HOST" ]; then
-	cp "$BB_HOST" "$ALPINE_TREE/bin/busybox-p105"
-	chmod 755 "$ALPINE_TREE/bin/busybox-p105"
-	echo "==> installed /bin/busybox-p105 (cttyhack fallback) from $BB_HOST"
-else
-	echo "==> note: no $BB_HOST — getty -n -l will be the console path"
-fi
-
 # Static /dev nodes so the kernel can open an initial console before /init.
 # (Avoids "Warning: unable to open an initial console.") Needs mknod capability.
 echo "==> seeding /dev console nodes"

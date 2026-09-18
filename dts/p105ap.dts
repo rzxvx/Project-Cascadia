@@ -265,6 +265,7 @@
 			reg = <0xf200000 0x10000>;
 			interrupt-controller;
 			#interrupt-cells = <1>;
+			#address-cells = <0>;	/* dtc wants it on every interrupt provider */
 			apple,main-cpus = <2>;
 		};
 
@@ -286,6 +287,7 @@
             #gpio-cells = <2>;
             interrupt-controller;
             #interrupt-cells = <2>;
+            #address-cells = <0>;
             pin-count = <224>;
             interrupt-groups = <1>;
             status = "okay";
