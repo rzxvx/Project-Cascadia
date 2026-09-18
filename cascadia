@@ -267,6 +267,35 @@ cmd_build() {
         else
             note "note: no ssh-keygen here, so the device makes its host key at boot -- a new one every boot"
         fi
+        # The image always lets in the machine that builds it.  add-dropbear.sh
+        # bakes a key once, at rootfs time, so a key made after that -- another
+        # ssh-keygen, another laptop -- left an image that met every login with
+        # a password prompt for a password that does not exist.  This machine's
+        # key is added if the image does not carry it yet; nothing is removed.
+        AK="$ROOT/build/initramfs-root/root/.ssh/authorized_keys"
+        PUB="${PUBKEY:-}"
+        if [ -z "$PUB" ]; then
+            for c in ~/.ssh/id_ed25519.pub ~/.ssh/id_rsa.pub ~/.ssh/id_ecdsa.pub; do
+                if [ -f "$c" ]; then PUB="$c"; break; fi
+            done
+        fi
+        blob=
+        [ -n "$PUB" ] && [ -f "$PUB" ] && blob=$(awk 'NR == 1 { print $2 }' "$PUB")
+        case "$(head -c 12 "$PUB" 2>/dev/null)" in
+            ssh-*|ecdsa-*|sk-*) : ;;
+            *) blob= ;;
+        esac
+        if [ -z "$blob" ]; then
+            note "note: no ssh public key on this machine -- the image keeps whatever keys it had"
+        elif [ -f "$AK" ] && grep -qF "$blob" "$AK"; then
+            note "ok: ssh lets in $PUB"
+        else
+            mkdir -p "$(dirname "$AK")"
+            chmod 700 "$(dirname "$AK")"
+            { [ -s "$AK" ] && echo; cat "$PUB"; } >> "$AK"
+            chmod 600 "$AK"
+            note "ok: ssh lets in $PUB -- added to the image"
+        fi
     fi
 
     say "3/6 kernel"

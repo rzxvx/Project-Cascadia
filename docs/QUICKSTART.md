@@ -151,7 +151,7 @@ only so far; on Linux they say so.
 
 | What you see | What it is |
 |---|---|
-| `ssh` asks for a password | The key is not root's in the image, or you are ssh'ing from a different machine than the one that ran `./cascadia rootfs`. Root has no password — use the ACM console, and check `ls -ln /root/.ssh`. |
+| `ssh` asks for a password | The image does not carry the key ssh is offering — `ssh -v` shows the one offered, and `dmesg` on the ACM console shows dropbear's side. `./cascadia build` adds the building machine's key every time; from any other machine, `PUBKEY=that.pub ./cascadia build`, or append the key to `/root/.ssh/authorized_keys` on the ACM console for this boot. Root has no password, so the prompt can never succeed. |
 | `ssh` hangs, no error | This host has no address on the link. `./cascadia link`. |
 | `ssh` hangs, but `ping 10.55.0.2` answers and the glass says `nfs: server ... not responding, still trying` | The NFS root lost its server, and a hard-mounted root blocks everything that touches it until the server returns — the kernel is fine, the cursor still blinks. Only a reboot gets out of it today. `./cascadia nfs off` and a rebuild boot from RAM instead. |
 | `REMOTE HOST IDENTIFICATION HAS CHANGED` | The device's host key changed. Images built before 2026-09-19 made a new one on every boot from RAM; `./cascadia build` now makes it once and prints its fingerprint. Once: `ssh-keygen -R 10.55.0.2`, then compare the fingerprint ssh shows with the build's. |
