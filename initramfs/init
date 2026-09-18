@@ -145,6 +145,14 @@ if [ -f /etc/nfsroot ] && [ -x /sbin/mount.nfs ]; then
         if [ -x /newroot/sbin/p105-stage2 ]; then
             cp /etc/resolv.conf /newroot/etc/resolv.conf 2>/dev/null || true
             cp /etc/build-date  /newroot/etc/build-date  2>/dev/null || true
+            # Stage 2 is part of the boot, not of the root filesystem, so the
+            # one from this build replaces whatever the NFS root holds.  The
+            # root is seeded once and never overwritten, which froze its stage 2
+            # at the seed: the hostname fix landed 34 minutes after the author's
+            # root was seeded, and that root came up as "(none)" for good.  The
+            # existence check above still decides whether this is a Cascadia
+            # root at all; a read-only export simply keeps its own copy.
+            cp /sbin/p105-stage2 /newroot/sbin/p105-stage2 2>/dev/null || true
             mkdir -p /newroot/proc /newroot/sys /newroot/dev
             # Move rather than remount: /dev in particular is devtmpfs with the
             # devpts and shm instances already mounted underneath it, and
