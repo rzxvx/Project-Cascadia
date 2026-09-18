@@ -236,6 +236,11 @@ cmd_build() {
     note "ok: fresh dtb, gadget MACs pinned"
 
     say "2/6 initramfs extras"
+    # initramfs/ is the source of truth for the boot scripts, but only
+    # ./cascadia rootfs used to copy it in -- an edit to initramfs/init followed
+    # by ./cascadia build shipped the old init.  Overlay it on every build.
+    cp -a "$ROOT/initramfs/." "$ROOT/build/initramfs-root/"
+    note "ok: boot scripts from initramfs/"
     # No RTC on this board: without a stamp it boots at the epoch and every TLS
     # handshake fails on notBefore.  Written before the kernel build so it lands
     # inside the embedded initramfs.
@@ -247,6 +252,22 @@ cmd_build() {
     in_docker "arm-linux-gnueabihf-gcc -static -Os -o build/initramfs-root/bin/peek tools/p105-peek.c"
     [ -s "$ROOT/build/initramfs-root/bin/peek" ] || fail "peek did not build"
     note "ok: /bin/peek ($(filesize "$ROOT/build/initramfs-root/bin/peek") bytes, static ARM)"
+    # dropbear's host key, made once and kept in build/keep so it outlives a
+    # rootfs rebuild.  Without it dropbear -R made a new one at every boot of the
+    # RAM root, and every boot met ssh with REMOTE HOST IDENTIFICATION HAS
+    # CHANGED.  The fingerprint printed here is the one ssh shows the first time.
+    if [ -x "$ROOT/build/initramfs-root/usr/sbin/dropbear" ]; then
+        if command -v ssh-keygen >/dev/null 2>&1; then
+            HOSTKEY=etc/dropbear/dropbear_ed25519_host_key
+            hk=$(python3 "$ROOT/scripts/dropbear-hostkey.py" "$ROOT/build/keep/$HOSTKEY") \
+                || fail "could not make the ssh host key"
+            mkdir -p "$ROOT/build/initramfs-root/etc/dropbear"
+            cp -p "$ROOT/build/keep/$HOSTKEY" "$ROOT/build/initramfs-root/$HOSTKEY"
+            note "ok: ssh host key, ${hk%% *} ed25519 ${hk#* }"
+        else
+            note "note: no ssh-keygen here, so the device makes its host key at boot -- a new one every boot"
+        fi
+    fi
 
     say "3/6 kernel"
     # set -o pipefail INSIDE the container shell: without it a failed build
@@ -290,7 +311,7 @@ so this is a file in build/initramfs-root owned by some third uid."
     [ "$bad_gid" = "-" ] || note "note: some entries keep a non-root group ($bad_gid) -- harmless; rootfs and build ran under different groups"
 
     # Not fatal: a tree without these still boots and still gives both consoles.
-    for s in bin/peek usr/sbin/dropbear sbin/mount.nfs; do
+    for s in bin/peek usr/sbin/dropbear etc/dropbear/dropbear_ed25519_host_key sbin/mount.nfs; do
         if LC_ALL=C grep -aFq "$s" "$CPIO"; then note "ok:      $s"
         else note "missing: $s  -- ./cascadia rootfs installs it when docker is up"; fi
     done

@@ -153,6 +153,8 @@ only so far; on Linux they say so.
 |---|---|
 | `ssh` asks for a password | The key is not root's in the image, or you are ssh'ing from a different machine than the one that ran `./cascadia rootfs`. Root has no password — use the ACM console, and check `ls -ln /root/.ssh`. |
 | `ssh` hangs, no error | This host has no address on the link. `./cascadia link`. |
+| `ssh` hangs, but `ping 10.55.0.2` answers and the glass says `nfs: server ... not responding, still trying` | The NFS root lost its server, and a hard-mounted root blocks everything that touches it until the server returns — the kernel is fine, the cursor still blinks. Only a reboot gets out of it today. `./cascadia nfs off` and a rebuild boot from RAM instead. |
+| `REMOTE HOST IDENTIFICATION HAS CHANGED` | The device's host key changed. Images built before 2026-09-19 made a new one on every boot from RAM; `./cascadia build` now makes it once and prints its fingerprint. Once: `ssh-keygen -R 10.55.0.2`, then compare the fingerprint ssh shows with the build's. |
 | kDFU: "Unable to connect to device", the iPad never reacted | Legacy iOS Kit spent the run installing its own dependencies. Run it once on its own; on Arch `pacman -Syu` first. |
 | kDFU: the iBEC uploads to 100%, then the device looks switched off | An encrypted iBEC. After iOS has booted the AES GID key is gone, so the KBAG decrypts to nothing. `--kdfu` picks the plaintext image by itself unless `--ibec` or `--known-good` pinned one. |
 | `no iBoot32Patcher ... rebuild the image` | The build image predates a change to the Dockerfile. `./cascadia image` (and `./cascadia firmware` now does this itself). |

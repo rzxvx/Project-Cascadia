@@ -40,11 +40,11 @@ hostname -F /etc/hostname 2>/dev/null || hostname p105 2>/dev/null || true
 msg "P105: ACM console started on ttyGS0"
 
 # ----------------------------------------------------------- ssh (dropbear) --
-# -R generates host keys on demand.  On the RAM rootfs they die with the boot,
-# so the host key changes every time and ssh needs
-# -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null.  On an NFS root
-# they persist and that stops being necessary -- which is a decent way to tell
-# at a glance which root you actually booted.
+# The ed25519 host key is baked into the image by ./cascadia build and stage 1
+# carries it onto an NFS root, so the device has one identity on every boot and
+# on both roots.  -R only fills in key types that are missing -- which is all of
+# them on an image built where there was no ssh-keygen, and then the key changes
+# every boot of the RAM root again.
 if [ -x /usr/sbin/dropbear ]; then
     mkdir -p /etc/dropbear
     # -E logs to stderr; /dev/kmsg puts that in dmesg and the UART capture,

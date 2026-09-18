@@ -108,7 +108,9 @@ while [ "$(date +%s)" -lt "$deadline" ]; do
         fi
         if answers; then
             echo "==> link: $IP_DEV answers"
-            echo "    ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@$IP_DEV"
+            # Plain ssh: the host key is baked into the image now and stays put
+            # across boots, so there is nothing to switch checking off for.
+            echo "    ssh root@$IP_DEV"
             exit 0
         fi
     fi

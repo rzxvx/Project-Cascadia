@@ -153,6 +153,13 @@ if [ -f /etc/nfsroot ] && [ -x /sbin/mount.nfs ]; then
             # existence check above still decides whether this is a Cascadia
             # root at all; a read-only export simply keeps its own copy.
             cp /sbin/p105-stage2 /newroot/sbin/p105-stage2 2>/dev/null || true
+            # One ssh host key for the device, whichever root it booted: the one
+            # this image carries (./cascadia build makes it once and keeps it).
+            if [ -f /etc/dropbear/dropbear_ed25519_host_key ]; then
+                mkdir -p /newroot/etc/dropbear 2>/dev/null
+                cp -p /etc/dropbear/dropbear_ed25519_host_key /newroot/etc/dropbear/ \
+                    2>/dev/null || true
+            fi
             mkdir -p /newroot/proc /newroot/sys /newroot/dev
             # Move rather than remount: /dev in particular is devtmpfs with the
             # devpts and shm instances already mounted underneath it, and
