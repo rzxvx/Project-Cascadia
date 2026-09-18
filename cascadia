@@ -116,8 +116,8 @@ cmd_doctor() {
         note "BROKEN:  docker is installed but its daemon is not reachable"; rc=1
     fi
     case "$(uname -s)" in
-        Darwin) note "ok:      macOS -- flash/net/nfs are implemented for this host" ;;
-        Linux)  note "note:    Linux -- build works; flash/net/nfs are still macOS-only" ;;
+        Darwin) note "ok:      macOS -- build, flash and the host-side helpers all run here" ;;
+        Linux)  note "note:    Linux -- build, flash and link run here; net and nfs are macOS-only so far" ;;
         *)      note "note:    $(uname -s) -- untested; build may work, the rest will not" ;;
     esac
     say "boot chain (not needed to build a kernel)"
@@ -245,9 +245,9 @@ cmd_build() {
 
 host_only_macos() {
     [ "$(uname -s)" = "Darwin" ] || fail "'$1' is implemented for macOS only so far.
-The build works everywhere; flashing and the host-side network and NFS helpers
-still speak networksetup/pfctl/nfsd.  Porting them is tracked work, not a
-limitation of the device."
+The build, ./cascadia flash and ./cascadia link run anywhere; it is these two
+that still speak networksetup, pfctl and nfsd.  Porting them is tracked work,
+not a limitation of the device."
 }
 
 case "${1:-}" in

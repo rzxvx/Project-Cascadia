@@ -41,7 +41,14 @@ grep -qi '^ID=alpine' "$TREE/etc/os-release" 2>/dev/null \
 # image if this is the first thing to want it, exactly as ./cascadia does.
 docker image inspect "$IMAGE" >/dev/null 2>&1 \
     || { echo "==> building the $IMAGE image (first run only)"; docker build -t "$IMAGE" "$ROOT"; }
-docker run --rm -v "$ROOT":/cascadia "$IMAGE" \
+# Run as the caller on Linux, as ./cascadia does: a plain Linux daemon maps no
+# ownership, so everything the unpack writes into the bind mount would land
+# owned by root and the next rootfs rebuild would need sudo to clean it up.
+# ${arr[@]+"${arr[@]}"} because macOS ships bash 3.2, where expanding an empty
+# array under set -u is an error.
+duser=()
+[ "$(uname -s)" = "Linux" ] && duser=(--user "$(id -u):$(id -g)")
+docker run --rm ${duser[@]+"${duser[@]}"} -v "$ROOT":/cascadia "$IMAGE" \
     python3 /cascadia/scripts/apk-unpack.py \
         --repo "$REPO" --dest "/cascadia/$WORK" --rootfs /cascadia/build/initramfs-root \
         "$@"
