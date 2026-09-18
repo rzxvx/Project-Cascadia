@@ -163,7 +163,7 @@ cmd_build() {
         DOCKER_EXTRA=(-v "$KTREE":/cascadia/build/linux)
     fi
 
-    say "1/5 device tree"
+    say "1/6 device tree"
     # rm first: dtc is not a make target here, so a stale .dtb would just be
     # reused and an edit to the .dts would silently never reach the device.
     rm -f "$ROOT/dtb/p105ap.dtb"; mkdir -p "$ROOT/dtb"
@@ -182,27 +182,52 @@ cmd_build() {
     LC_ALL=C grep -aFq initcall_debug "$ROOT/dtb/p105ap.dtb" && fail "dtb has initcall_debug; drop it from bootargs"
     note "ok: fresh dtb, gadget MACs pinned"
 
-    say "2/5 build date stamp"
+    say "2/6 initramfs extras"
     # No RTC on this board: without a stamp it boots at the epoch and every TLS
     # handshake fails on notBefore.  Written before the kernel build so it lands
     # inside the embedded initramfs.
     date -u "+%Y-%m-%d %H:%M:%S" > "$ROOT/build/initramfs-root/etc/build-date"
-    note "ok: $(cat "$ROOT/build/initramfs-root/etc/build-date") UTC"
+    note "ok: build date $(cat "$ROOT/build/initramfs-root/etc/build-date") UTC"
+    # /bin/peek is the MMIO tool every lab note in docs/ uses, and this busybox
+    # has no devmem applet.  Built here rather than committed: the source is
+    # ours, and the cross-compiler is already in the image.
+    in_docker "arm-linux-gnueabihf-gcc -static -Os -o build/initramfs-root/bin/peek tools/p105-peek.c"
+    [ -s "$ROOT/build/initramfs-root/bin/peek" ] || fail "peek did not build"
+    note "ok: /bin/peek ($(filesize "$ROOT/build/initramfs-root/bin/peek") bytes, static ARM)"
 
-    say "3/5 kernel"
+    say "3/6 kernel"
     # set -o pipefail INSIDE the container shell: without it a failed build
     # returns the status of whatever the output was piped into, and the stale
     # artifacts from last time get shipped as if they were fresh.
     in_docker "set -o pipefail; bash scripts/build-kernel.sh 2>&1 | tail -25"
 
-    say "4/5 freshness"
+    say "4/6 freshness"
     CPIO="$ROOT/build/linux/usr/initramfs_data.cpio"
     [ -f "$CPIO" ] || fail "no $CPIO -- the kernel build did not embed an initramfs"
     STALE=$(find "$ROOT/build/initramfs-root" -type f -newer "$CPIO" -print -quit 2>/dev/null || true)
     [ -z "$STALE" ] || fail "the archive predates ${STALE#$ROOT/build/initramfs-root/} -- the build missed your change"
     note "ok: the initramfs archive is newer than every input"
 
-    say "5/5 bundle"
+    say "5/6 initramfs contents"
+    # The kernel build embeds whatever it is pointed at without an opinion, so
+    # check that what went in is the boot these docs describe.  This is the
+    # check that was missing while ./cascadia rootfs still installed a pre-USB
+    # /init: the build was green, the kernel was fine, and the device came up
+    # on the glass with no console over the cable, no 10.55.0.2 and no ssh.
+    # LC_ALL=C because BSD grep in a UTF-8 locale silently skips regions of a
+    # binary it cannot decode.
+    for s in "P105: stage1 start" p105-stage2 ttyGS0 10.55.0.2; do
+        LC_ALL=C grep -aFq "$s" "$CPIO" \
+            || fail "the archive has no '$s' -- build/initramfs-root is not what ./cascadia rootfs builds"
+    done
+    note "ok: stage 1, stage 2, the ACM console and the pinned address are in the archive"
+    # Not fatal: a tree without these still boots and still gives both consoles.
+    for s in bin/peek usr/sbin/dropbear sbin/mount.nfs; do
+        if LC_ALL=C grep -aFq "$s" "$CPIO"; then note "ok:      $s"
+        else note "missing: $s  -- ./cascadia rootfs installs it when docker is up"; fi
+    done
+
+    say "6/6 bundle"
     cat "$ROOT/build/linux/arch/arm/boot/zImage" "$ROOT/dtb/p105ap.dtb" > "$ROOT/output/zImage-dtb"
     want=$(( $(filesize "$ROOT/build/linux/arch/arm/boot/zImage") + $(filesize "$ROOT/dtb/p105ap.dtb") ))
     got=$(filesize "$ROOT/output/zImage-dtb")

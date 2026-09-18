@@ -274,6 +274,15 @@ cd Project-Cascadia
 ./cascadia build      # dtb + kernel + output/staging-bundle.bin
 ```
 
+`./cascadia rootfs` also bakes in the two things that cannot be installed
+afterwards: dropbear, authorised with this machine's own SSH public key, and
+`mount.nfs`. Both need docker, and both are skipped with a warning rather than
+a failure if it is not running -- the tree still boots and still gives a
+console on the glass and over the cable. `./cascadia build` then refuses to
+ship an archive that is missing stage 1, stage 2, the ACM console or the pinned
+address, which is the check that was missing when a clean clone quietly built a
+kernel around a pre-USB `/init`.
+
 The kernel pin matters. Every edit to an existing kernel file is one patch
 (`patches/tree/0001-cascadia.patch`) applied with `git apply`, so it either
 applies or says why. Whole new files are copied separately. This replaced
@@ -333,7 +342,10 @@ patches/*.patch generated diffs of the glue edits, for reference
 config/         p105ap.config — the kernel config fragment
 scripts/        patch application + build + bundle scripts
 dts/            p105ap.dts — hand-written, generated from the Apple ADT
-initramfs/      /init for the embedded Alpine rootfs
+rootfs/alpine/  the Alpine-side overlay: apk repositories, inittab, motd
+initramfs/      stage 1 (/init) and stage 2 (/sbin/p105-stage2) -- the boot
+                itself.  ./cascadia rootfs lays both overlays onto the Alpine
+                minirootfs; nothing is edited inside build/
 tools/          p105-peek.c (MMIO tool), build/flash wrappers, LZSS helpers
 docs/           CASCADIA-CHEATSHEET.md — the real reference. Start there
 docs/research/  one file per investigation; several are dead ends, on purpose

@@ -48,7 +48,7 @@ msg "P105: stage1 start"
 # No RTC on this board, so the clock starts at the epoch, and that breaks
 # anything validating a TLS certificate -- notably apk against the default
 # https:// mirrors, which fails on notBefore with an error that looks nothing
-# like a clock problem.  /etc/build-date is stamped by tools/rebuild-rearm.sh.
+# like a clock problem.  /etc/build-date is stamped by ./cascadia build.
 if [ -f /etc/build-date ]; then
     date -u -s "$(cat /etc/build-date)" >/dev/null 2>&1 \
         && msg "P105: clock set to build date $(cat /etc/build-date) UTC" \
@@ -123,8 +123,25 @@ if [ -f /etc/nfsroot ] && [ -x /sbin/mount.nfs ]; then
     NFSROOT=$(cat /etc/nfsroot)
     msg "P105: trying NFS root $NFSROOT"
     mkdir -p /newroot
-    if mount -t nfs -o nolock,vers=3,proto=tcp,rsize=8192,wsize=8192 \
-            "$NFSROOT" /newroot 2>/dev/kmsg; then
+    # retry=0 with a short timeo, tried a handful of times, rather than one
+    # call with mount.nfs's defaults.  Its default retry window is two minutes,
+    # and the usual reason for failing here is that the host has not put
+    # 10.55.0.1 on the link yet -- which either resolves within seconds or not
+    # at all.  Two minutes of silence during boot is a worse answer than the
+    # RAM root, and it is exactly what a flash without ./cascadia link produced.
+    nfs_try=0
+    nfs_ok=0
+    while [ $nfs_try -lt 5 ]; do
+        nfs_try=$((nfs_try+1))
+        if mount -t nfs \
+                -o nolock,vers=3,proto=tcp,rsize=8192,wsize=8192,retry=0,timeo=50,retrans=1 \
+                "$NFSROOT" /newroot 2>/dev/kmsg; then
+            nfs_ok=1
+            break
+        fi
+        settle
+    done
+    if [ $nfs_ok = 1 ]; then
         if [ -x /newroot/sbin/p105-stage2 ]; then
             cp /etc/resolv.conf /newroot/etc/resolv.conf 2>/dev/null || true
             cp /etc/build-date  /newroot/etc/build-date  2>/dev/null || true
@@ -141,7 +158,7 @@ if [ -f /etc/nfsroot ] && [ -x /sbin/mount.nfs ]; then
         msg "P105: $NFSROOT has no /sbin/p105-stage2 -- staying in RAM"
         umount /newroot 2>/dev/null
     else
-        msg "P105: NFS mount failed -- staying in RAM"
+        msg "P105: NFS mount failed after $nfs_try tries -- staying in RAM"
     fi
 fi
 

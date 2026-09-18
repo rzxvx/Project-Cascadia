@@ -19,8 +19,8 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TREE="$ROOT/build/initramfs-root"
-WORK="build/apk-unpack"                    # relative to ROOT, i.e. /ibss in the container
-IMAGE="${IMAGE:-ipad-mini-linux}"
+WORK="build/apk-unpack"                    # relative to ROOT, i.e. /cascadia in the container
+IMAGE="${IMAGE:-cascadia-build}"
 
 ALPINE_VER="${ALPINE_VER:-3.24}"
 ALPINE_ARCH="${ALPINE_ARCH:-armhf}"
@@ -36,11 +36,14 @@ grep -qi '^ID=alpine' "$TREE/etc/os-release" 2>/dev/null \
 [ "$(cat "$TREE/etc/apk/arch" 2>/dev/null)" = "$ALPINE_ARCH" ] \
     || fail "rootfs arch is not $ALPINE_ARCH -- set ALPINE_ARCH to match"
 
-# In the build image, not on macOS: it needs network, python3 and readelf, and
-# this is where the rest of the build already happens.
-docker run --rm -v "$ROOT":/ibss "$IMAGE" \
-    python3 /ibss/scripts/apk-unpack.py \
-        --repo "$REPO" --dest "/ibss/$WORK" --rootfs /ibss/build/initramfs-root \
+# In the build image, not on the host: this needs a network, python3 and
+# readelf, and readelf in particular is not something a Mac has.  Build the
+# image if this is the first thing to want it, exactly as ./cascadia does.
+docker image inspect "$IMAGE" >/dev/null 2>&1 \
+    || { echo "==> building the $IMAGE image (first run only)"; docker build -t "$IMAGE" "$ROOT"; }
+docker run --rm -v "$ROOT":/cascadia "$IMAGE" \
+    python3 /cascadia/scripts/apk-unpack.py \
+        --repo "$REPO" --dest "/cascadia/$WORK" --rootfs /cascadia/build/initramfs-root \
         "$@"
 
 EX="$ROOT/$WORK"
@@ -63,4 +66,4 @@ echo "==> installing into $TREE"
     mkdir -p "$TREE/$(dirname "$f")"
     cp -a "$f" "$TREE/$f"
 done )
-echo "==> done.  Rebuild to embed:  ./tools/rebuild-rearm.sh"
+echo "==> done.  Rebuild to embed:  ./cascadia build"

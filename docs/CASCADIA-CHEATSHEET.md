@@ -35,12 +35,31 @@ dts/p105ap.dts              ИСТОЧНИК ИСТИНЫ для DTS (не де�
 config/p105ap.config        фрагмент Kconfig, мерджится с multi_v7_defconfig
 patches/files/**            целые НОВЫЕ файлы ядра, копируются как есть
 patches/tree/*.patch        правки СУЩЕСТВУЮЩИХ файлов ядра, git apply
+rootfs/alpine/**            оверлей со стороны Alpine: репозитории apk, inittab, motd
 initramfs/init              stage 1: монтирования, часы, USB, сеть, выбор корня
 initramfs/sbin/p105-stage2  stage 2: getty, dropbear — общий для обоих корней
 pongo/                      bare-metal трамплин linux-boot
 build/                      всё генерируемое: ядро, rootfs, прошивка
 output/                     staging-bundle.bin + staging-loader.bin
 ```
+
+### Как собирается initramfs
+
+`./cascadia rootfs` разворачивает alpine-minirootfs, кладёт сверху два оверлея —
+`rootfs/alpine/` (сторона Alpine) и `initramfs/` (наши stage 1 и stage 2), —
+доставляет то, что нельзя поставить после первой загрузки (dropbear с твоим
+публичным ключом и `mount.nfs`), и копирует поверх всё, что лежит в
+`build/keep/`. Последнее — для файлов, которые пока не воспроизводятся из
+репозитория: там сейчас `hx-touchd`, демон тача из Sandcastle.
+
+**Внутри `build/initramfs-root` руками ничего не правят.** До 2026-09-18 правили
+именно там, а в репозитории лежала копия `/init` времён до USB-сети, и чистый
+клон собирал ядро, которое поднималось на стекле — без консоли по кабелю, без
+10.55.0.2 и без ssh. Теперь `./cascadia build` проверяет собранный архив на
+`P105: stage1 start`, `p105-stage2`, `ttyGS0` и `10.55.0.2` и падает, если их нет.
+
+Если docker не запущен, шаг с пакетами пропускается с предупреждением: дерево
+всё равно грузится, но без ssh и без NFS-корня.
 
 ### Два механизма патчей, не путать
 **Новые файлы** — `patches/files/` копируются `apply-kernel-patches.py --files-only`.
@@ -828,10 +847,9 @@ dropbear (без него нет шелла по сети) и `mount.nfs` (ко�
 ## Порядок поднятия
 ```bash
 # один раз
-cd ~/iBSSloader && bash scripts/add-dropbear.sh
-bash scripts/add-apk-packages.sh nfs-utils
-cd ~/Desktop/ipad-mini-linux && ./tools/mac-nfs-export.sh on
-./tools/rebuild-rearm.sh && ./tools/flash-rearm.sh
+./cascadia rootfs          # dropbear с твоим ключом и mount.nfs ставятся здесь
+./cascadia nfs on          # экспорт корня с мака + /etc/nfsroot в initramfs
+./cascadia build && ./cascadia flash
 
 # каждый раз после прошивки -- адрес 10.55.0.1 на маке flash выставляет сам
 # (отдельно: ./cascadia link)

@@ -2,13 +2,22 @@
 #
 # Build Alpine armhf minirootfs for CONFIG_INITRAMFS_SOURCE.
 #
-# Downloads the official alpine-minirootfs tarball, extracts it, applies
-# rootfs/alpine/ overlay (tty0 getty, apk repos, motd), and installs the
-# tree into build/initramfs-root so the existing build-kernel.sh path is
-# unchanged. Also keeps a copy under build/alpine-rootfs and packs
-# build/out/initramfs.cpio.gz for inspection.
+# Downloads the official alpine-minirootfs tarball, extracts it, lays the
+# repository's two overlays on top -- rootfs/alpine/ for the Alpine-side
+# configuration and initramfs/ for this port's own boot scripts -- adds the
+# packages that cannot be installed after first boot, and installs the result
+# into build/initramfs-root, which is what build-kernel.sh embeds.
 #
-# Host deps: wget or curl, tar, cpio, gzip. No qemu.
+# The second overlay is the point.  For a while the boot scripts existed only
+# inside build/initramfs-root, edited in place, while rootfs/alpine/init still
+# held a copy from before USB networking existed.  A clean clone therefore
+# built a kernel that came up on the glass with no console over the cable, no
+# 10.55.0.2 and no ssh -- and nothing said so, because everything that checks
+# the build checks the kernel.  initramfs/ is now the source of truth and this
+# script is the only thing that assembles the tree.
+#
+# Host deps: wget or curl, tar, cpio, gzip.  No qemu.  Docker is needed only
+# for the package step, which is skipped with a warning when it is missing.
 #
 # Usage:
 #   bash scripts/build-alpine-rootfs.sh
@@ -30,6 +39,7 @@ ALPINE_TREE="$ROOT/build/alpine-rootfs"
 OUTDIR="$ROOT/build/initramfs-root"
 OUT_CPIO="$ROOT/build/out/initramfs.cpio.gz"
 OVERLAY="$ROOT/rootfs/alpine"
+BOOT="$ROOT/initramfs"
 STAMP="$ALPINE_TREE/.alpine-build-stamp"
 
 mkdir -p "$CACHE" "$ROOT/build/out"
@@ -81,7 +91,16 @@ if [ ! -d "$OVERLAY" ]; then
 fi
 # Overlay may include dirs that already exist; -a preserves modes where possible.
 cp -a "$OVERLAY"/. "$ALPINE_TREE"/
-chmod 755 "$ALPINE_TREE/init"
+
+echo "==> applying boot scripts from $BOOT"
+for f in init sbin/p105-stage2; do
+	if [ ! -f "$BOOT/$f" ]; then
+		echo "missing $BOOT/$f -- initramfs/ is the source of truth for the boot scripts" >&2
+		exit 1
+	fi
+done
+cp -a "$BOOT"/. "$ALPINE_TREE"/
+chmod 755 "$ALPINE_TREE/init" "$ALPINE_TREE/sbin/p105-stage2"
 
 # Ensure apk repos dir exists even if overlay copy was partial.
 mkdir -p "$ALPINE_TREE/etc/apk"
@@ -145,6 +164,38 @@ mkdir -p "$(dirname "$OUTDIR")"
 cp -a "$ALPINE_TREE" "$OUTDIR"
 # Drop stamp from the embedded tree (optional clutter).
 rm -f "$OUTDIR/.alpine-build-stamp"
+
+# ------------------------------------------------------------------ packages --
+# Two things have to be in the image before the first boot, because neither can
+# be installed once it is running: dropbear, because there is no shell over the
+# network without it and no convenient apk without that shell, and mount.nfs,
+# because the root filesystem cannot be mounted by a binary that lives on the
+# root filesystem.  Everything else is `apk add` on the device.
+#
+# Unpacking them needs the build image (readelf and a network), so a machine
+# without a running docker gets a warning rather than a failure: the tree still
+# boots, and still gives a console on the glass and over the cable.
+if [ "${SKIP_PACKAGES:-0}" = 1 ]; then
+	echo "==> SKIP_PACKAGES=1 -- no dropbear, no mount.nfs"
+elif docker info >/dev/null 2>&1; then
+	bash "$ROOT/scripts/add-apk-packages.sh" nfs-utils
+	PUBKEY_OPTIONAL=1 bash "$ROOT/scripts/add-dropbear.sh"
+else
+	echo "==> docker is not reachable -- skipping dropbear and nfs-utils."
+	echo "    The tree boots without them, but there is no ssh and no NFS root."
+	echo "    Once docker runs:"
+	echo "      bash scripts/add-dropbear.sh"
+	echo "      bash scripts/add-apk-packages.sh nfs-utils"
+fi
+
+# Anything left in build/keep/ is copied in last.  It is for files that are not
+# yet reproducible from this repository -- hx-touchd, the Sandcastle touch
+# daemon, is the current one -- so that rebuilding the rootfs does not quietly
+# drop them on the floor.
+if [ -d "$ROOT/build/keep" ]; then
+	echo "==> copying build/keep/ over the tree"
+	cp -a "$ROOT/build/keep/." "$OUTDIR/"
+fi
 
 echo "==> packing $OUT_CPIO"
 (

@@ -16,8 +16,11 @@
 #   bash scripts/add-apk-packages.sh nfs-utils
 set -euo pipefail
 
-IBSS="${IBSS:-$HOME/iBSSloader}"
-SRC="$IBSS/build/initramfs-root"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SRC="${SRC:-$ROOT/build/initramfs-root}"   # the tree ./cascadia rootfs builds and
+                                           # ./cascadia build embeds -- pointing this
+                                           # anywhere else writes /etc/nfsroot into a
+                                           # tree nothing ships
 DST="${DST:-$HOME/cascadia-root}"          # deliberately not under Desktop/Documents/
                                            # Downloads: those are TCC-protected and
                                            # nfsd cannot read them
@@ -37,9 +40,9 @@ fail() { echo "error: $*" >&2; exit 1; }
 
 case "${1:-}" in
 on)
-    [ -d "$SRC" ] || fail "no rootfs at $SRC (set IBSS=)"
+    [ -d "$SRC" ] || fail "no rootfs at $SRC -- run ./cascadia rootfs first (or set SRC=)"
     [ -x "$SRC/sbin/p105-stage2" ] || fail "$SRC has no /sbin/p105-stage2 -- stage 1 would refuse it"
-    [ -x "$SRC/sbin/mount.nfs" ] || echo "warning: no mount.nfs in the initramfs yet -- run: bash $IBSS/scripts/add-apk-packages.sh nfs-utils" >&2
+    [ -x "$SRC/sbin/mount.nfs" ] || echo "warning: no mount.nfs in the initramfs yet -- run: bash $ROOT/scripts/add-apk-packages.sh nfs-utils" >&2
 
     # Once the device has booted from $DST, that directory IS the live root
     # filesystem: every `apk add` run over ssh lands there.  An rsync --delete
@@ -94,7 +97,7 @@ on)
     echo
     echo "==> /etc/nfsroot in the initramfs = $IP_HOST:$DST"
     echo "    Rebuild and flash for it to take effect:"
-    echo "      ./tools/rebuild-rearm.sh && ./tools/flash-rearm.sh"
+    echo "      ./cascadia build && ./cascadia flash"
     ;;
 off)
     TMP=$(mktemp)

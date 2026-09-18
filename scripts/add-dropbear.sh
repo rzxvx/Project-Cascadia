@@ -9,6 +9,11 @@
 # network there is no convenient way to run apk.
 #
 #   bash scripts/add-dropbear.sh
+#   PUBKEY_OPTIONAL=1 bash scripts/add-dropbear.sh   # no key is a warning
+#
+# ./cascadia rootfs calls this with PUBKEY_OPTIONAL=1: a machine with no SSH
+# key of its own should still end up with a bootable tree, it just cannot log
+# in over the network until a key is added and the kernel rebuilt.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -37,6 +42,12 @@ if [ -z "$PUB" ]; then
     echo >&2
     echo "Not configuring a password or a blank-password server -- this box" >&2
     echo "gets WiFi eventually." >&2
+    if [ "${PUBKEY_OPTIONAL:-0}" = 1 ]; then
+        echo >&2
+        echo "Continuing without ssh: the console on the glass and the one over" >&2
+        echo "the cable both still work." >&2
+        exit 0
+    fi
     exit 1
 fi
 [ -f "$PUB" ] || fail "no such public key: $PUB"
@@ -57,5 +68,5 @@ chmod 700 "$TREE/root/.ssh"
 chmod 600 "$TREE/root/.ssh/authorized_keys"
 echo "==> installed $PUB as root's authorized_keys"
 echo
-echo "Rebuild to embed it:   ./tools/rebuild-rearm.sh"
+echo "Rebuild to embed it:   ./cascadia build"
 echo "Then, after flashing:  ssh root@10.55.0.2"
