@@ -17,6 +17,8 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+KEEP="$ROOT/build/keep"                    # survives a rootfs rebuild; the assembly
+                                           # copies it back over the fresh tree
 SRC="${SRC:-$ROOT/build/initramfs-root}"   # the tree ./cascadia rootfs builds and
                                            # ./cascadia build embeds -- pointing this
                                            # anywhere else writes /etc/nfsroot into a
@@ -93,7 +95,14 @@ on)
 
     # Stage 1 reads this at boot; absent, it stays in RAM.  It goes in the
     # initramfs, so it takes effect on the NEXT kernel build, not this instant.
+    #
+    # Written twice on purpose.  The copy in build/keep/ is what survives
+    # ./cascadia rootfs, which rebuilds the tree from scratch; without it,
+    # re-running rootfs would quietly take the device back to the RAM root and
+    # nothing would say why.
     echo "$IP_HOST:$DST" > "$SRC/etc/nfsroot"
+    mkdir -p "$KEEP/etc"
+    echo "$IP_HOST:$DST" > "$KEEP/etc/nfsroot"
     echo
     echo "==> /etc/nfsroot in the initramfs = $IP_HOST:$DST"
     echo "    Rebuild and flash for it to take effect:"
@@ -104,7 +113,7 @@ off)
     ours /etc/exports > "$TMP"
     sudo cp "$TMP" /etc/exports; rm -f "$TMP"
     sudo nfsd update >/dev/null 2>&1 || true
-    rm -f "$SRC/etc/nfsroot"
+    rm -f "$SRC/etc/nfsroot" "$KEEP/etc/nfsroot"
     echo "==> export removed and /etc/nfsroot cleared."
     echo "    $DST is left on disk; delete it yourself if you want it gone."
     echo "    Rebuild and flash to go back to the RAM rootfs."
@@ -115,6 +124,7 @@ status)
     echo "--- nfsd ---"; sudo nfsd status 2>&1 | head -3 || true
     echo "--- exported now ---"; showmount -e localhost 2>&1 | head -5 || true
     echo "--- initramfs /etc/nfsroot ---"; cat "$SRC/etc/nfsroot" 2>/dev/null || echo "(none: device will boot from RAM)"
+    echo "--- build/keep copy (survives ./cascadia rootfs) ---"; cat "$KEEP/etc/nfsroot" 2>/dev/null || echo "(none)"
     ;;
 *)
     sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'
