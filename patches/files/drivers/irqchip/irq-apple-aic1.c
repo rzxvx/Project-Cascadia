@@ -21,13 +21,17 @@
 
 #include <linux/bitfield.h>
 #include <linux/bits.h>
+#include <linux/clockchips.h>
+#include <linux/cpumask.h>
 #include <linux/delay.h>
 #include <linux/io.h>
 #include <linux/irq.h>
 #include <linux/irqchip.h>
 #include <linux/irqdomain.h>
+#include <linux/math64.h>
 #include <linux/of.h>
 #include <linux/of_address.h>
+#include <linux/processor.h>
 #include <linux/slab.h>
 #include <linux/smp.h>
 
@@ -77,6 +81,40 @@
 #define AIC1_NR_SWIPI		32
 #define AIC1_NR_CPUS		2
 
+/*
+ * The AIC's own timer (2026-09-18), read out of the AIC driver inside iBEC
+ * 12H321 -- iBoot uses literal addresses, so unlike XNU it can simply be read.
+ * The timebase was then confirmed live from Linux with peek: it runs at the
+ * same 24 MHz as the watchdog counter, and its low word matches it.
+ *
+ *   AIC +0x0020 / +0x0028  TIME_LO / TIME_HI, 64 bits, 24 MHz.  iBoot reads it
+ *                          hi, lo, hi and retries if hi moved.
+ * In a local window (the current CPU's alias at 0x2000, or the explicit copy
+ * at 0x5000 + (cpu << 7), which is where this driver already reads EVENT):
+ *   +0x10  config: bit 0 enables the timer; iBoot's init writes 0xe
+ *   +0x14  countdown: iBoot parks it at ~0, enables, clears status, then
+ *          writes deadline - now in timebase ticks
+ *   +0x18  status: write 1 to clear
+ *   +0x1c / +0x20  local event mask set / clear; the timer is bit 1
+ * It fires as EVENT 0x00070001 -- type 7, number 1 -- which the dispatcher
+ * below knew nothing about before this.
+ */
+#define AIC1_TIME_LO		0x0020
+#define AIC1_TIME_HI		0x0028
+#define AIC1_TMR_CFG		0x10
+#define AIC1_TMR_CFG_ENABLE	BIT(0)
+#define AIC1_TMR_CFG_IBOOT	0xe
+#define AIC1_TMR_CNT		0x14
+#define AIC1_TMR_STAT		0x18
+#define AIC1_LOCAL_MASK_SET	0x1c
+#define AIC1_LOCAL_MASK_CLR	0x20
+#define AIC1_LOCAL_TIMER	BIT(1)
+#define AIC1_EVENT_TYPE_LOCAL	7
+#define AIC1_EVENT_NUM_TIMER	1
+#define AIC1_TIMER_HZ		24000000
+#define AIC1_ALIAS_WINDOW	0x2000
+#define AIC1_CPU_WINDOW(cpu)	(0x5000 + ((cpu) << 7))
+
 struct apple_aic1 {
 	void __iomem		*base;
 	unsigned int		nr_irq;
@@ -92,6 +130,8 @@ static unsigned int aic1_handler_entries;
 
 void apple_a9_gic_drain(void);
 extern bool apple_aic1_early_irq_escape;
+
+static void aic1_tmr_event(struct apple_aic1 *aic);
 
 static inline u32 aic1_read(struct apple_aic1 *aic, u32 reg)
 {
@@ -449,6 +489,15 @@ static void __exception_irq_entry aic1_handle_irq(struct pt_regs *regs)
 			continue;
 		}
 
+		if (type == AIC1_EVENT_TYPE_LOCAL) {
+			if (num == AIC1_EVENT_NUM_TIMER)
+				aic1_tmr_event(aic);
+			else
+				pr_err_ratelimited("AIC-TIMER: unexpected local event %#x\n",
+						   event);
+			continue;
+		}
+
 		hw = aic1_event_hwirq(aic, event);
 		if (hw < aic->nr_irq)
 			generic_handle_domain_irq(aic->domain, hw);
@@ -665,6 +714,168 @@ static int __init aic1_late_smoke(void)
 	return 0;
 }
 late_initcall(aic1_late_smoke);
+
+/* ------------------------------------------------------------ AIC timer -- */
+
+/* Never 0: offset 0x10 from the base is the AIC's own CONFIG, and a stray
+ * timer write there would switch the whole controller off. */
+static u32 aic1_tmr_win = AIC1_ALIAS_WINDOW;
+static unsigned int aic1_tmr_events;
+static u64 aic1_tmr_last;
+static bool aic1_tmr_registered;
+static struct clock_event_device aic1_clkevt;
+
+static inline u32 aic1_tmr_read(struct apple_aic1 *aic, u32 reg)
+{
+	return aic1_read(aic, aic1_tmr_win + reg);
+}
+
+static inline void aic1_tmr_write(struct apple_aic1 *aic, u32 reg, u32 val)
+{
+	aic1_write(aic, aic1_tmr_win + reg, val);
+}
+
+static u64 aic1_time(struct apple_aic1 *aic)
+{
+	u32 hi, lo, hi2;
+
+	do {
+		hi = aic1_read(aic, AIC1_TIME_HI);
+		lo = aic1_read(aic, AIC1_TIME_LO);
+		hi2 = aic1_read(aic, AIC1_TIME_HI);
+	} while (hi != hi2);
+
+	return ((u64)hi << 32) | lo;
+}
+
+static void aic1_tmr_disarm(struct apple_aic1 *aic)
+{
+	aic1_tmr_write(aic, AIC1_LOCAL_MASK_SET, AIC1_LOCAL_TIMER);
+	aic1_tmr_write(aic, AIC1_TMR_CFG,
+		       aic1_tmr_read(aic, AIC1_TMR_CFG) & ~AIC1_TMR_CFG_ENABLE);
+	aic1_tmr_write(aic, AIC1_TMR_STAT, 1);
+}
+
+static void aic1_tmr_arm(struct apple_aic1 *aic, u32 delta)
+{
+	/* iBoot's order: park the countdown, enable, clear status, load. */
+	aic1_tmr_write(aic, AIC1_TMR_CNT, ~0U);
+	aic1_tmr_write(aic, AIC1_TMR_CFG,
+		       aic1_tmr_read(aic, AIC1_TMR_CFG) | AIC1_TMR_CFG_ENABLE);
+	aic1_tmr_write(aic, AIC1_TMR_STAT, 1);
+	aic1_tmr_write(aic, AIC1_TMR_CNT, delta);
+	aic1_tmr_write(aic, AIC1_LOCAL_MASK_CLR, AIC1_LOCAL_TIMER);
+}
+
+/*
+ * Hard IRQ context, from aic1_handle_irq.  The event is masked before anything
+ * else and only set_next_event unmasks it again, so a timer that refuses to
+ * clear stays quiet instead of becoming an interrupt storm.
+ */
+static void aic1_tmr_event(struct apple_aic1 *aic)
+{
+	aic1_tmr_events++;
+	aic1_tmr_last = aic1_time(aic);
+	aic1_tmr_disarm(aic);
+
+	if (aic1_tmr_registered && aic1_clkevt.event_handler)
+		aic1_clkevt.event_handler(&aic1_clkevt);
+}
+
+static int aic1_ce_set_next_event(unsigned long delta,
+				  struct clock_event_device *ce)
+{
+	aic1_tmr_arm(apple_aic1, delta);
+	return 0;
+}
+
+static int aic1_ce_shutdown(struct clock_event_device *ce)
+{
+	aic1_tmr_disarm(apple_aic1);
+	return 0;
+}
+
+static struct clock_event_device aic1_clkevt = {
+	.name			= "apple-aic1-timer",
+	.features		= CLOCK_EVT_FEAT_ONESHOT,
+	/* Above the USB SOF tick (250), which stays registered as a spare. */
+	.rating			= 400,
+	.set_next_event		= aic1_ce_set_next_event,
+	.set_state_shutdown	= aic1_ce_shutdown,
+	.set_state_oneshot	= aic1_ce_shutdown,
+	.tick_resume		= aic1_ce_shutdown,
+};
+
+/*
+ * Arm a 10 ms shot in one window and wait up to 200 ms of timebase for the
+ * event to come back through the dispatcher.  IRQs are on by late_initcall;
+ * the wait spins on the AIC's own counter, so it needs no working tick.
+ */
+static bool __init aic1_tmr_try(struct apple_aic1 *aic, u32 win,
+				const char *what)
+{
+	unsigned int before = READ_ONCE(aic1_tmr_events);
+	u32 cfg0, cnt_a, cnt_b;
+	u64 t0, t;
+
+	aic1_tmr_win = win;
+	cfg0 = aic1_tmr_read(aic, AIC1_TMR_CFG);
+	aic1_tmr_write(aic, AIC1_TMR_CFG, AIC1_TMR_CFG_IBOOT);
+
+	t0 = aic1_time(aic);
+	aic1_tmr_arm(aic, AIC1_TIMER_HZ / 100);
+	cnt_a = aic1_tmr_read(aic, AIC1_TMR_CNT);
+	do {
+		if (READ_ONCE(aic1_tmr_events) != before)
+			break;
+		cpu_relax();
+		t = aic1_time(aic);
+	} while (t - t0 < AIC1_TIMER_HZ / 5);
+	cnt_b = aic1_tmr_read(aic, AIC1_TMR_CNT);
+
+	if (READ_ONCE(aic1_tmr_events) != before) {
+		pr_err("AIC-TIMER: %s window %#x: a 10 ms shot fired after %llu us (CFG was %#x)\n",
+		       what, win, div_u64((aic1_tmr_last - t0) * 1000000ULL, AIC1_TIMER_HZ),
+		       cfg0);
+		return true;
+	}
+
+	aic1_tmr_disarm(aic);
+	aic1_tmr_write(aic, AIC1_TMR_CFG, cfg0);
+	pr_err("AIC-TIMER: %s window %#x: nothing in 200 ms. CFG was %#x, CNT %#x -> %#x, STAT %#x\n",
+	       what, win, cfg0, cnt_a, cnt_b, aic1_tmr_read(aic, AIC1_TMR_STAT));
+	return false;
+}
+
+/*
+ * Register only on a timer seen to fire.  Failing leaves the system exactly as
+ * it was -- the SOF tick carries on -- so this cannot cost a boot.
+ */
+static int __init aic1_timer_init(void)
+{
+	struct apple_aic1 *aic = apple_aic1;
+
+	if (!aic)
+		return 0;
+
+	pr_err("AIC-TIMER: timebase at %#llx; trying the AIC's own timer (recipe from iBEC 12H321)\n",
+	       aic1_time(aic));
+
+	if (!aic1_tmr_try(aic, AIC1_ALIAS_WINDOW, "alias") &&
+	    !aic1_tmr_try(aic, AIC1_CPU_WINDOW(0), "cpu0")) {
+		aic1_tmr_win = AIC1_ALIAS_WINDOW;
+		pr_err("AIC-TIMER: FAIL -- no timer event in either window; the tick stays on USB SOF.\n");
+		return 0;
+	}
+
+	aic1_tmr_registered = true;
+	aic1_clkevt.cpumask = cpumask_of(0);
+	clockevents_config_and_register(&aic1_clkevt, AIC1_TIMER_HZ, 0xf, 0x7fffffff);
+	pr_err("AIC-TIMER: PASS -- clockevent registered at 24 MHz, rating %d. The tick no longer needs a USB host.\n",
+	       aic1_clkevt.rating);
+	return 0;
+}
+late_initcall(aic1_timer_init);
 
 IRQCHIP_DECLARE(apple_aic1, "aic,1", aic1_of_init);
 IRQCHIP_DECLARE(apple_aic1_vendor, "apple,aic1", aic1_of_init);

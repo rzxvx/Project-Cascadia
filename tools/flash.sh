@@ -261,6 +261,6 @@ fi
 if [ -n "$CAP" ] && [ -f "$LOG" ]; then
     echo
     echo "==> verdict lines"
-    grep -E "AIC1-REARM|LATE-SMOKE|SOF-TIMER|P105:" "$LOG" \
+    grep -E "AIC1-REARM|LATE-SMOKE|SOF-TIMER|AIC-TIMER|P105:" "$LOG" \
         || echo "  none captured -- the framebuffer has the early log too"
 fi

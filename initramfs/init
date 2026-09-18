@@ -56,7 +56,7 @@ if [ -f /etc/build-date ]; then
 fi
 
 # ---------------------------------------------------------------- verdicts --
-dmesg 2>/dev/null | grep -E "AIC1-REARM|LATE-SMOKE|SOF-TIMER|CALIB:|apple-wdt" \
+dmesg 2>/dev/null | grep -E "AIC1-REARM|LATE-SMOKE|SOF-TIMER|AIC-TIMER|CALIB:|apple-wdt" \
     | while read x; do msg "  V: $x"; done
 
 # --------------------------------------------------------------- usb reset --
