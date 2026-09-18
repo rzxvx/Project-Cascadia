@@ -262,6 +262,10 @@ Two more gotchas worth recording:
 
 ## Building
 
+**[docs/QUICKSTART.md](docs/QUICKSTART.md) is the walkthrough** — hardware,
+host setup, the IPSW, Legacy iOS Kit, the first shell, and what the failures
+look like. The short version follows.
+
 Needs git, docker (with a running daemon), python3 and rsync.  Everything else
 happens inside the build image.  Verified on macOS/arm64 and Arch Linux/x86_64.
 
@@ -347,7 +351,8 @@ initramfs/      stage 1 (/init) and stage 2 (/sbin/p105-stage2) -- the boot
                 itself.  ./cascadia rootfs lays both overlays onto the Alpine
                 minirootfs; nothing is edited inside build/
 tools/          p105-peek.c (MMIO tool), build/flash wrappers, LZSS helpers
-docs/           CASCADIA-CHEATSHEET.md — the real reference. Start there
+docs/           QUICKSTART.md — clean machine to a shell on the device
+                CASCADIA-CHEATSHEET.md — the real reference for working on it
 docs/research/  one file per investigation; several are dead ends, on purpose
 pongo/          pongoOS module (ADT read, DT fixup)
 mt-hook/        XNU multitouch hook (RE infrastructure)
