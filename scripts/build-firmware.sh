@@ -1,10 +1,18 @@
 #!/usr/bin/env bash
 #
-# Build the two boot-chain images this port needs, from a stock IPSW.
+# Build the boot-chain images this port needs, from a stock IPSW.
 #
 #   iBSS.patched                signature patch only; stock USB receive is left
 #                               alone so the host can still upload iBEC
-#   iBEC.patched.autogo.dfu     signature patch plus the auto-go hook
+#   iBEC.patched.autogo.dfu     signature patch plus the auto-go hook, packed
+#                               the way the stock image is: encrypted, with a
+#                               KBAG.  This is the one the checkm8 route sends
+#   iBEC.patched.autogo.plain.dfu
+#                               the same patched iBEC, packed WITHOUT
+#                               encryption.  --kdfu needs this one: after iOS
+#                               has booted the AES GID key is gone, so a KBAG
+#                               decrypts to nothing and the iBSS jumps into
+#                               garbage (scripts/img3pack.py has the detail)
 #
 # Runs INSIDE the build container (see ./cascadia firmware): the image carries
 # pycryptodome, capstone and an iBoot32Patcher built from source, so the result
@@ -85,10 +93,14 @@ python3 "$ROOT/scripts/verify-ibss-clean.py" "$OUT/iBSS.patched"
 build_one iBEC "$IBEC_IV" "$IBEC_KEY"
 echo "==> iBEC: auto-go hook"
 python3 "$ROOT/scripts/patch-ibec-autogo.py" "$OUT/iBEC.patched" "$OUT/iBEC.autogo"
-echo "==> iBEC: repack as img3"
+echo "==> iBEC: repack as img3 (encrypted -- the checkm8 route)"
 python3 "$ROOT/scripts/img3encrypt.py" \
     "$OUT/iBEC.p105.RELEASE.dfu" "$OUT/iBEC.autogo" \
     "$OUT/iBEC.patched.autogo.dfu" "$IBEC_IV" "$IBEC_KEY"
+echo "==> iBEC: repack as img3 (plaintext -- the kDFU route)"
+python3 "$ROOT/scripts/img3pack.py" \
+    "$OUT/iBEC.p105.RELEASE.dfu" "$OUT/iBEC.autogo" \
+    "$OUT/iBEC.patched.autogo.plain.dfu"
 
 echo
 rc=0
@@ -119,4 +131,5 @@ EOF
 fi
 
 echo
-ls -l "$OUT/iBSS.patched" "$OUT/iBEC.patched.autogo.dfu"
+ls -l "$OUT/iBSS.patched" "$OUT/iBEC.patched.autogo.dfu" \
+      "$OUT/iBEC.patched.autogo.plain.dfu"

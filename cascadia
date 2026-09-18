@@ -6,8 +6,9 @@
 #   ./cascadia kernel      fetch the pinned Linux source into build/linux
 #   ./cascadia rootfs      build the Alpine armhf rootfs for the initramfs
 #   ./cascadia build       dtb + kernel + staging bundle, with the safety checks
-#   ./cascadia firmware    patch iBSS/iBEC out of a stock IPSW (needs Legacy iOS Kit)
+#   ./cascadia firmware    patch iBSS/iBEC out of a stock IPSW
 #   ./cascadia flash       boot the device over USB (needs Legacy iOS Kit)
+#   ./cascadia link        give this host 10.55.0.1 on the device's link (flash does it)
 #   ./cascadia net on|off  share the Mac's internet with it    (macOS for now)
 #   ./cascadia nfs on|off  export a root filesystem to it      (macOS for now)
 #
@@ -231,6 +232,7 @@ case "${1:-}" in
     build)  cmd_build ;;
     firmware) cmd_firmware ;;
     flash)  shift; bash "$ROOT/tools/flash.sh" "$@" ;;
+    link)   bash "$ROOT/tools/host-link.sh" ;;
     net)    host_only_macos net;   shift; bash "$ROOT/tools/mac-share-internet.sh" "$@" ;;
     nfs)    host_only_macos nfs;   shift; bash "$ROOT/tools/mac-nfs-export.sh" "$@" ;;
     *)      sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;

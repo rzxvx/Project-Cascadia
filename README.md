@@ -281,7 +281,13 @@ Flashing needs the device, a Lightning cable, a way into pwned DFU, and
 ```bash
 ./cascadia firmware   # patch iBSS/iBEC out of your own IPSW
 ./cascadia flash      # iBSS -> iBEC -> bundle -> loader
+ssh root@10.55.0.2
 ```
+
+`flash` ends by giving this machine `10.55.0.1` on the gadget's network
+interface and waiting for the device to answer; `./cascadia link` does only
+that step. It has to happen on every boot, because the interface is recreated
+each time the device enumerates, and without it `ssh` does not fail, it hangs.
 
 Reaching pwned DFU has two routes. checkm8 on A5 needs hardware that drives USB
 with tighter timing than a general-purpose host manages — a Raspberry Pi Pico,
@@ -292,6 +298,15 @@ iBSS directly, with no extra hardware.
 7–9.3.6 untethered, so the device comes up jailbroken every time and this stays
 a one-command step. Both routes are Legacy iOS Kit's; Cascadia calls it rather
 than reimplementing either.
+
+The two routes do not take the same image. Anything sent after kDFU has to be
+unencrypted: once iOS has booted, the AES GID key is gone, so a stock-layout
+KBAG decrypts to nothing and the iBSS jumps into garbage — while `irecovery`
+reports a clean 100% upload and the device simply looks switched off. So
+`./cascadia firmware` packs the patched iBEC twice, once like the stock image
+and once as a plain img3 with no KBAG, and `--kdfu` picks the second. Legacy
+iOS Kit's own pwned iBSS is built the same way, which is the reason kDFU works
+there at all.
 
 No Apple firmware ships with this repository. `./cascadia firmware` derives the
 boot chain from an `iPad2,5_8.4.1_12H321_Restore.ipsw` you supply, and checks

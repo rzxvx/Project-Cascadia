@@ -5,6 +5,7 @@
 #   ./cascadia flash                 use the freshly built iBEC
 #   ./cascadia flash --known-good    use the preserved August image instead
 #   ./cascadia flash --no-uart       skip the serial capture
+#   ./cascadia flash --no-link       leave this host's side of the network alone
 #   ./cascadia flash --kdfu          reach pwned DFU without a Pi Pico
 #   ./cascadia flash --skip-pwn      the device is already in pwned DFU
 #
@@ -27,27 +28,52 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LIK="${LIK:-$HOME/Legacy-iOS-Kit}"
 FW="$ROOT/build/firmware"
 LOG="${LOG:-$ROOT/uart.txt}"
-UART_SECONDS="${UART_SECONDS:-240}"
+UART_SECONDS="${UART_SECONDS:-}"   # the default depends on the route; see below
 
 IBEC="$FW/iBEC.patched.autogo.dfu"
 IBEC_WHICH="freshly built"
+IBEC_PINNED=0          # --known-good and --ibec pin the image; kDFU must not
+                       # then quietly swap it for another one
 WANT_UART=1
+WANT_LINK=1
 PWN_MODE=primepwn
 
 while [ $# -gt 0 ]; do
     case "$1" in
         --known-good)
             IBEC="${KNOWN_GOOD_IBEC:-$ROOT/ibootfiles/iBEC.patched.autogo.lk.dfu}"
-            IBEC_WHICH="preserved known-good"; shift ;;
+            IBEC_WHICH="preserved known-good"; IBEC_PINNED=1; shift ;;
         --no-uart) WANT_UART=0; shift ;;
+        --no-link) WANT_LINK=0; shift ;;
         --kdfu)     PWN_MODE=kdfu; shift ;;
         --skip-pwn) PWN_MODE=none; shift ;;
-        --ibec) IBEC="$2"; IBEC_WHICH="explicit"; shift 2 ;;
+        --ibec) IBEC="$2"; IBEC_WHICH="explicit"; IBEC_PINNED=1; shift 2 ;;
         *) echo "unknown argument: $1" >&2; exit 2 ;;
     esac
 done
 
 fail() { echo "error: $*" >&2; exit 1; }
+
+# kDFU cannot be handed an encrypted image.  Once iOS has booted, the AES GID
+# key is no longer usable, so the KBAG of a stock-layout img3 decrypts to
+# nothing and the pwned iBSS jumps into garbage.  Nothing says so at the time:
+# irecovery reports 100%, and then the device drops off the bus and looks
+# switched off.  Legacy iOS Kit's own pwned iBSS is plaintext for this reason,
+# and ./cascadia firmware builds the same iBEC both ways for this reason.
+# The capture starts before the boot chain does, and kDFU's first half is a
+# person: a Trust prompt, a root password, an unplug and replug.  240 s can be
+# spent before the kernel even starts, so that route gets a longer window.
+if [ -z "$UART_SECONDS" ]; then
+    case "$PWN_MODE" in
+        kdfu) UART_SECONDS=600 ;;
+        *)    UART_SECONDS=240 ;;
+    esac
+fi
+
+if [ "$PWN_MODE" = kdfu ] && [ "$IBEC_PINNED" = 0 ]; then
+    IBEC="$FW/iBEC.patched.autogo.plain.dfu"
+    IBEC_WHICH="freshly built, unencrypted for kDFU"
+fi
 
 # primepwn and irecovery come from Legacy iOS Kit rather than being vendored.
 # The path used to be /Users/<someone>/Legacy-iOS-Kit/bin/macos/arm64/primepwn,
@@ -108,6 +134,12 @@ echo "==> bundle: $(basename "$ROOT/output/staging-bundle.bin")"
 # framebuffer, and the UART capture has a habit of truncating partway through a
 # boot anyway, so a missing cable is a nuisance rather than a blocker.
 CAP=""
+# Without this the capture outlives the script: on a failure `set -e` takes the
+# shell down mid-flash and the python sits on the serial port for the rest of
+# UART_SECONDS.
+cleanup() { if [ -n "$CAP" ]; then kill "$CAP" 2>/dev/null || true; fi; }
+trap cleanup EXIT
+
 if [ "$WANT_UART" = 1 ]; then
     PORT="${UART_PORT:-}"
     if [ -z "$PORT" ]; then
@@ -125,13 +157,16 @@ if [ "$WANT_UART" = 1 ]; then
 import serial, sys, time
 port, log, secs = sys.argv[1], sys.argv[2], int(sys.argv[3])
 s = serial.Serial(port, 115200, timeout=0.2)
-end, buf = time.time() + secs, b""
-while time.time() < end:
-    c = s.read(65536)
-    if c:
-        buf += c
-        sys.stdout.write(c.decode("utf-8", "replace")); sys.stdout.flush()
-open(log, "wb").write(buf)
+end = time.time() + secs
+# Write through rather than buffering until the end.  This process is killed
+# whenever the flash stops early, and a log that exists only in memory dies
+# with it -- which is precisely the run whose log is worth having.
+with open(log, "wb") as f:
+    while time.time() < end:
+        c = s.read(65536)
+        if c:
+            f.write(c); f.flush()
+            sys.stdout.write(c.decode("utf-8", "replace")); sys.stdout.flush()
 s.close()
 PY
         CAP=$!
@@ -160,8 +195,47 @@ case "$PWN_MODE" in
     none) : ;;
 esac
 sudo "$IRECOVERY" -f "$IBEC";                               sleep 1
+
+# An iBEC upload always "succeeds": it means the host finished sending, not
+# that anything is still listening.  Ask the device what it is before throwing
+# 21 MB at it, so an iBEC that never came up is reported as that, and not as a
+# failed bundle upload three lines later.  A warning rather than an error --
+# the upload below is the real test, and this check is not worth breaking a
+# working bench over.
+echo "==> waiting for the iBEC to come up in Recovery"
+back=0
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+    if sudo "$IRECOVERY" -q 2>/dev/null | grep -q "MODE: Recovery"; then back=1; break; fi
+    sleep 1
+done
+if [ "$back" = 0 ]; then
+    echo "    it did not.  The device is: $(sudo "$IRECOVERY" -q 2>/dev/null | grep -w MODE || echo "not on the bus at all")" >&2
+    if [ "$PWN_MODE" = kdfu ]; then
+        case "$IBEC" in
+            *.plain.dfu)
+                echo "    The image was already the unencrypted one, so it is not the KBAG." >&2
+                echo "    The UART capture and the screen are where to look next." >&2 ;;
+            *)
+                echo "    On the kDFU route this is usually an ENCRYPTED iBEC: after iOS has" >&2
+                echo "    booted the AES GID key is gone, the KBAG decrypts to nothing, and the" >&2
+                echo "    iBSS jumps into garbage.  Use build/firmware/iBEC.patched.autogo.plain.dfu" >&2
+                echo "    -- ./cascadia firmware builds it, and --kdfu picks it by default." >&2 ;;
+        esac
+    fi
+fi
+
 sudo "$IRECOVERY" -f "$ROOT/output/staging-bundle.bin";     sleep 1
 sudo "$IRECOVERY" -f "$ROOT/output/staging-loader.bin"
+
+# This host's end of the link, now, while the device boots.  Until the gadget
+# interface here has 10.55.0.1 nothing reaches the device over the network --
+# ssh does not fail, it hangs -- and stage 1's NFS mount gives up after about
+# two minutes and stays on the RAM root.  Not fatal: the ACM console needs no
+# address, and the verdicts below still come from the capture.
+if [ "$WANT_LINK" = 1 ]; then
+    bash "$ROOT/tools/host-link.sh" \
+        || echo "==> link did not come up; the ACM console still works" >&2
+fi
 
 [ -n "$CAP" ] && wait "$CAP" || true
 
