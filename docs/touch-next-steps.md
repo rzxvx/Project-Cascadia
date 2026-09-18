@@ -1,5 +1,15 @@
 # Touch bring-up — consolidated state & decision (2026-09-06)
 
+> **2026-09-18: the wall was a wrong register address.** SPI1 (`0x32100000`)
+> and the PWM (`0x33500000`) both come up from a running Linux -- they stop
+> handing back bus leftovers and start reading as zeros -- once the PMGR
+> power-state register is computed as
+> `0x3f100fd8 + <ADT clock-gates id>*4` instead of `+0x1000 + id*4`. Every
+> attempt below aimed ten ids high and hit a neighbour's register or no
+> register at all. `docs/research/p105-pmgr-gates.md` has the mapping and the
+> evidence; what `Cmwp` still has to answer is how the PWM is *programmed* for
+> grape-clk, not how it is powered. The rest of this file stands as it was.
+
 ## Bottom line
 The ONLY blocker is **powering the Samsung SPI1 controller** (the `Cmwp` /
 grape-clk sequence). teutekeune's bare-metal `touch_cursor.c` already implements
