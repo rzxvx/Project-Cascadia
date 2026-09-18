@@ -190,8 +190,27 @@ case "$PWN_MODE" in
         # boot-args iBoot32Patcher wrote in; what matters is the signature
         # patch, which both have, and iBEC sets its own boot-args anyway.
         ( cd "$LIK" && ./restore.sh --kdfu )
-        echo "==> kDFU done; waiting for the device to come back"
-        sleep 3 ;;
+        # restore.sh returning is not the device being in kDFU.  On its first
+        # run on Linux it installs its own dependencies instead, says "run the
+        # script again", and exits -- with success -- having never touched the
+        # device, and this used to carry on into an iBEC upload that could only
+        # fail with irecovery's "Unable to connect to device".  So ask the
+        # device, the same way restore.sh itself checks for kDFU.
+        echo "==> waiting for the device in DFU (kDFU)"
+        indfu=0
+        for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+            if sudo "$IRECOVERY" -q 2>/dev/null | grep -q "MODE: DFU"; then indfu=1; break; fi
+            sleep 1
+        done
+        if [ "$indfu" = 0 ]; then
+            fail "Legacy iOS Kit returned, but no device is in DFU mode -- kloader never ran.
+Scroll up to its output.  The usual cause is a first run on Linux: it installs
+its own dependencies instead, says \"run the script again\" and exits without
+touching the device.  Run it once on its own until it reaches its menu, then
+flash again:
+    cd $LIK && ./restore.sh"
+        fi
+        echo "==> device is in kDFU" ;;
     none) : ;;
 esac
 sudo "$IRECOVERY" -f "$IBEC";                               sleep 1
