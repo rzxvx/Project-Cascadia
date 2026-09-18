@@ -110,8 +110,19 @@ if [ ! -f "$ALPINE_TREE/etc/apk/repositories" ]; then
 fi
 
 # Empty root password for glass getty (embedded bring-up only).
+#
+# Not `sed -i`: BSD sed requires an argument to it and GNU sed refuses one, so
+# there is no spelling that works on both.  This script had never actually run
+# on the Mac until now -- the tree used to be built in a Linux container and
+# copied -- and `sed -i 's|...|' file` on macOS reads the expression as the
+# backup suffix and the path as the script, which fails as "invalid command
+# code k", k being the first letter of the user's home directory.
+#
+# `cat >` rather than `mv`: it truncates the file in place and keeps its mode.
 if [ -f "$ALPINE_TREE/etc/shadow" ]; then
-	sed -i 's|^root:[^:]*:|root::|' "$ALPINE_TREE/etc/shadow"
+	sed 's|^root:[^:]*:|root::|' "$ALPINE_TREE/etc/shadow" > "$ALPINE_TREE/etc/shadow.new"
+	cat "$ALPINE_TREE/etc/shadow.new" > "$ALPINE_TREE/etc/shadow"
+	rm -f "$ALPINE_TREE/etc/shadow.new"
 fi
 
 # Bring-up busybox with cttyhack (Alpine's busybox often lacks that applet).
