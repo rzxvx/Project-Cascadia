@@ -2,6 +2,14 @@
 /*
  * System tick from the USB Start-of-Frame interrupt (P105AP / A5).
  *
+ * SUPERSEDED 2026-09-18, and kept as the fallback.  The AIC has a timer of its
+ * own, found by reading iBoot's AIC driver, and irq-apple-aic1.c registers a
+ * clockevent on it once it has seen it fire.  When that happens it calls
+ * apple_s5l_real_tick() before dwc2 first initialises, and from then on dwc2
+ * leaves GINTSTS_SOF out of its interrupt mask and nothing here registers.
+ * Everything below still describes the boot where the AIC timer fails its
+ * self-test -- which has not happened on hardware, but costs nothing to keep.
+ *
  * This is a bring-up expedient, and it is deliberate.  Every proper timer on
  * this SoC has been chased down and ruled out from the running system:
  *
@@ -53,6 +61,23 @@ static unsigned int sof_countdown;	/* SOFs left until the next event; 0 = idle *
 static unsigned int sof_reload;		/* non-zero while periodic */
 static unsigned int sof_seen;
 static bool sof_live;
+static bool sof_superseded;
+
+/* Called by irq-apple-aic1.c when its own timer has registered. */
+void apple_s5l_real_tick(void)
+{
+	sof_superseded = true;
+}
+
+/*
+ * Asked by dwc2 every time it builds its interrupt mask.  8000 interrupts a
+ * second are a few percent of the CPU and all of the reason this port's USB
+ * line dominated /proc/interrupts; with a real timer they buy nothing.
+ */
+bool apple_s5l_usb_sof_wanted(void)
+{
+	return !sof_superseded;
+}
 
 static inline u32 pmccntr(void)
 {
@@ -148,6 +173,11 @@ static int __init apple_sof_clkevt_register(void)
 	unsigned int before = READ_ONCE(sof_seen);
 	u32 start = pmccntr();
 	unsigned long cpu_hz = 1000000000UL;	/* only used to size the spin */
+
+	if (sof_superseded) {
+		pr_err("SOF-TIMER: not needed -- the AIC timer is the tick, SOF interrupts stay off.\n");
+		return 0;
+	}
 
 	while ((u32)(pmccntr() - start) < cpu_hz * 2) {	/* up to ~2 s */
 		if (READ_ONCE(sof_seen) != before)

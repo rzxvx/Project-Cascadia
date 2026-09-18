@@ -707,10 +707,13 @@ static int __init aic1_late_smoke(void)
 		pr_err("LATE-SMOKE: WEIRD -- EVENT=%#x, needs deeper look.\n", ev_after);
 	}
 
-	/* Clean up: drain any residue so we don't leave state pending */
-	aic1_read(aic, aic1_cpu_event_off());
-	aic1_read(aic, AIC1_EVENT);
-
+	/*
+	 * No draining here any more.  It used to read EVENT once more "to clean
+	 * up", but an EVENT read acknowledges whatever is pending and masks it --
+	 * with the AIC timer live, that could swallow a tick, and a swallowed
+	 * timer event stays masked, so the tick would simply stop.  The SW_SET
+	 * event above has long since been taken by the handler.
+	 */
 	return 0;
 }
 late_initcall(aic1_late_smoke);
@@ -808,7 +811,7 @@ static struct clock_event_device aic1_clkevt = {
 
 /*
  * Arm a 10 ms shot in one window and wait up to 200 ms of timebase for the
- * event to come back through the dispatcher.  IRQs are on by late_initcall;
+ * event to come back through the dispatcher.  IRQs are on before any initcall;
  * the wait spins on the AIC's own counter, so it needs no working tick.
  */
 static bool __init aic1_tmr_try(struct apple_aic1 *aic, u32 win,
@@ -850,6 +853,12 @@ static bool __init aic1_tmr_try(struct apple_aic1 *aic, u32 win,
 /*
  * Register only on a timer seen to fire.  Failing leaves the system exactly as
  * it was -- the SOF tick carries on -- so this cannot cost a boot.
+ *
+ * arch_initcall, not late: dwc2 decides whether to take Start-of-Frame
+ * interrupts when it first initialises the core, at device_initcall, and it
+ * asks whether this timer is live.  The AIC is re-armed and interrupts are on
+ * before any initcall runs (init/main.c), so this is as early as it can be
+ * and still see the timer fire.
  */
 static int __init aic1_timer_init(void)
 {
@@ -871,11 +880,20 @@ static int __init aic1_timer_init(void)
 	aic1_tmr_registered = true;
 	aic1_clkevt.cpumask = cpumask_of(0);
 	clockevents_config_and_register(&aic1_clkevt, AIC1_TIMER_HZ, 0xf, 0x7fffffff);
+#ifdef CONFIG_ARCH_APPLE_S5L
+	{
+		/* Tell the USB SOF fallback it is not needed, before dwc2 builds
+		 * its interrupt mask -- see apple_sof_clkevt.c. */
+		void apple_s5l_real_tick(void);
+
+		apple_s5l_real_tick();
+	}
+#endif
 	pr_err("AIC-TIMER: PASS -- clockevent registered at 24 MHz, rating %d. The tick no longer needs a USB host.\n",
 	       aic1_clkevt.rating);
 	return 0;
 }
-late_initcall(aic1_timer_init);
+arch_initcall(aic1_timer_init);
 
 IRQCHIP_DECLARE(apple_aic1, "aic,1", aic1_of_init);
 IRQCHIP_DECLARE(apple_aic1_vendor, "apple,aic1", aic1_of_init);

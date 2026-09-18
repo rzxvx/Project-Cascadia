@@ -522,24 +522,30 @@ index 9919ab725..f0c547b78 100644
  }
  
 diff --git a/drivers/usb/dwc2/gadget.c b/drivers/usb/dwc2/gadget.c
-index e7bf9cc63..24689c3d6 100644
+index e7bf9cc63..a36f0e99d 100644
 --- a/drivers/usb/dwc2/gadget.c
 +++ b/drivers/usb/dwc2/gadget.c
-@@ -3463,6 +3463,13 @@ void dwc2_hsotg_core_init_disconnected(struct dwc2_hsotg *hsotg,
+@@ -3463,6 +3463,19 @@ void dwc2_hsotg_core_init_disconnected(struct dwc2_hsotg *hsotg,
  		GINTSTS_USBSUSP | GINTSTS_WKUPINT |
  		GINTSTS_LPMTRANRCVD;
  
 +#ifdef CONFIG_ARCH_APPLE_S5L
-+	/* P105AP has no usable timer peripheral at all -- see the file comment in
-+	 * arch/arm/mach-apple/apple_sof_clkevt.c for the list of what was ruled
-+	 * out.  The 125 us Start-of-Frame is the system tick there. */
-+	intmsk |= GINTSTS_SOF;
++	/* The 125 us Start-of-Frame was P105AP's only tick until the AIC's own
++	 * timer turned up (drivers/irqchip/irq-apple-aic1.c).  It is only a
++	 * fallback now, and it costs 8000 interrupts a second, so ask first --
++	 * see arch/arm/mach-apple/apple_sof_clkevt.c. */
++	{
++		bool apple_s5l_usb_sof_wanted(void);
++
++		if (apple_s5l_usb_sof_wanted())
++			intmsk |= GINTSTS_SOF;
++	}
 +#endif
 +
  	if (!using_desc_dma(hsotg))
  		intmsk |= GINTSTS_INCOMPL_SOIN | GINTSTS_INCOMPL_SOOUT;
  
-@@ -3715,6 +3722,22 @@ static irqreturn_t dwc2_hsotg_irq(int irq, void *pw)
+@@ -3715,6 +3728,22 @@ static irqreturn_t dwc2_hsotg_irq(int irq, void *pw)
  	if (!dwc2_is_device_mode(hsotg))
  		return IRQ_NONE;
  

@@ -44,7 +44,7 @@ including the parts that didn't work.
 - [x] Custom Linux DTS (memory, UART0, AIC1, simplefb, PL310 L2, dwc2, SPI, I2C)
 - [x] Custom AIC1 interrupt controller driver
 - [x] **Interrupts actually reach the CPU** — see *The AIC problem* below
-- [x] **A working system tick** — see *The timer problem* below
+- [x] **A working system tick** — the AIC's own timer, read out of iBoot; see *The timer problem* below
 - [x] **Correct wall-clock time** — calibrated 24 MHz clocksource + sched_clock
 - [x] Serial output via DCSD cable — kernel logs confirmed
 - [x] simplefb framebuffer — `/dev/fb0`, Tux on screen, blinking cursor
@@ -65,7 +65,7 @@ including the parts that didn't work.
 - [ ] Touch input — blocked on the Cmwp touch clock
 - [ ] Wi-Fi (BCM4334 — HSIC, behind EHCI, not SDIO as initially assumed)
 - [ ] CPU1 / SMP bringup — **parked**, see *Negative results*
-- [ ] USB host mode / keyboard — no free host port, and it would kill the tick
+- [ ] USB host mode / keyboard — no free host port: dwc2 in host mode would take the console and the network with it
 
 ## Three problems worth reading about
 
@@ -106,36 +106,47 @@ IRQ: 50:  116  APPLE-AIC1  11 Edge  36100000.usb
 27 real hardware interrupts had already been taken before the smoke test even
 ran. The hardware had been fine the whole time.
 
-### 2. The timer problem — the SoC has no usable timer interrupt
+### 2. The timer problem — the timer was in the one block nobody scanned
 
 With interrupts working, the system still had no clockevent: `jiffies` frozen,
-`msleep()` never returning, `sleep` hanging forever. Every plausible timer source
-on this chip was tried on real hardware and every one of them failed (table
-below).
+`msleep()` never returning, `sleep` hanging forever. Every timer the datasheets
+and the device tree pointed at was tried on real hardware, and every one of
+them failed (table below).
 
-The tick that actually works comes from an unlikely place: **the USB
-controller's Start-of-Frame interrupt**. At high speed, dwc2 sees one SOF per
-125 µs microframe. That is a free, hardware-accurate 8 kHz interrupt, and it is
-enough to build a clockevent on.
+For a while the tick came from an unlikely place: **the USB controller's
+Start-of-Frame interrupt**. At high speed dwc2 sees one SOF per 125 µs
+microframe — a free, hardware-accurate 8 kHz interrupt — and a clockevent built
+on it made `sleep` work. The first sign it worked wasn't a log line; it was the
+framebuffer cursor starting to blink. It also meant no tick at all without a
+USB host enumerating the gadget, and 8000 interrupts a second to pay for it.
+
+The real timer lives inside the interrupt controller, and the way to it was to
+read iBoot rather than XNU. XNU reaches hardware through IOKit mappings and
+never names a register; iBoot uses literal addresses, so its AIC driver in
+iBEC reads straight off the page:
 
 ```
-arch/arm/mach-apple/apple_sof_clkevt.c   clockevent, 8 kHz, rating 250
-drivers/usb/dwc2/gadget.c                +GINTSTS_SOF in intmsk, hook before
-                                         spin_lock(&hsotg->lock)
+timer_get_ticks   hi=[AIC+0x28]; lo=[AIC+0x20]; hi2=[AIC+0x28]; retry while hi != hi2
+tick_rate         return 24000000
+deadline_enter    [+0x2014]=~0; [+0x2010]|=1; [+0x2018]=1; [+0x2014]=deadline-now
+timer ISR         [+0x2010]&=~1; [+0x2018]|=1; callback()
+IRQ dispatch      EVENT 0x00070001 -> the timer
 ```
 
-The hook deliberately sits outside the dwc2 lock — the tick handler descends
-into timer and scheduler code, and holding a USB driver lock across that is not
-acceptable. Registration happens at `late_initcall`, and only after real SOFs
-have been observed, so a failed USB bringup can't leave a dead clockevent
-registered.
+A 64-bit timebase at 24 MHz, and a one-shot countdown that fires as an AIC
+event of a type — 7 — the Linux driver had never been told about. Linux drives
+it through the per-CPU copy of that block at `AIC+0x5010`; the alias at
+`+0x2010` that iBoot uses reads as zeros from Linux. It registers only after a
+self-test shot comes back:
 
-The first sign it worked wasn't a log line — it was the framebuffer cursor
-starting to blink.
+```
+AIC-TIMER: cpu0 window 0x5000: a 10 ms shot fired after 10003 us (CFG was 0x0)
+AIC-TIMER: PASS -- clockevent registered at 24 MHz, rating 400.
+```
 
-Honest limitations: there is no tick before USB enumerates; a host bus suspend
-stops it; 8000 interrupts/second costs a few percent of CPU; and switching dwc2
-to host mode would kill it (the hook would have to be duplicated in `hcd.c`).
+The SOF tick is kept as the fallback for a boot where that self-test fails.
+Otherwise it costs nothing: dwc2 enables Start-of-Frame interrupts only when
+the AIC timer did not come up.
 
 ### 3. The clock problem — `sleep 1` took 14 seconds
 
@@ -162,6 +173,8 @@ Verified by stopwatch.
 ## Negative results
 
 Kept deliberately. Knowing what doesn't work on this silicon is most of the value.
+The timer that does work is not in this table — it was never in the search
+space; see *The timer problem*.
 
 | Candidate timer source | Verdict |
 |---|---|
@@ -190,7 +203,7 @@ clocks whatever iOS had powered.
 **No free USB host port.** The ADT puts the Wi-Fi part (`wlan`) as a child node
 of `usb-ehci` — BCM4334 is HSIC-attached, not SDIO. So a USB keyboard would have
 to come from dwc2 in host mode, which is mutually exclusive with the ACM console
-on the same port and would take the SOF tick with it.
+and the network on the same port.
 
 ## Technical notes
 
@@ -200,8 +213,8 @@ datasheet.
 | Peripheral | Physical | Notes |
 |---|---|---|
 | UART0 | `0x32500000` | boot-console, `earlycon=s3c6400`, IRQ 21 |
-| AIC | `0x3F200000` | Custom `aic,1` driver (not the arm64 mainline one) |
-| dwc2 USB | `0x36100000` | IRQ 11 → hwirq 50. Peripheral mode. Source of the tick |
+| AIC | `0x3F200000` | Custom `aic,1` driver (not the arm64 mainline one). 64-bit 24 MHz timebase at `+0x20`; per-CPU timer at `+0x5010` is the tick |
+| dwc2 USB | `0x36100000` | IRQ 11 → hwirq 50. Peripheral mode. Its Start-of-Frame is the fallback tick |
 | OTG PHY | `0x36000000` | Register map recovered empirically from live iBoot DFU |
 | Watchdog / 24 MHz counter | `0x3F103020` | IRQ 4 (dead). Counter is the clocksource |
 | PMGR | `0x3F100000` | ADT `device_type = "timer"`. Not modelled — iBoot leaves our clocks ungated |
@@ -232,24 +245,22 @@ root filesystem). Those two are unpacked into the initramfs by
 APKINDEX and the ELF headers without executing anything. Everything else is
 `apk add` over ssh.
 
-### The tick and the USB gadget are coupled
+### The tick and the USB gadget used to be coupled
 
-This is the sharpest edge in the port, and it is not obvious from any one file.
+With the AIC timer they are not, and this section only matters again on a boot
+where its self-test fails and the SOF fallback takes over — which is when it
+matters most, so it stays.
 
-Because the tick is the SOF interrupt, and SOFs only arrive once the host has
-enumerated the device, and the host only enumerates once a gadget driver binds
-and pulls up D+ — **the gadget must bind before `apple_sof_clkevt` registers at
-`late_initcall`.** A legacy gadget (`g_cdc` here) binds from its own initcall
-and satisfies that. A configfs gadget is bound by userspace writing to
-`$GADGET/UDC`, which happens in `/init`, long after `late_initcall`: the tick
-would look for SOFs, find none, decline to register, and the machine would come
-up with frozen jiffies and no way to `sleep`. Do not port this to configfs
-without first making the clockevent registration deferrable.
-
-The same trap exists inside `/init`. Between a soft disconnect and the
-reconnect there are no SOFs, so there are no jiffies, so `sleep` never returns.
-That window has to be crossed with a CPU spin. Both facts are commented at the
-places where someone would otherwise "clean up" the code.
+On the fallback, the tick is the SOF interrupt; SOFs only arrive once the host
+has enumerated the device, and the host only enumerates once a gadget driver
+binds and pulls up D+ — **so the gadget must bind before `apple_sof_clkevt`
+registers at `late_initcall`.** A legacy gadget (`g_cdc` here) binds from its
+own initcall and satisfies that. A configfs gadget is bound by userspace
+writing to `$GADGET/UDC`, which happens in `/init`, long after `late_initcall`:
+the tick would look for SOFs, find none, decline to register, and the machine
+would come up with frozen jiffies. Between a soft disconnect and the reconnect
+inside `/init` there are no SOFs either, which is why the waits there are CPU
+spins rather than `sleep`.
 
 Two more gotchas worth recording:
 
@@ -367,8 +378,8 @@ Build products (`output/`) and stock firmware are not tracked; everything in
 - **Phase 1 ✓** — Linux boots to an interactive shell. Serial logs. Framebuffer console.
 - **Phase 2 ✓** — USB gadget, CDC ACM shell, CDC ECM networking, SSH, working
   tick, correct wall clock, `apk`, and an NFS root on the host's disk.
-- **Phase 3** — Touch (unblock the Cmwp clock) → a tick that does not depend on
-  USB device mode → Wi-Fi via HSIC/EHCI.
+- **Phase 3** — ~~a tick that does not depend on USB device mode~~ (the AIC
+  timer) → Touch (unblock the Cmwp clock) → Wi-Fi via HSIC/EHCI.
 - **Phase 4** — A6 port (iPhone 5 / iPad mini 2), on this foundation.
 - **Phase 5** — A12/A13, longer term.
 
