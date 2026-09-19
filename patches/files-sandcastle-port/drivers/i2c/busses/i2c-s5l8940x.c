@@ -188,6 +188,73 @@ static void apple_s5l8940x_i2c_start_write(struct apple_s5l8940x_i2c *i2c)
     writel(REG_SMSTA_MTN | REG_SMSTA_XEN | REG_SMSTA_ERROR, i2c->base + REG_IRQMASK);
 }
 
+/*
+ * A register access is always "write the address, then read the data", and on
+ * this controller that has to be ONE transaction.  MTXFIFO words carry
+ * START/STOP/READ flags, so a repeated START is just a second START queued
+ * behind the address bytes -- the controller executes the whole sequence.
+ *
+ * Doing it as two transactions fails both ways, and we tried both: end the
+ * address write with a STOP and the PMU's register pointer is gone, so every
+ * register in 0x00..0xff read back as the same byte; leave the STOP off and
+ * wait for the write to complete on its own and the controller rejects the
+ * dangling transaction outright.
+ */
+static int apple_s5l8940x_i2c_xfer_combined(struct apple_s5l8940x_i2c *i2c,
+                                            struct i2c_msg *w, struct i2c_msg *r)
+{
+    unsigned int poll_us = TIMEOUT_MS * 1000;
+    unsigned long flags;
+    unsigned int i;
+    int done = 0;
+    u32 smsta;
+
+    spin_lock_irqsave(&i2c->lock, flags);
+    i2c->msg = r;
+    i2c->compl_ptr = 0;
+    i2c->tx_ptr = 0;
+    i2c->last = 1;
+    i2c->error = 0;
+    reinit_completion(&i2c->done);
+
+    writel(1, i2c->base + REG_LOCK);
+
+    writel((readl(i2c->base + REG_RDCOUNT) & ~REG_RDCOUNT_MASK) |
+           (r->len << REG_RDCOUNT_SHIFT), i2c->base + REG_RDCOUNT);
+
+    writel(REG_MTXFIFO_START | (w->addr << 1), i2c->base + REG_MTXFIFO);
+    for(i = 0; i < w->len; i++)
+        writel(w->buf[i], i2c->base + REG_MTXFIFO);
+
+    writel(REG_MTXFIFO_START | (r->addr << 1) | 1, i2c->base + REG_MTXFIFO);
+    writel(REG_MTXFIFO_READ | REG_MTXFIFO_STOP | r->len, i2c->base + REG_MTXFIFO);
+
+    writel(REG_SMSTA_MTN | REG_SMSTA_RXDONE | REG_SMSTA_ERROR, i2c->base + REG_IRQMASK);
+    writel(0, i2c->base + REG_LOCK);
+
+    spin_unlock_irqrestore(&i2c->lock, flags);
+
+    while(poll_us) {
+        smsta = readl(i2c->base + REG_SMSTA);
+        if(smsta & (REG_SMSTA_XEN | REG_SMSTA_MTN | REG_SMSTA_RXDONE | REG_SMSTA_ERROR))
+            apple_s5l8940x_i2c_irq(0, i2c);
+        if(try_wait_for_completion(&i2c->done)) {
+            done = 1;
+            break;
+        }
+        udelay(10);
+        poll_us -= 10;
+    }
+
+    if(!done) {
+        dev_err(i2c->dev, "combined transfer timed out, SMSTA=%#x\n",
+                readl(i2c->base + REG_SMSTA));
+        return -ETIMEDOUT;
+    }
+
+    return i2c->error;
+}
+
 static int apple_s5l8940x_i2c_xfer_msg(struct apple_s5l8940x_i2c *i2c, struct i2c_msg *msg, int first, int last)
 {
     unsigned long timeout = msecs_to_jiffies(TIMEOUT_MS);
@@ -280,6 +347,13 @@ static int apple_s5l8940x_i2c_xfer(struct i2c_adapter *adap, struct i2c_msg *msg
     writel(0, i2c->base + REG_IRQMASK);
     writel(REG_RESET_BIT, i2c->base + REG_RESET);
     writel(readl(i2c->base + REG_FILTER) | REG_FILTER_DFLT, i2c->base + REG_FILTER);
+
+    if(num == 2 && !(msgs[0].flags & I2C_M_RD) && (msgs[1].flags & I2C_M_RD) &&
+       msgs[0].addr == msgs[1].addr) {
+        ret = apple_s5l8940x_i2c_xfer_combined(i2c, &msgs[0], &msgs[1]);
+        mutex_unlock(&i2c->mtx);
+        return ret ? ret : num;
+    }
 
     for(i=0; i<num; i++) {
         ret = apple_s5l8940x_i2c_xfer_msg(i2c, &msgs[i], i == 0, i == num - 1);
