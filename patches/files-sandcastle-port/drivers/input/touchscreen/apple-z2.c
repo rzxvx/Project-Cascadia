@@ -68,13 +68,25 @@ struct hx_touch_data {
 
 static void hx_touch_process_report(struct hx_touch_data *hxt, u8 *data, unsigned len)
 {
-    unsigned ntouch = data[16], i, finger, state;
+    unsigned ntouch, i, finger, state;
     u8 *touch;
     long long posx, posy;
     unsigned widthm, widthu;
     s16 angle;
     int slot;
 
+    /* The digitizer sends short reports when nothing is on the glass -- we see
+     * len 12, checksum valid.  Those carry no touch block at all, so reading
+     * data[16] for the count would be off the end of the packet.  Report an
+     * empty frame and say nothing: this is the normal idle case, not an
+     * error. */
+    if(len < 24) {
+        input_mt_sync_frame(hxt->input_dev);
+        input_sync(hxt->input_dev);
+        return;
+    }
+
+    ntouch = data[16];
     if(len < 24 + ntouch * 30) {
         dev_warn(&hxt->spi->dev, "packet too short for number of touches (%d, %d)\n", ntouch, len);
         return;
