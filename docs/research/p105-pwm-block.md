@@ -106,17 +106,31 @@ So the block is three channels:
 sweep saw `0x4c1d`, without it. A self-clearing latch, like the UPDATE bit Linux
 knows at bit 5 on later chips.
 
-## Where it stands
+## grape-clk runs, on GPIO 63 (2026-09-19)
 
 Running the recipe on channel 2 -- grape-clk's channel, `reg = 2` in the ADT --
 with 366 and 366 (732 ticks of 24 MHz, 32787 Hz) leaves its capture registers
-dead. That is not evidence against it: capture timestamps an **input** edge, and
-the only thing on that wire is a digitizer with no power. The PWM's own clock is
-not the problem either -- its parent PCLK3 reads enabled, see
-`p105-pmgr-gates.md`.
+dead. That turned out to say nothing: capture timestamps an **input** edge, and
+the only thing on that wire is a digitizer with no power.
 
-What can see the output without the digitizer is the pad itself:
-`tools/pwm-find-pin.sh` snapshots all 256 GPIO registers six times with the
-channel off, six times on, and six times off again. A pin carrying 32 kHz read
-at ~10 ms a sample comes back as a coin toss; a sleeping pin reads the same
-every time. That would both prove the clock and name the pin.
+The pad says it directly. `tools/pwm-find-pin.sh` snapshots all 256 GPIO
+registers six times with the channel off, six times on, six times off again,
+and once more with channel 0 on instead:
+
+    everything off       no pad changes
+    channel 2 running    pin 63 (0x3fa000fc): 620 620 621 620 621 620
+    channel 2 off        no pad changes
+    channel 0 running    no pad changes
+
+One pad in the whole SoC, reading as a coin toss exactly while channel 2 runs.
+That is the digitizer's clock coming out of the SoC for the first time in this
+project, and it needed nothing but the gate fixed and the three writes iOS
+does: the pad was already in the right mode (`0x620`, set before Linux ran).
+
+The control register reads back `0x4001` after `0x4003` is written -- bit 1
+clears itself, as the implemented-bit map predicted.
+
+A coin toss says "fast", not "32768 Hz". `tools/pwm-hz.sh` checks the unit: at
+12,000,000 + 12,000,000 ticks the pad should read like `0000111100001111` when
+sampled every quarter second, and 6M + 18M against 18M + 6M says which register
+is the high half.
