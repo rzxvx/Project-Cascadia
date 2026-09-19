@@ -286,19 +286,11 @@ static int apple_s5l8940x_i2c_init_hw(struct apple_s5l8940x_i2c *i2c)
     unsigned long clk_rate = clk_get_rate(i2c->clk);
     unsigned int clkdiv;
 
-    /* HACK: force pinmux for I2C0 pins 4 (SDA) + 5 (SCL) via direct MMIO write
-     * to GPIO base 0x3FA00000. ADT function-iic_* config = 0x00010102. */
-    {
-        void __iomem *gpio = ioremap(0x3FA00000, 0x100);
-        if (gpio) {
-            writel(0x00010102u, gpio + 4 * 4);  /* SDA pin 4 */
-            writel(0x00010102u, gpio + 5 * 4);  /* SCL pin 5 */
-            iounmap(gpio);
-            pr_err("I2C: forced pinmux for pins 4,5 = 0x00010102\n");
-        } else {
-            pr_err("I2C: failed to ioremap GPIO for pinmux\n");
-        }
-    }
+    /* The pinmux hack that used to live here forced pins 4 and 5, which are
+     * not this bus: the ADT puts I2C0 on 0x0604 and 0x0605, linear pins 52
+     * and 53, and a dump of the pad registers shows iBoot already leaves both
+     * muxed to the peripheral (PERIPH set, 0x621).  Writing pins 4,5 only
+     * clobbered two unrelated pads. */
 
     clkdiv = DIV_ROUND_UP(clk_rate, 16 * i2c->frequency);
     if(clkdiv < 4)

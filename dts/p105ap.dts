@@ -518,16 +518,20 @@
         };
 
         i2c0: i2c@3200000 {
-            compatible = "apple,s5l8940x-samsung-i2c";
+            /* This is Apple's I2C block (REG_SMSTA / REG_MRXFIFO / REG_FIFOLVL),
+             * not a Samsung one.  The node used to say "...-samsung-i2c", which
+             * no driver here matches -- so the generic s3c2410 driver bound to
+             * it and drove Apple registers with Samsung's map.  Transfers then
+             * "succeeded" while every PMU register read back a constant 0x01,
+             * which made regmap_update_bits think the rails were already set
+             * and skip the write entirely: the digitizer was never powered.
+             * i2c-s5l8940x.c matches this compatible. */
+            compatible = "apple,s5l8940x-i2c";
             reg = <0x3200000 0x1000>;
-            samsung,i2c-sda-delay = <100>;
-            samsung,i2c-max-bus-freq = <100000>;
+            clock-frequency = <100000>;
             interrupts = <10>;
             clocks = <&refclk24mhz>;
             clock-names = "i2c";
-            pinctrl-names = "default";
-            /* no pinctrl-0 - just an empty default state so samsung driver
-             * skips gpio path (pins 4,5 already forced to iic by pinctrl driver) */
             #address-cells = <1>;
             #size-cells = <0>;
             status = "okay";
