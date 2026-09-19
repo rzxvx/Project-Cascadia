@@ -8,6 +8,9 @@ constant ten ids, for two years of other people's code and three weeks of ours.
 
     power-state register = 0x3f100fd8 + <ADT clock-gates id> * 4
 
+for every device this port cares about -- but see *The ADT had it all along*
+below: that formula is a local coincidence, and the real mapping is a table.
+
 Found by brute force from a running Linux (`tools/pmgr-map.sh`): dump the whole
 28 KB PMGR window, switch on every register shaped like a powered-down device,
 and after each one look at whether SPI1 or the PWM started answering on the bus.
@@ -95,3 +98,42 @@ both blocks read plain `0x00000000`.
 - `tools/touch-power-on.sh` — switch spi1 and pwm on and read the blocks.
 
 All three run on the device over ssh: `ssh root@10.55.0.2 sh -s < tools/<script>`.
+
+## The ADT had it all along (2026-09-19)
+
+The pmgr node carries `device-clocks`, 4176 bytes: 116 entries of 36 bytes, one
+per clock and per gateable device.
+
+    +0x00  4     byte 3 is the id -- the number device nodes put in
+                 `clock-gates` -- bytes 0..2 are flags
+    +0x04  u32   flags
+    +0x08  4     up to four parent clock ids, one per byte
+    +0x0c  u32   index of the power-state register: PMGR + 0x1000 + idx * 4
+    +0x10  u32   index of the clock register:       PMGR + idx * 4
+    +0x14  16    name
+
+`scripts/adt-pmgr-map.py` prints it, and with a `peek r 3f100000 7168` dump as a
+second argument it prints the live value beside each name. It agrees with the
+sweep register for register: PWM id 83 -> index 73 -> `0x3f101124`, spi1 id 68 ->
+58 -> `0x3f1010e8`, uart0 72 -> 62, i2c0 80 -> 70.
+
+**The difference between id and index is not a constant.** It is 10 for the run
+of ids 56..83 -- which happens to contain every device this port has needed, so
+the formula above works -- and 4, 6, 7, 8, 21, 27, 32, 49, 54, 55, 75, 79, 80,
+82, 84, 85, 86 and 117 elsewhere. MCA's index is *higher* than its id. So the
+table is the mapping; the formula is a shortcut that holds in one neighbourhood.
+
+It also names every register, which turns the dump into a description of the
+machine iBoot hands over:
+
+- **on**: uart0-5, i2c0-2, FMI0/FMI1 with their BCH engines (the NAND iBoot
+  booted from), USB-OTG, USBREG, MIPI-DSI (the panel the framebuffer is on),
+  CDIO, CDMA, UPERF, PERFCNT, DWI
+- **off**: spi0-3, PWM, PKE, SHA-1, SHA-2, all four I2S, SPDIF, SDIO-WIFI, IOP,
+  VDEC, VENC, the scalers, JPEG, GFX, TV-OUT, DPLINK, HPARK
+- **no register at all**: CLCD, RGBOUT, ISP, the DARTs, CPU0/CPU1 -- their
+  entries carry a zero index, which is why that whole group read as holes.
+
+And the PWM's clock, which had been the other suspect, is not the problem: its
+parent by the table is PCLK3 at `0x3f100094`, reading `0x90000004` -- enabled,
+divider 4 -- since before Linux started.
