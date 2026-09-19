@@ -562,8 +562,8 @@
                 touch_pmuclk: touch_pmuclk@61 {
                     compatible = "apple,pmu-pwrsw";
                     reg = <0x61>;
-                    mask = <0x62>;
-                    enable = <0x62>;
+                    mask = <0x02>;
+                    enable = <0x02>;
                 };
             };
         };

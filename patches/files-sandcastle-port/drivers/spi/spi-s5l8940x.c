@@ -73,6 +73,12 @@ struct hx_spi {
     struct completion done;
 };
 
+/* Temporary bring-up instrumentation: the digitizer's reads were coming back
+ * byte-for-byte as our own TX buffer, while a hand-driven transfer on the same
+ * wires returned zeros -- so the echo is ours, not the chip's.  Log the first
+ * few transfers to see exactly what RXDATA hands back. */
+static unsigned hx_spi_dbg_left = 8;
+
 static inline struct hx_spi *spidev_to_hx_spi(struct spi_device *spi)
 {
     return spi_controller_get_devdata(spi->controller);
@@ -271,7 +277,14 @@ static int hx_spi_transfer_one_message(struct spi_controller *master, struct spi
         if(!t->len)
             continue;
 
-        /* Samsung layout: program the packet counts, then start PIO. */
+        /* Samsung layout, in XNU's order: CLKCFG first -- writing 0xd every
+         * transfer is what AppleSamsungSPIController does, and bits 2,3 reset
+         * the TX/RX FIFOs, so no stale words survive into this transfer.  We
+         * used to do this once in hw_init only. */
+        writel(REG_CLKCFG_ENABLE, spi->base + REG_CLKCFG);
+        writel(REG_STATUS_COMPL | 0xf, spi->base + REG_STATUS);
+
+        /* program the packet counts, then start PIO. */
         writel(t->len, spi->base + REG_RXCNT);
         writel(t->len, spi->base + REG_TXCNT);
         writel(spi->config | REG_CONFIG_PIOEN, spi->base + REG_CONFIG);
@@ -294,6 +307,17 @@ static int hx_spi_transfer_one_message(struct spi_controller *master, struct spi
                 break;
             }
             cpu_relax();
+        }
+
+        if(hx_spi_dbg_left) {
+            const u8 *tb = spi->tx_buf, *rb = spi->rx_buf;
+            hx_spi_dbg_left--;
+            dev_info(&spid->dev,
+                     "xfer len=%u tx=%02x %02x %02x %02x rx=%02x %02x %02x %02x tx_compl=%u rx_compl=%u st=%#x\n",
+                     spi->len,
+                     tb ? tb[0] : 0, tb ? tb[1] : 0, tb ? tb[2] : 0, tb ? tb[3] : 0,
+                     rb ? rb[0] : 0, rb ? rb[1] : 0, rb ? rb[2] : 0, rb ? rb[3] : 0,
+                     spi->tx_compl, spi->rx_compl, readl(spi->base + REG_STATUS));
         }
 
         /* stop the channel and clear latched status */
