@@ -197,7 +197,18 @@ static int apple_s5l8940x_i2c_xfer_msg(struct apple_s5l8940x_i2c *i2c, struct i2
     i2c->msg = msg;
     i2c->compl_ptr = 0;
     i2c->tx_ptr = 0;
-    i2c->last = 1; /* Hx controller doesn't seem to like leaving a transaction hanging */
+    /* Honour the real end-of-transaction instead of forcing it on every
+     * message.  This used to be hardcoded to 1, so a register read -- write
+     * the address, then read the data -- ended the address write with a STOP
+     * and began the read with a fresh START.  The PMU's register pointer does
+     * not survive that, and every register in the 0x00..0xff bank came back
+     * as the same byte (0xa5) no matter which one we asked for.  With last
+     * taken per message the address write leaves the bus held and the read
+     * follows on a repeated START, which is what a register-addressed device
+     * expects.  (The note that used to sit here, that the controller dislikes
+     * leaving a transaction hanging, was written while the polling loop was
+     * broken and no transfer completed at all.) */
+    i2c->last = last;
     i2c->error = 0;
 
     reinit_completion(&i2c->done);
