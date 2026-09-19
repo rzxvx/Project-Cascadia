@@ -544,18 +544,28 @@
                 #address-cells = <1>;
                 #size-cells = <0>;
 
-                touch_ana: touch_ana@20c {
+                /* ADT function-power_ana is 0x020c: flags 0x02 plus index 0x0c,
+                 * i.e. LDO 12 -- not a register address.  AppleD1946PMU::_setLDO
+                 * takes the enable register and bit from its LDO table
+                 * (0x80c95f30, 8 bytes per entry, byte 6 = register, byte 7 =
+                 * mask); entry 12 gives register 0x22 bit 0x04.  A live dump
+                 * reads 0x22 = 0x61, so this rail was off, which is why the
+                 * digitizer never answered. */
+                touch_ana: touch_ana@22 {
                     compatible = "apple,pmu-pwrsw";
-                    reg = <0x20c>;
-                    mask = <0x01>;
-                    enable = <0x01>;
+                    reg = <0x22>;
+                    mask = <0x04>;
+                    enable = <0x04>;
                 };
 
-                touch_ldo: touch_ldo@213 {
+                /* function-power_ldo is 0x0213: LDO 19 by the same reading.
+                 * Table entry 19 gives register 0x23 bit 0x40; the dump reads
+                 * 0x23 = 0xa0, so this one was off too. */
+                touch_ldo: touch_ldo@23 {
                     compatible = "apple,pmu-pwrsw";
-                    reg = <0x213>;
-                    mask = <0x01>;
-                    enable = <0x01>;
+                    reg = <0x23>;
+                    mask = <0x40>;
+                    enable = <0x40>;
                 };
 
                 /* ADT function-clock_enable-pmu: PMU GPIO0.  The register is
