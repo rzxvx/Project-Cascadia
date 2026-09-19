@@ -152,26 +152,31 @@ static void hx_spi_set_cs(struct spi_device *spid, int enable)
 }
 
 /*
- * Controller setup, the "apple_spi_wake" sequence from touch_cursor.c, written
- * for this A5 controller.  Done once: the block is powered by its "clocks"
- * entry -- SPI1's power-state switch in PMGR, index 58 in the ADT's
- * device-clocks table -- which the probe enables.
+ * Controller setup, done once.  The block is powered by its "clocks" entry --
+ * SPI1's power-state switch in PMGR, index 58 in the ADT's device-clocks table
+ * -- which the probe's clk_prepare_enable turns on.  Here we bring the SPI
+ * controller itself up: clock config, divider, and pin/config defaults.
  *
- * This used to be the place where the bring-up lab lived: blind writes into
- * the PMGR gate table at the wrong indices, bitmaps at 0x1200/0x1204, a PLL
- * predivider (0x3f100010 is PREDIV0-CLK, not "the PWM clock"), and a
- * Samsung-style PWM setup at 0x33500300, the fourth file of a block that is
- * not Samsung-style at all.  None of it ever made SPI1 answer; the wrong gate
- * address was why.  See docs/research/p105-pmgr-gates.md.
+ * CLKCFG (offset 0) must end at 0xd (REG_CLKCFG_ENABLE), the value XNU's
+ * AppleSamsungSPIController writes.  The bug that made every transfer time out
+ * was here: this used to set bits 2,3 with |0xc and then immediately overwrite
+ * offset 0 with a plain 1, clearing them again -- so the prescaler never ran,
+ * nothing shifted, and the RX FIFO stayed empty forever.
+ *
+ * This was also once the home of a bring-up lab of blind writes into the PMGR
+ * gate table at the wrong indices, a PLL predivider, and a Samsung-style PWM
+ * setup at 0x33500300 -- none of which ever made SPI1 answer.  The wrong PMGR
+ * gate address was the real problem; see docs/research/p105-pmgr-gates.md.
  */
 static void hx_spi_hw_init(struct hx_spi *spi)
 {
-    writel(0xf, spi->base + REG_STATUS);                      /* clear status */
-    writel(readl(spi->base + REG_CLKCFG) | 0xc, spi->base + REG_CLKCFG);
+    /* clear any latched status, arm the FIFO thresholds (XNU writes this exact
+     * value to offset 8 at bring-up: COMPL w1c | the low status bits) */
+    writel(REG_STATUS_COMPL | 0xf, spi->base + REG_STATUS);
     writel(spi->clkdiv, spi->base + REG_CLKDIV);
-    writel(6, spi->base + REG_PIN);                           /* CS_REG = 6 */
-    writel(0x10618, spi->base + REG_CONFIG);                  /* SETUP */
-    writel(1, spi->base + REG_CLKCFG);                        /* enable */
+    writel(6, spi->base + REG_PIN);                           /* CS idle high */
+    writel(REG_CONFIG_SET, spi->base + REG_CONFIG);           /* base config */
+    writel(REG_CLKCFG_ENABLE, spi->base + REG_CLKCFG);        /* 0xd: run the clock */
     mdelay(5);
 }
 
@@ -190,18 +195,60 @@ static int hx_spi_prepare(struct spi_device *spid, unsigned int speed)
     return 0;
 }
 
+/*
+ * Polled FIFO transfer, the S5L8940X (Samsung, spi-version 1) layout.
+ *
+ * The old byte-by-byte loop here came from touch_cursor.c, which drives a
+ * *later* Apple SPI generation: its status masks (0x1f0, 0x3e00) are for a
+ * different register.  On this controller the FIFO levels live at STATUS bits
+ * [10:6] (TX) and [15:11] (RX) -- exactly the REG_STATUS_*FIFO_MASK values
+ * below, and exactly what XNU's AppleSamsungSPIController::doTransfer uses.  A
+ * PIO transfer here is: set the RX/TX packet counts, raise PIOEN, keep the TX
+ * FIFO fed and drain the RX FIFO until every byte is back.
+ *
+ * We poll rather than take the completion interrupt: the AIC masks most lines
+ * after its rearm (the PWM line had to be unmasked by hand), and a transfer
+ * that blocks forever on an interrupt that never arrives is exactly the kind of
+ * hang we are trying to avoid.  Transfers here are tens of bytes, microseconds
+ * of busy-wait, so the completion IRQ (hx_spi_irq, still wired for later use)
+ * is left disabled by never setting the IE bits.
+ */
+static void hx_spi_poll_tx(struct hx_spi *spi, u32 status)
+{
+    unsigned free = SPI_FIFO - ((status & REG_STATUS_TXFIFO_MASK) >> REG_STATUS_TXFIFO_SHIFT);
+
+    while(spi->tx_compl < spi->len && free) {
+        u32 data = spi->tx_buf ? spi->tx_buf[spi->tx_compl] : 0x00;
+        writel(data, spi->base + REG_TXDATA);
+        spi->tx_compl++;
+        free--;
+    }
+}
+
+static int hx_spi_poll_rx(struct hx_spi *spi, u32 status)
+{
+    unsigned level = (status & REG_STATUS_RXFIFO_MASK) >> REG_STATUS_RXFIFO_SHIFT;
+
+    while(spi->rx_compl < spi->len && level) {
+        u32 data = readl(spi->base + REG_RXDATA);
+        if(spi->rx_buf)
+            spi->rx_buf[spi->rx_compl] = data;
+        spi->rx_compl++;
+        level--;
+    }
+    return spi->rx_compl >= spi->len;
+}
+
 static int hx_spi_transfer_one_message(struct spi_controller *master, struct spi_message *m)
 {
-    unsigned long timeout = msecs_to_jiffies(TIMEOUT_MS);
     struct hx_spi *spi = spi_controller_get_devdata(master);
     struct spi_device *spid = m->spi;
     unsigned int speed = spid->max_speed_hz;
     struct spi_transfer *t = NULL;
     int status = 0;
-    unsigned long flags;
 
     list_for_each_entry(t, &m->transfers, transfer_list)
-        if(t->speed_hz < speed)
+        if(t->speed_hz && t->speed_hz < speed)
             speed = t->speed_hz;
 
     if(hx_spi_prepare(spid, speed)) {
@@ -213,85 +260,49 @@ static int hx_spi_transfer_one_message(struct spi_controller *master, struct spi
 
     m->actual_length = 0;
     list_for_each_entry(t, &m->transfers, transfer_list) {
-        spin_lock_irqsave(&spi->lock, flags);
-
-        reinit_completion(&spi->done);
+        unsigned long deadline;
 
         spi->len = t->len;
         spi->tx_compl = spi->rx_compl = 0;
         spi->tx_buf = t->tx_buf;
         spi->rx_buf = t->rx_buf;
 
-        /* touch_cursor.c-style byte-by-byte xfer (A5 SPI hardware) —
-         * do NOT touch REG_CONFIG here: apple_spi_wake set SETUP = 0x10618,
-         * touch_cursor never rewrites SETUP during xfer. Overwriting it
-         * with REG_CONFIG_SET|PIOEN (0x10403E) kills the transfer. */
-        spin_unlock_irqrestore(&spi->lock, flags);
-        timeout = 1;  /* assume success */
-        {
-            unsigned i;
-            unsigned deadline;
-            u32 st, st0, setup_pre;
-            setup_pre = readl(spi->base + REG_CONFIG);
-            st0 = readl(spi->base + REG_STATUS);
-            dev_dbg(&spid->dev, "xfer start len=%u setup=0x%x status=0x%x cs_pin=0x%x ctrl=0x%x\n",
-                    t->len, setup_pre, st0,
-                    readl(spi->base + REG_PIN), readl(spi->base + REG_CLKCFG));
-            for (i = 0; i < t->len; i++) {
-                u32 txw = 0xff;
-                if (spi->tx_buf)
-                    txw = ((const u8 *)spi->tx_buf)[i];
-                /* RXLIM = 1 (get one byte back) */
-                writel(1, spi->base + 0x34);
-                /* wait for idle */
-                deadline = 100000;
-                while (((st = readl(spi->base + REG_STATUS)) & 0x1f0u) == 0x100u) {
-                    if (!deadline--) break;
-                    udelay(1);
-                }
-                writel(txw, spi->base + REG_TXDATA);
-                /* wait for RX ready (status bit range 0x3e00) */
-                deadline = 100000;
-                while (!((st = readl(spi->base + REG_STATUS)) & 0x3e00u)) {
-                    if (!deadline--) {
-                        u32 rx_val = readl(spi->base + REG_RXDATA);
-                        u32 rxcnt = readl(spi->base + 0x34);
-                        u32 txcnt = readl(spi->base + 0x4C);
-                        u32 setup_now = readl(spi->base + REG_CONFIG);
-                        dev_err(&spid->dev, "byte %u TX-wait fail, status=0x%x rx=0x%x rxcnt=0x%x txcnt=0x%x setup=0x%x\n",
-                                i, st, rx_val, rxcnt, txcnt, setup_now);
-                        timeout = 0;
-                        goto xfer_done;
-                    }
-                    udelay(1);
-                }
-                st = readl(spi->base + REG_RXDATA);
-                if (i < 4 || i == t->len - 1)
-                    dev_dbg(&spid->dev, "byte %u OK tx=0x%x rx=0x%x\n", i, txw, st & 0xff);
-                if (spi->rx_buf)
-                    ((u8 *)spi->rx_buf)[i] = (u8)st;
-                spi->tx_compl++;
-                spi->rx_compl++;
+        if(!t->len)
+            continue;
+
+        /* Samsung layout: program the packet counts, then start PIO. */
+        writel(t->len, spi->base + REG_RXCNT);
+        writel(t->len, spi->base + REG_TXCNT);
+        writel(REG_CONFIG_SET | REG_CONFIG_PIOEN, spi->base + REG_CONFIG);
+
+        deadline = jiffies + msecs_to_jiffies(TIMEOUT_MS);
+        for(;;) {
+            u32 st = readl(spi->base + REG_STATUS);
+
+            hx_spi_poll_tx(spi, st);
+            if(hx_spi_poll_rx(spi, st))
+                break;
+
+            if(time_after(jiffies, deadline)) {
+                dev_err(&spid->dev,
+                        "transfer timed out: %u/%u tx, %u/%u rx, status=0x%x rxcnt=0x%x txcnt=0x%x config=0x%x\n",
+                        spi->tx_compl, spi->len, spi->rx_compl, spi->len,
+                        st, readl(spi->base + REG_RXCNT),
+                        readl(spi->base + REG_TXCNT), readl(spi->base + REG_CONFIG));
+                status = -ETIMEDOUT;
+                break;
             }
-xfer_done: ;
+            cpu_relax();
         }
 
-        spin_lock_irqsave(&spi->lock, flags);
-
-        /* clear status flags but LEAVE SETUP (REG_CONFIG) alone */
+        /* stop the channel and clear latched status */
+        writel(REG_CONFIG_SET, spi->base + REG_CONFIG);
         writel(REG_STATUS_COMPL | REG_STATUS_TXEMPTY | REG_STATUS_RXRDY, spi->base + REG_STATUS);
-
-        if(timeout == 0) {
-            dev_err(&spid->dev, "transfer timed out with %d/%d remaining.\n", spi->len - spi->tx_compl, spi->len - spi->rx_compl);
-            status = -ETIMEDOUT;
-        }
-
-        m->actual_length += t->len;
-
-        spin_unlock_irqrestore(&spi->lock, flags);
 
         if(status)
             break;
+
+        m->actual_length += t->len;
     }
 
     hx_spi_set_cs(spid, 0);
