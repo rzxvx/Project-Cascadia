@@ -160,6 +160,24 @@ if [ -f /etc/nfsroot ] && [ -x /sbin/mount.nfs ]; then
                 cp -p /etc/dropbear/dropbear_ed25519_host_key /newroot/etc/dropbear/ \
                     2>/dev/null || true
             fi
+            # And the keys that get in.  The NFS root is seeded once, from
+            # whatever the initramfs tree held that day, and never again --
+            # so a key added afterwards (another ssh-keygen, another laptop,
+            # ./cascadia build adding this machine's) reaches the RAM root and
+            # not this one, and the NFS boot answers with a password prompt
+            # for a password that does not exist.  The image decides who may
+            # log in, on either root.  Ownership and modes are set here rather
+            # than preserved: dropbear refuses a key whose ~, ~/.ssh or
+            # authorized_keys is not root's or is writable by anyone else, and
+            # refuses it the same silent way.
+            if [ -s /root/.ssh/authorized_keys ]; then
+                mkdir -p /newroot/root/.ssh 2>/dev/null
+                cp /root/.ssh/authorized_keys \
+                    /newroot/root/.ssh/authorized_keys 2>/dev/null || true
+                chown -R 0:0 /newroot/root 2>/dev/null || true
+                chmod 700 /newroot/root /newroot/root/.ssh 2>/dev/null || true
+                chmod 600 /newroot/root/.ssh/authorized_keys 2>/dev/null || true
+            fi
             mkdir -p /newroot/proc /newroot/sys /newroot/dev
             # Move rather than remount: /dev in particular is devtmpfs with the
             # devpts and shm instances already mounted underneath it, and
