@@ -342,8 +342,7 @@
 				generation = <1>;
 				hv-supply = <&touch_ana>;
 				core-supply = <&touch_ldo>;
-				pmuclk0-supply = <&touch_pmuclk0>;
-				pmuclk1-supply = <&touch_pmuclk1>;
+				pmuclk-supply = <&touch_pmuclk>;
 				/* The ADT writes GPIOs as (port << 8) | pin, eight
 				 * to a port: function-reset 0x0205 is pin 21,
 				 * function-enable_cs 0x0c07 is pin 103.  The ATTN
@@ -553,23 +552,18 @@
                     enable = <0x01>;
                 };
 
-                /* ADT function-clock_enable-pmu: PMU GPIO0, which on this PMU
-                 * is two register writes -- 0x0200 <- 0x01, 0x0201 <- 0x02.
-                 * This is the enable the digitizer needs before it will run
-                 * its bootloader at all; without it the Z2 is powered and
-                 * clocked but never drives MISO and never pulls ATTN. */
-                touch_pmuclk0: touch_pmuclk0@200 {
+                /* ADT function-clock_enable-pmu: PMU GPIO0.  The register is
+                 * gpio + 0x61 (AppleD1946PMU::_setGPIOFunction in the 12H321
+                 * kernelcache), so GPIO0 is 0x61 -- not 0x200, which is the
+                 * LDO range.  0x60 is the direction/enable field and 0x02 the
+                 * output level; 0x1d is preserved config.  We drive it as an
+                 * enabled output: if the level turns out to be inverted this
+                 * is one hex digit (enable = <0x60>). */
+                touch_pmuclk: touch_pmuclk@61 {
                     compatible = "apple,pmu-pwrsw";
-                    reg = <0x200>;
-                    mask = <0xff>;
-                    enable = <0x01>;
-                };
-
-                touch_pmuclk1: touch_pmuclk1@201 {
-                    compatible = "apple,pmu-pwrsw";
-                    reg = <0x201>;
-                    mask = <0xff>;
-                    enable = <0x02>;
+                    reg = <0x61>;
+                    mask = <0x62>;
+                    enable = <0x62>;
                 };
             };
         };
