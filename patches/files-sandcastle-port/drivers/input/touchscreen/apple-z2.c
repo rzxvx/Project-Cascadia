@@ -51,6 +51,8 @@ struct hx_touch_data {
     struct input_dev *input_dev;
     struct regulator *regu_hv;
     struct regulator *regu_core;
+    struct regulator *regu_pmuclk0;
+    struct regulator *regu_pmuclk1;
     struct completion irq_done;
     u32 generation;
     int misc_dev_inuse;
@@ -259,6 +261,32 @@ static int hx_touch_misc_dev_open(struct inode *inode, struct file *filp)
      * that was reset being put on GPIO 5, which is not the digitizer's reset
      * at all -- the ADT's 0x0205 is pin 21.  See pinctrl-s5l8940x-gpio.c. */
 
+    /* The ADT's function-clock_enable-pmu -- the one enable in the digitizer's
+     * bring-up list we used to skip.  It is PMU GPIO0, and on this PMU that is
+     * two register writes over I2C: 0x0200 <- 0x01, 0x0201 <- 0x02.  Without it
+     * the Z2 comes up powered and clocked but never runs its bootloader: it
+     * drives nothing on MISO (reads come back as our own TX) and never pulls
+     * ATTN, so hx-touchd times out on the boot IRQ.  It goes on before the
+     * rails, and is modelled as two pwrsw regulators the way the rails are. */
+    if(hxt->regu_pmuclk0) {
+        pr_err("Z2-OPEN: regulator_enable pmuclk0 (clock_enable-pmu 0x200)\n");
+        ret = regulator_enable(hxt->regu_pmuclk0);
+        pr_err("Z2-OPEN: regu_pmuclk0 ret=%d\n", ret);
+        if(ret)
+            return ret;
+    }
+    if(hxt->regu_pmuclk1) {
+        pr_err("Z2-OPEN: regulator_enable pmuclk1 (clock_enable-pmu 0x201)\n");
+        ret = regulator_enable(hxt->regu_pmuclk1);
+        pr_err("Z2-OPEN: regu_pmuclk1 ret=%d\n", ret);
+        if(ret) {
+            if(hxt->regu_pmuclk0)
+                regulator_disable(hxt->regu_pmuclk0);
+            return ret;
+        }
+    }
+    mdelay(5);
+
     pr_err("Z2-OPEN: regulator_enable hv\n");
     ret = regulator_enable(hxt->regu_hv);
     pr_err("Z2-OPEN: regu_hv ret=%d\n", ret);
@@ -310,6 +338,14 @@ static int hx_touch_misc_dev_release(struct inode *inode, struct file *filp)
     regulator_disable(hxt->regu_core);
     mdelay(2);
     regulator_disable(hxt->regu_hv);
+    if(hxt->regu_pmuclk1) {
+        mdelay(2);
+        regulator_disable(hxt->regu_pmuclk1);
+    }
+    if(hxt->regu_pmuclk0) {
+        mdelay(2);
+        regulator_disable(hxt->regu_pmuclk0);
+    }
 
     hxt->rx_size = hxt->rx_rdptr = 0;
     hxt->misc_dev_inuse = 0;
@@ -534,6 +570,22 @@ static int hx_touch_spi_probe(struct spi_device *spi)
             return PTR_ERR(hxt->regu_core);
         dev_warn(&spi->dev, "touch panel may not function, missing 'core-supply': %ld.", PTR_ERR(hxt->regu_core));
         hxt->regu_core = NULL;
+    }
+
+    hxt->regu_pmuclk0 = devm_regulator_get(&spi->dev, "pmuclk0");
+    if(IS_ERR(hxt->regu_pmuclk0)) {
+        if(PTR_ERR(hxt->regu_pmuclk0) == -EPROBE_DEFER)
+            return PTR_ERR(hxt->regu_pmuclk0);
+        dev_warn(&spi->dev, "no 'pmuclk0-supply' (ADT clock_enable-pmu): %ld.", PTR_ERR(hxt->regu_pmuclk0));
+        hxt->regu_pmuclk0 = NULL;
+    }
+
+    hxt->regu_pmuclk1 = devm_regulator_get(&spi->dev, "pmuclk1");
+    if(IS_ERR(hxt->regu_pmuclk1)) {
+        if(PTR_ERR(hxt->regu_pmuclk1) == -EPROBE_DEFER)
+            return PTR_ERR(hxt->regu_pmuclk1);
+        dev_warn(&spi->dev, "no 'pmuclk1-supply' (ADT clock_enable-pmu): %ld.", PTR_ERR(hxt->regu_pmuclk1));
+        hxt->regu_pmuclk1 = NULL;
     }
 
     hxt->gpiod_reset = devm_gpiod_get_index(&spi->dev, "reset", 0, 0);
