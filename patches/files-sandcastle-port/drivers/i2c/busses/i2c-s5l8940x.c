@@ -43,6 +43,8 @@
 #define  REG_SMSTA_RXDONE       0x00100000
 #define REG_CTL                 0x1c
 #define  REG_CTL_REV6_UNK       0x00000800
+#define  REG_CTL_ENABLE         0x00000100   /* iBoot writes CTL = clkdiv | 0x100 */
+#define  REG_CTL_UNK600         0x00000600   /* and ORs 0x600 in at init */
 #define  REG_CTL_MRR            0x00000400
 #define  REG_CTL_MTR            0x00000200
 #define  REG_CTL_CLKDIV_MASK    0x000000ff
@@ -200,27 +202,33 @@ static void apple_s5l8940x_i2c_start_write(struct apple_s5l8940x_i2c *i2c)
  * wait for the write to complete on its own and the controller rejects the
  * dangling transaction outright.
  */
+/*
+ * A register access is "write the address, then read the data", and on this
+ * controller that is ONE transaction.  This follows iBoot's own routine
+ * (iBEC 2261.30.37, 0xbae0), which is the reference for this hardware:
+ *
+ *      SMSTA   = 0x08200000                 clear XEN | MTN
+ *      MTXFIFO = START | (addr << 1)        address write, no STOP
+ *      MTXFIFO = <register address bytes>
+ *      MTXFIFO = START | (addr << 1) | 1    repeated start, read
+ *      MTXFIFO = len | READ | STOP
+ *      then pull bytes out of MRXFIFO until it stops reporting EMPTY,
+ *      watching MTN for a NAK.
+ *
+ * Note iBoot never touches RDCOUNT and never waits on RXDONE: the count rides
+ * along in the read command word and the data is taken straight from the FIFO.
+ * Doing this as two transactions fails both ways, and we measured both -- a
+ * STOP after the address loses the PMU's register pointer (every register read
+ * back 0xa5), and leaving the STOP off between two separate transfers makes
+ * the controller reject the dangling transaction.
+ */
 static int apple_s5l8940x_i2c_xfer_combined(struct apple_s5l8940x_i2c *i2c,
                                             struct i2c_msg *w, struct i2c_msg *r)
 {
-    unsigned int poll_us = TIMEOUT_MS * 1000;
-    unsigned long flags;
-    unsigned int i;
-    int done = 0;
-    u32 smsta;
+    unsigned int i, guard;
+    u32 v;
 
-    spin_lock_irqsave(&i2c->lock, flags);
-    i2c->msg = r;
-    i2c->compl_ptr = 0;
-    i2c->tx_ptr = 0;
-    i2c->last = 1;
-    i2c->error = 0;
-    reinit_completion(&i2c->done);
-
-    writel(1, i2c->base + REG_LOCK);
-
-    writel((readl(i2c->base + REG_RDCOUNT) & ~REG_RDCOUNT_MASK) |
-           (r->len << REG_RDCOUNT_SHIFT), i2c->base + REG_RDCOUNT);
+    writel(REG_SMSTA_XEN | REG_SMSTA_MTN, i2c->base + REG_SMSTA);
 
     writel(REG_MTXFIFO_START | (w->addr << 1), i2c->base + REG_MTXFIFO);
     for(i = 0; i < w->len; i++)
@@ -229,30 +237,28 @@ static int apple_s5l8940x_i2c_xfer_combined(struct apple_s5l8940x_i2c *i2c,
     writel(REG_MTXFIFO_START | (r->addr << 1) | 1, i2c->base + REG_MTXFIFO);
     writel(REG_MTXFIFO_READ | REG_MTXFIFO_STOP | r->len, i2c->base + REG_MTXFIFO);
 
-    writel(REG_SMSTA_MTN | REG_SMSTA_RXDONE | REG_SMSTA_ERROR, i2c->base + REG_IRQMASK);
-    writel(0, i2c->base + REG_LOCK);
-
-    spin_unlock_irqrestore(&i2c->lock, flags);
-
-    while(poll_us) {
-        smsta = readl(i2c->base + REG_SMSTA);
-        if(smsta & (REG_SMSTA_XEN | REG_SMSTA_MTN | REG_SMSTA_RXDONE | REG_SMSTA_ERROR))
-            apple_s5l8940x_i2c_irq(0, i2c);
-        if(try_wait_for_completion(&i2c->done)) {
-            done = 1;
-            break;
+    for(i = 0; i < r->len; i++) {
+        guard = TIMEOUT_MS * 100;   /* 10us per turn */
+        for(;;) {
+            v = readl(i2c->base + REG_MRXFIFO);
+            if(!(v & REG_MRXFIFO_EMPTY))
+                break;
+            if(readl(i2c->base + REG_SMSTA) & REG_SMSTA_MTN) {
+                writel(readl(i2c->base + REG_CTL) | REG_CTL_MTR, i2c->base + REG_CTL);
+                writel(REG_SMSTA_MTN, i2c->base + REG_SMSTA);
+                return -ENXIO;
+            }
+            if(!guard--) {
+                dev_err(i2c->dev, "read stalled at byte %u, SMSTA=%#x\n",
+                        i, readl(i2c->base + REG_SMSTA));
+                return -ETIMEDOUT;
+            }
+            udelay(10);
         }
-        udelay(10);
-        poll_us -= 10;
+        r->buf[i] = v & REG_MRXFIFO_DATA_MASK;
     }
 
-    if(!done) {
-        dev_err(i2c->dev, "combined transfer timed out, SMSTA=%#x\n",
-                readl(i2c->base + REG_SMSTA));
-        return -ETIMEDOUT;
-    }
-
-    return i2c->error;
+    return 0;
 }
 
 static int apple_s5l8940x_i2c_xfer_msg(struct apple_s5l8940x_i2c *i2c, struct i2c_msg *msg, int first, int last)
@@ -342,7 +348,12 @@ static int apple_s5l8940x_i2c_xfer(struct i2c_adapter *adap, struct i2c_msg *msg
 
     mutex_lock(&i2c->mtx);
 
-    writel(i2c->clkdiv | (i2c->hw_rev >= 6 ? REG_CTL_REV6_UNK : 0), i2c->base + REG_CTL);
+    /* iBoot (iBEC 2261.30.37, i2c_init at 0xb9dc and the baud setup at 0xbaa0)
+     * leaves this register at clkdiv | 0x100 | 0x600.  We were writing bare
+     * clkdiv -- 0x800 only applies from rev 6 and this core is rev 1 -- so the
+     * controller ran without whatever those bits enable. */
+    writel(i2c->clkdiv | REG_CTL_ENABLE | REG_CTL_UNK600 |
+           (i2c->hw_rev >= 6 ? REG_CTL_REV6_UNK : 0), i2c->base + REG_CTL);
     writel(REG_SMSTA_XEN | REG_SMSTA_MTN | REG_SMSTA_ERROR, i2c->base + REG_SMSTA);
     writel(0, i2c->base + REG_IRQMASK);
     writel(REG_RESET_BIT, i2c->base + REG_RESET);
