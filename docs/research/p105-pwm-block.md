@@ -130,7 +130,23 @@ does: the pad was already in the right mode (`0x620`, set before Linux ran).
 The control register reads back `0x4001` after `0x4003` is written -- bit 1
 clears itself, as the implemented-bit map predicted.
 
-A coin toss says "fast", not "32768 Hz". `tools/pwm-hz.sh` checks the unit: at
-12,000,000 + 12,000,000 ticks the pad should read like `0000111100001111` when
-sampled every quarter second, and 6M + 18M against 18M + 6M says which register
-is the high half.
+A coin toss says "fast", not "32768 Hz". `tools/pwm-hz.sh` slows the channel
+down and samples the pad every ~267 ms:
+
+    12M + 12M   0011001100110010   one cycle per second, even halves
+     6M + 18M   0001000100010000   high a quarter of the time
+    18M +  6M   0111011101110110   high three quarters of the time
+    366 + 366   0011000011000010   back to a coin toss
+
+So the unit is the 24 MHz reference, the period is the sum of the two
+registers, and **`ch*8 + 0` is the high time, `ch*8 + 4` the low time**. 366 +
+366 is 732 ticks: 32787 Hz, 0.06 % above the 32768 the ADT asks for -- inside any
+crystal's tolerance, and 732.42 is not an integer anyway.
+
+grape-clk for the digitizer, in full:
+
+    power:   0x3f101124 <- (v & ~0x10f) | 0xf, wait for bits 7:4 == 3:0
+    cycles:  0x33500010 <- 366            high
+             0x33500014 <- 366            low
+    enable:  0x33500020 <- 0x4003         reads back 0x4001
+    out on:  GPIO 63 (0x3fa000fc), already in the right mode at boot
