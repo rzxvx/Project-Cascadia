@@ -213,35 +213,37 @@ static int apple_s5l8940x_i2c_xfer_msg(struct apple_s5l8940x_i2c *i2c, struct i2
 
     spin_unlock_irqrestore(&i2c->lock, flags);
 
-    pr_err("I2C-XFER: polling SMSTA directly\n");
+    /* This controller's interrupt (hwirq 10) never reaches us -- the AIC
+     * masks its lines after rearm -- so the transfer is driven by polling and
+     * we call the handler ourselves whenever the controller has something to
+     * service.
+     *
+     * The condition used to be MTN | RXDONE | ERROR, leaving out XEN.  XEN is
+     * exactly the bit a write completes on, so every write to the PMU ran the
+     * full 100 ms and was then reported as a timeout with SMSTA = 0x08010118
+     * -- XEN set, sitting there ignored.  Wait on XEN as well, and let the
+     * handler decide when the message is actually finished: a write longer
+     * than one FIFO chunk needs several rounds before it completes. */
     {
-        unsigned int poll_us = TIMEOUT_MS * 1000;  /* microseconds */
-        uint32_t smsta;
+        unsigned int poll_us = TIMEOUT_MS * 1000;
+        u32 smsta;
+
         timeout = 0;
-        while (poll_us > 0) {
+        while(poll_us) {
+            smsta = readl(i2c->base + REG_SMSTA);
+            if(smsta & (REG_SMSTA_XEN | REG_SMSTA_MTN | REG_SMSTA_RXDONE | REG_SMSTA_ERROR))
+                apple_s5l8940x_i2c_irq(0, i2c);
+            if(try_wait_for_completion(&i2c->done)) {
+                timeout = 1;
+                break;
+            }
             udelay(10);
             poll_us -= 10;
-            smsta = readl(i2c->base + REG_SMSTA);
-            if (smsta & (REG_SMSTA_MTN | REG_SMSTA_RXDONE | REG_SMSTA_ERROR)) {
-                pr_err("I2C-XFER: SMSTA=0x%x after %u us\n", smsta, TIMEOUT_MS*1000 - poll_us);
-                /* Invoke IRQ handler manually to process */
-                apple_s5l8940x_i2c_irq(0, i2c);
-                timeout = 1;
-                break;
-            }
-            /* also check if completion was signaled */
-            if (try_wait_for_completion(&i2c->done)) {
-                pr_err("I2C-XFER: completion signaled after %u us\n", TIMEOUT_MS*1000 - poll_us);
-                timeout = 1;
-                break;
-            }
         }
-        if (!timeout) {
-            smsta = readl(i2c->base + REG_SMSTA);
-            pr_err("I2C-XFER: TIMEOUT SMSTA=0x%x\n", smsta);
-        }
+        if(!timeout)
+            dev_err(i2c->dev, "transfer timed out, SMSTA=%#x\n",
+                    readl(i2c->base + REG_SMSTA));
     }
-    pr_err("I2C-XFER: poll returned %lu, err=%d\n", timeout, i2c->error);
 
     if(timeout == 0) {
         spin_lock_irqsave(&i2c->lock, flags);
@@ -260,9 +262,7 @@ static int apple_s5l8940x_i2c_xfer(struct i2c_adapter *adap, struct i2c_msg *msg
     struct apple_s5l8940x_i2c *i2c = adap->algo_data;
     int i, ret;
 
-    pr_err("I2C-XFER: enter num=%d addr=0x%x\n", num, msgs[0].addr);
     mutex_lock(&i2c->mtx);
-    pr_err("I2C-XFER: got mutex\n");
 
     writel(i2c->clkdiv | (i2c->hw_rev >= 6 ? REG_CTL_REV6_UNK : 0), i2c->base + REG_CTL);
     writel(REG_SMSTA_XEN | REG_SMSTA_MTN | REG_SMSTA_ERROR, i2c->base + REG_SMSTA);
@@ -272,8 +272,13 @@ static int apple_s5l8940x_i2c_xfer(struct i2c_adapter *adap, struct i2c_msg *msg
 
     for(i=0; i<num; i++) {
         ret = apple_s5l8940x_i2c_xfer_msg(i2c, &msgs[i], i == 0, i == num - 1);
-        if(ret)
+        if(ret) {
+            /* this used to return with the mutex still held, so the very next
+             * transfer blocked on mutex_lock for good and the boot stopped
+             * dead right after the first failed PMU access */
+            mutex_unlock(&i2c->mtx);
             return ret;
+        }
     }
 
     mutex_unlock(&i2c->mtx);
