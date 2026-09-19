@@ -120,7 +120,15 @@ static int hx_touch_read_report(struct hx_touch_data *hxt)
     struct spi_transfer xfer = { 0 };
     u8 readpkt[64] = { 0xEB, 1 + hxt->read_tag };
     int ret;
-    unsigned len, i, g1done = 0, g1len = 0, step;
+    /* g1len must start at the full packet size, not 0.  When the digitizer
+     * answers with zeros -- which is what a chip that never booted does --
+     * readpkt[0] is 0, the branch below takes the g1done path and leaves
+     * g1len alone.  With g1len = 0 the second transfer became zero-length,
+     * the controller was asked for nothing, readpkt kept the command we had
+     * just written into it, and this function then reported that as an
+     * "invalid read header: eb 01 01 00 00" -- our own TX, mistaken for a
+     * reply from the chip for several rounds of debugging. */
+    unsigned len, i, g1done = 0, g1len = 16, step;
     u16 csum;
 
     gpiod_direction_output(hxt->gpiod_cs, 0);

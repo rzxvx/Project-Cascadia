@@ -16,6 +16,7 @@
 #include <linux/regulator/of_regulator.h>
 #include <linux/regulator/consumer.h>
 #include <linux/of.h>
+#include <linux/regmap.h>
 #include <linux/apple-pmu-i2c.h>
 
 struct apple_pmu_i2c_pwrsw {
@@ -37,6 +38,16 @@ static int apple_pmu_i2c_pwrsw_enable(struct regulator_dev *rdev)
            pwrsw->base, pwrsw->mask, pwrsw->enable);
     ret = regulator_enable_regmap(rdev);
     pr_err("PWRSW-EN: regulator_enable_regmap ret=%d\n", ret);
+    {
+        /* Say what the register actually holds afterwards.  ret == 0 only
+         * means the I2C transfer was ACKed; it does not mean the bits stuck,
+         * and for PMU GPIO0 at 0x61 they did not. */
+        struct regmap *map = rdev_get_regmap(rdev);
+        unsigned int v = 0;
+        int rr = map ? regmap_read(map, pwrsw->base, &v) : -ENODEV;
+        pr_err("PWRSW-EN: reg=0x%x reads back 0x%02x (read ret=%d, wanted 0x%x in mask 0x%x)\n",
+               pwrsw->base, v, rr, pwrsw->enable, pwrsw->mask);
+    }
     if(!ret) {
         pwrsw->was_enabled = 1;
         mdelay(1);  /* HACK: hrtimer broken, do enable delay ourselves */
