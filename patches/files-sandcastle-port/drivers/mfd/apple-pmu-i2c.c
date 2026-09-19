@@ -23,7 +23,27 @@ struct apple_pmu_i2c_info {
 
 static const struct apple_pmu_i2c_info apple_pmu_i2c_d2333_info = { .reg_bits = 16, .val_bits = 8 };
 static const struct apple_pmu_i2c_info apple_pmu_i2c_chestnut_info = { .reg_bits = 8, .val_bits = 8 };
+/*
+ * The PMU on this board is a D1946 -- the ADT node is "pmu,d1946" and the only
+ * PMU driver in the 12H321 cache is AppleD1946PMU -- and it takes an 8-bit
+ * register address, not 16.  iBoot settles it: its PMU register write (iBEC
+ * 2261.30.37, 0xbe6c) builds a two-byte buffer of [reg, value] and calls
+ * i2c_write with txlen 2 to address 0x78, and the read beside it uses txlen 1.
+ *
+ * We had this node on the d2333 profile, so every access sent two address
+ * bytes.  Asking for "register 0x020c" put 0x02 on the bus as the register
+ * number and 0x0c as data -- which is why every register in 0x00..0xff read
+ * back the same byte and why none of the rail writes ever stuck.
+ *
+ * It also explains the kernelcache offsets, which are all single-byte:
+ * _setGPIOFunction uses gpio + 0x61, _setLDO uses ldo + 0x2f with a shared
+ * enable at 0x7c.  And it means the ADT's 0x020c and 0x0213 are not addresses
+ * at all but flags 0x02 plus an index -- LDO 12 and LDO 19, both inside
+ * _setLDO's bounds check of 0x16.
+ */
+static const struct apple_pmu_i2c_info apple_pmu_i2c_d1946_info = { .reg_bits = 8, .val_bits = 8 };
 static const struct of_device_id apple_pmu_i2c_of_match[] = {
+    { .compatible = "apple,pmu-d1946", .data = &apple_pmu_i2c_d1946_info },
     { .compatible = "apple,pmu-d2333", .data = &apple_pmu_i2c_d2333_info },
     { .compatible = "apple,pmu-chestnut", .data = &apple_pmu_i2c_chestnut_info },
     { },
@@ -76,7 +96,7 @@ static int apple_pmu_i2c_probe(struct i2c_client *i2c)
      * registers would be 0x3b and 0x42.  The dump settles it. */
     {
         static const struct { unsigned first, last; } banks[] = {
-            { 0x00, 0xff }, { 0x200, 0x21f },
+            { 0x00, 0xff },
         };
         unsigned b, r, c;
         char line[80];

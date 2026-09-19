@@ -537,7 +537,9 @@
             status = "okay";
 
             pmu: pmu@3c {
-                compatible = "apple,pmu-d2333";
+                /* the ADT calls this node pmu,d1946, and the chip takes an 8-bit
+                 * register address -- see apple-pmu-i2c.c */
+                compatible = "apple,pmu-d1946";
                 reg = <0x3c>;
                 #address-cells = <1>;
                 #size-cells = <0>;
