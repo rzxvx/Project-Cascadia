@@ -62,6 +62,38 @@ static int apple_pmu_i2c_probe(struct i2c_client *i2c)
         return ret;
     }
 
+    /* Bring-up: with the bus finally working, dump the chip once.  This is
+     * cheap now -- it only cost eighteen seconds of boot back when every
+     * transfer ran into the 100 ms timeout.
+     *
+     * What we are looking for: the ADT calls power_ana and power_ldo with
+     * 0x020c and 0x0213, which this tree reads as register addresses.  Both
+     * read 0x00 and stay 0x00 after a write, which is how a register that
+     * does not exist behaves.  AppleD1946PMU::_setLDO takes an LDO *index*
+     * (bounds-checked at 0x16) whose voltage register is index + 0x2f, with
+     * a shared enable bit at 0x7c for a few of them; read as index + flags,
+     * 0x20c and 0x213 are LDO 12 and LDO 19, both in range -- so the real
+     * registers would be 0x3b and 0x42.  The dump settles it. */
+    {
+        static const struct { unsigned first, last; } banks[] = {
+            { 0x00, 0xff }, { 0x200, 0x21f },
+        };
+        unsigned b, r, c;
+        char line[80];
+
+        for (b = 0; b < ARRAY_SIZE(banks); b++)
+            for (r = banks[b].first; r <= banks[b].last; r += 16) {
+                int n = 0;
+                for (c = 0; c < 16 && r + c <= banks[b].last; c++) {
+                    unsigned int v = 0;
+                    n += scnprintf(line + n, sizeof(line) - n, "%s%02x",
+                                   c ? " " : "",
+                                   regmap_read(pmu->regmap, r + c, &v) ? 0xff : (v & 0xff));
+                }
+                dev_info(&i2c->dev, "PMU %03x: %s\n", r, line);
+            }
+    }
+
     for_each_child_of_node(node, child)
         of_platform_device_create(child, NULL, &i2c->dev);
 
