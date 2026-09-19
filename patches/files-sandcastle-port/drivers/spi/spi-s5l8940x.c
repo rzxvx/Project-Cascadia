@@ -33,7 +33,7 @@
 #define  REG_CONFIG_16BIT               (1 << 15)
 #define  REG_CONFIG_32BIT               (1 << 16)
 #define  REG_CONFIG_IE_COMPL            (1 << 21)
-#define  REG_CONFIG_SET                 (0x0010401E)
+#define  REG_CONFIG_SET                 (0x00004018)  /* 8-bit words, XNU base; was 0x0010401E which set bit16 = 32-bit words */
 #define REG_STATUS                      0x08
 #define  REG_STATUS_RXRDY               (1 << 0)
 #define  REG_STATUS_TXEMPTY             (1 << 1)
@@ -61,6 +61,7 @@ struct hx_spi {
     unsigned int clkfreq;
     unsigned int speed;
     u32 clkdiv;
+    u32 config;
     bool hw_ready;
     struct clk *clk;
     struct gpio_descs *csgpio;
@@ -175,7 +176,7 @@ static void hx_spi_hw_init(struct hx_spi *spi)
     writel(REG_STATUS_COMPL | 0xf, spi->base + REG_STATUS);
     writel(spi->clkdiv, spi->base + REG_CLKDIV);
     writel(6, spi->base + REG_PIN);                           /* CS idle high */
-    writel(REG_CONFIG_SET, spi->base + REG_CONFIG);           /* base config */
+    writel(spi->config, spi->base + REG_CONFIG);              /* base config */
     writel(REG_CLKCFG_ENABLE, spi->base + REG_CLKCFG);        /* 0xd: run the clock */
     mdelay(5);
 }
@@ -273,7 +274,7 @@ static int hx_spi_transfer_one_message(struct spi_controller *master, struct spi
         /* Samsung layout: program the packet counts, then start PIO. */
         writel(t->len, spi->base + REG_RXCNT);
         writel(t->len, spi->base + REG_TXCNT);
-        writel(REG_CONFIG_SET | REG_CONFIG_PIOEN, spi->base + REG_CONFIG);
+        writel(spi->config | REG_CONFIG_PIOEN, spi->base + REG_CONFIG);
 
         deadline = jiffies + msecs_to_jiffies(TIMEOUT_MS);
         for(;;) {
@@ -296,7 +297,7 @@ static int hx_spi_transfer_one_message(struct spi_controller *master, struct spi
         }
 
         /* stop the channel and clear latched status */
-        writel(REG_CONFIG_SET, spi->base + REG_CONFIG);
+        writel(spi->config, spi->base + REG_CONFIG);
         writel(REG_STATUS_COMPL | REG_STATUS_TXEMPTY | REG_STATUS_RXRDY, spi->base + REG_STATUS);
 
         if(status)
@@ -398,8 +399,15 @@ static int hx_spi_probe(struct platform_device *pdev)
     if(spi->clkdiv > REG_CLKDIV_MAX)
         spi->clkdiv = REG_CLKDIV_MAX;
 
-    dev_info(&pdev->dev, "S5L8940X SPI, powered: CLKDIV %u reads back %#x, %d chip select GPIO%s.\n",
-             spi->clkdiv, readl(base + REG_CLKDIV), ncs, ncs == 1 ? "" : "s");
+    /* CONFIG base word: 8-bit words + XNU's mode bits (REG_CONFIG_SET).  Kept
+     * overridable so CPOL/CPHA/word-size can be tuned from the device tree
+     * without a kernel rebuild -- the 32-bit-word default (bit 16) was what
+     * scrambled the digitizer's byte stream. */
+    if(of_property_read_u32(pdev->dev.of_node, "apple,spi-config", &spi->config))
+        spi->config = REG_CONFIG_SET;
+
+    dev_info(&pdev->dev, "S5L8940X SPI, powered: CLKDIV %u reads back %#x, CONFIG %#x, %d chip select GPIO%s.\n",
+             spi->clkdiv, readl(base + REG_CLKDIV), spi->config, ncs, ncs == 1 ? "" : "s");
 
     spin_lock_init(&spi->lock);
     init_completion(&spi->done);
