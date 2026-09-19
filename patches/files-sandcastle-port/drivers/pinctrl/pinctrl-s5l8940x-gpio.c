@@ -424,10 +424,16 @@ static int apple_s5l8940x_gpio_gpio_register(struct apple_s5l8940x_gpio_pinctrl 
         return ret;
     }
 
-    /* FORCE PINMUX FOR I2C0 pins 4 (SDA) and 5 (SCL). ADT config 0x00010102. */
-    pr_err("PINCTRL: forcing I2C0 pins 4,5 to iic function 0x00010102\n");
-    writel(0x00010102u, pctl->base + 4 * 4);  /* SDA pin 4 */
-    writel(0x00010102u, pctl->base + 5 * 4);  /* SCL pin 5 */
+    /*
+     * This used to force "I2C0 pins 4 and 5" into the iic function.  Those
+     * are not I2C0's pins.  The ADT writes a GPIO as (port << 8) | pin, eight
+     * pins to a port: function-iic_sda is 0x0604 and function-iic_scl 0x0605,
+     * which are pins 52 and 53 -- and iBoot has them configured already.  The
+     * old code took the low byte and rewrote pins 4 and 5, which belong to
+     * something else, and the touch driver then found that "reset on pin 5
+     * clobbers SCL".  The same misreading put the digitizer's reset on 5 and
+     * its chip select on 7; they are 0x0205 = 21 and 0x0c07 = 103.
+     */
 
     ret = gpiochip_add_pin_range(&pctl->gpio_chip, dev_name(pctl->dev), 0, 0, pctl->npins);
     if(ret < 0) {

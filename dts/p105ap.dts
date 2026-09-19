@@ -322,15 +322,15 @@
 		 * and injects events via uinput; writing a kernel multitouch
 		 * driver is explicitly out of scope for "LXDE on glass".
 		 *
-		 * TODO: no upstream driver binds apple,s5l8940x-spi either, so
-		 * this is disabled until patches/ grows one.  The ADT records DMA
-		 * channels 11/12 on the cdma controller if we ever want them.
+		 * Bound by the Sandcastle-port spi-s5l8940x.c (built from
+		 * patches/files-sandcastle-port/).  The ADT records DMA channels
+		 * 11/12 on the cdma controller if PIO ever becomes the bottleneck.
 		 */
 				spi1: spi@2100000 {
 			compatible = "apple,s5l8940x-spi";
 			reg = <0x2100000 0x1000>;
 			interrupts = <29>;
-			clocks = <&touchclk>;
+			clocks = <&spi1_ps>;
 			#address-cells = <1>;
 			#size-cells = <0>;
 			status = "okay";
@@ -342,8 +342,12 @@
 				generation = <1>;
 				hv-supply = <&touch_ana>;
 				core-supply = <&touch_ldo>;
-				reset-gpios = <&gpio 5 0>;
-				cs-gpios = <&gpio 7 0>;
+				/* The ADT writes GPIOs as (port << 8) | pin, eight
+				 * to a port: function-reset 0x0205 is pin 21,
+				 * function-enable_cs 0x0c07 is pin 103.  The ATTN
+				 * interrupt is already a plain number, 22. */
+				reset-gpios = <&gpio 21 0>;
+				cs-gpios = <&gpio 103 0>;
 				irq-gpios = <&gpio 22 1>;
 				clocks = <&touchclk>;
 			};
@@ -484,17 +488,32 @@
 		};
         /*
          * ---- Sandcastle-port additions (touch stack) ----
-         * refclk24mhz -> touchclk -> spi1 + touch@0
-         *                     ^
-         *                     hypothesis: Apple-native Cmwp @ 0x33500300
+         *
+         * touchclk is the digitizer's 32 kHz clock, and on A5 it is PWM
+         * channel 2 (ADT /arm-io/pwm, child grape-clk, reg = 2): 366 + 366
+         * ticks of the 24 MHz reference, out on GPIO 63.  reg[1] is the PWM
+         * block's power-state register -- index 73 of the ADT's
+         * device-clocks table, not the clock-gates id 83.
+         * docs/research/p105-pwm-block.md, p105-pmgr-gates.md.
          */
-        touchclk: touchclk@3500300 {
-            compatible = "apple,s5l8940x-pmgr-clk-touch";
+        touchclk: touchclk@3500000 {
+            compatible = "apple,s5l8940x-pwm-clk";
             #clock-cells = <0>;
-            reg = <0x3500300 0x8>;
+            reg = <0x3500000 0x1000>, <0xf101124 0x4>;
             clocks = <&refclk24mhz>;
             clock-output-names = "touchclk";
             clock-frequency = <32768>;
+            apple,pwm-channel = <2>;
+        };
+
+        /* SPI1's power-state switch: device-clocks index 58, clock-gates id
+         * 68.  The SPI driver enables it as its clock. */
+        spi1_ps: spi1-ps@f1010e8 {
+            compatible = "apple,s5l8940x-pmgr-clk-gate";
+            #clock-cells = <0>;
+            reg = <0xf1010e8 0x4>;
+            clocks = <&refclk24mhz>;
+            clock-output-names = "spi1_ps";
         };
 
         i2c0: i2c@3200000 {

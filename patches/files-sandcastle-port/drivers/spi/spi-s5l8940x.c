@@ -60,6 +60,8 @@ struct hx_spi {
     void __iomem *base;
     unsigned int clkfreq;
     unsigned int speed;
+    u32 clkdiv;
+    bool hw_ready;
     struct clk *clk;
     struct gpio_descs *csgpio;
 
@@ -149,284 +151,42 @@ static void hx_spi_set_cs(struct spi_device *spid, int enable)
     gpiod_direction_output(spi->csgpio->desc[cs], !enable);
 }
 
+/*
+ * Controller setup, the "apple_spi_wake" sequence from touch_cursor.c, written
+ * for this A5 controller.  Done once: the block is powered by its "clocks"
+ * entry -- SPI1's power-state switch in PMGR, index 58 in the ADT's
+ * device-clocks table -- which the probe enables.
+ *
+ * This used to be the place where the bring-up lab lived: blind writes into
+ * the PMGR gate table at the wrong indices, bitmaps at 0x1200/0x1204, a PLL
+ * predivider (0x3f100010 is PREDIV0-CLK, not "the PWM clock"), and a
+ * Samsung-style PWM setup at 0x33500300, the fourth file of a block that is
+ * not Samsung-style at all.  None of it ever made SPI1 answer; the wrong gate
+ * address was why.  See docs/research/p105-pmgr-gates.md.
+ */
+static void hx_spi_hw_init(struct hx_spi *spi)
+{
+    writel(0xf, spi->base + REG_STATUS);                      /* clear status */
+    writel(readl(spi->base + REG_CLKCFG) | 0xc, spi->base + REG_CLKCFG);
+    writel(spi->clkdiv, spi->base + REG_CLKDIV);
+    writel(6, spi->base + REG_PIN);                           /* CS_REG = 6 */
+    writel(0x10618, spi->base + REG_CONFIG);                  /* SETUP */
+    writel(1, spi->base + REG_CLKCFG);                        /* enable */
+    mdelay(5);
+}
+
 static int hx_spi_prepare(struct spi_device *spid, unsigned int speed)
 {
     struct hx_spi *spi = spidev_to_hx_spi(spid);
-    u32 rate;
 
-    rate = DIV_ROUND_UP(spi->clkfreq, speed);
-    if(rate > REG_CLKDIV_MAX + 1)
-        return -EINVAL;
-    if(rate < 2)
-        rate = 2;
-
-    /* Dump SPI regs BEFORE any of our writes — see if hardware is
-     * responsive at all with whatever state iBoot left it in. */
-    pr_err("SPI: spi->base virt=%p\n", spi->base);
-    pr_err("SPI: probe reg dump (before clocks/wake):\n");
-    pr_err("SPI:   0x00 CTRL   =0x%x\n", readl(spi->base + 0x00));
-    pr_err("SPI:   0x04 SETUP  =0x%x\n", readl(spi->base + 0x04));
-    pr_err("SPI:   0x08 STATUS =0x%x\n", readl(spi->base + 0x08));
-    pr_err("SPI:   0x0C CS_REG =0x%x\n", readl(spi->base + 0x0C));
-    pr_err("SPI:   0x30 CLKDIV =0x%x\n", readl(spi->base + 0x30));
-
-    /* Independent ioremap on hardcoded 0x32100000 in case devm mapping is wrong. */
-    {
-        void __iomem *alt = ioremap(0x32100000, 0x1000);
-        pr_err("SPI: alt ioremap 0x32100000 -> virt=%p\n", alt);
-        if (alt) {
-            pr_err("SPI:   alt 0x00 CTRL   =0x%x\n", readl(alt + 0x00));
-            pr_err("SPI:   alt 0x04 SETUP  =0x%x\n", readl(alt + 0x04));
-            pr_err("SPI:   alt 0x08 STATUS =0x%x\n", readl(alt + 0x08));
-            writel(0xDEADBE00, alt + 0x30);
-            udelay(10);
-            pr_err("SPI: alt write-test CLKDIV=0xDEADBE00 readback=0x%x\n",
-                   readl(alt + 0x30));
-            iounmap(alt);
-        }
+    if(!spi->hw_ready) {
+        hx_spi_hw_init(spi);
+        spi->hw_ready = true;
+        dev_info(&spi->master->dev, "controller up: CLKCFG %#x CONFIG %#x PIN %#x CLKDIV %u\n",
+                 readl(spi->base + REG_CLKCFG), readl(spi->base + REG_CONFIG),
+                 readl(spi->base + REG_PIN), readl(spi->base + REG_CLKDIV));
     }
-
-    /* Test other well-known peripheral addresses to confirm ioremap works. */
-    {
-        void __iomem *i2c = ioremap(0x33200000, 0x100);   /* I2C0 which works */
-        void __iomem *pwm = ioremap(0x33F00000, 0x100);   /* PWM */
-        if (i2c) {
-            pr_err("SPI: I2C0 sanity 0x00=0x%x 0x04=0x%x\n",
-                   readl(i2c + 0x00), readl(i2c + 0x04));
-            iounmap(i2c);
-        }
-        if (pwm) {
-            pr_err("SPI: PWM sanity 0x00=0x%x 0x04=0x%x\n",
-                   readl(pwm + 0x00), readl(pwm + 0x04));
-            iounmap(pwm);
-        }
-    }
-
-    /* spi1_hw_reset from touch_cursor.c: toggle CH_SW_RST (bit 5) at 0x00 */
-    {
-        u32 v = readl(spi->base + 0x00);
-        pr_err("SPI: hw_reset pre CTRL=0x%x\n", v);
-        writel(v | (1u << 5), spi->base + 0x00);
-        mdelay(2);
-        writel(v & ~(1u << 5), spi->base + 0x00);
-        mdelay(2);
-        pr_err("SPI: hw_reset post CTRL=0x%x\n", readl(spi->base + 0x00));
-    }
-
-    /* Try writing a known value to CLKDIV (which has no side effects if
-     * hardware is off) and reading it back. If write sticks -> hw alive. */
-    writel(0xAA, spi->base + 0x30);
-    udelay(10);
-    pr_err("SPI: write-test CLKDIV=0xAA readback=0x%x\n", readl(spi->base + 0x30));
-
-    /* XNU AppleS5L8940XIO::_initPMGRState replay from pongo/touch_cursor.c
-     * pmgr_bootstrap(). MUST BE FIRST — before any other clock/gate writes.
-     * Without this, most peripherals (SPI1, PWM, etc.) remain dead after iBoot
-     * handoff — reads return 0x22, writes are dropped. */
-    {
-        void __iomem *pm = ioremap(0x3F100000, 0x2000);
-        if (pm) {
-            u32 v;
-            pr_err("SPI: PMGR bootstrap (XNU _initPMGRState replay) - FIRST\n");
-            v = readl(pm + 0x1180);
-            pr_err("SPI:   0x1180 pre=0x%x\n", v);
-            writel(v | 0x80000000u, pm + 0x1180);
-            writel(0x7FFEu,       pm + 0x1200);
-            writel(0x3FFF8001u,   pm + 0x1204);
-            writel(0x0014000Fu,   pm + 0x1010);
-            writel(0x0014000Fu,   pm + 0x1014);
-            writel(0x0014000Fu,   pm + 0x1018);
-            writel(0x00100000u,   pm + 0x107C);
-            udelay(1000);
-            pr_err("SPI:   0x1180 post=0x%x  0x1200=0x%x  0x1204=0x%x\n",
-                   readl(pm + 0x1180), readl(pm + 0x1200), readl(pm + 0x1204));
-            iounmap(pm);
-        }
-    }
-
-    /* Full dump of PMGR gate table 0x1000..0x11FC to see which gates
-     * iBoot left enabled (nonzero) and confirm ID mapping. Each entry
-     * is 4 bytes; XNU id N is at 0x1000 + N*4, iBoot id N is at 0x1008 + N*4. */
-    {
-        void __iomem *pm3 = ioremap(0x3F100000, 0x2000);
-        if (pm3) {
-            u32 off;
-            pr_err("SPI: PMGR gate table dump 0x1000..0x11FC (nonzero only):\n");
-            for (off = 0x1000; off < 0x1200; off += 4) {
-                u32 v = readl(pm3 + off);
-                if (v)
-                    pr_err("SPI:   PMGR+0x%03x = 0x%08x  (xnu_id=%u ibot_id=%d)\n",
-                           off, v, (off - 0x1000) / 4,
-                           (int)((off - 0x1008) / 4));
-            }
-            iounmap(pm3);
-        }
-    }
-
-    /* Enable PMGR clock/gate for PWM (grape-clk source).
-     * touch_cursor.c enables CLK 4 (PWM) and GATE 83 (PWM) alongside SPI1.
-     * Without these the PWM controller at 0x33500300 stays dead (0x22). */
-    {
-        void __iomem *pm2 = ioremap(0x3F100000, 0x2000);
-        if (pm2) {
-            u32 v;
-            /* CLK 4 (PWM) — pmgr_clk_addr(4): id>>5=0, id&7=4, idx=4, off=0x10 */
-            v = readl(pm2 + 0x10);
-            pr_err("SPI: CLK4(PWM) pre=0x%x\n", v);
-            writel((v & ~0x180u) | 0x180u, pm2 + 0x10);
-            udelay(100);
-            pr_err("SPI: CLK4(PWM) post=0x%x\n", readl(pm2 + 0x10));
-
-            /* GATE_XNU 83 @ 0x1000 + 83*4 = 0x114C */
-            v = readl(pm2 + 0x114C);
-            pr_err("SPI: GXNU83(PWM) pre=0x%x\n", v);
-            writel((v & 0xFFFFFEF0u) | 0xFu, pm2 + 0x114C);
-            udelay(100);
-            pr_err("SPI: GXNU83(PWM) post=0x%x\n", readl(pm2 + 0x114C));
-
-            /* GATE 83 @ 0x1008 + 83*4 = 0x1154 */
-            v = readl(pm2 + 0x1154);
-            pr_err("SPI: GATE83(PWM) pre=0x%x\n", v);
-            writel(v | 0xFu, pm2 + 0x1154);
-            udelay(100);
-            pr_err("SPI: GATE83(PWM) post=0x%x\n", readl(pm2 + 0x1154));
-
-            iounmap(pm2);
-        }
-    }
-
-    /* mt_grape_clk_on replay from pongo/touch_cursor.c: configure PWM ch2
-     * at 0x33500300 (ADT /arm-io/pwm) to generate 32768 Hz "grape-clk".
-     * Our clk-s5l8940x-pmgr.c 'touch clock' driver interprets 0x33500300
-     * as a single-register clock gate (bit 19 = enable), but it's actually
-     * a Samsung PWM controller. Without proper PWM setup the SPI1 bus clock
-     * source is missing and SPI1 MMIO reads back 0x22. */
-    {
-        void __iomem *pwm = ioremap(0x33500300, 0x100);
-        if (pwm) {
-            const u32 GRAPE_CH = 2;
-            u32 tc = (GRAPE_CH == 0) ? 0 : (GRAPE_CH + 1);
-            u32 tcnt_off = 0x0C + GRAPE_CH * 0x0C;
-            u32 tcfg0, tcfg1, tcon, peek;
-
-            pr_err("SPI: PWM grape-clk setup (mt_grape_clk_on replay)\n");
-            pr_err("SPI:   PWM pre TCFG0=0x%x TCFG1=0x%x TCON=0x%x\n",
-                   readl(pwm + 0x00), readl(pwm + 0x04), readl(pwm + 0x08));
-
-            /* TCFG0: set prescaler1 to 0xff (bits 8-15) */
-            tcfg0 = readl(pwm + 0x00);
-            tcfg0 = (tcfg0 & 0x00FFFFFFu) | (0xFFu << 8);
-            writel(tcfg0, pwm + 0x00);
-
-            /* TCFG1: clear divider nibble for our channel (=> /2 by default) */
-            tcfg1 = readl(pwm + 0x04);
-            tcfg1 &= ~(0xFu << (GRAPE_CH * 4));
-            writel(tcfg1, pwm + 0x04);
-
-            /* TCNTB<ch> and TCMPB<ch> */
-            writel(732u,     pwm + tcnt_off);        /* count */
-            writel(732u / 2, pwm + tcnt_off + 4);    /* compare */
-
-            /* TCON: pulse manual-update bit, then enable + auto-reload */
-            tcon = readl(pwm + 0x08);
-            tcon |= (1u << (tc * 4 + 1));
-            writel(tcon, pwm + 0x08);
-            tcon &= ~(1u << (tc * 4 + 1));
-            tcon |= (1u << (tc * 4 + 0)) | (1u << (tc * 4 + 3));
-            writel(tcon, pwm + 0x08);
-            mdelay(5);
-
-            peek = readl(pwm + 0x08);
-            pr_err("SPI:   PWM post TCFG0=0x%x TCFG1=0x%x TCON=0x%x\n",
-                   readl(pwm + 0x00), readl(pwm + 0x04), peek);
-            if (peek == 0) {
-                /* Try alternate bases if PWM_BLK didn't take */
-                void __iomem *alt;
-                alt = ioremap(0x33500000, 0x100);
-                if (alt) {
-                    pr_err("SPI:   PWM alt 0x33500000 TCON=0x%x\n",
-                           readl(alt + 0x08));
-                    iounmap(alt);
-                }
-                alt = ioremap(0x33500500, 0x100);
-                if (alt) {
-                    pr_err("SPI:   PWM alt 0x33500500 TCON=0x%x\n",
-                           readl(alt + 0x08));
-                    iounmap(alt);
-                }
-            }
-            iounmap(pwm);
-        }
-    }
-
-    /* Full SPI1 clock enable sequence from touch_cursor.c:
-     *   CLK 304 @ PMGR+0x020 (SPI1A) : set CLK_EN_BITS 0x180
-     *   CLK 307 @ PMGR+0x02C (SPI1B) : set CLK_EN_BITS 0x180
-     *   GATE_XNU 68 @ PMGR+0x1110    : (v & ~0x10F0) | 0xF
-     *   GATE 68 @ PMGR+0x1118        : v |= 0xF
-     * Only enabling gate 68 is NOT sufficient — hardware bus returns
-     * garbage (all regs = 0x22) until clocks 304 and 307 are running. */
-    {
-        void __iomem *pmgr = ioremap(0x3F100000, 0x2000);
-        u32 v;
-        if (pmgr) {
-            /* CLK 304 (SPI1A) — offset 0x020 per touch_cursor formula */
-            v = readl(pmgr + 0x020);
-            pr_err("SPI: CLK304 pre=0x%x\n", v);
-            writel((v & ~0x180u) | 0x180u, pmgr + 0x020);
-            udelay(100);
-            pr_err("SPI: CLK304 post=0x%x\n", readl(pmgr + 0x020));
-
-            /* CLK 307 (SPI1B) — offset 0x02C */
-            v = readl(pmgr + 0x02C);
-            pr_err("SPI: CLK307 pre=0x%x\n", v);
-            writel((v & ~0x180u) | 0x180u, pmgr + 0x02C);
-            udelay(100);
-            pr_err("SPI: CLK307 post=0x%x\n", readl(pmgr + 0x02C));
-
-            /* GATE_XNU 68 @ PMGR+0x1000+68*4 = 0x1110 */
-            v = readl(pmgr + 0x1110);
-            pr_err("SPI: GXNU68 pre=0x%x\n", v);
-            writel((v & 0xFFFFFEF0u) | 0xFu, pmgr + 0x1110);
-            udelay(100);
-            pr_err("SPI: GXNU68 post=0x%x\n", readl(pmgr + 0x1110));
-
-            /* GATE 68 @ PMGR+0x1008+68*4 = 0x1118 */
-            v = readl(pmgr + 0x1118);
-            pr_err("SPI: GATE68 pre=0x%x\n", v);
-            writel(v | 0xFu, pmgr + 0x1118);
-            udelay(100);
-            pr_err("SPI: GATE68 post=0x%x\n", readl(pmgr + 0x1118));
-
-            iounmap(pmgr);
-        } else {
-            pr_err("SPI: failed to ioremap PMGR\n");
-        }
-    }
-
-    /* Post-clock dump — did the clock enables help? */
-    pr_err("SPI: post-clock reg dump:\n");
-    pr_err("SPI:   0x00 CTRL   =0x%x\n", readl(spi->base + 0x00));
-    pr_err("SPI:   0x04 SETUP  =0x%x\n", readl(spi->base + 0x04));
-    pr_err("SPI:   0x08 STATUS =0x%x\n", readl(spi->base + 0x08));
-    pr_err("SPI:   0x30 CLKDIV =0x%x\n", readl(spi->base + 0x30));
-    writel(0x55, spi->base + 0x30);
-    udelay(10);
-    pr_err("SPI: post-clock write-test CLKDIV=0x55 readback=0x%x\n", readl(spi->base + 0x30));
-
-    /* apple_spi_wake sequence from touch_cursor.c (A5 hardware) */
-    writel(0xf, spi->base + REG_STATUS);                  /* clear status */
-    writel(readl(spi->base + REG_CLKCFG) | 0xc,
-           spi->base + REG_CLKCFG);                       /* CTRL |= 0xc */
-    writel(4, spi->base + REG_CLKDIV);                    /* CLK divider */
-    writel(6, spi->base + REG_PIN);                       /* CS_REG = 6 */
-    writel(0x10618, spi->base + REG_CONFIG);              /* SETUP */
-    writel(1, spi->base + REG_CLKCFG);                    /* CTRL = 1 (enable) */
-    mdelay(5);
-    (void)rate;
-
     spi->speed = speed;
-
     return 0;
 }
 
@@ -474,9 +234,9 @@ static int hx_spi_transfer_one_message(struct spi_controller *master, struct spi
             u32 st, st0, setup_pre;
             setup_pre = readl(spi->base + REG_CONFIG);
             st0 = readl(spi->base + REG_STATUS);
-            pr_err("SPI: xfer start len=%u setup=0x%x status=0x%x cs_pin=0x%x ctrl=0x%x\n",
-                   t->len, setup_pre, st0,
-                   readl(spi->base + REG_PIN), readl(spi->base + REG_CLKCFG));
+            dev_dbg(&spid->dev, "xfer start len=%u setup=0x%x status=0x%x cs_pin=0x%x ctrl=0x%x\n",
+                    t->len, setup_pre, st0,
+                    readl(spi->base + REG_PIN), readl(spi->base + REG_CLKCFG));
             for (i = 0; i < t->len; i++) {
                 u32 txw = 0xff;
                 if (spi->tx_buf)
@@ -498,8 +258,8 @@ static int hx_spi_transfer_one_message(struct spi_controller *master, struct spi
                         u32 rxcnt = readl(spi->base + 0x34);
                         u32 txcnt = readl(spi->base + 0x4C);
                         u32 setup_now = readl(spi->base + REG_CONFIG);
-                        pr_err("SPI: byte %u TX-wait fail, status=0x%x rx=0x%x rxcnt=0x%x txcnt=0x%x setup=0x%x\n",
-                               i, st, rx_val, rxcnt, txcnt, setup_now);
+                        dev_err(&spid->dev, "byte %u TX-wait fail, status=0x%x rx=0x%x rxcnt=0x%x txcnt=0x%x setup=0x%x\n",
+                                i, st, rx_val, rxcnt, txcnt, setup_now);
                         timeout = 0;
                         goto xfer_done;
                     }
@@ -507,7 +267,7 @@ static int hx_spi_transfer_one_message(struct spi_controller *master, struct spi
                 }
                 st = readl(spi->base + REG_RXDATA);
                 if (i < 4 || i == t->len - 1)
-                    pr_err("SPI: byte %u OK tx=0x%x rx=0x%x\n", i, txw, st & 0xff);
+                    dev_dbg(&spid->dev, "byte %u OK tx=0x%x rx=0x%x\n", i, txw, st & 0xff);
                 if (spi->rx_buf)
                     ((u8 *)spi->rx_buf)[i] = (u8)st;
                 spi->tx_compl++;
@@ -620,8 +380,15 @@ static int hx_spi_probe(struct platform_device *pdev)
     spi->master = master;
     spi->clkfreq = clk_get_rate(spi->clk);
     spi->csgpio = csgpio;
+    /* touch_cursor.c used 4; the input clock is not known yet, so it stays
+     * overridable from the device tree until someone measures it. */
+    if(of_property_read_u32(pdev->dev.of_node, "apple,clkdiv", &spi->clkdiv))
+        spi->clkdiv = 4;
+    if(spi->clkdiv > REG_CLKDIV_MAX)
+        spi->clkdiv = REG_CLKDIV_MAX;
 
-    dev_err(&pdev->dev, "S5L8940X SPI at %d MHz, %d chip select GPIO%s.\n", spi->clkfreq / 1000000, ncs, ncs == 1 ? "" : "s");
+    dev_info(&pdev->dev, "S5L8940X SPI, powered: CLKDIV %u reads back %#x, %d chip select GPIO%s.\n",
+             spi->clkdiv, readl(base + REG_CLKDIV), ncs, ncs == 1 ? "" : "s");
 
     spin_lock_init(&spi->lock);
     init_completion(&spi->done);

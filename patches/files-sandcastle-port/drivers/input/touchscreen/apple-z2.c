@@ -254,11 +254,12 @@ static int hx_touch_misc_dev_open(struct inode *inode, struct file *filp)
     if(hxt->misc_dev_inuse)
         return -EBUSY;
 
-    /* NOTE: order matters: pins 4/5 are I2C SDA/SCL. Reset pin 5 clobbers SCL,
-     * so we do I2C-based regulator_enable FIRST, then reset (which re-purposes
-     * pin 5 to GPIO for touch chip reset). */
+    /* Rails first (over I2C, through the PMU), then reset and chip select,
+     * then the 32 kHz clock.  An older note here said reset "clobbers SCL":
+     * that was reset being put on GPIO 5, which is not the digitizer's reset
+     * at all -- the ADT's 0x0205 is pin 21.  See pinctrl-s5l8940x-gpio.c. */
 
-    pr_err("Z2-OPEN: regulator_enable hv (SCL still on pin 5)\n");
+    pr_err("Z2-OPEN: regulator_enable hv\n");
     ret = regulator_enable(hxt->regu_hv);
     pr_err("Z2-OPEN: regu_hv ret=%d\n", ret);
     if(ret)
@@ -273,7 +274,7 @@ static int hx_touch_misc_dev_open(struct inode *inode, struct file *filp)
     }
     mdelay(5);
 
-    pr_err("Z2-OPEN: reset=0 (repurposes pin 5 to GPIO reset)\n");
+    pr_err("Z2-OPEN: reset=0\n");
     gpiod_direction_output(hxt->gpiod_reset, 0);
 
     pr_err("Z2-OPEN: cs=1\n");

@@ -261,12 +261,20 @@ cmd_build() {
             HOSTKEY=etc/dropbear/dropbear_ed25519_host_key
             hk=$(python3 "$ROOT/scripts/dropbear-hostkey.py" "$ROOT/build/keep/$HOSTKEY") \
                 || fail "could not make the ssh host key"
-            mkdir -p "$ROOT/build/initramfs-root/etc/dropbear"
-            cp -p "$ROOT/build/keep/$HOSTKEY" "$ROOT/build/initramfs-root/$HOSTKEY"
             note "ok: ssh host key, ${hk%% *} ed25519 ${hk#* }"
         else
             note "note: no ssh-keygen here, so the device makes its host key at boot -- a new one every boot"
         fi
+    fi
+    # build/keep holds what the repository cannot reproduce -- the touch
+    # daemon, the digitizer firmware, the ssh host key made just above -- and
+    # only ./cascadia rootfs used to copy it in, so a firmware added later
+    # never reached the image.  Every build now.
+    if [ -d "$ROOT/build/keep" ]; then
+        cp -a "$ROOT/build/keep/." "$ROOT/build/initramfs-root/"
+        note "ok: build/keep/ -> image ($(cd "$ROOT/build/keep" && find . -type f | wc -l | tr -d ' ') files)"
+    fi
+    if [ -x "$ROOT/build/initramfs-root/usr/sbin/dropbear" ]; then
         # The image always lets in the machine that builds it.  add-dropbear.sh
         # bakes a key once, at rootfs time, so a key made after that -- another
         # ssh-keygen, another laptop -- left an image that met every login with
