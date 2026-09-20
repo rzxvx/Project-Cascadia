@@ -127,6 +127,10 @@ static void hx_touch_process_report(struct hx_touch_data *hxt, u8 *data, unsigne
     input_sync(hxt->input_dev);
 }
 
+/* Every wait in this driver sleeps.  They were mdelay()s -- four per report
+ * read, 8 ms of the only CPU spun away per ATTN -- and every caller is a
+ * process: the threaded IRQ handler, open, release and the ioctls, all of
+ * which already take the mutex. */
 static int hx_touch_read_report(struct hx_touch_data *hxt)
 {
     struct spi_transfer xfer = { 0 };
@@ -144,14 +148,14 @@ static int hx_touch_read_report(struct hx_touch_data *hxt)
     u16 csum;
 
     gpiod_direction_output(hxt->gpiod_cs, 0);
-    mdelay(2);
+    usleep_range(2000, 2500);
     readpkt[14] = 0xEC + hxt->read_tag;
     xfer.tx_buf = readpkt;
     xfer.rx_buf = readpkt;
     xfer.len = 16;
     ret = spi_sync_transfer(hxt->spi, &xfer, 1);
     gpiod_direction_output(hxt->gpiod_cs, 1);
-    mdelay(2);
+    usleep_range(2000, 2500);
     if(ret) {
         dev_warn(&hxt->spi->dev, "spi_sync_transfer returned %d\n", ret);
         return ret;
@@ -169,7 +173,7 @@ static int hx_touch_read_report(struct hx_touch_data *hxt)
     }
 
     gpiod_direction_output(hxt->gpiod_cs, 0);
-    mdelay(2);
+    usleep_range(2000, 2500);
     if(hxt->generation == 1) {
         memset(readpkt, 0, 16);
         readpkt[0] = 0xEB;
@@ -192,14 +196,14 @@ static int hx_touch_read_report(struct hx_touch_data *hxt)
 
     if(hxt->generation == 1 && (!readpkt[0] || readpkt[0] == 0xE1)) {
         gpiod_direction_output(hxt->gpiod_cs, 1);
-        mdelay(2);
+        usleep_range(2000, 2500);
         return g1done ? -ENOENT : 0;
     }
 
     len = readpkt[2] + ((unsigned)readpkt[3] << 8);
     if(((readpkt[0] + readpkt[1] + readpkt[2] + readpkt[3] + readpkt[4]) & 0xFF) || len > 326 || (readpkt[0] & 0xFE) != 0xEA || readpkt[1] != 1 + hxt->read_tag) {
         gpiod_direction_output(hxt->gpiod_cs, 1);
-        mdelay(2);
+        usleep_range(2000, 2500);
         if(readpkt[0])
             dev_warn(&hxt->spi->dev, "invalid read header: %02x %02x %02x %02x %02x\n", readpkt[0], readpkt[1], readpkt[2], readpkt[3], readpkt[4]);
         return -EINVAL;
@@ -226,13 +230,13 @@ static int hx_touch_read_report(struct hx_touch_data *hxt)
     for(i=0; i<len; i++)
         csum -= hxt->rx_data[i];
     if(csum) {
-        mdelay(2);
+        usleep_range(2000, 2500);
         dev_warn(&hxt->spi->dev, "invalid data checksum: %04x\n", csum);
         return -EINVAL;
     }
 
     hx_touch_process_report(hxt, hxt->rx_data, len);
-    mdelay(2);
+    usleep_range(2000, 2500);
 
     return 0;
 }
@@ -298,7 +302,7 @@ static int hx_touch_misc_dev_open(struct inode *inode, struct file *filp)
         pr_err("Z2-OPEN: regu_pmuclk ret=%d\n", ret);
         if(ret)
             return ret;
-        mdelay(5);
+        usleep_range(5000, 6000);
     }
 
     pr_err("Z2-OPEN: regulator_enable hv\n");
@@ -306,7 +310,7 @@ static int hx_touch_misc_dev_open(struct inode *inode, struct file *filp)
     pr_err("Z2-OPEN: regu_hv ret=%d\n", ret);
     if(ret)
         return ret;
-    mdelay(5);
+    usleep_range(5000, 6000);
     pr_err("Z2-OPEN: regulator_enable core\n");
     ret = regulator_enable(hxt->regu_core);
     pr_err("Z2-OPEN: regu_core ret=%d\n", ret);
@@ -314,7 +318,7 @@ static int hx_touch_misc_dev_open(struct inode *inode, struct file *filp)
         regulator_disable(hxt->regu_hv);
         return ret;
     }
-    mdelay(5);
+    usleep_range(5000, 6000);
 
     pr_err("Z2-OPEN: reset=0\n");
     gpiod_direction_output(hxt->gpiod_reset, 0);
@@ -328,7 +332,7 @@ static int hx_touch_misc_dev_open(struct inode *inode, struct file *filp)
     if(ret < 0)
         return ret;
 
-    mdelay(2);
+    usleep_range(2000, 2500);
     pr_err("Z2-OPEN: enable_irq\n");
     enable_irq(hxt->virq);
 
@@ -343,17 +347,17 @@ static int hx_touch_misc_dev_release(struct inode *inode, struct file *filp)
 
     disable_irq(hxt->virq);
     gpiod_direction_output(hxt->gpiod_reset, 0);
-    mdelay(2);
+    usleep_range(2000, 2500);
     gpiod_direction_output(hxt->gpiod_cs, 0);
 
     clk_disable_unprepare(hxt->clk);
 
-    mdelay(2);
+    usleep_range(2000, 2500);
     regulator_disable(hxt->regu_core);
-    mdelay(2);
+    usleep_range(2000, 2500);
     regulator_disable(hxt->regu_hv);
     if(hxt->regu_pmuclk) {
-        mdelay(2);
+        usleep_range(2000, 2500);
         regulator_disable(hxt->regu_pmuclk);
     }
 
@@ -448,9 +452,9 @@ static long hx_touch_misc_dev_ioctl(struct file *filp, unsigned int cmd, unsigne
         mutex_lock(&hxt->mutex);
         hxt->ready = 0;
         gpiod_direction_output(hxt->gpiod_cs, 1);
-        mdelay(1);
+        usleep_range(1000, 1500);
         gpiod_direction_output(hxt->gpiod_reset, 0);
-        mdelay(2);
+        usleep_range(2000, 2500);
         gpiod_direction_output(hxt->gpiod_reset, 1);
         mutex_unlock(&hxt->mutex);
         return 0;
