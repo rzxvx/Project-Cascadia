@@ -360,6 +360,16 @@ int main(int argc, char **argv)
     }
 
     printf("== reset\n");
+    /* hx-touchd's order, which the chip has answered: a reset, one transfer
+     * with chip select off so the controller has driven the clock to its idle
+     * level, then the reset that counts -- iOS's resetDevice likewise starts
+     * with "ensuring S_CLK is high". */
+    if(ioctl(fd, HXT_IOC_RESET) < 0)
+        perror("RESET");
+    memset(c, 0, 4);
+    if(write(fd, c, 4) == 4 && read(fd, res, 4) == 4)
+        hex("idle transfer ->", res, 4);
+    usleep(1000);
     arm_attn();
     if(ioctl(fd, HXT_IOC_RESET) < 0)
         perror("RESET");
