@@ -42,11 +42,16 @@
  *
  * Kernel side: /dev/hx-touch from drivers/input/touchscreen/apple-z2.c.
  *
- *   z2-boot [-m] [-n] [-O] [-Z] [-t secs] [mtprops]
+ *   z2-boot [-m] [-n] [-O] [-W] [-Z] [-p secs] [-t secs] [mtprops]
  *     -m  also send hx-touchd's "mode 1" feature reports 9d/bf/af
  *     -n  skip performCalibSeq (control run)
  *     -O  skip the operating-mode report
+ *     -W  send REQ_WAKEUP (19 c1) after the boot ATTN, as hx-touchd did
+ *         (iOS: AppleMultitouchN1SPI sends it during power-on, then 10 ms)
  *     -Z  do iOS's writes to address 0 as well
+ *     -p  before READY, read frames here for this many seconds: every ATTN
+ *         counted, the chip's output sampled every 50 ms, any frame read out
+ *         the way AppleMultitouchZ2SPI does -- touch the glass meanwhile
  *     -t  hold the device this many seconds after READY (default: forever)
  */
 #include <stdio.h>
@@ -57,6 +62,7 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <sys/ioctl.h>
+#include <time.h>
 
 #define HXT_IOC_SET_CS          _IOW('h', 1, uint32_t)
 #define HXT_IOC_RESET           _IO('h', 2)
@@ -319,10 +325,62 @@ static void set_report(uint8_t id, const uint8_t *data, uint8_t len)
     z2_cmd(c, NULL);
 }
 
+/* Frames, read here instead of by the kernel, so nothing depends on how
+ * the driver's READY path treats them.  AppleMultitouchZ2SPI: the result
+ * length is 16 bytes of {eb, seq, 0.., csum LE}; a frame comes back as
+ * ea/eb, seq, length, and is read out with {eb, seq, 1, 0.., csum at the
+ * end} over length + 5 bytes; seq goes 1, 2, 1, ... after each good read. */
+static void poll_frames(int secs)
+{
+    uint8_t q[16], r[16], last[16] = { 0 }, pkt[1024], fr[1024];
+    unsigned seq = 1, nattn = 0, nframes = 0, lines = 0, len, n;
+    time_t end = time(NULL) + secs;
+    uint16_t s;
+    int attn;
+
+    printf("== poll %d s before READY -- touch the glass now\n", secs);
+    while(time(NULL) < end) {
+        arm_attn();
+        attn = wait_attn(50);
+        nattn += attn;
+        memset(q, 0, 16);
+        q[0] = 0xeb; q[1] = seq;
+        s = sum16(q, 14); q[14] = s; q[15] = s >> 8;
+        if(xfer(q, r, 16))
+            break;
+        if(r[0] == 0xea || r[0] == 0xeb) {
+            len = r[1] | r[2] << 8;
+            n = len + 5 > sizeof(pkt) ? sizeof(pkt) : len + 5;
+            if(n < 16)
+                n = 16;
+            memset(pkt, 0, n);
+            pkt[0] = 0xeb; pkt[1] = seq; pkt[2] = 1;
+            s = sum16(pkt, 14); pkt[n - 2] = s; pkt[n - 1] = s >> 8;
+            if(xfer(pkt, fr, n))
+                break;
+            nframes++;
+            if(lines++ < 60) {
+                printf("  %sframe %u bytes:", attn ? "ATTN " : "     ", len);
+                hex("", fr, n < 32 ? n : 32);
+                if(n > 16)
+                    hex("        ...", fr + 16, n - 16 < 16 ? n - 16 : 16);
+            }
+            seq = seq == 1 ? 2 : 1;
+        } else if(attn || memcmp(r, last, 16)) {
+            if(lines++ < 60) {
+                printf("  %s", attn ? "ATTN " : "     ");
+                hex("", r, 16);
+            }
+            memcpy(last, r, 16);
+        }
+    }
+    printf("  %u ATTN, %u frames in %d s\n", nattn, nframes, secs);
+}
+
 int main(int argc, char **argv)
 {
     const char *mtprops = "/lib/firmware/P105.mtprops";
-    int opt, mode1 = 0, nocal = 0, noopmode = 0, zero = 0, hold = -1;
+    int opt, mode1 = 0, nocal = 0, noopmode = 0, zero = 0, hold = -1, poll = 0, wake = 0;
     uint8_t *fw, c[16], res[16];
     size_t fwlen;
     uint32_t ver, v;
@@ -330,15 +388,17 @@ int main(int argc, char **argv)
     unsigned len;
     struct hxt_metrics m = { 0, 0, 0, 0 };
 
-    while((opt = getopt(argc, argv, "mnOZt:")) != -1) {
+    while((opt = getopt(argc, argv, "mnOWZp:t:")) != -1) {
         switch(opt) {
         case 'm': mode1 = 1; break;
         case 'n': nocal = 1; break;
         case 'O': noopmode = 1; break;
+        case 'W': wake = 1; break;
         case 'Z': zero = 1; break;
+        case 'p': poll = atoi(optarg); break;
         case 't': hold = atoi(optarg); break;
         default:
-            fprintf(stderr, "usage: %s [-m] [-n] [-O] [-Z] [-t secs] [mtprops]\n", argv[0]);
+            fprintf(stderr, "usage: %s [-m] [-n] [-O] [-W] [-Z] [-p secs] [-t secs] [mtprops]\n", argv[0]);
             return 2;
         }
     }
@@ -374,6 +434,12 @@ int main(int argc, char **argv)
     if(ioctl(fd, HXT_IOC_RESET) < 0)
         perror("RESET");
     printf("  boot ATTN: %s\n", wait_attn(500) ? "yes" : "NO (500 ms)");
+    if(wake) {
+        c[0] = 0x19; c[1] = 0xc1;
+        xfer(c, res, 2);
+        hex("REQ_WAKEUP ->", res, 2);
+        usleep(10000);
+    }
     if(!hbpp_check())
         printf("  not in HBPP -- carrying on to see what the chip does\n");
 
@@ -439,6 +505,9 @@ int main(int argc, char **argv)
         printf("  operating mode: report ab = 00 (iOS)\n");
         set_report(0xab, op, 1);
     }
+
+    if(poll > 0)
+        poll_frames(poll);
 
     if(ioctl(fd, HXT_IOC_METRICS, &m) < 0)
         perror("METRICS");
