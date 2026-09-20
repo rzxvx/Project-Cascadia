@@ -40,6 +40,21 @@ struct hxt_metrics {
 
 #define MAX_DATA_CHUNK          16384
 
+/* Tracing for the bring-up: every command hx-touchd sends after the firmware
+ * upload and the digitizer's answer, every ATTN with the phase it arrived in,
+ * and every report read, until the budget runs out.  More on demand:
+ *     echo 64 > /sys/module/apple_z2/parameters/debug */
+static int hxt_dbg = 64;
+module_param_named(debug, hxt_dbg, int, 0644);
+MODULE_PARM_DESC(debug, "lines of boot/report tracing left to print");
+
+#define hxt_trace(hxt, fmt, ...) do {                                   \
+        if(hxt_dbg > 0) {                                               \
+            hxt_dbg--;                                                  \
+            dev_info(&(hxt)->spi->dev, fmt, ##__VA_ARGS__);             \
+        }                                                               \
+    } while(0)
+
 struct hx_touch_data {
     struct mutex mutex;
     struct clk *clk;
@@ -62,6 +77,7 @@ struct hx_touch_data {
     unsigned rx_size, rx_rdptr;
     struct hxt_metrics metrics;
     unsigned read_tag;
+    unsigned nirq, nxfer, nbytes;
 };
 
 #define miscdev_to_hxt(md) container_of(md, struct hx_touch_data, misc_dev)
@@ -160,6 +176,7 @@ static int hx_touch_read_report(struct hx_touch_data *hxt)
         dev_warn(&hxt->spi->dev, "spi_sync_transfer returned %d\n", ret);
         return ret;
     }
+    hxt_trace(hxt, "rd hdr %16ph\n", readpkt);
 
     if(hxt->generation == 1) {
         if(readpkt[0] == 0) {
@@ -193,6 +210,8 @@ static int hx_touch_read_report(struct hx_touch_data *hxt)
         dev_warn(&hxt->spi->dev, "spi_sync_transfer returned %d\n", ret);
         return ret;
     }
+
+    hxt_trace(hxt, "rd pkt %16ph (asked %u)\n", readpkt, xfer.len);
 
     if(hxt->generation == 1 && (!readpkt[0] || readpkt[0] == 0xE1)) {
         gpiod_direction_output(hxt->gpiod_cs, 1);
@@ -235,6 +254,7 @@ static int hx_touch_read_report(struct hx_touch_data *hxt)
         return -EINVAL;
     }
 
+    hxt_trace(hxt, "report, %u bytes: %*ph\n", len, (int)min(len, 32u), hxt->rx_data);
     hx_touch_process_report(hxt, hxt->rx_data, len);
     usleep_range(2000, 2500);
 
@@ -260,6 +280,8 @@ static irqreturn_t hx_touch_irq_handler(int irq, void *dev_id)
 
     mutex_lock(&hxt->mutex);
 
+    hxt->nirq++;
+    hxt_trace(hxt, "ATTN #%u, %s\n", hxt->nirq, hxt->ready ? "reading reports" : "boot phase");
     if(hxt->ready) {
         hx_touch_read_all_reports(hxt);
     } else
@@ -336,6 +358,7 @@ static int hx_touch_misc_dev_open(struct inode *inode, struct file *filp)
     pr_err("Z2-OPEN: enable_irq\n");
     enable_irq(hxt->virq);
 
+    hxt->nirq = hxt->nxfer = hxt->nbytes = 0;
     hxt->misc_dev_inuse = 1;
     pr_err("Z2-OPEN: done\n");
     return 0;
@@ -401,6 +424,15 @@ static ssize_t hx_touch_misc_dev_write(struct file *filp, const char __user *uda
         return ret;
     }
 
+    /* The commands hx-touchd sends once the firmware is in (0xE1..0xEE, 16
+     * bytes each) and what comes back; the upload itself is only counted. */
+    if(sz == 16 && hxt->tx_data[0] >= 0xE0)
+        hxt_trace(hxt, "cmd %16ph -> %16ph\n", hxt->tx_data, hxt->rx_data + hxt->rx_size);
+    else {
+        hxt->nxfer++;
+        hxt->nbytes += sz;
+    }
+
     hxt->rx_size += sz;
     mutex_unlock(&hxt->mutex);
     return sz;
@@ -464,6 +496,9 @@ static long hx_touch_misc_dev_ioctl(struct file *filp, unsigned int cmd, unsigne
         gpiod_direction_output(hxt->gpiod_cs, 1);
 
         mutex_lock(&hxt->mutex);
+        hxt_trace(hxt, "READY after %u ATTN, %u other transfers (%u bytes); metrics x %d..%d y %d..%d\n",
+                  hxt->nirq, hxt->nxfer, hxt->nbytes, hxt->metrics.left, hxt->metrics.right,
+                  hxt->metrics.top, hxt->metrics.bottom);
         hxt->ready = 1;
         hx_touch_read_all_reports(hxt);
         mutex_unlock(&hxt->mutex);
