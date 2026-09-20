@@ -252,6 +252,12 @@ cmd_build() {
     in_docker "arm-linux-gnueabihf-gcc -static -Os -o build/initramfs-root/bin/peek tools/p105-peek.c"
     [ -s "$ROOT/build/initramfs-root/bin/peek" ] || fail "peek did not build"
     note "ok: /bin/peek ($(filesize "$ROOT/build/initramfs-root/bin/peek") bytes, static ARM)"
+    # /sbin/z2-boot brings the digitizer up the way iOS does -- firmware, the
+    # N1 calibration sequence, EXECUTE, operating mode -- where hx-touchd stops
+    # after the firmware.  docs/research/p105-z2-boot.md.
+    in_docker "arm-linux-gnueabihf-gcc -static -Os -o build/initramfs-root/sbin/z2-boot tools/z2-boot.c"
+    [ -s "$ROOT/build/initramfs-root/sbin/z2-boot" ] || fail "z2-boot did not build"
+    note "ok: /sbin/z2-boot ($(filesize "$ROOT/build/initramfs-root/sbin/z2-boot") bytes, static ARM)"
     # dropbear's host key, made once and kept in build/keep so it outlives a
     # rootfs rebuild.  Without it dropbear -R made a new one at every boot of the
     # RAM root, and every boot met ssh with REMOTE HOST IDENTIFICATION HAS
