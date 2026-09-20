@@ -138,3 +138,34 @@ Reset sequence matches upstream **`apple_z2_boot`**: assert reset → wait ATTN 
 Then existing `stat:` should reach **`03010101`** (bootAttn=1, fwOk=1) and `rx0:` → **`E1`**.
 
 `err:` is upload fail latch — stays **0 or 1** (not `poll:`).
+
+## Interrupt block — from XNU (2026-09-20)
+
+The ADT's gpio node lists `gpio,s5l8940x` and `gpio,s5l8930x`; the second is
+what XNU matches, with **`AppleS5L8930XGPIOIC`** in
+`com.apple.driver.AppleS5L8930X` (12H321: kext header at file `0xb61000`,
+VA `0x80ba2000`; vtable at `0x80ba7918`). Its register accessors are virtual,
+`+0x370` read and `+0x374` write, both `[this+0x64] + offset`, so every offset
+below is exact.
+
+| offset | role | XNU |
+|---|---|---|
+| `0x000 + 4*pin` | pin config; `[3:1]` trigger mode | `initVector` writes it (`\| 0x200`) |
+| `0x800 + 4*w` | **disable**, write 1 per pin | `disableVectorHard`; `start` writes `~0` |
+| `0x840 + 4*w` | **enable**, write 1 per pin | `enableVector` |
+| `0x880 + 4*w` | **status**, write 1 to clear | `handleInterrupt`; `start` writes `~0` |
+| `0xc00` | summary, one bit per word with work | `handleInterrupt` loops on it |
+| `0xc48` | "NPL mode", `1` unless `no-npl-mode` | `start` (P105's ADT has no such property) |
+
+`w = pin / 32`, bit `pin % 32`; `#interrupt-groups = 8` is only the number
+of words. Trigger modes, from `initVector` and `getInterruptType` (ADT
+interrupt cell: bit0 = level, bit1 = polarity, bit2 = both edges): 2 high,
+3 low (level), 4 rising, 5 falling (edge), 6 any. `handleInterrupt` clears an
+edge pin's status before calling its handler and a level pin's after;
+`enableVector` clears a level pin's stale status before enabling it.
+
+The Linux driver came from Sandcastle's A10 and treated `0x800 + 0x40*g` as
+the pending register: on the A5 that is the disable register. It never saw a
+status bit, its "ack" switched the pin off, and it never wrote the enable —
+so no GPIO interrupt reached Linux at all, ATTN included, until the driver
+was rewritten to this map.

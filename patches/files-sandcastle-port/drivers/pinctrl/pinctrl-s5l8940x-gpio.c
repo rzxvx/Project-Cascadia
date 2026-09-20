@@ -73,7 +73,36 @@ struct apple_s5l8940x_gpio_pinctrl {
 #define  REG_GPIOx_CFG_DONE     (1 << 9)
 #define  REG_GPIOx_GRP_MASK     (7 << 16)
 #define    REG_GPIOx_GRP_SHIFT  16
-#define REG_IRQ(g,x)            (0x800 + 0x40 * (g) + 4 * ((x) >> 5))
+/*
+ * Interrupt block.  The driver came from Sandcastle (A10), whose GPIO block
+ * gives every interrupt group its own 0x40 window of pending words at 0x800.
+ * The A5's is laid out differently, and XNU says how: AppleS5L8930XGPIOIC,
+ * the class that matches "gpio,s5l8930x" -- which this ADT's gpio node
+ * lists -- in com.apple.driver.AppleS5L8930X (12H321):
+ *
+ *   start              0x800 + 4*w <- ~0     every pin's interrupt off
+ *                      0x880 + 4*w <- ~0     every status bit cleared
+ *                      0xc48       <- 1      unless "no-npl-mode" (P105: absent)
+ *   handleInterrupt    0xc00                 one bit per word that has work
+ *                      0x880 + 4*w           status; write 1 to clear -- before
+ *                                            the handler for an edge pin,
+ *                                            after it for a level pin
+ *   enableVector       0x840 + 4*w <- bit    (level pin: clear 0x880 first)
+ *   disableVectorHard  0x800 + 4*w <- bit
+ *
+ * w is pin / 32 and the bit is pin % 32; the ADT's "#interrupt-groups" = 8 is
+ * nothing more than the number of words.  So 0x800, which this driver read as
+ * "pending" and wrote to "ack", is the DISABLE register: the handler could
+ * never see a status bit, the ack switched the pin off, and nothing ever wrote
+ * the enable.  No GPIO interrupt -- the digitizer's ATTN included -- could
+ * reach Linux on this SoC, whatever the pin did.
+ */
+#define REG_IRQ_DISABLE(x)      (0x800 + 4 * ((x) >> 5))
+#define REG_IRQ_ENABLE(x)       (0x840 + 4 * ((x) >> 5))
+#define REG_IRQ_STATUS(x)       (0x880 + 4 * ((x) >> 5))
+#define REG_IRQ_SUMMARY         0xc00
+#define REG_NPL_MODE            0xc48
+#define IRQ_NWORDS              8
 #define REG_LOCK                0xC50
 
 static void apple_s5l8940x_gpio_set_reg(struct apple_s5l8940x_gpio_pinctrl *pctl, unsigned pin, uint32_t clr, uint32_t set)
@@ -288,25 +317,35 @@ static int apple_s5l8940x_gpio_gpio_direction_output(struct gpio_chip *chip, uns
 static void apple_s5l8940x_gpio_gpio_irq_ack(struct irq_data *data)
 {
     struct apple_s5l8940x_gpio_pinctrl *pctl = gpiochip_get_data(irq_data_get_irq_chip_data(data));
-    unsigned irqgrp = (apple_s5l8940x_gpio_get_reg(pctl, data->hwirq) & REG_GPIOx_GRP_MASK) >> REG_GPIOx_GRP_SHIFT;
 
-    writel(1u << (data->hwirq & 31), pctl->base + REG_IRQ(irqgrp, data->hwirq));
+    writel(BIT(data->hwirq & 31), pctl->base + REG_IRQ_STATUS(data->hwirq));
 }
 
 static void apple_s5l8940x_gpio_gpio_irq_mask(struct irq_data *data)
 {
     struct apple_s5l8940x_gpio_pinctrl *pctl = gpiochip_get_data(irq_data_get_irq_chip_data(data));
 
-    pctl->pin_cfgs[data->hwirq].stat &= ~PINCFG_STAT_IRQEN;
-    apple_s5l8940x_gpio_refresh_reg(pctl, data->hwirq);
+    /* XNU's disableVectorHard: the pin keeps its trigger mode, the block
+     * stops passing it on. */
+    writel(BIT(data->hwirq & 31), pctl->base + REG_IRQ_DISABLE(data->hwirq));
 }
 
 static void apple_s5l8940x_gpio_gpio_irq_unmask(struct irq_data *data)
 {
     struct apple_s5l8940x_gpio_pinctrl *pctl = gpiochip_get_data(irq_data_get_irq_chip_data(data));
+    struct apple_s5l8940x_gpio_pincfg *pincfg = &pctl->pin_cfgs[data->hwirq];
+    u32 bit = BIT(data->hwirq & 31);
 
-    pctl->pin_cfgs[data->hwirq].stat |= PINCFG_STAT_IRQEN;
-    apple_s5l8940x_gpio_refresh_reg(pctl, data->hwirq);
+    /* The pin has to be in its trigger mode ... */
+    if(!(pincfg->stat & PINCFG_STAT_IRQEN)) {
+        pincfg->stat |= PINCFG_STAT_IRQEN;
+        apple_s5l8940x_gpio_refresh_reg(pctl, data->hwirq);
+    }
+    /* ... and then XNU's enableVector: a level pin's stale status is cleared
+     * first, then the block lets the pin through. */
+    if(pincfg->irqtype == REG_GPIOx_IRQ_HI || pincfg->irqtype == REG_GPIOx_IRQ_LO)
+        writel(bit, pctl->base + REG_IRQ_STATUS(data->hwirq));
+    writel(bit, pctl->base + REG_IRQ_ENABLE(data->hwirq));
 }
 
 static unsigned int apple_s5l8940x_gpio_gpio_irq_startup(struct irq_data *data)
@@ -361,15 +400,35 @@ static void apple_s5l8940x_gpio_gpio_irq_handler(struct irq_desc *desc)
     struct gpio_chip *gc = irq_desc_get_handler_data(desc);
     struct apple_s5l8940x_gpio_pinctrl *pctl = gpiochip_get_data(gc);
     struct irq_chip *chip = irq_desc_get_chip(desc);
-    unsigned irqgrp = 0, pinh, pinl;
-    unsigned long pending;
+    unsigned long summary, status;
+    unsigned w, b, pin, pass;
 
     chained_irq_enter(chip, desc);
-    for(pinh=0; pinh<pctl->npins; pinh+=32) {
-        pending = readl(pctl->base + REG_IRQ(irqgrp, pinh));
-        for_each_set_bit(pinl, &pending, 32)
-            generic_handle_irq(irq_linear_revmap(gc->irq.domain, pinh + pinl));
+    /* XNU's handleInterrupt: the summary names the words with work, the word
+     * names the pins.  Bounded, where XNU's loop is not: a bit that will not
+     * clear should cost a warning, not the only CPU this kernel runs on. */
+    for(pass = 0; pass < 32; pass++) {
+        summary = readl(pctl->base + REG_IRQ_SUMMARY) & (BIT(IRQ_NWORDS) - 1);
+        if(!summary)
+            break;
+        for_each_set_bit(w, &summary, IRQ_NWORDS) {
+            status = readl(pctl->base + REG_IRQ_STATUS(w * 32));
+            for_each_set_bit(b, &status, 32) {
+                pin = w * 32 + b;
+                if(pin < pctl->npins && !generic_handle_domain_irq(gc->irq.domain, pin))
+                    continue;
+                /* Nobody in Linux asked for this pin -- iBoot armed it, or it
+                 * lies past the last pin.  Its status would hold the AIC line
+                 * up for good, so switch it off and clear it. */
+                writel(BIT(b), pctl->base + REG_IRQ_DISABLE(pin));
+                writel(BIT(b), pctl->base + REG_IRQ_STATUS(pin));
+                dev_warn_ratelimited(pctl->dev, "stray interrupt on pin %u, disabled\n", pin);
+            }
+        }
     }
+    if(pass == 32)
+        dev_warn_ratelimited(pctl->dev, "interrupt summary will not clear: %08x\n",
+                             readl(pctl->base + REG_IRQ_SUMMARY));
     chained_irq_exit(chip, desc);
 }
 
@@ -537,6 +596,19 @@ static int apple_s5l8940x_gpio_pinctrl_probe(struct platform_device *pdev)
     }
 
     writel(0, pctl->base + REG_LOCK);
+
+    /* XNU's start, before anything can be let through: every pin's interrupt
+     * off and every status bit cleared, so whatever iBoot left armed cannot
+     * hold AIC 119 up the moment the chained handler opens it.  Then the NPL
+     * mode XNU always sets on this device (the ADT has no "no-npl-mode");
+     * what it does is not known, so the old value goes to the log. */
+    for(i = 0; i < IRQ_NWORDS; i++) {
+        writel(~0u, pctl->base + REG_IRQ_DISABLE(i * 32));
+        writel(~0u, pctl->base + REG_IRQ_STATUS(i * 32));
+    }
+    dev_info(&pdev->dev, "interrupts quiesced as XNU does; NPL mode %#x -> 1\n",
+             readl(pctl->base + REG_NPL_MODE));
+    writel(1, pctl->base + REG_NPL_MODE);
 
     return apple_s5l8940x_gpio_gpio_register(pctl);
 }
