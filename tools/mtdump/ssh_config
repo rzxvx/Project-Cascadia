@@ -1,0 +1,12 @@
+# ssh into the iPad's own iOS 8.4.1 (OpenSSH from Cydia) through iproxy:
+#   iproxy 2222 22        and then
+#   ssh -F tools/mtdump/ssh_config -p 2222 root@127.0.0.1      (password: alpine, unless changed)
+# That sshd only has ssh-rsa host keys, which OpenSSH 8.8+ refuses by default;
+# the rest keeps a per-boot host key from tripping known_hosts.  Same settings
+# as Legacy iOS Kit's resources/ssh_config.
+Host *
+    StrictHostKeyChecking no
+    UserKnownHostsFile /dev/null
+    HostKeyAlgorithms +ssh-rsa
+    PubkeyAcceptedAlgorithms +ssh-rsa
+    LogLevel ERROR

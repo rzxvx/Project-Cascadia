@@ -1,0 +1,8 @@
+--- !tapi-tbd
+tbd-version:     4
+targets:         [ armv7-ios ]
+install-name:    '/System/Library/Frameworks/IOKit.framework/Versions/A/IOKit'
+exports:
+  - targets:         [ armv7-ios ]
+    symbols:         [ _IOIteratorNext, _IOObjectRelease, _IORegistryEntryCreateCFProperties, _IORegistryEntryFromPath, _IORegistryEntryGetPath, _IOServiceGetMatchingServices, _IOServiceMatching, _IOConnectCallScalarMethod, _IOConnectMapMemory64, _IODataQueueDataAvailable, _IODataQueueDequeue, _IOServiceClose, _IOServiceGetMatchingService, _IOServiceOpen, _IORegistryEntryCreateCFProperty, _IOObjectGetClass ]
+...
