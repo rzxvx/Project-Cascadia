@@ -753,6 +753,8 @@ static void list_reports(void)
 /* GET report the way AppleMultitouchZ2SPI's control read does it: a stage-0
  * command, then stage 1 which carries the answer -- 16 bytes for a short
  * read (e6), len + 5 for a long one (e7), the csum at the very end. */
+static uint8_t d9[64];          /* the last answer to GET d9 */
+
 static void ios_get(uint8_t id, unsigned len, int lng)
 {
     uint8_t c[16] = { lng ? 0xe7 : 0xe6, id, 0, len }, r[16], b[64], a[64];
@@ -768,6 +770,8 @@ static void ios_get(uint8_t id, unsigned len, int lng)
     b[n - 2] = s; b[n - 1] = s >> 8;
     if(xfer(b, a, n))
         return;
+    if(id == 0xd9)
+        memcpy(d9, a, n);
     printf("  GET %02x ->", id);
     hex("", a, n);
     if(n > 16)
@@ -1092,6 +1096,16 @@ int main(int argc, char **argv)
         stamp("closed");
         return 0;
     }
+    /* The surface, from report d9 (e7 d9 00, then 16 bytes): width and
+     * height, then x0 y0 x1 y1, signed -- -114 -114 11741 15738 here, the
+     * range the touches' coordinates come in. */
+    if(d9[0] == 0xe7 && d9[1] == 0xd9 && d9[2] == 0) {
+        m.left = (int16_t)(d9[11] | d9[12] << 8);
+        m.top = (int16_t)(d9[13] | d9[14] << 8);
+        m.right = (int16_t)(d9[15] | d9[16] << 8);
+        m.bottom = (int16_t)(d9[17] | d9[18] << 8);
+    }
+    printf("  metrics x %d..%d y %d..%d\n", m.left, m.right, m.top, m.bottom);
     if(ioctl(fd, HXT_IOC_METRICS, &m) < 0)
         perror("METRICS");
     printf("== READY -- touch the glass; reports go to the kernel\n");

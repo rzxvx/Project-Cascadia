@@ -77,25 +77,28 @@ struct hx_touch_data {
     unsigned rx_size, rx_rdptr;
     struct hxt_metrics metrics;
     unsigned read_tag;
-    unsigned nirq, nxfer, nbytes;
+    unsigned nirq, nxfer, nbytes, nframes, nretries;
 };
 
 #define miscdev_to_hxt(md) container_of(md, struct hx_touch_data, misc_dev)
 
+/* A frame's payload, as P105's digitizer sends it and iOS 8.4.1 reads it
+ * (logs/ios-mtlog1.txt; docs/research/p105-z2-boot.md): [16] is the number
+ * of touches, and from [24] each touch is 30 bytes -- [0] id, [1] state,
+ * [4..5] x, [6..7] y (signed, the units of report d9's surface), [12..13]
+ * and [14..15] the major and minor width, [16..17] the angle.  States are
+ * Apple's path stages: 3 make-touch and 4 touching mean a finger on the
+ * glass, anything else is on its way off.  There are no frames without a
+ * finger: the last one of a touch carries its lift. */
 static void hx_touch_process_report(struct hx_touch_data *hxt, u8 *data, unsigned len)
 {
-    unsigned ntouch, i, finger, state;
+    unsigned ntouch, i, finger, state, down;
     u8 *touch;
     long long posx, posy;
     unsigned widthm, widthu;
     s16 angle;
     int slot;
 
-    /* The digitizer sends short reports when nothing is on the glass -- we see
-     * len 12, checksum valid.  Those carry no touch block at all, so reading
-     * data[16] for the count would be off the end of the packet.  Report an
-     * empty frame and say nothing: this is the normal idle case, not an
-     * error. */
     if(len < 24) {
         input_mt_sync_frame(hxt->input_dev);
         input_sync(hxt->input_dev);
@@ -104,7 +107,7 @@ static void hx_touch_process_report(struct hx_touch_data *hxt, u8 *data, unsigne
 
     ntouch = data[16];
     if(len < 24 + ntouch * 30) {
-        dev_warn(&hxt->spi->dev, "packet too short for number of touches (%d, %d)\n", ntouch, len);
+        dev_warn_ratelimited(&hxt->spi->dev, "frame too short for %u touches (%u bytes)\n", ntouch, len);
         return;
     }
 
@@ -112,30 +115,33 @@ static void hx_touch_process_report(struct hx_touch_data *hxt, u8 *data, unsigne
         touch = data + 24 + 30 * i;
         finger = touch[0];
         state = touch[1];
-        posx = (s16)(touch[4] + ((unsigned)touch[5] << 8));
-        posy = (s16)(touch[6] + ((unsigned)touch[7] << 8));
-        widthm = touch[12] + ((unsigned)touch[13] << 8);
-        widthu = touch[14] + ((unsigned)touch[15] << 8);
-        angle = touch[16] + ((unsigned)touch[17] << 8);
+        down = state == 3 || state == 4;
+        posx = (s16)(touch[4] | ((unsigned)touch[5] << 8));
+        posy = (s16)(touch[6] | ((unsigned)touch[7] << 8));
+        widthm = touch[12] | ((unsigned)touch[13] << 8);
+        widthu = touch[14] | ((unsigned)touch[15] << 8);
+        angle = touch[16] | ((unsigned)touch[17] << 8);
+
+        hxt_trace(hxt, "touch id %u state %u x %lld y %lld w %u/%u\n",
+                  finger, state, posx, posy, widthm, widthu);
 
         posx = div_s64((s64)4096 * (posx - hxt->metrics.left), hxt->metrics.right - hxt->metrics.left);
         posy = div_s64((s64)4096 * (posy - hxt->metrics.top), hxt->metrics.bottom - hxt->metrics.top);
+        posx = clamp_val(posx, 0, 4096);
+        posy = clamp_val(posy, 0, 4096);
         angle = 0x4000 - angle;
 
-#if 0
-        pr_info(">> %d,%d: %d,%d [%d:%d,%d:%d] %dx%d@%d\n", finger, state, posx, posy, hxt->metrics.left, hxt->metrics.right, hxt->metrics.top, hxt->metrics.bottom, widthm, widthu, angle);
-#endif
         slot = input_mt_get_slot_by_key(hxt->input_dev, finger);
-        if(slot >= 0) {
-            input_mt_slot(hxt->input_dev, slot);
-            input_mt_report_slot_state(hxt->input_dev, MT_TOOL_FINGER, state == 4);
-            if(state == 4) {
-                input_report_abs(hxt->input_dev, ABS_MT_POSITION_X, posx);
-                input_report_abs(hxt->input_dev, ABS_MT_POSITION_Y, posy);
-                input_report_abs(hxt->input_dev, ABS_MT_WIDTH_MAJOR, widthm);
-                input_report_abs(hxt->input_dev, ABS_MT_WIDTH_MINOR, widthu);
-                input_report_abs(hxt->input_dev, ABS_MT_ORIENTATION, angle);
-            }
+        if(slot < 0)
+            continue;
+        input_mt_slot(hxt->input_dev, slot);
+        input_mt_report_slot_state(hxt->input_dev, MT_TOOL_FINGER, down);
+        if(down) {
+            input_report_abs(hxt->input_dev, ABS_MT_POSITION_X, posx);
+            input_report_abs(hxt->input_dev, ABS_MT_POSITION_Y, posy);
+            input_report_abs(hxt->input_dev, ABS_MT_WIDTH_MAJOR, widthm);
+            input_report_abs(hxt->input_dev, ABS_MT_WIDTH_MINOR, widthu);
+            input_report_abs(hxt->input_dev, ABS_MT_ORIENTATION, angle);
         }
     }
 
@@ -143,134 +149,122 @@ static void hx_touch_process_report(struct hx_touch_data *hxt, u8 *data, unsigne
     input_sync(hxt->input_dev);
 }
 
-/* Every wait in this driver sleeps.  They were mdelay()s -- four per report
- * read, 8 ms of the only CPU spun away per ATTN -- and every caller is a
- * process: the threaded IRQ handler, open, release and the ioctls, all of
- * which already take the mutex. */
+static u16 hx_touch_sum16(const u8 *p, unsigned n)
+{
+    u16 s = 0;
+
+    while(n--)
+        s += *p++;
+    return s;
+}
+
+/* One chip-select window, n bytes each way -- z2-boot's xfer(), whose
+ * 1 ms either side of the transfer the chip has been happy with. */
+static int hx_touch_xfer(struct hx_touch_data *hxt, const u8 *tx, u8 *rx, unsigned n)
+{
+    struct spi_transfer xfer = { .tx_buf = tx, .rx_buf = rx, .len = n };
+    int ret;
+
+    gpiod_direction_output(hxt->gpiod_cs, 0);
+    usleep_range(1000, 1200);
+    ret = spi_sync_transfer(hxt->spi, &xfer, 1);
+    gpiod_direction_output(hxt->gpiod_cs, 1);
+    usleep_range(1000, 1200);
+    return ret;
+}
+
+#define Z2_MAX_PACKET   1944    /* device info e2: 0x798 */
+
+/* A frame, the way AppleMultitouchZ2SPI reads one (12H321: result length
+ * 0x80605be0, result data 0x80605d5c), which the old read -- a 16-byte
+ * header, then the rest with no command and no checksum, frames capped at
+ * 326 bytes -- was not:
+ *   eb seq 00.. csum16([0..13]) at [14..15]    -> eX LL.. csum at [14..15]
+ *   eb seq 01 00.. csum16([0..13]) at the end, LL + 5 bytes
+ *                                              -> ea seq LL hcsum payload csum
+ * the first five answer bytes sum to 0, the payload's sum16 is in the last
+ * two; seq goes 1, 2, 1, ... after each good read.  -ENOENT: nothing to read. */
 static int hx_touch_read_report(struct hx_touch_data *hxt)
 {
-    struct spi_transfer xfer = { 0 };
-    u8 readpkt[64] = { 0xEB, 1 + hxt->read_tag };
+    u8 *q = hxt->tx_data, *r = hxt->rx_data;
+    unsigned seq = 1 + hxt->read_tag, len, n, plen, tries;
+    u16 s;
     int ret;
-    /* g1len must start at the full packet size, not 0.  When the digitizer
-     * answers with zeros -- which is what a chip that never booted does --
-     * readpkt[0] is 0, the branch below takes the g1done path and leaves
-     * g1len alone.  With g1len = 0 the second transfer became zero-length,
-     * the controller was asked for nothing, readpkt kept the command we had
-     * just written into it, and this function then reported that as an
-     * "invalid read header: eb 01 01 00 00" -- our own TX, mistaken for a
-     * reply from the chip for several rounds of debugging. */
-    unsigned len, i, g1done = 0, g1len = 16, step;
-    u16 csum;
 
-    gpiod_direction_output(hxt->gpiod_cs, 0);
-    usleep_range(2000, 2500);
-    readpkt[14] = 0xEC + hxt->read_tag;
-    xfer.tx_buf = readpkt;
-    xfer.rx_buf = readpkt;
-    xfer.len = 16;
-    ret = spi_sync_transfer(hxt->spi, &xfer, 1);
-    gpiod_direction_output(hxt->gpiod_cs, 1);
-    usleep_range(2000, 2500);
-    if(ret) {
-        dev_warn(&hxt->spi->dev, "spi_sync_transfer returned %d\n", ret);
-        return ret;
-    }
-    hxt_trace(hxt, "rd hdr %16ph\n", readpkt);
-
-    if(hxt->generation == 1) {
-        if(readpkt[0] == 0) {
-            g1done = 1;
-        } else {
-            g1len = readpkt[1] + ((unsigned)readpkt[2] << 8);
-            g1len += 5;
-            if(g1len < 16)
-                g1len = 16;
-        }
-    }
-
-    gpiod_direction_output(hxt->gpiod_cs, 0);
-    usleep_range(2000, 2500);
-    if(hxt->generation == 1) {
-        memset(readpkt, 0, 16);
-        readpkt[0] = 0xEB;
-        readpkt[1] = 1 + hxt->read_tag;
-        readpkt[2] = 1;
-        step = 16;
-        xfer.len = g1len < step ? g1len : step;
-    } else {
-        memset(readpkt, 0xA5, 16);
-        xfer.len = step = sizeof(readpkt);
-    }
-    xfer.tx_buf = readpkt;
-    xfer.rx_buf = readpkt;
-    ret = spi_sync_transfer(hxt->spi, &xfer, 1);
-    if(ret) {
-        gpiod_direction_output(hxt->gpiod_cs, 1);
-        dev_warn(&hxt->spi->dev, "spi_sync_transfer returned %d\n", ret);
-        return ret;
-    }
-
-    hxt_trace(hxt, "rd pkt %16ph (asked %u)\n", readpkt, xfer.len);
-
-    if(hxt->generation == 1 && (!readpkt[0] || readpkt[0] == 0xE1)) {
-        gpiod_direction_output(hxt->gpiod_cs, 1);
-        usleep_range(2000, 2500);
-        return g1done ? -ENOENT : 0;
-    }
-
-    len = readpkt[2] + ((unsigned)readpkt[3] << 8);
-    if(((readpkt[0] + readpkt[1] + readpkt[2] + readpkt[3] + readpkt[4]) & 0xFF) || len > 326 || (readpkt[0] & 0xFE) != 0xEA || readpkt[1] != 1 + hxt->read_tag) {
-        gpiod_direction_output(hxt->gpiod_cs, 1);
-        usleep_range(2000, 2500);
-        if(readpkt[0])
-            dev_warn(&hxt->spi->dev, "invalid read header: %02x %02x %02x %02x %02x\n", readpkt[0], readpkt[1], readpkt[2], readpkt[3], readpkt[4]);
-        return -EINVAL;
-    }
-
-    memcpy(hxt->rx_data, readpkt + 5, step - 5);
-    if(len > step - 5) {
-        xfer.tx_buf = NULL;
-        xfer.rx_buf = hxt->rx_data + step - 5;
-        xfer.len = len;
-        ret = spi_sync_transfer(hxt->spi, &xfer, 1);
-        if(ret) {
-            gpiod_direction_output(hxt->gpiod_cs, 1);
-            dev_warn(&hxt->spi->dev, "spi_sync_transfer returned %d\n", ret);
+    /* A query answered with a length, then the data answered with the
+     * status again (e1 38 00 eb 01 ..: the chip still on the query) is a
+     * frame not ready yet -- ask for the length again and read again, as
+     * AppleMultitouchZ2SPI does after a failed read (its +0x823). */
+    for(tries = 0; tries < 4; tries++) {
+        memset(q, 0, 16);
+        q[0] = 0xeb;
+        q[1] = seq;
+        s = hx_touch_sum16(q, 14);
+        q[14] = s;
+        q[15] = s >> 8;
+        ret = hx_touch_xfer(hxt, q, r, 16);
+        if(ret)
             return ret;
+        hxt_trace(hxt, "q %u: %16ph\n", seq, r);
+        if((r[0] & 0xf0) != 0xe0 || (r[14] | r[15] << 8) != hx_touch_sum16(r, 14))
+            continue;
+        len = r[1] | r[2] << 8;
+        if(!len)
+            return -ENOENT;
+        if(len > Z2_MAX_PACKET) {
+            dev_warn_ratelimited(&hxt->spi->dev, "result length %u, more than %u\n", len, Z2_MAX_PACKET);
+            return -EIO;
         }
-    }
-    gpiod_direction_output(hxt->gpiod_cs, 1);
 
+        n = len + 5;
+        memset(q, 0, n);
+        q[0] = 0xeb;
+        q[1] = seq;
+        q[2] = 1;
+        s = hx_touch_sum16(q, 14);
+        q[n - 2] = s;
+        q[n - 1] = s >> 8;
+        ret = hx_touch_xfer(hxt, q, r, n);
+        if(ret)
+            return ret;
+        hxt_trace(hxt, "d %u: %16ph (%u)\n", seq, r, n);
+        if(r[0] == 0xea || r[0] == 0xeb)
+            break;
+        hxt->nretries++;
+    }
+    if(tries == 4) {
+        dev_warn_ratelimited(&hxt->spi->dev, "no frame after 4 tries: %5ph\n", r);
+        return -EIO;
+    }
+
+    plen = r[2] | r[3] << 8;
+    if(r[1] != seq || ((r[0] + r[1] + r[2] + r[3] + r[4]) & 0xff) || plen < 2 || plen + 5 > n) {
+        dev_warn_ratelimited(&hxt->spi->dev, "bad frame header %5ph (asked %u)\n", r, n);
+        return -EIO;
+    }
+    if(hx_touch_sum16(r + 5, plen - 2) != (r[plen + 3] | r[plen + 4] << 8)) {
+        dev_warn_ratelimited(&hxt->spi->dev, "bad frame checksum (%u bytes)\n", plen);
+        return -EIO;
+    }
     hxt->read_tag = !hxt->read_tag;
-
-    len -= 2;
-    csum = hxt->rx_data[len] + ((unsigned)hxt->rx_data[len + 1] << 8);
-    for(i=0; i<len; i++)
-        csum -= hxt->rx_data[i];
-    if(csum) {
-        usleep_range(2000, 2500);
-        dev_warn(&hxt->spi->dev, "invalid data checksum: %04x\n", csum);
-        return -EINVAL;
-    }
-
-    hxt_trace(hxt, "report, %u bytes: %*ph\n", len, (int)min(len, 32u), hxt->rx_data);
-    hx_touch_process_report(hxt, hxt->rx_data, len);
-    usleep_range(2000, 2500);
-
+    hxt->nframes++;
+    hx_touch_process_report(hxt, r + 5, plen - 2);
     return 0;
 }
 
+/* Read while ATTN stays asserted: the interrupt is on its falling edge, and
+ * a frame left unread leaves the line low with no edge to come -- which is
+ * also why a failed read does not end the loop while the line is down. */
 static void hx_touch_read_all_reports(struct hx_touch_data *hxt)
 {
-    unsigned max;
-    int ret;
+    int i, ret;
 
-    max = hxt->generation == 1 ? 4 : 1;
-    while(max --) {
+    for(i = 0; i < 16; i++) {
         ret = hx_touch_read_report(hxt);
-        if(ret)
+        if(gpiod_get_value(hxt->gpiod_irq) <= 0)
             break;
+        if(ret)
+            usleep_range(1000, 2000);
     }
 }
 
@@ -358,7 +352,7 @@ static int hx_touch_misc_dev_open(struct inode *inode, struct file *filp)
     pr_err("Z2-OPEN: enable_irq\n");
     enable_irq(hxt->virq);
 
-    hxt->nirq = hxt->nxfer = hxt->nbytes = 0;
+    hxt->nirq = hxt->nxfer = hxt->nbytes = hxt->nframes = hxt->nretries = 0;
     hxt->misc_dev_inuse = 1;
     pr_err("Z2-OPEN: done\n");
     return 0;
