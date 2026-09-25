@@ -141,8 +141,11 @@ difference is `0x22` = 0x67 vs 0x65: bit 0x02 is LDO idx 15, a 5 V-class LDO
 (voltage register 0x3e, 5.1 V) that no ADT function names and iOS keeps on.
 With `-M 22:02:02 -M 3d:20:20 -M 61:02:00` (the last two: 0x3d's bit 0x20,
 and PMU GPIO0 back at 0x11 where iOS has it) the digitizer scans: 1131 frames
-in 20 s, one to three fingers (`logs/z2-boot11.txt`). Which of the three it
-takes is still to be split out.
+in 20 s, one to three fingers (`logs/z2-boot11.txt`). Split out: it is
+0x22 bit 0x02 alone -- forced off, 0 frames; on, 457 frames in 8 s, with
+0x3d untouched and PMU GPIO0 at our 0x13 (`logs/z2-boot12.txt`,
+`z2-boot13.txt`). `dts/p105ap.dts` now switches it together with the analog
+rail (`touch_ana`, mask 0x06), and drops `pmuclk-supply`.
 
 Two things fell out on the way:
 - `irq-apple-aic1.c` switched the whole AIC off (all lines masked,

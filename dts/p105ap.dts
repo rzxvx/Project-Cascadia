@@ -342,7 +342,6 @@
 				generation = <1>;
 				hv-supply = <&touch_ana>;
 				core-supply = <&touch_ldo>;
-				pmuclk-supply = <&touch_pmuclk>;
 				/* The ADT writes GPIOs as (port << 8) | pin, eight
 				 * to a port: function-reset 0x0205 is pin 21,
 				 * function-enable_cs 0x0c07 is pin 103.  The ATTN
@@ -550,12 +549,23 @@
                  * (0x80c95f30, 8 bytes per entry, byte 6 = register, byte 7 =
                  * mask); entry 12 gives register 0x22 bit 0x04.  A live dump
                  * reads 0x22 = 0x61, so this rail was off, which is why the
-                 * digitizer never answered. */
+                 * digitizer never answered.  (The table's index 12 is LDO13 in
+                 * the PMU's own 1-based names: 5.25 V, PP5V25_GRAPE on the
+                 * board, J1700.17.)
+                 *
+                 * Bit 0x02 of the same register is LDO index 15, another 5 V
+                 * LDO (voltage register 0x3e, 5.1 V) that no ADT function names
+                 * and iOS keeps on: its live register dump reads 0x22 = 0x67
+                 * (tools/mtdump, AppleRegisterDump on AppleARMPMUCharger).
+                 * Without it the digitizer boots, answers every command as it
+                 * does under iOS, takes bf/af -- and never scans; with it, 60
+                 * frames a second (docs/research/p105-z2-boot.md).  It goes on
+                 * and off with the analog rail. */
                 touch_ana: touch_ana@22 {
                     compatible = "apple,pmu-pwrsw";
                     reg = <0x22>;
-                    mask = <0x04>;
-                    enable = <0x04>;
+                    mask = <0x06>;
+                    enable = <0x06>;
                 };
 
                 /* function-power_ldo is 0x0213: LDO 19 by the same reading.
@@ -568,19 +578,11 @@
                     enable = <0x40>;
                 };
 
-                /* ADT function-clock_enable-pmu: PMU GPIO0.  The register is
-                 * gpio + 0x61 (AppleD1946PMU::_setGPIOFunction in the 12H321
-                 * kernelcache), so GPIO0 is 0x61 -- not 0x200, which is the
-                 * LDO range.  0x60 is the direction/enable field and 0x02 the
-                 * output level; 0x1d is preserved config.  We drive it as an
-                 * enabled output: if the level turns out to be inverted this
-                 * is one hex digit (enable = <0x60>). */
-                touch_pmuclk: touch_pmuclk@61 {
-                    compatible = "apple,pmu-pwrsw";
-                    reg = <0x61>;
-                    mask = <0x02>;
-                    enable = <0x02>;
-                };
+                /* No PMU GPIO0 here.  The ADT's function-clock_enable-pmu is
+                 * GPIO0 (register 0x61), but iBEC makes it the digitizer's
+                 * clock only on boards of revision <= 1, where it also turns
+                 * grape-clk's GPIO 63 off; on this one the live ADT keeps
+                 * function-clock_enable = Cmwp and iOS leaves 0x61 at 0x11. */
             };
         };
 

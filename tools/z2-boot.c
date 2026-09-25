@@ -122,10 +122,10 @@
  *         start of the scan provoked; kept to watch ATTN without the kernel
  *     -M  reg:mask:val, hex, repeatable: PMU writes right after open, before
  *         the chip is reset -- what iOS's register dump has and ours does
- *         not (logs/ios-mtdump2.txt).  -M 22:02:02 -M 3d:20:20 -M 61:02:00
- *         is what made the digitizer scan (logs/z2-boot11.txt): 0x22 bit
- *         0x02 is LDO idx 15, a 5 V-class LDO no ADT function names and iOS
- *         keeps on
+ *         not (logs/ios-mtdump2.txt).  -M 22:02:02 alone is what makes the
+ *         digitizer scan (logs/z2-boot12/13.txt: 0 frames without, 457 in
+ *         8 s with): LDO idx 15, a 5 V-class LDO no ADT function names and
+ *         iOS keeps on.  dts/p105ap.dts now switches it with the analog rail
  *     -D  with each stage mark (not the ones during -p), all of the PMU's
  *         0x00..0x7f -- what iOS publishes as "AppleRegisterDump" on its
  *         AppleARMPMUCharger (tools/mtdump), to compare the two
@@ -137,7 +137,7 @@
  *   /dev/mem, edges counted, the shortest and longest half-periods kept.
  *   366 + 366 ticks of 24 MHz is 32787 Hz with 15.25 us halves.
  *
- *   With -c and the -M above, the digitizer scans: 60 Hz frames, 30 bytes a
+ *   With -c and that LDO on, the digitizer scans: 60 Hz frames, 30 bytes a
  *   finger, several fingers at once (2026-09-25).
  */
 #include <stdio.h>
