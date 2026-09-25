@@ -122,7 +122,16 @@ if [ ! -e "$x" ]; then
 </channel>
 XML
 fi
-nohup startxfce4 >/tmp/desktop.log 2>&1 </dev/null &
+# When the session ends the text console is back on the glass -- with no
+# keyboard, since fbkeyboard was stopped above.  Start it again, the way
+# stage 2 did (it leaves its arguments in /run/fbkeyboard.args).  setsid, so
+# that the session outlives the ssh connection it was started from.
+setsid sh -c '
+    startxfce4 >/tmp/desktop.log 2>&1 </dev/null
+    if [ -s /run/fbkeyboard.args ] && ! pidof fbkeyboard >/dev/null; then
+        exec fbkeyboard $(cat /run/fbkeyboard.args) >/tmp/fbkeyboard.log 2>&1 </dev/null
+    fi
+' </dev/null >/dev/null 2>&1 &
 echo "XFCE is starting -- about half a minute; the first start takes longer (log: /tmp/desktop.log)"
 END
 

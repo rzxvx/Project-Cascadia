@@ -13,6 +13,14 @@
 
 msg() { echo "$*" > /dev/kmsg; }
 
+# The kernel starts PID 1 with HOME=/ and TERM=linux and nothing else -- no
+# PATH at all, so ash falls back to its built-in one, which has no
+# /usr/local/bin: `desktop` ran over ssh (a login shell, /etc/profile) and was
+# "not found" on the glass.  And HOME=/ would have put an XFCE started from the
+# glass in /.config.  Everything this starts inherits these.
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+export HOME=/root USER=root LOGNAME=root SHELL=/bin/sh
+
 IP_DEV="${IP_DEV:-10.55.0.2}"
 
 ROOTTYPE=$(awk '$2=="/"{print $3; exit}' /proc/mounts 2>/dev/null)
@@ -127,6 +135,9 @@ if command -v fbkeyboard >/dev/null 2>&1; then
     done
     if [ -n "$ts" ] && [ -n "$font" ]; then
         setsid fbkeyboard -d "$ts" -f "$font" >/tmp/fbkeyboard.log 2>&1 </dev/null &
+        # For `desktop`, which stops it while X owns the framebuffer and
+        # starts it again, the same way, when the session ends.
+        echo "-d $ts -f $font" > /run/fbkeyboard.args
         msg "P105: fbkeyboard on $ts"
     else
         msg "P105: fbkeyboard installed, but no touchscreen ($ts) or font ($font)"
@@ -145,8 +156,10 @@ msg "P105: stage2 done, shell on tty0"
 # orphan that exits in the meantime is reaped on the way.  No setsid: busybox's
 # forks when its caller leads a process group, and $! would then be a process
 # that is already gone -- a new shell every second.
+# A login shell, like ssh's: /etc/profile, the prompt, ~/.profile.
+cd "$HOME" 2>/dev/null || cd /
 while :; do
-    /bin/sh </dev/tty0 >/dev/tty0 2>&1 &
+    /bin/sh -l </dev/tty0 >/dev/tty0 2>&1 &
     wait $!
     sleep 1
 done
