@@ -454,10 +454,20 @@ static struct irq_chip aic1_chip = {
 	.irq_eoi	= aic1_irq_eoi,
 };
 
+/* IRQ entries that found no event, and events handled in one entry beyond
+ * which a line counts as stuck.  Both used to shut the whole AIC down
+ * (aic1_clear_sticky_nirq / aic1_mask_all): every line masked, CONFIG.ENABLE
+ * cleared, forever.  One empty entry the moment the digitizer started
+ * scanning did exactly that -- USB, network and NFS gone, only the local
+ * timer left (2026-09-25, z2-boot -S with bf/af: AIC masks all ffffffff at
+ * t+2.8 s, dwc2 GINTSTS pending, its IRQ count frozen).  An empty entry is a
+ * line that dropped before EVENT was read; a stuck line gets masked alone. */
+static unsigned int aic1_empty_entries;
+
 static void __exception_irq_entry aic1_handle_irq(struct pt_regs *regs)
 {
 	struct apple_aic1 *aic = apple_aic1;
-	unsigned int limit, n = 0;
+	unsigned int limit, n = 0, last_hw = ~0U, same = 0;
 	u32 event;
 
 	aic1_handler_entries++;
@@ -473,7 +483,9 @@ static void __exception_irq_entry aic1_handle_irq(struct pt_regs *regs)
 	apple_a9_gic_drain();
 	event = aic1_read_event(aic);
 	if (!event) {
-		aic1_clear_sticky_nirq(aic);
+		aic1_empty_entries++;
+		pr_err_ratelimited("aic,1: IRQ entry with no EVENT (%u so far) -- ignored\n",
+				   aic1_empty_entries);
 		return;
 	}
 
@@ -499,6 +511,9 @@ static void __exception_irq_entry aic1_handle_irq(struct pt_regs *regs)
 		}
 
 		hw = aic1_event_hwirq(aic, event);
+		if (hw == last_hw)
+			same++;
+		last_hw = hw;
 		if (hw < aic->nr_irq)
 			generic_handle_domain_irq(aic->domain, hw);
 		else if (event)
@@ -507,8 +522,14 @@ static void __exception_irq_entry aic1_handle_irq(struct pt_regs *regs)
 	} while (n < limit && (event = aic1_read_event(aic)));
 
 	if (n >= limit) {
-		aic1_mask_all(aic);
-		aic1_drain_events(aic);
+		if (last_hw < aic->nr_irq) {
+			aic1_write(aic, AIC1_MASK_SET + (last_hw >> 5) * 4, BIT(last_hw & 31));
+			pr_err("aic,1: hwirq %u fired %u times in one entry (%u events) -- masked\n",
+			       last_hw, same + 1, n);
+		} else {
+			pr_err("aic,1: %u events in one entry, last %#x -- nothing masked\n",
+			       n, event);
+		}
 	}
 }
 
