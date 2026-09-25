@@ -286,6 +286,10 @@ cmd_build() {
         # ssh-keygen, another laptop -- left an image that met every login with
         # a password prompt for a password that does not exist.  This machine's
         # key is added if the image does not carry it yet; nothing is removed.
+        # So is every ~/.ssh/cascadia*.pub: keys made for this device alone
+        # (cascadia_claude, the passphrase-less one the assistant logs in
+        # with).  Stage 1 copies the image's list over the NFS root's at every
+        # boot, so a key appended on the device by hand is gone after a reboot.
         AK="$ROOT/build/initramfs-root/root/.ssh/authorized_keys"
         PUB="${PUBKEY:-}"
         if [ -z "$PUB" ]; then
@@ -293,23 +297,26 @@ cmd_build() {
                 if [ -f "$c" ]; then PUB="$c"; break; fi
             done
         fi
-        blob=
-        [ -n "$PUB" ] && [ -f "$PUB" ] && blob=$(awk 'NR == 1 { print $2 }' "$PUB")
-        case "$(head -c 12 "$PUB" 2>/dev/null)" in
-            ssh-*|ecdsa-*|sk-*) : ;;
-            *) blob= ;;
-        esac
-        if [ -z "$blob" ]; then
-            note "note: no ssh public key on this machine -- the image keeps whatever keys it had"
-        elif [ -f "$AK" ] && grep -qF "$blob" "$AK"; then
-            note "ok: ssh lets in $PUB"
-        else
-            mkdir -p "$(dirname "$AK")"
-            chmod 700 "$(dirname "$AK")"
-            { [ -s "$AK" ] && echo; cat "$PUB"; } >> "$AK"
-            chmod 600 "$AK"
-            note "ok: ssh lets in $PUB -- added to the image"
-        fi
+        [ -n "$PUB" ] || note "note: no ssh public key on this machine -- the image keeps whatever keys it had"
+        for PUB in $PUB ~/.ssh/cascadia*.pub; do
+            [ -f "$PUB" ] || continue
+            blob=$(awk 'NR == 1 { print $2 }' "$PUB")
+            case "$(head -c 12 "$PUB" 2>/dev/null)" in
+                ssh-*|ecdsa-*|sk-*) : ;;
+                *) blob= ;;
+            esac
+            if [ -z "$blob" ]; then
+                note "note: $PUB is not an OpenSSH public key -- skipped"
+            elif [ -f "$AK" ] && grep -qF "$blob" "$AK"; then
+                note "ok: ssh lets in $PUB"
+            else
+                mkdir -p "$(dirname "$AK")"
+                chmod 700 "$(dirname "$AK")"
+                { [ -s "$AK" ] && echo; cat "$PUB"; } >> "$AK"
+                chmod 600 "$AK"
+                note "ok: ssh lets in $PUB -- added to the image"
+            fi
+        done
     fi
 
     say "3/6 kernel"
