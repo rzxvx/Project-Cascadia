@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """Copy one file out of an IPSW's root filesystem, without mounting anything.
 
-    rootfs-extract.py IPSW DMG KEY PATH OUT
+    rootfs-extract.py IPSW DMG KEY PATH OUT [PATH OUT ...]
 
     IPSW   the stock .ipsw
     DMG    the root filesystem's name inside it (BuildManifest's "OS" entry)
     KEY    its 72-hex-digit key: AES-128 key, then HMAC-SHA1 key
     PATH   absolute path inside the root filesystem
-    OUT    where to write the file
+    OUT    where to write the file (pairs repeat: one pass over the DMG)
 
 Written for /usr/share/firmware/multitouch/P105.mtprops, the digitizer's
 firmware: touch needs it, it is Apple's and cannot ship with the repository,
@@ -318,9 +318,10 @@ class Hfs:
 
 
 def main():
-    if len(sys.argv) != 6:
+    if len(sys.argv) < 6 or len(sys.argv) % 2:
         sys.exit(__doc__)
-    ipsw, dmg, keyhex, path, out = sys.argv[1:]
+    ipsw, dmg, keyhex = sys.argv[1:4]
+    pairs = list(zip(sys.argv[4::2], sys.argv[5::2]))
     key = bytes.fromhex(keyhex)
     if len(key) != 36:
         fail("the key is %d bytes, not 36" % len(key))
@@ -328,20 +329,21 @@ def main():
     # The DMG is deflated inside the zip, and a deflate stream cannot be read
     # at random -- so it goes to a file of its own first, next to the output,
     # and away again at the end.
-    tmp = out + ".dmg.tmp"
+    tmp = pairs[0][1] + ".dmg.tmp"
     try:
         with zipfile.ZipFile(ipsw) as z, z.open(dmg) as src, open(tmp, "wb") as dst:
             shutil.copyfileobj(src, dst, 1 << 20)
         with open(tmp, "rb") as f:
             src = Encrcdsa(f, key) if f.read(8) == b"encrcdsa" else Plain(f)
             hfs = Hfs(Udif(src))
-            data = hfs.read_file(hfs.lookup(path))
+            for path, out in pairs:
+                data = hfs.read_file(hfs.lookup(path))
+                with open(out, "wb") as o:
+                    o.write(data)
+                print("    %s: %d bytes -> %s" % (path, len(data), out))
     finally:
         if os.path.exists(tmp):
             os.remove(tmp)
-    with open(out, "wb") as f:
-        f.write(data)
-    print("    %s: %d bytes -> %s" % (path, len(data), out))
 
 
 if __name__ == "__main__":

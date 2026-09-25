@@ -346,6 +346,31 @@ index 2a9f91e81..ca986f254 100644
  obj-$(CONFIG_MFD_RSMU_I2C)	+= rsmu_i2c.o rsmu_core.o
  obj-$(CONFIG_MFD_RSMU_SPI)	+= rsmu_spi.o rsmu_core.o
 +obj-$(CONFIG_MFD_APPLE_PMU_I2C)    += apple-pmu-i2c.o
+diff --git a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/usb.c b/drivers/net/wireless/broadcom/brcm80211/brcmfmac/usb.c
+index 8afbf529c..9496d7410 100644
+--- a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/usb.c
++++ b/drivers/net/wireless/broadcom/brcm80211/brcmfmac/usb.c
+@@ -40,6 +40,10 @@ BRCMF_FW_DEF(43236B, "brcmfmac43236b");
+ BRCMF_FW_DEF(43242A, "brcmfmac43242a");
+ BRCMF_FW_DEF(43569, "brcmfmac43569");
+ BRCMF_FW_DEF(4373, "brcmfmac4373");
++/* Cascadia: BCM4334 on the iPad mini 1's HSIC port -- a USB device to the
++ * host.  Apple's firmware for it is a TRX image (wifi/4334b1/borg.trx in the
++ * iOS root filesystem), the format this driver downloads over USB. */
++BRCMF_FW_DEF(4334, "brcmfmac4334");
+ 
+ static const struct brcmf_firmware_mapping brcmf_usb_fwnames[] = {
+ 	BRCMF_FW_ENTRY(BRCM_CC_43143_CHIP_ID, 0xFFFFFFFF, 43143),
+@@ -49,7 +53,8 @@ static const struct brcmf_firmware_mapping brcmf_usb_fwnames[] = {
+ 	BRCMF_FW_ENTRY(BRCM_CC_43242_CHIP_ID, 0xFFFFFFFF, 43242A),
+ 	BRCMF_FW_ENTRY(BRCM_CC_43566_CHIP_ID, 0xFFFFFFFF, 43569),
+ 	BRCMF_FW_ENTRY(BRCM_CC_43569_CHIP_ID, 0xFFFFFFFF, 43569),
+-	BRCMF_FW_ENTRY(CY_CC_4373_CHIP_ID, 0xFFFFFFFF, 4373)
++	BRCMF_FW_ENTRY(CY_CC_4373_CHIP_ID, 0xFFFFFFFF, 4373),
++	BRCMF_FW_ENTRY(BRCM_CC_4334_CHIP_ID, 0xFFFFFFFF, 4334)
+ };
+ 
+ #define TRX_MAGIC		0x30524448	/* "HDR0" */
 diff --git a/drivers/phy/Kconfig b/drivers/phy/Kconfig
 index f73abff41..eee847c7e 100644
 --- a/drivers/phy/Kconfig

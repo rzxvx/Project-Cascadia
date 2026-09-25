@@ -435,11 +435,14 @@
 		};
 
 		/*
-		 * USB.  Kept because the BCM4334 Wi-Fi part is USB-attached on
-		 * this board (ADT puts /wlan under usb-complex/usb-ehci, not
-		 * SDIO), so brcmfmac later needs a working EHCI.  Off for now:
-		 * the OTG PHY needs bringing up first and it is not on the
-		 * critical path to a desktop.
+		 * USB.  The OTG port is dwc2, the gadget.  EHCI is the host
+		 * side, for one device: the BCM4334 Wi-Fi part on HSIC port 3
+		 * (ADT: /wlan under usb-complex/usb-ehci, port 3, port-type 3).
+		 * The PHY driver has two outputs -- <&otgphy 0> for dwc2, as
+		 * before, and <&otgphy 1> for EHCI, whose power-on switches the
+		 * USB 2.0 host block on in PMGR, enables HSIC in usb-complex (the
+		 * second reg) and raises the chip's REG_ON (hsic-supply).  The
+		 * why of each is in drivers/phy/phy-apple-s5l-usb.c.
 		 *
 		 * Addresses are flattened through the usb-complex bus, whose own
 		 * ranges map child 0 to 0x6100000 within arm-io; EHCI's ADT reg of
@@ -447,8 +450,10 @@
 		 */
 		otgphy: phy@6000000 {
 			compatible = "apple,s5l8940x-otgphy";
-			reg = <0x6000000 0x1000>;
-			#phy-cells = <0>;
+			reg = <0x6000000 0x1000>,	/* otgphyctrl */
+			      <0xf108000 0x1000>;	/* usb-complex */
+			#phy-cells = <1>;
+			hsic-supply = <&wlan_reg_on>;
 			status = "okay";
 		};
 
@@ -461,7 +466,7 @@
 			compatible = "apple,s5l8940x-dwc2", "snps,dwc2";
 			reg = <0x6100000 0x10000>;
 			interrupts = <11>;
-			phys = <&otgphy>;
+			phys = <&otgphy 0>;
 			phy-names = "usb2-phy";
 			dr_mode = "peripheral";
 			g-rx-fifo-size = <512>;
@@ -474,7 +479,9 @@
 			compatible = "apple,s5l8940x-ehci", "generic-ehci";
 			reg = <0x6400000 0x10000>;
 			interrupts = <12>;
-			status = "disabled";
+			phys = <&otgphy 1>;
+			phy-names = "usb";
+			status = "okay";
 		};
 
 		ohci0: usb@6500000 {
@@ -580,6 +587,18 @@
                     reg = <0x23>;
                     mask = <0x40>;
                     enable = <0x40>;
+                };
+
+                /* The Wi-Fi chip's REG_ON: the ADT's wlan function-device_reset
+                 * is PMU GPIO 3, whose config register is 0x61 + 3.  Linux
+                 * finds it at 0x09, iOS with Wi-Fi up at 0x0b (the PMU dump,
+                 * logs/ios-mtdump2.txt): bit 1 is the output level.  The
+                 * host PHY takes it as hsic-supply. */
+                wlan_reg_on: wlan_reg_on@64 {
+                    compatible = "apple,pmu-pwrsw";
+                    reg = <0x64>;
+                    mask = <0x02>;
+                    enable = <0x02>;
                 };
 
                 /* No PMU GPIO0 here.  The ADT's function-clock_enable-pmu is

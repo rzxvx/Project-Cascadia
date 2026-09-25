@@ -256,6 +256,16 @@ cmd_build() {
         cp "$ROOT/build/firmware/P105.mtprops" "$ROOT/build/initramfs-root/lib/firmware/"
         note "ok: touch firmware from the IPSW (build/firmware/P105.mtprops)"
     fi
+    # The same for Wi-Fi: brcmfmac is built in and asks for brcm/<name> as soon
+    # as the chip enumerates, which is long before any NFS root is mounted --
+    # so it has to be in the image itself.
+    if [ -s "$ROOT/build/firmware/brcmfmac4334.bin" ]; then
+        mkdir -p "$ROOT/build/initramfs-root/lib/firmware/brcm"
+        cp "$ROOT/build/firmware/brcmfmac4334.bin" "$ROOT/build/initramfs-root/lib/firmware/brcm/"
+        note "ok: Wi-Fi firmware from the IPSW (build/firmware/brcmfmac4334.bin)"
+    else
+        note "note: no Wi-Fi firmware -- ./cascadia firmware extracts it from the IPSW"
+    fi
     # No RTC on this board: without a stamp it boots at the epoch and every TLS
     # handshake fails on notBefore.  Written before the kernel build so it lands
     # inside the embedded initramfs.

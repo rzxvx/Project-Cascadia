@@ -13,6 +13,7 @@
 #include <linux/of.h>
 #include <linux/phy/phy.h>
 #include <linux/platform_device.h>
+#include <linux/regulator/consumer.h>
 
 #define OPHYPWR		0x00
 #define OPHYCLK		0x04
@@ -52,11 +53,61 @@ static const u8 usb_complex_gates[] = { 87, 88, 89, 90, 91 };
 #define OPHY_UOTGTUNE1		0x30
 #define OPHY_UOTGTUNE2		0x34
 
+/* The host side: EHCI and its HSIC port, where the Wi-Fi chip is.
+ *
+ *   PMGR +0x1088   the USB 2.0 host block's power/clock register.  The ADT
+ *                  calls it usb-complex's function-usb20_reset, 'ARST' 34:
+ *                  reset ids index the gate array the way XNU reads it,
+ *                  PMGR + 0x1000 + id * 4, ten ids above the gate numbering
+ *                  (i2c0's reset, 70, is the register of its gate, 80).
+ *                  iBoot leaves it off, and EHCI and OHCI then read as
+ *                  nothing at all; switched on, EHCI answers (HCIVERSION
+ *                  0x0100, three ports).  Measured 2026-09-26.
+ *   PMGR +0x1140   gate 90, the one usb-complex gate iBoot leaves off.  It
+ *                  was on when EHCI first answered; kept.
+ *   usb-complex    +0 bit 2: HSIC enable.  AppleS5L8930XUSBArbitrator's
+ *                  _configureHSIC ORs the ADT's usb_ctl (0x64) into this
+ *                  register (iOS 6.1 kernelcache 0x808afffc); bits 5/6 there
+ *                  are clock-off bits it clears again for active clients, so
+ *                  bit 2 is what it leaves.  Bit 7 is the OTG PHY's own
+ *                  (set on power-up, 0x344 on the same object) -- not ours.
+ *   hsic-supply    the Wi-Fi chip's REG_ON, PMU GPIO3.  With all three on
+ *                  and the port powered, PORTSC3 read 0x1803: connected.
+ *
+ * The regulator is taken when the host PHY powers on, not at probe: the PMU
+ * sits behind I2C and may come later, and the OTG PHY -- the gadget, the
+ * console, the network -- must not wait for it. */
+#define PMGR_USB20_HOST		0x1088
+#define PMGR_GATE_90		0x1140
+#define USBCPLX_HSIC_EN		BIT(2)
+
 struct s5l_usbphy {
 	void __iomem *base;
 	void __iomem *pmgr;
+	void __iomem *usbcplx;		/* NULL without a second reg */
+	struct regulator *hsic_supply;
+	bool hsic_supply_on;
 	struct device *dev;
+	struct phy *phys[2];		/* [0] OTG, [1] host/HSIC */
 };
+
+/* XNU's clock_gate_switch: request the state in bits 3:0, wait for bits 7:4
+ * to follow.  Bit 8 is cleared with the request, as XNU does. */
+static int s5l_pmgr_on(struct s5l_usbphy *p, u32 off)
+{
+	u32 v = readl(p->pmgr + off);
+	int n;
+
+	writel((v & ~0x10f) | 0xf, p->pmgr + off);
+	for (n = 0; n < 1000; n++) {
+		v = readl(p->pmgr + off);
+		if (!((v ^ (v >> 4)) & 0xf))
+			return 0;
+		udelay(1);
+	}
+	dev_err(p->dev, "PMGR +0x%x stuck at 0x%08x\n", off, v);
+	return -ETIMEDOUT;
+}
 
 static void phy_dump_regs(struct s5l_usbphy *p, const char *tag)
 {
@@ -159,6 +210,74 @@ static const struct phy_ops s5l_usbphy_ops = {
 	.owner = THIS_MODULE,
 };
 
+static int s5l_hostphy_power_on(struct phy *phy)
+{
+	struct s5l_usbphy *p = phy_get_drvdata(phy);
+	int ret;
+
+	if (!p->hsic_supply) {
+		struct regulator *r = devm_regulator_get_optional(p->dev, "hsic");
+
+		if (IS_ERR(r)) {
+			if (PTR_ERR(r) == -EPROBE_DEFER)
+				return -EPROBE_DEFER;
+			dev_warn(p->dev, "no hsic-supply (%ld): the HSIC device stays unpowered\n",
+				 PTR_ERR(r));
+		} else {
+			p->hsic_supply = r;
+		}
+	}
+	if (p->hsic_supply && !p->hsic_supply_on) {
+		ret = regulator_enable(p->hsic_supply);
+		if (ret)
+			return ret;
+		p->hsic_supply_on = true;
+		msleep(10);
+	}
+
+	ret = s5l_pmgr_on(p, PMGR_USB20_HOST);
+	if (ret)
+		return ret;
+	s5l_pmgr_on(p, PMGR_GATE_90);
+	if (p->usbcplx)
+		writel(readl(p->usbcplx) | USBCPLX_HSIC_EN, p->usbcplx);
+
+	dev_info(p->dev, "host PHY on: PMGR +0x%x=0x%08x usb-complex=0x%08x\n",
+		 PMGR_USB20_HOST, readl(p->pmgr + PMGR_USB20_HOST),
+		 p->usbcplx ? readl(p->usbcplx) : 0);
+	return 0;
+}
+
+static int s5l_hostphy_power_off(struct phy *phy)
+{
+	struct s5l_usbphy *p = phy_get_drvdata(phy);
+
+	if (p->hsic_supply_on) {
+		regulator_disable(p->hsic_supply);
+		p->hsic_supply_on = false;
+	}
+	return 0;
+}
+
+static const struct phy_ops s5l_hostphy_ops = {
+	.power_on  = s5l_hostphy_power_on,
+	.power_off = s5l_hostphy_power_off,
+	.owner     = THIS_MODULE,
+};
+
+/* <&otgphy 0> is the OTG PHY dwc2 has always had, <&otgphy 1> the host
+ * side.  With #phy-cells = <0> there are no args, and that is the OTG PHY. */
+static struct phy *s5l_usbphy_xlate(struct device *dev,
+				    const struct of_phandle_args *args)
+{
+	struct s5l_usbphy *p = dev_get_drvdata(dev);
+	unsigned int idx = args->args_count ? args->args[0] : 0;
+
+	if (idx >= ARRAY_SIZE(p->phys))
+		return ERR_PTR(-EINVAL);
+	return p->phys[idx];
+}
+
 static int s5l_usbphy_probe(struct platform_device *pdev)
 {
 	struct s5l_usbphy *p;
@@ -185,15 +304,31 @@ static int s5l_usbphy_probe(struct platform_device *pdev)
 		return -ENOMEM;
 	}
 
+	/* usb-complex, for the HSIC enable bit: optional, the second reg. */
+	if (platform_get_resource(pdev, IORESOURCE_MEM, 1)) {
+		p->usbcplx = devm_platform_ioremap_resource(pdev, 1);
+		if (IS_ERR(p->usbcplx))
+			p->usbcplx = NULL;
+	}
+	platform_set_drvdata(pdev, p);
+
 	phy = devm_phy_create(&pdev->dev, NULL, &s5l_usbphy_ops);
 	if (IS_ERR(phy)) {
 		dev_err(&pdev->dev, "failed to create PHY\n");
 		return PTR_ERR(phy);
 	}
-
 	phy_set_drvdata(phy, p);
+	p->phys[0] = phy;
 
-	provider = devm_of_phy_provider_register(&pdev->dev, of_phy_simple_xlate);
+	phy = devm_phy_create(&pdev->dev, NULL, &s5l_hostphy_ops);
+	if (IS_ERR(phy)) {
+		dev_err(&pdev->dev, "failed to create host PHY\n");
+		return PTR_ERR(phy);
+	}
+	phy_set_drvdata(phy, p);
+	p->phys[1] = phy;
+
+	provider = devm_of_phy_provider_register(&pdev->dev, s5l_usbphy_xlate);
 	if (IS_ERR(provider))
 		return PTR_ERR(provider);
 

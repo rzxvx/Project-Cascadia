@@ -17,6 +17,10 @@
 #                               filesystem (scripts/rootfs-extract.py); touch
 #                               needs it and ./cascadia build puts it in the
 #                               image
+#   brcmfmac4334.bin            the Wi-Fi chip's firmware, wifi/4334b1/borg.trx
+#                               from the same place ("borg" is the ADT's
+#                               module-instance); a TRX image, which is what
+#                               brcmfmac downloads over USB
 #
 # Runs INSIDE the build container (see ./cascadia firmware): the image carries
 # pycryptodome, capstone and an iBoot32Patcher built from source, so the result
@@ -48,6 +52,7 @@ IBEC_KEY="485ddb5f7e70cecfc25c036f812641b9e55bd97783de1488306e3a80abf6950b"
 ROOTFS_DMG="058-24036-023.dmg"
 ROOTFS_KEY="21862ddcc49a861ffda17f7c6eca65355d2d1e762026cca60aabc726cd48b9e4cff214ff"
 MTPROPS=/usr/share/firmware/multitouch/P105.mtprops
+WIFI_FW=/usr/share/firmware/wifi/4334b1/borg.trx
 
 BOOTARGS="${BOOTARGS:-cs_enforcement_disable=1 debug=0x14}"
 
@@ -112,8 +117,9 @@ python3 "$ROOT/scripts/img3pack.py" \
     "$OUT/iBEC.p105.RELEASE.dfu" "$OUT/iBEC.autogo" \
     "$OUT/iBEC.patched.autogo.plain.dfu"
 
-echo "==> touch firmware: $MTPROPS out of the root filesystem"
-python3 "$ROOT/scripts/rootfs-extract.py" "$IPSW" "$ROOTFS_DMG" "$ROOTFS_KEY" "$MTPROPS" "$OUT/P105.mtprops"
+echo "==> touch and Wi-Fi firmware out of the root filesystem"
+python3 "$ROOT/scripts/rootfs-extract.py" "$IPSW" "$ROOTFS_DMG" "$ROOTFS_KEY" \
+    "$MTPROPS" "$OUT/P105.mtprops" "$WIFI_FW" "$OUT/brcmfmac4334.bin"
 
 echo
 rc=0
@@ -145,4 +151,4 @@ fi
 
 echo
 ls -l "$OUT/iBSS.patched" "$OUT/iBEC.patched.autogo.dfu" \
-      "$OUT/iBEC.patched.autogo.plain.dfu" "$OUT/P105.mtprops"
+      "$OUT/iBEC.patched.autogo.plain.dfu" "$OUT/P105.mtprops" "$OUT/brcmfmac4334.bin"

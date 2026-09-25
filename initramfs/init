@@ -162,7 +162,10 @@ if [ -f /etc/nfsroot ] && [ -x /sbin/mount.nfs ]; then
             # calibration, which build/keep carries into the image
             # (tools/mtdump saves it from iOS; Linux cannot read syscfg).
             # busybox.static is the ACM console's, run from RAM by stage 2.
-            for f in /sbin/z2-boot /lib/firmware/P105.mtprops /lib/firmware/mtcal.bin /bin/busybox.static; do
+            # The Wi-Fi firmware too: brcmfmac asks for it whenever the chip
+            # enumerates, which may be after this switch_root.
+            for f in /sbin/z2-boot /lib/firmware/P105.mtprops /lib/firmware/mtcal.bin /bin/busybox.static \
+                     /lib/firmware/brcm/brcmfmac4334.bin; do
                 [ -f "$f" ] || continue
                 mkdir -p "/newroot${f%/*}" 2>/dev/null
                 cp -p "$f" "/newroot$f" 2>/dev/null || true

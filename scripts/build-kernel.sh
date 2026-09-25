@@ -136,6 +136,15 @@ for sym in CONFIG_ARCH_APPLE_S5L CONFIG_APPLE_AIC1 CONFIG_SERIAL_SAMSUNG \
     fi
 done
 [ "$missing" -eq 0 ] || { echo "$missing required symbol(s) missing" >&2; exit 1; }
+# Wanted, not required: the image boots without Wi-Fi, but a dependency that
+# quietly dropped one of these should be seen here, not on the device.
+for sym in CONFIG_USB_EHCI_HCD_PLATFORM CONFIG_CFG80211 CONFIG_BRCMFMAC_USB; do
+    if grep -q "^${sym}=y" "$TREE/.config"; then
+        echo "    ok: $sym"
+    else
+        echo "    note: $sym did not survive olddefconfig -- no Wi-Fi"
+    fi
+done
 
 echo "==> Building zImage with -j$JOBS (log: logs/kernel-build.log)"
 make -C "$TREE" -j"$JOBS" zImage > "$LOGS/kernel-build.log" 2>&1
