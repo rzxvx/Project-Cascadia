@@ -23,6 +23,18 @@ export HOME=/root USER=root LOGNAME=root SHELL=/bin/sh
 
 IP_DEV="${IP_DEV:-10.55.0.2}"
 
+# /run and /tmp in RAM.  On the NFS root they were plain directories on the
+# server: every boot inherited the last one's sockets, pid files and udev
+# database (a stale /run/dbus/system_bus_socket reads as "the bus is up"), and
+# anything touching them hung whenever NFS did.  Nothing before this point
+# puts anything in either.
+for d in run:755:16m tmp:1777:128m; do
+    dir=/${d%%:*}; rest=${d#*:}; mode=${rest%%:*}; size=${rest#*:}
+    if ! awk -v d="$dir" '$2 == d && $3 == "tmpfs" { f = 1 } END { exit !f }' /proc/mounts; then
+        mkdir -p "$dir" && mount -t tmpfs -o "mode=$mode,size=$size,nosuid,nodev" "${dir#/}" "$dir"
+    fi
+done
+
 ROOTTYPE=$(awk '$2=="/"{print $3; exit}' /proc/mounts 2>/dev/null)
 msg "P105: stage2 on $ROOTTYPE root"
 
@@ -49,11 +61,17 @@ if [ -x /bin/busybox.static ] && mkdir -p "$RESCUE" \
    && mount -t tmpfs -o size=4m,mode=755 rescue "$RESCUE" \
    && cp /bin/busybox.static "$RESCUE/busybox" && mkdir -p "$RESCUE/bin" \
    && "$RESCUE/busybox" --install -s "$RESCUE/bin"; then
+    # HOME, history and working directory in RAM as well: an interactive ash
+    # reads $HOME/.ash_history when it starts, and with HOME on the NFS root
+    # this console hung at its first prompt exactly when it was needed
+    # (2026-09-26: keystrokes echoed, nothing ran).  -i: no /etc/issue.
     cat > "$RESCUE/acm" <<'ACM'
+export HOME=/run/rescue HISTFILE=/run/rescue/.ash_history
+cd /run/rescue
 n=0
 while [ $n -lt 500 ]; do
     n=$((n+1))
-    [ -e /dev/ttyGS0 ] && getty -n -l sh 115200 ttyGS0 2>/dev/null
+    [ -e /dev/ttyGS0 ] && getty -i -n -l sh 115200 ttyGS0 2>/dev/null
     sleep 1
 done
 echo "P105: ACM respawn limit reached, giving up" > /dev/kmsg
@@ -102,6 +120,34 @@ if command -v udevd >/dev/null 2>&1 && command -v udevadm >/dev/null 2>&1; then
     udevadm trigger --action=add 2>/dev/null
     udevadm settle -t 10 2>/dev/null
     msg "P105: udevd started"
+fi
+
+# --------------------------------------------------------- NFS trace ---
+# The NFS root stalls now and then (2026-09-26, the Mac): the server closed
+# the TCP connection, the client acknowledged its FIN and then never closed its
+# own end nor connected again -- no FIN, no SYN, no request, only keepalives
+# on the dead socket.  Why is inside the RPC client, so its connection events
+# go to the trace ring buffer, in RAM, from boot: socket states and TCP
+# transitions on port 2049, connect/disconnect, timeouts, retransmissions.  A
+# handful of lines an hour when all is well.  When it stalls, from the ACM
+# console:  cat /sys/kernel/tracing/trace
+T=/sys/kernel/tracing
+mount -t tracefs nodev "$T" 2>/dev/null
+if [ -d "$T/events/sunrpc" ]; then
+    echo 256 > "$T/buffer_size_kb"
+    for e in rpc_socket_state_change rpc_socket_connect rpc_socket_error \
+             rpc_socket_reset_connection rpc_socket_close rpc_socket_shutdown \
+             xprt_create xprt_connect xprt_disconnect_auto xprt_disconnect_done \
+             xprt_disconnect_force xprt_destroy rpc_timeout_status \
+             rpc_connect_status xprt_retransmit xprt_timer; do
+        echo 1 > "$T/events/sunrpc/$e/enable" 2>/dev/null
+    done
+    if [ -d "$T/events/sock/inet_sock_set_state" ]; then
+        echo 'sport == 2049 || dport == 2049' > "$T/events/sock/inet_sock_set_state/filter"
+        echo 1 > "$T/events/sock/inet_sock_set_state/enable"
+    fi
+    echo 1 > "$T/tracing_on"
+    msg "P105: NFS transport events traced (cat $T/trace)"
 fi
 
 # ------------------------------------------------------------ touch (z2) ---

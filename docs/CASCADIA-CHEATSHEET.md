@@ -1130,8 +1130,21 @@ frames and touches in dmesg; `z2-boot -p N -N` reads the frames itself, without 
 - `./cascadia net` / `nfs` have Linux twins (`tools/linux-*.sh`); walked on Arch.
   The pitfalls from Ubuntu (docker's FORWARD DROP, NetworkManager, ufw) are in the
   "Pitfalls collected along the way" table above.
-- The NFS root stalling ("server not responding") is the host's side: seen with
-  macOS's nfsd and on an Ubuntu host, never on the Arch one.
+- The NFS root stalling ("server not responding"): caught live on the Mac on
+  2026-09-26, and it is the iPad's RPC client, not the server. pf's state for the
+  connection read `ESTABLISHED:FIN_WAIT_2` — the Mac had closed its end and the
+  iPad had acknowledged the FIN — and a minute of tcpdump on en10 showed nothing
+  from the iPad but TCP keepalives on that same socket: no FIN of its own, no
+  SYN, no request. The client saw the server hang up and never closed or
+  reconnected. Why is still open; stage 2 now traces the RPC transport's
+  connection events from boot (`cat /sys/kernel/tracing/trace`, from the ACM
+  console). Not a pf problem: six dead connections from earlier boots sat in
+  pf's table as `ESTABLISHED:ESTABLISHED`, harmless. Never seen on the Arch host.
+- The ACM console hung along with NFS — keystrokes echoed, nothing ran: an
+  interactive ash reads `$HOME/.ash_history` at start, and HOME was on the NFS
+  root. It now runs with HOME, history and cwd in RAM, and `/run` and `/tmp`
+  are tmpfs (they were plain directories on the server, carrying the last
+  boot's sockets and pid files into the next).
 - XFCE runs with touch as the pointer (first brought up by teutekeune):
   `ssh root@10.55.0.2 sh -s < tools/desktop/xfce-setup.sh`, then `desktop` on the
   iPad. What the boot adds for it: stage 2 starts eudev when installed — Xorg finds
