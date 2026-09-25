@@ -79,6 +79,14 @@ assign() {
     if [ "$OS" = Darwin ]; then
         sudo ifconfig "$1" "$IP_HOST" netmask 255.255.255.0 up
     else
+        # NetworkManager takes any new Ethernet device for itself: it runs DHCP
+        # on it, gives up after 45 s and deactivates it, and the address set
+        # here goes with it.  Unmanaged is a runtime setting for this one
+        # interface, gone with it -- and the next enumeration comes back
+        # through here.
+        if command -v nmcli >/dev/null 2>&1 && nmcli -t -f RUNNING general 2>/dev/null | grep -q running; then
+            sudo nmcli device set "$1" managed no 2>/dev/null || true
+        fi
         sudo ip addr replace "$IP_HOST/24" dev "$1"
         sudo ip link set "$1" up
     fi

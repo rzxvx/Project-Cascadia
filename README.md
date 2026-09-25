@@ -356,8 +356,9 @@ boot chain from an `iPad2,5_8.4.1_12H321_Restore.ipsw` you supply, and checks
 the result against reference hashes. The pin to that build is not arbitrary: the
 auto-go hook patches an address inside that exact iBEC.
 
-The host-side network and NFS helpers (`./cascadia net`, `./cascadia nfs`) are
-still macOS-only and say so.
+The host-side network and NFS helpers (`./cascadia net`, `./cascadia nfs`) have
+one script per host: `tools/mac-*.sh` (pf, nfsd) and `tools/linux-*.sh`
+(iptables or nftables, nfs-utils).
 
 ## Repo layout
 

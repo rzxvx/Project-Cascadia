@@ -9,8 +9,8 @@
 #   ./cascadia firmware    patch iBSS/iBEC out of a stock IPSW
 #   ./cascadia flash       boot the device over USB (needs Legacy iOS Kit)
 #   ./cascadia link        give this host 10.55.0.1 on the device's link (flash does it)
-#   ./cascadia net on|off  share the Mac's internet with it    (macOS for now)
-#   ./cascadia nfs on|off  export a root filesystem to it      (macOS for now)
+#   ./cascadia net on|off  share this host's internet with it  (macOS or Linux)
+#   ./cascadia nfs on|off  export a root filesystem to it      (macOS or Linux)
 #   ./cascadia image       rebuild the build image if the Dockerfile changed
 #
 # Everything is relative to this file, so the repository works wherever it is
@@ -165,7 +165,13 @@ cmd_doctor() {
     fi
     case "$(uname -s)" in
         Darwin) note "ok:      macOS -- build, flash and the host-side helpers all run here" ;;
-        Linux)  note "note:    Linux -- build, flash and link run here; net and nfs are macOS-only so far" ;;
+        Linux)  note "ok:      Linux -- build, flash, link, net and nfs all run here"
+                for t in exportfs rpcinfo; do
+                    if have "$t"; then note "ok:      $t"
+                    else note "missing: $t -- ./cascadia nfs needs nfs-utils (Arch: pacman -S nfs-utils)"; fi
+                done
+                if have iptables || have nft; then note "ok:      $(have iptables && echo iptables || echo nft) (./cascadia net)"
+                else note "missing: iptables or nft -- ./cascadia net needs one (Arch: pacman -S iptables-nft)"; fi ;;
         *)      note "note:    $(uname -s) -- untested; build may work, the rest will not" ;;
     esac
     say "boot chain (not needed to build a kernel)"
@@ -382,11 +388,14 @@ so this is a file in build/initramfs-root owned by some third uid."
     ls -l "$ROOT/output/staging-bundle.bin" "$ROOT/output/staging-loader.bin"
 }
 
-host_only_macos() {
-    [ "$(uname -s)" = "Darwin" ] || fail "'$1' is implemented for macOS only so far.
-The build, ./cascadia flash and ./cascadia link run anywhere; it is these two
-that still speak networksetup, pfctl and nfsd.  Porting them is tracked work,
-not a limitation of the device."
+# net and nfs have one script per host OS: they share the interface and not
+# much else (pf and nfsd on the Mac, iptables/nftables and nfs-utils on Linux).
+host_tool() {
+    case "$(uname -s)" in
+        Darwin) echo "$ROOT/tools/mac-$1.sh" ;;
+        Linux)  echo "$ROOT/tools/linux-$1.sh" ;;
+        *)      fail "no host-side '$1' for $(uname -s) -- macOS and Linux only" ;;
+    esac
 }
 
 case "${1:-}" in
@@ -398,7 +407,7 @@ case "${1:-}" in
     flash)  shift; bash "$ROOT/tools/flash.sh" "$@" ;;
     link)   bash "$ROOT/tools/host-link.sh" ;;
     image)  ensure_image; say "$IMAGE is current" ;;
-    net)    host_only_macos net;   shift; bash "$ROOT/tools/mac-share-internet.sh" "$@" ;;
-    nfs)    host_only_macos nfs;   shift; bash "$ROOT/tools/mac-nfs-export.sh" "$@" ;;
+    net)    t=$(host_tool share-internet); shift; bash "$t" "$@" ;;
+    nfs)    t=$(host_tool nfs-export);     shift; bash "$t" "$@" ;;
     *)      sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
 esac

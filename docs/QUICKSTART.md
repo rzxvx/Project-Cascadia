@@ -37,6 +37,7 @@ a shallow kernel clone, its objects, the build image and the IPSW.
 # Arch
 sudo pacman -Syu                       # not optional; see "Legacy iOS Kit" below
 sudo pacman -S --needed git python rsync docker
+sudo pacman -S --needed nfs-utils      # ./cascadia nfs; ./cascadia net uses docker's iptables
 sudo systemctl enable --now docker
 sudo usermod -aG docker "$USER" && newgrp docker
 ```
@@ -128,7 +129,9 @@ it goes away, twice per boot — and without it `ssh` does not fail, it hangs.
 
 There are two consoles besides ssh, and both are useful when ssh is not:
 
-- **the glass**: a shell on the framebuffer, no keyboard attached to it yet;
+- **the glass**: a shell on the framebuffer; with the NFS root and
+  `apk add fbkeyboard font-dejavu` on the device, stage 2 puts an on-screen
+  keyboard under it at every boot (no arrow keys);
 - **the cable**: CDC ACM, no credentials at all —
   `screen /dev/cu.usbmodem* 115200` on macOS, `sudo picocom -b 115200
   /dev/ttyACM0` on Linux (picocom exits with `C-a C-x`).
@@ -138,14 +141,17 @@ There are two consoles besides ssh, and both are useful when ssh is not:
 Linux 6.12 booting to an interactive shell in about five seconds, with
 interrupts, a working tick and correct wall-clock time; a framebuffer console;
 CDC ACM and CDC ECM over the Lightning cable; ssh; `apk`, the whole Alpine
-repository, over that link; and `/bin/peek` for poking at MMIO. Touch, Wi-Fi
-and the second CPU are not there — see the README for why, in detail.
+repository, over that link; `/bin/peek` for poking at MMIO; and multitouch,
+brought up the way iOS brings it up, as an evdev device. Wi-Fi and the second
+CPU are not there — see the README for why, in detail.
 
 The root filesystem is the initramfs, in RAM, so anything installed with `apk`
-is gone on the next boot. On macOS, `./cascadia nfs on` moves the root onto the
-host's disk over the same cable, which fixes both that and the 512 MB ceiling.
-`./cascadia net on` shares the host's internet with the device. Both are macOS
-only so far; on Linux they say so.
+is gone on the next boot. `./cascadia nfs on` moves the root onto the host's
+disk over the same cable, which fixes both that and the 512 MB ceiling.
+`./cascadia net on` shares the host's internet with the device. On macOS they
+drive nfsd and pf; on Linux, nfs-utils and iptables (nftables without it), from
+`tools/linux-*.sh`. The export is `~/cascadia-root` on the Mac and
+`/srv/cascadia-root` on Linux; `DST=` moves it.
 
 ## When it goes wrong
 
