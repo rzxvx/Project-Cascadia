@@ -207,14 +207,56 @@ drive nfsd and pf; on Linux, nfs-utils and iptables (nftables without it), from
 ## A desktop
 
 XFCE runs, with touch as the pointer, off the NFS root — all of it software
-rendered on one core (the GPU has no Linux driver). Two things it needs from
-this boot that a shell does not:
+rendered on one core (the GPU has no Linux driver). First brought up by
+teutekeune; on the device, with `./cascadia nfs on` and `./cascadia net on`:
 
-- **udev.** Xorg and Wayland find input devices through libinput, and libinput
-  through udev; without it the desktop comes up and ignores the glass.
-  `apk add eudev` on the device, and stage 2 starts it from the next boot on.
-- **The framebuffer to itself.** The on-screen keyboard keeps redrawing its part
-  of the screen; `killall fbkeyboard` before starting X.
+```sh
+setup-xorg-base              # xorg-server, xf86-input-libinput, eudev, mesa
+apk add xf86-video-fbdev xf86-input-evdev xfce4 xfce4-terminal
+
+cat > /etc/X11/xorg.conf.d/99-fbdev.conf <<'END'
+Section "Device"
+    Identifier "Framebuffer Card"
+    Driver     "fbdev"
+    Option     "fbdev" "/dev/fb0"
+EndSection
+
+Section "Screen"
+    Identifier "Framebuffer Screen"
+    Device     "Framebuffer Card"
+EndSection
+END
+
+cat > /etc/X11/xorg.conf.d/50-touchscreen.conf <<'END'
+Section "InputClass"
+    Identifier   "S5L8940X touchscreen"
+    MatchProduct "S5L8940X Capacitive TouchScreen"
+    Driver       "evdev"
+EndSection
+END
+```
+
+Then reboot once, so stage 2 starts udev, and before starting XFCE:
+
+```sh
+killall fbkeyboard           # it keeps redrawing its strip of the framebuffer
+startxfce4
+```
+
+Why each piece:
+
+- **udev.** Xorg finds input devices through udev; without it the desktop comes
+  up and ignores the glass. Stage 2 starts it whenever eudev is installed
+  (`setup-xorg-base` installs it; its OpenRC half does nothing here).
+- **evdev for the touchscreen** is the configuration it was tried with.
+  libinput alone, without `50-touchscreen.conf`, should drive it too — the
+  driver declares a direct-touch device with pointer emulation — but that has
+  not been tried yet. Match it by name, not by `/dev/input/eventN`: the number
+  is not fixed.
+- **fbdev** because there is no DRM driver; `99-fbdev.conf` says so instead of
+  leaving Xorg to work it out.
+- On one core, xfwm4's compositor costs full-screen redraws in software; if it
+  feels slow, `xfconf-query -c xfwm4 -p /general/use_compositing -s false`.
 
 ## When it goes wrong
 
