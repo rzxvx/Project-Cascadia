@@ -7,6 +7,7 @@
 #   ./cascadia rootfs      build the Alpine armhf rootfs for the initramfs
 #   ./cascadia build       dtb + kernel + staging bundle, with the safety checks
 #   ./cascadia firmware    patch iBSS/iBEC out of a stock IPSW
+#   ./cascadia mtcal       touch calibration + firmware from the iPad's own iOS
 #   ./cascadia flash       boot the device over USB (needs Legacy iOS Kit)
 #   ./cascadia link        give this host 10.55.0.1 on the device's link (flash does it)
 #   ./cascadia net on|off  share this host's internet with it  (macOS or Linux)
@@ -286,6 +287,12 @@ cmd_build() {
         cp -a "$ROOT/build/keep/." "$ROOT/build/initramfs-root/"
         note "ok: build/keep/ -> image ($(cd "$ROOT/build/keep" && find . -type f | wc -l | tr -d ' ') files)"
     fi
+    # Not fatal: without them the image boots as before, just without touch.
+    for f in mtcal.bin P105.mtprops; do
+        if [ ! -s "$ROOT/build/keep/lib/firmware/$f" ]; then
+            note "note: no build/keep/lib/firmware/$f -- touch stays off; ./cascadia mtcal fetches it"
+        fi
+    done
     if [ -x "$ROOT/build/initramfs-root/usr/sbin/dropbear" ]; then
         # The image always lets in the machine that builds it.  add-dropbear.sh
         # bakes a key once, at rootfs time, so a key made after that -- another
@@ -404,10 +411,11 @@ case "${1:-}" in
     rootfs) cmd_rootfs ;;
     build)  cmd_build ;;
     firmware) cmd_firmware ;;
+    mtcal)  bash "$ROOT/tools/mtcal.sh" ;;
     flash)  shift; bash "$ROOT/tools/flash.sh" "$@" ;;
     link)   bash "$ROOT/tools/host-link.sh" ;;
     image)  ensure_image; say "$IMAGE is current" ;;
     net)    t=$(host_tool share-internet); shift; bash "$t" "$@" ;;
     nfs)    t=$(host_tool nfs-export);     shift; bash "$t" "$@" ;;
-    *)      sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+    *)      sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
 esac

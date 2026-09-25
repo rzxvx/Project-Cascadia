@@ -64,8 +64,11 @@ including the parts that didn't work.
       byte-for-byte and booted on hardware. No Apple binaries in this repository
 - [x] **Touch** — multi-touch on `/dev/input/event0`, 60 Hz, up from boot. The
       digitizer is brought up the way iOS does it, recorded from iOS's own
-      driver trace; it needs this iPad's factory calibration, dumped once from
-      its jailbroken iOS (`tools/mtdump`). See `docs/research/p105-z2-boot.md`
+      driver trace; it needs this iPad's factory calibration and the
+      digitizer's firmware, fetched once from its jailbroken iOS with
+      `./cascadia mtcal`, on macOS or Linux. See `docs/research/p105-z2-boot.md`
+- [x] **On-screen keyboard** — `fbkeyboard` under the console on the glass,
+      started at boot once it is installed on the NFS root (no arrow keys)
 - [ ] Wi-Fi (BCM4334 — HSIC, behind EHCI, not SDIO as initially assumed)
 - [ ] CPU1 / SMP bringup — **parked**, see *Negative results*
 - [ ] USB host mode / keyboard — no free host port: dwc2 in host mode would take the console and the network with it
@@ -391,7 +394,7 @@ Build products (`output/`) and stock firmware are not tracked; everything in
 - **Phase 2 ✓** — USB gadget, CDC ACM shell, CDC ECM networking, SSH, working
   tick, correct wall clock, `apk`, and an NFS root on the host's disk.
 - **Phase 3** — ~~a tick that does not depend on USB device mode~~ (the AIC
-  timer) → ~~Touch~~ ✓ → an on-screen keyboard for the console → Wi-Fi via
+  timer) → ~~Touch~~ ✓ → ~~an on-screen keyboard for the console~~ ✓ → Wi-Fi via
   HSIC/EHCI.
 - **Phase 4** — A6 port (iPhone 5 / iPad mini 2), on this foundation.
 - **Phase 5** — A12/A13, longer term.

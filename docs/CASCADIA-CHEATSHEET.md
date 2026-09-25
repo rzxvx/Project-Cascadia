@@ -1076,15 +1076,18 @@ tools/touch-power-on.sh      включить spi1 и pwm, снять регис
 мультитач (`ABS_MT_*`, `BTN_TOUCH`), 60 кадров в секунду, несколько пальцев.
 
 **Калибровка у каждого iPad своя** (syscfg `MtCl`, 1024 байта), и Linux её не
-прочитает. Снимается из джейлбрейкнутой iOS этого же устройства:
+прочитает. Снимается из джейлбрейкнутой iOS этого же устройства, вместе с
+прошивкой чипа (`P105.mtprops`), одной командой, с мака или Linux:
 ```bash
-iproxy 2222 22        # в отдельной вкладке
-ssh -F tools/mtdump/ssh_config -p 2222 root@127.0.0.1 \
-    'rm -f /tmp/mtdump; cat > /tmp/mtdump && chmod +x /tmp/mtdump && /tmp/mtdump /tmp' < build/mtdump
-# забрать /tmp/AppleMultitouchN1SPI-Calibration_Data.bin
-# и положить в build/keep/lib/firmware/mtcal.bin, потом ./cascadia build
+./cascadia mtcal          # iPad в iOS, на кабеле; пароль root iOS один раз
+./cascadia build
 ```
-Нет файла — тач не стартует, stage2 так и пишет в dmesg.
+Кладёт оба файла в `build/keep/lib/firmware/`. На iPad запускается
+`tools/mtdump/prebuilt/mtcal` (исходник `mtcal.c`, без заголовков SDK): бинарь
+лежит в дереве, потому что собрать armv7 под iOS может только Xcode — у
+ld64.lld для armv7 есть только BR24/BR22, остальные релокации FIXME, а ld64
+на Linux требует libtapi. Пересборка: `tools/mtdump/build.sh` на маке.
+Нет файлов — тач не стартует, stage2 так и пишет в dmesg.
 
 **Что было нужно** (всего по одному пункту, без любого из них чип не сканирует):
 - калибровка на `0x10009000` перед `performCalibSeq`;

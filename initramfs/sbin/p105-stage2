@@ -85,13 +85,14 @@ fi
 # ------------------------------------------------------------ touch (z2) ---
 # z2-boot brings the digitizer up the way iOS does, hands it to the kernel and
 # holds it: /dev/input/event0 from then on.  It needs this iPad's calibration
-# (syscfg MtCl) -- tools/mtdump saves it from iOS, and
-# build/keep/lib/firmware/mtcal.bin puts it in the image.
-if [ -x /sbin/z2-boot ] && [ -s /lib/firmware/mtcal.bin ]; then
+# (syscfg MtCl) and the digitizer's firmware, both from the iPad's own iOS:
+# ./cascadia mtcal puts them in build/keep/lib/firmware/, and the build carries
+# them into the image.
+if [ -x /sbin/z2-boot ] && [ -s /lib/firmware/mtcal.bin ] && [ -s /lib/firmware/P105.mtprops ]; then
     setsid /sbin/z2-boot -c /lib/firmware/mtcal.bin >/tmp/z2boot.log 2>&1 </dev/null &
     msg "P105: touch -- z2-boot started (/tmp/z2boot.log)"
 else
-    msg "P105: touch -- no /lib/firmware/mtcal.bin, not started (tools/mtdump)"
+    msg "P105: touch -- no /lib/firmware/mtcal.bin or P105.mtprops, not started (./cascadia mtcal)"
 fi
 
 # --------------------------------------------------- on-screen keyboard -----

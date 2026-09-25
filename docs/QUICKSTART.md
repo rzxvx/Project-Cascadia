@@ -34,12 +34,37 @@ framebuffer, so its absence is a nuisance rather than a blocker.
 a shallow kernel clone, its objects, the build image and the IPSW.
 
 ```bash
-# Arch
+# Arch -- the only Linux this has been walked end to end on
 sudo pacman -Syu                       # not optional; see "Legacy iOS Kit" below
 sudo pacman -S --needed git python rsync docker
 sudo pacman -S --needed nfs-utils      # ./cascadia nfs; ./cascadia net uses docker's iptables
+sudo pacman -S --needed usbmuxd libusbmuxd   # ./cascadia mtcal (iproxy)
 sudo systemctl enable --now docker
 sudo usermod -aG docker "$USER" && newgrp docker
+```
+
+The same for the other two package managers. **Untested**: the package names
+are the distributions' own, but nothing here has been run on either yet —
+only Arch with pacman, and macOS, have been.
+
+```bash
+# Debian / Ubuntu (apt)
+sudo apt update
+sudo apt install git python3 rsync docker.io
+sudo apt install nfs-kernel-server rpcbind          # ./cascadia nfs
+sudo apt install usbmuxd libusbmuxd-tools           # ./cascadia mtcal
+sudo systemctl enable --now docker
+sudo usermod -aG docker "$USER" && newgrp docker
+
+# Fedora (dnf)
+sudo dnf install git python3 rsync moby-engine
+sudo dnf install nfs-utils                          # ./cascadia nfs
+sudo dnf install usbmuxd libusbmuxd-utils           # ./cascadia mtcal
+sudo systemctl enable --now docker
+sudo usermod -aG docker "$USER" && newgrp docker
+# firewalld is on by default: let the iPad's link through, NFS and forwarding
+sudo firewall-cmd --permanent --zone=trusted --add-source=10.55.0.0/24
+sudo firewall-cmd --reload
 ```
 
 **An SSH key on the host**, if you want ssh on the device. `./cascadia rootfs`
@@ -103,6 +128,25 @@ script again" — successfully, having never touched the device. Run it once by
 hand and leave it when it reaches its menu. On Arch, `pacman -Syu` first: Legacy
 iOS Kit's installer pulls `udev`, which is systemd, and a partially upgraded
 system refuses the transaction.
+
+## Touch
+
+Touch needs two files that cannot ship here: the digitizer's firmware, which is
+Apple's, and the panel's calibration, which is different on every iPad and only
+iOS can read (iBoot copies it out of syscfg at boot). With the iPad booted into
+its jailbroken iOS, OpenSSH installed, on the cable:
+
+```bash
+./cascadia mtcal            # asks for iOS's root password once ("alpine")
+./cascadia build            # carries them into the image
+```
+
+That is the same iOS `--kdfu` starts from, so it fits right before the first
+flash. Both land in `build/keep/lib/firmware/`, which no rebuild deletes.
+Without them the iPad boots as before and stage 2 says why touch did not start.
+The helper that runs on the iPad, `tools/mtdump/prebuilt/mtcal`, is kept built
+in the tree because only a Mac can build it (`tools/mtdump/build.sh`, Xcode);
+its source is `tools/mtdump/mtcal.c`.
 
 ## Flash, and the first shell
 
