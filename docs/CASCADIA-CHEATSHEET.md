@@ -1132,6 +1132,16 @@ frames and touches in dmesg; `z2-boot -p N -N` reads the frames itself, without 
   "Pitfalls collected along the way" table above.
 - The NFS root stalling ("server not responding") is the host's side: seen with
   macOS's nfsd and on an Ubuntu host, never on the Arch one.
-- XFCE runs with touch as the pointer (teutekeune): recipe in `docs/QUICKSTART.md`,
-  "A desktop". What the boot adds for it: stage 2 starts eudev when installed —
-  Xorg finds input devices only through udev.
+- XFCE runs with touch as the pointer (first brought up by teutekeune):
+  `ssh root@10.55.0.2 sh -s < tools/desktop/xfce-setup.sh`, then `desktop` on the
+  iPad. What the boot adds for it: stage 2 starts eudev when installed — Xorg finds
+  input devices only through udev.
+
+| what | why |
+|---|---|
+| XFCE ignores the glass | no udev running: Xorg's input hotplug is udev only |
+| evdev's `EmulateThirdButton` never fires | for a device with multitouch axes X emulates the pointer from touches itself; evdev's button logic is not in the path. Right click is touchegg's two-finger tap, over libinput |
+| a black screen for over a minute at login | xfdesktop rasterising XFCE 4.20's SVG wallpaper on one core. `desktop` writes a solid-colour `xfce4-desktop.xml` before a first session; the monitor is `monitordefault` (fbdev: no RandR outputs, X names its made-up one "default") |
+| `Failed to execute command "kbd-toggle"` | the session's PATH is whatever started X; ssh's has no `/usr/local/bin`. Launchers use absolute paths |
+| `pkill -x svkbd-mobile-intl` matches nothing | the kernel keeps 15 characters of a process name; the name is 17. `pkill -f` |
+| hundreds of zombies, and `exit` on the glass panics the kernel | stage 2 used to `exec` the glass shell as PID 1: it never reaped orphans, and PID 1 exiting is a panic. Now PID 1 respawns the shell and waits on it, and ash's wait (waitpid(-1)) reaps the orphans |

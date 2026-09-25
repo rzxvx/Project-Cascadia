@@ -206,57 +206,41 @@ drive nfsd and pf; on Linux, nfs-utils and iptables (nftables without it), from
 
 ## A desktop
 
-XFCE runs, with touch as the pointer, off the NFS root — all of it software
-rendered on one core (the GPU has no Linux driver). First brought up by
-teutekeune; on the device, with `./cascadia nfs on` and `./cascadia net on`:
+XFCE runs off the NFS root with touch as the pointer — all of it software
+rendered on one core, since the GPU has no Linux driver. One script sets it
+up. From the host, with the iPad booted from NFS and `./cascadia net on`:
 
-```sh
-setup-xorg-base              # xorg-server, xf86-input-libinput, eudev, mesa
-apk add xf86-video-fbdev xf86-input-evdev xfce4 xfce4-terminal
-
-cat > /etc/X11/xorg.conf.d/99-fbdev.conf <<'END'
-Section "Device"
-    Identifier "Framebuffer Card"
-    Driver     "fbdev"
-    Option     "fbdev" "/dev/fb0"
-EndSection
-
-Section "Screen"
-    Identifier "Framebuffer Screen"
-    Device     "Framebuffer Card"
-EndSection
-END
-
-cat > /etc/X11/xorg.conf.d/50-touchscreen.conf <<'END'
-Section "InputClass"
-    Identifier   "S5L8940X touchscreen"
-    MatchProduct "S5L8940X Capacitive TouchScreen"
-    Driver       "evdev"
-EndSection
-END
+```bash
+ssh root@10.55.0.2 sh -s < tools/desktop/xfce-setup.sh   # ~280 packages, ~6 min
 ```
 
-Then reboot once, so stage 2 starts udev, and before starting XFCE:
+Then on the iPad, from the glass or over ssh:
 
 ```sh
-killall fbkeyboard           # it keeps redrawing its strip of the framebuffer
-startxfce4
+desktop
 ```
 
-Why each piece:
+- **Touch.** Tap = click. A quick swipe scrolls (a finger that rests before it
+  moves selects instead — that is GTK's rule, not a fault). A two-finger tap =
+  right click.
+- **Keyboard.** The button next to the clock shows and hides an on-screen
+  keyboard (svkbd). Ctrl is the `^` key.
+- **Timing.** About 40 s to a drawn desktop on the first login, then ~25 s to
+  the session and ~40 s until the desktop has settled. The background is a
+  solid colour on purpose: XFCE's default wallpaper is an SVG, and rasterising
+  it on one core kept the screen black for over a minute.
 
-- **udev.** Xorg finds input devices through udev; without it the desktop comes
-  up and ignores the glass. Stage 2 starts it whenever eudev is installed
-  (`setup-xorg-base` installs it; its OpenRC half does nothing here).
-- **evdev for the touchscreen** is the configuration it was tried with.
-  libinput alone, without `50-touchscreen.conf`, should drive it too — the
-  driver declares a direct-touch device with pointer emulation — but that has
-  not been tried yet. Match it by name, not by `/dev/input/eventN`: the number
-  is not fixed.
-- **fbdev** because there is no DRM driver; `99-fbdev.conf` says so instead of
-  leaving Xorg to work it out.
-- On one core, xfwm4's compositor costs full-screen redraws in software; if it
-  feels slow, `xfconf-query -c xfwm4 -p /general/use_compositing -s false`.
+The script's header says what each package is for. Three things older recipes
+had that do not work here:
+
+- `setup-xorg-base` is not installed (it lives in `alpine-conf`, which also
+  pulls in openrc);
+- `xf86-video-vesa` does not exist for armv7, and one missing name fails the
+  whole `apk add`;
+- a touchscreen section forcing `evdev` removes multitouch, and with it the
+  two-finger right click. evdev's long-press right click does not help either:
+  for a device with multitouch axes X emulates the pointer itself, and evdev's
+  emulation never runs.
 
 ## When it goes wrong
 

@@ -137,4 +137,16 @@ fi
 # Always reached, and independent of USB: if the gadget never comes up this is
 # still a real shell on the panel.
 msg "P105: stage2 done, shell on tty0"
-exec /bin/sh </dev/tty0 >/dev/tty0 2>&1
+# PID 1 from here on, and a shell exec'd as PID 1 got two things wrong:
+# typing exit on the glass ended PID 1, which is a kernel panic, and it never
+# reaped the orphans the kernel hands to PID 1 -- 127 zombies after an hour of
+# a desktop (2026-09-25).  So the glass shell is a child, started again
+# whenever it ends, and PID 1 waits on it: ash's wait is waitpid(-1), so every
+# orphan that exits in the meantime is reaped on the way.  No setsid: busybox's
+# forks when its caller leads a process group, and $! would then be a process
+# that is already gone -- a new shell every second.
+while :; do
+    /bin/sh </dev/tty0 >/dev/tty0 2>&1 &
+    wait $!
+    sleep 1
+done
