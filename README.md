@@ -398,6 +398,8 @@ Build products (`output/`) and stock firmware are not tracked; everything in
 
 SMP is not on the roadmap until the SecureROM core-release path is understood.
 
+![FastFetch written using screen keyboard](imgs/IMG_1196.jpg)
+
 ## Background
 
 In May 2026, while looking for an existing Linux port for the iPad mini 1, I
