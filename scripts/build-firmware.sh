@@ -13,6 +13,10 @@
 #                               has booted the AES GID key is gone, so a KBAG
 #                               decrypts to nothing and the iBSS jumps into
 #                               garbage (scripts/img3pack.py has the detail)
+#   P105.mtprops                the digitizer's firmware, out of the root
+#                               filesystem (scripts/rootfs-extract.py); touch
+#                               needs it and ./cascadia build puts it in the
+#                               image
 #
 # Runs INSIDE the build container (see ./cascadia firmware): the image carries
 # pycryptodome, capstone and an iBoot32Patcher built from source, so the result
@@ -41,6 +45,9 @@ IBSS_IV="b21abc8689b0dea8f6e613f9f970e241"
 IBSS_KEY="b9ed63e4a31f5d9d4d7dddc527e65fd31d1ea48c70204e6b44551c1e6dfc52b5"
 IBEC_IV="8460cab6348e74ba7134ba0f9462b632"
 IBEC_KEY="485ddb5f7e70cecfc25c036f812641b9e55bd97783de1488306e3a80abf6950b"
+ROOTFS_DMG="058-24036-023.dmg"
+ROOTFS_KEY="21862ddcc49a861ffda17f7c6eca65355d2d1e762026cca60aabc726cd48b9e4cff214ff"
+MTPROPS=/usr/share/firmware/multitouch/P105.mtprops
 
 BOOTARGS="${BOOTARGS:-cs_enforcement_disable=1 debug=0x14}"
 
@@ -62,6 +69,9 @@ BOOTARGS="${BOOTARGS:-cs_enforcement_disable=1 debug=0x14}"
 # it is the tested one now.
 KNOWN_IBEC_PLAIN_MD5="b7e502c0262660b68adac4fe4e764b1b"
 KNOWN_IBSS_MD5="8b6dcc510c0ab303d67495978f4eb523"
+# The same bytes iOS itself has at that path on the iPad (read there over ssh
+# and compared).
+KNOWN_MTPROPS_MD5="807fdbc8816df68cf5d57a3964bd8400"
 
 fail() { echo "error: $*" >&2; exit 1; }
 md5of() { md5sum "$1" | cut -d' ' -f1; }
@@ -102,9 +112,12 @@ python3 "$ROOT/scripts/img3pack.py" \
     "$OUT/iBEC.p105.RELEASE.dfu" "$OUT/iBEC.autogo" \
     "$OUT/iBEC.patched.autogo.plain.dfu"
 
+echo "==> touch firmware: $MTPROPS out of the root filesystem"
+python3 "$ROOT/scripts/rootfs-extract.py" "$IPSW" "$ROOTFS_DMG" "$ROOTFS_KEY" "$MTPROPS" "$OUT/P105.mtprops"
+
 echo
 rc=0
-for pair in "iBSS.patched:$KNOWN_IBSS_MD5" "iBEC.autogo:$KNOWN_IBEC_PLAIN_MD5"; do
+for pair in "iBSS.patched:$KNOWN_IBSS_MD5" "iBEC.autogo:$KNOWN_IBEC_PLAIN_MD5" "P105.mtprops:$KNOWN_MTPROPS_MD5"; do
     f=${pair%%:*}; want=${pair##*:}; got=$(md5of "$OUT/$f")
     if [ "$got" = "$want" ]; then
         echo "    ok: $f reproduces the reference byte for byte"
@@ -132,4 +145,4 @@ fi
 
 echo
 ls -l "$OUT/iBSS.patched" "$OUT/iBEC.patched.autogo.dfu" \
-      "$OUT/iBEC.patched.autogo.plain.dfu"
+      "$OUT/iBEC.patched.autogo.plain.dfu" "$OUT/P105.mtprops"

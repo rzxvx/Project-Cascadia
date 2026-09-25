@@ -64,9 +64,10 @@ including the parts that didn't work.
       byte-for-byte and booted on hardware. No Apple binaries in this repository
 - [x] **Touch** — multi-touch on `/dev/input/event0`, 60 Hz, up from boot. The
       digitizer is brought up the way iOS does it, recorded from iOS's own
-      driver trace; it needs this iPad's factory calibration and the
-      digitizer's firmware, fetched once from its jailbroken iOS with
-      `./cascadia mtcal`, on macOS or Linux. See `docs/research/p105-z2-boot.md`
+      driver trace. The digitizer's firmware comes out of the user's IPSW with
+      the boot chain; the panel's calibration is a default one, or the iPad's
+      own from its jailbroken iOS (`./cascadia mtcal`, optional). See
+      `docs/research/p105-z2-boot.md`
 - [x] **On-screen keyboard** — `fbkeyboard` under the console on the glass,
       started at boot once it is installed on the NFS root (no arrow keys)
 - [ ] Wi-Fi (BCM4334 — HSIC, behind EHCI, not SDIO as initially assumed)

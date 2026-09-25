@@ -7,7 +7,7 @@
 #   ./cascadia rootfs      build the Alpine armhf rootfs for the initramfs
 #   ./cascadia build       dtb + kernel + staging bundle, with the safety checks
 #   ./cascadia firmware    patch iBSS/iBEC out of a stock IPSW
-#   ./cascadia mtcal       touch calibration + firmware from the iPad's own iOS
+#   ./cascadia mtcal       this iPad's own touch calibration, from its iOS (optional)
 #   ./cascadia flash       boot the device over USB (needs Legacy iOS Kit)
 #   ./cascadia link        give this host 10.55.0.1 on the device's link (flash does it)
 #   ./cascadia net on|off  share this host's internet with it  (macOS or Linux)
@@ -248,6 +248,14 @@ cmd_build() {
     # by ./cascadia build shipped the old init.  Overlay it on every build.
     cp -a "$ROOT/initramfs/." "$ROOT/build/initramfs-root/"
     note "ok: boot scripts from initramfs/"
+    # The digitizer's firmware is Apple's, so it comes out of the user's IPSW
+    # with the boot chain rather than out of the repository.  Before build/keep
+    # is laid over the tree, so a copy there still wins.
+    if [ -s "$ROOT/build/firmware/P105.mtprops" ]; then
+        mkdir -p "$ROOT/build/initramfs-root/lib/firmware"
+        cp "$ROOT/build/firmware/P105.mtprops" "$ROOT/build/initramfs-root/lib/firmware/"
+        note "ok: touch firmware from the IPSW (build/firmware/P105.mtprops)"
+    fi
     # No RTC on this board: without a stamp it boots at the epoch and every TLS
     # handshake fails on notBefore.  Written before the kernel build so it lands
     # inside the embedded initramfs.
@@ -287,12 +295,15 @@ cmd_build() {
         cp -a "$ROOT/build/keep/." "$ROOT/build/initramfs-root/"
         note "ok: build/keep/ -> image ($(cd "$ROOT/build/keep" && find . -type f | wc -l | tr -d ' ') files)"
     fi
-    # Not fatal: without them the image boots as before, just without touch.
-    for f in mtcal.bin P105.mtprops; do
-        if [ ! -s "$ROOT/build/keep/lib/firmware/$f" ]; then
-            note "note: no build/keep/lib/firmware/$f -- touch stays off; ./cascadia mtcal fetches it"
-        fi
-    done
+    # Not fatal: without it the image boots as before, just without touch.
+    if [ ! -s "$ROOT/build/initramfs-root/lib/firmware/P105.mtprops" ]; then
+        note "note: no touch firmware -- touch stays off; ./cascadia firmware extracts it from the IPSW"
+    fi
+    if [ -f "$ROOT/build/keep/lib/firmware/mtcal.bin" ]; then
+        note "ok: touch calibration: this iPad's own (build/keep, ./cascadia mtcal)"
+    else
+        note "ok: touch calibration: the default (initramfs/lib/firmware/mtcal.bin)"
+    fi
     if [ -x "$ROOT/build/initramfs-root/usr/sbin/dropbear" ]; then
         # The image always lets in the machine that builds it.  add-dropbear.sh
         # bakes a key once, at rootfs time, so a key made after that -- another

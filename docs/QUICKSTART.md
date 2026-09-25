@@ -131,22 +131,29 @@ system refuses the transaction.
 
 ## Touch
 
-Touch needs two files that cannot ship here: the digitizer's firmware, which is
-Apple's, and the panel's calibration, which is different on every iPad and only
-iOS can read (iBoot copies it out of syscfg at boot). With the iPad booted into
-its jailbroken iOS, OpenSSH installed, on the cable:
+Works out of the box. The digitizer's firmware is Apple's, so it does not ship
+here: `./cascadia firmware` takes it out of the same IPSW, with the boot chain
+(`build/firmware/P105.mtprops`, checked against the copy iOS itself has).
+
+The other thing touch needs is the panel's calibration, and that one is
+different on every iPad — iBoot copies it out of syscfg at boot. The image
+carries a default, `initramfs/lib/firmware/mtcal.bin`, from the iPad this port
+was brought up on. On any other iPad it has not been tried yet: expect touch to
+work, possibly a little less precisely than it could.
+
+**Optional:** your own panel's calibration. With the iPad booted into its
+jailbroken iOS, OpenSSH installed, on the cable:
 
 ```bash
 ./cascadia mtcal            # asks for iOS's root password once ("alpine")
-./cascadia build            # carries them into the image
+./cascadia build            # lays it over the default
 ```
 
-That is the same iOS `--kdfu` starts from, so it fits right before the first
-flash. Both land in `build/keep/lib/firmware/`, which no rebuild deletes.
-Without them the iPad boots as before and stage 2 says why touch did not start.
-The helper that runs on the iPad, `tools/mtdump/prebuilt/mtcal`, is kept built
-in the tree because only a Mac can build it (`tools/mtdump/build.sh`, Xcode);
-its source is `tools/mtdump/mtcal.c`.
+That is the same iOS `--kdfu` starts from, so it fits right before a flash. It
+lands in `build/keep/lib/firmware/`, which no rebuild deletes. The helper that
+runs on the iPad, `tools/mtdump/prebuilt/mtcal`, is kept built in the tree
+because only a Mac can build it (`tools/mtdump/build.sh`, Xcode); its source is
+`tools/mtdump/mtcal.c`.
 
 ## Flash, and the first shell
 

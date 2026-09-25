@@ -1075,19 +1075,25 @@ tools/touch-power-on.sh      включить spi1 и pwm, снять регис
 дальше кадры читает ядро. Касания идут в `/dev/input/event0` как стандартный
 мультитач (`ABS_MT_*`, `BTN_TOUCH`), 60 кадров в секунду, несколько пальцев.
 
+**Прошивка чипа** (`P105.mtprops`) — Apple, в репо её нет: `./cascadia firmware`
+вынимает её из IPSW (`scripts/rootfs-extract.py`: encrcdsa → UDIF → HFS+,
+чистый Python, ключ RootFS 12H321 публичный) в `build/firmware/`, сборка кладёт
+в образ. Побайтно совпадает с копией из iOS (md5 в `build-firmware.sh`).
+
 **Калибровка у каждого iPad своя** (syscfg `MtCl`, 1024 байта), и Linux её не
-прочитает. Снимается из джейлбрейкнутой iOS этого же устройства, вместе с
-прошивкой чипа (`P105.mtprops`), одной командой, с мака или Linux:
+прочитает. В образе по умолчанию — калибровка iPad, на котором всё поднималось
+(`initramfs/lib/firmware/mtcal.bin`); на чужих iPad не проверялась. Свою —
+опционально, из джейлбрейкнутой iOS этого же устройства, с мака или Linux:
 ```bash
 ./cascadia mtcal          # iPad в iOS, на кабеле; пароль root iOS один раз
-./cascadia build
+./cascadia build          # build/keep перекрывает дефолт
 ```
-Кладёт оба файла в `build/keep/lib/firmware/`. На iPad запускается
+Кладёт её в `build/keep/lib/firmware/`. На iPad запускается
 `tools/mtdump/prebuilt/mtcal` (исходник `mtcal.c`, без заголовков SDK): бинарь
 лежит в дереве, потому что собрать armv7 под iOS может только Xcode — у
 ld64.lld для armv7 есть только BR24/BR22, остальные релокации FIXME, а ld64
 на Linux требует libtapi. Пересборка: `tools/mtdump/build.sh` на маке.
-Нет файлов — тач не стартует, stage2 так и пишет в dmesg.
+Нет прошивки (не запускали `./cascadia firmware`) — тач не стартует, stage2 так и пишет в dmesg.
 
 **Что было нужно** (всего по одному пункту, без любого из них чип не сканирует):
 - калибровка на `0x10009000` перед `performCalibSeq`;
