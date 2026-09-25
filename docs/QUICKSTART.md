@@ -204,6 +204,18 @@ drive nfsd and pf; on Linux, nfs-utils and iptables (nftables without it), from
 `tools/linux-*.sh`. The export is `~/cascadia-root` on the Mac and
 `/srv/cascadia-root` on Linux; `DST=` moves it.
 
+## A desktop
+
+XFCE runs, with touch as the pointer, off the NFS root — all of it software
+rendered on one core (the GPU has no Linux driver). Two things it needs from
+this boot that a shell does not:
+
+- **udev.** Xorg and Wayland find input devices through libinput, and libinput
+  through udev; without it the desktop comes up and ignores the glass.
+  `apk add eudev` on the device, and stage 2 starts it from the next boot on.
+- **The framebuffer to itself.** The on-screen keyboard keeps redrawing its part
+  of the screen; `killall fbkeyboard` before starting X.
+
 ## When it goes wrong
 
 | What you see | What it is |

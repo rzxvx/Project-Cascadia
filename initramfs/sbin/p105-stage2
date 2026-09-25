@@ -82,6 +82,20 @@ else
     msg "P105: dropbear not installed (run scripts/add-dropbear.sh)"
 fi
 
+# ------------------------------------------------------------------- udev ---
+# Nothing in this boot needs udev, but a desktop does: Xorg and Wayland find
+# input devices through libinput, and libinput through udev.  Without it XFCE
+# came up and ignored the glass; with udevd started by hand touch worked as a
+# pointer (teutekeune, 2026-09-25).  So when eudev is on the root (apk add
+# eudev) it is started here, before touch, so the touchscreen is announced to
+# it as it appears, and everything the kernel already has is replayed.
+if command -v udevd >/dev/null 2>&1 && command -v udevadm >/dev/null 2>&1; then
+    udevd --daemon 2>/dev/null
+    udevadm trigger --action=add 2>/dev/null
+    udevadm settle -t 10 2>/dev/null
+    msg "P105: udevd started"
+fi
+
 # ------------------------------------------------------------ touch (z2) ---
 # z2-boot brings the digitizer up the way iOS does, hands it to the kernel and
 # holds it: /dev/input/event0 from then on.  It needs the digitizer's firmware,
