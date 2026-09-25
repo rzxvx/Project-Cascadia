@@ -62,7 +62,10 @@ including the parts that didn't work.
 - [x] **The boot chain regenerates from a stock IPSW** — `./cascadia firmware`
       decrypts and patches iBSS/iBEC from the user's own firmware, verified
       byte-for-byte and booted on hardware. No Apple binaries in this repository
-- [ ] Touch input — blocked on the Cmwp touch clock
+- [x] **Touch** — multi-touch on `/dev/input/event0`, 60 Hz, up from boot. The
+      digitizer is brought up the way iOS does it, recorded from iOS's own
+      driver trace; it needs this iPad's factory calibration, dumped once from
+      its jailbroken iOS (`tools/mtdump`). See `docs/research/p105-z2-boot.md`
 - [ ] Wi-Fi (BCM4334 — HSIC, behind EHCI, not SDIO as initially assumed)
 - [ ] CPU1 / SMP bringup — **parked**, see *Negative results*
 - [ ] USB host mode / keyboard — no free host port: dwc2 in host mode would take the console and the network with it
@@ -198,7 +201,9 @@ that state across: SPI1 (`0x32100000`) and the touch clock (`0x33500300`) read
 back `0xd00c3ccc` in every word, which is what the bus returns for an address
 nobody answers -- an address that is nothing at all returns the same, while
 PMGR, GPIO and UART0 read normally in the same boot. iBSS and iBEC reset the
-clocks whatever iOS had powered.
+clocks whatever iOS had powered. (Moot now: the clock was never what stopped
+touch -- a 5 V LDO no device-tree function names, the calibration, and two
+reports iOS userspace sets were.)
 
 **No free USB host port.** The ADT puts the Wi-Fi part (`wlan`) as a child node
 of `usb-ehci` — BCM4334 is HSIC-attached, not SDIO. So a USB keyboard would have
@@ -293,7 +298,13 @@ cd Project-Cascadia
 afterwards: dropbear, authorised with this machine's own SSH public key, and
 `mount.nfs`. Both need docker, and both are skipped with a warning rather than
 a failure if it is not running -- the tree still boots and still gives a
-console on the glass and over the cable. `./cascadia build` then refuses to
+console on the glass and over the cable.
+
+Touch needs one file that cannot come from the IPSW: the iPad's own
+multitouch calibration (syscfg `MtCl`). `tools/mtdump` saves it from the
+device's jailbroken iOS; put it at `build/keep/lib/firmware/mtcal.bin` before
+`./cascadia build` (details in `docs/CASCADIA-CHEATSHEET.md`). Without it the
+system boots as before, just without touch. `./cascadia build` then refuses to
 ship an archive that is missing stage 1, stage 2, the ACM console or the pinned
 address, which is the check that was missing when a clean clone quietly built a
 kernel around a pre-USB `/init`.
@@ -379,7 +390,8 @@ Build products (`output/`) and stock firmware are not tracked; everything in
 - **Phase 2 ✓** — USB gadget, CDC ACM shell, CDC ECM networking, SSH, working
   tick, correct wall clock, `apk`, and an NFS root on the host's disk.
 - **Phase 3** — ~~a tick that does not depend on USB device mode~~ (the AIC
-  timer) → Touch (unblock the Cmwp clock) → Wi-Fi via HSIC/EHCI.
+  timer) → ~~Touch~~ ✓ → an on-screen keyboard for the console → Wi-Fi via
+  HSIC/EHCI.
 - **Phase 4** — A6 port (iPhone 5 / iPad mini 2), on this foundation.
 - **Phase 5** — A12/A13, longer term.
 
@@ -404,7 +416,7 @@ pretty far.
 - **LukeZGD** — Legacy iOS Kit, EverPwnage, checkm8-a5 Pico firmware
 - **NyanSatan** — checkm8_bootkit, iBoot research
 - **iH8sn0w** — iBoot32Patcher
-- **Project Sandcastle** — Z2 multitouch protocol reference
+- **Project Sandcastle** — Z2 multitouch driver and protocol, the starting point
 
 ## License
 
