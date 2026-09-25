@@ -347,7 +347,7 @@ index 2a9f91e81..ca986f254 100644
  obj-$(CONFIG_MFD_RSMU_SPI)	+= rsmu_spi.o rsmu_core.o
 +obj-$(CONFIG_MFD_APPLE_PMU_I2C)    += apple-pmu-i2c.o
 diff --git a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/usb.c b/drivers/net/wireless/broadcom/brcm80211/brcmfmac/usb.c
-index 8afbf529c..e8e0651c1 100644
+index 8afbf529c..cb6373f44 100644
 --- a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/usb.c
 +++ b/drivers/net/wireless/broadcom/brcm80211/brcmfmac/usb.c
 @@ -40,6 +40,10 @@ BRCMF_FW_DEF(43236B, "brcmfmac43236b");
@@ -371,7 +371,29 @@ index 8afbf529c..e8e0651c1 100644
  };
  
  #define TRX_MAGIC		0x30524448	/* "HDR0" */
-@@ -1540,6 +1545,9 @@ static const struct usb_device_id brcmf_usb_devid_table[] = {
+@@ -57,6 +62,11 @@ static const struct brcmf_firmware_mapping brcmf_usb_fwnames[] = {
+ #define TRX_UNCOMP_IMAGE	0x20		/* Trx holds uncompressed img */
+ #define TRX_RDL_CHUNK		1500		/* size of each dl transfer */
+ #define TRX_OFFSETS_DLFWLEN_IDX	0
++/* Cascadia: NVRAM appended after the firmware, its length here -- the
++ * layout of Broadcom's own USB host driver (bcmdhd's dbus).  The iPad's
++ * BCM4334 does not start without its module NVRAM, and over USB the image
++ * is the only thing sent (scripts/trx-add-nvram.py builds it). */
++#define TRX_OFFSETS_NVM_LEN_IDX	2
+ 
+ /* Control messages: bRequest values */
+ #define DL_GETSTATE	0	/* returns the rdl_state_t struct */
+@@ -1084,7 +1094,8 @@ static int check_file(const u8 *headers)
+ 	headers += sizeof(struct trx_header_le);
+ 
+ 	if (le32_to_cpu(trx->flag_version) & TRX_UNCOMP_IMAGE) {
+-		actual_len = le32_to_cpu(trx->offsets[TRX_OFFSETS_DLFWLEN_IDX]);
++		actual_len = le32_to_cpu(trx->offsets[TRX_OFFSETS_DLFWLEN_IDX]) +
++			     le32_to_cpu(trx->offsets[TRX_OFFSETS_NVM_LEN_IDX]);
+ 		return actual_len + sizeof(struct trx_header_le);
+ 	}
+ 	return -1;
+@@ -1540,6 +1551,9 @@ static const struct usb_device_id brcmf_usb_devid_table[] = {
  	BRCMF_USB_DEVICE(BRCM_USB_43236_DEVICE_ID),
  	BRCMF_USB_DEVICE(BRCM_USB_43242_DEVICE_ID),
  	BRCMF_USB_DEVICE(BRCM_USB_43569_DEVICE_ID),

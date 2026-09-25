@@ -19,8 +19,11 @@
 #                               image
 #   brcmfmac4334.bin            the Wi-Fi chip's firmware, wifi/4334b1/borg.trx
 #                               from the same place ("borg" is the ADT's
-#                               module-instance); a TRX image, which is what
-#                               brcmfmac downloads over USB
+#                               module-instance), a TRX image -- what
+#                               brcmfmac downloads over USB -- with the
+#                               module's NVRAM appended inside it
+#                               (scripts/trx-add-nvram.py): without it the
+#                               firmware is downloaded and never comes up
 #
 # Runs INSIDE the build container (see ./cascadia firmware): the image carries
 # pycryptodome, capstone and an iBoot32Patcher built from source, so the result
@@ -53,6 +56,11 @@ ROOTFS_DMG="058-24036-023.dmg"
 ROOTFS_KEY="21862ddcc49a861ffda17f7c6eca65355d2d1e762026cca60aabc726cd48b9e4cff214ff"
 MTPROPS=/usr/share/firmware/multitouch/P105.mtprops
 WIFI_FW=/usr/share/firmware/wifi/4334b1/borg.trx
+# The NVRAM is per module.  This iPad's chip names itself "M=HEIN m=2.6 V=t"
+# in its USB product string and heineken-t-st.txt begins moduleid=TDK,ES2.6:
+# the same part.  Other modules exist (-m-, -u-, borg-); WIFI_NVRAM= picks
+# another file from wifi/4334b1/.
+WIFI_NVRAM="${WIFI_NVRAM:-heineken-t-st.txt}"
 
 BOOTARGS="${BOOTARGS:-cs_enforcement_disable=1 debug=0x14}"
 
@@ -119,7 +127,10 @@ python3 "$ROOT/scripts/img3pack.py" \
 
 echo "==> touch and Wi-Fi firmware out of the root filesystem"
 python3 "$ROOT/scripts/rootfs-extract.py" "$IPSW" "$ROOTFS_DMG" "$ROOTFS_KEY" \
-    "$MTPROPS" "$OUT/P105.mtprops" "$WIFI_FW" "$OUT/brcmfmac4334.bin"
+    "$MTPROPS" "$OUT/P105.mtprops" "$WIFI_FW" "$OUT/borg.trx" \
+    "/usr/share/firmware/wifi/4334b1/$WIFI_NVRAM" "$OUT/brcmfmac4334-nvram.txt"
+python3 "$ROOT/scripts/trx-add-nvram.py" "$OUT/borg.trx" "$OUT/brcmfmac4334-nvram.txt" \
+    "$OUT/brcmfmac4334.bin"
 
 echo
 rc=0
