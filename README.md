@@ -1,10 +1,12 @@
 # Project Cascadia — Native Linux on Apple A5
 
 Mainline Linux 6.12 on an iPad mini 1 (iPad2,5 / S5L8942X), booting to an
-interactive shell — on the glass and over USB.
+interactive shell — on the glass and over USB — and on to an XFCE desktop you
+drive with your fingers.
 
-> **Status: Phase 1 & 2 complete.** Linux boots, takes interrupts, keeps time,
-> enumerates as a USB gadget, and gives you a shell over the Lightning cable.
+> **Status: Phases 1 & 2 complete, Phase 3 all but Wi-Fi.** Linux boots, takes
+> interrupts, keeps time, gives you a shell and a network over the Lightning
+> cable, takes multi-touch, and runs XFCE with an on-screen keyboard.
 
 ![Boot](imgs/boot.png)
 
@@ -70,6 +72,12 @@ including the parts that didn't work.
       `docs/research/p105-z2-boot.md`
 - [x] **On-screen keyboard** — `fbkeyboard` under the console on the glass,
       started at boot once it is installed on the NFS root (no arrow keys)
+- [x] **A desktop** — XFCE on the framebuffer, touch as the pointer (a
+      two-finger tap is a right click), `svkbd` as the keyboard behind a panel
+      button. One script sets it up: `tools/desktop/xfce-setup.sh`, then
+      `desktop`. Software rendered on one core; see QUICKSTART
+- [x] **Linux hosts** — build, flash, `./cascadia net` and `./cascadia nfs` on
+      Linux as well as macOS (walked on Arch; Ubuntu used by a second tester)
 - [ ] Wi-Fi (BCM4334 — HSIC, behind EHCI, not SDIO as initially assumed)
 - [ ] CPU1 / SMP bringup — **parked**, see *Negative results*
 - [ ] USB host mode / keyboard — no free host port: dwc2 in host mode would take the console and the network with it
@@ -395,14 +403,16 @@ Build products (`output/`) and stock firmware are not tracked; everything in
 - **Phase 2 ✓** — USB gadget, CDC ACM shell, CDC ECM networking, SSH, working
   tick, correct wall clock, `apk`, and an NFS root on the host's disk.
 - **Phase 3** — ~~a tick that does not depend on USB device mode~~ (the AIC
-  timer) → ~~Touch~~ ✓ → ~~an on-screen keyboard for the console~~ ✓ → Wi-Fi via
-  HSIC/EHCI.
+  timer) → ~~Touch~~ ✓ → ~~an on-screen keyboard for the console~~ ✓ →
+  ~~a desktop~~ ✓ (XFCE) → Wi-Fi via HSIC/EHCI.
 - **Phase 4** — A6 port (iPhone 5 / iPad mini 2), on this foundation.
 - **Phase 5** — A12/A13, longer term.
 
 SMP is not on the roadmap until the SecureROM core-release path is understood.
 
 ![FastFetch written using screen keyboard](imgs/IMG_1196.jpg)
+
+![XFCE on the iPad, read straight out of /dev/fb0](imgs/xfce-fb0.png)
 
 ## Background
 
