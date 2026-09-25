@@ -87,6 +87,8 @@ struct s5l_usbphy {
 	void __iomem *usbcplx;		/* NULL without a second reg */
 	struct regulator *hsic_supply;
 	bool hsic_supply_on;
+	struct regulator *lpo_supply;	/* the chip's 32 kHz sleep clock */
+	bool lpo_supply_on;
 	struct device *dev;
 	struct phy *phys[2];		/* [0] OTG, [1] host/HSIC */
 };
@@ -215,6 +217,26 @@ static int s5l_hostphy_power_on(struct phy *phy)
 	struct s5l_usbphy *p = phy_get_drvdata(phy);
 	int ret;
 
+	/* The 32 kHz clock first, the way a chip expects its sleep clock
+	 * before it is let out of reset.  Optional like hsic-supply. */
+	if (!p->lpo_supply) {
+		struct regulator *r = devm_regulator_get_optional(p->dev, "lpo");
+
+		if (IS_ERR(r)) {
+			if (PTR_ERR(r) == -EPROBE_DEFER)
+				return -EPROBE_DEFER;
+		} else {
+			p->lpo_supply = r;
+		}
+	}
+	if (p->lpo_supply && !p->lpo_supply_on) {
+		ret = regulator_enable(p->lpo_supply);
+		if (ret)
+			return ret;
+		p->lpo_supply_on = true;
+		msleep(10);
+	}
+
 	if (!p->hsic_supply) {
 		struct regulator *r = devm_regulator_get_optional(p->dev, "hsic");
 
@@ -255,6 +277,10 @@ static int s5l_hostphy_power_off(struct phy *phy)
 	if (p->hsic_supply_on) {
 		regulator_disable(p->hsic_supply);
 		p->hsic_supply_on = false;
+	}
+	if (p->lpo_supply_on) {
+		regulator_disable(p->lpo_supply);
+		p->lpo_supply_on = false;
 	}
 	return 0;
 }

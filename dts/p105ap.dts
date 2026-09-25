@@ -454,6 +454,7 @@
 			      <0xf108000 0x1000>;	/* usb-complex */
 			#phy-cells = <1>;
 			hsic-supply = <&wlan_reg_on>;
+			lpo-supply = <&wlan_lpo>;
 			status = "okay";
 		};
 
@@ -599,6 +600,20 @@
                     reg = <0x64>;
                     mask = <0x02>;
                     enable = <0x02>;
+                };
+
+                /* PMU GPIO11 (0x61 + 11): 0xb9 under Linux, 0x79 in iOS --
+                 * the same pin in another mode (bits 7:6), which on a
+                 * Broadcom combo board is the 32 kHz sleep clock (LPO) the
+                 * chip's firmware needs and its boot ROM does not.  An
+                 * inference, being tested: with REG_ON alone the firmware
+                 * downloaded and never came up.  The host PHY enables it
+                 * before REG_ON. */
+                wlan_lpo: wlan_lpo@6c {
+                    compatible = "apple,pmu-pwrsw";
+                    reg = <0x6c>;
+                    mask = <0xc0>;
+                    enable = <0x40>;
                 };
 
                 /* No PMU GPIO0 here.  The ADT's function-clock_enable-pmu is

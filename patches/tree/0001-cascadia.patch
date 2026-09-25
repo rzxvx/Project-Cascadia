@@ -347,10 +347,21 @@ index 2a9f91e81..ca986f254 100644
  obj-$(CONFIG_MFD_RSMU_SPI)	+= rsmu_spi.o rsmu_core.o
 +obj-$(CONFIG_MFD_APPLE_PMU_I2C)    += apple-pmu-i2c.o
 diff --git a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/usb.c b/drivers/net/wireless/broadcom/brcm80211/brcmfmac/usb.c
-index 8afbf529c..cb6373f44 100644
+index 8afbf529c..b214040ea 100644
 --- a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/usb.c
 +++ b/drivers/net/wireless/broadcom/brcm80211/brcmfmac/usb.c
-@@ -40,6 +40,10 @@ BRCMF_FW_DEF(43236B, "brcmfmac43236b");
+@@ -24,7 +24,9 @@
+ #define IOCTL_RESP_TIMEOUT		msecs_to_jiffies(2000)
+ 
+ #define BRCMF_USB_RESET_GETVER_SPINWAIT	100	/* in unit of ms */
+-#define BRCMF_USB_RESET_GETVER_LOOP_CNT	10
++/* Cascadia: 10 was one second; the iPad's BCM4334 gets five while its
++ * start is being worked out. */
++#define BRCMF_USB_RESET_GETVER_LOOP_CNT	50
+ 
+ #define BRCMF_POSTBOOT_ID		0xA123  /* ID to detect if dongle
+ 						   has boot up */
+@@ -40,6 +42,10 @@ BRCMF_FW_DEF(43236B, "brcmfmac43236b");
  BRCMF_FW_DEF(43242A, "brcmfmac43242a");
  BRCMF_FW_DEF(43569, "brcmfmac43569");
  BRCMF_FW_DEF(4373, "brcmfmac4373");
@@ -361,7 +372,7 @@ index 8afbf529c..cb6373f44 100644
  
  static const struct brcmf_firmware_mapping brcmf_usb_fwnames[] = {
  	BRCMF_FW_ENTRY(BRCM_CC_43143_CHIP_ID, 0xFFFFFFFF, 43143),
-@@ -49,7 +53,8 @@ static const struct brcmf_firmware_mapping brcmf_usb_fwnames[] = {
+@@ -49,7 +55,8 @@ static const struct brcmf_firmware_mapping brcmf_usb_fwnames[] = {
  	BRCMF_FW_ENTRY(BRCM_CC_43242_CHIP_ID, 0xFFFFFFFF, 43242A),
  	BRCMF_FW_ENTRY(BRCM_CC_43566_CHIP_ID, 0xFFFFFFFF, 43569),
  	BRCMF_FW_ENTRY(BRCM_CC_43569_CHIP_ID, 0xFFFFFFFF, 43569),
@@ -371,7 +382,7 @@ index 8afbf529c..cb6373f44 100644
  };
  
  #define TRX_MAGIC		0x30524448	/* "HDR0" */
-@@ -57,6 +62,11 @@ static const struct brcmf_firmware_mapping brcmf_usb_fwnames[] = {
+@@ -57,6 +64,11 @@ static const struct brcmf_firmware_mapping brcmf_usb_fwnames[] = {
  #define TRX_UNCOMP_IMAGE	0x20		/* Trx holds uncompressed img */
  #define TRX_RDL_CHUNK		1500		/* size of each dl transfer */
  #define TRX_OFFSETS_DLFWLEN_IDX	0
@@ -383,7 +394,19 @@ index 8afbf529c..cb6373f44 100644
  
  /* Control messages: bRequest values */
  #define DL_GETSTATE	0	/* returns the rdl_state_t struct */
-@@ -1084,7 +1094,8 @@ static int check_file(const u8 *headers)
+@@ -846,8 +858,9 @@ brcmf_usb_resetcfg(struct brcmf_usbdev_info *devinfo)
+ 		brcmf_usb_dl_cmd(devinfo, DL_RESETCFG, &id, sizeof(id));
+ 		return 0;
+ 	} else {
+-		brcmf_err("Cannot talk to Dongle. Firmware is not UP, %d ms\n",
+-			  BRCMF_USB_RESET_GETVER_SPINWAIT * loop_cnt);
++		brcmf_err("Cannot talk to Dongle. Firmware is not UP, %d ms (last GETVER: err %d, chip 0x%x rev 0x%x)\n",
++			  BRCMF_USB_RESET_GETVER_SPINWAIT * loop_cnt, err,
++			  le32_to_cpu(id.chip), le32_to_cpu(id.chiprev));
+ 		return -EINVAL;
+ 	}
+ }
+@@ -1084,7 +1097,8 @@ static int check_file(const u8 *headers)
  	headers += sizeof(struct trx_header_le);
  
  	if (le32_to_cpu(trx->flag_version) & TRX_UNCOMP_IMAGE) {
@@ -393,7 +416,7 @@ index 8afbf529c..cb6373f44 100644
  		return actual_len + sizeof(struct trx_header_le);
  	}
  	return -1;
-@@ -1540,6 +1551,9 @@ static const struct usb_device_id brcmf_usb_devid_table[] = {
+@@ -1540,6 +1554,9 @@ static const struct usb_device_id brcmf_usb_devid_table[] = {
  	BRCMF_USB_DEVICE(BRCM_USB_43236_DEVICE_ID),
  	BRCMF_USB_DEVICE(BRCM_USB_43242_DEVICE_ID),
  	BRCMF_USB_DEVICE(BRCM_USB_43569_DEVICE_ID),
