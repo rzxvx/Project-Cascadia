@@ -171,7 +171,10 @@ rm -f "$OUTDIR/.alpine-build-stamp"
 # be installed once it is running: dropbear, because there is no shell over the
 # network without it and no convenient apk without that shell, and mount.nfs,
 # because the root filesystem cannot be mounted by a binary that lives on the
-# root filesystem.  Everything else is `apk add` on the device.
+# root filesystem.  Everything else is `apk add` on the device.  busybox-static
+# as well: stage 2 runs the ACM console from a copy of it in RAM, so the cable
+# still gives a shell when an NFS root has wedged and taken every binary on it
+# with it.
 #
 # Unpacking them needs the build image (readelf and a network), so a machine
 # without a running docker gets a warning rather than a failure: the tree still
@@ -179,14 +182,14 @@ rm -f "$OUTDIR/.alpine-build-stamp"
 if [ "${SKIP_PACKAGES:-0}" = 1 ]; then
 	echo "==> SKIP_PACKAGES=1 -- no dropbear, no mount.nfs"
 elif docker info >/dev/null 2>&1; then
-	bash "$ROOT/scripts/add-apk-packages.sh" nfs-utils
+	bash "$ROOT/scripts/add-apk-packages.sh" nfs-utils busybox-static
 	PUBKEY_OPTIONAL=1 bash "$ROOT/scripts/add-dropbear.sh"
 else
 	echo "==> docker is not reachable -- skipping dropbear and nfs-utils."
 	echo "    The tree boots without them, but there is no ssh and no NFS root."
 	echo "    Once docker runs:"
 	echo "      bash scripts/add-dropbear.sh"
-	echo "      bash scripts/add-apk-packages.sh nfs-utils"
+	echo "      bash scripts/add-apk-packages.sh nfs-utils busybox-static"
 fi
 
 # Anything left in build/keep/ is copied in last.  It is for files that are not

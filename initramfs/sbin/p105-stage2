@@ -28,16 +28,42 @@ hostname -F /etc/hostname 2>/dev/null || hostname p105 2>/dev/null || true
 # getty, not a bare shell: it takes the tty as its controlling terminal and
 # exits on hangup, so there is exactly one reader on /dev/ttyGS0 at a time.
 # Two readers is what made the console eat every other keystroke.
-(
-    n=0
-    while [ $n -lt 500 ]; do
-        n=$((n+1))
-        [ -e /dev/ttyGS0 ] && /sbin/getty -n -l /bin/sh 115200 ttyGS0 2>/dev/null
-        sleep 1
-    done
-    msg "P105: ACM respawn limit reached, giving up"
-) &
-msg "P105: ACM console started on ttyGS0"
+#
+# And out of RAM.  On an NFS root every binary is paged in from the server, the
+# shell included, so when the NFS client wedged -- after a while idle, the Mac's
+# nfsd listening and no connection ever coming back -- ssh, this console and the
+# shell on the glass all hung with it, and nothing was left to see why from.
+# busybox.static in a tmpfs needs nothing from the root: the respawn loop, getty
+# and the shell all run from there, its applets first on PATH (anything else
+# still reachable by the root's own PATH while the root is well).
+RESCUE=/run/rescue
+if [ -x /bin/busybox.static ] && mkdir -p "$RESCUE" \
+   && mount -t tmpfs -o size=4m,mode=755 rescue "$RESCUE" \
+   && cp /bin/busybox.static "$RESCUE/busybox" && mkdir -p "$RESCUE/bin" \
+   && "$RESCUE/busybox" --install -s "$RESCUE/bin"; then
+    cat > "$RESCUE/acm" <<'ACM'
+n=0
+while [ $n -lt 500 ]; do
+    n=$((n+1))
+    [ -e /dev/ttyGS0 ] && getty -n -l sh 115200 ttyGS0 2>/dev/null
+    sleep 1
+done
+echo "P105: ACM respawn limit reached, giving up" > /dev/kmsg
+ACM
+    PATH="$RESCUE/bin:/usr/sbin:/usr/bin:/sbin:/bin" "$RESCUE/busybox" sh "$RESCUE/acm" &
+    msg "P105: ACM console started on ttyGS0, running from RAM ($RESCUE)"
+else
+    (
+        n=0
+        while [ $n -lt 500 ]; do
+            n=$((n+1))
+            [ -e /dev/ttyGS0 ] && /sbin/getty -n -l /bin/sh 115200 ttyGS0 2>/dev/null
+            sleep 1
+        done
+        msg "P105: ACM respawn limit reached, giving up"
+    ) &
+    msg "P105: ACM console started on ttyGS0 (no busybox.static: it hangs with an NFS root)"
+fi
 
 # ----------------------------------------------------------- ssh (dropbear) --
 # The ed25519 host key is baked into the image by ./cascadia build and stage 1
