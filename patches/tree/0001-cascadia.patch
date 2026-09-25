@@ -347,7 +347,7 @@ index 2a9f91e81..ca986f254 100644
  obj-$(CONFIG_MFD_RSMU_SPI)	+= rsmu_spi.o rsmu_core.o
 +obj-$(CONFIG_MFD_APPLE_PMU_I2C)    += apple-pmu-i2c.o
 diff --git a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/usb.c b/drivers/net/wireless/broadcom/brcm80211/brcmfmac/usb.c
-index 8afbf529c..9496d7410 100644
+index 8afbf529c..e8e0651c1 100644
 --- a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/usb.c
 +++ b/drivers/net/wireless/broadcom/brcm80211/brcmfmac/usb.c
 @@ -40,6 +40,10 @@ BRCMF_FW_DEF(43236B, "brcmfmac43236b");
@@ -371,6 +371,16 @@ index 8afbf529c..9496d7410 100644
  };
  
  #define TRX_MAGIC		0x30524448	/* "HDR0" */
+@@ -1540,6 +1545,9 @@ static const struct usb_device_id brcmf_usb_devid_table[] = {
+ 	BRCMF_USB_DEVICE(BRCM_USB_43236_DEVICE_ID),
+ 	BRCMF_USB_DEVICE(BRCM_USB_43242_DEVICE_ID),
+ 	BRCMF_USB_DEVICE(BRCM_USB_43569_DEVICE_ID),
++	/* Cascadia: the iPad mini 1's BCM4334 on HSIC, as its boot ROM
++	 * enumerates -- "M=HEIN m=2.6 V=t", bcdDevice 0.01. */
++	BRCMF_USB_DEVICE(0xbd1a),
+ 	LINKSYS_USB_DEVICE(BRCM_USB_43235_LINKSYS_DEVICE_ID),
+ 	CYPRESS_USB_DEVICE(CY_USB_4373_DEVICE_ID),
+ 	{ USB_DEVICE(BRCM_USB_VENDOR_ID_LG, BRCM_USB_43242_LG_DEVICE_ID) },
 diff --git a/drivers/phy/Kconfig b/drivers/phy/Kconfig
 index f73abff41..eee847c7e 100644
 --- a/drivers/phy/Kconfig
