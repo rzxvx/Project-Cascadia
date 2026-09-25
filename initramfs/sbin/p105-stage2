@@ -94,6 +94,31 @@ else
     msg "P105: touch -- no /lib/firmware/mtcal.bin, not started (tools/mtdump)"
 fi
 
+# --------------------------------------------------- on-screen keyboard -----
+# fbkeyboard draws a keyboard at the bottom of the framebuffer and types into
+# the console through uinput -- the only keyboard there is, since the one USB
+# port is the gadget.  Not baked into the image: `apk add fbkeyboard` on the
+# device, and it starts from here on the next boot.  The touchscreen is found
+# by name, not by event number: fbkeyboard's own uinput device is an event node
+# too.
+if command -v fbkeyboard >/dev/null 2>&1; then
+    ts=
+    for n in /sys/class/input/event*; do
+        [ "$(cat "$n/device/name" 2>/dev/null)" = "S5L8940X Capacitive TouchScreen" ] \
+            && ts=/dev/input/${n##*/} && break
+    done
+    font=
+    for f in /usr/share/fonts/dejavu/DejaVuSans.ttf /usr/share/fonts/*/*.ttf; do
+        [ -f "$f" ] && font=$f && break
+    done
+    if [ -n "$ts" ] && [ -n "$font" ]; then
+        setsid fbkeyboard -d "$ts" -f "$font" >/tmp/fbkeyboard.log 2>&1 </dev/null &
+        msg "P105: fbkeyboard on $ts"
+    else
+        msg "P105: fbkeyboard installed, but no touchscreen ($ts) or font ($font)"
+    fi
+fi
+
 # --------------------------------------------------------- glass fallback ---
 # Always reached, and independent of USB: if the gadget never comes up this is
 # still a real shell on the panel.

@@ -483,9 +483,13 @@ static void __exception_irq_entry aic1_handle_irq(struct pt_regs *regs)
 	apple_a9_gic_drain();
 	event = aic1_read_event(aic);
 	if (!event) {
+		/* They do happen in normal running, now and then -- each one used
+		 * to be the end of the AIC.  Counted, and logged at KERN_DEBUG:
+		 * in dmesg, not over the shell on the glass. */
 		aic1_empty_entries++;
-		pr_err_ratelimited("aic,1: IRQ entry with no EVENT (%u so far) -- ignored\n",
-				   aic1_empty_entries);
+		if (printk_ratelimit())
+			printk(KERN_DEBUG "aic,1: IRQ entry with no EVENT (%u so far) -- ignored\n",
+			       aic1_empty_entries);
 		return;
 	}
 
