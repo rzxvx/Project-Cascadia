@@ -461,8 +461,11 @@ static struct irq_chip aic1_chip = {
  * scanning did exactly that -- USB, network and NFS gone, only the local
  * timer left (2026-09-25, z2-boot -S with bf/af: AIC masks all ffffffff at
  * t+2.8 s, dwc2 GINTSTS pending, its IRQ count frozen).  An empty entry is a
- * line that dropped before EVENT was read; a stuck line gets masked alone. */
-static unsigned int aic1_empty_entries;
+ * line that dropped before EVENT was read; a stuck line gets masked alone.
+ * They are counted where ARM counts spurious interrupts: the "Err:" line of
+ * /proc/interrupts (arch/arm/kernel/irq.c; its only declaration is inside
+ * ack_bad_irq(), hence the one here). */
+extern unsigned long irq_err_count;
 
 static void __exception_irq_entry aic1_handle_irq(struct pt_regs *regs)
 {
@@ -483,13 +486,10 @@ static void __exception_irq_entry aic1_handle_irq(struct pt_regs *regs)
 	apple_a9_gic_drain();
 	event = aic1_read_event(aic);
 	if (!event) {
-		/* They do happen in normal running, now and then -- each one used
-		 * to be the end of the AIC.  Counted, and logged at KERN_DEBUG:
-		 * in dmesg, not over the shell on the glass. */
-		aic1_empty_entries++;
-		if (printk_ratelimit())
-			printk(KERN_DEBUG "aic,1: IRQ entry with no EVENT (%u so far) -- ignored\n",
-			       aic1_empty_entries);
+		/* They do happen in normal running, a few a minute.  Not
+		 * logged: the command line carries ignore_loglevel, so even
+		 * KERN_DEBUG went over the shell on the glass. */
+		irq_err_count++;
 		return;
 	}
 
