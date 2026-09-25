@@ -16,6 +16,7 @@
 #include <linux/regulator/consumer.h>
 #include <linux/input.h>
 #include <linux/input/mt.h>
+#include <linux/input/touchscreen.h>
 #include <linux/interrupt.h>
 #include <linux/module.h>
 #include <linux/slab.h>
@@ -40,11 +41,12 @@ struct hxt_metrics {
 
 #define MAX_DATA_CHUNK          16384
 
-/* Tracing for the bring-up: every command hx-touchd sends after the firmware
- * upload and the digitizer's answer, every ATTN with the phase it arrived in,
- * and every report read, until the budget runs out.  More on demand:
- *     echo 64 > /sys/module/apple_z2/parameters/debug */
-static int hxt_dbg = 64;
+/* Tracing for the bring-up: every command sent after the firmware upload and
+ * the digitizer's answer, every ATTN with the phase it arrived in, every frame
+ * read and every touch in it, until the budget runs out.  Off now that it all
+ * works; on demand:
+ *     echo 300 > /sys/module/apple_z2/parameters/debug */
+static int hxt_dbg;
 module_param_named(debug, hxt_dbg, int, 0644);
 MODULE_PARM_DESC(debug, "lines of boot/report tracing left to print");
 
@@ -76,6 +78,7 @@ struct hx_touch_data {
     u8 rx_data[MAX_DATA_CHUNK];
     unsigned rx_size, rx_rdptr;
     struct hxt_metrics metrics;
+    struct touchscreen_properties prop;
     unsigned read_tag;
     unsigned nirq, nxfer, nbytes, nframes, nretries;
 };
@@ -137,8 +140,8 @@ static void hx_touch_process_report(struct hx_touch_data *hxt, u8 *data, unsigne
         input_mt_slot(hxt->input_dev, slot);
         input_mt_report_slot_state(hxt->input_dev, MT_TOOL_FINGER, down);
         if(down) {
-            input_report_abs(hxt->input_dev, ABS_MT_POSITION_X, posx);
-            input_report_abs(hxt->input_dev, ABS_MT_POSITION_Y, posy);
+            /* the panel's y grows bottom to top -- touchscreen-inverted-y */
+            touchscreen_report_pos(hxt->input_dev, &hxt->prop, posx, posy, true);
             input_report_abs(hxt->input_dev, ABS_MT_WIDTH_MAJOR, widthm);
             input_report_abs(hxt->input_dev, ABS_MT_WIDTH_MINOR, widthu);
             input_report_abs(hxt->input_dev, ABS_MT_ORIENTATION, angle);
@@ -559,6 +562,7 @@ static int hx_touch_spi_create_touch_input(struct hx_touch_data *hxt)
     input_set_abs_params(input, ABS_MT_WIDTH_MAJOR, 0, 65535, 0, 0);
     input_set_abs_params(input, ABS_MT_WIDTH_MINOR, 0, 65535, 0, 0);
     input_set_abs_params(input, ABS_MT_ORIENTATION, -32768, 32767, 0, 0);
+    touchscreen_parse_properties(input, true, &hxt->prop);
     input_mt_init_slots(input, 10, INPUT_MT_DIRECT);
 
     input->name = "S5L8940X Capacitive TouchScreen";

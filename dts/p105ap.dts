@@ -349,6 +349,10 @@
 				reset-gpios = <&gpio 21 0>;
 				cs-gpios = <&gpio 103 0>;
 				irq-gpios = <&gpio 22 1>;
+				/* held upright, Home at the bottom: x grows left to
+				 * right, y bottom to top (corners 810,14945 / 11100,
+				 * 15080 / 11130,315 / 420,425 -- logs/z2-corners.txt) */
+				touchscreen-inverted-y;
 				clocks = <&touchclk>;
 			};
 		};

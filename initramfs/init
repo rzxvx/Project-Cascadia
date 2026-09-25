@@ -153,6 +153,15 @@ if [ -f /etc/nfsroot ] && [ -x /sbin/mount.nfs ]; then
             # existence check above still decides whether this is a Cascadia
             # root at all; a read-only export simply keeps its own copy.
             cp /sbin/p105-stage2 /newroot/sbin/p105-stage2 2>/dev/null || true
+            # The digitizer's bring-up belongs to the boot the same way:
+            # z2-boot from this build, its firmware, and this iPad's own
+            # calibration, which build/keep carries into the image
+            # (tools/mtdump saves it from iOS; Linux cannot read syscfg).
+            for f in /sbin/z2-boot /lib/firmware/P105.mtprops /lib/firmware/mtcal.bin; do
+                [ -f "$f" ] || continue
+                mkdir -p "/newroot${f%/*}" 2>/dev/null
+                cp -p "$f" "/newroot$f" 2>/dev/null || true
+            done
             # One ssh host key for the device, whichever root it booted: the one
             # this image carries (./cascadia build makes it once and keeps it).
             if [ -f /etc/dropbear/dropbear_ed25519_host_key ]; then
