@@ -66,18 +66,50 @@ if [ -x /bin/busybox.static ] && mkdir -p "$RESCUE" \
     # this console hung at its first prompt exactly when it was needed
     # (2026-09-26: keystrokes echoed, nothing ran).  -i: no /etc/issue.
     cat > "$RESCUE/acm" <<'ACM'
-export HOME=/run/rescue HISTFILE=/run/rescue/.ash_history
+# PATH is RAM only: with the root's directories on it as well, a command
+# the shell looked up hung in NFS along with everything else (2026-09-26).
+# Anything on the root is still there by its full path while the root is well.
+export PATH=/run/rescue/bin HOME=/run/rescue HISTFILE=/run/rescue/.ash_history
 cd /run/rescue
 n=0
 while [ $n -lt 500 ]; do
     n=$((n+1))
-    [ -e /dev/ttyGS0 ] && getty -i -n -l sh 115200 ttyGS0 2>/dev/null
+    [ -e /dev/ttyGS0 ] && getty -i -n -l /run/rescue/bin/sh 115200 ttyGS0 2>/dev/null
     sleep 1
 done
 echo "P105: ACM respawn limit reached, giving up" > /dev/kmsg
 ACM
-    PATH="$RESCUE/bin:/usr/sbin:/usr/bin:/sbin:/bin" "$RESCUE/busybox" sh "$RESCUE/acm" &
+    PATH="$RESCUE/bin" "$RESCUE/busybox" sh "$RESCUE/acm" &
     msg "P105: ACM console started on ttyGS0, running from RAM ($RESCUE)"
+    # NFS stall watchdog, also from RAM: every 20 s a child stats the root;
+    # if it has not come back in 30 s the root is stalled, and a snapshot --
+    # TCP sockets, the RPC trace, the end of dmesg -- goes to
+    # /run/nfs-stall.txt before anyone has to reach the device to take it.
+    # One probe at a time: a probe stuck in NFS stays stuck.
+    cat > "$RESCUE/nfswatch" <<'NFSW'
+probe=
+while :; do
+    if [ -z "$probe" ] || ! kill -0 "$probe" 2>/dev/null; then
+        rm -f /run/nfswatch.ok
+        ( stat / >/dev/null 2>&1 && touch /run/nfswatch.ok ) &
+        probe=$!
+    fi
+    n=0
+    while [ $n -lt 30 ] && [ ! -e /run/nfswatch.ok ]; do sleep 1; n=$((n+1)); done
+    if [ ! -e /run/nfswatch.ok ] && [ ! -e /run/nfs-stall.txt ]; then
+        {
+            echo "== $(date) uptime $(cat /proc/uptime)"
+            echo "== /proc/net/tcp"; cat /proc/net/tcp
+            echo "== mountstats xprt"; grep -E "xprt|age" /proc/self/mountstats
+            echo "== trace"; grep -v "^#" /sys/kernel/tracing/trace
+            echo "== dmesg"; dmesg | tail -60
+        } > /run/nfs-stall.txt 2>&1
+        echo "P105: NFS root stalled -- snapshot in /run/nfs-stall.txt" > /dev/kmsg
+    fi
+    sleep 20
+done
+NFSW
+    PATH="$RESCUE/bin" "$RESCUE/busybox" sh "$RESCUE/nfswatch" </dev/null >/dev/null 2>&1 &
 else
     (
         n=0
