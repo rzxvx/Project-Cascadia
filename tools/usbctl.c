@@ -1,6 +1,7 @@
 /* usbctl -- one control transfer to a USB device through usbfs, bytes out.
  *
  *   usbctl DEV TYPE REQ VALUE INDEX LEN        (numbers in hex)
+ *   usbctl DEV reset                           USBDEVFS_RESET: a port reset
  *   usbctl /dev/bus/usb/001/002 80 06 0100 0 12      device descriptor
  *   usbctl /dev/bus/usb/001/002 c1 00 0 0 8          Broadcom DL_GETSTATE
  *
@@ -13,6 +14,7 @@
 #include <linux/usbdevice_fs.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <sys/ioctl.h>
 #include <unistd.h>
 
@@ -22,6 +24,15 @@ int main(int argc, char **argv)
     struct usbdevfs_ctrltransfer c;
     int fd, n, i;
 
+    if (argc == 3 && !strcmp(argv[2], "reset")) {
+        fd = open(argv[1], O_RDWR);
+        if (fd < 0 || ioctl(fd, USBDEVFS_RESET, 0) < 0) {
+            perror("USBDEVFS_RESET");
+            return 1;
+        }
+        printf("reset done\n");
+        return 0;
+    }
     if (argc != 7) {
         fprintf(stderr, "usage: %s DEV TYPE REQ VALUE INDEX LEN (hex)\n", argv[0]);
         return 2;

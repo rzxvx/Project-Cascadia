@@ -482,9 +482,9 @@
 			interrupts = <12>;
 			phys = <&otgphy 1>;
 			phy-names = "usb";
-			/* Port 3 is HSIC (the Wi-Fi chip): reset it the way
-			 * iOS's hsic-port-errata does, resume first. */
-			apple,hsic-resume-ports = <0x4>;
+			/* Port 3 is HSIC (the Wi-Fi chip), which takes longer
+			 * than EHCI's usual millisecond to end a port reset. */
+			apple,hsic-ports = <0x4>;
 			status = "okay";
 		};
 

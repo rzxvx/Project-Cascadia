@@ -347,7 +347,7 @@ index 2a9f91e81..ca986f254 100644
  obj-$(CONFIG_MFD_RSMU_SPI)	+= rsmu_spi.o rsmu_core.o
 +obj-$(CONFIG_MFD_APPLE_PMU_I2C)    += apple-pmu-i2c.o
 diff --git a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/usb.c b/drivers/net/wireless/broadcom/brcm80211/brcmfmac/usb.c
-index 8afbf529c..f39cb7fe7 100644
+index 8afbf529c..b214040ea 100644
 --- a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/usb.c
 +++ b/drivers/net/wireless/broadcom/brcm80211/brcmfmac/usb.c
 @@ -24,7 +24,9 @@
@@ -394,7 +394,7 @@ index 8afbf529c..f39cb7fe7 100644
  
  /* Control messages: bRequest values */
  #define DL_GETSTATE	0	/* returns the rdl_state_t struct */
-@@ -846,8 +858,19 @@ brcmf_usb_resetcfg(struct brcmf_usbdev_info *devinfo)
+@@ -846,8 +858,9 @@ brcmf_usb_resetcfg(struct brcmf_usbdev_info *devinfo)
  		brcmf_usb_dl_cmd(devinfo, DL_RESETCFG, &id, sizeof(id));
  		return 0;
  	} else {
@@ -403,20 +403,10 @@ index 8afbf529c..f39cb7fe7 100644
 +		brcmf_err("Cannot talk to Dongle. Firmware is not UP, %d ms (last GETVER: err %d, chip 0x%x rev 0x%x)\n",
 +			  BRCMF_USB_RESET_GETVER_SPINWAIT * loop_cnt, err,
 +			  le32_to_cpu(id.chip), le32_to_cpu(id.chiprev));
-+		/* Cascadia: Apple's firmware for the iPad's HSIC 4334 never
-+		 * answers the postboot GETVER.  It takes the chip's USB core
-+		 * over -- GETVER then reads zeros and GET_DESCRIPTOR stalls --
-+		 * and waits for the host to reset the port, which on HSIC no
-+		 * disconnect ever prompts.  So reset it: the device comes back
-+		 * as the running firmware and is probed afresh. */
-+		if (!err && !id.chip) {
-+			brcmf_err("resetting the port for the running firmware\n");
-+			usb_queue_reset_device(to_usb_interface(devinfo->dev));
-+		}
  		return -EINVAL;
  	}
  }
-@@ -1084,7 +1107,8 @@ static int check_file(const u8 *headers)
+@@ -1084,7 +1097,8 @@ static int check_file(const u8 *headers)
  	headers += sizeof(struct trx_header_le);
  
  	if (le32_to_cpu(trx->flag_version) & TRX_UNCOMP_IMAGE) {
@@ -426,7 +416,7 @@ index 8afbf529c..f39cb7fe7 100644
  		return actual_len + sizeof(struct trx_header_le);
  	}
  	return -1;
-@@ -1540,6 +1564,9 @@ static const struct usb_device_id brcmf_usb_devid_table[] = {
+@@ -1540,6 +1554,9 @@ static const struct usb_device_id brcmf_usb_devid_table[] = {
  	BRCMF_USB_DEVICE(BRCM_USB_43236_DEVICE_ID),
  	BRCMF_USB_DEVICE(BRCM_USB_43242_DEVICE_ID),
  	BRCMF_USB_DEVICE(BRCM_USB_43569_DEVICE_ID),
@@ -659,74 +649,53 @@ index e7bf9cc63..a36f0e99d 100644
  irq_retry:
  	gintsts = dwc2_readl(hsotg, GINTSTS);
 diff --git a/drivers/usb/host/ehci-hub.c b/drivers/usb/host/ehci-hub.c
-index 1aee392e8..4ddabda11 100644
+index 1aee392e8..51ef91773 100644
 --- a/drivers/usb/host/ehci-hub.c
 +++ b/drivers/usb/host/ehci-hub.c
-@@ -953,7 +953,9 @@ int ehci_hub_control(
+@@ -952,8 +952,17 @@ int ehci_hub_control(
+ 			/* REVISIT:  some hardware needs 550+ usec to clear
  			 * this bit; seems too long to spin routinely...
  			 */
++			/*
++			 * Cascadia: an HSIC port of Apple's S5L EHCI takes
++			 * longer than this millisecond to end a reset after
++			 * the first enumeration: every later reset of the
++			 * Wi-Fi chip's port "timed out", and done by hand the
++			 * same reset had PR clear by the first look, 2 ms on.
++			 */
  			retval = ehci_handshake(ehci, status_reg,
 -					PORT_RESET, 0, 1000);
 +					PORT_RESET, 0,
-+					(ehci->hsic_resume_ports & BIT(wIndex)) ?
++					(ehci->hsic_ports & BIT(wIndex)) ?
 +					20000 : 1000);
  			if (retval != 0) {
  				ehci_err (ehci, "port %d reset error %d\n",
  					wIndex + 1, retval);
-@@ -1091,7 +1093,26 @@ int ehci_hub_control(
- 			}
- 			break;
- 		case USB_PORT_FEAT_RESET:
--			if (temp & (PORT_SUSPEND|PORT_RESUME))
-+			/*
-+			 * Cascadia: an HSIC port of Apple's S5L EHCI resets
-+			 * once -- the first enumeration after power-up -- and
-+			 * then never again: PORT_RESET stays set and the reset
-+			 * times out, every retry.  iOS resumes the port first
-+			 * (hsic-port-errata; the errata path in the iOS 6.1
-+			 * kernelcache writes PORTSC |= FPR, sleeps, then
-+			 * (PORTSC & ~(FPR|PR)) | PR), and done by hand that
-+			 * way the reset completed and the port came back
-+			 * enabled with the device on it.
-+			 */
-+			if ((ehci->hsic_resume_ports & BIT(wIndex)) &&
-+			    !(temp & PORT_SUSPEND)) {
-+				ehci_writel(ehci, temp | PORT_RESUME, status_reg);
-+				spin_unlock_irqrestore(&ehci->lock, flags);
-+				msleep(20);
-+				spin_lock_irqsave(&ehci->lock, flags);
-+				temp = ehci_readl(ehci, status_reg);
-+				temp &= ~(PORT_RWC_BITS | PORT_RESUME);
-+			} else if (temp & (PORT_SUSPEND|PORT_RESUME))
- 				goto error;
- 			/* line status bits may report this as low speed,
- 			 * which can be fine if this root hub has a
 diff --git a/drivers/usb/host/ehci-platform.c b/drivers/usb/host/ehci-platform.c
-index 98b073185..fb0c108ba 100644
+index 98b073185..7c8ecb9e0 100644
 --- a/drivers/usb/host/ehci-platform.c
 +++ b/drivers/usb/host/ehci-platform.c
 @@ -290,6 +290,9 @@ static int ehci_platform_probe(struct platform_device *dev)
  					  "needs-reset-on-resume"))
  			priv->reset_on_resume = true;
  
-+		of_property_read_u32(dev->dev.of_node, "apple,hsic-resume-ports",
-+				     &ehci->hsic_resume_ports);
++		of_property_read_u32(dev->dev.of_node, "apple,hsic-ports",
++				     &ehci->hsic_ports);
 +
  		if (of_property_read_bool(dev->dev.of_node,
  					  "has-transaction-translator"))
  			hcd->has_tt = 1;
 diff --git a/drivers/usb/host/ehci.h b/drivers/usb/host/ehci.h
-index d7a3c8d13..9944df25f 100644
+index d7a3c8d13..f12b1f57c 100644
 --- a/drivers/usb/host/ehci.h
 +++ b/drivers/usb/host/ehci.h
-@@ -216,6 +216,10 @@ struct ehci_hcd {			/* one per controller */
+@@ -216,6 +216,9 @@ struct ehci_hcd {			/* one per controller */
  	unsigned		amd_pll_fix:1;
  	unsigned		use_dummy_qh:1;	/* AMD Frame List table quirk*/
  	unsigned		has_synopsys_hc_bug:1; /* Synopsys HC */
-+	/* Cascadia: root ports (bit n = port n + 1) whose reset has to be
-+	 * preceded by a forced resume -- the HSIC port of Apple's S5L EHCI.
-+	 * See the USB_PORT_FEAT_RESET case in ehci-hub.c. */
-+	u32			hsic_resume_ports;
++	/* Cascadia: HSIC root ports (bit n = port n + 1) of Apple's S5L
++	 * EHCI, which take longer to end a port reset (ehci-hub.c). */
++	u32			hsic_ports;
  	unsigned		frame_index_bug:1; /* MosChip (AKA NetMos) */
  	unsigned		need_oc_pp_cycle:1; /* MPC834X port power */
  	unsigned		imx28_write_fix:1; /* For Freescale i.MX28 */
