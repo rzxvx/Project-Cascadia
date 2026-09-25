@@ -93,6 +93,10 @@ IP_HOST=10.55.0.1
 IP_PFX=24
 
 msg "P105: net interfaces: $(ls /sys/class/net 2>/dev/null | tr '\n' ' ')"
+# Loopback first.  Nothing brought it up, and a Linux host reaches its own
+# addresses through lo -- so the iPad could not even ping 10.55.0.2 from
+# itself, and anything listening on 127.0.0.1 was unreachable.
+ip link set lo up 2>/dev/null || ifconfig lo 127.0.0.1 up 2>/dev/null || true
 if [ -d /sys/class/net/usb0 ]; then
     ip link set usb0 up 2>/dev/null || ifconfig usb0 up 2>/dev/null
     ip addr add "$IP_DEV/$IP_PFX" dev usb0 2>/dev/null \

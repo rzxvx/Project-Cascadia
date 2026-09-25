@@ -38,9 +38,11 @@ have() { command -v "$1" >/dev/null 2>&1; }
 # whatever manages that firewall.
 firewall_note() {
     local f=""
-    for s in firewalld ufw; do
-        if systemctl is-active --quiet "$s" 2>/dev/null; then f="$s"; fi
-    done
+    if systemctl is-active --quiet firewalld 2>/dev/null; then f=firewalld; fi
+    # Not systemctl for ufw: ufw.service stays "active (exited)" with the
+    # firewall disabled, and said "ufw is running" on a host where it was off.
+    # The switch is ENABLED in its own configuration.
+    if grep -qs '^ENABLED=yes' /etc/ufw/ufw.conf; then f=ufw; fi
     [ -n "$f" ] || return 0
     echo "note: $f is running.  The device needs TCP 111 (rpcbind), 2049 (nfsd) and"
     echo "      mountd's port from $LAN; if the mount times out at boot, allow them there."

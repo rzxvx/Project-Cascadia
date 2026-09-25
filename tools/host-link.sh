@@ -75,18 +75,40 @@ has_ip() {
     fi
 }
 
+# NetworkManager takes any new Ethernet device for itself: it runs DHCP on it,
+# gives up after 45 s, deactivates it -- and an address set by hand goes with
+# it.  On Ubuntu that landed in the middle of the boot: the NFS mount stalled
+# with "server 10.55.0.1 not responding", ssh hung, then "No route to host".
+# Marking the one interface unmanaged raced NM's own teardown and could lose.
+# So NM is told about the link instead: one profile, cascadia-usb, bound to
+# the gadget's MAC, 10.55.0.1/24, never a default route, no IPv6.  NM then puts
+# the address on by itself every time the interface appears -- including the
+# re-enumerations after this script has exited.  Made once, kept; remove with
+#   sudo nmcli connection delete cascadia-usb
+NM_PROFILE=cascadia-usb
+nm_running() {
+    command -v nmcli >/dev/null 2>&1 && nmcli -t -f RUNNING general 2>/dev/null | grep -q running
+}
+nm_assign() {
+    if ! nmcli -t -f NAME connection show 2>/dev/null | grep -qx "$NM_PROFILE"; then
+        echo "    NetworkManager: adding connection '$NM_PROFILE' ($MAC -> $IP_HOST/24, no default route)"
+        sudo nmcli connection add type ethernet con-name "$NM_PROFILE" ifname '*' \
+            ethernet.mac-address "$MAC" ipv4.method manual ipv4.addresses "$IP_HOST/24" \
+            ipv4.never-default yes ipv6.method ignore \
+            connection.autoconnect yes connection.autoconnect-priority 100 >/dev/null || return 1
+    fi
+    # An older version of this script marked the interface unmanaged; undo
+    # that, then hand it the profile instead of whatever NM had started.
+    sudo nmcli device set "$1" managed yes 2>/dev/null || true
+    sudo nmcli connection up "$NM_PROFILE" ifname "$1" >/dev/null
+}
+
 assign() {
     if [ "$OS" = Darwin ]; then
         sudo ifconfig "$1" "$IP_HOST" netmask 255.255.255.0 up
+    elif nm_running && nm_assign "$1"; then
+        :
     else
-        # NetworkManager takes any new Ethernet device for itself: it runs DHCP
-        # on it, gives up after 45 s and deactivates it, and the address set
-        # here goes with it.  Unmanaged is a runtime setting for this one
-        # interface, gone with it -- and the next enumeration comes back
-        # through here.
-        if command -v nmcli >/dev/null 2>&1 && nmcli -t -f RUNNING general 2>/dev/null | grep -q running; then
-            sudo nmcli device set "$1" managed no 2>/dev/null || true
-        fi
         sudo ip addr replace "$IP_HOST/24" dev "$1"
         sudo ip link set "$1" up
     fi

@@ -85,11 +85,14 @@ EOF
     else
         echo "neither iptables nor nft here (Arch: sudo pacman -S iptables-nft)" >&2; exit 1
     fi
-    for s in firewalld ufw; do
-        if systemctl is-active --quiet "$s" 2>/dev/null; then
-            echo "note: $s is running and may still drop forwarded traffic; if ping fails, allow $DOWN -> $UP there."
-        fi
-    done
+    # ufw by its own switch, not systemctl: ufw.service stays "active" with the
+    # firewall disabled (linux-nfs-export.sh has the same check).
+    fw=""
+    if systemctl is-active --quiet firewalld 2>/dev/null; then fw=firewalld; fi
+    if grep -qs '^ENABLED=yes' /etc/ufw/ufw.conf; then fw=ufw; fi
+    if [ -n "$fw" ]; then
+        echo "note: $fw is enabled and may still drop forwarded traffic; if ping fails, allow $DOWN -> $UP there."
+    fi
     echo "    test from the device:  ping -c3 1.1.1.1  &&  apk update"
     ;;
 off)
