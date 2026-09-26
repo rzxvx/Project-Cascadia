@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Append a Broadcom NVRAM file to a TRX firmware image, for USB download.
 
-    trx-add-nvram.py FIRMWARE.trx NVRAM.txt OUT
+    trx-add-nvram.py FIRMWARE.trx NVRAM.txt OUT [MACADDR]
 
 The BCM4334 on the iPad's HSIC port runs Apple's wifi/4334b1/borg.trx, and
 iOS hands it the module's NVRAM separately (wifi/4334b1/<module>.txt): the
@@ -21,6 +21,11 @@ host driver (bcmdhd's dbus) packs it:
 
 The kernel side is one line in brcmfmac's check_file(): download
 offsets[0] + offsets[2] bytes after the header, not offsets[0] alone.
+
+MACADDR goes in as macaddr= when the file has none -- and Apple's module files
+have none: the MAC lives in the device's syscfg, not in the chip, and iOS adds
+it.  Without it the firmware starts, answers the bus, and its wl half never
+attaches: the first ioctl halts it (TRAP in proto_ctrldispatch).
 """
 import struct
 import sys
@@ -33,7 +38,7 @@ def trx_crc(img):
     return zlib.crc32(img[12:]) ^ 0xFFFFFFFF
 
 
-def nvram_blob(text):
+def nvram_blob(text, macaddr=None):
     lines = []
     for raw in text.splitlines():
         line = raw.split("#", 1)[0].strip()
@@ -41,6 +46,8 @@ def nvram_blob(text):
             continue
         key, val = line.split("=", 1)
         lines.append("%s=%s" % (key.strip(), val.strip()))
+    if macaddr and not any(l.startswith("macaddr=") for l in lines):
+        lines.append("macaddr=" + macaddr)
     body = "\0".join(lines).encode("ascii") + b"\0"
     length = (len(body) + 1 + 3) & ~3            # roundup(len + 1, 4)
     body = body.ljust(length, b"\0")
@@ -50,8 +57,9 @@ def nvram_blob(text):
 
 
 def main():
-    if len(sys.argv) != 4:
+    if len(sys.argv) not in (4, 5):
         sys.exit(__doc__)
+    mac = sys.argv[4] if len(sys.argv) == 5 else None
     fw = open(sys.argv[1], "rb").read()
     magic, ln, crc, flags = struct.unpack_from("<4sIII", fw, 0)
     offs = list(struct.unpack_from("<3I", fw, 16))
@@ -62,7 +70,7 @@ def main():
     if offs[2]:
         sys.exit("trx-add-nvram: the input already carries %d bytes of NVRAM" % offs[2])
 
-    nv = nvram_blob(open(sys.argv[2], encoding="ascii", errors="strict").read())
+    nv = nvram_blob(open(sys.argv[2], encoding="ascii", errors="strict").read(), mac)
     img = bytearray(fw[:HDR + offs[0]] + nv)
     offs[2] = len(nv)
     struct.pack_into("<I", img, 4, len(img))

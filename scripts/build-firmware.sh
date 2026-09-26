@@ -65,6 +65,11 @@ WIFI_FW=/usr/share/firmware/wifi/4334b1/borg.trx
 # with swdiv wants, and has regrev 9 where borg's has 14.  WIFI_NVRAM= picks
 # another file from wifi/4334b1/.
 WIFI_NVRAM="${WIFI_NVRAM:-borg-t-st.txt}"
+# The module files carry no MAC address -- iOS adds the one in syscfg -- and
+# without macaddr= the firmware's wl half never attaches.  Locally administered,
+# the same family as the USB gadget's pair in the dts; WIFI_MAC= sets another
+# (the iPad's own is under Settings > General > About > Wi-Fi Address).
+WIFI_MAC="${WIFI_MAC:-02:10:5a:05:00:03}"
 
 BOOTARGS="${BOOTARGS:-cs_enforcement_disable=1 debug=0x14}"
 
@@ -134,7 +139,7 @@ python3 "$ROOT/scripts/rootfs-extract.py" "$IPSW" "$ROOTFS_DMG" "$ROOTFS_KEY" \
     "$MTPROPS" "$OUT/P105.mtprops" "$WIFI_FW" "$OUT/borg.trx" \
     "/usr/share/firmware/wifi/4334b1/$WIFI_NVRAM" "$OUT/brcmfmac4334-nvram.txt"
 python3 "$ROOT/scripts/trx-add-nvram.py" "$OUT/borg.trx" "$OUT/brcmfmac4334-nvram.txt" \
-    "$OUT/brcmfmac4334.bin"
+    "$OUT/brcmfmac4334.bin" "$WIFI_MAC"
 
 echo
 rc=0
