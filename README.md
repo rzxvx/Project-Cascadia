@@ -4,9 +4,9 @@ Mainline Linux 6.12 on an iPad mini 1 (iPad2,5 / S5L8942X), booting to an
 interactive shell — on the glass and over USB — and on to an XFCE desktop you
 drive with your fingers.
 
-> **Status: Phases 1 & 2 complete, Phase 3 all but Wi-Fi.** Linux boots, takes
-> interrupts, keeps time, gives you a shell and a network over the Lightning
-> cable, takes multi-touch, and runs XFCE with an on-screen keyboard.
+> **Status: Phases 1 & 2 complete, Phase 3 all but Wi-Fi.** Linux boots on both
+> cores, takes interrupts, keeps time, gives you a shell and a network over the
+> Lightning cable, takes multi-touch, and runs XFCE with an on-screen keyboard.
 
 ![Boot](imgs/boot.png)
 
@@ -75,14 +75,15 @@ including the parts that didn't work.
 - [x] **A desktop** — XFCE on the framebuffer, touch as the pointer (a
       two-finger tap is a right click), `svkbd` as the keyboard behind a panel
       button. One script sets it up: `tools/desktop/xfce-setup.sh`, then
-      `desktop`. Software rendered on one core; see QUICKSTART
+      `desktop`. Software rendered; see QUICKSTART
 - [x] **Linux hosts** — build, flash, `./cascadia net` and `./cascadia nfs` on
       Linux as well as macOS (walked on Arch; Ubuntu used by a second tester)
+- [x] **Both cores** — CPU1 comes up at boot, idles the way XNU does, and
+      hotplugs off and on; see *The idle problem* below
 - [ ] Wi-Fi (BCM4334 — HSIC, behind EHCI, not SDIO as initially assumed)
-- [ ] CPU1 / SMP bringup — **parked**, see *Negative results*
 - [ ] USB host mode / keyboard — no free host port: dwc2 in host mode would take the console and the network with it
 
-## Three problems worth reading about
+## Four problems worth reading about
 
 Most of the interesting work in this port was not writing drivers. It was
 finding out why perfectly correct drivers did nothing.
@@ -179,11 +180,53 @@ CALIB: 50000549 CPU cycles per 1200013 ticks of 24 MHz => CPU = 1000000146 Hz
 ```
 
 So PMCCNTR is now calibrated against that counter at boot (the old hardcoded
-"1 GHz guess" turned out to be right to 0.6 ppm — but it's a measured fact now,
-and it feeds `udelay`), and the 24 MHz counter itself became the clocksource
-(`apple-wdt-24m`, rating 350) and `sched_clock`. It keeps counting in WFI.
+"1 GHz guess" turned out to be right to 0.6 ppm — but it's a measured fact
+now), and the 24 MHz counter itself became the clocksource
+(`apple-wdt-24m`, rating 350), `sched_clock` and — since PMCCNTR is per core
+and CPU1 does not run it — the delay timer too. It keeps counting in WFI.
 
 Verified by stopwatch.
+
+### 4. The idle problem — the second core died every time it rested
+
+Starting CPU1 turned out to be the easy half. iOS does it by writing the core's
+bit to PMGR `+0x1214` and then `+0x1220`, and the core leaves reset at physical
+address 0 — an alias of the first page of DRAM, where Linux now keeps a
+two-word trampoline. CPU1 printed its banner, took IPIs, went idle — and within
+a few milliseconds the whole machine stopped, with no panic and no output.
+Onlined by hand on a running system, it stopped at once.
+
+The answer came from a debugger this device turned out to have. CoreSight is
+open on it (`DBGAUTHSTATUS = 0xff`), so from userspace on CPU0 the other core
+can be halted, its registers and CP15 read, and its MMU asked to translate
+(`tools/cpudbg.c`). With that and a bare-metal stub run on CPU1 step by step
+(`tools/cpu1probe.c`), the behaviour showed itself:
+
+```
+stub on CPU1 reaches WFI      SCU CONFIG 0x531 -> 0x511   CPU1's debug block reads 0
+IPI sent to CPU1              starts 1 -> 2               it came back through reset
+same stub waiting in WFE      SCU CONFIG 0x531            still on, SEV wakes it
+```
+
+**The PMGR powers CPU1 off the moment it executes WFI** — CPU0 is left alone —
+and powers it back on, through reset, when an interrupt arrives for it. That is
+XNU's deep idle. Linux's idle loop is a plain WFI, so every time CPU1 rested it
+lost its L1 cache, dirty lines and all, and the next timer tick sent it through
+`secondary_startup` a second time.
+
+So CPU1 now idles the way XNU does: `cpu_suspend()` saves its state, L1 is
+cleaned and the core leaves coherency, the trampoline is pointed at a resume
+entry, and then WFI. When an interrupt powers it back on, it invalidates L1 and
+its SCU tags and returns through `cpu_resume` as if WFI had just finished.
+Thousands of power-downs a minute, and a stress test of parallel hashing and
+forks runs about 1.9× as fast as on one core, with every result correct.
+
+Two smaller traps on the way. The AIC timer used to register after
+`smp_init()`: one core survives the stretch without a tick, but two cannot
+finish an RCU grace period, so it registers first now. And reading another
+core's AIC `EVENT` register takes its pending interrupt away — an IPI taken
+that way left CPU1's IPIs masked for good, which a debug probe did for a
+while.
 
 ## Negative results
 
@@ -203,9 +246,11 @@ The A9 private memory region is alive — SCU at `+0x000` reports `CTRL=0x2d`,
 `CFG=0x511` (two cores, CPU0 in SMP), and the GIC CPU interface at `+0x100`
 answers sensibly. It's specifically the timers that are dead.
 
-**SMP is parked.** CPU1 is held in reset and the release mechanism lives in
-SecureROM; ~20 lab iterations against PMGR `function-enable_core` and AIC
-`IPI_SEND` produced nothing. Details in `docs/research/p105-smp-bringup.md`.
+**Starting CPU1 took the wrong path for a long time.** ~20 lab iterations
+went into PMGR `+0x1008`, start addresses planted at `+0x6008..0x603c` and
+AIC `IPI_SEND` before iOS 6.1's kernelcache showed the real sequence
+(`+0x1214`, `+0x1220`). The release mechanism was never in SecureROM. The
+notebook, wrong turns included, is `docs/research/p105-smp-bringup.md`.
 
 **The touch clock cannot be inherited from iOS.** Reaching DFU through
 `kloader`, from a jailbroken iOS where the digitizer is running, does not carry
@@ -234,7 +279,10 @@ datasheet.
 | dwc2 USB | `0x36100000` | IRQ 11 → hwirq 50. Peripheral mode. Its Start-of-Frame is the fallback tick |
 | OTG PHY | `0x36000000` | Register map recovered empirically from live iBoot DFU |
 | Watchdog / 24 MHz counter | `0x3F103020` | IRQ 4 (dead). Counter is the clocksource |
-| PMGR | `0x3F100000` | ADT `device_type = "timer"`. Not modelled — iBoot leaves our clocks ungated |
+| PMGR | `0x3F100000` | ADT `device_type = "timer"`. Clocks not modelled — iBoot leaves ours ungated. Core start: mask to `+0x1214`, then `+0x1220`; off `+0x1210` |
+| Reset page | `0x80000000` | A core leaves reset at physical 0, an alias of this page; reserved, holds the SMP trampoline |
+| SCU | `0x3E100000` | CBAR. `CONFIG` bits 7:4 show which cores are in SMP right now |
+| CoreSight | `0x3D230000` | Cortex-A9 debug, CPU0; CPU1 at `0x3D232000`. Fully enabled — `tools/cpudbg.c` |
 | PL310 L2 | `0x3E000000` | Left enabled by iBoot; registering `outer_cache` with L1 D-cache off hangs |
 | Framebuffer | `0x9F6FC000` | 768×1024, stride 3072, a8r8g8b8 |
 | SPI1 (touch) | `0x32100000` | IRQ 29 |
@@ -404,11 +452,10 @@ Build products (`output/`) and stock firmware are not tracked; everything in
   tick, correct wall clock, `apk`, and an NFS root on the host's disk.
 - **Phase 3** — ~~a tick that does not depend on USB device mode~~ (the AIC
   timer) → ~~Touch~~ ✓ → ~~an on-screen keyboard for the console~~ ✓ →
-  ~~a desktop~~ ✓ (XFCE) → Wi-Fi via HSIC/EHCI.
+  ~~a desktop~~ ✓ (XFCE) → ~~the second core~~ ✓ → Wi-Fi via HSIC/EHCI →
+  NAND.
 - **Phase 4** — A6 port (iPhone 5 / iPad mini 2), on this foundation.
 - **Phase 5** — A12/A13, longer term.
-
-SMP is not on the roadmap until the SecureROM core-release path is understood.
 
 ![FastFetch written using screen keyboard](imgs/IMG_1196.jpg)
 
