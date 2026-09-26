@@ -45,6 +45,8 @@
 #include <linux/of_address.h>
 #include <linux/printk.h>
 #include <linux/sched_clock.h>
+
+#include <asm/delay.h>
 #include <linux/processor.h>
 
 #define WDT_CUR_TIME		0x00
@@ -89,6 +91,19 @@ static struct clocksource apple_wdt_cs = {
 	.flags	= CLOCK_SOURCE_IS_CONTINUOUS,
 };
 
+static unsigned long apple_wdt_delay_read(void)
+{
+	return readl_relaxed(wdt_base + WDT_CUR_TIME);
+}
+
+/* udelay's timer too: one counter for every CPU.  PMCCNTR, which had this job,
+ * is each core's own cycle counter -- and not even running on CPU1, whose
+ * first udelay would then spin for ever. */
+static struct delay_timer apple_wdt_delay = {
+	.read_current_timer	= apple_wdt_delay_read,
+	.freq			= APPLE_WDT_REF_HZ,
+};
+
 /**
  * apple_s5l_wdt_clocksource_init - wall time that survives idle
  *
@@ -105,7 +120,8 @@ void __init apple_s5l_wdt_clocksource_init(void)
 
 	clocksource_register_hz(&apple_wdt_cs, APPLE_WDT_REF_HZ);
 	sched_clock_register(apple_wdt_sched_read, 32, APPLE_WDT_REF_HZ);
-	pr_err("CS: 24 MHz watchdog counter is now the clocksource and sched_clock\n");
+	register_current_timer_delay(&apple_wdt_delay);
+	pr_err("CS: 24 MHz watchdog counter is now the clocksource, sched_clock and delay timer\n");
 }
 
 /**

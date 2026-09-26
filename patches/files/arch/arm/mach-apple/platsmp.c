@@ -1,147 +1,124 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * Apple S5L894x (A5) SMP — PMGR Core(n) + start-addr + AIC IPI.
+ * Apple S5L8942X (A5) SMP -- the second core started the way iOS starts it.
  *
- * enable-method: "apple,pmgr-core"
+ * Read out of iOS 6.1's kernelcache (docs/research/p105-smp-bringup.md):
  *
- * aic1-lab v31 glass facts:
- *   - SCU already enabled (0x2D) by iBoot — do NOT ioremap CBAR (hangs).
- *   - IPI_SEND → cpu1 EVENT 0x00040001 (type=IPI, OTHER) works.
- *   - PMGR+0x6000 100A0C07→100A0C0F sticks; bit1 already set before poke.
- *   - Missing piece for second penguin: cpu1 entry PC (start-addr + reset).
+ *  - The ADT's function-enable_core is the 'Core' function of
+ *    AppleS5L8940XPerformanceController on the pmgr node, called with a core
+ *    mask: cpu0 1, cpu1 2.  To start a core it writes the mask to PMGR+0x1214
+ *    and then PMGR+0x1220 (and 0 to +0x1204, which is not needed here and
+ *    whose other bits are unknown).
+ *  - The core then comes out of reset at the first page of DRAM, where XNU's
+ *    cpu_start() has put its exception vectors.
  *
- * See docs/p105-smp-bringup.md.
+ * Here that page is reserved (dts: cpu-reset@80000000, no-map, the cpus
+ * node's apple,cpu-reset-page) and its reset vector jumps to
+ * secondary_startup.  Seen working with tools/cpu1probe before this was
+ * written: 2 to +0x1214 and +0x1220, and CPU1 ran from that reset vector.
  */
 
 #include <linux/bits.h>
-#include <linux/delay.h>
 #include <linux/init.h>
 #include <linux/io.h>
 #include <linux/of.h>
+#include <linux/of_address.h>
 #include <linux/smp.h>
 
-#include <asm/cacheflush.h>
+#include <asm/barrier.h>
+#include <asm/cputype.h>
 #include <asm/smp_plat.h>
 
-#include "p105_fb_dbg.h"
+#define PMGR_CORE_STOP		0x1210
+#define PMGR_CORE_START		0x1214
+#define PMGR_CORE_RUN		0x1220
 
-#define P105_PMGR_PHYS		0x3F100000ul
-#define P105_PMGR_SIZE		0x7000
-#define P105_PMGR_CPU_REG	0x6000
-#define P105_PMGR_APPLY_1180	0x1180
-#define P105_PMGR_APPLY_1200	0x1200
-#define P105_PMGR_APPLY_1204	0x1204
-
-/* Candidate cpu1 start-address offsets (PA plant only — NOT 0x2100/2104).
- * iBSS: 0x2100/2104 are CTRL/STATUS (store 2/0x1f + poll); 0x6004 is config.
- */
-static const u32 apple_pmgr_start_offs[] = {
-	0x6008, 0x600c, 0x6010, 0x6004, /* 6004 unlikely; kept for rb probe */
-};
+#define ARM_LDR_PC_PC_M4	0xe51ff004	/* ldr pc, [pc, #-4] */
 
 static void __iomem *pmgr_base;
+static phys_addr_t reset_page;
 
-void apple_aic1_ipi_wake(unsigned int cpu);
-
-static void apple_pmgr_write_start_addr(u32 pa)
-{
-	unsigned int i;
-
-	if (!pmgr_base)
-		return;
-
-	for (i = 0; i < ARRAY_SIZE(apple_pmgr_start_offs); i++) {
-		void __iomem *r = pmgr_base + apple_pmgr_start_offs[i];
-
-		writel_relaxed(pa, r);
-		if (readl_relaxed(r) != pa)
-			writel_relaxed(pa | 1u, r);
-	}
-	dsb(sy);
-}
-
-/*
- * Core(n) — ADT arg is 1-based. Live v31: 0x100A0C07 → 0x100A0C0F.
- * Pulse bit(n-1) low then restore full low nibble so a parked core may reset.
- */
-static int apple_pmgr_core_enable(unsigned int core_arg)
-{
-	u32 v, bit;
-
-	if (!pmgr_base || core_arg < 1 || core_arg > 2)
-		return -EINVAL;
-
-	bit = BIT(core_arg - 1);
-
-	writel_relaxed(readl_relaxed(pmgr_base + P105_PMGR_APPLY_1180) |
-		       0x80000000u,
-		       pmgr_base + P105_PMGR_APPLY_1180);
-	writel_relaxed(0x7FFE, pmgr_base + P105_PMGR_APPLY_1200);
-	writel_relaxed(0x3fff8001, pmgr_base + P105_PMGR_APPLY_1204);
-
-	v = readl_relaxed(pmgr_base + P105_PMGR_CPU_REG);
-	/* Brief clear of this core's bit (reset pulse). */
-	writel_relaxed((v & ~0xFu) | ((v & 0xFu) & ~bit),
-		       pmgr_base + P105_PMGR_CPU_REG);
-	dsb(sy);
-	udelay(50);
-
-	v = readl_relaxed(pmgr_base + P105_PMGR_CPU_REG);
-	writel_relaxed(v | 0xFu | bit, pmgr_base + P105_PMGR_CPU_REG);
-	dsb(sy);
-	udelay(100);
-
-	v = readl_relaxed(pmgr_base + P105_PMGR_CPU_REG);
-	p105_fb_dbg_hex("pmgr6", v);
-	return 0;
-}
+void apple_aic1_secondary_init(unsigned int cpu);
 
 static void __init apple_smp_prepare_cpus(unsigned int max_cpus)
 {
-	p105_fb_dbg("smp_prep");
+	struct device_node *cpus, *page, *pmgr;
+	struct resource res;
 
-	pmgr_base = ioremap(P105_PMGR_PHYS, P105_PMGR_SIZE);
-	if (!pmgr_base) {
-		p105_fb_dbg("pmgr_mapf");
-		return;
-	}
+	cpus = of_find_node_by_path("/cpus");
+	page = cpus ? of_parse_phandle(cpus, "apple,cpu-reset-page", 0) : NULL;
+	if (page && !of_address_to_resource(page, 0, &res))
+		reset_page = res.start;
+	of_node_put(page);
+	of_node_put(cpus);
 
-	/*
-	 * SCU is already enabled by iBoot (lab SCUb=SCUa=0x2D).  Mapping any
-	 * CBAR window under Linux has hung this port — skip scu_enable().
-	 */
-	p105_fb_dbg("scu_ibrt");
+	pmgr = of_find_compatible_node(NULL, NULL, "apple,s5l8940x-pmgr");
+	if (pmgr)
+		pmgr_base = of_iomap(pmgr, 0);
+	of_node_put(pmgr);
 
-	apple_pmgr_core_enable(1);
+	if (!reset_page || !pmgr_base)
+		pr_err("apple-smp: no %s -- CPU1 stays off\n",
+		       reset_page ? "PMGR" : "apple,cpu-reset-page");
 }
 
 static int apple_boot_secondary(unsigned int cpu, struct task_struct *idle)
 {
-	unsigned int core_arg = cpu_logical_map(cpu) + 1;
-	u32 entry = (u32)__pa_symbol(secondary_startup);
+	u32 mask = BIT(MPIDR_AFFINITY_LEVEL(cpu_logical_map(cpu), 0));
+	void __iomem *vec;
 
-	p105_fb_dbg_hex("boot_c", cpu);
-	p105_fb_dbg_hex("entry", entry);
-
-	/* Plant entry before Core pulse so a reset fetch can see it. */
-	apple_pmgr_write_start_addr(entry);
-	dsb(sy);
-	isb();
-
-	if (apple_pmgr_core_enable(core_arg))
+	if (!reset_page || !pmgr_base)
 		return -ENODEV;
+	/* A mask of 1 is CPU0, the one running this. */
+	if (mask == BIT(0))
+		return -EINVAL;
 
-	/* AIC IPI OTHER path proven in aic1-lab v31 (EV1=0x00040001). */
-	apple_aic1_ipi_wake(cpu);
-	arch_send_wakeup_ipi_mask(cpumask_of(cpu));
-	dsb(sy);
-	sev();
+	vec = ioremap(reset_page, 8);
+	if (!vec)
+		return -ENOMEM;
+	writel_relaxed(ARM_LDR_PC_PC_M4, vec);
+	writel_relaxed(__pa_symbol(secondary_startup), vec + 4);
+	iounmap(vec);
+	wmb();
 
+	writel(mask, pmgr_base + PMGR_CORE_START);
+	writel(mask, pmgr_base + PMGR_CORE_RUN);
 	return 0;
 }
+
+/* On the new CPU, before it takes interrupts: its AIC window made quiet. */
+static void apple_secondary_init(unsigned int cpu)
+{
+	apple_aic1_secondary_init(cpu);
+}
+
+#ifdef CONFIG_HOTPLUG_CPU
+/* The CPU going down parks itself; the next start is a reset anyway. */
+static void apple_cpu_die(unsigned int cpu)
+{
+	for (;;)
+		wfi();
+}
+
+/* On a surviving CPU: power the dead one off, as iOS's EnableCore(off) does. */
+static int apple_cpu_kill(unsigned int cpu)
+{
+	u32 mask = BIT(MPIDR_AFFINITY_LEVEL(cpu_logical_map(cpu), 0));
+
+	if (!pmgr_base || mask == BIT(0))
+		return 0;
+	writel(mask, pmgr_base + PMGR_CORE_STOP);
+	return 1;
+}
+#endif
 
 static const struct smp_operations apple_s5l_smp_ops __initconst = {
 	.smp_prepare_cpus	= apple_smp_prepare_cpus,
 	.smp_boot_secondary	= apple_boot_secondary,
+	.smp_secondary_init	= apple_secondary_init,
+#ifdef CONFIG_HOTPLUG_CPU
+	.cpu_die		= apple_cpu_die,
+	.cpu_kill		= apple_cpu_kill,
+#endif
 };
 CPU_METHOD_OF_DECLARE(apple_pmgr_core, "apple,pmgr-core", &apple_s5l_smp_ops);

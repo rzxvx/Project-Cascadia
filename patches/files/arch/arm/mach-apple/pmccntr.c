@@ -107,5 +107,9 @@ void __init apple_s5l_pmccntr_init(unsigned long rate)
 	 * PMCCNTR's 1 GHz here would permanently shut out the 24 MHz counter --
 	 * and PMCCNTR freezes in idle, which is exactly what we are fixing. */
 	clocksource_register_hz(&apple_pmccntr_cs, apple_pmccntr_rate);
-	register_current_timer_delay(&apple_pmccntr_delay);
+	/* Not the delay timer any more: a per-core counter, only running on
+	 * CPU0.  The watchdog's 24 MHz counter does it (apple_wdt_clkevt.c);
+	 * this one takes over only if that one never registered. */
+	if (!IS_ENABLED(CONFIG_SMP))
+		register_current_timer_delay(&apple_pmccntr_delay);
 }

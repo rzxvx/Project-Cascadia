@@ -22,6 +22,7 @@
 #include <linux/bitfield.h>
 #include <linux/bits.h>
 #include <linux/clockchips.h>
+#include <linux/cpuhotplug.h>
 #include <linux/cpumask.h>
 #include <linux/delay.h>
 #include <linux/io.h>
@@ -184,9 +185,11 @@ static u32 aic1_read_event(struct apple_aic1 *aic)
 {
 	u32 e5 = aic1_read(aic, aic1_cpu_event_off());
 
-	if (e5)
+	if (e5 || smp_processor_id())
 		return e5;
-	/* Fallback: some firmware paths may still use the shared view */
+	/* Fallback: some firmware paths may still use the shared view.  CPU0
+	 * only: reading it pops an event, and from CPU1 that could be one of
+	 * CPU0's. */
 	return aic1_read(aic, AIC1_EVENT);
 }
 
@@ -340,10 +343,25 @@ static void aic1_handle_ipi(struct pt_regs *regs)
 	if (!aic)
 		return;
 
-	aic1_write(aic, AIC1_IPI_ACK, AIC1_IPI_OTHER);
+	unsigned int cpu = smp_processor_id();
+
+	/* The AIC masks an IPI as it delivers it; the receiver acks and opens
+	 * it again in its own window, 0x5000 + (cpu << 7).  CPU0 also keeps
+	 * the 0x2000 alias it was proven on -- CPU1 stays off it, in case that
+	 * alias is CPU0's rather than the running CPU's. */
+	if (!cpu)
+		aic1_write(aic, AIC1_IPI_ACK, AIC1_IPI_OTHER);
+	aic1_write(aic, AIC1_CPU_IPI_ACK(cpu), AIC1_IPI_OTHER);
 	ipi_mux_process();
-	aic1_write(aic, AIC1_IPI_MASK_CLR, AIC1_IPI_OTHER);
+	if (!cpu)
+		aic1_write(aic, AIC1_IPI_MASK_CLR, AIC1_IPI_OTHER);
+	aic1_write(aic, AIC1_CPU_IPI_MASK_CLR(cpu), AIC1_IPI_OTHER);
 }
+
+static unsigned int aic1_dbg_ev1;			/* Cascadia SMP debug */
+static unsigned int aic1_dbg_irq[AIC1_NR_CPUS];		/* Cascadia SMP debug */
+static u32 aic1_dbg_evlog[16];				/* Cascadia SMP debug */
+extern unsigned int cascadia_fiq_count[];		/* arch/arm/kernel/traps.c */
 
 static void aic1_ipi_send_single(unsigned int cpu)
 {
@@ -353,6 +371,75 @@ static void aic1_ipi_send_single(unsigned int cpu)
 		return;
 
 	aic1_write(aic, AIC1_IPI_SEND, AIC1_IPI_SEND_CPU(cpu));
+}
+
+/* Cascadia SMP debug: one IPI to CPU, and did it take an IRQ or a FIQ? */
+static void aic1_ipi_probe(struct apple_aic1 *aic, unsigned int cpu,
+			   const char *what)
+{
+	unsigned int irq0 = READ_ONCE(aic1_dbg_irq[cpu]);
+	unsigned int fiq0 = READ_ONCE(cascadia_fiq_count[cpu]);
+	u32 w = AIC1_CPU_WINDOW(cpu), ev;
+	int i;
+
+	aic1_write(aic, AIC1_IPI_SEND, AIC1_IPI_SEND_CPU(cpu));
+	ev = aic1_read(aic, w + 4);
+	for (i = 0; i < 200; i++) {
+		if ((READ_ONCE(aic1_dbg_irq[cpu]) != irq0 ||
+		     READ_ONCE(cascadia_fiq_count[cpu]) != fiq0) &&
+		    !(aic1_read(aic, w + 0x24) & AIC1_IPI_OTHER))
+			break;
+		udelay(100);
+	}
+	pr_info("SMP-DBG: %s: IPI to CPU%u, EVENT %08x then %08x; its IRQs +%u FIQs +%u (%d x 100 us); window +0 %08x, IPI mask %08x\n",
+		what, cpu, ev, aic1_read(aic, w + 4),
+		READ_ONCE(aic1_dbg_irq[cpu]) - irq0,
+		READ_ONCE(cascadia_fiq_count[cpu]) - fiq0, i,
+		aic1_read(aic, w), aic1_read(aic, w + 0x24));
+}
+
+/* Cascadia SMP debug: from __cpu_up, once the CPU is online. */
+void apple_aic1_ipi_test(unsigned int cpu)
+{
+	struct apple_aic1 *aic = apple_aic1;
+	unsigned int irq0;
+
+	if (!aic || cpu >= AIC1_NR_CPUS)
+		return;
+	irq0 = READ_ONCE(aic1_dbg_irq[cpu]);
+	aic1_ipi_probe(aic, cpu, "first");
+	aic1_ipi_probe(aic, cpu, "second");
+	pr_info("SMP-DBG: CPU%u took %u IRQs, events %08x %08x %08x %08x\n", cpu,
+		READ_ONCE(aic1_dbg_irq[cpu]) - irq0, aic1_dbg_evlog[0],
+		aic1_dbg_evlog[1], aic1_dbg_evlog[2], aic1_dbg_evlog[3]);
+}
+
+/*
+ * Cascadia: from platsmp's smp_secondary_init, on the new CPU before it takes
+ * interrupts.  Shows what its window holds (and CPU0's, to compare), stops a
+ * timer iBoot may have left running there, and opens its IPIs.
+ */
+void apple_aic1_secondary_init(unsigned int cpu)
+{
+	struct apple_aic1 *aic = apple_aic1;
+	u32 w = AIC1_CPU_WINDOW(cpu), o;
+
+	if (!aic || cpu >= AIC1_NR_CPUS)
+		return;
+	pr_info("SMP-DBG: CPU%u window %#x:", cpu, w);
+	for (o = 0; o < 0x30; o += 4)
+		pr_cont(" %08x", aic1_read(aic, w + o));
+	pr_cont("\n");
+	pr_info("SMP-DBG: CPU0 window %#x:", AIC1_CPU_WINDOW(0));
+	for (o = 0; o < 0x30; o += 4)
+		pr_cont(" %08x", aic1_read(aic, AIC1_CPU_WINDOW(0) + o));
+	pr_cont("\n");
+
+	aic1_write(aic, w + AIC1_LOCAL_MASK_SET, AIC1_LOCAL_TIMER);
+	aic1_write(aic, w + AIC1_TMR_CFG,
+		   aic1_read(aic, w + AIC1_TMR_CFG) & ~AIC1_TMR_CFG_ENABLE);
+	aic1_write(aic, w + AIC1_TMR_STAT, 1);
+	aic1_write(aic, AIC1_CPU_IPI_MASK_CLR(cpu), ~0U);
 }
 
 /** Wake a parked core via AIC IPI_SEND (lab: EV1 becomes 0x00040001). */
@@ -474,6 +561,8 @@ static void __exception_irq_entry aic1_handle_irq(struct pt_regs *regs)
 	u32 event;
 
 	aic1_handler_entries++;
+	if (smp_processor_id() < AIC1_NR_CPUS)		/* Cascadia SMP debug */
+		aic1_dbg_irq[smp_processor_id()]++;
 
 	if (apple_aic1_early_irq_escape)
 		regs->ARM_cpsr |= PSR_I_BIT;
@@ -500,6 +589,8 @@ static void __exception_irq_entry aic1_handle_irq(struct pt_regs *regs)
 		unsigned int hw;
 
 		n++;
+		if (smp_processor_id() && aic1_dbg_ev1 < 16)	/* Cascadia SMP debug */
+			aic1_dbg_evlog[aic1_dbg_ev1++] = event;
 		if (type == AIC1_EVENT_TYPE_IPI) {
 			aic1_handle_ipi(regs);
 			continue;
@@ -751,16 +842,25 @@ static u32 aic1_tmr_win = AIC1_ALIAS_WINDOW;
 static unsigned int aic1_tmr_events;
 static u64 aic1_tmr_last;
 static bool aic1_tmr_registered;
-static struct clock_event_device aic1_clkevt;
+/* Once the probe has seen CPU0's window fire, each CPU runs the timer of its
+ * own window, 0x5000 + (cpu << 7), with a clockevent of its own. */
+static bool aic1_tmr_percpu;
+static DEFINE_PER_CPU(struct clock_event_device, aic1_clkevts);
+
+static inline u32 aic1_tmr_base(void)
+{
+	return aic1_tmr_percpu ? AIC1_CPU_WINDOW(smp_processor_id()) :
+				 aic1_tmr_win;
+}
 
 static inline u32 aic1_tmr_read(struct apple_aic1 *aic, u32 reg)
 {
-	return aic1_read(aic, aic1_tmr_win + reg);
+	return aic1_read(aic, aic1_tmr_base() + reg);
 }
 
 static inline void aic1_tmr_write(struct apple_aic1 *aic, u32 reg, u32 val)
 {
-	aic1_write(aic, aic1_tmr_win + reg, val);
+	aic1_write(aic, aic1_tmr_base() + reg, val);
 }
 
 static u64 aic1_time(struct apple_aic1 *aic)
@@ -806,8 +906,12 @@ static void aic1_tmr_event(struct apple_aic1 *aic)
 	aic1_tmr_last = aic1_time(aic);
 	aic1_tmr_disarm(aic);
 
-	if (aic1_tmr_registered && aic1_clkevt.event_handler)
-		aic1_clkevt.event_handler(&aic1_clkevt);
+	if (aic1_tmr_registered) {
+		struct clock_event_device *ce = this_cpu_ptr(&aic1_clkevts);
+
+		if (ce->event_handler)
+			ce->event_handler(ce);
+	}
 }
 
 static int aic1_ce_set_next_event(unsigned long delta,
@@ -823,16 +927,39 @@ static int aic1_ce_shutdown(struct clock_event_device *ce)
 	return 0;
 }
 
-static struct clock_event_device aic1_clkevt = {
-	.name			= "apple-aic1-timer",
-	.features		= CLOCK_EVT_FEAT_ONESHOT,
+/*
+ * CPU hotplug STARTING, on the CPU itself with interrupts off: its window's
+ * timer set up the way the probe found it working, and its clockevent.  CPU1
+ * is already up when this is installed (smp_init runs before arch_initcall),
+ * so cpuhp_setup_state() calls it there too.
+ */
+static int aic1_tmr_cpu_starting(unsigned int cpu)
+{
+	struct clock_event_device *ce = per_cpu_ptr(&aic1_clkevts, cpu);
+	struct apple_aic1 *aic = apple_aic1;
+
+	if (cpu) {
+		aic1_tmr_write(aic, AIC1_TMR_CFG, AIC1_TMR_CFG_IBOOT);
+		aic1_tmr_disarm(aic);
+	}
+	ce->name = "apple-aic1-timer";
+	ce->features = CLOCK_EVT_FEAT_ONESHOT;
 	/* Above the USB SOF tick (250), which stays registered as a spare. */
-	.rating			= 400,
-	.set_next_event		= aic1_ce_set_next_event,
-	.set_state_shutdown	= aic1_ce_shutdown,
-	.set_state_oneshot	= aic1_ce_shutdown,
-	.tick_resume		= aic1_ce_shutdown,
-};
+	ce->rating = 400;
+	ce->set_next_event = aic1_ce_set_next_event;
+	ce->set_state_shutdown = aic1_ce_shutdown;
+	ce->set_state_oneshot = aic1_ce_shutdown;
+	ce->tick_resume = aic1_ce_shutdown;
+	ce->cpumask = cpumask_of(cpu);
+	clockevents_config_and_register(ce, AIC1_TIMER_HZ, 0xf, 0x7fffffff);
+	return 0;
+}
+
+static int aic1_tmr_cpu_dying(unsigned int cpu)
+{
+	aic1_tmr_disarm(apple_aic1);
+	return 0;
+}
 
 /*
  * Arm a 10 ms shot in one window and wait up to 200 ms of timebase for the
@@ -903,8 +1030,15 @@ static int __init aic1_timer_init(void)
 	}
 
 	aic1_tmr_registered = true;
-	aic1_clkevt.cpumask = cpumask_of(0);
-	clockevents_config_and_register(&aic1_clkevt, AIC1_TIMER_HZ, 0xf, 0x7fffffff);
+	aic1_tmr_percpu = aic1_tmr_win != AIC1_ALIAS_WINDOW;
+	if (aic1_tmr_percpu) {
+		cpuhp_setup_state(CPUHP_AP_IRQ_APPLE_AIC_STARTING,
+				  "irqchip/apple-aic1/timer:starting",
+				  aic1_tmr_cpu_starting, aic1_tmr_cpu_dying);
+	} else {
+		/* The alias fired: one timer, CPU0's. */
+		aic1_tmr_cpu_starting(0);
+	}
 #ifdef CONFIG_ARCH_APPLE_S5L
 	{
 		/* Tell the USB SOF fallback it is not needed, before dwc2 builds
@@ -914,8 +1048,8 @@ static int __init aic1_timer_init(void)
 		apple_s5l_real_tick();
 	}
 #endif
-	pr_err("AIC-TIMER: PASS -- clockevent registered at 24 MHz, rating %d. The tick no longer needs a USB host.\n",
-	       aic1_clkevt.rating);
+	pr_err("AIC-TIMER: PASS -- clockevent registered at 24 MHz, %s. The tick no longer needs a USB host.\n",
+	       aic1_tmr_percpu ? "one per CPU" : "CPU0 only");
 	return 0;
 }
 arch_initcall(aic1_timer_init);

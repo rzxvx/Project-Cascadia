@@ -72,7 +72,9 @@
 		 *   ...:01 = host side (the Mac's enN)
 		 *   ...:02 = device side (usb0 here)
 		 */
-		bootargs = "earlycon=s3c6400,0x32500000 keep_bootcon lpj=5000000 root=/dev/ram0 rw rootwait panic=10 loglevel=8 ignore_loglevel g_cdc.host_addr=02:10:5a:05:00:01 g_cdc.dev_addr=02:10:5a:05:00:02";
+		/* maxcpus=1: SMP bring-up in progress -- CPU1 is started by hand,
+		 * echo 1 > /sys/devices/system/cpu/cpu1/online, with ssh up. */
+		bootargs = "earlycon=s3c6400,0x32500000 keep_bootcon lpj=5000000 maxcpus=1 root=/dev/ram0 rw rootwait panic=10 loglevel=8 ignore_loglevel g_cdc.host_addr=02:10:5a:05:00:01 g_cdc.dev_addr=02:10:5a:05:00:02";
 
 		/*
 		 * Placeholders.  The loader MUST overwrite both before jumping;
@@ -165,22 +167,32 @@
 	cpus {
 		#address-cells = <1>;
 		#size-cells = <0>;
+		/* Where a core starts when PMGR lets it out of reset -- see
+		 * arch/arm/mach-apple/platsmp.c. */
+		apple,cpu-reset-page = <&cpu_reset_page>;
 
-		cpu0: cpu@0 {
+		/*
+		 * reg is the MPIDR: Cortex-A9 core number in bits 1:0, the A5's
+		 * cluster id 0xa in bits 11:8 ("Booting Linux on physical CPU
+		 * 0xa00").  With 0 and 1 here Linux matched neither to the boot
+		 * CPU and kept one CPU.
+		 */
+		cpu0: cpu@a00 {
 			device_type = "cpu";
 			compatible = "arm,cortex-a9";
-			reg = <0>;
+			reg = <0xa00>;
 			enable-method = "apple,pmgr-core";
 		};
 
 		/*
-		 * Dual-core A5: cpu1 brought up via PMGR function-enable_core
-		 * ("Core", arg 2) + AIC IPI_SEND.  See docs/p105-smp-bringup.md.
+		 * Started as iOS starts it: its core mask (2) to PMGR+0x1214 and
+		 * +0x1220 -- the ADT's function-enable_core, docs/research/
+		 * p105-smp-bringup.md.
 		 */
-		cpu1: cpu@1 {
+		cpu1: cpu@a01 {
 			device_type = "cpu";
 			compatible = "arm,cortex-a9";
-			reg = <1>;
+			reg = <0xa01>;
 			enable-method = "apple,pmgr-core";
 		};
 	};
