@@ -81,7 +81,9 @@ including the parts that didn't work.
 - [x] **Both cores** — CPU1 comes up at boot, idles the way XNU does, and
       hotplugs off and on; see *The idle problem* below
 - [ ] Wi-Fi (BCM4334 — HSIC, behind EHCI, not SDIO as initially assumed)
+- [ ] NAND (to store data independently of the host PC)
 - [ ] USB host mode / keyboard — no free host port: dwc2 in host mode would take the console and the network with it
+- [ ] Graphical Acceleration (SGX543MP2)
 
 ## Four problems worth reading about
 
