@@ -4,9 +4,10 @@ Mainline Linux 6.12 on an iPad mini 1 (iPad2,5 / S5L8942X), booting to an
 interactive shell — on the glass and over USB — and on to an XFCE desktop you
 drive with your fingers.
 
-> **Status: Phases 1 & 2 complete, Phase 3 all but Wi-Fi.** Linux boots on both
+> **Status: Phases 1 & 2 complete, Phase 3 all but NAND.** Linux boots on both
 > cores, takes interrupts, keeps time, gives you a shell and a network over the
-> Lightning cable, takes multi-touch, and runs XFCE with an on-screen keyboard.
+> Lightning cable, takes multi-touch, brings up Wi-Fi, and runs XFCE with an
+> on-screen keyboard.
 
 ![Boot](imgs/dualcoreboot.png)
 
@@ -80,12 +81,15 @@ including the parts that didn't work.
       Linux as well as macOS (walked on Arch; Ubuntu used by a second tester)
 - [x] **Both cores** — CPU1 comes up at boot, idles the way XNU does, and
       hotplugs off and on; see *The idle problem* below
-- [ ] Wi-Fi (BCM4334 — HSIC, behind EHCI, not SDIO as initially assumed)
+- [x] **Wi-Fi** — BCM4334 on HSIC behind EHCI (not SDIO, as first assumed),
+      firmware and NVRAM out of the user's IPSW; `wlan0` comes up and scans
+      2.4 and 5 GHz. See *The Wi-Fi problem* below. Associating with a network
+      is the next thing to try, and the CLM blob is not loaded yet
 - [ ] NAND (to store data independently of the host PC)
 - [ ] USB host mode / keyboard — no free host port: dwc2 in host mode would take the console and the network with it
 - [ ] Graphical Acceleration (SGX543MP2)
 
-## Four problems worth reading about
+## Five problems worth reading about
 
 Most of the interesting work in this port was not writing drivers. It was
 finding out why perfectly correct drivers did nothing.
@@ -230,6 +234,35 @@ core's AIC `EVENT` register takes its pending interrupt away — an IPI taken
 that way left CPU1's IPIs masked for good, which a debug probe did for a
 while.
 
+### 5. The Wi-Fi problem — the one line iOS adds
+
+The Wi-Fi chip, a BCM4334, is not on SDIO but on HSIC, port 3 of the EHCI
+controller. Its firmware and NVRAM come out of the user's IPSW, picked the way
+iOS's own driver table picks them (`wifi/4334b1/borg.trx` with the module's
+`borg-t-st.txt`), and `brcmfmac` loads them. Getting that far took a few of
+Apple's own habits: HOST_READY on GPIO 50, a forced resume before every reset
+of the HSIC port (the ADT's `hsic-port-errata`), and the NVRAM appended to the
+TRX image with its length in `offsets[2]`.
+
+Then the firmware started, re-enumerated, answered the bus — and died on the
+first command, every time. The console it leaves in chip RAM showed the
+Wi-Fi half of it (`wl`) never attaching. One by one, these were ruled out: the
+firmware (iOS 6.1's fails the same), the NVRAM pairing, iOS's exact download
+sequence, framing, timing, the 32 kHz sleep clock, every LDO the PMU has.
+
+The answer was in a function of iOS's driver called `editFirmwareTRXHeader`,
+the one that appends the NVRAM — and in what that NVRAM is missing. Apple's
+module files carry no MAC address; it lives in the device's syscfg, and iOS
+adds it. Without `macaddr=` the firmware never brings `wl` up, and the first
+ioctl lands in an empty protocol layer. One line in the NVRAM:
+
+```
+brcmf_c_preinit_dcmds: Firmware: BCM4334/3 wl0: Feb  6 2015 23:29:25 version 6.25.65.182 (r532850)
+```
+
+The build uses a locally administered `02:10:5a:05:00:03`; `WIFI_MAC=` puts the
+iPad's own in instead.
+
 ## Negative results
 
 Kept deliberately. Knowing what doesn't work on this silicon is most of the value.
@@ -288,6 +321,7 @@ datasheet.
 | PL310 L2 | `0x3E000000` | Left enabled by iBoot; registering `outer_cache` with L1 D-cache off hangs |
 | Framebuffer | `0x9F6FC000` | 768×1024, stride 3072, a8r8g8b8 |
 | SPI1 (touch) | `0x32100000` | IRQ 29 |
+| EHCI (HSIC) | `0x36400000` | Port 3: the BCM4334 Wi-Fi chip. REG_ON is PMU GPIO 3, HOST_READY SoC GPIO 50 |
 | GPIO | `0x3FA00000` | IRQ 119 |
 | RAM base | `0x80000000` | 512 MB |
 
@@ -454,8 +488,8 @@ Build products (`output/`) and stock firmware are not tracked; everything in
   tick, correct wall clock, `apk`, and an NFS root on the host's disk.
 - **Phase 3** — ~~a tick that does not depend on USB device mode~~ (the AIC
   timer) → ~~Touch~~ ✓ → ~~an on-screen keyboard for the console~~ ✓ →
-  ~~a desktop~~ ✓ (XFCE) → ~~the second core~~ ✓ → Wi-Fi via HSIC/EHCI →
-  NAND.
+  ~~a desktop~~ ✓ (XFCE) → ~~the second core~~ ✓ → ~~Wi-Fi via HSIC/EHCI~~ ✓
+  → NAND.
 - **Phase 4** — A6 port (iPhone 5 / iPad mini 2), on this foundation.
 - **Phase 5** — A12/A13, longer term.
 
