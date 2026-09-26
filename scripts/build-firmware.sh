@@ -56,11 +56,15 @@ ROOTFS_DMG="058-24036-023.dmg"
 ROOTFS_KEY="21862ddcc49a861ffda17f7c6eca65355d2d1e762026cca60aabc726cd48b9e4cff214ff"
 MTPROPS=/usr/share/firmware/multitouch/P105.mtprops
 WIFI_FW=/usr/share/firmware/wifi/4334b1/borg.trx
-# The NVRAM is per module.  This iPad's chip names itself "M=HEIN m=2.6 V=t"
-# in its USB product string and heineken-t-st.txt begins moduleid=TDK,ES2.6:
-# the same part.  Other modules exist (-m-, -u-, borg-); WIFI_NVRAM= picks
+# The NVRAM goes with the firmware, per module.  The chip names itself
+# "s=B3 M=HEIN m=2.6 V=t" (4334B3, TDK), and the iOS 8.4.1 Wi-Fi driver's own
+# table, "Heineken - 4334B3 - TDK", picks by the ADT's module-instance: borg
+# is borg.trx with borg-t-st.txt (heineken-t-st.txt belongs to centennial.trx,
+# the default).  borg.trx with the heineken file came up, and halted on the
+# first command -- that file lacks swdiv_en/swdiv_gpio, which a firmware built
+# with swdiv wants, and has regrev 9 where borg's has 14.  WIFI_NVRAM= picks
 # another file from wifi/4334b1/.
-WIFI_NVRAM="${WIFI_NVRAM:-heineken-t-st.txt}"
+WIFI_NVRAM="${WIFI_NVRAM:-borg-t-st.txt}"
 
 BOOTARGS="${BOOTARGS:-cs_enforcement_disable=1 debug=0x14}"
 

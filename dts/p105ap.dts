@@ -485,13 +485,23 @@
 			/* Port 3 is HSIC (the Wi-Fi chip), which takes longer
 			 * than EHCI's usual millisecond to end a port reset. */
 			apple,hsic-ports = <0x4>;
-			/* Its out-of-band handshake (ADT usb-ehci/wlan
-			 * function-host_ready, function-device_ready): the
-			 * chip's firmware follows HOST_READY with DEVICE_READY,
-			 * and only talks once it has seen the host wake. */
-			apple,host-ready-gpios = <&gpio 50 0>;
-			apple,device-ready-gpios = <&gpio 51 0>;
+			#address-cells = <1>;
+			#size-cells = <0>;
 			status = "okay";
+
+			/* The Wi-Fi chip, as whatever it enumerates as on port
+			 * 3 (the node goes with the port), and its out-of-band
+			 * lines -- ADT usb-ehci/wlan function-host_ready and
+			 * function-device_ready.  The firmware follows HOST_READY
+			 * with DEVICE_READY and only talks once it has seen the
+			 * host wake; brcmfmac drives it, as iOS's Wi-Fi driver
+			 * does, not the port. */
+			wifi@3 {
+				compatible = "usba5c,bd1a";
+				reg = <3>;
+				apple,host-ready-gpios = <&gpio 50 0>;
+				apple,device-ready-gpios = <&gpio 51 0>;
+			};
 		};
 
 		ohci0: usb@6500000 {

@@ -18,7 +18,7 @@ set -e
 cd "$(dirname "$0")"
 SDK=$(xcrun --sdk iphoneos --show-sdk-path)
 mkdir -p ../../build
-for tool in mtdump mtlog mtcal; do
+for tool in mtdump mtlog mtcal ioprops; do
     OUT=../../build/$tool
     clang -arch armv7 -miphoneos-version-min=8.0 -isysroot "$SDK" -marm -Os -Wall -c $tool.c -o /tmp/$tool.$$.o 2>&1 \
         | grep -v 'incompatible-sysroot' || true
