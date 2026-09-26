@@ -8,7 +8,7 @@ drive with your fingers.
 > cores, takes interrupts, keeps time, gives you a shell and a network over the
 > Lightning cable, takes multi-touch, and runs XFCE with an on-screen keyboard.
 
-![Boot](imgs/iPadMini1dmesgdual-core.jpg)
+![Boot](imgs/dualcoreboot.png)
 
 ## What is this?
 
