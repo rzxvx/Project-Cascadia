@@ -125,6 +125,17 @@
 			reg = <0x9f6fc000 0x400000>;
 			no-map;
 		};
+
+		/*
+		 * The first page of DRAM: where a core coming out of reset
+		 * starts on this SoC.  XNU copies its exception vectors here
+		 * (physBase) before cpu_start() powers CPU1 up through PMGR
+		 * Core(2); the SMP bring-up needs it for its own trampoline.
+		 */
+		cpu_reset_page: cpu-reset@80000000 {
+			reg = <0x80000000 0x1000>;
+			no-map;
+		};
 	};
 
 	/*
