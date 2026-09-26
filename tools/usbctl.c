@@ -3,6 +3,11 @@
  *   usbctl DEV TYPE REQ VALUE INDEX LEN        (numbers in hex)
  *   usbctl DEV TYPE REQ VALUE INDEX LEN HEX    OUT request, HEX its data
  *   usbctl DEV reset                           USBDEVFS_RESET: a port reset
+ *   usbctl DEV read EP LEN MS                  one bulk/interrupt IN, interface 0
+ *   usbctl DEV cmd HEX                         BCDC: claim interface 0, listen on
+ *                                              the interrupt endpoint 81, send HEX
+ *                                              (SEND_ENCAPSULATED_COMMAND), read
+ *                                              the response and what 81 said
  *   usbctl DEV dump ADDR LEN OUT               chip memory -> OUT, in the
  *                                              BCM4334's CPU-less mode
  *   usbctl /dev/bus/usb/001/002 80 06 0100 0 12      device descriptor
@@ -35,6 +40,84 @@ int main(int argc, char **argv)
             return 1;
         }
         printf("reset done\n");
+        return 0;
+    }
+    if (argc == 4 && !strcmp(argv[2], "cmd")) {
+        static unsigned char ibuf[64];
+        struct usbdevfs_urb u, *done;
+        unsigned int ifc = 0;
+        const char *h = argv[3];
+        int len = 0, k;
+
+        fd = open(argv[1], O_RDWR);
+        if (fd < 0 || ioctl(fd, USBDEVFS_CLAIMINTERFACE, &ifc) < 0) {
+            perror("claim");
+            return 1;
+        }
+        memset(&u, 0, sizeof(u));
+        u.type = USBDEVFS_URB_TYPE_INTERRUPT;
+        u.endpoint = 0x81;
+        u.buffer = ibuf;
+        u.buffer_length = sizeof(ibuf);
+        if (ioctl(fd, USBDEVFS_SUBMITURB, &u) < 0)
+            perror("submit 81");
+        usleep(200000);
+        memset(buf, 0, sizeof(buf));
+        for (i = 0; h[i] && h[i + 1]; i += 2) {
+            char b2[3] = { h[i], h[i + 1], 0 };
+            buf[len++] = strtoul(b2, NULL, 16);
+        }
+        c.bRequestType = 0x21; c.bRequest = 0; c.wValue = 0; c.wIndex = 0;
+        c.wLength = len; c.timeout = 1000; c.data = buf;
+        n = ioctl(fd, USBDEVFS_CONTROL, &c);
+        printf("sent %d: %s\n", len, n < 0 ? strerror(errno) : "ok");
+        for (k = 0; k < 10; k++) {
+            usleep(100000);
+            if (ioctl(fd, USBDEVFS_REAPURBNDELAY, &done) == 0) {
+                printf("ep 81: status %d, %d bytes:", done->status, done->actual_length);
+                for (i = 0; i < done->actual_length; i++)
+                    printf(" %02x", ibuf[i]);
+                printf("\n");
+                break;
+            }
+        }
+        c.bRequestType = 0xa1; c.bRequest = 1; c.wLength = 0x200; c.data = buf;
+        n = ioctl(fd, USBDEVFS_CONTROL, &c);
+        if (n < 0)
+            printf("response: %s\n", strerror(errno));
+        else {
+            printf("response %d:", n);
+            for (i = 0; i < n && i < 64; i++)
+                printf(" %02x", buf[i]);
+            printf("\n");
+        }
+        ioctl(fd, USBDEVFS_DISCARDURB, &u);
+        return 0;
+    }
+    if (argc == 6 && !strcmp(argv[2], "read")) {
+        struct usbdevfs_bulktransfer b;
+        unsigned int ifc = 0;
+
+        fd = open(argv[1], O_RDWR);
+        if (fd < 0 || ioctl(fd, USBDEVFS_CLAIMINTERFACE, &ifc) < 0) {
+            perror("claim");
+            return 1;
+        }
+        b.ep = strtoul(argv[3], NULL, 16);
+        b.len = strtoul(argv[4], NULL, 16);
+        if (b.len > sizeof(buf))
+            b.len = sizeof(buf);
+        b.timeout = strtoul(argv[5], NULL, 10);
+        b.data = buf;
+        n = ioctl(fd, USBDEVFS_BULK, &b);
+        if (n < 0) {
+            printf("ep %02x: %s\n", b.ep, strerror(errno));
+            return 1;
+        }
+        printf("ep %02x: %d bytes:", b.ep, n);
+        for (i = 0; i < n; i++)
+            printf(" %02x", buf[i]);
+        printf("\n");
         return 0;
     }
     if (argc == 6 && !strcmp(argv[2], "dump")) {
