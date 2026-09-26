@@ -82,9 +82,10 @@ including the parts that didn't work.
 - [x] **Both cores** — CPU1 comes up at boot, idles the way XNU does, and
       hotplugs off and on; see *The idle problem* below
 - [x] **Wi-Fi** — BCM4334 on HSIC behind EHCI (not SDIO, as first assumed),
-      firmware and NVRAM out of the user's IPSW; `wlan0` comes up and scans
-      2.4 and 5 GHz. See *The Wi-Fi problem* below. Associating with a network
-      is the next thing to try, and the CLM blob is not loaded yet
+      firmware and NVRAM out of the user's IPSW; `wlan0` joins 2.4 and 5 GHz
+      networks, DHCP and all (`iw`/`wpa_supplicant` from `apk`). See *The
+      Wi-Fi problem* below. Tested on an open network; WPA not tried yet, and
+      the CLM blob does not load (this firmware refuses `clmload`)
 - [ ] NAND (to store data independently of the host PC)
 - [ ] USB host mode / keyboard — no free host port: dwc2 in host mode would take the console and the network with it
 - [ ] Graphical Acceleration (SGX543MP2)
@@ -262,6 +263,21 @@ brcmf_c_preinit_dcmds: Firmware: BCM4334/3 wl0: Feb  6 2015 23:29:25 version 6.2
 
 The build uses a locally administered `02:10:5a:05:00:03`; `WIFI_MAC=` puts the
 iPad's own in instead.
+
+One more thing stood between that and a network: every join failed with a
+lone `SET_SSID` event, status FAIL. The radio was fine — the firmware's own
+counters, read through `brcmfmac`'s vendor command, showed probe requests
+going out and answers coming back. `brcmfmac` turns cfg80211's "automatic"
+authentication into the firmware's `auth = 2` (try shared key, then open), and
+this firmware never gets through authentication that way; asked for open
+system it connects at once. Without a WEP key there is nothing for "automatic"
+to choose, so it is open system now:
+
+```
+wlan0: connected to 50:c7:bf:31:b3:03
+udhcpc: lease of 192.168.0.195 obtained from 192.168.0.1
+round-trip min/avg/max = 2.599/3.383/4.891 ms
+```
 
 ## Negative results
 
