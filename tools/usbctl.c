@@ -8,6 +8,11 @@
  *                                              the interrupt endpoint 81, send HEX
  *                                              (SEND_ENCAPSULATED_COMMAND), read
  *                                              the response and what 81 said
+ *   usbctl DEV rdl EP FILE                     boot-loader download the way iOS does
+ *                                              it: GETVER, the image in 1500-byte
+ *                                              chunks to bulk OUT EP, GETSTATE after
+ *                                              the first and the last, then DL_GO --
+ *                                              every command with wValue 1, no DL_START
  *   usbctl DEV dump ADDR LEN OUT               chip memory -> OUT, in the
  *                                              BCM4334's CPU-less mode
  *   usbctl /dev/bus/usb/001/002 80 06 0100 0 12      device descriptor
@@ -40,6 +45,53 @@ int main(int argc, char **argv)
             return 1;
         }
         printf("reset done\n");
+        return 0;
+    }
+    if (argc == 5 && !strcmp(argv[2], "rdl")) {
+        static unsigned char img[1 << 20];
+        struct usbdevfs_bulktransfer b;
+        unsigned int ifc = 0, st[6];
+        FILE *f = fopen(argv[4], "rb");
+        int size, off, ep = strtoul(argv[3], NULL, 16);
+
+        if (!f) {
+            perror(argv[4]);
+            return 1;
+        }
+        size = fread(img, 1, sizeof(img), f);
+        fclose(f);
+        fd = open(argv[1], O_RDWR);
+        if (fd < 0 || ioctl(fd, USBDEVFS_CLAIMINTERFACE, &ifc) < 0) {
+            perror("claim");
+            return 1;
+        }
+#define RDL(req, what) do { \
+            memset(st, 0, sizeof(st)); \
+            c.bRequestType = 0xc1; c.bRequest = (req); c.wValue = 1; c.wIndex = 0; \
+            c.wLength = 8; c.timeout = 2000; c.data = st; \
+            n = ioctl(fd, USBDEVFS_CONTROL, &c); \
+            printf("%-8s %s: %08x %08x\n", what, n < 0 ? strerror(errno) : "ok", st[0], st[1]); \
+        } while (0)
+        RDL(5, "GETVER");
+        for (off = 0; off < size; off += 1500) {
+            b.ep = ep;
+            b.len = size - off < 1500 ? size - off : 1500;
+            b.timeout = 2000;
+            b.data = img + off;
+            if (ioctl(fd, USBDEVFS_BULK, &b) < 0) {
+                printf("bulk at %d: %s\n", off, strerror(errno));
+                return 1;
+            }
+            if (off == 0)
+                RDL(0, "GETSTATE");
+        }
+        printf("sent %d bytes\n", size);
+        RDL(0, "GETSTATE");
+        if (st[0] != 4) {
+            printf("not runnable\n");
+            return 1;
+        }
+        RDL(2, "GO");
         return 0;
     }
     if (argc == 4 && !strcmp(argv[2], "cmd")) {
