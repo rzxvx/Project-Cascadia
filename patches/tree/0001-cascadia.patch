@@ -347,21 +347,10 @@ index 2a9f91e81..ca986f254 100644
  obj-$(CONFIG_MFD_RSMU_SPI)	+= rsmu_spi.o rsmu_core.o
 +obj-$(CONFIG_MFD_APPLE_PMU_I2C)    += apple-pmu-i2c.o
 diff --git a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/usb.c b/drivers/net/wireless/broadcom/brcm80211/brcmfmac/usb.c
-index 8afbf529c..b214040ea 100644
+index 8afbf529c..4975ffcb6 100644
 --- a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/usb.c
 +++ b/drivers/net/wireless/broadcom/brcm80211/brcmfmac/usb.c
-@@ -24,7 +24,9 @@
- #define IOCTL_RESP_TIMEOUT		msecs_to_jiffies(2000)
- 
- #define BRCMF_USB_RESET_GETVER_SPINWAIT	100	/* in unit of ms */
--#define BRCMF_USB_RESET_GETVER_LOOP_CNT	10
-+/* Cascadia: 10 was one second; the iPad's BCM4334 gets five while its
-+ * start is being worked out. */
-+#define BRCMF_USB_RESET_GETVER_LOOP_CNT	50
- 
- #define BRCMF_POSTBOOT_ID		0xA123  /* ID to detect if dongle
- 						   has boot up */
-@@ -40,6 +42,10 @@ BRCMF_FW_DEF(43236B, "brcmfmac43236b");
+@@ -40,6 +40,10 @@ BRCMF_FW_DEF(43236B, "brcmfmac43236b");
  BRCMF_FW_DEF(43242A, "brcmfmac43242a");
  BRCMF_FW_DEF(43569, "brcmfmac43569");
  BRCMF_FW_DEF(4373, "brcmfmac4373");
@@ -372,7 +361,7 @@ index 8afbf529c..b214040ea 100644
  
  static const struct brcmf_firmware_mapping brcmf_usb_fwnames[] = {
  	BRCMF_FW_ENTRY(BRCM_CC_43143_CHIP_ID, 0xFFFFFFFF, 43143),
-@@ -49,7 +55,8 @@ static const struct brcmf_firmware_mapping brcmf_usb_fwnames[] = {
+@@ -49,14 +53,26 @@ static const struct brcmf_firmware_mapping brcmf_usb_fwnames[] = {
  	BRCMF_FW_ENTRY(BRCM_CC_43242_CHIP_ID, 0xFFFFFFFF, 43242A),
  	BRCMF_FW_ENTRY(BRCM_CC_43566_CHIP_ID, 0xFFFFFFFF, 43569),
  	BRCMF_FW_ENTRY(BRCM_CC_43569_CHIP_ID, 0xFFFFFFFF, 43569),
@@ -381,8 +370,14 @@ index 8afbf529c..b214040ea 100644
 +	BRCMF_FW_ENTRY(BRCM_CC_4334_CHIP_ID, 0xFFFFFFFF, 4334)
  };
  
++/* Cascadia: the iPad mini 1's BCM4334 on HSIC, as both its boot ROM and
++ * Apple's firmware enumerate ("M=HEIN m=2.6 V=t", bcdDevice 0.01). */
++#define BRCM_USB_4334_HSIC_DEVICE_ID	0xbd1a
++/* Cascadia: how long that firmware gets to start before its bus is reset */
++#define BRCMF_USB_HSIC_BOOT_WAIT	500	/* in unit of ms */
++
  #define TRX_MAGIC		0x30524448	/* "HDR0" */
-@@ -57,6 +64,11 @@ static const struct brcmf_firmware_mapping brcmf_usb_fwnames[] = {
+ #define TRX_MAX_OFFSET		3		/* Max number of file offsets */
  #define TRX_UNCOMP_IMAGE	0x20		/* Trx holds uncompressed img */
  #define TRX_RDL_CHUNK		1500		/* size of each dl transfer */
  #define TRX_OFFSETS_DLFWLEN_IDX	0
@@ -394,19 +389,64 @@ index 8afbf529c..b214040ea 100644
  
  /* Control messages: bRequest values */
  #define DL_GETSTATE	0	/* returns the rdl_state_t struct */
-@@ -846,8 +858,9 @@ brcmf_usb_resetcfg(struct brcmf_usbdev_info *devinfo)
- 		brcmf_usb_dl_cmd(devinfo, DL_RESETCFG, &id, sizeof(id));
- 		return 0;
- 	} else {
--		brcmf_err("Cannot talk to Dongle. Firmware is not UP, %d ms\n",
--			  BRCMF_USB_RESET_GETVER_SPINWAIT * loop_cnt);
-+		brcmf_err("Cannot talk to Dongle. Firmware is not UP, %d ms (last GETVER: err %d, chip 0x%x rev 0x%x)\n",
-+			  BRCMF_USB_RESET_GETVER_SPINWAIT * loop_cnt, err,
-+			  le32_to_cpu(id.chip), le32_to_cpu(id.chiprev));
- 		return -EINVAL;
- 	}
+@@ -141,6 +157,7 @@ struct brcmf_usbdev_info {
+ 	int image_len;
+ 
+ 	struct usb_device *usbdev;
++	bool hsic_reenum;	/* Cascadia: firmware started, reset the bus */
+ 	struct device *dev;
+ 	struct completion dev_init_done;
+ 
+@@ -785,6 +802,18 @@ static int brcmf_usb_dl_cmd(struct brcmf_usbdev_info *devinfo, u8 cmd,
+ 	return ret;
  }
-@@ -1084,7 +1097,8 @@ static int check_file(const u8 *headers)
+ 
++/*
++ * Cascadia: Apple's BCM4334 on an HSIC port, where the device cannot drop
++ * off the bus and come back the way a USB dongle does after DL_GO or
++ * DL_RESETCFG -- iOS never sends the latter, and has its port reset the bus
++ * once the firmware runs (the HOST_READY handshake in ehci-hub.c).
++ */
++static bool brcmf_usb_is_hsic(struct brcmf_usbdev_info *devinfo)
++{
++	return le16_to_cpu(devinfo->usbdev->descriptor.idProduct) ==
++	       BRCM_USB_4334_HSIC_DEVICE_ID;
++}
++
+ static bool
+ brcmf_usb_dlneeded(struct brcmf_usbdev_info *devinfo)
+ {
+@@ -809,7 +838,12 @@ brcmf_usb_dlneeded(struct brcmf_usbdev_info *devinfo)
+ 		brcmf_dbg(USB, "chip %d rev 0x%x\n", chipid, chiprev);
+ 	if (chipid == BRCMF_POSTBOOT_ID) {
+ 		brcmf_dbg(USB, "firmware already downloaded\n");
+-		brcmf_usb_dl_cmd(devinfo, DL_RESETCFG, &id, sizeof(id));
++		/* Cascadia: on HSIC, DL_RESETCFG has the firmware drop off the
++		 * bus and ask, over its DEVICE_READY line, to be enumerated
++		 * again; the configuration it is in is the one to use. */
++		if (!brcmf_usb_is_hsic(devinfo))
++			brcmf_usb_dl_cmd(devinfo, DL_RESETCFG, &id,
++					 sizeof(id));
+ 		return false;
+ 	} else {
+ 		devinfo->bus_pub.devid = chipid;
+@@ -1006,6 +1040,15 @@ static int brcmf_usb_dlrun(struct brcmf_usbdev_info *devinfo)
+ 	if (state.state == cpu_to_le32(DL_RUNNABLE)) {
+ 		if (brcmf_usb_dl_cmd(devinfo, DL_GO, &state, sizeof(state)))
+ 			return -ENODEV;
++		/* Cascadia: on HSIC the firmware answers nothing on the boot
++		 * ROM's connection; let it start, give up this device, and
++		 * reset the bus (brcmf_usb_probe_phase2).  It enumerates
++		 * again as the firmware, and probes with it running. */
++		if (brcmf_usb_is_hsic(devinfo)) {
++			msleep(BRCMF_USB_HSIC_BOOT_WAIT);
++			devinfo->hsic_reenum = true;
++			return -EAGAIN;
++		}
+ 		if (brcmf_usb_resetcfg(devinfo))
+ 			return -ENODEV;
+ 		/* The Dongle may go for re-enumeration. */
+@@ -1084,7 +1127,8 @@ static int check_file(const u8 *headers)
  	headers += sizeof(struct trx_header_le);
  
  	if (le32_to_cpu(trx->flag_version) & TRX_UNCOMP_IMAGE) {
@@ -416,13 +456,42 @@ index 8afbf529c..b214040ea 100644
  		return actual_len + sizeof(struct trx_header_le);
  	}
  	return -1;
-@@ -1540,6 +1554,9 @@ static const struct usb_device_id brcmf_usb_devid_table[] = {
+@@ -1170,6 +1214,7 @@ static void brcmf_usb_probe_phase2(struct device *dev, int ret,
+ {
+ 	struct brcmf_bus *bus = dev_get_drvdata(dev);
+ 	struct brcmf_usbdev_info *devinfo = bus->bus_priv.usb->devinfo;
++	struct usb_device *udev = devinfo->usbdev;
+ 	const struct firmware *fw;
+ 
+ 	if (ret)
+@@ -1208,6 +1253,22 @@ static void brcmf_usb_probe_phase2(struct device *dev, int ret,
+ 	return;
+ error:
+ 	brcmf_dbg(TRACE, "failed: dev=%s, err=%d\n", dev_name(dev), ret);
++	if (devinfo->hsic_reenum) {
++		/* Cascadia: devinfo goes with the driver; the device stays */
++		usb_get_dev(udev);
++		complete(&devinfo->dev_init_done);
++		device_release_driver(dev);
++		brcmf_info("firmware started, resetting the HSIC bus\n");
++		ret = usb_lock_device_for_reset(udev, NULL);
++		if (!ret) {
++			/* -ENODEV: new descriptors, re-enumerating */
++			ret = usb_reset_device(udev);
++			usb_unlock_device(udev);
++		}
++		brcmf_dbg(USB, "bus reset: %d\n", ret);
++		usb_put_dev(udev);
++		return;
++	}
+ 	complete(&devinfo->dev_init_done);
+ 	device_release_driver(dev);
+ }
+@@ -1540,6 +1601,7 @@ static const struct usb_device_id brcmf_usb_devid_table[] = {
  	BRCMF_USB_DEVICE(BRCM_USB_43236_DEVICE_ID),
  	BRCMF_USB_DEVICE(BRCM_USB_43242_DEVICE_ID),
  	BRCMF_USB_DEVICE(BRCM_USB_43569_DEVICE_ID),
-+	/* Cascadia: the iPad mini 1's BCM4334 on HSIC, as its boot ROM
-+	 * enumerates -- "M=HEIN m=2.6 V=t", bcdDevice 0.01. */
-+	BRCMF_USB_DEVICE(0xbd1a),
++	BRCMF_USB_DEVICE(BRCM_USB_4334_HSIC_DEVICE_ID),	/* Cascadia */
  	LINKSYS_USB_DEVICE(BRCM_USB_43235_LINKSYS_DEVICE_ID),
  	CYPRESS_USB_DEVICE(CY_USB_4373_DEVICE_ID),
  	{ USB_DEVICE(BRCM_USB_VENDOR_ID_LG, BRCM_USB_43242_LG_DEVICE_ID) },
@@ -648,11 +717,66 @@ index e7bf9cc63..a36f0e99d 100644
  	spin_lock(&hsotg->lock);
  irq_retry:
  	gintsts = dwc2_readl(hsotg, GINTSTS);
+diff --git a/drivers/usb/host/ehci-hcd.c b/drivers/usb/host/ehci-hcd.c
+index cbc0b86fc..4d5f20e11 100644
+--- a/drivers/usb/host/ehci-hcd.c
++++ b/drivers/usb/host/ehci-hcd.c
+@@ -12,6 +12,7 @@
+ #include <linux/dmapool.h>
+ #include <linux/kernel.h>
+ #include <linux/delay.h>
++#include <linux/gpio/consumer.h>
+ #include <linux/ioport.h>
+ #include <linux/sched.h>
+ #include <linux/vmalloc.h>
 diff --git a/drivers/usb/host/ehci-hub.c b/drivers/usb/host/ehci-hub.c
-index 1aee392e8..51ef91773 100644
+index 1aee392e8..29c4aff6c 100644
 --- a/drivers/usb/host/ehci-hub.c
 +++ b/drivers/usb/host/ehci-hub.c
-@@ -952,8 +952,17 @@ int ehci_hub_control(
+@@ -729,6 +729,42 @@ ehci_hub_descriptor (
+ 
+ /*-------------------------------------------------------------------------*/
+ 
++/*
++ * Cascadia: the out-of-band handshake of an Apple HSIC device -- the iPad
++ * mini 1's BCM4334 -- as iOS's AppleUSBHSICPort drives it.  The running
++ * firmware follows HOST_READY with DEVICE_READY: low is the host asleep, and
++ * the firmware suspends; high again, it wakes ready to be reset and
++ * enumerated.  Firmware just started over the boot ROM's connection stalls
++ * every request until it has been through this once, so every reset of the
++ * port starts with it; the boot ROM ignores the lines.
++ */
++static void ehci_hsic_ready_cycle(struct ehci_hcd *ehci, int port)
++{
++	struct gpio_desc *dr = ehci->hsic_device_ready;
++	int down = -1, up = -1, ms;
++
++	gpiod_set_value_cansleep(ehci->hsic_host_ready, 0);
++	for (ms = 0; ms < 20; ms++) {
++		if (dr && !gpiod_get_value_cansleep(dr)) {
++			down = ms;
++			break;
++		}
++		usleep_range(1000, 1200);
++	}
++	msleep(10);
++	gpiod_set_value_cansleep(ehci->hsic_host_ready, 1);
++	for (ms = 0; dr && ms < 100; ms++) {
++		if (gpiod_get_value_cansleep(dr)) {
++			up = ms;
++			break;
++		}
++		usleep_range(1000, 1200);
++	}
++	msleep(10);
++	ehci_info(ehci, "port %d: HOST_READY cycled, DEVICE_READY down %d ms, up %d ms\n",
++		 port, down, up);
++}
++
+ int ehci_hub_control(
+ 	struct usb_hcd	*hcd,
+ 	u16		typeReq,
+@@ -952,8 +988,17 @@ int ehci_hub_control(
  			/* REVISIT:  some hardware needs 550+ usec to clear
  			 * this bit; seems too long to spin routinely...
  			 */
@@ -671,31 +795,71 @@ index 1aee392e8..51ef91773 100644
  			if (retval != 0) {
  				ehci_err (ehci, "port %d reset error %d\n",
  					wIndex + 1, retval);
+@@ -1093,6 +1138,14 @@ int ehci_hub_control(
+ 		case USB_PORT_FEAT_RESET:
+ 			if (temp & (PORT_SUSPEND|PORT_RESUME))
+ 				goto error;
++			if ((ehci->hsic_ports & BIT(wIndex)) &&
++			    ehci->hsic_host_ready) {
++				spin_unlock_irqrestore(&ehci->lock, flags);
++				ehci_hsic_ready_cycle(ehci, wIndex + 1);
++				spin_lock_irqsave(&ehci->lock, flags);
++				temp = ehci_readl(ehci, status_reg) &
++				       ~PORT_RWC_BITS;
++			}
+ 			/* line status bits may report this as low speed,
+ 			 * which can be fine if this root hub has a
+ 			 * transaction translator built in.
 diff --git a/drivers/usb/host/ehci-platform.c b/drivers/usb/host/ehci-platform.c
-index 98b073185..7c8ecb9e0 100644
+index 98b073185..c0f24f147 100644
 --- a/drivers/usb/host/ehci-platform.c
 +++ b/drivers/usb/host/ehci-platform.c
-@@ -290,6 +290,9 @@ static int ehci_platform_probe(struct platform_device *dev)
+@@ -22,6 +22,7 @@
+ #include <linux/clk.h>
+ #include <linux/dma-mapping.h>
+ #include <linux/err.h>
++#include <linux/gpio/consumer.h>
+ #include <linux/kernel.h>
+ #include <linux/hrtimer.h>
+ #include <linux/io.h>
+@@ -290,6 +291,23 @@ static int ehci_platform_probe(struct platform_device *dev)
  					  "needs-reset-on-resume"))
  			priv->reset_on_resume = true;
  
 +		of_property_read_u32(dev->dev.of_node, "apple,hsic-ports",
 +				     &ehci->hsic_ports);
++		/* Cascadia: HOST_READY goes high here, before the PHY powers
++		 * the device -- the host is awake from the start. */
++		ehci->hsic_host_ready = devm_gpiod_get_optional(&dev->dev,
++					"apple,host-ready", GPIOD_OUT_HIGH);
++		if (IS_ERR(ehci->hsic_host_ready)) {
++			err = PTR_ERR(ehci->hsic_host_ready);
++			goto err_put_clks;
++		}
++		ehci->hsic_device_ready = devm_gpiod_get_optional(&dev->dev,
++					"apple,device-ready", GPIOD_IN);
++		if (IS_ERR(ehci->hsic_device_ready)) {
++			err = PTR_ERR(ehci->hsic_device_ready);
++			goto err_put_clks;
++		}
 +
  		if (of_property_read_bool(dev->dev.of_node,
  					  "has-transaction-translator"))
  			hcd->has_tt = 1;
 diff --git a/drivers/usb/host/ehci.h b/drivers/usb/host/ehci.h
-index d7a3c8d13..f12b1f57c 100644
+index d7a3c8d13..36a10f88e 100644
 --- a/drivers/usb/host/ehci.h
 +++ b/drivers/usb/host/ehci.h
-@@ -216,6 +216,9 @@ struct ehci_hcd {			/* one per controller */
+@@ -216,6 +216,12 @@ struct ehci_hcd {			/* one per controller */
  	unsigned		amd_pll_fix:1;
  	unsigned		use_dummy_qh:1;	/* AMD Frame List table quirk*/
  	unsigned		has_synopsys_hc_bug:1; /* Synopsys HC */
 +	/* Cascadia: HSIC root ports (bit n = port n + 1) of Apple's S5L
-+	 * EHCI, which take longer to end a port reset (ehci-hub.c). */
++	 * EHCI, which take longer to end a port reset (ehci-hub.c), and the
++	 * out-of-band lines of the device on them (ehci_hsic_ready_cycle). */
 +	u32			hsic_ports;
++	struct gpio_desc	*hsic_host_ready;
++	struct gpio_desc	*hsic_device_ready;
  	unsigned		frame_index_bug:1; /* MosChip (AKA NetMos) */
  	unsigned		need_oc_pp_cycle:1; /* MPC834X port power */
  	unsigned		imx28_write_fix:1; /* For Freescale i.MX28 */
