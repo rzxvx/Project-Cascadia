@@ -37,6 +37,7 @@ NEW_FILES = [
     "arch/arm/mach-apple/Makefile",
     "arch/arm/mach-apple/apple.c",
     "arch/arm/mach-apple/platsmp.c",
+    "arch/arm/mach-apple/headsmp.S",
     "arch/arm/mach-apple/pmccntr.c",
     "arch/arm/mach-apple/apple_wdt_clkevt.c",
     "arch/arm/mach-apple/apple_pmu_clkevt.c",

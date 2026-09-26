@@ -102,14 +102,16 @@ void __init apple_s5l_pmccntr_init(unsigned long rate)
 	pr_info("pmccntr: clocksource at %lu Hz (%s)\n", apple_pmccntr_rate,
 		rate ? "measured against the 24 MHz watchdog counter" : "fallback guess");
 
+	/* A per-core counter, only running on CPU0, and frozen in WFI: with a
+	 * second core it is neither a clocksource nor a delay timer.  The
+	 * watchdog's 24 MHz counter is both (apple_wdt_clkevt.c). */
+	if (IS_ENABLED(CONFIG_SMP))
+		return;
+
 	/* sched_clock is registered by the watchdog clocksource instead.
 	 * sched_clock_register() keeps whichever rate is HIGHER, so registering
 	 * PMCCNTR's 1 GHz here would permanently shut out the 24 MHz counter --
 	 * and PMCCNTR freezes in idle, which is exactly what we are fixing. */
 	clocksource_register_hz(&apple_pmccntr_cs, apple_pmccntr_rate);
-	/* Not the delay timer any more: a per-core counter, only running on
-	 * CPU0.  The watchdog's 24 MHz counter does it (apple_wdt_clkevt.c);
-	 * this one takes over only if that one never registered. */
-	if (!IS_ENABLED(CONFIG_SMP))
-		register_current_timer_delay(&apple_pmccntr_delay);
+	register_current_timer_delay(&apple_pmccntr_delay);
 }

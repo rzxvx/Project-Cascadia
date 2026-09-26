@@ -176,7 +176,8 @@ void __init apple_s5l_pmu_clkevt_init(unsigned long cpu_hz)
 	}
 
 	np = of_find_compatible_node(NULL, NULL, "apple,s5l8940x-pmu-timer");
-	if (!np) {
+	if (!np || !of_device_is_available(np)) {
+		of_node_put(np);
 		pr_info("no pmu-timer node, staying tickless\n");
 		return;
 	}

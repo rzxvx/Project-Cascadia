@@ -2,6 +2,67 @@
 
 **Hardware:** S5L8942X A5 = **2× Cortex-A9** (not 4). ADT `#main-cpus = 2`.
 
+## Status: working (2026-09-26)
+
+Both cores run Linux: CPU1 boots, takes IPIs and timer interrupts, hotplugs
+off and on again, and a hashing + fork stress test runs 1.93x faster on two
+cores with every result correct.  The lab notebook further down records how
+we got here; where it disagrees with this section, this section wins.
+
+**Starting a core** (`arch/arm/mach-apple/platsmp.c`).  Core mask (cpu0 1,
+cpu1 2) to PMGR+0x1214, then PMGR+0x1220; PMGR+0x1210 powers a core off
+(only once it sits in WFI).  The core leaves reset at **physical 0, an alias
+of the first page of DRAM** -- so code run there sees `adr` give 0x0000xxxx,
+not 0x8000xxxx.  That page is reserved (dts `cpu-reset@80000000`, no-map) and
+holds a trampoline, `ldr pc, [pc, #-4]` plus a physical target at +4.
+
+**Why CPU1 used to kill the system.**  The PMGR powers CPU1 off as soon as it
+executes WFI -- CPU0 is left alone, and WFE does not count -- and powers it
+back on, through reset, when an interrupt arrives for it.  This is XNU's
+deep idle.  Linux idling CPU1 in a plain WFI lost its L1 (dirty lines
+included) and the next interrupt sent it through `secondary_startup` a
+second time; the system died within milliseconds of CPU1 enabling IRQs, or
+at once when onlined at runtime.  Seen directly: on WFI, CPU1's debug block
+reads 0 and its SMP bit leaves SCU CONFIG (0x531 -> 0x511); an IPI then
+restarts it from the reset vector (a start counter in a test stub went 1 -> 2).
+
+**Idle.**  `arm_pm_idle` on CPU1: `cpu_pm_enter()`, trampoline target =
+`apple_s5l_cpu_resume`, `cpu_suspend()` with a finisher that does
+`v7_exit_coherency_flush(louis)` and WFI (and re-enters coherency if WFI
+falls through).  `apple_s5l_cpu_resume` (`headsmp.S`) invalidates L1 and the
+core's SCU duplicate tags (SCU+0x0c, as iBoot does on a core reset), then
+`cpu_resume`.  A core taken offline gets the trampoline pointed at a WFI loop
+at page+0x40, so a stray wake parks it again.  Knob and counters:
+`/sys/module/apple_smp/parameters/{idle,powerdowns,wfi_returns}` (idle: 0
+power down, 1 poll, 2 plain WFI -- the broken behaviour, for experiments).
+
+**AIC trap.**  Reading a CPU's window EVENT (0x5004 + (cpu << 7)) takes the
+event.  The AIC masks an IPI as it delivers it and only the receiving CPU's
+handler unmasks it, so a debug read of CPU1's EVENT from CPU0 left CPU1's
+IPIs masked for good (and everything waiting on CPU1 hung).  Never read
+another CPU's EVENT.
+
+**Booting with both cores.**  Two more things had to go before CPU1 could
+come up at boot rather than by hand.  The AIC timer registered at
+arch_initcall, after `smp_init()`: until then there is no clockevent at all
+and jiffies stand still, which one CPU survives but two do not (the first
+RCU grace period never ends).  It is an early_initcall now, so CPU1 gets its
+own clockevent from the STARTING callback as it comes up.  And PMCCNTR is a
+per-core counter that only CPU0 runs: the old PMU-tick self-test spun on it
+for ever once `kernel_init` migrated to CPU1 (the node is disabled; the test
+never passed anyway), and it is no longer registered as a clocksource under
+SMP.  Both cores have been up from boot since, with the stress test clean
+(`tools/smp-stress.sh`: 300 x sha256 of 8 MB in three workers plus 3000
+forks, 82 s, every hash right).
+
+**Tools.**  CoreSight is open on this device (DBGAUTHSTATUS 0xff): Cortex-A9
+debug CPU0 0x3d230000, CPU1 0x3d232000 (PMU +0x1000; CTI 0x3d238000/0x3d239000;
+PTM 0x3d23c000/0x3d23d000; funnel 0x3d203000, ETB 0x3d204000 -- the ADT's
+arm-io/trace node).  `tools/cpudbg.c` halts one core from the other, dumps
+r0-r15/CPSR/CP15, translates through that core's MMU (ATS1CPR) and can park
+it.  `tools/cpu1probe.c run` + `tools/cpu1stub/steps.S` run a bare-metal stub
+on CPU1 step by step.  CPU: Cortex-A9 r2p8 (MIDR 0x412fc098), CBAR 0x3e100000.
+
 ## ADT contracts
 
 | Hook | Target | Decode |

@@ -358,11 +358,6 @@ static void aic1_handle_ipi(struct pt_regs *regs)
 	aic1_write(aic, AIC1_CPU_IPI_MASK_CLR(cpu), AIC1_IPI_OTHER);
 }
 
-static unsigned int aic1_dbg_ev1;			/* Cascadia SMP debug */
-static unsigned int aic1_dbg_irq[AIC1_NR_CPUS];		/* Cascadia SMP debug */
-static u32 aic1_dbg_evlog[16];				/* Cascadia SMP debug */
-extern unsigned int cascadia_fiq_count[];		/* arch/arm/kernel/traps.c */
-
 static void aic1_ipi_send_single(unsigned int cpu)
 {
 	struct apple_aic1 *aic = apple_aic1;
@@ -373,67 +368,19 @@ static void aic1_ipi_send_single(unsigned int cpu)
 	aic1_write(aic, AIC1_IPI_SEND, AIC1_IPI_SEND_CPU(cpu));
 }
 
-/* Cascadia SMP debug: one IPI to CPU, and did it take an IRQ or a FIQ? */
-static void aic1_ipi_probe(struct apple_aic1 *aic, unsigned int cpu,
-			   const char *what)
-{
-	unsigned int irq0 = READ_ONCE(aic1_dbg_irq[cpu]);
-	unsigned int fiq0 = READ_ONCE(cascadia_fiq_count[cpu]);
-	u32 w = AIC1_CPU_WINDOW(cpu), ev;
-	int i;
-
-	aic1_write(aic, AIC1_IPI_SEND, AIC1_IPI_SEND_CPU(cpu));
-	ev = aic1_read(aic, w + 4);
-	for (i = 0; i < 200; i++) {
-		if ((READ_ONCE(aic1_dbg_irq[cpu]) != irq0 ||
-		     READ_ONCE(cascadia_fiq_count[cpu]) != fiq0) &&
-		    !(aic1_read(aic, w + 0x24) & AIC1_IPI_OTHER))
-			break;
-		udelay(100);
-	}
-	pr_info("SMP-DBG: %s: IPI to CPU%u, EVENT %08x then %08x; its IRQs +%u FIQs +%u (%d x 100 us); window +0 %08x, IPI mask %08x\n",
-		what, cpu, ev, aic1_read(aic, w + 4),
-		READ_ONCE(aic1_dbg_irq[cpu]) - irq0,
-		READ_ONCE(cascadia_fiq_count[cpu]) - fiq0, i,
-		aic1_read(aic, w), aic1_read(aic, w + 0x24));
-}
-
-/* Cascadia SMP debug: from __cpu_up, once the CPU is online. */
-void apple_aic1_ipi_test(unsigned int cpu)
-{
-	struct apple_aic1 *aic = apple_aic1;
-	unsigned int irq0;
-
-	if (!aic || cpu >= AIC1_NR_CPUS)
-		return;
-	irq0 = READ_ONCE(aic1_dbg_irq[cpu]);
-	aic1_ipi_probe(aic, cpu, "first");
-	aic1_ipi_probe(aic, cpu, "second");
-	pr_info("SMP-DBG: CPU%u took %u IRQs, events %08x %08x %08x %08x\n", cpu,
-		READ_ONCE(aic1_dbg_irq[cpu]) - irq0, aic1_dbg_evlog[0],
-		aic1_dbg_evlog[1], aic1_dbg_evlog[2], aic1_dbg_evlog[3]);
-}
-
 /*
  * Cascadia: from platsmp's smp_secondary_init, on the new CPU before it takes
- * interrupts.  Shows what its window holds (and CPU0's, to compare), stops a
- * timer iBoot may have left running there, and opens its IPIs.
+ * interrupts.  Stops a timer iBoot may have left running in its window and
+ * opens its IPIs.  Never read another CPU's window +4 (EVENT) from here: a
+ * read takes the event, and the IRQ it stood for stays masked for good.
  */
 void apple_aic1_secondary_init(unsigned int cpu)
 {
 	struct apple_aic1 *aic = apple_aic1;
-	u32 w = AIC1_CPU_WINDOW(cpu), o;
+	u32 w = AIC1_CPU_WINDOW(cpu);
 
 	if (!aic || cpu >= AIC1_NR_CPUS)
 		return;
-	pr_info("SMP-DBG: CPU%u window %#x:", cpu, w);
-	for (o = 0; o < 0x30; o += 4)
-		pr_cont(" %08x", aic1_read(aic, w + o));
-	pr_cont("\n");
-	pr_info("SMP-DBG: CPU0 window %#x:", AIC1_CPU_WINDOW(0));
-	for (o = 0; o < 0x30; o += 4)
-		pr_cont(" %08x", aic1_read(aic, AIC1_CPU_WINDOW(0) + o));
-	pr_cont("\n");
 
 	aic1_write(aic, w + AIC1_LOCAL_MASK_SET, AIC1_LOCAL_TIMER);
 	aic1_write(aic, w + AIC1_TMR_CFG,
@@ -561,8 +508,6 @@ static void __exception_irq_entry aic1_handle_irq(struct pt_regs *regs)
 	u32 event;
 
 	aic1_handler_entries++;
-	if (smp_processor_id() < AIC1_NR_CPUS)		/* Cascadia SMP debug */
-		aic1_dbg_irq[smp_processor_id()]++;
 
 	if (apple_aic1_early_irq_escape)
 		regs->ARM_cpsr |= PSR_I_BIT;
@@ -589,8 +534,6 @@ static void __exception_irq_entry aic1_handle_irq(struct pt_regs *regs)
 		unsigned int hw;
 
 		n++;
-		if (smp_processor_id() && aic1_dbg_ev1 < 16)	/* Cascadia SMP debug */
-			aic1_dbg_evlog[aic1_dbg_ev1++] = event;
 		if (type == AIC1_EVENT_TYPE_IPI) {
 			aic1_handle_ipi(regs);
 			continue;
@@ -775,7 +718,7 @@ static int __init aic1_of_init(struct device_node *node,
 static int __init aic1_late_smoke(void)
 {
 	struct apple_aic1 *aic = apple_aic1;
-	u32 cpsr_before, cpsr_after, ev_before, ev_after;
+	u32 cpsr_before, cpsr_after;
 	unsigned int handler_before, handler_after;
 
 	if (!aic) {
@@ -785,13 +728,14 @@ static int __init aic1_late_smoke(void)
 
 	asm volatile("mrs %0, cpsr" : "=r"(cpsr_before));
 	handler_before = aic1_handler_entries;
-	ev_before = aic1_read(aic, aic1_cpu_event_off());
 
-	pr_err("LATE-SMOKE: CPSR=%#x (I=%u F=%u) CONFIG=%#x (ENABLE=%u) EVENT=%#x handler_entries=%u\n",
+	/* EVENT is not read here: a read takes whatever is pending -- a timer
+	 * tick, an IPI -- and what it took stays masked. */
+	pr_err("LATE-SMOKE: CPSR=%#x (I=%u F=%u) CONFIG=%#x (ENABLE=%u) handler_entries=%u\n",
 	       cpsr_before, !!(cpsr_before & 0x80), !!(cpsr_before & 0x40),
 	       aic1_read(aic, AIC1_CONFIG),
 	       !!(aic1_read(aic, AIC1_CONFIG) & AIC1_CONFIG_ENABLE),
-	       ev_before, handler_before);
+	       handler_before);
 
 	/* Make absolutely sure hwirq 0 is unmasked and targeted at CPU0 */
 	aic1_write(aic, AIC1_TARGET_CPU + 0 * 4, BIT(0));
@@ -807,20 +751,17 @@ static int __init aic1_late_smoke(void)
 
 	asm volatile("mrs %0, cpsr" : "=r"(cpsr_after));
 	handler_after = aic1_handler_entries;
-	ev_after = aic1_read(aic, aic1_cpu_event_off());
 
-	pr_err("LATE-SMOKE: after SW_SET+50ms: CPSR=%#x (I=%u F=%u) EVENT=%#x handler_entries=%u (delta=%u)\n",
+	pr_err("LATE-SMOKE: after SW_SET+50ms: CPSR=%#x (I=%u F=%u) handler_entries=%u (delta=%u)\n",
 	       cpsr_after, !!(cpsr_after & 0x80), !!(cpsr_after & 0x40),
-	       ev_after, handler_after, handler_after - handler_before);
+	       handler_after, handler_after - handler_before);
 
 	if (handler_after > handler_before) {
 		pr_err("LATE-SMOKE: PASS -- CPU takes AIC1 IRQ exception. Look for per-line enable / MASK readback lying.\n");
 	} else if (cpsr_after & 0x80) {
 		pr_err("LATE-SMOKE: FAIL -- CPSR.I=1 late in boot; local_irq_enable() didn't take effect.\n");
-	} else if (ev_after == 0x10000 || ev_after == 0x10001) {
-		pr_err("LATE-SMOKE: FAIL -- CPSR.I=0 but AIC1 output line never reaches CPU nIRQ pin (HW gating).\n");
 	} else {
-		pr_err("LATE-SMOKE: WEIRD -- EVENT=%#x, needs deeper look.\n", ev_after);
+		pr_err("LATE-SMOKE: FAIL -- CPSR.I=0 but no IRQ taken: the AIC output never reached nIRQ.\n");
 	}
 
 	/*
@@ -929,9 +870,9 @@ static int aic1_ce_shutdown(struct clock_event_device *ce)
 
 /*
  * CPU hotplug STARTING, on the CPU itself with interrupts off: its window's
- * timer set up the way the probe found it working, and its clockevent.  CPU1
- * is already up when this is installed (smp_init runs before arch_initcall),
- * so cpuhp_setup_state() calls it there too.
+ * timer set up the way the probe found it working, and its clockevent.
+ * Installed before smp_init(), so it runs on CPU0 at once and on CPU1 as CPU1
+ * comes up.
  */
 static int aic1_tmr_cpu_starting(unsigned int cpu)
 {
@@ -1006,11 +947,15 @@ static bool __init aic1_tmr_try(struct apple_aic1 *aic, u32 win,
  * Register only on a timer seen to fire.  Failing leaves the system exactly as
  * it was -- the SOF tick carries on -- so this cannot cost a boot.
  *
- * arch_initcall, not late: dwc2 decides whether to take Start-of-Frame
- * interrupts when it first initialises the core, at device_initcall, and it
- * asks whether this timer is live.  The AIC is re-armed and interrupts are on
- * before any initcall runs (init/main.c), so this is as early as it can be
- * and still see the timer fire.
+ * early_initcall: dwc2 decides whether to take Start-of-Frame interrupts
+ * when it first initialises the core, at device_initcall, and it asks whether
+ * this timer is live; and it must come before smp_init().  Until it runs there
+ * is no clockevent at all and jiffies stand still -- harmless on one CPU, but
+ * with CPU1 online the first RCU grace period waits for ever and the boot
+ * stops here.  Registered first, it hands CPU1 a clockevent of its own through
+ * the STARTING callback as CPU1 comes up, the same order as onlining CPU1 by
+ * hand.  The AIC is re-armed and interrupts are on before any initcall runs
+ * (init/main.c), so the probe below still sees the timer fire.
  */
 static int __init aic1_timer_init(void)
 {
@@ -1052,7 +997,7 @@ static int __init aic1_timer_init(void)
 	       aic1_tmr_percpu ? "one per CPU" : "CPU0 only");
 	return 0;
 }
-arch_initcall(aic1_timer_init);
+early_initcall(aic1_timer_init);
 
 IRQCHIP_DECLARE(apple_aic1, "aic,1", aic1_of_init);
 IRQCHIP_DECLARE(apple_aic1_vendor, "apple,aic1", aic1_of_init);

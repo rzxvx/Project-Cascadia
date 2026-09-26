@@ -85,62 +85,19 @@ index 1dfae1af8..e4084f15d 100644
   UNWIND(.fnend		)
  ENDPROC(__irq_svc)
 diff --git a/arch/arm/kernel/smp.c b/arch/arm/kernel/smp.c
-index 3431c0553..7d5e9c751 100644
+index 3431c0553..2d46adad3 100644
 --- a/arch/arm/kernel/smp.c
 +++ b/arch/arm/kernel/smp.c
-@@ -170,6 +170,13 @@ int __cpu_up(unsigned int cpu, struct task_struct *idle)
- 		if (!cpu_online(cpu)) {
- 			pr_crit("CPU%u: failed to come online\n", cpu);
- 			ret = -EIO;
-+		} else {
-+			pr_info("SMP-DBG: CPU%u online, CPU0 carries on\n", cpu);	/* Cascadia debug */
-+			{
-+				void apple_aic1_ipi_test(unsigned int cpu);
-+
-+				apple_aic1_ipi_test(cpu);		/* Cascadia debug */
-+			}
- 		}
- 	} else {
- 		pr_err("CPU%u: failed to boot: %d\n", cpu, ret);
-@@ -467,9 +474,18 @@ asmlinkage void secondary_start_kernel(struct task_struct *task)
- 	check_other_bugs();
- 
+@@ -469,7 +469,8 @@ asmlinkage void secondary_start_kernel(struct task_struct *task)
  	complete(&cpu_running);
-+	pr_info("SMP-DBG: CPU%u signalled CPU0, enabling IRQ\n", cpu);	/* Cascadia debug */
  
  	local_irq_enable();
 -	local_fiq_enable();
-+	{
-+		u32 isr;	/* Cascadia debug: pending I/F/A before FIQ goes on */
-+
-+		asm volatile("mrc p15, 0, %0, c12, c1, 0" : "=r"(isr));
-+		pr_info("SMP-DBG: CPU%u IRQ on; ISR %08x (F=%u I=%u A=%u); FIQ left off\n",
-+			cpu, isr, !!(isr & BIT(6)), !!(isr & BIT(7)), !!(isr & BIT(8)));
-+	}
-+	/* Cascadia debug: local_fiq_enable() skipped on secondaries -- CPU1
-+	 * stopped dead right after it, mid-printk. */
++	/* Cascadia: the A5's AIC delivers everything as IRQ; FIQ stays off on
++	 * secondaries until something is known to need it. */
  	local_abt_enable();
  
  	/*
-diff --git a/arch/arm/kernel/traps.c b/arch/arm/kernel/traps.c
-index 6ea645939..46e983c3b 100644
---- a/arch/arm/kernel/traps.c
-+++ b/arch/arm/kernel/traps.c
-@@ -514,11 +514,14 @@ NOKPROBE_SYMBOL(do_undefinstr)
-  * This handler is not appropriate for general purpose use in drivers
-  * platform code and can be overrideen using set_fiq_handler.
-  */
-+unsigned int cascadia_fiq_count[NR_CPUS];	/* Cascadia SMP debug */
-+
- asmlinkage void __exception_irq_entry handle_fiq_as_nmi(struct pt_regs *regs)
- {
- 	struct pt_regs *old_regs = set_irq_regs(regs);
- 
- 	nmi_enter();
-+	cascadia_fiq_count[smp_processor_id()]++;	/* Cascadia SMP debug */
- 
- 	/* nop. FIQ handlers for special arch/arm features can be added here. */
- 
 diff --git a/arch/arm/mm/alignment.c b/arch/arm/mm/alignment.c
 index 3c6ddb1af..c9e36089c 100644
 --- a/arch/arm/mm/alignment.c

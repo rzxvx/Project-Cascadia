@@ -72,9 +72,7 @@
 		 *   ...:01 = host side (the Mac's enN)
 		 *   ...:02 = device side (usb0 here)
 		 */
-		/* maxcpus=1: SMP bring-up in progress -- CPU1 is started by hand,
-		 * echo 1 > /sys/devices/system/cpu/cpu1/online, with ssh up. */
-		bootargs = "earlycon=s3c6400,0x32500000 keep_bootcon lpj=5000000 maxcpus=1 root=/dev/ram0 rw rootwait panic=10 loglevel=8 ignore_loglevel g_cdc.host_addr=02:10:5a:05:00:01 g_cdc.dev_addr=02:10:5a:05:00:02";
+		bootargs = "earlycon=s3c6400,0x32500000 keep_bootcon lpj=5000000 root=/dev/ram0 rw rootwait panic=10 loglevel=8 ignore_loglevel g_cdc.host_addr=02:10:5a:05:00:01 g_cdc.dev_addr=02:10:5a:05:00:02";
 
 		/*
 		 * Placeholders.  The loader MUST overwrite both before jumping;
@@ -99,12 +97,16 @@
 	 * ipi_dispatch_other at 193 -- so the outer two are IPIs and the middle
 	 * one is the per-CPU interrupt.  aic target-destinations = <135 cpu0,
 	 * 139 cpu1> pins each to its own core.  On an A9 with no architected
-	 * timer, that per-CPU line is nPMUIRQ.
+	 * timer, that per-CPU line was taken to be nPMUIRQ.
+	 *
+	 * Disabled: its self-test never saw an overflow interrupt, the AIC timer
+	 * is the tick, and with SMP the test itself hung when it ran on CPU1 --
+	 * it waits on PMCCNTR, a per-core counter that only CPU0 runs.
 	 */
 	pmu_timer: pmu-timer {
 		compatible = "apple,s5l8940x-pmu-timer";
 		interrupts = <135>;
-		status = "okay";
+		status = "disabled";
 	};
 
 	memory@80000000 {
@@ -129,10 +131,11 @@
 		};
 
 		/*
-		 * The first page of DRAM: where a core coming out of reset
-		 * starts on this SoC.  XNU copies its exception vectors here
-		 * (physBase) before cpu_start() powers CPU1 up through PMGR
-		 * Core(2); the SMP bring-up needs it for its own trampoline.
+		 * The first page of DRAM: a core coming out of reset starts at
+		 * physical 0, which is an alias of it.  XNU keeps its exception
+		 * vectors here (physBase); platsmp.c keeps its trampoline, which
+		 * CPU1 goes through on every start -- including each wake from
+		 * power-down idle, as the PMGR powers it off in WFI.
 		 */
 		cpu_reset_page: cpu-reset@80000000 {
 			reg = <0x80000000 0x1000>;
