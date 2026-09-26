@@ -222,6 +222,14 @@ if command -v fbkeyboard >/dev/null 2>&1; then
     fi
 fi
 
+# ----------------------------------------------------------------- Wi-Fi ---
+# `wifi auto on` leaves /etc/wifi/auto: join the remembered networks.  In the
+# background -- it waits for wlan0, which brcmfmac makes a few seconds in.
+if [ -e /etc/wifi/auto ] && [ -x /usr/bin/wifi ]; then
+    setsid /usr/bin/wifi up >/tmp/wifi.log 2>&1 </dev/null &
+    msg "P105: Wi-Fi -- joining the remembered networks (/tmp/wifi.log)"
+fi
+
 # --------------------------------------------------------- glass fallback ---
 # Always reached, and independent of USB: if the gadget never comes up this is
 # still a real shell on the panel.
