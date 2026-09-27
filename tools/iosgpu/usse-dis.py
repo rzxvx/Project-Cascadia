@@ -100,6 +100,47 @@ def bits_of(name):
     return None
 
 
+BANK = {0: "temp", 1: "pa", 2: "o", 3: "sa"}      # register banks
+FMT = {0: "f32", 1: "f16", 2: "c10", 3: "u8", 4: "s8", 5: "u16", 6: "s16"}
+
+# per-opcode operand fields worked out from Vita3K's decoder (letter -> (name, fmt))
+# fmt: 'bank' shows the register bank, 'fmt' the pack format, else decimal.
+OPERANDS = {
+    "VMOV": [("mm", "movetype", None), ("ooo", "dtype", "fmt"),
+             ("ll", "dbank", "bank"), ("jjjjjj", "dn", None), ("hhhh", "dmask", None),
+             ("k", "s0bank", "bank"), ("qqqqqq", "s0n", None),
+             ("ff", "s1bank", "bank"), ("uuuuuu", "s1n", None), ("e", "end", None)],
+    "VPCK": [("fff", "sfmt", "fmt"), ("ttt", "dfmt", "fmt"), ("mmmm", "dmask", None),
+             ("bb", "dbank", "bank"), ("ggggggg", "dn", None),
+             ("kk", "s1bank", "bank"), ("qqqqqq", "s1n", None),
+             ("ll", "s2bank", "bank"), ("wwwwww", "s2n", None), ("e", "end", None)],
+}
+
+
+def field_multi(word, bits, letters):
+    """Value of a run of one repeated letter (letters is like 'jjjjjj')."""
+    return field(word, bits, letters[0])
+
+
+def operands(name, word):
+    spec = OPERANDS.get(name)
+    if not spec:
+        return ""
+    bs = bits_of(name)
+    out = []
+    for letters, label, kind in spec:
+        v = field(word, bs, letters[0])
+        if v is None:
+            continue
+        if kind == "bank":
+            out.append(f"{label}={BANK.get(v, v)}")
+        elif kind == "fmt":
+            out.append(f"{label}={FMT.get(v, v)}")
+        else:
+            out.append(f"{label}={v}")
+    return "  " + " ".join(out)
+
+
 def dis(data, off, n):
     for k in range(n):
         p = off + k * 8
@@ -107,17 +148,7 @@ def dis(data, off, n):
             break
         w = int.from_bytes(data[p:p + 8], "little")
         name, nfix = decode(w)
-        extra = ""
-        if name:
-            bs = bits_of(name)
-            pred = field(w, bs, "p")
-            end = field(w, bs, "e")
-            extra = ""
-            if pred is not None:
-                extra += f" pred={pred}"
-            if end is not None:
-                extra += f" e={end}"
-        print(f"  +{p:04x}: {w:016x}  {name or '???':10}{extra}")
+        print(f"  +{p:04x}: {w:016x}  {name or '???':10}{operands(name, w) if name else ''}")
 
 
 def valid(w):

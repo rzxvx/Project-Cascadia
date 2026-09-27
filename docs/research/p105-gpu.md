@@ -356,3 +356,20 @@ fields (which bits pick the uniform, the register banks, the swizzles, the
 F16 pack) -- single-instruction opcode IDs from the permissive matcher are also
 not all trustworthy yet. Decoding those fields, using Vita3K's field
 definitions, is the next step.
+
+## Operands decode too (2026-09-28)
+
+`usse-dis.py` now decodes operand fields (from Vita3K's field definitions) for
+the output-writing ops. The fragment program at 0x3adec0 reads:
+
+    PHAS / NOP / VTST / VLDST / SPEC          (preamble)
+    V16NMAD                                    (the colour arithmetic)
+    VPCK  sfmt=u16 dfmt=f32 dmask=15 dbank=o dn=6 s1bank=o s1n=3 ... end=1
+
+So the shader ends by VPCK-ing the 4 components (dmask=15) into **output
+register o6**, with the `end` bit set on the last instruction. That `end` bit
+is exactly the one byte by which the two captured fragment programs differed
+(0x40810a3e... vs 0x40850a3e...: end 0 vs 1) -- which confirms the field
+decode. Register banks (temp/pa/o/sa), pack formats (f32/f16/...), dest mask
+and reg number, and the end flag now come out correctly; VMOV and VPCK are
+wired up, more opcodes to follow the same way.
