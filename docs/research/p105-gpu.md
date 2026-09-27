@@ -279,3 +279,25 @@ the diff, and the changed bytes are the command/USSE/PDS for that change. Next
 is the slow part -- decode the ~0x740000 program words as USSE (Vita3K's
 encoding) and the ~0x750000 ring as the kick/DMA format, one controlled change
 at a time (one attribute, one instruction, one constant).
+
+## Correction: 0x740000 is a patch/descriptor table, not USSE (2026-09-28)
+
+Pulling the actual bytes at ~0x740000 (frame b) corrected the earlier reading.
+It is not shader code but a **relocation / descriptor table**: 40-byte records,
+each roughly `{srcA, srcA2, srcA3, dstA, patchA (a GPU VA ~0x1461xxxx), u32
+index, flags}`, the addresses pointing into the mapped buffers (0x006bxxxx,
+0x0075xxxx) and the arena. The `index` field (0f, 0d, 04, 05, 0e, 07, ...) is
+the same handle that appears in map0's 8-byte records at 0x118 and that the
+colour-only diff moved. So the b->c changes here are **addresses and handles in
+this table shifting because the fragment constant is a separate allocation**
+that got a new address -- consistent with the map0 pointer move, and *not* the
+constant being folded into USSE. (The earlier "folded into USSE" note was
+wrong; this supersedes it.)
+
+The real USSE fragment program is small (a constant-colour shader is a couple
+of instructions) and lives in one of the referenced allocations, not in this
+table. Finding and decoding it needs a USSE disassembler rather than more blind
+diffing -- that is the next, and genuinely long, step. Structure mapped so far:
+map0 control page -> this patch table at ~0x740000 -> the mapped param/state
+buffers (0x6b3000-0x6bc000) and the INIT/LIVE command ring (~0x750000), with
+GPU VAs (0x0098xxxx / 0x0190xxxx / 0x1461xxxx) threaded through all of them.
