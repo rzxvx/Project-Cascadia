@@ -26,6 +26,14 @@
 #   master: +0x4000 MASTER_CORE (cores enabled)  +0x4010 CORE_ID
 #           +0x4014 CORE_REVISION  +0x4080 SOFT_RESET  +0x4c00 BIF_CTRL
 #
+# 2026-09-27: GFX_SYS-CLK and GFX-CLK switch on fine (0x300 -> 0x3ff), but
+# the first SGX read after that HUNG THE BUS -- the iPad froze, not even ping.
+# Two domains are not enough.  iBEC's reset of device 6 also pulses 0x3f101020
+# (unnamed), HPERF-NRT (0x3f10102c, the non-real-time fabric) and 0x3f101044
+# (unnamed), and the pmgr node has three bus bridges (0x38c00000, 0x38d00000,
+# 0x38e00000) with 512 bytes of bridge-settings.  So the SGX reads after
+# power-on only happen with SGX_READ=1, until XNU's sequence is known.
+#
 # A block nobody powers does not fault on a read here; it returns whatever
 # the fabric last drove (docs/research/p105-pmgr-gates.md).  So "alive" is
 # judged against a read of 0x38000000, where there is nothing at all.
@@ -81,9 +89,16 @@ echo "== glue block $GLUE: $(rd $GLUE) $(rd $(hex "$GLUE + 4")) $(rd $(hex "$GLU
 
 echo "== switching GFX on"
 gate_on $GFX_SYS && gate_on $GFX
+echo "== the rest of device 6: 0x3f101020 $(rd 0x3f101020), HPERF-NRT $(rd 0x3f10102c), 0x3f101044 $(rd 0x3f101044)"
+echo "== glue block $GLUE: $(rd $GLUE) $(rd $(hex "$GLUE + 4")) $(rd $(hex "$GLUE + 8")) $(rd $(hex "$GLUE + 0xc"))"
+if [ "$SGX_READ" != 1 ]; then
+    echo "== not reading the SGX (that hung the bus; SGX_READ=1 to try anyway)"
+    wr $GFX "$gfx0"; wr $GFX_SYS "$sys0"
+    echo "  back as it was: GFX $(rd $GFX), GFX_SYS $(rd $GFX_SYS)"
+    exit 0
+fi
 echo "== SGX with GFX on (columns: bank 0, core 0, core 1)"
 regs
-echo "== glue block $GLUE: $(rd $GLUE) $(rd $(hex "$GLUE + 4")) $(rd $(hex "$GLUE + 8")) $(rd $(hex "$GLUE + 0xc"))"
 
 echo "== decoded"
 decode "$(rd $(hex "$SGX + 0x4010"))" "$(rd $(hex "$SGX + 0x4014"))" master
