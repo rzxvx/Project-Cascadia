@@ -1,0 +1,91 @@
+#!/bin/sh
+# ios -- the iPad's iOS partitions from Linux, read-only.  Dual boot, the
+# Linux side of it: iOS stays as it is, Linux looks at its files.
+#
+#   ios                 where things stand, and what to type next
+#   ios mount [Data]    serve iOS's System partition (and Data, if asked) off
+#                       the NAND and mount it read-only on /mnt/ios
+#   ios umount          unmount and stop serving
+#   ios scan            catch up with the NAND after iOS has run (mount does
+#                       this too)
+#   ios parts           iOS's partitions
+#
+# /sbin/iosnand does the work (tools/nand/iosnand.c): it reads the NAND,
+# follows iOS's FTL to disk0 and its LwVM partitions, and serves them as
+# /dev/nbd0, /dev/nbd1.  It never writes to the NAND.  The first run reads
+# every page once (~15 minutes) and keeps a map in /var/lib/iosnand; after
+# that a start takes a few seconds plus whatever iOS rewrote in between.
+# Data is encrypted file by file (iOS content protection): it can be served,
+# but it does not mount as HFS+.  Installed from the image into /usr/bin on
+# every boot (initramfs/init).
+
+MNT=/mnt/ios
+RUN=/run/ios
+LOG=$RUN/iosnand.log
+
+say() { printf '%s\n' "$*"; }
+die() { printf 'ios: %s\n' "$*" >&2; exit 1; }
+
+serving() { [ -s $RUN/pid ] && kill -0 "$(cat $RUN/pid)" 2>/dev/null; }
+mounted() { grep -q " $MNT hfsplus " /proc/mounts 2>/dev/null; }
+
+need() {
+    [ -x /sbin/iosnand ] || die "no /sbin/iosnand in this image"
+    [ -e /dev/nbd0 ] || die "no /dev/nbd0: this kernel was built without CONFIG_BLK_DEV_NBD"
+    grep -q hfsplus /proc/filesystems || die "this kernel has no HFS+ (CONFIG_HFSPLUS_FS)"
+}
+
+status() {
+    if mounted; then
+        say "iOS System is mounted read-only on $MNT ($(df -h $MNT | awk 'NR==2 { print $3 " used" }'))."
+        say "  ls $MNT            look around"
+        say "  ios umount         let go of it"
+    elif serving; then
+        say "iosnand is running (log: $LOG) but nothing is mounted."
+        say "  ios umount         stop it"
+    else
+        say "iOS's partitions are not mounted."
+        [ -f /var/lib/iosnand/pages.v1 ] || say "(the first mount reads the whole NAND once: ~15 minutes)"
+        say "  ios mount          System, read-only, on $MNT"
+        say "  ios parts          what is there"
+    fi
+}
+
+start() {
+    need
+    serving && die "already serving (ios umount first)"
+    mkdir -p $RUN $MNT
+    say "reading the NAND map (a few seconds; ~15 minutes the very first time)..."
+    iosnand serve System "$@" > $LOG 2>&1 &
+    echo $! > $RUN/pid
+    # iosnand attaches /dev/nbd0 once its map is ready
+    while ! [ "$(cat /sys/block/nbd0/size 2>/dev/null)" -gt 0 ] 2>/dev/null; do
+        serving || { cat $LOG >&2; die "iosnand stopped"; }
+        sleep 1
+    done
+    grep -v "blocks read," $LOG
+    mount -t hfsplus -o ro /dev/nbd0 $MNT || { stop_serving; die "mount failed (dmesg | tail)"; }
+    say "iOS $(sed -n '/ProductVersion/{n;s/.*<string>\(.*\)<\/string>.*/\1/p}' \
+        $MNT/System/Library/CoreServices/SystemVersion.plist 2>/dev/null) System on $MNT, read-only."
+    [ -b /dev/nbd1 ] && [ "$(cat /sys/block/nbd1/size 2>/dev/null)" -gt 0 ] 2>/dev/null &&
+        say "Data is on /dev/nbd1 (encrypted by iOS: raw only)."
+}
+
+stop_serving() {
+    serving && kill "$(cat $RUN/pid)" 2>/dev/null
+    i=0
+    while serving && [ $i -lt 20 ]; do sleep 0.5; i=$((i + 1)); done
+    rm -f $RUN/pid
+}
+
+case "$1" in
+    ""|status)  status ;;
+    mount)      shift; start "$@" ;;
+    umount|unmount)
+                mounted && { umount $MNT || die "$MNT is busy"; }
+                stop_serving
+                say "iOS unmounted." ;;
+    scan)       need; serving && die "iosnand is serving; ios umount first"; iosnand scan ;;
+    parts)      need; serving && die "iosnand is serving; ios umount first"; iosnand parts ;;
+    *)          sed -n '/^#   ios/,/^#$/p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
+esac

@@ -160,7 +160,9 @@ media size 16 000 000 000, two partition records at 0x200 (0x80 bytes each:
 type, GUID, begin, end, attributes, UTF-16 name) -- System and Data, both HFS+
 -- and at 0x800 a map of 1024 16 MB chunks, one u16 per physical chunk:
 0xF000 the header itself, 0xF3FF unused, else partition << 12 | chunk.
-System is 143 chunks (physical 1-143), Data 803.  System's volume header is
+LBA 0 was rewritten twice after the restore (three copies on the NAND: one
+partition, then System at 143 chunks, then 133); the newest says System 133
+chunks, Data 813, which is what iOS reports.  System's volume header is
 HFSX (case-sensitive, journaled), 4 KB blocks, 543 000 of them =
 2 224 128 000 bytes, exactly iOS's `disk0s1s1`.  It is not encrypted.
 
@@ -175,6 +177,20 @@ and it mounts on a Mac (attach with `-shadow`, the journal wants replaying).
 104 964 SHA-1 page hashes of the 432 MB `dyld_shared_cache_armv7` all match
 but the first 8 -- the cache header, which TaiG's untether rewrote (6
 mappings instead of 3, two pointing past the code signature).
+
+## iosnand: iOS's partitions as Linux block devices
+
+`tools/nand/iosnand.c` (with `ppn.c`, the read-only PPN layer `nandctl` uses
+too) keeps a page table -- per page the sequence and the four LBAs, 26 MB,
+`/var/lib/iosnand/pages.v1` -- and serves LwVM partitions through the kernel's
+NBD ioctls (a socketpair, no nbd-client).  First run: every page's metadata,
+714 s (2944 blocks with data, 1277 erased, 31 retired).  Later runs read page
+0 of every block (a block the FTL erased and wrote again has a new sequence
+there) and the old write pointer of blocks that were still filling: 1.0 s when
+nothing changed.  Each read checks the LBA in the page's metadata, the way
+SFTL's `s_verify_meta` does.  Checked against the dump: LBA 0, System's first
+16 MB and 8 MB at LBA 1000000 read back with the same MD5.  `ios mount` puts
+System on /mnt/ios through Linux's hfsplus.
 
 ## Trap: an absent CE wedges the bus
 
