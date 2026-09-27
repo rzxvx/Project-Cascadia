@@ -155,3 +155,31 @@ An MP core has 16 KB banks: the master at `+0x4000`, core n at
 1.2.2. Reading the ID is only the first checkpoint: after it come the
 microkernel the SGX runs, a kernel driver, and a userspace GL driver, none of
 which exist for this chip in the open.
+
+## Reversing the command stream by tracing iOS (2026-09-28)
+
+The other end of the problem: rather than bring the GPU up blind, watch iOS
+drive it and copy what it does. The idea, and the ABI, so far:
+
+**The stack** (from the 6.1 kernelcache, `com.apple.driver.IMGSGX543`):
+- kext `IMGSGX543`, `IOClass SGXDriver543`, matches `sgx,s5l8940x`, category
+  `IOAcceleratorES`, built on `IOAcceleratorFamily` (20.0.9). Userspace GL
+  driver is `IMGSGX543GLDriver` (`IOGLESBundleName`), in the dyld shared cache.
+- Userspace → kernel goes through IOAccelerator's user clients:
+  `IOAccelSharedUserClient` / an `IOAccelContext` (`IMGSGXGLContext` on the
+  kernel side), carrying `IOAccelCommandBuffer`s. The SGX-specific payload is
+  validated by `IMGSGXGLContext::copyAndValidateVendorPayload(IOGLStreamHardwareCommand*,
+  size_t, IMGSGXResource*, IMGSGXCommandDescriptor*)` and
+  `validateRenderCommand` — that vendor payload is the USSE/PDS/command stream
+  we want.
+
+**How to eavesdrop without tfp0** (which this jailbreak denies): be the
+rendering process. A small armv7 GLES tool draws a triangle to an offscreen
+FBO; in the same process, `fishhook` rebinds `IOConnectCallMethod`,
+`IOConnectCallStructMethod`, `IOConnectCallAsyncStructMethod` and
+`IOConnectMapMemory` to log the selector, the input scalars/structs, and the
+mapped shared buffers before calling through. The submit selector and the
+command-buffer layout fall out of the log; the mapped buffers hold the vendor
+payload. Cross-referenced with the SGX register set (TI DDK) and the USSE
+decoder (Vita3K's), that is the raw material for a driver. Tool: `tools/iosgpu/`
+(planned).
