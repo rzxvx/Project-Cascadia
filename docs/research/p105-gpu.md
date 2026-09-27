@@ -373,3 +373,29 @@ is exactly the one byte by which the two captured fragment programs differed
 decode. Register banks (temp/pa/o/sa), pack formats (f32/f16/...), dest mask
 and reg number, and the end flag now come out correctly; VMOV and VPCK are
 wired up, more opcodes to follow the same way.
+
+## Reading the arithmetic: uColor*uColor = VMUL (2026-09-28)
+
+With V16NMAD operands decoded (op2 selects the ALU op: VMUL/VADD/VFRC/VMIN/
+VMAX/VDP...), the two captured fragment programs read cleanly and confirm the
+whole method:
+
+    prog1  gl_FragColor = uColor:
+        PHAS / NOP / VTST / VLDST / SPEC
+        VPCK  dmask=15 dbank=o dn=6 s1bank=o s1n=3      ; o6 <- o3, pack to output
+
+    prog2  gl_FragColor = uColor*uColor:
+        PHAS / NOP / VTST / VLDST / SPEC
+        V16NMAD op2=VMUL dmask=15 dbank=o dn=3 s1n=3 s2n=3   ; o3 = o3 * o3
+        VPCK    dmask=15 dbank=o dn=6 s1n=3                  ; o6 <- o3, end
+
+So the `*` compiled to `VMUL o3, o3, o3` (square in place) followed by the pack
+to output register o6 -- exactly the source, read back from the captured USSE.
+We can now read fragment-program arithmetic and dataflow, not just opcodes.
+(The preamble VTST/VLDST/SPEC set up the pixel phase / load the iterated
+inputs; the separate program at 0x3005c0 with an SMP is a different,
+texture-using program the driver keeps around, not one of ours.)
+
+Stage 4 (decode USSE) is now real for the vector ALU + pack path. Still to do:
+the swizzle fields, the preamble's exact meaning, the SMP/texture path, and how
+PDS feeds uniforms/varyings into those `o`/`pa` registers.

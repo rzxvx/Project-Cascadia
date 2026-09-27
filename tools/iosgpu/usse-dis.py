@@ -114,7 +114,19 @@ OPERANDS = {
              ("bb", "dbank", "bank"), ("ggggggg", "dn", None),
              ("kk", "s1bank", "bank"), ("qqqqqq", "s1n", None),
              ("ll", "s2bank", "bank"), ("wwwwww", "s2n", None), ("e", "end", None)],
+    # V*NMAD: op2 (ggg) selects the actual ALU op within the group
+    "V16NMAD": [("ggg", "op2", "nmad"), ("eeee", "dmask", None),
+                ("tt", "dbank", "bank"), ("ffffff", "dn", None),
+                ("kk", "s1bank", "bank"), ("hhhhhh", "s1n", None), ("mm", "s1mod", None),
+                ("ll", "s2bank", "bank"), ("jjjjjj", "s2n", None), ("o", "s2mod", None)],
+    "V32NMAD": [("ggg", "op2", "nmad"), ("eeee", "dmask", None),
+                ("tt", "dbank", "bank"), ("ffffff", "dn", None),
+                ("kk", "s1bank", "bank"), ("hhhhhh", "s1n", None), ("mm", "s1mod", None),
+                ("ll", "s2bank", "bank"), ("jjjjjj", "s2n", None), ("o", "s2mod", None)],
 }
+
+# the NMAD-group operation select (op2), from Vita3K's Opcode order
+NMAD = {0: "VMUL", 1: "VADD", 2: "VFRC", 3: "VDSX", 4: "VDSY", 5: "VMIN", 6: "VMAX", 7: "VDP"}
 
 
 def field_multi(word, bits, letters):
@@ -136,6 +148,8 @@ def operands(name, word):
             out.append(f"{label}={BANK.get(v, v)}")
         elif kind == "fmt":
             out.append(f"{label}={FMT.get(v, v)}")
+        elif kind == "nmad":
+            out.append(f"{label}={NMAD.get(v, v)}")
         else:
             out.append(f"{label}={v}")
     return "  " + " ".join(out)
