@@ -96,7 +96,9 @@ including the parts that didn't work.
 - [ ] NAND as Linux's own storage — for Pi Pico users, at the cost of iOS;
       see *Where Linux keeps its files* below
 - [ ] USB host mode / keyboard — no free host port: dwc2 in host mode would take the console and the network with it
-- [ ] Graphical Acceleration (SGX543MP2)
+- [ ] Graphical Acceleration (SGX543MP2) — the power domains switch on, the first
+      register read hangs the bus; all that is known is in
+      [docs/research/p105-gpu.md](docs/research/p105-gpu.md)
 
 ## Where Linux keeps its files
 
