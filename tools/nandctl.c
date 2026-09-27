@@ -51,7 +51,7 @@
  * An absent CE must never be read from while the FMC is in DDR (FMC_ON = 5,
  * as iBEC leaves it): data out is clocked by the chip's DQS, and with no chip
  * the FMC waits forever -- only a PMGR reset of the block gets it back.  Build:
- *   arm-linux-gnueabihf-gcc -static -Os -o nandctl tools/nandctl.c
+ *   arm-linux-gnueabihf-gcc -static -Os -D_FILE_OFFSET_BITS=64 -o nandctl tools/nandctl.c
  */
 #include <errno.h>
 #include <fcntl.h>

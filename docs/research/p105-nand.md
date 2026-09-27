@@ -164,6 +164,18 @@ System is 143 chunks (physical 1-143), Data 803.  System's volume header is
 HFSX (case-sensitive, journaled), 4 KB blocks, 543 000 of them =
 2 224 128 000 bytes, exactly iOS's `disk0s1s1`.  It is not encrypted.
 
+## Proof: iOS's System partition, rebuilt from a raw dump
+
+Full dump (2 buses x 2 CAUs x 1064 blocks, 17.9 GB, `nandctl dump`), map by
+`nand-ftl-scan.py scan` (765 317 LBAs live), `part ... System` -> 2.2 GB image.
+`fsck_hfs -n` passes catalog, extents, hierarchy, attributes and bitmap; the
+volume is `Donner12H321.P105OS`, `SystemVersion.plist` says 8.4.1 (12H321),
+and it mounts on a Mac (attach with `-shadow`, the journal wants replaying).
+183 signed Mach-O files verify with `codesign -v` (page hashes), and of the
+104 964 SHA-1 page hashes of the 432 MB `dyld_shared_cache_armv7` all match
+but the first 8 -- the cache header, which TaiG's untether rewrote (6
+mappings instead of 3, two pointing past the code signature).
+
 ## Trap: an absent CE wedges the bus
 
 In DDR the chip clocks data out with DQS.  Reading data from a CE with no chip
@@ -187,6 +199,7 @@ lock (`/tmp/nandctl-busN.lock`) for every command that drives a bus.
 
 ## Next
 
-A full raw image (`nandctl dump`, 4 x 4.5 GB: bus x CAU, 1064 blocks x 256
-pages x 16448 bytes, plus a status byte per page) to develop the read-only
-PPNFPart → SVFL → SFTL → LwVM → HFS+ chain offline against iBEC, then port it.
+A kernel driver: H2FMI + PPN reads (DMA instead of PIO), a map built from the
+page metadata (or from the SFTL context, to avoid a full scan), LwVM on top;
+the System partition then mounts with Linux's hfsplus.  Data is encrypted
+per file (content protection) and needs the AES engine.

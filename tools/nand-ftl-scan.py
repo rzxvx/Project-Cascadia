@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """nand-ftl-scan.py -- rebuild the iPad's disk0 from a raw NAND dump, offline.
 
-Input: the files `nandctl dump` writes, one per bus and CAU (bus0-cau0.bin ...,
-1064 blocks x 256 pages x 16448 bytes, plus a status byte per page in .st).
+Input: the files `nandctl dump` writes, per bus and CAU: busB-cauC.bin from
+block 0, and busB-cauC.bNNN.bin for a dump resumed at block NNN (256 pages x
+16448 bytes a block, plus a status byte per page in .st).
 
 A PPN page comes off the bus as four 4 KB logical pages, each laid out as
 1024 data bytes, 16 bytes of FTL metadata, 3072 data bytes.  The metadata
@@ -31,7 +32,9 @@ free, else partition << 12 | chunk within that partition.
 MAP holds 12 bytes per LBA: the sequence (s64, -1 = never written) and
 file << 28 | page << 2 | chunk.
 """
+import glob
 import os
+import re
 import struct
 import sys
 
@@ -39,17 +42,24 @@ PAGE = 16448
 CHUNK = 4112
 PAGES_PER_FILE = 1064 * 256
 NLBA = 16000000000 // 4096
-FILES = ['bus0-cau0', 'bus0-cau1', 'bus1-cau0', 'bus1-cau1']
+
+
+def dump_files(d):
+    """[(path, bus, cau, first block)], in a fixed order."""
+    out = []
+    for path in sorted(glob.glob(os.path.join(d, 'bus[01]-cau[01]*.bin'))):
+        m = re.match(r'bus(\d)-cau(\d)(?:\.b(\d+))?\.bin$', os.path.basename(path))
+        if m:
+            out.append((path, int(m.group(1)), int(m.group(2)), int(m.group(3) or 0)))
+    return out
 
 
 def scan(d, mapfile):
     seqs = [-1] * NLBA
     where = [0] * NLBA
     kinds = {}
-    for fi, name in enumerate(FILES):
-        path = os.path.join(d, name + '.bin')
-        if not os.path.exists(path):
-            continue
+    for fi, (path, bus, cau, first) in enumerate(dump_files(d)):
+        name = os.path.basename(path)
         st = open(path + '.st', 'rb').read()
         with open(path, 'rb') as f:
             pg = 0
@@ -85,8 +95,7 @@ def scan(d, mapfile):
 class Disk:
     def __init__(self, d, mapfile):
         self.l2p = open(mapfile, 'rb')
-        self.f = [open(os.path.join(d, n + '.bin'), 'rb') if os.path.exists(os.path.join(d, n + '.bin')) else None
-                  for n in FILES]
+        self.f = [open(f[0], 'rb') for f in dump_files(d)]
 
     def read4k(self, lba):
         self.l2p.seek(lba * 12)
