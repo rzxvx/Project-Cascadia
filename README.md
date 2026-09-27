@@ -93,10 +93,29 @@ including the parts that didn't work.
       iOS's FTL, LwVM and HFS+ including HFS+ compression. iOS is left as it
       is; nothing writes to the NAND. See *The NAND problem* below. iOS's Data
       partition is encrypted file by file and does not mount yet
-- [ ] NAND as Linux's own storage (writes) — with iOS kept, that means
-      writing through iOS's FTL
+- [ ] NAND as Linux's own storage — for Pi Pico users, at the cost of iOS;
+      see *Where Linux keeps its files* below
 - [ ] USB host mode / keyboard — no free host port: dwc2 in host mode would take the console and the network with it
 - [ ] Graphical Acceleration (SGX543MP2)
+
+## Where Linux keeps its files
+
+Which way into pwned DFU you have decides it:
+
+- **No extra hardware** (`./cascadia flash --kdfu`, from a jailbroken iOS):
+  iOS has to stay — kDFU starts from it — and so the NAND stays iOS's. Linux's
+  root is the host's disk over NFS (`./cascadia nfs on`) or RAM. iOS's own
+  System partition is readable from Linux, read-only (`ios mount`).
+- **A Pi Pico** (checkm8 without iOS): the NAND can be Linux's, at the cost of
+  iOS. That is the planned way to storage on the device itself: an MTD driver
+  for the PPN chips with UBI/UBIFS on the blocks iOS's FTL uses now, block 0
+  (syscfg, NVRAM, the bootloaders) never touched. **Not written yet.** iOS
+  comes back with a restore.
+
+Both at once — iOS kept and Linux writing to the NAND — means writing through
+iOS's FTL, and a mistake there breaks iOS, and kDFU with it. Not planned.
+Splitting the NAND between the two (a smaller FTL for iOS after a restore) is
+an open question.
 
 ## Seven problems worth reading about
 

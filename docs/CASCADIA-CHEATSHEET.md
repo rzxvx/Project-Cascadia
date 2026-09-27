@@ -143,7 +143,29 @@ the device:
 ssh root@10.55.0.2 'dmesg | grep -E "AIC1-REARM|LATE-SMOKE|SOF-TIMER|AIC-TIMER|P105:"'
 ```
 
-## Kernel status (Linux 6.12.0 on A5) — updated 2026-09-14
+## Where it stands (2026-09-27)
+
+Everything below this section is the lab log, oldest first; a status line in it
+is true as of its date. Now:
+
+- boots in ~5 s; AIC1 with IPIs, the AIC's timer, both cores (XNU-style idle),
+  the 1 MB L2; framebuffer; touch; USB console + network; ssh; NFS root; apk
+- Wi-Fi (BCM4334 over HSIC): `wifi` on the device — see "WI-FI" at the end
+- the NAND, read-only: `ios mount` puts iOS's System partition on /mnt/ios;
+  `nandctl` for the chips themselves — see "THE NAND" at the end
+- XFCE: `tools/desktop/xfce-setup.sh`, then `desktop`
+- not there: USB host, the GPU, NAND as Linux's own storage (planned for Pi Pico
+  users, at the cost of iOS — README, "Where Linux keeps its files")
+
+On the device:
+```
+wifi                 Wi-Fi: scan / connect SSID [PASS] / auto on / forget
+ios mount|umount     iOS's System partition, read-only
+nandctl ...          the PPN chips: ids, features, pages, dumps (read-only)
+peek r|w ADDR [VAL]  MMIO
+```
+
+## Kernel status (Linux 6.12.0 on A5) — as of 2026-09-14 (history; current state above)
 ✅ Boot to an interactive shell (framebuffer console, tty0), Alpine 3.24 initramfs
 ✅ Custom AIC1 interrupt controller driver (**with two fixes, 2026-09-13**), PMCCNTR clocksource, simplefb
 ✅ **USB PHY driver** — registers fully decoded, iBoot already leaves a VALID state,
@@ -473,7 +495,7 @@ Details: `iBSSloader/docs/p105-mt-peek.md`.
 4. **WiFi (BCM4334 HSIC)** — an alternative path to SSH, independent of USB and touch
 5. **CPU1/SMP** — there is IPI code in AIC1, waiting for IRQ to be unblocked
 
-## WiFi — a note for the future
+## WiFi — a note for the future (done 2026-09-26/27: see "WI-FI" at the end)
 BCM4334 combo (WiFi+BT). SDIO/UART, HSIC for WiFi. Fully independent of the AIC1 IRQ decision
 (if the WiFi driver can work by polling — TBD). Hardcoded SSID/pass in init for a test:
 ```
@@ -1158,3 +1180,85 @@ frames and touches in dmesg; `z2-boot -p N -N` reads the frames itself, without 
 | `Failed to execute command "kbd-toggle"` | the session's PATH is whatever started X; ssh's has no `/usr/local/bin`. Launchers use absolute paths |
 | `pkill -x svkbd-mobile-intl` matches nothing | the kernel keeps 15 characters of a process name; the name is 17. `pkill -f` |
 | hundreds of zombies, and `exit` on the glass panics the kernel | stage 2 used to `exec` the glass shell as PID 1: it never reaped orphans, and PID 1 exiting is a panic. Now PID 1 respawns the shell and waits on it, and ash's wait (waitpid(-1)) reaps the orphans |
+
+# ═══════════════════════════════════════════════════════════════
+# BOTH CORES, THE L2 (2026-09-26/27)
+# ═══════════════════════════════════════════════════════════════
+
+- CPU1 starts through the PMGR: core mask to +0x1214, then +0x1220; +0x1210 powers
+  a core off. It leaves reset at PHYSICAL 0, an alias of 0x80000000: that page is
+  reserved (dts `cpu-reset@80000000`) and holds a trampoline, park loop at +0x40.
+- The PMGR powers CPU1 off on every WFI (not WFE, not CPU0) and an interrupt brings
+  it back through reset: XNU's deep idle. So CPU1 idles through `cpu_suspend`
+  (`platsmp.c`, `headsmp.S`). Knobs: `/sys/module/apple_smp/parameters/{idle,
+  powerdowns,wfi_returns}` — idle 0 power down (default), 1 poll, 2 plain WFI.
+- AIC rules learnt the hard way: never read another CPU's EVENT register
+  (0x5004 + (cpu << 7)) — the read takes the event; a self-IPI needs the SELF bit
+  (bit 31), BIT(self) is dropped; map the AIC strongly-ordered, or with the L2 on
+  IPI_SEND loses the writer's identity in the PL310's store buffer and IPIs
+  vanish. Counters: `/sys/module/aic1/parameters/ipi_{tx,tx_self,rx,rx_event}`.
+- The AIC timer registers in `early_initcall`, before `smp_init`, or RCU hangs.
+- L2: the PL310 set up the way iOS 6.1's driver does (ADT latencies, clock
+  gating without standby, two CIF writes before the enable); `l2c_aux_mask = ~0`
+  or the kernel skips it; A9 errata 743622 and 751472 set by hand (secure-only).
+- Tools: `tools/cpudbg.c` halts the other core from userspace through the
+  CoreSight debug registers (DBGAUTHSTATUS reads 0xff); `tools/smp-stress.sh`.
+- Heavy load over the NFS root makes ssh time out without anything hanging:
+  ping, and netconsole (`nc -u -l 6666` on the Mac), before calling it a freeze.
+- More: `docs/research/p105-smp-bringup.md`, README problems 4 and 6.
+
+# ═══════════════════════════════════════════════════════════════
+# WI-FI (2026-09-26/27)
+# ═══════════════════════════════════════════════════════════════
+
+- BCM4334B3 ("borg") on EHCI port 3 over HSIC — not SDIO. brcmfmac, firmware
+  `wifi/4334b1/borg.trx` + NVRAM `borg-t-st.txt` from the IPSW (`./cascadia
+  firmware`). The NVRAM has no `macaddr=` (iOS adds it from syscfg) and without
+  one the chip never attaches and the first ioctl traps: build-firmware.sh adds
+  `WIFI_MAC` (default 02:10:5a:05:00:03).
+- In the tree: the HOST_READY handshake (GPIO 50) and a reset of the HSIC port;
+  brcmfmac patched to use open auth when AUTOMATIC has no WEP key (auth 2 never
+  authenticates on this firmware), and to keep an interrupt-IN URB posted.
+  This firmware refuses `clmload` (-52), after which brcmfmac fails attach:
+  never ship `brcmfmac4334.clm_blob`.
+- Use: `wifi` (initramfs/usr/bin/wifi; QUICKSTART "Wi-Fi"). Open networks on 2.4
+  and 5 GHz work; WPA-PSK untried.
+- Debug: `echo 0x8400 > /sys/module/brcmfmac/parameters/debug`; firmware iovars
+  from userspace with `iw dev wlan0 vendor recv 0x001018 0x1 FILE`
+  (brcmf_vndr_dcmd_hdr + data; GET_VAR 262, SET_VAR 263). Retest without a reboot:
+  REG_ON cycle (PMU 0x64 0x09 → 0x0b) with port 3 disabled and bit 2 of
+  usb-complex 0x3f108000 toggled; brcmfmac probes again.
+- **Never** write PMU registers 0x29 or 0x42 to iOS's values: the iPad dies.
+  (0x1c, 0x3d, 0x43 are harmless; 0x44 is read-only.)
+
+# ═══════════════════════════════════════════════════════════════
+# THE NAND (2026-09-27) — read-only
+# ═══════════════════════════════════════════════════════════════
+
+- Two Hynix PPN packages, CE0 on each H2FMI bus (FMI0 0x31200000, FMI1 0x31300000;
+  FMC +0x40000, ECC +0x80000). Every sequence is out of iBEC (`build/firmware/
+  iBEC.dec`, which carries iOS's whole read stack). Details, register table and
+  all: `docs/research/p105-nand.md`.
+- `tools/nand/`: `ppn.c` the read-only layer (opcode allowlist: no program, no
+  erase; set-feature only for the power state), `nandctl` the pokes, `iosnand`
+  the block devices. `ios` (initramfs/usr/bin/ios) is the front end.
+- `ios mount`: the first run reads every page's metadata, ~12 min, into
+  `/var/lib/iosnand/pages.v1`; then ~1 s, ~20 s after iOS has run. The kernel
+  needs NBD and HFS+ (config) and reads HFS+ compressed files through
+  `fs/hfsplus/decmpfs.c` (91% of iOS's System is compressed).
+- Offline: a full raw dump is in `~/cascadia-root/srv/nand` (bus × CAU files,
+  `.b510` for the second half, status bytes in `.st`); `tools/nand-ftl-scan.py`
+  rebuilds disk0 from it (`scan`, `read`, `image`, `part System`).
+
+| trap | what to do |
+|---|---|
+| a read on a CE with no chip hangs the bus for good | only CE0 exists; `nandctl` refuses the others |
+| two programs on one bus wedge the FMC and confuse the PPN | `nandctl`/`iosnand` lock the bus; `ppninfo` touches both buses |
+| a NAND reset (FF) drops the PPN to async (SDR) and loses iBEC's DDR setup | power state 0x0a alone does not bring it back: reboot |
+| a wedged bus | `nandctl recover BUS` (PMGR block reset, FMC config put back) |
+| a dump stopping at 2 GB per file | build with `-D_FILE_OFFSET_BITS=64` (the build does) |
+| boot pages come out shifted a byte per sector | the FMI's BCH in DDR skips 54 bytes, not 53: `nandctl bootpage` reads them raw |
+
+- Storage policy (README, "Where Linux keeps its files"): with kDFU the NAND stays
+  iOS's (NFS or RAM for Linux); with a Pi Pico it can be Linux's, iOS erased —
+  planned, not written.

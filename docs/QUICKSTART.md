@@ -6,8 +6,9 @@ on an x86_64 Core i3 — clone, build, flash, ssh, with nothing borrowed from th
 author's machine.
 
 Nothing is written to the device's storage. The kernel is uploaded into RAM and
-run from there; iOS is untouched, and holding **power + home** brings the iPad
-back to it. That is worth knowing before you start rather than after.
+run from there; iOS is untouched (Linux can read its files, and never writes
+them), and holding **power + home** brings the iPad back to it. That is worth
+knowing before you start rather than after.
 
 ## What you need
 
@@ -193,8 +194,8 @@ Linux 6.12 booting to an interactive shell in about five seconds, with
 interrupts, a working tick and correct wall-clock time; a framebuffer console;
 CDC ACM and CDC ECM over the Lightning cable; ssh; `apk`, the whole Alpine
 repository, over that link; `/bin/peek` for poking at MMIO; and multitouch,
-brought up the way iOS brings it up, as an evdev device. Wi-Fi and the second
-CPU are not there — see the README for why, in detail.
+brought up the way iOS brings it up, as an evdev device; both CPU cores and the
+L2 cache; Wi-Fi (below); and iOS's own files, read-only (below).
 
 The root filesystem is the initramfs, in RAM, so anything installed with `apk`
 is gone on the next boot. `./cascadia nfs on` moves the root onto the host's
@@ -204,10 +205,55 @@ drive nfsd and pf; on Linux, nfs-utils and iptables (nftables without it), from
 `tools/linux-*.sh`. The export is `~/cascadia-root` on the Mac and
 `/srv/cascadia-root` on Linux; `DST=` moves it.
 
+That is also where it stays: the NAND is iOS's as long as iOS is there, and
+kDFU needs iOS. With a Pi Pico, giving the NAND to Linux (and iOS up) is the
+planned alternative — not written yet; the README's *Where Linux keeps its
+files* says more.
+
+## Wi-Fi
+
+The Wi-Fi chip's firmware comes out of your IPSW with the boot chain
+(`./cascadia firmware`); `./cascadia build` says `ok: Wi-Fi firmware from the
+IPSW` when it found it. On the iPad:
+
+```sh
+wifi                          # where things stand, and what to type next
+wifi scan
+wifi connect "Home" secret    # leave the password out for an open network
+wifi auto on                  # join the remembered networks at every boot
+wifi forget "Home"
+```
+
+`wifi` installs `iw` and `wpa_supplicant` with `apk` the first time, so that
+first time needs the internet over the cable (`./cascadia net on`) and the NFS
+root to keep them. Networks are remembered in `/etc/wifi/networks/`, a WPA
+password only as its PSK. Once Wi-Fi is up, ssh works over it too, at the
+address `wifi` prints.
+
+- Open networks work on 2.4 and 5 GHz, DHCP and all. WPA-PSK has not been
+  tried yet.
+- The MAC address is not the iPad's own (Linux cannot read it from iOS's
+  syscfg): it is `02:10:5a:05:00:03` unless you build the firmware with
+  another one — `WIFI_MAC=xx:xx:xx:xx:xx:xx ./cascadia firmware`, then
+  `./cascadia build`.
+
+## iOS's files
+
+```sh
+ios mount     # iOS's System partition, read-only, on /mnt/ios
+ios umount
+```
+
+`iosnand` reads the NAND itself and follows iOS's FTL to its partitions,
+without writing a byte. The very first `ios mount` reads every page once —
+about 12 minutes — and keeps a map in `/var/lib/iosnand` (on the NFS root);
+after that it takes a second, or twenty after iOS has been running. Only
+System mounts: iOS's Data partition (apps, photos) is encrypted file by file.
+
 ## A desktop
 
 XFCE runs off the NFS root with touch as the pointer — all of it software
-rendered on one core, since the GPU has no Linux driver. One script sets it
+rendered on the two CPU cores, since the GPU has no Linux driver. One script sets it
 up. From the host, with the iPad booted from NFS and `./cascadia net on`:
 
 ```bash
