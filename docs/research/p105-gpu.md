@@ -413,3 +413,20 @@ recorded so the wrong assumption is not repeated. The solid, verified part of
 the operand decode stands: register banks, dest number/mask, pack formats, the
 end flag, and the V*NMAD ALU op (VMUL et al.). Swizzles, the SMP/texture path,
 and the PDS uniform feed remain for stage 4.
+
+## Swizzle: solved (2026-09-28)
+
+Reading Vita3K's `vpck()` gave the trick the naive layout missed: VPCK's
+component-select is `SWIZZLE(comp0, comp_sel_1(ii), comp_sel_2(jj),
+comp_sel_3(oo))`, where **comp0's high bit is not its own -- it comes from
+`src2_n & 1` when the source is not F32** (from `comp0_sel_bit1` only for F32).
+That is exactly why the uColor->uColor.bgra change had landed in the src2_n and
+jj bits. With that, the two programs read correctly:
+
+    uColor       VPCK ... dn=6 s1n=3 src1.rgba     (identity)
+    uColor.bgra  VPCK ... dn=6 s1n=3 src1.bgra
+
+`usse-dis.py` now prints the VPCK source swizzle. Stage 4 solid so far: opcodes,
+operands (banks/reg/mask/fmt/end), the V*NMAD ALU op, and VPCK swizzles.
+Remaining: the SMP/texture path and how PDS feeds uniforms/varyings into the
+registers.

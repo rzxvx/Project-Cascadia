@@ -134,6 +134,19 @@ def field_multi(word, bits, letters):
     return field(word, bits, letters[0])
 
 
+def vpck_swizzle(word):
+    """VPCK src1 component select -> a swizzle like 'rgba'.  comp0's high bit
+    comes from src2_n&1 when the source is not F32 (Vita3K vpck())."""
+    bs = bits_of("VPCK")
+    ch = "rgba"
+    s2n = field(word, bs, "w")
+    sfmt = field(word, bs, "f")
+    hi = (field(word, bs, "v") if sfmt == 0 else (s2n & 1))
+    c0 = field(word, bs, "x") | (hi << 1)
+    sel = [c0, field(word, bs, "i"), field(word, bs, "j"), field(word, bs, "o")]
+    return "".join(ch[i] for i in sel)
+
+
 def operands(name, word):
     spec = OPERANDS.get(name)
     if not spec:
@@ -152,6 +165,8 @@ def operands(name, word):
             out.append(f"{label}={NMAD.get(v, v)}")
         else:
             out.append(f"{label}={v}")
+    if name == "VPCK":
+        out.append(f"src1.{vpck_swizzle(word)}")
     return "  " + " ".join(out)
 
 
