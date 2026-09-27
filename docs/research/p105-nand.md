@@ -9,8 +9,10 @@ it.
 ## Status (2026-09-27)
 
 From Linux, over `/dev/mem`, both buses answer: read ID, PPN firmware version
-and the PPN device-parameter page, all matching what iOS reports.  No kernel
-driver yet, no page reads yet.
+and the PPN device-parameter page, all matching what iOS reports.  Page reads
+work (PIO, ~14 MB/s through `nandctl dump` to the NFS root) and are
+bit-for-bit repeatable; the flash partition table reads back and decodes.
+No kernel driver yet, no FTL yet.
 
 ## What the NAND is
 
@@ -98,6 +100,39 @@ iBoot leaves them on.  Block reset = bit 31 of 0x3f1010c4 (FMI0) /
   tREA tREH tRHOH tRHZ tRLOH tRP, -, tWC tWH tWP, in ns); queue sizes at 0xe0;
   tRST / tPURST / tSCE ms, tCERDY us at 0xf0.
 
+- **Page read** (`fmiss_ppn_read_multi`, which queues this on the FMI's
+  sequencer at FMI+0xc0000; done by hand here): `0A <row, 3 bytes> 37`
+  (RW_CTRL 0xb), status, `7A`, data out, `77`.  Row = page | block << 8 |
+  cau << 19 (| slc << 23).  A page comes out as 16384 data + 64 metadata
+  bytes (`0x4040`); the PPN has already corrected it.  Status 0x40 = good,
+  0x49 = erased (all FF).  (The sequencer also queues `07 <row> 37` for all
+  but the last page of a multi-page read.)
+- **Boot pages** (LLB, the flash partition table) use the same read but carry
+  the FMI's own BCH: 3 x (512 data + 53 parity), `ECC_CONFIG` 0x1a8 = 424 bits,
+  `FMI_CONFIG` 0xf5 = ECC strength 30 << 3 | 5 (openiBoot:
+  `((ecc_bits & 0x1f) << 3) | 5`).  iBEC decodes them only after switching the
+  PPN to SDR (`transitionWorldFromDDR`: PPN set-feature 0x180 = 1, FMC_ON 1)
+  and back (0x180 = 0xa, DDR).  In DDR the FMI skips 54 bytes per sector
+  instead of 53: sector n comes out shifted by n bytes.  `nandctl bootpage`
+  reads raw and drops the parity instead (no correction).
+
+## Flash partition table
+
+Boot page 0 and 1 of block 0, on every bank (bank 0 = FMI0 CE0, bank 1 = FMI1
+CE0; all four copies identical).  1536 bytes: `"ndrG"` header, spare/remap
+lists (`"VgrA"`, `"sbus"`), device geometry at 0x200 (1, 2 banks, 2128
+blocks/CE, 256 pages, 32 x 512 bytes, 64 spare, 6, 0xdeadcafe), and at 0x400
+32 entries of 16 bytes: tag, start block, block count, flags.
+
+| tag | start | blocks | flags | IORegistry |
+|---|---|---|---|---|
+| boot | 0 | 1 | 0x002 | Boot Block |
+| plog | 4 | 1 | 0x108 | Effaceable |
+| nvrm | 2 | 3 | 0x108 | NVRAM |
+| firm | 2 | 1 | 0x308 | Firmware |
+| fsys | 1 | 2127 | 0x006 | Filesystem (the FTL) |
+| scfg / diag / fbbt | 0 | 1 | 0x001 | System Config / Diagnostic / BBT |
+
 ## Trap: an absent CE wedges the bus
 
 In DDR the chip clocks data out with DQS.  Reading data from a CE with no chip
@@ -109,6 +144,6 @@ registers back.  `nandctl` now refuses CEs outside `ce-bitmap`.
 
 ## Next
 
-Page reads: iBEC's `h2fmiPpnReadSinglePage` / `h2fmi_ppn_read_bootpage` →
-first page of the boot block (flash partition table) → PPNFPart → SVFL → SFTL
-→ LwVM → System, read-only.
+A full raw image (`nandctl dump`, 4 x 4.5 GB: bus x CAU, 1064 blocks x 256
+pages x 16448 bytes, plus a status byte per page) to develop the read-only
+PPNFPart → SVFL → SFTL → LwVM → HFS+ chain offline against iBEC, then port it.

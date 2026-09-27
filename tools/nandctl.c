@@ -3,7 +3,8 @@
  * The NAND carries the iPad's iOS install.  This tool never programs and never
  * erases: every command byte goes through nand_cmd(), which only lets through
  * the opcodes on READ_ONLY_OPS below.  There is no path in here that can issue
- * a program (80/10), an erase (60/D0) or a PPN set-features (EF ... E7).
+ * a program (80/10, PPN boot page 8A/17), an erase (60/D0, PPN 67) or a PPN
+ * set-features (EF ... E7).
  *
  * Two buses, each an FMI (DMA/PIO side), an FMC (the NAND bus itself, +0x40000)
  * and an ECC block (+0x80000): FMI0 at 0x31200000, FMI1 at 0x31300000 (ADT
@@ -18,6 +19,17 @@
  *   nandctl getfeat BUS CE FEAT LEN PPN get feature (EE FEAT E7, 77 7D, 7A)
  *   nandctl params BUS CE           PPN device parameters (92 00 97), 512 bytes
  *   nandctl ppninfo                 firmware version (feature 0x9080), both buses
+ *   nandctl page BUS CE ROW F [LEN] page read (0A ROW 37, 7A), raw: LEN bytes as
+ *                                   the bus delivers them (default 16448 = 16 KB
+ *                                   data + 64 metadata) into file F
+ *   nandctl bootpage BUS CE ROW [F] boot-page format (LLB, flash partition
+ *                                   table): 3 x (512 data + 53 BCH bytes), the
+ *                                   BCH bytes dropped, NOT corrected
+ *   nandctl dump BUS CE CAU BLK N F N blocks x 256 pages from CAU/BLK on, raw,
+ *                                   into F ("-" = stdout); a status byte per page
+ *                                   into F.st
+ *
+ * ROW = page | block << 8 | cau << 19 (| slc << 23), 3 address bytes.
  *
  * PPN sequences are iBEC's H2fmi_ppn.c: h2fmi_ppn_get_feature,
  * h2fmi_ppn_get_device_params, h2fmi_get_nand_status.
@@ -67,6 +79,8 @@
 
 #define FMI_INTEN       0x10
 
+#define PAGE_RAW        16448   /* 16 KB data + 4 x 16 bytes metadata */
+
 /* first byte, and the second one it may be paired with (0 = none) */
 static const uint8_t READ_ONLY_OPS[][2] = {
     { 0xff, 0 },        /* reset */
@@ -77,6 +91,7 @@ static const uint8_t READ_ONLY_OPS[][2] = {
     { 0x77, 0x7d },     /* PPN operation status */
     { 0x77, 0 },        /* PPN end of operation */
     { 0x7a, 0 },        /* PPN data out */
+    { 0x0a, 0x37 },     /* PPN read boot page */
 };
 
 static volatile uint32_t *fmi[2], *fmc[2], *ecc[2];
@@ -332,6 +347,28 @@ static int ppn_params(int bus, int ce, uint8_t *buf, uint8_t *st)
     return r;
 }
 
+/* One page read, the way iBEC's sequencer queues it (fmiss_ppn_read_multi:
+ * 0A ROW 37, status, 7A, data, 77), done by hand with PIO.  The PPN corrects
+ * its own pages, so what comes out is data + metadata.  Boot pages are the
+ * exception: they carry the FMI's BCH (ECC_CONFIG 0x1a8 = 53 bytes per 512),
+ * which iBEC only decodes after switching the PPN to SDR (set-feature 0x180,
+ * transitionWorldFromDDR) -- in DDR the FMI skips 54 bytes per sector, so
+ * here they are read raw and the BCH bytes dropped. */
+static int ppn_read_page(int bus, int ce, uint32_t row, uint8_t *buf, uint32_t len, uint8_t *st)
+{
+    uint32_t on = R(fmc[bus], FMC_ON), if_ctrl = R(fmc[bus], FMC_IF_CTRL);
+    int r = -1;
+
+    W(fmc[bus], FMC_CE_CTRL, 1u << ce);
+    clear_irqs(bus);
+    if (ppn_cmd_addr_cmd(bus, 0x0a, 0x37, row, 3) == 0 && ppn_status(bus, st) == 0)
+        r = ppn_data_out(bus, buf, len);
+    ppn_cmd1(bus, 0x77);
+    W(fmc[bus], FMC_CE_CTRL, 0);
+    device_reset(bus, on, if_ctrl);
+    return r;
+}
+
 static void hexdump(const uint8_t *p, uint32_t n)
 {
     for (uint32_t o = 0; o < n; o += 16) {
@@ -453,7 +490,100 @@ int main(int argc, char **argv)
         }
         return 0;
     }
+    if (argc >= 5 && !strcmp(argv[1], "bootpage")) {
+        int bus = atoi(argv[2]) & 1, ce = atoi(argv[3]);
+        if (!ce_ok(ce))
+            return 1;
+        uint32_t row = strtoul(argv[4], NULL, 0);
+        uint8_t raw[3 * 565 + 3] __attribute__((aligned(4))) = { 0 }, buf[0x600], st = 0;
+        if (!gates_on(bus))
+            return 1;
+        int r = ppn_read_page(bus, ce, row, raw, sizeof(raw) & ~3u, &st);
+        for (int i = 0; i < 3; i++)
+            memcpy(buf + i * 512, raw + i * 565, 512);
+        printf("FMI%d CE%d boot page 0x%06x: status 0x%02x%s\n", bus, ce, row, st, r ? " (failed)" : "");
+        if (argc >= 6) {
+            FILE *f = fopen(argv[5], "wb");
+            if (!f || fwrite(buf, 1, sizeof(buf), f) != sizeof(buf)) {
+                perror(argv[5]);
+                return 1;
+            }
+            fclose(f);
+        } else {
+            hexdump(buf, 0x100);
+        }
+        return r ? 1 : 0;
+    }
+    if (argc >= 6 && !strcmp(argv[1], "page")) {
+        int bus = atoi(argv[2]) & 1, ce = atoi(argv[3]);
+        if (!ce_ok(ce))
+            return 1;
+        uint32_t row = strtoul(argv[4], NULL, 0);
+        uint32_t len = argc > 6 ? strtoul(argv[6], NULL, 0) : PAGE_RAW;
+        static uint8_t buf[0x4400] __attribute__((aligned(4)));
+        uint8_t st = 0;
+        if (len > sizeof(buf) || !gates_on(bus))
+            return 1;
+        int r = ppn_read_page(bus, ce, row, buf, len, &st);
+        printf("FMI%d CE%d page 0x%06x, %u bytes: status 0x%02x%s\n",
+               bus, ce, row, len, st, r ? " (failed)" : "");
+        FILE *f = fopen(argv[5], "wb");
+        if (!f || fwrite(buf, 1, len, f) != len) {
+            perror(argv[5]);
+            return 1;
+        }
+        fclose(f);
+        return r ? 1 : 0;
+    }
+    if (argc >= 8 && !strcmp(argv[1], "dump")) {
+        int bus = atoi(argv[2]) & 1, ce = atoi(argv[3]);
+        if (!ce_ok(ce))
+            return 1;
+        uint32_t cau = strtoul(argv[4], NULL, 0), blk = strtoul(argv[5], NULL, 0);
+        uint32_t n = strtoul(argv[6], NULL, 0);
+        static uint8_t buf[PAGE_RAW] __attribute__((aligned(4))), sts[256];
+        char stname[256];
+        if (cau > 1 || blk + n > 1064 || !gates_on(bus))
+            return 1;
+        int out = strcmp(argv[7], "-") ? open(argv[7], O_WRONLY | O_CREAT | O_TRUNC, 0644) : 1;
+        snprintf(stname, sizeof(stname), "%s.st", strcmp(argv[7], "-") ? argv[7] : "/tmp/dump");
+        int stf = open(stname, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        if (out < 0 || stf < 0) {
+            perror("open");
+            return 1;
+        }
+        uint64_t t0 = now_us();
+        for (uint32_t b = blk; b < blk + n; b++) {
+            int bad = 0;
+            for (uint32_t pg = 0; pg < 256; pg++) {
+                uint8_t st = 0;
+                if (ppn_read_page(bus, ce, pg | b << 8 | cau << 19, buf, PAGE_RAW, &st)) {
+                    memset(buf, 0, PAGE_RAW);
+                    st = 0;
+                }
+                sts[pg] = st;
+                bad += st != 0x40;
+                if (write(out, buf, PAGE_RAW) != PAGE_RAW) {
+                    perror("write");
+                    return 1;
+                }
+            }
+            if (write(stf, sts, 256) != 256) {
+                perror("write");
+                return 1;
+            }
+            fprintf(stderr, "FMI%d CE%d CAU%u block %4u: %3d pages not 0x40, %.1f MB/s\n",
+                    bus, ce, cau, b, bad,
+                    (b - blk + 1) * 256.0 * PAGE_RAW / (now_us() - t0 + 1));
+        }
+        close(stf);
+        if (out != 1)
+            close(out);
+        return 0;
+    }
     fprintf(stderr, "usage: nandctl regs | readid BUS CE [ADDR] | reset BUS CE |\n"
-                    "               getfeat BUS CE FEAT LEN | params BUS CE | ppninfo\n");
+                    "               getfeat BUS CE FEAT LEN | params BUS CE | ppninfo |\n"
+                    "               page BUS CE ROW FILE [LEN] | bootpage BUS CE ROW [FILE] |\n"
+                    "               dump BUS CE CAU BLOCK NBLOCKS FILE\n");
     return 1;
 }
