@@ -973,6 +973,87 @@ index d7a3c8d13..f12b1f57c 100644
  	unsigned		frame_index_bug:1; /* MosChip (AKA NetMos) */
  	unsigned		need_oc_pp_cycle:1; /* MPC834X port power */
  	unsigned		imx28_write_fix:1; /* For Freescale i.MX28 */
+diff --git a/fs/hfsplus/Kconfig b/fs/hfsplus/Kconfig
+index 8ce4a33a9..f6666bb90 100644
+--- a/fs/hfsplus/Kconfig
++++ b/fs/hfsplus/Kconfig
+@@ -6,6 +6,7 @@ config HFSPLUS_FS
+ 	select NLS
+ 	select NLS_UTF8
+ 	select LEGACY_DIRECT_IO
++	select ZLIB_INFLATE
+ 	help
+ 	  If you say Y here, you will be able to mount extended format
+ 	  Macintosh-formatted hard drive partitions with full read-write access.
+diff --git a/fs/hfsplus/Makefile b/fs/hfsplus/Makefile
+index 9ed20e64b..76acd4da9 100644
+--- a/fs/hfsplus/Makefile
++++ b/fs/hfsplus/Makefile
+@@ -7,4 +7,5 @@ obj-$(CONFIG_HFSPLUS_FS) += hfsplus.o
+ 
+ hfsplus-objs := super.o options.o inode.o ioctl.o extents.o catalog.o dir.o btree.o \
+ 		bnode.o brec.o bfind.o tables.o unicode.o wrapper.o bitmap.o part_tbl.o \
+-		attributes.o xattr.o xattr_user.o xattr_security.o xattr_trusted.o
++		attributes.o xattr.o xattr_user.o xattr_security.o xattr_trusted.o \
++		decmpfs.o
+diff --git a/fs/hfsplus/hfsplus_fs.h b/fs/hfsplus/hfsplus_fs.h
+index 59ce81dca..01964008d 100644
+--- a/fs/hfsplus/hfsplus_fs.h
++++ b/fs/hfsplus/hfsplus_fs.h
+@@ -250,6 +250,8 @@ struct hfsplus_inode_info {
+ 	spinlock_t open_dir_lock;
+ 	loff_t phys_size;
+ 
++	struct hfsplus_decmpfs *decmpfs;	/* compressed file (decmpfs.c) */
++
+ 	struct inode vfs_inode;
+ };
+ 
+@@ -468,6 +470,11 @@ void hfsplus_file_truncate(struct inode *inode);
+ 
+ /* inode.c */
+ extern const struct address_space_operations hfsplus_aops;
++
++/* decmpfs.c */
++#define HFSPLUS_UF_COMPRESSED	0x20	/* BSD UF_COMPRESSED, in the user flags */
++void hfsplus_decmpfs_init(struct inode *inode);
++void hfsplus_decmpfs_evict(struct inode *inode);
+ extern const struct address_space_operations hfsplus_btree_aops;
+ extern const struct dentry_operations hfsplus_dentry_operations;
+ 
+diff --git a/fs/hfsplus/super.c b/fs/hfsplus/super.c
+index 979202027..13d139468 100644
+--- a/fs/hfsplus/super.c
++++ b/fs/hfsplus/super.c
+@@ -92,6 +92,8 @@ struct inode *hfsplus_iget(struct super_block *sb, unsigned long ino)
+ 		iget_failed(inode);
+ 		return ERR_PTR(err);
+ 	}
++	if (inode->i_ino >= HFSPLUS_FIRSTUSER_CNID)
++		hfsplus_decmpfs_init(inode);
+ 
+ 	unlock_new_inode(inode);
+ 	return inode;
+@@ -166,6 +168,7 @@ static void hfsplus_evict_inode(struct inode *inode)
+ {
+ 	hfs_dbg(INODE, "hfsplus_evict_inode: %lu\n", inode->i_ino);
+ 	truncate_inode_pages_final(&inode->i_data);
++	hfsplus_decmpfs_evict(inode);
+ 	clear_inode(inode);
+ 	if (HFSPLUS_IS_RSRC(inode)) {
+ 		HFSPLUS_I(HFSPLUS_I(inode)->rsrc_inode)->rsrc_inode = NULL;
+@@ -631,7 +634,10 @@ static struct inode *hfsplus_alloc_inode(struct super_block *sb)
+ 	struct hfsplus_inode_info *i;
+ 
+ 	i = alloc_inode_sb(sb, hfsplus_inode_cachep, GFP_KERNEL);
+-	return i ? &i->vfs_inode : NULL;
++	if (!i)
++		return NULL;
++	i->decmpfs = NULL;
++	return &i->vfs_inode;
+ }
+ 
+ static void hfsplus_free_inode(struct inode *inode)
 diff --git a/init/main.c b/init/main.c
 index c4778edae..296545649 100644
 --- a/init/main.c

@@ -48,6 +48,7 @@ NEW_FILES = [
     "drivers/irqchip/irq-apple-aic1.c",
     "drivers/phy/phy-apple-s5l-usb.c",
     "Documentation/devicetree/bindings/interrupt-controller/apple,aic1.yaml",
+    "fs/hfsplus/decmpfs.c",
 ]
 
 # Glue edits: (file, anchor substring, text to insert after that line)
