@@ -133,6 +133,37 @@ blocks/CE, 256 pages, 32 x 512 bytes, 64 spare, 6, 0xdeadcafe), and at 0x400
 | fsys | 1 | 2127 | 0x006 | Filesystem (the FTL) |
 | scfg / diag / fbbt | 0 | 1 | 0x001 | System Config / Diagnostic / BBT |
 
+## Page layout and the FTL's metadata
+
+A page comes off the bus as four 4 KB logical pages, each **1024 data, 16
+metadata, 3072 data** (4112 bytes; HFS+ nodes found in the stream pin this
+down: record offsets jump by 16 at logical 0x400 of every 4 KB).  The
+metadata is plain -- not whitened, whatever the ADT's `metadata-whitening`
+means:
+
+| bytes | field |
+|---|---|
+| 0 | type: 1 user data, 2 FTL context (L2V spans, "weaved" into the data stream), FF erased |
+| 1 | flags |
+| 2-7 | u48 write sequence: +1 per 4 KB; +16 per page, the stripe runs over 4 dies (2 banks x 2 CAUs) |
+| 8-11 | u32 LBA in 4 KB units (disk0 = 3 906 250 of them); context pages use LBAs above that |
+| 12-15 | u32 sequence >> 16 |
+
+So disk0 can be rebuilt without parsing the SFTL context: for each LBA the
+copy with the highest sequence is the live one (`tools/nand-ftl-scan.py`).
+TRIMmed LBAs come back stale, which the filesystem never looks at.
+
+## disk0: LwVM, then HFSX
+
+LBA 0 holds the LwVM header: type `6A9088CF-8AFD-630A-E351-E24887E0B98B`,
+media size 16 000 000 000, two partition records at 0x200 (0x80 bytes each:
+type, GUID, begin, end, attributes, UTF-16 name) -- System and Data, both HFS+
+-- and at 0x800 a map of 1024 16 MB chunks, one u16 per physical chunk:
+0xF000 the header itself, 0xF3FF unused, else partition << 12 | chunk.
+System is 143 chunks (physical 1-143), Data 803.  System's volume header is
+HFSX (case-sensitive, journaled), 4 KB blocks, 543 000 of them =
+2 224 128 000 bytes, exactly iOS's `disk0s1s1`.  It is not encrypted.
+
 ## Trap: an absent CE wedges the bus
 
 In DDR the chip clocks data out with DQS.  Reading data from a CE with no chip
