@@ -301,3 +301,30 @@ diffing -- that is the next, and genuinely long, step. Structure mapped so far:
 map0 control page -> this patch table at ~0x740000 -> the mapped param/state
 buffers (0x6b3000-0x6bc000) and the INIT/LIVE command ring (~0x750000), with
 GPU VAs (0x0098xxxx / 0x0190xxxx / 0x1461xxxx) threaded through all of them.
+
+## A USSE disassembler, and finding the programs (2026-09-28)
+
+`tools/iosgpu/usse-dis.py` disassembles the SGX543's USSE ISA. USSE
+instructions are 64 bits, top 5 bits = major opcode; the full encoding is taken
+as 64-char bitstrings from the Vita3K project's decoder (GPLv2, like this repo),
+turned into (mask, value) matchers. `dis FILE OFF N` lists instructions;
+`scan FILE` finds runs of valid ones.
+
+Run over the captured arena (`gt_b`), it works at the opcode level: it finds
+PHAS-anchored programs, e.g. a small one at cpu 0x6a45c0 that reads
+
+    PHAS / VBW / NOP / VTST / VLDST / SPEC / VPCK / SMP / VMAD / VMOV
+
+before turning to data -- a plausible complete program. Caveats, honestly: the
+low-fixed-bit opcodes (VMAD2 has only 5 fixed bits) match ~1/32 of random
+words, so `scan` has false positives; the pred/end fields are multi-bit and not
+yet mapped to meaning; and program boundaries are fuzzy. That 0x6a45c0 program
+has an SMP (texture sample), which a constant-colour fragment shader would not
+-- so it is likely a vertex or an always-present driver program, not ours. A
+big PHAS-dense region at ~0x6bf000 (and copies at 0x7d7000, 0xaa9000, 0xbc1000)
+looks like the driver's built-in program library.
+
+So the disassembler exists and identifies instructions; what remains is the
+long part: pin our fragment program exactly (follow the control-page GPU VA, or
+diff two shaders that differ by one instruction), then decode operands
+(banks/swizzles/dest) field by field. That is the ongoing USSE RE.

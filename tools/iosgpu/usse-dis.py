@@ -1,0 +1,165 @@
+#!/usr/bin/env python3
+"""usse-dis.py -- a disassembler for the SGX543's USSE shader ISA, enough to
+find and read the programs iOS's GL driver builds (captured by gltrace; see
+docs/research/p105-gpu.md).
+
+USSE instructions are 64 bits; the top 5 bits select the major opcode.  The
+encoding here is the public one from the Vita3K project's decoder (GPLv2, like
+this repo): each instruction is a 64-char bitstring, bit 63 first, where 0/1
+are fixed bits and letters/'-' are operand fields.  We turn the fixed bits into
+a (mask, value) matcher and identify instructions by them.  Operand decoding is
+added field by field as it is worked out; for now this gives the opcode, the
+raw word, and the end/predicate flags -- enough to locate a program and see its
+shape.
+
+    usse-dis.py dis  FILE [OFF [N]]   disassemble N instrs from byte OFF
+    usse-dis.py scan FILE [MIN]       find runs of >= MIN (default 6) valid,
+                                      non-zero, non-illegal instructions
+"""
+import sys
+
+# (mnemonic, bitstring) -- from Vita3K vita3k/shader/src/usse_translator_entry.cpp
+OPS = [
+    ("VMAD2",   "00000dpps-ry-cbawwwineeeemmookttffgghhhhhhzzjjllllllqqqqqquuuuuu"),
+    ("V32NMAD", "00001pppsrrydcbawwwwneeeemmoiittkkllffffffzzzzzzzggghhhhhhjjjjjj"),
+    ("V16NMAD", "00010pppsrrydcbawwwwneeeemmoiittkkllffffffzzzzzzzggghhhhhhjjjjjj"),
+    ("VMAD",    "00011pppsg1oderaaittnwwwwcbfhzkkjjllmmmmmmqqqquuuuvvxyAAAABBBBBB"),
+    ("VDP",     "00011pppsc0oderaagttnwwwwbflllkkhhiijjjjjjzzzzmmmqqqyyyxxxuuuuuu"),
+    ("VDUAL",   "0010cgsskdtpuuuunaaalriiiiwwwwmmffeebbbbbbbooohhjqvvxxyyyzzzzzzz"),
+    ("VCOMP",   "00110pppsddyenr-aaaaobbccmmff-ttkk--ggggggg-------hhhhhhh---wwww"),
+    ("VMOV",    "00111pppstrydecbmmaanoooiwwwwkllffgghhhhjjjjjjqqqqqquuuuuuvvvvvv"),
+    ("VPCK",    "01000pppsnuydercaaaaffftttmmmmbbkkllgggggggoohiijjqqqqqqvwwwwwwx"),
+    ("VTST",    "01001ppps-oydrceavttiizzmhhhnnbbkkffgggggggwlluuuujjjjjjjqqqqqqq"),
+    ("VTSTMSK", "01111ppps-oydtrcevuuiizzm-aa--bbnnkkfffffffwllgggghhhhhhhjjjjjjj"),
+    ("VBW",     "01ooopppsnrydecxaaaaittttthhbwkkffggjjjjjjjlllllllmmmmmmmqqqqqqq"),
+    ("SOP2",    "10000ppcsnaaderbmooofllggghhhittkkjjqqqqqqquvvwwxyzzzzzzzAAAAAAA"),
+    ("SOP2M",   "10010ppmsnccderbowwwwaalllfff-ttkkgguuuuuuu-------hhhhhhhiiiiiii"),
+    ("SOP3",    "10001ppcsnooderbmallfgghhhiiikttjjqquuuuuuuvvvvvvvwwwwwwwxxxxxxx"),
+    ("I8MAD",   "10011ppcsneedarbmtttuolfghijkqvvwwxxyyyyyyyzzzzzzzAAAAAAABBBBBBB"),
+    ("I16MAD",  "10100ppasnredbck-tttmmffoolhhgiijjqquuuuuuuvvvvvvvwwwwwwwxxxxxxx"),
+    ("I32MAD",  "10101pps-nrcdeba0tttif00yy000kgghhjjlllllllmmmmmmmoooooooqqqqqqq"),
+    ("ILLEGAL22", "10110-----------------------------------------------------------"),
+    ("ILLEGAL23", "10111-----------------------------------------------------------"),
+    ("ILLEGAL24", "11000-----------------------------------------------------------"),
+    ("I8MAD2",  "11001-----------------------------------------------------------"),
+    ("I32MAD2", "11010ppp-nssdercbooo00iga0000kttffhhjjjjjjjlllllllmmmmmmmqqqqqqq"),
+    ("ILLEGAL27", "11011-----------------------------------------------------------"),
+    ("SMP",     "11100pppsn-ymrceffaaddlltbbggkhhiijjoooooooqqqqqqquuuuuuuvvvvvvv"),
+    ("PHAS",    "11111010s100eirc--matwwwppppppppbbnn--------xxxxxxoooooooddddddd"),
+    ("NOP",     "11111----000-----------101--------------------------------------"),
+    ("BR",      "11111ppps000e-----wynba00r----------------iloooooooooooooooooooo"),
+    ("SMLSI",   "11111010--01-n--ttttppppssssdrcieeeeeeeeaaaaaaaabbbbbbbbffffffff"),
+    ("SMBO",    "11111011--01-n--ddddddddddddssssssssssssrrrrrrrrrrrrcccccccccccc"),
+    ("KILL",    "11111001--11000000000pp0000001101111----------------------------"),
+    ("LIMM",    "11111100sn10deiiiiiipppmmmmm--tt----uuuuuuuvvvvvvvvvvvvvvvvvvvvv"),
+    ("DEPTHF",  "11111011s-11recb----npp---tffa--kkddggggggghhhhhhhiiiiiiijjjjjjj"),
+    ("SPEC",    "11111----scc----------------------------------------------------"),
+    ("VLDST",   "111oopppsnmycrbakkkkddeetgffihjlqquuvvvvvvvwwwwwwwxxxxxxxzzzzzzz"),
+]
+
+
+def matcher(bits):
+    mask = val = 0
+    for i, ch in enumerate(bits):        # i=0 is bit 63
+        b = 63 - i
+        if ch == "0":
+            mask |= 1 << b
+        elif ch == "1":
+            mask |= 1 << b
+            val |= 1 << b
+    return mask, val
+
+
+MATCH = [(name, *matcher(bits), bits.count("0") + bits.count("1")) for name, bits in OPS]
+
+
+def decode(word):
+    """Return (mnemonic, fixed_bits) of the best match, or (None, 0)."""
+    best = (None, -1)
+    for name, mask, val, nfix in MATCH:
+        if word & mask == val and nfix > best[1]:
+            best = (name, nfix)
+    return best
+
+
+def field(word, bits, letter):
+    """Assemble the value of a lettered field (MSB-first in the bitstring)."""
+    v = 0
+    got = False
+    for i, ch in enumerate(bits):
+        if ch == letter:
+            v = (v << 1) | ((word >> (63 - i)) & 1)
+            got = True
+    return v if got else None
+
+
+def bits_of(name):
+    for n, b in OPS:
+        if n == name:
+            return b
+    return None
+
+
+def dis(data, off, n):
+    for k in range(n):
+        p = off + k * 8
+        if p + 8 > len(data):
+            break
+        w = int.from_bytes(data[p:p + 8], "little")
+        name, nfix = decode(w)
+        extra = ""
+        if name:
+            bs = bits_of(name)
+            pred = field(w, bs, "p")
+            end = field(w, bs, "e")
+            extra = ""
+            if pred is not None:
+                extra += f" pred={pred}"
+            if end is not None:
+                extra += f" e={end}"
+        print(f"  +{p:04x}: {w:016x}  {name or '???':10}{extra}")
+
+
+def valid(w):
+    if w == 0:
+        return False
+    name, _ = decode(w)
+    return name is not None and not name.startswith("ILLEGAL")
+
+
+def scan(data, minrun):
+    n = len(data) // 8
+    words = [int.from_bytes(data[i * 8:i * 8 + 8], "little") for i in range(n)]
+    i = 0
+    hits = 0
+    while i < n:
+        if valid(words[i]):
+            j = i
+            while j < n and valid(words[j]):
+                j += 1
+            if j - i >= minrun:
+                print(f"\n== run at +0x{i*8:04x}, {j-i} instrs")
+                for k in range(i, min(j, i + 40)):
+                    name, _ = decode(words[k])
+                    print(f"  +{k*8:04x}: {words[k]:016x}  {name}")
+                hits += 1
+            i = j
+        else:
+            i += 1
+    if not hits:
+        print("no USSE-looking runs found (try LE/BE, or the wrong buffer)")
+
+
+def main():
+    cmd, fn = sys.argv[1], sys.argv[2]
+    data = open(fn, "rb").read()
+    if cmd == "dis":
+        off = int(sys.argv[3], 0) if len(sys.argv) > 3 else 0
+        n = int(sys.argv[4], 0) if len(sys.argv) > 4 else (len(data) - off) // 8
+        dis(data, off, n)
+    elif cmd == "scan":
+        scan(data, int(sys.argv[3]) if len(sys.argv) > 3 else 6)
+
+
+if __name__ == "__main__":
+    main()
