@@ -203,13 +203,26 @@ int main(void)
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex, 0);
 
     const char *vs = "attribute vec4 p; void main(){ gl_Position = p; }";
-    const char *fs = "precision mediump float; uniform vec4 uColor;"
-                     "void main(){ gl_FragColor = uColor; }";
+    /* two fragment programs differing by ONE op: prog1 outputs the uniform,
+     * prog2 outputs uColor*uColor.  Both are compiled and drawn in this one
+     * process, so both USSE programs sit in the arena at once; the two are
+     * near-identical (that is our fragment program) and their one-instruction
+     * difference is the MUL -- a first operand-level decode. */
+    const char *fs1 = "precision mediump float; uniform vec4 uColor;"
+                      "void main(){ gl_FragColor = uColor; }";
+    const char *fs2 = "precision mediump float; uniform vec4 uColor;"
+                      "void main(){ gl_FragColor = uColor * uColor; }";
+    GLuint vsh = make_shader(GL_VERTEX_SHADER, vs);
     GLuint prog = glCreateProgram();
-    glAttachShader(prog, make_shader(GL_VERTEX_SHADER, vs));
-    glAttachShader(prog, make_shader(GL_FRAGMENT_SHADER, fs));
+    glAttachShader(prog, vsh);
+    glAttachShader(prog, make_shader(GL_FRAGMENT_SHADER, fs1));
     glBindAttribLocation(prog, 0, "p");
     glLinkProgram(prog);
+    GLuint prog2 = glCreateProgram();
+    glAttachShader(prog2, vsh);
+    glAttachShader(prog2, make_shader(GL_FRAGMENT_SHADER, fs2));
+    glBindAttribLocation(prog2, 0, "p");
+    glLinkProgram(prog2);
     glUseProgram(prog);
     GLint uColor = glGetUniformLocation(prog, "uColor");
 
@@ -233,17 +246,18 @@ int main(void)
     glFinish();
     snapshot("b"); snapshot_arena("b");
 
-    /* c: same triangle, teal -- only the uniform differs from b */
-    printf("== frame c (triangle, teal)\n");
+    /* c: triangle with prog2 (uColor*uColor) -- a different fragment program */
+    printf("== frame c (triangle, prog2 = uColor*uColor)\n");
+    glUseProgram(prog2);
+    glUniform4f(glGetUniformLocation(prog2, "uColor"), 1.0f, 0.5f, 0.0f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT);
-    glUniform4f(uColor, 0.0f, 0.5f, 1.0f, 1.0f);
     glDrawArrays(GL_TRIANGLES, 0, 3);
     glFinish();
     snapshot("c"); snapshot_arena("c");
 
     unsigned char px[4] = { 0 };
     glReadPixels(32, 32, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
-    printf("== centre pixel after c: %02x %02x %02x %02x (expect ~00 80 ff ff)\n",
+    printf("== centre pixel after c: %02x %02x %02x %02x (prog2: uColor^2 -> ~ff 40 00 ff)\n",
            px[0], px[1], px[2], px[3]);
     return 0;
 }

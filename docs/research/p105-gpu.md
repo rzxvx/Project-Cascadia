@@ -328,3 +328,31 @@ So the disassembler exists and identifies instructions; what remains is the
 long part: pin our fragment program exactly (follow the control-page GPU VA, or
 diff two shaders that differ by one instruction), then decode operands
 (banks/swizzles/dest) field by field. That is the ongoing USSE RE.
+
+## The fragment program, located (2026-09-28)
+
+`gltrace` now compiles two fragment programs in one process -- `gl_FragColor =
+uColor` and `= uColor*uColor` -- draws both, and dumps the arena. Both render
+correctly (prog2's centre pixel `ff 40 00 ff` = (1,0.5,0) squared), and both
+USSE programs are then in the arena. Scanning for PHAS-anchored small programs
+finds them, and they share a byte-identical **fragment preamble**:
+
+    PHAS   fa44070000000000
+    NOP    f800094000000000
+    VTST   488b0281a00c0000
+    VLDST  e9a30084a0000000
+    SPEC   f920000000000000
+
+This exact sequence appears at the head of every fragment program (0x3005c0,
+0x300940, 0x300cc0, 0x3adec0, ...), so it is the driver's boilerplate (load the
+iterated inputs / set up the pixel phase), and a reliable fingerprint for "this
+is a fragment program". After it comes a short body that differs with the
+shader's arithmetic -- VPCK (pack to the F16 output) plus a NMAD/MAD-class
+multiply (`V16NMAD`/`VMAD`) for the `*` -- and ends folding into data.
+
+So our fragment programs are pinned (~7-12 instructions) and the multiply maps
+to a NMAD/MAD-class op, as expected. What is not yet done: the exact operand
+fields (which bits pick the uniform, the register banks, the swizzles, the
+F16 pack) -- single-instruction opcode IDs from the permissive matcher are also
+not all trustworthy yet. Decoding those fields, using Vita3K's field
+definitions, is the next step.
