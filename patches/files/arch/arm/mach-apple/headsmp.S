@@ -26,8 +26,26 @@ apple_s5l_scu_inv_self:
 	dsb
 	ret	lr
 
+/*
+ * Cortex-A9 errata 743622 (r2p*, diagnostic bit 6) and 751472 (before r3p0,
+ * bit 11), which multi_v7 leaves out: the diagnostic register is secure-only,
+ * and this kernel runs secure.  apple.c does the same for CPU0.  Corrupts
+ * r0-r2.
+ */
+apple_s5l_a9_errata:
+	mrc	p15, 0, r0, c0, c0, 0		@ MIDR
+	ubfx	r1, r0, #20, #4			@ variant
+	mrc	p15, 0, r2, c15, c0, 1		@ diagnostic register
+	cmp	r1, #2
+	orreq	r2, r2, #(1 << 6)
+	cmp	r1, #3
+	orrlt	r2, r2, #(1 << 11)
+	mcr	p15, 0, r2, c15, c0, 1
+	ret	lr
+
 /* First start of a secondary: __v7_ca9mp_setup cleans its L1 itself. */
 ENTRY(apple_s5l_secondary_startup)
+	bl	apple_s5l_a9_errata
 	bl	apple_s5l_scu_inv_self
 	b	secondary_startup
 ENDPROC(apple_s5l_secondary_startup)
@@ -37,6 +55,7 @@ ENDPROC(apple_s5l_secondary_startup)
  * reset), so invalidate it before cpu_resume turns SMP and the caches on.
  */
 ENTRY(apple_s5l_cpu_resume)
+	bl	apple_s5l_a9_errata
 	bl	v7_invalidate_l1
 	bl	apple_s5l_scu_inv_self
 	b	cpu_resume

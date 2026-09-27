@@ -30,6 +30,7 @@
 #include <linux/irqchip.h>
 #include <linux/irqdomain.h>
 #include <linux/math64.h>
+#include <linux/moduleparam.h>
 #include <linux/of.h>
 #include <linux/of_address.h>
 #include <linux/processor.h>
@@ -37,6 +38,7 @@
 #include <linux/smp.h>
 
 #include <asm/exception.h>
+#include <asm/mach/map.h>
 #include <asm/ptrace.h>
 #ifdef CONFIG_SMP
 #include <asm/smp.h>
@@ -336,6 +338,17 @@ void apple_aic1_rearm(void)
 }
 
 #ifdef CONFIG_SMP
+/* IPI accounting, /sys/module/aic1/parameters/: sends by target CPU (and to
+ * the sender itself), IPI events taken per CPU and the last one's value. */
+#undef MODULE_PARAM_PREFIX
+#define MODULE_PARAM_PREFIX "aic1."
+static unsigned int ipi_tx[AIC1_NR_CPUS], ipi_tx_self, ipi_rx[AIC1_NR_CPUS];
+static unsigned int ipi_rx_event[AIC1_NR_CPUS];
+module_param_array(ipi_tx, uint, NULL, 0444);
+module_param(ipi_tx_self, uint, 0444);
+module_param_array(ipi_rx, uint, NULL, 0444);
+module_param_array(ipi_rx_event, uint, NULL, 0444);
+
 static void aic1_handle_ipi(struct pt_regs *regs)
 {
 	struct apple_aic1 *aic = apple_aic1;
@@ -349,13 +362,21 @@ static void aic1_handle_ipi(struct pt_regs *regs)
 	 * it again in its own window, 0x5000 + (cpu << 7).  CPU0 also keeps
 	 * the 0x2000 alias it was proven on -- CPU1 stays off it, in case that
 	 * alias is CPU0's rather than the running CPU's. */
+	/* Both kinds: an IPI from the other CPU (OTHER, bit 0) and one a CPU
+	 * sent itself (SELF, bit 31) -- each is masked as it is delivered. */
 	if (!cpu)
-		aic1_write(aic, AIC1_IPI_ACK, AIC1_IPI_OTHER);
-	aic1_write(aic, AIC1_CPU_IPI_ACK(cpu), AIC1_IPI_OTHER);
+		aic1_write(aic, AIC1_IPI_ACK, AIC1_IPI_SELF | AIC1_IPI_OTHER);
+	aic1_write(aic, AIC1_CPU_IPI_ACK(cpu), AIC1_IPI_SELF | AIC1_IPI_OTHER);
+	/* The ack has to land before the vIPI flags are read.  An IPI raised
+	 * after the read and wiped by a late ack leaves its flag set -- and
+	 * ipi_mux never sends a pending vIPI again, so that kind of IPI is gone
+	 * for good (with the L2 on, every one of them was, and every wakeup
+	 * across CPUs waited for a timer).  wmb() is dsb plus a PL310 sync. */
+	wmb();
 	ipi_mux_process();
 	if (!cpu)
-		aic1_write(aic, AIC1_IPI_MASK_CLR, AIC1_IPI_OTHER);
-	aic1_write(aic, AIC1_CPU_IPI_MASK_CLR(cpu), AIC1_IPI_OTHER);
+		aic1_write(aic, AIC1_IPI_MASK_CLR, AIC1_IPI_SELF | AIC1_IPI_OTHER);
+	aic1_write(aic, AIC1_CPU_IPI_MASK_CLR(cpu), AIC1_IPI_SELF | AIC1_IPI_OTHER);
 }
 
 static void aic1_ipi_send_single(unsigned int cpu)
@@ -365,7 +386,24 @@ static void aic1_ipi_send_single(unsigned int cpu)
 	if (!aic || cpu >= AIC1_NR_CPUS)
 		return;
 
-	aic1_write(aic, AIC1_IPI_SEND, AIC1_IPI_SEND_CPU(cpu));
+	/* The vIPI flag ipi_mux has just set, a store to Normal memory, must be
+	 * visible to the other CPU before the IPI is: smp_mb() (dmb ish) does
+	 * not order it against a device write.  wmb() -- dsb plus a PL310 sync
+	 * -- does, and the second one pushes the IPI itself out of the L2's
+	 * store buffer, which does not drain on its own (PL310 erratum 769419). */
+	if (cpu == smp_processor_id())
+		ipi_tx_self++;
+	else
+		ipi_tx[cpu]++;
+	wmb();
+	/* To itself a CPU sends SELF (bit 31): BIT(cpu) is an IPI to *another*
+	 * CPU, and aimed at the sender it never arrives.  ipi_mux sends itself
+	 * one whenever it unmasks a vIPI that is already pending -- as CPU1
+	 * does coming up -- and with that one lost the vIPI flag stayed set and
+	 * no IPI of that kind was ever sent again, to either CPU. */
+	aic1_write(aic, AIC1_IPI_SEND, cpu == smp_processor_id() ?
+		   AIC1_IPI_SELF : AIC1_IPI_SEND_CPU(cpu));
+	wmb();
 }
 
 /*
@@ -535,6 +573,12 @@ static void __exception_irq_entry aic1_handle_irq(struct pt_regs *regs)
 
 		n++;
 		if (type == AIC1_EVENT_TYPE_IPI) {
+#ifdef CONFIG_SMP
+			if (smp_processor_id() < AIC1_NR_CPUS) {
+				ipi_rx[smp_processor_id()]++;
+				ipi_rx_event[smp_processor_id()] = event;
+			}
+#endif
 			aic1_handle_ipi(regs);
 			continue;
 		}
@@ -600,7 +644,19 @@ static int __init aic1_of_init(struct device_node *node,
 		return -EEXIST;
 	}
 
-	regs = of_iomap(node, 0);
+	/* Strongly-ordered (MT_UNCACHED), not ioremap()'s Device: behind the
+	 * PL310, bufferable writes lose the writing CPU's identity on their way
+	 * through its store buffer, and IPI_SEND in the per-CPU 0x2000 window
+	 * then sends nothing (the same write from /dev/mem, strongly-ordered,
+	 * arrives).  Not the static MT_DEVICE map in mach-apple/apple.c: the
+	 * types differ, so this gets a mapping of its own. */
+	{
+		struct resource res;
+
+		regs = of_address_to_resource(node, 0, &res) ? NULL :
+			__arm_ioremap_caller(res.start, resource_size(&res),
+					     MT_UNCACHED, __builtin_return_address(0));
+	}
 	if (!regs) {
 		pr_err("failed to map MMIO\n");
 		return -ENOMEM;

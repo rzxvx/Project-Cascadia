@@ -10,8 +10,11 @@
 #include <linux/irq.h>
 #include <linux/bits.h>
 #include <linux/memblock.h>
+#include <linux/of.h>
+#include <linux/of_address.h>
 #include <linux/sched.h>
 #include <linux/sched/task.h>
+#include <asm/cputype.h>
 #include <asm/barrier.h>
 #include <asm/thread_info.h>
 #include <asm/exception.h>
@@ -72,6 +75,12 @@ unsigned p105_vis_row0 = 4;
 #define P105_AIC_NR_IRQ		192
 #define P105_AIC_NR_WORDS	6
 
+/*
+ * For the early quiesce/rearm code only.  The AIC driver maps the block again
+ * itself, strongly-ordered -- see aic1_of_init() in irq-apple-aic1.c.  (Made
+ * MT_UNCACHED here, this static map came out without page tables and the
+ * driver, reusing it, faulted at the first read.)
+ */
 static struct map_desc apple_aic_desc __initdata = {
 	.virtual	= P105_AIC_VIRT,
 	.pfn		= __phys_to_pfn(P105_AIC_PHYS),
@@ -315,9 +324,68 @@ static void __init apple_s5l_map_io(void)
 	p105_fb_dbg_hex("str", p105_fb_stride);
 }
 
+/*
+ * Cortex-A9 errata that multi_v7 cannot apply for us -- the workaround is a
+ * write to the diagnostic register, which only secure code may make, and
+ * this kernel runs secure.  The A5's cores are r2p8:
+ *   743622 (r2p*): faulty hazard checking in the store buffer can corrupt
+ *                  data -- diagnostic bit 6;
+ *   751472 (before r3p0, SMP): an interrupted ICIALLUIS may never complete,
+ *                  and the core waiting on it hangs -- bit 11.
+ * CPU1 sets the same bits in headsmp.S; cpu_resume restores the register
+ * after power-down idle.
+ */
+static void __init apple_s5l_a9_errata(void)
+{
+	u32 midr = read_cpuid_id(), variant = (midr >> 20) & 0xf, diag;
+
+	if (read_cpuid_part() != ARM_CPU_PART_CORTEX_A9)
+		return;
+	asm volatile("mrc p15, 0, %0, c15, c0, 1" : "=r" (diag));
+	if (variant == 2)
+		diag |= BIT(6);
+	if (variant < 3)
+		diag |= BIT(11);
+	asm volatile("mcr p15, 0, %0, c15, c0, 1" : : "r" (diag));
+	pr_info("Cortex-A9 r%up%u: errata 743622/751472, diagnostic register %#x\n",
+		variant, midr & 0xf, diag);
+}
+
 static void __init apple_s5l_init_early(void)
 {
 	p105_fb_dbg("init_early");
+	apple_s5l_a9_errata();
+}
+
+/*
+ * The L2's other half.  The ADT's pl310 node has two register blocks: the
+ * PL310 itself and Apple's CIF at 0x3fd00000.  iOS 6.1's AppleS5L8940XPL310,
+ * enabling the L2 (its 'pmtc' platform function), configures the PL310 and
+ * then, right before the enable bit, writes CIF+0x1020 = 1 and CIF+0x1120 =
+ * 0x80000100.  Without them one core ran fine with the L2 on, and two cores
+ * under load froze the whole machine, silently, within a minute.
+ * init_IRQ() enables the L2 as soon as the machine's init_irq returns.
+ */
+static void __init apple_s5l_cif_l2_on(void)
+{
+	struct device_node *np;
+	void __iomem *cif;
+
+	np = of_find_compatible_node(NULL, NULL, "arm,pl310-cache");
+	if (!np || !of_device_is_available(np))
+		goto out;
+	cif = of_iomap(np, 1);
+	if (!cif) {
+		pr_warn("L2 CIF: no second reg in the cache-controller node\n");
+		goto out;
+	}
+	pr_info("L2 CIF: +0x1020 %#x -> 0x1, +0x1120 %#x -> 0x80000100\n",
+		readl_relaxed(cif + 0x1020), readl_relaxed(cif + 0x1120));
+	writel(1, cif + 0x1020);
+	writel(0x80000100, cif + 0x1120);
+	iounmap(cif);
+out:
+	of_node_put(np);
 }
 
 static void __init apple_s5l_init_irq(void)
@@ -325,6 +393,7 @@ static void __init apple_s5l_init_irq(void)
 	p105_fb_dbg("irqchip_init");
 	irqchip_init();
 	p105_fb_dbg("irqchip_done");
+	apple_s5l_cif_l2_on();
 }
 
 static void __init apple_s5l_init_time(void)
@@ -365,6 +434,8 @@ DT_MACHINE_START(APPLE_S5L, "Apple S5L (Device Tree)")
 	.init_early	= apple_s5l_init_early,
 	.init_irq	= apple_s5l_init_irq,
 	.init_time	= apple_s5l_init_time,
+	/* Keep iBoot's AUX (16 x 64 KB); a mask at all is what makes
+	 * init_IRQ() bring the PL310 up from the DT (dts: cache-controller). */
 	.l2c_aux_val	= 0,
-	.l2c_aux_mask	= 0,
+	.l2c_aux_mask	= ~0,
 MACHINE_END

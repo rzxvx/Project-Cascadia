@@ -244,15 +244,35 @@
 
 	l2: cache-controller@3e000000 {
 		compatible = "arm,pl310-cache";
-		reg = <0x3e000000 0x1000>;
+		/* the PL310, and Apple's CIF next to it (ADT pl310 reg[1]) --
+		 * see apple_s5l_cif_l2_on() in mach-apple/apple.c */
+		reg = <0x3e000000 0x1000>, <0x3fd00000 0x2000>;
 		cache-unified;
 		cache-level = <2>;
 		/*
-		 * iBoot already enabled PL310. Driving it from Linux with
-		 * SCTLR.C=0 hangs in outer_cache / slab (stuck at mm_slab).
-		 * Leave the hardware on; do not register outer_cache ops.
+		 * 1 MB, 16 ways of 64 KB (AUX 0x02070000 as iBoot leaves it) --
+		 * and iBoot leaves it OFF (CTRL 0): Linux ran without an L2 until
+		 * 2026-09-27.  (An early attempt hung in outer_cache/slab, but the
+		 * kernel was running with SCTLR.C=0 then.)  apple.c's l2c_aux_mask
+		 * is what makes the kernel look at this node at all.
+		 *
+		 * Latencies as iOS programs them from the ADT's pl310 node: tag
+		 * 0x110 and data 0x120, i.e. <2 2 1> and <3 2 1> in cycles (iBoot
+		 * leaves the reset value, 8 cycles each).
+		 * shared-override keeps non-cacheable DMA buffers out of the L2.
+		 *
+		 * As iOS has it otherwise (ADT pl310: auxiliary-features 0x72100000,
+		 * power-features 0x2): no full line of zeros -- with it on in the
+		 * L2 and in both A9s, two cores under load froze the machine --
+		 * and dynamic clock gating without standby mode.
 		 */
-		status = "disabled";
+		arm,tag-latency = <2 2 1>;
+		arm,data-latency = <3 2 1>;
+		arm,shared-override;
+		arm,full-line-zero-disable;
+		arm,dynamic-clock-gating = <1>;
+		arm,standby-mode = <0>;
+		status = "okay";
 	};
 
 	/*
