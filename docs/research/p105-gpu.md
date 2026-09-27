@@ -399,3 +399,17 @@ texture-using program the driver keeps around, not one of ours.)
 Stage 4 (decode USSE) is now real for the vector ALU + pack path. Still to do:
 the swizzle fields, the preamble's exact meaning, the SMP/texture path, and how
 PDS feeds uniforms/varyings into those `o`/`pa` registers.
+
+## Swizzle: not solved yet (2026-09-28)
+
+Tried to decode VPCK's component select by capturing `gl_FragColor = uColor`
+vs `uColor.bgra` (both render correctly -- bgra gives centre pixel
+`00 80 ff ff`). The identity VPCK's comp fields read as [0,1,2,3] as hoped, but
+the identity-vs-bgra difference lands in the `jj` (comp_sel_2) and `w`
+(src2_n) bits, not the comp0 bits a naive 4x2 layout predicted. So VPCK's
+swizzle/component-select encoding is more subtle than a flat four 2-bit selects
+(it interacts with src2_n and the scale/format), and is **not decoded yet** --
+recorded so the wrong assumption is not repeated. The solid, verified part of
+the operand decode stands: register banks, dest number/mask, pack formats, the
+end flag, and the V*NMAD ALU op (VMUL et al.). Swizzles, the SMP/texture path,
+and the PDS uniform feed remain for stage 4.
