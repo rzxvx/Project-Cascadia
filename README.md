@@ -81,6 +81,8 @@ including the parts that didn't work.
       Linux as well as macOS (walked on Arch; Ubuntu used by a second tester)
 - [x] **Both cores** — CPU1 comes up at boot, idles the way XNU does, and
       hotplugs off and on; see *The idle problem* below
+- [x] **The L2 cache** — 1 MB, set up the way iOS does it; gzip runs 2.4×
+      as fast as before. See *The cache problem* below
 - [x] **Wi-Fi** — BCM4334 on HSIC behind EHCI (not SDIO, as first assumed),
       firmware and NVRAM out of the user's IPSW; `wlan0` joins 2.4 and 5 GHz
       networks, DHCP and all (`iw`/`wpa_supplicant` from `apk`). See *The
@@ -90,7 +92,7 @@ including the parts that didn't work.
 - [ ] USB host mode / keyboard — no free host port: dwc2 in host mode would take the console and the network with it
 - [ ] Graphical Acceleration (SGX543MP2)
 
-## Five problems worth reading about
+## Six problems worth reading about
 
 Most of the interesting work in this port was not writing drivers. It was
 finding out why perfectly correct drivers did nothing.
@@ -279,6 +281,47 @@ udhcpc: lease of 192.168.0.195 obtained from 192.168.0.1
 round-trip min/avg/max = 2.599/3.383/4.891 ms
 ```
 
+### 6. The cache problem — a megabyte of L2, off the whole time
+
+The A5 has a 1 MB L2 cache, a PL310. For weeks the device tree said iBoot had
+already turned it on and Linux should leave it alone. It had not: its control
+register read 0. Every cache miss went to DRAM.
+
+Turning it on took what iOS 6.1's own L2 driver does: the latencies from the
+ADT, clock gating without standby, and two writes to a block of Apple's next
+to the PL310 — the ADT's `pl310` node has two register ranges, and the driver
+calls the second one CIF — right before the enable bit:
+
+```
+L2 CIF: +0x1020 0x0 -> 0x1, +0x1120 0x0 -> 0x80000100
+L2C-310 cache controller enabled, 16 ways, 1024 kB
+```
+
+One core was fine at once. Two cores under load crawled: a stress run that
+took 82 s without the L2 took 866 s with it, both cores mostly idle, and
+`/proc/interrupts` showed not one IPI taken. Counters in the AIC driver told
+it plainly — sent, never received — while the very same write from `/dev/mem`
+got through.
+
+The register that sends an IPI sits in an AIC window that tells CPUs apart by
+who is writing. The kernel mapped the AIC as Device memory, and with the L2 on,
+those writes pass through the PL310's store buffer and arrive at the AIC as
+nobody's. `/dev/mem` maps strongly-ordered, which the PL310 does not buffer.
+So the AIC is strongly-ordered now. Underneath was a second bug that the L2's
+timing only exposed: an IPI a CPU sends itself must use the AIC's SELF bit,
+not its own number, or it is dropped — and `ipi_mux` never resends an IPI
+it believes is pending, so one lost IPI meant that kind of IPI was gone for
+good.
+
+| | no L2 | L2 |
+|---|---|---|
+| `gzip -1`, 16 MB | 9.03 s | 3.83 s |
+| `md5sum`, 16 MB | 0.26 s | 0.18 s |
+| two-core stress test | 82 s | 64 s |
+| CPU0 busy reading over NFS | 96% | 34–47% |
+
+On the desktop it shows as XFCE and its terminal starting about twice as fast.
+
 ## Negative results
 
 Kept deliberately. Knowing what doesn't work on this silicon is most of the value.
@@ -334,7 +377,8 @@ datasheet.
 | Reset page | `0x80000000` | A core leaves reset at physical 0, an alias of this page; reserved, holds the SMP trampoline |
 | SCU | `0x3E100000` | CBAR. `CONFIG` bits 7:4 show which cores are in SMP right now |
 | CoreSight | `0x3D230000` | Cortex-A9 debug, CPU0; CPU1 at `0x3D232000`. Fully enabled — `tools/cpudbg.c` |
-| PL310 L2 | `0x3E000000` | Left enabled by iBoot; registering `outer_cache` with L1 D-cache off hangs |
+| PL310 L2 | `0x3E000000` | Off when iBoot hands over; enabled with the ADT's latencies (tag 0x110, data 0x120) |
+| L2 CIF | `0x3FD00000` | Apple's, the ADT `pl310` node's second range: `+0x1020 = 1`, `+0x1120 = 0x80000100` before the L2 goes on |
 | Framebuffer | `0x9F6FC000` | 768×1024, stride 3072, a8r8g8b8 |
 | SPI1 (touch) | `0x32100000` | IRQ 29 |
 | EHCI (HSIC) | `0x36400000` | Port 3: the BCM4334 Wi-Fi chip. REG_ON is PMU GPIO 3, HOST_READY SoC GPIO 50 |
@@ -505,7 +549,7 @@ Build products (`output/`) and stock firmware are not tracked; everything in
 - **Phase 3** — ~~a tick that does not depend on USB device mode~~ (the AIC
   timer) → ~~Touch~~ ✓ → ~~an on-screen keyboard for the console~~ ✓ →
   ~~a desktop~~ ✓ (XFCE) → ~~the second core~~ ✓ → ~~Wi-Fi via HSIC/EHCI~~ ✓
-  → NAND.
+  → ~~the L2 cache~~ ✓ → NAND.
 - **Phase 4** — A6 port (iPhone 5 / iPad mini 2), on this foundation.
 - **Phase 5** — A12/A13, longer term.
 
