@@ -30,6 +30,17 @@ typedef unsigned int vm_size_t;
 
 long write(int, const void *, unsigned long);
 int close(int);   /* open() and the O_* flags come from <fcntl.h> */
+void *malloc(unsigned long);
+void free(void *);
+extern mach_port_t mach_task_self_;
+#define mach_task_self() mach_task_self_
+kern_return_t vm_read_overwrite(mach_port_t, vm_address_t, vm_size_t, vm_address_t, vm_size_t *);
+
+/* the CPU arena the GL driver keeps its GPU-shared buffers in (map0/1/2 and the
+ * submit structs' pointers all landed here); dumped as a sparse image so the
+ * same file offset is the same address across frames a/b/c */
+#define ARENA_LO 0x00400000u
+#define ARENA_HI 0x00c00000u
 
 /* ---- the IOKit calls we intercept ------------------------------------- */
 
@@ -128,6 +139,32 @@ static void snapshot(const char *label)
     printf("== snapshot '%s': %d buffers written\n", label, nmaps);
 }
 
+/* dump the CPU arena as a sparse image: mapped pages copied in, holes left zero */
+static void snapshot_arena(const char *label)
+{
+    unsigned span = ARENA_HI - ARENA_LO;
+    unsigned char *img = malloc(span);
+    if (!img)
+        return;
+    memset(img, 0, span);
+    unsigned mapped = 0;
+    for (unsigned off = 0; off < span; off += 0x1000) {
+        vm_size_t got = 0;
+        if (vm_read_overwrite(mach_task_self(), ARENA_LO + off, 0x1000,
+                              (vm_address_t)(img + off), &got) == 0 && got == 0x1000)
+            mapped++;
+    }
+    char path[64];
+    snprintf(path, sizeof path, "/var/root/gt_%s_arena.bin", label);
+    int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd >= 0) {
+        write(fd, img, span);
+        close(fd);
+    }
+    free(img);
+    printf("== arena '%s': %u/%u pages mapped\n", label, mapped, span / 0x1000);
+}
+
 /* ---- GLES ------------------------------------------------------------- */
 
 static GLuint make_shader(GLenum type, const char *src)
@@ -186,7 +223,7 @@ int main(void)
     glClearColor(0, 0, 0.2f, 1);
     glClear(GL_COLOR_BUFFER_BIT);
     glFinish();
-    snapshot("a");
+    snapshot("a"); snapshot_arena("a");
 
     /* b: triangle, orange */
     printf("== frame b (triangle, orange)\n");
@@ -194,7 +231,7 @@ int main(void)
     glUniform4f(uColor, 1.0f, 0.5f, 0.0f, 1.0f);
     glDrawArrays(GL_TRIANGLES, 0, 3);
     glFinish();
-    snapshot("b");
+    snapshot("b"); snapshot_arena("b");
 
     /* c: same triangle, teal -- only the uniform differs from b */
     printf("== frame c (triangle, teal)\n");
@@ -202,7 +239,7 @@ int main(void)
     glUniform4f(uColor, 0.0f, 0.5f, 1.0f, 1.0f);
     glDrawArrays(GL_TRIANGLES, 0, 3);
     glFinish();
-    snapshot("c");
+    snapshot("c"); snapshot_arena("c");
 
     unsigned char px[4] = { 0 };
     glReadPixels(32, 32, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);

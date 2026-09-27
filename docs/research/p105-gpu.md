@@ -247,3 +247,35 @@ resource path, not IOConnectMapMemory; the submit struct (IOConnectCallMethod
 sel 0) carries CPU-space pointers into them (values like `0x007446f4`, next to
 map0's own `0x0074f000`). Following those is the way into the USSE bytes, which
 Vita3K's SGX543 work then decodes.
+
+## Reaching the shader/command bytes (2026-09-28)
+
+The programs and constants the control page points at are not in the three
+IOConnectMapMemory buffers -- but the driver keeps their CPU copies in our own
+process, so `gltrace` now also snapshots its address space: it probes
+0x00400000..0x00c00000 page by page with `vm_read_overwrite` on
+`mach_task_self()` (safe -- unmapped pages just return an error) into a sparse
+image `gt_<a|b|c>_arena.bin`. The device has `cmp`, so the diff is done there
+(`cmp -l a b`), and only the small result is pulled -- the 8 MB image gzips to
+~56 KB, it is almost all zero.
+
+Diffing the arena (base 0x00400000) shows where the real work lands:
+
+- **~0x740000**: the CPU-side command / PDS / USSE buffer the control page
+  references. Clear→draw fills it with structured words; **colour-only
+  (b→c) rewrites program words here** (e.g. 0x7402dd..0x740408), so for a
+  constant uniform the driver *folds the colour into the USSE/PDS program*
+  rather than storing it as separate data -- the first real USSE we have.
+- **~0x750000**: a command/kick ring whose slots carry GPU addresses and flip
+  between ASCII tags `"INIT"` (`49 4e 49 54`) and `"LIVE"` (`4c 49 56 45`);
+  each submit's descriptor addresses appear here.
+- **~0x6b4000..0x6bb000**: the mapped parameter/state buffers (map1/map2's
+  arena); small descriptor fields and pointers change, matching the map0 diffs.
+- The descriptor args at map0+0x118 (`0c/02`) also appear at ~0x744900 in the
+  arena -- the control page is shadowed here.
+
+So the pipeline is complete: render a variant, `cmp` the arena on device, pull
+the diff, and the changed bytes are the command/USSE/PDS for that change. Next
+is the slow part -- decode the ~0x740000 program words as USSE (Vita3K's
+encoding) and the ~0x750000 ring as the kick/DMA format, one controlled change
+at a time (one attribute, one instruction, one constant).
