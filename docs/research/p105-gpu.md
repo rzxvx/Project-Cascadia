@@ -213,3 +213,37 @@ change the GL calls, watch the buffers and submits change. Next: draw variants
 (clear-only, one triangle, a texture) and diff the type-0 buffer and the sel-2
 descriptors to pin down the command and USSE/PDS layout, cross-referencing the
 USSE encoding (Vita3K's SGX543 work) and the register/opcode names in the DDK.
+
+## The command buffer's structure, by diffing (2026-09-28)
+
+`gltrace` now renders three frames into one context, changing only one thing at
+a time, and writes the full contents of each mapped buffer after each:
+frame **a** clears only, **b** draws a triangle (uColor orange), **c** the same
+triangle in teal (only the uniform differs). `tools/iosgpu/diffmaps` compares
+them. (Buffers come off the device as `openssl base64` over ssh -- scp to this
+jailbreak's sshd hangs, and the device has no od/xxd/base64, only openssl.)
+
+Findings, all in the 32 KB command buffer (`map type 0`); the event ring
+(`map2`) and status page (`map1`) never change with the draw or the colour:
+
+- It is not a linear command FIFO but a **fixed-layout control page**: a whole
+  frame (clear vs full draw) changes only ~40 of 32768 bytes, patched in place.
+- It holds **GPU virtual addresses** (`0x0098xxxx`, `0x0190xxxx`) that point at
+  separately-allocated shader programs and constants -- those allocations are
+  *not* among the three IOConnectMapMemory buffers, so the USSE/PDS bytes are
+  not captured yet.
+- **Colour-only (b vs c)** moves the constant allocation: the pointer at
+  offsets 0x69 and 0x81 goes `0x0098db80 -> 0x0098dfd0` (+0x450), and two
+  descriptor args at 0x118 change. So a fragment constant lives in its own GPU
+  allocation, reached by a pointer in the control page -- not inline.
+- **Clear vs draw (a vs b)** changes a VA at 0x41 (`0x019000f0 -> 0x01900120`)
+  and a run of 8-byte descriptor records at **0x118..0x148**, each
+  `[u32 arg][0x02][index][u16 size]` -- a table of the state/allocation blocks
+  the draw added (the args are handles/counts that shift as allocations are made).
+
+Next: capture the allocations those VAs point at (the USSE fragment/vertex
+programs and the PDS constants). They are made through the IOAccelerator
+resource path, not IOConnectMapMemory; the submit struct (IOConnectCallMethod
+sel 0) carries CPU-space pointers into them (values like `0x007446f4`, next to
+map0's own `0x0074f000`). Following those is the way into the USSE bytes, which
+Vita3K's SGX543 work then decodes.
