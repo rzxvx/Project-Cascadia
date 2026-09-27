@@ -1,0 +1,114 @@
+# P105AP NAND — H2FMI + PPN, read-only bring-up
+
+**Rule for everything below:** the NAND holds the iPad's iOS install.  Nothing
+here programs or erases it.  `tools/nandctl.c` sends NAND opcodes only through
+an allowlist (reset, read ID, status, PPN get-feature / device parameters /
+data out); program (80/10), erase (60/D0) and PPN set-features (EF) are not in
+it.
+
+## Status (2026-09-27)
+
+From Linux, over `/dev/mem`, both buses answer: read ID, PPN firmware version
+and the PPN device-parameter page, all matching what iOS reports.  No kernel
+driver yet, no page reads yet.
+
+## What the NAND is
+
+Two Hynix PPN packages, one per bus, each on CE0 (ADT `ce-bitmap 0x101`).
+PPN = the package has its own controller: ECC and part of the bad-block work
+happen inside it, the host talks a command protocol on top of Toggle-DDR.
+
+| | value | source |
+|---|---|---|
+| PPN firmware | `040472P_HYNIX_B_` | feature 0x9080, iOS `firmware-version` |
+| marketing name | `20nm64Gb` | iOS `nand-marketing-name` |
+| read ID (addr 0) | `50 50 4E 01 05 05` = "PPN" v1.5.5 | ADT `device-readid`, Linux |
+| manufacturer ID | `AD 82 52 23 21 02` | iOS |
+| page | 16384 + 64 bytes spare (`0x4040`) | device params |
+| pages / block | 256 MLC, 128 SLC | device params |
+| blocks / CAU | 1064 (`0x428`) | device params |
+| CAUs / CE | 2 | device params |
+| bits | cau 4, block 11, page-address 8 | device params |
+| raw size | 2 CE x 2 CAU x 1064 x 256 x 16 KB ≈ 17.9 GB | |
+
+## iOS's storage stack (IORegistry)
+
+`flash-controller0` (fmi,s5l8920x) → `AppleIOPFMI` (the IOP coprocessor
+drives the FMI; iOS never does it from the AP) → `IOFlashStorageDevice disk`
+→ `IOFlashPartitionScheme`: Boot Block, Bad Block Table, NVRAM, Firmware,
+System Config, Effaceable, Diagnostic Data, Filesystem → on Filesystem
+`AppleSwissPPNFTL` → disk0, 16 000 000 000 bytes → `LightweightVolumeManager`
+→ GPT → `System` (disk0s1s1, 2.2 GB, HFS+, read-only) and `Data`
+(disk0s1s2, 13.6 GB, HFS+, content-protected).
+
+## iBEC has the whole read stack
+
+`build/firmware/iBEC.dec` (base 0x9ff00000) drives the FMI from the AP and
+carries every layer needed to reach a file: `drivers/apple/h2fmi/*`
+(H2fmi_ppn.c, H2fmi_ppn_fil.c, fmiss_ppn.c), `WhimoryPPN/Core/FPart` (flash
+partitions), `SVFL/s_vfl.c`, `SFTL/*` (s_read, s_cxt_load, L2V_*), `lib/fs/hfs`.
+It is how iBoot loads `/System/Library/Caches/com.apple.kernelcaches/kernelcache`.
+That is the reference for a Linux read path.
+
+## Hardware
+
+Per bus: FMI (DMA/PIO) at 0x31200000 / 0x31300000, FMC (the NAND bus) at
++0x40000, ECC at +0x80000 (ADT `reg`, six 4 KB windows).  AIC 0x21 / 0x22.
+PMGR gates 0x3f1010c4/c8 (FMI0), 0x3f1010cc/d0 (FMI1), iBoot ids 0x2f-0x32;
+iBoot leaves them on.  Block reset = bit 31 of 0x3f1010c4 (FMI0) /
+0x3f1010cc (FMI1), pulsed.
+
+| reg | name | notes |
+|---|---|---|
+| FMI+0x00 | CONFIG | 0 for read ID, 5 for PPN data out |
+| FMI+0x04 | CONTROL | 3 = start PIO transfer, 6 = reset/stop |
+| FMI+0x0c | STATUS | bit 1 transfer done (W1C) |
+| FMI+0x10 | INT enable | 0x100 = FMC event |
+| FMI+0x14 | DATA | PIO FIFO, a read pops it |
+| FMI+0x1c | DMA status | bits 3-4: data ready |
+| FMI+0x34 | PIO config | `bytes << 8 \| sectors` |
+| FMC+0x00 | ON | 1 SDR, 5 DDR (iBEC leaves 5); 2 after reset |
+| FMC+0x08 | IF_CTRL | bus timing |
+| FMC+0x0c | CE_CTRL | `1 << ce` |
+| FMC+0x10 | RW_CTRL | phases: 1 cmd1, 2 cmd2, 8 addr; 0x50 = poll status |
+| FMC+0x14 | CMD | cmd1 \| cmd2 << 8 |
+| FMC+0x18/1c | ADDR0/1 | address bytes, LSB first |
+| FMC+0x20 | ADDRNUM | bytes - 1 |
+| FMC+0x40 | INT mask | 0x20 = status match |
+| FMC+0x44 | STATUS | phase-done bits (W1C), 0x20 status match |
+| FMC+0x48 | NAND status | last status byte |
+| FMC+0x4c | status mask | 0x4040 = wait for bit 6 |
+| FMC+0x70/74/78 | Toggle/DDR | `00c40000 03020100 01011d0b` from iBEC; a block reset clears them |
+
+## Command sequences (from iBEC, run from Linux)
+
+- **Read ID** (`h2fmi_nand_read_id`): CE, CMD 90, ADDR0 = addr, ADDRNUM 0,
+  RW_CTRL 9, wait FMC_STATUS 9; FMI CONFIG 0, PIO 0x801, CONTROL 3, wait
+  FMI_STATUS 2, read 8 bytes.  In DDR the device repeats each ID byte.
+- **PPN status** (`h2fmi_ppn_get_operation_status`): CMD `77 7D`, RW_CTRL 3;
+  then status mask 0x4040, INT mask 0x20, RW_CTRL 0x50, wait for the match,
+  byte from FMC+0x48.  0x40 = ready, no error.
+- **PPN get feature** (`h2fmi_ppn_get_feature`): `EE <feature, 2 bytes> E7`
+  (RW_CTRL 0xb), status, `7A`, data out by PIO, CONTROL 6, `77`.
+  Feature 0x9080 = 16-byte firmware version.
+- **PPN device parameters** (`h2fmi_ppn_get_device_params`): `92 <00> 97`,
+  status, `7A`, 512 bytes: `"PPN Device Info"`, then u32s at 0x10: CAUs,
+  cau bits, blocks/CAU, block bits, pages/block, SLC pages/block, page-address
+  bits, bits-per-cell bits, default bits/cell, page size; timings at 0xa0 (tRC
+  tREA tREH tRHOH tRHZ tRLOH tRP, -, tWC tWH tWP, in ns); queue sizes at 0xe0;
+  tRST / tPURST / tSCE ms, tCERDY us at 0xf0.
+
+## Trap: an absent CE wedges the bus
+
+In DDR the chip clocks data out with DQS.  Reading data from a CE with no chip
+behind it leaves the FMC waiting for edges forever: RW_CTRL stays set,
+FMC_STATUS stays 0, every later command times out.  FMI CONTROL=6 and
+toggling FMC_ON do not clear it.  What does, like iBEC's `h2fmi_device_reset`:
+pulse the PMGR reset bit, then FMI CONTROL=6, FMC_ON=5 and the three Toggle
+registers back.  `nandctl` now refuses CEs outside `ce-bitmap`.
+
+## Next
+
+Page reads: iBEC's `h2fmiPpnReadSinglePage` / `h2fmi_ppn_read_bootpage` →
+first page of the boot block (flash partition table) → PPNFPart → SVFL → SFTL
+→ LwVM → System, read-only.

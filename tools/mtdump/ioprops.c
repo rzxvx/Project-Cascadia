@@ -6,6 +6,10 @@
  *
  *   ioprops CLASS [CLASS...]
  *   ioprops AppleBCMWLANBusInterfaceHSIC AppleUSBHSICPort
+ *   ioprops IODeviceTree:/arm-io/flash-controller0/disk
+ *
+ * An argument with ":/" in it is a registry path, not a class: the one entry
+ * at that path -- a device-tree node with the values iBoot filled in, say.
  */
 #include <stdio.h>
 #include <string.h>
@@ -20,6 +24,7 @@ kern_return_t IOServiceGetMatchingServices(unsigned int master, CFDictionaryRef 
 io_object_t IOIteratorNext(io_object_t iter);
 kern_return_t IORegistryEntryGetPath(io_object_t, const char *plane, char *path);
 kern_return_t IOObjectGetClass(io_object_t, char *name);
+io_object_t IORegistryEntryFromPath(unsigned int master, const char *path);
 
 static void hexdump(const unsigned char *p, long n)
 {
@@ -88,6 +93,22 @@ int main(int argc, char **argv)
         io_object_t it = 0, e;
         int found = 0;
 
+        if(strstr(argv[i], ":/")) {
+            CFMutableDictionaryRef props = NULL;
+
+            e = IORegistryEntryFromPath(0, argv[i]);
+            if(!e) {
+                printf("== %s: no such entry\n", argv[i]);
+                continue;
+            }
+            printf("== %s\n", argv[i]);
+            if(!IORegistryEntryCreateCFProperties(e, &props, kCFAllocatorDefault, 0) && props) {
+                CFDictionaryApplyFunction(props, prop, NULL);
+                CFRelease(props);
+            }
+            IOObjectRelease(e);
+            continue;
+        }
         if(IOServiceGetMatchingServices(0, IOServiceMatching(argv[i]), &it) || !it) {
             printf("== %s: no match\n", argv[i]);
             continue;
