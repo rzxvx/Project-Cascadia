@@ -183,3 +183,33 @@ command-buffer layout fall out of the log; the mapped buffers hold the vendor
 payload. Cross-referenced with the SGX register set (TI DDK) and the USSE
 decoder (Vita3K's), that is the raw material for a driver. Tool: `tools/iosgpu/`
 (planned).
+
+## First capture (2026-09-28): it works
+
+`tools/iosgpu/gltrace` ran on the iPad's iOS 8.4.1 and drew a triangle
+offscreen with GLES2. The headless EAGL context came up -- renderer string
+**"PowerVR SGX 543"**, which confirms the core without the register read that
+hangs the bus -- and the triangle rendered (centre pixel `ff 80 00 ff`, our
+fragment colour). No tfp0, no kernel access, no reboot.
+
+The IOAccelerator submission ABI, captured live (connections are user clients;
+selectors are the external methods):
+
+- `IOConnectMapMemory` maps three shared buffers per context on the render
+  connection: **type 0** 0x8000 (the command / parameter buffer -- structured
+  GPU data), **type 2** 0x1000 (an event/sync ring, each slot tagged
+  `"EVTINIT"`), **type 1** 0x1000 (a status page, zero before the draw).
+- Per frame the driver calls `IOConnectCallStructMethod` sel 2 (136-byte
+  descriptors: they carry addresses and a length at +0x18, e.g. `c0 01`.. len
+  0x3c) and sel 3 (8 bytes), then `IOConnectCallMethod` sel 0 with a 0- or
+  96-byte struct -- the submit/kick. Context setup uses sel 0/256/258 and a
+  96-byte struct that holds GPU virtual addresses (framebuffer, USSE/PDS).
+- The 32 KB command buffer's head has descriptor records (counts, offsets,
+  and 0x98..-based GPU addresses like `00 c0 0a 98`), i.e. the parameter/
+  command stream the SGX consumes.
+
+So the harness for reversing the command stream exists and is safe to iterate:
+change the GL calls, watch the buffers and submits change. Next: draw variants
+(clear-only, one triangle, a texture) and diff the type-0 buffer and the sel-2
+descriptors to pin down the command and USSE/PDS layout, cross-referencing the
+USSE encoding (Vita3K's SGX543 work) and the register/opcode names in the DDK.
