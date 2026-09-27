@@ -88,11 +88,17 @@ including the parts that didn't work.
       networks, DHCP and all (`iw`/`wpa_supplicant` from `apk`). See *The
       Wi-Fi problem* below. Tested on an open network; WPA not tried yet, and
       the CLM blob does not load (this firmware refuses `clmload`)
-- [ ] NAND (to store data independently of the host PC)
+- [x] **iOS's own files, read-only, straight off the NAND** — `ios mount`
+      puts iOS's System partition on `/mnt/ios`: the NAND's PPN protocol,
+      iOS's FTL, LwVM and HFS+ including HFS+ compression. iOS is left as it
+      is; nothing writes to the NAND. See *The NAND problem* below. iOS's Data
+      partition is encrypted file by file and does not mount yet
+- [ ] NAND as Linux's own storage (writes) — with iOS kept, that means
+      writing through iOS's FTL
 - [ ] USB host mode / keyboard — no free host port: dwc2 in host mode would take the console and the network with it
 - [ ] Graphical Acceleration (SGX543MP2)
 
-## Six problems worth reading about
+## Seven problems worth reading about
 
 Most of the interesting work in this port was not writing drivers. It was
 finding out why perfectly correct drivers did nothing.
@@ -322,6 +328,43 @@ good.
 
 On the desktop it shows as XFCE and its terminal starting about twice as fast.
 
+### 7. The NAND problem — reading iOS's disk without iOS
+
+The iPad's 16 GB are two Hynix packages of PPN NAND ("physical page NAND"),
+one per bus of Apple's H2FMI controller. PPN puts a controller inside the
+package that does ECC and bad blocks and speaks its own command set on top
+of Toggle DDR. iOS never drives it from the CPU at all: an I/O coprocessor
+does. What does drive it from the CPU is iBEC, which carries iOS's whole read
+path to load the kernel with — the H2FMI and PPN drivers, the flash
+partitions, the VFL, the FTL, HFS+. Every command sequence here was read out
+of it: read ID (the chip answers `PPN` 1.5.5, each byte twice, as DDR does),
+`EE <feature> E7` for the firmware version, `0A <row> 37` then `7A` to read
+a page. Two lessons came with them: reading from a chip select with no chip
+behind it leaves the controller waiting forever for a strobe nobody drives,
+and two programs sharing one bus leave both the controller and the chip
+confused until the next boot.
+
+A page is 16 KB with 64 bytes of FTL metadata, laid out as four times 1024
+data, 16 metadata, 3072 data. The metadata turned out to be plain: a type, a
+48-bit write sequence and the LBA. So there is no need to decode Apple's FTL
+context at all: the live copy of every LBA is the one with the highest
+sequence. `iosnand` reads every page's metadata once (12 minutes), keeps the
+table, and on later starts reads only the first page of each block — a block
+the FTL erased and wrote again has a new sequence there — plus the write
+pointer of the blocks that were still filling: a second when nothing
+changed, 19 s after iOS has run for a while. It serves disk0's LwVM
+partitions as NBD devices, read-only.
+
+The System partition is HFSX, and 91% of its files (52 580 of 57 965) are
+HFS+ compressed — zlib in an extended attribute or in the resource fork, with
+an empty data fork, which Linux read as empty files. `fs/hfsplus/decmpfs.c`
+inflates them.
+
+Checked against an offline rebuild from a full raw dump of the NAND (17.9 GB,
+mounted on the Mac, where the dyld shared cache's own SHA-1 page hashes and
+`codesign` agree with it): 17 285 files of the System partition, 596 MB, read
+byte-identical on the device, 15 010 of them compressed.
+
 ## Negative results
 
 Kept deliberately. Knowing what doesn't work on this silicon is most of the value.
@@ -529,7 +572,8 @@ rootfs/alpine/  the Alpine-side overlay: apk repositories, inittab, motd
 initramfs/      stage 1 (/init) and stage 2 (/sbin/p105-stage2) -- the boot
                 itself.  ./cascadia rootfs lays both overlays onto the Alpine
                 minirootfs; nothing is edited inside build/
-tools/          p105-peek.c (MMIO tool), build/flash wrappers, LZSS helpers
+tools/          p105-peek.c (MMIO tool), build/flash wrappers, LZSS helpers,
+                nand/ (nandctl, iosnand: the NAND, read-only)
 docs/           QUICKSTART.md — clean machine to a shell on the device
                 CASCADIA-CHEATSHEET.md — the real reference for working on it
 docs/research/  one file per investigation; several are dead ends, on purpose
@@ -549,7 +593,8 @@ Build products (`output/`) and stock firmware are not tracked; everything in
 - **Phase 3** — ~~a tick that does not depend on USB device mode~~ (the AIC
   timer) → ~~Touch~~ ✓ → ~~an on-screen keyboard for the console~~ ✓ →
   ~~a desktop~~ ✓ (XFCE) → ~~the second core~~ ✓ → ~~Wi-Fi via HSIC/EHCI~~ ✓
-  → ~~the L2 cache~~ ✓ → NAND.
+  → ~~the L2 cache~~ ✓ → ~~iOS's files off the NAND~~ ✓ (read-only) → NAND
+  as Linux's own storage.
 - **Phase 4** — A6 port (iPhone 5 / iPad mini 2), on this foundation.
 - **Phase 5** — A12/A13, longer term.
 
