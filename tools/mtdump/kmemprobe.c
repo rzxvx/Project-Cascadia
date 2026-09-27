@@ -18,6 +18,15 @@
  * MMIO mapped somewhere in the kernel we do not know yet, so this does not read
  * them; it reads kernel code and data, which is what a command-stream trace
  * needs.
+ *
+ * RESULT on this iPad's TaiG 8.4.1 (2026-09-28): closed.  Plain (ldid -S, no
+ * entitlements) runs but task_for_pid(0) is KERN_FAILURE and host special
+ * port 4 is null -- the kernel task is not handed out.  Signing it with a
+ * task_for_pid-allow entitlement (ldid -S<plist>) PANICS the kernel and
+ * reboots the device -- do not do that.  So there is no cheap live-kernel
+ * route here; the GPU clock config comes from static RE of the kernelcache
+ * instead.  Overwriting an executable AMFI has already seen can also get it
+ * SIGKILL'd ("Killed: 9") from a stale cdhash -- run a fresh path.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -35,6 +44,9 @@ kern_return_t task_for_pid(mach_port_t target, int pid, mach_port_t *t);
 kern_return_t vm_read_overwrite(mach_port_t task, vm_address_t addr, vm_size_t size,
                                 vm_address_t data, vm_size_t *out);
 char *mach_error_string(kern_return_t);
+mach_port_t mach_host_self(void);
+kern_return_t host_get_special_port(mach_port_t host, int node, int which, mach_port_t *port);
+#define HOST_KERNEL_PORT 4      /* many 8.x jailbreaks park tfp0 here */
 
 /* the static base of our kernelcache's first (kernel) __TEXT segment */
 #define KERNEL_STATIC_BASE 0x80001000u
@@ -78,12 +90,21 @@ static vm_address_t find_kernel(void)
 int main(int argc, char **argv)
 {
     kern_return_t kr = task_for_pid(mach_task_self(), 0, &kt);
-    if (kr != KERN_SUCCESS || !kt) {
-        printf("task_for_pid(0): FAILED (%s, port %u)\n", mach_error_string(kr), kt);
-        printf("this jailbreak does not hand out the kernel task; falling back to static RE.\n");
-        return 2;
+    if (kr == KERN_SUCCESS && kt) {
+        printf("task_for_pid(0): ok, kernel task port %u\n", kt);
+    } else {
+        printf("task_for_pid(0): no (%s)\n", mach_error_string(kr));
+        /* the entitlement-free route: the kernel task as a host special port */
+        mach_port_t hp = mach_host_self();
+        kr = host_get_special_port(hp, 0, HOST_KERNEL_PORT, &kt);
+        if (kr == KERN_SUCCESS && kt && kt != mach_task_self()) {
+            printf("host special port 4: ok, kernel task port %u\n", kt);
+        } else {
+            printf("host special port 4: no (%s, port %u)\n", mach_error_string(kr), kt);
+            printf("this jailbreak does not hand out the kernel task; falling back to static RE.\n");
+            return 2;
+        }
     }
-    printf("task_for_pid(0): ok, kernel task port %u\n", kt);
 
     if (argc >= 3 && argv[1][0] == 'r') {          /* "read VA [N]" */
         vm_address_t va = (vm_address_t)strtoul(argv[2], 0, 16);
