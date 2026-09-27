@@ -3,8 +3,9 @@
  * The NAND carries the iPad's iOS install.  This tool never programs and never
  * erases: every command byte goes through nand_cmd(), which only lets through
  * the opcodes on READ_ONLY_OPS below.  There is no path in here that can issue
- * a program (80/10, PPN boot page 8A/17), an erase (60/D0, PPN 67) or a PPN
- * set-features (EF ... E7).
+ * a program (80/10, PPN boot page 8A/17) or an erase (60/D0, PPN 67).  The one
+ * setter is PPN set-feature (EF ... E7), and only for feature 0x180, the bus
+ * power state, with the two values iBoot itself uses (ppn_set_power_state).
  *
  * Two buses, each an FMI (DMA/PIO side), an FMC (the NAND bus itself, +0x40000)
  * and an ECC block (+0x80000): FMI0 at 0x31200000, FMI1 at 0x31300000 (ADT
@@ -25,11 +26,22 @@
  *   nandctl bootpage BUS CE ROW [F] boot-page format (LLB, flash partition
  *                                   table): 3 x (512 data + 53 BCH bytes), the
  *                                   BCH bytes dropped, NOT corrected
+ *   nandctl recover BUS             un-wedge a bus: PMGR block reset (as iBEC's
+ *                                   h2fmi_device_reset), FMC config put back
+ *   nandctl sdr BUS                 FMC to SDR (FMC_ON 1, slow timing): what a
+ *                                   PPN needs after a NAND reset
+ *   nandctl ddr BUS                 PPN power state -> DDR (set-feature 0x180 =
+ *                                   0x0a, iBEC's transitionWorldToDDR), FMC to DDR
  *   nandctl dump BUS CE CAU BLK N F N blocks x 256 pages from CAU/BLK on, raw,
  *                                   into F ("-" = stdout); a status byte per page
  *                                   into F.st
  *
  * ROW = page | block << 8 | cau << 19 (| slc << 23), 3 address bytes.
+ *
+ * One process per bus at a time: two interleaved command sequences on the
+ * same FMC wedge it and confuse the PPN (a reboot is the clean way back), so
+ * every command that drives a bus takes /tmp/nandctl-busN.lock first and
+ * gives up if another nandctl holds it.
  *
  * PPN sequences are iBEC's H2fmi_ppn.c: h2fmi_ppn_get_feature,
  * h2fmi_ppn_get_device_params, h2fmi_get_nand_status.
@@ -41,11 +53,13 @@
  * the FMC waits forever -- only a PMGR reset of the block gets it back.  Build:
  *   arm-linux-gnueabihf-gcc -static -Os -o nandctl tools/nandctl.c
  */
+#include <errno.h>
 #include <fcntl.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/file.h>
 #include <sys/mman.h>
 #include <time.h>
 #include <unistd.h>
@@ -93,6 +107,12 @@ static const uint8_t READ_ONLY_OPS[][2] = {
     { 0x7a, 0 },        /* PPN data out */
     { 0x0a, 0x37 },     /* PPN read boot page */
 };
+
+/* Set-feature is kept off the list above; ppn_set_power_state() is its only
+ * caller and only takes these. */
+#define PPN_FEATURE_POWER_STATE 0x180
+#define PPN_PS_ASYNC            0x01
+#define PPN_PS_DDR              0x0a
 
 static volatile uint32_t *fmi[2], *fmc[2], *ecc[2];
 static volatile uint32_t *pmgr;
@@ -153,6 +173,15 @@ static void nand_cmd(int bus, uint8_t op)
 
 #define CE_PRESENT      0x01    /* per bus, from the ADT's ce-bitmap 0x101 */
 
+static int gates_on_nolock(int bus);
+static int lock_bus(int bus);
+
+/* the bus is clocked and ours */
+static int gates_on(int bus)
+{
+    return gates_on_nolock(bus) && lock_bus(bus);
+}
+
 static int ce_ok(int ce)
 {
     if (ce < 0 || ce > 7 || !(CE_PRESENT & (1u << ce))) {
@@ -162,7 +191,20 @@ static int ce_ok(int ce)
     return 1;
 }
 
-static int gates_on(int bus)
+static int lock_bus(int bus)
+{
+    char name[32];
+    snprintf(name, sizeof(name), "/tmp/nandctl-bus%d.lock", bus);
+    int fd = open(name, O_RDWR | O_CREAT, 0644);
+    if (fd < 0 || flock(fd, LOCK_EX | LOCK_NB)) {
+        fprintf(stderr, "FMI%d is busy (another nandctl, a dump?): %s\n", bus,
+                fd < 0 ? strerror(errno) : "locked");
+        return 0;
+    }
+    return 1;       /* held until exit */
+}
+
+static int gates_on_nolock(int bus)
 {
     uint32_t a = R(pmgr, 0xc4 + bus * 8), b = R(pmgr, 0xc8 + bus * 8);
     if ((a & 0xf0) != 0xf0 || (b & 0xf0) != 0xf0) {
@@ -179,6 +221,25 @@ static void device_reset(int bus, uint32_t on, uint32_t if_ctrl)
     W(fmi[bus], FMI_CONTROL, 6);
     W(fmc[bus], FMC_ON, on);
     W(fmc[bus], FMC_IF_CTRL, if_ctrl);
+}
+
+/* The FMC config iBEC leaves (DDR on, Toggle timing) is lost on a block
+ * reset; everything else comes back at its reset value. */
+static const uint32_t FMC_KEEP[] = { 0x00, 0x04, 0x08, 0x30, 0x34, 0x4c, 0x68, 0x6c, 0x70, 0x74, 0x78 };
+
+static void recover(int bus)
+{
+    uint32_t v[sizeof(FMC_KEEP) / sizeof(FMC_KEEP[0])];
+    for (size_t i = 0; i < sizeof(v) / sizeof(v[0]); i++)
+        v[i] = R(fmc[bus], FMC_KEEP[i]);
+    uint32_t g = R(pmgr, 0xc4 + bus * 8);
+    W(pmgr, 0xc4 + bus * 8, g | 0x80000000u);
+    usleep(10);
+    W(pmgr, 0xc4 + bus * 8, g & ~0x80000000u);
+    W(fmi[bus], FMI_CONTROL, 6);
+    for (size_t i = 1; i < sizeof(v) / sizeof(v[0]); i++)
+        W(fmc[bus], FMC_KEEP[i], v[i]);
+    W(fmc[bus], FMC_ON, v[0]);
 }
 
 static int nand_reset(int bus, int ce)
@@ -318,6 +379,14 @@ static int ppn_data_out(int bus, uint8_t *buf, uint32_t len)
     return 0;
 }
 
+/* E7 on its own closes a set-feature; only ppn_set_power_state sends it. */
+static int ppn_cmd2_e7(int bus)
+{
+    W(fmc[bus], FMC_CMD, 0xe7);
+    W(fmc[bus], FMC_RW_CTRL, 1);
+    return wait_done(fmc[bus], FMC_STATUS, 1, 1);
+}
+
 static void ppn_end(int bus)
 {
     W(fmi[bus], FMI_CONTROL, 6);
@@ -333,6 +402,44 @@ static int ppn_get_feature(int bus, int ce, uint16_t feat, uint8_t *buf, uint32_
     if (ppn_cmd_addr_cmd(bus, 0xee, 0xe7, feat, 2) == 0 && ppn_status(bus, st) == 0)
         r = ppn_data_out(bus, buf, len);
     ppn_end(bus);
+    return r;
+}
+
+/* h2fmi_ppn_set_features, for the power-state feature only: EF FEAT (RW_CTRL
+ * 9), the value as one PIO word (FMI_CONTROL 5 = host to NAND), E7, status. */
+static int ppn_set_power_state(int bus, int ce, uint32_t ps, uint8_t *st)
+{
+    uint32_t on = R(fmc[bus], FMC_ON), if_ctrl = R(fmc[bus], FMC_IF_CTRL);
+    int r = -1;
+
+    if (ps != PPN_PS_ASYNC && ps != PPN_PS_DDR)
+        return -1;
+    W(fmc[bus], FMC_CE_CTRL, 1u << ce);
+    W(fmi[bus], FMI_CONTROL, 6);
+    W(fmc[bus], FMC_CMD, 0xef);
+    W(fmc[bus], FMC_ADDR0, PPN_FEATURE_POWER_STATE);
+    W(fmc[bus], FMC_ADDRNUM, 1);
+    W(fmc[bus], FMC_RW_CTRL, 9);
+    if (wait_done(fmc[bus], FMC_STATUS, 9, 9))
+        goto out;
+    clear_irqs(bus);
+    W(fmi[bus], FMI_CONFIG, 5);
+    W(fmi[bus], FMI_PIO_CONFIG, 4 << 8 | 1);
+    W(fmi[bus], FMI_CONTROL, 5);
+    for (uint64_t t0 = now_us(); !(R(fmi[bus], FMI_DMA_STATUS) & 0x18); )
+        if (now_us() - t0 > 100000)
+            goto out;
+    W(fmi[bus], FMI_DATA, ps);
+    if (wait_done(fmi[bus], FMI_STATUS, 2, 2))
+        goto out;
+    if (ppn_cmd2_e7(bus) || ppn_status(bus, st))
+        goto out;
+    r = *st == 0x40 ? 0 : -1;
+out:
+    ppn_cmd1(bus, 0x77);
+    W(fmi[bus], FMI_CONTROL, 6);
+    W(fmc[bus], FMC_CE_CTRL, 0);
+    device_reset(bus, on, if_ctrl);
     return r;
 }
 
@@ -424,7 +531,7 @@ int main(int argc, char **argv)
     if (argc >= 2 && !strcmp(argv[1], "regs")) {
         for (int b = 0; b < 2; b++) {
             printf("FMI%d gates: 0x%08x 0x%08x\n", b, R(pmgr, 0xc4 + b * 8), R(pmgr, 0xc8 + b * 8));
-            if (!gates_on(b))
+            if (!gates_on_nolock(b))
                 continue;
             dump("  FMI", fmi[b], FMI_BASE(b), 0x40, 1);
             dump("  FMC", fmc[b], FMI_BASE(b) + FMC_OFF, 0x80, 0);
@@ -514,6 +621,39 @@ int main(int argc, char **argv)
         }
         return r ? 1 : 0;
     }
+    if (argc >= 3 && !strcmp(argv[1], "recover")) {
+        int bus = atoi(argv[2]) & 1;
+        if (!gates_on(bus))
+            return 1;
+        recover(bus);
+        uint8_t buf[16] = { 0 }, st = 0;
+        int r = ppn_get_feature(bus, 0, 0x9080, buf, 16, &st);
+        printf("FMI%d recovered: firmware query status 0x%02x%s \"%.16s\"\n", bus, st,
+               r ? " (failed)" : "", (char *)buf);
+        return r ? 1 : 0;
+    }
+    if (argc >= 3 && !strcmp(argv[1], "sdr")) {
+        int bus = atoi(argv[2]) & 1;
+        if (!gates_on(bus))
+            return 1;
+        W(fmc[bus], FMC_ON, 1);
+        W(fmc[bus], FMC_IF_CTRL, 0xffff);
+        printf("FMI%d: FMC in SDR, IF_CTRL 0xffff\n", bus);
+        return 0;
+    }
+    if (argc >= 3 && !strcmp(argv[1], "ddr")) {
+        int bus = atoi(argv[2]) & 1;
+        uint8_t st = 0;
+        if (!gates_on(bus))
+            return 1;
+        int r = ppn_set_power_state(bus, 0, PPN_PS_DDR, &st);
+        printf("FMI%d CE0 power state -> DDR: status 0x%02x%s\n", bus, st, r ? " (failed)" : "");
+        if (r)
+            return 1;
+        W(fmc[bus], FMC_ON, 5);
+        W(fmc[bus], FMC_IF_CTRL, 0);
+        return 0;
+    }
     if (argc >= 6 && !strcmp(argv[1], "page")) {
         int bus = atoi(argv[2]) & 1, ce = atoi(argv[3]);
         if (!ce_ok(ce))
@@ -584,6 +724,6 @@ int main(int argc, char **argv)
     fprintf(stderr, "usage: nandctl regs | readid BUS CE [ADDR] | reset BUS CE |\n"
                     "               getfeat BUS CE FEAT LEN | params BUS CE | ppninfo |\n"
                     "               page BUS CE ROW FILE [LEN] | bootpage BUS CE ROW [FILE] |\n"
-                    "               dump BUS CE CAU BLOCK NBLOCKS FILE\n");
+                    "               dump BUS CE CAU BLOCK NBLOCKS FILE | recover BUS | sdr BUS | ddr BUS\n");
     return 1;
 }

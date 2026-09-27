@@ -142,6 +142,18 @@ toggling FMC_ON do not clear it.  What does, like iBEC's `h2fmi_device_reset`:
 pulse the PMGR reset bit, then FMI CONTROL=6, FMC_ON=5 and the three Toggle
 registers back.  `nandctl` now refuses CEs outside `ce-bitmap`.
 
+## Trap: two processes on one bus
+
+Two command sequences interleaved on one FMC (a dump running while another
+`nandctl` read the same bus) wedge the FMC and leave the PPN answering 0x11 /
+0x51 (general error).  A block reset (`recover`) clears the host side only.
+A NAND reset (FF) clears the PPN but drops it to the async (SDR) interface --
+read ID in SDR then reads a clean `50 50 4E 01 05 05` -- and loses the DDR
+features iBEC set at init: setting the power state back to DDR (feature 0x180
+= 0x0a, status 0x40) is not enough, status reads come back as junk (0xbf).
+The clean way back is a reboot through iBEC.  `nandctl` now takes a per-bus
+lock (`/tmp/nandctl-busN.lock`) for every command that drives a bus.
+
 ## Next
 
 A full raw image (`nandctl dump`, 4 x 4.5 GB: bus x CAU, 1064 blocks x 256
