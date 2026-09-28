@@ -11,6 +11,52 @@ may carry over.
 Probe: `tools/sgx-probe.sh` (reads, plus the two power-domain writes; it stops
 before the SGX read unless `SGX_READ=1`).
 
+## STATUS 2026-09-28: clock bring-up is a DEAD END (for now)
+
+After a full arc of work (below), clocking the SGX from Linux is **blocked**, and
+honestly so: it is the hardest wall in the project because the mechanism lives in
+kernel-only, object-abstracted code we can neither observe nor fully reverse with
+the access we have. The bottom line, so nobody re-treads it:
+
+- The GFX clock chain is mapped: SGX ← gate/power **GFX** (idx 0x5c) ← **GFX_SYS-CLK**
+  (id30, PS 0x3f101024, clk mirror 0x3f100074) + **GFX-CLK** (id31, PS 0x3f101028,
+  clk 0x3f100070) ← one of **MANAGED0..4** (0x3f10002c..3c) ← PLL/PREDIV.
+- **Enabling the GFX_SYS/GFX PS gates works** (0x3f101024/28: `(v&~0x10f)|0xf` →
+  0x3ff) — first time the GPU clock *domain* is on under Linux — **but it is not
+  enough**: the GFX clock's **source (a MANAGED clock) stays off**, so the first
+  SGX register read (0x35100020) hangs the bus every time (hard freeze, reboot).
+- **Every writable knob was tested and none clocks the GPU**: the gates (above),
+  the CPU/SoC voltage rails (0x3f100110+idx*0x10, all 0x80010000 — DVFS voltage,
+  not GPU), the perf-state setter (0x3f102100/04 — CPU DVFS, no effect on GFX),
+  and a bit31 reset pulse. The clock **config registers (0x3f100000+idx*4, incl.
+  GFX 0x70/0x74) are read-only mirrors** — direct writes are silently ignored.
+- The MANAGED-source enable is only reachable through a **runtime-dispatched
+  clock-controller** (the router `FUN_804c09a8`/`FUN_804c1640` in the base
+  AppleARMPerformanceController kext). Ghidra (full analysis of the decrypted
+  8.4.1 kernelcache) **cannot recover that class's vtable** (no RTTI, no data
+  xref), so the concrete "enable MANAGED N / route GFX" register write is not
+  pinned. The register *primitives* are known (clock_gate_switch, the managed-rail
+  ramp `FUN_80b8d280`, the domain-apply `FUN_80b8cdbc`) — but they are the CPU/DVFS
+  paths; the GPU-clock path is behind the unrecovered controller.
+- **We cannot observe the kernel** to shortcut this: TaiG 8.4.1 has no working
+  tfp0 (plain fake-signed → KERN_FAILURE; task_for_pid-allow entitlement → kernel
+  PANIC), so there is no live PMGR read and no kernel-write trace on iOS. kdebug
+  (sysctl, userspace) would give state *indices*, not register values.
+
+**What would unblock it:** (a) a kernel-observation primitive — a working tfp0 on
+a different jailbreak/firmware, or a kernel hook — to trace the exact PMGR writes
+iOS makes when the GPU powers on; or (b) recovering the clock-controller class and
+its commit path (deeper RE, or a decompiler that reconstructs the C++ vtables); or
+(c) reimplementing the clock framework from the ADT topology. All are large.
+
+**Reusable and solid (not lost):** the full clock topology and register map; the
+working gate protocol; the decrypted 8.4.1 kernelcache + cached Ghidra project
+(scratchpad); the USSE disassembler validated on real shaders; the gltrace
+command-stream capture; the reliable Arch capture channel. Note also (below) that
+software rendering is measured too slow (SuperTux ~0.22 fps on llvmpipe), so the
+GPU really is the only path to smooth graphics — and it is the one gate we cannot
+currently open. **Paused here on purpose.**
+
 ## Why it matters
 
 Software OpenGL (Mesa 26.1.6 llvmpipe, LLVM 22, both cores, 768×1024, measured
@@ -469,3 +515,282 @@ decode (the DMA program that does the load) is still open -- PDS is its own
 instruction set with no Vita3K reference -- but the constant and the F32->F16
 conversion are pinned. (The F32 sits at a non-aligned 0x..185, i.e. inside a
 larger constant/uniform record.)
+
+## Texture/SMP fragment program is GPU-only, not CPU-readable (2026-09-28)
+
+Reworked the capture path onto the user's x86 Arch box (see the tooling note
+below): the Mac's usbmuxd was corrupting bulk transfers; the Linux
+libimobiledevice path is clean (8 MB in 1.6 s), so we can now pull full arenas
+and re-run at will. Re-ran gltrace with the texture-sampling frame (prog3 =
+`texture2D(uTex,t)`, 2x2 RGBA, NEAREST; centre pixel = ffff00ff = the corner
+texel, so the sample really happens).
+
+Located the app's fragment programs in the CPU arena by their preamble
+`PHAS(fa44070000000000) / VBW(50850009e0000300) / NOP / VTST / VLDST / SPEC`:
+
+- **prog1** (`gl_FragColor = uColor`): preamble + `VPCK pa6 <- pa3 (src1.rgba)`.
+- **prog2** (`uColor*uColor`): preamble + `V16NMAD VMUL pa3 = pa3*pa3` + `VPCK pa6 <- pa3`.
+
+Both match the earlier reads exactly. Also found the vertex program as a
+genuine *multi-phase* USSE program: its `PHAS` is `fa440000000003be` (non-zero
+next-phase address field 0x3be, vs `...070000000000` = single phase), body =
+`LIMM`(the 0.5 scale/bias) + `VMOV o0<-pa0 / o1<-pa1` across several phases.
+
+**The texture fragment program (the one with the SMP) is not in CPU memory.**
+Widened the arena dump to the whole 0x200000-0x2000000 window (vm_read on
+mach_task_self) and even took a snapshot the instant after `glLinkProgram(prog3)`
+/`glUseProgram(prog3)`, before any draw. In all 30 MB there is **not one run of
+>=6 consecutive valid instructions containing an SMP**, and only two distinct
+PHAS words exist (the two above) -- neither leads to an SMP. Every apparent
+"SMP" (major 0x1c) is data (an `0xe...` word whose low 32 bits are a small
+count); its decoded coordn/texn are noise. The GPU VA the pipeline binds for
+the fragment program (map0 offset 0x69: prog2 0x00980f30 -> prog3 0x00980ac0)
+is in the 0x98xxxx range, which `vm_read` returns as **zero** -- i.e. the
+compiled fragment program is uploaded to GPU-only / write-combined memory and
+the CPU staging copy is kept only for the trivial colour shaders.
+
+map0 diff prog2(c) vs prog3(d), 41 bytes in 8 regions: the bound program VA at
+0x69, resource counts at 0x118 (0x01->0x0d, +8 0x10->0x02), and a **new
+non-zero record at 0x15c = `01 00 04 00 0a`** that is absent for the
+non-textured draws -- the texture/sampler binding. map1/map2 unchanged.
+
+Consequence: reading the real SMP encoding of our own shader needs either a
+hook on the driver routine that writes the USSE into the GPU buffer (in
+IMGSGX543GLDriver, in the dyld shared cache), or reading that GPU buffer through
+the IOAccelerator surface API rather than raw vm_read. The SMP *encoding* is
+already defined in usse-dis.py from Vita3K; what is missing is a captured
+instance to validate it against. Operand decode itself is validated on
+prog1/prog2 (banks/mask/fmt/end/ALU-op/VPCK-swizzle all correct).
+
+## Capture tooling now runs through the Arch box (2026-09-28)
+
+iOS-over-USB bulk transfers reset on the Mac (Apple's closed usbmuxd); they are
+solid through the user's x86 Arch box (open libimobiledevice usbmuxd). On Arch:
+`iproxy 2222 22` as a transient unit `cascadia-iproxy`, iPad root over a legacy
+OpenSSH (`-o HostKeyAlgorithms=+ssh-rsa -o PubkeyAcceptedAlgorithms=+ssh-rsa`),
+key auth set up (helpers `~/ipad` / `~/ipush` / `~/ipull`). gltrace deploys to a
+fresh `/var/root/gltraceN` each time (AMFI kills a re-used path on stale cdhash).
+
+## GPU clock/power topology — full map from the ADT (2026-09-28)
+
+Pivoted to the real end goal (running the GPU from Linux). The first gate is the
+clock bring-up: on Linux the first SGX register read hangs the bus because the
+SGX's feeding clocks are off. Pulled the complete clock tree from the ADT with
+NO device risk -- it is all static data, live in the IORegistry
+(`ioprops "IODeviceTree:/arm-io/pmgr"` and `.../sgx`) and offline in the
+teammate's ADT dump (`~/iBSSloader/dts/apple-p105ap-raw.json`, pmgr node
+`device-clocks` = 5104 bytes, 116 records of 44 bytes: [id|flags]/.../[u32
+sources packed as bytes]/.../[16-char name]).
+
+**SGX device node** (`/arm-io/sgx`, `compatible "gpu,s5l8940x"`):
+`clock-gates = 0x5c`, `power-gates = 0x5c`, `clock-ids = 0x127`,
+`interrupts = 49 @ AIC`, `gfx-qos = 1,1`, `brn_31195 = 1` (SGX543 rev 1.2.2),
+reg = 0x35100000/0x18000 (SGX bank) + 0x3F101000/0x1000 (its PMGR power block).
+
+**The clock chain (each clock's `id`, and its candidate source ids):**
+
+- SGX  ->  gate/power **GFX** (id 0x5c, record 81); GFX sources = {0x1e, 0x1f};
+  field5 = 0x02d5 (QoS/freq-ish). 
+- **GFX_SYS-CLK** (id 0x1e, rec 29): sources {0x18,0x19,0x1a,0x1c}, sel 0x09.
+- **GFX-CLK**     (id 0x1f, rec 30): sources {0x18,0x19,0x1a,0x1c}, sel 0x0a.
+- **MANAGED0..4** (ids 0x18..0x1c, recs 23-27): fed by PREDIV/PLL; the 0x80 flag
+  byte = "managed/enabled" marker. These are the ones that read DISABLED
+  (bit31 clear) on Linux -> the missing link.
+- PREDIV0-6 / VID / PLLs feed the MANAGED clocks; those PLLs are already up on
+  Linux (the CPU runs off them).
+
+So the bring-up order is: MANAGED0/1(/2/4) on (source+divider, the perf-state) ->
+GFX_SYS-CLK + GFX-CLK on (0x3f101024 / 0x3f101028, seen going 0x300->0x3ff) ->
+GFX gate/power (idx 0x5c) -> only THEN read SGX CORE_ID at 0x35100020.
+
+**Known register spots** (from earlier Linux peeks): GFX_SYS-CLK 0x3f101024,
+GFX-CLK 0x3f101028; MANAGED0/1 0x3f100070/0x3f100074 (bit31=enable, bit30=busy);
+perf-state index -> PMGR+0x300 then wait bits 16-23; per-clock perf table at
+PMGR 0x200 + n*16 (byte = source 6:5 / divider 4:0). PMGR base 0x3F100000 len
+0x7000 (pmgr `reg`).
+
+**The one remaining unknown for a safe attempt:** the actual values to write to
+enable MANAGED0/1 (source select + divider = the GPU perf-state), and the exact
+handshake. iOS's AppleS5L8940XPerformanceController writes these at runtime; we
+cannot read PMGR live (no tfp0). Get them from static RE of the real 8.4.1
+kernelcache (decrypts with docs/kernelcache-keys.txt; the in-tree Kernelcache.dec
+is 6.1) -- the PerformanceController / ClockController there holds the perf-state
+table and the enable sequence. That is the next step, zero device risk.
+
+**Reachability, honest:** a GL "game" from Linux is out -- no open Mesa or kernel
+driver exists for SGX543 (Series5XT; mainline drm/powervr is Rogue-only), and the
+compiled texture program never even appears in CPU memory (see above). The
+realistic triumph is hardware bring-up: clock the GPU, read CORE_ID/revision,
+load its ukernel (extractable from IMGSGX543), and ideally drive a hand-built
+command stream to a triangle -- using our USSE + command-stream RE, bypassing GL.
+
+## GPU clock bring-up — register-level findings from Linux + kernelcache (2026-09-28)
+
+Booted to Linux, drove PMGR by `peek r/w` over ssh, cross-checked against the
+decrypted 8.4.1 kernelcache (AppleS5L8940X kext, PIC-aware capstone). Confirmed:
+
+- **PS-gate registers ARE writable and work.** `clock_gate_switch` (kc @0x80b8de38):
+  reg = `PMGR + 0x1000 + idx*4`; recipe `write (v & ~0x10f) | 0xf`, poll until
+  bits[7:4]==bits[3:0]. Applied to GFX_SYS-CLK (idx 9, 0x3f101024) and GFX-CLK
+  (idx 10, 0x3f101028): both went 0x300 -> **0x3ff (ON)**, no hang. First time the
+  GPU clock domain is gated on under Linux. (Map registers with
+  `scripts/adt-pmgr-map.py ibootfiles/DeviceTree.raw <peek dump>`.)
+
+- **Clock-config registers (`PMGR + idx*4`, e.g. GFX-CLK 0x3f100070, GFX_SYS
+  0x3f100074, MANAGED0/1/2 0x3f10002c/30/34) are READ-ONLY mirrors.** Every
+  `peek w` to them is silently ignored (reads back unchanged). So a clock's
+  source/divider/enable cannot be set by a direct register write — that was the
+  whole reason the naive "re-point GFX to a running MANAGED" failed.
+
+- **The CPU/SoC DVFS state machine is at PMGR+0x2100.** A second kernelcache
+  function (@0x80b8deb4) writes 0x3f102100 (domain1) / 0x3f102104 (domain0) and
+  polls busy bit16 (0x10000). Live: 0x2100=2 (current state), 0x2104=1; a 16-entry
+  voltage/freq table at 0x2120..0x2190 (`00020904 00824024` per state), more at
+  0x2010/0x2080/0x21c0. This is CPU/SoC voltage-frequency, **not** the GPU clock.
+
+- **Reading any SGX register (0x35100020) with GFX sourced from a dead MANAGED
+  still HANGS the bus** (froze the device, reboot). Confirmed: gating the domain
+  on is not enough; a running MANAGED source must actually feed GFX first.
+
+**Clock-reg format (from the touch-clk driver, clk-s5l8940x-pmgr.c):** bit31 =
+DISABLE (1 = off), bit19 = enable, bit18 = busy, low bits = divider. So GFX-CLK
+0x80000001 has bit31 set = **disabled**; MANAGED3/4 (0x38/0x3c, bit31 set) are
+likewise "off" by this reading — i.e. the whole GFX chain is parked.
+
+**Still open — the real next task:** the GPU managed-clock **enable + source
+routing** is a subsystem in the base AppleARMPerformanceController kext (kext
+__text file 0x461b48, vm 0x804a9b48; disasm scratchpad/gpu2/pc_disasm.txt),
+reachable by its strings "routing failed: could not connect %s" (@0x804c18c2)
+and "clock conflict (%s vs %s)" (@0x804c1a18) and AppleARMSlowAdaptiveClockingManager
+(@0x804bff40). Its control register + write protocol for a managed clock is not
+yet pinned (the routing solver is heavy C++ bit-manipulation over in-memory clock
+nodes; a Ghidra decompile is the efficient way in). Once pinned: add GFX clocks
+to clk-s5l8940x-pmgr.c with the routing sequence, enable MANAGED source, gate on
+GFX_SYS/GFX, THEN read CORE_ID. This is genuine driver work, a multi-session arc.
+
+## Ghidra pass on the clock-routing subsystem (2026-09-28)
+
+Headless Ghidra 12.1.2 (analyzeHeadless, ARM:LE:32:v7) on kc841.macho, project
+in scratchpad/gpu2/gproj. Decompiled the routing subsystem reached from the
+"routing failed" strings:
+
+- FUN_804c1640 (@0x804c1640) is the routing SOLVER: a recursive graph algorithm
+  over in-memory clock-node structures (this[0x17]=node array of 0xc-byte
+  records, this[0x18]=adjacency, this[0x14]=stride, this[0x15]=mask word count).
+  It computes connectivity masks and calls FUN_804c1c6c / FUN_804c1ba0 to apply.
+- FUN_804c1ba0 dispatches FUN_804c1c6c with mode 0/1/2 per direction flags.
+- FUN_804c1c6c walks the graph via vtable method (*this+0x360) and merges masks.
+- FUN_804c1490/14e8 only build OSString names ("M","<","-",">") for the logs.
+
+So this layer is pure software routing logic; the actual MMIO write is one more
+level down, behind vtable dispatch to per-clock objects: (*this+0x340) returns a
+clock object, and a method on it does the register write. The S5L8940X register
+accessors are tiny: readReg = `ldr base,[this+0x550]; ldr r0,[base+off]`,
+writeReg = `str val,[base+off]` (base ivar at +0x550; for the base
+PerformanceController the base is _pcBaseAddress = PMGR 0x3f100000).
+
+NEXT Ghidra target: resolve (*this+0x340)/(*this+0x360) to the concrete
+clock-object class and decompile its enable/setSource method to get the control
+register offset + protocol for a managed clock. Then implement in
+clk-s5l8940x-pmgr.c. (The routing solver decides *what* to connect; we need the
+*apply* register write.) Reusable: the analyzed Ghidra project is cached, so
+re-running DecompDump.java with new addresses is fast (-process -noanalysis).
+
+## Ghidra passes 2-4: static RE hits the OOP/runtime-dispatch wall (2026-09-28)
+
+Chased the clock commit through the vtable. The PerformanceController vtable is
+at file 0xb48938 (found via ptrs to its methods: readReg=slot 0x490 @0x80b8df5c,
+writeReg=0x494, clock_gate_switch=0x488 @0x80b8de38). Slot 0x364 (the commit the
+router calls) -> FUN_804b3490, which calls slot 0x440 -> FUN_804b2900. But:
+
+- FUN_804b2900 is NOT an MMIO write -- it records voltage/perf state into in-mem
+  tables ([this+0xac]/[0xa8]/[0xb0]) under a spinlock and emits `_kernel_debug`
+  events; the `0x27002000 | dom<<4` "selector" is a **kdebug trace code**, and the
+  branches panic on "voltage state"/"SRAM EMA"/"performance state" -- this is the
+  **CPU/SoC voltage-frequency DVFS path, not the GPU clock**.
+- The real hardware apply in FUN_804b3490 is `(*(*(perdomain+0x10))+0x3c)(...)` --
+  a **runtime-populated clock/regulator object**, whose class is not statically
+  known.
+- The clock ROUTER (FUN_804c09a8/1640) is a different class again; Ghidra found no
+  RTTI, no data-xref, and no vtable pointer to its methods, so its vtable (and its
+  own +0x364 commit) can't be pinned statically.
+
+Conclusion: static decompilation of this framework does not cheaply yield the
+concrete "enable managed clock N, route GFX" register write -- the MMIO sits
+behind runtime-object vtable dispatch. Switching tactics (per plan).
+
+**Better tactic — dynamic kdebug trace on iOS.** The perf/clock framework TRACES
+its own operations via `_kernel_debug` (code group 0x27xxxxxx). kdebug is readable
+from iOS userspace WITHOUT tfp0 (sysctl KERN_KDEBUG: KDSETUP/KDENABLE/KDREADTR).
+So: on iOS, enable kdebug, run a GPU workload (gltrace), capture the 0x27-class
+events -> ground truth of the clock/voltage state machine as the GPU powers on,
+including the state indices/args passed to the tracer. This bypasses both the
+static-RE wall and the no-tfp0 wall. Alternative (cheaper, in Linux now): sweep
+CPU perf-states via the writable setter 0x3f102100/04 and watch whether the GFX
+MANAGED sources turn on (long-shot; GPU clock is likely GPU-dedicated, not tied to
+CPU perf-state).
+
+## Ghidra pass D: the concrete register recipe (2026-09-28)
+
+Decompiled ALL 44 functions of the AppleS5L8940X kext (text 0x80b8b328-0x80b8f1fc)
+via headless Ghidra (scratchpad/gpu2/kext_c.txt). All register access goes through
+readReg = vtable+0x490 (`ldr [this+0x550 + off]`) and writeReg = vtable+0x494;
+_pcBase (this+0x550) = PMGR 0x3f100000. Found the real writable control (the
+0x00-0xff clock regs we saw are read-only mirrors; the control is in the 0x100+
+and 0x1000+ regions):
+
+- **FUN_80b8d280 — managed-rail enable/ramp** (the missing piece). For rail idx
+  (param_2, 0..6):
+    writeReg(0x110 + idx*0x10, level ? 0x90000000 : 0);  poll (v & 0x40000000)==0  // bit30 busy
+    // enabling (level != 0):
+    writeReg(0x114 + idx*0x10, level*2);        poll +0x110 bit9 (0x200) clear
+    writeReg(0x118 + idx*0x10, level*2 - k);    poll bit9        // k from this[0x6b] companion (voltage)
+    writeReg(0x110 + idx*0x10, 0x90000000|0x400); poll bit9      // ramp step
+    writeReg(0x110 + idx*0x10, 0x90000000|0xc00); poll bit9      // ramp step
+  So a managed rail is controlled at **0x3f100110 + idx*0x10** (+0x114/+0x118),
+  NOT the 0x2c mirror -- that is why raw peek writes to 0x3f10002c/0x70 were ignored.
+- **FUN_80b8cdbc — per-domain clock apply**: domain1 writes reg 0x38 (poll bit30
+  0x40000000); domain0 writes reg 0x300 (poll bits 16-23, 0xff0000). Values come
+  from tables this[0x201]/this[0x202] indexed by state.
+- **FUN_80b8cf58 = _enableDevicePowerGated**: device clock-gate id -> group via
+  this[0x81][id], group struct at this[0x159]+group*0x2c holds up to 4 gate ids at
+  +0xc; each enabled via clock_gate_switch (vtable+0x488). Panics
+  "power gate enabled before clock" if a gate reads (v&0xf)!=0xf while enabling.
+- clock_gate_switch (FUN_80b8de38, vtable+0x488): reg 0x1000+idx*4, (v&~0x10f)|0xf,
+  poll [3:0]==[7:4]. FUN_80b8d154: bit31 reset pulse on 0x1000+idx*4.
+  FUN_80b8d1a0: CPU1 start (0x1214/0x1220/0x1204/0x1210). FUN_80b8d0a0: device
+  on/off touching this[0x1ff] + poll 0x2104.
+
+**Still to pin for the GPU:** which managed-rail idx (0..6) feeds GFX and at what
+level; whether 0x110-region is the clock or the companion voltage (this[0x6b]).
+NEXT (on Linux): read 0x3f100100-0x1ff (the rail region, not read before) to see
+current rail states; find the caller that drives the GFX rail (rail<->clock map);
+then reproduce FUN_80b8d280's ramp for the GFX rail + clock_gate_switch for GFX,
+and only then read CORE_ID. This is now a concrete register sequence, not a
+mystery -- the driver work is bounded.
+
+## Ghidra pass A2: the rail path is CPU DVFS; apply the recipe empirically (2026-09-28)
+
+The managed-rail ramp FUN_80b8d280 (vtable+0x478, regs 0x3f100110+idx*0x10) is
+called from exactly one site: FUN_804b0cb0 = AppleARMPerformanceController::
+initVoltageAndPerformanceStates (reads DT performance-domain-features /
+nominal-performance%ld / boost-performance%ld / voltage-states%ld and builds the
+per-domain state tables). So the 0x110-region rails serve CPU/SoC DVFS
+(voltage+perf domains), and the domain-apply FUN_80b8cdbc (regs 0x38/0x300) is
+CPU too. The GPU clock is NOT in the PerformanceController; it lives in the clock
+ROUTER/controller class (FUN_804c09a8/1640), whose vtable Ghidra can't recover
+(no RTTI/xref) -- static RE of the GPU-clock-source enable stalls there.
+
+BUT the rail CONTROL PROTOCOL is general (any rail idx 0..6), so the GFX MANAGED
+source can be brought up EMPIRICALLY on Linux with the extracted recipe:
+  1. read 0x3f100100-0x1ff (rail region -- never dumped) to see rail states;
+  2. for each candidate rail feeding GFX (GFX sources = MANAGED0..4, mirror ids
+     0x18-0x1c): ramp it via FUN_80b8d280's sequence
+       w(0x110+idx*0x10, 0x90000000); poll bit30; w(+0x114, lvl*2); poll +0x110 bit9;
+       w(+0x118, lvl*2-k); poll bit9; w(0x110.., 0x90000000|0x400); poll bit9;
+       w(0x110.., 0x90000000|0xc00); poll bit9;
+  3. gate GFX_SYS/GFX (0x3f101024/28, (v&~0x10f)|0xf) -- already works;
+  4. read SGX CORE_ID 0x35100020.
+The rail<->GFX map + level is the one empirical unknown; resolve on-device (read
+region, try, watch, CORE_ID). Static RE delivered the register recipe; the rest
+is a bounded on-device experiment.

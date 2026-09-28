@@ -96,9 +96,12 @@ including the parts that didn't work.
 - [ ] NAND as Linux's own storage — for Pi Pico users, at the cost of iOS;
       see *Where Linux keeps its files* below
 - [ ] USB host mode / keyboard — no free host port: dwc2 in host mode would take the console and the network with it
-- [ ] Graphical Acceleration (SGX543MP2) — the power domains switch on, the first
-      register read hangs the bus; all that is known is in
-      [docs/research/p105-gpu.md](docs/research/p105-gpu.md)
+- [ ] Graphical Acceleration (SGX543MP2) — **dead end for now** (2026-09-28): the
+      clock *domain* can be gated on from Linux, but the GFX clock *source* enable
+      lives behind a runtime-dispatched kernel clock-controller we can neither
+      observe (no working tfp0 on 8.4.1) nor recover statically, so the first SGX
+      register read still hangs. Full arc, register map, and what would unblock it:
+      [docs/research/p105-gpu.md](docs/research/p105-gpu.md) (see STATUS at top)
 
 ## Where Linux keeps its files
 

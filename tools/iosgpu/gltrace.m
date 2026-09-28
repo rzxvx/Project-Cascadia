@@ -39,8 +39,8 @@ kern_return_t vm_read_overwrite(mach_port_t, vm_address_t, vm_size_t, vm_address
 /* the CPU arena the GL driver keeps its GPU-shared buffers in (map0/1/2 and the
  * submit structs' pointers all landed here); dumped as a sparse image so the
  * same file offset is the same address across frames a/b/c */
-#define ARENA_LO 0x00400000u
-#define ARENA_HI 0x00c00000u
+#define ARENA_LO 0x00200000u
+#define ARENA_HI 0x02000000u
 
 /* ---- the IOKit calls we intercept ------------------------------------- */
 
@@ -148,12 +148,24 @@ static void snapshot_arena(const char *label)
         return;
     memset(img, 0, span);
     unsigned mapped = 0;
+    /* also log contiguous mapped extents, so a program's page can be located
+     * even when the heap has grown past the old fixed window */
+    unsigned run_start = 0;
+    int in_run = 0;
     for (unsigned off = 0; off < span; off += 0x1000) {
         vm_size_t got = 0;
-        if (vm_read_overwrite(mach_task_self(), ARENA_LO + off, 0x1000,
-                              (vm_address_t)(img + off), &got) == 0 && got == 0x1000)
+        int ok = (vm_read_overwrite(mach_task_self(), ARENA_LO + off, 0x1000,
+                                    (vm_address_t)(img + off), &got) == 0 && got == 0x1000);
+        if (ok)
             mapped++;
+        if (ok && !in_run) { in_run = 1; run_start = off; }
+        else if (!ok && in_run) {
+            in_run = 0;
+            printf("   ext %s: 0x%06x..0x%06x\n", label, ARENA_LO + run_start, ARENA_LO + off);
+        }
     }
+    if (in_run)
+        printf("   ext %s: 0x%06x..0x%06x\n", label, ARENA_LO + run_start, ARENA_HI);
     char path[64];
     snprintf(path, sizeof path, "/var/root/gt_%s_arena.bin", label);
     int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
@@ -223,6 +235,32 @@ int main(void)
     glAttachShader(prog2, make_shader(GL_FRAGMENT_SHADER, fs2));
     glBindAttribLocation(prog2, 0, "p");
     glLinkProgram(prog2);
+    /* prog3: samples a texture -- gives a clean SMP to validate against.
+     * texcoord is derived in the vertex shader, so no extra attribute. */
+    const char *vs2 = "attribute vec4 p; varying vec2 t;"
+                      "void main(){ gl_Position = p; t = p.xy*0.5+0.5; }";
+    const char *fs3 = "precision mediump float; varying vec2 t; uniform sampler2D uTex;"
+                      "void main(){ gl_FragColor = texture2D(uTex, t); }";
+    GLuint prog3 = glCreateProgram();
+    glAttachShader(prog3, make_shader(GL_VERTEX_SHADER, vs2));
+    glAttachShader(prog3, make_shader(GL_FRAGMENT_SHADER, fs3));
+    glBindAttribLocation(prog3, 0, "p");
+    glLinkProgram(prog3);
+    /* e: right after linking the texture program -- catch its fragment USSE in
+     * the compiler's CPU staging buffer before any draw can free/reuse it
+     * (the SMP program is absent from post-draw snapshots -> it lives in
+     * GPU-only memory once uploaded). */
+    glUseProgram(prog3);
+    snapshot_arena("e");
+    GLuint smptex;
+    glGenTextures(1, &smptex);
+    glBindTexture(GL_TEXTURE_2D, smptex);
+    static const unsigned char texels[] = { 255,0,0,255, 0,255,0,255,
+                                            0,0,255,255, 255,255,0,255 };
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 2, 2, 0, GL_RGBA, GL_UNSIGNED_BYTE, texels);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+
     glUseProgram(prog);
     GLint uColor = glGetUniformLocation(prog, "uColor");
 
@@ -255,9 +293,20 @@ int main(void)
     glFinish();
     snapshot("c"); snapshot_arena("c");
 
+    /* d: textured triangle (prog3) -- a clean SMP */
+    printf("== frame d (triangle, prog3 = texture2D)\n");
+    glUseProgram(prog3);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, smptex);
+    glUniform1i(glGetUniformLocation(prog3, "uTex"), 0);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glFinish();
+    snapshot("d"); snapshot_arena("d");
+
     unsigned char px[4] = { 0 };
     glReadPixels(32, 32, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
-    printf("== centre pixel after c: %02x %02x %02x %02x (prog2: uColor^2 -> ~ff 40 00 ff)\n",
+    printf("== centre pixel after d: %02x %02x %02x %02x (textured)\n",
            px[0], px[1], px[2], px[3]);
     return 0;
 }
