@@ -5,7 +5,15 @@ run), since userland peek is impossible on the LIK SSH ramdisk (no /dev/mem,
 gutted busybox — only dd+printf). Read the registers from inside XNU and print
 them over the DCSD UART, then diff vs Recovery.
 
-## Resolved kernel symbols (kernelcache.macho, LC_SYMTAB present, 12H321)
+## Resolved kernel symbols (`ibootfiles/kernelcache.macho`, LC_SYMTAB present)
+
+**Not 12H321, as this note used to say.** That file is `Darwin Kernel Version
+13.0.0 ... xnu-2107.7.55.2.2~1/RELEASE_ARM_S5L8942X` -- iOS 6.1, 2013, the same
+SoC. It is the one kernelcache here that still carries a symbol table, which is
+why the addresses below could be resolved at all; the 8.4.1 one is stripped and
+has to be decrypted first (`docs/kernelcache-keys.txt`). Fine for hardware RE --
+the register layout did not move between the two -- but every address in this
+note is a 6.1 address and means nothing on the running 8.4.1 kernel.
 
     serial_putc   0x8027a7d4  thumb   (call 0x8027a7d5; char in r0)
     kprintf       0x8027a7f0  thumb
