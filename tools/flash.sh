@@ -129,6 +129,21 @@ esac
 echo "==> iBEC:   $IBEC  ($IBEC_WHICH)"
 echo "==> bundle: $(basename "$ROOT/output/staging-bundle.bin")"
 
+# --skip-pwn cannot know how the device reached pwned DFU, and the two routes
+# want different images: checkm8 from a Pico leaves the GID key usable and takes
+# the stock encrypted iBEC, while a kDFU done by hand -- kloader from a
+# jailbroken iOS -- does not, and needs the plaintext one.  --kdfu picks the
+# right image because it did the pwning itself; here we can only say so.
+if [ "$PWN_MODE" = none ] && [ "$IBEC_PINNED" = 0 ]; then
+    case "$IBEC" in
+        *.plain.dfu) : ;;
+        *) echo "    note: this is the ENCRYPTED iBEC, which is right after checkm8 (Pico)" >&2
+           echo "    and wrong after a hand-made kDFU from iOS -- that one uploads to 100%" >&2
+           echo "    and the device goes dark.  If you got here with kloader, re-run with" >&2
+           echo "      --ibec $FW/iBEC.patched.autogo.plain.dfu" >&2 ;;
+    esac
+fi
+
 # ---------------------------------------------------------------- UART -----
 # Optional, and best-effort.  The device also writes its early boot log to the
 # framebuffer, and the UART capture has a habit of truncating partway through a
@@ -229,16 +244,17 @@ for _ in 1 2 3 4 5 6 7 8 9 10; do
 done
 if [ "$back" = 0 ]; then
     echo "    it did not.  The device is: $(sudo "$IRECOVERY" -q 2>/dev/null | grep -w MODE || echo "not on the bus at all")" >&2
-    if [ "$PWN_MODE" = kdfu ]; then
+    if [ "$PWN_MODE" != primepwn ]; then
         case "$IBEC" in
             *.plain.dfu)
                 echo "    The image was already the unencrypted one, so it is not the KBAG." >&2
                 echo "    The UART capture and the screen are where to look next." >&2 ;;
             *)
-                echo "    On the kDFU route this is usually an ENCRYPTED iBEC: after iOS has" >&2
+                echo "    Off a jailbroken iOS this is usually an ENCRYPTED iBEC: once iOS has" >&2
                 echo "    booted the AES GID key is gone, the KBAG decrypts to nothing, and the" >&2
                 echo "    iBSS jumps into garbage.  Use build/firmware/iBEC.patched.autogo.plain.dfu" >&2
-                echo "    -- ./cascadia firmware builds it, and --kdfu picks it by default." >&2 ;;
+                echo "    -- ./cascadia firmware builds it, --kdfu picks it by default, and with" >&2
+                echo "    --skip-pwn you have to pass it yourself: --ibec <that file>." >&2 ;;
         esac
     fi
 fi
