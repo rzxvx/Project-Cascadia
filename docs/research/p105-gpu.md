@@ -430,3 +430,24 @@ jj bits. With that, the two programs read correctly:
 operands (banks/reg/mask/fmt/end), the V*NMAD ALU op, and VPCK swizzles.
 Remaining: the SMP/texture path and how PDS feeds uniforms/varyings into the
 registers.
+
+## Correcting the register banks; the uniform lands in a primary attribute (2026-09-29)
+
+The bank names in the reads above were wrong: the 2-bit bank-select does not map
+straight to the RegisterBank enum. From Vita3K's usse_decode_helpers.cpp the
+no-ext mapping is dest {0 temp,1 output,2 primattr,3 indexed1}, src1/2
+{0 temp,1 output,2 primattr,3 secattr}, and the ext bit picks
+secattr/special/immediate/indexed. usse-dis.py now decodes banks per operand
+role and ext bit. With that the fragment program reads correctly:
+
+    V16NMAD VMUL dmask=15 dbank=pa dn=3 s1=pa3 s2=pa3      ; pa3 = pa3 * pa3
+    VPCK    dmask=15 dbank=pa dn=6 s1=pa3 src1.rgba        ; pa6 = pack(pa3)
+
+So it works in the **primary-attribute** bank (not "output"): the colour is in
+pa3 and the pixel result in pa6. That answers the start of the uniform question
+-- a uniform arrives in a *primary attribute* register, and on SGX primary
+attributes are loaded by the **PDS** program before the USSE runs. So the PDS is
+what DMAs uColor into pa3; decoding the PDS program (a separate small program the
+control page points at) is the next step. (This supersedes the "o3/o6" bank
+names in the notes above; the dataflow and swizzle there were right, the bank
+labels were not.)

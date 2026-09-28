@@ -100,33 +100,42 @@ def bits_of(name):
     return None
 
 
-BANK = {0: "temp", 1: "pa", 2: "o", 3: "sa"}      # register banks
 FMT = {0: "f32", 1: "f16", 2: "c10", 3: "u8", 4: "s8", 5: "u16", 6: "s16"}
 
-# per-opcode operand fields worked out from Vita3K's decoder (letter -> (name, fmt))
-# fmt: 'bank' shows the register bank, 'fmt' the pack format, else decimal.
-OPERANDS = {
-    "VMOV": [("mm", "movetype", None), ("ooo", "dtype", "fmt"),
-             ("ll", "dbank", "bank"), ("jjjjjj", "dn", None), ("hhhh", "dmask", None),
-             ("k", "s0bank", "bank"), ("qqqqqq", "s0n", None),
-             ("ff", "s1bank", "bank"), ("uuuuuu", "s1n", None), ("e", "end", None)],
-    "VPCK": [("fff", "sfmt", "fmt"), ("ttt", "dfmt", "fmt"), ("mmmm", "dmask", None),
-             ("bb", "dbank", "bank"), ("ggggggg", "dn", None),
-             ("kk", "s1bank", "bank"), ("qqqqqq", "s1n", None),
-             ("ll", "s2bank", "bank"), ("wwwwww", "s2n", None), ("e", "end", None)],
-    # V*NMAD: op2 (ggg) selects the actual ALU op within the group
-    "V16NMAD": [("ggg", "op2", "nmad"), ("eeee", "dmask", None),
-                ("tt", "dbank", "bank"), ("ffffff", "dn", None),
-                ("kk", "s1bank", "bank"), ("hhhhhh", "s1n", None), ("mm", "s1mod", None),
-                ("ll", "s2bank", "bank"), ("jjjjjj", "s2n", None), ("o", "s2mod", None)],
-    "V32NMAD": [("ggg", "op2", "nmad"), ("eeee", "dmask", None),
-                ("tt", "dbank", "bank"), ("ffffff", "dn", None),
-                ("kk", "s1bank", "bank"), ("hhhhhh", "s1n", None), ("mm", "s1mod", None),
-                ("ll", "s2bank", "bank"), ("jjjjjj", "s2n", None), ("o", "s2mod", None)],
-}
+# 2-bit bank-select -> register bank, from Vita3K's usse_decode_helpers.cpp.
+# The ext bit picks the alternate set; different operand roles decode differently.
+def bank_dest(sel, ext):
+    return (["sa", "special", "index", "idx2"] if ext else ["temp", "o", "pa", "idx1"])[sel]
+def bank_src12(sel, ext):
+    return (["idx1", "special", "imm", "idx2"] if ext else ["temp", "o", "pa", "sa"])[sel]
+def bank_src0(sel, ext):
+    return (["o", "sa"] if ext else ["temp", "pa"])[sel & 1]
 
 # the NMAD-group operation select (op2), from Vita3K's Opcode order
 NMAD = {0: "VMUL", 1: "VADD", 2: "VFRC", 3: "VDSX", 4: "VDSY", 5: "VMIN", 6: "VMAX", 7: "VDP"}
+
+# per-opcode operand fields, from Vita3K's decoder.  Each entry:
+#   (letters, label, kind[, ext_letter])
+# kind: 'fmt' pack format, 'nmad' ALU op, 'dbank'/'s12bank'/'s0bank' a register
+# bank (with its ext bit given by ext_letter), else a plain number.
+OPERANDS = {
+    "VMOV": [("ooo", "dtype", "fmt"), ("ll", "dbank", "dbank", "d"), ("jjjjjj", "dn", None),
+             ("hhhh", "dmask", None), ("ff", "sbank", "s12bank", "c"), ("uuuuuu", "sn", None),
+             ("e", "end", None)],
+    "VPCK": [("fff", "sfmt", "fmt"), ("ttt", "dfmt", "fmt"), ("mmmm", "dmask", None),
+             ("bb", "dbank", "dbank", "d"), ("ggggggg", "dn", None),
+             ("kk", "s1bank", "s12bank", "r"), ("qqqqqq", "s1n", None),
+             ("ll", "s2bank", "s12bank", "c"), ("wwwwww", "s2n", None), ("e", "end", None)],
+    "V16NMAD": [("ggg", "op2", "nmad"), ("eeee", "dmask", None),
+                ("tt", "dbank", "dbank", "d"), ("ffffff", "dn", None),
+                ("kk", "s1bank", "s12bank", "b"), ("hhhhhh", "s1n", None),
+                ("ll", "s2bank", "s12bank", "a"), ("jjjjjj", "s2n", None)],
+    "V32NMAD": [("ggg", "op2", "nmad"), ("eeee", "dmask", None),
+                ("tt", "dbank", "dbank", "d"), ("ffffff", "dn", None),
+                ("kk", "s1bank", "s12bank", "b"), ("hhhhhh", "s1n", None),
+                ("ll", "s2bank", "s12bank", "a"), ("jjjjjj", "s2n", None)],
+}
+BANKFN = {"dbank": bank_dest, "s12bank": bank_src12, "s0bank": bank_src0}
 
 
 def field_multi(word, bits, letters):
@@ -153,12 +162,14 @@ def operands(name, word):
         return ""
     bs = bits_of(name)
     out = []
-    for letters, label, kind in spec:
+    for entry in spec:
+        letters, label, kind = entry[0], entry[1], entry[2]
         v = field(word, bs, letters[0])
         if v is None:
             continue
-        if kind == "bank":
-            out.append(f"{label}={BANK.get(v, v)}")
+        if kind in BANKFN:
+            ext = field(word, bs, entry[3]) or 0
+            out.append(f"{label}={BANKFN[kind](v, ext)}")
         elif kind == "fmt":
             out.append(f"{label}={FMT.get(v, v)}")
         elif kind == "nmad":
