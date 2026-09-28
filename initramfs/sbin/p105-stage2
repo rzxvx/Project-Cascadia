@@ -134,7 +134,12 @@ if [ -x /usr/sbin/dropbear ]; then
     # -E logs to stderr; /dev/kmsg puts that in dmesg and the UART capture,
     # where every other verdict already is.  It used to go to /dev/null, which
     # cost a whole flash cycle to diagnose a missing devpts.
-    /usr/sbin/dropbear -R -E -p "$IP_DEV:22" 2>/dev/kmsg &
+    # -s: no password authentication.  root's password is blank and can never
+    # be accepted, but without -s dropbear advertises the method anyway, so a
+    # key ssh could not offer -- a passphrase the user did not type is enough --
+    # ends in three prompts for a password that does not exist and a final
+    # "Permission denied (publickey,password)" that blames the wrong thing.
+    /usr/sbin/dropbear -s -R -E -p "$IP_DEV:22" 2>/dev/kmsg &
     msg "P105: dropbear on $IP_DEV:22"
 else
     msg "P105: dropbear not installed (run scripts/add-dropbear.sh)"
@@ -239,13 +244,42 @@ msg "P105: stage2 done, shell on tty0"
 # reaped the orphans the kernel hands to PID 1 -- 127 zombies after an hour of
 # a desktop (2026-09-25).  So the glass shell is a child, started again
 # whenever it ends, and PID 1 waits on it: ash's wait is waitpid(-1), so every
-# orphan that exits in the meantime is reaped on the way.  No setsid: busybox's
-# forks when its caller leads a process group, and $! would then be a process
-# that is already gone -- a new shell every second.
-# A login shell, like ssh's: /etc/profile, the prompt, ~/.profile.
+# orphan that exits in the meantime is reaped on the way.
+#
+# A getty, for the same reason the ACM console above uses one: it calls
+# setsid() and takes the tty as the shell's CONTROLLING terminal.  Redirecting
+# a shell's stdin to /dev/tty0, which is what this did, leaves the device open
+# but the shell with no session and no foreground process group, and the tty
+# layer then has nobody to deliver a signal to: Ctrl-C, Ctrl-Z and job control
+# are all silently dead, and a command started on the glass can only be killed
+# from somewhere else.  Measured on the device 2026-09-29 -- every process on
+# the system had tty_nr 0 except the ACM console's shell, which getty had given
+# a session (pgrp=sess=pid, tpgid=pid) and a controlling tty.
+#
+# If getty will not stay up, fall back to the old bare shell instead of
+# respawning a failure forever: a wrong guess here costs the only console on
+# the glass, and a spinning loop would cost it just as thoroughly.
 cd "$HOME" 2>/dev/null || cd /
+use_getty=1
+[ -x /sbin/getty ] && [ -x /sbin/p105-glass-shell ] || use_getty=0
+quick=0
 while :; do
-    /bin/sh -l </dev/tty0 >/dev/tty0 2>&1 &
+    t0=$(cut -d. -f1 /proc/uptime 2>/dev/null || echo 0)
+    if [ "$use_getty" = 1 ]; then
+        /sbin/getty -i -n -l /sbin/p105-glass-shell 38400 tty0 &
+    else
+        /bin/sh -l </dev/tty0 >/dev/tty0 2>&1 &
+    fi
     wait $!
+    t1=$(cut -d. -f1 /proc/uptime 2>/dev/null || echo 0)
+    if [ "$use_getty" = 1 ] && [ "$((t1 - t0))" -lt 2 ]; then
+        quick=$((quick + 1))
+        if [ "$quick" -ge 3 ]; then
+            msg "P105: getty on tty0 will not stay up -- bare shell, no Ctrl-C"
+            use_getty=0
+        fi
+    else
+        quick=0
+    fi
     sleep 1
 done

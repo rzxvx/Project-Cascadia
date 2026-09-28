@@ -68,13 +68,27 @@ sudo firewall-cmd --permanent --zone=trusted --add-source=10.55.0.0/24
 sudo firewall-cmd --reload
 ```
 
-**An SSH key on the host**, if you want ssh on the device. `./cascadia rootfs`
-installs the public key of the machine it runs on and nothing else — there is
-no password login, root's password is blank and dropbear refuses it.
+**An SSH key on the host**, if you want ssh on the device. The build installs
+the public key of the machine it runs on, and every `~/.ssh/cascadia*.pub`
+besides. There is no password login: root's password is blank and dropbear is
+started with password authentication switched off, so a key is the only way in.
 
 ```bash
 ls ~/.ssh/id_*.pub || ssh-keygen -t ed25519
 ```
+
+**Make it a key without a passphrase**, or keep a second one that has none:
+
+```bash
+ssh-keygen -t ed25519 -N '' -f ~/.ssh/cascadia -C cascadia
+```
+
+Anything matching `~/.ssh/cascadia*.pub` is baked in by name, so this works
+without `PUBKEY=`, and it is the difference between `ssh root@10.55.0.2` and a
+passphrase prompt every time you want to look at a register. If your only key
+has a passphrase, unlock it once per session instead — `ssh-add ~/.ssh/id_ed25519`
+— because an ssh that cannot decrypt a key does not say so: it skips the key and
+fails as though the device had never heard of you.
 
 ## Build
 
@@ -292,7 +306,8 @@ had that do not work here:
 
 | What you see | What it is |
 |---|---|
-| `ssh` asks for a password | The image does not carry the key ssh is offering — `ssh -v` shows the one offered, and `dmesg` on the ACM console shows dropbear's side. `./cascadia build` adds the building machine's key every time; from any other machine, `PUBKEY=that.pub ./cascadia build`, or append the key to `/root/.ssh/authorized_keys` on the ACM console for this boot. Root has no password, so the prompt can never succeed. |
+| `ssh` says `Permission denied (publickey)` | The image does not carry the key ssh offered — `ssh -v` shows which one that was, and `dmesg` on the ACM console shows dropbear's side. `./cascadia build` adds the building machine's key every time; from any other machine, `PUBKEY=that.pub ./cascadia build`, or append the key to `/root/.ssh/authorized_keys` on the ACM console for this boot. |
+| `ssh` asks for a **passphrase** and then gives up | That is your own key on this host, not the device: ssh could not decrypt it, so it never offered it. `ssh-add ~/.ssh/id_ed25519` once, or keep a passphrase-less `~/.ssh/cascadia` (see *Prerequisites*). Nothing is wrong with the image — rebuilding will not help. |
 | `ssh` hangs, no error | This host has no address on the link. `./cascadia link`. |
 | `ssh` hangs, but `ping 10.55.0.2` answers and the glass says `nfs: server ... not responding, still trying` | The NFS root lost its server, and a hard-mounted root blocks everything that touches it until the server returns — the kernel is fine, the cursor still blinks, and the console over the cable still works (it runs from RAM). This is the host's side, not the iPad's: seen with macOS's nfsd and on an Ubuntu host, never on the Arch one. On a NetworkManager host it was NM taking 10.55.0.1 off the link; `./cascadia link` (and so `flash`) now gives NM a profile that keeps it. Otherwise only a reboot gets out of it today; `./cascadia nfs off` and a rebuild boot from RAM instead. |
 | `REMOTE HOST IDENTIFICATION HAS CHANGED` | The device's host key changed. Images built before 2026-09-19 made a new one on every boot from RAM; `./cascadia build` now makes it once and prints its fingerprint. Once: `ssh-keygen -R 10.55.0.2`, then compare the fingerprint ssh shows with the build's. |

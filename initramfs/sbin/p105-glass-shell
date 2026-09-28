@@ -1,0 +1,8 @@
+#!/bin/sh
+# The login program getty invokes for the console on the glass.
+#
+# It exists only to keep the shell a LOGIN shell.  getty's -l takes a program
+# and no arguments, so `-l /bin/sh` would start a shell that never reads
+# /etc/profile -- no prompt, no PATH, none of what every other console here
+# gets.  Two lines are cheaper than guessing at getty's argv[0] conventions.
+exec /bin/sh -l
