@@ -134,7 +134,14 @@ OPERANDS = {
                 ("tt", "dbank", "dbank", "d"), ("ffffff", "dn", None),
                 ("kk", "s1bank", "s12bank", "b"), ("hhhhhh", "s1n", None),
                 ("ll", "s2bank", "s12bank", "a"), ("jjjjjj", "s2n", None)],
+    # SMP: texture sample.  src0 = coordinates, src1 = texture state, src2 = ?,
+    # dim = texture dimensionality, ll = LOD mode.
+    "SMP": [("dd", "dim", "dim"), ("ll", "lodmode", None), ("ooooooo", "dn", None),
+            ("k", "s0bank", "s0bank", "r"), ("qqqqqqq", "coordn", None),
+            ("ii", "s1bank", "s12bank", "c"), ("uuuuuuu", "texn", None),
+            ("jj", "s2bank", "s12bank", "e"), ("vvvvvvv", "s2n", None)],
 }
+DIM = {0: "1D", 1: "2D", 2: "3D", 3: "cube"}   # SMP dim field (best guess order)
 BANKFN = {"dbank": bank_dest, "s12bank": bank_src12, "s0bank": bank_src0}
 
 
@@ -174,6 +181,8 @@ def operands(name, word):
             out.append(f"{label}={FMT.get(v, v)}")
         elif kind == "nmad":
             out.append(f"{label}={NMAD.get(v, v)}")
+        elif kind == "dim":
+            out.append(f"{label}={DIM.get(v, v)}")
         else:
             out.append(f"{label}={v}")
     if name == "VPCK":
