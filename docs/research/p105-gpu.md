@@ -451,3 +451,21 @@ what DMAs uColor into pa3; decoding the PDS program (a separate small program th
 control page points at) is the next step. (This supersedes the "o3/o6" bank
 names in the notes above; the dataflow and swizzle there were right, the bank
 labels were not.)
+
+## The uniform's data, located (2026-09-29)
+
+Searching the captured arena (gt_c, uColor = orange (1,0.5,0,1)) for the value,
+found offline without the device:
+
+- **F32 vec4 (1.0,0.5,0.0,1.0)** at 0x773185 and 0xb60185 -- the value the app
+  set with glUniform4f, in the constant buffer the PDS reads (two copies, the
+  two programs/draws).
+- **F16 (1.0,0.5,0.0,1.0)** at 0x745230 etc. -- the driver's converted copy,
+  matching the VPCK sfmt=f16 the fragment program uses.
+
+So the uniform path is visible end to end: the app's F32 -> the driver converts
+to F16 -> placed where it is loaded into the fragment program's pa3. Full PDS
+decode (the DMA program that does the load) is still open -- PDS is its own
+instruction set with no Vita3K reference -- but the constant and the F32->F16
+conversion are pinned. (The F32 sits at a non-aligned 0x..185, i.e. inside a
+larger constant/uniform record.)
