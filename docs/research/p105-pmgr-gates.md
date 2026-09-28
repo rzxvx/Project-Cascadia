@@ -38,6 +38,15 @@ to an address with no register behind it: it swallows writes and reads zero.
 Implemented: ids **12..90**, 71 registers, holes at 29, 30, 63–66, 71, 78.
 Nothing above id 90 — see *What is still open*.
 
+> **The ids in this table were labelled with the `id - 10` shortcut, and for
+> USB and IOP that shortcut is wrong** (corrected 2026-09-29). It holds for the
+> run this table was built to explain — spi1, the PWM, the UARTs, I2C — and
+> breaks either side of it. The table in *The ADT had it all along*, below, is
+> the authority, and `scripts/adt-pmgr-map.py` prints it. Registers below are
+> now the ADT's; a state is given only where it was actually read, and the
+> sweep that filled this table never read the USB registers by their real
+> addresses.
+
 | id | reg | state | ADT device |
 |---|---|---|---|
 | 58 | `3f1010c0` | off | sha2 |
@@ -48,9 +57,15 @@ Nothing above id 90 — see *What is still open*.
 | 79 | `3f101114` | off | pke |
 | 80–82 | `3f101118`–`120` | **on** | i2c0 (the PMU), i2c1, i2c2 |
 | 83 | `3f101124` | off | **pwm** — grape-clk for the digitizer |
-| 86 | `3f101130` | off | iop |
-| 87–89 | `3f101134`–`13c` | **on** | usb-complex (this ssh session rides on it) |
-| 90 | `3f101140` | off | usb-complex (the fifth gate, 91, has no register) |
+| 86 | `3f10107c` | ? | iop (**not** `3f101130` — that is swi) |
+| 87 | — | — | usb-complex/USB-PHY: register index 0, nothing to gate |
+| 88 | `3f101084` | **on** | **usb-complex/USB-OTG** — the gadget, so this ssh session. Never read directly; it must be on, iBoot's own DFU runs on it |
+| 89 | `3f101088` | off → on | usb-complex/USB-EHCI. iBoot leaves it off; the host PHY switches it and EHCI then answers (HCIVERSION `0x0100`) |
+| 90 | `3f101090` | ? | usb-complex/USB-OHCI0, EHCI's companion |
+| 91 | `3f101094` | ? | usb-complex/USB-OHCI1 |
+| 125 | `3f101130` | off | swi (the row this table used to call iop) |
+| 126 | `3f101134` | **on** | dwi (the row it used to call usb-complex) |
+| 47 | `3f101140` | off | mca — audio. The row it used to call "gate 90", and so the register the USB PHY driver switched on for a year |
 
 The clusters line up with the ADT's device groups — three I2C controllers in a
 row, the UART block, the USB gates — which is the cross-check that matters more

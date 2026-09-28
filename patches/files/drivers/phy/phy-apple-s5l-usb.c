@@ -34,15 +34,42 @@
 #define OPHYUNK2_START			0xF8
 
 #define PMGR_BASE		0x3F100000
-#define PMGR_GATE_BASE		0x3F101008
 #define PMGR_GATE_ON		0xF
 
-/* ADT clock-ids: otgphyctrl uses id 5 (PHY block itself),
- * usb-complex uses id 292 (main USB clock) and clock-gates 87..91
- * (five gates that power the whole USB subsystem). */
-#define USB_PHY_CLOCK_ID	5
-#define USB_MAIN_CLOCK_ID	292
-static const u8 usb_complex_gates[] = { 87, 88, 89, 90, 91 };
+/* usb-complex's power-state registers.
+ *
+ * The ADT gives usb-complex `clock-gates = <88 89 90 91 87>`, and those ids do
+ * NOT index the register array.  Every id has its own register index in the
+ * pmgr node's `device-clocks` table, and the id-to-index difference is not a
+ * constant -- it is 10 across ids 56..83 and something else either side, so
+ * *any* `base + id * 4` formula is a shortcut that holds in one neighbourhood
+ * and silently misses everywhere else.  USB is one of the places it misses.
+ * scripts/adt-pmgr-map.py prints the table; docs/research/p105-pmgr-gates.md
+ * has the story.
+ *
+ *   id 88  USB-OTG    0x3f101084   the gadget: the console and the network
+ *   id 89  USB-EHCI   0x3f101088   the host side, the Wi-Fi chip behind it
+ *   id 90  USB-OHCI0  0x3f101090   EHCI's companion
+ *   id 91  USB-OHCI1  0x3f101094
+ *   id 87  USB-PHY    --           index 0: no register, nothing to gate
+ *
+ * This used to be `0x3F101008 + id * 4`, which put ids 88..91 at 0x1168..
+ * 0x1174 -- addresses with no register behind them, which swallow writes and
+ * read back zero.  The boot log said so all along: `PHY gate 87/88/89
+ * pre=0x00000000` for three gates iBoot leaves ON and which must read ~0x2ff.
+ * None of the five was ever switched; USB worked because iBoot leaves USB-OTG
+ * on for its own DFU.
+ *
+ * `clock-ids` is a different property in a different namespace -- a reference
+ * to a clock source, not to a gate.  otgphyctrl's `clock-ids = <5>` is
+ * PREDIV3-CLK (clock register 0x3f10001c); usb-complex's `clock-ids = <292>`
+ * is not a device-clocks entry at all.  Writing a gate value at `base + 5 * 4`
+ * and `base + 292 * 4`, as this driver did, hit PERFCNT's gate and an empty
+ * address respectively.  Neither has anything to do with USB. */
+#define PMGR_USB_OTG		0x1084
+#define PMGR_USB_EHCI		0x1088
+#define PMGR_USB_OHCI0		0x1090
+#define PMGR_USB_OHCI1		0x1094
 
 /* Tuning constants from ADT otgphyctrl node (device-mode values):
  *   uotgtune1-device = 0x549, uotgtune2-device = 0x2ff3
@@ -55,16 +82,18 @@ static const u8 usb_complex_gates[] = { 87, 88, 89, 90, 91 };
 
 /* The host side: EHCI and its HSIC port, where the Wi-Fi chip is.
  *
- *   PMGR +0x1088   the USB 2.0 host block's power/clock register.  The ADT
- *                  calls it usb-complex's function-usb20_reset, 'ARST' 34:
- *                  reset ids index the gate array the way XNU reads it,
- *                  PMGR + 0x1000 + id * 4, ten ids above the gate numbering
- *                  (i2c0's reset, 70, is the register of its gate, 80).
+ *   PMGR +0x1088   USB-EHCI's power-state register (ADT clock-gates id 89).
  *                  iBoot leaves it off, and EHCI and OHCI then read as
  *                  nothing at all; switched on, EHCI answers (HCIVERSION
- *                  0x0100, three ports).  Measured 2026-09-26.
- *   PMGR +0x1140   gate 90, the one usb-complex gate iBoot leaves off.  It
- *                  was on when EHCI first answered; kept.
+ *                  0x0100, three ports).  Measured 2026-09-26.  The register
+ *                  is right; the reasoning that first reached it -- 'reset
+ *                  ids sit ten above the gate numbering' -- was not, see the
+ *                  device-clocks note above.
+ *   PMGR +0x1090   USB-OHCI0 (id 90), EHCI's companion controller, the other
+ *                  usb-complex gate iBoot leaves off.  This used to be
+ *                  +0x1140, read as 'gate 90' through the old formula; that
+ *                  register is MCA, an audio block, and switching it on is
+ *                  what actually happened every time EHCI came up.
  *   usb-complex    +0 bit 2: HSIC enable.  AppleS5L8930XUSBArbitrator's
  *                  _configureHSIC ORs the ADT's usb_ctl (0x64) into this
  *                  register (iOS 6.1 kernelcache 0x808afffc); bits 5/6 there
@@ -77,8 +106,6 @@ static const u8 usb_complex_gates[] = { 87, 88, 89, 90, 91 };
  * The regulator is taken when the host PHY powers on, not at probe: the PMU
  * sits behind I2C and may come later, and the OTG PHY -- the gadget, the
  * console, the network -- must not wait for it. */
-#define PMGR_USB20_HOST		0x1088
-#define PMGR_GATE_90		0x1140
 #define USBCPLX_HSIC_EN		BIT(2)
 
 struct s5l_usbphy {
@@ -100,7 +127,7 @@ static int s5l_pmgr_on(struct s5l_usbphy *p, u32 off)
 	u32 v = readl(p->pmgr + off);
 	int n;
 
-	writel((v & ~0x10f) | 0xf, p->pmgr + off);
+	writel((v & ~0x10f) | PMGR_GATE_ON, p->pmgr + off);
 	for (n = 0; n < 1000; n++) {
 		v = readl(p->pmgr + off);
 		if (!((v ^ (v >> 4)) & 0xf))
@@ -139,28 +166,28 @@ static void phy_dump_regs(struct s5l_usbphy *p, const char *tag)
 static int s5l_usbphy_init(struct phy *phy)
 {
 	struct s5l_usbphy *p = phy_get_drvdata(phy);
-	unsigned i;
-	u32 val;
 
 	dev_info(p->dev, "PHY init start\n");
 
 	/* -- pre-touch snapshot: what did iBoot leave us? -- */
 	phy_dump_regs(p, "pre");
 
-	/* Enable ALL usb-complex clock gates (87..91) + PHY gate 5 + main OTG clock 292.
-	 * ADT lists these five together for usb-complex; missing any keeps DWC2 dead. */
-	for (i = 0; i < ARRAY_SIZE(usb_complex_gates); i++) {
-		unsigned g = usb_complex_gates[i];
-		val = readl(p->pmgr + (PMGR_GATE_BASE - PMGR_BASE) + g * 4);
-		pr_err("PHY gate %u pre=0x%08x\n", g, val);
-		writel(PMGR_GATE_ON, p->pmgr + (PMGR_GATE_BASE - PMGR_BASE) + g * 4);
-	}
-	val = readl(p->pmgr + (PMGR_GATE_BASE - PMGR_BASE) + USB_PHY_CLOCK_ID * 4);
-	pr_err("PHY gate %u(PHY) pre=0x%08x\n", USB_PHY_CLOCK_ID, val);
-	writel(PMGR_GATE_ON, p->pmgr + (PMGR_GATE_BASE - PMGR_BASE) + USB_PHY_CLOCK_ID * 4);
-	val = readl(p->pmgr + (PMGR_GATE_BASE - PMGR_BASE) + USB_MAIN_CLOCK_ID * 4);
-	pr_err("PHY gate %u(MAIN) pre=0x%08x\n", USB_MAIN_CLOCK_ID, val);
-	writel(PMGR_GATE_ON, p->pmgr + (PMGR_GATE_BASE - PMGR_BASE) + USB_MAIN_CLOCK_ID * 4);
+	/* The gadget's own gate.  iBoot leaves USB-OTG on -- its DFU runs on it,
+	 * which is how this port ever enumerated with every gate write landing
+	 * in a hole -- so this is normally a no-op that confirms the state
+	 * rather than changes it.  The host-side gates belong to the host PHY
+	 * and are switched in s5l_hostphy_power_on(); OHCI1 nothing here uses.
+	 *
+	 * Logged by name and by register, because the old messages named ids
+	 * that were not the ids being written. */
+	dev_info(p->dev, "usb-complex pre: OTG(88)=0x%08x EHCI(89)=0x%08x OHCI0(90)=0x%08x OHCI1(91)=0x%08x\n",
+		 readl(p->pmgr + PMGR_USB_OTG), readl(p->pmgr + PMGR_USB_EHCI),
+		 readl(p->pmgr + PMGR_USB_OHCI0), readl(p->pmgr + PMGR_USB_OHCI1));
+
+	s5l_pmgr_on(p, PMGR_USB_OTG);
+
+	dev_info(p->dev, "usb-complex OTG(88) now 0x%08x\n",
+		 readl(p->pmgr + PMGR_USB_OTG));
 
 	udelay(100);
 
@@ -257,15 +284,15 @@ static int s5l_hostphy_power_on(struct phy *phy)
 		msleep(10);
 	}
 
-	ret = s5l_pmgr_on(p, PMGR_USB20_HOST);
+	ret = s5l_pmgr_on(p, PMGR_USB_EHCI);
 	if (ret)
 		return ret;
-	s5l_pmgr_on(p, PMGR_GATE_90);
+	s5l_pmgr_on(p, PMGR_USB_OHCI0);
 	if (p->usbcplx)
 		writel(readl(p->usbcplx) | USBCPLX_HSIC_EN, p->usbcplx);
 
-	dev_info(p->dev, "host PHY on: PMGR +0x%x=0x%08x usb-complex=0x%08x\n",
-		 PMGR_USB20_HOST, readl(p->pmgr + PMGR_USB20_HOST),
+	dev_info(p->dev, "host PHY on: EHCI(89)=0x%08x OHCI0(90)=0x%08x usb-complex=0x%08x\n",
+		 readl(p->pmgr + PMGR_USB_EHCI), readl(p->pmgr + PMGR_USB_OHCI0),
 		 p->usbcplx ? readl(p->usbcplx) : 0);
 	return 0;
 }
