@@ -42,14 +42,22 @@ kernel observability, 2026-09-29"): the **GPU clock domain is identified** — i
 perf-controller domain **0x50** (class-0x26 `sub=56` gate events with a2 high byte
 0x50: `0x0050a300/0x00508300/0x00504300`, seen 378× while the GPU is active and 0×
 in idle). Still open — the **last mile** — is turning that abstract domain/state
-into the raw PMGR `source+divider` the Linux clock driver must write, via one of two
-routes: (A) map the perf-state index (kdebug `sub=25 a4`) through the static
-perf-state table at `PMGR 0x200 + n*16` already dumped on Linux; or (B) now that
-tfp0 works, read the live GFX/MANAGED clock registers (`0x3f100070/74`,
-`0x3f10002c/30`) *while the GPU is on* — they hold the real enabled values then,
-unlike on Linux where the GPU is off and they read "disabled". So clock bring-up is
-no longer an unbreakable wall; it is a bounded last-mile RE task with two concrete
-routes.
+into the raw PMGR `source+divider` the Linux clock driver must write.
+
+**Update 2026-09-30 — Route A is ruled out; Route B is the only path to the value.**
+Route A (recover it from Linux-readable static registers) was tested and does NOT
+work: on the Linux boot the GPU is off, so `GFX-CLK 0x3f100070 = 0x80000001`
+("disabled") — the very register that would hold the enabled value shows nothing —
+and the perf-state table at `PMGR 0x200` is the **CPU/SoC DVFS** table, not the GPU
+(the GPU has a fixed single clock and is not in a multi-state table). So the enabled
+`source+divider` exists only in the **live PMGR on iOS with the GPU on** = Route B.
+Route B needs a safe kernel-read primitive: `kas_info` is `ENOTSUP` here and
+`mach_port_kobject` returns a `VM_KERNEL_ADDRPERM`-permuted address, so it takes a
+real-address info-leak (`sysctl KERN_PROC` `kinfo_proc.e_paddr`) + a `proc->task`
+offset to derive the permutation constant, then un-permute the perf-controller object
+and read its `_pcBaseAddress` (+0x550) = PMGR kernel VA. Details in the last two
+sections. So clock bring-up is no longer an unbreakable wall, but the last mile is a
+bounded (reboot-prone) kernel-primitive task, not a quick read.
 
 The 2026-09-28 status below is kept as the record of why the *static-only* path
 stalled — it is accurate for that path, and its register map/gate protocol are still
@@ -966,3 +974,80 @@ write, via one of:
   they do not belong in the tree); they live in the working session's scratchpad.
 - Deploy/run went through the Arch box's usbmuxd/iproxy (the Mac's usbmuxd resets
   bulk transfers); the device has no `head`/`wc`/`grep`, so filter output host-side.
+
+## The last mile: Route A ruled out, Route B is the only path (2026-09-30)
+
+The goal is the raw value the Linux clock driver must write to enable the GFX
+clock — the `source+divider` for the GFX/MANAGED clock chain. This session settled
+which of the two candidate routes can actually produce it.
+
+### Route A (read Linux-side static registers) — DOES NOT contain the value
+
+Peeked the PMGR on the Linux boot (`peek r`, read-only, safe):
+
+- **Clock config `0x3f100000..0x7f`** matches the earlier dump exactly. Crucially
+  `GFX-CLK 0x3f100070 = 0x80000001` and `GFX_SYS 0x3f100074 = 0x90000002` — the GPU
+  is **off**, so the mux registers that would carry the enabled `source+divider`
+  read as "disabled". The GFX power-state gates `0x3f101024/28 = 0x300` (off) too.
+  MANAGED sources, for reference: MANAGED0(`0x2c`)=`0x00010960`,
+  MANAGED1(`0x30`)=`0x00000008`, MANAGED2(`0x34`)=`0x40000000`,
+  MANAGED3(`0x38`)=`0x90011041`, MANAGED4(`0x3c`)=`0x90000001`; the running clocks
+  (PREDIV0/2/6, HPERF, …) have high nibble `0x9`/`0xa`.
+- **The perf-state table at `0x3f100200` is CPU/SoC DVFS, not the GPU.** Rows
+  `0x220–0x260` decode as multi-clock CPU states (`byte = source[6:5] / divider[4:0]`,
+  e.g. row `0x230` word0 byte `0x43` → src 2 / div 3, `0x24` → src 1 / div 4);
+  rows `0x270–0x2f0` are filler `0x01010101`. The GPU has a **fixed** single clock
+  (SGX `CurrentPowerState=1 / MaxPowerState=1`), so it is not represented in a
+  multi-state DVFS table. The earlier hope that the kdebug perf-state index `0x1f`
+  (`sub=25 a4`) indexes a GPU row here was a false lead — `0x1f` at `0x250` is a CPU
+  state.
+
+Conclusion: no Linux-readable static register holds the GPU's enabled clock value.
+It exists only in the live PMGR while the GPU is running — i.e. Route B, on iOS.
+
+### Route B (read live PMGR on iOS via tfp0) — the plan, and why it needs a primitive
+
+`tools/mtdump/pmgrread.c` (entitled) does: `task_for_pid(0)` → kernel task (works);
+`IOServiceGetMatchingServices("AppleS5L8940XPerformanceController")` → the perf
+controller service; `mach_port_kobject(mach_task_self(), io_object, &type, &addr)`
+→ the object's kernel address. That returned type `0x1e` (`IKOT_IOKIT_OBJECT`) and
+addr **`0xb9ef1771`** — but that address is odd/unaligned, i.e. it is
+`VM_KERNEL_ADDRPERM`-permuted (xnu-2784 adds a per-boot constant to kobject
+addresses before handing them out). `vm_read` of it hit an unmapped page and
+rebooted the device (recovered fine).
+
+The clean shortcut to a usable address is also gone: `tools/mtdump/kasinfo.c` shows
+`kas_info(KAS_INFO_KERNEL_TEXT_SLIDE_SELECTOR)` returns **`ENOTSUP` (errno 45)** on
+this kernel, via both the libc wrapper and raw syscall 439, despite daibutsu setting
+`PE_i_can_has_debugger`.
+
+So Route B needs a real **safe-kernel-read primitive** first:
+
+1. Leak one real (unpermuted) kernel address from userspace — `sysctl KERN_PROC`
+   → `kinfo_proc.kp_eproc.e_paddr` (this is the linchpin, and it is a safe,
+   read-only probe; on some iOS 8 builds this field is zeroed/permuted, so it must
+   be verified before relying on it).
+2. Read `proc->task` (offset from the decrypted 8.4.1 kernelcache) to get the real
+   task address, and `mach_port_kobject(mach_task_self(), mach_task_self())` for the
+   *permuted* task address → their difference is `vm_kernel_addrperm`.
+3. Un-permute the perf controller (`0xb9ef1771 − addrperm`), read `_pcBaseAddress`
+   at `+0x550` (its register base, per the AppleS5L8940X Ghidra work) = the kernel VA
+   that maps PMGR, then read `GFX-CLK`/`GFX_SYS`/`MANAGED*` through it **with the GPU
+   powered on** — those are the enabled `source+divider` we want.
+
+Bounded but reboot-prone: a wrong offset yields an unmapped VA, and unmapped kernel
+reads fault the bus here (they do not return an error), so each mistake reboots.
+Reads of the leaked-real proc struct and of the (correctly) un-permuted object are of
+mapped kernel heap and are safe; the risk is concentrated in getting the two offsets
+right. Next step is the safe step 1 probe (does the leak yield a real address?),
+then build the rest only if it does.
+
+### This session's tools
+
+- `tools/mtdump/pmgrread.c` — the two-step live-PMGR reader (`obj` finds the
+  controller object + base VA; `pmgr <VA>` reads the clock region / perf table /
+  gates). Sign with `tools/mtdump/tfp0.entitlements` (needs tfp0).
+- `tools/mtdump/kasinfo.c` — the `kas_info` slide probe (result: unavailable here).
+- Both build via `tools/mtdump/build.sh`; new stub symbols added to
+  `tools/mtdump/stubs/libSystem.tbd` (`_mach_port_kobject`, `_kas_info`, `_syscall`,
+  `___error`).
