@@ -4,5 +4,5 @@ targets:         [ armv7-ios ]
 install-name:    '/usr/lib/libSystem.B.dylib'
 exports:
   - targets:         [ armv7-ios ]
-    symbols:         [ dyld_stub_binder, ___stack_chk_fail, ___stack_chk_guard, ___stdoutp, _fclose, _fopen, _fwrite, _memset, _printf, _putchar, _puts, _setvbuf, _snprintf, _strlen, _strstr, _strcpy, _memcpy, ___floatundidf, ___udivdi3, _atoi, _strtoul, _mach_absolute_time, _mach_task_self_, _mach_timebase_info, _usleep, _write, _task_for_pid, _vm_read_overwrite, _mach_error_string, _host_get_special_port, _mach_host_self ]
+    symbols:         [ dyld_stub_binder, ___stack_chk_fail, ___stack_chk_guard, ___stdoutp, _fclose, _fopen, _fwrite, _memset, _printf, _putchar, _puts, _setvbuf, _snprintf, _strlen, _strstr, _strcpy, _memcpy, ___floatundidf, ___udivdi3, _atoi, _strtoul, _mach_absolute_time, _mach_task_self_, _mach_timebase_info, _usleep, _write, _task_for_pid, _vm_read_overwrite, _mach_error_string, _host_get_special_port, _mach_host_self, _vm_region_recurse, _pid_for_task, _open, _fsync, _fflush, _fputs, _fputc, _strcmp, _sysctl, _system, _malloc, _free, _close ]
 ...

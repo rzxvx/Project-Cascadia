@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Exactly daibutsu's own ent.xml set: daibutsu NOPs the pid==0 guard in
+         task_for_pid but LEAVES the posix/entitlement check, so a binary needs
+         task_for_pid-allow to get the kernel task port.  platform-application +
+         get-task-allow match what daibutsu's patched AMFI is built to accept. -->
+    <key>platform-application</key>
+    <true/>
+    <key>get-task-allow</key>
+    <true/>
+    <key>task_for_pid-allow</key>
+    <true/>
+</dict>
+</plist>

@@ -11,7 +11,53 @@ may carry over.
 Probe: `tools/sgx-probe.sh` (reads, plus the two power-domain writes; it stops
 before the SGX read unless `SGX_READ=1`).
 
-## STATUS 2026-09-28: clock bring-up is a DEAD END (for now)
+## STATUS 2026-09-29: the dead end is REOPENED — kernel observability solved
+
+The "we can neither observe the kernel" premise the 2026-09-28 status rests on is
+no longer true. Two ways to watch iOS from the inside now work on the device
+(jailbroken iOS 8.4.1, iPad2,5):
+
+- **tfp0 (the kernel task port) — CONFIRMED.** The jailbreak is **daibutsu**
+  (what Legacy iOS Kit installs for 8.4.1 on a 32-bit device — *not* TaiG; every
+  earlier "TaiG 8.4.1" note in this repo is mislabelled). daibutsu NOPs the
+  `pid == 0` guard in `task_for_pid` but keeps the posix/entitlement check, so a
+  binary signed with the `task_for_pid-allow` entitlement (daibutsu's own ent.xml
+  set: platform-application + get-task-allow + task_for_pid-allow) gets the kernel
+  task port: `task_for_pid(mach_task_self(),0,&kt)` succeeds and `pid_for_task(kt)`
+  returns pid 0, no panic. The old "tfp0 CLOSED" finding was wrong on two counts:
+  a *plain* (unentitled) binary correctly returns KERN_FAILURE, and the old
+  kmemprobe "panic" was its own blind kernel scan, not a tfp0 denial. Tool:
+  `tools/mtdump/tfp0probe.c` (+ `tfp0.entitlements`).
+  **CAVEAT:** a blind `vm_read` of an *unmapped* kernel page PANICS here (it faults
+  the bus, it does not return a clean error) — read only addresses known to be
+  mapped; finding the kernel base needs a non-scanning slide-finder, not a page walk.
+- **kdebug perf trace — WORKS.** `tools/mtdump/kdtrace.c` captures the kernel's
+  kdebug stream from userspace (sysctl `KERN_KDEBUG`, no tfp0, no reboot risk) and
+  `tools/mtdump/kddec.py` decodes it offline. The AppleS5L8940XPerformanceController
+  emits its clock/voltage/perf state machine as debugid **class 0x26** (not 0x27,
+  which was a guess from static RE and is empty at runtime).
+
+**What this bought for the GPU clock** (full write-up at the end, "GPU clock via
+kernel observability, 2026-09-29"): the **GPU clock domain is identified** — it is
+perf-controller domain **0x50** (class-0x26 `sub=56` gate events with a2 high byte
+0x50: `0x0050a300/0x00508300/0x00504300`, seen 378× while the GPU is active and 0×
+in idle). Still open — the **last mile** — is turning that abstract domain/state
+into the raw PMGR `source+divider` the Linux clock driver must write, via one of two
+routes: (A) map the perf-state index (kdebug `sub=25 a4`) through the static
+perf-state table at `PMGR 0x200 + n*16` already dumped on Linux; or (B) now that
+tfp0 works, read the live GFX/MANAGED clock registers (`0x3f100070/74`,
+`0x3f10002c/30`) *while the GPU is on* — they hold the real enabled values then,
+unlike on Linux where the GPU is off and they read "disabled". So clock bring-up is
+no longer an unbreakable wall; it is a bounded last-mile RE task with two concrete
+routes.
+
+The 2026-09-28 status below is kept as the record of why the *static-only* path
+stalled — it is accurate for that path, and its register map/gate protocol are still
+correct and reused.
+
+---
+
+## STATUS 2026-09-28: clock bring-up is a DEAD END (for the static-only path)
 
 After a full arc of work (below), clocking the SGX from Linux is **blocked**, and
 honestly so: it is the hardest wall in the project because the mechanism lives in
@@ -794,3 +840,129 @@ source can be brought up EMPIRICALLY on Linux with the extracted recipe:
 The rail<->GFX map + level is the one empirical unknown; resolve on-device (read
 region, try, watch, CORE_ID). Static RE delivered the register recipe; the rest
 is a bounded on-device experiment.
+
+## GPU clock via kernel observability (2026-09-29): tfp0 + kdebug
+
+The static-only path above stalled because the GPU-clock enable sits behind a
+runtime-dispatched clock controller we could neither reverse (no RTTI/vtable in
+Ghidra) nor observe (tfp0 believed closed). Both of those turned out to be
+solvable. This section is the record of reopening the dead end and how far it got.
+
+### The jailbreak is daibutsu, and it gives tfp0
+
+The device was jailbroken with **Legacy iOS Kit** ("install with jailbreak"),
+which for iOS 8.4.1 on a 32-bit device installs the **daibutsu** untether
+(kok3shidoll, open source) — *not* TaiG (TaiG never supported 8.4.1; Apple shipped
+8.4.1 to kill it). This matters because the tfp0 mechanism is daibutsu's, and its
+kernel patches (from `untether/patchfinder.c` / `untether32.c`):
+
+- `find_tfp0_patch` NOPs the conditional branch at the start of `task_for_pid`,
+  which removes the `pid == 0` guard — but the posix/entitlement check remains.
+- daibutsu's own `ent.xml` carries `task_for_pid-allow` (+ `platform-application`,
+  `get-task-allow`), which is the proof the entitlement is *required*, not optional.
+
+So: a plain fake-signed binary gets `KERN_FAILURE` from `task_for_pid(0)`
+(correct — no entitlement), and a binary signed with daibutsu's entitlement set
+gets the real kernel task port. Verified on-device with `tools/mtdump/tfp0probe.c`:
+
+    task_for_pid(0): OK, port 2563
+    pid_for_task(port 2563) => kr=0 pid=0   [CONFIRMED kernel_task]
+
+no panic, device stayed up. The earlier `kmemprobe` conclusion ("tfp0 closed;
+entitlement panics") was doubly wrong: the plain binary *should* fail, and the
+"panic" was `find_kernel()` blind-scanning kernel VAs, not a tfp0 denial.
+
+**Hard rule learned:** `vm_read_overwrite(kernel_task, VA)` on an *unmapped* kernel
+page does **not** return a clean error here — it faults the bus and panics
+(reproduced: a bounded scan of 0x80000000–0x84000000 read 0x80000000–0x80080000
+fine and then rebooted the device around 0x800Cxxxx). Twice. So **never blind-scan
+kernel memory**; read only addresses known to be mapped. Finding the kernel base
+therefore needs a non-scanning KASLR-slide source (a leaked kernel pointer via a
+Mach/IOKit call) plus the decrypted 8.4.1 kernelcache segment map — not a page walk.
+`vm_region_recurse` on the kernel task returns nothing from userspace here (a known
+XNU quirk), so it cannot be used to pre-check a read either.
+
+### kdebug: watching the clock/perf state machine without tfp0
+
+`tools/mtdump/kdtrace.c` captures the kernel kdebug ring from userspace via
+`sysctl KERN_KDEBUG` (=24): `KDREMOVE / KDSETBUF(nbufs) / KDSETUP / KDENABLE(1) /
+wait / KDENABLE(0) / KDREADTR / KDREMOVE`. K32 `kd_buf` is 32 bytes
+(`u64 timestamp; uintptr_t arg1..arg5; u32 debugid`); on `KDREADTR` the sysctl
+oldlen is bytes in, entry-count out. Modern SDKs deleted the legacy `KERN_KD*` /
+`kd_buf` defs from `<sys/kdebug.h>`, so they are inlined in the tool (stable
+xnu-2784 ABI). It also has a `raw` mode that dumps the whole `kd_buf` array to a
+file; `tools/mtdump/kddec.py` decodes those offline (`hist` / `diff` / `dump` /
+`onset`). Device max buffer here is ~198656 entries.
+
+`debugid = (class<<24) | (subclass<<16) | (code<<2) | func`. The
+AppleS5L8940XPerformanceController's trace is **class 0x26** (its IORegistry
+`TraceBufferNomenclature` names the events — PERF_CLOCK_GATE{ClockID},
+PERF_PERF_CHG, PERF_VOLT_CHG, … — but that list is *not* indexed by the kdebug
+subclass number, so the labels are not yet pinned to subclasses). The
+graphics/IOAccelerator command trace is **class 0x31**.
+
+### Finding the GPU clock domain by diffing idle vs Angry Birds
+
+Method: capture a GPU-idle baseline, then capture with a GPU workload (Angry Birds
+6.1.0), then diff `(class,subclass,code)` counts and the event args. Captures used:
+`kd_base.bin` (idle), `kd_game.bin` (GPU already on), `kd_trans.bin` and
+`kd_wake.bin` (GPU off → wake, i.e. an off→on transition). A "did nothing" run
+produced no class-0x31 at all — confirming the GPU stays off in idle.
+
+Class-0x26 event shapes observed:
+
+- `sub=25 code=8` START/END — **perf-state apply**: a2 = a packed freq/voltage
+  descriptor (changes START→END, e.g. `0x07001980 → 0x04802180`), a4 = state index.
+- `sub=56 code=10` — **clock/power gate apply**: a2 = `[domain<<16 | gateval]`.
+  Idle only ever shows domain 0 (a2 in {0x300,0x6300,0x8300,0xa300}).
+- `sub=16` / `sub=17` — per-domain voltage/clock *change* events, but they fire on
+  the **wake/display** sequence (present in the wake capture, absent during steady
+  gameplay), so they are not GPU-specific.
+
+**The result:** `sub=56` gate events whose a2 high byte = **0x50**
+(`0x0050a300 / 0x00508300 / 0x00504300`) occur **378× while the GPU is active and 0×
+in idle**. So perf-controller **domain 0x50 is the GPU clock domain**, and its gate
+values are `0xa300/0x8300/0x4300`. (This domain-index space is the controller's own;
+it does not map to the ADT clock-gate ids 0x1e/0x1f/0x5c.)
+
+### The limitation, and the two routes for the last mile
+
+Two things kdebug does **not** give us:
+
+1. **No one-shot "enable" event.** In every capture the first class-0x31 graphics
+   event and all domain-0x50 gates come *after* graphics has already started — the
+   GPU is clocked at the instant of power-on, before the perf controller emits any
+   0x26 event, and because the GPU clock is **fixed** (SGX `CurrentPowerState=1 /
+   MaxPowerState=1`, no GPU DVFS) there is no distinct enable event to catch — only
+   ongoing gate management of the already-running domain.
+2. **No raw register values.** kdebug shows the controller's abstract view (domain
+   0x50, gate value 0xa300, state index), not the PMGR `source+divider` the Linux
+   driver must write.
+
+So the last mile is translating `domain 0x50 / state index` → a real PMGR register
+write, via one of:
+
+- **Route A (offline, no device):** map the perf-state index (`sub=25 a4`, e.g.
+  0x1f) through the static perf-state table at `PMGR 0x200 + n*16` already dumped on
+  Linux. Caveat: n=0x1f exceeds the 16 rows we dumped, so first confirm the table's
+  size/identity.
+- **Route B (direct, uses tfp0 — the ground truth):** read the live GFX/MANAGED
+  clock registers (`0x3f100070/74`, `0x3f10002c/30`) *while the GPU is on*; they hold
+  the real enabled `source+divider` then, unlike on Linux (GPU off → "disabled"
+  mirrors). Prerequisite: the PMGR mapping's kernel VA, found *safely* (no blind
+  scan) — via a non-scanning slide-finder + the kernelcache segment map, or by
+  reading the AppleS5L8940XPerformanceController driver object's `_pcBaseAddress`
+  ivar.
+
+### Tooling and artifacts
+
+- On device (armv7, daibutsu iOS 8.4.1): `tools/mtdump/tfp0probe.c` (+ signed with
+  `tools/mtdump/tfp0.entitlements`), `tools/mtdump/kdtrace.c`. Both build via
+  `tools/mtdump/build.sh` (Xcode + ldid; the entitled tfp0probe is a separate
+  `ldid -Stfp0.entitlements` step). `tools/mtdump/ioprops.c` located the perf
+  controller (class `AppleS5L8940XPerformanceController`, provider `AppleS5L8940XIO`).
+- Host-side offline decoder: `tools/mtdump/kddec.py`.
+- The raw kdebug captures (~6 MB each) are **not** committed (like Apple firmware,
+  they do not belong in the tree); they live in the working session's scratchpad.
+- Deploy/run went through the Arch box's usbmuxd/iproxy (the Mac's usbmuxd resets
+  bulk transfers); the device has no `head`/`wc`/`grep`, so filter output host-side.
