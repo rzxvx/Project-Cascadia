@@ -355,8 +355,11 @@ static void h2fmi_split_page(const u8 *raw, u8 *data, u8 *oob)
 
 /*
  * The one place that turns an MTD offset into a page and reads it.  Whole
- * pages are always read; a partial request is served out of the bounce buffer,
- * because the PPN has no way to hand over less than a page.
+ * pages are always read -- the PPN cannot hand over less than one -- and the
+ * caller takes what it wants out of the bounce buffer.
+ *
+ * `from` must be page-aligned.  The page's status byte comes back in *stp; a
+ * negative return means the bus failed, not that the data is bad.
  */
 static int h2fmi_read_page_at(struct mtd_info *mtd, loff_t from,
 			      u8 *data, u8 *oob, u8 *stp)
@@ -379,105 +382,111 @@ static int h2fmi_read_page_at(struct mtd_info *mtd, loff_t from,
 		h2fmi_split_page(b->page, data, oob);
 	mutex_unlock(&b->lock);
 
-	if (stp)
-		*stp = st;
-	if (ret)
-		return ret;
-
-	/* An erased page is not an error, and neither is one the PPN corrected
-	 * but wants rewritten -- that is what -EUCLEAN is for. */
-	if (st == PPN_ST_REFRESH)
-		return -EUCLEAN;
-	if (st != PPN_ST_GOOD && st != PPN_ST_ERASED)
-		return -EBADMSG;
-	return 0;
+	*stp = st;
+	return ret;
 }
 
-static int h2fmi_mtd_read(struct mtd_info *mtd, loff_t from, size_t len,
-			  size_t *retlen, u_char *buf)
+/*
+ * Turn the PPN's status byte into what MTD expects back from _read_oob: a
+ * count of corrected bitflips, or a negative errno.
+ *
+ * The package corrects its own data and will not say how much it had to
+ * correct, only whether the page wants rewriting -- so "wants rewriting"
+ * becomes one bitflip, which is bitflip_threshold, which is what makes
+ * mtd_read_oob() hand the caller -EUCLEAN.  That is the signal UBI scrubs on.
+ * An erased page is not an error; a retired block is.
+ */
+static int h2fmi_bitflips(struct mtd_info *mtd, u8 st)
 {
-	u8 *page;
-	int worst = 0;
-
-	*retlen = 0;
-	if (from < 0 || from >= mtd->size)
-		return -EINVAL;
-	len = min_t(u64, len, mtd->size - from);
-
-	page = kmalloc(H2FMI_PAGE_DATA, GFP_KERNEL);
-	if (!page)
-		return -ENOMEM;
-
-	while (len) {
-		u32 skip = (u32)from & H2FMI_PAGE_MASK;
-		u32 n = min_t(size_t, len, H2FMI_PAGE_DATA - skip);
-		int ret = h2fmi_read_page_at(mtd, from - skip, page, NULL, NULL);
-
-		if (ret && ret != -EUCLEAN) {
-			kfree(page);
-			return ret;
-		}
-		if (ret == -EUCLEAN)
-			worst = -EUCLEAN;
-
-		memcpy(buf, page + skip, n);
-		buf += n;
-		from += n;
-		len -= n;
-		*retlen += n;
+	switch (st) {
+	case PPN_ST_GOOD:
+	case PPN_ST_ERASED:
+		return 0;
+	case PPN_ST_REFRESH:
+		return 1;
+	default:
+		dev_err_ratelimited(mtd->dev.parent,
+				    "%s: page status 0x%02x\n", mtd->name, st);
+		return -EBADMSG;
 	}
-
-	kfree(page);
-	return worst;
 }
 
+/*
+ * The whole read path.  mtd_read() builds an mtd_oob_ops and comes through
+ * here too, so this has to cope with an unaligned start, any length, and
+ * either buffer on its own -- a driver may implement _read or _read_oob but
+ * not both, and _read_oob is the one that can carry the metadata.
+ */
 static int h2fmi_mtd_read_oob(struct mtd_info *mtd, loff_t from,
 			      struct mtd_oob_ops *ops)
 {
+	size_t oobavail = mtd_oobavail(mtd, ops);
+	size_t len = ops->len, ooblen = ops->ooblen;
+	u8 *datbuf = ops->datbuf, *oobbuf = ops->oobbuf;
+	u32 ooboffs = ops->ooboffs;
 	u8 oob[H2FMI_PAGE_OOB];
+	int maxbitflips = 0;
 	u8 *page = NULL;
-	int ret;
+	int ret = 0;
 
 	ops->retlen = 0;
 	ops->oobretlen = 0;
+	if (!len && !ooblen)
+		return 0;
 
-	if (ops->ooboffs >= H2FMI_PAGE_OOB)
-		return -EINVAL;
-	if ((u32)from & H2FMI_PAGE_MASK)
-		return -EINVAL;
-
-	if (ops->datbuf) {
+	if (datbuf) {
 		page = kmalloc(H2FMI_PAGE_DATA, GFP_KERNEL);
 		if (!page)
 			return -ENOMEM;
 	}
 
-	ret = h2fmi_read_page_at(mtd, from, page, oob, NULL);
-	if (ret && ret != -EUCLEAN) {
-		kfree(page);
-		return ret;
-	}
+	while (len || ooblen) {
+		loff_t base = from & ~(loff_t)H2FMI_PAGE_MASK;
+		u32 skip = (u32)(from - base);
+		u8 st = 0;
+		int bf;
 
-	if (ops->datbuf) {
-		size_t n = min_t(size_t, ops->len, H2FMI_PAGE_DATA);
+		ret = h2fmi_read_page_at(mtd, base, page, oob, &st);
+		if (ret)
+			break;
 
-		memcpy(ops->datbuf, page, n);
-		ops->retlen = n;
-	}
-	if (ops->oobbuf) {
-		size_t n = min_t(size_t, ops->ooblen, H2FMI_PAGE_OOB - ops->ooboffs);
+		bf = h2fmi_bitflips(mtd, st);
+		if (bf < 0) {
+			ret = bf;
+			break;
+		}
+		maxbitflips = max(maxbitflips, bf);
 
-		memcpy(ops->oobbuf, oob + ops->ooboffs, n);
-		ops->oobretlen = n;
+		if (len) {
+			size_t n = min_t(size_t, len, H2FMI_PAGE_DATA - skip);
+
+			memcpy(datbuf, page + skip, n);
+			datbuf += n;
+			len -= n;
+			ops->retlen += n;
+		}
+		if (ooblen) {
+			size_t n = min_t(size_t, ooblen, oobavail - ooboffs);
+
+			memcpy(oobbuf, oob + ooboffs, n);
+			oobbuf += n;
+			ooblen -= n;
+			ops->oobretlen += n;
+			ooboffs = 0;
+		}
+
+		from = base + H2FMI_PAGE_DATA;
+		if (from >= mtd->size)
+			break;
 	}
 
 	kfree(page);
-	return ret;
+	return ret ? ret : maxbitflips;
 }
 
 /*
- * A retired block answers 0x45 on every page, which is the PPN telling us so
- * directly -- there is no bad-block marker to interpret and no table to keep.
+ * A retired block answers 0x45 on every page, which is the PPN saying so
+ * directly -- there is no marker to interpret and no table to keep.
  */
 static int h2fmi_mtd_block_isbad(struct mtd_info *mtd, loff_t ofs)
 {
@@ -486,7 +495,7 @@ static int h2fmi_mtd_block_isbad(struct mtd_info *mtd, loff_t ofs)
 
 	ofs &= ~(loff_t)(mtd->erasesize - 1);
 	ret = h2fmi_read_page_at(mtd, ofs, NULL, NULL, &st);
-	if (ret && ret != -EUCLEAN && ret != -EBADMSG)
+	if (ret)
 		return ret;
 	return st == PPN_ST_RETIRED;
 }
@@ -508,21 +517,28 @@ static int h2fmi_setup_mtd(struct h2fmi *fmi, int idx)
 		return -ENOMEM;
 
 	mtd->type = MTD_NANDFLASH;
-	/* No MTD_WRITEABLE on purpose.  This driver cannot write, and the NAND
-	 * it is pointed at holds somebody's iOS. */
-	mtd->flags = 0;
+	/* No MTD_WRITEABLE on purpose: this driver cannot write, and the NAND
+	 * it is pointed at holds somebody's iOS.  MTD_NO_ERASE goes with it --
+	 * add_mtd_device() rejects an erasesize with no ->_erase behind it
+	 * unless the device says erasing is not a thing it does.  Both come off
+	 * when the write path lands. */
+	mtd->flags = MTD_NO_ERASE;
 	mtd->size = (u64)H2FMI_BLOCKS * H2FMI_ERASESIZE;
 	mtd->erasesize = H2FMI_ERASESIZE;
 	mtd->writesize = H2FMI_PAGE_DATA;
 	mtd->writebufsize = H2FMI_PAGE_DATA;
 	mtd->oobsize = H2FMI_PAGE_OOB;
 	mtd->oobavail = H2FMI_PAGE_OOB;
-	/* The package corrects its own data and reports the result as a status
-	 * byte, so there is no host ECC and no strength to advertise. */
-	mtd->ecc_strength = 0;
+	/* The package corrects its own data and never says by how much, only
+	 * whether the page wants rewriting.  So: one notional bit of strength,
+	 * a threshold of one, and _read_oob returns 1 for "wants rewriting" --
+	 * which mtd_read_oob() then reports to the caller as -EUCLEAN.  With
+	 * ecc_strength left at 0 the core treats the device as having no ECC
+	 * and throws that signal away. */
+	mtd->ecc_strength = 1;
 	mtd->bitflip_threshold = 1;
 
-	mtd->_read = h2fmi_mtd_read;
+	/* _read_oob only: add_mtd_device() rejects a driver that has both. */
 	mtd->_read_oob = h2fmi_mtd_read_oob;
 	mtd->_block_isbad = h2fmi_mtd_block_isbad;
 
