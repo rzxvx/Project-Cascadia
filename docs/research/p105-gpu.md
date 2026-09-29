@@ -59,6 +59,16 @@ and read its `_pcBaseAddress` (+0x550) = PMGR kernel VA. Details in the last two
 sections. So clock bring-up is no longer an unbreakable wall, but the last mile is a
 bounded (reboot-prone) kernel-primitive task, not a quick read.
 
+**Update 2026-09-30 (later) — iBoot RE breakthrough (see "iBoot/iBEC clock RE" at
+the end).** Reversing `iBEC.dec` (linear C, no OOP wall) gave the **PLL formula**
+(`freq = 24MHz*M/P/2^S`) which shows **`0x3f100010` = 200 MHz = the GPU clock**, the
+**clock write mechanism** (`write config to 0x3f100038+idx*4, poll bit30 clear`;
+these regs are writable in iBEC), and iBEC's full boot value table (which *parks*
+GFX off). So the frequency (200 MHz) and the write mechanism are now known; what
+is left is the enabled GFX source+divider (iBEC parks it; computation says the
+200 MHz chain, divider 1) and whether those registers are writable *from Linux* —
+a reboot-prone on-device test to run with a human present.
+
 The 2026-09-28 status below is kept as the record of why the *static-only* path
 stalled — it is accurate for that path, and its register map/gate protocol are still
 correct and reused.
@@ -1051,3 +1061,60 @@ then build the rest only if it does.
 - Both build via `tools/mtdump/build.sh`; new stub symbols added to
   `tools/mtdump/stubs/libSystem.tbd` (`_mach_port_kobject`, `_kas_info`, `_syscall`,
   `___error`).
+
+## iBoot/iBEC clock RE: the PLL formula, 200 MHz, and the write mechanism (2026-09-30)
+
+Attacking the clock from iBoot (linear C, no IOKit OOP wall) instead of the iOS
+kernel paid off. `build/firmware/iBEC.dec` (iBoot-2261.30.37 for p105, base
+`0x9ff00000`, Thumb-2, absolute literals) programs the SoC clocks at boot with
+straight-line code. Tooling: capstone Thumb, VA = `0x9ff00000 + fileoffset`.
+
+**The PLL frequency formula** (iBEC's clock-frequency getter, linear code):
+
+    freq = 24 MHz * M / P / 2^S       M = bits[12:3], P = bits[19:14], S = bits[2:0]
+
+reference 24 MHz (literal `0x016e3600`); early-out if `(reg & 0x40800000)` (off/
+bypass). Root/PLL registers: `0x3f100008 / 0x10 / 0x18 / 0x20`. Applied to the
+Linux-side register values this gives, decisively:
+
+    0x3f100010 = 24e6 * 200 / 6 / 2^2 = 200.00 MHz   <-- exactly the SGX543 GPU clock
+    0x3f100018 = 513 MHz,  0x3f100028 = 240 MHz
+
+So there is a **200 MHz PLL at `0x3f100010`**, and the GPU (200 MHz) runs off it
+through a MANAGED clock at divider 1. This is the clock *value* by computation —
+no live read of iOS needed.
+
+**The clock write mechanism** (iBEC `set_clocks(start,end)` @ `0x9ff1f4d0`):
+
+    for idx in [start..end]:
+        *(0x3f100038 + idx*4) = SOURCE_TABLE[idx]     # write config
+        while (*(0x3f100038 + idx*4) & 0x40000000) {} # poll bit30 (busy) until clear
+
+i.e. **write the config word, poll bit30 clear**. The register index maps
+`reg = 0x3f100038 + idx*4`, so `idx 0x0e -> 0x70` (GFX-CLK), `idx 0x0f -> 0x74`
+(GFX_SYS). The PLLs are enabled by a sibling routine that writes the PLL regs and
+polls **bit30 for LOCK**. These `0x3f100038..0xcc` registers are writable in
+iBEC's context.
+
+**But iBEC parks the GPU off.** `SOURCE_TABLE` (`0x9ff44448`) holds iBEC's boot
+value for every clock: GFX-CLK and GFX_SYS are both `0x80000000` = parked/disabled
+(matching the Linux read `0x80000001`). Running clocks in the table are
+`0x80000001`, so for these PMGR mux clocks **bit31 = 1 is the normal/active state,
+not "disable"** — the on/off is the separate power-state gate at `0x3f101024/28`
+(the touch-leaf format bit31=disable/bit19=enable does *not* apply to these).
+
+**Net.** We now have the PLL formula (decode any clock), the 200 MHz GPU source,
+the register write mechanism, and iBEC's full boot value table. What remains for
+actually clocking the GPU from Linux: (a) the *enabled* GFX source+divider — iBEC
+parks it, iOS sets the real value, so it is still only directly observable live
+(Route B); computation says source = the 200 MHz chain, divider 1; (b) whether the
+`0x38..0xcc` config registers are writable *from Linux* (an earlier peek-write to
+`0x70` was ignored — likely locked after iBEC hand-off, or that test was flawed;
+must be re-tested carefully on-device, and it is reboot-prone); (c) the mux
+source-select bit position + the iBEC-index→clock map to confirm GFX→PLL@0x10.
+The concrete resumption step (do it with a human present, it can reboot the pad):
+on Linux, re-test writing a benign clock reg with the real mechanism (write + poll
+bit30); if writable, enable a 200 MHz MANAGED source, write GFX-CLK (source = the
+200 MHz chain, divider 1) + open the gate, then read CORE_ID at `0x35100020`.
+Tooling: `ibectool.py` (scratchpad) for iBEC; `kc841.macho` + `kctool.py` for the
+decrypted 8.4.1 kernelcache.

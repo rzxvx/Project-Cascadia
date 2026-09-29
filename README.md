@@ -106,13 +106,15 @@ including the parts that didn't work.
       register read hangs until it is clocked. What changed: kernel observability on
       iOS now works — **tfp0 confirmed** (the jailbreak is *daibutsu*, not TaiG; needs
       the `task_for_pid-allow` entitlement) and a **kdebug tracer** locates the GPU
-      clock domain (perf-controller domain 0x50). The remaining last mile is reading
-      the live GFX `source+divider` the driver must program: it is *not* in any
-      Linux-readable static register (GPU is off there; the perf-state table is CPU
-      DVFS), so it takes a live read of PMGR on iOS with the GPU on, which needs a
-      safe kernel-read primitive (defeat `VM_KERNEL_ADDRPERM`). Full arc, register
-      map, tooling, and the two routes tried: [docs/research/p105-gpu.md](docs/research/p105-gpu.md)
-      (see STATUS at top)
+      clock domain (perf-controller domain 0x50). Then reversing iBoot/iBEC (linear
+      C, no OOP wall) gave the **PLL formula** — which shows `0x3f100010` is a
+      **200 MHz PLL = the GPU clock** — and the **clock write mechanism** (write the
+      config to `0x3f100038 + idx*4`, poll bit30; these regs are writable in iBEC).
+      So the frequency and the write mechanism are known. What is left: the *enabled*
+      GFX `source+divider` (iBEC parks the GPU off; computation points at the 200 MHz
+      chain ÷1) and whether those registers are writable *from Linux* — a
+      reboot-prone on-device test. Full arc, register map, PLL formula, and tooling:
+      [docs/research/p105-gpu.md](docs/research/p105-gpu.md) (see STATUS at top)
 
 ## Where Linux keeps its files
 
