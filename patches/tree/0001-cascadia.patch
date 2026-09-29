@@ -1241,3 +1241,42 @@ index 22f43721d..eb4f68a52 100644
  	struct kernel_clone_args args = {
  		.flags		= ((lower_32_bits(flags) | CLONE_VM |
  				    CLONE_UNTRACED) & ~CSIGNAL),
+diff --git a/drivers/mtd/devices/Kconfig b/drivers/mtd/devices/Kconfig
+--- a/drivers/mtd/devices/Kconfig
++++ b/drivers/mtd/devices/Kconfig
+@@ -206,6 +206,24 @@
+ 	  SPI Fast Sequence Mode (FSM) Serial Flash Controller and support
+ 	  for a subset of connected Serial Flash devices.
+ 
++config MTD_APPLE_H2FMI
++	tristate "Apple S5L H2FMI / PPN NAND (read-only)"
++	depends on ARCH_APPLE_S5L || COMPILE_TEST
++	help
++	  Apple's flash controller as it appears on the A5 (S5L8940X/8942X),
++	  driving the Hynix PPN packages the iPad mini 1 boots iOS from.  The
++	  package does its own ECC, so this is a plain MTD and not a raw-NAND
++	  driver.  One MTD per die; four on this board.
++
++	  READ ONLY.  The driver's opcode allowlist contains no program and no
++	  erase, so it cannot damage whatever the NAND already holds -- which
++	  on an un-restored device is somebody's iOS install.
++
++	  Say Y to read the NAND from Linux, for instance to check a dump or
++	  to mount iOS's own partitions.
++
++	  If unsure, say N.
++
+ if MTD_DOCG3
+ config BCH_CONST_M
+ 	default 14
+diff --git a/drivers/mtd/devices/Makefile b/drivers/mtd/devices/Makefile
+--- a/drivers/mtd/devices/Makefile
++++ b/drivers/mtd/devices/Makefile
+@@ -18,6 +18,7 @@
+ obj-$(CONFIG_MTD_BCM47XXSFLASH)	+= bcm47xxsflash.o
+ obj-$(CONFIG_MTD_ST_SPI_FSM)    += st_spi_fsm.o
+ obj-$(CONFIG_MTD_POWERNV_FLASH)	+= powernv_flash.o
++obj-$(CONFIG_MTD_APPLE_H2FMI)	+= mtd-apple-h2fmi.o
+ 
+ 
+ CFLAGS_docg3.o			+= -I$(src)

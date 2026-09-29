@@ -46,6 +46,7 @@ NEW_FILES = [
     "arch/arm/mach-apple/p105_fb_dbg.h",
     "arch/arm/mach-apple/font8x8.h",
     "drivers/irqchip/irq-apple-aic1.c",
+    "drivers/mtd/devices/mtd-apple-h2fmi.c",
     "drivers/phy/phy-apple-s5l-usb.c",
     "Documentation/devicetree/bindings/interrupt-controller/apple,aic1.yaml",
     "fs/hfsplus/decmpfs.c",

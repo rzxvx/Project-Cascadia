@@ -557,6 +557,34 @@
 			status = "disabled";
 		};
 
+		/* The NAND: Apple's H2FMI driving two Hynix PPN packages, one on
+		 * CE0 of each bus.  Six windows, in the ADT's own order -- FMI,
+		 * FMC, ECC for bus 0, then the same for bus 1 (ADT
+		 * /arm-io/flash-controller0, reg 0x1200000/0x1240000/0x1280000
+		 * and 0x1300000/0x1340000/0x1380000, physical 0x312.. and
+		 * 0x313..).  Interrupts 33 and 34, one per bus; the driver polls
+		 * and does not use them yet.
+		 *
+		 * The clock gates (ADT clock-gates 59-62, PMGR 0x3f1010c4..d0)
+		 * are iBoot's: it booted iOS off this flash and leaves the block
+		 * clocked and the bus in DDR.  The driver does not switch them,
+		 * because the state it would have to restore afterwards is not
+		 * known -- a NAND reset drops the PPN to SDR and only a reboot
+		 * through iBEC gets DDR back.
+		 *
+		 * Read-only.  See docs/research/p105-nand.md. */
+		nand: flash-controller@1200000 {
+			compatible = "apple,s5l8940x-fmi";
+			reg = <0x1200000 0x1000>,	/* FMI0 */
+			      <0x1240000 0x1000>,	/* FMC0 */
+			      <0x1280000 0x1000>,	/* ECC0 */
+			      <0x1300000 0x1000>,	/* FMI1 */
+			      <0x1340000 0x1000>,	/* FMC1 */
+			      <0x1380000 0x1000>;	/* ECC1 */
+			interrupts = <33>, <34>;
+			status = "okay";
+		};
+
 		ohci1: usb@6600000 {
 			compatible = "apple,s5l8940x-ohci", "generic-ohci";
 			reg = <0x6600000 0x10000>;
