@@ -10,9 +10,19 @@ it.
 
 From Linux, over `/dev/mem`, both buses answer: read ID, PPN firmware version
 and the PPN device-parameter page, all matching what iOS reports.  Page reads
-work (PIO, ~14 MB/s through `nandctl dump` to the NFS root) and are
+work (PIO, 14.6 MB/s, measured 2026-09-29 with `nandctl dump` into tmpfs) and are
 bit-for-bit repeatable; the flash partition table reads back and decodes.
 No kernel driver yet, no FTL yet.
+
+That number used to read "through `nandctl dump` to the NFS root", which made it
+look like an NFS figure as much as a NAND one. It never was: `nandctl` times its
+own `write()` calls, and those land in the page cache, not on the server. The
+NFS root itself does 5.5 MB/s writing and 7.0 MB/s reading (measured the same
+day), so 14 MB/s could never have passed through it. Two things follow. The NAND
+is **2.5x faster than the root filesystem it is dumped to** -- and that is
+userspace PIO through `/dev/mem`, before any of the DMA work below. And a dump
+that reports 14 MB/s is still filling the page cache faster than it drains, so
+the wall-clock time of a large dump is set by NFS, not by the flash.
 
 ## What the NAND is
 
