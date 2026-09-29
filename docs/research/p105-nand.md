@@ -223,6 +223,46 @@ features iBEC set at init: setting the power state back to DDR (feature 0x180
 The clean way back is a reboot through iBEC.  `nandctl` now takes a per-bus
 lock (`/tmp/nandctl-busN.lock`) for every command that drives a bus.
 
+## Sharing the NAND with iOS: two cuts, neither worth making (2026-09-29)
+
+The README asks people to choose between keeping iOS and having the NAND.  The
+obvious question is why not both, and the answer is worth writing down because
+the danger is not where it looks.
+
+**It is not spatial.**  The risk is not that Linux's bytes land on iOS's.  The
+FTL is log-structured and its metadata is *global*: `fsys` is 2127 of the 2128
+blocks, every 4 KB page carries a sequence and an LBA, the live copy of an LBA
+is whichever has the highest sequence, and LBAs are striped across all four
+dies.  Any write means allocating blocks, updating the shared context (type-2
+pages, the L2V spans) and doing wear levelling and GC.  Get that wrong and you
+have not corrupted a partition, you have corrupted the map for the whole
+volume -- iOS included, and kDFU with it, which is the only way back in.
+
+**Cut 1 -- at LwVM.  Easy to cut, impossible to write.**  There is room already:
+1024 chunks of 16 MB, System 133 + Data 813 + 1 for the header = 947, so **77
+chunks (1.20 GB) are mapped to nothing** and iOS never touches them.  Adding a
+third partition record is a small edit to a structure this note already
+decodes, and there are three copies of the header on the NAND.  But a write
+into it still goes through the FTL, and what we have is the *read* stack, out
+of iBEC.  The write path lives in AppleSwissPPNFTL, in the iOS kernelcache,
+un-reversed.  So the easy cut buys 1.2 GB behind the hardest door in the port.
+
+**Cut 2 -- at the flash partition table.  The right shape, at a real price.**
+Shrink `fsys` in `ndrG`, give Linux its own flash partition, and the FTL never
+sees our blocks at all: no shared metadata, no FTL work, just MTD and UBI.  That
+is the architecture the Pico path already plans for.  The price: shrinking
+`fsys` invalidates the FTL's layout, so it needs a restore; iOS rewrites `ndrG`
+during that restore, so the edit has to be re-applied afterwards and the FTL has
+to tolerate a partition smaller than it formatted for (it may reformat, it may
+panic -- untested); the edit is a write to the block holding the bootloaders;
+and the blocks come out of the FTL's 1.85 GB (10.4%) of overprovisioning, which
+iOS spends on write endurance.
+
+**The conclusion, for now:** a USB flash drive in host mode is more space, more
+speed (~15-30 MB/s against the NAND's 14.6 on PIO) and no risk to iOS at all,
+and giving up iOS removes the question entirely.  Sharing the NAND is third
+choice, and only if both of those fail.
+
 ## Next
 
 A kernel driver: H2FMI + PPN reads (DMA instead of PIO), a map built from the

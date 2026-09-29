@@ -95,7 +95,11 @@ including the parts that didn't work.
       partition is encrypted file by file and does not mount yet
 - [ ] NAND as Linux's own storage — for Pi Pico users, at the cost of iOS;
       see *Where Linux keeps its files* below
-- [ ] USB host mode / keyboard — no free host port: dwc2 in host mode would take the console and the network with it
+- [ ] USB host mode — a flash drive, or a keyboard, or both behind a hub. The
+      controller is a full OTG core with internal DMA and hub support, and the
+      ADT carries Apple's host-mode PHY tuning; the port costs the console and
+      the network, which Wi-Fi now covers, and the open question is VBUS — in
+      host mode the iPad has to power the bus itself
 - [ ] Graphical Acceleration (SGX543MP2) — **dead end for now** (2026-09-28): the
       clock *domain* can be gated on from Linux, but the GFX clock *source* enable
       lives behind a runtime-dispatched kernel clock-controller we can neither
@@ -105,22 +109,79 @@ including the parts that didn't work.
 
 ## Where Linux keeps its files
 
-Which way into pwned DFU you have decides it:
+One question decides this, and it is not a technical one: **are you willing to
+lose iOS?** Everything else follows from the answer, because the only way into
+pwned DFU without extra hardware starts from a jailbroken iOS.
 
-- **No extra hardware** (`./cascadia flash --kdfu`, from a jailbroken iOS):
-  iOS has to stay — kDFU starts from it — and so the NAND stays iOS's. Linux's
-  root is the host's disk over NFS (`./cascadia nfs on`) or RAM. iOS's own
-  System partition is readable from Linux, read-only (`ios mount`).
-- **A Pi Pico** (checkm8 without iOS): the NAND can be Linux's, at the cost of
-  iOS. That is the planned way to storage on the device itself: an MTD driver
-  for the PPN chips with UBI/UBIFS on the blocks iOS's FTL uses now, block 0
-  (syscfg, NVRAM, the bootloaders) never touched. **Not written yet.** iOS
-  comes back with a restore.
+| | **Keep iOS** | **Give up iOS** |
+|---|---|---|
+| Needs | nothing but a cable | a microcontroller (Pi Pico) for checkm8 |
+| Into DFU by | `./cascadia flash --kdfu`, out of iOS | checkm8, no iOS involved |
+| Linux's root | the host's disk over NFS, or RAM | the NAND itself |
+| Speed | 5.5 MB/s write, 7.0 read | 14.6 MB/s read today, more with a driver |
+| iOS afterwards | untouched, and readable from Linux (`ios mount`) | gone until you restore it |
+| Status | **works now** | **not written yet** |
 
-Both at once — iOS kept and Linux writing to the NAND — means writing through
-iOS's FTL, and a mistake there breaks iOS, and kDFU with it. Not planned.
-Splitting the NAND between the two (a smaller FTL for iOS after a restore) is
-an open question.
+Most people will want the first column, and it is the one that works today.
+The second is the better machine and the one the port is aiming at: an MTD
+driver for the PPN chips with UBI/UBIFS on the blocks iOS's FTL uses now, block
+0 (syscfg, NVRAM, the bootloaders) never touched.
+
+### How fast each one actually is
+
+Measured on the device, 2026-09-29:
+
+| Where | Write | Read |
+|---|---|---|
+| RAM (`tmpfs`) | 272.8 MB/s | 415.4 MB/s |
+| NFS root, over the Lightning cable | 5.5 MB/s | 7.0 MB/s |
+| The NAND, read-only, userspace PIO | — | 14.6 MB/s |
+| A USB flash drive in host mode | *unproven, see below* | |
+
+Do not blame NFS for the second row: raw TCP over the same cable manages
+5.9 MB/s, so NFS is keeping 93% of what the link gives it. **The link is the
+bottleneck** — 47 Mbit/s on a bus rated 480 — and not because the CPU cannot
+keep up, which sits 95% idle while it happens. CDC ECM sends one 1500-byte
+frame per USB transaction and only keeps ten requests in flight
+(`g_cdc.qmult` is 5, and the queue is twice that), so the bus spends its time
+waiting. That is a fixable number, not a law.
+
+Which makes the third row worth reading twice: **the NAND is already 2.5× faster
+than the filesystem this port roots on**, on userspace PIO through `/dev/mem`,
+before any of the DMA work a real driver would bring.
+
+### A USB flash drive, which would suit the first column
+
+The controller can do it: `GHWCFG2` reads back a full HNP/SRP-capable OTG core
+with **internal DMA**, 14 host channels and hub support, and the ADT carries
+Apple's host-mode PHY tuning beside the device-mode values this port uses —
+this is the Camera Connection Kit path. A stick should land around 15–30 MB/s,
+limited first by the stick and then by the controller's 8 KB of FIFO.
+
+What is not solved: in host mode the iPad has to supply VBUS itself, which is a
+PMU function nobody has looked for yet, and it does not charge while it is the
+host. The port also stops being the console and the network — survivable now
+that Wi-Fi works, but not free.
+
+### Why there is no third column
+
+Keeping iOS *and* writing to the NAND would mean writing through iOS's own FTL,
+and the danger is not where people expect. It is not that Linux's bytes might
+land on iOS's: it is that the FTL's metadata is **global**. `ndrG` gives the FTL
+2127 of the 2128 blocks, and it is log-structured — every 4 KB page carries a
+sequence number and an LBA, live data is whichever copy has the highest
+sequence, and LBAs are striped across all four dies. Writing anything means
+allocating blocks, updating the shared context and doing wear levelling, and a
+mistake there does not corrupt your partition, it corrupts the map for the whole
+volume — iOS included, and kDFU with it.
+
+Cutting the disk in two is possible at two levels, and the analysis is in
+[docs/research/p105-nand.md](docs/research/p105-nand.md). Neither is worth it:
+the easy cut (LwVM has 1.2 GB unmapped already) still needs a reverse-engineered
+FTL write path, and the clean cut (shrink `fsys`, give Linux its own flash
+partition) needs a restore, a write to the block that holds the bootloaders, and
+eats the FTL's 1.85 GB of overprovisioning. A flash drive is more space, more
+speed and no risk at all.
 
 ## Seven problems worth reading about
 
@@ -424,9 +485,16 @@ touch -- a 5 V LDO no device-tree function names, the calibration, and two
 reports iOS userspace sets were.)
 
 **No free USB host port.** The ADT puts the Wi-Fi part (`wlan`) as a child node
-of `usb-ehci` — BCM4334 is HSIC-attached, not SDIO. So a USB keyboard would have
-to come from dwc2 in host mode, which is mutually exclusive with the ACM console
-and the network on the same port.
+of `usb-ehci` — BCM4334 is HSIC-attached, not SDIO — and that is EHCI's only
+child: ports 1 and 2 are not described, so nothing is wired to them. Anything
+plugged into the Lightning port therefore has to come from dwc2 in host mode,
+which is mutually exclusive with the ACM console and the network there.
+
+That was written when the cable was the only way in. It is less final now: Wi-Fi
+carries the network, the UART and the glass carry the console, `GHWCFG2` says the
+core is HNP/SRP-capable with hub support, so one port can still host a keyboard
+and a disk at once. What has not been looked for is VBUS — the host has to power
+the bus, and on this board that is the PMU's job.
 
 ## Technical notes
 
