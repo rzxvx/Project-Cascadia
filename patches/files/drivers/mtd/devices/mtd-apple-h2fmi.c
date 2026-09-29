@@ -434,19 +434,35 @@ static int h2fmi_mtd_read_oob(struct mtd_info *mtd, loff_t from,
 	if (!len && !ooblen)
 		return 0;
 
-	if (datbuf) {
-		page = kmalloc(H2FMI_PAGE_DATA, GFP_KERNEL);
-		if (!page)
-			return -ENOMEM;
-	}
-
 	while (len || ooblen) {
 		loff_t base = from & ~(loff_t)H2FMI_PAGE_MASK;
 		u32 skip = (u32)(from - base);
+		bool direct = false;
+		u8 *dst = NULL;
 		u8 st = 0;
 		int bf;
 
-		ret = h2fmi_read_page_at(mtd, base, page, oob, &st);
+		/* A whole aligned page -- which is every page of a large read,
+		 * and so nearly all of them -- is split straight into the
+		 * caller's buffer.  The bounce is only for a partial page, and
+		 * is only allocated if one turns up. */
+		if (len) {
+			if (!skip && len >= H2FMI_PAGE_DATA) {
+				dst = datbuf;
+				direct = true;
+			} else {
+				if (!page) {
+					page = kmalloc(H2FMI_PAGE_DATA, GFP_KERNEL);
+					if (!page) {
+						ret = -ENOMEM;
+						break;
+					}
+				}
+				dst = page;
+			}
+		}
+
+		ret = h2fmi_read_page_at(mtd, base, dst, oob, &st);
 		if (ret)
 			break;
 
@@ -460,7 +476,8 @@ static int h2fmi_mtd_read_oob(struct mtd_info *mtd, loff_t from,
 		if (len) {
 			size_t n = min_t(size_t, len, H2FMI_PAGE_DATA - skip);
 
-			memcpy(datbuf, page + skip, n);
+			if (!direct)
+				memcpy(datbuf, page + skip, n);
 			datbuf += n;
 			len -= n;
 			ops->retlen += n;
