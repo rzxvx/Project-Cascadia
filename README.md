@@ -100,12 +100,7 @@ including the parts that didn't work.
       ADT carries Apple's host-mode PHY tuning; the port costs the console and
       the network, which Wi-Fi now covers, and the open question is VBUS — in
       host mode the iPad has to power the bus itself
-- [ ] Graphical Acceleration (SGX543MP2) — **dead end for now** (2026-09-28): the
-      clock *domain* can be gated on from Linux, but the GFX clock *source* enable
-      lives behind a runtime-dispatched kernel clock-controller we can neither
-      observe (no working tfp0 on 8.4.1) nor recover statically, so the first SGX
-      register read still hangs. Full arc, register map, and what would unblock it:
-      [docs/research/p105-gpu.md](docs/research/p105-gpu.md) (see STATUS at top)
+- [ ] Graphical Acceleration (SGX543MP2)
 
 ## Where Linux keeps its files
 
