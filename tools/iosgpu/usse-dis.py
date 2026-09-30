@@ -163,7 +163,17 @@ def vpck_swizzle(word):
     return "".join(ch[i] for i in sel)
 
 
+def limm_imm(word):
+    """LIMM's 32-bit immediate.  The pattern's letters do not follow it: bits
+    49:44 are imm[31:26], bits 40:36 imm[25:21], bits 20:0 imm[20:0], and
+    bits 27:21 are the destination register.  Checked on the microkernel's
+    LIMM rN, #0xdeadbeef fills (fc237150000dbeef, ...004dbeef, ...008dbeef)."""
+    return (((word >> 44) & 0x3f) << 26) | (((word >> 36) & 0x1f) << 21) | (word & 0x1fffff)
+
+
 def operands(name, word):
+    if name == "LIMM":
+        return f"  r{(word >> 21) & 0x7f} <- #0x{limm_imm(word):08x}"
     spec = OPERANDS.get(name)
     if not spec:
         return ""

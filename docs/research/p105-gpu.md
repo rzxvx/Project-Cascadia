@@ -111,13 +111,172 @@ interrupt (49) is in the DT but not requested.
 
 ### Next
 
-- BIF / MMU: iOS continues `initSGX` with broadcast BIF writes (`0xc00 = 0`,
-  `0xc78 = 0x77077`, `0xc10 = 0xbeffe00`, `0xc14 = 0xcffff00`, directory lists
-  at `0xc34 + 4i`, `0x4cd0`/`0x8cd0 = 2`) — the page-table side comes next.
-- The microkernel: where iOS keeps it and how it is loaded (IMGSGX543.kext:
-  "failed to map ukernel structures", "illegal code base").
-- SGX543 has PTLA (2D hardware, `SGX_FEATURE_2D_HARDWARE`) — possibly the
+- The GPU address map (heaps) and the MMU: the page-table format is in the
+  GPL DDK (`sgxmmu.h`, `mmu.c`); `DIR_LIST_BASE0` takes the page directory.
+- Extract the microkernel from the user's kernelcache at build time.
+- In the driver: allocate and map the buffers, copy the microkernel, program
+  the registers below, kick core 0, and wait for the acknowledgement -- the
+  first code the GPU runs under Linux.
+- SGX543 has PTLA (2D hardware, `SGX_FEATURE_2D_HARDWARE`) -- possibly the
   cheapest first use for a framebuffer.
+
+## The microkernel, and how iOS boots it (2026-09-30, static)
+
+Everything here is from the decrypted 8.4.1 kernelcache (`kc841.macho`),
+kext `com.apple.driver.IMGSGX543` (Mach-O at `0x80bf1000`, `__text`
+`0x80bf1500`, class `SGXDriver543`; register base pointer at `this+0x5bc`).
+The kext's code loads strings as `ldr rX, [pc, #n]` + `add rX, pc`.
+
+**The microkernel is inside the kext**, in `__DATA,__data` (VA `0x80c02a20`,
+`0x16094` bytes). `tools/iosgpu/usse-dis.py scan` finds a run of 3627 valid
+USSE instructions from `+0x60`. It is Apple's/IMG's firmware: never commit
+it; a build step has to take it out of the user's own IPSW, as with
+`P105.mtprops`.
+
+| blob offset | size | what | where iOS puts it |
+|---|---|---|---|
+| `+0x00000` | `0x60` | header (`1, 0.., 1, 2, 2, 2, 0..`) | — |
+| `+0x00060` | `0x11f88` | the microkernel code | code buffer `+0x1000` |
+| `+0x11fe8` | `0x3b58` | data | its own buffer (`this+0x700`) |
+| `+0x15b40` | `0x248` | boot program | code buffer `+0x0` |
+| `+0x15d90` | tables | `+0x28` (0xf0 bytes), `+0x118` (0x140 bytes) | buffers `this+0x784` (heap 6), `this+0x78c` (heap 5) |
+
+**Loader** `0x80bf9754`: allocates the code buffer (`0x12f88` = boot program
+at 0, microkernel at `0x1000`) and copies both in, then allocates and fills
+the data buffers, some from templates in `__TEXT,__const` (sizes `0x18`,
+`0x38`, `0x18`, `0x350`, `0x9c`, `0x258`). **Allocator** `0x80bf9658`
+`(this, &obj, init, size, opts=0x100, align, heap, flag)`: size rounded to
+4 KiB, GPU mapping by the IOAccel memory object (heap index at `obj+0x20`),
+**GPU address at `obj+0x18`**, CPU mapping, then memcpy of `init` or bzero.
+**Setup** `0x80bfa080` calls the loader and allocates the rest: the host
+control block (`this+0x74c`, `0xec` bytes -- the microkernel acknowledges
+through its word 0), and buffers of `0x1a4`, `0x2000`, `8`, `0x1000`, ...
+Heap names in the kext: Default Vertex, Default Fragment, VDM Control
+Stream, USE Spill (vertex/fragment), USE Code, Transfer, 3D Aperture -- the
+GPU address map behind them is not decoded yet.
+
+**The rest of `initSGX`** (after the clock prologue in the STATUS above;
+register names from the DDK where it has them, bank 0 = broadcast):
+
+- BIF: `BIF_CTRL` `0xc00 = 0`, `BIF_BANK0` `0xc78 = 0x77077`, `BIF_BANK1`
+  `0xc7c = 0`, `BIF_BANK_SET` `0xc74 = 0`, `DIR_LIST_BASE0` `0xc84` and
+  `DIR_LIST_BASE1..7` `0xc38..` = page directories, `BIF_TILE1/2`
+  `0xc10 = 0xbeffe00`, `0xc14 = 0xcffff00`, `BIF_CTRL_INVAL` `0xc34 = 8`,
+  `MASTER_BIF_MMU_CTRL` `0x4cd0 = 2` and each core's `0x8cd0 = 2`,
+  `MASTER_BIF_CTRL` `0x4c00 = 0`.
+- Misc (names unknown): `0xa58 = 0`, `0xacc` (`EVENT_TIMER`) `= 0`, `POWER`
+  `0x1c = 0`, `0xa7c = 0xa80 = 0`, `0xa00 = 0x7c000`, `0xabc = 0x4c`,
+  `0xaa0`, `0x818 = 0`, `0x804 = 0x5e0`, `0x814 = 0xffff`, `0xa74`, `0xb30 =
+  0x100`, master `0x4808 = 4`, `0x4144 = 1000`, `0x414c = 0`, `0x630 = 2`.
+- **Boot entry per core**: `core n + 0xba0` = entry / 8 into the boot
+  program -- `0x40` for core 0, `0x240` for the others (`0x80bfa068` and
+  `0x80bfa06c` just return those constants); `+0xbb4 = 0`. iOS writes it
+  for cores 1..3 regardless of the core count, so writes to the empty banks
+  4-5 are evidently harmless.
+- **Code bases**: `USE_CODE_BASE_0` `0xa0c = 0x0c000000 | codeVA >> 6`,
+  `USE_CODE_BASE_1` `0xa10` = GPU address of the `+0x118` table buffer
+  `>> 6`, `USE_CODE_BASE_2..14` `0xa14..0xa44` from `this+0x7f0..`.
+- `EVENT_KICKER` `0xac4` = a buffer's GPU address; `0xa68..0xa70` (bank 0)
+  and core 0's `0x8a68..0x8a70`, `0x8a58`, master `0x4a58`: GPU addresses.
+- Events: `EVENT_HOST_CLEAR` `0x134` and `CLEAR2` `0x114` = `~0`,
+  `0x140 = ~0`, `EVENT_HOST_ENABLE` `0x130 = 0x4000`, `ENABLE2` `0x110`,
+  `0x13c = 0`.
+- **Start**: host control word 0 = 0, **core 0 `EVENT_KICK` (`0x8ac8`) = 1**,
+  then poll host control word 0 until the microkernel sets bit 0 -- the
+  "SGX Hang - Poll Failure" if it never does.
+
+### The GPU's MMU and address space (2026-09-30, static)
+
+**Page tables: the DDK's format, confirmed by iOS.** Two levels, 4 KiB
+pages, 32-bit GPU addresses: page directory index `va >> 22` (1024 entries),
+page table index `(va >> 12) & 0x3ff`. From `sgxmmu.h` (GPL DDK, no 36-bit
+MMU on SGX543): PDE = page table physical address `& 0xfffff000 | VALID (1)`,
+bits 3:1 page size (0 = 4 KiB); PTE = page physical address `| VALID (1) |
+WRITEONLY (2) | READONLY (4) | CACHECONSISTENT (8) | EDMPROTECT (0x10)`.
+iOS's PTE writer (`0x80bf4dc4`) builds exactly that from the memory
+object's flags (`obj+0x94`: bit 0 -> READONLY, bit 1 -> EDMPROTECT, bit 2
+-> CACHECONSISTENT) and the fault dump (`0x80bf8e50`) walks it the same way.
+`DIR_LIST_BASE0` takes the page directory.
+
+**Fixed regions in Apple's GPU address map** (constants in the kext):
+
+| GPU address | what |
+|---|---|
+| `0x80000000` | the "GART" base: the fault dump prints `(va >> 20) - 0x800` as the GART offset in MB |
+| `0x84000000 - 0x8407ffff` | must be mapped writable (`0x80bf4dc4` panics "bad pte bits on page" otherwise) |
+| `0x87800000` | written into TA/transfer commands |
+| `0x8c000000` | written into render commands |
+| `0x94000000 - 0x977fffff` | the parameter buffer (`0x80bf9620`), must be writable |
+
+USE code addresses in commands are relative to the code buffer
+(`0x80bf963c`: `((va - this[0x6cc]) << 1) & 0xfffff0`).
+
+**The microkernel hard-codes no data address.** Decoding every LIMM in the
+code (immediate = `(bits 49:44 << 26) | (bits 40:36 << 21) | bits 20:0`, the
+destination register in bits 27:21 -- `usse-dis.py`'s LIMM pattern labels
+these wrongly) gives no `0x84.../0x94...` constants: the `0x...dbeef` words
+are `LIMM rN, #0xdeadbeef` (a fill pattern), the rest are masks and
+`0xad00xxxx` values. So it gets its addresses from registers and the host
+control block, and Linux can choose its own layout for the boot buffers.
+The "data" part of the blob (`+0x11fe8`) is more USSE code (a 1942-instruction
+run at `+0x120a8`).
+
+### The host patches the microkernel (2026-09-30, static)
+
+"No hard-coded data address" above is true of the shipped code, but only
+because the host fills the addresses in. After the buffers are allocated
+(`0x80bfa080`, from `0x80bfa3f2` on) it rewrites the immediates of seven
+LIMM instructions at the very start of the microkernel (offsets relative to
+the microkernel, i.e. code buffer `+0x1000`, blob `+0x60`). A LIMM
+immediate is set by: low word `[20:0] = imm[20:0]`; high word `&= 0xfffc0e0f`,
+`|= (imm >> 14) & 0x3f000` (imm[31:26] -> bits 17:12) `| (imm >> 17) & 0x1f0`
+(imm[25:21] -> bits 8:4).
+
+| ukernel offset | immediate |
+|---|---|
+| `+0x00` | `0x01001000` |
+| `+0x10` | GPU address of buffer `this+0x6e0` `>> 4` |
+| `+0x18` | GPU address of buffer `this+0x740` |
+| `+0x58` | `0x00800900` |
+| `+0x60` | GPU address of buffer `this+0x6e8` `>> 4` |
+| `+0xe0` | GPU address of buffer `this+0x6f0` (16-byte aligned) |
+| `+0xf0` | `7` |
+
+Also computed there: `this+0x72c..0x738` = (microkernel start + `0x1fa8`,
+`0x1bf0`, `0x1e80`, `0x21d0`) `>> 3` and `this+0x73c` = (start + `0x21d8`)
+`>> 3` -- entry points in 8-byte instruction units; a `0x60`-byte buffer
+(heap 6) filled with the words 0..23; and further buffers of `0x14000`
+(heap 2, 1 MiB aligned), `0x1000`, `0x8000`, `0x28000` (heap 6). Buffers
+named by `this+` offset: `0x6d4` code, `0x6d8`/`0x6e0`/`0x6e8`/`0x6f0`/`0x6f8`
+from `__TEXT,__const` templates (`0x18`, `0x38`, `0x18`, `0x350`, `0x9c`
+bytes), `0x700` blob `+0x11fe8`, `0x704` template (`0x258`), `0x784`/`0x78c`
+blob tables, `0x740` (`0x1a4`), `0x748` host control (`0xec`), `0x750`
+(`0x2000`), `0x758` (`8`), `0x760` (`0x1000`, its address goes to
+EVENT_KICKER), `0x768`, `0x774` (`0x28`, heap 4, from blob `+0x15d90`).
+
+### Where the register values come from (2026-09-30, static)
+
+`0x80bfa884` (called by `initSGX` on a normal start) fills them:
+
+- `this+0x6cc` = GPU address of the code buffer (-> `USE_CODE_BASE_0`).
+- The template buffers (`0x6d8`, `0x6e0`, `0x6e8`, `0x6f0`, `0x6f8`; CPU
+  pointers one word after each) are small **PDS programs**: the host writes
+  USE code addresses into them, each `((codeVA + ukernel offset - this[0x6cc])
+  << 1) & 0xfffff0`, for ukernel offsets `0x90`, `0xc0`, `0x1470`, `0xd0d0`,
+  `0x4340`, `0xac50`, `0x10d20`, `0xd3f0`, `0x4510`, `0xad20`, `0x11190`.
+- Event PDS registers: core 0 `0x8a68` = `this[0x70c]` = GPU address of the
+  `0x6d8` PDS program `& ~0xf`, `0x8a6c` = `this[0x710]` = `1`, `0x8a70` =
+  `this[0x714]` = `0x12001`; `0x8a58` = `this[0x718]` = `0x2200c000`; master
+  `0x4a58` = `this[0x71c]` = `0x804300f`. Bank 0 `0xa68..0xa70` =
+  `this[0x720..0x728]` (set at `0x80bfad68`, not decoded yet).
+- Four more LIMM patches inside the microkernel: `+0x86c8` and `+0x7f98`
+  get `0x900` (high word `|= 0x140`), `+0x86e0` and `+0x7fb0` get the `0x6f8`
+  buffer's GPU address `>> 4`.
+- `this+0x744` (the `0x1a4`-byte block at `0x740`): GPU addresses of the
+  `0x740`, `0x748`, `0x758`, `0x750`, `0x768` buffers, `+0x14 = 2`, **`+0xf8` =
+  the page directory's physical address**, plus timing/DVFS parameters.
+- Host control (`0x74c`, `0xec` bytes): zeroed, word 0 = 0 (the handshake),
+  a few parameters and two 0x20-byte copies from `this+0x5cc` / `this+0x5ec`.
 
 ## STATUS 2026-09-29: the dead end is REOPENED — kernel observability solved
 
