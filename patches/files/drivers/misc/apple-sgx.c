@@ -370,6 +370,10 @@ struct apple_sgx {
 
 	struct sgx_buf buf[B_NUM];
 	bool bufs_ready;
+
+	/* buffers mapped at a chosen GPU address (replaying iOS's layout) */
+	struct sgx_buf extra[16];
+	int nextra;
 	int boot_result;	/* 0 never tried, 1 acknowledged, -errno */
 
 	/* the interrupt */
@@ -1061,6 +1065,145 @@ static int sgx_tq_cmd(struct apple_sgx *sgx, u32 flags, u32 val)
 	return ret;
 }
 
+/* ---- replay tools: memory at chosen GPU addresses ------------------------ */
+
+/* "map VA SIZE": fresh zeroed memory at GPU address VA, cache-consistent
+ * like the shared buffers.  Mappings stay until reboot; the next microkernel
+ * boot invalidates the MMU's caches, so map first and boot after. */
+static int sgx_map_extra(struct apple_sgx *sgx, u32 va, u32 size)
+{
+	struct sgx_buf *b;
+	int i, ret;
+
+	if (!sgx->bufs_ready)
+		return -ENODEV;
+	size = ALIGN(size, SGX_PAGE_SIZE);
+	if ((va & (SGX_PAGE_SIZE - 1)) || !size || va + size < va ||
+	    (va < sgx->va_next && va + size > SGX_VA_BASE))
+		return -EINVAL;
+	for (i = 0; i < sgx->nextra; i++)
+		if (va < sgx->extra[i].va + sgx->extra[i].size &&
+		    va + size > sgx->extra[i].va)
+			return -EEXIST;
+	if (sgx->nextra == ARRAY_SIZE(sgx->extra))
+		return -ENOSPC;
+	b = &sgx->extra[sgx->nextra];
+	b->size = size;
+	b->cpu = dmam_alloc_coherent(sgx->dev, size, &b->dma, GFP_KERNEL);
+	if (!b->cpu)
+		return -ENOMEM;
+	b->va = va;
+	ret = sgx_mmu_map(sgx, va, b->dma, size, PTE_SHARED);
+	if (ret)
+		return ret;
+	sgx->nextra++;
+	dev_info(sgx->dev, "mapped GPU 0x%08x-0x%08x at %pad\n", va, va + size, &b->dma);
+	return 0;
+}
+
+/* The CPU side of GPU address va, and how many bytes follow it there. */
+static u8 *sgx_va_cpu(struct apple_sgx *sgx, u32 va, size_t *avail)
+{
+	int i;
+
+	for (i = 0; sgx->bufs_ready && i < B_NUM + sgx->nextra; i++) {
+		struct sgx_buf *b = i < B_NUM ? &sgx->buf[i] : &sgx->extra[i - B_NUM];
+
+		if (va >= b->va && va - b->va < b->size) {
+			*avail = b->size - (va - b->va);
+			return (u8 *)b->cpu + (va - b->va);
+		}
+	}
+	return NULL;
+}
+
+/* apple-sgx/mem: the file offset is the GPU address. */
+static ssize_t sgx_mem_rw(struct file *file, char __user *ubuf, const char __user *wbuf,
+			  size_t len, loff_t *ppos)
+{
+	struct apple_sgx *sgx = file->private_data;
+	size_t done = 0, avail, n;
+	u8 *p;
+
+	if (*ppos < 0 || *ppos > U32_MAX)
+		return -EINVAL;
+	mutex_lock(&sgx->lock);
+	while (done < len) {
+		p = sgx_va_cpu(sgx, *ppos + done, &avail);
+		if (!p)
+			break;
+		n = min(len - done, avail);
+		if (ubuf ? copy_to_user(ubuf + done, p, n) :
+			   copy_from_user(p, wbuf + done, n)) {
+			mutex_unlock(&sgx->lock);
+			return -EFAULT;
+		}
+		done += n;
+	}
+	wmb();
+	mutex_unlock(&sgx->lock);
+	if (!done && len)
+		return -EFAULT;		/* nothing mapped there */
+	*ppos += done;
+	return done;
+}
+
+static ssize_t sgx_mem_read(struct file *file, char __user *ubuf, size_t len, loff_t *ppos)
+{
+	return sgx_mem_rw(file, ubuf, NULL, len, ppos);
+}
+
+static ssize_t sgx_mem_write(struct file *file, const char __user *ubuf, size_t len,
+			     loff_t *ppos)
+{
+	return sgx_mem_rw(file, NULL, ubuf, len, ppos);
+}
+
+static const struct file_operations sgx_mem_fops = {
+	.owner = THIS_MODULE,
+	.open = simple_open,
+	.read = sgx_mem_read,
+	.write = sgx_mem_write,
+	.llseek = default_llseek,
+};
+
+/* "tqkick": the 0x140-byte command at the transfer CCB's write offset has
+ * been put there through apple-sgx/mem; queue it and send TRANSFER.  Waits
+ * for scratch word 0 to change (point the completion write there). */
+static int sgx_tq_kick(struct apple_sgx *sgx)
+{
+	u32 *ctl = sgx->buf[B_TQ_CTL].cpu, *ctx = sgx->buf[B_TQ_CTX].cpu;
+	u32 *scratch = sgx->buf[B_SCRATCH].cpu, wo, got;
+	unsigned int n;
+	int ret;
+
+	if (sgx->boot_result != 1)
+		return -ENODEV;
+	wo = READ_ONCE(ctl[0]);
+	if (wo + SGX_TQ_CMD_SIZE > SGX_TQ_CCB_SIZE)
+		return -ENOSPC;
+	WRITE_ONCE(scratch[0], 0);
+	wmb();
+	WRITE_ONCE(ctl[0], wo + SGX_TQ_CMD_SIZE);
+	WRITE_ONCE(ctx[0], 1);
+	wmb();
+	ret = sgx_send_cmd(sgx, SGX_CMD_TRANSFER, 0, 0, sgx->buf[B_TQ_CTX].va);
+	if (ret)
+		return ret;
+	ret = read_poll_timeout(READ_ONCE, got, got, 10, 500000, false, scratch[0]);
+	dev_info(sgx->dev, "tqkick at 0x%x: scratch 0x%08x (%s), tq read 0x%x ctx 0x%x; "
+		 "master BIF_INT_STAT 0x%08x BIF_FAULT 0x%08x\n",
+		 wo, READ_ONCE(scratch[0]), ret ? "not done" : "done",
+		 READ_ONCE(ctl[1]), READ_ONCE(ctx[0]),
+		 sgx_read(sgx, SGX_MASTER_BIF_INT_STAT), sgx_read(sgx, SGX_MASTER_BIF_FAULT));
+	for (n = 0; n < sgx->ncores; n++)
+		dev_info(sgx->dev, "  core%u EVENT_STATUS 0x%08x BIF_INT_STAT 0x%08x BIF_FAULT 0x%08x\n",
+			 n, sgx_read(sgx, SGX_CORE(n) + SGX_EVENT_STATUS),
+			 sgx_read(sgx, SGX_CORE(n) + SGX_BIF_INT_STAT),
+			 sgx_read(sgx, SGX_CORE(n) + SGX_BIF_FAULT));
+	return ret;
+}
+
 /* ---- debugfs -------------------------------------------------------------- */
 
 static const struct {
@@ -1145,6 +1288,9 @@ static int sgx_regs_show(struct seq_file *s, void *unused)
 			seq_printf(s, "buffer %-10s va 0x%08x pa %pad size 0x%zx\n",
 				   sgx_buf_descs[i].name, sgx->buf[i].va,
 				   &sgx->buf[i].dma, sgx->buf[i].size);
+		for (i = 0; i < sgx->nextra; i++)
+			seq_printf(s, "mapped            va 0x%08x pa %pad size 0x%zx\n",
+				   sgx->extra[i].va, &sgx->extra[i].dma, sgx->extra[i].size);
 	}
 	seq_printf(s, "interrupt %d: %s, %u handled, %u unhandled; events core0 0x%08x core1 0x%08x; host interrupt flags 0x%08x\n",
 		   sgx->irq, sgx->irq_on ? "on" : "off", sgx->irq_count,
@@ -1182,13 +1328,15 @@ static const struct file_operations sgx_boot_fops = {
 /* Commands that need nothing but the microkernel itself:
  *   "hwperf N"   SETHWPERFSTATUS with status N (0 = counters off)
  *   "power N"    POWER: 1 power off, 2 idle, 3 resume (after idle)
- *   "tq F [V]"   a transfer with flags F and no work but two writes of V */
+ *   "tq F [V]"   a transfer with flags F and no work but two writes of V
+ *   "map VA SZ"  memory at GPU address VA (see apple-sgx/mem)
+ *   "tqkick"     send the transfer command placed at the transfer CCB */
 static ssize_t sgx_cmd_write(struct file *file, const char __user *ubuf,
 			     size_t len, loff_t *ppos)
 {
 	struct apple_sgx *sgx = file->private_data;
 	char buf[48], word[8];
-	u32 arg, arg2 = 0x1234;
+	u32 arg = 0, arg2 = 0x1234;
 	int ret;
 
 	if (len >= sizeof(buf))
@@ -1196,7 +1344,7 @@ static ssize_t sgx_cmd_write(struct file *file, const char __user *ubuf,
 	if (copy_from_user(buf, ubuf, len))
 		return -EFAULT;
 	buf[len] = 0;
-	if (sscanf(buf, "%7s %i %i", word, &arg, &arg2) < 2)
+	if (sscanf(buf, "%7s %i %i", word, &arg, &arg2) < 1)
 		return -EINVAL;
 
 	mutex_lock(&sgx->lock);
@@ -1206,6 +1354,10 @@ static ssize_t sgx_cmd_write(struct file *file, const char __user *ubuf,
 		ret = sgx_power_cmd(sgx, arg);
 	else if (!strcmp(word, "tq"))
 		ret = sgx_tq_cmd(sgx, arg, arg2);
+	else if (!strcmp(word, "map"))
+		ret = sgx_map_extra(sgx, arg, arg2);
+	else if (!strcmp(word, "tqkick"))
+		ret = sgx_tq_kick(sgx);
 	else
 		ret = -EINVAL;
 	mutex_unlock(&sgx->lock);
@@ -1312,6 +1464,7 @@ static int apple_sgx_probe(struct platform_device *pdev)
 	debugfs_create_file("regs", 0400, sgx->debugfs, sgx, &sgx_regs_fops);
 	debugfs_create_file("boot", 0200, sgx->debugfs, sgx, &sgx_boot_fops);
 	debugfs_create_file("cmd", 0200, sgx->debugfs, sgx, &sgx_cmd_fops);
+	debugfs_create_file("mem", 0600, sgx->debugfs, sgx, &sgx_mem_fops);
 	platform_set_drvdata(pdev, sgx);
 	return 0;
 }

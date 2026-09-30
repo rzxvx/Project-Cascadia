@@ -344,6 +344,35 @@ CPU copy of `w12`'s block is not pinned yet, nor what `0x90012000` and
 `0x8c009000` (also in the command's resource list) hold, nor where the
 USSE/PDS code the `0x388a`-style words point at lives.
 
+### Replaying the captured transfers under Linux (2026-09-30, on the device)
+
+Tools in the driver: `echo "map VA SIZE" > cmd` (zeroed, cache-consistent
+memory at a chosen GPU address; map first, then `boot`, which invalidates
+the MMU caches), `apple-sgx/mem` (the file offset is the GPU address --
+**write with `dd ... conv=notrunc`**, without it dd tries to truncate the
+debugfs file, gets "File too large" and writes nothing), and `echo tqkick >
+cmd` (queue the 0x140-byte command put at the transfer CCB's write offset
+through `mem`, send TRANSFER, report the completion word and the MMU status
+of every bank).
+
+Replayed from the capture, at iOS's GPU addresses: the level blocks
+(`0x980f3000`), the texture (`0x98104000`, one level zeroed), `w12`'s block
+(`0x980ac000`, only its `+0x100` = `af000000` is used) and `0x90012000`
+mapped empty; the kernel command built from the payload as the kernel does,
+completion pointed at scratch. Level 2 alone and level 1 (with `w2`/`w12`)
+behave the same:
+
+- TRANSFER taken, the context's word 0 cleared, and **`TRIG_3D` set in
+  EVENT_STATUS2** (core 0 and 1 `0xa8` = TRIG_3D | TE_RGNHDR_INIT_COMPLETE |
+  DCU_INVALCOMPLETE, master `0x8`): the microkernel started the 3D pipe.
+- The render never ends: no `PIXELBE_END_RENDER`, transfer read offset stays
+  0, no completion write, the texture is unchanged, `0x90012000` untouched.
+- No MMU fault anywhere; the microkernel still takes other commands.
+
+So everything the command points at is in place, and what is missing is
+state set outside the command -- registers iOS programs when it creates a
+transfer context or in `initSGX`, or ADT-derived parameters still zero.
+
 ### Next
 
 Done since this list was first written: the page tables, the firmware
