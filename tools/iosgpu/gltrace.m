@@ -35,6 +35,10 @@ void free(void *);
 extern mach_port_t mach_task_self_;
 #define mach_task_self() mach_task_self_
 kern_return_t vm_read_overwrite(mach_port_t, vm_address_t, vm_size_t, vm_address_t, vm_size_t *);
+/* 32-bit vm_region_recurse_64 with a vm_region_submap_info_64 as 19 words:
+ * [0] protection, [5] user_tag */
+kern_return_t vm_region_recurse_64(mach_port_t, vm_address_t *, vm_size_t *,
+                                   unsigned int *, int *, unsigned int *);
 
 /* the CPU arena the GL driver keeps its GPU-shared buffers in (map0/1/2 and the
  * submit structs' pointers all landed here); dumped as a sparse image so the
@@ -177,6 +181,128 @@ static void snapshot_arena(const char *label)
     printf("== arena '%s': %u/%u pages mapped\n", label, mapped, span / 0x1000);
 }
 
+/* Find the GL driver's hardware commands in the arena: a header whose word 4
+ * is the payload offset, a payload that starts with its type (1 = render,
+ * 0xdc bytes; 2 = transfer, 0x7c bytes, word 1 zero) and the total size
+ * among the header words -- what IMGSGXGLContext::copyAndValidateVendorPayload
+ * (kernelcache 0x80bf64d4) expects.  Transfers are printed whole. */
+static uint32_t tq_w12, tq_w13;	/* GPU addresses in the first transfer */
+
+static void scan_payloads(const char *label)
+{
+    unsigned span = ARENA_HI - ARENA_LO, nrender = 0, ntransfer = 0;
+    unsigned char *img = malloc(span);
+    if (!img)
+        return;
+    memset(img, 0, span);
+    for (unsigned off = 0; off < span; off += 0x1000) {
+        vm_size_t got = 0;
+        vm_read_overwrite(mach_task_self(), ARENA_LO + off, 0x1000,
+                          (vm_address_t)(img + off), &got);
+    }
+    for (unsigned p = 0; p + 0x200 < span; p += 4) {
+        const uint32_t *h = (const uint32_t *)(img + p), *pl;
+        uint32_t off = h[4], size, t;
+        if (off < 0x14 || off > 0x80 || (off & 3))
+            continue;
+        t = img[p + off];
+        size = t == 1 ? 0xdc : t == 2 ? 0x7c : 0;
+        if (!size || (h[0] != off + size && h[1] != off + size &&
+                      h[2] != off + size && h[3] != off + size))
+            continue;
+        pl = (const uint32_t *)(img + p + off);
+        if (t == 1) {
+            nrender++;
+            continue;
+        }
+        if (pl[1] != 0)
+            continue;
+        if (!ntransfer) {
+            tq_w12 = pl[12];
+            tq_w13 = pl[13];
+        }
+        ntransfer++;
+        printf("== %s: transfer command at 0x%08x, header", label, ARENA_LO + p);
+        for (unsigned i = 0; i < off / 4; i++)
+            printf(" %08x", h[i]);
+        printf("\n   payload:");
+        for (unsigned i = 0; i < size / 4; i++)
+            printf("%s%08x", i % 8 ? " " : "\n   ", pl[i]);
+        printf("\n");
+    }
+    free(img);
+    printf("== %s: %u render, %u transfer command(s) in the arena\n",
+           label, nrender, ntransfer);
+}
+
+/* Walk every writable region of the process: print the map, find words equal
+ * to the GPU addresses the first transfer carries (a bookkeeping record next
+ * to one may hold the CPU mapping), and pages holding three alike 0x1c0-byte
+ * blocks at +0, +0x1c0, +0x380 (the per-mip-level state), dumped to
+ * /var/root/gt_blk_<addr>.bin. */
+static void scan_regions(void)
+{
+    vm_address_t a = 0;
+    unsigned char *pg = malloc(0x2000);
+    int dumped = 0, found = 0;
+    if (!pg)
+        return;
+    printf("== regions (looking for 0x%08x and 0x%08x)\n", tq_w12, tq_w13);
+    for (;;) {
+        vm_size_t sz = 0;
+        unsigned int depth = 99, cnt = 19;
+        int info[19];
+        if (vm_region_recurse_64(mach_task_self(), &a, &sz, &depth, info, &cnt))
+            break;
+        int prot = info[0], tag = info[5];
+        if (a >= 0x2000000 || tag)
+            printf("   %08x-%08x prot %d tag %d\n", a, a + sz, prot, tag);
+        if ((prot & 3) == 3 && sz <= 0x4000000) {
+            for (vm_address_t q = a; q < a + sz; q += 0x1000) {
+                vm_size_t got = 0;
+                if (vm_read_overwrite(mach_task_self(), q, 0x1000,
+                                      (vm_address_t)pg, &got) || got != 0x1000)
+                    continue;
+                const uint32_t *w = (const uint32_t *)pg;
+                for (int i = 0; i < 0x400; i++)
+                    if ((w[i] == tq_w12 || w[i] == tq_w13) && w[i] && found < 40) {
+                        found++;
+                        printf("   0x%08x at %08x:", w[i], q + 4 * i);
+                        for (int j = i - 4; j < i + 8; j++)
+                            if (j >= 0 && j < 0x400)
+                                printf(" %08x", w[j]);
+                        printf("\n");
+                    }
+                int nz = 0, eq1 = 0, eq2 = 0;
+                for (int i = 0; i < 0x70; i++) {
+                    uint32_t x = w[i], y = w[0x70 + i], z = w[0xe0 + i];
+                    nz += x != 0;
+                    eq1 += x && x == y;
+                    eq2 += y && y == z;
+                }
+                if (nz >= 8 && eq1 * 2 >= nz && eq2 * 2 >= nz && w[0] != w[4] &&
+                    dumped < 8) {
+                    char path[64];
+                    snprintf(path, sizeof path, "/var/root/gt_blk_%08x.bin", q);
+                    int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+                    if (fd >= 0) {
+                        write(fd, pg, 0x1000);
+                        close(fd);
+                    }
+                    dumped++;
+                    printf("   blocks at %08x:", q);
+                    for (int i = 0; i < 8; i++)
+                        printf(" %08x", w[i]);
+                    printf("\n");
+                }
+            }
+        }
+        a += sz;
+    }
+    free(pg);
+    printf("== regions done: %d matches, %d pages dumped\n", found, dumped);
+}
+
 /* ---- GLES ------------------------------------------------------------- */
 
 static GLuint make_shader(GLenum type, const char *src)
@@ -194,7 +320,7 @@ static GLuint make_shader(GLenum type, const char *src)
     return s;
 }
 
-int main(void)
+int main(int argc, char **argv)
 {
     install_hooks();
     printf("== hooks installed; creating GLES2 context\n");
@@ -268,6 +394,34 @@ int main(void)
     glViewport(0, 0, 64, 64);
     glEnableVertexAttribArray(0);
     glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, tri);
+
+    /* "gltrace tq": operations the driver may do with the transfer queue
+     * instead of a render -- a copy out of the FBO into another texture, and
+     * mipmap generation -- each followed by a scan for transfer commands. */
+    if (argc > 1 && !strcmp(argv[1], "tq")) {
+        glClearColor(0, 0, 0.2f, 1);
+        glClear(GL_COLOR_BUFFER_BIT);
+        glUniform4f(uColor, 1.0f, 0.5f, 0.0f, 1.0f);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+        glFinish();
+        scan_payloads("tq-before");
+
+        GLuint dst;
+        glGenTextures(1, &dst);
+        glBindTexture(GL_TEXTURE_2D, dst);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 64, 64, 0, GL_RGBA, GL_UNSIGNED_BYTE, 0);
+        printf("== f: glCopyTexSubImage2D 64x64 from the FBO\n");
+        glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 0, 0, 64, 64);
+        glFinish();
+        scan_payloads("f");
+
+        printf("== g: glGenerateMipmap on it\n");
+        glGenerateMipmap(GL_TEXTURE_2D);
+        glFinish();
+        scan_payloads("g");
+        scan_regions();
+        return 0;
+    }
 
     /* a: clear only */
     printf("== frame a (clear only)\n");
