@@ -1,4 +1,4 @@
-# P105 GPU (SGX543MP2) — powered, clocked, running its microkernel, taking commands (2026-09-30)
+# P105 GPU (SGX543MP2) — powered, clocked, microkernel running, first transfer done (2026-09-30)
 
 The GPU is off when Linux starts. As of 2026-09-30 it is switched on from Linux
 and **every register bank of the SGX543MP2 answers**: the master and both cores
@@ -238,15 +238,75 @@ read-only code. The driver now carries the flags per buffer
 (`sgx_buf_descs[].pte`). No interrupt was raised for any of these commands
 (0 handled, 0 unhandled): the microkernel does not signal SW_EVENT for them.
 
+### The first job: a transfer through a transfer queue (2026-09-30, on the device)
+
+**The queue, from iOS.** `IMGSGXTQChannel` allocates three heap-1 buffers
+(`0x80bfcf06..0x80bfcfa0`): a hardware context of `0x24` bytes, its own CCB
+of 64 KiB and that CCB's control words (8 bytes). The context (filled at
+`0x80bfd074`) is `{1, channel number (this+0x34), page directory physical
+address, CCB GPU address, CCB control GPU address, 0, 0, 0, 0}`. A submit
+(`0x80bfd150` -> builder `0x80bfd19c`) puts a **0x140-byte** command at the
+CCB's write offset -- in bytes, 16 bits wide; a command that would not fit
+before the end pads to it (`0x80bfd364`) -- and sends TRANSFER through the
+kernel CCB with `Data[1]` = the hardware context, as the DDK's
+`SGXSubmitTransferKM` does.
+
+**The command.** GL's part is a vendor payload of type 2, exactly `0x7c`
+bytes (`copyAndValidateVendorPayload`, `0x80bf64d4`), copied to the
+descriptor at `+0x16c`; `validateTransferCommand` fails unless payload word 1
+is **0**. The builder places payload words at `+0x00..+0x43` and (when
+payload word 2 is set) `+0x78..+0x9f` -- the transfer's register values --
+and adds its own:
+
+| offset | what |
+|---|---|
+| `+0xa0` | the command size, `0x140` |
+| `+0xa4` | payload word 1, always 0 from GL: the flags (DDK `SGXMKIF_TQFLAGS_*`) |
+| `+0xa8` | from the descriptor (`+0x168`) |
+| `+0xac`, `+0xb0` | {address, value}: **written by the microkernel when the command is done** |
+| `+0xb4` | number of dependencies |
+| `+0xb8 + 8i` | {address, value}: **wait until `(s32)(*address - value) >= 0`** |
+| `+0x104` | payload word 2 |
+| `+0x108` | `0x1800000` |
+
+(The addresses iOS puts there point into its sync buffer, `this+0x6c8`.)
+
+**On the device**, before the driver had it, by hand with `peek` in the
+spare part of the kicker page (context `+0x100`, CCB control `+0x200`,
+scratch `+0x300`, CCB `+0x800`): one command with flags `0x20` (the DDK's
+DUMMYTRANSFER), no register words, completion {scratch, `0xcafe0001`}, one
+dependency {scratch + 4, `0xcafe0002`}:
+
+    kernel CCB: write 1 read 1        tq CCB: write 0x140 read 0x140
+    scratch:    cafe0001 00000000     context word 0: 1 -> 0
+    core0 EVENT_STATUS 0x20002a00 -> 0x24002a00 (TCU_INVALCOMPLETE)
+
+**The microkernel ran its first job**: took the transfer from the queue and
+wrote our value to our address. Two more with the dependency changed to
+{scratch + 4, 1} were taken from the kernel CCB but stalled the queue at
+read `0x140` -- `0 - 1 < 0`, the wait was not met (with `0xcafe0002` it had
+been, signed). Writing 1 there did nothing until the next kick; after one,
+both ran (read `0x3c0`, scratch `0x12345678`, context word 0 back to 0).
+So: dependencies are wrap-around compares, and the microkernel re-checks a
+waiting queue only when kicked.
+
+In the driver: `echo "tq 0x20 VALUE" > .../apple-sgx/cmd` (a context, its
+CCB and a scratch page are allocated with the other buffers; no
+dependencies; waits for VALUE in scratch).
+
 ### Next
 
 Done since this list was first written: the page tables, the firmware
-extraction step, the microkernel start and the command path (above).  Open:
+extraction step, the microkernel start, the command path and a first
+(dummy) transfer (above).  Open:
 
-- **A command that does work**: TA/3D or TRANSFER needs a context (render
-  or transfer queue objects, their CCBs) -- the iOS submit paths at
-  `0x80bfc9a4` / `0x80bfd150` and the command layouts the userspace driver
-  builds (captured by `gltrace`).
+- **A transfer that moves pixels**: the register words (`+0x00..+0x43`,
+  `+0x78..+0x9f`) of a real one, from a `gltrace` capture of an iOS transfer
+  (a texture upload or a blit), with its source and destination repointed
+  -- the destination can be the framebuffer. Flags 0 with zeroed registers
+  was not tried (it would run an unconfigured transfer).
+- TA/3D (a triangle): the render queue (`0x80bfc9a4`, a `0x40`-byte context,
+  64 KiB CCB) and a whole render command -- the bigger step.
 - The interrupt: requested and switched on with `irq=1`, never fired yet.
 - The ADT-derived parameters (DVFS, timing) are still zero.
 - SGX543 has PTLA (2D hardware, `SGX_FEATURE_2D_HARDWARE`).

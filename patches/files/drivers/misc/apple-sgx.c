@@ -284,6 +284,8 @@ enum sgx_buf_id {
 	B_740, B_HOST, B_750, B_758, B_KICKER, B_768,
 	B_TAB_774, B_IDX_77C,
 	B_794, B_798, B_79C, B_7A0,
+	B_TQ_CTX, B_TQ_CCB, B_TQ_CTL,	/* one transfer queue (IMGSGXTQChannel) */
+	B_SCRATCH,			/* where test commands write */
 	B_NUM
 };
 
@@ -318,6 +320,11 @@ static const struct sgx_buf_desc {
 	[B_798]		= { "798",	0x1000,	0x1000, SRC_ZERO },
 	[B_79C]		= { "79c",	0x8000,	0x1000, SRC_ZERO },
 	[B_7A0]		= { "7a0",	0x28000, 0x1000, SRC_ZERO },
+	/* IMGSGXTQChannel (allocations at 0x80bfcf06-0x80bfcfa0, heap 1) */
+	[B_TQ_CTX]	= { "tq ctx",	0x24,	0x1000, SRC_ZERO, PTE_SHARED },
+	[B_TQ_CCB]	= { "tq ccb",	0x10000, 0x1000, SRC_ZERO, PTE_SHARED },
+	[B_TQ_CTL]	= { "tq ctl",	8,	0x1000, SRC_ZERO, PTE_SHARED },
+	[B_SCRATCH]	= { "scratch",	0x1000,	0x1000, SRC_ZERO, PTE_SHARED },
 };
 
 struct sgx_buf {
@@ -662,6 +669,16 @@ static void sgx_uk_fill(struct apple_sgx *sgx, const u8 *data, const u8 *cnst)
 	t[0xf8 / 4] = lower_32_bits(sgx->pd_dma);
 	t[0x154 / 4] = b[B_768].va;
 
+	/* The transfer queue's hardware context (0x80bfd074): valid, the
+	 * channel's number (this+0x34, set by the base class; 0 here), the
+	 * page directory, its CCB and the CCB's control words. */
+	t = b[B_TQ_CTX].cpu;
+	t[0] = 1;
+	t[1] = 0;
+	t[2] = lower_32_bits(sgx->pd_dma);
+	t[3] = b[B_TQ_CCB].va;
+	t[4] = b[B_TQ_CTL].va;
+
 	/* Everything above is in write-combined memory; it has to be out
 	 * before the GPU is told to look. */
 	wmb();
@@ -975,6 +992,75 @@ static int sgx_power_cmd(struct apple_sgx *sgx, u32 powercmd)
 	return 0;
 }
 
+/* A transfer command, as IMGSGXTQChannel builds it (0x80bfd19c): 0x140
+ * bytes in the channel's CCB, whose write offset counts bytes.  From the
+ * GL payload (type 2, 0x7c bytes) come the register words at +0x00..+0x43
+ * and +0x78..+0x9f; the kernel adds +0xa0 the size, +0xa4 a word the payload
+ * must leave 0 (validateTransferCommand, 0x80bf6508) -- by elimination the
+ * DDK's SGXMKIF_TQFLAGS_* --, +0xa8 from the command descriptor, and:
+ *
+ *   +0xac/+0xb0   {address, value}: written by the microkernel when the
+ *                 command is done
+ *   +0xb4         number of dependencies, then from +0xb8 {address, value}
+ *                 pairs: the command waits until (s32)(*address - value) >= 0
+ *   +0x108        0x1800000
+ *
+ * (Both measured: a dependency that is not met stalls the queue until the
+ * word changes AND the microkernel is kicked again; it does not poll.)
+ * Then TRANSFER goes through the kernel CCB with Data[1] = the hardware
+ * context, whose word 0 the microkernel clears when the queue is empty.
+ *
+ * "tq FLAGS VAL" sends one with no register words and no dependencies, its
+ * completion written to the scratch buffer, and waits for VAL there.  With
+ * FLAGS = 0x20 (DUMMYTRANSFER in the DDK: "uKernel only updates syncobjects
+ * / status values") that is all the microkernel does. */
+#define SGX_TQ_CMD_SIZE			0x140
+#define SGX_TQ_CCB_SIZE			0x10000
+
+static int sgx_tq_cmd(struct apple_sgx *sgx, u32 flags, u32 val)
+{
+	u32 *ctl = sgx->buf[B_TQ_CTL].cpu, *scratch = sgx->buf[B_SCRATCH].cpu;
+	u32 sva = sgx->buf[B_SCRATCH].va, *ctx = sgx->buf[B_TQ_CTX].cpu;
+	u32 wo, *cmd, got;
+	int ret;
+
+	if (sgx->boot_result != 1)
+		return -ENODEV;
+	wo = READ_ONCE(ctl[0]);
+	if (wo + SGX_TQ_CMD_SIZE > SGX_TQ_CCB_SIZE)
+		return -ENOSPC;		/* no wrap-around; boot again */
+
+	cmd = sgx->buf[B_TQ_CCB].cpu + wo / 4;
+	memset(cmd, 0, SGX_TQ_CMD_SIZE);
+	cmd[0xa0 / 4] = SGX_TQ_CMD_SIZE;
+	cmd[0xa4 / 4] = flags;
+	cmd[0xac / 4] = sva;
+	cmd[0xb0 / 4] = val;
+	cmd[0x108 / 4] = 0x01800000;
+	WRITE_ONCE(scratch[0], 0);
+	wmb();
+	WRITE_ONCE(ctl[0], wo + SGX_TQ_CMD_SIZE);
+	WRITE_ONCE(ctx[0], 1);
+	wmb();
+
+	ret = sgx_send_cmd(sgx, SGX_CMD_TRANSFER, 0, 0, sgx->buf[B_TQ_CTX].va);
+	if (ret)
+		return ret;
+	ret = read_poll_timeout(READ_ONCE, got, got == val, 10, 500000, false,
+				scratch[0]);
+	dev_info(sgx->dev,
+		 "transfer (flags 0x%x): scratch 0x%08x 0x%08x (%s), tq write 0x%x read 0x%x ctx 0x%x, "
+		 "BIF_FAULT core0 0x%08x master 0x%08x, host lockups %u assert 0x%08x\n",
+		 flags, READ_ONCE(scratch[0]), READ_ONCE(scratch[1]),
+		 ret ? "NOT WRITTEN" : "written", READ_ONCE(ctl[0]), READ_ONCE(ctl[1]),
+		 READ_ONCE(ctx[0]),
+		 sgx_read(sgx, SGX_CORE(0) + SGX_BIF_FAULT),
+		 sgx_read(sgx, SGX_MASTER_BIF_FAULT),
+		 READ_ONCE(sgx->buf[B_HOST].cpu[HOST_UK_LOCKUPS]),
+		 READ_ONCE(sgx->buf[B_HOST].cpu[HOST_ASSERT_FAIL]));
+	return ret;
+}
+
 /* ---- debugfs -------------------------------------------------------------- */
 
 static const struct {
@@ -1050,6 +1136,11 @@ static int sgx_regs_show(struct seq_file *s, void *unused)
 		seq_printf(s, "CCB write %u read %u, kicker %u\n",
 			   READ_ONCE(ctl[0]), READ_ONCE(ctl[1]),
 			   READ_ONCE(sgx->buf[B_KICKER].cpu[0]));
+		seq_printf(s, "tq CCB write 0x%x read 0x%x; scratch 0x%08x 0x%08x\n",
+			   READ_ONCE(sgx->buf[B_TQ_CTL].cpu[0]),
+			   READ_ONCE(sgx->buf[B_TQ_CTL].cpu[1]),
+			   READ_ONCE(sgx->buf[B_SCRATCH].cpu[0]),
+			   READ_ONCE(sgx->buf[B_SCRATCH].cpu[1]));
 		for (i = 0; i < B_NUM; i++)
 			seq_printf(s, "buffer %-10s va 0x%08x pa %pad size 0x%zx\n",
 				   sgx_buf_descs[i].name, sgx->buf[i].va,
@@ -1090,13 +1181,14 @@ static const struct file_operations sgx_boot_fops = {
 
 /* Commands that need nothing but the microkernel itself:
  *   "hwperf N"   SETHWPERFSTATUS with status N (0 = counters off)
- *   "power N"    POWER: 1 power off, 2 idle, 3 resume (after idle) */
+ *   "power N"    POWER: 1 power off, 2 idle, 3 resume (after idle)
+ *   "tq F [V]"   a transfer with flags F and no work but two writes of V */
 static ssize_t sgx_cmd_write(struct file *file, const char __user *ubuf,
 			     size_t len, loff_t *ppos)
 {
 	struct apple_sgx *sgx = file->private_data;
-	char buf[32], word[8];
-	u32 arg;
+	char buf[48], word[8];
+	u32 arg, arg2 = 0x1234;
 	int ret;
 
 	if (len >= sizeof(buf))
@@ -1104,7 +1196,7 @@ static ssize_t sgx_cmd_write(struct file *file, const char __user *ubuf,
 	if (copy_from_user(buf, ubuf, len))
 		return -EFAULT;
 	buf[len] = 0;
-	if (sscanf(buf, "%7s %i", word, &arg) != 2)
+	if (sscanf(buf, "%7s %i %i", word, &arg, &arg2) < 2)
 		return -EINVAL;
 
 	mutex_lock(&sgx->lock);
@@ -1112,6 +1204,8 @@ static ssize_t sgx_cmd_write(struct file *file, const char __user *ubuf,
 		ret = sgx_send_cmd(sgx, SGX_CMD_HWPERF, 0, arg, 0);
 	else if (!strcmp(word, "power"))
 		ret = sgx_power_cmd(sgx, arg);
+	else if (!strcmp(word, "tq"))
+		ret = sgx_tq_cmd(sgx, arg, arg2);
 	else
 		ret = -EINVAL;
 	mutex_unlock(&sgx->lock);
