@@ -41,6 +41,8 @@ kern_return_t task_for_pid(mach_port_t target, int pid, mach_port_t *t);
 kern_return_t vm_read_overwrite(mach_port_t task, vm_address_t addr, vm_size_t size,
                                 vm_address_t data, vm_size_t *out);
 char *mach_error_string(kern_return_t);
+kern_return_t vm_region_recurse(mach_port_t task, vm_address_t *address, vm_size_t *size,
+                                unsigned int *nesting_depth, int *info, unsigned int *infoCnt);
 void *IOServiceMatching(const char *name);
 kern_return_t IOServiceGetMatchingServices(mach_port_t master, void *matching, mach_port_t *iter);
 mach_port_t IOIteratorNext(mach_port_t iter);
@@ -97,6 +99,37 @@ int main(int argc, char **argv)
     kern_return_t kr = task_for_pid(mach_task_self(), 0, &kt);
     if (kr != KERN_SUCCESS || !kt) { char b[128]; snprintf(b,sizeof b,"task_for_pid(0) failed: %s", mach_error_string(kr)); logln(b); return 2; }
     { char b[64]; snprintf(b,sizeof b,"kernel task port %u", kt); logln(b); }
+
+    if (argc >= 2 && strcmp(argv[1], "kmap") == 0) {
+        /* enumerate the kernel VM map (vm_region_recurse -- query-only, no region
+         * reads, reboot-safe). struct vm_region_submap_info, 19 ints. */
+        struct submap_info {
+            unsigned int protection, max_protection, inheritance, offset, user_tag,
+                         pages_resident, pages_shared_now_private, pages_swapped_out,
+                         pages_dirtied, ref_count;
+            unsigned short shadow_depth; unsigned char external_pager, share_mode;
+            unsigned int is_submap, behavior, object_id; unsigned short user_wired_count;
+        };
+        vm_address_t addr = 0x80000000; unsigned int n = 0; char b[200];
+        logln("  addr       size       prot mx tag   shr sub depth");
+        for (;;) {
+            vm_size_t size = 0; unsigned int depth = 100, cnt = 15;
+            struct submap_info info;
+            kern_return_t rr = vm_region_recurse(kt, &addr, &size, &depth, (int *)&info, &cnt);
+            if (rr != KERN_SUCCESS) {
+                if (n == 0) { snprintf(b,sizeof b,"vm_region_recurse kr=%d (%s) cnt_out=%u", rr, mach_error_string(rr), cnt); logln(b); }
+                break;
+            }
+            snprintf(b, sizeof b, "  %08x  %08x   %x  %x  %-4u  %u   %u   %u",
+                     addr, size, info.protection, info.max_protection, info.user_tag,
+                     info.share_mode, info.is_submap, depth);
+            logln(b);
+            if (++n > 4000) { logln("  ...(capped)"); break; }
+            addr += size; if (!addr) break;
+        }
+        { char e[64]; snprintf(e,sizeof e,"== %u regions ==", n); logln(e); }
+        return 0;
+    }
 
     if (argc >= 2 && strcmp(argv[1], "obj") == 0) {
         mach_port_t obj = find_perf_controller();
