@@ -266,6 +266,15 @@ cmd_build() {
     else
         note "note: no Wi-Fi firmware -- ./cascadia firmware extracts it from the IPSW"
     fi
+    # The GPU's microkernel, for drivers/misc/apple-sgx.c.  Apple's, so it
+    # comes out of the kernelcache like the rest (scripts/extract-sgx-firmware.py).
+    if [ -s "$ROOT/build/firmware/sgx543.fw" ]; then
+        mkdir -p "$ROOT/build/initramfs-root/lib/firmware/apple"
+        cp "$ROOT/build/firmware/sgx543.fw" "$ROOT/build/initramfs-root/lib/firmware/apple/"
+        note "ok: GPU microkernel from the IPSW (build/firmware/sgx543.fw)"
+    else
+        note "note: no GPU microkernel -- ./cascadia firmware extracts it from the IPSW"
+    fi
     # No RTC on this board: without a stamp it boots at the epoch and every TLS
     # handshake fails on notBefore.  Written before the kernel build so it lands
     # inside the embedded initramfs.

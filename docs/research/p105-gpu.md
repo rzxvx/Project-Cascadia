@@ -1,4 +1,4 @@
-# P105 GPU (SGX543MP2) — powered, clocked, both cores answering (2026-09-30)
+# P105 GPU (SGX543MP2) — powered, clocked, running its microkernel (2026-09-30)
 
 The GPU is off when Linux starts. As of 2026-09-30 it is switched on from Linux
 and **every register bank of the SGX543MP2 answers**: the master and both cores
@@ -108,6 +108,37 @@ refuses bank-0 reads and core banks the SGX does not have. `MASTER_BIF_CTRL`
 is still `0x000e0000` (MMU bypass for VDM/IPF/DPM): nothing sets up the BIF
 yet. `apple_sgx.clock_mode=2` selects iOS's automatic clock gating. The
 interrupt (49) is in the DT but not requested.
+
+### The microkernel runs (2026-09-30)
+
+`echo 1 > /sys/kernel/debug/apple-sgx/boot` loads iOS's microkernel the way
+`initSGX` does -- page tables, 22 buffers, 16 LIMM patches, the PDS
+programs, the registers -- and kicks core 0. First try:
+
+    apple-sgx 35100000.gpu: starting the microkernel: code at GPU 0x80000000, page directory 0x9b047000
+    apple-sgx 35100000.gpu: microkernel is up: host[0] 0x00000001
+
+15 ms from kick to answer. Only the GPU can have set that bit, through our
+page tables, at an address it can only have found by following the patched
+pointers, so the MMU format, the patches and the boot path are all right.
+Afterwards (sgx544defs.h names):
+
+| register | value | meaning |
+|---|---|---|
+| core 0 `EVENT_STATUS` | `0x20002a00` | TIMER, TA_FINISHED, TPC_CLEAR, DPM_CONTROL_CLEAR |
+| core 1 `EVENT_STATUS` | `0x00002a00` | TA_FINISHED, TPC_CLEAR, DPM_CONTROL_CLEAR -- core 1 ran its boot too |
+| both `EVENT_STATUS2` | `0x20` | TE_RGNHDR_INIT_COMPLETE |
+| master `EVENT_STATUS` | `0x20000000` | (timer) |
+| all `BIF_FAULT` | `0` | no MMU fault |
+| all `BIF_CTRL` | `0` | MMU on for every requestor |
+| all `BIF_INT_STAT` | `0x00080000` | FLUSH_COMPLETE -- set before the start as well; not a fault |
+
+The microkernel initialises the tiling and parameter-management hardware on
+both cores and arms its timer. The GPU buffers are at `0x80000000`
+(`0x80000000-0x8013ffff`), from `dmam_alloc_coherent`; the parameters iOS
+takes from the ADT (DVFS, timing) are still zero and did not stop it. The
+microkernel comes from the user's IPSW: `scripts/extract-sgx-firmware.py`,
+run by `./cascadia firmware`, into `/lib/firmware/apple/sgx543.fw`.
 
 ### Next
 

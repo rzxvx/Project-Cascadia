@@ -24,6 +24,9 @@
 #                               module's NVRAM appended inside it
 #                               (scripts/trx-add-nvram.py): without it the
 #                               firmware is downloaded and never comes up
+#   sgx543.fw                   the GPU's microkernel and PDS templates, out of
+#                               the kernelcache's IMGSGX543 kext
+#                               (scripts/extract-sgx-firmware.py)
 #
 # Runs INSIDE the build container (see ./cascadia firmware): the image carries
 # pycryptodome, capstone and an iBoot32Patcher built from source, so the result
@@ -141,6 +144,9 @@ python3 "$ROOT/scripts/rootfs-extract.py" "$IPSW" "$ROOTFS_DMG" "$ROOTFS_KEY" \
 python3 "$ROOT/scripts/trx-add-nvram.py" "$OUT/borg.trx" "$OUT/brcmfmac4334-nvram.txt" \
     "$OUT/brcmfmac4334.bin" "$WIFI_MAC"
 
+echo "==> GPU microkernel out of the kernelcache"
+python3 "$ROOT/scripts/extract-sgx-firmware.py" "$IPSW" "$OUT/sgx543.fw"
+
 echo
 rc=0
 for pair in "iBSS.patched:$KNOWN_IBSS_MD5" "iBEC.autogo:$KNOWN_IBEC_PLAIN_MD5" "P105.mtprops:$KNOWN_MTPROPS_MD5"; do
@@ -171,4 +177,5 @@ fi
 
 echo
 ls -l "$OUT/iBSS.patched" "$OUT/iBEC.patched.autogo.dfu" \
-      "$OUT/iBEC.patched.autogo.plain.dfu" "$OUT/P105.mtprops" "$OUT/brcmfmac4334.bin"
+      "$OUT/iBEC.patched.autogo.plain.dfu" "$OUT/P105.mtprops" "$OUT/brcmfmac4334.bin" \
+      "$OUT/sgx543.fw"

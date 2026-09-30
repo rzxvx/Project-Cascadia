@@ -165,10 +165,12 @@ if [ -f /etc/nfsroot ] && [ -x /sbin/mount.nfs ]; then
             # The Wi-Fi firmware too: brcmfmac asks for it whenever the chip
             # enumerates, which may be after this switch_root.
             # And the NAND tools with their `ios` front end, and the login
-            # banner, which otherwise stays whatever the seed said.
+            # banner, which otherwise stays whatever the seed said.  And the
+            # GPU's microkernel: apple-sgx asks for it when it is started,
+            # long after this switch_root.
             for f in /sbin/z2-boot /lib/firmware/P105.mtprops /lib/firmware/mtcal.bin /bin/busybox.static /usr/bin/wifi \
                      /lib/firmware/brcm/brcmfmac4334.bin /sbin/nandctl /sbin/iosnand /usr/bin/ios \
-                     /etc/motd; do
+                     /lib/firmware/apple/sgx543.fw /etc/motd; do
                 [ -f "$f" ] || continue
                 mkdir -p "/newroot${f%/*}" 2>/dev/null
                 cp -p "$f" "/newroot$f" 2>/dev/null || true
