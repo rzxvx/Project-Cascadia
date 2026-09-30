@@ -14,6 +14,10 @@
 
 mount -t proc  proc  /proc
 mount -t sysfs sysfs /sys
+# debugfs holds the GPU driver's controls (apple-sgx/boot, cmd, regs) and the
+# clock summary.  It sits under /sys, so the mount --move before switch_root
+# takes it along.
+mount -t debugfs debugfs /sys/kernel/debug 2>/dev/null || true
 mount -t devtmpfs devtmpfs /dev 2>/dev/null || true
 
 # devpts is not optional once anything wants a terminal it did not inherit.
