@@ -105,7 +105,9 @@ including the parts that didn't work.
       init sequence — core enable, per-core clocks, master soft reset, taken from
       IMGSGX543.kext — and the master and both cores report CORE_ID `0x01194201`,
       revision 1.2.2. The "clock dead end" of the previous days never existed:
-      every freeze was a read of the write-only broadcast register bank. Next:
+      every freeze was a read of the write-only broadcast register bank. A
+      kernel driver (`drivers/misc/apple-sgx.c`) now does this at boot and
+      shows the registers in debugfs. Next:
       MMU/BIF, then the microkernel; no GL driver exists for this chip in the
       open. Recipe, register map and the corrections:
       [docs/research/p105-gpu.md](docs/research/p105-gpu.md) (see STATUS at top)

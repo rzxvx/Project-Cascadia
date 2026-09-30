@@ -93,10 +93,24 @@ CLKGATECTL2, `0x4024` CLKGATESTATUS2. MASTER_CORE's "+ 1" in the DDK is right
   the kernelcache and iBEC tooling, domain 0x50), but none of it is needed to
   run the GPU.
 
+### In the kernel (2026-09-30)
+
+`drivers/misc/apple-sgx.c` (`CONFIG_APPLE_SGX`, DT node `sgx: gpu@5100000`
+with the two power states as clocks) does all of the above at boot, and the
+first boot with it came up clean:
+
+    apple-sgx 35100000.gpu: SGX543MP2 rev 1.2.2, 2 core(s) up, clocks on
+
+`/sys/kernel/debug/apple-sgx/regs` shows the master and both cores with the
+values in the tables above; `clk_summary` shows `gfx-sys-ps` and `gfx-ps`
+enabled once, by `gpu@5100000`. Every access goes through one function that
+refuses bank-0 reads and core banks the SGX does not have. `MASTER_BIF_CTRL`
+is still `0x000e0000` (MMU bypass for VDM/IPF/DPM): nothing sets up the BIF
+yet. `apple_sgx.clock_mode=2` selects iOS's automatic clock gating. The
+interrupt (49) is in the DT but not requested.
+
 ### Next
 
-- A Linux driver skeleton: power domains + the init above, with `sgx-probe.sh`
-  as the reference.
 - BIF / MMU: iOS continues `initSGX` with broadcast BIF writes (`0xc00 = 0`,
   `0xc78 = 0x77077`, `0xc10 = 0xbeffe00`, `0xc14 = 0xcffff00`, directory lists
   at `0xc34 + 4i`, `0x4cd0`/`0x8cd0 = 2`) — the page-table side comes next.

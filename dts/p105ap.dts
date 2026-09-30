@@ -621,6 +621,39 @@
             clock-output-names = "spi1_ps";
         };
 
+        /* The GPU's two power states: GFX_SYS-CLK and GFX-CLK, device-clocks
+         * index 9 and 10.  The SGX's own gate (id 92) has no register; these
+         * are its parents.  apple-sgx enables them in this order. */
+        gfx_sys_ps: gfx-sys-ps@f101024 {
+            compatible = "apple,s5l8940x-pmgr-clk-gate";
+            #clock-cells = <0>;
+            reg = <0xf101024 0x4>;
+            clocks = <&refclk24mhz>;
+            clock-output-names = "gfx_sys_ps";
+        };
+
+        gfx_ps: gfx-ps@f101028 {
+            compatible = "apple,s5l8940x-pmgr-clk-gate";
+            #clock-cells = <0>;
+            reg = <0xf101028 0x4>;
+            clocks = <&refclk24mhz>;
+            clock-output-names = "gfx_ps";
+        };
+
+        /* PowerVR SGX543MP2 (ADT /arm-io/sgx, "gpu,s5l8940x", IRQ 49; the
+         * ADT's second window, 0x3f10b000, reads all zero and is left out).
+         * Six 16 KiB banks: 0 is broadcast and WRITE-ONLY -- a read hangs
+         * the bus -- 1 is the master, 2 + n is core n.  The driver does not
+         * take the interrupt yet.  docs/research/p105-gpu.md. */
+        sgx: gpu@5100000 {
+            compatible = "apple,s5l8940x-sgx";
+            reg = <0x5100000 0x18000>;
+            interrupts = <49>;
+            clocks = <&gfx_sys_ps>, <&gfx_ps>;
+            clock-names = "gfx_sys", "gfx";
+            apple,brn-31195;
+        };
+
         i2c0: i2c@3200000 {
             /* This is Apple's I2C block (REG_SMSTA / REG_MRXFIFO / REG_FIFOLVL),
              * not a Samsung one.  The node used to say "...-samsung-i2c", which
