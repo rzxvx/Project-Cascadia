@@ -1118,3 +1118,73 @@ bit30); if writable, enable a 200 MHz MANAGED source, write GFX-CLK (source = th
 200 MHz chain, divider 1) + open the gate, then read CORE_ID at `0x35100020`.
 Tooling: `ibectool.py` (scratchpad) for iBEC; `kc841.macho` + `kctool.py` for the
 decrypted 8.4.1 kernelcache.
+
+## The GFX clock tree, fully decoded from the live 1537 iBEC (2026-09-30)
+
+The boot chain we actually run is **iBoot-1537.9.55** (6.1.3), not the 2261 (8.4.1)
+iBEC the earlier RE used. Both are the same silicon (S5L8942X), and the 1537 iBEC
+carries the identical clock machinery — verified: the 12-byte clock descriptor
+table (`reg`, `f2`, `parents`), the PLL frequency getter, the `set_clocks` apply
+primitive, and `SOURCE_TABLE` (boot values, here at `0x9ff4340c`). This session
+decoded the *frequency-reporter* (`freq_of_root` at `0x9ff1f90c` + the tree walker
+at `0x9ff1f984`) in full, which is the ground truth for the register bit layout,
+and validated it against the live Linux PMGR dump (`logs/pmgr-map.txt`).
+
+### The register formats (ground truth from the walker)
+
+- **PLL/root freq** = `24 MHz × M / P / 2^S`, `M=bits[12:3]`, `P=bits[19:14]`,
+  `S=bits[2:0]`; `bit31=0` → disabled, `bits & 0x40800000` → bypass (24 MHz).
+- **A mux/derived clock's source-select** = `(reg >> shift) & 3` (a 2-bit index into
+  that clock's 4-entry `parents` list). `shift` is per clock *type*: the default
+  type uses `shift=28` (source = `bits[29:28]`); GFX-CLK's type uses `shift=29`
+  (source = `bits[30:29]`).
+- **Divider** = `(reg & mask) >> dshift`, from a per-type table at `0x9ff41754`
+  (divcode 1 = `bits[4:0]`; divcode 7 = `bits[28:24]`). GFX-CLK is divcode 7.
+- Parent indices in a `parents` byte are **clock indices** into the tree array
+  (`entry = 0x9ff4143c + idx*12`); indices 0–6 are the roots, filled by the PLL
+  getter: **idx0→reg0x00, 1→0x08, 2→0x10, 3→0x18, 4→0x20, 5→0x28**.
+
+### The root PLLs, computed from the live dump (clean numbers = decode is correct)
+
+| root | reg | live value | frequency |
+|---|---|---|---|
+| 0 | `0x3f100000` | `a001a7d1` | **500 MHz** |
+| 1 | `0x3f100008` | `40000000` | off |
+| 2 | `0x3f100010` | `a001a642` | **200 MHz** |
+| 3 | `0x3f100018` | `a0012559` | **513 MHz** |
+| 4 | `0x3f100020` | `40000000` | **off** |
+| 5 | `0x3f100028` | `a0012502` | **240 MHz** |
+
+### GFX-CLK's tree — and the correction
+
+`GFX-CLK` is config reg `0x3f100070`, clock-index `0x18`, set-clocks index `0x0e`.
+Its four selectable parents (`parents = 0x11100f0e` → clock indices `0e,0f,10,11`)
+are the clocks at regs **`0x48, 0x4c, 0x50, 0x54`**. Each of those is a default-type
+mux with `parents = [0,3,4,5]`, and in every live (parked) state each one's own
+source-select points at **root 4 = PLL@`0x3f100020`** (with dividers ÷5, ÷2, ÷3
+respectively). So the entire GFX source subtree hangs off **PLL@0x20, which is
+powered down on the Linux boot** — that, concretely, is why the GPU has no clock.
+
+**This corrects the earlier "200 MHz PLL@0x10 is the GPU clock" note.** That was a
+coincidental value match: PLL@0x10 *is* 200 MHz, but it is **not reachable** from
+GFX-CLK (root 2 is not in any GFX parent's `[0,3,4,5]` list). The GPU is fed by the
+dedicated **PLL@0x20**, currently off. iBEC's own nominal template for GFX-CLK
+(hard-coded in the reporter: `0x01220001`, decoded with its type = source 0 → the
+`reg0x48` tap, GFX divider 1) means **GFX = PLL@0x20 ÷ 5 ÷ 1**; for the SGX543's
+200 MHz operating point that implies **PLL@0x20 ≈ 1000 MHz**.
+
+### What is and isn't recoverable statically
+
+iBEC computes the PLL configs it programs with a solver (they are not stored as
+literals) and it **never programs PLL@0x20** — it leaves the GPU PLL off, because
+the GPU is only clocked once iOS's driver runs. So PLL@0x20's exact operating M/P/S
+(the last scalar: is it exactly 1000 MHz? what enable value?) is **not present in
+iBEC** and not in the Linux dump (root 4 off in both). It exists only in the live
+iOS PMGR with the GPU on (Route B), or inside the iOS GPU/PMGR driver in the
+kernelcache (behind the runtime-dispatch wall; a raw-constant scan of `kc841` did
+not isolate it). What *is* now fully solved and reusable: the complete GFX clock
+tree, every register's source-select/divider bit layout, the root map with
+validated frequencies, and that **bringing up the GPU requires turning on and
+programming PLL@0x20 (≈1000 MHz), then routing GFX-CLK (source 0 → reg0x48÷5,
+GFX÷1) and opening the `0x3f101024/28` gate** — the PLL-enable being the same
+HW-locked operation that must be done in iBEC context or via the clock router.
