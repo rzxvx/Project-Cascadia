@@ -1,17 +1,113 @@
-# P105 GPU (SGX543MP2) — powered, never clocked (2026-09-27)
+# P105 GPU (SGX543MP2) — powered, clocked, both cores answering (2026-09-30)
 
-The GPU is off when Linux starts. Its two power domains switch on cleanly; the
-first read of an SGX register after that hangs the bus, and the iPad freezes
-hard (no ping, no ACM console; power + home to reset). Nothing past that point
-is known. This note keeps everything there is, so that whoever picks it up next
-starts here and not at zero. The same GPU family sits in the iPad 2 (SGX543MP2,
-same A5), the iPad 3 (SGX543MP4) and the iPad 4 (SGX554MP4), so much of this
-may carry over.
+The GPU is off when Linux starts. As of 2026-09-30 it is switched on from Linux
+and **every register bank of the SGX543MP2 answers**: the master and both cores
+report CORE_ID `0x01194201` and revision 1.2.2. The same GPU family sits in the
+iPad 2 (SGX543MP2, same A5), the iPad 3 (SGX543MP4) and the iPad 4 (SGX554MP4),
+so much of this may carry over.
 
-Probe: `tools/sgx-probe.sh` (reads, plus the two power-domain writes; it stops
-before the SGX read unless `SGX_READ=1`).
+Probe: `tools/sgx-probe.sh` (`SGX_INIT=1 SGX_READ=2` runs the whole sequence
+below and reads every bank; without `SGX_READ` it touches no SGX register).
+
+## STATUS 2026-09-30: the SGX answers — and the "clock dead end" never existed
+
+Everything in the 2026-09-27..30 sections below that says the GPU "has no
+clock" is **wrong**. The clock was running all along. Every freeze came from
+reading a register bank that cannot be read, or cannot be read yet.
+
+### The bring-up recipe (verified on the device)
+
+1. **Power**: switch the GFX_SYS and GFX power domains on — `0x3f101024`, then
+   `0x3f101028`, each `(v & ~0x10f) | 0xf`, wait for bits 7:4 = `0xf`
+   (`0x300 -> 0x3ff`). Nothing else: no clock register is written, and
+   HPERF-NRT (`0x3f10102c`) is **not** needed (tested with it off).
+2. **Master bank** (`0x35104000`) now answers: CORE_ID `0x01194201` (ID
+   `0x0119`, cores field 2, multi-core), CORE_REVISION `0x00010202` = 1.2.2 —
+   exactly the revision the ADT's `brn_31195` predicted.
+3. **iOS's own init** (IMGSGX543.kext, `SGXDriver543::initSGX` at kernelcache
+   8.4.1 `0x80bf3918`, helpers `0x80bf3700` / `0x80bf3754`), clock mode 1 =
+   forced on (iOS uses 2 = auto when auto clock gating is enabled):
+
+   | reg | value | what |
+   |---|---|---|
+   | `0x4000` MASTER_CORE | `1` (cores - 1) | reads 3 after power-on |
+   | `0x4020` MASTER_CLKGATECTL2 | `0x155` | master modules' clocks |
+   | `0x4004` MASTER_CLKGATECTL | `0x5` | **each slave core's clock, 2 bits per core — without it the core banks hang** |
+   | `0x4080` MASTER_SOFT_RESET | `0x5f3` | BIF, IPF, DPM, VDM, SLC, PTLA, cores 0-1 |
+   | `0x4d00` MASTER_SLC_CTRL | `0x44c000` | |
+   | `0x4d04` MASTER_SLC_CTRL_BYPASS | `0x4001e40` | `0x1e40` = the brn_31195 bypass bits |
+   | `0x4080` | `0` | release |
+   | bank 0 `+0x0` CLKGATECTL | `0x10155555` | broadcast to every core |
+   | bank 0 `+0x4` CLKGATECTL2 | `0x05454555` | broadcast |
+   | bank 0 `+0x310` | `1` | broadcast |
+
+   After it: MASTER_CLKGATESTATUS `0x4008` `0xc -> 0xf`, MASTER_CLKGATESTATUS2
+   `0x4024` `0 -> 0x1f`.
+4. **Core banks** (`0x35108000`, `0x3510c000`) answer: CLKGATECTL `0x10055555`
+   (the BIF_CORE field, bits 21:20, reads back 0), CLKGATESTATUS `0x00fbbfff`,
+   CORE_ID `0x01194201`, CORE_REVISION `0x00010202`, SOFT_RESET `0`.
+
+### The register banks (DDK `sgx_mkif_km.h`, confirmed by iOS)
+
+16 KB banks, from the MIT/GPLv2 DDK (TI omap5-sgx-ddk-linux,
+`eurasia_km/services4/include/sgx_mkif_km.h`): `SGX_REG_BANK_MASTER_INDEX` 1,
+`SGX_REG_BANK_BASE_INDEX` 2. iOS addresses core n at `0x8c00 + (n << 14)`
+(`waitForMemoryRequests`, `0x80bf4854`), the same layout.
+
+| bank | offset | contents | read |
+|---|---|---|---|
+| 0 | `0x0000` | **broadcast**: the DDK and iOS write CLKGATECTL/BIF registers here at bare offsets to reach every core | **hangs the bus — never read** |
+| 1 | `0x4000` | master | works once GFX is powered |
+| 2 | `0x8000` | core 0 | hangs until MASTER_CLKGATECTL gives the core a clock |
+| 3 | `0xc000` | core 1 | same |
+| 4-5 | `0x10000+` | nothing on an MP2 (the ADT window is sized for an MP4) | not tried — do not |
+
+Master registers besides the DDK's (`sgxmpdefs.h`), named by iOS's register
+dump (`0x80bf9230`): `0x4004` CLKGATECTL, `0x4008` CLKGATESTATUS, `0x4020`
+CLKGATECTL2, `0x4024` CLKGATESTATUS2. MASTER_CORE's "+ 1" in the DDK is right
+(1 -> 2 cores); the 3 found after power-on is the reset default for four.
+
+### What was wrong in the earlier analysis
+
+- **Every freeze was a bank-0 read** (`0x35100000` on 09-27, `0x35100020` on
+  09-28, `0x35100000` again on 09-30), plus one core-bank read before step 3.
+  None of them was a clock problem.
+- **The GFX clock tree was decoded off by one.** In iBEC's frequency walker the
+  array is indexed with OSC = 0 and the PLLs at 1..6 (`0x00, 0x08, 0x10, 0x18,
+  0x20, 0x28`), so parents `[0,3,4,5]` are OSC, PLL@0x10, **PLL@0x18 (513 MHz,
+  running)**, PLL@0x20. The GFX parents `0x48/0x4c/0x50` select PLL@0x18: GFX-CLK
+  ≈ 513/5 = 102.6 MHz, GFX_SYS ≈ 513/2/2 = 128 MHz, in perf state 2. The
+  section "The GFX clock tree, fully decoded" below says PLL@0x20 (off) — that
+  is the error.
+- **`0x70`/`0x74` are perf-state outputs, not locked registers.** The walker
+  replaces the low bits of the clocks at walker indices `0xc..0x19` (regs
+  `0x3c, 0x40, 0x64, 0x68, 0x6c, 0x70, 0x74`) with the PMGR perf-table row
+  `0x220` (state 2, the value in PMGR `+0x300`), and the live registers match it.
+  That is why a write to `0x70` "did nothing". The perf table at `0x200` is not
+  CPU-only: GFX-CLK's divider is byte 3 of each row's first word.
+- **`0x2c` is not MANAGED0**: it is PLL5's second register (every PLL has
+  `0x00010960` at +4). `scripts/adt-pmgr-map.py` labels MANAGED*/PREDIV* with
+  wrong addresses, and the "top nibble is locked by hardware" test poked it.
+- So the tfp0 / kdebug / Route B / iBEC-payload work below was aimed at a
+  problem that did not exist. The tools and facts stay useful (tfp0, kdebug,
+  the kernelcache and iBEC tooling, domain 0x50), but none of it is needed to
+  run the GPU.
+
+### Next
+
+- A Linux driver skeleton: power domains + the init above, with `sgx-probe.sh`
+  as the reference.
+- BIF / MMU: iOS continues `initSGX` with broadcast BIF writes (`0xc00 = 0`,
+  `0xc78 = 0x77077`, `0xc10 = 0xbeffe00`, `0xc14 = 0xcffff00`, directory lists
+  at `0xc34 + 4i`, `0x4cd0`/`0x8cd0 = 2`) — the page-table side comes next.
+- The microkernel: where iOS keeps it and how it is loaded (IMGSGX543.kext:
+  "failed to map ukernel structures", "illegal code base").
+- SGX543 has PTLA (2D hardware, `SGX_FEATURE_2D_HARDWARE`) — possibly the
+  cheapest first use for a framebuffer.
 
 ## STATUS 2026-09-29: the dead end is REOPENED — kernel observability solved
+
+> Superseded by the 2026-09-30 status above: there was no clock dead end.
 
 The "we can neither observe the kernel" premise the 2026-09-28 status rests on is
 no longer true. Two ways to watch iOS from the inside now work on the device
@@ -76,6 +172,8 @@ correct and reused.
 ---
 
 ## STATUS 2026-09-28: clock bring-up is a DEAD END (for the static-only path)
+
+> Superseded: the hangs were bank-0 reads, not a missing clock (2026-09-30).
 
 After a full arc of work (below), clocking the SGX from Linux is **blocked**, and
 honestly so: it is the hardest wall in the project because the mechanism lives in
@@ -1120,6 +1218,9 @@ Tooling: `ibectool.py` (scratchpad) for iBEC; `kc841.macho` + `kctool.py` for th
 decrypted 8.4.1 kernelcache.
 
 ## The GFX clock tree, fully decoded from the live 1537 iBEC (2026-09-30)
+
+> Correction (same day, top of this file): the root indices here are off by
+> one. GFX hangs off the running PLL@0x18, not PLL@0x20.
 
 The boot chain we actually run is **iBoot-1537.9.55** (6.1.3), not the 2261 (8.4.1)
 iBEC the earlier RE used. Both are the same silicon (S5L8942X), and the 1537 iBEC

@@ -100,20 +100,14 @@ including the parts that didn't work.
       ADT carries Apple's host-mode PHY tuning; the port costs the console and
       the network, which Wi-Fi now covers, and the open question is VBUS — in
       host mode the iPad has to power the bus itself
-- [ ] Graphical Acceleration (SGX543MP2) — **in progress; dead end reopened**
-      (2026-09-30): the GFX clock *source* enable lives behind a runtime-dispatched
-      kernel clock-controller that static RE could not recover, and the first SGX
-      register read hangs until it is clocked. What changed: kernel observability on
-      iOS now works — **tfp0 confirmed** (the jailbreak is *daibutsu*, not TaiG; needs
-      the `task_for_pid-allow` entitlement) and a **kdebug tracer** locates the GPU
-      clock domain (perf-controller domain 0x50). Then reversing iBoot/iBEC (linear
-      C, no OOP wall) gave the **PLL formula** — which shows `0x3f100010` is a
-      **200 MHz PLL = the GPU clock** — and the **clock write mechanism** (write the
-      config to `0x3f100038 + idx*4`, poll bit30; these regs are writable in iBEC).
-      So the frequency and the write mechanism are known. What is left: the *enabled*
-      GFX `source+divider` (iBEC parks the GPU off; computation points at the 200 MHz
-      chain ÷1) and whether those registers are writable *from Linux* — a
-      reboot-prone on-device test. Full arc, register map, PLL formula, and tooling:
+- [ ] Graphical Acceleration (SGX543MP2) — **in progress: the GPU answers
+      from Linux** (2026-09-30). Two power domains (GFX_SYS, GFX) and iOS's own
+      init sequence — core enable, per-core clocks, master soft reset, taken from
+      IMGSGX543.kext — and the master and both cores report CORE_ID `0x01194201`,
+      revision 1.2.2. The "clock dead end" of the previous days never existed:
+      every freeze was a read of the write-only broadcast register bank. Next:
+      MMU/BIF, then the microkernel; no GL driver exists for this chip in the
+      open. Recipe, register map and the corrections:
       [docs/research/p105-gpu.md](docs/research/p105-gpu.md) (see STATUS at top)
 
 ## Where Linux keeps its files
