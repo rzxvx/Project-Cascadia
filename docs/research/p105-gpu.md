@@ -142,14 +142,19 @@ run by `./cascadia firmware`, into `/lib/firmware/apple/sgx543.fw`.
 
 ### Next
 
-- The GPU address map (heaps) and the MMU: the page-table format is in the
-  GPL DDK (`sgxmmu.h`, `mmu.c`); `DIR_LIST_BASE0` takes the page directory.
-- Extract the microkernel from the user's kernelcache at build time.
-- In the driver: allocate and map the buffers, copy the microkernel, program
-  the registers below, kick core 0, and wait for the acknowledgement -- the
-  first code the GPU runs under Linux.
-- SGX543 has PTLA (2D hardware, `SGX_FEATURE_2D_HARDWARE`) -- possibly the
-  cheapest first use for a framebuffer.
+Done since this list was first written: the page tables, the firmware
+extraction step and the microkernel start (above).  Open:
+
+- **No work is handed to the microkernel yet.**  It starts, initialises the
+  hardware on both cores and idles; the driver has no command submission.
+- The interrupt (AIC 49) is described in the DT but not requested;
+  `EVENT_HOST_ENABLE` is `0x4000` as iOS sets it.
+- The ADT-derived parameters (DVFS, timing) are still zero.
+- SGX543 has PTLA (2D hardware, `SGX_FEATURE_2D_HARDWARE`).
+
+State at the end of 2026-09-30: power, clocks, register access, the MMU and
+the microkernel start all work from Linux (`drivers/misc/apple-sgx.c`,
+`echo 1 > /sys/kernel/debug/apple-sgx/boot`); everything above is committed.
 
 ## The microkernel, and how iOS boots it (2026-09-30, static)
 
