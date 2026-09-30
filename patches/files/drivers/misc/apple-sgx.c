@@ -7,8 +7,9 @@
  * runs the initialisation iOS runs, checks that the master and every core
  * answer, and shows their registers in debugfs (apple-sgx/regs).  Writing to
  * apple-sgx/boot then builds the GPU's page tables and buffers, loads the
- * microkernel the way iOS does, kicks it, and waits for it to answer.  There
- * is no command submission yet.
+ * microkernel the way iOS does, kicks it, and waits for it to answer.
+ * apple-sgx/cmd hands it the commands that need no context (power, perf
+ * counters) through the kernel CCB, the DDK's command queue.
  *
  * Power is two PMGR power states, GFX_SYS (0x3f101024) then GFX
  * (0x3f101028), taken as clocks from the gate driver in the order the DT
@@ -49,9 +50,11 @@
 #include <linux/delay.h>
 #include <linux/dma-mapping.h>
 #include <linux/firmware.h>
+#include <linux/interrupt.h>
 #include <linux/io.h>
 #include <linux/iopoll.h>
 #include <linux/kernel.h>
+#include <linux/ktime.h>
 #include <linux/mod_devicetable.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
@@ -61,6 +64,7 @@
 #include <linux/sizes.h>
 #include <linux/slab.h>
 #include <linux/string.h>
+#include <linux/uaccess.h>
 
 #define SGX_BANK_SIZE			0x4000
 #define SGX_BCAST			0x0000
@@ -150,6 +154,18 @@
 #define SGX_PD_ENTRIES			1024
 #define SGX_PDE_VALID			BIT(0)
 #define SGX_PTE_VALID			BIT(0)
+#define SGX_PTE_READONLY		BIT(2)
+#define SGX_PTE_CACHECONSISTENT		BIT(3)
+#define SGX_PTE_EDMPROTECT		BIT(4)
+
+/* The page flags iOS gives each buffer.  Its allocator (0x80bf9658) takes
+ * explicit flags, or else by heap: heap 1 -> cache-consistent and
+ * EDM-protected, heap 0 -> read-only; the PTE writer (0x80bf4dc4) turns them
+ * into these bits.  CACHECONSISTENT is not optional: without it the
+ * microkernel keeps the kernel CCB's write offset in its data cache from
+ * the first read on and never sees a command. */
+#define PTE_RO				SGX_PTE_READONLY
+#define PTE_SHARED			(SGX_PTE_CACHECONSISTENT | SGX_PTE_EDMPROTECT)
 
 /* Where the buffers go in the GPU's address space.  The microkernel carries
  * no address of its own (every one is patched in or handed over in a
@@ -189,6 +205,74 @@ struct sgx_fw_header {
 #define UK_ENTRY_CORE0			0x40
 #define UK_ENTRY_OTHERS			0x240
 
+/* ---- commands: the DDK's kernel CCB (sgx_mkif_km.h), as iOS uses it ---- */
+
+/* The 0x750 buffer is the kernel CCB, 256 SGXMKIF_COMMANDs; the 0x758
+ * buffer is PVRSRV_SGX_CCB_CTL, the write offset and the read offset the
+ * microkernel advances as it takes each command.  iOS's
+ * SGXScheduleCCBCommand (0x80bfb104) fills the slot at the write offset,
+ * bumps the offset and the kicker count, and kicks core 0. */
+#define SGX_CCB_SIZE			256
+
+struct sgx_ccb_cmd {
+	u32 service;		/* the handler: USE code address / 8 */
+	u32 cache_control;	/* SGXMKIF_CC_INVAL_* */
+	u32 data[6];
+};
+
+/* The handlers iOS hands the microkernel (this+0x72c..0x73c, computed at
+ * 0x80bfa448), as offsets into the microkernel.  Which is which follows
+ * from where iOS sends them: TA and TRANSFER from the submit of the
+ * render and the transfer queue (slot 38 of the vtables at 0x80c02798 and
+ * 0x80c02898), POWER from deinitSGX (0x80bf4048) exactly as the DDK's
+ * SGXPrePowerState does it, HWPERF with the perf-counter selectors it
+ * copies into the host control block (0x80bfb1f0), and 0x738 for each
+ * context after a hardware recovery (0x80bf3f42), with cache control 6. */
+enum sgx_cmd_type {
+	SGX_CMD_TA,
+	SGX_CMD_POWER,
+	SGX_CMD_TRANSFER,
+	SGX_CMD_RECOVER,
+	SGX_CMD_HWPERF,
+	SGX_CMD_NUM
+};
+
+static const struct {
+	u32 off;
+	const char *name;
+} uk_handlers[SGX_CMD_NUM] = {
+	[SGX_CMD_TA]		= { 0x1fa8, "TA" },
+	[SGX_CMD_POWER]		= { 0x1bf0, "POWER" },
+	[SGX_CMD_TRANSFER]	= { 0x1e80, "TRANSFER" },
+	[SGX_CMD_RECOVER]	= { 0x21d0, "RECOVER" },
+	[SGX_CMD_HWPERF]	= { 0x21d8, "HWPERF" },
+};
+
+/* POWER's Data[1], and what the microkernel sets in the power status when
+ * it is done. */
+#define SGX_POWERCMD_POWEROFF		1
+#define SGX_POWERCMD_IDLE		2
+#define SGX_POWERCMD_RESUME		3
+#define SGX_POWMAN_IDLE_COMPLETE	BIT(2)
+#define SGX_POWMAN_POWEROFF_COMPLETE	BIT(3)
+#define SGX_POWMAN_NO_WORK		BIT(5)
+
+/* The host control block (0x748 buffer) is the DDK's SGXMKIF_HOST_CTL as
+ * built with SUPPORT_HW_RECOVERY, without FIX_HW_BRN_28889: iOS reads and
+ * writes these words at exactly these offsets.  Word indices. */
+#define HOST_INIT_STATUS		0	/* bit 0: the microkernel is up */
+#define HOST_POWER_STATUS		1	/* SGX_POWMAN_* */
+#define HOST_CLEANUP_STATUS		2
+#define HOST_UK_LOCKUPS			3
+#define HOST_HWR_SAMPLE_RATE		5
+#define HOST_UK_TIMER_CLOCK		6
+#define HOST_APM_SAMPLE_RATE		7
+#define HOST_INTERRUPT_FLAGS		8
+#define HOST_INTERRUPT_CLEAR		9
+#define HOST_TIME_WRAPS			12
+#define HOST_HOST_CLOCK			13
+#define HOST_ASSERT_FAIL		14
+
 enum { SRC_ZERO, SRC_DATA, SRC_CONST };
 
 enum sgx_buf_id {
@@ -207,28 +291,29 @@ static const struct sgx_buf_desc {
 	const char *name;
 	u32 size, align;
 	u8 src;
+	u8 pte;			/* PTE_RO, PTE_SHARED or 0 */
 	u32 off;		/* into __data or __const */
 } sgx_buf_descs[B_NUM] = {
 	/* 0x80bf9754, the loader */
-	[B_CODE]	= { "code 6d4",	UK_START + UK_CODE_SIZE, 0x1000, SRC_ZERO },
-	[B_PDS_6D8]	= { "pds 6d8",	0x18,	0x1000, SRC_CONST, 0x084 },
-	[B_PDS_6E0]	= { "pds 6e0",	0x38,	0x1000, SRC_CONST, 0x09c },
-	[B_PDS_6E8]	= { "pds 6e8",	0x18,	0x1000, SRC_CONST, 0x0d4 },
-	[B_PDS_6F0]	= { "pds 6f0",	0x350,	0x1000, SRC_CONST, 0x0ec },
-	[B_PDS_6F8]	= { "pds 6f8",	0x9c,	0x1000, SRC_CONST, 0x43c },
-	[B_CODE2]	= { "code 700",	UK_CODE2_SIZE, 0x1000, SRC_DATA, UK_CODE2_OFF },
-	[B_PDS_704]	= { "pds 704",	0x258,	0x1000, SRC_CONST, 0x4d8 },
-	[B_TAB_784]	= { "tab 784",	0xf0,	0x1000, SRC_DATA, UK_TAB_BASE + 0x28 },
-	[B_TAB_78C]	= { "tab 78c",	0x140,	0x1000, SRC_DATA, UK_TAB_BASE + 0x118 },
+	[B_CODE]	= { "code 6d4",	UK_START + UK_CODE_SIZE, 0x1000, SRC_ZERO, PTE_RO },
+	[B_PDS_6D8]	= { "pds 6d8",	0x18,	0x1000, SRC_CONST, PTE_SHARED, 0x084 },
+	[B_PDS_6E0]	= { "pds 6e0",	0x38,	0x1000, SRC_CONST, PTE_SHARED, 0x09c },
+	[B_PDS_6E8]	= { "pds 6e8",	0x18,	0x1000, SRC_CONST, PTE_SHARED, 0x0d4 },
+	[B_PDS_6F0]	= { "pds 6f0",	0x350,	0x1000, SRC_CONST, PTE_SHARED, 0x0ec },
+	[B_PDS_6F8]	= { "pds 6f8",	0x9c,	0x1000, SRC_CONST, PTE_SHARED, 0x43c },
+	[B_CODE2]	= { "code 700",	UK_CODE2_SIZE, 0x1000, SRC_DATA, PTE_RO, UK_CODE2_OFF },
+	[B_PDS_704]	= { "pds 704",	0x258,	0x1000, SRC_CONST, PTE_SHARED, 0x4d8 },
+	[B_TAB_784]	= { "tab 784",	0xf0,	0x1000, SRC_DATA, PTE_RO, UK_TAB_BASE + 0x28 },
+	[B_TAB_78C]	= { "tab 78c",	0x140,	0x1000, SRC_DATA, PTE_RO, UK_TAB_BASE + 0x118 },
 	/* 0x80bfa080, the setup */
-	[B_740]		= { "ctl 740",	0x1a4,	0x1000, SRC_ZERO },
-	[B_HOST]	= { "host 748",	0xec,	0x1000, SRC_ZERO },
-	[B_750]		= { "750",	0x2000,	0x1000, SRC_ZERO },
-	[B_758]		= { "758",	8,	0x1000, SRC_ZERO },
-	[B_KICKER]	= { "kicker 760", 0x1000, 0x1000, SRC_ZERO },
-	[B_768]		= { "768",	0x1500c, 0x1000, SRC_ZERO },
-	[B_TAB_774]	= { "tab 774",	0x28,	0x1000, SRC_DATA, UK_TAB_BASE },
-	[B_IDX_77C]	= { "idx 77c",	0x60,	0x1000, SRC_ZERO },
+	[B_740]		= { "ctl 740",	0x1a4,	0x1000, SRC_ZERO, PTE_SHARED },
+	[B_HOST]	= { "host 748",	0xec,	0x1000, SRC_ZERO, PTE_SHARED },
+	[B_750]		= { "750",	0x2000,	0x1000, SRC_ZERO, PTE_SHARED },
+	[B_758]		= { "758",	8,	0x1000, SRC_ZERO, PTE_SHARED },
+	[B_KICKER]	= { "kicker 760", 0x1000, 0x1000, SRC_ZERO, PTE_SHARED },
+	[B_768]		= { "768",	0x1500c, 0x1000, SRC_ZERO, PTE_SHARED },
+	[B_TAB_774]	= { "tab 774",	0x28,	0x1000, SRC_DATA, PTE_RO, UK_TAB_BASE },
+	[B_IDX_77C]	= { "idx 77c",	0x60,	0x1000, SRC_ZERO, PTE_RO },
 	[B_794]		= { "794",	0x14000, 0x100000, SRC_ZERO },
 	[B_798]		= { "798",	0x1000,	0x1000, SRC_ZERO },
 	[B_79C]		= { "79c",	0x8000,	0x1000, SRC_ZERO },
@@ -248,6 +333,15 @@ struct sgx_buf {
 static unsigned int clock_mode = 1;
 module_param(clock_mode, uint, 0444);
 MODULE_PARM_DESC(clock_mode, "SGX clock gating: 1 = always on (default), 2 = automatic");
+
+/* The interrupt is taken only when asked for, from the next microkernel
+ * boot on: what raises it and how it clears is still being learnt. */
+static bool use_irq;
+module_param_named(irq, use_irq, bool, 0644);
+MODULE_PARM_DESC(irq, "take the SGX interrupt (AIC 49) from the next microkernel boot");
+
+/* Unhandled interrupts in a row before the line is switched off. */
+#define SGX_IRQ_STORM			16
 
 struct apple_sgx {
 	struct device *dev;
@@ -270,6 +364,13 @@ struct apple_sgx {
 	struct sgx_buf buf[B_NUM];
 	bool bufs_ready;
 	int boot_result;	/* 0 never tried, 1 acknowledged, -errno */
+
+	/* the interrupt */
+	int irq;
+	bool irq_on;
+	unsigned int irq_count, irq_unhandled, irq_run;
+	u32 irq_events[SGX_MAX_CORES];	/* every event bit seen, per core */
+	u32 irq_host_flags;		/* host control's interrupt flags, last */
 };
 
 /* The only way to a register.  A read of bank 0 or of a core bank this SGX
@@ -353,7 +454,8 @@ static void sgx_init(struct apple_sgx *sgx)
 
 /* ---- the MMU ------------------------------------------------------------ */
 
-static int sgx_mmu_map(struct apple_sgx *sgx, u32 va, dma_addr_t pa, size_t size)
+static int sgx_mmu_map(struct apple_sgx *sgx, u32 va, dma_addr_t pa, size_t size,
+		       u32 flags)
 {
 	size_t done;
 
@@ -367,7 +469,7 @@ static int sgx_mmu_map(struct apple_sgx *sgx, u32 va, dma_addr_t pa, size_t size
 				return -ENOMEM;
 			sgx->pd[pde] = lower_32_bits(sgx->pt_dma[pde]) | SGX_PDE_VALID;
 		}
-		sgx->pt[pde][pte] = lower_32_bits(pa + done) | SGX_PTE_VALID;
+		sgx->pt[pde][pte] = lower_32_bits(pa + done) | flags | SGX_PTE_VALID;
 	}
 	return 0;
 }
@@ -384,7 +486,7 @@ static int sgx_buf_alloc(struct apple_sgx *sgx, enum sgx_buf_id id)
 		return -ENOMEM;
 	b->va = ALIGN(sgx->va_next, d->align);
 	sgx->va_next = b->va + b->size;
-	ret = sgx_mmu_map(sgx, b->va, b->dma, b->size);
+	ret = sgx_mmu_map(sgx, b->va, b->dma, b->size, d->pte);
 	if (ret)
 		return ret;
 	dev_dbg(sgx->dev, "%-10s va 0x%08x pa %pad size 0x%zx\n",
@@ -671,6 +773,12 @@ static int sgx_boot_ukernel(struct apple_sgx *sgx)
 		goto out;
 	}
 
+	/* Quiet while the GPU is reset under it; back on once it is up. */
+	if (sgx->irq_on) {
+		disable_irq(sgx->irq);
+		sgx->irq_on = false;
+	}
+
 	/* From a clean GPU: clocks and master reset again, then load. */
 	sgx_init(sgx);
 	sgx_uk_fill(sgx, fw->data + le32_to_cpu(h->data_off),
@@ -721,10 +829,150 @@ static int sgx_boot_ukernel(struct apple_sgx *sgx)
 	} else {
 		dev_info(sgx->dev, "microkernel is up: host[0] 0x%08x\n",
 			 READ_ONCE(host[0]));
+		if (use_irq && sgx->irq > 0) {
+			sgx->irq_run = 0;
+			sgx->irq_on = true;
+			enable_irq(sgx->irq);
+			dev_info(sgx->dev, "interrupt %d on\n", sgx->irq);
+		}
 	}
 out:
 	release_firmware(fw);
 	return ret;
+}
+
+/* The microkernel signals the host with SW_EVENT (EVENT_HOST_ENABLE is
+ * 0x4000, as initSGX sets it).  iOS's handler (0x80bf2168) reads
+ * EVENT_STATUS in the broadcast bank and clears through EVENT_HOST_CLEAR
+ * with MASTER_INTERRUPT (bit 31) added, as the DDK's SGX_ISRHandler does.
+ * Bank 0 reads hung the bus during bring-up (before the cores had clocks),
+ * so this reads each core's own bank instead and clears it there.  If the
+ * source is somewhere else, the line would never drop: after
+ * SGX_IRQ_STORM unhandled interrupts in a row it is switched off. */
+static irqreturn_t sgx_irq_handler(int irq, void *data)
+{
+	struct apple_sgx *sgx = data;
+	bool handled = false, cleared = true;
+	unsigned int n;
+
+	for (n = 0; n < sgx->ncores; n++) {
+		u32 base = SGX_CORE(n), st;
+
+		st = sgx_read(sgx, base + SGX_EVENT_STATUS) &
+		     sgx_read(sgx, base + SGX_EVENT_HOST_ENABLE);
+		if (!st)
+			continue;
+		sgx_write(sgx, base + SGX_EVENT_HOST_CLEAR, st | BIT(31));
+		sgx->irq_events[n] |= st;
+		handled = true;
+		if (sgx_read(sgx, base + SGX_EVENT_STATUS) & st)
+			cleared = false;
+	}
+	if (!handled)
+		sgx->irq_unhandled++;
+	/* No event found, or one that does not clear: either way the line
+	 * would stay up forever. */
+	if (!handled || !cleared) {
+		if (++sgx->irq_run >= SGX_IRQ_STORM) {
+			disable_irq_nosync(irq);
+			sgx->irq_on = false;
+			dev_err(sgx->dev, "interrupt: %u in a row %s, switched off\n",
+				sgx->irq_run, handled ? "with an event that does not clear" :
+				"with no core event");
+		}
+		if (!handled)
+			return IRQ_NONE;
+	} else {
+		sgx->irq_run = 0;
+	}
+	sgx->irq_count++;
+	if (sgx->bufs_ready)
+		sgx->irq_host_flags =
+			READ_ONCE(sgx->buf[B_HOST].cpu[HOST_INTERRUPT_FLAGS]);
+	return IRQ_HANDLED;
+}
+
+/* One command through the kernel CCB, the way 0x80bfb104 does it, then wait
+ * for the microkernel to take it (its read offset reaches ours). */
+static int sgx_send_cmd(struct apple_sgx *sgx, enum sgx_cmd_type type,
+			u32 cache_control, u32 data0, u32 data1)
+{
+	u32 *ctl = sgx->buf[B_758].cpu, *kicker = sgx->buf[B_KICKER].cpu;
+	struct sgx_ccb_cmd *cmd;
+	u32 wo, ro, val;
+	ktime_t start;
+	int ret;
+
+	if (sgx->boot_result != 1)
+		return -ENODEV;
+	wo = READ_ONCE(ctl[0]);
+	ro = READ_ONCE(ctl[1]);
+	if (wo >= SGX_CCB_SIZE || ro >= SGX_CCB_SIZE) {
+		dev_err(sgx->dev, "CCB offsets out of range: write %u read %u\n",
+			wo, ro);
+		return -EIO;
+	}
+	if (((wo + 1) & (SGX_CCB_SIZE - 1)) == ro)
+		return -EBUSY;
+
+	cmd = (struct sgx_ccb_cmd *)sgx->buf[B_750].cpu + wo;
+	memset(cmd, 0, sizeof(*cmd));
+	cmd->service = (UK_START + uk_handlers[type].off) >> 3;
+	cmd->cache_control = cache_control;
+	cmd->data[0] = data0;
+	cmd->data[1] = data1;
+	wmb();
+
+	wo = (wo + 1) & (SGX_CCB_SIZE - 1);
+	WRITE_ONCE(ctl[0], wo);
+	WRITE_ONCE(kicker[0], (READ_ONCE(kicker[0]) + 1) & 0xff);
+	wmb();
+	start = ktime_get();
+	sgx_write(sgx, SGX_CORE(0) + SGX_EVENT_KICK, 1);
+
+	ret = read_poll_timeout(READ_ONCE, val, val == wo, 10, 500000, false,
+				ctl[1]);
+	dev_info(sgx->dev,
+		 "command %s (cc 0x%x, data 0x%x 0x%x): %s after %lld us, CCB write %u read %u, "
+		 "core0 EVENT_STATUS 0x%08x\n",
+		 uk_handlers[type].name, cache_control, data0, data1,
+		 ret ? "NOT TAKEN" : "taken",
+		 ktime_us_delta(ktime_get(), start), wo, READ_ONCE(ctl[1]),
+		 sgx_read(sgx, SGX_CORE(0) + SGX_EVENT_STATUS));
+	return ret;
+}
+
+/* POWER, and for power-off and idle the answer in the power status
+ * (deinitSGX 0x80bf4048, the DDK's SGXPrePowerState).  After a power-off
+ * the microkernel has stopped; only a new boot starts it again. */
+static int sgx_power_cmd(struct apple_sgx *sgx, u32 powercmd)
+{
+	u32 *host = sgx->buf[B_HOST].cpu, done = 0, val;
+	int ret;
+
+	if (powercmd == SGX_POWERCMD_POWEROFF)
+		done = SGX_POWMAN_POWEROFF_COMPLETE;
+	else if (powercmd == SGX_POWERCMD_IDLE)
+		done = SGX_POWMAN_IDLE_COMPLETE;
+	else if (powercmd != SGX_POWERCMD_RESUME)
+		return -EINVAL;
+
+	ret = sgx_send_cmd(sgx, SGX_CMD_POWER, 0, 0, powercmd);
+	if (ret || !done)
+		return ret;
+	ret = read_poll_timeout(READ_ONCE, val, val & done, 10, 500000, false,
+				host[HOST_POWER_STATUS]);
+	dev_info(sgx->dev, "power status 0x%08x: %s\n", val,
+		 ret ? "no answer" : powercmd == SGX_POWERCMD_POWEROFF ?
+		 "powered off" : "idle");
+	if (ret)
+		return ret;
+	/* iOS keeps NO_WORK and clears the status for the next request. */
+	WRITE_ONCE(host[HOST_POWER_STATUS], 0);
+	wmb();
+	if (powercmd == SGX_POWERCMD_POWEROFF)
+		sgx->boot_result = 0;
+	return 0;
 }
 
 /* ---- debugfs -------------------------------------------------------------- */
@@ -782,14 +1030,35 @@ static int sgx_regs_show(struct seq_file *s, void *unused)
 				   sgx_core_regs[i].name, sgx_read(sgx, off));
 		}
 	if (sgx->bufs_ready) {
+		static const struct { u8 w; const char *name; } hw[] = {
+			{ HOST_INIT_STATUS, "init status" },
+			{ HOST_POWER_STATUS, "power status" },
+			{ HOST_CLEANUP_STATUS, "cleanup status" },
+			{ HOST_UK_LOCKUPS, "ukernel lockups" },
+			{ HOST_UK_TIMER_CLOCK, "ukernel timer clock" },
+			{ HOST_INTERRUPT_FLAGS, "interrupt flags" },
+			{ HOST_INTERRUPT_CLEAR, "interrupt clear" },
+			{ HOST_TIME_WRAPS, "time wraps" },
+			{ HOST_ASSERT_FAIL, "assert fail" },
+		};
+		u32 *host = sgx->buf[B_HOST].cpu, *ctl = sgx->buf[B_758].cpu;
+
 		seq_printf(s, "page directory pa %pad\n", &sgx->pd_dma);
-		seq_printf(s, "host control word 0: 0x%08x\n",
-			   READ_ONCE(sgx->buf[B_HOST].cpu[0]));
+		for (i = 0; i < ARRAY_SIZE(hw); i++)
+			seq_printf(s, "host +0x%02x %-20s 0x%08x\n", hw[i].w * 4,
+				   hw[i].name, READ_ONCE(host[hw[i].w]));
+		seq_printf(s, "CCB write %u read %u, kicker %u\n",
+			   READ_ONCE(ctl[0]), READ_ONCE(ctl[1]),
+			   READ_ONCE(sgx->buf[B_KICKER].cpu[0]));
 		for (i = 0; i < B_NUM; i++)
 			seq_printf(s, "buffer %-10s va 0x%08x pa %pad size 0x%zx\n",
 				   sgx_buf_descs[i].name, sgx->buf[i].va,
 				   &sgx->buf[i].dma, sgx->buf[i].size);
 	}
+	seq_printf(s, "interrupt %d: %s, %u handled, %u unhandled; events core0 0x%08x core1 0x%08x; host interrupt flags 0x%08x\n",
+		   sgx->irq, sgx->irq_on ? "on" : "off", sgx->irq_count,
+		   sgx->irq_unhandled, sgx->irq_events[0], sgx->irq_events[1],
+		   sgx->irq_host_flags);
 	seq_printf(s, "microkernel: %s (%d)\n",
 		   sgx->boot_result == 1 ? "up" :
 		   sgx->boot_result ? "failed" : "not started", sgx->boot_result);
@@ -816,6 +1085,43 @@ static const struct file_operations sgx_boot_fops = {
 	.owner = THIS_MODULE,
 	.open = simple_open,
 	.write = sgx_boot_write,
+	.llseek = noop_llseek,
+};
+
+/* Commands that need nothing but the microkernel itself:
+ *   "hwperf N"   SETHWPERFSTATUS with status N (0 = counters off)
+ *   "power N"    POWER: 1 power off, 2 idle, 3 resume (after idle) */
+static ssize_t sgx_cmd_write(struct file *file, const char __user *ubuf,
+			     size_t len, loff_t *ppos)
+{
+	struct apple_sgx *sgx = file->private_data;
+	char buf[32], word[8];
+	u32 arg;
+	int ret;
+
+	if (len >= sizeof(buf))
+		return -EINVAL;
+	if (copy_from_user(buf, ubuf, len))
+		return -EFAULT;
+	buf[len] = 0;
+	if (sscanf(buf, "%7s %i", word, &arg) != 2)
+		return -EINVAL;
+
+	mutex_lock(&sgx->lock);
+	if (!strcmp(word, "hwperf"))
+		ret = sgx_send_cmd(sgx, SGX_CMD_HWPERF, 0, arg, 0);
+	else if (!strcmp(word, "power"))
+		ret = sgx_power_cmd(sgx, arg);
+	else
+		ret = -EINVAL;
+	mutex_unlock(&sgx->lock);
+	return ret ? ret : len;
+}
+
+static const struct file_operations sgx_cmd_fops = {
+	.owner = THIS_MODULE,
+	.open = simple_open,
+	.write = sgx_cmd_write,
 	.llseek = noop_llseek,
 };
 
@@ -895,6 +1201,15 @@ static int apple_sgx_probe(struct platform_device *pdev)
 				n, cid, crev, id, rev);
 	}
 
+	/* Requested now, switched on only by a microkernel boot with irq=1. */
+	sgx->irq = platform_get_irq_optional(pdev, 0);
+	if (sgx->irq > 0) {
+		ret = devm_request_irq(dev, sgx->irq, sgx_irq_handler,
+				       IRQF_NO_AUTOEN, dev_name(dev), sgx);
+		if (ret)
+			return dev_err_probe(dev, ret, "interrupt %d\n", sgx->irq);
+	}
+
 	dev_info(dev, "SGX543MP%u rev %u.%u.%u, %u core(s) up, clocks %s\n",
 		 sgx->ncores, (rev >> 16) & 0xff, (rev >> 8) & 0xff, rev & 0xff,
 		 sgx->ncores, clock_mode == 1 ? "on" : "auto");
@@ -902,6 +1217,7 @@ static int apple_sgx_probe(struct platform_device *pdev)
 	sgx->debugfs = debugfs_create_dir("apple-sgx", NULL);
 	debugfs_create_file("regs", 0400, sgx->debugfs, sgx, &sgx_regs_fops);
 	debugfs_create_file("boot", 0200, sgx->debugfs, sgx, &sgx_boot_fops);
+	debugfs_create_file("cmd", 0200, sgx->debugfs, sgx, &sgx_cmd_fops);
 	platform_set_drvdata(pdev, sgx);
 	return 0;
 }
@@ -929,6 +1245,6 @@ static struct platform_driver apple_sgx_driver = {
 };
 module_platform_driver(apple_sgx_driver);
 
-MODULE_DESCRIPTION("Apple S5L8940X PowerVR SGX543MP2 power-on and microkernel start");
+MODULE_DESCRIPTION("Apple S5L8940X PowerVR SGX543MP2 power-on, microkernel start and commands");
 MODULE_FIRMWARE(SGX_FW_NAME);
 MODULE_LICENSE("GPL");

@@ -1,4 +1,4 @@
-# P105 GPU (SGX543MP2) — powered, clocked, running its microkernel (2026-09-30)
+# P105 GPU (SGX543MP2) — powered, clocked, running its microkernel, taking commands (2026-09-30)
 
 The GPU is off when Linux starts. As of 2026-09-30 it is switched on from Linux
 and **every register bank of the SGX543MP2 answers**: the master and both cores
@@ -140,21 +140,121 @@ takes from the ADT (DVFS, timing) are still zero and did not stop it. The
 microkernel comes from the user's IPSW: `scripts/extract-sgx-firmware.py`,
 run by `./cascadia firmware`, into `/lib/firmware/apple/sgx543.fw`.
 
+### Commands: the DDK's kernel CCB, unchanged (2026-09-30, static)
+
+Apple's host interface to the microkernel is the DDK's SGXMKIF
+(`sgx_mkif_km.h`, `sgxutils.c`, `sgxpower.c`) as it stands, buffer for
+buffer:
+
+| iOS (`SGXDriver543`) | DDK |
+|---|---|
+| `this+0x750`, `0x2000` bytes | kernel CCB: 256 × `SGXMKIF_COMMAND` {`ServiceAddress`, `CacheControl`, `Data[6]`}, 32 bytes each |
+| `this+0x758`, 8 bytes | `PVRSRV_SGX_CCB_CTL` {`WriteOffset`, `ReadOffset`} |
+| `this+0x760` (-> `EVENT_KICKER`) | the kernel CCB event kicker (a count, `& 0xff`) |
+| `this+0x748`, `0xec` bytes | `SGXMKIF_HOST_CTL`, built with `SUPPORT_HW_RECOVERY`, without `FIX_HW_BRN_28889` |
+| `this+0x72c..0x73c` | `aui32HostKickAddr[]`: the handler for each command type |
+
+**`SGXScheduleCCBCommand` is `0x80bfb104`** `(this, service, cache_control,
+data0, data1)`: wait while `(WriteOffset + 1) & 0xff == ReadOffset`
+("SGX Hang - Poll Timeout"), bump `WriteOffset`, write the 32-byte command
+into the old slot (`Data[2..5]` = 0), barrier, and if powered
+(`this+0x878 == 3`) bump the kicker and write 1 to core 0 `EVENT_KICK`
+(`0x8ac8`). `0x80bfafe8` re-kicks once per pending command after a power-up.
+
+**The handlers** are microkernel offsets, `ServiceAddress = (UK_START + off)
+>> 3` in the code buffer's 8-byte units (`this+0x6d0` is the offset `0x1000`,
+not an address; computed at `0x80bfa448`). Which is which follows from the
+callers:
+
+| slot | ukernel off | command | sent by |
+|---|---|---|---|
+| `0x72c` | `0x1fa8` | TA (render) | slot 38 of vtable `0x80c02798`, `Data[1]` = a context buffer's GPU address |
+| `0x730` | `0x1bf0` | **POWER** | `deinitSGX` (`0x80bf4048`): `Data[1] = 1` (`PVRSRV_POWERCMD_POWEROFF`), then waits for `PowerStatus` bit 3 -- exactly the DDK's `SGXPrePowerState` |
+| `0x734` | `0x1e80` | TRANSFER | slot 38 of vtable `0x80c02898` (strings: `validateRenderCommand` / `validateTransferCommand`) |
+| `0x738` | `0x21d0` | ? (one `BR`) | `initSGX` after a hardware recovery (type 2), once per context at `this+0x628/0x634/0x640`, cache control 6 |
+| `0x73c` | `0x21d8` | SETHWPERFSTATUS | `0x80bfb1f0`: copies the counter selectors to host `+0x3c`/`+0x5c`, `Data[0]` = status (0 or 3) |
+
+TA and TRANSFER open with the same instructions (both walk a queue).
+
+**Host control words** confirmed by iOS's accesses: `+0x00` InitStatus,
+`+0x04` PowerStatus (`POWMAN_*`: 4 idle, 8 power-off complete, 0x20 no work),
+`+0x0c` uKernelDetectedLockups (iOS adds it to a counter and zeroes it),
+`+0x14` HWRecoverySampleRate (`this+0xccc`), `+0x18` uKernelTimerClock
+(`this+0xcc4`), `+0x1c` ActivePowManSampleRate (`this+0x87c`), `+0x20`
+InterruptFlags, `+0x24` InterruptClearFlags ("sgx ukernel didn't clear HWR
+state"), `+0x34` HostClock (ms), `+0x38` AssertFail, `+0x3c`/`+0x5c` the
+perf-counter group/bit selectors (8 each). The driver leaves the rates and
+the timer at 0.
+
+**The interrupt**: `EVENT_HOST_ENABLE = 0x4000` is SW_EVENT, the
+microkernel's signal to the host. iOS's handler (`0x80bf2168`) reads
+`EVENT_STATUS` (`0x12c`) and `EVENT_STATUS2` (`0x118`) **in bank 0**, masks
+them with its enables, writes the result `| 0x80000000` (MASTER_INTERRUPT) to
+`EVENT_HOST_CLEAR` / `CLEAR2`, handles SW_EVENT in `0x80bf4400`, then looks
+at InterruptFlags: bit 0 = "Microkernel detected lockup", bit 1 = the
+microkernel asking to be powered down (active power management, then
+`deinitSGX`). So bank 0 **is** readable once the SGX is initialised -- every
+bank-0 hang happened before the cores had clocks. The driver still reads
+the core banks.
+
+In the driver: `apple-sgx/cmd` takes `hwperf N` and `power N` (1 off, 2
+idle, 3 resume); `regs` shows the CCB offsets, the kicker and the host
+words; `apple_sgx.irq=1` (also writable in `/sys/module`) switches the
+interrupt on at the next microkernel boot, with a guard that turns the line
+off after 16 interrupts in a row that it cannot clear.
+
+### The microkernel takes commands (2026-09-30, on the device)
+
+**First try: not taken.** The command landed in the CCB and `WriteOffset`
+moved, but `ReadOffset` stayed 0 for every command. Snapshots of every
+buffer (with `peek` on the physical addresses `regs` prints) before and
+after a kick showed that the microkernel wrote **nothing** in response, while
+at init it had filled `0x794`, `0x798` and `0x7a0` and set host `+0x30`
+(TimeWraps) to 1. So it was alive and was kicked, but saw no work.
+
+**Cause: the page flags.** iOS's allocator (`0x80bf9658`, args `this, &obj,
+init, size, opts, align, heap, flag`) sets the memory object's flags from
+`flag`, or else by heap: **heap 1 -> 6** (cache-consistent + EDM-protected),
+heap 0 -> 1 (read-only). The PTE writer turns them into `CACHECONSISTENT
+(0x8) | EDMPROTECT (0x10)` and `READONLY (0x4)`. Every buffer the host and
+the microkernel share (the `0x740` block, host control, CCB, CCB control,
+kicker, `0x768`, the PDS programs, `0x704`) is heap 1; the code, the second
+code buffer and the blob tables are read-only; `0x794..0x7a0` (heap 2/6,
+flag 0) get nothing. Our PTEs had only VALID, so the microkernel read the CCB
+control once at init, kept `WriteOffset = 0` in its data cache and never
+looked again.
+
+Setting the flags by hand in the live page table (`peek w` on the PTEs,
+then a new `boot`) fixed it at once:
+
+    command HWPERF (cc 0x0, data 0x0 0x0): taken after 40 us, CCB write 1 read 1
+    command POWER (cc 0x0, data 0x0 0x1): taken after 44 us, CCB write 2 read 2
+    power status 0x0000002c: powered off
+
+A run of seven (`hwperf` x3, `power 2` -> status `0x4` idle, `power 3`
+resume, `hwperf`, `power 1` -> `0x2c` = IDLE | POWEROFF | NO_WORK) went
+through at 33-44 us each, then again with iOS's full flag set including the
+read-only code. The driver now carries the flags per buffer
+(`sgx_buf_descs[].pte`). No interrupt was raised for any of these commands
+(0 handled, 0 unhandled): the microkernel does not signal SW_EVENT for them.
+
 ### Next
 
 Done since this list was first written: the page tables, the firmware
-extraction step and the microkernel start (above).  Open:
+extraction step, the microkernel start and the command path (above).  Open:
 
-- **No work is handed to the microkernel yet.**  It starts, initialises the
-  hardware on both cores and idles; the driver has no command submission.
-- The interrupt (AIC 49) is described in the DT but not requested;
-  `EVENT_HOST_ENABLE` is `0x4000` as iOS sets it.
+- **A command that does work**: TA/3D or TRANSFER needs a context (render
+  or transfer queue objects, their CCBs) -- the iOS submit paths at
+  `0x80bfc9a4` / `0x80bfd150` and the command layouts the userspace driver
+  builds (captured by `gltrace`).
+- The interrupt: requested and switched on with `irq=1`, never fired yet.
 - The ADT-derived parameters (DVFS, timing) are still zero.
 - SGX543 has PTLA (2D hardware, `SGX_FEATURE_2D_HARDWARE`).
 
-State at the end of 2026-09-30: power, clocks, register access, the MMU and
-the microkernel start all work from Linux (`drivers/misc/apple-sgx.c`,
-`echo 1 > /sys/kernel/debug/apple-sgx/boot`); everything above is committed.
+State at the end of 2026-09-30: power, clocks, register access, the MMU,
+the microkernel start and context-free commands all work from Linux
+(`drivers/misc/apple-sgx.c`, `echo 1 > .../apple-sgx/boot`, `echo "power 1"
+> .../apple-sgx/cmd`).
 
 ## The microkernel, and how iOS boots it (2026-09-30, static)
 

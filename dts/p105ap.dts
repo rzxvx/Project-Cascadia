@@ -643,8 +643,8 @@
         /* PowerVR SGX543MP2 (ADT /arm-io/sgx, "gpu,s5l8940x", IRQ 49; the
          * ADT's second window, 0x3f10b000, reads all zero and is left out).
          * Six 16 KiB banks: 0 is broadcast and WRITE-ONLY -- a read hangs
-         * the bus -- 1 is the master, 2 + n is core n.  The driver does not
-         * take the interrupt yet.  docs/research/p105-gpu.md. */
+         * the bus -- 1 is the master, 2 + n is core n.  The driver switches
+         * the interrupt on only with apple_sgx.irq=1.  docs/research/p105-gpu.md. */
         sgx: gpu@5100000 {
             compatible = "apple,s5l8940x-sgx";
             reg = <0x5100000 0x18000>;
