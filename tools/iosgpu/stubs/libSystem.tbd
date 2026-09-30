@@ -4,5 +4,5 @@ targets:         [ armv7-ios ]
 install-name:    '/usr/lib/libSystem.B.dylib'
 exports:
   - targets:         [ armv7-ios ]
-    symbols:         [ dyld_stub_binder, ___stack_chk_fail, ___stack_chk_guard, ___stdoutp, _printf, _puts, _putchar, _snprintf, _atoi, _malloc, _calloc, _free, _vm_read_overwrite, _vm_region_recurse_64, _mach_task_self_, _strcmp, _strlen, _memcpy, _open, _write, _close, _dladdr, __dyld_register_func_for_add_image, __dyld_image_count, __dyld_get_image_header, __dyld_get_image_vmaddr_slide ]
+    symbols:         [ dyld_stub_binder, ___stack_chk_fail, ___stack_chk_guard, ___stdoutp, _printf, _puts, _putchar, _snprintf, _atoi, _malloc, _calloc, _free, _vm_read_overwrite, _vm_region_recurse_64, _mach_task_self_, _strcmp, _strlen, _memcpy, _memset, _open, _write, _close, _dladdr, __dyld_register_func_for_add_image, __dyld_image_count, __dyld_get_image_header, __dyld_get_image_vmaddr_slide ]
 ...

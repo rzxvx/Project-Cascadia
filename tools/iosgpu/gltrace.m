@@ -186,7 +186,7 @@ static void snapshot_arena(const char *label)
  * 0xdc bytes; 2 = transfer, 0x7c bytes, word 1 zero) and the total size
  * among the header words -- what IMGSGXGLContext::copyAndValidateVendorPayload
  * (kernelcache 0x80bf64d4) expects.  Transfers are printed whole. */
-static uint32_t tq_w12, tq_w13;	/* GPU addresses in the first transfer */
+static uint32_t tq_w2, tq_w12, tq_w13;	/* GPU addresses in the first transfer */
 
 static void scan_payloads(const char *label)
 {
@@ -218,6 +218,7 @@ static void scan_payloads(const char *label)
         if (pl[1] != 0)
             continue;
         if (!ntransfer) {
+            tq_w2 = pl[2];
             tq_w12 = pl[12];
             tq_w13 = pl[13];
         }
@@ -301,6 +302,181 @@ static void scan_regions(void)
     }
     free(pg);
     printf("== regions done: %d matches, %d pages dumped\n", found, dumped);
+}
+
+/* ---- resources: GPU address -> CPU mapping ------------------------------ */
+
+static struct { uint32_t lo, hi; } wr[1024];	/* writable regions */
+static int nwr;
+
+static void load_regions(void)
+{
+    vm_address_t a = 0;
+    nwr = 0;
+    for (;;) {
+        vm_size_t sz = 0;
+        unsigned int depth = 99, cnt = 19;
+        int info[19];
+        if (vm_region_recurse_64(mach_task_self(), &a, &sz, &depth, info, &cnt))
+            break;
+        if ((info[0] & 3) == 3 && sz <= 0x4000000 && nwr < 1024) {
+            wr[nwr].lo = a;
+            wr[nwr].hi = a + sz;
+            nwr++;
+        }
+        a += sz;
+    }
+}
+
+static int region_of(uint32_t x)
+{
+    for (int i = 0; i < nwr; i++)
+        if (x >= wr[i].lo && x < wr[i].hi)
+            return i;
+    return -1;
+}
+
+/* call fn(page address, words) for every readable writable page */
+static void each_page(void (*fn)(uint32_t, const uint32_t *))
+{
+    static uint32_t pg[0x400];
+    for (int r = 0; r < nwr; r++)
+        for (uint32_t q = wr[r].lo; q < wr[r].hi; q += 0x1000) {
+            vm_size_t got = 0;
+            if (vm_read_overwrite(mach_task_self(), q, 0x1000, (vm_address_t)pg, &got) == 0 &&
+                got == 0x1000)
+                fn(q, pg);
+        }
+}
+
+static uint32_t gva[16];
+static int ngva;
+
+static void add_gva(uint32_t g)
+{
+    if (g < 0x80000000u || g >= 0xa0000000u)
+        return;
+    for (int i = 0; i < ngva; i++)
+        if (gva[i] == g)
+            return;
+    if (ngva < 16)
+        gva[ngva++] = g;
+}
+
+/* pass 1: the resource list holds w12 two words before w2 */
+static void find_list(uint32_t q, const uint32_t *w)
+{
+    for (int i = 0; i + 2 < 0x400; i++)
+        if (w[i] == tq_w12 && w[i + 2] == tq_w2) {
+            printf("   resource list at %08x:", q + 4 * (i - 4));
+            for (int j = i - 6; j < i + 16 && j < 0x400; j++)
+                if (j >= 0) {
+                    printf(" %08x", w[j]);
+                    add_gva(w[j]);
+                }
+            printf("\n");
+        }
+}
+
+/* pass 2: a record is "<pages> 0xa <gpu address>"; print it and every word
+ * in it that lies in a writable region */
+static int ndumps;
+static void find_records(uint32_t q, const uint32_t *w)
+{
+    for (int i = 2; i < 0x400; i++) {
+        int k;
+        for (k = 0; k < ngva; k++)
+            if (w[i] == gva[k])
+                break;
+        if (k == ngva || w[i - 1] != 0xa || !w[i - 2] || w[i - 2] > 0x4000)
+            continue;
+        uint32_t pages = w[i - 2];
+        printf("   record %08x @%08x pages %u:", w[i], q + 4 * i, pages);
+        int lo = i - 24 < 0 ? 0 : i - 24, hi = i + 24 > 0x400 ? 0x400 : i + 24;
+        for (int j = lo; j < hi; j++)
+            printf("%s%08x", (j - lo) % 8 ? " " : "\n     ", w[j]);
+        printf("\n");
+        for (int j = lo; j < hi; j++) {
+            int r = region_of(w[j]);
+            if (r < 0 || (w[j] & 0xfff))
+                continue;
+            printf("     cand CPU %08x (word %+d) in %08x-%08x\n", w[j], j - i,
+                   wr[r].lo, wr[r].hi);
+            if (w[j] + pages * 0x1000 <= wr[r].hi && ndumps < 24) {
+                char path[64];
+                snprintf(path, sizeof path, "/var/root/gt_res_%08x_%08x.bin", w[i], w[j]);
+                int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+                if (fd >= 0) {
+                    static unsigned char buf[0x1000];
+                    for (uint32_t o = 0; o < pages * 0x1000; o += 0x1000) {
+                        vm_size_t got = 0;
+                        memset(buf, 0, sizeof buf);
+                        vm_read_overwrite(mach_task_self(), w[j] + o, 0x1000,
+                                          (vm_address_t)buf, &got);
+                        write(fd, buf, 0x1000);
+                    }
+                    close(fd);
+                    ndumps++;
+                    printf("     dumped %u pages -> %s\n", pages, path);
+                }
+            }
+        }
+    }
+}
+
+/* Every IOKit mapping in the process (VM tag 21: GPU buffers the kernel
+ * mapped in) to /var/root/gt_iokit.bin as {u32 lo, u32 hi, bytes...}
+ * records, so GPU addresses can be matched to contents offline. */
+static void dump_iokit(void)
+{
+    vm_address_t a = 0;
+    static unsigned char pg[0x1000];
+    int fd = open("/var/root/gt_iokit.bin", O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    unsigned total = 0, n = 0;
+    if (fd < 0)
+        return;
+    for (;;) {
+        vm_size_t sz = 0;
+        unsigned int depth = 99, cnt = 19;
+        int info[19];
+        if (vm_region_recurse_64(mach_task_self(), &a, &sz, &depth, info, &cnt))
+            break;
+        if (info[5] == 21 && (info[0] & 1) && sz <= 0x400000) {
+            uint32_t hdr[2] = { a, a + sz };
+            write(fd, hdr, 8);
+            for (uint32_t o = 0; o < sz; o += 0x1000) {
+                vm_size_t got = 0;
+                memset(pg, 0, sizeof pg);
+                vm_read_overwrite(mach_task_self(), a + o, 0x1000, (vm_address_t)pg, &got);
+                write(fd, pg, 0x1000);
+            }
+            printf("   iokit %08x-%08x prot %d\n", a, a + sz, info[0]);
+            total += sz;
+            n++;
+        }
+        a += sz;
+    }
+    close(fd);
+    printf("== iokit: %u regions, %u KiB -> /var/root/gt_iokit.bin\n", n, total / 1024);
+}
+
+static void scan_resources(void)
+{
+    load_regions();
+    ngva = 0;
+    add_gva(tq_w2);
+    add_gva(tq_w12);
+    add_gva(tq_w13);
+    printf("== resources: %d writable regions; w2 %08x w12 %08x w13 %08x\n",
+           nwr, tq_w2, tq_w12, tq_w13);
+    each_page(find_list);
+    printf("   GPU addresses:");
+    for (int i = 0; i < ngva; i++)
+        printf(" %08x", gva[i]);
+    printf("\n");
+    ndumps = 0;
+    each_page(find_records);
+    printf("== resources done, %d dumps\n", ndumps);
 }
 
 /* ---- GLES ------------------------------------------------------------- */
@@ -419,7 +595,8 @@ int main(int argc, char **argv)
         glGenerateMipmap(GL_TEXTURE_2D);
         glFinish();
         scan_payloads("g");
-        scan_regions();
+        scan_resources();
+        dump_iokit();
         return 0;
     }
 

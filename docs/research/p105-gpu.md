@@ -294,17 +294,68 @@ In the driver: `echo "tq 0x20 VALUE" > .../apple-sgx/cmd` (a context, its
 CCB and a scratch page are allocated with the other buffers; no
 dependencies; waits for VALUE in scratch).
 
+### A real transfer, captured: mipmap generation (2026-09-30, iOS)
+
+`gltrace tq` (commit `6a74b91` and after) draws the triangle, then does
+`glCopyTexSubImage2D` (-> a **render**, no transfer) and `glGenerateMipmap`
+on a 64x64 RGBA texture (-> **six transfers, one per level**). Raw output
+and dumps: `logs/ios/tq/` (not in git). The GPU addresses are the same run
+after run (`0x90012000`, `0x980ac000`, `0x980f3000` ...).
+
+**The hardware command**: header `{0, 5, 0x94, 0x7c, 0x18, ...}` (word 4 =
+payload offset, word 2 = total size), payload of 31 words:
+
+| word | value (level 1 / levels 2-6) | goes to |
+|---|---|---|
+| 0 | `2` (type) | -- |
+| 1 | `0` (flags) | `+0xa4` |
+| 2 | `0x90012000` / 0 -- a GPU address; non-zero also copies words 21-30 | `+0x104` |
+| 3 | `0x02000600` / `0x02000628`, `..648` ... | `+0x00` |
+| 7 | `0x6200`, `0x6400`, `0x6600` ... | `+0x10` |
+| 12 | `0x980ac000` / 0 -- not copied by the kernel | -- |
+| 13 | `0x980f3000 + 0x1c0 * level` -- the level's state block | `+0x24` |
+| 14, 15 | `5`, `0x4000` | `+0x28`, `+0x2c` |
+| 18 | `(w12 + 0x100 - 0x80000000) >> 4` / 0 -- a PDS program pointer | `+0x38` |
+| 23, 24 | `0x200`, `3` / 0 | `+0x84`, `+0x88` |
+
+**The per-level state blocks** (GPU `0x980f3000`, 0x1c0 each, six; found
+in the process's IOKit mappings -- VM tag 21 -- by content, CPU `0x8a3000`):
+
+| offset | what |
+|---|---|
+| `+0x000`, `+0x008`, `+0x010` | `0x388a`, `0x3a8a`, `0x380a`, each `+0x1b80` per level (code addresses?) |
+| `+0x01c..+0x040` | constants (`ffff0000`, `ff`, `ff00`, `0x100`, `0x20000`, `fffeffff`, `0x30000`) |
+| `+0x050..+0x0a4` | a PDS program, the same for every level (ends `af000000`) |
+| `+0x120..+0x138` | **destination**: `{code, 0xa, 0, 0xf800, 0x001e0090, 0x0c<log2 w><log2 h>, GPU address}` -- level n+1 |
+| `+0x140..+0x14c` | a PDS program |
+| `+0x180..+0x198` | **source**: the same shape with `0x001e1490` -- level n |
+| `+0x1a0..+0x1ac` | a PDS program |
+
+Source and destination are levels of the same texture: GPU `0x98104000`
+(CPU `0x8b3000`, 6 pages), levels at `+0x0, +0x4000, +0x5000, +0x5400,
++0x5500, +0x5540, +0x5550` (16K/4K/1K/256/64/16/4 bytes); `0x0c06_0006` =
+64x64 (`0x0c` the format). After the six transfers the texture holds the
+whole chain (exactly 5461 non-zero words).
+
+GPU buffers the driver allocates are laid out size + one guard page apart
+(`0x9809b000` 64K, `0x980ac000` 64K, `0x980bd000` 8K, `0x980c0000` 8K), which
+lines up with the IOKit mappings in the process in several places, but the
+CPU copy of `w12`'s block is not pinned yet, nor what `0x90012000` and
+`0x8c009000` (also in the command's resource list) hold, nor where the
+USSE/PDS code the `0x388a`-style words point at lives.
+
 ### Next
 
 Done since this list was first written: the page tables, the firmware
-extraction step, the microkernel start, the command path and a first
-(dummy) transfer (above).  Open:
+extraction step, the microkernel start, the command path, a first
+(dummy) transfer and a capture of real ones (above).  Open:
 
-- **A transfer that moves pixels**: the register words (`+0x00..+0x43`,
-  `+0x78..+0x9f`) of a real one, from a `gltrace` capture of an iOS transfer
-  (a texture upload or a blit), with its source and destination repointed
-  -- the destination can be the framebuffer. Flags 0 with zeroed registers
-  was not tried (it would run an unconfigured transfer).
+- **A transfer that moves pixels** under Linux: replay one mip-level
+  transfer -- everything it references mapped at the same GPU addresses,
+  source and destination repointed (the destination can be the
+  framebuffer). Still missing: `w2`/`w12` contents and the code the blocks
+  point at. Flags 0 with zeroed registers was not tried (it would run an
+  unconfigured transfer).
 - TA/3D (a triangle): the render queue (`0x80bfc9a4`, a `0x40`-byte context,
   64 KiB CCB) and a whole render command -- the bigger step.
 - The interrupt: requested and switched on with `irq=1`, never fired yet.
