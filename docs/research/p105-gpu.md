@@ -592,6 +592,32 @@ printk at level 1) and wipes the GPU's output -- unbind it first (`echo 0 >
 /sys/class/vtconsole/vtcon1/bind`). The framebuffer is `nomap`, so `/dev/mem`
 does not read it; `peek` does.
 
+**The pixel back end's state, and a correct image in the framebuffer
+(2026-10-01).** The transfer's emit program loads six state words
+`r0..r5` and emits them (`fb24000003200082`). Probed on Linux with a source
+whose texels encode their own address, and read from iOS with `gltrace
+linear` (a render into an IOSurface-backed `CVPixelBuffer`):
+
+| word | twiddled texture (GL) | linear surface |
+|---|---|---|
+| `r0` | `0x08010000` | `0x00110000` |
+| `r1` | address | address |
+| `r2` | `w/2 - 1` | line stride in pixels `/ 2 - 1` (208 px -> `0x67`) |
+| `r3` | 0 | 0 |
+| `r4` | log2 of the tile count (bits 24-27, 28-31) | 0 |
+| `r5` | `(h-1) << 12 \| (w-1)` | the same |
+
+`r0` bits 24-31 and 20-21 are the pixel format (`0x08` 32 bpp, `0x48` 16 bpp,
+`0x88` 8 bpp; the linear `0x00110000` writes BGRA from an RGBA source), bits
+16-8 the pixels written per 16x16 tile (`0x100` = all). Twiddled is Morton
+order with Y in the even bits. Single-bit sweeps of every word, the emit
+instruction and the command never found the linear switch -- it is a
+multi-bit change, which only the iOS capture showed. With the linear words,
+`r2 = 0x17f` (768-pixel lines) and the destination mapped onto the simplefb
+memory, the replayed transfer draws its 32x32 level into the framebuffer
+**pixel-for-pixel identical to iOS's level** (the test scene: an orange
+triangle on blue).
+
 ### Next
 
 Done since this list was first written: the page tables, the firmware
