@@ -9,9 +9,12 @@ Pieces, at the GPU addresses the replay used (the driver will choose later):
 """
 import struct
 
-def limm(reg, imm, bank_pa=False, end=False):
-    """LIMM rN/paN <- imm (encoding checked against the GL programs)."""
+def limm(reg, imm, bank_pa=False, end=False, bank=None):
+    """LIMM rN/paN <- imm (encoding checked against the GL programs);
+    bank: 0 temp, 1 output, 2 primary attribute (bits 33:32)"""
     w = 0xfca0000000000000 | (0x0000000200000000 if bank_pa else 0)
+    if bank is not None:
+        w = 0xfca0000000000000 | (bank & 3) << 32
     w |= (reg & 0x7f) << 21
     w |= ((imm >> 26) & 0x3f) << 44 | ((imm >> 21) & 0x1f) << 36 | (imm & 0x1fffff)
     if end:
@@ -20,7 +23,11 @@ def limm(reg, imm, bank_pa=False, end=False):
 
 PHAS = 0xfa44070000000000
 # ---- USSE programs ------------------------------------------------------
+FILL = None                 # set to an ARGB colour to make the pixel program a fill
+
 def prog_copy():            # 0x1400: o0 = pa0 (the sampled texel), end
+    if FILL is not None:    # fill: o0 = constant
+        return [PHAS, limm(0, FILL, bank=1, end=True)]
     return [PHAS, 0x50850009a0000000]
 def prog_eot0():            # 0x1c00
     return [PHAS, 0xf834800000000000]
@@ -88,6 +95,14 @@ def half(x):
 def xy(x, y):
     return half(y) << 16 | half(x)
 
+def pos(px):
+    """a vertex coordinate: 16-bit fixed point, 4 fraction bits, +1024 px guard
+    band (measured: 0x4100 -> 16 px, 0x4500 -> 80 px; it only looks like a half)"""
+    return 0x4000 + int(round(px * 16))
+
+def xy_px(x, y):
+    return pos(x) << 16 | pos(y)          # x in the high half (100x37 test)
+
 def pds_ptr(va, flag=0):
     return flag << 28 | ((va - 0x80000000) >> 4)
 
@@ -117,7 +132,7 @@ def command(block_va, rgn_base, bg_off, box_x, box_y, completion_va):
     c[0x00 // 4] = 0x02000000 | (bg_off >> 4)
     c[0x10 // 4] = rgn_base
     c[0x24 // 4: 0x30 // 4] = [block_va, 5, 0x4000]
-    c[0x34 // 4] = box_y << 16 | box_x
+    c[0x34 // 4] = box_x << 16 | box_y    # last region index, x in the high half
     c[0xa0 // 4] = 0x140; c[0xa4 // 4] = 0; c[0xac // 4] = completion_va; c[0xb0 // 4] = 1
     c[0x108 // 4] = 0x01800000
     return struct.pack('<%dI' % len(c), *c)
@@ -128,3 +143,21 @@ def build(outdir, src, dst, pbe, quad, box, block_va=0x980f3000, completion_va=0
     open(os.path.join(outdir, 'g_block.bin'), 'wb').write(block(src, dst) + bytes(0x10000 - 0x1c0))
     open(os.path.join(outdir, 'g_param.bin'), 'wb').write(param_page(block_va, *quad))
     open(os.path.join(outdir, 'g_cmd.bin'), 'wb').write(command(block_va, 0x6200, 0x6000, box[0], box[1], completion_va))
+
+def blit(outdir, src, dst_addr, dst_stride_px, w, h, block_va=0x980f3000, completion_va=0x80157000):
+    """copy/scale src onto a w x h rectangle at dst_addr of a linear BGRA surface"""
+    import os
+    r5 = (h - 1) << 12 | (w - 1)
+    pbe = [0x00110000, dst_addr, dst_stride_px // 2 - 1, 0, 0, r5]
+    dst = ('lin', dst_addr, w, h, dst_stride_px)
+    open(os.path.join(outdir, 'g_code.bin'), 'wb').write(code_page(pbe))
+    open(os.path.join(outdir, 'g_block.bin'), 'wb').write(block(src, dst) + bytes(0x10000 - 0x1c0))
+    page = bytearray(param_page(block_va, 2, 2, 3, 3))
+    # the background triangle covers the box, the quad the rectangle (pixel coordinates)
+    struct.pack_into('<3I', page, 0x2c, xy_px(0, 0), 0x3f800000, xy_px(0, 2 * h))
+    struct.pack_into('<I', page, 0x3c, xy_px(2 * w, 0))
+    for o, (x, y) in zip((0x13c, 0x144, 0x14c, 0x154), ((0, 0), (0, h), (w, h), (w, 0))):
+        struct.pack_into('<I', page, o, xy_px(x, y))
+    open(os.path.join(outdir, 'g_param.bin'), 'wb').write(bytes(page))
+    open(os.path.join(outdir, 'g_cmd.bin'), 'wb').write(
+        command(block_va, 0x6200, 0x6000, (w - 1) // 32, (h - 1) // 32, completion_va))

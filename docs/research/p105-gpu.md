@@ -643,6 +643,33 @@ the framebuffer and shows on screen. Still taken from the capture: the GL
 code, the level block (PDS programs and the source/destination
 descriptors), the command skeleton and the object layout.
 
+**M1 done: our own 2D blit and fill (2026-10-01).** `tools/sgx/tqgen.py`
+builds every piece of a transfer from parameters -- no captured data:
+`blit(src, dst_addr, dst_stride, w, h)` copies or scales a source onto a
+w x h rectangle of a linear BGRA surface, `FILL = 0xAARRGGBB` turns it into
+a solid fill. What it took beyond the replay:
+
+- **Vertex coordinates** are 16-bit fixed point with 4 fraction bits and a
+  1024-pixel guard band (`0x4000 + px * 16`), x in the high half, y in the
+  low half -- not half floats (2.0/3.0/8.0 only looked like them). The
+  quad's vertex order (top-left, bottom-left, bottom-right, top-right) sets
+  the texture coordinates.
+- **The region box** `cmd+0x34` = last region x `<< 16` | last region y;
+  `r5` of the emit = `(h-1) << 12 | (w-1)`.
+- **A linear source** (from iOS sampling an IOSurface, `gltrace linsrc W H`):
+  format word bits 16-23 = stride in pixels `/ 4 - 2`, low bits `0x0e90`
+  (nearest, clamp); size word `0xcc000000 | (w-1) << 12 | (h-1)`; fourth word
+  `0x10000000`. The destination's descriptor (read by the background object,
+  which keeps the pixels outside the quad) must describe the destination
+  the same way.
+- **Fill**: the pixel program becomes `PHAS; LIMM o0 <- colour (end)`.
+
+Verified on the device: a linear 64x64 source reproduced exactly; a
+128x128 block copied framebuffer to framebuffer pixel for pixel; a 64x64
+image scaled to 100x37 at an arbitrary position; an 80x30 fill. Each is one
+transfer kicked by hand (`setup.sh`, `grun.sh`) with the microkernel
+rebooted in between -- the next milestone moves it into the driver.
+
 ### Next
 
 Done since this list was first written: the page tables, the firmware
