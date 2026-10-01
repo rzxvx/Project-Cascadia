@@ -536,6 +536,22 @@ the region-header fetch. Both cores show `0x4e4` (ISP_STATUS2) =
 `0x00010000`. Leading suspect: the render-only registers above. Next: their
 iOS values -- from the kext's render-command builder, or read live on iOS.
 
+**The kernel rewrites the transfer before the GPU sees it (2026-10-01).**
+`0x80bf6274` (the transfer submit, after `copyAndValidateVendorPayload`) takes
+a second path whenever the command header's word 0 is 0 -- every GL transfer
+captured -- and overwrites payload words in its copy at `desc+0x16c` before
+the builder runs: **w4 = `0x300`, w5 = `0x3f800000`, w6 = 2, w8 = `0x100`,
+w9 = `0x8c000000`, w10 = 0, w11 = `0x88`, w12 = `0x8c000000`, w18 = `0x80`,
+w2 = 0**. So on iOS `cmd+0x18` -- BIF_3D_REQ_BASE -- is `0x8c000000` (the
+base the ISPP fault showed), `0x400` gets `0x80` instead of GL's PDS pointer,
+`0x4bc`/`0x4b8`/`0x404`/`0x414`/`0x4c8` get fixed values, and `cmd+0x104` = 0
+(no `+0x78` block). gltrace reads the payload in user memory, so it never saw
+this; the Linux replay ran the unpatched words. The render side has the same
+kind of fixed setup: `0x80bf5eec` fills the render command's 3D register block
+(BIF_3D_REQ_BASE `0x87800000`, `0x400` = `0x80`, `0x424` = `0xee`, `0x418` = 1,
+`0x41c`/`0x420` = `0x322bcc77`, `0x4b8` = 1.0, per-core `0x4c0` and region
+bases from the render target). Next: replay with the patched words.
+
 ### Next
 
 Done since this list was first written: the page tables, the firmware
