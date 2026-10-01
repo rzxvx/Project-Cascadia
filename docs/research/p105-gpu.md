@@ -580,6 +580,18 @@ The replay is still by hand (`map`, `mem`, `tqkick` in debugfs, PTE edits
 with `peek`); next is building the same transfer from scratch -- own source,
 own destination (the framebuffer), own region headers.
 
+**The GPU writes the framebuffer (2026-10-01).** The destination is two
+words: the level-1 emit program's `LIMM r1 <- dest` (GL code at GPU `0x1d68`)
+and the level block's DEST address (`0x980f3138`). Patched to a GPU address
+whose PTEs point at the simplefb memory (PA `0x9f6fc000`, 768x1024 a8r8g8b8,
+stride 3072; PTE flags `0x1`, not cache-consistent), the same transfer writes
+its 32x32 level straight into the framebuffer, bit-exact; 48 transfers in a row
+paint a band in the middle of the screen. One trap: fbcon repaints the whole
+framebuffer when the microkernel boots or is kicked (even with console
+printk at level 1) and wipes the GPU's output -- unbind it first (`echo 0 >
+/sys/class/vtconsole/vtcon1/bind`). The framebuffer is `nomap`, so `/dev/mem`
+does not read it; `peek` does.
+
 ### Next
 
 Done since this list was first written: the page tables, the firmware
