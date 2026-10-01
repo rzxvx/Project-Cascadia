@@ -670,6 +670,24 @@ image scaled to 100x37 at an arbitrary position; an 80x30 fill. Each is one
 transfer kicked by hand (`setup.sh`, `grun.sh`) with the microkernel
 rebooted in between -- the next milestone moves it into the driver.
 
+**M2 done: the 2D engine in the driver (2026-10-01).** `apple-sgx.c` now
+builds and queues transfers itself (`sgx_blt_run`): at the microkernel's
+boot it puts the fixed USSE programs on a code page at GPU `0x1000` and maps
+the framebuffer (the `simple-framebuffer` node's memory) at GPU
+`0x90000000`; each job writes the emit program's PBE words, the PDS block,
+the parameter page (1 MiB aligned, which is BIF_3D_REQ_BASE) and the
+command, kicks TRANSFER and waits for its sequence number in the scratch
+word. The transfer CCB wraps the way iOS does it (`0x80bfd364`): offsets are
+16-bit and the last command before the end is stretched to reach it
+(`cmd+0xa0` = `0x10000 - offset`), so the next starts at 0.
+
+debugfs `cmd`: `fill X Y W H ARGB`, `copy SX SY DX DY W H`, `bench N`.
+Measured on the device: 6000 fills in a row (1000 + 5000, the CCB wrapping
+about 30 times) with no error or lockup, 112 us per 64x64 fill (the
+per-job cost), about 2.5 ms for a full 768x1024 fill (~300 Mpixel/s);
+copies verified pixel for pixel. The microkernel is never rebooted between
+jobs. (fbcon has to be unbound while testing: it repaints the screen.)
+
 ### Next
 
 Done since this list was first written: the page tables, the firmware

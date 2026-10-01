@@ -55,10 +55,12 @@
 #include <linux/iopoll.h>
 #include <linux/kernel.h>
 #include <linux/ktime.h>
+#include <linux/math64.h>
 #include <linux/mod_devicetable.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
 #include <linux/of.h>
+#include <linux/of_address.h>
 #include <linux/platform_device.h>
 #include <linux/seq_file.h>
 #include <linux/sizes.h>
@@ -166,6 +168,7 @@
  * the first read on and never sees a command. */
 #define PTE_RO				SGX_PTE_READONLY
 #define PTE_SHARED			(SGX_PTE_CACHECONSISTENT | SGX_PTE_EDMPROTECT)
+#define PTE_CC				SGX_PTE_CACHECONSISTENT
 
 /* Where the buffers go in the GPU's address space.  The microkernel carries
  * no address of its own (every one is patched in or handed over in a
@@ -289,6 +292,7 @@ enum sgx_buf_id {
 	B_794, B_798, B_79C, B_7A0,
 	B_TQ_CTX, B_TQ_CCB, B_TQ_CTL,	/* one transfer queue (IMGSGXTQChannel) */
 	B_SCRATCH,			/* where test commands write */
+	B_BLT_BLOCK, B_BLT_PARAM,	/* the 2D engine's PDS block and parameter page */
 	B_NUM
 };
 
@@ -328,6 +332,8 @@ static const struct sgx_buf_desc {
 	[B_TQ_CCB]	= { "tq ccb",	0x10000, 0x1000, SRC_ZERO, PTE_SHARED },
 	[B_TQ_CTL]	= { "tq ctl",	8,	0x1000, SRC_ZERO, PTE_SHARED },
 	[B_SCRATCH]	= { "scratch",	0x1000,	0x1000, SRC_ZERO, PTE_SHARED },
+	[B_BLT_BLOCK]	= { "blt pds",	0x1000,	0x1000, SRC_ZERO, PTE_CC },
+	[B_BLT_PARAM]	= { "blt param", 0x8000, SZ_1M, SRC_ZERO, PTE_CC },
 };
 
 struct sgx_buf {
@@ -385,7 +391,16 @@ struct apple_sgx {
 	unsigned int irq_count, irq_unhandled, irq_run;
 	u32 irq_events[SGX_MAX_CORES];	/* every event bit seen, per core */
 	u32 irq_host_flags;		/* host control's interrupt flags, last */
+
+	/* the 2D engine (blits and fills through the transfer queue) */
+	bool quiet;			/* no log line per microkernel command */
+	bool blt_ready;
+	u64 *blt_code;			/* CPU side of the code page at GPU 0x1000 */
+	u32 blt_seq;
+	u32 fb_w, fb_h, fb_stride;	/* the framebuffer: pixels, pixels, pixels */
 };
+
+static int sgx_blt_init(struct apple_sgx *sgx);
 
 /* The only way to a register.  A read of bank 0 or of a core bank this SGX
  * does not have would hang the bus, so it is refused -- with a warning,
@@ -818,6 +833,11 @@ static int sgx_boot_ukernel(struct apple_sgx *sgx)
 		dev_err(sgx->dev, "GPU buffers: %d\n", ret);
 		goto out;
 	}
+	ret = sgx_blt_init(sgx);
+	if (ret) {
+		dev_err(sgx->dev, "2D engine: %d\n", ret);
+		goto out;
+	}
 
 	/* Quiet while the GPU is reset under it; back on once it is up. */
 	if (sgx->irq_on) {
@@ -978,6 +998,7 @@ static int sgx_send_cmd(struct apple_sgx *sgx, enum sgx_cmd_type type,
 
 	ret = read_poll_timeout(READ_ONCE, val, val == wo, 10, 500000, false,
 				ctl[1]);
+	if (!sgx->quiet || ret)
 	dev_info(sgx->dev,
 		 "command %s (cc 0x%x, data 0x%x 0x%x): %s after %lld us, CCB write %u read %u, "
 		 "core0 EVENT_STATUS 0x%08x\n",
@@ -1232,6 +1253,338 @@ static int sgx_tq_kick(struct apple_sgx *sgx)
 	return ret;
 }
 
+/* ---- the 2D engine: blits and fills through the transfer queue ---------- */
+
+/*
+ * A transfer is the GPU's blit: the 3D pipe draws one quad whose texture is
+ * the source, and the pixel back end writes the result.  Everything it needs
+ * is built here; tools/sgx/tqgen.py is the same in Python and
+ * docs/research/p105-gpu.md how each word was found.
+ *
+ *   code    GPU 0x1000    five tiny USSE programs; USE code base 10 is 0
+ *   block   B_BLT_BLOCK   the end-of-tile PDS program, and per object a PDS
+ *                         program with its data: pixel program + texture
+ *   param   B_BLT_PARAM   at BIF_3D_REQ_BASE (1 MiB aligned): the background
+ *                         object, the quad, one region header for the box
+ *   command               0x140 bytes in the transfer CCB
+ *
+ * Surfaces are linear BGRA8888.  One job at a time: each is waited for.
+ */
+#define SGX_BLT_CODE_VA		0x00001000u
+#define SGX_BLT_PROG_COPY	0x1400u		/* o0 = the sampled texel */
+#define SGX_BLT_PROG_FILL	0x1500u		/* o0 = a constant */
+#define SGX_BLT_PROG_EOT0	0x1c00u
+#define SGX_BLT_PROG_EOT1	0x1c40u
+#define SGX_BLT_PROG_EMIT	0x1d40u		/* loads the six PBE words, emits */
+#define SGX_BLT_BG_OFF		0x6000u		/* in the parameter page */
+#define SGX_BLT_QUAD_OFF	0x6100u
+#define SGX_BLT_RGN_OFF		0x6200u
+#define SGX_FB_VA		0x90000000u
+
+#define USSE_PHAS		0xfa44070000000000ull
+
+/* The end-of-tile PDS program and its constants, and the per-object one
+ * (DOUTU the pixel program, DOUTT the texture state), from the GL driver. */
+static const u32 blt_pds_main[] = {
+	0x9380000c, 0xcf800630, 0xcf800870, 0xf7700070, 0xcf086070, 0xc7606030,
+	0xcf800a70, 0xf7700070, 0xcf0a6070, 0xc7606030, 0x07600b05, 0xaf000000,
+	0x94800014, 0xcf0c8270, 0x8700c100, 0xcf800c70, 0xc70e6070, 0x100010e0,
+	0x07018185, 0xaf000000, 0x07041185, 0xaf000000,
+};
+static const u32 blt_pds_const[] = {
+	0xffff0000, 0x000000ff, 0x0000ff00, 0x000000ff, 0x0000ff00,
+	0x00000100, 0x00020000, 0xfffeffff, 0x00000000, 0x00030000,
+};
+static const u32 blt_pds_tex[] = { 0x07000185, 0x07000c02, 0x07041004, 0xaf000000 };
+
+/* LIMM: bank 0 temporaries, 1 outputs, 2 primary attributes */
+static u64 usse_limm(unsigned int bank, unsigned int reg, u32 imm, bool end)
+{
+	u64 w = 0xfca0000000000000ull | (u64)(bank & 3) << 32 | (u64)(reg & 0x7f) << 21;
+
+	w |= (u64)((imm >> 26) & 0x3f) << 44 | (u64)((imm >> 21) & 0x1f) << 36;
+	w |= imm & 0x1fffff;
+	return end ? w | 1ull << 50 : w;
+}
+
+static u32 blt_doutu(u32 va)	{ return (va / 8) << 4 | 0xa; }
+static u32 blt_pds_ptr(u32 va, u32 flag) { return flag << 28 | (va - SGX_VA_BASE) >> 4; }
+/* vertex coordinates: 16-bit fixed point, 4 fraction bits, 1024-px guard band */
+static u32 blt_xy(u32 x, u32 y) { return (0x4000 + x * 16) << 16 | (0x4000 + y * 16); }
+
+struct sgx_surf {		/* a rectangle of a linear BGRA8888 surface */
+	u32 va;			/* its first pixel */
+	u32 w, h, stride;	/* pixels */
+};
+
+/* texture state for a linear BGRA source (from iOS sampling an IOSurface) */
+static void blt_tex(u32 *t, const struct sgx_surf *s)
+{
+	t[0] = (s->stride / 4 - 2) << 16 | 0x0e90;
+	t[1] = 0xcc000000 | (s->w - 1) << 12 | (s->h - 1);
+	t[2] = s->va;
+	t[3] = 0x10000000;
+}
+
+static void blt_put_prog(struct apple_sgx *sgx, u32 va, const u64 *p, int n)
+{
+	memcpy(sgx->blt_code + (va - SGX_BLT_CODE_VA) / 8, p, n * sizeof(*p));
+}
+
+/* The framebuffer simplefb drives, from the device tree. */
+static int sgx_fb_find(struct apple_sgx *sgx, struct resource *res)
+{
+	struct device_node *np, *mem;
+	int ret;
+
+	np = of_find_compatible_node(NULL, NULL, "simple-framebuffer");
+	if (!np)
+		return -ENODEV;
+	mem = of_parse_phandle(np, "memory-region", 0);
+	ret = of_address_to_resource(mem ? mem : np, 0, res);
+	of_node_put(mem);
+	if (!ret && (of_property_read_u32(np, "width", &sgx->fb_w) ||
+		     of_property_read_u32(np, "height", &sgx->fb_h) ||
+		     of_property_read_u32(np, "stride", &sgx->fb_stride)))
+		ret = -EINVAL;
+	of_node_put(np);
+	sgx->fb_stride /= 4;
+	return ret;
+}
+
+/* Once the buffers exist and before the microkernel starts (the MMU caches
+ * are clean from its boot): the code page, the fixed programs, and the
+ * framebuffer at GPU 0x90000000. */
+static int sgx_blt_init(struct apple_sgx *sgx)
+{
+	u64 eot0[] = { USSE_PHAS, 0xf834800000000000ull };
+	u64 eot1[] = { USSE_PHAS, usse_limm(0, 0, 0, false), usse_limm(0, 1, 0, false),
+		       0xfb26000081200000ull, 0, 0, 0, 0,
+		       USSE_PHAS, usse_limm(2, 1, 0, false), usse_limm(2, 2, 1, false),
+		       usse_limm(2, 4, 2, false), usse_limm(2, 8, 3, true) };
+	u64 copy[] = { USSE_PHAS, 0x50850009a0000000ull };
+	struct resource fb;
+	size_t avail;
+	int ret;
+
+	if (sgx->blt_ready)
+		return 0;
+	ret = sgx_map_extra(sgx, SGX_BLT_CODE_VA, SGX_PAGE_SIZE);
+	if (ret && ret != -EEXIST)
+		return ret;
+	sgx->blt_code = (u64 *)sgx_va_cpu(sgx, SGX_BLT_CODE_VA, &avail);
+	if (!sgx->blt_code || avail < SGX_PAGE_SIZE)
+		return -ENOMEM;
+	memset(sgx->blt_code, 0, SGX_PAGE_SIZE);
+	blt_put_prog(sgx, SGX_BLT_PROG_COPY, copy, ARRAY_SIZE(copy));
+	blt_put_prog(sgx, SGX_BLT_PROG_EOT0, eot0, ARRAY_SIZE(eot0));
+	blt_put_prog(sgx, SGX_BLT_PROG_EOT1, eot1, ARRAY_SIZE(eot1));
+
+	ret = sgx_fb_find(sgx, &fb);
+	if (ret)
+		dev_warn(sgx->dev, "no framebuffer for the 2D engine: %d\n", ret);
+	else
+		ret = sgx_mmu_map(sgx, SGX_FB_VA, fb.start, resource_size(&fb), 0);
+	if (ret)
+		sgx->fb_w = 0;
+	else
+		dev_info(sgx->dev, "2D engine: framebuffer %ux%u, %u px lines, at GPU 0x%08x\n",
+			 sgx->fb_w, sgx->fb_h, sgx->fb_stride, SGX_FB_VA);
+	sgx->blt_ready = true;
+	return 0;
+}
+
+/* One job: src (or a fill colour, ABGR as the pixel program writes it)
+ * onto dst, scaled.  Builds the pieces, queues the command, waits. */
+static int sgx_blt_run(struct apple_sgx *sgx, const struct sgx_surf *src, u32 fill,
+		       const struct sgx_surf *dst)
+{
+	u32 *blk = sgx->buf[B_BLT_BLOCK].cpu, *par = sgx->buf[B_BLT_PARAM].cpu;
+	u32 bva = sgx->buf[B_BLT_BLOCK].va, pva = sgx->buf[B_BLT_PARAM].va;
+	u32 *ctl = sgx->buf[B_TQ_CTL].cpu, *ctx = sgx->buf[B_TQ_CTX].cpu;
+	u32 *scratch = sgx->buf[B_SCRATCH].cpu, *bg, *q, *r, *c, wo, got, seq, size;
+	u64 emit[11], fillp[2];
+	int i, ret;
+
+	if (sgx->boot_result != 1 || !sgx->blt_ready)
+		return -ENODEV;
+	if (!dst->w || !dst->h || dst->w > 2048 || dst->h > 2048)
+		return -EINVAL;
+
+	/* the pixel back end: linear BGRA, stride, size */
+	emit[0] = USSE_PHAS;
+	emit[1] = 0x488b0281a00c0000ull;
+	emit[2] = 0xe9a30084a0000000ull;
+	emit[3] = 0xf920000000000000ull;
+	emit[4] = usse_limm(0, 0, 0x00110000, false);
+	emit[5] = usse_limm(0, 1, dst->va, false);
+	emit[6] = usse_limm(0, 2, dst->stride / 2 - 1, false);
+	emit[7] = usse_limm(0, 3, 0, false);
+	emit[8] = usse_limm(0, 4, 0, false);
+	emit[9] = usse_limm(0, 5, (dst->h - 1) << 12 | (dst->w - 1), false);
+	emit[10] = 0xfb24000003200082ull;
+	blt_put_prog(sgx, SGX_BLT_PROG_EMIT, emit, ARRAY_SIZE(emit));
+	if (!src) {
+		fillp[0] = USSE_PHAS;
+		fillp[1] = usse_limm(1, 0, fill, true);
+		blt_put_prog(sgx, SGX_BLT_PROG_FILL, fillp, ARRAY_SIZE(fillp));
+	}
+
+	/* the PDS block */
+	memset(blk, 0, 0x1c0);
+	blk[0x00 / 4] = blt_doutu(SGX_BLT_PROG_EOT1);
+	blk[0x08 / 4] = blt_doutu(SGX_BLT_PROG_EMIT);
+	blk[0x10 / 4] = blt_doutu(SGX_BLT_PROG_EOT0);
+	memcpy(&blk[0x1c / 4], blt_pds_const, sizeof(blt_pds_const));
+	memcpy(&blk[0x50 / 4], blt_pds_main, sizeof(blt_pds_main));
+	for (i = 0; i < 2; i++) {	/* 0: background (reads dst), 1: the quad */
+		u32 *o = &blk[(0x100 + 0x60 * i) / 4];
+
+		o[0] = 0xaf000000;
+		o[8] = blt_doutu(i && !src ? SGX_BLT_PROG_FILL : SGX_BLT_PROG_COPY);
+		o[9] = 0xa;
+		o[11] = 0xf800;
+		blt_tex(&o[12], i && src ? src : dst);
+		memcpy(&o[16], blt_pds_tex, sizeof(blt_pds_tex));
+	}
+
+	/* the parameter page: background triangle over the box, the quad
+	 * (top-left, bottom-left, bottom-right, top-right), one region header */
+	bg = &par[SGX_BLT_BG_OFF / 4];
+	q = &par[SGX_BLT_QUAD_OFF / 4];
+	r = &par[SGX_BLT_RGN_OFF / 4];
+	memset(bg, 0, 0x210);
+	bg[0] = blt_pds_ptr(bva + 0x100, 0);
+	bg[1] = 0x0801e000;
+	bg[2] = blt_pds_ptr(bva + 0x120, 1);
+	bg[5] = bg[8] = bg[12] = bg[14] = bg[16] = 0x3f800000;
+	bg[9] = 2;
+	bg[11] = blt_xy(0, 0);
+	bg[13] = blt_xy(0, 2 * dst->h);
+	bg[15] = blt_xy(2 * dst->w, 0);
+	q[0] = blt_pds_ptr(bva + 0x160, 0);
+	q[1] = 0x0801e000;
+	q[2] = blt_pds_ptr(bva + 0x180, 1);
+	q[6] = q[7] = q[8] = q[9] = 0x3f800000;
+	q[11] = 0x01d80000;
+	q[12] = 0x4e504a30;
+	q[13] = 2;
+	q[15] = blt_xy(0, 0);
+	q[17] = blt_xy(0, dst->h);
+	q[19] = blt_xy(dst->w, dst->h);
+	q[21] = blt_xy(dst->w, 0);
+	q[16] = q[18] = q[20] = q[22] = 0x3f800000;
+	r[0] = 0x80000000;		/* last region */
+	r[1] = 0x46400f03;		/* both triangles of the quad */
+	r[2] = 0x0c000000 | SGX_BLT_QUAD_OFF >> 2 | 0xb;
+	r[3] = 0xc0000000;		/* end of the stream */
+
+	/* the command, as iOS places it (0x80bfd364): 16-bit offsets, and the
+	 * last command before the end is stretched to reach it, so the next
+	 * one starts at 0 */
+	wo = READ_ONCE(ctl[0]);
+	size = SGX_TQ_CMD_SIZE;
+	if (SGX_TQ_CCB_SIZE - SGX_TQ_CMD_SIZE - wo < SGX_TQ_CMD_SIZE)
+		size = SGX_TQ_CCB_SIZE - wo;
+	if (((READ_ONCE(ctl[1]) + 0xffff - wo) & 0xffff) <= size)
+		return -EBUSY;
+	seq = ++sgx->blt_seq ? sgx->blt_seq : ++sgx->blt_seq;
+	c = sgx->buf[B_TQ_CCB].cpu + wo / 4;
+	memset(c, 0, size);
+	c[0x00 / 4] = 0x02000000 | SGX_BLT_BG_OFF >> 4;	/* background object */
+	c[0x04 / 4] = 0x300;
+	c[0x08 / 4] = 0x3f800000;
+	c[0x0c / 4] = 2;
+	c[0x10 / 4] = SGX_BLT_RGN_OFF;			/* ISP_RGN_BASE */
+	c[0x14 / 4] = 0x100;
+	c[0x18 / 4] = pva;				/* BIF_3D_REQ_BASE */
+	c[0x20 / 4] = 0x88;
+	c[0x24 / 4] = bva;				/* end-of-tile PDS */
+	c[0x28 / 4] = 5;
+	c[0x2c / 4] = 0x4000;
+	c[0x34 / 4] = ((dst->w - 1) / 32) << 16 | (dst->h - 1) / 32;	/* region box */
+	c[0x38 / 4] = 0x80;
+	c[0xa0 / 4] = size;
+	c[0xac / 4] = sgx->buf[B_SCRATCH].va;		/* completion */
+	c[0xb0 / 4] = seq;
+	c[0x108 / 4] = 0x01800000;
+	WRITE_ONCE(scratch[0], 0);
+	wmb();
+	WRITE_ONCE(ctl[0], (wo + size) & (SGX_TQ_CCB_SIZE - 1));
+	WRITE_ONCE(ctx[0], 1);
+	wmb();
+	sgx->quiet = true;
+	ret = sgx_send_cmd(sgx, SGX_CMD_TRANSFER, 0, 0, sgx->buf[B_TQ_CTX].va);
+	sgx->quiet = false;
+	if (ret)
+		return ret;
+	ret = read_poll_timeout_atomic(READ_ONCE, got, got == seq, 1, 200000, false,
+				       scratch[0]);
+	if (ret)
+		dev_err(sgx->dev, "2D job %u not done: completion 0x%08x, tq read 0x%x, "
+			"BIF_FAULT core0 0x%08x master 0x%08x, lockups %u\n", seq, got,
+			READ_ONCE(ctl[1]), sgx_read(sgx, SGX_CORE(0) + SGX_BIF_FAULT),
+			sgx_read(sgx, SGX_MASTER_BIF_FAULT),
+			READ_ONCE(sgx->buf[B_HOST].cpu[HOST_UK_LOCKUPS]));
+	return ret;
+}
+
+static bool sgx_fb_rect_ok(struct apple_sgx *sgx, u32 x, u32 y, u32 w, u32 h)
+{
+	return sgx->fb_w && w && h && x < sgx->fb_w && y < sgx->fb_h &&
+	       w <= sgx->fb_w - x && h <= sgx->fb_h - y;
+}
+
+static void sgx_fb_surf(struct apple_sgx *sgx, struct sgx_surf *s, u32 x, u32 y,
+			u32 w, u32 h)
+{
+	s->va = SGX_FB_VA + (y * sgx->fb_stride + x) * 4;
+	s->w = w;
+	s->h = h;
+	s->stride = sgx->fb_stride;
+}
+
+/* "fill X Y W H ARGB" on the framebuffer */
+static int sgx_fb_fill(struct apple_sgx *sgx, u32 x, u32 y, u32 w, u32 h, u32 argb)
+{
+	struct sgx_surf d;
+
+	if (!sgx_fb_rect_ok(sgx, x, y, w, h))
+		return -EINVAL;
+	sgx_fb_surf(sgx, &d, x, y, w, h);
+	/* the pixel program's output is ABGR */
+	return sgx_blt_run(sgx, NULL, (argb & 0xff00ff00) | (argb & 0xff) << 16 |
+			   (argb >> 16 & 0xff), &d);
+}
+
+/* "copy SX SY DX DY W H" within the framebuffer */
+static int sgx_fb_copy(struct apple_sgx *sgx, u32 sx, u32 sy, u32 dx, u32 dy, u32 w, u32 h)
+{
+	struct sgx_surf s, d;
+
+	if (!sgx_fb_rect_ok(sgx, sx, sy, w, h) || !sgx_fb_rect_ok(sgx, dx, dy, w, h))
+		return -EINVAL;
+	sgx_fb_surf(sgx, &s, sx, sy, w, h);
+	sgx_fb_surf(sgx, &d, dx, dy, w, h);
+	return sgx_blt_run(sgx, &s, 0, &d);
+}
+
+/* "bench N": N fills of 64x64 in the top-left corner, timed */
+static int sgx_fb_bench(struct apple_sgx *sgx, u32 n)
+{
+	ktime_t t0 = ktime_get();
+	s64 us;
+	u32 i;
+	int ret = 0;
+
+	for (i = 0; i < n && !ret; i++)
+		ret = sgx_fb_fill(sgx, 0, 0, 64, 64, 0xff000000 | (i * 0x0a1f3d));
+	us = ktime_us_delta(ktime_get(), t0);
+	dev_info(sgx->dev, "bench: %u of %u fills done in %lld us (%lld us each)%s\n",
+		 ret ? i - 1 : i, n, us, i ? div_s64(us, i) : 0, ret ? ", stopped on an error" : "");
+	return ret;
+}
+
 /* ---- debugfs -------------------------------------------------------------- */
 
 static const struct {
@@ -1358,13 +1711,15 @@ static const struct file_operations sgx_boot_fops = {
  *   "power N"    POWER: 1 power off, 2 idle, 3 resume (after idle)
  *   "tq F [V]"   a transfer with flags F and no work but two writes of V
  *   "map VA SZ"  memory at GPU address VA (see apple-sgx/mem)
- *   "tqkick"     send the transfer command placed at the transfer CCB */
+ *   "tqkick"     send the transfer command placed at the transfer CCB
+ * and the 2D engine, on the framebuffer:
+ *   "fill X Y W H ARGB", "copy SX SY DX DY W H", "bench N" (N timed fills) */
 static ssize_t sgx_cmd_write(struct file *file, const char __user *ubuf,
 			     size_t len, loff_t *ppos)
 {
 	struct apple_sgx *sgx = file->private_data;
-	char buf[48], word[8];
-	u32 arg = 0, arg2 = 0x1234;
+	char buf[96], word[8];
+	u32 arg = 0, arg2 = 0x1234, a[4] = { 0 };
 	int ret;
 
 	if (len >= sizeof(buf))
@@ -1372,7 +1727,8 @@ static ssize_t sgx_cmd_write(struct file *file, const char __user *ubuf,
 	if (copy_from_user(buf, ubuf, len))
 		return -EFAULT;
 	buf[len] = 0;
-	if (sscanf(buf, "%7s %i %i", word, &arg, &arg2) < 1)
+	if (sscanf(buf, "%7s %i %i %i %i %i %i", word, &arg, &arg2,
+		   &a[0], &a[1], &a[2], &a[3]) < 1)
 		return -EINVAL;
 
 	mutex_lock(&sgx->lock);
@@ -1386,6 +1742,12 @@ static ssize_t sgx_cmd_write(struct file *file, const char __user *ubuf,
 		ret = sgx_map_extra(sgx, arg, arg2);
 	else if (!strcmp(word, "tqkick"))
 		ret = sgx_tq_kick(sgx);
+	else if (!strcmp(word, "fill"))
+		ret = sgx_fb_fill(sgx, arg, arg2, a[0], a[1], a[2]);
+	else if (!strcmp(word, "copy"))
+		ret = sgx_fb_copy(sgx, arg, arg2, a[0], a[1], a[2], a[3]);
+	else if (!strcmp(word, "bench"))
+		ret = sgx_fb_bench(sgx, arg);
 	else
 		ret = -EINVAL;
 	mutex_unlock(&sgx->lock);
