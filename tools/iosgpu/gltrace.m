@@ -75,6 +75,45 @@ static void dump(const char *tag, const unsigned char *p, size_t n, size_t cap)
     printf("\n");
 }
 
+/* "gltrace tqpatch WORD VALUE": at the first IOKit call made while the first
+ * transfer (payload word 2 non-zero) sits in the command buffer -- the kernel
+ * takes the commands at the callStruct before the submit -- set payload word
+ * WORD to VALUE.  Pointing
+ * a GPU access at nothing makes the GPU hang on purpose; the kernel then resets
+ * it and its hang report (SGXDriver543's register dump, kernelcache 0x80bf9230,
+ * IOLog) shows iOS's own register state in the middle of a transfer, and the
+ * driver's and the registers' kernel addresses. */
+static int patch_word = -1;
+static uint32_t patch_val;
+static int patched;
+
+static void patch_transfer(void)
+{
+    for (int i = 0; i < nmaps; i++) {
+        unsigned char *b = (unsigned char *)(uintptr_t)maps[i].addr;
+
+        if (maps[i].type != 0)
+            continue;
+        for (unsigned p = 0; p + 0x80 + 0x7c <= maps[i].size; p += 4) {
+            uint32_t *h = (uint32_t *)(b + p), off = h[4], *pl;
+
+            if (off < 0x14 || off > 0x80 || (off & 3) || b[p + off] != 2)
+                continue;
+            if (h[0] != off + 0x7c && h[1] != off + 0x7c &&
+                h[2] != off + 0x7c && h[3] != off + 0x7c)
+                continue;
+            pl = (uint32_t *)(b + p + off);
+            if (pl[1] != 0 || pl[2] == 0)
+                continue;
+            printf("== tqpatch: transfer at 0x%08x, payload word %d 0x%08x -> 0x%08x\n",
+                   maps[i].addr + p, patch_word, pl[patch_word], patch_val);
+            pl[patch_word] = patch_val;
+            patched = 1;
+            return;
+        }
+    }
+}
+
 static kern_return_t my_call(mach_port_t c, uint32_t sel, const uint64_t *in, uint32_t inc,
                              const void *ins, size_t insc, uint64_t *out, uint32_t *outc,
                              void *outs, size_t *outsc)
@@ -82,6 +121,8 @@ static kern_return_t my_call(mach_port_t c, uint32_t sel, const uint64_t *in, ui
     printf("[call]        conn %u sel %-4u scalars %u struct %zu\n", c, sel, inc, insc);
     if (ins && insc)
         dump("in", ins, insc, 128);
+    if (patch_word >= 0 && !patched)
+        patch_transfer();
     return orig_call(c, sel, in, inc, ins, insc, out, outc, outs, outsc);
 }
 
@@ -91,6 +132,8 @@ static kern_return_t my_call_struct(mach_port_t c, uint32_t sel, const void *ins
     printf("[callStruct]  conn %u sel %-4u struct %zu\n", c, sel, insc);
     if (ins && insc)
         dump("in", ins, insc, 128);
+    if (patch_word >= 0 && !patched)
+        patch_transfer();
     return orig_call_struct(c, sel, ins, insc, outs, outsc);
 }
 
@@ -98,6 +141,8 @@ static kern_return_t my_call_scalar(mach_port_t c, uint32_t sel, const uint64_t 
                                     uint64_t *out, uint32_t *outc)
 {
     printf("[callScalar]  conn %u sel %-4u scalars %u\n", c, sel, inc);
+    if (patch_word >= 0 && !patched)
+        patch_transfer();
     return orig_call_scalar(c, sel, in, inc, out, outc);
 }
 
@@ -498,6 +543,15 @@ static GLuint make_shader(GLenum type, const char *src)
 
 int main(int argc, char **argv)
 {
+    int tq = argc > 1 && (!strcmp(argv[1], "tq") || !strcmp(argv[1], "tqpatch"));
+
+    if (argc > 3 && !strcmp(argv[1], "tqpatch")) {
+        patch_word = (int)strtoul(argv[2], 0, 0);
+        patch_val = (uint32_t)strtoul(argv[3], 0, 0);
+        if (patch_word < 3 || patch_word > 30)
+            return printf("tqpatch: word 3..30\n"), 1;
+    }
+    setvbuf(stdout, 0, _IONBF, 0);	/* the GPU reset may take the process down */
     install_hooks();
     printf("== hooks installed; creating GLES2 context\n");
 
@@ -574,7 +628,7 @@ int main(int argc, char **argv)
     /* "gltrace tq": operations the driver may do with the transfer queue
      * instead of a render -- a copy out of the FBO into another texture, and
      * mipmap generation -- each followed by a scan for transfer commands. */
-    if (argc > 1 && !strcmp(argv[1], "tq")) {
+    if (tq) {
         glClearColor(0, 0, 0.2f, 1);
         glClear(GL_COLOR_BUFFER_BIT);
         glUniform4f(uColor, 1.0f, 0.5f, 0.0f, 1.0f);
@@ -594,7 +648,10 @@ int main(int argc, char **argv)
         printf("== g: glGenerateMipmap on it\n");
         glGenerateMipmap(GL_TEXTURE_2D);
         glFinish();
+        printf("== g: glFinish returned, GL error 0x%x\n", glGetError());
         scan_payloads("g");
+        if (patch_word >= 0)
+            return 0;
         scan_resources();
         dump_iokit();
         return 0;

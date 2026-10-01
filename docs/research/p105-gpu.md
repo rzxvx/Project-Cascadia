@@ -452,6 +452,33 @@ registers and the SLC status, and it runs when a CCB stays full (`0x80bfd22c`,
 at power-off (`0x80bf4854`) -- a way to read iOS's values without a kernel read
 primitive.
 
+**iOS's own registers in the middle of a transfer (2026-10-01).** `gltrace
+tqpatch WORD VALUE` changes one payload word of the first mipmap transfer
+before the kernel takes it (it takes the commands at the `callStruct sel 2`
+before the `sel 0` submit -- patching at the submit is too late). With word 13
+(`cmd+0x24`, the PDS data address) set to `0x70000000`, the GPU faults, the
+microkernel stops answering and the kernel's reset report (IOLog, read with
+`idevicesyslog` on the Arch box; `logs/ios/tq/hwr_pds_fault.txt`) dumps the
+registers:
+
+- both cores: BIF_FAULT `0x70000010`, **requestor PDS**, address `0x70000000`
+  -- on iOS the same transfer gets as far as the PDS fetching the level block's
+  data segment. Under Linux it never gets there (no fault with that memory
+  unmapped).
+- the same as ours: ISP_RGN_BASE `0x6200`, ZLS registers 0, DPM thresholds
+  `0x14`/`0x14`, TA_GLOBAL_LIST `0x1000a`, PAGE_STATUS `0x40004`, EVENT_STATUS
+  `0x24002a00`, EVENT_STATUS2 `0xa8`, BIF_BANK0 `0x70077`, BIF_CTRL 0, USE DM
+  slots `0xaaaaaaab`/`0xaaaaaaaa`, SLC_CTRL `0x44c000`, SLC_BYPASS `0x4001e40`.
+  ISP_STATUS2 core 1 `0x001f0000` = our `0x4e4` (so `0x4e4` is probably a
+  status register, not a value the microkernel writes).
+- **different: clock gating.** iOS runs the module clocks in mode 2 (auto):
+  core CLKGATECTL `0x000aaaaa`, CLKGATECTL2 `0x0a8a8aaa`, MASTER_CLKGATECTL2
+  `0x2a9`; CLKGATESTATUS core 0 `0x0063ba80`, core 1 `0x80`. We force them on
+  (mode 1): `0x10055555`, `0x05454555`, `0x155`.
+
+With word 7 (ISP_RGN_BASE) patched too late it proved nothing; redo it with the
+early patch before drawing conclusions about the region headers.
+
 ### Next
 
 Done since this list was first written: the page tables, the firmware
