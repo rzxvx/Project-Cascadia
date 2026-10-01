@@ -229,11 +229,21 @@ def own_texture(gl, path):
                          1.0 if y > 0 else -1.0)
 
 def resize_tex(gl, n):
-    """--size N (profile tex): an N x N frame (rtemu.py run with N N).  The
-    viewport (state +0x1e4: x/y scale and offset) and the output descriptor
-    (3D PDS block +0x134, log2 w/h) follow."""
+    """--size N (profile tex): an N x N frame (rtemu.py run with N N).  From
+    gltrace tmplsz (64..256): the state buffer's header (+0x10, last tile
+    x << 16 | y, 32-pixel tiles), the clear's and the draw's tile clip
+    (0x80000000 | last x, last y), the clear program's constants (2W, 2H),
+    the viewport (x/y scale and offset, N/2), and the output descriptor
+    (3D PDS block +0x134, log2 w/h)."""
     base = PROFILES['tex']['gl'][0]
-    struct.pack_into('<4f', gl, 0x98940000 + 0x1e4 - base, n / 2, n / 2, n / 2, n / 2)
+    st = 0x98940000 - base
+    t = (n + 31) // 32 - 1
+    struct.pack_into('<I', gl, st + 0x10, t << 16 | t)
+    struct.pack_into('<II', gl, st + 0x90, 0x80000000 | t, t)
+    struct.pack_into('<II', gl, st + 0x1dc, 0x80000000 | t, t)
+    struct.pack_into('<f', gl, st + 0xf8, 2.0 * n)
+    struct.pack_into('<f', gl, st + 0x108, 2.0 * n)
+    struct.pack_into('<4f', gl, st + 0x1e4, n / 2, n / 2, n / 2, n / 2)
     l = n.bit_length() - 1
     struct.pack_into('<I', gl, 0x989d8000 + 0x134 - base, 0x0c000000 | l << 16 | l)
 

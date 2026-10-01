@@ -914,6 +914,70 @@ int main(int argc, char **argv)
         printf("== centre pixel %02x %02x %02x %02x\n", c[0], c[1], c[2], c[3]);
         return 0;
     }
+    if (argc > 1 && !strcmp(argv[1], "twotex")) {
+        /* two quads, two textures, blending on: how one frame carries several
+         * draws with their own sampler state (sprites) */
+        const char *vst = "attribute vec4 p; attribute vec2 a; varying mediump vec2 t;"
+                          "void main(){ gl_Position = p; t = a; }";
+        const char *fst = "precision mediump float; varying vec2 t; uniform sampler2D uTex;"
+                          "void main(){ gl_FragColor = texture2D(uTex, t); }";
+        GLuint pt = glCreateProgram();
+        glAttachShader(pt, make_shader(GL_VERTEX_SHADER, vst));
+        glAttachShader(pt, make_shader(GL_FRAGMENT_SHADER, fst));
+        glBindAttribLocation(pt, 0, "p");
+        glBindAttribLocation(pt, 1, "a");
+        glLinkProgram(pt);
+        glUseProgram(pt);
+        glUniform1i(glGetUniformLocation(pt, "uTex"), 0);
+        static const float q1[] = { -0.9f, -0.9f, 0.1f, -0.9f, 0.1f, 0.1f,
+                                    -0.9f, -0.9f, 0.1f, 0.1f, -0.9f, 0.1f };
+        static const float q2[] = { -0.1f, -0.1f, 0.9f, -0.1f, 0.9f, 0.9f,
+                                    -0.1f, -0.1f, 0.9f, 0.9f, -0.1f, 0.9f };
+        static const float uv[] = { 0, 0, 1, 0, 1, 1, 0, 0, 1, 1, 0, 1 };
+        unsigned char t1[8 * 8 * 4], t2[4 * 4 * 4];
+        for (int i = 0; i < 64; i++) {	/* 8x8: blue/white checker, opaque */
+            int c = ((i & 7) ^ (i >> 3)) & 1;
+            t1[i * 4] = c ? 255 : 0; t1[i * 4 + 1] = c ? 255 : 0; t1[i * 4 + 2] = 255;
+            t1[i * 4 + 3] = 255;
+        }
+        for (int i = 0; i < 16; i++) {	/* 4x4: yellow, half transparent */
+            t2[i * 4] = 255; t2[i * 4 + 1] = 255; t2[i * 4 + 2] = 0; t2[i * 4 + 3] = 128;
+        }
+        GLuint tx[2];
+        glGenTextures(2, tx);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, tx[0]);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 8, 8, 0, GL_RGBA, GL_UNSIGNED_BYTE, t1);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glBindTexture(GL_TEXTURE_2D, tx[1]);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 4, 4, 0, GL_RGBA, GL_UNSIGNED_BYTE, t2);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glEnableVertexAttribArray(0);
+        glEnableVertexAttribArray(1);
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        print_renders = 1;
+        glClearColor(0, 0, 0.2f, 1);
+        glClear(GL_COLOR_BUFFER_BIT);
+        glBindTexture(GL_TEXTURE_2D, tx[0]);
+        glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, q1);
+        glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 0, uv);
+        glDrawArrays(GL_TRIANGLES, 0, 6);
+        glBindTexture(GL_TEXTURE_2D, tx[1]);
+        glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, q2);
+        glDrawArrays(GL_TRIANGLES, 0, 6);
+        glFinish();
+        scan_payloads("twotex");
+        dump_iokit_to("/var/root/gt_2t.bin");
+        unsigned char a[4] = { 0 }, b[4] = { 0 };
+        glReadPixels(16, 16, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, a);
+        glReadPixels(48, 48, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, b);
+        printf("== twotex: pixel (16,16) %02x %02x %02x %02x, (48,48) %02x %02x %02x %02x\n",
+               a[0], a[1], a[2], a[3], b[0], b[1], b[2], b[3]);
+        return 0;
+    }
     if (argc > 1 && !strcmp(argv[1], "tmplsz")) {
         /* the textured quad again at several render target sizes, to find
          * every field that depends on the size: one frame per W x H */
