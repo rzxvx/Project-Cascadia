@@ -220,6 +220,9 @@ struct sgx_ccb_cmd {
 	u32 data[6];
 };
 
+/* The GPU clock in kHz: GFX-CLK, PLL@0x18 (513 MHz) / 5 in perf state 2. */
+#define SGX_CLOCK_KHZ			102600
+
 /* The handlers iOS hands the microkernel (this+0x72c..0x73c, computed at
  * 0x80bfa448), as offsets into the microkernel.  Which is which follows
  * from where iOS sends them: TA and TRANSFER from the submit of the
@@ -667,7 +670,19 @@ static void sgx_uk_fill(struct apple_sgx *sgx, const u8 *data, const u8 *cnst)
 	t[1] = b[B_HOST].va;
 	t[2] = b[B_758].va;
 	t[0x14 / 4] = 2;
+	/* iOS's defaults when the ADT has no sgx-duty-* / sgx-*-scale /
+	 * sgx-ticks-per-timer properties, which this one has not
+	 * (SGXDriver543::start 0x80bf1e32-, copied here at 0x80bfa908-). */
+	t[0xb0 / 4] = 0x3aba40d9;	/* this+0x84c */
+	t[0xb4 / 4] = 0x44af0000;	/* this+0x850, 1400.0 */
+	t[0xb8 / 4] = 0x3f628c7a;	/* this+0x854 */
+	t[0xbc / 4] = 0x42451141;	/* this+0x844 */
+	t[0xc0 / 4] = 0x41c2f9f9;	/* this+0x840 */
+	t[0xc4 / 4] = 0x428c79f8;	/* this+0x83c */
+	t[0xc8 / 4] = 0x3a3b3ee7;	/* 1 / 1400.0 */
 	t[0xcc / 4] = 0x3f4ccccd;
+	t[0xd0 / 4] = 0x3f7f9724;	/* this+0x858 */
+	t[0xd4 / 4] = 0x3ad1b717;	/* this+0x85c */
 	t[0xe0 / 4] = 0x10;
 	t[0xf4 / 4] = b[B_750].va;
 	t[0xf8 / 4] = lower_32_bits(sgx->pd_dma);
@@ -682,6 +697,16 @@ static void sgx_uk_fill(struct apple_sgx *sgx, const u8 *data, const u8 *cnst)
 	t[2] = lower_32_bits(sgx->pd_dma);
 	t[3] = b[B_TQ_CCB].va;
 	t[4] = b[B_TQ_CTL].va;
+
+	/* Host control parameters (0x80bfa96c-0x80bfaa12).  The microkernel's
+	 * timer period is "hclk" / 1000 -- ticks per millisecond -- and the
+	 * lockup check runs every 16 periods; active power management and duty
+	 * management stay off (sample rate 0, enable byte 0). */
+	t = b[B_HOST].cpu;
+	t[HOST_HWR_SAMPLE_RATE] = 0x10;
+	t[HOST_UK_TIMER_CLOCK] = SGX_CLOCK_KHZ;
+	t[0x98 / 4] = 0x44af2000;	/* this+0x848, 1401.0 */
+	t[0x9c / 4] = 0x44af2000;
 
 	/* Everything above is in write-combined memory; it has to be out
 	 * before the GPU is told to look. */
