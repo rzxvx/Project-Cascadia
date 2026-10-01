@@ -496,6 +496,46 @@ ISPP (region headers), USE (shader code) each fault separately, so `tqpatch`
 can map each GPU-address field of the transfer to the unit that reads it.
 
 
+**Reading the microkernel (2026-10-01).** `tools/iosgpu/ukdis.py` decodes the
+microkernel down to operands (Vita3K's field layouts for the ALU and load/store
+instructions, plus the microkernel-only encodings, all documented in its
+header): `fe2x` is a hardware register access -- an immediate 10-bit word
+address with a bank select (broadcast, master, own core) or an address in a
+register; BR with bit 38 set is relative; calls save the return address and
+return through a register. With that, the transfer's 3D kick reads plainly
+(microkernel `+0xffd8`, `r1` = the command):
+
+| command | register |
+|---|---|
+| `+0x108` (`0x1800000`) | OR'd into `0xa74` (bits 22-25) |
+| -- | `0x63c` = 0, `0x480` ISP_ZLSCTL = 0 |
+| `+0x00..+0x14` | `0x4c4`, `0x4bc`, `0x4b8`, `0x404`, `0x408` ISP_RGN_BASE, `0x414` |
+| `+0x18..+0x2c` | `0xcac` BIF_3D_REQ_BASE, `0x42c`, `0x4c8`, `0xa5c`/`0xa60`/`0xa64` (pixel PDS) |
+| `+0x30..+0x3c` | `0x40c`, `0x410`, `0x400`, `0x44c` |
+| `+0x40` | `0x148` |
+| if `+0x100`: 12 words | `0x81c..0x848` |
+| if `+0x104`: 10 words (`+0x78..`) | `0xa9c`, `0xa84..0xa98`, `0xb20..0xb28` |
+
+then PDS_INV1, a few handshakes (`0x43c`/`0x810` -> EVENT_STATUS2 bit 7,
+`0x808` -> TCU_INVALCOMPLETE, `0xa08` -> `0x138` bit 2, `0x140` = 4) and **the
+3D start: 1 written to `0x428`** (the render path starts the 3D the same way).
+This matches the marker experiments register for register.
+
+The render path (`+0xbf70`) programs the same registers and more that a
+transfer never touches: `0xcb0` ZLS_REQ_BASE, `0x424`, `0x418..0x420`,
+`0x520..0x528`, `0x484..0x490`, `0x4dc`, `0x800`, per-core `0x4c0` and `0x50c`,
+master `0x510+` (one per extra core) and `0x51c` MASTER_ISP_RGN. On iOS they
+hold whatever the previous render left (the mipmap transfers follow a
+glCopyTexSubImage2D render); under Linux every one of them is 0.
+
+Tested under Linux: `cmd+0x18 = 0x8c000000` does set BIF_3D_REQ_BASE to
+`0x8c000000` on the master and the cores, but with the region headers'
+page unmapped there is still no fault and the same hang -- the 3D stops before
+the region-header fetch. Both cores show `0x4e4` (ISP_STATUS2) =
+`0x001f0000` and one outstanding read; on iOS core 0 had moved on to
+`0x00010000`. Leading suspect: the render-only registers above. Next: their
+iOS values -- from the kext's render-command builder, or read live on iOS.
+
 ### Next
 
 Done since this list was first written: the page tables, the firmware
