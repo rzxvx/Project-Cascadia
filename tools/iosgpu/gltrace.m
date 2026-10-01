@@ -914,6 +914,90 @@ int main(int argc, char **argv)
         printf("== centre pixel %02x %02x %02x %02x\n", c[0], c[1], c[2], c[3]);
         return 0;
     }
+    if (argc > 1 && !strcmp(argv[1], "mod")) {
+        /* texture x vertex colour (SDL's colour/alpha mod) in three blend
+         * modes -- BLEND, ADD, MOD -- each a frame with two quads and two
+         * textures; one interleaved array, 32 bytes a vertex: u v x y r g b a */
+        const char *vsm = "attribute vec4 p; attribute vec2 a; attribute vec4 c;"
+                          "varying mediump vec2 t; varying lowp vec4 v;"
+                          "void main(){ gl_Position = p; t = a; v = c; }";
+        const char *fsm = "precision mediump float; varying vec2 t; varying lowp vec4 v;"
+                          "uniform sampler2D uTex;"
+                          "void main(){ gl_FragColor = texture2D(uTex, t) * v; }";
+        GLuint pm = glCreateProgram();
+        glAttachShader(pm, make_shader(GL_VERTEX_SHADER, vsm));
+        glAttachShader(pm, make_shader(GL_FRAGMENT_SHADER, fsm));
+        glBindAttribLocation(pm, 0, "p");
+        glBindAttribLocation(pm, 1, "a");
+        glBindAttribLocation(pm, 2, "c");
+        glLinkProgram(pm);
+        glUseProgram(pm);
+        glUniform1i(glGetUniformLocation(pm, "uTex"), 0);
+        static float vb[12 * 8];
+        static const float box[2][4] = { { -0.9f, -0.9f, 0.1f, 0.1f }, { -0.1f, -0.1f, 0.9f, 0.9f } };
+        static const float col[2][4] = { { 1, 0.5f, 0.5f, 1 }, { 0.5f, 1, 1, 0.5f } };
+        static const int corner[6][2] = { { 0, 0 }, { 1, 0 }, { 1, 1 }, { 0, 0 }, { 1, 1 }, { 0, 1 } };
+        for (int q = 0; q < 2; q++)
+            for (int k = 0; k < 6; k++) {
+                float *o = vb + (q * 6 + k) * 8;
+                o[0] = corner[k][0]; o[1] = corner[k][1];
+                o[2] = corner[k][0] ? box[q][2] : box[q][0];
+                o[3] = corner[k][1] ? box[q][3] : box[q][1];
+                for (int c = 0; c < 4; c++) o[4 + c] = col[q][c];
+            }
+        unsigned char t1[8 * 8 * 4], t2[4 * 4 * 4];
+        for (int i = 0; i < 64; i++) {
+            int c = ((i & 7) ^ (i >> 3)) & 1;
+            t1[i * 4] = c ? 255 : 0; t1[i * 4 + 1] = c ? 255 : 0; t1[i * 4 + 2] = 255;
+            t1[i * 4 + 3] = 255;
+        }
+        for (int i = 0; i < 16; i++) {
+            t2[i * 4] = 255; t2[i * 4 + 1] = 255; t2[i * 4 + 2] = 0; t2[i * 4 + 3] = 200;
+        }
+        GLuint tx[2];
+        glGenTextures(2, tx);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, tx[0]);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 8, 8, 0, GL_RGBA, GL_UNSIGNED_BYTE, t1);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glBindTexture(GL_TEXTURE_2D, tx[1]);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 4, 4, 0, GL_RGBA, GL_UNSIGNED_BYTE, t2);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glEnableVertexAttribArray(0);
+        glEnableVertexAttribArray(1);
+        glEnableVertexAttribArray(2);
+        glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 32, vb);
+        glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 32, vb + 2);
+        glVertexAttribPointer(2, 4, GL_FLOAT, GL_FALSE, 32, vb + 4);
+        glEnable(GL_BLEND);
+        static const GLenum bf[3][2] = { { GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA },
+                                         { GL_SRC_ALPHA, GL_ONE }, { GL_DST_COLOR, GL_ZERO } };
+        static const char *names[3] = { "blend", "add", "mod" };
+        print_renders = 1;
+        for (int m = 0; m < 3; m++) {
+            char label[32], path[64];
+            glBlendFunc(bf[m][0], bf[m][1]);
+            glClearColor(0.3f, 0.3f, 0.3f, 1);
+            glClear(GL_COLOR_BUFFER_BIT);
+            glBindTexture(GL_TEXTURE_2D, tx[0]);
+            glDrawArrays(GL_TRIANGLES, 0, 6);
+            glBindTexture(GL_TEXTURE_2D, tx[1]);
+            glDrawArrays(GL_TRIANGLES, 6, 6);
+            glFinish();
+            snprintf(label, sizeof(label), "mod_%s", names[m]);
+            snprintf(path, sizeof(path), "/var/root/gt_m_%s.bin", names[m]);
+            scan_payloads(label);
+            dump_iokit_to(path);
+            unsigned char a[4] = { 0 }, b[4] = { 0 };
+            glReadPixels(16, 16, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, a);
+            glReadPixels(48, 48, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, b);
+            printf("== %s: pixel (16,16) %02x %02x %02x %02x, (48,48) %02x %02x %02x %02x\n",
+                   label, a[0], a[1], a[2], a[3], b[0], b[1], b[2], b[3]);
+        }
+        return 0;
+    }
     if (argc > 1 && !strcmp(argv[1], "twotex")) {
         /* two quads, two textures, blending on: how one frame carries several
          * draws with their own sampler state (sprites) */
