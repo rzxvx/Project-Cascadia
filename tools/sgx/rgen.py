@@ -19,6 +19,8 @@ images for apple-sgx/mem plus a device script (rrun.sh):
 
 Usage: rgen.py CAPDIR RTDIR OUTDIR [--profile tri|depth] [--fb X Y] [--reloc BASE]
   --reloc the triangle's GL buffers and VDM stream moved to BASE.. (tri only)
+  --codebase CB  shader code page at CB + 0x1000, USE_CODE_BASE_3 = CB (the
+          2D engine's programs at 0x1000 stay)
   --fb    draw straight into the framebuffer (GPU 0x90000000, 768 px lines)
           at X, Y: the 3D pass's emit program (GPU 0x1d40) gets the linear
           PBE state instead of the twiddled 64x64 surface at 0x98ddd000
@@ -136,6 +138,7 @@ def ta_cmd(rtdir):
 MAPS = ((RT_VA, 0xd000), (PB_VA, 0xd1000), (CMD_VA, 0x1000), (VDM_VA, 0x4000))
 
 FB_VA, FB_STRIDE_PX = 0x90000000, 768
+SGX_REGS = 0x35100000            # broadcast register bank (physical)
 
 def emit_to_fb(code, x, y, w=64, h=64):
     """Rewrite the emit LIMMs r0..r5 (GPU 0x1d60..0x1d88): linear output."""
@@ -205,6 +208,14 @@ def main():
             from tqgen import limm
             struct.pack_into('<Q', code, 0xd68, limm(1, base + 0x30000))
         maps = MAPS[:3] + ((base, 0x54000),)
+    post = []
+    if '--codebase' in sys.argv:
+        # GL's programs use USE_CODE_BASE_3 (0 on iOS, code at GPU 0x1000..):
+        # point the base at CB and put the page at CB + 0x1000 instead
+        cb = int(sys.argv[sys.argv.index('--codebase') + 1], 0)
+        imgs[cb + 0x1000] = imgs.pop(0x1000)
+        maps = maps + ((cb + 0x1000, 0x1000),)
+        post.append('peek w %x %x > /dev/null' % (SGX_REGS + 0xa0c + 4 * 3, cb >> 6))
     out_va = base + 0x30000 if '--reloc' in sys.argv else 0x98ddd000
     for va, b in imgs.items():
         open(os.path.join(out, 'm_%08x.bin' % va), 'wb').write(b)
@@ -215,6 +226,7 @@ def main():
     sh += ['echo 1 > $D/boot; sleep 0.2']
     sh += ['dd if=m_%08x.bin of=$D/mem bs=4096 seek=%d conv=notrunc 2>/dev/null' % (va, va >> 12)
            for va in imgs]
+    sh += post
     sh += ['dmesg -c > /dev/null',
            'echo "rkick 0x%x 0x%x 0x%x ${1:-0}" > $D/cmd' % (PB_VA, RT_VA + 0x8000, CMD_VA),
            'sleep 0.5; dmesg | grep -A3 rkick',

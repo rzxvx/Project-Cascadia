@@ -842,6 +842,24 @@ context word 0 cleared, no MMU fault, no lockup.
   patching the compare to ALWAYS flips it; `ranim.py --depth` turns the far
   triangle and swings its z through the near one.
 
+### M6 first steps: the triangle on our own terms (2026-10-02)
+
+- **All addresses ours** (`rgen.py --reloc BASE`): the 21 pointer words of
+  the GL buffers come in three encodings -- plain; `tag4 | addr >> 4` (VDM
+  words, some PDS data); PDS data words `tag5 | (addr >> 4) & 0x07ffffff`
+  with bit 31 implied (`0x118dbc1a` = `0x98dbc1a0`). Relocated, the frame
+  renders identically while the old addresses hold other data.
+- **Shader code anywhere** (`--codebase CB`): GL's programs use
+  `USE_CODE_BASE_3` (0 on iOS: code at GPU `0x1000`); with the base = CB >> 6
+  and the page at CB + 0x1000, rendering still works with page `0x1000`
+  zeroed. The 2D engine's code page is no longer touched.
+- **Draw word** `0x81c00003` (VDM, then the index buffer address): the low
+  bits are the index count -- 6 with six vertices gives two triangles.
+- **Colour**: `uColor` (mediump) sits as four f16 in the 3D pass's PDS block
+  (`+0x230`); rewriting it recolours the frame.
+- The render target's row 0 is GL's bottom row, so the image lands
+  upside down in the framebuffer.
+
 ### Next
 
 Done since this list was first written: the page tables, the firmware
