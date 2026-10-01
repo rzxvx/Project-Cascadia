@@ -61,8 +61,14 @@ def tex_words(addr, log2w, log2h, fmt):
     """texture state for a source/destination: format word, size word, address"""
     return [fmt, 0x0c000000 | log2w << 16 | log2h, addr, 0]
 
+def tex_words_linear(addr, w, h, stride_px):
+    """a linear BGRA source (from iOS sampling an IOSurface): stride field in
+    format bits 16-23, (w-1, h-1) in the size word, 0x10000000 marks linear"""
+    return [(stride_px // 4 - 2) << 16 | 0x0e90, 0xcc000000 | (w - 1) << 12 | (h - 1), addr, 0x10000000]
+
 def block(src, dst):
-    """src/dst = (addr, log2w, log2h, fmtword).  Returns 0x1c0 bytes."""
+    """src/dst = (addr, log2w, log2h, fmtword), or ('lin', addr, w, h, stride_px)
+    for a linear source.  Returns 0x1c0 bytes."""
     w = [0] * (0x1c0 // 4)
     w[0x00 // 4] = doutu(0x1c40); w[0x08 // 4] = doutu(0x1d40); w[0x10 // 4] = doutu(0x1c00)
     w[0x1c // 4: 0x1c // 4 + len(PDS_MAIN_CONST)] = PDS_MAIN_CONST
@@ -71,7 +77,7 @@ def block(src, dst):
         w[base // 4] = PDS_END[0]
         d = base + 0x20
         w[d // 4: d // 4 + 4] = [doutu(0x1400), 0xa, 0, 0xf800]
-        w[d // 4 + 4: d // 4 + 8] = tex_words(t[0], t[1], t[2], t[3])
+        w[d // 4 + 4: d // 4 + 8] = tex_words_linear(*t[1:]) if t[0] == 'lin' else tex_words(t[0], t[1], t[2], t[3])
         w[(d + 0x20) // 4:(d + 0x20) // 4 + 4] = PDS_TEX
     return struct.pack('<%dI' % len(w), *w)
 
