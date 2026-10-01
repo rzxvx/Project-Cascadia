@@ -125,6 +125,12 @@ PROFILES = {
                          0x980cd000: 0x969000, 0x980cf000: 0x96a000,
                          0x980e6000: 0x971000},
                    code=0x985000, vdm=0x981000, cbase=(3,)),
+    # gt_m_blend.bin (logs/ios/mod): texture x vertex colour, two quads, two
+    # textures, SRC_ALPHA/ONE_MINUS_SRC_ALPHA; vertices [rgba][uv][xy], 32 B
+    'modblend': dict(gl=(0x98956000, 0x6f000),
+                     bufs={0x98956000: 0x8a2000, 0x98967000: 0x8b4000,
+                           0x989b5000: 0x931000},
+                     code=0x8f7000, vdm=0x8f3000, cbase=(3,)),
     # gt_t_vcolor.bin: a triangle with a colour per vertex
     'vcolor': dict(gl=(0x9889d000, 0x14b000),
                    bufs={0x989c7000: 0x9aa000, 0x98995000: 0x912000,
@@ -252,6 +258,8 @@ SIZE_FIELDS = {
                 viewport=0x1e4, pds=0x989d8000),
     'twotex': dict(state=0x980e6000, clips=(0xfc,), clear=(), viewport=0x104,
                    pds=0x980ac000),
+    'modblend': dict(state=0x989b5000, clips=(0xfc,), clear=(), viewport=0x104,
+                     pds=0x98956000),
 }
 
 def resize(gl, prof_name, w, h):

@@ -33,8 +33,29 @@ int main(int argc, char **argv)
 		sgx2d_texture_update(st, stream);
 		sgx2d_begin(bg);
 		sgx2d_quad(st, 184, 100, 400, 400);
-		for (i = 0; i < 8; i++)
-			sgx2d_fill(RGBA(40 + i * 25, 200 - i * 20, 90, 180), 60 + i * 80, 560 + 40 * sinf(f * 0.05f + i), 70, 70);
+		for (i = 0; i < 8; i++) {		/* translucent fills */
+			sgx2d_color((40 + i * 25) / 255.f, (200 - i * 20) / 255.f, 90 / 255.f, 0.7f);
+			sgx2d_fill(60 + i * 80, 560 + 40 * sinf(f * 0.05f + i), 70, 70);
+		}
+		sgx2d_blend(SGX2D_ADD);			/* glows */
+		for (i = 0; i < 3; i++) {
+			sgx2d_color(0.6f, 0.4f, 0.1f, 1);
+			sgx2d_quad(sh, 100 + i * 220 + 60 * sinf(f * 0.03f), 330, 180, 180);
+		}
+		sgx2d_blend(SGX2D_MOD);			/* darken the bottom third */
+		sgx2d_color(0.4f, 0.4f, 0.7f, 1);
+		sgx2d_fill(0, 700, 768, 324);
+		sgx2d_blend(SGX2D_BLEND);
+		{					/* a turning, fading sprite */
+			float a = f * 0.04f, c = cosf(a) * 90, s = sinf(a) * 90, cx = 384, cy = 960;
+			float xy[8] = { cx - c + s, cy - s - c, cx + c + s, cy + s - c,
+					cx + c - s, cy + s + c, cx - c - s, cy - s + c };
+			float uv[8] = { 0, 0, 0.5f, 0, 0.5f, 0.5f, 0, 0.5f };
+
+			sgx2d_color(1, 1, 1, 0.5f + 0.5f * sinf(f * 0.1f));
+			sgx2d_quad4(sh, xy, uv);
+		}
+		sgx2d_color(1, 1, 1, 1);
 		for (i = 0; i < 4; i++)
 			sgx2d_quad_uv(sh, 100 + i * 150 + 30 * cosf(f * 0.04f), 760, 128, 128,
 				      (i % 2) * 0.5f, (i / 2) * 0.5f, (i % 2) * 0.5f + 0.5f, (i / 2) * 0.5f + 0.5f);

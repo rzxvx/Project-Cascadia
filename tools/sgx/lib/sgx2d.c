@@ -1,11 +1,10 @@
-/* sgx2d: see sgx2d.h.  How each block works is in tools/sgx/rbatch.py and
- * docs/research/p105-gpu.md; this is the same frame assembly in C. */
+/* sgx2d: see sgx2d.h.  How each block works is in tools/sgx/rpack.py,
+ * rbatch.py and docs/research/p105-gpu.md; this is the frame assembly. */
 #include "sgx2d.h"
 
 #include <errno.h>
-#include <stdarg.h>
 #include <fcntl.h>
-#include <stdint.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -19,30 +18,40 @@
 #define EXT_VB		0x100000
 #define EXT_VB_END	0x1c0000
 #define EXT_FRAME	0x1c0000
-#define QUAD_BYTES	(6 * 4 * 4)
+#define VTX_FLOATS	8		/* r g b a u v x y */
+#define QUAD_BYTES	(6 * VTX_FLOATS * 4)
 #define MAX_QUADS	((EXT_VB_END - EXT_VB) / QUAD_BYTES - 1)
-#define MAX_TEX		256
+#define MAX_TEX		512
 
 enum { T_FULL, T_FULLPROG, T_DELTA, T_DELTAPROG, T_FETCH, T_TEX, T_NUM };
 static const char *tmpl_names[T_NUM] = {
 	"tmpl_full", "tmpl_fullprog", "tmpl_delta", "tmpl_deltaprog", "tmpl_fetch", "tmpl_tex"
 };
 
+struct quad {
+	int tex, mode;
+	float xy[8], uv[8], rgba[4];
+};
+
 static struct {
 	int mem, cmd;
 	uint32_t kick[3], consts0, consts, idx, idx_count, vdm, vdm_size, ext, ext_size;
+	uint32_t fetch_tag, fetch_word, blendprog[SGX2D_NMODES];
 	uint32_t tail[8];
 	int ntail, w, h;
 	uint8_t *tmpl;
 	int toff[T_NUM], tsize[T_NUM];
 	uint32_t ext_top;
-	struct { uint32_t block, deltaprog, data; float us, vs; int w, h, s; } tex[MAX_TEX];
-	struct { uint32_t rgba; int tex; } fills[64];
-	int nfills;
-	int ntex;
+	struct {
+		uint32_t data, block[SGX2D_NMODES], deltaprog[SGX2D_NMODES];
+		float us, vs;
+		int w, h, s;
+	} tex[MAX_TEX];
+	int ntex, white;
 	/* the frame being built */
-	int bg, nq;
-	struct { int tex; float x, y, w, h, u0, v0, u1, v1; } *q;
+	int bg, nq, mode;
+	float rgba[4];
+	struct quad *q;
 	float *vb;
 	uint8_t *fbuf;		/* EXT_FRAME .. end, staged */
 	uint32_t ftop;
@@ -94,6 +103,22 @@ static int load_file(const char *dir, const char *name, uint8_t **buf, size_t *l
 	return *len == (size_t)n ? 0 : -EIO;
 }
 
+static int parse_words(const char *p, uint32_t *out, int max)
+{
+	int n = 0;
+
+	while (n < max && *p) {
+		char *e;
+		uint32_t v = strtoul(p, &e, 0);
+
+		if (e == p)
+			break;
+		out[n++] = v;
+		p = e;
+	}
+	return n;
+}
+
 int sgx2d_open(const char *dir)
 {
 	char path[512], line[512], key[64], a[64], b[64], c[64];
@@ -118,10 +143,9 @@ int sgx2d_open(const char *dir)
 			continue;
 		if (!strcmp(key, "map"))
 			cmd("map %s %s", a, b);	/* EEXIST on a second open is fine */
-		else if (!strcmp(key, "kick")) {
-			S.kick[0] = strtoul(a, 0, 0); S.kick[1] = strtoul(b, 0, 0);
-			S.kick[2] = strtoul(c, 0, 0);
-		} else if (!strcmp(key, "screen")) {
+		else if (!strcmp(key, "kick"))
+			parse_words(line + 4, S.kick, 3);
+		else if (!strcmp(key, "screen")) {
 			S.w = atoi(a); S.h = atoi(b);
 		} else if (!strcmp(key, "consts0"))
 			S.consts0 = strtoul(a, 0, 0);
@@ -133,19 +157,13 @@ int sgx2d_open(const char *dir)
 			S.vdm = strtoul(a, 0, 0); S.vdm_size = strtoul(b, 0, 0);
 		} else if (!strcmp(key, "ext")) {
 			S.ext = strtoul(a, 0, 0); S.ext_size = strtoul(b, 0, 0);
-		} else if (!strcmp(key, "tail")) {
-			char *p = line + 4;
-
-			while (S.ntail < 8 && *p) {
-				char *e;
-				uint32_t v = strtoul(p, &e, 0);
-
-				if (e == p)
-					break;
-				S.tail[S.ntail++] = v;
-				p = e;
-			}
-		} else
+		} else if (!strcmp(key, "fetch")) {
+			S.fetch_tag = strtoul(a, 0, 0); S.fetch_word = strtoul(b, 0, 0);
+		} else if (!strcmp(key, "blendprogs"))
+			parse_words(line + 10, S.blendprog, SGX2D_NMODES);
+		else if (!strcmp(key, "tail"))
+			S.ntail = parse_words(line + 4, S.tail, 8);
+		else
 			for (i = 0; i < T_NUM; i++)
 				if (!strcmp(key, tmpl_names[i])) {
 					S.toff[i] = atoi(a); S.tsize[i] = atoi(b);
@@ -184,7 +202,16 @@ int sgx2d_open(const char *dir)
 	S.vb = malloc((MAX_QUADS + 1) * QUAD_BYTES);
 	S.fbuf = malloc(S.ext_size - EXT_FRAME);
 	S.vdmbuf = malloc(S.vdm_size);
-	return S.q && S.vb && S.fbuf && S.vdmbuf ? 0 : -ENOMEM;
+	if (!S.q || !S.vb || !S.fbuf || !S.vdmbuf)
+		return -ENOMEM;
+	{
+		uint32_t px[16];
+
+		for (i = 0; i < 16; i++)
+			px[i] = 0xffffffff;
+		S.white = sgx2d_texture(px, 4, 4);
+	}
+	return S.white < 0 ? S.white : 0;
 }
 
 void sgx2d_close(void)
@@ -217,102 +244,107 @@ static uint32_t twiddle(uint32_t x, uint32_t y)
 	return i;
 }
 
+static int upload(int id, const uint32_t *src, uint32_t va)
+{
+	int s = S.tex[id].s, x, y, ret;
+	uint32_t *t = calloc(s * s, 4);
+
+	if (!t)
+		return -ENOMEM;
+	for (y = 0; y < S.tex[id].h; y++)
+		for (x = 0; x < S.tex[id].w; x++)
+			t[twiddle(x, y)] = src[y * S.tex[id].w + x];
+	ret = put(va, t, s * s * 4);
+	free(t);
+	return ret;
+}
+
 int sgx2d_texture(const void *rgba, int w, int h)
 {
-	const uint32_t *src = rgba;
-	uint32_t *t, block, data, va;
+	uint32_t va, data;
 	uint8_t blk[0x40], d[0x20], prog[0x40];
-	int s = 4, x, y, id = S.ntex;
+	int s = 4, id = S.ntex, m;
 
-	if (id >= MAX_TEX || w > 1024 || h > 1024)
+	if (id >= MAX_TEX || w < 1 || h < 1 || w > 1024 || h > 1024)
 		return -EINVAL;
 	while (s < w || s < h)
 		s <<= 1;		/* square, power of two (padded) */
-	t = calloc(s * s, 4);
-	if (!t)
-		return -ENOMEM;
-	for (y = 0; y < h; y++)
-		for (x = 0; x < w; x++)
-			t[twiddle(x, y)] = src[y * w + x];
-	va = ext_alloc(t, s * s * 4, 0x1000);
-	free(t);
-	if (!va)
-		return -ENOSPC;
-	memcpy(blk, S.tmpl + S.toff[T_TEX], S.tsize[T_TEX]);
-	((uint32_t *)blk)[5] = 0x0c000000 | (__builtin_ctz(s) << 16) | __builtin_ctz(s);
-	((uint32_t *)blk)[6] = va;
-	block = ext_alloc(blk, S.tsize[T_TEX], 0x40);
-	memcpy(d, S.tmpl + S.toff[T_DELTA], S.tsize[T_DELTA]);
-	((uint32_t *)d)[3] = p27(block);
-	data = ext_alloc(d, S.tsize[T_DELTA], 0x20);
-	memcpy(prog, S.tmpl + S.toff[T_DELTAPROG], S.tsize[T_DELTAPROG]);
-	((uint32_t *)prog)[0] = data;
-	S.tex[id].deltaprog = ext_alloc(prog, S.tsize[T_DELTAPROG], 0x40);
-	if (!block || !data || !S.tex[id].deltaprog)
-		return -ENOSPC;
-	S.tex[id].block = block;
-	S.tex[id].data = va;
 	S.tex[id].w = w; S.tex[id].h = h; S.tex[id].s = s;
 	S.tex[id].us = (float)w / s;
 	S.tex[id].vs = (float)h / s;
+	S.ext_top = (S.ext_top + 0xfff) & ~0xfff;
+	va = S.ext + S.ext_top;
+	if (S.ext_top + s * s * 4 > EXT_TEX_END)
+		return -ENOSPC;
+	S.ext_top += s * s * 4;
+	if (upload(id, rgba, va))
+		return -EIO;
+	S.tex[id].data = va;
+	for (m = 0; m < SGX2D_NMODES; m++) {	/* a block and a delta per blend mode */
+		memcpy(blk, S.tmpl + S.toff[T_TEX], S.tsize[T_TEX]);
+		((uint32_t *)blk)[0] = S.blendprog[m];
+		((uint32_t *)blk)[5] = 0x0c000000 | (__builtin_ctz(s) << 16) | __builtin_ctz(s);
+		((uint32_t *)blk)[6] = va;
+		S.tex[id].block[m] = ext_alloc(blk, S.tsize[T_TEX], 0x40);
+		memcpy(d, S.tmpl + S.toff[T_DELTA], S.tsize[T_DELTA]);
+		((uint32_t *)d)[3] = p27(S.tex[id].block[m]);
+		data = ext_alloc(d, S.tsize[T_DELTA], 0x20);
+		memcpy(prog, S.tmpl + S.toff[T_DELTAPROG], S.tsize[T_DELTAPROG]);
+		((uint32_t *)prog)[0] = data;
+		S.tex[id].deltaprog[m] = ext_alloc(prog, S.tsize[T_DELTAPROG], 0x40);
+		if (!S.tex[id].block[m] || !data || !S.tex[id].deltaprog[m])
+			return -ENOSPC;
+	}
 	return S.ntex++;
 }
 
 int sgx2d_texture_update(int id, const void *rgba)
 {
-	const uint32_t *src = rgba;
-	uint32_t *t;
-	int s, x, y, ret;
-
 	if (id < 0 || id >= S.ntex)
 		return -EINVAL;
-	s = S.tex[id].s;
-	if (!(t = calloc(s * s, 4)))
-		return -ENOMEM;
-	for (y = 0; y < S.tex[id].h; y++)
-		for (x = 0; x < S.tex[id].w; x++)
-			t[twiddle(x, y)] = src[y * S.tex[id].w + x];
-	ret = put(S.tex[id].data, t, s * s * 4);
-	free(t);
-	return ret;
-}
-
-void sgx2d_fill(uint32_t rgba, float x, float y, float w, float h)
-{
-	uint32_t px[16];
-	int i, tex = -1;
-
-	for (i = 0; i < S.nfills; i++)
-		if (S.fills[i].rgba == rgba)
-			tex = S.fills[i].tex;
-	if (tex < 0) {
-		for (i = 0; i < 16; i++)
-			px[i] = rgba;
-		if ((tex = sgx2d_texture(px, 4, 4)) < 0)
-			return;
-		if (S.nfills < 64) {
-			S.fills[S.nfills].rgba = rgba;
-			S.fills[S.nfills++].tex = tex;
-		}
-	}
-	sgx2d_quad(tex, x, y, w, h);
+	return upload(id, rgba, S.tex[id].data);
 }
 
 void sgx2d_begin(int bg)
 {
 	S.bg = bg;
 	S.nq = 0;
+	S.mode = SGX2D_BLEND;
+	S.rgba[0] = S.rgba[1] = S.rgba[2] = S.rgba[3] = 1;
+}
+
+void sgx2d_color(float r, float g, float b, float a)
+{
+	S.rgba[0] = r; S.rgba[1] = g; S.rgba[2] = b; S.rgba[3] = a;
+}
+
+void sgx2d_blend(int mode)
+{
+	if (mode >= 0 && mode < SGX2D_NMODES)
+		S.mode = mode;
+}
+
+void sgx2d_quad4(int tex, const float xy[8], const float uv[8])
+{
+	struct quad *q;
+
+	if (S.nq >= MAX_QUADS || tex < 0 || tex >= S.ntex)
+		return;
+	q = &S.q[S.nq++];
+	q->tex = tex;
+	q->mode = S.mode;
+	memcpy(q->xy, xy, sizeof(q->xy));
+	memcpy(q->uv, uv, sizeof(q->uv));
+	memcpy(q->rgba, S.rgba, sizeof(q->rgba));
 }
 
 void sgx2d_quad_uv(int tex, float x, float y, float w, float h,
 		   float u0, float v0, float u1, float v1)
 {
-	if (S.nq >= MAX_QUADS || tex < 0 || tex >= S.ntex)
-		return;
-	S.q[S.nq].tex = tex;
-	S.q[S.nq].x = x; S.q[S.nq].y = y; S.q[S.nq].w = w; S.q[S.nq].h = h;
-	S.q[S.nq].u0 = u0; S.q[S.nq].v0 = v0; S.q[S.nq].u1 = u1; S.q[S.nq].v1 = v1;
-	S.nq++;
+	float xy[8] = { x, y, x + w, y, x + w, y + h, x, y + h };
+	float uv[8] = { u0, v0, u1, v0, u1, v1, u0, v1 };
+
+	sgx2d_quad4(tex, xy, uv);
 }
 
 void sgx2d_quad(int tex, float x, float y, float w, float h)
@@ -320,23 +352,25 @@ void sgx2d_quad(int tex, float x, float y, float w, float h)
 	sgx2d_quad_uv(tex, x, y, w, h, 0, 0, 1, 1);
 }
 
-static void vb_quad(float *v, int tex, float x, float y, float w, float h,
-		    float u0, float v0, float u1, float v1)
+void sgx2d_fill(float x, float y, float w, float h)
 {
-	float x0 = x / S.w * 2 - 1, y0 = y / S.h * 2 - 1;
-	float x1 = (x + w) / S.w * 2 - 1, y1 = (y + h) / S.h * 2 - 1;
-	float us = S.tex[tex].us, vs = S.tex[tex].vs;
-	float c[6][4] = {
-		{ u0, v0, x0, y0 }, { u1, v0, x1, y0 }, { u1, v1, x1, y1 },
-		{ u0, v0, x0, y0 }, { u1, v1, x1, y1 }, { u0, v1, x0, y1 },
-	};
-	int i;
+	sgx2d_quad(S.white, x, y, w, h);
+}
 
-	for (i = 0; i < 6; i++) {
-		v[i * 4 + 0] = c[i][0] * us;
-		v[i * 4 + 1] = c[i][1] * vs;
-		v[i * 4 + 2] = c[i][2];
-		v[i * 4 + 3] = c[i][3];
+/* two triangles (corners 0 1 2, 0 2 3) as r g b a u v x y */
+static void vb_quad(float *v, const struct quad *q)
+{
+	static const int order[6] = { 0, 1, 2, 0, 2, 3 };
+	float us = S.tex[q->tex].us, vs = S.tex[q->tex].vs;
+	int i, k;
+
+	for (i = 0; i < 6; i++, v += VTX_FLOATS) {
+		k = order[i];
+		memcpy(v, q->rgba, 4 * sizeof(float));
+		v[4] = q->uv[2 * k] * us;
+		v[5] = q->uv[2 * k + 1] * vs;
+		v[6] = q->xy[2 * k] / S.w * 2 - 1;
+		v[7] = q->xy[2 * k + 1] / S.h * 2 - 1;
 	}
 }
 
@@ -354,8 +388,9 @@ static uint32_t fetch_block(uint32_t vb)
 	uint8_t b[0x80];
 
 	memcpy(b, S.tmpl + S.toff[T_FETCH], S.tsize[T_FETCH]);
-	((uint32_t *)b)[0] = vb;
-	((uint32_t *)b)[4] = vb + 8;
+	((uint32_t *)b)[0] = vb;		/* r g b a */
+	((uint32_t *)b)[4] = vb + 16;		/* u v */
+	((uint32_t *)b)[8] = vb + 24;		/* x y */
 	return frame_alloc(b, S.tsize[T_FETCH], 0x40);
 }
 
@@ -387,6 +422,8 @@ int sgx2d_end(void)
 {
 	uint32_t *v = S.vdmbuf, vbva = S.ext + EXT_VB, d0, p0, limit;
 	uint8_t full[0x80], prog[0x40];
+	struct quad bgq = { .tex = S.bg, .mode = SGX2D_BLEND,
+			    .uv = { 0, 0, 1, 0, 1, 1, 0, 1 }, .rgba = { 1, 1, 1, 1 } };
 	/* the VDM reads ahead: keep 512 bytes clear of the window's end */
 	int i, n, ret, maxv = S.vdm_size / 4 - 128 - 10 - S.ntail;
 
@@ -396,9 +433,11 @@ int sgx2d_end(void)
 		return ret;
 	S.ftop = 0;
 	/* draw 0: the background, with the whole state */
-	vb_quad(S.vb, S.bg, 0, 0, S.w, S.h, 0, 0, 1, 1);
+	bgq.xy[2] = bgq.xy[4] = S.w;
+	bgq.xy[5] = bgq.xy[7] = S.h;
+	vb_quad(S.vb, &bgq);
 	memcpy(full, S.tmpl + S.toff[T_FULL], S.tsize[T_FULL]);
-	((uint32_t *)full)[6] = p27(S.tex[S.bg].block);
+	((uint32_t *)full)[6] = p27(S.tex[S.bg].block[SGX2D_BLEND]);
 	d0 = frame_alloc(full, S.tsize[T_FULL], 0x20);
 	memcpy(prog, S.tmpl + S.toff[T_FULLPROG], S.tsize[T_FULLPROG]);
 	((uint32_t *)prog)[0] = d0;
@@ -406,22 +445,23 @@ int sgx2d_end(void)
 	*v++ = vdm4(4, S.consts0); *v++ = 0x1000e102;
 	*v++ = vdm4(4, p0); *v++ = 0x12022206;
 	*v++ = 0x81c00006; *v++ = S.idx; *v++ = 0x70000000; *v++ = 0x003fffff;
-	*v++ = vdm4(15, fetch_block(vbva)); *v++ = 0x05800403;
-	/* one draw per run of quads with the same texture */
+	*v++ = vdm4(S.fetch_tag, fetch_block(vbva)); *v++ = S.fetch_word;
+	/* one draw per run of quads with the same texture and blend mode */
 	limit = S.idx_count / 6;
 	for (i = 0; i < S.nq; i += n) {
-		for (n = 1; i + n < S.nq && S.q[i + n].tex == S.q[i].tex && n < (int)limit; n++)
+		for (n = 1; i + n < S.nq && S.q[i + n].tex == S.q[i].tex &&
+		     S.q[i + n].mode == S.q[i].mode && n < (int)limit; n++)
 			;
 		if (v - S.vdmbuf > maxv || S.ftop + 0x100 > S.ext_size - EXT_FRAME)
 			break;		/* too many draws: the rest is dropped */
 		*v++ = vdm4(4, S.consts); *v++ = 0x1000e102;
-		*v++ = vdm4(4, S.tex[S.q[i].tex].deltaprog); *v++ = 0x12022201;
+		*v++ = vdm4(4, S.tex[S.q[i].tex].deltaprog[S.q[i].mode]); *v++ = 0x12022201;
 		*v++ = 0x81c00000 | 6 * n; *v++ = S.idx; *v++ = 0x70000000; *v++ = 0x003fffff;
-		*v++ = vdm4(15, fetch_block(vbva + QUAD_BYTES * (1 + i))); *v++ = 0x05800403;
+		*v++ = vdm4(S.fetch_tag, fetch_block(vbva + QUAD_BYTES * (1 + i)));
+		*v++ = S.fetch_word;
 	}
 	for (n = 0; n < S.nq; n++)
-		vb_quad(S.vb + (1 + n) * 24, S.q[n].tex, S.q[n].x, S.q[n].y, S.q[n].w, S.q[n].h,
-			S.q[n].u0, S.q[n].v0, S.q[n].u1, S.q[n].v1);
+		vb_quad(S.vb + (1 + n) * 6 * VTX_FLOATS, &S.q[n]);
 	for (n = 0; n < S.ntail; n++)
 		*v++ = S.tail[n];
 	if ((ret = put(vbva, S.vb, QUAD_BYTES * (1 + S.nq))) ||
