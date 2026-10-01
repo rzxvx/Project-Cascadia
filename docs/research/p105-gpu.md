@@ -860,6 +860,20 @@ context word 0 cleared, no MMU fault, no lockup.
 - The render target's row 0 is GL's bottom row, so the image lands
   upside down in the framebuffer.
 
+### M6: textures, alpha blending and per-vertex colour replay (2026-10-02)
+
+`gltrace tmpl` (`logs/ios/tmpl`) captured three frames: a triangle with a
+colour per vertex, a 4x4-textured quad, and the quad with `SRC_ALPHA,
+ONE_MINUS_SRC_ALPHA`. The texture is CPU-visible in the capture (twiddled,
+GPU `0x9889d000`); its descriptor in the 3D pass's PDS block has the DEST
+layout `{code, 0xa, 0, 0x0c00f900, 0x03fe0090, 0x0c<log2 w><log2 h>,
+address}`. These frames' programs use code bases 5 (and 3), also 0 on iOS.
+`rgen.py --profile tex|texblend|vcolor` replays them; pixels match iOS's
+readback exactly (blend `bf008019` = iOS `00 80 19 bf`, vertex colour
+`33 b2 1a`). The vcolor frame loads the previous render target contents as
+its background (GL cleared in a separate render), so its background is ours
+(zero).
+
 ### Next
 
 Done since this list was first written: the page tables, the firmware

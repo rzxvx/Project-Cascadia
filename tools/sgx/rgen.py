@@ -93,6 +93,22 @@ PROFILES = {
                   bufs={0x98dab000: 0x852000, 0x98dd6000: 0x87a000,
                         0x98e62000: 0x907000},
                   code=0x8bd000, vdm=0x8b9000),
+    # gt_t_tex.bin: a 4x4 texture on a quad (logs/ios/tmpl); texture
+    # 0x9889d000 (twiddled), output 0x98951000; programs through code base 5
+    'tex': dict(gl=(0x9889d000, 0x14b000),
+                bufs={0x98940000: 0x902000, 0x989d8000: 0x9ba000,
+                      0x989c2000: 0x92d000, 0x9889d000: 0x941000},
+                code=0x96d000, vdm=0x948000, cbase=(5,)),
+    # gt_t_texblend.bin: the same quad with SRC_ALPHA, ONE_MINUS_SRC_ALPHA
+    'texblend': dict(gl=(0x9889d000, 0x14b000),
+                     bufs={0x989c7000: 0x9aa000, 0x98995000: 0x912000,
+                           0x989c2000: 0x92d000, 0x9889d000: 0x941000},
+                     code=0x96d000, vdm=0x974000, cbase=(3, 5)),
+    # gt_t_vcolor.bin: a triangle with a colour per vertex
+    'vcolor': dict(gl=(0x9889d000, 0x14b000),
+                   bufs={0x989c7000: 0x9aa000, 0x98995000: 0x912000,
+                         0x989c2000: 0x92d000},
+                   code=0x96d000, vdm=0x948000, cbase=(5,)),
 }
 
 def gl_image(cap, prof):
@@ -210,12 +226,13 @@ def main():
         maps = MAPS[:3] + ((base, 0x54000),)
     post = []
     if '--codebase' in sys.argv:
-        # GL's programs use USE_CODE_BASE_3 (0 on iOS, code at GPU 0x1000..):
+        # GL's programs use USE_CODE_BASE_3 or _5 (0 on iOS, code at 0x1000..):
         # point the base at CB and put the page at CB + 0x1000 instead
         cb = int(sys.argv[sys.argv.index('--codebase') + 1], 0)
         imgs[cb + 0x1000] = imgs.pop(0x1000)
         maps = maps + ((cb + 0x1000, 0x1000),)
-        post.append('peek w %x %x > /dev/null' % (SGX_REGS + 0xa0c + 4 * 3, cb >> 6))
+        for n in prof.get('cbase', (3,)):
+            post.append('peek w %x %x > /dev/null' % (SGX_REGS + 0xa0c + 4 * n, cb >> 6))
     out_va = base + 0x30000 if '--reloc' in sys.argv else 0x98ddd000
     for va, b in imgs.items():
         open(os.path.join(out, 'm_%08x.bin' % va), 'wb').write(b)
