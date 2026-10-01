@@ -897,6 +897,19 @@ its background (GL cleared in a separate render), so its background is ours
   index buffer counts to 8191): 150 moving 48..128-pixel sprites over the
   whole screen, 300 frames in ~4 s from a shell loop.
 
+- **Batches with their own textures** (`tools/sgx/rbatch.py`, from the
+  twotex capture): the VDM stream is ours -- draw 0 a full-screen background
+  quad through the first draw's full state, then per texture the shared
+  constants block (state +0x2c0), a 4-word delta (mask `0x40`, pixel
+  program, `0x0803e000`, the 3D PDS block with the texture's descriptor) and
+  a vertex fetch block (+0x360 copy) on our vertex buffer; textures, blocks
+  and vertices live in a window of our own. With blending on, the background
+  object loads the previous frame for every tile from the output descriptor
+  (3D PDS block +0x120): at full screen that read ran past the captured
+  64x64 surface (MMU faults just after the window, rendering stopped at
+  128x128) -- the descriptor now points at a 4 MiB surface of its own.
+  4 textures, 120 sprites + background, full screen, 300 frames in ~4 s.
+
 ### Next
 
 Done since this list was first written: the page tables, the firmware

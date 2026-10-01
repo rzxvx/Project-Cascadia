@@ -21,7 +21,7 @@ Usage: rgen.py CAPDIR RTDIR OUTDIR [--profile tri|depth] [--fb X Y] [--reloc BAS
   --reloc the triangle's GL buffers and VDM stream moved to BASE.. (tri only)
   --teximg PNG  (profile tex) the quad, stretched over the frame, shows PNG
           as a 64x64 texture at 0x98900000
-  --size W[xH]  (profile tex) a W x H frame; RTDIR must come from rtemu.py W H
+  --size W[xH]  (profiles tex, twotex) a W x H frame; RTDIR must come from rtemu.py W H
   --codebase CB  shader code page at CB + 0x1000, USE_CODE_BASE_3 = CB (the
           2D engine's programs at 0x1000 stay)
   --fb    draw straight into the framebuffer (GPU 0x90000000, 768 px lines)
@@ -242,24 +242,33 @@ def own_texture(gl, path):
         struct.pack_into('<2f', gl, verts + 16 * i + 8, 1.0 if x > 0 else -1.0,
                          1.0 if y > 0 else -1.0)
 
-def resize_tex(gl, w, h):
-    """--size W[xH] (profile tex): a W x H frame (rtemu.py run with W H).  From
-    gltrace tmplsz (64..256): the state buffer's header (+0x10, last tile
-    x << 16 | y, 32-pixel tiles), the clear's and the draw's tile clip
-    (0x80000000 | last x, last y), the clear program's constants (2W, 2H),
-    the viewport (x/y scale and offset, N/2), and the output descriptor
-    (3D PDS block +0x134, log2 w/h)."""
-    base = PROFILES['tex']['gl'][0]
-    st = 0x98940000 - base
+# Where each profile keeps the frame size (found with gltrace tmplsz): the
+# state buffer, its header (+0x10: last 32-pixel tile x << 16 | y), the tile
+# clip pairs (0x80000000 | last x, last y), the clear program's constants
+# (2W, 2H), the viewport (W/2, W/2, H/2, H/2), and the 3D PDS block with the
+# output descriptor (+0x134: log2 w/h).
+SIZE_FIELDS = {
+    'tex': dict(state=0x98940000, clips=(0x90, 0x1dc), clear=(0xf8, 0x108),
+                viewport=0x1e4, pds=0x989d8000),
+    'twotex': dict(state=0x980e6000, clips=(0xfc,), clear=(), viewport=0x104,
+                   pds=0x980ac000),
+}
+
+def resize(gl, prof_name, w, h):
+    """--size WxH: a W x H frame (RTDIR from rtemu.py W H)."""
+    f = SIZE_FIELDS[prof_name]
+    base = PROFILES[prof_name]['gl'][0]
+    st = f['state'] - base
     tx, ty = (w + 31) // 32 - 1, (h + 31) // 32 - 1
     struct.pack_into('<I', gl, st + 0x10, tx << 16 | ty)
-    struct.pack_into('<II', gl, st + 0x90, 0x80000000 | tx, ty)
-    struct.pack_into('<II', gl, st + 0x1dc, 0x80000000 | tx, ty)
-    struct.pack_into('<f', gl, st + 0xf8, 2.0 * w)
-    struct.pack_into('<f', gl, st + 0x108, 2.0 * h)
-    struct.pack_into('<4f', gl, st + 0x1e4, w / 2, w / 2, h / 2, h / 2)
+    for c in f['clips']:
+        struct.pack_into('<II', gl, st + c, 0x80000000 | tx, ty)
+    if f['clear']:
+        struct.pack_into('<f', gl, st + f['clear'][0], 2.0 * w)
+        struct.pack_into('<f', gl, st + f['clear'][1], 2.0 * h)
+    struct.pack_into('<4f', gl, st + f['viewport'], w / 2, w / 2, h / 2, h / 2)
     lw, lh = (w - 1).bit_length(), (h - 1).bit_length()
-    struct.pack_into('<I', gl, 0x989d8000 + 0x134 - base, 0x0c000000 | lw << 16 | lh)
+    struct.pack_into('<I', gl, f['pds'] + 0x134 - base, 0x0c000000 | lw << 16 | lh)
 
 def main():
     cap, rtdir, out = sys.argv[1:4]
@@ -283,7 +292,8 @@ def main():
     imgs = {rt_va: rt_image(rtdir), PB_VA: pb_image(), CMD_VA: ta_cmd(rtdir),
             prof['gl'][0]: gl_image(cap, prof), VDM_VA: vdm, 0x1000: code}
     if '--size' in sys.argv:
-        resize_tex(imgs[prof['gl'][0]], *fsize)
+        pname = sys.argv[sys.argv.index('--profile') + 1] if '--profile' in sys.argv else 'tri'
+        resize(imgs[prof['gl'][0]], pname, *fsize)
     if '--teximg' in sys.argv:
         own_texture(imgs[prof['gl'][0]], sys.argv[sys.argv.index('--teximg') + 1])
     if '--reloc' in sys.argv:
