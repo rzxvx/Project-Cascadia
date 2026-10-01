@@ -21,6 +21,7 @@ Usage: rgen.py CAPDIR RTDIR OUTDIR [--profile tri|depth] [--fb X Y] [--reloc BAS
   --reloc the triangle's GL buffers and VDM stream moved to BASE.. (tri only)
   --teximg PNG  (profile tex) the quad, stretched over the frame, shows PNG
           as a 64x64 texture at 0x98900000
+  --size N  (profile tex) an N x N frame; RTDIR must come from rtemu.py N N
   --codebase CB  shader code page at CB + 0x1000, USE_CODE_BASE_3 = CB (the
           2D engine's programs at 0x1000 stay)
   --fb    draw straight into the framebuffer (GPU 0x90000000, 768 px lines)
@@ -68,15 +69,19 @@ def pb_image():
     img[0:80] = pack(d)
     return img
 
+def rt_name(rtdir, part):
+    import glob
+    return glob.glob(os.path.join(rtdir, 'rt_*x*_%s.bin' % part))[0]
+
 def rt_image(rtdir):
     """rtemu.py's buffers (it places them from 0x87900000 in order) + 3D block."""
     img = bytearray(0xd000)
     off = 0
     for i in range(6):
-        b = open(os.path.join(rtdir, 'rt_64x64_b%d.bin' % i), 'rb').read()
+        b = open(rt_name(rtdir, 'b%d' % i), 'rb').read()
         img[off:off + len(b)] = b
         off += len(b)
-    blk = open(os.path.join(rtdir, 'rt_64x64_blk3d.bin'), 'rb').read()
+    blk = open(rt_name(rtdir, 'blk3d'), 'rb').read()
     img[0xc000:0xc000 + len(blk)] = blk
     return img
 
@@ -124,7 +129,7 @@ def gl_image(cap, prof):
 
 def ta_cmd(rtdir):
     """The render CCB command as 0x80bfca20 builds it (one TA, first + last)."""
-    p = words(open(os.path.join(rtdir, 'rt_64x64_payload.bin'), 'rb').read())
+    p = words(open(rt_name(rtdir, 'payload'), 'rb').read())
     w = lambda n: p[n - 2]
     c = [0] * (CMD_SIZE // 4)
     def put(off, v): c[off // 4] = v & 0xffffffff
@@ -223,6 +228,15 @@ def own_texture(gl, path):
         struct.pack_into('<2f', gl, verts + 16 * i + 8, 1.0 if x > 0 else -1.0,
                          1.0 if y > 0 else -1.0)
 
+def resize_tex(gl, n):
+    """--size N (profile tex): an N x N frame (rtemu.py run with N N).  The
+    viewport (state +0x1e4: x/y scale and offset) and the output descriptor
+    (3D PDS block +0x134, log2 w/h) follow."""
+    base = PROFILES['tex']['gl'][0]
+    struct.pack_into('<4f', gl, 0x98940000 + 0x1e4 - base, n / 2, n / 2, n / 2, n / 2)
+    l = n.bit_length() - 1
+    struct.pack_into('<I', gl, 0x989d8000 + 0x134 - base, 0x0c000000 | l << 16 | l)
+
 def main():
     cap, rtdir, out = sys.argv[1:4]
     os.makedirs(out, exist_ok=True)
@@ -233,10 +247,17 @@ def main():
     code = bytearray(open(os.path.join(cap, 'r_%08x.bin' % prof['code']), 'rb').read()[:0x1000])
     if '--fb' in sys.argv:
         i = sys.argv.index('--fb')
-        emit_to_fb(code, int(sys.argv[i + 1], 0), int(sys.argv[i + 2], 0))
+        fbxy = (int(sys.argv[i + 1], 0), int(sys.argv[i + 2], 0))
     vdm = open(os.path.join(cap, 'r_%08x.bin' % prof['vdm']), 'rb').read()
+    if '--fb' in sys.argv:
+        n = int(sys.argv[sys.argv.index('--size') + 1], 0) if '--size' in sys.argv else 64
+        emit_to_fb(code, fbxy[0], fbxy[1], n, n)
     imgs = {RT_VA: rt_image(rtdir), PB_VA: pb_image(), CMD_VA: ta_cmd(rtdir),
             prof['gl'][0]: gl_image(cap, prof), VDM_VA: vdm, 0x1000: code}
+    size = 64
+    if '--size' in sys.argv:
+        size = int(sys.argv[sys.argv.index('--size') + 1], 0)
+        resize_tex(imgs[prof['gl'][0]], size)
     if '--teximg' in sys.argv:
         own_texture(imgs[prof['gl'][0]], sys.argv[sys.argv.index('--teximg') + 1])
     if '--reloc' in sys.argv:

@@ -914,6 +914,68 @@ int main(int argc, char **argv)
         printf("== centre pixel %02x %02x %02x %02x\n", c[0], c[1], c[2], c[3]);
         return 0;
     }
+    if (argc > 1 && !strcmp(argv[1], "tmplsz")) {
+        /* the textured quad again at several render target sizes, to find
+         * every field that depends on the size: one frame per W x H */
+        const char *vst = "attribute vec4 p; attribute vec2 a; varying mediump vec2 t;"
+                          "void main(){ gl_Position = p; t = a; }";
+        const char *fst = "precision mediump float; varying vec2 t; uniform sampler2D uTex;"
+                          "void main(){ gl_FragColor = texture2D(uTex, t); }";
+        GLuint pt = glCreateProgram();
+        glAttachShader(pt, make_shader(GL_VERTEX_SHADER, vst));
+        glAttachShader(pt, make_shader(GL_FRAGMENT_SHADER, fst));
+        glBindAttribLocation(pt, 0, "p");
+        glBindAttribLocation(pt, 1, "a");
+        glLinkProgram(pt);
+        glUseProgram(pt);
+        static const float quad[] = { -0.6f, -0.6f, 0.6f, -0.6f, 0.6f, 0.6f,
+                                      -0.6f, -0.6f, 0.6f, 0.6f, -0.6f, 0.6f };
+        static const float uv[] = { 0, 0, 1, 0, 1, 1, 0, 0, 1, 1, 0, 1 };
+        unsigned char tx[4 * 4 * 4];
+        for (int i = 0; i < 16; i++) {
+            tx[i * 4] = (i & 3) < 2 ? 255 : 0; tx[i * 4 + 1] = (i & 3) < 2 ? 0 : 255;
+            tx[i * 4 + 2] = 0; tx[i * 4 + 3] = 255;
+        }
+        GLuint qt;
+        glGenTextures(1, &qt);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, qt);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 4, 4, 0, GL_RGBA, GL_UNSIGNED_BYTE, tx);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glUniform1i(glGetUniformLocation(pt, "uTex"), 0);
+        glEnableVertexAttribArray(0);
+        glEnableVertexAttribArray(1);
+        glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, quad);
+        glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 0, uv);
+        static const int sz[][2] = { { 64, 64 }, { 128, 128 }, { 256, 256 }, { 256, 128 } };
+        print_renders = 1;
+        for (int k = 0; k < 4; k++) {
+            int w = sz[k][0], h = sz[k][1];
+            GLuint rt, fb;
+            glGenTextures(1, &rt);
+            glBindTexture(GL_TEXTURE_2D, rt);
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, 0);
+            glGenFramebuffers(1, &fb);
+            glBindFramebuffer(GL_FRAMEBUFFER, fb);
+            glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, rt, 0);
+            glBindTexture(GL_TEXTURE_2D, qt);
+            glViewport(0, 0, w, h);
+            glClearColor(0, 0, 0.2f, 1);
+            glClear(GL_COLOR_BUFFER_BIT);
+            glDrawArrays(GL_TRIANGLES, 0, 6);
+            glFinish();
+            char label[32], path[64];
+            snprintf(label, sizeof(label), "tex%dx%d", w, h);
+            snprintf(path, sizeof(path), "/var/root/gt_s_%dx%d.bin", w, h);
+            scan_payloads(label);
+            dump_iokit_to(path);
+            unsigned char c[4] = { 0 };
+            glReadPixels(w / 2 - 4, h / 2 - 4, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, c);
+            printf("== %s: pixel %02x %02x %02x %02x\n", label, c[0], c[1], c[2], c[3]);
+        }
+        return 0;
+    }
     if (argc > 1 && !strcmp(argv[1], "tmpl")) {
         /* templates for building frames under Linux: a triangle with a
          * colour per vertex, then a textured quad without and with alpha
