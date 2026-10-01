@@ -1,5 +1,5 @@
 /* sprites: N bouncing sprites over a gradient, through sgx2d; prints fps.
- *   sprites PACKDIR [N] [FRAMES] */
+ *   sprites PACKDIR [N] [FRAMES] [g] */
 #include "sgx2d.h"
 
 #include <math.h>
@@ -63,7 +63,8 @@ int main(int argc, char **argv)
 		sp[i].y = rand() % (int)(H - sp[i].s);
 		sp[i].dx = (rand() % 1000) / 100.0f - 5;
 		sp[i].dy = (rand() % 1000) / 100.0f - 5;
-		sp[i].t = i % 3;	/* interleaved: worst case, one draw per quad */
+		/* interleaved: worst case, one draw per quad; "g": grouped, 3 draws */
+		sp[i].t = argc > 4 && argv[4][0] == 'g' ? i * 3 / n : i % 3;
 	}
 	clock_gettime(CLOCK_MONOTONIC, &t0);
 	for (f = 0; f < frames; f++) {
@@ -80,6 +81,7 @@ int main(int argc, char **argv)
 			return 1;
 		}
 	}
+	sgx2d_finish();
 	clock_gettime(CLOCK_MONOTONIC, &t1);
 	printf("%d frames, %d sprites: %.1f fps\n", frames, n,
 	       frames / ((t1.tv_sec - t0.tv_sec) + (t1.tv_nsec - t0.tv_nsec) / 1e9));

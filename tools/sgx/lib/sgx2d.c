@@ -36,7 +36,9 @@ static struct {
 	uint8_t *tmpl;
 	int toff[T_NUM], tsize[T_NUM];
 	uint32_t ext_top;
-	struct { uint32_t block, deltaprog; float us, vs; } tex[MAX_TEX];
+	struct { uint32_t block, deltaprog, data; float us, vs; int w, h, s; } tex[MAX_TEX];
+	struct { uint32_t rgba; int tex; } fills[64];
+	int nfills;
 	int ntex;
 	/* the frame being built */
 	int bg, nq;
@@ -249,9 +251,51 @@ int sgx2d_texture(const void *rgba, int w, int h)
 	if (!block || !data || !S.tex[id].deltaprog)
 		return -ENOSPC;
 	S.tex[id].block = block;
+	S.tex[id].data = va;
+	S.tex[id].w = w; S.tex[id].h = h; S.tex[id].s = s;
 	S.tex[id].us = (float)w / s;
 	S.tex[id].vs = (float)h / s;
 	return S.ntex++;
+}
+
+int sgx2d_texture_update(int id, const void *rgba)
+{
+	const uint32_t *src = rgba;
+	uint32_t *t;
+	int s, x, y, ret;
+
+	if (id < 0 || id >= S.ntex)
+		return -EINVAL;
+	s = S.tex[id].s;
+	if (!(t = calloc(s * s, 4)))
+		return -ENOMEM;
+	for (y = 0; y < S.tex[id].h; y++)
+		for (x = 0; x < S.tex[id].w; x++)
+			t[twiddle(x, y)] = src[y * S.tex[id].w + x];
+	ret = put(S.tex[id].data, t, s * s * 4);
+	free(t);
+	return ret;
+}
+
+void sgx2d_fill(uint32_t rgba, float x, float y, float w, float h)
+{
+	uint32_t px[16];
+	int i, tex = -1;
+
+	for (i = 0; i < S.nfills; i++)
+		if (S.fills[i].rgba == rgba)
+			tex = S.fills[i].tex;
+	if (tex < 0) {
+		for (i = 0; i < 16; i++)
+			px[i] = rgba;
+		if ((tex = sgx2d_texture(px, 4, 4)) < 0)
+			return;
+		if (S.nfills < 64) {
+			S.fills[S.nfills].rgba = rgba;
+			S.fills[S.nfills++].tex = tex;
+		}
+	}
+	sgx2d_quad(tex, x, y, w, h);
 }
 
 void sgx2d_begin(int bg)
@@ -315,14 +359,41 @@ static uint32_t fetch_block(uint32_t vb)
 	return frame_alloc(b, S.tsize[T_FETCH], 0x40);
 }
 
+/* The microkernel stores the 3D block's address in the render details
+ * (+0x24, entry 0 word 1) when the TA starts and clears it when the 3D pass
+ * has ended: that is the frame's fence. */
+static int wait_3d(void)
+{
+	uint32_t v = 1;
+	int i;
+
+	for (i = 0; i < 200000; i++) {
+		if (pread(S.mem, &v, 4, (off_t)S.kick[1] + 0x24) != 4)
+			return -EIO;
+		if (!v)
+			return 0;
+		if (i > 100)
+			usleep(50);
+	}
+	return -ETIMEDOUT;
+}
+
+int sgx2d_finish(void)
+{
+	return wait_3d();
+}
+
 int sgx2d_end(void)
 {
 	uint32_t *v = S.vdmbuf, vbva = S.ext + EXT_VB, d0, p0, limit;
 	uint8_t full[0x80], prog[0x40];
-	int i, n, ret, maxv = S.vdm_size / 4 - 16;
+	/* the VDM reads ahead: keep 512 bytes clear of the window's end */
+	int i, n, ret, maxv = S.vdm_size / 4 - 128 - 10 - S.ntail;
 
 	if (S.bg < 0 || S.bg >= S.ntex)
 		return -EINVAL;
+	if ((ret = wait_3d()))		/* the previous frame still reads our buffers */
+		return ret;
 	S.ftop = 0;
 	/* draw 0: the background, with the whole state */
 	vb_quad(S.vb, S.bg, 0, 0, S.w, S.h, 0, 0, 1, 1);
@@ -342,7 +413,7 @@ int sgx2d_end(void)
 		for (n = 1; i + n < S.nq && S.q[i + n].tex == S.q[i].tex && n < (int)limit; n++)
 			;
 		if (v - S.vdmbuf > maxv || S.ftop + 0x100 > S.ext_size - EXT_FRAME)
-			break;
+			break;		/* too many draws: the rest is dropped */
 		*v++ = vdm4(4, S.consts); *v++ = 0x1000e102;
 		*v++ = vdm4(4, S.tex[S.q[i].tex].deltaprog); *v++ = 0x12022201;
 		*v++ = 0x81c00000 | 6 * n; *v++ = S.idx; *v++ = 0x70000000; *v++ = 0x003fffff;

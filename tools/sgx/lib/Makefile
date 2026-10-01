@@ -1,7 +1,9 @@
-# Built for the device (armv7, musl): see ../README or
+# Built for the device (armv7, musl), in an Alpine arm/v7 container:
 #   docker run --rm --platform linux/arm/v7 -v "$PWD":/w -w /w cascadia-armdev make
+# (cascadia-armdev: FROM alpine:3.24 on linux/arm/v7 + gcc musl-dev make)
 CFLAGS ?= -O2 -Wall -D_FILE_OFFSET_BITS=64
-sprites: sprites.c sgx2d.c sgx2d.h
-	$(CC) $(CFLAGS) -o $@ sprites.c sgx2d.c -lm
+all: sprites demo2
+%: %.c sgx2d.c sgx2d.h
+	$(CC) $(CFLAGS) -o $@ $< sgx2d.c -lm
 clean:
-	rm -f sprites
+	rm -f sprites demo2

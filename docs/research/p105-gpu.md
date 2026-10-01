@@ -923,6 +923,29 @@ its background (GL cleared in a separate render), so its background is ours
   faults. The rate is TA completions -- rkick returns when the TA is done,
   not the 3D pass.
 
+### M6 done: sgx2d, a 2D API on the GPU (2026-10-02)
+
+`tools/sgx/lib/sgx2d.{h,c}`: textures (RGBA8, padded to a power-of-two
+square, twiddled on the CPU; `sgx2d_texture_update` for streaming), quads
+with texture sub-rectangles, colour fills (cached 4x4 textures), alpha
+blending, full screen straight into the framebuffer. Frame fence: the
+microkernel writes the 3D block's address into the render details (+0x24)
+when the TA starts and clears it when the 3D pass ends (found by diffing the
+render's memory right after rkick and 300 ms later; the render CCB
+command's own completion word is written when the command is taken);
+`sgx2d_end()` waits for the previous frame there, `sgx2d_finish()` for the
+current one. The VDM reads ahead: a stream ending within 512 bytes of its
+16 KiB window faulted on the next page (MASTER BIF_FAULT `0x98f04000`) and
+locked the microkernel -- about 390 draws per frame fit.
+
+Measured with the fence (frames actually drawn): 50 sprites 326 fps, 200
+sprites (one draw each) 221 fps, 1000 sprites in 3 draws 92 fps. `demo2`:
+a streaming 64x64 texture, translucent fills and sprite-sheet cells.
+
+Not there yet: blend modes other than SRC_ALPHA/ONE_MINUS_SRC_ALPHA, custom
+shaders (a GLSL -> USSE compiler), a real device node (it all goes through
+debugfs, mapping and booting included).
+
 ### Next
 
 Done since this list was first written: the page tables, the firmware

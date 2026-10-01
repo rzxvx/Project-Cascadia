@@ -45,3 +45,4 @@ ipad25.ipsw
 
 # sgx2d demo binary (built in docker, armv7)
 tools/sgx/lib/sprites
+tools/sgx/lib/demo2
