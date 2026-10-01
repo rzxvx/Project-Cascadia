@@ -914,6 +914,45 @@ int main(int argc, char **argv)
         printf("== centre pixel %02x %02x %02x %02x\n", c[0], c[1], c[2], c[3]);
         return 0;
     }
+    if (argc > 1 && !strcmp(argv[1], "depth")) {
+        /* two overlapping triangles, the near one (green, z -0.5) drawn
+         * first: without the depth test the far one (orange, z 0.5) covers
+         * the overlap, with it the green stays.  One frame each way, so the
+         * diff shows what the depth test changes; centre pixel = overlap. */
+        static const float near_tri[] = { -0.7f, 0.7f, -0.5f, -0.7f, -0.7f, -0.5f,
+                                          0.5f, 0.0f, -0.5f };
+        static const float far_tri[] = { 0.7f, 0.7f, 0.5f, -0.5f, 0.0f, 0.5f,
+                                         0.7f, -0.7f, 0.5f };
+        GLuint rb;
+        glGenRenderbuffers(1, &rb);
+        glBindRenderbuffer(GL_RENDERBUFFER, rb);
+        glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT16, 64, 64);
+        glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, rb);
+        print_renders = 1;
+        for (int pass = 0; pass < 2; pass++) {
+            if (pass)
+                glEnable(GL_DEPTH_TEST);
+            else
+                glDisable(GL_DEPTH_TEST);
+            glClearColor(0, 0, 0.2f, 1);
+            glClearDepthf(1.0f);
+            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+            glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 0, near_tri);
+            glUniform4f(uColor, 0.0f, 1.0f, 0.0f, 1.0f);
+            glDrawArrays(GL_TRIANGLES, 0, 3);
+            glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 0, far_tri);
+            glUniform4f(uColor, 1.0f, 0.5f, 0.0f, 1.0f);
+            glDrawArrays(GL_TRIANGLES, 0, 3);
+            glFinish();
+            scan_payloads(pass ? "depth on" : "depth off");
+            dump_iokit_to(pass ? "/var/root/gt_d_on.bin" : "/var/root/gt_d_off.bin");
+            unsigned char c[4] = { 0 };
+            glReadPixels(32, 32, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, c);
+            printf("== %s: centre pixel %02x %02x %02x %02x\n", pass ? "depth on" : "depth off",
+                   c[0], c[1], c[2], c[3]);
+        }
+        return 0;
+    }
     if (argc > 1 && !strcmp(argv[1], "linsrc")) {
         glEnableVertexAttribArray(0);
         glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, tri);

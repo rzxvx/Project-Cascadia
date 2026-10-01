@@ -430,7 +430,7 @@ struct apple_sgx {
 	struct work_struct boot_work;
 	phys_addr_t fb_pa;
 	u64 *blt_code;			/* CPU side of the code page at GPU 0x1000 */
-	u32 blt_seq;
+	u32 blt_seq, r_seq;
 	u32 fb_w, fb_h, fb_stride;	/* the framebuffer: pixels, pixels, pixels */
 };
 
@@ -1309,12 +1309,14 @@ static int sgx_tq_kick(struct apple_sgx *sgx)
  * 6), DET = the render target's "render details" (its two entries get the
  * context's address at +0x20 and +0xa4, as 0x80bf7d2a does), CMD = a TA
  * command (word 0 = its size) to copy into the render CCB.  Its completion
- * (+0x68/+0x6c, written when the TA is done) is pointed at scratch word 0. */
+ * (+0x68/+0x6c, written when the TA is done) goes to scratch word 0.  The
+ * CCB wraps the way iOS's does (the last command before the end is
+ * stretched to reach it).  Quiet unless something fails. */
 static int sgx_r_kick(struct apple_sgx *sgx, u32 pb, u32 det, u32 cmdva, u32 cc)
 {
 	u32 *ctl = sgx->buf[B_R_CTL].cpu, *ctx = sgx->buf[B_R_CTX].cpu;
 	u32 *scratch = sgx->buf[B_SCRATCH].cpu, cva = sgx->buf[B_R_CTX].va;
-	u32 *src, *cmd, *d, wo, size, got;
+	u32 *src, *cmd, *d, wo, len, size, got, seq;
 	size_t avail;
 	unsigned int n;
 	int ret;
@@ -1325,43 +1327,52 @@ static int sgx_r_kick(struct apple_sgx *sgx, u32 pb, u32 det, u32 cmdva, u32 cc)
 	d = (u32 *)sgx_va_cpu(sgx, det, &avail);
 	if (!src || !d || avail < 0xa8 || !sgx_va_cpu(sgx, pb, &avail))
 		return -EFAULT;
-	size = src[0];
-	wo = READ_ONCE(ctl[0]);
-	if (size < 0x11c || size > 0x1000 || (size & 7) || wo + size > SGX_TQ_CCB_SIZE)
+	len = src[0];
+	if (len < 0x11c || len > 0x1000 || (len & 7))
 		return -EINVAL;
+	wo = READ_ONCE(ctl[0]);
+	size = len;
+	if (SGX_TQ_CCB_SIZE - len - wo < len)
+		size = SGX_TQ_CCB_SIZE - wo;
+	if (((READ_ONCE(ctl[1]) + 0xffff - wo) & 0xffff) <= size)
+		return -EBUSY;
+	seq = ++sgx->r_seq ? sgx->r_seq : ++sgx->r_seq;
 
 	cmd = sgx->buf[B_R_CCB].cpu + wo / 4;
-	memcpy(cmd, src, size);
+	memcpy(cmd, src, len);
+	memset(cmd + len / 4, 0, size - len);
+	cmd[0] = size;
 	cmd[0x64 / 4] |= 1;
 	cmd[0x68 / 4] = sgx->buf[B_SCRATCH].va;
-	cmd[0x6c / 4] = 1;
+	cmd[0x6c / 4] = seq;
 	d[0x20 / 4] = cva;
 	d[0xa4 / 4] = cva;
 	ctx[6] = pb;
 	WRITE_ONCE(scratch[0], 0);
 	wmb();
-	WRITE_ONCE(ctl[0], wo + size);
+	WRITE_ONCE(ctl[0], (wo + size) & (SGX_TQ_CCB_SIZE - 1));
 	WRITE_ONCE(ctx[0], 1);
 	wmb();
+	sgx->quiet = true;
 	ret = sgx_send_cmd(sgx, SGX_CMD_TA, cc, 0, cva);
+	sgx->quiet = false;
 	if (ret)
 		return ret;
-	ret = read_poll_timeout(READ_ONCE, got, got, 10, 500000, false, scratch[0]);
-	dev_info(sgx->dev, "rkick at 0x%x (size 0x%x, ctx 0x%08x): scratch 0x%08x (%s), "
-		 "r read 0x%x ctx0 0x%x, host lockups %u; master BIF_INT_STAT 0x%08x BIF_FAULT 0x%08x\n",
-		 wo, size, cva, READ_ONCE(scratch[0]), ret ? "not done" : "done",
-		 READ_ONCE(ctl[1]), READ_ONCE(ctx[0]),
-		 READ_ONCE(sgx->buf[B_HOST].cpu[HOST_UK_LOCKUPS]),
-		 sgx_read(sgx, SGX_MASTER_BIF_INT_STAT), sgx_read(sgx, SGX_MASTER_BIF_FAULT));
+	ret = read_poll_timeout(READ_ONCE, got, got == seq, 10, 500000, false, scratch[0]);
+	if (!ret)
+		return 0;
+	dev_err(sgx->dev, "render %u at 0x%x not done: completion 0x%08x, r read 0x%x ctx0 0x%x, "
+		"lockups %u; master BIF_INT_STAT 0x%08x BIF_FAULT 0x%08x\n",
+		seq, wo, got, READ_ONCE(ctl[1]), READ_ONCE(ctx[0]),
+		READ_ONCE(sgx->buf[B_HOST].cpu[HOST_UK_LOCKUPS]),
+		sgx_read(sgx, SGX_MASTER_BIF_INT_STAT), sgx_read(sgx, SGX_MASTER_BIF_FAULT));
 	for (n = 0; n < sgx->ncores; n++)
-		dev_info(sgx->dev, "  core%u EVENT_STATUS 0x%08x STATUS2 0x%08x BIF_INT_STAT 0x%08x "
-			 "BIF_FAULT 0x%08x DPM 0x614 %08x 0x620 %08x 0x630 %08x 0x700 %08x\n",
-			 n, sgx_read(sgx, SGX_CORE(n) + SGX_EVENT_STATUS),
-			 sgx_read(sgx, SGX_CORE(n) + SGX_EVENT_STATUS2),
-			 sgx_read(sgx, SGX_CORE(n) + SGX_BIF_INT_STAT),
-			 sgx_read(sgx, SGX_CORE(n) + SGX_BIF_FAULT),
-			 sgx_read(sgx, SGX_CORE(n) + 0x614), sgx_read(sgx, SGX_CORE(n) + 0x620),
-			 sgx_read(sgx, SGX_CORE(n) + 0x630), sgx_read(sgx, SGX_CORE(n) + 0x700));
+		dev_err(sgx->dev, "  core%u EVENT_STATUS 0x%08x STATUS2 0x%08x BIF_INT_STAT 0x%08x "
+			"BIF_FAULT 0x%08x\n", n,
+			sgx_read(sgx, SGX_CORE(n) + SGX_EVENT_STATUS),
+			sgx_read(sgx, SGX_CORE(n) + SGX_EVENT_STATUS2),
+			sgx_read(sgx, SGX_CORE(n) + SGX_BIF_INT_STAT),
+			sgx_read(sgx, SGX_CORE(n) + SGX_BIF_FAULT));
 	return ret;
 }
 
@@ -1876,10 +1887,11 @@ static int sgx_regs_show(struct seq_file *s, void *unused)
 			   READ_ONCE(sgx->buf[B_TQ_CTL].cpu[1]),
 			   READ_ONCE(sgx->buf[B_SCRATCH].cpu[0]),
 			   READ_ONCE(sgx->buf[B_SCRATCH].cpu[1]));
-		seq_printf(s, "r CCB write 0x%x read 0x%x; r ctx 0x%08x word0 0x%x\n",
+		seq_printf(s, "r CCB write 0x%x read 0x%x; r ctx 0x%08x word0 0x%x; renders %u\n",
 			   READ_ONCE(sgx->buf[B_R_CTL].cpu[0]),
 			   READ_ONCE(sgx->buf[B_R_CTL].cpu[1]),
-			   sgx->buf[B_R_CTX].va, READ_ONCE(sgx->buf[B_R_CTX].cpu[0]));
+			   sgx->buf[B_R_CTX].va, READ_ONCE(sgx->buf[B_R_CTX].cpu[0]),
+			   sgx->r_seq);
 		for (i = 0; i < B_NUM; i++)
 			seq_printf(s, "buffer %-10s va 0x%08x pa %pad size 0x%zx\n",
 				   sgx_buf_descs[i].name, sgx->buf[i].va,
