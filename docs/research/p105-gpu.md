@@ -822,6 +822,26 @@ points at itself. Output: `0x98ddd000`, twiddled, 4 bytes/pixel.
 Result of the run: TA completion written, CCB read offset = write offset,
 context word 0 cleared, no MMU fault, no lockup.
 
+### M5: animation and the depth test under Linux (2026-10-02)
+
+- **Animation**: the GL client vertex array is copied into the state buffer
+  (triangle capture: GPU `0x98df2290`, x/y floats), so a new frame is "write
+  the vertices, rkick". `tools/sgx/ranim.py` makes the frames; with the CCB
+  wrap in `rkick` 720 renders run in ~6 s from a shell loop.
+- **Straight to the framebuffer**: `rgen.py --fb X Y` rewrites the 3D pass's
+  emit program (GPU `0x1d40`, LIMM r0..r5) with the linear PBE state.
+- **Depth**: `gltrace depth` captured two overlapping triangles without and
+  with `GL_DEPTH_TEST` (`logs/ios/depth`, centre pixel orange / green). The
+  shader code is identical; the draw's ISP state word (the second of the pair
+  `0x0000dfc7, 0x01d00300` in the state buffer) carries the depth compare in
+  **bits 24:22** (7 = ALWAYS without the test, 1 = LESS with it) and **bit
+  20** set when depth writes are off. A depth attachment adds payload w30-w33
+  (ZLS control `0x0015100c`, load/store offset `0xe4000`, ZLS base
+  `0x98d00000`), which the kernel copies into the 3D block. Replayed with
+  `rgen.py --profile depth`: the near triangle wins the overlap as on iOS;
+  patching the compare to ALWAYS flips it; `ranim.py --depth` turns the far
+  triangle and swings its z through the near one.
+
 ### Next
 
 Done since this list was first written: the page tables, the firmware

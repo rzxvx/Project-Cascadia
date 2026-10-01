@@ -6,22 +6,32 @@ The GL client array was copied into the vertex buffer at GPU 0x98df2290
 triangle to frames.bin and anim.sh, which (after rgen.py's rrun.sh has set
 everything up) puts each frame's vertices in place and renders it.
 
-Usage: ranim.py OUTDIR [N]
+Usage: ranim.py OUTDIR [N] [--depth]
+  --depth  for rgen.py --profile depth: the far (orange) triangle's x, y, z
+           at 0x98dab3b0 -- it turns and its z swings through the near
+           (green, z -0.5) one, so the depth test decides the overlap
 """
 import math, os, struct, sys
 
 VERTS_VA = 0x98df2290
 TRI = ((0.0, 0.6), (-0.6, -0.6), (0.6, -0.6))
+DEPTH_VA = 0x98dab3b0
+FAR = ((0.7, 0.7), (-0.5, 0.0), (0.7, -0.7))
 
 def main():
     out = sys.argv[1]
-    n = int(sys.argv[2]) if len(sys.argv) > 2 else 120
+    n = int(sys.argv[2]) if len(sys.argv) > 2 and sys.argv[2][0] != '-' else 120
+    depth = '--depth' in sys.argv
+    va, tri, fsize = (DEPTH_VA, FAR, 36) if depth else (VERTS_VA, TRI, 24)
     frames = bytearray()
     for i in range(n):
         a = 2 * math.pi * i / n
         c, s = math.cos(a), math.sin(a)
-        for x, y in TRI:
-            frames += struct.pack('<2f', x * c - y * s, x * s + y * c)
+        for x, y in tri:
+            v = (x * c - y * s, x * s + y * c)
+            if depth:
+                v += (-0.5 + 0.4 * math.sin(2 * a),)
+            frames += struct.pack('<%df' % len(v), *v)
     os.makedirs(out, exist_ok=True)
     open(os.path.join(out, 'frames.bin'), 'wb').write(frames)
     sh = """#!/bin/sh
@@ -29,13 +39,13 @@ def main():
 D=/sys/kernel/debug/apple-sgx; cd $(dirname $0)
 l=0; while [ $l -lt ${1:-1} ]; do
 i=0; while [ $i -lt %d ]; do
-  dd if=frames.bin of=/tmp/f.bin bs=24 skip=$i count=1 2>/dev/null
+  dd if=frames.bin of=/tmp/f.bin bs=%d skip=$i count=1 2>/dev/null
   dd if=/tmp/f.bin of=$D/mem bs=16 seek=%d conv=notrunc 2>/dev/null
   echo "rkick 0x87a00000 0x87908000 0x87b00000" > $D/cmd || { echo "frame $i failed"; exit 1; }
   i=$((i+1))
 done; l=$((l+1)); done
 echo "$((${1:-1} * %d)) frames"; grep "r CCB" $D/regs
-""" % (n, VERTS_VA // 16, n)
+""" % (n, fsize, va // 16, n)
     open(os.path.join(out, 'anim.sh'), 'w').write(sh)
     os.chmod(os.path.join(out, 'anim.sh'), 0o755)
 
