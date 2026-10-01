@@ -1,0 +1,8 @@
+--- !tapi-tbd
+tbd-version:     4
+targets:         [ armv7-ios ]
+install-name:    '/System/Library/Frameworks/CoreVideo.framework/CoreVideo'
+exports:
+  - targets:         [ armv7-ios ]
+    symbols:         [ _CVPixelBufferCreate, _kCVPixelBufferIOSurfacePropertiesKey, _CVOpenGLESTextureCacheCreate, _CVOpenGLESTextureCacheCreateTextureFromImage, _CVOpenGLESTextureGetName, _CVOpenGLESTextureGetTarget, _CVPixelBufferGetBytesPerRow, _CVPixelBufferLockBaseAddress, _CVPixelBufferGetBaseAddress, _CVPixelBufferUnlockBaseAddress ]
+...

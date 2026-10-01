@@ -17,6 +17,7 @@
 #import <OpenGLES/EAGL.h>
 #import <OpenGLES/ES2/gl.h>
 #import <OpenGLES/ES2/glext.h>
+#import <CoreVideo/CoreVideo.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -524,6 +525,125 @@ static void scan_resources(void)
     printf("== resources done, %d dumps\n", ndumps);
 }
 
+
+/* "gltrace linear": the pixel back end's emit programs.  Every readable page
+ * of the process is searched for the emit instruction (top half-word 0xfb24,
+ * as in the transfer's level programs) with the LIMMs that load its state
+ * words r0..r5 right before it; each distinct set is printed once.  Run after
+ * a render into an ordinary (twiddled) texture and after one into a linear,
+ * IOSurface-backed CVPixelBuffer, the difference is the linear-layout
+ * encoding. */
+static uint32_t seen_emit[64][7];
+static int nseen;
+
+static uint32_t limm_imm(uint64_t w)
+{
+    return (uint32_t)(((w >> 44) & 0x3f) << 26 | ((w >> 36) & 0x1f) << 21 | (w & 0x1fffff));
+}
+
+static void scan_emits(const char *label)
+{
+    vm_address_t a = 0;
+    static uint64_t pg[0x1000 / 8 + 16];
+    int hits = 0;
+    printf("== emits after %s\n", label);
+    for (;;) {
+        vm_size_t sz = 0;
+        unsigned int depth = 99, cnt = 19;
+        int info[19];
+        if (vm_region_recurse_64(mach_task_self(), &a, &sz, &depth, info, &cnt))
+            break;
+        if ((info[0] & 1) && sz <= 0x2000000) {
+            for (uint32_t o = 0; o < sz; o += 0x1000) {
+                vm_size_t got = 0;
+                memset(pg, 0, sizeof pg);
+                if (vm_read_overwrite(mach_task_self(), a + o, 0x1000, (vm_address_t)pg, &got) || got != 0x1000)
+                    continue;
+                for (int i = 6; i < 0x1000 / 8; i++) {
+                    uint64_t w = pg[i];
+                    if ((w >> 48) != 0xfb24 && (w >> 48) != 0xfb25 && (w >> 48) != 0xfb26)
+                        continue;
+                    uint32_t r[6] = { 0 }, have = 0;
+                    for (int k = 1; k <= 8 && i - k >= 0; k++) {
+                        uint64_t x = pg[i - k];
+                        if ((x >> 56) != 0xfc || ((x >> 52) & 3) != 2)
+                            break;
+                        unsigned reg = (unsigned)(x >> 21) & 0x7f;
+                        if (reg < 6 && !(have & (1u << reg))) {
+                            r[reg] = limm_imm(x);
+                            have |= 1u << reg;
+                        }
+                    }
+                    if (have != 0x3f)
+                        continue;
+                    uint32_t key[7] = { (uint32_t)w, r[0], r[2], r[3], r[4], r[5], (uint32_t)(w >> 32) };
+                    int dup = 0;
+                    for (int j = 0; j < nseen; j++)
+                        if (!memcmp(seen_emit[j], key, sizeof key))
+                            dup = 1;
+                    if (dup)
+                        continue;
+                    if (nseen < 64)
+                        memcpy(seen_emit[nseen++], key, sizeof key);
+                    hits++;
+                    printf("   %08x: emit %016llx r0 %08x r1 %08x r2 %08x r3 %08x r4 %08x r5 %08x\n",
+                           a + o + i * 8, w, r[0], r[1], r[2], r[3], r[4], r[5]);
+                }
+            }
+        }
+        a += sz;
+    }
+    printf("== %d new emit set(s)\n", hits);
+}
+
+/* A render into a linear IOSurface-backed BGRA buffer of W x H; prints the
+ * buffer's bytesPerRow and a few pixels as the GPU left them. */
+static void linear_render(EAGLContext *ctx, GLuint prog, GLint uColor, int W, int H)
+{
+    const void *k[1] = { kCVPixelBufferIOSurfacePropertiesKey };
+    CFDictionaryRef empty = CFDictionaryCreate(kCFAllocatorDefault, 0, 0, 0,
+            &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+    const void *v[1] = { empty };
+    CFDictionaryRef attrs = CFDictionaryCreate(kCFAllocatorDefault, k, v, 1,
+            &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+    CVPixelBufferRef pb = 0;
+    CVReturn cr = CVPixelBufferCreate(kCFAllocatorDefault, W, H, kCVPixelFormatType_32BGRA, attrs, &pb);
+    CVOpenGLESTextureCacheRef cache = 0;
+    if (!cr)
+        cr = CVOpenGLESTextureCacheCreate(kCFAllocatorDefault, 0, (__bridge CVEAGLContext)ctx, 0, &cache);
+    CVOpenGLESTextureRef cvtex = 0;
+    if (!cr)
+        cr = CVOpenGLESTextureCacheCreateTextureFromImage(kCFAllocatorDefault, cache, pb, 0,
+                GL_TEXTURE_2D, GL_RGBA, W, H, GL_BGRA_EXT, GL_UNSIGNED_BYTE, 0, &cvtex);
+    if (cr) {
+        printf("== linear %dx%d: CoreVideo error %d\n", W, H, cr);
+        return;
+    }
+    printf("== linear %dx%d: bytesPerRow %lu\n", W, H, (unsigned long)CVPixelBufferGetBytesPerRow(pb));
+    GLuint fbo;
+    glGenFramebuffers(1, &fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glBindTexture(CVOpenGLESTextureGetTarget(cvtex), CVOpenGLESTextureGetName(cvtex));
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
+                           CVOpenGLESTextureGetName(cvtex), 0);
+    printf("   fbo status 0x%x\n", glCheckFramebufferStatus(GL_FRAMEBUFFER));
+    glViewport(0, 0, W, H);
+    glUseProgram(prog);
+    glClearColor(0, 0, 0.2f, 1);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glUniform4f(uColor, 1.0f, 0.5f, 0.0f, 1.0f);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glFinish();
+    CVPixelBufferLockBaseAddress(pb, 0);
+    const uint32_t *px = CVPixelBufferGetBaseAddress(pb);
+    size_t bpr = CVPixelBufferGetBytesPerRow(pb);
+    if (px)
+        printf("   pixels: row0 %08x %08x, centre %08x\n", px[0], px[W - 1],
+               px[(H / 2) * (bpr / 4) + W / 2]);
+    CVPixelBufferUnlockBaseAddress(pb, 0);
+}
+
 /* ---- GLES ------------------------------------------------------------- */
 
 static GLuint make_shader(GLenum type, const char *src)
@@ -624,6 +744,21 @@ int main(int argc, char **argv)
     glViewport(0, 0, 64, 64);
     glEnableVertexAttribArray(0);
     glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, tri);
+
+    if (argc > 1 && !strcmp(argv[1], "linear")) {
+        scan_emits("setup");
+        glClearColor(0, 0, 0.2f, 1);
+        glClear(GL_COLOR_BUFFER_BIT);
+        glUniform4f(uColor, 1.0f, 0.5f, 0.0f, 1.0f);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+        glFinish();
+        scan_emits("render into a 64x64 texture");
+        linear_render(ctx, prog, uColor, 200, 120);
+        scan_emits("render into a linear 200x120 buffer");
+        linear_render(ctx, prog, uColor, 64, 64);
+        scan_emits("render into a linear 64x64 buffer");
+        return 0;
+    }
 
     /* "gltrace tq": operations the driver may do with the transfer queue
      * instead of a render -- a copy out of the FBO into another texture, and

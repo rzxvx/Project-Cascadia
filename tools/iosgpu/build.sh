@@ -15,7 +15,7 @@ CFLAGS="-arch armv7 -miphoneos-version-min=8.0 -isysroot $SDK -marm -Os -Wall"
 clang $CFLAGS -c fishhook.c -o /tmp/fishhook.$$.o
 clang $CFLAGS -c gltrace.m  -o /tmp/gltrace.$$.o
 clang -arch armv7 -miphoneos-version-min=8.0 -nostdlib /tmp/gltrace.$$.o /tmp/fishhook.$$.o \
-    stubs/libSystem.tbd stubs/libobjc.tbd stubs/OpenGLES.tbd -o ../../build/gltrace
+    stubs/libSystem.tbd stubs/libobjc.tbd stubs/OpenGLES.tbd stubs/CoreVideo.tbd stubs/CoreFoundation.tbd -o ../../build/gltrace
 rm -f /tmp/fishhook.$$.o /tmp/gltrace.$$.o
 ldid -S ../../build/gltrace
 echo "ok: ../../build/gltrace ($(wc -c < ../../build/gltrace | tr -d ' ') bytes)"
