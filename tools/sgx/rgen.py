@@ -19,6 +19,8 @@ images for apple-sgx/mem plus a device script (rrun.sh):
 
 Usage: rgen.py CAPDIR RTDIR OUTDIR [--profile tri|depth] [--fb X Y] [--reloc BASE]
   --reloc the triangle's GL buffers and VDM stream moved to BASE.. (tri only)
+  --teximg PNG  (profile tex) the quad, stretched over the frame, shows PNG
+          as a 64x64 texture at 0x98900000
   --codebase CB  shader code page at CB + 0x1000, USE_CODE_BASE_3 = CB (the
           2D engine's programs at 0x1000 stay)
   --fb    draw straight into the framebuffer (GPU 0x90000000, 768 px lines)
@@ -193,6 +195,34 @@ def reloc_buf(b, base):
     w = [reloc_word(x, base) for x in words(bytes(b))]
     return bytearray(pack(w))
 
+def twiddle(rgba, w, h):
+    """RGBA rows -> the GPU's texture order: Morton, y in the even bits."""
+    out = bytearray(w * h * 4)
+    for y in range(h):
+        for x in range(w):
+            i = 0
+            for b in range(max(w, h).bit_length()):
+                i |= ((y >> b) & 1) << (2 * b) | ((x >> b) & 1) << (2 * b + 1)
+            out[i * 4:i * 4 + 4] = rgba[(y * w + x) * 4:(y * w + x) * 4 + 4]
+    return out
+
+TEX_VA = 0x98900000
+
+def own_texture(gl, path):
+    """--teximg (profile tex): the quad shows PATH (64x64) over the whole frame."""
+    from PIL import Image
+    base = PROFILES['tex']['gl'][0]
+    img = Image.open(path).convert('RGBA').resize((64, 64))
+    t = twiddle(img.tobytes(), 64, 64)
+    gl[TEX_VA - base:TEX_VA - base + len(t)] = t
+    desc = 0x989d8000 + 0x1e0 - base           # the sampler's descriptor
+    struct.pack_into('<II', gl, desc + 0x14, 0x0c060006, TEX_VA)
+    verts = 0x98940000 + 0x2b0 - base          # six (u, v, x, y) vertices
+    for i in range(6):
+        u, v, x, y = struct.unpack_from('<4f', gl, verts + 16 * i)
+        struct.pack_into('<2f', gl, verts + 16 * i + 8, 1.0 if x > 0 else -1.0,
+                         1.0 if y > 0 else -1.0)
+
 def main():
     cap, rtdir, out = sys.argv[1:4]
     os.makedirs(out, exist_ok=True)
@@ -207,6 +237,8 @@ def main():
     vdm = open(os.path.join(cap, 'r_%08x.bin' % prof['vdm']), 'rb').read()
     imgs = {RT_VA: rt_image(rtdir), PB_VA: pb_image(), CMD_VA: ta_cmd(rtdir),
             prof['gl'][0]: gl_image(cap, prof), VDM_VA: vdm, 0x1000: code}
+    if '--teximg' in sys.argv:
+        own_texture(imgs[prof['gl'][0]], sys.argv[sys.argv.index('--teximg') + 1])
     if '--reloc' in sys.argv:
         base = int(sys.argv[sys.argv.index('--reloc') + 1], 0)
         gl = imgs.pop(prof['gl'][0])
