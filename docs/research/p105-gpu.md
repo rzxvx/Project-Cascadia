@@ -373,6 +373,85 @@ So everything the command points at is in place, and what is missing is
 state set outside the command -- registers iOS programs when it creates a
 transfer context or in `initSGX`, or ADT-derived parameters still zero.
 
+### The transfer's code, and what the microkernel programs (2026-10-01)
+
+**The GL driver's USSE code.** The `0x388a`-style words in the level blocks are
+the first word of a DOUTU triple (`{address word, temporaries?, 0}`, emitted by
+PDS `07ss0185` from data-segment word `ss`). The address word is
+`(instruction index << 4) | code base index`:
+
+- the **low nibble selects `USE_CODE_BASE_n`**. Proof from the microkernel's own
+  tables: TAB_784's three PDS programs use `0x01000001`, `0x01000101`,
+  `0x01000231` -- base 1 (TAB_78C) and indices 0, 0x10, 0x23, which land exactly
+  on the three `PHAS` in TAB_78C at +0, +0x80, +0x118. The microkernel's own
+  templates use base 0 (its code); bit 24/27 are other flags.
+- GL's words end in `0xa`: **base 10**, which `initSGX` sets to 0. The driver's
+  resource table (CPU `0x810000` in the capture, records `{idx, 0xa, gpuva}`)
+  lists the code buffers at **GPU address `0x1000`** (records 6, 15, 18 -- one per
+  time the buffer grew). So GL code lives at VA `0x1000` with base 10 = 0.
+- In the capture the code is CPU `0x89c000` (7 pages, `0x5280` bytes used =
+  6 x `0xdc0`): one `0xdc0`-byte copy of a small program library **per transfer**,
+  identical except the emit program at `+0xd40` (`LIMM r1 <- #0x98108000`, the
+  destination level, and its size). The `+0x1b80` per level in the words is that
+  `0xdc0`. Checked: a `PHAS` at `+0xdc0` of the older code buffer names its next
+  phase `0x3be` = `0x1df0` from the base = the `PHAS` at `+0xdf0`.
+
+The kernel does not relocate the payload (`copyAndValidateVendorPayload` copies
+the `0x7c` bytes as they are; the builder `0x80bfd19c` only adds `+0xa0..+0xb8`,
+`+0x104` and `+0x108 = 0x1800000`), so the microkernel gets exactly what GL wrote.
+
+**What the microkernel programs for a transfer** -- found by dumping every word of
+the master and both core banks (`peek r`, 3 x 16 KB, all readable with the
+clocks on) after `boot` and again after `tqkick`, and diffing (core banks; the
+master's registers survive `boot`, so its diff is not clean). Register names
+from the kext's dump routine (`0x80bf9230`, strings next to the reads):
+
+| register | value | from |
+|---|---|---|
+| `0x408` **ISP_RGN_BASE** (core and master `0x4408`) | `0x6200` | `cmd+0x10` (`+0x200` per transfer) |
+| `0x4c4` | `0x02000600` | `cmd+0x00` |
+| `0xa5c`, `0xa60`, `0xa64` | `0x980f3000`, `5`, `0x4000` | `cmd+0x24..0x2c`: a PDS program -- data segment at the address, `5 x 16` bytes long, code right after it (the level block's program at `+0x50`), the same shape as EVENT_PDS `0xa68..0xa70` |
+| `0x400` | `0x410` | ? |
+| `0x4e4` | `0x001f0000` | ? (31 = the 32-pixel level's last row/column?) |
+| `0xa74` | bit 23 set | |
+| `0xc78` BIF_BANK0 | 3D directory index 7 -> 0 | (all eight directory bases hold our page directory) |
+| `0x070`, `0x074` | `0x06020000`, `0x06060606` (core 1 `0x02020202`) | status? |
+
+Not found in any register: `cmd+0x38` (the PDS pointer into `w12`), `cmd+0x104`
+(`w2` = `0x90012000`), `cmd+0x84/0x88`. Other names from the dump routine:
+`0x480` ISP_ZLSCTL, `0x484/0x488` ZLOAD/ZSTORE_BASE, `0x48c/0x490` stencil
+load/store, `0x451c` MASTER_ISP_RGN, `0x4400` MASTER_ISP_STATUS, DPM: `0x614`
+PDS_PAGE_THRESHOLD, `0x620` TA_PAGE_THRESHOLD, `0x624` ZLS_PAGE_THRESHOLD,
+`0x628` TA_GLOBAL_LIST, `0x724/0x72c` (GLOBAL_)PAGE_STATUS, `0x728/0x730`
+(GLOBAL_)PAGE.
+
+**Where it stops.** After the kick: TRIG_3D, then nothing -- no ISP_END_TILE
+(`0x800000`), so not one tile finishes; **BIF_MEM_REQ_STAT = 1 on both cores**
+(one memory read outstanding forever), no MMU fault, the microkernel declares a
+lockup. And it stops **before touching any of the transfer's memory**: with the
+PTEs of the code, level blocks, `w12`, `w2` and the texture all invalid
+(`peek w` on the page table, then `boot` to flush the MMU), still no fault and
+the same hang. Things tried that changed nothing: code at VA `0x1000` (with base
+10 = 0), PTEs without EDMPROTECT, `USE_CODE_BASE_15` (reset garbage
+`0x0c3a1cc4`) zeroed, BIF_3D_REQ_BASE (`0xcac`, 0 here; TA_REQ_BASE is
+`0x80100000` = buffer `794`) set to `0x80100000` or `0x90000000`, page 0 mapped.
+
+What `794..7a0` are: `794` (20 pages, = TA_REQ_BASE) is the parameter memory,
+`798` its DPM page list (master `0x4618` = `0x80114000`, `0x4620/24` = 20
+pages), `7a0` per-core state (core 0 `0x21c` = `0x8011d000`, core 1
+`0x80120000`). The microkernel's boot touches `7a0` through a non-EDM requestor
+(BIF_INT_STAT FAULT_REQ bit 2) when it is unmapped -- its DPM/TPC clear.
+
+Open: what the 3D side waits for. Leading ideas -- the region headers
+(ISP_RGN_BASE `0x6200` relative to a base we do not know: on iOS they may sit in
+memory the kernel or GL prepared, never captured), or 3D state that iOS's
+microkernel sets during ordinary renders and a transfer assumes. Ground truth
+would settle it: the kext's dump routine prints ISP_RGN_BASE, the ZLS and DPM
+registers and the SLC status, and it runs when a CCB stays full (`0x80bfd22c`,
+`0x80bfb178`), a render times out (`0x80bfcaba`) or memory requests do not drain
+at power-off (`0x80bf4854`) -- a way to read iOS's values without a kernel read
+primitive.
+
 ### Next
 
 Done since this list was first written: the page tables, the firmware
