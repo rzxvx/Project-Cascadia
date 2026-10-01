@@ -910,6 +910,19 @@ its background (GL cleared in a separate render), so its background is ours
   128x128) -- the descriptor now points at a 4 MiB surface of its own.
   4 textures, 120 sprites + background, full screen, 300 frames in ~4 s.
 
+- **sgx2d, a C library on the device** (`tools/sgx/lib`, pack from
+  `tools/sgx/rpack.py`): `sgx2d_open(pack)` maps, boots and loads the
+  templates; `sgx2d_texture(rgba, w, h)` twiddles (padded square, power of
+  two) into our window and builds the texture's 3D PDS block and state delta
+  once; `sgx2d_begin(bg)`, `sgx2d_quad(...)`, `sgx2d_end()` assemble the VDM
+  stream, vertex fetch blocks and vertices and render (pwrite on
+  apple-sgx/mem at the GPU address, then rkick). Built for armv7/musl in an
+  Alpine `linux/arm/v7` Docker image (`cascadia-armdev`: alpine:3.24 + gcc
+  musl-dev make). `sprites PACK 200 600`: 200 sprites, three textures
+  interleaved (one draw per sprite), 600 frames at ~236 submits/s, no
+  faults. The rate is TA completions -- rkick returns when the TA is done,
+  not the 3D pass.
+
 ### Next
 
 Done since this list was first written: the page tables, the firmware

@@ -42,3 +42,6 @@ attic/_to_delete/
 # built by ./cascadia build from dts/p105ap.dts
 dtb/
 ipad25.ipsw
+
+# sgx2d demo binary (built in docker, armv7)
+tools/sgx/lib/sprites
