@@ -688,6 +688,21 @@ per-job cost), about 2.5 ms for a full 768x1024 fill (~300 Mpixel/s);
 copies verified pixel for pixel. The microkernel is never rebooted between
 jobs. (fbcon has to be unbound while testing: it repaints the screen.)
 
+**M3 (optional) tried: fbcon on the GPU is slower (2026-10-01).** The
+driver can now start the microkernel by itself at probe (`autoboot`, on by
+default -- up 1.6 s into the boot) and, on request (`fbcon_gpu=1` or debugfs
+`fbcon`), give simplefb's `fillrect`/`copyarea` to the 2D engine and switch
+fbcon to moving instead of redrawing (`CONFIG_FRAMEBUFFER_CONSOLE_LEGACY_ACCELERATION`;
+a copy up the screen over itself is safe in one job -- 3 x 756 samples exact --
+other overlapping moves are cut into bands). It works, but fbcon's move mode
+(`fbcon_redraw_blit`) moves the screen one text line and one run at a time:
+~76 GPU jobs per scrolled line at ~111 us each, 9-90 ms a line against
+0.2-1.3 ms for fbcon redrawing the text with the CPU. The cost is the
+per-job round trip (build, kick, wait), not the GPU's speed -- a full-screen
+copy is ~1 ms. So the console stays on the CPU by default; the engine is for
+large blits. Batching jobs without a wait each would be the fix if it ever
+matters.
+
 ### Next
 
 Done since this list was first written: the page tables, the firmware

@@ -47,8 +47,10 @@
 #include <linux/bits.h>
 #include <linux/clk.h>
 #include <linux/debugfs.h>
+#include <linux/console.h>
 #include <linux/delay.h>
 #include <linux/dma-mapping.h>
+#include <linux/fb.h>
 #include <linux/firmware.h>
 #include <linux/interrupt.h>
 #include <linux/io.h>
@@ -65,8 +67,11 @@
 #include <linux/seq_file.h>
 #include <linux/sizes.h>
 #include <linux/slab.h>
+#include <linux/spinlock.h>
 #include <linux/string.h>
 #include <linux/uaccess.h>
+#include <linux/vt_kern.h>
+#include <linux/workqueue.h>
 
 #define SGX_BANK_SIZE			0x4000
 #define SGX_BCAST			0x0000
@@ -356,6 +361,26 @@ static bool use_irq;
 module_param_named(irq, use_irq, bool, 0644);
 MODULE_PARM_DESC(irq, "take the SGX interrupt (AIC 49) from the next microkernel boot");
 
+/* Start the microkernel at probe and put fbcon's copies and fills on the
+ * GPU (the 2D engine); off leaves both to debugfs. */
+static bool autoboot = true;
+module_param(autoboot, bool, 0444);
+MODULE_PARM_DESC(autoboot, "start the microkernel at boot and accelerate fbcon (default on)");
+
+/* fbcon's fills and copies on the GPU.  Off by default: a scroll is a copy of
+ * the whole screen per line (~1 ms), no faster than fbcon redrawing the text
+ * with the CPU (0.2-1.3 ms a line, measured); debugfs "fbcon" turns it on. */
+static bool fbcon_gpu;
+module_param(fbcon_gpu, bool, 0644);
+MODULE_PARM_DESC(fbcon_gpu, "accelerate fbcon with the 2D engine at microkernel start (default off)");
+
+/* A copy up the screen over itself (a scroll) in one job: measured exact
+ * (the GPU reads each region before rows below are written); off cuts it
+ * into bands like the other directions. */
+static bool fast_scroll = true;
+module_param(fast_scroll, bool, 0644);
+MODULE_PARM_DESC(fast_scroll, "scroll up in one GPU job (default on)");
+
 /* Unhandled interrupts in a row before the line is switched off. */
 #define SGX_IRQ_STORM			16
 
@@ -394,7 +419,11 @@ struct apple_sgx {
 
 	/* the 2D engine (blits and fills through the transfer queue) */
 	bool quiet;			/* no log line per microkernel command */
-	bool blt_ready;
+	spinlock_t ccb_lock;		/* the kernel CCB: fbcon may draw from atomic context */
+	spinlock_t blt_lock;		/* one 2D job at a time; also guards boot_result */
+	bool blt_ready, blt_broken, fb_hooked;
+	struct work_struct boot_work;
+	phys_addr_t fb_pa;
 	u64 *blt_code;			/* CPU side of the code page at GPU 0x1000 */
 	u32 blt_seq;
 	u32 fb_w, fb_h, fb_stride;	/* the framebuffer: pixels, pixels, pixels */
@@ -969,17 +998,23 @@ static int sgx_send_cmd(struct apple_sgx *sgx, enum sgx_cmd_type type,
 	ktime_t start;
 	int ret;
 
+	unsigned long flags;
+
 	if (sgx->boot_result != 1)
 		return -ENODEV;
+	spin_lock_irqsave(&sgx->ccb_lock, flags);
 	wo = READ_ONCE(ctl[0]);
 	ro = READ_ONCE(ctl[1]);
 	if (wo >= SGX_CCB_SIZE || ro >= SGX_CCB_SIZE) {
+		spin_unlock_irqrestore(&sgx->ccb_lock, flags);
 		dev_err(sgx->dev, "CCB offsets out of range: write %u read %u\n",
 			wo, ro);
 		return -EIO;
 	}
-	if (((wo + 1) & (SGX_CCB_SIZE - 1)) == ro)
+	if (((wo + 1) & (SGX_CCB_SIZE - 1)) == ro) {
+		spin_unlock_irqrestore(&sgx->ccb_lock, flags);
 		return -EBUSY;
+	}
 
 	cmd = (struct sgx_ccb_cmd *)sgx->buf[B_750].cpu + wo;
 	memset(cmd, 0, sizeof(*cmd));
@@ -996,8 +1031,10 @@ static int sgx_send_cmd(struct apple_sgx *sgx, enum sgx_cmd_type type,
 	start = ktime_get();
 	sgx_write(sgx, SGX_CORE(0) + SGX_EVENT_KICK, 1);
 
-	ret = read_poll_timeout(READ_ONCE, val, val == wo, 10, 500000, false,
-				ctl[1]);
+	/* taken in tens of microseconds; never sleeps (fbcon) */
+	ret = read_poll_timeout_atomic(READ_ONCE, val, val == wo, 1, 500000, false,
+				       ctl[1]);
+	spin_unlock_irqrestore(&sgx->ccb_lock, flags);
 	if (!sgx->quiet || ret)
 	dev_info(sgx->dev,
 		 "command %s (cc 0x%x, data 0x%x 0x%x): %s after %lld us, CCB write %u read %u, "
@@ -1385,6 +1422,7 @@ static int sgx_blt_init(struct apple_sgx *sgx)
 		dev_warn(sgx->dev, "no framebuffer for the 2D engine: %d\n", ret);
 	else
 		ret = sgx_mmu_map(sgx, SGX_FB_VA, fb.start, resource_size(&fb), 0);
+	sgx->fb_pa = fb.start;
 	if (ret)
 		sgx->fb_w = 0;
 	else
@@ -1396,8 +1434,8 @@ static int sgx_blt_init(struct apple_sgx *sgx)
 
 /* One job: src (or a fill colour, ABGR as the pixel program writes it)
  * onto dst, scaled.  Builds the pieces, queues the command, waits. */
-static int sgx_blt_run(struct apple_sgx *sgx, const struct sgx_surf *src, u32 fill,
-		       const struct sgx_surf *dst)
+static int __sgx_blt_run(struct apple_sgx *sgx, const struct sgx_surf *src, u32 fill,
+			 const struct sgx_surf *dst)
 {
 	u32 *blk = sgx->buf[B_BLT_BLOCK].cpu, *par = sgx->buf[B_BLT_PARAM].cpu;
 	u32 bva = sgx->buf[B_BLT_BLOCK].va, pva = sgx->buf[B_BLT_PARAM].va;
@@ -1529,6 +1567,23 @@ static int sgx_blt_run(struct apple_sgx *sgx, const struct sgx_surf *src, u32 fi
 	return ret;
 }
 
+/* One job at a time, from any context.  A job that does not finish takes
+ * the engine out of service (callers fall back to the CPU) until the next
+ * microkernel boot. */
+static int sgx_blt_run(struct apple_sgx *sgx, const struct sgx_surf *src, u32 fill,
+		       const struct sgx_surf *dst)
+{
+	unsigned long flags;
+	int ret;
+
+	spin_lock_irqsave(&sgx->blt_lock, flags);
+	ret = sgx->blt_broken ? -EIO : __sgx_blt_run(sgx, src, fill, dst);
+	if (ret == -ETIMEDOUT)
+		sgx->blt_broken = true;
+	spin_unlock_irqrestore(&sgx->blt_lock, flags);
+	return ret;
+}
+
 static bool sgx_fb_rect_ok(struct apple_sgx *sgx, u32 x, u32 y, u32 w, u32 h)
 {
 	return sgx->fb_w && w && h && x < sgx->fb_w && y < sgx->fb_h &&
@@ -1567,6 +1622,87 @@ static int sgx_fb_copy(struct apple_sgx *sgx, u32 sx, u32 sy, u32 dx, u32 dy, u3
 	sgx_fb_surf(sgx, &s, sx, sy, w, h);
 	sgx_fb_surf(sgx, &d, dx, dy, w, h);
 	return sgx_blt_run(sgx, &s, 0, &d);
+}
+
+/* fbcon moves rectangles over themselves.  Up the screen is one job (see
+ * fast_scroll); otherwise the move goes in bands no taller -- or wider --
+ * than the distance, in the order that never reads a written band. */
+static int sgx_fb_copy_safe(struct apple_sgx *sgx, u32 sx, u32 sy, u32 dx, u32 dy,
+			    u32 w, u32 h)
+{
+	bool overlap = sx < dx + w && dx < sx + w && sy < dy + h && dy < sy + h;
+	u32 d, i, n;
+	int ret = 0;
+
+	if (!overlap || (fast_scroll && dx == sx && dy < sy))
+		return sgx_fb_copy(sgx, sx, sy, dx, dy, w, h);
+	if (dy != sy) {
+		d = dy > sy ? dy - sy : sy - dy;
+		n = DIV_ROUND_UP(h, d);
+		for (i = 0; i < n && !ret; i++) {
+			u32 k = dy > sy ? n - 1 - i : i;	/* down: last band first */
+			u32 y = k * d, bh = min(d, h - y);
+
+			ret = sgx_fb_copy(sgx, sx, sy + y, dx, dy + y, w, bh);
+		}
+		return ret;
+	}
+	d = dx > sx ? dx - sx : sx - dx;
+	n = DIV_ROUND_UP(w, d);
+	for (i = 0; i < n && !ret; i++) {
+		u32 k = dx > sx ? n - 1 - i : i;		/* right: last band first */
+		u32 x = k * d, bw = min(d, w - x);
+
+		ret = sgx_fb_copy(sgx, sx + x, sy, dx + x, dy, bw, h);
+	}
+	return ret;
+}
+
+/* fbcon on the GPU: simplefb's operations, with fills and copies replaced;
+ * whatever the engine cannot do goes back to simplefb's (CPU) versions. */
+extern struct fb_info *registered_fb[FB_MAX];	/* fbmem.c; both built in */
+static struct apple_sgx *sgx_fbcon;
+static struct fb_ops sgx_fbcon_ops;
+static const struct fb_ops *sgx_fbcon_cpu;
+
+static void sgx_fbcon_fillrect(struct fb_info *info, const struct fb_fillrect *r)
+{
+	u32 c = r->color;
+
+	if (info->fix.visual == FB_VISUAL_TRUECOLOR || info->fix.visual == FB_VISUAL_DIRECTCOLOR)
+		c = ((u32 *)info->pseudo_palette)[r->color];
+	if (r->rop != ROP_COPY || sgx_fb_fill(sgx_fbcon, r->dx, r->dy, r->width, r->height, c))
+		sgx_fbcon_cpu->fb_fillrect(info, r);
+}
+
+static void sgx_fbcon_copyarea(struct fb_info *info, const struct fb_copyarea *a)
+{
+	/* glyphs the CPU drew must be in memory before the GPU reads them */
+	wmb();
+	if (sgx_fb_copy_safe(sgx_fbcon, a->sx, a->sy, a->dx, a->dy, a->width, a->height))
+		sgx_fbcon_cpu->fb_copyarea(info, a);
+}
+
+static void sgx_fbcon_hook(struct apple_sgx *sgx)
+{
+	struct fb_info *info = registered_fb[0];
+
+	if (sgx->fb_hooked || !sgx->fb_w || !info || info->fix.smem_start != sgx->fb_pa)
+		return;
+	sgx_fbcon_cpu = info->fbops;
+	sgx_fbcon_ops = *info->fbops;
+	sgx_fbcon_ops.fb_fillrect = sgx_fbcon_fillrect;
+	sgx_fbcon_ops.fb_copyarea = sgx_fbcon_copyarea;
+	sgx_fbcon = sgx;
+	console_lock();
+	info->fbops = &sgx_fbcon_ops;
+	info->flags |= FBINFO_HWACCEL_COPYAREA | FBINFO_HWACCEL_FILLRECT;
+	/* fbcon picks its scroll mode on a switch: copies instead of redraws */
+	if (vc_cons[fg_console].d)
+		redraw_screen(vc_cons[fg_console].d, 0);
+	console_unlock();
+	sgx->fb_hooked = true;
+	dev_info(sgx->dev, "fbcon: fills and copies on the GPU\n");
 }
 
 /* "bench N": N fills of 64x64 in the top-left corner, timed */
@@ -1686,6 +1822,38 @@ static int sgx_regs_show(struct seq_file *s, void *unused)
 DEFINE_SHOW_ATTRIBUTE(sgx_regs);
 
 /* Any write starts the microkernel, from a reset GPU each time. */
+/* Start (or restart) the microkernel; sgx->lock held.  The 2D engine is out
+ * of service meanwhile -- fbcon draws with the CPU. */
+static int sgx_boot(struct apple_sgx *sgx)
+{
+	unsigned long flags;
+	int ret;
+
+	spin_lock_irqsave(&sgx->blt_lock, flags);
+	sgx->boot_result = 0;
+	spin_unlock_irqrestore(&sgx->blt_lock, flags);
+	ret = sgx_boot_ukernel(sgx);
+	spin_lock_irqsave(&sgx->blt_lock, flags);
+	sgx->boot_result = ret ? ret : 1;
+	sgx->blt_broken = false;
+	spin_unlock_irqrestore(&sgx->blt_lock, flags);
+	if (!ret && fbcon_gpu)
+		sgx_fbcon_hook(sgx);
+	return ret;
+}
+
+static void sgx_boot_work(struct work_struct *work)
+{
+	struct apple_sgx *sgx = container_of(work, struct apple_sgx, boot_work);
+	int ret;
+
+	mutex_lock(&sgx->lock);
+	ret = sgx_boot(sgx);
+	mutex_unlock(&sgx->lock);
+	if (ret)
+		dev_err(sgx->dev, "microkernel did not start: %d\n", ret);
+}
+
 static ssize_t sgx_boot_write(struct file *file, const char __user *ubuf,
 			      size_t len, loff_t *ppos)
 {
@@ -1693,8 +1861,7 @@ static ssize_t sgx_boot_write(struct file *file, const char __user *ubuf,
 	int ret;
 
 	mutex_lock(&sgx->lock);
-	ret = sgx_boot_ukernel(sgx);
-	sgx->boot_result = ret ? ret : 1;
+	ret = sgx_boot(sgx);
 	mutex_unlock(&sgx->lock);
 	return ret ? ret : len;
 }
@@ -1713,7 +1880,8 @@ static const struct file_operations sgx_boot_fops = {
  *   "map VA SZ"  memory at GPU address VA (see apple-sgx/mem)
  *   "tqkick"     send the transfer command placed at the transfer CCB
  * and the 2D engine, on the framebuffer:
- *   "fill X Y W H ARGB", "copy SX SY DX DY W H", "bench N" (N timed fills) */
+ *   "fill X Y W H ARGB", "copy SX SY DX DY W H", "bench N" (N timed fills),
+ *   "fbcon" (put fbcon's fills and copies on the GPU from now on) */
 static ssize_t sgx_cmd_write(struct file *file, const char __user *ubuf,
 			     size_t len, loff_t *ppos)
 {
@@ -1736,6 +1904,8 @@ static ssize_t sgx_cmd_write(struct file *file, const char __user *ubuf,
 		ret = sgx_send_cmd(sgx, SGX_CMD_HWPERF, 0, arg, 0);
 	else if (!strcmp(word, "power"))
 		ret = sgx_power_cmd(sgx, arg);
+	else if ((!strcmp(word, "tq") || !strcmp(word, "tqkick")) && sgx->fb_hooked)
+		ret = -EBUSY;	/* the transfer queue belongs to fbcon now */
 	else if (!strcmp(word, "tq"))
 		ret = sgx_tq_cmd(sgx, arg, arg2);
 	else if (!strcmp(word, "map"))
@@ -1748,6 +1918,11 @@ static ssize_t sgx_cmd_write(struct file *file, const char __user *ubuf,
 		ret = sgx_fb_copy(sgx, arg, arg2, a[0], a[1], a[2], a[3]);
 	else if (!strcmp(word, "bench"))
 		ret = sgx_fb_bench(sgx, arg);
+	else if (!strcmp(word, "fbcon")) {
+		ret = sgx->boot_result == 1 ? 0 : -ENODEV;
+		if (!ret)
+			sgx_fbcon_hook(sgx);
+	}
 	else
 		ret = -EINVAL;
 	mutex_unlock(&sgx->lock);
@@ -1787,6 +1962,9 @@ static int apple_sgx_probe(struct platform_device *pdev)
 		return -ENOMEM;
 	sgx->dev = dev;
 	mutex_init(&sgx->lock);
+	spin_lock_init(&sgx->ccb_lock);
+	spin_lock_init(&sgx->blt_lock);
+	INIT_WORK(&sgx->boot_work, sgx_boot_work);
 	sgx->brn_31195 = of_property_read_bool(dev->of_node, "apple,brn-31195");
 
 	ret = dma_set_mask_and_coherent(dev, DMA_BIT_MASK(32));
@@ -1856,6 +2034,8 @@ static int apple_sgx_probe(struct platform_device *pdev)
 	debugfs_create_file("cmd", 0200, sgx->debugfs, sgx, &sgx_cmd_fops);
 	debugfs_create_file("mem", 0600, sgx->debugfs, sgx, &sgx_mem_fops);
 	platform_set_drvdata(pdev, sgx);
+	if (autoboot)
+		schedule_work(&sgx->boot_work);
 	return 0;
 }
 
@@ -1863,6 +2043,7 @@ static void apple_sgx_remove(struct platform_device *pdev)
 {
 	struct apple_sgx *sgx = platform_get_drvdata(pdev);
 
+	cancel_work_sync(&sgx->boot_work);
 	debugfs_remove_recursive(sgx->debugfs);
 }
 
