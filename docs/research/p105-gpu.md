@@ -618,6 +618,31 @@ memory, the replayed transfer draws its 32x32 level into the framebuffer
 **pixel-for-pixel identical to iOS's level** (the test scene: an orange
 triangle on blue).
 
+**Our own transfer: source, rectangle, any size (2026-10-01).** On top of the
+replay, three pieces are now ours:
+
+- **The source.** Any 64x64 RGBA image, laid out in Morton order (Y in the
+  even bits), in place of the captured texture.
+- **The destination rectangle.** The parameter page's second object (`+0x100`)
+  is a quad -- half-float x/y pairs at `+0x13c/+0x144/+0x14c/+0x154`, each
+  followed by `1.0f` -- that sets where the result lands; the source is
+  stretched onto it (`2..2.5` = 16 px, `2..3` = 32, `2..4` = 64,
+  `2..8` = 128 in the captures). The first object (`+0x000`) has no visible
+  effect.
+- **Size beyond one region.** A render is cut into 32x32 regions and
+  `cmd+0x34` (register `0x410`) holds the last region's index, `x | y << 16`
+  (`0x00010001` = 2x2, `0x00030003` = 4x4; taken from an iOS capture of a
+  256x256 mipmap, `gltrace tq 256`). One region header serves every region
+  in that box -- its word 0 holds only flags (bit 31 last region, bit 30
+  empty), words 1-3 are the control stream (bits 0-1 of word 1 enable the
+  quad's two triangles, word 2 points at the object, word 3 ends the stream).
+  A second header hangs the render.
+
+With these, a 128x128 transfer (the 64x64 source scaled up 2x) draws into
+the framebuffer and shows on screen. Still taken from the capture: the GL
+code, the level block (PDS programs and the source/destination
+descriptors), the command skeleton and the object layout.
+
 ### Next
 
 Done since this list was first written: the page tables, the firmware
