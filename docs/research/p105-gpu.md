@@ -476,8 +476,25 @@ registers:
   `0x2a9`; CLKGATESTATUS core 0 `0x0063ba80`, core 1 `0x80`. We force them on
   (mode 1): `0x10055555`, `0x05454555`, `0x155`.
 
-With word 7 (ISP_RGN_BASE) patched too late it proved nothing; redo it with the
-early patch before drawing conclusions about the region headers.
+**ISP_RGN_BASE is an offset from `0x8c000000` (2026-10-01).** Redone with the
+early patch: word 7 (`cmd+0x10`, which the microkernel writes to ISP_RGN_BASE)
+set to `0xabc000` faults as **requestor ISPP** at device address **`0x8cabc000`**
+-- a MASTER BIF fault (`MASTER_BIF_FAULT 0x8cabc010`), not a per-core one. So the
+hardware reads the region headers at `0x8c000000 + ISP_RGN_BASE`; iOS's `0x6200`
+means **`0x8c006200`**. `0x8c000000` is the DDK's render-command region, and the
+transfer's own resource list carries `0x8c009000` (and the kext allocates
+`0x8c006000`, record idx 8, a real buffer -- kernel pointer at its `+0x14`).
+
+**This is the piece our Linux replay is missing**: we never map anything at
+`0x8c000000`, so the ISP's region-header read lands in an unmapped page.
+(Under Linux the hang comes with no fault at all, so the 3D pipe there stalls
+even earlier -- before the ISP reads the headers; the first thing to try is
+mapping `0x8c006000`/`0x8c009000` with the captured content, if any, or zeroed,
+and seeing whether Linux now faults as ISPP at `0x8c006200` too.) The ISPP fault
+also distinguishes the requestors: PDS (the level block's PDS program),
+ISPP (region headers), USE (shader code) each fault separately, so `tqpatch`
+can map each GPU-address field of the transfer to the unit that reads it.
+
 
 ### Next
 
