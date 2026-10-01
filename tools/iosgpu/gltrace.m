@@ -87,6 +87,35 @@ static void dump(const char *tag, const unsigned char *p, size_t n, size_t cap)
 static int patch_word = -1;
 static uint32_t patch_val;
 static int patched;
+/* "gltrace rpatch WORD VALUE": the same for the triangle's render commands
+ * (type 1, 0xdc bytes) -- any whose word 2 differs from the clear frame's */
+static int rpatch_armed;
+static uint32_t rpatch_clear_w2;
+
+static void patch_renders(void)
+{
+    for (int i = 0; i < nmaps; i++) {
+        unsigned char *b = (unsigned char *)(uintptr_t)maps[i].addr;
+
+        if (maps[i].type != 0)
+            continue;
+        for (unsigned p = 0; p + 0x80 + 0xdc <= maps[i].size; p += 4) {
+            uint32_t *h = (uint32_t *)(b + p), off = h[4], *pl;
+
+            if (off < 0x14 || off > 0x80 || (off & 3) || b[p + off] != 1)
+                continue;
+            if (h[0] != off + 0xdc && h[1] != off + 0xdc &&
+                h[2] != off + 0xdc && h[3] != off + 0xdc)
+                continue;
+            pl = (uint32_t *)(b + p + off);
+            if (pl[2] == rpatch_clear_w2 || pl[patch_word] == patch_val)
+                continue;
+            printf("== rpatch: render at 0x%08x, payload word %d 0x%08x -> 0x%08x\n",
+                   maps[i].addr + p, patch_word, pl[patch_word], patch_val);
+            pl[patch_word] = patch_val;
+        }
+    }
+}
 
 static void patch_transfer(void)
 {
@@ -122,7 +151,9 @@ static kern_return_t my_call(mach_port_t c, uint32_t sel, const uint64_t *in, ui
     printf("[call]        conn %u sel %-4u scalars %u struct %zu\n", c, sel, inc, insc);
     if (ins && insc)
         dump("in", ins, insc, 128);
-    if (patch_word >= 0 && !patched)
+    if (rpatch_armed)
+        patch_renders();
+    else if (patch_word >= 0 && !patched)
         patch_transfer();
     return orig_call(c, sel, in, inc, ins, insc, out, outc, outs, outsc);
 }
@@ -133,7 +164,9 @@ static kern_return_t my_call_struct(mach_port_t c, uint32_t sel, const void *ins
     printf("[callStruct]  conn %u sel %-4u struct %zu\n", c, sel, insc);
     if (ins && insc)
         dump("in", ins, insc, 128);
-    if (patch_word >= 0 && !patched)
+    if (rpatch_armed)
+        patch_renders();
+    else if (patch_word >= 0 && !patched)
         patch_transfer();
     return orig_call_struct(c, sel, ins, insc, outs, outsc);
 }
@@ -142,7 +175,9 @@ static kern_return_t my_call_scalar(mach_port_t c, uint32_t sel, const uint64_t 
                                     uint64_t *out, uint32_t *outc)
 {
     printf("[callScalar]  conn %u sel %-4u scalars %u\n", c, sel, inc);
-    if (patch_word >= 0 && !patched)
+    if (rpatch_armed)
+        patch_renders();
+    else if (patch_word >= 0 && !patched)
         patch_transfer();
     return orig_call_scalar(c, sel, in, inc, out, outc);
 }
@@ -233,6 +268,8 @@ static void snapshot_arena(const char *label)
  * among the header words -- what IMGSGXGLContext::copyAndValidateVendorPayload
  * (kernelcache 0x80bf64d4) expects.  Transfers are printed whole. */
 static uint32_t tq_w2, tq_w12, tq_w13;	/* GPU addresses in the first transfer */
+static int print_renders;		/* "gltrace render": print render payloads too */
+static uint32_t last_render_w2;
 
 static void scan_payloads(const char *label)
 {
@@ -259,6 +296,22 @@ static void scan_payloads(const char *label)
         pl = (const uint32_t *)(img + p + off);
         if (t == 1) {
             nrender++;
+            last_render_w2 = pl[2];
+            if (print_renders) {
+                unsigned nrec = h[1], recoff = h[2];
+                printf("== %s: render command at 0x%08x, header", label, ARENA_LO + p);
+                for (unsigned i = 0; i < off / 4; i++)
+                    printf(" %08x", h[i]);
+                printf("\n   payload:");
+                for (unsigned i = 0; i < size / 4; i++)
+                    printf("%s%08x", i % 8 ? " " : "\n   ", pl[i]);
+                printf("\n   records (%u at +0x%x):", nrec, recoff);
+                for (unsigned i = 0; i < nrec && i < 64 && p + recoff + 8 * i + 8 <= span; i++)
+                    printf("%s%08x %08x", i % 4 ? "  " : "\n   ",
+                           ((const uint32_t *)(img + p + recoff))[2 * i],
+                           ((const uint32_t *)(img + p + recoff))[2 * i + 1]);
+                printf("\n");
+            }
             continue;
         }
         if (pl[1] != 0)
@@ -749,6 +802,13 @@ int main(int argc, char **argv)
      * several 32x32 regions (default 64: every level fits one) */
     int tqsize = (tq && argc > 2 && !strcmp(argv[1], "tq")) ? atoi(argv[2]) : 64;
 
+    int rpatch = argc > 3 && !strcmp(argv[1], "rpatch");
+    if (rpatch) {
+        patch_word = (int)strtoul(argv[2], 0, 0);
+        patch_val = (uint32_t)strtoul(argv[3], 0, 0);
+        if (patch_word < 2 || patch_word > 54)
+            return printf("rpatch: word 2..54\n"), 1;
+    }
     if (argc > 3 && !strcmp(argv[1], "tqpatch")) {
         patch_word = (int)strtoul(argv[2], 0, 0);
         patch_val = (uint32_t)strtoul(argv[3], 0, 0);
@@ -829,6 +889,31 @@ int main(int argc, char **argv)
     glEnableVertexAttribArray(0);
     glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, tri);
 
+    if (argc > 1 && (!strcmp(argv[1], "render") || rpatch)) {
+        /* the smallest render: a clear, then a clear and one triangle */
+        print_renders = 1;
+        glClearColor(0, 0, 0.2f, 1);
+        glClear(GL_COLOR_BUFFER_BIT);
+        glFinish();
+        scan_payloads("clear");
+        if (rpatch) {
+            rpatch_clear_w2 = last_render_w2;
+            rpatch_armed = 1;
+            printf("== rpatch armed: clear frame's word 2 is 0x%08x\n", rpatch_clear_w2);
+        } else
+            dump_iokit_to("/var/root/gt_r_clear.bin");
+        glClear(GL_COLOR_BUFFER_BIT);
+        glUniform4f(uColor, 1.0f, 0.5f, 0.0f, 1.0f);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+        glFinish();
+        scan_payloads("triangle");
+        if (!rpatch)
+            dump_iokit_to("/var/root/gt_r_tri.bin");
+        unsigned char c[4] = { 0 };
+        glReadPixels(32, 32, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, c);
+        printf("== centre pixel %02x %02x %02x %02x\n", c[0], c[1], c[2], c[3]);
+        return 0;
+    }
     if (argc > 1 && !strcmp(argv[1], "linsrc")) {
         glEnableVertexAttribArray(0);
         glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, tri);
