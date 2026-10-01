@@ -473,11 +473,11 @@ static void find_records(uint32_t q, const uint32_t *w)
 /* Every IOKit mapping in the process (VM tag 21: GPU buffers the kernel
  * mapped in) to /var/root/gt_iokit.bin as {u32 lo, u32 hi, bytes...}
  * records, so GPU addresses can be matched to contents offline. */
-static void dump_iokit(void)
+static void dump_iokit_to(const char *path)
 {
     vm_address_t a = 0;
     static unsigned char pg[0x1000];
-    int fd = open("/var/root/gt_iokit.bin", O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
     unsigned total = 0, n = 0;
     if (fd < 0)
         return;
@@ -503,7 +503,12 @@ static void dump_iokit(void)
         a += sz;
     }
     close(fd);
-    printf("== iokit: %u regions, %u KiB -> /var/root/gt_iokit.bin\n", n, total / 1024);
+    printf("== iokit: %u regions, %u KiB -> %s\n", n, total / 1024, path);
+}
+
+static void dump_iokit(void)
+{
+    dump_iokit_to("/var/root/gt_iokit.bin");
 }
 
 static void scan_resources(void)
@@ -644,6 +649,82 @@ static void linear_render(EAGLContext *ctx, GLuint prog, GLint uColor, int W, in
     CVPixelBufferUnlockBaseAddress(pb, 0);
 }
 
+
+/* "gltrace linsrc": a render that samples (a) an ordinary 64x64 texture and
+ * (b) a linear, IOSurface-backed 200x120 BGRA texture; the GPU buffers are
+ * dumped after each, to find how a linear source is described. */
+static void linsrc(EAGLContext *ctx, GLuint prog3, int LW, int LH)
+{
+    GLuint fbo, rt;
+    glGenTextures(1, &rt);
+    glBindTexture(GL_TEXTURE_2D, rt);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 64, 64, 0, GL_RGBA, GL_UNSIGNED_BYTE, 0);
+    glGenFramebuffers(1, &fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, rt, 0);
+    glViewport(0, 0, 64, 64);
+    glUseProgram(prog3);
+    glUniform1i(glGetUniformLocation(prog3, "uTex"), 0);
+    glActiveTexture(GL_TEXTURE0);
+
+    static uint32_t tw[64 * 64];
+    for (int i = 0; i < 64 * 64; i++)
+        tw[i] = 0xff000000u | (uint32_t)i * 0x10203u;
+    GLuint t;
+    glGenTextures(1, &t);
+    glBindTexture(GL_TEXTURE_2D, t);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 64, 64, 0, GL_RGBA, GL_UNSIGNED_BYTE, tw);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glFinish();
+    printf("== a: sampled a 64x64 texture\n");
+    dump_iokit_to("/var/root/gt_ls_a.bin");
+
+    const void *k[1] = { kCVPixelBufferIOSurfacePropertiesKey };
+    CFDictionaryRef empty = CFDictionaryCreate(kCFAllocatorDefault, 0, 0, 0,
+            &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+    const void *v[1] = { empty };
+    CFDictionaryRef attrs = CFDictionaryCreate(kCFAllocatorDefault, k, v, 1,
+            &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+    CVPixelBufferRef pb = 0;
+    CVOpenGLESTextureCacheRef cache = 0;
+    CVOpenGLESTextureRef cvtex = 0;
+    CVReturn cr = CVPixelBufferCreate(kCFAllocatorDefault, LW, LH, kCVPixelFormatType_32BGRA, attrs, &pb);
+    if (!cr)
+        cr = CVOpenGLESTextureCacheCreate(kCFAllocatorDefault, 0, (__bridge CVEAGLContext)ctx, 0, &cache);
+    if (!cr) {
+        CVPixelBufferLockBaseAddress(pb, 0);
+        uint32_t *px = CVPixelBufferGetBaseAddress(pb);
+        size_t bpr = CVPixelBufferGetBytesPerRow(pb);
+        for (int y = 0; y < LH; y++)
+            for (int x = 0; x < LW; x++)
+                px[y * (bpr / 4) + x] = 0xff000000u | (uint32_t)(y << 8) | (uint32_t)x;
+        CVPixelBufferUnlockBaseAddress(pb, 0);
+        printf("== b: linear 200x120 source, bytesPerRow %lu\n", (unsigned long)bpr);
+        cr = CVOpenGLESTextureCacheCreateTextureFromImage(kCFAllocatorDefault, cache, pb, 0,
+                GL_TEXTURE_2D, GL_RGBA, LW, LH, GL_BGRA_EXT, GL_UNSIGNED_BYTE, 0, &cvtex);
+    }
+    if (cr) {
+        printf("== b: CoreVideo error %d\n", cr);
+        return;
+    }
+    glBindTexture(CVOpenGLESTextureGetTarget(cvtex), CVOpenGLESTextureGetName(cvtex));
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glFinish();
+    unsigned char c[4] = { 0 };
+    glReadPixels(32, 32, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, c);
+    printf("== b: sampled the linear texture, centre %02x %02x %02x %02x, GL error 0x%x\n",
+           c[0], c[1], c[2], c[3], glGetError());
+    dump_iokit_to("/var/root/gt_ls_b.bin");
+}
+
 /* ---- GLES ------------------------------------------------------------- */
 
 static GLuint make_shader(GLenum type, const char *src)
@@ -748,6 +829,12 @@ int main(int argc, char **argv)
     glEnableVertexAttribArray(0);
     glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, tri);
 
+    if (argc > 1 && !strcmp(argv[1], "linsrc")) {
+        glEnableVertexAttribArray(0);
+        glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, tri);
+        linsrc(ctx, prog3, argc > 3 ? atoi(argv[2]) : 200, argc > 3 ? atoi(argv[3]) : 120);
+        return 0;
+    }
     if (argc > 1 && !strcmp(argv[1], "linear")) {
         scan_emits("setup");
         glClearColor(0, 0, 0.2f, 1);
