@@ -914,6 +914,91 @@ int main(int argc, char **argv)
         printf("== centre pixel %02x %02x %02x %02x\n", c[0], c[1], c[2], c[3]);
         return 0;
     }
+    if (argc > 1 && !strcmp(argv[1], "tmpl")) {
+        /* templates for building frames under Linux: a triangle with a
+         * colour per vertex, then a textured quad without and with alpha
+         * blending.  Each frame: payloads, all IOKit regions, two pixels. */
+        const char *vsc = "attribute vec4 p; attribute vec4 c; varying lowp vec4 v;"
+                          "void main(){ gl_Position = p; v = c; }";
+        const char *fsc = "varying lowp vec4 v; void main(){ gl_FragColor = v; }";
+        const char *vst = "attribute vec4 p; attribute vec2 a; varying mediump vec2 t;"
+                          "void main(){ gl_Position = p; t = a; }";
+        const char *fst = "precision mediump float; varying vec2 t; uniform sampler2D uTex;"
+                          "void main(){ gl_FragColor = texture2D(uTex, t); }";
+        GLuint pc = glCreateProgram(), pt = glCreateProgram();
+        glAttachShader(pc, make_shader(GL_VERTEX_SHADER, vsc));
+        glAttachShader(pc, make_shader(GL_FRAGMENT_SHADER, fsc));
+        glBindAttribLocation(pc, 0, "p");
+        glBindAttribLocation(pc, 1, "c");
+        glLinkProgram(pc);
+        glAttachShader(pt, make_shader(GL_VERTEX_SHADER, vst));
+        glAttachShader(pt, make_shader(GL_FRAGMENT_SHADER, fst));
+        glBindAttribLocation(pt, 0, "p");
+        glBindAttribLocation(pt, 1, "a");
+        glLinkProgram(pt);
+
+        static const float cols[] = { 1, 0, 0, 1, 0, 1, 0, 1, 0, 0, 1, 1 };
+        static const float quad[] = { -0.6f, -0.6f, 0.6f, -0.6f, 0.6f, 0.6f,
+                                      -0.6f, -0.6f, 0.6f, 0.6f, -0.6f, 0.6f };
+        static const float uv[] = { 0, 0, 1, 0, 1, 1, 0, 0, 1, 1, 0, 1 };
+        /* 4x4: left red, right green; bottom rows opaque, top rows alpha 128 */
+        unsigned char tx[4 * 4 * 4];
+        for (int y = 0; y < 4; y++)
+            for (int x = 0; x < 4; x++) {
+                unsigned char *t = tx + (y * 4 + x) * 4;
+                t[0] = x < 2 ? 255 : 0; t[1] = x < 2 ? 0 : 255; t[2] = 0;
+                t[3] = y < 2 ? 255 : 128;
+            }
+        GLuint qt;
+        glGenTextures(1, &qt);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, qt);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 4, 4, 0, GL_RGBA, GL_UNSIGNED_BYTE, tx);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glBindTexture(GL_TEXTURE_2D, tex);	/* the render target again */
+        print_renders = 1;
+        glEnableVertexAttribArray(0);
+        glEnableVertexAttribArray(1);
+        static const char *names[] = { "vcolor", "tex", "texblend" };
+        static const char *files[] = { "/var/root/gt_t_vcolor.bin", "/var/root/gt_t_tex.bin",
+                                       "/var/root/gt_t_texblend.bin" };
+        for (int f = 0; f < 3; f++) {
+            glClearColor(0, 0, 0.2f, 1);
+            glClear(GL_COLOR_BUFFER_BIT);
+            if (f == 0) {
+                glUseProgram(pc);
+                glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, tri);
+                glVertexAttribPointer(1, 4, GL_FLOAT, GL_FALSE, 0, cols);
+                glDrawArrays(GL_TRIANGLES, 0, 3);
+            } else {
+                glUseProgram(pt);
+                glUniform1i(glGetUniformLocation(pt, "uTex"), 0);
+                glBindTexture(GL_TEXTURE_2D, qt);
+                if (f == 2) {
+                    glEnable(GL_BLEND);
+                    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+                } else
+                    glDisable(GL_BLEND);
+                glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, quad);
+                glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 0, uv);
+                glDrawArrays(GL_TRIANGLES, 0, 6);
+            }
+            glFinish();
+            scan_payloads(names[f]);
+            dump_iokit_to(files[f]);
+            unsigned char a[4] = { 0 }, b[4] = { 0 };
+            glReadPixels(20, 20, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, a);
+            glReadPixels(44, 44, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, b);
+            printf("== %s: pixel (20,20) %02x %02x %02x %02x, (44,44) %02x %02x %02x %02x\n",
+                   names[f], a[0], a[1], a[2], a[3], b[0], b[1], b[2], b[3]);
+            if (f)
+                glBindTexture(GL_TEXTURE_2D, tex);
+        }
+        return 0;
+    }
     if (argc > 1 && !strcmp(argv[1], "depth")) {
         /* two overlapping triangles, the near one (green, z -0.5) drawn
          * first: without the depth test the far one (orange, z 0.5) covers
