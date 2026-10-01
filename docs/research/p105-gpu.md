@@ -795,6 +795,33 @@ region array, w28 = `0x1000`, w29 = `0x2000`, w51 = 3D block, w52/w53 =
 details base / entry 0. Run it with `KC841=` pointing at the user's own
 decrypted kernelcache; nothing from it is committed.
 
+### M4 milestone: the first triangle through TA + 3D under Linux (2026-10-01)
+
+The captured GLES triangle (`gltrace render`, 64x64) renders under Linux,
+pixel colours identical to iOS (background `ff330000`, triangle `ff0080ff`
+-- iOS read back centre pixel `ff 80 00 ff`). Pieces:
+
+- driver: a render queue (`r ctx` 0x40 bytes = the transfer context + word
+  6 = PB descriptor, 64 KiB `r ccb`, `r ctl`) and `rkick PB DET CMD [CC]`
+  (copies the TA command into the render CCB, writes the context address
+  into the render details at +0x20/+0xa4 as `0x80bf7d2a` does, points the
+  TA completion `+0x68/+0x6c` at scratch, sends TA with Data1 = context);
+- `tools/sgx/rgen.py`: PB, render target buffers and 3D block (from
+  `rtemu.py`), the TA command (`0x80bfca20` field by field), the GL buffers
+  from the capture at their iOS GPU addresses, and `rrun.sh` for the device.
+
+GL buffer map of the capture (record table in the CPU `0x8d0000` region,
+`{.., idx, 0xa, gpu}` at stride 0x114): `0x98dbc000` = CPU `0x8f2000` (3D
+PDS block), `0x98dd6000` = `0x90a000` (indices), `0x98ddb000` = `0x91d000`,
+`0x98df2000` = `0x977000` (vertex PDS + constants), `0x90012000` =
+`0x924000` (VDM stream), USE code `0x1000` = `0x949000` (code base 3 = 0;
+every DOUTU `idx << 4 | 3` lands on a PHAS there). The VDM stream was moved
+to `0x98f00000` (`0x90000000` is our framebuffer window); nothing in it
+points at itself. Output: `0x98ddd000`, twiddled, 4 bytes/pixel.
+
+Result of the run: TA completion written, CCB read offset = write offset,
+context word 0 cleared, no MMU fault, no lockup.
+
 ### Next
 
 Done since this list was first written: the page tables, the firmware

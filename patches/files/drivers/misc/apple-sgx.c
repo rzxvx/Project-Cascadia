@@ -296,6 +296,7 @@ enum sgx_buf_id {
 	B_TAB_774, B_IDX_77C,
 	B_794, B_798, B_79C, B_7A0,
 	B_TQ_CTX, B_TQ_CCB, B_TQ_CTL,	/* one transfer queue (IMGSGXTQChannel) */
+	B_R_CTX, B_R_CCB, B_R_CTL,	/* one render queue (TA + 3D) */
 	B_SCRATCH,			/* where test commands write */
 	B_BLT_BLOCK, B_BLT_PARAM,	/* the 2D engine's PDS block and parameter page */
 	B_NUM
@@ -336,6 +337,10 @@ static const struct sgx_buf_desc {
 	[B_TQ_CTX]	= { "tq ctx",	0x24,	0x1000, SRC_ZERO, PTE_SHARED },
 	[B_TQ_CCB]	= { "tq ccb",	0x10000, 0x1000, SRC_ZERO, PTE_SHARED },
 	[B_TQ_CTL]	= { "tq ctl",	8,	0x1000, SRC_ZERO, PTE_SHARED },
+	/* the render queue (0x80bfc860: a 0x40-byte context, 64 KiB CCB) */
+	[B_R_CTX]	= { "r ctx",	0x40,	0x1000, SRC_ZERO, PTE_SHARED },
+	[B_R_CCB]	= { "r ccb",	0x10000, 0x1000, SRC_ZERO, PTE_SHARED },
+	[B_R_CTL]	= { "r ctl",	8,	0x1000, SRC_ZERO, PTE_SHARED },
 	[B_SCRATCH]	= { "scratch",	0x1000,	0x1000, SRC_ZERO, PTE_SHARED },
 	[B_BLT_BLOCK]	= { "blt pds",	0x1000,	0x1000, SRC_ZERO, PTE_CC },
 	[B_BLT_PARAM]	= { "blt param", 0x8000, SZ_1M, SRC_ZERO, PTE_CC },
@@ -741,6 +746,15 @@ static void sgx_uk_fill(struct apple_sgx *sgx, const u8 *data, const u8 *cnst)
 	t[2] = lower_32_bits(sgx->pd_dma);
 	t[3] = b[B_TQ_CCB].va;
 	t[4] = b[B_TQ_CTL].va;
+
+	/* The render queue's context: the same, plus word 6 = the parameter
+	 * buffer descriptor ("rkick" sets it). */
+	t = b[B_R_CTX].cpu;
+	t[0] = 1;
+	t[1] = 0;
+	t[2] = lower_32_bits(sgx->pd_dma);
+	t[3] = b[B_R_CCB].va;
+	t[4] = b[B_R_CTL].va;
 
 	/* Host control parameters (0x80bfa96c-0x80bfaa12).  The microkernel's
 	 * timer period is "hclk" / 1000 -- ticks per millisecond -- and the
@@ -1290,6 +1304,67 @@ static int sgx_tq_kick(struct apple_sgx *sgx)
 	return ret;
 }
 
+/* "rkick PB DET CMD [CC]": one render (TA, then 3D) from memory put in place
+ * through apple-sgx/mem.  PB = the parameter buffer descriptor (context word
+ * 6), DET = the render target's "render details" (its two entries get the
+ * context's address at +0x20 and +0xa4, as 0x80bf7d2a does), CMD = a TA
+ * command (word 0 = its size) to copy into the render CCB.  Its completion
+ * (+0x68/+0x6c, written when the TA is done) is pointed at scratch word 0. */
+static int sgx_r_kick(struct apple_sgx *sgx, u32 pb, u32 det, u32 cmdva, u32 cc)
+{
+	u32 *ctl = sgx->buf[B_R_CTL].cpu, *ctx = sgx->buf[B_R_CTX].cpu;
+	u32 *scratch = sgx->buf[B_SCRATCH].cpu, cva = sgx->buf[B_R_CTX].va;
+	u32 *src, *cmd, *d, wo, size, got;
+	size_t avail;
+	unsigned int n;
+	int ret;
+
+	if (sgx->boot_result != 1)
+		return -ENODEV;
+	src = (u32 *)sgx_va_cpu(sgx, cmdva, &avail);
+	d = (u32 *)sgx_va_cpu(sgx, det, &avail);
+	if (!src || !d || avail < 0xa8 || !sgx_va_cpu(sgx, pb, &avail))
+		return -EFAULT;
+	size = src[0];
+	wo = READ_ONCE(ctl[0]);
+	if (size < 0x11c || size > 0x1000 || (size & 7) || wo + size > SGX_TQ_CCB_SIZE)
+		return -EINVAL;
+
+	cmd = sgx->buf[B_R_CCB].cpu + wo / 4;
+	memcpy(cmd, src, size);
+	cmd[0x64 / 4] |= 1;
+	cmd[0x68 / 4] = sgx->buf[B_SCRATCH].va;
+	cmd[0x6c / 4] = 1;
+	d[0x20 / 4] = cva;
+	d[0xa4 / 4] = cva;
+	ctx[6] = pb;
+	WRITE_ONCE(scratch[0], 0);
+	wmb();
+	WRITE_ONCE(ctl[0], wo + size);
+	WRITE_ONCE(ctx[0], 1);
+	wmb();
+	ret = sgx_send_cmd(sgx, SGX_CMD_TA, cc, 0, cva);
+	if (ret)
+		return ret;
+	ret = read_poll_timeout(READ_ONCE, got, got, 10, 500000, false, scratch[0]);
+	dev_info(sgx->dev, "rkick at 0x%x (size 0x%x, ctx 0x%08x): scratch 0x%08x (%s), "
+		 "r read 0x%x ctx0 0x%x, host lockups %u; master BIF_INT_STAT 0x%08x BIF_FAULT 0x%08x\n",
+		 wo, size, cva, READ_ONCE(scratch[0]), ret ? "not done" : "done",
+		 READ_ONCE(ctl[1]), READ_ONCE(ctx[0]),
+		 READ_ONCE(sgx->buf[B_HOST].cpu[HOST_UK_LOCKUPS]),
+		 sgx_read(sgx, SGX_MASTER_BIF_INT_STAT), sgx_read(sgx, SGX_MASTER_BIF_FAULT));
+	for (n = 0; n < sgx->ncores; n++)
+		dev_info(sgx->dev, "  core%u EVENT_STATUS 0x%08x STATUS2 0x%08x BIF_INT_STAT 0x%08x "
+			 "BIF_FAULT 0x%08x DPM 0x614 %08x 0x620 %08x 0x630 %08x 0x700 %08x\n",
+			 n, sgx_read(sgx, SGX_CORE(n) + SGX_EVENT_STATUS),
+			 sgx_read(sgx, SGX_CORE(n) + SGX_EVENT_STATUS2),
+			 sgx_read(sgx, SGX_CORE(n) + SGX_BIF_INT_STAT),
+			 sgx_read(sgx, SGX_CORE(n) + SGX_BIF_FAULT),
+			 sgx_read(sgx, SGX_CORE(n) + 0x614), sgx_read(sgx, SGX_CORE(n) + 0x620),
+			 sgx_read(sgx, SGX_CORE(n) + 0x630), sgx_read(sgx, SGX_CORE(n) + 0x700));
+	return ret;
+}
+
 /* ---- the 2D engine: blits and fills through the transfer queue ---------- */
 
 /*
@@ -1801,6 +1876,10 @@ static int sgx_regs_show(struct seq_file *s, void *unused)
 			   READ_ONCE(sgx->buf[B_TQ_CTL].cpu[1]),
 			   READ_ONCE(sgx->buf[B_SCRATCH].cpu[0]),
 			   READ_ONCE(sgx->buf[B_SCRATCH].cpu[1]));
+		seq_printf(s, "r CCB write 0x%x read 0x%x; r ctx 0x%08x word0 0x%x\n",
+			   READ_ONCE(sgx->buf[B_R_CTL].cpu[0]),
+			   READ_ONCE(sgx->buf[B_R_CTL].cpu[1]),
+			   sgx->buf[B_R_CTX].va, READ_ONCE(sgx->buf[B_R_CTX].cpu[0]));
 		for (i = 0; i < B_NUM; i++)
 			seq_printf(s, "buffer %-10s va 0x%08x pa %pad size 0x%zx\n",
 				   sgx_buf_descs[i].name, sgx->buf[i].va,
@@ -1879,6 +1958,7 @@ static const struct file_operations sgx_boot_fops = {
  *   "tq F [V]"   a transfer with flags F and no work but two writes of V
  *   "map VA SZ"  memory at GPU address VA (see apple-sgx/mem)
  *   "tqkick"     send the transfer command placed at the transfer CCB
+ *   "rkick PB DET CMD [CC]"  one render (see sgx_r_kick)
  * and the 2D engine, on the framebuffer:
  *   "fill X Y W H ARGB", "copy SX SY DX DY W H", "bench N" (N timed fills),
  *   "fbcon" (put fbcon's fills and copies on the GPU from now on) */
@@ -1912,6 +1992,8 @@ static ssize_t sgx_cmd_write(struct file *file, const char __user *ubuf,
 		ret = sgx_map_extra(sgx, arg, arg2);
 	else if (!strcmp(word, "tqkick"))
 		ret = sgx_tq_kick(sgx);
+	else if (!strcmp(word, "rkick"))
+		ret = sgx_r_kick(sgx, arg, arg2, a[0], a[1]);
 	else if (!strcmp(word, "fill"))
 		ret = sgx_fb_fill(sgx, arg, arg2, a[0], a[1], a[2]);
 	else if (!strcmp(word, "copy"))
