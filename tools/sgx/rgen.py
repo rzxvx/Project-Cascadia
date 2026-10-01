@@ -118,6 +118,13 @@ PROFILES = {
                      bufs={0x989c7000: 0x9aa000, 0x98995000: 0x912000,
                            0x989c2000: 0x92d000, 0x9889d000: 0x941000},
                      code=0x96d000, vdm=0x974000, cbase=(3, 5)),
+    # gt_2t.bin (logs/ios/twotex): two quads, two textures (8x8 at
+    # 0x980cd000, 4x4 at 0x980cf000), blending on; output 0x980d1000
+    'twotex': dict(gl=(0x980ac000, 0x4a000),
+                   bufs={0x980ac000: 0x91b000, 0x980c6000: 0x935000,
+                         0x980cd000: 0x969000, 0x980cf000: 0x96a000,
+                         0x980e6000: 0x971000},
+                   code=0x985000, vdm=0x981000, cbase=(3,)),
     # gt_t_vcolor.bin: a triangle with a colour per vertex
     'vcolor': dict(gl=(0x9889d000, 0x14b000),
                    bufs={0x989c7000: 0x9aa000, 0x98995000: 0x912000,

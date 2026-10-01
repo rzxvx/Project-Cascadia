@@ -874,6 +874,29 @@ readback exactly (blend `bf008019` = iOS `00 80 19 bf`, vertex colour
 its background (GL cleared in a separate render), so its background is ours
 (zero).
 
+### M6: full-screen frames, several textures, sprites (2026-10-02)
+
+- **Frame size** (`gltrace tmplsz`, `logs/ios/size`, 64/128/256/256x128):
+  besides payload w44/w45 (W, H) and the kernel's words, GL writes the size
+  into its state: the state buffer header (+0x10, last 32-pixel tile x << 16
+  | y), a tile clip pair `0x80000000 | last x, last y` in the clear's and
+  the draw's state data (right before the viewport floats W/2, W/2, H/2, H/2,
+  0.5, 0.5) and the clear program's constants 2W, 2H. Without the clip pair
+  the TA bins only the captured 64x64. `rgen.py --size 768x1024` renders the
+  whole screen (render target buffers where `rtemu.py` put them;
+  `RT_GPU_BASE` moves them).
+- **Several textures** (`gltrace twotex`, `logs/ios/twotex`): each draw has a
+  state-update block; the first carries the whole state (ISP words -- bit 25
+  of the second set with blending --, pixel PDS pointers, tile clip,
+  viewport), the second only a delta: mask `0x40` and the pixel PDS block
+  holding its own texture descriptor. Replays with both textures
+  (`--profile twotex`).
+- **Sprites** (`tools/sgx/rsprite.py`): the textured draw's vertex
+  attributes (state +0x260 (u, v), +0x270 (x, y), stride 16) point at our
+  own vertex buffer and its draw word gets 6 indices per quad (the captured
+  index buffer counts to 8191): 150 moving 48..128-pixel sprites over the
+  whole screen, 300 frames in ~4 s from a shell loop.
+
 ### Next
 
 Done since this list was first written: the page tables, the firmware
