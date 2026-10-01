@@ -703,6 +703,52 @@ copy is ~1 ms. So the console stays on the CPU by default; the engine is for
 large blits. Batching jobs without a wait each would be the fix if it ever
 matters.
 
+### M4: the render path (TA + 3D), first map (2026-10-01)
+
+**The GL render command, from iOS** (`gltrace render`, `rpatch`; `logs/ios/tq/gltr.out`,
+`gt_r_clear.bin`, `gt_r_tri.bin`): payload type 1, 55 words, 9 resource records.
+The kernel copies it from **word 2** on (`0x80bf588c`, 0xd4 bytes to
+`desc+0x16c`). w3 = number of TA commands; w2.. = their **VDM control
+streams** (patched to `0x70000000`: MASTER BIF fault, requestor **VDM**);
+w12/w13 = the 3D pass's PDS block (w13 patched: requestor **PDS**);
+w18-w20 = the background object; w44/w45 = the size (0x40 x 0x40). The
+control stream for the test triangle is in the capture (CPU `0x924000`): state
+words pointing at PDS programs (`0x498df20c`, `0x798df212` -> `0x98df2xxx`),
+`0x81c00003` + an address (the draw), `0xc0000000` (end); its PDS vertex
+programs and constants (1.0, 32.0, 128.0) at CPU `0x977000`.
+
+**The render CCB command** (`0x80bfca20`, one per TA command; the queue kick
+`0x80bfc9a4` then sends TA, uk `+0x1fa8`, with Data1 = the hardware render
+context): +0 size, +4 flags `0x70`/`0x71` (|2 last) | PB update flags,
++8..+10 background object (w18-w20), +14 `0x0c000000`, +1c flags, +28 the PB
+descriptor, +2c..+4c a pending PB update (`0x80bfdca8`), +50..+58 w51-w53,
++64/+68/+6c completion, +70 dependencies, and from +0xbc the TA registers --
+**the microkernel's TA kick (uk `+0x6508`) reads them in order**:
+
+| register | command | value / payload |
+|---|---|---|
+| `0x204` | +bc | w38 |
+| `0x208`..`0x214` | +c0..+cc | w4..w7 |
+| `0x218` | +d0 | `(flags << 21) & 0x400000` |
+| **`0x238`** | +d4 | **w(2+i): the VDM control stream** |
+| `0x23c` | +d8 | `0x1a2` |
+| core n `0x21c` | +dc+4n | w27 + n * w28 |
+| core n `0x220` | +ec+4n | w8 + n * w9 |
+| `0x240`, `0x244` | +fc, +100 | `0x1e3ce508` |
+| `0x248` | +104 | w11 |
+| `0xa04`, `0xaa0` | +108, +10c | 0, `0x7fffffff` |
+| **`0xc90` TA_REQ_BASE** | +110 | `0x87800000` |
+| `0x388` | +114 | 1 if the size exceeds 0x400/0x800 |
+| `0x250` | +118 | w37 |
+
+**The hardware render context** (`0x80bfc860`, 0x40 bytes): `{1, channel,
+page directory, CCB (64 KiB), CCB control (8 bytes), 0, PB descriptor}` -- the
+transfer context plus word 6. The PB descriptor belongs to one of three
+parameter-buffer objects (`this+0x6b0..0x6b8`, picked by size,
+`0x80bf2f48`); the class (`0x80bfdc90..`) grows a buffer in 128 KiB blocks
+and keeps its page lists -- the next thing to read, since that GPU memory is
+the kernel's and not in the captures.
+
 ### Next
 
 Done since this list was first written: the page tables, the firmware
