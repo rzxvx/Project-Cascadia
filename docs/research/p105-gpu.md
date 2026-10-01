@@ -552,6 +552,34 @@ kind of fixed setup: `0x80bf5eec` fills the render command's 3D register block
 `0x41c`/`0x420` = `0x322bcc77`, `0x4b8` = 1.0, per-core `0x4c0` and region
 bases from the render target). Next: replay with the patched words.
 
+**MILESTONE: the GPU's first real work under Linux, bit-exact with iOS
+(2026-10-01).** The captured `glGenerateMipmap` transfer (level 1), replayed
+with the kernel's rewritten words, runs to completion: the TQ CCB is consumed,
+the completion value lands, core 0 raises PIXELBE_END_RENDER, and the mip level
+the SGX writes at texture `+0x4000` is **byte-for-byte identical to the one iOS
+produced** (2286 bytes changed, the whole texture equals the iOS capture).
+What it took, in order:
+
+1. The kernel's words (above). With BIF_3D_REQ_BASE = `0x8c000000` and the
+   region-header page unmapped, Linux now faults exactly like iOS:
+   MASTER_BIF_FAULT `0x8c006010`, requestor ISPP, core 0 with 4 reads pending.
+2. The region headers. GL writes them itself, into its parameter page -- in
+   the capture CPU `0x84c000` (8 KiB) is GPU `0x8c006000`: one 16-byte
+   region header per transfer at `+0x200 * n` (`80000000 46400f03 0c00184b
+   c0000000`; word 2 points at the object at `(0x1840 << 2)` = `+0x6100`,
+   `+0x80` words per transfer) and the objects themselves at `+0x0`/`+0x100`
+   (PDS pointers `0x0180f310` = level block `0x980f3100`, half-float
+   corners). Mapped with that content, the 3D runs: ISP_STATUS2 goes to
+   `0x10000` as on iOS.
+3. A writable destination. The PBE's write of the level faulted
+   (BIF_INT_STAT `0x000b0020`, fault type 3) because the texture was mapped
+   EDM-protected; without EDMPROTECT the write goes through. `map` now maps
+   without it.
+
+The replay is still by hand (`map`, `mem`, `tqkick` in debugfs, PTE edits
+with `peek`); next is building the same transfer from scratch -- own source,
+own destination (the framebuffer), own region headers.
+
 ### Next
 
 Done since this list was first written: the page tables, the firmware

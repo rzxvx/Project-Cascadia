@@ -1093,8 +1093,11 @@ static int sgx_tq_cmd(struct apple_sgx *sgx, u32 flags, u32 val)
 /* ---- replay tools: memory at chosen GPU addresses ------------------------ */
 
 /* "map VA SIZE": fresh zeroed memory at GPU address VA, cache-consistent
- * like the shared buffers.  Mappings stay until reboot; the next microkernel
- * boot invalidates the MMU's caches, so map first and boot after. */
+ * like the shared buffers but without EDMPROTECT: on an EDM-protected page
+ * only the microkernel may write, and the pixel back end's write of a
+ * render target faults (BIF_INT_STAT 0x000b0020).  Mappings stay until
+ * reboot; the next microkernel boot invalidates the MMU's caches, so map
+ * first and boot after. */
 static int sgx_map_extra(struct apple_sgx *sgx, u32 va, u32 size)
 {
 	struct sgx_buf *b;
@@ -1118,7 +1121,7 @@ static int sgx_map_extra(struct apple_sgx *sgx, u32 va, u32 size)
 	if (!b->cpu)
 		return -ENOMEM;
 	b->va = va;
-	ret = sgx_mmu_map(sgx, va, b->dma, size, PTE_SHARED);
+	ret = sgx_mmu_map(sgx, va, b->dma, size, SGX_PTE_CACHECONSISTENT);
 	if (ret)
 		return ret;
 	sgx->nextra++;
