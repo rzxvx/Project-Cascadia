@@ -749,6 +749,52 @@ parameter-buffer objects (`this+0x6b0..0x6b8`, picked by size,
 and keeps its page lists -- the next thing to read, since that GPU memory is
 the kernel's and not in the captures.
 
+### M4: the kernel-side render data, decoded (2026-10-01)
+
+**Parameter buffer.** The PB class init (`0x80bfd51c`) allocates three GPU
+objects: a 4 KiB descriptor, a 64 KiB page table, and blocks (`0x80bfd9a0`)
+of one header page + N data pages -- first `0x22000`, then `initial << 17`
+bytes (PB0: 4 x 128 KiB). Page numbers count 4 KiB pages from `0x87800000`
+(`TA_REQ_BASE`). Block header: `+0` pages, `+4` u16 first data page, `+6`
+u16 last page, `+8` descriptor VA, `+c` next block VA (0 at the end).
+Descriptor (`0x80bfdaa8`, 0x50 bytes, zeroed first): `+0 = 3` (init
+needed), `+4` total pages, `+8` free list `last << 16 | first`, `+c`
+`(last-1) << 16`, `+10` page table VA, `+28` total+0x10, `+2c` pages in the
+grown part, `+30` total, `+34` max(pages-0x100, 0), `+38` first block VA.
+**The microkernel builds the free list itself** (uk `+0x8158`, on `+0 & 1`):
+it walks the block chain and writes 32-bit `prev << 16 | next` entries into
+the page table. TA DPM load (uk `+0x7bc0`): `0x618` = PT, `0x61c/0x648/0x638`
+= saved state (`+18..+24`), `0x620` = `+28`, `0x624` = `+2c`, `0x628` =
+`+30 | 0x10000`, `0x614` = `+34`, then `0x684 = 1` and wait for
+`EVENT_STATUS2` bit 0; the 3D side (`+0x7e10`) loads `0x600/0x604/0x64c/0x660`
+and kicks `0x680`. The PB descriptor is render-context word 6 (`ctx+0x18`).
+
+**The 3D pass has its own register block.** Payload w51 = GPU VA of a
+per-submit block that the microkernel's render 3D kick (uk `+0xbf70`) loads
+into `0xcac`, `0xcb0`, `0x400`, `0x414`, `0x42c`, `0x424`, `0x44c`, `0x408`,
+`0x528/520/524`, `0x148`, `0x418-0x420`, ZLS `0x480-0x490`, `0x4b8..0x4dc`,
+`0x800`, pixel PDS `0xa5c-0xa64`, `0xa84-0xa9c`, `0xb20-0xb28`, `0x81c-0x848`
+in that order. w53 = the "render details" entry (first word = hardware
+render context; the TA kick stores w51 at `+4`). **All of these are written
+by the kernel, not by GL** (the GL payload has them as 0).
+
+**Render target object** (init `0x80bf7aac`, from the GL call `sel 256`,
+0x70 bytes `{flags, w, h, samples, ...}`): `0x80bf6fd8` sizes and allocates
+the buffers, `0x80bf74f4` fills them: region arrays x2 (`+24/+28`), tail
+pointers (`+34`), render details (`+3c`), a state buffer (`+44`), plus
+`+1c`. The submit path `0x80bf5eec` then fills payload words w4-w11, w21-22,
+w27-29, w51-53 and the 3D block.
+
+**These are computed by running the kext code**: `tools/iosgpu/rtemu.py`
+(unicorn) executes `0x80bf7aac` and `0x80bf5eec` on fake device objects
+(GPU VAs placed from `0x87900000`) and dumps every buffer, the filled-in
+payload words and the 3D block. For the captured 64x64 triangle:
+w4 = w5 = `0x01004004`, w6 = `0x1001`, w7 = `0x10`, w8 = tail pointers,
+w9 = `0x1000`, w10 = `0x2000`, w11 = `0x3f03f`, w21 = w22 = 64, w27 =
+region array, w28 = `0x1000`, w29 = `0x2000`, w51 = 3D block, w52/w53 =
+details base / entry 0. Run it with `KC841=` pointing at the user's own
+decrypted kernelcache; nothing from it is committed.
+
 ### Next
 
 Done since this list was first written: the page tables, the firmware
