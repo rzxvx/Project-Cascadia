@@ -19,7 +19,7 @@ HEAP, HEAPSZ = 0x10000000, 0x01000000      # fake kernel objects
 BUF, BUFSZ = 0x40000000, 0x04000000        # CPU maps of GPU buffers
 STK, STKSZ = 0x20000000, 0x00100000
 TRAP, TRAPSZ = 0x30000000, 0x1000          # fake virtual functions
-GPU_BASE = 0x87900000                      # fake GPU VAs, inside the TA heap
+GPU_BASE = int(os.environ.get('RT_GPU_BASE', '0x87900000'), 0)  # fake GPU VAs, inside the TA heap
 
 mu = Uc(UC_ARCH_ARM, UC_MODE_THUMB)
 for b, s in ((KLO, KHI - KLO), (HEAP, HEAPSZ), (BUF, BUFSZ), (STK, STKSZ), (TRAP, TRAPSZ)):

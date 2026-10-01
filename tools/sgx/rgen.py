@@ -21,7 +21,7 @@ Usage: rgen.py CAPDIR RTDIR OUTDIR [--profile tri|depth] [--fb X Y] [--reloc BAS
   --reloc the triangle's GL buffers and VDM stream moved to BASE.. (tri only)
   --teximg PNG  (profile tex) the quad, stretched over the frame, shows PNG
           as a 64x64 texture at 0x98900000
-  --size N  (profile tex) an N x N frame; RTDIR must come from rtemu.py N N
+  --size W[xH]  (profile tex) a W x H frame; RTDIR must come from rtemu.py W H
   --codebase CB  shader code page at CB + 0x1000, USE_CODE_BASE_3 = CB (the
           2D engine's programs at 0x1000 stay)
   --fb    draw straight into the framebuffer (GPU 0x90000000, 768 px lines)
@@ -73,16 +73,23 @@ def rt_name(rtdir, part):
     import glob
     return glob.glob(os.path.join(rtdir, 'rt_*x*_%s.bin' % part))[0]
 
+def rt_layout(rtdir):
+    """rtemu.py's buffers at the GPU addresses it gave them (from RT_VA, in
+    allocation order), then the 3D block (payload w51)."""
+    import glob, json
+    j = json.load(open(glob.glob(os.path.join(rtdir, 'rt_*x*.json'))[0]))
+    blk_va = words(open(rt_name(rtdir, 'payload'), 'rb').read())[51 - 2]
+    return j['bufs'], blk_va
+
 def rt_image(rtdir):
-    """rtemu.py's buffers (it places them from 0x87900000 in order) + 3D block."""
-    img = bytearray(0xd000)
-    off = 0
-    for i in range(6):
-        b = open(rt_name(rtdir, 'b%d' % i), 'rb').read()
-        img[off:off + len(b)] = b
-        off += len(b)
+    bufs, blk_va = rt_layout(rtdir)
+    va = bufs[0]['gpu']               # RT_VA unless rtemu.py ran with RT_GPU_BASE
+    img = bytearray(blk_va + 0x1000 - va)
+    for i, b in enumerate(bufs):
+        data = open(rt_name(rtdir, 'b%d' % i), 'rb').read()
+        img[b['gpu'] - va:b['gpu'] - va + len(data)] = data
     blk = open(rt_name(rtdir, 'blk3d'), 'rb').read()
-    img[0xc000:0xc000 + len(blk)] = blk
+    img[blk_va - va:blk_va - va + len(blk)] = blk
     return img
 
 # Per capture: the GL buffers' window (GPU base, size), {GPU: CPU region},
@@ -158,7 +165,7 @@ def ta_cmd(rtdir):
     put(0x118, w(37))
     return pack(c)
 
-MAPS = ((RT_VA, 0xd000), (PB_VA, 0xd1000), (CMD_VA, 0x1000), (VDM_VA, 0x4000))
+MAPS = ((PB_VA, 0xd1000), (CMD_VA, 0x1000), (VDM_VA, 0x4000))
 
 FB_VA, FB_STRIDE_PX = 0x90000000, 768
 SGX_REGS = 0x35100000            # broadcast register bank (physical)
@@ -228,8 +235,8 @@ def own_texture(gl, path):
         struct.pack_into('<2f', gl, verts + 16 * i + 8, 1.0 if x > 0 else -1.0,
                          1.0 if y > 0 else -1.0)
 
-def resize_tex(gl, n):
-    """--size N (profile tex): an N x N frame (rtemu.py run with N N).  From
+def resize_tex(gl, w, h):
+    """--size W[xH] (profile tex): a W x H frame (rtemu.py run with W H).  From
     gltrace tmplsz (64..256): the state buffer's header (+0x10, last tile
     x << 16 | y, 32-pixel tiles), the clear's and the draw's tile clip
     (0x80000000 | last x, last y), the clear program's constants (2W, 2H),
@@ -237,15 +244,15 @@ def resize_tex(gl, n):
     (3D PDS block +0x134, log2 w/h)."""
     base = PROFILES['tex']['gl'][0]
     st = 0x98940000 - base
-    t = (n + 31) // 32 - 1
-    struct.pack_into('<I', gl, st + 0x10, t << 16 | t)
-    struct.pack_into('<II', gl, st + 0x90, 0x80000000 | t, t)
-    struct.pack_into('<II', gl, st + 0x1dc, 0x80000000 | t, t)
-    struct.pack_into('<f', gl, st + 0xf8, 2.0 * n)
-    struct.pack_into('<f', gl, st + 0x108, 2.0 * n)
-    struct.pack_into('<4f', gl, st + 0x1e4, n / 2, n / 2, n / 2, n / 2)
-    l = n.bit_length() - 1
-    struct.pack_into('<I', gl, 0x989d8000 + 0x134 - base, 0x0c000000 | l << 16 | l)
+    tx, ty = (w + 31) // 32 - 1, (h + 31) // 32 - 1
+    struct.pack_into('<I', gl, st + 0x10, tx << 16 | ty)
+    struct.pack_into('<II', gl, st + 0x90, 0x80000000 | tx, ty)
+    struct.pack_into('<II', gl, st + 0x1dc, 0x80000000 | tx, ty)
+    struct.pack_into('<f', gl, st + 0xf8, 2.0 * w)
+    struct.pack_into('<f', gl, st + 0x108, 2.0 * h)
+    struct.pack_into('<4f', gl, st + 0x1e4, w / 2, w / 2, h / 2, h / 2)
+    lw, lh = (w - 1).bit_length(), (h - 1).bit_length()
+    struct.pack_into('<I', gl, 0x989d8000 + 0x134 - base, 0x0c000000 | lw << 16 | lh)
 
 def main():
     cap, rtdir, out = sys.argv[1:4]
@@ -253,21 +260,23 @@ def main():
     prof = PROFILES['tri']
     if '--profile' in sys.argv:
         prof = PROFILES[sys.argv[sys.argv.index('--profile') + 1]]
-    maps = MAPS + (prof['gl'],)
+    maps = ((rt_layout(rtdir)[0][0]['gpu'], len(rt_image(rtdir))),) + MAPS + (prof['gl'],)
     code = bytearray(open(os.path.join(cap, 'r_%08x.bin' % prof['code']), 'rb').read()[:0x1000])
     if '--fb' in sys.argv:
         i = sys.argv.index('--fb')
         fbxy = (int(sys.argv[i + 1], 0), int(sys.argv[i + 2], 0))
     vdm = open(os.path.join(cap, 'r_%08x.bin' % prof['vdm']), 'rb').read()
-    if '--fb' in sys.argv:
-        n = int(sys.argv[sys.argv.index('--size') + 1], 0) if '--size' in sys.argv else 64
-        emit_to_fb(code, fbxy[0], fbxy[1], n, n)
-    imgs = {RT_VA: rt_image(rtdir), PB_VA: pb_image(), CMD_VA: ta_cmd(rtdir),
-            prof['gl'][0]: gl_image(cap, prof), VDM_VA: vdm, 0x1000: code}
-    size = 64
+    fsize = (64, 64)
     if '--size' in sys.argv:
-        size = int(sys.argv[sys.argv.index('--size') + 1], 0)
-        resize_tex(imgs[prof['gl'][0]], size)
+        a = sys.argv[sys.argv.index('--size') + 1].split('x')
+        fsize = (int(a[0], 0), int(a[-1], 0))
+    if '--fb' in sys.argv:
+        emit_to_fb(code, fbxy[0], fbxy[1], *fsize)
+    rt_va = rt_layout(rtdir)[0][0]['gpu']
+    imgs = {rt_va: rt_image(rtdir), PB_VA: pb_image(), CMD_VA: ta_cmd(rtdir),
+            prof['gl'][0]: gl_image(cap, prof), VDM_VA: vdm, 0x1000: code}
+    if '--size' in sys.argv:
+        resize_tex(imgs[prof['gl'][0]], *fsize)
     if '--teximg' in sys.argv:
         own_texture(imgs[prof['gl'][0]], sys.argv[sys.argv.index('--teximg') + 1])
     if '--reloc' in sys.argv:
@@ -281,12 +290,13 @@ def main():
             win[new:new + len(part)] = part if data else reloc_buf(part, base)
         imgs[base] = win
         imgs[CMD_VA] = reloc_buf(imgs[CMD_VA], base)
-        rt = imgs[RT_VA]
-        rt[0xc000:0xd000] = reloc_buf(rt[0xc000:0xd000], base)
+        rt = imgs[rt_va]
+        blk = rt_layout(rtdir)[1] - rt_va
+        rt[blk:blk + 0x1000] = reloc_buf(rt[blk:blk + 0x1000], base)
         if '--fb' not in sys.argv:
             from tqgen import limm
             struct.pack_into('<Q', code, 0xd68, limm(1, base + 0x30000))
-        maps = MAPS[:3] + ((base, 0x54000),)
+        maps = maps[:3] + ((base, 0x54000),)
     post = []
     if '--codebase' in sys.argv:
         # GL's programs use USE_CODE_BASE_3 or _5 (0 on iOS, code at 0x1000..):
@@ -308,7 +318,8 @@ def main():
            for va in imgs]
     sh += post
     sh += ['dmesg -c > /dev/null',
-           'echo "rkick 0x%x 0x%x 0x%x ${1:-0}" > $D/cmd' % (PB_VA, RT_VA + 0x8000, CMD_VA),
+           'echo "rkick 0x%x 0x%x 0x%x ${1:-0}" > $D/cmd' % (PB_VA, rt_layout(rtdir)[0][4]['gpu'],
+                                                            CMD_VA),
            'sleep 0.5; dmesg | grep -A3 rkick',
            'dd if=$D/mem bs=4096 skip=%d count=20 2>/dev/null > /tmp/rout.bin' % (out_va >> 12),
            'echo "out md5 $(md5sum /tmp/rout.bin | cut -c1-8)"; grep "r CCB" $D/regs']
