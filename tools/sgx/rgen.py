@@ -17,7 +17,10 @@ images for apple-sgx/mem plus a device script (rrun.sh):
   0x00001000  the GL shader code page (USE code base 3 = 0; overwrites the
               2D engine's programs until the next boot)
 
-Usage: rgen.py CAPDIR RTDIR OUTDIR
+Usage: rgen.py CAPDIR RTDIR OUTDIR [--fb X Y]
+  --fb    draw straight into the framebuffer (GPU 0x90000000, 768 px lines)
+          at X, Y: the 3D pass's emit program (GPU 0x1d40) gets the linear
+          PBE state instead of the twiddled 64x64 surface at 0x98ddd000
   CAPDIR  r_<cpu>.bin regions split from logs/ios/tq/gt_r_tri.bin
   RTDIR   rtemu.py output for 64 64 1 2 tri_payload.txt (rt_64x64_*.bin)
 """
@@ -115,10 +118,23 @@ def ta_cmd(rtdir):
 MAPS = ((RT_VA, 0xd000), (PB_VA, 0xd1000), (CMD_VA, 0x1000),
         (0x98dbc000, 0x46000), (VDM_VA, 0x4000))
 
+FB_VA, FB_STRIDE_PX = 0x90000000, 768
+
+def emit_to_fb(code, x, y, w=64, h=64):
+    """Rewrite the emit LIMMs r0..r5 (GPU 0x1d60..0x1d88): linear output."""
+    from tqgen import limm
+    regs = (0x00110000, FB_VA + (y * FB_STRIDE_PX + x) * 4, FB_STRIDE_PX // 2 - 1,
+            0, 0, (h - 1) << 12 | (w - 1))
+    for i, v in enumerate(regs):
+        struct.pack_into('<Q', code, 0xd60 + 8 * i, limm(i, v))
+
 def main():
     cap, rtdir, out = sys.argv[1:4]
     os.makedirs(out, exist_ok=True)
-    code = open(os.path.join(cap, 'r_00949000.bin'), 'rb').read()[:0x1000]
+    code = bytearray(open(os.path.join(cap, 'r_00949000.bin'), 'rb').read()[:0x1000])
+    if '--fb' in sys.argv:
+        i = sys.argv.index('--fb')
+        emit_to_fb(code, int(sys.argv[i + 1], 0), int(sys.argv[i + 2], 0))
     vdm = open(os.path.join(cap, 'r_00924000.bin'), 'rb').read()
     imgs = {RT_VA: rt_image(rtdir), PB_VA: pb_image(), CMD_VA: ta_cmd(rtdir),
             0x98dbc000: gl_image(cap), VDM_VA: vdm, 0x1000: code}
