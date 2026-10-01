@@ -664,6 +664,9 @@ static GLuint make_shader(GLenum type, const char *src)
 int main(int argc, char **argv)
 {
     int tq = argc > 1 && (!strcmp(argv[1], "tq") || !strcmp(argv[1], "tqpatch"));
+    /* "gltrace tq N": an N x N destination, so the mip transfers span
+     * several 32x32 regions (default 64: every level fits one) */
+    int tqsize = (tq && argc > 2 && !strcmp(argv[1], "tq")) ? atoi(argv[2]) : 64;
 
     if (argc > 3 && !strcmp(argv[1], "tqpatch")) {
         patch_word = (int)strtoul(argv[2], 0, 0);
@@ -774,8 +777,8 @@ int main(int argc, char **argv)
         GLuint dst;
         glGenTextures(1, &dst);
         glBindTexture(GL_TEXTURE_2D, dst);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 64, 64, 0, GL_RGBA, GL_UNSIGNED_BYTE, 0);
-        printf("== f: glCopyTexSubImage2D 64x64 from the FBO\n");
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, tqsize, tqsize, 0, GL_RGBA, GL_UNSIGNED_BYTE, 0);
+        printf("== f: glCopyTexSubImage2D 64x64 from the FBO into %dx%d\n", tqsize, tqsize);
         glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 0, 0, 64, 64);
         glFinish();
         scan_payloads("f");
