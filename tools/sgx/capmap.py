@@ -13,7 +13,8 @@ tag | addr >> 4 (VDM, some PDS data); PDS data tag5 | (addr >> 4) &
 0x07ffffff with bit 31 implied; DOUTU idx << 4 | 3, a USSE program at code
 base + idx * 8.  An object runs from where it is pointed at to the next 16
 zero bytes (a PDS program's data and code are contiguous); a USSE program
-from its PHAS to the first other instruction with bit 50, the end flag, set.
+from its PHAS to the first other instruction with bit 50, the end flag, set,
+and the next phase where a PHAS names one (low 20 bits, code base + n * 8).
 
 --strip writes a copy of the pack with everything not reached zeroed: if the
 frames still draw from it, the map is the whole of what has to be replaced
@@ -131,7 +132,14 @@ def main():
         src = gl if region(s) == 'gl' else code
         base = GL if region(s) == 'gl' else CODE
         if region(s) == 'code':
-            continue                    # USSE code points nowhere we map
+            # a PHAS with an address in its low 20 bits chains to the next
+            # phase, at code base + address * 8 (the vertex program's second
+            # phase: PHAS fa440000000003be -> 0x1df0)
+            for o in range(s - CODE, e - CODE, 8):
+                w = struct.unpack_from('<Q', code, o)[0]
+                if w >> 56 == 0xfa and (w >> 52) & 0xf == 4 and w & 0xfffff:
+                    ref(CB + (w & 0xfffff) * 8, '%x phase' % (CODE + o))
+            continue
         scan('%x' % s, words(src[s - base:e - base]))
 
     # merge overlaps and print
