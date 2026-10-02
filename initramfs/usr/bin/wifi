@@ -81,6 +81,12 @@ stop() {
     pkill -f "udhcpc.*-i *$IF" 2>/dev/null
     iw dev $IF disconnect 2>/dev/null
     ip -4 addr flush dev $IF 2>/dev/null
+    # udhcpc pointed DNS at this network's router; the cable's way out needs
+    # the resolvers stage 1 set
+    if [ -n "$(sed -n 's/^nameserver //p' /etc/resolv.conf 2>/dev/null)" ] &&
+       ! grep -q '^nameserver 1\.1\.1\.1' /etc/resolv.conf 2>/dev/null; then
+        printf 'nameserver 1.1.1.1\nnameserver 8.8.8.8\n' > /etc/resolv.conf
+    fi
 }
 
 # network_block SSID [PASS] -- one wpa_supplicant network, SSID in hex
