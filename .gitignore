@@ -46,3 +46,8 @@ ipad25.ipsw
 # sgx2d demo binary (built in docker, armv7)
 tools/sgx/lib/sprites
 tools/sgx/lib/demo2
+tools/sgx/lib/libsgxsdl.so
+tools/sgx/lib/libsdlshot.so
+tools/sgx/lib/replay
+tools/sgx/lib/cnttest
+tools/sgx/lib/pbtest

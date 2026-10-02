@@ -14,14 +14,14 @@
 
 /* EXT window layout: textures and their blocks, the vertex buffer, and the
  * blocks rebuilt every frame */
-#define EXT_TEX_END	0x100000
-#define EXT_VB		0x100000
-#define EXT_VB_END	0x1c0000
-#define EXT_FRAME	0x1c0000
+#define EXT_TEX_END	0x280000	/* texture blocks: 0xa0 a texture and blend mode */
+#define EXT_VB		0x280000
+#define EXT_VB_END	0x3c0000
+#define EXT_FRAME	0x3c0000
 #define VTX_FLOATS	8		/* r g b a u v x y */
 #define QUAD_BYTES	(6 * VTX_FLOATS * 4)
 #define MAX_QUADS	((EXT_VB_END - EXT_VB) / QUAD_BYTES - 1)
-#define MAX_TEX		512
+#define MAX_TEX		8192
 
 enum { T_FULL, T_FULLPROG, T_DELTA, T_DELTAPROG, T_FETCH, T_TEX, T_NUM };
 static const char *tmpl_names[T_NUM] = {
@@ -41,15 +41,17 @@ static struct {
 	int ntail, w, h;
 	uint8_t *tmpl;
 	int toff[T_NUM], tsize[T_NUM];
-	uint32_t ext_top;
+	uint32_t ext_top, heap, heap_size;
+	struct { uint32_t off, size; } hfree[1024];	/* free texel ranges, by offset */
+	int nhfree;
 	struct {
-		uint32_t data, block[SGX2D_NMODES], deltaprog[SGX2D_NMODES];
+		uint32_t data, size, block[SGX2D_NMODES], deltaprog[SGX2D_NMODES];
 		float us, vs;
-		int w, h, s;
+		int w, h, sw, sh, used;
 	} tex[MAX_TEX];
 	int ntex, white;
 	/* the frame being built */
-	int bg, nq, mode;
+	int bg, nq, mode, last_draws, last_dropped;
 	float rgba[4];
 	struct quad *q;
 	float *vb;
@@ -157,6 +159,9 @@ int sgx2d_open(const char *dir)
 			S.vdm = strtoul(a, 0, 0); S.vdm_size = strtoul(b, 0, 0);
 		} else if (!strcmp(key, "ext")) {
 			S.ext = strtoul(a, 0, 0); S.ext_size = strtoul(b, 0, 0);
+		} else if (!strcmp(key, "texheap")) {
+			S.heap = strtoul(a, 0, 0); S.heap_size = strtoul(b, 0, 0);
+			S.hfree[0].off = 0; S.hfree[0].size = S.heap_size; S.nhfree = 1;
 		} else if (!strcmp(key, "fetch")) {
 			S.fetch_tag = strtoul(a, 0, 0); S.fetch_word = strtoul(b, 0, 0);
 		} else if (!strcmp(key, "blendprogs"))
@@ -220,6 +225,32 @@ void sgx2d_close(void)
 	close(S.cmd);
 }
 
+uint32_t sgx2d_texture_addr(int id)
+{
+	return id >= 0 && id < S.ntex ? S.tex[id].data : 0;
+}
+
+void sgx2d_frame_stats(int *quads, int *draws, int *dropped)
+{
+	*quads = S.nq;
+	*draws = S.last_draws;
+	*dropped = S.last_dropped > 0 ? S.last_dropped : 0;
+}
+
+void sgx2d_stats(int *ntex, uint32_t *heap_free, uint32_t *ext_used)
+{
+	int i, n = 0;
+	uint32_t f = 0;
+
+	for (i = 0; i < S.ntex; i++)
+		n += S.tex[i].used;
+	for (i = 0; i < S.nhfree; i++)
+		f += S.hfree[i].size;
+	*ntex = n;
+	*heap_free = f;
+	*ext_used = S.ext_top;
+}
+
 int sgx2d_width(void) { return S.w; }
 int sgx2d_height(void) { return S.h; }
 
@@ -233,8 +264,10 @@ static uint32_t ext_alloc(const void *p, uint32_t n, uint32_t align)
 	return put(S.ext + off, p, n) ? 0 : S.ext + off;
 }
 
-/* Morton order, y in the even bits (the layout the GL driver uploads) */
-static uint32_t twiddle(uint32_t x, uint32_t y)
+/* Morton order, y in the even bits (the layout the GL driver uploads); a
+ * rectangle is a row (or column) of such squares, the side of the shorter
+ * edge, one after another */
+static uint32_t morton(uint32_t x, uint32_t y)
 {
 	uint32_t i = 0;
 	int b;
@@ -244,63 +277,158 @@ static uint32_t twiddle(uint32_t x, uint32_t y)
 	return i;
 }
 
+static uint32_t twiddle(uint32_t x, uint32_t y, uint32_t sw, uint32_t sh)
+{
+	uint32_t m = sw < sh ? sw : sh;
+
+	if (sw >= sh)
+		return (x / m) * m * m + morton(x % m, y);
+	return (y / m) * m * m + morton(x, y % m);
+}
+
 static int upload(int id, const uint32_t *src, uint32_t va)
 {
-	int s = S.tex[id].s, x, y, ret;
-	uint32_t *t = calloc(s * s, 4);
+	int sw = S.tex[id].sw, sh = S.tex[id].sh, x, y, ret;
+	uint32_t *t = calloc(sw * sh, 4);
 
 	if (!t)
 		return -ENOMEM;
 	for (y = 0; y < S.tex[id].h; y++)
 		for (x = 0; x < S.tex[id].w; x++)
-			t[twiddle(x, y)] = src[y * S.tex[id].w + x];
-	ret = put(va, t, s * s * 4);
+			t[twiddle(x, y, sw, sh)] = src[y * S.tex[id].w + x];
+	ret = put(va, t, sw * sh * 4);
 	free(t);
 	return ret;
 }
 
+/* texel memory: first fit over the free list, 4 KiB granules */
+static uint32_t heap_alloc(uint32_t n)
+{
+	int i;
+
+	n = (n + 0xfff) & ~0xfff;
+	for (i = 0; i < S.nhfree; i++)
+		if (S.hfree[i].size >= n) {
+			uint32_t off = S.hfree[i].off;
+
+			S.hfree[i].off += n;
+			S.hfree[i].size -= n;
+			if (!S.hfree[i].size) {
+				memmove(&S.hfree[i], &S.hfree[i + 1], (S.nhfree - i - 1) * sizeof(S.hfree[0]));
+				S.nhfree--;
+			}
+			return S.heap + off;
+		}
+	return 0;
+}
+
+static void heap_free(uint32_t va, uint32_t n)
+{
+	uint32_t off = va - S.heap;
+	int i, j;
+
+	n = (n + 0xfff) & ~0xfff;
+	if (S.nhfree == (int)(sizeof(S.hfree) / sizeof(S.hfree[0])))
+		return;				/* lost, rather than corrupt */
+	for (i = 0; i < S.nhfree && S.hfree[i].off < off; i++)
+		;				/* keep the list sorted */
+	memmove(&S.hfree[i + 1], &S.hfree[i], (S.nhfree - i) * sizeof(S.hfree[0]));
+	S.hfree[i].off = off;
+	S.hfree[i].size = n;
+	S.nhfree++;
+	for (i = 0, j = 1; j < S.nhfree; j++)	/* merge neighbours */
+		if (S.hfree[i].off + S.hfree[i].size == S.hfree[j].off)
+			S.hfree[i].size += S.hfree[j].size;
+		else
+			S.hfree[++i] = S.hfree[j];
+	S.nhfree = i + 1;
+}
+
+/* the texture's 3D PDS block and state delta for blend mode m: made on
+ * first use, rewritten in place when the id is reused */
+static int make_blocks(int id, int m)
+{
+	uint8_t blk[0x40], d[0x20], prog[0x40];
+	uint32_t data;
+
+	memcpy(blk, S.tmpl + S.toff[T_TEX], S.tsize[T_TEX]);
+	((uint32_t *)blk)[0] = S.blendprog[m];
+	((uint32_t *)blk)[5] = 0x0c000000 | (__builtin_ctz(S.tex[id].sw) << 16) |
+			       __builtin_ctz(S.tex[id].sh);
+	((uint32_t *)blk)[6] = S.tex[id].data;
+	if (S.tex[id].block[m])
+		return put(S.tex[id].block[m], blk, S.tsize[T_TEX]);
+	S.tex[id].block[m] = ext_alloc(blk, S.tsize[T_TEX], 0x40);
+	memcpy(d, S.tmpl + S.toff[T_DELTA], S.tsize[T_DELTA]);
+	((uint32_t *)d)[3] = p27(S.tex[id].block[m]);
+	data = ext_alloc(d, S.tsize[T_DELTA], 0x20);
+	memcpy(prog, S.tmpl + S.toff[T_DELTAPROG], S.tsize[T_DELTAPROG]);
+	((uint32_t *)prog)[0] = data;
+	S.tex[id].deltaprog[m] = ext_alloc(prog, S.tsize[T_DELTAPROG], 0x40);
+	if (!S.tex[id].block[m] || !data || !S.tex[id].deltaprog[m]) {
+		S.tex[id].block[m] = 0;
+		return -ENOSPC;
+	}
+	return 0;
+}
+
+static int need_blocks(int id, int m)
+{
+	return S.tex[id].block[m] ? 0 : make_blocks(id, m);
+}
+
 int sgx2d_texture(const void *rgba, int w, int h)
 {
-	uint32_t va, data;
-	uint8_t blk[0x40], d[0x20], prog[0x40];
-	int s = 4, id = S.ntex, m;
+	uint32_t va;
+	int sw = 4, sh = 4, id, m, fresh;
 
-	if (id >= MAX_TEX || w < 1 || h < 1 || w > 1024 || h > 1024)
+	if (w < 1 || h < 1 || w > 1024 || h > 1024)
 		return -EINVAL;
-	while (s < w || s < h)
-		s <<= 1;		/* square, power of two (padded) */
-	S.tex[id].w = w; S.tex[id].h = h; S.tex[id].s = s;
-	S.tex[id].us = (float)w / s;
-	S.tex[id].vs = (float)h / s;
-	S.ext_top = (S.ext_top + 0xfff) & ~0xfff;
-	va = S.ext + S.ext_top;
-	if (S.ext_top + s * s * 4 > EXT_TEX_END)
+	for (id = 0; id < S.ntex && S.tex[id].used; id++)
+		;			/* reuse a freed id, and its blocks */
+	if (id >= MAX_TEX)
 		return -ENOSPC;
-	S.ext_top += s * s * 4;
-	if (upload(id, rgba, va))
-		return -EIO;
+	fresh = id == S.ntex;
+	while (sw < w)
+		sw <<= 1;		/* powers of two (padded) */
+	while (sh < h)
+		sh <<= 1;
+	if (!(va = heap_alloc(sw * sh * 4)))
+		return -ENOSPC;
+	S.tex[id].w = w; S.tex[id].h = h; S.tex[id].sw = sw; S.tex[id].sh = sh;
+	S.tex[id].us = (float)w / sw;
+	S.tex[id].vs = (float)h / sh;
 	S.tex[id].data = va;
-	for (m = 0; m < SGX2D_NMODES; m++) {	/* a block and a delta per blend mode */
-		memcpy(blk, S.tmpl + S.toff[T_TEX], S.tsize[T_TEX]);
-		((uint32_t *)blk)[0] = S.blendprog[m];
-		((uint32_t *)blk)[5] = 0x0c000000 | (__builtin_ctz(s) << 16) | __builtin_ctz(s);
-		((uint32_t *)blk)[6] = va;
-		S.tex[id].block[m] = ext_alloc(blk, S.tsize[T_TEX], 0x40);
-		memcpy(d, S.tmpl + S.toff[T_DELTA], S.tsize[T_DELTA]);
-		((uint32_t *)d)[3] = p27(S.tex[id].block[m]);
-		data = ext_alloc(d, S.tsize[T_DELTA], 0x20);
-		memcpy(prog, S.tmpl + S.toff[T_DELTAPROG], S.tsize[T_DELTAPROG]);
-		((uint32_t *)prog)[0] = data;
-		S.tex[id].deltaprog[m] = ext_alloc(prog, S.tsize[T_DELTAPROG], 0x40);
-		if (!S.tex[id].block[m] || !data || !S.tex[id].deltaprog[m])
-			return -ENOSPC;
+	S.tex[id].size = sw * sh * 4;
+	if (upload(id, rgba, va)) {
+		heap_free(va, sw * sh * 4);
+		return -EIO;
 	}
-	return S.ntex++;
+	for (m = 0; m < SGX2D_NMODES; m++)	/* blocks are made when a mode is first used */
+		if (!fresh && S.tex[id].block[m] && make_blocks(id, m))
+			return -EIO;
+	if (fresh)
+		for (m = 0; m < SGX2D_NMODES; m++)
+			S.tex[id].block[m] = S.tex[id].deltaprog[m] = 0;
+	S.tex[id].used = 1;
+	if (fresh)
+		S.ntex++;
+	return id;
+}
+
+/* The texture may still be read by the frame on the GPU: callers free
+ * between frames (sgx2d_end waits for the previous one first). */
+void sgx2d_texture_free(int id)
+{
+	if (id < 0 || id >= S.ntex || !S.tex[id].used || id == S.white)
+		return;
+	heap_free(S.tex[id].data, S.tex[id].size);
+	S.tex[id].used = 0;
 }
 
 int sgx2d_texture_update(int id, const void *rgba)
 {
-	if (id < 0 || id >= S.ntex)
+	if (id < 0 || id >= S.ntex || !S.tex[id].used)
 		return -EINVAL;
 	return upload(id, rgba, S.tex[id].data);
 }
@@ -328,7 +456,7 @@ void sgx2d_quad4(int tex, const float xy[8], const float uv[8])
 {
 	struct quad *q;
 
-	if (S.nq >= MAX_QUADS || tex < 0 || tex >= S.ntex)
+	if (S.nq >= MAX_QUADS || tex < 0 || tex >= S.ntex || !S.tex[tex].used)
 		return;
 	q = &S.q[S.nq++];
 	q->tex = tex;
@@ -355,6 +483,13 @@ void sgx2d_quad(int tex, float x, float y, float w, float h)
 void sgx2d_fill(float x, float y, float w, float h)
 {
 	sgx2d_quad(S.white, x, y, w, h);
+}
+
+void sgx2d_fill4(const float xy[8])
+{
+	static const float uv[8] = { 0, 0, 1, 0, 1, 1, 0, 1 };
+
+	sgx2d_quad4(S.white, xy, uv);
 }
 
 /* two triangles (corners 0 1 2, 0 2 3) as r g b a u v x y */
@@ -418,6 +553,20 @@ int sgx2d_finish(void)
 	return wait_3d();
 }
 
+/* SGX2D_DUMP=FILE: the 300th frame's quads, for replaying elsewhere */
+static void dump_quads(void)
+{
+	static int frame;
+	const char *path = getenv("SGX2D_DUMP");
+	FILE *f;
+
+	if (!path || ++frame != 300 || !(f = fopen(path, "wb")))
+		return;
+	fwrite(&S.nq, sizeof(S.nq), 1, f);
+	fwrite(S.q, sizeof(S.q[0]), S.nq, f);
+	fclose(f);
+}
+
 int sgx2d_end(void)
 {
 	uint32_t *v = S.vdmbuf, vbva = S.ext + EXT_VB, d0, p0, limit;
@@ -427,15 +576,18 @@ int sgx2d_end(void)
 	/* the VDM reads ahead: keep 512 bytes clear of the window's end */
 	int i, n, ret, maxv = S.vdm_size / 4 - 128 - 10 - S.ntail;
 
-	if (S.bg < 0 || S.bg >= S.ntex)
-		return -EINVAL;
+	if (S.bg < 0 || S.bg >= S.ntex || !S.tex[S.bg].used)
+		S.bg = S.white;
 	if ((ret = wait_3d()))		/* the previous frame still reads our buffers */
 		return ret;
+	dump_quads();
 	S.ftop = 0;
 	/* draw 0: the background, with the whole state */
 	bgq.xy[2] = bgq.xy[4] = S.w;
 	bgq.xy[5] = bgq.xy[7] = S.h;
 	vb_quad(S.vb, &bgq);
+	if ((ret = need_blocks(S.bg, SGX2D_BLEND)))
+		return ret;
 	memcpy(full, S.tmpl + S.toff[T_FULL], S.tsize[T_FULL]);
 	((uint32_t *)full)[6] = p27(S.tex[S.bg].block[SGX2D_BLEND]);
 	d0 = frame_alloc(full, S.tsize[T_FULL], 0x20);
@@ -454,12 +606,16 @@ int sgx2d_end(void)
 			;
 		if (v - S.vdmbuf > maxv || S.ftop + 0x100 > S.ext_size - EXT_FRAME)
 			break;		/* too many draws: the rest is dropped */
+		if (need_blocks(S.q[i].tex, S.q[i].mode))
+			continue;	/* no room for its blocks: skip the run */
 		*v++ = vdm4(4, S.consts); *v++ = 0x1000e102;
 		*v++ = vdm4(4, S.tex[S.q[i].tex].deltaprog[S.q[i].mode]); *v++ = 0x12022201;
 		*v++ = 0x81c00000 | 6 * n; *v++ = S.idx; *v++ = 0x70000000; *v++ = 0x003fffff;
 		*v++ = vdm4(S.fetch_tag, fetch_block(vbva + QUAD_BYTES * (1 + i)));
 		*v++ = S.fetch_word;
 	}
+	S.last_dropped = S.nq - i;
+	S.last_draws = (v - S.vdmbuf) / 10;
 	for (n = 0; n < S.nq; n++)
 		vb_quad(S.vb + (1 + n) * 6 * VTX_FLOATS, &S.q[n]);
 	for (n = 0; n < S.ntail; n++)

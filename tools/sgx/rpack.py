@@ -34,8 +34,15 @@ GL = 0x98956000
 STATE, PDS = 0x989b5000, 0x98956000
 IDX = 0x98967000
 CB = 0x9a060000                        # code base 3: the page is at CB + 0x1000
-EXT_VA, EXT_SIZE = 0x9b100000, 0x200000
-BGLOAD_VA, BGLOAD_SIZE = 0x9c000000, 0x400000    # see rbatch.py
+EXT_VA, EXT_SIZE = 0x9b400000, 0x400000
+# The background object reloads every tile from the output descriptor (3D
+# PDS block +0x120): with blending on it cannot know a tile is covered, and
+# after a partial render (the parameter buffer ran out mid-frame) it must
+# bring back what the first pass drew.  So it reads the framebuffer itself,
+# linear (the 2D engine's format: stride field, size, 0x10000000).
+FB_LOAD = ((768 // 4 - 2) << 16 | 0x0e90, 0xcc000000 | (768 - 1) << 12 | (1024 - 1),
+           rgen.FB_VA, 0x10000000)
+TEXHEAP_VA, TEXHEAP_CHUNK, TEXHEAP_N = 0x9d000000, 0x4000000, 1  # texels, 64 MiB
 
 # the blend program (GPU 0x1e80) and its copies: (code page offset, SOP2)
 BLEND_PROGS = ((0xe80, None),                       # SRC_ALPHA, ONE_MINUS_SRC_ALPHA
@@ -58,7 +65,7 @@ def main():
                            '--codebase', '0x%x' % CB])
     gpath = os.path.join(out, 'm_%08x.bin' % GL)
     gl = bytearray(open(gpath, 'rb').read())
-    struct.pack_into('<I', gl, PDS + 0x138 - GL, BGLOAD_VA)
+    struct.pack_into('<4I', gl, PDS + 0x130 - GL, *FB_LOAD)
     open(gpath, 'wb').write(gl)
     cpath = os.path.join(out, 'm_%08x.bin' % (CB + 0x1000))
     code = bytearray(open(cpath, 'rb').read())
@@ -80,7 +87,9 @@ def main():
 
     rrun = open(os.path.join(out, 'rrun.sh')).read().splitlines()
     maps = [l.split('"')[1].split()[1:] for l in rrun if l.startswith('echo "map ')]
-    maps += [['0x%x' % EXT_VA, '0x%x' % EXT_SIZE], ['0x%x' % BGLOAD_VA, '0x%x' % BGLOAD_SIZE]]
+    maps += [['0x%x' % EXT_VA, '0x%x' % EXT_SIZE]]
+    maps += [['0x%x' % (TEXHEAP_VA + i * TEXHEAP_CHUNK), '0x%x' % TEXHEAP_CHUNK]
+             for i in range(TEXHEAP_N)]
     imgs = [l.split()[1][3:] for l in rrun if l.startswith('dd if=m_')]
     pokes = [l.split()[2:4] for l in rrun if l.startswith('peek w ')]
     kick = [l for l in rrun if 'rkick' in l and l.startswith('echo')][0].split('"')[1].split()[1:4]
@@ -96,6 +105,7 @@ def main():
           'consts0 0x%x' % (STATE + 0xa0), 'consts 0x%x' % (STATE + 0x380),
           'idx 0x%x 8192' % IDX, 'vdm 0x%x 0x4000' % rgen.VDM_VA,
           'ext 0x%x 0x%x' % (EXT_VA, EXT_SIZE),
+          'texheap 0x%x 0x%x' % (TEXHEAP_VA, TEXHEAP_CHUNK * TEXHEAP_N),
           'fetch 9 0x%08x' % fetchw,
           'blendprogs ' + ' '.join('0x%x' % d for d in doutu),
           'tail ' + ' '.join('0x%08x' % w for w in tail)]

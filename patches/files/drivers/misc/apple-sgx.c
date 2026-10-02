@@ -70,6 +70,7 @@
 #include <linux/spinlock.h>
 #include <linux/string.h>
 #include <linux/uaccess.h>
+#include <linux/vmalloc.h>
 #include <linux/vt_kern.h>
 #include <linux/workqueue.h>
 
@@ -351,6 +352,9 @@ struct sgx_buf {
 	dma_addr_t dma;
 	u32 va;
 	size_t size;
+	struct page **pages;	/* set: allocated page by page (map_extra) */
+	dma_addr_t *page_dma;
+	struct device *dev;
 };
 
 /* A clock-gating mode, as iOS writes it into every 2-bit field: 1 keeps the
@@ -411,7 +415,7 @@ struct apple_sgx {
 	bool bufs_ready;
 
 	/* buffers mapped at a chosen GPU address (replaying iOS's layout) */
-	struct sgx_buf extra[16];
+	struct sgx_buf extra[32];
 	int nextra;
 	int boot_result;	/* 0 never tried, 1 acknowledged, -errno */
 
@@ -1164,16 +1168,40 @@ static int sgx_tq_cmd(struct apple_sgx *sgx, u32 flags, u32 val)
 
 /* ---- replay tools: memory at chosen GPU addresses ------------------------ */
 
+static void sgx_extra_free(void *data)
+{
+	struct sgx_buf *b = data;
+	unsigned int i, n = b->size >> PAGE_SHIFT;
+
+	if (b->cpu)
+		vunmap(b->cpu);
+	for (i = 0; i < n && b->pages[i]; i++) {
+		if (b->page_dma[i])
+			dma_unmap_page(b->dev, b->page_dma[i], PAGE_SIZE, DMA_BIDIRECTIONAL);
+		__free_page(b->pages[i]);
+	}
+	kvfree(b->pages);
+	kvfree(b->page_dma);
+}
+
 /* "map VA SIZE": fresh zeroed memory at GPU address VA, cache-consistent
  * like the shared buffers but without EDMPROTECT: on an EDM-protected page
  * only the microkernel may write, and the pixel back end's write of a
  * render target faults (BIF_INT_STAT 0x000b0020).  Mappings stay until
  * reboot; the next microkernel boot invalidates the MMU's caches, so map
- * first and boot after. */
+ * first and boot after.
+ *
+ * The memory comes page by page: the GPU's MMU maps every page on its own,
+ * so nothing here needs to be contiguous (the CMA pool is only 64 MiB, and
+ * textures and the parameter buffer want more).  The CPU sees the pages
+ * through one write-combining mapping, as it does dma_alloc_coherent
+ * memory; the pages are cleaned out of the cache when they are mapped for
+ * the device and never touched cached again. */
 static int sgx_map_extra(struct apple_sgx *sgx, u32 va, u32 size)
 {
 	struct sgx_buf *b;
-	int i, ret;
+	unsigned int i, n;
+	int i2, ret;
 
 	if (!sgx->bufs_ready)
 		return -ENODEV;
@@ -1181,24 +1209,57 @@ static int sgx_map_extra(struct apple_sgx *sgx, u32 va, u32 size)
 	if ((va & (SGX_PAGE_SIZE - 1)) || !size || va + size < va ||
 	    (va < sgx->va_next && va + size > SGX_VA_BASE))
 		return -EINVAL;
-	for (i = 0; i < sgx->nextra; i++)
-		if (va < sgx->extra[i].va + sgx->extra[i].size &&
-		    va + size > sgx->extra[i].va)
+	for (i2 = 0; i2 < sgx->nextra; i2++)
+		if (va < sgx->extra[i2].va + sgx->extra[i2].size &&
+		    va + size > sgx->extra[i2].va)
 			return -EEXIST;
 	if (sgx->nextra == ARRAY_SIZE(sgx->extra))
 		return -ENOSPC;
 	b = &sgx->extra[sgx->nextra];
+	memset(b, 0, sizeof(*b));
 	b->size = size;
-	b->cpu = dmam_alloc_coherent(sgx->dev, size, &b->dma, GFP_KERNEL);
-	if (!b->cpu)
+	b->dev = sgx->dev;
+	n = size >> PAGE_SHIFT;
+	b->pages = kvcalloc(n, sizeof(*b->pages), GFP_KERNEL);
+	b->page_dma = kvcalloc(n, sizeof(*b->page_dma), GFP_KERNEL);
+	if (!b->pages || !b->page_dma) {
+		kvfree(b->pages);
+		kvfree(b->page_dma);
 		return -ENOMEM;
-	b->va = va;
-	ret = sgx_mmu_map(sgx, va, b->dma, size, SGX_PTE_CACHECONSISTENT);
+	}
+	ret = devm_add_action_or_reset(sgx->dev, sgx_extra_free, b);
 	if (ret)
 		return ret;
+	for (i = 0; i < n; i++) {
+		dma_addr_t dma;
+
+		ret = -ENOMEM;
+		b->pages[i] = alloc_page(GFP_KERNEL | __GFP_ZERO);
+		if (!b->pages[i])
+			goto fail;
+		dma = dma_map_page(sgx->dev, b->pages[i], 0, PAGE_SIZE, DMA_BIDIRECTIONAL);
+		if (dma_mapping_error(sgx->dev, dma))
+			goto fail;
+		b->page_dma[i] = dma;
+		ret = sgx_mmu_map(sgx, va + i * PAGE_SIZE, dma, PAGE_SIZE,
+				  SGX_PTE_CACHECONSISTENT);
+		if (ret)
+			goto fail;
+	}
+	ret = -ENOMEM;
+	b->cpu = vmap(b->pages, n, VM_MAP, pgprot_writecombine(PAGE_KERNEL));
+	if (!b->cpu)
+		goto fail;
+	b->va = va;
+	b->dma = b->page_dma[0];
 	sgx->nextra++;
-	dev_info(sgx->dev, "mapped GPU 0x%08x-0x%08x at %pad\n", va, va + size, &b->dma);
+	dev_info(sgx->dev, "mapped GPU 0x%08x-0x%08x (%u pages)\n", va, va + size, n);
 	return 0;
+
+fail:	/* the PTEs written so far point at pages freed here: nothing uses
+	 * them, and a later map of the same range rewrites them */
+	devm_release_action(sgx->dev, sgx_extra_free, b);
+	return ret;
 }
 
 /* The CPU side of GPU address va, and how many bytes follow it there. */

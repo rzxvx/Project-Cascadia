@@ -7,8 +7,8 @@ images for apple-sgx/mem plus a device script (rrun.sh):
   0x87900000  render target buffers, from tools/iosgpu/rtemu.py (the kext's
               own init + submit code): regions, tail pointers, details, state,
               and the 3D register block at +0xc000
-  0x87a00000  parameter buffer: descriptor, page table (+0x10000), two blocks
-              (+0x20000: 0x22 pages, +0x50000: 0x80 pages), each a header page
+  0x88000000  parameter buffer: descriptor, page table (+0x10000), two blocks
+              (+0x20000: 0x22 pages, +0x50000: 0x800 pages), each a header page
               then data pages; page numbers count from TA_REQ_BASE 0x87800000
   0x87b00000  the TA command (rkick copies it into the render CCB)
   0x98dbc000  the GL buffers from the capture, at their iOS GPU addresses
@@ -33,7 +33,12 @@ Usage: rgen.py CAPDIR RTDIR OUTDIR [--profile tri|depth] [--fb X Y] [--reloc BAS
 import os, struct, sys
 
 TA_BASE = 0x87800000
-RT_VA, PB_VA, CMD_VA = 0x87900000, 0x87a00000, 0x87b00000
+RT_VA, PB_VA, CMD_VA = 0x87900000, 0x88000000, 0x87b00000
+# the parameter buffer: descriptor, page table (+0x10000), then blocks of a
+# header page and data pages (offset, bytes) -- iOS grows PB0 up to 8 MiB;
+# too small a buffer forces partial renders mid-frame
+PB_BLOCKS = ((0x20000, 0x22000), (0x50000, 0x800000))
+PB_SIZE = PB_BLOCKS[-1][0] + PB_BLOCKS[-1][1] + 0x1000
 VDM_VA = 0x98f00000
 CMD_SIZE = 0x120
 NCORES = 2
@@ -46,8 +51,8 @@ def pack(w):
 
 def pb_image():
     """PB as the kext lays it out (0x80bfd51c, 0x80bfd9a0, 0x80bfdaa8)."""
-    img = bytearray(0xd1000)
-    blocks = [(PB_VA + 0x20000, 0x22000), (PB_VA + 0x50000, 0x80000)]
+    img = bytearray(PB_SIZE)
+    blocks = [(PB_VA + off, size) for off, size in PB_BLOCKS]
     pg = lambda va: (va - TA_BASE) >> 12
     for i, (va, size) in enumerate(blocks):
         nxt = blocks[i + 1][0] if i + 1 < len(blocks) else 0
@@ -178,7 +183,7 @@ def ta_cmd(rtdir):
     put(0x118, w(37))
     return pack(c)
 
-MAPS = ((PB_VA, 0xd1000), (CMD_VA, 0x1000), (VDM_VA, 0x4000))
+MAPS = ((PB_VA, PB_SIZE), (CMD_VA, 0x1000), (VDM_VA, 0x4000))
 
 FB_VA, FB_STRIDE_PX = 0x90000000, 768
 SGX_REGS = 0x35100000            # broadcast register bank (physical)

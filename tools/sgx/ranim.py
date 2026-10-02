@@ -13,6 +13,9 @@ Usage: ranim.py OUTDIR [N] [--depth]
 """
 import math, os, struct, sys
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from rgen import PB_VA
+
 VERTS_VA = 0x98df2290
 TRI = ((0.0, 0.6), (-0.6, -0.6), (0.6, -0.6))
 DEPTH_VA = 0x98dab3b0
@@ -41,11 +44,11 @@ l=0; while [ $l -lt ${1:-1} ]; do
 i=0; while [ $i -lt %d ]; do
   dd if=frames.bin of=/tmp/f.bin bs=%d skip=$i count=1 2>/dev/null
   dd if=/tmp/f.bin of=$D/mem bs=16 seek=%d conv=notrunc 2>/dev/null
-  echo "rkick 0x87a00000 0x87908000 0x87b00000" > $D/cmd || { echo "frame $i failed"; exit 1; }
+  echo "rkick 0x%x 0x87908000 0x87b00000" > $D/cmd || { echo "frame $i failed"; exit 1; }
   i=$((i+1))
 done; l=$((l+1)); done
 echo "$((${1:-1} * %d)) frames"; grep "r CCB" $D/regs
-""" % (n, fsize, va // 16, n)
+""" % (n, fsize, va // 16, PB_VA, n)
     open(os.path.join(out, 'anim.sh'), 'w').write(sh)
     os.chmod(os.path.join(out, 'anim.sh'), 0o755)
 
