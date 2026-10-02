@@ -290,7 +290,10 @@ def main():
     if '--profile' in sys.argv:
         prof = PROFILES[sys.argv[sys.argv.index('--profile') + 1]]
     maps = ((rt_layout(rtdir)[0][0]['gpu'], len(rt_image(rtdir))),) + MAPS + (prof['gl'],)
-    code = bytearray(open(os.path.join(cap, 'r_%08x.bin' % prof['code']), 'rb').read()[:0x1000])
+    if '--code' in sys.argv:        # a code page of our own (programs.py)
+        code = bytearray(open(sys.argv[sys.argv.index('--code') + 1], 'rb').read())
+    else:
+        code = bytearray(open(os.path.join(cap, 'r_%08x.bin' % prof['code']), 'rb').read()[:0x1000])
     if '--fb' in sys.argv:
         i = sys.argv.index('--fb')
         fbxy = (int(sys.argv[i + 1], 0), int(sys.argv[i + 2], 0))

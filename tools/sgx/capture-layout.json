@@ -63,16 +63,6 @@
     "0x450": "00003b83"
    }
   },
-  "code": {
-   "cpu": "008f7000",
-   "size": 28672,
-   "masked": "e2467c7252b0ac1f8061c9e5e7d56d96c0707fabadbe6d3928c567aa1bb76ea4",
-   "sha256": "d1b3a526eb14ad2948a0f3aea21f759aaa343edbab49ce9fd8ea746a606a1fd3",
-   "patch": {
-    "0xd68": "003a5000",
-    "0xd6c": "fca26040"
-   }
-  },
   "vdm": {
    "cpu": "008f3000",
    "size": 16384,

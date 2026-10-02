@@ -7,9 +7,9 @@ per-texture blocks and vertices.  A frame is: draw 0, the background, with
 the whole state; then one draw per run of quads with the same texture and
 blend mode, each with a 4-word state delta pointing at that texture's 3D PDS
 block.  The blend mode lives in the small USSE program that block runs
-(GPU 0x1e80: PHAS, SOP2M, SOP2 -- only the SOP2 differs between SRC_ALPHA/
-ONE_MINUS_SRC_ALPHA, SRC_ALPHA/ONE and DST_COLOR/ZERO); the ADD and MOD
-copies go into free space on the code page.
+(programs.py: pixel_blend, pixel_add, pixel_mod -- SRC_ALPHA/
+ONE_MINUS_SRC_ALPHA, SRC_ALPHA/ONE and DST_COLOR/ZERO).  The code page is
+ours (programs.py); the state and PDS blocks are still the capture's.
 
 OUTDIR gets the memory images (m_<va>.bin), tmpl.bin (the blocks sgx2d
 copies) and pack.txt:
@@ -27,7 +27,7 @@ import os, struct, subprocess, sys
 
 here = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, here)
-import rgen
+import programs, rgen
 
 W, H = 768, 1024
 GL = 0x98956000
@@ -44,11 +44,6 @@ FB_LOAD = ((768 // 4 - 2) << 16 | 0x0e90, 0xcc000000 | (768 - 1) << 12 | (1024 -
            rgen.FB_VA, 0x10000000)
 TEXHEAP_VA, TEXHEAP_CHUNK, TEXHEAP_N = 0x9d000000, 0x4000000, 1  # texels, 64 MiB
 
-# the blend program (GPU 0x1e80) and its copies: (code page offset, SOP2)
-BLEND_PROGS = ((0xe80, None),                       # SRC_ALPHA, ONE_MINUS_SRC_ALPHA
-               (0xf40, 0x809480c590000000),         # SRC_ALPHA, ONE
-               (0xf80, 0x80a4008190000000))         # DST_COLOR, ZERO
-
 # tmpl.bin: (name, address, size)
 TMPL = (('full', STATE + 0xe0, 0x50),      # draw 0's whole state; word 6 = texture block
         ('fullprog', STATE + 0x140, 0x2c), # its program; word 0 = data pointer
@@ -60,23 +55,19 @@ TMPL = (('full', STATE + 0xe0, 0x50),      # draw 0's whole state; word 6 = text
 
 def main():
     cap, rtdir, out = sys.argv[1:4]
+    os.makedirs(out, exist_ok=True)
+    page = os.path.join(out, 'code.bin')
+    open(page, 'wb').write(programs.code_page())
     subprocess.check_call([sys.executable, os.path.join(here, 'rgen.py'), cap, rtdir, out,
                            '--profile', 'modblend', '--fb', '0', '0', '--size', '%dx%d' % (W, H),
-                           '--codebase', '0x%x' % CB])
+                           '--codebase', '0x%x' % CB, '--code', page])
+    os.remove(page)
     gpath = os.path.join(out, 'm_%08x.bin' % GL)
     gl = bytearray(open(gpath, 'rb').read())
     struct.pack_into('<4I', gl, PDS + 0x130 - GL, *FB_LOAD)
     open(gpath, 'wb').write(gl)
-    cpath = os.path.join(out, 'm_%08x.bin' % (CB + 0x1000))
-    code = bytearray(open(cpath, 'rb').read())
-    doutu = []
-    for off, sop2 in BLEND_PROGS:
-        if sop2 is not None:
-            assert code[off:off + 0x18] == bytes(0x18)
-            code[off:off + 0x18] = code[0xe80:0xe98]
-            struct.pack_into('<Q', code, off + 0x10, sop2)
-        doutu.append(((0x1000 + off) // 8) << 4 | 3)
-    open(cpath, 'wb').write(code)
+    doutu = [programs.doutu_index(programs.LAYOUT['pixel_' + m]) << 4 | 3
+             for m in ('blend', 'add', 'mod')]
     t = bytearray()
     lines = []
     for name, va, size in TMPL:
