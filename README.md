@@ -85,9 +85,12 @@ including the parts that didn't work.
       as fast as before. See *The cache problem* below
 - [x] **Wi-Fi** — BCM4334 on HSIC behind EHCI (not SDIO, as first assumed),
       firmware and NVRAM out of the user's IPSW; `wlan0` joins 2.4 and 5 GHz
-      networks, DHCP and all (`iw`/`wpa_supplicant` from `apk`). See *The
-      Wi-Fi problem* below. Tested on an open network; WPA not tried yet, and
-      the CLM blob does not load (this firmware refuses `clmload`)
+      networks, DHCP and all (`iw`/`wpa_supplicant` from `apk`; `wifi
+      connect SSID PASSWORD`). WPA2 and open networks; 38 Mbit/s in, 21 out,
+      10 minutes of ping without a loss. A chip that does not come back on
+      the bus at boot is power-cycled by itself (`wifi reset` by hand). See
+      *The Wi-Fi problem* below. The CLM blob does not load (this firmware
+      refuses `clmload`)
 - [x] **iOS's own files, read-only, straight off the NAND** — `ios mount`
       puts iOS's System partition on `/mnt/ios`: the NAND's PPN protocol,
       iOS's FTL, LwVM and HFS+ including HFS+ compression. iOS is left as it
@@ -379,6 +382,18 @@ wlan0: connected to 50:c7:bf:31:b3:03
 udhcpc: lease of 192.168.0.195 obtained from 192.168.0.1
 round-trip min/avg/max = 2.599/3.383/4.891 ms
 ```
+
+And one thing between that and a Wi-Fi that is there every time: now and
+then the chip did not come back on the bus after its firmware started, and
+powering it off and on — the only way back — worked 3 times in 10. A regmap
+trace showed the PMU's REG_ON register (0x64) keeping its old value after the
+write that clears it. The PMU was not at fault: the I2C driver called a write
+done once the controller's FIFO had the bytes, while they still had ~300 µs to
+go on the wire, and began the next transfer with a controller reset — cutting
+the write off whenever another one followed within that time, as the
+regulator core's read of the next register did. With a millisecond after
+every write before the next transfer, 10 power cycles in 10 bring the chip
+back, and the `wifi` tool does that by itself when it has not come up.
 
 ### 6. The cache problem — a megabyte of L2, off the whole time
 
