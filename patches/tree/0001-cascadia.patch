@@ -877,7 +877,7 @@ index 9919ab725..f0c547b78 100644
  }
  
 diff --git a/drivers/usb/dwc2/gadget.c b/drivers/usb/dwc2/gadget.c
-index e7bf9cc63..a36f0e99d 100644
+index e7bf9cc63..65223cefa 100644
 --- a/drivers/usb/dwc2/gadget.c
 +++ b/drivers/usb/dwc2/gadget.c
 @@ -3463,6 +3463,19 @@ void dwc2_hsotg_core_init_disconnected(struct dwc2_hsotg *hsotg,
@@ -923,6 +923,39 @@ index e7bf9cc63..a36f0e99d 100644
  	spin_lock(&hsotg->lock);
  irq_retry:
  	gintsts = dwc2_readl(hsotg, GINTSTS);
+@@ -3746,6 +3775,23 @@ static irqreturn_t dwc2_hsotg_irq(int irq, void *pw)
+ 	if (gintsts & (GINTSTS_USBRST | GINTSTS_RESETDET)) {
+ 		u32 usb_status = dwc2_readl(hsotg, GOTGCTL);
+ 		u32 connected = hsotg->connected;
++#ifdef CONFIG_ARCH_APPLE_S5L
++		/* A reset with the core not in L0 is a new session after the
++		 * old one ended: the cable out (session end -> L3, or suspend ->
++		 * L2 and clock gating) and back in.  On other boards a VBUS
++		 * detector calls vbus_session() and that reinitialises the
++		 * core; P105AP has none, so nothing did, every SETUP was refused
++		 * with -EAGAIN ("failed queue (-11)") and the host gave up --
++		 * GitHub issue #1.  Do here what a reset within a session gets. */
++		bool new_session = hsotg->lx_state != DWC2_L0;
++
++		if (new_session && hsotg->bus_suspended &&
++		    hsotg->params.power_down == DWC2_POWER_DOWN_PARAM_NONE &&
++		    !hsotg->params.no_clock_gating)
++			dwc2_gadget_exit_clock_gating(hsotg, 0);
++#else
++		bool new_session = false;
++#endif
+ 
+ 		dev_dbg(hsotg->dev, "%s: USBRst\n", __func__);
+ 		dev_dbg(hsotg->dev, "GNPTXSTS=%08x\n",
+@@ -3759,7 +3805,7 @@ static irqreturn_t dwc2_hsotg_irq(int irq, void *pw)
+ 		/* Reset device address to zero */
+ 		dwc2_clear_bit(hsotg, DCFG, DCFG_DEVADDR_MASK);
+ 
+-		if (usb_status & GOTGCTL_BSESVLD && connected)
++		if ((usb_status & GOTGCTL_BSESVLD && connected) || new_session)
+ 			dwc2_hsotg_core_init_disconnected(hsotg, true);
+ 	}
+ 
 diff --git a/drivers/usb/host/ehci-hub.c b/drivers/usb/host/ehci-hub.c
 index 1aee392e8..51ef91773 100644
 --- a/drivers/usb/host/ehci-hub.c
