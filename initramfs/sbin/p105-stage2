@@ -260,15 +260,22 @@ msg "P105: stage2 done, shell on tty0"
 # respawning a failure forever: a wrong guess here costs the only console on
 # the glass, and a spinning loop would cost it just as thoroughly.
 #
-# getty's -l takes a program and no arguments, and `-l /bin/sh` would start
-# a shell that never reads /etc/profile, so the login program is a two-line
-# wrapper that execs a login shell.  It is written here, into /run, not
-# shipped in the root: an NFS root is seeded once, and one seeded before the
-# wrapper existed never got it -- the glass then fell back to the bare shell,
-# without a tty, on that root for good (2026-10-02).
+# The login program getty runs is busybox login -f root (already
+# authenticated: no password), not a shell, for a reason of its own: getty
+# is started with &, and a non-interactive shell starts a background command
+# with SIGINT and SIGQUIT ignored.  That is inherited all the way down, and
+# ash cannot undo a signal that was ignored on entry -- so with the tty in
+# place, Ctrl-C still did nothing to a command on the glass (its SigIgn read
+# 0x6; 2026-10-02).  login sets SIGINT back to the default before it starts
+# the shell.  The & itself has to stay: ash reaps orphans only in `wait`.
+#
+# getty's -l takes a program and no arguments, hence a two-line wrapper.  It
+# is written here, into /run, not shipped in the root: an NFS root is seeded
+# once, and one seeded before the wrapper existed never got it -- the glass
+# then fell back to the bare shell, without a tty, on that root for good.
 cd "$HOME" 2>/dev/null || cd /
 GLASS=/run/p105-glass-shell
-printf '#!/bin/sh\nexec /bin/sh -l\n' > "$GLASS" && chmod 755 "$GLASS"
+printf '#!/bin/sh\nexec /bin/login -f root\n' > "$GLASS" && chmod 755 "$GLASS"
 use_getty=1
 [ -x /sbin/getty ] && [ -x "$GLASS" ] || use_getty=0
 quick=0
