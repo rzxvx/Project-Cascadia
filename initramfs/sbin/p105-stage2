@@ -139,8 +139,11 @@ if [ -x /usr/sbin/dropbear ]; then
     # key ssh could not offer -- a passphrase the user did not type is enough --
     # ends in three prompts for a password that does not exist and a final
     # "Permission denied (publickey,password)" that blames the wrong thing.
-    /usr/sbin/dropbear -s -R -E -p "$IP_DEV:22" 2>/dev/kmsg &
-    msg "P105: dropbear on $IP_DEV:22"
+    # Every address, not only the cable's: with Wi-Fi up the iPad is
+    # reachable without the cable (and charges from a wall charger the while).
+    # Keys only, as above.
+    /usr/sbin/dropbear -s -R -E -p 22 2>/dev/kmsg &
+    msg "P105: dropbear on port 22 (keys only)"
 else
     msg "P105: dropbear not installed (run scripts/add-dropbear.sh)"
 fi
