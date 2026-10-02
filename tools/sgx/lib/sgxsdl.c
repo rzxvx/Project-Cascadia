@@ -8,6 +8,12 @@
  * drawn with sgx2d, straight into the framebuffer.  SGXSDL_ROTATE=1 (the
  * default) turns a landscape window onto the portrait screen.
  *
+ * Input: a touch gamepad drawn over the frame (SGXSDL_PAD=0 turns it off):
+ * the touchscreen (SGXSDL_TOUCH, default /dev/input/event0, 0..4096 on both
+ * axes; SGXSDL_TOUCH_FLIP=x, y or xy if the axes run the other way) is read
+ * on a thread and its buttons pushed to SDL as key events -- arrows, space
+ * (jump), left control (action), escape and return.
+ *
  * Covered: textures from surfaces, colour/alpha mod, blend modes (NONE is
  * drawn as BLEND), viewport, scale, clip rect, RenderCopy(Ex) with rotation
  * and flips, fills, lines, clear, present.  Render targets are not: drawing
@@ -24,6 +30,11 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+
+#include <fcntl.h>
+#include <linux/input.h>
+#include <pthread.h>
+#include <unistd.h>
 
 #include "sgx2d.h"
 
@@ -63,6 +74,151 @@ static unsigned slot_of(SDL_Texture *t)
 	k *= 0x45d9f3b;
 	k ^= k >> 16;
 	return k & (G.cap - 1);
+}
+
+/* ---- the touch gamepad ------------------------------------------------------ */
+
+/* buttons in window coordinates (landscape 1024x768) */
+static const struct pad_button {
+	float x, y, w, h;
+	SDL_Keycode key;
+	SDL_Scancode scan;
+} pad[] = {
+	{   20, 560, 140, 150, SDLK_LEFT,   SDL_SCANCODE_LEFT },
+	{  180, 560, 140, 150, SDLK_RIGHT,  SDL_SCANCODE_RIGHT },
+	{  100, 430, 140, 110, SDLK_UP,     SDL_SCANCODE_UP },
+	{  100, 715, 140,  50, SDLK_DOWN,   SDL_SCANCODE_DOWN },
+	{  864, 540, 150, 170, SDLK_SPACE,  SDL_SCANCODE_SPACE },
+	{  700, 590, 140, 130, SDLK_LCTRL,  SDL_SCANCODE_LCTRL },
+	{  914,  10, 100,  70, SDLK_ESCAPE, SDL_SCANCODE_ESCAPE },
+	{  790,  10, 100,  70, SDLK_RETURN, SDL_SCANCODE_RETURN },
+};
+#define NPAD (sizeof(pad) / sizeof(pad[0]))
+
+static struct {
+	int fd, flipx, flipy;
+	struct { int id, x, y; } slot[10];
+	int cur;
+	volatile unsigned down;		/* bit per button */
+} T = { .fd = -1 };
+
+static void pad_key(int i, int press)
+{
+	SDL_Event e;
+
+	memset(&e, 0, sizeof(e));
+	e.type = press ? SDL_KEYDOWN : SDL_KEYUP;
+	e.key.state = press ? SDL_PRESSED : SDL_RELEASED;
+	e.key.keysym.sym = pad[i].key;
+	e.key.keysym.scancode = pad[i].scan;
+	SDL_PushEvent(&e);
+}
+
+/* touch (0..4096) -> framebuffer -> window coordinates, as to_fb inverted */
+static void touch_to_window(int tx, int ty, float *wx, float *wy)
+{
+	float fx = (T.flipx ? 4096 - tx : tx) * 768.f / 4096;
+	float fy = (T.flipy ? 4096 - ty : ty) * 1024.f / 4096;
+
+	*wx = fy;
+	*wy = 768 - fx;
+}
+
+static void pad_update(void)
+{
+	unsigned now = 0, changed;
+	int s, i;
+
+	for (s = 0; s < 10; s++) {
+		float wx, wy;
+
+		if (T.slot[s].id < 0)
+			continue;
+		touch_to_window(T.slot[s].x, T.slot[s].y, &wx, &wy);
+		for (i = 0; i < (int)NPAD; i++)
+			if (wx >= pad[i].x && wx < pad[i].x + pad[i].w &&
+			    wy >= pad[i].y && wy < pad[i].y + pad[i].h)
+				now |= 1u << i;
+	}
+	changed = now ^ T.down;
+	for (i = 0; i < (int)NPAD; i++)
+		if (changed & (1u << i))
+			pad_key(i, now & (1u << i));
+	T.down = now;
+}
+
+static void *pad_thread(void *arg)
+{
+	struct input_event ev[32];
+	int n, i;
+
+	(void)arg;
+	for (i = 0; i < 10; i++)
+		T.slot[i].id = -1;
+	while ((n = read(T.fd, ev, sizeof(ev))) > 0)
+		for (i = 0; i < n / (int)sizeof(ev[0]); i++) {
+			if (ev[i].type == EV_SYN && ev[i].code == SYN_REPORT) {
+				pad_update();
+				continue;
+			}
+			if (ev[i].type != EV_ABS)
+				continue;
+			switch (ev[i].code) {
+			case ABS_MT_SLOT:
+				T.cur = ev[i].value >= 0 && ev[i].value < 10 ? ev[i].value : 0;
+				break;
+			case ABS_MT_TRACKING_ID:
+				T.slot[T.cur].id = ev[i].value;
+				break;
+			case ABS_MT_POSITION_X:
+				T.slot[T.cur].x = ev[i].value;
+				break;
+			case ABS_MT_POSITION_Y:
+				T.slot[T.cur].y = ev[i].value;
+				break;
+			}
+		}
+	return NULL;
+}
+
+static void pad_start(void)
+{
+	const char *dev = getenv("SGXSDL_TOUCH"), *flip = getenv("SGXSDL_TOUCH_FLIP");
+	pthread_t th;
+
+	if (getenv("SGXSDL_PAD") && !atoi(getenv("SGXSDL_PAD")))
+		return;
+	T.flipx = flip && strchr(flip, 'x');
+	T.flipy = flip && strchr(flip, 'y');
+	T.fd = open(dev ? dev : "/dev/input/event0", O_RDONLY);
+	if (T.fd < 0 || pthread_create(&th, NULL, pad_thread, NULL)) {
+		fprintf(stderr, "sgxsdl: no touch input\n");
+		return;
+	}
+	pthread_detach(th);
+}
+
+/* the buttons, over everything, in window coordinates */
+static void pad_draw(void)
+{
+	int i;
+
+	if (T.fd < 0)
+		return;
+	for (i = 0; i < (int)NPAD; i++) {
+		float c[8] = { pad[i].x, pad[i].y, pad[i].x + pad[i].w, pad[i].y,
+			       pad[i].x + pad[i].w, pad[i].y + pad[i].h, pad[i].x, pad[i].y + pad[i].h };
+		float f[8];
+		int k;
+
+		for (k = 0; k < 4; k++) {	/* rotation only: no viewport, no scale */
+			f[2 * k] = G.rotate ? G.fbw - c[2 * k + 1] : c[2 * k];
+			f[2 * k + 1] = G.rotate ? c[2 * k] : c[2 * k + 1];
+		}
+		sgx2d_blend(SGX2D_BLEND);
+		sgx2d_color(1, 1, 1, T.down & (1u << i) ? 0.45f : 0.16f);
+		sgx2d_fill4(f);
+	}
 }
 
 static struct tex *find(SDL_Texture *t)
@@ -155,6 +311,7 @@ static void start(void)
 	}
 	sgx2d_begin(G.white);
 	G.on = 1;
+	pad_start();
 	fprintf(stderr, "sgxsdl: on, %dx%d%s\n", G.fbw, G.fbh, G.rotate ? ", rotated" : "");
 }
 
@@ -540,6 +697,7 @@ void SDL_RenderPresent(SDL_Renderer *r)
 	(void)r;
 	if (!G.on)
 		return;
+	pad_draw();
 	if ((ret = sgx2d_end()))
 		fprintf(stderr, "sgxsdl: frame %u: %d\n", G.frames, ret);
 	if (getenv("SGXSDL_FPS") && G.frames % 100 == 50) {
