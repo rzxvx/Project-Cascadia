@@ -30,6 +30,9 @@
 #   kernelcache.12H321.macho    the decrypted kernelcache itself; the GPU's 2D
 #                               pack is computed from its GPU kext
 #                               (tools/sgx/mkpack.py, docs/GPU.md)
+#   gl-event.pds                the 3D pass's event PDS program, a template in
+#                               iOS's GL driver (dyld shared cache), for the
+#                               same pack
 #
 # Runs INSIDE the build container (see ./cascadia firmware): the image carries
 # pycryptodome, capstone and an iBoot32Patcher built from source, so the result
@@ -151,6 +154,15 @@ echo "==> GPU microkernel out of the kernelcache"
 python3 "$ROOT/scripts/extract-sgx-firmware.py" "$IPSW" "$OUT/sgx543.fw" \
     "$OUT/kernelcache.12H321.macho"
 
+# The 3D pass's event PDS program: a template in iOS's GL driver
+# (IMGSGX543GLDriver, in the dyld shared cache), 0xa8 bytes the 2D pack
+# fills in (tools/sgx/pds.py).  Only that range is read; the cache is 432 MB.
+echo "==> GPU event program out of the GL driver"
+python3 "$ROOT/scripts/rootfs-extract.py" "$IPSW" "$ROOTFS_DMG" "$ROOTFS_KEY" \
+    "/System/Library/Caches/com.apple.dyld/dyld_shared_cache_armv7@46ebd8+a8" "$OUT/gl-event.pds"
+echo "a1b855d41993968b40005e886f7ac11c8c3abb42aa0987e005eec4e6cb2a2285  $OUT/gl-event.pds" \
+    | sha256sum -c --quiet - || fail "gl-event.pds is not the 12H321 GL driver's"
+
 echo
 rc=0
 for pair in "iBSS.patched:$KNOWN_IBSS_MD5" "iBEC.autogo:$KNOWN_IBEC_PLAIN_MD5" "P105.mtprops:$KNOWN_MTPROPS_MD5"; do
@@ -182,4 +194,4 @@ fi
 echo
 ls -l "$OUT/iBSS.patched" "$OUT/iBEC.patched.autogo.dfu" \
       "$OUT/iBEC.patched.autogo.plain.dfu" "$OUT/P105.mtprops" "$OUT/brcmfmac4334.bin" \
-      "$OUT/sgx543.fw" "$OUT/kernelcache.12H321.macho"
+      "$OUT/sgx543.fw" "$OUT/kernelcache.12H321.macho" "$OUT/gl-event.pds"

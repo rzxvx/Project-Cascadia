@@ -6,7 +6,8 @@
     IPSW   the stock .ipsw
     DMG    the root filesystem's name inside it (BuildManifest's "OS" entry)
     KEY    its 72-hex-digit key: AES-128 key, then HMAC-SHA1 key
-    PATH   absolute path inside the root filesystem
+    PATH   absolute path inside the root filesystem; PATH@OFFSET+LENGTH (hex)
+           takes only that range of it (an uncompressed file)
     OUT    where to write the file (pairs repeat: one pass over the DMG)
 
 Written for /usr/share/firmware/multitouch/P105.mtprops, the digitizer's
@@ -201,13 +202,21 @@ class Udif:
 
 
 class Fork:
-    def __init__(self, hfs, rec):
+    def __init__(self, hfs, rec, cnid=None, fork_type=0):
         self.hfs = hfs
         self.size = u64(rec, 0)
         self.ext = [(u32(rec, 16 + 8 * i), u32(rec, 20 + 8 * i)) for i in range(8)]
         covered = sum(c for _, c in self.ext) * hfs.bs
         if covered < self.size:
-            fail("a fork with more than eight extents -- the overflow file is not read")
+            # A fragmented file (the dyld shared cache) keeps the rest of its
+            # extents in the extents overflow B-tree, keyed by file and fork
+            # and in file order.
+            if cnid is None:
+                fail("a fork with more than eight extents and no file id")
+            self.ext += hfs.overflow(cnid, fork_type)
+            covered = sum(c for _, c in self.ext) * hfs.bs
+            if covered < self.size:
+                fail("file %d: its extents cover 0x%x of 0x%x bytes" % (cnid, covered, self.size))
 
     def read(self, off, n):
         out = bytearray()
@@ -235,6 +244,7 @@ class Hfs:
         if vh[:2] not in (b"H+", b"HX"):
             fail("the partition is not HFS+ (signature %r)" % vh[:2])
         self.bs = u32(vh, 40)
+        self.extents = Fork(self, vh[192:272])
         self.catalog = Fork(self, vh[272:352])
         self.attributes = Fork(self, vh[352:432])
 
@@ -248,6 +258,18 @@ class Hfs:
             for i in range(u16(node, 10)):
                 yield node, u16(node, ns - 2 * (i + 1))
             n = u32(node, 0)
+
+    def overflow(self, cnid, fork_type):
+        """the extents of file CNID's fork beyond its first eight"""
+        found = []
+        for node, o in self.leaves(self.extents):
+            klen = u16(node, o)
+            if node[o + 2] != fork_type or u32(node, o + 4) != cnid:
+                continue
+            first = u32(node, o + 8)
+            rec = node[o + 2 + klen:o + 2 + klen + 64]
+            found.append((first, [(u32(rec, 8 * i), u32(rec, 8 * i + 4)) for i in range(8)]))
+        return [e for _, ext in sorted(found) for e in ext if e[1]]
 
     def lookup(self, path):
         names = [p for p in path.split("/") if p]
@@ -288,11 +310,15 @@ class Hfs:
             return node[d + 16:d + 16 + u32(node, d + 12)]
         return None
 
-    def read_file(self, rec):
-        data = Fork(self, rec[88:168])
-        if not rec[41] & 0x20:                      # UF_COMPRESSED
-            return data.all()
+    def read_file(self, rec, rng=None):
         cnid = u32(rec, 8)
+        data = Fork(self, rec[88:168], cnid, 0)
+        if not rec[41] & 0x20:                      # UF_COMPRESSED
+            if rng:
+                return data.read(rng[0], rng[1])
+            return data.all()
+        if rng:
+            fail("a byte range of a compressed file is not handled")
         hdr = self.xattr(cnid, "com.apple.decmpfs")
         if hdr is None or hdr[:4] != b"fpmc":
             fail("compressed file without a decmpfs header")
@@ -301,7 +327,7 @@ class Hfs:
             body = hdr[16:]
             out = body[1:] if body[:1] == b"\xff" else zlib.decompress(body)
         elif kind == 4:
-            rsrc = Fork(self, rec[168:248]).all()
+            rsrc = Fork(self, rec[168:248], cnid, 0xff).all()
             base = u32(rsrc, 0) + 4
             nblk = struct.unpack_from("<I", rsrc, base)[0]
             out = bytearray()
@@ -337,7 +363,11 @@ def main():
             src = Encrcdsa(f, key) if f.read(8) == b"encrcdsa" else Plain(f)
             hfs = Hfs(Udif(src))
             for path, out in pairs:
-                data = hfs.read_file(hfs.lookup(path))
+                rng = None
+                if "@" in path:                     # PATH@OFFSET+LENGTH, hex
+                    path, r = path.split("@")
+                    rng = [int(x, 16) for x in r.split("+")]
+                data = hfs.read_file(hfs.lookup(path), rng)
                 with open(out, "wb") as o:
                     o.write(data)
                 print("    %s: %d bytes -> %s" % (path, len(data), out))
