@@ -44,6 +44,18 @@ msg "P105: stage2 on $ROOTTYPE root"
 # choosing which one to boot.
 hostname -F /etc/hostname 2>/dev/null || hostname p105 2>/dev/null || true
 
+# The login banner says which root this is.  One image boots both ways, and
+# stage 1 copies the image's /etc/motd -- the template, @ROOT@ in it -- over
+# an NFS root at every boot, so the line is filled in here, every boot.
+case "$ROOTTYPE" in
+    nfs*) where="the root is NFS\n  from the host's machine." ;;
+    *)    where="the root sits in RAM." ;;
+esac
+if grep -q @ROOT@ /etc/motd 2>/dev/null; then
+    awk -v w="$where" '{ sub(/@ROOT@/, w) } 1' /etc/motd > /run/motd \
+        && cat /run/motd > /etc/motd
+fi
+
 # ------------------------------------------------------- ACM console (tty) --
 # getty, not a bare shell: it takes the tty as its controlling terminal and
 # exits on hangup, so there is exactly one reader on /dev/ttyGS0 at a time.
@@ -252,6 +264,28 @@ fi
 # --------------------------------------------------------- glass fallback ---
 # Always reached, and independent of USB: if the gadget never comes up this is
 # still a real shell on the panel.
+# poweroff, reboot and halt.  busybox's only send PID 1 a signal -- USR2, TERM,
+# USR1 -- and leave the rest to it, and PID 1 is this script: a shell without
+# traps ignores them, so `poweroff` did nothing at all.  Do what busybox init
+# would: TERM everyone else, KILL whoever is left, sync, then ask the kernel,
+# which powers off through the PMU the way iOS does (apple-pmu-i2c.c).  Hold
+# starts the iPad again, into iOS.  The RAM busybox when there is one, so a
+# dead NFS root cannot hang the way down.  There is no restart yet: the PMU's
+# restart register is not understood, so reboot powers off too, and says so.
+p105_down() {
+    B=/bin/busybox
+    [ -x "$RESCUE/busybox" ] && B="$RESCUE/busybox"
+    msg "P105: $1"
+    kill -TERM -1 2>/dev/null
+    "$B" sleep 2
+    kill -KILL -1 2>/dev/null
+    "$B" sync
+    "$B" "$2" -f
+}
+trap 'p105_down "powering off" poweroff' USR2
+trap 'p105_down "no restart on this iPad yet -- powering off instead" poweroff' TERM
+trap 'p105_down "halt" halt' USR1
+
 msg "P105: stage2 done, shell on tty0"
 # PID 1 from here on, and a shell exec'd as PID 1 got two things wrong:
 # typing exit on the glass ended PID 1, which is a kernel panic, and it never

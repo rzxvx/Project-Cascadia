@@ -356,12 +356,10 @@ static int apple_s5l8940x_i2c_xfer_msg(struct apple_s5l8940x_i2c *i2c, struct i2
     return i2c->error;
 }
 
-static int apple_s5l8940x_i2c_xfer(struct i2c_adapter *adap, struct i2c_msg *msgs, int num)
+/* The transfer itself: polled, so it runs with interrupts off as well. */
+static int apple_s5l8940x_i2c_do_xfer(struct apple_s5l8940x_i2c *i2c, struct i2c_msg *msgs, int num)
 {
-    struct apple_s5l8940x_i2c *i2c = adap->algo_data;
     int i, ret;
-
-    mutex_lock(&i2c->mtx);
 
     {
         s64 since = ktime_us_delta(ktime_get(), i2c->last_write);
@@ -387,7 +385,6 @@ static int apple_s5l8940x_i2c_xfer(struct i2c_adapter *adap, struct i2c_msg *msg
     if(num == 2 && !(msgs[0].flags & I2C_M_RD) && (msgs[1].flags & I2C_M_RD) &&
        msgs[0].addr == msgs[1].addr) {
         ret = apple_s5l8940x_i2c_xfer_combined(i2c, &msgs[0], &msgs[1]);
-        mutex_unlock(&i2c->mtx);
         return ret ? ret : num;
     }
 
@@ -395,18 +392,33 @@ static int apple_s5l8940x_i2c_xfer(struct i2c_adapter *adap, struct i2c_msg *msg
         ret = apple_s5l8940x_i2c_xfer_msg(i2c, &msgs[i], i == 0, i == num - 1);
         if(!(msgs[i].flags & I2C_M_RD))
             i2c->last_write = ktime_get();
-        if(ret) {
-            /* this used to return with the mutex still held, so the very next
-             * transfer blocked on mutex_lock for good and the boot stopped
-             * dead right after the first failed PMU access */
-            mutex_unlock(&i2c->mtx);
+        if(ret)
             return ret;
-        }
     }
 
-    mutex_unlock(&i2c->mtx);
-
     return num;
+}
+
+static int apple_s5l8940x_i2c_xfer(struct i2c_adapter *adap, struct i2c_msg *msgs, int num)
+{
+    struct apple_s5l8940x_i2c *i2c = adap->algo_data;
+    int ret;
+
+    /* An early version returned from inside the transfer with this still
+     * held, so the very next transfer blocked for good and the boot stopped
+     * dead right after the first failed PMU access: one lock, one unlock. */
+    mutex_lock(&i2c->mtx);
+    ret = apple_s5l8940x_i2c_do_xfer(i2c, msgs, num);
+    mutex_unlock(&i2c->mtx);
+    return ret;
+}
+
+/* Power-off: the PMU's last writes happen with interrupts off and the other
+ * CPU stopped, where the mutex cannot be taken (and nobody else can hold the
+ * bus).  The transfer polls anyway, so it is the same code without the lock. */
+static int apple_s5l8940x_i2c_xfer_atomic(struct i2c_adapter *adap, struct i2c_msg *msgs, int num)
+{
+    return apple_s5l8940x_i2c_do_xfer(adap->algo_data, msgs, num);
 }
 
 static int apple_s5l8940x_i2c_init_hw(struct apple_s5l8940x_i2c *i2c)
@@ -442,6 +454,7 @@ static u32 apple_s5l8940x_i2c_func(struct i2c_adapter *adap)
 
 static const struct i2c_algorithm apple_s5l8940x_i2c_algorithm = {
     .master_xfer    = apple_s5l8940x_i2c_xfer,
+    .master_xfer_atomic = apple_s5l8940x_i2c_xfer_atomic,
     .functionality  = apple_s5l8940x_i2c_func,
 };
 

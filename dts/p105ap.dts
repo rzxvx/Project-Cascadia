@@ -735,6 +735,8 @@
                  * register address -- see apple-pmu-i2c.c */
                 compatible = "apple,pmu-d1946";
                 reg = <0x3c>;
+                /* powers the iPad off the way iOS does (apple-pmu-i2c.c) */
+                system-power-controller;
                 #address-cells = <1>;
                 #size-cells = <0>;
 
