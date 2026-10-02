@@ -1488,7 +1488,7 @@ index 3614a5d29..f7e4a140f 100644
 +	depends on MFD_APPLE_PMU_I2C || COMPILE_TEST
 +	help
 +	  The iPad mini 1's backlight, driven by the white-LED strings of its
-+	  D1946 PMU, as /sys/class/backlight/apple-pmu-wled (0..63).
++	  D1946 PMU, as /sys/class/backlight/apple-pmu-wled (0..2047).
 +
  config BACKLIGHT_GPIO
  	tristate "Generic GPIO based Backlight Driver"

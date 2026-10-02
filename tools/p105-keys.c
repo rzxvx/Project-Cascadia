@@ -1,7 +1,9 @@
 /*
  * p105-keys -- what the iPad's buttons do.
  *
- *   volume up / down   backlight brighter / dimmer (held: keeps going)
+ *   volume up / down   backlight brighter / dimmer (held: keeps going), in
+ *                      32 steps -- the PMU's current DAC is exponential
+ *                      already, so equal steps look equal
  *   hold               screen off / on; while it is off the touchscreen is
  *                      grabbed, so a finger on the dark glass types nothing
  *
@@ -93,10 +95,7 @@ static int is_touch(int fd)
 	return has_bit(abs, ABS_MT_POSITION_X);
 }
 
-static int step(int level)
-{
-	return level < 8 ? 1 : level < 24 ? 2 : 4;	/* finer at the dark end */
-}
+#define STEP 64		/* of 0..2047; 64 is about 1 nit, the bottom */
 
 int main(void)
 {
@@ -122,11 +121,8 @@ int main(void)
 			if (off || max <= 0)
 				continue;
 			level = rd_int(BL "brightness");	/* someone else may have set it */
-			if (ev.code == KEY_VOLUMEUP)
-				level += step(level);
-			else
-				level -= step(level - 1);
-			level = level < 1 ? 1 : level > max ? max : level;
+			level += ev.code == KEY_VOLUMEUP ? STEP : -STEP;
+			level = level < STEP ? STEP : level > max ? max : level;
 			wr_int(BL "brightness", level);
 		} else if (ev.type == EV_KEY && ev.value == 1 && ev.code == KEY_POWER) {
 			off = !off;

@@ -91,6 +91,16 @@ including the parts that didn't work.
       the bus at boot is power-cycled by itself (`wifi reset` by hand). See
       *The Wi-Fi problem* below. The CLM blob does not load (this firmware
       refuses `clmload`)
+- [x] **Buttons and backlight** — Home, Hold, volume and the side switch are
+      `gpio-keys`. Volume up/down set the backlight (32 steps, 1 to 400 nits),
+      Hold switches the screen off and on and ignores the touchscreen while
+      it is dark (`/sbin/p105-keys`, started at boot). The backlight is
+      `/sys/class/backlight/apple-pmu-wled`, 0..2047, the PMU's LED current
+      DAC; see `docs/research/p105-backlight.md`
+- [x] **Battery gauge** — the bq27540 on its one-wire HDQ bus:
+      `/sys/class/power_supply/battery` (charge, voltage, current,
+      temperature, cycles), so `fastfetch` and desktop panels show it.
+      Charging is not set up yet: on the cable the iPad still drains slowly
 - [x] **iOS's own files, read-only, straight off the NAND** — `ios mount`
       puts iOS's System partition on `/mnt/ios`: the NAND's PPN protocol,
       iOS's FTL, LwVM and HFS+ including HFS+ compression. iOS is left as it

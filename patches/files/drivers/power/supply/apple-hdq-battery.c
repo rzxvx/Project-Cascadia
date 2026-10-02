@@ -15,7 +15,7 @@
  *
  * Only reads (command bit 7 clear) are ever sent: register numbers are the
  * bq27541 family's standard commands, 16 bits as two 8-bit reads.
- * docs/research and README ("The battery") have the measurements.
+ * README ("Battery gauge") has the summary.
  */
 #include <linux/delay.h>
 #include <linux/io.h>

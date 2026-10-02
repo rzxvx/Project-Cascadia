@@ -799,15 +799,16 @@
                     enable = <0x40>;
                 };
 
-                /* The backlight: the PMU's white-LED strings.  Brightness
-                 * 0..63 in the string current registers 0x4f/0x51/0x53 (the
-                 * panel's three strings; 0x4b/0x4d are unused), bit 6 of 0x3f
-                 * switches them off -- AppleD1946PMU's backlight update does
-                 * exactly this.  apple-pmu-wled.c. */
-                backlight: wled@3f {
+                /* The backlight: the PMU's white-LED driver.  An 11-bit
+                 * current DAC, 0xd0 = bits 10:3 and 0xd1 = bits 2:0, 2047 =
+                 * 22.5 mA; 0xd2 switches the strings, on = the ADT pmu's
+                 * wled-enables.  (0x3f and 0x4b..0x53 look like WLED
+                 * registers but do nothing to this panel.)  apple-pmu-wled.c. */
+                backlight: wled@d0 {
                     compatible = "apple,pmu-wled";
-                    reg = <0x3f>;
-                    apple,strings = <0x4f 0x51 0x53>;
+                    reg = <0xd0>;
+                    apple,enable-reg = <0xd2>;
+                    apple,wled-enables = <0x3f>;
                 };
 
                 /* No PMU GPIO0 here.  The ADT's function-clock_enable-pmu is
