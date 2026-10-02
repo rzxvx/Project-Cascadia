@@ -1439,3 +1439,39 @@ index 7d3e64180..e84cad0a1 100644
  	} else {
  		/* Turn on the port power bit. */
  		hprt0 = dwc2_read_hprt0(hsotg);
+diff --git a/drivers/usb/dwc2/params.c b/drivers/usb/dwc2/params.c
+index 4d73fae80..97d1d24ff 100644
+--- a/drivers/usb/dwc2/params.c
++++ b/drivers/usb/dwc2/params.c
+@@ -106,6 +106,23 @@ static void dwc2_set_s3c6400_params(struct dwc2_hsotg *hsotg)
+ 	p->phy_utmi_width = 8;
+ }
+ 
++/*
++ * Cascadia: Apple's A5 (iPad mini 1).  Partial power down is entered when the
++ * cable goes (PCGCTL 0x0d: STOPPCLK | PWRCLMP | RSTPDWNMODULE, measured
++ * 2026-10-02) and never left: no wake-up or session-request interrupt arrives
++ * while the core is powered down, so it stayed down when the cable came back
++ * and the host found only a hung pull-up -- full speed, STALLs, GitHub
++ * issue #1.  Keep the core powered and ungated; the session request then
++ * arrives and starts the new session (gadget.c, dwc2_s5l_new_session()).
++ */
++static void dwc2_set_s5l8940x_params(struct dwc2_hsotg *hsotg)
++{
++	struct dwc2_core_params *p = &hsotg->params;
++
++	p->power_down = DWC2_POWER_DOWN_PARAM_NONE;
++	p->no_clock_gating = true;
++}
++
+ static void dwc2_set_socfpga_agilex_params(struct dwc2_hsotg *hsotg)
+ {
+ 	struct dwc2_core_params *p = &hsotg->params;
+@@ -319,6 +336,7 @@ const struct of_device_id dwc2_of_match_table[] = {
+ 	{ .compatible = "lantiq,arx100-usb", .data = &dwc2_set_ltq_ase_params },
+ 	{ .compatible = "lantiq,xrx200-usb", .data = &dwc2_set_ltq_xrx200_params },
+ 	{ .compatible = "lantiq,xrx300-usb", .data = &dwc2_set_ltq_xrx200_params },
++	{ .compatible = "apple,s5l8940x-dwc2", .data = dwc2_set_s5l8940x_params },
+ 	{ .compatible = "snps,dwc2" },
+ 	{ .compatible = "samsung,s3c6400-hsotg",
+ 	  .data = dwc2_set_s3c6400_params },
