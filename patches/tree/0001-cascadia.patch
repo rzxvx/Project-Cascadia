@@ -877,7 +877,7 @@ index 9919ab725..f0c547b78 100644
  }
  
 diff --git a/drivers/usb/dwc2/gadget.c b/drivers/usb/dwc2/gadget.c
-index e7bf9cc63..540d491e9 100644
+index e7bf9cc63..f3a0a0b78 100644
 --- a/drivers/usb/dwc2/gadget.c
 +++ b/drivers/usb/dwc2/gadget.c
 @@ -3463,6 +3463,19 @@ void dwc2_hsotg_core_init_disconnected(struct dwc2_hsotg *hsotg,
@@ -900,7 +900,7 @@ index e7bf9cc63..540d491e9 100644
  	if (!using_desc_dma(hsotg))
  		intmsk |= GINTSTS_INCOMPL_SOIN | GINTSTS_INCOMPL_SOOUT;
  
-@@ -3700,6 +3713,34 @@ static void dwc2_gadget_handle_incomplete_isoc_out(struct dwc2_hsotg *hsotg)
+@@ -3700,6 +3713,37 @@ static void dwc2_gadget_handle_incomplete_isoc_out(struct dwc2_hsotg *hsotg)
  	dwc2_writel(hsotg, GINTSTS_INCOMPL_SOOUT, GINTSTS);
  }
  
@@ -918,6 +918,9 @@ index e7bf9cc63..540d491e9 100644
 +void dwc2_s5l_new_session(struct dwc2_hsotg *hsotg);
 +void dwc2_s5l_new_session(struct dwc2_hsotg *hsotg)
 +{
++	dev_info(hsotg->dev, "new session (L%d, %s, GOTGCTL %08x)\n", hsotg->lx_state,
++		 hsotg->bus_suspended ? "suspended" : "not suspended",
++		 dwc2_readl(hsotg, GOTGCTL));
 +	if (hsotg->bus_suspended &&
 +	    hsotg->params.power_down == DWC2_POWER_DOWN_PARAM_NONE &&
 +	    !hsotg->params.no_clock_gating)
@@ -935,7 +938,7 @@ index e7bf9cc63..540d491e9 100644
  /**
   * dwc2_hsotg_irq - handle device interrupt
   * @irq: The IRQ number triggered
-@@ -3715,6 +3756,22 @@ static irqreturn_t dwc2_hsotg_irq(int irq, void *pw)
+@@ -3715,6 +3759,22 @@ static irqreturn_t dwc2_hsotg_irq(int irq, void *pw)
  	if (!dwc2_is_device_mode(hsotg))
  		return IRQ_NONE;
  
@@ -958,7 +961,7 @@ index e7bf9cc63..540d491e9 100644
  	spin_lock(&hsotg->lock);
  irq_retry:
  	gintsts = dwc2_readl(hsotg, GINTSTS);
-@@ -3747,6 +3804,20 @@ static irqreturn_t dwc2_hsotg_irq(int irq, void *pw)
+@@ -3747,6 +3807,21 @@ static irqreturn_t dwc2_hsotg_irq(int irq, void *pw)
  		u32 usb_status = dwc2_readl(hsotg, GOTGCTL);
  		u32 connected = hsotg->connected;
  
@@ -968,6 +971,7 @@ index e7bf9cc63..540d491e9 100644
 +		 * with the core in L0 this time.  The rest of this pass belongs
 +		 * to the core as it was before the reinit; drop it. */
 +		if (hsotg->lx_state != DWC2_L0) {
++			dev_info(hsotg->dev, "USB reset out of L0: the session request was missed\n");
 +			dwc2_writel(hsotg, GINTSTS_USBRST | GINTSTS_RESETDET |
 +				    GINTSTS_ENUMDONE, GINTSTS);
 +			dwc2_s5l_new_session(hsotg);
@@ -1404,7 +1408,7 @@ index 8dcb41545..9665999c8 100644
  obj-$(CONFIG_BATTERY_BQ27XXX_I2C) += bq27xxx_battery_i2c.o
  obj-$(CONFIG_BATTERY_BQ27XXX_HDQ) += bq27xxx_battery_hdq.o
 diff --git a/drivers/usb/dwc2/core_intr.c b/drivers/usb/dwc2/core_intr.c
-index 7d3e64180..105b0c8b8 100644
+index 7d3e64180..e84cad0a1 100644
 --- a/drivers/usb/dwc2/core_intr.c
 +++ b/drivers/usb/dwc2/core_intr.c
 @@ -301,6 +301,9 @@ static void dwc2_handle_session_req_intr(struct dwc2_hsotg *hsotg)
@@ -1417,7 +1421,7 @@ index 7d3e64180..105b0c8b8 100644
  		if (hsotg->lx_state != DWC2_L0) {
  			if (hsotg->in_ppd) {
  				ret = dwc2_exit_partial_power_down(hsotg, 0,
-@@ -322,6 +325,16 @@ static void dwc2_handle_session_req_intr(struct dwc2_hsotg *hsotg)
+@@ -322,6 +325,17 @@ static void dwc2_handle_session_req_intr(struct dwc2_hsotg *hsotg)
  		 * established
  		 */
  		dwc2_hsotg_disconnect(hsotg);
@@ -1428,6 +1432,7 @@ index 7d3e64180..105b0c8b8 100644
 +		if (ended) {
 +			void dwc2_s5l_new_session(struct dwc2_hsotg *hsotg);
 +
++			dev_info(hsotg->dev, "VBUS back: session request\n");
 +			dwc2_s5l_new_session(hsotg);
 +		}
 +#endif
