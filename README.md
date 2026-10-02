@@ -100,7 +100,9 @@ including the parts that didn't work.
 - [x] **Battery gauge** — the bq27540 on its one-wire HDQ bus:
       `/sys/class/power_supply/battery` (charge, voltage, current,
       temperature, cycles), so `fastfetch` and desktop panels show it.
-      Charging is not set up yet: on the cable the iPad still drains slowly
+      A full charge lasts about 5½ hours with the screen off, 4½ at medium
+      brightness and 2 at full (idle, Wi-Fi up). Charging is not set up yet:
+      on a cable or a wall charger the iPad still drains, only slower
 - [x] **iOS's own files, read-only, straight off the NAND** — `ios mount`
       puts iOS's System partition on `/mnt/ios`: the NAND's PPN protocol,
       iOS's FTL, LwVM and HFS+ including HFS+ compression. iOS is left as it

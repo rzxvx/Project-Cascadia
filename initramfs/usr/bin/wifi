@@ -110,6 +110,11 @@ start() {
     stop
     wpa_supplicant -B -i $IF -c $CONF -P $RUN/wpa.pid >/dev/null 2>&1 \
         || die "wpa_supplicant did not start"
+    # brcmfmac starts with power save on, and then, after a minute or so
+    # without traffic, the chip stops answering ARP: the iPad is up, but ssh
+    # to it says "No route to host" until it sends something itself.  Off
+    # costs a little battery; a device nobody can reach costs more.
+    iw dev $IF set power_save off 2>/dev/null
     i=0
     until connected; do
         if [ $i -ge 40 ]; then
