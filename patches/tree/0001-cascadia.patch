@@ -877,7 +877,7 @@ index 9919ab725..f0c547b78 100644
  }
  
 diff --git a/drivers/usb/dwc2/gadget.c b/drivers/usb/dwc2/gadget.c
-index e7bf9cc63..65223cefa 100644
+index e7bf9cc63..540d491e9 100644
 --- a/drivers/usb/dwc2/gadget.c
 +++ b/drivers/usb/dwc2/gadget.c
 @@ -3463,6 +3463,19 @@ void dwc2_hsotg_core_init_disconnected(struct dwc2_hsotg *hsotg,
@@ -900,7 +900,42 @@ index e7bf9cc63..65223cefa 100644
  	if (!using_desc_dma(hsotg))
  		intmsk |= GINTSTS_INCOMPL_SOIN | GINTSTS_INCOMPL_SOOUT;
  
-@@ -3715,6 +3728,22 @@ static irqreturn_t dwc2_hsotg_irq(int irq, void *pw)
+@@ -3700,6 +3713,34 @@ static void dwc2_gadget_handle_incomplete_isoc_out(struct dwc2_hsotg *hsotg)
+ 	dwc2_writel(hsotg, GINTSTS_INCOMPL_SOOUT, GINTSTS);
+ }
+ 
++#ifdef CONFIG_ARCH_APPLE_S5L
++/*
++ * Cascadia: start a new session, as dwc2_hsotg_vbus_session(1) does when a
++ * VBUS detector reports the cable -- P105AP has no such detector, so nothing
++ * ever did.  After the cable was out the core stayed out of L0 (session end,
++ * or suspend with clock gating), every SETUP was refused with -EAGAIN
++ * ("failed queue (-11)"), and the host never got the gadget back (GitHub
++ * issue #1).  Called with hsotg->lock held: from the session request
++ * interrupt when VBUS comes back, and from a USB reset that still finds the
++ * core out of L0.
++ */
++void dwc2_s5l_new_session(struct dwc2_hsotg *hsotg);
++void dwc2_s5l_new_session(struct dwc2_hsotg *hsotg)
++{
++	if (hsotg->bus_suspended &&
++	    hsotg->params.power_down == DWC2_POWER_DOWN_PARAM_NONE &&
++	    !hsotg->params.no_clock_gating)
++		dwc2_gadget_exit_clock_gating(hsotg, 0);
++	dwc2_hsotg_disconnect(hsotg);
++	hsotg->op_state = OTG_STATE_B_PERIPHERAL;
++	dwc2_hsotg_core_init_disconnected(hsotg, false);
++	if (hsotg->enabled) {
++		dwc2_enable_acg(hsotg);
++		dwc2_hsotg_core_connect(hsotg);
++	}
++}
++#endif
++
+ /**
+  * dwc2_hsotg_irq - handle device interrupt
+  * @irq: The IRQ number triggered
+@@ -3715,6 +3756,22 @@ static irqreturn_t dwc2_hsotg_irq(int irq, void *pw)
  	if (!dwc2_is_device_mode(hsotg))
  		return IRQ_NONE;
  
@@ -923,39 +958,27 @@ index e7bf9cc63..65223cefa 100644
  	spin_lock(&hsotg->lock);
  irq_retry:
  	gintsts = dwc2_readl(hsotg, GINTSTS);
-@@ -3746,6 +3775,23 @@ static irqreturn_t dwc2_hsotg_irq(int irq, void *pw)
- 	if (gintsts & (GINTSTS_USBRST | GINTSTS_RESETDET)) {
+@@ -3747,6 +3804,20 @@ static irqreturn_t dwc2_hsotg_irq(int irq, void *pw)
  		u32 usb_status = dwc2_readl(hsotg, GOTGCTL);
  		u32 connected = hsotg->connected;
-+#ifdef CONFIG_ARCH_APPLE_S5L
-+		/* A reset with the core not in L0 is a new session after the
-+		 * old one ended: the cable out (session end -> L3, or suspend ->
-+		 * L2 and clock gating) and back in.  On other boards a VBUS
-+		 * detector calls vbus_session() and that reinitialises the
-+		 * core; P105AP has none, so nothing did, every SETUP was refused
-+		 * with -EAGAIN ("failed queue (-11)") and the host gave up --
-+		 * GitHub issue #1.  Do here what a reset within a session gets. */
-+		bool new_session = hsotg->lx_state != DWC2_L0;
-+
-+		if (new_session && hsotg->bus_suspended &&
-+		    hsotg->params.power_down == DWC2_POWER_DOWN_PARAM_NONE &&
-+		    !hsotg->params.no_clock_gating)
-+			dwc2_gadget_exit_clock_gating(hsotg, 0);
-+#else
-+		bool new_session = false;
-+#endif
  
++#ifdef CONFIG_ARCH_APPLE_S5L
++		/* The session request was missed: start the session now.  The
++		 * host sees a disconnect and a connect and enumerates again --
++		 * with the core in L0 this time.  The rest of this pass belongs
++		 * to the core as it was before the reinit; drop it. */
++		if (hsotg->lx_state != DWC2_L0) {
++			dwc2_writel(hsotg, GINTSTS_USBRST | GINTSTS_RESETDET |
++				    GINTSTS_ENUMDONE, GINTSTS);
++			dwc2_s5l_new_session(hsotg);
++			spin_unlock(&hsotg->lock);
++			return IRQ_HANDLED;
++		}
++#endif
++
  		dev_dbg(hsotg->dev, "%s: USBRst\n", __func__);
  		dev_dbg(hsotg->dev, "GNPTXSTS=%08x\n",
-@@ -3759,7 +3805,7 @@ static irqreturn_t dwc2_hsotg_irq(int irq, void *pw)
- 		/* Reset device address to zero */
- 		dwc2_clear_bit(hsotg, DCFG, DCFG_DEVADDR_MASK);
- 
--		if (usb_status & GOTGCTL_BSESVLD && connected)
-+		if ((usb_status & GOTGCTL_BSESVLD && connected) || new_session)
- 			dwc2_hsotg_core_init_disconnected(hsotg, true);
- 	}
- 
+ 			dwc2_readl(hsotg, GNPTXSTS));
 diff --git a/drivers/usb/host/ehci-hub.c b/drivers/usb/host/ehci-hub.c
 index 1aee392e8..51ef91773 100644
 --- a/drivers/usb/host/ehci-hub.c
@@ -1380,3 +1403,34 @@ index 8dcb41545..9665999c8 100644
  obj-$(CONFIG_BATTERY_BQ27XXX)	+= bq27xxx_battery.o
  obj-$(CONFIG_BATTERY_BQ27XXX_I2C) += bq27xxx_battery_i2c.o
  obj-$(CONFIG_BATTERY_BQ27XXX_HDQ) += bq27xxx_battery_hdq.o
+diff --git a/drivers/usb/dwc2/core_intr.c b/drivers/usb/dwc2/core_intr.c
+index 7d3e64180..105b0c8b8 100644
+--- a/drivers/usb/dwc2/core_intr.c
++++ b/drivers/usb/dwc2/core_intr.c
+@@ -301,6 +301,9 @@ static void dwc2_handle_session_req_intr(struct dwc2_hsotg *hsotg)
+ 		hsotg->lx_state);
+ 
+ 	if (dwc2_is_device_mode(hsotg)) {
++#ifdef CONFIG_ARCH_APPLE_S5L
++		bool ended = hsotg->lx_state != DWC2_L0;
++#endif
+ 		if (hsotg->lx_state != DWC2_L0) {
+ 			if (hsotg->in_ppd) {
+ 				ret = dwc2_exit_partial_power_down(hsotg, 0,
+@@ -322,6 +325,16 @@ static void dwc2_handle_session_req_intr(struct dwc2_hsotg *hsotg)
+ 		 * established
+ 		 */
+ 		dwc2_hsotg_disconnect(hsotg);
++#ifdef CONFIG_ARCH_APPLE_S5L
++		/* VBUS is back after the old session ended (not the first
++		 * session at boot, which udc_start set up): no detector calls
++		 * vbus_session() here, so start it ourselves (gadget.c) */
++		if (ended) {
++			void dwc2_s5l_new_session(struct dwc2_hsotg *hsotg);
++
++			dwc2_s5l_new_session(hsotg);
++		}
++#endif
+ 	} else {
+ 		/* Turn on the port power bit. */
+ 		hprt0 = dwc2_read_hprt0(hsotg);
