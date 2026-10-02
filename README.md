@@ -103,10 +103,11 @@ including the parts that didn't work.
 - [x] Graphical Acceleration (SGX543MP2) — **2D on the GPU; SuperTux plays
       at 60 fps** (2026-10-02). A kernel driver (`drivers/misc/apple-sgx.c`)
       powers the GPU with iOS's own sequence and boots **iOS's own GPU
-      microkernel** (taken from your IPSW by `./cascadia firmware`); frames
-      are assembled from templates captured from iOS's GL driver (its
-      compiled shaders included), with the kernel's share computed by running
-      the kext's own code under an emulator. On that sits `sgx2d`, a small 2D
+      microkernel** (taken from your IPSW by `./cascadia firmware`); the
+      shaders and the frame's state are this repository's own (a USSE
+      assembler and PDS builder, checked word by word against iOS's GL
+      driver), with the kernel's share computed by running the kext's own
+      code under an emulator. On that sits `sgx2d`, a small 2D
       library (textured quads, colour modulation, three blend modes, full
       screen), and an SDL2 renderer shim: `supertux-gpu` runs SuperTux with a
       touch gamepad. No OpenGL — that would take a shader compiler. Set up

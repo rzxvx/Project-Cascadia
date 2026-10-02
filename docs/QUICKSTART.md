@@ -312,10 +312,8 @@ iPad booted from NFS and `./cascadia net on`:
 ./cascadia gpu
 ```
 
-then `supertux-gpu` on the iPad. The first time it needs the iPad in its
-jailbroken iOS once, for the GPU's templates — unless you flash with
-`--kdfu`, which takes them on the way. [GPU.md](GPU.md) has the details, the
-controls and how it works.
+then `supertux-gpu` on the iPad. It needs only the IPSW the port is built
+from; [GPU.md](GPU.md) has the details, the controls and how it works.
 
 ## When it goes wrong
 

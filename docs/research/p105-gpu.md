@@ -985,6 +985,60 @@ Not done: render targets (SuperTux's lightmap reads as white, so dark levels
 are not darkened), blend mode NONE (drawn as BLEND), sound (no audio
 device), and everything still goes through debugfs as root.
 
+### M8: no iOS capture -- the programs are ours (2026-10-02)
+
+Until now the pack was built from a capture of iOS's GL driver (`gltrace
+mod`), which needs the iPad's own jailbroken iOS 8.4.1. Now nothing comes
+from the device: only the IPSW (as for the microkernel) and this repository.
+
+- **What a frame takes from iOS** (`tools/sgx/capmap.py`): walking every
+  pointer encoding from what reaches the GPU (sgx2d's templates and VDM
+  words, the kernel's render data) gives 16 USSE programs (~54
+  instructions), ~200 words of PDS programs and state, and the index buffer
+  (0..8191). A pack with everything else zeroed drew byte-identical frames
+  on the device. Two USSE facts fell out: **bit 50 ends a program** (on
+  every instruction but PHAS, where it is `imm`), and **a PHAS with an
+  address in its low 20 bits chains to the next phase** (code base + n *
+  8): the vertex shader has two phases, and zeroing the second hung the TA.
+  (A run after a GPU hang fails once with a BIF fault, the next is fine --
+  for the driver's list.)
+- **USSE** (`tools/sgx/usse.py`, `programs.py`): an assembler on the
+  disassembler's (Vita3K's) bit layouts, fields named, and the 16 programs
+  as source. The common prologue `tst p0 = false; p0 ld32; wdf 0` is a load
+  that never happens (a hardware workaround, kept); the state loaders copy
+  `pa0..` to `o0..` and emit; the end-of-tile program loads the PBE state
+  and emits; the emits are special instructions outside Vita3K's table,
+  named by what they do. All assemble byte-identical to the capture's page.
+- **PDS** (`tools/sgx/pds.py`): the GL driver (`IMGSGX543GLDriver`, in the
+  IPSW's dyld shared cache) does not compile PDS programs; its code writes a
+  data segment of a fixed shape and fixed instruction words (movw/movt
+  constants, a field ORed in). Format: bits 31:27 opcode, 26:24 predicate
+  (7 always), `0x07` DOUT with the data operand as row (word index >> 2) in
+  23:18 (+1 for the second half of a row, DS1) and 17:12, the kind in the
+  low 12 bits (`185`/`1a5`/`1b5`/`1f5` USSE starts, `113` DMA, `c12`/`c02`
+  iterate, `004` texture, `1a6` attributes), `af000000` end. Built by shape,
+  all 12 programs a frame uses are byte-identical to the capture's.
+- **The event program** -- the 3D pass's pixel/event PDS (22 instructions,
+  branches on the event, pointed at by both `0xa5c` and `0xa68`) -- is the
+  one thing the driver keeps as a template (two variants, in its
+  `__TEXT,__const`); `./cascadia firmware` reads its 0xa8 bytes out of the
+  IPSW (`rootfs-extract.py PATH@OFFSET+LENGTH`; the 432 MB cache needed the
+  HFS+ extents overflow file) and `pds.event_program()` fills in its three
+  USSE programs.
+- **The frame** (`tools/sgx/frame.py`): the GL window (PDS block, index
+  buffer, state), the VDM stream and the render command's 55 words, laid out
+  as the capture had them so the rest of the pack is unchanged. Words whose
+  meaning is not known are named by place and kept at GL's values; the
+  constants the state programs load are 2/255, 1/255, 2/65535, 1/65535.
+  `frame.py --check` compares with a capture: all 18 objects and the
+  payload identical. On the device: demo2 byte-identical, sprites at the
+  same 217 fps, SuperTux's title screen right.
+
+The capture tools stay for research: `tools/gpucap.sh` (was `./cascadia
+gpucap`) and `gltrace`. iOS places its GL buffers differently from run to
+run (`0x98956000` here, `0x980ac000` in another run), and ASLR moves them in
+the process; regions match by content once the pointer words are masked.
+
 ### Next
 
 Done since this list was first written: the page tables, the firmware

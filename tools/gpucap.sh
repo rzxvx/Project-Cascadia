@@ -1,18 +1,17 @@
 #!/usr/bin/env bash
 #
-# The GPU's 2D templates, captured from this iPad's own iOS.  Once.
+# A capture of what iOS's GL driver sets up for a textured quad, from this
+# iPad's own jailbroken iOS -- a research tool.  ./cascadia gpu does not need
+# it any more: tools/sgx/frame.py builds the same frame from our own programs
+# (frame.py --check compares the two, word by word).
 #
-#   ./cascadia gpucap                       iPad booted into its jailbroken iOS, on USB
-#   IOS_HOST=192.168.1.20 ./cascadia gpucap the same over Wi-Fi
+#   bash tools/gpucap.sh                       iPad booted into its jailbroken iOS, on USB
+#   IOS_HOST=192.168.1.20 bash tools/gpucap.sh the same over Wi-Fi
 #
-# sgx2d draws with iOS's own compiled shaders and command templates: there is
-# no shader compiler for the SGX543 outside Apple's GL driver.  This runs
-# tools/iosgpu/gltrace on the iPad -- it draws a textured quad with GLES2 in
-# three blend modes and saves the GPU memory the GL driver set up for it --
-# and brings the result back into logs/ios/mod/, which ./cascadia gpu builds
-# the pack from.  It is Apple's code and data, so it stays out of git (logs/
-# is ignored) and every user captures their own; the iPad and iOS build are
-# the same for everyone, and so is what comes out.
+# It runs tools/iosgpu/gltrace on the iPad -- it draws a textured quad with
+# GLES2 in three blend modes and saves the GPU memory the GL driver set up
+# for it -- and brings the result back into logs/ios/mod/ (out of git: it is
+# Apple's code and data).
 #
 # The helper is prebuilt (tools/iosgpu/prebuilt/gltrace, from gltrace.m by
 # tools/iosgpu/build.sh, which needs Xcode), so this works from any host.
@@ -127,4 +126,4 @@ mkdir -p "$OUT"
 cp "$WORK/gtm.out" "$WORK/gt_m_blend.bin" "$OUT/"
 echo "==> logs/ios/mod/: gt_m_blend.bin, gtm.out"
 echo
-echo "    Then build and install:  ./cascadia gpu --install"
+echo "    Compare with ours: python3 tools/sgx/frame.py build/sgx2d/frame --check <canonical capture>"

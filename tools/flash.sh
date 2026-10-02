@@ -204,13 +204,6 @@ case "$PWN_MODE" in
         # Note it sends ITS pwned iBSS, not ours.  Ours differs only in the
         # boot-args iBoot32Patcher wrote in; what matters is the signature
         # patch, which both have, and iBEC sets its own boot-args anyway.
-        # While iOS is up anyway: the GPU's 2D templates come from it
-        # (./cascadia gpucap), once.  Not needed to boot, so not fatal.
-        if [ ! -f "$ROOT/logs/ios/mod/gt_m_blend.bin" ]; then
-            echo "==> while iOS is up: the GPU's 2D templates, once (./cascadia gpucap)"
-            bash "$ROOT/tools/gpucap.sh" \
-                || echo "    not taken; ./cascadia gpu takes them later, with the iPad in iOS"
-        fi
         ( cd "$LIK" && ./restore.sh --kdfu )
         # restore.sh returning is not the device being in kDFU.  On its first
         # run on Linux it installs its own dependencies instead, says "run the

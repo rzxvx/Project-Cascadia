@@ -8,18 +8,18 @@
     tools/sgx/mkpack.py --root [DIR]
 
 Building:
-1. the template capture: logs/ios/mod/gt_m_blend.bin and gtm.out (from the
-   iPad's iOS, ./cascadia gpucap): the regions and payload the pack is made
-   of, found and brought to the reference layout (capture-layout.json)
+1. the template frame (frame.py): our USSE programs (programs.py), PDS
+   programs (pds.py) and state, plus the one PDS template iOS's GL driver
+   keeps, out of the IPSW (build/firmware/gl-event.pds)
 2. the kernel's render-target data for a 768x1024 frame: the kext's own code
    run under unicorn (tools/iosgpu/rtemu.py) out of the decrypted 8.4.1
-   kernelcache (./cascadia firmware leaves it in build/firmware; KC841=
-   overrides)
+   kernelcache (build/firmware; KC841= overrides)
 3. the template pack (tools/sgx/rpack.py)
 4. libsgxsdl.so and the demos, cross-built against Alpine's armhf musl
    (tools/sgx/lib/cross.sh), and supertux.sh
 The image has unicorn, capstone and the ARM cross compiler, so the host needs
-nothing beyond docker and python3, and no ARM emulation.
+nothing beyond docker and python3, and no ARM emulation.  Everything comes
+from the IPSW and this repository: no capture from the device's iOS.
 
 Installing, as /usr/local/lib/sgx2d and /usr/local/bin/supertux-gpu:
    --auto     the running device's NFS root (with apk add supertux there),
@@ -29,16 +29,19 @@ Installing, as /usr/local/lib/sgx2d and /usr/local/bin/supertux-gpu:
    --root     into a root filesystem tree on this machine, such as the one
               ./cascadia nfs exports (DIR, default that one)
 
-build/sgx2d holds data derived from Apple's driver and shaders: it stays out
-of git, like the captures it is made from.
+build/sgx2d holds data derived from Apple's kext and GL driver (from the
+IPSW): it stays out of git, like the rest of build/.
 """
-import argparse, hashlib, io, json, os, platform, re, shutil, struct, subprocess, sys, tarfile, time
+import argparse, io, os, platform, subprocess, sys, tarfile, time
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import frame
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
-CAP = os.path.join(ROOT, 'logs', 'ios', 'mod')
 LIB = os.path.join(ROOT, 'tools', 'sgx', 'lib')
 OUT = os.path.join(ROOT, 'build', 'sgx2d')
 KC = os.path.join(ROOT, 'build', 'firmware', 'kernelcache.12H321.macho')
+EVENT = os.path.join(ROOT, 'build', 'firmware', 'gl-event.pds')
 W, H = 768, 1024
 RT_GPU_BASE = '0x87c00000'
 DEVICE_FILES = ('libsgxsdl.so', 'sprites', 'demo2', 'supertux.sh')
@@ -53,68 +56,14 @@ def run(cmd, **kw):
 def fail(msg):
     sys.exit('mkpack: ' + msg)
 
-def capture():
-    """logs/ios/mod -> build/sgx2d/capture: the five regions the pack is made
-    of, as r_<cpu>.bin under the reference capture's names, and the render
-    command's payload.  iOS places its GL buffers differently from run to run
-    (and ASLR moves them in the process), so each region is found by its
-    contents with the pointer words masked, and the pointers are set to the
-    reference layout's (tools/sgx/capture-layout.json); the result is checked
-    against that layout's hashes."""
-    for f in ('gt_m_blend.bin', 'gtm.out'):
-        if not os.path.exists(os.path.join(CAP, f)):
-            fail('no logs/ios/mod/%s -- capture it from the iPad\'s iOS first: '
-                 './cascadia gpucap (docs/GPU.md)' % f)
-    L = json.load(open(os.path.join(ROOT, 'tools', 'sgx', 'capture-layout.json')))
-    unknown = ('\n  This capture is not laid out like any the pack knows.  Please report it,\n'
-               '  with logs/ios/mod/gtm.out (a text log, no Apple data in it).')
-    sha = lambda b: hashlib.sha256(b).hexdigest()
-    def patched(b, patch, zero=False):
-        b = bytearray(b)
-        for o, w in patch.items():
-            struct.pack_into('<I', b, int(o, 16), 0 if zero else int(w, 16))
-        return bytes(b)
-    d = open(os.path.join(CAP, 'gt_m_blend.bin'), 'rb').read()
-    regs, o = [], 0
-    while o < len(d):
-        lo, hi = struct.unpack_from('<II', d, o)
-        regs.append(d[o + 8:o + 8 + hi - lo])
-        o += 8 + hi - lo
-    out = os.path.join(OUT, 'capture')
-    shutil.rmtree(out, ignore_errors=True)
-    os.makedirs(out)
-    for name, r in L['regions'].items():
-        hit = [b for b in regs if len(b) == r['size'] and sha(patched(b, r['patch'], True)) == r['masked']]
-        if not hit:
-            fail('no %s region in logs/ios/mod/gt_m_blend.bin' % name + unknown)
-        b = patched(hit[0], r['patch'])
-        if sha(b) != r['sha256']:
-            fail('the %s region does not match after relocation' % name + unknown)
-        open(os.path.join(out, 'r_%s.bin' % r['cpu']), 'wb').write(b)
-    t = open(os.path.join(CAP, 'gtm.out')).read()
-    m = re.search(r'== mod_blend: render command at \S+, header[^\n]*\n   payload:\n'
-                  r'((?:   [0-9a-f ]+\n)+)', t)
-    if not m:
-        fail('logs/ios/mod/gtm.out has no mod_blend render command -- recapture')
-    w = m.group(1).split()
-    P = L['payload']
-    z = ' '.join('0' * 8 if str(i) in P['patch'] else x for i, x in enumerate(w))
-    if len(w) != P['words'] or sha(z.encode()) != P['masked']:
-        fail('the render command differs' + unknown)
-    for i, x in P['patch'].items():
-        w[int(i)] = x
-    if sha(' '.join(w).encode()) != P['sha256']:
-        fail('the render command does not match after relocation' + unknown)
-    pay = os.path.join(out, 'payload.txt')
-    open(pay, 'w').write(' '.join(w) + '\n')
-    return out, pay
-
 def build_pack(pack):
     kc = os.environ.get('KC841') or KC
-    if not os.path.exists(kc):
-        fail('no decrypted kernelcache at %s -- run ./cascadia firmware '
-             '(or set KC841=)' % os.path.relpath(kc, ROOT))
-    capdir, pay = capture()
+    for f in (kc, EVENT):
+        if not os.path.exists(f):
+            fail('no %s -- run ./cascadia firmware' % os.path.relpath(f, ROOT))
+    capdir = os.path.join(OUT, 'frame')
+    frame.write(capdir, EVENT)
+    pay = os.path.join(capdir, 'payload.txt')
     emu = os.path.join(OUT, 'rtemu')
     os.makedirs(emu, exist_ok=True)
     w = open(pay).read().split()

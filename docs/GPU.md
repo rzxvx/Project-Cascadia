@@ -21,41 +21,31 @@ the host sharing its internet (`./cascadia net on`):
 
 Then, on the iPad: `supertux-gpu`.
 
-That one command gets whatever it is missing, and then builds and installs:
+Nothing from the iPad's iOS is needed, only the IPSW the port is built from
+anyway. That one command:
 
-- **the decrypted iOS 8.4.1 kernelcache**, out of your IPSW
-  (`./cascadia firmware`, if not run yet). The GPU kext's own code is run
-  from it in an emulator, to compute the kernel's per-frame data.
-- **the 2D templates, once, from the iPad's jailbroken iOS** (`./cascadia
-  gpucap`): a prebuilt helper, `gltrace`, draws a textured quad with OpenGL
-  ES there and saves the GPU memory iOS's GL driver set up for it; its
-  compiled shaders and command templates are what the GPU runs under Linux.
-  `./cascadia flash --kdfu` takes them on the way by itself, while iOS is up.
-  Otherwise, if the iPad is in Linux when they are needed, the command says
-  so: boot it into iOS once and run it again.
-- **the build**, in the same `cascadia-build` image as the kernel: no ARM
+- runs `./cascadia firmware` if it has not been run: besides the boot chain
+  and the GPU's microkernel, it takes two more things out of the IPSW --
+  **the decrypted kernelcache**, whose GPU kext code is run in an emulator
+  to compute the kernel's per-frame data, and **one PDS template from iOS's
+  GL driver** (the 3D pass's event program, 168 bytes read out of the dyld
+  shared cache, hash-checked). Both are Apple's, so neither is in this
+  repository.
+- builds the pack, in the same `cascadia-build` image as the kernel: no ARM
   emulation, and Apple Silicon and x86_64 hosts give byte-identical results.
-- **the install**: over ssh into the running iPad's root, with SuperTux
-  itself from `apk`; or, if the iPad is not up, into the root this host
-  exports (SuperTux is then added the next time the command runs with the
-  iPad up).
-
-The kernelcache and the templates are Apple's code and data, so neither is
-in this repository; both come from what every user of this port already has.
-iOS places its GL buffers differently from run to run, so the templates are
-found by content and their pointers moved to one reference layout
-(`tools/sgx/capture-layout.json`: offsets and hashes, no Apple data); a
-capture it cannot place is refused with a message, not half-used.
+  The GPU programs and the frame's state are this repository's own (see
+  "How it works").
+- installs it: over ssh into the running iPad's root, with SuperTux itself
+  from `apk`; or, if the iPad is not up, into the root this host exports
+  (SuperTux is then added the next time the command runs with the iPad up).
 
 Needs a kernel with the `apple-sgx` driver from this tree, build #263 or
 later (`./cascadia build`); the command warns if the running one has none.
 
-**By hand**, the pieces separately: `./cascadia gpucap` (iPad in iOS; over
-Wi-Fi with `IOS_HOST=<its IP>`), `./cascadia gpu --install [HOST]` (over ssh
-only) or `./cascadia gpu --root [DIR]` (into a root tree only). The NFS root
-lives on the host that exports it: a device booted from another host's root
-needs it installed there too. Everything built stays in `build/sgx2d`, out of
-git.
+**By hand**: `./cascadia gpu --install [HOST]` (over ssh only) or
+`./cascadia gpu --root [DIR]` (into a root tree only). The NFS root lives on
+the host that exports it: a device booted from another host's root needs it
+installed there too. Everything built stays in `build/sgx2d`, out of git.
 
 ## Play
 
@@ -117,12 +107,20 @@ apple-sgx.c ── render queue: context + CCB + TA command ──> iOS's microk
   iOS's own register sequence and talks to it through the same command
   buffers iOS uses. It manages the parameter buffer (the tiler's memory)
   itself.
-- **The shaders** are iOS's: compiled USSE and PDS programs taken from a
-  capture of iOS's GL driver. A frame is assembled from that capture's
-  blocks: the first draw carries the whole GPU state, every later draw only
-  a 4-word delta naming the 3D PDS block that loads its texture.
-- **Blend modes** are three copies of one tiny USSE program (on the SGX the
-  fragment program does the blending); only its last instruction differs.
+- **The GPU programs are ours.** `tools/sgx/programs.py` is the source of
+  the 16 USSE programs a frame runs (vertex shader, one pixel shader per
+  blend mode, end of tile, background reload, state loaders), assembled by
+  `tools/sgx/usse.py`; `tools/sgx/pds.py` builds the PDS programs (the data
+  movers that start them) by shape, as iOS's GL driver does; `tools/sgx/
+  frame.py` lays out the frame's state. All of it was checked word by word
+  against what iOS's GL driver sets up for the same quad, and on the device
+  frame by frame. The one exception is the 3D pass's 22-instruction event
+  program, which the GL driver keeps as a template; it comes from the IPSW.
+- **A frame** is the first draw carrying the whole GPU state and every
+  later draw only a 4-word delta naming the PDS block that loads its texture.
+- **Blend modes** are three versions of one 3-instruction pixel shader (on
+  the SGX the fragment program does the blending); only the factors of its
+  last instruction differ.
 - **The kernel's part of a frame** (render-target buffers, the 3D register
   block) is computed by running the kext's own code in an emulator, once,
   when the pack is built.
@@ -157,10 +155,12 @@ apple-sgx.c ── render queue: context + CCB + TA command ──> iOS's microk
 | `tools/sgx/lib/sgxsdl.c` | the SDL2 renderer shim and the touch gamepad |
 | `tools/sgx/lib/supertux.sh` | the launcher (`supertux-gpu`) |
 | `tools/sgx/mkpack.py` | build and install (`./cascadia gpu`) |
-| `tools/sgx/capture-layout.json` | where the pointers are in the iOS capture, for relocating it |
+| `tools/sgx/programs.py`, `usse.py` | the USSE programs, and their assembler |
+| `tools/sgx/pds.py` | the PDS programs |
+| `tools/sgx/frame.py` | the template frame: state, layout, render command |
+| `tools/sgx/rpack.py`, `rgen.py` | the pack sgx2d loads, from the frame |
 | `tools/sgx/lib/cross.sh` | the device's binaries, cross-built against Alpine's armhf packages |
-| `tools/gpucap.sh` | the capture from iOS (`./cascadia gpucap`) |
-| `tools/sgx/rpack.py`, `rgen.py` | the template pack, from a capture |
 | `tools/iosgpu/rtemu.py` | runs the kext's render-target code under unicorn |
-| `tools/iosgpu/gltrace.m` | the iOS capture tool (`prebuilt/gltrace`; `build.sh` needs Xcode) |
+| `tools/sgx/capmap.py` | research: what of a frame a capture of iOS reaches |
+| `tools/gpucap.sh`, `tools/iosgpu/gltrace.m` | research: capture what iOS's GL driver sets up (jailbroken iOS; `frame.py --check` compares) |
 | `tools/sgx/lib/{rectest,pbtest,cnttest,bigtest,replay,sdlshot}.c` | diagnostics |

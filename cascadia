@@ -12,8 +12,7 @@
 #   ./cascadia link        give this host 10.55.0.1 on the device's link (flash does it)
 #   ./cascadia net on|off  share this host's internet with it  (macOS or Linux)
 #   ./cascadia nfs on|off  export a root filesystem to it      (macOS or Linux)
-#   ./cascadia gpu         SuperTux on the GPU: everything, in one go
-#   ./cascadia gpucap      only its templates from the iPad's iOS (gpu does it)
+#   ./cascadia gpu         SuperTux on the GPU: build and install, in one go
 #   ./cascadia image       rebuild the build image if the Dockerfile changed
 #
 # Everything is relative to this file, so the repository works wherever it is
@@ -432,26 +431,17 @@ so this is a file in build/initramfs-root owned by some third uid."
     ls -l "$ROOT/output/staging-bundle.bin" "$ROOT/output/staging-loader.bin"
 }
 
-# SuperTux on the GPU (docs/GPU.md), in one command.  What it needs and does
-# not have yet, it gets: the kernelcache out of the IPSW (firmware), the 2D
-# templates out of the iPad's iOS (gpucap -- flash --kdfu also takes them on
-# the way).  Built in the build image -- unicorn for the kext's emulated
-# code, the ARM cross compiler for the device's binaries -- and installed from
-# the host: into the running device's NFS root over ssh, with SuperTux itself
-# from apk, or else into the root this host exports.
+# SuperTux on the GPU (docs/GPU.md), in one command.  It needs the IPSW's
+# kernelcache and the GL driver's event template from ./cascadia firmware
+# (run here if it has not been), nothing from the device.  Built in the
+# build image -- unicorn for the kext's emulated code, the ARM cross compiler
+# for the device's binaries -- and installed from the host: into the running
+# device's NFS root over ssh, with SuperTux itself from apk, or else into the
+# root this host exports.
 cmd_gpu() {
-    if [ ! -f "$ROOT/build/firmware/kernelcache.12H321.macho" ]; then
-        say "the GPU kext's code comes from the IPSW's kernelcache: ./cascadia firmware"
+    if [ ! -f "$ROOT/build/firmware/kernelcache.12H321.macho" ] || [ ! -f "$ROOT/build/firmware/gl-event.pds" ]; then
+        say "the GPU pack is made from the IPSW: ./cascadia firmware"
         cmd_firmware
-    fi
-    if [ ! -f "$ROOT/logs/ios/mod/gt_m_blend.bin" ]; then
-        if ssh -o BatchMode=yes -o ConnectTimeout=4 root@10.55.0.2 true 2>/dev/null; then
-            fail "the GPU's 2D templates come from the iPad's iOS, once, and it is in Linux now.
-  Boot it into iOS and run ./cascadia gpu again.  (./cascadia flash --kdfu
-  takes them by itself on the way, while iOS is up.)"
-        fi
-        say "the GPU's 2D templates come from the iPad's iOS, once: ./cascadia gpucap"
-        bash "$ROOT/tools/gpucap.sh"
     fi
     in_docker "python3 tools/sgx/mkpack.py"
     if [ $# -gt 0 ]; then
@@ -483,7 +473,6 @@ case "${1:-}" in
     image)  ensure_image; say "$IMAGE is current" ;;
     net)    t=$(host_tool share-internet); shift; bash "$t" "$@" ;;
     nfs)    t=$(host_tool nfs-export);     shift; bash "$t" "$@" ;;
-    gpucap) bash "$ROOT/tools/gpucap.sh" ;;
     gpu)    shift; cmd_gpu "$@" ;;
-    *)      sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+    *)      sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
 esac
