@@ -12,34 +12,59 @@ how the pieces fit.
 
 ## What you need
 
-- A kernel with the `apple-sgx` driver from this tree (`./cascadia build`; the
-  GPU memory allocator described below needs build #263 or later).
-- The microkernel firmware from your IPSW (`./cascadia firmware`, as for the
-  driver itself).
-- Two things from **your own** device and IPSW that cannot be in this repo,
-  because they are Apple's code and data:
-  - the decrypted iOS 8.4.1 kernelcache (`KC841`), whose GPU kext code is run
-    in an emulator to compute the kernel's per-frame data;
-  - a capture of iOS's GL driver drawing a textured quad
-    (`logs/ios/mod/`, made by `tools/iosgpu/gltrace mod` under the device's
-    jailbroken iOS; see [research/p105-gpu.md](research/p105-gpu.md),
-    "M7"). Its compiled shaders and command templates are what the GPU runs.
-- Docker on the build machine (the device's userland is built in an
-  emulated Alpine armv7 container).
+Everything the rest of this port needs, and nothing more on the host: macOS
+or Linux, Docker, python3 and the IPSW. The build runs in the same
+`cascadia-build` image as the kernel (no ARM emulation), and Apple Silicon
+and x86_64 hosts give byte-identical results.
+
+- A kernel with the `apple-sgx` driver from this tree, build #263 or later
+  (`./cascadia build`; the GPU memory allocator described below needs it).
+- The device booted from an NFS root (`./cascadia nfs on`) with SuperTux
+  installed on it: `apk add supertux` on the device, with `./cascadia net on`
+  on the host. A RAM root has no room for it, and anything installed into
+  one is gone at the next boot.
+- Two things that cannot be in this repository, because they are Apple's
+  code and data. Both come from what you already have:
+  - **the decrypted iOS 8.4.1 kernelcache**: `./cascadia firmware` leaves it
+    in `build/firmware/kernelcache.12H321.macho`, next to the GPU's
+    microkernel it extracts from the same file. The GPU kext's own code is
+    run from it in an emulator, to compute the kernel's per-frame data;
+  - **the 2D templates, from your iPad's iOS**: `./cascadia gpucap`, once.
+    It needs the iPad in its jailbroken iOS 8.4.1 with OpenSSH — the same
+    one `./cascadia flash --kdfu` and `./cascadia mtcal` use — on the cable
+    (or `IOS_HOST=<its IP>` over Wi-Fi). It runs `gltrace` there (prebuilt
+    in `tools/iosgpu/prebuilt`), which draws a textured quad with OpenGL ES
+    and saves the GPU memory iOS's GL driver set up for it; the compiled
+    shaders and command templates in it are what the GPU runs under Linux.
+    About 9 MB comes back into `logs/ios/mod/`. The same iOS build should
+    give the same capture on any iPad mini 1; so far it has been taken on
+    one.
 
 ## Build and install
 
 ```bash
-KC841=path/to/kc841.macho tools/sgx/mkpack.py --install
+./cascadia firmware          # if not done yet: also leaves the kernelcache
+./cascadia gpucap            # once; iPad in iOS, on the cable
+./cascadia gpu --root        # build, and install into this host's NFS root
 ```
 
-This splits the capture, runs the kext's render-target code under unicorn
-(`tools/iosgpu/rtemu.py`), builds the template pack (`tools/sgx/rpack.py`),
-builds `libsgxsdl.so` and the demos for armv7/musl (`tools/sgx/lib`, image
-`cascadia-armdev` from `tools/sgx/lib/Dockerfile`) and copies it all to
-`/usr/local/lib/sgx2d` on the device (`root@10.55.0.2`; another host after
-`--install`), with the command `supertux-gpu`. Everything it writes stays in
-`build/sgx2d` and out of git.
+`--root` writes into the root filesystem `./cascadia nfs` exports from this
+host (`~/cascadia-root` on a Mac, `/srv/cascadia-root` on Linux, through
+`sudo` where it is root's), or into another tree given as `--root DIR`. The
+device does not have to be on. Alternatively `./cascadia gpu --install`
+copies it over ssh into whatever root the running device has
+(`root@10.55.0.2`, or `--install HOST`). Either way it lands in
+`/usr/local/lib/sgx2d`, with the command `/usr/local/bin/supertux-gpu`.
+
+The NFS root lives on the host that exports it: a device booted from another
+host's root (say, a Mac's and then an Arch box's) needs it installed there
+too.
+
+What `./cascadia gpu` does, in the build image: splits the capture, runs the
+kext's render-target code under unicorn (`tools/iosgpu/rtemu.py`), builds the
+template pack (`tools/sgx/rpack.py`) and cross-compiles `libsgxsdl.so` and the
+demos against Alpine's own armhf musl and SDL packages
+(`tools/sgx/lib/cross.sh`). All of it stays in `build/sgx2d`, out of git.
 
 ## Play
 
@@ -140,8 +165,10 @@ apple-sgx.c ── render queue: context + CCB + TA command ──> iOS's microk
 | `tools/sgx/lib/sgx2d.{c,h}` | the 2D library |
 | `tools/sgx/lib/sgxsdl.c` | the SDL2 renderer shim and the touch gamepad |
 | `tools/sgx/lib/supertux.sh` | the launcher (`supertux-gpu`) |
-| `tools/sgx/mkpack.py` | build and install, in one go |
+| `tools/sgx/mkpack.py` | build and install (`./cascadia gpu`) |
+| `tools/sgx/lib/cross.sh` | the device's binaries, cross-built against Alpine's armhf packages |
+| `tools/gpucap.sh` | the capture from iOS (`./cascadia gpucap`) |
 | `tools/sgx/rpack.py`, `rgen.py` | the template pack, from a capture |
 | `tools/iosgpu/rtemu.py` | runs the kext's render-target code under unicorn |
-| `tools/iosgpu/gltrace.m` | the iOS capture tool |
+| `tools/iosgpu/gltrace.m` | the iOS capture tool (`prebuilt/gltrace`; `build.sh` needs Xcode) |
 | `tools/sgx/lib/{rectest,pbtest,cnttest,bigtest,replay,sdlshot}.c` | diagnostics |

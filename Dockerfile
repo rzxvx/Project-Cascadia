@@ -67,6 +67,12 @@ RUN git clone --depth 1 https://github.com/iH8sn0w/iBoot32Patcher /tmp/ib32 \
     && cd / && rm -rf /tmp/ib32 \
     && iBoot32Patcher 2>&1 | head -1
 
+# unicorn: ./cascadia gpu runs the GPU kext's render-target code, out of the
+# decrypted kernelcache, in an emulator (tools/iosgpu/rtemu.py).  Not in
+# Ubuntu 22.04's archive; pinned to the version it was developed with.
+RUN pip3 install --no-cache-dir unicorn==2.1.4 \
+    && python3 -c 'import unicorn; print("unicorn", unicorn.__version__)'
+
 ENV ARCH=arm
 ENV CROSS_COMPILE=arm-linux-gnueabihf-
 

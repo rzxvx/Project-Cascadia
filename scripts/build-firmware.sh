@@ -27,6 +27,9 @@
 #   sgx543.fw                   the GPU's microkernel and PDS templates, out of
 #                               the kernelcache's IMGSGX543 kext
 #                               (scripts/extract-sgx-firmware.py)
+#   kernelcache.12H321.macho    the decrypted kernelcache itself; the GPU's 2D
+#                               pack is computed from its GPU kext
+#                               (tools/sgx/mkpack.py, docs/GPU.md)
 #
 # Runs INSIDE the build container (see ./cascadia firmware): the image carries
 # pycryptodome, capstone and an iBoot32Patcher built from source, so the result
@@ -145,7 +148,8 @@ python3 "$ROOT/scripts/trx-add-nvram.py" "$OUT/borg.trx" "$OUT/brcmfmac4334-nvra
     "$OUT/brcmfmac4334.bin" "$WIFI_MAC"
 
 echo "==> GPU microkernel out of the kernelcache"
-python3 "$ROOT/scripts/extract-sgx-firmware.py" "$IPSW" "$OUT/sgx543.fw"
+python3 "$ROOT/scripts/extract-sgx-firmware.py" "$IPSW" "$OUT/sgx543.fw" \
+    "$OUT/kernelcache.12H321.macho"
 
 echo
 rc=0
@@ -178,4 +182,4 @@ fi
 echo
 ls -l "$OUT/iBSS.patched" "$OUT/iBEC.patched.autogo.dfu" \
       "$OUT/iBEC.patched.autogo.plain.dfu" "$OUT/P105.mtprops" "$OUT/brcmfmac4334.bin" \
-      "$OUT/sgx543.fw"
+      "$OUT/sgx543.fw" "$OUT/kernelcache.12H321.macho"

@@ -267,7 +267,8 @@ System mounts: iOS's Data partition (apps, photos) is encrypted file by file.
 ## A desktop
 
 XFCE runs off the NFS root with touch as the pointer — all of it software
-rendered on the two CPU cores, since the GPU has no Linux driver. One script sets it
+rendered on the two CPU cores: the GPU only has the 2D path below, and X
+does not use it. One script sets it
 up. From the host, with the iPad booted from NFS and `./cascadia net on`:
 
 ```bash
@@ -301,6 +302,19 @@ had that do not work here:
   two-finger right click. evdev's long-press right click does not help either:
   for a device with multitouch axes X emulates the pointer itself, and evdev's
   emulation never runs.
+
+## Games on the GPU
+
+SuperTux runs on the GPU at 60 fps, played with a touch gamepad. With the
+iPad booted from NFS and `apk add supertux` done on it:
+
+```bash
+./cascadia gpucap            # once, with the iPad in its jailbroken iOS
+./cascadia gpu --root        # into this host's NFS root
+```
+
+then `supertux-gpu` on the iPad. [GPU.md](GPU.md) has what is needed, the
+controls and how it works.
 
 ## When it goes wrong
 

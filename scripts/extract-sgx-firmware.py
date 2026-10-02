@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """extract-sgx-firmware.py -- the GPU microkernel, out of the user's own IPSW.
 
-    python3 scripts/extract-sgx-firmware.py <ipsw> <out.fw>
+    python3 scripts/extract-sgx-firmware.py <ipsw> <out.fw> [<kernelcache.out>]
 
 The SGX543MP2 runs a microkernel that iOS ships inside its GPU kext,
 com.apple.driver.IMGSGX543, in the kernelcache.  It is Apple's and
@@ -19,6 +19,10 @@ docs/research/p105-gpu.md ("The microkernel, and how iOS boots it") has the
 layout of both.  The driver (drivers/misc/apple-sgx.c) uses offsets into
 these exact bytes, so both are checked against the hashes of the 12H321
 build and anything else is refused rather than half-loaded.
+
+With a third argument the whole decrypted kernelcache is written there too:
+tools/sgx/mkpack.py runs the GPU kext's render-target code from it in an
+emulator (docs/GPU.md).
 
 Output: a 64-byte header, then the two sections.
 
@@ -148,10 +152,10 @@ def segments(buf, base):
 
 
 def main():
-    if len(sys.argv) != 3:
+    if len(sys.argv) not in (3, 4):
         print(__doc__.split("\n\n")[1], file=sys.stderr)
         return 2
-    ipsw, out = sys.argv[1:]
+    ipsw, out = sys.argv[1:3]
     kc = kernelcache(ipsw)
     top = segments(kc, 0) or fail("kernelcache is not a 32-bit Mach-O")
     pt = top.get("__PRELINK_TEXT") or fail("no __PRELINK_TEXT")
@@ -195,6 +199,10 @@ def main():
         fh.write(hdr + data + const)
     print(f"  {out}: microkernel 0x{len(data):x} + templates 0x{len(const):x} "
           f"bytes from IMGSGX543 ({BUILD})")
+    if len(sys.argv) == 4:
+        with open(sys.argv[3], "wb") as fh:
+            fh.write(kc)
+        print(f"  {sys.argv[3]}: the decrypted kernelcache, 0x{len(kc):x} bytes")
     return 0
 
 

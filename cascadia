@@ -12,6 +12,8 @@
 #   ./cascadia link        give this host 10.55.0.1 on the device's link (flash does it)
 #   ./cascadia net on|off  share this host's internet with it  (macOS or Linux)
 #   ./cascadia nfs on|off  export a root filesystem to it      (macOS or Linux)
+#   ./cascadia gpucap      the GPU's 2D templates, from the iPad's iOS (once)
+#   ./cascadia gpu         SuperTux on the GPU: build, --install or --root
 #   ./cascadia image       rebuild the build image if the Dockerfile changed
 #
 # Everything is relative to this file, so the repository works wherever it is
@@ -430,6 +432,20 @@ so this is a file in build/initramfs-root owned by some third uid."
     ls -l "$ROOT/output/staging-bundle.bin" "$ROOT/output/staging-loader.bin"
 }
 
+# The GPU's 2D pack and SuperTux on it (docs/GPU.md).  Built in the build
+# image -- unicorn for the kext's emulated code, the ARM cross compiler for
+# the device's binaries -- and installed from the host: over ssh to the
+# device, or into a root tree on this machine.
+cmd_gpu() {
+    in_docker "python3 tools/sgx/mkpack.py"
+    if [ $# -gt 0 ]; then
+        python3 "$ROOT/tools/sgx/mkpack.py" "$@"
+    else
+        note "install it:  ./cascadia gpu --install   (over ssh, into the device's running root)"
+        note "         or  ./cascadia gpu --root      (into the root ./cascadia nfs exports)"
+    fi
+}
+
 # net and nfs have one script per host OS: they share the interface and not
 # much else (pf and nfsd on the Mac, iptables/nftables and nfs-utils on Linux).
 host_tool() {
@@ -452,5 +468,7 @@ case "${1:-}" in
     image)  ensure_image; say "$IMAGE is current" ;;
     net)    t=$(host_tool share-internet); shift; bash "$t" "$@" ;;
     nfs)    t=$(host_tool nfs-export);     shift; bash "$t" "$@" ;;
-    *)      sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+    gpucap) bash "$ROOT/tools/gpucap.sh" ;;
+    gpu)    shift; cmd_gpu "$@" ;;
+    *)      sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
 esac
