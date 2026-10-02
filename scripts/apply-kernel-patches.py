@@ -50,6 +50,7 @@ NEW_FILES = [
     "drivers/mtd/devices/mtd-apple-h2fmi.c",
     "drivers/phy/phy-apple-s5l-usb.c",
     "drivers/power/supply/apple-hdq-battery.c",
+    "drivers/video/backlight/apple-pmu-wled.c",
     "Documentation/devicetree/bindings/interrupt-controller/apple,aic1.yaml",
     "fs/hfsplus/decmpfs.c",
 ]

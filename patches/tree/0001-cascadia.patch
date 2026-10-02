@@ -1475,3 +1475,33 @@ index 4d73fae80..97d1d24ff 100644
  	{ .compatible = "snps,dwc2" },
  	{ .compatible = "samsung,s3c6400-hsotg",
  	  .data = dwc2_set_s3c6400_params },
+diff --git a/drivers/video/backlight/Kconfig b/drivers/video/backlight/Kconfig
+index 3614a5d29..f7e4a140f 100644
+--- a/drivers/video/backlight/Kconfig
++++ b/drivers/video/backlight/Kconfig
+@@ -451,6 +451,13 @@ config BACKLIGHT_AS3711
+ 	  If you have an Austrian Microsystems AS3711 say Y to enable the
+ 	  backlight driver.
+ 
++config BACKLIGHT_APPLE_PMU_WLED
++	tristate "Apple iPad mini 1 backlight (D1946 PMU white LEDs)"
++	depends on MFD_APPLE_PMU_I2C || COMPILE_TEST
++	help
++	  The iPad mini 1's backlight, driven by the white-LED strings of its
++	  D1946 PMU, as /sys/class/backlight/apple-pmu-wled (0..63).
++
+ config BACKLIGHT_GPIO
+ 	tristate "Generic GPIO based Backlight Driver"
+ 	depends on GPIOLIB || COMPILE_TEST
+diff --git a/drivers/video/backlight/Makefile b/drivers/video/backlight/Makefile
+index 8fc98f760..050be5fca 100644
+--- a/drivers/video/backlight/Makefile
++++ b/drivers/video/backlight/Makefile
+@@ -29,6 +29,7 @@ obj-$(CONFIG_BACKLIGHT_CLASS_DEVICE)	+= backlight.o
+ obj-$(CONFIG_BACKLIGHT_DA903X)		+= da903x_bl.o
+ obj-$(CONFIG_BACKLIGHT_DA9052)		+= da9052_bl.o
+ obj-$(CONFIG_BACKLIGHT_EP93XX)		+= ep93xx_bl.o
++obj-$(CONFIG_BACKLIGHT_APPLE_PMU_WLED)	+= apple-pmu-wled.o
+ obj-$(CONFIG_BACKLIGHT_GPIO)		+= gpio_backlight.o
+ obj-$(CONFIG_BACKLIGHT_HP680)		+= hp680_bl.o
+ obj-$(CONFIG_BACKLIGHT_HP700)		+= jornada720_bl.o

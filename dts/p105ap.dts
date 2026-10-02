@@ -305,6 +305,7 @@
 	 */
 	gpio-keys {
 		compatible = "gpio-keys";
+		autorepeat;	/* a held volume button keeps changing the backlight */
 
 		home {
 			label = "Home";
@@ -796,6 +797,17 @@
                     reg = <0x6c>;
                     mask = <0xc0>;
                     enable = <0x40>;
+                };
+
+                /* The backlight: the PMU's white-LED strings.  Brightness
+                 * 0..63 in the string current registers 0x4f/0x51/0x53 (the
+                 * panel's three strings; 0x4b/0x4d are unused), bit 6 of 0x3f
+                 * switches them off -- AppleD1946PMU's backlight update does
+                 * exactly this.  apple-pmu-wled.c. */
+                backlight: wled@3f {
+                    compatible = "apple,pmu-wled";
+                    reg = <0x3f>;
+                    apple,strings = <0x4f 0x51 0x53>;
                 };
 
                 /* No PMU GPIO0 here.  The ADT's function-clock_enable-pmu is

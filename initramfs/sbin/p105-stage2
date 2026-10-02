@@ -230,6 +230,12 @@ if command -v fbkeyboard >/dev/null 2>&1; then
     fi
 fi
 
+# --------------------------------------------------------------- buttons ---
+# Volume sets the backlight, Hold puts the screen out and back (p105-keys.c).
+if [ -x /sbin/p105-keys ]; then
+    setsid /sbin/p105-keys >/tmp/p105-keys.log 2>&1 </dev/null &
+fi
+
 # ----------------------------------------------------------------- Wi-Fi ---
 # `wifi auto on` leaves /etc/wifi/auto: join the remembered networks.  In the
 # background -- it waits for wlan0, which brcmfmac makes a few seconds in.
