@@ -205,8 +205,9 @@ fi
 # --------------------------------------------------- on-screen keyboard -----
 # fbkeyboard draws a keyboard at the bottom of the framebuffer and types into
 # the console through uinput -- the only keyboard there is, since the one USB
-# port is the gadget.  Not baked into the image: `apk add fbkeyboard` on the
-# device, and it starts from here on the next boot.  The touchscreen is found
+# port is the gadget.  In the image (scripts/add-base-packages.sh), with
+# DejaVuSans as its font; an NFS root seeded before that needs `apk add
+# fbkeyboard font-dejavu`.  The touchscreen is found
 # by name, not by event number: fbkeyboard's own uinput device is an event node
 # too.
 if command -v fbkeyboard >/dev/null 2>&1; then

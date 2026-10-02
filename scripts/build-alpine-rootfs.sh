@@ -167,14 +167,15 @@ cp -a "$ALPINE_TREE" "$OUTDIR"
 rm -f "$OUTDIR/.alpine-build-stamp"
 
 # ------------------------------------------------------------------ packages --
-# Two things have to be in the image before the first boot, because neither can
-# be installed once it is running: dropbear, because there is no shell over the
-# network without it and no convenient apk without that shell, and mount.nfs,
+# What has to be in the image before the first boot, because it cannot be
+# installed once it is running: dropbear, because there is no shell over the
+# network without it and no convenient apk without that shell; mount.nfs,
 # because the root filesystem cannot be mounted by a binary that lives on the
-# root filesystem.  Everything else is `apk add` on the device.  busybox-static
-# as well: stage 2 runs the ACM console from a copy of it in RAM, so the cable
-# still gives a shell when an NFS root has wedged and taken every binary on it
-# with it.
+# root filesystem; busybox-static, because stage 2 runs the ACM console from a
+# copy of it in RAM, so the cable still gives a shell when an NFS root has
+# wedged and taken every binary on it with it; iw and wpa_supplicant, because a
+# RAM boot's only network is Wi-Fi; and fbkeyboard, the only keyboard there is.
+# The list is scripts/add-base-packages.sh.  Everything else is `apk add`.
 #
 # Unpacking them needs the build image (readelf and a network), so a machine
 # without a running docker gets a warning rather than a failure: the tree still
@@ -182,14 +183,14 @@ rm -f "$OUTDIR/.alpine-build-stamp"
 if [ "${SKIP_PACKAGES:-0}" = 1 ]; then
 	echo "==> SKIP_PACKAGES=1 -- no dropbear, no mount.nfs"
 elif docker info >/dev/null 2>&1; then
-	bash "$ROOT/scripts/add-apk-packages.sh" nfs-utils busybox-static
+	bash "$ROOT/scripts/add-base-packages.sh"
 	PUBKEY_OPTIONAL=1 bash "$ROOT/scripts/add-dropbear.sh"
 else
-	echo "==> docker is not reachable -- skipping dropbear and nfs-utils."
-	echo "    The tree boots without them, but there is no ssh and no NFS root."
+	echo "==> docker is not reachable -- skipping dropbear and the base packages."
+	echo "    The tree boots without them, but there is no ssh, no NFS root and no Wi-Fi."
 	echo "    Once docker runs:"
 	echo "      bash scripts/add-dropbear.sh"
-	echo "      bash scripts/add-apk-packages.sh nfs-utils busybox-static"
+	echo "      bash scripts/add-base-packages.sh"
 fi
 
 # Anything left in build/keep/ is copied in last.  It is for files that are not

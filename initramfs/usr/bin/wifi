@@ -14,7 +14,8 @@
 #
 # Networks live one per file in /etc/wifi/networks/, SSID in hex so that no
 # name can break the config, a WPA password only as its PSK.  iw and
-# wpa_supplicant come from apk; this asks for them if they are missing.
+# wpa_supplicant are in the image (scripts/add-base-packages.sh); on an NFS
+# root seeded before that, this installs them with apk, over the cable.
 # Installed from the image into /usr/bin on every boot (initramfs/init), and
 # `wifi up` runs from stage 2 when /etc/wifi/auto exists.
 

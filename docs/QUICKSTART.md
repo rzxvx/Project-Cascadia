@@ -195,9 +195,10 @@ it goes away, twice per boot — and without it `ssh` does not fail, it hangs.
 
 There are two consoles besides ssh, and both are useful when ssh is not:
 
-- **the glass**: a shell on the framebuffer; with the NFS root and
-  `apk add fbkeyboard font-dejavu` on the device, stage 2 puts an on-screen
-  keyboard under it at every boot (no arrow keys);
+- **the glass**: a shell on the framebuffer, with an on-screen keyboard
+  (`fbkeyboard`) under it from boot (no arrow keys). An NFS root seeded
+  before the keyboard joined the image needs `apk add fbkeyboard
+  font-dejavu` once;
 - **the cable**: CDC ACM, no credentials at all —
   `screen /dev/cu.usbmodem* 115200` on macOS, `sudo picocom -b 115200
   /dev/ttyACM0` on Linux (picocom exits with `C-a C-x`).
@@ -238,14 +239,14 @@ wifi auto on                  # join the remembered networks at every boot
 wifi forget "Home"
 ```
 
-`wifi` installs `iw` and `wpa_supplicant` with `apk` the first time, so that
-first time needs the internet over the cable (`./cascadia net on`) and the NFS
-root to keep them. Networks are remembered in `/etc/wifi/networks/`, a WPA
-password only as its PSK. Once Wi-Fi is up, ssh works over it too, at the
+`iw` and `wpa_supplicant` are in the image, so Wi-Fi works from a RAM boot,
+with no cable network at all. (An NFS root seeded before they joined the image
+lacks them; `wifi` then installs them with `apk` the first time, over the
+cable.) Networks are remembered in `/etc/wifi/networks/`, a WPA password only
+as its PSK -- on the NFS root for good, in a RAM boot until the next reboot. Once Wi-Fi is up, ssh works over it too, at the
 address `wifi` prints.
 
-- Open networks work on 2.4 and 5 GHz, DHCP and all. WPA-PSK has not been
-  tried yet.
+- WPA2 and open networks work on 2.4 and 5 GHz, DHCP and all.
 - The MAC address is not the iPad's own (Linux cannot read it from iOS's
   syscfg): it is `02:10:5a:05:00:03` unless you build the firmware with
   another one — `WIFI_MAC=xx:xx:xx:xx:xx:xx ./cascadia firmware`, then

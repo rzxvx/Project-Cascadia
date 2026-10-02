@@ -159,7 +159,9 @@ def satisfied(soname, roots):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--repo", required=True, help="e.g. https://dl-cdn.../v3.24/main/armhf")
+    ap.add_argument("--repo", required=True, action="append",
+                    help="e.g. https://dl-cdn.../v3.24/main/armhf; repeat for more "
+                         "repositories, the first one that has a package wins")
     ap.add_argument("--dest", required=True, help="directory to unpack into")
     ap.add_argument("--rootfs", required=True, help="existing rootfs, to know what is already there")
     ap.add_argument("--max-rounds", type=int, default=10)
@@ -170,9 +172,17 @@ def main():
         shutil.rmtree(args.dest)
     os.makedirs(args.dest)
 
-    print(f"==> index: {args.repo}/APKINDEX.tar.gz", flush=True)
-    by_name, by_soname = parse_index(fetch(f"{args.repo}/APKINDEX.tar.gz"))
-    log(f"{len(by_name)} packages, {len(by_soname)} sonames")
+    # name / soname -> (repository, file name).  setdefault: main before
+    # community, so a library both carry comes from where apk would take it.
+    by_name, by_soname = {}, {}
+    for repo in args.repo:
+        print(f"==> index: {repo}/APKINDEX.tar.gz", flush=True)
+        names, sonames = parse_index(fetch(f"{repo}/APKINDEX.tar.gz"))
+        log(f"{len(names)} packages, {len(sonames)} sonames")
+        for k, fn in names.items():
+            by_name.setdefault(k, (repo, fn))
+        for k, fn in sonames.items():
+            by_soname.setdefault(k, (repo, fn))
 
     wanted, done = list(args.packages), set()
 
@@ -180,11 +190,11 @@ def main():
         for pkg in wanted:
             if pkg in done:
                 continue
-            fn = by_name.get(pkg)
-            if not fn:
+            if pkg not in by_name:
                 sys.exit(f"error: no package named {pkg!r} in the index")
+            repo, fn = by_name[pkg]
             print(f"==> {fn}", flush=True)
-            for n in untar_apk(fetch(f"{args.repo}/{fn}"), args.dest):
+            for n in untar_apk(fetch(f"{repo}/{fn}"), args.dest):
                 log(n)
             done.add(pkg)
 
@@ -208,11 +218,10 @@ def main():
         print(f"==> unsatisfied: {' '.join(sorted(missing))}", flush=True)
         wanted = []
         for so in sorted(missing):
-            fn = by_soname.get(so)
-            if not fn:
+            if so not in by_soname:
                 sys.exit(f"error: nothing in the index provides {so!r}. "
                          f"Fetch it by hand or drop the package that wants it.")
-            pkg = fn.rsplit("-", 2)[0]      # name-version-rrel.apk
+            pkg = by_soname[so][1].rsplit("-", 2)[0]      # name-version-rrel.apk
             if pkg in done:
                 sys.exit(f"error: {pkg} is already unpacked but {so} is still "
                          f"missing -- the index and the package disagree.")

@@ -25,7 +25,9 @@ IMAGE="${IMAGE:-cascadia-build}"
 ALPINE_VER="${ALPINE_VER:-3.24}"
 ALPINE_ARCH="${ALPINE_ARCH:-armhf}"
 MIRROR="${MIRROR:-https://dl-cdn.alpinelinux.org}"
-REPO="$MIRROR/alpine/v$ALPINE_VER/main/$ALPINE_ARCH"
+# main first, then community (fbkeyboard lives there).
+REPOS=(--repo "$MIRROR/alpine/v$ALPINE_VER/main/$ALPINE_ARCH"
+       --repo "$MIRROR/alpine/v$ALPINE_VER/community/$ALPINE_ARCH")
 
 fail() { echo "error: $*" >&2; exit 1; }
 [ $# -gt 0 ] || fail "usage: $0 <package>..."
@@ -50,7 +52,7 @@ duser=()
 [ "$(uname -s)" = "Linux" ] && duser=(--user "$(id -u):$(id -g)")
 docker run --rm ${duser[@]+"${duser[@]}"} -v "$ROOT":/cascadia "$IMAGE" \
     python3 /cascadia/scripts/apk-unpack.py \
-        --repo "$REPO" --dest "/cascadia/$WORK" --rootfs /cascadia/build/initramfs-root \
+        "${REPOS[@]}" --dest "/cascadia/$WORK" --rootfs /cascadia/build/initramfs-root \
         "$@"
 
 EX="$ROOT/$WORK"

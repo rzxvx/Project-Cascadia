@@ -72,7 +72,7 @@ including the parts that didn't work.
       own from its jailbroken iOS (`./cascadia mtcal`, optional). See
       `docs/research/p105-z2-boot.md`
 - [x] **On-screen keyboard** — `fbkeyboard` under the console on the glass,
-      started at boot once it is installed on the NFS root (no arrow keys)
+      in the image and up from boot, NFS root or not (no arrow keys)
 - [x] **A desktop** — XFCE on the framebuffer, touch as the pointer (a
       two-finger tap is a right click), `svkbd` as the keyboard behind a panel
       button. One script sets it up: `tools/desktop/xfce-setup.sh`, then
@@ -85,8 +85,8 @@ including the parts that didn't work.
       as fast as before. See *The cache problem* below
 - [x] **Wi-Fi** — BCM4334 on HSIC behind EHCI (not SDIO, as first assumed),
       firmware and NVRAM out of the user's IPSW; `wlan0` joins 2.4 and 5 GHz
-      networks, DHCP and all (`iw`/`wpa_supplicant` from `apk`; `wifi
-      connect SSID PASSWORD`). WPA2 and open networks; 38 Mbit/s in, 21 out,
+      networks, DHCP and all (`iw` and `wpa_supplicant` are in the image, so
+      it works from a RAM boot too; `wifi connect SSID PASSWORD`). WPA2 and open networks; 38 Mbit/s in, 21 out,
       10 minutes of ping without a loss. A chip that does not come back on
       the bus at boot is power-cycled by itself (`wifi reset` by hand). See
       *The Wi-Fi problem* below. The CLM blob does not load (this firmware

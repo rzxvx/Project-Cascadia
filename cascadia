@@ -303,6 +303,16 @@ cmd_build() {
     in_docker "arm-linux-gnueabihf-gcc -static -Os -D_FILE_OFFSET_BITS=64 -o build/initramfs-root/sbin/nandctl tools/nand/nandctl.c tools/nand/ppn.c && arm-linux-gnueabihf-gcc -static -O2 -D_FILE_OFFSET_BITS=64 -o build/initramfs-root/sbin/iosnand tools/nand/iosnand.c tools/nand/ppn.c"
     [ -s "$ROOT/build/initramfs-root/sbin/iosnand" ] || fail "iosnand did not build"
     note "ok: /sbin/nandctl, /sbin/iosnand (static ARM)"
+    # Wi-Fi's tools and the on-screen keyboard ride in the image (a RAM boot
+    # has no network to apk add them with).  A tree made by an older
+    # ./cascadia rootfs lacks them; add them rather than make it start over.
+    if [ ! -x "$ROOT/build/initramfs-root/sbin/wpa_supplicant" ] \
+        || [ ! -x "$ROOT/build/initramfs-root/usr/sbin/iw" ] \
+        || [ ! -x "$ROOT/build/initramfs-root/usr/bin/fbkeyboard" ]; then
+        bash "$ROOT/scripts/add-base-packages.sh" >/dev/null \
+            || fail "could not add iw, wpa_supplicant and fbkeyboard (scripts/add-base-packages.sh)"
+    fi
+    note "ok: iw, wpa_supplicant, fbkeyboard"
     # dropbear's host key, made once and kept in build/keep so it outlives a
     # rootfs rebuild.  Without it dropbear -R made a new one at every boot of the
     # RAM root, and every boot met ssh with REMOTE HOST IDENTIFICATION HAS
@@ -415,7 +425,8 @@ so this is a file in build/initramfs-root owned by some third uid."
     [ "$bad_gid" = "-" ] || note "note: some entries keep a non-root group ($bad_gid) -- harmless; rootfs and build ran under different groups"
 
     # Not fatal: a tree without these still boots and still gives both consoles.
-    for s in bin/peek usr/sbin/dropbear etc/dropbear/dropbear_ed25519_host_key sbin/mount.nfs; do
+    for s in bin/peek usr/sbin/dropbear etc/dropbear/dropbear_ed25519_host_key sbin/mount.nfs \
+             usr/sbin/iw sbin/wpa_supplicant usr/bin/fbkeyboard; do
         if LC_ALL=C grep -aFq "$s" "$CPIO"; then note "ok:      $s"
         else note "missing: $s  -- ./cascadia rootfs installs it when docker is up"; fi
     done
