@@ -29,26 +29,48 @@ struct apple_pmu_i2c_pwrsw {
     int was_enabled;
 };
 
+/*
+ * The D1946 now and then ignores a write to a GPIO's config register.  With
+ * the Wi-Fi chip's REG_ON (0x64) the write that clears the level bit read
+ * back unchanged in 4 of 10 power cycles (regmap trace, 2026-10-02): the
+ * chip was never powered off, and after the next power-on it did not come
+ * back on the bus.  Each time, the next write took.  (An enable of PMU GPIO0
+ * at 0x61 was seen not to stick either.)  So write until it reads back.
+ */
+static int apple_pmu_i2c_pwrsw_set(struct regulator_dev *rdev, bool on)
+{
+    struct apple_pmu_i2c_pwrsw *pwrsw = rdev->reg_data;
+    struct regmap *map = rdev_get_regmap(rdev);
+    unsigned int want = on ? pwrsw->enable : (pwrsw->enable ^ pwrsw->mask);
+    unsigned int v = 0;
+    int i, ret;
+
+    for (i = 1; i <= 5; i++) {
+        ret = regmap_update_bits(map, pwrsw->base, pwrsw->mask, want);
+        if (ret)
+            return ret;
+        ret = regmap_read(map, pwrsw->base, &v);
+        if (ret)
+            return ret;
+        if ((v & pwrsw->mask) == want) {
+            if (i > 1)
+                dev_info(pwrsw->dev, "0x%02x %s: took %d writes\n",
+                         pwrsw->base, on ? "on" : "off", i);
+            return 0;
+        }
+        msleep(1);
+    }
+    dev_err(pwrsw->dev, "0x%02x %s: still 0x%02x after %d writes\n",
+            pwrsw->base, on ? "on" : "off", v, i - 1);
+    return -EIO;
+}
+
 static int apple_pmu_i2c_pwrsw_enable(struct regulator_dev *rdev)
 {
-    int ret;
     struct apple_pmu_i2c_pwrsw *pwrsw = rdev->reg_data;
+    int ret = apple_pmu_i2c_pwrsw_set(rdev, true);
 
-    pr_err("PWRSW-EN: enter reg=0x%x mask=0x%x val=0x%x\n",
-           pwrsw->base, pwrsw->mask, pwrsw->enable);
-    ret = regulator_enable_regmap(rdev);
-    pr_err("PWRSW-EN: regulator_enable_regmap ret=%d\n", ret);
-    {
-        /* Say what the register actually holds afterwards.  ret == 0 only
-         * means the I2C transfer was ACKed; it does not mean the bits stuck,
-         * and for PMU GPIO0 at 0x61 they did not. */
-        struct regmap *map = rdev_get_regmap(rdev);
-        unsigned int v = 0;
-        int rr = map ? regmap_read(map, pwrsw->base, &v) : -ENODEV;
-        pr_err("PWRSW-EN: reg=0x%x reads back 0x%02x (read ret=%d, wanted 0x%x in mask 0x%x)\n",
-               pwrsw->base, v, rr, pwrsw->enable, pwrsw->mask);
-    }
-    if(!ret) {
+    if (!ret) {
         pwrsw->was_enabled = 1;
         mdelay(1);  /* HACK: hrtimer broken, do enable delay ourselves */
     }
@@ -57,7 +79,7 @@ static int apple_pmu_i2c_pwrsw_enable(struct regulator_dev *rdev)
 
 static int apple_pmu_i2c_pwrsw_disable(struct regulator_dev *rdev)
 {
-    return regulator_disable_regmap(rdev);
+    return apple_pmu_i2c_pwrsw_set(rdev, false);
 }
 
 static int apple_pmu_i2c_pwrsw_is_enabled(struct regulator_dev *rdev)

@@ -233,6 +233,10 @@ fi
 if [ -e /etc/wifi/auto ] && [ -x /usr/bin/wifi ]; then
     setsid /usr/bin/wifi up >/tmp/wifi.log 2>&1 </dev/null &
     msg "P105: Wi-Fi -- joining the remembered networks (/tmp/wifi.log)"
+elif [ -x /usr/bin/wifi ]; then
+    # not joining anything, but the chip has to come up all the same: it now
+    # and then needs a power cycle, which `wifi chip` gives it
+    setsid /usr/bin/wifi chip >/tmp/wifi.log 2>&1 </dev/null &
 fi
 
 # --------------------------------------------------------- glass fallback ---

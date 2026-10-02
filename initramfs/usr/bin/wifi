@@ -9,6 +9,8 @@
 #   wifi down                   leave; stop wpa_supplicant and DHCP
 #   wifi forget SSID            drop a remembered network
 #   wifi auto on|off            join the remembered networks at boot
+#   wifi reset                  power the chip off and on (it comes up again
+#                               on its own if it ever does not at boot)
 #
 # Networks live one per file in /etc/wifi/networks/, SSID in hex so that no
 # name can break the config, a WPA password only as its PSK.  iw and
@@ -32,13 +34,37 @@ need_tools() {
     apk add iw wpa_supplicant >/dev/null 2>&1 || die "apk add iw wpa_supplicant failed -- is the USB network up?"
 }
 
+# The chip's power: unbinding EHCI powers the host PHY down, and with it the
+# chip's REG_ON and its sleep clock (phy-apple-s5l-usb); binding it again
+# starts the whole bring-up over -- boot ROM, firmware download, the HSIC
+# reset, the firmware enumerating.  The same regulator writes as at boot.
+EHCI=36400000.usb
+EHCI_DRV=/sys/bus/platform/drivers/ehci-platform
+chip_cycle() {
+    [ -e $EHCI_DRV/$EHCI ] && echo $EHCI > $EHCI_DRV/unbind
+    sleep 1
+    echo $EHCI > $EHCI_DRV/bind
+}
+
 # brcmfmac makes wlan0 a few seconds into boot; at boot this may run first.
-need_if() {
-    i=0
+# Now and then the chip does not come back on the bus after its firmware
+# starts -- the HSIC port stays "not attached", DEVICE_READY never moves,
+# and only power brings it back (2026-10-02).  So: 15 s, then power it off
+# and on, twice at most.
+need_chip() {
+    tries=0; i=0
     while [ ! -d /sys/class/net/$IF ]; do
-        [ $i -ge 40 ] && die "no $IF: the Wi-Fi chip did not come up (dmesg | grep brcmf)"
+        if [ $i -ge 30 ]; then
+            [ $tries -ge 2 ] && die "no $IF: the Wi-Fi chip did not come up, power-cycled twice (dmesg | grep brcmf)"
+            say "The Wi-Fi chip did not come back on the bus; power-cycling it..."
+            chip_cycle; tries=$((tries + 1)); i=0
+        fi
         sleep 0.5; i=$((i + 1))
     done
+}
+
+need_if() {
+    need_chip
     ip link set $IF up 2>/dev/null
 }
 
@@ -107,7 +133,7 @@ status() {
     if ! command -v iw >/dev/null 2>&1; then
         say "Wi-Fi tools not installed yet: 'wifi scan' or 'wifi connect' installs them."
     elif [ ! -d /sys/class/net/$IF ]; then
-        say "No $IF -- the Wi-Fi chip did not come up (dmesg | grep brcmf)."
+        say "No $IF -- the Wi-Fi chip did not come up; 'wifi reset' power-cycles it."
     elif connected; then
         iw dev $IF link | awk '
             /^Connected/  { bssid = $3 }
@@ -187,6 +213,12 @@ case "$1" in
         start "$@" && say "Connected: $(iw dev $IF link | sed -n 's/^[[:space:]]*SSID: //p'), $(addr4)" ;;
     down)
         stop; say "Wi-Fi disconnected." ;;
+    chip)
+        need_chip ;;
+    reset)
+        stop; say "Power-cycling the Wi-Fi chip..."; chip_cycle; need_chip
+        say "$IF is back."
+        [ -e $DIR/auto ] && exec "$0" up ;;
     forget)
         [ -n "$2" ] || die "usage: wifi forget SSID"
         f="$NETS/$(hexof "$2").conf"
