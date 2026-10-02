@@ -247,8 +247,12 @@ cmd_build() {
     # initramfs/ is the source of truth for the boot scripts, but only
     # ./cascadia rootfs used to copy it in -- an edit to initramfs/init followed
     # by ./cascadia build shipped the old init.  Overlay it on every build.
+    # rootfs/alpine/ the same way, and first, as ./cascadia rootfs lays them:
+    # it was applied only there, so the login banner's list of what works
+    # (etc/motd) stayed whatever the last rootfs build had seen.
+    cp -a "$ROOT/rootfs/alpine/." "$ROOT/build/initramfs-root/"
     cp -a "$ROOT/initramfs/." "$ROOT/build/initramfs-root/"
-    note "ok: boot scripts from initramfs/"
+    note "ok: rootfs/alpine/ and boot scripts from initramfs/"
     # The digitizer's firmware is Apple's, so it comes out of the user's IPSW
     # with the boot chain rather than out of the repository.  Before build/keep
     # is laid over the tree, so a copy there still wins.
