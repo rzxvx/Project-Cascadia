@@ -18,6 +18,7 @@
 #include <linux/io.h>
 #include <linux/mutex.h>
 #include <linux/kernel.h>
+#include <linux/ktime.h>
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/platform_device.h>
@@ -37,6 +38,7 @@
 #define REG_RESET               0x10
 #define  REG_RESET_BIT          0x80000000
 #define REG_SMSTA               0x14
+#define  REG_SMSTA_XIP          0x10000000   /* transfer in progress (pasemi's name) */
 #define  REG_SMSTA_XEN          0x08000000
 #define  REG_SMSTA_ERROR        0x00800040
 #define  REG_SMSTA_MTN          0x00200000
@@ -59,6 +61,18 @@
 #define REG_LOCK                0x44
 
 #define DEFAULT_FREQ            100000
+/*
+ * A write is reported done on XEN, which the controller raises once its FIFO
+ * has taken the bytes -- not when they and the STOP are out on the bus; a
+ * three-byte PMU write at 100 kHz takes ~300 us on the wire.  Every transfer
+ * starts with a controller reset, so a transfer begun right behind a write
+ * cut that write off: the PMU's REG_ON for the Wi-Fi chip (0x64) kept its
+ * old value whenever the regulator core went on to read the next register
+ * ~200 us later (regmap trace, 2026-10-02), and the chip was never powered
+ * off.  So a transfer waits for XIP to clear and for this long after the
+ * last write.
+ */
+#define WRITE_GAP_US            1000
 #define TIMEOUT_MS              100
 #define MTXFIFO_CHUNK           16
 
@@ -72,6 +86,7 @@ struct apple_s5l8940x_i2c {
 
     unsigned int hw_rev;
     unsigned int clkdiv;
+    ktime_t last_write;
 
     struct i2c_msg *msg;
     unsigned int compl_ptr, tx_ptr;
@@ -348,6 +363,16 @@ static int apple_s5l8940x_i2c_xfer(struct i2c_adapter *adap, struct i2c_msg *msg
 
     mutex_lock(&i2c->mtx);
 
+    {
+        s64 since = ktime_us_delta(ktime_get(), i2c->last_write);
+        unsigned int spin = WRITE_GAP_US;
+
+        if (since >= 0 && since < WRITE_GAP_US)
+            udelay(WRITE_GAP_US - since);
+        while ((readl(i2c->base + REG_SMSTA) & REG_SMSTA_XIP) && spin--)
+            udelay(1);
+    }
+
     /* iBoot (iBEC 2261.30.37, i2c_init at 0xb9dc and the baud setup at 0xbaa0)
      * leaves this register at clkdiv | 0x100 | 0x600.  We were writing bare
      * clkdiv -- 0x800 only applies from rev 6 and this core is rev 1 -- so the
@@ -368,6 +393,8 @@ static int apple_s5l8940x_i2c_xfer(struct i2c_adapter *adap, struct i2c_msg *msg
 
     for(i=0; i<num; i++) {
         ret = apple_s5l8940x_i2c_xfer_msg(i2c, &msgs[i], i == 0, i == num - 1);
+        if(!(msgs[i].flags & I2C_M_RD))
+            i2c->last_write = ktime_get();
         if(ret) {
             /* this used to return with the mutex still held, so the very next
              * transfer blocked on mutex_lock for good and the boot stopped
