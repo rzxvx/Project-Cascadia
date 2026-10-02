@@ -36,9 +36,12 @@ and x86_64 hosts give byte-identical results.
     in `tools/iosgpu/prebuilt`), which draws a textured quad with OpenGL ES
     and saves the GPU memory iOS's GL driver set up for it; the compiled
     shaders and command templates in it are what the GPU runs under Linux.
-    About 9 MB comes back into `logs/ios/mod/`. The same iOS build should
-    give the same capture on any iPad mini 1; so far it has been taken on
-    one.
+    About 5 MB comes back into `logs/ios/mod/`. iOS places its GL buffers
+    differently from run to run, so `./cascadia gpu` finds the pieces it
+    needs by content and moves their pointers to one reference layout
+    (`tools/sgx/capture-layout.json`: offsets and hashes, no Apple data);
+    two captures from two runs gave byte-identical packs. One it cannot
+    place is refused with a message, not half-used.
 
 ## Build and install
 

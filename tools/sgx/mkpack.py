@@ -9,7 +9,8 @@
 
 Building:
 1. the template capture: logs/ios/mod/gt_m_blend.bin and gtm.out (from the
-   iPad's iOS, ./cascadia gpucap), split into its regions and payload
+   iPad's iOS, ./cascadia gpucap): the regions and payload the pack is made
+   of, found and brought to the reference layout (capture-layout.json)
 2. the kernel's render-target data for a 768x1024 frame: the kext's own code
    run under unicorn (tools/iosgpu/rtemu.py) out of the decrypted 8.4.1
    kernelcache (./cascadia firmware leaves it in build/firmware; KC841=
@@ -29,7 +30,7 @@ Installing, as /usr/local/lib/sgx2d and /usr/local/bin/supertux-gpu:
 build/sgx2d holds data derived from Apple's driver and shaders: it stays out
 of git, like the captures it is made from.
 """
-import argparse, io, os, platform, re, struct, subprocess, sys, tarfile, time
+import argparse, hashlib, io, json, os, platform, re, shutil, struct, subprocess, sys, tarfile, time
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
 CAP = os.path.join(ROOT, 'logs', 'ios', 'mod')
@@ -50,30 +51,60 @@ def run(cmd, **kw):
 def fail(msg):
     sys.exit('mkpack: ' + msg)
 
-def split_capture():
-    """gt_m_blend.bin -> blend/r_<cpu>.bin; gtm.out -> blend_payload.txt"""
+def capture():
+    """logs/ios/mod -> build/sgx2d/capture: the five regions the pack is made
+    of, as r_<cpu>.bin under the reference capture's names, and the render
+    command's payload.  iOS places its GL buffers differently from run to run
+    (and ASLR moves them in the process), so each region is found by its
+    contents with the pointer words masked, and the pointers are set to the
+    reference layout's (tools/sgx/capture-layout.json); the result is checked
+    against that layout's hashes."""
     for f in ('gt_m_blend.bin', 'gtm.out'):
         if not os.path.exists(os.path.join(CAP, f)):
             fail('no logs/ios/mod/%s -- capture it from the iPad\'s iOS first: '
                  './cascadia gpucap (docs/GPU.md)' % f)
-    out = os.path.join(CAP, 'blend')
-    if not os.path.isdir(out):
-        os.makedirs(out)
-        d = open(os.path.join(CAP, 'gt_m_blend.bin'), 'rb').read()
-        o = 0
-        while o < len(d):
-            lo, hi = struct.unpack_from('<II', d, o)
-            o += 8
-            open(os.path.join(out, 'r_%08x.bin' % lo), 'wb').write(d[o:o + hi - lo])
-            o += hi - lo
-    pay = os.path.join(CAP, 'blend_payload.txt')
-    if not os.path.exists(pay):
-        t = open(os.path.join(CAP, 'gtm.out')).read()
-        m = re.search(r'== mod_blend: render command at \S+, header[^\n]*\n   payload:\n'
-                      r'((?:   [0-9a-f ]+\n)+)', t)
-        if not m:
-            fail('logs/ios/mod/gtm.out has no mod_blend render command -- recapture')
-        open(pay, 'w').write(' '.join(m.group(1).split()) + '\n')
+    L = json.load(open(os.path.join(ROOT, 'tools', 'sgx', 'capture-layout.json')))
+    unknown = ('\n  This capture is not laid out like any the pack knows.  Please report it,\n'
+               '  with logs/ios/mod/gtm.out (a text log, no Apple data in it).')
+    sha = lambda b: hashlib.sha256(b).hexdigest()
+    def patched(b, patch, zero=False):
+        b = bytearray(b)
+        for o, w in patch.items():
+            struct.pack_into('<I', b, int(o, 16), 0 if zero else int(w, 16))
+        return bytes(b)
+    d = open(os.path.join(CAP, 'gt_m_blend.bin'), 'rb').read()
+    regs, o = [], 0
+    while o < len(d):
+        lo, hi = struct.unpack_from('<II', d, o)
+        regs.append(d[o + 8:o + 8 + hi - lo])
+        o += 8 + hi - lo
+    out = os.path.join(OUT, 'capture')
+    shutil.rmtree(out, ignore_errors=True)
+    os.makedirs(out)
+    for name, r in L['regions'].items():
+        hit = [b for b in regs if len(b) == r['size'] and sha(patched(b, r['patch'], True)) == r['masked']]
+        if not hit:
+            fail('no %s region in logs/ios/mod/gt_m_blend.bin' % name + unknown)
+        b = patched(hit[0], r['patch'])
+        if sha(b) != r['sha256']:
+            fail('the %s region does not match after relocation' % name + unknown)
+        open(os.path.join(out, 'r_%s.bin' % r['cpu']), 'wb').write(b)
+    t = open(os.path.join(CAP, 'gtm.out')).read()
+    m = re.search(r'== mod_blend: render command at \S+, header[^\n]*\n   payload:\n'
+                  r'((?:   [0-9a-f ]+\n)+)', t)
+    if not m:
+        fail('logs/ios/mod/gtm.out has no mod_blend render command -- recapture')
+    w = m.group(1).split()
+    P = L['payload']
+    z = ' '.join('0' * 8 if str(i) in P['patch'] else x for i, x in enumerate(w))
+    if len(w) != P['words'] or sha(z.encode()) != P['masked']:
+        fail('the render command differs' + unknown)
+    for i, x in P['patch'].items():
+        w[int(i)] = x
+    if sha(' '.join(w).encode()) != P['sha256']:
+        fail('the render command does not match after relocation' + unknown)
+    pay = os.path.join(out, 'payload.txt')
+    open(pay, 'w').write(' '.join(w) + '\n')
     return out, pay
 
 def build_pack(pack):
@@ -81,7 +112,7 @@ def build_pack(pack):
     if not os.path.exists(kc):
         fail('no decrypted kernelcache at %s -- run ./cascadia firmware '
              '(or set KC841=)' % os.path.relpath(kc, ROOT))
-    capdir, pay = split_capture()
+    capdir, pay = capture()
     emu = os.path.join(OUT, 'rtemu')
     os.makedirs(emu, exist_ok=True)
     w = open(pay).read().split()

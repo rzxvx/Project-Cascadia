@@ -18,7 +18,7 @@
 # tools/iosgpu/build.sh, which needs Xcode), so this works from any host.
 # The connection is the one ./cascadia mtcal uses: usbmuxd and iproxy over
 # USB, or IOS_HOST= over Wi-Fi; iOS's root password, "alpine" unless changed.
-# About 9 MB comes back.  If a USB transfer from a Mac stops halfway, use
+# About 5 MB comes back.  If a USB transfer from a Mac stops halfway, use
 # Wi-Fi (Apple's usbmuxd has been seen to reset long transfers).
 set -euo pipefail
 
@@ -123,10 +123,7 @@ assert n and o == len(d)
 print('    %d regions, %d bytes' % (n, len(d)))
 EOF
 
-# The pack is derived from these, so a new capture starts from scratch.
 mkdir -p "$OUT"
-rm -rf "$OUT/blend"
-rm -f "$OUT/blend_payload.txt"
 cp "$WORK/gtm.out" "$WORK/gt_m_blend.bin" "$OUT/"
 echo "==> logs/ios/mod/: gt_m_blend.bin, gtm.out"
 echo

@@ -1,0 +1,107 @@
+{
+ "_": [
+  "The capture tools/sgx/mkpack.py expects (./cascadia gpucap), as the pack",
+  "was built from it: per region the size, its sha256 with the pointer words",
+  "zeroed and as a whole, and the pointer words.  iOS places its GL buffers",
+  "differently from run to run; only these words change, and mkpack sets",
+  "them back to the values below.  The bytes are the user's own capture."
+ ],
+ "regions": {
+  "pds": {
+   "cpu": "008a2000",
+   "size": 65536,
+   "masked": "1326b7f9c541d92c43b397369bb6889608ec99b43163517fdcbbb64357a80ecf",
+   "sha256": "99a8bcc068395fd1311bffce001669b14a1c61ce820ff558070333bcea7c9ac5",
+   "patch": {
+    "0x0": "00003883",
+    "0x8": "00003a83",
+    "0x10": "00003803",
+    "0x120": "00002803",
+    "0x138": "989a5000",
+    "0x160": "00003d03",
+    "0x178": "9896c000",
+    "0x1c0": "989561a4",
+    "0x1d0": "00003d83",
+    "0x200": "00003d03",
+    "0x218": "9896e000"
+   }
+  },
+  "idx": {
+   "cpu": "008b4000",
+   "size": 16384,
+   "masked": "a546be36c81eec891ae01480ccd76a6fbd22b2a4639d2d2458f90276d43d03b6",
+   "sha256": "a546be36c81eec891ae01480ccd76a6fbd22b2a4639d2d2458f90276d43d03b6",
+   "patch": {}
+  },
+  "state": {
+   "cpu": "00931000",
+   "size": 65536,
+   "masked": "6a6cf31612d581cbf5c3aaac497aca34ecf85914d13b3ed2794210db9711c45e",
+   "sha256": "10cec90ab5c64eff30f5cd385e91e237d5bc3a60d6014a8320a61c0cb0a874e1",
+   "patch": {
+    "0x20": "00002c03",
+    "0x60": "00002a83",
+    "0xa0": "989b5078",
+    "0xb0": "00003c83",
+    "0xf0": "1189561c",
+    "0xf8": "11895616",
+    "0x140": "989b50e0",
+    "0x150": "00003583",
+    "0x180": "989b51e0",
+    "0x190": "989b51f0",
+    "0x1a0": "989b51f8",
+    "0x1b0": "00003b83",
+    "0x380": "989b5360",
+    "0x390": "00003e03",
+    "0x3c4": "1189561c",
+    "0x3cc": "11895620",
+    "0x3e0": "989b53c0",
+    "0x3f0": "00002d03",
+    "0x420": "989b5480",
+    "0x430": "989b5490",
+    "0x440": "989b5498",
+    "0x450": "00003b83"
+   }
+  },
+  "code": {
+   "cpu": "008f7000",
+   "size": 28672,
+   "masked": "e2467c7252b0ac1f8061c9e5e7d56d96c0707fabadbe6d3928c567aa1bb76ea4",
+   "sha256": "d1b3a526eb14ad2948a0f3aea21f759aaa343edbab49ce9fd8ea746a606a1fd3",
+   "patch": {
+    "0xd68": "003a5000",
+    "0xd6c": "fca26040"
+   }
+  },
+  "vdm": {
+   "cpu": "008f3000",
+   "size": 16384,
+   "masked": "7b88949a119df056fd7905759cb764f191ab69398bbfa76b9869c8e561195e47",
+   "sha256": "e6bdd62d8271d10c0bf5ac438d3704104098fc1c036fda8a6d0014ba0d94b930",
+   "patch": {
+    "0x0": "4989b50a",
+    "0x8": "4989b514",
+    "0x14": "98967000",
+    "0x20": "9989b518",
+    "0x28": "4989b538",
+    "0x30": "4989b53e",
+    "0x3c": "98967000",
+    "0x48": "9989b542",
+    "0x50": "4989b506",
+    "0x58": "6989b500"
+   }
+  }
+ },
+ "payload": {
+  "words": 55,
+  "masked": "b83c800dc6ecd521f72816e8b1847bee6becc3021f35bc83b314c1b9479ea95a",
+  "patch": {
+   "12": "98956000",
+   "13": "98956000",
+   "18": "01895610",
+   "20": "11895612",
+   "46": "989a5000"
+  },
+  "sha256": "723b82a6a6790519f1b3dd00c67596d0be3674909311ca0d663ec6182d4566d7"
+ }
+}
