@@ -100,20 +100,18 @@ including the parts that didn't work.
       ADT carries Apple's host-mode PHY tuning; the port costs the console and
       the network, which Wi-Fi now covers, and the open question is VBUS — in
       host mode the iPad has to power the bus itself
-- [ ] Graphical Acceleration (SGX543MP2) — **in progress: the GPU runs its
-      microkernel under Linux** (2026-09-30). Two power domains (GFX_SYS, GFX) and iOS's own
-      init sequence — core enable, per-core clocks, master soft reset, taken from
-      IMGSGX543.kext — and the master and both cores report CORE_ID `0x01194201`,
-      revision 1.2.2. The "clock dead end" of the previous days never existed:
-      every freeze was a read of the write-only broadcast register bank. A
-      kernel driver (`drivers/misc/apple-sgx.c`) now does this at boot, and
-      **starts iOS's own GPU microkernel** (taken from your IPSW by
-      `./cascadia firmware`) with its own page tables: the GPU runs code
-      under Linux (start it with `echo 1 > /sys/kernel/debug/apple-sgx/boot`).
-      Next: talking to the microkernel (its command interface), then drawing;
-      no GL driver exists for this chip in the open. Recipe, register map and
-      the corrections: [docs/research/p105-gpu.md](docs/research/p105-gpu.md)
-      (see STATUS at top)
+- [x] Graphical Acceleration (SGX543MP2) — **2D on the GPU; SuperTux plays
+      at 60 fps** (2026-10-02). A kernel driver (`drivers/misc/apple-sgx.c`)
+      powers the GPU with iOS's own sequence and boots **iOS's own GPU
+      microkernel** (taken from your IPSW by `./cascadia firmware`); frames
+      are assembled from templates captured from iOS's GL driver (its
+      compiled shaders included), with the kernel's share computed by running
+      the kext's own code under an emulator. On that sits `sgx2d`, a small 2D
+      library (textured quads, colour modulation, three blend modes, full
+      screen), and an SDL2 renderer shim: `supertux-gpu` runs SuperTux with a
+      touch gamepad. No OpenGL — that would take a shader compiler. How to
+      build and play: [docs/GPU.md](docs/GPU.md); how it was found, wrong
+      turns included: [docs/research/p105-gpu.md](docs/research/p105-gpu.md)
 
 ## Where Linux keeps its files
 
@@ -673,9 +671,12 @@ initramfs/      stage 1 (/init) and stage 2 (/sbin/p105-stage2) -- the boot
                 itself.  ./cascadia rootfs lays both overlays onto the Alpine
                 minirootfs; nothing is edited inside build/
 tools/          p105-peek.c (MMIO tool), build/flash wrappers, LZSS helpers,
-                nand/ (nandctl, iosnand: the NAND, read-only)
+                nand/ (nandctl, iosnand: the NAND, read-only),
+                sgx/ (the GPU: sgx2d, the SDL shim, pack builder), iosgpu/
+                (the iOS capture tool, the kext emulator)
 docs/           QUICKSTART.md — clean machine to a shell on the device
                 CASCADIA-CHEATSHEET.md — the real reference for working on it
+                GPU.md — the GPU: building, playing SuperTux, how it works
 docs/research/  one file per investigation; several are dead ends, on purpose
 pongo/          pongoOS module (ADT read, DT fixup)
 mt-hook/        XNU multitouch hook (RE infrastructure)
