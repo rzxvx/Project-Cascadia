@@ -946,6 +946,45 @@ Not there yet: blend modes other than SRC_ALPHA/ONE_MINUS_SRC_ALPHA, custom
 shaders (a GLSL -> USSE compiler), a real device node (it all goes through
 debugfs, mapping and booting included).
 
+### M7 done: SuperTux on the GPU, playable at 60 fps (2026-10-02)
+
+`tools/sgx/lib/sgxsdl.c`, an `LD_PRELOAD` shim, draws SDL2's 2D renderer
+with sgx2d (`supertux.sh`: `supertux2 --renderer sdl --geometry 1024x768`,
+`SDL_VIDEODRIVER=offscreen`, the landscape window turned onto the portrait
+framebuffer). The real SDL keeps the window, events and bookkeeping; every
+drawing call goes to the GPU. Input is a touch gamepad drawn over the frame:
+the touchscreen (`event0`, 0..4096, multitouch) is read on a thread and its
+buttons pushed as SDL key events. The user played it: stable 60 fps.
+
+What it took, in order:
+
+- Texture memory: SuperTux makes ~4000 textures (tiles, text). Square
+  padding blew a 139x23 text line up to 256x256; textures are now
+  power-of-two rectangles -- the layout of a rectangle is a row of Morton
+  squares the size of the shorter edge (verified texel by texel, 64x16 and
+  16x64) -- and big images are resampled to the nearest power of two (up to
+  50% shrink above 512).
+- Speed, 2.9 -> 41 fps: perf showed 93% of the time in a linear search of
+  the texture table; it is a hash now.
+- Correctness: with blending on, the background object reloads every tile
+  from the output descriptor (3D PDS block +0x120). When the parameter
+  buffer runs out mid-frame the microkernel renders what it has and goes on
+  (a partial render); the second pass then reloaded tiles from a blank
+  surface and the sky disappeared. Found by dumping a frame's quads
+  (`SGX2D_DUMP`), replaying subsets (`replay`, `ONLY=a-b,...`) and bisecting
+  to the point where adding one more quad broke an earlier one. The
+  descriptor now reads the framebuffer itself, linear (the 2D engine's
+  format), so a partial render is lossless.
+- 41 -> 63 fps: a parameter buffer of 8 MiB (it was ~650 KiB) instead of
+  partial renders. GPU memory beyond the driver's own buffers is now
+  allocated page by page (`map_extra`: alloc_page + dma_map_page + one
+  write-combining vmap), so the 64 MiB CMA pool no longer limits textures
+  (64 MiB heap) or the PB.
+
+Not done: render targets (SuperTux's lightmap reads as white, so dark levels
+are not darkened), blend mode NONE (drawn as BLEND), sound (no audio
+device), and everything still goes through debugfs as root.
+
 ### Next
 
 Done since this list was first written: the page tables, the firmware
