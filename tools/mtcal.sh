@@ -47,7 +47,19 @@ if [ -n "${IOS_HOST:-}" ]; then
     HOST="$IOS_HOST"; PORT="${IOS_PORT:-22}"
     echo "==> iOS at $HOST:$PORT"
 else
-    HOST=127.0.0.1; PORT="${IOS_PORT:-2222}"
+    # The first free port from 2222: one may be taken by an iproxy left
+    # running from before -- seen on the Arch box, which then failed here
+    # with "Address already in use".
+    HOST=127.0.0.1; PORT="${IOS_PORT:-$(python3 -c '
+import socket
+for p in range(2222, 2300):
+    s = socket.socket()
+    try:
+        s.bind(("", p)); print(p); break
+    except OSError:
+        pass
+    finally:
+        s.close()')}"
     IPROXY="$(command -v iproxy || true)"
     if [ -z "$IPROXY" ]; then
         c=""
