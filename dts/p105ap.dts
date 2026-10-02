@@ -395,6 +395,18 @@
 		 * probe.  Baud may be wrong for USB-TTL until the real rate is
 		 * known — on-glass console=tty0 does not depend on it.
 		 */
+		/*
+		 * UART5, as the battery gauge's HDQ bus: a bq27540, the ADT's
+		 * uart5/gas-gauge.  Not a serial port for Linux -- the driver
+		 * talks HDQ through its registers (57600 8N2, one frame per HDQ
+		 * bit), as iBoot set it up; pin 196 is iBoot's mux.
+		 */
+		battery: hdq@2a00000 {
+			compatible = "apple,s5l8940x-hdq-battery";
+			reg = <0x2a00000 0x1000>;
+			status = "okay";
+		};
+
 		uart0: serial@2500000 {
 			compatible = "apple,s5l-uart", "samsung,s3c6400-uart";
 			reg = <0x2500000 0x1000>;

@@ -1316,3 +1316,34 @@ diff --git a/drivers/misc/Makefile b/drivers/misc/Makefile
  obj-$(CONFIG_ICS932S401)	+= ics932s401.o
  obj-$(CONFIG_LKDTM)		+= lkdtm/
  obj-$(CONFIG_TIFM_CORE)       	+= tifm_core.o
+diff --git a/drivers/power/supply/Kconfig b/drivers/power/supply/Kconfig
+index bcfa63fb9..e3d8b7b19 100644
+--- a/drivers/power/supply/Kconfig
++++ b/drivers/power/supply/Kconfig
+@@ -263,6 +263,14 @@ config MANAGER_SBS
+ 	  This driver can also be built as a module. If so, the module will be
+ 	  called sbs-manager.
+ 
++config BATTERY_APPLE_HDQ
++	tristate "Apple iPad mini 1 battery gauge (bq27540 on HDQ over UART)"
++	depends on ARCH_APPLE_S5L || COMPILE_TEST
++	help
++	  The iPad mini 1's bq27540 gas gauge, read over its one-wire HDQ bus
++	  through UART5 as iOS does it: charge, voltage, current, temperature,
++	  capacities and cycle count, as the "battery" power supply.
++
+ config BATTERY_BQ27XXX
+ 	tristate "BQ27xxx battery driver"
+ 	help
+diff --git a/drivers/power/supply/Makefile b/drivers/power/supply/Makefile
+index 8dcb41545..9665999c8 100644
+--- a/drivers/power/supply/Makefile
++++ b/drivers/power/supply/Makefile
+@@ -44,6 +44,7 @@ obj-$(CONFIG_BATTERY_WM97XX)	+= wm97xx_battery.o
+ obj-$(CONFIG_BATTERY_SBS)	+= sbs-battery.o
+ obj-$(CONFIG_CHARGER_SBS)	+= sbs-charger.o
+ obj-$(CONFIG_MANAGER_SBS)	+= sbs-manager.o
++obj-$(CONFIG_BATTERY_APPLE_HDQ)	+= apple-hdq-battery.o
+ obj-$(CONFIG_BATTERY_BQ27XXX)	+= bq27xxx_battery.o
+ obj-$(CONFIG_BATTERY_BQ27XXX_I2C) += bq27xxx_battery_i2c.o
+ obj-$(CONFIG_BATTERY_BQ27XXX_HDQ) += bq27xxx_battery_hdq.o

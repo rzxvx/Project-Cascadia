@@ -49,6 +49,7 @@ NEW_FILES = [
     "drivers/misc/apple-sgx.c",
     "drivers/mtd/devices/mtd-apple-h2fmi.c",
     "drivers/phy/phy-apple-s5l-usb.c",
+    "drivers/power/supply/apple-hdq-battery.c",
     "Documentation/devicetree/bindings/interrupt-controller/apple,aic1.yaml",
     "fs/hfsplus/decmpfs.c",
 ]
