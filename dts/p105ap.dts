@@ -292,6 +292,53 @@
 		clock-frequency = <24000000>;
 	};
 
+	/*
+	 * The four buttons, SoC GPIO pins 0-3 (the ADT's /buttons), pull-ups,
+	 * active low -- read live, docs/research/p105-gpio.md.  Hold is the
+	 * power key; Home is KEY_HOMEPAGE, as on Linux phones.  The side switch
+	 * (mute or rotation lock on iOS; the ADT's ringer A/B, pin 4) is a
+	 * switch, SW_MUTE_DEVICE -- its polarity not checked live yet.  The
+	 * smart-cover sensors are PMU GPIOs, not these.  Codes: KEY_HOMEPAGE
+	 * 172, KEY_POWER 116, KEY_VOLUMEUP 115, KEY_VOLUMEDOWN 114, EV_SW 5,
+	 * SW_MUTE_DEVICE 14; flags 1 = GPIO_ACTIVE_LOW.  Interrupts through the
+	 * GPIO block's group 0 (pinctrl-s5l8940x-gpio).
+	 */
+	gpio-keys {
+		compatible = "gpio-keys";
+
+		home {
+			label = "Home";
+			gpios = <&gpio 0 1>;
+			linux,code = <172>;
+			debounce-interval = <20>;
+		};
+		hold {
+			label = "Hold";
+			gpios = <&gpio 1 1>;
+			linux,code = <116>;
+			debounce-interval = <20>;
+		};
+		volume-up {
+			label = "Volume Up";
+			gpios = <&gpio 2 1>;
+			linux,code = <115>;
+			debounce-interval = <20>;
+		};
+		volume-down {
+			label = "Volume Down";
+			gpios = <&gpio 3 1>;
+			linux,code = <114>;
+			debounce-interval = <20>;
+		};
+		side-switch {
+			label = "Side Switch";
+			gpios = <&gpio 4 1>;
+			linux,input-type = <5>;
+			linux,code = <14>;
+			debounce-interval = <50>;
+		};
+	};
+
 	soc: soc@30000000 {
 		compatible = "simple-bus";
 		#address-cells = <1>;
@@ -317,13 +364,10 @@
 
 		/*
 		 * GPIO block.  28 ports, 8 interrupt groups
-		 * multiplexed onto a single AIC line.  Needed here only because
-		 * the touch controller's attention line hangs off it.
-		 *
-		 * TODO: no upstream driver binds apple,s5l8940x-gpio.  Until one
-		 * exists the touchscreen child below cannot get a real interrupt
-		 * and the userspace daemon must poll.  Kept in the DT so the
-		 * wiring is recorded.
+		 * multiplexed onto a single AIC line.  Driven by
+		 * pinctrl-s5l8940x-gpio (patches/files-sandcastle-port, from
+		 * Corellium's A5 work): Wi-Fi's HOST_READY, the buttons
+		 * (gpio-keys above), the touch controller's lines.
 		 */
 		gpio: gpio@fa00000 {
             compatible = "apple,s5l8940x-gpio";
