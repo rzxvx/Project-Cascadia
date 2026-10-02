@@ -306,14 +306,15 @@ had that do not work here:
 ## Games on the GPU
 
 SuperTux runs on the GPU at 60 fps, played with a touch gamepad. With the
-iPad booted from NFS and `apk add supertux` done on it:
+iPad booted from NFS and `./cascadia net on`:
 
 ```bash
-./cascadia gpucap            # once, with the iPad in its jailbroken iOS
-./cascadia gpu --root        # into this host's NFS root
+./cascadia gpu
 ```
 
-then `supertux-gpu` on the iPad. [GPU.md](GPU.md) has what is needed, the
+then `supertux-gpu` on the iPad. The first time it needs the iPad in its
+jailbroken iOS once, for the GPU's templates — unless you flash with
+`--kdfu`, which takes them on the way. [GPU.md](GPU.md) has the details, the
 controls and how it works.
 
 ## When it goes wrong

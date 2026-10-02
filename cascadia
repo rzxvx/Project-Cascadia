@@ -12,8 +12,8 @@
 #   ./cascadia link        give this host 10.55.0.1 on the device's link (flash does it)
 #   ./cascadia net on|off  share this host's internet with it  (macOS or Linux)
 #   ./cascadia nfs on|off  export a root filesystem to it      (macOS or Linux)
-#   ./cascadia gpucap      the GPU's 2D templates, from the iPad's iOS (once)
-#   ./cascadia gpu         SuperTux on the GPU: build, --install or --root
+#   ./cascadia gpu         SuperTux on the GPU: everything, in one go
+#   ./cascadia gpucap      only its templates from the iPad's iOS (gpu does it)
 #   ./cascadia image       rebuild the build image if the Dockerfile changed
 #
 # Everything is relative to this file, so the repository works wherever it is
@@ -432,17 +432,32 @@ so this is a file in build/initramfs-root owned by some third uid."
     ls -l "$ROOT/output/staging-bundle.bin" "$ROOT/output/staging-loader.bin"
 }
 
-# The GPU's 2D pack and SuperTux on it (docs/GPU.md).  Built in the build
-# image -- unicorn for the kext's emulated code, the ARM cross compiler for
-# the device's binaries -- and installed from the host: over ssh to the
-# device, or into a root tree on this machine.
+# SuperTux on the GPU (docs/GPU.md), in one command.  What it needs and does
+# not have yet, it gets: the kernelcache out of the IPSW (firmware), the 2D
+# templates out of the iPad's iOS (gpucap -- flash --kdfu also takes them on
+# the way).  Built in the build image -- unicorn for the kext's emulated
+# code, the ARM cross compiler for the device's binaries -- and installed from
+# the host: into the running device's NFS root over ssh, with SuperTux itself
+# from apk, or else into the root this host exports.
 cmd_gpu() {
+    if [ ! -f "$ROOT/build/firmware/kernelcache.12H321.macho" ]; then
+        say "the GPU kext's code comes from the IPSW's kernelcache: ./cascadia firmware"
+        cmd_firmware
+    fi
+    if [ ! -f "$ROOT/logs/ios/mod/gt_m_blend.bin" ]; then
+        if ssh -o BatchMode=yes -o ConnectTimeout=4 root@10.55.0.2 true 2>/dev/null; then
+            fail "the GPU's 2D templates come from the iPad's iOS, once, and it is in Linux now.
+  Boot it into iOS and run ./cascadia gpu again.  (./cascadia flash --kdfu
+  takes them by itself on the way, while iOS is up.)"
+        fi
+        say "the GPU's 2D templates come from the iPad's iOS, once: ./cascadia gpucap"
+        bash "$ROOT/tools/gpucap.sh"
+    fi
     in_docker "python3 tools/sgx/mkpack.py"
     if [ $# -gt 0 ]; then
         python3 "$ROOT/tools/sgx/mkpack.py" "$@"
     else
-        note "install it:  ./cascadia gpu --install   (over ssh, into the device's running root)"
-        note "         or  ./cascadia gpu --root      (into the root ./cascadia nfs exports)"
+        python3 "$ROOT/tools/sgx/mkpack.py" --auto
     fi
 }
 

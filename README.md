@@ -109,8 +109,9 @@ including the parts that didn't work.
       the kext's own code under an emulator. On that sits `sgx2d`, a small 2D
       library (textured quads, colour modulation, three blend modes, full
       screen), and an SDL2 renderer shim: `supertux-gpu` runs SuperTux with a
-      touch gamepad. No OpenGL — that would take a shader compiler. How to
-      build and play: [docs/GPU.md](docs/GPU.md); how it was found, wrong
+      touch gamepad. No OpenGL — that would take a shader compiler. Set up
+      with one command, `./cascadia gpu`; details and controls:
+      [docs/GPU.md](docs/GPU.md); how it was found, wrong
       turns included: [docs/research/p105-gpu.md](docs/research/p105-gpu.md)
 
 ## Where Linux keeps its files
