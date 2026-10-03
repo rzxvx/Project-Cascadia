@@ -19,8 +19,10 @@
  *
  *  - USE_CODE_BASE_3 and USE_CODE_BASE_5 (the ones iOS's GL driver uses)
  *    point at APPLE_SGX_PARAM_CODE_BASE.  A DOUTU word for code at GPU
- *    address A is ((A - CODE_BASE) / 8) << 4 | 3.  Buffers created with
- *    APPLE_SGX_BO_USSE_CODE land above the base.
+ *    address A is ((A - CODE_BASE) / 8) << 4 | 3, the index in 20 bits:
+ *    code has to be within 8 MiB of the base.  Buffers created with
+ *    APPLE_SGX_BO_USSE_CODE land there (kernels before 2026-10-04 gave
+ *    CODE_VA_END as base + 16 MiB and used the top of it: out of reach).
  *
  *  - A render (the TA, then the 3D pass) is submitted as the TA command iOS
  *    puts in a render context's CCB, built by the caller as for debugfs's

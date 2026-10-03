@@ -52,8 +52,12 @@ struct page;
  *   0x80800000-0xefffffff render node buffers (apple_sgx_drm.h), and what
  *                         debugfs "map" puts there
  *     0x90000000-+16 MiB  the framebuffer, for the 2D engine and renders
- *     0x9a000000-+16 MiB  the USSE code zone; USE_CODE_BASE_3 and _5 point
- *                         at its start
+ *     0x9a000000-+8 MiB   the USSE code zone; USE_CODE_BASE_3 and _5 point
+ *                         at its start.  8 MiB is all a DOUTU or a PHAS can
+ *                         reach: they name a program by its index from the
+ *                         base, 20 bits of 8-byte instructions.  (It was 16
+ *                         MiB, handed out top down, and Mesa's first program
+ *                         landed out of reach: every render hung.)
  *     0xa8000000-         where the kernel picks addresses, top down
  *
  * PDS data pointers carry bit 31 implied, so everything a PDS program reads
@@ -65,7 +69,7 @@ struct page;
 #define SGX_USER_VA_START		0x80800000u
 #define SGX_USER_VA_END			0xf0000000u
 #define SGX_CODE_BASE			0x9a000000u
-#define SGX_CODE_VA_END			(SGX_CODE_BASE + SZ_16M)
+#define SGX_CODE_VA_END			(SGX_CODE_BASE + SZ_8M)
 #define SGX_AUTO_VA_START		0xa8000000u
 
 /* The GPU clock in kHz: GFX-CLK, PLL@0x18 (513 MHz) / 5 in perf state 2. */
