@@ -16,7 +16,7 @@ What is taken, from the kext in the 8.4.1 (12H321) kernelcache:
                                     the host fills in
 
 docs/research/p105-gpu.md ("The microkernel, and how iOS boots it") has the
-layout of both.  The driver (drivers/misc/apple-sgx.c) uses offsets into
+layout of both.  The driver (drivers/gpu/drm/apple-sgx) uses offsets into
 these exact bytes, so both are checked against the hashes of the 12H321
 build and anything else is refused rather than half-loaded.
 

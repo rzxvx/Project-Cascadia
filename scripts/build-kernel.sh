@@ -145,6 +145,11 @@ for sym in CONFIG_USB_EHCI_HCD_PLATFORM CONFIG_CFG80211 CONFIG_BRCMFMAC_USB; do
         echo "    note: $sym did not survive olddefconfig -- no Wi-Fi"
     fi
 done
+if grep -q "^CONFIG_DRM_APPLE_SGX=y" "$TREE/.config"; then
+    echo "    ok: CONFIG_DRM_APPLE_SGX"
+else
+    echo "    note: CONFIG_DRM_APPLE_SGX did not survive olddefconfig -- no GPU"
+fi
 
 echo "==> Building zImage with -j$JOBS (log: logs/kernel-build.log)"
 make -C "$TREE" -j"$JOBS" zImage > "$LOGS/kernel-build.log" 2>&1

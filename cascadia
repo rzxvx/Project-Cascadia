@@ -280,7 +280,7 @@ cmd_build() {
     else
         note "note: no Bluetooth firmware -- ./cascadia firmware extracts it from the IPSW"
     fi
-    # The GPU's microkernel, for drivers/misc/apple-sgx.c.  Apple's, so it
+    # The GPU's microkernel, for drivers/gpu/drm/apple-sgx.  Apple's, so it
     # comes out of the kernelcache like the rest (scripts/extract-sgx-firmware.py).
     if [ -s "$ROOT/build/firmware/sgx543.fw" ]; then
         mkdir -p "$ROOT/build/initramfs-root/lib/firmware/apple"

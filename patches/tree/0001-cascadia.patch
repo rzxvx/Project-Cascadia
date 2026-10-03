@@ -1396,42 +1396,31 @@ diff --git a/drivers/mtd/devices/Makefile b/drivers/mtd/devices/Makefile
  
  
  CFLAGS_docg3.o			+= -I$(src)
-diff --git a/drivers/misc/Kconfig b/drivers/misc/Kconfig
---- a/drivers/misc/Kconfig
-+++ b/drivers/misc/Kconfig
-@@ -56,6 +56,21 @@
- 	  This module accepts a single 'irq' parameter, which it should register for.
- 	  The sole purpose of this module is to help with debugging of systems on
- 	  which spurious IRQs would happen on disabled IRQ vector.
-+
-+config APPLE_SGX
-+	tristate "Apple S5L8940X PowerVR SGX543MP2 power-on"
-+	depends on ARCH_APPLE_S5L || COMPILE_TEST
-+	depends on COMMON_CLK && OF
-+	help
-+	  Switches on the GPU of the Apple A5 (S5L8940X/8942X), a PowerVR
-+	  SGX543MP2, runs the initialisation iOS runs, checks that the
-+	  master and every core answer, and shows their registers in
-+	  debugfs (apple-sgx/regs).
-+
-+	  This is the first piece of a GPU driver, not a GPU driver: there
-+	  is no memory management, no microkernel and no rendering.
-+
-+	  If unsure, say N.
+diff --git a/drivers/gpu/drm/Kconfig b/drivers/gpu/drm/Kconfig
+index 1cb5a4f19..a54282595 100644
+--- a/drivers/gpu/drm/Kconfig
++++ b/drivers/gpu/drm/Kconfig
+@@ -449,6 +449,8 @@ source "drivers/gpu/drm/vboxvideo/Kconfig"
  
- config IBM_ASM
- 	tristate "Device driver for IBM RSA service processor"
-diff --git a/drivers/misc/Makefile b/drivers/misc/Makefile
---- a/drivers/misc/Makefile
-+++ b/drivers/misc/Makefile
-@@ -10,6 +10,7 @@
- obj-$(CONFIG_AD525X_DPOT_SPI)	+= ad525x_dpot-spi.o
- obj-$(CONFIG_ATMEL_SSC)		+= atmel-ssc.o
- obj-$(CONFIG_DUMMY_IRQ)		+= dummy-irq.o
-+obj-$(CONFIG_APPLE_SGX)		+= apple-sgx.o
- obj-$(CONFIG_ICS932S401)	+= ics932s401.o
- obj-$(CONFIG_LKDTM)		+= lkdtm/
- obj-$(CONFIG_TIFM_CORE)       	+= tifm_core.o
+ source "drivers/gpu/drm/lima/Kconfig"
+ 
++source "drivers/gpu/drm/apple-sgx/Kconfig"
++
+ source "drivers/gpu/drm/panfrost/Kconfig"
+ 
+ source "drivers/gpu/drm/panthor/Kconfig"
+diff --git a/drivers/gpu/drm/Makefile b/drivers/gpu/drm/Makefile
+index 784229d45..2f13b67fe 100644
+--- a/drivers/gpu/drm/Makefile
++++ b/drivers/gpu/drm/Makefile
+@@ -207,6 +207,7 @@ obj-$(CONFIG_DRM_TVE200) += tve200/
+ obj-$(CONFIG_DRM_XEN) += xen/
+ obj-$(CONFIG_DRM_VBOXVIDEO) += vboxvideo/
+ obj-$(CONFIG_DRM_LIMA)  += lima/
++obj-$(CONFIG_DRM_APPLE_SGX) += apple-sgx/
+ obj-$(CONFIG_DRM_PANFROST) += panfrost/
+ obj-$(CONFIG_DRM_PANTHOR) += panthor/
+ obj-$(CONFIG_DRM_ASPEED_GFX) += aspeed/
 diff --git a/drivers/power/supply/Kconfig b/drivers/power/supply/Kconfig
 index bcfa63fb9..e3d8b7b19 100644
 --- a/drivers/power/supply/Kconfig
