@@ -241,8 +241,9 @@ every operand of every instruction the corpus produces.
 the few lines that register it with Mesa (`mesa/mesa.patch`: the
 `gallium-drivers` choice `sgx`, the meson subdirectories, the
 `apple_sgx` DRM driver descriptor for the pipe loader, the dril entry point),
-and the build (`mesa/build.sh`, `./cascadia mesa`). Mesa is 26.1.8, from
-freedesktop.org at the tag, checked by commit.
+and the build (`mesa/build.sh`, `./cascadia mesa`). Mesa is 26.1.8, at the
+tag, checked by commit; `mesa/fetch.sh` clones it on the host (freedesktop.org,
+a GitHub mirror if that does not answer).
 
 | file | what |
 |---|---|
@@ -299,6 +300,27 @@ with `sgx-gl` to run things with it):
 The driver says at start whether clears go to the GPU (`template frame
 768x1024 from ...`) or the CPU (no pack, or its buffers taken -- SuperTux
 running, say). `0 wrong` from glclear on the GPU path is the milestone.
+
+**First run on the device (2026-10-03).** Two things went wrong before a
+clear could.
+
+- The clone of Mesa, inside the armv7 container, sat for over an hour on a Mac
+  (git under emulation, quiet with `-q`). It is done on the host now,
+  natively, with progress, a minute's stall as the limit and a mirror to fall
+  back on; the container only builds.
+- The driver came up (`template frame 768x1024`, `clears on the GPU`), and
+  then GL had no context: `glGetString` returned NULL with `GL_INVALID_OPERATION
+  in Inside glBegin/glEnd` and a spurious `1 similar GL_NONE errors`, and
+  glclear died of a bus error before its first clear. The context pointer
+  itself was wrong. Mesa's `meson.build` turns on TLS descriptors
+  (`-mtls-dialect=gnu2`) whenever the compiler takes the flag, and on 32-bit
+  ARM the current context (`_mesa_glapi_tls_Context`) then reads back as
+  garbage. The same Mesa, cross-built for armhf (glibc) and run under
+  `qemu-arm` with the drm-shim (which needed wrappers for glibc's 64-bit-time
+  `__ioctl_time64`, `__fcntl_time64`, `__stat64_time64`, `__fstat64_time64`
+  there), crashes at that read in `_mesa_make_current`; with
+  `-mtls-dialect=gnu` it gives the strings and `0 wrong`. `build.sh` passes
+  that now, and reconfigures a tree built with other options.
 
 Not yet: draws (`draw_vbo` says so once and drops them), textures in any
 layout but linear, scanout (EGL has the surfaceless and GBM platforms; the

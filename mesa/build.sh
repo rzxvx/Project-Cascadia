@@ -6,29 +6,26 @@
 # build/mesa/install/usr/local/lib/sgx-mesa: libEGL, libGLESv2, libgbm and
 # libgallium with only the sgx driver in it, glclear, sgx-gl.
 #
-# Mesa itself comes from freedesktop.org at the pinned tag (checked by
-# commit); this repository has the driver (mesa/files, copied into the
-# tree) and the few lines that register it (mesa/mesa.patch).  The first
-# build takes long under ARM emulation; after that only what changed is
-# built again.
+# Mesa itself is fetched on the host beforehand (mesa/fetch.sh, which
+# ./cascadia mesa runs first: git under emulation is far too slow); this
+# repository has the driver (mesa/files, copied into the tree) and the few
+# lines that register it (mesa/mesa.patch).  The first build takes long
+# under ARM emulation; after that only what changed is built again.
 set -eu
 ROOT=/cascadia
 B=$ROOT/build/mesa
-TAG=mesa-26.1.8
-COMMIT=0fadfea4f394211946f308458f614839ef253ee8
+COMMIT=$(sed -n 's/^COMMIT=\([0-9a-f]*\).*/\1/p' "$ROOT/mesa/fetch.sh")
 PREFIX=/usr/local/lib/sgx-mesa
 
 say() { printf '==> %s\n' "$*"; }
 fail() { printf 'error: %s\n' "$*" >&2; exit 1; }
-g() { git -c safe.directory='*' -C "$B/src" "$@"; }
+# the tree was checked out by the host's git: its index has the host's
+# inode numbers, so compare files by size and time only, or git would read
+# every file again (slow, under emulation)
+g() { git -c safe.directory='*' -c core.checkStat=minimal -c core.trustctime=false -C "$B/src" "$@"; }
 
-mkdir -p "$B"
-if [ ! -d "$B/src/.git" ]; then
-    say "Mesa $TAG from gitlab.freedesktop.org"
-    rm -rf "$B/src"
-    git clone -q --depth 1 --branch "$TAG" https://gitlab.freedesktop.org/mesa/mesa.git "$B/src"
-fi
-[ "$(g rev-parse HEAD)" = "$COMMIT" ] || fail "$B/src is not $TAG ($COMMIT)"
+[ "$(g rev-parse -q --verify HEAD 2>/dev/null)" = "$COMMIT" ] \
+    || fail "build/mesa/src is not Mesa at $COMMIT -- ./cascadia mesa fetches it (mesa/fetch.sh)"
 
 say "the sgx driver into the tree"
 # copy only what changed, so ninja rebuilds only that
@@ -47,16 +44,31 @@ if ! g apply --reverse --check "$ROOT/mesa/mesa.patch" 2>/dev/null; then
     printf '    applied mesa/mesa.patch\n'
 fi
 
+# -mtls-dialect=gnu: left to itself, Mesa's meson.build finds that the
+# compiler takes -mtls-dialect=gnu2 (TLS descriptors) and builds with it,
+# and on 32-bit ARM the current GL context then comes back wrong: garbage on
+# the iPad (glGetString NULL, "Inside glBegin/glEnd", a bus error), a crash
+# in _mesa_make_current under qemu with glibc.  The classic dialect is right
+# on both.  The options are kept in a stamp, so a change reconfigures.
+OPTS="--prefix=$PREFIX --libdir=lib --buildtype=debugoptimized
+    -Dc_args=-mtls-dialect=gnu -Dcpp_args=-mtls-dialect=gnu
+    -Dgallium-drivers=sgx -Dvulkan-drivers= -Dplatforms=
+    -Dglx=disabled -Degl=enabled -Dgbm=enabled -Dgles1=disabled -Dgles2=enabled
+    -Dopengl=true -Dglvnd=disabled -Dllvm=disabled -Dvalgrind=disabled
+    -Dlibunwind=disabled -Dzstd=disabled -Dxmlconfig=disabled -Dexpat=disabled
+    -Dshader-cache=disabled -Dtools= -Dbuild-tests=false -Dgallium-va=disabled
+    -Dgallium-rusticl=false -Dvideo-codecs= -Dteflon=false -Dlmsensors=disabled
+    -Dmicrosoft-clc=disabled -Dspirv-tools=disabled"
 if [ ! -f "$B/build/build.ninja" ]; then
     say "configuring"
-    meson setup "$B/build" "$B/src" --prefix="$PREFIX" --libdir=lib --buildtype=debugoptimized \
-        -Dgallium-drivers=sgx -Dvulkan-drivers= -Dplatforms= \
-        -Dglx=disabled -Degl=enabled -Dgbm=enabled -Dgles1=disabled -Dgles2=enabled \
-        -Dopengl=true -Dglvnd=disabled -Dllvm=disabled -Dvalgrind=disabled \
-        -Dlibunwind=disabled -Dzstd=disabled -Dxmlconfig=disabled -Dexpat=disabled \
-        -Dshader-cache=disabled -Dtools= -Dbuild-tests=false -Dgallium-va=disabled \
-        -Dgallium-rusticl=false -Dvideo-codecs= -Dteflon=false -Dlmsensors=disabled \
-        -Dmicrosoft-clc=disabled -Dspirv-tools=disabled >/dev/null
+    # shellcheck disable=SC2086
+    meson setup "$B/build" "$B/src" $OPTS >/dev/null
+    printf '%s\n' "$OPTS" > "$B/build/.cascadia-options"
+elif [ "$(cat "$B/build/.cascadia-options" 2>/dev/null)" != "$OPTS" ]; then
+    say "configuring again (the options changed: everything is built again)"
+    # shellcheck disable=SC2086
+    meson setup --reconfigure "$B/build" "$B/src" $OPTS >/dev/null
+    printf '%s\n' "$OPTS" > "$B/build/.cascadia-options"
 fi
 
 say "building (the first time is slow under emulation)"
