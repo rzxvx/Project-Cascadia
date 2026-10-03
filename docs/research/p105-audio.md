@@ -116,9 +116,34 @@ bit in a mask of devices that need AE2; the first one runs `enableAE2`
 then **MCS `+0x10 + 4*i` = 1 for i = 0..6** (0..4 when `ae2-version` ≤ 1).
 AE2 (id 112) has no PMGR register of its own.
 
+## The i2s-switch encoder (AppleAE2I2SSwitch2, vtable `0x80cfc0c8`)
+
+Own methods: `+0x34c` node count (`[+0x70] + [+0x74] + 7`), `+0x350` index →
+name (`dspN`, `dspc`, `audN`, `pinN`, `mcaN`), `+0x354` node type, `+0x358`
+register count (21), `+0x364` writes the 21 words to `0x3fa01000`, and
+**`+0x360` (`0x80cf950c`) encodes one edge** into a mask array and a value
+array (21 words each) — `(signal type lr = 0/1/2, src, dst, index…)`. What
+it does, so far:
+
+- destination `pinN` → `reg[N]`: bit 15 on; type 0: source in bits 8..11
+  (`dspK` → `4+K`, `audN`/`mcaN` (N > 0) → `7+N`), `aud0` in bits 12..14
+  (`7 − pin`); type 1: bits 0..4, `0x10 |` source (`dspK` → `8+K`, `mcaN` →
+  `4+N`);
+- the port side: `reg[0xa+N]` / `reg[0xb+N]` bits 8..12 (`0x800 + pin<<8` for
+  aud, `0x1000 + pin<<8` for mca) and bits 0..4 for type 1;
+- `reg[5+N]` for aud, `reg[9+N]` for mca (bits 8..11 or 0..3);
+- `reg[0xf]` for `dspc`; type 2 (data?) sets `reg[0x10+N]` bit 0 when an
+  aud drives its own pin; `reg[0x14]` bit 0 for the special pin4 → mca0.
+
+The base router (AppleARMIISSwitch, `0x804c09a8`) decides which edges and
+which signal types to encode from the route's flag bytes — the ADT's
+`0x030303` (mca0 → pin1), `0x300003` (aud1 → pin1), `0x330303` (aud0 → pin0)
+— and is the part still to read before the table for a route can be
+computed.
+
 ## Still open
 
-1. **The i2s-switch's 21 registers.** `'i2sR'` lands in AppleARMIISSwitch's
+1. **The i2s-switch's 21 registers** (the router, above). `'i2sR'` lands in AppleARMIISSwitch's
    generic router (`0x804c09a8`): a graph of dsp/aud/mca/pin nodes and per-
    signal edges (the flag bytes `03 03 03`) that computes a 21-word table;
    AppleAE2I2SSwitch2 only copies it to `0x3fa01000`. Linux reads all zero.
