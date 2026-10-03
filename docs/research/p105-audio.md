@@ -116,6 +116,34 @@ right, no sense outputs: `0x07 = 0xf8`, `0x2d..0x31 = 0x80`,
 Power-off: all `0x10 = 0x19`, `0x06` bit 7, `0x07 = 0xfe`, wait 1 ms,
 `0x06 = 0x87`, wait 4 ms, MCLK off.
 
+## On the hardware: I2S1 by hand (2026-10-03, `tools/audio/i2s1-probe.c`)
+
+The clock tree, from the pmgr node's `device-clocks`:
+
+    AUDIO-CLK (21)  clock 0x3f100058, parents PREDIV0..3      off under Linux (0)
+    AUDIO (46)      power 0x3f10109c, parent AUDIO-CLK        on (0x2ff)
+    AE2 (112), I2S0..3 (115..118), SPDIF, MCA (47) -- parent AUDIO
+      (AE2 has no power-state register of its own; MCA0/1 hang off MCA)
+    NCO_REF0/1 (121/122) clocks 0x3f1000c0/c4, parents PREDIV0..3
+                    iBoot leaves them on: 0xb0000002, 0x80000001
+
+What happened, in order:
+
+- I2S1's power state (`0x3f1010a4`) goes on with the usual recipe.
+- `AUDIO-CLK = 0x80000001` sticks (reads `0xc0000001` right after, then
+  `0x80000001`).
+- NCO1 takes iOS's sequence without a timeout: `90000c00 00bb8000 ff4d4a00`.
+- I2S1's registers take TXCON/TXCOM/CLKCON, and **STATUS counts the TX FIFO
+  from bit 7** (`+0x80` a word, 64 deep, a 6-bit field). The FIFO never
+  drains — no bit clock — with CLKCON 1, 0x5, 0x11, 0x15 and TXCOM 4, 5, 6, 0xc.
+- **AE2's ACS `+0x14 = 1`** (what `enableAE2` writes for I2S1) makes every I2S1
+  register read `0x0015006b` and drops writes, with or without the NCO
+  running; back to 0 and the block answers again. ACS evidently moves the
+  device onto AE2's clock, which is not running. In iOS the device-clock
+  function is `AppleA5AE2DeviceClockPutA5InWFIFunction`, which builds an IOP
+  endpoint: the AE2's Cortex-A5 probably has to be booted (into WFI) for
+  those clocks to run. That is the next thing to read.
+
 ## Still open
 
 1. **MCA0's registers** for a 2 x 32-bit TX stream as a clock slave (or
