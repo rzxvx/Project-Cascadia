@@ -1,0 +1,14 @@
+#!/bin/sh
+# sgx-gl PROGRAM [ARGS] -- run PROGRAM with the Mesa that has the SGX's
+# driver (/usr/local/lib/sgx-mesa, mesa/build.sh) instead of the system's.
+#
+#   sgx-gl glclear 100 --fb
+#   sgx-gl eglinfo            (apk add mesa-demos)
+#
+# SGX_DEBUG=frame says what each render is; SGX_PACK names the template
+# frame (default /usr/local/lib/sgx2d, from ./cascadia gpu).
+P=/usr/local/lib/sgx-mesa
+export LD_LIBRARY_PATH="$P/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+export GBM_BACKENDS_PATH="$P/lib/gbm"
+export PATH="$P/bin:$PATH"
+exec "$@"
