@@ -1,0 +1,130 @@
+diff --git a/meson.build b/meson.build
+index c18edad..6ed3ec8 100644
+--- a/meson.build
++++ b/meson.build
+@@ -228,6 +228,7 @@ with_gallium_i915 = gallium_drivers.contains('i915')
+ with_gallium_svga = gallium_drivers.contains('svga')
+ with_gallium_virgl = gallium_drivers.contains('virgl')
+ with_gallium_lima = gallium_drivers.contains('lima')
++with_gallium_sgx = gallium_drivers.contains('sgx')
+ with_gallium_zink = gallium_drivers.contains('zink')
+ with_gallium_d3d12 = gallium_drivers.contains('d3d12')
+ with_gallium_asahi = gallium_drivers.contains('asahi')
+diff --git a/meson.options b/meson.options
+index 220d46e..3fdab70 100644
+--- a/meson.options
++++ b/meson.options
+@@ -88,7 +88,7 @@ option(
+     'all', 'auto',
+     'asahi', 'crocus', 'd3d12', 'ethosu', 'etnaviv', 'freedreno', 'i915', 'iris',
+     'lima', 'llvmpipe', 'nouveau', 'panfrost', 'r300', 'r600', 'radeonsi',
+-    'rocket', 'softpipe', 'svga', 'tegra', 'v3d', 'vc4', 'virgl', 'zink',
++    'rocket', 'sgx', 'softpipe', 'svga', 'tegra', 'v3d', 'vc4', 'virgl', 'zink',
+   ],
+   description : 'List of gallium drivers to build. If this is set to auto ' +
+                 'all drivers applicable to the target OS/architecture ' +
+diff --git a/src/gallium/auxiliary/pipe-loader/pipe_loader_drm.c b/src/gallium/auxiliary/pipe-loader/pipe_loader_drm.c
+index dc631b4..96a7737 100644
+--- a/src/gallium/auxiliary/pipe-loader/pipe_loader_drm.c
++++ b/src/gallium/auxiliary/pipe-loader/pipe_loader_drm.c
+@@ -88,6 +88,7 @@ static const struct drm_driver_descriptor *driver_descriptors[] = {
+    &ethosu_driver_descriptor,
+    &tegra_driver_descriptor,
+    &lima_driver_descriptor,
++   &apple_sgx_driver_descriptor,
+    &zink_driver_descriptor,
+    &kmsro_driver_descriptor,
+ };
+diff --git a/src/gallium/auxiliary/target-helpers/drm_helper.h b/src/gallium/auxiliary/target-helpers/drm_helper.h
+index 65481b3..2ca6c38 100644
+--- a/src/gallium/auxiliary/target-helpers/drm_helper.h
++++ b/src/gallium/auxiliary/target-helpers/drm_helper.h
+@@ -414,6 +414,23 @@ DRM_DRIVER_DESCRIPTOR(lima, lima_driconf, ARRAY_SIZE(lima_driconf))
+ DRM_DRIVER_DESCRIPTOR_STUB(lima)
+ #endif
+ 
++#ifdef GALLIUM_SGX
++#include "sgx/drm/sgx_drm_public.h"
++
++static struct pipe_screen *
++pipe_apple_sgx_create_screen(int fd, const struct pipe_screen_config *config)
++{
++   struct pipe_screen *screen;
++
++   screen = sgx_drm_screen_create(fd, config);
++   return screen ? debug_screen_wrap(screen) : NULL;
++}
++DRM_DRIVER_DESCRIPTOR(apple_sgx, NULL, 0)
++
++#else
++DRM_DRIVER_DESCRIPTOR_STUB(apple_sgx)
++#endif
++
+ #ifdef GALLIUM_ZINK
+ #include "zink/zink_public.h"
+ 
+diff --git a/src/gallium/auxiliary/target-helpers/drm_helper_public.h b/src/gallium/auxiliary/target-helpers/drm_helper_public.h
+index fe0e122..0a9f3fe 100644
+--- a/src/gallium/auxiliary/target-helpers/drm_helper_public.h
++++ b/src/gallium/auxiliary/target-helpers/drm_helper_public.h
+@@ -26,6 +26,7 @@ extern const struct drm_driver_descriptor rocket_driver_descriptor;
+ extern const struct drm_driver_descriptor ethosu_driver_descriptor;
+ extern const struct drm_driver_descriptor tegra_driver_descriptor;
+ extern const struct drm_driver_descriptor lima_driver_descriptor;
++extern const struct drm_driver_descriptor apple_sgx_driver_descriptor;
+ extern const struct drm_driver_descriptor zink_driver_descriptor;
+ extern const struct drm_driver_descriptor kmsro_driver_descriptor;
+ 
+diff --git a/src/gallium/meson.build b/src/gallium/meson.build
+index 67011f5..2fd55c4 100644
+--- a/src/gallium/meson.build
++++ b/src/gallium/meson.build
+@@ -184,6 +184,12 @@ if with_gallium_lima
+ else
+   driver_lima = declare_dependency()
+ endif
++if with_gallium_sgx
++  subdir('winsys/sgx/drm')
++  subdir('drivers/sgx')
++else
++  driver_sgx = declare_dependency()
++endif
+ if with_gallium_rocket
+   subdir('winsys/rocket/drm')
+   subdir('drivers/rocket')
+diff --git a/src/gallium/targets/dri/meson.build b/src/gallium/targets/dri/meson.build
+index c526ffe..99b7b40 100644
+--- a/src/gallium/targets/dri/meson.build
++++ b/src/gallium/targets/dri/meson.build
+@@ -61,7 +61,7 @@ libgallium_dri = shared_library(
+     driver_kmsro, driver_v3d, driver_vc4, driver_freedreno, driver_etnaviv,
+     driver_tegra, driver_i915, driver_svga, driver_virgl,
+     driver_panfrost, driver_iris, driver_lima, driver_zink, driver_d3d12,
+-    driver_asahi, driver_crocus, driver_rocket, driver_ethosu
++    driver_asahi, driver_crocus, driver_rocket, driver_ethosu, driver_sgx
+   ],
+   install : true,
+   name_suffix : libname_suffix,
+diff --git a/src/gallium/targets/dril/dril_target.c b/src/gallium/targets/dril/dril_target.c
+index b5ba518..4642458 100644
+--- a/src/gallium/targets/dril/dril_target.c
++++ b/src/gallium/targets/dril/dril_target.c
+@@ -685,5 +685,6 @@ DEFINE_LOADER_DRM_ENTRYPOINT(sun4i_drm)
+ DEFINE_LOADER_DRM_ENTRYPOINT(udl)
+ DEFINE_LOADER_DRM_ENTRYPOINT(zynqmp_dpsub)
+ DEFINE_LOADER_DRM_ENTRYPOINT(lima)
++DEFINE_LOADER_DRM_ENTRYPOINT(apple_sgx)
+ DEFINE_LOADER_DRM_ENTRYPOINT(d3d12)
+ DEFINE_LOADER_DRM_ENTRYPOINT(zink)
+diff --git a/src/gallium/targets/dril/meson.build b/src/gallium/targets/dril/meson.build
+index 55f10dc..2b46aef 100644
+--- a/src/gallium/targets/dril/meson.build
++++ b/src/gallium/targets/dril/meson.build
+@@ -122,6 +122,7 @@ foreach d : [[with_gallium_kmsro, [
+                (with_gallium_radeonsi and with_amdgpu_virtio),
+                ['virtio_gpu']],
+              [with_gallium_lima, ['lima']],
++             [with_gallium_sgx, ['apple_sgx']],
+              [with_gallium_d3d12, ['d3d12']],
+              [with_gallium_zink, ['zink']],
+              [with_gallium_asahi, ['asahi']]]

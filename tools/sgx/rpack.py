@@ -18,7 +18,8 @@ copies) and pack.txt:
   img VA FILE        an image to load after the boot
   poke PHYS VALUE    a register to set after the boot (USE_CODE_BASE_3)
   kick PB DET CMD    the rkick arguments
-  key VALUE...       addresses and sizes (see the end of main())
+  key VALUE...       addresses and sizes (see the end of main()); the Mesa
+                     driver reads the same file (mesa/files/.../sgx_frame.c)
 
 Usage: rpack.py CAPDIR RTDIR OUTDIR   (CAPDIR logs/ios/mod/blend, RTDIR
 rtemu.py 768 1024 on mod/blend_payload.txt, W/H patched, RT_GPU_BASE=0x87c00000)
@@ -97,6 +98,7 @@ def main():
     p += ['screen %d %d' % (W, H),
           'consts0 0x%x' % (STATE + 0xa0), 'consts 0x%x' % (STATE + 0x380),
           'idx 0x%x 8192' % IDX, 'vdm 0x%x 0x4000' % rgen.VDM_VA,
+          'pds 0x%x' % PDS,     # the 3D PDS block: Mesa's clears point it at their target
           'ext 0x%x 0x%x' % (EXT_VA, EXT_SIZE),
           'texheap 0x%x 0x%x' % (TEXHEAP_VA, TEXHEAP_CHUNK * TEXHEAP_N),
           'fetch 9 0x%08x' % fetchw,
