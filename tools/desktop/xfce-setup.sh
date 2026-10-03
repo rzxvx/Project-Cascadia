@@ -4,7 +4,8 @@
 #   desktop
 #
 # XFCE with touch, as walked on the iPad on 2026-09-25 -- all software
-# rendered on one core, since the GPU has no Linux driver.  About 280
+# rendered on the CPU: the GPU's driver has no OpenGL yet, so X cannot use
+# it (docs/research/p105-mesa.md is the plan for that).  About 280
 # packages, ~490 MB on the NFS root, ~6 minutes over the cable.  Running it
 # again changes nothing that is already right.
 #

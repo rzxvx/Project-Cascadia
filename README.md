@@ -124,7 +124,7 @@ including the parts that didn't work.
       the network, which Wi-Fi now covers, and the open question is VBUS — in
       host mode the iPad has to power the bus itself
 - [x] Graphical Acceleration (SGX543MP2) — **2D on the GPU; SuperTux plays
-      at 60 fps** (2026-10-02). A kernel driver (`drivers/misc/apple-sgx.c`)
+      at 60 fps** (2026-10-02). A kernel driver (`drivers/gpu/drm/apple-sgx`)
       powers the GPU with iOS's own sequence and boots **iOS's own GPU
       microkernel** (taken from your IPSW by `./cascadia firmware`); the
       shaders and the frame's state are this repository's own (a USSE
@@ -137,6 +137,9 @@ including the parts that didn't work.
       with one command, `./cascadia gpu`; details and controls:
       [docs/GPU.md](docs/GPU.md); how it was found, wrong
       turns included: [docs/research/p105-gpu.md](docs/research/p105-gpu.md)
+- [ ] OpenGL through Mesa — under way: the driver has a DRM render node
+      (2026-10-03), and the plan for the Gallium driver and the shader
+      compiler is [docs/research/p105-mesa.md](docs/research/p105-mesa.md)
 
 ## Where Linux keeps its files
 
@@ -698,7 +701,8 @@ one script per host: `tools/mac-*.sh` (pf, nfsd) and `tools/linux-*.sh`
 
 ```
 patches/files/  new source files, copied verbatim into the kernel tree
-                (irqchip/, mach-apple/, phy/) — the core of the port
+                (irqchip/, mach-apple/, phy/, gpu/drm/apple-sgx/, and the
+                render node's uapi header) — the core of the port
 patches/*.patch generated diffs of the glue edits, for reference
 config/         p105ap.config — the kernel config fragment
 scripts/        patch application + build + bundle scripts
@@ -715,6 +719,7 @@ docs/           QUICKSTART.md — clean machine to a shell on the device
                 CASCADIA-CHEATSHEET.md — the real reference for working on it
                 GPU.md — the GPU: building, playing SuperTux, how it works
 docs/research/  one file per investigation; several are dead ends, on purpose
+                (p105-mesa.md: the plan for Mesa and OpenGL)
 pongo/          pongoOS module (ADT read, DT fixup)
 mt-hook/        XNU multitouch hook (RE infrastructure)
 attic/          superseded experiments, kept for provenance — see attic/README.md

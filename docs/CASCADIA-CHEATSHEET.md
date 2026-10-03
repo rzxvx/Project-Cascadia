@@ -154,7 +154,10 @@ is true as of its date. Now:
 - the NAND, read-only: `ios mount` puts iOS's System partition on /mnt/ios;
   `nandctl` for the chips themselves — see "THE NAND" at the end
 - XFCE: `tools/desktop/xfce-setup.sh`, then `desktop`
-- not there: USB host, the GPU, NAND as Linux's own storage (planned for Pi Pico
+- the GPU, 2D: `./cascadia gpu`, then `supertux-gpu` (docs/GPU.md); a render node
+  (`/dev/dri/renderD128`) for the Mesa driver to come (docs/research/p105-mesa.md);
+  no OpenGL yet
+- not there: USB host, NAND as Linux's own storage (planned for Pi Pico
   users, at the cost of iOS — README, "Where Linux keeps its files")
 
 On the device:

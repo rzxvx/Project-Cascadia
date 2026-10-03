@@ -1,4 +1,9 @@
-# P105 GPU (SGX543MP2) — powered, clocked, microkernel running, first transfer done (2026-09-30)
+# P105 GPU (SGX543MP2) — from power-on to SuperTux at 60 fps (2026-09-27 .. 10-02)
+
+> Where it stands and how to use it: [../GPU.md](../GPU.md). What comes next --
+> the render node (M9), Mesa and OpenGL: [p105-mesa.md](p105-mesa.md). This
+> file is the notebook, oldest status at the bottom; M1-M8 below are the
+> milestones in order.
 
 The GPU is off when Linux starts. As of 2026-09-30 it is switched on from Linux
 and **every register bank of the SGX543MP2 answers**: the master and both cores
@@ -1039,7 +1044,10 @@ gpucap`) and `gltrace`. iOS places its GL buffers differently from run to
 run (`0x98956000` here, `0x980ac000` in another run), and ASLR moves them in
 the process; regions match by content once the pointer words are masked.
 
-### Next
+### Next (as of 2026-09-30 -- historical)
+
+> Everything in this list but the interrupt and the ADT parameters was done in
+> M1-M8 above; the plan from M9 on is [p105-mesa.md](p105-mesa.md).
 
 Done since this list was first written: the page tables, the firmware
 extraction step, the microkernel start, the command path, a first
