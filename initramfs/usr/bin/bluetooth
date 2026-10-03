@@ -1,0 +1,232 @@
+#!/bin/sh
+# bluetooth -- Bluetooth on the iPad (the BCM4334's other half, hci0), the
+# short way.
+#
+#   bluetooth                     where things stand, and what to type next
+#   bluetooth on | off            start | stop it (bluetoothd, the radio)
+#   bluetooth scan [SECONDS]      what is in range (10 s)
+#   bluetooth pair NAME|ADDRESS   pair, trust and connect; put the device in
+#                                 its pairing mode first
+#   bluetooth connect NAME|ADDR   connect a paired device again
+#   bluetooth disconnect NAME|ADDR
+#   bluetooth forget NAME|ADDR    unpair
+#   bluetooth auto on|off         start at boot, so paired devices come back
+#
+# NAME is any part of the name the device advertises, case ignored.  bluez and
+# dbus are in the image (scripts/add-base-packages.sh); on an NFS root seeded
+# before that, this installs them with apk.  Pairings live in
+# /var/lib/bluetooth -- on the NFS root for good, in a RAM boot until the next
+# reboot.  Installed from the image into /usr/bin on every boot
+# (initramfs/init), and `bluetooth on` runs from stage 2 when
+# /etc/bluetooth/auto exists.
+
+DIR=/etc/bluetooth
+RUN=/run/bluetooth
+BLUETOOTHD=/usr/lib/bluetooth/bluetoothd
+
+say() { printf '%s\n' "$*"; }
+die() { printf 'bluetooth: %s\n' "$*" >&2; exit 1; }
+
+need_tools() {
+    command -v bluetoothctl >/dev/null 2>&1 && [ -x $BLUETOOTHD ] \
+        && command -v dbus-daemon >/dev/null 2>&1 && return 0
+    say "bluez and dbus are not installed; installing (needs the network)..."
+    apk add bluez dbus >/dev/null 2>&1 || die "apk add bluez dbus failed -- is the network up?"
+}
+
+# pidof, not pgrep -x: busybox's pgrep -x never matched bluetoothd
+running() { pidof bluetoothd >/dev/null 2>&1; }
+# Always with a timeout: without bluetoothd, bluetoothctl waits for it forever.
+ctl() { bluetoothctl --timeout "${T:-5}" "$@" 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g'; }
+powered() { ctl show | grep -q 'Powered: yes'; }
+
+# The system bus first -- bluetoothd is nothing but a bus service -- then the
+# daemon, which powers the controller on by itself (AutoEnable), then a wait
+# until bluetoothctl sees it.
+start() {
+    need_tools
+    [ -d /sys/class/bluetooth/hci0 ] || die "no hci0 -- the chip did not come up (dmesg | grep -i bluetooth)"
+    mkdir -p $RUN /run/dbus /var/lib/bluetooth /var/lib/dbus
+    if ! pgrep -f 'dbus-daemon --system' >/dev/null 2>&1; then
+        rm -f /run/dbus/system_bus_socket /run/dbus/dbus.pid
+        dbus-uuidgen --ensure 2>/dev/null
+        dbus-daemon --system --fork || die "the system bus did not start"
+    fi
+    if ! running; then
+        setsid $BLUETOOTHD >$RUN/bluetoothd.log 2>&1 </dev/null &
+    fi
+    i=0
+    until T=2 ctl show | grep -q '^Controller'; do
+        running || die "bluetoothd exited: $(tail -1 $RUN/bluetoothd.log)"
+        [ $i -ge 10 ] && die "bluetoothd did not come up (log: $RUN/bluetoothd.log)"
+        i=$((i + 1))
+    done
+    powered || ctl power on >/dev/null
+}
+
+stop() {
+    running && ctl power off >/dev/null
+    killall bluetoothd 2>/dev/null
+    # gone, not just signalled: a new one started while this one still holds
+    # its bus name exits at once ("D-Bus setup failed: Name already in use")
+    i=0
+    while running && [ $i -lt 20 ]; do sleep 0.25; i=$((i + 1)); done
+}
+
+is_addr() { echo "$1" | grep -qiE '^([0-9a-f]{2}:){5}[0-9a-f]{2}$'; }
+
+# lookup NAME|ADDR -- the address; a name not seen yet sends it scanning once
+lookup() {
+    if is_addr "$1"; then echo "$1" | tr 'a-f' 'A-F'; return 0; fi
+    a=$(ctl devices | awk -v n="$1" 'BEGIN { n = tolower(n) }
+        $1 == "Device" && index(tolower(substr($0, index($0, $3))), n) { print $2; exit }')
+    if [ -z "$a" ] && [ -z "$2" ]; then
+        say "Looking for \"$1\"..." >&2
+        T=10 ctl scan on >/dev/null
+        lookup "$1" again; return $?
+    fi
+    [ -n "$a" ] || return 1
+    echo "$a"
+}
+
+prop() { ctl info "$1" | sed -n "s/^[[:space:]]*$2: //p" | head -1; }
+
+# until ADDR PROP VALUE SECONDS -- wait for a device property to read VALUE
+until_prop() {
+    i=0
+    while [ "$(prop "$1" "$2")" != "$3" ]; do
+        [ $i -ge $(($4 * 2)) ] && return 1
+        sleep 0.5; i=$((i + 1))
+    done
+}
+name_of() { n=$(prop "$1" Name); echo "${n:-$1}"; }
+
+# pair ADDR -- in a bluetoothctl that lives as long as the pairing does: the
+# agent has to be there to be asked.  NoInputNoOutput is "just works", which
+# keyboards, mice and headphones accept; a device that insists on a code
+# gets a KeyboardDisplay agent instead, whose code is printed here to type on
+# it -- or, for a phone, confirmed here and to be confirmed there too.
+pair() {
+    cap=NoInputNoOutput
+    [ "$2" = code ] && cap=KeyboardDisplay
+    fifo=$RUN/ctl.fifo out=$RUN/ctl.out
+    rm -f $fifo; mkfifo $fifo || die "no fifo in $RUN"
+    bluetoothctl <$fifo >$out 2>&1 &
+    pid=$!
+    exec 3>$fifo
+    printf 'agent %s\ndefault-agent\nscan on\n' $cap >&3
+    sleep 2
+    printf 'pair %s\n' "$1" >&3
+    shown= i=0 ok=1
+    while [ $i -lt 60 ]; do
+        sleep 0.5; i=$((i + 1))
+        o=$(sed 's/\x1b\[[0-9;]*m//g' $out)
+        case "$o" in *"Pairing successful"*) ok=0; break ;; esac
+        case "$o" in *"Failed to pair"*) break ;; esac
+        code=$(printf '%s\n' "$o" | sed -n 's/.*Passkey: \([0-9]\{6\}\).*/\1/p' | tail -1)
+        if [ -n "$code" ] && [ "$code" != "$shown" ]; then
+            say ">>> Type $code on the device, then Enter."; shown=$code
+        fi
+        conf=$(printf '%s\n' "$o" | sed -n 's/.*Confirm passkey \([0-9]\{6\}\).*/\1/p' | tail -1)
+        if [ -n "$conf" ] && [ "$conf" != "$shown" ]; then
+            say ">>> Code $conf -- accept it on the device."; printf 'yes\n' >&3; shown=$conf
+        fi
+        case "$o" in *"Enter PIN code"*) [ "$shown" = pin ] || { printf '0000\n' >&3; shown=pin; } ;; esac
+        case "$o" in *"Authorize service"*) printf 'yes\n' >&3 ;; esac
+    done
+    if [ $ok = 0 ]; then
+        printf 'trust %s\n' "$1" >&3; sleep 1
+        printf 'connect %s\n' "$1" >&3; sleep 4
+    fi
+    printf 'scan off\nquit\n' >&3
+    exec 3>&-
+    wait $pid 2>/dev/null
+    rm -f $fifo
+    return $ok
+}
+
+status() {
+    if ! command -v bluetoothctl >/dev/null 2>&1; then
+        say "Bluetooth tools not installed yet: 'bluetooth on' installs them."
+    elif [ ! -d /sys/class/bluetooth/hci0 ]; then
+        say "No hci0 -- the Bluetooth chip did not come up (dmesg | grep -i bluetooth)."
+    elif ! running; then
+        say "Bluetooth is off."
+    else
+        a=$(ctl show | awk '/^Controller/ { print $2; exit }')
+        powered && say "Bluetooth is on, address $a." || say "Bluetooth is running, radio off ($a)."
+        ctl devices Paired | while read -r _ addr name; do
+            [ "$(prop "$addr" Connected)" = yes ] && c="connected" || c="paired"
+            say "  $c: $name ($addr)"
+        done
+    fi
+    [ -e $DIR/auto ] && say "Starts at boot: on." || say "Starts at boot: off."
+    say ""
+    say "  bluetooth on | off              start | stop"
+    say "  bluetooth scan                  devices in range"
+    say "  bluetooth pair NAME             pair one (in its pairing mode)"
+    say "  bluetooth connect | disconnect | forget NAME"
+    say "  bluetooth auto on|off           start at boot"
+}
+
+case "$1" in
+    ""|status)
+        status ;;
+    on)
+        start; say "Bluetooth is on, address $(ctl show | awk '/^Controller/ { print $2; exit }')." ;;
+    off)
+        stop; say "Bluetooth is off." ;;
+    scan)
+        start
+        t=${2:-10}
+        say "Scanning for $t s..."
+        T=$t ctl scan on >/dev/null
+        ctl devices | awk '$1 == "Device" {
+            addr = $2; name = substr($0, index($0, $3))
+            if (name == addr || name ~ /^([0-9A-F]{2}-){5}[0-9A-F]{2}$/) name = "(no name)"
+            printf "%s  %s\n", addr, name }' | sort -k2 ;;
+    pair)
+        [ -n "$2" ] || die "usage: bluetooth pair NAME|ADDRESS [code]"
+        start
+        a=$(lookup "$2") || die "\"$2\" is not in range -- is it in its pairing mode?"
+        say "Pairing with $(name_of "$a") ($a)..."
+        if pair "$a" "$3"; then
+            [ "$(prop "$a" Connected)" = yes ] && say "Paired and connected." \
+                || say "Paired; 'bluetooth connect $2' connects it."
+        else
+            say "Pairing failed."
+            [ "$3" = code ] || say "If the device wants a code: bluetooth pair \"$2\" code"
+            exit 1
+        fi ;;
+    connect|disconnect|forget)
+        [ -n "$2" ] || die "usage: bluetooth $1 NAME|ADDRESS"
+        start
+        a=$(lookup "$2" no-scan) || a=$(lookup "$2") || die "no device \"$2\" known"
+        n=$(name_of "$a")
+        # A trusted device often reconnects by itself, and connect then
+        # answers "In Progress": so the answer is the device's state, not
+        # bluetoothctl's.
+        case "$1" in
+            connect)
+                T=15 ctl connect "$a" >/dev/null
+                until_prop "$a" Connected yes 15 && say "Connected: $n." \
+                    || die "$n did not connect. A keyboard or mouse wakes on a key press or a click and connects by itself." ;;
+            disconnect)
+                T=10 ctl disconnect "$a" >/dev/null
+                until_prop "$a" Connected no 10 && say "Disconnected: $n." \
+                    || die "$n is still connected" ;;
+            forget)
+                T=10 ctl remove "$a" >/dev/null
+                ctl devices | grep -q "$a" && die "$n is still known" || say "Forgot $n." ;;
+        esac ;;
+    auto)
+        case "$2" in
+            on)  mkdir -p $DIR; touch $DIR/auto; say "Bluetooth starts at boot; paired devices reconnect." ;;
+            off) rm -f $DIR/auto; say "No Bluetooth at boot." ;;
+            *)   die "usage: bluetooth auto on|off" ;;
+        esac ;;
+    -h|--help|help)
+        sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//' ;;
+    *)
+        die "unknown command '$1' -- 'bluetooth' alone lists them" ;;
+esac

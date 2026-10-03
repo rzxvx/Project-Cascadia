@@ -3,6 +3,7 @@ Welcome to Alpine on Apple iPad mini 1st gen (P105AP / S5L8942X).
   Both cores, touch, Wi-Fi and the USB network work; @ROOT@
 
   wifi            Wi-Fi: scan, connect, remember networks
+  bluetooth       Bluetooth: scan, pair keyboards, mice and the like
   ios             iOS's own System partition, read-only, straight off the NAND
   apk             packages, over the USB network or Wi-Fi
   poweroff        shuts the system down

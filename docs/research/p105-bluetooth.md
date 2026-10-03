@@ -68,5 +68,6 @@ context", a connection that could never pair. Built in now.
 
 510 HCI commands without an error at 1.5 Mbaud; LE and classic discovery; an
 EPOMAKER TH40 (BLE HID) paired Just Works, bonded, and showed up as
-`EPOMAKER TH40-3 Keyboard` and `… Mouse` input devices. Userspace is `apk add
-bluez dbus` and `bluetoothd`; in a RAM boot the bond is gone at the next boot.
+`EPOMAKER TH40-3 Keyboard` and `… Mouse` input devices. bluez and dbus are in
+the image and `bluetooth` (initramfs/usr/bin) runs them; in a RAM boot the bond
+is gone at the next boot.

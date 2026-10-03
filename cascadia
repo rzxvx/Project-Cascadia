@@ -321,11 +321,12 @@ cmd_build() {
     # ./cascadia rootfs lacks them; add them rather than make it start over.
     if [ ! -x "$ROOT/build/initramfs-root/sbin/wpa_supplicant" ] \
         || [ ! -x "$ROOT/build/initramfs-root/usr/sbin/iw" ] \
-        || [ ! -x "$ROOT/build/initramfs-root/usr/bin/fbkeyboard" ]; then
+        || [ ! -x "$ROOT/build/initramfs-root/usr/bin/fbkeyboard" ] \
+        || [ ! -x "$ROOT/build/initramfs-root/usr/lib/bluetooth/bluetoothd" ]; then
         bash "$ROOT/scripts/add-base-packages.sh" >/dev/null \
-            || fail "could not add iw, wpa_supplicant and fbkeyboard (scripts/add-base-packages.sh)"
+            || fail "could not add the base packages (scripts/add-base-packages.sh)"
     fi
-    note "ok: iw, wpa_supplicant, fbkeyboard"
+    note "ok: iw, wpa_supplicant, fbkeyboard, bluez, dbus"
     # dropbear's host key, made once and kept in build/keep so it outlives a
     # rootfs rebuild.  Without it dropbear -R made a new one at every boot of the
     # RAM root, and every boot met ssh with REMOTE HOST IDENTIFICATION HAS
@@ -439,7 +440,7 @@ so this is a file in build/initramfs-root owned by some third uid."
 
     # Not fatal: a tree without these still boots and still gives both consoles.
     for s in bin/peek usr/sbin/dropbear etc/dropbear/dropbear_ed25519_host_key sbin/mount.nfs \
-             usr/sbin/iw sbin/wpa_supplicant usr/bin/fbkeyboard; do
+             usr/sbin/iw sbin/wpa_supplicant usr/bin/fbkeyboard usr/lib/bluetooth/bluetoothd; do
         if LC_ALL=C grep -aFq "$s" "$CPIO"; then note "ok:      $s"
         else note "missing: $s  -- ./cascadia rootfs installs it when docker is up"; fi
     done

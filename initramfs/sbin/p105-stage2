@@ -261,6 +261,15 @@ elif [ -x /usr/bin/wifi ]; then
     setsid /usr/bin/wifi chip >/tmp/wifi.log 2>&1 </dev/null &
 fi
 
+# ------------------------------------------------------------- Bluetooth ---
+# `bluetooth auto on` leaves /etc/bluetooth/auto: the system bus and
+# bluetoothd, so that paired keyboards and mice reconnect on a key press.
+# Off by default -- the daemon and its bus cost memory nobody may want.
+if [ -e /etc/bluetooth/auto ] && [ -x /usr/bin/bluetooth ]; then
+    setsid /usr/bin/bluetooth on >/tmp/bluetooth.log 2>&1 </dev/null &
+    msg "P105: Bluetooth -- starting (/tmp/bluetooth.log)"
+fi
+
 # --------------------------------------------------------- glass fallback ---
 # Always reached, and independent of USB: if the gadget never comes up this is
 # still a real shell on the panel.

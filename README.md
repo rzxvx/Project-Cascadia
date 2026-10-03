@@ -94,8 +94,8 @@ including the parts that didn't work.
 - [x] **Bluetooth** — the BCM4334's other half, on UART1 at 1.5 Mbaud
       through `hci_bcm`, its patchram cut out of the user's IPSW (iOS's
       BlueTool). LE and classic; an LE keyboard pairs and types into the
-      console. `apk add bluez dbus` for the tools. See
-      `docs/research/p105-bluetooth.md`
+      console. bluez is in the image: `bluetooth pair NAME`, `bluetooth auto
+      on` to have it back at every boot. See `docs/research/p105-bluetooth.md`
 - [x] **Buttons and backlight** — Home, Hold, volume and the side switch are
       `gpio-keys`. Volume up/down set the backlight (32 steps, 1 to 400 nits),
       Hold switches the screen off and on and ignores the touchscreen while

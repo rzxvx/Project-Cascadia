@@ -177,8 +177,10 @@ if [ -f /etc/nfsroot ] && [ -x /sbin/mount.nfs ]; then
             # And the NAND tools with their `ios` front end, and the login
             # banner, which otherwise stays whatever the seed said.  And the
             # GPU's microkernel: apple-sgx asks for it when it is started,
-            # long after this switch_root.
+            # long after this switch_root.  And `bluetooth`, with the
+            # patchram hci_bcm reloads whenever the chip is reset.
             for f in /sbin/z2-boot /sbin/p105-keys /lib/firmware/P105.mtprops /lib/firmware/mtcal.bin /bin/busybox.static /usr/bin/wifi \
+                     /usr/bin/bluetooth /lib/firmware/brcm/BCM4334B0.hcd \
                      /lib/firmware/brcm/brcmfmac4334.bin /sbin/nandctl /sbin/iosnand /usr/bin/ios \
                      /lib/firmware/apple/sgx543.fw /etc/motd; do
                 [ -f "$f" ] || continue

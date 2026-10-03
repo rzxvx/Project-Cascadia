@@ -252,6 +252,26 @@ address `wifi` prints.
   another one — `WIFI_MAC=xx:xx:xx:xx:xx:xx ./cascadia firmware`, then
   `./cascadia build`.
 
+## Bluetooth
+
+The chip's Bluetooth firmware comes out of your IPSW too (`./cascadia
+firmware`, `ok: Bluetooth firmware from the IPSW`). On the iPad:
+
+```sh
+bluetooth                     # where things stand, and what to type next
+bluetooth scan
+bluetooth pair "TH40"         # any part of the name; the device in pairing mode
+bluetooth auto on             # start at boot, so paired devices reconnect
+bluetooth forget "TH40"
+```
+
+A keyboard or a mouse pairs without a code, connects, and types into the
+console (and into X). If a device insists on a code, `bluetooth pair NAME
+code` prints one to type on it. After `bluetooth off` or a reboot, a paired
+keyboard comes back when a key is pressed. Pairings are kept on the NFS root;
+in a RAM boot they last until the next reboot. The address is
+`02:10:5A:05:00:04`; `local-bd-address` in the dts sets another.
+
 ## iOS's files
 
 ```sh
