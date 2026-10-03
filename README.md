@@ -137,9 +137,10 @@ including the parts that didn't work.
       with one command, `./cascadia gpu`; details and controls:
       [docs/GPU.md](docs/GPU.md); how it was found, wrong
       turns included: [docs/research/p105-gpu.md](docs/research/p105-gpu.md)
-- [ ] OpenGL through Mesa — under way: the driver has a DRM render node
-      (2026-10-03), and the plan for the Gallium driver and the shader
-      compiler is [docs/research/p105-mesa.md](docs/research/p105-mesa.md)
+- [ ] OpenGL through Mesa — under way: the kernel driver has a DRM render
+      node, and a Gallium driver in [mesa/](mesa/) runs OpenGL ES 2.0
+      programs with clears on the GPU (2026-10-03); draws wait for the
+      shader compiler. The plan: [docs/research/p105-mesa.md](docs/research/p105-mesa.md)
 
 ## Where Linux keeps its files
 
@@ -715,6 +716,8 @@ tools/          p105-peek.c (MMIO tool), build/flash wrappers, LZSS helpers,
                 nand/ (nandctl, iosnand: the NAND, read-only),
                 sgx/ (the GPU: sgx2d, the SDL shim, pack builder), iosgpu/
                 (the iOS capture tool, the kext emulator)
+mesa/           the GPU's Mesa driver (Gallium, OpenGL ES): its files, the
+                patch that registers it, the device build (./cascadia mesa)
 docs/           QUICKSTART.md — clean machine to a shell on the device
                 CASCADIA-CHEATSHEET.md — the real reference for working on it
                 GPU.md — the GPU: building, playing SuperTux, how it works

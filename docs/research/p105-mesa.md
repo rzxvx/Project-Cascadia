@@ -235,16 +235,75 @@ A corpus to run through it, one feature at a time:
 `usse-dis.py` decodes opcodes and a few operand layouts; for this it needs
 every operand of every instruction the corpus produces.
 
-## M12: the Mesa driver's skeleton
+## M12: the Mesa driver's skeleton (2026-10-03)
 
-`src/gallium/drivers/sgx` and a winsys on the render node, against Mesa 26.1
-(the version Alpine 3.24 ships, so it can replace the system's). Screen caps
-for GLES 2.0; resources (linear and twiddled, the formats M14 needs); buffer
-maps; a context that turns `clear` and `flush` into a render with the
-template frame's programs; EGL with the surfaceless platform, and a way to
-put a finished frame on the framebuffer (the 2D engine, or the render
-writing straight into it as sgx2d's do). Done when a GLES program's
-`glClear` colour is on the screen and `eglinfo` names the driver.
+`mesa/` holds it: the driver's files (`mesa/files`, copied into a Mesa tree),
+the few lines that register it with Mesa (`mesa/mesa.patch`: the
+`gallium-drivers` choice `sgx`, the meson subdirectories, the
+`apple_sgx` DRM driver descriptor for the pipe loader, the dril entry point),
+and the build (`mesa/build.sh`, `./cascadia mesa`). Mesa is 26.1.8, from
+freedesktop.org at the tag, checked by commit.
+
+| file | what |
+|---|---|
+| `sgx_device.c` | the render node: parameters, buffers (mmap'd write-combined), submits, syncobj fences |
+| `sgx_screen.c` | the screen: a GLES 2.0 part's caps, formats, NIR options |
+| `sgx_resource.c` | resources, all linear for now; maps wait for the renders that use the buffer |
+| `sgx_context.c` | state (kept, unused), clears, CPU copies and blits, fences; `draw_vbo` drops draws |
+| `sgx_frame.c` | the template frame: clears on the GPU (below) |
+| `winsys/sgx/drm` | `sgx_drm_screen_create()`, one screen per device |
+| `drm-shim/sgx_noop.c` | a pretend render node for running the driver without an iPad (Mesa's drm-shim) |
+
+**Clears on the GPU, through sgx2d's frame.** Until the driver builds its own
+renders, it borrows sgx2d's pack (`/usr/local/lib/sgx2d`, from `./cascadia
+gpu`; `SGX_PACK` names another): every window of it becomes a buffer at its
+GPU address, and a clear is sgx2d's draw 0 -- one full-screen quad, the white
+texture times the clear colour -- with two programs of the driver's own:
+
+- **end of tile**, one per render target, written once at its own address in a
+  code-zone buffer (never rewritten under a running render): the PBE's six
+  words `0x00110000` (linear, B8G8R8A8 from the shader's RGBA), the target's
+  address, its stride in pixels / 2 - 1, 0, 0, `(h-1) << 12 | (w-1)`; the 3D
+  pass's event program names it (its data word 2);
+- **replace** instead of blend: `PHAS; SOP2M (texel x vertex colour); SOP2
+  o0 = r * (1 - 0) + o0 * 0`, the selector fields as Vita3K decodes SOP2
+  (`c` cmod1, `aa` asel1, `m` cmod2, `f` amod1, `ll` asel2, `ggg` csel1,
+  `hhh` csel2, `i` amod2), words from `usse.py`.
+
+The background object's descriptor (3D PDS block `+0x130`) points at the
+target too, as FB_LOAD points at the framebuffer for sgx2d. Only targets of
+the pack's size (the screen's, 768x1024), B8G8R8A8 or X8, level 0, can be
+cleared this way; everything else, scissored clears and depth/stencil go
+through the CPU. `SGX_DEBUG=frame` logs every word a clear sets.
+
+**Tested on the host, through the drm-shim** (no GPU work runs there, renders
+are "done" at once): EGL finds the device and picks `apple_sgx` by itself,
+`GL_RENDERER` is `PowerVR SGX543MP2`, `GL_VERSION` `OpenGL ES 2.0 Mesa
+26.1.8`; `glclear` gets every pixel right with CPU clears; with a synthetic
+pack (frame.py's objects at their addresses) the GPU path builds the frame
+and submits it, every word as sgx2d's frame has it (the VDM stream, the
+background descriptor `00be0e90 cc2ff3ff ...` = FB_LOAD for 768 pixels).
+`mesa/build.sh` runs end to end the same way (configure, build, install,
+glclear linked against the result).
+
+**On the device** (kernel with the render node; `./cascadia gpu` for the pack,
+then `./cascadia mesa`, which builds in an Alpine armv7 container -- slow the
+first time, under ARM emulation -- and installs to `/usr/local/lib/sgx-mesa`
+with `sgx-gl` to run things with it):
+
+    sgx-gl glclear                  # one clear, read back and checked
+    SGX_DEBUG=frame sgx-gl glclear 6
+    sgx-gl glclear 100              # how long a clear and its read-back take
+    echo 0 > /sys/class/vtconsole/vtcon1/bind; sgx-gl glclear 4 --fb
+
+The driver says at start whether clears go to the GPU (`template frame
+768x1024 from ...`) or the CPU (no pack, or its buffers taken -- SuperTux
+running, say). `0 wrong` from glclear on the GPU path is the milestone.
+
+Not yet: draws (`draw_vbo` says so once and drops them), textures in any
+layout but linear, scanout (EGL has the surfaceless and GBM platforms; the
+picture reaches the screen only through glclear's `--fb` copy), desktop GL
+(no GLX, and GL 2.1 waits for the queries and the rest of M14).
 
 ## M13: the first triangle, then the compiler
 
