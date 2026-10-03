@@ -829,7 +829,7 @@ index 28e4beeab..25e0c13e1 100644
  	help
  	  Support for the on-chip UARTs on the Samsung
 diff --git a/drivers/tty/serial/samsung_tty.c b/drivers/tty/serial/samsung_tty.c
-index 0d184ee2f..bd419f788 100644
+index 0d184ee2f..1e7a227b4 100644
 --- a/drivers/tty/serial/samsung_tty.c
 +++ b/drivers/tty/serial/samsung_tty.c
 @@ -1896,6 +1896,8 @@ static int s3c24xx_serial_init_port(struct s3c24xx_uart_port *ourport,
@@ -850,6 +850,62 @@ index 0d184ee2f..bd419f788 100644
  static const struct s3c24xx_serial_drv_data s5l_serial_drv_data = {
  	.info = {
  		.name		= "Apple S5L UART",
+@@ -2563,8 +2565,46 @@ static const struct s3c24xx_serial_drv_data s5l_serial_drv_data = {
+ 	},
+ };
+ #define S5L_SERIAL_DRV_DATA (&s5l_serial_drv_data)
++
++/*
++ * The A5 (S5L8940X) picks a UART's clock with UCON bit 10, which nothing
++ * above knows about.  iBoot sets it on the ports it uses itself -- the
++ * console, and UART5 for the battery's HDQ -- and with it set the port runs
++ * from the 24 MHz reference the dts gives as its baud clock.  A port iBoot
++ * leaves alone has it clear and runs from some other clock: UART1, the
++ * Bluetooth chip's, then sent at a rate nobody understood and the chip never
++ * answered.  So it is part of the reset value here.
++ */
++#define S5L8940X_UCON_CLK_24M	BIT(10)
++
++static const struct s3c24xx_serial_drv_data s5l8940x_serial_drv_data = {
++	.info = {
++		.name		= "Apple S5L UART",
++		.type		= TYPE_APPLE_S5L,
++		.port_type	= PORT_8250,
++		.iotype		= UPIO_MEM32,
++		.fifosize	= 16,
++		.rx_fifomask	= S3C2410_UFSTAT_RXMASK,
++		.rx_fifoshift	= S3C2410_UFSTAT_RXSHIFT,
++		.rx_fifofull	= S3C2410_UFSTAT_RXFULL,
++		.tx_fifofull	= S3C2410_UFSTAT_TXFULL,
++		.tx_fifomask	= S3C2410_UFSTAT_TXMASK,
++		.tx_fifoshift	= S3C2410_UFSTAT_TXSHIFT,
++		.def_clk_sel	= S3C2410_UCON_CLKSEL0,
++		.num_clks	= 1,
++		.clksel_mask	= 0,
++		.clksel_shift	= 0,
++		.ucon_mask	= APPLE_S5L_UCON_MASK,
++	},
++	.def_cfg = {
++		.ucon		= APPLE_S5L_UCON_DEFAULT | S5L8940X_UCON_CLK_24M,
++		.ufcon		= S3C2410_UFCON_DEFAULT,
++	},
++};
++#define S5L8940X_SERIAL_DRV_DATA (&s5l8940x_serial_drv_data)
+ #else
+ #define S5L_SERIAL_DRV_DATA NULL
++#define S5L8940X_SERIAL_DRV_DATA NULL
+ #endif
+ 
+ #if defined(CONFIG_ARCH_ARTPEC)
+@@ -2638,6 +2678,8 @@ static const struct of_device_id s3c24xx_uart_dt_match[] = {
+ 		.data = EXYNOS4210_SERIAL_DRV_DATA },
+ 	{ .compatible = "samsung,exynos5433-uart",
+ 		.data = EXYNOS5433_SERIAL_DRV_DATA },
++	{ .compatible = "apple,s5l8940x-uart",
++		.data = S5L8940X_SERIAL_DRV_DATA },
+ 	{ .compatible = "apple,s5l-uart",
+ 		.data = S5L_SERIAL_DRV_DATA },
+ 	{ .compatible = "samsung,exynos850-uart",
 diff --git a/drivers/usb/dwc2/core.c b/drivers/usb/dwc2/core.c
 index 9919ab725..f0c547b78 100644
 --- a/drivers/usb/dwc2/core.c
@@ -1505,3 +1561,57 @@ index 8fc98f760..050be5fca 100644
  obj-$(CONFIG_BACKLIGHT_GPIO)		+= gpio_backlight.o
  obj-$(CONFIG_BACKLIGHT_HP680)		+= hp680_bl.o
  obj-$(CONFIG_BACKLIGHT_HP700)		+= jornada720_bl.o
+diff --git a/drivers/bluetooth/btbcm.c b/drivers/bluetooth/btbcm.c
+index eef004679..060ddcbb9 100644
+--- a/drivers/bluetooth/btbcm.c
++++ b/drivers/bluetooth/btbcm.c
+@@ -31,6 +31,7 @@
+ #define BDADDR_BCM4334B0 (&(bdaddr_t) {{0x00, 0x00, 0x00, 0xb0, 0x34, 0x43}})
+ #define BDADDR_BCM4345C5 (&(bdaddr_t) {{0xac, 0x1f, 0x00, 0xc5, 0x45, 0x43}})
+ #define BDADDR_BCM43341B (&(bdaddr_t) {{0xac, 0x1f, 0x00, 0x1b, 0x34, 0x43}})
++#define BDADDR_BCM4334B1_APPLE (&(bdaddr_t) {{0xac, 0x1f, 0x34, 0x43, 0x34, 0x43}})
+ 
+ #define BCM_FW_NAME_LEN			64
+ #define BCM_FW_NAME_COUNT_MAX		4
+@@ -120,6 +121,10 @@ int btbcm_check_bdaddr(struct hci_dev *hdev)
+ 	 *
+ 	 * The address AA:AA:AA:AA:AA:AA indicates a BCM43430A1 controller
+ 	 * with no configured address.
++	 *
++	 * The address 43:34:43:34:1F:AC indicates a BCM4334 running Apple's
++	 * patchram (iPad mini, iOS's BlueTool), which leaves the address to
++	 * the host.
+ 	 */
+ 	if (!bacmp(&bda->bdaddr, BDADDR_BCM20702A0) ||
+ 	    !bacmp(&bda->bdaddr, BDADDR_BCM20702A1) ||
+@@ -130,7 +135,8 @@ int btbcm_check_bdaddr(struct hci_dev *hdev)
+ 	    !bacmp(&bda->bdaddr, BDADDR_BCM4345C5) ||
+ 	    !bacmp(&bda->bdaddr, BDADDR_BCM43430A0) ||
+ 	    !bacmp(&bda->bdaddr, BDADDR_BCM43430A1) ||
+-	    !bacmp(&bda->bdaddr, BDADDR_BCM43341B)) {
++	    !bacmp(&bda->bdaddr, BDADDR_BCM43341B) ||
++	    !bacmp(&bda->bdaddr, BDADDR_BCM4334B1_APPLE)) {
+ 		/* Try falling back to BDADDR EFI variable */
+ 		if (btbcm_set_bdaddr_from_efi(hdev) != 0) {
+ 			bt_dev_info(hdev, "BCM: Using default device address (%pMR)",
+diff --git a/net/bluetooth/hci_event.c b/net/bluetooth/hci_event.c
+index 0bbad90dd..34eeb6dd6 100644
+--- a/net/bluetooth/hci_event.c
++++ b/net/bluetooth/hci_event.c
+@@ -6224,7 +6224,15 @@ static void hci_le_adv_report_evt(struct hci_dev *hdev, void *data,
+ 
+ 		if (info->length <= max_adv_len(hdev)) {
+ 			rssi = info->data[info->length];
+-			process_adv_report(hdev, info->type, &info->bdaddr,
++			/* The legacy types are 0..4.  Apple's patchram for the
++			 * iPad mini's BCM4334 (iOS's BlueTool) sets bits 4 and
++			 * 5 on top of them -- 0x20 for an ADV_IND, 0x24 for its
++			 * SCAN_RSP, 0x13 for an ADV_NONCONN_IND -- and a type
++			 * this function does not know drops the report: an LE
++			 * keyboard in pairing mode was never found.  Only
++			 * reserved bits are cleared; 5..7 are still refused.
++			 */
++			process_adv_report(hdev, info->type & 0x07, &info->bdaddr,
+ 					   info->bdaddr_type, NULL, 0,
+ 					   HCI_ADV_PHY_1M, 0, rssi,
+ 					   info->data, info->length, false,

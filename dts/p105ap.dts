@@ -36,6 +36,7 @@
 
 	aliases {
 		serial0 = &uart0;
+		serial1 = &uart1;
 	};
 
 	chosen {
@@ -382,6 +383,16 @@
             pin-count = <224>;
             interrupt-groups = <1>;
             status = "okay";
+
+            /* UART1, the Bluetooth chip's: TX 40, RX 41, RTS 42, CTS 43
+             * (the ADT's uart1 function-tx and function-rts name 40 and
+             * 42).  iBoot leaves 42 a GPIO driven high -- RTS deasserted,
+             * so the chip never sends a byte; iOS holds it that way while
+             * the chip powers up and hands it to the UART after. */
+            uart1_pins: uart1-pins {
+                pins = "gpio40", "gpio41", "gpio42", "gpio43";
+                function = "periph";
+            };
         };
 
 		/*
@@ -415,6 +426,53 @@
 			clocks = <&uart_clk>, <&uart_clk>;
 			clock-names = "uart", "clk_uart_baud0";
 			status = "disabled";
+		};
+
+		/*
+		 * UART1: the BCM4334's Bluetooth half (ADT uart1/bluetooth,
+		 * "bluetooth,n88").  iOS runs it at 3 Mbaud (transport-speed),
+		 * which needs a faster UART clock than the 24 MHz this node
+		 * knows of: 24 MHz / 16 is 1.5 Mbaud, so that is max-speed.  The
+		 * chip starts at 115200; hci_bcm loads the patchram there and
+		 * then raises both ends -- which it only does when it can reset
+		 * the chip, hence REG_ON as a GPIO (shutdown-gpios), not a
+		 * regulator.  From the ADT:
+		 *   function-power_enable  PMU GPIO 2 (0x63), active high
+		 *   function-bt_wake       SoC GPIO 0x0101 = pin 9, active high
+		 * The 32 kHz sleep clock is the Wi-Fi chip's (wlan_lpo), taken as
+		 * vddio-supply so it stays on while either half needs it.  No
+		 * host-wake line in the ADT.
+		 *
+		 * The address: the ADT's local-mac-address is iBoot's to fill
+		 * from syscfg and reads zero in this tree, and with Apple's
+		 * patchram the chip says 43:34:43:34:1F:AC, the same on every
+		 * iPad -- a placeholder, which btbcm.c is taught to treat as one
+		 * so that this property is used.  A fixed address in the same
+		 * family as the gadget's and Wi-Fi's MACs,
+		 * 02:10:5A:05:00:04 (bytes reversed here).  Put the iPad's own
+		 * (Settings > General > About > Bluetooth) here to use that.
+		 */
+		uart1: serial@2600000 {
+			/* s5l8940x: UCON bit 10, the 24 MHz clock, which iBoot sets
+			 * only on the ports it uses (samsung_tty.c) */
+			compatible = "apple,s5l8940x-uart", "apple,s5l-uart",
+				     "samsung,s3c6400-uart";
+			reg = <0x2600000 0x1000>;
+			interrupts = <22>;
+			clocks = <&uart_clk>, <&uart_clk>;
+			clock-names = "uart", "clk_uart_baud0";
+			pinctrl-names = "default";
+			pinctrl-0 = <&uart1_pins>;
+			status = "okay";
+
+			bluetooth {
+				compatible = "brcm,bcm4334-bt";
+				shutdown-gpios = <&pmu 2 0>;
+				device-wakeup-gpios = <&gpio 9 0>;
+				vddio-supply = <&wlan_lpo>;
+				max-speed = <1500000>;
+				local-bd-address = [04 00 05 5a 10 02];
+			};
 		};
 
 		/*
@@ -737,6 +795,9 @@
                 reg = <0x3c>;
                 /* powers the iPad off the way iOS does (apple-pmu-i2c.c) */
                 system-power-controller;
+                /* its output GPIOs, 0x61 + n: Bluetooth's REG_ON is 2 */
+                gpio-controller;
+                #gpio-cells = <2>;
                 #address-cells = <1>;
                 #size-cells = <0>;
 

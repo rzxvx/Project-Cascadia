@@ -24,6 +24,9 @@
 #                               module's NVRAM appended inside it
 #                               (scripts/trx-add-nvram.py): without it the
 #                               firmware is downloaded and never comes up
+#   BCM4334B0.hcd               the same chip's Bluetooth patchram, cut out of
+#                               /usr/sbin/BlueTool, which carries one per
+#                               module (scripts/extract-bt-firmware.py)
 #   sgx543.fw                   the GPU's microkernel and PDS templates, out of
 #                               the kernelcache's IMGSGX543 kext
 #                               (scripts/extract-sgx-firmware.py)
@@ -74,6 +77,10 @@ WIFI_FW=/usr/share/firmware/wifi/4334b1/borg.trx
 # with swdiv wants, and has regrev 9 where borg's has 14.  WIFI_NVRAM= picks
 # another file from wifi/4334b1/.
 WIFI_NVRAM="${WIFI_NVRAM:-borg-t-st.txt}"
+# Bluetooth's patchram is inside /usr/sbin/BlueTool, one image per module
+# (scripts/extract-bt-firmware.py), and the module is the Wi-Fi one: Borg,
+# made by TDK, as WIFI_NVRAM says.  BT_MODULE= picks another ("Borg USI").
+BT_MODULE="${BT_MODULE:-Borg TDK}"
 # The module files carry no MAC address -- iOS adds the one in syscfg -- and
 # without macaddr= the firmware's wl half never attaches.  Locally administered,
 # the same family as the USB gadget's pair in the dts; WIFI_MAC= sets another
@@ -143,12 +150,19 @@ python3 "$ROOT/scripts/img3pack.py" \
     "$OUT/iBEC.p105.RELEASE.dfu" "$OUT/iBEC.autogo" \
     "$OUT/iBEC.patched.autogo.plain.dfu"
 
-echo "==> touch and Wi-Fi firmware out of the root filesystem"
+echo "==> touch, Wi-Fi and Bluetooth firmware out of the root filesystem"
 python3 "$ROOT/scripts/rootfs-extract.py" "$IPSW" "$ROOTFS_DMG" "$ROOTFS_KEY" \
     "$MTPROPS" "$OUT/P105.mtprops" "$WIFI_FW" "$OUT/borg.trx" \
-    "/usr/share/firmware/wifi/4334b1/$WIFI_NVRAM" "$OUT/brcmfmac4334-nvram.txt"
+    "/usr/share/firmware/wifi/4334b1/$WIFI_NVRAM" "$OUT/brcmfmac4334-nvram.txt" \
+    /usr/sbin/BlueTool "$OUT/BlueTool"
 python3 "$ROOT/scripts/trx-add-nvram.py" "$OUT/borg.trx" "$OUT/brcmfmac4334-nvram.txt" \
     "$OUT/brcmfmac4334.bin" "$WIFI_MAC"
+python3 "$ROOT/scripts/extract-bt-firmware.py" "$OUT/BlueTool" "$BT_MODULE" "$OUT/BCM4334B0.hcd"
+rm -f "$OUT/BlueTool"
+if [ "$BT_MODULE" = "Borg TDK" ]; then
+    echo "b6791a67141f1a16447e916237180a049b89dfaab9c38451b33864dbb6a50dda  $OUT/BCM4334B0.hcd" \
+        | sha256sum -c --quiet - || fail "BCM4334B0.hcd is not 12H321's Borg TDK patchram"
+fi
 
 echo "==> GPU microkernel out of the kernelcache"
 python3 "$ROOT/scripts/extract-sgx-firmware.py" "$IPSW" "$OUT/sgx543.fw" \
@@ -194,4 +208,4 @@ fi
 echo
 ls -l "$OUT/iBSS.patched" "$OUT/iBEC.patched.autogo.dfu" \
       "$OUT/iBEC.patched.autogo.plain.dfu" "$OUT/P105.mtprops" "$OUT/brcmfmac4334.bin" \
-      "$OUT/sgx543.fw" "$OUT/kernelcache.12H321.macho" "$OUT/gl-event.pds"
+      "$OUT/BCM4334B0.hcd" "$OUT/sgx543.fw" "$OUT/kernelcache.12H321.macho" "$OUT/gl-event.pds"
