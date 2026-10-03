@@ -141,9 +141,35 @@ which signal types to encode from the route's flag bytes — the ADT's
 — and is the part still to read before the table for a route can be
 computed.
 
+### Computed by running iOS's router (`tools/audio/i2sswitch-emu.py`)
+
+Reading the router to redo it by hand invites mistakes, so it is run instead:
+the script maps the kernelcache into unicorn, builds the switch object the way
+both `start()`s do (14 nodes `dsp0-2 dspc pin0-3 aud0-3 mca0-1`, 21 registers,
+version `0x20001` — what `0x3fa01ffc` reads), and calls the router with the
+ADT's default route and the arguments each driver passes when a stream starts
+(MCA: `p1` = active directions, TX `0x2`; `p2` = 2 as clock master, 1 as
+slave. I2S: `p1` = 3; `p2` = 2 as master, `| 0x20` with RX).
+
+| Route | Registers written |
+|---|---|
+| default `dspc → dsp0` | none |
+| **speakers as iOS runs them**: I2S1 master + MCA0 TX slave | **`reg1 = 0x0000f000`, `reg9 = 0x00000001`** |
+| `aud1 → pin1` clocks only | none — I2S1's clocks reach pin1 without the switch |
+| `aud1 → pin1` TX data | refused (`0xe00002e6`): I2S1 cannot put data on pin1 |
+| `aud0 → pin0` (codec) | `reg0 = 0x00009010` |
+| **MCA0 TX as clock master** | **`reg1 = 0x0000f014`** |
+
+Read with the encoder: `reg[pin]` bit 15 enables the pin, bits 12..14 pick
+its data source (7 = mca0), bits 0..4 its frame clocks (`0x10 | 4` = mca0);
+`reg9` is mca0's clock input (1 = pin1). Under iOS the speakers' data come
+from MCA0, clocked by I2S1, which also gives the amps their MCLK. Either
+that, or MCA0 alone as master (`reg1 = 0xf014`) if the amps can do without
+I2S1's MCLK.
+
 ## Still open
 
-1. **The i2s-switch's 21 registers** (the router, above). `'i2sR'` lands in AppleARMIISSwitch's
+1. ~~The i2s-switch~~ — done, above. `'i2sR'` lands in AppleARMIISSwitch's
    generic router (`0x804c09a8`): a graph of dsp/aud/mca/pin nodes and per-
    signal edges (the flag bytes `03 03 03`) that computes a 21-word table;
    AppleAE2I2SSwitch2 only copies it to `0x3fa01000`. Linux reads all zero.
