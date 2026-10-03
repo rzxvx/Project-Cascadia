@@ -84,14 +84,44 @@ then a broadcast `+0x4d8 (6, 0x80)`, then per speaker:
 then broadcast `+0x4d8 (6, 0)` and a further loop from `0x80af5a5a` (reg
 `0x15` read…) not yet read.
 
+## The NCO (MCLK)
+
+`AppleS5L8940XPerformanceController` vtable `+0x478` (`0x80b8d280`) is
+`setNCOFrequency(n, Hz)`, n = 0..6 — the `NCOf` index in the ADT. Each NCO
+is four words in PMGR at `0x110 + 16n` (I2S1's, n = 1: `0x3f100120`):
+
+    CTRL = Hz ? 0x90000000 : 0       then wait for CTRL bit 30 to clear
+    +4   = 2*Hz                      wait for CTRL bit 9 to clear
+    +8   = 2*Hz - Fref               wait for bit 9
+    CTRL = 0x90000400, then 0x90000c00 (each: wait for bit 9)
+
+an accumulator divider stepping by `2f` and `2f - Fref`. Before the first
+NCO starts the driver enables something through its provider (`+0x354 (1,
+0)`; disabled again when all seven are off) — likely the `AUDIO-CLK`
+domain (`0x3f100058`, 0 under Linux). `Fref` comes from the provider and is
+not read statically; it can be measured: run I2S1 as clock master from the NCO
+and time how fast its TX FIFO drains. Under Linux all seven NCOs read
+`0x80010000`.
+
+## AE2 is a CPU, and holds the device clocks
+
+`AppleA5AE2` (`/SourceCache/AppleA5AE2/AppleA5AE2-64`): the audio engine is
+a Cortex-A5 IOP with firmware (`startCPU(IOSlaveFirmware *)`), five windows
+— MCS `0x341e0000`, IRQ `0x341e1000`, ACS `0x341a0000`, WGT `0x341c1000`,
+SRAM. iOS 8 keeps its CPU in WFI (`'advW'` =
+`AppleA5AE2DeviceClockPutA5InWFIFunction`) and uses the block only for device
+clocks: `'advW'` with the ADT index (0 i2s0, 1 i2s1, 5 mca0, 6 mca1) sets a
+bit in a mask of devices that need AE2; the first one runs `enableAE2`
+(`0x804f4afc`): the provider's clock and power gates on (`+0x354`, `+0x358`),
+then **MCS `+0x10 + 4*i` = 1 for i = 0..6** (0..4 when `ae2-version` ≤ 1).
+AE2 (id 112) has no PMGR register of its own.
+
 ## Still open
 
 1. **The i2s-switch's 21 registers.** `'i2sR'` lands in AppleARMIISSwitch's
    generic router (`0x804c09a8`): a graph of dsp/aud/mca/pin nodes and per-
    signal edges (the flag bytes `03 03 03`) that computes a 21-word table;
    AppleAE2I2SSwitch2 only copies it to `0x3fa01000`. Linux reads all zero.
-2. **The NCO** for MCLK: `AppleS5L8940XPerformanceControllerFunctionNCOFrequency`
-   calls the perf controller's vtable `+0x478 (index, Hz)`; registers in PMGR.
-3. **AE2's pclk gate** (`'advW'`, handler near `0x804f4ac8`).
-4. The rest of the CS35L19 sequence (calibration mask, the second loop).
-5. CDMA for real playback; PIO into I2S1's FIFO is enough for a first tone.
+2. The NCO's reference clock (to be measured) and what `+0x354` enables.
+3. The rest of the CS35L19 sequence (calibration mask, the second loop).
+4. CDMA for real playback; PIO into I2S1's FIFO is enough for a first tone.
