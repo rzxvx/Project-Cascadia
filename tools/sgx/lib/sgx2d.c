@@ -1,14 +1,28 @@
 /* sgx2d: see sgx2d.h.  How each block works is in tools/sgx/rpack.py,
- * rbatch.py and docs/research/p105-gpu.md; this is the frame assembly. */
+ * rbatch.py and docs/research/p105-gpu.md; this is the frame assembly.
+ *
+ * Two ways to the GPU.  The render node (/dev/dri/renderD*, driver
+ * "apple_sgx": include/uapi/drm/apple_sgx_drm.h) when the kernel has one:
+ * every "map" of the pack is a buffer at that GPU address, mapped into this
+ * process, and a frame is a submit with a syncobj to wait on.  Otherwise
+ * debugfs (apple-sgx/mem, cmd, boot) as root, as before; SGX2D_DEBUGFS=1
+ * forces it. */
 #include "sgx2d.h"
 
 #include <errno.h>
 #include <fcntl.h>
 #include <stdarg.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/ioctl.h>
+#include <sys/mman.h>
+#include <time.h>
 #include <unistd.h>
+
+#include <drm.h>
+#include "apple_sgx_drm.h"
 
 #define DBG "/sys/kernel/debug/apple-sgx/"
 
@@ -60,9 +74,181 @@ static struct {
 	uint32_t *vdmbuf;
 } S;
 
+/* ---- the render node ---------------------------------------------------- */
+
+#define MAX_BOS		64
+
+static struct {
+	int fd;				/* -1: debugfs */
+	struct { uint32_t va, size, handle; uint8_t *cpu; } bo[MAX_BOS];
+	uint32_t handles[MAX_BOS];
+	int nbo;
+	uint32_t syncobj;		/* the last frame's render */
+	uint64_t code_base;
+} D = { .fd = -1 };
+
+static int drm_node(void)
+{
+	char path[32], name[32];
+	int i, fd;
+
+	if (getenv("SGX2D_DEBUGFS") && atoi(getenv("SGX2D_DEBUGFS")))
+		return -1;
+	for (i = 128; i < 192; i++) {
+		struct drm_version v = { 0 };
+
+		snprintf(path, sizeof(path), "/dev/dri/renderD%d", i);
+		if ((fd = open(path, O_RDWR | O_CLOEXEC)) < 0)
+			continue;
+		memset(name, 0, sizeof(name));
+		v.name = name;
+		v.name_len = sizeof(name) - 1;
+		if (!ioctl(fd, DRM_IOCTL_VERSION, &v) && !strcmp(name, "apple_sgx"))
+			return fd;
+		close(fd);
+	}
+	return -1;
+}
+
+static int drm_param(uint32_t param, uint64_t *value)
+{
+	struct drm_apple_sgx_get_param p = { .param = param };
+
+	if (ioctl(D.fd, DRM_IOCTL_APPLE_SGX_GET_PARAM, &p))
+		return -errno;
+	*value = p.value;
+	return 0;
+}
+
+/* a buffer at GPU address va, mapped here */
+static int drm_map(uint32_t va, uint32_t size)
+{
+	struct drm_apple_sgx_gem_create c = {
+		.size = size, .flags = APPLE_SGX_BO_FIXED_VA, .va = va,
+	};
+	struct drm_apple_sgx_gem_mmap_offset m = { 0 };
+	void *p;
+
+	if (D.nbo == MAX_BOS)
+		return -ENOSPC;
+	if (ioctl(D.fd, DRM_IOCTL_APPLE_SGX_GEM_CREATE, &c)) {
+		int e = errno;
+
+		if (e == EEXIST)
+			fprintf(stderr, "sgx2d: GPU 0x%08x is taken -- memory mapped through "
+				"debugfs stays until a reboot\n", va);
+		return -e;
+	}
+	m.handle = c.handle;
+	if (ioctl(D.fd, DRM_IOCTL_APPLE_SGX_GEM_MMAP_OFFSET, &m))
+		return -errno;
+	size = (size + 0xfff) & ~0xfffu;
+	p = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, D.fd, (off_t)m.offset);
+	if (p == MAP_FAILED)
+		return -errno;
+	D.bo[D.nbo].va = va;
+	D.bo[D.nbo].size = size;
+	D.bo[D.nbo].handle = c.handle;
+	D.bo[D.nbo].cpu = p;
+	D.handles[D.nbo] = c.handle;
+	D.nbo++;
+	return 0;
+}
+
+/* the CPU side of [va, va + n), when one buffer holds all of it */
+static uint8_t *drm_cpu(uint32_t va, size_t n, int *bo)
+{
+	int i;
+
+	for (i = 0; i < D.nbo; i++)
+		if (va >= D.bo[i].va && va - D.bo[i].va + n <= D.bo[i].size) {
+			if (bo)
+				*bo = i;
+			return D.bo[i].cpu + (va - D.bo[i].va);
+		}
+	return NULL;
+}
+
+static int drm_wait(void)
+{
+	struct drm_syncobj_wait w = { 0 };
+	struct timespec ts;
+
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	w.handles = (uintptr_t)&D.syncobj;
+	w.count_handles = 1;
+	w.timeout_nsec = (int64_t)ts.tv_sec * 1000000000 + ts.tv_nsec + 5000000000ll;
+	return ioctl(D.fd, DRM_IOCTL_SYNCOBJ_WAIT, &w) ? -errno : 0;
+}
+
+/* "rkick PB DET CMD" as a submit: the TA command from its buffer, every
+ * buffer listed */
+static int drm_kick(uint32_t pb, uint32_t det, uint32_t cmdva)
+{
+	struct drm_apple_sgx_submit s = { 0 };
+	uint32_t *c = (uint32_t *)drm_cpu(cmdva, APPLE_SGX_TA_CMD_MIN, NULL);
+	int dbo;
+
+	if (!c || !drm_cpu(cmdva, c[0], NULL) || !drm_cpu(det, 0xa8, &dbo))
+		return -EFAULT;
+	s.cmd = (uintptr_t)c;
+	s.cmd_size = c[0];
+	s.pb_va = pb;
+	s.details_handle = D.bo[dbo].handle;
+	s.details_offset = det - D.bo[dbo].va;
+	s.bo_handles = (uintptr_t)D.handles;
+	s.bo_handle_count = D.nbo;
+	s.out_sync = D.syncobj;
+	return ioctl(D.fd, DRM_IOCTL_APPLE_SGX_SUBMIT, &s) ? -errno : 0;
+}
+
+static int drm_open(void)
+{
+	struct drm_syncobj_create sc = { .flags = DRM_SYNCOBJ_CREATE_SIGNALED };
+	uint64_t up = 0;
+	int ret;
+
+	if ((ret = drm_param(APPLE_SGX_PARAM_UKERNEL_UP, &up)) ||
+	    (ret = drm_param(APPLE_SGX_PARAM_CODE_BASE, &D.code_base)))
+		return ret;
+	if (!up) {
+		fprintf(stderr, "sgx2d: the GPU's microkernel is not running "
+			"(dmesg | grep apple-sgx; ./cascadia firmware)\n");
+		return -ENODEV;
+	}
+	if (ioctl(D.fd, DRM_IOCTL_SYNCOBJ_CREATE, &sc))
+		return -errno;
+	D.syncobj = sc.handle;
+	return 0;
+}
+
+/* ---- either way ------------------------------------------------------------ */
+
+/* GPU memory at va, written: through debugfs, or into the buffers that hold
+ * it (an image may run on from one into the next, as debugfs allows) */
 static int put(uint32_t va, const void *p, size_t n)
 {
-	return pwrite(S.mem, p, n, (off_t)va) == (ssize_t)n ? 0 : -errno;
+	const uint8_t *src = p;
+	int i;
+
+	if (D.fd < 0)
+		return pwrite(S.mem, p, n, (off_t)va) == (ssize_t)n ? 0 : -errno;
+	while (n) {
+		size_t k;
+
+		for (i = 0; i < D.nbo; i++)
+			if (va >= D.bo[i].va && va - D.bo[i].va < D.bo[i].size)
+				break;
+		if (i == D.nbo)
+			return -EFAULT;
+		k = D.bo[i].size - (va - D.bo[i].va);
+		k = k < n ? k : n;
+		memcpy(D.bo[i].cpu + (va - D.bo[i].va), src, k);
+		va += k;
+		src += k;
+		n -= k;
+	}
+	return 0;
 }
 
 static int cmd(const char *fmt, ...)
@@ -128,12 +314,17 @@ int sgx2d_open(const char *dir)
 	size_t len;
 	int boot, ret, i;
 
-	if (access(DBG "mem", F_OK))
-		system("mount -t debugfs none /sys/kernel/debug 2>/dev/null");
-	S.mem = open(DBG "mem", O_RDWR);
-	S.cmd = open(DBG "cmd", O_WRONLY);
-	if (S.mem < 0 || S.cmd < 0)
-		return -errno;
+	if ((D.fd = drm_node()) >= 0) {
+		if ((ret = drm_open()))
+			return ret;
+	} else {
+		if (access(DBG "mem", F_OK))
+			system("mount -t debugfs none /sys/kernel/debug 2>/dev/null");
+		S.mem = open(DBG "mem", O_RDWR);
+		S.cmd = open(DBG "cmd", O_WRONLY);
+		if (S.mem < 0 || S.cmd < 0)
+			return -errno;
+	}
 	snprintf(path, sizeof(path), "%s/pack.txt", dir);
 	if (!(f = fopen(path, "r")))
 		return -errno;
@@ -143,7 +334,12 @@ int sgx2d_open(const char *dir)
 
 		if (n < 2)
 			continue;
-		if (!strcmp(key, "map"))
+		if (!strcmp(key, "map") && D.fd >= 0) {
+			if ((ret = drm_map(strtoul(a, 0, 0), strtoul(b, 0, 0)))) {
+				fclose(f);
+				return ret;
+			}
+		} else if (!strcmp(key, "map"))
 			cmd("map %s %s", a, b);	/* EEXIST on a second open is fine */
 		else if (!strcmp(key, "kick"))
 			parse_words(line + 4, S.kick, 3);
@@ -174,11 +370,14 @@ int sgx2d_open(const char *dir)
 					S.toff[i] = atoi(a); S.tsize[i] = atoi(b);
 				}
 	}
-	boot = open(DBG "boot", O_WRONLY);
-	if (boot < 0 || write(boot, "1", 1) != 1)
-		return -EIO;
-	close(boot);
-	usleep(200000);
+	/* the render node's microkernel is running already, and stays */
+	if (D.fd < 0) {
+		boot = open(DBG "boot", O_WRONLY);
+		if (boot < 0 || write(boot, "1", 1) != 1)
+			return -EIO;
+		close(boot);
+		usleep(200000);
+	}
 	/* pass 2: images and register pokes (after the boot) */
 	rewind(f);
 	while (fgets(line, sizeof(line), f)) {
@@ -193,6 +392,15 @@ int sgx2d_open(const char *dir)
 			free(img);
 			if (ret)
 				return ret;
+		} else if (!strcmp(key, "poke") && D.fd >= 0) {
+			/* USE_CODE_BASE_3: the kernel sets it, the pack must agree */
+			if (strtoull(b, 0, 0) != D.code_base >> 6) {
+				fprintf(stderr, "sgx2d: %s was built for code base 0x%llx, the "
+					"kernel's is 0x%llx -- ./cascadia gpu rebuilds it\n", dir,
+					strtoull(b, 0, 0) << 6, (unsigned long long)D.code_base);
+				fclose(f);
+				return -EINVAL;
+			}
 		} else if (!strcmp(key, "poke")) {
 			snprintf(line, sizeof(line), "peek w %s %s > /dev/null",
 				 a + (a[0] == '0' && a[1] == 'x' ? 2 : 0),
@@ -221,6 +429,17 @@ int sgx2d_open(const char *dir)
 
 void sgx2d_close(void)
 {
+	int i;
+
+	if (D.fd >= 0) {
+		drm_wait();
+		for (i = 0; i < D.nbo; i++)
+			munmap(D.bo[i].cpu, D.bo[i].size);
+		close(D.fd);	/* the buffers go with it */
+		D.fd = -1;
+		D.nbo = 0;
+		return;
+	}
 	close(S.mem);
 	close(S.cmd);
 }
@@ -537,6 +756,8 @@ static int wait_3d(void)
 	uint32_t v = 1;
 	int i;
 
+	if (D.fd >= 0)		/* the kernel watches the same word */
+		return drm_wait();
 	for (i = 0; i < 200000; i++) {
 		if (pread(S.mem, &v, 4, (off_t)S.kick[1] + 0x24) != 4)
 			return -EIO;
@@ -624,5 +845,7 @@ int sgx2d_end(void)
 	    (ret = put(S.ext + EXT_FRAME, S.fbuf, S.ftop)) ||
 	    (ret = put(S.vdm, S.vdmbuf, (v - S.vdmbuf) * 4)))
 		return ret;
+	if (D.fd >= 0)
+		return drm_kick(S.kick[0], S.kick[1], S.kick[2]);
 	return cmd("rkick 0x%x 0x%x 0x%x", S.kick[0], S.kick[1], S.kick[2]);
 }

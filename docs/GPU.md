@@ -41,6 +41,9 @@ anyway. That one command:
 
 Needs a kernel with the `apple-sgx` driver from this tree, build #263 or
 later (`./cascadia build`); the command warns if the running one has none.
+A kernel from 2026-10-03 on also has the render node, which sgx2d then uses
+instead of debugfs; a pack from before that date is refused by it (the code
+base moved) -- run `./cascadia gpu` again after updating the kernel.
 
 **By hand**: `./cascadia gpu --install [HOST]` (over ssh only) or
 `./cascadia gpu --root [DIR]` (into a root tree only). The NFS root lives on
@@ -83,6 +86,8 @@ Options, as environment variables in front of `supertux-gpu`:
 Two demos come along: `/usr/local/lib/sgx2d/sprites /usr/local/lib/sgx2d 200 600`
 (bouncing sprites, prints fps) and `/usr/local/lib/sgx2d/demo2
 /usr/local/lib/sgx2d` (streaming texture, fills, blend modes, rotation).
+`/usr/local/lib/sgx2d/sgxinfo` shows what the render node reports and checks
+that its buffers map where they should.
 
 ## How it works
 
@@ -94,10 +99,11 @@ SuperTux ── SDL2 2D renderer calls ──> libsgxsdl.so (LD_PRELOAD)
                                          │   VDM control stream, per-draw state
                                          │   deltas, vertex fetch blocks, vertices
                                          v
-                    /sys/kernel/debug/apple-sgx/{mem,cmd}
-                                         │   pwrite at the GPU address; "rkick"
+              /dev/dri/renderD128 (or debugfs apple-sgx/{mem,cmd})
+                                         │   buffers at the pack's GPU addresses,
+                                         │   mmapped; a submit per frame
                                          v
-apple-sgx.c ── render queue: context + CCB + TA command ──> iOS's microkernel
+apple-sgx ── render queue: context + CCB + TA command ──> iOS's microkernel
                                          │   TA (geometry -> tiles) then 3D
                                          v   (tiles -> pixels -> framebuffer)
                                       the screen
@@ -129,9 +135,15 @@ apple-sgx.c ── render queue: context + CCB + TA command ──> iOS's microk
   heap. GPU memory outside the driver's own buffers is allocated page by
   page, so it is not limited by the 64 MiB CMA pool.
 - **A frame's end** is seen in memory: the microkernel clears a word of the
-  render target's details when the 3D pass is over. `sgx2d_end()` waits for
-  the previous frame there, so the CPU builds frame N+1 while the GPU draws
-  frame N.
+  render target's details when the 3D pass is over. The kernel watches it and
+  signals the frame's syncobj; `sgx2d_end()` waits for the previous frame,
+  so the CPU builds frame N+1 while the GPU draws frame N.
+- **The render node** (`/dev/dri/renderD128`, driver `apple_sgx`) is how
+  sgx2d reaches the GPU when the kernel has it: each of the pack's GPU
+  memory windows is a buffer at that address, mapped into the process, and
+  a frame is one submit. Without it sgx2d falls back to debugfs as root
+  (`SGX2D_DEBUGFS=1` forces that). `sgxinfo` checks the node.
+  [research/p105-mesa.md](research/p105-mesa.md), M9, has the interface.
 
 ## Limits
 
@@ -141,8 +153,9 @@ apple-sgx.c ── render queue: context + CCB + TA command ──> iOS's microk
 - No custom shaders — that would need a GLSL to USSE compiler — so no
   OpenGL: programs that use SDL's 2D renderer work, GL programs do not.
 - No sound (there is no audio device yet).
-- It runs as root, through debugfs. A proper device node (submit and wait
-  ioctls, mmap) is the next step for anything beyond games.
+- The render node is new (M9 in [research/p105-mesa.md](research/p105-mesa.md))
+  and its interface will change while the Mesa driver is written; Mesa and
+  OpenGL are the plan there.
 - About 390 draws (texture or blend-mode changes) fit in one frame; quads
   beyond that are dropped. SuperTux's title screen uses ~60.
 
@@ -150,7 +163,8 @@ apple-sgx.c ── render queue: context + CCB + TA command ──> iOS's microk
 
 | file | what |
 |---|---|
-| `patches/files/drivers/misc/apple-sgx.c` | the kernel driver: power, clocks, MMU, microkernel, queues, debugfs |
+| `patches/files/drivers/gpu/drm/apple-sgx/` | the kernel driver: power, clocks, MMU, microkernel, queues, debugfs (`apple_sgx_hw.c`), the render node (`apple_sgx_drm.c`) |
+| `patches/files/include/uapi/drm/apple_sgx_drm.h` | the render node's interface |
 | `tools/sgx/lib/sgx2d.{c,h}` | the 2D library |
 | `tools/sgx/lib/sgxsdl.c` | the SDL2 renderer shim and the touch gamepad |
 | `tools/sgx/lib/supertux.sh` | the launcher (`supertux-gpu`) |
@@ -163,4 +177,5 @@ apple-sgx.c ── render queue: context + CCB + TA command ──> iOS's microk
 | `tools/iosgpu/rtemu.py` | runs the kext's render-target code under unicorn |
 | `tools/sgx/capmap.py` | research: what of a frame a capture of iOS reaches |
 | `tools/gpucap.sh`, `tools/iosgpu/gltrace.m` | research: capture what iOS's GL driver sets up (jailbroken iOS; `frame.py --check` compares) |
+| `tools/sgx/lib/sgxinfo.c` | the render node's parameters, and a check of its buffers |
 | `tools/sgx/lib/{rectest,pbtest,cnttest,bigtest,replay,sdlshot}.c` | diagnostics |

@@ -33,7 +33,9 @@ W, H = 768, 1024
 GL = 0x98956000
 STATE, PDS = 0x989b5000, 0x98956000
 IDX = 0x98967000
-CB = 0x9a060000                        # code base 3: the page is at CB + 0x1000
+# code base 3: the page is at CB + 0x1000.  The kernel points USE_CODE_BASE_3
+# and _5 here itself (apple_sgx.h, SGX_CODE_BASE); sgx2d checks they agree.
+CB = 0x9a000000
 EXT_VA, EXT_SIZE = 0x9b400000, 0x400000
 # The background object reloads every tile from the output descriptor (3D
 # PDS block +0x120): with blending on it cannot know a tile is covered, and

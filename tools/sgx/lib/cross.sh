@@ -7,7 +7,7 @@
 # steps, and for the same reason (scripts/apk-unpack.py): a Linux host may
 # have no ARM emulation, and the result must not depend on it.
 #
-#   bash tools/sgx/lib/cross.sh            -> sprites demo2 libsgxsdl.so here
+#   bash tools/sgx/lib/cross.sh    -> sprites demo2 sgxinfo libsgxsdl.so here
 #
 # The same Makefile also builds natively in an Alpine armv7 container (see
 # its header); both give the device the same ABI: EABI hard-float, musl,
@@ -46,8 +46,10 @@ fi
 # musl's start files and libc with gcc's libgcc for the helpers it calls.
 GCCINC=$("${CROSS}gcc" -print-file-name=include)
 LIBGCC=$("${CROSS}gcc" -print-libgcc-file-name)
+# drm.h from the kernel headers, the render node's own header from this tree
 CFLAGS="-O2 -Wall -D_FILE_OFFSET_BITS=64 -march=armv7-a -mfpu=vfpv3-d16 -mfloat-abi=hard
- -nostdinc -isystem $SR/usr/include -isystem $GCCINC"
+ -nostdinc -isystem $SR/usr/include -isystem $GCCINC
+ -I$SR/usr/include/drm -I$ROOT/patches/files/include/uapi/drm"
 LDFLAGS="-nostdlib -L$SR/usr/lib -L$SR/lib -Wl,--dynamic-linker=/lib/ld-musl-armhf.so.1
  -Wl,-rpath-link,$SR/usr/lib -Wl,--hash-style=both"
 CRTI="$SR/usr/lib/crti.o"
@@ -58,6 +60,8 @@ for p in sprites demo2; do
     # shellcheck disable=SC2086
     "${CROSS}gcc" $CFLAGS $LDFLAGS -o "$p" "$SR/usr/lib/crt1.o" $CRTI "$p.c" sgx2d.c -lm -lc "$LIBGCC" $CRTN
 done
+# shellcheck disable=SC2086
+"${CROSS}gcc" $CFLAGS $LDFLAGS -o sgxinfo "$SR/usr/lib/crt1.o" $CRTI sgxinfo.c -lc "$LIBGCC" $CRTN
 # shellcheck disable=SC2086
 "${CROSS}gcc" $CFLAGS -fPIC -shared $LDFLAGS -I"$SR/usr/include/SDL2" -D_REENTRANT \
     -o libsgxsdl.so $CRTI sgxsdl.c sgx2d.c -lSDL2 -lm -lc "$LIBGCC" $CRTN
