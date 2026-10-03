@@ -41,6 +41,7 @@ On the iPad:
 sgx-gl glclear                   # one clear, read back and checked
 sgx-gl glclear 100               # timing
 SGX_DEBUG=frame sgx-gl glclear   # every word a clear sets
+SGX_FRAME=fb,blend sgx-gl glclear   # the pack's own pieces (docs, M12): to the screen
 ```
 
 ## Without an iPad

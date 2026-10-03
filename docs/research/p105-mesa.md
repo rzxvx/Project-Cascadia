@@ -107,7 +107,7 @@ The GPU's address map (`apple_sgx.h`):
 | `0x80000000-0x807fffff` | the microkernel's buffers and the kernel's queues |
 | `0x80800000-0xefffffff` | render node buffers (and debugfs `map`) |
 | `0x90000000` +16 MiB | the framebuffer, mapped by the kernel |
-| `0x9a000000` +16 MiB | the USSE code zone; `USE_CODE_BASE_3` and `_5` point at its start |
+| `0x9a000000` +8 MiB | the USSE code zone; `USE_CODE_BASE_3` and `_5` point at its start (8 MiB: a DOUTU names code by a 20-bit index of 8-byte words) |
 | `0xa8000000-` | where the kernel places buffers, top down |
 
 How a render runs: a DRM scheduler with room for one job. `run_job` copies
@@ -321,6 +321,23 @@ clear could.
   there), crashes at that read in `_mesa_make_current`; with
   `-mtls-dialect=gnu` it gives the strings and `0 wrong`. `build.sh` passes
   that now, and reconfigures a tree built with other options.
+
+With the context right, every clear took 2.2 s and left the target at zero:
+the kernel's 2 s timeout, every time. The driver's code buffer (the replace
+and end-of-tile programs) had been given `0x9aff6000` -- the kernel made the
+code zone 16 MiB and handed out its top first -- and a DOUTU names a program
+by a 20-bit index of 8-byte instructions from the code base: 8 MiB of reach
+(the kernel's own address-map comment said as much about its buffers). The
+index was cut to `0xfec20`, the USSE jumped to nothing, the render hung. The
+driver now puts its programs at a fixed address just above the pack's code
+page (`0x9a010000`), whatever the kernel; the kernel's code zone is 8 MiB.
+
+For telling on the device which of the frame's pieces is wrong,
+`SGX_FRAME` puts the pack's own back: `fb` its end of tile and background
+(the clear goes to the screen, as sgx2d's frames do, and glclear's read-back
+is wrong by design), `blend` its pixel program (texel x colour, blended)
+instead of the replace program. `SGX_FRAME=fb,blend` is sgx2d's draw 0 with
+our vertices.
 
 Not yet: draws (`draw_vbo` says so once and drops them), textures in any
 layout but linear, scanout (EGL has the surfaceless and GBM platforms; the

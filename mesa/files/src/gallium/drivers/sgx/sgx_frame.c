@@ -30,6 +30,7 @@
 #include "drm-uapi/apple_sgx_drm.h"
 #include "util/log.h"
 #include "util/os_time.h"
+#include "util/u_math.h"
 #include "util/u_memory.h"
 
 #include "sgx_device.h"
@@ -45,6 +46,13 @@
 #define MAX_EOT         256
 #define EOT_SLOT        0x80
 #define CODE_SIZE       (0x100 + MAX_EOT * EOT_SLOT)
+
+/* A DOUTU (and a PHAS) names a program by its index from the code base:
+ * 20 bits of 8-byte instructions, 8 MiB.  Kernels before 2026-10-04 made
+ * the code zone 16 MiB and gave out its top first, out of reach -- the
+ * first clears on the iPad hung until the kernel's timeout -- so the code
+ * goes at an address of our own choosing, just above the pack's. */
+#define CODE_REACH      (8u << 20)
 
 /* the GL window's 3D PDS block, where frame.py puts it */
 #define PDS_DEFAULT     0x98956000u
@@ -99,6 +107,11 @@ struct sgx_frame {
    uint32_t texblock;           /* the white texture's block, replace program */
    struct sgx_fence *last;      /* the last render through the frame */
    bool debug;                  /* SGX_DEBUG=frame: say what each render is */
+   /* SGX_FRAME=fb,blend: the pack's own pieces instead of ours, to tell on
+    * the device which of ours is wrong -- "fb" keeps the pack's end of tile
+    * and background (the clear lands on the screen, not in the target),
+    * "blend" its pixel program (texel x colour, blended) */
+   bool pack_eot, pack_pixel;
 };
 
 static uint32_t
@@ -191,6 +204,9 @@ map_window(struct sgx_frame *f, uint32_t va, uint32_t size)
    if (f->nbo == MAX_PACK_BOS)
       return false;
    bo = sgx_bo_create(f->dev, size, APPLE_SGX_BO_FIXED_VA, va);
+   if (!bo && errno == EEXIST)
+      mesa_logw("sgx: GPU 0x%08x is taken (another client of the template "
+                "frame, or memory debugfs mapped there)", va);
    if (!bo || !sgx_bo_map(bo)) {
       sgx_bo_destroy(bo);
       return false;
@@ -287,6 +303,38 @@ load_pack(struct sgx_frame *f, const char *dir)
    return ok;
 }
 
+/* The buffer for our programs: the lowest free 64 KiB step above the
+ * pack's windows in the code zone, within a DOUTU's reach */
+static struct sgx_bo *
+code_bo(struct sgx_frame *f)
+{
+   struct sgx_device *dev = f->dev;
+   uint32_t size = align(CODE_SIZE, 4096);
+   uint32_t lo = MAX2(dev->code_va_start, dev->code_base);
+   uint32_t hi = MIN2(dev->code_va_end, dev->code_base + CODE_REACH);
+
+   for (uint32_t va = align(lo, 0x10000); va + size <= hi; va += 0x10000) {
+      struct sgx_bo *bo;
+      bool clear = true;
+
+      /* a page of space around the pack's windows, as the kernel leaves */
+      for (unsigned i = 0; i < f->nbo && clear; i++)
+         clear = va + size + 4096 <= f->bo[i]->va ||
+                 va >= f->bo[i]->va + f->bo[i]->size + 4096;
+      if (!clear)
+         continue;
+      bo = sgx_bo_create(dev, size, APPLE_SGX_BO_USSE_CODE | APPLE_SGX_BO_FIXED_VA, va);
+      if (bo && sgx_bo_map(bo))
+         return bo;
+      sgx_bo_destroy(bo);
+      if (bo || errno != EEXIST)
+         return NULL;
+   }
+   mesa_logw("sgx: no room for programs within 8 MiB of the code base 0x%08x",
+             dev->code_base);
+   return NULL;
+}
+
 struct sgx_frame *
 sgx_frame_create(struct sgx_device *dev, const char *dir)
 {
@@ -298,11 +346,12 @@ sgx_frame_create(struct sgx_device *dev, const char *dir)
       return NULL;
    f->dev = dev;
    f->debug = getenv("SGX_DEBUG") && strstr(getenv("SGX_DEBUG"), "frame");
+   f->pack_eot = getenv("SGX_FRAME") && strstr(getenv("SGX_FRAME"), "fb");
+   f->pack_pixel = getenv("SGX_FRAME") && strstr(getenv("SGX_FRAME"), "blend");
    if (!load_pack(f, dir))
       goto fail;
 
-   f->code = sgx_bo_create(dev, CODE_SIZE, APPLE_SGX_BO_USSE_CODE, 0);
-   if (!f->code || !sgx_bo_map(f->code))
+   if (!(f->code = code_bo(f)))
       goto fail;
    memcpy(f->code->map, replace, sizeof(replace));
    f->handles[f->nbo] = f->code->handle;
@@ -311,7 +360,8 @@ sgx_frame_create(struct sgx_device *dev, const char *dir)
     * word 0 the pixel program, 5 the size (log2), 6 the address */
    memset(white, 0xff, sizeof(white));
    memcpy(blk, f->tmpl + f->toff[T_TEX], MIN2(f->tsize[T_TEX], (int)sizeof(blk)));
-   blk[0] = doutu(f, f->code->va);
+   if (!f->pack_pixel)
+      blk[0] = doutu(f, f->code->va);
    blk[5] = 0x0c000000 | 2 << 16 | 2;
    blk[6] = f->heap;
    f->texblock = f->ext;
@@ -429,7 +479,8 @@ sgx_frame_clear(struct sgx_frame *f, struct sgx_resource *rt, const float rgba[4
    bg[2] = rt->bo->va;
    bg[3] = 0x10000000;
    d0 = doutu(f, eot);
-   if (!put(f, f->pds + 8, &d0, 4) || !put(f, f->pds + 0x130, bg, sizeof(bg)))
+   if (!f->pack_eot &&
+       (!put(f, f->pds + 8, &d0, 4) || !put(f, f->pds + 0x130, bg, sizeof(bg))))
       return -EFAULT;
 
    /* draw 0: the whole state, the white texture with the replace program */
@@ -468,8 +519,14 @@ sgx_frame_clear(struct sgx_frame *f, struct sgx_resource *rt, const float rgba[4
    if (f->debug) {
       mesa_logi("sgx: clear %ux%u at 0x%08x (stride %u) to %.3f %.3f %.3f %.3f", f->w, f->h,
                 rt->bo->va, rt->stride[0], rgba[0], rgba[1], rgba[2], rgba[3]);
-      mesa_logi("sgx:   end of tile at 0x%08x (DOUTU 0x%08x), background %08x %08x %08x %08x",
-                eot, doutu(f, eot), bg[0], bg[1], bg[2], bg[3]);
+      if (f->pack_eot)
+         mesa_logi("sgx:   the pack's end of tile and background (SGX_FRAME=fb): to the screen");
+      else
+         mesa_logi("sgx:   end of tile at 0x%08x (DOUTU 0x%08x), background %08x %08x %08x %08x",
+                   eot, doutu(f, eot), bg[0], bg[1], bg[2], bg[3]);
+      mesa_logi("sgx:   pixel program: %s (texture block 0x%08x word 0 = 0x%08x)",
+                f->pack_pixel ? "the pack's (SGX_FRAME=blend)" : "replace",
+                f->texblock, *(uint32_t *)cpu_at(f, f->texblock, 4, NULL));
       mesa_logi("sgx:   state 0x%08x, its program 0x%08x, vertex fetch 0x%08x, vertices 0x%08x",
                 d0, p0, fb, vb);
       for (i = 0; i < (unsigned)(v - vdm); i += 5)

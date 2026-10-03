@@ -57,11 +57,9 @@ sgx_bo_create(struct sgx_device *dev, uint32_t size, uint32_t flags, uint32_t va
    };
    struct sgx_bo *bo;
 
+   /* a fixed address that is taken (EEXIST) is the caller's to report */
    if (drmIoctl(dev->fd, DRM_IOCTL_APPLE_SGX_GEM_CREATE, &c)) {
-      if (errno == EEXIST)
-         mesa_loge("sgx: GPU 0x%08x is taken (another client of the template "
-                   "frame, or memory debugfs mapped there)", va);
-      else
+      if (errno != EEXIST)
          mesa_loge("sgx: GEM_CREATE %u bytes: %s", size, strerror(errno));
       return NULL;
    }
