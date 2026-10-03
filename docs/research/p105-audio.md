@@ -57,122 +57,74 @@ TXCOM=0, RXCOM=0, CLKCON last; its TXCON/RXCON values come from a format
 descriptor the framework fills (fields at +0x10..0x13 and +0x1c..0x1f are not
 in the ADT blob), so they are to be set from openiboot's bit meanings instead.
 
-## CS35L19 init (AppleCS35L19Amp, text `0x80af4de0`)
+## CS35L19 (AppleCS35L19Amp, text `0x80af4de0`)
 
-Register helpers through the class vtable: write `+0x4d4 (spk, reg, val)`,
-update bits `+0x4ec (spk, reg, mask, val)`, read `+0x4dc`, block write
-`+0x4e0`. The ADT's `speaker-config` is 20 bytes per speaker:
+Both amps answer on I2C0 at `0x40`/`0x41` once **pin 5** (their reset, ADT
+`function-reset`) is driven high; both read revision `0xb0` (reg 5), ID
+`35 a1 90` at regs 1..3. Reset values: `logs/audio/cs35l19-reset.txt`
+(out of git). Pin 6 is `function-alive`.
 
-    ff 26 02 70 6a 80 30 1e 02 04 0c 8a 8a 10 74 03 05 00 00 00
+Register helpers, from their call sites (the class's own vtable starts at
+`0x80af6fac`; the slots below are its base class's): `+0x4d4 (spk, reg,
+val)` write, `+0x4d8 (reg, val)` write to all amps, `+0x4dc (spk, reg)`
+read, `+0x4e0 (spk, reg, ptr, len)` block write, `+0x4ec (spk, reg, mask,
+val)` / `+0x4f0 (reg, mask, val)` update bits on one / all.
 
-Per speaker, in order (`0x80af5776..`):
+**MCLK must run first, at 12.000 MHz**: power-on asks
+`function-mclk_control` (→ `i2s1/audio-bluetooth 'MCLK'`) for `0x00b71b00`
+Hz and logs "could not enable MCLK" otherwise.
 
-- read reg 5 (revision); if ≥ 0xb0 (errata): `0x00=0x99`, `0x45=0x3f`,
-  `0x46=cfg[0x10]`, `0x51=0xff`, `0x59=0x0a`, `0x6b=0x20`,
-  [`0x54=cfg[0x12]` if non-zero], `0x00=0x00`
-- if `cfg[0x11]`: `0x00=0x99`, `0x66=cfg[0x11]`, `0x00=0`
-- `0x0b = cfg[1] & 0x3f`; `0x0c` bits 1:0 = `cfg[2]`
+Power-on (`0x80af55d4` with state 1), per amp unless "all"; `cfg` is the
+ADT `speaker-config` (20 bytes per amp, both
+`ff 26 02 70 6a 80 30 1e 02 04 0c 8a 8a 10 74 03 05 00 00 00`):
 
-then a broadcast `+0x4d8 (6, 0x80)`, then per speaker:
+    rev >= 0xb0:  0x00=0x99 0x45=0x3f 0x46=cfg[16] 0x51=0xff 0x59=0x0a
+                  0x6b=0x20 [0x54=cfg[18] if !0] 0x00=0x00
+    cfg[17]:      0x00=0x99 0x66=cfg[17] 0x00=0x00   (0 here: skipped)
+    0x0b = cfg[1] & 0x3f;  0x0c[1:0] = cfg[2]
+    all: 0x06 = 0x80
+    0x07 = path power-downs: bit7..4 set for each of the V, I, P, B roles
+           absent from the stream, bit 3 if F is absent as well
+    0x08[7:6] = 01;  0x09 = cfg[0];  0x10 = 0x19;  0x0f bit 4 = 0
+    0x11 = 0x1c;  0x0e (mask 0xcf) = 0xc4;  0x12[7:4] = cfg[3]>>4
+    0x3a..0x3d = cfg[12..15]
+    wait 10 ms;  all: 0x06 = 0x00;  wait 8 ms
+    read 0x15, 0x15, 0x16, 0x16 (latched status)
+    0x23..0x2a = cfg[4..11];  0x29[6:0] = 0x14;  0x11 = 0x14
 
-- `0x07` = a mask built from four calibration words (bits 7..4 for the ones
-  that are zero, bit 3 if…) — still to be read closely
-- `0x08` bits 7:6 = `0x40`; `0x09 = cfg[0]`; `0x10 = 0x19`;
-  `0x0f` bit 4 = 0; `0x11 = 0x1c`; `0x0e` mask `0xcf` = `0xc4`;
-  `0x12` bits 7:4 = `cfg[3]`; `0x3a..0x3d` = `cfg[0x0c..0x0f]`
+Then the serial port (`0x80af5be0`), per amp. The stream's channels carry
+role names per amp n — `spA<n>` the speaker's audio, `spV/spI/spP/spB/spF`
+and `spK` the amp's own outputs (V/I sense and the like). Slot widths are
+in **bytes**, positions are byte offsets in the TDM frame:
 
-then broadcast `+0x4d8 (6, 0)` and a further loop from `0x80af5a5a` (reg
-`0x15` read…) not yet read.
+    0x2d..0x31 = byte offset of V, I, P, B, F (0x80 = not sent)
+    0x32..0x35 = 32-bit map of the bytes those use (0x32 high)
+    0x0d = 3 (0x43 on the first amp in one mode)
+    0x08 = rate: 48000 0x49, 44100 0x4b, 32000 0x4d, 24000 0x51,
+           22050 0x53, 16000 0x55, 12000 0x59, 11025 0x5b, 8000 0x5d
+    0x36 = spA's byte offset | ((7 + width) & 7) << 5;  0xc0 = no audio
+    0x38, 0x37 = byte offsets of spK and one more; 0x0c bit 4 / 0x0b bit 6
+           enable them
 
-## The NCO (MCLK)
+and volume (`0x80af65e0`): all `0x10 = 0x19` muted, else `volume + 0x34`.
 
-`AppleS5L8940XPerformanceController` vtable `+0x478` (`0x80b8d280`) is
-`setNCOFrequency(n, Hz)`, n = 0..6 — the `NCOf` index in the ADT. Each NCO
-is four words in PMGR at `0x110 + 16n` (I2S1's, n = 1: `0x3f100120`):
+For a plain 2 x 32-bit frame, amp 0 on the left slot and amp 1 on the
+right, no sense outputs: `0x07 = 0xf8`, `0x2d..0x31 = 0x80`,
+`0x32..0x35 = 0`, `0x37 = 0x38 = 0x80`, `0x36 = 0x60` / `0x64`,
+`0x08 = 0x49`, `0x10 = 0x34`.
 
-    CTRL = Hz ? 0x90000000 : 0       then wait for CTRL bit 30 to clear
-    +4   = 2*Hz                      wait for CTRL bit 9 to clear
-    +8   = 2*Hz - Fref               wait for bit 9
-    CTRL = 0x90000400, then 0x90000c00 (each: wait for bit 9)
-
-an accumulator divider stepping by `2f` and `2f - Fref`. Before the first
-NCO starts the driver enables something through its provider (`+0x354 (1,
-0)`; disabled again when all seven are off) — likely the `AUDIO-CLK`
-domain (`0x3f100058`, 0 under Linux). `Fref` comes from the provider and is
-not read statically; it can be measured: run I2S1 as clock master from the NCO
-and time how fast its TX FIFO drains. Under Linux all seven NCOs read
-`0x80010000`.
-
-## AE2 is a CPU, and holds the device clocks
-
-`AppleA5AE2` (`/SourceCache/AppleA5AE2/AppleA5AE2-64`): the audio engine is
-a Cortex-A5 IOP with firmware (`startCPU(IOSlaveFirmware *)`), five windows
-— MCS `0x341e0000`, IRQ `0x341e1000`, ACS `0x341a0000`, WGT `0x341c1000`,
-SRAM. iOS 8 keeps its CPU in WFI (`'advW'` =
-`AppleA5AE2DeviceClockPutA5InWFIFunction`) and uses the block only for device
-clocks: `'advW'` with the ADT index (0 i2s0, 1 i2s1, 5 mca0, 6 mca1) sets a
-bit in a mask of devices that need AE2; the first one runs `enableAE2`
-(`0x804f4afc`): the provider's clock and power gates on (`+0x354`, `+0x358`),
-then **MCS `+0x10 + 4*i` = 1 for i = 0..6** (0..4 when `ae2-version` ≤ 1).
-AE2 (id 112) has no PMGR register of its own.
-
-## The i2s-switch encoder (AppleAE2I2SSwitch2, vtable `0x80cfc0c8`)
-
-Own methods: `+0x34c` node count (`[+0x70] + [+0x74] + 7`), `+0x350` index →
-name (`dspN`, `dspc`, `audN`, `pinN`, `mcaN`), `+0x354` node type, `+0x358`
-register count (21), `+0x364` writes the 21 words to `0x3fa01000`, and
-**`+0x360` (`0x80cf950c`) encodes one edge** into a mask array and a value
-array (21 words each) — `(signal type lr = 0/1/2, src, dst, index…)`. What
-it does, so far:
-
-- destination `pinN` → `reg[N]`: bit 15 on; type 0: source in bits 8..11
-  (`dspK` → `4+K`, `audN`/`mcaN` (N > 0) → `7+N`), `aud0` in bits 12..14
-  (`7 − pin`); type 1: bits 0..4, `0x10 |` source (`dspK` → `8+K`, `mcaN` →
-  `4+N`);
-- the port side: `reg[0xa+N]` / `reg[0xb+N]` bits 8..12 (`0x800 + pin<<8` for
-  aud, `0x1000 + pin<<8` for mca) and bits 0..4 for type 1;
-- `reg[5+N]` for aud, `reg[9+N]` for mca (bits 8..11 or 0..3);
-- `reg[0xf]` for `dspc`; type 2 (data?) sets `reg[0x10+N]` bit 0 when an
-  aud drives its own pin; `reg[0x14]` bit 0 for the special pin4 → mca0.
-
-The base router (AppleARMIISSwitch, `0x804c09a8`) decides which edges and
-which signal types to encode from the route's flag bytes — the ADT's
-`0x030303` (mca0 → pin1), `0x300003` (aud1 → pin1), `0x330303` (aud0 → pin0)
-— and is the part still to read before the table for a route can be
-computed.
-
-### Computed by running iOS's router (`tools/audio/i2sswitch-emu.py`)
-
-Reading the router to redo it by hand invites mistakes, so it is run instead:
-the script maps the kernelcache into unicorn, builds the switch object the way
-both `start()`s do (14 nodes `dsp0-2 dspc pin0-3 aud0-3 mca0-1`, 21 registers,
-version `0x20001` — what `0x3fa01ffc` reads), and calls the router with the
-ADT's default route and the arguments each driver passes when a stream starts
-(MCA: `p1` = active directions, TX `0x2`; `p2` = 2 as clock master, 1 as
-slave. I2S: `p1` = 3; `p2` = 2 as master, `| 0x20` with RX).
-
-| Route | Registers written |
-|---|---|
-| default `dspc → dsp0` | none |
-| **speakers as iOS runs them**: I2S1 master + MCA0 TX slave | **`reg1 = 0x0000f000`, `reg9 = 0x00000001`** |
-| `aud1 → pin1` clocks only | none — I2S1's clocks reach pin1 without the switch |
-| `aud1 → pin1` TX data | refused (`0xe00002e6`): I2S1 cannot put data on pin1 |
-| `aud0 → pin0` (codec) | `reg0 = 0x00009010` |
-| **MCA0 TX as clock master** | **`reg1 = 0x0000f014`** |
-
-Read with the encoder: `reg[pin]` bit 15 enables the pin, bits 12..14 pick
-its data source (7 = mca0), bits 0..4 its frame clocks (`0x10 | 4` = mca0);
-`reg9` is mca0's clock input (1 = pin1). Under iOS the speakers' data come
-from MCA0, clocked by I2S1, which also gives the amps their MCLK. Either
-that, or MCA0 alone as master (`reg1 = 0xf014`) if the amps can do without
-I2S1's MCLK.
+Power-off: all `0x10 = 0x19`, `0x06` bit 7, `0x07 = 0xfe`, wait 1 ms,
+`0x06 = 0x87`, wait 4 ms, MCLK off.
 
 ## Still open
 
-1. ~~The i2s-switch~~ — done, above. `'i2sR'` lands in AppleARMIISSwitch's
-   generic router (`0x804c09a8`): a graph of dsp/aud/mca/pin nodes and per-
-   signal edges (the flag bytes `03 03 03`) that computes a 21-word table;
-   AppleAE2I2SSwitch2 only copies it to `0x3fa01000`. Linux reads all zero.
+1. **MCA0's registers** for a 2 x 32-bit TX stream as a clock slave (or
+   master). AppleAE2MCA::configure (`0x80cfa9a4`, vtable `0x80cfc868` +0x348)
+   computes them from a descriptor the framework builds — `[0]` bit 0 master,
+   `[2]` & 3 clock mode, `[4]` slots, `[5]` slot bits, `[8..b]` MCLK ratio,
+   `[c..d]` bits per frame, `[10..13]` rate fraction, `[14..17]` /
+   `[18..1b]` TX / RX slot masks, `[1c]`/`[1d]` channels, `[1e]`/`[1f]` sample
+   bits (helper `0x804acf28`) — and can be run in unicorn like the switch.
 2. The NCO's reference clock (to be measured) and what `+0x354` enables.
-3. The rest of the CS35L19 sequence (calibration mask, the second loop).
-4. CDMA for real playback; PIO into I2S1's FIFO is enough for a first tone.
+3. CDMA for real playback; PIO into MCA0's TX FIFO (`0x34196028`) is enough
+   for a first tone.
