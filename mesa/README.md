@@ -9,7 +9,8 @@ GPU: there is no shader compiler yet, so draws are dropped.
 |---|---|
 | `files/` | new files, copied verbatim into the Mesa tree: the driver (`src/gallium/drivers/sgx`), its winsys (`src/gallium/winsys/sgx/drm`), the render node's interface (`include/drm-uapi/apple_sgx_drm.h`, a copy of the kernel's) |
 | `mesa.patch` | the lines that register the driver with Mesa (meson option, subdirectories, DRM driver descriptor, pipe loader, dril) |
-| `build.sh` | fetch Mesa at the pinned tag, put the driver in, configure, build, install, build `glclear` — inside the `cascadia-mesa` image |
+| `fetch.sh` | Mesa at the pinned tag into `build/mesa/src`, on the host (git under emulation is far too slow) |
+| `build.sh` | put the driver in, configure, build, install, build `glclear` — inside the `cascadia-mesa` image |
 | `Dockerfile` | that image: Alpine 3.24 armv7 with Mesa's build tools |
 | `install.py` | onto the iPad, over ssh or into the NFS root, as `tools/sgx/mkpack.py` does it |
 | `sgx-gl` | on the device: run a program with this Mesa instead of the system's |
@@ -25,11 +26,14 @@ and the template frame installed (`./cascadia gpu`):
 ./cascadia mesa --root DIR       # into a root tree only
 ```
 
-The build runs Alpine's own armv7 compilers under the host's ARM emulation
-(Docker Desktop has it; on a Linux host, install qemu-user-static's binfmt
-handlers). The first build takes a long time — expect the better part of an
-hour on a laptop; after that only what changed is compiled again. Everything
-lands in `build/mesa` (out of git): `src` (Mesa), `build`, `install`.
+Mesa's source is cloned on the host first (`mesa/fetch.sh`, ~120 MB;
+`MESA_URL=` names another mirror). The build then runs Alpine's own armv7
+compilers under the host's ARM emulation (Docker Desktop has it; on a Linux
+host, install qemu-user-static's binfmt handlers). The first build takes a
+long time — expect the better part of an hour on a laptop; after that only
+what changed is compiled again, unless the build options changed (then
+everything is). Everything lands in `build/mesa` (out of git): `src` (Mesa),
+`build`, `install`.
 
 On the iPad:
 

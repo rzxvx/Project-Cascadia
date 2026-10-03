@@ -493,16 +493,20 @@ cmd_gpu() {
 
 # Mesa for the device is built in an Alpine armv7 image of its own
 # (mesa/Dockerfile), under the host's ARM emulation: a native musl build
-# against the libraries the device's root has.  mesa/build.sh does the work;
+# against the libraries the device's root has.  The source is fetched here
+# first, natively (mesa/fetch.sh): the first try cloned it inside the image
+# and sat there for over an hour.  mesa/build.sh does the build;
 # mesa/install.py puts it where ./cascadia gpu would put SuperTux.
 cmd_mesa() {
     require_docker
+    bash "$ROOT/mesa/fetch.sh"
     say "the cascadia-mesa image (Alpine armv7)"
     docker build -q --platform linux/arm/v7 -t cascadia-mesa "$ROOT/mesa" >/dev/null \
         || fail "could not build the cascadia-mesa image -- does docker run linux/arm/v7 here?"
     duser=()
     [ "$(uname -s)" = "Linux" ] && duser=(--user "$(id -u):$(id -g)")
-    docker run --rm --platform linux/arm/v7 ${duser[@]+"${duser[@]}"} \
+    # --init: without it the build is PID 1, which ignores ^C
+    docker run --rm --init --platform linux/arm/v7 ${duser[@]+"${duser[@]}"} \
         -v "$ROOT":/cascadia -w /cascadia cascadia-mesa sh mesa/build.sh
     if [ $# -gt 0 ]; then
         python3 "$ROOT/mesa/install.py" "$@"
