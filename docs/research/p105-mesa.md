@@ -126,8 +126,9 @@ next kick carries `SGXMKIF_CC_INVAL_BIF_PT | _PD | _SL` in its cache-control
 word, the DDK's way (`apple_sgx.mmu_inval_cc`, default 7): its `mmu.c` adds
 the system level cache on multi-core parts, where the SLC holds PDEs and PTEs
 (TI's omap5 DDK, `services4/srvkm/devices/sgx/mmu.c`, the values in
-`sgx_mkif_km.h`). This path has not run on the device yet: sgx2d always mapped
-first and booted after.
+`sgx_mkif_km.h`). It works on the device as it stands: sgx2d's buffers are
+all created after the boot now, and its first frame (and every one after)
+renders.
 
 The first client is `sgx2d`: when a render node is there, every `map` of
 its pack becomes a buffer at that address, mapped into the process; `img`
@@ -146,6 +147,27 @@ the new pack and binaries):
    frame rate as through debugfs (~220 fps); `renders done` in sgxinfo
    counts them.
 4. `supertux-gpu`.
+
+**On the device, 2026-10-03: it works.** The render node registers next to
+the old driver (`[drm] Initialized apple_sgx 0.1.0 ... on minor 0`), the
+microkernel starts as before, and:
+
+- `sgxinfo`: every parameter as expected (CORE_ID `0x01194201`, rev 1.2.2,
+  2 cores, 102.6 MHz, framebuffer 768x1024 at GPU `0x90000000`); a buffer the
+  kernel placed at `0xeffef000` (the top of the range, below its guard
+  page), one in the code zone at `0x9affb000`, one at the fixed `0xc0000000`,
+  each written and read back through its mapping.
+- `sprites 200 600` through `/dev/dri`: 207 fps (217-221 through debugfs).
+  The few percent are the completion poll and the one-render-at-a-time
+  scheduler, both on the list for M15.
+- SuperTux: 62-64 fps, 1571-1608 quads in 56-62 draws a frame, none dropped
+  -- the same as through debugfs. The first start after the boot showed no
+  frame for a while (the game reading its data over NFS, cold); the second
+  came up at once.
+
+SDL now finds a DRM device and asks Mesa for EGL before falling back
+(`ZINK: vkCreateInstance failed`, `failed to create dri2 screen`): Mesa has
+no driver for `apple_sgx` yet. Harmless, and gone once M12 gives it one.
 
 What to look for if it does not work: a first frame that hangs (the MMU
 invalidation: try `echo 3 > /sys/module/apple_sgx/parameters/mmu_inval_cc`,
