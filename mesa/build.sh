@@ -80,5 +80,5 @@ I=$B/install$PREFIX
 mkdir -p "$I/bin"
 cc -O2 -Wall -I"$I/include" "$ROOT/tools/sgx/gl/glclear.c" -L"$I/lib" -lEGL -lGLESv2 \
     -Wl,-rpath-link,"$I/lib" -Wl,-rpath,"$PREFIX/lib" -o "$I/bin/glclear"
-cp "$ROOT/mesa/sgx-gl" "$I/bin/sgx-gl"
+cp "$ROOT/mesa/sgx-gl" "$ROOT/mesa/frame-bisect" "$I/bin/"
 say "built: build/mesa/install$PREFIX"

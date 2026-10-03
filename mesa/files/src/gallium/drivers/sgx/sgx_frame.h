@@ -20,6 +20,19 @@ struct sgx_resource;
 
 struct sgx_frame;
 
+/* SGX_FRAME=a,b,...: pieces of the frame swapped for the pack's, or moved,
+ * to find on the device which one is wrong (docs/research/p105-mesa.md,
+ * M12; mesa/frame-bisect runs them all) */
+enum {
+   SGX_FRAME_FB = 1 << 0,     /* "fb": the pack's end of tile and background (the screen) */
+   SGX_FRAME_BLEND = 1 << 1,  /* "blend": the pack's pixel program, texel x colour blended */
+   SGX_FRAME_SCREEN = 1 << 2, /* "screen": ours, aimed at the framebuffer, not the target */
+   SGX_FRAME_CODEBO = 1 << 3, /* "codebo": our programs in a buffer of their own */
+   SGX_FRAME_SOP2 = 1 << 4,   /* "sop2": replace by SOP2 (cmod1, amod1), not MOV */
+   SGX_FRAME_ALIGN = 1 << 5,  /* "align": render targets at 1 MiB-aligned addresses */
+};
+unsigned sgx_frame_options(void);
+
 /* Loads the pack in packdir into buffers at the GPU addresses it was built
  * for; NULL (and a message) if there is none or the addresses are taken. */
 struct sgx_frame *sgx_frame_create(struct sgx_device *dev, const char *packdir);

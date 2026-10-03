@@ -7,9 +7,11 @@
  */
 #include "sgx_resource.h"
 
+#include <errno.h>
 #include <fcntl.h>
 #include <xf86drm.h>
 
+#include "drm-uapi/apple_sgx_drm.h"
 #include "drm-uapi/drm_fourcc.h"
 #include "frontend/winsys_handle.h"
 #include "util/format/u_format.h"
@@ -19,7 +21,23 @@
 
 #include "sgx_context.h"
 #include "sgx_device.h"
+#include "sgx_frame.h"
 #include "sgx_screen.h"
+
+/* SGX_FRAME=align: a render target at a 1 MiB-aligned address of our own
+ * choosing (0xc0000000 up), to tell whether the pixel back end or the
+ * background object want more than a page's alignment */
+static struct sgx_bo *
+aligned_bo(struct sgx_device *dev, uint32_t size)
+{
+   for (uint32_t va = 0xc0000000u; va + size <= 0xe0000000u; va += 1u << 20) {
+      struct sgx_bo *bo = sgx_bo_create(dev, size, APPLE_SGX_BO_FIXED_VA, va);
+
+      if (bo || errno != EEXIST)
+         return bo;
+   }
+   return NULL;
+}
 
 static struct pipe_resource *
 sgx_resource_create(struct pipe_screen *pscreen, const struct pipe_resource *templ)
@@ -49,7 +67,12 @@ sgx_resource_create(struct pipe_screen *pscreen, const struct pipe_resource *tem
       }
    }
 
-   res->bo = sgx_bo_create(&screen->dev, align(MAX2(size, 1), 4096), 0, 0);
+   size = align(MAX2(size, 1), 4096);
+   if ((templ->bind & PIPE_BIND_RENDER_TARGET) && templ->target != PIPE_BUFFER &&
+       (sgx_frame_options() & SGX_FRAME_ALIGN))
+      res->bo = aligned_bo(&screen->dev, size);
+   if (!res->bo)
+      res->bo = sgx_bo_create(&screen->dev, size, 0, 0);
    if (!res->bo) {
       FREE(res);
       return NULL;

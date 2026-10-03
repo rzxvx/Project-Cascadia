@@ -14,6 +14,7 @@ GPU: there is no shader compiler yet, so draws are dropped.
 | `Dockerfile` | that image: Alpine 3.24 armv7 with Mesa's build tools |
 | `install.py` | onto the iPad, over ssh or into the NFS root, as `tools/sgx/mkpack.py` does it |
 | `sgx-gl` | on the device: run a program with this Mesa instead of the system's |
+| `frame-bisect` | on the device: a clear through each `SGX_FRAME` variant, to find a wrong piece of the template frame |
 
 ## Building and installing
 
@@ -41,7 +42,7 @@ On the iPad:
 sgx-gl glclear                   # one clear, read back and checked
 sgx-gl glclear 100               # timing
 SGX_DEBUG=frame sgx-gl glclear   # every word a clear sets
-SGX_FRAME=fb,blend sgx-gl glclear   # the pack's own pieces (docs, M12): to the screen
+sgx-gl frame-bisect              # one clear through every SGX_FRAME variant (docs, M12)
 ```
 
 ## Without an iPad

@@ -1,0 +1,50 @@
+#!/bin/sh
+# frame-bisect -- one GPU clear through every SGX_FRAME variant, and what
+# the kernel said about each: which piece of the template frame is wrong
+# when glclear's clears are (docs/research/p105-mesa.md, M12).
+#
+#   echo 0 > /sys/class/vtconsole/vtcon1/bind    # the console off the screen
+#   sgx-gl frame-bisect
+#
+# Each line is a fresh `glclear 1` (red).  Variants with "fb" or "screen"
+# draw on the screen instead of the target, so glclear's read-back is wrong
+# there by design: the screen is painted black first and its centre pixel
+# read back after (B G R A; red is 00 00 ff ff).  A hang shows as ~2 s and
+# the kernel's "not done"; the next variant starts from a reloaded frame.
+#
+#   fb      the pack's end of tile and background (to the screen)
+#   blend   the pack's pixel program (texel x colour, blended)
+#   screen  our end of tile and background, aimed at the screen
+#   codebo  our programs in a buffer of their own, not the pack's code page
+#   sop2    replace by SOP2 with cmod1/amod1, not by MOV
+#   align   the render target at a 1 MiB-aligned GPU address
+FB=${FB:-/dev/fb0}
+CENTRE=$(( (512 * 768 + 384) * 4 ))
+
+centre() {
+    dd if=$FB bs=1 skip=$CENTRE count=4 2>/dev/null | od -An -tx1 | tr -s ' ' | sed 's/^ //'
+}
+
+printf '%-14s %9s  %-24s %s\n' SGX_FRAME time result kernel
+for v in fb,blend fb fb,sop2 fb,codebo screen,blend screen blend "" align align,blend; do
+    case "$v" in
+        *fb*|*screen*) on_screen=1
+                       dd if=/dev/zero of=$FB bs=3072 count=1024 2>/dev/null ;;
+        *)             on_screen= ;;
+    esac
+    n=$(dmesg | wc -l)
+    out=$(SGX_FRAME=$v glclear 1 2>&1)
+    t=$(printf '%s\n' "$out" | sed -n 's/.* in \([0-9.]*\) s:.*/\1 s/p')
+    if [ -n "$on_screen" ]; then
+        res="screen $(centre)"
+    else
+        res=$(printf '%s\n' "$out" | sed -n 's/.*; \([0-9]*\) wrong$/\1 wrong/p')
+        [ "$res" = "0 wrong" ] && res="target right"
+    fi
+    k=$(dmesg | tail -n +$((n + 1)) | sed -n \
+        -e 's/.*render [0-9]* not done after [0-9]* ms (\(.*\))/hung (\1)/p' \
+        -e 's/.*\(core[01]\).*BIF_FAULT \(0x[0-9a-f]*[1-9a-f][0-9a-f]*\)$/\1 fault \2/p' |
+        tr '\n' ' ')
+    printf '%-14s %9s  %-24s %s\n' "${v:-(ours)}" "${t:-?}" "${res:-?}" "${k:-ok}"
+    printf '%s\n' "$out" | grep 'MESA: \(warning\|error\)' | sed 's/^MESA: /    /'
+done

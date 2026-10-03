@@ -332,12 +332,35 @@ index was cut to `0xfec20`, the USSE jumped to nothing, the render hung. The
 driver now puts its programs at a fixed address just above the pack's code
 page (`0x9a010000`), whatever the kernel; the kernel's code zone is 8 MiB.
 
-For telling on the device which of the frame's pieces is wrong,
-`SGX_FRAME` puts the pack's own back: `fb` its end of tile and background
-(the clear goes to the screen, as sgx2d's frames do, and glclear's read-back
-is wrong by design), `blend` its pixel program (texel x colour, blended)
-instead of the replace program. `SGX_FRAME=fb,blend` is sgx2d's draw 0 with
-our vertices.
+With the programs in reach the renders still hung. `SGX_FRAME` puts the
+pack's own pieces back: `fb,blend` -- sgx2d's draw 0 with our vertices and
+texture block -- ran in 45 ms and turned the screen red, so the submit, the
+buffers, the VDM stream and the vertices are right; `fb` alone (our replace
+program) hung, and with everything ours the 3D pass faulted near the target
+(`BIF_FAULT 0xefcf0020`: page `0xefcf0000`, 60 KiB below the target at
+`0xefcff000`, the low bits presumably the requester). The replace program
+was the pack's blend with a different SOP2: `cmod1` and `amod1` set, bits
+the pack's programs never use and nothing had checked. It is now the pack's
+SOP2M, then `o0 = pa0` -- the very instruction of the pack's background
+program -- and our programs live where the pack's run, in the free first
+KiB of its code page (`0x9a001000`, seven end-of-tile slots).
+
+`SGX_FRAME` (comma-separated) to bisect on the device, and
+`sgx-gl frame-bisect` to run them all, one fresh red clear each, with the
+screen's centre pixel read back from `/dev/fb0` where the clear goes there
+and the kernel's verdict from `dmesg`:
+
+| switch | what changes |
+|---|---|
+| `fb` | the pack's end of tile and background: to the screen |
+| `blend` | the pack's pixel program (texel x colour, blended) |
+| `screen` | our end of tile and background, aimed at the screen |
+| `codebo` | our programs in a buffer of their own (`0x9a010000`) |
+| `sop2` | replace by the SOP2 with `cmod1`/`amod1` |
+| `align` | render targets at 1 MiB-aligned addresses (`0xc0000000` up) |
+
+After a render times out, the driver loads the pack's buffers again before
+the next one (the hang leaves the parameter buffer half-used).
 
 Not yet: draws (`draw_vbo` says so once and drops them), textures in any
 layout but linear, scanout (EGL has the surfaceless and GBM platforms; the

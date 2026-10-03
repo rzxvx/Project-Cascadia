@@ -13,12 +13,18 @@
  *    B8G8R8A8 from the shader's RGBA; the address; the line stride in
  *    pixels / 2 - 1; 0; 0; the size);
  *  - a pixel program that replaces the tile's colour instead of blending
- *    with it (SOP2 with src * (1 - 0) + dst * 0; Vita3K's field layout).
+ *    with it: the pack's texel x colour (SOP2M, into pa0), then o0 = pa0,
+ *    which is the pack's background program's own instruction.
  *
- * The 3D pass's event program names the end-of-tile program in its data
- * (word 2), and the background object reloads every tile from a linear
- * descriptor (the 3D PDS block +0x130): both are pointed at the render
- * target before each render.
+ * They go in the pack's code page, in the 1 KiB below its first program,
+ * where the pack's own programs are known to run.  The 3D pass's event
+ * program names the end-of-tile program in its data (word 2), and the
+ * background object reloads every tile from a linear descriptor (the 3D
+ * PDS block +0x130): both are pointed at the render target before each
+ * render.
+ *
+ * SGX_FRAME swaps pieces for the pack's, or moves them, to find on the
+ * device which one is wrong when a clear is (sgx_frame.h).
  */
 #include "sgx_frame.h"
 
@@ -43,15 +49,22 @@
 #define VTX_FLOATS      8               /* r g b a u v x y */
 
 #define MAX_PACK_BOS    48
-#define MAX_EOT         256
+
+/* our programs: the replace program, then one end-of-tile program a slot */
+#define REPLACE_SIZE    0x40
 #define EOT_SLOT        0x80
-#define CODE_SIZE       (0x100 + MAX_EOT * EOT_SLOT)
+#define MAX_EOT         256
+#define CODE_BO_SIZE    (REPLACE_SIZE + MAX_EOT * EOT_SLOT)
+/* the pack's code page is at code base + 0x1000 (rpack.py), its first
+ * program at +0x400 (programs.py) */
+#define PAGE_OFFSET     0x1000
+#define PAGE_FREE       0x400
 
 /* A DOUTU (and a PHAS) names a program by its index from the code base:
  * 20 bits of 8-byte instructions, 8 MiB.  Kernels before 2026-10-04 made
- * the code zone 16 MiB and gave out its top first, out of reach -- the
- * first clears on the iPad hung until the kernel's timeout -- so the code
- * goes at an address of our own choosing, just above the pack's. */
+ * the code zone 16 MiB and gave out its top first, out of reach; with
+ * SGX_FRAME=codebo the buffer goes at an address of our own choosing, just
+ * above the pack's. */
 #define CODE_REACH      (8u << 20)
 
 /* the GL window's 3D PDS block, where frame.py puts it */
@@ -66,7 +79,8 @@ static const char *tmpl_names[T_NUM] = {
 #define USSE_PHAS          0xfa44070000000000ull
 #define USSE_EMIT_PIXEL    0xfb24000003200082ull
 #define USSE_SOP2M_MOD     0x90807982a0000140ull   /* r = texel * vertex colour */
-#define USSE_SOP2_REPLACE  0x8184080190000000ull   /* o0 = r * 1 + o0 * 0, end */
+#define USSE_SOP2_REPLACE  0x8184080190000000ull   /* o0 = pa0 * (1 - 0) + o0 * 0, end */
+#define USSE_MOV_O0_PA0    0x50850009a0000000ull   /* o0 = pa0, end (the pack's bg_reload) */
 static const uint64_t usse_dummy_load[3] = {
    0x488b0281a00c0000ull, 0xe9a30084a0000000ull, 0xf920000000000000ull,
 };
@@ -100,19 +114,51 @@ struct sgx_frame {
    int toff[T_NUM], tsize[T_NUM];
    uint64_t code_base_expected;
 
-   /* ours */
-   struct sgx_bo *code;         /* the replace program, then end-of-tile programs */
+   /* ours: the replace program at code_va, end-of-tile programs after it */
+   struct sgx_bo *code;         /* their own buffer: SGX_FRAME=codebo only */
+   uint32_t code_va;
+   uint8_t *code_map;
+   unsigned nhandles;           /* the pack's buffers (and ours); then the target */
    struct sgx_eot eot[MAX_EOT];
-   unsigned neot;
+   unsigned neot, max_eot;
    uint32_t texblock;           /* the white texture's block, replace program */
    struct sgx_fence *last;      /* the last render through the frame */
+   char *dir;                   /* the pack: loaded again after a render hangs */
+   uint64_t timeouts;           /* the kernel's count of renders that did */
    bool debug;                  /* SGX_DEBUG=frame: say what each render is */
-   /* SGX_FRAME=fb,blend: the pack's own pieces instead of ours, to tell on
-    * the device which of ours is wrong -- "fb" keeps the pack's end of tile
-    * and background (the clear lands on the screen, not in the target),
-    * "blend" its pixel program (texel x colour, blended) */
-   bool pack_eot, pack_pixel;
+   unsigned opts;               /* SGX_FRAME */
 };
+
+unsigned
+sgx_frame_options(void)
+{
+   static const struct { const char *name; unsigned bit; } names[] = {
+      { "fb", SGX_FRAME_FB }, { "blend", SGX_FRAME_BLEND },
+      { "screen", SGX_FRAME_SCREEN }, { "codebo", SGX_FRAME_CODEBO },
+      { "sop2", SGX_FRAME_SOP2 }, { "align", SGX_FRAME_ALIGN },
+   };
+   static int opts = -1;
+   const char *env = getenv("SGX_FRAME");
+   unsigned o = 0;
+
+   if (opts >= 0)
+      return opts;
+   while (env && *env) {
+      size_t n = strcspn(env, ",");
+      unsigned i;
+
+      for (i = 0; i < ARRAY_SIZE(names); i++)
+         if (n == strlen(names[i].name) && !strncmp(env, names[i].name, n)) {
+            o |= names[i].bit;
+            break;
+         }
+      if (n && i == ARRAY_SIZE(names))
+         mesa_logw("sgx: SGX_FRAME: no such switch \"%.*s\"", (int)n, env);
+      env += n + (env[n] == ',');
+   }
+   opts = o;
+   return o;
+}
 
 static uint32_t
 p27(uint32_t a)                 /* a PDS data pointer */
@@ -216,6 +262,34 @@ map_window(struct sgx_frame *f, uint32_t va, uint32_t size)
    return true;
 }
 
+/* the pack's contents ("img" lines) into its buffers: when the frame is
+ * made, and again after a render hung (it leaves the parameter buffer and
+ * the render target data half-used) */
+static bool
+load_images(struct sgx_frame *f)
+{
+   char path[512], line[512], key[64], a[64], b[64];
+   bool ok = true;
+   size_t len;
+   FILE *fp;
+
+   snprintf(path, sizeof(path), "%s/pack.txt", f->dir);
+   if (!(fp = fopen(path, "r")))
+      return false;
+   while (ok && fgets(line, sizeof(line), fp)) {
+      uint8_t *img = NULL;
+
+      if (sscanf(line, "%63s %63s %63s", key, a, b) < 3 || strcmp(key, "img"))
+         continue;
+      ok = load_file(f->dir, b, &img, &len) && put(f, strtoul(a, 0, 0), img, len);
+      free(img);
+      if (!ok)
+         mesa_logw("sgx: %s/%s is missing or larger than its buffer", f->dir, b);
+   }
+   fclose(fp);
+   return ok;
+}
+
 /* pack.txt, the way sgx2d_open() reads it (two passes there: buffers before
  * the microkernel's boot, contents after; the render node needs no boot) */
 static bool
@@ -280,23 +354,13 @@ load_pack(struct sgx_frame *f, const char *dir)
                 "./cascadia gpu rebuilds it", dir, poke_value << 6, f->dev->code_base);
       ok = false;
    }
-   rewind(fp);
-   while (ok && fgets(line, sizeof(line), fp)) {
-      uint8_t *img = NULL;
-
-      if (sscanf(line, "%63s %63s %63s", key, a, b) < 3 || strcmp(key, "img"))
-         continue;
-      ok = load_file(dir, b, &img, &len) && put(f, strtoul(a, 0, 0), img, len);
-      free(img);
-      if (!ok)
-         mesa_logw("sgx: %s/%s is missing or larger than its buffer", dir, b);
-   }
    fclose(fp);
+   ok = ok && load_images(f);
    if (ok && !load_file(dir, "tmpl.bin", &f->tmpl, &len))
       ok = false;
    if (ok && (!f->w || !f->h || !f->vdm || !f->ext || !f->heap || !f->kick[2] ||
               !f->tsize[T_FULL] || !f->tsize[T_FETCH] || !f->tsize[T_TEX] ||
-              !cpu_at(f, f->pds, 0x140, NULL))) {
+              f->tsize[T_TEX] > 64 || !cpu_at(f, f->pds, 0x140, NULL))) {
       mesa_logw("sgx: %s/pack.txt lacks pieces of the frame", dir);
       ok = false;
    }
@@ -309,7 +373,7 @@ static struct sgx_bo *
 code_bo(struct sgx_frame *f)
 {
    struct sgx_device *dev = f->dev;
-   uint32_t size = align(CODE_SIZE, 4096);
+   uint32_t size = align(CODE_BO_SIZE, 4096);
    uint32_t lo = MAX2(dev->code_va_start, dev->code_base);
    uint32_t hi = MIN2(dev->code_va_end, dev->code_base + CODE_REACH);
 
@@ -335,38 +399,74 @@ code_bo(struct sgx_frame *f)
    return NULL;
 }
 
+/* Our pieces into the pack's buffers (again after load_images): the
+ * replace program, a 4x4 white texture at the start of the texel heap, and
+ * its block (word 0 the pixel program, 5 the size, log2, 6 the address).
+ * End-of-tile programs are written as targets come. */
+static bool
+put_ours(struct sgx_frame *f)
+{
+   const uint64_t replace[3] = {
+      USSE_PHAS, USSE_SOP2M_MOD,
+      f->opts & SGX_FRAME_SOP2 ? USSE_SOP2_REPLACE : USSE_MOV_O0_PA0,
+   };
+   uint32_t white[16], blk[16];
+
+   memcpy(f->code_map, replace, sizeof(replace));
+   f->neot = 0;
+   memset(white, 0xff, sizeof(white));
+   memcpy(blk, f->tmpl + f->toff[T_TEX], f->tsize[T_TEX]);
+   if (!(f->opts & SGX_FRAME_BLEND))
+      blk[0] = doutu(f, f->code_va);
+   blk[5] = 0x0c000000 | 2 << 16 | 2;
+   blk[6] = f->heap;
+   f->texblock = f->ext;
+   return put(f, f->heap, white, sizeof(white)) &&
+          put(f, f->texblock, blk, f->tsize[T_TEX]);
+}
+
 struct sgx_frame *
 sgx_frame_create(struct sgx_device *dev, const char *dir)
 {
    struct sgx_frame *f = CALLOC_STRUCT(sgx_frame);
-   static const uint64_t replace[] = { USSE_PHAS, USSE_SOP2M_MOD, USSE_SOP2_REPLACE };
-   uint32_t white[16], blk[16];
+   uint32_t page;
+   uint8_t *at;
 
    if (!f)
       return NULL;
    f->dev = dev;
    f->debug = getenv("SGX_DEBUG") && strstr(getenv("SGX_DEBUG"), "frame");
-   f->pack_eot = getenv("SGX_FRAME") && strstr(getenv("SGX_FRAME"), "fb");
-   f->pack_pixel = getenv("SGX_FRAME") && strstr(getenv("SGX_FRAME"), "blend");
-   if (!load_pack(f, dir))
+   f->opts = sgx_frame_options();
+   if (!(f->dir = strdup(dir)) || !load_pack(f, dir))
       goto fail;
+   f->timeouts = sgx_device_param(dev, APPLE_SGX_PARAM_RENDERS_TIMED_OUT);
+   f->nhandles = f->nbo;
 
-   if (!(f->code = code_bo(f)))
-      goto fail;
-   memcpy(f->code->map, replace, sizeof(replace));
-   f->handles[f->nbo] = f->code->handle;
-
-   /* a 4x4 white texture at the start of the texel heap, and its block:
-    * word 0 the pixel program, 5 the size (log2), 6 the address */
-   memset(white, 0xff, sizeof(white));
-   memcpy(blk, f->tmpl + f->toff[T_TEX], MIN2(f->tsize[T_TEX], (int)sizeof(blk)));
-   if (!f->pack_pixel)
-      blk[0] = doutu(f, f->code->va);
-   blk[5] = 0x0c000000 | 2 << 16 | 2;
-   blk[6] = f->heap;
-   f->texblock = f->ext;
-   if (!put(f, f->heap, white, sizeof(white)) ||
-       !put(f, f->texblock, blk, f->tsize[T_TEX]))
+   /* where our programs go: the free start of the pack's code page, or a
+    * buffer of their own */
+   page = dev->code_base + PAGE_OFFSET;
+   at = cpu_at(f, page, PAGE_FREE, NULL);
+   if (!(f->opts & SGX_FRAME_CODEBO) && at) {
+      for (unsigned i = 0; i < PAGE_FREE && at; i++)
+         if (at[i])
+            at = NULL;
+      if (!at)
+         mesa_logw("sgx: the pack's code page has something below its first "
+                   "program; ours go in a buffer of their own");
+   }
+   if (!(f->opts & SGX_FRAME_CODEBO) && at) {
+      f->code_va = page;
+      f->code_map = at;
+      f->max_eot = (PAGE_FREE - REPLACE_SIZE) / EOT_SLOT;
+   } else {
+      if (!(f->code = code_bo(f)))
+         goto fail;
+      f->code_va = f->code->va;
+      f->code_map = f->code->map;
+      f->max_eot = MAX_EOT;
+      f->handles[f->nhandles++] = f->code->handle;
+   }
+   if (!put_ours(f))
       goto fail;
    mesa_logi("sgx: template frame %ux%u from %s", f->w, f->h, dir);
    return f;
@@ -389,6 +489,7 @@ sgx_frame_destroy(struct sgx_frame *f)
    for (unsigned i = 0; i < f->nbo; i++)
       sgx_bo_destroy(f->bo[i]);
    free(f->tmpl);
+   free(f->dir);
    FREE(f);
 }
 
@@ -404,35 +505,36 @@ sgx_frame_can_render(struct sgx_frame *f, struct sgx_resource *rt)
           !(rt->stride[0] & 15);
 }
 
-/* The end-of-tile program for a render target: written once per target,
- * at its own address (never rewritten under a running render) */
+/* The end-of-tile program for a target: written once per target, in a
+ * slot of its own.  When the slots run out (seven in the pack's page) the
+ * oldest is written over -- no render is running then (the caller waits for
+ * the last), but the USSE may still have the old program in its cache. */
 static uint32_t
-eot_program(struct sgx_frame *f, struct sgx_resource *rt)
+eot_program(struct sgx_frame *f, const struct sgx_eot *want)
 {
-   struct sgx_eot want = {
-      .va = rt->bo->va, .w = rt->base.width0, .h = rt->base.height0,
-      .stride = rt->stride[0],
-   };
    const uint32_t pbe[6] = {
-      0x00110000, want.va, want.stride / 4 / 2 - 1, 0, 0,
-      (want.h - 1) << 12 | (want.w - 1),
+      0x00110000, want->va, want->stride / 4 / 2 - 1, 0, 0,
+      (want->h - 1) << 12 | (want->w - 1),
    };
    uint64_t prog[11];
    unsigned i, slot;
 
-   for (i = 0; i < f->neot; i++)
-      if (!memcmp(&f->eot[i], &want, sizeof(want)))
-         return f->code->va + 0x100 + i * EOT_SLOT;
-   slot = f->neot < MAX_EOT ? f->neot++ : (f->neot++ % MAX_EOT);
-   f->eot[slot % MAX_EOT] = want;
+   for (i = 0; i < MIN2(f->neot, f->max_eot); i++)
+      if (!memcmp(&f->eot[i], want, sizeof(*want)))
+         return f->code_va + REPLACE_SIZE + i * EOT_SLOT;
+   slot = f->neot++ % f->max_eot;
+   if (f->neot == f->max_eot + 1)
+      mesa_logw("sgx: more render targets than end-of-tile slots (%u); old ones are "
+                "written over", f->max_eot);
+   f->eot[slot] = *want;
 
    prog[0] = USSE_PHAS;
    memcpy(&prog[1], usse_dummy_load, sizeof(usse_dummy_load));
    for (i = 0; i < 6; i++)
       prog[4 + i] = usse_limm_r(i, pbe[i]);
    prog[10] = USSE_EMIT_PIXEL;
-   memcpy(f->code->map + 0x100 + (slot % MAX_EOT) * EOT_SLOT, prog, sizeof(prog));
-   return f->code->va + 0x100 + (slot % MAX_EOT) * EOT_SLOT;
+   memcpy(f->code_map + REPLACE_SIZE + slot * EOT_SLOT, prog, sizeof(prog));
+   return f->code_va + REPLACE_SIZE + slot * EOT_SLOT;
 }
 
 /* two triangles over the whole target, r g b a u v x y */
@@ -459,8 +561,12 @@ sgx_frame_clear(struct sgx_frame *f, struct sgx_resource *rt, const float rgba[4
 {
    uint32_t vdm[32] = { 0 }, full[32], prog[16], fetch[32], bg[4], *v = vdm, *cmd;
    uint32_t frame = f->ext + EXT_FRAME, vb = f->ext + EXT_VB, d0, p0, fb, eot;
+   struct sgx_eot to = {
+      .va = rt->bo->va, .w = f->w, .h = f->h, .stride = rt->stride[0],
+   };
    float verts[6 * VTX_FLOATS];
    unsigned det_bo, i;
+   uint64_t timeouts;
    uint8_t *det;
    int ret;
 
@@ -472,14 +578,31 @@ sgx_frame_clear(struct sgx_frame *f, struct sgx_resource *rt, const float rgba[4
    if (f->last && !sgx_fence_wait(f->last, 5ull * 1000 * 1000 * 1000))
       mesa_logw("sgx: the last render through the template frame is still running");
 
-   /* where tiles go, and what they start as: the render target */
-   eot = eot_program(f, rt);
-   bg[0] = (rt->stride[0] / 4 / 4 - 2) << 16 | 0x0e90;
+   /* a render that hung (this process's or another's) leaves the parameter
+    * buffer and the render target data half-used: the pack again */
+   timeouts = sgx_device_param(f->dev, APPLE_SGX_PARAM_RENDERS_TIMED_OUT);
+   if (timeouts != f->timeouts) {
+      mesa_logw("sgx: a render timed out (%llu so far); the template frame is "
+                "loaded again", (unsigned long long)timeouts);
+      f->timeouts = timeouts;
+      if (!load_images(f) || !put_ours(f))
+         return -EFAULT;
+   }
+
+   /* where tiles go, and what they start as: the render target (or, with
+    * SGX_FRAME=screen, the framebuffer) */
+   if (f->opts & SGX_FRAME_SCREEN) {
+      /* where the pack's own end of tile writes, if the kernel does not say */
+      to.va = f->dev->fb_va ? f->dev->fb_va : 0x90000000u;
+      to.stride = f->dev->fb_stride ? f->dev->fb_stride : f->w * 4;
+   }
+   eot = eot_program(f, &to);
+   bg[0] = (to.stride / 4 / 4 - 2) << 16 | 0x0e90;
    bg[1] = 0xcc000000 | (f->w - 1) << 12 | (f->h - 1);
-   bg[2] = rt->bo->va;
+   bg[2] = to.va;
    bg[3] = 0x10000000;
    d0 = doutu(f, eot);
-   if (!f->pack_eot &&
+   if (!(f->opts & SGX_FRAME_FB) &&
        (!put(f, f->pds + 8, &d0, 4) || !put(f, f->pds + 0x130, bg, sizeof(bg))))
       return -EFAULT;
 
@@ -514,18 +637,22 @@ sgx_frame_clear(struct sgx_frame *f, struct sgx_resource *rt, const float rgba[4
    det = cpu_at(f, f->kick[1], 0xa8, &det_bo);
    if (!cmd || !det || !cpu_at(f, f->kick[2], cmd[0], NULL))
       return -EFAULT;
-   f->handles[f->nbo + 1] = rt->bo->handle;
+   f->handles[f->nhandles] = rt->bo->handle;
 
    if (f->debug) {
       mesa_logi("sgx: clear %ux%u at 0x%08x (stride %u) to %.3f %.3f %.3f %.3f", f->w, f->h,
                 rt->bo->va, rt->stride[0], rgba[0], rgba[1], rgba[2], rgba[3]);
-      if (f->pack_eot)
-         mesa_logi("sgx:   the pack's end of tile and background (SGX_FRAME=fb): to the screen");
+      mesa_logi("sgx:   SGX_FRAME=%s; our programs at 0x%08x (%s)",
+                getenv("SGX_FRAME") ? getenv("SGX_FRAME") : "", f->code_va,
+                f->code ? "a buffer of their own" : "the pack's code page");
+      if (f->opts & SGX_FRAME_FB)
+         mesa_logi("sgx:   the pack's end of tile and background: to the screen");
       else
-         mesa_logi("sgx:   end of tile at 0x%08x (DOUTU 0x%08x), background %08x %08x %08x %08x",
-                   eot, doutu(f, eot), bg[0], bg[1], bg[2], bg[3]);
+         mesa_logi("sgx:   end of tile at 0x%08x (DOUTU 0x%08x) to 0x%08x, background "
+                   "%08x %08x %08x %08x", eot, doutu(f, eot), to.va, bg[0], bg[1], bg[2], bg[3]);
       mesa_logi("sgx:   pixel program: %s (texture block 0x%08x word 0 = 0x%08x)",
-                f->pack_pixel ? "the pack's (SGX_FRAME=blend)" : "replace",
+                f->opts & SGX_FRAME_BLEND ? "the pack's" :
+                f->opts & SGX_FRAME_SOP2 ? "replace by SOP2" : "replace by MOV",
                 f->texblock, *(uint32_t *)cpu_at(f, f->texblock, 4, NULL));
       mesa_logi("sgx:   state 0x%08x, its program 0x%08x, vertex fetch 0x%08x, vertices 0x%08x",
                 d0, p0, fb, vb);
@@ -533,10 +660,10 @@ sgx_frame_clear(struct sgx_frame *f, struct sgx_resource *rt, const float rgba[4
          mesa_logi("sgx:   VDM +%02x: %08x %08x %08x %08x %08x", i * 4, vdm[i], vdm[i + 1],
                    vdm[i + 2], vdm[i + 3], vdm[i + 4]);
       mesa_logi("sgx:   kick: PB 0x%08x, details 0x%08x, TA command 0x%08x (%u bytes), %u buffers",
-                f->kick[0], f->kick[1], f->kick[2], cmd[0], f->nbo + 2);
+                f->kick[0], f->kick[1], f->kick[2], cmd[0], f->nhandles + 1);
    }
    ret = sgx_submit(f->dev, cmd, f->kick[0], f->bo[det_bo]->handle,
-                    f->kick[1] - f->bo[det_bo]->va, f->handles, f->nbo + 2, done);
+                    f->kick[1] - f->bo[det_bo]->va, f->handles, f->nhandles + 1, done);
    if (!ret)
       sgx_fence_reference(&f->last, done);
    return ret;
