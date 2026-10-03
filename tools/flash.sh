@@ -87,7 +87,12 @@ case "$(uname -m)" in
     arm64|aarch64) LARCH=arm64 ;;
     *) LARCH=x86_64 ;;
 esac
+# Linux builds come per architecture (bin/linux/arm64, bin/linux/x86_64); the
+# macOS ones are universal binaries straight in bin/macos.  Asking for
+# bin/macos/arm64 is what made a plain flash say "no primepwn" on a Mac
+# whose Legacy iOS Kit had it all along (--kdfu only goes through restore.sh).
 LBIN="$LIK/bin/$LOS/$LARCH"
+[ -d "$LBIN" ] || LBIN="$LIK/bin/$LOS"
 LIKMSG="    git clone https://github.com/LukeZGD/Legacy-iOS-Kit.git ~/Legacy-iOS-Kit
 Or set LIK=/path/to/it."
 
