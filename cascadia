@@ -192,8 +192,17 @@ cmd_doctor() {
 
     say "tree"
     for p in build/linux/Makefile build/initramfs-root/init dtb/p105ap.dtb; do
+        # The hint is picked outside $(...): macOS's /bin/bash 3.2 cannot parse
+        # a case statement inside a command substitution.
         if [ -e "$p" ]; then note "ok:      $p"
-        else note "missing: $p    ($(case $p in build/linux*) echo './cascadia kernel';; build/initramfs*) echo './cascadia rootfs';; *) echo './cascadia build';; esac))"; fi
+        else
+            case $p in
+                build/linux*) hint='./cascadia kernel' ;;
+                build/initramfs*) hint='./cascadia rootfs' ;;
+                *) hint='./cascadia build' ;;
+            esac
+            note "missing: $p    ($hint)"
+        fi
     done
     [ "$rc" -eq 0 ] || fail "install what is missing above and re-run"
     say "ready"

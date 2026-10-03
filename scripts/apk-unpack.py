@@ -23,6 +23,7 @@ Runs inside the build container (needs network and readelf), not on the host.
 
 import argparse
 import gzip
+import http.client
 import io
 import os
 import re
@@ -30,6 +31,7 @@ import shutil
 import subprocess
 import sys
 import tarfile
+import urllib.error
 import urllib.request
 
 
@@ -37,9 +39,22 @@ def log(msg):
     print(f"    {msg}", flush=True)
 
 
-def fetch(url):
-    with urllib.request.urlopen(url, timeout=60) as r:
-        return r.read()
+def fetch(url, tries=5):
+    """The body of url.  The CDN now and then stalls in the middle of a
+    transfer (a read timeout, a reset): try again, waiting longer each time,
+    before giving up."""
+    import time
+    for n in range(1, tries + 1):
+        try:
+            with urllib.request.urlopen(url, timeout=120) as r:
+                return r.read()
+        except (OSError, http.client.HTTPException) as e:
+            # a missing file stays missing
+            if n == tries or (isinstance(e, urllib.error.HTTPError) and e.code < 500):
+                raise
+            wait = 2 ** n
+            log(f"{url}: {e} -- again in {wait} s ({n}/{tries})")
+            time.sleep(wait)
 
 
 def untar_apk(blob, dest):
