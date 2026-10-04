@@ -14,7 +14,9 @@ The short version:
   colour and a triangle turned by the vertex shader all draw right
   (`sgx-gl gltri`: 11 of 11). The bug that held it up was not in the draw:
   render targets sat in the BIF's tiled window (section 2).
-- **Next: M13b**, our own vertex side (section 7).
+- **M13b (our own vertex side) is done**: 1 to 8 varyings, F16 or F32,
+  no pack in the vertex half of a draw.
+- **Next: M13c**, the compiler (section 7).
 
 ## 1. How to work in this repository
 
@@ -82,12 +84,12 @@ The full account is in p105-mesa.md, M13a, "Solved". In short:
 - Lesson for later checks: test with pictures that are not uniform, and
   look at a whole read-back as an image before reading numbers off it.
 
-## 3. M13a: how the code draws
+## 3. How the code draws (M13a, M13b)
 
 The driver lives in `mesa/files/src/gallium/drivers/sgx/`. It is copied
 into Mesa 26.1.8 by `mesa/build.sh`; `mesa/mesa.patch` registers it.
 
-- **`sgx_draw.c/.h`**, the M13a path.
+- **`sgx_draw.c/.h`**, the CPU vertex path (M13a).
   - `sgx_draw_init` sets up Gallium's draw module:
     - `draw_create_no_llvm`;
     - a `vbuf_render` backend (`struct sgx_render`) with `need_pipeline`;
@@ -96,11 +98,13 @@ into Mesa 26.1.8 by `mesa/build.sh`; `mesa/mesa.patch` registers it.
     input, so pass a clone) → `tgsi_exec`.
   - `update_vertex_info`: position EMIT_4F, then one EMIT_4F per varying.
     Varying names follow `nir_to_tgsi`'s: `VARn` is `GENERIC n`.
-  - `emit_vertex` writes `r g b a u v x y`:
+  - `emit_vertex` writes the frame's layout (M13b): `x y z w`, then the
+    colour as varying 0:
+    - x and y in NDC from window coordinates, z = 0, w = 1;
     - colour per channel from the FS analysis (grey 0.5 when it is not
       understood), clamped to 0..1;
-    - u = v = 0;
-    - x and y in NDC from window coordinates.
+    - `SGX_DRAW_LAYOUT=N[,K][,f32]` sends N varyings, the colour the K-th,
+      the rest a filler colour (a test of the vertex side).
   - `render_index` makes every triangle anticlockwise.
   - `sgx_fs_colour_analyse` reads the fragment shader instead of running
     it:
@@ -124,21 +128,29 @@ into Mesa 26.1.8 by `mesa/build.sh`; `mesa/mesa.patch` registers it.
   clear or draw, over what the target holds, because the background object
   reloads the target.
   - Our programs go in the pack's code page at `code_base + 0x1000`, in the
-    free 1 KiB:
-    - the replace program at +0, then the iterated pixel program at +0x20;
-    - end-of-tile programs in 0x80 slots after +0x40.
+    free 1 KiB, all written once:
+    - the replace program at +0, the iterated pixel programs (F16 at
+      +0x20, F32 at +0x30);
+    - the vertex programs for 0..8 varyings from +0x40 (52 instructions);
+    - six end-of-tile slots of 0x58 from +0x1e0.
   - In the EXT window:
     - the white 4x4 texture's block at +0;
-    - the iterated PDS at +0x100;
+    - the iterated PDS per varying and format, 0x20 each, from +0x100;
+    - the vertex fetch per number of varyings, 0x100 each, from +0x400;
     - vertices at +0x280000;
     - per-render state at +0x3c0000.
+  - Draws use our vertex side (`struct sgx_frame_layout`; state words 16,
+    19, 20; the VDM fetch word `(1+N) << 25 | 0x01800000 | (4+4N) << 7 |
+    (N+2)`), clears the pack's. p105-mesa.md, M13b.
   - The VDM draw word is `0x81c00000 | count`, over the pack's identity
     index buffer of 8192 entries.
-  - `render(..., iterated)`: clears use the pack's pixel side; draws use
-    the iterated one unless `SGX_FRAME=packpixel`.
+  - `render(f, rt, layout, ...)`: no layout = the pack's vertex side
+    (clears, `SGX_FRAME=packvertex`); clears use the pack's pixel side,
+    draws the iterated one unless `SGX_FRAME=packpixel`.
   - State word 6 is `iterated ? 1<<27 | iter_pds>>4 : p27(texblock)`.
   - `SGX_FRAME=` takes comma-separated switches: `fb`, `blend`, `screen`,
-    `codebo`, `sop2`, `align`, `packpixel` (sgx_frame.h, M12 in the doc).
+    `codebo`, `sop2`, `align`, `packpixel`, `packvertex` (sgx_frame.h).
+    `SGX_FETCH=word`, `SGX_FETCH_TAG=n` override the VDM fetch.
     `SGX_DEBUG=frame` logs every word.
 - **Tests.**
   - `tools/sgx/gl/glclear.c` takes `N` and `--fb`.
@@ -330,11 +342,7 @@ gnu2 dialect breaks the current-context TLS on 32-bit ARM.
 
 From p105-mesa.md, M13 to M16.
 
-- **M13b: our own vertex side.**
-  - Our own vertex program and vertex fetch PDS.
-  - State words 16, 19 and 20 to match.
-  - Several varyings, and a colour that is not just varying 1.
-  - This also frees the vertex layout from sgx2d's `r g b a u v x y`.
+- **M13b: our own vertex side** -- done 2026-10-04 (p105-mesa.md).
 - **M13c: the compiler**, NIR → USSE:
   - an encoder in C (the tables of `usse.py`, Vita3K's bits);
   - a register allocator over the banks;
@@ -355,11 +363,11 @@ From p105-mesa.md, M13 to M16.
 
 ## 8. Where the last session stopped
 
-- **Last work (2026-10-04):** M13a solved and checked on the iPad
-  (`gltri` 11 of 11 on the default path, `glclear 20` 0 wrong). Kernel
-  and Mesa fixes for the tiled window, docs.
+- **Last work (2026-10-04):** M13a solved (the tiled window) and M13b
+  done: our own vertex side, 1 to 8 varyings, F16 or F32, checked on the
+  iPad (`gltri` 11 of 11 for every layout, `glclear 20` 0 wrong).
 - **On the device:** the new Mesa is installed. The kernel there (#291)
   is the old one; a kernel with the fix is built (`./cascadia build`) and
   waits for the user to flash it. Mesa works on both.
-- **Next:** M13b, our own vertex side (section 7). Then textures through
-  the corpus's `t*` cases (M14) or M10's render targets of any size.
+- **Next:** M13c, the compiler (section 7), starting with fragment
+  shaders: the vertex side now carries any varyings to the pixels.

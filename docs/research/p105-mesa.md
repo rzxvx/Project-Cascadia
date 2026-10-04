@@ -789,6 +789,67 @@ at 0xdfcf0000; `glclear 20` 0 wrong.
 turned triangle are all right, through the pack's vertex side and iOS's
 pixel side. Next is M13b.
 
+**M13b: our own vertex side (2026-10-04, done the same day).** Draws no
+longer go through the pack's vertex half (`r g b a u v x y`, a two-phase
+vertex program, three fetched attributes). A vertex is now the position
+(`x y z w`) and then N varyings of four floats each, N from 1 to 8, each
+kept as F16 or F32 (`struct sgx_frame_layout`, sgx_frame.h). For each N
+the frame has, written once:
+
+- a vertex program in the pack's code page: `PHAS`, `SMLSI` +1, then
+  `vmov.f32 o2k.xy, pa2k rpt4` until the 4 + 4N words are moved, then the
+  vertex emit (`fb275000a0200000`). This is iOS's own shape (v00_vec4: there
+  the `SMLSI` has the swizzle form `[2,3,0,1]` because the app's position
+  is the second attribute, fetched into pa4..pa7; ours comes first). VMOV
+  repeats at most 4 times and its register fields count pairs, so `o3` in
+  the encoding is o6. The programs for N = 0..8 take 52 instructions; the
+  end-of-tile slots shrank to 11 instructions (`0x58`), six of them;
+- a vertex fetch PDS program in the EXT window: one attribute a vec4,
+  `{address, first pa << 8 | 3, stride (row 0 only), 0}`, then the
+  vertex program's DOUTU row; code `67800072`, `2f0n91a3` per row,
+  `030R01f5`, `af000000` (pds.py's `vertex_fetch`).
+
+Per render: state word 16 = (4 + 4N) << 24 | `0x001000`, word 19 = `111`
+per varying, word 20 = one bit per F16 varying, and the pixel side's
+iterate PDS is the one for the colour varying, F16 (`2fc0V00f`, two
+registers, `pck.u8.f16 o0, pa0`) or F32 (`0fc0V00f`, `07040c32` four
+registers, `pck.u8.f32 o0, pa0, pa2` = `40840c3da01d8002`, v07_highp).
+`SGX_FRAME=packvertex` goes back to the pack's vertex side.
+
+The one real unknown was the VDM word after the fetch's address. With the
+pack's `0x07800604` and three data rows the render hung (TA not done);
+with only its low bits changed, positions came out of the wrong words:
+the TA took 12 words a vertex whatever word 16 said. A vertex of 12 words
+(N = 2) drew right at once, which pointed at the word, and iOS's template
+captures settled it -- three layouts, three words:
+
+| capture | attributes | vertex | VDM fetch word |
+|---|---|---|---|
+| logs/ios/depth | 1 (pa 4) | 4 words | `0x03800202` |
+| tmpl/vcolor, tex, size | 2 (pa 8) | 6 or 8 words | `0x05800403` |
+| mod (the pack) | 3 (pa 12) | 10 words | `0x07800604` |
+
+So: attributes in bits 26:25 and up (at least to bit 28: N = 8 is 9 << 25
+and works), the primary attributes the vertex program gets in 11:7, the
+fetch's data rows in 6:0, `0x01800000` always. Our word is `(1 + N) << 25 |
+0x01800000 | (4 + 4N) << 7 | (N + 2)`; `SGX_FETCH=word` overrides it. The
+address word's tag differs too (`0xf` for one or two attributes, `9` for
+three, `7` for a two-word attribute of the GL driver's own); we keep the
+pack's 9, and `SGX_FETCH_TAG=15` drew the same, so its meaning is open.
+
+Checked on the iPad: `SGX_DRAW_LAYOUT=N[,K][,f32]` (sgx_draw.c) sends N
+varyings with the colour the K-th and the rest a filler colour that would
+fail the checks. `gltri` 11 of 11 with N = 1..8, the colour first, in the
+middle or last, F16 and F32; the default (N = 1) 11 of 11;
+`packvertex` and `packpixel` 11 of 11; `glclear 20` 0 wrong.
+
+**State word 5 (the pixel PDS info), partly read** from the corpus by
+what each pixel program uses: bits 31:27 = (primary attributes +
+temporaries) / 4, rounded up -- v00 (2 pa) 1, v07 (4 pa) 1, v04 (3 pa + 2
+temps) 2, v05 (16 pa) 4, c04 (no pa, 10 temps) 3, no pa and no temps 0.
+Bits 26:23 (0, 6, 3, 4 in those cases) are not read yet; 17:13 = `0x1f`
+always. M13c's programs will need it.
+
 ## M14: textures, blending, depth and the rest of GLES 2.0's state
 
 Every GLES 2.0 texture format (RGBA8, RGB565, RGBA4444, RGBA5551, L8, A8, LA8,

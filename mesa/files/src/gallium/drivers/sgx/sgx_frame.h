@@ -5,9 +5,10 @@
  * The template frame (docs/research/p105-mesa.md, M12): until the driver
  * builds renders of its own, it borrows sgx2d's pack (tools/sgx/rpack.py)
  * -- iOS's render target data for the full screen, the state blocks and
- * USSE programs of a textured quad -- and draws triangles with it, each
- * pixel the colour interpolated between the vertices (texel x colour with a
- * white texture).  That is enough for a clear, and for M13a's draws.
+ * USSE programs of a textured quad.  A clear is the pack's quad as it is
+ * (texel x colour with a white texture).  A draw has a vertex side of our
+ * own (M13b: vertex fetch, vertex program, the state words that describe
+ * the varyings) and iOS's pixel side for gl_FragColor = v (M13a).
  */
 #ifndef SGX_FRAME_H
 #define SGX_FRAME_H
@@ -31,7 +32,9 @@ enum {
    SGX_FRAME_CODEBO = 1 << 3, /* "codebo": our programs in a buffer of their own */
    SGX_FRAME_SOP2 = 1 << 4,   /* "sop2": replace by SOP2 (cmod1, amod1), not MOV */
    SGX_FRAME_ALIGN = 1 << 5,  /* "align": render targets at 1 MiB-aligned addresses */
-   SGX_FRAME_PACKPIX = 1 << 6, /* "packpixel": draws through the pack's pixel side too */
+   SGX_FRAME_PACKPIX = 1 << 6, /* "packpixel": draws through the pack's pixel side too
+                                  (and its vertex side, which that needs) */
+   SGX_FRAME_PACKVTX = 1 << 7, /* "packvertex": draws through the pack's vertex side */
 };
 unsigned sgx_frame_options(void);
 
@@ -49,18 +52,32 @@ bool sgx_frame_can_render(struct sgx_frame *f, struct sgx_resource *rt);
 int sgx_frame_clear(struct sgx_frame *f, struct sgx_resource *rt, const float rgba[4],
                     struct sgx_fence *done);
 
+/* A vertex as a draw hands it over (M13b): the position, x y z w -- x and y
+ * in [-1, 1] over the whole target, -1 being its first row and column (z
+ * and w are not used yet: 0 and 1) -- then nvaryings varyings of four
+ * floats each.  Each is kept for the pixels as F16, or as F32 if its bit in
+ * f32 is set; varying colour is the pixel's colour, interpolated between
+ * the vertices and packed to 8 bits a channel, the way iOS's GL driver
+ * colours gl_FragColor = v (the corpus's v00_vec4 and v07_highp). */
+#define SGX_FRAME_MAX_VARYINGS 8
+struct sgx_frame_layout {
+   unsigned nvaryings;
+   unsigned f32;
+   unsigned colour;
+};
+
+static inline unsigned
+sgx_frame_vertex_floats(const struct sgx_frame_layout *l)
+{
+   return 4 * (1 + l->nvaryings);
+}
+
 /* Triangles into rt, over what it holds (each tile starts as the target's
- * pixels): nverts vertices, three a triangle, eight floats each -- r g b a
- * (the colour, interpolated between the vertices), u v (unused), x y in
- * [-1, 1] over the whole target, -1 being its first row and column.  As
- * many vertices as sgx_frame_max_vertices() a render.  The pixels are
- * coloured the way iOS's GL driver does it for gl_FragColor = v (the
- * corpus's v00_vec4): the colour iterated as F16 into pa0..pa1, packed to
- * o0; the pack's pixel side (texel x colour, SGX_FRAME=packpixel) gets
- * colours that vary across a triangle wrong. */
-#define SGX_FRAME_VERTEX_FLOATS 8
-int sgx_frame_draw(struct sgx_frame *f, struct sgx_resource *rt, const float *verts,
-                   unsigned nverts, struct sgx_fence *done);
-unsigned sgx_frame_max_vertices(struct sgx_frame *f);
+ * pixels): nverts vertices laid out as l says, three a triangle, as many
+ * as sgx_frame_max_vertices() a render. */
+int sgx_frame_draw(struct sgx_frame *f, struct sgx_resource *rt,
+                   const struct sgx_frame_layout *l, const float *verts, unsigned nverts,
+                   struct sgx_fence *done);
+unsigned sgx_frame_max_vertices(struct sgx_frame *f, const struct sgx_frame_layout *l);
 
 #endif

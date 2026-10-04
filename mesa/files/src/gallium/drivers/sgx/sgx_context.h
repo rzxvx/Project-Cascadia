@@ -10,6 +10,7 @@
 #include "util/slab.h"
 
 #include "sgx_draw.h"
+#include "sgx_frame.h"
 
 struct draw_context;
 struct draw_stage;
@@ -44,8 +45,9 @@ struct sgx_context {
    struct draw_context *draw;
    struct draw_stage *vbuf;
    struct vbuf_render *render;
+   struct sgx_frame_layout layout;      /* of verts, for the bound shaders */
    float *verts;
-   unsigned nverts, maxverts;
+   unsigned nverts, maxfloats;
    const float *fs_constants;
    unsigned fs_constants_size;  /* bytes */
    bool warned_fs, debug_draw;

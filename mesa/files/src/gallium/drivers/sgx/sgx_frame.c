@@ -16,6 +16,10 @@
  *    with it: the pack's texel x colour (SOP2M, into pa0), then o0 = pa0,
  *    which is the pack's background program's own instruction.
  *
+ * Draws have a vertex side of our own (M13b): a vertex fetch PDS program
+ * and a vertex program for each number of varyings, iOS's shape (the
+ * corpus's v* cases), and the TA state words that describe the varyings.
+ *
  * They go in the pack's code page, in the 1 KiB below its first program,
  * where the pack's own programs are known to run.  The 3D pass's event
  * program names the end-of-tile program in its data (word 2), and the
@@ -28,6 +32,7 @@
  */
 #include "sgx_frame.h"
 
+#include <assert.h>
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -46,20 +51,27 @@
 #define EXT_TEX_END     0x280000
 #define EXT_VB          0x280000
 #define EXT_FRAME       0x3c0000
-#define VTX_FLOATS      SGX_FRAME_VERTEX_FLOATS  /* r g b a u v x y */
+#define PACK_VTX_FLOATS 8       /* the pack's vertex: r g b a u v x y */
 
 #define MAX_PACK_BOS    48
 
-/* our programs: the replace program (and after it, at ITER_PROG, the
- * iterated-colour pixel program), then one end-of-tile program a slot */
-#define REPLACE_SIZE    0x40
+/* our programs: the replace program, the iterated-colour pixel programs
+ * (F16 and F32), the vertex programs (one for each number of varyings,
+ * 0..8: 52 instructions), then one end-of-tile program (11) a slot */
 #define ITER_PROG       0x20
-/* the iterated-colour pixel program's PDS, in the EXT window after the
- * white texture's block */
-#define EXT_ITER_PDS    0x100
-#define EOT_SLOT        0x80
+#define ITER_PROG_F32   0x30
+#define VERTEX_PROGS    0x40
+#define PROGS_SIZE      0x1e0
+#define EOT_SLOT        0x58
 #define MAX_EOT         256
-#define CODE_BO_SIZE    (REPLACE_SIZE + MAX_EOT * EOT_SLOT)
+#define CODE_BO_SIZE    (PROGS_SIZE + MAX_EOT * EOT_SLOT)
+/* in the EXT window after the white texture's block: the iterated-colour
+ * pixel program's PDS, one for each varying (F16, F32), and the vertex
+ * fetch, one for each number of varyings */
+#define EXT_ITER_PDS    0x100
+#define ITER_PDS_SIZE   0x20
+#define EXT_FETCH_PDS   0x400
+#define FETCH_PDS_SIZE  0x100
 /* the pack's code page is at code base + 0x1000 (rpack.py), its first
  * program at +0x400 (programs.py) */
 #define PAGE_OFFSET     0x1000
@@ -87,6 +99,9 @@ static const char *tmpl_names[T_NUM] = {
 #define USSE_SOP2_REPLACE  0x8184080190000000ull   /* o0 = pa0 * (1 - 0) + o0 * 0, end */
 #define USSE_MOV_O0_PA0    0x50850009a0000000ull   /* o0 = pa0, end (the pack's bg_reload) */
 #define USSE_PCK_O0_PA0    0x40850a3da01d8000ull   /* pck.u8.f16 o0, pa0 scale, end (iOS's) */
+#define USSE_PCK_O0_PA0_F32 0x40840c3da01d8002ull  /* pck.u8.f32 o0, pa0, pa2 scale, end */
+#define USSE_SMLSI_INC1    0xfa10000001010101ull   /* repeats: every register + 1 */
+#define USSE_EMIT_VERTEX   0xfb275000a0200000ull   /* o0.. to the tiler, end */
 
 /* The pixel side iOS's GL driver builds for gl_FragColor = v, a mediump
  * vec4 varying (docs/research/p105-mesa.md, M11): a PDS program that
@@ -97,12 +112,71 @@ static const char *tmpl_names[T_NUM] = {
  * (u, v) as varying 0, the colour as varying 1. */
 #define PDS_DOUTU_ROW0_ITER  0x070001b5u
 #define PDS_ITERATE_2REG_W3  0x07040c12u
+#define PDS_ITERATE_4REG_W3  0x07040c32u
 #define PDS_END              0xaf000000u
-#define ITERATE_F16_VEC4_V1  0x2fc0100fu
+#define ITERATE_F16_VEC4     0x2fc0000fu   /* | varying << 12 */
+#define ITERATE_F32_VEC4     0x0fc0000fu
 #define ITER_TEMPS           6
+/* the pack's colour, for draws through its vertex side */
+#define PACK_COLOUR_VARYING  1
+
+/* The vertex fetch (pds.py's vertex_fetch(), iOS's for the v* cases): the
+ * index, then attribute n from data row n -- the address, the first primary
+ * attribute << 8 | words - 1, the stride (row 0's) -- then the vertex
+ * program, its DOUTU in the row after (predicate 3). */
+#define PDS_FETCH_INDEX      0x67800072u
+
+static uint32_t
+pds_fetch_attr(unsigned row)
+{
+   return 0x2f0091a3u | (4 * row + 1) << 16;
+}
+
+static uint32_t
+pds_doutu_vertex(unsigned row)
+{
+   return 3u << 24 | row << 18 | 0x1f5;
+}
+
+/* The VDM word after the vertex fetch's address, as iOS's captures have
+ * it: 0x03800202 for one vec4 attribute (logs/ios/depth), 0x05800403 for
+ * two (tmpl/vcolor), 0x07800604 for three (mod, the pack's) -- read as the
+ * attributes (bits 26:25), the primary attributes the vertex program gets
+ * (11:7) and the fetch's data rows (6:0).  M13b; SGX_FETCH=word
+ * overrides it. */
+static uint32_t
+vdm_fetch_word(unsigned nvaryings)
+{
+   static int64_t forced = -2;
+
+   if (forced == -2)
+      forced = getenv("SGX_FETCH") ? (int64_t)strtoul(getenv("SGX_FETCH"), NULL, 0) : -1;
+   if (forced >= 0)
+      return forced;
+   return (1 + nvaryings) << 25 | 0x01800000u | (4 + 4 * nvaryings) << 7 | (nvaryings + 2);
+}
+
+static unsigned
+vdm_fetch_tag(unsigned pack_tag)
+{
+   static int forced = -2;
+
+   if (forced == -2)
+      forced = getenv("SGX_FETCH_TAG") ? (int)strtoul(getenv("SGX_FETCH_TAG"), NULL, 0) : -1;
+   return forced >= 0 ? forced : pack_tag;
+}
 static const uint64_t usse_dummy_load[3] = {
    0x488b0281a00c0000ull, 0xe9a30084a0000000ull, 0xf920000000000000ull,
 };
+
+/* VMOV.f32 o[dst..] <- pa[src..], two words a repeat (registers counted
+ * in pairs: 3 is o6), up to four repeats (usse.py's vmov_f32) */
+static uint64_t
+usse_vmov_f32(unsigned dst, unsigned src, unsigned repeat)
+{
+   return 0x3880052183000000ull | (uint64_t)(repeat - 1) << 44 | (uint64_t)dst << 18 |
+          (uint64_t)src << 6;
+}
 
 /* LIMM rN <- imm (bank 0, the temporaries) */
 static uint64_t
@@ -141,7 +215,9 @@ struct sgx_frame {
    struct sgx_eot eot[MAX_EOT];
    unsigned neot, max_eot;
    uint32_t texblock;           /* the white texture's block, replace program */
-   uint32_t iter_pds;           /* the iterated-colour pixel program's PDS */
+   uint32_t iter_pds;           /* the iterated-colour pixel program's PDS, per varying */
+   uint32_t fetch_pds;          /* the vertex fetch, per number of varyings */
+   uint32_t vertex_prog[SGX_FRAME_MAX_VARYINGS + 1];
    struct sgx_fence *last;      /* the last render through the frame */
    char *dir;                   /* the pack: loaded again after a render hangs */
    uint64_t timeouts;           /* the kernel's count of renders that did */
@@ -156,7 +232,7 @@ sgx_frame_options(void)
       { "fb", SGX_FRAME_FB }, { "blend", SGX_FRAME_BLEND },
       { "screen", SGX_FRAME_SCREEN }, { "codebo", SGX_FRAME_CODEBO },
       { "sop2", SGX_FRAME_SOP2 }, { "align", SGX_FRAME_ALIGN },
-      { "packpixel", SGX_FRAME_PACKPIX },
+      { "packpixel", SGX_FRAME_PACKPIX }, { "packvertex", SGX_FRAME_PACKVTX },
    };
    static int opts = -1;
    const char *env = getenv("SGX_FRAME");
@@ -422,10 +498,60 @@ code_bo(struct sgx_frame *f)
    return NULL;
 }
 
+/* The vertex program for n varyings: the position and the varyings, as
+ * the vertex fetch put them in pa0.., to the outputs in the same order --
+ * iOS's for gl_Position = p; v = a (the corpus's v00_vec4, there with the
+ * attributes the other way round) -- then to the tiler */
+static unsigned
+vertex_program(uint64_t *p, unsigned nvaryings)
+{
+   unsigned n = 0, pairs = 2 * (1 + nvaryings);
+
+   p[n++] = USSE_PHAS;
+   p[n++] = USSE_SMLSI_INC1;
+   for (unsigned i = 0; i < pairs; i += 4)
+      p[n++] = usse_vmov_f32(i, i, MIN2(4, pairs - i));
+   p[n++] = USSE_EMIT_VERTEX;
+   return n;
+}
+
+/* the vertex fetch for n varyings: one attribute a vec4, from the vertices
+ * at EXT_VB */
+static unsigned
+fetch_program(struct sgx_frame *f, uint32_t *p, unsigned nvaryings)
+{
+   uint32_t vb = f->ext + EXT_VB;
+   unsigned n = 0, rows = 1 + nvaryings;
+
+   for (unsigned i = 0; i < rows; i++) {
+      p[n++] = vb + 16 * i;
+      p[n++] = 4 * i << 8 | 3;
+      p[n++] = i ? 0 : 16 * rows;
+      p[n++] = 0;
+   }
+   p[n++] = doutu(f, f->vertex_prog[nvaryings]);
+   p[n++] = 0;
+   p[n++] = 0;
+   p[n++] = 0;
+   p[n++] = PDS_FETCH_INDEX;
+   for (unsigned i = 0; i < rows; i++)
+      p[n++] = pds_fetch_attr(i);
+   p[n++] = pds_doutu_vertex(rows);
+   p[n++] = PDS_END;
+   return n;
+}
+
+static uint32_t
+iter_pds_at(struct sgx_frame *f, unsigned varying, bool f32)
+{
+   return f->iter_pds + (2 * varying + f32) * ITER_PDS_SIZE;
+}
+
 /* Our pieces into the pack's buffers (again after load_images): the
  * replace program, a 4x4 white texture at the start of the texel heap, and
- * its block (word 0 the pixel program, 5 the size, log2, 6 the address).
- * End-of-tile programs are written as targets come. */
+ * its block (word 0 the pixel program, 5 the size, log2, 6 the address);
+ * the iterated-colour pixel programs and their PDS; the vertex programs
+ * and their fetches.  End-of-tile programs are written as targets come. */
 static bool
 put_ours(struct sgx_frame *f)
 {
@@ -433,13 +559,24 @@ put_ours(struct sgx_frame *f)
       USSE_PHAS, USSE_SOP2M_MOD,
       f->opts & SGX_FRAME_SOP2 ? USSE_SOP2_REPLACE : USSE_MOV_O0_PA0,
    };
-   uint32_t white[16], blk[16];
-
    const uint64_t iterated[2] = { USSE_PHAS, USSE_PCK_O0_PA0 };
-   uint32_t iter_pds[8];
+   const uint64_t iterated_f32[2] = { USSE_PHAS, USSE_PCK_O0_PA0_F32 };
+   uint32_t white[16], blk[16], pds[FETCH_PDS_SIZE / 4];
+   unsigned at = VERTEX_PROGS;
+   bool ok;
 
    memcpy(f->code_map, replace, sizeof(replace));
    memcpy(f->code_map + ITER_PROG, iterated, sizeof(iterated));
+   memcpy(f->code_map + ITER_PROG_F32, iterated_f32, sizeof(iterated_f32));
+   for (unsigned n = 0; n <= SGX_FRAME_MAX_VARYINGS; n++) {
+      uint64_t prog[8];
+      unsigned len = vertex_program(prog, n);
+
+      f->vertex_prog[n] = f->code_va + at;
+      memcpy(f->code_map + at, prog, len * 8);
+      at += len * 8;
+   }
+   assert(at <= PROGS_SIZE);
    f->neot = 0;
    memset(white, 0xff, sizeof(white));
    memcpy(blk, f->tmpl + f->toff[T_TEX], f->tsize[T_TEX]);
@@ -448,18 +585,28 @@ put_ours(struct sgx_frame *f)
    blk[5] = 0x0c000000 | 2 << 16 | 2;
    blk[6] = f->heap;
    f->texblock = f->ext;
+   ok = put(f, f->heap, white, sizeof(white)) && put(f, f->texblock, blk, f->tsize[T_TEX]);
+
    f->iter_pds = f->ext + EXT_ITER_PDS;
-   iter_pds[0] = doutu(f, f->code_va + ITER_PROG);
-   iter_pds[1] = ITER_TEMPS;
-   iter_pds[2] = 0;
-   iter_pds[3] = ITERATE_F16_VEC4_V1;
-   iter_pds[4] = PDS_DOUTU_ROW0_ITER;
-   iter_pds[5] = PDS_ITERATE_2REG_W3;
-   iter_pds[6] = PDS_END;
-   iter_pds[7] = 0;
-   return put(f, f->heap, white, sizeof(white)) &&
-          put(f, f->texblock, blk, f->tsize[T_TEX]) &&
-          put(f, f->iter_pds, iter_pds, sizeof(iter_pds));
+   for (unsigned v = 0; v < SGX_FRAME_MAX_VARYINGS; v++) {
+      for (unsigned f32 = 0; f32 < 2; f32++) {
+         const uint32_t p[8] = {
+            doutu(f, f->code_va + (f32 ? ITER_PROG_F32 : ITER_PROG)), ITER_TEMPS, 0,
+            (f32 ? ITERATE_F32_VEC4 : ITERATE_F16_VEC4) | v << 12,
+            PDS_DOUTU_ROW0_ITER, f32 ? PDS_ITERATE_4REG_W3 : PDS_ITERATE_2REG_W3, PDS_END, 0,
+         };
+
+         ok = ok && put(f, iter_pds_at(f, v, f32), p, sizeof(p));
+      }
+   }
+   f->fetch_pds = f->ext + EXT_FETCH_PDS;
+   for (unsigned n = 0; n <= SGX_FRAME_MAX_VARYINGS; n++) {
+      unsigned len = fetch_program(f, pds, n);
+
+      assert(len * 4 <= FETCH_PDS_SIZE);
+      ok = ok && put(f, f->fetch_pds + n * FETCH_PDS_SIZE, pds, len * 4);
+   }
+   return ok;
 }
 
 struct sgx_frame *
@@ -494,7 +641,7 @@ sgx_frame_create(struct sgx_device *dev, const char *dir)
    if (!(f->opts & SGX_FRAME_CODEBO) && at) {
       f->code_va = page;
       f->code_map = at;
-      f->max_eot = (PAGE_FREE - REPLACE_SIZE) / EOT_SLOT;
+      f->max_eot = (PAGE_FREE - PROGS_SIZE) / EOT_SLOT;
    } else {
       if (!(f->code = code_bo(f)))
          goto fail;
@@ -558,7 +705,7 @@ eot_program(struct sgx_frame *f, const struct sgx_eot *want)
 
    for (i = 0; i < MIN2(f->neot, f->max_eot); i++)
       if (!memcmp(&f->eot[i], want, sizeof(*want)))
-         return f->code_va + REPLACE_SIZE + i * EOT_SLOT;
+         return f->code_va + PROGS_SIZE + i * EOT_SLOT;
    slot = f->neot++ % f->max_eot;
    if (f->neot == f->max_eot + 1)
       mesa_logw("sgx: more render targets than end-of-tile slots (%u); old ones are "
@@ -570,18 +717,18 @@ eot_program(struct sgx_frame *f, const struct sgx_eot *want)
    for (i = 0; i < 6; i++)
       prog[4 + i] = usse_limm_r(i, pbe[i]);
    prog[10] = USSE_EMIT_PIXEL;
-   memcpy(f->code_map + REPLACE_SIZE + slot * EOT_SLOT, prog, sizeof(prog));
-   return f->code_va + REPLACE_SIZE + slot * EOT_SLOT;
+   memcpy(f->code_map + PROGS_SIZE + slot * EOT_SLOT, prog, sizeof(prog));
+   return f->code_va + PROGS_SIZE + slot * EOT_SLOT;
 }
 
-/* two triangles over the whole target, r g b a u v x y */
+/* two triangles over the whole target, the pack's vertices */
 static void
 quad(float *v, const float rgba[4])
 {
    static const float corner[4][2] = { { 0, 0 }, { 1, 0 }, { 1, 1 }, { 0, 1 } };
    static const int order[6] = { 0, 1, 2, 0, 2, 3 };
 
-   for (unsigned i = 0; i < 6; i++, v += VTX_FLOATS) {
+   for (unsigned i = 0; i < 6; i++, v += PACK_VTX_FLOATS) {
       const float *c = corner[order[i]];
 
       memcpy(v, rgba, 4 * sizeof(float));
@@ -592,41 +739,80 @@ quad(float *v, const float rgba[4])
    }
 }
 
-unsigned
-sgx_frame_max_vertices(struct sgx_frame *f)
+static unsigned
+max_vertices(struct sgx_frame *f, unsigned stride)
 {
-   unsigned n = MIN2(f->idx_count, (EXT_FRAME - EXT_VB) / (VTX_FLOATS * sizeof(float)));
+   unsigned n = MIN2(f->idx_count, (EXT_FRAME - EXT_VB) / stride);
 
    return n - n % 3;
 }
 
-static int render(struct sgx_frame *f, struct sgx_resource *rt, const float *verts,
-                  unsigned nverts, bool iterated, struct sgx_fence *done);
+unsigned
+sgx_frame_max_vertices(struct sgx_frame *f, const struct sgx_frame_layout *l)
+{
+   /* the pack's vertices (SGX_FRAME=packvertex) are never larger */
+   return max_vertices(f, sgx_frame_vertex_floats(l) * sizeof(float));
+}
 
-/* a clear: the pack's pixel side, as M12 proved it */
+static int render(struct sgx_frame *f, struct sgx_resource *rt,
+                  const struct sgx_frame_layout *l, const float *verts, unsigned nverts,
+                  bool iterated, struct sgx_fence *done);
+
+/* a clear: the pack's vertex and pixel sides, as M12 proved them */
 int
 sgx_frame_clear(struct sgx_frame *f, struct sgx_resource *rt, const float rgba[4],
                 struct sgx_fence *done)
 {
-   float verts[6 * VTX_FLOATS];
+   float verts[6 * PACK_VTX_FLOATS];
 
    quad(verts, rgba);
-   return render(f, rt, verts, 6, false, done);
+   return render(f, rt, NULL, verts, 6, false, done);
 }
 
 int
-sgx_frame_draw(struct sgx_frame *f, struct sgx_resource *rt, const float *verts,
-               unsigned nverts, struct sgx_fence *done)
+sgx_frame_draw(struct sgx_frame *f, struct sgx_resource *rt, const struct sgx_frame_layout *l,
+               const float *verts, unsigned nverts, struct sgx_fence *done)
 {
-   return render(f, rt, verts, nverts, !(f->opts & SGX_FRAME_PACKPIX), done);
+   unsigned vf = sgx_frame_vertex_floats(l);
+   float *pack;
+   int ret;
+
+   if (l->nvaryings > SGX_FRAME_MAX_VARYINGS || l->colour >= l->nvaryings)
+      return -EINVAL;
+   if (!(f->opts & (SGX_FRAME_PACKVTX | SGX_FRAME_PACKPIX)))
+      return render(f, rt, l, verts, nverts, true, done);
+
+   /* through the pack's vertex side: r g b a (the colour) u v x y */
+   if (!(pack = malloc(nverts * PACK_VTX_FLOATS * sizeof(float))))
+      return -ENOMEM;
+   for (unsigned i = 0; i < nverts; i++) {
+      const float *in = verts + i * vf;
+      float *out = pack + i * PACK_VTX_FLOATS;
+
+      memcpy(out, in + 4 + 4 * l->colour, 4 * sizeof(float));
+      out[4] = out[5] = 0;
+      out[6] = in[0];
+      out[7] = in[1];
+   }
+   ret = render(f, rt, NULL, pack, nverts, !(f->opts & SGX_FRAME_PACKPIX), done);
+   free(pack);
+   return ret;
 }
 
+/* A render through the frame: with l, our vertex side (M13b) and verts
+ * laid out as it says; without, the pack's, verts r g b a u v x y.  The
+ * pixel side is the iterated colour (l's colour varying, or the pack's) or
+ * the pack's texel x colour. */
 static int
-render(struct sgx_frame *f, struct sgx_resource *rt, const float *verts, unsigned nverts,
-       bool iterated, struct sgx_fence *done)
+render(struct sgx_frame *f, struct sgx_resource *rt, const struct sgx_frame_layout *l,
+       const float *verts, unsigned nverts, bool iterated, struct sgx_fence *done)
 {
    uint32_t vdm[32] = { 0 }, full[32], prog[16], fetch[32], bg[4], *v = vdm, *cmd;
-   uint32_t frame = f->ext + EXT_FRAME, vb = f->ext + EXT_VB, d0, p0, fb, eot;
+   uint32_t frame = f->ext + EXT_FRAME, vb = f->ext + EXT_VB, d0, p0, fb, eot, fetch_word;
+   unsigned stride = l ? sgx_frame_vertex_floats(l) * sizeof(float) :
+                     PACK_VTX_FLOATS * sizeof(float);
+   unsigned colour = l ? l->colour : PACK_COLOUR_VARYING;
+   bool f32 = l && (l->f32 >> l->colour & 1);
    struct sgx_eot to = {
       .va = rt->bo->va, .w = f->w, .h = f->h, .stride = rt->stride[0],
    };
@@ -637,7 +823,7 @@ render(struct sgx_frame *f, struct sgx_resource *rt, const float *verts, unsigne
 
    if (!sgx_frame_can_render(f, rt) || f->tsize[T_FULL] > (int)sizeof(full) ||
        f->tsize[T_FULLPROG] > (int)sizeof(prog) || f->tsize[T_FETCH] > (int)sizeof(fetch) ||
-       !nverts || nverts % 3 || nverts > sgx_frame_max_vertices(f))
+       !nverts || nverts % 3 || nverts > max_vertices(f, stride))
       return -EINVAL;
 
    /* the frame's buffers are the last render's until it is done */
@@ -675,26 +861,43 @@ render(struct sgx_frame *f, struct sgx_resource *rt, const float *verts, unsigne
    /* draw 0: the whole state, the white texture with the replace program */
    memcpy(full, f->tmpl + f->toff[T_FULL], f->tsize[T_FULL]);
    /* the pixel program's PDS: tag (bits 31:27) its data size in rows */
-   full[6] = iterated ? 1u << 27 | (f->iter_pds >> 4 & 0x07ffffff) : p27(f->texblock);
+   full[6] = iterated ? 1u << 27 | (iter_pds_at(f, colour, f32) >> 4 & 0x07ffffff) :
+             p27(f->texblock);
+   if (l) {
+      /* the vertex's size in words (31:24); three bits a varying, 111 for
+       * four components; a bit a varying kept as F16 */
+      full[16] = (4 + 4 * l->nvaryings) << 24 | (full[16] & 0x00ffffff);
+      full[19] = 0;
+      for (i = 0; i < l->nvaryings; i++)
+         full[19] |= 7u << 3 * i;
+      full[20] = ~l->f32 & ((1u << l->nvaryings) - 1);
+   }
    d0 = frame;
    memcpy(prog, f->tmpl + f->toff[T_FULLPROG], f->tsize[T_FULLPROG]);
    prog[0] = d0;
    p0 = (frame + f->tsize[T_FULL] + 0x3f) & ~0x3fu;
-   memcpy(fetch, f->tmpl + f->toff[T_FETCH], f->tsize[T_FETCH]);
-   fetch[0] = vb;               /* r g b a */
-   fetch[4] = vb + 16;          /* u v */
-   fetch[8] = vb + 24;          /* x y */
-   fb = (p0 + f->tsize[T_FULLPROG] + 0x3f) & ~0x3fu;
    if (!put(f, d0, full, f->tsize[T_FULL]) || !put(f, p0, prog, f->tsize[T_FULLPROG]) ||
-       !put(f, fb, fetch, f->tsize[T_FETCH]) ||
-       !put(f, vb, verts, nverts * VTX_FLOATS * sizeof(float)))
+       !put(f, vb, verts, nverts * stride))
       return -EFAULT;
+   if (l) {
+      fb = f->fetch_pds + l->nvaryings * FETCH_PDS_SIZE;
+      fetch_word = vdm_fetch_word(l->nvaryings);
+   } else {
+      memcpy(fetch, f->tmpl + f->toff[T_FETCH], f->tsize[T_FETCH]);
+      fetch[0] = vb;            /* r g b a */
+      fetch[4] = vb + 16;       /* u v */
+      fetch[8] = vb + 24;       /* x y */
+      fb = (p0 + f->tsize[T_FULLPROG] + 0x3f) & ~0x3fu;
+      fetch_word = f->fetch_word;
+      if (!put(f, fb, fetch, f->tsize[T_FETCH]))
+         return -EFAULT;
+   }
 
    /* the draw: index count, the index buffer (0, 1, 2, ...) */
    *v++ = vdm4(4, f->consts0); *v++ = 0x1000e102;
    *v++ = vdm4(4, p0);         *v++ = 0x12022206;
    *v++ = 0x81c00000 | nverts; *v++ = f->idx; *v++ = 0x70000000; *v++ = 0x003fffff;
-   *v++ = vdm4(f->fetch_tag, fb); *v++ = f->fetch_word;
+   *v++ = vdm4(l ? vdm_fetch_tag(f->fetch_tag) : f->fetch_tag, fb); *v++ = fetch_word;
    for (i = 0; i < f->ntail; i++)
       *v++ = f->tail[i];
    if (!put(f, f->vdm, vdm, (v - vdm) * 4))
@@ -708,9 +911,18 @@ render(struct sgx_frame *f, struct sgx_resource *rt, const float *verts, unsigne
    f->handles[f->nhandles] = rt->bo->handle;
 
    if (f->debug) {
+      const float *c = l ? verts + 4 + 4 * l->colour : verts, *pos = l ? verts : verts + 6;
+
       mesa_logi("sgx: %u vertices into %ux%u at 0x%08x (stride %u); the first's colour "
                 "%.3f %.3f %.3f %.3f, position %.3f %.3f", nverts, f->w, f->h, rt->bo->va,
-                rt->stride[0], verts[0], verts[1], verts[2], verts[3], verts[6], verts[7]);
+                rt->stride[0], c[0], c[1], c[2], c[3], pos[0], pos[1]);
+      if (l)
+         mesa_logi("sgx:   vertex side: ours, %u varyings (F32 mask 0x%x), the colour "
+                   "varying %u; program 0x%08x, state words 16 %08x 19 %08x 20 %08x, "
+                   "fetch word %08x", l->nvaryings, l->f32, l->colour,
+                   f->vertex_prog[l->nvaryings], full[16], full[19], full[20], fetch_word);
+      else
+         mesa_logi("sgx:   vertex side: the pack's");
       mesa_logi("sgx:   SGX_FRAME=%s; our programs at 0x%08x (%s)",
                 getenv("SGX_FRAME") ? getenv("SGX_FRAME") : "", f->code_va,
                 f->code ? "a buffer of their own" : "the pack's code page");
@@ -720,9 +932,10 @@ render(struct sgx_frame *f, struct sgx_resource *rt, const float *verts, unsigne
          mesa_logi("sgx:   end of tile at 0x%08x (DOUTU 0x%08x) to 0x%08x, background "
                    "%08x %08x %08x %08x", eot, doutu(f, eot), to.va, bg[0], bg[1], bg[2], bg[3]);
       if (iterated)
-         mesa_logi("sgx:   pixel program: the colour iterated as F16 and packed (iOS's); "
+         mesa_logi("sgx:   pixel program: varying %u iterated as %s and packed (iOS's); "
                    "its PDS at 0x%08x (state word 6 0x%08x), the program at 0x%08x",
-                   f->iter_pds, full[6], f->code_va + ITER_PROG);
+                   colour, f32 ? "F32" : "F16", iter_pds_at(f, colour, f32), full[6],
+                   f->code_va + (f32 ? ITER_PROG_F32 : ITER_PROG));
       else
          mesa_logi("sgx:   pixel program: %s (texture block 0x%08x word 0 = 0x%08x)",
                    f->opts & SGX_FRAME_BLEND ? "the pack's" :

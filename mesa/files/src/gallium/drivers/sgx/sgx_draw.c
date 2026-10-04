@@ -10,7 +10,9 @@
  * So the fragment shader is not run but read: one whose colour is, channel
  * by channel, a constant or a component of a varying or of a uniform is
  * drawn right, the colour worked out per vertex here; any other is drawn
- * in grey, with a warning once.  Only render targets the frame can fill
+ * in grey, with a warning once.  The vertices go to the GPU as the frame's
+ * vertex side takes them (M13b): the position, then the colour as a
+ * varying.  Only render targets the frame can fill
  * are drawn into (the screen's size, B8G8R8A8); depth, stencil, blending,
  * scissors and colour masks are not applied yet.  Each draw is a render.
  */
@@ -34,8 +36,6 @@
 #include "sgx_frame.h"
 #include "sgx_resource.h"
 #include "sgx_screen.h"
-
-#define VF SGX_FRAME_VERTEX_FLOATS
 
 /* ---- the fragment shader's colour --------------------------------------- */
 
@@ -214,14 +214,29 @@ render_set_view_index(struct vbuf_render *r, unsigned view_index)
 {
 }
 
-/* one vertex, the template frame's way: colour, (u v), x y over the target */
+/* one vertex, as the frame's vertex side takes it: x y over the target, z
+ * 0, w 1, then the varyings -- the colour, and with SGX_DRAW_LAYOUT the
+ * fillers around it */
 static void
 emit_vertex(struct sgx_render *sr, const float *in, float *out)
 {
    struct sgx_context *ctx = sr->ctx;
    const struct sgx_fs_colour *c = ctx->fs ? &ctx->fs->colour : NULL;
    const float *cb = ctx->fs_constants;
+   const struct sgx_frame_layout *l = &ctx->layout;
 
+   out[0] = in[0] * 2 / ctx->fb.width - 1;
+   out[1] = in[1] * 2 / ctx->fb.height - 1;
+   out[2] = 0;
+   out[3] = 1;
+   for (unsigned k = 0; k < l->nvaryings; k++) {
+      /* a filler: a colour the checks would notice */
+      out[4 + 4 * k + 0] = 1;
+      out[4 + 4 * k + 1] = 0;
+      out[4 + 4 * k + 2] = 1;
+      out[4 + 4 * k + 3] = (k + 1) / 16.0f;
+   }
+   out += 4 + 4 * l->colour;
    for (unsigned i = 0; i < 4; i++) {
       float v = 0.5f;
 
@@ -243,39 +258,37 @@ emit_vertex(struct sgx_render *sr, const float *in, float *out)
       }
       out[i] = CLAMP(v, 0.0f, 1.0f);
    }
-   out[4] = out[5] = 0;
-   out[6] = in[0] * 2 / ctx->fb.width - 1;
-   out[7] = in[1] * 2 / ctx->fb.height - 1;
 }
 
 static void
 render_index(struct sgx_render *sr, unsigned index)
 {
    struct sgx_context *ctx = sr->ctx;
+   unsigned vf = sgx_frame_vertex_floats(&ctx->layout);
 
-   if (ctx->nverts == ctx->maxverts) {
-      unsigned n = MAX2(ctx->maxverts * 2, 3 * 256);
-      float *p = REALLOC(ctx->verts, ctx->maxverts * VF * sizeof(float),
-                         n * VF * sizeof(float));
+   if ((ctx->nverts + 1) * vf > ctx->maxfloats) {
+      unsigned n = MAX2(ctx->maxfloats * 2, 3 * 256 * vf);
+      float *p = REALLOC(ctx->verts, ctx->maxfloats * sizeof(float), n * sizeof(float));
 
       if (!p)
          return;
       ctx->verts = p;
-      ctx->maxverts = n;
+      ctx->maxfloats = n;
    }
    emit_vertex(sr, (const float *)(sr->vertices + index * sr->vertex_size),
-               ctx->verts + ctx->nverts++ * VF);
+               ctx->verts + ctx->nverts++ * vf);
 
    /* every triangle anticlockwise, as the clear's quad is: the draw module
     * has culled what GL culls, and the pack's state may cull the rest */
    if (ctx->nverts % 3 == 0) {
-      float *t = ctx->verts + (ctx->nverts - 3) * VF, tmp[VF];
+      float *t = ctx->verts + (ctx->nverts - 3) * vf;
+      float tmp[4 * (1 + SGX_FRAME_MAX_VARYINGS)];
 
-      if ((t[VF + 6] - t[6]) * (t[2 * VF + 7] - t[7]) -
-          (t[2 * VF + 6] - t[6]) * (t[VF + 7] - t[7]) < 0) {
-         memcpy(tmp, t + VF, sizeof(tmp));
-         memcpy(t + VF, t + 2 * VF, sizeof(tmp));
-         memcpy(t + 2 * VF, tmp, sizeof(tmp));
+      if ((t[vf] - t[0]) * (t[2 * vf + 1] - t[1]) -
+          (t[2 * vf] - t[0]) * (t[vf + 1] - t[1]) < 0) {
+         memcpy(tmp, t + vf, vf * sizeof(float));
+         memcpy(t + vf, t + 2 * vf, vf * sizeof(float));
+         memcpy(t + 2 * vf, tmp, vf * sizeof(float));
       }
    }
 }
@@ -327,6 +340,36 @@ render_need_pipeline(const struct vbuf_render *r, const struct pipe_rasterizer_s
    return true;         /* everything as triangles, one by one */
 }
 
+/* What goes to the GPU: the position and the colour, as a varying.
+ * SGX_DRAW_LAYOUT=N[,K][,f32] (a test of the frame's vertex side) makes
+ * that N varyings, the colour the K-th (the last by default), F32 or
+ * not, the rest fillers. */
+static struct sgx_frame_layout
+draw_layout(void)
+{
+   static struct sgx_frame_layout l;
+   static bool parsed;
+
+   if (!parsed) {
+      const char *env = getenv("SGX_DRAW_LAYOUT");
+      char *e;
+
+      l.nvaryings = 1;
+      if (env && *env) {
+         l.nvaryings = CLAMP(strtoul(env, &e, 0), 1, SGX_FRAME_MAX_VARYINGS);
+         l.colour = l.nvaryings - 1;
+         if (*e == ',' && e[1] >= '0' && e[1] <= '9')
+            l.colour = MIN2(strtoul(e + 1, &e, 0), l.nvaryings - 1);
+         if (strstr(env, "f32"))
+            l.f32 = 1u << l.colour;
+         mesa_logi("sgx: SGX_DRAW_LAYOUT: %u varyings, the colour the %u-th%s",
+                   l.nvaryings, l.colour, l.f32 ? ", F32" : "");
+      }
+      parsed = true;
+   }
+   return l;
+}
+
 /* The vertex layout for the bound shaders: the position, then the varyings
  * the fragment colour reads (as the vertex shader's outputs are named) */
 static void
@@ -365,6 +408,8 @@ update_vertex_info(struct sgx_context *ctx)
                    "shader does not write", c->ch[i].slot, name, index);
    }
    draw_compute_vertex_size(vinfo);
+
+   ctx->layout = draw_layout();
 }
 
 bool
@@ -419,7 +464,7 @@ sgx_draw_fini(struct sgx_context *ctx)
    ctx->render = NULL;
    FREE(ctx->verts);
    ctx->verts = NULL;
-   ctx->nverts = ctx->maxverts = 0;
+   ctx->nverts = ctx->maxfloats = 0;
 }
 
 /* ---- draw_vbo ----------------------------------------------------------- */
@@ -453,10 +498,11 @@ submit(struct sgx_context *ctx)
    if (ctx->debug_draw) {
       mesa_logi("sgx: %u triangles; the first:", ctx->nverts / 3);
       for (unsigned i = 0; i < MIN2(ctx->nverts, 3); i++) {
-         const float *v = ctx->verts + i * VF;
+         const float *v = ctx->verts + i * sgx_frame_vertex_floats(&ctx->layout);
+         const float *c = v + 4 + 4 * ctx->layout.colour;
 
          mesa_logi("sgx:   x %8.4f y %8.4f  colour %.3f %.3f %.3f %.3f",
-                   v[6], v[7], v[0], v[1], v[2], v[3]);
+                   v[0], v[1], c[0], c[1], c[2], c[3]);
       }
    }
    if (!screen->frame) {
@@ -471,7 +517,7 @@ submit(struct sgx_context *ctx)
       ctx->nverts = 0;
       return;
    }
-   max = sgx_frame_max_vertices(screen->frame);
+   max = sgx_frame_max_vertices(screen->frame, &ctx->layout);
    while (done < ctx->nverts) {
       unsigned n = MIN2(ctx->nverts - done, max);
       struct sgx_fence *fence = sgx_fence_create(&screen->dev, false);
@@ -480,7 +526,8 @@ submit(struct sgx_context *ctx)
       if (!fence)
          break;
       simple_mtx_lock(&screen->frame_lock);
-      ret = sgx_frame_draw(screen->frame, rt, ctx->verts + done * VF, n, fence);
+      ret = sgx_frame_draw(screen->frame, rt, &ctx->layout,
+                           ctx->verts + done * sgx_frame_vertex_floats(&ctx->layout), n, fence);
       simple_mtx_unlock(&screen->frame_lock);
       if (!ret)
          sgx_fence_reference(&ctx->last, fence);

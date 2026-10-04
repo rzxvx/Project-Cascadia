@@ -54,6 +54,9 @@ sgx-gl glclear 100               # timing
 SGX_DEBUG=frame sgx-gl glclear   # every word a clear sets
 sgx-gl gltri                     # three draws, read back and checked (--fb to see them)
 SGX_DEBUG_DRAW=1 sgx-gl gltri    # the triangles each draw hands the GPU
+SGX_DRAW_LAYOUT=8,3,f32 sgx-gl gltri   # the vertex side with 8 varyings, the colour
+                                 # the 4th, F32 (the rest fillers; docs, M13b)
+sgx-gl gltri --ppm /tmp/x.ppm    # the last read-back as a picture: look at it
 sgx-gl frame-bisect              # one clear through every SGX_FRAME variant (docs, M12)
 ```
 
