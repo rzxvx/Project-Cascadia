@@ -74,18 +74,24 @@ for p in range(2222, 2300):
         pass
     finally:
         s.close()')}"
-    IPROXY="$(command -v iproxy || true)"
-    if [ -z "$IPROXY" ]; then
-        c=""
-        case "$(uname -s)/$(uname -m)" in
-            Darwin/*)                     c="$LIK/bin/macos/iproxy" ;;
-            Linux/aarch64|Linux/arm64)    c="$LIK/bin/linux/arm64/iproxy" ;;
-            Linux/*)                      c="$LIK/bin/linux/x86_64/iproxy" ;;
-        esac
-        if [ -x "$c" ]; then IPROXY="$c"; fi
-    fi
+    # The first iproxy that runs, PATH's then Legacy iOS Kit's: Homebrew's
+    # has been seen broken by a libplist upgrade under it ("Library not
+    # loaded: libplist-2.0.4.dylib", abort trap) -- brew reinstall libusbmuxd.
+    IPROXY=""
+    case "$(uname -s)/$(uname -m)" in
+        Darwin/*)                     lik="$LIK/bin/macos/iproxy" ;;
+        Linux/aarch64|Linux/arm64)    lik="$LIK/bin/linux/arm64/iproxy" ;;
+        *)                            lik="$LIK/bin/linux/x86_64/iproxy" ;;
+    esac
+    for c in "$(command -v iproxy || true)" "$lik"; do
+        [ -n "$c" ] && [ -x "$c" ] || continue
+        rc=$( { "$c" -h >/dev/null 2>&1; echo $?; } 2>/dev/null )
+        if [ "$rc" -lt 127 ]; then IPROXY="$c"; break; fi
+        echo "    $c does not run (exit $rc); trying the next one" >&2
+    done
     [ -n "$IPROXY" ] || fail "no iproxy: not on PATH and not in Legacy iOS Kit ($LIK).
-  macOS: brew install libimobiledevice     Or over Wi-Fi: IOS_HOST=<the iPad's IP>"
+  macOS: brew install libusbmuxd (or brew reinstall libusbmuxd if it is broken)
+  Or over Wi-Fi: IOS_HOST=<the iPad's IP>"
     echo "==> iOS over USB: $IPROXY $PORT 22"
     "$IPROXY" "$PORT" 22 >"$WORK/iproxy.log" 2>&1 &
     IPROXY_PID=$!
