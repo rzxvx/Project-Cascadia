@@ -50,8 +50,13 @@
 
 #define MAX_PACK_BOS    48
 
-/* our programs: the replace program, then one end-of-tile program a slot */
+/* our programs: the replace program (and after it, at ITER_PROG, the
+ * iterated-colour pixel program), then one end-of-tile program a slot */
 #define REPLACE_SIZE    0x40
+#define ITER_PROG       0x20
+/* the iterated-colour pixel program's PDS, in the EXT window after the
+ * white texture's block */
+#define EXT_ITER_PDS    0x100
 #define EOT_SLOT        0x80
 #define MAX_EOT         256
 #define CODE_BO_SIZE    (REPLACE_SIZE + MAX_EOT * EOT_SLOT)
@@ -81,6 +86,20 @@ static const char *tmpl_names[T_NUM] = {
 #define USSE_SOP2M_MOD     0x90807982a0000140ull   /* r = texel * vertex colour */
 #define USSE_SOP2_REPLACE  0x8184080190000000ull   /* o0 = pa0 * (1 - 0) + o0 * 0, end */
 #define USSE_MOV_O0_PA0    0x50850009a0000000ull   /* o0 = pa0, end (the pack's bg_reload) */
+#define USSE_PCK_O0_PA0    0x40850a3da01d8000ull   /* pck.u8.f16 o0, pa0 scale, end (iOS's) */
+
+/* The pixel side iOS's GL driver builds for gl_FragColor = v, a mediump
+ * vec4 varying (docs/research/p105-mesa.md, M11): a PDS program that
+ * starts the pixel program (doutu row 0) after iterating the varying into
+ * pa0..pa1 as F16 (07040c12: two registers, control word 3), and the
+ * control word: F16 (29:28 = 2), the last iterate (25), four components
+ * (23:22 = 3), varying 1 (15:12) -- the pack's vertex program writes
+ * (u, v) as varying 0, the colour as varying 1. */
+#define PDS_DOUTU_ROW0_ITER  0x070001b5u
+#define PDS_ITERATE_2REG_W3  0x07040c12u
+#define PDS_END              0xaf000000u
+#define ITERATE_F16_VEC4_V1  0x2fc0100fu
+#define ITER_TEMPS           6
 static const uint64_t usse_dummy_load[3] = {
    0x488b0281a00c0000ull, 0xe9a30084a0000000ull, 0xf920000000000000ull,
 };
@@ -122,6 +141,7 @@ struct sgx_frame {
    struct sgx_eot eot[MAX_EOT];
    unsigned neot, max_eot;
    uint32_t texblock;           /* the white texture's block, replace program */
+   uint32_t iter_pds;           /* the iterated-colour pixel program's PDS */
    struct sgx_fence *last;      /* the last render through the frame */
    char *dir;                   /* the pack: loaded again after a render hangs */
    uint64_t timeouts;           /* the kernel's count of renders that did */
@@ -136,6 +156,7 @@ sgx_frame_options(void)
       { "fb", SGX_FRAME_FB }, { "blend", SGX_FRAME_BLEND },
       { "screen", SGX_FRAME_SCREEN }, { "codebo", SGX_FRAME_CODEBO },
       { "sop2", SGX_FRAME_SOP2 }, { "align", SGX_FRAME_ALIGN },
+      { "packpixel", SGX_FRAME_PACKPIX },
    };
    static int opts = -1;
    const char *env = getenv("SGX_FRAME");
@@ -414,7 +435,11 @@ put_ours(struct sgx_frame *f)
    };
    uint32_t white[16], blk[16];
 
+   const uint64_t iterated[2] = { USSE_PHAS, USSE_PCK_O0_PA0 };
+   uint32_t iter_pds[8];
+
    memcpy(f->code_map, replace, sizeof(replace));
+   memcpy(f->code_map + ITER_PROG, iterated, sizeof(iterated));
    f->neot = 0;
    memset(white, 0xff, sizeof(white));
    memcpy(blk, f->tmpl + f->toff[T_TEX], f->tsize[T_TEX]);
@@ -423,8 +448,18 @@ put_ours(struct sgx_frame *f)
    blk[5] = 0x0c000000 | 2 << 16 | 2;
    blk[6] = f->heap;
    f->texblock = f->ext;
+   f->iter_pds = f->ext + EXT_ITER_PDS;
+   iter_pds[0] = doutu(f, f->code_va + ITER_PROG);
+   iter_pds[1] = ITER_TEMPS;
+   iter_pds[2] = 0;
+   iter_pds[3] = ITERATE_F16_VEC4_V1;
+   iter_pds[4] = PDS_DOUTU_ROW0_ITER;
+   iter_pds[5] = PDS_ITERATE_2REG_W3;
+   iter_pds[6] = PDS_END;
+   iter_pds[7] = 0;
    return put(f, f->heap, white, sizeof(white)) &&
-          put(f, f->texblock, blk, f->tsize[T_TEX]);
+          put(f, f->texblock, blk, f->tsize[T_TEX]) &&
+          put(f, f->iter_pds, iter_pds, sizeof(iter_pds));
 }
 
 struct sgx_frame *
@@ -565,6 +600,10 @@ sgx_frame_max_vertices(struct sgx_frame *f)
    return n - n % 3;
 }
 
+static int render(struct sgx_frame *f, struct sgx_resource *rt, const float *verts,
+                  unsigned nverts, bool iterated, struct sgx_fence *done);
+
+/* a clear: the pack's pixel side, as M12 proved it */
 int
 sgx_frame_clear(struct sgx_frame *f, struct sgx_resource *rt, const float rgba[4],
                 struct sgx_fence *done)
@@ -572,12 +611,19 @@ sgx_frame_clear(struct sgx_frame *f, struct sgx_resource *rt, const float rgba[4
    float verts[6 * VTX_FLOATS];
 
    quad(verts, rgba);
-   return sgx_frame_draw(f, rt, verts, 6, done);
+   return render(f, rt, verts, 6, false, done);
 }
 
 int
 sgx_frame_draw(struct sgx_frame *f, struct sgx_resource *rt, const float *verts,
                unsigned nverts, struct sgx_fence *done)
+{
+   return render(f, rt, verts, nverts, !(f->opts & SGX_FRAME_PACKPIX), done);
+}
+
+static int
+render(struct sgx_frame *f, struct sgx_resource *rt, const float *verts, unsigned nverts,
+       bool iterated, struct sgx_fence *done)
 {
    uint32_t vdm[32] = { 0 }, full[32], prog[16], fetch[32], bg[4], *v = vdm, *cmd;
    uint32_t frame = f->ext + EXT_FRAME, vb = f->ext + EXT_VB, d0, p0, fb, eot;
@@ -628,7 +674,8 @@ sgx_frame_draw(struct sgx_frame *f, struct sgx_resource *rt, const float *verts,
 
    /* draw 0: the whole state, the white texture with the replace program */
    memcpy(full, f->tmpl + f->toff[T_FULL], f->tsize[T_FULL]);
-   full[6] = p27(f->texblock);
+   /* the pixel program's PDS: tag (bits 31:27) its data size in rows */
+   full[6] = iterated ? 1u << 27 | (f->iter_pds >> 4 & 0x07ffffff) : p27(f->texblock);
    d0 = frame;
    memcpy(prog, f->tmpl + f->toff[T_FULLPROG], f->tsize[T_FULLPROG]);
    prog[0] = d0;
@@ -672,10 +719,15 @@ sgx_frame_draw(struct sgx_frame *f, struct sgx_resource *rt, const float *verts,
       else
          mesa_logi("sgx:   end of tile at 0x%08x (DOUTU 0x%08x) to 0x%08x, background "
                    "%08x %08x %08x %08x", eot, doutu(f, eot), to.va, bg[0], bg[1], bg[2], bg[3]);
-      mesa_logi("sgx:   pixel program: %s (texture block 0x%08x word 0 = 0x%08x)",
-                f->opts & SGX_FRAME_BLEND ? "the pack's" :
-                f->opts & SGX_FRAME_SOP2 ? "replace by SOP2" : "replace by MOV",
-                f->texblock, *(uint32_t *)cpu_at(f, f->texblock, 4, NULL));
+      if (iterated)
+         mesa_logi("sgx:   pixel program: the colour iterated as F16 and packed (iOS's); "
+                   "its PDS at 0x%08x (state word 6 0x%08x), the program at 0x%08x",
+                   f->iter_pds, full[6], f->code_va + ITER_PROG);
+      else
+         mesa_logi("sgx:   pixel program: %s (texture block 0x%08x word 0 = 0x%08x)",
+                   f->opts & SGX_FRAME_BLEND ? "the pack's" :
+                   f->opts & SGX_FRAME_SOP2 ? "replace by SOP2" : "replace by MOV",
+                   f->texblock, *(uint32_t *)cpu_at(f, f->texblock, 4, NULL));
       mesa_logi("sgx:   state 0x%08x, its program 0x%08x, vertex fetch 0x%08x, vertices 0x%08x",
                 d0, p0, fb, vb);
       for (i = 0; i < (unsigned)(v - vdm); i += 5)

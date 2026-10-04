@@ -725,6 +725,20 @@ the right colour (`SGX_DEBUG_DRAW=1`). Varyings have to be looked up the
 way `nir_to_tgsi` names the vertex shader's outputs (`VARn` is `GENERIC n`,
 not shifted by 9 as `tgsi_get_gl_varying_semantic` has it).
 
+First run on the iPad (2026-10-04): the triangles are where they should be
+(the turned yellow one exactly; the colour-per-vertex one's blue channel is
+the true barycentric to the last bit), but the pack's pixel side gets
+colours that vary across a triangle wrong -- each pixel's red + green right,
+the two mixed -- and a strip in a uniform's colour did not show. sgx2d only
+ever drew one colour per quad, so this was never tried. Draws now use the
+pixel side iOS builds for `gl_FragColor = v` (the corpus's `v00_vec4`): a
+PDS program `{doutu, temps 6, 0, 0x2fc0100f}` / `070001b5 07040c12
+af000000` (iterate varying 1, the pack's colour, as F16 into pa0..pa1) and
+the pixel program `PHAS; pck.u8.f16 o0, pa0 scale` (`40850a3da01d8000`),
+the state's word 6 `1 << 27 | va >> 4` (one data row); clears keep the
+pack's, and `SGX_FRAME=packpixel` puts draws back on it. `gltri --ppm FILE`
+saves what it read back.
+
 ## M14: textures, blending, depth and the rest of GLES 2.0's state
 
 Every GLES 2.0 texture format (RGBA8, RGB565, RGBA4444, RGBA5551, L8, A8, LA8,

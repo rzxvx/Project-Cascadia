@@ -9,12 +9,13 @@
  *   3. a triangle turned a quarter round by the vertex shader (a uniform
  *      mat2), in a constant colour.
  *
- *   sgx-gl gltri [--fb]
+ *   sgx-gl gltri [--fb] [--ppm FILE]
  *
  * The vertex shaders run on the CPU (the draw module) and the triangles are
  * drawn by the GPU through the template frame; with --fb the result is
- * also copied to /dev/fb0 (echo 0 > .../vtcon1/bind first).  Exit status 0
- * when every check passed.
+ * also copied to /dev/fb0 (echo 0 > .../vtcon1/bind first), with --ppm
+ * written to FILE as a PPM image (top row first, as it should look).  Exit
+ * status 0 when every check passed.
  */
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
@@ -148,12 +149,23 @@ int main(int argc, char **argv)
 	static const float turn[4] = { 0, 1, -1, 0 };    /* column-major: (x, y) -> (-y, x) */
 	PFNEGLGETPLATFORMDISPLAYEXTPROC get_display;
 	EGLint ctx_attrs[] = { EGL_CONTEXT_CLIENT_VERSION, 2, EGL_NONE };
-	int to_fb = argc > 1 && !strcmp(argv[1], "--fb");
+	const char *ppm = NULL;
+	int to_fb = 0;
 	EGLDisplay dpy;
 	EGLContext ctx;
 	GLuint tex, fbo, p1, p2, p3;
 	double t0, t[3];
 
+	for (int i = 1; i < argc; i++) {
+		if (!strcmp(argv[i], "--fb"))
+			to_fb = 1;
+		else if (!strcmp(argv[i], "--ppm") && i + 1 < argc)
+			ppm = argv[++i];
+		else {
+			fprintf(stderr, "usage: gltri [--fb] [--ppm FILE]\n");
+			return 2;
+		}
+	}
 	get_display = (PFNEGLGETPLATFORMDISPLAYEXTPROC)eglGetProcAddress("eglGetPlatformDisplayEXT");
 	if (!get_display)
 		return fail("no eglGetPlatformDisplayEXT");
@@ -234,6 +246,18 @@ int main(int argc, char **argv)
 
 	printf("%d of %d checks right\n", checks - bad, checks);
 
+	if (ppm) {
+		FILE *fp = fopen(ppm, "wb");
+
+		if (!fp)
+			return fail("cannot write the PPM file");
+		fprintf(fp, "P6\n%d %d\n255\n", W, H);
+		for (int y = H - 1; y >= 0; y--)
+			for (int x = 0; x < W; x++)
+				fwrite(px + (y * W + x) * 4, 1, 3, fp);
+		fclose(fp);
+		printf("the last read-back: %s\n", ppm);
+	}
 	if (to_fb) {
 		int fd = open("/dev/fb0", O_WRONLY);
 		uint8_t *row = malloc(W * 4);

@@ -31,6 +31,7 @@ enum {
    SGX_FRAME_CODEBO = 1 << 3, /* "codebo": our programs in a buffer of their own */
    SGX_FRAME_SOP2 = 1 << 4,   /* "sop2": replace by SOP2 (cmod1, amod1), not MOV */
    SGX_FRAME_ALIGN = 1 << 5,  /* "align": render targets at 1 MiB-aligned addresses */
+   SGX_FRAME_PACKPIX = 1 << 6, /* "packpixel": draws through the pack's pixel side too */
 };
 unsigned sgx_frame_options(void);
 
@@ -52,7 +53,11 @@ int sgx_frame_clear(struct sgx_frame *f, struct sgx_resource *rt, const float rg
  * pixels): nverts vertices, three a triangle, eight floats each -- r g b a
  * (the colour, interpolated between the vertices), u v (unused), x y in
  * [-1, 1] over the whole target, -1 being its first row and column.  As
- * many vertices as sgx_frame_max_vertices() a render. */
+ * many vertices as sgx_frame_max_vertices() a render.  The pixels are
+ * coloured the way iOS's GL driver does it for gl_FragColor = v (the
+ * corpus's v00_vec4): the colour iterated as F16 into pa0..pa1, packed to
+ * o0; the pack's pixel side (texel x colour, SGX_FRAME=packpixel) gets
+ * colours that vary across a triangle wrong. */
 #define SGX_FRAME_VERTEX_FLOATS 8
 int sgx_frame_draw(struct sgx_frame *f, struct sgx_resource *rt, const float *verts,
                    unsigned nverts, struct sgx_fence *done);
