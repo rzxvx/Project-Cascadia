@@ -5,8 +5,9 @@
  * The template frame (docs/research/p105-mesa.md, M12): until the driver
  * builds renders of its own, it borrows sgx2d's pack (tools/sgx/rpack.py)
  * -- iOS's render target data for the full screen, the state blocks and
- * USSE programs of a textured quad -- and draws one full-screen quad with
- * it.  That is enough for a clear.
+ * USSE programs of a textured quad -- and draws triangles with it, each
+ * pixel the colour interpolated between the vertices (texel x colour with a
+ * white texture).  That is enough for a clear, and for M13a's draws.
  */
 #ifndef SGX_FRAME_H
 #define SGX_FRAME_H
@@ -46,5 +47,15 @@ bool sgx_frame_can_render(struct sgx_frame *f, struct sgx_resource *rt);
  * One render at a time: the caller serialises (sgx_screen.frame_lock). */
 int sgx_frame_clear(struct sgx_frame *f, struct sgx_resource *rt, const float rgba[4],
                     struct sgx_fence *done);
+
+/* Triangles into rt, over what it holds (each tile starts as the target's
+ * pixels): nverts vertices, three a triangle, eight floats each -- r g b a
+ * (the colour, interpolated between the vertices), u v (unused), x y in
+ * [-1, 1] over the whole target, -1 being its first row and column.  As
+ * many vertices as sgx_frame_max_vertices() a render. */
+#define SGX_FRAME_VERTEX_FLOATS 8
+int sgx_frame_draw(struct sgx_frame *f, struct sgx_resource *rt, const float *verts,
+                   unsigned nverts, struct sgx_fence *done);
+unsigned sgx_frame_max_vertices(struct sgx_frame *f);
 
 #endif

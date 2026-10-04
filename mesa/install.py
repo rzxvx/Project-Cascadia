@@ -10,7 +10,7 @@
     mesa/install.py --root [DIR]       into a root filesystem tree
 
 Installs /usr/local/lib/sgx-mesa (libEGL, libGLESv2, libgbm, libgallium,
-glclear) and /usr/local/bin/sgx-gl, which runs a program with this Mesa
+glclear, gltri) and /usr/local/bin/sgx-gl, which runs a program with this Mesa
 instead of the system's.  Where things go is decided as tools/sgx/mkpack.py
 decides it for SuperTux, with its helpers.
 """
@@ -81,6 +81,7 @@ def auto():
              '  (./cascadia nfs on).  Or name one: --install HOST / --root DIR.'
              % (mkpack.DEVICE, root))
     print('\nOn the iPad: sgx-gl glclear 100      (sgx-gl glclear 1 --fb to see it)')
+    print('             sgx-gl gltri          (sgx-gl gltri --fb to see it)')
 
 
 def main():

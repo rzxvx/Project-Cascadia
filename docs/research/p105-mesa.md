@@ -705,6 +705,26 @@ decoder), a register allocator over the USSE's banks, and `programs.py`'s 16
 programs as the first unit tests: assembled byte-identical to iOS's. Done
 when `es2gears` turns.
 
+**M13a: the first triangles (2026-10-04).** Before the compiler, a way to
+draw at all, the way i915 has always drawn: the vertex shader runs on the
+CPU, in Gallium's draw module (NIR to TGSI, `tgsi_exec`), which also clips,
+culls and turns strips, fans, lines and points into triangles; the
+triangles go to the GPU through the template frame (`sgx_frame_draw`: up to
+8190 vertices a render, `r g b a u v x y` each, the draw word `0x81c00000 |
+count`), whose programs colour each pixel by interpolating between the
+vertices. The fragment shader is not run but read (`sgx_draw.c`): when its
+colour is, channel by channel, a constant or a component of a varying or a
+uniform, that colour is worked out per vertex -- `gl_FragColor = v`,
+`vec4(v.rgb, 1.0)`, `= u` are drawn right, anything else in grey. Each
+draw is a render, over what the target holds; screen-sized B8G8R8A8 targets
+only, no depth, blending or textures. `tools/sgx/gl/gltri.c` checks three
+draws (a triangle with a colour per vertex, a strip in a uniform's colour,
+a triangle turned by a `mat2` in the vertex shader); on the host, through
+drm-shim, every vertex comes out of the draw module where it should and in
+the right colour (`SGX_DEBUG_DRAW=1`). Varyings have to be looked up the
+way `nir_to_tgsi` names the vertex shader's outputs (`VARn` is `GENERIC n`,
+not shifted by 9 as `tgsi_get_gl_varying_semantic` has it).
+
 ## M14: textures, blending, depth and the rest of GLES 2.0's state
 
 Every GLES 2.0 texture format (RGBA8, RGB565, RGBA4444, RGBA5551, L8, A8, LA8,

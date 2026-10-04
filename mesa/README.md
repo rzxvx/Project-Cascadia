@@ -2,18 +2,23 @@
 
 A Gallium driver for the iPad mini's GPU, built into Mesa 26.1.8 for the
 device. The plan and the state of it: [docs/research/p105-mesa.md](../docs/research/p105-mesa.md)
-(M12 on). It runs OpenGL ES 2.0 programs today, but only clears reach the
-GPU (`sgx-gl glclear 100`: every pixel right, ~60 ms a clear with its
-read-back): there is no shader compiler yet, so draws are dropped. It needs
-a kernel from 2026-10-04 or later (the render node's workarounds for the
-microkernel, M12 in the doc).
+(M12 on). It runs OpenGL ES 2.0 programs: clears on the GPU (`sgx-gl
+glclear 100`: every pixel right, ~60 ms a clear with its read-back), and
+draws the M13a way -- the vertex shader on the CPU (Gallium's draw module),
+the triangles on the GPU through the template frame, the pixels in a
+colour interpolated between the vertices. So a fragment shader whose colour
+is a varying, constants or uniforms is drawn right and others in grey
+(`sgx-gl gltri`); there is no shader compiler for the GPU yet. Only
+screen-sized render targets are drawn into, without depth, blending or
+textures. It needs a kernel from 2026-10-04 or later (the render node's
+workarounds for the microkernel, M12 in the doc).
 
 | path | what |
 |---|---|
 | `files/` | new files, copied verbatim into the Mesa tree: the driver (`src/gallium/drivers/sgx`), its winsys (`src/gallium/winsys/sgx/drm`), the render node's interface (`include/drm-uapi/apple_sgx_drm.h`, a copy of the kernel's) |
 | `mesa.patch` | the lines that register the driver with Mesa (meson option, subdirectories, DRM driver descriptor, pipe loader, dril) |
 | `fetch.sh` | Mesa at the pinned tag into `build/mesa/src`, on the host (git under emulation is far too slow) |
-| `build.sh` | put the driver in, configure, build, install, build `glclear` — inside the `cascadia-mesa` image |
+| `build.sh` | put the driver in, configure, build, install, build `glclear` and `gltri` — inside the `cascadia-mesa` image |
 | `Dockerfile` | that image: Alpine 3.24 armv7 with Mesa's build tools |
 | `install.py` | onto the iPad, over ssh or into the NFS root, as `tools/sgx/mkpack.py` does it |
 | `sgx-gl` | on the device: run a program with this Mesa instead of the system's |
@@ -45,6 +50,8 @@ On the iPad:
 sgx-gl glclear                   # one clear, read back and checked
 sgx-gl glclear 100               # timing
 SGX_DEBUG=frame sgx-gl glclear   # every word a clear sets
+sgx-gl gltri                     # three draws, read back and checked (--fb to see them)
+SGX_DEBUG_DRAW=1 sgx-gl gltri    # the triangles each draw hands the GPU
 sgx-gl frame-bisect              # one clear through every SGX_FRAME variant (docs, M12)
 ```
 
@@ -52,7 +59,7 @@ sgx-gl frame-bisect              # one clear through every SGX_FRAME variant (do
 
 Mesa's drm-shim pretends to be the render node, so the driver can be run on
 any Linux machine (renders do nothing there, so only CPU clears come back
-right):
+right; draws can be followed with SGX_DEBUG_DRAW=1):
 
 ```bash
 meson setup build -Dgallium-drivers=sgx -Dtools=drm-shim -Dplatforms= -Dglx=disabled \

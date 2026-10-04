@@ -46,7 +46,7 @@
 #define EXT_TEX_END     0x280000
 #define EXT_VB          0x280000
 #define EXT_FRAME       0x3c0000
-#define VTX_FLOATS      8               /* r g b a u v x y */
+#define VTX_FLOATS      SGX_FRAME_VERTEX_FLOATS  /* r g b a u v x y */
 
 #define MAX_PACK_BOS    48
 
@@ -106,7 +106,7 @@ struct sgx_frame {
 
    uint32_t kick[3];            /* PB descriptor, render details, TA command */
    uint32_t w, h;
-   uint32_t consts0, idx, vdm, vdm_size, ext, ext_size, heap, heap_size, pds;
+   uint32_t consts0, idx, idx_count, vdm, vdm_size, ext, ext_size, heap, heap_size, pds;
    uint32_t fetch_tag, fetch_word;
    uint32_t tail[8];
    unsigned ntail;
@@ -322,8 +322,10 @@ load_pack(struct sgx_frame *f, const char *dir)
          f->h = atoi(b);
       } else if (!strcmp(key, "consts0"))
          f->consts0 = strtoul(a, 0, 0);
-      else if (!strcmp(key, "idx"))
+      else if (!strcmp(key, "idx")) {
          f->idx = strtoul(a, 0, 0);
+         f->idx_count = n == 3 ? strtoul(b, 0, 0) : 6;   /* indices 0, 1, ... */
+      }
       else if (!strcmp(key, "vdm")) {
          f->vdm = strtoul(a, 0, 0);
          f->vdm_size = strtoul(b, 0, 0);
@@ -555,23 +557,41 @@ quad(float *v, const float rgba[4])
    }
 }
 
+unsigned
+sgx_frame_max_vertices(struct sgx_frame *f)
+{
+   unsigned n = MIN2(f->idx_count, (EXT_FRAME - EXT_VB) / (VTX_FLOATS * sizeof(float)));
+
+   return n - n % 3;
+}
+
 int
 sgx_frame_clear(struct sgx_frame *f, struct sgx_resource *rt, const float rgba[4],
                 struct sgx_fence *done)
+{
+   float verts[6 * VTX_FLOATS];
+
+   quad(verts, rgba);
+   return sgx_frame_draw(f, rt, verts, 6, done);
+}
+
+int
+sgx_frame_draw(struct sgx_frame *f, struct sgx_resource *rt, const float *verts,
+               unsigned nverts, struct sgx_fence *done)
 {
    uint32_t vdm[32] = { 0 }, full[32], prog[16], fetch[32], bg[4], *v = vdm, *cmd;
    uint32_t frame = f->ext + EXT_FRAME, vb = f->ext + EXT_VB, d0, p0, fb, eot;
    struct sgx_eot to = {
       .va = rt->bo->va, .w = f->w, .h = f->h, .stride = rt->stride[0],
    };
-   float verts[6 * VTX_FLOATS];
    unsigned det_bo, i;
    uint64_t timeouts;
    uint8_t *det;
    int ret;
 
    if (!sgx_frame_can_render(f, rt) || f->tsize[T_FULL] > (int)sizeof(full) ||
-       f->tsize[T_FULLPROG] > (int)sizeof(prog) || f->tsize[T_FETCH] > (int)sizeof(fetch))
+       f->tsize[T_FULLPROG] > (int)sizeof(prog) || f->tsize[T_FETCH] > (int)sizeof(fetch) ||
+       !nverts || nverts % 3 || nverts > sgx_frame_max_vertices(f))
       return -EINVAL;
 
    /* the frame's buffers are the last render's until it is done */
@@ -618,14 +638,15 @@ sgx_frame_clear(struct sgx_frame *f, struct sgx_resource *rt, const float rgba[4
    fetch[4] = vb + 16;          /* u v */
    fetch[8] = vb + 24;          /* x y */
    fb = (p0 + f->tsize[T_FULLPROG] + 0x3f) & ~0x3fu;
-   quad(verts, rgba);
    if (!put(f, d0, full, f->tsize[T_FULL]) || !put(f, p0, prog, f->tsize[T_FULLPROG]) ||
-       !put(f, fb, fetch, f->tsize[T_FETCH]) || !put(f, vb, verts, sizeof(verts)))
+       !put(f, fb, fetch, f->tsize[T_FETCH]) ||
+       !put(f, vb, verts, nverts * VTX_FLOATS * sizeof(float)))
       return -EFAULT;
 
+   /* the draw: index count, the index buffer (0, 1, 2, ...) */
    *v++ = vdm4(4, f->consts0); *v++ = 0x1000e102;
    *v++ = vdm4(4, p0);         *v++ = 0x12022206;
-   *v++ = 0x81c00006;          *v++ = f->idx; *v++ = 0x70000000; *v++ = 0x003fffff;
+   *v++ = 0x81c00000 | nverts; *v++ = f->idx; *v++ = 0x70000000; *v++ = 0x003fffff;
    *v++ = vdm4(f->fetch_tag, fb); *v++ = f->fetch_word;
    for (i = 0; i < f->ntail; i++)
       *v++ = f->tail[i];
@@ -640,8 +661,9 @@ sgx_frame_clear(struct sgx_frame *f, struct sgx_resource *rt, const float rgba[4
    f->handles[f->nhandles] = rt->bo->handle;
 
    if (f->debug) {
-      mesa_logi("sgx: clear %ux%u at 0x%08x (stride %u) to %.3f %.3f %.3f %.3f", f->w, f->h,
-                rt->bo->va, rt->stride[0], rgba[0], rgba[1], rgba[2], rgba[3]);
+      mesa_logi("sgx: %u vertices into %ux%u at 0x%08x (stride %u); the first's colour "
+                "%.3f %.3f %.3f %.3f, position %.3f %.3f", nverts, f->w, f->h, rt->bo->va,
+                rt->stride[0], verts[0], verts[1], verts[2], verts[3], verts[6], verts[7]);
       mesa_logi("sgx:   SGX_FRAME=%s; our programs at 0x%08x (%s)",
                 getenv("SGX_FRAME") ? getenv("SGX_FRAME") : "", f->code_va,
                 f->code ? "a buffer of their own" : "the pack's code page");

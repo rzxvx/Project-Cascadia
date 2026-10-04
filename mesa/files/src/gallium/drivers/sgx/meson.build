@@ -6,6 +6,8 @@ files_sgx = files(
   'sgx_context.h',
   'sgx_device.c',
   'sgx_device.h',
+  'sgx_draw.c',
+  'sgx_draw.h',
   'sgx_frame.c',
   'sgx_frame.h',
   'sgx_resource.c',

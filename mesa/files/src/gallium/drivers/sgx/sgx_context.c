@@ -2,18 +2,21 @@
  * Copyright 2026 Project Cascadia
  * SPDX-License-Identifier: MIT
  *
- * The context.  State is kept and not used yet: nothing draws until the
- * compiler exists (docs/research/p105-mesa.md, M13).  A clear of a whole
- * render target the template frame can render into is a render on the GPU;
- * every other clear, copy and blit is done by the CPU through the buffers'
- * mappings, which wait for the renders using them.
+ * The context.  Draws go through sgx_draw.c (M13a: vertex shaders on the
+ * CPU in the draw module, triangles on the GPU through the template frame),
+ * which is handed the state it uses; the rest is kept for later.  A clear
+ * of a whole render target the template frame can render into is a render
+ * on the GPU; every other clear, copy and blit is done by the CPU through
+ * the buffers' mappings, which wait for the renders using them.
  */
 #include "sgx_context.h"
 
 #include "compiler/nir/nir.h"
+#include "draw/draw_context.h"
 #include "util/log.h"
 #include "util/os_time.h"
 #include "util/ralloc.h"
+#include "util/u_debug.h"
 #include "util/u_framebuffer.h"
 #include "util/u_helpers.h"
 #include "util/u_inlines.h"
@@ -22,6 +25,7 @@
 #include "util/u_upload_mgr.h"
 
 #include "sgx_device.h"
+#include "sgx_draw.h"
 #include "sgx_frame.h"
 #include "sgx_resource.h"
 #include "sgx_screen.h"
@@ -153,20 +157,6 @@ sgx_flush_resource(struct pipe_context *pctx, struct pipe_resource *prsc)
 {
 }
 
-/* ---- draws -------------------------------------------------------------- */
-
-static void
-sgx_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info,
-             unsigned drawid_offset, const struct pipe_draw_indirect_info *indirect,
-             const struct pipe_draw_start_count_bias *draws, unsigned num_draws)
-{
-   struct sgx_context *ctx = sgx_context(pctx);
-
-   if (!ctx->warned_draw)
-      mesa_logw("sgx: draws are not done yet (no shader compiler): dropped");
-   ctx->warned_draw = true;
-}
-
 /* ---- state, kept for later ---------------------------------------------- */
 
 static void *
@@ -208,30 +198,94 @@ static void *
 sgx_create_vertex_elements(struct pipe_context *pctx, unsigned count,
                            const struct pipe_vertex_element *e)
 {
-   return sgx_create_copy(e, count * sizeof(*e));
+   struct sgx_vertex_elements *ve = CALLOC_STRUCT(sgx_vertex_elements);
+
+   if (!ve)
+      return NULL;
+   ve->count = MIN2(count, PIPE_MAX_ATTRIBS);
+   memcpy(ve->e, e, ve->count * sizeof(*e));
+   return ve;
 }
 
+static void
+sgx_bind_vertex_elements(struct pipe_context *pctx, void *state)
+{
+   struct sgx_vertex_elements *ve = state;
+
+   if (ve)
+      draw_set_vertex_elements(sgx_context(pctx)->draw, ve->count, ve->e);
+}
+
+/* The state tracker hands over its NIR, which the shader keeps (the
+ * compiler, M13, will take it from there).  For now a vertex shader also
+ * goes to the draw module, which runs it on the CPU (a copy: it is turned
+ * into TGSI and freed), and a fragment shader's colour is read off it. */
 static void *
 sgx_create_shader_state(struct pipe_context *pctx, const struct pipe_shader_state *s)
 {
+   struct sgx_context *ctx = sgx_context(pctx);
    struct sgx_shader *sh = CALLOC_STRUCT(sgx_shader);
 
    if (!sh)
       return NULL;
-   /* the state tracker hands over its NIR; the compiler (M13) will take
-    * it from here */
-   if (s->type == PIPE_SHADER_IR_NIR)
-      sh->nir = s->ir.nir;
+   if (s->type != PIPE_SHADER_IR_NIR)
+      return sh;
+   sh->nir = s->ir.nir;
+   if (sh->nir->info.stage == MESA_SHADER_VERTEX && ctx->draw) {
+      struct pipe_shader_state copy = *s;
+
+      copy.ir.nir = nir_shader_clone(NULL, sh->nir);
+      sh->draw = draw_create_vertex_shader(ctx->draw, &copy);
+      if (!sh->draw)
+         mesa_logw("sgx: the draw module did not take a vertex shader");
+   } else if (sh->nir->info.stage == MESA_SHADER_FRAGMENT) {
+      sgx_fs_colour_analyse(sh->nir, &sh->colour);
+   }
    return sh;
 }
 
 static void
 sgx_delete_shader_state(struct pipe_context *pctx, void *state)
 {
+   struct sgx_context *ctx = sgx_context(pctx);
    struct sgx_shader *sh = state;
 
+   if (ctx->vs == sh) {
+      ctx->vs = NULL;
+      if (ctx->draw)
+         draw_bind_vertex_shader(ctx->draw, NULL);
+   }
+   if (sh->draw)
+      draw_delete_vertex_shader(ctx->draw, sh->draw);
+   if (ctx->fs == sh)
+      ctx->fs = NULL;
    ralloc_free(sh->nir);
    FREE(sh);
+}
+
+static void
+sgx_bind_vs_state(struct pipe_context *pctx, void *state)
+{
+   struct sgx_context *ctx = sgx_context(pctx);
+
+   ctx->vs = state;
+   if (ctx->draw)
+      draw_bind_vertex_shader(ctx->draw, ctx->vs ? ctx->vs->draw : NULL);
+}
+
+static void
+sgx_bind_fs_state(struct pipe_context *pctx, void *state)
+{
+   sgx_context(pctx)->fs = state;
+}
+
+static void
+sgx_bind_rs_state(struct pipe_context *pctx, void *state)
+{
+   struct sgx_context *ctx = sgx_context(pctx);
+
+   if (ctx->draw && state)
+      draw_set_rasterizer_state(ctx->draw, state, state);
 }
 
 static void
@@ -296,12 +350,21 @@ sgx_set_blend_color(struct pipe_context *pctx, const struct pipe_blend_color *c)
 static void
 sgx_set_clip_state(struct pipe_context *pctx, const struct pipe_clip_state *c)
 {
+   struct sgx_context *ctx = sgx_context(pctx);
+
+   if (ctx->draw)
+      draw_set_clip_state(ctx->draw, c);
 }
 
+/* buffer 0 of the vertex and the fragment shader: read at draw time */
 static void
 sgx_set_constant_buffer(struct pipe_context *pctx, mesa_shader_stage shader,
                         uint index, const struct pipe_constant_buffer *cb)
 {
+   struct sgx_context *ctx = sgx_context(pctx);
+
+   if (index == 0 && (shader == MESA_SHADER_VERTEX || shader == MESA_SHADER_FRAGMENT))
+      util_copy_constant_buffer(&ctx->cb[shader == MESA_SHADER_FRAGMENT], cb);
 }
 
 static void
@@ -329,6 +392,10 @@ static void
 sgx_set_viewport_states(struct pipe_context *pctx, unsigned start, unsigned count,
                         const struct pipe_viewport_state *v)
 {
+   struct sgx_context *ctx = sgx_context(pctx);
+
+   if (ctx->draw)
+      draw_set_viewport_states(ctx->draw, start, count, v);
 }
 
 static void
@@ -337,7 +404,10 @@ sgx_set_vertex_buffers(struct pipe_context *pctx, unsigned count,
 {
    struct sgx_context *ctx = sgx_context(pctx);
 
-   /* takes over the references the state tracker hands in */
+   /* the draw module takes references of its own; then ours takes over the
+    * ones the state tracker hands in */
+   if (ctx->draw)
+      draw_set_vertex_buffers(ctx->draw, count, buffers);
    util_set_vertex_buffers_mask(ctx->vb, &ctx->vb_mask, buffers, count);
 }
 
@@ -364,8 +434,11 @@ sgx_context_destroy(struct pipe_context *pctx)
 {
    struct sgx_context *ctx = sgx_context(pctx);
 
+   sgx_draw_fini(ctx);
    util_unreference_framebuffer_state(&ctx->fb);
    util_set_vertex_buffers_mask(ctx->vb, &ctx->vb_mask, NULL, 0);
+   for (unsigned i = 0; i < ARRAY_SIZE(ctx->cb); i++)
+      pipe_resource_reference(&ctx->cb[i].buffer, NULL);
    if (pctx->stream_uploader)
       u_upload_destroy(pctx->stream_uploader);
    sgx_fence_reference(&ctx->last, NULL);
@@ -397,9 +470,11 @@ sgx_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
    p->blit = sgx_blit;
    p->flush_resource = sgx_flush_resource;
    p->draw_vbo = sgx_draw_vbo;
+   ctx->debug_draw = debug_get_bool_option("SGX_DEBUG_DRAW", false);
    p->texture_barrier = sgx_texture_barrier;
    p->memory_barrier = sgx_memory_barrier;
    p->get_device_reset_status = sgx_get_device_reset_status;
+   p->resource_release = u_default_resource_release;
 
    p->create_blend_state = sgx_create_blend_state;
    p->bind_blend_state = sgx_bind_state;
@@ -408,19 +483,19 @@ sgx_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
    p->bind_depth_stencil_alpha_state = sgx_bind_state;
    p->delete_depth_stencil_alpha_state = sgx_delete_state;
    p->create_rasterizer_state = sgx_create_rs_state;
-   p->bind_rasterizer_state = sgx_bind_state;
+   p->bind_rasterizer_state = sgx_bind_rs_state;
    p->delete_rasterizer_state = sgx_delete_state;
    p->create_sampler_state = sgx_create_sampler_state;
    p->bind_sampler_states = sgx_bind_sampler_states;
    p->delete_sampler_state = sgx_delete_state;
    p->create_vertex_elements_state = sgx_create_vertex_elements;
-   p->bind_vertex_elements_state = sgx_bind_state;
+   p->bind_vertex_elements_state = sgx_bind_vertex_elements;
    p->delete_vertex_elements_state = sgx_delete_state;
    p->create_vs_state = sgx_create_shader_state;
-   p->bind_vs_state = sgx_bind_state;
+   p->bind_vs_state = sgx_bind_vs_state;
    p->delete_vs_state = sgx_delete_shader_state;
    p->create_fs_state = sgx_create_shader_state;
-   p->bind_fs_state = sgx_bind_state;
+   p->bind_fs_state = sgx_bind_fs_state;
    p->delete_fs_state = sgx_delete_shader_state;
    p->create_sampler_view = sgx_create_sampler_view;
    p->sampler_view_destroy = sgx_sampler_view_destroy;
@@ -437,6 +512,10 @@ sgx_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
    p->set_viewport_states = sgx_set_viewport_states;
    p->set_vertex_buffers = sgx_set_vertex_buffers;
    sgx_resource_context_init(p);
+
+   /* after the hooks: the draw module looks at them */
+   if (!sgx_draw_init(ctx))
+      mesa_logw("sgx: no draw module: draws are dropped");
 
    p->stream_uploader = u_upload_create_default(p);
    if (!p->stream_uploader) {

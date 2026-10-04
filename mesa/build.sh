@@ -4,7 +4,7 @@
 # Runs inside the cascadia-mesa image (mesa/Dockerfile), which ./cascadia
 # mesa builds and starts with this repository at /cascadia.  The result is
 # build/mesa/install/usr/local/lib/sgx-mesa: libEGL, libGLESv2, libgbm and
-# libgallium with only the sgx driver in it, glclear, sgx-gl.
+# libgallium with only the sgx driver in it, glclear, gltri, sgx-gl.
 #
 # Mesa itself is fetched on the host beforehand (mesa/fetch.sh, which
 # ./cascadia mesa runs first: git under emulation is far too slow); this
@@ -78,7 +78,9 @@ DESTDIR="$B/install" ninja -C "$B/build" install >/dev/null
 
 I=$B/install$PREFIX
 mkdir -p "$I/bin"
-cc -O2 -Wall -I"$I/include" "$ROOT/tools/sgx/gl/glclear.c" -L"$I/lib" -lEGL -lGLESv2 \
-    -Wl,-rpath-link,"$I/lib" -Wl,-rpath,"$PREFIX/lib" -o "$I/bin/glclear"
+for t in glclear gltri; do
+    cc -O2 -Wall -I"$I/include" "$ROOT/tools/sgx/gl/$t.c" -L"$I/lib" -lEGL -lGLESv2 -lm \
+        -Wl,-rpath-link,"$I/lib" -Wl,-rpath,"$PREFIX/lib" -o "$I/bin/$t"
+done
 cp "$ROOT/mesa/sgx-gl" "$ROOT/mesa/frame-bisect" "$I/bin/"
 say "built: build/mesa/install$PREFIX"
