@@ -9,16 +9,19 @@ driver made for it, disassembled, and the other bytes the draw changed.
       --own    also only the programs found in at most 5 cases: the
                shader's own, not the driver's per-draw ones
       --list   a line per program: where, how long, the opening mnemonics
+      --catalog  every case's programs by kind, words and disassembly only
 
 DIR holds log.txt (gltrace corpus's output, which gives the order the
 cases ran in), baseline.pages (every page of the GL driver's GPU buffers
 that was not zero before the first case) and NAME.pages per case (the pages
 its draw changed), each a run of {u32 CPU address, 4096 bytes}.  Memory is
 rebuilt case by case, so a case's bytes are exactly the ones its draw
-changed; a program is a PHAS and the instructions after it up to the next
-PHAS or a zero word (bit 50, the end flag, marked <end>).  Fragment programs
-open with the driver's preamble (VTST, VLDST: the load that never happens),
-which marks them.
+changed; a program is a PHAS and the instructions after it up to the one
+that ends it (bit 50 on VBW, VPCK, VMOV, SOP2, LIMM, NOP and the emits).
+The GL driver splits a shader: a vertex program (ends with the vertex
+emit), a pixel program (ends writing o0), and a secondary program run once
+per draw (its preamble VTST, VLDST) that does the arithmetic that only
+depends on uniforms, into a secondary attribute the pixel program reads.
 """
 import importlib.util, os, re, struct, sys
 
@@ -71,24 +74,51 @@ def is_phas(w):
     return w >> 48 == 0xfa44
 
 
+# Bit 50 ends a program on these (the layouts' 'e' there, or the special
+# instructions'); on V*NMAD, VMAD2, VTST, VCOMP, SMLSI it is another field
+# (a swizzle bit and the like) -- the first corpus run has V16NMADs with it
+# set in the middle of programs.
+END_AT_50 = {'VBW', 'SOP2', 'SOP2M', 'SOP3', 'VPCK', 'VMOV', 'LIMM', 'NOP', 'SPEC'}
+EMIT_VERTEX = 0xfb275000a0200000
+
+
+def ends(w, name):
+    return name in END_AT_50 and bool(w & END)
+
+
 def program_at(b, o):
-    """the instructions from the PHAS at O up to the next PHAS, a zero word
-    or one that does not decode -- not to the end flag, which the driver's
-    own preambles have been seen to carry mid-program (corpus 0 will say)"""
+    """the instructions from the PHAS at O to the one that ends the program;
+    None if the run breaks first (the driver writes programs over older
+    ones, so what follows the end is often the rest of an older one)"""
     out = []
     while o + 8 <= len(b) and len(out) < MAX_PROGRAM:
         w = word(b, o)
         name, _ = ud.decode(w)
         if not w or not name or name.startswith('ILLEGAL') or (out and is_phas(w)):
-            break
+            return None
         out.append((w, name))
+        if len(out) > 1 and ends(w, name):
+            return out
         o += 8
-    return out if len(out) > 1 else None
+    return None
 
 
 def kind(prog):
-    names = [n for _, n in prog[:6]]
-    return 'fragment' if 'VTST' in names and 'VLDST' in names else 'other'
+    """vertex (ends emitting the vertex), secondary (the driver's per-draw
+    program: its preamble, VTST VLDST -- uniform-only arithmetic goes here,
+    the result to a secondary attribute), pixel (ends writing o0), or
+    empty (PHAS, NOP)"""
+    names = [n for _, n in prog]
+    last_w, last = prog[-1]
+    if last_w == EMIT_VERTEX:
+        return 'vertex'
+    if len(prog) == 2 and last == 'NOP':
+        return 'empty'
+    if 'VTST' in names[:4] and 'VLDST' in names[:5]:
+        return 'secondary'
+    if last in ('VBW', 'VPCK', 'SOP2', 'VMOV'):
+        return 'pixel'
+    return 'other'
 
 
 def hexdump(b, start, end, base):
@@ -178,8 +208,7 @@ def show(title, at, p, changed):
     print('-- %s at CPU %08x, %d instructions, %d changed' % (title, at, len(p), sum(changed)))
     for k, (w, n) in enumerate(p):
         print('  %s+%03x: %016x  %-9s%s%s' % ('*' if changed[k] else ' ', 8 * k, w, n,
-                                            ud.operands(n, w),
-                                            '  <end>' if n != 'PHAS' and w & END else ''))
+                                            ud.operands(n, w), '  <end>' if ends(w, n) else ''))
 
 
 def listing(name, result):
@@ -189,8 +218,36 @@ def listing(name, result):
     print('== %s: %d programs, %d code runs, %d other runs' % (name, len(progs), len(codes), len(other)))
     for title, items in (('prog', progs), ('code', codes)):
         for at, p, changed in items:
-            print('   %s %08x %3d instr %3d changed  %016x  %s' %
-                  (title, at, len(p), sum(changed), p[0][0], ' '.join(n for _, n in p[:12])))
+            print('   %-9s %08x %3d instr %3d changed  %s' %
+                  (kind(p) if title == 'prog' else 'code', at, len(p), sum(changed),
+                   ' '.join(n for _, n in p[:14])))
+
+
+GROUP = {'vertex': 'vertex', 'secondary': 'secondary', 'empty': 'secondary',
+         'pixel': 'pixel', 'other': 'other'}
+
+
+def catalog(name, result, last):
+    """a case's programs, by kind, as words and their disassembly -- test
+    vectors for our compiler: what iOS's compiler made of the same GLSL.
+    A program the draw did not change is not in the case's pages; LAST
+    holds the latest one of each group, printed with the case it is from."""
+    order = ('vertex', 'secondary', 'pixel', 'other')
+    found = {}
+    for at, p, _ in result[0]:
+        found.setdefault(GROUP[kind(p)], p)
+    print('== %s' % name)
+    for g in order:
+        if g in found:
+            p, note = found[g], ''
+            last[g] = (name, p)
+        elif g in last and g != 'other':
+            p, note = last[g][1], ' (unchanged since %s)' % last[g][0]
+        else:
+            continue
+        print('-- %s%s' % (kind(p), note))
+        for w, n in p:
+            print('   %016x  %-9s%s%s' % (w, n, ud.operands(n, w), '  <end>' if ends(w, n) else ''))
 
 
 def report(name, src, result, keep=None):
@@ -253,7 +310,7 @@ def main():
             for k in set(key(p) for _, p, _ in r[0] + r[1]):
                 seen_in[k] = seen_in.get(k, 0) + 1
     keep = (lambda p: seen_in.get(key(p), 0) <= OWN_MAX) if own else None
-    summary = []
+    summary, last = [], {}
     for name, r in results:
         if r is None:
             summary.append((name, None, None))
@@ -261,12 +318,19 @@ def main():
         n_own = sum(1 for _, p, _ in r[0] + r[1] if seen_in.get(key(p), 0) <= OWN_MAX)
         summary.append((name, len(r[0]) + len(r[1]), n_own))
         if only and name not in only:
+            for at, p, _ in r[0]:
+                last[GROUP[kind(p)]] = (name, p)
             continue
         if '--list' in sys.argv:
             listing(name, r)
             continue
+        if '--catalog' in sys.argv:
+            catalog(name, r, last)
+            continue
         src_path = os.path.join(HERE, 'corpus', name + '.glsl')
         report(name, open(src_path).read() if os.path.exists(src_path) else '', r, keep)
+    if '--catalog' in sys.argv:
+        return
     print('=' * 78)
     print('== summary: programs and code runs per case, and those in at most %d cases '
           '(- not drawn)' % OWN_MAX)

@@ -256,6 +256,42 @@ bit 50 marked, not trusted as the end: an old note has the driver's
 fragment preamble carry it on its second instruction) and the other
 changed runs as hex.
 
+**First run (2026-10-04): 91 of 91 cases drawn**, centre pixels as the
+values predict (`f06_div` `80 83 87 8a` = 1/2, 1.0625/2.0625, ...;
+`f20_rcp` `ff f0 e3 d7`; `v00_vec4` the attribute). What the programs say:
+
+- The driver writes the current draw's programs over the last ones, at a
+  few fixed places (CPU `0x951de8` vertex, `0x951e40` pixel, `0x951e80`
+  secondary, in this run; a second buffer at `0x926e..` in some cases), so
+  a program's PHAS is often unchanged and what follows its end is the rest
+  of an older one. `corpus.py` takes a program from the PHAS before a
+  changed run to the instruction that ends it.
+- **Bit 50 ends a program only on some instructions**: VBW, VPCK, VMOV,
+  SOP2, LIMM, NOP and the emits (the layouts' `e`). On V16NMAD/V32NMAD,
+  VMAD2, VTST, VCOMP it is another field: iOS's programs have V16NMADs
+  with it set mid-program. (`usse.py`'s note that bit 50 ends every
+  instruction but PHAS held only for what sgx2d uses.) The old note of a
+  fragment "preamble" `PHAS / VBW 50850009e0000300 / NOP / VTST ...` was
+  two programs: `PHAS; VBW (end)`, then an older program's tail.
+- **A shader is up to three programs.** A **vertex** program (ends with the
+  vertex emit `fb275000a0200000`: `PHAS; SMLSI; VMOV o0 <- pa0; SMLSI;
+  emit` for a pass-through position); a **pixel** program, ending in a
+  write of `o0`; and a **secondary** program, run once per draw, which
+  does the arithmetic that only depends on uniforms. `gl_FragColor = u0 +
+  u1` is: secondary `PHAS; NOP; VTST; VLDST; SPEC` (the never-taken load,
+  as our `programs.py` has it), `V16NMAD VADD pa3 = pa4 + pa3`, `VPCK pa6
+  <- pa3 (end)`; pixel `PHAS; VBW o0 <- sa6 (end)` (`50850009e0000300`:
+  `f=3` is the secondary bank, `m=6`) -- the secondary program's `pa`
+  outputs are the pixel program's `sa`. `u0 * u1` differs in one word, the
+  V16NMAD's op2 (`...41103` VADD, `...40103` VMUL). A varying: pixel `PHAS;
+  VPCK o0 <- pa0 (end)`, secondary empty (`PHAS; NOP (end)`). A
+  non-dependent texture read: pixel `PHAS; VBW o0 <- pa0 (end)` -- the
+  PDS fetched the texel, as in sgx2d's frame -- and the vertex program
+  computes `t` with two VMAD2s.
+- `corpus.py --catalog` prints every case's three programs by kind (an
+  unchanged one taken from the case it was last written in, and said so):
+  the test vectors for our compiler.
+
 ## M12: the Mesa driver's skeleton (2026-10-03, done 2026-10-04)
 
 `mesa/` holds it: the driver's files (`mesa/files`, copied into a Mesa tree),
