@@ -445,14 +445,52 @@ iterate `07040c12` and a texture fetch after; a vec2's control word is
 2, 0, 0}`, `dma row 0, doutu row 1, end` (frame.py's `dma_then_usse`),
 which DMAs six words of constants into the secondary attributes.
 
-For M13 this is enough to write the first programs by hand: a vertex
-program `mov.f32 o0.xy, paP rpt2; [varyings]; emit`, a pixel program
-`pck.u8.f16 o0, pa0 scale` (a varying colour) or `or o0, saN, #0` (a
-colour packed by a secondary program). What it does not give is the state
-around them: how many outputs the vertex program has and which iterators
-load which pa (the TA's state words), and the PDS programs that load
-attributes and uniforms -- the next things to read out of the same
-captures' other changed runs.
+**The PDS programs, read (2026-10-04).** `corpus.py --pds` finds them by
+their DOUTU words. They are frame.py's shapes, with the varyings' iterators
+added:
+
+- **Vertex fetch** (`vertex_fetch`): a row per attribute `{address,
+  control, stride (first row only), 0}` -- control `first pa << 8 | words -
+  1`: `a` `0x003` (pa0, four words), `p` `0x403` (pa4) at +16, stride 32 --
+  then `{doutu, 0, 0, 0}`; code `fetch index 67800072`, `fetch attribute`
+  a row each (`2f0191a3`, `2f0591a3`, `2f0991a3`), `doutu (row n, vertex)
+  030n01f5`, `end`.
+- **The state block's loader**: `{block, 0x14, 0, 0}, {doutu, 0, 0, 0}`,
+  `dma row 0; doutu row 1; end` -- the 21 words to a USSE program that
+  emits them (frame.py's `state_21`).
+- **The pixel program's PDS**: `{doutu, temps, 0, control 0}, {control 1,
+  ...}`, code `doutu row 0 (070001b5)`, one **iterate** per varying, `end`.
+  An iterate DOUT `0x07RRRWSS`: its control word is word `4 * row + word`
+  of the data (row in bits 17:12, word in 11:10; bits 23:18 grow with it
+  too: 1 for words 3..5, 2 for 6..9, 3 for 10), and it writes the next
+  primary attributes, one register (`..02`), two (`..12`) or four
+  (`..32`). Eight vec4s: `07040c12 07041112 07041612 07081b12 07081c12
+  07082112 07082612 070c2b12`, control words 3..10.
+- **A varying's control word**: `0x2fc0000f` is F16 (bits 29:28 = 2; F32
+  is 0, `0x0fc0000f` with highp), the last iterate (bit 25; `0x2dc0...`
+  for the others), four components (bits 23:22 = components - 1:
+  `0x2f00000f` a float, `..40..` a vec2, `..80..` a vec3), varying 0 (bits
+  15:12: which of the vertex's varyings, in words 19/20's order; 13 is the
+  position, for `gl_FragCoord`). The pixel side's order is the iterates':
+  vec4 + vec2 iterates varying 1 (the vec4) into pa0..pa1, then varying 0
+  into pa2; eight vec4s come in the order 3 6 2 4 1 5 7 0.
+- A texture read the PDS does: an iterate with a different control word
+  (`0x0c00f900`; `0x0c00fa00` for `texture2DProj` -- the divide; sgx2d's
+  `0x1fc01900`), then `texture fetch, state row 1` with `{format, size,
+  address, 0}` (`03fe0090` -- `04fe0090` with a bias of 1.0 --,
+  `0c020002` for 4x4, the texture's GPU address). A pixel program with no
+  varyings: `doutu row 0; end`. temps: 2 without iterates, 6 with, 10 with
+  a texture fetch.
+
+For M13 this is enough to draw by hand: a vertex fetch PDS for the
+attributes, a vertex program `mov.f32 o0.xy, paP rpt2; [varyings]; emit`,
+the full state with word 16 = vertex size, 19/20 = the varyings, a pixel
+PDS with an iterate per varying, and a pixel program `pck.u8.f16 o0, pa0
+scale` (a varying colour) or `or o0, saN, #0` (a colour a secondary
+program packed). Word 5 (the pixel PDS info: `0803e000` with one varying
+or one temporary, `1303e000` with two varyings, `2183e000` with eight,
+`0003e000` with neither) is still to be decoded; iOS's values can be
+copied for the shapes above.
 
 ## M12: the Mesa driver's skeleton (2026-10-03, done 2026-10-04)
 

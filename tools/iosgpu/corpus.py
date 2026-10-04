@@ -446,14 +446,40 @@ def tag5_va(w):
 # PDS instruction words iOS's GL driver writes (tools/sgx/pds.py)
 PDS_NAMES = {0xaf000000: 'end', 0x070001b5: 'doutu row0 (then iterate/fetch)',
              0x07000185: 'doutu row0', 0x070401a5: 'doutu row1 (after)',
-             0x07018113: 'dma row0', 0x07040c12: 'iterate, control w3 (texture)',
-             0x07040c02: 'iterate, control w3', 0x07000c02: 'iterate (background)',
+             0x07018113: 'dma row0', 0x07000c02: 'iterate (background)',
              0x07041004: 'texture fetch, state row1', 0x67800072: 'fetch index'}
+
+
+ITERATE_SIZE = {0x02: 'one register', 0x12: 'two registers', 0x32: 'four registers'}
+
+
+def iterate_word(w):
+    """an iterate DOUT: its control word's index in the data segment (row
+    in bits 17:12, word in the row in 11:10) and the size of what it writes
+    to the primary attributes (bits 5:4) -- from the 2026-10-04 corpus"""
+    if w >> 24 == 0x07 and (w & 0xcf) == 0x02:
+        return (w >> 12 & 0x3f) * 4 + (w >> 10 & 3), ITERATE_SIZE.get(w & 0x3f, '%#x' % (w & 0x3f))
+    return None
+
+
+def iterate_control(c):
+    """a varying's iterate control word (0x2fc0000f: the last, F16, four
+    components, varying 0): F16 when bits 29:28 are 2 (0: F32), bit 25 the
+    last iterate, bits 23:22 components - 1, bits 15:12 which varying of the
+    vertex (in words 19/20's order; 13 is the position: gl_FragCoord)"""
+    if c & 0x0d00000f != 0x0d00000f:
+        return 'texture coordinates or other (%08x)' % c
+    return '%s, %d component%s, varying %d%s' % (
+        {2: 'F16', 0: 'F32'}.get(c >> 28 & 3, 'format %d' % (c >> 28 & 3)), (c >> 22 & 3) + 1,
+        '' if c >> 22 & 3 == 0 else 's', c >> 12 & 0xf, ', last' if c >> 25 & 1 else '')
 
 
 def pds_name(w):
     if w in PDS_NAMES:
         return PDS_NAMES[w]
+    it = iterate_word(w)
+    if it:
+        return 'iterate into %s, control: word %d' % (it[1], it[0])
     if w & 0xffc0ffff == 0x2f0091a3:
         return 'fetch attribute, row %d' % ((w >> 16 & 0x3f) // 4)
     if w >> 24 == 0x07:
@@ -461,35 +487,55 @@ def pds_name(w):
     return ''
 
 
-def pds_programs(name, case_pages, mem_after, targets):
-    """the PDS programs the case's draw wrote that start a USSE program
-    (TARGETS: address -> kind, every program seen up to this case): found
-    by their DOUTU word ((address - code base) / 8 << 4 | selector; the
-    code base 64 KiB-aligned) and the PDS shape (data rows, then
-    instruction words up to an end, 0xaf000000)"""
+def pds_programs(name, case_pages, mem_after, mem_before):
+    """the PDS programs the case's draw wrote that start a USSE program:
+    found by a DOUTU word the draw changed ((address - code base) / 8 << 4
+    | 3 or 8, the code base 64 KiB-aligned) that lands on a PHAS, and the
+    PDS shape (data rows, then instruction words up to an end, 0xaf000000).
+    Words the draw left as they were are marked '=' (often the rest of an
+    older, longer program)."""
     print('== %s' % name)
+    done = set()
     for addr in sorted(case_pages):
         ws = struct.unpack('<1024I', mem_after[addr])
-        for k in range(1024):
+        old = struct.unpack('<1024I', mem_before.get(addr, bytes(PAGE)))
+        for k in range(1023):
             w = ws[k]
-            if not w or w & 0xf not in (3, 8) or k + 1 >= 1024 or ws[k + 1] >= 0x80:
+            if not w or w == old[k] or w & 0xf not in (3, 8) or ws[k + 1] >= 0x80:
                 continue
-            for at, what in targets.items():
-                base = at - (w >> 4) * 8
-                if base & 0xffff or base < 0:
-                    continue
-                end = next((e for e in range(k + 1, min(k + 40, 1024)) if ws[e] == 0xaf000000), None)
-                if end is None:
-                    continue
-                first = k & ~3          # back over the data rows before the DOUTU's
-                while first >= 4 and any(ws[first - 4:first]) and 0xaf000000 not in ws[first - 4:first] \
-                        and k - first < 12:
-                    first -= 4
-                print('-- PDS at CPU %08x, starts the %s program at %08x (code base CPU %08x)' %
-                      (addr + 4 * first, what, at, base))
-                for e in range(first, end + 1):
-                    print('   %08x  %08x  %s%s' % (addr + 4 * e, ws[e], pds_name(ws[e]) if e > k else '',
-                                                  '  <- doutu' if e == k else ''))
+            end = next((e for e in range(k + 1, min(k + 40, 1024)) if ws[e] == 0xaf000000), None)
+            if end is None:
+                continue
+            base = None
+            for b in sorted(set(a & ~0xffff for a in mem_after)):
+                at = b + (w >> 4) * 8
+                page = mem_after.get(at & ~(PAGE - 1))
+                if page and is_phas(word(page, at & (PAGE - 1))):
+                    base = b
+                    break
+            if base is None:
+                continue
+            at = base + (w >> 4) * 8
+            span = b''.join(mem_after.get((at & ~(PAGE - 1)) + d, bytes(PAGE)) for d in (0, PAGE))
+            prog = program_at(span, at & (PAGE - 1))
+            what = kind(prog) if prog else 'cut-off'
+            first = k & ~3          # back over the data rows before the DOUTU's
+            while first >= 4 and any(ws[first - 4:first]) and 0xaf000000 not in ws[first - 4:first] \
+                    and k - first < 12:
+                first -= 4
+            if (addr, first) in done:
+                continue
+            done.add((addr, first))
+            print('-- PDS at CPU %08x: starts the %s program at %08x (doutu %08x)' %
+                  (addr + 4 * first, what, at, w))
+            for e in range(first, end + 1):
+                print('   %08x %s %08x  %s' % (addr + 4 * e, '=' if ws[e] == old[e] else ' ', ws[e],
+                                              pds_name(ws[e]) if e > k else ''))
+            for e in range(k + 1, end):
+                it = iterate_word(ws[e])
+                if it and first + it[0] < 1024:
+                    print('      control word %d = %08x: %s' % (it[0], ws[first + it[0]],
+                                                              iterate_control(ws[first + it[0]])))
 
 
 def main():
@@ -520,11 +566,11 @@ def main():
                 code_words.update(at + 4 * k for k in range(2 * len(p)))
         return state_diff(names[0], after[names[0]], names[1], after[names[1]], code_words)
     if '--pds' in sys.argv:
-        known = {}
-        for (name, r) in results:
-            known.update((at, kind(p)) for at, p, _ in (r[0] if r else []))
-            if r and (not only or any(fnmatch.fnmatchcase(name, o) for o in only)):
-                pds_programs(name, changed[name], after[name], dict(known))
+        prev = pages(base) if os.path.exists(base) else {}
+        for name in order:
+            if not only or any(fnmatch.fnmatchcase(name, o) for o in only):
+                pds_programs(name, changed[name], after[name], prev)
+            prev = after[name]
         return
     if '--state' in sys.argv:
         for name in order:
