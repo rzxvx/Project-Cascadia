@@ -362,6 +362,28 @@ and the kernel's verdict from `dmesg`:
 After a render times out, the driver loads the pack's buffers again before
 the next one (the hang leaves the parameter buffer half-used).
 
+The second bisect (2026-10-04) answered the pieces and raised a new
+question. `fb` and `fb,codebo` drew red: the MOV replace works, in the
+pack's page and in a buffer of its own. `align,blend` gave `target right`:
+our end of tile and background fill a render target. But `fb,blend`, good
+the day before, hung this time, and nearly every failure was the same:
+`TA not done`, the render queue's write offset past its read offset -- the
+microkernel took the TA command from the kernel's queue and never read the
+render from the context's. Twice core 1 faulted at `0x87800050`, page 0
+counted from `TA_REQ_BASE` (rgen.py's `0x87800000`): a parameter buffer page
+the free list should never hand out. So something outside the frame makes
+renders fail at random, and the suspects are what differs from sgx2d, which
+draws thousands of frames in one process: each glclear is a new process
+that loads the pack (parameter buffer included) afresh at the same
+addresses, renders once, and goes. `frame-bisect` now runs each variant
+four ways to tell: as it is; with `SGX_CC=8` (every kick also has the
+microkernel drop the GPU's data caches, `SGXMKIF_CC_INVAL_DATA`); after a
+fresh start of the microkernel (debugfs `apple-sgx/boot`, allowed while the
+render node has no clients); and with `SGX_NOCC=1` (every buffer mapped for
+the GPU without the cache-consistent bit: the CPU writes them
+write-combined, and a GPU read through a cache could see an old line). The
+known-good draw also runs four times in one process.
+
 Not yet: draws (`draw_vbo` says so once and drops them), textures in any
 layout but linear, scanout (EGL has the surfaceless and GBM platforms; the
 picture reaches the screen only through glclear's `--fb` copy), desktop GL

@@ -5,6 +5,7 @@
 #include "sgx_device.h"
 
 #include <errno.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
 #include <xf86drm.h>
@@ -49,11 +50,26 @@ sgx_device_init(struct sgx_device *dev, int fd)
    return true;
 }
 
+/* SGX_NOCC=1: every buffer mapped for the GPU without the cache-consistent
+ * bit -- the CPU writes them write-combined, past any cache, and a GPU read
+ * that goes through one could see an older line (mesa/frame-bisect tries
+ * it) */
+static uint32_t
+extra_bo_flags(void)
+{
+   static int flags = -1;
+
+   if (flags < 0)
+      flags = getenv("SGX_NOCC") && atoi(getenv("SGX_NOCC")) ?
+              APPLE_SGX_BO_NOT_CACHE_CONSISTENT : 0;
+   return flags;
+}
+
 struct sgx_bo *
 sgx_bo_create(struct sgx_device *dev, uint32_t size, uint32_t flags, uint32_t va)
 {
    struct drm_apple_sgx_gem_create c = {
-      .size = size, .flags = flags, .va = va,
+      .size = size, .flags = flags | extra_bo_flags(), .va = va,
    };
    struct sgx_bo *bo;
 
@@ -160,12 +176,27 @@ sgx_fence_wait(struct sgx_fence *f, uint64_t timeout_ns)
                           DRM_SYNCOBJ_WAIT_FLAGS_WAIT_FOR_SUBMIT, NULL);
 }
 
+/* SGX_CC: SGXMKIF_CC_* for every kick, on top of the MMU invalidation the
+ * kernel adds after mapping changes -- 8 (INVAL_DATA) has the microkernel
+ * drop the GPU's data caches, which know addresses, not buffers
+ * (mesa/frame-bisect tries it) */
+static uint32_t
+submit_cache_control(void)
+{
+   static int cc = -1;
+
+   if (cc < 0)
+      cc = getenv("SGX_CC") ? strtoul(getenv("SGX_CC"), NULL, 0) & 0xff : 0;
+   return cc;
+}
+
 int
 sgx_submit(struct sgx_device *dev, const uint32_t *cmd, uint32_t pb_va,
            uint32_t details_handle, uint32_t details_offset,
            const uint32_t *handles, unsigned count, struct sgx_fence *done)
 {
    struct drm_apple_sgx_submit s = {
+      .cache_control = submit_cache_control(),
       .cmd = (uintptr_t)cmd,
       .cmd_size = cmd[0],
       .pb_va = pb_va,

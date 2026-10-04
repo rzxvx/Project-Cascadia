@@ -1,16 +1,30 @@
 #!/bin/sh
-# frame-bisect -- one GPU clear through every SGX_FRAME variant, and what
-# the kernel said about each: which piece of the template frame is wrong
-# when glclear's clears are (docs/research/p105-mesa.md, M12).
+# frame-bisect -- GPU clears through the SGX_FRAME variants, and what the
+# kernel said about each: which piece of the template frame is wrong, and
+# which failures are not about the frame at all (docs/research/p105-mesa.md,
+# M12).  Each variant runs three ways:
+#
+#   -      as it is
+#   cc8    with SGX_CC=8: every kick has the microkernel drop the GPU's data
+#          caches (they know addresses, and each process puts new buffers at
+#          the pack's same addresses)
+#   boot   after a fresh start of the microkernel (debugfs apple-sgx/boot),
+#          which forgets whatever it kept of the last process's frame -- the
+#          parameter buffer, which every process loads afresh, above all
+#   nocc   with SGX_NOCC=1: the buffers mapped for the GPU without the
+#          cache-consistent bit (the CPU writes them past every cache)
 #
 #   echo 0 > /sys/class/vtconsole/vtcon1/bind    # the console off the screen
-#   sgx-gl frame-bisect
+#   sgx-gl frame-bisect            (about three minutes if everything hangs)
+#   sgx-gl frame-bisect quick      (each variant once, as it is)
 #
-# Each line is a fresh `glclear 1` (red).  Variants with "fb" or "screen"
-# draw on the screen instead of the target, so glclear's read-back is wrong
-# there by design: the screen is painted black first and its centre pixel
-# read back after (B G R A; red is 00 00 ff ff).  A hang shows as ~2 s and
-# the kernel's "not done"; the next variant starts from a reloaded frame.
+# A line is one process: `glclear N` (red, then green, ...).  Variants with
+# "fb" or "screen" draw on the screen instead of the target, so glclear's
+# read-back is wrong there by design: the screen is painted black first and
+# its centre pixel read back after (B G R A; red is 00 00 ff ff).  A hang
+# shows as ~2 s a clear and the kernel's report: the render queue's write
+# and read offsets (equal: the microkernel took the command), the context
+# word, the microkernel's lockup count, faults.
 #
 #   fb      the pack's end of tile and background (to the screen)
 #   blend   the pack's pixel program (texel x colour, blended)
@@ -25,26 +39,59 @@ centre() {
     dd if=$FB bs=1 skip=$CENTRE count=4 2>/dev/null | od -An -tx1 | tr -s ' ' | sed 's/^ //'
 }
 
-printf '%-14s %9s  %-24s %s\n' SGX_FRAME time result kernel
-for v in fb,blend fb fb,sop2 fb,codebo screen,blend screen blend "" align align,blend; do
+BOOT=${BOOT:-/sys/kernel/debug/apple-sgx/boot}
+[ -e $BOOT ] || mount -t debugfs none /sys/kernel/debug 2>/dev/null
+
+# run VARIANT HOW N: one process of N clears; HOW is -, cc8, boot or nocc
+run() {
+    v=$1 how=$2 n=$3 cc=0 nocc=0
+    case "$how" in
+        cc8)  cc=8 ;;
+        nocc) nocc=1 ;;
+        boot) { echo 1 > $BOOT; } 2>/dev/null || how="boot?" ;;
+    esac
     case "$v" in
         *fb*|*screen*) on_screen=1
                        dd if=/dev/zero of=$FB bs=3072 count=1024 2>/dev/null ;;
         *)             on_screen= ;;
     esac
-    n=$(dmesg | wc -l)
-    out=$(SGX_FRAME=$v glclear 1 2>&1)
-    t=$(printf '%s\n' "$out" | sed -n 's/.* in \([0-9.]*\) s:.*/\1 s/p')
+    before=$(dmesg | wc -l)
+    out=$(SGX_FRAME=$v SGX_CC=$cc SGX_NOCC=$nocc glclear $n 2>&1)
+    t=$(printf '%s\n' "$out" | sed -n 's/.* in [0-9.]* s: \([0-9.]*\) ms each.*/\1 ms/p')
     if [ -n "$on_screen" ]; then
         res="screen $(centre)"
     else
-        res=$(printf '%s\n' "$out" | sed -n 's/.*; \([0-9]*\) wrong$/\1 wrong/p')
-        [ "$res" = "0 wrong" ] && res="target right"
+        res=$(printf '%s\n' "$out" | sed -n 's/.*; \([0-9]*\) wrong$/\1 of '"$n"' wrong/p')
+        [ "$res" = "0 of $n wrong" ] && res="target right"
     fi
-    k=$(dmesg | tail -n +$((n + 1)) | sed -n \
-        -e 's/.*render [0-9]* not done after [0-9]* ms (\(.*\))/hung (\1)/p' \
-        -e 's/.*\(core[01]\).*BIF_FAULT \(0x[0-9a-f]*[1-9a-f][0-9a-f]*\)$/\1 fault \2/p' |
+    k=$(dmesg | tail -n +$((before + 1)) | sed -n \
+        -e 's/.*render [0-9]* not done after [0-9]* ms (TA \(.*\))/hung, TA \1;/p' \
+        -e 's/.*timed out: r CCB write 0x\([0-9a-f]*\) read 0x\([0-9a-f]*\), ctx0 0x\([0-9a-f]*\), lockups \([0-9]*\).*/ccb \1\/\2 ctx \3 lk \4;/p' \
+        -e 's/.*\(core[01]\).*BIF_FAULT \(0x[0-9a-f]*[1-9a-f][0-9a-f]*\)$/\1 fault \2;/p' \
+        -e 's/.*command \([A-Z]*\).*NOT TAKEN.*/\1 not taken;/p' |
         tr '\n' ' ')
-    printf '%-14s %9s  %-24s %s\n' "${v:-(ours)}" "${t:-?}" "${res:-?}" "${k:-ok}"
-    printf '%s\n' "$out" | grep 'MESA: \(warning\|error\)' | sed 's/^MESA: /    /'
+    printf '%-13s %-5s %2s %10s  %-21s %s\n' "${v:-(ours)}" "$how" "$n" "${t:-?}" "${res:-?}" "${k:-ok}"
+    printf '%s\n' "$out" | grep 'MESA: \(warning\|error\)' | sort -u | sed 's/^MESA: /      /'
+}
+
+printf '%-13s %-5s %2s %10s  %-21s %s\n' SGX_FRAME how n each result kernel
+if [ "$1" = quick ]; then
+    for v in fb,blend fb fb,sop2 fb,codebo screen,blend screen blend "" align align,blend; do
+        run "$v" - 1
+    done
+    exit 0
+fi
+# the known-good draw: alone, and four in one process
+for how in - cc8 boot nocc; do
+    run fb,blend $how 1
+    run fb,blend $how 1
+    run fb,blend $how 1
+    run fb,blend $how 4
+done
+# the rest
+for v in fb fb,sop2 screen,blend screen blend "" align,blend align; do
+    for how in - cc8 boot nocc; do
+        run "$v" $how 1
+    done
+    run "$v" boot 3
 done
