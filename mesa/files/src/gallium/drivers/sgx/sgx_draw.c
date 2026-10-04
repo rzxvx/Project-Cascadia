@@ -31,6 +31,7 @@
 #include "util/u_memory.h"
 #include "util/u_prim.h"
 
+#include "sgx_compiler.h"
 #include "sgx_context.h"
 #include "sgx_device.h"
 #include "sgx_frame.h"
@@ -229,6 +230,11 @@ emit_vertex(struct sgx_render *sr, const float *in, float *out)
    out[1] = in[1] * 2 / ctx->fb.height - 1;
    out[2] = 0;
    out[3] = 1;
+   if (ctx->fs && ctx->fs->compiled) {
+      /* the program's inputs, as the draw module has them */
+      memcpy(out + 4, in + 4, 4 * l->nvaryings * sizeof(float));
+      return;
+   }
    for (unsigned k = 0; k < l->nvaryings; k++) {
       /* a filler: a colour the checks would notice */
       out[4 + 4 * k + 0] = 1;
@@ -340,6 +346,28 @@ render_need_pipeline(const struct vbuf_render *r, const struct pipe_rasterizer_s
    return true;         /* everything as triangles, one by one */
 }
 
+/* One varying of the draw module's output vertex, four floats, named as
+ * nir_to_tgsi names the vertex shader's outputs: VARn is GENERIC n (no
+ * shift here), the rest as TGSI has them */
+static void
+emit_varying(struct sgx_context *ctx, struct vertex_info *vinfo, unsigned slot)
+{
+   unsigned name, index;
+   int out;
+
+   if (slot >= VARYING_SLOT_VAR0 && slot < VARYING_SLOT_PATCH0) {
+      name = TGSI_SEMANTIC_GENERIC;
+      index = slot - VARYING_SLOT_VAR0;
+   } else {
+      tgsi_get_gl_varying_semantic(slot, true, &name, &index);
+   }
+   out = draw_find_shader_output(ctx->draw, name, index);
+   draw_emit_vertex_attr(vinfo, EMIT_4F, out);
+   if (ctx->debug_draw && out < 0)
+      mesa_logi("sgx: the fragment shader reads varying slot %u (TGSI %u %u), which the "
+                "vertex shader does not write", slot, name, index);
+}
+
 /* What goes to the GPU: the position and the colour, as a varying.
  * SGX_DRAW_LAYOUT=N[,K][,f32] (a test of the frame's vertex side) makes
  * that N varyings, the colour the K-th (the last by default), F32 or
@@ -383,8 +411,20 @@ update_vertex_info(struct sgx_context *ctx)
    sr->nvarying = 0;
    draw_emit_vertex_attr(vinfo, EMIT_4F,
                          draw_find_shader_output(ctx->draw, TGSI_SEMANTIC_POSITION, 0));
+   if (ctx->fs && ctx->fs->compiled) {
+      /* a compiled fragment shader: its inputs, in its order, all F32 */
+      const struct sgx_fs *fs = ctx->fs->compiled;
+
+      for (unsigned i = 0; i < fs->prog.ninputs; i++)
+         emit_varying(ctx, vinfo, fs->input_slot[i]);
+      draw_compute_vertex_size(vinfo);
+      ctx->layout.nvaryings = fs->prog.ninputs;
+      ctx->layout.f32 = (1u << fs->prog.ninputs) - 1;
+      ctx->layout.colour = 0;
+      return;
+   }
    for (unsigned i = 0; c && c->ok && i < 4; i++) {
-      unsigned name, index, k;
+      unsigned k;
 
       if (c->ch[i].src != SGX_SRC_VARYING)
          continue;
@@ -392,20 +432,8 @@ update_vertex_info(struct sgx_context *ctx)
          ;
       if (k < sr->nvarying)
          continue;
-      /* named as nir_to_tgsi names the vertex shader's outputs:
-       * VARn is GENERIC n (no shift here), the rest as TGSI has them */
-      if (c->ch[i].slot >= VARYING_SLOT_VAR0 && c->ch[i].slot < VARYING_SLOT_PATCH0) {
-         name = TGSI_SEMANTIC_GENERIC;
-         index = c->ch[i].slot - VARYING_SLOT_VAR0;
-      } else {
-         tgsi_get_gl_varying_semantic(c->ch[i].slot, true, &name, &index);
-      }
       sr->varying[sr->nvarying++] = c->ch[i].slot;
-      draw_emit_vertex_attr(vinfo, EMIT_4F,
-                            draw_find_shader_output(ctx->draw, name, index));
-      if (ctx->debug_draw && draw_find_shader_output(ctx->draw, name, index) < 0)
-         mesa_logi("sgx: the colour reads varying slot %u (TGSI %u %u), which the vertex "
-                   "shader does not write", c->ch[i].slot, name, index);
+      emit_varying(ctx, vinfo, c->ch[i].slot);
    }
    draw_compute_vertex_size(vinfo);
 
@@ -527,7 +555,9 @@ submit(struct sgx_context *ctx)
          break;
       simple_mtx_lock(&screen->frame_lock);
       ret = sgx_frame_draw(screen->frame, rt, &ctx->layout,
-                           ctx->verts + done * sgx_frame_vertex_floats(&ctx->layout), n, fence);
+                           ctx->verts + done * sgx_frame_vertex_floats(&ctx->layout), n,
+                           ctx->fs && ctx->fs->compiled ? &ctx->fs->compiled->prog : NULL,
+                           ctx->fs_constants, ctx->fs_constants_size / 4, fence);
       simple_mtx_unlock(&screen->frame_lock);
       if (!ret)
          sgx_fence_reference(&ctx->last, fence);
@@ -551,7 +581,7 @@ sgx_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info,
 
    if (indirect || !draw || !ctx->vs || !ctx->vs->draw)
       return;
-   if (ctx->fs && !ctx->fs->colour.ok && !ctx->warned_fs) {
+   if (ctx->fs && !ctx->fs->compiled && !ctx->fs->colour.ok && !ctx->warned_fs) {
       mesa_logw("sgx: a fragment shader whose colour is not a varying, a constant or a "
                 "uniform per channel: drawn grey (M13a)");
       ctx->warned_fs = true;

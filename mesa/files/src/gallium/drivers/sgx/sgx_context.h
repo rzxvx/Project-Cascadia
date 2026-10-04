@@ -23,6 +23,7 @@ struct sgx_shader {
    struct nir_shader *nir;
    struct draw_vertex_shader *draw;     /* a vertex shader's, on the CPU */
    struct sgx_fs_colour colour;         /* a fragment shader's colour */
+   struct sgx_fs *compiled;             /* a fragment shader, compiled (M13c) */
 };
 
 struct sgx_vertex_elements {

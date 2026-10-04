@@ -57,6 +57,9 @@ SGX_DEBUG_DRAW=1 sgx-gl gltri    # the triangles each draw hands the GPU
 SGX_DRAW_LAYOUT=8,3,f32 sgx-gl gltri   # the vertex side with 8 varyings, the colour
                                  # the 4th, F32 (the rest fillers; docs, M13b)
 sgx-gl gltri --ppm /tmp/x.ppm    # the last read-back as a picture: look at it
+sgx-gl glfs                      # the fragment compiler's 23 cases (M13c)
+SGX_DEBUG_SHADER=1 sgx-gl glfs mad   # a compiled program's words (tools/iosgpu/usse-dis.py words)
+SGX_NOCOMPILE=1 sgx-gl gltri     # without the compiler: M13a's per-vertex colour
 sgx-gl frame-bisect              # one clear through every SGX_FRAME variant (docs, M12)
 ```
 
@@ -77,6 +80,10 @@ mesa/host/run --arm glclear 2
 ```
 
 The packages it needs are in `host/build.sh`'s header.
+
+The USSE encoder alone, on any host with a C compiler (macOS too):
+`python3 mesa/host/usse-test.py` checks what it writes against the
+disassembler and against iOS's own words.
 
 ## Licence
 

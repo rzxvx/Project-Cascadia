@@ -2,6 +2,8 @@
 # SPDX-License-Identifier: MIT
 
 files_sgx = files(
+  'sgx_compiler.c',
+  'sgx_compiler.h',
   'sgx_context.c',
   'sgx_context.h',
   'sgx_device.c',
@@ -14,6 +16,8 @@ files_sgx = files(
   'sgx_resource.h',
   'sgx_screen.c',
   'sgx_screen.h',
+  'sgx_usse.c',
+  'sgx_usse.h',
 )
 
 libsgx = static_library(

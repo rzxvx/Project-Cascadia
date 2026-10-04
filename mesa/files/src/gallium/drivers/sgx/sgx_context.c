@@ -24,6 +24,7 @@
 #include "util/u_surface.h"
 #include "util/u_upload_mgr.h"
 
+#include "sgx_compiler.h"
 #include "sgx_device.h"
 #include "sgx_draw.h"
 #include "sgx_frame.h"
@@ -239,7 +240,26 @@ sgx_create_shader_state(struct pipe_context *pctx, const struct pipe_shader_stat
       if (!sh->draw)
          mesa_logw("sgx: the draw module did not take a vertex shader");
    } else if (sh->nir->info.stage == MESA_SHADER_FRAGMENT) {
+      char why[128];
+
       sgx_fs_colour_analyse(sh->nir, &sh->colour);
+      /* SGX_NOCOMPILE=1: M13a's way only */
+      if (!debug_get_bool_option("SGX_NOCOMPILE", false)) {
+         sh->compiled = sgx_compile_fs(sh->nir, why, sizeof(why));
+         if (!sh->compiled)
+            mesa_logw("sgx: a fragment shader not compiled (%s): its colour is worked "
+                      "out per vertex", why);
+         else if (ctx->debug_draw || debug_get_bool_option("SGX_DEBUG_SHADER", false)) {
+            mesa_logi("sgx: a fragment shader compiled: %u instructions, %u temps, "
+                      "%u inputs, %u uniform words", sh->compiled->prog.ncode,
+                      sh->compiled->prog.ntemps, sh->compiled->prog.ninputs,
+                      sh->compiled->prog.nuniforms);
+            /* SGX_DEBUG_SHADER=1: the code, for tools/iosgpu/usse-dis.py words */
+            for (unsigned i = 0; debug_get_bool_option("SGX_DEBUG_SHADER", false) &&
+                                 i < sh->compiled->prog.ncode; i++)
+               mesa_logi("sgx:   %016llx", (unsigned long long)sh->compiled->prog.code[i]);
+         }
+      }
    }
    return sh;
 }
@@ -259,6 +279,8 @@ sgx_delete_shader_state(struct pipe_context *pctx, void *state)
       draw_delete_vertex_shader(ctx->draw, sh->draw);
    if (ctx->fs == sh)
       ctx->fs = NULL;
+   /* its code stays where the frame put it: that place is not reused */
+   sgx_fs_destroy(sh->compiled);
    ralloc_free(sh->nir);
    FREE(sh);
 }

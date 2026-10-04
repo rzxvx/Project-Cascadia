@@ -850,6 +850,78 @@ temps) 2, v05 (16 pa) 4, c04 (no pa, 10 temps) 3, no pa and no temps 0.
 Bits 26:23 (0, 6, 3, 4 in those cases) are not read yet; 17:13 = `0x1f`
 always. M13c's programs will need it.
 
+**M13c, step 1: the first fragment compiler (2026-10-04).** Fragment
+shaders now run on the GPU as compiled USSE programs; M13a's per-vertex
+colour is the fallback for what the compiler does not take yet.
+
+*The encoder* (`sgx_usse.c/.h`, no Mesa headers): V32NMAD (mul, add,
+min, max, frc), VMAD2, VCOMP (rcp, rsq, log2, exp2), VMOV and its
+conditional form, LIMM, and VPCK `u8.f32`. Registers are given in 32-bit
+units; the encoder turns them into the 64-bit register and lane the float
+instructions address (masks and swizzles), and the banks into their
+two-bit selects and extension bits. Field positions are taken from
+iOS's programs; the code is ours (MIT). `mesa/host/usse-test.py` builds
+it with `cc` and checks 21 cases with `usse-dis.py`, five of them against
+iOS's own words bit for bit (`pck.u8.f32 o0, pa0, pa2` from v07, four
+`rcp.f32` from p05).
+
+*The compiler* (`sgx_compiler.c`) is deliberately plain:
+
+- NIR: io lowered to slots, then scalarised, loops unrolled, ifs
+  flattened into selects (`nir_opt_peephole_select`, any size), ints and
+  bools lowered to floats (as nir_to_tgsi does for float-only GPUs, with
+  `fcsel`); floor, ceil, trunc, round, sign and sin/cos lowered by NIR's
+  options to `ffract` and arithmetic. A shader that keeps control flow is
+  not compiled.
+- Every value is a scalar F32 in an even temporary (lane x); varyings are
+  read where the PDS put them (input i in pa4i..pa4i+3, F32) and uniforms
+  where the loader put them (word n in san), any lane, through swizzles.
+- A temporary is taken when a value is made and given back after its last
+  use. Constants are loaded with LIMM where used. fneg and fabs fold into
+  operands that take them (V32NMAD's first source both, its second abs
+  only, so commutative operands swap).
+- Comparisons (`slt sge seq sne`) subtract and test the difference with
+  the conditional move; `fcsel` is the conditional move itself.
+- The colour is moved into four temporaries in a row and packed with
+  `pck.u8.f32 o0, rA, rA+2 scale`, which clamps to 0..1 (glfs `saturate`).
+
+*The frame* (`sgx_frame.c`) places a program at its first draw: the code in
+a 256 KiB code buffer of its own (filled from the start, never reused --
+the USSE caches code), its PDS program in the EXT window: data `{doutu,
+temps, 0, control words...}`, code `070001b5`, one iterate DOUT per input,
+`af000000`. An F32 vec4 iterate is control `0dc0V00f` (`0fc0V00f` the
+last) and DOUT size `0x32`; the DOUT word for the control word at data
+word d is `0x07000000 | ((d+2) >> 2) << 18 | d << 10 | ((d+1) & 3) << 8 |
+size` -- it fits all nine iterate words in the corpus (v04, v05). The
+registers follow one another from pa0 in DOUT order. Per draw: state word
+6 the program's PDS, word 5 = `fours << 27 | (fours > 1 ? 12 / fours : 0)
+<< 23 | 0x0003e000` with fours = (4 * inputs + temps) / 4 rounded up -- the
+three corpus values (2, 3, 4 fours) and now 6 on the device (glfs `mad`:
+4 pa + 17 temps) -- and, if the program reads uniforms, word 4 a loader:
+`{uniforms, count - 1, 0, 0}, {doutu of an empty program, 2, 0, 0}` with
+`07018113 070401a5 af000000` (iOS's for u00), the words DMA'd into sa0...
+
+*Tested* by `tools/sgx/gl/glfs.c`: 23 fragment shaders over a full-screen
+quad with two affine varyings and three uniforms, each against the same
+arithmetic in C on a 24 x 24 grid. On the iPad all 23 within one or two
+steps of 255: varyings, uniforms (vec4 and float), add, mul, mad, min,
+max, clamp, fract/floor/ceil, division, sqrt and inversesqrt, exp2/log2/
+exp/log, pow, sin/cos, dot/length/normalize, comparisons and the ternary,
+step, mix, smoothstep, abs/sign/negation, an if/else, a loop, out-of-range
+colours, a 39-instruction expression. `gltri` stays 11 of 11.
+
+Two lessons on the way. The first run kept the colour's values only until
+`store_output`, so the output block could land on them; and a test's
+varying `s * t` is not interpolated as `s * t` -- varyings are affine over
+each triangle (glfs's are now).
+
+Not yet: textures (M14), discard, gl_FragCoord and gl_FrontFacing, real
+control flow, F16 for mediump, two lanes an instruction, constants from
+the hardware's table, more than 128 uniform words (one DMA so far; glfs
+loads at most 9 words, the pack's state program 21 the same way).
+`SGX_NOCOMPILE=1` draws the M13a way; `SGX_DEBUG_SHADER=1` prints each
+program's words for `usse-dis.py words`.
+
 ## M14: textures, blending, depth and the rest of GLES 2.0's state
 
 Every GLES 2.0 texture format (RGBA8, RGB565, RGBA4444, RGBA5551, L8, A8, LA8,

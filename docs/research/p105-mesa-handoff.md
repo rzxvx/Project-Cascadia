@@ -16,7 +16,10 @@ The short version:
   render targets sat in the BIF's tiled window (section 2).
 - **M13b (our own vertex side) is done**: 1 to 8 varyings, F16 or F32,
   no pack in the vertex half of a draw.
-- **Next: M13c**, the compiler (section 7).
+- **M13c has begun**: fragment shaders are compiled to USSE (one block of
+  F32 arithmetic: varyings, uniforms, the ALU, comparisons, selects,
+  unrolled loops, flattened ifs); `sgx-gl glfs` 23 of 23 on the iPad.
+  p105-mesa.md, "M13c, step 1".
 
 ## 1. How to work in this repository
 
@@ -369,5 +372,7 @@ From p105-mesa.md, M13 to M16.
 - **On the device:** the new Mesa is installed. The kernel there (#291)
   is the old one; a kernel with the fix is built (`./cascadia build`) and
   waits for the user to flash it. Mesa works on both.
-- **Next:** M13c, the compiler (section 7), starting with fragment
-  shaders: the vertex side now carries any varyings to the pixels.
+- **Then (same day):** M13c step 1, the fragment compiler
+  (`sgx_usse.c`, `sgx_compiler.c`; `glfs` 23 of 23, `gltri` 11 of 11).
+- **Next:** textures in the compiler (M14's first part: the corpus's t*
+  cases), discard, gl_FragCoord; or M10 (targets of any size) and depth.
