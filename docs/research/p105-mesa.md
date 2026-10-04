@@ -384,6 +384,33 @@ the GPU without the cache-consistent bit: the CPU writes them
 write-combined, and a GPU read through a cache could see an old line). The
 known-good draw also runs four times in one process.
 
+That run (56 lines) read clearly once each hang was put next to the render
+queue's offsets:
+
+- **Every** new process whose first render followed a good render without
+  a restart in between hung, with a lockup and the fault at parameter
+  buffer page 0 -- 16 times out of 16 -- and renders in one process never
+  did. The microkernel (its DPM) keeps a parameter buffer's state between
+  renders; a new client loads a fresh one at the same address, and the two
+  disagree. After a start of the microkernel (`boot`), never.
+- About one start in three, the first render after it was left in the
+  queue: taken from the kernel CCB, never read (`ccb 120/0`), nothing
+  started. `cc8` and `nocc` changed nothing, so neither the GPU's data
+  caches nor the cache-consistent mappings are it.
+- With the target at `0xefcff000`, our end of tile and background always
+  faulted at `0xefcf0000` once the TA was through: the target's address
+  loses its low 16 bits. At 1 MiB-aligned addresses (`align`) the target
+  came out right.
+
+The kernel now works around all three: a render whose parameter buffer is
+another buffer object than the last one's (each object has a serial)
+starts the microkernel again first (`apple_sgx.pb_restart`); the poller
+sends TA again for a render left unread and unstarted after 20 ms
+(`apple_sgx.rekick_ms`, up to five times); and addresses it picks for
+buffers of 64 KiB or more are 64 KiB aligned. `frame-bisect` now checks:
+each variant three times as it is, and 20 clears in one process, with the
+kernel's "restarted for the PB" and "TA sent again" in the report.
+
 Not yet: draws (`draw_vbo` says so once and drops them), textures in any
 layout but linear, scanout (EGL has the surfaceless and GBM platforms; the
 picture reaches the screen only through glclear's `--fb` copy), desktop GL

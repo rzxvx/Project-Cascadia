@@ -2,7 +2,14 @@
 # frame-bisect -- GPU clears through the SGX_FRAME variants, and what the
 # kernel said about each: which piece of the template frame is wrong, and
 # which failures are not about the frame at all (docs/research/p105-mesa.md,
-# M12).  Each variant runs three ways:
+# M12).
+#
+#   echo 0 > /sys/class/vtconsole/vtcon1/bind    # the console off the screen
+#   sgx-gl frame-bisect            each variant three times, as it is, and the
+#                                  known-good draw 20 times in one process
+#   sgx-gl frame-bisect quick      each variant once
+#   sgx-gl frame-bisect full       each variant four ways (about three minutes
+#                                  if everything hangs):
 #
 #   -      as it is
 #   cc8    with SGX_CC=8: every kick has the microkernel drop the GPU's data
@@ -13,10 +20,6 @@
 #          parameter buffer, which every process loads afresh, above all
 #   nocc   with SGX_NOCC=1: the buffers mapped for the GPU without the
 #          cache-consistent bit (the CPU writes them past every cache)
-#
-#   echo 0 > /sys/class/vtconsole/vtcon1/bind    # the console off the screen
-#   sgx-gl frame-bisect            (about three minutes if everything hangs)
-#   sgx-gl frame-bisect quick      (each variant once, as it is)
 #
 # A line is one process: `glclear N` (red, then green, ...).  Variants with
 # "fb" or "screen" draw on the screen instead of the target, so glclear's
@@ -68,30 +71,41 @@ run() {
         -e 's/.*render [0-9]* not done after [0-9]* ms (TA \(.*\))/hung, TA \1;/p' \
         -e 's/.*timed out: r CCB write 0x\([0-9a-f]*\) read 0x\([0-9a-f]*\), ctx0 0x\([0-9a-f]*\), lockups \([0-9]*\).*/ccb \1\/\2 ctx \3 lk \4;/p' \
         -e 's/.*\(core[01]\).*BIF_FAULT \(0x[0-9a-f]*[1-9a-f][0-9a-f]*\)$/\1 fault \2;/p' \
-        -e 's/.*command \([A-Z]*\).*NOT TAKEN.*/\1 not taken;/p' |
+        -e 's/.*command \([A-Z]*\).*NOT TAKEN.*/\1 not taken;/p' \
+        -e 's/.*new parameter buffer.*starts again.*/restarted for the PB;/p' \
+        -e 's/.*left unread in the queue.*/TA sent again;/p' |
         tr '\n' ' ')
     printf '%-13s %-5s %2s %10s  %-21s %s\n' "${v:-(ours)}" "$how" "$n" "${t:-?}" "${res:-?}" "${k:-ok}"
     printf '%s\n' "$out" | grep 'MESA: \(warning\|error\)' | sort -u | sed 's/^MESA: /      /'
 }
 
 printf '%-13s %-5s %2s %10s  %-21s %s\n' SGX_FRAME how n each result kernel
-if [ "$1" = quick ]; then
-    for v in fb,blend fb fb,sop2 fb,codebo screen,blend screen blend "" align align,blend; do
+VARIANTS='fb,blend fb fb,sop2 fb,codebo screen,blend screen blend "" align align,blend'
+case "$1" in
+quick)
+    eval "set -- $VARIANTS"
+    for v; do run "$v" - 1; done ;;
+full)
+    # the known-good draw: alone, and four in one process
+    for how in - cc8 boot nocc; do
+        run fb,blend $how 1
+        run fb,blend $how 1
+        run fb,blend $how 1
+        run fb,blend $how 4
+    done
+    for v in fb fb,sop2 screen,blend screen blend "" align,blend align; do
+        for how in - cc8 boot nocc; do
+            run "$v" $how 1
+        done
+        run "$v" boot 3
+    done ;;
+*)
+    eval "set -- $VARIANTS"
+    for v; do
+        run "$v" - 1
+        run "$v" - 1
         run "$v" - 1
     done
-    exit 0
-fi
-# the known-good draw: alone, and four in one process
-for how in - cc8 boot nocc; do
-    run fb,blend $how 1
-    run fb,blend $how 1
-    run fb,blend $how 1
-    run fb,blend $how 4
-done
-# the rest
-for v in fb fb,sop2 screen,blend screen blend "" align,blend align; do
-    for how in - cc8 boot nocc; do
-        run "$v" $how 1
-    done
-    run "$v" boot 3
-done
+    run fb,blend - 20
+    run "" - 20 ;;
+esac
