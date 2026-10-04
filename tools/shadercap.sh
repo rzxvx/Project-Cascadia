@@ -95,6 +95,7 @@ for p in range(2222, 2300):
     echo "==> iOS over USB: $IPROXY $PORT 22"
     "$IPROXY" "$PORT" 22 >"$WORK/iproxy.log" 2>&1 &
     IPROXY_PID=$!
+    disown "$IPROXY_PID" 2>/dev/null || true     # no "Terminated" when cleanup stops it
     sleep 1
     kill -0 "$IPROXY_PID" 2>/dev/null || fail "iproxy exited: $(cat "$WORK/iproxy.log")"
 fi

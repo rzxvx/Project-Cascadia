@@ -3,8 +3,9 @@
 docs/research/p105-mesa.md): for each case, the USSE programs iOS's GL
 driver made for it, disassembled, and the other bytes the draw changed.
 
-    corpus.py DIR [CASE...]        DIR from tools/shadercap.sh
-                                   (logs/ios/corpus/<date>)
+    corpus.py DIR [--brief] [CASE...]   DIR from tools/shadercap.sh
+                                        (logs/ios/corpus/<date>); --brief:
+                                        no hex of the other changed runs
 
 DIR holds log.txt (gltrace corpus's output, which gives the order the
 cases ran in), baseline.pages (every page of the GL driver's GPU buffers
@@ -89,6 +90,9 @@ def hexdump(b, start, end, base):
     return lines
 
 
+BRIEF = False
+
+
 def report(name, mem, case_pages, src):
     print('=' * 78)
     print('== %s' % name)
@@ -124,16 +128,19 @@ def report(name, mem, case_pages, src):
     print('-- %d other changed run(s), %d of them up to 256 bytes:' % (len(other), len(small)))
     for addr, a, b, new in small:
         print('   CPU %08x +0x%x bytes' % (addr + a, b - a))
-        for line in hexdump(new, a, b, addr):
-            print(line)
+        if not BRIEF:
+            for line in hexdump(new, a, b, addr):
+                print(line)
     return len(progs)
 
 
 def main():
     if len(sys.argv) < 2:
         raise SystemExit(__doc__)
+    global BRIEF
     d = sys.argv[1]
-    only = set(sys.argv[2:])
+    BRIEF = '--brief' in sys.argv
+    only = set(a for a in sys.argv[2:] if a != '--brief')
     log = open(os.path.join(d, 'log.txt'), errors='replace').read()
     order = re.findall(r'^== case (\S+)', log, re.M)
     mem = pages(os.path.join(d, 'baseline.pages')) if os.path.exists(os.path.join(d, 'baseline.pages')) else {}
