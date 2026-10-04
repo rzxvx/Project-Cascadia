@@ -19,6 +19,7 @@ struct sgx_device {
    uint32_t va_start, va_end;
    uint32_t code_base, code_va_start, code_va_end;
    uint32_t fb_va, fb_width, fb_height, fb_stride;
+   uint32_t untiled_next;   /* sgx_bo_create, on kernels that pick tiled addresses */
 };
 
 struct sgx_bo {

@@ -20,7 +20,8 @@
 
 bool drm_shim_driver_prefers_first_render_node = true;
 
-static uint32_t next_va = 0xf0000000, next_code = 0x9b000000;
+/* below the BIF's tiled window, as the kernel picks them since 2026-10-04 */
+static uint32_t next_va = 0xe0000000, next_code = 0x9b000000;
 
 static int
 sgx_ioctl_noop(int fd, unsigned long request, void *arg)

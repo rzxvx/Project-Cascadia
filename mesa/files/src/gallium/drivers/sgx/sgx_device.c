@@ -13,6 +13,7 @@
 #include "drm-uapi/apple_sgx_drm.h"
 #include "util/log.h"
 #include "util/os_time.h"
+#include "util/u_math.h"
 #include "util/u_memory.h"
 
 uint64_t
@@ -45,6 +46,7 @@ sgx_device_init(struct sgx_device *dev, int fd)
    dev->fb_width = sgx_device_param(dev, APPLE_SGX_PARAM_FB_WIDTH);
    dev->fb_height = sgx_device_param(dev, APPLE_SGX_PARAM_FB_HEIGHT);
    dev->fb_stride = sgx_device_param(dev, APPLE_SGX_PARAM_FB_STRIDE);
+   dev->untiled_next = UINT32_MAX;
    if (!sgx_device_param(dev, APPLE_SGX_PARAM_UKERNEL_UP))
       mesa_logw("sgx: the GPU's microkernel is not running (dmesg | grep apple-sgx)");
    return true;
@@ -65,6 +67,38 @@ extra_bo_flags(void)
    return flags;
 }
 
+/* The BIF's first tiled window (the kernel's apple_sgx.h): what the GPU
+ * writes from here up the CPU reads back scrambled, in 256-byte x 16-line
+ * tiles.  Kernels before 2026-10-04 gave out addresses from its top down
+ * (docs/research/p105-mesa.md, M13a); a buffer put there is made again
+ * below it, at an address of our own -- next fit, from where the last one
+ * went. */
+#define SGX_TILED_VA_START 0xe0000000u
+
+static struct sgx_bo *
+untiled_bo(struct sgx_device *dev, uint32_t size, uint32_t flags)
+{
+   uint32_t step = size >= 0x10000 ? 0x10000 : 0x1000;
+   uint32_t top = (SGX_TILED_VA_START - align(size, 0x1000) - 0x1000) & ~(step - 1);
+   uint32_t bottom = MAX2(dev->va_start, dev->code_va_end);
+   uint32_t va = MIN2(dev->untiled_next, top) & ~(step - 1);
+
+   for (unsigned wrapped = 0; wrapped < 2; wrapped++, va = top) {
+      for (; va >= bottom && va <= top; va -= step) {
+         struct sgx_bo *bo = sgx_bo_create(dev, size, flags | APPLE_SGX_BO_FIXED_VA, va);
+
+         if (bo) {
+            dev->untiled_next = va - 0x1000;
+            return bo;
+         }
+         if (errno != EEXIST)
+            return NULL;
+      }
+   }
+   mesa_loge("sgx: no room for %u bytes below the tiled window", size);
+   return NULL;
+}
+
 struct sgx_bo *
 sgx_bo_create(struct sgx_device *dev, uint32_t size, uint32_t flags, uint32_t va)
 {
@@ -78,6 +112,12 @@ sgx_bo_create(struct sgx_device *dev, uint32_t size, uint32_t flags, uint32_t va
       if (errno != EEXIST)
          mesa_loge("sgx: GEM_CREATE %u bytes: %s", size, strerror(errno));
       return NULL;
+   }
+   if (!(flags & APPLE_SGX_BO_FIXED_VA) && c.va + size > SGX_TILED_VA_START) {
+      struct drm_gem_close cl = { .handle = c.handle };
+
+      drmIoctl(dev->fd, DRM_IOCTL_GEM_CLOSE, &cl);
+      return untiled_bo(dev, size, flags);
    }
    bo = CALLOC_STRUCT(sgx_bo);
    if (!bo) {

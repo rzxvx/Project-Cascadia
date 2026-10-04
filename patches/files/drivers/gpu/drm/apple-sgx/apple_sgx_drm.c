@@ -41,10 +41,12 @@
  *     queue, unread and unstarted; the poller sends TA again after
  *     rekick_ms.
  *
- * Addresses picked here for buffers of 64 KiB or more are 64 KiB aligned:
- * a render target's address loses its low 16 bits on the way to the pixel
- * back end or the background object (a fault at 0xefcf0000 for a target
- * at 0xefcff000).
+ * Addresses picked here for buffers of 64 KiB or more are 64 KiB aligned.
+ * That came from a fault at 0xefcf0000 for a render target at 0xefcff000,
+ * read then as the address losing its low 16 bits; it was the BIF's tiled
+ * window (apple_sgx.h), which moves accesses around within 64 KiB, and the
+ * kernel now picks addresses below it.  The alignment stays: it costs
+ * nothing.
  */
 
 #include <linux/dma-fence.h>
@@ -250,11 +252,11 @@ static int sgx_bo_map(struct apple_sgx_drm *sdrm, struct apple_sgx_bo *bo, u32 v
 						  SGX_CODE_BASE, SGX_CODE_VA_END,
 						  DRM_MM_INSERT_HIGH);
 	} else {
-		/* 64 KiB aligned from 64 KiB up: render targets need it (above) */
+		/* below the tiled windows; 64 KiB aligned from 64 KiB up */
 		ret = drm_mm_insert_node_in_range(&sdrm->va, &bo->node,
 						  size + SGX_PAGE_SIZE,
 						  size >= SZ_64K ? SZ_64K : SGX_PAGE_SIZE, 0,
-						  SGX_AUTO_VA_START, SGX_USER_VA_END,
+						  SGX_AUTO_VA_START, SGX_TILED_VA_START,
 						  DRM_MM_INSERT_HIGH);
 	}
 	mutex_unlock(&sdrm->va_lock);

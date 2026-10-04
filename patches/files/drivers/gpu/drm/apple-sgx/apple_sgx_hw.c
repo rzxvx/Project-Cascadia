@@ -734,8 +734,14 @@ static void sgx_uk_regs(struct apple_sgx *sgx)
 	for (i = 0; i < 8; i++)
 		sgx_write(sgx, SGX_BCAST + SGX_BIF_DIR_LIST_BASE(i),
 			  lower_32_bits(sgx->pd_dma));
-	sgx_write(sgx, SGX_BCAST + SGX_BIF_TILE1, 0xbeffe00);
-	sgx_write(sgx, SGX_BCAST + SGX_BIF_TILE2, 0xcffff00);
+	/* Tiled windows, as the DDK lays the register out (sgx543defs.h):
+	 * first MiB in 11:0, last in 23:12, configuration in 27:24.  0xb is
+	 * stride 4096 -- measured on 2026-10-04: within each 64 KiB, address
+	 * bits 11:8 and 15:12 trade places, 256-byte x 16-line tiles -- and
+	 * 0xc presumably 8192.  The render node keeps its buffers out of
+	 * them (apple_sgx.h). */
+	sgx_write(sgx, SGX_BCAST + SGX_BIF_TILE1, 0xbeffe00);	/* 0xe0000000-0xefffffff */
+	sgx_write(sgx, SGX_BCAST + SGX_BIF_TILE2, 0xcffff00);	/* 0xf0000000-0xffffffff */
 	sgx_write(sgx, SGX_BCAST + SGX_BIF_CTRL_INVAL, 8);
 	sgx_write(sgx, SGX_MASTER_BIF_MMU_CTRL, 2);
 	for (n = 0; n < sgx->ncores; n++)

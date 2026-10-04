@@ -58,7 +58,18 @@ struct page;
  *                         base, 20 bits of 8-byte instructions.  (It was 16
  *                         MiB, handed out top down, and Mesa's first program
  *                         landed out of reach: every render hung.)
- *     0xa8000000-         where the kernel picks addresses, top down
+ *     0xa8000000-         where the kernel picks addresses, top down,
+ *                         up to the tiled window
+ *     0xe0000000-+256 MiB the BIF's tiled window 1 (stride 4096): only at
+ *                         an address asked for
+ *   0xf0000000-           the BIF's tiled window 2 (stride 8192), unused
+ *
+ * The tiled windows are iOS's (BIF_TILE1/2, apple_sgx_hw.c): what the GPU
+ * writes through them lands in 256-byte x 16-line tiles, which the CPU,
+ * reading the buffer as linear, sees scrambled.  (Until 2026-10-04 the
+ * kernel picked addresses from 0xf0000000 down: Mesa's first render
+ * targets landed in window 1 and every non-uniform draw came back
+ * scrambled; uniform clears hid it.)
  *
  * PDS data pointers carry bit 31 implied, so everything a PDS program reads
  * has to be at 0x80000000 or above.
@@ -71,6 +82,7 @@ struct page;
 #define SGX_CODE_BASE			0x9a000000u
 #define SGX_CODE_VA_END			(SGX_CODE_BASE + SZ_8M)
 #define SGX_AUTO_VA_START		0xa8000000u
+#define SGX_TILED_VA_START		0xe0000000u
 
 /* The GPU clock in kHz: GFX-CLK, PLL@0x18 (513 MHz) / 5 in perf state 2. */
 #define SGX_CLOCK_KHZ			102600
