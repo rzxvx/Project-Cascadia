@@ -3,9 +3,11 @@
 docs/research/p105-mesa.md): for each case, the USSE programs iOS's GL
 driver made for it, disassembled, and the other bytes the draw changed.
 
-    corpus.py DIR [--brief] [CASE...]   DIR from tools/shadercap.sh
-                                        (logs/ios/corpus/<date>); --brief:
-                                        no hex of the other changed runs
+    corpus.py DIR [--brief|--own] [CASE...]   DIR from tools/shadercap.sh
+                                        (logs/ios/corpus/<date>)
+      --brief  no hex of the other changed runs
+      --own    also only the programs found in at most 5 cases: the
+               shader's own, not the driver's per-draw ones
 
 DIR holds log.txt (gltrace corpus's output, which gives the order the
 cases ran in), baseline.pages (every page of the GL driver's GPU buffers
@@ -91,6 +93,7 @@ def hexdump(b, start, end, base):
 
 
 BRIEF = False
+OWN_MAX = 5         # --own: a program in at most this many cases is the case's own
 
 
 def phas_before(b, o, limit=0x800):
@@ -120,15 +123,11 @@ def code_run(b, a, e):
     return best if len(best) >= 3 else None
 
 
-def report(name, mem, case_pages, src):
+def analyse(mem, case_pages):
     """A case's changed bytes: programs that overlap them (from the PHAS
-    before, so a program rewritten in place counts; '*' marks the
-    instructions that changed), code without a PHAS near, and the rest."""
-    print('=' * 78)
-    print('== %s' % name)
-    if src:
-        for line in src.rstrip().split('\n'):
-            print('   | ' + line)
+    before, so a program rewritten in place counts; CHANGED marks the
+    instructions that did), code without a PHAS near, and the rest.
+    Brings MEM up to date."""
     progs, codes, other, seen = [], [], [], set()
     for addr in sorted(case_pages):
         new = case_pages[addr]
@@ -152,25 +151,49 @@ def report(name, mem, case_pages, src):
                 continue
             c = code_run(new, a, b)
             if c and (addr + c[0]) not in seen:
-                codes.append((addr, c, new, old))
+                p = [(word(new, k), ud.decode(word(new, k))[0]) for k in c]
+                changed = [word(old, k) != word(new, k) for k in c]
+                codes.append((addr + c[0], p, changed))
                 seen.update(addr + k for k in c)
             else:
                 other.append((addr, a, b, new))
         mem[addr] = new
+    return progs, codes, other
+
+
+def key(p):
+    return tuple(w for w, _ in p)
+
+
+def show(title, at, p, changed):
+    print('-- %s at CPU %08x, %d instructions, %d changed' % (title, at, len(p), sum(changed)))
+    for k, (w, n) in enumerate(p):
+        print('  %s+%03x: %016x  %-9s%s%s' % ('*' if changed[k] else ' ', 8 * k, w, n,
+                                            ud.operands(n, w),
+                                            '  <end>' if n != 'PHAS' and w & END else ''))
+
+
+def report(name, src, result, keep=None):
+    """print a case; with KEEP, only the programs and code KEEP(p) passes"""
+    progs, codes, other = result
+    print('=' * 78)
+    print('== %s' % name)
+    if src:
+        for line in src.rstrip().split('\n'):
+            print('   | ' + line)
+    hidden = 0
     for at, p, changed in progs:
-        print('-- %s program at CPU %08x, %d instructions, %d changed' %
-              (kind(p), at, len(p), sum(changed)))
-        for k, (w, n) in enumerate(p):
-            print('  %s+%03x: %016x  %-9s%s%s' % ('*' if changed[k] else ' ', 8 * k, w, n,
-                                                ud.operands(n, w),
-                                                '  <end>' if n != 'PHAS' and w & END else ''))
-    for addr, c, new, old in codes:
-        print('-- code without a PHAS near, CPU %08x, %d instructions' % (addr + c[0], len(c)))
-        for o in c:
-            w = word(new, o)
-            n = ud.decode(w)[0]
-            print('  %s%08x: %016x  %-9s%s%s' % ('*' if word(old, o) != w else ' ', addr + o, w, n,
-                                              ud.operands(n, w), '  <end>' if n != 'PHAS' and w & END else ''))
+        if keep and not keep(p):
+            hidden += 1
+            continue
+        show('%s program' % kind(p), at, p, changed)
+    for at, p, changed in codes:
+        if keep and not keep(p):
+            hidden += 1
+            continue
+        show('code without a PHAS near', at, p, changed)
+    if hidden:
+        print('-- %d more, also in other cases (not shown)' % hidden)
     small = [r for r in other if r[2] - r[1] <= 0x100]
     print('-- %d other changed run(s), %d of them up to 256 bytes%s' %
           (len(other), len(small), '' if BRIEF else ':'))
@@ -188,33 +211,44 @@ def report(name, mem, case_pages, src):
 
 
 def main():
+    global BRIEF
     if len(sys.argv) < 2:
         raise SystemExit(__doc__)
-    global BRIEF
     d = sys.argv[1]
-    BRIEF = '--brief' in sys.argv
-    only = set(a for a in sys.argv[2:] if a != '--brief')
+    BRIEF = '--brief' in sys.argv or '--own' in sys.argv
+    own = '--own' in sys.argv
+    only = set(a for a in sys.argv[2:] if not a.startswith('--'))
     log = open(os.path.join(d, 'log.txt'), errors='replace').read()
     order = re.findall(r'^== case (\S+)', log, re.M)
-    mem = pages(os.path.join(d, 'baseline.pages')) if os.path.exists(os.path.join(d, 'baseline.pages')) else {}
-    summary = []
+    base = os.path.join(d, 'baseline.pages')
+    mem = pages(base) if os.path.exists(base) else {}
+    results = []
     for name in order:
         path = os.path.join(d, name + '.pages')
-        if not os.path.exists(path):
-            summary.append((name, None))
+        results.append((name, analyse(mem, pages(path)) if os.path.exists(path) else None))
+    # how many cases each program (by its words) turns up in
+    seen_in = {}
+    for name, r in results:
+        if r:
+            for k in set(key(p) for _, p, _ in r[0] + r[1]):
+                seen_in[k] = seen_in.get(k, 0) + 1
+    keep = (lambda p: seen_in.get(key(p), 0) <= OWN_MAX) if own else None
+    summary = []
+    for name, r in results:
+        if r is None:
+            summary.append((name, None, None))
             continue
-        cp = pages(path)
-        src_path = os.path.join(HERE, 'corpus', name + '.glsl')
-        src = open(src_path).read() if os.path.exists(src_path) else ''
+        n_own = sum(1 for _, p, _ in r[0] + r[1] if seen_in.get(key(p), 0) <= OWN_MAX)
+        summary.append((name, len(r[0]) + len(r[1]), n_own))
         if only and name not in only:
-            for a, b in cp.items():         # keep memory right for later cases
-                mem[a] = b
             continue
-        summary.append((name, report(name, mem, cp, src)))
+        src_path = os.path.join(HERE, 'corpus', name + '.glsl')
+        report(name, open(src_path).read() if os.path.exists(src_path) else '', r, keep)
     print('=' * 78)
-    print('== summary: programs and code runs found per case (- not drawn)')
-    for name, n in summary:
-        print('   %-24s %s' % (name, '-' if n is None else n))
+    print('== summary: programs and code runs per case, and those in at most %d cases '
+          '(- not drawn)' % OWN_MAX)
+    for name, n, n_own in summary:
+        print('   %-24s %s' % (name, '-' if n is None else '%3d %3d' % (n, n_own)))
 
 
 if __name__ == '__main__':
