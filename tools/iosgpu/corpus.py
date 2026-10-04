@@ -93,45 +93,98 @@ def hexdump(b, start, end, base):
 BRIEF = False
 
 
+def phas_before(b, o, limit=0x800):
+    """the nearest PHAS at or before O (8-aligned) in B, within LIMIT bytes"""
+    k = o & ~7
+    while k >= 0 and o - k <= limit:
+        if ud.decode(word(b, k))[0] == 'PHAS':
+            return k
+        k -= 8
+    return None
+
+
+def code_run(b, a, e):
+    """the 8-aligned instructions over [A, E) if at least three in a row
+    decode, else None"""
+    o, run, best = a & ~7, [], []
+    while o < e and o + 8 <= PAGE:
+        w = word(b, o)
+        n = ud.decode(w)[0]
+        if w and n and not n.startswith('ILLEGAL'):
+            run.append(o)
+        else:
+            best = max(best, run, key=len)
+            run = []
+        o += 8
+    best = max(best, run, key=len)
+    return best if len(best) >= 3 else None
+
+
 def report(name, mem, case_pages, src):
+    """A case's changed bytes: programs that overlap them (from the PHAS
+    before, so a program rewritten in place counts; '*' marks the
+    instructions that changed), code without a PHAS near, and the rest."""
     print('=' * 78)
     print('== %s' % name)
     if src:
         for line in src.rstrip().split('\n'):
             print('   | ' + line)
-    progs, other, seen = [], [], set()
+    progs, codes, other, seen = [], [], [], set()
     for addr in sorted(case_pages):
         new = case_pages[addr]
         old = mem.get(addr, bytes(PAGE))
         for a, b in changed_ranges(old, new):
-            o = a & ~7
-            found = False
+            hit = False
+            o = phas_before(new, a)
+            o = a & ~7 if o is None else o
             while o < b:
                 if (addr + o) not in seen and ud.decode(word(new, o))[0] == 'PHAS':
                     p = program_at(new, o)
-                    if p:
-                        progs.append((addr + o, p))
+                    if p and o + 8 * len(p) > a:
+                        changed = [word(old, o + 8 * k) != w for k, (w, _) in enumerate(p)]
+                        progs.append((addr + o, p, changed))
                         seen.update(addr + o + 8 * k for k in range(len(p)))
                         o += 8 * len(p)
-                        found = True
+                        hit = True
                         continue
                 o += 8
-            if not found:
+            if hit:
+                continue
+            c = code_run(new, a, b)
+            if c and (addr + c[0]) not in seen:
+                codes.append((addr, c, new, old))
+                seen.update(addr + k for k in c)
+            else:
                 other.append((addr, a, b, new))
         mem[addr] = new
-    for at, p in progs:
-        print('-- %s program at CPU %08x, %d instructions' % (kind(p), at, len(p)))
+    for at, p, changed in progs:
+        print('-- %s program at CPU %08x, %d instructions, %d changed' %
+              (kind(p), at, len(p), sum(changed)))
         for k, (w, n) in enumerate(p):
-            print('   +%03x: %016x  %-9s%s%s' % (8 * k, w, n, ud.operands(n, w),
-                                              '  <end>' if n != 'PHAS' and w & END else ''))
+            print('  %s+%03x: %016x  %-9s%s%s' % ('*' if changed[k] else ' ', 8 * k, w, n,
+                                                ud.operands(n, w),
+                                                '  <end>' if n != 'PHAS' and w & END else ''))
+    for addr, c, new, old in codes:
+        print('-- code without a PHAS near, CPU %08x, %d instructions' % (addr + c[0], len(c)))
+        for o in c:
+            w = word(new, o)
+            n = ud.decode(w)[0]
+            print('  %s%08x: %016x  %-9s%s%s' % ('*' if word(old, o) != w else ' ', addr + o, w, n,
+                                              ud.operands(n, w), '  <end>' if n != 'PHAS' and w & END else ''))
     small = [r for r in other if r[2] - r[1] <= 0x100]
-    print('-- %d other changed run(s), %d of them up to 256 bytes:' % (len(other), len(small)))
-    for addr, a, b, new in small:
-        print('   CPU %08x +0x%x bytes' % (addr + a, b - a))
-        if not BRIEF:
+    print('-- %d other changed run(s), %d of them up to 256 bytes%s' %
+          (len(other), len(small), '' if BRIEF else ':'))
+    if BRIEF:
+        pagesum = {}
+        for addr, a, b, _ in other:
+            pagesum[addr] = pagesum.get(addr, 0) + b - a
+        print('   by page: ' + ' '.join('%08x:%d' % (k, v) for k, v in sorted(pagesum.items())))
+    else:
+        for addr, a, b, new in small:
+            print('   CPU %08x +0x%x bytes' % (addr + a, b - a))
             for line in hexdump(new, a, b, addr):
                 print(line)
-    return len(progs)
+    return len(progs) + len(codes)
 
 
 def main():
@@ -159,7 +212,7 @@ def main():
             continue
         summary.append((name, report(name, mem, cp, src)))
     print('=' * 78)
-    print('== summary: programs found per case (- not drawn)')
+    print('== summary: programs and code runs found per case (- not drawn)')
     for name, n in summary:
         print('   %-24s %s' % (name, '-' if n is None else n))
 
