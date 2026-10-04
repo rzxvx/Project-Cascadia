@@ -274,23 +274,87 @@ values predict (`f06_div` `80 83 87 8a` = 1/2, 1.0625/2.0625, ...;
   fragment "preamble" `PHAS / VBW 50850009e0000300 / NOP / VTST ...` was
   two programs: `PHAS; VBW (end)`, then an older program's tail.
 - **A shader is up to three programs.** A **vertex** program (ends with the
-  vertex emit `fb275000a0200000`: `PHAS; SMLSI; VMOV o0 <- pa0; SMLSI;
-  emit` for a pass-through position); a **pixel** program, ending in a
-  write of `o0`; and a **secondary** program, run once per draw, which
-  does the arithmetic that only depends on uniforms. `gl_FragColor = u0 +
-  u1` is: secondary `PHAS; NOP; VTST; VLDST; SPEC` (the never-taken load,
-  as our `programs.py` has it), `V16NMAD VADD pa3 = pa4 + pa3`, `VPCK pa6
-  <- pa3 (end)`; pixel `PHAS; VBW o0 <- sa6 (end)` (`50850009e0000300`:
-  `f=3` is the secondary bank, `m=6`) -- the secondary program's `pa`
-  outputs are the pixel program's `sa`. `u0 * u1` differs in one word, the
-  V16NMAD's op2 (`...41103` VADD, `...40103` VMUL). A varying: pixel `PHAS;
-  VPCK o0 <- pa0 (end)`, secondary empty (`PHAS; NOP (end)`). A
-  non-dependent texture read: pixel `PHAS; VBW o0 <- pa0 (end)` -- the
+  vertex emit `fb275000a0200000`: `PHAS; mov.f32 o0.xy, pa0 rpt2; emit`
+  for a pass-through position, some draws with SMLSIs around a 4-repeat
+  VMOV); a **pixel** program, ending in a write of `o0`; and a
+  **secondary** program, run once per draw, which does the arithmetic that
+  only depends on uniforms. `gl_FragColor = u0 + u1` is: secondary `PHAS;
+  NOP; VTST; VLDST; SPEC` (the never-taken load, as our `programs.py` has
+  it), `add.f16 sa6, sa8, sa6`, `pck.u8.f16 sa6, sa6 scale (end)`; pixel
+  `PHAS; or o0, sa6, #0 (end)` (`50850009e0000300`) -- the secondary
+  program's `pa` bank is the pixel program's `sa`. `u0 * u1` differs in
+  one word, the V16NMAD's op2 (`...41103` add, `...40103` mul). A varying:
+  pixel `PHAS; VPCK o0 <- pa0 (end)`, secondary empty (`PHAS; NOP (end)`).
+  A non-dependent texture read: pixel `PHAS; VBW o0 <- pa0 (end)` -- the
   PDS fetched the texel, as in sgx2d's frame -- and the vertex program
   computes `t` with two VMAD2s.
-- `corpus.py --catalog` prints every case's three programs by kind (an
-  unchanged one taken from the case it was last written in, and said so):
-  the test vectors for our compiler.
+- `corpus.py --catalog` prints every case's programs by kind, words and
+  disassembly: the test vectors for our compiler. A kind the draw wrote no
+  program of is only named (the driver used one already in GPU memory, or
+  the shader has none; the capture cannot tell which).
+
+**Reading them: the operands (2026-10-04).** `usse-dis.py` now decodes
+the operands of the ALU, move, pack, test, load, sample and branch
+instructions the way Vita3K's translator does (`usse-dis.py words HEX...`
+for loose words). What that took, and what the arithmetic cases confirm:
+
+- **Register fields of vector operands count 64-bit registers**: F16/F32
+  operands of V16NMAD/V32NMAD, VMAD2, VCOMP, a float VPCK source and a
+  float VMOV are doubled into 32-bit numbers (V16NMAD's dest field 3 is
+  sa6 -- the register the pixel program's VBW, which is not doubled,
+  reads). An F16 vec4 is two registers (sa6 = x,y; sa7 = z,w). The top
+  temporaries a field can name (last 4, or 8 doubled) are the FP internal
+  registers i0..i3, which hold F32 vec4s.
+- **VPCK's formats are `u8 s8 o8 u16 s16 f16 f32 c10`** (the table had
+  them wrong: what printed as `u16 -> f32` is f16 -> u8). The colour is
+  packed by `pck.u8.f16 ... scale` (or `.f32` from an internal register):
+  four bytes in one register, which the pixel program moves to o0.
+- **mediump is F16 throughout**: uniforms sit in the secondary attributes
+  as F16, the ALU work is V16NMAD / VMAD2 `d=1` / VCOMP `.f16`. `sin`,
+  `cos` and `ceil` go to F32 in the internal registers.
+- **Constants** come from the hardware's table as a special-bank operand
+  (Vita3K's table: in F16, `c15.y` = 1.0, `c0.x` = 0, `c4.y` = 2.0, `c34` =
+  1.0 in every half -- the halves of the F32 table's words) or from a
+  secondary attribute the PDS loads (`exp` multiplies by sa5's low half,
+  `log` by its high half: log2(e) and ln(2)).
+- **Where uniforms land is the compiler's choice per shader**, not a fixed
+  layout: `u0 - u1` reads u0 from sa8 and u1 from sa6, `mod(u0, u1)` u0
+  from sa6; a uniform used only by component goes wherever there is room,
+  even split (`u0 / u1` takes u1 as sa5 and sa8). The PDS program that
+  loads them says where; for our compiler the layout is ours to pick.
+
+What each `f*` case became (secondary program; the pixel program is `or o0,
+saN, #0` with N the VPCK's destination):
+
+| GLSL | iOS's secondary program (after the 5-word preamble) |
+|---|---|
+| `vec4(0.25, 0.5, 0.75, 1.0)` | `pck.u8.f16 sa8, sa6` (the constant loaded into sa6) |
+| `u0 + u1`, `*`, `min`, `max` | `add/mul/min/max.f16 sa6, sa8, sa6` -- V16NMAD op2 1/0/5/6 |
+| `u0 - u1` | `add.f16 sa6, -sa6, sa8` (src1 modifier `m=1`) |
+| `u0 * u1 + u2` | `mad.f16 sa6, sa10, sa8, sa6` (VMAD2, `d=1`) |
+| `u0 / u1`, `1.0 / u0` | four `rcp.f16` (VCOMP op2 0, one component each), then `mul.f16` |
+| `inversesqrt`, `exp2`, `log2` | four VCOMP `rsq` / `exp` / `log` (op2 1/3/2) |
+| `sqrt(u0)` | `rsq` then `rcp`, per component |
+| `pow(u0, u1)` | `log`, `mul`, `exp` |
+| `dot(u0.xyz, u1.xyz)` | `dp.f16 sa6.xyzw, sa8.xyz0, sa6.xyz1` -- the swizzles' 0 and 1 drop w; the dest mask broadcasts |
+| `length`, `normalize` | `dp` to `.x`, `rsq`; `rcp` for length, `mul` for normalize |
+| `clamp(u0, 0.0, 1.0)` | nothing: the u8 pack saturates |
+| `abs`, `-u0` | `mul.f16 sa6, \|sa6\|, c15.yyyy` / `-sa6` (times 1.0, with a modifier) |
+| `floor`, `fract` | `frc` (VFRC is `a - floor(b)`), then `add -frc + x` for floor |
+| `ceil` | `mul.f16 i0, -x, 1.0`; `frc.f32 i0, c0 (0), i0` = 0 - floor(-x) |
+| `mix(u0, u1, u2.x)` | two VMAD2s: `u1 * a + u0`, then `u0 * -a + that` |
+| `step(u0, u1)` | `tstmsk sa6 = sub(sa8, sa6) ... ? 1 : 0` (VTSTMSK; the comparison's sign still to pin down) |
+| `smoothstep` | sub, sub, 4 rcp, mul, max c0, min c15.y, `mad (1 - t) * 2 + 1`, mul, mul |
+| `sign` | `mul -1 * 1`, then two conditional VMOVs (`< 0 ? -1 : 0`, `<= 0 ? that : 1`) |
+| `cross` | `mul sa10.xyz, sa8.zxy, sa6.yzx`; `mov sa6, sa6.zxyw`; `mad sa8.yzx * sa6 - sa10` |
+| `mod`, `reflect` | rcp, mul, frc, add, `mad -y`; `dp`, `mul 2.0`, `mad -n` |
+| `u0.wzyx` | `pck.u8.f16 sa6, sa6.wzyx` (the pack's own component select) |
+| `vec4(normalize(u0.xyz), 1.0)` | ..., `pck.u8.f16 sa6.xyz, ...` and `pck.u8.f16 sa6.w, c15.xxxy` (1.0) |
+| `sin`, `cos` | F32 in i0/i1: range reduction (`mad`, `frc`), a polynomial of VMAD2s on table constants c28..c30, VDUAL and VMAD (not decoded yet) |
+
+`tan` is the exception: a 44-instruction pixel program with per-channel
+predicates (VTST into p0..p3, predicated VPCKs) reading sa8..sa20, and no
+secondary program written by the draw -- to look at again with `--list`.
 
 ## M12: the Mesa driver's skeleton (2026-10-03, done 2026-10-04)
 

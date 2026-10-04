@@ -205,11 +205,17 @@ def key(p):
     return tuple(w for w, _ in p)
 
 
+def second(p):
+    """a secondary program's: its pa bank is the secondary attributes"""
+    return kind(p) in ('secondary', 'empty')
+
+
 def show(title, at, p, changed):
     print('-- %s at CPU %08x, %d instructions, %d changed' % (title, at, len(p), sum(changed)))
     for k, (w, n) in enumerate(p):
         print('  %s+%03x: %016x  %-9s%s%s' % ('*' if changed[k] else ' ', 8 * k, w, n,
-                                            ud.operands(n, w), '  <end>' if ends(w, n) else ''))
+                                            ud.operands(n, w, second(p)),
+                                            '  <end>' if ends(w, n) else ''))
 
 
 def listing(name, result):
@@ -231,24 +237,25 @@ GROUP = {'vertex': 'vertex', 'secondary': 'secondary', 'empty': 'secondary',
 def catalog(name, result, last):
     """a case's programs, by kind, as words and their disassembly -- test
     vectors for our compiler: what iOS's compiler made of the same GLSL.
-    A program the draw did not change is not in the case's pages; LAST
-    holds the latest one of each group, printed with the case it is from."""
+    A kind the draw wrote no program of is only named: the driver used one
+    already in GPU memory (the same code an earlier case's draw left there),
+    or the shader needs none -- which of the two, the capture does not say."""
     order = ('vertex', 'secondary', 'pixel', 'other')
     found = {}
     for at, p, _ in result[0]:
-        found.setdefault(GROUP[kind(p)], p)
+        found.setdefault(GROUP[kind(p)], []).append(p)
     print('== %s' % name)
     for g in order:
-        if g in found:
-            p, note = found[g], ''
-            last[g] = (name, p)
-        elif g in last and g != 'other':
-            p, note = last[g][1], ' (unchanged since %s)' % last[g][0]
-        else:
+        if g not in found:
+            if g in last:
+                print('-- %s: none written by this draw (the last one was in %s)' % (g, last[g]))
             continue
-        print('-- %s%s' % (kind(p), note))
-        for w, n in p:
-            print('   %016x  %-9s%s%s' % (w, n, ud.operands(n, w), '  <end>' if ends(w, n) else ''))
+        last[g] = name
+        for p in found[g]:
+            print('-- %s' % kind(p))
+            for w, n in p:
+                print('   %016x  %-9s%s%s' % (w, n, ud.operands(n, w, second(p)),
+                                             '  <end>' if ends(w, n) else ''))
 
 
 def report(name, src, result, keep=None):
@@ -320,7 +327,7 @@ def main():
         summary.append((name, len(r[0]) + len(r[1]), n_own))
         if only and not any(fnmatch.fnmatchcase(name, o) for o in only):
             for at, p, _ in r[0]:
-                last[GROUP[kind(p)]] = (name, p)
+                last[GROUP[kind(p)]] = name
             continue
         if '--list' in sys.argv:
             listing(name, r)
