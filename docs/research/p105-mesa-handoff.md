@@ -10,15 +10,18 @@ The short version:
 - **M12 is done.** OpenGL ES clears run on the GPU through Mesa.
 - **M11 is read.** iOS's compiled shaders, state words and PDS programs are
   decoded.
-- **M13a (first triangles) is in progress.** Triangles draw on the iPad in
-  the right places, and constant colours come out right. Colours that vary
-  across a triangle come out wrong, and one test draw does not show at all.
-  Section 2 has the data and the next experiments.
+- **M13a (first triangles) is done.** A colour per vertex, a uniform's
+  colour and a triangle turned by the vertex shader all draw right
+  (`sgx-gl gltri`: 11 of 11). The bug that held it up was not in the draw:
+  render targets sat in the BIF's tiled window (section 2).
+- **Next: M13b**, our own vertex side (section 7).
 
 ## 1. How to work in this repository
 
-- **Branch.** Work on `claude/nice-ptolemy-sc3zlz` of rzxvx/Project-Cascadia,
-  then commit and push there. Do not open a PR unless asked.
+- **Branch.** Since 2026-10-04 the work is on `main` of
+  rzxvx/Project-Cascadia (the `claude/nice-ptolemy-sc3zlz` branch was
+  fast-forwarded into it). Commit there; **the user pushes**, the session
+  does not. Do not open a PR unless asked.
 - **Commit messages** end with the attribution trailer the session's system
   reminder gives. The last session used:
 
@@ -37,8 +40,11 @@ The short version:
   Code style is in the surrounding code: Mesa style in `mesa/files`, short
   docstrings in Python.
 - **The user's side.**
-  - The working copy is `~/Desktop/cascadia-mesa` on an Apple-silicon Mac.
-  - They update and build with `git pull && ./cascadia mesa`. This builds
+  - The working copy is `~/Desktop/ipad-mini-linux` on an Apple-silicon
+    Mac (`~/Desktop/cascadia-mesa` is the older checkout of the branch).
+    The kernel tree `build/linux` is a link to `~/Desktop/linux-kernel`,
+    shared by both.
+  - They build with `./cascadia mesa`. This builds
     Mesa in an Alpine armv7 Docker image and installs it on the iPad over
     ssh or into the NFS root.
   - The iPad is an iPad mini 1, iPad2,5 (`p105ap`), with a PowerVR
@@ -47,141 +53,34 @@ The short version:
   - The same iPad also boots jailbroken iOS 8.4.1 (12H321), which is used
     for GPU captures.
   - The user pastes device output into the chat.
-- **This side.** The cloud container has no device. Test on the host
-  through drm-shim (section 6) before asking the user to run anything.
+- **This side.** Since 2026-10-04 the session runs on the user's Mac and
+  reaches the iPad itself: `ssh cascadia` (root@10.55.0.2), the Mesa
+  build is `docker run ... cascadia-mesa sh mesa/build.sh` then
+  `mesa/install.py --install root@10.55.0.2` (what `./cascadia mesa`
+  does), and runs are `ssh cascadia 'PATH=/usr/local/lib/sgx-mesa/bin:$PATH
+  sgx-gl gltri'`. Flashing a kernel needs the user. A session without the
+  device tests on a host through drm-shim (section 6).
 
-## 2. The open bug: M13a's colours on the device
+## 2. The M13a bug, solved: the BIF's tiled window
 
-### What runs
+The full account is in p105-mesa.md, M13a, "Solved". In short:
 
-`sgx-gl gltri` (`tools/sgx/gl/gltri.c`) draws three things into a 768x1024
-RGBA framebuffer object, reads each one back and checks pixels:
-
-| test | what it draws | shader |
-|---|---|---|
-| 1 | a triangle at (-0.8,-0.8) red, (0.8,-0.8) green, (0,0.8) blue | a colour per vertex, `gl_FragColor = v` |
-| 2 | a strip rectangle at x -0.9..-0.5, y 0.5..0.9, 4 vertices, so 2 triangles | `gl_FragColor = u`, orange (1, 0.5, 0.25, 1) |
-| 3 | a thin triangle (0.05,0.5) (0,0.9) (-0.05,0.5), turned by `uniform mat2 m` | constant yellow |
-
-Read-back pixel (0,0) is the bottom left, as GL has it.
-
-### What the device gave
-
-Five of 11 checks were right. The results were byte-identical in all three
-runs:
-
-- the first build, with the pack's pixel side;
-- commit 6b303d9's default, iOS's pixel side for an iterated colour;
-- `SGX_FRAME=packpixel`.
-
-| point | read (R G B) | true colour (barycentric × 255) |
-|---|---|---|
-| near the red corner (96,117) | 54 a4 07 = 84 164 7 | 244.5 5.8 4.7 |
-| near the green corner (672,117) | a5 56 04 = 165 86 4 | 5.4 244.9 4.7 |
-| centroid (384,375) | 05 a5 55 = 5 165 85 | 84.8 85.2 85.0 |
-| near the blue corner (384,896) | 00 00 00 | 3.7 4.1 247.2 |
-| test 2, inside the rectangle (115,870) | 00 00 00 | 255 128 64 |
-| test 3, the turned triangle (384,819) | ff ff 00 | ff ff 00 ✓ |
-| every "outside" check | 00 00 00 | 00 00 00 ✓ |
-
-Clears are right in every colour: `glclear`, and the black clear before
-test 1.
-
-### What the numbers say
-
-- **Blue is about right** at the three drawn points (7/4.7, 4/4.7, 85/85).
-- **R + G is right** at each of the three points (248/250, 251/250,
-  170/170). R and G are mixed with each other, and how they mix depends on
-  position. A fixed colour transform cannot explain it, because constant
-  colours come out right.
-- **A correction to the record.** The M13a paragraph in p105-mesa.md called
-  blue "the true barycentric to the last bit". That overstates it. A linear
-  fit through the three points:
-
-  ```
-  R_obs = 0.345R + 0.684G - 0.97B
-  G_obs = 0.643R + 0.318G + 0.98B
-  ```
-
-  It is exact for three points, so it validates nothing. It is also
-  contradicted by the blue-corner pixel, which reads all black: the fit
-  predicts a green near 0.95 and B is near 0.97.
-- **Parts are not drawn.**
-  - Near the blue apex (the top of the triangle), the pixel is black. It
-    should be bright blue whatever the mixing.
-  - Test 2's rectangle (6 vertices, constant orange) does not show.
-  - Test 3's triangle does show, in the same y range (768..973).
-  - So a plain "y above 768 is not drawn" does not explain it.
-- **Timings.** Test 1 took 35 ms (first draw: setup), tests 2 and 3 took
-  about 1.2 ms each. That is not necessarily suspicious: the clear's 60 ms
-  is mostly its 3 MB read-back from uncached memory.
-- **The photo is not evidence.** A photo of the screen with `gltri --fb`
-  showed a repeated striped pattern that does not match the read-back. The
-  `--fb` copy to `/dev/fb0` may have the wrong stride or format.
-- **Why the pixel program is probably not the cause.** Two different pixel
-  sides gave identical bytes:
-  - the pack's: texture block PDS, iterate `0x1fc01900` (format 1, varying
-    1), then SOP2M texel × colour, then MOV;
-  - ours: PDS `{doutu, 6, 0, 0x2fc0100f}` plus `070001b5 07040c12 af000000`
-    (iterate varying 1 as F16), then `PHAS; pck.u8.f16 o0, pa0`.
-
-  Either the varying data is already wrong when it reaches the pixel stage
-  (the vertex program, the TA's varying setup, or the vertex data), or the
-  hardware did not take our state word 6 at all. M12 did point word 6 at
-  our own texture block at a new address and that worked, so word 6 is
-  normally taken.
-
-### Next experiments, in order
-
-1. **Get the two read-backs as images.** Ask the user for `/tmp/gltri.ppm`
-   and `/tmp/gltri-pack.ppm` from the last runs: `scp` from the iPad, then
-   `sips -s format png` on the Mac. The whole picture shows the triangle's
-   shape, the colour field and what is missing. This is cheap and should
-   come first.
-2. **Prove the iterated pixel side is the one that runs.** Run
-   `SGX_DEBUG=frame sgx-gl gltri` and check that the log says "pixel
-   program: the colour iterated as F16 and packed (iOS's)". The only debug
-   log the user has sent was from the first build. Then temporarily make the
-   program at `code_va + ITER_PROG` write a fixed colour: for example LIMM
-   into o0, or a MOV from a constant. If draws do not change colour, word 6
-   is not reaching the hardware.
-3. **Isolate one channel at a time.** Add a mode to gltri, or a new test:
-   - a full-screen quad where only R varies (0 at left, 1 at right), G = B
-     = 0; then only G, only B, only A;
-   - the same with vertical gradients;
-   - read back a grid and fit planes.
-
-   This shows which output component ends up where, and whether the
-   vertex-to-colour association is wrong. That is the "mixing depends on
-   position" signature: for example, the TA computing component planes
-   from a permuted vertex order, or reading F32 outputs as F16 pairs. Word
-   20 = 0x3 says both varyings are F16.
-4. **Log test 2's six vertices** with `SGX_DEBUG_DRAW=1`. Only the first
-   triangle is logged now. Check whether the strip's two triangles both
-   survive the anticlockwise reordering, and whether a 6-vertex draw that
-   is not full-screen works at all: try two triangles of test 1's kind.
-5. **Read the pack's vertex side against iOS's.**
-   - The pack (`tools/sgx/frame.py`, `programs.py: vertex()`):
-     - fetch control `0x003` (rgba → pa0..3), `0x401` (uv → pa4..5),
-       `0x801` (xy → pa8..9), stride 32;
-     - phase 1 sets pa10 = 0 and pa11 = 1.0;
-     - phase 2 has two VMOVs with SMLSI increments into o0..o9;
-     - state word 16 = `0x0a001000` (10 output words), word 19 = 0x39,
-       word 20 = 0x3.
-
-     sgx2d only ever drew one colour per quad, so per-vertex colour was
-     never tested.
-   - iOS: `corpus.py DIR --state 'v0*' 'x00*'` and `--catalog v00_vec4`
-     show its vertex program and words 16/19/20 for one vec4 varying.
-   - Does iOS's vertex program write the varying as F32 or as packed F16?
-     Does our output layout match words 19/20? Disassemble the pack's
-     vertex program with `usse-dis.py words`, from `programs.py`'s
-     assembled words.
-6. **If the pack's vertex side is at fault, go to M13b now** (section 7).
-   Write our own vertex program (position o0..o3, colour o4..o7 as F32 or
-   F16 to match word 20), our own vertex fetch PDS, state words 16/19/20 to
-   match, and the iterated pixel side we already have. This replaces the
-   pack's vertex half.
+- The GPU drew everything right. The same draws into the framebuffer
+  (`SGX_FRAME=screen`, then `cat /dev/fb0`) are a perfect picture.
+- The render target was at 0xefcf0000, which the render node picked top
+  down from 0xf0000000. `BIF_TILE1 = 0x0beffe00` (iOS's value, set by
+  the kernel) makes 0xe0000000-0xefffffff a tiled window, stride 4096:
+  within each 64 KiB, address bits 11:8 and 15:12 trade places, so the CPU
+  saw the picture cut into 64-pixel pieces and shuffled. `BIF_TILE2`
+  makes 0xf0000000 up another (configuration 0xc).
+- Uniform clears look the same in any layout, which is why M12 passed.
+  The colour "mixing" numbers in the earlier version of this file were
+  pixels from other places.
+- Fixed in the kernel (addresses below 0xe0000000, `SGX_TILED_VA_START`)
+  and in Mesa for the kernel on the device until it is flashed
+  (`untiled_bo` in sgx_device.c).
+- Lesson for later checks: test with pictures that are not uniform, and
+  look at a whole read-back as an image before reading numbers off it.
 
 ## 3. M13a: how the code draws
 
@@ -456,14 +355,11 @@ From p105-mesa.md, M13 to M16.
 
 ## 8. Where the last session stopped
 
-- **Last commits:**
-  - 6b303d9: M13a with iOS's pixel side for an interpolated colour, and
-    `gltri --ppm`;
-  - af7b2d8: M13a draws;
-  - 970b8bd and ab06d0e: M11 PDS and state decoding.
-- **Task in progress:** M13a. The device results are in section 2.
-- **What the user was last asked for:** nothing is pending. The last runs
-  were `sgx-gl gltri --ppm /tmp/gltri.ppm` and `SGX_FRAME=packpixel sgx-gl
-  gltri --ppm /tmp/gltri-pack.ppm`, both 5/11 with identical bytes.
-- **Start the next session** by asking for those two images, or for a
-  fresh run with `SGX_DEBUG=frame` (section 2, steps 1 and 2).
+- **Last work (2026-10-04):** M13a solved and checked on the iPad
+  (`gltri` 11 of 11 on the default path, `glclear 20` 0 wrong). Kernel
+  and Mesa fixes for the tiled window, docs.
+- **On the device:** the new Mesa is installed. The kernel there (#291)
+  is the old one; a kernel with the fix is built (`./cascadia build`) and
+  waits for the user to flash it. Mesa works on both.
+- **Next:** M13b, our own vertex side (section 7). Then textures through
+  the corpus's `t*` cases (M14) or M10's render targets of any size.

@@ -658,7 +658,8 @@ queue's offsets:
 - With the target at `0xefcff000`, our end of tile and background always
   faulted at `0xefcf0000` once the TA was through: the target's address
   loses its low 16 bits. At 1 MiB-aligned addresses (`align`) the target
-  came out right.
+  came out right. (Later: it was the BIF's tiled window, which moves
+  accesses around within 64 KiB -- M13a, "Solved".)
 
 The kernel now works around all three: a render whose parameter buffer is
 another buffer object than the last one's (each object has a serial)
@@ -746,6 +747,47 @@ pack's (`packpixel`) -- so what is wrong is most likely before the pixel
 program: the varyings as the pack's vertex program and state words 16, 19
 and 20 hand them to the TA, or the vertices. Where this stands, the numbers
 and the next experiments: [p105-mesa-handoff.md](p105-mesa-handoff.md).
+
+**Solved (2026-10-04, third session): nothing was wrong with the draw.**
+The two read-backs as images (`gltri.ppm`, `gltri-pack.ppm`) were the whole
+scene, in the right colours, cut into 64-pixel pieces and shuffled: four
+narrow copies side by side, striped. Rendering the same three draws into
+the framebuffer instead of the target (`SGX_FRAME=screen`, then `cat
+/dev/fb0`) gave a perfect picture -- the gradient triangle, the orange
+rectangle, the yellow triangle. The same pixels, 283838 of them not black
+in both, only in other places. Matching every 256-byte piece of the one
+against the other (4690 that match exactly one place) gave the rule
+without exception: within each 64 KiB, bits 11:8 and 15:12 of the address
+trade places, so each 4 KiB of memory holds a 256-byte x 16-line tile of a
+4096-byte-stride surface.
+
+That is the BIF's tiling. The kernel sets `BIF_TILE1 = 0x0beffe00` and
+`BIF_TILE2 = 0x0cffff00`, as iOS does: in the DDK's layout, 0xe0000000 to
+0xefffffff tiled with configuration 0xb (stride 4096) and 0xf0000000 up
+with 0xc. The render node picked addresses from 0xf0000000 down, so every
+target Mesa made was at 0xefcf0000 -- inside window 1. Clears are uniform,
+and a uniform clear looks the same in any layout: M12's "every pixel
+right" over 100 clears could not see it. Nor could sgx2d, which writes the
+framebuffer at 0x90000000. The fault that made the kernel align buffers
+to 64 KiB (0xefcf0000 for a target at 0xefcff000, M12) was the same
+swizzle. The "R and G mixed by position" fit of the second run was
+pixels from other places.
+
+Checked: `SGX_FRAME=align` (targets at 0xc0000000) gave 11 of 11 with no
+rebuild. Fixed on both sides:
+
+- the kernel picks addresses below 0xe0000000 (`SGX_TILED_VA_START`); an
+  address in the windows can still be asked for, for tiled surfaces later;
+- Mesa, for kernels before that one: a buffer the kernel put in the window
+  is made again below it at an address of its own (`untiled_bo`,
+  sgx_device.c, next fit).
+
+With the new Mesa on the old kernel: `sgx-gl gltri` 11 of 11, the target
+at 0xdfcf0000; `glclear 20` 0 wrong.
+
+**M13a is done.** The colours per vertex, the uniform's colour and the
+turned triangle are all right, through the pack's vertex side and iOS's
+pixel side. Next is M13b.
 
 ## M14: textures, blending, depth and the rest of GLES 2.0's state
 
