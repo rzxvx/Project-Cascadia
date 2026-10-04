@@ -11,6 +11,8 @@ driver made for it, disassembled, and the other bytes the draw changed.
                shader's own, not the driver's per-draw ones
       --list   a line per program: where, how long, the opening mnemonics
       --catalog  every case's programs by kind, words and disassembly only
+      --diff A B  memory after case A against after case B, outside the
+               code: the state words and PDS programs the draws set apart
 
 DIR holds log.txt (gltrace corpus's output, which gives the order the
 cases ran in), baseline.pages (every page of the GL driver's GPU buffers
@@ -305,6 +307,46 @@ def report(name, src, result, keep=None):
     return len(progs) + len(codes)
 
 
+def state_diff(na, sa, nb, sb, maxrun=32, maxruns=80):
+    """GPU memory after case NA against after case NB, as 32-bit words:
+    the runs that differ, outside the code pages (pages with a PHAS) --
+    the state words, PDS programs, vertex data and constants the two draws
+    set differently.  Neighbouring cases differ least."""
+    print('== %s -> %s: what differs outside the USSE code' % (na, nb))
+    code, shown, more = 0, 0, 0
+    for addr in sorted(set(sa) | set(sb)):
+        a, b = sa.get(addr, bytes(PAGE)), sb.get(addr, bytes(PAGE))
+        if a == b:
+            continue
+        if any(is_phas(word(b, o)) or is_phas(word(a, o)) for o in range(0, PAGE, 8)):
+            code += 1
+            continue
+        wa, wb = struct.unpack('<1024I', a), struct.unpack('<1024I', b)
+        k = 0
+        while k < 1024:
+            if wa[k] == wb[k]:
+                k += 1
+                continue
+            j = k
+            while j < 1024 and any(wa[m] != wb[m] for m in range(j, min(j + 4, 1024))):
+                j += 1
+            if shown >= maxruns:
+                more += 1
+                k = j
+                continue
+            shown += 1
+            print('   %08x  %d word%s' % (addr + 4 * k, j - k, '' if j - k == 1 else 's'))
+            if j - k <= maxrun:
+                for r in range(k, j, 8):
+                    e = min(r + 8, j)
+                    print('     - ' + ' '.join('%08x' % w for w in wa[r:e]))
+                    print('     + ' + ' '.join('%08x' % w for w in wb[r:e]))
+            k = j
+    if more:
+        print('   ... %d more runs' % more)
+    print('   (%d code pages differ too, not shown)' % code)
+
+
 def main():
     global BRIEF
     if len(sys.argv) < 2:
@@ -317,10 +359,16 @@ def main():
     order = re.findall(r'^== case (\S+)', log, re.M)
     base = os.path.join(d, 'baseline.pages')
     mem = pages(base) if os.path.exists(base) else {}
-    results = []
+    results, after = [], {}
     for name in order:
         path = os.path.join(d, name + '.pages')
         results.append((name, analyse(mem, pages(path)) if os.path.exists(path) else None))
+        after[name] = dict(mem)
+    if '--diff' in sys.argv:
+        names = [a for a in sys.argv[2:] if not a.startswith('--')]
+        if len(names) != 2 or not all(n in after for n in names):
+            raise SystemExit('--diff takes two case names (as in log.txt)')
+        return state_diff(names[0], after[names[0]], names[1], after[names[1]])
     # how many cases each program (by its words) turns up in
     seen_in = {}
     for name, r in results:
