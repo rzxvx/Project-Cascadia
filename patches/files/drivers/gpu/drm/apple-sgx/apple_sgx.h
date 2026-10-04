@@ -173,7 +173,9 @@ void apple_sgx_mmu_unmap(struct apple_sgx *sgx, u32 va, size_t size);
 bool apple_sgx_up(struct apple_sgx *sgx);
 int apple_sgx_restart(struct apple_sgx *sgx);
 int apple_sgx_render_queue(struct apple_sgx *sgx, const u32 *cmd, u32 len, u32 pb,
-			   u32 *details, u32 done_va, u32 seq, u32 cache_control);
+			   u32 *details, u32 done_va, u32 seq, u32 cache_control, u32 *at);
+bool apple_sgx_render_waiting(struct apple_sgx *sgx, u32 at, const u32 *details);
+int apple_sgx_render_rekick(struct apple_sgx *sgx);
 void apple_sgx_report(struct apple_sgx *sgx, const char *why);
 
 /* apple_sgx_drm.c */

@@ -11,8 +11,9 @@
  *
  *  - One GPU address space, shared by every client (the microkernel's own
  *    buffers are in it too, at 0x80000000).  Buffers are GEM objects mapped
- *    into it for their whole life; the kernel picks the address, or the
- *    caller asks for one (APPLE_SGX_BO_FIXED_VA).  The GPU's own pointer
+ *    into it for their whole life; the kernel picks the address (64 KiB
+ *    aligned for buffers of 64 KiB or more: a render target needs it), or
+ *    the caller asks for one (APPLE_SGX_BO_FIXED_VA).  The GPU's own pointer
  *    encodings decide where things may go -- PDS data pointers only reach
  *    0x80000000 and up, and USSE code is addressed relative to a code base
  *    register -- so the usable range and the code zone are parameters.

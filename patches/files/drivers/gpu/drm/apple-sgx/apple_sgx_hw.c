@@ -1341,7 +1341,7 @@ static int sgx_tq_kick(struct apple_sgx *sgx)
  * which a command as large as any (SGX_R_CMD_MAX) would not fit is
  * stretched to the end, so the next one starts at 0. */
 int apple_sgx_render_queue(struct apple_sgx *sgx, const u32 *src, u32 len, u32 pb,
-			   u32 *details, u32 done_va, u32 seq, u32 cache_control)
+			   u32 *details, u32 done_va, u32 seq, u32 cache_control, u32 *at)
 {
 	u32 *ctl = sgx->buf[B_R_CTL].cpu, *ctx = sgx->buf[B_R_CTX].cpu;
 	u32 cva = sgx->buf[B_R_CTX].va, *cmd, wo, size;
@@ -1360,6 +1360,8 @@ int apple_sgx_render_queue(struct apple_sgx *sgx, const u32 *src, u32 len, u32 p
 	if (((READ_ONCE(ctl[1]) + 0xffff - wo) & 0xffff) <= size)
 		return -EBUSY;
 
+	if (at)
+		*at = wo;
 	cmd = sgx->buf[B_R_CCB].cpu + wo / 4;
 	memcpy(cmd, src, len);
 	memset(cmd + len / 4, 0, size - len);
@@ -1378,6 +1380,35 @@ int apple_sgx_render_queue(struct apple_sgx *sgx, const u32 *src, u32 len, u32 p
 		cache_control |= mmu_inval_cc;
 	sgx->quiet = true;
 	ret = sgx_send_cmd(sgx, SGX_CMD_TA, cache_control, 0, cva);
+	sgx->quiet = false;
+	return ret;
+}
+
+/* Whether the render queued at AT is still where it was put: the
+ * microkernel has not read it (its read offset is AT) and has not started
+ * it (the render details' +0x24, set when the TA starts, is 0). */
+bool apple_sgx_render_waiting(struct apple_sgx *sgx, u32 at, const u32 *details)
+{
+	return READ_ONCE(sgx->buf[B_R_CTL].cpu[1]) == at && !READ_ONCE(details[0x24 / 4]);
+}
+
+/* TA again for the render queue.  Now and then the microkernel takes the
+ * TA command from the kernel CCB and leaves the render it names in the
+ * queue -- seen on the first render after a start, about one in three --
+ * and nothing makes it look again; iOS too kicks pending work again
+ * (0x80bfafe8, after a power-up).  The context is marked as having work,
+ * as for the first kick. */
+int apple_sgx_render_rekick(struct apple_sgx *sgx)
+{
+	u32 *ctx = sgx->buf[B_R_CTX].cpu;
+	int ret;
+
+	if (sgx->boot_result != 1)
+		return -ENODEV;
+	WRITE_ONCE(ctx[0], 1);
+	wmb();
+	sgx->quiet = true;
+	ret = sgx_send_cmd(sgx, SGX_CMD_TA, 0, 0, sgx->buf[B_R_CTX].va);
 	sgx->quiet = false;
 	return ret;
 }
@@ -1428,7 +1459,7 @@ static int sgx_r_kick(struct apple_sgx *sgx, u32 pb, u32 det, u32 cmdva, u32 cc)
 	seq = ++sgx->r_seq ? sgx->r_seq : ++sgx->r_seq;
 	WRITE_ONCE(scratch[0], 0);
 	ret = apple_sgx_render_queue(sgx, src, src[0], pb, d, sgx->buf[B_SCRATCH].va,
-				     seq, cc);
+				     seq, cc, NULL);
 	if (ret)
 		return ret;
 	ret = read_poll_timeout(READ_ONCE, got, got == seq, 10, 500000, false, scratch[0]);

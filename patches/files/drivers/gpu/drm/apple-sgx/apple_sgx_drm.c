@@ -27,6 +27,24 @@
  * The SGX's interrupt has never been seen to fire, so both are polled, by
  * an hrtimer that runs only while a render is on the GPU.  A render that
  * does not finish in render_timeout_ms restarts the microkernel.
+ *
+ * Two things the microkernel does that the render node works around, both
+ * found with Mesa's template-frame clears (docs/research/p105-mesa.md, M12):
+ *
+ *   - it keeps a parameter buffer's state between renders (the DPM's), so
+ *     a new buffer at the same address -- every new client of the template
+ *     frame loads one -- has it hand out pages that are not there: a fault
+ *     at page 0 above TA_REQ_BASE, a lockup.  A render whose parameter
+ *     buffer is another buffer object than the last one's starts the
+ *     microkernel again first (pb_restart);
+ *   - now and then it takes the TA command and leaves the render in the
+ *     queue, unread and unstarted; the poller sends TA again after
+ *     rekick_ms.
+ *
+ * Addresses picked here for buffers of 64 KiB or more are 64 KiB aligned:
+ * a render target's address loses its low 16 bits on the way to the pixel
+ * back end or the background object (a fault at 0xefcf0000 for a target
+ * at 0xefcff000).
  */
 
 #include <linux/dma-fence.h>
@@ -62,6 +80,16 @@ static unsigned int poll_us = 200;
 module_param(poll_us, uint, 0644);
 MODULE_PARM_DESC(poll_us, "how often a running render is checked on, in microseconds");
 
+static unsigned int rekick_ms = 20;
+module_param(rekick_ms, uint, 0644);
+MODULE_PARM_DESC(rekick_ms, "TA again for a render left unread this long (0: never)");
+
+static bool pb_restart = true;
+module_param(pb_restart, bool, 0644);
+MODULE_PARM_DESC(pb_restart, "start the microkernel again for a new parameter buffer");
+
+#define SGX_MAX_REKICKS			5
+
 /* The render details are read up to here (+0xa4 is written). */
 #define SGX_DETAILS_SIZE		0xa8
 #define SGX_MAX_BOS			4096
@@ -92,6 +120,13 @@ struct apple_sgx_drm {
 	spinlock_t job_lock;		/* active, against the poller */
 	struct apple_sgx_job *active;	/* the render on the GPU */
 	struct hrtimer poll;
+	struct work_struct rekick;
+
+	/* the parameter buffer the microkernel last worked with: its buffer
+	 * object's serial, and the microkernel start that saw it */
+	atomic64_t bo_serial;
+	u64 pb_serial;
+	unsigned int pb_boots;
 
 	atomic_t submitted, done, timed_out;
 };
@@ -101,6 +136,7 @@ struct apple_sgx_bo {
 	struct drm_mm_node node;	/* its GPU address, and a guard page */
 	u32 flags;			/* APPLE_SGX_BO_* */
 	u32 mapped;			/* bytes the PTEs cover */
+	u64 serial;			/* one per buffer object ever made */
 };
 
 struct apple_sgx_file {
@@ -114,6 +150,7 @@ struct apple_sgx_job {
 	u32 *cmd;			/* the TA command */
 	u32 cmd_len;
 	u32 pb_va, cache_control;
+	u64 pb_serial;			/* the parameter buffer's object */
 
 	struct drm_gem_object *details_obj;
 	struct iosys_map details_map;
@@ -126,6 +163,9 @@ struct apple_sgx_job {
 	struct dma_fence *hw_fence;	/* ours, while on the GPU (job_lock) */
 	u32 seq;
 	bool ta_done;
+	u32 ccb_at;			/* where in the render queue it went */
+	ktime_t kicked;			/* when TA was last sent for it */
+	unsigned int rekicks;
 };
 
 static struct apple_sgx_drm *to_sgx_drm(struct drm_device *drm)
@@ -210,8 +250,10 @@ static int sgx_bo_map(struct apple_sgx_drm *sdrm, struct apple_sgx_bo *bo, u32 v
 						  SGX_CODE_BASE, SGX_CODE_VA_END,
 						  DRM_MM_INSERT_HIGH);
 	} else {
+		/* 64 KiB aligned from 64 KiB up: render targets need it (above) */
 		ret = drm_mm_insert_node_in_range(&sdrm->va, &bo->node,
-						  size + SGX_PAGE_SIZE, SGX_PAGE_SIZE, 0,
+						  size + SGX_PAGE_SIZE,
+						  size >= SZ_64K ? SZ_64K : SGX_PAGE_SIZE, 0,
 						  SGX_AUTO_VA_START, SGX_USER_VA_END,
 						  DRM_MM_INSERT_HIGH);
 	}
@@ -263,6 +305,7 @@ static int sgx_ioctl_gem_create(struct drm_device *drm, void *data, struct drm_f
 		return PTR_ERR(shmem);
 	bo = to_sgx_bo(&shmem->base);
 	bo->flags = args->flags;
+	bo->serial = atomic64_inc_return(&sdrm->bo_serial);
 	ret = sgx_bo_map(sdrm, bo, args->va);
 	if (!ret)
 		ret = drm_gem_handle_create(file, &shmem->base, &args->handle);
@@ -441,6 +484,12 @@ static enum hrtimer_restart sgx_poll(struct hrtimer *timer)
 			fence = job->hw_fence;
 			job->hw_fence = NULL;
 			sdrm->active = NULL;
+		} else if (!job->ta_done && rekick_ms && job->rekicks < SGX_MAX_REKICKS &&
+			   ktime_ms_delta(ktime_get(), job->kicked) >= rekick_ms &&
+			   apple_sgx_render_waiting(sdrm->sgx, job->ccb_at, job->details)) {
+			job->kicked = ktime_get();
+			job->rekicks++;
+			schedule_work(&sdrm->rekick);
 		}
 	}
 	spin_unlock_irqrestore(&sdrm->job_lock, flags);
@@ -455,6 +504,32 @@ static enum hrtimer_restart sgx_poll(struct hrtimer *timer)
 		return HRTIMER_NORESTART;
 	hrtimer_forward_now(timer, ns_to_ktime((u64)poll_us * NSEC_PER_USEC));
 	return HRTIMER_RESTART;
+}
+
+/* TA again for a render the microkernel left in its queue (the poller
+ * decides; sending takes the microkernel's lock, so not from the timer) */
+static void sgx_rekick_work(struct work_struct *work)
+{
+	struct apple_sgx_drm *sdrm = container_of(work, struct apple_sgx_drm, rekick);
+	struct apple_sgx *sgx = sdrm->sgx;
+	struct apple_sgx_job *job;
+	unsigned long flags;
+	bool waiting = false;
+	u32 seq = 0;
+
+	mutex_lock(&sgx->lock);
+	spin_lock_irqsave(&sdrm->job_lock, flags);
+	job = sdrm->active;
+	if (job && !job->ta_done) {
+		seq = job->seq;
+		waiting = apple_sgx_render_waiting(sgx, job->ccb_at, job->details);
+	}
+	spin_unlock_irqrestore(&sdrm->job_lock, flags);
+	if (waiting) {
+		drm_info(&sdrm->drm, "render %u left unread in the queue: TA sent again\n", seq);
+		apple_sgx_render_rekick(sgx);
+	}
+	mutex_unlock(&sgx->lock);
 }
 
 static struct dma_fence *sgx_job_run(struct drm_sched_job *sched_job)
@@ -476,6 +551,15 @@ static struct dma_fence *sgx_job_run(struct drm_sched_job *sched_job)
 	dma_fence_init(fence, &sgx_fence_ops, &sdrm->fence_lock, sdrm->fence_context,
 		       ++sdrm->fence_seqno);
 
+	/* another parameter buffer than the one the running microkernel last
+	 * used: start it again, or it goes on from the old one's state */
+	if (pb_restart && sdrm->pb_serial && sdrm->pb_serial != job->pb_serial &&
+	    sdrm->pb_boots == READ_ONCE(sgx->boots)) {
+		drm_info(&sdrm->drm, "render with a new parameter buffer at 0x%08x: "
+			 "the microkernel starts again\n", job->pb_va);
+		apple_sgx_restart(sgx);
+	}
+
 	mutex_lock(&sgx->lock);
 	if (!apple_sgx_up(sgx)) {
 		ret = -ENODEV;
@@ -488,10 +572,13 @@ static struct dma_fence *sgx_job_run(struct drm_sched_job *sched_job)
 		ret = apple_sgx_render_queue(sgx, job->cmd, job->cmd_len, job->pb_va,
 					     job->details,
 					     sgx->buf[B_SCRATCH].va + SGX_SCRATCH_RENDER,
-					     job->seq, job->cache_control);
+					     job->seq, job->cache_control, &job->ccb_at);
 	}
 	if (!ret) {
+		sdrm->pb_serial = job->pb_serial;
+		sdrm->pb_boots = sgx->boots;
 		spin_lock_irqsave(&sdrm->job_lock, flags);
+		job->kicked = ktime_get();
 		job->hw_fence = dma_fence_get(fence);
 		sdrm->active = job;
 		spin_unlock_irqrestore(&sdrm->job_lock, flags);
@@ -682,6 +769,20 @@ static int sgx_ioctl_submit(struct drm_device *drm, void *data, struct drm_file 
 	if (ret)
 		goto out_job;
 
+	/* the parameter buffer: in one of the listed buffers, whose serial
+	 * tells a new one at the same address (pb_restart) */
+	for (i = 0; i < job->bo_count && !job->pb_serial; i++) {
+		struct apple_sgx_bo *bo = to_sgx_bo(job->bos[i]);
+
+		if (drm_mm_node_allocated(&bo->node) && args->pb_va >= bo->node.start &&
+		    args->pb_va - bo->node.start < job->bos[i]->size)
+			job->pb_serial = bo->serial;
+	}
+	if (!job->pb_serial) {
+		ret = -EINVAL;
+		goto out_job;
+	}
+
 	/* the render details: in one of the listed buffers, and mapped for the
 	 * poller */
 	det = drm_gem_object_lookup(file, args->details_handle);
@@ -856,6 +957,7 @@ int apple_sgx_drm_init(struct apple_sgx *sgx)
 	sdrm->fence_context = dma_fence_context_alloc(1);
 	hrtimer_init(&sdrm->poll, CLOCK_MONOTONIC, HRTIMER_MODE_REL_SOFT);
 	sdrm->poll.function = sgx_poll;
+	INIT_WORK(&sdrm->rekick, sgx_rekick_work);
 
 	drm_mm_init(&sdrm->va, SGX_USER_VA_START, SGX_USER_VA_END - SGX_USER_VA_START);
 	ret = drmm_add_action_or_reset(&sdrm->drm, sgx_drm_release, sdrm);
@@ -895,4 +997,5 @@ void apple_sgx_drm_fini(struct apple_sgx *sgx)
 	drm_dev_unplug(&sdrm->drm);
 	drm_sched_fini(&sdrm->sched);
 	hrtimer_cancel(&sdrm->poll);
+	cancel_work_sync(&sdrm->rekick);
 }
