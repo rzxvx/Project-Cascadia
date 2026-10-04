@@ -11,8 +11,10 @@ driver made for it, disassembled, and the other bytes the draw changed.
                shader's own, not the driver's per-draw ones
       --list   a line per program: where, how long, the opening mnemonics
       --catalog  every case's programs by kind, words and disassembly only
-      --diff A B  memory after case A against after case B, outside the
-               code: the state words and PDS programs the draws set apart
+      --diff A B  memory after case A against after case B, without the
+               USSE programs and the driver's bookkeeping: the state words
+               and PDS programs the draws set apart
+      --state  the TA's full state block(s) each case's draw wrote
 
 DIR holds log.txt (gltrace corpus's output, which gives the order the
 cases ran in), baseline.pages (every page of the GL driver's GPU buffers
@@ -205,12 +207,49 @@ def analyse(mem, case_pages):
             if c and (addr + c[0]) not in seen:
                 p = [(word(new, k), ud.decode(word(new, k))[0]) for k in c]
                 changed = [word(old, k) != word(new, k) for k in c]
-                codes.append((addr + c[0], p, changed))
+                more = None
+                if is_phas(p[0][0]) and c[-1] == PAGE - 8 and c == list(range(c[0], PAGE, 8)):
+                    more = continuation(case_pages, after, addr)
+                if more:
+                    at2, rest = more
+                    CONTINUED[addr + c[0]] = at2
+                    progs.append((addr + c[0], p + rest, changed + [True] * len(rest)))
+                    seen.update(at2 + 8 * k for k in range(len(rest)))
+                else:
+                    codes.append((addr + c[0], p, changed))
                 seen.update(addr + k for k in c)
             else:
                 other.append((addr, a, b, new))
     mem.update(case_pages)
     return progs, codes, other
+
+
+CONTINUED = {}      # program address -> where its continuation was found
+
+
+def continuation(case_pages, after, cut):
+    """A program that runs to the end of the page at CUT, with the next
+    page's CPU address not holding its rest: the GPU's next page is mapped
+    elsewhere.  The rest is taken from the first page the draw changed that
+    starts with instructions (no PHAS) running to an end; (address,
+    instructions) or None."""
+    for addr in sorted(case_pages):
+        if addr == cut + PAGE:
+            continue
+        b = after[addr]
+        if is_phas(word(b, 0)):
+            continue
+        out, o = [], 0
+        while o + 8 <= PAGE and len(out) < MAX_PROGRAM:
+            w = word(b, o)
+            name, _ = ud.decode(w)
+            if not w or not name or name.startswith('ILLEGAL') or is_phas(w):
+                break
+            out.append((w, name))
+            if ends(w, name):
+                return addr, out
+            o += 8
+    return None
 
 
 def key(p):
@@ -237,9 +276,10 @@ def listing(name, result):
     print('== %s: %d programs, %d code runs, %d other runs' % (name, len(progs), len(codes), len(other)))
     for title, items in (('prog', progs), ('code', codes)):
         for at, p, changed in items:
-            print('   %-9s %08x %3d instr %3d changed  %s' %
+            print('   %-9s %08x %3d instr %3d changed  %s%s' %
                   (kind(p) if title == 'prog' else 'code', at, len(p), sum(changed),
-                   ' '.join(n for _, n in p[:14])))
+                   ' '.join(n for _, n in p[:14]),
+                   '  (continues at %08x)' % CONTINUED[at] if at in CONTINUED else ''))
 
 
 GROUP = {'vertex': 'vertex', 'secondary': 'secondary', 'empty': 'secondary',
@@ -255,7 +295,7 @@ def catalog(name, result, last):
     order = ('vertex', 'secondary', 'pixel', 'other')
     found = {}
     for at, p, _ in result[0]:
-        found.setdefault(GROUP[kind(p)], []).append(p)
+        found.setdefault(GROUP[kind(p)], []).append((at, p))
     print('== %s' % name)
     for g in order:
         if g not in found:
@@ -263,8 +303,9 @@ def catalog(name, result, last):
                 print('-- %s: none written by this draw (the last one was in %s)' % (g, last[g]))
             continue
         last[g] = name
-        for p in found[g]:
-            print('-- %s' % kind(p))
+        for at, p in found[g]:
+            print('-- %s%s' % (kind(p), '  (continues at CPU %08x: the next page is mapped '
+                               'elsewhere; a guess)' % CONTINUED[at] if at in CONTINUED else ''))
             for w, n in p:
                 print('   %016x  %-9s%s%s' % (w, n, ud.operands(n, w, second(p)),
                                              '  <end>' if ends(w, n) else ''))
@@ -307,29 +348,39 @@ def report(name, src, result, keep=None):
     return len(progs) + len(codes)
 
 
-def state_diff(na, sa, nb, sb, maxrun=32, maxruns=80):
+# The driver's own bookkeeping in its shared memory, not GPU state: the
+# event records ("EVTLIVE", "EVTINIT") and the heap records that follow the
+# pattern {address, 0, serial, index, size, 0x19fc, 0x19fc, 0, ...}.
+NOISE_WORDS = {0x4c545645, 0x00455649, 0x49545645, 0x0054494e, 0x000019fc}
+
+
+def state_diff(na, sa, nb, sb, code_words, maxrun=32, maxruns=120):
     """GPU memory after case NA against after case NB, as 32-bit words:
-    the runs that differ, outside the code pages (pages with a PHAS) --
-    the state words, PDS programs, vertex data and constants the two draws
-    set differently.  Neighbouring cases differ least."""
-    print('== %s -> %s: what differs outside the USSE code' % (na, nb))
-    code, shown, more = 0, 0, 0
+    the runs that differ, leaving out the USSE programs found (CODE_WORDS,
+    their word addresses) and runs next to the driver's bookkeeping -- the
+    state words, PDS programs, vertex data and constants the two draws set
+    differently.  Neighbouring cases differ least."""
+    print('== %s -> %s: what differs, USSE programs and driver bookkeeping left out' % (na, nb))
+    shown, more, noise = 0, 0, 0
     for addr in sorted(set(sa) | set(sb)):
         a, b = sa.get(addr, bytes(PAGE)), sb.get(addr, bytes(PAGE))
         if a == b:
             continue
-        if any(is_phas(word(b, o)) or is_phas(word(a, o)) for o in range(0, PAGE, 8)):
-            code += 1
-            continue
         wa, wb = struct.unpack('<1024I', a), struct.unpack('<1024I', b)
+        diff = [wa[k] != wb[k] and (addr + 4 * k) not in code_words for k in range(1024)]
         k = 0
         while k < 1024:
-            if wa[k] == wb[k]:
+            if not diff[k]:
                 k += 1
                 continue
             j = k
-            while j < 1024 and any(wa[m] != wb[m] for m in range(j, min(j + 4, 1024))):
+            while j < 1024 and any(diff[j:j + 4]):
                 j += 1
+            near = set(wa[max(0, k - 8):j + 8]) | set(wb[max(0, k - 8):j + 8])
+            if near & NOISE_WORDS:
+                noise += 1
+                k = j
+                continue
             if shown >= maxruns:
                 more += 1
                 k = j
@@ -344,7 +395,73 @@ def state_diff(na, sa, nb, sb, maxrun=32, maxruns=80):
             k = j
     if more:
         print('   ... %d more runs' % more)
-    print('   (%d code pages differ too, not shown)' % code)
+    print('   (%d runs of driver bookkeeping not shown)' % noise)
+
+
+STATE_MARK = 0x3727c5ac     # f32(1e-5), word 17 of the TA's full state (tools/sgx/frame.py)
+
+
+def state_blocks(name, case_pages, mem_after):
+    """the 21-word full state each draw of the case wrote (frame.py's
+    full_state: ISP A/B, the pixel program's PDS pointers, tile clip,
+    viewport, then 0x0a001000, 1e-5, 0x00088000, 0x39, 0x3 in sgx2d's
+    frame), found by its word 17, among the bytes the case changed"""
+    hits = []
+    for addr in sorted(case_pages):
+        b = mem_after[addr]
+        ws = struct.unpack('<1024I', b)
+        for k in range(17, 1024 - 3):
+            if ws[k] == STATE_MARK:
+                hits.append((addr + 4 * (k - 17), ws[k - 17:k + 4]))
+    print('== %s: %d full state block%s' % (name, len(hits), '' if len(hits) == 1 else 's'))
+    for at, ws in hits:
+        print('   %08x  %s' % (at, ' '.join('%08x' % w for w in ws[:7])))
+        print('             %s' % ' '.join('%08x' % w for w in ws[7:15]))
+        print('             %s' % ' '.join('%08x' % w for w in ws[15:]))
+        delta = gpu_delta(mem_after, at)
+        if delta is None:
+            print('   (no PDS DMA of this block found: GPU addresses not resolved)')
+            continue
+        print('   GPU = CPU + 0x%08x (the PDS program that DMAs the block names it)' % delta)
+        for k, what in ((4, "the pixel program's secondary loader"), (6, "the pixel program's PDS")):
+            va = tag5_va(ws[k])
+            cpu = (va - delta) & 0xffffffff
+            words = read_words(mem_after, cpu, 16)
+            print('   word %d -> GPU %08x, CPU %08x, %s:' % (k, va, cpu, what))
+            if words is None:
+                print('      (not in the capture)')
+                continue
+            for r in range(0, 16, 8):
+                print('      %s' % ' '.join('%08x' % w for w in words[r:r + 8]))
+
+
+def tag5_va(w):
+    """a PDS data pointer back to its GPU address (frame.py's tag5: bits
+    26:0 are address >> 4, bit 31 implied)"""
+    return 0x80000000 | (w & 0x07ffffff) << 4
+
+
+def read_words(mem, cpu, n):
+    page = mem.get(cpu & ~(PAGE - 1))
+    if page is None or (cpu & (PAGE - 1)) + 4 * n > PAGE:
+        return None
+    return struct.unpack_from('<%dI' % n, page, cpu & (PAGE - 1))
+
+
+def gpu_delta(mem, at):
+    """GPU minus CPU address for the mapping that holds AT: a PDS program's
+    data that DMAs the block has its GPU address (same offset in the page,
+    in the GPU's range) followed by a small count word"""
+    loose = None
+    for addr in sorted(mem):
+        ws = struct.unpack('<1024I', mem[addr])
+        for k in range(1023):
+            w = ws[k]
+            if w & 0xfff == at & 0xfff and w >= 0x80000000 and w != at and ws[k + 1] < 0x40:
+                if ws[k + 1] == 0x14:        # sgx2d's frame: 21 words, control 20
+                    return (w - at) & 0xffffffff
+                loose = loose if loose is not None else (w - at) & 0xffffffff
+    return loose
 
 
 def main():
@@ -359,16 +476,26 @@ def main():
     order = re.findall(r'^== case (\S+)', log, re.M)
     base = os.path.join(d, 'baseline.pages')
     mem = pages(base) if os.path.exists(base) else {}
-    results, after = [], {}
+    results, after, changed = [], {}, {}
     for name in order:
         path = os.path.join(d, name + '.pages')
-        results.append((name, analyse(mem, pages(path)) if os.path.exists(path) else None))
+        changed[name] = pages(path) if os.path.exists(path) else {}
+        results.append((name, analyse(mem, changed[name]) if os.path.exists(path) else None))
         after[name] = dict(mem)
     if '--diff' in sys.argv:
         names = [a for a in sys.argv[2:] if not a.startswith('--')]
         if len(names) != 2 or not all(n in after for n in names):
             raise SystemExit('--diff takes two case names (as in log.txt)')
-        return state_diff(names[0], after[names[0]], names[1], after[names[1]])
+        code_words = set()
+        for _, r in results:
+            for at, p, _ in (r[0] + r[1]) if r else []:
+                code_words.update(at + 4 * k for k in range(2 * len(p)))
+        return state_diff(names[0], after[names[0]], names[1], after[names[1]], code_words)
+    if '--state' in sys.argv:
+        for name in order:
+            if not only or any(fnmatch.fnmatchcase(name, o) for o in only):
+                state_blocks(name, changed[name], after[name])
+        return
     # how many cases each program (by its words) turns up in
     seen_in = {}
     for name, r in results:
