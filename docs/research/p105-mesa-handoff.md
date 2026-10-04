@@ -414,8 +414,8 @@ mesa/host/run --arm glclear 2
   zeroed event program: nothing in it is Apple's, so `SGX_DEBUG=frame`
   works anywhere.
 - The x86 build took about 10 minutes on 4 cores (checked on 2026-10-04);
-  the ARM build takes longer, and the ARM path was checked by hand, not
-  through the script.
+  the ARM build takes longer. Both were run through the scripts:
+  `run gltri` gives 4 of 11 with `SGX_PACK=/nonexistent` on either.
 - `drm-shim-t64.patch` makes drm-shim work with armhf glibc's 64-bit
   `time_t` symbols. It is only for these host builds; the device build does
   not build drm-shim.
