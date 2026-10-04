@@ -8,6 +8,7 @@ driver made for it, disassembled, and the other bytes the draw changed.
       --brief  no hex of the other changed runs
       --own    also only the programs found in at most 5 cases: the
                shader's own, not the driver's per-draw ones
+      --list   a line per program: where, how long, the opening mnemonics
 
 DIR holds log.txt (gltrace corpus's output, which gives the order the
 cases ran in), baseline.pages (every page of the GL driver's GPU buffers
@@ -63,6 +64,13 @@ def word(b, o):
     return struct.unpack_from('<Q', b, o)[0]
 
 
+def is_phas(w):
+    """a PHAS as the GL driver writes them: fa44 07.. (one phase) or
+    fa44 .. next phase.  The table's PHAS leaves most bits free, and almost
+    any word decodes as something, so this is the anchor and not decode()"""
+    return w >> 48 == 0xfa44
+
+
 def program_at(b, o):
     """the instructions from the PHAS at O up to the next PHAS, a zero word
     or one that does not decode -- not to the end flag, which the driver's
@@ -71,7 +79,7 @@ def program_at(b, o):
     while o + 8 <= len(b) and len(out) < MAX_PROGRAM:
         w = word(b, o)
         name, _ = ud.decode(w)
-        if not w or not name or name.startswith('ILLEGAL') or (out and name == 'PHAS'):
+        if not w or not name or name.startswith('ILLEGAL') or (out and is_phas(w)):
             break
         out.append((w, name))
         o += 8
@@ -100,7 +108,7 @@ def phas_before(b, o, limit=0x800):
     """the nearest PHAS at or before O (8-aligned) in B, within LIMIT bytes"""
     k = o & ~7
     while k >= 0 and o - k <= limit:
-        if ud.decode(word(b, k))[0] == 'PHAS':
+        if is_phas(word(b, k)):
             return k
         k -= 8
     return None
@@ -132,12 +140,13 @@ def analyse(mem, case_pages):
     for addr in sorted(case_pages):
         new = case_pages[addr]
         old = mem.get(addr, bytes(PAGE))
+        code_page = any(is_phas(word(new, o)) for o in range(0, PAGE, 8))
         for a, b in changed_ranges(old, new):
             hit = False
             o = phas_before(new, a)
             o = a & ~7 if o is None else o
             while o < b:
-                if (addr + o) not in seen and ud.decode(word(new, o))[0] == 'PHAS':
+                if (addr + o) not in seen and is_phas(word(new, o)):
                     p = program_at(new, o)
                     if p and o + 8 * len(p) > a:
                         changed = [word(old, o + 8 * k) != w for k, (w, _) in enumerate(p)]
@@ -149,7 +158,7 @@ def analyse(mem, case_pages):
                 o += 8
             if hit:
                 continue
-            c = code_run(new, a, b)
+            c = code_run(new, a, b) if code_page else None
             if c and (addr + c[0]) not in seen:
                 p = [(word(new, k), ud.decode(word(new, k))[0]) for k in c]
                 changed = [word(old, k) != word(new, k) for k in c]
@@ -171,6 +180,17 @@ def show(title, at, p, changed):
         print('  %s+%03x: %016x  %-9s%s%s' % ('*' if changed[k] else ' ', 8 * k, w, n,
                                             ud.operands(n, w),
                                             '  <end>' if n != 'PHAS' and w & END else ''))
+
+
+def listing(name, result):
+    """one line per program and code run: where, how long, what changed,
+    the opening mnemonics"""
+    progs, codes, other = result
+    print('== %s: %d programs, %d code runs, %d other runs' % (name, len(progs), len(codes), len(other)))
+    for title, items in (('prog', progs), ('code', codes)):
+        for at, p, changed in items:
+            print('   %s %08x %3d instr %3d changed  %016x  %s' %
+                  (title, at, len(p), sum(changed), p[0][0], ' '.join(n for _, n in p[:12])))
 
 
 def report(name, src, result, keep=None):
@@ -241,6 +261,9 @@ def main():
         n_own = sum(1 for _, p, _ in r[0] + r[1] if seen_in.get(key(p), 0) <= OWN_MAX)
         summary.append((name, len(r[0]) + len(r[1]), n_own))
         if only and name not in only:
+            continue
+        if '--list' in sys.argv:
+            listing(name, r)
             continue
         src_path = os.path.join(HERE, 'corpus', name + '.glsl')
         report(name, open(src_path).read() if os.path.exists(src_path) else '', r, keep)
