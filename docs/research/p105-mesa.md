@@ -235,6 +235,27 @@ A corpus to run through it, one feature at a time:
 `usse-dis.py` decodes opcodes and a few operand layouts; for this it needs
 every operand of every instruction the corpus produces.
 
+**The tools (2026-10-04).** `gltrace corpus OUTDIR FILE.glsl...` draws each
+case once with iOS's GL driver -- every attribute fed (the one named `p` a
+triangle over the 64x64 target, the others `0.25 * (location + 1) + 0.0625
+* vertex + 0.015625 * component`), every uniform given a value (uniform `i`:
+`i + 1 + 0.0625 * component`; ints `16 * (i + 1) + component`; samplers a
+4x4 texture or cube map, a unit each) -- and writes the pages of the
+driver's GPU buffers (the process's IOKit mappings) that the draw changed,
+after a baseline of every page that was not zero before the first case.
+No GPU-to-CPU address map is needed: the new programs are the new bytes.
+`tools/iosgpu/corpus/` holds the first 91 cases (`make.py` writes them; all
+pass glslang as GLSL ES 1.00): 40 arithmetic, 6 precision, 11 varying, 8
+vertex-side, 10 uniform-shape, 10 texture and 6 control-flow cases.
+`tools/shadercap.sh` builds gltrace if needed (macOS, Xcode, ldid), runs
+the corpus on the iPad's iOS, fetches the pages into
+`logs/ios/corpus/<date>/` (out of git) and runs `tools/iosgpu/corpus.py`,
+which rebuilds memory case by case and lists, per case, the USSE programs
+found in the changed bytes (from a PHAS to the next one or a zero word;
+bit 50 marked, not trusted as the end: an old note has the driver's
+fragment preamble carry it on its second instruction) and the other
+changed runs as hex.
+
 ## M12: the Mesa driver's skeleton (2026-10-03, done 2026-10-04)
 
 `mesa/` holds it: the driver's files (`mesa/files`, copied into a Mesa tree),

@@ -13,6 +13,12 @@
 // a vs b isolates the draw (VDM/state/USSE/PDS); b vs c isolates the colour
 // constant.  Every IOConnectCall* into the kernel is logged to stdout.
 //
+// "gltrace corpus OUTDIR FILE.glsl..." is the shader oracle (M11,
+// docs/research/p105-mesa.md): each file a vertex and a fragment shader,
+// drawn once; the pages of the GL driver's GPU buffers the draw changed
+// (the new USSE and PDS programs among them) go to OUTDIR/NAME.pages.
+// tools/shadercap.sh runs it, tools/iosgpu/corpus.py reads the result.
+//
 // Build: tools/iosgpu/build.sh (macOS + Xcode; stubs/*.tbd, ldid, no entitlements).
 #import <OpenGLES/EAGL.h>
 #import <OpenGLES/ES2/gl.h>
@@ -30,6 +36,7 @@ typedef unsigned int vm_address_t;
 typedef unsigned int vm_size_t;
 
 long write(int, const void *, unsigned long);
+long read(int, void *, unsigned long);
 int close(int);   /* open() and the O_* flags come from <fcntl.h> */
 void *malloc(unsigned long);
 void free(void *);
@@ -61,6 +68,7 @@ static kern_return_t (*orig_map)(mach_port_t, uint32_t, mach_port_t,
 
 static struct { vm_address_t addr; vm_size_t size; uint32_t type; } maps[64];
 static int nmaps;
+static int quiet;	/* corpus: no line per IOKit call */
 
 static void dump(const char *tag, const unsigned char *p, size_t n, size_t cap)
 {
@@ -148,9 +156,11 @@ static kern_return_t my_call(mach_port_t c, uint32_t sel, const uint64_t *in, ui
                              const void *ins, size_t insc, uint64_t *out, uint32_t *outc,
                              void *outs, size_t *outsc)
 {
-    printf("[call]        conn %u sel %-4u scalars %u struct %zu\n", c, sel, inc, insc);
-    if (ins && insc)
-        dump("in", ins, insc, 128);
+    if (!quiet) {
+        printf("[call]        conn %u sel %-4u scalars %u struct %zu\n", c, sel, inc, insc);
+        if (ins && insc)
+            dump("in", ins, insc, 128);
+    }
     if (rpatch_armed)
         patch_renders();
     else if (patch_word >= 0 && !patched)
@@ -161,9 +171,11 @@ static kern_return_t my_call(mach_port_t c, uint32_t sel, const uint64_t *in, ui
 static kern_return_t my_call_struct(mach_port_t c, uint32_t sel, const void *ins, size_t insc,
                                     void *outs, size_t *outsc)
 {
-    printf("[callStruct]  conn %u sel %-4u struct %zu\n", c, sel, insc);
-    if (ins && insc)
-        dump("in", ins, insc, 128);
+    if (!quiet) {
+        printf("[callStruct]  conn %u sel %-4u struct %zu\n", c, sel, insc);
+        if (ins && insc)
+            dump("in", ins, insc, 128);
+    }
     if (rpatch_armed)
         patch_renders();
     else if (patch_word >= 0 && !patched)
@@ -174,7 +186,8 @@ static kern_return_t my_call_struct(mach_port_t c, uint32_t sel, const void *ins
 static kern_return_t my_call_scalar(mach_port_t c, uint32_t sel, const uint64_t *in, uint32_t inc,
                                     uint64_t *out, uint32_t *outc)
 {
-    printf("[callScalar]  conn %u sel %-4u scalars %u\n", c, sel, inc);
+    if (!quiet)
+        printf("[callScalar]  conn %u sel %-4u scalars %u\n", c, sel, inc);
     if (rpatch_armed)
         patch_renders();
     else if (patch_word >= 0 && !patched)
@@ -187,7 +200,8 @@ static kern_return_t my_map(mach_port_t c, uint32_t type, mach_port_t task,
 {
     kern_return_t r = orig_map(c, type, task, addr, size, opts);
     if (r == 0 && addr && size) {
-        printf("[map]         conn %u type %u -> 0x%08x + 0x%x\n", c, type, *addr, *size);
+        if (!quiet)
+            printf("[map]         conn %u type %u -> 0x%08x + 0x%x\n", c, type, *addr, *size);
         if (nmaps < 64) {
             maps[nmaps].addr = *addr;
             maps[nmaps].size = *size;
@@ -795,6 +809,359 @@ static GLuint make_shader(GLenum type, const char *src)
     return s;
 }
 
+/* ---- "gltrace corpus OUTDIR FILE...": the shader oracle -------------------
+ *
+ * Each FILE holds a vertex shader, a line starting "// fragment", and a
+ * fragment shader.  Every program is linked, given an array for each
+ * attribute (the one named "p" a triangle over the whole 64x64 target,
+ * the others 0.25 * (location + 1) + 0.0625 * vertex + 0.015625 * component)
+ * and a value for each uniform (uniform i: i + 1 + 0.0625 * component;
+ * ints 16 * (i + 1) + component; samplers a 4x4 texture or cube map, one
+ * unit each), and drawn once.  Then every page of the process's IOKit
+ * mappings (VM tag 21: the GPU buffers the kernel mapped in) that differs
+ * from before the draw is written to OUTDIR/NAME.pages as {u32 address,
+ * 4096 bytes} records: the USSE and PDS programs the GL driver made for the
+ * shaders, their constants, the draw's state and command.  A first draw
+ * with a trivial shader takes the driver's own setup out of the way; every
+ * page that is not zero after it goes to OUTDIR/baseline.pages, so what
+ * each case changed can be told byte by byte. */
+
+struct page_hash {
+    uint32_t addr;
+    uint64_t hash;
+};
+static struct page_hash *ph;
+static int nph;
+
+static uint64_t hash_page(const uint32_t *w)
+{
+    uint64_t h = 0xcbf29ce484222325ull;
+    for (int i = 0; i < 0x400; i++)
+        h = (h ^ w[i]) * 0x100000001b3ull;
+    return h;
+}
+
+static int old_hash(uint32_t addr, uint64_t *h)
+{
+    int lo = 0, hi = nph - 1;
+    while (lo <= hi) {
+        int m = (lo + hi) / 2;
+        if (ph[m].addr == addr) {
+            *h = ph[m].hash;
+            return 1;
+        }
+        if (ph[m].addr < addr)
+            lo = m + 1;
+        else
+            hi = m - 1;
+    }
+    return 0;
+}
+
+/* the pages that changed since the last call -- or, with ALL, every page
+ * that is not zero -- to PATH (none if NULL); returns how many */
+static int changed_pages(const char *path, int all)
+{
+    static uint32_t pg[0x400];
+    struct page_hash *np = 0;
+    int nnp = 0, cap = 0, changed = 0, fd = -1;
+    vm_address_t a = 0;
+
+    if (path && (fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644)) < 0)
+        printf("   cannot write %s\n", path);
+    for (;;) {
+        vm_size_t sz = 0;
+        unsigned int depth = 99, cnt = 19;
+        int info[19];
+        if (vm_region_recurse_64(mach_task_self(), &a, &sz, &depth, info, &cnt))
+            break;
+        if (info[5] == 21 && (info[0] & 1) && sz <= 0x1000000) {
+            for (uint32_t o = 0; o < sz; o += 0x1000) {
+                vm_size_t got = 0;
+                uint64_t h, was;
+                if (vm_read_overwrite(mach_task_self(), a + o, 0x1000, (vm_address_t)pg, &got) ||
+                    got != 0x1000)
+                    continue;
+                h = hash_page(pg);
+                if (nnp == cap) {
+                    struct page_hash *t = malloc(sizeof(*t) * (cap = cap ? cap * 2 : 4096));
+                    if (!t)
+                        break;
+                    if (np) {
+                        memcpy(t, np, sizeof(*t) * nnp);
+                        free(np);
+                    }
+                    np = t;
+                }
+                np[nnp].addr = a + o;
+                np[nnp].hash = h;
+                nnp++;
+                if (all) {
+                    int k;
+                    for (k = 0; k < 0x400 && !pg[k]; k++)
+                        ;
+                    if (k == 0x400)
+                        continue;
+                } else if (old_hash(a + o, &was) && was == h)
+                    continue;
+                changed++;
+                if (fd >= 0) {
+                    uint32_t at = a + o;
+                    write(fd, &at, 4);
+                    write(fd, pg, 0x1000);
+                }
+            }
+        }
+        a += sz;
+    }
+    if (fd >= 0)
+        close(fd);
+    free(ph);
+    ph = np;
+    nph = nnp;
+    return changed;
+}
+
+static char shader_text[0x10000];
+
+/* FILE's two shaders, split at the "// fragment" line */
+static int read_shaders(const char *path, const char **vs, const char **fs)
+{
+    int fd = open(path, O_RDONLY), n = 0;
+    long r;
+    char *f;
+
+    if (fd < 0)
+        return 0;
+    while (n < (int)sizeof(shader_text) - 1 &&
+           (r = read(fd, shader_text + n, sizeof(shader_text) - 1 - n)) > 0)
+        n += r;
+    close(fd);
+    shader_text[n] = 0;
+    f = strstr(shader_text, "// fragment");
+    if (!f)
+        return 0;
+    *vs = shader_text;
+    *fs = strchr(f, '\n') ? strchr(f, '\n') + 1 : f + strlen(f);
+    *f = 0;		/* the vertex shader ends where the line starts */
+    return 1;
+}
+
+static GLuint compile_logged(GLenum type, const char *src, const char *what)
+{
+    GLuint s = glCreateShader(type);
+    GLint ok = 0;
+    glShaderSource(s, 1, &src, 0);
+    glCompileShader(s);
+    glGetShaderiv(s, GL_COMPILE_STATUS, &ok);
+    if (!ok) {
+        char log[1024];
+        glGetShaderInfoLog(s, sizeof log, 0, log);
+        printf("   %s shader does not compile: %s\n", what, log);
+        return 0;
+    }
+    return s;
+}
+
+static GLuint link_logged(const char *vs, const char *fs)
+{
+    GLuint v = compile_logged(GL_VERTEX_SHADER, vs, "vertex");
+    GLuint f = compile_logged(GL_FRAGMENT_SHADER, fs, "fragment");
+    GLuint p;
+    GLint ok = 0;
+
+    if (!v || !f)
+        return 0;
+    p = glCreateProgram();
+    glAttachShader(p, v);
+    glAttachShader(p, f);
+    glLinkProgram(p);
+    glGetProgramiv(p, GL_LINK_STATUS, &ok);
+    if (!ok) {
+        char log[1024];
+        glGetProgramInfoLog(p, sizeof log, 0, log);
+        printf("   does not link: %s\n", log);
+        return 0;
+    }
+    return p;
+}
+
+static float attr_data[16][3][4];
+
+static void corpus_attribs(GLuint prog)
+{
+    static const float tri[3][4] = { { -1, -1, 0, 1 }, { 3, -1, 0, 1 }, { -1, 3, 0, 1 } };
+    GLint n = 0;
+
+    for (int l = 0; l < 16; l++)
+        glDisableVertexAttribArray(l);
+    glGetProgramiv(prog, GL_ACTIVE_ATTRIBUTES, &n);
+    for (int i = 0; i < n; i++) {
+        char name[64];
+        GLint size = 0, loc;
+        GLenum type = 0;
+        int cols, comps;
+
+        glGetActiveAttrib(prog, i, sizeof name, 0, &size, &type, name);
+        loc = glGetAttribLocation(prog, name);
+        cols = type == GL_FLOAT_MAT2 ? 2 : type == GL_FLOAT_MAT3 ? 3 : type == GL_FLOAT_MAT4 ? 4 : 1;
+        comps = type == GL_FLOAT ? 1 :
+                type == GL_FLOAT_VEC2 || type == GL_FLOAT_MAT2 ? 2 :
+                type == GL_FLOAT_VEC3 || type == GL_FLOAT_MAT3 ? 3 : 4;
+        printf("   attribute %s: type 0x%x, %d, location %d\n", name, type, size, loc);
+        for (int c = 0; c < cols && loc >= 0 && loc + c < 16; c++) {
+            for (int k = 0; k < 3; k++)
+                for (int j = 0; j < 4; j++)
+                    attr_data[loc + c][k][j] = !strcmp(name, "p") ? tri[k][j] :
+                        0.25f * (loc + c + 1) + 0.0625f * k + 0.015625f * j;
+            glEnableVertexAttribArray(loc + c);
+            glVertexAttribPointer(loc + c, comps, GL_FLOAT, GL_FALSE, 16, attr_data[loc + c]);
+        }
+    }
+}
+
+static void corpus_uniforms(GLuint prog, GLuint tex2d, GLuint texcube)
+{
+    GLint n = 0, unit = 0;
+
+    glGetProgramiv(prog, GL_ACTIVE_UNIFORMS, &n);
+    for (int i = 0; i < n; i++) {
+        static float f[64 * 16];
+        static GLint iv[64 * 4];
+        char name[64];
+        GLint size = 0, loc;
+        GLenum type = 0;
+
+        glGetActiveUniform(prog, i, sizeof name, 0, &size, &type, name);
+        loc = glGetUniformLocation(prog, name);
+        if (size > 64)
+            size = 64;
+        for (int e = 0; e < size; e++)
+            for (int j = 0; j < 16; j++) {
+                f[e * 16 + j] = (i + 1) + 0.0625f * j;
+                if (j < 4)
+                    iv[e * 4 + j] = 16 * (i + 1) + j;
+            }
+        printf("   uniform %s: type 0x%x, %d, location %d, value %d + 0.0625 * component\n",
+               name, type, size, loc, i + 1);
+        switch (type) {
+        case GL_FLOAT: glUniform1fv(loc, size, f); break;
+        case GL_FLOAT_VEC2: glUniform2fv(loc, size, f); break;
+        case GL_FLOAT_VEC3: glUniform3fv(loc, size, f); break;
+        case GL_FLOAT_VEC4: glUniform4fv(loc, size, f); break;
+        case GL_INT: case GL_BOOL: glUniform1iv(loc, size, iv); break;
+        case GL_INT_VEC2: case GL_BOOL_VEC2: glUniform2iv(loc, size, iv); break;
+        case GL_INT_VEC3: case GL_BOOL_VEC3: glUniform3iv(loc, size, iv); break;
+        case GL_INT_VEC4: case GL_BOOL_VEC4: glUniform4iv(loc, size, iv); break;
+        case GL_FLOAT_MAT2: glUniformMatrix2fv(loc, size, GL_FALSE, f); break;
+        case GL_FLOAT_MAT3: glUniformMatrix3fv(loc, size, GL_FALSE, f); break;
+        case GL_FLOAT_MAT4: glUniformMatrix4fv(loc, size, GL_FALSE, f); break;
+        case GL_SAMPLER_2D:
+        case GL_SAMPLER_CUBE:
+            for (int e = 0; e < size && unit < 8; e++, unit++) {
+                glActiveTexture(GL_TEXTURE0 + unit);
+                if (type == GL_SAMPLER_2D)
+                    glBindTexture(GL_TEXTURE_2D, tex2d);
+                else
+                    glBindTexture(GL_TEXTURE_CUBE_MAP, texcube);
+                iv[e] = unit;
+            }
+            glUniform1iv(loc, size, iv);
+            glActiveTexture(GL_TEXTURE0);
+            break;
+        }
+    }
+}
+
+static int corpus(int argc, char **argv)
+{
+    static const char *vs0 = "attribute vec4 p; void main() { gl_Position = p; }";
+    static const char *fs0 = "void main() { gl_FragColor = vec4(1.0); }";
+    unsigned char texels[4 * 4 * 4];
+    GLuint tex2d, texcube, p0;
+    const char *out = argv[2];
+    char path0[512];
+    int n0;
+    int ok = 0;
+
+    quiet = 1;
+    for (int i = 0; i < 16; i++) {
+        texels[i * 4] = (i & 3) * 64;
+        texels[i * 4 + 1] = (i >> 2) * 64;
+        texels[i * 4 + 2] = 128;
+        texels[i * 4 + 3] = 255;
+    }
+    glGenTextures(1, &tex2d);
+    glBindTexture(GL_TEXTURE_2D, tex2d);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 4, 4, 0, GL_RGBA, GL_UNSIGNED_BYTE, texels);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glGenTextures(1, &texcube);
+    glBindTexture(GL_TEXTURE_CUBE_MAP, texcube);
+    for (int face = 0; face < 6; face++) {
+        for (int i = 0; i < 16; i++)
+            texels[i * 4 + 2] = 40 * face;
+        glTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + face, 0, GL_RGBA, 4, 4, 0, GL_RGBA,
+                     GL_UNSIGNED_BYTE, texels);
+    }
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glViewport(0, 0, 64, 64);
+
+    /* the driver's own first-use setup, out of the way */
+    p0 = link_logged(vs0, fs0);
+    if (!p0)
+        return printf("== corpus: the trivial shader does not build\n"), 1;
+    for (int k = 0; k < 2; k++) {
+        glUseProgram(p0);
+        corpus_attribs(p0);
+        glClear(GL_COLOR_BUFFER_BIT);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+        glFinish();
+    }
+    snprintf(path0, sizeof path0, "%s/baseline.pages", out);
+    n0 = changed_pages(path0, 1);
+    printf("== corpus: %d pages in the GPU buffers, %d not zero -> %s\n", nph, n0, path0);
+
+    for (int i = 3; i < argc; i++) {
+        const char *vs, *fs, *base = strrchr(argv[i], '/'), *dot;
+        char name[128], path[512];
+        unsigned char px[4] = { 0 };
+        GLuint prog;
+        int n;
+
+        base = base ? base + 1 : argv[i];
+        dot = strrchr(base, '.');
+        snprintf(name, sizeof name, "%.*s", dot ? (int)(dot - base) : (int)strlen(base), base);
+        printf("== case %s\n", name);
+        if (!read_shaders(argv[i], &vs, &fs)) {
+            printf("   no \"// fragment\" line in %s\n", argv[i]);
+            continue;
+        }
+        changed_pages(0, 0);	/* whatever happened since the last case */
+        prog = link_logged(vs, fs);
+        if (!prog)
+            continue;
+        glUseProgram(prog);
+        corpus_attribs(prog);
+        corpus_uniforms(prog, tex2d, texcube);
+        glClearColor(0, 0, 0, 0);
+        glClear(GL_COLOR_BUFFER_BIT);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+        glFinish();
+        glReadPixels(32, 32, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
+        snprintf(path, sizeof path, "%s/%s.pages", out, name);
+        n = changed_pages(path, 0);
+        printf("   drawn: GL error 0x%x, centre pixel %02x %02x %02x %02x, %d pages changed -> %s\n",
+               glGetError(), px[0], px[1], px[2], px[3], n, path);
+        ok++;
+    }
+    printf("== corpus done: %d of %d cases drawn\n", ok, argc - 3);
+    return 0;
+}
+
 int main(int argc, char **argv)
 {
     int tq = argc > 1 && (!strcmp(argv[1], "tq") || !strcmp(argv[1], "tqpatch"));
@@ -833,6 +1200,9 @@ int main(int argc, char **argv)
     glGenFramebuffers(1, &fbo);
     glBindFramebuffer(GL_FRAMEBUFFER, fbo);
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex, 0);
+
+    if (argc > 2 && !strcmp(argv[1], "corpus"))
+        return corpus(argc, argv);
 
     const char *vs = "attribute vec4 p; void main(){ gl_Position = p; }";
     /* two fragment programs differing by ONE op: prog1 outputs the uniform,
