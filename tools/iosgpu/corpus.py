@@ -166,29 +166,39 @@ def analyse(mem, case_pages):
     """A case's changed bytes: programs that overlap them (from the PHAS
     before, so a program rewritten in place counts; CHANGED marks the
     instructions that did), code without a PHAS near, and the rest.
-    Brings MEM up to date."""
+    Programs are read across page boundaries: each page is looked at with
+    its neighbours, as memory is before the draw and after.  Brings MEM up
+    to date."""
     progs, codes, other, seen = [], [], [], set()
+    after = dict(mem)
+    after.update(case_pages)
+
+    def span(view, addr):
+        return b''.join(view.get(addr + d, bytes(PAGE)) for d in (-PAGE, 0, PAGE))
+
     for addr in sorted(case_pages):
         new = case_pages[addr]
         old = mem.get(addr, bytes(PAGE))
+        nb, ob, base = span(after, addr), span(mem, addr), addr - PAGE
         code_page = any(is_phas(word(new, o)) for o in range(0, PAGE, 8))
         for a, b in changed_ranges(old, new):
             hit = False
-            o = phas_before(new, a)
-            o = a & ~7 if o is None else o
-            while o < b:
-                if (addr + o) not in seen and is_phas(word(new, o)):
-                    p = program_at(new, o)
-                    if p and o + 8 * len(p) > a:
-                        changed = [word(old, o + 8 * k) != w for k, (w, _) in enumerate(p)]
-                        progs.append((addr + o, p, changed))
-                        seen.update(addr + o + 8 * k for k in range(len(p)))
+            A, B = PAGE + a, PAGE + b
+            o = phas_before(nb, A)
+            o = A & ~7 if o is None else o
+            while o < B:
+                if (base + o) not in seen and is_phas(word(nb, o)):
+                    p = program_at(nb, o)
+                    if p and o + 8 * len(p) > A:
+                        changed = [word(ob, o + 8 * k) != w for k, (w, _) in enumerate(p)]
+                        progs.append((base + o, p, changed))
+                        seen.update(base + o + 8 * k for k in range(len(p)))
                         o += 8 * len(p)
                         hit = True
                         continue
                 o += 8
-            if hit:
-                continue
+            if hit or all((addr + k) in seen for k in range(a & ~7, b, 8)):
+                continue        # (or a program found from the page before covers it)
             c = code_run(new, a, b) if code_page else None
             if c and (addr + c[0]) not in seen:
                 p = [(word(new, k), ud.decode(word(new, k))[0]) for k in c]
@@ -197,7 +207,7 @@ def analyse(mem, case_pages):
                 seen.update(addr + k for k in c)
             else:
                 other.append((addr, a, b, new))
-        mem[addr] = new
+    mem.update(case_pages)
     return progs, codes, other
 
 

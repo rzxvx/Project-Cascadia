@@ -397,6 +397,84 @@ def op_br(name, w, second):
                          " (any)" if F("i") else " (all)" if F("l") else "")
 
 
+VEC3_STD = ("xxx", "yyy", "zzz", "www", "xyz", "yzw", "xxy", "xyx",
+            "yyx", "yyz", "zxy", "xzy", "yzx", "zyx", "zzy", "xy1")
+VEC3_EXT = ("xyy", "yxy", "xxz", "yxx", "xy0", "x10", "000", "111",
+            "hhh", "222", "x00", "???", "???", "???", "???", "???")
+REPEAT_MODE = ("", " (rpt internal)", " (rpt both)", " (rpt smlsi)")
+
+
+def vec34(swiz, ext, vec4):
+    return (VEC4_EXT if ext else VEC4_STD)[swiz] if vec4 else (VEC3_EXT if ext else VEC3_STD)[swiz]
+
+
+def gpi_mod(neg, ab, s):
+    s = "|%s|" % s if ab else s
+    return "-" + s if neg else s
+
+
+def op_vmad(name, w, second):
+    """VMAD: dest = gpi0 * src1 + gpi1, the gpis internal registers"""
+    F = _fields(name, w)
+    v4 = F("o")
+    d = reg(DEST_BANKS[F("d")][F("k")], F("m"), True, 7, second)
+    s1 = "%s.%s" % (reg(SRC12_BANKS[F("r")][F("j")], F("B"), True, 7, second), vec34(F("A"), F("y"), v4))
+    g0 = "i%d.%s" % (F("l"), vec34(F("q"), F("z"), v4))
+    g1 = "i%d.%s" % (F("v"), vec34(F("u"), F("g"), v4))
+    return "%smad%d.f32 %s.%s, %s, %s, %s%s%s" % (
+        VPRED[F("p")], 4 if v4 else 3, d, mask(F("w")), gpi_mod(F("x"), F("i"), g0),
+        gpi_mod(F("c"), F("b"), s1), gpi_mod(F("f"), F("h"), g1),
+        rpt(F("t")), REPEAT_MODE[F("a")] if F("t") else "")
+
+
+def op_vdp(name, w, second):
+    """VDP: dest = dot(src1, gpi0)"""
+    F = _fields(name, w)
+    v4 = F("o")
+    d = reg(DEST_BANKS[F("d")][F("k")], F("j"), True, 7, second)
+    sw = "".join(CHAN[F(c)] for c in "xyqm")[:4 if v4 else 3]
+    s1 = "%s.%s" % (reg(SRC12_BANKS[F("r")][F("h")], F("u"), True, 7, second), sw)
+    g0 = "i%d.%s" % (F("i"), vec34(F("z"), 0, v4))
+    return "%sdp%d.f32 %s.%s, %s, %s%s%s%s" % (
+        VPRED[F("p")], 4 if v4 else 3, d, mask(F("w")), gpi_mod(F("b"), F("f"), s1),
+        "|%s|" % g0 if F("g") else g0, " clip%d" % F("l") if F("c") else "",
+        rpt(F("t")), REPEAT_MODE[F("a")] if F("t") else "")
+
+
+DUAL_OP1 = ("vmad", "vdp", "vssq", "vmul", "vadd", "vmov", "frsq", "frcp",
+            "fmad", "fadd", "fmul", "fsubflr", "fexp", "flog", "?", "?")
+DUAL_OP2 = ("?",) + DUAL_OP1[1:]
+
+
+def op_vdual(name, w, second):
+    """two operations at once; the sources (internal registers and one
+    "unified store" slot) are not decoded here yet"""
+    F = _fields(name, w)
+    op1 = DUAL_OP1[(not F("c") and F("d")) << 3 | F("a")]
+    op2 = DUAL_OP2[F("l") << 3 | F("o")]
+    unified = reg(DEST_BANKS[0][F("m")], F("b"), False, 7, second)
+    primary = ("%s -> %s" % (op1, unified), "%s -> i%d" % (op1, F("e")))[not F("r")]
+    secondary = ("%s -> i%d" % (op2, F("e")), "%s -> %s" % (op2, unified))[not F("r")]
+    return "%s%s | %s (%s; sources not decoded)" % (
+        SPRED[F("s")], primary, secondary, "f16" if F("t") else "f32")
+
+
+def op_smlsi(name, w, second):
+    """the register increments of the repeats that follow: per operand an
+    increment, or with its mode bit 4 two-bit offsets (one per iteration);
+    in units of the instruction's register size"""
+    F = _fields(name, w)
+    out = []
+    for label, mode, inc in (("d", "d", "e"), ("s0", "r", "a"), ("s1", "c", "b"), ("s2", "i", "f")):
+        v = F(inc)
+        if F(mode):
+            out.append("%s=[%s]" % (label, ",".join(str(v >> 2 * k & 3) for k in range(4))))
+        else:
+            out.append("%s+%d" % (label, v - 256 if v & 0x80 else v))
+    lim = (F("t"), F("p"), F("s"))
+    return " ".join(out) + (" limits r%d pa%d sa%d" % lim if any(lim) else "")
+
+
 def op_limm(name, w, second):
     return "r%d <- #0x%08x" % ((w >> 21) & 0x7f, limm_imm(w))
 
@@ -404,7 +482,8 @@ def op_limm(name, w, second):
 OPERANDS = {"V16NMAD": op_nmad, "V32NMAD": op_nmad, "VMAD2": op_vmad2, "VCOMP": op_vcomp,
             "VMOV": op_vmov, "VPCK": op_vpck, "VBW": op_vbw, "VTST": op_vtst,
             "VTSTMSK": op_vtstmsk, "VLDST": op_vldst, "SMP": op_smp, "PHAS": op_phas,
-            "LIMM": op_limm, "BR": op_br}
+            "LIMM": op_limm, "BR": op_br, "VMAD": op_vmad, "VDP": op_vdp,
+            "VDUAL": op_vdual, "SMLSI": op_smlsi}
 
 
 def limm_imm(word):

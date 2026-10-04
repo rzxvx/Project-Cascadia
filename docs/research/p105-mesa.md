@@ -352,9 +352,75 @@ saN, #0` with N the VPCK's destination):
 | `vec4(normalize(u0.xyz), 1.0)` | ..., `pck.u8.f16 sa6.xyz, ...` and `pck.u8.f16 sa6.w, c15.xxxy` (1.0) |
 | `sin`, `cos` | F32 in i0/i1: range reduction (`mad`, `frc`), a polynomial of VMAD2s on table constants c28..c30, VDUAL and VMAD (not decoded yet) |
 
-`tan` is the exception: a 44-instruction pixel program with per-channel
-predicates (VTST into p0..p3, predicated VPCKs) reading sa8..sa20, and no
-secondary program written by the draw -- to look at again with `--list`.
+`tan` is the exception: a 43-instruction pixel program with per-channel
+predicates (VTST into p0..p3, predicated VPCKs) reading sa8..sa20; it is
+long enough that the driver put the secondary program after it, at CPU
+`0x951fc0`, across a page boundary -- `corpus.py` cut programs at page
+ends until it read each page with its neighbours.
+
+**The other groups (2026-10-04).** `usse-dis.py` also decodes SMLSI, the
+GPI forms VMAD (`d = gpi0 * s1 + gpi1`) and VDP (`d = dot(s1, gpi0)`), and
+names VDUAL's two operations. What the `v`, `x`, `p`, `u`, `t` and `c`
+cases show:
+
+- **Vertex programs** copy and compute into `o`: position in o0..o3 (F32),
+  the varyings after it (o4.., one register per component, F32). A vec4 is
+  `mov.f32 oN.xy, paM rpt2` (each repeat moves a 64-bit pair; F32 ALU
+  instructions work on two lanes, F16 on four). The attributes sit in pa
+  in an order of the driver's: `a` at pa0, `p` at pa4 in the two-attribute
+  cases, and an SMLSI with per-iteration offsets (`s1=[2,3,0,1]`) lets one
+  repeated VMOV take p then a. `v = a * 2.0` is two `mul.f32 o.xy` per
+  vec4 with the constant from the table (c4.x = 2.0, c5.x = 8.0) or a
+  secondary attribute; `p * 0.5 + 0.5` is `mad.f32 o4.xy, pa0, c12.x,
+  c12.x`. `m * p` (mat4): `pck.f32.f32 i0 <- p`, `mul.f32 i1, m0, i0.xxxx`,
+  then VMADs `i1 = i0.y * m1 + i1` ... the last writing o0..o3, the
+  matrix's columns in secondary attributes (F32). `dot(a, k)`: `dp4.f32`
+  into o4 and o6.
+- **Varyings reach the pixel program as F16 in pa** (mediump; the
+  iterators convert): a vec4 in two registers, a vec2 in one, eight vec4s
+  in pa0..pa15. highp varyings come as F32 (`pck.u8.f32 o0, pa0, pa2`);
+  lowp ones like mediump. `gl_FragColor = v` is `pck.u8.f16 o0, pa0
+  scale`, alone.
+- **Precision**: lowp arithmetic is fixed point on packed bytes -- `u0 +
+  u1` and `u0 * u1` in lowp are one SOP2M each, on u8x4 uniforms -- and
+  highp is F32 (`pck.f32.f32 i0 <- sa`, `add.f32`, `pck.u8.f32`). For us
+  lowp can be mediump: GLSL ES allows more precision.
+- **Uniforms**: F16 (mediump) or F32 (highp) in secondary attributes,
+  packed where the compiler likes (a `mat2` and a `vec4.xy` share sa6..sa7,
+  a float takes half a register); ints arrive converted to float (`float(i)`
+  is a bare pack); arrays load only the elements used. `m * u0` for mat2,
+  mat3, mat4 is a `mul` and `mad`s by column, in the secondary program.
+- **Uniform conditions stay in the pixel program**, as predicates: `b ?
+  vec4(1.0) : vec4(0.0)`, `if (u0.x > 1.5)`, `u0.x > u1.x ? u0 : u1` are
+  `tst p0 = ...; or o0, saA; !p0? or o0, saB`, the secondary program
+  packing both values. A loop with a constant count is unrolled into the
+  secondary program; one with a `break` is a real loop in the pixel
+  program (`br` relative, in instructions: `p0? br +21` out, `br -21`
+  back), indexing the uniform array through the index registers and
+  shifts. `discard` is a second phase (`PHAS ... next at 974`) and an
+  unknown special instruction `f9340426c0000280` after a VTST into p1.
+- **Textures**: a non-dependent `texture2D` (also with bias, also
+  `texture2DProj`) is fetched by the PDS: pixel `or o0, pa0`. A dependent
+  one is `smp2d` in the pixel program -- coordinates in pa (F16), the
+  texture's state words in sa6.., `drc0`, then `wdf 0` (the `SPEC
+  f920000000000000`) before the result is read; `t.yx` and `t * 2.0` are
+  dependent; a cube map is `smp` with dim 3D after `t.xyz - 0.5`. A
+  texture read with uniform coordinates moves to the secondary program
+  (`smp ... lod`). `texture2D(s, t) * v` with a lowp `v` (sgx2d's case) is
+  one SOP2M on bytes, like sgx2d's own program.
+- `c02_if_varying` caught the driver's internal programs too (81): moves
+  of sa0.. to o0.. with every repeat count 1..16 (clears/loads), the
+  colour-mask programs (`mov.f16 i0, o0; mov.f16 i0.<mask>, sa0; mov.f16
+  o0, i0`) for each mask, SOP2Ms (blend), and a LIMM setup program.
+
+For M13 this is enough to write the first programs by hand: a vertex
+program `mov.f32 o0.xy, paP rpt2; [varyings]; emit`, a pixel program
+`pck.u8.f16 o0, pa0 scale` (a varying colour) or `or o0, saN, #0` (a
+colour packed by a secondary program). What it does not give is the state
+around them: how many outputs the vertex program has and which iterators
+load which pa (the TA's state words), and the PDS programs that load
+attributes and uniforms -- the next things to read out of the same
+captures' other changed runs.
 
 ## M12: the Mesa driver's skeleton (2026-10-03, done 2026-10-04)
 
