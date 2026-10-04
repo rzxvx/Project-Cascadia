@@ -4,7 +4,8 @@ docs/research/p105-mesa.md): for each case, the USSE programs iOS's GL
 driver made for it, disassembled, and the other bytes the draw changed.
 
     corpus.py DIR [--brief|--own] [CASE...]   DIR from tools/shadercap.sh
-                                        (logs/ios/corpus/<date>)
+                                        (logs/ios/corpus/<date>); CASE
+                                        a name or a pattern ('f*')
       --brief  no hex of the other changed runs
       --own    also only the programs found in at most 5 cases: the
                shader's own, not the driver's per-draw ones
@@ -23,7 +24,7 @@ emit), a pixel program (ends writing o0), and a secondary program run once
 per draw (its preamble VTST, VLDST) that does the arithmetic that only
 depends on uniforms, into a secondary attribute the pixel program reads.
 """
-import importlib.util, os, re, struct, sys
+import fnmatch, importlib.util, os, re, struct, sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 _spec = importlib.util.spec_from_file_location('usse_dis', os.path.join(HERE, 'usse-dis.py'))
@@ -317,7 +318,7 @@ def main():
             continue
         n_own = sum(1 for _, p, _ in r[0] + r[1] if seen_in.get(key(p), 0) <= OWN_MAX)
         summary.append((name, len(r[0]) + len(r[1]), n_own))
-        if only and name not in only:
+        if only and not any(fnmatch.fnmatchcase(name, o) for o in only):
             for at, p, _ in r[0]:
                 last[GROUP[kind(p)]] = (name, p)
             continue
