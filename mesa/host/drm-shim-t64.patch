@@ -1,0 +1,116 @@
+diff --git a/src/drm-shim/drm_shim.c b/src/drm-shim/drm_shim.c
+index 789c05f..b505933 100644
+--- a/src/drm-shim/drm_shim.c
++++ b/src/drm-shim/drm_shim.c
+@@ -864,3 +864,80 @@ mmap64(void* addr, size_t length, int prot, int flags, int fd, off64_t offset)
+ 
+    return real_mmap64(addr, length, prot, flags, fd, offset);
+ }
++
++/* mesa/host only: armhf glibc with 64-bit time_t (Ubuntu noble) */
++#if defined(__arm__) && defined(__GLIBC__)
++#include <dlfcn.h>
++void shim_t64_fake(void *p, dev_t rdev);
++int __stat64_time64(const char *path, void *st);
++int __fstat64_time64(int fd, void *st);
++int __ioctl_time64(int fd, unsigned long request, ...);
++int __fcntl_time64(int fd, int cmd, ...);
++
++PUBLIC int __stat64_time64(const char *path, void *st)
++{
++   static int (*real)(const char *, void *);
++   char *d;
++   bool sys;
++
++   init_shim();
++   if (!real)
++      real = dlsym(RTLD_NEXT, "__stat64_time64");
++   if (render_node_minor == -1)
++      return real(path, st);
++   if (hide_drm_device_path(path)) {
++      errno = ENOENT;
++      return -1;
++   }
++   nfasprintf(&d, "/sys/dev/char/%d:%d/device/drm", DRM_MAJOR, render_node_minor);
++   sys = !strcmp(path, d);
++   free(d);
++   if (sys)
++      return 0;
++   if (strcmp(path, render_node_path) != 0)
++      return real(path, st);
++   shim_t64_fake(st, makedev(DRM_MAJOR, render_node_minor));
++   return 0;
++}
++
++PUBLIC int __fstat64_time64(int fd, void *st)
++{
++   static int (*real)(int, void *);
++
++   init_shim();
++   if (!real)
++      real = dlsym(RTLD_NEXT, "__fstat64_time64");
++   if (!drm_shim_fd_lookup(fd))
++      return real(fd, st);
++   shim_t64_fake(st, makedev(DRM_MAJOR, render_node_minor));
++   return 0;
++}
++
++PUBLIC int __ioctl_time64(int fd, unsigned long request, ...)
++{
++   static int (*real)(int, unsigned long, ...);
++   va_list ap;
++   void *arg;
++
++   init_shim();
++   va_start(ap, request);
++   arg = va_arg(ap, void *);
++   va_end(ap);
++   if (!real)
++      real = dlsym(RTLD_NEXT, "__ioctl_time64");
++   if (!drm_shim_fd_lookup(fd))
++      return real(fd, request, arg);
++   return drm_shim_ioctl(fd, request, arg);
++}
++
++PUBLIC int __fcntl_time64(int fd, int cmd, ...)
++{
++   va_list ap;
++   void *arg;
++
++   va_start(ap, cmd);
++   arg = va_arg(ap, void *);
++   va_end(ap);
++   return fcntl(fd, cmd, arg);
++}
++#endif
+diff --git a/src/drm-shim/meson.build b/src/drm-shim/meson.build
+index 4f0fe4e..c7a1770 100644
+--- a/src/drm-shim/meson.build
++++ b/src/drm-shim/meson.build
+@@ -7,6 +7,7 @@ drm_shim = static_library(
+   [
+     'device.c',
+     'drm_shim.c',
++    't64.c',
+   ],
+   include_directories: [inc_include, inc_src],
+   dependencies: [dep_libdrm, idep_mesautil, dep_dl],
+diff --git a/src/drm-shim/t64.c b/src/drm-shim/t64.c
+new file mode 100644
+index 0000000..36591bd
+--- /dev/null
++++ b/src/drm-shim/t64.c
+@@ -0,0 +1,13 @@
++/* mesa/host only: time64 stat layout for the armhf glibc wrappers */
++#define _FILE_OFFSET_BITS 64
++#define _TIME_BITS 64
++#include <string.h>
++#include <sys/stat.h>
++void shim_t64_fake(void *p, dev_t rdev);
++void shim_t64_fake(void *p, dev_t rdev)
++{
++   struct stat *st = p;
++   memset(st, 0, sizeof(*st));
++   st->st_rdev = rdev;
++   st->st_mode = S_IFCHR;
++}

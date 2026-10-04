@@ -1,0 +1,35 @@
+#!/bin/sh
+# mesa/host/run [--arm] PROGRAM [ARGS] -- a program against the Mesa that
+# mesa/host/build.sh built, through drm-shim (no GPU: renders do nothing).
+# PROGRAM is glclear or gltri from that build, or a path.
+#
+#   mesa/host/run gltri
+#   SGX_DEBUG_DRAW=1 SGX_DEBUG=frame mesa/host/run gltri
+#   mesa/host/run --arm glclear 2           armhf, under qemu-arm-static
+#
+# SGX_PACK is the fake pack (mesa/host/fakepack.py) unless set;
+# SGX_PACK=/nonexistent runs without a template frame (clears on the CPU,
+# draws only as far as SGX_DEBUG_DRAW's log).
+ROOT=$(cd "$(dirname "$0")/../.." && pwd)
+arch=host
+[ "$1" = --arm ] && { arch=arm; shift; }
+[ -n "$1" ] || { sed -n '2,13s/^# \{0,1\}//p' "$0"; exit 1; }
+O=$ROOT/build/mesa-host/$arch
+B=$O/build
+if [ ! -d "$B" ]; then
+    [ $arch = arm ] && a=" arm" || a=
+    echo "error: no $arch build -- bash mesa/host/build.sh$a" >&2
+    exit 1
+fi
+LIBS=$B/src/egl:$B/src/mesa/glapi/es2api:$B/src/gallium/targets/dri:$B/src/gbm
+SHIM=$B/src/gallium/drivers/sgx/drm-shim/libsgx_noop_drm_shim.so
+prog=$1
+shift
+[ -x "$O/$prog" ] && prog=$O/$prog
+export SGX_PACK="${SGX_PACK:-$ROOT/build/mesa-host/fakepack}"
+if [ $arch = arm ]; then
+    # the preload and the libraries are the guest's, not qemu's own
+    QEMU_SET_ENV="LD_PRELOAD=$SHIM,LD_LIBRARY_PATH=$LIBS:/usr/arm-linux-gnueabihf/lib" \
+        exec qemu-arm-static -L / "$prog" "$@"
+fi
+LD_PRELOAD=$SHIM LD_LIBRARY_PATH=$LIBS exec "$prog" "$@"

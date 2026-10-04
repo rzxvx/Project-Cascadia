@@ -2,7 +2,8 @@
 
 A Gallium driver for the iPad mini's GPU, built into Mesa 26.1.8 for the
 device. The plan and the state of it: [docs/research/p105-mesa.md](../docs/research/p105-mesa.md)
-(M12 on). It runs OpenGL ES 2.0 programs: clears on the GPU (`sgx-gl
+(M12 on); where the work stopped last, in one page:
+[docs/research/p105-mesa-handoff.md](../docs/research/p105-mesa-handoff.md). It runs OpenGL ES 2.0 programs: clears on the GPU (`sgx-gl
 glclear 100`: every pixel right, ~60 ms a clear with its read-back), and
 draws the M13a way -- the vertex shader on the CPU (Gallium's draw module),
 the triangles on the GPU through the template frame, the pixels in a
@@ -23,6 +24,7 @@ workarounds for the microkernel, M12 in the doc).
 | `install.py` | onto the iPad, over ssh or into the NFS root, as `tools/sgx/mkpack.py` does it |
 | `sgx-gl` | on the device: run a program with this Mesa instead of the system's |
 | `frame-bisect` | on the device: a clear through each `SGX_FRAME` variant, to find a wrong piece of the template frame |
+| `host/` | the driver on a Linux PC through drm-shim: `build.sh [arm]`, `run`, a fake template frame, drm-shim's patch for armhf glibc |
 
 ## Building and installing
 
@@ -58,17 +60,20 @@ sgx-gl frame-bisect              # one clear through every SGX_FRAME variant (do
 ## Without an iPad
 
 Mesa's drm-shim pretends to be the render node, so the driver can be run on
-any Linux machine (renders do nothing there, so only CPU clears come back
-right; draws can be followed with SGX_DEBUG_DRAW=1):
+any Linux machine. Renders do nothing there, so only CPU clears come back
+right, but draws can be followed with `SGX_DEBUG_DRAW=1`, and every word a
+render would hand the GPU with `SGX_DEBUG=frame` (against a fake template
+frame, `host/fakepack.py`, which has nothing of Apple's in it):
 
 ```bash
-meson setup build -Dgallium-drivers=sgx -Dtools=drm-shim -Dplatforms= -Dglx=disabled \
-    -Dvulkan-drivers= -Dllvm=disabled -Dxmlconfig=disabled -Dexpat=disabled ...
-ninja -C build
-LD_PRELOAD=build/src/gallium/drivers/sgx/drm-shim/libsgx_noop_drm_shim.so \
-    LD_LIBRARY_PATH=build/src/egl:build/src/mesa/glapi/es2api:build/src/gallium/targets/dri \
-    ./glclear 6
+bash mesa/host/build.sh            # build/mesa-host/host: x86-64, debug
+bash mesa/host/build.sh arm        # build/mesa-host/arm: armhf, run under qemu-arm-static
+mesa/host/run gltri
+SGX_DEBUG_DRAW=1 SGX_DEBUG=frame mesa/host/run gltri
+mesa/host/run --arm glclear 2
 ```
+
+The packages it needs are in `host/build.sh`'s header.
 
 ## Licence
 
