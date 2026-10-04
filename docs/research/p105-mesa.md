@@ -413,6 +413,38 @@ cases show:
   colour-mask programs (`mov.f16 i0, o0; mov.f16 i0.<mask>, sa0; mov.f16
   o0, i0`) for each mask, SOP2Ms (blend), and a LIMM setup program.
 
+**The TA's full state, read (2026-10-04).** Every case's draw writes the
+21-word block sgx2d's frame has (`tools/sgx/frame.py`'s `full_state`;
+`corpus.py --state` finds it by word 17, `f32(1e-5)`), in one of two
+buffers in turn. Across the `v`, `t` and `x` cases (64x64 target, no
+blending):
+
+| word | value | what it is |
+|---|---|---|
+| 0, 1 | `0000dfc7`, `01d00300` | ISP A, B (sgx2d's B `03d00300` has bit 25, blending) |
+| 4 | `1180ac24` / `..26` / `..28` | the pixel program's secondary loader (PDS), tag in bits 31:28 |
+| 5 | `0803e000`; `1303e000` two varyings; `2183e000` eight; `0003e000` none | pixel PDS info: the top bits grow with the varyings (not decoded yet) |
+| 6 | `0980ac1e`; `1180ac1e` two varyings or a texture fetch; `1980f51e` eight | the pixel program's PDS; bits 28:27 a size class (1, 2, 3) |
+| 7, 8 | `80000001`, `1` | tile clip: last tile (1, 1) |
+| 9..14 | 32.0 x4, 0.5 x2 | viewport |
+| 16 | `NN001000` | **bits 31:24: the vertex's size in words** -- 4 for the position plus the varyings: 8 (vec4), 6 (vec2, and a float: it takes two), 7 (vec3), 10 (vec4 + vec2: sgx2d's `0a001000`), 36 (eight vec4s), 4 (none) |
+| 19 | `7`, `1`, `3`, `39`, `ffffff`, `0` | **three bits a varying, in output order**: `001` two components (or a float), `011` three, `111` four. vec4 + vec2 is `0x39` = vec2 first, then vec4 (sgx2d's `0x39`) |
+| 20 | `1`, `3`, `ff`, `0` | **a bit a varying: F16** (mediump and lowp 1, highp 0) |
+
+So a vertex program's outputs are the position, then each varying padded
+to two components, in the order words 19 and 20 list them; the iterators
+hand the pixel program each varying as F16 or F32 by word 20. The PDS
+programs: iOS's DOUTU word is `(address - code base) / 8 << 4 | 8` with
+the code base at CPU `0x950000` in this run (`0x3c88` starts the pixel
+program at `0x951e40`), which is how `corpus.py --pds` finds the PDS
+program that starts each USSE program. A pixel PDS for a float varying:
+data `{doutu 0x3d08, temps 6, 0, 0x2f40000f}`, code `doutu row 0, iterate
+(control: word 3) 07040c02, end` -- sgx2d's textured program has the
+iterate `07040c12` and a texture fetch after; a vec2's control word is
+`0x2f00000f`. The secondary loader: `{0x980f521c, 5, 0, 0}, {doutu 0x3d88,
+2, 0, 0}`, `dma row 0, doutu row 1, end` (frame.py's `dma_then_usse`),
+which DMAs six words of constants into the secondary attributes.
+
 For M13 this is enough to write the first programs by hand: a vertex
 program `mov.f32 o0.xy, paP rpt2; [varyings]; emit`, a pixel program
 `pck.u8.f16 o0, pa0 scale` (a varying colour) or `or o0, saN, #0` (a

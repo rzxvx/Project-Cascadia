@@ -15,6 +15,7 @@ driver made for it, disassembled, and the other bytes the draw changed.
                USSE programs and the driver's bookkeeping: the state words
                and PDS programs the draws set apart
       --state  the TA's full state block(s) each case's draw wrote
+      --pds    the PDS programs that start each case's USSE programs
 
 DIR holds log.txt (gltrace corpus's output, which gives the order the
 cases ran in), baseline.pages (every page of the GL driver's GPU buffers
@@ -237,8 +238,8 @@ def continuation(case_pages, after, cut):
         if addr == cut + PAGE:
             continue
         b = after[addr]
-        if is_phas(word(b, 0)):
-            continue
+        if is_phas(word(b, 0)) or not any(is_phas(word(b, o)) for o in range(0, PAGE, 8)):
+            continue        # (the rest is code: a page that holds programs)
         out, o = [], 0
         while o + 8 <= PAGE and len(out) < MAX_PROGRAM:
             w = word(b, o)
@@ -418,21 +419,22 @@ def state_blocks(name, case_pages, mem_after):
         print('   %08x  %s' % (at, ' '.join('%08x' % w for w in ws[:7])))
         print('             %s' % ' '.join('%08x' % w for w in ws[7:15]))
         print('             %s' % ' '.join('%08x' % w for w in ws[15:]))
-        delta = gpu_delta(mem_after, at)
-        if delta is None:
-            print('   (no PDS DMA of this block found: GPU addresses not resolved)')
-            continue
-        print('   GPU = CPU + 0x%08x (the PDS program that DMAs the block names it)' % delta)
-        for k, what in ((4, "the pixel program's secondary loader"), (6, "the pixel program's PDS")):
-            va = tag5_va(ws[k])
-            cpu = (va - delta) & 0xffffffff
-            words = read_words(mem_after, cpu, 16)
-            print('   word %d -> GPU %08x, CPU %08x, %s:' % (k, va, cpu, what))
-            if words is None:
-                print('      (not in the capture)')
-                continue
-            for r in range(0, 16, 8):
-                print('      %s' % ' '.join('%08x' % w for w in words[r:r + 8]))
+        print('   vertex size %d words; varyings %s; pixel PDS info %08x; '
+              'pixel PDS %08x (size field %d)' % (
+                  ws[16] >> 24, varyings(ws[19], ws[20]), ws[5], tag5_va(ws[6]), ws[6] >> 27 & 3))
+
+
+def varyings(fmt, half):
+    """words 19 and 20 of the full state: three bits a varying (the
+    components after the first: 001 two, 011 three, 111 four -- a float
+    takes two), one bit a varying in word 20 (set: F16, clear: F32)"""
+    out = []
+    for i in range(10):
+        f = fmt >> 3 * i & 7
+        if not f:
+            break
+        out.append('%d%s' % ({1: 2, 3: 3, 7: 4}.get(f, f), 'h' if half >> i & 1 else 'f'))
+    return '[%s]' % ' '.join(out) if out else 'none'
 
 
 def tag5_va(w):
@@ -441,27 +443,53 @@ def tag5_va(w):
     return 0x80000000 | (w & 0x07ffffff) << 4
 
 
-def read_words(mem, cpu, n):
-    page = mem.get(cpu & ~(PAGE - 1))
-    if page is None or (cpu & (PAGE - 1)) + 4 * n > PAGE:
-        return None
-    return struct.unpack_from('<%dI' % n, page, cpu & (PAGE - 1))
+# PDS instruction words iOS's GL driver writes (tools/sgx/pds.py)
+PDS_NAMES = {0xaf000000: 'end', 0x070001b5: 'doutu row0 (then iterate/fetch)',
+             0x07000185: 'doutu row0', 0x070401a5: 'doutu row1 (after)',
+             0x07018113: 'dma row0', 0x07040c12: 'iterate, control w3 (texture)',
+             0x07040c02: 'iterate, control w3', 0x07000c02: 'iterate (background)',
+             0x07041004: 'texture fetch, state row1', 0x67800072: 'fetch index'}
 
 
-def gpu_delta(mem, at):
-    """GPU minus CPU address for the mapping that holds AT: a PDS program's
-    data that DMAs the block has its GPU address (same offset in the page,
-    in the GPU's range) followed by a small count word"""
-    loose = None
-    for addr in sorted(mem):
-        ws = struct.unpack('<1024I', mem[addr])
-        for k in range(1023):
+def pds_name(w):
+    if w in PDS_NAMES:
+        return PDS_NAMES[w]
+    if w & 0xffc0ffff == 0x2f0091a3:
+        return 'fetch attribute, row %d' % ((w >> 16 & 0x3f) // 4)
+    if w >> 24 == 0x07:
+        return 'dout %03x, operands at %03x' % (w & 0xfff, w >> 12 & 0xfff)
+    return ''
+
+
+def pds_programs(name, case_pages, mem_after, targets):
+    """the PDS programs the case's draw wrote that start a USSE program
+    (TARGETS: address -> kind, every program seen up to this case): found
+    by their DOUTU word ((address - code base) / 8 << 4 | selector; the
+    code base 64 KiB-aligned) and the PDS shape (data rows, then
+    instruction words up to an end, 0xaf000000)"""
+    print('== %s' % name)
+    for addr in sorted(case_pages):
+        ws = struct.unpack('<1024I', mem_after[addr])
+        for k in range(1024):
             w = ws[k]
-            if w & 0xfff == at & 0xfff and w >= 0x80000000 and w != at and ws[k + 1] < 0x40:
-                if ws[k + 1] == 0x14:        # sgx2d's frame: 21 words, control 20
-                    return (w - at) & 0xffffffff
-                loose = loose if loose is not None else (w - at) & 0xffffffff
-    return loose
+            if not w or w & 0xf not in (3, 8) or k + 1 >= 1024 or ws[k + 1] >= 0x80:
+                continue
+            for at, what in targets.items():
+                base = at - (w >> 4) * 8
+                if base & 0xffff or base < 0:
+                    continue
+                end = next((e for e in range(k + 1, min(k + 40, 1024)) if ws[e] == 0xaf000000), None)
+                if end is None:
+                    continue
+                first = k & ~3          # back over the data rows before the DOUTU's
+                while first >= 4 and any(ws[first - 4:first]) and 0xaf000000 not in ws[first - 4:first] \
+                        and k - first < 12:
+                    first -= 4
+                print('-- PDS at CPU %08x, starts the %s program at %08x (code base CPU %08x)' %
+                      (addr + 4 * first, what, at, base))
+                for e in range(first, end + 1):
+                    print('   %08x  %08x  %s%s' % (addr + 4 * e, ws[e], pds_name(ws[e]) if e > k else '',
+                                                  '  <- doutu' if e == k else ''))
 
 
 def main():
@@ -491,6 +519,13 @@ def main():
             for at, p, _ in (r[0] + r[1]) if r else []:
                 code_words.update(at + 4 * k for k in range(2 * len(p)))
         return state_diff(names[0], after[names[0]], names[1], after[names[1]], code_words)
+    if '--pds' in sys.argv:
+        known = {}
+        for (name, r) in results:
+            known.update((at, kind(p)) for at, p, _ in (r[0] if r else []))
+            if r and (not only or any(fnmatch.fnmatchcase(name, o) for o in only)):
+                pds_programs(name, changed[name], after[name], dict(known))
+        return
     if '--state' in sys.argv:
         for name in order:
             if not only or any(fnmatch.fnmatchcase(name, o) for o in only):
