@@ -139,8 +139,9 @@ including the parts that didn't work.
       turns included: [docs/research/p105-gpu.md](docs/research/p105-gpu.md)
 - [ ] OpenGL through Mesa — under way: the kernel driver has a DRM render
       node, and a Gallium driver in [mesa/](mesa/) runs OpenGL ES 2.0
-      programs with clears on the GPU (2026-10-03); draws wait for the
-      shader compiler. The plan: [docs/research/p105-mesa.md](docs/research/p105-mesa.md)
+      programs with clears on the GPU — 100 of them, every pixel right
+      (2026-10-04); draws wait for the shader compiler. The plan:
+      [docs/research/p105-mesa.md](docs/research/p105-mesa.md)
 
 ## Where Linux keeps its files
 

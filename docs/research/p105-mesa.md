@@ -235,7 +235,7 @@ A corpus to run through it, one feature at a time:
 `usse-dis.py` decodes opcodes and a few operand layouts; for this it needs
 every operand of every instruction the corpus produces.
 
-## M12: the Mesa driver's skeleton (2026-10-03)
+## M12: the Mesa driver's skeleton (2026-10-03, done 2026-10-04)
 
 `mesa/` holds it: the driver's files (`mesa/files`, copied into a Mesa tree),
 the few lines that register it with Mesa (`mesa/mesa.patch`: the
@@ -410,6 +410,26 @@ sends TA again for a render left unread and unstarted after 20 ms
 buffers of 64 KiB or more are 64 KiB aligned. `frame-bisect` now checks:
 each variant three times as it is, and 20 clears in one process, with the
 kernel's "restarted for the PB" and "TA sent again" in the report.
+
+**M12 on the device (2026-10-04).** With that kernel:
+
+    sgx-gl glclear 100
+    100 clears with read-back in 6.094 s: 60.9 ms each; 0 wrong
+
+and every `frame-bisect` line right -- all ten variants three times each,
+screen variants red, target variants `target right`, 20 clears in one
+process right -- with "restarted for the PB" once per process and not one
+"TA sent again". The first render of a process takes 70-95 ms (the
+microkernel's start, firmware load included, is in it); after that a
+clear plus the read-back of 3 MiB through a write-combined mapping is
+47-60 ms, most of it the read-back. `fb,sop2` drew too: the SOP2 with
+`cmod1`/`amod1` was never wrong, its hang the day before was the parameter
+buffer's. The MOV replace stays (fewer unknowns).
+
+What M12 leaves for later: the parameter buffer and the render target
+data still come from the pack (M10 replaces them, and with them the
+restart per client); one render at a time; targets of the screen's size
+only; no draws.
 
 Not yet: draws (`draw_vbo` says so once and drops them), textures in any
 layout but linear, scanout (EGL has the surfaceless and GBM platforms; the

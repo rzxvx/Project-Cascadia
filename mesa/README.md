@@ -3,7 +3,10 @@
 A Gallium driver for the iPad mini's GPU, built into Mesa 26.1.8 for the
 device. The plan and the state of it: [docs/research/p105-mesa.md](../docs/research/p105-mesa.md)
 (M12 on). It runs OpenGL ES 2.0 programs today, but only clears reach the
-GPU: there is no shader compiler yet, so draws are dropped.
+GPU (`sgx-gl glclear 100`: every pixel right, ~60 ms a clear with its
+read-back): there is no shader compiler yet, so draws are dropped. It needs
+a kernel from 2026-10-04 or later (the render node's workarounds for the
+microkernel, M12 in the doc).
 
 | path | what |
 |---|---|
