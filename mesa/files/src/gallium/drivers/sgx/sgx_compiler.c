@@ -41,8 +41,10 @@
 
 #include "sgx_usse.h"
 
-/* 32-bit temporaries the compiler hands out; values take the even ones */
+/* 32-bit temporaries the compiler hands out; values made by the ALU take
+ * even ones, a texture's four values a block of four */
 #define MAX_TEMPS 64
+#define MAX_UNITS 32
 
 struct operand {
    unsigned id;         /* the value: its def's index * 4 + the component */
@@ -61,12 +63,14 @@ struct comp {
    struct sgx_fs *fs;
    struct util_dynarray code;           /* uint64_t */
    struct usse_reg *loc;                /* where each value is */
-   bool *owned;                         /* loc is a temporary of its own */
+   bool *owned;                         /* loc is a temporary of its own (any lane) */
    int *last_use;                       /* the last instruction that reads it */
    bool used[MAX_TEMPS];
    unsigned top;                        /* temporaries used: highest + 1 */
    int input_of_slot[VARYING_SLOT_MAX];
    unsigned ninputs, nuniforms;
+   int slot_of_unit[MAX_UNITS];         /* a texture unit's state words, by slot */
+   unsigned nsamplers, sampler_sa;
    struct operand colour[4];
    bool have_colour[4];
    char *why;
@@ -93,18 +97,30 @@ emit(struct comp *c, uint64_t w)
    util_dynarray_append(&c->code, w);
 }
 
+/* n free temporaries in a row, the first a multiple of align */
+static unsigned
+block(struct comp *c, unsigned n, unsigned align)
+{
+   for (unsigned r = 0; r + n <= MAX_TEMPS; r += align) {
+      unsigned i;
+
+      for (i = 0; i < n && !c->used[r + i]; i++)
+         ;
+      if (i < n)
+         continue;
+      for (i = 0; i < n; i++)
+         c->used[r + i] = true;
+      c->top = MAX2(c->top, r + n);
+      return r;
+   }
+   fail(c, "more values live at once than %u temporaries hold", MAX_TEMPS);
+   return 0;
+}
+
 static unsigned
 take(struct comp *c)            /* an even temporary */
 {
-   for (unsigned r = 0; r + 1 < MAX_TEMPS; r += 2) {
-      if (!c->used[r]) {
-         c->used[r] = true;
-         c->top = MAX2(c->top, r + 1);
-         return r;
-      }
-   }
-   fail(c, "more than %u values live at once", MAX_TEMPS / 2);
-   return 0;
+   return block(c, 1, 2);
 }
 
 static void
@@ -356,10 +372,151 @@ alu(struct comp *c, nir_alu_instr *alu, struct scratch *s)
    }
 }
 
+static bool uniform_word(struct comp *c, nir_intrinsic_instr *in, unsigned *at);
+
+/* an operand into a given register (any lane) */
+static void
+move_into(struct comp *c, struct usse_reg d, struct operand o, struct scratch *s)
+{
+   struct usse_reg r;
+
+   if (o.is_const) {
+      emit(c, usse_limm(d, f32_bits(o.c)));
+      return;
+   }
+   r = c->loc[o.id];
+   r.neg = o.neg;
+   r.abs = o.abs;
+   if (r.neg || r.abs)          /* the modifiers applied: times one */
+      emit(c, usse_fop(USSE_NMAD_MUL, d, r, constant(c, s, 1.0f)));
+   else
+      emit(c, usse_fmov(d, r));
+}
+
+static struct operand
+tex_operand(nir_tex_instr *tex, int src, unsigned comp)
+{
+   return resolve(nir_get_scalar(tex->src[src].src.ssa, comp));
+}
+
+/* texture2D, with a bias or a level: the coordinates into a register pair,
+ * SMP for an F32 texel into four temporaries in a row, wait for it.  The
+ * texture's four state words are in sa, after the uniforms (the draw puts
+ * them there, sgx_draw.c). */
+static void
+texture(struct comp *c, nir_tex_instr *tex, struct scratch *s)
+{
+   int coord = nir_tex_instr_src_index(tex, nir_tex_src_coord);
+   int bias = nir_tex_instr_src_index(tex, nir_tex_src_bias);
+   int lod = nir_tex_instr_src_index(tex, nir_tex_src_lod);
+   enum usse_smp_lod mode = USSE_SMP_NONE;
+   struct usse_reg lodreg = usse_reg(USSE_TEMP, 0);
+   unsigned pair, d, id = tex->def.index * 4;
+
+   if ((tex->op != nir_texop_tex && tex->op != nir_texop_txb && tex->op != nir_texop_txl) ||
+       tex->sampler_dim != GLSL_SAMPLER_DIM_2D || tex->is_shadow || tex->is_array ||
+       coord < 0 || tex->texture_index >= MAX_UNITS ||
+       c->slot_of_unit[tex->texture_index] < 0) {
+      fail(c, "no %s texture lookups yet", tex->sampler_dim == GLSL_SAMPLER_DIM_CUBE ?
+           "cube" : "such");
+      return;
+   }
+   pair = block(c, 2, 2);
+   s->reg[s->n++] = pair;
+   s->reg[s->n++] = pair + 1;
+   move_into(c, usse_reg(USSE_TEMP, pair), tex_operand(tex, coord, 0), s);
+   move_into(c, usse_reg(USSE_TEMP, pair + 1), tex_operand(tex, coord, 1), s);
+   if (bias >= 0 || lod >= 0) {
+      mode = bias >= 0 ? USSE_SMP_BIAS : USSE_SMP_LOD;
+      lodreg = usse_reg(USSE_TEMP, scratch_take(c, s));
+      move_into(c, lodreg, tex_operand(tex, bias >= 0 ? bias : lod, 0), s);
+   }
+   d = block(c, 4, 4);
+   emit(c, usse_smp2d(USSE_SMP_F32, USSE_SMP_COORD_F32, usse_reg(USSE_TEMP, d),
+                      usse_reg(USSE_TEMP, pair),
+                      usse_reg(USSE_SA, c->sampler_sa + 4 * c->slot_of_unit[tex->texture_index]),
+                      mode, lodreg));
+   emit(c, USSE_WDF0);
+   /* the sampler hands an 8-bit channel back as its integer value (0..255,
+    * checked with gltex): to 0..1 (the copy it reads is always RGBA8) */
+   {
+      struct usse_reg k = constant(c, s, 1.0f / 255.0f);
+
+      for (unsigned i = 0; i < 4; i++)
+         if (i < tex->def.num_components && c->last_use[id + i] >= 0)
+            emit(c, usse_fop(USSE_NMAD_MUL, usse_reg(USSE_TEMP, d + i),
+                             usse_reg(USSE_TEMP, d + i), k));
+   }
+   for (unsigned i = 0; i < 4; i++) {
+      c->loc[id + i] = usse_reg(USSE_TEMP, d + i);
+      c->owned[id + i] = i < tex->def.num_components && c->last_use[id + i] >= 0;
+      if (!c->owned[id + i])
+         give_back(c, d + i);
+   }
+}
+
+/* Before anything is emitted: how many uniform words the shader reads (the
+ * texture states go after them) and a slot for each texture unit. */
+static void
+scan(struct comp *c, nir_function_impl *impl)
+{
+   nir_foreach_block(block, impl) {
+      nir_foreach_instr(instr, block) {
+         if (instr->type == nir_instr_type_intrinsic) {
+            nir_intrinsic_instr *in = nir_instr_as_intrinsic(instr);
+            unsigned at;
+
+            if ((in->intrinsic == nir_intrinsic_load_uniform ||
+                 in->intrinsic == nir_intrinsic_load_ubo) && uniform_word(c, in, &at))
+               c->nuniforms = MAX2(c->nuniforms, at + in->def.num_components);
+         } else if (instr->type == nir_instr_type_tex) {
+            nir_tex_instr *tex = nir_instr_as_tex(instr);
+
+            if (tex->texture_index < MAX_UNITS && c->slot_of_unit[tex->texture_index] < 0) {
+               if (c->nsamplers == SGX_FS_MAX_SAMPLERS) {
+                  fail(c, "more than %u textures", SGX_FS_MAX_SAMPLERS);
+                  return;
+               }
+               c->fs->sampler_unit[c->nsamplers] = tex->texture_index;
+               c->slot_of_unit[tex->texture_index] = c->nsamplers++;
+            }
+         }
+      }
+   }
+   c->sampler_sa = align(c->nuniforms, 4);
+}
+
 static int
 type_size_vec4(const struct glsl_type *type, bool bindless)
 {
    return glsl_count_attribute_slots(type, false);
+}
+
+/* the constant buffer word a uniform load starts at; false (and fail) if
+ * it is not one we take */
+static bool
+uniform_word(struct comp *c, nir_intrinsic_instr *in, unsigned *at)
+{
+   if (in->intrinsic == nir_intrinsic_load_uniform) {
+      /* vec4 slots (the screen does not pack uniforms) */
+      if (!nir_src_is_const(in->src[0])) {
+         fail(c, "an indirect uniform");
+         return false;
+      }
+      *at = (nir_intrinsic_base(in) + nir_src_as_uint(in->src[0])) * 4;
+   } else {
+      if (!nir_src_is_const(in->src[0]) || nir_src_as_uint(in->src[0]) ||
+          !nir_src_is_const(in->src[1])) {
+         fail(c, "an indirect or second constant buffer");
+         return false;
+      }
+      *at = nir_src_as_uint(in->src[1]) / 4;
+   }
+   if (*at + in->def.num_components > 128) {
+      fail(c, "uniforms past word 128");
+      return false;
+   }
+   return true;
 }
 
 static void
@@ -396,25 +553,9 @@ intrinsic(struct comp *c, nir_intrinsic_instr *in)
       return;
    }
    case nir_intrinsic_load_uniform:
-      /* vec4 slots (the screen does not pack uniforms) */
-      if (!nir_src_is_const(in->src[0])) {
-         fail(c, "an indirect uniform");
-         return;
-      }
-      at = (nir_intrinsic_base(in) + nir_src_as_uint(in->src[0])) * 4;
-      goto uniform;
    case nir_intrinsic_load_ubo:
-      if (!nir_src_is_const(in->src[0]) || nir_src_as_uint(in->src[0]) ||
-          !nir_src_is_const(in->src[1])) {
-         fail(c, "an indirect or second constant buffer");
+      if (!uniform_word(c, in, &at))
          return;
-      }
-      at = nir_src_as_uint(in->src[1]) / 4;
-   uniform:
-      if (at + in->def.num_components > 128) {
-         fail(c, "uniforms past word 128");
-         return;
-      }
       for (unsigned i = 0; i < in->def.num_components; i++)
          c->loc[id + i] = usse_reg(USSE_SA, at + i);
       c->nuniforms = MAX2(c->nuniforms, at + in->def.num_components);
@@ -464,6 +605,19 @@ for_each_read(struct comp *c, nir_instr *instr, void (*f)(struct comp *, struct 
       if (in->intrinsic == nir_intrinsic_store_output)
          for (unsigned i = 0; i < in->src[0].ssa->num_components; i++)
             f(c, resolve(nir_get_scalar(in->src[0].ssa, i)), index);
+   } else if (instr->type == nir_instr_type_tex) {
+      nir_tex_instr *tex = nir_instr_as_tex(instr);
+
+      for (unsigned i = 0; i < tex->num_srcs; i++) {
+         if (tex->src[i].src_type == nir_tex_src_coord) {
+            f(c, tex_operand(tex, i, 0), index);
+            if (tex->src[i].src.ssa->num_components > 1)
+               f(c, tex_operand(tex, i, 1), index);
+         } else if (tex->src[i].src_type == nir_tex_src_bias ||
+                    tex->src[i].src_type == nir_tex_src_lod) {
+            f(c, tex_operand(tex, i, 0), index);
+         }
+      }
    }
 }
 
@@ -499,34 +653,15 @@ output(struct comp *c)
       fail(c, "no colour written");
       return;
    }
-   for (base = 0; base + 3 < MAX_TEMPS; base += 2)
-      if (!c->used[base] && !c->used[base + 2])
-         break;
-   if (base + 3 >= MAX_TEMPS) {
-      fail(c, "no room for the colour");
-      return;
-   }
-   c->used[base] = c->used[base + 2] = true;
-   c->top = MAX2(c->top, base + 4);
+   base = block(c, 4, 2);
    for (unsigned i = 0; i < 4; i++) {
-      struct usse_reg d = usse_reg(USSE_TEMP, base + i), r;
       struct operand o = c->colour[i];
 
       if (!c->have_colour[i]) {
          o.is_const = true;
          o.c = i == 3 ? 1.0f : 0.0f;
       }
-      if (o.is_const) {
-         emit(c, usse_limm(d, f32_bits(o.c)));
-         continue;
-      }
-      r = c->loc[o.id];
-      r.neg = o.neg;
-      r.abs = o.abs;
-      if (r.neg || r.abs)
-         emit(c, usse_fop(USSE_NMAD_MUL, d, r, constant(c, &s, 1.0f)));
-      else
-         emit(c, usse_fmov(d, r));
+      move_into(c, usse_reg(USSE_TEMP, base + i), o, &s);
       scratch_give_back(c, &s);
    }
    emit(c, usse_pack_unorm8(0, usse_reg(USSE_TEMP, base)) | USSE_END);
@@ -576,9 +711,17 @@ sgx_compile_fs(const nir_shader *fs, char *why, unsigned why_size)
    for (unsigned i = 0; i < ARRAY_SIZE(c.input_of_slot); i++)
       c.input_of_slot[i] = -1;
 
+   for (unsigned i = 0; i < ARRAY_SIZE(c.slot_of_unit); i++)
+      c.slot_of_unit[i] = -1;
+
    s = nir_shader_clone(NULL, fs);
    NIR_PASS(_, s, nir_lower_io, nir_var_shader_in | nir_var_shader_out | nir_var_uniform,
             type_size_vec4, 0);
+   {
+      const nir_lower_tex_options tex = { .lower_txp = ~0u };
+
+      NIR_PASS(_, s, nir_lower_tex, &tex);
+   }
    optimize(s);
    NIR_PASS(_, s, nir_lower_int_to_float);
    NIR_PASS(_, s, nir_lower_bool_to_float, true);
@@ -605,6 +748,10 @@ sgx_compile_fs(const nir_shader *fs, char *why, unsigned why_size)
    for (unsigned i = 0; i < n; i++)
       c.last_use[i] = -1;
 
+   scan(&c, impl);
+   if (c.failed)
+      goto out;
+
    /* liveness, then the code, in the same order */
    index = 0;
    nir_foreach_block(block, impl)
@@ -625,12 +772,14 @@ sgx_compile_fs(const nir_shader *fs, char *why, unsigned why_size)
          case nir_instr_type_intrinsic:
             intrinsic(&c, nir_instr_as_intrinsic(instr));
             break;
+         case nir_instr_type_tex:
+            texture(&c, nir_instr_as_tex(instr), &sc);
+            break;
          case nir_instr_type_load_const:
          case nir_instr_type_undef:
             break;
          default:
-            fail(&c, "no %s instructions yet",
-                 instr->type == nir_instr_type_tex ? "texture" : "such");
+            fail(&c, "no such instructions yet");
             break;
          }
          scratch_give_back(&c, &sc);
@@ -652,7 +801,10 @@ sgx_compile_fs(const nir_shader *fs, char *why, unsigned why_size)
    memcpy(c.fs->prog.code, util_dynarray_begin(&c.code), c.fs->prog.ncode * sizeof(uint64_t));
    c.fs->prog.ntemps = c.top;
    c.fs->prog.ninputs = c.ninputs;
-   c.fs->prog.nuniforms = c.nuniforms;
+   c.fs->nuniforms = c.nuniforms;
+   c.fs->nsamplers = c.nsamplers;
+   c.fs->sampler_sa = c.sampler_sa;
+   c.fs->prog.nsa = c.nsamplers ? c.sampler_sa + 4 * c.nsamplers : c.nuniforms;
 
 out:
    util_dynarray_fini(&c.code);

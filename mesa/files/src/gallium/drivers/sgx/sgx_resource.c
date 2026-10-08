@@ -15,6 +15,7 @@
 #include "drm-uapi/drm_fourcc.h"
 #include "frontend/winsys_handle.h"
 #include "util/format/u_format.h"
+#include "util/log.h"
 #include "util/u_inlines.h"
 #include "util/u_math.h"
 #include "util/u_memory.h"
@@ -86,6 +87,7 @@ sgx_resource_destroy(struct pipe_screen *pscreen, struct pipe_resource *prsc)
    struct sgx_resource *res = sgx_resource(prsc);
 
    /* a render still using it holds the kernel's reference */
+   sgx_bo_destroy(res->tw);
    sgx_bo_destroy(res->bo);
    FREE(res);
 }
@@ -113,6 +115,95 @@ sgx_resource_get_handle(struct pipe_screen *pscreen, struct pipe_context *pctx,
    default:
       return false;
    }
+}
+
+/* Morton order, y in the even bits (the layout iOS's GL driver uploads); a
+ * rectangle is a row (or column) of such squares, the side of the shorter
+ * edge, one after another (docs/research/p105-gpu.md, M7) */
+static uint32_t
+twiddle(uint32_t x, uint32_t y, uint32_t w, uint32_t h)
+{
+   uint32_t m = MIN2(w, h), i = 0, xs = x % m, ys = y % m;
+
+   for (unsigned b = 0; (1u << b) < m; b++)
+      i |= ((ys >> b) & 1) << (2 * b) | ((xs >> b) & 1) << (2 * b + 1);
+   return (w >= h ? x / m : y / m) * m * m + i;
+}
+
+/* the copy made again from the linear content (level 0) */
+static bool
+twiddle_texture(struct sgx_screen *screen, struct sgx_resource *res)
+{
+   struct pipe_resource *p = &res->base;
+   unsigned w = p->width0, h = p->height0, tw = util_next_power_of_two(w);
+   unsigned th = util_next_power_of_two(h);
+   uint32_t *dst, *row;
+   const uint8_t *src;
+
+   if (!res->tw || res->tw_w != tw || res->tw_h != th) {
+      sgx_bo_destroy(res->tw);
+      res->tw = sgx_bo_create(&screen->dev, tw * th * 4, 0, 0);
+      if (!res->tw || !sgx_bo_map(res->tw)) {
+         sgx_bo_destroy(res->tw);
+         res->tw = NULL;
+         return false;
+      }
+      res->tw_w = tw;
+      res->tw_h = th;
+   } else {
+      /* a render may still be sampling the old copy */
+      sgx_frame_finish(screen->frame);
+   }
+   if (!(src = sgx_bo_map(res->bo)) || !(row = MALLOC(w * 4)))
+      return false;
+   /* what the GPU wrote into the texture, done first */
+   sgx_bo_wait(res->bo, -1);
+   dst = (uint32_t *)res->tw->map;
+   /* padding: the last column and row repeated, so a clamped lookup at the
+    * edge finds the edge */
+   for (unsigned y = 0; y < th; y++) {
+      unsigned sy = MIN2(y, h - 1);
+
+      util_format_unpack_rgba_8unorm_rect(p->format, (uint8_t *)row, w * 4,
+                                          src + res->offset[0] + sy * res->stride[0],
+                                          res->stride[0], w, 1);
+      for (unsigned x = 0; x < tw; x++)
+         dst[twiddle(x, y, tw, th)] = row[MIN2(x, w - 1)];
+   }
+   FREE(row);
+   res->tw_seq = res->seq;
+   return true;
+}
+
+/* GL's wrap modes as the state's word 0 has them: iOS's for CLAMP_TO_EDGE
+ * on both axes is 0x90 (the corpus's t* cases), REPEAT is what sgx2d draws
+ * with (0) */
+static uint32_t
+wrap_bits(unsigned wrap_s, unsigned wrap_t)
+{
+   return (wrap_s == PIPE_TEX_WRAP_REPEAT ? 0 : 1u << 4) |
+          (wrap_t == PIPE_TEX_WRAP_REPEAT ? 0 : 1u << 7);
+}
+
+bool
+sgx_resource_texture(struct sgx_screen *screen, struct sgx_resource *res,
+                     const struct pipe_sampler_state *ss, uint32_t words[4])
+{
+   struct pipe_resource *p = &res->base;
+
+   if ((p->target != PIPE_TEXTURE_2D && p->target != PIPE_TEXTURE_RECT) ||
+       p->array_size != 1 || !p->width0 || !p->height0)
+      return false;
+   if ((!res->tw || res->tw_seq != res->seq) && !twiddle_texture(screen, res))
+      return false;
+   if ((p->width0 & (p->width0 - 1)) || (p->height0 & (p->height0 - 1)))
+      mesa_logw_once("sgx: textures that are not a power of two in size are sampled "
+                     "from a padded copy; their coordinates are not scaled yet");
+   words[0] = 0x03fe0000 | (ss ? wrap_bits(ss->wrap_s, ss->wrap_t) : 0);
+   words[1] = 0x0c000000 | util_logbase2(res->tw_w) << 16 | util_logbase2(res->tw_h);
+   words[2] = res->tw->va;
+   words[3] = 0;
+   return true;
 }
 
 void
@@ -160,6 +251,9 @@ static void
 sgx_transfer_unmap(struct pipe_context *pctx, struct pipe_transfer *ptrans)
 {
    struct sgx_context *ctx = sgx_context(pctx);
+
+   if (ptrans->usage & PIPE_MAP_WRITE)
+      sgx_resource(ptrans->resource)->seq++;
 
    pipe_resource_reference(&ptrans->resource, NULL);
    slab_free(&ctx->transfer_pool, ptrans);

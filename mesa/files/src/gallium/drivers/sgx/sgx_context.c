@@ -92,8 +92,10 @@ sgx_clear_gpu(struct sgx_context *ctx, struct pipe_surface *surf,
    simple_mtx_lock(&screen->frame_lock);
    ret = sgx_frame_clear(screen->frame, rt, color->f, done);
    simple_mtx_unlock(&screen->frame_lock);
-   if (!ret)
+   if (!ret) {
       sgx_fence_reference(&ctx->last, done);
+      rt->seq++;
+   }
    sgx_fence_reference(&done, NULL);
    return !ret;
 }
@@ -251,9 +253,9 @@ sgx_create_shader_state(struct pipe_context *pctx, const struct pipe_shader_stat
                       "out per vertex", why);
          else if (ctx->debug_draw || debug_get_bool_option("SGX_DEBUG_SHADER", false)) {
             mesa_logi("sgx: a fragment shader compiled: %u instructions, %u temps, "
-                      "%u inputs, %u uniform words", sh->compiled->prog.ncode,
+                      "%u inputs, %u sa words, %u textures", sh->compiled->prog.ncode,
                       sh->compiled->prog.ntemps, sh->compiled->prog.ninputs,
-                      sh->compiled->prog.nuniforms);
+                      sh->compiled->prog.nsa, sh->compiled->nsamplers);
             /* SGX_DEBUG_SHADER=1: the code, for tools/iosgpu/usse-dis.py words */
             for (unsigned i = 0; debug_get_bool_option("SGX_DEBUG_SHADER", false) &&
                                  i < sh->compiled->prog.ncode; i++)
@@ -325,6 +327,12 @@ static void
 sgx_bind_sampler_states(struct pipe_context *pctx, mesa_shader_stage shader,
                         unsigned start, unsigned count, void **states)
 {
+   struct sgx_context *ctx = sgx_context(pctx);
+
+   if (shader != MESA_SHADER_FRAGMENT)
+      return;
+   for (unsigned i = 0; i < count && start + i < PIPE_MAX_SAMPLERS; i++)
+      ctx->fs_samplers[start + i] = states ? states[i] : NULL;
 }
 
 static struct pipe_sampler_view *
@@ -355,6 +363,14 @@ sgx_set_sampler_views(struct pipe_context *pctx, mesa_shader_stage shader,
                       unsigned start, unsigned count, unsigned unbind_trailing,
                       struct pipe_sampler_view **views)
 {
+   struct sgx_context *ctx = sgx_context(pctx);
+
+   if (shader != MESA_SHADER_FRAGMENT)
+      return;
+   for (unsigned i = 0; i < count + unbind_trailing; i++)
+      if (start + i < PIPE_MAX_SHADER_SAMPLER_VIEWS)
+         pipe_sampler_view_reference(&ctx->fs_views[start + i],
+                                     views && i < count ? views[i] : NULL);
 }
 
 static void
@@ -457,6 +473,8 @@ sgx_context_destroy(struct pipe_context *pctx)
    struct sgx_context *ctx = sgx_context(pctx);
 
    sgx_draw_fini(ctx);
+   for (unsigned i = 0; i < ARRAY_SIZE(ctx->fs_views); i++)
+      pipe_sampler_view_reference(&ctx->fs_views[i], NULL);
    util_unreference_framebuffer_state(&ctx->fb);
    util_set_vertex_buffers_mask(ctx->vb, &ctx->vb_mask, NULL, 0);
    for (unsigned i = 0; i < ARRAY_SIZE(ctx->cb); i++)

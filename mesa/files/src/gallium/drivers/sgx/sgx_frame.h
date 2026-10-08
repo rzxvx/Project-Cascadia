@@ -74,15 +74,16 @@ sgx_frame_vertex_floats(const struct sgx_frame_layout *l)
 
 /* A pixel program of our own (M13c, sgx_compiler.c): its USSE code, the
  * temporaries it uses, the varyings it reads -- F32 vec4s the PDS iterates
- * into pa0.., varying i of the layout into pa4i -- and the uniform words it
- * reads from sa0..  The frame puts the code and its PDS program in GPU
- * memory at the first draw, once, and keeps where in code_va, pds_va. */
+ * into pa0.., varying i of the layout into pa4i -- and how many words of
+ * secondary attributes it reads from sa0.. (uniforms, texture states: the
+ * draw hands them over).  The frame puts the code and its PDS program in
+ * GPU memory at the first draw, once, and keeps where in code_va, pds_va. */
 struct sgx_pixel_program {
    uint64_t *code;
    unsigned ncode;
    unsigned ntemps;
    unsigned ninputs;
-   unsigned nuniforms;
+   unsigned nsa;
    uint32_t code_va, pds_va;
    unsigned pds_rows;
 };
@@ -90,12 +91,18 @@ struct sgx_pixel_program {
 /* Triangles into rt, over what it holds (each tile starts as the target's
  * pixels): nverts vertices laid out as l says, three a triangle, as many
  * as sgx_frame_max_vertices() a render.  With prog, the pixels are its
- * (l has its inputs, all F32), with uniforms[0..nuniforms) in sa0..;
- * without, they are l's colour varying. */
+ * (l has its inputs, all F32), with sa[0..prog->nsa) in sa0..; without,
+ * they are l's colour varying.  handles: buffers the render reads besides
+ * the frame's and rt (textures, at most SGX_FRAME_MAX_HANDLES), for the
+ * kernel to keep. */
+#define SGX_FRAME_MAX_HANDLES 16
 int sgx_frame_draw(struct sgx_frame *f, struct sgx_resource *rt,
                    const struct sgx_frame_layout *l, const float *verts, unsigned nverts,
-                   struct sgx_pixel_program *prog, const float *uniforms,
-                   unsigned nuniforms, struct sgx_fence *done);
+                   struct sgx_pixel_program *prog, const uint32_t *sa,
+                   const uint32_t *handles, unsigned nhandles, struct sgx_fence *done);
+
+/* waits for the last render through the frame */
+void sgx_frame_finish(struct sgx_frame *f);
 unsigned sgx_frame_max_vertices(struct sgx_frame *f, const struct sgx_frame_layout *l);
 
 #endif

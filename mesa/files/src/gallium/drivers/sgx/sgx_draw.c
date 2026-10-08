@@ -519,7 +519,9 @@ submit(struct sgx_context *ctx)
    struct sgx_screen *screen = sgx_screen(ctx->base.screen);
    struct pipe_surface *surf = &ctx->fb.cbufs[0];
    struct sgx_resource *rt = surf->texture ? sgx_resource(surf->texture) : NULL;
-   unsigned max, done = 0;
+   struct sgx_fs *fs = ctx->fs ? ctx->fs->compiled : NULL;
+   uint32_t sa[128 + 4 * SGX_FS_MAX_SAMPLERS], handles[SGX_FS_MAX_SAMPLERS];
+   unsigned max, done = 0, nhandles = 0;
 
    if (!ctx->nverts)
       return;
@@ -545,6 +547,31 @@ submit(struct sgx_context *ctx)
       ctx->nverts = 0;
       return;
    }
+   /* a compiled fragment shader's secondary attributes: its uniforms,
+    * then the state words of each texture it samples */
+   if (fs) {
+      unsigned n = MIN2(fs->nuniforms, ctx->fs_constants_size / 4);
+
+      memset(sa, 0, sizeof(sa));
+      if (ctx->fs_constants)
+         memcpy(sa, ctx->fs_constants, n * sizeof(float));
+      for (unsigned i = 0; i < fs->nsamplers; i++) {
+         unsigned unit = fs->sampler_unit[i];
+         struct pipe_sampler_view *view = unit < ARRAY_SIZE(ctx->fs_views) ?
+                                          ctx->fs_views[unit] : NULL;
+         struct sgx_resource *tex = view ? sgx_resource(view->texture) : NULL;
+
+         if (!tex || !sgx_resource_texture(screen, tex, unit < PIPE_MAX_SAMPLERS ?
+                                           ctx->fs_samplers[unit] : NULL,
+                                           sa + fs->sampler_sa + 4 * i)) {
+            mesa_logw_once("sgx: a draw samples a texture unit with nothing it can "
+                           "sample bound: dropped");
+            ctx->nverts = 0;
+            return;
+         }
+         handles[nhandles++] = tex->tw->handle;
+      }
+   }
    max = sgx_frame_max_vertices(screen->frame, &ctx->layout);
    while (done < ctx->nverts) {
       unsigned n = MIN2(ctx->nverts - done, max);
@@ -556,8 +583,9 @@ submit(struct sgx_context *ctx)
       simple_mtx_lock(&screen->frame_lock);
       ret = sgx_frame_draw(screen->frame, rt, &ctx->layout,
                            ctx->verts + done * sgx_frame_vertex_floats(&ctx->layout), n,
-                           ctx->fs && ctx->fs->compiled ? &ctx->fs->compiled->prog : NULL,
-                           ctx->fs_constants, ctx->fs_constants_size / 4, fence);
+                           fs ? &fs->prog : NULL, sa, handles, nhandles, fence);
+      if (!ret)
+         rt->seq++;
       simple_mtx_unlock(&screen->frame_lock);
       if (!ret)
          sgx_fence_reference(&ctx->last, fence);

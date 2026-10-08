@@ -39,6 +39,9 @@ struct sgx_context {
    uint32_t vb_mask;
    struct pipe_constant_buffer cb[2];   /* buffer 0: the vertex, fragment shader's */
    struct sgx_shader *vs, *fs;
+   /* the fragment shader's textures (M14) */
+   const struct pipe_sampler_state *fs_samplers[PIPE_MAX_SAMPLERS];
+   struct pipe_sampler_view *fs_views[PIPE_MAX_SHADER_SAMPLER_VIEWS];
    struct sgx_fence *last;      /* the last render this context submitted */
 
    /* draws (sgx_draw.c): the draw module, its back end, and the vertices

@@ -76,8 +76,8 @@
 #define EXT_PROG_PDS    0x1000
 #define EXT_PROG_PDS_END 0x80000
 #define PROG_PDS_SLOT   0x80
-/* per render, in the frame's part of the EXT window: the uniforms' loader
- * and the uniforms */
+/* per render, in the frame's part of the EXT window: the secondary
+ * attributes' loader and the words it loads (uniforms, texture states) */
 #define FRAME_UNI_PDS   0xf00
 #define FRAME_UNIFORMS  0x1000
 /* the code of our pixel programs: a buffer of its own in the code zone,
@@ -696,6 +696,13 @@ fail:
 }
 
 void
+sgx_frame_finish(struct sgx_frame *f)
+{
+   if (f && f->last)
+      sgx_fence_wait(f->last, OS_TIMEOUT_INFINITE);
+}
+
+void
 sgx_frame_destroy(struct sgx_frame *f)
 {
    if (!f)
@@ -831,8 +838,8 @@ upload(struct sgx_frame *f, struct sgx_pixel_program *p)
 
 static int render(struct sgx_frame *f, struct sgx_resource *rt,
                   const struct sgx_frame_layout *l, const float *verts, unsigned nverts,
-                  bool iterated, struct sgx_pixel_program *prog, const float *uniforms,
-                  unsigned nuniforms, struct sgx_fence *done);
+                  bool iterated, struct sgx_pixel_program *prog, const uint32_t *sa,
+                  const uint32_t *handles, unsigned nhandles, struct sgx_fence *done);
 
 /* a clear: the pack's vertex and pixel sides, as M12 proved them */
 int
@@ -842,13 +849,14 @@ sgx_frame_clear(struct sgx_frame *f, struct sgx_resource *rt, const float rgba[4
    float verts[6 * PACK_VTX_FLOATS];
 
    quad(verts, rgba);
-   return render(f, rt, NULL, verts, 6, false, NULL, NULL, 0, done);
+   return render(f, rt, NULL, verts, 6, false, NULL, NULL, NULL, 0, done);
 }
 
 int
 sgx_frame_draw(struct sgx_frame *f, struct sgx_resource *rt, const struct sgx_frame_layout *l,
                const float *verts, unsigned nverts, struct sgx_pixel_program *prog,
-               const float *uniforms, unsigned nuniforms, struct sgx_fence *done)
+               const uint32_t *sa, const uint32_t *handles, unsigned nhandles,
+               struct sgx_fence *done)
 {
    unsigned vf = sgx_frame_vertex_floats(l);
    float *pack;
@@ -858,9 +866,9 @@ sgx_frame_draw(struct sgx_frame *f, struct sgx_resource *rt, const struct sgx_fr
        (prog ? l->nvaryings != prog->ninputs : l->colour >= l->nvaryings))
       return -EINVAL;
    if (prog)
-      return render(f, rt, l, verts, nverts, true, prog, uniforms, nuniforms, done);
+      return render(f, rt, l, verts, nverts, true, prog, sa, handles, nhandles, done);
    if (!(f->opts & (SGX_FRAME_PACKVTX | SGX_FRAME_PACKPIX)))
-      return render(f, rt, l, verts, nverts, true, NULL, NULL, 0, done);
+      return render(f, rt, l, verts, nverts, true, NULL, NULL, NULL, 0, done);
 
    /* through the pack's vertex side: r g b a (the colour) u v x y */
    if (!(pack = malloc(nverts * PACK_VTX_FLOATS * sizeof(float))))
@@ -874,8 +882,8 @@ sgx_frame_draw(struct sgx_frame *f, struct sgx_resource *rt, const struct sgx_fr
       out[6] = in[0];
       out[7] = in[1];
    }
-   ret = render(f, rt, NULL, pack, nverts, !(f->opts & SGX_FRAME_PACKPIX), NULL, NULL, 0,
-                done);
+   ret = render(f, rt, NULL, pack, nverts, !(f->opts & SGX_FRAME_PACKPIX), NULL, NULL, NULL,
+                0, done);
    free(pack);
    return ret;
 }
@@ -887,9 +895,10 @@ sgx_frame_draw(struct sgx_frame *f, struct sgx_resource *rt, const struct sgx_fr
 static int
 render(struct sgx_frame *f, struct sgx_resource *rt, const struct sgx_frame_layout *l,
        const float *verts, unsigned nverts, bool iterated, struct sgx_pixel_program *pix,
-       const float *uniforms, unsigned nuniforms, struct sgx_fence *done)
+       const uint32_t *sa, const uint32_t *handles, unsigned nhandles, struct sgx_fence *done)
 {
    uint32_t vdm[32] = { 0 }, full[32], prog[16], fetch[32], bg[4], *v = vdm, *cmd;
+   uint32_t hs[MAX_PACK_BOS + 3 + 1 + SGX_FRAME_MAX_HANDLES];
    uint32_t frame = f->ext + EXT_FRAME, vb = f->ext + EXT_VB, d0, p0, fb, eot, fetch_word;
    unsigned stride = l ? sgx_frame_vertex_floats(l) * sizeof(float) :
                      PACK_VTX_FLOATS * sizeof(float);
@@ -951,11 +960,11 @@ render(struct sgx_frame *f, struct sgx_resource *rt, const struct sgx_frame_layo
       /* our pixel program: its PDS (word 6), how many registers a pixel
        * takes (word 5: bits 31:27 primary attributes + temporaries in fours;
        * 26:23 as iOS has them for 2, 3 and 4 fours, 12 / fours -- M13b),
-       * and its uniforms in sa0.. (word 4: a DMA, then the empty program) */
+       * and its secondary attributes in sa0.. (word 4: a DMA, then the empty
+       * program) */
       unsigned fours = DIV_ROUND_UP(4 * pix->ninputs + pix->ntemps, 4);
-      uint32_t words[128] = { 0 };
       uint32_t loader[12] = {
-         uni, pix->nuniforms - 1, 0, 0, doutu(f, f->empty_prog), 2, 0, 0,
+         uni, pix->nsa - 1, 0, 0, doutu(f, f->empty_prog), 2, 0, 0,
          PDS_DMA_ROW0, PDS_DOUTU_ROW1_AFTER, PDS_END, 0,
       };
 
@@ -963,9 +972,8 @@ render(struct sgx_frame *f, struct sgx_resource *rt, const struct sgx_frame_layo
          return ret;
       full[6] = pix->pds_rows << 27 | (pix->pds_va >> 4 & 0x07ffffff);
       full[5] = fours << 27 | (fours > 1 ? 12 / fours : 0) << 23 | 0x0003e000;
-      if (pix->nuniforms) {
-         memcpy(words, uniforms, MIN2(nuniforms, pix->nuniforms) * sizeof(float));
-         if (!put(f, uni, words, pix->nuniforms * 4) || !put(f, uni_pds, loader, sizeof(loader)))
+      if (pix->nsa) {
+         if (!put(f, uni, sa, pix->nsa * 4) || !put(f, uni_pds, loader, sizeof(loader)))
             return -EFAULT;
          full[4] = 2u << 27 | (uni_pds >> 4 & 0x07ffffff);
       }
@@ -1015,7 +1023,12 @@ render(struct sgx_frame *f, struct sgx_resource *rt, const struct sgx_frame_layo
    det = cpu_at(f, f->kick[1], 0xa8, &det_bo);
    if (!cmd || !det || !cpu_at(f, f->kick[2], cmd[0], NULL))
       return -EFAULT;
-   f->handles[f->nhandles] = rt->bo->handle;
+   /* the frame's buffers, the target, and what the draw reads besides */
+   if (f->nhandles + 1 + nhandles > ARRAY_SIZE(hs))
+      return -EINVAL;
+   memcpy(hs, f->handles, f->nhandles * sizeof(uint32_t));
+   hs[f->nhandles] = rt->bo->handle;
+   memcpy(hs + f->nhandles + 1, handles, nhandles * sizeof(uint32_t));
 
    if (f->debug) {
       const float *c = l ? verts + 4 + 4 * l->colour : verts, *pos = l ? verts : verts + 6;
@@ -1040,9 +1053,9 @@ render(struct sgx_frame *f, struct sgx_resource *rt, const struct sgx_frame_layo
                    "%08x %08x %08x %08x", eot, doutu(f, eot), to.va, bg[0], bg[1], bg[2], bg[3]);
       if (pix)
          mesa_logi("sgx:   pixel program: compiled, %u instructions at 0x%08x, %u temps, "
-                   "%u inputs, %u uniform words; its PDS at 0x%08x (%u rows), state words 4 "
+                   "%u inputs, %u sa words; its PDS at 0x%08x (%u rows), state words 4 "
                    "%08x 5 %08x 6 %08x", pix->ncode, pix->code_va, pix->ntemps,
-                   pix->ninputs, pix->nuniforms, pix->pds_va, pix->pds_rows, full[4],
+                   pix->ninputs, pix->nsa, pix->pds_va, pix->pds_rows, full[4],
                    full[5], full[6]);
       else if (iterated)
          mesa_logi("sgx:   pixel program: varying %u iterated as %s and packed (iOS's); "
@@ -1060,10 +1073,10 @@ render(struct sgx_frame *f, struct sgx_resource *rt, const struct sgx_frame_layo
          mesa_logi("sgx:   VDM +%02x: %08x %08x %08x %08x %08x", i * 4, vdm[i], vdm[i + 1],
                    vdm[i + 2], vdm[i + 3], vdm[i + 4]);
       mesa_logi("sgx:   kick: PB 0x%08x, details 0x%08x, TA command 0x%08x (%u bytes), %u buffers",
-                f->kick[0], f->kick[1], f->kick[2], cmd[0], f->nhandles + 1);
+                f->kick[0], f->kick[1], f->kick[2], cmd[0], f->nhandles + 1 + nhandles);
    }
    ret = sgx_submit(f->dev, cmd, f->kick[0], f->bo[det_bo]->handle,
-                    f->kick[1] - f->bo[det_bo]->va, f->handles, f->nhandles + 1, done);
+                    f->kick[1] - f->bo[det_bo]->va, hs, f->nhandles + 1 + nhandles, done);
    if (!ret)
       sgx_fence_reference(&f->last, done);
    return ret;
