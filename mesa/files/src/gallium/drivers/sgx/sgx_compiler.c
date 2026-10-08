@@ -30,10 +30,12 @@
 #include <math.h>
 #include <stdarg.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "compiler/glsl_types.h"
 #include "compiler/nir/nir.h"
+#include "compiler/nir/nir_lower_blend.h"
 #include "util/ralloc.h"
 #include "util/u_dynarray.h"
 #include "util/u_math.h"
@@ -71,6 +73,7 @@ struct comp {
    unsigned ninputs, nuniforms;
    int slot_of_unit[MAX_UNITS];         /* a texture unit's state words, by slot */
    unsigned nsamplers, sampler_sa;
+   int blend_sa;                        /* the blend colour's words, -1 none */
    struct operand colour[4];
    bool have_colour[4];
    char *why;
@@ -469,6 +472,11 @@ scan(struct comp *c, nir_function_impl *impl)
             if ((in->intrinsic == nir_intrinsic_load_uniform ||
                  in->intrinsic == nir_intrinsic_load_ubo) && uniform_word(c, in, &at))
                c->nuniforms = MAX2(c->nuniforms, at + in->def.num_components);
+            if (in->intrinsic == nir_intrinsic_load_blend_const_color_r_float ||
+                in->intrinsic == nir_intrinsic_load_blend_const_color_g_float ||
+                in->intrinsic == nir_intrinsic_load_blend_const_color_b_float ||
+                in->intrinsic == nir_intrinsic_load_blend_const_color_a_float)
+               c->blend_sa = 0;      /* placed below */
          } else if (instr->type == nir_instr_type_tex) {
             nir_tex_instr *tex = nir_instr_as_tex(instr);
 
@@ -484,6 +492,8 @@ scan(struct comp *c, nir_function_impl *impl)
       }
    }
    c->sampler_sa = align(c->nuniforms, 4);
+   if (c->blend_sa >= 0)
+      c->blend_sa = c->sampler_sa + 4 * c->nsamplers;
 }
 
 static int
@@ -576,6 +586,53 @@ intrinsic(struct comp *c, nir_intrinsic_instr *in)
       }
       return;
    }
+   case nir_intrinsic_load_output: {
+      /* the colour the tile holds (blending, nir_lower_blend): o0's four
+       * 8-bit channels into four temporaries */
+      unsigned d;
+
+      if (!nir_intrinsic_io_semantics(in).fb_fetch_output ||
+          (nir_intrinsic_io_semantics(in).location != FRAG_RESULT_DATA0 &&
+           nir_intrinsic_io_semantics(in).location != FRAG_RESULT_COLOR)) {
+         fail(c, "reads an output");
+         return;
+      }
+      d = block(c, 4, 2);
+      {
+         /* SGX_DEBUG_FBFETCH=word: unpack a constant instead of o0 (a test
+          * of the channel selects) */
+         const char *dbg = getenv("SGX_DEBUG_FBFETCH");
+         struct usse_reg src = usse_reg(USSE_OUTPUT, 0);
+         unsigned k = 0;
+
+         if (dbg) {
+            k = take(c);
+            src = usse_reg(USSE_TEMP, k);
+            emit(c, usse_limm(src, strtoul(dbg, NULL, 0)));
+         }
+         emit(c, usse_unpack_unorm8(usse_reg(USSE_TEMP, d), src, 0));
+         emit(c, usse_unpack_unorm8(usse_reg(USSE_TEMP, d + 2), src, 2));
+         for (unsigned i = 0; i < 4; i++) {
+            c->loc[id + i] = usse_reg(USSE_TEMP, d + i);
+            c->owned[id + i] = i < in->def.num_components && c->last_use[id + i] >= 0;
+            if (!c->owned[id + i])
+               give_back(c, d + i);
+         }
+         if (dbg)
+            give_back(c, k);
+      }
+      return;
+   }
+   case nir_intrinsic_load_blend_const_color_r_float:
+   case nir_intrinsic_load_blend_const_color_g_float:
+   case nir_intrinsic_load_blend_const_color_b_float:
+   case nir_intrinsic_load_blend_const_color_a_float:
+      /* (the intrinsics are not in rgba order) */
+      c->loc[id] = usse_reg(USSE_SA, c->blend_sa +
+         (in->intrinsic == nir_intrinsic_load_blend_const_color_r_float ? 0 :
+          in->intrinsic == nir_intrinsic_load_blend_const_color_g_float ? 1 :
+          in->intrinsic == nir_intrinsic_load_blend_const_color_b_float ? 2 : 3));
+      return;
    case nir_intrinsic_load_barycentric_pixel:
    case nir_intrinsic_load_barycentric_centroid:
    case nir_intrinsic_load_barycentric_sample:
@@ -694,9 +751,35 @@ optimize(nir_shader *s)
    } while (progress);
 }
 
-struct sgx_fs *
-sgx_compile_fs(const nir_shader *fs, char *why, unsigned why_size)
+/* GL's blending (and colour mask) for render target 0 into the shader:
+ * NIR's own lowering, which reads the destination with load_output */
+static void
+lower_blend(nir_shader *s, const struct sgx_blend_key *k)
 {
+   nir_lower_blend_options o = { .scalar_blend_const = true };
+
+   o.rt[0].format = PIPE_FORMAT_B8G8R8A8_UNORM;
+   o.rt[0].colormask = k->colormask;
+   if (k->enable) {
+      o.rt[0].rgb.func = k->rgb_func;
+      o.rt[0].rgb.src_factor = k->rgb_src;
+      o.rt[0].rgb.dst_factor = k->rgb_dst;
+      o.rt[0].alpha.func = k->alpha_func;
+      o.rt[0].alpha.src_factor = k->alpha_src;
+      o.rt[0].alpha.dst_factor = k->alpha_dst;
+   } else {
+      o.rt[0].rgb.func = o.rt[0].alpha.func = PIPE_BLEND_ADD;
+      o.rt[0].rgb.src_factor = o.rt[0].alpha.src_factor = PIPE_BLENDFACTOR_ONE;
+      o.rt[0].rgb.dst_factor = o.rt[0].alpha.dst_factor = PIPE_BLENDFACTOR_ZERO;
+   }
+   NIR_PASS(_, s, nir_lower_blend, &o);
+}
+
+struct sgx_fs *
+sgx_compile_fs(const nir_shader *fs, const struct sgx_blend_key *blend, char *why,
+               unsigned why_size)
+{
+   bool blending = blend && (blend->enable || blend->colormask != 0xf);
    struct comp c = { 0 };
    nir_function_impl *impl;
    nir_shader *s;
@@ -713,10 +796,19 @@ sgx_compile_fs(const nir_shader *fs, char *why, unsigned why_size)
 
    for (unsigned i = 0; i < ARRAY_SIZE(c.slot_of_unit); i++)
       c.slot_of_unit[i] = -1;
+   c.blend_sa = -1;
+   if (blend)
+      c.fs->blend = *blend;
+   else
+      c.fs->blend.colormask = 0xf;
 
    s = nir_shader_clone(NULL, fs);
+   if (blending)
+      NIR_PASS(_, s, nir_lower_fragcolor, 1);
    NIR_PASS(_, s, nir_lower_io, nir_var_shader_in | nir_var_shader_out | nir_var_uniform,
             type_size_vec4, 0);
+   if (blending)
+      lower_blend(s, blend);
    {
       const nir_lower_tex_options tex = { .lower_txp = ~0u };
 
@@ -813,7 +905,9 @@ sgx_compile_fs(const nir_shader *fs, char *why, unsigned why_size)
    c.fs->nuniforms = c.nuniforms;
    c.fs->nsamplers = c.nsamplers;
    c.fs->sampler_sa = c.sampler_sa;
-   c.fs->prog.nsa = c.nsamplers ? c.sampler_sa + 4 * c.nsamplers : c.nuniforms;
+   c.fs->prog.nsa = c.blend_sa >= 0 ? c.blend_sa + 4 :
+                    c.nsamplers ? c.sampler_sa + 4 * c.nsamplers : c.nuniforms;
+   c.fs->blend_sa = c.blend_sa;
 
 out:
    util_dynarray_fini(&c.code);

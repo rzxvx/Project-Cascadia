@@ -9,12 +9,16 @@
 #include "sgx_usse.h"
 
 #include <assert.h>
+#include <stdio.h>
 
 /* v into bits hi..lo */
 static uint64_t
 bits(uint64_t v, unsigned hi, unsigned lo)
 {
-   assert(!(v >> (hi - lo + 1)));
+   if (v >> (hi - lo + 1)) {
+      fprintf(stderr, "sgx_usse: %#llx does not fit bits %u:%u\n", (unsigned long long)v, hi, lo);
+      assert(!"a USSE field overflows");
+   }
    return v << lo;
 }
 
@@ -222,4 +226,23 @@ usse_smp2d(enum usse_smp_out out, enum usse_smp_coord coord, struct usse_reg des
           bits(dest.bank == USSE_PA, 39, 39) | bits(coord, 36, 35) | bits(bank0, 34, 34) |
           bits(bank1, 31, 30) | bits(bank2, 29, 28) | bits(dest.num, 27, 21) |
           bits(coords.num >> 1, 20, 14) | bits(state.num >> 1, 13, 7) | bits(lodn, 6, 0);
+}
+
+uint64_t
+usse_unpack_unorm8(struct usse_reg dest, struct usse_reg src, unsigned chan)
+{
+   unsigned dext, dbank, ext, bank;
+
+   assert(!(dest.num & 1) && (chan == 0 || chan == 2));
+   dest_bank(dest, &dext, &dbank);
+   src_bank(src, &ext, &bank);
+   /* VPCK: source format 0 (U8), dest 6 (F32), mask xy, scale.  A U8 source
+    * is named in 32-bit units (its low bit at 7).  x reads channel chan --
+    * the select's low bit at 0, its high bit the second source's low bit
+    * (an immediate here, as iOS's pck.f16.u8 has it) -- y reads chan + 1 */
+   return bits(0x08, 63, 59) | SKIPINV | bits(dext, 51, 51) | bits(ext, 49, 49) |
+          bits(1, 48, 48) | bits(0, 43, 41) | bits(6, 40, 38) | bits(3, 37, 34) |
+          bits(dbank, 33, 32) | bits(bank, 31, 30) | bits(2, 29, 28) | bits(dest.num, 27, 21) |
+          bits(3, 20, 19) | bits(1, 18, 18) | bits(chan + 1, 17, 16) | bits(2, 15, 14) |
+          bits(src.num >> 1, 13, 8) | bits(src.num & 1, 7, 7) | bits(chan >> 1, 6, 1);
 }

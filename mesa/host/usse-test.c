@@ -56,6 +56,8 @@ main(void)
    P("smp_bias", usse_smp2d(USSE_SMP_F32, USSE_SMP_COORD_F32, T(8), T(4), SA(12), USSE_SMP_BIAS,
                             T(6)));
    P("wdf0", USSE_WDF0);
+   P("unpack_r4_o0_xy", usse_unpack_unorm8(T(4), O(0), 0));
+   P("unpack_r6_o0_zw", usse_unpack_unorm8(T(6), O(0), 2));
    P("limm_r5", usse_limm(T(5), 0x3f800000));
    P("limm_r100", usse_limm(T(100), 0xdeadbeef));
    return 0;

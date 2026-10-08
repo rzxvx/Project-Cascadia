@@ -230,7 +230,7 @@ emit_vertex(struct sgx_render *sr, const float *in, float *out)
    out[1] = in[1] * 2 / ctx->fb.height - 1;
    out[2] = 0;
    out[3] = 1;
-   if (ctx->fs && ctx->fs->compiled) {
+   if (ctx->draw_fs) {
       /* the program's inputs, as the draw module has them */
       memcpy(out + 4, in + 4, 4 * l->nvaryings * sizeof(float));
       return;
@@ -411,9 +411,9 @@ update_vertex_info(struct sgx_context *ctx)
    sr->nvarying = 0;
    draw_emit_vertex_attr(vinfo, EMIT_4F,
                          draw_find_shader_output(ctx->draw, TGSI_SEMANTIC_POSITION, 0));
-   if (ctx->fs && ctx->fs->compiled) {
+   if (ctx->draw_fs) {
       /* a compiled fragment shader: its inputs, in its order, all F32 */
-      const struct sgx_fs *fs = ctx->fs->compiled;
+      const struct sgx_fs *fs = ctx->draw_fs;
 
       for (unsigned i = 0; i < fs->prog.ninputs; i++)
          emit_varying(ctx, vinfo, fs->input_slot[i]);
@@ -497,6 +497,52 @@ sgx_draw_fini(struct sgx_context *ctx)
 
 /* ---- draw_vbo ----------------------------------------------------------- */
 
+/* The fragment shader as this draw runs it: compiled with the bound blend
+ * state folded in (a variant made at the first draw that needs it), or
+ * NULL for M13a's way. */
+static struct sgx_fs *
+fs_for_draw(struct sgx_context *ctx)
+{
+   struct sgx_shader *sh = ctx->fs;
+   const struct pipe_rt_blend_state *rt = ctx->blend ? &ctx->blend->rt[0] : NULL;
+   struct sgx_blend_key key = { .colormask = 0xf };
+   struct sgx_fs *fs;
+   char why[128];
+
+   if (!sh || !sh->compiled)
+      return NULL;
+   if (rt) {
+      key.colormask = rt->colormask;
+      if (rt->blend_enable) {
+         key.enable = 1;
+         key.rgb_func = rt->rgb_func;
+         key.rgb_src = rt->rgb_src_factor;
+         key.rgb_dst = rt->rgb_dst_factor;
+         key.alpha_func = rt->alpha_func;
+         key.alpha_src = rt->alpha_src_factor;
+         key.alpha_dst = rt->alpha_dst_factor;
+      }
+   }
+   if (!key.enable && key.colormask == 0xf)
+      return sh->compiled;
+   for (unsigned i = 0; i < sh->nvariants; i++)
+      if (!memcmp(&sh->variant[i]->blend, &key, sizeof(key)))
+         return sh->variant[i];
+   if (!(fs = sgx_compile_fs(sh->nir, &key, why, sizeof(why)))) {
+      mesa_logw_once("sgx: a fragment shader with blending not compiled (%s): drawn "
+                     "without it", why);
+      return sh->compiled;
+   }
+   if (sh->nvariants == ARRAY_SIZE(sh->variant)) {
+      /* its code stays where the frame put it: that place is not reused */
+      sgx_fs_destroy(sh->variant[0]);
+      memmove(sh->variant, sh->variant + 1, (ARRAY_SIZE(sh->variant) - 1) * sizeof(fs));
+      sh->nvariants--;
+   }
+   sh->variant[sh->nvariants++] = fs;
+   return fs;
+}
+
 static const void *
 map_buffer(struct pipe_resource *prsc, size_t *size)
 {
@@ -519,7 +565,7 @@ submit(struct sgx_context *ctx)
    struct sgx_screen *screen = sgx_screen(ctx->base.screen);
    struct pipe_surface *surf = &ctx->fb.cbufs[0];
    struct sgx_resource *rt = surf->texture ? sgx_resource(surf->texture) : NULL;
-   struct sgx_fs *fs = ctx->fs ? ctx->fs->compiled : NULL;
+   struct sgx_fs *fs = ctx->draw_fs;
    uint32_t sa[128 + 4 * SGX_FS_MAX_SAMPLERS], handles[SGX_FS_MAX_SAMPLERS];
    unsigned max, done = 0, nhandles = 0;
 
@@ -571,6 +617,8 @@ submit(struct sgx_context *ctx)
          }
          handles[nhandles++] = tex->tw->handle;
       }
+      if (fs->blend_sa >= 0)
+         memcpy(sa + fs->blend_sa, ctx->blend_color.color, 4 * sizeof(float));
    }
    max = sgx_frame_max_vertices(screen->frame, &ctx->layout);
    while (done < ctx->nverts) {
@@ -609,6 +657,7 @@ sgx_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info,
 
    if (indirect || !draw || !ctx->vs || !ctx->vs->draw)
       return;
+   ctx->draw_fs = fs_for_draw(ctx);
    if (ctx->fs && !ctx->fs->compiled && !ctx->fs->colour.ok && !ctx->warned_fs) {
       mesa_logw("sgx: a fragment shader whose colour is not a varying, a constant or a "
                 "uniform per channel: drawn grey (M13a)");

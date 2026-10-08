@@ -24,6 +24,8 @@ struct sgx_shader {
    struct draw_vertex_shader *draw;     /* a vertex shader's, on the CPU */
    struct sgx_fs_colour colour;         /* a fragment shader's colour */
    struct sgx_fs *compiled;             /* a fragment shader, compiled (M13c) */
+   struct sgx_fs *variant[8];           /* and again for blend states (M14) */
+   unsigned nvariants;
 };
 
 struct sgx_vertex_elements {
@@ -39,6 +41,10 @@ struct sgx_context {
    uint32_t vb_mask;
    struct pipe_constant_buffer cb[2];   /* buffer 0: the vertex, fragment shader's */
    struct sgx_shader *vs, *fs;
+   /* blending (M14) */
+   const struct pipe_blend_state *blend;
+   struct pipe_blend_color blend_color;
+   struct sgx_fs *draw_fs;              /* this draw's fragment shader (sgx_draw.c) */
    /* the fragment shader's textures (M14) */
    const struct pipe_sampler_state *fs_samplers[PIPE_MAX_SAMPLERS];
    struct pipe_sampler_view *fs_views[PIPE_MAX_SHADER_SAMPLER_VIEWS];

@@ -88,6 +88,14 @@ uint64_t usse_smp2d(enum usse_smp_out out, enum usse_smp_coord coord, struct uss
                     struct usse_reg lod);
 #define USSE_WDF0             0xf920000000000000ull   /* wait for data return channel 0 */
 
+/* dest, dest + 1 (F32, dest even) = channels chan, chan + 1 (0 or 2) of
+ * src's four 8-bit channels, scaled to [0, 1] -- the colour the tile holds,
+ * read out of o0 for blending.  An F32 VPCK writes one 64-bit register:
+ * two of these make the four channels (gltex/glblend with
+ * SGX_DEBUG_FBFETCH: a mask of xyzw left z and w unwritten, and the first
+ * channel select reaches channel 2 but not 3). */
+uint64_t usse_unpack_unorm8(struct usse_reg dest, struct usse_reg src, unsigned chan);
+
 /* o<dest> = four F32 values packed to 8 bits each, scaled from [0, 1]:
  * src, src + 1 (a pair) and src + 2, src + 3; src even */
 uint64_t usse_pack_unorm8(unsigned dest_o, struct usse_reg src);

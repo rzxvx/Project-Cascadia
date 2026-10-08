@@ -247,7 +247,7 @@ sgx_create_shader_state(struct pipe_context *pctx, const struct pipe_shader_stat
       sgx_fs_colour_analyse(sh->nir, &sh->colour);
       /* SGX_NOCOMPILE=1: M13a's way only */
       if (!debug_get_bool_option("SGX_NOCOMPILE", false)) {
-         sh->compiled = sgx_compile_fs(sh->nir, why, sizeof(why));
+         sh->compiled = sgx_compile_fs(sh->nir, NULL, why, sizeof(why));
          if (!sh->compiled)
             mesa_logw("sgx: a fragment shader not compiled (%s): its colour is worked "
                       "out per vertex", why);
@@ -283,6 +283,8 @@ sgx_delete_shader_state(struct pipe_context *pctx, void *state)
       ctx->fs = NULL;
    /* its code stays where the frame put it: that place is not reused */
    sgx_fs_destroy(sh->compiled);
+   for (unsigned i = 0; i < sh->nvariants; i++)
+      sgx_fs_destroy(sh->variant[i]);
    ralloc_free(sh->nir);
    FREE(sh);
 }
@@ -383,6 +385,13 @@ sgx_set_framebuffer_state(struct pipe_context *pctx,
 static void
 sgx_set_blend_color(struct pipe_context *pctx, const struct pipe_blend_color *c)
 {
+   sgx_context(pctx)->blend_color = *c;
+}
+
+static void
+sgx_bind_blend_state(struct pipe_context *pctx, void *state)
+{
+   sgx_context(pctx)->blend = state;
 }
 
 static void
@@ -517,7 +526,7 @@ sgx_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
    p->resource_release = u_default_resource_release;
 
    p->create_blend_state = sgx_create_blend_state;
-   p->bind_blend_state = sgx_bind_state;
+   p->bind_blend_state = sgx_bind_blend_state;
    p->delete_blend_state = sgx_delete_state;
    p->create_depth_stencil_alpha_state = sgx_create_dsa_state;
    p->bind_depth_stencil_alpha_state = sgx_bind_state;

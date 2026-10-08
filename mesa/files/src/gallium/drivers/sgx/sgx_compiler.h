@@ -20,22 +20,35 @@
 
 struct nir_shader;
 
+/* GL's blending for render target 0, as the shader does it (M14): equations
+ * and factors (pipe_blend_func, pipe_blendfactor), the colour mask.  All
+ * zero but colormask 0xf: no blending, nothing done. */
+struct sgx_blend_key {
+   uint8_t enable;
+   uint8_t rgb_func, rgb_src, rgb_dst;
+   uint8_t alpha_func, alpha_src, alpha_dst;
+   uint8_t colormask;
+};
+
 #define SGX_FS_MAX_SAMPLERS 8
 
 /* A compiled fragment shader.  Its secondary attributes (prog.nsa words)
  * are constant buffer 0's words 0..nuniforms, then from sampler_sa four
  * state words for each texture it samples, sampler_unit[i] the unit of the
- * i-th. */
+ * i-th, then (blend_sa, if the blending reads it) the blend colour. */
 struct sgx_fs {
    struct sgx_pixel_program prog;
    unsigned input_slot[SGX_FRAME_MAX_VARYINGS];   /* gl_varying_slot, input i */
    unsigned nuniforms, nsamplers, sampler_sa;
    unsigned sampler_unit[SGX_FS_MAX_SAMPLERS];
+   int blend_sa;                                  /* -1: no blend colour */
+   struct sgx_blend_key blend;                    /* what it was compiled for */
 };
 
-/* fs is not changed.  NULL, and why in why[], when it cannot be compiled
- * (yet). */
-struct sgx_fs *sgx_compile_fs(const struct nir_shader *fs, char *why, unsigned why_size);
+/* fs is not changed; blend NULL for none.  NULL, and why in why[], when
+ * it cannot be compiled (yet). */
+struct sgx_fs *sgx_compile_fs(const struct nir_shader *fs, const struct sgx_blend_key *blend,
+                              char *why, unsigned why_size);
 void sgx_fs_destroy(struct sgx_fs *fs);
 
 #endif

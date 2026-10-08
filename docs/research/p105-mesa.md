@@ -984,6 +984,41 @@ not powers of two (the padded copy is sampled with unscaled coordinates),
 MIRRORED_REPEAT (bits 3 and 6 did something), cube maps, render targets
 sampled without a CPU round trip.
 
+**M14, step 2: blending (2026-10-08).** GL's blending is done by the
+compiled fragment shader, as on every tile-based GPU that lets a pixel
+program read the tile: o0 holds the tile's colour when the program starts
+(the background object loads the target into it; an earlier triangle of
+the same render has written its own), packed RGBA8.
+
+- `nir_lower_blend` builds the equation, the factors, the constant
+  colour and the colour mask into the shader (after `nir_lower_fragcolor`,
+  which it needs: it does not take FRAG_RESULT_COLOR); the destination
+  comes from `load_output` with `fb_fetch_output`, which the compiler turns
+  into o0 unpacked to F32.
+- The unpack is `pck.f32.u8 rD.xy, o0 scale` twice (channels 0, 1 into
+  rD, rD+1 and 2, 3 into rD+2, rD+3). Found with `SGX_DEBUG_FBFETCH=word`
+  (the compiler unpacks a LIMM'd word instead of o0): one VPCK with an
+  F32 destination writes one 64-bit register -- with mask xyzw, z and w
+  stayed unwritten -- and the first channel select reaches channel 2 but
+  reads 3 as 1, so channel 3 has to come in as the second of a pair.
+  Before that, every case blended RGB right and took the destination's
+  alpha from its green.
+- The blend colour is four more words of sa after the textures' state
+  (`load_blend_const_color_{r,g,b,a}_float`; NIR's intrinsics are not in
+  rgba order).
+- Each blend state is a variant of the shader, compiled at the first draw
+  that needs it (eight a shader, the oldest dropped); no blending and a
+  full colour mask is the shader as first compiled.
+
+`tools/sgx/gl/glblend.c`: a gradient, then a second full-screen quad
+blended over it, against the same equation in C on the gradient as the
+8-bit target holds it -- no blending, SRC_ALPHA/ONE_MINUS_SRC_ALPHA, ONE/ONE,
+DST_COLOR/ZERO, premultiplied, SUBTRACT, REVERSE_SUBTRACT, CONSTANT_COLOR
+and CONSTANT_ALPHA, separate RGB and alpha functions, DST_ALPHA,
+SRC_ALPHA_SATURATE, ZERO/ONE, a colour mask, and the quad twice in one
+draw (blending onto itself within a render). On the iPad 14 of 14, within
+one step; glfs 23, gltex 12, gltri 11, glclear right.
+
 ## M15: conformance and speed
 
 `dEQP-GLES2` and the GLES parts of `piglit`. Control flow, `discard`,
