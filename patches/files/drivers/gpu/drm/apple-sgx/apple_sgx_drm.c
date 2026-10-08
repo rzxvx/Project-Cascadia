@@ -133,6 +133,14 @@ struct apple_sgx_drm {
 	u64 pb_serial;
 	unsigned int pb_boots;
 
+	/* the kernel's parameter buffer (UAPI 3), made at the first submit
+	 * that asks for it; its image written again for every microkernel
+	 * start that uses it */
+	struct mutex kpb_lock;
+	struct apple_sgx_bo *kpb;
+	struct iosys_map kpb_map;
+	unsigned int kpb_boots;
+
 	atomic_t submitted, done, timed_out;
 };
 
@@ -156,6 +164,7 @@ struct apple_sgx_job {
 	u32 cmd_len;
 	u32 pb_va, cache_control;
 	u64 pb_serial;			/* the parameter buffer's object */
+	bool kernel_pb;			/* it is the kernel's */
 
 	struct drm_gem_object *details_obj;
 	struct iosys_map details_map;
@@ -249,6 +258,11 @@ static int sgx_bo_map(struct apple_sgx_drm *sdrm, struct apple_sgx_bo *bo, u32 v
 		ret = drm_mm_reserve_node(&sdrm->va, &bo->node);
 		if (ret == -ENOSPC)
 			ret = -EEXIST;
+	} else if (bo->flags & APPLE_SGX_BO_TA_HEAP) {
+		ret = drm_mm_insert_node_in_range(&sdrm->va, &bo->node,
+						  size + SGX_PAGE_SIZE, SGX_PAGE_SIZE, 0,
+						  SGX_TA_HEAP_START, SGX_TA_HEAP_END,
+						  DRM_MM_INSERT_LOW);
 	} else if (bo->flags & APPLE_SGX_BO_USSE_CODE) {
 		ret = drm_mm_insert_node_in_range(&sdrm->va, &bo->node,
 						  size + SGX_PAGE_SIZE, SGX_PAGE_SIZE, 0,
@@ -425,7 +439,7 @@ static int sgx_ioctl_get_param(struct drm_device *drm, void *data, struct drm_fi
 		return -EINVAL;
 	switch (args->param) {
 	case APPLE_SGX_PARAM_UAPI_VERSION:
-		args->value = 2;
+		args->value = 3;
 		break;
 	case APPLE_SGX_PARAM_CORE_ID:
 		args->value = sgx->core_id;
@@ -479,10 +493,107 @@ static int sgx_ioctl_get_param(struct drm_device *drm, void *data, struct drm_fi
 	case APPLE_SGX_PARAM_UKERNEL_BOOTS:
 		args->value = READ_ONCE(sgx->boots);
 		break;
+	case APPLE_SGX_PARAM_PB_VA:
+		args->value = SGX_PB_VA;
+		break;
+	case APPLE_SGX_PARAM_TA_HEAP_START:
+		args->value = SGX_TA_HEAP_START;
+		break;
+	case APPLE_SGX_PARAM_TA_HEAP_END:
+		args->value = SGX_TA_HEAP_END;
+		break;
 	default:
 		return -EINVAL;
 	}
 	return 0;
+}
+
+/* ---- the kernel's parameter buffer ----------------------------------------- */
+
+/*
+ * One for every client (UAPI 3): the microkernel keeps a parameter buffer's
+ * state between renders, so clients with buffers of their own at the same
+ * address cost it a restart each time they take turns (pb_restart).  Laid
+ * out as the kext does (0x80bfd51c, 0x80bfd9a0, 0x80bfdaa8;
+ * tools/sgx/rgen.py's pb_image()): a descriptor, a page table at +0x10000,
+ * then two blocks -- a header page and data pages each -- whose page
+ * numbers count from the TA's base.
+ */
+#define SGX_PB_PT			0x10000
+#define SGX_PB_SIZE			(0x50000 + 0x800000 + 0x1000)
+
+static const struct { u32 off, size; } sgx_pb_blocks[] = {
+	{ 0x20000, 0x22000 }, { 0x50000, 0x800000 },
+};
+
+static u32 sgx_pb_page(u32 va)
+{
+	return (va - SGX_TA_BASE) >> 12;
+}
+
+static void sgx_pb_image(u8 *img)
+{
+	const unsigned int n = ARRAY_SIZE(sgx_pb_blocks);
+	u32 *d = (u32 *)img, total = 0, last, end;
+	unsigned int i;
+
+	memset(img, 0, SGX_PB_SIZE);
+	for (i = 0; i < n; i++) {
+		u32 va = SGX_PB_VA + sgx_pb_blocks[i].off, size = sgx_pb_blocks[i].size;
+		u32 *h = (u32 *)(img + sgx_pb_blocks[i].off);
+
+		h[0] = size >> 12;
+		h[1] = (sgx_pb_page(va) + 1) | sgx_pb_page(va + size) << 16;
+		h[2] = SGX_PB_VA;
+		h[3] = i + 1 < n ? SGX_PB_VA + sgx_pb_blocks[i + 1].off : 0;
+		total += size >> 12;
+	}
+	last = sgx_pb_blocks[n - 1].size >> 12;
+	end = sgx_pb_page(SGX_PB_VA + sgx_pb_blocks[n - 1].off + sgx_pb_blocks[n - 1].size +
+			  0x1000);
+	d[0] = 3;
+	d[1] = total;
+	d[2] = (end - 1) << 16 | (sgx_pb_page(SGX_PB_VA + sgx_pb_blocks[0].off) + 1);
+	d[3] = (end - 2) << 16;
+	d[4] = SGX_PB_VA + SGX_PB_PT;
+	d[10] = total + 0x10;
+	d[11] = last;
+	d[12] = total;
+	d[13] = last > 0x100 ? last - 0x100 : 0;
+	d[14] = sgx_pb_blocks[0].off;
+}
+
+/* the kernel's parameter buffer, made and mapped the first time */
+static struct apple_sgx_bo *sgx_kpb_get(struct apple_sgx_drm *sdrm)
+{
+	struct drm_gem_shmem_object *shmem;
+	struct apple_sgx_bo *bo;
+	int ret;
+
+	mutex_lock(&sdrm->kpb_lock);
+	if (sdrm->kpb)
+		goto out;
+	shmem = drm_gem_shmem_create(&sdrm->drm, SGX_PB_SIZE);
+	if (IS_ERR(shmem))
+		goto out;
+	bo = to_sgx_bo(&shmem->base);
+	bo->flags = APPLE_SGX_BO_FIXED_VA;
+	bo->serial = atomic64_inc_return(&sdrm->bo_serial);
+	ret = sgx_bo_map(sdrm, bo, SGX_PB_VA);
+	if (!ret)
+		ret = drm_gem_vmap_unlocked(&shmem->base, &sdrm->kpb_map);
+	if (ret) {
+		drm_err(&sdrm->drm, "no parameter buffer at 0x%08x: %d\n", SGX_PB_VA, ret);
+		drm_gem_object_put(&shmem->base);
+		goto out;
+	}
+	sdrm->kpb_boots = UINT_MAX;
+	sdrm->kpb = bo;
+	drm_info(&sdrm->drm, "the kernel's parameter buffer: 0x%08x, %u KiB\n", SGX_PB_VA,
+		 SGX_PB_SIZE >> 10);
+out:
+	mutex_unlock(&sdrm->kpb_lock);
+	return sdrm->kpb;
 }
 
 /* ---- renders --------------------------------------------------------------- */
@@ -623,6 +734,13 @@ static struct dma_fence *sgx_job_run(struct drm_sched_job *sched_job)
 	} else {
 		u32 *done = sgx->buf[B_SCRATCH].cpu + SGX_SCRATCH_RENDER / 4;
 
+		/* the kernel's parameter buffer as new, for a microkernel that
+		 * has not used it yet */
+		if (job->kernel_pb && sdrm->kpb_boots != READ_ONCE(sgx->boots)) {
+			sgx_pb_image(sdrm->kpb_map.vaddr);
+			wmb();
+			sdrm->kpb_boots = READ_ONCE(sgx->boots);
+		}
 		job->seq = ++sdrm->render_seq ? sdrm->render_seq : ++sdrm->render_seq;
 		job->ta_done = false;
 		WRITE_ONCE(*done, 0);
@@ -826,8 +944,20 @@ static int sgx_ioctl_submit(struct drm_device *drm, void *data, struct drm_file 
 	if (ret)
 		goto out_job;
 
-	/* the parameter buffer: in one of the listed buffers, whose serial
-	 * tells a new one at the same address (pb_restart) */
+	/* the parameter buffer: the kernel's, or in one of the listed
+	 * buffers, whose serial tells a new one at the same address
+	 * (pb_restart) */
+	if (!args->pb_va) {
+		struct apple_sgx_bo *kpb = sgx_kpb_get(sdrm);
+
+		if (!kpb) {
+			ret = -ENOMEM;
+			goto out_job;
+		}
+		job->pb_va = SGX_PB_VA;
+		job->pb_serial = kpb->serial;
+		job->kernel_pb = true;
+	}
 	for (i = 0; i < job->bo_count && !job->pb_serial; i++) {
 		struct apple_sgx_bo *bo = to_sgx_bo(job->bos[i]);
 
@@ -1012,6 +1142,7 @@ int apple_sgx_drm_init(struct apple_sgx *sgx)
 	sdrm->sgx = sgx;
 	mutex_init(&sdrm->va_lock);
 	mutex_init(&sdrm->sched_lock);
+	mutex_init(&sdrm->kpb_lock);
 	spin_lock_init(&sdrm->fence_lock);
 	spin_lock_init(&sdrm->job_lock);
 	sdrm->fence_context = dma_fence_context_alloc(1);

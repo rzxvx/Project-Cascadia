@@ -54,6 +54,7 @@
 #include "sgx_device.h"
 #include "sgx_resource.h"
 #include "sgx_rt.h"
+#include "sgx_template.h"
 
 /* the EXT window, as sgx2d uses it */
 #define EXT_TEX_END     0x280000
@@ -263,6 +264,14 @@ struct sgx_frame {
    uint32_t term;               /* the tiles' bounds in the stream's terminate PDS data */
    struct rt_set rts[MAX_RT_SETS];
    uint64_t rt_clock;
+
+   /* M17: the frame built here (sgx_template.c), in buffers where the
+    * kernel puts them, rendered with the kernel's parameter buffer -- or the
+    * pack's, at its addresses (SGX_FRAME=pack, kernels before UAPI 3) */
+   bool built;
+   uint32_t pack_pb;                              /* built, with the pack's parameter buffer */
+   uint32_t cmd_tmpl[SGX_TMPL_CMD_SIZE / 4];      /* the TA command, render target aside */
+   uint32_t blk_tmpl[SGX_TMPL_BLOCK_SIZE / 4];    /* the 3D block's GL words */
    uint8_t *tmpl;
    int toff[T_NUM], tsize[T_NUM];
    uint64_t code_base_expected;
@@ -296,7 +305,7 @@ sgx_frame_options(void)
       { "screen", SGX_FRAME_SCREEN }, { "codebo", SGX_FRAME_CODEBO },
       { "sop2", SGX_FRAME_SOP2 }, { "align", SGX_FRAME_ALIGN },
       { "packpixel", SGX_FRAME_PACKPIX }, { "packvertex", SGX_FRAME_PACKVTX },
-      { "packrt", SGX_FRAME_PACKRT },
+      { "packrt", SGX_FRAME_PACKRT }, { "pack", SGX_FRAME_PACK }, { "built", SGX_FRAME_BUILT },
    };
    static int opts = -1;
    const char *env = getenv("SGX_FRAME");
@@ -443,13 +452,20 @@ load_images(struct sgx_frame *f)
    size_t len;
    FILE *fp;
 
+   /* a built frame has nothing a render changes but the parameter buffer,
+    * and that is the kernel's (which writes it again after a restart) --
+    * or the pack's, SGX_FRAME=built on an older kernel */
+   if (f->built && !f->pack_pb)
+      return true;
+
    snprintf(path, sizeof(path), "%s/pack.txt", f->dir);
    if (!(fp = fopen(path, "r")))
       return false;
    while (ok && fgets(line, sizeof(line), fp)) {
       uint8_t *img = NULL;
 
-      if (sscanf(line, "%63s %63s %63s", key, a, b) < 3 || strcmp(key, "img"))
+      if (sscanf(line, "%63s %63s %63s", key, a, b) < 3 || strcmp(key, "img") ||
+          (f->built && strtoul(a, 0, 0) != f->pack_pb))
          continue;
       ok = load_file(f->dir, b, &img, &len) && put(f, strtoul(a, 0, 0), img, len);
       free(img);
@@ -539,6 +555,189 @@ load_pack(struct sgx_frame *f, const char *dir)
    return ok;
 }
 
+/* ---- M17: the frame built here ----------------------------------------- */
+
+/* the frame's own buffers, where the kernel puts them */
+#define BUILT_PROG      0x80        /* a program a slot, in its code buffer */
+#define BUILT_PDS       0x0         /* in the GL buffer: the PDS block, */
+#define BUILT_STATE     0x400       /* the state area, */
+#define BUILT_WHITE     0xc00       /* the white texture, */
+#define BUILT_IDX       0x1000      /* the index buffer */
+#define BUILT_GL_SIZE   (BUILT_IDX + SGX_TMPL_IDX_COUNT * 2)
+#define BUILT_VDM_SIZE  0x4000
+#define BUILT_EXT_SIZE  0x400000
+
+static struct sgx_bo *
+new_bo(struct sgx_frame *f, uint32_t size, uint32_t flags)
+{
+   struct sgx_bo *bo;
+
+   if (f->nbo == MAX_PACK_BOS)
+      return NULL;
+   bo = sgx_bo_create(f->dev, size, flags, 0);
+   if (!bo || !sgx_bo_map(bo)) {
+      sgx_bo_destroy(bo);
+      return NULL;
+   }
+   memset(bo->map, 0, size);
+   f->handles[f->nbo] = bo->handle;
+   f->bo[f->nbo++] = bo;
+   return bo;
+}
+
+/* The one piece from elsewhere: the GL driver's event program for the 3D
+ * pass (pds.py's event_program(), from the IPSW), as the pack has it at the
+ * start of its PDS block -- three programs and a word of it are ours. */
+static bool
+event_template(const char *dir, uint32_t ev[SGX_TMPL_EVENT_WORDS])
+{
+   char path[512], line[512], key[64], a[64], b[64];
+   uint32_t pds = PDS_DEFAULT;
+   bool ok = false;
+   uint8_t *img;
+   size_t len;
+   FILE *fp;
+
+   snprintf(path, sizeof(path), "%s/pack.txt", dir);
+   if (!(fp = fopen(path, "r")))
+      return false;
+   while (fgets(line, sizeof(line), fp))
+      if (sscanf(line, "%63s %63s", key, a) == 2 && !strcmp(key, "pds"))
+         pds = strtoul(a, 0, 0);
+   rewind(fp);
+   while (!ok && fgets(line, sizeof(line), fp)) {
+      if (sscanf(line, "%63s %63s %63s", key, a, b) < 3 || strcmp(key, "img") ||
+          strtoul(a, 0, 0) != pds || !load_file(dir, b, &img, &len))
+         continue;
+      if (len >= SGX_TMPL_EVENT_WORDS * 4) {
+         memcpy(ev, img, SGX_TMPL_EVENT_WORDS * 4);
+         ok = true;
+      }
+      free(img);
+   }
+   fclose(fp);
+   return ok;
+}
+
+/* SGX_FRAME=built on a kernel without a parameter buffer of its own: the
+ * pack's, at its address (the first of pack.txt's kick words) */
+static bool
+pack_pb(struct sgx_frame *f, const char *dir)
+{
+   char path[512], line[512], key[64], a[64], b[64];
+   uint32_t kick[3] = { 0 }, size = 0;
+   FILE *fp;
+
+   snprintf(path, sizeof(path), "%s/pack.txt", dir);
+   if (!(fp = fopen(path, "r")))
+      return false;
+   while (fgets(line, sizeof(line), fp))
+      if (!strncmp(line, "kick ", 5))
+         parse_words(line + 4, kick, 3);
+   rewind(fp);
+   while (fgets(line, sizeof(line), fp))
+      if (sscanf(line, "%63s %63s %63s", key, a, b) == 3 && !strcmp(key, "map") &&
+          strtoul(a, 0, 0) == kick[0])
+         size = strtoul(b, 0, 0);
+   fclose(fp);
+   if (!kick[0] || !size || !map_window(f, kick[0], size))
+      return false;
+   f->pack_pb = f->kick[0] = f->cmd_tmpl[0x28 / 4] = kick[0];
+   return load_images(f);
+}
+
+static bool
+build_frame(struct sgx_frame *f, const char *dir)
+{
+   struct sgx_device *dev = f->dev;
+   uint32_t ev[SGX_TMPL_EVENT_WORDS], *pds, *state;
+   struct sgx_bo *prog, *gl, *vdm, *ext;
+   struct sgx_tmpl t = { 0 };
+   static const struct { int which, off, size; } blocks[T_NUM] = {
+      [T_FULL] = { 1, 0xe0, 0x50 }, [T_FULLPROG] = { 1, 0x140, 0x2c },
+      [T_DELTA] = { 1, 0x3c0, 0x20 }, [T_DELTAPROG] = { 1, 0x3e0, 0x2c },
+      [T_FETCH] = { 1, 0x180, 0x58 }, [T_TEX] = { 0, 0x160, 0x30 },
+   };
+   unsigned at = 0;
+
+   f->built = true;
+   if (!event_template(dir, ev)) {
+      mesa_logw("sgx: no 3D event program in %s (./cascadia gpu installs it)", dir);
+      return false;
+   }
+   if (!(prog = new_bo(f, 0x1000, APPLE_SGX_BO_USSE_CODE)) ||
+       !(gl = new_bo(f, BUILT_GL_SIZE, 0)) || !(vdm = new_bo(f, BUILT_VDM_SIZE, 0)) ||
+       !(ext = new_bo(f, BUILT_EXT_SIZE, 0)))
+      return false;
+
+   /* the programs, a slot each */
+   t.code_base = dev->code_base;
+   for (unsigned p = 0; p < SGX_TP_N; p++) {
+      uint64_t code[SGX_TMPL_PROG_MAX];
+      unsigned n;
+
+      t.prog[p] = prog->va + p * BUILT_PROG;
+      n = sgx_tmpl_program(p, (t.prog[p] - dev->code_base) / 8, code);
+      memcpy(prog->map + p * BUILT_PROG, code, n * 8);
+   }
+   /* until a render says, the end of tile and the frame's pixel blocks do
+    * nothing; the background reads the screen */
+   t.eot = t.pixel = t.prog[SGX_TP_EMPTY_A];
+   t.pds = gl->va + BUILT_PDS;
+   t.state = gl->va + BUILT_STATE;
+   t.idx = gl->va + BUILT_IDX;
+   t.tex0 = t.tex1 = gl->va + BUILT_WHITE;
+   t.fb = dev->fb_va ? dev->fb_va : 0x90000000u;
+   t.fb_w = dev->fb_width ? dev->fb_width : 768;
+   t.fb_h = dev->fb_height ? dev->fb_height : 1024;
+   t.fb_stride = dev->fb_stride ? dev->fb_stride / 4 : t.fb_w;
+   t.w = t.fb_w;
+   t.h = t.fb_h;
+
+   pds = (uint32_t *)(gl->map + BUILT_PDS);
+   state = (uint32_t *)(gl->map + BUILT_STATE);
+   sgx_tmpl_pds(&t, ev, pds);
+   sgx_tmpl_state(&t, state);
+   for (unsigned i = 0; i < SGX_TMPL_IDX_COUNT; i++)
+      ((uint16_t *)(gl->map + BUILT_IDX))[i] = i;
+   sgx_tmpl_tail(&t, f->tail);
+   f->ntail = 5;
+   sgx_tmpl_ta_cmd(&t, vdm->va, 0, f->cmd_tmpl);
+   f->cmd_tmpl[0x28 / 4] = sgx_device_param(dev, APPLE_SGX_PARAM_PB_VA);
+   if (dev->uapi < 3 && !pack_pb(f, dir))
+      return false;
+   sgx_tmpl_block3d(&t, f->blk_tmpl);
+
+   /* the blocks draws are made from */
+   if (!(f->tmpl = CALLOC(T_NUM, 0x80)))
+      return false;
+   for (unsigned i = 0; i < T_NUM; i++) {
+      f->toff[i] = at;
+      f->tsize[i] = blocks[i].size;
+      memcpy(f->tmpl + at, (blocks[i].which ? state : pds) + blocks[i].off / 4,
+             blocks[i].size);
+      at += 0x80;
+   }
+
+   f->w = t.w;
+   f->h = t.h;
+   f->kick[0] = f->pack_pb;
+   f->kick[1] = f->kick[2] = 0;
+   f->consts0 = t.state + 0xa0;
+   f->idx = t.idx;
+   f->idx_count = SGX_TMPL_IDX_COUNT;
+   f->vdm = vdm->va;
+   f->vdm_size = BUILT_VDM_SIZE;
+   f->ext = ext->va;
+   f->ext_size = BUILT_EXT_SIZE;
+   f->heap = gl->va + BUILT_WHITE;
+   f->heap_size = 0x400;
+   f->pds = t.pds;
+   f->fetch_tag = 9;
+   f->fetch_word = 0x07800604;
+   return true;
+}
+
 /* The buffer for our programs: the lowest free 64 KiB step above the
  * pack's windows in the code zone, within a DOUTU's reach */
 static struct sgx_bo *
@@ -548,6 +747,15 @@ code_bo(struct sgx_frame *f, uint32_t size)
    uint32_t lo = MAX2(dev->code_va_start, dev->code_base);
    uint32_t hi = MIN2(dev->code_va_end, dev->code_base + CODE_REACH);
 
+   /* a built frame takes the kernel's pick: the code zone is within reach */
+   if (f->built) {
+      struct sgx_bo *bo = sgx_bo_create(dev, size, APPLE_SGX_BO_USSE_CODE, 0);
+
+      if (bo && sgx_bo_map(bo))
+         return bo;
+      sgx_bo_destroy(bo);
+      return NULL;
+   }
    for (uint32_t va = align(lo, 0x10000); va + size <= hi; va += 0x10000) {
       struct sgx_bo *bo;
       bool clear = true;
@@ -687,13 +895,20 @@ sgx_frame_create(struct sgx_device *dev, const char *dir)
    struct sgx_frame *f = CALLOC_STRUCT(sgx_frame);
    uint32_t page;
    uint8_t *at;
+   bool pack;
 
    if (!f)
       return NULL;
    f->dev = dev;
    f->debug = getenv("SGX_DEBUG") && strstr(getenv("SGX_DEBUG"), "frame");
    f->opts = sgx_frame_options();
-   if (!(f->dir = strdup(dir)) || !load_pack(f, dir))
+   /* the frame built here, unless the kernel is too old for it (no
+    * parameter buffer of its own, UAPI 3) or the pack's pieces are asked
+    * for */
+   pack = (dev->uapi < 3 && !(f->opts & SGX_FRAME_BUILT)) ||
+          (f->opts & (SGX_FRAME_PACK | SGX_FRAME_FB | SGX_FRAME_BLEND | SGX_FRAME_PACKPIX |
+                      SGX_FRAME_PACKRT));
+   if (!(f->dir = strdup(dir)) || !(pack ? load_pack(f, dir) : build_frame(f, dir)))
       goto fail;
    f->timeouts = sgx_device_param(dev, APPLE_SGX_PARAM_RENDERS_TIMED_OUT);
    f->nhandles = f->nbo;
@@ -713,7 +928,7 @@ sgx_frame_create(struct sgx_device *dev, const char *dir)
    /* where our programs go: the free start of the pack's code page, or a
     * buffer of their own */
    page = dev->code_base + PAGE_OFFSET;
-   at = cpu_at(f, page, PAGE_FREE, NULL);
+   at = f->built ? NULL : cpu_at(f, page, PAGE_FREE, NULL);
    if (!(f->opts & SGX_FRAME_CODEBO) && at) {
       for (unsigned i = 0; i < PAGE_FREE && at; i++)
          if (at[i])
@@ -746,7 +961,11 @@ sgx_frame_create(struct sgx_device *dev, const char *dir)
    f->empty_prog = f->code_heap->va;
    f->heap_used = 0x40;
    f->handles[f->nhandles++] = f->code_heap->handle;
-   mesa_logi("sgx: template frame %ux%u from %s", f->w, f->h, dir);
+   if (f->built)
+      mesa_logi("sgx: template frame built at 0x%08x (PDS); the parameter buffer "
+                "%s", f->pds, f->pack_pb ? "the pack's" : "the kernel's");
+   else
+      mesa_logi("sgx: template frame %ux%u from %s", f->w, f->h, dir);
    return f;
 
 fail:
@@ -812,8 +1031,10 @@ static struct rt_set *
 rt_set(struct sgx_frame *f, unsigned w, unsigned h)
 {
    struct rt_set *s = NULL;
-   const uint32_t *cmd = (const uint32_t *)cpu_at(f, f->kick[2], APPLE_SGX_TA_CMD_MIN, NULL);
-   const uint8_t *blk = cmd ? cpu_at(f, cmd[0x50 / 4], BLOCK_SIZE, NULL) : NULL;
+   const uint32_t *cmd = f->built ? f->cmd_tmpl :
+                         (const uint32_t *)cpu_at(f, f->kick[2], APPLE_SGX_TA_CMD_MIN, NULL);
+   const uint8_t *blk = f->built ? (const uint8_t *)f->blk_tmpl :
+                        cmd ? cpu_at(f, cmd[0x50 / 4], BLOCK_SIZE, NULL) : NULL;
    uint32_t va, size = 0;
    unsigned slot;
 
@@ -832,16 +1053,26 @@ rt_set(struct sgx_frame *f, unsigned w, unsigned h)
    s->bo = NULL;
    if (!blk || !sgx_rt_layout(&s->rt, w, h, MAX2(f->dev->num_cores, 1)))
       return NULL;
+   for (unsigned i = 0; i < SGX_RT_NBUF; i++)
+      size += align(s->rt.size[i], 4096);
+   size += BLOCK_SIZE;
+   if (size > RT_SLOT_SIZE)
+      return NULL;
+   /* a slot of our own in the TA's heap; the kernel's pick with the frame
+    * built (M17) */
    va = RT_SLOT_VA + slot * RT_SLOT_SIZE;
+   s->bo = f->built && f->dev->uapi >= 3 ?
+           sgx_bo_create(f->dev, size, APPLE_SGX_BO_TA_HEAP, 0) :
+           sgx_bo_create(f->dev, size, APPLE_SGX_BO_FIXED_VA, va);
+   if (s->bo)
+      va = s->bo->va;
+   size = 0;
    for (unsigned i = 0; i < SGX_RT_NBUF; i++) {
       s->va[i] = va + size;
       size += align(s->rt.size[i], 4096);
    }
    s->blk_va = va + size;
    size += BLOCK_SIZE;
-   if (size > RT_SLOT_SIZE)
-      return NULL;
-   s->bo = sgx_bo_create(f->dev, size, APPLE_SGX_BO_FIXED_VA, va);
    if (!s->bo || !sgx_bo_map(s->bo)) {
       mesa_logw("sgx: no render target data for %ux%u at 0x%08x (%u bytes)", w, h, va, size);
       sgx_bo_destroy(s->bo);
@@ -850,7 +1081,8 @@ rt_set(struct sgx_frame *f, unsigned w, unsigned h)
    }
    sgx_rt_fill(&s->rt, s->va, (uint32_t *)(s->bo->map + (s->va[SGX_RT_DETAILS] - va)),
                (uint32_t *)(s->bo->map + (s->va[SGX_RT_STATE] - va)));
-   memcpy(s->bo->map + (s->blk_va - va), blk, BLOCK_SIZE);
+   memset(s->bo->map + (s->blk_va - va), 0, BLOCK_SIZE);
+   memcpy(s->bo->map + (s->blk_va - va), blk, f->built ? SGX_TMPL_BLOCK_SIZE : BLOCK_SIZE);
    sgx_rt_block3d(&s->rt, s->va, (uint32_t *)(s->bo->map + (s->blk_va - va)));
    s->used = ++f->rt_clock;
    if (f->debug)
@@ -885,15 +1117,16 @@ kick(struct sgx_frame *f, struct sgx_resource *rt, float depth, const uint32_t *
      unsigned nhandles, struct sgx_fence *done)
 {
    uint32_t hs[MAX_PACK_BOS + 3 + 2 + SGX_FRAME_MAX_HANDLES], cmd[APPLE_SGX_TA_CMD_MAX / 4];
-   const uint32_t *pack = (const uint32_t *)cpu_at(f, f->kick[2], APPLE_SGX_TA_CMD_MIN, NULL);
+   const uint32_t *pack = f->built ? f->cmd_tmpl :
+                          (const uint32_t *)cpu_at(f, f->kick[2], APPLE_SGX_TA_CMD_MIN, NULL);
    unsigned n = f->nhandles, det_bo;
    uint32_t det_handle, det_offset;
    struct rt_set *s = NULL;
    uint8_t *blk;
    int ret;
 
-   if (!pack || pack[0] > sizeof(cmd) || !cpu_at(f, f->kick[2], pack[0], NULL) ||
-       n + 2 + nhandles > ARRAY_SIZE(hs))
+   if (!pack || pack[0] > sizeof(cmd) ||
+       (!f->built && !cpu_at(f, f->kick[2], pack[0], NULL)) || n + 2 + nhandles > ARRAY_SIZE(hs))
       return -EINVAL;
    memcpy(cmd, pack, pack[0]);
    memcpy(hs, f->handles, n * sizeof(uint32_t));

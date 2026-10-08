@@ -61,6 +61,9 @@ struct resource;
  *                         base, 20 bits of 8-byte instructions.  (It was 16
  *                         MiB, handed out top down, and Mesa's first program
  *                         landed out of reach: every render hung.)
+ *     0x8c000000-+8.3 MiB the kernel's parameter buffer, shared by all
+ *     0x8d000000-0x977fffff  the TA's heap (APPLE_SGX_BO_TA_HEAP): render
+ *                         target data, within 256 MiB of the TA's base
  *     0xa8000000-         where the kernel picks addresses, top down,
  *                         up to the tiled window
  *     0xe0000000-+256 MiB the BIF's tiled window 1 (stride 4096): only at
@@ -85,6 +88,14 @@ struct resource;
 #define SGX_CODE_BASE			0x9a000000u
 #define SGX_CODE_VA_END			(SGX_CODE_BASE + SZ_8M)
 #define SGX_AUTO_VA_START		0xa8000000u
+/* The TA's base (its requests' page numbers count from here), the kernel's
+ * parameter buffer, and where TA-heap buffers go: within 256 MiB of the
+ * base, clear of the windows of the template frame's pack (0x87b00000 to
+ * 0x8b000000, sgx2d's and older Mesa's). */
+#define SGX_TA_BASE			0x87800000u
+#define SGX_PB_VA			0x8c000000u
+#define SGX_TA_HEAP_START		0x8d000000u
+#define SGX_TA_HEAP_END			0x97800000u
 #define SGX_TILED_VA_START		0xe0000000u
 
 /* The GPU clock in kHz: GFX-CLK, PLL@0x18 (513 MHz) / 5 in perf state 2. */

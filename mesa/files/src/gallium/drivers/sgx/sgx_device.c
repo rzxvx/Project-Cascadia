@@ -31,10 +31,11 @@ bool
 sgx_device_init(struct sgx_device *dev, int fd)
 {
    dev->fd = fd;
-   /* 2: GEM_INFO, for buffers that come as dma-bufs */
+   /* 2: GEM_INFO, for buffers that come as dma-bufs; 3: the kernel's
+    * parameter buffer, the TA's heap */
    dev->uapi = sgx_device_param(dev, APPLE_SGX_PARAM_UAPI_VERSION);
-   if (dev->uapi < 1 || dev->uapi > 2) {
-      mesa_loge("sgx: the kernel's render node interface is version %u, not 1 or 2",
+   if (dev->uapi < 1 || dev->uapi > 3) {
+      mesa_loge("sgx: the kernel's render node interface is version %u, not 1 to 3",
                 dev->uapi);
       return false;
    }

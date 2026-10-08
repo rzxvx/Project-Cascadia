@@ -36,6 +36,11 @@ enum {
                                   (and its vertex side, which that needs) */
    SGX_FRAME_PACKVTX = 1 << 7, /* "packvertex": draws through the pack's vertex side */
    SGX_FRAME_PACKRT = 1 << 8,  /* "packrt": the pack's render target data (its size only) */
+   SGX_FRAME_PACK = 1 << 9,    /* "pack": the pack's buffers, at its addresses, as before
+                                  M17 (one process at a time); fb, blend, packpixel and
+                                  packrt need it */
+   SGX_FRAME_BUILT = 1 << 10,  /* "built": the frame built on a kernel before UAPI 3 too,
+                                  with the pack's parameter buffer */
 };
 unsigned sgx_frame_options(void);
 

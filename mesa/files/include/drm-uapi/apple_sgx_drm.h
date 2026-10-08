@@ -70,7 +70,7 @@ extern "C" {
 /* ---- GET_PARAM ---------------------------------------------------------- */
 
 enum drm_apple_sgx_param {
-	APPLE_SGX_PARAM_UAPI_VERSION = 0,	/* 2 (1: no GEM_INFO) */
+	APPLE_SGX_PARAM_UAPI_VERSION = 0,	/* 3 (2: no kernel PB, 1: no GEM_INFO) */
 	APPLE_SGX_PARAM_CORE_ID = 1,		/* MASTER_CORE_ID: 0x01194201 */
 	APPLE_SGX_PARAM_CORE_REVISION = 2,	/* 0x00010202 = 1.2.2 */
 	APPLE_SGX_PARAM_NUM_CORES = 3,		/* 2 */
@@ -100,6 +100,13 @@ enum drm_apple_sgx_param {
 	APPLE_SGX_PARAM_RENDERS_DONE = 16,
 	APPLE_SGX_PARAM_RENDERS_TIMED_OUT = 17,
 	APPLE_SGX_PARAM_UKERNEL_BOOTS = 18,
+
+	/* UAPI 3: the kernel's parameter buffer (a submit with pb_va 0 uses
+	 * it), and where APPLE_SGX_BO_TA_HEAP buffers go -- above the TA's
+	 * base, 0x87800000, within the 256 MiB the TA's addresses reach. */
+	APPLE_SGX_PARAM_PB_VA = 19,
+	APPLE_SGX_PARAM_TA_HEAP_START = 20,
+	APPLE_SGX_PARAM_TA_HEAP_END = 21,
 };
 
 struct drm_apple_sgx_get_param {
@@ -121,8 +128,11 @@ struct drm_apple_sgx_get_param {
  * microkernel only sees CPU writes to cache-consistent pages; the
  * framebuffer is mapped without it). */
 #define APPLE_SGX_BO_NOT_CACHE_CONSISTENT	(1 << 3)
+/* In the TA's heap (UAPI 3): render target data, whose state buffer the 3D
+ * register block names by its offset from the TA's base. */
+#define APPLE_SGX_BO_TA_HEAP			(1 << 4)
 
-#define APPLE_SGX_BO_FLAGS			0xf
+#define APPLE_SGX_BO_FLAGS			0x1f
 
 struct drm_apple_sgx_gem_create {
 	__u64 size;		/* in: bytes, rounded up to 4 KiB */
@@ -162,7 +172,8 @@ struct drm_apple_sgx_submit {
 	__u32 cmd_size;		/* in: bytes copied from cmd; >= word 0 */
 	__u32 flags;		/* in: 0 */
 
-	__u32 pb_va;		/* in: the parameter buffer's descriptor */
+	__u32 pb_va;		/* in: the parameter buffer's descriptor; 0: the
+				 * kernel's, shared by every client (UAPI 3) */
 	__u32 details_handle;	/* in: the buffer holding the render details */
 	__u32 details_offset;	/* in: where in it, 4-byte aligned */
 	__u32 cache_control;	/* in: SGXMKIF_CC_* to add to the kick, normally 0 */

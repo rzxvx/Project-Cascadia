@@ -18,6 +18,8 @@ files_sgx = files(
   'sgx_rt.h',
   'sgx_screen.c',
   'sgx_screen.h',
+  'sgx_template.c',
+  'sgx_template.h',
   'sgx_usse.c',
   'sgx_usse.h',
 )
