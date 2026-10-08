@@ -560,7 +560,7 @@ static void sgx_pb_image(u8 *img)
 	d[11] = last;
 	d[12] = total;
 	d[13] = last > 0x100 ? last - 0x100 : 0;
-	d[14] = sgx_pb_blocks[0].off;
+	d[14] = SGX_PB_VA + sgx_pb_blocks[0].off;
 }
 
 /* the kernel's parameter buffer, made and mapped the first time */

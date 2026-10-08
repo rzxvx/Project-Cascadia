@@ -704,7 +704,8 @@ build_frame(struct sgx_frame *f, const char *dir)
    f->ntail = 5;
    sgx_tmpl_ta_cmd(&t, vdm->va, 0, f->cmd_tmpl);
    f->cmd_tmpl[0x28 / 4] = sgx_device_param(dev, APPLE_SGX_PARAM_PB_VA);
-   if (dev->uapi < 3 && !pack_pb(f, dir))
+   /* SGX_PACK_PB=1: the pack's on any kernel (to tell the kernel's apart) */
+   if ((dev->uapi < 3 || getenv("SGX_PACK_PB")) && !pack_pb(f, dir))
       return false;
    sgx_tmpl_block3d(&t, f->blk_tmpl);
 
@@ -1061,7 +1062,7 @@ rt_set(struct sgx_frame *f, unsigned w, unsigned h)
    /* a slot of our own in the TA's heap; the kernel's pick with the frame
     * built (M17) */
    va = RT_SLOT_VA + slot * RT_SLOT_SIZE;
-   s->bo = f->built && f->dev->uapi >= 3 ?
+   s->bo = f->built && f->dev->uapi >= 3 && !getenv("SGX_RT_SLOTS") ?
            sgx_bo_create(f->dev, size, APPLE_SGX_BO_TA_HEAP, 0) :
            sgx_bo_create(f->dev, size, APPLE_SGX_BO_FIXED_VA, va);
    if (s->bo)
