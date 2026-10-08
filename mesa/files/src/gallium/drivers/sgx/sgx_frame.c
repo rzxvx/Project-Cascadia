@@ -839,7 +839,8 @@ upload(struct sgx_frame *f, struct sgx_pixel_program *p)
 static int render(struct sgx_frame *f, struct sgx_resource *rt,
                   const struct sgx_frame_layout *l, const float *verts, unsigned nverts,
                   bool iterated, struct sgx_pixel_program *prog, const uint32_t *sa,
-                  const uint32_t *handles, unsigned nhandles, struct sgx_fence *done);
+                  const uint32_t *handles, unsigned nhandles,
+                  const struct sgx_frame_state *st, struct sgx_fence *done);
 
 /* a clear: the pack's vertex and pixel sides, as M12 proved them */
 int
@@ -849,14 +850,14 @@ sgx_frame_clear(struct sgx_frame *f, struct sgx_resource *rt, const float rgba[4
    float verts[6 * PACK_VTX_FLOATS];
 
    quad(verts, rgba);
-   return render(f, rt, NULL, verts, 6, false, NULL, NULL, NULL, 0, done);
+   return render(f, rt, NULL, verts, 6, false, NULL, NULL, NULL, 0, NULL, done);
 }
 
 int
 sgx_frame_draw(struct sgx_frame *f, struct sgx_resource *rt, const struct sgx_frame_layout *l,
                const float *verts, unsigned nverts, struct sgx_pixel_program *prog,
                const uint32_t *sa, const uint32_t *handles, unsigned nhandles,
-               struct sgx_fence *done)
+               const struct sgx_frame_state *st, struct sgx_fence *done)
 {
    unsigned vf = sgx_frame_vertex_floats(l);
    float *pack;
@@ -866,9 +867,9 @@ sgx_frame_draw(struct sgx_frame *f, struct sgx_resource *rt, const struct sgx_fr
        (prog ? l->nvaryings != prog->ninputs : l->colour >= l->nvaryings))
       return -EINVAL;
    if (prog)
-      return render(f, rt, l, verts, nverts, true, prog, sa, handles, nhandles, done);
+      return render(f, rt, l, verts, nverts, true, prog, sa, handles, nhandles, st, done);
    if (!(f->opts & (SGX_FRAME_PACKVTX | SGX_FRAME_PACKPIX)))
-      return render(f, rt, l, verts, nverts, true, NULL, NULL, NULL, 0, done);
+      return render(f, rt, l, verts, nverts, true, NULL, NULL, NULL, 0, st, done);
 
    /* through the pack's vertex side: r g b a (the colour) u v x y */
    if (!(pack = malloc(nverts * PACK_VTX_FLOATS * sizeof(float))))
@@ -883,7 +884,7 @@ sgx_frame_draw(struct sgx_frame *f, struct sgx_resource *rt, const struct sgx_fr
       out[7] = in[1];
    }
    ret = render(f, rt, NULL, pack, nverts, !(f->opts & SGX_FRAME_PACKPIX), NULL, NULL, NULL,
-                0, done);
+                0, st, done);
    free(pack);
    return ret;
 }
@@ -895,7 +896,8 @@ sgx_frame_draw(struct sgx_frame *f, struct sgx_resource *rt, const struct sgx_fr
 static int
 render(struct sgx_frame *f, struct sgx_resource *rt, const struct sgx_frame_layout *l,
        const float *verts, unsigned nverts, bool iterated, struct sgx_pixel_program *pix,
-       const uint32_t *sa, const uint32_t *handles, unsigned nhandles, struct sgx_fence *done)
+       const uint32_t *sa, const uint32_t *handles, unsigned nhandles,
+       const struct sgx_frame_state *st, struct sgx_fence *done)
 {
    uint32_t vdm[32] = { 0 }, full[32], prog[16], fetch[32], bg[4], *v = vdm, *cmd;
    uint32_t hs[MAX_PACK_BOS + 3 + 1 + SGX_FRAME_MAX_HANDLES];
@@ -956,6 +958,12 @@ render(struct sgx_frame *f, struct sgx_resource *rt, const struct sgx_frame_layo
    /* the pixel program's PDS: tag (bits 31:27) its data size in rows */
    full[6] = iterated ? 1u << 27 | (iter_pds_at(f, colour, f32) >> 4 & 0x07ffffff) :
              p27(f->texblock);
+   if (st) {
+      /* ISP state B: the depth compare in bits 24:22, bit 20 set when depth
+       * is not written (iOS's depth capture, M5) */
+      full[1] = (full[1] & ~(7u << 22 | 1u << 20)) | (uint32_t)(st->depth_func & 7) << 22 |
+                (st->depth_write ? 0 : 1u << 20);
+   }
    if (pix) {
       /* our pixel program: its PDS (word 6), how many registers a pixel
        * takes (word 5: bits 31:27 primary attributes + temporaries in fours;

@@ -96,10 +96,19 @@ struct sgx_pixel_program {
  * the frame's and rt (textures, at most SGX_FRAME_MAX_HANDLES), for the
  * kernel to keep. */
 #define SGX_FRAME_MAX_HANDLES 16
+/* What the ISP does with a draw's pixels (M14): the depth test (a
+ * pipe_compare_func; ALWAYS when GL's test is off) and whether it writes
+ * depth. */
+struct sgx_frame_state {
+   uint8_t depth_func;
+   bool depth_write;
+};
+
 int sgx_frame_draw(struct sgx_frame *f, struct sgx_resource *rt,
                    const struct sgx_frame_layout *l, const float *verts, unsigned nverts,
                    struct sgx_pixel_program *prog, const uint32_t *sa,
-                   const uint32_t *handles, unsigned nhandles, struct sgx_fence *done);
+                   const uint32_t *handles, unsigned nhandles,
+                   const struct sgx_frame_state *st, struct sgx_fence *done);
 
 /* waits for the last render through the frame */
 void sgx_frame_finish(struct sgx_frame *f);

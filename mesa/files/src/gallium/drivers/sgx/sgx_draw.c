@@ -228,7 +228,9 @@ emit_vertex(struct sgx_render *sr, const float *in, float *out)
 
    out[0] = in[0] * 2 / ctx->fb.width - 1;
    out[1] = in[1] * 2 / ctx->fb.height - 1;
-   out[2] = 0;
+   /* the draw module's window z back to -1..1 (the frame's viewport takes
+    * it to depth as z / 2 + 1 / 2) */
+   out[2] = in[2] * 2 - 1;
    out[3] = 1;
    if (ctx->draw_fs) {
       /* the program's inputs, as the draw module has them */
@@ -566,7 +568,11 @@ submit(struct sgx_context *ctx)
    struct pipe_surface *surf = &ctx->fb.cbufs[0];
    struct sgx_resource *rt = surf->texture ? sgx_resource(surf->texture) : NULL;
    struct sgx_fs *fs = ctx->draw_fs;
-   uint32_t sa[128 + 4 * SGX_FS_MAX_SAMPLERS], handles[SGX_FS_MAX_SAMPLERS];
+   uint32_t sa[128 + 4 * SGX_FS_MAX_SAMPLERS + 4], handles[SGX_FS_MAX_SAMPLERS];
+   struct sgx_frame_state st = {
+      .depth_func = ctx->dsa && ctx->dsa->depth_enabled ? ctx->dsa->depth_func : PIPE_FUNC_ALWAYS,
+      .depth_write = ctx->dsa && ctx->dsa->depth_enabled && ctx->dsa->depth_writemask,
+   };
    unsigned max, done = 0, nhandles = 0;
 
    if (!ctx->nverts)
@@ -631,7 +637,7 @@ submit(struct sgx_context *ctx)
       simple_mtx_lock(&screen->frame_lock);
       ret = sgx_frame_draw(screen->frame, rt, &ctx->layout,
                            ctx->verts + done * sgx_frame_vertex_floats(&ctx->layout), n,
-                           fs ? &fs->prog : NULL, sa, handles, nhandles, fence);
+                           fs ? &fs->prog : NULL, sa, handles, nhandles, &st, fence);
       if (!ret)
          rt->seq++;
       simple_mtx_unlock(&screen->frame_lock);

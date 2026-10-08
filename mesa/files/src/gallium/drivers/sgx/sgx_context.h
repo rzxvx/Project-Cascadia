@@ -41,8 +41,9 @@ struct sgx_context {
    uint32_t vb_mask;
    struct pipe_constant_buffer cb[2];   /* buffer 0: the vertex, fragment shader's */
    struct sgx_shader *vs, *fs;
-   /* blending (M14) */
+   /* blending, depth (M14) */
    const struct pipe_blend_state *blend;
+   const struct pipe_depth_stencil_alpha_state *dsa;
    struct pipe_blend_color blend_color;
    struct sgx_fs *draw_fs;              /* this draw's fragment shader (sgx_draw.c) */
    /* the fragment shader's textures (M14) */

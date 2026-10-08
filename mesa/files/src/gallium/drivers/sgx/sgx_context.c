@@ -395,6 +395,12 @@ sgx_bind_blend_state(struct pipe_context *pctx, void *state)
 }
 
 static void
+sgx_bind_dsa_state(struct pipe_context *pctx, void *state)
+{
+   sgx_context(pctx)->dsa = state;
+}
+
+static void
 sgx_set_clip_state(struct pipe_context *pctx, const struct pipe_clip_state *c)
 {
    struct sgx_context *ctx = sgx_context(pctx);
@@ -529,7 +535,7 @@ sgx_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
    p->bind_blend_state = sgx_bind_blend_state;
    p->delete_blend_state = sgx_delete_state;
    p->create_depth_stencil_alpha_state = sgx_create_dsa_state;
-   p->bind_depth_stencil_alpha_state = sgx_bind_state;
+   p->bind_depth_stencil_alpha_state = sgx_bind_dsa_state;
    p->delete_depth_stencil_alpha_state = sgx_delete_state;
    p->create_rasterizer_state = sgx_create_rs_state;
    p->bind_rasterizer_state = sgx_bind_rs_state;
