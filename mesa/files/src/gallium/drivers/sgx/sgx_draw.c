@@ -229,12 +229,17 @@ emit_vertex(struct sgx_render *sr, const float *in, float *out)
    const float *cb = ctx->fs_constants;
    const struct sgx_frame_layout *l = &ctx->layout;
 
-   out[0] = in[0] * 2 / ctx->fb.width - 1;
-   out[1] = in[1] * 2 / ctx->fb.height - 1;
-   /* the draw module's window z back to -1..1 (the frame's viewport takes
-    * it to depth as z / 2 + 1 / 2) */
-   out[2] = in[2] * 2 - 1;
-   out[3] = 1;
+   /* clip coordinates, as a vertex shader would hand them to the TA (it
+    * divides by w, and interpolates the varyings with it): the draw
+    * module's window coordinates back to -1..1 -- z too, the frame's
+    * viewport takes it to depth as z / 2 + 1 / 2 -- times w, which the
+    * draw module keeps as 1 / w */
+   float w = in[3] > 0 ? 1 / in[3] : 1;
+
+   out[0] = (in[0] * 2 / ctx->fb.width - 1) * w;
+   out[1] = (in[1] * 2 / ctx->fb.height - 1) * w;
+   out[2] = (in[2] * 2 - 1) * w;
+   out[3] = w;
    if (ctx->draw_fs) {
       /* the program's inputs, as the draw module has them */
       memcpy(out + 4, in + 4, 4 * l->nvaryings * sizeof(float));
@@ -295,8 +300,12 @@ render_index(struct sgx_render *sr, unsigned index)
       float *t = ctx->verts + (ctx->nverts - 3) * vf;
       float tmp[4 * (1 + SGX_FRAME_MAX_VARYINGS)];
 
-      if ((t[vf] - t[0]) * (t[2 * vf + 1] - t[1]) -
-          (t[2 * vf] - t[0]) * (t[vf + 1] - t[1]) < 0) {
+      /* (on the screen: x / w, y / w) */
+      float x0 = t[0] / t[3], y0 = t[1] / t[3], x1 = t[vf] / t[vf + 3];
+      float y1 = t[vf + 1] / t[vf + 3], x2 = t[2 * vf] / t[2 * vf + 3];
+      float y2 = t[2 * vf + 1] / t[2 * vf + 3];
+
+      if ((x1 - x0) * (y2 - y0) - (x2 - x0) * (y1 - y0) < 0) {
          memcpy(tmp, t + vf, vf * sizeof(float));
          memcpy(t + vf, t + 2 * vf, vf * sizeof(float));
          memcpy(t + 2 * vf, tmp, vf * sizeof(float));
