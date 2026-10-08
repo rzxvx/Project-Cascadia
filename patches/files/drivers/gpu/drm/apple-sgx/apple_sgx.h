@@ -18,7 +18,10 @@ struct apple_sgx_drm;
 struct clk_bulk_data;
 struct dentry;
 struct device;
+struct drm_device;
+struct drm_gem_object;
 struct page;
+struct resource;
 
 /* The register window: six 16 KiB banks -- bank 0 broadcast (write only:
  * a read hangs the bus), bank 1 the master, bank 2 + n core n. */
@@ -189,6 +192,8 @@ int apple_sgx_render_queue(struct apple_sgx *sgx, const u32 *cmd, u32 len, u32 p
 bool apple_sgx_render_waiting(struct apple_sgx *sgx, u32 at, const u32 *details);
 int apple_sgx_render_rekick(struct apple_sgx *sgx);
 void apple_sgx_report(struct apple_sgx *sgx, const char *why);
+int apple_sgx_fb_find(struct apple_sgx *sgx, struct resource *res);
+int apple_sgx_fb_show(struct apple_sgx *sgx, u32 va, u32 stride, u32 x, u32 y, u32 w, u32 h);
 
 /* apple_sgx_drm.c */
 int apple_sgx_drm_init(struct apple_sgx *sgx);
@@ -196,5 +201,9 @@ void apple_sgx_drm_fini(struct apple_sgx *sgx);
 bool apple_sgx_drm_busy(struct apple_sgx *sgx);
 int apple_sgx_drm_reserve(struct apple_sgx *sgx, int slot, u32 va, u32 size);
 void apple_sgx_drm_unreserve(struct apple_sgx *sgx, int slot);
+u32 apple_sgx_bo_va(struct drm_gem_object *obj);
+
+/* apple_sgx_kms.c */
+int apple_sgx_kms_init(struct drm_device *drm, struct apple_sgx *sgx);
 
 #endif

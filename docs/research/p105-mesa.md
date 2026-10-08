@@ -1149,6 +1149,36 @@ instead of full state per draw, the parameter buffer's size.
 then a compositor (weston or sway), Xorg with glamor, and desktop GL 2.1
 exposed for the programs that want it. XFCE with a GPU behind it.
 
+**Step 1 (2026-10-08): KMS in the render node's own device.** Not
+simpledrm and kmsro after all: nothing programs the display pipe in either
+case (iBoot set it up to scan out its framebuffer; both would only copy
+frames into that memory), and the copy is better done by the GPU than by
+simpledrm's CPU reading shmem pages the GPU wrote (no cache maintenance
+for its own buffers on ARMv7, and 3 MiB a frame). So `apple-sgx`'s primary
+node, `card0`, is now a KMS device too (`apple_sgx_kms.c`): one plane, CRTC
+and connector with the framebuffer's mode (768x1024, a nominal 60 Hz, 119 x
+159 mm); framebuffers are any of the render node's buffers (Mesa's through
+GBM, or dumb buffers, pitches of 64 bytes); showing one is a copy onto the
+screen by the 2D engine (`apple_sgx_fb_show()`, the fbcon engine's blit),
+the whole plane on a flip and the damaged rectangles (widened to 16
+pixels) otherwise, after the plane's implicit fences -- the renders that
+write the buffer put theirs on it. No vblank interrupt: a flip completes
+when its copy has (`drm_atomic_helper_fake_vblank`). simplefb keeps the
+console on the same memory. A full-screen copy takes ~1.9 ms (200
+`copy 0 0 0 0 768 1024` through debugfs: 0.38 s).
+
+Nothing changed in Mesa for it: GBM on `card0` loads the driver by the
+kernel's name (`apple_sgx`), scanout buffers are its linear render targets
+and `resource_get_handle` gives KMS their GEM handles. `tools/sgx/gl/glkms.c`
+is the test: EGL on GBM, a turning square over a gradient, each frame shown
+with a page flip, then a still frame and `/dev/fb0` checked against it.
+Kernel #293: **118 frames a second, every pixel of the screen right**; the
+rest of the tests unchanged.
+
+Next: a compositor. Weston's DRM backend needs the same, plus dma-buf import
+of its clients' buffers (`resource_from_handle`, and the kernel telling a
+buffer's GPU address for a handle).
+
 ## Testing, without and with the device
 
 - **Host, every change:** the kernel driver builds with `W=1` against the

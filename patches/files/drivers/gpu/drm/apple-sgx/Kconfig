@@ -5,6 +5,7 @@ config DRM_APPLE_SGX
 	depends on ARCH_APPLE_S5L || COMPILE_TEST
 	depends on COMMON_CLK && OF
 	select DRM_GEM_SHMEM_HELPER
+	select DRM_KMS_HELPER
 	select DRM_SCHED
 	help
 	  The GPU of the Apple A5 (S5L8940X/8942X), a PowerVR SGX543MP2.
@@ -12,8 +13,9 @@ config DRM_APPLE_SGX
 	  microkernel (from /lib/firmware/apple/sgx543.fw, which the user
 	  takes out of their own IPSW), and offers a render node for Mesa
 	  and sgx2d: GEM buffers in the GPU's address space and renders
-	  queued to the microkernel.  Also a 2D engine that can draw fbcon's
-	  fills and copies, and research tools in debugfs (apple-sgx/).
+	  queued to the microkernel; KMS on the boot framebuffer, which the
+	  2D engine copies frames into.  Also fbcon's fills and copies on
+	  the 2D engine, and research tools in debugfs (apple-sgx/).
 
 	  The render node's interface is experimental and will change.
 

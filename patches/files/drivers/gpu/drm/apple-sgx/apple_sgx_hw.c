@@ -1551,7 +1551,7 @@ static void blt_put_prog(struct apple_sgx *sgx, u32 va, const u64 *p, int n)
 }
 
 /* The framebuffer simplefb drives, from the device tree. */
-static int sgx_fb_find(struct apple_sgx *sgx, struct resource *res)
+int apple_sgx_fb_find(struct apple_sgx *sgx, struct resource *res)
 {
 	struct device_node *np, *mem;
 	int ret;
@@ -1599,7 +1599,7 @@ static int sgx_blt_init(struct apple_sgx *sgx)
 	blt_put_prog(sgx, SGX_BLT_PROG_EOT0, eot0, ARRAY_SIZE(eot0));
 	blt_put_prog(sgx, SGX_BLT_PROG_EOT1, eot1, ARRAY_SIZE(eot1));
 
-	ret = sgx_fb_find(sgx, &fb);
+	ret = apple_sgx_fb_find(sgx, &fb);
 	if (ret)
 		dev_warn(sgx->dev, "no framebuffer for the 2D engine: %d\n", ret);
 	else
@@ -1803,6 +1803,19 @@ static int sgx_fb_copy(struct apple_sgx *sgx, u32 sx, u32 sy, u32 dx, u32 dy, u3
 		return -EINVAL;
 	sgx_fb_surf(sgx, &s, sx, sy, w, h);
 	sgx_fb_surf(sgx, &d, dx, dy, w, h);
+	return sgx_blt_run(sgx, &s, 0, &d);
+}
+
+/* The render node's screen (apple_sgx_kms.c): a rectangle of a linear
+ * BGRA surface -- va its first pixel, stride in pixels -- onto the screen
+ * at x, y. */
+int apple_sgx_fb_show(struct apple_sgx *sgx, u32 va, u32 stride, u32 x, u32 y, u32 w, u32 h)
+{
+	struct sgx_surf s = { .va = va, .w = w, .h = h, .stride = stride }, d;
+
+	if (!sgx_fb_rect_ok(sgx, x, y, w, h))
+		return -EINVAL;
+	sgx_fb_surf(sgx, &d, x, y, w, h);
 	return sgx_blt_run(sgx, &s, 0, &d);
 }
 

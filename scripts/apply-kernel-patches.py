@@ -51,6 +51,7 @@ NEW_FILES = [
     "drivers/gpu/drm/apple-sgx/apple_sgx.h",
     "drivers/gpu/drm/apple-sgx/apple_sgx_hw.c",
     "drivers/gpu/drm/apple-sgx/apple_sgx_drm.c",
+    "drivers/gpu/drm/apple-sgx/apple_sgx_kms.c",
     "include/uapi/drm/apple_sgx_drm.h",
     "drivers/mtd/devices/mtd-apple-h2fmi.c",
     "drivers/phy/phy-apple-s5l-usb.c",

@@ -7,6 +7,9 @@
  * syncobjs for synchronisation.  The interface is include/uapi/drm/
  * apple_sgx_drm.h; docs/research/p105-mesa.md is the plan it belongs to.
  *
+ * The device's primary node is also the screen (apple_sgx_kms.c): KMS on
+ * the boot framebuffer, which any of these buffers can be shown in.
+ *
  * Buffers are shmem objects, write-combined on the CPU side, pinned and
  * mapped page by page into the one page directory the hardware side keeps
  * (apple_sgx_hw.c), at an address the caller chose or one picked here.
@@ -284,38 +287,67 @@ static int sgx_bo_map(struct apple_sgx_drm *sdrm, struct apple_sgx_bo *bo, u32 v
 	return ret;
 }
 
-static int sgx_ioctl_gem_create(struct drm_device *drm, void *data, struct drm_file *file)
+/* A buffer object, mapped, and a handle to it; *va in: where (with
+ * APPLE_SGX_BO_FIXED_VA), out: where it went. */
+static int sgx_bo_new(struct drm_device *drm, struct drm_file *file, u64 size, u32 flags,
+		      u32 *va, u32 *handle)
 {
 	struct apple_sgx_drm *sdrm = to_sgx_drm(drm);
-	struct drm_apple_sgx_gem_create *args = data;
 	struct drm_gem_shmem_object *shmem;
 	struct apple_sgx_bo *bo;
-	u64 size;
 	int ret;
 
-	if (args->pad || (args->flags & ~APPLE_SGX_BO_FLAGS) || !args->size ||
-	    args->size > SGX_MAX_BO_SIZE)
+	if ((flags & ~APPLE_SGX_BO_FLAGS) || !size || size > SGX_MAX_BO_SIZE)
 		return -EINVAL;
-	size = ALIGN(args->size, PAGE_SIZE);
-	if ((args->flags & APPLE_SGX_BO_FIXED_VA) &&
-	    ((args->va & (SGX_PAGE_SIZE - 1)) || args->va < SGX_USER_VA_START ||
-	     size > SGX_USER_VA_END - args->va))
+	size = ALIGN(size, PAGE_SIZE);
+	if ((flags & APPLE_SGX_BO_FIXED_VA) &&
+	    ((*va & (SGX_PAGE_SIZE - 1)) || *va < SGX_USER_VA_START ||
+	     size > SGX_USER_VA_END - *va))
 		return -EINVAL;
 
 	shmem = drm_gem_shmem_create(drm, size);
 	if (IS_ERR(shmem))
 		return PTR_ERR(shmem);
 	bo = to_sgx_bo(&shmem->base);
-	bo->flags = args->flags;
+	bo->flags = flags;
 	bo->serial = atomic64_inc_return(&sdrm->bo_serial);
-	ret = sgx_bo_map(sdrm, bo, args->va);
+	ret = sgx_bo_map(sdrm, bo, *va);
 	if (!ret)
-		ret = drm_gem_handle_create(file, &shmem->base, &args->handle);
+		ret = drm_gem_handle_create(file, &shmem->base, handle);
 	if (!ret)
-		args->va = bo->node.start;
+		*va = bo->node.start;
 	/* the handle holds it now, or it goes */
 	drm_gem_object_put(&shmem->base);
 	return ret;
+}
+
+static int sgx_ioctl_gem_create(struct drm_device *drm, void *data, struct drm_file *file)
+{
+	struct drm_apple_sgx_gem_create *args = data;
+
+	if (args->pad)
+		return -EINVAL;
+	return sgx_bo_new(drm, file, args->size, args->flags, &args->va, &args->handle);
+}
+
+/* Dumb buffers, for the screen (apple_sgx_kms.c): pitches of 64 bytes */
+static int sgx_dumb_create(struct drm_file *file, struct drm_device *drm,
+			   struct drm_mode_create_dumb *args)
+{
+	u32 va = 0;
+
+	if (!args->width || !args->height || !args->bpp || args->width > 4096 ||
+	    args->height > 4096)
+		return -EINVAL;
+	args->pitch = ALIGN(DIV_ROUND_UP(args->width * args->bpp, 8), 64);
+	args->size = ALIGN((u64)args->pitch * args->height, PAGE_SIZE);
+	return sgx_bo_new(drm, file, args->size, 0, &va, &args->handle);
+}
+
+/* where the GPU sees a buffer object */
+u32 apple_sgx_bo_va(struct drm_gem_object *obj)
+{
+	return to_sgx_bo(obj)->node.start;
 }
 
 static int sgx_ioctl_gem_mmap_offset(struct drm_device *drm, void *data,
@@ -876,13 +908,15 @@ static const struct drm_ioctl_desc sgx_ioctls[] = {
 DEFINE_DRM_GEM_FOPS(sgx_drm_fops);
 
 static const struct drm_driver sgx_drm_driver = {
-	.driver_features = DRIVER_GEM | DRIVER_RENDER | DRIVER_SYNCOBJ,
+	.driver_features = DRIVER_GEM | DRIVER_RENDER | DRIVER_SYNCOBJ | DRIVER_MODESET |
+			   DRIVER_ATOMIC,
 	.open = sgx_open,
 	.postclose = sgx_postclose,
 	.ioctls = sgx_ioctls,
 	.num_ioctls = ARRAY_SIZE(sgx_ioctls),
 	.fops = &sgx_drm_fops,
 	.gem_create_object = sgx_gem_create_object,
+	.dumb_create = sgx_dumb_create,
 	.name = "apple_sgx",
 	.desc = "Apple S5L8940X PowerVR SGX543MP2",
 	.date = "20261003",
@@ -970,6 +1004,13 @@ int apple_sgx_drm_init(struct apple_sgx *sgx)
 	sdrm->fb_window.size = SGX_FB_WINDOW;
 	ret = drm_mm_reserve_node(&sdrm->va, &sdrm->fb_window);
 	if (ret)
+		return ret;
+
+	/* the screen, if there is a framebuffer to show things in */
+	ret = apple_sgx_kms_init(&sdrm->drm, sgx);
+	if (ret == -ENODEV)
+		sdrm->drm.driver_features &= ~(DRIVER_MODESET | DRIVER_ATOMIC);
+	else if (ret)
 		return ret;
 
 	ret = drm_sched_init(&sdrm->sched, &sgx_sched_ops, NULL, DRM_SCHED_PRIORITY_COUNT,
