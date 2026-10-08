@@ -271,7 +271,10 @@ sgx_resource_linear(const struct sgx_resource *res, bool *swap, bool *x8)
        res->stride[0] < 32 || ((res->offset[0] + res->bo->va) & 15) ||
        (p->target != PIPE_TEXTURE_2D && p->target != PIPE_TEXTURE_RECT))
       return false;
-   return force == 1 || res->external || res->gpu_written;
+   /* and when the twiddled copy would be padded (its coordinates are not
+    * scaled): a size not a power of two */
+   return force == 1 || res->external || res->gpu_written ||
+          !util_is_power_of_two_nonzero(p->width0) || !util_is_power_of_two_nonzero(p->height0);
 }
 
 bool

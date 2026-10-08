@@ -58,6 +58,11 @@ static void tx_565(int x, int y, uint8_t c[4])       /* 2x2 RGB565: exact values
 	c[0] = x ? 255 : 0, c[1] = y ? 255 : 0, c[2] = (x ^ y) ? 255 : 0, c[3] = 255;
 }
 
+static void tx_panel(int x, int y, uint8_t c[4])     /* 768x32: not a power of two */
+{
+	c[0] = y * 8, c[1] = x & 255, c[2] = (x >> 8) * 80, c[3] = 255;
+}
+
 struct tex {
 	int w, h;
 	GLenum format, type;    /* GL_RGBA/UNSIGNED_BYTE, GL_LUMINANCE, GL_RGB/565 */
@@ -70,6 +75,7 @@ static const struct tex T_OTHER = { 2, 2, GL_RGBA, GL_UNSIGNED_BYTE, tx_other };
 static const struct tex T_LUM = { 4, 4, GL_LUMINANCE, GL_UNSIGNED_BYTE, tx_lum };
 static const struct tex T_565 = { 2, 2, GL_RGB, GL_UNSIGNED_SHORT_5_6_5, tx_565 };
 static const struct tex T_FINE = { 64, 64, GL_RGBA, GL_UNSIGNED_BYTE, tx_fine };
+static const struct tex T_PANEL = { 768, 32, GL_RGBA, GL_UNSIGNED_BYTE, tx_panel };
 
 /* the expected colour at s, t; false where the pixel is too near an edge */
 typedef int (*ref_fn)(float s, float t, float c[4]);
@@ -188,6 +194,9 @@ static const struct test {
 	{ "clamp", "c = texture2D(t0, v.xy * 3.0 - 1.0);", &T_QUAD, NULL, 0, r_clamp },
 	{ "linear", "c = texture2D(t0, v.xy);", &T_OTHER, NULL, 2, r_linear },
 	{ "minify", "c = texture2D(t0, v.xy * vec2(24.0, 18.0));", &T_FINE, NULL, 3, r_minify },
+	/* a size not a power of two, a texel a pixel across (weston's panel) */
+	{ "npot", "c = texture2D(t0, v.xy);", &T_PANEL, NULL, 0, r_plain },
+	{ "npot_linear", "c = texture2D(t0, v.xy);", &T_PANEL, NULL, 2, r_linear },
 };
 
 static const char *vs_src =
@@ -241,7 +250,7 @@ static GLuint build(const char *body)
 /* a texture object with T's texels, on unit `unit` */
 static GLuint make(const struct tex *T, int unit, int repeat)
 {
-	static uint8_t data[64 * 64 * 4];
+	static uint8_t data[768 * 32 * 4];      /* the largest texture */
 	GLuint t;
 	int n = 0;
 

@@ -785,7 +785,7 @@ sgx_compile_fs(const nir_shader *fs, const struct sgx_blend_key *blend, char *wh
    struct comp c = { 0 };
    nir_function_impl *impl;
    nir_shader *s;
-   unsigned n;
+   unsigned n, out_at;
    int index;
 
    c.why = why;
@@ -892,6 +892,7 @@ sgx_compile_fs(const nir_shader *fs, const struct sgx_blend_key *blend, char *wh
             goto out;
       }
    }
+   out_at = util_dynarray_num_elements(&c.code, uint64_t);
    output(&c);
    if (c.failed)
       goto out;
@@ -908,9 +909,11 @@ sgx_compile_fs(const nir_shader *fs, const struct sgx_blend_key *blend, char *wh
     * have it, corpus t01 and t07): the sampler takes its level of detail
     * from the coordinates of the 2x2 block, and a neighbour that skipped
     * the moves into them handed it garbage (gltex linear: point sampling
-    * along the diagonal seam). */
+    * along the diagonal seam).  But not the writes of the output: those
+    * pixels' tiles would take them too -- blended twice along each shared
+    * edge, in 2x2 blocks (weston's panel, M16). */
    if (c.nsamplers)
-      for (unsigned i = 0; i < c.fs->prog.ncode; i++)
+      for (unsigned i = 0; i < out_at; i++)
          c.fs->prog.code[i] &= ~(1ull << 55);
    c.fs->prog.ntemps = c.top;
    c.fs->prog.ninputs = c.ninputs;
