@@ -542,14 +542,26 @@ fs_for_draw(struct sgx_context *ctx)
          key.alpha_dst = rt->alpha_dst_factor;
       }
    }
-   if (!key.enable && key.colormask == 0xf)
+   /* textures sampled linear in other orders than R G B A (M16) */
+   for (unsigned i = 0; i < sh->compiled->nsamplers; i++) {
+      unsigned unit = sh->compiled->sampler_unit[i];
+      struct pipe_sampler_view *view = unit < ARRAY_SIZE(ctx->fs_views) ?
+                                       ctx->fs_views[unit] : NULL;
+      bool bgra, x8;
+
+      if (unit < 8 && view && sgx_resource_linear(sgx_resource(view->texture), &bgra, &x8)) {
+         key.tex_bgra |= bgra << unit;
+         key.tex_x8 |= x8 << unit;
+      }
+   }
+   if (!key.enable && key.colormask == 0xf && !key.tex_bgra && !key.tex_x8)
       return sh->compiled;
    for (unsigned i = 0; i < sh->nvariants; i++)
       if (!memcmp(&sh->variant[i]->blend, &key, sizeof(key)))
          return sh->variant[i];
    if (!(fs = sgx_compile_fs(sh->nir, &key, why, sizeof(why)))) {
-      mesa_logw_once("sgx: a fragment shader with blending not compiled (%s): drawn "
-                     "without it", why);
+      mesa_logw_once("sgx: a variant of a fragment shader (blending, texture orders) "
+                     "not compiled (%s): drawn without it", why);
       return sh->compiled;
    }
    if (sh->nvariants == ARRAY_SIZE(sh->variant)) {
@@ -621,6 +633,7 @@ sgx_batch_flush(struct sgx_context *ctx)
    if (!ret) {
       sgx_fence_reference(&ctx->last, fence);
       sgx_resource(b->rt)->seq++;
+      sgx_resource(b->rt)->gpu_written = true;
    } else {
       mesa_logw("sgx: a render of %u draws failed (%d)", b->ndraws, ret);
    }
@@ -709,6 +722,7 @@ submit(struct sgx_context *ctx)
                              NULL, NULL, NULL, 0, &st, fence)) {
             sgx_fence_reference(&ctx->last, fence);
             rt->seq++;
+            rt->gpu_written = true;
          }
          simple_mtx_unlock(&screen->frame_lock);
          sgx_fence_reference(&fence, NULL);
@@ -783,6 +797,8 @@ submit(struct sgx_context *ctx)
          break;
       if (!b->ndraws)
          pipe_resource_reference(&b->rt, &rt->base);
+      /* from now on sampled linear: decided before any draw samples it */
+      rt->gpu_written = true;
       for (unsigned i = 0; fs && i < fs->nsamplers; i++) {
          unsigned k;
 
@@ -790,7 +806,7 @@ submit(struct sgx_context *ctx)
             ;
          if (k == b->ntex) {
             pipe_resource_reference(&b->tex[b->ntex], tex[i]);
-            b->handles[b->ntex++] = sgx_resource(tex[i])->tw->handle;
+            b->handles[b->ntex++] = sgx_resource(tex[i])->sampled->handle;
          }
       }
       bd = &b->draw[b->ndraws++];

@@ -109,15 +109,63 @@ sgx_resource_get_handle(struct pipe_screen *pscreen, struct pipe_context *pctx,
    switch (handle->type) {
    case WINSYS_HANDLE_TYPE_KMS:
       handle->handle = res->bo->handle;
+      res->external = true;
       return true;
    case WINSYS_HANDLE_TYPE_FD:
       if (drmPrimeHandleToFD(res->bo->dev->fd, res->bo->handle, DRM_CLOEXEC | DRM_RDWR, &fd))
          return false;
       handle->handle = fd;
+      res->external = true;
       return true;
    default:
       return false;
    }
+}
+
+/* A dma-buf (or a handle on this device) as a texture or a render target:
+ * linear, its stride and offset as given. */
+static struct pipe_resource *
+sgx_resource_from_handle(struct pipe_screen *pscreen, const struct pipe_resource *templ,
+                         struct winsys_handle *whandle, unsigned usage)
+{
+   struct sgx_screen *screen = sgx_screen(pscreen);
+   struct sgx_device *dev = &screen->dev;
+   struct sgx_resource *res;
+   uint32_t handle;
+
+   if ((templ->target != PIPE_TEXTURE_2D && templ->target != PIPE_TEXTURE_RECT) ||
+       templ->last_level || templ->array_size > 1 || whandle->plane ||
+       (whandle->modifier != DRM_FORMAT_MOD_INVALID &&
+        whandle->modifier != DRM_FORMAT_MOD_LINEAR))
+      return NULL;
+   switch (whandle->type) {
+   case WINSYS_HANDLE_TYPE_FD:
+      if (drmPrimeFDToHandle(dev->fd, whandle->handle, &handle))
+         return NULL;
+      break;
+   case WINSYS_HANDLE_TYPE_KMS:
+      handle = whandle->handle;
+      break;
+   default:
+      return NULL;
+   }
+   if (!(res = CALLOC_STRUCT(sgx_resource)))
+      return NULL;
+   res->base = *templ;
+   res->base.screen = pscreen;
+   pipe_reference_init(&res->base.reference, 1);
+   res->stride[0] = whandle->stride;
+   res->offset[0] = whandle->offset;
+   res->layer_size[0] = whandle->stride * util_format_get_nblocksy(templ->format,
+                                                                     templ->height0);
+   res->external = true;
+   if (!(res->bo = sgx_bo_import(dev, handle)) ||
+       (uint64_t)res->offset[0] + res->layer_size[0] > res->bo->size) {
+      sgx_bo_destroy(res->bo);
+      FREE(res);
+      return NULL;
+   }
+   return &res->base;
 }
 
 /* Morton order, y in the even bits (the layout iOS's GL driver uploads); a
@@ -195,20 +243,71 @@ sampler_bits(const struct pipe_sampler_state *ss)
 }
 
 bool
+sgx_resource_linear(const struct sgx_resource *res, bool *bgra, bool *x8)
+{
+   const struct pipe_resource *p = &res->base;
+   static int force = -1;
+
+   if (force < 0)
+      force = getenv("SGX_LINEAR_TEX") ? atoi(getenv("SGX_LINEAR_TEX")) : 2;
+   *bgra = *x8 = false;
+   switch (p->format) {
+   case PIPE_FORMAT_R8G8B8X8_UNORM:
+      *x8 = true;
+      FALLTHROUGH;
+   case PIPE_FORMAT_R8G8B8A8_UNORM:
+      break;
+   case PIPE_FORMAT_B8G8R8X8_UNORM:
+      *x8 = true;
+      FALLTHROUGH;
+   case PIPE_FORMAT_B8G8R8A8_UNORM:
+      *bgra = true;
+      break;
+   default:
+      return false;
+   }
+   /* SGX_LINEAR_TEX=0: never, 1: whenever it can */
+   if (force == 0 || p->last_level || p->array_size > 1 || (res->stride[0] & 15) ||
+       res->stride[0] < 32 || ((res->offset[0] + res->bo->va) & 15) ||
+       (p->target != PIPE_TEXTURE_2D && p->target != PIPE_TEXTURE_RECT))
+      return false;
+   return force == 1 || res->external || res->gpu_written;
+}
+
+bool
 sgx_resource_texture(struct sgx_screen *screen, struct sgx_resource *res,
                      const struct pipe_sampler_state *ss, uint32_t words[4])
 {
+   bool bgra, x8;
+
    struct pipe_resource *p = &res->base;
 
    if ((p->target != PIPE_TEXTURE_2D && p->target != PIPE_TEXTURE_RECT) ||
        p->array_size != 1 || !p->width0 || !p->height0)
       return false;
-   if ((!res->tw || res->tw_seq != res->seq) && !twiddle_texture(screen, res))
-      return false;
-   if ((p->width0 & (p->width0 - 1)) || (p->height0 & (p->height0 - 1)))
-      mesa_logw_once("sgx: textures that are not a power of two in size are sampled "
-                     "from a padded copy; their coordinates are not scaled yet");
-   words[0] = 0x03fe0000 | sampler_bits(ss);
+   if (sgx_resource_linear(res, &bgra, &x8)) {
+      /* the 2D engine's way (apple_sgx_hw.c, blt_tex: iOS's for an
+       * IOSurface): the content itself, its stride in 16 bytes less 2;
+       * bits 11:9 all set, or the rows come out skewed -- every other value
+       * of the three was tried (gltex), and the minification filter they
+       * are for twiddled textures is lost: point sampling */
+      words[0] = (res->stride[0] / 16 - 2) << 16 | (sampler_bits(ss) & ~0xe00u) | 7u << 9;
+      words[1] = 0xcc000000 | (p->width0 - 1) << 12 | (p->height0 - 1);
+      words[2] = res->bo->va + res->offset[0];
+      words[3] = 0x10000000;
+      res->sampled = res->bo;
+   } else {
+      if ((!res->tw || res->tw_seq != res->seq) && !twiddle_texture(screen, res))
+         return false;
+      if ((p->width0 & (p->width0 - 1)) || (p->height0 & (p->height0 - 1)))
+         mesa_logw_once("sgx: textures that are not a power of two in size are sampled "
+                        "from a padded copy; their coordinates are not scaled yet");
+      words[0] = 0x03fe0000 | sampler_bits(ss);
+      words[1] = 0x0c000000 | util_logbase2(res->tw_w) << 16 | util_logbase2(res->tw_h);
+      words[2] = res->tw->va;
+      words[3] = 0;
+      res->sampled = res->tw;
+   }
    /* SGX_TEX_WORDn=mask: bits of word n flipped, to find what they do */
    {
       static int64_t flip[4] = { -1, -1, -1, -1 };
@@ -223,9 +322,6 @@ sgx_resource_texture(struct sgx_screen *screen, struct sgx_resource *res,
          words[i] ^= (uint32_t)flip[i];
       }
    }
-   words[1] = 0x0c000000 | util_logbase2(res->tw_w) << 16 | util_logbase2(res->tw_h);
-   words[2] = res->tw->va;
-   words[3] = 0;
    return true;
 }
 
@@ -235,6 +331,7 @@ sgx_resource_screen_init(struct sgx_screen *screen)
    screen->base.resource_create = sgx_resource_create;
    screen->base.resource_destroy = sgx_resource_destroy;
    screen->base.resource_get_handle = sgx_resource_get_handle;
+   screen->base.resource_from_handle = sgx_resource_from_handle;
 }
 
 static void *

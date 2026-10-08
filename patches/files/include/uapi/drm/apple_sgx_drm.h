@@ -52,6 +52,7 @@ extern "C" {
 #define DRM_APPLE_SGX_GEM_MMAP_OFFSET		0x02
 #define DRM_APPLE_SGX_GEM_WAIT			0x03
 #define DRM_APPLE_SGX_SUBMIT			0x04
+#define DRM_APPLE_SGX_GEM_INFO			0x05
 
 #define DRM_IOCTL_APPLE_SGX_GET_PARAM \
 	DRM_IOWR(DRM_COMMAND_BASE + DRM_APPLE_SGX_GET_PARAM, struct drm_apple_sgx_get_param)
@@ -63,11 +64,13 @@ extern "C" {
 	DRM_IOW(DRM_COMMAND_BASE + DRM_APPLE_SGX_GEM_WAIT, struct drm_apple_sgx_gem_wait)
 #define DRM_IOCTL_APPLE_SGX_SUBMIT \
 	DRM_IOW(DRM_COMMAND_BASE + DRM_APPLE_SGX_SUBMIT, struct drm_apple_sgx_submit)
+#define DRM_IOCTL_APPLE_SGX_GEM_INFO \
+	DRM_IOWR(DRM_COMMAND_BASE + DRM_APPLE_SGX_GEM_INFO, struct drm_apple_sgx_gem_info)
 
 /* ---- GET_PARAM ---------------------------------------------------------- */
 
 enum drm_apple_sgx_param {
-	APPLE_SGX_PARAM_UAPI_VERSION = 0,	/* 1 */
+	APPLE_SGX_PARAM_UAPI_VERSION = 0,	/* 2 (1: no GEM_INFO) */
 	APPLE_SGX_PARAM_CORE_ID = 1,		/* MASTER_CORE_ID: 0x01194201 */
 	APPLE_SGX_PARAM_CORE_REVISION = 2,	/* 0x00010202 = 1.2.2 */
 	APPLE_SGX_PARAM_NUM_CORES = 3,		/* 2 */
@@ -170,6 +173,19 @@ struct drm_apple_sgx_submit {
 	__u64 in_syncs;		/* in: user pointer to __u32 syncobj handles */
 	__u32 out_sync;		/* in: syncobj to signal when it is done, or 0 */
 	__u32 pad;		/* in: 0 */
+};
+
+/* ---- GEM_INFO: what a handle is, for one that came from a dma-buf ------ */
+
+/* Every buffer is the render node's own (dma-bufs of other devices are not
+ * taken), so a dma-buf's handle names a buffer already mapped: this says
+ * where.  UAPI version 2 on. */
+struct drm_apple_sgx_gem_info {
+	__u32 handle;		/* in */
+	__u32 flags;		/* out: the APPLE_SGX_BO_* it was made with */
+	__u32 va;		/* out: its GPU address */
+	__u32 pad;		/* in: 0 */
+	__u64 size;		/* out: bytes */
 };
 
 #if defined(__cplusplus)

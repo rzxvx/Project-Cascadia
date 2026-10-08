@@ -14,7 +14,8 @@ struct sgx_screen;
 /* Every resource is linear: rows of stride bytes, levels and layers one
  * after another.  A texture the GPU samples also gets a twiddled copy, made
  * by the CPU when the linear content has changed since (seq): RGBA8 in
- * Morton order, padded to powers of two (sgx_resource_texture). */
+ * Morton order, padded to powers of two (sgx_resource_texture) -- unless
+ * it is sampled as it is (sgx_resource_linear()). */
 struct sgx_resource {
    struct pipe_resource base;
    struct sgx_bo *bo;
@@ -25,6 +26,9 @@ struct sgx_resource {
    struct sgx_bo *tw;                             /* the twiddled copy */
    uint32_t tw_seq;                               /* the content it was made from */
    unsigned tw_w, tw_h;                           /* its size */
+   struct sgx_bo *sampled;                        /* what the last state words point at */
+   bool external;                                 /* shared: others may write it */
+   bool gpu_written;                              /* a render has written it */
 };
 
 static inline struct sgx_resource *
@@ -36,6 +40,13 @@ sgx_resource(struct pipe_resource *p)
 struct sgx_transfer {
    struct pipe_transfer base;
 };
+
+/* Whether res is sampled as it is, linear (M16): RGBA8 orders, one level,
+ * written by the GPU or by others (a render's target, a shared buffer) --
+ * the CPU's copy would read it back each time.  Minification is point
+ * sampling then.  The sampler reads bytes as R G B A: *bgra says the
+ * shader swaps red and blue, *x8 that it takes alpha as 1. */
+bool sgx_resource_linear(const struct sgx_resource *res, bool *bgra, bool *x8);
 
 /* The four state words the sampler reads for res sampled with ss (M14):
  * the twiddled copy brought up to date first.  False when res cannot be

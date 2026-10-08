@@ -11,6 +11,7 @@
 #include <xf86drm.h>
 
 #include "drm-uapi/apple_sgx_drm.h"
+#include "util/hash_table.h"
 #include "util/log.h"
 #include "util/os_time.h"
 #include "util/u_math.h"
@@ -30,8 +31,11 @@ bool
 sgx_device_init(struct sgx_device *dev, int fd)
 {
    dev->fd = fd;
-   if (sgx_device_param(dev, APPLE_SGX_PARAM_UAPI_VERSION) != 1) {
-      mesa_loge("sgx: the kernel's render node interface is not version 1");
+   /* 2: GEM_INFO, for buffers that come as dma-bufs */
+   dev->uapi = sgx_device_param(dev, APPLE_SGX_PARAM_UAPI_VERSION);
+   if (dev->uapi < 1 || dev->uapi > 2) {
+      mesa_loge("sgx: the kernel's render node interface is version %u, not 1 or 2",
+                dev->uapi);
       return false;
    }
    dev->core_id = sgx_device_param(dev, APPLE_SGX_PARAM_CORE_ID);
@@ -47,9 +51,19 @@ sgx_device_init(struct sgx_device *dev, int fd)
    dev->fb_height = sgx_device_param(dev, APPLE_SGX_PARAM_FB_HEIGHT);
    dev->fb_stride = sgx_device_param(dev, APPLE_SGX_PARAM_FB_STRIDE);
    dev->untiled_next = UINT32_MAX;
+   simple_mtx_init(&dev->bo_lock, mtx_plain);
+   if (!(dev->bos = _mesa_hash_table_u64_create(NULL)))
+      return false;
    if (!sgx_device_param(dev, APPLE_SGX_PARAM_UKERNEL_UP))
       mesa_logw("sgx: the GPU's microkernel is not running (dmesg | grep apple-sgx)");
    return true;
+}
+
+void
+sgx_device_fini(struct sgx_device *dev)
+{
+   _mesa_hash_table_u64_destroy(dev->bos);
+   simple_mtx_destroy(&dev->bo_lock);
 }
 
 /* SGX_NOCC=1: every buffer mapped for the GPU without the cache-consistent
@@ -130,6 +144,40 @@ sgx_bo_create(struct sgx_device *dev, uint32_t size, uint32_t flags, uint32_t va
    bo->handle = c.handle;
    bo->va = c.va;
    bo->size = (size + 0xfff) & ~0xfffu;
+   simple_mtx_lock(&dev->bo_lock);
+   _mesa_hash_table_u64_insert(dev->bos, bo->handle, bo);
+   simple_mtx_unlock(&dev->bo_lock);
+   return bo;
+}
+
+struct sgx_bo *
+sgx_bo_import(struct sgx_device *dev, uint32_t handle)
+{
+   struct drm_apple_sgx_gem_info info = { .handle = handle };
+   struct sgx_bo *bo;
+
+   simple_mtx_lock(&dev->bo_lock);
+   if ((bo = _mesa_hash_table_u64_search(dev->bos, handle))) {
+      bo->refs++;
+      simple_mtx_unlock(&dev->bo_lock);
+      return bo;
+   }
+   if (dev->uapi < 2 || drmIoctl(dev->fd, DRM_IOCTL_APPLE_SGX_GEM_INFO, &info) ||
+       !(bo = CALLOC_STRUCT(sgx_bo))) {
+      struct drm_gem_close cl = { .handle = handle };
+
+      simple_mtx_unlock(&dev->bo_lock);
+      mesa_logw_once("sgx: a buffer from elsewhere (a dma-buf) cannot be used%s",
+                     dev->uapi < 2 ? ": the kernel has no GEM_INFO (before 2026-10-08)" : "");
+      drmIoctl(dev->fd, DRM_IOCTL_GEM_CLOSE, &cl);
+      return NULL;
+   }
+   bo->dev = dev;
+   bo->handle = handle;
+   bo->va = info.va;
+   bo->size = info.size;
+   _mesa_hash_table_u64_insert(dev->bos, handle, bo);
+   simple_mtx_unlock(&dev->bo_lock);
    return bo;
 }
 
@@ -158,6 +206,14 @@ sgx_bo_destroy(struct sgx_bo *bo)
 
    if (!bo)
       return;
+   simple_mtx_lock(&bo->dev->bo_lock);
+   if (bo->refs) {
+      bo->refs--;
+      simple_mtx_unlock(&bo->dev->bo_lock);
+      return;
+   }
+   _mesa_hash_table_u64_remove(bo->dev->bos, bo->handle);
+   simple_mtx_unlock(&bo->dev->bo_lock);
    if (bo->map)
       munmap(bo->map, bo->size);
    cl = (struct drm_gem_close){ .handle = bo->handle };

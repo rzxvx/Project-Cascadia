@@ -36,6 +36,7 @@
 #include "compiler/glsl_types.h"
 #include "compiler/nir/nir.h"
 #include "compiler/nir/nir_lower_blend.h"
+#include "util/format/u_formats.h"
 #include "util/ralloc.h"
 #include "util/u_dynarray.h"
 #include "util/u_math.h"
@@ -417,7 +418,8 @@ texture(struct comp *c, nir_tex_instr *tex, struct scratch *s)
    unsigned pair, d, id = tex->def.index * 4;
 
    if ((tex->op != nir_texop_tex && tex->op != nir_texop_txb && tex->op != nir_texop_txl) ||
-       tex->sampler_dim != GLSL_SAMPLER_DIM_2D || tex->is_shadow || tex->is_array ||
+       (tex->sampler_dim != GLSL_SAMPLER_DIM_2D && tex->sampler_dim != GLSL_SAMPLER_DIM_EXTERNAL) ||
+       tex->is_shadow || tex->is_array ||
        coord < 0 || tex->texture_index >= MAX_UNITS ||
        c->slot_of_unit[tex->texture_index] < 0) {
       fail(c, "no %s texture lookups yet", tex->sampler_dim == GLSL_SAMPLER_DIM_CUBE ?
@@ -810,8 +812,18 @@ sgx_compile_fs(const nir_shader *fs, const struct sgx_blend_key *blend, char *wh
    if (blending)
       lower_blend(s, blend);
    {
-      const nir_lower_tex_options tex = { .lower_txp = ~0u };
+      nir_lower_tex_options tex = { .lower_txp = ~0u };
 
+      /* the linear sampler reads R G B A: other orders swizzled back */
+      for (unsigned u = 0; blend && u < 8; u++) {
+         if (!((blend->tex_bgra | blend->tex_x8) >> u & 1))
+            continue;
+         tex.swizzle_result |= 1u << u;
+         tex.swizzles[u][0] = blend->tex_bgra >> u & 1 ? 2 : 0;
+         tex.swizzles[u][1] = 1;
+         tex.swizzles[u][2] = blend->tex_bgra >> u & 1 ? 0 : 2;
+         tex.swizzles[u][3] = blend->tex_x8 >> u & 1 ? PIPE_SWIZZLE_1 : 3;
+      }
       NIR_PASS(_, s, nir_lower_tex, &tex);
    }
    optimize(s);

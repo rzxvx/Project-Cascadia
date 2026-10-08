@@ -20,14 +20,17 @@
 
 struct nir_shader;
 
-/* GL's blending for render target 0, as the shader does it (M14): equations
- * and factors (pipe_blend_func, pipe_blendfactor), the colour mask.  All
- * zero but colormask 0xf: no blending, nothing done. */
+/* What a variant of a fragment shader is compiled for.  GL's blending for
+ * render target 0, as the shader does it (M14): equations and factors
+ * (pipe_blend_func, pipe_blendfactor), the colour mask.  And the texture
+ * units sampled linear (sgx_resource_linear(), M16) from memory in B G R A
+ * order, and with no alpha.  All zero but colormask 0xf: nothing done. */
 struct sgx_blend_key {
    uint8_t enable;
    uint8_t rgb_func, rgb_src, rgb_dst;
    uint8_t alpha_func, alpha_src, alpha_dst;
    uint8_t colormask;
+   uint8_t tex_bgra, tex_x8;
 };
 
 #define SGX_FS_MAX_SAMPLERS 8

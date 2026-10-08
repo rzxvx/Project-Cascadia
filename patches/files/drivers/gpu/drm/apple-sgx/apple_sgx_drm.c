@@ -350,6 +350,29 @@ u32 apple_sgx_bo_va(struct drm_gem_object *obj)
 	return to_sgx_bo(obj)->node.start;
 }
 
+static int sgx_ioctl_gem_info(struct drm_device *drm, void *data, struct drm_file *file)
+{
+	struct drm_apple_sgx_gem_info *args = data;
+	struct drm_gem_object *obj;
+	struct apple_sgx_bo *bo;
+
+	if (args->pad)
+		return -EINVAL;
+	obj = drm_gem_object_lookup(file, args->handle);
+	if (!obj)
+		return -ENOENT;
+	if (obj->funcs != &sgx_gem_funcs) {
+		drm_gem_object_put(obj);
+		return -EINVAL;
+	}
+	bo = to_sgx_bo(obj);
+	args->flags = bo->flags;
+	args->va = bo->node.start;
+	args->size = obj->size;
+	drm_gem_object_put(obj);
+	return 0;
+}
+
 static int sgx_ioctl_gem_mmap_offset(struct drm_device *drm, void *data,
 				     struct drm_file *file)
 {
@@ -402,7 +425,7 @@ static int sgx_ioctl_get_param(struct drm_device *drm, void *data, struct drm_fi
 		return -EINVAL;
 	switch (args->param) {
 	case APPLE_SGX_PARAM_UAPI_VERSION:
-		args->value = 1;
+		args->value = 2;
 		break;
 	case APPLE_SGX_PARAM_CORE_ID:
 		args->value = sgx->core_id;
@@ -903,6 +926,7 @@ static const struct drm_ioctl_desc sgx_ioctls[] = {
 	DRM_IOCTL_DEF_DRV(APPLE_SGX_GEM_MMAP_OFFSET, sgx_ioctl_gem_mmap_offset, DRM_RENDER_ALLOW),
 	DRM_IOCTL_DEF_DRV(APPLE_SGX_GEM_WAIT, sgx_ioctl_gem_wait, DRM_RENDER_ALLOW),
 	DRM_IOCTL_DEF_DRV(APPLE_SGX_SUBMIT, sgx_ioctl_submit, DRM_RENDER_ALLOW),
+	DRM_IOCTL_DEF_DRV(APPLE_SGX_GEM_INFO, sgx_ioctl_gem_info, DRM_RENDER_ALLOW),
 };
 
 DEFINE_DRM_GEM_FOPS(sgx_drm_fops);

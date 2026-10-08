@@ -56,6 +56,7 @@ sgx_screen_destroy(struct pipe_screen *pscreen)
    struct sgx_screen *screen = sgx_screen(pscreen);
 
    sgx_frame_destroy(screen->frame);
+   sgx_device_fini(&screen->dev);
    simple_mtx_destroy(&screen->frame_lock);
    slab_destroy_parent(&screen->transfer_pool);
    FREE(screen);

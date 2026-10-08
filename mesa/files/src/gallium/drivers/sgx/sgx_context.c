@@ -96,6 +96,7 @@ sgx_clear_gpu(struct sgx_context *ctx, struct pipe_surface *surf,
    if (!ret) {
       sgx_fence_reference(&ctx->last, done);
       rt->seq++;
+      rt->gpu_written = true;
    }
    sgx_fence_reference(&done, NULL);
    return !ret;

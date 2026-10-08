@@ -11,15 +11,23 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "util/simple_mtx.h"
 #include "util/u_inlines.h"
+
+struct hash_table_u64;
 
 struct sgx_device {
    int fd;
-   uint32_t core_id, core_rev, num_cores;
+   uint32_t uapi, core_id, core_rev, num_cores;
    uint32_t va_start, va_end;
    uint32_t code_base, code_va_start, code_va_end;
    uint32_t fb_va, fb_width, fb_height, fb_stride;
    uint32_t untiled_next;   /* sgx_bo_create, on kernels that pick tiled addresses */
+
+   /* every buffer object by its handle: a dma-buf of ours imported again
+    * comes back as the same handle, and has to be the same sgx_bo */
+   simple_mtx_t bo_lock;
+   struct hash_table_u64 *bos;
 };
 
 struct sgx_bo {
@@ -28,6 +36,7 @@ struct sgx_bo {
    uint32_t va;      /* its GPU address */
    uint32_t size;
    uint8_t *map;     /* write-combined; NULL until sgx_bo_map() */
+   unsigned refs;    /* sgx_bo_import()s besides the first; under bo_lock */
 };
 
 /* A fence: one syncobj, signalled when the render it was given to is done
@@ -39,11 +48,17 @@ struct sgx_fence {
 };
 
 bool sgx_device_init(struct sgx_device *dev, int fd);
+void sgx_device_fini(struct sgx_device *dev);
 uint64_t sgx_device_param(struct sgx_device *dev, uint32_t param);
 
 /* flags: APPLE_SGX_BO_*; va only with APPLE_SGX_BO_FIXED_VA */
 struct sgx_bo *sgx_bo_create(struct sgx_device *dev, uint32_t size, uint32_t flags,
                              uint32_t va);
+/* a handle on this device (from a dma-buf, say): its buffer object, the
+ * one there is already if the handle has one (another reference to it);
+ * NULL on a kernel without GEM_INFO */
+struct sgx_bo *sgx_bo_import(struct sgx_device *dev, uint32_t handle);
+/* drops a reference: the last one closes the handle */
 void sgx_bo_destroy(struct sgx_bo *bo);
 void *sgx_bo_map(struct sgx_bo *bo);
 /* until no render that listed it is running (timeout_ns < 0: however long
