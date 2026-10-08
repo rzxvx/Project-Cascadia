@@ -42,6 +42,10 @@ CASES = {
     'mov_r2_sa7': ('VMOV', 'mov.f32 r2.x, sa6.yyyy', None),
     'movc_eq': ('VMOV', 'movc.f32 r2.x, r4.xxxx == 0 ? r6.xxxx : r8.xxxx', None),
     'movc_lt': ('VMOV', 'movc.f32 r2.y, pa4.yyyy < 0 ? sa0.yyyy : r8.yyyy', None),
+    'smp_ios': ('SMP', 'smp2d.raw.f16 pa0, pa0, state sa6 drc0', 0xe001048ce0000180),
+    'smp_f32': ('SMP', 'smp2d.f32.f32 r8, r4, state sa12 drc0', None),
+    'smp_bias': ('SMP', 'smp2d.f32.f32 r8, r4, state sa12, r6 drc0 bias', None),
+    'wdf0': ('SPEC', '', 0xf920000000000000),
     'limm_r5': ('LIMM', 'r5 <- #0x3f800000', None),
     'limm_r100': ('LIMM', 'r100 <- #0xdeadbeef', None),
 }

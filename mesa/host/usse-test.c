@@ -49,6 +49,13 @@ main(void)
    P("movc_eq", w);
    usse_fmovc(&w, USSE_TEST_LT0, T(3), PA(5), SA(1), T(9));
    P("movc_lt", w);
+   P("smp_ios", usse_smp2d(USSE_SMP_RAW, USSE_SMP_COORD_F16, PA(0), PA(0), SA(6), USSE_SMP_NONE,
+                           T(0)));
+   P("smp_f32", usse_smp2d(USSE_SMP_F32, USSE_SMP_COORD_F32, T(8), T(4), SA(12), USSE_SMP_NONE,
+                           T(0)));
+   P("smp_bias", usse_smp2d(USSE_SMP_F32, USSE_SMP_COORD_F32, T(8), T(4), SA(12), USSE_SMP_BIAS,
+                            T(6)));
+   P("wdf0", USSE_WDF0);
    P("limm_r5", usse_limm(T(5), 0x3f800000));
    P("limm_r100", usse_limm(T(100), 0xdeadbeef));
    return 0;

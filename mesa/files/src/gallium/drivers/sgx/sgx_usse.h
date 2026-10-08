@@ -75,6 +75,19 @@ bool usse_fmovc(uint64_t *out, enum usse_test test, struct usse_reg dest,
                 struct usse_reg src0, struct usse_reg src1, struct usse_reg src2);
 /* dest = a 32-bit immediate (any bank but special) */
 uint64_t usse_limm(struct usse_reg dest, uint32_t value);
+/* Texture sampling: SMP, then (before the result is read) WDF on the same
+ * data return channel.  The texel lands in dest..: four registers as F32,
+ * two as F16, one raw.  coords is a 64-bit register (F32: x the even
+ * register, y the odd one), state the texture's four state words (in sa,
+ * even), lod the bias or level for those modes (a register of its own). */
+enum usse_smp_out { USSE_SMP_RAW = 0, USSE_SMP_F16 = 2, USSE_SMP_F32 = 3 };
+enum usse_smp_coord { USSE_SMP_COORD_F32 = 0, USSE_SMP_COORD_F16 = 1 };
+enum usse_smp_lod { USSE_SMP_NONE, USSE_SMP_BIAS, USSE_SMP_LOD };
+uint64_t usse_smp2d(enum usse_smp_out out, enum usse_smp_coord coord, struct usse_reg dest,
+                    struct usse_reg coords, struct usse_reg state, enum usse_smp_lod mode,
+                    struct usse_reg lod);
+#define USSE_WDF0             0xf920000000000000ull   /* wait for data return channel 0 */
+
 /* o<dest> = four F32 values packed to 8 bits each, scaled from [0, 1]:
  * src, src + 1 (a pair) and src + 2, src + 3; src even */
 uint64_t usse_pack_unorm8(unsigned dest_o, struct usse_reg src);

@@ -2,29 +2,29 @@
 
 A Gallium driver for the iPad mini's GPU, built into Mesa 26.1.8 for the
 device. The plan and the state of it: [docs/research/p105-mesa.md](../docs/research/p105-mesa.md)
-(M12 on); where the work stopped last, in one page:
-[docs/research/p105-mesa-handoff.md](../docs/research/p105-mesa-handoff.md). It runs OpenGL ES 2.0 programs: clears on the GPU (`sgx-gl
+(M12 on). It runs OpenGL ES 2.0 programs: clears on the GPU (`sgx-gl
 glclear 100`: every pixel right, ~60 ms a clear with its read-back), and
-draws the M13a way -- the vertex shader on the CPU (Gallium's draw module),
-the triangles on the GPU through the template frame, the pixels in a
-colour interpolated between the vertices. So a fragment shader whose colour
-is a varying, constants or uniforms is drawn right and others in grey
-(`sgx-gl gltri`); there is no shader compiler for the GPU yet. Only
-screen-sized render targets are drawn into, without depth, blending or
-textures. It needs a kernel from 2026-10-04 or later (the render node's
-workarounds for the microkernel, M12 in the doc).
+draws with the vertex shader on the CPU (Gallium's draw module) and the
+triangles and their pixels on the GPU. Fragment shaders are compiled to
+the GPU's own code (M13c: float arithmetic, varyings, uniforms,
+comparisons, unrolled loops and flattened ifs; `sgx-gl glfs`); one the
+compiler does not take yet is drawn in a colour worked out per vertex
+(M13a). Only screen-sized render targets are drawn into, without depth or
+blending. It needs a kernel from 2026-10-04 or later (the render node's
+workarounds for the microkernel, M12; buffers out of the BIF's tiled
+window, M13a).
 
 | path | what |
 |---|---|
 | `files/` | new files, copied verbatim into the Mesa tree: the driver (`src/gallium/drivers/sgx`), its winsys (`src/gallium/winsys/sgx/drm`), the render node's interface (`include/drm-uapi/apple_sgx_drm.h`, a copy of the kernel's) |
 | `mesa.patch` | the lines that register the driver with Mesa (meson option, subdirectories, DRM driver descriptor, pipe loader, dril) |
 | `fetch.sh` | Mesa at the pinned tag into `build/mesa/src`, on the host (git under emulation is far too slow) |
-| `build.sh` | put the driver in, configure, build, install, build `glclear` and `gltri` — inside the `cascadia-mesa` image |
+| `build.sh` | put the driver in, configure, build, install, build `glclear`, `gltri` and `glfs` — inside the `cascadia-mesa` image |
 | `Dockerfile` | that image: Alpine 3.24 armv7 with Mesa's build tools |
 | `install.py` | onto the iPad, over ssh or into the NFS root, as `tools/sgx/mkpack.py` does it |
 | `sgx-gl` | on the device: run a program with this Mesa instead of the system's |
 | `frame-bisect` | on the device: a clear through each `SGX_FRAME` variant, to find a wrong piece of the template frame |
-| `host/` | the driver on a Linux PC through drm-shim: `build.sh [arm]`, `run`, a fake template frame, drm-shim's patch for armhf glibc |
+| `host/` | the driver on a Linux PC through drm-shim: `build.sh [arm]`, `run`, a fake template frame, drm-shim's patch for armhf glibc; `usse-test.py`, the USSE encoder against the disassembler |
 
 ## Building and installing
 

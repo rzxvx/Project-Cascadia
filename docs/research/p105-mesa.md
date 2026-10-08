@@ -7,8 +7,7 @@ written by hand, one render target, the screen. This file is the plan for
 the rest -- a Mesa driver, so that OpenGL ES 2.0 and then desktop OpenGL 2.1
 programs run on the GPU -- and the record of each step as it is taken.
 
-The milestones carry on the numbering of `p105-gpu.md`. Where the work
-stands now, in one page for picking it up: [p105-mesa-handoff.md](p105-mesa-handoff.md).
+The milestones carry on the numbering of `p105-gpu.md`.
 
 ## Where it starts
 
@@ -745,8 +744,8 @@ saves what it read back.
 Second run: byte for byte the same, with iOS's pixel side and with the
 pack's (`packpixel`) -- so what is wrong is most likely before the pixel
 program: the varyings as the pack's vertex program and state words 16, 19
-and 20 hand them to the TA, or the vertices. Where this stands, the numbers
-and the next experiments: [p105-mesa-handoff.md](p105-mesa-handoff.md).
+and 20 hand them to the TA, or the vertices. (It was neither: see
+"Solved" below.)
 
 **Solved (2026-10-04, third session): nothing was wrong with the draw.**
 The two read-backs as images (`gltri.ppm`, `gltri-pack.ppm`) were the whole
