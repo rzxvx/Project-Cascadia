@@ -117,7 +117,17 @@ struct sgx_pixel_program {
 struct sgx_frame_state {
    uint8_t depth_func;
    bool depth_write;
+   /* the TA's viewport (M18): scale and translate, x y z, as gallium's;
+    * else the target's whole, depth 0..1 (the draw module's vertices) */
+   bool viewport;
+   float scale[3], translate[3];
+   uint8_t cull;            /* SGX_CULL_* */
 };
+/* the TA's culling (state word 18, bits 1:0): the triangles clockwise or
+ * anticlockwise in the target, row 0 at the top (M18) */
+#define SGX_CULL_NONE 0
+#define SGX_CULL_CW   1
+#define SGX_CULL_CCW  2
 
 int sgx_frame_draw(struct sgx_frame *f, struct sgx_resource *rt,
                    const struct sgx_frame_layout *l, const float *verts, unsigned nverts,

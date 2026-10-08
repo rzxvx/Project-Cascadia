@@ -691,6 +691,21 @@ submit(struct sgx_context *ctx)
 
    if (!ctx->nverts)
       return;
+   /* the draw module's vertices come in the target's whole viewport; a
+    * vertex shader's need the draw's */
+   if (vs) {
+      const struct pipe_rasterizer_state *r = ctx->rast;
+
+      st.viewport = true;
+      memcpy(st.scale, ctx->viewport.scale, sizeof(st.scale));
+      memcpy(st.translate, ctx->viewport.translate, sizeof(st.translate));
+      /* gallium's anticlockwise is the target's, row 0 at the top: the
+       * TA's; the back faces are what the front ones are not */
+      if (r->cull_face == PIPE_FACE_BACK)
+         st.cull = r->front_ccw ? SGX_CULL_CW : SGX_CULL_CCW;
+      else if (r->cull_face == PIPE_FACE_FRONT)
+         st.cull = r->front_ccw ? SGX_CULL_CCW : SGX_CULL_CW;
+   }
    if (ctx->debug_draw && !vs) {
       mesa_logi("sgx: %u triangles; the first:", ctx->nverts / 3);
       for (unsigned i = 0; i < MIN2(ctx->nverts, 3); i++) {
@@ -912,7 +927,6 @@ static bool
 gpu_vs_can_draw(struct sgx_context *ctx, const struct pipe_draw_info *info)
 {
    const struct pipe_rasterizer_state *r = ctx->rast;
-   const struct pipe_viewport_state *vp = &ctx->viewport;
    static int off = -1;
 
    if (off < 0)
@@ -922,15 +936,11 @@ gpu_vs_can_draw(struct sgx_context *ctx, const struct pipe_draw_info *info)
    if (info->mode != MESA_PRIM_TRIANGLES && info->mode != MESA_PRIM_TRIANGLE_STRIP &&
        info->mode != MESA_PRIM_TRIANGLE_FAN)
       return false;
-   if (info->primitive_restart || r->cull_face != PIPE_FACE_NONE ||
+   if (info->primitive_restart || r->cull_face == PIPE_FACE_FRONT_AND_BACK ||
        r->fill_front != PIPE_POLYGON_MODE_FILL || r->fill_back != PIPE_POLYGON_MODE_FILL ||
        r->clip_plane_enable || r->flatshade)
       return false;
-   /* the TA's viewport is the target's for now: GL's whole framebuffer,
-    * the right way up, depth 0..1 */
-   return vp->scale[0] == ctx->fb.width / 2.0f && vp->translate[0] == ctx->fb.width / 2.0f &&
-          vp->scale[1] == ctx->fb.height / 2.0f && vp->translate[1] == ctx->fb.height / 2.0f &&
-          vp->scale[2] == 0.5f && vp->translate[2] == 0.5f;
+   return true;
 }
 
 /* One draw with the vertex shader on the GPU: its vertices' attributes

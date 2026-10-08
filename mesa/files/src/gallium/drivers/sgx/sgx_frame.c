@@ -1101,9 +1101,10 @@ rt_set(struct sgx_frame *f, unsigned w, unsigned h)
 }
 
 /* The state words that hold the target's size: the tiles the TA bins into
- * (words 7 and 8: the last tile across and down) and the viewport (9..12:
- * half the width twice, half the height twice -- iOS's captures of other
- * sizes, logs/ios/size) */
+ * (words 7 and 8: the last tile across and down) and the viewport (9..14:
+ * translate and scale for x, y and z -- half the width twice, half the
+ * height twice for the whole target, as iOS's captures of other sizes have
+ * them, logs/ios/size; the order from glcull, M18) */
 static void
 state_size(uint32_t *full, unsigned w, unsigned h)
 {
@@ -1631,6 +1632,32 @@ sgx_frame_place(struct sgx_frame *f, unsigned *cursor, const struct sgx_frame_la
    return true;
 }
 
+/* SGX_STATE=word:mask[,word:mask...] flips bits of every draw's state
+ * words, to find what they do */
+static void
+state_xor(uint32_t *full)
+{
+   static uint32_t mask[21];
+   static int parsed;
+
+   if (!parsed) {
+      const char *s = getenv("SGX_STATE");
+
+      parsed = 1;
+      while (s && *s) {
+         char *e;
+         unsigned w = strtoul(s, &e, 0);
+
+         if (*e != ':' || w >= 21)
+            break;
+         mask[w] ^= strtoul(e + 1, &e, 0);
+         s = *e == ',' ? e + 1 : e;
+      }
+   }
+   for (unsigned i = 0; i < 21; i++)
+      full[i] ^= mask[i];
+}
+
 /* A draw's whole state for our vertex side, its secondary attributes'
  * loader and words written into its slot at base */
 static int
@@ -1647,6 +1674,13 @@ draw_state(struct sgx_frame *f, const struct sgx_frame_draw *d, uint32_t base,
     * is not written */
    full[1] = (full[1] & ~(7u << 22 | 1u << 20)) | (uint32_t)(d->st.depth_func & 7) << 22 |
              (d->st.depth_write ? 0 : 1u << 20);
+   full[18] = (full[18] & ~3u) | d->st.cull;
+   /* the viewport: words 9..14, translate and scale for x, y and z */
+   if (d->st.viewport)
+      for (unsigned i = 0; i < 3; i++) {
+         memcpy(&full[9 + 2 * i], &d->st.translate[i], 4);
+         memcpy(&full[10 + 2 * i], &d->st.scale[i], 4);
+      }
    if (pix) {
       unsigned fours = DIV_ROUND_UP(4 * pix->ninputs + pix->ntemps, 4);
       const uint32_t loader[12] = {
@@ -1674,6 +1708,7 @@ draw_state(struct sgx_frame *f, const struct sgx_frame_draw *d, uint32_t base,
    for (unsigned i = 0; i < l->nvaryings; i++)
       full[19] |= 7u << 3 * i;
    full[20] = ~l->f32 & ((1u << l->nvaryings) - 1);
+   state_xor(full);
    return 0;
 }
 

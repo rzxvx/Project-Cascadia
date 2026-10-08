@@ -330,9 +330,12 @@ sgx_bind_rs_state(struct pipe_context *pctx, void *state)
 {
    struct sgx_context *ctx = sgx_context(pctx);
 
-   ctx->rast = state;
+   /* the draw module first: its flush binds the state it had again (its
+    * wide point and line stages restore it), and that must not be the
+    * one the GPU's vertex side then goes by */
    if (ctx->draw && state)
       draw_set_rasterizer_state(ctx->draw, state, state);
+   ctx->rast = state;
 }
 
 static void

@@ -4,12 +4,12 @@ A Gallium driver for the iPad mini's GPU, built into Mesa 26.1.8 for the
 device. The plan and the state of it: [docs/research/p105-mesa.md](../docs/research/p105-mesa.md)
 (M12 on). It runs OpenGL ES 2.0 programs: clears on the GPU (`sgx-gl
 glclear 100`: every pixel right, ~60 ms a clear with its read-back), and
-draws with the vertex shader on the CPU (Gallium's draw module) and the
-triangles and their pixels on the GPU. Fragment shaders are compiled to
-the GPU's own code (M13c: float arithmetic, varyings, uniforms,
-comparisons, unrolled loops and flattened ifs; `sgx-gl glfs`); one the
-compiler does not take yet is drawn in a colour worked out per vertex
-(M13a). Textures, blending and the depth test work (M14); render targets
+draws on the GPU: vertex shaders (M18: with viewports and culling; points,
+lines, flat shading and clip planes still go through Gallium's draw module
+on the CPU) and fragment shaders are compiled to the GPU's own code (M13c:
+float arithmetic, varyings, uniforms, comparisons, unrolled loops and
+flattened ifs; `sgx-gl glfs`); a fragment shader the compiler does not
+take yet is drawn in a colour worked out per vertex (M13a). Textures, blending and the depth test work (M14); render targets
 are any size from 1x1 to 4096x4096, the render target data the kext would
 compute for each made by the driver (M10, `sgx-gl glsize`). On the screen
 through KMS and GBM on `/dev/dri/card0` (M16: `sgx-gl glkms`, a kernel from
@@ -61,7 +61,10 @@ SGX_DEBUG_DRAW=1 sgx-gl gltri    # the triangles each draw hands the GPU
 SGX_DRAW_LAYOUT=8,3,f32 sgx-gl gltri   # the vertex side with 8 varyings, the colour
                                  # the 4th, F32 (the rest fillers; docs, M13b)
 sgx-gl gltri --ppm /tmp/x.ppm    # the last read-back as a picture: look at it
-sgx-gl glfs                      # the fragment compiler's 23 cases (M13c)
+sgx-gl glfs                      # the fragment compiler's 25 cases (M13c)
+sgx-gl glcull                    # culling, viewports, depth ranges; texture and pbuffer (M18)
+SGX_CPU_VS=1 sgx-gl glcull       # the same with the vertex shaders on the CPU
+SGX_STATE=18:1 sgx-gl glcull     # xor bits into every draw's state words (finding them)
 SGX_DEBUG_SHADER=1 sgx-gl glfs mad   # a compiled program's words (tools/iosgpu/usse-dis.py words)
 SGX_NOCOMPILE=1 sgx-gl gltri     # without the compiler: M13a's per-vertex colour
 sgx-gl frame-bisect              # one clear through every SGX_FRAME variant (docs, M12)

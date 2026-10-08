@@ -233,7 +233,8 @@ platform (`-Dplatforms=`): EGL on Wayland found no configs. With `wayland`
 and weston-simple-egl draw in weston's windows, three processes on the GPU
 at once: the clients render into their buffers, weston samples them as
 dma-bufs (linear) and its output goes to the screen through KMS. es2gears
-takes 64% of the CPU -- the vertex shaders are still the draw module's.
+takes 64% of the CPU -- the vertex shaders are still the draw module's
+(M18 moves them to the GPU).
 
 ## M10: render targets without iOS's code
 
@@ -1025,8 +1026,12 @@ Two lessons on the way. The first run kept the colour's values only until
 varying `s * t` is not interpolated as `s * t` -- varyings are affine over
 each triangle (glfs's are now).
 
-Not yet: textures (M14), discard, gl_FragCoord and gl_FrontFacing, real
-control flow, F16 for mediump, two lanes an instruction, constants from
+`gl_FragCoord` (2026-10-08) is one more iterate: the PDS iterates the
+pixel's position like a varying, source 13 in the control word's bits
+15:12 (`0x0fc0d00f`), the fragment shader reads it as an input like any
+other (glfs 25 of 25 with two cases on it).
+
+Not yet: textures (M14), discard, gl_FrontFacing, real control flow, F16 for mediump, two lanes an instruction, constants from
 the hardware's table, more than 128 uniform words (one DMA so far; glfs
 loads at most 9 words, the pack's state program 21 the same way).
 `SGX_NOCOMPILE=1` draws the M13a way; `SGX_DEBUG_SHADER=1` prints each
@@ -1258,6 +1263,87 @@ while weston runs (and it crashes instead of failing: to fix). That needs the
 parameter buffer to become the kernel's, shared by everyone (the microkernel
 keeps its state, M12), and the rest of the frame made by Mesa at addresses
 the kernel picks.
+
+## M18: vertex shaders on the GPU
+
+Until now the draw module ran every vertex shader on the CPU (M12) and
+handed the TA clip coordinates through the pack's vertex program. Now the
+compiler (`translate()`, shared by both stages) makes USSE code of the
+vertex shader too, and the TA runs it.
+
+**Step 1 (2026-10-08): the shader, its fetch, its uniforms.**
+
+- Registers: attribute n in pa4n..pa4n+3, as the vertex fetch puts it
+  (one F32 vec4 each: the CPU unpacks any vertex format with
+  `util_format_unpack_rgba`), the temporaries in pa after them, the
+  uniforms in sa from sa0. Outputs from o0: the position, then the
+  varyings in the order the fragment shader iterates them; then
+  `EMIT_VERTEX` (`0xfb275000a0200000`). A vertex shader is compiled once
+  for each list of varyings a fragment shader wants.
+- The vertex fetch (PDS, in the frame's code heap): a DMA row an attribute
+  (`{vb + 16 i, 4 i << 8 | 3, i ? 0 : stride, 0}`), the index fetch, a
+  DOUTU of the shader. The VDM word after its address is `(1 + varyings) << 25 |
+  0x01800000 | regs << 7 | (attributes + 1)`, regs = 4 x attributes +
+  temporaries rounded up to four. Bits 31:25 count the vertex's *output*
+  vec4s, not its attributes -- with the attribute count there the
+  varyings came from the wrong words of the vertex.
+- The uniforms: a loader per draw before the state (`0x1000e100 |
+  ceil(words / 4)` after its address in the VDM stream), the words in sa.
+  A uniform's offset in NIR becomes a float in `int_to_float` unless it is
+  folded into the base first (`fold_uniform_offset`; a `mat2` turned the
+  triangle by garbage without it).
+- Indices: strips and fans are made lists on the CPU (a strip's odd
+  triangles with their first two vertices swapped), the indices go into
+  the frame (up to 65536 vertices a draw), the primitive word `0x81c00000
+  | count`.
+
+Every test right on the GPU's vertex side (gltri 11, glfs 25, gltex 14,
+glblend 14, gldepth 9, glsize 15, glseam, glpersp); glspeed **22 975
+draws a second against 9 545** with the draw module (`SGX_CPU_VS=1`
+forces it), 44 000 with 400 draws a frame.
+
+**Step 2 (2026-10-09): the viewport and culling.** `tools/sgx/gl/glcull.c`:
+a triangle anticlockwise and one clockwise with culling off, back, front,
+front clockwise; the windings swapped between the sides; a quad in a
+viewport off the origin; two depth ranges -- into a texture, then into a
+pbuffer (the window system's kind of buffer: gallium flips y with a
+negative scale). The draw module's way is the reference: 17 of 17.
+
+- The viewport: state words 9..14 are **translate, then scale**, for x,
+  y and z. The whole target's (half the width twice, half the height
+  twice) cannot tell the order; the off-origin viewport with the words
+  the other way round put the quad's left and bottom edges at -192 and
+  -128 (clipped), the pbuffer's flipped y put everything above row 0.
+  Depth: 0.5..1 puts z 0 behind a clear to 0.5, 0..0.5 in front.
+- Culling: state word 18 (`0x00088000` in the pack's state), **bits 1:0**:
+  1 drops the triangles clockwise in the target as the TA sees it (row 0
+  at the top), 2 the anticlockwise ones -- gallium's sense of the winding,
+  so `cull_face` and `front_ccw` map straight to it, flipped targets
+  included. Found by flipping state bits (`SGX_STATE=word:mask[,...]`
+  xors every draw's state words) and drawing one triangle a render, four
+  places, both windings, three rotations of its vertices. On the way:
+  word 16's bits 3..6 each clip the right half away whatever the winding
+  (clip planes, presumably), bit 9 gave the left triangle the right one's
+  colour, bit 13 timed the render out; word 18's bit 16 drops
+  everything.
+- A bug of the driver's under it: binding a rasterizer state calls
+  `draw_set_rasterizer_state`, whose flush has the draw module's wide
+  point stage bind the *previous* state again (it restores its own
+  change). The driver kept that one, so the GPU's vertex side went by the
+  last draw's culling after every draw module draw -- the bind is now
+  recorded after the draw module's.
+
+glcull 17 of 17 with nothing left to the draw module; the rest of the
+tests unchanged; glspeed 23 209 draws a second. kmscube's vertices are the
+GPU's now: its last frame is the draw module's to within 1 in a channel,
+180 frames a second either way (36 vertices a frame: the copy to the
+screen is the limit). es2gears under weston takes **19% of the CPU
+against 55%**, the gears lit and culled as before; weston's own drawing
+(a flipped target) goes the same way.
+
+The draw module still does what the GPU's vertex side does not: points
+and lines, flat shading, polygon modes other than fill, clip planes,
+primitive restart, culling both faces.
 
 ## Testing, without and with the device
 
