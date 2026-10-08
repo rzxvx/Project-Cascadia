@@ -538,18 +538,26 @@ intrinsic(struct comp *c, nir_intrinsic_instr *in)
    unsigned at, id = in->def.index * 4;
 
    switch (in->intrinsic) {
+   case nir_intrinsic_load_frag_coord:
    case nir_intrinsic_load_input: {
-      unsigned slot;
+      unsigned slot, comp = 0;
 
-      offset = nir_get_io_offset_src(in);
-      if (!nir_src_is_const(*offset)) {
-         fail(c, "an indirect varying");
-         return;
-      }
-      slot = nir_intrinsic_io_semantics(in).location + nir_src_as_uint(*offset);
-      if (slot < VARYING_SLOT_VAR0 && (slot < VARYING_SLOT_COL0 || slot > VARYING_SLOT_TEX7)) {
-         fail(c, "input %s", gl_varying_slot_name_for_stage(slot, MESA_SHADER_FRAGMENT));
-         return;
+      if (in->intrinsic == nir_intrinsic_load_frag_coord) {
+         /* the PDS iterates the pixel's position like a varying */
+         slot = VARYING_SLOT_POS;
+      } else {
+         offset = nir_get_io_offset_src(in);
+         if (!nir_src_is_const(*offset)) {
+            fail(c, "an indirect varying");
+            return;
+         }
+         slot = nir_intrinsic_io_semantics(in).location + nir_src_as_uint(*offset);
+         comp = nir_intrinsic_component(in);
+         if (slot < VARYING_SLOT_VAR0 &&
+             (slot < VARYING_SLOT_COL0 || slot > VARYING_SLOT_TEX7)) {
+            fail(c, "input %s", gl_varying_slot_name_for_stage(slot, MESA_SHADER_FRAGMENT));
+            return;
+         }
       }
       if (c->input_of_slot[slot] < 0) {
          if (c->ninputs == SGX_FRAME_MAX_VARYINGS) {
@@ -559,7 +567,7 @@ intrinsic(struct comp *c, nir_intrinsic_instr *in)
          c->fs->input_slot[c->ninputs] = slot;
          c->input_of_slot[slot] = c->ninputs++;
       }
-      at = 4 * c->input_of_slot[slot] + nir_intrinsic_component(in);
+      at = 4 * c->input_of_slot[slot] + comp;
       for (unsigned i = 0; i < in->def.num_components; i++)
          c->loc[id + i] = usse_reg(USSE_PA, at + i);
       return;
@@ -917,6 +925,9 @@ sgx_compile_fs(const nir_shader *fs, const struct sgx_blend_key *blend, char *wh
          c.fs->prog.code[i] &= ~(1ull << 55);
    c.fs->prog.ntemps = c.top;
    c.fs->prog.ninputs = c.ninputs;
+   for (unsigned i = 0; i < c.ninputs; i++)
+      c.fs->prog.iter_src[i] = c.fs->input_slot[i] == VARYING_SLOT_POS ? SGX_ITERATE_POSITION :
+                               c.fs->prog.nvaryings++;
    c.fs->nuniforms = c.nuniforms;
    c.fs->nsamplers = c.nsamplers;
    c.fs->sampler_sa = c.sampler_sa;

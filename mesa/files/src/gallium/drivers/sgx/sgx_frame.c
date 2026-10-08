@@ -1253,7 +1253,8 @@ upload(struct sgx_frame *f, struct sgx_pixel_program *p)
    pds[n++] = p->ninputs ? ITER_TEMPS : 2;
    pds[n++] = 0;
    for (unsigned i = 0; i < p->ninputs; i++)
-      pds[n++] = (i == p->ninputs - 1 ? ITERATE_F32_VEC4 : ITERATE_F32_VEC4_MORE) | i << 12;
+      pds[n++] = (i == p->ninputs - 1 ? ITERATE_F32_VEC4 : ITERATE_F32_VEC4_MORE) |
+                 p->iter_src[i] << 12;
    while (n % 4)
       pds[n++] = 0;
    data = n;
@@ -1295,7 +1296,7 @@ sgx_frame_draw(struct sgx_frame *f, struct sgx_resource *rt, const struct sgx_fr
    int ret;
 
    if (l->nvaryings > SGX_FRAME_MAX_VARYINGS ||
-       (prog ? l->nvaryings != prog->ninputs : l->colour >= l->nvaryings))
+       (prog ? l->nvaryings != prog->nvaryings : l->colour >= l->nvaryings))
       return -EINVAL;
    if (prog)
       return render(f, rt, l, verts, nverts, true, prog, sa, handles, nhandles, st, done);
@@ -1618,7 +1619,7 @@ sgx_frame_render(struct sgx_frame *f, struct sgx_resource *rt,
       unsigned first, stride = sgx_frame_vertex_floats(&d->l) * sizeof(float);
 
       if (!d->nverts || d->nverts % 3 || d->l.nvaryings > SGX_FRAME_MAX_VARYINGS ||
-          (d->prog && d->l.nvaryings != d->prog->ninputs))
+          (d->prog && d->l.nvaryings != d->prog->nvaryings))
          return -EINVAL;
       if (!sgx_frame_place(f, &cursor, &d->l, d->nverts, &first))
          return -ENOSPC;

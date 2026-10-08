@@ -430,10 +430,11 @@ update_vertex_info(struct sgx_context *ctx)
       const struct sgx_fs *fs = ctx->draw_fs;
 
       for (unsigned i = 0; i < fs->prog.ninputs; i++)
-         emit_varying(ctx, vinfo, fs->input_slot[i]);
+         if (fs->input_slot[i] != VARYING_SLOT_POS)     /* gl_FragCoord: iterated, not sent */
+            emit_varying(ctx, vinfo, fs->input_slot[i]);
       draw_compute_vertex_size(vinfo);
-      ctx->layout.nvaryings = fs->prog.ninputs;
-      ctx->layout.f32 = (1u << fs->prog.ninputs) - 1;
+      ctx->layout.nvaryings = fs->prog.nvaryings;
+      ctx->layout.f32 = (1u << fs->prog.nvaryings) - 1;
       ctx->layout.colour = 0;
       return;
    }

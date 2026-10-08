@@ -49,6 +49,10 @@ static float smooth_(float a, float b, float x)
 }
 
 REF(r_varying) { SET(v[0], v[1], v[2], v[3]); }
+/* gl_FragCoord: the pixel's centre in window coordinates, depth 0.5 (z 0
+ * through the viewport), 1 / w = 1 */
+REF(r_fragcoord) { SET(v[0], v[1], 0.5f, 0.5f); }
+REF(r_fragcoord_centre) { SET(0.5f, 0.5f, 0.0f, 1.0f); }
 REF(r_second) { SET(w[2], w[3] * 2, v[0] * 0.5f, 1); }
 REF(r_add) { for (int i = 0; i < 4; i++) c[i] = v[i] + w[i] * 0.25f; }
 REF(r_mul) { SET(v[0] * v[1], v[1] * v[0], v[2] * v[3], v[3] * v[2]); }
@@ -88,6 +92,8 @@ static const struct test {
 	int tol;        /* in 8-bit steps */
 } tests[] = {
 	{ "varying", "c = v;", r_varying, 1 },
+	{ "fragcoord", "c = vec4(gl_FragCoord.x / 768.0, gl_FragCoord.y / 1024.0, gl_FragCoord.z, gl_FragCoord.w * 0.5);", r_fragcoord, 1 },
+	{ "fragcoord_centre", "c = vec4(fract(gl_FragCoord.xy), 0.0, 1.0);", r_fragcoord_centre, 1 },
 	{ "second", "c = vec4(w.z, w.w * 2.0, v.x * 0.5, 1.0);", r_second, 1 },
 	{ "add", "c = v + w * 0.25;", r_add, 1 },
 	{ "mul", "c = v * v.yxwz;", r_mul, 1 },

@@ -67,6 +67,10 @@ int sgx_frame_clear(struct sgx_frame *f, struct sgx_resource *rt, const float rg
  * the vertices and packed to 8 bits a channel, the way iOS's GL driver
  * colours gl_FragColor = v (the corpus's v00_vec4 and v07_highp). */
 #define SGX_FRAME_MAX_VARYINGS 8
+/* the iterate source of the pixel's position, window coordinates in F32
+ * (iOS's gl_FragCoord: corpus v08, control word 0x0fc0d00f) */
+#define SGX_ITERATE_POSITION 13
+
 struct sgx_frame_layout {
    unsigned nvaryings;
    unsigned f32;
@@ -90,6 +94,10 @@ struct sgx_pixel_program {
    unsigned ncode;
    unsigned ntemps;
    unsigned ninputs;
+   /* what the PDS iterates for each input: varying n of the layout, or
+    * SGX_ITERATE_POSITION (gl_FragCoord); nvaryings of the layout's */
+   uint8_t iter_src[SGX_FRAME_MAX_VARYINGS];
+   unsigned nvaryings;
    unsigned nsa;
    uint32_t code_va, pds_va;
    unsigned pds_rows;
