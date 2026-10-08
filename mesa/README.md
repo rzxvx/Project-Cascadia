@@ -9,8 +9,9 @@ triangles and their pixels on the GPU. Fragment shaders are compiled to
 the GPU's own code (M13c: float arithmetic, varyings, uniforms,
 comparisons, unrolled loops and flattened ifs; `sgx-gl glfs`); one the
 compiler does not take yet is drawn in a colour worked out per vertex
-(M13a). Only screen-sized render targets are drawn into, without depth or
-blending. It needs a kernel from 2026-10-04 or later (the render node's
+(M13a). Textures, blending and the depth test work (M14); render targets
+are any size from 1x1 to 4096x4096, the render target data the kext would
+compute for each made by the driver (M10, `sgx-gl glsize`). It needs a kernel from 2026-10-04 or later (the render node's
 workarounds for the microkernel, M12; buffers out of the BIF's tiled
 window, M13a).
 

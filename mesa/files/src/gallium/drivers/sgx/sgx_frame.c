@@ -27,6 +27,13 @@
  * PDS block +0x130): both are pointed at the render target before each
  * render.
  *
+ * Render targets of any size (M10): the render target data -- what the
+ * kext computes for a size, sgx_rt.c -- are ours, one set for each size a
+ * render goes to (rt_set()), and the words that hold the size are written
+ * for each render: the TA command's, the state's tile bounds and viewport,
+ * the stream end's tiles.  The pack's own set, for the screen's size, is
+ * left unused (SGX_FRAME=packrt takes it).
+ *
  * SGX_FRAME swaps pieces for the pack's, or moves them, to find on the
  * device which one is wrong when a clear is (sgx_frame.h).
  */
@@ -46,6 +53,7 @@
 
 #include "sgx_device.h"
 #include "sgx_resource.h"
+#include "sgx_rt.h"
 
 /* the EXT window, as sgx2d uses it */
 #define EXT_TEX_END     0x280000
@@ -104,6 +112,17 @@
 
 /* the GL window's 3D PDS block, where frame.py puts it */
 #define PDS_DEFAULT     0x98956000u
+
+/* The render target data for each size a render goes to (M10, sgx_rt.c):
+ * a buffer each, in a slot of the TA's heap -- the state buffer has to be
+ * within 256 MiB above its base, and the kernel picks addresses far above
+ * -- clear of the pack's windows; the least recently used is dropped when
+ * the slots run out.  4 MiB holds a 4096 x 4096 target's. */
+#define RT_SLOT_VA      0x89000000u
+#define RT_SLOT_SIZE    (4u << 20)
+#define MAX_RT_SETS     8
+/* the pack's 3D register block, copied for each size */
+#define BLOCK_SIZE      0x1000
 
 enum { T_FULL, T_FULLPROG, T_DELTA, T_DELTAPROG, T_FETCH, T_TEX, T_NUM };
 static const char *tmpl_names[T_NUM] = {
@@ -222,6 +241,13 @@ struct sgx_eot {
    uint32_t va, w, h, stride;   /* the render target it writes */
 };
 
+struct rt_set {
+   struct sgx_rt rt;
+   struct sgx_bo *bo;           /* the buffers, then the 3D block */
+   uint32_t va[SGX_RT_NBUF], blk_va;
+   uint64_t used;
+};
+
 struct sgx_frame {
    struct sgx_device *dev;
    struct sgx_bo *bo[MAX_PACK_BOS];
@@ -234,6 +260,9 @@ struct sgx_frame {
    uint32_t fetch_tag, fetch_word;
    uint32_t tail[8];
    unsigned ntail;
+   uint32_t term;               /* the tiles' bounds in the stream's terminate PDS data */
+   struct rt_set rts[MAX_RT_SETS];
+   uint64_t rt_clock;
    uint8_t *tmpl;
    int toff[T_NUM], tsize[T_NUM];
    uint64_t code_base_expected;
@@ -267,6 +296,7 @@ sgx_frame_options(void)
       { "screen", SGX_FRAME_SCREEN }, { "codebo", SGX_FRAME_CODEBO },
       { "sop2", SGX_FRAME_SOP2 }, { "align", SGX_FRAME_ALIGN },
       { "packpixel", SGX_FRAME_PACKPIX }, { "packvertex", SGX_FRAME_PACKVTX },
+      { "packrt", SGX_FRAME_PACKRT },
    };
    static int opts = -1;
    const char *env = getenv("SGX_FRAME");
@@ -291,8 +321,6 @@ sgx_frame_options(void)
    return o;
 }
 
-static bool set_depth_clear(struct sgx_frame *f, const uint32_t *cmd, float depth);
-
 static uint32_t
 p27(uint32_t a)                 /* a PDS data pointer */
 {
@@ -309,6 +337,15 @@ static uint32_t
 doutu(struct sgx_frame *f, uint32_t va)  /* USE code base 3 */
 {
    return ((va - f->dev->code_base) / 8) << 4 | 3;
+}
+
+/* the stream's terminate PDS program (the tail's tag 6 word, in the
+ * pack's buffers) holds the last tile across (31:16) and down (15:0) in
+ * its data's +0x10 */
+static uint32_t
+term_tiles(unsigned w, unsigned h)
+{
+   return (DIV_ROUND_UP(w, 32) - 1) << 16 | (DIV_ROUND_UP(h, 32) - 1);
 }
 
 static uint8_t *
@@ -661,6 +698,18 @@ sgx_frame_create(struct sgx_device *dev, const char *dir)
    f->timeouts = sgx_device_param(dev, APPLE_SGX_PARAM_RENDERS_TIMED_OUT);
    f->nhandles = f->nbo;
 
+   /* where the stream's end holds the pack's tiles, for other sizes' */
+   for (unsigned i = 0; i < f->ntail; i++) {
+      uint32_t va = (f->tail[i] & 0x0fffffff) << 4;
+      uint32_t *w = (uint32_t *)cpu_at(f, va + 0x10, 4, NULL);
+
+      if (f->tail[i] >> 28 == 6 && w && *w == term_tiles(f->w, f->h))
+         f->term = va + 0x10;
+   }
+   if (!f->term)
+      mesa_logw("sgx: the pack's stream end has not got its tiles where they were "
+                "found; renders at its size only");
+
    /* where our programs go: the free start of the pack's code page, or a
     * buffer of their own */
    page = dev->code_base + PAGE_OFFSET;
@@ -705,6 +754,15 @@ fail:
    return NULL;
 }
 
+static void
+drop_rt_sets(struct sgx_frame *f)
+{
+   for (unsigned i = 0; i < MAX_RT_SETS; i++) {
+      sgx_bo_destroy(f->rts[i].bo);
+      f->rts[i].bo = NULL;
+   }
+}
+
 void
 sgx_frame_finish(struct sgx_frame *f)
 {
@@ -723,6 +781,7 @@ sgx_frame_destroy(struct sgx_frame *f)
    }
    sgx_bo_destroy(f->code);
    sgx_bo_destroy(f->code_heap);
+   drop_rt_sets(f);
    for (unsigned i = 0; i < f->nbo; i++)
       sgx_bo_destroy(f->bo[i]);
    free(f->tmpl);
@@ -734,12 +793,140 @@ bool
 sgx_frame_can_render(struct sgx_frame *f, struct sgx_resource *rt)
 {
    struct pipe_resource *p = &rt->base;
+   bool pack_size = f && p->width0 == f->w && p->height0 == f->h;
 
    return f && (p->format == PIPE_FORMAT_B8G8R8A8_UNORM ||
                 p->format == PIPE_FORMAT_B8G8R8X8_UNORM) &&
-          p->target == PIPE_TEXTURE_2D && p->width0 == f->w && p->height0 == f->h &&
+          p->target == PIPE_TEXTURE_2D && p->width0 <= SGX_RT_MAX_SIZE &&
+          p->height0 <= SGX_RT_MAX_SIZE &&
+          (pack_size || (f->term && !(f->opts & SGX_FRAME_PACKRT))) &&
           p->array_size == 1 && p->nr_samples <= 1 && rt->offset[0] == 0 &&
           !(rt->stride[0] & 15);
+}
+
+/* The render target data for a w x h target: made the first time a render
+ * goes to that size -- the buffers as sgx_rt.c fills them, the pack's 3D
+ * block with the size's words -- and kept.  No render is running (the
+ * caller waited for the last), so a slot can be taken over. */
+static struct rt_set *
+rt_set(struct sgx_frame *f, unsigned w, unsigned h)
+{
+   struct rt_set *s = NULL;
+   const uint32_t *cmd = (const uint32_t *)cpu_at(f, f->kick[2], APPLE_SGX_TA_CMD_MIN, NULL);
+   const uint8_t *blk = cmd ? cpu_at(f, cmd[0x50 / 4], BLOCK_SIZE, NULL) : NULL;
+   uint32_t va, size = 0;
+   unsigned slot;
+
+   for (unsigned i = 0; i < MAX_RT_SETS; i++) {
+      struct rt_set *t = &f->rts[i];
+
+      if (t->bo && t->rt.w == w && t->rt.h == h) {
+         t->used = ++f->rt_clock;
+         return t;
+      }
+      if (!s || (s->bo && (!t->bo || t->used < s->used)))
+         s = t;
+   }
+   slot = s - f->rts;
+   sgx_bo_destroy(s->bo);
+   s->bo = NULL;
+   if (!blk || !sgx_rt_layout(&s->rt, w, h, MAX2(f->dev->num_cores, 1)))
+      return NULL;
+   va = RT_SLOT_VA + slot * RT_SLOT_SIZE;
+   for (unsigned i = 0; i < SGX_RT_NBUF; i++) {
+      s->va[i] = va + size;
+      size += align(s->rt.size[i], 4096);
+   }
+   s->blk_va = va + size;
+   size += BLOCK_SIZE;
+   if (size > RT_SLOT_SIZE)
+      return NULL;
+   s->bo = sgx_bo_create(f->dev, size, APPLE_SGX_BO_FIXED_VA, va);
+   if (!s->bo || !sgx_bo_map(s->bo)) {
+      mesa_logw("sgx: no render target data for %ux%u at 0x%08x (%u bytes)", w, h, va, size);
+      sgx_bo_destroy(s->bo);
+      s->bo = NULL;
+      return NULL;
+   }
+   sgx_rt_fill(&s->rt, s->va, (uint32_t *)(s->bo->map + (s->va[SGX_RT_DETAILS] - va)),
+               (uint32_t *)(s->bo->map + (s->va[SGX_RT_STATE] - va)));
+   memcpy(s->bo->map + (s->blk_va - va), blk, BLOCK_SIZE);
+   sgx_rt_block3d(&s->rt, s->va, (uint32_t *)(s->bo->map + (s->blk_va - va)));
+   s->used = ++f->rt_clock;
+   if (f->debug)
+      mesa_logi("sgx: render target data for %ux%u at 0x%08x: details 0x%08x, 3D block "
+                "0x%08x, %u bytes", w, h, va, s->va[SGX_RT_DETAILS], s->blk_va, size);
+   return s;
+}
+
+/* The state words that hold the target's size: the tiles the TA bins into
+ * (words 7 and 8: the last tile across and down) and the viewport (9..12:
+ * half the width twice, half the height twice -- iOS's captures of other
+ * sizes, logs/ios/size) */
+static void
+state_size(uint32_t *full, unsigned w, unsigned h)
+{
+   float hw = w / 2.0f, hh = h / 2.0f;
+
+   full[7] = (full[7] & ~0xfffu) | (DIV_ROUND_UP(w, 32) - 1);
+   full[8] = (full[8] & ~0xfffu) | (DIV_ROUND_UP(h, 32) - 1);
+   memcpy(&full[9], &hw, 4);
+   memcpy(&full[10], &hw, 4);
+   memcpy(&full[11], &hh, 4);
+   memcpy(&full[12], &hh, 4);
+}
+
+/* The render: the pack's TA command with the target's render target data
+ * (or the pack's own, SGX_FRAME=packrt), its parameter buffer, and the
+ * buffers -- the frame's, the target, the render target data, what the
+ * draws read besides */
+static int
+kick(struct sgx_frame *f, struct sgx_resource *rt, float depth, const uint32_t *handles,
+     unsigned nhandles, struct sgx_fence *done)
+{
+   uint32_t hs[MAX_PACK_BOS + 3 + 2 + SGX_FRAME_MAX_HANDLES], cmd[APPLE_SGX_TA_CMD_MAX / 4];
+   const uint32_t *pack = (const uint32_t *)cpu_at(f, f->kick[2], APPLE_SGX_TA_CMD_MIN, NULL);
+   unsigned n = f->nhandles, det_bo;
+   uint32_t det_handle, det_offset;
+   struct rt_set *s = NULL;
+   uint8_t *blk;
+   int ret;
+
+   if (!pack || pack[0] > sizeof(cmd) || !cpu_at(f, f->kick[2], pack[0], NULL) ||
+       n + 2 + nhandles > ARRAY_SIZE(hs))
+      return -EINVAL;
+   memcpy(cmd, pack, pack[0]);
+   memcpy(hs, f->handles, n * sizeof(uint32_t));
+   hs[n++] = rt->bo->handle;
+   if (f->opts & SGX_FRAME_PACKRT) {
+      if (!cpu_at(f, f->kick[1], 0xa8, &det_bo))
+         return -EFAULT;
+      det_handle = f->bo[det_bo]->handle;
+      det_offset = f->kick[1] - f->bo[det_bo]->va;
+      blk = cpu_at(f, cmd[0x50 / 4] + 0x80, 4, NULL);
+   } else {
+      if (!(s = rt_set(f, rt->base.width0, rt->base.height0)))
+         return -ENOMEM;
+      sgx_rt_ta_cmd(&s->rt, s->va, s->blk_va, cmd);
+      det_handle = hs[n++] = s->bo->handle;
+      det_offset = s->va[SGX_RT_DETAILS] - s->bo->va;
+      blk = s->bo->map + (s->blk_va - s->bo->va) + 0x80;
+   }
+   /* the depth the tiles start at: register 0x4b8, the 3D block's +0x80
+    * (1.0 as the kext sets it, M4) */
+   if (!blk)
+      return -EFAULT;
+   memcpy(blk, &depth, 4);
+   memcpy(hs + n, handles, nhandles * sizeof(uint32_t));
+   n += nhandles;
+   if (f->debug)
+      mesa_logi("sgx:   kick: PB 0x%08x, details 0x%08x (%s), 3D block 0x%08x, TA command "
+                "%u bytes, %u buffers", f->kick[0], cmd[0x54 / 4],
+                s ? "ours" : "the pack's", cmd[0x50 / 4], cmd[0], n);
+   ret = sgx_submit(f->dev, cmd, f->kick[0], det_handle, det_offset, hs, n, done);
+   if (!ret)
+      sgx_fence_reference(&f->last, done);
+   return ret;
 }
 
 /* The end-of-tile program for a target: written once per target, in a
@@ -912,10 +1099,10 @@ begin_render(struct sgx_frame *f, struct sgx_resource *rt, struct sgx_eot *out_t
              uint32_t *out_eot, uint32_t bg[4])
 {
    struct sgx_eot to = {
-      .va = rt->bo->va, .w = f->w, .h = f->h, .stride = rt->stride[0],
+      .va = rt->bo->va, .w = rt->base.width0, .h = rt->base.height0, .stride = rt->stride[0],
    };
+   uint32_t eot, d0, tiles = term_tiles(to.w, to.h);
    uint64_t timeouts;
-   uint32_t eot, d0;
 
    /* the frame's buffers are the last render's until it is done */
    if (f->last && !sgx_fence_wait(f->last, 5ull * 1000 * 1000 * 1000))
@@ -930,7 +1117,11 @@ begin_render(struct sgx_frame *f, struct sgx_resource *rt, struct sgx_eot *out_t
       f->timeouts = timeouts;
       if (!load_images(f) || !put_ours(f))
          return -EFAULT;
+      drop_rt_sets(f);
    }
+   /* the tiles the stream's end covers: the target's */
+   if (f->term && !put(f, f->term, &tiles, 4))
+      return -EFAULT;
 
    /* where tiles go, and what they start as: the render target (or, with
     * SGX_FRAME=screen, the framebuffer) */
@@ -941,7 +1132,7 @@ begin_render(struct sgx_frame *f, struct sgx_resource *rt, struct sgx_eot *out_t
    }
    eot = eot_program(f, &to);
    bg[0] = (to.stride / 4 / 4 - 2) << 16 | 0x0e90;
-   bg[1] = 0xcc000000 | (f->w - 1) << 12 | (f->h - 1);
+   bg[1] = 0xcc000000 | (to.w - 1) << 12 | (to.h - 1);
    bg[2] = to.va;
    bg[3] = 0x10000000;
    d0 = doutu(f, eot);
@@ -960,8 +1151,7 @@ render(struct sgx_frame *f, struct sgx_resource *rt, const struct sgx_frame_layo
        const uint32_t *sa, const uint32_t *handles, unsigned nhandles,
        const struct sgx_frame_state *st, struct sgx_fence *done)
 {
-   uint32_t vdm[32] = { 0 }, full[32], prog[16], fetch[32], bg[4], *v = vdm, *cmd;
-   uint32_t hs[MAX_PACK_BOS + 3 + 1 + SGX_FRAME_MAX_HANDLES];
+   uint32_t vdm[32] = { 0 }, full[32], prog[16], fetch[32], bg[4], *v = vdm;
    uint32_t frame = f->ext + EXT_FRAME, vb = f->ext + EXT_VB, d0, p0, fb, eot, fetch_word;
    unsigned stride = l ? sgx_frame_vertex_floats(l) * sizeof(float) :
                      PACK_VTX_FLOATS * sizeof(float);
@@ -969,11 +1159,8 @@ render(struct sgx_frame *f, struct sgx_resource *rt, const struct sgx_frame_layo
    bool f32 = l && (l->f32 >> l->colour & 1);
    uint32_t uni_pds = f->ext + EXT_FRAME + FRAME_UNI_PDS;
    uint32_t uni = f->ext + EXT_FRAME + FRAME_UNIFORMS;
-   struct sgx_eot to = {
-      .va = rt->bo->va, .w = f->w, .h = f->h, .stride = rt->stride[0],
-   };
-   unsigned det_bo, i;
-   uint8_t *det;
+   struct sgx_eot to;
+   unsigned i;
    int ret;
 
    if (!sgx_frame_can_render(f, rt) || f->tsize[T_FULL] > (int)sizeof(full) ||
@@ -986,6 +1173,7 @@ render(struct sgx_frame *f, struct sgx_resource *rt, const struct sgx_frame_layo
 
    /* draw 0: the whole state, the white texture with the replace program */
    memcpy(full, f->tmpl + f->toff[T_FULL], f->tsize[T_FULL]);
+   state_size(full, to.w, to.h);
    /* the pixel program's PDS: tag (bits 31:27) its data size in rows */
    full[6] = iterated ? 1u << 27 | (iter_pds_at(f, colour, f32) >> 4 & 0x07ffffff) :
              p27(f->texblock);
@@ -1057,23 +1245,11 @@ render(struct sgx_frame *f, struct sgx_resource *rt, const struct sgx_frame_layo
    if (!put(f, f->vdm, vdm, (v - vdm) * 4))
       return -EFAULT;
 
-   /* the render: the pack's TA command, PB and render details */
-   cmd = (uint32_t *)cpu_at(f, f->kick[2], APPLE_SGX_TA_CMD_MIN, NULL);
-   det = cpu_at(f, f->kick[1], 0xa8, &det_bo);
-   if (!cmd || !det || !cpu_at(f, f->kick[2], cmd[0], NULL) || !set_depth_clear(f, cmd, 1.0f))
-      return -EFAULT;
-   /* the frame's buffers, the target, and what the draw reads besides */
-   if (f->nhandles + 1 + nhandles > ARRAY_SIZE(hs))
-      return -EINVAL;
-   memcpy(hs, f->handles, f->nhandles * sizeof(uint32_t));
-   hs[f->nhandles] = rt->bo->handle;
-   memcpy(hs + f->nhandles + 1, handles, nhandles * sizeof(uint32_t));
-
    if (f->debug) {
       const float *c = l ? verts + 4 + 4 * l->colour : verts, *pos = l ? verts : verts + 6;
 
       mesa_logi("sgx: %u vertices into %ux%u at 0x%08x (stride %u); the first's colour "
-                "%.3f %.3f %.3f %.3f, position %.3f %.3f", nverts, f->w, f->h, rt->bo->va,
+                "%.3f %.3f %.3f %.3f, position %.3f %.3f", nverts, to.w, to.h, rt->bo->va,
                 rt->stride[0], c[0], c[1], c[2], c[3], pos[0], pos[1]);
       if (l)
          mesa_logi("sgx:   vertex side: ours, %u varyings (F32 mask 0x%x), the colour "
@@ -1111,14 +1287,8 @@ render(struct sgx_frame *f, struct sgx_resource *rt, const struct sgx_frame_layo
       for (i = 0; i < (unsigned)(v - vdm); i += 5)
          mesa_logi("sgx:   VDM +%02x: %08x %08x %08x %08x %08x", i * 4, vdm[i], vdm[i + 1],
                    vdm[i + 2], vdm[i + 3], vdm[i + 4]);
-      mesa_logi("sgx:   kick: PB 0x%08x, details 0x%08x, TA command 0x%08x (%u bytes), %u buffers",
-                f->kick[0], f->kick[1], f->kick[2], cmd[0], f->nhandles + 1 + nhandles);
    }
-   ret = sgx_submit(f->dev, cmd, f->kick[0], f->bo[det_bo]->handle,
-                    f->kick[1] - f->bo[det_bo]->va, hs, f->nhandles + 1 + nhandles, done);
-   if (!ret)
-      sgx_fence_reference(&f->last, done);
-   return ret;
+   return kick(f, rt, 1.0f, handles, nhandles, done);
 }
 
 int
@@ -1145,30 +1315,18 @@ sgx_frame_place(struct sgx_frame *f, unsigned *cursor, const struct sgx_frame_la
    return true;
 }
 
-/* The depth a render's tiles start at: register 0x4b8 in the 3D block
- * (1.0 as the kext sets it, M4), whose address the TA command holds at
- * +0x50 -- the background object's depth, presumably */
-static bool
-set_depth_clear(struct sgx_frame *f, const uint32_t *cmd, float depth)
-{
-   uint8_t *blk = cpu_at(f, cmd[0x50 / 4] + 0x80, 4, NULL);
-
-   if (!blk)
-      return false;
-   memcpy(blk, &depth, 4);
-   return true;
-}
-
 /* A draw's whole state for our vertex side, its secondary attributes'
  * loader and words written into its slot at base */
 static int
-draw_state(struct sgx_frame *f, const struct sgx_frame_draw *d, uint32_t base, uint32_t *full)
+draw_state(struct sgx_frame *f, const struct sgx_frame_draw *d, uint32_t base,
+           const struct sgx_eot *to, uint32_t *full)
 {
    const struct sgx_frame_layout *l = &d->l;
    const struct sgx_pixel_program *pix = d->prog;
    bool f32 = !pix && (l->f32 >> l->colour & 1);
 
    memcpy(full, f->tmpl + f->toff[T_FULL], f->tsize[T_FULL]);
+   state_size(full, to->w, to->h);
    /* ISP state B: the depth compare in bits 24:22, bit 20 set when depth
     * is not written */
    full[1] = (full[1] & ~(7u << 22 | 1u << 20)) | (uint32_t)(d->st.depth_func & 7) << 22 |
@@ -1208,16 +1366,14 @@ sgx_frame_render(struct sgx_frame *f, struct sgx_resource *rt,
                  const struct sgx_frame_draw *draws, unsigned n, const uint32_t *handles,
                  unsigned nhandles, float depth_clear, struct sgx_fence *done)
 {
-   uint32_t full[32], prog[16], bg[4], eot, *v = f->vdmbuf, *cmd;
-   uint32_t hs[MAX_PACK_BOS + 3 + 1 + SGX_FRAME_MAX_HANDLES];
-   unsigned cursor = 0, det_bo, total = 0;
+   uint32_t full[32], prog[16], bg[4], eot, *v = f->vdmbuf;
+   unsigned cursor = 0, total = 0;
    struct sgx_eot to;
-   uint8_t *det;
    int ret;
 
    if (!sgx_frame_can_render(f, rt) || !n || n > SGX_FRAME_MAX_DRAWS ||
        f->tsize[T_FULL] > (int)sizeof(full) || f->tsize[T_FULLPROG] > (int)sizeof(prog) ||
-       f->nhandles + 1 + nhandles > ARRAY_SIZE(hs))
+       nhandles > SGX_FRAME_MAX_HANDLES)
       return -EINVAL;
    if ((ret = begin_render(f, rt, &to, &eot, bg)))
       return ret;
@@ -1232,7 +1388,7 @@ sgx_frame_render(struct sgx_frame *f, struct sgx_resource *rt,
          return -EINVAL;
       if (!sgx_frame_place(f, &cursor, &d->l, d->nverts, &first))
          return -ENOSPC;
-      if ((ret = draw_state(f, d, base, full)))
+      if ((ret = draw_state(f, d, base, &to, full)))
          return ret;
       memcpy(prog, f->tmpl + f->toff[T_FULLPROG], f->tsize[T_FULLPROG]);
       prog[0] = base;
@@ -1262,20 +1418,8 @@ sgx_frame_render(struct sgx_frame *f, struct sgx_resource *rt,
    if (!put(f, f->vdm, f->vdmbuf, (v - f->vdmbuf) * 4))
       return -EFAULT;
 
-   cmd = (uint32_t *)cpu_at(f, f->kick[2], APPLE_SGX_TA_CMD_MIN, NULL);
-   det = cpu_at(f, f->kick[1], 0xa8, &det_bo);
-   if (!cmd || !det || !cpu_at(f, f->kick[2], cmd[0], NULL) ||
-       !set_depth_clear(f, cmd, depth_clear))
-      return -EFAULT;
-   memcpy(hs, f->handles, f->nhandles * sizeof(uint32_t));
-   hs[f->nhandles] = rt->bo->handle;
-   memcpy(hs + f->nhandles + 1, handles, nhandles * sizeof(uint32_t));
    if (f->debug)
-      mesa_logi("sgx: a render of %u draws, %u vertices, into 0x%08x (end of tile 0x%08x), "
-                "%u buffers", n, total, to.va, eot, f->nhandles + 1 + nhandles);
-   ret = sgx_submit(f->dev, cmd, f->kick[0], f->bo[det_bo]->handle,
-                    f->kick[1] - f->bo[det_bo]->va, hs, f->nhandles + 1 + nhandles, done);
-   if (!ret)
-      sgx_fence_reference(&f->last, done);
-   return ret;
+      mesa_logi("sgx: a render of %u draws, %u vertices, into %ux%u at 0x%08x (end of tile "
+                "0x%08x)", n, total, to.w, to.h, to.va, eot);
+   return kick(f, rt, depth_clear, handles, nhandles, done);
 }

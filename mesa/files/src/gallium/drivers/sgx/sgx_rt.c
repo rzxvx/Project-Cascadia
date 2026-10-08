@@ -14,9 +14,9 @@
  * macrotiles, whose sides are a multiple of 4 tiles; the TA keeps a region
  * array per pixel pipe (12 bytes a tile) and tail pointers, and the CPU
  * writes the render details -- where all of it is, for the microkernel --
- * and the state buffer: a full-screen object the clear draws (vertices in
- * 12.4 fixed point, biased by 0x4000), a tile-sized one, and a stream entry
- * per region pointing at the latter.  Everything is kept twice ("copies"),
+ * and the state buffer: a full-screen object (the background's, presumably:
+ * vertices in 12.4 fixed point, biased by 0x4000), a tile-sized one, and a
+ * stream entry per region pointing at the latter.  Everything is kept twice ("copies"),
  * for a TA and a 3D pass in flight at once; renders here use copy 0.
  *
  * One sample only: the kext's multi-sample path (samples > 1: a tile of
@@ -185,8 +185,8 @@ sgx_rt_fill(const struct sgx_rt *rt, const uint32_t va[SGX_RT_NBUF], uint32_t *d
    details[0x18 / 4] = rt->regions;
    details[0x14 / 4] = va[SGX_RT_STATE] + rt->state_regions;
 
-   /* the state buffer: the clear's object (a triangle (0, 0), (w, 0),
-    * (0, h) at depth 1, at half scale on big targets) */
+   /* the state buffer: the full-screen object ((0, 0), (w, 0), (0, h) at
+    * depth 1, at half scale on big targets) */
    s = state + rt->state_clear / 4;
    s[0x0c / 4] = 0xffff0000;
    s[0x18 / 4] = 0xff00ff00;

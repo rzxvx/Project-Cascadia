@@ -35,6 +35,7 @@ enum {
    SGX_FRAME_PACKPIX = 1 << 6, /* "packpixel": draws through the pack's pixel side too
                                   (and its vertex side, which that needs) */
    SGX_FRAME_PACKVTX = 1 << 7, /* "packvertex": draws through the pack's vertex side */
+   SGX_FRAME_PACKRT = 1 << 8,  /* "packrt": the pack's render target data (its size only) */
 };
 unsigned sgx_frame_options(void);
 
@@ -44,7 +45,8 @@ struct sgx_frame *sgx_frame_create(struct sgx_device *dev, const char *packdir);
 void sgx_frame_destroy(struct sgx_frame *f);
 
 /* Whether a render through the frame can fill this surface: B8G8R8A8 or
- * B8G8R8X8, the pack's size (the screen's), level 0, one layer. */
+ * B8G8R8X8, up to 4096 x 4096 (M10: the render target data for each size
+ * are ours, sgx_rt.c), level 0, one layer. */
 bool sgx_frame_can_render(struct sgx_frame *f, struct sgx_resource *rt);
 
 /* The whole of rt set to rgba, on the GPU; done is signalled when it is.

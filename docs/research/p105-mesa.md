@@ -206,6 +206,70 @@ tail pointers, the "state buffer" `+0x44`), which payload words depend on
 anything but the size, and the multi-sample paths (`samples` in the init
 call; one sample only to begin with).
 
+**Done (2026-10-08): render targets of any size, 1x1 to 4096x4096.**
+`mesa/files/src/gallium/drivers/sgx/sgx_rt.c` is the kext's render target
+code rewritten from its behaviour (headless Ghidra on the four functions,
+their literals read from the kernelcache). Two helpers it calls were not
+what they looked like: `0x80bfe330` is ARM code, `__umodsi3`, used for the
+macrotiles' first regions; `0x80bf6e78` fills, once per boot, the table of
+context areas at `0x80c18b04` that the init's first buffer is sized from
+(zeros in the kernelcache: it is computed). What the CPU writes, per size:
+
+| buffer | size | contents |
+|---|---|---|
+| context | 0x11a0 for two pipes | none: two areas per copy (0x6f0 apart), two per pipe, for the microkernel |
+| regions, copy 0 and 1 | per pipe: 12 bytes a tile of the macrotiles, padded to 4 KiB | none (the TA's) |
+| tail pointers | per pipe: (next power of two of the macrotiles' side)^2 x 8 | none |
+| render details | 0x180 | two copies 0x84 apart (where everything is, per pipe), then each copy's first region of each macrotile |
+| state | 0x200 + 64 a region per pipe | a full-screen object (the background's, presumably: (0, 0), (w, 0), (0, h) as 12.4 fixed point biased by 0x4000, half scale past 2048), a tile-sized one, a stream entry per region pointing at it |
+
+and the words that point at them: the 3D block's (`+0x28` big, `+0x2c` the
+region arrays, `+0x3c`..`+0x48` sizes and macrotile bounds, `+0x88` the state
+buffer from the TA's base in 16 bytes -- which is why it has to be within
+256 MiB above 0x87800000 --, `+0x10c`/`+0x110` the details) and the TA
+command's (`+0x50`..`+0x58`, `+0xc0`..`+0xcc`, the arrays and tail pointers
+per pipe, `+0x104` the last pixel, `+0x114` big). Tiles are 32 x 32 pixels
+and the macrotiles 2 x 2, each side a multiple of 4 tiles; "big" is a side
+over 2048.
+
+`mesa/host/rt-test.py` runs `rtemu.py` for 61 sizes (every pair of powers of
+two from 32 to 2048, and 1x1, 33x33, 100x50, 300x200, 480x320, 767x1023,
+768x1024, 1024x768, 1000x1, 2049x64, 4096x16, 4096x4096) and compares every
+buffer, the payload words, the 3D block and the TA command (both another
+size's with this size's words written over them: the rest are the GL
+driver's): all 61 the same, byte for byte.
+
+Three more places hold the size, found in iOS's captures at other sizes
+(`logs/ios/size`, a 256x128 target: `80000007 00000003`, viewport 128, 64):
+the state's words 7 and 8 (the last tile across and down, bit 31 set on the
+first), words 9..12 (the viewport: half the width twice, half the height
+twice), and the VDM stream's terminate PDS program, whose data `+0x10` is
+the last tile across << 16 | down (`0017001f` in the pack, `00070003` for
+256x128).
+
+In the driver (`sgx_frame.c`), each size a render goes to gets its set of
+buffers and a 3D block (the pack's, with the size's words) in a slot of 4
+MiB at 0x89000000 + slot x 4 MiB -- the kernel picks addresses far above
+the TA's base -- eight slots, the least recently used given up, all of them
+after a render hangs. The TA command is the pack's, copied and written over
+per render; the terminate data are written in place. `SGX_FRAME=packrt`
+takes the pack's set instead (its size only). The texture size limit is
+now iOS's 4096.
+
+On the device: `glsize` (a gradient and a square, every pixel checked) 15
+of 15 -- 64x64, 100x50, 256x128, 128x256, 300x200, 33x17, 1x1, 768x1024,
+1024x768, 512x512, 2048x2048 and back to earlier sizes after the slots ran
+out -- and 2049x100, 4096x16, 100x4096, 4096x4096 right; everything before
+unchanged at the screen's size, now through our set (glfs 23/23, gltex
+12/12, glblend 14/14, gldepth 9/9, glpersp exact, gltri 11/11; glspeed 9.6k
+draws a second).
+
+Still from the kernelcache: the pack's own render target data (`rtemu.py` at
+`./cascadia gpu`; sgx2d uses them) and the parameter buffer image; neither
+is needed by Mesa now. Not ported: the multi-sample paths, the 4x4
+macrotiles (an RT field the init sets to -1), and copy 1 of everything,
+which renders here never use.
+
 ## M11: the shader oracle
 
 iOS's GL driver compiles GLSL ES to USSE, and gltrace can already capture

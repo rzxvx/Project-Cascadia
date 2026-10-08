@@ -27,7 +27,7 @@ enum sgx_rt_buf {
    SGX_RT_REGIONS1,   /* ... and for copy 1 */
    SGX_RT_TAILS,      /* the tail pointers, per core */
    SGX_RT_DETAILS,    /* the render details: two copies, then each one's first regions */
-   SGX_RT_STATE,      /* the state buffer: the clear's objects, a stream entry per region */
+   SGX_RT_STATE,      /* the state buffer: two objects, a stream entry per region */
    SGX_RT_NBUF,
 };
 

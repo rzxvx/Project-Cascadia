@@ -187,7 +187,7 @@ sgx_init_screen_caps(struct pipe_screen *pscreen)
    caps->blend_equation_separate = true;
    caps->uma = true;
    caps->max_render_targets = 1;
-   caps->max_texture_2d_size = 2048;
+   caps->max_texture_2d_size = 4096;      /* iOS's on the A5; SGX_RT_MAX_SIZE */
    caps->max_texture_cube_levels = 12;
    caps->max_texture_3d_levels = 0;
    caps->max_texture_array_layers = 0;

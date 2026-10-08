@@ -13,7 +13,7 @@
  * in grey, with a warning once.  The vertices go to the GPU as the frame's
  * vertex side takes them (M13b): the position, then the colour as a
  * varying.  Only render targets the frame can fill
- * are drawn into (the screen's size, B8G8R8A8); depth, stencil, blending,
+ * are drawn into (B8G8R8A8, up to 4096 x 4096: M10); depth, stencil, blending,
  * scissors and colour masks are not applied yet.  Each draw is a render.
  */
 #include "sgx_draw.h"
@@ -685,8 +685,8 @@ submit(struct sgx_context *ctx)
    }
    if (!rt || ctx->fb.nr_cbufs < 1 || surf->level || surf->first_layer ||
        !sgx_frame_can_render(screen->frame, rt)) {
-      mesa_logw_once("sgx: draws only go into the screen-sized B8G8R8A8 targets the "
-                     "template frame can fill (M13a); others are dropped");
+      mesa_logw_once("sgx: draws only go into the B8G8R8A8 targets the template frame "
+                     "can fill (level 0, up to 4096 x 4096); others are dropped");
       ctx->nverts = 0;
       return;
    }
