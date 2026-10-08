@@ -814,14 +814,14 @@ sgx_compile_fs(const nir_shader *fs, const struct sgx_blend_key *blend, char *wh
    {
       nir_lower_tex_options tex = { .lower_txp = ~0u };
 
-      /* the linear sampler reads R G B A: other orders swizzled back */
+      /* the linear sampler reads B G R A: other orders swizzled back */
       for (unsigned u = 0; blend && u < 8; u++) {
-         if (!((blend->tex_bgra | blend->tex_x8) >> u & 1))
+         if (!((blend->tex_swap | blend->tex_x8) >> u & 1))
             continue;
          tex.swizzle_result |= 1u << u;
-         tex.swizzles[u][0] = blend->tex_bgra >> u & 1 ? 2 : 0;
+         tex.swizzles[u][0] = blend->tex_swap >> u & 1 ? 2 : 0;
          tex.swizzles[u][1] = 1;
-         tex.swizzles[u][2] = blend->tex_bgra >> u & 1 ? 0 : 2;
+         tex.swizzles[u][2] = blend->tex_swap >> u & 1 ? 0 : 2;
          tex.swizzles[u][3] = blend->tex_x8 >> u & 1 ? PIPE_SWIZZLE_1 : 3;
       }
       NIR_PASS(_, s, nir_lower_tex, &tex);

@@ -44,9 +44,9 @@ struct sgx_transfer {
 /* Whether res is sampled as it is, linear (M16): RGBA8 orders, one level,
  * written by the GPU or by others (a render's target, a shared buffer) --
  * the CPU's copy would read it back each time.  Minification is point
- * sampling then.  The sampler reads bytes as R G B A: *bgra says the
- * shader swaps red and blue, *x8 that it takes alpha as 1. */
-bool sgx_resource_linear(const struct sgx_resource *res, bool *bgra, bool *x8);
+ * sampling then.  The sampler reads bytes as B G R A: *swap says the
+ * shader swaps red and blue back, *x8 that it takes alpha as 1. */
+bool sgx_resource_linear(const struct sgx_resource *res, bool *swap, bool *x8);
 
 /* The four state words the sampler reads for res sampled with ss (M14):
  * the twiddled copy brought up to date first.  False when res cannot be

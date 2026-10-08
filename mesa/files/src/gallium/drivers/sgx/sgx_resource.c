@@ -243,25 +243,25 @@ sampler_bits(const struct pipe_sampler_state *ss)
 }
 
 bool
-sgx_resource_linear(const struct sgx_resource *res, bool *bgra, bool *x8)
+sgx_resource_linear(const struct sgx_resource *res, bool *swap, bool *x8)
 {
    const struct pipe_resource *p = &res->base;
    static int force = -1;
 
    if (force < 0)
       force = getenv("SGX_LINEAR_TEX") ? atoi(getenv("SGX_LINEAR_TEX")) : 2;
-   *bgra = *x8 = false;
+   *swap = *x8 = false;
    switch (p->format) {
    case PIPE_FORMAT_R8G8B8X8_UNORM:
       *x8 = true;
       FALLTHROUGH;
    case PIPE_FORMAT_R8G8B8A8_UNORM:
+      *swap = true;
       break;
    case PIPE_FORMAT_B8G8R8X8_UNORM:
       *x8 = true;
       FALLTHROUGH;
    case PIPE_FORMAT_B8G8R8A8_UNORM:
-      *bgra = true;
       break;
    default:
       return false;
@@ -278,14 +278,14 @@ bool
 sgx_resource_texture(struct sgx_screen *screen, struct sgx_resource *res,
                      const struct pipe_sampler_state *ss, uint32_t words[4])
 {
-   bool bgra, x8;
+   bool swap, x8;
 
    struct pipe_resource *p = &res->base;
 
    if ((p->target != PIPE_TEXTURE_2D && p->target != PIPE_TEXTURE_RECT) ||
        p->array_size != 1 || !p->width0 || !p->height0)
       return false;
-   if (sgx_resource_linear(res, &bgra, &x8)) {
+   if (sgx_resource_linear(res, &swap, &x8)) {
       /* the 2D engine's way (apple_sgx_hw.c, blt_tex: iOS's for an
        * IOSurface): the content itself, its stride in 16 bytes less 2;
        * bits 11:9 all set, or the rows come out skewed -- every other value

@@ -542,19 +542,19 @@ fs_for_draw(struct sgx_context *ctx)
          key.alpha_dst = rt->alpha_dst_factor;
       }
    }
-   /* textures sampled linear in other orders than R G B A (M16) */
+   /* textures sampled linear in other orders than B G R A (M16) */
    for (unsigned i = 0; i < sh->compiled->nsamplers; i++) {
       unsigned unit = sh->compiled->sampler_unit[i];
       struct pipe_sampler_view *view = unit < ARRAY_SIZE(ctx->fs_views) ?
                                        ctx->fs_views[unit] : NULL;
-      bool bgra, x8;
+      bool swap, x8;
 
-      if (unit < 8 && view && sgx_resource_linear(sgx_resource(view->texture), &bgra, &x8)) {
-         key.tex_bgra |= bgra << unit;
+      if (unit < 8 && view && sgx_resource_linear(sgx_resource(view->texture), &swap, &x8)) {
+         key.tex_swap |= swap << unit;
          key.tex_x8 |= x8 << unit;
       }
    }
-   if (!key.enable && key.colormask == 0xf && !key.tex_bgra && !key.tex_x8)
+   if (!key.enable && key.colormask == 0xf && !key.tex_swap && !key.tex_x8)
       return sh->compiled;
    for (unsigned i = 0; i < sh->nvariants; i++)
       if (!memcmp(&sh->variant[i]->blend, &key, sizeof(key)))
