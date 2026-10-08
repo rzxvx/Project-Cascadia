@@ -9,6 +9,8 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <xf86drm.h>
 
 #include "drm-uapi/apple_sgx_drm.h"
@@ -175,14 +177,20 @@ twiddle_texture(struct sgx_screen *screen, struct sgx_resource *res)
    return true;
 }
 
-/* GL's wrap modes as the state's word 0 has them: iOS's for CLAMP_TO_EDGE
+/* The sampler's half of the state's word 0.  Wrap: iOS's for CLAMP_TO_EDGE
  * on both axes is 0x90 (the corpus's t* cases), REPEAT is what sgx2d draws
- * with (0) */
+ * with (0).  Filters, found by flipping bits under gltex: bits 13:12 the
+ * magnification filter, 11:10 the minification one, 0 point and 1 (or 2)
+ * bilinear -- 3 samples as point again. */
 static uint32_t
-wrap_bits(unsigned wrap_s, unsigned wrap_t)
+sampler_bits(const struct pipe_sampler_state *ss)
 {
-   return (wrap_s == PIPE_TEX_WRAP_REPEAT ? 0 : 1u << 4) |
-          (wrap_t == PIPE_TEX_WRAP_REPEAT ? 0 : 1u << 7);
+   if (!ss)
+      return 0;
+   return (ss->wrap_s == PIPE_TEX_WRAP_REPEAT ? 0 : 1u << 4) |
+          (ss->wrap_t == PIPE_TEX_WRAP_REPEAT ? 0 : 1u << 7) |
+          (ss->min_img_filter == PIPE_TEX_FILTER_LINEAR ? 1u << 10 : 0) |
+          (ss->mag_img_filter == PIPE_TEX_FILTER_LINEAR ? 1u << 12 : 0);
 }
 
 bool
@@ -199,7 +207,21 @@ sgx_resource_texture(struct sgx_screen *screen, struct sgx_resource *res,
    if ((p->width0 & (p->width0 - 1)) || (p->height0 & (p->height0 - 1)))
       mesa_logw_once("sgx: textures that are not a power of two in size are sampled "
                      "from a padded copy; their coordinates are not scaled yet");
-   words[0] = 0x03fe0000 | (ss ? wrap_bits(ss->wrap_s, ss->wrap_t) : 0);
+   words[0] = 0x03fe0000 | sampler_bits(ss);
+   /* SGX_TEX_WORDn=mask: bits of word n flipped, to find what they do */
+   {
+      static int64_t flip[4] = { -1, -1, -1, -1 };
+
+      for (unsigned i = 0; i < 4; i++) {
+         char name[16];
+
+         if (flip[i] < 0) {
+            snprintf(name, sizeof(name), "SGX_TEX_WORD%u", i);
+            flip[i] = getenv(name) ? strtoul(getenv(name), NULL, 0) : 0;
+         }
+         words[i] ^= (uint32_t)flip[i];
+      }
+   }
    words[1] = 0x0c000000 | util_logbase2(res->tw_w) << 16 | util_logbase2(res->tw_h);
    words[2] = res->tw->va;
    words[3] = 0;

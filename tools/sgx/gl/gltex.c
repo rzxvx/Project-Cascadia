@@ -5,7 +5,9 @@
  * edge are left out (which side they fall is a rounding question, not a
  * texturing one).
  *
- *   sgx-gl gltex [CASE...]       (a name, or a prefix; all by default)
+ *   sgx-gl gltex [--ppm DIR] [CASE...]   (a name, or a prefix; all by default)
+ *
+ * --ppm: each case's read-back saved as DIR/CASE.ppm (top row first).
  *
  * Exit status 0 when every case passed.
  */
@@ -46,6 +48,11 @@ static void tx_lum(int x, int y, uint8_t c[4])       /* 4x4 L8 */
 	c[0] = c[1] = c[2] = (x + 4 * y) * 16, c[3] = 255;
 }
 
+static void tx_fine(int x, int y, uint8_t c[4])      /* 64x64: changes every texel */
+{
+	c[0] = ((x * 37) & 63) * 4, c[1] = ((y * 23) & 63) * 4, c[2] = (x ^ y) & 1 ? 255 : 0, c[3] = 255;
+}
+
 static void tx_565(int x, int y, uint8_t c[4])       /* 2x2 RGB565: exact values */
 {
 	c[0] = x ? 255 : 0, c[1] = y ? 255 : 0, c[2] = (x ^ y) ? 255 : 0, c[3] = 255;
@@ -62,6 +69,7 @@ static const struct tex T_STRIP = { 64, 16, GL_RGBA, GL_UNSIGNED_BYTE, tx_strip 
 static const struct tex T_OTHER = { 2, 2, GL_RGBA, GL_UNSIGNED_BYTE, tx_other };
 static const struct tex T_LUM = { 4, 4, GL_LUMINANCE, GL_UNSIGNED_BYTE, tx_lum };
 static const struct tex T_565 = { 2, 2, GL_RGB, GL_UNSIGNED_SHORT_5_6_5, tx_565 };
+static const struct tex T_FINE = { 64, 64, GL_RGBA, GL_UNSIGNED_BYTE, tx_fine };
 
 /* the expected colour at s, t; false where the pixel is too near an edge */
 typedef int (*ref_fn)(float s, float t, float c[4]);
@@ -125,10 +133,47 @@ static int r_two(float s, float t, float c[4])
 }
 static int r_proj(float s, float t, float c[4]) { return texel(0, s, t, 0, c); }
 
+/* GL_LINEAR: the four texels around (u w - 0.5, v h - 0.5), clamped or
+ * repeated */
+static int bilinear(float s, float t, int repeat, float c[4])
+{
+	const struct tex *T = cur[0];
+	float fu = s * T->w - 0.5f, fv = t * T->h - 0.5f, a = fu - floorf(fu), b = fv - floorf(fv);
+	int x0 = (int)floorf(fu), y0 = (int)floorf(fv);
+
+	for (int i = 0; i < 4; i++)
+		c[i] = 0;
+	for (int k = 0; k < 4; k++) {
+		int x = x0 + (k & 1), y = y0 + (k >> 1);
+		float wgt = ((k & 1) ? a : 1 - a) * ((k >> 1) ? b : 1 - b);
+		uint8_t q[4];
+
+		if (repeat) {
+			x = ((x % T->w) + T->w) % T->w;
+			y = ((y % T->h) + T->h) % T->h;
+		} else {
+			x = x < 0 ? 0 : x >= T->w ? T->w - 1 : x;
+			y = y < 0 ? 0 : y >= T->h ? T->h - 1 : y;
+		}
+		T->fn(x, y, q);
+		for (int i = 0; i < 4; i++)
+			c[i] += wgt * q[i] / 255.0f;
+	}
+	return 1;
+}
+
+static int r_linear(float s, float t, float c[4]) { return bilinear(s, t, 0, c); }
+/* 64x64 over a sixth of the width: about two texels a pixel */
+static int r_minify(float s, float t, float c[4]) { return bilinear(s * 24, t * 18, 1, c); }
+
+/* clamped outside 0..1 */
+static int r_clamp(float s, float t, float c[4]) { return texel(0, s * 3 - 1, t * 3 - 1, 0, c); }
+
 static const struct test {
 	const char *name, *body;
 	const struct tex *t0, *t1;
-	int repeat;
+	int repeat;     /* 0 nearest + clamp, 1 nearest + repeat, 2 magnified linear + clamp,
+	                   3 minified linear + repeat */
 	ref_fn ref;
 } tests[] = {
 	{ "plain", "c = texture2D(t0, v.xy);", &T_QUAD, NULL, 0, r_plain },
@@ -140,6 +185,9 @@ static const struct test {
 	{ "luminance", "c = texture2D(t0, v.xy);", &T_LUM, NULL, 0, r_plain },
 	{ "rgb565", "c = texture2D(t0, v.xy);", &T_565, NULL, 0, r_plain },
 	{ "proj", "c = texture2DProj(t0, vec3(v.xy * 2.0, 2.0));", &T_QUAD, NULL, 0, r_proj },
+	{ "clamp", "c = texture2D(t0, v.xy * 3.0 - 1.0);", &T_QUAD, NULL, 0, r_clamp },
+	{ "linear", "c = texture2D(t0, v.xy);", &T_OTHER, NULL, 2, r_linear },
+	{ "minify", "c = texture2D(t0, v.xy * vec2(24.0, 18.0));", &T_FINE, NULL, 3, r_minify },
 };
 
 static const char *vs_src =
@@ -220,10 +268,11 @@ static GLuint make(const struct tex *T, int unit, int repeat)
 	glBindTexture(GL_TEXTURE_2D, t);
 	glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
 	glTexImage2D(GL_TEXTURE_2D, 0, T->format, T->w, T->h, 0, T->format, T->type, data);
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, repeat ? GL_REPEAT : GL_CLAMP_TO_EDGE);
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, repeat ? GL_REPEAT : GL_CLAMP_TO_EDGE);
+	/* each linear case: only the filter the case is about linear */
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, repeat == 3 ? GL_LINEAR : GL_NEAREST);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, repeat == 2 ? GL_LINEAR : GL_NEAREST);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, repeat & 1 ? GL_REPEAT : GL_CLAMP_TO_EDGE);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, repeat & 1 ? GL_REPEAT : GL_CLAMP_TO_EDGE);
 	return t;
 }
 
@@ -233,12 +282,33 @@ static int to8(float x)
 	return (int)(x * 255 + 0.5f);
 }
 
+static const char *ppm_dir;
+
+static void save(const char *name, const uint8_t *px)
+{
+	char path[512];
+	FILE *fp;
+
+	snprintf(path, sizeof(path), "%s/%s.ppm", ppm_dir, name);
+	if (!(fp = fopen(path, "wb")))
+		return;
+	fprintf(fp, "P6\n%d %d\n255\n", W, H);
+	for (int y = H - 1; y >= 0; y--)
+		for (int x = 0; x < W; x++)
+			fwrite(px + (y * W + x) * 4, 1, 3, fp);
+	fclose(fp);
+}
+
 static int wanted(int argc, char **argv, const char *name)
 {
-	if (argc < 2)
+	int any = 0;
+
+	for (int i = 1; i < argc; i++)
+		any |= argv[i][0] != 0;
+	if (!any)
 		return 1;
 	for (int i = 1; i < argc; i++)
-		if (!strncmp(name, argv[i], strlen(argv[i])))
+		if (argv[i][0] && !strncmp(name, argv[i], strlen(argv[i])))
 			return 1;
 	return 0;
 }
@@ -256,6 +326,12 @@ int main(int argc, char **argv)
 	EGLContext ctx;
 	GLuint rt, fbo;
 
+	for (int i = 1; i + 1 < argc; i++) {
+		if (!strcmp(argv[i], "--ppm")) {
+			ppm_dir = strdup(argv[i + 1]);
+			argv[i][0] = argv[i + 1][0] = 0;   /* not case names */
+		}
+	}
 	get_display = (PFNEGLGETPLATFORMDISPLAYEXTPROC)eglGetProcAddress("eglGetPlatformDisplayEXT");
 	dpy = get_display ? get_display(EGL_PLATFORM_SURFACELESS_MESA, EGL_DEFAULT_DISPLAY, NULL) : NULL;
 	if (!dpy || !eglInitialize(dpy, NULL, NULL) || !eglBindAPI(EGL_OPENGL_ES_API))
@@ -299,6 +375,8 @@ int main(int argc, char **argv)
 		glClear(GL_COLOR_BUFFER_BIT);
 		glDrawArrays(GL_TRIANGLES, 0, 6);
 		glReadPixels(0, 0, W, H, GL_RGBA, GL_UNSIGNED_BYTE, px);
+		if (ppm_dir)
+			save(T->name, px);
 
 		for (int gy = 0; gy < GRID; gy++) {
 			for (int gx = 0; gx < GRID; gx++) {
@@ -320,7 +398,8 @@ int main(int argc, char **argv)
 				}
 			}
 		}
-		if (worst <= 2 && checked) {
+		/* filtered: the hardware's weights are coarse (a few bits) */
+		if (worst <= (T->repeat >= 2 ? 8 : 2) && checked) {
 			printf("%-12s ok (%d pixels, largest difference %d)\n", T->name, checked, worst);
 		} else {
 			failed++;

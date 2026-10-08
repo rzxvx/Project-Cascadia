@@ -931,6 +931,59 @@ M5, stencil not yet); scissor, viewport, culling, polygon offset, points and
 lines. Done when `glmark2-es2` runs its scenes and SuperTux's GL renderer
 draws.
 
+**M14, step 1: textures in compiled shaders (2026-10-08).** `texture2D`
+(with a bias or a level; `texture2DProj` lowered by NIR) compiles to
+`SMP`, the dependent-read path iOS uses for computed coordinates (corpus
+t01, t07): the coordinates into a register pair, the texel into four
+temporaries as F32, `WDF` before it is read. iOS's non-dependent reads go
+through the PDS (t00: iterate, texture DOUT, the raw texel in pa0); ours
+all go through SMP, one path for every case.
+
+- `smp2d.f32.f32`: the texel comes back as the channels' integer values
+  (0..255 for RGBA8), so the compiler scales it by 1/255. Seen first as
+  every non-zero channel saturating to 255 -- an RGB565 2x2 of 0s and
+  255s passed and nothing else did.
+- The four state words, in sa after the uniforms (aligned to four): word
+  0 `0x03fe0000` with the sampler's bits, word 1 `0x0c << 24 | log2 w <<
+  16 | log2 h`, word 2 the address, word 3 0.
+- Word 0's sampler bits, the wrap from the corpus and the filters by
+  flipping bits one at a time under `gltex` (`SGX_TEX_WORDn=mask` flips
+  word n's bits): `1 << 4` / `1 << 7` clamp s / t (iOS's `0x90` for
+  CLAMP_TO_EDGE; 0 is REPEAT), bits 13:12 the magnification filter and
+  11:10 the minification filter, 0 point, 1 (or 2) bilinear, 3 point
+  again. Bits 8, 17-20, 27 and 31 broke the lookup (format and size),
+  words 1's top byte and word 3 did nothing visible.
+- **skipinv**: with every instruction carrying it (bit 55, as iOS sets it
+  on most), bilinear pixels along the quad's diagonal came out point
+  sampled: the pixels just outside a triangle skip the moves into the
+  coordinate registers, and the sampler takes its level of detail from the
+  2x2 block's coordinates -- garbage there, so minification and point
+  sampling. iOS clears skipinv on the instructions that make a dependent
+  read's coordinates (t01's `mul.f16`, t07's `pck.f16`); a program of ours
+  that samples has it clear on every instruction.
+- Textures stay linear in their buffers (CPU maps, render targets); a
+  sampled one gets a twiddled copy made by the CPU when its content has
+  changed (`seq`: a write through a map, a render or a clear into it):
+  always RGBA8, any format through `util_format_unpack_rgba_8unorm`,
+  Morton order with y in the even bits, rectangles as a row of squares,
+  padded to powers of two with the last row and column repeated. Before
+  rewriting a copy the driver waits for the last render, which may still
+  sample it; renders take the copies' buffers along.
+
+`tools/sgx/gl/gltex.c` checks lookups against the texel each pixel should
+land on (pixels near a texel's edge left out): RGBA8 4x4, a 64x16
+rectangle, REPEAT, CLAMP_TO_EDGE beyond 0..1, a swizzle, a texel times a
+uniform plus a varying, two textures, L8, RGB565, texture2DProj, bilinear
+magnification of a 2x2 (within 4 of 255: the hardware's weights are
+coarse) and bilinear minification of a 64x64 at about two texels a pixel
+(within 8). On the iPad 12 of 12, most with no difference at all; glfs
+23 of 23, gltri 11 of 11.
+
+Not yet: mipmaps (and the mip filter, probably bits 9:8), sizes that are
+not powers of two (the padded copy is sampled with unscaled coordinates),
+MIRRORED_REPEAT (bits 3 and 6 did something), cube maps, render targets
+sampled without a CPU round trip.
+
 ## M15: conformance and speed
 
 `dEQP-GLES2` and the GLES parts of `piglit`. Control flow, `discard`,
