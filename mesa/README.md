@@ -13,7 +13,8 @@ compiler does not take yet is drawn in a colour worked out per vertex
 are any size from 1x1 to 4096x4096, the render target data the kext would
 compute for each made by the driver (M10, `sgx-gl glsize`). On the screen
 through KMS and GBM on `/dev/dri/card0` (M16: `sgx-gl glkms`, a kernel from
-2026-10-08). It needs a kernel from 2026-10-04 or later (the render node's
+2026-10-08); weston runs on it, its GL clients too, any number of processes
+at once (M17: a kernel with UAPI 3). It needs a kernel from 2026-10-04 or later (the render node's
 workarounds for the microkernel, M12; buffers out of the BIF's tiled
 window, M13a).
 

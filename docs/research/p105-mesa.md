@@ -220,6 +220,21 @@ target data in that range are fine. Not understood; the kernel's buffer is
 at 0x89000000, near iOS's 0x88000000, and the full set of tests passes with
 a buffer there.
 
+On the device (kernel #299): every test right with the kernel's buffer and
+the frame built (glclear, gltri, glfs, gltex, glblend, gldepth, glsize,
+glseam, glpersp; glspeed 10.3k draws a second, kmscube 194 fps), and not
+one microkernel restart. **Four GL processes at once** (glspeed, gltex,
+glfs, gldepth): all right, no restart, no timeout. Each builds its frame
+where the kernel puts it; weston and its clients each have their own.
+
+**GL clients under weston.** Mesa had been built with no window-system
+platform (`-Dplatforms=`): EGL on Wayland found no configs. With `wayland`
+(and `wayland-dev`, `wayland-protocols` in the build image), es2gears_wayland
+and weston-simple-egl draw in weston's windows, three processes on the GPU
+at once: the clients render into their buffers, weston samples them as
+dma-bufs (linear) and its output goes to the screen through KMS. es2gears
+takes 64% of the CPU -- the vertex shaders are still the draw module's.
+
 ## M10: render targets without iOS's code
 
 The kext's render target setup (`0x80bf7aac` init, `0x80bf6fd8` sizes and

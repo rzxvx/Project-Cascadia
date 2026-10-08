@@ -52,7 +52,7 @@ fi
 # on both.  The options are kept in a stamp, so a change reconfigures.
 OPTS="--prefix=$PREFIX --libdir=lib --buildtype=debugoptimized
     -Dc_args=-mtls-dialect=gnu -Dcpp_args=-mtls-dialect=gnu
-    -Dgallium-drivers=sgx -Dvulkan-drivers= -Dplatforms=
+    -Dgallium-drivers=sgx -Dvulkan-drivers= -Dplatforms=wayland
     -Dglx=disabled -Degl=enabled -Dgbm=enabled -Dgles1=disabled -Dgles2=enabled
     -Dopengl=true -Dglvnd=disabled -Dllvm=disabled -Dvalgrind=disabled
     -Dlibunwind=disabled -Dzstd=disabled -Dxmlconfig=disabled -Dexpat=disabled
