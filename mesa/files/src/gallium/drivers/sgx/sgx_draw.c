@@ -18,6 +18,9 @@
  */
 #include "sgx_draw.h"
 
+#include <errno.h>
+#include <stdlib.h>
+
 #include "compiler/glsl_types.h"
 #include "compiler/nir/nir.h"
 #include "draw/draw_context.h"
@@ -492,6 +495,11 @@ sgx_draw_fini(struct sgx_context *ctx)
       render_destroy(ctx->render);
    ctx->draw = NULL;
    ctx->render = NULL;
+   sgx_batch_flush(ctx);
+   free(ctx->batch.verts);
+   free(ctx->batch.sa);
+   ctx->batch.verts = NULL;
+   ctx->batch.sa = NULL;
    FREE(ctx->verts);
    ctx->verts = NULL;
    ctx->nverts = ctx->maxfloats = 0;
@@ -559,32 +567,106 @@ map_buffer(struct pipe_resource *prsc, size_t *size)
    return map;
 }
 
-/* the triangles gathered, into the bound colour buffer, a render each
- * sgx_frame_max_vertices() */
+/* ---- gathering draws into renders (M14) -------------------------------- */
+
+bool
+sgx_batch_uses(struct sgx_context *ctx, struct pipe_resource *p)
+{
+   struct sgx_batch *b = &ctx->batch;
+
+   if (!b->ndraws || !p)
+      return false;
+   if (b->rt == p)
+      return true;
+   for (unsigned i = 0; i < b->ntex; i++)
+      if (b->tex[i] == p)
+         return true;
+   return false;
+}
+
+void
+sgx_batch_flush(struct sgx_context *ctx)
+{
+   struct sgx_screen *screen = sgx_screen(ctx->base.screen);
+   struct sgx_batch *b = &ctx->batch;
+   struct sgx_frame_draw d[SGX_FRAME_MAX_DRAWS];
+   struct sgx_fence *fence;
+   int ret = -ENOMEM;
+
+   if (!b->ndraws)
+      return;
+   for (unsigned i = 0; i < b->ndraws; i++) {
+      const struct sgx_batch_draw *bd = &b->draw[i];
+
+      d[i] = (struct sgx_frame_draw){
+         .l = bd->l, .verts = b->verts + bd->first, .nverts = bd->nverts,
+         .prog = bd->compiled ? &bd->prog : NULL, .sa = b->sa + bd->sa, .st = bd->st,
+      };
+   }
+   if ((fence = sgx_fence_create(&screen->dev, false))) {
+      simple_mtx_lock(&screen->frame_lock);
+      ret = sgx_frame_render(screen->frame, sgx_resource(b->rt), d, b->ndraws, b->handles,
+                             b->ntex, fence);
+      simple_mtx_unlock(&screen->frame_lock);
+   }
+   if (!ret) {
+      sgx_fence_reference(&ctx->last, fence);
+      sgx_resource(b->rt)->seq++;
+   } else {
+      mesa_logw("sgx: a render of %u draws failed (%d)", b->ndraws, ret);
+   }
+   sgx_fence_reference(&fence, NULL);
+   pipe_resource_reference(&b->rt, NULL);
+   for (unsigned i = 0; i < b->ntex; i++)
+      pipe_resource_reference(&b->tex[i], NULL);
+   b->ndraws = b->ntex = b->nfloats = b->nsa = b->cursor = 0;
+}
+
+static bool
+grow(void **p, unsigned *max, unsigned want, unsigned size)
+{
+   unsigned n;
+   void *q;
+
+   if (want <= *max)
+      return true;
+   n = MAX2(want, *max * 2);
+   if (!(q = realloc(*p, (size_t)n * size)))
+      return false;
+   *p = q;
+   *max = n;
+   return true;
+}
+
+/* One draw's triangles (ctx->verts, ctx->nverts) added to the gathered
+ * render, in pieces when they are more than one draw of a render takes */
 static void
 submit(struct sgx_context *ctx)
 {
    struct sgx_screen *screen = sgx_screen(ctx->base.screen);
+   struct sgx_batch *b = &ctx->batch;
    struct pipe_surface *surf = &ctx->fb.cbufs[0];
    struct sgx_resource *rt = surf->texture ? sgx_resource(surf->texture) : NULL;
    struct sgx_fs *fs = ctx->draw_fs;
-   uint32_t sa[128 + 4 * SGX_FS_MAX_SAMPLERS + 4], handles[SGX_FS_MAX_SAMPLERS];
+   uint32_t sa[128 + 4 * SGX_FS_MAX_SAMPLERS + 4];
+   struct pipe_resource *tex[SGX_FS_MAX_SAMPLERS];
+   unsigned vf = sgx_frame_vertex_floats(&ctx->layout), nsa = fs ? fs->prog.nsa : 0;
+   unsigned max, done = 0;
    struct sgx_frame_state st = {
       .depth_func = ctx->dsa && ctx->dsa->depth_enabled ? ctx->dsa->depth_func : PIPE_FUNC_ALWAYS,
       .depth_write = ctx->dsa && ctx->dsa->depth_enabled && ctx->dsa->depth_writemask,
    };
-   unsigned max, done = 0, nhandles = 0;
 
    if (!ctx->nverts)
       return;
    if (ctx->debug_draw) {
       mesa_logi("sgx: %u triangles; the first:", ctx->nverts / 3);
       for (unsigned i = 0; i < MIN2(ctx->nverts, 3); i++) {
-         const float *v = ctx->verts + i * sgx_frame_vertex_floats(&ctx->layout);
+         const float *v = ctx->verts + i * vf;
          const float *c = v + 4 + 4 * ctx->layout.colour;
 
-         mesa_logi("sgx:   x %8.4f y %8.4f  colour %.3f %.3f %.3f %.3f",
-                   v[0], v[1], c[0], c[1], c[2], c[3]);
+         mesa_logi("sgx:   x %8.4f y %8.4f z %8.4f  colour %.3f %.3f %.3f %.3f",
+                   v[0], v[1], v[2], c[0], c[1], c[2], c[3]);
       }
    }
    if (!screen->frame) {
@@ -599,8 +681,35 @@ submit(struct sgx_context *ctx)
       ctx->nverts = 0;
       return;
    }
+   if (b->ndraws && b->rt != &rt->base)
+      sgx_batch_flush(ctx);
+
+   /* SGX_FRAME=packvertex, packpixel: the pack's sides, a render a draw,
+    * M13a's colour (debugging only) */
+   if (sgx_frame_options() & (SGX_FRAME_PACKVTX | SGX_FRAME_PACKPIX)) {
+      sgx_batch_flush(ctx);
+      max = sgx_frame_max_vertices(screen->frame, &ctx->layout);
+      for (done = 0; done < ctx->nverts; done += max) {
+         unsigned n = MIN2(ctx->nverts - done, max);
+         struct sgx_fence *fence = sgx_fence_create(&screen->dev, false);
+
+         if (!fence)
+            break;
+         simple_mtx_lock(&screen->frame_lock);
+         if (!sgx_frame_draw(screen->frame, rt, &ctx->layout, ctx->verts + done * vf, n,
+                             NULL, NULL, NULL, 0, &st, fence)) {
+            sgx_fence_reference(&ctx->last, fence);
+            rt->seq++;
+         }
+         simple_mtx_unlock(&screen->frame_lock);
+         sgx_fence_reference(&fence, NULL);
+      }
+      ctx->nverts = 0;
+      return;
+   }
+
    /* a compiled fragment shader's secondary attributes: its uniforms,
-    * then the state words of each texture it samples */
+    * then the state words of each texture it samples, the blend colour */
    if (fs) {
       unsigned n = MIN2(fs->nuniforms, ctx->fs_constants_size / 4);
 
@@ -611,41 +720,84 @@ submit(struct sgx_context *ctx)
          unsigned unit = fs->sampler_unit[i];
          struct pipe_sampler_view *view = unit < ARRAY_SIZE(ctx->fs_views) ?
                                           ctx->fs_views[unit] : NULL;
-         struct sgx_resource *tex = view ? sgx_resource(view->texture) : NULL;
+         struct sgx_resource *t = view ? sgx_resource(view->texture) : NULL;
 
-         if (!tex || !sgx_resource_texture(screen, tex, unit < PIPE_MAX_SAMPLERS ?
-                                           ctx->fs_samplers[unit] : NULL,
-                                           sa + fs->sampler_sa + 4 * i)) {
+         /* its copy is about to be made again (or it is the target):
+          * what was gathered reads the old one, so render that first */
+         if (t && sgx_batch_uses(ctx, &t->base) &&
+             (&t->base == b->rt || !t->tw || t->tw_seq != t->seq))
+            sgx_batch_flush(ctx);
+         if (!t || !sgx_resource_texture(screen, t, unit < PIPE_MAX_SAMPLERS ?
+                                         ctx->fs_samplers[unit] : NULL,
+                                         sa + fs->sampler_sa + 4 * i)) {
             mesa_logw_once("sgx: a draw samples a texture unit with nothing it can "
                            "sample bound: dropped");
             ctx->nverts = 0;
             return;
          }
-         handles[nhandles++] = tex->tw->handle;
+         tex[i] = &t->base;
       }
       if (fs->blend_sa >= 0)
          memcpy(sa + fs->blend_sa, ctx->blend_color.color, 4 * sizeof(float));
+      simple_mtx_lock(&screen->frame_lock);
+      if (sgx_frame_upload(screen->frame, &fs->prog)) {
+         simple_mtx_unlock(&screen->frame_lock);
+         ctx->nverts = 0;
+         return;
+      }
+      simple_mtx_unlock(&screen->frame_lock);
    }
+
    max = sgx_frame_max_vertices(screen->frame, &ctx->layout);
    while (done < ctx->nverts) {
-      unsigned n = MIN2(ctx->nverts - done, max);
-      struct sgx_fence *fence = sgx_fence_create(&screen->dev, false);
-      int ret;
+      unsigned n = MIN2(ctx->nverts - done, max), first, ntex = b->ntex;
+      unsigned cursor = b->cursor;
+      struct sgx_batch_draw *bd;
 
-      if (!fence)
+      /* room in this render: a draw, its vertices, its textures */
+      for (unsigned i = 0; fs && i < fs->nsamplers; i++) {
+         unsigned k;
+
+         for (k = 0; k < b->ntex && b->tex[k] != tex[i]; k++)
+            ;
+         ntex += k == b->ntex;
+      }
+      if (b->ndraws == SGX_FRAME_MAX_DRAWS || ntex > SGX_FRAME_MAX_HANDLES ||
+          !sgx_frame_place(screen->frame, &cursor, &ctx->layout, n, &first)) {
+         sgx_batch_flush(ctx);
+         cursor = 0;
+         if (!sgx_frame_place(screen->frame, &cursor, &ctx->layout, n, &first))
+            break;
+      }
+      if (!grow((void **)&b->verts, &b->maxfloats, b->nfloats + n * vf, sizeof(float)) ||
+          !grow((void **)&b->sa, &b->maxsa, b->nsa + nsa, sizeof(uint32_t)))
          break;
-      simple_mtx_lock(&screen->frame_lock);
-      ret = sgx_frame_draw(screen->frame, rt, &ctx->layout,
-                           ctx->verts + done * sgx_frame_vertex_floats(&ctx->layout), n,
-                           fs ? &fs->prog : NULL, sa, handles, nhandles, &st, fence);
-      if (!ret)
-         rt->seq++;
-      simple_mtx_unlock(&screen->frame_lock);
-      if (!ret)
-         sgx_fence_reference(&ctx->last, fence);
-      else
-         mesa_logw("sgx: a draw of %u vertices failed (%d)", n, ret);
-      sgx_fence_reference(&fence, NULL);
+      if (!b->ndraws)
+         pipe_resource_reference(&b->rt, &rt->base);
+      for (unsigned i = 0; fs && i < fs->nsamplers; i++) {
+         unsigned k;
+
+         for (k = 0; k < b->ntex && b->tex[k] != tex[i]; k++)
+            ;
+         if (k == b->ntex) {
+            pipe_resource_reference(&b->tex[b->ntex], tex[i]);
+            b->handles[b->ntex++] = sgx_resource(tex[i])->tw->handle;
+         }
+      }
+      bd = &b->draw[b->ndraws++];
+      bd->l = ctx->layout;
+      bd->first = b->nfloats;
+      bd->nverts = n;
+      bd->compiled = fs != NULL;
+      if (fs)
+         bd->prog = fs->prog;
+      bd->sa = b->nsa;
+      bd->st = st;
+      memcpy(b->verts + b->nfloats, ctx->verts + done * vf, n * vf * sizeof(float));
+      memcpy(b->sa + b->nsa, sa, nsa * sizeof(uint32_t));
+      b->nfloats += n * vf;
+      b->nsa += nsa;
+      b->cursor = cursor;
       done += n;
    }
    ctx->nverts = 0;

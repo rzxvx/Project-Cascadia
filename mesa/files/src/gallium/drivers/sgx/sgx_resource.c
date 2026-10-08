@@ -24,6 +24,7 @@
 
 #include "sgx_context.h"
 #include "sgx_device.h"
+#include "sgx_draw.h"
 #include "sgx_frame.h"
 #include "sgx_screen.h"
 
@@ -245,6 +246,9 @@ sgx_transfer_map(struct pipe_context *pctx, struct pipe_resource *prsc, unsigned
    struct sgx_transfer *trans;
    uint8_t *map;
 
+   /* draws gathered but not rendered that write or read it go first */
+   if (!(usage & PIPE_MAP_UNSYNCHRONIZED) && sgx_batch_uses(ctx, prsc))
+      sgx_batch_flush(ctx);
    if (!(usage & PIPE_MAP_UNSYNCHRONIZED) && !sgx_bo_wait(res->bo, -1))
       return NULL;
    if (!(map = sgx_bo_map(res->bo)))

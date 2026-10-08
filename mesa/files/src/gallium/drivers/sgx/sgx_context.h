@@ -28,6 +28,31 @@ struct sgx_shader {
    unsigned nvariants;
 };
 
+/* Draws gathered into one render until something needs it done
+ * (sgx_draw.c: sgx_batch_flush): a flush, a map of what it writes or
+ * reads, another target, a clear, a full batch. */
+struct sgx_batch_draw {
+   struct sgx_frame_layout l;
+   unsigned first, nverts;              /* its vertices: floats from first in verts */
+   struct sgx_pixel_program prog;       /* a copy, uploaded */
+   bool compiled;
+   unsigned sa;                         /* its secondary attributes, from word sa */
+   struct sgx_frame_state st;
+};
+
+struct sgx_batch {
+   struct pipe_resource *rt;            /* referenced */
+   struct sgx_batch_draw draw[SGX_FRAME_MAX_DRAWS];
+   unsigned ndraws, cursor;             /* cursor: sgx_frame_place's */
+   float *verts;
+   unsigned nfloats, maxfloats;
+   uint32_t *sa;
+   unsigned nsa, maxsa;
+   struct pipe_resource *tex[SGX_FRAME_MAX_HANDLES];   /* sampled, referenced */
+   uint32_t handles[SGX_FRAME_MAX_HANDLES];           /* their twiddled copies */
+   unsigned ntex;
+};
+
 struct sgx_vertex_elements {
    unsigned count;
    struct pipe_vertex_element e[PIPE_MAX_ATTRIBS];
@@ -59,6 +84,7 @@ struct sgx_context {
    struct sgx_frame_layout layout;      /* of verts, for the bound shaders */
    float *verts;
    unsigned nverts, maxfloats;
+   struct sgx_batch batch;
    const float *fs_constants;
    unsigned fs_constants_size;  /* bytes */
    bool warned_fs, debug_draw;

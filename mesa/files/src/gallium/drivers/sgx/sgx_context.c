@@ -62,6 +62,7 @@ sgx_flush(struct pipe_context *pctx, struct pipe_fence_handle **fence, unsigned 
    struct sgx_context *ctx = sgx_context(pctx);
    struct sgx_fence *f = NULL;
 
+   sgx_batch_flush(ctx);
    if (!fence)
       return;
    if (ctx->last)
@@ -110,6 +111,12 @@ sgx_clear(struct pipe_context *pctx, unsigned buffers, uint32_t color_clear_mask
    unsigned w = scissor ? scissor->maxx - scissor->minx : ctx->fb.width;
    unsigned h = scissor ? scissor->maxy - scissor->miny : ctx->fb.height;
 
+   /* what was drawn before comes first; and a render starts at the far
+    * depth, so a depth clear starts a new one */
+   sgx_batch_flush(ctx);
+   if ((buffers & PIPE_CLEAR_DEPTH) && depth != 1.0)
+      mesa_logw_once("sgx: depth is cleared to 1.0 whatever the clear value (%f)", depth);
+
    for (unsigned i = 0; i < ctx->fb.nr_cbufs; i++) {
       struct pipe_surface *surf = &ctx->fb.cbufs[i];
 
@@ -131,6 +138,7 @@ sgx_clear_render_target(struct pipe_context *pctx, struct pipe_surface *dst,
                         const union pipe_color_union *color, unsigned x, unsigned y,
                         unsigned w, unsigned h, bool render_condition_enabled)
 {
+   sgx_batch_flush(sgx_context(pctx));
    if (!x && !y && w == dst->texture->width0 && h == dst->texture->height0 &&
        sgx_clear_gpu(sgx_context(pctx), dst, color))
       return;
@@ -142,6 +150,7 @@ sgx_clear_depth_stencil(struct pipe_context *pctx, struct pipe_surface *dst,
                         unsigned flags, double depth, unsigned stencil, unsigned x,
                         unsigned y, unsigned w, unsigned h, bool render_condition_enabled)
 {
+   sgx_batch_flush(sgx_context(pctx));
    util_clear_depth_stencil(pctx, dst, flags, depth, stencil, x, y, w, h);
 }
 
@@ -158,6 +167,8 @@ sgx_blit(struct pipe_context *pctx, const struct pipe_blit_info *info)
 static void
 sgx_flush_resource(struct pipe_context *pctx, struct pipe_resource *prsc)
 {
+   if (sgx_batch_uses(sgx_context(pctx), prsc))
+      sgx_batch_flush(sgx_context(pctx));
 }
 
 /* ---- state, kept for later ---------------------------------------------- */
@@ -379,7 +390,11 @@ static void
 sgx_set_framebuffer_state(struct pipe_context *pctx,
                           const struct pipe_framebuffer_state *fb)
 {
-   util_copy_framebuffer_state(&sgx_context(pctx)->fb, fb);
+   struct sgx_context *ctx = sgx_context(pctx);
+
+   if (!util_framebuffer_state_equal(&ctx->fb, fb))
+      sgx_batch_flush(ctx);
+   util_copy_framebuffer_state(&ctx->fb, fb);
 }
 
 static void

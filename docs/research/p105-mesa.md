@@ -1019,6 +1019,40 @@ SRC_ALPHA_SATURATE, ZERO/ONE, a colour mask, and the quad twice in one
 draw (blending onto itself within a render). On the iPad 14 of 14, within
 one step; glfs 23, gltex 12, gltri 11, glclear right.
 
+**M14, step 3: depth, and draws gathered into renders (2026-10-08).**
+The draw's ISP state B carries GL's depth test (compare in bits 24:22, bit
+20 set when depth is not written; M5's capture), vertices carry the draw
+module's z, and a tile starts at the far depth. The test holds within a
+render; to make it hold across draws, draws are no longer a render each:
+
+- the context gathers them (`struct sgx_batch`: vertices, secondary
+  attributes, the uploaded program's copy, ISP state, the textures'
+  copies) and `sgx_frame_render` draws up to 200 in one render: a state
+  block, state program and secondary attributes in a 1 KiB slot each
+  (EXT window), every draw's vertices one after another, each draw's
+  indices taken from the pack's 0, 1, 2, ... buffer at its first vertex
+  (rounded to eight for a 16-byte boundary), ten VDM words a draw;
+- what renders the gathered draws: a flush, a map of the target or of a
+  sampled texture, another framebuffer, any clear (a render starts at the
+  far depth, so a depth clear starts a new one; a clear value other than
+  1.0 is not done yet), a texture whose copy must be made again while a
+  gathered draw still reads it, a full batch;
+- `SGX_FRAME=packvertex|packpixel` still draws a render at a time.
+
+`tools/sgx/gl/gldepth.c`: two overlapping quads, near (green) and far
+(red), in one draw and in two -- the test off, LESS and LEQUAL in either
+order, ALWAYS, depth writes off. On the iPad 8 of 8 (two draws was the
+one wrong before the gathering); glfs 23, gltex 12, glblend 14, gltri 11,
+glclear right.
+
+Speed (`tools/sgx/gl/glspeed.c`, small quads, a uniform colour each, a
+glFinish a frame): 1 draw 3.1 ms a frame, 10 draws 3.4 ms, 100 draws 10.2
+ms, 400 draws 36.7 ms -- about 10 000 draws a second. A render a draw
+(`packvertex`) is as fast (100 draws 9.1 ms): a render costs little on the
+GPU (tiles without geometry seem to be passed over), and the time is the
+CPU's for each draw -- the draw module running the vertex shader, the
+state, the copies. That is M15's to look at; the gathering is for depth.
+
 ## M15: conformance and speed
 
 `dEQP-GLES2` and the GLES parts of `piglit`. Control flow, `discard`,

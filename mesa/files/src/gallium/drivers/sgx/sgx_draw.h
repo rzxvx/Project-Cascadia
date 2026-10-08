@@ -38,6 +38,11 @@ struct sgx_fs_colour {
 /* reads fs (it is not changed) */
 void sgx_fs_colour_analyse(const struct nir_shader *fs, struct sgx_fs_colour *out);
 
+/* the gathered draws rendered now (nothing if there are none) */
+void sgx_batch_flush(struct sgx_context *ctx);
+/* whether the gathered draws write or read p */
+bool sgx_batch_uses(struct sgx_context *ctx, struct pipe_resource *p);
+
 bool sgx_draw_init(struct sgx_context *ctx);
 void sgx_draw_fini(struct sgx_context *ctx);
 

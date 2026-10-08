@@ -112,6 +112,35 @@ int sgx_frame_draw(struct sgx_frame *f, struct sgx_resource *rt,
 
 /* waits for the last render through the frame */
 void sgx_frame_finish(struct sgx_frame *f);
+
+/* One draw of a render (M14: draws are gathered into renders): vertices
+ * laid out as l says, the pixels prog's (uploaded with sgx_frame_upload,
+ * reading sa) or, without, l's colour iterated; what the ISP does. */
+struct sgx_frame_draw {
+   struct sgx_frame_layout l;
+   const float *verts;
+   unsigned nverts;
+   const struct sgx_pixel_program *prog;
+   const uint32_t *sa;
+   struct sgx_frame_state st;
+};
+#define SGX_FRAME_MAX_DRAWS 200
+
+/* the program's code and PDS into GPU memory, once (sgx_frame_draw does it
+ * itself) */
+int sgx_frame_upload(struct sgx_frame *f, struct sgx_pixel_program *p);
+
+/* Room for a draw's vertices among a render's: *cursor (0 for the first)
+ * moves past them; false when they do not fit. */
+bool sgx_frame_place(struct sgx_frame *f, unsigned *cursor, const struct sgx_frame_layout *l,
+                     unsigned nverts, unsigned *first);
+
+/* n draws (at most SGX_FRAME_MAX_DRAWS, their vertices placed one after
+ * another as sgx_frame_place says) in one render into rt, in order, over
+ * what it holds: the depth test holds across them. */
+int sgx_frame_render(struct sgx_frame *f, struct sgx_resource *rt,
+                     const struct sgx_frame_draw *draws, unsigned n, const uint32_t *handles,
+                     unsigned nhandles, struct sgx_fence *done);
 unsigned sgx_frame_max_vertices(struct sgx_frame *f, const struct sgx_frame_layout *l);
 
 #endif
