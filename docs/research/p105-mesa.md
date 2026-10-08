@@ -1175,9 +1175,42 @@ with a page flip, then a still frame and `/dev/fb0` checked against it.
 Kernel #293: **118 frames a second, every pixel of the screen right**; the
 rest of the tests unchanged.
 
-Next: a compositor. Weston's DRM backend needs the same, plus dma-buf import
-of its clients' buffers (`resource_from_handle`, and the kernel telling a
-buffer's GPU address for a handle).
+**Step 2 (2026-10-08): dma-buf import, linear textures, weston.** The kernel
+(#294) says where a handle's buffer is (`GEM_INFO`, UAPI version 2): every
+buffer is the render node's own, so a dma-buf's handle names one already
+mapped. Mesa keeps its buffer objects by handle (a dma-buf of ours imported
+again in the same process comes back as the same handle) and takes dma-bufs
+in `resource_from_handle`; `samplerExternalOES` is a 2D sampler. kmscube
+`-M rgba` (an ABGR8888 dma-buf through `EGL_EXT_image_dma_buf_import`): 142
+frames a second, the colour bars in order.
+
+Textures written by the GPU or by others, and those not a power of two in
+size, are sampled as they are, linear -- the CPU's twiddled copy would read
+them back from write-combined memory each time, or is padded. The state
+words are the 2D engine's for iOS's IOSurfaces: the stride in 16 bytes less
+2 at bit 16, bits 11:9 all set (every other value of the three skews the
+rows; tried on gltex), `0xcc000000 | (w - 1) << 12 | (h - 1)`, the address,
+`0x10000000`. The sampler reads bytes as B G R A; R8G8B8A8 textures and X8
+ones are swizzled back in the shader (`nir_lower_tex`, a variant key). What
+is lost: the minification filter (point sampling), and formats but the 8-bit
+RGBA orders (L8 and 565 keep the copy). gltex 14 of 14 (with two NPOT cases).
+
+weston 14 (DRM backend, GL renderer, through seatd) then runs on the GPU:
+the desktop shell, weston-terminal. It showed a bug of the compiler's: a
+program that samples clears skipinv everywhere, so that the pixels around a
+triangle compute the 2x2 blocks' derivatives -- and their output writes
+landed too, blended twice along every shared edge (dashes on the panel,
+exactly one blend darker). The output writes keep skipinv now; `glseam`
+checks a blended textured rectangle's every pixel. The panel is now the same
+as weston's pixman renderer draws it.
+
+What is left for a desktop: GL clients under weston. Every process that
+draws loads the template frame at the same fixed addresses (the pack's
+parameter buffer, PDS block, state, code page), so a second one cannot start
+while weston runs (and it crashes instead of failing: to fix). That needs the
+parameter buffer to become the kernel's, shared by everyone (the microkernel
+keeps its state, M12), and the rest of the frame made by Mesa at addresses
+the kernel picks.
 
 ## Testing, without and with the device
 
