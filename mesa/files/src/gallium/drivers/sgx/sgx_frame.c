@@ -1059,10 +1059,10 @@ rt_set(struct sgx_frame *f, unsigned w, unsigned h)
    size += BLOCK_SIZE;
    if (size > RT_SLOT_SIZE)
       return NULL;
-   /* a slot of our own in the TA's heap; the kernel's pick with the frame
-    * built (M17) */
+   /* a slot of our own in the TA's heap; the kernel's pick on a kernel
+    * that has one (UAPI 3, M17) */
    va = RT_SLOT_VA + slot * RT_SLOT_SIZE;
-   s->bo = f->built && f->dev->uapi >= 3 && !getenv("SGX_RT_SLOTS") ?
+   s->bo = f->dev->uapi >= 3 ?
            sgx_bo_create(f->dev, size, APPLE_SGX_BO_TA_HEAP, 0) :
            sgx_bo_create(f->dev, size, APPLE_SGX_BO_FIXED_VA, va);
    if (s->bo)

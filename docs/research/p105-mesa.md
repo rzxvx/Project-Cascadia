@@ -188,6 +188,38 @@ layout has the 3D array too, a render's end becomes one word the kernel
 owns. To find with a capture of a render command whose status counts are
 not zero.
 
+## M17: more than one process -- the frame built, the kernel's parameter buffer
+
+Every process that drew loaded sgx2d's pack at its fixed addresses, so a
+second one could not start while weston ran. Now (2026-10-08):
+
+- **the frame is Mesa's own** (`sgx_template.c`): what `frame.py`, `pds.py`
+  and `programs.py` put in the pack -- the PDS block, the state area, the
+  stream's tail, the programs, the TA command, the GL words of the 3D block
+  -- built at addresses given; `mesa/host/tmpl-test.py` builds it at the
+  pack's and compares, byte for byte: the same. `sgx_frame.c` builds it in
+  buffers where the kernel puts them; only the GL driver's event program
+  still comes from the pack's image. `SGX_FRAME=pack` keeps the old way.
+- **the parameter buffer is the kernel's** (UAPI 3): one for all clients,
+  laid out as `rgen.py`'s `pb_image()`, written again for each microkernel
+  start that uses it; a submit with `pb_va` 0 takes it. Clients taking
+  turns no longer cost the microkernel a restart.
+- **render target data in the TA's heap** (`APPLE_SGX_BO_TA_HEAP`), where
+  the kernel picks: the 3D block names the state buffer by its offset from
+  the TA's base, 24 bits of 16 bytes.
+
+Two things the first kernels got wrong. The descriptor's word 14 is the
+first block's *address* (`rgen.py` takes it from its list of addresses; the
+port wrote the offset): core 0's `BIF_FAULT 0x00020010`, a read at
+0x00020000. And where the buffer is matters: from Mesa, with the same image
+in a buffer of its own at 4 MiB steps, a single clear hangs with the buffer
+at 0x8cc00000-0x8ef00000 (or at 0x8d000000-0x8f400000 now and then:
+`gltri` failed at two the clear passed), and works everywhere else from
+0x88c00000 to 0x96c00000 (0x97000000 runs past the TA's 256 MiB). Render
+target data in that range are fine. Not understood; the kernel's buffer is
+at 0x89000000, near iOS's 0x88000000, and the full set of tests passes with
+a buffer there.
+
 ## M10: render targets without iOS's code
 
 The kext's render target setup (`0x80bf7aac` init, `0x80bf6fd8` sizes and
