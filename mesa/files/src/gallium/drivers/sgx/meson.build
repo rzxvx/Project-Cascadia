@@ -14,6 +14,8 @@ files_sgx = files(
   'sgx_frame.h',
   'sgx_resource.c',
   'sgx_resource.h',
+  'sgx_rt.c',
+  'sgx_rt.h',
   'sgx_screen.c',
   'sgx_screen.h',
   'sgx_usse.c',
