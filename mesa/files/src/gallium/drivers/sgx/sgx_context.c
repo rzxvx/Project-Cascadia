@@ -114,8 +114,10 @@ sgx_clear(struct pipe_context *pctx, unsigned buffers, uint32_t color_clear_mask
    /* what was drawn before comes first; and a render starts at the far
     * depth, so a depth clear starts a new one */
    sgx_batch_flush(ctx);
-   if ((buffers & PIPE_CLEAR_DEPTH) && depth != 1.0)
-      mesa_logw_once("sgx: depth is cleared to 1.0 whatever the clear value (%f)", depth);
+   /* every render starts at the last depth clear's value (there is no
+    * loading of depth from memory yet) */
+   if (buffers & PIPE_CLEAR_DEPTH)
+      ctx->batch.depth_clear = depth;
 
    for (unsigned i = 0; i < ctx->fb.nr_cbufs; i++) {
       struct pipe_surface *surf = &ctx->fb.cbufs[i];
@@ -525,6 +527,7 @@ sgx_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
 
    if (!ctx)
       return NULL;
+   ctx->batch.depth_clear = 1.0f;
    p = &ctx->base;
    p->screen = pscreen;
    p->priv = priv;

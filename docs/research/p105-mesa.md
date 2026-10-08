@@ -1053,6 +1053,24 @@ GPU (tiles without geometry seem to be passed over), and the time is the
 CPU's for each draw -- the draw module running the vertex shader, the
 state, the copies. That is M15's to look at; the gathering is for depth.
 
+**M14, step 4: perspective and the depth clear value (2026-10-08).**
+
+- Vertices reach the TA as clip coordinates, as a vertex shader would
+  hand them over: the draw module keeps 1 / w in the position's w, so the
+  driver multiplies x, y, z (back in -1..1) by w and gives w. The TA
+  divides and interpolates with it: `tools/sgx/gl/glpersp.c`, a quad with
+  w 1 on the left and 3 on the right, matches the perspective-correct
+  varying exactly (69 steps from the affine one).
+- The depth a render's tiles start at is register `0x4b8` in the 3D
+  block (1.0 as the kext fills it, M4; the block's address is in the TA
+  command at `+0x50`, the register at `+0x80` in it) -- the background
+  object's depth. A gathered render starts at the last depth clear's
+  value; `gldepth`'s `clear_half` (cleared to 0.5, the far quad at 0.75
+  fails LESS) passes. Without loading depth from memory, a render after a
+  flush in the middle of a frame starts from that value again.
+
+gldepth 9 of 9; glfs, gltex, glblend, glpersp, gltri, glclear unchanged.
+
 ## M15: conformance and speed
 
 `dEQP-GLES2` and the GLES parts of `piglit`. Control flow, `discard`,

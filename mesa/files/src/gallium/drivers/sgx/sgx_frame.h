@@ -137,10 +137,10 @@ bool sgx_frame_place(struct sgx_frame *f, unsigned *cursor, const struct sgx_fra
 
 /* n draws (at most SGX_FRAME_MAX_DRAWS, their vertices placed one after
  * another as sgx_frame_place says) in one render into rt, in order, over
- * what it holds: the depth test holds across them. */
+ * what it holds: the depth test holds across them, from depth_clear. */
 int sgx_frame_render(struct sgx_frame *f, struct sgx_resource *rt,
                      const struct sgx_frame_draw *draws, unsigned n, const uint32_t *handles,
-                     unsigned nhandles, struct sgx_fence *done);
+                     unsigned nhandles, float depth_clear, struct sgx_fence *done);
 unsigned sgx_frame_max_vertices(struct sgx_frame *f, const struct sgx_frame_layout *l);
 
 #endif

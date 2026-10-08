@@ -19,7 +19,7 @@
 #define W 768
 #define H 1024
 
-enum { NEAR, FAR };
+enum { NEAR, FAR, NONE };
 
 static const struct test {
 	const char *name;
@@ -28,6 +28,8 @@ static const struct test {
 	GLboolean mask;
 	int first, split;       /* which quad first; each in a draw of its own */
 	int middle;             /* what the middle should be */
+	float clear;            /* the depth clear value (0: 1.0) */
+	int right;              /* what the right should be (0: FAR) */
 } tests[] = {
 	{ "off", 0, GL_LESS, 1, NEAR, 0, FAR },
 	{ "less", 1, GL_LESS, 1, NEAR, 0, NEAR },
@@ -37,6 +39,8 @@ static const struct test {
 	{ "nowrite", 1, GL_LESS, 0, NEAR, 0, FAR },
 	{ "two_draws", 1, GL_LESS, 1, NEAR, 1, NEAR },
 	{ "two_draws_far_first", 1, GL_LESS, 1, FAR, 1, NEAR },
+	/* cleared to 0.5: the far quad (depth 0.75) fails LESS everywhere */
+	{ "clear_half", 1, GL_LESS, 1, FAR, 0, NEAR, 0.5f, NONE },
 };
 
 static const char *vs_src =
@@ -76,7 +80,7 @@ static int wanted(int argc, char **argv, const char *name)
 int main(int argc, char **argv)
 {
 	static const float green[4] = { 0, 1, 0, 1 }, red[4] = { 1, 0, 0, 1 };
-	static const char *what[2] = { "near (green)", "far (red)" };
+	static const char *what[3] = { "near (green)", "far (red)", "nothing" };
 	PFNEGLGETPLATFORMDISPLAYEXTPROC get_display;
 	EGLint ctx_attrs[] = { EGL_CONTEXT_CLIENT_VERSION, 2, EGL_NONE };
 	uint8_t *px = malloc(W * H * 4);
@@ -141,7 +145,7 @@ int main(int argc, char **argv)
 		glDisable(GL_DEPTH_TEST);
 		glDepthMask(GL_TRUE);
 		glClearColor(0, 0, 0, 1);
-		glClearDepthf(1);
+		glClearDepthf(T->clear ? T->clear : 1);
 		glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 		if (T->test)
 			glEnable(GL_DEPTH_TEST);
@@ -157,14 +161,15 @@ int main(int argc, char **argv)
 		for (int i = 0; i < 3; i++) {
 			const uint8_t *q = px + (H / 2 * W + xs[i]) * 4;
 
-			got[i] = q[1] > 200 && q[0] < 50 ? NEAR : q[0] > 200 && q[1] < 50 ? FAR : -1;
+			got[i] = q[1] > 200 && q[0] < 50 ? NEAR : q[0] > 200 && q[1] < 50 ? FAR :
+				 q[0] < 50 && q[1] < 50 ? NONE : -1;
 		}
-		ok = got[0] == NEAR && got[2] == FAR && got[1] == T->middle;
+		ok = got[0] == NEAR && got[2] == (T->right ? T->right : FAR) && got[1] == T->middle;
 		failed += !ok;
-		printf("%-20s %s: left %s, middle %s (want %s), right %s\n", T->name,
+		printf("%-20s %s: left %s, middle %s (want %s), right %s (want %s)\n", T->name,
 		       ok ? "ok   " : "WRONG", got[0] < 0 ? "?" : what[got[0]],
 		       got[1] < 0 ? "?" : what[got[1]], what[T->middle],
-		       got[2] < 0 ? "?" : what[got[2]]);
+		       got[2] < 0 ? "?" : what[got[2]], what[T->right ? T->right : FAR]);
 	}
 	printf("%d of %d cases right\n", run - failed, run);
 	eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);

@@ -615,7 +615,7 @@ sgx_batch_flush(struct sgx_context *ctx)
    if ((fence = sgx_fence_create(&screen->dev, false))) {
       simple_mtx_lock(&screen->frame_lock);
       ret = sgx_frame_render(screen->frame, sgx_resource(b->rt), d, b->ndraws, b->handles,
-                             b->ntex, fence);
+                             b->ntex, b->depth_clear, fence);
       simple_mtx_unlock(&screen->frame_lock);
    }
    if (!ret) {

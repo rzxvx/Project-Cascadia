@@ -44,6 +44,7 @@ struct sgx_batch {
    struct pipe_resource *rt;            /* referenced */
    struct sgx_batch_draw draw[SGX_FRAME_MAX_DRAWS];
    unsigned ndraws, cursor;             /* cursor: sgx_frame_place's */
+   float depth_clear;                   /* what the render's depth starts at */
    float *verts;
    unsigned nfloats, maxfloats;
    uint32_t *sa;

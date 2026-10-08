@@ -291,6 +291,8 @@ sgx_frame_options(void)
    return o;
 }
 
+static bool set_depth_clear(struct sgx_frame *f, const uint32_t *cmd, float depth);
+
 static uint32_t
 p27(uint32_t a)                 /* a PDS data pointer */
 {
@@ -1058,7 +1060,7 @@ render(struct sgx_frame *f, struct sgx_resource *rt, const struct sgx_frame_layo
    /* the render: the pack's TA command, PB and render details */
    cmd = (uint32_t *)cpu_at(f, f->kick[2], APPLE_SGX_TA_CMD_MIN, NULL);
    det = cpu_at(f, f->kick[1], 0xa8, &det_bo);
-   if (!cmd || !det || !cpu_at(f, f->kick[2], cmd[0], NULL))
+   if (!cmd || !det || !cpu_at(f, f->kick[2], cmd[0], NULL) || !set_depth_clear(f, cmd, 1.0f))
       return -EFAULT;
    /* the frame's buffers, the target, and what the draw reads besides */
    if (f->nhandles + 1 + nhandles > ARRAY_SIZE(hs))
@@ -1143,6 +1145,20 @@ sgx_frame_place(struct sgx_frame *f, unsigned *cursor, const struct sgx_frame_la
    return true;
 }
 
+/* The depth a render's tiles start at: register 0x4b8 in the 3D block
+ * (1.0 as the kext sets it, M4), whose address the TA command holds at
+ * +0x50 -- the background object's depth, presumably */
+static bool
+set_depth_clear(struct sgx_frame *f, const uint32_t *cmd, float depth)
+{
+   uint8_t *blk = cpu_at(f, cmd[0x50 / 4] + 0x80, 4, NULL);
+
+   if (!blk)
+      return false;
+   memcpy(blk, &depth, 4);
+   return true;
+}
+
 /* A draw's whole state for our vertex side, its secondary attributes'
  * loader and words written into its slot at base */
 static int
@@ -1190,7 +1206,7 @@ draw_state(struct sgx_frame *f, const struct sgx_frame_draw *d, uint32_t base, u
 int
 sgx_frame_render(struct sgx_frame *f, struct sgx_resource *rt,
                  const struct sgx_frame_draw *draws, unsigned n, const uint32_t *handles,
-                 unsigned nhandles, struct sgx_fence *done)
+                 unsigned nhandles, float depth_clear, struct sgx_fence *done)
 {
    uint32_t full[32], prog[16], bg[4], eot, *v = f->vdmbuf, *cmd;
    uint32_t hs[MAX_PACK_BOS + 3 + 1 + SGX_FRAME_MAX_HANDLES];
@@ -1248,7 +1264,8 @@ sgx_frame_render(struct sgx_frame *f, struct sgx_resource *rt,
 
    cmd = (uint32_t *)cpu_at(f, f->kick[2], APPLE_SGX_TA_CMD_MIN, NULL);
    det = cpu_at(f, f->kick[1], 0xa8, &det_bo);
-   if (!cmd || !det || !cpu_at(f, f->kick[2], cmd[0], NULL))
+   if (!cmd || !det || !cpu_at(f, f->kick[2], cmd[0], NULL) ||
+       !set_depth_clear(f, cmd, depth_clear))
       return -EFAULT;
    memcpy(hs, f->handles, f->nhandles * sizeof(uint32_t));
    hs[f->nhandles] = rt->bo->handle;
