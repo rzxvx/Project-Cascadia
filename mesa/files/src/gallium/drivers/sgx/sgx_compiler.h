@@ -49,6 +49,26 @@ struct sgx_fs {
    struct sgx_blend_key blend;                    /* what it was compiled for */
 };
 
+/* A compiled vertex shader (docs/research/p105-mesa.md, M18): attribute n
+ * (vertex element n, four F32 words, as the CPU lays the vertices out) in
+ * pa4n.., uniforms (constant buffer 0's words) in sa0.., the position and
+ * then the varyings varying_slot[] -- the fragment shader's inputs, in its
+ * order -- out through o0.. to the tiler. */
+#define SGX_VS_MAX_ATTRIBS 16
+
+struct sgx_vs {
+   uint64_t *code;
+   unsigned ncode, ntemps;
+   unsigned nattrs, nuniforms;
+   unsigned varying_slot[SGX_FRAME_MAX_VARYINGS];
+   unsigned nvaryings;
+   uint32_t code_va, fetch_va;      /* where the frame put it, and its vertex fetch */
+};
+
+struct sgx_vs *sgx_compile_vs(const struct nir_shader *vs, const unsigned *varying_slot,
+                              unsigned nvaryings, char *why, unsigned why_size);
+void sgx_vs_destroy(struct sgx_vs *vs);
+
 /* fs is not changed; blend NULL for none.  NULL, and why in why[], when
  * it cannot be compiled (yet). */
 struct sgx_fs *sgx_compile_fs(const struct nir_shader *fs, const struct sgx_blend_key *blend,

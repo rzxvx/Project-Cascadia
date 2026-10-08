@@ -26,6 +26,10 @@ struct sgx_shader {
    struct sgx_fs *compiled;             /* a fragment shader, compiled (M13c) */
    struct sgx_fs *variant[8];           /* and again for blend states (M14) */
    unsigned nvariants;
+   struct sgx_vs *vs_variant[4];        /* a vertex shader on the GPU, for the varyings
+                                           a fragment shader reads (M18) */
+   unsigned nvs;
+   bool vs_failed;                      /* it cannot be compiled: the draw module's */
 };
 
 /* Draws gathered into one render until something needs it done
@@ -38,6 +42,9 @@ struct sgx_batch_draw {
    bool compiled;
    unsigned sa;                         /* its secondary attributes, from word sa */
    struct sgx_frame_state st;
+   struct sgx_vs *vs;                   /* its vertex shader on the GPU (M18), or NULL */
+   unsigned vs_sa;                      /* its uniforms, from word vs_sa in sa */
+   unsigned idx, nidx;                  /* its indices, from idx in the batch's */
 };
 
 struct sgx_batch {
@@ -49,6 +56,8 @@ struct sgx_batch {
    unsigned nfloats, maxfloats;
    uint32_t *sa;
    unsigned nsa, maxsa;
+   uint16_t *idx;
+   unsigned nidx, maxidx;
    struct pipe_resource *tex[SGX_FRAME_MAX_HANDLES];   /* sampled, referenced */
    uint32_t handles[SGX_FRAME_MAX_HANDLES];           /* their twiddled copies */
    unsigned ntex;
@@ -85,6 +94,15 @@ struct sgx_context {
    struct sgx_frame_layout layout;      /* of verts, for the bound shaders */
    float *verts;
    unsigned nverts, maxfloats;
+   /* M18: the vertex shader on the GPU -- verts its attributes, the
+    * triangles indices into them, its uniforms */
+   struct sgx_vs *gpu_vs;
+   uint16_t *indices;
+   unsigned nindices, maxindices;
+   uint32_t vs_sa[128];
+   const struct pipe_rasterizer_state *rast;
+   const struct sgx_vertex_elements *velems;
+   struct pipe_viewport_state viewport;
    struct sgx_batch batch;
    const float *fs_constants;
    unsigned fs_constants_size;  /* bytes */

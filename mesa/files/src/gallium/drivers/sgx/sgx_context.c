@@ -229,6 +229,7 @@ sgx_bind_vertex_elements(struct pipe_context *pctx, void *state)
 {
    struct sgx_vertex_elements *ve = state;
 
+   sgx_context(pctx)->velems = ve;
    if (ve)
       draw_set_vertex_elements(sgx_context(pctx)->draw, ve->count, ve->e);
 }
@@ -295,10 +296,15 @@ sgx_delete_shader_state(struct pipe_context *pctx, void *state)
       draw_delete_vertex_shader(ctx->draw, sh->draw);
    if (ctx->fs == sh)
       ctx->fs = NULL;
-   /* its code stays where the frame put it: that place is not reused */
+   /* its code stays where the frame put it: that place is not reused; a
+    * render gathered with it goes first */
+   if (sh->nvs)
+      sgx_batch_flush(ctx);
    sgx_fs_destroy(sh->compiled);
    for (unsigned i = 0; i < sh->nvariants; i++)
       sgx_fs_destroy(sh->variant[i]);
+   for (unsigned i = 0; i < sh->nvs; i++)
+      sgx_vs_destroy(sh->vs_variant[i]);
    ralloc_free(sh->nir);
    FREE(sh);
 }
@@ -324,6 +330,7 @@ sgx_bind_rs_state(struct pipe_context *pctx, void *state)
 {
    struct sgx_context *ctx = sgx_context(pctx);
 
+   ctx->rast = state;
    if (ctx->draw && state)
       draw_set_rasterizer_state(ctx->draw, state, state);
 }
@@ -465,6 +472,8 @@ sgx_set_viewport_states(struct pipe_context *pctx, unsigned start, unsigned coun
 {
    struct sgx_context *ctx = sgx_context(pctx);
 
+   if (start == 0 && count)
+      ctx->viewport = v[0];
    if (ctx->draw)
       draw_set_viewport_states(ctx->draw, start, count, v);
 }

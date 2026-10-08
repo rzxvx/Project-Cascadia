@@ -131,6 +131,12 @@ void sgx_frame_finish(struct sgx_frame *f);
 /* One draw of a render (M14: draws are gathered into renders): vertices
  * laid out as l says, the pixels prog's (uploaded with sgx_frame_upload,
  * reading sa) or, without, l's colour iterated; what the ISP does. */
+struct sgx_vs;
+
+/* With vs (M18: the vertex shader on the GPU), verts are its attributes,
+ * vs->nattrs F32 vec4s a vertex, l the varyings it hands the pixels, vs_sa
+ * its uniforms; the triangles are indices[0..nindices) into verts, or the
+ * vertices in order without. */
 struct sgx_frame_draw {
    struct sgx_frame_layout l;
    const float *verts;
@@ -138,12 +144,23 @@ struct sgx_frame_draw {
    const struct sgx_pixel_program *prog;
    const uint32_t *sa;
    struct sgx_frame_state st;
+   struct sgx_vs *vs;
+   const uint32_t *vs_sa;
+   const uint16_t *indices;
+   unsigned nindices;
 };
 #define SGX_FRAME_MAX_DRAWS 200
+/* the indices a render's draws take, all told (8 more a draw: alignment) */
+#define SGX_FRAME_MAX_INDICES 0x40000
 
 /* the program's code and PDS into GPU memory, once (sgx_frame_draw does it
  * itself) */
 int sgx_frame_upload(struct sgx_frame *f, struct sgx_pixel_program *p);
+/* a vertex shader's code and its vertex fetch, once */
+int sgx_frame_upload_vs(struct sgx_frame *f, struct sgx_vs *vs);
+/* sgx_frame_place() for vertices of stride bytes, indexed: up to 65536 */
+bool sgx_frame_place_indexed(struct sgx_frame *f, unsigned *cursor, unsigned stride,
+                             unsigned nverts, unsigned *first);
 
 /* Room for a draw's vertices among a render's: *cursor (0 for the first)
  * moves past them; false when they do not fit. */

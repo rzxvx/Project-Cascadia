@@ -27,6 +27,7 @@
 #include "draw/draw_vbuf.h"
 #include "draw/draw_vertex.h"
 #include "tgsi/tgsi_from_mesa.h"
+#include "util/format/u_format.h"
 #include "util/log.h"
 #include "util/u_debug.h"
 #include "util/u_inlines.h"
@@ -508,11 +509,15 @@ sgx_draw_fini(struct sgx_context *ctx)
    sgx_batch_flush(ctx);
    free(ctx->batch.verts);
    free(ctx->batch.sa);
+   free(ctx->batch.idx);
    ctx->batch.verts = NULL;
    ctx->batch.sa = NULL;
+   ctx->batch.idx = NULL;
    FREE(ctx->verts);
+   free(ctx->indices);
    ctx->verts = NULL;
-   ctx->nverts = ctx->maxfloats = 0;
+   ctx->indices = NULL;
+   ctx->nverts = ctx->maxfloats = ctx->nindices = ctx->maxindices = 0;
 }
 
 /* ---- draw_vbo ----------------------------------------------------------- */
@@ -623,6 +628,8 @@ sgx_batch_flush(struct sgx_context *ctx)
       d[i] = (struct sgx_frame_draw){
          .l = bd->l, .verts = b->verts + bd->first, .nverts = bd->nverts,
          .prog = bd->compiled ? &bd->prog : NULL, .sa = b->sa + bd->sa, .st = bd->st,
+         .vs = bd->vs, .vs_sa = b->sa + bd->vs_sa,
+         .indices = bd->vs ? b->idx + bd->idx : NULL, .nindices = bd->nidx,
       };
    }
    if ((fence = sgx_fence_create(&screen->dev, false))) {
@@ -642,7 +649,7 @@ sgx_batch_flush(struct sgx_context *ctx)
    pipe_resource_reference(&b->rt, NULL);
    for (unsigned i = 0; i < b->ntex; i++)
       pipe_resource_reference(&b->tex[i], NULL);
-   b->ndraws = b->ntex = b->nfloats = b->nsa = b->cursor = 0;
+   b->ndraws = b->ntex = b->nfloats = b->nsa = b->nidx = b->cursor = 0;
 }
 
 static bool
@@ -673,7 +680,9 @@ submit(struct sgx_context *ctx)
    struct sgx_fs *fs = ctx->draw_fs;
    uint32_t sa[128 + 4 * SGX_FS_MAX_SAMPLERS + 4];
    struct pipe_resource *tex[SGX_FS_MAX_SAMPLERS];
-   unsigned vf = sgx_frame_vertex_floats(&ctx->layout), nsa = fs ? fs->prog.nsa : 0;
+   struct sgx_vs *vs = ctx->gpu_vs;
+   unsigned vf = vs ? 4 * vs->nattrs : sgx_frame_vertex_floats(&ctx->layout);
+   unsigned nsa = fs ? fs->prog.nsa : 0, nvsa = vs ? vs->nuniforms : 0;
    unsigned max, done = 0;
    struct sgx_frame_state st = {
       .depth_func = ctx->dsa && ctx->dsa->depth_enabled ? ctx->dsa->depth_func : PIPE_FUNC_ALWAYS,
@@ -682,7 +691,7 @@ submit(struct sgx_context *ctx)
 
    if (!ctx->nverts)
       return;
-   if (ctx->debug_draw) {
+   if (ctx->debug_draw && !vs) {
       mesa_logi("sgx: %u triangles; the first:", ctx->nverts / 3);
       for (unsigned i = 0; i < MIN2(ctx->nverts, 3); i++) {
          const float *v = ctx->verts + i * vf;
@@ -709,7 +718,7 @@ submit(struct sgx_context *ctx)
 
    /* SGX_FRAME=packvertex, packpixel: the pack's sides, a render a draw,
     * M13a's colour (debugging only) */
-   if (sgx_frame_options() & (SGX_FRAME_PACKVTX | SGX_FRAME_PACKPIX)) {
+   if (!vs && (sgx_frame_options() & (SGX_FRAME_PACKVTX | SGX_FRAME_PACKPIX))) {
       sgx_batch_flush(ctx);
       max = sgx_frame_max_vertices(screen->frame, &ctx->layout);
       for (done = 0; done < ctx->nverts; done += max) {
@@ -764,7 +773,8 @@ submit(struct sgx_context *ctx)
       if (fs->blend_sa >= 0)
          memcpy(sa + fs->blend_sa, ctx->blend_color.color, 4 * sizeof(float));
       simple_mtx_lock(&screen->frame_lock);
-      if (sgx_frame_upload(screen->frame, &fs->prog)) {
+      if (sgx_frame_upload(screen->frame, &fs->prog) ||
+          (vs && sgx_frame_upload_vs(screen->frame, vs))) {
          simple_mtx_unlock(&screen->frame_lock);
          ctx->nverts = 0;
          return;
@@ -772,10 +782,10 @@ submit(struct sgx_context *ctx)
       simple_mtx_unlock(&screen->frame_lock);
    }
 
-   max = sgx_frame_max_vertices(screen->frame, &ctx->layout);
+   max = vs ? ctx->nverts : sgx_frame_max_vertices(screen->frame, &ctx->layout);
    while (done < ctx->nverts) {
       unsigned n = MIN2(ctx->nverts - done, max), first, ntex = b->ntex;
-      unsigned cursor = b->cursor;
+      unsigned cursor = b->cursor, nidx = vs ? ctx->nindices : 0;
       struct sgx_batch_draw *bd;
 
       /* room in this render: a draw, its vertices, its textures */
@@ -787,14 +797,21 @@ submit(struct sgx_context *ctx)
          ntex += k == b->ntex;
       }
       if (b->ndraws == SGX_FRAME_MAX_DRAWS || ntex > SGX_FRAME_MAX_HANDLES ||
-          !sgx_frame_place(screen->frame, &cursor, &ctx->layout, n, &first)) {
+          b->nidx + nidx + 8 * (b->ndraws + 1) > SGX_FRAME_MAX_INDICES ||
+          !(vs ? sgx_frame_place_indexed(screen->frame, &cursor, vf * 4, n, &first) :
+                 sgx_frame_place(screen->frame, &cursor, &ctx->layout, n, &first))) {
          sgx_batch_flush(ctx);
          cursor = 0;
-         if (!sgx_frame_place(screen->frame, &cursor, &ctx->layout, n, &first))
+         if (nidx + 8 > SGX_FRAME_MAX_INDICES ||
+             !(vs ? sgx_frame_place_indexed(screen->frame, &cursor, vf * 4, n, &first) :
+                    sgx_frame_place(screen->frame, &cursor, &ctx->layout, n, &first))) {
+            mesa_logw_once("sgx: a draw larger than a render takes: dropped");
             break;
+         }
       }
       if (!grow((void **)&b->verts, &b->maxfloats, b->nfloats + n * vf, sizeof(float)) ||
-          !grow((void **)&b->sa, &b->maxsa, b->nsa + nsa, sizeof(uint32_t)))
+          !grow((void **)&b->sa, &b->maxsa, b->nsa + nsa + nvsa, sizeof(uint32_t)) ||
+          !grow((void **)&b->idx, &b->maxidx, b->nidx + nidx, sizeof(uint16_t)))
          break;
       if (!b->ndraws)
          pipe_resource_reference(&b->rt, &rt->base);
@@ -819,14 +836,238 @@ submit(struct sgx_context *ctx)
          bd->prog = fs->prog;
       bd->sa = b->nsa;
       bd->st = st;
+      bd->vs = vs;
+      bd->vs_sa = b->nsa + nsa;
+      bd->idx = b->nidx;
+      bd->nidx = nidx;
       memcpy(b->verts + b->nfloats, ctx->verts + done * vf, n * vf * sizeof(float));
       memcpy(b->sa + b->nsa, sa, nsa * sizeof(uint32_t));
+      memcpy(b->sa + b->nsa + nsa, ctx->vs_sa, nvsa * sizeof(uint32_t));
+      memcpy(b->idx + b->nidx, ctx->indices, nidx * sizeof(uint16_t));
       b->nfloats += n * vf;
-      b->nsa += nsa;
+      b->nsa += nsa + nvsa;
+      b->nidx += nidx;
       b->cursor = cursor;
       done += n;
    }
    ctx->nverts = 0;
+}
+
+/* ---- the vertex shader on the GPU (M18) --------------------------------- */
+
+/* The vertex shader for the bound fragment shader's varyings: compiled
+ * once for each list of them; NULL when it cannot be (the draw module's
+ * way then) */
+static struct sgx_vs *
+vs_for_draw(struct sgx_context *ctx, const struct sgx_fs *fs)
+{
+   struct sgx_shader *sh = ctx->vs;
+   unsigned slot[SGX_FRAME_MAX_VARYINGS], n = 0;
+   struct sgx_vs *vs;
+   char why[128];
+
+   if (!sh || !sh->nir || sh->vs_failed)
+      return NULL;
+   for (unsigned i = 0; i < fs->prog.ninputs; i++)
+      if (fs->input_slot[i] != VARYING_SLOT_POS)
+         slot[n++] = fs->input_slot[i];
+   for (unsigned i = 0; i < sh->nvs; i++)
+      if (sh->vs_variant[i]->nvaryings == n &&
+          !memcmp(sh->vs_variant[i]->varying_slot, slot, n * sizeof(*slot)))
+         return sh->vs_variant[i];
+   if (!(vs = sgx_compile_vs(sh->nir, slot, n, why, sizeof(why)))) {
+      mesa_logw("sgx: a vertex shader not compiled (%s): run on the CPU", why);
+      sh->vs_failed = true;
+      return NULL;
+   }
+   if (debug_get_bool_option("SGX_DEBUG_SHADER", false)) {
+      mesa_logi("sgx: a vertex shader: %u instructions, %u temps, %u attributes, %u "
+                "uniform words", vs->ncode, vs->ntemps, vs->nattrs, vs->nuniforms);
+      for (unsigned i = 0; i < vs->ncode; i++)
+         mesa_logi("sgx:   %016llx", (unsigned long long)vs->code[i]);
+   }
+   if (sh->nvs == ARRAY_SIZE(sh->vs_variant)) {
+      sgx_batch_flush(ctx);
+      sgx_vs_destroy(sh->vs_variant[0]);
+      memmove(sh->vs_variant, sh->vs_variant + 1, (ARRAY_SIZE(sh->vs_variant) - 1) * sizeof(vs));
+      sh->nvs--;
+   }
+   sh->vs_variant[sh->nvs++] = vs;
+   return vs;
+}
+
+static bool
+index_at(const void *indices, unsigned size, unsigned i, unsigned *out)
+{
+   switch (size) {
+   case 1: *out = ((const uint8_t *)indices)[i]; return true;
+   case 2: *out = ((const uint16_t *)indices)[i]; return true;
+   case 4: *out = ((const uint32_t *)indices)[i]; return true;
+   default: return false;
+   }
+}
+
+/* What the GPU's vertex side does not do yet: then the draw module's way */
+static bool
+gpu_vs_can_draw(struct sgx_context *ctx, const struct pipe_draw_info *info)
+{
+   const struct pipe_rasterizer_state *r = ctx->rast;
+   const struct pipe_viewport_state *vp = &ctx->viewport;
+   static int off = -1;
+
+   if (off < 0)
+      off = debug_get_bool_option("SGX_CPU_VS", false);
+   if (off || !ctx->draw_fs || !r || !ctx->velems)
+      return false;
+   if (info->mode != MESA_PRIM_TRIANGLES && info->mode != MESA_PRIM_TRIANGLE_STRIP &&
+       info->mode != MESA_PRIM_TRIANGLE_FAN)
+      return false;
+   if (info->primitive_restart || r->cull_face != PIPE_FACE_NONE ||
+       r->fill_front != PIPE_POLYGON_MODE_FILL || r->fill_back != PIPE_POLYGON_MODE_FILL ||
+       r->clip_plane_enable || r->flatshade)
+      return false;
+   /* the TA's viewport is the target's for now: GL's whole framebuffer,
+    * the right way up, depth 0..1 */
+   return vp->scale[0] == ctx->fb.width / 2.0f && vp->translate[0] == ctx->fb.width / 2.0f &&
+          vp->scale[1] == ctx->fb.height / 2.0f && vp->translate[1] == ctx->fb.height / 2.0f &&
+          vp->scale[2] == 0.5f && vp->translate[2] == 0.5f;
+}
+
+/* One draw with the vertex shader on the GPU: its vertices' attributes
+ * unpacked to F32 vec4s, its triangles as indices into them (strips and
+ * fans made lists), its uniforms; false: not done, the caller's way. */
+static bool
+gpu_vs_draw(struct sgx_context *ctx, const struct pipe_draw_info *info,
+            const struct pipe_draw_start_count_bias *draw)
+{
+   const struct sgx_vertex_elements *ve = ctx->velems;
+   const void *indices = NULL;
+   struct sgx_vs *vs;
+   unsigned lo = ~0u, hi = 0, ntri, vf;
+   int bias = info->index_size ? draw->index_bias : 0;
+
+   if (draw->count < 3 || !(vs = vs_for_draw(ctx, ctx->draw_fs)))
+      return false;
+   ntri = info->mode == MESA_PRIM_TRIANGLES ? draw->count / 3 : draw->count - 2;
+
+   /* the vertices the draw reads */
+   if (info->index_size) {
+      size_t size = ~(size_t)0;
+
+      indices = info->has_user_indices ? info->index.user :
+                map_buffer(info->index.resource, &size);
+      if (!indices)
+         return false;
+      indices = (const uint8_t *)indices + draw->start * info->index_size;
+      for (unsigned i = 0; i < draw->count; i++) {
+         unsigned x;
+
+         if (!index_at(indices, info->index_size, i, &x))
+            return false;
+         lo = MIN2(lo, x);
+         hi = MAX2(hi, x);
+      }
+   } else {
+      lo = draw->start;
+      hi = draw->start + draw->count - 1;
+   }
+   if (hi - lo + 1 > 65536 || (int)lo + bias < 0)
+      return false;
+
+   /* their attributes, four floats each, attribute n from vertex element n */
+   vf = 4 * vs->nattrs;
+   ctx->nverts = 0;
+   if ((hi - lo + 1) * vf > ctx->maxfloats) {
+      unsigned n = (hi - lo + 1) * vf;
+      float *p = REALLOC(ctx->verts, ctx->maxfloats * sizeof(float), n * sizeof(float));
+
+      if (!p)
+         return false;
+      ctx->verts = p;
+      ctx->maxfloats = n;
+   }
+   for (unsigned a = 0; a < vs->nattrs; a++) {
+      const struct pipe_vertex_element *e = a < ve->count ? &ve->e[a] : NULL;
+      const struct pipe_vertex_buffer *vb = e ? &ctx->vb[e->vertex_buffer_index] : NULL;
+      const uint8_t *base = NULL;
+
+      if (vb && (ctx->vb_mask & 1u << e->vertex_buffer_index)) {
+         if (vb->is_user_buffer) {
+            base = vb->buffer.user;
+         } else if (vb->buffer.resource) {
+            size_t size;
+
+            base = map_buffer(vb->buffer.resource, &size);
+         }
+         if (base)
+            base += vb->buffer_offset + e->src_offset;
+      }
+      for (unsigned v = 0; v <= hi - lo; v++) {
+         float *out = ctx->verts + v * vf + 4 * a;
+         unsigned at = e && e->instance_divisor ? info->start_instance / e->instance_divisor :
+                       lo + bias + v;
+
+         if (!base) {
+            out[0] = out[1] = out[2] = 0;
+            out[3] = 1;
+            continue;
+         }
+         util_format_unpack_rgba(e->src_format, out, base + at * e->src_stride, 1);
+      }
+   }
+   ctx->nverts = hi - lo + 1;
+
+   /* the triangles, as a list */
+   if (3 * ntri > ctx->maxindices) {
+      uint16_t *p = realloc(ctx->indices, 3 * ntri * sizeof(uint16_t));
+
+      if (!p)
+         return false;
+      ctx->indices = p;
+      ctx->maxindices = 3 * ntri;
+   }
+   for (unsigned t = 0; t < ntri; t++) {
+      unsigned k[3], x[3];
+
+      if (info->mode == MESA_PRIM_TRIANGLES) {
+         k[0] = 3 * t, k[1] = 3 * t + 1, k[2] = 3 * t + 2;
+      } else if (info->mode == MESA_PRIM_TRIANGLE_STRIP) {
+         /* every other triangle the other way round, as GL turns them */
+         k[0] = t + (t & 1), k[1] = t + 1 - (t & 1), k[2] = t + 2;
+      } else {
+         k[0] = 0, k[1] = t + 1, k[2] = t + 2;
+      }
+      for (unsigned i = 0; i < 3; i++) {
+         if (indices)
+            index_at(indices, info->index_size, k[i], &x[i]);
+         else
+            x[i] = draw->start + k[i];
+         ctx->indices[3 * t + i] = x[i] - lo;
+      }
+   }
+   ctx->nindices = 3 * ntri;
+
+   /* its uniforms: constant buffer 0's words */
+   if (vs->nuniforms) {
+      const struct pipe_constant_buffer *cb = &ctx->cb[0];
+      const uint8_t *p = cb->user_buffer;
+      size_t size;
+
+      if (!p && cb->buffer && (p = map_buffer(cb->buffer, &size)))
+         p += cb->buffer_offset;
+      memset(ctx->vs_sa, 0, sizeof(ctx->vs_sa));
+      if (p)
+         memcpy(ctx->vs_sa, p, MIN2(vs->nuniforms * 4, cb->buffer_size));
+   }
+
+   ctx->layout.nvaryings = vs->nvaryings;
+   ctx->layout.f32 = (1u << vs->nvaryings) - 1;
+   ctx->layout.colour = 0;
+   ctx->gpu_vs = vs;
+   submit(ctx);
+   ctx->gpu_vs = NULL;
+   ctx->nverts = ctx->nindices = 0;
+   return true;
 }
 
 void
@@ -888,10 +1129,22 @@ sgx_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info,
       }
    }
 
+   /* the vertex shader on the GPU, where it can be (M18) */
+   if (gpu_vs_can_draw(ctx, info)) {
+      for (i = 0; i < num_draws; i++)
+         if (!gpu_vs_draw(ctx, info, &draws[i]))
+            break;
+      if (i == num_draws)
+         goto done;
+      draws += i;
+      num_draws -= i;
+   }
+
    update_vertex_info(ctx);
    draw_vbo(draw, info, drawid_offset, NULL, draws, num_draws, 0);
    draw_flush(draw);
 
+done:
    for (i = 0; i < PIPE_MAX_ATTRIBS; i++)
       if (ctx->vb_mask & 1u << i)
          draw_set_mapped_vertex_buffer(draw, i, NULL, 0);

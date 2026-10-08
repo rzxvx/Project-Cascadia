@@ -51,6 +51,7 @@
 #include "util/u_math.h"
 #include "util/u_memory.h"
 
+#include "sgx_compiler.h"
 #include "sgx_device.h"
 #include "sgx_resource.h"
 #include "sgx_rt.h"
@@ -85,6 +86,13 @@
 #define EXT_PROG_PDS    0x1000
 #define EXT_PROG_PDS_END 0x80000
 #define PROG_PDS_SLOT   0x80
+/* M18: per draw of a render, a vertex shader's uniforms and their loader;
+ * per render, the draws' indices */
+#define EXT_VS_UNI      0x100000
+#define VS_UNI_SLOT     0x240
+#define VS_UNI_WORDS    0x40
+#define EXT_IDX         0x200000
+#define EXT_IDX_END     0x280000
 /* per render, in the frame's part of the EXT window: the secondary
  * attributes' loader and the words it loads (uniforms, texture states) */
 #define FRAME_UNI_PDS   0xf00
@@ -1268,6 +1276,65 @@ upload(struct sgx_frame *f, struct sgx_pixel_program *p)
    return put(f, p->pds_va, pds, n * 4) ? 0 : -EFAULT;
 }
 
+/* A vertex shader into GPU memory, at its first draw: the code into the
+ * heap, and its vertex fetch -- each attribute four words from the vertex
+ * the index names (stride 16 x attributes), into pa4n.., then the program
+ * (iOS's shape, the corpus's x cases) -- into the EXT window. */
+int
+sgx_frame_upload_vs(struct sgx_frame *f, struct sgx_vs *vs)
+{
+   uint32_t pds[4 * (SGX_VS_MAX_ATTRIBS + 1) + SGX_VS_MAX_ATTRIBS + 3], size = vs->ncode * 8;
+   uint32_t vb = f->ext + EXT_VB, slots;
+   unsigned n = 0;
+
+   if (vs->code_va)
+      return 0;
+   slots = DIV_ROUND_UP(sizeof(pds), PROG_PDS_SLOT);
+   if (f->heap_used + size > HEAP_SIZE || vs->nattrs > SGX_VS_MAX_ATTRIBS ||
+       f->pds_used + slots * PROG_PDS_SLOT > EXT_PROG_PDS_END - EXT_PROG_PDS) {
+      mesa_logw("sgx: no room for another vertex program");
+      return -ENOSPC;
+   }
+   memcpy((uint8_t *)f->code_heap->map + f->heap_used, vs->code, size);
+   vs->code_va = f->code_heap->va + f->heap_used;
+   f->heap_used = align(f->heap_used + size, 64);
+
+   for (unsigned i = 0; i < vs->nattrs; i++) {
+      pds[n++] = vb + 16 * i;
+      pds[n++] = 4 * i << 8 | 3;
+      pds[n++] = i ? 0 : 16 * vs->nattrs;
+      pds[n++] = 0;
+   }
+   /* the DOUTU's second word, temporaries: none -- the program's scratch is
+    * primary attributes after the vertex's, which the VDM's fetch word
+    * counts in (vs_fetch_word()) */
+   pds[n++] = doutu(f, vs->code_va);
+   pds[n++] = 0;
+   pds[n++] = 0;
+   pds[n++] = 0;
+   pds[n++] = PDS_FETCH_INDEX;
+   for (unsigned i = 0; i < vs->nattrs; i++)
+      pds[n++] = pds_fetch_attr(i);
+   pds[n++] = pds_doutu_vertex(vs->nattrs);
+   pds[n++] = PDS_END;
+   vs->fetch_va = f->ext + EXT_PROG_PDS + f->pds_used;
+   f->pds_used += slots * PROG_PDS_SLOT;
+   return put(f, vs->fetch_va, pds, n * 4) ? 0 : -EFAULT;
+}
+
+/* The VDM's word after a vertex shader's fetch: the vec4s the vertex hands
+ * the tiler, the position and the varyings (bits 25 and up -- what M13b
+ * read as attributes: with its copying programs they were as many), the
+ * registers the program takes -- the attributes' four words each, then its
+ * temporaries -- and the fetch's data rows */
+static uint32_t
+vs_fetch_word(const struct sgx_vs *vs)
+{
+   unsigned regs = align(4 * vs->nattrs + vs->ntemps, 4);
+
+   return (1 + vs->nvaryings) << 25 | 0x01800000u | regs << 7 | (vs->nattrs + 1);
+}
+
 static int render(struct sgx_frame *f, struct sgx_resource *rt,
                   const struct sgx_frame_layout *l, const float *verts, unsigned nverts,
                   bool iterated, struct sgx_pixel_program *prog, const uint32_t *sa,
@@ -1533,6 +1600,20 @@ sgx_frame_upload(struct sgx_frame *f, struct sgx_pixel_program *p)
 }
 
 bool
+sgx_frame_place_indexed(struct sgx_frame *f, unsigned *cursor, unsigned stride,
+                        unsigned nverts, unsigned *first)
+{
+   unsigned start = align(DIV_ROUND_UP(*cursor, stride), 8);
+
+   if (start + nverts > 65536 || (start + nverts) * stride > EXT_FRAME - EXT_VB)
+      return false;
+   if (first)
+      *first = start;
+   *cursor = (start + nverts) * stride;
+   return true;
+}
+
+bool
 sgx_frame_place(struct sgx_frame *f, unsigned *cursor, const struct sgx_frame_layout *l,
                 unsigned nverts, unsigned *first)
 {
@@ -1602,7 +1683,7 @@ sgx_frame_render(struct sgx_frame *f, struct sgx_resource *rt,
                  unsigned nhandles, float depth_clear, struct sgx_fence *done)
 {
    uint32_t full[32], prog[16], bg[4], eot, *v = f->vdmbuf;
-   unsigned cursor = 0, total = 0;
+   unsigned cursor = 0, total = 0, icursor = 0;
    struct sgx_eot to;
    int ret;
 
@@ -1615,14 +1696,32 @@ sgx_frame_render(struct sgx_frame *f, struct sgx_resource *rt,
 
    for (unsigned k = 0; k < n; k++) {
       const struct sgx_frame_draw *d = &draws[k];
-      uint32_t base = f->ext + EXT_FRAME + k * DRAW_SLOT;
-      unsigned first, stride = sgx_frame_vertex_floats(&d->l) * sizeof(float);
+      uint32_t base = f->ext + EXT_FRAME + k * DRAW_SLOT, idx_va, count;
+      unsigned first, stride = d->vs ? 16 * d->vs->nattrs :
+                                       sgx_frame_vertex_floats(&d->l) * sizeof(float);
 
-      if (!d->nverts || d->nverts % 3 || d->l.nvaryings > SGX_FRAME_MAX_VARYINGS ||
-          (d->prog && d->l.nvaryings != d->prog->nvaryings))
+      count = d->indices ? d->nindices : d->nverts;
+      if (!d->nverts || !count || count % 3 || d->l.nvaryings > SGX_FRAME_MAX_VARYINGS ||
+          (d->prog && d->l.nvaryings != d->prog->nvaryings) ||
+          (d->vs && (!d->vs->fetch_va || d->vs->nvaryings != d->l.nvaryings)))
          return -EINVAL;
-      if (!sgx_frame_place(f, &cursor, &d->l, d->nverts, &first))
+      if (!(d->vs || d->indices ? sgx_frame_place_indexed(f, &cursor, stride, d->nverts, &first) :
+                                  sgx_frame_place(f, &cursor, &d->l, d->nverts, &first)))
          return -ENOSPC;
+      /* the triangles: the draw's indices, after its first vertex, or the
+       * frame's 0, 1, 2, ... from there */
+      if (d->indices) {
+         uint16_t *idx = (uint16_t *)cpu_at(f, f->ext + EXT_IDX + 2 * icursor, 2 * count, NULL);
+
+         if (f->ext + EXT_IDX + 2 * (icursor + count) > f->ext + EXT_IDX_END || !idx)
+            return -ENOSPC;
+         for (unsigned i = 0; i < count; i++)
+            idx[i] = first + d->indices[i];
+         idx_va = f->ext + EXT_IDX + 2 * icursor;
+         icursor = align(icursor + count, 8);
+      } else {
+         idx_va = f->idx + 2 * first;
+      }
       if ((ret = draw_state(f, d, base, &to, full)))
          return ret;
       memcpy(prog, f->tmpl + f->toff[T_FULLPROG], f->tsize[T_FULLPROG]);
@@ -1631,15 +1730,36 @@ sgx_frame_render(struct sgx_frame *f, struct sgx_resource *rt,
           !put(f, base, full, f->tsize[T_FULL]) ||
           !put(f, base + DRAW_PROG, prog, f->tsize[T_FULLPROG]))
          return -EFAULT;
-      /* the constants, the state, the draw (count, its first index in the
-       * pack's buffer of 0, 1, 2, ...), the vertex fetch */
-      *v++ = vdm4(4, f->consts0); *v++ = 0x1000e102;
+      /* the vertex side's constants (a vertex shader's uniforms: its loader,
+       * the words in fours -- the corpus's x00, x02), the state, the draw
+       * (count, indices), the vertex fetch */
+      if (d->vs && d->vs->nuniforms) {
+         uint32_t ub = f->ext + EXT_VS_UNI + k * VS_UNI_SLOT;
+         const uint32_t loader[12] = {
+            ub + VS_UNI_WORDS, d->vs->nuniforms - 1, 0, 0, doutu(f, f->empty_prog), 2, 0, 0,
+            PDS_DMA_ROW0, PDS_DOUTU_ROW1_AFTER, PDS_END, 0,
+         };
+
+         if (d->vs->nuniforms * 4 > VS_UNI_SLOT - VS_UNI_WORDS ||
+             !put(f, ub + VS_UNI_WORDS, d->vs_sa, d->vs->nuniforms * 4) ||
+             !put(f, ub, loader, sizeof(loader)))
+            return -EFAULT;
+         *v++ = vdm4(4, ub); *v++ = 0x1000e100 | DIV_ROUND_UP(d->vs->nuniforms, 4);
+      } else {
+         *v++ = vdm4(4, f->consts0); *v++ = 0x1000e102;
+      }
       *v++ = vdm4(4, base + DRAW_PROG); *v++ = 0x12022206;
-      *v++ = 0x81c00000 | d->nverts; *v++ = f->idx + 2 * first;
+      *v++ = 0x81c00000 | count; *v++ = idx_va;
       *v++ = 0x70000000; *v++ = 0x003fffff;
-      *v++ = vdm4(vdm_fetch_tag(f->fetch_tag), f->fetch_pds + d->l.nvaryings * FETCH_PDS_SIZE);
-      *v++ = vdm_fetch_word(d->l.nvaryings);
-      total += d->nverts;
+      if (d->vs) {
+         *v++ = vdm4(vdm_fetch_tag(f->fetch_tag), d->vs->fetch_va);
+         *v++ = vs_fetch_word(d->vs);
+      } else {
+         *v++ = vdm4(vdm_fetch_tag(f->fetch_tag),
+                     f->fetch_pds + d->l.nvaryings * FETCH_PDS_SIZE);
+         *v++ = vdm_fetch_word(d->l.nvaryings);
+      }
+      total += count;
       if (f->debug)
          mesa_logi("sgx:   draw %u: %u vertices from %u, %u varyings, ISP B %08x, state "
                    "4 %08x 5 %08x 6 %08x, %s", k, d->nverts, first, d->l.nvaryings, full[1],

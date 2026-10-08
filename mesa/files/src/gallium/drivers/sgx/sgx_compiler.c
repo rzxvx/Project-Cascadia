@@ -35,6 +35,7 @@
 
 #include "compiler/glsl_types.h"
 #include "compiler/nir/nir.h"
+#include "compiler/nir/nir_builder.h"
 #include "compiler/nir/nir_lower_blend.h"
 #include "util/format/u_formats.h"
 #include "util/ralloc.h"
@@ -63,7 +64,8 @@ struct scratch {
 };
 
 struct comp {
-   struct sgx_fs *fs;
+   struct sgx_fs *fs;                   /* a fragment shader's, or */
+   struct sgx_vs *vs;                   /* a vertex shader's */
    struct util_dynarray code;           /* uint64_t */
    struct usse_reg *loc;                /* where each value is */
    bool *owned;                         /* loc is a temporary of its own (any lane) */
@@ -77,6 +79,13 @@ struct comp {
    int blend_sa;                        /* the blend colour's words, -1 none */
    struct operand colour[4];
    bool have_colour[4];
+   /* a vertex shader's outputs: 0 the position, 1 + k varying k of the
+    * layout (varying_slot[k]); the attributes it reads */
+   const unsigned *varying_slot;
+   unsigned nvaryings, nattrs;
+   unsigned pa_base;                    /* a vertex program's temporaries: pa from here */
+   struct operand vout[1 + SGX_FRAME_MAX_VARYINGS][4];
+   bool have_vout[1 + SGX_FRAME_MAX_VARYINGS][4];
    char *why;
    unsigned why_size;
    bool failed;
@@ -133,6 +142,15 @@ give_back(struct comp *c, unsigned r)
    c->used[r] = false;
 }
 
+/* temporary r as a register: a vertex program's are primary attributes
+ * after the vertex's (iOS's vertex programs use them as scratch too, the
+ * corpus's x03: the fetch's register count covers them) */
+static struct usse_reg
+treg(struct comp *c, unsigned r)
+{
+   return c->vs ? usse_reg(USSE_PA, c->pa_base + r) : usse_reg(USSE_TEMP, r);
+}
+
 static unsigned
 scratch_take(struct comp *c, struct scratch *s)
 {
@@ -164,7 +182,7 @@ f32_bits(float f)
 static struct usse_reg
 constant(struct comp *c, struct scratch *s, float f)
 {
-   struct usse_reg r = usse_reg(USSE_TEMP, scratch_take(c, s));
+   struct usse_reg r = treg(c, scratch_take(c, s));
 
    emit(c, usse_limm(r, f32_bits(f)));
    return r;
@@ -234,7 +252,7 @@ get(struct comp *c, struct operand o, unsigned takes, struct scratch *s)
    if ((r.neg && !(takes & TAKES_NEG)) || (r.abs && !(takes & TAKES_ABS)) ||
        ((r.num & 1) && !(takes & TAKES_LANE_Y)) ||
        (r.bank == USSE_SA && !(takes & TAKES_SA))) {
-      t = usse_reg(USSE_TEMP, scratch_take(c, s));
+      t = treg(c, scratch_take(c, s));
       if (r.neg || r.abs)        /* the modifiers applied: times one */
          emit(c, usse_fop(USSE_NMAD_MUL, t, r, constant(c, s, 1.0f)));
       else
@@ -250,7 +268,7 @@ define(struct comp *c, nir_def *def)
 {
    unsigned id = def->index * 4, r = take(c);
 
-   c->loc[id] = usse_reg(USSE_TEMP, r);
+   c->loc[id] = treg(c, r);
    c->owned[id] = true;
    if (c->last_use[id] < 0) {    /* never read */
       give_back(c, r);
@@ -283,7 +301,7 @@ static void
 comparison(struct comp *c, nir_alu_instr *alu, struct scratch *s)
 {
    struct operand a = alu_operand(alu, 0), b = alu_operand(alu, 1);
-   struct usse_reg diff = usse_reg(USSE_TEMP, scratch_take(c, s)), one, zero, ra, rb;
+   struct usse_reg diff = treg(c, scratch_take(c, s)), one, zero, ra, rb;
    enum usse_test test = alu->op == nir_op_slt || alu->op == nir_op_sge ?
                          USSE_TEST_LT0 : USSE_TEST_EQ0;
    bool swap = alu->op == nir_op_sge || alu->op == nir_op_sne;
@@ -346,7 +364,7 @@ alu(struct comp *c, nir_alu_instr *alu, struct scratch *s)
       return;
    case nir_op_fsqrt:   /* 1 / (1 / sqrt x): 0 for 0, where x * rsq x is not */
       a = get(c, alu_operand(alu, 0), TAKES_ALL, s);
-      t = usse_reg(USSE_TEMP, scratch_take(c, s));
+      t = treg(c, scratch_take(c, s));
       emit(c, usse_fcomp(USSE_COMP_RSQ, t, a));
       emit(c, usse_fcomp(USSE_COMP_RCP, define(c, &alu->def), t));
       return;
@@ -356,7 +374,7 @@ alu(struct comp *c, nir_alu_instr *alu, struct scratch *s)
       return;
    case nir_op_fsat:
       a = get(c, alu_operand(alu, 0), TAKES_ALL, s);
-      t = usse_reg(USSE_TEMP, scratch_take(c, s));
+      t = treg(c, scratch_take(c, s));
       emit(c, usse_fop(USSE_NMAD_MAX, t, a, constant(c, s, 0.0f)));
       d = define(c, &alu->def);
       emit(c, usse_fop(USSE_NMAD_MIN, d, t, constant(c, s, 1.0f)));
@@ -414,7 +432,7 @@ texture(struct comp *c, nir_tex_instr *tex, struct scratch *s)
    int bias = nir_tex_instr_src_index(tex, nir_tex_src_bias);
    int lod = nir_tex_instr_src_index(tex, nir_tex_src_lod);
    enum usse_smp_lod mode = USSE_SMP_NONE;
-   struct usse_reg lodreg = usse_reg(USSE_TEMP, 0);
+   struct usse_reg lodreg = treg(c, 0);
    unsigned pair, d, id = tex->def.index * 4;
 
    if ((tex->op != nir_texop_tex && tex->op != nir_texop_txb && tex->op != nir_texop_txl) ||
@@ -429,16 +447,16 @@ texture(struct comp *c, nir_tex_instr *tex, struct scratch *s)
    pair = block(c, 2, 2);
    s->reg[s->n++] = pair;
    s->reg[s->n++] = pair + 1;
-   move_into(c, usse_reg(USSE_TEMP, pair), tex_operand(tex, coord, 0), s);
-   move_into(c, usse_reg(USSE_TEMP, pair + 1), tex_operand(tex, coord, 1), s);
+   move_into(c, treg(c, pair), tex_operand(tex, coord, 0), s);
+   move_into(c, treg(c, pair + 1), tex_operand(tex, coord, 1), s);
    if (bias >= 0 || lod >= 0) {
       mode = bias >= 0 ? USSE_SMP_BIAS : USSE_SMP_LOD;
-      lodreg = usse_reg(USSE_TEMP, scratch_take(c, s));
+      lodreg = treg(c, scratch_take(c, s));
       move_into(c, lodreg, tex_operand(tex, bias >= 0 ? bias : lod, 0), s);
    }
    d = block(c, 4, 4);
-   emit(c, usse_smp2d(USSE_SMP_F32, USSE_SMP_COORD_F32, usse_reg(USSE_TEMP, d),
-                      usse_reg(USSE_TEMP, pair),
+   emit(c, usse_smp2d(USSE_SMP_F32, USSE_SMP_COORD_F32, treg(c, d),
+                      treg(c, pair),
                       usse_reg(USSE_SA, c->sampler_sa + 4 * c->slot_of_unit[tex->texture_index]),
                       mode, lodreg));
    emit(c, USSE_WDF0);
@@ -449,11 +467,11 @@ texture(struct comp *c, nir_tex_instr *tex, struct scratch *s)
 
       for (unsigned i = 0; i < 4; i++)
          if (i < tex->def.num_components && c->last_use[id + i] >= 0)
-            emit(c, usse_fop(USSE_NMAD_MUL, usse_reg(USSE_TEMP, d + i),
-                             usse_reg(USSE_TEMP, d + i), k));
+            emit(c, usse_fop(USSE_NMAD_MUL, treg(c, d + i),
+                             treg(c, d + i), k));
    }
    for (unsigned i = 0; i < 4; i++) {
-      c->loc[id + i] = usse_reg(USSE_TEMP, d + i);
+      c->loc[id + i] = treg(c, d + i);
       c->owned[id + i] = i < tex->def.num_components && c->last_use[id + i] >= 0;
       if (!c->owned[id + i])
          give_back(c, d + i);
@@ -474,6 +492,10 @@ scan(struct comp *c, nir_function_impl *impl)
             if ((in->intrinsic == nir_intrinsic_load_uniform ||
                  in->intrinsic == nir_intrinsic_load_ubo) && uniform_word(c, in, &at))
                c->nuniforms = MAX2(c->nuniforms, at + in->def.num_components);
+            if (c->vs && in->intrinsic == nir_intrinsic_load_input &&
+                nir_src_is_const(*nir_get_io_offset_src(in)))
+               c->nattrs = MAX2(c->nattrs, nir_intrinsic_base(in) +
+                                           nir_src_as_uint(*nir_get_io_offset_src(in)) + 1);
             if (in->intrinsic == nir_intrinsic_load_blend_const_color_r_float ||
                 in->intrinsic == nir_intrinsic_load_blend_const_color_g_float ||
                 in->intrinsic == nir_intrinsic_load_blend_const_color_b_float ||
@@ -482,6 +504,10 @@ scan(struct comp *c, nir_function_impl *impl)
          } else if (instr->type == nir_instr_type_tex) {
             nir_tex_instr *tex = nir_instr_as_tex(instr);
 
+            if (c->vs) {
+               fail(c, "texture lookups in a vertex shader");
+               return;
+            }
             if (tex->texture_index < MAX_UNITS && c->slot_of_unit[tex->texture_index] < 0) {
                if (c->nsamplers == SGX_FS_MAX_SAMPLERS) {
                   fail(c, "more than %u textures", SGX_FS_MAX_SAMPLERS);
@@ -494,6 +520,7 @@ scan(struct comp *c, nir_function_impl *impl)
       }
    }
    c->sampler_sa = align(c->nuniforms, 4);
+   c->pa_base = 4 * MAX2(c->nattrs, 1);
    if (c->blend_sa >= 0)
       c->blend_sa = c->sampler_sa + 4 * c->nsamplers;
 }
@@ -542,6 +569,24 @@ intrinsic(struct comp *c, nir_intrinsic_instr *in)
    case nir_intrinsic_load_input: {
       unsigned slot, comp = 0;
 
+      if (c->vs) {
+         /* attribute n (its vertex element) where the fetch put it: four
+          * words from pa4n */
+         offset = nir_get_io_offset_src(in);
+         if (in->intrinsic != nir_intrinsic_load_input || !nir_src_is_const(*offset)) {
+            fail(c, "an indirect attribute");
+            return;
+         }
+         at = nir_intrinsic_base(in) + nir_src_as_uint(*offset);
+         if (at >= SGX_VS_MAX_ATTRIBS) {
+            fail(c, "attribute %u", at);
+            return;
+         }
+         c->nattrs = MAX2(c->nattrs, at + 1);
+         for (unsigned i = 0; i < in->def.num_components; i++)
+            c->loc[id + i] = usse_reg(USSE_PA, 4 * at + nir_intrinsic_component(in) + i);
+         return;
+      }
       if (in->intrinsic == nir_intrinsic_load_frag_coord) {
          /* the PDS iterates the pixel's position like a varying */
          slot = VARYING_SLOT_POS;
@@ -584,6 +629,25 @@ intrinsic(struct comp *c, nir_intrinsic_instr *in)
       unsigned loc = nir_intrinsic_io_semantics(in).location;
       unsigned mask = nir_intrinsic_write_mask(in), comp = nir_intrinsic_component(in);
 
+      if (c->vs) {
+         int k = -1;
+
+         /* the position, or a varying the fragment shader reads; the rest
+          * (the point size, varyings nobody reads) go nowhere */
+         loc += nir_src_as_uint(*nir_get_io_offset_src(in));
+         if (loc == VARYING_SLOT_POS)
+            k = 0;
+         for (unsigned j = 0; j < c->nvaryings && k < 0; j++)
+            if (c->varying_slot[j] == loc)
+               k = 1 + j;
+         for (unsigned i = 0; k >= 0 && i < in->src[0].ssa->num_components; i++) {
+            if (!(mask & 1 << i) || comp + i >= 4)
+               continue;
+            c->vout[k][comp + i] = resolve(nir_get_scalar(in->src[0].ssa, i));
+            c->have_vout[k][comp + i] = true;
+         }
+         return;
+      }
       if (loc != FRAG_RESULT_COLOR && loc != FRAG_RESULT_DATA0) {
          fail(c, "output %s", gl_frag_result_name(loc));
          return;
@@ -617,13 +681,13 @@ intrinsic(struct comp *c, nir_intrinsic_instr *in)
 
          if (dbg) {
             k = take(c);
-            src = usse_reg(USSE_TEMP, k);
+            src = treg(c, k);
             emit(c, usse_limm(src, strtoul(dbg, NULL, 0)));
          }
-         emit(c, usse_unpack_unorm8(usse_reg(USSE_TEMP, d), src, 0));
-         emit(c, usse_unpack_unorm8(usse_reg(USSE_TEMP, d + 2), src, 2));
+         emit(c, usse_unpack_unorm8(treg(c, d), src, 0));
+         emit(c, usse_unpack_unorm8(treg(c, d + 2), src, 2));
          for (unsigned i = 0; i < 4; i++) {
-            c->loc[id + i] = usse_reg(USSE_TEMP, d + i);
+            c->loc[id + i] = treg(c, d + i);
             c->owned[id + i] = i < in->def.num_components && c->last_use[id + i] >= 0;
             if (!c->owned[id + i])
                give_back(c, d + i);
@@ -703,8 +767,13 @@ release(struct comp *c, struct operand o, int index)
       for (unsigned i = 0; i < 4; i++)
          if (c->have_colour[i] && !c->colour[i].is_const && c->colour[i].id == o.id)
             return;
+   /* and a vertex's until vertex_output() has */
+   for (unsigned k = 0; c->vs && k <= c->nvaryings; k++)
+      for (unsigned i = 0; i < 4; i++)
+         if (c->have_vout[k][i] && !c->vout[k][i].is_const && c->vout[k][i].id == o.id)
+            return;
    if (!o.is_const && c->last_use[o.id] == index && c->owned[o.id]) {
-      give_back(c, c->loc[o.id].num);
+      give_back(c, c->loc[o.id].num - (c->vs ? c->pa_base : 0));
       c->owned[o.id] = false;
    }
 }
@@ -728,10 +797,10 @@ output(struct comp *c)
          o.is_const = true;
          o.c = i == 3 ? 1.0f : 0.0f;
       }
-      move_into(c, usse_reg(USSE_TEMP, base + i), o, &s);
+      move_into(c, treg(c, base + i), o, &s);
       scratch_give_back(c, &s);
    }
-   emit(c, usse_pack_unorm8(0, usse_reg(USSE_TEMP, base)) | USSE_END);
+   emit(c, usse_pack_unorm8(0, treg(c, base)) | USSE_END);
 }
 
 static void
@@ -785,16 +854,139 @@ lower_blend(nir_shader *s, const struct sgx_blend_key *k)
    NIR_PASS(_, s, nir_lower_blend, &o);
 }
 
+/* A vertex's outputs into o0.. -- the position, then the varyings, four
+ * words each, as the TA state's vertex size says -- and out to the tiler.
+ * What the shader does not write is 0, w 1. */
+#define USSE_EMIT_VERTEX_END 0xfb275000a0200000ull
+
+static void
+vertex_output(struct comp *c)
+{
+   struct scratch s = { 0 };
+
+   if (!c->have_vout[0][0] || !c->have_vout[0][1] || !c->have_vout[0][3]) {
+      fail(c, "no position written");
+      return;
+   }
+   for (unsigned k = 0; k <= c->nvaryings; k++)
+      for (unsigned i = 0; i < 4; i++) {
+         struct operand o = c->vout[k][i];
+
+         if (!c->have_vout[k][i]) {
+            o.is_const = true;
+            o.c = i == 3 ? 1.0f : 0.0f;
+         }
+         move_into(c, usse_reg(USSE_OUTPUT, 4 * k + i), o, &s);
+         scratch_give_back(c, &s);
+      }
+   emit(c, USSE_EMIT_VERTEX_END);
+}
+
+/* A uniform's constant offset into its base: nir_lower_int_to_float makes
+ * the integer constants floats, an offset of 1 among them (0x3f800000: a
+ * matrix's second column read as word 4261412864) */
+static bool
+fold_uniform_offset(nir_builder *b, nir_intrinsic_instr *in, void *data)
+{
+   if (in->intrinsic != nir_intrinsic_load_uniform || !nir_src_is_const(in->src[0]) ||
+       !nir_src_as_uint(in->src[0]))
+      return false;
+   b->cursor = nir_before_instr(&in->instr);
+   nir_intrinsic_set_base(in, nir_intrinsic_base(in) + nir_src_as_uint(in->src[0]));
+   nir_src_rewrite(&in->src[0], nir_imm_int(b, 0));
+   return true;
+}
+
+/* NIR to instructions, after the opening PHAS, for either stage: the
+ * shader lowered to scalar float arithmetic, one block, its values given
+ * temporaries in the order NIR has them.  False (c->failed, c->why) when it
+ * cannot be. */
+static bool
+translate(struct comp *c, nir_shader *s)
+{
+   nir_function_impl *impl;
+   unsigned n;
+   int index;
+
+   optimize(s);
+   NIR_PASS(_, s, nir_shader_intrinsics_pass, fold_uniform_offset, nir_metadata_control_flow,
+            NULL);
+   NIR_PASS(_, s, nir_lower_int_to_float);
+   NIR_PASS(_, s, nir_lower_bool_to_float, true);
+   NIR_PASS(_, s, nir_opt_algebraic_late);
+   NIR_PASS(_, s, nir_lower_alu_to_scalar, NULL, NULL);
+   NIR_PASS(_, s, nir_opt_copy_prop);
+   NIR_PASS(_, s, nir_opt_cse);
+   NIR_PASS(_, s, nir_opt_dce);
+
+   impl = nir_shader_get_entrypoint(s);
+   if (exec_list_length(&impl->body) != 1) {
+      fail(c, "control flow left after flattening");
+      return false;
+   }
+   nir_index_ssa_defs(impl);
+   n = impl->ssa_alloc * 4;
+   c->loc = calloc(n, sizeof(*c->loc));
+   c->owned = calloc(n, sizeof(*c->owned));
+   c->last_use = malloc(n * sizeof(*c->last_use));
+   if (!c->loc || !c->owned || !c->last_use) {
+      fail(c, "out of memory");
+      return false;
+   }
+   for (unsigned i = 0; i < n; i++)
+      c->last_use[i] = -1;
+
+   scan(c, impl);
+   if (c->failed)
+      return false;
+
+   /* liveness, then the code, in the same order */
+   index = 0;
+   nir_foreach_block(block, impl)
+      nir_foreach_instr(instr, block)
+         for_each_read(c, instr, note_use, index++);
+
+   util_dynarray_init(&c->code, NULL);
+   emit(c, USSE_PHAS);
+   index = 0;
+   nir_foreach_block(block, impl) {
+      nir_foreach_instr(instr, block) {
+         struct scratch sc = { 0 };
+
+         switch (instr->type) {
+         case nir_instr_type_alu:
+            alu(c, nir_instr_as_alu(instr), &sc);
+            break;
+         case nir_instr_type_intrinsic:
+            intrinsic(c, nir_instr_as_intrinsic(instr));
+            break;
+         case nir_instr_type_tex:
+            texture(c, nir_instr_as_tex(instr), &sc);
+            break;
+         case nir_instr_type_load_const:
+         case nir_instr_type_undef:
+            break;
+         default:
+            fail(c, "no such instructions yet");
+            break;
+         }
+         scratch_give_back(c, &sc);
+         for_each_read(c, instr, release, index++);
+         if (c->failed)
+            return false;
+      }
+   }
+   return true;
+}
+
 struct sgx_fs *
 sgx_compile_fs(const nir_shader *fs, const struct sgx_blend_key *blend, char *why,
                unsigned why_size)
 {
    bool blending = blend && (blend->enable || blend->colormask != 0xf);
    struct comp c = { 0 };
-   nir_function_impl *impl;
    nir_shader *s;
-   unsigned n, out_at;
-   int index;
+   unsigned out_at;
 
    c.why = why;
    c.why_size = why_size;
@@ -834,72 +1026,8 @@ sgx_compile_fs(const nir_shader *fs, const struct sgx_blend_key *blend, char *wh
       }
       NIR_PASS(_, s, nir_lower_tex, &tex);
    }
-   optimize(s);
-   NIR_PASS(_, s, nir_lower_int_to_float);
-   NIR_PASS(_, s, nir_lower_bool_to_float, true);
-   NIR_PASS(_, s, nir_opt_algebraic_late);
-   NIR_PASS(_, s, nir_lower_alu_to_scalar, NULL, NULL);
-   NIR_PASS(_, s, nir_opt_copy_prop);
-   NIR_PASS(_, s, nir_opt_cse);
-   NIR_PASS(_, s, nir_opt_dce);
-
-   impl = nir_shader_get_entrypoint(s);
-   if (exec_list_length(&impl->body) != 1) {
-      fail(&c, "control flow left after flattening");
+   if (!translate(&c, s))
       goto out;
-   }
-   nir_index_ssa_defs(impl);
-   n = impl->ssa_alloc * 4;
-   c.loc = calloc(n, sizeof(*c.loc));
-   c.owned = calloc(n, sizeof(*c.owned));
-   c.last_use = malloc(n * sizeof(*c.last_use));
-   if (!c.loc || !c.owned || !c.last_use) {
-      fail(&c, "out of memory");
-      goto out;
-   }
-   for (unsigned i = 0; i < n; i++)
-      c.last_use[i] = -1;
-
-   scan(&c, impl);
-   if (c.failed)
-      goto out;
-
-   /* liveness, then the code, in the same order */
-   index = 0;
-   nir_foreach_block(block, impl)
-      nir_foreach_instr(instr, block)
-         for_each_read(&c, instr, note_use, index++);
-
-   util_dynarray_init(&c.code, NULL);
-   emit(&c, USSE_PHAS);
-   index = 0;
-   nir_foreach_block(block, impl) {
-      nir_foreach_instr(instr, block) {
-         struct scratch sc = { 0 };
-
-         switch (instr->type) {
-         case nir_instr_type_alu:
-            alu(&c, nir_instr_as_alu(instr), &sc);
-            break;
-         case nir_instr_type_intrinsic:
-            intrinsic(&c, nir_instr_as_intrinsic(instr));
-            break;
-         case nir_instr_type_tex:
-            texture(&c, nir_instr_as_tex(instr), &sc);
-            break;
-         case nir_instr_type_load_const:
-         case nir_instr_type_undef:
-            break;
-         default:
-            fail(&c, "no such instructions yet");
-            break;
-         }
-         scratch_give_back(&c, &sc);
-         for_each_read(&c, instr, release, index++);
-         if (c.failed)
-            goto out;
-      }
-   }
    out_at = util_dynarray_num_elements(&c.code, uint64_t);
    output(&c);
    if (c.failed)
@@ -946,6 +1074,70 @@ out:
       return NULL;
    }
    return c.fs;
+}
+
+struct sgx_vs *
+sgx_compile_vs(const nir_shader *vs, const unsigned *varying_slot, unsigned nvaryings,
+               char *why, unsigned why_size)
+{
+   struct comp c = { 0 };
+   nir_shader *s;
+
+   c.why = why;
+   c.why_size = why_size;
+   why[0] = 0;
+   if (nvaryings > SGX_FRAME_MAX_VARYINGS || !(c.vs = CALLOC_STRUCT(sgx_vs)))
+      return NULL;
+   for (unsigned i = 0; i < ARRAY_SIZE(c.slot_of_unit); i++)
+      c.slot_of_unit[i] = -1;
+   c.blend_sa = -1;
+   c.varying_slot = varying_slot;
+   c.nvaryings = nvaryings;
+   memcpy(c.vs->varying_slot, varying_slot, nvaryings * sizeof(*varying_slot));
+   c.vs->nvaryings = nvaryings;
+
+   s = nir_shader_clone(NULL, vs);
+   NIR_PASS(_, s, nir_lower_io, nir_var_shader_in | nir_var_shader_out | nir_var_uniform,
+            type_size_vec4, 0);
+   if (getenv("SGX_DEBUG_VS_NIR"))
+      nir_print_shader(s, stderr);
+   if (!translate(&c, s))
+      goto out;
+   vertex_output(&c);
+   if (c.failed)
+      goto out;
+
+   c.vs->ncode = util_dynarray_num_elements(&c.code, uint64_t);
+   c.vs->code = MALLOC(c.vs->ncode * sizeof(uint64_t));
+   if (!c.vs->code) {
+      fail(&c, "out of memory");
+      goto out;
+   }
+   memcpy(c.vs->code, util_dynarray_begin(&c.code), c.vs->ncode * sizeof(uint64_t));
+   c.vs->ntemps = c.top;
+   c.vs->nattrs = MAX2(c.nattrs, 1);
+   c.vs->nuniforms = c.nuniforms;
+
+out:
+   util_dynarray_fini(&c.code);
+   free(c.loc);
+   free(c.owned);
+   free(c.last_use);
+   ralloc_free(s);
+   if (c.failed) {
+      sgx_vs_destroy(c.vs);
+      return NULL;
+   }
+   return c.vs;
+}
+
+void
+sgx_vs_destroy(struct sgx_vs *vs)
+{
+   if (!vs)
+      return;
+   FREE(vs->code);
+   FREE(vs);
 }
 
 void
