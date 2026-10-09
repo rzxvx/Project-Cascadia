@@ -71,6 +71,7 @@ sgx-gl gldepth                   # the depth test, within a render and across tw
 sgx-gl glchurn                   # 3000 programs made, drawn and deleted: GPU memory reused
 sgx-gl glwrap                    # texture wrap modes, each axis (M24)
 sgx-gl glvtx                     # the vertex path: layouts, formats, buffers, indices (M26)
+sgx-gl glspeed 400 40 flush      # draws a second, a glFlush a frame: renders queued (M27)
 SGX_REPACK=1 sgx-gl glvtx        # every draw's vertices made one stream by the CPU
 SGX_DEBUG_DRAW=1 sgx-gl glvtx    # each vertex shader draw: fetched or made, its addresses
 SGX_CPU_VS=1 sgx-gl glcull       # the same with the vertex shaders on the CPU

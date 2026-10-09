@@ -66,7 +66,7 @@ struct sgx_batch {
    struct pipe_resource *rt;            /* referenced */
    struct sgx_batch_draw draw[SGX_FRAME_MAX_DRAWS];
    struct sgx_frame_draw fdraw[SGX_FRAME_MAX_DRAWS];    /* (sgx_batch_flush's) */
-   unsigned ndraws, cursor;             /* cursor: sgx_frame_place's */
+   unsigned ndraws;
    unsigned seq;                        /* this one's number, counted from 1 */
    float depth_clear;                   /* what the render's depth starts at */
    struct pipe_resource *zs;            /* the depth buffer, referenced (M24) */

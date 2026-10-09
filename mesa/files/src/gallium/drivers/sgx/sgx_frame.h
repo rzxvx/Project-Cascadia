@@ -171,7 +171,6 @@ struct sgx_frame_draw {
    unsigned stride, count;
    const uint16_t *indices;
 };
-/* (the pack's frame, SGX_FRAME=pack, takes 200: sgx_frame_max_draws()) */
 #define SGX_FRAME_MAX_DRAWS 2048
 unsigned sgx_frame_max_draws(const struct sgx_frame *f);
 
@@ -189,12 +188,8 @@ sgx_frame_state_equal(const struct sgx_frame_state *x, const struct sgx_frame_st
                             x->translate[2] == y->translate[2]));
 }
 
-/* sgx_frame_place_bytes()'s last draw grown by n bytes more */
-bool sgx_frame_extend_bytes(struct sgx_frame *f, unsigned *cursor, unsigned n);
 /* the most vertices a draw takes without indices */
 unsigned sgx_frame_list_max(const struct sgx_frame *f);
-/* the bytes of vertices a render takes */
-unsigned sgx_frame_vertex_room(const struct sgx_frame *f);
 
 /* n 32-bit words the same (musl's memcmp goes a byte at a time) */
 static inline bool
@@ -205,8 +200,9 @@ sgx_words_equal(const uint32_t *a, const uint32_t *b, unsigned n)
          return false;
    return true;
 }
-/* the indices a render's draws take, all told (8 more a draw: alignment) */
-#define SGX_FRAME_MAX_INDICES 0x40000
+/* the vertices and indices a render's draws take, all told, in bytes (its
+ * own memory grows as they need: a bound, not a size) */
+#define SGX_FRAME_MAX_BYTES (8u << 20)
 
 /* the program's code and PDS into GPU memory, once (sgx_frame_draw does it
  * itself) */
@@ -218,15 +214,6 @@ int sgx_frame_upload_vs(struct sgx_frame *f, struct sgx_vs *vs);
  * uploaded again if drawn after all) */
 void sgx_frame_retire(struct sgx_frame *f, struct sgx_pixel_program *p);
 void sgx_frame_retire_vs(struct sgx_frame *f, struct sgx_vs *vs);
-/* sgx_frame_place() for n bytes of a vertex shader's vertices (16-byte
- * aligned), *at their offset among the render's */
-bool sgx_frame_place_bytes(struct sgx_frame *f, unsigned *cursor, unsigned n, unsigned *at);
-
-/* Room for a draw's vertices among a render's: *cursor (0 for the first)
- * moves past them; false when they do not fit. */
-bool sgx_frame_place(struct sgx_frame *f, unsigned *cursor, const struct sgx_frame_layout *l,
-                     unsigned nverts, unsigned *first);
-
 /* The depth buffer a render loads its tiles' depth from, stores it to, or
  * both (M24, the ISP's z load/store): 32 x 32 F32 tiles, 4 KiB each, rows
  * of tiles an even number long (sgx_frame_zls_size()) */
@@ -239,14 +226,18 @@ struct sgx_frame_zls {
 };
 uint32_t sgx_frame_zls_size(unsigned w, unsigned h);
 
-/* n draws (at most SGX_FRAME_MAX_DRAWS, their vertices placed one after
- * another as sgx_frame_place says) in one render into rt, in order, over
- * what it holds: the depth test holds across them, from depth_clear -- or
- * from zls, when it loads.  zls NULL: no depth buffer. */
+/* n draws (at most SGX_FRAME_MAX_DRAWS) in one render into rt, in order,
+ * over what it holds: the depth test holds across them, from depth_clear
+ * -- or from zls, when it loads.  zls NULL: no depth buffer.  What the
+ * render reads besides rt and the frame's buffers -- its stream, the
+ * draws' state, vertices and indices -- goes in memory of its own (M27):
+ * it need not wait for the renders before it. */
 int sgx_frame_render(struct sgx_frame *f, struct sgx_resource *rt,
                      const struct sgx_frame_draw *draws, unsigned n, const uint32_t *handles,
                      unsigned nhandles, float depth_clear, const struct sgx_frame_zls *zls,
                      struct sgx_fence *done);
+/* the most vertices a draw module draw (l) takes: sgx_frame_draw's, and a
+ * gathered render's without indices */
 unsigned sgx_frame_max_vertices(struct sgx_frame *f, const struct sgx_frame_layout *l);
 
 #endif

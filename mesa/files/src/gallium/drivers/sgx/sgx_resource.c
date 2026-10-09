@@ -484,7 +484,7 @@ sgx_buffer_bo(struct sgx_context *ctx, struct sgx_resource *res)
 
    if (bo && lo >= hi)
       return bo;
-   if (bo && res->dirty_sync && (sgx_batch_reads(ctx, bo) || !sgx_bo_wait(bo, 0))) {
+   if (bo && res->dirty_sync && (sgx_batch_reads(ctx, bo) || !sgx_bo_idle(bo))) {
       /* a render reads the old content: the gathered draws or the kernel
        * keep the old copy for it */
       sgx_bo_destroy(bo);

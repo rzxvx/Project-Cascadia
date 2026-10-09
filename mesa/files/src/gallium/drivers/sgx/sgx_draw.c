@@ -906,9 +906,12 @@ sgx_batch_flush_at(struct sgx_context *ctx, const char *file, int line)
    for (unsigned i = 0; i < b->ntex; i++)
       pipe_resource_reference(&b->tex[i], NULL);
    /* (the kernel keeps the buffers for the render) */
-   for (unsigned i = 0; i < b->nbos; i++)
+   for (unsigned i = 0; i < b->nbos; i++) {
+      if (!ret)
+         sgx_bo_set_busy(b->bos[i], ctx->last);
       sgx_bo_destroy(b->bos[i]);
-   b->ndraws = b->ntex = b->nbos = b->nfloats = b->nbytes = b->nsa = b->nidx = b->cursor = 0;
+   }
+   b->ndraws = b->ntex = b->nbos = b->nfloats = b->nbytes = b->nsa = b->nidx = 0;
    b->seq++;
    bury(ctx);
 }
@@ -973,6 +976,13 @@ clip_to(struct sgx_context *ctx, bool vs, struct sgx_frame_state *st, float ab[4
    st->scale[2] = vs ? ctx->viewport.scale[2] : 0.5f;
    st->viewport = true;
    return true;
+}
+
+/* the vertices and indices gathered, in bytes (SGX_FRAME_MAX_BYTES) */
+static unsigned
+batch_bytes(const struct sgx_batch *b)
+{
+   return b->nfloats * sizeof(float) + b->nbytes + 2 * b->nidx;
 }
 
 /* how many more buffers the render would list for the kernel with these
@@ -1049,7 +1059,7 @@ merge_vs_draw(struct sgx_context *ctx, struct sgx_vs *vs, const struct sgx_fs *f
    struct sgx_screen *screen = sgx_screen(ctx->base.screen);
    struct sgx_batch *b = &ctx->batch;
    struct sgx_vtx *v = &ctx->vtx;
-   unsigned nvsa = vs->nuniforms, at = 0, cursor = b->cursor;
+   unsigned nvsa = vs->nuniforms, at = 0;
    unsigned nbytes = v->repacked ? v->nverts * v->stride : 0, nidx = v->indexed ? v->count : 0;
    struct sgx_batch_draw *p;
    bool found = false;
@@ -1070,8 +1080,7 @@ merge_vs_draw(struct sgx_context *ctx, struct sgx_vs *vs, const struct sgx_fs *f
     * them (the CPU's stream), or where its attributes' addresses say --
     * the same number of vertices on for each */
    if (v->repacked) {
-      if (p->first + p->nverts * p->stride != b->nbytes ||
-          !sgx_frame_extend_bytes(screen->frame, &cursor, nbytes))
+      if (p->first + p->nverts * p->stride != b->nbytes)
          return false;
       at = p->nverts;
    } else {
@@ -1096,13 +1105,13 @@ merge_vs_draw(struct sgx_context *ctx, struct sgx_vs *vs, const struct sgx_fs *f
       if (at != p->count || p->count + v->count > sgx_frame_list_max(screen->frame))
          return false;
    } else if (v->indexed && p->nidx) {
-      if (p->idx + p->nidx != b->nidx || at + v->max_index > 0xffff ||
-          b->nidx + nidx + 8 * b->ndraws > SGX_FRAME_MAX_INDICES)
+      if (p->idx + p->nidx != b->nidx || at + v->max_index > 0xffff)
          return false;
    } else {
       return false;
    }
-   if (b->ntex + b->nbos + more_handles(ctx, NULL, 0, v->bos, v->nbos) > SGX_FRAME_MAX_HANDLES ||
+   if (batch_bytes(b) + nbytes + 2 * nidx > SGX_FRAME_MAX_BYTES ||
+       b->ntex + b->nbos + more_handles(ctx, NULL, 0, v->bos, v->nbos) > SGX_FRAME_MAX_HANDLES ||
        !grow((void **)&b->vdata, &b->maxbytes, b->nbytes + nbytes, 1) ||
        !grow((void **)&b->idx, &b->maxidx, b->nidx + nidx, sizeof(uint16_t)))
       return false;
@@ -1116,7 +1125,6 @@ merge_vs_draw(struct sgx_context *ctx, struct sgx_vs *vs, const struct sgx_fs *f
    memcpy(b->vdata + b->nbytes, ctx->vdata, nbytes);
    p->nverts += v->repacked ? v->nverts : 0;
    b->nbytes += nbytes;
-   b->cursor = cursor;
    p->count += v->count;
    return true;
 }
@@ -1131,7 +1139,7 @@ add_vs_draw(struct sgx_context *ctx, struct sgx_vs *vs, const struct sgx_fs *fs,
    struct sgx_screen *screen = sgx_screen(ctx->base.screen);
    struct sgx_batch *b = &ctx->batch;
    struct sgx_vtx *v = &ctx->vtx;
-   unsigned nvsa = vs->nuniforms, nidx = v->indexed ? v->count : 0, cursor = b->cursor;
+   unsigned nvsa = vs->nuniforms, nidx = v->indexed ? v->count : 0;
    unsigned nbytes = v->repacked ? v->nverts * v->stride : 0, ntex = fs ? fs->nsamplers : 0;
    struct sgx_batch_draw *bd;
 
@@ -1143,13 +1151,10 @@ add_vs_draw(struct sgx_context *ctx, struct sgx_vs *vs, const struct sgx_fs *fs,
     * buffers */
    if (b->ndraws == sgx_frame_max_draws(screen->frame) ||
        b->ntex + b->nbos + more_handles(ctx, tex, ntex, v->bos, v->nbos) > SGX_FRAME_MAX_HANDLES ||
-       b->nidx + nidx + 8 * (b->ndraws + 1) > SGX_FRAME_MAX_INDICES ||
-       (nbytes && !sgx_frame_place_bytes(screen->frame, &cursor, nbytes, NULL))) {
+       batch_bytes(b) + nbytes + 2 * nidx > SGX_FRAME_MAX_BYTES) {
       sgx_batch_flush(ctx);
-      cursor = 0;
-      if (nidx + 8 > SGX_FRAME_MAX_INDICES ||
-          more_handles(ctx, tex, ntex, v->bos, v->nbos) > SGX_FRAME_MAX_HANDLES ||
-          (nbytes && !sgx_frame_place_bytes(screen->frame, &cursor, nbytes, NULL))) {
+      if (nbytes + 2 * nidx > SGX_FRAME_MAX_BYTES ||
+          more_handles(ctx, tex, ntex, v->bos, v->nbos) > SGX_FRAME_MAX_HANDLES) {
          mesa_logw_once("sgx: a draw larger than a render takes: dropped");
          return;
       }
@@ -1192,7 +1197,6 @@ add_vs_draw(struct sgx_context *ctx, struct sgx_vs *vs, const struct sgx_fs *fs,
    b->nbytes += nbytes;
    b->nsa += nsa + nvsa;
    b->nidx += nidx;
-   b->cursor = cursor;
 }
 
 /* One draw added to the gathered render: the draw module's triangles
@@ -1400,22 +1404,14 @@ submit(struct sgx_context *ctx)
    max = sgx_frame_max_vertices(screen->frame, &ctx->layout);
    for (unsigned k = 0; !vs && k < npass; k++)
    for (done = 0, st = pass[k]; done < ctx->nverts;) {
-      unsigned n = MIN2(ctx->nverts - done, max), first, ntex = fs ? fs->nsamplers : 0;
-      unsigned cursor = b->cursor;
+      unsigned n = MIN2(ctx->nverts - done, max), ntex = fs ? fs->nsamplers : 0;
       struct sgx_batch_draw *bd;
 
       /* room in this render: a draw, its vertices, its textures */
       if (b->ndraws == sgx_frame_max_draws(screen->frame) ||
           b->ntex + b->nbos + more_handles(ctx, tex, ntex, NULL, 0) > SGX_FRAME_MAX_HANDLES ||
-          b->nidx + 8 * (b->ndraws + 1) > SGX_FRAME_MAX_INDICES ||
-          !sgx_frame_place(screen->frame, &cursor, &ctx->layout, n, &first)) {
+          batch_bytes(b) + n * vf * sizeof(float) > SGX_FRAME_MAX_BYTES)
          sgx_batch_flush(ctx);
-         cursor = 0;
-         if (!sgx_frame_place(screen->frame, &cursor, &ctx->layout, n, &first)) {
-            mesa_logw_once("sgx: a draw larger than a render takes: dropped");
-            break;
-         }
-      }
       if (!grow((void **)&b->verts, &b->maxfloats, b->nfloats + n * vf, sizeof(float)) ||
           !grow((void **)&b->sa, &b->maxsa, b->nsa + nsa, sizeof(uint32_t)))
          break;
@@ -1443,7 +1439,6 @@ submit(struct sgx_context *ctx)
       memcpy(b->sa + b->nsa, sa, nsa * sizeof(uint32_t));
       b->nfloats += n * vf;
       b->nsa += nsa;
-      b->cursor = cursor;
       done += n;
    }
    ctx->nverts = 0;
@@ -1463,7 +1458,7 @@ quad(struct sgx_context *ctx, const struct pipe_scissor_state *sc, float d,
    struct sgx_batch *b = &ctx->batch;
    struct pipe_surface *surf = &ctx->fb.cbufs[0];
    struct sgx_resource *rt = surf->texture ? sgx_resource(surf->texture) : NULL;
-   unsigned cursor = b->cursor, first, vf = sgx_frame_vertex_floats(&l);
+   unsigned vf = sgx_frame_vertex_floats(&l);
    /* the rectangle in clip space, through the target's whole viewport (rows
     * from the first: gallium's framebuffer space), at the depth d */
    float x0 = sc ? 2.0f * sc->minx / ctx->fb.width - 1 : -1;
@@ -1485,7 +1480,6 @@ quad(struct sgx_context *ctx, const struct pipe_scissor_state *sc, float d,
       if (!flush)
          return false;
       sgx_batch_flush(ctx);
-      cursor = 0;
    }
    simple_mtx_lock(&screen->frame_lock);
    ret = sgx_frame_upload(screen->frame, prog);
@@ -1493,13 +1487,10 @@ quad(struct sgx_context *ctx, const struct pipe_scissor_state *sc, float d,
    if (ret)
       return false;
    if (b->ndraws == sgx_frame_max_draws(screen->frame) ||
-       !sgx_frame_place(screen->frame, &cursor, &l, 6, &first)) {
+       batch_bytes(b) + sizeof(quad) > SGX_FRAME_MAX_BYTES) {
       if (!flush)
          return false;
       sgx_batch_flush(ctx);
-      cursor = 0;
-      if (!sgx_frame_place(screen->frame, &cursor, &l, 6, &first))
-         return false;
    }
    if (!grow((void **)&b->verts, &b->maxfloats, b->nfloats + 6 * vf, sizeof(float)) ||
        !grow((void **)&b->sa, &b->maxsa, b->nsa + nsa, sizeof(uint32_t)))
@@ -1525,7 +1516,6 @@ quad(struct sgx_context *ctx, const struct pipe_scissor_state *sc, float d,
    b->zs_written |= st->depth_write || (st->stencil_on && (st->stencil & 0xff));
    memcpy(b->verts + b->nfloats, quad, sizeof(quad));
    b->nfloats += 6 * vf;
-   b->cursor = cursor;
    return true;
 }
 
@@ -1886,7 +1876,7 @@ gpu_vs_draw(struct sgx_context *ctx, const struct pipe_draw_info *info,
             at += 4 * sgx_attr_words(vs->attr[a]);
          }
       v->stride = MAX2(at, 4);
-      if (n * v->stride > sgx_frame_vertex_room(screen->frame) ||
+      if (n * v->stride > SGX_FRAME_MAX_BYTES ||
           !grow_bytes(&ctx->vdata, &ctx->maxvdata, n * v->stride))
          return false;
       for (unsigned a = 0; a < vs->nattrs; a++) {

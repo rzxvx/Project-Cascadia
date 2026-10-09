@@ -1,8 +1,10 @@
 /* glspeed -- how fast draws go (docs/research/p105-mesa.md, M14): frames of
  * N small quads, each a draw of its own with its own uniform colour, a
- * glFinish a frame; the time a frame and draws a second.
+ * glFinish a frame -- or, with "flush", a glFlush, the CPU going on with the
+ * next frame while the GPU draws the last (M27), and two targets in turn;
+ * the time a frame and draws a second.
  *
- *   sgx-gl glspeed [DRAWS [FRAMES]]      (defaults 100, 20)
+ *   sgx-gl glspeed [DRAWS [FRAMES [flush]]]      (defaults 100, 20)
  */
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
@@ -10,6 +12,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <time.h>
 
 #define W 768
@@ -26,6 +29,7 @@ static double now(void)
 int main(int argc, char **argv)
 {
 	int draws = argc > 1 ? atoi(argv[1]) : 100, frames = argc > 2 ? atoi(argv[2]) : 20;
+	int flush = argc > 3 && !strcmp(argv[3], "flush");
 	static const char *vs = "attribute vec4 p; uniform vec2 o;\n"
 	                        "void main() { gl_Position = vec4(p.xy * 0.05 + o, 0.0, 1.0); }\n";
 	static const char *fs = "precision mediump float; uniform vec4 c;\n"
@@ -34,7 +38,7 @@ int main(int argc, char **argv)
 	                              -1, -1, 0, 1,  1, 1, 0, 1,  -1, 1, 0, 1 };
 	PFNEGLGETPLATFORMDISPLAYEXTPROC get_display;
 	EGLint ctx_attrs[] = { EGL_CONTEXT_CLIENT_VERSION, 2, EGL_NONE };
-	GLuint rt, fbo, p;
+	GLuint rt[2], fbo[2], p;
 	GLint lo, lc;
 	EGLDisplay dpy;
 	EGLContext ctx;
@@ -47,12 +51,14 @@ int main(int argc, char **argv)
 	ctx = eglCreateContext(dpy, EGL_NO_CONFIG_KHR, EGL_NO_CONTEXT, ctx_attrs);
 	if (ctx == EGL_NO_CONTEXT || !eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, ctx))
 		return fprintf(stderr, "glspeed: no GLES 2 context\n"), 2;
-	glGenTextures(1, &rt);
-	glBindTexture(GL_TEXTURE_2D, rt);
-	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, W, H, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
-	glGenFramebuffers(1, &fbo);
-	glBindFramebuffer(GL_FRAMEBUFFER, fbo);
-	glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, rt, 0);
+	glGenTextures(2, rt);
+	glGenFramebuffers(2, fbo);
+	for (int i = 0; i < 2; i++) {
+		glBindTexture(GL_TEXTURE_2D, rt[i]);
+		glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, W, H, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+		glBindFramebuffer(GL_FRAMEBUFFER, fbo[i]);
+		glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, rt[i], 0);
+	}
 	glViewport(0, 0, W, H);
 	p = glCreateProgram();
 	for (int i = 0; i < 2; i++) {
@@ -73,6 +79,7 @@ int main(int argc, char **argv)
 	for (int f = -1; f < frames; f++) {
 		if (f == 0)
 			t0 = now();     /* the first frame warms up: not counted */
+		glBindFramebuffer(GL_FRAMEBUFFER, fbo[flush && (f & 1)]);
 		glClearColor(0, 0, 0.2f, 1);
 		glClear(GL_COLOR_BUFFER_BIT);
 		for (int i = 0; i < draws; i++) {
@@ -80,7 +87,10 @@ int main(int argc, char **argv)
 			glUniform4f(lc, (i % 7) / 6.0f, (i % 5) / 4.0f, (i % 3) / 2.0f, 1);
 			glDrawArrays(GL_TRIANGLES, 0, 6);
 		}
-		glFinish();
+		if (flush && f < frames - 1)
+			glFlush();
+		else
+			glFinish();
 	}
 	t = now() - t0;
 	printf("%d frames of %d draws: %.2f ms a frame, %.0f draws a second\n", frames, draws,

@@ -60,6 +60,8 @@ struct sgx_bo {
     * context and batch number (sgx_draw.c) */
    const void *batch_ctx;
    unsigned batch_seq;
+   /* a cached one's: the last render that listed it (under bo_lock) */
+   struct sgx_fence *busy;
 };
 
 /* A fence: one syncobj, signalled when the render it was given to is done
@@ -85,6 +87,11 @@ struct sgx_bo *sgx_bo_import(struct sgx_device *dev, uint32_t handle);
  * back in the cache) */
 void sgx_bo_destroy(struct sgx_bo *bo);
 void sgx_bo_ref(struct sgx_bo *bo);
+/* a cached buffer object (sgx_bo_cache_get) listed by the render done
+ * signals, and whether the last one that listed it is done -- without the
+ * kernel's GEM_WAIT, whose zero timeout waits a jiffy for a busy one */
+void sgx_bo_set_busy(struct sgx_bo *bo, struct sgx_fence *done);
+bool sgx_bo_idle(struct sgx_bo *bo);
 /* A mapped buffer object of at least size bytes for a buffer resource: the
  * cache's oldest of its size that no render reads any more, or a new one */
 struct sgx_bo *sgx_bo_cache_get(struct sgx_device *dev, uint32_t size);

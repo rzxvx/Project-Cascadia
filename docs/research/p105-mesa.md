@@ -1936,6 +1936,71 @@ right, and so is everything else: the `gl*` tests, dEQP's `vertex_arrays`
 before). SuperTux, the same scene, debug builds: **20.0 -> 24.5 frames a
 second**.
 
+## M27: renders that do not wait for each other
+
+Every render was written into the same memory -- the template frame's
+EXT window (its draws' state, uniforms, fetches, vertices, indices), its
+VDM stream, the 3D pass's PDS block, the stream's end, the render target
+set's 3D block -- so each one waited for the last to be done before it
+could start being written (`begin_render`). The kernel runs one render at
+a time (the scheduler's credit limit is 1), so what the GPU itself fills
+in, the render target data, can be shared; what the CPU writes for a
+render cannot.
+
+- **A render's own memory.** Everything the CPU writes for one gathered
+  render goes in memory of its own (`struct arena`): chunks of 256 KiB (or
+  as large as one piece needs) from the device's cache of buffer objects
+  (M26), listed with the render for the kernel and given back after the
+  submit -- the cache hands a chunk out again once the render is done. Each piece is allocated as large as it is: no slots of
+  fixed size, no 2048-draw, 1.25 MiB-vertex or 256 Ki-index windows; a
+  batch is bounded by 8 MiB of vertices and indices
+  (`SGX_FRAME_MAX_BYTES`) and 2048 draws. The draw module's draws get a
+  fetch of their own, at their vertices, as vertex shaders' do (M26).
+- **Its own copies of the frame's words a render sets**: the 3D pass's PDS
+  block (the end of tile's DOUTU at `+8`, the background's descriptor at
+  `+0x130`), the stream's terminate program (the tiles at `+0x10`) and the
+  render target set's 3D block (the depth the tiles start at, the ZLS
+  words) in the render's memory; the TA command's background program
+  (`+0x08`, `+0x10`), stream (`+0xd4`) and 3D block (`+0x50`), the 3D
+  block's event and pixel PDS programs (`+0x98`, `+0xfc`) and the stream's
+  tail pointed at them.
+- **A draw's state is 21 words.** The renders hung at first, the BIF
+  faulting at `0x87800040` and the like (the TA's base, `0x87800000`, plus
+  a little), and the hangs stayed with every copy above turned off, with
+  every piece aligned to 4 KiB, with the render's memory one buffer of its
+  own: the state program's DMA control word says 21 words (it is words less
+  one, 20, as the uniform loaders' are), and the template's block is 20
+  long (`0x50` bytes). The 21st -- word 20, which varyings the pixels get as
+  F16 -- came from whatever followed the block: zeros in the EXT window,
+  which nothing else wrote there, but the last render's leftovers in memory
+  used again. All 21 are written now.
+- **What is shared waits for what used it**: an end-of-tile program's slot
+  is written over once the last render that ran it is done; a render
+  target set given up stays with its renders (the kernel's reference).
+- **At most three renders queued**: the fourth waits for the first, so the
+  CPU is ahead of the GPU by that much and no more.
+- **Is a buffer object idle?** `GEM_WAIT` with a zero timeout, which the
+  buffer cache and the buffers' GPU copies (M26) asked, waits a jiffy for a
+  busy one (`dma_resv_wait_timeout` turns 0 into 1): a cached buffer object
+  keeps the fence of the last render that listed it now
+  (`sgx_bo_set_busy`), and a syncobj's wait with no timeout returns at
+  once.
+
+The template's own draws (`sgx_frame_draw`, `sgx_frame_clear`: the pack's
+sides, `SGX_FRAME=pack*`) still write the frame's buffers after waiting
+for the last render, and so do gathered renders with `SGX_FRAME=fb` or
+`packrt` (the pack's end of tile and render target data).
+
+`glspeed DRAWS FRAMES flush` ends each frame with a `glFlush` (the last
+with a `glFinish`), two targets in turn, so the CPU goes on while the GPU
+draws: 400 draws a frame 6.75 -> 5.80 ms, 100 a frame 3.98 -> 3.69 ms
+(with `glFinish` a frame, 9.1 and 4.7 ms either way). SuperTux, one render
+a frame and the CPU the bound, is where it was (24). Every `gl*` test is
+right, and dEQP-GLES2 as before but for one case,
+`shaders.matrix.add_assign.dynamic_mediump_mat3_fragment`, which fails run
+alone with the build before as well (it passes or not with what ran
+before it).
+
 ## Testing, without and with the device
 
 - **Host, every change:** the kernel driver builds with `W=1` against the

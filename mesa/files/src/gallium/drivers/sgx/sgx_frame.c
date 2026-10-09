@@ -87,28 +87,26 @@
 #define EXT_PROG_PDS    0x1000
 #define EXT_PROG_PDS_END 0x80000
 #define PROG_PDS_SLOT   0x80
-/* M18: per draw of a render, a vertex shader's uniforms and their loader;
- * per render, the draws' indices */
-#define EXT_VS_UNI      0x100000
-#define VS_UNI_SLOT     0x280           /* the words (128 at most), then their loader */
-#define VS_UNI_PDS      0x200
-#define EXT_IDX         0x200000
-#define EXT_IDX_END     0x280000
-/* M26: per draw of a render, a vertex shader's fetch -- its attributes'
- * addresses are the draw's (sgx_frame_render) */
-#define EXT_FETCH_SLOTS 0x140000
-#define FETCH_SLOT      0x180
 /* per render, in the frame's part of the EXT window: the secondary
  * attributes' loader and the words it loads (uniforms, texture states) */
 #define FRAME_UNI_PDS   0xf00
 #define FRAME_UNIFORMS  0x1000
-/* a gathered render's draws (sgx_frame_render): a slot each in the frame's
- * part of the EXT window -- the whole state, its state program, the
- * secondary attributes' loader and words */
-#define DRAW_SLOT       0x400
+/* a draw's whole state: the words the state program DMAs to the tiler
+ * (its control word says 21 -- the template's block is 20 long, and the
+ * 21st, which varyings are F16, came from whatever followed: zeros in a
+ * buffer of its own, M27) */
+#define STATE_WORDS     21
+/* a gathered render's draws (sgx_frame_render), in its own memory (M27):
+ * the whole state, then its state program */
 #define DRAW_PROG       0x80
-#define DRAW_UNIFORMS   0x100           /* 128 words at most, then their loader */
-#define DRAW_UNI_PDS    0x300
+/* the uniforms' loader after the words */
+#define UNIFORM_LOADER_AT(nsa) align(4 * (nsa), 16)
+/* M27: a render's own memory comes in chunks of at least this */
+#define ARENA_CHUNK     (256u << 10)
+#define ARENA_MAX       128
+/* M27: the gathered renders queued at most, the oldest waited for before
+ * another goes (the CPU ahead of the GPU by that much, no more) */
+#define MAX_QUEUED      3
 /* the code of our programs: a buffer of its own in the code zone, a
  * program's place free again once the renders that ran it are done */
 #define HEAP_SIZE       (256 << 10)
@@ -268,6 +266,18 @@ struct rt_set {
    struct sgx_bo *bo;           /* the buffers, then the 3D block */
    uint32_t va[SGX_RT_NBUF], blk_va;
    uint64_t used;
+   struct sgx_fence *fence;     /* the last render that used it */
+};
+
+/* M27: a render's own memory -- its stream, the draws' state, uniforms,
+ * fetches, vertices and indices, its copies of the frame's words a render
+ * sets -- in chunks from the device's cache of buffer objects, which hands
+ * them out again once the render is done (sgx_bo_set_busy; the kernel keeps
+ * them for the render) */
+struct arena {
+   struct sgx_bo *bo[ARENA_MAX];
+   unsigned n;
+   uint32_t at;                 /* in the last chunk */
 };
 
 struct sgx_frame {
@@ -279,10 +289,7 @@ struct sgx_frame {
    uint32_t kick[3];            /* PB descriptor, render details, TA command */
    uint32_t w, h;
    uint32_t consts0, idx, idx_count, vdm, vdm_size, ext, ext_size, heap, heap_size, pds;
-   /* where a render's draws' slots and vertex shaders' uniforms go in the
-    * EXT window, and how many draws a render takes */
-   uint32_t draw_slots, vs_uni, fetch_slots;
-   unsigned max_draws;
+   unsigned max_draws;          /* in a gathered render */
    uint32_t fetch_tag, fetch_word;
    uint32_t tail[8];
    unsigned ntail;
@@ -307,7 +314,11 @@ struct sgx_frame {
    uint8_t *code_map;
    unsigned nhandles;           /* the pack's buffers (and ours); then the target */
    struct sgx_eot eot[MAX_EOT];
-   unsigned neot, max_eot;
+   struct sgx_fence *eot_fence[MAX_EOT];   /* the last render each slot's program ran in */
+   unsigned neot, max_eot, eot_slot;       /* eot_slot: the render's */
+   struct arena arena;
+   struct sgx_fence *queued[MAX_QUEUED];   /* the last gathered renders, round in turn */
+   unsigned nqueued;
    uint32_t texblock;           /* the white texture's block, replace program */
    uint32_t iter_pds;           /* the iterated-colour pixel program's PDS, per varying */
    uint32_t fetch_pds;          /* the vertex fetch, per number of varyings */
@@ -361,6 +372,60 @@ sgx_frame_options(void)
    }
    opts = o;
    return o;
+}
+
+/* M27: a gathered render's own copies of the frame's words a render sets
+ * -- the 3D pass's PDS block (the end of tile's DOUTU at +8, the
+ * background's descriptor at +0x130) and the stream's end (the tiles at
+ * +0x10) -- so it need not wait for the last render; the TA command, the
+ * 3D block (a copy too) and the stream's tail point at them.
+ * With the built frame only, and not for SGX_FRAME=fb, packrt (the
+ * pack's). */
+struct own {
+   uint32_t pds, term;
+};
+
+/* n bytes of the render's own memory, at *va, aligned to al (a power of
+ * two); NULL if there is none */
+static uint8_t *
+arena_alloc(struct sgx_frame *f, uint32_t n, uint32_t al, uint32_t *va)
+{
+   struct arena *a = &f->arena;
+   struct sgx_bo *bo = a->n ? a->bo[a->n - 1] : NULL;
+   uint32_t at = align(a->at, al);
+
+   if (!bo || at + n > bo->size) {
+      if (a->n == ARENA_MAX || !(bo = sgx_bo_cache_get(f->dev, MAX2(n, ARENA_CHUNK))))
+         return NULL;
+      a->bo[a->n++] = bo;
+      at = 0;
+   }
+   a->at = at + n;
+   *va = bo->va + at;
+   return bo->map + at;
+}
+
+/* n bytes from p into the render's own memory; its address (0: none) */
+static uint32_t
+arena_put(struct sgx_frame *f, const void *p, uint32_t n, uint32_t al)
+{
+   uint32_t va;
+   uint8_t *dst = arena_alloc(f, n, al, &va);
+
+   if (!dst)
+      return 0;
+   memcpy(dst, p, n);
+   return va;
+}
+
+/* the render's memory given back: the cache takes it again once the
+ * render is done */
+static void
+arena_release(struct sgx_frame *f)
+{
+   for (unsigned i = 0; i < f->arena.n; i++)
+      sgx_bo_destroy(f->arena.bo[i]);
+   f->arena.n = f->arena.at = 0;
 }
 
 static uint32_t
@@ -580,11 +645,7 @@ load_pack(struct sgx_frame *f, const char *dir)
       } else if (!strcmp(key, "ext")) {
          f->ext = strtoul(a, 0, 0);
          f->ext_size = strtoul(b, 0, 0);
-         /* the pack's 4 MiB: its last 256 KiB the draws' slots */
-         f->draw_slots = EXT_FRAME;
-         f->vs_uni = EXT_VS_UNI;
-         f->fetch_slots = EXT_FETCH_SLOTS;
-         f->max_draws = 200;
+         f->max_draws = SGX_FRAME_MAX_DRAWS;
       } else if (!strcmp(key, "texheap")) {
          f->heap = strtoul(a, 0, 0);
          f->heap_size = strtoul(b, 0, 0);
@@ -631,11 +692,8 @@ load_pack(struct sgx_frame *f, const char *dir)
 #define BUILT_WHITE     0xc00       /* the white texture, */
 #define BUILT_IDX       0x1000      /* the index buffer */
 #define BUILT_GL_SIZE   (BUILT_IDX + SGX_TMPL_IDX_COUNT * 2)
-#define BUILT_VDM_SIZE  0x20000     /* 10 words a draw */
-#define BUILT_EXT_SIZE  0x800000    /* the pack's 4 MiB, then: */
-#define BUILT_DRAWS     0x400000    /* SGX_FRAME_MAX_DRAWS draw slots, */
-#define BUILT_VS_UNI    0x600000    /* vertex shader uniforms, */
-#define BUILT_FETCH     0x740000    /* and vertex shader fetches */
+#define BUILT_VDM_SIZE  0x1000      /* the template's own draws' stream */
+#define BUILT_EXT_SIZE  0x400000    /* the pack's 4 MiB */
 
 static struct sgx_bo *
 new_bo(struct sgx_frame *f, uint32_t size, uint32_t flags)
@@ -799,9 +857,6 @@ build_frame(struct sgx_frame *f, const char *dir)
    f->idx_count = SGX_TMPL_IDX_COUNT;
    f->vdm = vdm->va;
    f->vdm_size = BUILT_VDM_SIZE;
-   f->draw_slots = BUILT_DRAWS;
-   f->vs_uni = BUILT_VS_UNI;
-   f->fetch_slots = BUILT_FETCH;
    f->max_draws = SGX_FRAME_MAX_DRAWS;
    f->ext = ext->va;
    f->ext_size = BUILT_EXT_SIZE;
@@ -871,11 +926,10 @@ vertex_program(uint64_t *p, unsigned nvaryings)
 }
 
 /* the vertex fetch for n varyings: one attribute a vec4, from the vertices
- * at EXT_VB */
+ * at vb */
 static unsigned
-fetch_program(struct sgx_frame *f, uint32_t *p, unsigned nvaryings)
+fetch_program(struct sgx_frame *f, uint32_t *p, unsigned nvaryings, uint32_t vb)
 {
-   uint32_t vb = f->ext + EXT_VB;
    unsigned n = 0, rows = 1 + nvaryings;
 
    for (unsigned i = 0; i < rows; i++) {
@@ -956,7 +1010,7 @@ put_ours(struct sgx_frame *f)
    }
    f->fetch_pds = f->ext + EXT_FETCH_PDS;
    for (unsigned n = 0; n <= SGX_FRAME_MAX_VARYINGS; n++) {
-      unsigned len = fetch_program(f, pds, n);
+      unsigned len = fetch_program(f, pds, n, f->ext + EXT_VB);
 
       assert(len * 4 <= FETCH_PDS_SIZE);
       ok = ok && put(f, f->fetch_pds + n * FETCH_PDS_SIZE, pds, len * 4);
@@ -1057,6 +1111,7 @@ static void
 drop_rt_sets(struct sgx_frame *f)
 {
    for (unsigned i = 0; i < MAX_RT_SETS; i++) {
+      sgx_fence_reference(&f->rts[i].fence, NULL);
       sgx_bo_destroy(f->rts[i].bo);
       f->rts[i].bo = NULL;
    }
@@ -1088,6 +1143,11 @@ sgx_frame_destroy(struct sgx_frame *f)
    sgx_bo_destroy(f->code);
    sgx_bo_destroy(f->code_heap);
    drop_rt_sets(f);
+   arena_release(f);
+   for (unsigned i = 0; i < MAX_EOT; i++)
+      sgx_fence_reference(&f->eot_fence[i], NULL);
+   for (unsigned i = 0; i < MAX_QUEUED; i++)
+      sgx_fence_reference(&f->queued[i], NULL);
    for (unsigned i = 0; i < f->nbo; i++)
       sgx_bo_destroy(f->bo[i]);
    free(f->tmpl);
@@ -1112,8 +1172,10 @@ sgx_frame_can_render(struct sgx_frame *f, struct sgx_resource *rt)
 
 /* The render target data for a w x h target: made the first time a render
  * goes to that size -- the buffers as sgx_rt.c fills them, the pack's 3D
- * block with the size's words -- and kept.  No render is running (the
- * caller waited for the last), so a slot can be taken over. */
+ * block with the size's words -- and kept.  A slot taken over: its buffers
+ * stay with the renders that use them (the kernel's reference), but at a
+ * fixed address (kernels before UAPI 3) the new ones go where they are --
+ * once those renders are done. */
 static struct rt_set *
 rt_set(struct sgx_frame *f, unsigned w, unsigned h)
 {
@@ -1136,6 +1198,9 @@ rt_set(struct sgx_frame *f, unsigned w, unsigned h)
          s = t;
    }
    slot = s - f->rts;
+   if (s->fence && f->dev->uapi < 3)
+      sgx_fence_wait(s->fence, OS_TIMEOUT_INFINITE);
+   sgx_fence_reference(&s->fence, NULL);
    sgx_bo_destroy(s->bo);
    s->bo = NULL;
    if (!blk || !sgx_rt_layout(&s->rt, w, h, MAX2(f->dev->num_cores, 1)))
@@ -1233,9 +1298,11 @@ zls_ctl(const struct sgx_frame_zls *zls)
  * draws read besides */
 static int
 kick(struct sgx_frame *f, struct sgx_resource *rt, float depth, const struct sgx_frame_zls *zls,
-     const uint32_t *handles, unsigned nhandles, struct sgx_fence *done)
+     const uint32_t *handles, unsigned nhandles, uint32_t vdm, const struct own *o,
+     struct sgx_fence *done)
 {
-   uint32_t hs[MAX_PACK_BOS + 3 + 2 + 1 + SGX_FRAME_MAX_HANDLES], cmd[APPLE_SGX_TA_CMD_MAX / 4];
+   uint32_t hs[MAX_PACK_BOS + 3 + 2 + 1 + SGX_FRAME_MAX_HANDLES + ARENA_MAX];
+   uint32_t cmd[APPLE_SGX_TA_CMD_MAX / 4];
    const uint32_t *pack = f->built ? f->cmd_tmpl :
                           (const uint32_t *)cpu_at(f, f->kick[2], APPLE_SGX_TA_CMD_MIN, NULL);
    unsigned n = f->nhandles, det_bo;
@@ -1245,7 +1312,8 @@ kick(struct sgx_frame *f, struct sgx_resource *rt, float depth, const struct sgx
    int ret;
 
    if (!pack || pack[0] > sizeof(cmd) ||
-       (!f->built && !cpu_at(f, f->kick[2], pack[0], NULL)) || n + 2 + nhandles > ARRAY_SIZE(hs))
+       (!f->built && !cpu_at(f, f->kick[2], pack[0], NULL)) ||
+       n + 3 + nhandles + f->arena.n > ARRAY_SIZE(hs))
       return -EINVAL;
    memcpy(cmd, pack, pack[0]);
    memcpy(hs, f->handles, n * sizeof(uint32_t));
@@ -1257,12 +1325,33 @@ kick(struct sgx_frame *f, struct sgx_resource *rt, float depth, const struct sgx
       det_offset = f->kick[1] - f->bo[det_bo]->va;
       blk = cpu_at(f, cmd[0x50 / 4] + 0x80, 4, NULL);
    } else {
+      uint32_t blk_va;
+
       if (!(s = rt_set(f, rt->base.width0, rt->base.height0)))
          return -ENOMEM;
-      sgx_rt_ta_cmd(&s->rt, s->va, s->blk_va, cmd);
+      blk_va = s->blk_va;
+      blk = s->bo->map + (s->blk_va - s->bo->va);
+      /* a gathered render's own copy of the 3D block, its event and pixel
+       * PDS programs the render's (M27); the TA command's background
+       * program and stream too */
+      if (o) {
+         uint8_t *b = arena_alloc(f, SGX_TMPL_BLOCK_SIZE, 64, &blk_va);
+
+         if (!b)
+            return -ENOMEM;
+         memcpy(b, blk, SGX_TMPL_BLOCK_SIZE);
+         blk = b;
+         ((uint32_t *)blk)[0x98 / 4] = o->pds;
+         ((uint32_t *)blk)[0xfc / 4] = o->pds;
+      }
+      sgx_rt_ta_cmd(&s->rt, s->va, blk_va, cmd);
+      if (o) {
+         cmd[0x08 / 4] = (o->pds + 0x100 - 0x80000000u) >> 4;
+         cmd[0x10 / 4] = p27(o->pds + 0x120);
+      }
       det_handle = hs[n++] = s->bo->handle;
       det_offset = s->va[SGX_RT_DETAILS] - s->bo->va;
-      blk = s->bo->map + (s->blk_va - s->bo->va) + 0x80;
+      blk += 0x80;
    }
    /* the depth the tiles start at: register 0x4b8, the 3D block's +0x80
     * (1.0 as the kext sets it, M4) */
@@ -1283,6 +1372,9 @@ kick(struct sgx_frame *f, struct sgx_resource *rt, float depth, const struct sgx
       if (zls)
          hs[n++] = zls->bo->handle;
    }
+   /* the stream: the render's own (M27), or the frame's */
+   if (vdm)
+      cmd[0xd4 / 4] = vdm;
    /* SGX_CMD=off:xor[,...]: the TA command's words flipped (finding them) */
    {
       static uint32_t xo[APPLE_SGX_TA_CMD_MAX / 4];
@@ -1337,20 +1429,27 @@ kick(struct sgx_frame *f, struct sgx_resource *rt, float depth, const struct sgx
    }
    memcpy(hs + n, handles, nhandles * sizeof(uint32_t));
    n += nhandles;
+   for (unsigned i = 0; i < f->arena.n; i++)
+      hs[n++] = f->arena.bo[i]->handle;
    if (f->debug)
       mesa_logi("sgx:   kick: PB 0x%08x, details 0x%08x (%s), 3D block 0x%08x, TA command "
                 "%u bytes, %u buffers", f->kick[0], cmd[0x54 / 4],
                 s ? "ours" : "the pack's", cmd[0x50 / 4], cmd[0], n);
    ret = sgx_submit(f->dev, cmd, f->kick[0], det_handle, det_offset, hs, n, done);
-   if (!ret)
+   if (!ret) {
       sgx_fence_reference(&f->last, done);
+      sgx_fence_reference(&f->eot_fence[f->eot_slot], done);
+      if (s)
+         sgx_fence_reference(&s->fence, done);
+   }
    return ret;
 }
 
 /* The end-of-tile program for a target: written once per target, in a
- * slot of its own.  When the slots run out (seven in the pack's page) the
- * oldest is written over -- no render is running then (the caller waits for
- * the last), but the USSE may still have the old program in its cache. */
+ * slot of its own (f->eot_slot says which, for the render's fence).  When
+ * the slots run out (seven in the pack's page) the oldest is written over,
+ * once the last render that ran it is done -- the USSE may still have the
+ * old program in its cache. */
 static uint32_t
 eot_program(struct sgx_frame *f, const struct sgx_eot *want)
 {
@@ -1362,13 +1461,18 @@ eot_program(struct sgx_frame *f, const struct sgx_eot *want)
    unsigned i, slot;
 
    for (i = 0; i < MIN2(f->neot, f->max_eot); i++)
-      if (!memcmp(&f->eot[i], want, sizeof(*want)))
+      if (!memcmp(&f->eot[i], want, sizeof(*want))) {
+         f->eot_slot = i;
          return f->code_va + PROGS_SIZE + i * EOT_SLOT;
+      }
    slot = f->neot++ % f->max_eot;
    if (f->neot == f->max_eot + 1)
       mesa_logw("sgx: more render targets than end-of-tile slots (%u); old ones are "
                 "written over", f->max_eot);
+   if (f->eot_fence[slot])
+      sgx_fence_wait(f->eot_fence[slot], OS_TIMEOUT_INFINITE);
    f->eot[slot] = *want;
+   f->eot_slot = slot;
 
    prog[0] = USSE_PHAS;
    memcpy(&prog[1], usse_dummy_load, sizeof(usse_dummy_load));
@@ -1673,17 +1777,20 @@ sgx_frame_draw(struct sgx_frame *f, struct sgx_resource *rt, const struct sgx_fr
    return ret;
 }
 
-/* A render through the frame: with l, our vertex side (M13b) and verts
- * laid out as it says; without, the pack's, verts r g b a u v x y.  The
- * pixel side is the iterated colour (l's colour varying, or the pack's) or
- * the pack's texel x colour. */
-/* What every render starts with: the last one done (the frame's buffers
- * are its until then), the pack again after a hang, and the end of tile
- * and background aimed at the target (or, with SGX_FRAME=screen, the
- * framebuffer). */
+static bool
+own_copies(const struct sgx_frame *f)
+{
+   return f->built && f->term && !(f->opts & (SGX_FRAME_FB | SGX_FRAME_PACKRT));
+}
+
+/* What every render starts with: the pack again after a hang, and the end
+ * of tile and background aimed at the target (or, with SGX_FRAME=screen,
+ * the framebuffer) -- into the render's own copies (o), or into the
+ * frame's words once the last render is done (the frame's buffers are its
+ * until then). */
 static int
 begin_render(struct sgx_frame *f, struct sgx_resource *rt, struct sgx_eot *out_to,
-             uint32_t *out_eot, uint32_t bg[4])
+             uint32_t *out_eot, uint32_t bg[4], struct own *o)
 {
    struct sgx_eot to = {
       .va = rt->bo->va, .w = rt->base.width0, .h = rt->base.height0, .stride = rt->stride[0],
@@ -1691,11 +1798,12 @@ begin_render(struct sgx_frame *f, struct sgx_resource *rt, struct sgx_eot *out_t
    uint32_t eot, d0, tiles = term_tiles(to.w, to.h);
    uint64_t timeouts;
 
-   /* the frame's buffers are the last render's until it is done */
-   sgx_trace_mark("begin_render wait");
-   if (f->last && !sgx_fence_wait(f->last, 5ull * 1000 * 1000 * 1000))
-      mesa_logw("sgx: the last render through the template frame is still running");
-   sgx_trace_mark("begin_render waited");
+   if (!o) {
+      sgx_trace_mark("begin_render wait");
+      if (f->last && !sgx_fence_wait(f->last, 5ull * 1000 * 1000 * 1000))
+         mesa_logw("sgx: the last render through the template frame is still running");
+      sgx_trace_mark("begin_render waited");
+   }
 
    /* a render that hung (this process's or another's) leaves the parameter
     * buffer and the render target data half-used: the pack again */
@@ -1704,13 +1812,12 @@ begin_render(struct sgx_frame *f, struct sgx_resource *rt, struct sgx_eot *out_t
       mesa_logw("sgx: a render timed out (%llu so far); the template frame is "
                 "loaded again", (unsigned long long)timeouts);
       f->timeouts = timeouts;
+      if (f->last)
+         sgx_fence_wait(f->last, 5ull * 1000 * 1000 * 1000);
       if (!load_images(f) || !put_ours(f))
          return -EFAULT;
       drop_rt_sets(f);
    }
-   /* the tiles the stream's end covers: the target's */
-   if (f->term && !put(f, f->term, &tiles, 4))
-      return -EFAULT;
 
    /* where tiles go, and what they start as: the render target (or, with
     * SGX_FRAME=screen, the framebuffer) */
@@ -1725,15 +1832,38 @@ begin_render(struct sgx_frame *f, struct sgx_resource *rt, struct sgx_eot *out_t
    bg[2] = to.va;
    bg[3] = 0x10000000;
    d0 = doutu(f, eot);
-   if (!(f->opts & SGX_FRAME_FB) &&
-       (!put(f, f->pds + 8, &d0, 4) || !put(f, f->pds + 0x130, bg, 4 * sizeof(uint32_t))))
-      return -EFAULT;
+
+   if (o) {
+      const uint8_t *pds = cpu_at(f, f->pds, SGX_TMPL_PDS_SIZE, NULL);
+      const uint8_t *term = cpu_at(f, f->term - 0x10, 0x60, NULL);
+      uint32_t *p, *t;
+
+      if (!pds || !term || !(p = (uint32_t *)arena_alloc(f, SGX_TMPL_PDS_SIZE, 64, &o->pds)) ||
+          !(t = (uint32_t *)arena_alloc(f, 0x60, 64, &o->term)))
+         return -ENOMEM;
+      memcpy(p, pds, SGX_TMPL_PDS_SIZE);
+      p[8 / 4] = d0;
+      memcpy(p + 0x130 / 4, bg, 4 * sizeof(uint32_t));
+      memcpy(t, term, 0x60);
+      t[0x10 / 4] = tiles;
+   } else {
+      /* the tiles the stream's end covers: the target's */
+      if (f->term && !put(f, f->term, &tiles, 4))
+         return -EFAULT;
+      if (!(f->opts & SGX_FRAME_FB) &&
+          (!put(f, f->pds + 8, &d0, 4) || !put(f, f->pds + 0x130, bg, 4 * sizeof(uint32_t))))
+         return -EFAULT;
+   }
 
    *out_to = to;
    *out_eot = eot;
    return 0;
 }
 
+/* A render through the frame: with l, our vertex side (M13b) and verts
+ * laid out as it says; without, the pack's, verts r g b a u v x y.  The
+ * pixel side is the iterated colour (l's colour varying, or the pack's) or
+ * the pack's texel x colour. */
 static int
 render(struct sgx_frame *f, struct sgx_resource *rt, const struct sgx_frame_layout *l,
        const float *verts, unsigned nverts, bool iterated, struct sgx_pixel_program *pix,
@@ -1752,15 +1882,16 @@ render(struct sgx_frame *f, struct sgx_resource *rt, const struct sgx_frame_layo
    unsigned i;
    int ret;
 
-   if (!sgx_frame_can_render(f, rt) || f->tsize[T_FULL] > (int)sizeof(full) ||
+   if (!sgx_frame_can_render(f, rt) || f->tsize[T_FULL] > STATE_WORDS * 4 ||
        f->tsize[T_FULLPROG] > (int)sizeof(prog) || f->tsize[T_FETCH] > (int)sizeof(fetch) ||
        !nverts || nverts % 3 || nverts > max_vertices(f, stride))
       return -EINVAL;
 
-   if ((ret = begin_render(f, rt, &to, &eot, bg)))
+   if ((ret = begin_render(f, rt, &to, &eot, bg, NULL)))
       return ret;
 
    /* draw 0: the whole state, the white texture with the replace program */
+   memset(full, 0, sizeof(full));
    memcpy(full, f->tmpl + f->toff[T_FULL], f->tsize[T_FULL]);
    state_size(full, to.w, to.h);
    /* the pixel program's PDS: tag (bits 31:27) its data size in rows */
@@ -1806,8 +1937,8 @@ render(struct sgx_frame *f, struct sgx_resource *rt, const struct sgx_frame_layo
    d0 = frame;
    memcpy(prog, f->tmpl + f->toff[T_FULLPROG], f->tsize[T_FULLPROG]);
    prog[0] = d0;
-   p0 = (frame + f->tsize[T_FULL] + 0x3f) & ~0x3fu;
-   if (!put(f, d0, full, f->tsize[T_FULL]) || !put(f, p0, prog, f->tsize[T_FULLPROG]) ||
+   p0 = (frame + STATE_WORDS * 4 + 0x3f) & ~0x3fu;
+   if (!put(f, d0, full, STATE_WORDS * 4) || !put(f, p0, prog, f->tsize[T_FULLPROG]) ||
        !put(f, vb, verts, nverts * stride))
       return -EFAULT;
    if (l) {
@@ -1877,22 +2008,13 @@ render(struct sgx_frame *f, struct sgx_resource *rt, const struct sgx_frame_layo
          mesa_logi("sgx:   VDM +%02x: %08x %08x %08x %08x %08x", i * 4, vdm[i], vdm[i + 1],
                    vdm[i + 2], vdm[i + 3], vdm[i + 4]);
    }
-   return kick(f, rt, 1.0f, NULL, handles, nhandles, done);
+   return kick(f, rt, 1.0f, NULL, handles, nhandles, 0, NULL, done);
 }
 
 int
 sgx_frame_upload(struct sgx_frame *f, struct sgx_pixel_program *p)
 {
    return upload(f, p);
-}
-
-bool
-sgx_frame_extend_bytes(struct sgx_frame *f, unsigned *cursor, unsigned n)
-{
-   if (*cursor + n > EXT_FRAME - EXT_VB)
-      return false;
-   *cursor += n;
-   return true;
 }
 
 unsigned
@@ -1902,46 +2024,9 @@ sgx_frame_list_max(const struct sgx_frame *f)
 }
 
 unsigned
-sgx_frame_vertex_room(const struct sgx_frame *f)
-{
-   return EXT_FRAME - EXT_VB;
-}
-
-unsigned
 sgx_frame_max_draws(const struct sgx_frame *f)
 {
    return f->max_draws;
-}
-
-bool
-sgx_frame_place_bytes(struct sgx_frame *f, unsigned *cursor, unsigned n, unsigned *at)
-{
-   unsigned start = align(*cursor, 16);
-
-   if (start + n > EXT_FRAME - EXT_VB)
-      return false;
-   if (at)
-      *at = start;
-   *cursor = start + n;
-   return true;
-}
-
-bool
-sgx_frame_place(struct sgx_frame *f, unsigned *cursor, const struct sgx_frame_layout *l,
-                unsigned nverts, unsigned *first)
-{
-   unsigned stride = sgx_frame_vertex_floats(l) * sizeof(float);
-   /* a draw's vertices start at a multiple of eight vertices of its own
-    * size: its indices (into the pack's buffer of 0, 1, 2, ...) at a
-    * 16-byte boundary */
-   unsigned start = align(DIV_ROUND_UP(*cursor, stride), 8);
-
-   if (start + nverts > f->idx_count || (start + nverts) * stride > EXT_FRAME - EXT_VB)
-      return false;
-   if (first)
-      *first = start;
-   *cursor = (start + nverts) * stride;
-   return true;
 }
 
 /* SGX_STATE=word:mask[,word:mask...] flips bits of every draw's state
@@ -1970,16 +2055,34 @@ state_xor(uint32_t *full)
       full[i] ^= mask[i];
 }
 
+/* n words of secondary attributes into the render's memory, and their
+ * loader after them: the loader's address (*rows its data rows), 0 if
+ * there is no room */
+static uint32_t
+arena_uniforms(struct sgx_frame *f, const uint32_t *words, unsigned n, unsigned *rows)
+{
+   uint32_t loader[UNIFORM_LOADER_MAX], va, at = UNIFORM_LOADER_AT(n);
+   uint8_t *p = n <= 128 ? arena_alloc(f, at + sizeof(loader), 16, &va) : NULL;
+
+   if (!p)
+      return 0;
+   *rows = uniform_loader(f, va, n, loader);
+   memcpy(p, words, n * 4);
+   memcpy(p + at, loader, sizeof(loader));
+   return va + at;
+}
+
 /* A draw's whole state for our vertex side, its secondary attributes'
- * loader and words written into its slot at base */
+ * loader and words into the render's memory */
 static int
-draw_state(struct sgx_frame *f, const struct sgx_frame_draw *d, uint32_t base,
-           const struct sgx_eot *to, uint32_t *full)
+draw_state(struct sgx_frame *f, const struct sgx_frame_draw *d, const struct sgx_eot *to,
+           uint32_t *full)
 {
    const struct sgx_frame_layout *l = &d->l;
    const struct sgx_pixel_program *pix = d->prog;
    bool f32 = !pix && (l->f32 >> l->colour & 1);
 
+   memset(full, 0, STATE_WORDS * 4);
    memcpy(full, f->tmpl + f->toff[T_FULL], f->tsize[T_FULL]);
    state_size(full, to->w, to->h);
    /* ISP state B: the depth compare in bits 24:22, bit 20 set when depth
@@ -2000,18 +2103,17 @@ draw_state(struct sgx_frame *f, const struct sgx_frame_draw *d, uint32_t base,
    if (pix) {
       unsigned fours = DIV_ROUND_UP(4 * pix->ninputs + pix->ntemps, 4);
 
-      if (!pix->code_va || pix->nsa * 4 > DRAW_UNI_PDS - DRAW_UNIFORMS)
+      if (!pix->code_va || pix->nsa > 128)
          return -EINVAL;
       full[6] = pix->pds_rows << 27 | (pix->pds_va >> 4 & 0x07ffffff);
       full[5] = fours << 27 | (fours > 1 ? 12 / fours : 0) << 23 | sa_field(pix->nsa);
       if (pix->nsa) {
-         uint32_t loader[UNIFORM_LOADER_MAX];
-         unsigned rows = uniform_loader(f, base + DRAW_UNIFORMS, pix->nsa, loader);
+         unsigned rows;
+         uint32_t loader = arena_uniforms(f, d->sa, pix->nsa, &rows);
 
-         if (!put(f, base + DRAW_UNIFORMS, d->sa, pix->nsa * 4) ||
-             !put(f, base + DRAW_UNI_PDS, loader, sizeof(loader)))
-            return -EFAULT;
-         full[4] = rows << 27 | ((base + DRAW_UNI_PDS) >> 4 & 0x07ffffff);
+         if (!loader)
+            return -ENOMEM;
+         full[4] = rows << 27 | (loader >> 4 & 0x07ffffff);
       }
    } else {
       if (l->colour >= l->nvaryings)
@@ -2055,71 +2157,66 @@ sgx_frame_render(struct sgx_frame *f, struct sgx_resource *rt,
                  unsigned nhandles, float depth_clear, const struct sgx_frame_zls *zls,
                  struct sgx_fence *done)
 {
-   uint32_t full[32], prog[16], bg[4], eot, *v = f->vdmbuf, state_at = 0, ub_at = 0;
-   unsigned cursor = 0, total = 0, icursor = 0, ub_rows = 0;
+   uint32_t full[32], prog[16], bg[4], eot, *v = f->vdmbuf, state_at = 0, ub_at = 0, vdm;
+   unsigned total = 0, ub_rows = 0;
+   struct own own, *o = own_copies(f) ? &own : NULL;
    struct sgx_eot to;
    int ret;
 
    if (!sgx_frame_can_render(f, rt) || !n || n > f->max_draws ||
-       f->tsize[T_FULL] > (int)sizeof(full) || f->tsize[T_FULLPROG] > (int)sizeof(prog) ||
+       f->tsize[T_FULL] > STATE_WORDS * 4 || f->tsize[T_FULLPROG] > (int)sizeof(prog) ||
        nhandles > SGX_FRAME_MAX_HANDLES)
       return -EINVAL;
-   if ((ret = begin_render(f, rt, &to, &eot, bg)))
-      return ret;
+   arena_release(f);
+   if (f->queued[f->nqueued % MAX_QUEUED]) {
+      sgx_trace_mark("render queue full: wait");
+      sgx_fence_wait(f->queued[f->nqueued % MAX_QUEUED], OS_TIMEOUT_INFINITE);
+   }
+   if ((ret = begin_render(f, rt, &to, &eot, bg, o)))
+      goto out;
 
+   ret = -ENOMEM;
    for (unsigned k = 0; k < n; k++) {
       const struct sgx_frame_draw *d = &draws[k];
-      uint32_t base = f->ext + f->draw_slots + k * DRAW_SLOT, idx_va, count, vb = 0;
-      unsigned first = 0, at;
+      uint32_t idx_va, count, vb = 0, fetch, words[4 * (SGX_VS_MAX_ATTRIBS + 1) + 32];
+      unsigned nwords, rows;
 
       count = d->vs ? d->count : d->nverts;
       if (!count || count % 3 || d->l.nvaryings > SGX_FRAME_MAX_VARYINGS ||
           (d->prog && d->l.nvaryings != d->prog->nvaryings) ||
-          (d->vs && (!d->vs->code_va || d->vs->nvaryings != d->l.nvaryings ||
-                     (!d->indices && count > sgx_frame_list_max(f)))))
-         return -EINVAL;
+          (d->vs && (!d->vs->code_va || d->vs->nvaryings != d->l.nvaryings)) ||
+          (!d->indices && count > sgx_frame_list_max(f))) {
+         ret = -EINVAL;
+         goto out;
+      }
       /* the vertices: the draw module's, or a vertex shader's the CPU made
-       * one stream, into the render's (M26: else the fetch reads them
-       * where they are) */
-      if (d->vs) {
-         if (d->vdata) {
-            if (!sgx_frame_place_bytes(f, &cursor, d->nverts * d->stride, &at))
-               return -ENOSPC;
-            vb = f->ext + EXT_VB + at;
-            if (!put(f, vb, d->vdata, d->nverts * d->stride))
-               return -EFAULT;
-         }
-      } else {
-         unsigned stride = sgx_frame_vertex_floats(&d->l) * sizeof(float);
+       * one stream, into the render's memory (M26: else the fetch reads
+       * them where they are) */
+      if (!d->vs || d->vdata) {
+         unsigned size = d->vs ? d->nverts * d->stride :
+                                 d->nverts * sgx_frame_vertex_floats(&d->l) * sizeof(float);
 
-         if (!d->nverts || !sgx_frame_place(f, &cursor, &d->l, d->nverts, &first))
-            return -ENOSPC;
-         if (!put(f, f->ext + EXT_VB + first * stride, d->verts, d->nverts * stride))
-            return -EFAULT;
+         if (!(vb = arena_put(f, d->vs ? (const void *)d->vdata : d->verts, size, 16)))
+            goto out;
       }
-      /* the triangles: the draw's indices, or the frame's 0, 1, 2, ... from
-       * its first vertex (a vertex shader's: from its vertex 0) */
-      if (d->indices) {
-         uint16_t *idx = (uint16_t *)cpu_at(f, f->ext + EXT_IDX + 2 * icursor, 2 * count, NULL);
-
-         if (f->ext + EXT_IDX + 2 * (icursor + count) > f->ext + EXT_IDX_END || !idx)
-            return -ENOSPC;
-         memcpy(idx, d->indices, 2 * count);
-         idx_va = f->ext + EXT_IDX + 2 * icursor;
-         icursor = align(icursor + count, 8);
-      } else {
-         idx_va = f->idx + 2 * first;
-      }
+      /* the triangles: the draw's indices, or the frame's 0, 1, 2, ... (from
+       * the draw's vertex 0) */
+      idx_va = d->indices ? arena_put(f, d->indices, 2 * count, 16) : f->idx;
+      if (!idx_va)
+         goto out;
       /* the state: the last draw's again when it is the same */
       if (!k || !same_state(&draws[k - 1], d)) {
-         if ((ret = draw_state(f, d, base, &to, full)))
-            return ret;
+         uint8_t *slot;
+
+         if ((ret = draw_state(f, d, &to, full)))
+            goto out;
+         ret = -ENOMEM;
+         if (!(slot = arena_alloc(f, DRAW_PROG + f->tsize[T_FULLPROG], 64, &state_at)))
+            goto out;
          memcpy(prog, f->tmpl + f->toff[T_FULLPROG], f->tsize[T_FULLPROG]);
-         prog[0] = base;
-         if (!put(f, base, full, f->tsize[T_FULL]) ||
-             !put(f, base + DRAW_PROG, prog, f->tsize[T_FULLPROG]))
-            return -EFAULT;
-         state_at = base;
+         prog[0] = state_at;
+         memcpy(slot, full, STATE_WORDS * 4);
+         memcpy(slot + DRAW_PROG, prog, f->tsize[T_FULLPROG]);
       } else {
          sgx_stat_same++;
       }
@@ -2130,18 +2227,11 @@ sgx_frame_render(struct sgx_frame *f, struct sgx_resource *rt,
          /* (the last draw's again when the same) */
          if (!k || !draws[k - 1].vs || draws[k - 1].vs->nuniforms != d->vs->nuniforms ||
              !sgx_words_equal(draws[k - 1].vs_sa, d->vs_sa, d->vs->nuniforms)) {
-            uint32_t ub = f->ext + f->vs_uni + k * VS_UNI_SLOT, loader[UNIFORM_LOADER_MAX];
-
-            if (d->vs->nuniforms * 4 > VS_UNI_PDS)
-               return -EFAULT;
-            ub_rows = uniform_loader(f, ub, d->vs->nuniforms, loader);
-            if (!put(f, ub, d->vs_sa, d->vs->nuniforms * 4) ||
-                !put(f, ub + VS_UNI_PDS, loader, sizeof(loader)))
-               return -EFAULT;
-            ub_at = ub;
+            if (!(ub_at = arena_uniforms(f, d->vs_sa, d->vs->nuniforms, &ub_rows)))
+               goto out;
          }
          /* (the data rows in 31:27, as the state's PDS pointers have them) */
-         *v++ = vdm4(4, ub_at + VS_UNI_PDS);
+         *v++ = vdm4(4, ub_at);
          *v++ = ub_rows << 27 | 0x0000e100 | DIV_ROUND_UP(d->vs->nuniforms, 4);
       } else {
          *v++ = vdm4(4, f->consts0); *v++ = 0x1000e102;
@@ -2150,44 +2240,54 @@ sgx_frame_render(struct sgx_frame *f, struct sgx_resource *rt,
       *v++ = 0x81c00000 | count; *v++ = idx_va;
       *v++ = 0x70000000; *v++ = 0x003fffff;
       if (d->vs) {
-         uint32_t fetch = f->ext + f->fetch_slots + k * FETCH_SLOT;
-         uint32_t words[FETCH_SLOT / 4];
-         unsigned nwords, rows = vs_fetch(f, d, vb, words, &nwords);
-
-         assert(nwords * 4 <= FETCH_SLOT);
-         if (!put(f, fetch, words, nwords * 4))
-            return -EFAULT;
-         if (f->debug) {
-            char line[512];
-            unsigned m = 0;
-
-            for (unsigned i = 0; i < nwords && m < sizeof(line) - 10; i++)
-               m += snprintf(line + m, sizeof(line) - m, " %08x", words[i]);
-            mesa_logi("sgx:   fetch at 0x%08x, %u rows:%s", fetch, rows, line);
-         }
-         *v++ = vdm4(vdm_fetch_tag(f->fetch_tag), fetch);
-         *v++ = vs_fetch_word(d->vs, rows);
+         rows = vs_fetch(f, d, vb, words, &nwords);
       } else {
-         *v++ = vdm4(vdm_fetch_tag(f->fetch_tag),
-                     f->fetch_pds + d->l.nvaryings * FETCH_PDS_SIZE);
-         *v++ = vdm_fetch_word(d->l.nvaryings);
+         nwords = fetch_program(f, words, d->l.nvaryings, vb);
+         rows = 0;
+      }
+      assert(nwords <= ARRAY_SIZE(words));
+      if (!(fetch = arena_put(f, words, nwords * 4, 16)))
+         goto out;
+      *v++ = vdm4(vdm_fetch_tag(f->fetch_tag), fetch);
+      *v++ = d->vs ? vs_fetch_word(d->vs, rows) : vdm_fetch_word(d->l.nvaryings);
+      if (f->debug) {
+         char line[512];
+         unsigned m = 0;
+
+         for (unsigned i = 0; i < nwords && m < sizeof(line) - 10; i++)
+            m += snprintf(line + m, sizeof(line) - m, " %08x", words[i]);
+         mesa_logi("sgx:   draw %u: %u vertices, %u varyings, ISP B %08x, state 4 %08x "
+                   "5 %08x 6 %08x, %s; fetch at 0x%08x:%s", k, count, d->l.nvaryings,
+                   full[1], full[4], full[5], full[6],
+                   d->prog ? "compiled pixels" : "iterated colour", fetch, line);
       }
       total += count;
-      if (f->debug)
-         mesa_logi("sgx:   draw %u: %u vertices from %u, %u varyings, ISP B %08x, state "
-                   "4 %08x 5 %08x 6 %08x, %s", k, d->nverts, first, d->l.nvaryings, full[1],
-                   full[4], full[5], full[6], d->prog ? "compiled pixels" : "iterated colour");
    }
+   /* the stream's end; its terminate program the render's copy */
    for (unsigned i = 0; i < f->ntail; i++)
-      *v++ = f->tail[i];
-   /* the VDM reads ahead: keep clear of its window's end (sgx2d, M6) */
-   if ((v - f->vdmbuf) * 4 + 512 > f->vdm_size)
-      return -ENOSPC;
-   if (!put(f, f->vdm, f->vdmbuf, (v - f->vdmbuf) * 4))
-      return -EFAULT;
+      *v++ = o && f->tail[i] >> 28 == 6 && (f->tail[i] & 0x0fffffff) << 4 == f->term - 0x10 ?
+             vdm4(6, o->term) : f->tail[i];
+   /* the stream, in the render's memory (the VDM reads ahead: clear of
+    * its end by 512 bytes, sgx2d, M6) */
+   {
+      uint8_t *p = arena_alloc(f, (v - f->vdmbuf) * 4 + 512, 64, &vdm);
+
+      if (!p)
+         goto out;
+      memcpy(p, f->vdmbuf, (v - f->vdmbuf) * 4);
+   }
 
    if (f->debug)
       mesa_logi("sgx: a render of %u draws, %u vertices, into %ux%u at 0x%08x (end of tile "
-                "0x%08x)", n, total, to.w, to.h, to.va, eot);
-   return kick(f, rt, depth_clear, zls, handles, nhandles, done);
+                "0x%08x), its own memory %u chunks%s", n, total, to.w, to.h, to.va, eot,
+                f->arena.n, o ? "" : " (the frame's words: after the last render)");
+   ret = kick(f, rt, depth_clear, zls, handles, nhandles, vdm, o, done);
+   if (!ret) {
+      sgx_fence_reference(&f->queued[f->nqueued++ % MAX_QUEUED], done);
+      for (unsigned i = 0; i < f->arena.n; i++)
+         sgx_bo_set_busy(f->arena.bo[i], done);
+   }
+out:
+   arena_release(f);
+   return ret;
 }

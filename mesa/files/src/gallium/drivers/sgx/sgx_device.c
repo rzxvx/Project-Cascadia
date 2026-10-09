@@ -221,6 +221,7 @@ close_bo(struct sgx_bo *bo)
    simple_mtx_unlock(&bo->dev->bo_lock);
    if (bo->map)
       munmap(bo->map, bo->size);
+   sgx_fence_reference(&bo->busy, NULL);
    drmIoctl(bo->dev->fd, DRM_IOCTL_GEM_CLOSE, &cl);
    FREE(bo);
 }
@@ -271,6 +272,28 @@ sgx_bo_destroy(struct sgx_bo *bo)
 }
 
 void
+sgx_bo_set_busy(struct sgx_bo *bo, struct sgx_fence *done)
+{
+   simple_mtx_lock(&bo->dev->bo_lock);
+   sgx_fence_reference(&bo->busy, done);
+   simple_mtx_unlock(&bo->dev->bo_lock);
+}
+
+bool
+sgx_bo_idle(struct sgx_bo *bo)
+{
+   struct sgx_fence *f = NULL;
+   bool idle;
+
+   simple_mtx_lock(&bo->dev->bo_lock);
+   sgx_fence_reference(&f, bo->busy);
+   simple_mtx_unlock(&bo->dev->bo_lock);
+   idle = !f || sgx_fence_wait(f, 0);
+   sgx_fence_reference(&f, NULL);
+   return idle;
+}
+
+void
 sgx_bo_ref(struct sgx_bo *bo)
 {
    simple_mtx_lock(&bo->dev->bo_lock);
@@ -302,7 +325,7 @@ sgx_bo_cache_get(struct sgx_device *dev, uint32_t size)
    list_for_each_entry(struct sgx_bo, bo, &dev->cache, cache_link) {
       if (bo->size != size)
          continue;
-      if (sgx_bo_wait(bo, 0)) {
+      if (sgx_bo_idle(bo)) {
          found = bo;
          list_del(&bo->cache_link);
          dev->cache_size -= bo->size;
