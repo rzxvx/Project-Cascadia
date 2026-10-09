@@ -33,6 +33,9 @@
 static const float U0[4] = { 0.25f, 0.5f, 0.75f, 1.0f };
 static const float U1[4] = { -1.0f, 2.0f, 0.5f, 3.0f };
 static const float K = 0.3f;
+/* a uniform array (M21: read through an index) */
+#define A(i) { 0.05f * (i), 0.1f + 0.05f * (i), 0.8f - 0.1f * (i), 0.12f }
+static const float ARR[8][4] = { A(0), A(1), A(2), A(3), A(4), A(5), A(6), A(7) };
 
 typedef void (*ref_fn)(const float v[4], const float w[4], float c[4]);
 
@@ -148,6 +151,31 @@ REF(r_if_loop)
 		SET(0, v[1], 0, 1);
 	}
 }
+REF(r_array_varying) { int i = (int)(v[0] * 7.99f); SET(ARR[i][0], ARR[i][1], ARR[i][2], ARR[i][3]); }
+REF(r_uniform33) { SET(ARR[7][0] * 0.5f + K * 0.5f, ARR[7][1] * 0.5f, ARR[7][2] * 0.5f, ARR[7][3] * 0.5f); }
+REF(r_array_uniform) { int i = (int)(K * 10); SET(ARR[i][0], ARR[i][1], ARR[i][2], ARR[i][3]); }
+REF(r_array_loop)
+{
+	int n = (int)(K * 20);
+
+	SET(0, 0, 0, 0);
+	for (int i = 0; i < n; i++)
+		for (int j = 0; j < 4; j++)
+			c[j] += ARR[i][j] * 0.2f;
+}
+REF(r_vs_array)
+{
+	float s = v[0];         /* (the harness's v: the pixel's s, t) */
+
+	for (int i = 0; i < 4; i++)
+		c[i] = ARR[0][i] + (ARR[7][i] - ARR[0][i]) * s;
+}
+REF(r_array_two)
+{
+	int i = (int)(v[0] * 7.99f), j = (int)(v[1] * 7.99f);
+
+	SET(ARR[i][0] + ARR[j][2] * 0.5f, ARR[j][1], ARR[i][2] * 0.5f, 1);
+}
 REF(r_mandel)
 {
 	float zx = 0, zy = 0, cx = w[0] * 0.6f - 0.5f, cy = w[1] * 0.6f, n = 0;
@@ -170,10 +198,24 @@ REF(r_long)
 	SET(fract_(h + g), fract_(a + b + d), fract_(e * 3 + f), fract_(g * h + 0.5f));
 }
 
+/* a vertex shader whose v is the uniform array's element by the vertex's
+ * s: a[0] on the left, a[7] on the right, between them as interpolated */
+static const char vs_array[] =
+	"attribute vec4 p;\n"
+	"varying vec4 v, w;\n"
+	"uniform vec4 a[8];\n"
+	"void main() {\n"
+	"  vec2 st = p.xy * 0.5 + 0.5;\n"
+	"  v = a[int(st.x * 7.99)];\n"
+	"  w = vec4(st * 4.0 - 2.0, st.x - st.y, 0.25);\n"
+	"  gl_Position = p;\n"
+	"}\n";
+
 static const struct test {
 	const char *name, *body;
 	ref_fn ref;
 	int tol;        /* in 8-bit steps */
+	const char *vs; /* NULL: vs_src */
 } tests[] = {
 	{ "varying", "c = v;", r_varying, 1 },
 	{ "fragcoord", "c = vec4(gl_FragCoord.x / 768.0, gl_FragCoord.y / 1024.0, gl_FragCoord.z, gl_FragCoord.w * 0.5);", r_fragcoord, 1 },
@@ -217,6 +259,14 @@ static const struct test {
 	{ "if_loop", "if (v.x > 0.5) { float x = 0.0; for (int i = 0; i < 100; i++) {"
 	             "  if (float(i) >= v.y * 10.0) break; x += 0.1; } c = vec4(x, 0.0, 1.0, 1.0); }"
 	             "else c = vec4(0.0, v.y, 0.0, 1.0);", r_if_loop, 1 },
+	{ "uniform33", "c = a[7] * 0.5 + vec4(k * 0.5, 0.0, 0.0, 0.0);", r_uniform33, 1 },
+	{ "array_varying", "c = a[int(v.x * 7.99)];", r_array_varying, 1 },
+	{ "array_uniform", "c = a[int(k * 10.0)];", r_array_uniform, 1 },
+	{ "array_loop", "c = vec4(0.0); int n = int(k * 20.0); for (int i = 0; i < n; i++) c += a[i] * 0.2;",
+	  r_array_loop, 1 },
+	{ "vs_array", "c = v;", r_vs_array, 1, vs_array },
+	{ "array_two", "vec4 p = a[int(v.x * 7.99)], q = a[int(v.y * 7.99)];"
+	               "c = vec4(p.x + q.z * 0.5, q.y, p.z * 0.5, 1.0);", r_array_two, 1 },
 	{ "mandel", "vec2 z = vec2(0.0), q = vec2(w.x * 0.6 - 0.5, w.y * 0.6); float n = 0.0;"
 	            "for (int i = 0; i < 24; i++) { if (dot(z, z) > 4.0) break;"
 	            "  z = vec2(z.x * z.x - z.y * z.y, 2.0 * z.x * z.y) + q; n += 1.0; }"
@@ -236,10 +286,10 @@ static const char *vs_src =
 	"  gl_Position = p;\n"
 	"}\n";
 
-static GLuint build(const char *body)
+static GLuint build(const char *body, const char *vs)
 {
 	static char fs[4096];
-	const char *src[2] = { vs_src, fs };
+	const char *src[2] = { vs ? vs : vs_src, fs };
 	GLenum type[2] = { GL_VERTEX_SHADER, GL_FRAGMENT_SHADER };
 	GLuint p = glCreateProgram();
 	char log[1024];
@@ -248,7 +298,7 @@ static GLuint build(const char *body)
 	snprintf(fs, sizeof(fs),
 		 "precision highp float;\n"
 		 "varying vec4 v, w;\n"
-		 "uniform vec4 u0, u1;\n"
+		 "uniform vec4 u0, u1, a[8];\n"
 		 "uniform float k;\n"
 		 "void main() { vec4 c; %s gl_FragColor = c; }\n", body);
 	for (int i = 0; i < 2; i++) {
@@ -329,7 +379,7 @@ int main(int argc, char **argv)
 		if (!wanted(argc, argv, T->name))
 			continue;
 		run++;
-		if (!(p = build(T->body))) {
+		if (!(p = build(T->body, T->vs))) {
 			printf("%-16s does not build\n", T->name);
 			failed++;
 			continue;
@@ -338,6 +388,7 @@ int main(int argc, char **argv)
 		glUniform4fv(glGetUniformLocation(p, "u0"), 1, U0);
 		glUniform4fv(glGetUniformLocation(p, "u1"), 1, U1);
 		glUniform1f(glGetUniformLocation(p, "k"), K);
+		glUniform4fv(glGetUniformLocation(p, "a"), 8, &ARR[0][0]);
 		glClearColor(0, 0, 0, 0);
 		glClear(GL_COLOR_BUFFER_BIT);
 		glDrawArrays(GL_TRIANGLES, 0, 6);

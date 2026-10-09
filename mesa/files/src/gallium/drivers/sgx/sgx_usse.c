@@ -36,6 +36,7 @@ src_bank(struct usse_reg r, unsigned *ext, unsigned *bank)
    case USSE_PA:      *ext = 0; *bank = 2; break;
    case USSE_SA:      *ext = 0; *bank = 3; break;
    case USSE_SPECIAL: *ext = 1; *bank = 1; break;
+   case USSE_IDX1:    *ext = 1; *bank = 0; break;
    default:           assert(0); *ext = *bank = 0; break;
    }
 }
@@ -49,6 +50,7 @@ dest_bank(struct usse_reg r, unsigned *ext, unsigned *bank)
    case USSE_OUTPUT: *ext = 0; *bank = 1; break;
    case USSE_PA:     *ext = 0; *bank = 2; break;
    case USSE_SA:     *ext = 1; *bank = 0; break;
+   case USSE_INDEX:  *ext = 1; *bank = 2; break;
    default:          assert(0); *ext = *bank = 0; break;
    }
 }
@@ -286,4 +288,31 @@ usse_kill(unsigned pred)
 {
    /* iOS's word less its end bit and its predicate */
    return (0xf9340426c0000280ull & ~USSE_END & ~bits(3, 42, 41)) | bits(pred, 42, 41);
+}
+
+/* VBW's op 2 (and, or by bit 35), src2 the immediate (extended bank 2):
+ * its bits 15:14 at 37:36, 13:7 at 20:14, 6:0 at 6:0 */
+static uint64_t
+vbw_logic(bool or_, struct usse_reg dest, struct usse_reg src1, unsigned imm)
+{
+   unsigned dext, dbank, ext, bank;
+
+   dest_bank(dest, &dext, &dbank);
+   src_bank(src1, &ext, &bank);
+   return bits(1, 63, 62) | bits(2, 61, 59) | SKIPINV | bits(dext, 51, 51) | bits(ext, 49, 49) |
+          bits(1, 48, 48) | bits(imm >> 14, 37, 36) | bits(or_, 35, 35) | bits(dbank, 33, 32) |
+          bits(bank, 31, 30) | bits(2, 29, 28) | bits(dest.num, 27, 21) |
+          bits(imm >> 7 & 0x7f, 20, 14) | bits(src1.num, 13, 7) | bits(imm & 0x7f, 6, 0);
+}
+
+uint64_t
+usse_vbw_and(struct usse_reg dest, struct usse_reg src1, unsigned imm)
+{
+   return vbw_logic(false, dest, src1, imm);
+}
+
+uint64_t
+usse_vbw_or(struct usse_reg dest, struct usse_reg src1, unsigned imm)
+{
+   return vbw_logic(true, dest, src1, imm);
 }

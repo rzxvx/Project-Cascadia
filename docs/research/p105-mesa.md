@@ -1460,6 +1460,43 @@ branches) -- 32 of 32, on both vertex paths; the rest of the tests
 unchanged. The shadertoy sphere (24 ray-marching steps) and plasma under
 kmscube draw as before, 14 and 32 frames a second.
 
+## M21: uniform arrays read through an index
+
+`a[i]` with an `i` the compiler does not know -- a loop's counter to a
+uniform's count, a varying's value, a vertex's -- used to fail (the draw
+module's way, or M13a's grey).
+
+**The index register** (iOS's c04_loop_break reads its array so): `shr
+index1, r0, #5` -- VBW with destination bank INDEX (extended bank 2, number
+1) -- then `or r1, idx1101, ...`: a source in bank INDEXED1 (extended bank 0)
+whose 7-bit number is the bank indexed in bits 6:5 (0 temp, 1 output, 2 pa,
+3 sa) and an offset in 4:0, in 32-bit words, index1 added. (Vita3K's
+decoder has the bank and offset; that index1 counts 32-bit words for a
+32-bit move, iOS's array code shows -- and the tests.) The encoder makes
+VBW's `and`/`or` with an immediate (iOS's `or o0, sa14, #0` and `and r2,
+r0, #0x1f`, bit for bit).
+
+**The compiler**: an indirect `load_uniform` loads its array's whole range
+into sa, then `fmad t = offset * 4 + (base + 2^23)` -- the offset is an
+integer held as a float here, so t's low bits are the word as an integer --
+`and index1, t, #0xffff`, and a `or rN, idx1(sa + c), #0` for each
+component c. NIR's `ftrunc` (from `int(x)`, made after the options' own
+lowering ran) is lowered by the driver: sign times `|x| - fract |x|`.
+
+**33 uniform words and up** never worked in a pixel program, indexed or
+not: state word 5's `0x3e000` is the count of secondary attributes less 1
+in bits 21:13 -- 31 in every iOS state, so sa32 and up read nothing (a
+second DMA, tried first, changed nothing). The count is now the words
+rounded up to 32, less 1: 32 exactly (33 registers) hangs the GPU, 63
+works. One DMA loads them all (128 words at most; the uniforms now go
+before their loader in a draw's slot). A vertex program's count is its VDM
+word's, in fours, and was right.
+
+`glfs`: an index from a varying, from a uniform, a loop to a uniform's
+count summing the array, two indexed reads in one shader, 33 words without
+an index, and a vertex shader indexing by its vertex (`vs_array`) -- 38 of
+38 on both vertex paths; kmscube's frame the same as the draw module's.
+
 ## Testing, without and with the device
 
 - **Host, every change:** the kernel driver builds with `W=1` against the

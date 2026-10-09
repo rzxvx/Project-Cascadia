@@ -54,6 +54,11 @@ CASES = {
     'vtst_pa4': ('VTST', 'tst p0.x = and(pa4, pa4) eq 0 (and)', None),
     # iOS's c00_discard: `p1? KILL`, the end of its first phase
     'kill_p1_end': ('SPEC', '', 0xf9340426c0000280),
+    # c03_loop's pixel program, c04_loop_break's (skipinv clear there)
+    'or_o0_sa14': ('VBW', 'or o0, sa14, #0x0', 0x50850009e0000700),
+    'and_r2_r0': ('VBW', 'and r2, r0, #0x1f', 0x500100002040001f),
+    'and_index1': ('VBW', 'and index1, r6, #0xffff', None),
+    'or_r3_idx1_sa2': ('VBW', 'or r3, idx198, #0x0', None),
 }
 
 

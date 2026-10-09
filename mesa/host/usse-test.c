@@ -63,5 +63,9 @@ main(void)
    P("vtst_r5", usse_vtst_bits(1, T(5), false));
    P("vtst_pa4", usse_vtst_bits(0, PA(4), true));
    P("kill_p1_end", usse_kill(2) | USSE_END);
+   P("or_o0_sa14", usse_vbw_or(O(0), SA(14), 0) | USSE_END);
+   P("and_r2_r0", usse_vbw_and(T(2), T(0), 0x1f) & ~(1ull << 55));
+   P("and_index1", usse_vbw_and(usse_reg(USSE_INDEX, 1), T(6), 0xffff));
+   P("or_r3_idx1_sa2", usse_vbw_or(T(3), usse_reg(USSE_IDX1, 0x60 | 2), 0));
    return 0;
 }

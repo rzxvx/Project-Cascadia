@@ -89,8 +89,8 @@
 /* M18: per draw of a render, a vertex shader's uniforms and their loader;
  * per render, the draws' indices */
 #define EXT_VS_UNI      0x100000
-#define VS_UNI_SLOT     0x240
-#define VS_UNI_WORDS    0x40
+#define VS_UNI_SLOT     0x280           /* the words (128 at most), then their loader */
+#define VS_UNI_PDS      0x200
 #define EXT_IDX         0x200000
 #define EXT_IDX_END     0x280000
 /* per render, in the frame's part of the EXT window: the secondary
@@ -102,8 +102,8 @@
  * secondary attributes' loader and words */
 #define DRAW_SLOT       0x400
 #define DRAW_PROG       0x80
-#define DRAW_UNI_PDS    0xc0
-#define DRAW_UNIFORMS   0x100
+#define DRAW_UNIFORMS   0x100           /* 128 words at most, then their loader */
+#define DRAW_UNI_PDS    0x300
 /* the code of our pixel programs: a buffer of its own in the code zone,
  * filled from the start, never reused (the USSE caches code) */
 #define HEAP_SIZE       (256 << 10)
@@ -350,10 +350,39 @@ vdm4(uint32_t tag, uint32_t a)
    return tag << 28 | a >> 4;
 }
 
+
 static uint32_t
 doutu(struct sgx_frame *f, uint32_t va)  /* USE code base 3 */
 {
    return ((va - f->dev->code_base) / 8) << 4 | 3;
+}
+
+/* State word 5's secondary attributes: their count - 1 in bits 21:13, a
+ * multiple of 32 -- 31 in all of iOS's states (0x3e000); an sa past 32
+ * read nothing with that, and 32 itself (33 registers) hangs the GPU
+ * (M21).  (A vertex program's are in its VDM word, in fours.) */
+static uint32_t
+sa_field(unsigned nsa)
+{
+   return (align(MAX2(nsa, 1), 32) - 1) << 13;
+}
+
+/* A loader of n words (128 at most) at va into sa0..: a DMA, data row
+ * {address, words - 1, 0, 0}, then the empty program -- iOS's form.  Its
+ * words into out, its data rows returned.  (A pixel program has as many sa
+ * as its state word 5 says: sa_field().) */
+#define UNIFORM_LOADER_MAX 12
+
+static unsigned
+uniform_loader(struct sgx_frame *f, uint32_t va, unsigned n, uint32_t *out)
+{
+   const uint32_t loader[UNIFORM_LOADER_MAX] = {
+      va, n - 1, 0, 0, doutu(f, f->empty_prog), 2, 0, 0,
+      PDS_DMA_ROW0, PDS_DOUTU_ROW1_AFTER, PDS_END, 0,
+   };
+
+   memcpy(out, loader, sizeof(loader));
+   return 2;
 }
 
 /* the stream's terminate PDS program (the tail's tag 6 word, in the
@@ -1495,19 +1524,19 @@ render(struct sgx_frame *f, struct sgx_resource *rt, const struct sgx_frame_layo
        * and its secondary attributes in sa0.. (word 4: a DMA, then the empty
        * program) */
       unsigned fours = DIV_ROUND_UP(4 * pix->ninputs + pix->ntemps, 4);
-      uint32_t loader[12] = {
-         uni, pix->nsa - 1, 0, 0, doutu(f, f->empty_prog), 2, 0, 0,
-         PDS_DMA_ROW0, PDS_DOUTU_ROW1_AFTER, PDS_END, 0,
-      };
 
       if ((ret = upload(f, pix)))
          return ret;
       full[6] = pix->pds_rows << 27 | (pix->pds_va >> 4 & 0x07ffffff);
-      full[5] = fours << 27 | (fours > 1 ? 12 / fours : 0) << 23 | 0x0003e000;
+      full[5] = fours << 27 | (fours > 1 ? 12 / fours : 0) << 23 | sa_field(pix->nsa);
       if (pix->nsa) {
-         if (!put(f, uni, sa, pix->nsa * 4) || !put(f, uni_pds, loader, sizeof(loader)))
+         uint32_t loader[UNIFORM_LOADER_MAX];
+         unsigned rows = uniform_loader(f, uni, pix->nsa, loader);
+
+         if (pix->nsa > 128 || !put(f, uni, sa, pix->nsa * 4) ||
+             !put(f, uni_pds, loader, sizeof(loader)))
             return -EFAULT;
-         full[4] = 2u << 27 | (uni_pds >> 4 & 0x07ffffff);
+         full[4] = rows << 27 | (uni_pds >> 4 & 0x07ffffff);
       }
    }
    if (l) {
@@ -1685,20 +1714,19 @@ draw_state(struct sgx_frame *f, const struct sgx_frame_draw *d, uint32_t base,
       }
    if (pix) {
       unsigned fours = DIV_ROUND_UP(4 * pix->ninputs + pix->ntemps, 4);
-      const uint32_t loader[12] = {
-         base + DRAW_UNIFORMS, pix->nsa - 1, 0, 0, doutu(f, f->empty_prog), 2, 0, 0,
-         PDS_DMA_ROW0, PDS_DOUTU_ROW1_AFTER, PDS_END, 0,
-      };
 
-      if (!pix->code_va || pix->nsa * 4 > DRAW_SLOT - DRAW_UNIFORMS)
+      if (!pix->code_va || pix->nsa * 4 > DRAW_UNI_PDS - DRAW_UNIFORMS)
          return -EINVAL;
       full[6] = pix->pds_rows << 27 | (pix->pds_va >> 4 & 0x07ffffff);
-      full[5] = fours << 27 | (fours > 1 ? 12 / fours : 0) << 23 | 0x0003e000;
+      full[5] = fours << 27 | (fours > 1 ? 12 / fours : 0) << 23 | sa_field(pix->nsa);
       if (pix->nsa) {
+         uint32_t loader[UNIFORM_LOADER_MAX];
+         unsigned rows = uniform_loader(f, base + DRAW_UNIFORMS, pix->nsa, loader);
+
          if (!put(f, base + DRAW_UNIFORMS, d->sa, pix->nsa * 4) ||
              !put(f, base + DRAW_UNI_PDS, loader, sizeof(loader)))
             return -EFAULT;
-         full[4] = 2u << 27 | ((base + DRAW_UNI_PDS) >> 4 & 0x07ffffff);
+         full[4] = rows << 27 | ((base + DRAW_UNI_PDS) >> 4 & 0x07ffffff);
       }
    } else {
       if (l->colour >= l->nvaryings)
@@ -1771,17 +1799,18 @@ sgx_frame_render(struct sgx_frame *f, struct sgx_resource *rt,
        * the words in fours -- the corpus's x00, x02), the state, the draw
        * (count, indices), the vertex fetch */
       if (d->vs && d->vs->nuniforms) {
-         uint32_t ub = f->ext + EXT_VS_UNI + k * VS_UNI_SLOT;
-         const uint32_t loader[12] = {
-            ub + VS_UNI_WORDS, d->vs->nuniforms - 1, 0, 0, doutu(f, f->empty_prog), 2, 0, 0,
-            PDS_DMA_ROW0, PDS_DOUTU_ROW1_AFTER, PDS_END, 0,
-         };
+         uint32_t ub = f->ext + EXT_VS_UNI + k * VS_UNI_SLOT, loader[UNIFORM_LOADER_MAX];
+         unsigned rows;
 
-         if (d->vs->nuniforms * 4 > VS_UNI_SLOT - VS_UNI_WORDS ||
-             !put(f, ub + VS_UNI_WORDS, d->vs_sa, d->vs->nuniforms * 4) ||
-             !put(f, ub, loader, sizeof(loader)))
+         if (d->vs->nuniforms * 4 > VS_UNI_PDS)
             return -EFAULT;
-         *v++ = vdm4(4, ub); *v++ = 0x1000e100 | DIV_ROUND_UP(d->vs->nuniforms, 4);
+         rows = uniform_loader(f, ub, d->vs->nuniforms, loader);
+         if (!put(f, ub, d->vs_sa, d->vs->nuniforms * 4) ||
+             !put(f, ub + VS_UNI_PDS, loader, sizeof(loader)))
+            return -EFAULT;
+         /* (the data rows in 31:27, as the state's PDS pointers have them) */
+         *v++ = vdm4(4, ub + VS_UNI_PDS);
+         *v++ = rows << 27 | 0x0000e100 | DIV_ROUND_UP(d->vs->nuniforms, 4);
       } else {
          *v++ = vdm4(4, f->consts0); *v++ = 0x1000e102;
       }

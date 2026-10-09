@@ -508,9 +508,19 @@ scan(struct comp *c, nir_function_impl *impl)
             nir_intrinsic_instr *in = nir_instr_as_intrinsic(instr);
             unsigned at;
 
-            if ((in->intrinsic == nir_intrinsic_load_uniform ||
-                 in->intrinsic == nir_intrinsic_load_ubo) && uniform_word(c, in, &at))
+            if (in->intrinsic == nir_intrinsic_load_uniform &&
+                !nir_src_is_const(in->src[0])) {
+               /* an array read through an index: all of it in sa (M21) */
+               at = (nir_intrinsic_base(in) + nir_intrinsic_range(in)) * 4;
+               if (at > 128) {
+                  fail(c, "uniforms past word 128");
+                  return;
+               }
+               c->nuniforms = MAX2(c->nuniforms, at);
+            } else if ((in->intrinsic == nir_intrinsic_load_uniform ||
+                        in->intrinsic == nir_intrinsic_load_ubo) && uniform_word(c, in, &at)) {
                c->nuniforms = MAX2(c->nuniforms, at + in->def.num_components);
+            }
             if (in->intrinsic == nir_intrinsic_terminate ||
                 in->intrinsic == nir_intrinsic_terminate_if ||
                 in->intrinsic == nir_intrinsic_demote ||
@@ -582,6 +592,35 @@ uniform_word(struct comp *c, nir_intrinsic_instr *in, unsigned *at)
    return true;
 }
 
+/* A uniform array's element through an index (M21): index1 = its first
+ * sa word -- 4 x the offset (an integer as a float here) + the array's base,
+ * made an integer in the low bits of 2^23 + it -- then each word read
+ * through index1 by a 32-bit move, as iOS's c04_loop_break reads its
+ * array */
+static void
+indirect_uniform(struct comp *c, nir_intrinsic_instr *in)
+{
+   unsigned id = in->def.index * 4, base = nir_intrinsic_base(in) * 4;
+   struct operand off = resolve(nir_get_scalar(in->src[0].ssa, 0));
+   struct scratch s = { 0 };
+   struct usse_reg t = treg(c, scratch_take(c, &s));
+
+   emit(c, usse_fmad(t, get(c, off, TAKES_ABS | TAKES_LANE_Y, &s), constant(c, &s, 4.0f),
+                     constant(c, &s, 8388608.0f + base)));
+   emit(c, usse_vbw_and(usse_reg(USSE_INDEX, 1), t, 0xffff));
+   for (unsigned i = 0; i < in->def.num_components; i++) {
+      unsigned r;
+
+      if (c->last_use[id + i] < 0)
+         continue;
+      r = take(c);
+      c->loc[id + i] = treg(c, r);
+      c->owned[id + i] = true;
+      emit(c, usse_vbw_or(treg(c, r), usse_reg(USSE_IDX1, 3 << 5 | i), 0));
+   }
+   scratch_give_back(c, &s);
+}
+
 static void
 intrinsic(struct comp *c, nir_intrinsic_instr *in)
 {
@@ -642,6 +681,11 @@ intrinsic(struct comp *c, nir_intrinsic_instr *in)
       return;
    }
    case nir_intrinsic_load_uniform:
+      if (!nir_src_is_const(in->src[0])) {
+         indirect_uniform(c, in);
+         return;
+      }
+      FALLTHROUGH;
    case nir_intrinsic_load_ubo:
       if (!uniform_word(c, in, &at))
          return;
@@ -844,6 +888,8 @@ for_each_read(struct comp *c, nir_instr *instr, void (*f)(struct comp *, struct 
       if (in->intrinsic == nir_intrinsic_store_reg)
          for (unsigned i = 0; i < in->src[0].ssa->num_components; i++)
             f(c, resolve(nir_get_scalar(in->src[0].ssa, i)), index);
+      if (in->intrinsic == nir_intrinsic_load_uniform && !nir_src_is_const(in->src[0]))
+         f(c, resolve(nir_get_scalar(in->src[0].ssa, 0)), index);
    } else if (instr->type == nir_instr_type_tex) {
       nir_tex_instr *tex = nir_instr_as_tex(instr);
 

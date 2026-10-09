@@ -26,6 +26,9 @@ enum usse_bank {
    USSE_PA,          /* pa: primary attributes (what the PDS iterated) */
    USSE_SA,          /* sa: secondary attributes (uniforms) */
    USSE_SPECIAL,     /* c: the hardware's constants (sources only) */
+   USSE_INDEX,       /* index1 (num 1), index2 (num 2): destinations only */
+   USSE_IDX1,        /* a source through index1: num = bank << 5 | offset (bank 0
+                      * temp, 1 output, 2 pa, 3 sa), 32-bit words */
 };
 
 struct usse_reg {
@@ -107,6 +110,11 @@ uint64_t usse_pack_unorm8_to(struct usse_reg dest, struct usse_reg src);
  * boolean (0.0 or 1.0) tested.  (An F32 test, src - #0 by VSUB, gave the
  * wrong answers: M20.) */
 uint64_t usse_vtst_bits(unsigned pdst, struct usse_reg src, bool eq);
+/* VBW, 32 bits: dest = src1 & imm or src1 | imm (imm 16 bits) -- moves of
+ * raw words (`or o0, sa14, #0`), the index registers (`shr index1, r0, #5`,
+ * iOS's c04_loop_break) */
+uint64_t usse_vbw_and(struct usse_reg dest, struct usse_reg src1, unsigned imm);
+uint64_t usse_vbw_or(struct usse_reg dest, struct usse_reg src1, unsigned imm);
 /* KILL under a short predicate (0 always, 1 p0, 2 p1, 3 !p0): the
  * instruction that ends the first phase of iOS's c00_discard, with the
  * punch-through pass type in ISP state A.  Not used yet: here it kills
