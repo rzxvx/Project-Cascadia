@@ -1386,7 +1386,14 @@ encoder test has iOS's word bit for bit), on the iPad (`gldiscard`):
 
 So the punch-through pass wants something outside the draw's state and
 program -- likely in the render's 3D registers, which the GL payloads
-captured on iOS (none with a discard) cannot show. Until then **discard
+captured on iOS (none with a discard) cannot show.
+
+(Retried after M20 found the F32 VTST these tests used setting its
+predicate wrong: with the bitwise test, the predicate as `kill`, as
+`!kill`, iOS's `p1.x` true then `p1.y` the test, `p1.x` alone, bit 27 or
+iOS's exact ISP state A, a constant colour in the second phase -- every
+pixel of the punch-through draw stays invisible and writes no depth. The
+KILL's predicate is not what is missing.) Until then **discard
 keeps the tile's colour**: the conditions are gathered into a temporary,
 and at the end each channel is `kill != 0 ? dst : colour`, dst being o0
 unpacked as the blending reads it (every draw is a translucent object,
@@ -1415,9 +1422,9 @@ that sample. All three are needed or wanted:
   in each group -- the same shader hung or not from run to run, which for a
   while looked like PHAS's temps field mattering (it does not). The output
   write keeps skipinv set (M16).
-- `SGX_DEBUG_BRTEST`, a hand-made program in place of a shader (red where a
-  branch went as meant), showed the plain `br`, `p0? br`, `!p0? br` and a
-  backward loop all right -- once the test feeding them was. The F32 test
+- A hand-made program in place of a shader (red where a branch went as
+  meant; a throwaway, not kept) showed the plain `br`, `p0? br`, `!p0? br`
+  and a backward loop all right -- once the test feeding them was. The F32 test
   (`src - #0` by VSUB, sign test "none", zero test "zero") set the predicate
   wrong; the bitwise form of iOS's facing test, `and(r, r) eq 0`, is right:
   a boolean is 0.0 or 1.0 here, so its bits are 0 or not. (VTST's sign and
