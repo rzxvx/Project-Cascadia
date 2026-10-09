@@ -948,6 +948,12 @@ output(struct comp *c)
    unsigned base;
 
    if (!c->have_colour[0] && !c->have_colour[1] && !c->have_colour[2] && !c->have_colour[3]) {
+      /* a colour mask of nothing (nir_lower_blend took the output away):
+       * o0 keeps the tile's colour, as it came in (M23) */
+      if (c->fs->blend.colormask == 0) {
+         emit(c, USSE_NOP_END);
+         return;
+      }
       fail(c, "no colour written");
       return;
    }

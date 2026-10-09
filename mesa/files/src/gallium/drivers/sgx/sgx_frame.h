@@ -123,6 +123,12 @@ struct sgx_frame_state {
    bool viewport;
    float scale[3], translate[3];
    uint8_t cull;            /* SGX_CULL_* */
+   /* the stencil test (M23): ISP state B's word (state word 3; else the
+    * template's, ALWAYS and KEEP) and the reference (state word 1's low
+    * byte) */
+   bool stencil_on;
+   uint32_t stencil;
+   uint8_t stencil_ref;
 };
 /* the TA's culling (state word 18, bits 1:0): the triangles clockwise or
  * anticlockwise in the target, row 0 at the top (M18) */

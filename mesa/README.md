@@ -64,6 +64,7 @@ sgx-gl gltri --ppm /tmp/x.ppm    # the last read-back as a picture: look at it
 sgx-gl glfs                      # the compiler's 40 cases (M13c; M20-M22 loops, arrays)
 sgx-gl glcull                    # culling, viewports, depth ranges, gl_FrontFacing (M18, M19)
 sgx-gl gldiscard                 # discard (M19: the tile's colour kept; depth still written)
+sgx-gl glstencil                 # the stencil test, its ops, masks and clear (M23)
 SGX_CPU_VS=1 sgx-gl glcull       # the same with the vertex shaders on the CPU
 SGX_STATE=18:1 sgx-gl glcull     # xor bits into every draw's state words (finding them)
 SGX_DEBUG_SHADER=1 sgx-gl glfs mad   # a compiled program's words (tools/iosgpu/usse-dis.py words)

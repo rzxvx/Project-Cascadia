@@ -13,6 +13,7 @@
 
 #include "compiler/nir/nir.h"
 #include "draw/draw_context.h"
+#include "util/format/u_format.h"
 #include "util/log.h"
 #include "util/os_time.h"
 #include "util/ralloc.h"
@@ -131,9 +132,13 @@ sgx_clear(struct pipe_context *pctx, unsigned buffers, uint32_t color_clear_mask
          continue;
       util_clear_render_target(pctx, surf, color, x, y, w, h);
    }
-   if ((buffers & PIPE_CLEAR_DEPTHSTENCIL) && ctx->fb.zsbuf.texture)
-      util_clear_depth_stencil(pctx, &ctx->fb.zsbuf, buffers & PIPE_CLEAR_DEPTHSTENCIL,
-                               depth, stencil, x, y, w, h);
+   /* depth and stencil live in the tiles only (no z load/store yet, M23):
+    * the buffer's memory is not cleared.  A render's stencil starts at 0:
+    * another value, a quad first, after the colour's clears */
+   if ((buffers & PIPE_CLEAR_STENCIL) && ctx->fb.zsbuf.texture &&
+       util_format_has_stencil(util_format_description(ctx->fb.zsbuf.texture->format)) &&
+       (stencil & stencil_clear_mask & 0xff))
+      sgx_stencil_clear(ctx, stencil, stencil_clear_mask);
 }
 
 static void
@@ -467,6 +472,7 @@ sgx_set_scissor_states(struct pipe_context *pctx, unsigned start, unsigned count
 static void
 sgx_set_stencil_ref(struct pipe_context *pctx, const struct pipe_stencil_ref ref)
 {
+   sgx_context(pctx)->stencil_ref = ref;
 }
 
 static void

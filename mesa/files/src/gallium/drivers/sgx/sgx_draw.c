@@ -677,6 +677,29 @@ submit(struct sgx_context *ctx)
       .depth_write = ctx->dsa && ctx->dsa->depth_enabled && ctx->dsa->depth_writemask,
    };
 
+   /* the stencil test (M23): ISP state B -- compare in 27:25 (as the depth
+    * compare, gallium's order), the ops on stencil fail, depth fail and
+    * pass in 24:22, 21:19, 18:16, the compare mask in 15:8 and the write
+    * mask in 7:0 -- the reference in ISP state A's low byte */
+   if (ctx->dsa && ctx->dsa->stencil[0].enabled && ctx->fb.zsbuf.texture &&
+       util_format_has_stencil(util_format_description(ctx->fb.zsbuf.texture->format))) {
+      /* gallium's ops in the order of the hardware's: keep, zero, replace,
+       * incr, decr, invert, incr wrap, decr wrap */
+      static const uint8_t op[8] = {
+         [PIPE_STENCIL_OP_KEEP] = 0, [PIPE_STENCIL_OP_ZERO] = 1,
+         [PIPE_STENCIL_OP_REPLACE] = 2, [PIPE_STENCIL_OP_INCR] = 3,
+         [PIPE_STENCIL_OP_DECR] = 4, [PIPE_STENCIL_OP_INVERT] = 5,
+         [PIPE_STENCIL_OP_INCR_WRAP] = 6, [PIPE_STENCIL_OP_DECR_WRAP] = 7,
+      };
+      const struct pipe_stencil_state *s = &ctx->dsa->stencil[0];
+
+      st.stencil_on = true;
+      st.stencil = (uint32_t)(s->func & 7) << 25 | (uint32_t)op[s->fail_op & 7] << 22 |
+                   (uint32_t)op[s->zfail_op & 7] << 19 | (uint32_t)op[s->zpass_op & 7] << 16 |
+                   (uint32_t)s->valuemask << 8 | s->writemask;
+      st.stencil_ref = ctx->stencil_ref.ref_value[0];
+   }
+
    if (!ctx->nverts)
       return;
    /* the draw module's vertices come in the target's whole viewport; a
@@ -854,6 +877,75 @@ submit(struct sgx_context *ctx)
       done += n;
    }
    ctx->nverts = 0;
+}
+
+/* The stencil a render starts at is 0 -- the value the tiles get, as the
+ * depth's is register 0x4b8; no register for another was found (M23) --
+ * so a clear to another is a quad over the whole target first, its pixel
+ * program nothing (o0 keeps the tile's colour), depth ALWAYS without
+ * writes, stencil ALWAYS, REPLACE by value through mask. */
+void
+sgx_stencil_clear(struct sgx_context *ctx, unsigned value, unsigned mask)
+{
+   static const uint64_t nothing[2] = { 0xfa44070000000000ull, 0xf804014000000000ull };
+   static const struct sgx_frame_layout l = { .nvaryings = 1, .f32 = 1, .colour = 0 };
+   /* x y z w, then the varying nobody reads */
+   static const float quad[6][8] = {
+      { -1, -1, 0, 1 }, { 1, -1, 0, 1 }, { 1, 1, 0, 1 },
+      { -1, -1, 0, 1 }, { 1, 1, 0, 1 }, { -1, 1, 0, 1 },
+   };
+   struct sgx_screen *screen = sgx_screen(ctx->base.screen);
+   struct sgx_batch *b = &ctx->batch;
+   struct pipe_surface *surf = &ctx->fb.cbufs[0];
+   struct sgx_resource *rt = surf->texture ? sgx_resource(surf->texture) : NULL;
+   unsigned cursor = b->cursor, first, vf = sgx_frame_vertex_floats(&l);
+   struct sgx_batch_draw *bd;
+   int ret;
+
+   if (!rt)
+      return;
+   if (!ctx->clear_prog.code) {
+      ctx->clear_prog.code = (uint64_t *)nothing;
+      ctx->clear_prog.ncode = 2;
+      ctx->clear_prog.ninputs = 1;
+      ctx->clear_prog.nvaryings = 1;
+   }
+   simple_mtx_lock(&screen->frame_lock);
+   ret = sgx_frame_upload(screen->frame, &ctx->clear_prog);
+   simple_mtx_unlock(&screen->frame_lock);
+   if (ret)
+      return;
+   if (b->ndraws == SGX_FRAME_MAX_DRAWS ||
+       !sgx_frame_place(screen->frame, &cursor, &l, 6, &first)) {
+      sgx_batch_flush(ctx);
+      cursor = 0;
+      if (!sgx_frame_place(screen->frame, &cursor, &l, 6, &first))
+         return;
+   }
+   if (!grow((void **)&b->verts, &b->maxfloats, b->nfloats + 6 * vf, sizeof(float)))
+      return;
+   if (!b->ndraws)
+      pipe_resource_reference(&b->rt, &rt->base);
+   rt->gpu_written = true;
+   bd = &b->draw[b->ndraws++];
+   memset(bd, 0, sizeof(*bd));
+   bd->l = l;
+   bd->first = b->nfloats;
+   bd->nverts = 6;
+   bd->compiled = true;
+   bd->prog = ctx->clear_prog;
+   bd->sa = b->nsa;
+   bd->vs_sa = b->nsa;
+   bd->idx = b->nidx;
+   bd->st = (struct sgx_frame_state){
+      .depth_func = PIPE_FUNC_ALWAYS,
+      .stencil_on = true,
+      .stencil = 7u << 25 | 2u << 22 | 2u << 19 | 2u << 16 | 0xffu << 8 | (mask & 0xff),
+      .stencil_ref = value,
+   };
+   memcpy(b->verts + b->nfloats, quad, sizeof(quad));
+   b->nfloats += 6 * vf;
+   b->cursor = cursor;
 }
 
 /* ---- the vertex shader on the GPU (M18) --------------------------------- */

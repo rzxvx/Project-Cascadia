@@ -1189,6 +1189,50 @@ kick(struct sgx_frame *f, struct sgx_resource *rt, float depth, const uint32_t *
    if (!blk)
       return -EFAULT;
    memcpy(blk, &depth, 4);
+   /* SGX_CMD=off:xor[,...]: the TA command's words flipped (finding them) */
+   {
+      static uint32_t xo[APPLE_SGX_TA_CMD_MAX / 4];
+      static int parsed;
+
+      if (!parsed) {
+         const char *e = getenv("SGX_CMD");
+
+         parsed = 1;
+         while (e && *e) {
+            char *t;
+            unsigned o = strtoul(e, &t, 0);
+
+            if (*t != ':' || o >= APPLE_SGX_TA_CMD_MAX)
+               break;
+            xo[o / 4] ^= strtoul(t + 1, &t, 0);
+            e = *t == ',' ? t + 1 : t;
+         }
+      }
+      for (unsigned i = 0; i < cmd[0] / 4; i++)
+         cmd[i] ^= xo[i];
+   }
+   /* SGX_BLK=off:xor[,...]: the 3D block's words flipped (finding them) */
+   {
+      static uint32_t xo[0x160 / 4];
+      static int parsed;
+
+      if (!parsed) {
+         const char *e = getenv("SGX_BLK");
+
+         parsed = 1;
+         while (e && *e) {
+            char *t;
+            unsigned o = strtoul(e, &t, 0);
+
+            if (*t != ':' || o >= 0x160)
+               break;
+            xo[o / 4] ^= strtoul(t + 1, &t, 0);
+            e = *t == ',' ? t + 1 : t;
+         }
+      }
+      for (unsigned i = 0; i < 0x160 / 4; i++)
+         ((uint32_t *)(blk - 0x80))[i] ^= xo[i];
+   }
    memcpy(hs + n, handles, nhandles * sizeof(uint32_t));
    n += nhandles;
    if (f->debug)
@@ -1709,6 +1753,10 @@ draw_state(struct sgx_frame *f, const struct sgx_frame_draw *d, uint32_t base,
    full[1] = (full[1] & ~(7u << 22 | 1u << 20)) | (uint32_t)(d->st.depth_func & 7) << 22 |
              (d->st.depth_write ? 0 : 1u << 20);
    full[18] = (full[18] & ~3u) | d->st.cull;
+   if (d->st.stencil_on) {
+      full[3] = d->st.stencil;
+      full[1] = (full[1] & ~0xffu) | d->st.stencil_ref;
+   }
    /* the viewport: words 9..14, translate and scale for x, y and z */
    if (d->st.viewport)
       for (unsigned i = 0; i < 3; i++) {

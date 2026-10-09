@@ -1517,6 +1517,53 @@ primitive types are not known yet). The rest of its cases -- flat
 shading, polygon modes, clip planes, primitive restart -- are not GLES
 2.0's.
 
+## M23: stencil; depth and stencil in memory (half of it)
+
+**The stencil test** is ISP state B, the draw state's word 3 -- the
+template's `0x0e000000` is ALWAYS (7) in bits 27:25 and nothing else -- laid
+out as the later PowerVRs' ISPB: the compare in 27:25 (gallium's order, as
+the depth compare in ISP A), the ops on stencil fail, depth fail and pass in
+24:22, 21:19, 18:16, the compare mask in 15:8, the write mask in 7:0. The
+reference is ISP state A's low byte. The ops' order is keep, zero, replace,
+incr (saturating), decr, invert, incr wrap, decr wrap -- gallium's has the
+last three another way round. Right the first time on everything
+`glstencil` tries: replace then equal / not equal, incr twice, decr wrap,
+invert, zero, the write and compare masks, the depth-fail op, never, less.
+
+Its clear: a render's tiles start with stencil 0, and no register for
+another value turned up (the 3D block's words and the TA command's flipped
+with `SGX_BLK=off:xor` and `SGX_CMD=off:xor`). A clear to another value is
+a quad first: a pixel program that writes nothing, depth ALWAYS without
+writes, stencil ALWAYS, REPLACE by the value through the clear's mask. A
+pixel program that writes nothing also came out of a colour mask of
+nothing (nir_lower_blend takes the output away): it is `NOP` with the end
+bit, o0 keeping the tile's colour -- before, such a shader was drawn
+without its mask. The CPU's clear of the depth/stencil buffer's memory is
+gone: nothing reads it (3 MiB a clear for nothing).
+
+**Depth in memory -- the ISP's z load/store**, from iOS's depth capture run
+through the kext's 3D block builder (`rtemu.py` with the depth payload): a
+GL depth attachment puts the ZLS base (1 MiB aligned, BIF_ZLS_REQ_BASE
+`0xcb0` in the open kernel driver's `sgx543defs.h`) at the 3D block's
++0x14, ZLSCTL `0x0015100c` at +0x6c and the load and store offsets from the
+base (`0xe4000`) at +0x70, +0x74. Tried on the iPad with a buffer of our
+own:
+
+- **the store works**: the tiles land 32 x 32 F32, row by row, 4 KiB a tile,
+  tile (x, y) at `(x + y * S) * 4 KiB` -- found with a depth plane whose
+  value encodes the pixel (`d = 0.5 + 0.45 x + 0.0005 y`), the stored words
+  decoded back into pixels;
+- S, the row of tiles' stride, is ZLSCTL bits 10:4: `2 * (v + 1)` tiles
+  (iOS's word has 0: S = 2 whatever the target -- its depth capture never
+  loaded); bit 2 off stores nothing, bits 3, 16 and 19 change the format,
+  bit 18 off stores nothing; tiles a render draws nothing in are not stored;
+- **the load was not found**: no single bit of ZLSCTL (or pair tried), nor
+  of the 3D block's +0x84, makes a render start from what the last stored.
+
+So depth and stencil still live in the tiles only: a frame split into two
+renders loses them (`gldepth`'s `two_renders`, counted as known). The ZLS
+code is not kept; the layout and the stride are, here.
+
 ## Testing, without and with the device
 
 - **Host, every change:** the kernel driver builds with `W=1` against the

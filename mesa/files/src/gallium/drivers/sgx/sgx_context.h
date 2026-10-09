@@ -103,6 +103,8 @@ struct sgx_context {
    const struct pipe_rasterizer_state *rast;
    const struct sgx_vertex_elements *velems;
    struct pipe_viewport_state viewport;
+   struct pipe_stencil_ref stencil_ref;
+   struct sgx_pixel_program clear_prog;  /* writes nothing: sgx_stencil_clear() */
    struct sgx_batch batch;
    const float *fs_constants;
    unsigned fs_constants_size;  /* bytes */

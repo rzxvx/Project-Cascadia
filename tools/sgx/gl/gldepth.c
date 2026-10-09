@@ -30,6 +30,9 @@ static const struct test {
 	int middle;             /* what the middle should be */
 	float clear;            /* the depth clear value (0: 1.0) */
 	int right;              /* what the right should be (0: FAR) */
+	int finish;             /* split, a glFinish between: two renders, the depth
+	                         * to be stored and loaded between them -- not yet
+	                         * (M23): known wrong, not counted */
 } tests[] = {
 	{ "off", 0, GL_LESS, 1, NEAR, 0, FAR },
 	{ "less", 1, GL_LESS, 1, NEAR, 0, NEAR },
@@ -41,6 +44,9 @@ static const struct test {
 	{ "two_draws_far_first", 1, GL_LESS, 1, FAR, 1, NEAR },
 	/* cleared to 0.5: the far quad (depth 0.75) fails LESS everywhere */
 	{ "clear_half", 1, GL_LESS, 1, FAR, 0, NEAR, 0.5f, NONE },
+	{ "two_renders", 1, GL_LESS, 1, NEAR, 1, NEAR, 0, 0, 2 },
+	{ "two_renders_far_first", 1, GL_LESS, 1, FAR, 1, NEAR, 0, 0, 1 },
+	{ "two_renders_clear_half", 1, GL_LESS, 1, NEAR, 1, NEAR, 0.5f, NONE, 1 },
 };
 
 static const char *vs_src =
@@ -153,6 +159,8 @@ int main(int argc, char **argv)
 		glDepthMask(T->mask);
 		if (T->split) {
 			glDrawArrays(GL_TRIANGLES, 0, 6);
+			if (T->finish)
+				glFinish();
 			glDrawArrays(GL_TRIANGLES, 6, 6);
 		} else {
 			glDrawArrays(GL_TRIANGLES, 0, 12);
@@ -165,9 +173,12 @@ int main(int argc, char **argv)
 				 q[0] < 50 && q[1] < 50 ? NONE : -1;
 		}
 		ok = got[0] == NEAR && got[2] == (T->right ? T->right : FAR) && got[1] == T->middle;
-		failed += !ok;
+		if (T->finish == 2)
+			run--;          /* known wrong (M23): not counted */
+		else
+			failed += !ok;
 		printf("%-20s %s: left %s, middle %s (want %s), right %s (want %s)\n", T->name,
-		       ok ? "ok   " : "WRONG", got[0] < 0 ? "?" : what[got[0]],
+		       ok ? "ok   " : T->finish == 2 ? "known" : "WRONG", got[0] < 0 ? "?" : what[got[0]],
 		       got[1] < 0 ? "?" : what[got[1]], what[T->middle],
 		       got[2] < 0 ? "?" : what[got[2]], what[T->right ? T->right : FAR]);
 	}
