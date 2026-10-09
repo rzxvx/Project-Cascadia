@@ -28,6 +28,11 @@ struct sgx_device {
     * comes back as the same handle, and has to be the same sgx_bo */
    simple_mtx_t bo_lock;
    struct hash_table_u64 *bos;
+
+   /* fences the next submit waits for on the GPU (fence_server_sync: a
+    * compositor's or the display's, through sync files) */
+   uint32_t wait_syncs[16];
+   unsigned nwait_syncs;
 };
 
 struct sgx_bo {
@@ -68,6 +73,14 @@ bool sgx_bo_wait(struct sgx_bo *bo, int64_t timeout_ns);
 struct sgx_fence *sgx_fence_create(struct sgx_device *dev, bool signalled);
 void sgx_fence_reference(struct sgx_fence **ptr, struct sgx_fence *f);
 bool sgx_fence_wait(struct sgx_fence *f, uint64_t timeout_ns);
+/* a sync file of the fence (-1: none), and a fence from one */
+int sgx_fence_export(struct sgx_fence *f);
+struct sgx_fence *sgx_fence_import(struct sgx_device *dev, int fd);
+extern int64_t sgx_fence_waited;
+/* SGX_TRACE=1: a line with the time since the last mark */
+void sgx_trace_mark(const char *what);
+enum { SGX_IOCTL_CREATE, SGX_IOCTL_MMAP, SGX_IOCTL_WAIT, SGX_IOCTL_SUBMIT, SGX_IOCTL_KINDS };
+extern unsigned sgx_ioctls[SGX_IOCTL_KINDS];
 
 /* One render.  handles[] lists every buffer it touches (the render
  * details' among them); done is signalled when its 3D pass is over. */

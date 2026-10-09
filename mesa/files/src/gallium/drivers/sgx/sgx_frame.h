@@ -111,7 +111,7 @@ struct sgx_pixel_program {
  * they are l's colour varying.  handles: buffers the render reads besides
  * the frame's and rt (textures, at most SGX_FRAME_MAX_HANDLES), for the
  * kernel to keep. */
-#define SGX_FRAME_MAX_HANDLES 16
+#define SGX_FRAME_MAX_HANDLES 256
 /* What the ISP does with a draw's pixels (M14): the depth test (a
  * pipe_compare_func; ALWAYS when GL's test is off) and whether it writes
  * depth. */
@@ -166,7 +166,9 @@ struct sgx_frame_draw {
    const uint16_t *indices;
    unsigned nindices;
 };
-#define SGX_FRAME_MAX_DRAWS 200
+/* (the pack's frame, SGX_FRAME=pack, takes 200: sgx_frame_max_draws()) */
+#define SGX_FRAME_MAX_DRAWS 2048
+unsigned sgx_frame_max_draws(const struct sgx_frame *f);
 /* the indices a render's draws take, all told (8 more a draw: alignment) */
 #define SGX_FRAME_MAX_INDICES 0x40000
 

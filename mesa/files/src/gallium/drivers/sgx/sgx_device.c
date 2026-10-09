@@ -4,6 +4,8 @@
  */
 #include "sgx_device.h"
 
+#include <dlfcn.h>
+
 #include <errno.h>
 #include <stdlib.h>
 #include <string.h>
@@ -123,6 +125,7 @@ sgx_bo_create(struct sgx_device *dev, uint32_t size, uint32_t flags, uint32_t va
    struct sgx_bo *bo;
 
    /* a fixed address that is taken (EEXIST) is the caller's to report */
+   sgx_ioctls[SGX_IOCTL_CREATE]++;
    if (drmIoctl(dev->fd, DRM_IOCTL_APPLE_SGX_GEM_CREATE, &c)) {
       if (errno != EEXIST)
          mesa_loge("sgx: GEM_CREATE %u bytes: %s", size, strerror(errno));
@@ -190,6 +193,7 @@ sgx_bo_map(struct sgx_bo *bo)
 
    if (bo->map)
       return bo->map;
+   sgx_ioctls[SGX_IOCTL_MMAP]++;
    if (drmIoctl(bo->dev->fd, DRM_IOCTL_APPLE_SGX_GEM_MMAP_OFFSET, &m))
       return NULL;
    p = mmap(NULL, bo->size, PROT_READ | PROT_WRITE, MAP_SHARED, bo->dev->fd,
@@ -231,6 +235,7 @@ sgx_bo_wait(struct sgx_bo *bo, int64_t timeout_ns)
                     timeout_ns ? os_time_get_absolute_timeout(timeout_ns) : 0,
    };
 
+   sgx_ioctls[SGX_IOCTL_WAIT]++;
    return !drmIoctl(bo->dev->fd, DRM_IOCTL_APPLE_SGX_GEM_WAIT, &w);
 }
 
@@ -263,14 +268,33 @@ sgx_fence_reference(struct sgx_fence **ptr, struct sgx_fence *f)
    *ptr = f;
 }
 
+/* the time spent waiting for fences, all told, and the ioctls by kind
+ * (SGX_DEBUG=fps) */
+int64_t sgx_fence_waited;
+unsigned sgx_ioctls[SGX_IOCTL_KINDS];
+
 bool
 sgx_fence_wait(struct sgx_fence *f, uint64_t timeout_ns)
 {
+   static int trace = -1;
    int64_t abs = timeout_ns == OS_TIMEOUT_INFINITE ? INT64_MAX :
-                 os_time_get_absolute_timeout(timeout_ns);
+                 os_time_get_absolute_timeout(timeout_ns), t0 = os_time_get_nano();
+   bool done = !drmSyncobjWait(f->dev->fd, &f->syncobj, 1, abs,
+                               DRM_SYNCOBJ_WAIT_FLAGS_WAIT_FOR_SUBMIT, NULL);
 
-   return !drmSyncobjWait(f->dev->fd, &f->syncobj, 1, abs,
-                          DRM_SYNCOBJ_WAIT_FLAGS_WAIT_FOR_SUBMIT, NULL);
+   sgx_fence_waited += os_time_get_nano() - t0;
+   /* SGX_TRACE_WAITS: who waited a millisecond or more */
+   if (trace < 0)
+      trace = getenv("SGX_TRACE_WAITS") != NULL;
+   if (trace && os_time_get_nano() - t0 > 1000000) {
+      Dl_info di;
+      void *ra = __builtin_return_address(0);
+
+      if (dladdr(ra, &di))
+         mesa_logi("sgx: waited %.1f ms for a fence, from %s+0x%lx", (os_time_get_nano() - t0) / 1e6,
+                   di.dli_sname ? di.dli_sname : "?", (unsigned long)((char *)ra - (char *)di.dli_fbase));
+   }
+   return done;
 }
 
 /* SGX_CC: SGXMKIF_CC_* for every kick, on top of the MMU invalidation the
@@ -302,11 +326,55 @@ sgx_submit(struct sgx_device *dev, const uint32_t *cmd, uint32_t pb_va,
       .bo_handles = (uintptr_t)handles,
       .bo_handle_count = count,
       .out_sync = done ? done->syncobj : 0,
+      .in_syncs = (uintptr_t)dev->wait_syncs,
+      .in_sync_count = dev->nwait_syncs,
    };
+   int ret = 0;
 
+   sgx_ioctls[SGX_IOCTL_SUBMIT]++;
    if (drmIoctl(dev->fd, DRM_IOCTL_APPLE_SGX_SUBMIT, &s)) {
       mesa_loge("sgx: SUBMIT: %s", strerror(errno));
-      return -errno;
+      ret = -errno;
    }
-   return 0;
+   for (unsigned i = 0; i < dev->nwait_syncs; i++)
+      drmSyncobjDestroy(dev->fd, dev->wait_syncs[i]);
+   dev->nwait_syncs = 0;
+   return ret;
+}
+
+void
+sgx_trace_mark(const char *what)
+{
+   static int on = -1;
+   static int64_t last;
+   int64_t now;
+
+   if (on < 0)
+      on = getenv("SGX_TRACE") && atoi(getenv("SGX_TRACE"));
+   if (!on)
+      return;
+   now = os_time_get_nano();
+   mesa_logi("sgx: mark %8.3f (+%7.3f ms) %s", (now / 1000000) % 100000 / 1000.0,
+             last ? (now - last) / 1e6 : 0.0, what);
+   last = now;
+}
+
+int
+sgx_fence_export(struct sgx_fence *f)
+{
+   int fd = -1;
+
+   if (drmSyncobjExportSyncFile(f->dev->fd, f->syncobj, &fd))
+      return -1;
+   return fd;
+}
+
+struct sgx_fence *
+sgx_fence_import(struct sgx_device *dev, int fd)
+{
+   struct sgx_fence *f = sgx_fence_create(dev, false);
+
+   if (f && drmSyncobjImportSyncFile(dev->fd, f->syncobj, fd))
+      sgx_fence_reference(&f, NULL);
+   return f;
 }

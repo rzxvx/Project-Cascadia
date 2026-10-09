@@ -19,6 +19,7 @@ struct sgx_screen;
 struct sgx_resource {
    struct pipe_resource base;
    struct sgx_bo *bo;
+   uint8_t *data;                                 /* a buffer's: CPU memory (M25) */
    uint32_t stride[PIPE_MAX_TEXTURE_LEVELS];      /* bytes per row */
    uint32_t layer_size[PIPE_MAX_TEXTURE_LEVELS];  /* bytes per layer or slice */
    uint32_t offset[PIPE_MAX_TEXTURE_LEVELS];      /* of each level */

@@ -275,6 +275,10 @@ struct sgx_frame {
    uint32_t kick[3];            /* PB descriptor, render details, TA command */
    uint32_t w, h;
    uint32_t consts0, idx, idx_count, vdm, vdm_size, ext, ext_size, heap, heap_size, pds;
+   /* where a render's draws' slots and vertex shaders' uniforms go in the
+    * EXT window, and how many draws a render takes */
+   uint32_t draw_slots, vs_uni;
+   unsigned max_draws;
    uint32_t fetch_tag, fetch_word;
    uint32_t tail[8];
    unsigned ntail;
@@ -572,6 +576,10 @@ load_pack(struct sgx_frame *f, const char *dir)
       } else if (!strcmp(key, "ext")) {
          f->ext = strtoul(a, 0, 0);
          f->ext_size = strtoul(b, 0, 0);
+         /* the pack's 4 MiB: its last 256 KiB the draws' slots */
+         f->draw_slots = EXT_FRAME;
+         f->vs_uni = EXT_VS_UNI;
+         f->max_draws = 200;
       } else if (!strcmp(key, "texheap")) {
          f->heap = strtoul(a, 0, 0);
          f->heap_size = strtoul(b, 0, 0);
@@ -618,8 +626,10 @@ load_pack(struct sgx_frame *f, const char *dir)
 #define BUILT_WHITE     0xc00       /* the white texture, */
 #define BUILT_IDX       0x1000      /* the index buffer */
 #define BUILT_GL_SIZE   (BUILT_IDX + SGX_TMPL_IDX_COUNT * 2)
-#define BUILT_VDM_SIZE  0x4000
-#define BUILT_EXT_SIZE  0x400000
+#define BUILT_VDM_SIZE  0x20000     /* 10 words a draw */
+#define BUILT_EXT_SIZE  0x800000    /* the pack's 4 MiB, then: */
+#define BUILT_DRAWS     0x400000    /* SGX_FRAME_MAX_DRAWS draw slots, */
+#define BUILT_VS_UNI    0x600000    /* and vertex shader uniforms */
 
 static struct sgx_bo *
 new_bo(struct sgx_frame *f, uint32_t size, uint32_t flags)
@@ -783,6 +793,9 @@ build_frame(struct sgx_frame *f, const char *dir)
    f->idx_count = SGX_TMPL_IDX_COUNT;
    f->vdm = vdm->va;
    f->vdm_size = BUILT_VDM_SIZE;
+   f->draw_slots = BUILT_DRAWS;
+   f->vs_uni = BUILT_VS_UNI;
+   f->max_draws = SGX_FRAME_MAX_DRAWS;
    f->ext = ext->va;
    f->ext_size = BUILT_EXT_SIZE;
    f->heap = gl->va + BUILT_WHITE;
@@ -1657,8 +1670,10 @@ begin_render(struct sgx_frame *f, struct sgx_resource *rt, struct sgx_eot *out_t
    uint64_t timeouts;
 
    /* the frame's buffers are the last render's until it is done */
+   sgx_trace_mark("begin_render wait");
    if (f->last && !sgx_fence_wait(f->last, 5ull * 1000 * 1000 * 1000))
       mesa_logw("sgx: the last render through the template frame is still running");
+   sgx_trace_mark("begin_render waited");
 
    /* a render that hung (this process's or another's) leaves the parameter
     * buffer and the render target data half-used: the pack again */
@@ -1849,6 +1864,12 @@ sgx_frame_upload(struct sgx_frame *f, struct sgx_pixel_program *p)
    return upload(f, p);
 }
 
+unsigned
+sgx_frame_max_draws(const struct sgx_frame *f)
+{
+   return f->max_draws;
+}
+
 bool
 sgx_frame_place_indexed(struct sgx_frame *f, unsigned *cursor, unsigned stride,
                         unsigned nverts, unsigned *first)
@@ -1981,7 +2002,7 @@ sgx_frame_render(struct sgx_frame *f, struct sgx_resource *rt,
    struct sgx_eot to;
    int ret;
 
-   if (!sgx_frame_can_render(f, rt) || !n || n > SGX_FRAME_MAX_DRAWS ||
+   if (!sgx_frame_can_render(f, rt) || !n || n > f->max_draws ||
        f->tsize[T_FULL] > (int)sizeof(full) || f->tsize[T_FULLPROG] > (int)sizeof(prog) ||
        nhandles > SGX_FRAME_MAX_HANDLES)
       return -EINVAL;
@@ -1990,7 +2011,7 @@ sgx_frame_render(struct sgx_frame *f, struct sgx_resource *rt,
 
    for (unsigned k = 0; k < n; k++) {
       const struct sgx_frame_draw *d = &draws[k];
-      uint32_t base = f->ext + EXT_FRAME + k * DRAW_SLOT, idx_va, count;
+      uint32_t base = f->ext + f->draw_slots + k * DRAW_SLOT, idx_va, count;
       unsigned first, stride = d->vs ? 16 * d->vs->nattrs :
                                        sgx_frame_vertex_floats(&d->l) * sizeof(float);
 
@@ -2028,7 +2049,7 @@ sgx_frame_render(struct sgx_frame *f, struct sgx_resource *rt,
        * the words in fours -- the corpus's x00, x02), the state, the draw
        * (count, indices), the vertex fetch */
       if (d->vs && d->vs->nuniforms) {
-         uint32_t ub = f->ext + EXT_VS_UNI + k * VS_UNI_SLOT, loader[UNIFORM_LOADER_MAX];
+         uint32_t ub = f->ext + f->vs_uni + k * VS_UNI_SLOT, loader[UNIFORM_LOADER_MAX];
          unsigned rows;
 
          if (d->vs->nuniforms * 4 > VS_UNI_PDS)

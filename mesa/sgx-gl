@@ -5,10 +5,18 @@
 #   sgx-gl glclear 100 --fb
 #   sgx-gl eglinfo            (apk add mesa-demos)
 #
-# SGX_DEBUG=frame says what each render is; SGX_PACK names the template
-# frame (default /usr/local/lib/sgx2d, from ./cascadia gpu).
-P=/usr/local/lib/sgx-mesa
+# SGX_DEBUG=frame says what each render is, SGX_DEBUG=fps the frame rate;
+# SGX_PACK names the template frame (default /usr/local/lib/sgx2d, from
+# ./cascadia gpu).
+#
+# SGX_PRELOAD=1: the libraries preloaded -- for a program linked to the
+# system's libGL (SuperTux, through GLEW), whose Mesa would otherwise come
+# first and take our libEGL's calls into the system's driver.
+P=${SGX_MESA:-/usr/local/lib/sgx-mesa}
 export LD_LIBRARY_PATH="$P/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 export GBM_BACKENDS_PATH="$P/lib/gbm"
 export PATH="$P/bin:$PATH"
+if [ "$SGX_PRELOAD" = 1 ]; then
+	export LD_PRELOAD="$(ls "$P"/lib/libgallium-*.so) $P/lib/libEGL.so.1 $P/lib/libGLESv2.so.2${LD_PRELOAD:+ $LD_PRELOAD}"
+fi
 exec "$@"

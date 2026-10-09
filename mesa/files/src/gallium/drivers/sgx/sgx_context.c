@@ -12,6 +12,7 @@
 #include "sgx_context.h"
 
 #include <time.h>
+#include <unistd.h>
 
 #include "compiler/nir/nir.h"
 #include "draw/draw_context.h"
@@ -50,11 +51,57 @@ sgx_fence_finish(struct pipe_screen *pscreen, struct pipe_context *pctx,
    return sgx_fence_wait((struct sgx_fence *)fence, timeout);
 }
 
+/* native fence fds (EGL_ANDROID_native_fence_sync): sync files of the
+ * syncobjs -- what lets a KMS client (SDL) commit a flip without waiting
+ * for the render, the kernel waiting for it instead (M25) */
+static int
+sgx_fence_get_fd(struct pipe_screen *pscreen, struct pipe_fence_handle *fence)
+{
+   return sgx_fence_export((struct sgx_fence *)fence);
+}
+
+static void
+sgx_create_fence_fd(struct pipe_context *pctx, struct pipe_fence_handle **fence, int fd,
+                    enum pipe_fd_type type)
+{
+   *fence = type == PIPE_FD_TYPE_NATIVE_SYNC ?
+            (struct pipe_fence_handle *)sgx_fence_import(&sgx_screen(pctx->screen)->dev, fd) :
+            NULL;
+}
+
+/* the next submit waits for it on the GPU (a copy of its syncobj's fence:
+ * the submit lets go of it) */
+static void
+sgx_fence_server_sync(struct pipe_context *pctx, struct pipe_fence_handle *fence, uint64_t value)
+{
+   struct sgx_device *dev = &sgx_screen(pctx->screen)->dev;
+   struct sgx_fence *f = (struct sgx_fence *)fence;
+   struct sgx_fence *copy = NULL;
+   int fd;
+
+   sgx_trace_mark("server sync");
+   sgx_batch_flush(sgx_context(pctx));
+   /* (a binary syncobj's fence copied through a sync file) */
+   if (dev->nwait_syncs < ARRAY_SIZE(dev->wait_syncs) && (fd = sgx_fence_export(f)) >= 0) {
+      copy = sgx_fence_import(dev, fd);
+      close(fd);
+   }
+   if (!copy) {
+      sgx_fence_wait(f, OS_TIMEOUT_INFINITE);
+      return;
+   }
+   /* the syncobj is the submit's to destroy */
+   dev->wait_syncs[dev->nwait_syncs++] = copy->syncobj;
+   copy->syncobj = 0;
+   FREE(copy);
+}
+
 void
 sgx_context_screen_init(struct sgx_screen *screen)
 {
    screen->base.fence_reference = sgx_fence_reference_hook;
    screen->base.fence_finish = sgx_fence_finish;
+   screen->base.fence_get_fd = sgx_fence_get_fd;
 }
 
 /* Renders are submitted as they are made, so a flush only hands out the
@@ -65,6 +112,7 @@ sgx_flush(struct pipe_context *pctx, struct pipe_fence_handle **fence, unsigned 
    struct sgx_context *ctx = sgx_context(pctx);
    struct sgx_fence *f = NULL;
 
+   sgx_trace_mark(flags & PIPE_FLUSH_END_OF_FRAME ? "flush, end of frame" : "flush");
    sgx_batch_flush(ctx);
    if (ctx->debug_fps && (flags & PIPE_FLUSH_END_OF_FRAME)) {
       struct timespec ts;
@@ -73,16 +121,35 @@ sgx_flush(struct pipe_context *pctx, struct pipe_fence_handle **fence, unsigned 
       clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &ts);
       cpu = ts.tv_sec * 1000000000ll + ts.tv_nsec;
 
+      ctx->stat_swap = now;
+      ctx->stat_swap_cpu = cpu;
       if (!ctx->stat_t0) {
          ctx->stat_t0 = now;
          ctx->stat_cpu0 = cpu;
       } else if (++ctx->stat_frames, now - ctx->stat_t0 >= 2000000000ll) {
          double s = (now - ctx->stat_t0) / 1e9;
 
-         mesa_logi("sgx: %.1f fps, %.1f renders and %.1f draws a frame, %.0f%% CPU",
-                   ctx->stat_frames / s, (double)ctx->stat_renders / ctx->stat_frames,
+         mesa_logi("sgx: %.1f fps, %.1f renders and %.1f draws a frame, %.0f%% CPU, "
+                   "%.0f%% waiting for the GPU", ctx->stat_frames / s,
+                   (double)ctx->stat_renders / ctx->stat_frames,
                    (double)ctx->stat_draws / ctx->stat_frames,
-                   100.0 * (cpu - ctx->stat_cpu0) / (now - ctx->stat_t0));
+                   100.0 * (cpu - ctx->stat_cpu0) / (now - ctx->stat_t0),
+                   100.0 * sgx_fence_waited / (now - ctx->stat_t0));
+         sgx_fence_waited = 0;
+         mesa_logi("sgx:  a frame's buffers made %.1f, mapped %.1f, waited for %.1f; submits %.1f",
+                   (double)sgx_ioctls[SGX_IOCTL_CREATE] / ctx->stat_frames,
+                   (double)sgx_ioctls[SGX_IOCTL_MMAP] / ctx->stat_frames,
+                   (double)sgx_ioctls[SGX_IOCTL_WAIT] / ctx->stat_frames,
+                   (double)sgx_ioctls[SGX_IOCTL_SUBMIT] / ctx->stat_frames);
+         memset(sgx_ioctls, 0, sizeof(sgx_ioctls));
+         if (ctx->debug_sync)
+            mesa_logi("sgx:  %.1f ms a render on the GPU", ctx->stat_gpu / 1e6 / ctx->stat_renders);
+         ctx->stat_gpu = 0;
+         mesa_logi("sgx:  %.1f ms a frame between its end and the next one's first draw "
+                   "(%.1f ms of it CPU)", ctx->stat_between / 1e6 / ctx->stat_frames,
+                   ctx->stat_between_cpu / 1e6 / ctx->stat_frames);
+         ctx->stat_between = ctx->stat_between_cpu = 0;
+         sgx_batch_why(ctx);
          ctx->stat_frames = ctx->stat_renders = ctx->stat_draws = 0;
          ctx->stat_t0 = now;
          ctx->stat_cpu0 = cpu;
@@ -141,36 +208,36 @@ sgx_clear(struct pipe_context *pctx, unsigned buffers, uint32_t color_clear_mask
    bool cs = (buffers & PIPE_CLEAR_STENCIL) && zs &&
              util_format_has_stencil(util_format_description(zs->format));
 
-   /* a colour clear ends the render (what was drawn comes first) */
-   if (buffers & PIPE_CLEAR_COLOR)
-      sgx_batch_flush(ctx);
-   for (unsigned i = 0; i < ctx->fb.nr_cbufs; i++) {
-      struct pipe_surface *surf = &ctx->fb.cbufs[i];
-
-      if (!(buffers & (PIPE_CLEAR_COLOR0 << i)) || !surf->texture)
-         continue;
-      /* four channel bits per draw buffer */
-      if (!scissor && ((color_clear_mask >> (4 * i)) & 0xf) == 0xf &&
-          sgx_clear_gpu(ctx, surf, color))
-         continue;
-      util_clear_render_target(pctx, surf, color, x, y, w, h);
-   }
-   /* depth and stencil live in the tiles only (no z load/store yet, M23):
-    * the buffer's memory is not cleared.  At a render's start, all of the
-    * target: the depth the render starts at, and its stencil 0 for free;
-    * else a quad in the render (M24) */
-   if (!cd && !cs)
-      return;
-   if (!ctx->batch.ndraws && !scissor) {
+   /* depth and stencil first (the colour's quad would end a render's
+    * start): at a render's start, all of the target, the depth the render
+    * starts at and its stencil 0 for free; else a quad in the render (M24) */
+   if ((cd || cs) && !ctx->batch.ndraws && !scissor) {
       if (cd) {
          ctx->batch.depth_clear = depth;
          ctx->batch.zs_cleared = true;
       }
       if (cs && (stencil & stencil_clear_mask & 0xff))
          sgx_zs_clear(ctx, false, 0, true, stencil, stencil_clear_mask, NULL);
-      return;
+   } else if (cd || cs) {
+      sgx_zs_clear(ctx, cd, depth, cs, stencil, stencil_clear_mask, scissor);
    }
-   sgx_zs_clear(ctx, cd, depth, cs, stencil, stencil_clear_mask, scissor);
+   for (unsigned i = 0; i < ctx->fb.nr_cbufs; i++) {
+      struct pipe_surface *surf = &ctx->fb.cbufs[i];
+
+      if (!(buffers & (PIPE_CLEAR_COLOR0 << i)) || !surf->texture)
+         continue;
+      /* four channel bits per draw buffer: all of them, a quad in the
+       * render (M25) */
+      if (i == 0 && ((color_clear_mask >> (4 * i)) & 0xf) == 0xf &&
+          sgx_colour_clear(ctx, color, scissor))
+         continue;
+      /* else the render ends (what was drawn comes first) */
+      sgx_batch_flush(ctx);
+      if (!scissor && ((color_clear_mask >> (4 * i)) & 0xf) == 0xf &&
+          sgx_clear_gpu(ctx, surf, color))
+         continue;
+      util_clear_render_target(pctx, surf, color, x, y, w, h);
+   }
 }
 
 static void
@@ -614,6 +681,8 @@ sgx_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
    slab_create_child(&ctx->transfer_pool, &screen->transfer_pool);
 
    p->destroy = sgx_context_destroy;
+   p->create_fence_fd = sgx_create_fence_fd;
+   p->fence_server_sync = sgx_fence_server_sync;
    p->flush = sgx_flush;
    p->clear = sgx_clear;
    p->clear_render_target = sgx_clear_render_target;
@@ -625,6 +694,7 @@ sgx_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
    p->draw_vbo = sgx_draw_vbo;
    ctx->debug_draw = debug_get_bool_option("SGX_DEBUG_DRAW", false);
    ctx->debug_fps = getenv("SGX_DEBUG") && strstr(getenv("SGX_DEBUG"), "fps");
+   ctx->debug_sync = getenv("SGX_DEBUG") && strstr(getenv("SGX_DEBUG"), "sync");
    p->texture_barrier = sgx_texture_barrier;
    p->memory_barrier = sgx_memory_barrier;
    p->get_device_reset_status = sgx_get_device_reset_status;

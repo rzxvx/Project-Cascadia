@@ -316,3 +316,25 @@ usse_vbw_or(struct usse_reg dest, struct usse_reg src1, unsigned imm)
 {
    return vbw_logic(true, dest, src1, imm);
 }
+
+uint64_t
+usse_sop2(struct usse_reg dest, struct usse_reg src1, struct usse_reg src2,
+          const struct usse_sop2 *f)
+{
+   unsigned dext, dbank, ext1, bank1, ext2, bank2;
+
+   dest_bank(dest, &dext, &dbank);
+   src_bank(src1, &ext1, &bank1);
+   src_bank(src2, &ext2, &bank2);
+   /* Vita3K's SOP2 (alu.cpp): 10000 pp c(cmod1) s n aa(asel1) d e r b
+    * m(cmod2) ooo(count) f(amod1) ll(asel2) ggg(csel1) hhh(csel2) i(amod2)
+    * tt kk jj qqqqqqq(dest) u(src1 mod) vv(cop) ww(aop) x y zzzzzzz(src1)
+    * AAAAAAA(src2) -- register numbers in 32-bit words */
+   return bits(0x10, 63, 59) | bits(f->cmod1, 56, 56) | SKIPINV | bits(f->asel1, 53, 52) |
+          bits(dext, 51, 51) | bits(ext1, 49, 49) | bits(ext2, 48, 48) |
+          bits(f->cmod2, 47, 47) | bits(f->amod1, 43, 43) | bits(f->asel2, 42, 41) |
+          bits(f->csel1, 40, 38) | bits(f->csel2, 37, 35) | bits(f->amod2, 34, 34) |
+          bits(dbank, 33, 32) | bits(bank1, 31, 30) | bits(bank2, 29, 28) |
+          bits(dest.num, 27, 21) | bits(f->cop, 19, 18) | bits(f->aop, 17, 16) |
+          bits(src1.num, 13, 7) | bits(src2.num, 6, 0);
+}

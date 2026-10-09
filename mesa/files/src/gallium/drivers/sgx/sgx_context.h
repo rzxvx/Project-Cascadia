@@ -52,6 +52,7 @@ struct sgx_batch_draw {
 struct sgx_batch {
    struct pipe_resource *rt;            /* referenced */
    struct sgx_batch_draw draw[SGX_FRAME_MAX_DRAWS];
+   struct sgx_frame_draw fdraw[SGX_FRAME_MAX_DRAWS];    /* (sgx_batch_flush's) */
    unsigned ndraws, cursor;             /* cursor: sgx_frame_place's */
    float depth_clear;                   /* what the render's depth starts at */
    struct pipe_resource *zs;            /* the depth buffer, referenced (M24) */
@@ -117,15 +118,19 @@ struct sgx_context {
    struct pipe_scissor_state scissor;
    struct pipe_stencil_ref stencil_ref;
    struct sgx_pixel_program clear_prog;  /* writes nothing: sgx_zs_clear() */
+   struct sgx_pixel_program colour_prog; /* o0 = sa0: sgx_colour_clear() */
+   uint64_t colour_code[2];
    struct sgx_batch batch;
    const float *fs_constants;
    unsigned fs_constants_size;  /* bytes */
    bool warned_fs, debug_draw;
    /* SGX_DEBUG=fps: frames (swaps), renders and draws counted, and said
     * every two seconds */
-   bool debug_fps;
+   bool debug_fps, debug_sync;
    unsigned stat_frames, stat_renders, stat_draws;
-   int64_t stat_t0, stat_cpu0;
+   int64_t stat_t0, stat_cpu0, stat_gpu;
+   int64_t stat_swap, stat_between;     /* the last frame's end; to the next draw */
+   int64_t stat_swap_cpu, stat_between_cpu;
 };
 
 static inline struct sgx_context *

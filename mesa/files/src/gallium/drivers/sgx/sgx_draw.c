@@ -20,6 +20,7 @@
 
 #include <errno.h>
 #include <stdlib.h>
+#include <time.h>
 
 #include "compiler/glsl_types.h"
 #include "compiler/nir/nir.h"
@@ -29,6 +30,7 @@
 #include "tgsi/tgsi_from_mesa.h"
 #include "util/format/u_format.h"
 #include "util/log.h"
+#include "util/os_time.h"
 #include "util/u_debug.h"
 #include "util/u_inlines.h"
 #include "util/u_math.h"
@@ -41,6 +43,7 @@
 #include "sgx_frame.h"
 #include "sgx_resource.h"
 #include "sgx_screen.h"
+#include "sgx_usse.h"
 
 /* ---- the fragment shader's colour --------------------------------------- */
 
@@ -496,11 +499,12 @@ sgx_draw_fini(struct sgx_context *ctx)
    ctx->draw = NULL;
    ctx->render = NULL;
    sgx_batch_flush(ctx);
-   if (ctx->clear_prog.code_va) {
+   if (ctx->clear_prog.code_va || ctx->colour_prog.code_va) {
       struct sgx_screen *screen = sgx_screen(ctx->base.screen);
 
       simple_mtx_lock(&screen->frame_lock);
       sgx_frame_retire(screen->frame, &ctx->clear_prog);
+      sgx_frame_retire(screen->frame, &ctx->colour_prog);
       simple_mtx_unlock(&screen->frame_lock);
    }
    free(ctx->batch.dead_vs);
@@ -572,6 +576,14 @@ fs_for_draw(struct sgx_context *ctx)
                      "not compiled (%s): drawn without it", why);
       return sh->compiled;
    }
+   if (debug_get_bool_option("SGX_DEBUG_SHADER", false)) {
+      mesa_logi("sgx: a fragment shader's variant (blend %u %u/%u/%u %u/%u/%u, mask %x): "
+                "%u instructions, %u temps", key.enable, key.rgb_func, key.rgb_src, key.rgb_dst,
+                key.alpha_func, key.alpha_src, key.alpha_dst, key.colormask, fs->prog.ncode,
+                fs->prog.ntemps);
+      for (unsigned i = 0; i < fs->prog.ncode; i++)
+         mesa_logi("sgx:   %016llx", (unsigned long long)fs->prog.code[i]);
+   }
    if (sh->nvariants == ARRAY_SIZE(sh->variant)) {
       sgx_batch_bury_fs(ctx, sh->variant[0]);
       memmove(sh->variant, sh->variant + 1, (ARRAY_SIZE(sh->variant) - 1) * sizeof(fs));
@@ -587,10 +599,10 @@ map_buffer(struct pipe_resource *prsc, size_t *size)
    struct sgx_resource *res = sgx_resource(prsc);
    uint8_t *map;
 
-   if (!res || !res->bo || !(map = sgx_bo_map(res->bo)))
+   if (!res || !(map = res->data ? res->data : res->bo ? sgx_bo_map(res->bo) : NULL))
       return NULL;
-   /* the CPU reads what a render may still write: wait for it */
-   sgx_bo_wait(res->bo, -1);
+   /* (no render touches a buffer: what a draw takes from one is copied
+    * into the frame's) */
    *size = prsc->width0;
    return map;
 }
@@ -614,6 +626,9 @@ sgx_batch_uses(struct sgx_context *ctx, struct pipe_resource *p)
 
 static bool zs_quad(struct sgx_context *ctx, const struct pipe_scissor_state *sc, float d,
                     const struct sgx_frame_state *st, bool flush);
+static bool quad(struct sgx_context *ctx, const struct pipe_scissor_state *sc, float d,
+                 const struct sgx_frame_state *st, struct sgx_pixel_program *prog,
+                 const uint32_t *sa, unsigned nsa, bool flush);
 
 /* the buried programs: retired from the frame (their places free once the
  * renders submitted so far are done), then freed */
@@ -676,12 +691,91 @@ sgx_batch_bury_vs(struct sgx_context *ctx, struct sgx_vs *vs)
       bury(ctx);
 }
 
+static struct { const char *file; int line; unsigned n; } why[16];
+
+/* SGX_TRACE=1: a thread waits for each render and says how long it took
+ * from its kick, and how long since the last one ended (debugging speed) */
+#include <pthread.h>
+static struct { struct sgx_fence *f; int64_t kick; } trace_q[64];
+static unsigned trace_head, trace_tail;
+static pthread_mutex_t trace_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t trace_cond = PTHREAD_COND_INITIALIZER;
+
+static void *
+trace_thread(void *arg)
+{
+   int64_t last_done = 0;
+
+   for (;;) {
+      struct sgx_fence *f;
+      int64_t kick, done;
+
+      pthread_mutex_lock(&trace_lock);
+      while (trace_head == trace_tail)
+         pthread_cond_wait(&trace_cond, &trace_lock);
+      f = trace_q[trace_tail % 64].f;
+      kick = trace_q[trace_tail % 64].kick;
+      trace_tail++;
+      pthread_mutex_unlock(&trace_lock);
+      sgx_fence_wait(f, OS_TIMEOUT_INFINITE);
+      done = os_time_get_nano();
+      sgx_trace_mark("(render done)");
+      mesa_logi("sgx: trace: render done %.1f ms after its kick, %.1f ms after the last; "
+                "kicked %.1f ms after the last ended", (done - kick) / 1e6,
+                last_done ? (done - last_done) / 1e6 : 0, last_done ? (kick - last_done) / 1e6 : 0);
+      last_done = done;
+      sgx_fence_reference(&f, NULL);
+   }
+   return NULL;
+}
+
+static void
+trace_kick(struct sgx_fence *fence)
+{
+   static int on = -1;
+   static pthread_t thread;
+
+   if (on < 0) {
+      on = getenv("SGX_TRACE") && atoi(getenv("SGX_TRACE"));
+      if (on)
+         pthread_create(&thread, NULL, trace_thread, NULL);
+   }
+   if (!on)
+      return;
+   pthread_mutex_lock(&trace_lock);
+   if (trace_head - trace_tail < 64) {
+      trace_q[trace_head % 64].f = NULL;
+      sgx_fence_reference(&trace_q[trace_head % 64].f, fence);
+      trace_q[trace_head % 64].kick = os_time_get_nano();
+      trace_head++;
+      pthread_cond_signal(&trace_cond);
+   }
+   pthread_mutex_unlock(&trace_lock);
+}
+
+/* the renders since the last call, by where they were flushed from */
 void
-sgx_batch_flush(struct sgx_context *ctx)
+sgx_batch_why(struct sgx_context *ctx)
+{
+   char s[512];
+   unsigned n = 0;
+
+   s[0] = 0;
+   for (unsigned i = 0; i < ARRAY_SIZE(why) && why[i].file; i++) {
+      n += snprintf(s + n, sizeof(s) - MIN2(n, sizeof(s)), " %s:%d %u",
+                    strrchr(why[i].file, '/') ? strrchr(why[i].file, '/') + 1 : why[i].file,
+                    why[i].line, why[i].n);
+      why[i].n = 0;
+   }
+   mesa_logi("sgx:  renders from%s", s);
+}
+
+void
+sgx_batch_flush_at(struct sgx_context *ctx, const char *file, int line)
 {
    struct sgx_screen *screen = sgx_screen(ctx->base.screen);
    struct sgx_batch *b = &ctx->batch;
-   struct sgx_frame_draw d[SGX_FRAME_MAX_DRAWS];
+   struct sgx_frame_draw *d = b->fdraw;
    struct sgx_resource *zs = b->zs ? sgx_resource(b->zs) : NULL;
    struct sgx_frame_zls zls = { 0 };
    struct sgx_fence *fence;
@@ -749,6 +843,30 @@ sgx_batch_flush(struct sgx_context *ctx)
       ret = sgx_frame_render(screen->frame, sgx_resource(b->rt), d, b->ndraws, b->handles,
                              b->ntex, b->depth_clear, zls.bo ? &zls : NULL, fence);
       simple_mtx_unlock(&screen->frame_lock);
+   }
+   if (!ret && ctx->debug_fps) {
+      unsigned i;
+
+      for (i = 0; i < ARRAY_SIZE(why) - 1 && why[i].file &&
+                  (why[i].line != line || strcmp(why[i].file, file)); i++)
+         ;
+      why[i].file = file;
+      why[i].line = line;
+      why[i].n++;
+   }
+   /* SGX_DEBUG=fps,sync: each render waited for, its time on the GPU said */
+   if (!ret && ctx->debug_sync) {
+      int64_t t0 = os_time_get_nano();
+
+      sgx_fence_wait(fence, OS_TIMEOUT_INFINITE);
+      ctx->stat_gpu += os_time_get_nano() - t0;
+      if (!ctx->debug_fps)
+         mesa_logi("sgx: a render of %u draws: %.2f ms on the GPU", b->ndraws,
+                   (os_time_get_nano() - t0) / 1e6);
+   }
+   if (!ret) {
+      sgx_trace_mark("kicked");
+      trace_kick(fence);
    }
    if (!ret) {
       ctx->stat_renders++;
@@ -977,11 +1095,14 @@ submit(struct sgx_context *ctx)
          struct pipe_sampler_view *view = unit < ARRAY_SIZE(ctx->fs_views) ?
                                           ctx->fs_views[unit] : NULL;
          struct sgx_resource *t = view ? sgx_resource(view->texture) : NULL;
+         bool swap, x8;
 
          /* its copy is about to be made again (or it is the target):
-          * what was gathered reads the old one, so render that first */
+          * what was gathered reads the old one, so render that first --
+          * one sampled as it is has no copy */
          if (t && sgx_batch_uses(ctx, &t->base) &&
-             (&t->base == b->rt || !t->tw || t->tw_seq != t->seq))
+             (&t->base == b->rt ||
+              (!sgx_resource_linear(t, &swap, &x8) && (!t->tw || t->tw_seq != t->seq))))
             sgx_batch_flush(ctx);
          if (!t || !sgx_resource_texture(screen, t, unit < PIPE_MAX_SAMPLERS ?
                                          ctx->fs_samplers[unit] : NULL,
@@ -1042,7 +1163,7 @@ submit(struct sgx_context *ctx)
             ;
          ntex += k == b->ntex;
       }
-      if (b->ndraws == SGX_FRAME_MAX_DRAWS || ntex > SGX_FRAME_MAX_HANDLES ||
+      if (b->ndraws == sgx_frame_max_draws(screen->frame) || ntex > SGX_FRAME_MAX_HANDLES ||
           b->nidx + nidx + 8 * (b->ndraws + 1) > SGX_FRAME_MAX_INDICES ||
           !(vs ? sgx_frame_place_indexed(screen->frame, &cursor, vf * 4, n, &first) :
                  sgx_frame_place(screen->frame, &cursor, &ctx->layout, n, &first))) {
@@ -1107,14 +1228,14 @@ submit(struct sgx_context *ctx)
 }
 
 /* A quad over the rectangle sc (all of the target: NULL) at the depth d,
- * its pixel program nothing (o0 keeps the tile's colour), the ISP doing
- * what st says; false when there is no room in the render (and room is
- * not to be made: flush false) */
+ * its pixel program prog with sa[0..nsa) in its secondary attributes, the
+ * ISP doing what st says; false when there is no room in the render (and
+ * room is not to be made: flush false) */
 static bool
-zs_quad(struct sgx_context *ctx, const struct pipe_scissor_state *sc, float d,
-        const struct sgx_frame_state *st, bool flush)
+quad(struct sgx_context *ctx, const struct pipe_scissor_state *sc, float d,
+     const struct sgx_frame_state *st, struct sgx_pixel_program *prog, const uint32_t *sa,
+     unsigned nsa, bool flush)
 {
-   static const uint64_t nothing[2] = { 0xfa44070000000000ull, 0xf804014000000000ull };
    static const struct sgx_frame_layout l = { .nvaryings = 1, .f32 = 1, .colour = 0 };
    struct sgx_screen *screen = sgx_screen(ctx->base.screen);
    struct sgx_batch *b = &ctx->batch;
@@ -1144,18 +1265,12 @@ zs_quad(struct sgx_context *ctx, const struct pipe_scissor_state *sc, float d,
       sgx_batch_flush(ctx);
       cursor = 0;
    }
-   if (!ctx->clear_prog.code) {
-      ctx->clear_prog.code = (uint64_t *)nothing;
-      ctx->clear_prog.ncode = 2;
-      ctx->clear_prog.ninputs = 1;
-      ctx->clear_prog.nvaryings = 1;
-   }
    simple_mtx_lock(&screen->frame_lock);
-   ret = sgx_frame_upload(screen->frame, &ctx->clear_prog);
+   ret = sgx_frame_upload(screen->frame, prog);
    simple_mtx_unlock(&screen->frame_lock);
    if (ret)
       return false;
-   if (b->ndraws == SGX_FRAME_MAX_DRAWS ||
+   if (b->ndraws == sgx_frame_max_draws(screen->frame) ||
        !sgx_frame_place(screen->frame, &cursor, &l, 6, &first)) {
       if (!flush)
          return false;
@@ -1164,7 +1279,8 @@ zs_quad(struct sgx_context *ctx, const struct pipe_scissor_state *sc, float d,
       if (!sgx_frame_place(screen->frame, &cursor, &l, 6, &first))
          return false;
    }
-   if (!grow((void **)&b->verts, &b->maxfloats, b->nfloats + 6 * vf, sizeof(float)))
+   if (!grow((void **)&b->verts, &b->maxfloats, b->nfloats + 6 * vf, sizeof(float)) ||
+       !grow((void **)&b->sa, &b->maxsa, b->nsa + nsa, sizeof(uint32_t)))
       return false;
    if (!b->ndraws) {
       pipe_resource_reference(&b->rt, &rt->base);
@@ -1177,8 +1293,10 @@ zs_quad(struct sgx_context *ctx, const struct pipe_scissor_state *sc, float d,
    bd->first = b->nfloats;
    bd->nverts = 6;
    bd->compiled = true;
-   bd->prog = ctx->clear_prog;
+   bd->prog = *prog;
    bd->sa = b->nsa;
+   memcpy(b->sa + b->nsa, sa, nsa * sizeof(uint32_t));
+   b->nsa += nsa;
    bd->vs_sa = b->nsa;
    bd->idx = b->nidx;
    bd->st = *st;
@@ -1187,6 +1305,48 @@ zs_quad(struct sgx_context *ctx, const struct pipe_scissor_state *sc, float d,
    b->nfloats += 6 * vf;
    b->cursor = cursor;
    return true;
+}
+
+/* a quad whose pixel program writes nothing (o0 keeps the tile's colour) */
+static bool
+zs_quad(struct sgx_context *ctx, const struct pipe_scissor_state *sc, float d,
+        const struct sgx_frame_state *st, bool flush)
+{
+   static const uint64_t nothing[2] = { 0xfa44070000000000ull, 0xf804014000000000ull };
+
+   if (!ctx->clear_prog.code) {
+      ctx->clear_prog.code = (uint64_t *)nothing;
+      ctx->clear_prog.ncode = 2;
+      ctx->clear_prog.ninputs = 1;
+      ctx->clear_prog.nvaryings = 1;
+   }
+   return quad(ctx, sc, d, st, &ctx->clear_prog, NULL, 0, flush);
+}
+
+/* A colour clear (all four channels) in the render, a quad over the
+ * rectangle whose program puts the colour, packed, in o0 (`or o0, sa0,
+ * #0`) -- not a render of its own, which waited for the last one to be
+ * done and ended the gathered draws (M25) */
+bool
+sgx_colour_clear(struct sgx_context *ctx, const union pipe_color_union *color,
+                 const struct pipe_scissor_state *sc)
+{
+   const struct sgx_frame_state st = { .depth_func = PIPE_FUNC_ALWAYS };
+   uint32_t packed = 0;
+
+   if (!ctx->colour_prog.code) {
+      ctx->colour_code[0] = USSE_PHAS;
+      ctx->colour_code[1] = usse_vbw_or(usse_reg(USSE_OUTPUT, 0), usse_reg(USSE_SA, 0), 0) |
+                            USSE_END;
+      ctx->colour_prog.code = ctx->colour_code;
+      ctx->colour_prog.ncode = 2;
+      ctx->colour_prog.ninputs = 1;
+      ctx->colour_prog.nvaryings = 1;
+      ctx->colour_prog.nsa = 1;
+   }
+   for (unsigned i = 0; i < 4; i++)
+      packed |= (uint32_t)float_to_ubyte(color->f[i]) << 8 * i;
+   return quad(ctx, sc, 0.5f, &st, &ctx->colour_prog, &packed, 1, true);
 }
 
 /* A render starts at the last depth clear's value and stencil 0 (or from
@@ -1355,6 +1515,32 @@ gpu_vs_draw(struct sgx_context *ctx, const struct pipe_draw_info *info,
          if (base)
             base += vb->buffer_offset + e->src_offset;
       }
+      /* floats (the usual case) copied, 0 0 0 1 filling in; the rest
+       * through util_format, a vertex at a time */
+      unsigned nf = 0;
+
+      if (base && !e->instance_divisor) {
+         switch (e->src_format) {
+         case PIPE_FORMAT_R32_FLOAT: nf = 1; break;
+         case PIPE_FORMAT_R32G32_FLOAT: nf = 2; break;
+         case PIPE_FORMAT_R32G32B32_FLOAT: nf = 3; break;
+         case PIPE_FORMAT_R32G32B32A32_FLOAT: nf = 4; break;
+         default: break;
+         }
+      }
+      if (nf) {
+         const uint8_t *src = base + (lo + bias) * e->src_stride;
+         float *out = ctx->verts + 4 * a;
+
+         for (unsigned v = 0; v <= hi - lo; v++, src += e->src_stride, out += vf) {
+            out[0] = 0;
+            out[1] = 0;
+            out[2] = 0;
+            out[3] = 1;
+            memcpy(out, src, nf * sizeof(float));
+         }
+         continue;
+      }
       for (unsigned v = 0; v <= hi - lo; v++) {
          float *out = ctx->verts + v * vf + 4 * a;
          unsigned at = e && e->instance_divisor ? info->start_instance / e->instance_divisor :
@@ -1436,6 +1622,15 @@ sgx_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info,
    if (indirect || !draw || !ctx->vs || !ctx->vs->draw)
       return;
    ctx->stat_draws += num_draws;
+   if (ctx->stat_swap) {
+      struct timespec ts;
+
+      sgx_trace_mark("first draw");
+      clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &ts);
+      ctx->stat_between += os_time_get_nano() - ctx->stat_swap;
+      ctx->stat_between_cpu += ts.tv_sec * 1000000000ll + ts.tv_nsec - ctx->stat_swap_cpu;
+      ctx->stat_swap = 0;
+   }
    ctx->draw_fs = fs_for_draw(ctx);
    if (ctx->fs && !ctx->fs->compiled && !ctx->fs->colour.ok && !ctx->warned_fs) {
       mesa_logw("sgx: a fragment shader whose colour is not a varying, a constant or a "

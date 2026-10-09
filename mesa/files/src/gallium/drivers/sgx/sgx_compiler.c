@@ -83,6 +83,10 @@ struct comp {
    int slot_of_unit[MAX_UNITS];         /* a texture unit's state words, by slot */
    unsigned nsamplers, sampler_sa;
    int blend_sa;                        /* the blend colour's words, -1 none */
+   /* GL's blending by a SOP2 on the colour packed to bytes and the tile's
+    * (o0): src1 the colour unless swapped (M25) */
+   bool sop2, sop2_swap;
+   struct usse_sop2 sop2_factors;
    struct operand colour[4];
    bool have_colour[4];
    int kill;                            /* the temporary that is not 0 for a pixel discarded, or -1 */
@@ -986,7 +990,113 @@ output(struct comp *c)
          emit(c, w);
       }
    }
+   if (c->sop2) {
+      struct usse_reg packed = treg(c, take(c)), o0 = usse_reg(USSE_OUTPUT, 0);
+
+      emit(c, usse_pack_unorm8_to(packed, treg(c, base)));
+      emit(c, usse_sop2(o0, c->sop2_swap ? o0 : packed, c->sop2_swap ? packed : o0,
+                        &c->sop2_factors) | USSE_END);
+      return;
+   }
    emit(c, usse_pack_unorm8(0, treg(c, base)) | USSE_END);
+}
+
+/* A blend factor as SOP2 takes it, the source being SOP2's first operand
+ * (src1, swapped: its second); false: not one it has (the constant's) */
+static bool
+sop2_colour_factor(unsigned f, bool swapped, uint8_t *sel, uint8_t *mod)
+{
+   unsigned src = swapped ? USSE_SOP2_SRC2 : USSE_SOP2_SRC1;
+   unsigned dst = swapped ? USSE_SOP2_SRC1 : USSE_SOP2_SRC2;
+
+   *mod = f >= PIPE_BLENDFACTOR_ZERO;
+   switch (f) {
+   case PIPE_BLENDFACTOR_ONE: *sel = USSE_SOP2_ZERO; *mod = 1; return true;
+   case PIPE_BLENDFACTOR_ZERO: *sel = USSE_SOP2_ZERO; *mod = 0; return true;
+   case PIPE_BLENDFACTOR_SRC_COLOR: case PIPE_BLENDFACTOR_INV_SRC_COLOR:
+      *sel = src;
+      return true;
+   case PIPE_BLENDFACTOR_SRC_ALPHA: case PIPE_BLENDFACTOR_INV_SRC_ALPHA:
+      *sel = src + 2;
+      return true;
+   case PIPE_BLENDFACTOR_DST_COLOR: case PIPE_BLENDFACTOR_INV_DST_COLOR:
+      *sel = dst;
+      return true;
+   case PIPE_BLENDFACTOR_DST_ALPHA: case PIPE_BLENDFACTOR_INV_DST_ALPHA:
+      *sel = dst + 2;
+      return true;
+   default:
+      return false;
+   }
+}
+
+static bool
+sop2_alpha_factor(unsigned f, bool swapped, uint8_t *sel, uint8_t *mod)
+{
+   unsigned src = swapped ? USSE_SOP2_A_SRC2 : USSE_SOP2_A_SRC1;
+   unsigned dst = swapped ? USSE_SOP2_A_SRC1 : USSE_SOP2_A_SRC2;
+
+   *mod = f >= PIPE_BLENDFACTOR_ZERO;
+   switch (f) {
+   case PIPE_BLENDFACTOR_ONE: case PIPE_BLENDFACTOR_SRC_ALPHA_SATURATE:
+      *sel = USSE_SOP2_A_ZERO; *mod = 1; return true;
+   case PIPE_BLENDFACTOR_ZERO: *sel = USSE_SOP2_A_ZERO; *mod = 0; return true;
+   case PIPE_BLENDFACTOR_SRC_COLOR: case PIPE_BLENDFACTOR_INV_SRC_COLOR:
+   case PIPE_BLENDFACTOR_SRC_ALPHA: case PIPE_BLENDFACTOR_INV_SRC_ALPHA:
+      *sel = src;
+      return true;
+   case PIPE_BLENDFACTOR_DST_COLOR: case PIPE_BLENDFACTOR_INV_DST_COLOR:
+   case PIPE_BLENDFACTOR_DST_ALPHA: case PIPE_BLENDFACTOR_INV_DST_ALPHA:
+      *sel = dst;
+      return true;
+   default:
+      return false;
+   }
+}
+
+/* GL's blending as one SOP2 (M25): the colour and the tile's, 8 bits a
+ * channel, as iOS blends -- not F32 arithmetic on the tile's colour
+ * unpacked (nir_lower_blend), some 30 instructions more.  Not for the
+ * blend colour's factors, a colour mask, or min/max with the other
+ * channels' funcs not the same kind. */
+static bool
+sop2_blend(const struct sgx_blend_key *k, struct usse_sop2 *f, bool *swap)
+{
+   static const uint8_t op[] = {
+      [PIPE_BLEND_ADD] = USSE_SOP2_ADD, [PIPE_BLEND_SUBTRACT] = USSE_SOP2_SUB,
+      [PIPE_BLEND_REVERSE_SUBTRACT] = USSE_SOP2_SUB, [PIPE_BLEND_MIN] = USSE_SOP2_MIN,
+      [PIPE_BLEND_MAX] = USSE_SOP2_MAX,
+   };
+   bool rev = k->rgb_func == PIPE_BLEND_REVERSE_SUBTRACT;
+   unsigned rgb_src = k->rgb_src, rgb_dst = k->rgb_dst;
+   unsigned alpha_src = k->alpha_src, alpha_dst = k->alpha_dst;
+
+   if (!k->enable || k->colormask != 0xf || k->rgb_func > PIPE_BLEND_MAX ||
+       k->alpha_func > PIPE_BLEND_MAX ||
+       (k->alpha_func == PIPE_BLEND_REVERSE_SUBTRACT) != rev ||
+       (rev && (rgb_src == PIPE_BLENDFACTOR_SRC_ALPHA_SATURATE)))
+      return false;
+   /* min and max ignore the factors */
+   if (k->rgb_func == PIPE_BLEND_MIN || k->rgb_func == PIPE_BLEND_MAX)
+      rgb_src = rgb_dst = PIPE_BLENDFACTOR_ONE;
+   if (k->alpha_func == PIPE_BLEND_MIN || k->alpha_func == PIPE_BLEND_MAX)
+      alpha_src = alpha_dst = PIPE_BLENDFACTOR_ONE;
+   *swap = rev;
+   memset(f, 0, sizeof(*f));
+   f->cop = op[k->rgb_func];
+   f->aop = op[k->alpha_func];
+   if (rgb_src == PIPE_BLENDFACTOR_SRC_ALPHA_SATURATE)
+      f->csel1 = USSE_SOP2_SRC_ALPHA_SAT;
+   else if (!sop2_colour_factor(rgb_src, rev, rev ? &f->csel2 : &f->csel1,
+                                rev ? &f->cmod2 : &f->cmod1))
+      return false;
+   /* (swapped: the source's factor goes with src2, the tile's with src1) */
+   return sop2_colour_factor(rgb_dst, rev, rev ? &f->csel1 : &f->csel2,
+                             rev ? &f->cmod1 : &f->cmod2) &&
+          sop2_alpha_factor(alpha_src, rev, rev ? &f->asel2 : &f->asel1,
+                            rev ? &f->amod2 : &f->amod1) &&
+          sop2_alpha_factor(alpha_dst, rev, rev ? &f->asel1 : &f->asel2,
+                            rev ? &f->amod1 : &f->amod2);
 }
 
 static void
@@ -1392,8 +1502,8 @@ struct sgx_fs *
 sgx_compile_fs(const nir_shader *fs, const struct sgx_blend_key *blend, char *why,
                unsigned why_size)
 {
-   bool blending = blend && (blend->enable || blend->colormask != 0xf);
    struct comp c = { 0 };
+   bool blending = blend && (blend->enable || blend->colormask != 0xf);
    nir_shader *s;
    unsigned out_at;
 
@@ -1413,6 +1523,13 @@ sgx_compile_fs(const nir_shader *fs, const struct sgx_blend_key *blend, char *wh
       c.fs->blend = *blend;
    else
       c.fs->blend.colormask = 0xf;
+   /* (discard keeps the tile's colour as the colour: blended again, not
+    * kept, M19) */
+   if (blending && !fs->info.fs.uses_discard && !getenv("SGX_NO_SOP2") &&
+       sop2_blend(blend, &c.sop2_factors, &c.sop2_swap)) {
+      c.sop2 = true;
+      blending = false;
+   }
 
    s = nir_shader_clone(NULL, fs);
    if (blending)

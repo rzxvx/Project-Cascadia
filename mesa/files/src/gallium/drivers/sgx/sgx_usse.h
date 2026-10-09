@@ -126,4 +126,26 @@ uint64_t usse_vtst_facing(unsigned pdst);
 /* LIMM under an extended predicate (0 none, 1 p0, 2 p1, 5 !p0, 6 !p1) */
 uint64_t usse_limm_pred(struct usse_reg dest, uint32_t value, unsigned pred);
 
+/* SOP2: two sources of four 8-bit channels (32-bit registers),
+ * colour = cop(sel1 * src1.rgb, sel2 * src2.rgb), alpha = aop(asel1 *
+ * src1.a, asel2 * src2.a), each factor 1 - itself with its mod -- GL's
+ * blending, as iOS's pixel programs do it (M8; selects from Vita3K) */
+enum {
+   USSE_SOP2_ZERO,          /* colour selects */
+   USSE_SOP2_SRC1,
+   USSE_SOP2_SRC2,
+   USSE_SOP2_SRC1_ALPHA,
+   USSE_SOP2_SRC2_ALPHA,
+   USSE_SOP2_SRC_ALPHA_SAT,
+};
+enum { USSE_SOP2_A_ZERO, USSE_SOP2_A_SRC1, USSE_SOP2_A_SRC2 };   /* alpha selects */
+enum { USSE_SOP2_ADD, USSE_SOP2_SUB, USSE_SOP2_MIN, USSE_SOP2_MAX };
+struct usse_sop2 {
+   uint8_t csel1, cmod1, csel2, cmod2;
+   uint8_t asel1, amod1, asel2, amod2;
+   uint8_t cop, aop;
+};
+uint64_t usse_sop2(struct usse_reg dest, struct usse_reg src1, struct usse_reg src2,
+                   const struct usse_sop2 *f);
+
 #endif

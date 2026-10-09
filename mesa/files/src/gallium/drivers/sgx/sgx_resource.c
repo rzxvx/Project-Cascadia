@@ -71,6 +71,17 @@ sgx_resource_create(struct pipe_screen *pscreen, const struct pipe_resource *tem
       }
    }
 
+   /* a buffer in CPU memory: no render reads one (a draw's vertices,
+    * indices and uniforms are copied into the frame's buffers), and a
+    * buffer object a frame (SDL's) cost an ioctl and the cache cleaned
+    * over all of it (M25) */
+   if (templ->target == PIPE_BUFFER) {
+      if (!(res->data = MALLOC(MAX2(size, 1)))) {
+         FREE(res);
+         return NULL;
+      }
+      return &res->base;
+   }
    size = align(MAX2(size, 1), 4096);
    if ((templ->bind & PIPE_BIND_RENDER_TARGET) && templ->target != PIPE_BUFFER &&
        (sgx_frame_options() & SGX_FRAME_ALIGN))
@@ -93,6 +104,7 @@ sgx_resource_destroy(struct pipe_screen *pscreen, struct pipe_resource *prsc)
    sgx_bo_destroy(res->tw);
    sgx_bo_destroy(res->zls);
    sgx_bo_destroy(res->bo);
+   FREE(res->data);
    FREE(res);
 }
 
@@ -104,6 +116,8 @@ sgx_resource_get_handle(struct pipe_screen *pscreen, struct pipe_context *pctx,
    struct sgx_resource *res = sgx_resource(prsc);
    int fd;
 
+   if (!res->bo)                /* a buffer: CPU memory */
+      return false;
    handle->stride = res->stride[0];
    handle->offset = 0;
    handle->modifier = DRM_FORMAT_MOD_LINEAR;
@@ -388,12 +402,16 @@ sgx_transfer_map(struct pipe_context *pctx, struct pipe_resource *prsc, unsigned
    struct sgx_transfer *trans;
    uint8_t *map;
 
-   /* draws gathered but not rendered that write or read it go first */
-   if (!(usage & PIPE_MAP_UNSYNCHRONIZED) && sgx_batch_uses(ctx, prsc))
-      sgx_batch_flush(ctx);
-   if (!(usage & PIPE_MAP_UNSYNCHRONIZED) && !sgx_bo_wait(res->bo, -1))
-      return NULL;
-   if (!(map = sgx_bo_map(res->bo)))
+   /* draws gathered but not rendered that write or read it go first, and
+    * renders that do -- not for a buffer: no render touches one (a draw's
+    * vertices, indices and uniforms are copied into the frame's buffers) */
+   if (!(usage & PIPE_MAP_UNSYNCHRONIZED) && prsc->target != PIPE_BUFFER) {
+      if (sgx_batch_uses(ctx, prsc))
+         sgx_batch_flush(ctx);
+      if (!sgx_bo_wait(res->bo, -1))
+         return NULL;
+   }
+   if (!(map = res->data ? res->data : sgx_bo_map(res->bo)))
       return NULL;
    trans = slab_zalloc(&ctx->transfer_pool);
    if (!trans)

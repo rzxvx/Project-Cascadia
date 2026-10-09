@@ -41,7 +41,10 @@ struct sgx_fs_colour {
 void sgx_fs_colour_analyse(const struct nir_shader *fs, struct sgx_fs_colour *out);
 
 /* the gathered draws rendered now (nothing if there are none) */
-void sgx_batch_flush(struct sgx_context *ctx);
+void sgx_batch_flush_at(struct sgx_context *ctx, const char *file, int line);
+/* (where from: SGX_DEBUG=fps counts the renders by it) */
+#define sgx_batch_flush(ctx) sgx_batch_flush_at(ctx, __FILE__, __LINE__)
+void sgx_batch_why(struct sgx_context *ctx);
 /* a program gone from its shader: retired and freed at the next flush
  * (or now, when nothing is gathered) */
 void sgx_batch_bury_fs(struct sgx_context *ctx, struct sgx_fs *fs);
@@ -50,6 +53,8 @@ void sgx_batch_bury_vs(struct sgx_context *ctx, struct sgx_vs *vs);
  * render, over sc or all of the target: a quad that writes nothing but
  * them (M23, M24) */
 struct pipe_scissor_state;
+bool sgx_colour_clear(struct sgx_context *ctx, const union pipe_color_union *color,
+                      const struct pipe_scissor_state *sc);
 void sgx_zs_clear(struct sgx_context *ctx, bool depth, float d, bool stencil, unsigned value,
                   unsigned mask, const struct pipe_scissor_state *sc);
 /* whether the gathered draws write or read p */

@@ -193,6 +193,7 @@ sgx_init_screen_caps(struct pipe_screen *pscreen)
    /* GLES 2.0: ARB_texture_non_power_of_two and EXT_blend_equation_separate
     * are what version.c asks for besides the shaders */
    caps->npot_textures = true;
+   caps->native_fence_fd = true;
    caps->blend_equation_separate = true;
    caps->uma = true;
    caps->max_render_targets = 1;
