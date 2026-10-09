@@ -50,7 +50,14 @@ fi
 # the iPad (glGetString NULL, "Inside glBegin/glEnd", a bus error), a crash
 # in _mesa_make_current under qemu with glibc.  The classic dialect is right
 # on both.  The options are kept in a stamp, so a change reconfigures.
-OPTS="--prefix=$PREFIX --libdir=lib --buildtype=debugoptimized
+# MESA_BUILD=release: no assertions, optimised (build/mesa/build-release,
+# install-release) -- for measuring speed (M25); the default keeps them
+if [ "${MESA_BUILD:-}" = release ]; then
+    BT="--buildtype=release -Db_ndebug=true"; BD=$B/build-release; ID=$B/install-release
+else
+    BT=--buildtype=debugoptimized; BD=$B/build; ID=$B/install
+fi
+OPTS="--prefix=$PREFIX --libdir=lib $BT
     -Dc_args=-mtls-dialect=gnu -Dcpp_args=-mtls-dialect=gnu
     -Dgallium-drivers=sgx -Dvulkan-drivers= -Dplatforms=wayland
     -Dglx=disabled -Degl=enabled -Dgbm=enabled -Dgles1=disabled -Dgles2=enabled
@@ -59,24 +66,24 @@ OPTS="--prefix=$PREFIX --libdir=lib --buildtype=debugoptimized
     -Dshader-cache=disabled -Dtools= -Dbuild-tests=false -Dgallium-va=disabled
     -Dgallium-rusticl=false -Dvideo-codecs= -Dteflon=false -Dlmsensors=disabled
     -Dmicrosoft-clc=disabled -Dspirv-tools=disabled"
-if [ ! -f "$B/build/build.ninja" ]; then
+if [ ! -f "$BD/build.ninja" ]; then
     say "configuring"
     # shellcheck disable=SC2086
-    meson setup "$B/build" "$B/src" $OPTS >/dev/null
-    printf '%s\n' "$OPTS" > "$B/build/.cascadia-options"
-elif [ "$(cat "$B/build/.cascadia-options" 2>/dev/null)" != "$OPTS" ]; then
+    meson setup "$BD" "$B/src" $OPTS >/dev/null
+    printf '%s\n' "$OPTS" > "$BD/.cascadia-options"
+elif [ "$(cat "$BD/.cascadia-options" 2>/dev/null)" != "$OPTS" ]; then
     say "configuring again (the options changed: everything is built again)"
     # shellcheck disable=SC2086
-    meson setup --reconfigure "$B/build" "$B/src" $OPTS >/dev/null
-    printf '%s\n' "$OPTS" > "$B/build/.cascadia-options"
+    meson setup --reconfigure "$BD" "$B/src" $OPTS >/dev/null
+    printf '%s\n' "$OPTS" > "$BD/.cascadia-options"
 fi
 
 say "building (the first time is slow under emulation)"
-ninja -C "$B/build"
-rm -rf "$B/install"
-DESTDIR="$B/install" ninja -C "$B/build" install >/dev/null
+ninja -C "$BD"
+rm -rf "$ID"
+DESTDIR="$ID" ninja -C "$BD" install >/dev/null
 
-I=$B/install$PREFIX
+I=$ID$PREFIX
 mkdir -p "$I/bin"
 for t in glclear gltri glfs gltex glblend gldepth glspeed glpersp glsize glseam glcull gldiscard glstencil glchurn glwrap; do
     cc -O2 -Wall -I"$I/include" "$ROOT/tools/sgx/gl/$t.c" -L"$I/lib" -lEGL -lGLESv2 -lm \
@@ -87,4 +94,4 @@ cc -O2 -Wall -I"$I/include" $(pkg-config --cflags libdrm) "$ROOT/tools/sgx/gl/gl
     -L"$I/lib" -lEGL -lGLESv2 -lgbm $(pkg-config --libs libdrm) -lm \
     -Wl,-rpath-link,"$I/lib" -Wl,-rpath,"$PREFIX/lib" -o "$I/bin/glkms"
 cp "$ROOT/mesa/sgx-gl" "$ROOT/mesa/frame-bisect" "$I/bin/"
-say "built: build/mesa/install$PREFIX"
+say "built: ${ID#$ROOT/}$PREFIX"

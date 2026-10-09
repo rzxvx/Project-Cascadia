@@ -169,6 +169,16 @@ struct sgx_frame_draw {
 /* (the pack's frame, SGX_FRAME=pack, takes 200: sgx_frame_max_draws()) */
 #define SGX_FRAME_MAX_DRAWS 2048
 unsigned sgx_frame_max_draws(const struct sgx_frame *f);
+
+/* n 32-bit words the same (musl's memcmp goes a byte at a time) */
+static inline bool
+sgx_words_equal(const uint32_t *a, const uint32_t *b, unsigned n)
+{
+   for (unsigned i = 0; i < n; i++)
+      if (a[i] != b[i])
+         return false;
+   return true;
+}
 /* the indices a render's draws take, all told (8 more a draw: alignment) */
 #define SGX_FRAME_MAX_INDICES 0x40000
 

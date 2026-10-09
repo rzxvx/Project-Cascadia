@@ -569,7 +569,17 @@ fs_for_draw(struct sgx_context *ctx)
    if (!key.enable && key.colormask == 0xf && !key.tex_swap && !key.tex_x8 && !key.front_ccw)
       return sh->compiled;
    for (unsigned i = 0; i < sh->nvariants; i++)
-      if (!memcmp(&sh->variant[i]->blend, &key, sizeof(key)))
+      if (sh->variant[i]->blend.enable == key.enable &&
+          sh->variant[i]->blend.rgb_func == key.rgb_func &&
+          sh->variant[i]->blend.rgb_src == key.rgb_src &&
+          sh->variant[i]->blend.rgb_dst == key.rgb_dst &&
+          sh->variant[i]->blend.alpha_func == key.alpha_func &&
+          sh->variant[i]->blend.alpha_src == key.alpha_src &&
+          sh->variant[i]->blend.alpha_dst == key.alpha_dst &&
+          sh->variant[i]->blend.colormask == key.colormask &&
+          sh->variant[i]->blend.tex_swap == key.tex_swap &&
+          sh->variant[i]->blend.tex_x8 == key.tex_x8 &&
+          sh->variant[i]->blend.front_ccw == key.front_ccw)
          return sh->variant[i];
    if (!(fs = sgx_compile_fs(sh->nir, &key, why, sizeof(why)))) {
       mesa_logw_once("sgx: a variant of a fragment shader (blending, texture orders) "
@@ -1087,7 +1097,7 @@ submit(struct sgx_context *ctx)
    if (fs) {
       unsigned n = MIN2(fs->nuniforms, ctx->fs_constants_size / 4);
 
-      memset(sa, 0, sizeof(sa));
+      memset(sa, 0, nsa * sizeof(uint32_t));
       if (ctx->fs_constants)
          memcpy(sa, ctx->fs_constants, n * sizeof(float));
       for (unsigned i = 0; i < fs->nsamplers; i++) {
@@ -1389,7 +1399,7 @@ vs_for_draw(struct sgx_context *ctx, const struct sgx_fs *fs)
          slot[n++] = fs->input_slot[i];
    for (unsigned i = 0; i < sh->nvs; i++)
       if (sh->vs_variant[i]->nvaryings == n &&
-          !memcmp(sh->vs_variant[i]->varying_slot, slot, n * sizeof(*slot)))
+          sgx_words_equal(sh->vs_variant[i]->varying_slot, slot, n))
          return sh->vs_variant[i];
    if (!(vs = sgx_compile_vs(sh->nir, slot, n, why, sizeof(why)))) {
       mesa_logw("sgx: a vertex shader not compiled (%s): run on the CPU", why);
@@ -1594,9 +1604,11 @@ gpu_vs_draw(struct sgx_context *ctx, const struct pipe_draw_info *info,
 
       if (!p && cb->buffer && (p = map_buffer(cb->buffer, &size)))
          p += cb->buffer_offset;
-      memset(ctx->vs_sa, 0, sizeof(ctx->vs_sa));
+      unsigned n = p ? MIN2(vs->nuniforms * 4, cb->buffer_size) : 0;
+
       if (p)
-         memcpy(ctx->vs_sa, p, MIN2(vs->nuniforms * 4, cb->buffer_size));
+         memcpy(ctx->vs_sa, p, n);
+      memset((uint8_t *)ctx->vs_sa + n, 0, vs->nuniforms * 4 - n);
    }
 
    ctx->layout.nvaryings = vs->nvaryings;
@@ -1638,6 +1650,35 @@ sgx_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info,
       ctx->warned_fs = true;
    }
 
+   /* the fragment shader's constants (the vertex shader's: gpu_vs_draw's,
+    * or the draw module's below) */
+   {
+      const struct pipe_constant_buffer *cb = &ctx->cb[1];
+      const uint8_t *p = cb->user_buffer;
+
+      if (!p && cb->buffer) {
+         size_t whole;
+
+         p = map_buffer(cb->buffer, &whole);
+         if (p)
+            p += cb->buffer_offset;
+      }
+      ctx->fs_constants = (const float *)p;
+      ctx->fs_constants_size = p ? cb->buffer_size : 0;
+   }
+
+   /* the vertex shader on the GPU, where it can be (M18) */
+   if (gpu_vs_can_draw(ctx, info)) {
+      for (i = 0; i < num_draws; i++)
+         if (!gpu_vs_draw(ctx, info, &draws[i]))
+            break;
+      if (i == num_draws)
+         return;
+      draws += i;
+      num_draws -= i;
+   }
+
+   /* the draw module's way: its buffers mapped for it */
    for (i = 0; i < PIPE_MAX_ATTRIBS; i++) {
       const struct pipe_vertex_buffer *vb = &ctx->vb[i];
       const void *p = NULL;
@@ -1658,10 +1699,9 @@ sgx_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info,
                 map_buffer(info->index.resource, &size);
       draw_set_indexes(draw, indices, info->index_size, size);
    }
-   for (i = 0; i < 2; i++) {
-      const struct pipe_constant_buffer *cb = &ctx->cb[i];
+   {
+      const struct pipe_constant_buffer *cb = &ctx->cb[0];
       const uint8_t *p = cb->user_buffer;
-      size_t size = cb->buffer_size;
 
       if (!p && cb->buffer) {
          size_t whole;
@@ -1670,30 +1710,13 @@ sgx_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info,
          if (p)
             p += cb->buffer_offset;
       }
-      if (i == 0)
-         draw_set_mapped_constant_buffer(draw, MESA_SHADER_VERTEX, 0, p, p ? size : 0);
-      else {
-         ctx->fs_constants = (const float *)p;
-         ctx->fs_constants_size = p ? size : 0;
-      }
-   }
-
-   /* the vertex shader on the GPU, where it can be (M18) */
-   if (gpu_vs_can_draw(ctx, info)) {
-      for (i = 0; i < num_draws; i++)
-         if (!gpu_vs_draw(ctx, info, &draws[i]))
-            break;
-      if (i == num_draws)
-         goto done;
-      draws += i;
-      num_draws -= i;
+      draw_set_mapped_constant_buffer(draw, MESA_SHADER_VERTEX, 0, p, p ? cb->buffer_size : 0);
    }
 
    update_vertex_info(ctx);
    draw_vbo(draw, info, drawid_offset, NULL, draws, num_draws, 0);
    draw_flush(draw);
 
-done:
    for (i = 0; i < PIPE_MAX_ATTRIBS; i++)
       if (ctx->vb_mask & 1u << i)
          draw_set_mapped_vertex_buffer(draw, i, NULL, 0);

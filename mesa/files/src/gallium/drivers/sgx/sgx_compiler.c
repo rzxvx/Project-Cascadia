@@ -478,20 +478,33 @@ texture(struct comp *c, nir_tex_instr *tex, struct scratch *s)
       move_into(c, lodreg, tex_operand(tex, bias >= 0 ? bias : lod, 0), s);
    }
    d = block(c, 4, 4);
-   emit(c, usse_smp2d(USSE_SMP_F32, USSE_SMP_COORD_F32, treg(c, d),
-                      treg(c, pair),
-                      usse_reg(USSE_SA, c->sampler_sa + 4 * c->slot_of_unit[tex->texture_index]),
-                      mode, lodreg));
-   emit(c, USSE_WDF0);
-   /* the sampler hands an 8-bit channel back as its integer value (0..255,
-    * checked with gltex): to 0..1 (the copy it reads is always RGBA8) */
-   {
+   if (getenv("SGX_TEX_F32")) {
+      emit(c, usse_smp2d(USSE_SMP_F32, USSE_SMP_COORD_F32, treg(c, d),
+                         treg(c, pair),
+                         usse_reg(USSE_SA, c->sampler_sa + 4 * c->slot_of_unit[tex->texture_index]),
+                         mode, lodreg));
+      emit(c, USSE_WDF0);
+      /* the sampler hands an 8-bit channel back as its integer value
+       * (0..255, checked with gltex): to 0..1 (the copy it reads is always
+       * RGBA8) */
       struct usse_reg k = constant(c, s, 1.0f / 255.0f);
 
       for (unsigned i = 0; i < 4; i++)
          if (i < tex->def.num_components && c->last_use[id + i] >= 0)
             emit(c, usse_fop(USSE_NMAD_MUL, treg(c, d + i),
                              treg(c, d + i), k));
+   } else {
+      /* the texel as it is, four bytes in one register (the copy it reads
+       * is always RGBA8), then two VPCKs to F32 0..1 -- not four F32s
+       * scaled by 1/255 one by one (M25) */
+      struct usse_reg raw = treg(c, scratch_take(c, s));
+
+      emit(c, usse_smp2d(USSE_SMP_RAW, USSE_SMP_COORD_F32, raw, treg(c, pair),
+                         usse_reg(USSE_SA, c->sampler_sa + 4 * c->slot_of_unit[tex->texture_index]),
+                         mode, lodreg));
+      emit(c, USSE_WDF0);
+      emit(c, usse_unpack_unorm8(treg(c, d), raw, 0));
+      emit(c, usse_unpack_unorm8(treg(c, d + 2), raw, 2));
    }
    for (unsigned i = 0; i < 4; i++) {
       c->loc[id + i] = treg(c, d + i);

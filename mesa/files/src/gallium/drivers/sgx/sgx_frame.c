@@ -1991,14 +1991,39 @@ draw_state(struct sgx_frame *f, const struct sgx_frame_draw *d, uint32_t base,
    return 0;
 }
 
+/* the same state words a draw would write as the one before it: its
+ * pixel program, secondary attributes (uniforms, textures), layout and the
+ * ISP's state (M25: SDL's tiles, a texture atlas's, come in runs) */
+static bool
+same_state(const struct sgx_frame_draw *a, const struct sgx_frame_draw *b)
+{
+   const struct sgx_frame_state *x = &a->st, *y = &b->st;
+
+   if (!a->prog != !b->prog || a->vs != b->vs || a->l.nvaryings != b->l.nvaryings ||
+       a->l.f32 != b->l.f32 || a->l.colour != b->l.colour)
+      return false;
+   if (a->prog && (a->prog->code_va != b->prog->code_va || a->prog->pds_va != b->prog->pds_va ||
+                   a->prog->nsa != b->prog->nsa ||
+                   !sgx_words_equal(a->sa, b->sa, a->prog->nsa)))
+      return false;
+   return x->depth_func == y->depth_func && x->depth_write == y->depth_write &&
+          x->viewport == y->viewport && x->cull == y->cull &&
+          x->stencil_on == y->stencil_on && x->stencil == y->stencil &&
+          x->stencil_ref == y->stencil_ref &&
+          (!x->viewport || (x->scale[0] == y->scale[0] && x->scale[1] == y->scale[1] &&
+                            x->scale[2] == y->scale[2] && x->translate[0] == y->translate[0] &&
+                            x->translate[1] == y->translate[1] &&
+                            x->translate[2] == y->translate[2]));
+}
+
 int
 sgx_frame_render(struct sgx_frame *f, struct sgx_resource *rt,
                  const struct sgx_frame_draw *draws, unsigned n, const uint32_t *handles,
                  unsigned nhandles, float depth_clear, const struct sgx_frame_zls *zls,
                  struct sgx_fence *done)
 {
-   uint32_t full[32], prog[16], bg[4], eot, *v = f->vdmbuf;
-   unsigned cursor = 0, total = 0, icursor = 0;
+   uint32_t full[32], prog[16], bg[4], eot, *v = f->vdmbuf, state_at = 0, ub_at = 0;
+   unsigned cursor = 0, total = 0, icursor = 0, ub_rows = 0;
    struct sgx_eot to;
    int ret;
 
@@ -2037,34 +2062,43 @@ sgx_frame_render(struct sgx_frame *f, struct sgx_resource *rt,
       } else {
          idx_va = f->idx + 2 * first;
       }
-      if ((ret = draw_state(f, d, base, &to, full)))
-         return ret;
-      memcpy(prog, f->tmpl + f->toff[T_FULLPROG], f->tsize[T_FULLPROG]);
-      prog[0] = base;
-      if (!put(f, f->ext + EXT_VB + first * stride, d->verts, d->nverts * stride) ||
-          !put(f, base, full, f->tsize[T_FULL]) ||
-          !put(f, base + DRAW_PROG, prog, f->tsize[T_FULLPROG]))
+      if (!put(f, f->ext + EXT_VB + first * stride, d->verts, d->nverts * stride))
          return -EFAULT;
+      /* the state: the last draw's again when it is the same */
+      if (!k || !same_state(&draws[k - 1], d)) {
+         if ((ret = draw_state(f, d, base, &to, full)))
+            return ret;
+         memcpy(prog, f->tmpl + f->toff[T_FULLPROG], f->tsize[T_FULLPROG]);
+         prog[0] = base;
+         if (!put(f, base, full, f->tsize[T_FULL]) ||
+             !put(f, base + DRAW_PROG, prog, f->tsize[T_FULLPROG]))
+            return -EFAULT;
+         state_at = base;
+      }
       /* the vertex side's constants (a vertex shader's uniforms: its loader,
        * the words in fours -- the corpus's x00, x02), the state, the draw
        * (count, indices), the vertex fetch */
       if (d->vs && d->vs->nuniforms) {
-         uint32_t ub = f->ext + f->vs_uni + k * VS_UNI_SLOT, loader[UNIFORM_LOADER_MAX];
-         unsigned rows;
+         /* (the last draw's again when the same) */
+         if (!k || !draws[k - 1].vs || draws[k - 1].vs->nuniforms != d->vs->nuniforms ||
+             !sgx_words_equal(draws[k - 1].vs_sa, d->vs_sa, d->vs->nuniforms)) {
+            uint32_t ub = f->ext + f->vs_uni + k * VS_UNI_SLOT, loader[UNIFORM_LOADER_MAX];
 
-         if (d->vs->nuniforms * 4 > VS_UNI_PDS)
-            return -EFAULT;
-         rows = uniform_loader(f, ub, d->vs->nuniforms, loader);
-         if (!put(f, ub, d->vs_sa, d->vs->nuniforms * 4) ||
-             !put(f, ub + VS_UNI_PDS, loader, sizeof(loader)))
-            return -EFAULT;
+            if (d->vs->nuniforms * 4 > VS_UNI_PDS)
+               return -EFAULT;
+            ub_rows = uniform_loader(f, ub, d->vs->nuniforms, loader);
+            if (!put(f, ub, d->vs_sa, d->vs->nuniforms * 4) ||
+                !put(f, ub + VS_UNI_PDS, loader, sizeof(loader)))
+               return -EFAULT;
+            ub_at = ub;
+         }
          /* (the data rows in 31:27, as the state's PDS pointers have them) */
-         *v++ = vdm4(4, ub + VS_UNI_PDS);
-         *v++ = rows << 27 | 0x0000e100 | DIV_ROUND_UP(d->vs->nuniforms, 4);
+         *v++ = vdm4(4, ub_at + VS_UNI_PDS);
+         *v++ = ub_rows << 27 | 0x0000e100 | DIV_ROUND_UP(d->vs->nuniforms, 4);
       } else {
          *v++ = vdm4(4, f->consts0); *v++ = 0x1000e102;
       }
-      *v++ = vdm4(4, base + DRAW_PROG); *v++ = 0x12022206;
+      *v++ = vdm4(4, state_at + DRAW_PROG); *v++ = 0x12022206;
       *v++ = 0x81c00000 | count; *v++ = idx_va;
       *v++ = 0x70000000; *v++ = 0x003fffff;
       if (d->vs) {

@@ -48,7 +48,8 @@ host, install qemu-user-static's binfmt handlers). The first build takes a
 long time — expect the better part of an hour on a laptop; after that only
 what changed is compiled again, unless the build options changed (then
 everything is). Everything lands in `build/mesa` (out of git): `src` (Mesa),
-`build`, `install`.
+`build`, `install`; `MESA_BUILD=release` builds without assertions into
+`build-release`, `install-release` (for measuring speed).
 
 On the iPad:
 
@@ -73,6 +74,9 @@ SGX_CPU_VS=1 sgx-gl glcull       # the same with the vertex shaders on the CPU
 SGX_STATE=18:1 sgx-gl glcull     # xor bits into every draw's state words (finding them)
 SGX_DEBUG=state sgx-gl gltri     # each draw's state words (cmd: the TA command, 3D block)
 SGX_ZLS=0 sgx-gl gldepth         # depth and stencil in the tiles only (no z load/store)
+SGX_DEBUG=fps supertux-mesa.sh   # SuperTux on the driver, the frame rate every 2 s (M25;
+                                 # tools/sgx; ,sync: each render's GPU time)
+SGX_TRACE=1 sgx-gl ...           # a timeline: flushes, kicks, waits, renders' ends
 SGX_DEBUG_SHADER=1 sgx-gl glfs mad   # a compiled program's words (tools/iosgpu/usse-dis.py words)
 SGX_NOCOMPILE=1 sgx-gl gltri     # without the compiler: M13a's per-vertex colour
 sgx-gl frame-bisect              # one clear through every SGX_FRAME variant (docs, M12)

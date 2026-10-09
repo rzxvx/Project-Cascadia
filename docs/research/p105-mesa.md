@@ -1720,6 +1720,125 @@ New tests: `glchurn`, `glwrap`; `gldepth`'s `two_renders` cases and
 words, `SGX_DEBUG=cmd` the TA command and the 3D block, `SGX_ZLS=0` keeps
 depth and stencil in the tiles, `SGX_ZLS_CTL` sets ZLSCTL.
 
+## M25: speed, measured with SuperTux
+
+SuperTux 0.6.3 through the driver: its SDL renderer, SDL 3 (Alpine's SDL 2
+is sdl2-compat) on GLES 2, on KMS (`tools/sgx/supertux-mesa.sh`). Two
+things to see it at all: SuperTux links the system's libGL (through GLEW),
+which brings the system's Mesa, whose libgallium then took our libEGL's
+calls -- `sgx-gl` preloads ours with `SGX_PRELOAD=1`; and a `timeout` on
+the script, not the program, left SuperTux holding DRM master.
+
+Measured with `SGX_DEBUG=fps` -- every two seconds the frame rate, renders
+and draws a frame, the process's CPU, the time waiting for fences, buffer
+ioctls a frame, the time between a frame's end and the next one's first
+draw, and where the renders were ended from; `sync` adds each render's
+time on the GPU (waiting for it). `SGX_TRACE=1` prints a timeline (flushes,
+kicks, waits, each render's end from a thread that waits for it), and
+`SGX_TRACE_WAITS=1` who waited a millisecond or more.
+
+It started at 6 frames a second. In order:
+
+| | fps | why |
+|---|---|---|
+| start | 6.2 | 7 renders and 1040 draws a frame, 118 ms of GPU, 6000 buffer waits |
+| 2048 draws a render | 4.8 | one render a frame -- GPU-bound, no faster |
+| blending by SOP2 | 7.8 | the frame's GPU time 118 -> 41 ms |
+| no waits for buffers | 8.8 | |
+| native fence fds | 9.4 | |
+| colour clears in the render | 13.8 | CPU and GPU in parallel at last |
+| float attributes copied | 14.9 | |
+| buffers in CPU memory | 15.7 | |
+
+**A render took 200 draws** (the pack's EXT window: 256 KiB of 1 KiB draw
+slots). The built frame's EXT window is 8 MiB now -- the pack's 4 MiB
+layout, then 2048 draw slots and their vertex shaders' uniforms -- with a
+VDM stream of 128 KiB (10 words a draw), and a render's buffer list takes
+256 textures (the kernel takes 4096 buffers). One render a frame -- and no
+faster: the GPU was the bound.
+
+**Fill.** A benchmark of full-target quads (`build/probe/glfill`, out of
+git) put the costs at 3.4 ms for a render of one opaque quad (the
+background reload and the end of tile), 2 ms for each more opaque layer,
+11 for a blended one, 19 for a blended textured one -- and 768 small quads
+instead of one cost the GPU 1.4 ms more (the CPU 16 ms). Blending was
+`nir_lower_blend`'s F32 arithmetic on the tile's colour unpacked: clamps,
+constants loaded again and again, the colour packed at the end -- 50
+instructions for SDL's textured blend against 19 without. iOS blends with
+one SOP2 on bytes (M6, M8), and so does the driver now: the colour packed
+to bytes (`pck.u8.f32`, which clamps), then SOP2 with o0 -- the selects
+from Vita3K: colour `op(sel1 x src1, sel2 x src2)`, each select zero, either
+source's colour or alpha, or the saturated alpha, a modifier taking 1 -
+it; alpha likewise; add, subtract, min, max. Every GL blend function and
+factor but the constant colour's maps onto it (reverse subtract by
+swapping the sources); a colour mask, the constant and discard keep the
+old way. `glblend` 14 of 14 (within a bit or two), dEQP's blend cases all
+pass. A blended layer 11 -> 2.5 ms, a textured one 19 -> 6.7; SuperTux's
+frame 118 -> 41 ms.
+
+**Waits.** Every buffer map waited for the GPU (GEM_WAIT), and SDL maps
+its vertex buffer for each draw: 6000 ioctls a frame. No render reads or
+writes a buffer -- a draw's vertices, indices and uniforms are copied into
+the frame's buffers -- so a buffer map does not wait, and buffers are
+CPU memory (an SDL vertex buffer made anew each frame had cost an ioctl and
+the cache cleaned over all of it).
+
+**The flip.** With the waits gone a frame still spent 48 ms blocked between
+its end and the next one's start, on `DRM_IOCTL_MODE_ATOMIC`: SDL's
+atomic commit blocks until the plane's fence signals unless it can hand
+the kernel an in-fence, which needs `EGL_ANDROID_native_fence_sync`. The
+driver exports a render's syncobj as a sync file now (`fence_get_fd`),
+imports one (`create_fence_fd`), and `fence_server_sync` makes the next
+submit wait for it (the submit's in-syncs, a copy of the syncobj through a
+sync file: the kernel's syncobjs are binary).
+
+**Clears.** The timeline then showed the next frame starting only when the
+last render ended: SDL clears each frame, and a colour clear was a render
+of its own, whose start waits for the last render (the frame's buffers are
+the last render's until it is done). A colour clear of all four channels
+is a quad in the render now -- a program `or o0, sa0, #0` with the colour
+packed in sa0 -- scissored ones too (they were the CPU's), after the
+depth and stencil clears so a render's start stays free for those.
+
+**The CPU.** Float vertex attributes (SDL's) are copied with 0, 0, 0, 1
+filling in, not unpacked a vertex at a time through `util_format`; a
+linear texture drawn twice no longer ends the render (it has no copy to
+make again). `mesa_glthread` was slower (13.9).
+
+That made 15.7 frames a second, the CPU the bound (63 ms a frame, the
+GPU's 41 overlapping), a third of it SDL 3's: a hash table's lookups --
+SDL 3 checks every object handed to it against a table of all of them,
+and `SDL_INVALID_PARAM_CHECKS=1` (null checks only) takes that away: 19.7.
+Then:
+
+| | fps | why |
+|---|---|---|
+| SDL's light checks | 19.7 | |
+| a release build of Mesa | 21.4 | `MESA_BUILD=release mesa/build.sh` (no assertions): 6 % |
+| textures sampled raw | 20.0 (debug) | the frame's GPU time 41 -> 37 ms |
+| no byte-wise memcmp | 22.0 (debug) | |
+
+**Textures raw.** The sampler handed F32 channels back as 0..255, each
+then scaled by 1/255. It hands the RGBA8 texel back as it is now (`smp`'s
+raw format, one register) and two `pck.f32.u8 ... scale` make the four
+channels 0..1: a blended textured layer 6.7 -> 5.2 ms.
+
+**The CPU, again.** A draw whose state words would be the last draw's --
+the same program, uniforms, textures (their state is in the secondary
+attributes), layout and ISP state -- points at the last one's state slot
+instead of writing its own, and a vertex shader's uniforms likewise; the
+draw module's buffers are mapped only when a draw goes that way; only the
+uniform words a program reads are cleared. And musl's `memcmp` goes a byte
+at a time: the comparisons on the draw path (variant keys, those above)
+are word by word, which alone took the debug build 20 -> 22.
+
+At 22 frames a second (debug build) the CPU is still the bound: SDL 3 a
+quarter, musl a quarter (memcpy, memcmp and string functions, much of it
+Mesa's and SDL's), Mesa's state tracker and the driver a third. The old way
+to the screen (M8's `libsgxsdl`, SDL's renderer replaced by the pack's
+programs) ran SuperTux at 60 -- a draw there cost the CPU a few words, not
+GL's state machine.
+
 ## Testing, without and with the device
 
 - **Host, every change:** the kernel driver builds with `W=1` against the
