@@ -342,6 +342,8 @@ sgx_create_vertex_elements(struct pipe_context *pctx, unsigned count,
       return NULL;
    ve->count = MIN2(count, PIPE_MAX_ATTRIBS);
    memcpy(ve->e, e, ve->count * sizeof(*e));
+   for (unsigned i = 0; i < ve->count; i++)
+      ve->attr[i] = sgx_attr_of_format(e[i].src_format);
    return ve;
 }
 
@@ -370,6 +372,8 @@ sgx_create_shader_state(struct pipe_context *pctx, const struct pipe_shader_stat
    if (s->type != PIPE_SHADER_IR_NIR)
       return sh;
    sh->nir = s->ir.nir;
+   if (sh->nir->info.stage == MESA_SHADER_VERTEX)
+      sh->vs_nattrs = sgx_vs_attr_count(sh->nir);
    if (sh->nir->info.stage == MESA_SHADER_VERTEX && ctx->draw) {
       struct pipe_shader_state copy = *s;
 

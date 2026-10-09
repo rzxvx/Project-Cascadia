@@ -193,6 +193,14 @@ sgx_init_screen_caps(struct pipe_screen *pscreen)
    /* GLES 2.0: ARB_texture_non_power_of_two and EXT_blend_equation_separate
     * are what version.c asks for besides the shaders */
    caps->npot_textures = true;
+   /* a buffer's map is its CPU copy, which the GPU's is brought up to date
+    * with at a draw, from what unmaps and flushes say was written (M26):
+    * nothing tells of a write through a persistent map */
+   caps->buffer_map_persistent_coherent = false;
+   /* client arrays as they are: the CPU makes their vertices one stream
+    * itself (u_vbuf would copy each array into a buffer of its own first,
+    * and a draw's arrays would not follow the last one's) */
+   caps->user_vertex_buffers = true;
    caps->native_fence_fd = true;
    caps->blend_equation_separate = true;
    caps->uma = true;

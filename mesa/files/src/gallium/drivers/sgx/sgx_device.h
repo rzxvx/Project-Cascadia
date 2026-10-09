@@ -11,6 +11,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "util/list.h"
 #include "util/simple_mtx.h"
 #include "util/u_inlines.h"
 
@@ -33,6 +34,14 @@ struct sgx_device {
     * compositor's or the display's, through sync files) */
    uint32_t wait_syncs[16];
    unsigned nwait_syncs;
+
+   /* buffer objects of buffers no resource holds any more, kept to be
+    * used again once no render reads them (M26: a vertex buffer made anew
+    * each frame cost an ioctl and the pages cleared and cleaned), oldest
+    * first */
+   simple_mtx_t cache_lock;
+   struct list_head cache;
+   uint64_t cache_size;
 };
 
 struct sgx_bo {
@@ -41,7 +50,16 @@ struct sgx_bo {
    uint32_t va;      /* its GPU address */
    uint32_t size;
    uint8_t *map;     /* write-combined; NULL until sgx_bo_map() */
-   unsigned refs;    /* sgx_bo_import()s besides the first; under bo_lock */
+   unsigned refs;    /* references besides the first (sgx_bo_ref(), imports); under bo_lock */
+   /* a buffer's (sgx_bo_cache_get()): back into the cache when the last
+    * reference goes, when it went there, its place in it */
+   bool cached;
+   int64_t freed;
+   struct list_head cache_link;
+   /* the gathered draws that read it, if they are not rendered yet: their
+    * context and batch number (sgx_draw.c) */
+   const void *batch_ctx;
+   unsigned batch_seq;
 };
 
 /* A fence: one syncobj, signalled when the render it was given to is done
@@ -63,8 +81,13 @@ struct sgx_bo *sgx_bo_create(struct sgx_device *dev, uint32_t size, uint32_t fla
  * one there is already if the handle has one (another reference to it);
  * NULL on a kernel without GEM_INFO */
 struct sgx_bo *sgx_bo_import(struct sgx_device *dev, uint32_t handle);
-/* drops a reference: the last one closes the handle */
+/* drops a reference: the last one closes the handle (or puts a cached one
+ * back in the cache) */
 void sgx_bo_destroy(struct sgx_bo *bo);
+void sgx_bo_ref(struct sgx_bo *bo);
+/* A mapped buffer object of at least size bytes for a buffer resource: the
+ * cache's oldest of its size that no render reads any more, or a new one */
+struct sgx_bo *sgx_bo_cache_get(struct sgx_device *dev, uint32_t size);
 void *sgx_bo_map(struct sgx_bo *bo);
 /* until no render that listed it is running (timeout_ns < 0: however long
  * it takes); false on timeout */

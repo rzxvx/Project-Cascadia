@@ -510,16 +510,20 @@ sgx_draw_fini(struct sgx_context *ctx)
    free(ctx->batch.dead_vs);
    free(ctx->batch.dead_fs);
    free(ctx->batch.verts);
+   free(ctx->batch.vdata);
    free(ctx->batch.sa);
    free(ctx->batch.idx);
    ctx->batch.verts = NULL;
+   ctx->batch.vdata = NULL;
    ctx->batch.sa = NULL;
    ctx->batch.idx = NULL;
    FREE(ctx->verts);
+   free(ctx->vdata);
    free(ctx->indices);
    ctx->verts = NULL;
+   ctx->vdata = NULL;
    ctx->indices = NULL;
-   ctx->nverts = ctx->maxfloats = ctx->nindices = ctx->maxindices = 0;
+   ctx->nverts = ctx->maxfloats = ctx->maxvdata = ctx->maxindices = 0;
 }
 
 /* ---- draw_vbo ----------------------------------------------------------- */
@@ -611,8 +615,7 @@ map_buffer(struct pipe_resource *prsc, size_t *size)
 
    if (!res || !(map = res->data ? res->data : res->bo ? sgx_bo_map(res->bo) : NULL))
       return NULL;
-   /* (no render touches a buffer: what a draw takes from one is copied
-    * into the frame's) */
+   /* (a buffer's CPU copy: no render writes it, M26) */
    *size = prsc->width0;
    return map;
 }
@@ -842,16 +845,24 @@ sgx_batch_flush_at(struct sgx_context *ctx, const char *file, int line)
       const struct sgx_batch_draw *bd = &b->draw[i];
 
       d[i] = (struct sgx_frame_draw){
-         .l = bd->l, .verts = b->verts + bd->first, .nverts = bd->nverts,
+         .l = bd->l, .nverts = bd->nverts,
          .prog = bd->compiled ? &bd->prog : NULL, .sa = b->sa + bd->sa, .st = bd->st,
          .vs = bd->vs, .vs_sa = b->sa + bd->vs_sa,
-         .indices = bd->vs ? b->idx + bd->idx : NULL, .nindices = bd->nidx,
+         .base = bd->base, .stride = bd->stride, .count = bd->count,
+         .indices = bd->nidx ? b->idx + bd->idx : NULL,
       };
+      if (!bd->vs)
+         d[i].verts = b->verts + bd->first;
+      else if (bd->repacked)
+         d[i].vdata = b->vdata + bd->first;
    }
+   /* the buffers to list: the textures', then the buffers' */
+   for (unsigned i = 0; i < b->nbos; i++)
+      b->handles[b->ntex + i] = b->bos[i]->handle;
    if ((fence = sgx_fence_create(&screen->dev, false))) {
       simple_mtx_lock(&screen->frame_lock);
       ret = sgx_frame_render(screen->frame, sgx_resource(b->rt), d, b->ndraws, b->handles,
-                             b->ntex, b->depth_clear, zls.bo ? &zls : NULL, fence);
+                             b->ntex + b->nbos, b->depth_clear, zls.bo ? &zls : NULL, fence);
       simple_mtx_unlock(&screen->frame_lock);
    }
    if (!ret && ctx->debug_fps) {
@@ -894,7 +905,11 @@ sgx_batch_flush_at(struct sgx_context *ctx, const char *file, int line)
    b->zs_cleared = b->zs_read = b->zs_written = false;
    for (unsigned i = 0; i < b->ntex; i++)
       pipe_resource_reference(&b->tex[i], NULL);
-   b->ndraws = b->ntex = b->nfloats = b->nsa = b->nidx = b->cursor = 0;
+   /* (the kernel keeps the buffers for the render) */
+   for (unsigned i = 0; i < b->nbos; i++)
+      sgx_bo_destroy(b->bos[i]);
+   b->ndraws = b->ntex = b->nbos = b->nfloats = b->nbytes = b->nsa = b->nidx = b->cursor = 0;
+   b->seq++;
    bury(ctx);
 }
 
@@ -960,8 +975,229 @@ clip_to(struct sgx_context *ctx, bool vs, struct sgx_frame_state *st, float ab[4
    return true;
 }
 
-/* One draw's triangles (ctx->verts, ctx->nverts) added to the gathered
- * render, in pieces when they are more than one draw of a render takes */
+/* how many more buffers the render would list for the kernel with these
+ * textures and buffers' GPU copies (M26) besides its own */
+static unsigned
+more_handles(struct sgx_context *ctx, struct pipe_resource **tex, unsigned ntex,
+             struct sgx_bo **bos, unsigned nbos)
+{
+   struct sgx_batch *b = &ctx->batch;
+   unsigned n = 0;
+
+   for (unsigned i = 0; i < ntex; i++) {
+      unsigned k;
+
+      for (k = 0; k < b->ntex && b->tex[k] != tex[i]; k++)
+         ;
+      n += k == b->ntex;
+   }
+   for (unsigned i = 0; i < nbos; i++)
+      n += bos[i]->batch_ctx != ctx || bos[i]->batch_seq != b->seq;
+   return n;
+}
+
+/* the textures and buffers' GPU copies listed for the render, referenced
+ * (more_handles() said there is room) */
+static void
+add_handles(struct sgx_context *ctx, struct pipe_resource **tex, unsigned ntex,
+            struct sgx_bo **bos, unsigned nbos)
+{
+   struct sgx_batch *b = &ctx->batch;
+
+   for (unsigned i = 0; i < ntex; i++) {
+      unsigned k;
+
+      for (k = 0; k < b->ntex && b->tex[k] != tex[i]; k++)
+         ;
+      if (k == b->ntex) {
+         pipe_resource_reference(&b->tex[b->ntex], tex[i]);
+         b->handles[b->ntex++] = sgx_resource(tex[i])->sampled->handle;
+      }
+   }
+   for (unsigned i = 0; i < nbos; i++) {
+      if (bos[i]->batch_ctx == ctx && bos[i]->batch_seq == b->seq)
+         continue;
+      sgx_bo_ref(bos[i]);
+      bos[i]->batch_ctx = ctx;
+      bos[i]->batch_seq = b->seq;
+      b->bos[b->nbos++] = bos[i];
+   }
+}
+
+/* what a draw does to the depth buffer's tiles, noted for the render */
+static void
+note_zs(struct sgx_context *ctx, const struct sgx_frame_state *st)
+{
+   struct sgx_batch *b = &ctx->batch;
+
+   if (!ctx->fb.zsbuf.texture)
+      return;
+   b->zs_written |= st->depth_write || (st->stencil_on && (st->stencil & 0xff));
+   b->zs_read |= (st->depth_func != PIPE_FUNC_ALWAYS && st->depth_func != PIPE_FUNC_NEVER) ||
+                 st->stencil_on;
+}
+
+/* A vertex shader's draw (ctx->vtx) added to the last one gathered when
+ * that has the same state exactly -- the same programs, uniforms (its
+ * constant attributes among them), textures, layout and ISP state: SDL
+ * draws a tile a draw, a frame's thousand of them alike (M25) -- and its
+ * vertices follow on from the last one's: true if it was. */
+static bool
+merge_vs_draw(struct sgx_context *ctx, struct sgx_vs *vs, const struct sgx_fs *fs,
+              const uint32_t *sa, unsigned nsa, const struct sgx_frame_state *st)
+{
+   struct sgx_screen *screen = sgx_screen(ctx->base.screen);
+   struct sgx_batch *b = &ctx->batch;
+   struct sgx_vtx *v = &ctx->vtx;
+   unsigned nvsa = vs->nuniforms, at = 0, cursor = b->cursor;
+   unsigned nbytes = v->repacked ? v->nverts * v->stride : 0, nidx = v->indexed ? v->count : 0;
+   struct sgx_batch_draw *p;
+   bool found = false;
+
+   if (!b->ndraws)
+      return false;
+   p = &b->draw[b->ndraws - 1];
+   if (p->vs != vs || p->compiled != (fs != NULL) || p->repacked != v->repacked ||
+       p->stride != v->stride ||
+       (fs && (p->prog.code_va != fs->prog.code_va || p->prog.pds_va != fs->prog.pds_va ||
+               !sgx_words_equal(b->sa + p->sa, sa, nsa))) ||
+       p->l.nvaryings != ctx->layout.nvaryings || p->l.f32 != ctx->layout.f32 ||
+       p->l.colour != ctx->layout.colour || !sgx_frame_state_equal(&p->st, st) ||
+       p->vs_sa + nvsa > b->nsa || !sgx_words_equal(b->sa + p->vs_sa, ctx->vs_sa, nvsa))
+      return false;
+
+   /* where its vertex 0 is among the last draw's vertices: right after
+    * them (the CPU's stream), or where its attributes' addresses say --
+    * the same number of vertices on for each */
+   if (v->repacked) {
+      if (p->first + p->nverts * p->stride != b->nbytes ||
+          !sgx_frame_extend_bytes(screen->frame, &cursor, nbytes))
+         return false;
+      at = p->nverts;
+   } else {
+      for (unsigned a = 0; a < vs->nattrs; a++) {
+         uint32_t d = v->base[a] - p->base[a];
+
+         if (SGX_ATTR_KIND(vs->attr[a]) == SGX_ATTR_CONST)
+            continue;
+         if (!found) {
+            if (!v->stride || d % v->stride)
+               return false;
+            at = d / v->stride;
+            found = true;
+         } else if (d != at * v->stride) {
+            return false;
+         }
+      }
+   }
+   /* and its triangles: a list on from the last draw's, or indices after
+    * its indices */
+   if (!v->indexed && !p->nidx) {
+      if (at != p->count || p->count + v->count > sgx_frame_list_max(screen->frame))
+         return false;
+   } else if (v->indexed && p->nidx) {
+      if (p->idx + p->nidx != b->nidx || at + v->max_index > 0xffff ||
+          b->nidx + nidx + 8 * b->ndraws > SGX_FRAME_MAX_INDICES)
+         return false;
+   } else {
+      return false;
+   }
+   if (b->ntex + b->nbos + more_handles(ctx, NULL, 0, v->bos, v->nbos) > SGX_FRAME_MAX_HANDLES ||
+       !grow((void **)&b->vdata, &b->maxbytes, b->nbytes + nbytes, 1) ||
+       !grow((void **)&b->idx, &b->maxidx, b->nidx + nidx, sizeof(uint16_t)))
+      return false;
+
+   add_handles(ctx, NULL, 0, v->bos, v->nbos);
+   for (unsigned i = 0; i < nidx; i++)
+      b->idx[b->nidx + i] = ctx->indices[i] + at;
+   p->nidx += nidx;
+   b->nidx += nidx;
+   p->max_index = MAX2(p->max_index, at + v->max_index);
+   memcpy(b->vdata + b->nbytes, ctx->vdata, nbytes);
+   p->nverts += v->repacked ? v->nverts : 0;
+   b->nbytes += nbytes;
+   b->cursor = cursor;
+   p->count += v->count;
+   return true;
+}
+
+/* A vertex shader's draw (ctx->vtx) into the gathered render: merged into
+ * the last draw, or a draw of its own */
+static void
+add_vs_draw(struct sgx_context *ctx, struct sgx_vs *vs, const struct sgx_fs *fs,
+            const uint32_t *sa, unsigned nsa, struct pipe_resource **tex,
+            struct sgx_resource *rt, const struct sgx_frame_state *st)
+{
+   struct sgx_screen *screen = sgx_screen(ctx->base.screen);
+   struct sgx_batch *b = &ctx->batch;
+   struct sgx_vtx *v = &ctx->vtx;
+   unsigned nvsa = vs->nuniforms, nidx = v->indexed ? v->count : 0, cursor = b->cursor;
+   unsigned nbytes = v->repacked ? v->nverts * v->stride : 0, ntex = fs ? fs->nsamplers : 0;
+   struct sgx_batch_draw *bd;
+
+   if (merge_vs_draw(ctx, vs, fs, sa, nsa, st)) {
+      sgx_stat_merged++;
+      return;
+   }
+   /* room in this render: a draw, its vertices, indices, textures and
+    * buffers */
+   if (b->ndraws == sgx_frame_max_draws(screen->frame) ||
+       b->ntex + b->nbos + more_handles(ctx, tex, ntex, v->bos, v->nbos) > SGX_FRAME_MAX_HANDLES ||
+       b->nidx + nidx + 8 * (b->ndraws + 1) > SGX_FRAME_MAX_INDICES ||
+       (nbytes && !sgx_frame_place_bytes(screen->frame, &cursor, nbytes, NULL))) {
+      sgx_batch_flush(ctx);
+      cursor = 0;
+      if (nidx + 8 > SGX_FRAME_MAX_INDICES ||
+          more_handles(ctx, tex, ntex, v->bos, v->nbos) > SGX_FRAME_MAX_HANDLES ||
+          (nbytes && !sgx_frame_place_bytes(screen->frame, &cursor, nbytes, NULL))) {
+         mesa_logw_once("sgx: a draw larger than a render takes: dropped");
+         return;
+      }
+   }
+   if (!grow((void **)&b->vdata, &b->maxbytes, b->nbytes + nbytes, 1) ||
+       !grow((void **)&b->sa, &b->maxsa, b->nsa + nsa + nvsa, sizeof(uint32_t)) ||
+       !grow((void **)&b->idx, &b->maxidx, b->nidx + nidx, sizeof(uint16_t)))
+      return;
+   if (!b->ndraws) {
+      pipe_resource_reference(&b->rt, &rt->base);
+      pipe_resource_reference(&b->zs, ctx->fb.zsbuf.texture);
+   }
+   /* from now on sampled linear: decided before any draw samples it */
+   rt->gpu_written = true;
+   add_handles(ctx, tex, ntex, v->bos, v->nbos);
+   note_zs(ctx, st);
+
+   bd = &b->draw[b->ndraws++];
+   bd->l = ctx->layout;
+   bd->first = b->nbytes;
+   bd->nverts = v->repacked ? v->nverts : 0;
+   bd->compiled = fs != NULL;
+   if (fs)
+      bd->prog = fs->prog;
+   bd->sa = b->nsa;
+   bd->st = *st;
+   bd->vs = vs;
+   bd->vs_sa = b->nsa + nsa;
+   bd->idx = b->nidx;
+   bd->nidx = nidx;
+   memcpy(bd->base, v->base, sizeof(bd->base));
+   bd->stride = v->stride;
+   bd->count = v->count;
+   bd->max_index = v->max_index;
+   bd->repacked = v->repacked;
+   memcpy(b->vdata + b->nbytes, ctx->vdata, nbytes);
+   memcpy(b->sa + b->nsa, sa, nsa * sizeof(uint32_t));
+   memcpy(b->sa + b->nsa + nsa, ctx->vs_sa, nvsa * sizeof(uint32_t));
+   memcpy(b->idx + b->nidx, ctx->indices, nidx * sizeof(uint16_t));
+   b->nbytes += nbytes;
+   b->nsa += nsa + nvsa;
+   b->nidx += nidx;
+   b->cursor = cursor;
+}
+
+/* One draw added to the gathered render: the draw module's triangles
+ * (ctx->verts, ctx->nverts), in pieces when they are more than one draw of
+ * a render takes -- or, with ctx->gpu_vs, a vertex shader's (ctx->vtx) */
 static void
 submit(struct sgx_context *ctx)
 {
@@ -973,8 +1209,8 @@ submit(struct sgx_context *ctx)
    uint32_t sa[128 + 4 * SGX_FS_MAX_SAMPLERS + 4];
    struct pipe_resource *tex[SGX_FS_MAX_SAMPLERS];
    struct sgx_vs *vs = ctx->gpu_vs;
-   unsigned vf = vs ? 4 * vs->nattrs : sgx_frame_vertex_floats(&ctx->layout);
-   unsigned nsa = fs ? fs->prog.nsa : 0, nvsa = vs ? vs->nuniforms : 0;
+   unsigned vf = sgx_frame_vertex_floats(&ctx->layout);
+   unsigned nsa = fs ? fs->prog.nsa : 0;
    unsigned max, done = 0, npass = 1;
    uint32_t face_stencil[2];
    bool two_sided = false;
@@ -1016,7 +1252,7 @@ submit(struct sgx_context *ctx)
                    ctx->stencil_ref.ref_value[1] != ctx->stencil_ref.ref_value[0]);
    }
 
-   if (!ctx->nverts)
+   if (vs ? !ctx->vtx.count : !ctx->nverts)
       return;
    if (!clip_to(ctx, vs, &st, ab)) {
       ctx->nverts = 0;
@@ -1158,69 +1394,30 @@ submit(struct sgx_context *ctx)
       }
    }
 
-   max = vs ? ctx->nverts : sgx_frame_max_vertices(screen->frame, &ctx->layout);
-   for (unsigned k = 0; k < npass; k++)
+   for (unsigned k = 0; vs && k < npass; k++)
+      add_vs_draw(ctx, vs, fs, sa, nsa, tex, rt, &pass[k]);
+
+   max = sgx_frame_max_vertices(screen->frame, &ctx->layout);
+   for (unsigned k = 0; !vs && k < npass; k++)
    for (done = 0, st = pass[k]; done < ctx->nverts;) {
-      unsigned n = MIN2(ctx->nverts - done, max), first, ntex = b->ntex;
-      unsigned cursor = b->cursor, nidx = vs ? ctx->nindices : 0;
+      unsigned n = MIN2(ctx->nverts - done, max), first, ntex = fs ? fs->nsamplers : 0;
+      unsigned cursor = b->cursor;
       struct sgx_batch_draw *bd;
 
-      /* the last draw's state, exactly -- SDL draws a tile a draw, a
-       * frame's thousand of them alike -- : its vertices and triangles
-       * added to it instead (M25) */
-      if (vs && b->ndraws && b->draw[b->ndraws - 1].vs == vs &&
-          b->nidx + nidx + 8 * b->ndraws <= SGX_FRAME_MAX_INDICES) {
-         struct sgx_batch_draw *p = &b->draw[b->ndraws - 1];
-         unsigned c = b->cursor;
-
-         if (p->compiled == (fs != NULL) &&
-             (!fs || (p->prog.code_va == fs->prog.code_va && p->prog.pds_va == fs->prog.pds_va &&
-                      sgx_words_equal(b->sa + p->sa, sa, nsa))) &&
-             p->l.nvaryings == ctx->layout.nvaryings && p->l.f32 == ctx->layout.f32 &&
-             p->l.colour == ctx->layout.colour && sgx_frame_state_equal(&p->st, &st) &&
-             p->vs_sa + nvsa <= b->nsa && sgx_words_equal(b->sa + p->vs_sa, ctx->vs_sa, nvsa) &&
-             p->first + p->nverts * vf == b->nfloats && p->idx + p->nidx == b->nidx &&
-             sgx_frame_extend_indexed(screen->frame, &c, vf * 4, n) &&
-             grow((void **)&b->verts, &b->maxfloats, b->nfloats + n * vf, sizeof(float)) &&
-             grow((void **)&b->idx, &b->maxidx, b->nidx + nidx, sizeof(uint16_t))) {
-            memcpy(b->verts + b->nfloats, ctx->verts + done * vf, n * vf * sizeof(float));
-            for (unsigned i = 0; i < nidx; i++)
-               b->idx[b->nidx + i] = ctx->indices[i] + p->nverts;
-            p->nverts += n;
-            p->nidx += nidx;
-            b->nfloats += n * vf;
-            b->nidx += nidx;
-            b->cursor = c;
-            done += n;
-            sgx_stat_merged++;
-            continue;
-         }
-      }
-
       /* room in this render: a draw, its vertices, its textures */
-      for (unsigned i = 0; fs && i < fs->nsamplers; i++) {
-         unsigned k;
-
-         for (k = 0; k < b->ntex && b->tex[k] != tex[i]; k++)
-            ;
-         ntex += k == b->ntex;
-      }
-      if (b->ndraws == sgx_frame_max_draws(screen->frame) || ntex > SGX_FRAME_MAX_HANDLES ||
-          b->nidx + nidx + 8 * (b->ndraws + 1) > SGX_FRAME_MAX_INDICES ||
-          !(vs ? sgx_frame_place_indexed(screen->frame, &cursor, vf * 4, n, &first) :
-                 sgx_frame_place(screen->frame, &cursor, &ctx->layout, n, &first))) {
+      if (b->ndraws == sgx_frame_max_draws(screen->frame) ||
+          b->ntex + b->nbos + more_handles(ctx, tex, ntex, NULL, 0) > SGX_FRAME_MAX_HANDLES ||
+          b->nidx + 8 * (b->ndraws + 1) > SGX_FRAME_MAX_INDICES ||
+          !sgx_frame_place(screen->frame, &cursor, &ctx->layout, n, &first)) {
          sgx_batch_flush(ctx);
          cursor = 0;
-         if (nidx + 8 > SGX_FRAME_MAX_INDICES ||
-             !(vs ? sgx_frame_place_indexed(screen->frame, &cursor, vf * 4, n, &first) :
-                    sgx_frame_place(screen->frame, &cursor, &ctx->layout, n, &first))) {
+         if (!sgx_frame_place(screen->frame, &cursor, &ctx->layout, n, &first)) {
             mesa_logw_once("sgx: a draw larger than a render takes: dropped");
             break;
          }
       }
       if (!grow((void **)&b->verts, &b->maxfloats, b->nfloats + n * vf, sizeof(float)) ||
-          !grow((void **)&b->sa, &b->maxsa, b->nsa + nsa + nvsa, sizeof(uint32_t)) ||
-          !grow((void **)&b->idx, &b->maxidx, b->nidx + nidx, sizeof(uint16_t)))
+          !grow((void **)&b->sa, &b->maxsa, b->nsa + nsa, sizeof(uint32_t)))
          break;
       if (!b->ndraws) {
          pipe_resource_reference(&b->rt, &rt->base);
@@ -1228,17 +1425,10 @@ submit(struct sgx_context *ctx)
       }
       /* from now on sampled linear: decided before any draw samples it */
       rt->gpu_written = true;
-      for (unsigned i = 0; fs && i < fs->nsamplers; i++) {
-         unsigned k;
-
-         for (k = 0; k < b->ntex && b->tex[k] != tex[i]; k++)
-            ;
-         if (k == b->ntex) {
-            pipe_resource_reference(&b->tex[b->ntex], tex[i]);
-            b->handles[b->ntex++] = sgx_resource(tex[i])->sampled->handle;
-         }
-      }
+      add_handles(ctx, tex, ntex, NULL, 0);
+      note_zs(ctx, &st);
       bd = &b->draw[b->ndraws++];
+      memset(bd, 0, sizeof(*bd));
       bd->l = ctx->layout;
       bd->first = b->nfloats;
       bd->nverts = n;
@@ -1247,22 +1437,12 @@ submit(struct sgx_context *ctx)
          bd->prog = fs->prog;
       bd->sa = b->nsa;
       bd->st = st;
-      if (ctx->fb.zsbuf.texture) {
-         b->zs_written |= st.depth_write || (st.stencil_on && (st.stencil & 0xff));
-         b->zs_read |= (st.depth_func != PIPE_FUNC_ALWAYS && st.depth_func != PIPE_FUNC_NEVER) ||
-                       st.stencil_on;
-      }
-      bd->vs = vs;
       bd->vs_sa = b->nsa + nsa;
       bd->idx = b->nidx;
-      bd->nidx = nidx;
       memcpy(b->verts + b->nfloats, ctx->verts + done * vf, n * vf * sizeof(float));
       memcpy(b->sa + b->nsa, sa, nsa * sizeof(uint32_t));
-      memcpy(b->sa + b->nsa + nsa, ctx->vs_sa, nvsa * sizeof(uint32_t));
-      memcpy(b->idx + b->nidx, ctx->indices, nidx * sizeof(uint16_t));
       b->nfloats += n * vf;
-      b->nsa += nsa + nvsa;
-      b->nidx += nidx;
+      b->nsa += nsa;
       b->cursor = cursor;
       done += n;
    }
@@ -1413,14 +1593,34 @@ sgx_zs_clear(struct sgx_context *ctx, bool depth, float d, bool stencil, unsigne
 
 /* ---- the vertex shader on the GPU (M18) --------------------------------- */
 
-/* The vertex shader for the bound fragment shader's varyings: compiled
- * once for each list of them; NULL when it cannot be (the draw module's
- * way then) */
+uint8_t
+sgx_attr_of_format(enum pipe_format format)
+{
+   switch (format) {
+   case PIPE_FORMAT_R32_FLOAT:          return SGX_ATTR(SGX_ATTR_F32, 1);
+   case PIPE_FORMAT_R32G32_FLOAT:       return SGX_ATTR(SGX_ATTR_F32, 2);
+   case PIPE_FORMAT_R32G32B32_FLOAT:    return SGX_ATTR(SGX_ATTR_F32, 3);
+   case PIPE_FORMAT_R32G32B32A32_FLOAT: return SGX_ATTR(SGX_ATTR_F32, 4);
+   case PIPE_FORMAT_R8_UNORM:           return SGX_ATTR(SGX_ATTR_U8N, 1);
+   case PIPE_FORMAT_R8G8_UNORM:         return SGX_ATTR(SGX_ATTR_U8N, 2);
+   case PIPE_FORMAT_R8G8B8_UNORM:       return SGX_ATTR(SGX_ATTR_U8N, 3);
+   case PIPE_FORMAT_R8G8B8A8_UNORM:     return SGX_ATTR(SGX_ATTR_U8N, 4);
+   default:                             return 0;
+   }
+}
+
+/* The vertex shader for the bound fragment shader's varyings and the
+ * attributes' formats (attr): compiled once for each; NULL when it cannot
+ * be (the draw module's way then) */
 static struct sgx_vs *
-vs_for_draw(struct sgx_context *ctx, const struct sgx_fs *fs)
+vs_for_draw(struct sgx_context *ctx, const struct sgx_fs *fs, const uint8_t *attr)
 {
    struct sgx_shader *sh = ctx->vs;
    unsigned slot[SGX_FRAME_MAX_VARYINGS], n = 0;
+   union {
+      uint8_t b[SGX_VS_MAX_ATTRIBS];
+      uint32_t w[SGX_VS_MAX_ATTRIBS / 4];
+   } key;
    struct sgx_vs *vs;
    char why[128];
 
@@ -1429,11 +1629,15 @@ vs_for_draw(struct sgx_context *ctx, const struct sgx_fs *fs)
    for (unsigned i = 0; i < fs->prog.ninputs; i++)
       if (fs->input_slot[i] != VARYING_SLOT_POS)
          slot[n++] = fs->input_slot[i];
+   /* (as sgx_compile_vs fills it in) */
+   for (unsigned a = 0; a < SGX_VS_MAX_ATTRIBS; a++)
+      key.b[a] = a < sh->vs_nattrs ? attr[a] : SGX_ATTR(SGX_ATTR_CONST, 4);
    for (unsigned i = 0; i < sh->nvs; i++)
       if (sh->vs_variant[i]->nvaryings == n &&
-          sgx_words_equal(sh->vs_variant[i]->varying_slot, slot, n))
+          sgx_words_equal(sh->vs_variant[i]->varying_slot, slot, n) &&
+          sgx_words_equal(sh->vs_variant[i]->attr_words, key.w, ARRAY_SIZE(key.w)))
          return sh->vs_variant[i];
-   if (!(vs = sgx_compile_vs(sh->nir, slot, n, why, sizeof(why)))) {
+   if (!(vs = sgx_compile_vs(sh->nir, slot, n, attr, why, sizeof(why)))) {
       mesa_logw("sgx: a vertex shader not compiled (%s): run on the CPU", why);
       sh->vs_failed = true;
       return NULL;
@@ -1473,12 +1677,13 @@ gpu_vs_can_draw(struct sgx_context *ctx, const struct pipe_draw_info *info)
 
    if (off < 0)
       off = debug_get_bool_option("SGX_CPU_VS", false);
-   if (off || !ctx->draw_fs || !r || !ctx->velems)
+   if (off || !ctx->draw_fs || !r || !ctx->velems || !ctx->vs || !ctx->vs->nir)
       return false;
    if (info->mode != MESA_PRIM_TRIANGLES && info->mode != MESA_PRIM_TRIANGLE_STRIP &&
        info->mode != MESA_PRIM_TRIANGLE_FAN)
       return false;
-   if (info->primitive_restart || r->cull_face == PIPE_FACE_FRONT_AND_BACK ||
+   if (info->primitive_restart || info->instance_count != 1 ||
+       r->cull_face == PIPE_FACE_FRONT_AND_BACK ||
        r->fill_front != PIPE_POLYGON_MODE_FILL || r->fill_back != PIPE_POLYGON_MODE_FILL ||
        r->clip_plane_enable || r->flatshade ||
        /* polygon offset: the draw module's (the TA's not found yet) */
@@ -1488,26 +1693,97 @@ gpu_vs_can_draw(struct sgx_context *ctx, const struct pipe_draw_info *info)
    return true;
 }
 
-/* One draw with the vertex shader on the GPU: its vertices' attributes
- * unpacked to F32 vec4s, its triangles as indices into them (strips and
- * fans made lists), its uniforms; false: not done, the caller's way. */
+static bool
+grow_bytes(uint8_t **p, unsigned *max, unsigned want)
+{
+   uint8_t *q;
+
+   if (want <= *max)
+      return true;
+   want = MAX2(want, 2 * *max);
+   if (!(q = realloc(*p, want)))
+      return false;
+   *p = q;
+   *max = want;
+   return true;
+}
+
+/* One draw with the vertex shader on the GPU (M18, M26).  Its vertices
+ * are fetched from the application's buffers as they are when every
+ * attribute the shader reads from memory is in a format the fetch takes
+ * (sgx_attr_of_format), in a buffer, 4-byte aligned, and all have one
+ * stride (the PDS fetch has one for all, M26) -- else the CPU makes them
+ * one stream, in the formats the fetch takes or F32.  Attributes with a
+ * stride of 0 are constants, the shader's sa words.  The triangles go as
+ * a list of vertices, or indices (strips and fans made lists).  False:
+ * not done, the caller's way. */
 static bool
 gpu_vs_draw(struct sgx_context *ctx, const struct pipe_draw_info *info,
             const struct pipe_draw_start_count_bias *draw)
 {
    const struct sgx_vertex_elements *ve = ctx->velems;
+   struct sgx_shader *sh = ctx->vs;
+   struct sgx_vtx *v = &ctx->vtx;
+   struct sgx_screen *screen = sgx_screen(ctx->base.screen);
+   const uint8_t *src[SGX_VS_MAX_ATTRIBS];
+   struct sgx_resource *res[SGX_VS_MAX_ATTRIBS];
+   uint32_t off[SGX_VS_MAX_ATTRIBS];
+   uint8_t attr[SGX_VS_MAX_ATTRIBS];
    const void *indices = NULL;
    struct sgx_vs *vs;
-   unsigned lo = ~0u, hi = 0, ntri, vf;
+   unsigned nattrs = sh->vs_nattrs, stride = 0, ntri, lo = ~0u, hi = 0, vtx0;
    int bias = info->index_size ? draw->index_bias : 0;
+   static int repack = -1;
+   bool direct;
 
-   if (draw->count < 3 || !(vs = vs_for_draw(ctx, ctx->draw_fs)))
-      return false;
-   ntri = info->mode == MESA_PRIM_TRIANGLES ? draw->count / 3 : draw->count - 2;
+   /* SGX_REPACK=1: every draw's vertices made one stream by the CPU */
+   if (repack < 0)
+      repack = debug_get_bool_option("SGX_REPACK", false);
+   direct = !repack;
+
+   ntri = info->mode == MESA_PRIM_TRIANGLES ? draw->count / 3 :
+          draw->count >= 3 ? draw->count - 2 : 0;
+   if (!ntri)
+      return true;
+
+   /* each attribute: where vertex 0 of the buffer has it, how it comes */
+   for (unsigned a = nattrs; a < SGX_VS_MAX_ATTRIBS; a++) {
+      src[a] = NULL;
+      attr[a] = SGX_ATTR(SGX_ATTR_CONST, 4);
+   }
+   for (unsigned a = 0; a < nattrs; a++) {
+      const struct pipe_vertex_element *e = a < ve->count ? &ve->e[a] : NULL;
+      const struct pipe_vertex_buffer *vb =
+         e && (ctx->vb_mask & 1u << e->vertex_buffer_index) ? &ctx->vb[e->vertex_buffer_index] :
+                                                               NULL;
+
+      src[a] = NULL;
+      res[a] = NULL;
+      if (vb && vb->is_user_buffer) {
+         src[a] = vb->buffer.user;
+      } else if (vb && vb->buffer.resource) {
+         res[a] = sgx_resource(vb->buffer.resource);
+         src[a] = res[a]->data;
+      }
+      if (src[a]) {
+         off[a] = vb->buffer_offset + e->src_offset;
+         src[a] += off[a];
+      }
+      /* (no instancing here: gpu_vs_can_draw) */
+      if (!src[a] || !e->src_stride || e->instance_divisor) {
+         attr[a] = SGX_ATTR(SGX_ATTR_CONST, 4);
+         continue;
+      }
+      attr[a] = ve->attr[a];
+      if (!attr[a] || !res[a] || !res[a]->data || (off[a] & 3) || (e->src_stride & 3) ||
+          (stride && e->src_stride != stride))
+         direct = false;
+      stride = e->src_stride;
+   }
 
    /* the vertices the draw reads */
    if (info->index_size) {
-      size_t size = ~(size_t)0;
+      size_t size;
 
       indices = info->has_user_indices ? info->index.user :
                 map_buffer(info->index.resource, &size);
@@ -1526,109 +1802,118 @@ gpu_vs_draw(struct sgx_context *ctx, const struct pipe_draw_info *info,
       lo = draw->start;
       hi = draw->start + draw->count - 1;
    }
-   if (hi - lo + 1 > 65536 || (int)lo + bias < 0)
+   /* indices go to the GPU as they are, or less the first vertex the
+    * draw reads: 16 bits (a draw of more vertices, or more than the
+    * render's room for a stream of them, is the draw module's, which
+    * draws it in pieces) */
+   if (direct && info->index_size && hi > 0xffff)
+      direct = false;
+   if (hi - lo > 0xffff)
+      return false;
+   if (!direct)
+      for (unsigned a = 0; a < nattrs; a++)
+         if (!attr[a])
+            attr[a] = SGX_ATTR(SGX_ATTR_F32, 4);
+   if (!(vs = vs_for_draw(ctx, ctx->draw_fs, attr)))
       return false;
 
-   /* their attributes, four floats each, attribute n from vertex element n */
-   vf = 4 * vs->nattrs;
-   ctx->nverts = 0;
-   if ((hi - lo + 1) * vf > ctx->maxfloats) {
-      unsigned n = (hi - lo + 1) * vf;
-      float *p = REALLOC(ctx->verts, ctx->maxfloats * sizeof(float), n * sizeof(float));
+   /* vertex 0: the draw's first (the list's start, or index 0 as it is),
+    * or the first it reads (the CPU's stream) */
+   vtx0 = direct ? (info->index_size ? 0 : draw->start) : lo;
 
-      if (!p)
-         return false;
-      ctx->verts = p;
-      ctx->maxfloats = n;
+   /* the triangles */
+   v->count = 3 * ntri;
+   v->max_index = hi - vtx0;
+   v->indexed = info->index_size || info->mode != MESA_PRIM_TRIANGLES ||
+                v->count > sgx_frame_list_max(screen->frame);
+   if (v->indexed) {
+      if (v->count > ctx->maxindices) {
+         uint16_t *p = realloc(ctx->indices, v->count * sizeof(uint16_t));
+
+         if (!p)
+            return false;
+         ctx->indices = p;
+         ctx->maxindices = v->count;
+      }
+      for (unsigned t = 0; t < ntri; t++) {
+         unsigned k[3], x = 0;
+
+         if (info->mode == MESA_PRIM_TRIANGLES) {
+            k[0] = 3 * t, k[1] = 3 * t + 1, k[2] = 3 * t + 2;
+         } else if (info->mode == MESA_PRIM_TRIANGLE_STRIP) {
+            /* every other triangle the other way round, as GL turns them */
+            k[0] = t + (t & 1), k[1] = t + 1 - (t & 1), k[2] = t + 2;
+         } else {
+            k[0] = 0, k[1] = t + 1, k[2] = t + 2;
+         }
+         for (unsigned i = 0; i < 3; i++) {
+            if (indices)
+               index_at(indices, info->index_size, k[i], &x);
+            else
+               x = draw->start + k[i];
+            ctx->indices[3 * t + i] = x - vtx0;
+         }
+      }
    }
-   for (unsigned a = 0; a < vs->nattrs; a++) {
-      const struct pipe_vertex_element *e = a < ve->count ? &ve->e[a] : NULL;
-      const struct pipe_vertex_buffer *vb = e ? &ctx->vb[e->vertex_buffer_index] : NULL;
-      const uint8_t *base = NULL;
 
-      if (vb && (ctx->vb_mask & 1u << e->vertex_buffer_index)) {
-         if (vb->is_user_buffer) {
-            base = vb->buffer.user;
-         } else if (vb->buffer.resource) {
-            size_t size;
+   /* the attributes: where the fetch finds them */
+   v->nbos = 0;
+   if (direct) {
+      v->repacked = false;
+      v->stride = stride;
+      for (unsigned a = 0; a < vs->nattrs; a++) {
+         struct sgx_bo *bo;
+         unsigned i;
 
-            base = map_buffer(vb->buffer.resource, &size);
-         }
-         if (base)
-            base += vb->buffer_offset + e->src_offset;
-      }
-      /* floats (the usual case) copied, 0 0 0 1 filling in; the rest
-       * through util_format, a vertex at a time */
-      unsigned nf = 0;
-
-      if (base && !e->instance_divisor) {
-         switch (e->src_format) {
-         case PIPE_FORMAT_R32_FLOAT: nf = 1; break;
-         case PIPE_FORMAT_R32G32_FLOAT: nf = 2; break;
-         case PIPE_FORMAT_R32G32B32_FLOAT: nf = 3; break;
-         case PIPE_FORMAT_R32G32B32A32_FLOAT: nf = 4; break;
-         default: break;
-         }
-      }
-      if (nf) {
-         const uint8_t *src = base + (lo + bias) * e->src_stride;
-         float *out = ctx->verts + 4 * a;
-
-         for (unsigned v = 0; v <= hi - lo; v++, src += e->src_stride, out += vf) {
-            out[0] = 0;
-            out[1] = 0;
-            out[2] = 0;
-            out[3] = 1;
-            memcpy(out, src, nf * sizeof(float));
-         }
-         continue;
-      }
-      for (unsigned v = 0; v <= hi - lo; v++) {
-         float *out = ctx->verts + v * vf + 4 * a;
-         unsigned at = e && e->instance_divisor ? info->start_instance / e->instance_divisor :
-                       lo + bias + v;
-
-         if (!base) {
-            out[0] = out[1] = out[2] = 0;
-            out[3] = 1;
+         if (SGX_ATTR_KIND(vs->attr[a]) == SGX_ATTR_CONST)
             continue;
+         if (!(bo = sgx_buffer_bo(ctx, res[a])))
+            return false;
+         v->base[a] = bo->va + off[a] + (vtx0 + bias) * stride;
+         for (i = 0; i < v->nbos && v->bos[i] != bo; i++)
+            ;
+         if (i == v->nbos)
+            v->bos[v->nbos++] = bo;
+      }
+   } else {
+      unsigned n = hi - lo + 1, at = 0;
+
+      v->repacked = true;
+      v->nverts = n;
+      for (unsigned a = 0; a < vs->nattrs; a++)
+         if (SGX_ATTR_KIND(vs->attr[a]) != SGX_ATTR_CONST) {
+            v->base[a] = at;
+            at += 4 * sgx_attr_words(vs->attr[a]);
          }
-         util_format_unpack_rgba(e->src_format, out, base + at * e->src_stride, 1);
-      }
-   }
-   ctx->nverts = hi - lo + 1;
-
-   /* the triangles, as a list */
-   if (3 * ntri > ctx->maxindices) {
-      uint16_t *p = realloc(ctx->indices, 3 * ntri * sizeof(uint16_t));
-
-      if (!p)
+      v->stride = MAX2(at, 4);
+      if (n * v->stride > sgx_frame_vertex_room(screen->frame) ||
+          !grow_bytes(&ctx->vdata, &ctx->maxvdata, n * v->stride))
          return false;
-      ctx->indices = p;
-      ctx->maxindices = 3 * ntri;
-   }
-   for (unsigned t = 0; t < ntri; t++) {
-      unsigned k[3], x[3];
+      for (unsigned a = 0; a < vs->nattrs; a++) {
+         const struct pipe_vertex_element *e = &ve->e[a];
+         const uint8_t *in;
+         uint8_t *out = ctx->vdata + v->base[a];
+         unsigned size;
 
-      if (info->mode == MESA_PRIM_TRIANGLES) {
-         k[0] = 3 * t, k[1] = 3 * t + 1, k[2] = 3 * t + 2;
-      } else if (info->mode == MESA_PRIM_TRIANGLE_STRIP) {
-         /* every other triangle the other way round, as GL turns them */
-         k[0] = t + (t & 1), k[1] = t + 1 - (t & 1), k[2] = t + 2;
-      } else {
-         k[0] = 0, k[1] = t + 1, k[2] = t + 2;
-      }
-      for (unsigned i = 0; i < 3; i++) {
-         if (indices)
-            index_at(indices, info->index_size, k[i], &x[i]);
-         else
-            x[i] = draw->start + k[i];
-         ctx->indices[3 * t + i] = x[i] - lo;
+         if (SGX_ATTR_KIND(vs->attr[a]) == SGX_ATTR_CONST)
+            continue;
+         in = src[a] + (lo + bias) * e->src_stride;
+         if (vs->attr[a] == ve->attr[a]) {
+            /* as it is: its bytes (a word for RGB8, the fourth zero) */
+            size = util_format_get_blocksize(e->src_format);
+            for (unsigned i = 0; i < n; i++, in += e->src_stride, out += v->stride) {
+               memset(out, 0, 4 * sgx_attr_words(vs->attr[a]));
+               memcpy(out, in, size);
+            }
+         } else {
+            for (unsigned i = 0; i < n; i++, in += e->src_stride, out += v->stride)
+               util_format_unpack_rgba(e->src_format, (float *)out, in, 1);
+         }
       }
    }
-   ctx->nindices = 3 * ntri;
 
-   /* its uniforms: constant buffer 0's words */
+   /* its uniforms: constant buffer 0's words, then the constant
+    * attributes' */
    if (vs->nuniforms) {
       const struct pipe_constant_buffer *cb = &ctx->cb[0];
       const uint8_t *p = cb->user_buffer;
@@ -1642,14 +1927,33 @@ gpu_vs_draw(struct sgx_context *ctx, const struct pipe_draw_info *info,
          memcpy(ctx->vs_sa, p, n);
       memset((uint8_t *)ctx->vs_sa + n, 0, vs->nuniforms * 4 - n);
    }
+   for (unsigned a = 0; a < vs->nattrs; a++) {
+      float *c = (float *)ctx->vs_sa + vs->attr_sa[a];
 
+      if (SGX_ATTR_KIND(vs->attr[a]) != SGX_ATTR_CONST || vs->attr_sa[a] == 0xff)
+         continue;
+      if (src[a]) {
+         util_format_unpack_rgba(ve->e[a].src_format, c, src[a], 1);
+      } else {
+         c[0] = c[1] = c[2] = 0;
+         c[3] = 1;
+      }
+   }
+
+   if (ctx->debug_draw) {
+      mesa_logi("sgx: a vertex shader's draw: %u vertices%s, %s, stride %u, %u buffers",
+                v->count, v->indexed ? " indexed" : "", v->repacked ? "repacked" : "direct",
+                v->stride, v->nbos);
+      for (unsigned a = 0; a < vs->nattrs; a++)
+         mesa_logi("sgx:   attribute %u: %02x at 0x%08x", a, vs->attr[a], v->base[a]);
+   }
    ctx->layout.nvaryings = vs->nvaryings;
    ctx->layout.f32 = (1u << vs->nvaryings) - 1;
    ctx->layout.colour = 0;
    ctx->gpu_vs = vs;
    submit(ctx);
    ctx->gpu_vs = NULL;
-   ctx->nverts = ctx->nindices = 0;
+   v->count = 0;
    return true;
 }
 

@@ -71,10 +71,9 @@ sgx_resource_create(struct pipe_screen *pscreen, const struct pipe_resource *tem
       }
    }
 
-   /* a buffer in CPU memory: no render reads one (a draw's vertices,
-    * indices and uniforms are copied into the frame's buffers), and a
-    * buffer object a frame (SDL's) cost an ioctl and the cache cleaned
-    * over all of it (M25) */
+   /* a buffer: CPU memory, which maps read and write without waiting
+    * (M25); the GPU's copy is made when a draw reads it (M26:
+    * sgx_buffer_bo) */
    if (templ->target == PIPE_BUFFER) {
       if (!(res->data = MALLOC(MAX2(size, 1)))) {
          FREE(res);
@@ -116,7 +115,7 @@ sgx_resource_get_handle(struct pipe_screen *pscreen, struct pipe_context *pctx,
    struct sgx_resource *res = sgx_resource(prsc);
    int fd;
 
-   if (!res->bo)                /* a buffer: CPU memory */
+   if (prsc->target == PIPE_BUFFER || !res->bo)
       return false;
    handle->stride = res->stride[0];
    handle->offset = 0;
@@ -403,8 +402,8 @@ sgx_transfer_map(struct pipe_context *pctx, struct pipe_resource *prsc, unsigned
    uint8_t *map;
 
    /* draws gathered but not rendered that write or read it go first, and
-    * renders that do -- not for a buffer: no render touches one (a draw's
-    * vertices, indices and uniforms are copied into the frame's buffers) */
+    * renders that do -- not for a buffer: its CPU copy is no render's
+    * (M26: sgx_buffer_bo) */
    if (!(usage & PIPE_MAP_UNSYNCHRONIZED) && prsc->target != PIPE_BUFFER) {
       if (sgx_batch_uses(ctx, prsc))
          sgx_batch_flush(ctx);
@@ -433,16 +432,77 @@ sgx_transfer_map(struct pipe_context *pctx, struct pipe_resource *prsc, unsigned
           util_format_get_blocksize(prsc->format);
 }
 
+/* bytes [lo, hi) of a buffer written: what its GPU copy is behind by */
+static void
+buffer_written(struct sgx_resource *res, uint32_t lo, uint32_t hi, unsigned usage)
+{
+   if (lo >= hi)
+      return;
+   if (res->dirty_lo >= res->dirty_hi) {
+      res->dirty_lo = lo;
+      res->dirty_hi = hi;
+   } else {
+      res->dirty_lo = MIN2(res->dirty_lo, lo);
+      res->dirty_hi = MAX2(res->dirty_hi, hi);
+   }
+   res->dirty_sync |= !(usage & PIPE_MAP_UNSYNCHRONIZED);
+}
+
+/* a map with PIPE_MAP_FLUSH_EXPLICIT wrote what it flushes (u_upload_mgr
+ * maps the rest of its buffer, and flushes what it handed out) */
+static void
+sgx_transfer_flush_region(struct pipe_context *pctx, struct pipe_transfer *ptrans,
+                          const struct pipe_box *box)
+{
+   if (ptrans->resource->target == PIPE_BUFFER)
+      buffer_written(sgx_resource(ptrans->resource), ptrans->box.x + box->x,
+                     ptrans->box.x + box->x + box->width, ptrans->usage);
+}
+
 static void
 sgx_transfer_unmap(struct pipe_context *pctx, struct pipe_transfer *ptrans)
 {
    struct sgx_context *ctx = sgx_context(pctx);
+   struct sgx_resource *res = sgx_resource(ptrans->resource);
 
-   if (ptrans->usage & PIPE_MAP_WRITE)
-      sgx_resource(ptrans->resource)->seq++;
+   if (ptrans->usage & PIPE_MAP_WRITE) {
+      res->seq++;
+      if (ptrans->resource->target == PIPE_BUFFER && !(ptrans->usage & PIPE_MAP_FLUSH_EXPLICIT))
+         buffer_written(res, ptrans->box.x, ptrans->box.x + ptrans->box.width, ptrans->usage);
+   }
 
    pipe_resource_reference(&ptrans->resource, NULL);
    slab_free(&ctx->transfer_pool, ptrans);
+}
+
+struct sgx_bo *
+sgx_buffer_bo(struct sgx_context *ctx, struct sgx_resource *res)
+{
+   struct sgx_screen *screen = sgx_screen(ctx->base.screen);
+   struct sgx_bo *bo = res->bo;
+   uint32_t lo = res->dirty_lo, hi = res->dirty_hi;
+
+   if (bo && lo >= hi)
+      return bo;
+   if (bo && res->dirty_sync && (sgx_batch_reads(ctx, bo) || !sgx_bo_wait(bo, 0))) {
+      /* a render reads the old content: the gathered draws or the kernel
+       * keep the old copy for it */
+      sgx_bo_destroy(bo);
+      res->bo = bo = NULL;
+   }
+   if (!bo) {
+      /* (four bytes more: a fetch reads whole words, three bytes of RGB8
+       * at the end too) */
+      if (!(bo = sgx_bo_cache_get(&screen->dev, res->base.width0 + 4)))
+         return NULL;
+      res->bo = bo;
+      lo = 0;
+      hi = res->base.width0;
+   }
+   memcpy(bo->map + lo, res->data + lo, hi - lo);
+   res->dirty_lo = res->dirty_hi = 0;
+   res->dirty_sync = false;
+   return bo;
 }
 
 void
@@ -452,7 +512,7 @@ sgx_resource_context_init(struct pipe_context *pctx)
    pctx->texture_map = sgx_transfer_map;
    pctx->buffer_unmap = sgx_transfer_unmap;
    pctx->texture_unmap = sgx_transfer_unmap;
-   pctx->transfer_flush_region = u_default_transfer_flush_region;
+   pctx->transfer_flush_region = sgx_transfer_flush_region;
    pctx->buffer_subdata = u_default_buffer_subdata;
    pctx->texture_subdata = u_default_texture_subdata;
 }

@@ -60,6 +60,10 @@ void sgx_zs_clear(struct sgx_context *ctx, bool depth, float d, bool stencil, un
 /* whether the gathered draws write or read p */
 bool sgx_batch_uses(struct sgx_context *ctx, struct pipe_resource *p);
 
+/* how the vertex fetch reads a vertex element's format: an SGX_ATTR, or 0
+ * when it cannot as it is (M26) */
+uint8_t sgx_attr_of_format(enum pipe_format format);
+
 bool sgx_draw_init(struct sgx_context *ctx);
 void sgx_draw_fini(struct sgx_context *ctx);
 

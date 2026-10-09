@@ -107,6 +107,7 @@ struct comp {
    const unsigned *varying_slot;
    unsigned nvaryings, nattrs;
    unsigned pa_base;                    /* a vertex program's temporaries: pa from here */
+   const uint8_t *attr;                 /* how each attribute comes (M26) */
    struct operand vout[1 + SGX_FRAME_MAX_VARYINGS][4];
    bool have_vout[1 + SGX_FRAME_MAX_VARYINGS][4];
    char *why;
@@ -572,6 +573,13 @@ scan(struct comp *c, nir_function_impl *impl)
    }
    c->sampler_sa = align(c->nuniforms, 4);
    c->pa_base = 4 * MAX2(c->nattrs, 1);
+   /* a vertex shader's attributes that are constants (M26): four sa words
+    * each after the uniforms */
+   for (unsigned a = 0; c->vs && a < c->nattrs; a++)
+      if (SGX_ATTR_KIND(c->attr[a]) == SGX_ATTR_CONST) {
+         c->vs->attr_sa[a] = c->nuniforms;
+         c->nuniforms += 4;
+      }
    if (c->blend_sa >= 0)
       c->blend_sa = c->sampler_sa + 4 * c->nsamplers;
 }
@@ -650,8 +658,9 @@ intrinsic(struct comp *c, nir_intrinsic_instr *in)
       unsigned slot, comp = 0;
 
       if (c->vs) {
-         /* attribute n (its vertex element) where the fetch put it: four
-          * words from pa4n */
+         /* attribute n (its vertex element) where the fetch put it -- four
+          * words from pa4n, vs_prologue() made floats -- or, a constant,
+          * in sa */
          offset = nir_get_io_offset_src(in);
          if (in->intrinsic != nir_intrinsic_load_input || !nir_src_is_const(*offset)) {
             fail(c, "an indirect attribute");
@@ -662,9 +671,14 @@ intrinsic(struct comp *c, nir_intrinsic_instr *in)
             fail(c, "attribute %u", at);
             return;
          }
-         c->nattrs = MAX2(c->nattrs, at + 1);
+         if (at >= c->nattrs) {
+            fail(c, "attribute %u read but not found", at);
+            return;
+         }
          for (unsigned i = 0; i < in->def.num_components; i++)
-            c->loc[id + i] = usse_reg(USSE_PA, 4 * at + nir_intrinsic_component(in) + i);
+            c->loc[id + i] = SGX_ATTR_KIND(c->attr[at]) == SGX_ATTR_CONST ?
+                             usse_reg(USSE_SA, c->vs->attr_sa[at] + nir_intrinsic_component(in) + i) :
+                             usse_reg(USSE_PA, 4 * at + nir_intrinsic_component(in) + i);
          return;
       }
       if (in->intrinsic == nir_intrinsic_load_frag_coord) {
@@ -1447,6 +1461,29 @@ walk(struct comp *c, struct exec_list *list, enum walk_pass pass, int *index,
  * can be, what is left of them and the loops as branches (M20), its values
  * given temporaries in the order NIR has them.  False (c->failed, c->why)
  * when it cannot be. */
+/* A vertex program's start (M26): each attribute the fetch put in pa4n..
+ * as it is in memory made four floats -- bytes unpacked (the top two
+ * first, the word they come from last), the components the format does
+ * not have 0, 0, 1 */
+static void
+vs_prologue(struct comp *c)
+{
+   for (unsigned a = 0; a < c->nattrs; a++) {
+      unsigned kind = SGX_ATTR_KIND(c->attr[a]), n = SGX_ATTR_COMPS(c->attr[a]);
+      struct usse_reg r = usse_reg(USSE_PA, 4 * a);
+
+      if (kind == SGX_ATTR_CONST)
+         continue;
+      if (kind == SGX_ATTR_U8N) {
+         if (n > 2)
+            emit(c, usse_unpack_unorm8(usse_reg(USSE_PA, 4 * a + 2), r, 2));
+         emit(c, usse_unpack_unorm8(r, r, 0));
+      }
+      for (unsigned i = n; i < 4; i++)
+         emit(c, usse_limm(usse_reg(USSE_PA, 4 * a + i), f32_bits(i == 3 ? 1.0f : 0.0f)));
+   }
+}
+
 static bool
 translate(struct comp *c, nir_shader *s)
 {
@@ -1502,6 +1539,8 @@ translate(struct comp *c, nir_shader *s)
       c->kill = block(c, 2, 2);
       emit(c, usse_limm(treg(c, c->kill), 0));
    }
+   if (c->vs)
+      vs_prologue(c);
    index = 0;
    c->nloops = 0;
    walk(c, &impl->body, WALK_CODE, &index, NULL, 0);
@@ -1634,12 +1673,22 @@ out:
    return c.fs;
 }
 
+unsigned
+sgx_vs_attr_count(const nir_shader *vs)
+{
+   unsigned n = 0;
+
+   nir_foreach_shader_in_variable(var, vs)
+      n = MAX2(n, var->data.driver_location + glsl_count_attribute_slots(var->type, true));
+   return MIN2(n, SGX_VS_MAX_ATTRIBS);
+}
+
 struct sgx_vs *
 sgx_compile_vs(const nir_shader *vs, const unsigned *varying_slot, unsigned nvaryings,
-               char *why, unsigned why_size)
+               const uint8_t *attr, char *why, unsigned why_size)
 {
    struct comp c = { 0 };
-   unsigned out_at;
+   unsigned out_at, nattr = sgx_vs_attr_count(vs);
    nir_shader *s;
 
    c.why = why;
@@ -1655,6 +1704,11 @@ sgx_compile_vs(const nir_shader *vs, const unsigned *varying_slot, unsigned nvar
    c.nvaryings = nvaryings;
    memcpy(c.vs->varying_slot, varying_slot, nvaryings * sizeof(*varying_slot));
    c.vs->nvaryings = nvaryings;
+   /* (past what the shader declares: constants, never read) */
+   for (unsigned a = 0; a < SGX_VS_MAX_ATTRIBS; a++)
+      c.vs->attr[a] = a < nattr ? attr[a] : SGX_ATTR(SGX_ATTR_CONST, 4);
+   memset(c.vs->attr_sa, 0xff, sizeof(c.vs->attr_sa));
+   c.attr = c.vs->attr;
 
    s = nir_shader_clone(NULL, vs);
    NIR_PASS(_, s, nir_lower_io, nir_var_shader_in | nir_var_shader_out | nir_var_uniform,

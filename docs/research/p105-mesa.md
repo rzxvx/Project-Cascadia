@@ -1848,6 +1848,94 @@ to the screen (M8's `libsgxsdl`, SDL's renderer replaced by the pack's
 programs) ran SuperTux at 60 -- a draw there cost the CPU a few words, not
 GL's state machine.
 
+## M26: the vertex path, done properly
+
+**What the PDS vertex fetch does with several attributes (2026-10-10).**
+Its program: `fetch index` (`67800072`), then a `fetch attribute`
+(`2f0091a3 | (4 n + 1) << 16`) a row, each row `{address, first pa << 8 |
+words - 1, stride, 0}` -- iOS's always had one interleaved stream, the
+stride in row 0 only. Tried with each attribute an array of its own
+(`SGX_FETCH_TEST`, not kept):
+
+- each attribute's **address is its own row's**: attributes in separate
+  arrays with one stride draw right (`gltri`, `glcull` all right);
+- the **stride is one for the whole fetch**, row 0's: a stride in another
+  row is not taken (nor in the control word's top bits, 12..26 tried);
+- `fetch index`'s low four bits name the data word the stride is in (2
+  works, 6 takes row 1's word 2 instead, for every attribute); bits 6:4
+  do not matter (`52`, `62`, `72` alike); its bits 23:16 and 11:8 do;
+- a second `fetch index` before an attribute's fetch -- low byte 0..255,
+  bits 23:16 0..255, each tried -- changes nothing, and nor do the `fetch
+  attribute`'s bits 15:8 with one writing elsewhere (many of those hang).
+
+So a vertex's attributes are read from `address_n + index x stride`, one
+stride: a draw whose attributes share a stride (one interleaved buffer,
+most engines') can be fetched from the application's buffers as they are;
+any other is made one stream first.
+
+**The vertex path (2026-10-10).** Until now every draw's vertices were
+unpacked by the CPU into F32 vec4s, copied into the batch and again into
+the frame, and the fetch -- one program a vertex shader -- read them from
+there. Now:
+
+- **Buffers have a GPU copy.** A buffer's CPU copy (M25) stays what maps
+  see; its GPU copy, a buffer object, is made at the first draw that reads
+  the buffer from there and brought up to date at each draw after
+  (`sgx_buffer_bo`) with the bytes written since -- what unmaps say, or for
+  a map with `FLUSH_EXPLICIT` (`u_upload_mgr`'s) what it flushes. It is
+  written in place when no render reads it, gathered (the batch's number
+  stamped on the buffer object) or running (`GEM_WAIT` with no timeout),
+  or when only unsynchronized maps wrote it; else a new one is taken and
+  filled -- the gathered draws hold a reference to the old one, the kernel
+  one for the running render. Persistent coherent maps are off now (the
+  default cap said yes): nothing would tell of a write through one. The
+  buffer objects come from a cache of the ones dropped (size classes an
+  eighth of a power of two apart, the oldest idle one first, 32 MiB and
+  two seconds at most): a buffer made anew each frame no longer costs an
+  ioctl and its pages cleared.
+- **The vertex shader takes attributes as they are in memory.** A vertex
+  shader is compiled for the formats of its attributes too (`struct
+  sgx_vs`'s `attr[]`): `F32` with one to four components, the fetch reading
+  that many words; unsigned normalized bytes, one word, made floats by
+  `pck.f32.u8 ... scale` -- the top two channels first, then the bottom
+  two over the word itself; the components the format lacks set to 0, 0, 1
+  by `limm`. An attribute with a stride of 0 (a constant, GL's current
+  value) is not fetched at all: its four floats go in sa after the
+  uniforms, the shader reading them there. Other formats are made F32 by
+  the CPU.
+- **A fetch a draw.** Each draw's fetch program goes in a slot of its own
+  in the frame (384 bytes, after the vertex shaders' uniforms): a row for
+  each attribute fetched, its address for the draw's vertex 0, the stride
+  in row 0. When every attribute fetched is in a buffer, in a format the
+  fetch takes, 4-byte aligned, and they share a stride, the addresses are
+  the buffers' GPU copies' (`glvtx`: SDL's floats at stride 24, byte
+  colours at stride 12, attributes in two buffers): nothing is copied.
+  Otherwise the CPU makes the draw's vertices one stream (the formats as
+  they are, the rest F32) into the render's.
+- **Triangles.** A list of up to 8190 vertices is drawn from the frame's 0,
+  1, 2, ... buffer; anything else -- indices, strips, fans -- as 16-bit
+  indices from the draw's vertex 0. A draw whose vertices follow on from
+  the last draw's, with the same state, is merged into it as before (M25):
+  the addresses the same number of vertices on for every attribute.
+- **Client arrays as they are** (`user_vertex_buffers`). SDL 3's GLES 2
+  renderer draws from client memory, not buffers: `u_vbuf` copied each
+  array of each draw into its upload buffer, a draw's two arrays one after
+  the other, so no draw's vertices followed on from the last one's and
+  nothing merged (17.6 frames a second). The driver takes them now and
+  makes them one stream itself: one copy fewer, and SDL's tiles merge
+  again.
+
+A `getenv` on the draw path (the switch `SGX_REPACK=1`, which makes every
+draw's vertices one stream) cost 4 % of SuperTux's CPU: musl's `getenv`
+`strncmp`s its way through the environment. `glvtx` (12 cases: the
+layouts above, a constant colour, a buffer written again between two draws
+of a render, indices from a buffer at an odd offset and from memory, a
+strip from vertex 4, RGB bytes, short colours, 64 quads a draw each) is
+right, and so is everything else: the `gl*` tests, dEQP's `vertex_arrays`
+(571), `buffer` (49), `attribute_location` (57) and `draw` (100 of 101, as
+before). SuperTux, the same scene, debug builds: **20.0 -> 24.5 frames a
+second**.
+
 ## Testing, without and with the device
 
 - **Host, every change:** the kernel driver builds with `W=1` against the

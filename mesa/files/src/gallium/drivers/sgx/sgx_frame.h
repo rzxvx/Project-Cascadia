@@ -150,10 +150,13 @@ void sgx_frame_finish(struct sgx_frame *f);
  * reading sa) or, without, l's colour iterated; what the ISP does. */
 struct sgx_vs;
 
-/* With vs (M18: the vertex shader on the GPU), verts are its attributes,
- * vs->nattrs F32 vec4s a vertex, l the varyings it hands the pixels, vs_sa
- * its uniforms; the triangles are indices[0..nindices) into verts, or the
- * vertices in order without. */
+/* With vs (M18: the vertex shader on the GPU), l is the varyings it hands
+ * the pixels, vs_sa its uniforms, and its vertex fetch reads attribute n of
+ * vertex i at base[n] + i x stride (M26: one stride for all) -- addresses
+ * in the application's buffers, or, with vdata (nverts vertices the CPU
+ * made one stream), offsets into a vertex there.  It draws count
+ * vertices: indices[0..count) from vertex 0, or 0, 1, 2, ... without
+ * (count at most sgx_frame_list_max()). */
 struct sgx_frame_draw {
    struct sgx_frame_layout l;
    const float *verts;
@@ -163,8 +166,10 @@ struct sgx_frame_draw {
    struct sgx_frame_state st;
    struct sgx_vs *vs;
    const uint32_t *vs_sa;
+   const uint8_t *vdata;
+   const uint32_t *base;
+   unsigned stride, count;
    const uint16_t *indices;
-   unsigned nindices;
 };
 /* (the pack's frame, SGX_FRAME=pack, takes 200: sgx_frame_max_draws()) */
 #define SGX_FRAME_MAX_DRAWS 2048
@@ -184,9 +189,12 @@ sgx_frame_state_equal(const struct sgx_frame_state *x, const struct sgx_frame_st
                             x->translate[2] == y->translate[2]));
 }
 
-/* sgx_frame_place_indexed()'s last draw grown by nverts more vertices */
-bool sgx_frame_extend_indexed(struct sgx_frame *f, unsigned *cursor, unsigned stride,
-                              unsigned nverts);
+/* sgx_frame_place_bytes()'s last draw grown by n bytes more */
+bool sgx_frame_extend_bytes(struct sgx_frame *f, unsigned *cursor, unsigned n);
+/* the most vertices a draw takes without indices */
+unsigned sgx_frame_list_max(const struct sgx_frame *f);
+/* the bytes of vertices a render takes */
+unsigned sgx_frame_vertex_room(const struct sgx_frame *f);
 
 /* n 32-bit words the same (musl's memcmp goes a byte at a time) */
 static inline bool
@@ -203,16 +211,16 @@ sgx_words_equal(const uint32_t *a, const uint32_t *b, unsigned n)
 /* the program's code and PDS into GPU memory, once (sgx_frame_draw does it
  * itself) */
 int sgx_frame_upload(struct sgx_frame *f, struct sgx_pixel_program *p);
-/* a vertex shader's code and its vertex fetch, once */
+/* a vertex shader's code, once */
 int sgx_frame_upload_vs(struct sgx_frame *f, struct sgx_vs *vs);
 /* a program no render to be submitted from now on runs: its places free
  * again once the renders already submitted are done (and it is to be
  * uploaded again if drawn after all) */
 void sgx_frame_retire(struct sgx_frame *f, struct sgx_pixel_program *p);
 void sgx_frame_retire_vs(struct sgx_frame *f, struct sgx_vs *vs);
-/* sgx_frame_place() for vertices of stride bytes, indexed: up to 65536 */
-bool sgx_frame_place_indexed(struct sgx_frame *f, unsigned *cursor, unsigned stride,
-                             unsigned nverts, unsigned *first);
+/* sgx_frame_place() for n bytes of a vertex shader's vertices (16-byte
+ * aligned), *at their offset among the render's */
+bool sgx_frame_place_bytes(struct sgx_frame *f, unsigned *cursor, unsigned n, unsigned *at);
 
 /* Room for a draw's vertices among a render's: *cursor (0 for the first)
  * moves past them; false when they do not fit. */

@@ -55,6 +55,8 @@ sgx_device_init(struct sgx_device *dev, int fd)
    dev->fb_stride = sgx_device_param(dev, APPLE_SGX_PARAM_FB_STRIDE);
    dev->untiled_next = UINT32_MAX;
    simple_mtx_init(&dev->bo_lock, mtx_plain);
+   simple_mtx_init(&dev->cache_lock, mtx_plain);
+   list_inithead(&dev->cache);
    if (!(dev->bos = _mesa_hash_table_u64_create(NULL)))
       return false;
    if (!sgx_device_param(dev, APPLE_SGX_PARAM_UKERNEL_UP))
@@ -62,10 +64,15 @@ sgx_device_init(struct sgx_device *dev, int fd)
    return true;
 }
 
+static void close_bo(struct sgx_bo *bo);
+
 void
 sgx_device_fini(struct sgx_device *dev)
 {
+   list_for_each_entry_safe(struct sgx_bo, bo, &dev->cache, cache_link)
+      close_bo(bo);
    _mesa_hash_table_u64_destroy(dev->bos);
+   simple_mtx_destroy(&dev->cache_lock);
    simple_mtx_destroy(&dev->bo_lock);
 }
 
@@ -204,11 +211,41 @@ sgx_bo_map(struct sgx_bo *bo)
    return p;
 }
 
+static void
+close_bo(struct sgx_bo *bo)
+{
+   struct drm_gem_close cl = { .handle = bo->handle };
+
+   simple_mtx_lock(&bo->dev->bo_lock);
+   _mesa_hash_table_u64_remove(bo->dev->bos, bo->handle);
+   simple_mtx_unlock(&bo->dev->bo_lock);
+   if (bo->map)
+      munmap(bo->map, bo->size);
+   drmIoctl(bo->dev->fd, DRM_IOCTL_GEM_CLOSE, &cl);
+   FREE(bo);
+}
+
+/* The cache (M26): what it keeps all told, and for how long */
+#define CACHE_MAX_BYTES (32u << 20)
+#define CACHE_MAX_AGE_NS (2ll * 1000 * 1000 * 1000)
+
+/* the cache's buffers kept too long, or past its size, closed (under
+ * cache_lock) */
+static void
+cache_trim(struct sgx_device *dev, int64_t now)
+{
+   list_for_each_entry_safe(struct sgx_bo, bo, &dev->cache, cache_link) {
+      if (dev->cache_size <= CACHE_MAX_BYTES && now - bo->freed < CACHE_MAX_AGE_NS)
+         break;
+      list_del(&bo->cache_link);
+      dev->cache_size -= bo->size;
+      close_bo(bo);
+   }
+}
+
 void
 sgx_bo_destroy(struct sgx_bo *bo)
 {
-   struct drm_gem_close cl;
-
    if (!bo)
       return;
    simple_mtx_lock(&bo->dev->bo_lock);
@@ -217,13 +254,74 @@ sgx_bo_destroy(struct sgx_bo *bo)
       simple_mtx_unlock(&bo->dev->bo_lock);
       return;
    }
-   _mesa_hash_table_u64_remove(bo->dev->bos, bo->handle);
    simple_mtx_unlock(&bo->dev->bo_lock);
-   if (bo->map)
-      munmap(bo->map, bo->size);
-   cl = (struct drm_gem_close){ .handle = bo->handle };
-   drmIoctl(bo->dev->fd, DRM_IOCTL_GEM_CLOSE, &cl);
-   FREE(bo);
+   if (bo->cached) {
+      struct sgx_device *dev = bo->dev;
+
+      simple_mtx_lock(&dev->cache_lock);
+      bo->freed = os_time_get_nano();
+      bo->batch_ctx = NULL;
+      list_addtail(&bo->cache_link, &dev->cache);
+      dev->cache_size += bo->size;
+      cache_trim(dev, bo->freed);
+      simple_mtx_unlock(&dev->cache_lock);
+      return;
+   }
+   close_bo(bo);
+}
+
+void
+sgx_bo_ref(struct sgx_bo *bo)
+{
+   simple_mtx_lock(&bo->dev->bo_lock);
+   bo->refs++;
+   simple_mtx_unlock(&bo->dev->bo_lock);
+}
+
+/* sizes in classes, an eighth of the next power of two apart (whole pages
+ * up to 64 KiB): what a cached buffer of one class can be used for again */
+static uint32_t
+cache_class(uint32_t size)
+{
+   size = align(MAX2(size, 1), 4096);
+   return size <= 0x10000 ? util_next_power_of_two(size) :
+                            align(size, util_next_power_of_two(size) / 8);
+}
+
+struct sgx_bo *
+sgx_bo_cache_get(struct sgx_device *dev, uint32_t size)
+{
+   struct sgx_bo *found = NULL;
+   unsigned tries = 0;
+
+   size = cache_class(size);
+   simple_mtx_lock(&dev->cache_lock);
+   cache_trim(dev, os_time_get_nano());
+   /* the oldest of the size first: the likeliest to be idle (two looked
+    * at, an ioctl each) */
+   list_for_each_entry(struct sgx_bo, bo, &dev->cache, cache_link) {
+      if (bo->size != size)
+         continue;
+      if (sgx_bo_wait(bo, 0)) {
+         found = bo;
+         list_del(&bo->cache_link);
+         dev->cache_size -= bo->size;
+         break;
+      }
+      if (++tries == 2)
+         break;
+   }
+   simple_mtx_unlock(&dev->cache_lock);
+   if (found)
+      return found;
+   if (!(found = sgx_bo_create(dev, size, 0, 0)))
+      return NULL;
+   if (!sgx_bo_map(found)) {
+      sgx_bo_destroy(found);
+      return NULL;
+   }
+   found->cached = true;
+   return found;
 }
 
 bool

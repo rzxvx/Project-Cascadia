@@ -9,6 +9,7 @@
 #include "util/u_transfer.h"
 
 struct sgx_bo;
+struct sgx_context;
 struct sgx_screen;
 
 /* Every resource is linear: rows of stride bytes, levels and layers one
@@ -19,7 +20,13 @@ struct sgx_screen;
 struct sgx_resource {
    struct pipe_resource base;
    struct sgx_bo *bo;
-   uint8_t *data;                                 /* a buffer's: CPU memory (M25) */
+   /* a buffer's (M26): data is the CPU's copy, what maps see; bo the
+    * GPU's, made at the first draw that reads the buffer from there, and
+    * behind data by the bytes [dirty_lo, dirty_hi) -- written since by maps
+    * that were synchronized too if dirty_sync */
+   uint8_t *data;
+   uint32_t dirty_lo, dirty_hi;
+   bool dirty_sync;
    uint32_t stride[PIPE_MAX_TEXTURE_LEVELS];      /* bytes per row */
    uint32_t layer_size[PIPE_MAX_TEXTURE_LEVELS];  /* bytes per layer or slice */
    uint32_t offset[PIPE_MAX_TEXTURE_LEVELS];      /* of each level */
@@ -60,6 +67,12 @@ bool sgx_resource_linear(const struct sgx_resource *res, bool *swap, bool *x8);
  * sampled yet (not 2D, no copy). */
 bool sgx_resource_texture(struct sgx_screen *screen, struct sgx_resource *res,
                           const struct pipe_sampler_state *ss, uint32_t words[4]);
+
+/* A buffer's copy for the GPU (M26), brought up to date with the CPU's
+ * first: written in place when no render reads it -- gathered or running
+ * -- or when only unsynchronized maps wrote it since, else made anew (the
+ * old one stays with the renders that read it).  NULL if it cannot be. */
+struct sgx_bo *sgx_buffer_bo(struct sgx_context *ctx, struct sgx_resource *res);
 
 void sgx_resource_screen_init(struct sgx_screen *screen);
 void sgx_resource_context_init(struct pipe_context *pctx);

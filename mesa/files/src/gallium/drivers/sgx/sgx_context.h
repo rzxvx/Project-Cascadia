@@ -9,6 +9,8 @@
 #include "pipe/p_state.h"
 #include "util/slab.h"
 
+#include "sgx_compiler.h"
+#include "sgx_device.h"
 #include "sgx_draw.h"
 #include "sgx_frame.h"
 
@@ -28,9 +30,11 @@ struct sgx_shader {
    struct sgx_fs *compiled;             /* a fragment shader, compiled (M13c) */
    struct sgx_fs *variant[8];           /* and again for blend states (M14) */
    unsigned nvariants;
-   struct sgx_vs *vs_variant[4];        /* a vertex shader on the GPU, for the varyings
-                                           a fragment shader reads (M18) */
+   struct sgx_vs *vs_variant[8];        /* a vertex shader on the GPU, for the varyings
+                                           a fragment shader reads (M18) and the
+                                           attributes' formats (M26) */
    unsigned nvs;
+   unsigned vs_nattrs;                  /* the attributes it reads (sgx_vs_attr_count) */
    bool vs_failed;                      /* it cannot be compiled: the draw module's */
 };
 
@@ -39,7 +43,10 @@ struct sgx_shader {
  * reads, another target, a clear, a full batch. */
 struct sgx_batch_draw {
    struct sgx_frame_layout l;
-   unsigned first, nverts;              /* its vertices: floats from first in verts */
+   /* its vertices: the draw module's, floats from first in verts; a
+    * vertex shader's the CPU made one stream (M26), bytes from first in
+    * vdata -- or none, the fetch reading the application's buffers */
+   unsigned first, nverts;
    struct sgx_pixel_program prog;       /* a copy, uploaded */
    bool compiled;
    unsigned sa;                         /* its secondary attributes, from word sa */
@@ -47,6 +54,12 @@ struct sgx_batch_draw {
    struct sgx_vs *vs;                   /* its vertex shader on the GPU (M18), or NULL */
    unsigned vs_sa;                      /* its uniforms, from word vs_sa in sa */
    unsigned idx, nidx;                  /* its indices, from idx in the batch's */
+   /* a vertex shader's (M26): where the fetch reads each attribute of
+    * vertex 0, the stride, the vertices drawn (nidx of them when it has
+    * indices, else 0, 1, 2, ...), the largest index */
+   uint32_t base[SGX_VS_MAX_ATTRIBS];
+   unsigned stride, count, max_index;
+   bool repacked;
 };
 
 struct sgx_batch {
@@ -54,19 +67,27 @@ struct sgx_batch {
    struct sgx_batch_draw draw[SGX_FRAME_MAX_DRAWS];
    struct sgx_frame_draw fdraw[SGX_FRAME_MAX_DRAWS];    /* (sgx_batch_flush's) */
    unsigned ndraws, cursor;             /* cursor: sgx_frame_place's */
+   unsigned seq;                        /* this one's number, counted from 1 */
    float depth_clear;                   /* what the render's depth starts at */
    struct pipe_resource *zs;            /* the depth buffer, referenced (M24) */
    bool zs_cleared;                     /* its depth cleared at the render's start */
    bool zs_read, zs_written;            /* a draw tests depth, writes it */
    float *verts;
    unsigned nfloats, maxfloats;
+   uint8_t *vdata;                      /* vertex shaders' vertices made one stream */
+   unsigned nbytes, maxbytes;
    uint32_t *sa;
    unsigned nsa, maxsa;
    uint16_t *idx;
    unsigned nidx, maxidx;
    struct pipe_resource *tex[SGX_FRAME_MAX_HANDLES];   /* sampled, referenced */
-   uint32_t handles[SGX_FRAME_MAX_HANDLES];           /* their twiddled copies */
    unsigned ntex;
+   /* the buffers the render lists for the kernel -- the textures' copies,
+    * then buffers' (M26: their GPU copies, referenced in bos[], stamped
+    * with seq) -- SGX_FRAME_MAX_HANDLES at most all told */
+   uint32_t handles[SGX_FRAME_MAX_HANDLES];
+   struct sgx_bo *bos[SGX_FRAME_MAX_HANDLES];
+   unsigned nbos;
    /* programs deleted while draws here may use them: retired from the
     * frame and freed at the flush (M24) */
    struct sgx_vs **dead_vs;
@@ -78,6 +99,24 @@ struct sgx_batch {
 struct sgx_vertex_elements {
    unsigned count;
    struct pipe_vertex_element e[PIPE_MAX_ATTRIBS];
+   uint8_t attr[PIPE_MAX_ATTRIBS];      /* how the fetch reads each: an SGX_ATTR, 0 if
+                                           it cannot (M26) */
+};
+
+/* M26: a vertex shader's draw on its way into the batch (sgx_draw.c,
+ * gpu_vs_draw to submit): its attributes' addresses for vertex 0 -- in
+ * buffers' GPU copies (bos[]), or offsets in a vertex of the nverts the CPU
+ * made one stream in vdata -- one stride; the vertices drawn, count of
+ * them: from indices[] when indexed, else 0, 1, 2, ... */
+struct sgx_vtx {
+   uint32_t base[SGX_VS_MAX_ATTRIBS];
+   unsigned stride;
+   bool repacked;
+   unsigned nverts;
+   unsigned count, max_index;
+   bool indexed;
+   struct sgx_bo *bos[SGX_VS_MAX_ATTRIBS];
+   unsigned nbos;
 };
 
 struct sgx_context {
@@ -106,11 +145,14 @@ struct sgx_context {
    struct sgx_frame_layout layout;      /* of verts, for the bound shaders */
    float *verts;
    unsigned nverts, maxfloats;
-   /* M18: the vertex shader on the GPU -- verts its attributes, the
-    * triangles indices into them, its uniforms */
+   /* M18: the vertex shader on the GPU -- its vertices (M26: vtx, vdata),
+    * the triangles indices into them, its uniforms */
    struct sgx_vs *gpu_vs;
+   struct sgx_vtx vtx;
+   uint8_t *vdata;
+   unsigned maxvdata;
    uint16_t *indices;
-   unsigned nindices, maxindices;
+   unsigned maxindices;
    uint32_t vs_sa[128];
    const struct pipe_rasterizer_state *rast;
    const struct sgx_vertex_elements *velems;
@@ -137,6 +179,13 @@ static inline struct sgx_context *
 sgx_context(struct pipe_context *p)
 {
    return (struct sgx_context *)p;
+}
+
+/* whether the gathered draws read bo (a buffer's GPU copy, M26) */
+static inline bool
+sgx_batch_reads(const struct sgx_context *ctx, const struct sgx_bo *bo)
+{
+   return ctx->batch.ndraws && bo->batch_ctx == ctx && bo->batch_seq == ctx->batch.seq;
 }
 
 struct pipe_context *sgx_context_create(struct pipe_screen *pscreen, void *priv,
