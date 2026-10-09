@@ -99,5 +99,21 @@ uint64_t usse_unpack_unorm8(struct usse_reg dest, struct usse_reg src, unsigned 
 /* o<dest> = four F32 values packed to 8 bits each, scaled from [0, 1]:
  * src, src + 1 (a pair) and src + 2, src + 3; src even */
 uint64_t usse_pack_unorm8(unsigned dest_o, struct usse_reg src);
+/* the same into another register (an output or a primary attribute) */
+uint64_t usse_pack_unorm8_to(struct usse_reg dest, struct usse_reg src);
+
+/* VTST: predicate p<pdst> = (src != 0), src F32, one lane (src - #0 by
+ * VSUB, the zero test "non-zero"; iOS's c00_discard has the same form) */
+uint64_t usse_vtst_ne0(unsigned pdst, struct usse_reg src);
+/* KILL under a short predicate (0 always, 1 p0, 2 p1, 3 !p0): the
+ * instruction that ends the first phase of iOS's c00_discard, with the
+ * punch-through pass type in ISP state A.  Not used yet: here it kills
+ * nothing (docs/research/p105-mesa.md, M19). */
+uint64_t usse_kill(unsigned pred);
+/* VTST: p<pdst> = the pixel's facing bit (bit 0 of special register g16,
+ * iOS's v09_frontfacing: `and(g16, #1) ne 0`) */
+uint64_t usse_vtst_facing(unsigned pdst);
+/* LIMM under an extended predicate (0 none, 1 p0, 2 p1, 5 !p0, 6 !p1) */
+uint64_t usse_limm_pred(struct usse_reg dest, uint32_t value, unsigned pred);
 
 #endif

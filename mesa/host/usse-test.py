@@ -50,6 +50,10 @@ CASES = {
     'unpack_r6_o0_zw': ('VPCK', 'pck.f32.u8 r6.xy, o0.zwzw scale', None),
     'limm_r5': ('LIMM', 'r5 <- #0x3f800000', None),
     'limm_r100': ('LIMM', 'r100 <- #0xdeadbeef', None),
+    'vtst_r5': ('VTST', 'tst p1.y = sub.f32(r4, #0.x) ne 0', None),
+    'vtst_pa4': ('VTST', 'tst p0.x = sub.f32(pa4, #0.x) ne 0', None),
+    # iOS's c00_discard: `p1? KILL`, the end of its first phase
+    'kill_p1_end': ('SPEC', '', 0xf9340426c0000280),
 }
 
 

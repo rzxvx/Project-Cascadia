@@ -32,6 +32,7 @@ struct sgx_blend_key {
    uint8_t alpha_func, alpha_src, alpha_dst;
    uint8_t colormask;
    uint8_t tex_swap, tex_x8;
+   uint8_t front_ccw;      /* gallium's, for gl_FrontFacing (0 when not read) */
 };
 
 #define SGX_FS_MAX_SAMPLERS 8

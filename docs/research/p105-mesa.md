@@ -1029,9 +1029,10 @@ each triangle (glfs's are now).
 `gl_FragCoord` (2026-10-08) is one more iterate: the PDS iterates the
 pixel's position like a varying, source 13 in the control word's bits
 15:12 (`0x0fc0d00f`), the fragment shader reads it as an input like any
-other (glfs 25 of 25 with two cases on it).
+other (glfs 25 of 25 with two cases on it). discard and gl_FrontFacing:
+M19.
 
-Not yet: textures (M14), discard, gl_FrontFacing, real control flow, F16 for mediump, two lanes an instruction, constants from
+Not yet: textures (M14), real control flow, F16 for mediump, two lanes an instruction, constants from
 the hardware's table, more than 128 uniform words (one DMA so far; glfs
 loads at most 9 words, the pack's state program 21 the same way).
 `SGX_NOCOMPILE=1` draws the M13a way; `SGX_DEBUG_SHADER=1` prints each
@@ -1344,6 +1345,56 @@ against 55%**, the gears lit and culled as before; weston's own drawing
 The draw module still does what the GPU's vertex side does not: points
 and lines, flat shading, polygon modes other than fill, clip planes,
 primitive restart, culling both faces.
+
+## M19: discard and gl_FrontFacing
+
+**gl_FrontFacing (2026-10-09)** is bit 0 of special register g16, as iOS's
+v09_frontfacing reads it: `VTST p0 = and(g16, #1) ne 0` (`0x488b0281600c2801`).
+The compiler makes `load_front_face` `0 < load_front_face_fsign` and the sign
+`LIMM -1; VTST p0; p0? LIMM +1` (LIMM's predicate in bits 43:41). The bit is
+set for triangles anticlockwise in the target as the TA sees it -- gallium's
+sense -- so a shader that reads it is compiled for the rasterizer's
+`front_ccw` (a variant key). glcull's `facing` cases (red the front, green the
+back, both windings, texture and pbuffer): right the first time, and wrong
+with the sense flipped, so the test tells. On the draw module's path they
+were wrong at first: the driver's vbuf render turned every triangle
+anticlockwise, a precaution from M12 against the pack's state culling --
+which it does not (word 18's bits 1:0 are 0, M18). The triangles now reach
+the TA as the draw module winds them. glcull 21 of 21 either way.
+
+**discard (2026-10-09).** iOS's c00_discard (`if (u0.x > 1.5) discard`) is
+the one draw in the corpus with ISP state A `0x09d00300` -- bit 27 set, the
+other 61 have `0x01d00300` -- and a program of two phases: the first
+(`PHAS wait 1, next at` the second) tests into predicates (`p0` the
+condition, `p1.x` true, `p0? p1.y = ...`), moves the colour into pa0 and ends
+with `f9340426c0000280`, which Vita3K's tables read as `p1? KILL` (with the
+end bit, bit 50); the second (`PHAS wait 7`) is `or o0, pa0`. The PDS program
+is the usual one. Rebuilt in our compiler (`usse_vtst_ne0`, `usse_kill`; the
+encoder test has iOS's word bit for bit), on the iPad (`gldiscard`):
+
+- one phase, KILL anywhere, bit 27 set: nothing killed, the colour written,
+  no depth written (the ISP waits for a feedback that never comes);
+- two phases with iOS's `wait 1`: the second phase never runs -- nothing
+  written without the depth test, black and depth written everywhere with
+  it; the same with a constant colour made in the second phase;
+- `wait 0` or 5: the phases chain (as a vertex program's do) and the colour
+  is written, KILL still kills nothing; 2, 3, 4 and 6 time the render out;
+- no change from the KILL's predicate (always, p0, p1, !p0), the test's
+  sense or channel (iOS's `p1.x` / `p1.y`), the bits where iOS's word and
+  Vita3K's pattern differ (37, 29:28), or ISP state A's bits 25..27 in any
+  combination (iOS's exact `0x09d00300` included).
+
+So the punch-through pass wants something outside the draw's state and
+program -- likely in the render's 3D registers, which the GL payloads
+captured on iOS (none with a discard) cannot show. Until then **discard
+keeps the tile's colour**: the conditions are gathered into a temporary,
+and at the end each channel is `kill != 0 ? dst : colour`, dst being o0
+unpacked as the blending reads it (every draw is a translucent object,
+shaded in order). The colour is right in every case, blending included; the
+depth is not: a discarded pixel still writes it when depth writes are on.
+`gldiscard`: a varying's half, two discards, a uniform both ways, an alpha
+test from a texture, blended -- 6 of 6 on both vertex paths, the depth case
+reported as known wrong.
 
 ## Testing, without and with the device
 

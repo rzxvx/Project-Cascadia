@@ -188,16 +188,23 @@ usse_limm(struct usse_reg dest, uint32_t value)
 uint64_t
 usse_pack_unorm8(unsigned dest_o, struct usse_reg src)
 {
-   unsigned ext, bank;
+   return usse_pack_unorm8_to(usse_reg(USSE_OUTPUT, dest_o), src);
+}
+
+uint64_t
+usse_pack_unorm8_to(struct usse_reg dest, struct usse_reg src)
+{
+   unsigned ext, bank, dext, dbank;
 
    assert(!(src.num & 1));
    src_bank(src, &ext, &bank);
+   dest_bank(dest, &dext, &dbank);
    /* VPCK: source format 6 (F32), dest 0 (U8), mask xyzw, scale; channels
     * x y z w from src (x y) and src + 2 (z w), the second source's bank
     * the first's */
-   return bits(0x08, 63, 59) | SKIPINV | bits(ext, 49, 49) | bits(ext, 48, 48) |
-          bits(6, 43, 41) | bits(0, 40, 38) | bits(0xf, 37, 34) | bits(1, 33, 32) |
-          bits(bank, 31, 30) | bits(bank, 29, 28) | bits(dest_o, 27, 21) |
+   return bits(0x08, 63, 59) | SKIPINV | bits(dext, 51, 51) | bits(ext, 49, 49) |
+          bits(ext, 48, 48) | bits(6, 43, 41) | bits(0, 40, 38) | bits(0xf, 37, 34) |
+          bits(dbank, 33, 32) | bits(bank, 31, 30) | bits(bank, 29, 28) | bits(dest.num, 27, 21) |
           bits(3, 20, 19) | bits(1, 18, 18) | bits(1, 17, 16) | bits(2, 15, 14) |
           bits(src.num >> 1, 13, 8) | bits(0, 7, 7) | bits((src.num >> 1) + 1, 6, 1);
 }
@@ -245,4 +252,41 @@ usse_unpack_unorm8(struct usse_reg dest, struct usse_reg src, unsigned chan)
           bits(dbank, 33, 32) | bits(bank, 31, 30) | bits(2, 29, 28) | bits(dest.num, 27, 21) |
           bits(3, 20, 19) | bits(1, 18, 18) | bits(chan + 1, 17, 16) | bits(2, 15, 14) |
           bits(src.num >> 1, 13, 8) | bits(src.num & 1, 7, 7) | bits(chan >> 1, 6, 1);
+}
+
+uint64_t
+usse_vtst_ne0(unsigned pdst, struct usse_reg src)
+{
+   unsigned ext, bank;
+
+   src_bank(src, &ext, &bank);
+   /* Vita3K's fields: F32 (47), src2 xxxx (46), sign test 0 and zero test
+    * 2 (43:40: non-zero), the channel tested (38:36: src's lane), the
+    * predicate (35:34), the dest unwritten (no test_wben; bank and ext as
+    * iOS has them), ALU 0 op 14 (VSUB), src2 the immediate 0 */
+   return bits(0x09, 63, 59) | SKIPINV | bits(1, 51, 51) | bits(ext, 49, 49) |
+          bits(1, 48, 48) | bits(1, 47, 47) | bits(1, 46, 46) | bits(0, 43, 42) |
+          bits(2, 41, 40) | bits(lane(src), 38, 36) | bits(pdst, 35, 34) | bits(1, 33, 32) |
+          bits(bank, 31, 30) | bits(2, 29, 28) | bits(14, 17, 14) | bits(pair(src), 13, 7);
+}
+
+uint64_t
+usse_vtst_facing(unsigned pdst)
+{
+   /* iOS's word: bitwise ALU (3) op 0 (AND), src1 special 80, src2 the
+    * immediate 1, the zero test non-zero */
+   return (0x488b0281600c2801ull & ~bits(3, 35, 34)) | bits(pdst, 35, 34);
+}
+
+uint64_t
+usse_limm_pred(struct usse_reg dest, uint32_t value, unsigned pred)
+{
+   return usse_limm(dest, value) | bits(pred, 43, 41);
+}
+
+uint64_t
+usse_kill(unsigned pred)
+{
+   /* iOS's word less its end bit and its predicate */
+   return (0xf9340426c0000280ull & ~USSE_END & ~bits(3, 42, 41)) | bits(pred, 42, 41);
 }

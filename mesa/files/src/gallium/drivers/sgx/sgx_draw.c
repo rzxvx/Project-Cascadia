@@ -292,26 +292,10 @@ render_index(struct sgx_render *sr, unsigned index)
       ctx->verts = p;
       ctx->maxfloats = n;
    }
+   /* the triangles as the draw module wound them: the TA culls nothing
+    * (state word 18, M18), and gl_FrontFacing reads the winding */
    emit_vertex(sr, (const float *)(sr->vertices + index * sr->vertex_size),
                ctx->verts + ctx->nverts++ * vf);
-
-   /* every triangle anticlockwise, as the clear's quad is: the draw module
-    * has culled what GL culls, and the pack's state may cull the rest */
-   if (ctx->nverts % 3 == 0) {
-      float *t = ctx->verts + (ctx->nverts - 3) * vf;
-      float tmp[4 * (1 + SGX_FRAME_MAX_VARYINGS)];
-
-      /* (on the screen: x / w, y / w) */
-      float x0 = t[0] / t[3], y0 = t[1] / t[3], x1 = t[vf] / t[vf + 3];
-      float y1 = t[vf + 1] / t[vf + 3], x2 = t[2 * vf] / t[2 * vf + 3];
-      float y2 = t[2 * vf + 1] / t[2 * vf + 3];
-
-      if ((x1 - x0) * (y2 - y0) - (x2 - x0) * (y1 - y0) < 0) {
-         memcpy(tmp, t + vf, vf * sizeof(float));
-         memcpy(t + vf, t + 2 * vf, vf * sizeof(float));
-         memcpy(t + 2 * vf, tmp, vf * sizeof(float));
-      }
-   }
 }
 
 static void
@@ -560,7 +544,11 @@ fs_for_draw(struct sgx_context *ctx)
          key.tex_x8 |= x8 << unit;
       }
    }
-   if (!key.enable && key.colormask == 0xf && !key.tex_swap && !key.tex_x8)
+   /* gl_FrontFacing: which winding is the front */
+   if (ctx->rast && ctx->rast->front_ccw &&
+       BITSET_TEST(sh->nir->info.system_values_read, SYSTEM_VALUE_FRONT_FACE))
+      key.front_ccw = 1;
+   if (!key.enable && key.colormask == 0xf && !key.tex_swap && !key.tex_x8 && !key.front_ccw)
       return sh->compiled;
    for (unsigned i = 0; i < sh->nvariants; i++)
       if (!memcmp(&sh->variant[i]->blend, &key, sizeof(key)))

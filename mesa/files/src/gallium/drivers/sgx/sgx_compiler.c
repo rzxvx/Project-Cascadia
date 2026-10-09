@@ -79,6 +79,8 @@ struct comp {
    int blend_sa;                        /* the blend colour's words, -1 none */
    struct operand colour[4];
    bool have_colour[4];
+   int kill;                            /* the temporary that is not 0 for a pixel discarded, or -1 */
+   bool front_when_set;                 /* gl_FrontFacing: the facing bit set is the front */
    /* a vertex shader's outputs: 0 the position, 1 + k varying k of the
     * layout (varying_slot[k]); the attributes it reads */
    const unsigned *varying_slot;
@@ -707,6 +709,41 @@ intrinsic(struct comp *c, nir_intrinsic_instr *in)
           in->intrinsic == nir_intrinsic_load_blend_const_color_g_float ? 1 :
           in->intrinsic == nir_intrinsic_load_blend_const_color_b_float ? 2 : 3));
       return;
+   case nir_intrinsic_terminate:
+   case nir_intrinsic_terminate_if:
+   case nir_intrinsic_demote:
+   case nir_intrinsic_demote_if: {
+      /* discard: the conditions gathered (their largest) into a temporary of
+       * its own, which output() tests */
+      bool cond = in->intrinsic == nir_intrinsic_terminate_if ||
+                  in->intrinsic == nir_intrinsic_demote_if;
+      struct operand o = cond ? resolve(nir_get_scalar(in->src[0].ssa, 0)) :
+                                (struct operand){ .is_const = true, .c = 1.0f };
+      struct scratch sc = { 0 };
+
+      if (!c->fs) {
+         fail(c, "discard in a vertex shader");
+         break;
+      }
+      if (c->kill < 0) {
+         c->kill = block(c, 2, 2);   /* and a copy in the odd one */
+         move_into(c, treg(c, c->kill), o, &sc);
+      } else {
+         emit(c, usse_fop(USSE_NMAD_MAX, treg(c, c->kill), treg(c, c->kill),
+                          get(c, o, TAKES_ALL & ~TAKES_NEG, &sc)));
+      }
+      scratch_give_back(c, &sc);
+      break;
+   }
+   case nir_intrinsic_load_front_face_fsign: {
+      /* +1 front, -1 back, by the facing bit (iOS's v09_frontfacing) */
+      struct usse_reg d = define(c, &in->def);
+
+      emit(c, usse_limm(d, f32_bits(c->front_when_set ? -1.0f : 1.0f)));
+      emit(c, usse_vtst_facing(0));
+      emit(c, usse_limm_pred(d, f32_bits(c->front_when_set ? 1.0f : -1.0f), 1));
+      break;
+   }
    case nir_intrinsic_load_barycentric_pixel:
    case nir_intrinsic_load_barycentric_centroid:
    case nir_intrinsic_load_barycentric_sample:
@@ -736,6 +773,9 @@ for_each_read(struct comp *c, nir_instr *instr, void (*f)(struct comp *, struct 
       if (in->intrinsic == nir_intrinsic_store_output)
          for (unsigned i = 0; i < in->src[0].ssa->num_components; i++)
             f(c, resolve(nir_get_scalar(in->src[0].ssa, i)), index);
+      if (in->intrinsic == nir_intrinsic_terminate_if ||
+          in->intrinsic == nir_intrinsic_demote_if)
+         f(c, resolve(nir_get_scalar(in->src[0].ssa, 0)), index);
    } else if (instr->type == nir_instr_type_tex) {
       nir_tex_instr *tex = nir_instr_as_tex(instr);
 
@@ -800,6 +840,24 @@ output(struct comp *c)
       move_into(c, treg(c, base + i), o, &s);
       scratch_give_back(c, &s);
    }
+   if (c->kill >= 0) {
+      /* discarded: the pixel keeps the colour its tile holds (o0, as the
+       * blending reads it) -- every draw is a translucent object, shaded in
+       * order.  The hardware's own way, iOS's c00_discard (a punch-through
+       * pass, two phases, `p1? KILL`), does not work here yet (M19). */
+      unsigned d = block(c, 4, 2);
+
+      emit(c, usse_fmov(treg(c, c->kill + 1), treg(c, c->kill)));
+      emit(c, usse_unpack_unorm8(treg(c, d), usse_reg(USSE_OUTPUT, 0), 0));
+      emit(c, usse_unpack_unorm8(treg(c, d + 2), usse_reg(USSE_OUTPUT, 0), 2));
+      for (unsigned i = 0; i < 4; i++) {
+         uint64_t w;
+
+         usse_fmovc(&w, USSE_TEST_NE0, treg(c, base + i), treg(c, c->kill + (i & 1)),
+                    treg(c, d + i), treg(c, base + i));
+         emit(c, w);
+      }
+   }
    emit(c, usse_pack_unorm8(0, treg(c, base)) | USSE_END);
 }
 
@@ -808,6 +866,7 @@ optimize(nir_shader *s)
 {
    const nir_opt_peephole_select_options flatten = {
       .limit = 1000, .indirect_load_ok = true, .expensive_alu_ok = true,
+      .discard_ok = true,        /* if (c) discard: terminate_if(c) */
    };
    bool progress;
 
@@ -894,6 +953,17 @@ fold_uniform_offset(nir_builder *b, nir_intrinsic_instr *in, void *data)
    b->cursor = nir_before_instr(&in->instr);
    nir_intrinsic_set_base(in, nir_intrinsic_base(in) + nir_src_as_uint(in->src[0]));
    nir_src_rewrite(&in->src[0], nir_imm_int(b, 0));
+   return true;
+}
+
+/* gl_FrontFacing as 0 < its sign, which intrinsic() makes */
+static bool
+lower_front_face(nir_builder *b, nir_intrinsic_instr *in, void *data)
+{
+   if (in->intrinsic != nir_intrinsic_load_front_face)
+      return false;
+   b->cursor = nir_before_instr(&in->instr);
+   nir_def_replace(&in->def, nir_flt(b, nir_imm_float(b, 0.0f), nir_load_front_face_fsign(b)));
    return true;
 }
 
@@ -989,6 +1059,7 @@ sgx_compile_fs(const nir_shader *fs, const struct sgx_blend_key *blend, char *wh
    unsigned out_at;
 
    c.why = why;
+   c.kill = -1;
    c.why_size = why_size;
    why[0] = 0;
    if (!(c.fs = CALLOC_STRUCT(sgx_fs)))
@@ -1026,6 +1097,10 @@ sgx_compile_fs(const nir_shader *fs, const struct sgx_blend_key *blend, char *wh
       }
       NIR_PASS(_, s, nir_lower_tex, &tex);
    }
+   /* the facing bit is set for triangles anticlockwise in the target, row
+    * 0 at the top -- gallium's sense (glcull, M19) */
+   c.front_when_set = blend && blend->front_ccw;
+   NIR_PASS(_, s, nir_shader_intrinsics_pass, lower_front_face, nir_metadata_control_flow, NULL);
    if (!translate(&c, s))
       goto out;
    out_at = util_dynarray_num_elements(&c.code, uint64_t);
@@ -1084,6 +1159,7 @@ sgx_compile_vs(const nir_shader *vs, const unsigned *varying_slot, unsigned nvar
    nir_shader *s;
 
    c.why = why;
+   c.kill = -1;
    c.why_size = why_size;
    why[0] = 0;
    if (nvaryings > SGX_FRAME_MAX_VARYINGS || !(c.vs = CALLOC_STRUCT(sgx_vs)))

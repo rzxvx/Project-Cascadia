@@ -2,7 +2,8 @@
  * triangle anticlockwise on the left (red), one clockwise on the right
  * (green), drawn with culling off, back faces culled, front faces culled,
  * and front faces clockwise; the same with the windings the other way
- * round (the side must not matter); then a quad over the whole of clip
+ * round (the side must not matter); gl_FrontFacing, red the front and
+ * green the back, both ways round; then a quad over the whole of clip
  * space in a viewport that does not start at 0, whose edges are checked,
  * and in two depth ranges (behind the depth cleared, then in front).  All
  * of it into a texture, then into a pbuffer -- the window system's kind of
@@ -49,8 +50,9 @@ static void ppm(const char *dir, const char *where, const char *name)
 	fclose(f);
 }
 
-/* the cases into what is bound; the ones wrong */
-static int cases(const char *where, const char *dir, int depth, int *n)
+/* the cases into what is bound, with program p (pf: gl_FrontFacing's);
+ * the ones wrong */
+static int cases(const char *where, const char *dir, int depth, GLuint p, GLuint pf, int *n)
 {
 	/* left: anticlockwise (on the screen, GL's y up); right: clockwise */
 	static const float pos[] = {
@@ -112,6 +114,31 @@ static int cases(const char *where, const char *dir, int depth, int *n)
 		       c[k].swap ? "clockwise" : "anticlockwise", l ? "drawn" : "culled",
 		       c[k].swap ? "anticlockwise" : "clockwise", r ? "drawn" : "culled");
 		ppm(dir, where, c[k].name);
+	}
+
+	/* gl_FrontFacing, culling off: red the front, green the back */
+	for (int cw = 0; cw < 2; cw++, (*n)++) {
+		int lr, lg, rr, rg, ok;
+
+		glUseProgram(pf);
+		glDisable(GL_CULL_FACE);
+		glFrontFace(cw ? GL_CW : GL_CCW);
+		glClear(GL_COLOR_BUFFER_BIT);
+		glVertexAttribPointer(0, 4, GL_FLOAT, GL_FALSE, 0, pos);
+		glDrawArrays(GL_TRIANGLES, 0, 6);
+		glReadPixels(0, 0, W, H, GL_RGBA, GL_UNSIGNED_BYTE, px);
+		lr = is(W / 4, H / 2 - 100, 255, 0, 0);
+		lg = is(W / 4, H / 2 - 100, 0, 255, 0);
+		rr = is(3 * W / 4, H / 2 - 100, 255, 0, 0);
+		rg = is(3 * W / 4, H / 2 - 100, 0, 255, 0);
+		ok = cw ? lg && rr : lr && rg;
+		failed += !ok;
+		printf("%-7s %-10s %s: left (anticlockwise) %s, right (clockwise) %s\n", where,
+		       cw ? "facing_cw" : "facing", ok ? "ok   " : "WRONG",
+		       lr ? "front" : lg ? "back" : "neither", rr ? "front" : rg ? "back" : "neither");
+		ppm(dir, where, cw ? "facing_cw" : "facing");
+		glFrontFace(GL_CCW);
+		glUseProgram(p);
 	}
 
 	/* the viewport: x 192..576, y 128..640 (GL's, from the bottom) */
@@ -184,6 +211,9 @@ int main(int argc, char **argv)
 	                        "void main() { v = c; gl_Position = p; }\n";
 	static const char *fs = "precision mediump float; varying vec4 v;\n"
 	                        "void main() { gl_FragColor = v; }\n";
+	static const char *fs_facing = "precision mediump float; varying vec4 v;\n"
+	                               "void main() { gl_FragColor = gl_FrontFacing ?\n"
+	                               "  vec4(1.0, 0.0, 0.0, 1.0) : vec4(0.0, 1.0, v.z, 1.0); }\n";
 	static const EGLint cfg_attrs[] = {
 		EGL_SURFACE_TYPE, EGL_PBUFFER_BIT, EGL_RENDERABLE_TYPE, EGL_OPENGL_ES2_BIT,
 		EGL_RED_SIZE, 8, EGL_GREEN_SIZE, 8, EGL_BLUE_SIZE, 8, EGL_ALPHA_SIZE, 8, EGL_NONE,
@@ -193,7 +223,7 @@ int main(int argc, char **argv)
 	EGLint ctx_attrs[] = { EGL_CONTEXT_CLIENT_VERSION, 2, EGL_NONE }, ncfg;
 	const char *dir = argc > 2 && !strcmp(argv[1], "--ppm") ? argv[2] : NULL;
 	int failed = 0, n = 0;
-	GLuint rt, zb, fbo, p;
+	GLuint rt, zb, fbo, p, pf;
 	EGLSurface pb;
 	EGLDisplay dpy;
 	EGLContext ctx;
@@ -230,13 +260,24 @@ int main(int argc, char **argv)
 	glBindAttribLocation(p, 0, "p");
 	glBindAttribLocation(p, 1, "c");
 	glLinkProgram(p);
+	pf = glCreateProgram();
+	for (int i = 0; i < 2; i++) {
+		GLuint s = glCreateShader(i ? GL_FRAGMENT_SHADER : GL_VERTEX_SHADER);
+
+		glShaderSource(s, 1, i ? &fs_facing : &vs, NULL);
+		glCompileShader(s);
+		glAttachShader(pf, s);
+	}
+	glBindAttribLocation(pf, 0, "p");
+	glBindAttribLocation(pf, 1, "c");
+	glLinkProgram(pf);
 	glUseProgram(p);
 	glEnableVertexAttribArray(0);
 	glEnableVertexAttribArray(1);
 
-	failed += cases("texture", dir, 1, &n);
+	failed += cases("texture", dir, 1, p, pf, &n);
 	glBindFramebuffer(GL_FRAMEBUFFER, 0);
-	failed += cases("pbuffer", dir, 0, &n);
+	failed += cases("pbuffer", dir, 0, p, pf, &n);
 	printf("%d of %d cases right\n", n - failed, n);
 	eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
 	eglTerminate(dpy);
