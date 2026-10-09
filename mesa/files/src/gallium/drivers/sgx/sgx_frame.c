@@ -1864,6 +1864,17 @@ sgx_frame_upload(struct sgx_frame *f, struct sgx_pixel_program *p)
    return upload(f, p);
 }
 
+bool
+sgx_frame_extend_indexed(struct sgx_frame *f, unsigned *cursor, unsigned stride,
+                         unsigned nverts)
+{
+   if (*cursor % stride || *cursor / stride + nverts > 65536 ||
+       *cursor + nverts * stride > EXT_FRAME - EXT_VB)
+      return false;
+   *cursor += nverts * stride;
+   return true;
+}
+
 unsigned
 sgx_frame_max_draws(const struct sgx_frame *f)
 {
@@ -1997,8 +2008,6 @@ draw_state(struct sgx_frame *f, const struct sgx_frame_draw *d, uint32_t base,
 static bool
 same_state(const struct sgx_frame_draw *a, const struct sgx_frame_draw *b)
 {
-   const struct sgx_frame_state *x = &a->st, *y = &b->st;
-
    if (!a->prog != !b->prog || a->vs != b->vs || a->l.nvaryings != b->l.nvaryings ||
        a->l.f32 != b->l.f32 || a->l.colour != b->l.colour)
       return false;
@@ -2006,14 +2015,7 @@ same_state(const struct sgx_frame_draw *a, const struct sgx_frame_draw *b)
                    a->prog->nsa != b->prog->nsa ||
                    !sgx_words_equal(a->sa, b->sa, a->prog->nsa)))
       return false;
-   return x->depth_func == y->depth_func && x->depth_write == y->depth_write &&
-          x->viewport == y->viewport && x->cull == y->cull &&
-          x->stencil_on == y->stencil_on && x->stencil == y->stencil &&
-          x->stencil_ref == y->stencil_ref &&
-          (!x->viewport || (x->scale[0] == y->scale[0] && x->scale[1] == y->scale[1] &&
-                            x->scale[2] == y->scale[2] && x->translate[0] == y->translate[0] &&
-                            x->translate[1] == y->translate[1] &&
-                            x->translate[2] == y->translate[2]));
+   return sgx_frame_state_equal(&a->st, &b->st);
 }
 
 int
@@ -2074,6 +2076,8 @@ sgx_frame_render(struct sgx_frame *f, struct sgx_resource *rt,
              !put(f, base + DRAW_PROG, prog, f->tsize[T_FULLPROG]))
             return -EFAULT;
          state_at = base;
+      } else {
+         sgx_stat_same++;
       }
       /* the vertex side's constants (a vertex shader's uniforms: its loader,
        * the words in fours -- the corpus's x00, x02), the state, the draw

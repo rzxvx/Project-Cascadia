@@ -1832,7 +1832,16 @@ uniform words a program reads are cleared. And musl's `memcmp` goes a byte
 at a time: the comparisons on the draw path (variant keys, those above)
 are word by word, which alone took the debug build 20 -> 22.
 
-At 22 frames a second (debug build) the CPU is still the bound: SDL 3 a
+**Draws merged.** Counting what the renders' draws had in common showed it:
+of SuperTux's ~1050 draws a frame, ~990 have the state of the draw before
+them -- the same program, texture, uniforms -- and draw one tile each (6
+or 7 indices): SDL issues a tile a draw. Such a draw's vertices and
+triangles are added to the last draw now instead of being a draw of their
+own: ~1050 draws a frame become ~60 in the render, 22 -> 24 frames a
+second. The GPU hardly notices (36 ms; objects were cheap for it); the
+cost of a draw is before the driver.
+
+At 24 frames a second (debug build) the CPU is still the bound: SDL 3 a
 quarter, musl a quarter (memcpy, memcmp and string functions, much of it
 Mesa's and SDL's), Mesa's state tracker and the driver a third. The old way
 to the screen (M8's `libsgxsdl`, SDL's renderer replaced by the pack's

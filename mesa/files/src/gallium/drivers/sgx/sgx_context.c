@@ -142,6 +142,10 @@ sgx_flush(struct pipe_context *pctx, struct pipe_fence_handle **fence, unsigned 
                    (double)sgx_ioctls[SGX_IOCTL_WAIT] / ctx->stat_frames,
                    (double)sgx_ioctls[SGX_IOCTL_SUBMIT] / ctx->stat_frames);
          memset(sgx_ioctls, 0, sizeof(sgx_ioctls));
+         mesa_logi("sgx:  a frame's draws: %.1f merged into the last, %.1f rendered with the "
+                   "last one's state", (double)sgx_stat_merged / ctx->stat_frames,
+                   (double)sgx_stat_same / ctx->stat_frames);
+         sgx_stat_same = sgx_stat_verts = sgx_stat_tex_changes = sgx_stat_merged = 0;
          if (ctx->debug_sync)
             mesa_logi("sgx:  %.1f ms a render on the GPU", ctx->stat_gpu / 1e6 / ctx->stat_renders);
          ctx->stat_gpu = 0;

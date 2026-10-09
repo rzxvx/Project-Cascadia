@@ -272,6 +272,7 @@ sgx_fence_reference(struct sgx_fence **ptr, struct sgx_fence *f)
  * (SGX_DEBUG=fps) */
 int64_t sgx_fence_waited;
 unsigned sgx_ioctls[SGX_IOCTL_KINDS];
+unsigned sgx_stat_same, sgx_stat_verts, sgx_stat_tex_changes, sgx_stat_merged;
 
 bool
 sgx_fence_wait(struct sgx_fence *f, uint64_t timeout_ns)

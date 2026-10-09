@@ -1165,6 +1165,38 @@ submit(struct sgx_context *ctx)
       unsigned cursor = b->cursor, nidx = vs ? ctx->nindices : 0;
       struct sgx_batch_draw *bd;
 
+      /* the last draw's state, exactly -- SDL draws a tile a draw, a
+       * frame's thousand of them alike -- : its vertices and triangles
+       * added to it instead (M25) */
+      if (vs && b->ndraws && b->draw[b->ndraws - 1].vs == vs &&
+          b->nidx + nidx + 8 * b->ndraws <= SGX_FRAME_MAX_INDICES) {
+         struct sgx_batch_draw *p = &b->draw[b->ndraws - 1];
+         unsigned c = b->cursor;
+
+         if (p->compiled == (fs != NULL) &&
+             (!fs || (p->prog.code_va == fs->prog.code_va && p->prog.pds_va == fs->prog.pds_va &&
+                      sgx_words_equal(b->sa + p->sa, sa, nsa))) &&
+             p->l.nvaryings == ctx->layout.nvaryings && p->l.f32 == ctx->layout.f32 &&
+             p->l.colour == ctx->layout.colour && sgx_frame_state_equal(&p->st, &st) &&
+             p->vs_sa + nvsa <= b->nsa && sgx_words_equal(b->sa + p->vs_sa, ctx->vs_sa, nvsa) &&
+             p->first + p->nverts * vf == b->nfloats && p->idx + p->nidx == b->nidx &&
+             sgx_frame_extend_indexed(screen->frame, &c, vf * 4, n) &&
+             grow((void **)&b->verts, &b->maxfloats, b->nfloats + n * vf, sizeof(float)) &&
+             grow((void **)&b->idx, &b->maxidx, b->nidx + nidx, sizeof(uint16_t))) {
+            memcpy(b->verts + b->nfloats, ctx->verts + done * vf, n * vf * sizeof(float));
+            for (unsigned i = 0; i < nidx; i++)
+               b->idx[b->nidx + i] = ctx->indices[i] + p->nverts;
+            p->nverts += n;
+            p->nidx += nidx;
+            b->nfloats += n * vf;
+            b->nidx += nidx;
+            b->cursor = c;
+            done += n;
+            sgx_stat_merged++;
+            continue;
+         }
+      }
+
       /* room in this render: a draw, its vertices, its textures */
       for (unsigned i = 0; fs && i < fs->nsamplers; i++) {
          unsigned k;

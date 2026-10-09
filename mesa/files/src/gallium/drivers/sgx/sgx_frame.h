@@ -170,6 +170,24 @@ struct sgx_frame_draw {
 #define SGX_FRAME_MAX_DRAWS 2048
 unsigned sgx_frame_max_draws(const struct sgx_frame *f);
 
+/* the same ISP state and viewport (field by field: padding) */
+static inline bool
+sgx_frame_state_equal(const struct sgx_frame_state *x, const struct sgx_frame_state *y)
+{
+   return x->depth_func == y->depth_func && x->depth_write == y->depth_write &&
+          x->viewport == y->viewport && x->cull == y->cull &&
+          x->stencil_on == y->stencil_on && x->stencil == y->stencil &&
+          x->stencil_ref == y->stencil_ref &&
+          (!x->viewport || (x->scale[0] == y->scale[0] && x->scale[1] == y->scale[1] &&
+                            x->scale[2] == y->scale[2] && x->translate[0] == y->translate[0] &&
+                            x->translate[1] == y->translate[1] &&
+                            x->translate[2] == y->translate[2]));
+}
+
+/* sgx_frame_place_indexed()'s last draw grown by nverts more vertices */
+bool sgx_frame_extend_indexed(struct sgx_frame *f, unsigned *cursor, unsigned stride,
+                              unsigned nverts);
+
 /* n 32-bit words the same (musl's memcmp goes a byte at a time) */
 static inline bool
 sgx_words_equal(const uint32_t *a, const uint32_t *b, unsigned n)

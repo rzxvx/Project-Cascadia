@@ -81,6 +81,8 @@ extern int64_t sgx_fence_waited;
 void sgx_trace_mark(const char *what);
 enum { SGX_IOCTL_CREATE, SGX_IOCTL_MMAP, SGX_IOCTL_WAIT, SGX_IOCTL_SUBMIT, SGX_IOCTL_KINDS };
 extern unsigned sgx_ioctls[SGX_IOCTL_KINDS];
+/* SGX_DEBUG=fps: draws whose state was the last one's, vertices, textures */
+extern unsigned sgx_stat_same, sgx_stat_verts, sgx_stat_tex_changes, sgx_stat_merged;
 
 /* One render.  handles[] lists every buffer it touches (the render
  * details' among them); done is signalled when its 3D pass is over. */
