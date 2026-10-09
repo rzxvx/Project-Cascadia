@@ -2,7 +2,8 @@
  * with a packed depth/stencil buffer; quads drawn with stencil ops, then a
  * green quad over the whole target with a stencil test.  Four places across
  * are read: g green (the test passed), k black (failed).  All of a case in
- * one render: the stencil lives in the tiles.
+ * one render, but the two_renders ones: a glFinish between the marks and
+ * the test, the stencil stored and loaded between them (M24).
  *
  *   sgx-gl glstencil [CASE...]
  */
@@ -45,13 +46,13 @@ int main(int argc, char **argv)
 	static const char *names[] = {
 		"replace_equal", "replace_notequal", "incr_twice", "decr_wrap", "invert",
 		"zero", "write_mask", "compare_mask", "depth_fail", "never", "less",
-		"clear_value",
+		"clear_value", "two_renders", "two_renders_clear",
 	};
 	/* what the four places (eighths 1, 3, 5, 7) should be */
 	static const char *want[] = {
 		"ggkk", "kkgg", "ggkk", "ggkk", "ggkk",
 		"kkgg", "ggkk", "gggg", "kkgg", "kkkk", "ggkk",
-		"ggkk",
+		"ggkk", "ggkk", "ggkk",
 	};
 	PFNEGLGETPLATFORMDISPLAYEXTPROC get_display;
 	EGLint ctx_attrs[] = { EGL_CONTEXT_CLIENT_VERSION, 2, EGL_NONE };
@@ -109,7 +110,7 @@ int main(int argc, char **argv)
 		glDisable(GL_STENCIL_TEST);
 		glStencilMask(0xff);
 		glClearColor(0, 0, 0, 1);
-		glClearStencil(k == 11 ? 5 : 0);
+		glClearStencil(k == 11 || k == 13 ? 5 : 0);
 		glClearDepthf(1);
 		glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
 		glEnable(GL_STENCIL_TEST);
@@ -117,7 +118,7 @@ int main(int argc, char **argv)
 		glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
 		glUniform4f(col, 1, 0, 0, 1);
 		switch (k) {
-		case 0: case 1:         /* the left half 1 */
+		case 0: case 1: case 12: /* the left half 1 */
 			stencil(GL_ALWAYS, 1, 0xff, GL_KEEP, GL_KEEP, GL_REPLACE);
 			quad(-1, 0, 0);
 			break;
@@ -160,7 +161,7 @@ int main(int argc, char **argv)
 			quad(-1, 1, 0.5f);
 			glDisable(GL_DEPTH_TEST);
 			break;
-		case 11:                /* cleared to 5, the right half 6 */
+		case 11: case 13:       /* cleared to 5, the right half 6 */
 			stencil(GL_ALWAYS, 6, 0xff, GL_KEEP, GL_KEEP, GL_REPLACE);
 			quad(0, 1, 0);
 			break;
@@ -169,11 +170,13 @@ int main(int argc, char **argv)
 			quad(-1, 0, 0);
 			break;
 		}
+		if (k >= 12)
+			glFinish();
 		/* the test: green over everything where it passes */
 		glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
 		glUniform4f(col, 0, 1, 0, 1);
 		switch (k) {
-		case 0: stencil(GL_EQUAL, 1, 0xff, GL_KEEP, GL_KEEP, GL_KEEP); break;
+		case 0: case 12: stencil(GL_EQUAL, 1, 0xff, GL_KEEP, GL_KEEP, GL_KEEP); break;
 		case 1: stencil(GL_NOTEQUAL, 1, 0xff, GL_KEEP, GL_KEEP, GL_KEEP); break;
 		case 2: stencil(GL_EQUAL, 2, 0xff, GL_KEEP, GL_KEEP, GL_KEEP); break;
 		case 3: case 4: stencil(GL_EQUAL, 255, 0xff, GL_KEEP, GL_KEEP, GL_KEEP); break;
@@ -186,7 +189,7 @@ int main(int argc, char **argv)
 		case 9: stencil(GL_NEVER, 3, 0xff, GL_KEEP, GL_KEEP, GL_KEEP); break;
 		/* ref 2 < 3 on the left, 2 < 0 not on the right */
 		case 10: stencil(GL_LESS, 2, 0xff, GL_KEEP, GL_KEEP, GL_KEEP); break;
-		case 11: stencil(GL_EQUAL, 5, 0xff, GL_KEEP, GL_KEEP, GL_KEEP); break;
+		case 11: case 13: stencil(GL_EQUAL, 5, 0xff, GL_KEEP, GL_KEEP, GL_KEEP); break;
 		}
 		quad(-1, 1, 0);
 		glReadPixels(0, 0, W, H, GL_RGBA, GL_UNSIGNED_BYTE, px);

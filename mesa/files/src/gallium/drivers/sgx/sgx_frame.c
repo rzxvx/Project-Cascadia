@@ -50,6 +50,7 @@
 #include "util/os_time.h"
 #include "util/u_math.h"
 #include "util/u_memory.h"
+#include "util/vma.h"
 
 #include "sgx_compiler.h"
 #include "sgx_device.h"
@@ -104,9 +105,17 @@
 #define DRAW_PROG       0x80
 #define DRAW_UNIFORMS   0x100           /* 128 words at most, then their loader */
 #define DRAW_UNI_PDS    0x300
-/* the code of our pixel programs: a buffer of its own in the code zone,
- * filled from the start, never reused (the USSE caches code) */
+/* the code of our programs: a buffer of its own in the code zone, a
+ * program's place free again once the renders that ran it are done */
 #define HEAP_SIZE       (256 << 10)
+
+/* A retired program's places, free once fence (the last render when it
+ * was retired) is done */
+struct retired {
+   uint32_t code_va, code_size, pds_va, pds_size;
+   struct sgx_fence *fence;
+};
+
 /* the pack's code page is at code base + 0x1000 (rpack.py), its first
  * program at +0x400 (programs.py) */
 #define PAGE_OFFSET     0x1000
@@ -294,14 +303,22 @@ struct sgx_frame {
    uint32_t texblock;           /* the white texture's block, replace program */
    uint32_t iter_pds;           /* the iterated-colour pixel program's PDS, per varying */
    uint32_t fetch_pds;          /* the vertex fetch, per number of varyings */
-   struct sgx_bo *code_heap;    /* our pixel programs' code */
-   uint32_t heap_used, empty_prog, pds_used;
+   struct sgx_bo *code_heap;    /* our programs' code */
+   uint32_t empty_prog;
+   /* where our programs' code (in code_heap) and PDS programs (in the EXT
+    * window) go; a retired program's places, with the last render then,
+    * are free again when it is done (struct retired) */
+   struct util_vma_heap code_vma, pds_vma;
+   struct retired *retired;
+   unsigned nretired, maxretired;
    uint32_t vdmbuf[10 * SGX_FRAME_MAX_DRAWS + 32];   /* a gathered render's stream */
    uint32_t vertex_prog[SGX_FRAME_MAX_VARYINGS + 1];
    struct sgx_fence *last;      /* the last render through the frame */
    char *dir;                   /* the pack: loaded again after a render hangs */
    uint64_t timeouts;           /* the kernel's count of renders that did */
+   bool vma_ready;
    bool debug;                  /* SGX_DEBUG=frame: say what each render is */
+   bool debug_state;            /* SGX_DEBUG=state: each draw's state words */
    unsigned opts;               /* SGX_FRAME */
 };
 
@@ -939,6 +956,7 @@ sgx_frame_create(struct sgx_device *dev, const char *dir)
       return NULL;
    f->dev = dev;
    f->debug = getenv("SGX_DEBUG") && strstr(getenv("SGX_DEBUG"), "frame");
+   f->debug_state = getenv("SGX_DEBUG") && strstr(getenv("SGX_DEBUG"), "state");
    f->opts = sgx_frame_options();
    /* the frame built here, unless the kernel is too old for it (no
     * parameter buffer of its own, UAPI 3) or the pack's pieces are asked
@@ -997,7 +1015,11 @@ sgx_frame_create(struct sgx_device *dev, const char *dir)
    ((uint64_t *)f->code_heap->map)[0] = USSE_PHAS;
    ((uint64_t *)f->code_heap->map)[1] = 0xf804014000000000ull;     /* nop, end */
    f->empty_prog = f->code_heap->va;
-   f->heap_used = 0x40;
+   util_vma_heap_init(&f->code_vma, f->code_heap->va + 0x40, HEAP_SIZE - 0x40);
+   f->code_vma.alloc_high = false;
+   util_vma_heap_init(&f->pds_vma, f->ext + EXT_PROG_PDS, EXT_PROG_PDS_END - EXT_PROG_PDS);
+   f->pds_vma.alloc_high = false;
+   f->vma_ready = true;
    f->handles[f->nhandles++] = f->code_heap->handle;
    if (f->built)
       mesa_logi("sgx: template frame built at 0x%08x (PDS); the parameter buffer "
@@ -1035,6 +1057,13 @@ sgx_frame_destroy(struct sgx_frame *f)
    if (f->last) {
       sgx_fence_wait(f->last, OS_TIMEOUT_INFINITE);
       sgx_fence_reference(&f->last, NULL);
+   }
+   for (unsigned i = 0; i < f->nretired; i++)
+      sgx_fence_reference(&f->retired[i].fence, NULL);
+   free(f->retired);
+   if (f->vma_ready) {
+      util_vma_heap_finish(&f->code_vma);
+      util_vma_heap_finish(&f->pds_vma);
    }
    sgx_bo_destroy(f->code);
    sgx_bo_destroy(f->code_heap);
@@ -1147,15 +1176,46 @@ state_size(uint32_t *full, unsigned w, unsigned h)
    memcpy(&full[12], &hh, 4);
 }
 
+uint32_t
+sgx_frame_zls_size(unsigned w, unsigned h)
+{
+   return 2 * DIV_ROUND_UP(w, 64) * DIV_ROUND_UP(h, 32) * 4096;
+}
+
+/* ZLSCTL (register 0x480), from iOS's depth capture (0x0015100c, a store)
+ * and flipping its bits (M23, M24): bit 2 stores the tiles' depth, 17 their
+ * stencil (16 with it); 14 loads depth (1 with it), 13 stencil; the format
+ * stored in bits 25:24, loaded in 22:21 -- 0 F32, 1 24-bit with stencil in
+ * the top byte, 2 16-bit; bits 10:4 the rows of tiles in twos less 1 (tile
+ * x, y at (x + y * 2 * (v + 1)) * 4 KiB); 12 and 18 needed.  Tiles a render
+ * draws nothing in are neither loaded nor stored.  SGX_ZLS_CTL=value:
+ * another (the extent put in). */
+static uint32_t
+zls_ctl(const struct sgx_frame_zls *zls)
+{
+   const char *e = getenv("SGX_ZLS_CTL");
+   uint32_t ctl = 0x00151000;
+
+   if (zls->stencil)
+      ctl |= 0x01200000;
+   if (zls->store)
+      ctl |= 0xc | (zls->stencil ? 0x20000 : 0);
+   if (zls->load)
+      ctl |= 0x4002 | (zls->stencil ? 0x2000 : 0);
+   if (e)
+      ctl = strtoul(e, NULL, 0);
+   return (ctl & ~(0x7fu << 4)) | (DIV_ROUND_UP(zls->w, 64) - 1) << 4;
+}
+
 /* The render: the pack's TA command with the target's render target data
  * (or the pack's own, SGX_FRAME=packrt), its parameter buffer, and the
  * buffers -- the frame's, the target, the render target data, what the
  * draws read besides */
 static int
-kick(struct sgx_frame *f, struct sgx_resource *rt, float depth, const uint32_t *handles,
-     unsigned nhandles, struct sgx_fence *done)
+kick(struct sgx_frame *f, struct sgx_resource *rt, float depth, const struct sgx_frame_zls *zls,
+     const uint32_t *handles, unsigned nhandles, struct sgx_fence *done)
 {
-   uint32_t hs[MAX_PACK_BOS + 3 + 2 + SGX_FRAME_MAX_HANDLES], cmd[APPLE_SGX_TA_CMD_MAX / 4];
+   uint32_t hs[MAX_PACK_BOS + 3 + 2 + 1 + SGX_FRAME_MAX_HANDLES], cmd[APPLE_SGX_TA_CMD_MAX / 4];
    const uint32_t *pack = f->built ? f->cmd_tmpl :
                           (const uint32_t *)cpu_at(f, f->kick[2], APPLE_SGX_TA_CMD_MIN, NULL);
    unsigned n = f->nhandles, det_bo;
@@ -1189,6 +1249,20 @@ kick(struct sgx_frame *f, struct sgx_resource *rt, float depth, const uint32_t *
    if (!blk)
       return -EFAULT;
    memcpy(blk, &depth, 4);
+   /* the depth buffer (M24), where the kext puts a GL depth attachment's
+    * payload words (logs/ios/depth, rtemu.py): the ZLS base at +0x14 (1 MiB
+    * aligned, BIF_ZLS_REQ_BASE), ZLSCTL at +0x6c, the load and store
+    * offsets from the base at +0x70, +0x74 */
+   {
+      uint32_t *b = (uint32_t *)(blk - 0x80), base = zls ? zls->bo->va & ~0xfffffu : 0;
+
+      b[0x14 / 4] = base;
+      b[0x6c / 4] = zls ? zls_ctl(zls) : 0;
+      b[0x70 / 4] = zls ? zls->bo->va - base : 0;
+      b[0x74 / 4] = zls ? zls->bo->va - base : 0;
+      if (zls)
+         hs[n++] = zls->bo->handle;
+   }
    /* SGX_CMD=off:xor[,...]: the TA command's words flipped (finding them) */
    {
       static uint32_t xo[APPLE_SGX_TA_CMD_MAX / 4];
@@ -1232,6 +1306,14 @@ kick(struct sgx_frame *f, struct sgx_resource *rt, float depth, const uint32_t *
       }
       for (unsigned i = 0; i < 0x160 / 4; i++)
          ((uint32_t *)(blk - 0x80))[i] ^= xo[i];
+   }
+   if (getenv("SGX_DEBUG") && strstr(getenv("SGX_DEBUG"), "cmd")) {
+      for (unsigned i = 0; i < cmd[0] / 4; i++)
+         fprintf(stderr, "%s%03x:%08x", i % 8 ? " " : "\nsgx: cmd ", 4 * i, cmd[i]);
+      for (unsigned i = 0; i < 0x160 / 4; i++)
+         fprintf(stderr, "%s%03x:%08x", i % 8 ? " " : "\nsgx: blk ", 4 * i,
+                 ((uint32_t *)(blk - 0x80))[i]);
+      fprintf(stderr, "\n");
    }
    memcpy(hs + n, handles, nhandles * sizeof(uint32_t));
    n += nhandles;
@@ -1310,26 +1392,119 @@ sgx_frame_max_vertices(struct sgx_frame *f, const struct sgx_frame_layout *l)
    return max_vertices(f, sgx_frame_vertex_floats(l) * sizeof(float));
 }
 
+/* the retired programs' places whose renders are done (all of them:
+ * after waiting for the last render) back into the heaps */
+static void
+reclaim(struct sgx_frame *f, bool all)
+{
+   unsigned n = 0;
+
+   for (unsigned i = 0; i < f->nretired; i++) {
+      struct retired *r = &f->retired[i];
+
+      if (all || !r->fence || sgx_fence_wait(r->fence, 0)) {
+         util_vma_heap_free(&f->code_vma, r->code_va, r->code_size);
+         util_vma_heap_free(&f->pds_vma, r->pds_va, r->pds_size);
+         sgx_fence_reference(&r->fence, NULL);
+      } else {
+         f->retired[n++] = *r;
+      }
+   }
+   f->nretired = n;
+}
+
+/* a program's code and PDS places, the retired ones' taken back first if
+ * need be (waiting for the last render, at worst); false: no room */
+static bool
+place_program(struct sgx_frame *f, uint32_t code_size, uint32_t pds_size,
+              uint32_t *code_va, uint32_t *pds_va)
+{
+   for (unsigned attempt = 0; attempt < 3; attempt++) {
+      if (attempt == 1)
+         reclaim(f, false);
+      if (attempt == 2) {
+         if (!f->nretired)
+            break;
+         if (f->last)
+            sgx_fence_wait(f->last, OS_TIMEOUT_INFINITE);
+         reclaim(f, true);
+      }
+      *code_va = util_vma_heap_alloc(&f->code_vma, code_size, 64);
+      if (!*code_va)
+         continue;
+      *pds_va = util_vma_heap_alloc(&f->pds_vma, pds_size, PROG_PDS_SLOT);
+      if (*pds_va)
+         return true;
+      util_vma_heap_free(&f->code_vma, *code_va, code_size);
+   }
+   return false;
+}
+
+static void
+retire(struct sgx_frame *f, uint32_t code_va, uint32_t code_size, uint32_t pds_va,
+       uint32_t pds_size)
+{
+   struct retired *r;
+
+   if (f->nretired == f->maxretired) {
+      unsigned max = MAX2(16, 2 * f->maxretired);
+
+      if (!(r = realloc(f->retired, max * sizeof(*r)))) {
+         /* nowhere to keep it: the places stay taken */
+         mesa_logw_once("sgx: out of memory for a retired program: its place is lost");
+         return;
+      }
+      f->retired = r;
+      f->maxretired = max;
+   }
+   r = &f->retired[f->nretired++];
+   *r = (struct retired){ code_va, code_size, pds_va, pds_size, NULL };
+   sgx_fence_reference(&r->fence, f->last);
+}
+
+static uint32_t
+vs_pds_size(void)
+{
+   return align((4 * (SGX_VS_MAX_ATTRIBS + 1) + SGX_VS_MAX_ATTRIBS + 3) * 4, PROG_PDS_SLOT);
+}
+
+void
+sgx_frame_retire(struct sgx_frame *f, struct sgx_pixel_program *p)
+{
+   if (!p->code_va)
+      return;
+   retire(f, p->code_va, align(p->ncode * 8, 64), p->pds_va, PROG_PDS_SLOT);
+   p->code_va = p->pds_va = 0;
+}
+
+void
+sgx_frame_retire_vs(struct sgx_frame *f, struct sgx_vs *vs)
+{
+   if (!vs->code_va)
+      return;
+   retire(f, vs->code_va, align(vs->ncode * 8, 64), vs->fetch_va, vs_pds_size());
+   vs->code_va = vs->fetch_va = 0;
+}
+
 /* A pixel program into GPU memory, at its first draw: the code into the
  * heap, and its PDS program -- start the program, then iterate each input
  * (F32, four registers; iOS's shape, the corpus's v04 and v05) -- into the
- * EXT window.  Neither place is used again for anything else. */
+ * EXT window, until it is retired (sgx_frame_retire). */
 static int
 upload(struct sgx_frame *f, struct sgx_pixel_program *p)
 {
-   uint32_t pds[PROG_PDS_SLOT / 4], size = p->ncode * 8;
+   uint32_t pds[PROG_PDS_SLOT / 4], size = p->ncode * 8, code_va, pds_va;
    unsigned n = 0, data;
 
    if (p->code_va)
       return 0;
-   if (f->heap_used + size > HEAP_SIZE || f->pds_used + PROG_PDS_SLOT >
-       EXT_PROG_PDS_END - EXT_PROG_PDS || p->ninputs > SGX_FRAME_MAX_VARYINGS) {
+   if (p->ninputs > SGX_FRAME_MAX_VARYINGS ||
+       !place_program(f, align(size, 64), PROG_PDS_SLOT, &code_va, &pds_va)) {
       mesa_logw("sgx: no room for another pixel program");
       return -ENOSPC;
    }
-   memcpy((uint8_t *)f->code_heap->map + f->heap_used, p->code, size);
-   p->code_va = f->code_heap->va + f->heap_used;
-   f->heap_used = align(f->heap_used + size, 64);
+   memcpy((uint8_t *)f->code_heap->map + (code_va - f->code_heap->va), p->code, size);
+   p->code_va = code_va;
 
    pds[n++] = doutu(f, p->code_va);
    /* (bit 0 for a program that branches: iOS's c04_loop_break has 3 where
@@ -1346,9 +1521,8 @@ upload(struct sgx_frame *f, struct sgx_pixel_program *p)
    for (unsigned i = 0; i < p->ninputs; i++)
       pds[n++] = pds_iterate(3 + i, 0x32);
    pds[n++] = PDS_END;
-   p->pds_va = f->ext + EXT_PROG_PDS + f->pds_used;
+   p->pds_va = pds_va;
    p->pds_rows = data / 4;
-   f->pds_used += PROG_PDS_SLOT;
    return put(f, p->pds_va, pds, n * 4) ? 0 : -EFAULT;
 }
 
@@ -1360,20 +1534,18 @@ int
 sgx_frame_upload_vs(struct sgx_frame *f, struct sgx_vs *vs)
 {
    uint32_t pds[4 * (SGX_VS_MAX_ATTRIBS + 1) + SGX_VS_MAX_ATTRIBS + 3], size = vs->ncode * 8;
-   uint32_t vb = f->ext + EXT_VB, slots;
+   uint32_t vb = f->ext + EXT_VB, code_va, pds_va;
    unsigned n = 0;
 
    if (vs->code_va)
       return 0;
-   slots = DIV_ROUND_UP(sizeof(pds), PROG_PDS_SLOT);
-   if (f->heap_used + size > HEAP_SIZE || vs->nattrs > SGX_VS_MAX_ATTRIBS ||
-       f->pds_used + slots * PROG_PDS_SLOT > EXT_PROG_PDS_END - EXT_PROG_PDS) {
+   if (vs->nattrs > SGX_VS_MAX_ATTRIBS ||
+       !place_program(f, align(size, 64), vs_pds_size(), &code_va, &pds_va)) {
       mesa_logw("sgx: no room for another vertex program");
       return -ENOSPC;
    }
-   memcpy((uint8_t *)f->code_heap->map + f->heap_used, vs->code, size);
-   vs->code_va = f->code_heap->va + f->heap_used;
-   f->heap_used = align(f->heap_used + size, 64);
+   memcpy((uint8_t *)f->code_heap->map + (code_va - f->code_heap->va), vs->code, size);
+   vs->code_va = code_va;
 
    for (unsigned i = 0; i < vs->nattrs; i++) {
       pds[n++] = vb + 16 * i;
@@ -1396,8 +1568,7 @@ sgx_frame_upload_vs(struct sgx_frame *f, struct sgx_vs *vs)
       pds[n++] = pds_fetch_attr(i);
    pds[n++] = pds_doutu_vertex(vs->nattrs);
    pds[n++] = PDS_END;
-   vs->fetch_va = f->ext + EXT_PROG_PDS + f->pds_used;
-   f->pds_used += slots * PROG_PDS_SLOT;
+   vs->fetch_va = pds_va;
    return put(f, vs->fetch_va, pds, n * 4) ? 0 : -EFAULT;
 }
 
@@ -1669,7 +1840,7 @@ render(struct sgx_frame *f, struct sgx_resource *rt, const struct sgx_frame_layo
          mesa_logi("sgx:   VDM +%02x: %08x %08x %08x %08x %08x", i * 4, vdm[i], vdm[i + 1],
                    vdm[i + 2], vdm[i + 3], vdm[i + 4]);
    }
-   return kick(f, rt, 1.0f, handles, nhandles, done);
+   return kick(f, rt, 1.0f, NULL, handles, nhandles, done);
 }
 
 int
@@ -1790,13 +1961,20 @@ draw_state(struct sgx_frame *f, const struct sgx_frame_draw *d, uint32_t base,
       full[19] |= 7u << 3 * i;
    full[20] = ~l->f32 & ((1u << l->nvaryings) - 1);
    state_xor(full);
+   if (f->debug_state) {
+      fprintf(stderr, "sgx: state");
+      for (unsigned i = 0; i < 21; i++)
+         fprintf(stderr, " %u:%08x", i, full[i]);
+      fprintf(stderr, "\n");
+   }
    return 0;
 }
 
 int
 sgx_frame_render(struct sgx_frame *f, struct sgx_resource *rt,
                  const struct sgx_frame_draw *draws, unsigned n, const uint32_t *handles,
-                 unsigned nhandles, float depth_clear, struct sgx_fence *done)
+                 unsigned nhandles, float depth_clear, const struct sgx_frame_zls *zls,
+                 struct sgx_fence *done)
 {
    uint32_t full[32], prog[16], bg[4], eot, *v = f->vdmbuf;
    unsigned cursor = 0, total = 0, icursor = 0;
@@ -1893,5 +2071,5 @@ sgx_frame_render(struct sgx_frame *f, struct sgx_resource *rt,
    if (f->debug)
       mesa_logi("sgx: a render of %u draws, %u vertices, into %ux%u at 0x%08x (end of tile "
                 "0x%08x)", n, total, to.w, to.h, to.va, eot);
-   return kick(f, rt, depth_clear, handles, nhandles, done);
+   return kick(f, rt, depth_clear, zls, handles, nhandles, done);
 }

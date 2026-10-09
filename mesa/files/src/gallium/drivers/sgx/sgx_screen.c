@@ -24,6 +24,9 @@
 #include "sgx_resource.h"
 
 static const struct nir_shader_compiler_options sgx_nir_options = {
+   /* integers are floats (nir_lower_int_to_float): NIR's builtins (atan's
+    * copysign) built without integer bit operations */
+   .no_integers = true,
    .lower_fdiv = true,
    .lower_fmod = true,
    .lower_fpow = true,
@@ -130,6 +133,11 @@ sgx_is_format_supported(struct pipe_screen *pscreen, enum pipe_format format,
       case PIPE_FORMAT_L8_UNORM:
       case PIPE_FORMAT_A8_UNORM:
       case PIPE_FORMAT_L8A8_UNORM:
+      /* depth (GLES 2 has OES_depth_texture whatever the driver says): its
+       * copy grey, 8 bits of it (sgx_resource.c) */
+      case PIPE_FORMAT_Z16_UNORM:
+      case PIPE_FORMAT_Z24X8_UNORM:
+      case PIPE_FORMAT_Z24_UNORM_S8_UINT:
          break;
       default:
          return false;

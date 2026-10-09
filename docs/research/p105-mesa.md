@@ -1562,7 +1562,163 @@ own:
 
 So depth and stencil still live in the tiles only: a frame split into two
 renders loses them (`gldepth`'s `two_renders`, counted as known). The ZLS
-code is not kept; the layout and the stride are, here.
+code is not kept; the layout and the stride are, here. (The load: M24.)
+
+## M24: dEQP-GLES2, and what it found
+
+dEQP-GLES2 (VK-GL-CTS `opengl-es-cts-3.2.9.3`, its GLES 2 module for the
+surfaceless EGL platform) built for armhf Alpine under ARM emulation
+(`tools/sgx/deqp/build.sh`, which also puts it on the iPad) and run there
+with `tools/sgx/deqp-run.py`: a process per group, a case that crashes or
+goes a minute without output marked so and the next process going on from
+the case after; a pbuffer of 256 x 256, `rgba8888d24s8ms0`. All 19723
+cases take about half an hour. What the first runs found, and what came of
+it:
+
+**Depth and stencil clears inside a render; no flush at a shader's
+deletion.** Every clear ended the render, and depth and stencil live in
+the tiles: what was drawn before them was lost. A colour clear still ends
+the render; depth and stencil are cleared at a render's start for free (the
+depth the tiles start at, stencil 0), anywhere else by a quad (a pixel
+program that writes nothing, depth ALWAYS and written, stencil ALWAYS,
+REPLACE by the value through the clear's mask), scissored ones too. And st
+deletes the last program at the next `glUseProgram`: deleting a vertex
+shader flushed the gathered draws, which point at its GPU variants, in the
+middle of a frame; the variants live until the flush instead.
+
+**Programs' GPU memory given back.** Most failures came in long runs: from
+some case on, every case after it failed until the process ended. The code
+heap (256 KiB) and the PDS programs' window were filled from the start and
+never reused, so a process that made enough programs -- dEQP makes a few a
+case -- had every later program refused and its draws dropped. Both are
+`util_vma_heap`s now; a program deleted is retired with the last render
+submitted, and its places are free again once that render is done (at
+worst a new program waits for it). The fragment shaders' variants wait for
+the gathered draws to be rendered as the vertex shaders' do. `glchurn`
+makes, draws and deletes 3000 programs, each with its own colour (and one
+in three its own vertex shader), going round the code heap some 37 times:
+no program ran another's code, so the USSE's code cache does not keep a
+place's old program across renders. Before, the 78th program was refused.
+
+**Viewport and scissor.** The TA clips to a guard band of exactly 1.5
+times its viewport -- a quad four times clip space drawn through six
+viewports, odd sizes and fractional centres among them, comes out to the
+pixel (the top-left rule at the edges) -- and to nothing narrower, so a
+viewport smaller than the target let geometry past its edges, and the
+scissor was not applied at all. Words 7 and 8 of the draw state are the
+region clip: the first tile in bits 16 and up, the last in the low bits
+(word 7 has bit 31 set) -- whole tiles only. So each draw's rectangle -- the
+viewport's (a vertex shader's draw: the draw module clips to it itself),
+the scissor's, the target's -- shrunk 1.5 times becomes the TA's viewport,
+and the vertices are moved to land where they would have: x' = a x + b w,
+y' likewise, a and b from the draw's viewport and the rectangle. A vertex
+shader gets four uniform words after its own for them (two multiplies and
+an add for x and y); the draw module's vertices get it on the CPU. Word
+16's bits 3..6 look like clip planes, but the distances they read could
+not be pinned down; they were not needed.
+
+**Polygon offset** stays with the draw module (the TA's was not found),
+which a vertex shader's draw with an offset goes back to. Its unit is a
+24-bit depth buffer's times four: the draw module's own for the tiles' F32
+depth -- a bit of it -- is lost between its z and the ISP's interpolated
+one; two bits survive (dEQP's displacement cases), four for room.
+
+**Points and lines** go through the draw module's wide point and line
+stages, as triangles: it needs a fragment shader bound (it asserted),
+and it leaves a line of width 1 alone, so width 1 is made 1 + 1/1024.
+
+**Depth textures.** GLES 2 has `OES_depth_texture` whatever the driver
+says, and with no depth format sampleable Mesa asserted in
+`glTexImage2D` -- every `fbo.completeness` case with a depth texture,
+`clip_control`. Z16, Z24X8 and Z24S8 are sampleable now: their copy is
+grey, eight bits of the depth.
+
+**Depth and stencil in memory: the load, found.** ZLSCTL, register `0x480`
+(the 3D block's +0x6c), from iOS's store-only `0x0015100c` and flipping its
+bits with a probe of two renders (a quad at depth 0.25 on the left, a
+`glFinish`, then one over everything at 0.5 with LESS: loaded, the left
+stays red):
+
+| bits | |
+|---|---|
+| 2 | store depth (3 with it) |
+| 17 | store stencil (16 with it), into the top byte of the 24-bit format |
+| 14 | load depth (1 with it) |
+| 13 | load stencil |
+| 25:24 | the format stored: 0 F32, 1 24-bit with stencil above, 2 16-bit |
+| 22:21 | the format loaded, the same way |
+| 10:4 | the rows of tiles in twos, less 1 (M23) |
+| 12, 18 | needed (iOS's); 26 hangs the render |
+
+The first tries in M23 set bit 0 or 1 alone: bit 1 needs 14, and bit 0
+is no load at all -- with it set the tiles' colour comes out of the
+previous tile. Bit 8 of the 3D block's +0x84 (register `0x4bc`, `0x300`)
+turns off the background object, which reloads each tile's colour from
+the target and starts its depth: then nothing does.
+
+Tiles a render draws nothing in are neither loaded nor stored, so a render
+that starts from a clear and stores gets a quad over the target with depth
+NEVER first: every tile is in it and stored at the clear's depth. A render
+stores when a draw writes depth or stencil (or a clear's quad does), and
+loads when there is something stored, no clear came first, and a draw reads
+or writes them; a clear no draw uses is only noted, and the next render
+starts from it. Depth alone goes F32 (what the ISP keeps), depth with
+stencil the 24-bit format with stencil above. The buffer is 4 bytes a pixel,
+in 32 x 32 tiles, rows of an even number of tiles. Across a render, depth
+compared EQUAL comes out in diagonal bands: the ISP's interpolated depth
+differs between two quads at the same z by a bit or so, varying with the
+tile, F32 or not -- the hardware's, not the store's.
+
+**Two-sided stencil**: a draw whose front and back faces have different
+stencil states (or references) is two passes, the TA culling the other
+faces in each.
+
+**Texture wrap modes**: t is in bits 5:3 of the texture state's word 0, s
+in 8:6, each 0 repeat, 1 mirrored, 2 clamped (iOS's `0x90`, both clamped,
+matched the old guess of single bits with the axes the other way round).
+A texture not a power of two in size and not 8-bit RGBA had a twiddled
+copy padded to one, its coordinates not scaled: it gets a linear BGRA copy
+instead, sampled as the RGBA ones are.
+
+What dEQP-GLES2 says now (the first run's figures in brackets; NotSupported
+not counted):
+
+| group | pass | fail | crash |
+|---|---|---|---|
+| shaders | 9836 (4101) | 364 (5987) | 0 (112) |
+| fragment_ops | 1922 (508) | 1 (1411) | 0 (4) |
+| uniform_api | 1109 (1109) | 15 (15) | 0 (0) |
+| texture | 311 (208) | 534 (637) | 0 (0) |
+| fbo | 544 (451) | 0 (30) | 0 (63) |
+| clipping | 597 (37) | 5 (554) | 0 (11) |
+| draw | 100 (42) | 1 (40) | 0 (19) |
+| rasterization | 37 (39) | 15 (11) | 0 (2) |
+| polygon_offset | 14 (6) | 0 (8) | 0 (0) |
+| depth_stencil_clear | 11 (1) | 0 (10) | 0 (0) |
+| state_query, implementation_limits | 410 (410) | 2 (2) | 0 (0) |
+| clip_control | -- (0) | -- (0) | 0 (5) |
+| the rest (vertex_arrays, negative_api, ...) | 1136 (1136) | 0 (0) | 0 (0) |
+| **all** | **16027 (8048)** | **937 (8705)** | **0 (216)** |
+
+(clip_control is NotSupported now: its crashes were the depth texture
+assert. Lines are drawn now -- `primitives.lines` and the like pass -- and
+the wide line stage's interpolation is not dEQP's: the `interpolation`
+line cases went from passing on nothing drawn to failing.) The last two
+shader subgroups' crashes (atan's `copysign` built of integer bit
+operations, which `nir_lower_int_to_float` asserts on) went with the
+compiler options' `no_integers`, as GLES 2-only drivers have it.
+
+Left: mipmaps (the twiddled copy is level 0 only) and cube maps, most of
+the texture group; the interpolation along lines and wide points past the
+viewport's edge (the draw module's stages); `shaders`' 364 -- arrays of
+varyings and temporaries indexed, matrix arithmetic, texture lookups in
+the random group's fragment shaders, `?:` on vectors, some division and
+common functions; `uniform_api`'s 15.
+
+New tests: `glchurn`, `glwrap`; `gldepth`'s `two_renders` cases and
+`glstencil`'s are counted now. `SGX_DEBUG=state` prints each draw's state
+words, `SGX_DEBUG=cmd` the TA command and the 3D block, `SGX_ZLS=0` keeps
+depth and stencil in the tiles, `SGX_ZLS_CTL` sets ZLSCTL.
 
 ## Testing, without and with the device
 

@@ -91,6 +91,7 @@ sgx_resource_destroy(struct pipe_screen *pscreen, struct pipe_resource *prsc)
 
    /* a render still using it holds the kernel's reference */
    sgx_bo_destroy(res->tw);
+   sgx_bo_destroy(res->zls);
    sgx_bo_destroy(res->bo);
    FREE(res);
 }
@@ -181,17 +182,37 @@ twiddle(uint32_t x, uint32_t y, uint32_t w, uint32_t h)
    return (w >= h ? x / m : y / m) * m * m + i;
 }
 
-/* the copy made again from the linear content (level 0) */
+/* a row of the texture's content as 8-bit RGBA (depth: grey, alpha 1 --
+ * OES_depth_texture's d, d, d, 1) */
+static void
+unpack_row(enum pipe_format format, const uint8_t *line, unsigned w, uint32_t *row)
+{
+   if (util_format_is_depth_or_stencil(format)) {
+      float z[w];
+
+      util_format_unpack_z_float(format, z, line, w);
+      for (unsigned x = 0; x < w; x++)
+         row[x] = 0xff000000u | 0x010101u * (uint32_t)(CLAMP(z[x], 0.0f, 1.0f) * 255.0f + 0.5f);
+   } else {
+      util_format_unpack_rgba_8unorm_rect(format, (uint8_t *)row, w * 4, line, 0, w, 1);
+   }
+}
+
+/* The copy the sampler reads, made again from the linear content (level 0):
+ * twiddled, or (lin) linear BGRA rows -- what the sampler takes for a size
+ * not a power of two, which a twiddled copy would pad (and the coordinates
+ * are not scaled) */
 static bool
-twiddle_texture(struct sgx_screen *screen, struct sgx_resource *res)
+copy_texture(struct sgx_screen *screen, struct sgx_resource *res, bool lin)
 {
    struct pipe_resource *p = &res->base;
-   unsigned w = p->width0, h = p->height0, tw = util_next_power_of_two(w);
-   unsigned th = util_next_power_of_two(h);
+   unsigned w = p->width0, h = p->height0;
+   unsigned tw = lin ? align(MAX2(w * 4, 32), 16) / 4 : util_next_power_of_two(w);
+   unsigned th = lin ? h : util_next_power_of_two(h);
    uint32_t *dst, *row;
    const uint8_t *src;
 
-   if (!res->tw || res->tw_w != tw || res->tw_h != th) {
+   if (!res->tw || res->tw_w != tw || res->tw_h != th || res->tw_lin != lin) {
       sgx_bo_destroy(res->tw);
       res->tw = sgx_bo_create(&screen->dev, tw * th * 4, 0, 0);
       if (!res->tw || !sgx_bo_map(res->tw)) {
@@ -201,6 +222,7 @@ twiddle_texture(struct sgx_screen *screen, struct sgx_resource *res)
       }
       res->tw_w = tw;
       res->tw_h = th;
+      res->tw_lin = lin;
    } else {
       /* a render may still be sampling the old copy */
       sgx_frame_finish(screen->frame);
@@ -210,14 +232,19 @@ twiddle_texture(struct sgx_screen *screen, struct sgx_resource *res)
    /* what the GPU wrote into the texture, done first */
    sgx_bo_wait(res->bo, -1);
    dst = (uint32_t *)res->tw->map;
-   /* padding: the last column and row repeated, so a clamped lookup at the
-    * edge finds the edge */
    for (unsigned y = 0; y < th; y++) {
       unsigned sy = MIN2(y, h - 1);
 
-      util_format_unpack_rgba_8unorm_rect(p->format, (uint8_t *)row, w * 4,
-                                          src + res->offset[0] + sy * res->stride[0],
-                                          res->stride[0], w, 1);
+      unpack_row(p->format, src + res->offset[0] + sy * res->stride[0], w, row);
+      if (lin) {
+         /* B G R A in memory, as the sampler reads a linear texture */
+         for (unsigned x = 0; x < w; x++)
+            dst[y * tw + x] = (row[x] & 0xff00ff00u) | (row[x] & 0xff) << 16 |
+                              (row[x] >> 16 & 0xff);
+         continue;
+      }
+      /* padding: the last column and row repeated, so a clamped lookup at
+       * the edge finds the edge */
       for (unsigned x = 0; x < tw; x++)
          dst[twiddle(x, y, tw, th)] = row[MIN2(x, w - 1)];
    }
@@ -226,9 +253,17 @@ twiddle_texture(struct sgx_screen *screen, struct sgx_resource *res)
    return true;
 }
 
-/* The sampler's half of the state's word 0.  Wrap: iOS's for CLAMP_TO_EDGE
- * on both axes is 0x90 (the corpus's t* cases), REPEAT is what sgx2d draws
- * with (0).  Filters, found by flipping bits under gltex: bits 13:12 the
+/* a wrap mode as the sampler takes it: 0 repeat, 1 mirrored, 2 clamped */
+static uint32_t
+wrap_bits(unsigned wrap)
+{
+   return wrap == PIPE_TEX_WRAP_REPEAT ? 0 : wrap == PIPE_TEX_WRAP_MIRROR_REPEAT ? 1 : 2;
+}
+
+/* The sampler's half of the state's word 0.  Wrap: t in bits 5:3, s in
+ * 8:6 (iOS's for CLAMP_TO_EDGE on both axes is 0x90, the corpus's t* cases;
+ * the axes and mirroring found with a texture drawn three times over, M24).
+ * Filters, found by flipping bits under gltex: bits 13:12 the
  * magnification filter, 11:10 the minification one, 0 point and 1 (or 2)
  * bilinear -- 3 samples as point again. */
 static uint32_t
@@ -236,8 +271,7 @@ sampler_bits(const struct pipe_sampler_state *ss)
 {
    if (!ss)
       return 0;
-   return (ss->wrap_s == PIPE_TEX_WRAP_REPEAT ? 0 : 1u << 4) |
-          (ss->wrap_t == PIPE_TEX_WRAP_REPEAT ? 0 : 1u << 7) |
+   return wrap_bits(ss->wrap_t) << 3 | wrap_bits(ss->wrap_s) << 6 |
           (ss->min_img_filter == PIPE_TEX_FILTER_LINEAR ? 1u << 10 : 0) |
           (ss->mag_img_filter == PIPE_TEX_FILTER_LINEAR ? 1u << 12 : 0);
 }
@@ -300,15 +334,23 @@ sgx_resource_texture(struct sgx_screen *screen, struct sgx_resource *res,
       words[3] = 0x10000000;
       res->sampled = res->bo;
    } else {
-      if ((!res->tw || res->tw_seq != res->seq) && !twiddle_texture(screen, res))
+      bool lin = !util_is_power_of_two_nonzero(p->width0) ||
+                 !util_is_power_of_two_nonzero(p->height0);
+
+      if ((!res->tw || res->tw_seq != res->seq || res->tw_lin != lin) &&
+          !copy_texture(screen, res, lin))
          return false;
-      if ((p->width0 & (p->width0 - 1)) || (p->height0 & (p->height0 - 1)))
-         mesa_logw_once("sgx: textures that are not a power of two in size are sampled "
-                        "from a padded copy; their coordinates are not scaled yet");
-      words[0] = 0x03fe0000 | sampler_bits(ss);
-      words[1] = 0x0c000000 | util_logbase2(res->tw_w) << 16 | util_logbase2(res->tw_h);
+      if (lin) {
+         /* a linear BGRA copy, sampled as above */
+         words[0] = (res->tw_w * 4 / 16 - 2) << 16 | (sampler_bits(ss) & ~0xe00u) | 7u << 9;
+         words[1] = 0xcc000000 | (p->width0 - 1) << 12 | (p->height0 - 1);
+         words[3] = 0x10000000;
+      } else {
+         words[0] = 0x03fe0000 | sampler_bits(ss);
+         words[1] = 0x0c000000 | util_logbase2(res->tw_w) << 16 | util_logbase2(res->tw_h);
+         words[3] = 0;
+      }
       words[2] = res->tw->va;
-      words[3] = 0;
       res->sampled = res->tw;
    }
    /* SGX_TEX_WORDn=mask: bits of word n flipped, to find what they do */

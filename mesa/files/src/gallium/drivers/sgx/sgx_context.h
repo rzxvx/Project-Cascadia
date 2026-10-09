@@ -22,6 +22,8 @@ struct vbuf_render;
 struct sgx_shader {
    struct nir_shader *nir;
    struct draw_vertex_shader *draw;     /* a vertex shader's, on the CPU */
+   struct draw_fragment_shader *draw_fs; /* a fragment shader's, for the draw module's
+                                            point and line stages (M24) */
    struct sgx_fs_colour colour;         /* a fragment shader's colour */
    struct sgx_fs *compiled;             /* a fragment shader, compiled (M13c) */
    struct sgx_fs *variant[8];           /* and again for blend states (M14) */
@@ -52,6 +54,9 @@ struct sgx_batch {
    struct sgx_batch_draw draw[SGX_FRAME_MAX_DRAWS];
    unsigned ndraws, cursor;             /* cursor: sgx_frame_place's */
    float depth_clear;                   /* what the render's depth starts at */
+   struct pipe_resource *zs;            /* the depth buffer, referenced (M24) */
+   bool zs_cleared;                     /* its depth cleared at the render's start */
+   bool zs_read, zs_written;            /* a draw tests depth, writes it */
    float *verts;
    unsigned nfloats, maxfloats;
    uint32_t *sa;
@@ -61,10 +66,12 @@ struct sgx_batch {
    struct pipe_resource *tex[SGX_FRAME_MAX_HANDLES];   /* sampled, referenced */
    uint32_t handles[SGX_FRAME_MAX_HANDLES];           /* their twiddled copies */
    unsigned ntex;
-   /* vertex shaders deleted while draws here use them: freed at the
-    * flush (M24) */
+   /* programs deleted while draws here may use them: retired from the
+    * frame and freed at the flush (M24) */
    struct sgx_vs **dead_vs;
    unsigned ndead_vs;
+   struct sgx_fs **dead_fs;
+   unsigned ndead_fs;
 };
 
 struct sgx_vertex_elements {
@@ -107,12 +114,18 @@ struct sgx_context {
    const struct pipe_rasterizer_state *rast;
    const struct sgx_vertex_elements *velems;
    struct pipe_viewport_state viewport;
+   struct pipe_scissor_state scissor;
    struct pipe_stencil_ref stencil_ref;
    struct sgx_pixel_program clear_prog;  /* writes nothing: sgx_zs_clear() */
    struct sgx_batch batch;
    const float *fs_constants;
    unsigned fs_constants_size;  /* bytes */
    bool warned_fs, debug_draw;
+   /* SGX_DEBUG=fps: frames (swaps), renders and draws counted, and said
+    * every two seconds */
+   bool debug_fps;
+   unsigned stat_frames, stat_renders, stat_draws;
+   int64_t stat_t0, stat_cpu0;
 };
 
 static inline struct sgx_context *

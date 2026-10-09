@@ -11,6 +11,8 @@
  */
 #include "sgx_context.h"
 
+#include <time.h>
+
 #include "compiler/nir/nir.h"
 #include "draw/draw_context.h"
 #include "util/format/u_format.h"
@@ -64,6 +66,28 @@ sgx_flush(struct pipe_context *pctx, struct pipe_fence_handle **fence, unsigned 
    struct sgx_fence *f = NULL;
 
    sgx_batch_flush(ctx);
+   if (ctx->debug_fps && (flags & PIPE_FLUSH_END_OF_FRAME)) {
+      struct timespec ts;
+      int64_t now = os_time_get_nano(), cpu;
+
+      clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &ts);
+      cpu = ts.tv_sec * 1000000000ll + ts.tv_nsec;
+
+      if (!ctx->stat_t0) {
+         ctx->stat_t0 = now;
+         ctx->stat_cpu0 = cpu;
+      } else if (++ctx->stat_frames, now - ctx->stat_t0 >= 2000000000ll) {
+         double s = (now - ctx->stat_t0) / 1e9;
+
+         mesa_logi("sgx: %.1f fps, %.1f renders and %.1f draws a frame, %.0f%% CPU",
+                   ctx->stat_frames / s, (double)ctx->stat_renders / ctx->stat_frames,
+                   (double)ctx->stat_draws / ctx->stat_frames,
+                   100.0 * (cpu - ctx->stat_cpu0) / (now - ctx->stat_t0));
+         ctx->stat_frames = ctx->stat_renders = ctx->stat_draws = 0;
+         ctx->stat_t0 = now;
+         ctx->stat_cpu0 = cpu;
+      }
+   }
    if (!fence)
       return;
    if (ctx->last)
@@ -138,8 +162,10 @@ sgx_clear(struct pipe_context *pctx, unsigned buffers, uint32_t color_clear_mask
    if (!cd && !cs)
       return;
    if (!ctx->batch.ndraws && !scissor) {
-      if (cd)
+      if (cd) {
          ctx->batch.depth_clear = depth;
+         ctx->batch.zs_cleared = true;
+      }
       if (cs && (stencil & stencil_clear_mask & 0xff))
          sgx_zs_clear(ctx, false, 0, true, stencil, stencil_clear_mask, NULL);
       return;
@@ -213,7 +239,20 @@ sgx_create_dsa_state(struct pipe_context *pctx,
 static void *
 sgx_create_rs_state(struct pipe_context *pctx, const struct pipe_rasterizer_state *s)
 {
-   return sgx_create_copy(s, sizeof(*s));
+   struct pipe_rasterizer_state *r = sgx_create_copy(s, sizeof(*s));
+
+   /* lines of width 1 too through the draw module's wide line stage (made
+    * triangles: all the TA takes from us), which takes width 1 for a line
+    * to leave alone (M24) */
+   if (r && r->line_width == 1.0f)
+      r->line_width = 1.0f + 1.0f / 1024;
+   /* polygon offset's unit: 24-bit depth's (sgx_draw_init) is a bit or two
+    * of the tiles' F32 depth, lost between the draw module's z and the
+    * ISP's interpolated one; four of them are not (dEQP's displacement
+    * cases pass from two) */
+   if (r)
+      r->offset_units *= 4;
+   return r;
 }
 
 static void *
@@ -270,6 +309,10 @@ sgx_create_shader_state(struct pipe_context *pctx, const struct pipe_shader_stat
    } else if (sh->nir->info.stage == MESA_SHADER_FRAGMENT) {
       char why[128];
 
+      /* the draw module's wide point stage reads it (only scans it) */
+      if (ctx->draw)
+         sh->draw_fs = draw_create_fragment_shader(ctx->draw, s);
+
       sgx_fs_colour_analyse(sh->nir, &sh->colour);
       /* SGX_NOCOMPILE=1: M13a's way only */
       if (!debug_get_bool_option("SGX_NOCOMPILE", false)) {
@@ -305,28 +348,22 @@ sgx_delete_shader_state(struct pipe_context *pctx, void *state)
    }
    if (sh->draw)
       draw_delete_vertex_shader(ctx->draw, sh->draw);
-   if (ctx->fs == sh)
+   if (ctx->fs == sh) {
       ctx->fs = NULL;
-   /* its code stays where the frame put it: that place is not reused.  The
-    * gathered draws keep their copy of a pixel program; a vertex shader
-    * they use lives until they are rendered (st deletes the last program
-    * at the next glUseProgram: no flush in the middle of a frame, M24) */
-   sgx_fs_destroy(sh->compiled);
-   for (unsigned i = 0; i < sh->nvariants; i++)
-      sgx_fs_destroy(sh->variant[i]);
-   for (unsigned i = 0; i < sh->nvs; i++) {
-      struct sgx_vs **d;
-
-      if (!ctx->batch.ndraws ||
-          !(d = realloc(ctx->batch.dead_vs, (ctx->batch.ndead_vs + 1) * sizeof(*d)))) {
-         if (ctx->batch.ndraws)
-            sgx_batch_flush(ctx);
-         sgx_vs_destroy(sh->vs_variant[i]);
-         continue;
-      }
-      ctx->batch.dead_vs = d;
-      d[ctx->batch.ndead_vs++] = sh->vs_variant[i];
+      if (ctx->draw)
+         draw_bind_fragment_shader(ctx->draw, NULL);
    }
+   if (sh->draw_fs)
+      draw_delete_fragment_shader(ctx->draw, sh->draw_fs);
+   /* its programs live until the gathered draws, which may use them, are
+    * rendered; then their places in GPU memory are free once the render is
+    * done (st deletes the last program at the next glUseProgram: no flush
+    * in the middle of a frame, M24) */
+   sgx_batch_bury_fs(ctx, sh->compiled);
+   for (unsigned i = 0; i < sh->nvariants; i++)
+      sgx_batch_bury_fs(ctx, sh->variant[i]);
+   for (unsigned i = 0; i < sh->nvs; i++)
+      sgx_batch_bury_vs(ctx, sh->vs_variant[i]);
    ralloc_free(sh->nir);
    FREE(sh);
 }
@@ -344,7 +381,12 @@ sgx_bind_vs_state(struct pipe_context *pctx, void *state)
 static void
 sgx_bind_fs_state(struct pipe_context *pctx, void *state)
 {
-   sgx_context(pctx)->fs = state;
+   struct sgx_context *ctx = sgx_context(pctx);
+   struct sgx_shader *sh = state;
+
+   ctx->fs = sh;
+   if (ctx->draw)
+      draw_bind_fragment_shader(ctx->draw, sh ? sh->draw_fs : NULL);
 }
 
 static void
@@ -484,6 +526,8 @@ static void
 sgx_set_scissor_states(struct pipe_context *pctx, unsigned start, unsigned count,
                        const struct pipe_scissor_state *s)
 {
+   if (start == 0 && count)
+      sgx_context(pctx)->scissor = s[0];
 }
 
 static void
@@ -580,6 +624,7 @@ sgx_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
    p->flush_resource = sgx_flush_resource;
    p->draw_vbo = sgx_draw_vbo;
    ctx->debug_draw = debug_get_bool_option("SGX_DEBUG_DRAW", false);
+   ctx->debug_fps = getenv("SGX_DEBUG") && strstr(getenv("SGX_DEBUG"), "fps");
    p->texture_barrier = sgx_texture_barrier;
    p->memory_barrier = sgx_memory_barrier;
    p->get_device_reset_status = sgx_get_device_reset_status;

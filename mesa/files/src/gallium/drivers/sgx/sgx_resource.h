@@ -25,10 +25,15 @@ struct sgx_resource {
    uint32_t seq;                                  /* bumped at every write */
    struct sgx_bo *tw;                             /* the twiddled copy */
    uint32_t tw_seq;                               /* the content it was made from */
-   unsigned tw_w, tw_h;                           /* its size */
+   unsigned tw_w, tw_h;                           /* its size (linear: the stride's) */
+   bool tw_lin;                                   /* linear BGRA rows, not twiddled */
    struct sgx_bo *sampled;                        /* what the last state words point at */
    bool external;                                 /* shared: others may write it */
    bool gpu_written;                              /* a render has written it */
+   struct sgx_bo *zls;                            /* a depth buffer's tiles (M24) */
+   bool zls_valid;                                /* a render has stored them */
+   bool zls_cleared;                              /* cleared since, to zls_clear */
+   float zls_clear;
 };
 
 static inline struct sgx_resource *

@@ -8,6 +8,9 @@ and a summary to stdout.
 
     python3 deqp-run.py DEQPDIR OUT PREFIX...     (on the device)
 
+SGX_WRAP names the wrapper the cases run under (sgx-gl, the default; a test
+build's, say).
+
 DEQPDIR holds deqp-gles2, its gles2/ data and cases.txt (a case a line:
 deqp-gles2 --deqp-runmode=stdout-caselist).
 """
@@ -16,18 +19,21 @@ import os, re, select, signal, subprocess, sys, time
 QUIET = 60      # seconds without output: a hang
 ARGS = ['--deqp-surface-type=pbuffer', '--deqp-gl-config-name=rgba8888d24s8ms0',
         '--deqp-surface-width=256', '--deqp-surface-height=256', '--deqp-log-images=disable',
-        '--deqp-log-shader-sources=disable', '--deqp-log-filename=/tmp/deqp.qpa']
+        '--deqp-log-shader-sources=disable']
 STATUS = re.compile(r'^  (Pass|Fail|NotSupported|QualityWarning|CompatibilityWarning|'
                     r'InternalError|ResourceError|Crash|Timeout) \((.*)\)$')
 
 
-def run(deqp, cases, log):
-    """the cases, as far as one process gets: {case: (status, detail)}"""
-    with open('/tmp/deqp-caselist.txt', 'w') as f:
+def run(deqp, out, cases, log):
+    """the cases, as far as one process gets: {case: (status, detail)} (its
+    case list and log in OUT: runs side by side do not share them)"""
+    caselist = os.path.join(out, '.caselist.txt')
+    with open(caselist, 'w') as f:
         f.write('\n'.join(cases) + '\n')
     env = dict(os.environ, EGL_PLATFORM='surfaceless')
-    p = subprocess.Popen(['sgx-gl', os.path.join(deqp, 'deqp-gles2'),
-                          '--deqp-caselist-file=/tmp/deqp-caselist.txt'] + ARGS,
+    p = subprocess.Popen([os.environ.get('SGX_WRAP', 'sgx-gl'), os.path.join(deqp, 'deqp-gles2'),
+                          '--deqp-caselist-file=' + caselist,
+                          '--deqp-log-filename=' + os.path.join(out, '.deqp.qpa')] + ARGS,
                          cwd=deqp, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                          bufsize=0)
     done, current, buf = {}, None, b''
@@ -69,7 +75,7 @@ def main():
         results, t0 = {}, time.time()
         with open(os.path.join(out, prefix + '.log'), 'w') as log:
             while todo:
-                done = run(deqp, todo, log)
+                done = run(deqp, out, todo, log)
                 if not done:            # nothing ran: the first case, a crash
                     done = {todo[0]: ('Crash', 'nothing ran')}
                 results.update(done)

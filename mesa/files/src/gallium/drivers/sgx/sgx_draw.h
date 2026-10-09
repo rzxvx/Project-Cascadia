@@ -15,6 +15,8 @@
 
 struct nir_shader;
 struct sgx_context;
+struct sgx_fs;
+struct sgx_vs;
 
 /* Where each channel of a fragment shader's colour comes from: the
  * template frame's programs interpolate a colour between the vertices, so
@@ -40,6 +42,10 @@ void sgx_fs_colour_analyse(const struct nir_shader *fs, struct sgx_fs_colour *ou
 
 /* the gathered draws rendered now (nothing if there are none) */
 void sgx_batch_flush(struct sgx_context *ctx);
+/* a program gone from its shader: retired and freed at the next flush
+ * (or now, when nothing is gathered) */
+void sgx_batch_bury_fs(struct sgx_context *ctx, struct sgx_fs *fs);
+void sgx_batch_bury_vs(struct sgx_context *ctx, struct sgx_vs *vs);
 /* depth (to d) and/or stencil (to value, through mask) cleared within the
  * render, over sc or all of the target: a quad that writes nothing but
  * them (M23, M24) */

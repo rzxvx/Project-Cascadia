@@ -175,6 +175,11 @@ struct sgx_frame_draw {
 int sgx_frame_upload(struct sgx_frame *f, struct sgx_pixel_program *p);
 /* a vertex shader's code and its vertex fetch, once */
 int sgx_frame_upload_vs(struct sgx_frame *f, struct sgx_vs *vs);
+/* a program no render to be submitted from now on runs: its places free
+ * again once the renders already submitted are done (and it is to be
+ * uploaded again if drawn after all) */
+void sgx_frame_retire(struct sgx_frame *f, struct sgx_pixel_program *p);
+void sgx_frame_retire_vs(struct sgx_frame *f, struct sgx_vs *vs);
 /* sgx_frame_place() for vertices of stride bytes, indexed: up to 65536 */
 bool sgx_frame_place_indexed(struct sgx_frame *f, unsigned *cursor, unsigned stride,
                              unsigned nverts, unsigned *first);
@@ -184,12 +189,26 @@ bool sgx_frame_place_indexed(struct sgx_frame *f, unsigned *cursor, unsigned str
 bool sgx_frame_place(struct sgx_frame *f, unsigned *cursor, const struct sgx_frame_layout *l,
                      unsigned nverts, unsigned *first);
 
+/* The depth buffer a render loads its tiles' depth from, stores it to, or
+ * both (M24, the ISP's z load/store): 32 x 32 F32 tiles, 4 KiB each, rows
+ * of tiles an even number long (sgx_frame_zls_size()) */
+struct sgx_frame_zls {
+   struct sgx_bo *bo;
+   unsigned w;         /* the depth buffer's width, pixels */
+   bool load;          /* else the tiles start at depth_clear */
+   bool store;
+   bool stencil;       /* stencil too: 24-bit depth with it in the top byte */
+};
+uint32_t sgx_frame_zls_size(unsigned w, unsigned h);
+
 /* n draws (at most SGX_FRAME_MAX_DRAWS, their vertices placed one after
  * another as sgx_frame_place says) in one render into rt, in order, over
- * what it holds: the depth test holds across them, from depth_clear. */
+ * what it holds: the depth test holds across them, from depth_clear -- or
+ * from zls, when it loads.  zls NULL: no depth buffer. */
 int sgx_frame_render(struct sgx_frame *f, struct sgx_resource *rt,
                      const struct sgx_frame_draw *draws, unsigned n, const uint32_t *handles,
-                     unsigned nhandles, float depth_clear, struct sgx_fence *done);
+                     unsigned nhandles, float depth_clear, const struct sgx_frame_zls *zls,
+                     struct sgx_fence *done);
 unsigned sgx_frame_max_vertices(struct sgx_frame *f, const struct sgx_frame_layout *l);
 
 #endif

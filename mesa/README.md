@@ -64,9 +64,15 @@ sgx-gl gltri --ppm /tmp/x.ppm    # the last read-back as a picture: look at it
 sgx-gl glfs                      # the compiler's 40 cases (M13c; M20-M22 loops, arrays)
 sgx-gl glcull                    # culling, viewports, depth ranges, gl_FrontFacing (M18, M19)
 sgx-gl gldiscard                 # discard (M19: the tile's colour kept; depth still written)
-sgx-gl glstencil                 # the stencil test, its ops, masks and clear (M23)
+sgx-gl glstencil                 # the stencil test, its ops, masks and clear (M23; M24
+                                 # across renders)
+sgx-gl gldepth                   # the depth test, within a render and across two (M24)
+sgx-gl glchurn                   # 3000 programs made, drawn and deleted: GPU memory reused
+sgx-gl glwrap                    # texture wrap modes, each axis (M24)
 SGX_CPU_VS=1 sgx-gl glcull       # the same with the vertex shaders on the CPU
 SGX_STATE=18:1 sgx-gl glcull     # xor bits into every draw's state words (finding them)
+SGX_DEBUG=state sgx-gl gltri     # each draw's state words (cmd: the TA command, 3D block)
+SGX_ZLS=0 sgx-gl gldepth         # depth and stencil in the tiles only (no z load/store)
 SGX_DEBUG_SHADER=1 sgx-gl glfs mad   # a compiled program's words (tools/iosgpu/usse-dis.py words)
 SGX_NOCOMPILE=1 sgx-gl gltri     # without the compiler: M13a's per-vertex colour
 sgx-gl frame-bisect              # one clear through every SGX_FRAME variant (docs, M12)

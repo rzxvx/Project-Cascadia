@@ -1068,7 +1068,19 @@ vertex_output(struct comp *c)
             o.is_const = true;
             o.c = i == 3 ? 1.0f : 0.0f;
          }
-         move_into(c, usse_reg(USSE_OUTPUT, 4 * k + i), o, &s);
+         if (k == 0 && i < 2) {
+            /* x and y as a x + b w, a and b the draw's (the TA's clip
+             * rectangle, sgx_draw.c) */
+            struct usse_reg t = treg(c, scratch_take(c, &s)), u = treg(c, scratch_take(c, &s));
+
+            emit(c, usse_fop(USSE_NMAD_MUL, t, get(c, c->vout[0][3], TAKES_ALL, &s),
+                             usse_reg(USSE_SA, c->vs->clip_sa + 2 * i + 1)));
+            emit(c, usse_fop(USSE_NMAD_MUL, u, get(c, o, TAKES_ALL, &s),
+                             usse_reg(USSE_SA, c->vs->clip_sa + 2 * i)));
+            emit(c, usse_fop(USSE_NMAD_ADD, usse_reg(USSE_OUTPUT, i), u, t));
+         } else {
+            move_into(c, usse_reg(USSE_OUTPUT, 4 * k + i), o, &s);
+         }
          scratch_give_back(c, &s);
       }
    emit(c, USSE_EMIT_VERTEX_END);
@@ -1521,6 +1533,13 @@ sgx_compile_vs(const nir_shader *vs, const unsigned *varying_slot, unsigned nvar
       nir_print_shader(s, stderr);
    if (!translate(&c, s))
       goto out;
+   /* the draw's four words for the position, after the uniforms */
+   c.vs->clip_sa = c.nuniforms;
+   c.nuniforms += 4;
+   if (c.nuniforms > 128) {
+      fail(&c, "uniforms past word 128");
+      goto out;
+   }
    out_at = util_dynarray_num_elements(&c.code, uint64_t);
    vertex_output(&c);
    if (c.failed)

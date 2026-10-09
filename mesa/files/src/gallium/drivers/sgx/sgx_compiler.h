@@ -61,6 +61,9 @@ struct sgx_vs {
    uint64_t *code;
    unsigned ncode, ntemps;
    unsigned nattrs, nuniforms;
+   /* the uniform words a, b for x and for y, x' = a x + b w: the TA clips
+    * where the draw wants (sgx_draw.c) */
+   unsigned clip_sa;
    unsigned varying_slot[SGX_FRAME_MAX_VARYINGS];
    unsigned nvaryings;
    bool branches;                   /* the code branches (M22) */

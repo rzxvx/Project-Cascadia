@@ -478,6 +478,11 @@ sgx_draw_init(struct sgx_context *ctx)
    draw_wide_point_threshold(ctx->draw, 0.0f);
    draw_enable_line_stipple(ctx->draw, false);
    draw_enable_point_sprites(ctx->draw, false);
+   /* polygon offset's unit: a 24-bit depth buffer's (times four, the
+    * rasterizer state's copy) -- the tiles hold depth as F32 whatever the
+    * depth buffer's format (M23), and the draw module's unit for that is
+    * a bit of it, too fine to survive */
+   draw_set_zs_format(ctx->draw, PIPE_FORMAT_Z24X8_UNORM);
    return true;
 }
 
@@ -491,7 +496,15 @@ sgx_draw_fini(struct sgx_context *ctx)
    ctx->draw = NULL;
    ctx->render = NULL;
    sgx_batch_flush(ctx);
+   if (ctx->clear_prog.code_va) {
+      struct sgx_screen *screen = sgx_screen(ctx->base.screen);
+
+      simple_mtx_lock(&screen->frame_lock);
+      sgx_frame_retire(screen->frame, &ctx->clear_prog);
+      simple_mtx_unlock(&screen->frame_lock);
+   }
    free(ctx->batch.dead_vs);
+   free(ctx->batch.dead_fs);
    free(ctx->batch.verts);
    free(ctx->batch.sa);
    free(ctx->batch.idx);
@@ -560,8 +573,7 @@ fs_for_draw(struct sgx_context *ctx)
       return sh->compiled;
    }
    if (sh->nvariants == ARRAY_SIZE(sh->variant)) {
-      /* its code stays where the frame put it: that place is not reused */
-      sgx_fs_destroy(sh->variant[0]);
+      sgx_batch_bury_fs(ctx, sh->variant[0]);
       memmove(sh->variant, sh->variant + 1, (ARRAY_SIZE(sh->variant) - 1) * sizeof(fs));
       sh->nvariants--;
    }
@@ -600,17 +612,128 @@ sgx_batch_uses(struct sgx_context *ctx, struct pipe_resource *p)
    return false;
 }
 
+static bool zs_quad(struct sgx_context *ctx, const struct pipe_scissor_state *sc, float d,
+                    const struct sgx_frame_state *st, bool flush);
+
+/* the buried programs: retired from the frame (their places free once the
+ * renders submitted so far are done), then freed */
+static void
+bury(struct sgx_context *ctx)
+{
+   struct sgx_screen *screen = sgx_screen(ctx->base.screen);
+   struct sgx_batch *b = &ctx->batch;
+
+   if (!b->ndead_vs && !b->ndead_fs)
+      return;
+   simple_mtx_lock(&screen->frame_lock);
+   for (unsigned i = 0; screen->frame && i < b->ndead_vs; i++)
+      sgx_frame_retire_vs(screen->frame, b->dead_vs[i]);
+   for (unsigned i = 0; screen->frame && i < b->ndead_fs; i++)
+      sgx_frame_retire(screen->frame, &b->dead_fs[i]->prog);
+   simple_mtx_unlock(&screen->frame_lock);
+   for (unsigned i = 0; i < b->ndead_vs; i++)
+      sgx_vs_destroy(b->dead_vs[i]);
+   for (unsigned i = 0; i < b->ndead_fs; i++)
+      sgx_fs_destroy(b->dead_fs[i]);
+   b->ndead_vs = b->ndead_fs = 0;
+}
+
+void
+sgx_batch_bury_fs(struct sgx_context *ctx, struct sgx_fs *fs)
+{
+   struct sgx_batch *b = &ctx->batch;
+   struct sgx_fs **d;
+
+   if (!fs)
+      return;
+   if (!(d = realloc(b->dead_fs, (b->ndead_fs + 1) * sizeof(*d)))) {
+      sgx_batch_flush(ctx);
+      sgx_fs_destroy(fs);       /* its places stay taken */
+      return;
+   }
+   b->dead_fs = d;
+   d[b->ndead_fs++] = fs;
+   if (!b->ndraws)
+      bury(ctx);
+}
+
+void
+sgx_batch_bury_vs(struct sgx_context *ctx, struct sgx_vs *vs)
+{
+   struct sgx_batch *b = &ctx->batch;
+   struct sgx_vs **d;
+
+   if (!vs)
+      return;
+   if (!(d = realloc(b->dead_vs, (b->ndead_vs + 1) * sizeof(*d)))) {
+      sgx_batch_flush(ctx);
+      sgx_vs_destroy(vs);       /* its places stay taken */
+      return;
+   }
+   b->dead_vs = d;
+   d[b->ndead_vs++] = vs;
+   if (!b->ndraws)
+      bury(ctx);
+}
+
 void
 sgx_batch_flush(struct sgx_context *ctx)
 {
    struct sgx_screen *screen = sgx_screen(ctx->base.screen);
    struct sgx_batch *b = &ctx->batch;
    struct sgx_frame_draw d[SGX_FRAME_MAX_DRAWS];
+   struct sgx_resource *zs = b->zs ? sgx_resource(b->zs) : NULL;
+   struct sgx_frame_zls zls = { 0 };
    struct sgx_fence *fence;
    int ret = -ENOMEM;
 
-   if (!b->ndraws)
+   if (!b->ndraws) {
+      bury(ctx);
       return;
+   }
+   /* the depth buffer's tiles in memory (M24): stored at the render's end
+    * when a draw (or a clear's quad) writes depth, loaded at its start when
+    * there is something there, no clear came first and a draw reads or
+    * writes depth.  SGX_ZLS=0: never (depth lives in the tiles only) */
+   if (zs && b->zs->width0 && debug_get_bool_option("SGX_ZLS", true)) {
+      bool store, load;
+
+      /* a clear no draw used is only noted: the next render starts from
+       * it instead of loading */
+      if (zs->zls_cleared && !b->zs_cleared) {
+         b->zs_cleared = true;
+         b->depth_clear = zs->zls_clear;
+      }
+      zs->zls_cleared = false;
+      store = b->zs_written;
+      load = zs->zls_valid && !b->zs_cleared && (store || b->zs_read);
+      if (b->zs_cleared && !store) {
+         zs->zls_cleared = true;
+         zs->zls_clear = b->depth_clear;
+      }
+
+      if ((load || store) && !zs->zls) {
+         zs->zls = sgx_bo_create(&screen->dev, sgx_frame_zls_size(b->zs->width0,
+                                                                  b->zs->height0), 0, 0);
+         zs->zls_valid = false;
+         load = false;
+      }
+      if ((load || store) && zs->zls) {
+         zls.bo = zs->zls;
+         zls.w = b->zs->width0;
+         zls.load = load;
+         zls.store = store;
+         zls.stencil = util_format_has_stencil(util_format_description(b->zs->format));
+      }
+   }
+   /* a render that starts from a clear stores only the tiles it draws in:
+    * a quad that draws nothing (depth NEVER) over the target puts every
+    * tile in it, all stored at the clear's depth */
+   if (zls.store && !zls.load) {
+      const struct sgx_frame_state never = { .depth_func = PIPE_FUNC_NEVER };
+
+      zs_quad(ctx, NULL, 0.5f, &never, false);
+   }
    for (unsigned i = 0; i < b->ndraws; i++) {
       const struct sgx_batch_draw *bd = &b->draw[i];
 
@@ -624,24 +747,27 @@ sgx_batch_flush(struct sgx_context *ctx)
    if ((fence = sgx_fence_create(&screen->dev, false))) {
       simple_mtx_lock(&screen->frame_lock);
       ret = sgx_frame_render(screen->frame, sgx_resource(b->rt), d, b->ndraws, b->handles,
-                             b->ntex, b->depth_clear, fence);
+                             b->ntex, b->depth_clear, zls.bo ? &zls : NULL, fence);
       simple_mtx_unlock(&screen->frame_lock);
    }
    if (!ret) {
+      ctx->stat_renders++;
       sgx_fence_reference(&ctx->last, fence);
       sgx_resource(b->rt)->seq++;
       sgx_resource(b->rt)->gpu_written = true;
+      if (zls.store)
+         zs->zls_valid = true;
    } else {
       mesa_logw("sgx: a render of %u draws failed (%d)", b->ndraws, ret);
    }
    sgx_fence_reference(&fence, NULL);
    pipe_resource_reference(&b->rt, NULL);
+   pipe_resource_reference(&b->zs, NULL);
+   b->zs_cleared = b->zs_read = b->zs_written = false;
    for (unsigned i = 0; i < b->ntex; i++)
       pipe_resource_reference(&b->tex[i], NULL);
    b->ndraws = b->ntex = b->nfloats = b->nsa = b->nidx = b->cursor = 0;
-   for (unsigned i = 0; i < b->ndead_vs; i++)
-      sgx_vs_destroy(b->dead_vs[i]);
-   b->ndead_vs = 0;
+   bury(ctx);
 }
 
 static bool
@@ -660,6 +786,52 @@ grow(void **p, unsigned *max, unsigned want, unsigned size)
    return true;
 }
 
+/* Where a draw's pixels may go: its viewport (a vertex shader's draw; the
+ * draw module clips to it itself), the scissor, the target.  The TA clips
+ * to a guard band 1.5 times its viewport -- exactly, found drawing past
+ * the edges of viewports of all sizes -- so it gets that rectangle shrunk
+ * 1.5 times, and the vertices x' = a x + b w (ab: a, b for x, then y) to
+ * land where they did through the draw's viewport (t, s).  false when
+ * nothing is left. */
+static bool
+clip_to(struct sgx_context *ctx, bool vs, struct sgx_frame_state *st, float ab[4])
+{
+   float lo[2] = { 0, 0 }, hi[2] = { ctx->fb.width, ctx->fb.height }, t[2], s[2];
+
+   for (unsigned i = 0; i < 2; i++) {
+      if (vs) {
+         t[i] = ctx->viewport.translate[i];
+         s[i] = ctx->viewport.scale[i];
+         lo[i] = MAX2(lo[i], t[i] - fabsf(s[i]));
+         hi[i] = MIN2(hi[i], t[i] + fabsf(s[i]));
+      } else {
+         /* the draw module's vertices: over the target's whole viewport */
+         t[i] = s[i] = hi[i] / 2;
+      }
+   }
+   if (ctx->rast && ctx->rast->scissor) {
+      lo[0] = MAX2(lo[0], ctx->scissor.minx);
+      hi[0] = MIN2(hi[0], ctx->scissor.maxx);
+      lo[1] = MAX2(lo[1], ctx->scissor.miny);
+      hi[1] = MIN2(hi[1], ctx->scissor.maxy);
+   }
+   if (!(lo[0] < hi[0] && lo[1] < hi[1]))
+      return false;
+   for (unsigned i = 0; i < 2; i++) {
+      float c = (lo[i] + hi[i]) / 2, h = (hi[i] - lo[i]) / 3;
+
+      st->translate[i] = c;
+      st->scale[i] = h;
+      ab[2 * i] = s[i] / h;
+      ab[2 * i + 1] = (t[i] - c) / h;
+   }
+   /* depth as the viewport has it; the draw module's z through 0.5 z + 0.5 */
+   st->translate[2] = vs ? ctx->viewport.translate[2] : 0.5f;
+   st->scale[2] = vs ? ctx->viewport.scale[2] : 0.5f;
+   st->viewport = true;
+   return true;
+}
+
 /* One draw's triangles (ctx->verts, ctx->nverts) added to the gathered
  * render, in pieces when they are more than one draw of a render takes */
 static void
@@ -675,7 +847,11 @@ submit(struct sgx_context *ctx)
    struct sgx_vs *vs = ctx->gpu_vs;
    unsigned vf = vs ? 4 * vs->nattrs : sgx_frame_vertex_floats(&ctx->layout);
    unsigned nsa = fs ? fs->prog.nsa : 0, nvsa = vs ? vs->nuniforms : 0;
-   unsigned max, done = 0;
+   unsigned max, done = 0, npass = 1;
+   uint32_t face_stencil[2];
+   bool two_sided = false;
+   struct sgx_frame_state pass[2];
+   float ab[4];
    struct sgx_frame_state st = {
       .depth_func = ctx->dsa && ctx->dsa->depth_enabled ? ctx->dsa->depth_func : PIPE_FUNC_ALWAYS,
       .depth_write = ctx->dsa && ctx->dsa->depth_enabled && ctx->dsa->depth_writemask,
@@ -695,25 +871,33 @@ submit(struct sgx_context *ctx)
          [PIPE_STENCIL_OP_DECR] = 4, [PIPE_STENCIL_OP_INVERT] = 5,
          [PIPE_STENCIL_OP_INCR_WRAP] = 6, [PIPE_STENCIL_OP_DECR_WRAP] = 7,
       };
-      const struct pipe_stencil_state *s = &ctx->dsa->stencil[0];
 
+      for (unsigned f = 0; f < 2; f++) {
+         const struct pipe_stencil_state *s = &ctx->dsa->stencil[f && ctx->dsa->stencil[1].enabled];
+
+         face_stencil[f] = (uint32_t)(s->func & 7) << 25 | (uint32_t)op[s->fail_op & 7] << 22 |
+                           (uint32_t)op[s->zfail_op & 7] << 19 |
+                           (uint32_t)op[s->zpass_op & 7] << 16 | (uint32_t)s->valuemask << 8 |
+                           s->writemask;
+      }
       st.stencil_on = true;
-      st.stencil = (uint32_t)(s->func & 7) << 25 | (uint32_t)op[s->fail_op & 7] << 22 |
-                   (uint32_t)op[s->zfail_op & 7] << 19 | (uint32_t)op[s->zpass_op & 7] << 16 |
-                   (uint32_t)s->valuemask << 8 | s->writemask;
+      st.stencil = face_stencil[0];
       st.stencil_ref = ctx->stencil_ref.ref_value[0];
+      two_sided = face_stencil[1] != face_stencil[0] ||
+                  (ctx->dsa->stencil[1].enabled &&
+                   ctx->stencil_ref.ref_value[1] != ctx->stencil_ref.ref_value[0]);
    }
 
    if (!ctx->nverts)
       return;
-   /* the draw module's vertices come in the target's whole viewport; a
-    * vertex shader's need the draw's */
+   if (!clip_to(ctx, vs, &st, ab)) {
+      ctx->nverts = 0;
+      return;
+   }
    if (vs) {
       const struct pipe_rasterizer_state *r = ctx->rast;
 
-      st.viewport = true;
-      memcpy(st.scale, ctx->viewport.scale, sizeof(st.scale));
-      memcpy(st.translate, ctx->viewport.translate, sizeof(st.translate));
+      memcpy(ctx->vs_sa + vs->clip_sa, ab, sizeof(ab));
       /* gallium's anticlockwise is the target's, row 0 at the top: the
        * TA's; the back faces are what the front ones are not */
       if (r->cull_face == PIPE_FACE_BACK)
@@ -771,6 +955,15 @@ submit(struct sgx_context *ctx)
       return;
    }
 
+   /* the draw module's vertices through the clip rectangle's x' = a x + b w */
+   if (!vs)
+      for (unsigned i = 0; i < ctx->nverts; i++) {
+         float *v = ctx->verts + i * vf;
+
+         v[0] = ab[0] * v[0] + ab[1] * v[3];
+         v[1] = ab[2] * v[1] + ab[3] * v[3];
+      }
+
    /* a compiled fragment shader's secondary attributes: its uniforms,
     * then the state words of each texture it samples, the blend colour */
    if (fs) {
@@ -812,8 +1005,31 @@ submit(struct sgx_context *ctx)
       simple_mtx_unlock(&screen->frame_lock);
    }
 
+   /* two-sided stencil: the front faces with theirs, then the back ones
+    * with theirs -- a pass each, the TA culling the other faces (the
+    * draw module has culled what the rasterizer state does) */
+   pass[0] = st;
+   if (two_sided) {
+      const struct pipe_rasterizer_state *r = ctx->rast;
+      uint8_t back = r->front_ccw ? SGX_CULL_CW : SGX_CULL_CCW;
+      uint8_t front = r->front_ccw ? SGX_CULL_CCW : SGX_CULL_CW;
+
+      npass = 0;
+      if (r->cull_face != PIPE_FACE_FRONT) {
+         pass[npass] = st;
+         pass[npass++].cull = back;
+      }
+      if (r->cull_face != PIPE_FACE_BACK) {
+         pass[npass] = st;
+         pass[npass].cull = front;
+         pass[npass].stencil = face_stencil[1];
+         pass[npass++].stencil_ref = ctx->stencil_ref.ref_value[1];
+      }
+   }
+
    max = vs ? ctx->nverts : sgx_frame_max_vertices(screen->frame, &ctx->layout);
-   while (done < ctx->nverts) {
+   for (unsigned k = 0; k < npass; k++)
+   for (done = 0, st = pass[k]; done < ctx->nverts;) {
       unsigned n = MIN2(ctx->nverts - done, max), first, ntex = b->ntex;
       unsigned cursor = b->cursor, nidx = vs ? ctx->nindices : 0;
       struct sgx_batch_draw *bd;
@@ -843,8 +1059,10 @@ submit(struct sgx_context *ctx)
           !grow((void **)&b->sa, &b->maxsa, b->nsa + nsa + nvsa, sizeof(uint32_t)) ||
           !grow((void **)&b->idx, &b->maxidx, b->nidx + nidx, sizeof(uint16_t)))
          break;
-      if (!b->ndraws)
+      if (!b->ndraws) {
          pipe_resource_reference(&b->rt, &rt->base);
+         pipe_resource_reference(&b->zs, ctx->fb.zsbuf.texture);
+      }
       /* from now on sampled linear: decided before any draw samples it */
       rt->gpu_written = true;
       for (unsigned i = 0; fs && i < fs->nsamplers; i++) {
@@ -866,6 +1084,11 @@ submit(struct sgx_context *ctx)
          bd->prog = fs->prog;
       bd->sa = b->nsa;
       bd->st = st;
+      if (ctx->fb.zsbuf.texture) {
+         b->zs_written |= st.depth_write || (st.stencil_on && (st.stencil & 0xff));
+         b->zs_read |= (st.depth_func != PIPE_FUNC_ALWAYS && st.depth_func != PIPE_FUNC_NEVER) ||
+                       st.stencil_on;
+      }
       bd->vs = vs;
       bd->vs_sa = b->nsa + nsa;
       bd->idx = b->nidx;
@@ -883,16 +1106,13 @@ submit(struct sgx_context *ctx)
    ctx->nverts = 0;
 }
 
-/* Depth and stencil live in a render's tiles only (M23): a render starts
- * at the last depth clear's value and stencil 0 -- no register for another
- * stencil was found.  So a clear inside a render, a scissored one, or one
- * to another stencil, is a quad over the cleared rectangle: its pixel
- * program nothing (o0 keeps the tile's colour), at the cleared depth,
- * depth ALWAYS (written if cleared), stencil ALWAYS, REPLACE by value
- * through mask (if cleared). */
-void
-sgx_zs_clear(struct sgx_context *ctx, bool depth, float d, bool stencil, unsigned value,
-             unsigned mask, const struct pipe_scissor_state *sc)
+/* A quad over the rectangle sc (all of the target: NULL) at the depth d,
+ * its pixel program nothing (o0 keeps the tile's colour), the ISP doing
+ * what st says; false when there is no room in the render (and room is
+ * not to be made: flush false) */
+static bool
+zs_quad(struct sgx_context *ctx, const struct pipe_scissor_state *sc, float d,
+        const struct sgx_frame_state *st, bool flush)
 {
    static const uint64_t nothing[2] = { 0xfa44070000000000ull, 0xf804014000000000ull };
    static const struct sgx_frame_layout l = { .nvaryings = 1, .f32 = 1, .colour = 0 };
@@ -907,7 +1127,7 @@ sgx_zs_clear(struct sgx_context *ctx, bool depth, float d, bool stencil, unsigne
    float x1 = sc ? 2.0f * sc->maxx / ctx->fb.width - 1 : 1;
    float y0 = sc ? 2.0f * sc->miny / ctx->fb.height - 1 : -1;
    float y1 = sc ? 2.0f * sc->maxy / ctx->fb.height - 1 : 1;
-   float z = depth ? 2 * d - 1 : 0;
+   float z = 2 * d - 1;
    /* x y z w, then the varying nobody reads */
    const float quad[6][8] = {
       { x0, y0, z, 1 }, { x1, y0, z, 1 }, { x1, y1, z, 1 },
@@ -917,7 +1137,13 @@ sgx_zs_clear(struct sgx_context *ctx, bool depth, float d, bool stencil, unsigne
    int ret;
 
    if (!rt || !ctx->fb.width || !ctx->fb.height)
-      return;
+      return false;
+   if (b->ndraws && b->rt != &rt->base) {
+      if (!flush)
+         return false;
+      sgx_batch_flush(ctx);
+      cursor = 0;
+   }
    if (!ctx->clear_prog.code) {
       ctx->clear_prog.code = (uint64_t *)nothing;
       ctx->clear_prog.ncode = 2;
@@ -928,18 +1154,22 @@ sgx_zs_clear(struct sgx_context *ctx, bool depth, float d, bool stencil, unsigne
    ret = sgx_frame_upload(screen->frame, &ctx->clear_prog);
    simple_mtx_unlock(&screen->frame_lock);
    if (ret)
-      return;
+      return false;
    if (b->ndraws == SGX_FRAME_MAX_DRAWS ||
        !sgx_frame_place(screen->frame, &cursor, &l, 6, &first)) {
+      if (!flush)
+         return false;
       sgx_batch_flush(ctx);
       cursor = 0;
       if (!sgx_frame_place(screen->frame, &cursor, &l, 6, &first))
-         return;
+         return false;
    }
    if (!grow((void **)&b->verts, &b->maxfloats, b->nfloats + 6 * vf, sizeof(float)))
-      return;
-   if (!b->ndraws)
+      return false;
+   if (!b->ndraws) {
       pipe_resource_reference(&b->rt, &rt->base);
+      pipe_resource_reference(&b->zs, ctx->fb.zsbuf.texture);
+   }
    rt->gpu_written = true;
    bd = &b->draw[b->ndraws++];
    memset(bd, 0, sizeof(*bd));
@@ -951,16 +1181,32 @@ sgx_zs_clear(struct sgx_context *ctx, bool depth, float d, bool stencil, unsigne
    bd->sa = b->nsa;
    bd->vs_sa = b->nsa;
    bd->idx = b->nidx;
-   bd->st = (struct sgx_frame_state){
+   bd->st = *st;
+   b->zs_written |= st->depth_write || (st->stencil_on && (st->stencil & 0xff));
+   memcpy(b->verts + b->nfloats, quad, sizeof(quad));
+   b->nfloats += 6 * vf;
+   b->cursor = cursor;
+   return true;
+}
+
+/* A render starts at the last depth clear's value and stencil 0 (or from
+ * memory, M24) -- no register for another stencil was found.  So a clear
+ * inside a render, a scissored one, or one to another stencil, is a quad
+ * over the cleared rectangle at the cleared depth: depth ALWAYS (written if
+ * cleared), stencil ALWAYS, REPLACE by value through mask (if cleared). */
+void
+sgx_zs_clear(struct sgx_context *ctx, bool depth, float d, bool stencil, unsigned value,
+             unsigned mask, const struct pipe_scissor_state *sc)
+{
+   const struct sgx_frame_state st = {
       .depth_func = PIPE_FUNC_ALWAYS,
       .depth_write = depth,
       .stencil_on = stencil,
       .stencil = 7u << 25 | 2u << 22 | 2u << 19 | 2u << 16 | 0xffu << 8 | (mask & 0xff),
       .stencil_ref = value,
    };
-   memcpy(b->verts + b->nfloats, quad, sizeof(quad));
-   b->nfloats += 6 * vf;
-   b->cursor = cursor;
+
+   zs_quad(ctx, sc, depth ? d : 0.5f, &st, true);
 }
 
 /* ---- the vertex shader on the GPU (M18) --------------------------------- */
@@ -997,8 +1243,7 @@ vs_for_draw(struct sgx_context *ctx, const struct sgx_fs *fs)
          mesa_logi("sgx:   %016llx", (unsigned long long)vs->code[i]);
    }
    if (sh->nvs == ARRAY_SIZE(sh->vs_variant)) {
-      sgx_batch_flush(ctx);
-      sgx_vs_destroy(sh->vs_variant[0]);
+      sgx_batch_bury_vs(ctx, sh->vs_variant[0]);
       memmove(sh->vs_variant, sh->vs_variant + 1, (ARRAY_SIZE(sh->vs_variant) - 1) * sizeof(vs));
       sh->nvs--;
    }
@@ -1033,7 +1278,10 @@ gpu_vs_can_draw(struct sgx_context *ctx, const struct pipe_draw_info *info)
       return false;
    if (info->primitive_restart || r->cull_face == PIPE_FACE_FRONT_AND_BACK ||
        r->fill_front != PIPE_POLYGON_MODE_FILL || r->fill_back != PIPE_POLYGON_MODE_FILL ||
-       r->clip_plane_enable || r->flatshade)
+       r->clip_plane_enable || r->flatshade ||
+       /* polygon offset: the draw module's (the TA's not found yet) */
+       ((r->offset_tri || r->offset_point || r->offset_line) &&
+        (r->offset_units != 0.0f || r->offset_scale != 0.0f)))
       return false;
    return true;
 }
@@ -1187,6 +1435,7 @@ sgx_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info,
 
    if (indirect || !draw || !ctx->vs || !ctx->vs->draw)
       return;
+   ctx->stat_draws += num_draws;
    ctx->draw_fs = fs_for_draw(ctx);
    if (ctx->fs && !ctx->fs->compiled && !ctx->fs->colour.ok && !ctx->warned_fs) {
       mesa_logw("sgx: a fragment shader whose colour is not a varying, a constant or a "
