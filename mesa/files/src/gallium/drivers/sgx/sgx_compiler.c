@@ -63,12 +63,18 @@ struct scratch {
    unsigned n;
 };
 
+/* a loop's span: its first instruction's index, its end marker's */
+struct loop_span {
+   int start, end;
+};
+
 struct comp {
    struct sgx_fs *fs;                   /* a fragment shader's, or */
    struct sgx_vs *vs;                   /* a vertex shader's */
    struct util_dynarray code;           /* uint64_t */
    struct usse_reg *loc;                /* where each value is */
    bool *owned;                         /* loc is a temporary of its own (any lane) */
+   unsigned nvalues;                    /* of loc, owned, last_use */
    int *last_use;                       /* the last instruction that reads it */
    bool used[MAX_TEMPS];
    unsigned top;                        /* temporaries used: highest + 1 */
@@ -80,6 +86,17 @@ struct comp {
    struct operand colour[4];
    bool have_colour[4];
    int kill;                            /* the temporary that is not 0 for a pixel discarded, or -1 */
+   bool kills;                          /* the shader discards (scan) */
+   /* control flow (M20): the ifs and loops around the instruction, each
+    * SSA def's instruction, each loop's span (its first instruction, its
+    * end marker), the loops a walk is in, whether the code branches */
+   int depth;
+   int *def_at;
+   struct util_dynarray loops;          /* struct loop_span */
+   unsigned nloops;
+   struct loop_span active[16];
+   unsigned nactive;
+   bool branches;
    bool front_when_set;                 /* gl_FrontFacing: the facing bit set is the front */
    /* a vertex shader's outputs: 0 the position, 1 + k varying k of the
     * layout (varying_slot[k]); the attributes it reads */
@@ -494,6 +511,11 @@ scan(struct comp *c, nir_function_impl *impl)
             if ((in->intrinsic == nir_intrinsic_load_uniform ||
                  in->intrinsic == nir_intrinsic_load_ubo) && uniform_word(c, in, &at))
                c->nuniforms = MAX2(c->nuniforms, at + in->def.num_components);
+            if (in->intrinsic == nir_intrinsic_terminate ||
+                in->intrinsic == nir_intrinsic_terminate_if ||
+                in->intrinsic == nir_intrinsic_demote ||
+                in->intrinsic == nir_intrinsic_demote_if)
+               c->kills = true;
             if (c->vs && in->intrinsic == nir_intrinsic_load_input &&
                 nir_src_is_const(*nir_get_io_offset_src(in)))
                c->nattrs = MAX2(c->nattrs, nir_intrinsic_base(in) +
@@ -627,9 +649,51 @@ intrinsic(struct comp *c, nir_intrinsic_instr *in)
          c->loc[id + i] = usse_reg(USSE_SA, at + i);
       c->nuniforms = MAX2(c->nuniforms, at + in->def.num_components);
       return;
+   case nir_intrinsic_decl_reg:
+      /* a phi web's register (M20): a temporary a component, the whole
+       * program long */
+      if (nir_intrinsic_num_array_elems(in) || nir_intrinsic_bit_size(in) != 32) {
+         fail(c, "an array register");
+         return;
+      }
+      for (unsigned i = 0; i < nir_intrinsic_num_components(in); i++)
+         c->loc[id + i] = treg(c, take(c));
+      return;
+   case nir_intrinsic_store_reg: {
+      unsigned reg = in->src[1].ssa->index * 4, mask = nir_intrinsic_write_mask(in);
+      struct scratch sc = { 0 };
+
+      for (unsigned i = 0; i < in->src[0].ssa->num_components; i++) {
+         if (mask & 1 << i)
+            move_into(c, c->loc[reg + i], resolve(nir_get_scalar(in->src[0].ssa, i)), &sc);
+         scratch_give_back(c, &sc);
+      }
+      return;
+   }
+   case nir_intrinsic_load_reg: {
+      /* a copy: the register changes while the value may still be read */
+      unsigned reg = in->src[0].ssa->index * 4;
+
+      for (unsigned i = 0; i < in->def.num_components; i++) {
+         unsigned r;
+
+         if (c->last_use[id + i] < 0)
+            continue;
+         r = take(c);
+         c->loc[id + i] = treg(c, r);
+         c->owned[id + i] = true;
+         emit(c, usse_fmov(treg(c, r), c->loc[reg + i]));
+      }
+      return;
+   }
    case nir_intrinsic_store_output: {
       unsigned loc = nir_intrinsic_io_semantics(in).location;
       unsigned mask = nir_intrinsic_write_mask(in), comp = nir_intrinsic_component(in);
+
+      if (c->depth) {
+         fail(c, "an output written in control flow");
+         return;
+      }
 
       if (c->vs) {
          int k = -1;
@@ -714,24 +778,25 @@ intrinsic(struct comp *c, nir_intrinsic_instr *in)
    case nir_intrinsic_demote:
    case nir_intrinsic_demote_if: {
       /* discard: the conditions gathered (their largest) into a temporary of
-       * its own, which output() tests */
+       * its own (two: output() copies it to the odd one), which output()
+       * tests */
       bool cond = in->intrinsic == nir_intrinsic_terminate_if ||
                   in->intrinsic == nir_intrinsic_demote_if;
       struct operand o = cond ? resolve(nir_get_scalar(in->src[0].ssa, 0)) :
                                 (struct operand){ .is_const = true, .c = 1.0f };
       struct scratch sc = { 0 };
 
-      if (!c->fs) {
+      if (!c->fs || c->kill < 0) {
          fail(c, "discard in a vertex shader");
          break;
       }
-      if (c->kill < 0) {
-         c->kill = block(c, 2, 2);   /* and a copy in the odd one */
-         move_into(c, treg(c, c->kill), o, &sc);
-      } else {
+      /* (kill is 0 from the program's start: a discard in a branch may
+       * not run) */
+      if (o.is_const)
+         emit(c, usse_limm(treg(c, c->kill), f32_bits(o.c ? 1.0f : 0.0f)));
+      else
          emit(c, usse_fop(USSE_NMAD_MAX, treg(c, c->kill), treg(c, c->kill),
                           get(c, o, TAKES_ALL & ~TAKES_NEG, &sc)));
-      }
       scratch_give_back(c, &sc);
       break;
    }
@@ -776,6 +841,9 @@ for_each_read(struct comp *c, nir_instr *instr, void (*f)(struct comp *, struct 
       if (in->intrinsic == nir_intrinsic_terminate_if ||
           in->intrinsic == nir_intrinsic_demote_if)
          f(c, resolve(nir_get_scalar(in->src[0].ssa, 0)), index);
+      if (in->intrinsic == nir_intrinsic_store_reg)
+         for (unsigned i = 0; i < in->src[0].ssa->num_components; i++)
+            f(c, resolve(nir_get_scalar(in->src[0].ssa, i)), index);
    } else if (instr->type == nir_instr_type_tex) {
       nir_tex_instr *tex = nir_instr_as_tex(instr);
 
@@ -795,8 +863,16 @@ for_each_read(struct comp *c, nir_instr *instr, void (*f)(struct comp *, struct 
 static void
 note_use(struct comp *c, struct operand o, int index)
 {
-   if (!o.is_const)
-      c->last_use[o.id] = index;
+   if (o.is_const)
+      return;
+   /* read in a loop it was made before: alive until that loop's end (the
+    * outermost such), every iteration reads it */
+   for (unsigned i = 0; i < c->nactive; i++)
+      if (c->active[i].start > c->def_at[o.id / 4]) {
+         index = MAX2(index, c->active[i].end);
+         break;
+      }
+   c->last_use[o.id] = MAX2(c->last_use[o.id], index);
 }
 
 static void
@@ -864,8 +940,12 @@ output(struct comp *c)
 static void
 optimize(nir_shader *s)
 {
+   /* ifs of up to 32 instructions a side flattened (selects); bigger ones
+    * branch -- an unrolled loop with a break flattened whole needed 65
+    * registers a pixel (M20).  SGX_FLATTEN_LIMIT=n to try others. */
    const nir_opt_peephole_select_options flatten = {
-      .limit = 1000, .indirect_load_ok = true, .expensive_alu_ok = true,
+      .limit = getenv("SGX_FLATTEN_LIMIT") ? atoi(getenv("SGX_FLATTEN_LIMIT")) : 32,
+      .indirect_load_ok = true, .expensive_alu_ok = true,
       .discard_ok = true,        /* if (c) discard: terminate_if(c) */
    };
    bool progress;
@@ -917,6 +997,7 @@ lower_blend(nir_shader *s, const struct sgx_blend_key *k)
  * words each, as the TA state's vertex size says -- and out to the tiler.
  * What the shader does not write is 0, w 1. */
 #define USSE_EMIT_VERTEX_END 0xfb275000a0200000ull
+#define USSE_PHAS_BRANCHES   0xfa44270000000000ull
 
 static void
 vertex_output(struct comp *c)
@@ -956,6 +1037,23 @@ fold_uniform_offset(nir_builder *b, nir_intrinsic_instr *in, void *data)
    return true;
 }
 
+/* ftrunc (int(x), made by nir_lower_int_to_float after the options'
+ * lowering ran) as its sign times floor(|x|), floor y as y - fract y */
+static bool
+lower_ftrunc(nir_builder *b, nir_alu_instr *alu, void *data)
+{
+   nir_def *x, *a, *f;
+
+   if (alu->op != nir_op_ftrunc)
+      return false;
+   b->cursor = nir_before_instr(&alu->instr);
+   x = nir_ssa_for_alu_src(b, alu, 0);
+   a = nir_fabs(b, x);
+   f = nir_fadd(b, a, nir_fneg(b, nir_ffract(b, a)));
+   nir_def_replace(&alu->def, nir_bcsel(b, nir_flt_imm(b, x, 0.0), nir_fneg(b, f), f));
+   return true;
+}
+
 /* gl_FrontFacing as 0 < its sign, which intrinsic() makes */
 static bool
 lower_front_face(nir_builder *b, nir_intrinsic_instr *in, void *data)
@@ -967,10 +1065,201 @@ lower_front_face(nir_builder *b, nir_intrinsic_instr *in, void *data)
    return true;
 }
 
+/* A branch (iOS's c04_loop_break: `p0? br +21`, `br -21`): relative, in
+ * instructions from itself, under an extended predicate (0 always, 1 p0,
+ * 5 !p0) */
+#define USSE_BR   0xf800004000000000ull
+
+static void
+branch_to(struct comp *c, unsigned at, unsigned target)
+{
+   uint64_t *w = util_dynarray_element(&c->code, uint64_t, at);
+
+   *w = (*w & ~0xfffffull) | ((uint32_t)(target - at) & 0xfffff);
+}
+
+static unsigned
+branch(struct comp *c, unsigned pred)
+{
+   unsigned at = util_dynarray_num_elements(&c->code, uint64_t);
+
+   emit(c, USSE_BR | (uint64_t)pred << 56);
+   c->branches = true;
+   return at;
+}
+
+static unsigned
+here(struct comp *c)
+{
+   return util_dynarray_num_elements(&c->code, uint64_t);
+}
+
+static void
+instruction(struct comp *c, nir_instr *instr, struct util_dynarray *breaks, unsigned head)
+{
+   struct scratch sc = { 0 };
+
+   switch (instr->type) {
+   case nir_instr_type_alu:
+      alu(c, nir_instr_as_alu(instr), &sc);
+      break;
+   case nir_instr_type_intrinsic:
+      intrinsic(c, nir_instr_as_intrinsic(instr));
+      break;
+   case nir_instr_type_tex:
+      texture(c, nir_instr_as_tex(instr), &sc);
+      break;
+   case nir_instr_type_load_const:
+   case nir_instr_type_undef:
+      break;
+   case nir_instr_type_jump:
+      switch (nir_instr_as_jump(instr)->type) {
+      case nir_jump_break:
+         if (breaks) {
+            unsigned at = branch(c, 0);
+
+            util_dynarray_append(breaks, at);
+            break;
+         }
+         FALLTHROUGH;
+      case nir_jump_continue:
+         if (breaks) {
+            branch_to(c, branch(c, 0), head);
+            break;
+         }
+         FALLTHROUGH;
+      default:
+         fail(c, "a jump out of no loop");
+         break;
+      }
+      break;
+   default:
+      fail(c, "no such instructions yet");
+      break;
+   }
+   scratch_give_back(c, &sc);
+}
+
+/* What one walk over the shader's control flow does: number the
+ * instructions (each def's, each loop's span), note what each reads (the
+ * liveness), or make the code.  The three number alike: an instruction, an
+ * if's test and a loop's end marker an index each. */
+enum walk_pass { WALK_NUMBER, WALK_USES, WALK_CODE };
+
+static void
+walk(struct comp *c, struct exec_list *list, enum walk_pass pass, int *index,
+     struct util_dynarray *breaks, unsigned head)
+{
+   foreach_list_typed(nir_cf_node, node, node, list) {
+      if (c->failed)
+         return;
+      switch (node->type) {
+      case nir_cf_node_block:
+         nir_foreach_instr(instr, nir_cf_node_as_block(node)) {
+            nir_def *def = nir_instr_def(instr);
+
+            if (pass == WALK_NUMBER && def)
+               c->def_at[def->index] = *index;
+            else if (pass == WALK_USES)
+               for_each_read(c, instr, note_use, *index);
+            else if (pass == WALK_CODE) {
+               instruction(c, instr, breaks, head);
+               for_each_read(c, instr, release, *index);
+            }
+            (*index)++;
+            if (c->failed)
+               return;
+         }
+         break;
+      case nir_cf_node_if: {
+         /* the test -- p0 = cond's bits are 0 (a boolean is 0.0 or 1.0
+          * here), then `p0? br`, as iOS's branches have it -- past the
+          * then-list where it fails; the else-list past the then-list's
+          * end */
+         nir_if *nif = nir_cf_node_as_if(node);
+         struct operand cond = resolve(nir_get_scalar(nif->condition.ssa, 0));
+         int at = (*index)++;
+         unsigned to_else = 0, to_end = 0;
+
+         if (pass == WALK_USES)
+            note_use(c, cond, at);
+         if (pass == WALK_CODE) {
+            struct scratch sc = { 0 };
+
+            emit(c, usse_vtst_bits(0, get(c, cond, TAKES_LANE_Y | TAKES_SA, &sc), true));
+            scratch_give_back(c, &sc);
+            release(c, cond, at);
+            to_else = branch(c, 1);
+         }
+         c->depth++;
+         walk(c, &nif->then_list, pass, index, breaks, head);
+         if (pass == WALK_CODE && !exec_list_is_empty(&nif->else_list) &&
+             !nir_cf_list_is_empty_block(&nif->else_list))
+            to_end = branch(c, 0);
+         if (pass == WALK_CODE)
+            branch_to(c, to_else, here(c));
+         walk(c, &nif->else_list, pass, index, breaks, head);
+         if (pass == WALK_CODE && to_end)
+            branch_to(c, to_end, here(c));
+         c->depth--;
+         break;
+      }
+      case nir_cf_node_loop: {
+         /* the body, a branch back to its start; a break past it */
+         nir_loop *loop = nir_cf_node_as_loop(node);
+         unsigned k = c->nloops++, start_code = here(c);
+         struct util_dynarray mine;
+         int start = *index, end;
+
+         if (nir_loop_has_continue_construct(loop)) {
+            fail(c, "a loop with a continue construct");
+            return;
+         }
+         if (pass == WALK_USES) {
+            if (c->nactive == ARRAY_SIZE(c->active)) {
+               fail(c, "loops nested too deep");
+               return;
+            }
+            c->active[c->nactive++] = *util_dynarray_element(&c->loops, struct loop_span, k);
+         }
+         util_dynarray_init(&mine, NULL);
+         c->depth++;
+         walk(c, &loop->body, pass, index, &mine, start_code);
+         c->depth--;
+         end = (*index)++;
+         if (pass == WALK_NUMBER) {
+            struct loop_span span = { start, end };
+
+            util_dynarray_append(&c->loops, span);
+         }
+         if (pass == WALK_USES)
+            c->nactive--;
+         if (pass == WALK_CODE) {
+            branch_to(c, branch(c, 0), start_code);
+            util_dynarray_foreach(&mine, unsigned, at)
+               branch_to(c, *at, here(c));
+            /* what was kept alive for the loop */
+            for (unsigned id = 0; id < c->nvalues; id++)
+               if (c->last_use[id] == end && c->owned[id]) {
+                  give_back(c, c->loc[id].num - (c->vs ? c->pa_base : 0));
+                  c->owned[id] = false;
+               }
+         }
+         util_dynarray_fini(&mine);
+         break;
+      }
+      default:
+         fail(c, "no such control flow");
+         return;
+      }
+   }
+}
+
 /* NIR to instructions, after the opening PHAS, for either stage: the
- * shader lowered to scalar float arithmetic, one block, its values given
- * temporaries in the order NIR has them.  False (c->failed, c->why) when it
- * cannot be. */
+ * shader lowered to scalar float arithmetic, its ifs flattened where they
+ * can be, what is left of them and the loops as branches (M20), its values
+ * given temporaries in the order NIR has them.  False (c->failed, c->why)
+ * when it cannot be. */
 static bool
 translate(struct comp *c, nir_shader *s)
 {
@@ -982,6 +1271,7 @@ translate(struct comp *c, nir_shader *s)
    NIR_PASS(_, s, nir_shader_intrinsics_pass, fold_uniform_offset, nir_metadata_control_flow,
             NULL);
    NIR_PASS(_, s, nir_lower_int_to_float);
+   NIR_PASS(_, s, nir_shader_alu_pass, lower_ftrunc, nir_metadata_control_flow, NULL);
    NIR_PASS(_, s, nir_lower_bool_to_float, true);
    NIR_PASS(_, s, nir_opt_algebraic_late);
    NIR_PASS(_, s, nir_lower_alu_to_scalar, NULL, NULL);
@@ -990,63 +1280,48 @@ translate(struct comp *c, nir_shader *s)
    NIR_PASS(_, s, nir_opt_dce);
 
    impl = nir_shader_get_entrypoint(s);
-   if (exec_list_length(&impl->body) != 1) {
-      fail(c, "control flow left after flattening");
-      return false;
-   }
+   /* control flow left: the phis' webs registers */
+   if (exec_list_length(&impl->body) != 1)
+      NIR_PASS(_, s, nir_convert_from_ssa, true, false);
    nir_index_ssa_defs(impl);
-   n = impl->ssa_alloc * 4;
+   c->nvalues = n = impl->ssa_alloc * 4;
    c->loc = calloc(n, sizeof(*c->loc));
    c->owned = calloc(n, sizeof(*c->owned));
    c->last_use = malloc(n * sizeof(*c->last_use));
-   if (!c->loc || !c->owned || !c->last_use) {
+   c->def_at = calloc(impl->ssa_alloc, sizeof(*c->def_at));
+   if (!c->loc || !c->owned || !c->last_use || !c->def_at) {
       fail(c, "out of memory");
       return false;
    }
    for (unsigned i = 0; i < n; i++)
       c->last_use[i] = -1;
+   util_dynarray_init(&c->loops, NULL);
 
    scan(c, impl);
    if (c->failed)
       return false;
 
-   /* liveness, then the code, in the same order */
+   /* the numbering, the liveness, then the code, in the same order */
    index = 0;
-   nir_foreach_block(block, impl)
-      nir_foreach_instr(instr, block)
-         for_each_read(c, instr, note_use, index++);
+   c->nloops = 0;
+   walk(c, &impl->body, WALK_NUMBER, &index, NULL, 0);
+   index = 0;
+   c->nloops = 0;
+   walk(c, &impl->body, WALK_USES, &index, NULL, 0);
 
    util_dynarray_init(&c->code, NULL);
    emit(c, USSE_PHAS);
-   index = 0;
-   nir_foreach_block(block, impl) {
-      nir_foreach_instr(instr, block) {
-         struct scratch sc = { 0 };
-
-         switch (instr->type) {
-         case nir_instr_type_alu:
-            alu(c, nir_instr_as_alu(instr), &sc);
-            break;
-         case nir_instr_type_intrinsic:
-            intrinsic(c, nir_instr_as_intrinsic(instr));
-            break;
-         case nir_instr_type_tex:
-            texture(c, nir_instr_as_tex(instr), &sc);
-            break;
-         case nir_instr_type_load_const:
-         case nir_instr_type_undef:
-            break;
-         default:
-            fail(c, "no such instructions yet");
-            break;
-         }
-         scratch_give_back(c, &sc);
-         for_each_read(c, instr, release, index++);
-         if (c->failed)
-            return false;
-      }
+   if (c->kills) {
+      c->kill = block(c, 2, 2);
+      emit(c, usse_limm(treg(c, c->kill), 0));
    }
-   return true;
+   index = 0;
+   c->nloops = 0;
+   walk(c, &impl->body, WALK_CODE, &index, NULL, 0);
+   /* a program that branches: PHAS mode 1, as iOS's c04_loop_break has */
+   if (c->branches)
+      *util_dynarray_element(&c->code, uint64_t, 0) = USSE_PHAS_BRANCHES;
+   return !c->failed;
 }
 
 struct sgx_fs *
@@ -1107,6 +1382,13 @@ sgx_compile_fs(const nir_shader *fs, const struct sgx_blend_key *blend, char *wh
    output(&c);
    if (c.failed)
       goto out;
+   /* a pixel's registers, primary attributes and temporaries: 65 (an
+    * unrolled loop's) hung the GPU; 64 is what the temporaries alone may
+    * take */
+   if (4 * c.ninputs + c.top > 64) {
+      fail(&c, "%u registers a pixel", 4 * c.ninputs + c.top);
+      goto out;
+   }
 
    c.fs->prog.ncode = util_dynarray_num_elements(&c.code, uint64_t);
    c.fs->prog.code = MALLOC(c.fs->prog.ncode * sizeof(uint64_t));
@@ -1123,10 +1405,15 @@ sgx_compile_fs(const nir_shader *fs, const struct sgx_blend_key *blend, char *wh
     * along the diagonal seam).  But not the writes of the output: those
     * pixels' tiles would take them too -- blended twice along each shared
     * edge, in 2x2 blocks (weston's panel, M16). */
-   if (c.nsamplers)
+   /* And a program that branches the same (iOS's c04_loop_break): the
+    * pixels around the triangle skipped the tests of a loop's condition and
+    * took its branches on a predicate left from before -- round the loop
+    * for ever, now and then (M20). */
+   if (c.nsamplers || c.branches)
       for (unsigned i = 0; i < out_at; i++)
          c.fs->prog.code[i] &= ~(1ull << 55);
    c.fs->prog.ntemps = c.top;
+   c.fs->prog.branches = c.branches;
    c.fs->prog.ninputs = c.ninputs;
    for (unsigned i = 0; i < c.ninputs; i++)
       c.fs->prog.iter_src[i] = c.fs->input_slot[i] == VARYING_SLOT_POS ? SGX_ITERATE_POSITION :
@@ -1143,6 +1430,8 @@ out:
    free(c.loc);
    free(c.owned);
    free(c.last_use);
+   free(c.def_at);
+   util_dynarray_fini(&c.loops);
    ralloc_free(s);
    if (c.failed) {
       sgx_fs_destroy(c.fs);
@@ -1182,6 +1471,12 @@ sgx_compile_vs(const nir_shader *vs, const unsigned *varying_slot, unsigned nvar
    vertex_output(&c);
    if (c.failed)
       goto out;
+   /* branches in a vertex program: not tried on the GPU yet (M20) -- the
+    * draw module's way */
+   if (c.branches) {
+      fail(&c, "branches in a vertex shader");
+      goto out;
+   }
 
    c.vs->ncode = util_dynarray_num_elements(&c.code, uint64_t);
    c.vs->code = MALLOC(c.vs->ncode * sizeof(uint64_t));
@@ -1199,6 +1494,8 @@ out:
    free(c.loc);
    free(c.owned);
    free(c.last_use);
+   free(c.def_at);
+   util_dynarray_fini(&c.loops);
    ralloc_free(s);
    if (c.failed) {
       sgx_vs_destroy(c.vs);

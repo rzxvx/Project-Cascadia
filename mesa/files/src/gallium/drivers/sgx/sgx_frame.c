@@ -1259,7 +1259,9 @@ upload(struct sgx_frame *f, struct sgx_pixel_program *p)
    f->heap_used = align(f->heap_used + size, 64);
 
    pds[n++] = doutu(f, p->code_va);
-   pds[n++] = p->ninputs ? ITER_TEMPS : 2;
+   /* (bit 0 for a program that branches: iOS's c04_loop_break has 3 where
+    * the rest have 2) */
+   pds[n++] = (p->ninputs ? ITER_TEMPS : 2) | p->branches;
    pds[n++] = 0;
    for (unsigned i = 0; i < p->ninputs; i++)
       pds[n++] = (i == p->ninputs - 1 ? ITERATE_F32_VEC4 : ITERATE_F32_VEC4_MORE) |

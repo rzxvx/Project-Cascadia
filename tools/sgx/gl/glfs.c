@@ -79,6 +79,90 @@ REF(r_abs) { SET(fabsf(w[0]) * 0.5f, (w[1] > 0 ? 1.0f : w[1] < 0 ? -1.0f : 0.0f)
 REF(r_if) { if (v[0] > 0.5f) SET(1, 0, 0, 1); else SET(0, v[1], 0, 1); }
 REF(r_loop) { for (int i = 0; i < 4; i++) c[i] = v[i] * 0.2f * 4; }
 REF(r_saturate) { SET(2, -1, v[0] * 3, 1); }
+/* control flow the compiler cannot flatten (M20): loops of a count it does
+ * not know, breaks, continues, nesting */
+REF(r_loop_uniform) { int n = (int)(K * 20); SET(n * 0.05f, n * 0.1f, n * 0.02f, n * 0.1f); }
+REF(r_loop_varying)
+{
+	float i = 0, x = 0;
+
+	while (i < v[0] * 10) {
+		x += 0.05f;
+		i += 1;
+	}
+	SET(x, i * 0.05f, 0, 1);
+}
+REF(r_loop_break)
+{
+	float x = 0, y = 0;
+
+	for (int i = 0; i < 100; i++) {
+		if (x > v[1])
+			break;
+		x += 0.0625f;
+		y += v[0] * 0.03f;
+	}
+	SET(x, y, 0, 1);
+}
+REF(r_loop_continue)
+{
+	float x = 0, n = 0;
+
+	for (int i = 0; i < 60; i++) {
+		if (fmodf((float)i, 3) < 0.5f)
+			continue;
+		x += 0.01f;
+		if ((float)i > v[0] * 50)
+			break;
+		n += 1;
+	}
+	SET(x, n * 0.02f, 0, 1);
+}
+REF(r_loop_nested)
+{
+	float x = 0;
+
+	for (int i = 0; i < 40; i++) {
+		if ((float)i >= v[0] * 8)
+			break;
+		for (int j = 0; j < 40; j++) {
+			if ((float)j >= v[1] * 8)
+				break;
+			x += 0.015f;
+		}
+	}
+	SET(x, 0, 0, 1);
+}
+REF(r_if_loop)
+{
+	if (v[0] > 0.5f) {
+		float x = 0;
+
+		for (int i = 0; i < 100; i++) {
+			if ((float)i >= v[1] * 10)
+				break;
+			x += 0.1f;
+		}
+		SET(x, 0, 1, 1);
+	} else {
+		SET(0, v[1], 0, 1);
+	}
+}
+REF(r_mandel)
+{
+	float zx = 0, zy = 0, cx = w[0] * 0.6f - 0.5f, cy = w[1] * 0.6f, n = 0;
+
+	for (int i = 0; i < 24; i++) {
+		if (zx * zx + zy * zy > 4)
+			break;
+		float t = zx * zx - zy * zy + cx;
+
+		zy = 2 * zx * zy + cy;
+		zx = t;
+		n += 1;
+	}
+	SET(n / 24, 0, 0, 1);
+}
 REF(r_long)
 {
 	float a = v[0] * v[1], b = v[2] + w[2], d = a * b - v[3], e = d * d + 0.1f;
@@ -115,6 +199,28 @@ static const struct test {
 	{ "if", "if (v.x > 0.5) c = vec4(1.0, 0.0, 0.0, 1.0); else c = vec4(0.0, v.y, 0.0, 1.0);", r_if, 1 },
 	{ "loop", "c = vec4(0.0); for (int i = 0; i < 4; i++) c += v * 0.2;", r_loop, 1 },
 	{ "saturate", "c = vec4(2.0, -1.0, v.x * 3.0, 1.0);", r_saturate, 1 },
+	{ "loop_uniform", "c = vec4(0.0); int n = int(k * 20.0);"
+	                  "for (int i = 0; i < n; i++) c += vec4(0.05, 0.1, 0.02, 0.1);", r_loop_uniform, 1 },
+	{ "loop_varying", "float i = 0.0; c = vec4(0.0, 0.0, 0.0, 1.0);"
+	                  "while (i < v.x * 10.0) { c.x += 0.05; i += 1.0; } c.y = i * 0.05;", r_loop_varying, 1 },
+	{ "loop_break", "c = vec4(0.0, 0.0, 0.0, 1.0);"
+	                "for (int i = 0; i < 100; i++) { if (c.x > v.y) break; c.x += 0.0625; c.y += v.x * 0.03; }",
+	  r_loop_break, 1 },
+	{ "loop_continue", "c = vec4(0.0, 0.0, 0.0, 1.0); float n = 0.0;"
+	                   "for (int i = 0; i < 60; i++) { if (mod(float(i), 3.0) < 0.5) continue;"
+	                   "  c.x += 0.01; if (float(i) > v.x * 50.0) break; n += 1.0; } c.y = n * 0.02;",
+	  r_loop_continue, 1 },
+	{ "loop_nested", "c = vec4(0.0, 0.0, 0.0, 1.0);"
+	                 "for (int i = 0; i < 40; i++) { if (float(i) >= v.x * 8.0) break;"
+	                 "  for (int j = 0; j < 40; j++) { if (float(j) >= v.y * 8.0) break; c.x += 0.015; } }",
+	  r_loop_nested, 1 },
+	{ "if_loop", "if (v.x > 0.5) { float x = 0.0; for (int i = 0; i < 100; i++) {"
+	             "  if (float(i) >= v.y * 10.0) break; x += 0.1; } c = vec4(x, 0.0, 1.0, 1.0); }"
+	             "else c = vec4(0.0, v.y, 0.0, 1.0);", r_if_loop, 1 },
+	{ "mandel", "vec2 z = vec2(0.0), q = vec2(w.x * 0.6 - 0.5, w.y * 0.6); float n = 0.0;"
+	            "for (int i = 0; i < 24; i++) { if (dot(z, z) > 4.0) break;"
+	            "  z = vec2(z.x * z.x - z.y * z.y, 2.0 * z.x * z.y) + q; n += 1.0; }"
+	            "c = vec4(n / 24.0, 0.0, 0.0, 1.0);", r_mandel, 11 },
 	{ "long", "float a = v.x * v.y, b = v.z + w.z, d = a * b - v.w, e = d * d + 0.1;"
 	          "float f = e * a + b * d, g = f * 0.5 + e * 0.25, h = g - a * 0.5 + b * 0.125;"
 	          "c = vec4(fract(h + g), fract(a + b + d), fract(e * 3.0 + f), fract(g * h + 0.5));", r_long, 2 },

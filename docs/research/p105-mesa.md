@@ -1032,7 +1032,7 @@ pixel's position like a varying, source 13 in the control word's bits
 other (glfs 25 of 25 with two cases on it). discard and gl_FrontFacing:
 M19.
 
-Not yet: textures (M14), real control flow, F16 for mediump, two lanes an instruction, constants from
+Not yet: textures (M14), real control flow (M20), F16 for mediump, two lanes an instruction, constants from
 the hardware's table, more than 128 uniform words (one DMA so far; glfs
 loads at most 9 words, the pack's state program 21 the same way).
 `SGX_NOCOMPILE=1` draws the M13a way; `SGX_DEBUG_SHADER=1` prints each
@@ -1395,6 +1395,63 @@ depth is not: a discarded pixel still writes it when depth writes are on.
 `gldiscard`: a varying's half, two discards, a uniform both ways, an alpha
 test from a texture, blended -- 6 of 6 on both vertex paths, the depth case
 reported as known wrong.
+
+## M20: branches -- loops and ifs that stay
+
+Until now every shader had to come down to one basic block: ifs flattened
+into selects, loops unrolled, anything else drawn the M13a way.
+
+**The hardware's branch** (iOS's c04_loop_break, a loop with a break):
+`p0? br +21` out, `br -21` back -- `0xf800004000000000` with the predicate in
+bits 58:56 (extended: 1 p0, 5 !p0) and a 20-bit offset in instructions from
+the branch itself (bit 38: relative). That program starts with `PHAS mode 1`
+(`0xfa44270000000000`), its PDS's DOUTU data word is 3 where the others have
+2 (bit 0), and **skipinv is clear on every instruction** -- as in programs
+that sample. All three are needed or wanted:
+
+- Without clearing skipinv, the renders hung now and then: the pixels around
+  a triangle skip the test of a loop's condition but not the branch, and go
+  round on a predicate left from before. Which ones depends on the pixels
+  in each group -- the same shader hung or not from run to run, which for a
+  while looked like PHAS's temps field mattering (it does not). The output
+  write keeps skipinv set (M16).
+- `SGX_DEBUG_BRTEST`, a hand-made program in place of a shader (red where a
+  branch went as meant), showed the plain `br`, `p0? br`, `!p0? br` and a
+  backward loop all right -- once the test feeding them was. The F32 test
+  (`src - #0` by VSUB, sign test "none", zero test "zero") set the predicate
+  wrong; the bitwise form of iOS's facing test, `and(r, r) eq 0`, is right:
+  a boolean is 0.0 or 1.0 here, so its bits are 0 or not. (VTST's sign and
+  zero tests combine by bit 39: OR, the old encoder's, makes "none" always
+  true.)
+
+**The compiler** keeps NIR's structure: ifs of up to 32 instructions a side
+are still flattened (`SGX_FLATTEN_LIMIT`), the rest and every loop NIR does
+not unroll (up to 32 iterations it does) become branches:
+
+- out of SSA for the phis only (`nir_convert_from_ssa`): a phi web is a
+  register, a temporary for the whole program; `load_reg` copies it (the
+  register changes while the value may still be read), `store_reg` moves
+  into it;
+- three walks over the control flow that number alike (an instruction, an
+  if's test and a loop's end marker an index each): defs and loop spans,
+  then the liveness -- a value read in a loop it was made before lives to
+  that loop's end -- then the code;
+- an if: `VTST p0 = and(c, c) eq 0`, `p0? br` past the then-list, `br` past
+  the else-list; a loop: its body, `br` back to its start; break and
+  continue: `br` past the loop or to its start;
+- discard's flag is 0 from the program's start (a discard in a branch may not
+  run); an output written in control flow, or branches in a vertex shader,
+  still fail (the draw module's way for the latter);
+- a pixel's registers, primary attributes and temporaries, at most 64: an
+  unrolled loop with a break, flattened whole, took 65 and hung the GPU --
+  which is why the flattening has a limit now.
+
+`glfs` grows seven cases: a loop to a uniform's count, a loop to a
+varying's (each pixel its own count), break, continue, nested loops, a loop
+in an if, and a Mandelbrot set (24 iterations with a break, unrolled into
+branches) -- 32 of 32, on both vertex paths; the rest of the tests
+unchanged. The shadertoy sphere (24 ray-marching steps) and plasma under
+kmscube draw as before, 14 and 32 frames a second.
 
 ## Testing, without and with the device
 

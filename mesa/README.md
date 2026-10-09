@@ -7,8 +7,8 @@ glclear 100`: every pixel right, ~60 ms a clear with its read-back), and
 draws on the GPU: vertex shaders (M18: with viewports and culling; points,
 lines, flat shading and clip planes still go through Gallium's draw module
 on the CPU) and fragment shaders are compiled to the GPU's own code (M13c:
-float arithmetic, varyings, uniforms, comparisons, unrolled loops and
-flattened ifs; `sgx-gl glfs`); a fragment shader the compiler does not
+float arithmetic, varyings, uniforms, comparisons, ifs and loops -- M20;
+`sgx-gl glfs`); a fragment shader the compiler does not
 take yet is drawn in a colour worked out per vertex (M13a). Textures, blending and the depth test work (M14); render targets
 are any size from 1x1 to 4096x4096, the render target data the kext would
 compute for each made by the driver (M10, `sgx-gl glsize`). On the screen
@@ -61,7 +61,7 @@ SGX_DEBUG_DRAW=1 sgx-gl gltri    # the triangles each draw hands the GPU
 SGX_DRAW_LAYOUT=8,3,f32 sgx-gl gltri   # the vertex side with 8 varyings, the colour
                                  # the 4th, F32 (the rest fillers; docs, M13b)
 sgx-gl gltri --ppm /tmp/x.ppm    # the last read-back as a picture: look at it
-sgx-gl glfs                      # the fragment compiler's 25 cases (M13c)
+sgx-gl glfs                      # the fragment compiler's 32 cases (M13c, M20: loops)
 sgx-gl glcull                    # culling, viewports, depth ranges, gl_FrontFacing (M18, M19)
 sgx-gl gldiscard                 # discard (M19: the tile's colour kept; depth still written)
 SGX_CPU_VS=1 sgx-gl glcull       # the same with the vertex shaders on the CPU

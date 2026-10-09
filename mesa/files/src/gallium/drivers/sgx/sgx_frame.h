@@ -101,6 +101,7 @@ struct sgx_pixel_program {
    unsigned nsa;
    uint32_t code_va, pds_va;
    unsigned pds_rows;
+   bool branches;               /* the code branches (M20) */
 };
 
 /* Triangles into rt, over what it holds (each tile starts as the target's

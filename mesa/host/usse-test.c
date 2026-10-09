@@ -60,8 +60,8 @@ main(void)
    P("unpack_r6_o0_zw", usse_unpack_unorm8(T(6), O(0), 2));
    P("limm_r5", usse_limm(T(5), 0x3f800000));
    P("limm_r100", usse_limm(T(100), 0xdeadbeef));
-   P("vtst_r5", usse_vtst_ne0(1, T(5)));
-   P("vtst_pa4", usse_vtst_ne0(0, PA(4)));
+   P("vtst_r5", usse_vtst_bits(1, T(5), false));
+   P("vtst_pa4", usse_vtst_bits(0, PA(4), true));
    P("kill_p1_end", usse_kill(2) | USSE_END);
    return 0;
 }

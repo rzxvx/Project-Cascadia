@@ -102,9 +102,11 @@ uint64_t usse_pack_unorm8(unsigned dest_o, struct usse_reg src);
 /* the same into another register (an output or a primary attribute) */
 uint64_t usse_pack_unorm8_to(struct usse_reg dest, struct usse_reg src);
 
-/* VTST: predicate p<pdst> = (src != 0), src F32, one lane (src - #0 by
- * VSUB, the zero test "non-zero"; iOS's c00_discard has the same form) */
-uint64_t usse_vtst_ne0(unsigned pdst, struct usse_reg src);
+/* VTST: p<pdst> = (src & src) != 0 (eq: == 0) -- the bits of a 32-bit
+ * register, in the form of iOS's facing test (`and(g16, #1) ne 0`): a
+ * boolean (0.0 or 1.0) tested.  (An F32 test, src - #0 by VSUB, gave the
+ * wrong answers: M20.) */
+uint64_t usse_vtst_bits(unsigned pdst, struct usse_reg src, bool eq);
 /* KILL under a short predicate (0 always, 1 p0, 2 p1, 3 !p0): the
  * instruction that ends the first phase of iOS's c00_discard, with the
  * punch-through pass type in ISP state A.  Not used yet: here it kills
