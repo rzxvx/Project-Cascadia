@@ -1497,6 +1497,26 @@ count summing the array, two indexed reads in one shader, 33 words without
 an index, and a vertex shader indexing by its vertex (`vs_array`) -- 38 of
 38 on both vertex paths; kmscube's frame the same as the draw module's.
 
+## M22: vertex shaders that branch
+
+M20's branches in a vertex program, on the GPU: the same PHAS mode 1 and
+skipinv clear on all but the vertex's output; and bit 0 of the vertex
+fetch's DOUTU data word, as the pixel side's -- without it a loop whose
+count differs between the vertices of a batch comes out wrong (a corner
+of `vs_loop_vertex` lost its iterations), so the bit is what lets the
+instances go each their own way. A vertex's registers (attributes and
+temporaries in pa) are held to 64, as a pixel's.
+
+`glfs` grows two vertex shaders: a loop to a uniform's count summing the
+uniform array, and a loop to a count each vertex has its own (6s + 3t,
+linear, so the interpolated result is exact) -- 40 of 40 on both vertex
+paths, nothing left to the draw module.
+
+What the draw module still does for GLES 2.0: points and lines (the TA's
+primitive types are not known yet). The rest of its cases -- flat
+shading, polygon modes, clip planes, primitive restart -- are not GLES
+2.0's.
+
 ## Testing, without and with the device
 
 - **Host, every change:** the kernel driver builds with `W=1` against the

@@ -1491,6 +1491,7 @@ sgx_compile_vs(const nir_shader *vs, const unsigned *varying_slot, unsigned nvar
                char *why, unsigned why_size)
 {
    struct comp c = { 0 };
+   unsigned out_at;
    nir_shader *s;
 
    c.why = why;
@@ -1514,15 +1515,15 @@ sgx_compile_vs(const nir_shader *vs, const unsigned *varying_slot, unsigned nvar
       nir_print_shader(s, stderr);
    if (!translate(&c, s))
       goto out;
+   out_at = util_dynarray_num_elements(&c.code, uint64_t);
    vertex_output(&c);
    if (c.failed)
       goto out;
-   /* branches in a vertex program: not tried on the GPU yet (M20) -- the
-    * draw module's way */
-   if (c.branches) {
-      fail(&c, "branches in a vertex shader");
-      goto out;
-   }
+   /* branches: skipinv clear but on the vertex's output, as a pixel
+    * program's (M20, M22) */
+   if (c.branches)
+      for (unsigned i = 0; i < out_at; i++)
+         *util_dynarray_element(&c.code, uint64_t, i) &= ~(1ull << 55);
 
    c.vs->ncode = util_dynarray_num_elements(&c.code, uint64_t);
    c.vs->code = MALLOC(c.vs->ncode * sizeof(uint64_t));
@@ -1531,7 +1532,14 @@ sgx_compile_vs(const nir_shader *vs, const unsigned *varying_slot, unsigned nvar
       goto out;
    }
    memcpy(c.vs->code, util_dynarray_begin(&c.code), c.vs->ncode * sizeof(uint64_t));
+   /* a vertex's registers, attributes and temporaries (pa): a pixel's
+    * bound (M20) */
+   if (4 * MAX2(c.nattrs, 1) + c.top > 64) {
+      fail(&c, "%u registers a vertex", 4 * MAX2(c.nattrs, 1) + c.top);
+      goto out;
+   }
    c.vs->ntemps = c.top;
+   c.vs->branches = c.branches;
    c.vs->nattrs = MAX2(c.nattrs, 1);
    c.vs->nuniforms = c.nuniforms;
 

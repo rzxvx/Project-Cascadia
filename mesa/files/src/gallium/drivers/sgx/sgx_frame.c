@@ -1341,7 +1341,10 @@ sgx_frame_upload_vs(struct sgx_frame *f, struct sgx_vs *vs)
     * primary attributes after the vertex's, which the VDM's fetch word
     * counts in (vs_fetch_word()) */
    pds[n++] = doutu(f, vs->code_va);
-   pds[n++] = 0;
+   /* (bit 0 for a program that branches, as a pixel program's: without
+    * it, a loop whose count differs between vertices comes out wrong,
+    * M22) */
+   pds[n++] = vs->branches;
    pds[n++] = 0;
    pds[n++] = 0;
    pds[n++] = PDS_FETCH_INDEX;

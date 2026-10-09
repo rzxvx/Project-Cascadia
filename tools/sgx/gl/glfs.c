@@ -170,6 +170,7 @@ REF(r_vs_array)
 	for (int i = 0; i < 4; i++)
 		c[i] = ARR[0][i] + (ARR[7][i] - ARR[0][i]) * s;
 }
+REF(r_vs_loop_vertex) { SET(0.3f * v[0] + 0.15f * v[1], v[1], 0, 1); }
 REF(r_array_two)
 {
 	int i = (int)(v[0] * 7.99f), j = (int)(v[1] * 7.99f);
@@ -208,6 +209,33 @@ static const char vs_array[] =
 	"  vec2 st = p.xy * 0.5 + 0.5;\n"
 	"  v = a[int(st.x * 7.99)];\n"
 	"  w = vec4(st * 4.0 - 2.0, st.x - st.y, 0.25);\n"
+	"  gl_Position = p;\n"
+	"}\n";
+
+/* vertex shaders that loop (M22): to a uniform's count, summing the array;
+ * to a count each vertex has its own (6 s + 3 t: linear, so interpolated
+ * exactly) */
+static const char vs_loop_uniform[] =
+	"attribute vec4 p;\n"
+	"varying vec4 v, w;\n"
+	"uniform vec4 a[8];\n"
+	"uniform float k;\n"
+	"void main() {\n"
+	"  v = vec4(0.0);\n"
+	"  int n = int(k * 20.0);\n"
+	"  for (int i = 0; i < n; i++) v += a[i] * 0.2;\n"
+	"  w = vec4(0.25);\n"
+	"  gl_Position = p;\n"
+	"}\n";
+static const char vs_loop_vertex[] =
+	"attribute vec4 p;\n"
+	"varying vec4 v, w;\n"
+	"void main() {\n"
+	"  vec2 st = p.xy * 0.5 + 0.5;\n"
+	"  float x = 0.0;\n"
+	"  for (int i = 0; i < 100; i++) { if (float(i) >= st.x * 6.0 + st.y * 3.0) break; x += 0.1; }\n"
+	"  v = vec4(x * 0.5, st.y, 0.0, 1.0);\n"
+	"  w = vec4(0.25);\n"
 	"  gl_Position = p;\n"
 	"}\n";
 
@@ -265,6 +293,8 @@ static const struct test {
 	{ "array_loop", "c = vec4(0.0); int n = int(k * 20.0); for (int i = 0; i < n; i++) c += a[i] * 0.2;",
 	  r_array_loop, 1 },
 	{ "vs_array", "c = v;", r_vs_array, 1, vs_array },
+	{ "vs_loop_uniform", "c = v;", r_array_loop, 1, vs_loop_uniform },
+	{ "vs_loop_vertex", "c = v;", r_vs_loop_vertex, 1, vs_loop_vertex },
 	{ "array_two", "vec4 p = a[int(v.x * 7.99)], q = a[int(v.y * 7.99)];"
 	               "c = vec4(p.x + q.z * 0.5, q.y, p.z * 0.5, 1.0);", r_array_two, 1 },
 	{ "mandel", "vec2 z = vec2(0.0), q = vec2(w.x * 0.6 - 0.5, w.y * 0.6); float n = 0.0;"

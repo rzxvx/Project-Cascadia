@@ -63,6 +63,7 @@ struct sgx_vs {
    unsigned nattrs, nuniforms;
    unsigned varying_slot[SGX_FRAME_MAX_VARYINGS];
    unsigned nvaryings;
+   bool branches;                   /* the code branches (M22) */
    uint32_t code_va, fetch_va;      /* where the frame put it, and its vertex fetch */
 };
 

@@ -61,7 +61,7 @@ SGX_DEBUG_DRAW=1 sgx-gl gltri    # the triangles each draw hands the GPU
 SGX_DRAW_LAYOUT=8,3,f32 sgx-gl gltri   # the vertex side with 8 varyings, the colour
                                  # the 4th, F32 (the rest fillers; docs, M13b)
 sgx-gl gltri --ppm /tmp/x.ppm    # the last read-back as a picture: look at it
-sgx-gl glfs                      # the compiler's 38 cases (M13c; M20 loops, M21 arrays)
+sgx-gl glfs                      # the compiler's 40 cases (M13c; M20-M22 loops, arrays)
 sgx-gl glcull                    # culling, viewports, depth ranges, gl_FrontFacing (M18, M19)
 sgx-gl gldiscard                 # discard (M19: the tile's colour kept; depth still written)
 SGX_CPU_VS=1 sgx-gl glcull       # the same with the vertex shaders on the CPU
