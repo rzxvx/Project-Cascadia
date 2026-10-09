@@ -491,6 +491,7 @@ sgx_draw_fini(struct sgx_context *ctx)
    ctx->draw = NULL;
    ctx->render = NULL;
    sgx_batch_flush(ctx);
+   free(ctx->batch.dead_vs);
    free(ctx->batch.verts);
    free(ctx->batch.sa);
    free(ctx->batch.idx);
@@ -638,6 +639,9 @@ sgx_batch_flush(struct sgx_context *ctx)
    for (unsigned i = 0; i < b->ntex; i++)
       pipe_resource_reference(&b->tex[i], NULL);
    b->ndraws = b->ntex = b->nfloats = b->nsa = b->nidx = b->cursor = 0;
+   for (unsigned i = 0; i < b->ndead_vs; i++)
+      sgx_vs_destroy(b->dead_vs[i]);
+   b->ndead_vs = 0;
 }
 
 static bool
@@ -879,30 +883,40 @@ submit(struct sgx_context *ctx)
    ctx->nverts = 0;
 }
 
-/* The stencil a render starts at is 0 -- the value the tiles get, as the
- * depth's is register 0x4b8; no register for another was found (M23) --
- * so a clear to another is a quad over the whole target first, its pixel
- * program nothing (o0 keeps the tile's colour), depth ALWAYS without
- * writes, stencil ALWAYS, REPLACE by value through mask. */
+/* Depth and stencil live in a render's tiles only (M23): a render starts
+ * at the last depth clear's value and stencil 0 -- no register for another
+ * stencil was found.  So a clear inside a render, a scissored one, or one
+ * to another stencil, is a quad over the cleared rectangle: its pixel
+ * program nothing (o0 keeps the tile's colour), at the cleared depth,
+ * depth ALWAYS (written if cleared), stencil ALWAYS, REPLACE by value
+ * through mask (if cleared). */
 void
-sgx_stencil_clear(struct sgx_context *ctx, unsigned value, unsigned mask)
+sgx_zs_clear(struct sgx_context *ctx, bool depth, float d, bool stencil, unsigned value,
+             unsigned mask, const struct pipe_scissor_state *sc)
 {
    static const uint64_t nothing[2] = { 0xfa44070000000000ull, 0xf804014000000000ull };
    static const struct sgx_frame_layout l = { .nvaryings = 1, .f32 = 1, .colour = 0 };
-   /* x y z w, then the varying nobody reads */
-   static const float quad[6][8] = {
-      { -1, -1, 0, 1 }, { 1, -1, 0, 1 }, { 1, 1, 0, 1 },
-      { -1, -1, 0, 1 }, { 1, 1, 0, 1 }, { -1, 1, 0, 1 },
-   };
    struct sgx_screen *screen = sgx_screen(ctx->base.screen);
    struct sgx_batch *b = &ctx->batch;
    struct pipe_surface *surf = &ctx->fb.cbufs[0];
    struct sgx_resource *rt = surf->texture ? sgx_resource(surf->texture) : NULL;
    unsigned cursor = b->cursor, first, vf = sgx_frame_vertex_floats(&l);
+   /* the rectangle in clip space, through the target's whole viewport (rows
+    * from the first: gallium's framebuffer space), at the depth d */
+   float x0 = sc ? 2.0f * sc->minx / ctx->fb.width - 1 : -1;
+   float x1 = sc ? 2.0f * sc->maxx / ctx->fb.width - 1 : 1;
+   float y0 = sc ? 2.0f * sc->miny / ctx->fb.height - 1 : -1;
+   float y1 = sc ? 2.0f * sc->maxy / ctx->fb.height - 1 : 1;
+   float z = depth ? 2 * d - 1 : 0;
+   /* x y z w, then the varying nobody reads */
+   const float quad[6][8] = {
+      { x0, y0, z, 1 }, { x1, y0, z, 1 }, { x1, y1, z, 1 },
+      { x0, y0, z, 1 }, { x1, y1, z, 1 }, { x0, y1, z, 1 },
+   };
    struct sgx_batch_draw *bd;
    int ret;
 
-   if (!rt)
+   if (!rt || !ctx->fb.width || !ctx->fb.height)
       return;
    if (!ctx->clear_prog.code) {
       ctx->clear_prog.code = (uint64_t *)nothing;
@@ -939,7 +953,8 @@ sgx_stencil_clear(struct sgx_context *ctx, unsigned value, unsigned mask)
    bd->idx = b->nidx;
    bd->st = (struct sgx_frame_state){
       .depth_func = PIPE_FUNC_ALWAYS,
-      .stencil_on = true,
+      .depth_write = depth,
+      .stencil_on = stencil,
       .stencil = 7u << 25 | 2u << 22 | 2u << 19 | 2u << 16 | 0xffu << 8 | (mask & 0xff),
       .stencil_ref = value,
    };

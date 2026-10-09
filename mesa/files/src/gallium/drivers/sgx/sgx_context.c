@@ -109,18 +109,17 @@ sgx_clear(struct pipe_context *pctx, unsigned buffers, uint32_t color_clear_mask
           const union pipe_color_union *color, double depth, unsigned stencil)
 {
    struct sgx_context *ctx = sgx_context(pctx);
+   struct pipe_resource *zs = ctx->fb.zsbuf.texture;
    unsigned x = scissor ? scissor->minx : 0, y = scissor ? scissor->miny : 0;
    unsigned w = scissor ? scissor->maxx - scissor->minx : ctx->fb.width;
    unsigned h = scissor ? scissor->maxy - scissor->miny : ctx->fb.height;
+   bool cd = (buffers & PIPE_CLEAR_DEPTH) && zs;
+   bool cs = (buffers & PIPE_CLEAR_STENCIL) && zs &&
+             util_format_has_stencil(util_format_description(zs->format));
 
-   /* what was drawn before comes first; and a render starts at the far
-    * depth, so a depth clear starts a new one */
-   sgx_batch_flush(ctx);
-   /* every render starts at the last depth clear's value (there is no
-    * loading of depth from memory yet) */
-   if (buffers & PIPE_CLEAR_DEPTH)
-      ctx->batch.depth_clear = depth;
-
+   /* a colour clear ends the render (what was drawn comes first) */
+   if (buffers & PIPE_CLEAR_COLOR)
+      sgx_batch_flush(ctx);
    for (unsigned i = 0; i < ctx->fb.nr_cbufs; i++) {
       struct pipe_surface *surf = &ctx->fb.cbufs[i];
 
@@ -133,12 +132,19 @@ sgx_clear(struct pipe_context *pctx, unsigned buffers, uint32_t color_clear_mask
       util_clear_render_target(pctx, surf, color, x, y, w, h);
    }
    /* depth and stencil live in the tiles only (no z load/store yet, M23):
-    * the buffer's memory is not cleared.  A render's stencil starts at 0:
-    * another value, a quad first, after the colour's clears */
-   if ((buffers & PIPE_CLEAR_STENCIL) && ctx->fb.zsbuf.texture &&
-       util_format_has_stencil(util_format_description(ctx->fb.zsbuf.texture->format)) &&
-       (stencil & stencil_clear_mask & 0xff))
-      sgx_stencil_clear(ctx, stencil, stencil_clear_mask);
+    * the buffer's memory is not cleared.  At a render's start, all of the
+    * target: the depth the render starts at, and its stencil 0 for free;
+    * else a quad in the render (M24) */
+   if (!cd && !cs)
+      return;
+   if (!ctx->batch.ndraws && !scissor) {
+      if (cd)
+         ctx->batch.depth_clear = depth;
+      if (cs && (stencil & stencil_clear_mask & 0xff))
+         sgx_zs_clear(ctx, false, 0, true, stencil, stencil_clear_mask, NULL);
+      return;
+   }
+   sgx_zs_clear(ctx, cd, depth, cs, stencil, stencil_clear_mask, scissor);
 }
 
 static void
@@ -301,15 +307,26 @@ sgx_delete_shader_state(struct pipe_context *pctx, void *state)
       draw_delete_vertex_shader(ctx->draw, sh->draw);
    if (ctx->fs == sh)
       ctx->fs = NULL;
-   /* its code stays where the frame put it: that place is not reused; a
-    * render gathered with it goes first */
-   if (sh->nvs)
-      sgx_batch_flush(ctx);
+   /* its code stays where the frame put it: that place is not reused.  The
+    * gathered draws keep their copy of a pixel program; a vertex shader
+    * they use lives until they are rendered (st deletes the last program
+    * at the next glUseProgram: no flush in the middle of a frame, M24) */
    sgx_fs_destroy(sh->compiled);
    for (unsigned i = 0; i < sh->nvariants; i++)
       sgx_fs_destroy(sh->variant[i]);
-   for (unsigned i = 0; i < sh->nvs; i++)
-      sgx_vs_destroy(sh->vs_variant[i]);
+   for (unsigned i = 0; i < sh->nvs; i++) {
+      struct sgx_vs **d;
+
+      if (!ctx->batch.ndraws ||
+          !(d = realloc(ctx->batch.dead_vs, (ctx->batch.ndead_vs + 1) * sizeof(*d)))) {
+         if (ctx->batch.ndraws)
+            sgx_batch_flush(ctx);
+         sgx_vs_destroy(sh->vs_variant[i]);
+         continue;
+      }
+      ctx->batch.dead_vs = d;
+      d[ctx->batch.ndead_vs++] = sh->vs_variant[i];
+   }
    ralloc_free(sh->nir);
    FREE(sh);
 }

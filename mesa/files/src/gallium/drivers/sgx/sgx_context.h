@@ -61,6 +61,10 @@ struct sgx_batch {
    struct pipe_resource *tex[SGX_FRAME_MAX_HANDLES];   /* sampled, referenced */
    uint32_t handles[SGX_FRAME_MAX_HANDLES];           /* their twiddled copies */
    unsigned ntex;
+   /* vertex shaders deleted while draws here use them: freed at the
+    * flush (M24) */
+   struct sgx_vs **dead_vs;
+   unsigned ndead_vs;
 };
 
 struct sgx_vertex_elements {
@@ -104,7 +108,7 @@ struct sgx_context {
    const struct sgx_vertex_elements *velems;
    struct pipe_viewport_state viewport;
    struct pipe_stencil_ref stencil_ref;
-   struct sgx_pixel_program clear_prog;  /* writes nothing: sgx_stencil_clear() */
+   struct sgx_pixel_program clear_prog;  /* writes nothing: sgx_zs_clear() */
    struct sgx_batch batch;
    const float *fs_constants;
    unsigned fs_constants_size;  /* bytes */

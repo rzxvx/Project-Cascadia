@@ -40,9 +40,12 @@ void sgx_fs_colour_analyse(const struct nir_shader *fs, struct sgx_fs_colour *ou
 
 /* the gathered draws rendered now (nothing if there are none) */
 void sgx_batch_flush(struct sgx_context *ctx);
-/* the stencil cleared to value (through mask) at the start of the next
- * render: a quad that writes nothing but the stencil (M23) */
-void sgx_stencil_clear(struct sgx_context *ctx, unsigned value, unsigned mask);
+/* depth (to d) and/or stencil (to value, through mask) cleared within the
+ * render, over sc or all of the target: a quad that writes nothing but
+ * them (M23, M24) */
+struct pipe_scissor_state;
+void sgx_zs_clear(struct sgx_context *ctx, bool depth, float d, bool stencil, unsigned value,
+                  unsigned mask, const struct pipe_scissor_state *sc);
 /* whether the gathered draws write or read p */
 bool sgx_batch_uses(struct sgx_context *ctx, struct pipe_resource *p);
 
