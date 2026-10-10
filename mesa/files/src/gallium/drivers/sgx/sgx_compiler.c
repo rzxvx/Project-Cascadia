@@ -59,7 +59,7 @@ struct operand {
 
 /* temporaries made for one instruction, given back after it */
 struct scratch {
-   unsigned reg[8];
+   unsigned reg[12];
    unsigned n;
 };
 
@@ -445,10 +445,10 @@ tex_operand(nir_tex_instr *tex, int src, unsigned comp)
    return resolve(nir_get_scalar(tex->src[src].src.ssa, comp));
 }
 
-/* texture2D, with a bias or a level: the coordinates into a register pair,
- * SMP for an F32 texel into four temporaries in a row, wait for it.  The
- * texture's four state words are in sa, after the uniforms (the draw puts
- * them there, sgx_draw.c). */
+/* texture2D and textureCube, with a bias or a level: the coordinates into
+ * registers in a row (a pair; a cube map's direction three), SMP for the
+ * texel, wait for it.  The texture's four state words are in sa, after the
+ * uniforms (the draw puts them there, sgx_draw.c). */
 static void
 texture(struct comp *c, nir_tex_instr *tex, struct scratch *s)
 {
@@ -458,21 +458,26 @@ texture(struct comp *c, nir_tex_instr *tex, struct scratch *s)
    enum usse_smp_lod mode = USSE_SMP_NONE;
    struct usse_reg lodreg = treg(c, 0);
    unsigned pair, d, id = tex->def.index * 4;
+   bool cube = tex->sampler_dim == GLSL_SAMPLER_DIM_CUBE;
+   unsigned ncoord = cube ? 3 : 2;
+   uint64_t (*smp)(enum usse_smp_out, enum usse_smp_coord, struct usse_reg, struct usse_reg,
+                   struct usse_reg, enum usse_smp_lod, struct usse_reg) =
+      cube ? usse_smp3d : usse_smp2d;
 
    if ((tex->op != nir_texop_tex && tex->op != nir_texop_txb && tex->op != nir_texop_txl) ||
-       (tex->sampler_dim != GLSL_SAMPLER_DIM_2D && tex->sampler_dim != GLSL_SAMPLER_DIM_EXTERNAL) ||
+       (tex->sampler_dim != GLSL_SAMPLER_DIM_2D && tex->sampler_dim != GLSL_SAMPLER_DIM_EXTERNAL &&
+        !cube) ||
        tex->is_shadow || tex->is_array ||
        coord < 0 || tex->texture_index >= MAX_UNITS ||
        c->slot_of_unit[tex->texture_index] < 0) {
-      fail(c, "no %s texture lookups yet", tex->sampler_dim == GLSL_SAMPLER_DIM_CUBE ?
-           "cube" : "such");
+      fail(c, "no such texture lookups yet");
       return;
    }
-   pair = block(c, 2, 2);
-   s->reg[s->n++] = pair;
-   s->reg[s->n++] = pair + 1;
-   move_into(c, treg(c, pair), tex_operand(tex, coord, 0), s);
-   move_into(c, treg(c, pair + 1), tex_operand(tex, coord, 1), s);
+   pair = block(c, ncoord, 2);
+   for (unsigned i = 0; i < ncoord; i++) {
+      s->reg[s->n++] = pair + i;
+      move_into(c, treg(c, pair + i), tex_operand(tex, coord, i), s);
+   }
    if (bias >= 0 || lod >= 0) {
       mode = bias >= 0 ? USSE_SMP_BIAS : USSE_SMP_LOD;
       lodreg = treg(c, scratch_take(c, s));
@@ -480,7 +485,7 @@ texture(struct comp *c, nir_tex_instr *tex, struct scratch *s)
    }
    d = block(c, 4, 4);
    if (getenv("SGX_TEX_F32")) {
-      emit(c, usse_smp2d(USSE_SMP_F32, USSE_SMP_COORD_F32, treg(c, d),
+      emit(c, smp(USSE_SMP_F32, USSE_SMP_COORD_F32, treg(c, d),
                          treg(c, pair),
                          usse_reg(USSE_SA, c->sampler_sa + 4 * c->slot_of_unit[tex->texture_index]),
                          mode, lodreg));
@@ -500,7 +505,7 @@ texture(struct comp *c, nir_tex_instr *tex, struct scratch *s)
        * scaled by 1/255 one by one (M25) */
       struct usse_reg raw = treg(c, scratch_take(c, s));
 
-      emit(c, usse_smp2d(USSE_SMP_RAW, USSE_SMP_COORD_F32, raw, treg(c, pair),
+      emit(c, smp(USSE_SMP_RAW, USSE_SMP_COORD_F32, raw, treg(c, pair),
                          usse_reg(USSE_SA, c->sampler_sa + 4 * c->slot_of_unit[tex->texture_index]),
                          mode, lodreg));
       emit(c, USSE_WDF0);
@@ -926,9 +931,8 @@ for_each_read(struct comp *c, nir_instr *instr, void (*f)(struct comp *, struct 
 
       for (unsigned i = 0; i < tex->num_srcs; i++) {
          if (tex->src[i].src_type == nir_tex_src_coord) {
-            f(c, tex_operand(tex, i, 0), index);
-            if (tex->src[i].src.ssa->num_components > 1)
-               f(c, tex_operand(tex, i, 1), index);
+            for (unsigned k = 0; k < MIN2(tex->src[i].src.ssa->num_components, 3); k++)
+               f(c, tex_operand(tex, i, k), index);
          } else if (tex->src[i].src_type == nir_tex_src_bias ||
                     tex->src[i].src_type == nir_tex_src_lod) {
             f(c, tex_operand(tex, i, 0), index);

@@ -267,12 +267,90 @@ sgx_clear_depth_stencil(struct pipe_context *pctx, struct pipe_surface *dst,
 
 /* ---- copies and blits, by the CPU --------------------------------------- */
 
+/* A blit the copy cannot do -- another format, a scale, a flip -- by the
+ * CPU, a texel at a time through util_format's floats, nearest (glCopyTex
+ * Image's from a B8G8R8A8 target into an RGB texture, say: M28) */
+static bool
+cpu_blit(struct pipe_context *pctx, const struct pipe_blit_info *info)
+{
+   const struct pipe_box *sb = &info->src.box, *db = &info->dst.box;
+   struct pipe_transfer *st, *dt;
+   struct pipe_box sbox = *sb, dbox = *db;
+   const uint8_t *src;
+   uint8_t *dst;
+   float *in, *out;
+   int sw = abs(sb->width), sh = abs(sb->height), dw = abs(db->width), dh = abs(db->height);
+
+   if (!info->mask || (info->mask & ~PIPE_MASK_RGBA))
+      return false;
+   if (util_format_is_depth_or_stencil(info->src.format) ||
+       util_format_is_depth_or_stencil(info->dst.format) ||
+       util_format_is_compressed(info->dst.format) || info->scissor_enable ||
+       info->alpha_blend || sb->depth != 1 || db->depth != 1 || !sw || !sh || !dw || !dh)
+      return false;
+   /* the boxes as maps take them: x, y their least corner */
+   if (sb->width < 0) {
+      sbox.x += sb->width;
+      sbox.width = -sb->width;
+   }
+   if (sb->height < 0) {
+      sbox.y += sb->height;
+      sbox.height = -sb->height;
+   }
+   if (db->width < 0) {
+      dbox.x += db->width;
+      dbox.width = -db->width;
+   }
+   if (db->height < 0) {
+      dbox.y += db->height;
+      dbox.height = -db->height;
+   }
+   src = pctx->texture_map(pctx, info->src.resource, info->src.level, PIPE_MAP_READ, &sbox, &st);
+   if (!src)
+      return false;
+   dst = pctx->texture_map(pctx, info->dst.resource, info->dst.level, PIPE_MAP_WRITE, &dbox,
+                           &dt);
+   if (!dst) {
+      pctx->texture_unmap(pctx, st);
+      return false;
+   }
+   in = MALLOC(4 * sw * sizeof(float));
+   out = MALLOC(4 * dw * sizeof(float));
+   for (int y = 0; in && out && y < dh; y++) {
+      /* the destination's row y (counted the way its box goes) from the
+       * source's nearest */
+      int dy = db->height < 0 ? dh - 1 - y : y;
+      int sy = (int)(((float)y + 0.5f) * sh / dh);
+      uint8_t *drow = dst + dy * dt->stride;
+
+      sy = sb->height < 0 ? sh - 1 - sy : sy;
+      util_format_unpack_rgba(info->src.format, in, src + sy * st->stride, sw);
+      if (info->mask != PIPE_MASK_RGBA)
+         util_format_unpack_rgba(info->dst.format, out, drow, dw);
+      for (int x = 0; x < dw; x++) {
+         int dx = db->width < 0 ? dw - 1 - x : x;
+         int sx = (int)(((float)x + 0.5f) * sw / dw);
+
+         sx = sb->width < 0 ? sw - 1 - sx : sx;
+         for (unsigned c = 0; c < 4; c++)
+            if (info->mask & (PIPE_MASK_R << c))
+               out[4 * dx + c] = in[4 * sx + c];
+      }
+      util_format_pack_rgba(info->dst.format, drow, out, dw);
+   }
+   FREE(in);
+   FREE(out);
+   pctx->texture_unmap(pctx, dt);
+   pctx->texture_unmap(pctx, st);
+   return true;
+}
+
 static void
 sgx_blit(struct pipe_context *pctx, const struct pipe_blit_info *info)
 {
-   if (util_try_blit_via_copy_region(pctx, info, false))
+   if (util_try_blit_via_copy_region(pctx, info, false) || cpu_blit(pctx, info))
       return;
-   mesa_logw_once("sgx: blits that convert or scale are not done yet");
+   mesa_logw_once("sgx: a blit of depth or stencil, or scissored or blended: not done yet");
 }
 
 static void

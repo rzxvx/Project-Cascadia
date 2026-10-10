@@ -72,6 +72,8 @@ sgx-gl glchurn                   # 3000 programs made, drawn and deleted: GPU me
 sgx-gl glwrap                    # texture wrap modes, each axis (M24)
 sgx-gl glvtx                     # the vertex path: layouts, formats, buffers, indices (M26)
 sgx-gl glspeed 400 40 flush      # draws a second, a glFlush a frame: renders queued (M27)
+sgx-gl glmip                     # mipmaps, mip filters, cube maps (M28)
+SGX_TEX_PROBE=1 sgx-gl glmip --probe 16 32   # where the sampler reads a cube map's levels
 SGX_REPACK=1 sgx-gl glvtx        # every draw's vertices made one stream by the CPU
 SGX_DEBUG_DRAW=1 sgx-gl glvtx    # each vertex shader draw: fetched or made, its addresses
 SGX_CPU_VS=1 sgx-gl glcull       # the same with the vertex shaders on the CPU

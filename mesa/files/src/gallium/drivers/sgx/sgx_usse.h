@@ -89,6 +89,11 @@ enum usse_smp_lod { USSE_SMP_NONE, USSE_SMP_BIAS, USSE_SMP_LOD };
 uint64_t usse_smp2d(enum usse_smp_out out, enum usse_smp_coord coord, struct usse_reg dest,
                     struct usse_reg coords, struct usse_reg state, enum usse_smp_lod mode,
                     struct usse_reg lod);
+/* the same with three coordinates (a cube map's direction: iOS's
+ * textureCube is smp3d, the corpus's t04), F32 in coords..coords + 2 */
+uint64_t usse_smp3d(enum usse_smp_out out, enum usse_smp_coord coord, struct usse_reg dest,
+                    struct usse_reg coords, struct usse_reg state, enum usse_smp_lod mode,
+                    struct usse_reg lod);
 #define USSE_WDF0             0xf920000000000000ull   /* wait for data return channel 0 */
 
 /* dest, dest + 1 (F32, dest even) = channels chan, chan + 1 (0 or 2) of

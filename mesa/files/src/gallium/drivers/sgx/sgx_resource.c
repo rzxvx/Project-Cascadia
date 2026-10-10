@@ -211,23 +211,43 @@ unpack_row(enum pipe_format format, const uint8_t *line, unsigned w, uint32_t *r
    }
 }
 
-/* The copy the sampler reads, made again from the linear content (level 0):
- * twiddled, or (lin) linear BGRA rows -- what the sampler takes for a size
- * not a power of two, which a twiddled copy would pad (and the coordinates
- * are not scaled) */
+/* The copy the sampler reads, made again from the linear content: every
+ * level of every face (a cube map's six, in GL's order), one after another,
+ * each RGBA8 in Morton order at its own size padded to powers of two --
+ * iOS's layout (a 64x64's levels at +0, +0x4000, +0x5000, ...,
+ * p105-gpu.md's mipmap transfers); a cube map's faces each as far apart as
+ * a whole chain down to 1 x 1, whatever levels it has, rounded up to 2 KiB
+ * from 16 x 16 up (glmip --probe: 4 x 4 faces 21 texels apart, 8 x 8 85,
+ * 16 x 16 512, 32 x 32 1536, 64 x 64 5632; Vita3K's texture cache has the
+ * same rules for the same GPU).  A 2D texture's size not a power of two is
+ * padded, the last column and row repeated: the sampler takes the size as
+ * it is (sgx_resource_texture), the padding is its memory's layout.  A cube
+ * map's is scaled up to one, the nearest texel (GXM's arbitrary cube map,
+ * type 7, read past the copy here and hung the renders): a direction cannot
+ * be scaled to a part of a face. */
 static bool
-copy_texture(struct sgx_screen *screen, struct sgx_resource *res, bool lin)
+copy_texture(struct sgx_screen *screen, struct sgx_resource *res)
 {
    struct pipe_resource *p = &res->base;
    unsigned w = p->width0, h = p->height0;
-   unsigned tw = lin ? align(MAX2(w * 4, 32), 16) / 4 : util_next_power_of_two(w);
-   unsigned th = lin ? h : util_next_power_of_two(h);
-   uint32_t *dst, *row;
-   const uint8_t *src;
+   unsigned tw = util_next_power_of_two(w), th = util_next_power_of_two(h);
+   unsigned faces = p->target == PIPE_TEXTURE_CUBE ? 6 : 1;
+   unsigned levels = p->last_level + 1;
+   bool scale = faces > 1 && (tw != w || th != h);
+   uint32_t size = 0, face = 0, *dst, *row;
+   const uint8_t *map;
 
-   if (!res->tw || res->tw_w != tw || res->tw_h != th || res->tw_lin != lin) {
+   for (unsigned l = 0; l < levels; l++)
+      size += MAX2(tw >> l, 1) * MAX2(th >> l, 1) * 4;
+   for (unsigned l = 0; faces > 1 && (tw >> l || th >> l); l++)
+      face += MAX2(tw >> l, 1) * MAX2(th >> l, 1) * 4;
+   if (faces > 1 && tw >= 16 && th >= 16)
+      face = align(face, 2048);
+   if (faces > 1)
+      size = 5 * face + size;
+   if (!res->tw || res->tw_w != tw || res->tw_h != th || res->tw_levels != levels) {
       sgx_bo_destroy(res->tw);
-      res->tw = sgx_bo_create(&screen->dev, tw * th * 4, 0, 0);
+      res->tw = sgx_bo_create(&screen->dev, size, 0, 0);
       if (!res->tw || !sgx_bo_map(res->tw)) {
          sgx_bo_destroy(res->tw);
          res->tw = NULL;
@@ -235,33 +255,41 @@ copy_texture(struct sgx_screen *screen, struct sgx_resource *res, bool lin)
       }
       res->tw_w = tw;
       res->tw_h = th;
-      res->tw_lin = lin;
+      res->tw_levels = levels;
    } else {
       /* a render may still be sampling the old copy */
       sgx_frame_finish(screen->frame);
    }
-   if (!(src = sgx_bo_map(res->bo)) || !(row = MALLOC(w * 4)))
+   if (!(map = sgx_bo_map(res->bo)) || !(row = MALLOC(MAX2(w, 1) * 4)))
       return false;
    /* what the GPU wrote into the texture, done first */
    sgx_bo_wait(res->bo, -1);
-   dst = (uint32_t *)res->tw->map;
-   for (unsigned y = 0; y < th; y++) {
-      unsigned sy = MIN2(y, h - 1);
+   for (unsigned f = 0; f < faces; f++) {
+      dst = (uint32_t *)(res->tw->map + f * face);
+      for (unsigned l = 0; l < levels; l++) {
+         unsigned lw = u_minify(w, l), lh = u_minify(h, l);
+         unsigned dw = MAX2(tw >> l, 1), dh = MAX2(th >> l, 1);
+         const uint8_t *src = map + res->offset[l] + f * res->layer_size[l];
 
-      unpack_row(p->format, src + res->offset[0] + sy * res->stride[0], w, row);
-      if (lin) {
-         /* B G R A in memory, as the sampler reads a linear texture */
-         for (unsigned x = 0; x < w; x++)
-            dst[y * tw + x] = (row[x] & 0xff00ff00u) | (row[x] & 0xff) << 16 |
-                              (row[x] >> 16 & 0xff);
-         continue;
+         for (unsigned y = 0; y < dh; y++) {
+            unsigned sy = scale ? (2 * y + 1) * lh / (2 * dh) : MIN2(y, lh - 1);
+
+            unpack_row(p->format, src + sy * res->stride[l], lw, row);
+            /* padding: the last column and row repeated (a bilinear lookup
+             * at the edge reads it) */
+            for (unsigned x = 0; x < dw; x++)
+               dst[twiddle(x, y, dw, dh)] =
+                  row[scale ? (2 * x + 1) * lw / (2 * dw) : MIN2(x, lw - 1)];
+         }
+         dst += dw * dh;
       }
-      /* padding: the last column and row repeated, so a clamped lookup at
-       * the edge finds the edge */
-      for (unsigned x = 0; x < tw; x++)
-         dst[twiddle(x, y, tw, th)] = row[MIN2(x, w - 1)];
    }
    FREE(row);
+   /* SGX_TEX_PROBE=1: a cube map's copy holds each texel's own index
+    * instead (finding the layout: glmip --probe) */
+   if (faces > 1 && getenv("SGX_TEX_PROBE"))
+      for (uint32_t i = 0; i < res->tw->size / 4; i++)
+         ((uint32_t *)res->tw->map)[i] = 0xff000000u | i;
    res->tw_seq = res->seq;
    return true;
 }
@@ -278,13 +306,17 @@ wrap_bits(unsigned wrap)
  * the axes and mirroring found with a texture drawn three times over, M24).
  * Filters, found by flipping bits under gltex: bits 13:12 the
  * magnification filter, 11:10 the minification one, 0 point and 1 (or 2)
- * bilinear -- 3 samples as point again. */
+ * bilinear -- 3 samples as point again; bit 9 the linear mip filter, a
+ * level and the next mixed (glmip, M28: the nearest level without it).
+ * Whether there is mipmapping at all is the last level's field
+ * (sgx_resource_texture). */
 static uint32_t
 sampler_bits(const struct pipe_sampler_state *ss)
 {
    if (!ss)
       return 0;
    return wrap_bits(ss->wrap_t) << 3 | wrap_bits(ss->wrap_s) << 6 |
+          (ss->min_mip_filter == PIPE_TEX_MIPFILTER_LINEAR ? 1u << 9 : 0) |
           (ss->min_img_filter == PIPE_TEX_FILTER_LINEAR ? 1u << 10 : 0) |
           (ss->mag_img_filter == PIPE_TEX_FILTER_LINEAR ? 1u << 12 : 0);
 }
@@ -318,10 +350,9 @@ sgx_resource_linear(const struct sgx_resource *res, bool *swap, bool *x8)
        res->stride[0] < 32 || ((res->offset[0] + res->bo->va) & 15) ||
        (p->target != PIPE_TEXTURE_2D && p->target != PIPE_TEXTURE_RECT))
       return false;
-   /* and when the twiddled copy would be padded (its coordinates are not
-    * scaled): a size not a power of two */
-   return force == 1 || res->external || res->gpu_written ||
-          !util_is_power_of_two_nonzero(p->width0) || !util_is_power_of_two_nonzero(p->height0);
+   /* (a size not a power of two is twiddled too, M28: the minification
+    * filter is lost here) */
+   return force == 1 || res->external || res->gpu_written;
 }
 
 bool
@@ -332,8 +363,9 @@ sgx_resource_texture(struct sgx_screen *screen, struct sgx_resource *res,
 
    struct pipe_resource *p = &res->base;
 
-   if ((p->target != PIPE_TEXTURE_2D && p->target != PIPE_TEXTURE_RECT) ||
-       p->array_size != 1 || !p->width0 || !p->height0)
+   if ((p->target != PIPE_TEXTURE_2D && p->target != PIPE_TEXTURE_RECT &&
+        p->target != PIPE_TEXTURE_CUBE) ||
+       p->array_size != (p->target == PIPE_TEXTURE_CUBE ? 6 : 1) || !p->width0 || !p->height0)
       return false;
    if (sgx_resource_linear(res, &swap, &x8)) {
       /* the 2D engine's way (apple_sgx_hw.c, blt_tex: iOS's for an
@@ -347,23 +379,30 @@ sgx_resource_texture(struct sgx_screen *screen, struct sgx_resource *res,
       words[3] = 0x10000000;
       res->sampled = res->bo;
    } else {
-      bool lin = !util_is_power_of_two_nonzero(p->width0) ||
-                 !util_is_power_of_two_nonzero(p->height0);
+      bool cube = p->target == PIPE_TEXTURE_CUBE;
 
-      if ((!res->tw || res->tw_seq != res->seq || res->tw_lin != lin) &&
-          !copy_texture(screen, res, lin))
+      if ((!res->tw || res->tw_seq != res->seq) && !copy_texture(screen, res))
          return false;
-      if (lin) {
-         /* a linear BGRA copy, sampled as above */
-         words[0] = (res->tw_w * 4 / 16 - 2) << 16 | (sampler_bits(ss) & ~0xe00u) | 7u << 9;
-         words[1] = 0xcc000000 | (p->width0 - 1) << 12 | (p->height0 - 1);
-         words[3] = 0x10000000;
-      } else {
-         words[0] = 0x03fe0000 | sampler_bits(ss);
-         words[1] = 0x0c000000 | util_logbase2(res->tw_w) << 16 | util_logbase2(res->tw_h);
-         words[3] = 0;
-      }
+      /* bits 20:17 the last level the sampler goes down to (iOS's 4 x 4
+       * cube map, one level, has 0; glmip): with no mip filter, level 0's
+       * alone; bits 26:21 the LOD bias, 31 none (Vita3K's SceGxmTexture,
+       * the same words) */
+      words[0] = 0x03e00000 |
+                 (ss && ss->min_mip_filter != PIPE_TEX_MIPFILTER_NONE ?
+                  (res->tw_levels - 1) << 17 : 0) |
+                 sampler_bits(ss);
+      /* word 1: the type in bits 31:29 (0 twiddled, 2 a cube map -- iOS's
+       * t04, 0x4c020002 -- 5 twiddled of any size, 6 strided: GXM's
+       * SceGxmTextureType), the format in 28:24, the size: log2 w in 19:16
+       * and log2 h in 3:0, or w - 1 in 23:12 and h - 1 in 11:0 */
+      if (cube || (util_is_power_of_two_nonzero(p->width0) &&
+                   util_is_power_of_two_nonzero(p->height0)))
+         words[1] = (cube ? 2u << 29 : 0) | 0x0c000000 |
+                    util_logbase2(res->tw_w) << 16 | util_logbase2(res->tw_h);
+      else
+         words[1] = 5u << 29 | 0x0c000000 | (p->width0 - 1) << 12 | (p->height0 - 1);
       words[2] = res->tw->va;
+      words[3] = 0;
       res->sampled = res->tw;
    }
    /* SGX_TEX_WORDn=mask: bits of word n flipped, to find what they do */
@@ -505,6 +544,60 @@ sgx_buffer_bo(struct sgx_context *ctx, struct sgx_resource *res)
    return bo;
 }
 
+/* glGenerateMipmap by the CPU (M28): each level a 2 x 2 box filter of the
+ * one above (one texel of it where the level above has only one across or
+ * down), through util_format's floats -- the blit util_gen_mipmap would
+ * use scales, which the driver does not */
+static bool
+sgx_generate_mipmap(struct pipe_context *pctx, struct pipe_resource *prsc,
+                    enum pipe_format format, unsigned base_level, unsigned last_level,
+                    unsigned first_layer, unsigned last_layer)
+{
+   struct sgx_context *ctx = sgx_context(pctx);
+   struct sgx_resource *res = sgx_resource(prsc);
+   unsigned w = prsc->width0;
+   float *buf;
+   uint8_t *map;
+
+   if (prsc->target == PIPE_BUFFER || prsc->target == PIPE_TEXTURE_3D || !res->bo ||
+       util_format_is_compressed(format) || util_format_is_depth_or_stencil(format) ||
+       util_format_is_pure_integer(format))
+      return false;
+   /* draws that write or read it go first, and renders that do */
+   if (sgx_batch_uses(ctx, prsc))
+      sgx_batch_flush(ctx);
+   if (!sgx_bo_wait(res->bo, -1) || !(map = sgx_bo_map(res->bo)) ||
+       !(buf = MALLOC(3 * 4 * MAX2(w, 1) * sizeof(float))))
+      return false;
+   for (unsigned layer = first_layer; layer <= last_layer; layer++) {
+      for (unsigned l = base_level + 1; l <= last_level; l++) {
+         unsigned sw = u_minify(prsc->width0, l - 1), sh = u_minify(prsc->height0, l - 1);
+         unsigned dw = u_minify(prsc->width0, l), dh = u_minify(prsc->height0, l);
+         const uint8_t *src = map + res->offset[l - 1] + layer * res->layer_size[l - 1];
+         uint8_t *dst = map + res->offset[l] + layer * res->layer_size[l];
+         float *r0 = buf, *r1 = buf + 4 * w, *out = buf + 8 * w;
+
+         for (unsigned y = 0; y < dh; y++) {
+            unsigned y0 = MIN2(2 * y, sh - 1), y1 = MIN2(2 * y + 1, sh - 1);
+
+            util_format_unpack_rgba(format, r0, src + y0 * res->stride[l - 1], sw);
+            util_format_unpack_rgba(format, r1, src + y1 * res->stride[l - 1], sw);
+            for (unsigned x = 0; x < dw; x++) {
+               unsigned x0 = MIN2(2 * x, sw - 1), x1 = MIN2(2 * x + 1, sw - 1);
+
+               for (unsigned c = 0; c < 4; c++)
+                  out[4 * x + c] = (r0[4 * x0 + c] + r0[4 * x1 + c] + r1[4 * x0 + c] +
+                                    r1[4 * x1 + c]) / 4;
+            }
+            util_format_pack_rgba(format, dst + y * res->stride[l], out, dw);
+         }
+      }
+   }
+   FREE(buf);
+   res->seq++;
+   return true;
+}
+
 void
 sgx_resource_context_init(struct pipe_context *pctx)
 {
@@ -514,5 +607,6 @@ sgx_resource_context_init(struct pipe_context *pctx)
    pctx->texture_unmap = sgx_transfer_unmap;
    pctx->transfer_flush_region = sgx_transfer_flush_region;
    pctx->buffer_subdata = u_default_buffer_subdata;
+   pctx->generate_mipmap = sgx_generate_mipmap;
    pctx->texture_subdata = u_default_texture_subdata;
 }

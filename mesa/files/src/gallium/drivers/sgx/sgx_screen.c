@@ -193,6 +193,7 @@ sgx_init_screen_caps(struct pipe_screen *pscreen)
    /* GLES 2.0: ARB_texture_non_power_of_two and EXT_blend_equation_separate
     * are what version.c asks for besides the shaders */
    caps->npot_textures = true;
+   caps->generate_mipmap = true;     /* by the CPU: sgx_resource.c */
    /* a buffer's map is its CPU copy, which the GPU's is brought up to date
     * with at a draw, from what unmaps and flushes say was written (M26):
     * nothing tells of a write through a persistent map */

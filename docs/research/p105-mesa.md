@@ -2001,6 +2001,78 @@ right, and dEQP-GLES2 as before but for one case,
 alone with the build before as well (it passes or not with what ran
 before it).
 
+## M28: mipmaps and cube maps
+
+The sampled copy was level 0 only, and cube maps were not sampled at all:
+most of dEQP's texture group (534 failures).
+
+- **Levels.** iOS's layout was in the mipmap transfers captured in M7
+  (p105-gpu.md): a 64x64's levels at `+0, +0x4000, +0x5000, +0x5400, ...`
+  -- one after another, each twiddled at its own size, nothing between
+  them. The copy is that now, every level the texture has. Word 0's bits
+  20:17 are the last level the sampler goes down to: the levels less one
+  with a mip filter, 0 without (GL's `NEAREST` and `LINEAR` take level 0
+  whatever the size; iOS's one-level cube map has 0, its 2D textures 15).
+  Bit 9 is the linear mip filter, a level and the next mixed -- found by
+  flipping bits under `glmip` (half red, half green at level 0.5; without
+  it the nearest level). Bit 26 moves the level by four or so: a bias,
+  not needed.
+- **Cube maps.** iOS's `textureCube` (the corpus's `t04_cube`) is `smp`
+  with dimension 2 (`3d`, bits 43:42; `2d` is 1), the direction as three
+  coordinates; its state's word 1 has bit 30 set (`0x4c020002` for a 4x4)
+  and word 0 bits 20:17 clear. The compiler takes `samplerCube` now, the
+  direction in three registers in a row. The faces are in GL's order, each
+  a whole chain of levels down to 1x1 -- whatever levels the texture has
+  -- and from 16x16 up rounded to 2 KiB: found with `SGX_TEX_PROBE=1`,
+  which fills a cube map's copy with each texel's own index, and `glmip
+  --probe N...`, which reads back the least index a quad over each face at
+  each level brings: faces 21 texels apart at 4x4, 85 at 8x8, 512 at
+  16x16 (a chain of 341), 1536 at 32x32, 5632 at 64x64, 22016 at 128x128,
+  87552 at 256x256. A copy laid out otherwise was read past its end: the
+  BIF faulted, the render hung.
+- **`glGenerateMipmap`** is the CPU's (`generate_mipmap`: each level a 2x2
+  box of the one above, through `util_format`'s floats): `util_gen_mipmap`
+  blits, and the driver's blits did not scale. Blits that convert, scale or
+  flip are the CPU's now too, nearest (`glCopyTexImage2D` from a B8G8R8A8
+  target into an RGB texture is one: dEQP's `copyteximage2d` and
+  `copytexsubimage2d` cases had nothing copied).
+
+- **The same words as the PS Vita's.** The Vita's GPU is an SGX543 too,
+  and Vita3K's `SceGxmTexture` (`vita3k/gxm/include/gxm/types.h`) is these
+  four words: word 0 the t and s wrap (5:3, 8:6), the mip filter (9), the
+  minification and magnification filters (11:10, 13:12), the levels less
+  one (20:17), the LOD bias (26:21, 31 none); word 1 the size (log2 w in
+  19:16 and log2 h in 3:0, or w - 1 in 23:12 and h - 1 in 11:0), the
+  format (28:24) and the type (31:29: 0 twiddled, 2 a cube map, 3 linear,
+  4 tiled, 5 twiddled of any size, 6 strided -- what the M16 linear
+  textures are --, 7 a cube map of any size); word 2 the address. Its
+  texture cache lays a cube map's faces out with the rules found above: a
+  whole chain each, 2 KiB-aligned for 32-bit texels from 16x16 up.
+- **Sizes not a power of two.** A 2D texture is twiddled too now, type 5:
+  the copy padded to powers of two (its memory's layout), the size in word
+  1 as it is -- so the minification filter works, which the linear way
+  (M16) lost: only a texture the GPU renders into or that is shared is
+  sampled linear still. Type 7 does not do here what Vita3K says (the
+  sampler read past the copy, the renders hung): a cube map's faces are
+  scaled up to a power of two by the CPU instead, the nearest texel.
+
+`tools/sgx/gl/glmip.c`: a 64x64 with a colour a level drawn at each level's
+size, with biases of 1 and 2, with no mip filter, with the linear one; a
+4x4 cube map, each face's texels told apart by the direction through
+them; a 32x32 cube map with every level, each face at each level; a 24x12
+read texel by texel, a 48x48 minified with the linear filter, a 6x6 cube
+map. 15 of 15. dEQP-GLES2's texture group **311 -> 783** passing (534 ->
+62 failing); `uniform_api` (15 -> 4 failing) and `shaders` (363 -> 312)
+gain the cube maps' cases; nothing else changes. All of dEQP-GLES2:
+**16 562 passing, 402 failing** (16 027 and 937 after M24). What is left:
+
+- `mipmap.2d.basic` and `.projected` (36): a few rows of a cell take the
+  level next to GL's, where the level of detail is near a level's
+  boundary. dEQP allows 8 bits of LOD for 2D (6 for cube maps, which
+  pass): the sampler's own LOD is coarser than that.
+- cube maps not a power of two with the linear filter, and `size.cube`
+  at 15x15 (20): the scaled faces.
+
 ## Testing, without and with the device
 
 - **Host, every change:** the kernel driver builds with `W=1` against the

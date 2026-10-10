@@ -14,9 +14,10 @@ struct sgx_screen;
 
 /* Every resource is linear: rows of stride bytes, levels and layers one
  * after another.  A texture the GPU samples also gets a twiddled copy, made
- * by the CPU when the linear content has changed since (seq): RGBA8 in
- * Morton order, padded to powers of two (sgx_resource_texture) -- unless
- * it is sampled as it is (sgx_resource_linear()). */
+ * by the CPU when the linear content has changed since (seq): every level
+ * and face, RGBA8 in Morton order, padded to powers of two, as the sampler
+ * lays them out (M28: sgx_resource_texture) -- unless it is sampled as it
+ * is (sgx_resource_linear()). */
 struct sgx_resource {
    struct pipe_resource base;
    struct sgx_bo *bo;
@@ -34,7 +35,7 @@ struct sgx_resource {
    struct sgx_bo *tw;                             /* the twiddled copy */
    uint32_t tw_seq;                               /* the content it was made from */
    unsigned tw_w, tw_h;                           /* its size (linear: the stride's) */
-   bool tw_lin;                                   /* linear BGRA rows, not twiddled */
+   unsigned tw_levels;                            /* its levels (of each face, M28) */
    struct sgx_bo *sampled;                        /* what the last state words point at */
    bool external;                                 /* shared: others may write it */
    bool gpu_written;                              /* a render has written it */
@@ -56,8 +57,7 @@ struct sgx_transfer {
 
 /* Whether res is sampled as it is, linear (M16): RGBA8 orders, one level,
  * written by the GPU or by others (a render's target, a shared buffer) --
- * the CPU's copy would read it back each time -- or not a power of two in
- * size (the copy is padded).  Minification is point
+ * the CPU's copy would read it back each time.  Minification is point
  * sampling then.  The sampler reads bytes as B G R A: *swap says the
  * shader swaps red and blue back, *x8 that it takes alpha as 1. */
 bool sgx_resource_linear(const struct sgx_resource *res, bool *swap, bool *x8);

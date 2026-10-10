@@ -211,10 +211,9 @@ usse_pack_unorm8_to(struct usse_reg dest, struct usse_reg src)
           bits(src.num >> 1, 13, 8) | bits(0, 7, 7) | bits((src.num >> 1) + 1, 6, 1);
 }
 
-uint64_t
-usse_smp2d(enum usse_smp_out out, enum usse_smp_coord coord, struct usse_reg dest,
-           struct usse_reg coords, struct usse_reg state, enum usse_smp_lod mode,
-           struct usse_reg lod)
+static uint64_t
+smp(unsigned dim, enum usse_smp_out out, enum usse_smp_coord coord, struct usse_reg dest,
+    struct usse_reg coords, struct usse_reg state, enum usse_smp_lod mode, struct usse_reg lod)
 {
    unsigned ext1, bank1, ext2 = 1, bank2 = 2, lodn = 0;   /* no lod: immediate 0 */
    /* coords: temp, pa; output, sa extended */
@@ -228,13 +227,29 @@ usse_smp2d(enum usse_smp_out out, enum usse_smp_coord coord, struct usse_reg des
       src_bank(lod, &ext2, &bank2);
       lodn = pair(lod);
    }
-   /* skipinv clear, as iOS's sampling instructions have it; dimension 1
-    * (2D); data return channel 0 */
+   /* skipinv clear, as iOS's sampling instructions have it; dimension
+    * (1 2D, 2 3D: t01, t04); data return channel 0 */
    return bits(0x1c, 63, 59) | bits(ext0, 50, 50) | bits(ext1, 49, 49) | bits(ext2, 48, 48) |
-          bits(out, 47, 46) | bits(1, 43, 42) | bits(mode, 41, 40) |
+          bits(out, 47, 46) | bits(dim, 43, 42) | bits(mode, 41, 40) |
           bits(dest.bank == USSE_PA, 39, 39) | bits(coord, 36, 35) | bits(bank0, 34, 34) |
           bits(bank1, 31, 30) | bits(bank2, 29, 28) | bits(dest.num, 27, 21) |
           bits(coords.num >> 1, 20, 14) | bits(state.num >> 1, 13, 7) | bits(lodn, 6, 0);
+}
+
+uint64_t
+usse_smp2d(enum usse_smp_out out, enum usse_smp_coord coord, struct usse_reg dest,
+           struct usse_reg coords, struct usse_reg state, enum usse_smp_lod mode,
+           struct usse_reg lod)
+{
+   return smp(1, out, coord, dest, coords, state, mode, lod);
+}
+
+uint64_t
+usse_smp3d(enum usse_smp_out out, enum usse_smp_coord coord, struct usse_reg dest,
+           struct usse_reg coords, struct usse_reg state, enum usse_smp_lod mode,
+           struct usse_reg lod)
+{
+   return smp(2, out, coord, dest, coords, state, mode, lod);
 }
 
 uint64_t
