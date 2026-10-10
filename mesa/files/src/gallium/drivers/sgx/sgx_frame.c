@@ -226,14 +226,21 @@ vdm_fetch_word(unsigned nvaryings)
    return (1 + nvaryings) << 25 | 0x01800000u | (4 + 4 * nvaryings) << 7 | (nvaryings + 2);
 }
 
+/* The bits 31:28 of the VDM word with the vertex fetch's address: the
+ * vertices a vertex task takes, less one -- as many as their outputs (the
+ * position and nvaryings vec4s) fit in 128 words of the output buffer, 16
+ * at most.  iOS has 15 for two vec4s, 9 for three, 2 for nine (the
+ * corpus's v07, v04, v05); with more the vertices' outputs overlap, and
+ * in some tiles whole triangles take other vertices' varyings (M30).
+ * SGX_FETCH_TAG=n overrides it. */
 static unsigned
-vdm_fetch_tag(unsigned pack_tag)
+vdm_fetch_tag(unsigned nvaryings)
 {
    static int forced = -2;
 
    if (forced == -2)
       forced = getenv("SGX_FETCH_TAG") ? (int)strtoul(getenv("SGX_FETCH_TAG"), NULL, 0) : -1;
-   return forced >= 0 ? forced : pack_tag;
+   return forced >= 0 ? forced : MIN2(16, 128 / (4 + 4 * nvaryings)) - 1;
 }
 static const uint64_t usse_dummy_load[3] = {
    0x488b0281a00c0000ull, 0xe9a30084a0000000ull, 0xf920000000000000ull,
@@ -455,6 +462,19 @@ static uint32_t
 sa_field(unsigned nsa)
 {
    return (align(MAX2(nsa, 1), 32) - 1) << 13;
+}
+
+/* State word 5 for a pixel program: the registers a pixel takes, primary
+ * attributes and temporaries, in fours (bits 31:27); bits 26:23 as iOS has
+ * them for 2, 3 and 4 fours, 12 / fours (M13b), but 1 past 12 -- 0 there
+ * and the program reads 0 for its inputs (M30); its secondary attributes
+ * (sa_field) */
+static uint32_t
+pixel_word5(const struct sgx_pixel_program *pix)
+{
+   unsigned fours = DIV_ROUND_UP(4 * pix->ninputs + pix->ntemps, 4);
+
+   return fours << 27 | (fours > 1 ? MAX2(12 / fours, 1) : 0) << 23 | sa_field(pix->nsa);
 }
 
 /* A loader of n words (128 at most) at va into sa0..: a DMA, data row
@@ -1920,16 +1940,12 @@ render(struct sgx_frame *f, struct sgx_resource *rt, const struct sgx_frame_layo
    }
    if (pix) {
       /* our pixel program: its PDS (word 6), how many registers a pixel
-       * takes (word 5: bits 31:27 primary attributes + temporaries in fours;
-       * 26:23 as iOS has them for 2, 3 and 4 fours, 12 / fours -- M13b),
-       * and its secondary attributes in sa0.. (word 4: a DMA, then the empty
-       * program) */
-      unsigned fours = DIV_ROUND_UP(4 * pix->ninputs + pix->ntemps, 4);
-
+       * takes (word 5) and its secondary attributes in sa0.. (word 4: a
+       * DMA, then the empty program) */
       if ((ret = upload(f, pix)))
          return ret;
       full[6] = pix->pds_rows << 27 | (pix->pds_va >> 4 & 0x07ffffff);
-      full[5] = fours << 27 | (fours > 1 ? 12 / fours : 0) << 23 | sa_field(pix->nsa);
+      full[5] = pixel_word5(pix);
       if (pix->nsa) {
          uint32_t loader[UNIFORM_LOADER_MAX];
          unsigned rows = uniform_loader(f, uni, pix->nsa, loader);
@@ -1974,7 +1990,7 @@ render(struct sgx_frame *f, struct sgx_resource *rt, const struct sgx_frame_layo
    *v++ = vdm4(4, f->consts0); *v++ = 0x1000e102;
    *v++ = vdm4(4, p0);         *v++ = 0x12022206;
    *v++ = 0x81c00000 | nverts; *v++ = f->idx; *v++ = 0x70000000; *v++ = 0x003fffff;
-   *v++ = vdm4(l ? vdm_fetch_tag(f->fetch_tag) : f->fetch_tag, fb); *v++ = fetch_word;
+   *v++ = vdm4(l ? vdm_fetch_tag(l->nvaryings) : f->fetch_tag, fb); *v++ = fetch_word;
    for (i = 0; i < f->ntail; i++)
       *v++ = f->tail[i];
    if (!put(f, f->vdm, vdm, (v - vdm) * 4))
@@ -2116,12 +2132,10 @@ draw_state(struct sgx_frame *f, const struct sgx_frame_draw *d, const struct sgx
          memcpy(&full[10 + 2 * i], &d->st.scale[i], 4);
       }
    if (pix) {
-      unsigned fours = DIV_ROUND_UP(4 * pix->ninputs + pix->ntemps, 4);
-
       if (!pix->code_va || pix->nsa > 128)
          return -EINVAL;
       full[6] = pix->pds_rows << 27 | (pix->pds_va >> 4 & 0x07ffffff);
-      full[5] = fours << 27 | (fours > 1 ? 12 / fours : 0) << 23 | sa_field(pix->nsa);
+      full[5] = pixel_word5(pix);
       if (pix->nsa) {
          unsigned rows;
          uint32_t loader = arena_uniforms(f, d->sa, pix->nsa, &rows);
@@ -2263,7 +2277,7 @@ sgx_frame_render(struct sgx_frame *f, const struct sgx_frame_target *t,
       assert(nwords <= ARRAY_SIZE(words));
       if (!(fetch = arena_put(f, words, nwords * 4, 16)))
          goto out;
-      *v++ = vdm4(vdm_fetch_tag(f->fetch_tag), fetch);
+      *v++ = vdm4(vdm_fetch_tag(d->vs ? d->vs->nvaryings : d->l.nvaryings), fetch);
       *v++ = d->vs ? vs_fetch_word(d->vs, rows) : vdm_fetch_word(d->l.nvaryings);
       if (f->debug) {
          char line[512];

@@ -85,7 +85,7 @@ DESTDIR="$ID" ninja -C "$BD" install >/dev/null
 
 I=$ID$PREFIX
 mkdir -p "$I/bin"
-for t in glclear gltri glfs gltex glblend gldepth glspeed glpersp glsize glseam glcull gldiscard glstencil glchurn glwrap glvtx glmip; do
+for t in glclear gltri glfs gltex glblend gldepth glspeed glpersp glsize glseam glcull gldiscard glstencil glchurn glwrap glvtx glmip glvary; do
     cc -O2 -Wall -I"$I/include" "$ROOT/tools/sgx/gl/$t.c" -L"$I/lib" -lEGL -lGLESv2 -lm \
         -Wl,-rpath-link,"$I/lib" -Wl,-rpath,"$PREFIX/lib" -o "$I/bin/$t"
 done

@@ -946,7 +946,9 @@ fetch's data rows in 6:0, `0x01800000` always. Our word is `(1 + N) << 25 |
 0x01800000 | (4 + 4N) << 7 | (N + 2)`; `SGX_FETCH=word` overrides it. The
 address word's tag differs too (`0xf` for one or two attributes, `9` for
 three, `7` for a two-word attribute of the GL driver's own); we keep the
-pack's 9, and `SGX_FETCH_TAG=15` drew the same, so its meaning is open.
+pack's 9, and `SGX_FETCH_TAG=15` drew the same, so its meaning is open
+(M30: the vertices a vertex task takes, less one -- 9 overlapped vertices
+of three varyings and more).
 
 Checked on the iPad: `SGX_DRAW_LAYOUT=N[,K][,f32]` (sgx_draw.c) sends N
 varyings with the colour the K-th and the rest a filler colour that would
@@ -958,8 +960,8 @@ middle or last, F16 and F32; the default (N = 1) 11 of 11;
 what each pixel program uses: bits 31:27 = (primary attributes +
 temporaries) / 4, rounded up -- v00 (2 pa) 1, v07 (4 pa) 1, v04 (3 pa + 2
 temps) 2, v05 (16 pa) 4, c04 (no pa, 10 temps) 3, no pa and no temps 0.
-Bits 26:23 (0, 6, 3, 4 in those cases) are not read yet; 17:13 = `0x1f`
-always. M13c's programs will need it.
+Bits 26:23 (0, 6, 3, 4 in those cases) are not read yet (M30: 12 / fours,
+but at least 1); 17:13 = `0x1f` always. M13c's programs will need it.
 
 **M13c, step 1: the first fragment compiler (2026-10-04).** Fragment
 shaders now run on the GPU as compiled USSE programs; M13a's per-vertex
@@ -2086,6 +2088,70 @@ when the framebuffer's level or face changes. The pixel back end takes a
 into each face of a 16x16 cube map and into levels 1 and 3 of a 32x32
 and samples them back, 17 of 17. dEQP unchanged (its GLES 2 cases render
 into level 0 only).
+
+## M30: three varyings and more
+
+dEQP's `shaders.matrix` cases with a `mat3` or `mat4` varying failed
+(`dynamic_*_mat3_fragment` and the like: the linker packs their floats into
+three vec4 varyings or more). `tools/sgx/gl/glvary.c` showed the shape of
+it: with one or two vec4 varyings every pixel right, with three a third of
+them wrong, with four most -- and, drawn as a picture, not pixels at
+random but whole triangles, right in some tiles and wrong in the next
+(the edges the triangles' and the 32x32 tiles'). So not the pixel side,
+though everything there was tried first (more registers a pixel, more
+temporaries in the DOUTU, the code aligned, the PDS data padded, NOPs,
+the inputs iterated as F16): the vertex side.
+
+- **The vertices a vertex task takes.** The VDM word with the vertex
+  fetch's address has a tag in bits 31:28 that M13b left open (the pack's
+  9 kept). Every draw in iOS's captures has it as floor(128 / w) - 1 for
+  vertices of w words to the tiler: 15 for 8 (the position and a vec4:
+  v07 and most), 9 for 12 (v04, the pack), 2 for 36 (v05's eight
+  varyings) -- as many vertices as their outputs fit in 128 words of the
+  output buffer, less one. Ours was 9 whatever the vertex: ten vertices of
+  16 words (three varyings) are 160, and the last ones' outputs overlapped
+  the next task's. Swept on the device: three varyings right with 7 and
+  less and wrong with 9, four right with 5 and less and wrong with 7 --
+  the formula's 7 and 5. `vdm_fetch_tag()` works it out now
+  (`SGX_FETCH_TAG=n` overrides it).
+- **State word 5's bits 26:23** are 12 / fours (M13b, from iOS's 2, 3
+  and 4 fours) -- 0 past 12 fours, and a program of more than 48
+  registers then read 0 for every input (`glvary`'s eight varyings: 32
+  primary attributes and 28 temporaries, all black). 1 there is right (2
+  as well); `pixel_word5()`.
+- **A vertex shader's outputs early.** GLSL's compiler stores them all at
+  the shader's end, and every value for them was alive until then: seven
+  or eight vec4 varyings took more than the 64 temporaries there are (the
+  shader ran on the CPU). `store_outputs_early()` moves each store (and the
+  vec4 it is made of) up to just after the values it reads -- after the
+  stores before it to the same output, and not at all in a shader that
+  reads an output back -- and a varying goes into its output register
+  where it is stored (the position still at the end, its x and y moved
+  into the TA's clip rectangle there). `nir_opt_move` does not do it: it
+  moves an ALU instruction only when it has one source not a constant.
+
+Not kept: iterating mediump varyings as F16 as iOS does (control word bits
+29:28 2, DOUT size `0x12`, a vec4 in two registers, unpacked by `VPCK`
+with source format 5). An F16 input after an F32 one came back right, an
+F32 one after an F16 one did not (its z and w its x and y): the inputs stay
+F32.
+
+`glvary`: 1 to 8 vec4 varyings, each component its own linear function of
+the position, read back one at a time (the rest added times a uniform 0,
+so that the linker keeps them) and averaged; a `mat3` attribute and a float
+through varyings (dEQP's shape) -- every pixel of a 4 x 4 grid of quads
+checked, 30 of 30 (25 wrong with `SGX_FETCH_TAG=9`).
+
+dEQP-GLES2's shaders group **312 -> 68** failing: all 126 of `matrix`, 58
+of `operator`, 49 of `indexing` (varying and temporary arrays, matrix
+subscripts), 8 of `loops`; nothing else changes. Renders that time out
+during the whole run 46 -> 16 (all 16 of them among the 46). All of
+dEQP-GLES2: **16 792 passing, 158 failing** (16 562 and 402 after M28),
+the same twice. What is left of the shaders: an `ivec4` divided in a
+fragment shader (21), `select_iteration_count` loops (18: the 9 fragment
+ones time out -- the run's 16 timeouts are those, 6 of `random` and
+`discard.function_static_loop_always`), a temporary array of constants read
+through an index in a fragment shader (9).
 
 ## Testing, without and with the device
 

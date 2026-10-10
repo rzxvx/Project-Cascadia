@@ -103,7 +103,9 @@ struct comp {
    bool branches;
    bool front_when_set;                 /* gl_FrontFacing: the facing bit set is the front */
    /* a vertex shader's outputs: 0 the position, 1 + k varying k of the
-    * layout (varying_slot[k]); the attributes it reads */
+    * layout (varying_slot[k]) -- which are written, and the position's
+    * values (the varyings go to their registers as they are stored); the
+    * attributes it reads */
    const unsigned *varying_slot;
    unsigned nvaryings, nattrs;
    unsigned pa_base;                    /* a vertex program's temporaries: pa from here */
@@ -787,10 +789,23 @@ intrinsic(struct comp *c, nir_intrinsic_instr *in)
             if (c->varying_slot[j] == loc)
                k = 1 + j;
          for (unsigned i = 0; k >= 0 && i < in->src[0].ssa->num_components; i++) {
+            struct operand o;
+
             if (!(mask & 1 << i) || comp + i >= 4)
                continue;
-            c->vout[k][comp + i] = resolve(nir_get_scalar(in->src[0].ssa, i));
+            o = resolve(nir_get_scalar(in->src[0].ssa, i));
             c->have_vout[k][comp + i] = true;
+            if (k == 0) {
+               c->vout[0][comp + i] = o;
+            } else {
+               /* a varying straight into its output register: kept until
+                * the end, eight vec4s took more temporaries than there
+                * are (M30) */
+               struct scratch sc = { 0 };
+
+               move_into(c, usse_reg(USSE_OUTPUT, 4 * k + comp + i), o, &sc);
+               scratch_give_back(c, &sc);
+            }
          }
          return;
       }
@@ -964,11 +979,10 @@ release(struct comp *c, struct operand o, int index)
       for (unsigned i = 0; i < 4; i++)
          if (c->have_colour[i] && !c->colour[i].is_const && c->colour[i].id == o.id)
             return;
-   /* and a vertex's until vertex_output() has */
-   for (unsigned k = 0; c->vs && k <= c->nvaryings; k++)
-      for (unsigned i = 0; i < 4; i++)
-         if (c->have_vout[k][i] && !c->vout[k][i].is_const && c->vout[k][i].id == o.id)
-            return;
+   /* and the position's until vertex_output() has */
+   for (unsigned i = 0; c->vs && i < 4; i++)
+      if (c->have_vout[0][i] && !c->vout[0][i].is_const && c->vout[0][i].id == o.id)
+         return;
    if (!o.is_const && c->last_use[o.id] == index && c->owned[o.id]) {
       give_back(c, c->loc[o.id].num - (c->vs ? c->pa_base : 0));
       c->owned[o.id] = false;
@@ -1188,7 +1202,8 @@ lower_blend(nir_shader *s, const struct sgx_blend_key *k)
 
 /* A vertex's outputs into o0.. -- the position, then the varyings, four
  * words each, as the TA state's vertex size says -- and out to the tiler.
- * What the shader does not write is 0, w 1. */
+ * What the shader does not write is 0, w 1; the varyings it does are there
+ * already. */
 #define USSE_EMIT_VERTEX_END 0xfb275000a0200000ull
 #define USSE_PHAS_BRANCHES   0xfa44270000000000ull
 
@@ -1205,6 +1220,8 @@ vertex_output(struct comp *c)
       for (unsigned i = 0; i < 4; i++) {
          struct operand o = c->vout[k][i];
 
+         if (k && c->have_vout[k][i])
+            continue;
          if (!c->have_vout[k][i]) {
             o.is_const = true;
             o.c = i == 3 ? 1.0f : 0.0f;
@@ -1488,6 +1505,82 @@ vs_prologue(struct comp *c)
    }
 }
 
+struct latest {
+   nir_block *block;
+   nir_instr *instr;
+};
+
+static bool
+note_latest(nir_src *src, void *data)
+{
+   struct latest *l = data;
+   nir_instr *d = nir_def_instr(src->ssa);
+
+   if (d->block == l->block && (!l->instr || d->index > l->instr->index))
+      l->instr = d;
+   return true;
+}
+
+/* instr up to just after the last of what it reads in its block (or of
+ * after, when that is later) -- the block's start when it reads nothing of
+ * the block's */
+static void
+hoist(nir_function_impl *impl, nir_instr *instr, nir_instr *after)
+{
+   struct latest l = { instr->block, after };
+   nir_block *b = instr->block;
+
+   nir_foreach_src(instr, note_latest, &l);
+   nir_instr_remove(instr);
+   if (l.instr)
+      nir_instr_insert_after(l.instr, instr);
+   else
+      nir_instr_insert(nir_before_block_after_phis(b), instr);
+   nir_index_instrs(impl);
+}
+
+/* A vertex shader's outputs stored as soon as their values are there: the
+ * GLSL compiler stores them all at the end, and every value for them was
+ * alive until then -- eight vec4 varyings took more temporaries than there
+ * are (glvary, M30).  A store stays after the ones before it to the same
+ * output. */
+static void
+store_outputs_early(nir_shader *s)
+{
+   nir_function_impl *impl = nir_shader_get_entrypoint(s);
+
+   nir_foreach_block(b, impl)
+      nir_foreach_instr(instr, b)
+         if (instr->type == nir_instr_type_intrinsic &&
+             nir_instr_as_intrinsic(instr)->intrinsic == nir_intrinsic_load_output)
+            return;     /* (an output read back: left as it is) */
+   nir_index_instrs(impl);
+   nir_foreach_block(b, impl) {
+      nir_foreach_instr_safe(instr, b) {
+         nir_intrinsic_instr *in;
+         nir_instr *vec, *after = NULL;
+
+         if (instr->type != nir_instr_type_intrinsic)
+            continue;
+         in = nir_instr_as_intrinsic(instr);
+         if (in->intrinsic != nir_intrinsic_store_output)
+            continue;
+         for (nir_instr *p = nir_instr_prev(instr); p && !after; p = nir_instr_prev(p))
+            if (p->type == nir_instr_type_intrinsic &&
+                nir_instr_as_intrinsic(p)->intrinsic == nir_intrinsic_store_output &&
+                nir_intrinsic_base(nir_instr_as_intrinsic(p)) == nir_intrinsic_base(in))
+               after = p;
+         /* (the vec4 the value is made into first, when it is the store's
+          * alone) */
+         vec = nir_def_instr(in->src[0].ssa);
+         if (vec->block == b && vec->type == nir_instr_type_alu &&
+             nir_op_is_vec(nir_instr_as_alu(vec)->op) && list_is_singular(&in->src[0].ssa->uses))
+            hoist(impl, vec, NULL);
+         hoist(impl, instr, after);
+      }
+   }
+}
+
 static bool
 translate(struct comp *c, nir_shader *s)
 {
@@ -1506,6 +1599,8 @@ translate(struct comp *c, nir_shader *s)
    NIR_PASS(_, s, nir_opt_copy_prop);
    NIR_PASS(_, s, nir_opt_cse);
    NIR_PASS(_, s, nir_opt_dce);
+   if (c->vs)
+      store_outputs_early(s);
 
    impl = nir_shader_get_entrypoint(s);
    /* control flow left: the phis' webs registers */

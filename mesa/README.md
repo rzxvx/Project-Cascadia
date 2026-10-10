@@ -74,6 +74,9 @@ sgx-gl glvtx                     # the vertex path: layouts, formats, buffers, i
 sgx-gl glspeed 400 40 flush      # draws a second, a glFlush a frame: renders queued (M27)
 sgx-gl glmip                     # mipmaps, mip filters, cube maps (M28)
 SGX_TEX_PROBE=1 sgx-gl glmip --probe 16 32   # where the sampler reads a cube map's levels
+sgx-gl glvary                    # 1 to 8 vec4 varyings, each read back; a mat3 varying (M30)
+SGX_FETCH_TAG=9 sgx-gl glvary    # the vertices a vertex task takes, less one (M30: 9 is
+                                 # what overlapped the outputs of three varyings and more)
 SGX_REPACK=1 sgx-gl glvtx        # every draw's vertices made one stream by the CPU
 SGX_DEBUG_DRAW=1 sgx-gl glvtx    # each vertex shader draw: fetched or made, its addresses
 SGX_CPU_VS=1 sgx-gl glcull       # the same with the vertex shaders on the CPU
