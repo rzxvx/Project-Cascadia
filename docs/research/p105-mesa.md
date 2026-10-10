@@ -2073,6 +2073,20 @@ gain the cube maps' cases; nothing else changes. All of dEQP-GLES2:
 - cube maps not a power of two with the linear filter, and `size.cube`
   at 15x15 (20): the scaled faces.
 
+## M29: rendering into any level and face
+
+A render's target was a resource's level 0: a draw into a cube map's face
+(`glFramebufferTexture2D` with `GL_TEXTURE_CUBE_MAP_*`) or into another
+level (`OES_fbo_render_mipmap`) was dropped. The frame takes a target
+(`struct sgx_frame_target`: the resource, a level and a layer) now -- the
+end of tile and the background aimed at the level's and layer's pixels,
+the render target data for the level's size -- and the gathered draws end
+when the framebuffer's level or face changes. The pixel back end takes a
+64-byte-aligned address (a level's offset in its texture): `glmip` draws
+into each face of a 16x16 cube map and into levels 1 and 3 of a 32x32
+and samples them back, 17 of 17. dEQP unchanged (its GLES 2 cases render
+into level 0 only).
+
 ## Testing, without and with the device
 
 - **Host, every change:** the kernel driver builds with `W=1` against the

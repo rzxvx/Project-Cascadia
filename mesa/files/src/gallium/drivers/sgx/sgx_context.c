@@ -181,8 +181,10 @@ sgx_clear_gpu(struct sgx_context *ctx, struct pipe_surface *surf,
    struct sgx_fence *done;
    int ret;
 
+   const struct sgx_frame_target t = { rt, 0, 0 };
+
    if (!screen->frame || surf->level || surf->first_layer ||
-       !sgx_frame_can_render(screen->frame, rt))
+       !sgx_frame_can_render(screen->frame, &t))
       return false;
    if (!(done = sgx_fence_create(&screen->dev, false)))
       return false;

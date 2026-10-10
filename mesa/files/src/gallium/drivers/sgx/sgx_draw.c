@@ -861,7 +861,9 @@ sgx_batch_flush_at(struct sgx_context *ctx, const char *file, int line)
       b->handles[b->ntex + i] = b->bos[i]->handle;
    if ((fence = sgx_fence_create(&screen->dev, false))) {
       simple_mtx_lock(&screen->frame_lock);
-      ret = sgx_frame_render(screen->frame, sgx_resource(b->rt), d, b->ndraws, b->handles,
+      const struct sgx_frame_target t = { sgx_resource(b->rt), b->rt_level, b->rt_layer };
+
+      ret = sgx_frame_render(screen->frame, &t, d, b->ndraws, b->handles,
                              b->ntex + b->nbos, b->depth_clear, zls.bo ? &zls : NULL, fence);
       simple_mtx_unlock(&screen->frame_lock);
    }
@@ -976,6 +978,39 @@ clip_to(struct sgx_context *ctx, bool vs, struct sgx_frame_state *st, float ab[4
    st->scale[2] = vs ? ctx->viewport.scale[2] : 0.5f;
    st->viewport = true;
    return true;
+}
+
+/* the framebuffer's colour target as the frame takes it: its level and
+ * face (M29) */
+static bool
+fb_target(struct sgx_context *ctx, struct sgx_frame_target *t)
+{
+   struct pipe_surface *surf = &ctx->fb.cbufs[0];
+
+   if (ctx->fb.nr_cbufs < 1 || !surf->texture)
+      return false;
+   *t = (struct sgx_frame_target){ sgx_resource(surf->texture), surf->level, surf->first_layer };
+   return true;
+}
+
+/* whether the gathered draws go elsewhere than t */
+static bool
+batch_elsewhere(const struct sgx_batch *b, const struct sgx_frame_target *t)
+{
+   return b->ndraws && (b->rt != &t->res->base || b->rt_level != t->level ||
+                        b->rt_layer != t->layer);
+}
+
+/* the gathered render's target and depth buffer, at its first draw */
+static void
+batch_start(struct sgx_context *ctx, const struct sgx_frame_target *t)
+{
+   struct sgx_batch *b = &ctx->batch;
+
+   pipe_resource_reference(&b->rt, &t->res->base);
+   b->rt_level = t->level;
+   b->rt_layer = t->layer;
+   pipe_resource_reference(&b->zs, ctx->fb.zsbuf.texture);
 }
 
 /* the vertices and indices gathered, in bytes (SGX_FRAME_MAX_BYTES) */
@@ -1134,7 +1169,7 @@ merge_vs_draw(struct sgx_context *ctx, struct sgx_vs *vs, const struct sgx_fs *f
 static void
 add_vs_draw(struct sgx_context *ctx, struct sgx_vs *vs, const struct sgx_fs *fs,
             const uint32_t *sa, unsigned nsa, struct pipe_resource **tex,
-            struct sgx_resource *rt, const struct sgx_frame_state *st)
+            const struct sgx_frame_target *t, const struct sgx_frame_state *st)
 {
    struct sgx_screen *screen = sgx_screen(ctx->base.screen);
    struct sgx_batch *b = &ctx->batch;
@@ -1163,12 +1198,10 @@ add_vs_draw(struct sgx_context *ctx, struct sgx_vs *vs, const struct sgx_fs *fs,
        !grow((void **)&b->sa, &b->maxsa, b->nsa + nsa + nvsa, sizeof(uint32_t)) ||
        !grow((void **)&b->idx, &b->maxidx, b->nidx + nidx, sizeof(uint16_t)))
       return;
-   if (!b->ndraws) {
-      pipe_resource_reference(&b->rt, &rt->base);
-      pipe_resource_reference(&b->zs, ctx->fb.zsbuf.texture);
-   }
+   if (!b->ndraws)
+      batch_start(ctx, t);
    /* from now on sampled linear: decided before any draw samples it */
-   rt->gpu_written = true;
+   t->res->gpu_written = true;
    add_handles(ctx, tex, ntex, v->bos, v->nbos);
    note_zs(ctx, st);
 
@@ -1219,6 +1252,7 @@ submit(struct sgx_context *ctx)
    uint32_t face_stencil[2];
    bool two_sided = false;
    struct sgx_frame_state pass[2];
+   struct sgx_frame_target target;
    float ab[4];
    struct sgx_frame_state st = {
       .depth_func = ctx->dsa && ctx->dsa->depth_enabled ? ctx->dsa->depth_func : PIPE_FUNC_ALWAYS,
@@ -1288,19 +1322,19 @@ submit(struct sgx_context *ctx)
       ctx->nverts = 0;
       return;
    }
-   if (!rt || ctx->fb.nr_cbufs < 1 || surf->level || surf->first_layer ||
-       !sgx_frame_can_render(screen->frame, rt)) {
+   if (!fb_target(ctx, &target) || !sgx_frame_can_render(screen->frame, &target)) {
       mesa_logw_once("sgx: draws only go into the B8G8R8A8 targets the template frame "
-                     "can fill (level 0, up to 4096 x 4096); others are dropped");
+                     "can fill (up to 4096 x 4096); others are dropped");
       ctx->nverts = 0;
       return;
    }
-   if (b->ndraws && b->rt != &rt->base)
+   if (batch_elsewhere(b, &target))
       sgx_batch_flush(ctx);
 
    /* SGX_FRAME=packvertex, packpixel: the pack's sides, a render a draw,
     * M13a's colour (debugging only) */
-   if (!vs && (sgx_frame_options() & (SGX_FRAME_PACKVTX | SGX_FRAME_PACKPIX))) {
+   if (!vs && (sgx_frame_options() & (SGX_FRAME_PACKVTX | SGX_FRAME_PACKPIX)) &&
+       !surf->level && !surf->first_layer) {
       sgx_batch_flush(ctx);
       max = sgx_frame_max_vertices(screen->frame, &ctx->layout);
       for (done = 0; done < ctx->nverts; done += max) {
@@ -1399,7 +1433,7 @@ submit(struct sgx_context *ctx)
    }
 
    for (unsigned k = 0; vs && k < npass; k++)
-      add_vs_draw(ctx, vs, fs, sa, nsa, tex, rt, &pass[k]);
+      add_vs_draw(ctx, vs, fs, sa, nsa, tex, &target, &pass[k]);
 
    max = sgx_frame_max_vertices(screen->frame, &ctx->layout);
    for (unsigned k = 0; !vs && k < npass; k++)
@@ -1415,10 +1449,8 @@ submit(struct sgx_context *ctx)
       if (!grow((void **)&b->verts, &b->maxfloats, b->nfloats + n * vf, sizeof(float)) ||
           !grow((void **)&b->sa, &b->maxsa, b->nsa + nsa, sizeof(uint32_t)))
          break;
-      if (!b->ndraws) {
-         pipe_resource_reference(&b->rt, &rt->base);
-         pipe_resource_reference(&b->zs, ctx->fb.zsbuf.texture);
-      }
+      if (!b->ndraws)
+         batch_start(ctx, &target);
       /* from now on sampled linear: decided before any draw samples it */
       rt->gpu_written = true;
       add_handles(ctx, tex, ntex, NULL, 0);
@@ -1471,12 +1503,14 @@ quad(struct sgx_context *ctx, const struct pipe_scissor_state *sc, float d,
       { x0, y0, z, 1 }, { x1, y0, z, 1 }, { x1, y1, z, 1 },
       { x0, y0, z, 1 }, { x1, y1, z, 1 }, { x0, y1, z, 1 },
    };
+   struct sgx_frame_target target;
    struct sgx_batch_draw *bd;
    int ret;
 
-   if (!rt || !ctx->fb.width || !ctx->fb.height)
+   if (!rt || !ctx->fb.width || !ctx->fb.height || !fb_target(ctx, &target) ||
+       !sgx_frame_can_render(screen->frame, &target))
       return false;
-   if (b->ndraws && b->rt != &rt->base) {
+   if (batch_elsewhere(b, &target)) {
       if (!flush)
          return false;
       sgx_batch_flush(ctx);
@@ -1495,10 +1529,8 @@ quad(struct sgx_context *ctx, const struct pipe_scissor_state *sc, float d,
    if (!grow((void **)&b->verts, &b->maxfloats, b->nfloats + 6 * vf, sizeof(float)) ||
        !grow((void **)&b->sa, &b->maxsa, b->nsa + nsa, sizeof(uint32_t)))
       return false;
-   if (!b->ndraws) {
-      pipe_resource_reference(&b->rt, &rt->base);
-      pipe_resource_reference(&b->zs, ctx->fb.zsbuf.texture);
-   }
+   if (!b->ndraws)
+      batch_start(ctx, &target);
    rt->gpu_written = true;
    bd = &b->draw[b->ndraws++];
    memset(bd, 0, sizeof(*bd));

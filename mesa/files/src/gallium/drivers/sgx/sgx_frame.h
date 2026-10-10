@@ -49,10 +49,17 @@ unsigned sgx_frame_options(void);
 struct sgx_frame *sgx_frame_create(struct sgx_device *dev, const char *packdir);
 void sgx_frame_destroy(struct sgx_frame *f);
 
+/* A render's target: a level and a layer (a cube map's face) of a
+ * resource (M29) */
+struct sgx_frame_target {
+   struct sgx_resource *res;
+   unsigned level, layer;
+};
+
 /* Whether a render through the frame can fill this surface: B8G8R8A8 or
  * B8G8R8X8, up to 4096 x 4096 (M10: the render target data for each size
- * are ours, sgx_rt.c), level 0, one layer. */
-bool sgx_frame_can_render(struct sgx_frame *f, struct sgx_resource *rt);
+ * are ours, sgx_rt.c), any level or face of a 2D texture or cube map. */
+bool sgx_frame_can_render(struct sgx_frame *f, const struct sgx_frame_target *t);
 
 /* The whole of rt set to rgba, on the GPU; done is signalled when it is.
  * One render at a time: the caller serialises (sgx_screen.frame_lock). */
@@ -226,13 +233,13 @@ struct sgx_frame_zls {
 };
 uint32_t sgx_frame_zls_size(unsigned w, unsigned h);
 
-/* n draws (at most SGX_FRAME_MAX_DRAWS) in one render into rt, in order,
+/* n draws (at most SGX_FRAME_MAX_DRAWS) in one render into t, in order,
  * over what it holds: the depth test holds across them, from depth_clear
  * -- or from zls, when it loads.  zls NULL: no depth buffer.  What the
  * render reads besides rt and the frame's buffers -- its stream, the
  * draws' state, vertices and indices -- goes in memory of its own (M27):
  * it need not wait for the renders before it. */
-int sgx_frame_render(struct sgx_frame *f, struct sgx_resource *rt,
+int sgx_frame_render(struct sgx_frame *f, const struct sgx_frame_target *t,
                      const struct sgx_frame_draw *draws, unsigned n, const uint32_t *handles,
                      unsigned nhandles, float depth_clear, const struct sgx_frame_zls *zls,
                      struct sgx_fence *done);

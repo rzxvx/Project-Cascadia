@@ -64,6 +64,7 @@ struct sgx_batch_draw {
 
 struct sgx_batch {
    struct pipe_resource *rt;            /* referenced */
+   unsigned rt_level, rt_layer;         /* its level and face (M29) */
    struct sgx_batch_draw draw[SGX_FRAME_MAX_DRAWS];
    struct sgx_frame_draw fdraw[SGX_FRAME_MAX_DRAWS];    /* (sgx_batch_flush's) */
    unsigned ndraws;

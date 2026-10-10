@@ -506,6 +506,128 @@ npot(void)
 	}
 }
 
+/* rendered into (M29): each face of a 16 x 16 cube map cleared to a colour
+ * of its own and a quad drawn over its middle in another, through a
+ * framebuffer; then level 1 of a 32 x 32 texture (OES_fbo_render_mipmap);
+ * each sampled back */
+static void
+render_into(GLuint fbo_main)
+{
+	static const char *vs = "attribute vec2 p; attribute vec3 a; varying vec3 d;\n"
+	                        "void main() { d = a; gl_Position = vec4(p, 0.0, 1.0); }\n";
+	static const char *fsc = "precision mediump float; varying vec3 d; uniform samplerCube c;\n"
+	                         "void main() { gl_FragColor = textureCube(c, d); }\n";
+	static const char *fs2 = "precision mediump float; varying vec3 d; uniform sampler2D s;\n"
+	                         "uniform float bias;\n"
+	                         "void main() { gl_FragColor = texture2D(s, d.xy, bias); }\n";
+	static const char *fsk = "precision mediump float; uniform vec4 k;\n"
+	                         "void main() { gl_FragColor = k; }\n";
+	static const float major[6][3] = { { 1, 0, 0 }, { -1, 0, 0 }, { 0, 1, 0 },
+	                                   { 0, -1, 0 }, { 0, 0, 1 }, { 0, 0, -1 } };
+	static const float sdir[6][3] = { { 0, 0, -1 }, { 0, 0, 1 }, { 1, 0, 0 },
+	                                  { 1, 0, 0 }, { 1, 0, 0 }, { -1, 0, 0 } };
+	static const float tdir[6][3] = { { 0, -1, 0 }, { 0, -1, 0 }, { 0, 0, 1 },
+	                                  { 0, 0, -1 }, { 0, -1, 0 }, { 0, -1, 0 } };
+	static const float none[4][3];
+	GLuint pc = program(vs, fsc), p2 = program(vs, fs2), pk = program(vs, fsk), tex, fbo;
+	char detail[256];
+	int ok = 1, m = 0;
+
+	glGenTextures(1, &tex);
+	glBindTexture(GL_TEXTURE_CUBE_MAP, tex);
+	for (int f = 0; f < 6; f++)
+		glTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + f, 0, GL_RGBA, 16, 16, 0, GL_RGBA,
+		             GL_UNSIGNED_BYTE, NULL);
+	glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+	glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+	glGenFramebuffers(1, &fbo);
+	glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+	glUseProgram(pk);
+	glViewport(0, 0, 16, 16);
+	for (int f = 0; f < 6; f++) {
+		glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+		                       GL_TEXTURE_CUBE_MAP_POSITIVE_X + f, tex, 0);
+		glClearColor((40 * f + 20) / 255.0f, 0, 0, 1);
+		glClear(GL_COLOR_BUFFER_BIT);
+		glUniform4f(glGetUniformLocation(pk, "k"), (40 * f + 20) / 255.0f, 200 / 255.0f, 0, 1);
+		/* the middle 8 x 8 of the face (W x H is the quad()'s scale) */
+		{
+			float x0 = -0.5f, x1 = 0.5f;
+			const float pos[6][2] = { { x0, x0 }, { x1, x0 }, { x1, x1 },
+			                          { x0, x0 }, { x1, x1 }, { x0, x1 } };
+
+			glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, pos);
+			glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 0, none);
+			glDrawArrays(GL_TRIANGLES, 0, 6);
+		}
+	}
+	glBindFramebuffer(GL_FRAMEBUFFER, fbo_main);
+	glViewport(0, 0, W, H);
+	glUseProgram(pc);
+	glClearColor(0, 0, 0, 0);
+	glClear(GL_COLOR_BUFFER_BIT);
+	/* each face: its corner (cleared) and its middle (drawn) */
+	for (int f = 0; f < 6; f++)
+		for (int k = 0; k < 2; k++) {
+			float sc = k ? 0 : -0.9f, tc = k ? 0 : -0.9f, a[4][3];
+
+			for (int j = 0; j < 3; j++)
+				a[0][j] = major[f][j] + sc * sdir[f][j] + tc * tdir[f][j];
+			memcpy(a[1], a[0], sizeof(a[0]));
+			memcpy(a[2], a[0], sizeof(a[0]));
+			memcpy(a[3], a[0], sizeof(a[0]));
+			quad(f * 20 + k * 8, 0, 8, 8, a);
+		}
+	glReadPixels(0, 0, W, H, GL_RGBA, GL_UNSIGNED_BYTE, px);
+	for (int f = 0; f < 6; f++) {
+		const uint8_t *corner = at(f * 20 + 4, 4), *mid = at(f * 20 + 12, 4);
+
+		ok &= corner[0] / 40 == f && corner[1] < 20 && mid[0] / 40 == f && mid[1] > 180;
+		m += snprintf(detail + m, sizeof(detail) - m, " %d,%d:%d,%d", corner[0] / 40,
+		              corner[1] > 100, mid[0] / 40, mid[1] > 100);
+	}
+	check("each face rendered into (face,drawn: corner, middle)", ok, detail);
+	glDeleteTextures(1, &tex);
+
+	/* level 1 of a 32 x 32, if a level other than 0 may be a target */
+	if (strstr((const char *)glGetString(GL_EXTENSIONS), "GL_OES_fbo_render_mipmap")) {
+		static const float uv[4][3] = { { 0, 0 }, { 1, 0 }, { 1, 1 }, { 0, 1 } };
+		const uint8_t *q;
+
+		glGenTextures(1, &tex);
+		glBindTexture(GL_TEXTURE_2D, tex);
+		for (int l = 0; l < 6; l++)
+			glTexImage2D(GL_TEXTURE_2D, l, GL_RGBA, 32 >> l, 32 >> l, 0, GL_RGBA,
+			             GL_UNSIGNED_BYTE, NULL);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST_MIPMAP_NEAREST);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+		glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+		for (int l = 0; l < 6; l++) {
+			glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex, l);
+			glViewport(0, 0, 32 >> l, 32 >> l);
+			glClearColor(level_colour[l][0] / 255.0f, level_colour[l][1] / 255.0f,
+			             level_colour[l][2] / 255.0f, 1);
+			glClear(GL_COLOR_BUFFER_BIT);
+		}
+		glBindFramebuffer(GL_FRAMEBUFFER, fbo_main);
+		glViewport(0, 0, W, H);
+		glUseProgram(p2);
+		glUniform1f(glGetUniformLocation(p2, "bias"), 0.0f);
+		glClearColor(0, 0, 0, 0);
+		glClear(GL_COLOR_BUFFER_BIT);
+		quad(0, 0, 16, 16, uv);      /* level 1 */
+		quad(20, 0, 4, 4, uv);       /* level 3 */
+		glReadPixels(0, 0, W, H, GL_RGBA, GL_UNSIGNED_BYTE, px);
+		q = at(8, 8);
+		snprintf(detail, sizeof(detail), "levels %d and %d", which_level(q),
+		         which_level(at(22, 2)));
+		check("levels rendered into (1 and 3)", which_level(q) == 1 &&
+		      which_level(at(22, 2)) == 3, detail);
+		glDeleteTextures(1, &tex);
+	}
+	glDeleteFramebuffers(1, &fbo);
+}
+
 /* --probe: with SGX_TEX_PROBE=1 (the driver's copy holding each texel's
  * index), where the sampler reads each face's levels of an n x n cube map
  * with every level: the least index a quad over the face at that level
@@ -608,6 +730,7 @@ int main(int argc, char **argv)
 	cube();
 	cube_levels();
 	npot();
+	render_into(fbo);
 
 	printf("%d of %d cases right\n", cases - failed, cases);
 	eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);

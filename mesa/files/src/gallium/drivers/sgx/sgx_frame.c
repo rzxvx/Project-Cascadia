@@ -1155,19 +1155,34 @@ sgx_frame_destroy(struct sgx_frame *f)
    FREE(f);
 }
 
-bool
-sgx_frame_can_render(struct sgx_frame *f, struct sgx_resource *rt)
+/* where a target's pixels are: its level's and layer's */
+static struct sgx_eot
+target_eot(const struct sgx_frame_target *t)
 {
-   struct pipe_resource *p = &rt->base;
-   bool pack_size = f && p->width0 == f->w && p->height0 == f->h;
+   const struct sgx_resource *r = t->res;
 
-   return f && (p->format == PIPE_FORMAT_B8G8R8A8_UNORM ||
-                p->format == PIPE_FORMAT_B8G8R8X8_UNORM) &&
-          p->target == PIPE_TEXTURE_2D && p->width0 <= SGX_RT_MAX_SIZE &&
-          p->height0 <= SGX_RT_MAX_SIZE &&
-          (pack_size || (f->term && !(f->opts & SGX_FRAME_PACKRT))) &&
-          p->array_size == 1 && p->nr_samples <= 1 && rt->offset[0] == 0 &&
-          !(rt->stride[0] & 15);
+   return (struct sgx_eot){
+      .va = r->bo->va + r->offset[t->level] + t->layer * r->layer_size[t->level],
+      .w = u_minify(r->base.width0, t->level), .h = u_minify(r->base.height0, t->level),
+      .stride = r->stride[t->level],
+   };
+}
+
+bool
+sgx_frame_can_render(struct sgx_frame *f, const struct sgx_frame_target *t)
+{
+   const struct pipe_resource *p = &t->res->base;
+   struct sgx_eot to;
+
+   if (!f || !t->res->bo || t->level > p->last_level || t->layer >= p->array_size ||
+       (p->target != PIPE_TEXTURE_2D && p->target != PIPE_TEXTURE_CUBE) ||
+       (p->format != PIPE_FORMAT_B8G8R8A8_UNORM && p->format != PIPE_FORMAT_B8G8R8X8_UNORM) ||
+       p->nr_samples > 1)
+      return false;
+   to = target_eot(t);
+   return to.w <= SGX_RT_MAX_SIZE && to.h <= SGX_RT_MAX_SIZE &&
+          ((to.w == f->w && to.h == f->h) || (f->term && !(f->opts & SGX_FRAME_PACKRT))) &&
+          !(to.va & 63) && !(to.stride & 15);
 }
 
 /* The render target data for a w x h target: made the first time a render
@@ -1297,10 +1312,11 @@ zls_ctl(const struct sgx_frame_zls *zls)
  * buffers -- the frame's, the target, the render target data, what the
  * draws read besides */
 static int
-kick(struct sgx_frame *f, struct sgx_resource *rt, float depth, const struct sgx_frame_zls *zls,
-     const uint32_t *handles, unsigned nhandles, uint32_t vdm, const struct own *o,
-     struct sgx_fence *done)
+kick(struct sgx_frame *f, const struct sgx_frame_target *t, float depth,
+     const struct sgx_frame_zls *zls, const uint32_t *handles, unsigned nhandles, uint32_t vdm,
+     const struct own *o, struct sgx_fence *done)
 {
+   struct sgx_eot to = target_eot(t);
    uint32_t hs[MAX_PACK_BOS + 3 + 2 + 1 + SGX_FRAME_MAX_HANDLES + ARENA_MAX];
    uint32_t cmd[APPLE_SGX_TA_CMD_MAX / 4];
    const uint32_t *pack = f->built ? f->cmd_tmpl :
@@ -1317,7 +1333,7 @@ kick(struct sgx_frame *f, struct sgx_resource *rt, float depth, const struct sgx
       return -EINVAL;
    memcpy(cmd, pack, pack[0]);
    memcpy(hs, f->handles, n * sizeof(uint32_t));
-   hs[n++] = rt->bo->handle;
+   hs[n++] = t->res->bo->handle;
    if (f->opts & SGX_FRAME_PACKRT) {
       if (!cpu_at(f, f->kick[1], 0xa8, &det_bo))
          return -EFAULT;
@@ -1327,7 +1343,7 @@ kick(struct sgx_frame *f, struct sgx_resource *rt, float depth, const struct sgx
    } else {
       uint32_t blk_va;
 
-      if (!(s = rt_set(f, rt->base.width0, rt->base.height0)))
+      if (!(s = rt_set(f, to.w, to.h)))
          return -ENOMEM;
       blk_va = s->blk_va;
       blk = s->bo->map + (s->blk_va - s->bo->va);
@@ -1789,12 +1805,10 @@ own_copies(const struct sgx_frame *f)
  * frame's words once the last render is done (the frame's buffers are its
  * until then). */
 static int
-begin_render(struct sgx_frame *f, struct sgx_resource *rt, struct sgx_eot *out_to,
+begin_render(struct sgx_frame *f, const struct sgx_frame_target *t, struct sgx_eot *out_to,
              uint32_t *out_eot, uint32_t bg[4], struct own *o)
 {
-   struct sgx_eot to = {
-      .va = rt->bo->va, .w = rt->base.width0, .h = rt->base.height0, .stride = rt->stride[0],
-   };
+   struct sgx_eot to = target_eot(t);
    uint32_t eot, d0, tiles = term_tiles(to.w, to.h);
    uint64_t timeouts;
 
@@ -1870,6 +1884,7 @@ render(struct sgx_frame *f, struct sgx_resource *rt, const struct sgx_frame_layo
        const uint32_t *sa, const uint32_t *handles, unsigned nhandles,
        const struct sgx_frame_state *st, struct sgx_fence *done)
 {
+   const struct sgx_frame_target t = { rt, 0, 0 };
    uint32_t vdm[32] = { 0 }, full[32], prog[16], fetch[32], bg[4], *v = vdm;
    uint32_t frame = f->ext + EXT_FRAME, vb = f->ext + EXT_VB, d0, p0, fb, eot, fetch_word;
    unsigned stride = l ? sgx_frame_vertex_floats(l) * sizeof(float) :
@@ -1882,12 +1897,12 @@ render(struct sgx_frame *f, struct sgx_resource *rt, const struct sgx_frame_layo
    unsigned i;
    int ret;
 
-   if (!sgx_frame_can_render(f, rt) || f->tsize[T_FULL] > STATE_WORDS * 4 ||
+   if (!sgx_frame_can_render(f, &t) || f->tsize[T_FULL] > STATE_WORDS * 4 ||
        f->tsize[T_FULLPROG] > (int)sizeof(prog) || f->tsize[T_FETCH] > (int)sizeof(fetch) ||
        !nverts || nverts % 3 || nverts > max_vertices(f, stride))
       return -EINVAL;
 
-   if ((ret = begin_render(f, rt, &to, &eot, bg, NULL)))
+   if ((ret = begin_render(f, &t, &to, &eot, bg, NULL)))
       return ret;
 
    /* draw 0: the whole state, the white texture with the replace program */
@@ -2008,7 +2023,7 @@ render(struct sgx_frame *f, struct sgx_resource *rt, const struct sgx_frame_layo
          mesa_logi("sgx:   VDM +%02x: %08x %08x %08x %08x %08x", i * 4, vdm[i], vdm[i + 1],
                    vdm[i + 2], vdm[i + 3], vdm[i + 4]);
    }
-   return kick(f, rt, 1.0f, NULL, handles, nhandles, 0, NULL, done);
+   return kick(f, &t, 1.0f, NULL, handles, nhandles, 0, NULL, done);
 }
 
 int
@@ -2152,7 +2167,7 @@ same_state(const struct sgx_frame_draw *a, const struct sgx_frame_draw *b)
 }
 
 int
-sgx_frame_render(struct sgx_frame *f, struct sgx_resource *rt,
+sgx_frame_render(struct sgx_frame *f, const struct sgx_frame_target *t,
                  const struct sgx_frame_draw *draws, unsigned n, const uint32_t *handles,
                  unsigned nhandles, float depth_clear, const struct sgx_frame_zls *zls,
                  struct sgx_fence *done)
@@ -2163,7 +2178,7 @@ sgx_frame_render(struct sgx_frame *f, struct sgx_resource *rt,
    struct sgx_eot to;
    int ret;
 
-   if (!sgx_frame_can_render(f, rt) || !n || n > f->max_draws ||
+   if (!sgx_frame_can_render(f, t) || !n || n > f->max_draws ||
        f->tsize[T_FULL] > STATE_WORDS * 4 || f->tsize[T_FULLPROG] > (int)sizeof(prog) ||
        nhandles > SGX_FRAME_MAX_HANDLES)
       return -EINVAL;
@@ -2172,7 +2187,7 @@ sgx_frame_render(struct sgx_frame *f, struct sgx_resource *rt,
       sgx_trace_mark("render queue full: wait");
       sgx_fence_wait(f->queued[f->nqueued % MAX_QUEUED], OS_TIMEOUT_INFINITE);
    }
-   if ((ret = begin_render(f, rt, &to, &eot, bg, o)))
+   if ((ret = begin_render(f, t, &to, &eot, bg, o)))
       goto out;
 
    ret = -ENOMEM;
@@ -2281,7 +2296,7 @@ sgx_frame_render(struct sgx_frame *f, struct sgx_resource *rt,
       mesa_logi("sgx: a render of %u draws, %u vertices, into %ux%u at 0x%08x (end of tile "
                 "0x%08x), its own memory %u chunks%s", n, total, to.w, to.h, to.va, eot,
                 f->arena.n, o ? "" : " (the frame's words: after the last render)");
-   ret = kick(f, rt, depth_clear, zls, handles, nhandles, vdm, o, done);
+   ret = kick(f, t, depth_clear, zls, handles, nhandles, vdm, o, done);
    if (!ret) {
       sgx_fence_reference(&f->queued[f->nqueued++ % MAX_QUEUED], done);
       for (unsigned i = 0; i < f->arena.n; i++)
