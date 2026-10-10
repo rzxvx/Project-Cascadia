@@ -31,10 +31,12 @@ static const struct nir_shader_compiler_options sgx_nir_options = {
    .lower_fmod = true,
    .lower_fpow = true,
    .lower_fsat = false,
-   /* the fragment compiler has ffract and builds the rest on it (M13c) */
+   /* the fragment compiler has ffract and builds the rest on it (M13c);
+    * ftrunc (int()) is sgx_compiler.c's lower_ftrunc's, after
+    * nir_lower_int_to_float has made its own (M31) */
    .lower_ffloor = true,
    .lower_fceil = true,
-   .lower_ftrunc = true,
+   .lower_ftrunc = false,
    .lower_fround_even = true,
    .lower_fsign = true,
    .lower_sincos = true,

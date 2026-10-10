@@ -2153,6 +2153,54 @@ ones time out -- the run's 16 timeouts are those, 6 of `random` and
 `discard.function_static_loop_always`), a temporary array of constants read
 through an index in a fragment shader (9).
 
+## M31: ints, nested loops, a select on a uniform
+
+Three compiler bugs from what M30 left of dEQP's shaders group, each found
+by putting the failing case's shader into `glvary` and reading the program:
+
+- **`int()` of a whole number that comes a little short.** dEQP's
+  `div.*ivec4_fragment` cases divide `ivec4(v_in0)` by `ivec4(v_in1)`, 24
+  at every vertex by -1 .. -4. The quotients came one nearer 0 everywhere:
+  `ivec4(v_in0)` was 23 -- the varying, 24 at every vertex, comes into a
+  pixel 23.9995 in dEQP's 128 x 112 viewport (2e-5 of itself: the TSP's
+  plane is not exact unless the triangle's size is a power of two -- in
+  128 x 128 it was 24 to the last bit). No bit of the iterate's control
+  word changes it (bit 10 hangs). An int division, too, is
+  `trunc(x * rcp(y))`, and 24 * rcp(-3) is -7.9999995. Ints are floats
+  here (M13c), so `int(x)` -- `ftrunc`, `lower_ftrunc()` -- makes |x| larger
+  by 2^-13 of itself (1/16 at most) first: a whole number a bit short is
+  that number, a value further than that below one stays below it, and a
+  whole number never goes to the next (the 1/16).
+  `lower_ftrunc` is off in NIR's options now: `vec4(ivec4(v))` became an
+  `ftrunc` that NIR lowered itself, before ours saw it.
+- **Nested loops.** The numbering pass recorded a loop's span when it
+  ended, the other passes took the k-th loop by the order loops start: an
+  outer loop got its inner loop's span, and a value made before the outer
+  loop and read in it lived only to the inner loop's end -- `i++` at the
+  outer loop's end took its register (dEQP's `loops.*.nested*_vertex`,
+  which passed by luck before: one instruction more anywhere and they
+  failed). The span is recorded when the loop starts now.
+- **A select on a uniform.** `VMOV`'s conditional move with its test in
+  sa read 0 (`u_t ? 0.2 : 0.6` drew 0, alpha too): `select_iteration_count`
+  loops ran `ub_true ? 3 : 0` times -- 0 in a vertex shader, and in a
+  fragment shader long enough that the render timed out. iOS tests a
+  uniform with `VTST` and predicates (the corpus's `c01`, `c05`); ours
+  moves the test into a temporary first.
+
+`glvary` 39 of 39: whole numbers through a varying as floats and as ints,
+in 128 x 128 and 128 x 112, 24 divided by ints from uniforms and from a
+varying, dEQP's division shader as it is, a select on a uniform bool.
+
+dEQP-GLES2's shaders group **68 -> 21** failing (the 21 int divisions, 18
+`select_iteration_count` loops, `nested_sequence`, `side_effects.affect_*`,
+two nested struct arrays in loops, `linkage.varying_7`, a matrix from
+ivec4s); timeouts 16 -> 7. All of dEQP-GLES2: **16 842 passing, 108
+failing** (16 792 and 158 after M30), nothing worse. Left of the shaders:
+temporary arrays of 40 constants read through an index (8, and a written
+one), 6 of `random`, `scoping.valid.local_variable_hides_function_parameter`
+(GLSL's compiler, 2), `pointcoord`, `discard.dynamic_loop_texture`,
+`texture2dproj_vec4_bias`, a `mat4` written and read through indices.
+
 ## Testing, without and with the device
 
 - **Host, every change:** the kernel driver builds with `W=1` against the

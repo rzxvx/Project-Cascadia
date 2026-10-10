@@ -4,9 +4,10 @@
  * keeps them) and all of them averaged; then dEQP's shaders.matrix
  * "dynamic" cases' shape: a mat3 attribute (three columns from arrays of
  * their own, stride 16) and a float, both varyings -- 10 floats the linker
- * packs into three vec4s -- summed in the fragment shader.  A grid of 4 x 4
- * quads (32 triangles); every pixel read back against the same sums worked
- * out in C.
+ * packs into three vec4s -- summed in the fragment shader; whole numbers
+ * through a varying, as floats and as ints (M31: dEQP's int operators), in
+ * a 128 x 112 viewport too, and ints divided.  A grid of 4 x 4 quads (32
+ * triangles); every pixel read back against the same sums worked out in C.
  *
  *   sgx-gl glvary [--ppm out.ppm]     (--ppm: the last case's pixels)
  */
@@ -26,9 +27,10 @@
 #define V ((N + 1) * (N + 1))
 
 static uint8_t px[W * H * 4];
-static float pos[V][4], col[3][V][4], coords[V][4];
+static float pos[V][4], col[3][V][4], coords[V][4], whole[V][4];
 static uint16_t idx[N * N * 6];
 static int cases, failed;
+static int vp_h = H;     /* the viewport's height: rows above it are left clear */
 
 static GLuint
 program(const char *vs, const char *fs)
@@ -52,6 +54,7 @@ program(const char *vs, const char *fs)
 	glBindAttribLocation(p, 0, "a_position");
 	glBindAttribLocation(p, 1, "a_mat3");      /* 1, 2, 3 */
 	glBindAttribLocation(p, 4, "a_coords");
+	glBindAttribLocation(p, 5, "a_whole");
 	glLinkProgram(p);
 	glUseProgram(p);
 	return p;
@@ -95,7 +98,10 @@ check(const char *name, void (*want)(float sx, float sy, const void *arg, float 
 	for (int i = 0; i < W * H; i++) {
 		int off = 0;
 
-		want((i % W + 0.5f) / W, (i / W + 0.5f) / H, arg, rgba);
+		if (i / W >= vp_h)
+			rgba[0] = rgba[1] = rgba[2] = rgba[3] = 0;
+		else
+			want((i % W + 0.5f) / W, (i / W + 0.5f) / vp_h, arg, rgba);
 		for (int c = 0; c < 4; c++)
 			off |= abs(px[4 * i + c] - to8(rgba[c])) > 3;
 		if (off && at < 0)
@@ -108,7 +114,7 @@ check(const char *name, void (*want)(float sx, float sy, const void *arg, float 
 		return;
 	}
 	failed++;
-	want((at % W + 0.5f) / W, (at / W + 0.5f) / H, arg, rgba);
+	want((at % W + 0.5f) / W, (at / W + 0.5f) / vp_h, arg, rgba);
 	printf("%-36s WRONG: %d pixels, the first at %d, %d: %d %d %d %d, want %d %d %d %d\n", name,
 	       bad, at % W, at / W, px[4 * at], px[4 * at + 1], px[4 * at + 2], px[4 * at + 3],
 	       to8(rgba[0]), to8(rgba[1]), to8(rgba[2]), to8(rgba[3]));
@@ -165,6 +171,51 @@ varyings(int n, int k)
 	else
 		snprintf(name, sizeof(name), "%d varyings, averaged", n);
 	check(name, want_vary, &p);
+}
+
+static void
+want_zero(float sx, float sy, const void *arg, float rgba[4])
+{
+	(void)sx, (void)sy, (void)arg;
+	rgba[0] = rgba[1] = rgba[2] = rgba[3] = 0;
+}
+
+static void
+want_quotients(float sx, float sy, const void *arg, float rgba[4])
+{
+	(void)sx, (void)sy, (void)arg;
+	for (int c = 0; c < 4; c++)
+		rgba[c] = 24 / (c + 1) * 0.04f;
+}
+
+static void
+want_quotients2(float sx, float sy, const void *arg, float rgba[4])
+{
+	(void)arg;
+	for (int c = 0; c < 4; c++)
+		rgba[c] = 24 / -(int)(-4 + 3 * (c & 1 ? sy : sx)) * 0.04f;
+}
+
+static void
+want_quotients3(float sx, float sy, const void *arg, float rgba[4])
+{
+	want_quotients2(sx, sy, arg, rgba);
+	for (int c = 0; c < 4; c++)
+		rgba[c] = 1 - rgba[c];
+}
+
+static void
+want_02(float sx, float sy, const void *arg, float rgba[4])
+{
+	(void)sx, (void)sy, (void)arg;
+	rgba[0] = rgba[1] = rgba[2] = rgba[3] = 0.2f;
+}
+
+static void
+want_06(float sx, float sy, const void *arg, float rgba[4])
+{
+	(void)sx, (void)sy, (void)arg;
+	rgba[0] = rgba[1] = rgba[2] = rgba[3] = 0.6f;
 }
 
 static void
@@ -235,6 +286,10 @@ main(int argc, char **argv)
 				column(c, sx, sy, col[c][v]);
 			coords[v][0] = 0.1f * sx + 0.05f;
 			coords[v][1] = coords[v][2] = coords[v][3] = 7;
+			whole[v][0] = 24;
+			whole[v][1] = -3;
+			whole[v][2] = 7;
+			whole[v][3] = 100;
 		}
 	for (int y = 0; y < N; y++)
 		for (int x = 0; x < N; x++) {
@@ -267,6 +322,70 @@ main(int argc, char **argv)
 	glVertexAttribPointer(4, 4, GL_FLOAT, GL_FALSE, 0, coords);
 	program(vs, fs);
 	check("a mat3 and a float, packed", want_matrix, NULL);
+
+	/* the same at every vertex: the same at every pixel, to the last bit
+	 * here -- and as an int (dEQP's int operators: ivec4(v) of 24 at every
+	 * vertex, 24) */
+	glEnableVertexAttribArray(5);
+	glVertexAttribPointer(5, 4, GL_FLOAT, GL_FALSE, 0, whole);
+	program("attribute vec4 a_position; attribute vec4 a_whole; varying vec4 v_whole;\n"
+	        "void main() { gl_Position = a_position; v_whole = a_whole; }\n",
+	        "precision highp float; varying vec4 v_whole;\n"
+	        "void main() { gl_FragColor = abs(v_whole - vec4(24.0, -3.0, 7.0, 100.0)) * 1e5; }\n");
+	check("whole numbers through a varying", want_zero, NULL);
+	program("attribute vec4 a_position; attribute vec4 a_whole; varying vec4 v_whole;\n"
+	        "void main() { gl_Position = a_position; v_whole = a_whole; }\n",
+	        "precision mediump float; varying vec4 v_whole;\n"
+	        "void main() { gl_FragColor = abs(vec4(ivec4(v_whole)) - vec4(24.0, -3.0, 7.0, 100.0)); }\n");
+	check("whole numbers through a varying, as ints", want_zero, NULL);
+	/* (dEQP's viewport: there 24 comes 23.9995 -- M31) */
+	glViewport(0, 0, W, vp_h = 112);
+	check("the same, 128 x 112", want_zero, NULL);
+	glViewport(0, 0, W, vp_h = H);
+	{
+		GLuint p = program("attribute vec4 a_position; attribute vec4 a_whole; varying vec4 v_whole;\n"
+		                   "void main() { gl_Position = a_position; v_whole = a_whole; }\n",
+		                   "precision mediump float; varying vec4 v_whole; uniform ivec4 u_div;\n"
+		                   "void main() { ivec4 q = ivec4(v_whole.xxxx) / u_div;\n"
+		                   "  gl_FragColor = vec4(q) * -0.04; }\n");
+
+		glUniform4i(glGetUniformLocation(p, "u_div"), -1, -2, -3, -4);
+		check("24 / -1, -2, -3, -4 as ints", want_quotients, NULL);
+		program("attribute vec4 a_position; attribute vec4 a_whole; varying vec4 v_whole;\n"
+		        "varying vec4 v_div;\n"
+		        "void main() { gl_Position = a_position; v_whole = a_whole;\n"
+		        "  v_div = vec4(-4.0) + 3.0 * (a_position.xyxy * 0.5 + 0.5); }\n",
+		        "precision mediump float; varying vec4 v_whole; varying vec4 v_div;\n"
+		        "void main() { ivec4 q = ivec4(v_whole.xxxx) / ivec4(v_div);\n"
+		        "  gl_FragColor = vec4(q) * -0.04; }\n");
+		check("24 / int(-4..-1) as ints", want_quotients2, NULL);
+		program("attribute vec4 a_position; attribute vec4 a_whole; varying mediump vec4 v_in0;\n"
+		        "varying mediump vec4 v_in1;\n"
+		        "void main() { gl_Position = a_position; v_in0 = a_whole.xxxx;\n"
+		        "  v_in1 = (vec4(-4.0) + 3.0 * (a_position.xyxy * 0.5 + 0.5)).wzyx; }\n",
+		        "varying mediump vec4 v_in0;\nvarying mediump vec4 v_in1;\n"
+		        "void main()\n{\n\tmediump ivec4 in0 = ivec4(v_in0.yzwx);\n"
+		        "\tmediump ivec4 in1 = ivec4(v_in1.wzyx);\n\tmediump ivec4 res = ivec4(0.0);\n"
+		        "\tres = in0 / in1;\n\tmediump vec4 color = vec4(0.0, 0.0, 0.0, 1.0);\n"
+		        "\tcolor.xyzw = vec4(res);\n\tcolor = color * 0.04 + 1.00;\n"
+		        "\tgl_FragColor = color;\n}\n");
+		check("dEQP's div.mediump_ivec4_fragment", want_quotients3, NULL);
+		glViewport(0, 0, W, vp_h = 112);
+		check("the same, 128 x 112", want_quotients3, NULL);
+		glViewport(0, 0, W, vp_h = H);
+	}
+
+	/* a select on a uniform bool (dEQP's loops' select_iteration_count) */
+	for (int t = 0; t < 2; t++) {
+		GLuint p = program("attribute vec4 a_position;\n"
+		                   "void main() { gl_Position = a_position; }\n",
+		                   "precision mediump float; uniform bool u_t;\n"
+		                   "void main() { gl_FragColor = vec4(u_t ? 0.2 : 0.6); }\n");
+
+		glUniform1i(glGetUniformLocation(p, "u_t"), t);
+		check(t ? "a uniform bool's select, true" : "a uniform bool's select, false",
+		      t ? want_02 : want_06, NULL);
+	}
 
 	if (ppm) {
 		FILE *f = fopen(ppm, "wb");

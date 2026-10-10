@@ -349,8 +349,10 @@ comparison(struct comp *c, nir_alu_instr *alu, struct scratch *s)
 static void
 select_(struct comp *c, nir_alu_instr *alu, struct scratch *s)
 {
-   /* fcsel: c != 0 ? a : b -- a conditional move: no modifiers, one lane */
-   struct usse_reg rc = get(c, alu_operand(alu, 0), TAKES_SA, s);
+   /* fcsel: c != 0 ? a : b -- a conditional move: no modifiers, one lane;
+    * the test not in sa (VMOV's first source read 0 from there, dEQP's
+    * select_iteration_count loops; iOS tests a uniform with VTST, M31) */
+   struct usse_reg rc = get(c, alu_operand(alu, 0), 0, s);
    struct usse_reg ra = get(c, alu_operand(alu, 1), TAKES_SA, s);
    struct usse_reg rb = get(c, alu_operand(alu, 2), TAKES_SA, s);
    uint64_t w;
@@ -1260,7 +1262,12 @@ fold_uniform_offset(nir_builder *b, nir_intrinsic_instr *in, void *data)
 }
 
 /* ftrunc (int(x), made by nir_lower_int_to_float after the options'
- * lowering ran) as its sign times floor(|x|), floor y as y - fract y */
+ * lowering ran) as its sign times floor(|x|), floor y as y - fract y --
+ * |x| a little larger first, by 2^-13 of itself (1/16 at most): a whole
+ * number that comes a bit short is that number still.  An int division is
+ * trunc(x * rcp(y)), and 24 / -3 came out -7.9999995; a varying that is 24
+ * at every vertex comes 23.9995 into a viewport of 128 x 112 (dEQP's div
+ * cases, glvary; M31) */
 static bool
 lower_ftrunc(nir_builder *b, nir_alu_instr *alu, void *data)
 {
@@ -1271,6 +1278,7 @@ lower_ftrunc(nir_builder *b, nir_alu_instr *alu, void *data)
    b->cursor = nir_before_instr(&alu->instr);
    x = nir_ssa_for_alu_src(b, alu, 0);
    a = nir_fabs(b, x);
+   a = nir_fadd(b, a, nir_fmin(b, nir_fmul_imm(b, a, 1.0 / (1 << 13)), nir_imm_float(b, 0.0625f)));
    f = nir_fadd(b, a, nir_fneg(b, nir_ffract(b, a)));
    nir_def_replace(&alu->def, nir_bcsel(b, nir_flt_imm(b, x, 0.0), nir_fneg(b, f), f));
    return true;
@@ -1437,6 +1445,15 @@ walk(struct comp *c, struct exec_list *list, enum walk_pass pass, int *index,
             fail(c, "a loop with a continue construct");
             return;
          }
+         /* (a loop's span is k-th in the order the loops start, the same
+          * in every pass: an inner loop's after its outer one's -- taken
+          * at the end, the outer loop had the inner one's span, and what
+          * it reads lived to the inner loop's end, M31) */
+         if (pass == WALK_NUMBER) {
+            struct loop_span span = { start, -1 };
+
+            util_dynarray_append(&c->loops, span);
+         }
          if (pass == WALK_USES) {
             if (c->nactive == ARRAY_SIZE(c->active)) {
                fail(c, "loops nested too deep");
@@ -1449,11 +1466,8 @@ walk(struct comp *c, struct exec_list *list, enum walk_pass pass, int *index,
          walk(c, &loop->body, pass, index, &mine, start_code);
          c->depth--;
          end = (*index)++;
-         if (pass == WALK_NUMBER) {
-            struct loop_span span = { start, end };
-
-            util_dynarray_append(&c->loops, span);
-         }
+         if (pass == WALK_NUMBER)
+            util_dynarray_element(&c->loops, struct loop_span, k)->end = end;
          if (pass == WALK_USES)
             c->nactive--;
          if (pass == WALK_CODE) {

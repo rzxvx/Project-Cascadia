@@ -166,9 +166,9 @@ bool
 usse_fmovc(uint64_t *out, enum usse_test test, struct usse_reg dest, struct usse_reg src0,
            struct usse_reg src1, struct usse_reg src2)
 {
+   /* (src0 in sa reads 0, M31) */
    if (lane(src0) != lane(src1) || lane(src1) != lane(src2) ||
-       (src0.bank != USSE_TEMP && src0.bank != USSE_PA && src0.bank != USSE_OUTPUT &&
-        src0.bank != USSE_SA))
+       (src0.bank != USSE_TEMP && src0.bank != USSE_PA && src0.bank != USSE_OUTPUT))
       return false;
    *out = vmov(1, test, dest, src0, src1, src2, lane(src1));
    return true;
