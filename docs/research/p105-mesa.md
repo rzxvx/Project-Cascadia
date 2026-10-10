@@ -2201,6 +2201,59 @@ one), 6 of `random`, `scoping.valid.local_variable_hides_function_parameter`
 (GLSL's compiler, 2), `pointcoord`, `discard.dynamic_loop_texture`,
 `texture2dproj_vec4_bias`, a `mat4` written and read through indices.
 
+## M32: uniforms in memory -- the USSE's loads
+
+A program's uniforms were its secondary attributes and nothing else: 128
+words at most, the textures' state words and the blend colour among them.
+GLES 2 wants 128 vec4s (512 words) for a vertex shader, and GLSL's linker
+makes a constant array uniforms (dEQP's `tmp_array.*const_write*`: 40
+vec4s, read through an index -- "uniforms past word 128", drawn grey).
+
+**VLDST.** The PS Vita's GXM reads its uniform buffers with VLDST (Vita3K's
+`vldst`: `111 oo ppp s n m y c r b a kkkk dd ee t g ff i h j l qq uu` and
+four 7-bit register numbers), and iOS's end-of-tile program has one --
+`eot_program()`'s `usse_dummy_load`, `0xe9a30084a0000000`: on p0, a load
+into pa0 from the address in pa0, then `WDF0`. Found with `glldr --probe` (`SGX_LDR_PROBE=word,...`
+makes the fragment program those words, `WDF0` and r0 into o0 as it is;
+the 4 x 4 texture's state words are in sa0..3, the address in sa2, texel
+i the bytes i, 0x40 + i, 0x80 + i, 0xc0 + i, so a pixel's bytes are the
+word loaded):
+
+- op 1 is a load, src0 the base (sa: extended bank 1), src1 an offset --
+  an immediate counts words; a register is its high half times its low
+  half, bytes (`0x10004`: 4; `0x20004`: 8; `0x1003c`: 60; `0x40001`: 4;
+  `4` alone: 0). src2 is not added to a load.
+- Bits 47:44 are the words less one: four in a row into r0..r3 -- but only
+  with MOE expansion (bit 53) off, and then 4 bytes more are added (as
+  Vita3K says); with it on, more than one word loaded nothing.
+- `WDF0` waits for it, as for a texture sample.
+- The register offset is made as M21's index: 4 x the offset + the base +
+  2^23 as a float, `and` 0xffff, then `or` 4 rotated left by 16 (VBW's
+  src2 rotation, bits 42:38: its immediate is 16 bits).
+
+**The driver.** When a program's uniform words with the rest of its sa do
+not fit in 128, the first ones stay in sa, and all of them go into the
+render's memory too, after the sa words the loader DMAs (`arena_uniforms`):
+the block's address less 4 in an sa word (`ubuf_sa`). A word past sa's is
+read by `VLDST` (`memory_uniform()`): an immediate up to word 127, a
+register (LIMM'd) past it, the index made as above for an array read
+through an index whose end is past sa's. The draws' sa words go on with
+the block's (`prog.nubuf`, `vs->nubuf`), so gathered draws compare them as
+before. The vertex shader's constant buffer is 137 vec4s: the state
+tracker keeps 9 of them for clip planes and the point size, and with 128
+GL_MAX_VERTEX_UNIFORM_VECTORS was 119 (dEQP's `implementation_limits`).
+
+`tools/sgx/gl/glldr.c`: a fragment shader's 40 vec4s through a uniform
+index (elements 0, 13, 26, 39) and through one from a varying (each column
+of pixels its own element), straight in sa and past it; 40 constants
+through an index; a vertex shader's 120 vec4s through an index and
+straight (element 113); an element changed between two draws of a render
+and over three renders (the block is the render's own memory; nothing
+stale came back) -- 15 of 15. dEQP-GLES2: the 8 `tmp_array.*const_write*`
+cases still failing pass, and `max_vertex_uniform_vectors` (both),
+`uniform_api.random.74`: **16 852 passing, 98 failing** (16 842 and 108
+after M31), nothing worse.
+
 ## Testing, without and with the device
 
 - **Host, every change:** the kernel driver builds with `W=1` against the

@@ -1942,6 +1942,9 @@ render(struct sgx_frame *f, struct sgx_resource *rt, const struct sgx_frame_layo
       /* our pixel program: its PDS (word 6), how many registers a pixel
        * takes (word 5) and its secondary attributes in sa0.. (word 4: a
        * DMA, then the empty program) */
+      /* (uniforms in memory only through draw_state(), M32) */
+      if (pix->nubuf)
+         return -EINVAL;
       if ((ret = upload(f, pix)))
          return ret;
       full[6] = pix->pds_rows << 27 | (pix->pds_va >> 4 & 0x07ffffff);
@@ -2086,19 +2089,24 @@ state_xor(uint32_t *full)
       full[i] ^= mask[i];
 }
 
-/* n words of secondary attributes into the render's memory, and their
- * loader after them: the loader's address (*rows its data rows), 0 if
- * there is no room */
+/* n words of secondary attributes into the render's memory, the nmem
+ * words of uniforms in memory after them (M32; sa word slot their address
+ * less 4: VLDST adds 4), and their loader after that: the loader's address
+ * (*rows its data rows), 0 if there is no room */
 static uint32_t
-arena_uniforms(struct sgx_frame *f, const uint32_t *words, unsigned n, unsigned *rows)
+arena_uniforms(struct sgx_frame *f, const uint32_t *words, unsigned n, unsigned nmem,
+               unsigned slot, unsigned *rows)
 {
-   uint32_t loader[UNIFORM_LOADER_MAX], va, at = UNIFORM_LOADER_AT(n);
-   uint8_t *p = n <= 128 ? arena_alloc(f, at + sizeof(loader), 16, &va) : NULL;
+   uint32_t loader[UNIFORM_LOADER_MAX], va, at = UNIFORM_LOADER_AT(n + nmem);
+   uint8_t *p = n <= 128 && nmem <= SGX_UBUF_MAX && (!nmem || slot < n) ?
+                arena_alloc(f, at + sizeof(loader), 16, &va) : NULL;
 
    if (!p)
       return 0;
    *rows = uniform_loader(f, va, n, loader);
-   memcpy(p, words, n * 4);
+   memcpy(p, words, (n + nmem) * 4);
+   if (nmem)
+      ((uint32_t *)p)[slot] = va + 4 * n - 4;
    memcpy(p + at, loader, sizeof(loader));
    return va + at;
 }
@@ -2138,7 +2146,7 @@ draw_state(struct sgx_frame *f, const struct sgx_frame_draw *d, const struct sgx
       full[5] = pixel_word5(pix);
       if (pix->nsa) {
          unsigned rows;
-         uint32_t loader = arena_uniforms(f, d->sa, pix->nsa, &rows);
+         uint32_t loader = arena_uniforms(f, d->sa, pix->nsa, pix->nubuf, pix->ubuf_sa, &rows);
 
          if (!loader)
             return -ENOMEM;
@@ -2255,8 +2263,10 @@ sgx_frame_render(struct sgx_frame *f, const struct sgx_frame_target *t,
       if (d->vs && d->vs->nuniforms) {
          /* (the last draw's again when the same) */
          if (!k || !draws[k - 1].vs || draws[k - 1].vs->nuniforms != d->vs->nuniforms ||
-             !sgx_words_equal(draws[k - 1].vs_sa, d->vs_sa, d->vs->nuniforms)) {
-            if (!(ub_at = arena_uniforms(f, d->vs_sa, d->vs->nuniforms, &ub_rows)))
+             draws[k - 1].vs->nubuf != d->vs->nubuf ||
+             !sgx_words_equal(draws[k - 1].vs_sa, d->vs_sa, d->vs->nuniforms + d->vs->nubuf)) {
+            if (!(ub_at = arena_uniforms(f, d->vs_sa, d->vs->nuniforms, d->vs->nubuf,
+                                         d->vs->ubuf_sa, &ub_rows)))
                goto out;
          }
          /* (the data rows in 31:27, as the state's PDS pointers have them) */

@@ -80,6 +80,11 @@ struct comp {
    unsigned top;                        /* temporaries used: highest + 1 */
    int input_of_slot[VARYING_SLOT_MAX];
    unsigned ninputs, nuniforms;
+   /* the uniform words the shader reads (M32): in sa when they fit with
+    * the rest -- otherwise words 0..sa_uniforms in sa, and all of them in
+    * memory, read by VLDST from the address (less 4) in sa word ubuf_sa */
+   unsigned uwords, sa_uniforms, ubuf_sa;
+   bool ubuf;
    int slot_of_unit[MAX_UNITS];         /* a texture unit's state words, by slot */
    unsigned nsamplers, sampler_sa;
    int blend_sa;                        /* the blend colour's words, -1 none */
@@ -537,16 +542,12 @@ scan(struct comp *c, nir_function_impl *impl)
 
             if (in->intrinsic == nir_intrinsic_load_uniform &&
                 !nir_src_is_const(in->src[0])) {
-               /* an array read through an index: all of it in sa (M21) */
+               /* an array read through an index: all of it (M21) */
                at = (nir_intrinsic_base(in) + nir_intrinsic_range(in)) * 4;
-               if (at > 128) {
-                  fail(c, "uniforms past word 128");
-                  return;
-               }
-               c->nuniforms = MAX2(c->nuniforms, at);
+               c->uwords = MAX2(c->uwords, at);
             } else if ((in->intrinsic == nir_intrinsic_load_uniform ||
                         in->intrinsic == nir_intrinsic_load_ubo) && uniform_word(c, in, &at)) {
-               c->nuniforms = MAX2(c->nuniforms, at + in->def.num_components);
+               c->uwords = MAX2(c->uwords, at + in->def.num_components);
             }
             if (in->intrinsic == nir_intrinsic_terminate ||
                 in->intrinsic == nir_intrinsic_terminate_if ||
@@ -578,6 +579,27 @@ scan(struct comp *c, nir_function_impl *impl)
                c->slot_of_unit[tex->texture_index] = c->nsamplers++;
             }
          }
+      }
+   }
+   /* sa: the uniforms, then a fragment shader's textures' state words (four
+    * each, from a multiple of four) and the blend colour, a vertex shader's
+    * constant attributes and its clip words -- 128 words at most.  Past that
+    * the uniforms are in memory too (M32): the first ones still in sa, the
+    * block's address after them */
+   {
+      unsigned nconst = 0, extra;
+
+      for (unsigned a = 0; c->vs && a < c->nattrs; a++)
+         nconst += SGX_ATTR_KIND(c->attr[a]) == SGX_ATTR_CONST;
+      extra = c->vs ? 4 * nconst + 4 :
+                      (c->nsamplers ? 3 + 4 * c->nsamplers : 0) + (c->blend_sa >= 0 ? 4 : 0);
+      c->ubuf = c->uwords + extra > 128;
+      if (c->ubuf) {
+         c->sa_uniforms = MIN2(c->uwords, (128 - extra - 4) & ~3u);
+         c->ubuf_sa = c->sa_uniforms;
+         c->nuniforms = c->ubuf_sa + 1;
+      } else {
+         c->sa_uniforms = c->nuniforms = c->uwords;
       }
    }
    c->sampler_sa = align(c->nuniforms, 4);
@@ -619,10 +641,6 @@ uniform_word(struct comp *c, nir_intrinsic_instr *in, unsigned *at)
       }
       *at = nir_src_as_uint(in->src[1]) / 4;
    }
-   if (*at + in->def.num_components > 128) {
-      fail(c, "uniforms past word 128");
-      return false;
-   }
    return true;
 }
 
@@ -653,6 +671,43 @@ indirect_uniform(struct comp *c, nir_intrinsic_instr *in)
       emit(c, usse_vbw_or(treg(c, r), usse_reg(USSE_IDX1, 3 << 5 | i), 0));
    }
    scratch_give_back(c, &s);
+}
+
+/* Uniform words from memory (M32): VLDST of the value's words from word
+ * at of the block -- through an index, at + 4 x the offset: made an integer
+ * as indirect_uniform() makes it, with 4 in the high half (4 bytes a word)
+ * -- into temporaries in a row, then WDF0 */
+static void
+memory_uniform(struct comp *c, nir_intrinsic_instr *in, unsigned at, bool indexed)
+{
+   unsigned id = in->def.index * 4, n = in->def.num_components, r = block(c, n, 1);
+   struct scratch s = { 0 };
+
+   if (indexed) {
+      struct operand off = resolve(nir_get_scalar(in->src[0].ssa, 0));
+      struct usse_reg t = treg(c, scratch_take(c, &s));
+
+      emit(c, usse_fmad(t, get(c, off, TAKES_ABS | TAKES_LANE_Y, &s), constant(c, &s, 4.0f),
+                        constant(c, &s, 8388608.0f + at)));
+      emit(c, usse_vbw_and(t, t, 0xffff));
+      emit(c, usse_vbw_or_rot(t, t, 4, 16));
+      emit(c, usse_ldr_reg(treg(c, r), c->ubuf_sa, t, n));
+   } else if (at < 128) {
+      emit(c, usse_ldr_imm(treg(c, r), c->ubuf_sa, at, n));
+   } else {
+      struct usse_reg t = treg(c, scratch_take(c, &s));
+
+      emit(c, usse_limm(t, 4u << 16 | at));
+      emit(c, usse_ldr_reg(treg(c, r), c->ubuf_sa, t, n));
+   }
+   emit(c, USSE_WDF0);
+   scratch_give_back(c, &s);
+   for (unsigned i = 0; i < n; i++) {
+      c->loc[id + i] = treg(c, r + i);
+      c->owned[id + i] = c->last_use[id + i] >= 0;
+      if (!c->owned[id + i])
+         give_back(c, r + i);
+   }
 }
 
 static void
@@ -722,16 +777,23 @@ intrinsic(struct comp *c, nir_intrinsic_instr *in)
    }
    case nir_intrinsic_load_uniform:
       if (!nir_src_is_const(in->src[0])) {
-         indirect_uniform(c, in);
+         /* (in sa when all of the array is) */
+         if (c->ubuf && (nir_intrinsic_base(in) + nir_intrinsic_range(in)) * 4 > c->sa_uniforms)
+            memory_uniform(c, in, nir_intrinsic_base(in) * 4, true);
+         else
+            indirect_uniform(c, in);
          return;
       }
       FALLTHROUGH;
    case nir_intrinsic_load_ubo:
       if (!uniform_word(c, in, &at))
          return;
+      if (at + in->def.num_components > c->sa_uniforms) {
+         memory_uniform(c, in, at, false);
+         return;
+      }
       for (unsigned i = 0; i < in->def.num_components; i++)
          c->loc[id + i] = usse_reg(USSE_SA, at + i);
-      c->nuniforms = MAX2(c->nuniforms, at + in->def.num_components);
       return;
    case nir_intrinsic_decl_reg:
       /* a phi web's register (M20): a temporary a component, the whole
@@ -1759,12 +1821,36 @@ sgx_compile_fs(const nir_shader *fs, const struct sgx_blend_key *blend, char *wh
       for (unsigned i = 0; i < out_at; i++)
          c.fs->prog.code[i] &= ~(1ull << 55);
    c.fs->prog.ntemps = c.top;
+   /* SGX_LDR_PROBE=word,...: the program those words, WDF0, then r0 into
+    * o0 as it is (finding VLDST, M32) */
+   if (getenv("SGX_LDR_PROBE")) {
+      const char *e = getenv("SGX_LDR_PROBE");
+      unsigned n = 0;
+
+      c.fs->prog.code = REALLOC(c.fs->prog.code, 0, 32 * sizeof(uint64_t));
+      c.fs->prog.code[n++] = USSE_PHAS;
+      while (*e && n < 28) {
+         char *end;
+
+         c.fs->prog.code[n++] = strtoull(e, &end, 16);
+         e = *end == ',' ? end + 1 : end;
+      }
+      c.fs->prog.code[n++] = USSE_WDF0;
+      c.fs->prog.code[n++] = usse_fmov(usse_reg(USSE_OUTPUT, 0),
+                                       usse_reg(USSE_TEMP, getenv("SGX_LDR_OUT") ?
+                                                           atoi(getenv("SGX_LDR_OUT")) : 0)) | USSE_END;
+      c.fs->prog.ncode = n;
+      c.fs->prog.ntemps = MAX2(c.fs->prog.ntemps, 8);
+      mesa_logi("sgx: SGX_LDR_PROBE: %u words, samplers' state at sa%u", n, c.sampler_sa);
+   }
    c.fs->prog.branches = c.branches;
    c.fs->prog.ninputs = c.ninputs;
    for (unsigned i = 0; i < c.ninputs; i++)
       c.fs->prog.iter_src[i] = c.fs->input_slot[i] == VARYING_SLOT_POS ? SGX_ITERATE_POSITION :
                                c.fs->prog.nvaryings++;
-   c.fs->nuniforms = c.nuniforms;
+   c.fs->nuniforms = c.sa_uniforms;
+   c.fs->prog.nubuf = c.ubuf ? c.uwords : 0;
+   c.fs->prog.ubuf_sa = c.ubuf_sa;
    c.fs->nsamplers = c.nsamplers;
    c.fs->sampler_sa = c.sampler_sa;
    c.fs->prog.nsa = c.blend_sa >= 0 ? c.blend_sa + 4 :
@@ -1864,6 +1950,8 @@ sgx_compile_vs(const nir_shader *vs, const unsigned *varying_slot, unsigned nvar
    c.vs->branches = c.branches;
    c.vs->nattrs = MAX2(c.nattrs, 1);
    c.vs->nuniforms = c.nuniforms;
+   c.vs->nubuf = c.ubuf ? c.uwords : 0;
+   c.vs->ubuf_sa = c.ubuf_sa;
 
 out:
    util_dynarray_fini(&c.code);

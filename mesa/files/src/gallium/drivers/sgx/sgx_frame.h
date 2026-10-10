@@ -96,6 +96,10 @@ sgx_frame_vertex_floats(const struct sgx_frame_layout *l)
  * secondary attributes it reads from sa0.. (uniforms, texture states: the
  * draw hands them over).  The frame puts the code and its PDS program in
  * GPU memory at the first draw, once, and keeps where in code_va, pds_va. */
+/* the uniform words a program may have in memory (M32): constant buffer
+ * 0's, as the screen says them -- a vertex shader's 137 vec4s */
+#define SGX_UBUF_MAX (137 * 4)
+
 struct sgx_pixel_program {
    uint64_t *code;
    unsigned ncode;
@@ -106,6 +110,9 @@ struct sgx_pixel_program {
    uint8_t iter_src[SGX_FRAME_MAX_VARYINGS];
    unsigned nvaryings;
    unsigned nsa;
+   /* uniform words in memory after the nsa (M32): the draw's words go on
+    * with them, and sa word ubuf_sa has their address less 4 */
+   unsigned nubuf, ubuf_sa;
    uint32_t code_va, pds_va;
    unsigned pds_rows;
    bool branches;               /* the code branches (M20) */

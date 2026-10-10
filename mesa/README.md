@@ -76,6 +76,8 @@ sgx-gl glmip                     # mipmaps, mip filters, cube maps (M28)
 SGX_TEX_PROBE=1 sgx-gl glmip --probe 16 32   # where the sampler reads a cube map's levels
 sgx-gl glvary                    # 1 to 8 vec4 varyings, each read back; a mat3 varying (M30);
                                  # whole numbers through varyings as ints, int division (M31)
+sgx-gl glldr                     # uniforms past sa's 128 words, read from memory (M32)
+SGX_LDR_PROBE=e8870004a0008080 sgx-gl glldr --probe   # a program of those words: VLDST
 SGX_FETCH_TAG=9 sgx-gl glvary    # the vertices a vertex task takes, less one (M30: 9 is
                                  # what overlapped the outputs of three varyings and more)
 SGX_REPACK=1 sgx-gl glvtx        # every draw's vertices made one stream by the CPU

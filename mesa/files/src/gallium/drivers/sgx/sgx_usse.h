@@ -120,6 +120,17 @@ uint64_t usse_vtst_bits(unsigned pdst, struct usse_reg src, bool eq);
  * iOS's c04_loop_break) */
 uint64_t usse_vbw_and(struct usse_reg dest, struct usse_reg src1, unsigned imm);
 uint64_t usse_vbw_or(struct usse_reg dest, struct usse_reg src1, unsigned imm);
+/* dest = src1 | (imm rotated left by rot): bits past an immediate's 16
+ * (M32: an LDR offset's multiplier, 4 << 16) */
+uint64_t usse_vbw_or_rot(struct usse_reg dest, struct usse_reg src1, unsigned imm, unsigned rot);
+
+/* Memory loads (VLDST's, Vita3K's vldst; M32): count words in a row, from
+ * the address in sa word base plus an offset plus 4 bytes, into dest..
+ * (temporaries or pa).  The offset is an immediate in words (0..127) or a
+ * temporary whose high half times its low half is bytes -- (4 << 16) |
+ * word.  WDF0 before the words are read. */
+uint64_t usse_ldr_imm(struct usse_reg dest, unsigned base, unsigned words, unsigned count);
+uint64_t usse_ldr_reg(struct usse_reg dest, unsigned base, struct usse_reg offset, unsigned count);
 /* KILL under a short predicate (0 always, 1 p0, 2 p1, 3 !p0): the
  * instruction that ends the first phase of iOS's c00_discard, with the
  * punch-through pass type in ISP state A.  Not used yet: here it kills

@@ -154,7 +154,7 @@ struct sgx_context {
    unsigned maxvdata;
    uint16_t *indices;
    unsigned maxindices;
-   uint32_t vs_sa[128];
+   uint32_t vs_sa[128 + SGX_UBUF_MAX];   /* (sa's, then the uniforms in memory, M32) */
    const struct pipe_rasterizer_state *rast;
    const struct sgx_vertex_elements *velems;
    struct pipe_viewport_state viewport;

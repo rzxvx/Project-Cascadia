@@ -321,6 +321,44 @@ vbw_logic(bool or_, struct usse_reg dest, struct usse_reg src1, unsigned imm)
 }
 
 uint64_t
+usse_vbw_or_rot(struct usse_reg dest, struct usse_reg src1, unsigned imm, unsigned rot)
+{
+   /* (Vita3K's src2_rot, bits 42:38) */
+   return vbw_logic(true, dest, src1, imm) | bits(rot, 42, 38);
+}
+
+/* VLDST: 111, op 1 (a load), no MOE expansion (with it, more than a word
+ * loaded nothing), src0 sa (extended bank 1), src2 the immediate 0 (not
+ * added), F32 words; src1 an immediate (extended bank 2) or a register */
+static uint64_t
+ldr(struct usse_reg dest, unsigned base, unsigned src1_ext, unsigned src1_bank, unsigned src1,
+    unsigned count)
+{
+   assert(dest.bank == USSE_TEMP || dest.bank == USSE_PA);
+   assert(count >= 1 && count <= 16 && base < 128);
+   return bits(7, 63, 61) | bits(1, 60, 59) | SKIPINV | bits(1, 50, 50) | bits(src1_ext, 49, 49) |
+          bits(1, 48, 48) | bits(count - 1, 47, 44) | bits(dest.bank == USSE_PA, 39, 39) |
+          bits(1, 34, 34) | bits(src1_bank, 31, 30) | bits(2, 29, 28) | bits(dest.num, 27, 21) |
+          bits(base, 20, 14) | bits(src1, 13, 7);
+}
+
+uint64_t
+usse_ldr_imm(struct usse_reg dest, unsigned base, unsigned words, unsigned count)
+{
+   assert(words < 128);
+   return ldr(dest, base, 1, 2, words, count);
+}
+
+uint64_t
+usse_ldr_reg(struct usse_reg dest, unsigned base, struct usse_reg offset, unsigned count)
+{
+   unsigned ext, bank;
+
+   src_bank(offset, &ext, &bank);
+   return ldr(dest, base, ext, bank, offset.num, count);
+}
+
+uint64_t
 usse_vbw_and(struct usse_reg dest, struct usse_reg src1, unsigned imm)
 {
    return vbw_logic(false, dest, src1, imm);

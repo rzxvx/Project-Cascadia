@@ -90,6 +90,9 @@ struct sgx_vs {
    /* the uniform words a, b for x and for y, x' = a x + b w: the TA clips
     * where the draw wants (sgx_draw.c) */
    unsigned clip_sa;
+   /* uniform words in memory after the nuniforms of sa (M32), their
+    * address less 4 in sa word ubuf_sa -- as a pixel program's */
+   unsigned nubuf, ubuf_sa;
    unsigned varying_slot[SGX_FRAME_MAX_VARYINGS];
    unsigned nvaryings;
    bool branches;                   /* the code branches (M22) */

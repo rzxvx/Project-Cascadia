@@ -1094,7 +1094,7 @@ merge_vs_draw(struct sgx_context *ctx, struct sgx_vs *vs, const struct sgx_fs *f
    struct sgx_screen *screen = sgx_screen(ctx->base.screen);
    struct sgx_batch *b = &ctx->batch;
    struct sgx_vtx *v = &ctx->vtx;
-   unsigned nvsa = vs->nuniforms, at = 0;
+   unsigned nvsa = vs->nuniforms + vs->nubuf, at = 0;
    unsigned nbytes = v->repacked ? v->nverts * v->stride : 0, nidx = v->indexed ? v->count : 0;
    struct sgx_batch_draw *p;
    bool found = false;
@@ -1174,7 +1174,7 @@ add_vs_draw(struct sgx_context *ctx, struct sgx_vs *vs, const struct sgx_fs *fs,
    struct sgx_screen *screen = sgx_screen(ctx->base.screen);
    struct sgx_batch *b = &ctx->batch;
    struct sgx_vtx *v = &ctx->vtx;
-   unsigned nvsa = vs->nuniforms, nidx = v->indexed ? v->count : 0;
+   unsigned nvsa = vs->nuniforms + vs->nubuf, nidx = v->indexed ? v->count : 0;
    unsigned nbytes = v->repacked ? v->nverts * v->stride : 0, ntex = fs ? fs->nsamplers : 0;
    struct sgx_batch_draw *bd;
 
@@ -1243,11 +1243,12 @@ submit(struct sgx_context *ctx)
    struct pipe_surface *surf = &ctx->fb.cbufs[0];
    struct sgx_resource *rt = surf->texture ? sgx_resource(surf->texture) : NULL;
    struct sgx_fs *fs = ctx->draw_fs;
-   uint32_t sa[128 + 4 * SGX_FS_MAX_SAMPLERS + 4];
+   /* (sa's 128 words, then those of the uniforms in memory, M32) */
+   uint32_t sa[128 + SGX_UBUF_MAX];
    struct pipe_resource *tex[SGX_FS_MAX_SAMPLERS];
    struct sgx_vs *vs = ctx->gpu_vs;
    unsigned vf = sgx_frame_vertex_floats(&ctx->layout);
-   unsigned nsa = fs ? fs->prog.nsa : 0;
+   unsigned nsa = fs ? fs->prog.nsa + fs->prog.nubuf : 0;
    unsigned max, done = 0, npass = 1;
    uint32_t face_stencil[2];
    bool two_sided = false;
@@ -1374,6 +1375,10 @@ submit(struct sgx_context *ctx)
       memset(sa, 0, nsa * sizeof(uint32_t));
       if (ctx->fs_constants)
          memcpy(sa, ctx->fs_constants, n * sizeof(float));
+      /* the uniforms past sa's, all of them in memory after it (M32) */
+      if (fs->prog.nubuf && ctx->fs_constants)
+         memcpy(sa + fs->prog.nsa, ctx->fs_constants,
+                MIN2(fs->prog.nubuf, ctx->fs_constants_size / 4) * sizeof(float));
       for (unsigned i = 0; i < fs->nsamplers; i++) {
          unsigned unit = fs->sampler_unit[i];
          struct pipe_sampler_view *view = unit < ARRAY_SIZE(ctx->fs_views) ?
@@ -1948,6 +1953,14 @@ gpu_vs_draw(struct sgx_context *ctx, const struct pipe_draw_info *info,
       if (p)
          memcpy(ctx->vs_sa, p, n);
       memset((uint8_t *)ctx->vs_sa + n, 0, vs->nuniforms * 4 - n);
+      /* those past sa's, all of them in memory after it (M32) */
+      if (vs->nubuf) {
+         unsigned m = p ? MIN2(vs->nubuf * 4, cb->buffer_size) : 0;
+
+         if (p)
+            memcpy(ctx->vs_sa + vs->nuniforms, p, m);
+         memset((uint8_t *)(ctx->vs_sa + vs->nuniforms) + m, 0, vs->nubuf * 4 - m);
+      }
    }
    for (unsigned a = 0; a < vs->nattrs; a++) {
       float *c = (float *)ctx->vs_sa + vs->attr_sa[a];

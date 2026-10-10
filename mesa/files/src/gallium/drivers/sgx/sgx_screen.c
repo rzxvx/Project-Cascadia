@@ -169,7 +169,10 @@ sgx_init_shader_caps(struct pipe_screen *pscreen)
    caps->max_control_flow_depth = 32;
    caps->max_inputs = 16;
    caps->max_outputs = 10;     /* position, point size, 8 varyings */
-   caps->max_const_buffer0_size = 128 * 4 * sizeof(float);
+   /* GLES 2's 128 vec4s, and the 8 clip planes and point size the state
+    * tracker keeps room for (it took them out of the 128: 119, M32) --
+    * past sa's words they are in memory */
+   caps->max_const_buffer0_size = (128 + 8 + 1) * 4 * sizeof(float);
    caps->max_const_buffers = 1;
    caps->max_temps = 64;
 
