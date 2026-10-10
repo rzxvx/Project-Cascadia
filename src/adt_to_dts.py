@@ -379,16 +379,31 @@ class AdtToDts:
         if not dt:
             raise SystemExit("device-tree node not found")
 
-        model = "iPad2,5"
+        model = "iPad"
         for key in ("model",):
             if key in dt["props"]:
                 parts = decode_strings(dt["props"][key])
                 if parts:
                     model = parts[0]
 
+        armio = self._find_node(dt, "arm-io")
+        soc_compat = "apple,s5l8940x"
+        if armio and "compatible" in armio["props"]:
+            for part in decode_strings(armio["props"]["compatible"]):
+                if "s5l8955x" in part:
+                    soc_compat = "apple,s5l8955x"
+                    break
+                elif "s5l8950x" in part:
+                    soc_compat = "apple,s5l8950x"
+                    break
+                elif "s5l8942x" in part:
+                    soc_compat = "apple,s5l8942x"
+                    break
+
+        board_compat = f"apple,{model.lower()}"
         self.writer.write(0, "/ {")
-        self.writer.write(1, 'compatible = "apple,s5l8940x", "apple,ipad2,5";')
-        self.writer.write(1, f'model = "Apple {model} (iPad mini Wi-Fi)";')
+        self.writer.write(1, f'compatible = "{soc_compat}", "{board_compat}";')
+        self.writer.write(1, f'model = "Apple {model}";')
         self.writer.write(1, "#address-cells = <1>;")
         self.writer.write(1, "#size-cells = <1>;")
         self.writer.write(1, "")
@@ -444,7 +459,12 @@ class AdtToDts:
                 prefix = f"{label}: " if label else ""
                 self.writer.write(2, f"{prefix}cpu@{reg} {{")
                 self.writer.write(3, 'device_type = "cpu";')
-                self.writer.write(3, 'compatible = "arm,cortex-a9";')
+                cpu_compat = "arm,cortex-a9"
+                if "compatible" in cpu["props"]:
+                    compat_parts = decode_strings(cpu["props"]["compatible"])
+                    if compat_parts:
+                        cpu_compat = compat_parts[0]
+                self.writer.write(3, f'compatible = "{cpu_compat}";')
                 self.writer.write(3, f"reg = <{reg}>;")
                 if reg != 0:
                     self.writer.write(3, 'status = "disabled";')

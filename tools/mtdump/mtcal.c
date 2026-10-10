@@ -89,11 +89,15 @@ int main(void)
     long w;
 
     svc = IOServiceGetMatchingService(0, IOServiceMatching("AppleMultitouchN1SPI"));
+    if(!svc)
+        svc = IOServiceGetMatchingService(0, IOServiceMatching("AppleMultitouchSPI"));
     d = get(svc, "Calibration Data");
     if(d)
-        say("mtcal: AppleMultitouchN1SPI \"Calibration Data\"");
+        say("mtcal: AppleMultitouchSPI \"Calibration Data\"");
     else {
         adt = IORegistryEntryFromPath(0, "IODeviceTree:/arm-io/spi1/multi-touch");
+        if(!adt)
+            adt = IORegistryEntryFromPath(0, "IODeviceTree:/arm-io/spi3/multi-touch");
         d = get(adt, "multi-touch-calibration");
         if(d)
             say("mtcal: device tree multi-touch-calibration");
@@ -103,7 +107,7 @@ int main(void)
     if(svc)
         IOObjectRelease(svc);
     if(!d) {
-        say("mtcal: no calibration here -- neither AppleMultitouchN1SPI nor arm-io/spi1/multi-touch has one\n");
+        say("mtcal: no calibration here -- neither AppleMultitouchSPI nor arm-io/spi{1,3}/multi-touch has one\n");
         return 1;
     }
 
