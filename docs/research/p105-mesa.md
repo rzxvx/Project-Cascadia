@@ -2254,6 +2254,53 @@ cases still failing pass, and `max_vertex_uniform_vectors` (both),
 `uniform_api.random.74`: **16 852 passing, 98 failing** (16 842 and 108
 after M31), nothing worse.
 
+## M33: texture lookups in programs that branch; derivatives
+
+dEQP's `discard.dynamic_loop_texture` hung the GPU (and, after it,
+`function_static_loop_always` was the case the timeout landed on): a
+texture lookup in a loop of a uniform count. `glldr --probe` with
+`GLLDR_FS` (the probe's fragment shader replaced) took it apart: a lookup
+in a loop of a uniform count hung, before a loop too (4 of 4), after one
+now and then; in an if on a uniform it did not; in an if/else on a varying
+it did. With an explicit level of detail (`SMP`'s LOD mode) none hung and
+all came out right -- so the level of detail from the 2x2 block. And
+`dFdx` (new: `DSX`, `DSY`, OES_standard_derivatives) came out wrong in a
+quarter of the pixels in a loop: the block's pixels were not there
+together.
+
+**PHAS's mode.** M20 made a program that branches PHAS mode 1 (bit 45,
+iOS's `c04_loop_break`) with the DOUTU data word's bit 0 -- its pixels each
+on its own (Vita3K's PHAS fields: `mode`, then `rate_hi`, `rate_lo`).
+Mode 0 runs them together, and a branch then goes for all of them: BR's
+bit 20 (Vita3K's `all_inst`; `any_inst`, bit 21, the same here) taken
+when all the pixels take it. With that every case above came out right,
+no hang, the lookups with their own level of detail. SMP's `syncstart`
+(bit 52) did not help: everything hung with it.
+
+So the compiler runs NIR's divergence analysis on a fragment shader with
+control flow: when every if's test (a loop's breaks among them) is the
+same for all pixels -- loops of a uniform or constant count, ifs on
+uniforms -- the program is mode 0, its branches `all_inst`, the DOUTU bit
+clear. Otherwise it stays mode 1, and its lookups take level 0 (exact for
+a texture without levels whose filters agree; GLSL leaves derivatives
+undefined where pixels part) -- with a warning; one with a bias the level
+the bias names (dEQP's `random.all_features.fragment.34`: a biased lookup
+in an if on a varying hung, and the timeout landed on the next case).
+NIR's LICM moves what a loop does not change out of it first.
+
+A program with `dFdx`/`dFdy` clears skipinv (bit 55) on all but its
+output's writes, as one that samples does (M14): along the edge between
+the quad's two triangles the 2x2 blocks' pixels on the far side skipped
+the instructions, and DSY read what was in their registers.
+
+`tools/sgx/gl/glflow.c`: a lookup in an if on a uniform, in a loop of a
+uniform count (at fixed coordinates and at the loop's), before and after
+one, in nested loops, in an if/else on a varying; `dFdx`, `dFdy`, and in a
+loop; a 128 x 128 mipmap's level 1 at 64 x 64, in a loop -- 10 of 10.
+dEQP-GLES2: `discard.dynamic_loop_texture` and six of `random` pass, and
+the whole run has no render that timed out (7 after M32): **16 859
+passing, 91 failing** (16 852 and 98), nothing worse.
+
 ## Testing, without and with the device
 
 - **Host, every change:** the kernel driver builds with `W=1` against the

@@ -11,7 +11,8 @@
  *   SGX_LDR_PROBE=word,... sgx-gl glldr --probe    (sgx_compiler.c: the
  *       program those words, WDF0, r0 into o0 -- a 4 x 4 texture's state in
  *       sa0..3, texel i the bytes i, 0x40 + i, 0x80 + i, 0xc0 + i; prints
- *       the pixels' bytes)
+ *       the pixels' bytes; GLLDR_FS=source: that fragment shader instead,
+ *       its uniform int n GLLDR_N, 2 by default)
  */
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
@@ -200,8 +201,9 @@ probe(void)
 	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 4, 4, 0, GL_RGBA, GL_UNSIGNED_BYTE, texels);
 	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
 	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-	p = program(vs, fs);
+	p = program(vs, getenv("GLLDR_FS") ? getenv("GLLDR_FS") : fs);
 	glUniform1i(glGetUniformLocation(p, "t"), 0);
+	glUniform1i(glGetUniformLocation(p, "n"), getenv("GLLDR_N") ? atoi(getenv("GLLDR_N")) : 2);
 	draw();
 	glReadPixels(0, 0, W, H, GL_RGBA, GL_UNSIGNED_BYTE, px);
 	/* a pixel of each quarter */

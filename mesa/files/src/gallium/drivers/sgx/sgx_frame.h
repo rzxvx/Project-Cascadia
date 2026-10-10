@@ -115,7 +115,8 @@ struct sgx_pixel_program {
    unsigned nubuf, ubuf_sa;
    uint32_t code_va, pds_va;
    unsigned pds_rows;
-   bool branches;               /* the code branches (M20) */
+   bool branches;               /* its pixels each on its own: the code branches, not
+                                 * alike for all (M20, M33) */
 };
 
 /* Triangles into rt, over what it holds (each tile starts as the target's

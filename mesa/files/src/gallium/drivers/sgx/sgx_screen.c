@@ -27,6 +27,7 @@ static const struct nir_shader_compiler_options sgx_nir_options = {
    /* integers are floats (nir_lower_int_to_float): NIR's builtins (atan's
     * copysign) built without integer bit operations */
    .no_integers = true,
+   .scalarize_ddx = true,
    .lower_fdiv = true,
    .lower_fmod = true,
    .lower_fpow = true,
@@ -198,6 +199,7 @@ sgx_init_screen_caps(struct pipe_screen *pscreen)
    /* GLES 2.0: ARB_texture_non_power_of_two and EXT_blend_equation_separate
     * are what version.c asks for besides the shaders */
    caps->npot_textures = true;
+   caps->fragment_shader_derivatives = true;   /* DSX, DSY (M33) */
    caps->generate_mipmap = true;     /* by the CPU: sgx_resource.c */
    /* a buffer's map is its CPU copy, which the GPU's is brought up to date
     * with at a draw, from what unmaps and flushes say was written (M26):

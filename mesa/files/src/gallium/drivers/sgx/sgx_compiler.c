@@ -85,6 +85,11 @@ struct comp {
     * memory, read by VLDST from the address (less 4) in sa word ubuf_sa */
    unsigned uwords, sa_uniforms, ubuf_sa;
    bool ubuf;
+   /* a fragment program whose branches go alike for every pixel (M33):
+    * the pixels run together, the branches all of theirs -- or one with
+    * some that do not, its pixels each on its own (M20's way) */
+   bool divergent;
+   bool derivatives;                    /* DSX or DSY in it */
    int slot_of_unit[MAX_UNITS];         /* a texture unit's state words, by slot */
    unsigned nsamplers, sampler_sa;
    int blend_sa;                        /* the blend colour's words, -1 none */
@@ -488,9 +493,21 @@ texture(struct comp *c, nir_tex_instr *tex, struct scratch *s)
       move_into(c, treg(c, pair + i), tex_operand(tex, coord, i), s);
    }
    if (bias >= 0 || lod >= 0) {
-      mode = bias >= 0 ? USSE_SMP_BIAS : USSE_SMP_LOD;
+      /* (a bias where the pixels run each on their own: the level the bias
+       * names, from level 0 -- see below) */
+      mode = bias >= 0 && !c->divergent ? USSE_SMP_BIAS : USSE_SMP_LOD;
       lodreg = treg(c, scratch_take(c, s));
       move_into(c, lodreg, tex_operand(tex, bias >= 0 ? bias : lod, 0), s);
+   } else if (c->divergent) {
+      /* A program whose pixels each run on their own: a lookup with its
+       * level of detail from the 2x2 block hangs the GPU or reads the wrong
+       * level (the block's pixels are not there together) -- level 0
+       * (exact for a texture without levels whose filters agree; GLSL
+       * leaves the derivatives undefined where pixels part, M33) */
+      mode = USSE_SMP_LOD;
+      lodreg = constant(c, s, 0.0f);
+      mesa_logw_once("sgx: a texture sampled in a program whose branches differ between "
+                     "pixels: level 0");
    }
    d = block(c, 4, 4);
    if (getenv("SGX_TEX_F32")) {
@@ -795,6 +812,25 @@ intrinsic(struct comp *c, nir_intrinsic_instr *in)
       for (unsigned i = 0; i < in->def.num_components; i++)
          c->loc[id + i] = usse_reg(USSE_SA, at + i);
       return;
+   case nir_intrinsic_ddx:
+   case nir_intrinsic_ddx_fine:
+   case nir_intrinsic_ddx_coarse:
+   case nir_intrinsic_ddy:
+   case nir_intrinsic_ddy_fine:
+   case nir_intrinsic_ddy_coarse: {
+      /* the difference across the pixel's 2x2 block (M33; scalar: the
+       * screen's scalarize_ddx) */
+      struct scratch sc = { 0 };
+      struct usse_reg a = get(c, resolve(nir_get_scalar(in->src[0].ssa, 0)),
+                              TAKES_LANE_Y | TAKES_SA, &sc);
+      bool x = in->intrinsic == nir_intrinsic_ddx || in->intrinsic == nir_intrinsic_ddx_fine ||
+               in->intrinsic == nir_intrinsic_ddx_coarse;
+
+      emit(c, usse_fop(x ? USSE_NMAD_DSX : USSE_NMAD_DSY, define(c, &in->def), a, a));
+      scratch_give_back(c, &sc);
+      c->derivatives = true;
+      return;
+   }
    case nir_intrinsic_decl_reg:
       /* a phi web's register (M20): a temporary a component, the whole
        * program long */
@@ -978,6 +1014,22 @@ intrinsic(struct comp *c, nir_intrinsic_instr *in)
    }
 }
 
+static bool
+is_derivative(const nir_intrinsic_instr *in)
+{
+   switch (in->intrinsic) {
+   case nir_intrinsic_ddx:
+   case nir_intrinsic_ddx_fine:
+   case nir_intrinsic_ddx_coarse:
+   case nir_intrinsic_ddy:
+   case nir_intrinsic_ddy_fine:
+   case nir_intrinsic_ddy_coarse:
+      return true;
+   default:
+      return false;
+   }
+}
+
 /* what an instruction reads, for liveness: f(c, operand) for each */
 static void
 for_each_read(struct comp *c, nir_instr *instr, void (*f)(struct comp *, struct operand, int),
@@ -998,7 +1050,7 @@ for_each_read(struct comp *c, nir_instr *instr, void (*f)(struct comp *, struct 
          for (unsigned i = 0; i < in->src[0].ssa->num_components; i++)
             f(c, resolve(nir_get_scalar(in->src[0].ssa, i)), index);
       if (in->intrinsic == nir_intrinsic_terminate_if ||
-          in->intrinsic == nir_intrinsic_demote_if)
+          in->intrinsic == nir_intrinsic_demote_if || is_derivative(in))
          f(c, resolve(nir_get_scalar(in->src[0].ssa, 0)), index);
       if (in->intrinsic == nir_intrinsic_store_reg)
          for (unsigned i = 0; i < in->src[0].ssa->num_components; i++)
@@ -1375,7 +1427,10 @@ branch(struct comp *c, unsigned pred)
 {
    unsigned at = util_dynarray_num_elements(&c->code, uint64_t);
 
-   emit(c, USSE_BR | (uint64_t)pred << 56);
+   /* (pixels run together: taken when all of them take it -- bit 20,
+    * Vita3K's all_inst; any_inst, bit 21, did the same with branches
+    * that go alike, M33) */
+   emit(c, USSE_BR | (uint64_t)pred << 56 | (!c->vs && !c->divergent ? 1ull << 20 : 0));
    c->branches = true;
    return at;
 }
@@ -1679,6 +1734,17 @@ translate(struct comp *c, nir_shader *s)
       store_outputs_early(s);
 
    impl = nir_shader_get_entrypoint(s);
+   if (!c->vs && exec_list_length(&impl->body) != 1) {
+      /* what a loop does not change, out of it -- then whether any if
+       * (a loop's breaks among them) differs between pixels (M33) */
+      NIR_PASS(_, s, nir_opt_licm);
+      nir_divergence_analysis(s);
+      nir_foreach_block(block, impl) {
+         nir_if *nif = nir_block_get_following_if(block);
+
+         c->divergent |= nif && nir_src_is_divergent(&nif->condition);
+      }
+   }
    /* control flow left: the phis' webs registers */
    if (exec_list_length(&impl->body) != 1)
       NIR_PASS(_, s, nir_convert_from_ssa, true, false);
@@ -1719,9 +1785,12 @@ translate(struct comp *c, nir_shader *s)
    index = 0;
    c->nloops = 0;
    walk(c, &impl->body, WALK_CODE, &index, NULL, 0);
-   /* a program that branches: PHAS mode 1, as iOS's c04_loop_break has */
+   /* a program that branches: PHAS mode 1, as iOS's c04_loop_break has,
+    * its pixels each on its own -- mode 0, the pixels together, when its
+    * branches go alike for all of them (M33) */
    if (c->branches)
-      *util_dynarray_element(&c->code, uint64_t, 0) = USSE_PHAS_BRANCHES;
+      *util_dynarray_element(&c->code, uint64_t, 0) =
+         !c->vs && !c->divergent ? USSE_PHAS : USSE_PHAS_BRANCHES;
    return !c->failed;
 }
 
@@ -1817,7 +1886,9 @@ sgx_compile_fs(const nir_shader *fs, const struct sgx_blend_key *blend, char *wh
     * pixels around the triangle skipped the tests of a loop's condition and
     * took its branches on a predicate left from before -- round the loop
     * for ever, now and then (M20). */
-   if (c.nsamplers || c.branches)
+   /* (and a program with derivatives: the pixels around the triangle in
+    * its 2x2 blocks are what DSX and DSY read, glflow -- M33) */
+   if (c.nsamplers || c.branches || c.derivatives)
       for (unsigned i = 0; i < out_at; i++)
          c.fs->prog.code[i] &= ~(1ull << 55);
    c.fs->prog.ntemps = c.top;
@@ -1843,7 +1914,7 @@ sgx_compile_fs(const nir_shader *fs, const struct sgx_blend_key *blend, char *wh
       c.fs->prog.ntemps = MAX2(c.fs->prog.ntemps, 8);
       mesa_logi("sgx: SGX_LDR_PROBE: %u words, samplers' state at sa%u", n, c.sampler_sa);
    }
-   c.fs->prog.branches = c.branches;
+   c.fs->prog.branches = c.branches && c.divergent;
    c.fs->prog.ninputs = c.ninputs;
    for (unsigned i = 0; i < c.ninputs; i++)
       c.fs->prog.iter_src[i] = c.fs->input_slot[i] == VARYING_SLOT_POS ? SGX_ITERATE_POSITION :
