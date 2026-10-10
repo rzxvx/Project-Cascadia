@@ -6,6 +6,7 @@
 #define SGX_RESOURCE_H
 
 #include "pipe/p_state.h"
+#include "util/simple_mtx.h"
 #include "util/u_transfer.h"
 
 struct sgx_bo;
@@ -28,6 +29,11 @@ struct sgx_resource {
    uint8_t *data;
    uint32_t dirty_lo, dirty_hi;
    bool dirty_sync;
+   /* (M34) the maps that stay while draws read it -- glthread's uploads, in
+    * the application's thread: each draw takes what it reads of data as it
+    * is -- and the lock the dirty bytes are under (both threads') */
+   int live_maps;
+   simple_mtx_t dirty_lock;
    uint32_t stride[PIPE_MAX_TEXTURE_LEVELS];      /* bytes per row */
    uint32_t layer_size[PIPE_MAX_TEXTURE_LEVELS];  /* bytes per layer or slice */
    uint32_t offset[PIPE_MAX_TEXTURE_LEVELS];      /* of each level */
@@ -72,7 +78,8 @@ bool sgx_resource_texture(struct sgx_screen *screen, struct sgx_resource *res,
  * first: written in place when no render reads it -- gathered or running
  * -- or when only unsynchronized maps wrote it since, else made anew (the
  * old one stays with the renders that read it).  NULL if it cannot be. */
-struct sgx_bo *sgx_buffer_bo(struct sgx_context *ctx, struct sgx_resource *res);
+struct sgx_bo *sgx_buffer_bo(struct sgx_context *ctx, struct sgx_resource *res, uint32_t read_lo,
+                             uint32_t read_hi);
 
 void sgx_resource_screen_init(struct sgx_screen *screen);
 void sgx_resource_context_init(struct pipe_context *pctx);

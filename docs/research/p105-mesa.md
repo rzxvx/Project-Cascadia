@@ -2301,6 +2301,70 @@ dEQP-GLES2: `discard.dynamic_loop_texture` and six of `random` pass, and
 the whole run has no render that timed out (7 after M32): **16 859
 passing, 91 failing** (16 852 and 98), nothing worse.
 
+## M34: speed -- where SuperTux's frame goes, the pixel programs shorter
+
+SuperTux (SDL 3's GLES 2 renderer, 1 100 draws a frame) ran 24.5 fps,
+100 % of a core. `perf` on the device (no call graphs: the libraries have
+no frame pointers, and DWARF unwinding lost the maps; binutils and Alpine's
+`sdl3-dbg` installed from packages fetched in docker, `perf annotate
+--no-source` with `addr2line` run on the Mac's copy of the library) split
+the CPU's time: SDL 3 30 % (`SetDrawState`, its command queue, the hash
+tables and properties it reads every draw), musl 26 % (malloc, memcmp,
+strlen -- mostly SDL's), libgallium 29 % (the driver about 13 %, Mesa's GL
+side the rest), SuperTux 6 %. And `SGX_DEBUG=fps,sync` gave the GPU's:
+**35.5 ms a frame** -- the CPU's and the GPU's both at the limit, the
+renders in flight (M27) overlapping them.
+
+`glspeed` has SDL's way now (`sprites`: textured quads blended, 8 textures
+in turn, client arrays; `fill`: each the whole target; `GLSPEED_FS`,
+`_BLEND`, `_TEX`, `_VBO`). A full-target layer cost 1.9 ms for a program
+of 6 instructions, 4.4 ms for 12, 5.8 ms for SDL's 16 (texture times
+colour): about 2 G instructions a second, what two cores of four USSE
+pipelines at 250 MHz do -- the pixels cost their instructions, the texture
+less than its moves. iOS's `t06` (a texel times a uniform) is 3: PHAS,
+`mul.f16 pa0.xyzw`, `pck.u8.f16 o0` -- the PDS fetched the texel into pa0
+(M14's non-dependent read) and the mediump arithmetic is F16, four
+channels an instruction. Ours, `texture2D(t, uv) * c`: two moves of the
+coordinates into a pair, SMP, WDF, two unpacks, four F32 muls, four moves
+of the results into the colour's registers, the pack.
+
+- **The colour made where it goes.** The four registers the pack reads are
+  taken when the first value of the colour is made, and an ALU result that
+  is a channel of it is made there (`colour_id`, `out_base`). Only
+  V32NMAD's (add, mul, min, max): the compares', selects' and RCP's
+  encodings take an even destination, and two of the four are odd (glfs
+  and glcull caught it). Taken at the start, the four registers were held
+  through the whole program: 67 a pixel for dEQP's
+  `tmp_array.vec3_*_dynamic_read`.
+- **The coordinates where they are**: a varying's x and y are a pair of
+  primary attributes from an even one -- SMP reads them there.
+
+SDL's program 16 -> 10 instructions, a layer 5.8 -> 3.6 ms; SuperTux's
+GPU time 35.5 -> 25.5 ms a frame, and the CPU the limit again (26 fps).
+
+**glthread** (`mesa_glthread=true`) would put Mesa and the driver on the
+second core: it needs `map_unsynchronized_thread_safe` and
+`allow_mapped_buffers_during_execution`. The driver has them now: a map
+glthread makes in the application's thread takes nothing of the context's
+(its transfer `CALLOC`'d, not the context's slab), a buffer's dirty bytes
+are under a lock, and a buffer mapped while draws read it (glthread's 1 MiB
+upload buffer, written on and on) has each draw take what it reads of the
+CPU's copy (`live_maps`; `sgx_buffer_bo()` takes the range). SuperTux does
+not gain: it makes textures every frame (its text), and glthread waits for
+the other thread at every `glGenTextures`, `glTexImage2D` and
+`glTexSubImage2D` from the application's memory -- 33 a frame (counted
+with a print in glthread's `_mesa_glthread_finish_before`). Mesa leaves it
+off on fewer than four cores anyway.
+
+The CPU's stream of vertices from an application's array laid out as the
+stream is (SDL's x y, r g b a, u v at stride 32) is one copy now, not a
+memset and a memcpy an attribute a vertex.
+
+Release builds: `glspeed 1000 60 sprites` 49.5 -> 36.8 ms a frame (each
+waits for the GPU: both sides), 8 blended layers 53 -> 34.8 ms; SuperTux
+24.5 -> 26 fps, the GPU 24.7 ms of its frame. dEQP-GLES2 the same,
+16 859 / 91, no render timed out.
+
 ## Testing, without and with the device
 
 - **Host, every change:** the kernel driver builds with `W=1` against the

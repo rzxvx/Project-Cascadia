@@ -1894,7 +1894,9 @@ gpu_vs_draw(struct sgx_context *ctx, const struct pipe_draw_info *info,
 
          if (SGX_ATTR_KIND(vs->attr[a]) == SGX_ATTR_CONST)
             continue;
-         if (!(bo = sgx_buffer_bo(ctx, res[a])))
+         /* (the bytes it reads: vertices lo..hi) */
+         if (!(bo = sgx_buffer_bo(ctx, res[a], off[a] + (lo + bias) * stride,
+                                  off[a] + (hi + bias) * stride + 4 * sgx_attr_words(vs->attr[a]))))
             return false;
          v->base[a] = bo->va + off[a] + (vtx0 + bias) * stride;
          for (i = 0; i < v->nbos && v->bos[i] != bo; i++)
@@ -1916,6 +1918,29 @@ gpu_vs_draw(struct sgx_context *ctx, const struct pipe_draw_info *info,
       if (n * v->stride > SGX_FRAME_MAX_BYTES ||
           !grow_bytes(&ctx->vdata, &ctx->maxvdata, n * v->stride))
          return false;
+      /* the attributes one array of the application's laid out as the
+       * stream is -- SDL's x y, r g b a, u v at stride 32 (M34): the
+       * vertices in one copy */
+      {
+         const uint8_t *first = NULL;
+         bool whole = true;
+
+         for (unsigned a = 0; a < vs->nattrs && whole; a++) {
+            const struct pipe_vertex_element *e = &ve->e[a];
+
+            if (SGX_ATTR_KIND(vs->attr[a]) == SGX_ATTR_CONST)
+               continue;
+            if (!first)
+               first = src[a] - v->base[a];
+            whole = vs->attr[a] == ve->attr[a] && e->src_stride == v->stride &&
+                    src[a] == first + v->base[a] &&
+                    util_format_get_blocksize(e->src_format) == 4 * sgx_attr_words(vs->attr[a]);
+         }
+         if (whole && first) {
+            memcpy(ctx->vdata, first + (lo + bias) * v->stride, n * v->stride);
+            goto copied;
+         }
+      }
       for (unsigned a = 0; a < vs->nattrs; a++) {
          const struct pipe_vertex_element *e = &ve->e[a];
          const uint8_t *in;
@@ -1937,6 +1962,7 @@ gpu_vs_draw(struct sgx_context *ctx, const struct pipe_draw_info *info,
                util_format_unpack_rgba(e->src_format, (float *)out, in, 1);
          }
       }
+   copied:;
    }
 
    /* its uniforms: constant buffer 0's words, then the constant

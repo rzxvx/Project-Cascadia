@@ -75,6 +75,7 @@ sgx_resource_create(struct pipe_screen *pscreen, const struct pipe_resource *tem
     * (M25); the GPU's copy is made when a draw reads it (M26:
     * sgx_buffer_bo) */
    if (templ->target == PIPE_BUFFER) {
+      simple_mtx_init(&res->dirty_lock, mtx_plain);
       if (!(res->data = MALLOC(MAX2(size, 1)))) {
          FREE(res);
          return NULL;
@@ -103,6 +104,8 @@ sgx_resource_destroy(struct pipe_screen *pscreen, struct pipe_resource *prsc)
    sgx_bo_destroy(res->tw);
    sgx_bo_destroy(res->zls);
    sgx_bo_destroy(res->bo);
+   if (res->data)
+      simple_mtx_destroy(&res->dirty_lock);
    FREE(res->data);
    FREE(res);
 }
@@ -451,9 +454,14 @@ sgx_transfer_map(struct pipe_context *pctx, struct pipe_resource *prsc, unsigned
    }
    if (!(map = res->data ? res->data : sgx_bo_map(res->bo)))
       return NULL;
-   trans = slab_zalloc(&ctx->transfer_pool);
+   /* (a map glthread makes in the application's thread: nothing of the
+    * context's -- M34) */
+   trans = usage & PIPE_MAP_THREAD_SAFE ? CALLOC_STRUCT(sgx_transfer) :
+                                          slab_zalloc(&ctx->transfer_pool);
    if (!trans)
       return NULL;
+   if (prsc->target == PIPE_BUFFER && (usage & (PIPE_MAP_THREAD_SAFE | PIPE_MAP_PERSISTENT)))
+      p_atomic_inc(&res->live_maps);
    pipe_resource_reference(&trans->base.resource, prsc);
    trans->base.level = level;
    trans->base.usage = usage;
@@ -473,10 +481,8 @@ sgx_transfer_map(struct pipe_context *pctx, struct pipe_resource *prsc, unsigned
 
 /* bytes [lo, hi) of a buffer written: what its GPU copy is behind by */
 static void
-buffer_written(struct sgx_resource *res, uint32_t lo, uint32_t hi, unsigned usage)
+dirty_add(struct sgx_resource *res, uint32_t lo, uint32_t hi)
 {
-   if (lo >= hi)
-      return;
    if (res->dirty_lo >= res->dirty_hi) {
       res->dirty_lo = lo;
       res->dirty_hi = hi;
@@ -484,7 +490,17 @@ buffer_written(struct sgx_resource *res, uint32_t lo, uint32_t hi, unsigned usag
       res->dirty_lo = MIN2(res->dirty_lo, lo);
       res->dirty_hi = MAX2(res->dirty_hi, hi);
    }
+}
+
+static void
+buffer_written(struct sgx_resource *res, uint32_t lo, uint32_t hi, unsigned usage)
+{
+   if (lo >= hi)
+      return;
+   simple_mtx_lock(&res->dirty_lock);
+   dirty_add(res, lo, hi);
    res->dirty_sync |= !(usage & PIPE_MAP_UNSYNCHRONIZED);
+   simple_mtx_unlock(&res->dirty_lock);
 }
 
 /* a map with PIPE_MAP_FLUSH_EXPLICIT wrote what it flushes (u_upload_mgr
@@ -509,20 +525,37 @@ sgx_transfer_unmap(struct pipe_context *pctx, struct pipe_transfer *ptrans)
       if (ptrans->resource->target == PIPE_BUFFER && !(ptrans->usage & PIPE_MAP_FLUSH_EXPLICIT))
          buffer_written(res, ptrans->box.x, ptrans->box.x + ptrans->box.width, ptrans->usage);
    }
+   if (ptrans->resource->target == PIPE_BUFFER &&
+       (ptrans->usage & (PIPE_MAP_THREAD_SAFE | PIPE_MAP_PERSISTENT)))
+      p_atomic_dec(&res->live_maps);
 
    pipe_resource_reference(&ptrans->resource, NULL);
-   slab_free(&ctx->transfer_pool, ptrans);
+   if (ptrans->usage & PIPE_MAP_THREAD_SAFE)
+      FREE(ptrans);
+   else
+      slab_free(&ctx->transfer_pool, ptrans);
 }
 
 struct sgx_bo *
-sgx_buffer_bo(struct sgx_context *ctx, struct sgx_resource *res)
+sgx_buffer_bo(struct sgx_context *ctx, struct sgx_resource *res, uint32_t read_lo,
+              uint32_t read_hi)
 {
    struct sgx_screen *screen = sgx_screen(ctx->base.screen);
-   struct sgx_bo *bo = res->bo;
-   uint32_t lo = res->dirty_lo, hi = res->dirty_hi;
+   struct sgx_bo *bo;
+   uint32_t lo, hi;
 
-   if (bo && lo >= hi)
+   simple_mtx_lock(&res->dirty_lock);
+   /* mapped while it is drawn from: what the draw reads, as it is (glthread
+    * writes its uploads on and on, before the draws that read them) */
+   if (p_atomic_read(&res->live_maps) > 0 && read_lo < MIN2(read_hi, res->base.width0))
+      dirty_add(res, read_lo, MIN2(read_hi, res->base.width0));
+   bo = res->bo;
+   lo = res->dirty_lo;
+   hi = res->dirty_hi;
+   if (bo && lo >= hi) {
+      simple_mtx_unlock(&res->dirty_lock);
       return bo;
+   }
    if (bo && res->dirty_sync && (sgx_batch_reads(ctx, bo) || !sgx_bo_idle(bo))) {
       /* a render reads the old content: the gathered draws or the kernel
        * keep the old copy for it */
@@ -532,8 +565,10 @@ sgx_buffer_bo(struct sgx_context *ctx, struct sgx_resource *res)
    if (!bo) {
       /* (four bytes more: a fetch reads whole words, three bytes of RGB8
        * at the end too) */
-      if (!(bo = sgx_bo_cache_get(&screen->dev, res->base.width0 + 4)))
+      if (!(bo = sgx_bo_cache_get(&screen->dev, res->base.width0 + 4))) {
+         simple_mtx_unlock(&res->dirty_lock);
          return NULL;
+      }
       res->bo = bo;
       lo = 0;
       hi = res->base.width0;
@@ -541,6 +576,7 @@ sgx_buffer_bo(struct sgx_context *ctx, struct sgx_resource *res)
    memcpy(bo->map + lo, res->data + lo, hi - lo);
    res->dirty_lo = res->dirty_hi = 0;
    res->dirty_sync = false;
+   simple_mtx_unlock(&res->dirty_lock);
    return bo;
 }
 

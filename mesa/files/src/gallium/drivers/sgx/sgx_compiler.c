@@ -90,6 +90,11 @@ struct comp {
     * some that do not, its pixels each on its own (M20's way) */
    bool divergent;
    bool derivatives;                    /* DSX or DSY in it */
+   /* (M34) the colour's four registers, from the start: the values the
+    * colour is made of are made there (colour_id: their operands' ids,
+    * -1 none), not moved there at the end */
+   int out_base;
+   int colour_id[4];
    int slot_of_unit[MAX_UNITS];         /* a texture unit's state words, by slot */
    unsigned nsamplers, sampler_sa;
    int blend_sa;                        /* the blend colour's words, -1 none */
@@ -164,6 +169,25 @@ block(struct comp *c, unsigned n, unsigned align)
    }
    fail(c, "more values live at once than %u temporaries hold", MAX_TEMPS);
    return 0;
+}
+
+/* block()'s, -1 when there is no room (and the compile goes on) */
+static int
+block_try(struct comp *c, unsigned n, unsigned align)
+{
+   for (unsigned r = 0; r + n <= MAX_TEMPS; r += align) {
+      unsigned i;
+
+      for (i = 0; i < n && !c->used[r + i]; i++)
+         ;
+      if (i < n)
+         continue;
+      for (i = 0; i < n; i++)
+         c->used[r + i] = true;
+      c->top = MAX2(c->top, r + n);
+      return r;
+   }
+   return -1;
 }
 
 static unsigned
@@ -302,7 +326,21 @@ get(struct comp *c, struct operand o, unsigned takes, struct scratch *s)
 static struct usse_reg
 define(struct comp *c, nir_def *def)
 {
-   unsigned id = def->index * 4, r = take(c);
+   unsigned id = def->index * 4, r;
+
+   for (unsigned i = 0; i < 4; i++)
+      if (c->colour_id[i] == (int)id) {
+         /* (the colour's registers taken at its first value: from the
+          * start they held four the program wanted -- 67 a pixel) */
+         if (c->out_base == -1 && (c->out_base = block_try(c, 4, 2)) < 0)
+            c->out_base = -2;
+         if (c->out_base < 0)
+            break;
+         c->loc[id] = treg(c, c->out_base + i);
+         c->owned[id] = false;
+         return c->loc[id];
+      }
+   r = take(c);
 
    c->loc[id] = treg(c, r);
    c->owned[id] = true;
@@ -470,6 +508,7 @@ texture(struct comp *c, nir_tex_instr *tex, struct scratch *s)
    int bias = nir_tex_instr_src_index(tex, nir_tex_src_bias);
    int lod = nir_tex_instr_src_index(tex, nir_tex_src_lod);
    enum usse_smp_lod mode = USSE_SMP_NONE;
+   struct usse_reg coords;
    struct usse_reg lodreg = treg(c, 0);
    unsigned pair, d, id = tex->def.index * 4;
    bool cube = tex->sampler_dim == GLSL_SAMPLER_DIM_CUBE;
@@ -487,10 +526,28 @@ texture(struct comp *c, nir_tex_instr *tex, struct scratch *s)
       fail(c, "no such texture lookups yet");
       return;
    }
-   pair = block(c, ncoord, 2);
-   for (unsigned i = 0; i < ncoord; i++) {
-      s->reg[s->n++] = pair + i;
-      move_into(c, treg(c, pair + i), tex_operand(tex, coord, i), s);
+   /* the coordinates where they are when they are registers in a row
+    * from an even one -- a varying's x and y (M34) -- else moved there */
+   {
+      struct operand o0 = tex_operand(tex, coord, 0);
+      bool in_place = true;
+
+      for (unsigned i = 0; i < ncoord && in_place; i++) {
+         struct operand o = tex_operand(tex, coord, i);
+
+         in_place = !o.is_const && !o.neg && !o.abs && c->loc[o.id].bank == USSE_PA &&
+                    !(c->loc[o0.id].num & 1) && c->loc[o.id].num == c->loc[o0.id].num + i;
+      }
+      if (in_place) {
+         coords = c->loc[o0.id];
+      } else {
+         pair = block(c, ncoord, 2);
+         for (unsigned i = 0; i < ncoord; i++) {
+            s->reg[s->n++] = pair + i;
+            move_into(c, treg(c, pair + i), tex_operand(tex, coord, i), s);
+         }
+         coords = treg(c, pair);
+      }
    }
    if (bias >= 0 || lod >= 0) {
       /* (a bias where the pixels run each on their own: the level the bias
@@ -512,7 +569,7 @@ texture(struct comp *c, nir_tex_instr *tex, struct scratch *s)
    d = block(c, 4, 4);
    if (getenv("SGX_TEX_F32")) {
       emit(c, smp(USSE_SMP_F32, USSE_SMP_COORD_F32, treg(c, d),
-                         treg(c, pair),
+                         coords,
                          usse_reg(USSE_SA, c->sampler_sa + 4 * c->slot_of_unit[tex->texture_index]),
                          mode, lodreg));
       emit(c, USSE_WDF0);
@@ -531,7 +588,7 @@ texture(struct comp *c, nir_tex_instr *tex, struct scratch *s)
        * scaled by 1/255 one by one (M25) */
       struct usse_reg raw = treg(c, scratch_take(c, s));
 
-      emit(c, smp(USSE_SMP_RAW, USSE_SMP_COORD_F32, raw, treg(c, pair),
+      emit(c, smp(USSE_SMP_RAW, USSE_SMP_COORD_F32, raw, coords,
                          usse_reg(USSE_SA, c->sampler_sa + 4 * c->slot_of_unit[tex->texture_index]),
                          mode, lodreg));
       emit(c, USSE_WDF0);
@@ -1122,7 +1179,7 @@ output(struct comp *c)
       fail(c, "no colour written");
       return;
    }
-   base = block(c, 4, 2);
+   base = c->out_base >= 0 ? (unsigned)c->out_base : block(c, 4, 2);
    for (unsigned i = 0; i < 4; i++) {
       struct operand o = c->colour[i];
 
@@ -1130,6 +1187,10 @@ output(struct comp *c)
          o.is_const = true;
          o.c = i == 3 ? 1.0f : 0.0f;
       }
+      /* (made where it goes already) */
+      if (!o.is_const && !o.neg && !o.abs && c->colour_id[i] == (int)o.id &&
+          c->loc[o.id].bank == USSE_TEMP && c->loc[o.id].num == treg(c, base + i).num)
+         continue;
       move_into(c, treg(c, base + i), o, &s);
       scratch_give_back(c, &s);
    }
@@ -1776,6 +1837,45 @@ translate(struct comp *c, nir_shader *s)
 
    util_dynarray_init(&c->code, NULL);
    emit(c, USSE_PHAS);
+   /* the colour's registers first, and which values go into them: those
+    * an ALU instruction makes, each into one place (M34) */
+   c->out_base = -1;
+   for (unsigned i = 0; i < 4; i++)
+      c->colour_id[i] = -1;
+   if (!c->vs) {
+      nir_foreach_block(block, impl)
+         nir_foreach_instr(instr, block) {
+            nir_intrinsic_instr *in;
+
+            if (instr->type != nir_instr_type_intrinsic)
+               continue;
+            in = nir_instr_as_intrinsic(instr);
+            if (in->intrinsic != nir_intrinsic_store_output || block->cf_node.parent != &impl->cf_node)
+               continue;
+            for (unsigned i = 0; i < in->src[0].ssa->num_components; i++) {
+               unsigned comp = nir_intrinsic_component(in) + i;
+               struct operand o = resolve(nir_get_scalar(in->src[0].ssa, i));
+               bool taken = false;
+
+               nir_scalar sc = nir_scalar_chase_movs(nir_get_scalar(in->src[0].ssa, i));
+
+               /* (the value an ALU instruction makes, define()'s) */
+               /* (V32NMAD's: the others' encodings take an even
+                * destination -- compares, selects, RCP -- and two of the
+                * four are odd) */
+               if (comp >= 4 || !(nir_intrinsic_write_mask(in) & 1 << i) || o.is_const || o.neg ||
+                   o.abs || !nir_scalar_is_alu(sc) ||
+                   (nir_scalar_alu_op(sc) != nir_op_fmul && nir_scalar_alu_op(sc) != nir_op_fadd &&
+                    nir_scalar_alu_op(sc) != nir_op_fmin && nir_scalar_alu_op(sc) != nir_op_fmax) ||
+                   (unsigned)o.id != sc.def->index * 4 + sc.comp || sc.def->num_components != 1)
+                  continue;
+               for (unsigned k = 0; k < 4; k++)
+                  taken |= c->colour_id[k] == (int)o.id;
+               if (!taken)
+                  c->colour_id[comp] = o.id;
+            }
+         }
+   }
    if (c->kills) {
       c->kill = block(c, 2, 2);
       emit(c, usse_limm(treg(c, c->kill), 0));

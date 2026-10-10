@@ -209,6 +209,10 @@ sgx_init_screen_caps(struct pipe_screen *pscreen)
     * itself (u_vbuf would copy each array into a buffer of its own first,
     * and a draw's arrays would not follow the last one's) */
    caps->user_vertex_buffers = true;
+   /* glthread (M34): maps of buffers in the application's thread, kept
+    * while draws read them (sgx_resource.c) */
+   caps->map_unsynchronized_thread_safe = true;
+   caps->allow_mapped_buffers_during_execution = true;
    caps->native_fence_fd = true;
    caps->blend_equation_separate = true;
    caps->uma = true;
