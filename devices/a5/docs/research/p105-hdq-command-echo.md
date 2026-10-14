@@ -47,9 +47,11 @@ current zero-pulse encoding differs from iBoot's. The live comparison below
 checks acceptance of normal traffic. The change does not prove complete framing integrity for extra
 bytes, nor assign unverified UART error-status bit meanings.
 
-PR9's earlier framing test emits eight zero-valued fake echo bytes. When
-combining this fix, that fixture must emit the actual transmitted bytes.
-Its existing transport/cache assertions remain applicable. No production
+PR9's earlier framing fixture always echoed eight zero command bits, even
+when the command contained ones. A companion test-only update in PR9 now
+echoes the actual transmitted bytes. Its full transport/cache/property
+control passes both on PR9's source and with this comparison integrated
+privately. Its existing transport/cache assertions remain applicable. No production
 read16 or cache changes from PR9 are included here.
 
 No additional cache or unit defect was established beyond the existing
