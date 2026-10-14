@@ -44,7 +44,7 @@ typedef int64_t ktime_t;
 static uint64_t now_us, phase_us, tx_first_us;
 static unsigned int ucon, tx_count, rx_count, rx_limit, event_count, events[32];
 static bool stuck, response_ready, tx_during_break;
-static unsigned char uart[128];
+static unsigned char uart[128], tx[8];
 struct hdq_battery { void *base; };
 #define jiffies ((unsigned long)((phase_us + now_us) / 10000))
 /* Exact HZ<=1000/divisible branch from Linux v6.12 jiffies.h. */
@@ -74,7 +74,9 @@ static unsigned int readl(void *addr) {
     if (off == 0x10) return response_ready && rx_count < rx_limit;
     if (off == 0x24) {
         unsigned int i = rx_count++;
-        return i >= 8 && ((0xa6 >> (i - 8)) & 1) ? 0xfe : 0xe0;
+        /* Echo the actual transmitted command before the gauge data. */
+        if (i < 8) return tx[i];
+        return ((0xa6 >> (i - 8)) & 1) ? 0xfe : 0xe0;
     }
     abort();
 }
@@ -89,7 +91,8 @@ static void writel(unsigned int v, void *addr) {
     assert(off == 0x20 && (v == 0xfe || v == 0xe0));
     if (!tx_count) { tx_first_us = now_us; events[event_count++] = 5; }
     if (ucon & BIT(4)) tx_during_break = true;
-    ++tx_count;
+    assert(tx_count < ARRAY_SIZE(tx));
+    tx[tx_count++] = v;
 }
 '''
 
