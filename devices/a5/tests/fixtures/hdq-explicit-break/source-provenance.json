@@ -1,0 +1,8 @@
+{
+  "linux_revision": "adc218676eef25575469234709c2d87185ca223a",
+  "source": "include/linux/iopoll.h",
+  "url": "https://github.com/torvalds/linux/blob/adc218676eef25575469234709c2d87185ca223a/include/linux/iopoll.h",
+  "whole_header_sha256": "ae14ea5396f486ab5be2c364fe9ce10226c7088dbc1d798c6a6d8b88854b1558",
+  "fixture_sha256": "8bc67d85a5d771eeb15354e9894e076662565894c8b670e9dcba67128bb74087",
+  "scope": "Exact three macro bodies; fake clock/MMIO/sleep dependencies. No hardware semantics modeled as evidence."
+}
