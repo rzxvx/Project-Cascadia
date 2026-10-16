@@ -353,6 +353,7 @@ from; [GPU.md](GPU.md) has the details, the controls and how it works.
 | kDFU: "Unable to connect to device", the iPad never reacted | Legacy iOS Kit spent the run installing its own dependencies. Run it once on its own; on Arch `pacman -Syu` first. |
 | kDFU: the iBEC uploads to 100%, then the device looks switched off | An encrypted iBEC. After iOS has booted the AES GID key is gone, so the KBAG decrypts to nothing. `--kdfu` picks the plaintext image by itself unless `--ibec` or `--known-good` pinned one. |
 | `no iBoot32Patcher ... rebuild the image` | The build image predates a change to the Dockerfile. `./cascadia image` (and `./cascadia firmware` now does this itself). |
+| `mount.nfs` reports `Failed to find 'tcp' protocol` (or `Protocol not supported`) and `/etc/netconfig` is missing | Rebuild with the current base-package list, which includes `libtirpc-conf`. To repair a running image with package access, use `apk add libtirpc-conf`. The binary and its shared libraries alone are insufficient. |
 | The device boots, but from RAM when you expected NFS | The host's address arrived after stage 1 had given up. `flash` now sets it while the device boots; check `./cascadia nfs status`. |
 | The UART log stops mid-boot | Normal. It truncates late in boot; the framebuffer and `dmesg` over ssh have the rest. |
 
