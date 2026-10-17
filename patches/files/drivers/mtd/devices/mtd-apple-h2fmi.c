@@ -318,7 +318,8 @@ static int h2fmi_read_raw_page(struct h2fmi *fmi, struct h2fmi_bus *b,
 	writel(1u << H2FMI_CE, b->fmc + FMC_CE_CTRL);
 	h2fmi_clear_irqs(b);
 
-	ret = h2fmi_cmd_addr_cmd(fmi, b, 0x0a, 0x37, row, 3);
+	/* The fixed P105 PPN 1.5.x profile uses four row-address cycles. */
+	ret = h2fmi_cmd_addr_cmd(fmi, b, 0x0a, 0x37, row, 4);
 	if (!ret)
 		ret = h2fmi_status(fmi, b, st);
 	if (!ret)

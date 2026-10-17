@@ -111,7 +111,7 @@ iBoot leaves them on.  Block reset = bit 31 of 0x3f1010c4 (FMI0) /
   tRST / tPURST / tSCE ms, tCERDY us at 0xf0.
 
 - **Page read** (`fmiss_ppn_read_multi`, which queues this on the FMI's
-  sequencer at FMI+0xc0000; done by hand here): `0A <row, 3 bytes> 37`
+  sequencer at FMI+0xc0000; done by hand here): `0A <row> 37`
   (RW_CTRL 0xb), status, `7A`, data out, `77`.  Row = page | block << 8 |
   cau << 19 (| slc << 23).  A page comes out as 16384 data + 64 metadata
   bytes (`0x4040`); the PPN has already corrected it.  Status 0x40 = good,
@@ -125,6 +125,13 @@ iBoot leaves them on.  Block reset = bit 31 of 0x3f1010c4 (FMI0) /
   and back (0x180 = 0xa, DDR).  In DDR the FMI skips 54 bytes per sector
   instead of 53: sector n comes out shifted by n bytes.  `nandctl bootpage`
   reads raw and drops the parity instead (no correction).
+
+  **Address-cycle correction (2026-10-14):** the earlier manual recipe used
+  three row bytes. Original iBEC selects four for the documented PPN 1.5.x
+  profile, including a zero fourth byte. The kernel and PIO candidate now
+  follow that count. [Primary evidence and qualification limits](p105-ppn-row-address-cycles.md)
+  distinguish the offline correction from the still-unresolved read failure
+  on the current device; this candidate has not been hardware-tested.
 
 ## Flash partition table
 
