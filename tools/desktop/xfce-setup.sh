@@ -30,6 +30,9 @@
 #                                   X).  A button on the top panel shows and
 #                                   hides it.  Ctrl is the "^" key
 #   xinit                           startxfce4 needs it and nothing pulls it in
+#   mesa-dri-gallium                 swrast_dri.so: CPU OpenGL for Xorg/GLX.
+#                                   libGL alone does not pull in this driver;
+#                                   this does not accelerate the SGX GPU
 #
 # Not used, although older recipes have them: setup-xorg-base (alpine-conf,
 # which also drags in openrc), xf86-video-vesa (x86 only; for armv7 it does not
@@ -38,7 +41,7 @@
 set -e
 
 apk add --no-progress xorg-server xf86-video-fbdev xf86-input-libinput eudev \
-    xinit xfce4 xfce4-terminal svkbd touchegg
+    xinit xfce4 xfce4-terminal svkbd touchegg mesa-dri-gallium
 
 mkdir -p /etc/X11/xorg.conf.d /usr/local/bin /usr/share/applications \
          /usr/share/icons/hicolor/scalable/apps /etc/xdg/autostart
