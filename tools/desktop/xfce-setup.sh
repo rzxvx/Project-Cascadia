@@ -87,11 +87,34 @@ pkill -x fbkeyboard 2>/dev/null
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 export XDG_RUNTIME_DIR=/tmp/xdg-$(id -u)
 mkdir -p -m 700 "$XDG_RUNTIME_DIR"
-# The system bus: some XFCE parts ask for it.  Nothing in this boot starts one.
-if [ ! -S /run/dbus/system_bus_socket ]; then
+# The system bus: a socket can survive a stopped daemon in the same RAM boot.
+# Probe the bus, not just the socket, before starting XFCE/UPower clients.
+system_bus_ready() {
+    timeout 3 dbus-send --system --type=method_call --print-reply \
+        --reply-timeout=2000 --dest=org.freedesktop.DBus \
+        /org/freedesktop/DBus org.freedesktop.DBus.ListNames >/dev/null 2>&1
+}
+if ! system_bus_ready; then
+    # Alpine's system.conf uses this pid file. Never replace a live or
+    # ambiguous owner, and never kill a bus to make desktop startup succeed.
+    if [ -e /run/dbus/dbus.pid ]; then
+        bus_pid=$(cat /run/dbus/dbus.pid) || exit 1
+        case "$bus_pid" in
+            ''|0|*[!0-9]*) echo "Invalid system bus pid file" >&2; exit 1 ;;
+        esac
+        if [ -e "/proc/$bus_pid" ]; then
+            echo "System bus is unavailable but its process still exists" >&2
+            exit 1
+        fi
+        rm /run/dbus/dbus.pid || exit 1
+    elif [ -e /run/dbus/system_bus_socket ]; then
+        echo "System bus socket has no known owner; inspect it before retrying" >&2
+        exit 1
+    fi
     mkdir -p /run/dbus
-    dbus-uuidgen --ensure
-    dbus-daemon --system
+    dbus-uuidgen --ensure || exit 1
+    dbus-daemon --system || exit 1
+    system_bus_ready || { echo "System bus did not become ready" >&2; exit 1; }
 fi
 # touchegg is two halves: this daemon reads the touchscreen, the client in
 # the session (XFCE autostart) turns gestures into clicks.
