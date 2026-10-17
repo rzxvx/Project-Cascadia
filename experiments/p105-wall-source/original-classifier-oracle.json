@@ -1,0 +1,1095 @@
+{
+  "image_sha256": "7dc177231f52e7032cd10ddb255c3a8fd6f62c33c5e4d731eda7e5e0a8b8fdcd",
+  "image_size": 282624,
+  "entry": "0x9ff20f3c",
+  "preferred_load_base": "0x9ff00000",
+  "mock_status": 8,
+  "mock_tristar": {
+    "0x0c": 128,
+    "0x06": 4
+  },
+  "test_scope": "software classification only; I2C/ADC helper/delay/logging are fake, no current grant",
+  "case_count": 72,
+  "cases": [
+    {
+      "case": 0,
+      "encoded_samples": [
+        0,
+        0,
+        300
+      ],
+      "scaled_samples": [
+        0,
+        0,
+        366
+      ],
+      "source_type": 5,
+      "divider_id": 0
+    },
+    {
+      "case": 1,
+      "encoded_samples": [
+        0,
+        819,
+        300
+      ],
+      "scaled_samples": [
+        0,
+        999,
+        366
+      ],
+      "source_type": 5,
+      "divider_id": 0
+    },
+    {
+      "case": 2,
+      "encoded_samples": [
+        0,
+        820,
+        300
+      ],
+      "scaled_samples": [
+        0,
+        1000,
+        366
+      ],
+      "source_type": 5,
+      "divider_id": 0
+    },
+    {
+      "case": 3,
+      "encoded_samples": [
+        0,
+        1819,
+        300
+      ],
+      "scaled_samples": [
+        0,
+        2220,
+        366
+      ],
+      "source_type": 5,
+      "divider_id": 0
+    },
+    {
+      "case": 4,
+      "encoded_samples": [
+        0,
+        1820,
+        300
+      ],
+      "scaled_samples": [
+        0,
+        2221,
+        366
+      ],
+      "source_type": 5,
+      "divider_id": 0
+    },
+    {
+      "case": 5,
+      "encoded_samples": [
+        0,
+        2368,
+        300
+      ],
+      "scaled_samples": [
+        0,
+        2890,
+        366
+      ],
+      "source_type": 5,
+      "divider_id": 0
+    },
+    {
+      "case": 6,
+      "encoded_samples": [
+        0,
+        2369,
+        300
+      ],
+      "scaled_samples": [
+        0,
+        2891,
+        366
+      ],
+      "source_type": 5,
+      "divider_id": 0
+    },
+    {
+      "case": 7,
+      "encoded_samples": [
+        0,
+        4095,
+        300
+      ],
+      "scaled_samples": [
+        0,
+        4998,
+        366
+      ],
+      "source_type": 5,
+      "divider_id": 0
+    },
+    {
+      "case": 8,
+      "encoded_samples": [
+        819,
+        0,
+        300
+      ],
+      "scaled_samples": [
+        999,
+        0,
+        366
+      ],
+      "source_type": 5,
+      "divider_id": 0
+    },
+    {
+      "case": 9,
+      "encoded_samples": [
+        819,
+        819,
+        300
+      ],
+      "scaled_samples": [
+        999,
+        999,
+        366
+      ],
+      "source_type": 5,
+      "divider_id": 0
+    },
+    {
+      "case": 10,
+      "encoded_samples": [
+        819,
+        820,
+        300
+      ],
+      "scaled_samples": [
+        999,
+        1000,
+        366
+      ],
+      "source_type": 5,
+      "divider_id": 0
+    },
+    {
+      "case": 11,
+      "encoded_samples": [
+        819,
+        1819,
+        300
+      ],
+      "scaled_samples": [
+        999,
+        2220,
+        366
+      ],
+      "source_type": 5,
+      "divider_id": 0
+    },
+    {
+      "case": 12,
+      "encoded_samples": [
+        819,
+        1820,
+        300
+      ],
+      "scaled_samples": [
+        999,
+        2221,
+        366
+      ],
+      "source_type": 5,
+      "divider_id": 0
+    },
+    {
+      "case": 13,
+      "encoded_samples": [
+        819,
+        2368,
+        300
+      ],
+      "scaled_samples": [
+        999,
+        2890,
+        366
+      ],
+      "source_type": 5,
+      "divider_id": 0
+    },
+    {
+      "case": 14,
+      "encoded_samples": [
+        819,
+        2369,
+        300
+      ],
+      "scaled_samples": [
+        999,
+        2891,
+        366
+      ],
+      "source_type": 5,
+      "divider_id": 0
+    },
+    {
+      "case": 15,
+      "encoded_samples": [
+        819,
+        4095,
+        300
+      ],
+      "scaled_samples": [
+        999,
+        4998,
+        366
+      ],
+      "source_type": 5,
+      "divider_id": 0
+    },
+    {
+      "case": 16,
+      "encoded_samples": [
+        820,
+        0,
+        300
+      ],
+      "scaled_samples": [
+        1000,
+        0,
+        366
+      ],
+      "source_type": 5,
+      "divider_id": 0
+    },
+    {
+      "case": 17,
+      "encoded_samples": [
+        820,
+        819,
+        300
+      ],
+      "scaled_samples": [
+        1000,
+        999,
+        366
+      ],
+      "source_type": 5,
+      "divider_id": 0
+    },
+    {
+      "case": 18,
+      "encoded_samples": [
+        820,
+        820,
+        300
+      ],
+      "scaled_samples": [
+        1000,
+        1000,
+        366
+      ],
+      "source_type": 4,
+      "divider_id": 1
+    },
+    {
+      "case": 19,
+      "encoded_samples": [
+        820,
+        1819,
+        300
+      ],
+      "scaled_samples": [
+        1000,
+        2220,
+        366
+      ],
+      "source_type": 3,
+      "divider_id": 0
+    },
+    {
+      "case": 20,
+      "encoded_samples": [
+        820,
+        1820,
+        300
+      ],
+      "scaled_samples": [
+        1000,
+        2221,
+        366
+      ],
+      "source_type": 3,
+      "divider_id": 0
+    },
+    {
+      "case": 21,
+      "encoded_samples": [
+        820,
+        2368,
+        300
+      ],
+      "scaled_samples": [
+        1000,
+        2890,
+        366
+      ],
+      "source_type": 3,
+      "divider_id": 0
+    },
+    {
+      "case": 22,
+      "encoded_samples": [
+        820,
+        2369,
+        300
+      ],
+      "scaled_samples": [
+        1000,
+        2891,
+        366
+      ],
+      "source_type": 3,
+      "divider_id": 0
+    },
+    {
+      "case": 23,
+      "encoded_samples": [
+        820,
+        4095,
+        300
+      ],
+      "scaled_samples": [
+        1000,
+        4998,
+        366
+      ],
+      "source_type": 3,
+      "divider_id": 0
+    },
+    {
+      "case": 24,
+      "encoded_samples": [
+        1819,
+        0,
+        300
+      ],
+      "scaled_samples": [
+        2220,
+        0,
+        366
+      ],
+      "source_type": 5,
+      "divider_id": 0
+    },
+    {
+      "case": 25,
+      "encoded_samples": [
+        1819,
+        819,
+        300
+      ],
+      "scaled_samples": [
+        2220,
+        999,
+        366
+      ],
+      "source_type": 5,
+      "divider_id": 0
+    },
+    {
+      "case": 26,
+      "encoded_samples": [
+        1819,
+        820,
+        300
+      ],
+      "scaled_samples": [
+        2220,
+        1000,
+        366
+      ],
+      "source_type": 3,
+      "divider_id": 0
+    },
+    {
+      "case": 27,
+      "encoded_samples": [
+        1819,
+        1819,
+        300
+      ],
+      "scaled_samples": [
+        2220,
+        2220,
+        366
+      ],
+      "source_type": 4,
+      "divider_id": 1
+    },
+    {
+      "case": 28,
+      "encoded_samples": [
+        1819,
+        1820,
+        300
+      ],
+      "scaled_samples": [
+        2220,
+        2221,
+        366
+      ],
+      "source_type": 4,
+      "divider_id": 4
+    },
+    {
+      "case": 29,
+      "encoded_samples": [
+        1819,
+        2368,
+        300
+      ],
+      "scaled_samples": [
+        2220,
+        2890,
+        366
+      ],
+      "source_type": 4,
+      "divider_id": 4
+    },
+    {
+      "case": 30,
+      "encoded_samples": [
+        1819,
+        2369,
+        300
+      ],
+      "scaled_samples": [
+        2220,
+        2891,
+        366
+      ],
+      "source_type": 4,
+      "divider_id": 4
+    },
+    {
+      "case": 31,
+      "encoded_samples": [
+        1819,
+        4095,
+        300
+      ],
+      "scaled_samples": [
+        2220,
+        4998,
+        366
+      ],
+      "source_type": 3,
+      "divider_id": 0
+    },
+    {
+      "case": 32,
+      "encoded_samples": [
+        1820,
+        0,
+        300
+      ],
+      "scaled_samples": [
+        2221,
+        0,
+        366
+      ],
+      "source_type": 5,
+      "divider_id": 0
+    },
+    {
+      "case": 33,
+      "encoded_samples": [
+        1820,
+        819,
+        300
+      ],
+      "scaled_samples": [
+        2221,
+        999,
+        366
+      ],
+      "source_type": 5,
+      "divider_id": 0
+    },
+    {
+      "case": 34,
+      "encoded_samples": [
+        1820,
+        820,
+        300
+      ],
+      "scaled_samples": [
+        2221,
+        1000,
+        366
+      ],
+      "source_type": 3,
+      "divider_id": 0
+    },
+    {
+      "case": 35,
+      "encoded_samples": [
+        1820,
+        1819,
+        300
+      ],
+      "scaled_samples": [
+        2221,
+        2220,
+        366
+      ],
+      "source_type": 4,
+      "divider_id": 2
+    },
+    {
+      "case": 36,
+      "encoded_samples": [
+        1820,
+        1820,
+        300
+      ],
+      "scaled_samples": [
+        2221,
+        2221,
+        366
+      ],
+      "source_type": 4,
+      "divider_id": 5
+    },
+    {
+      "case": 37,
+      "encoded_samples": [
+        1820,
+        2368,
+        300
+      ],
+      "scaled_samples": [
+        2221,
+        2890,
+        366
+      ],
+      "source_type": 4,
+      "divider_id": 4
+    },
+    {
+      "case": 38,
+      "encoded_samples": [
+        1820,
+        2369,
+        300
+      ],
+      "scaled_samples": [
+        2221,
+        2891,
+        366
+      ],
+      "source_type": 4,
+      "divider_id": 4
+    },
+    {
+      "case": 39,
+      "encoded_samples": [
+        1820,
+        4095,
+        300
+      ],
+      "scaled_samples": [
+        2221,
+        4998,
+        366
+      ],
+      "source_type": 3,
+      "divider_id": 0
+    },
+    {
+      "case": 40,
+      "encoded_samples": [
+        2368,
+        0,
+        300
+      ],
+      "scaled_samples": [
+        2890,
+        0,
+        366
+      ],
+      "source_type": 5,
+      "divider_id": 0
+    },
+    {
+      "case": 41,
+      "encoded_samples": [
+        2368,
+        819,
+        300
+      ],
+      "scaled_samples": [
+        2890,
+        999,
+        366
+      ],
+      "source_type": 5,
+      "divider_id": 0
+    },
+    {
+      "case": 42,
+      "encoded_samples": [
+        2368,
+        820,
+        300
+      ],
+      "scaled_samples": [
+        2890,
+        1000,
+        366
+      ],
+      "source_type": 3,
+      "divider_id": 0
+    },
+    {
+      "case": 43,
+      "encoded_samples": [
+        2368,
+        1819,
+        300
+      ],
+      "scaled_samples": [
+        2890,
+        2220,
+        366
+      ],
+      "source_type": 4,
+      "divider_id": 2
+    },
+    {
+      "case": 44,
+      "encoded_samples": [
+        2368,
+        1820,
+        300
+      ],
+      "scaled_samples": [
+        2890,
+        2221,
+        366
+      ],
+      "source_type": 4,
+      "divider_id": 2
+    },
+    {
+      "case": 45,
+      "encoded_samples": [
+        2368,
+        2368,
+        300
+      ],
+      "scaled_samples": [
+        2890,
+        2890,
+        366
+      ],
+      "source_type": 4,
+      "divider_id": 5
+    },
+    {
+      "case": 46,
+      "encoded_samples": [
+        2368,
+        2369,
+        300
+      ],
+      "scaled_samples": [
+        2890,
+        2891,
+        366
+      ],
+      "source_type": 4,
+      "divider_id": 8
+    },
+    {
+      "case": 47,
+      "encoded_samples": [
+        2368,
+        4095,
+        300
+      ],
+      "scaled_samples": [
+        2890,
+        4998,
+        366
+      ],
+      "source_type": 4,
+      "divider_id": 8
+    },
+    {
+      "case": 48,
+      "encoded_samples": [
+        2369,
+        0,
+        300
+      ],
+      "scaled_samples": [
+        2891,
+        0,
+        366
+      ],
+      "source_type": 5,
+      "divider_id": 0
+    },
+    {
+      "case": 49,
+      "encoded_samples": [
+        2369,
+        819,
+        300
+      ],
+      "scaled_samples": [
+        2891,
+        999,
+        366
+      ],
+      "source_type": 5,
+      "divider_id": 0
+    },
+    {
+      "case": 50,
+      "encoded_samples": [
+        2369,
+        820,
+        300
+      ],
+      "scaled_samples": [
+        2891,
+        1000,
+        366
+      ],
+      "source_type": 3,
+      "divider_id": 0
+    },
+    {
+      "case": 51,
+      "encoded_samples": [
+        2369,
+        1819,
+        300
+      ],
+      "scaled_samples": [
+        2891,
+        2220,
+        366
+      ],
+      "source_type": 4,
+      "divider_id": 2
+    },
+    {
+      "case": 52,
+      "encoded_samples": [
+        2369,
+        1820,
+        300
+      ],
+      "scaled_samples": [
+        2891,
+        2221,
+        366
+      ],
+      "source_type": 4,
+      "divider_id": 2
+    },
+    {
+      "case": 53,
+      "encoded_samples": [
+        2369,
+        2368,
+        300
+      ],
+      "scaled_samples": [
+        2891,
+        2890,
+        366
+      ],
+      "source_type": 4,
+      "divider_id": 6
+    },
+    {
+      "case": 54,
+      "encoded_samples": [
+        2369,
+        2369,
+        300
+      ],
+      "scaled_samples": [
+        2891,
+        2891,
+        366
+      ],
+      "source_type": 4,
+      "divider_id": 9
+    },
+    {
+      "case": 55,
+      "encoded_samples": [
+        2369,
+        4095,
+        300
+      ],
+      "scaled_samples": [
+        2891,
+        4998,
+        366
+      ],
+      "source_type": 4,
+      "divider_id": 9
+    },
+    {
+      "case": 56,
+      "encoded_samples": [
+        4095,
+        0,
+        300
+      ],
+      "scaled_samples": [
+        4998,
+        0,
+        366
+      ],
+      "source_type": 5,
+      "divider_id": 0
+    },
+    {
+      "case": 57,
+      "encoded_samples": [
+        4095,
+        819,
+        300
+      ],
+      "scaled_samples": [
+        4998,
+        999,
+        366
+      ],
+      "source_type": 5,
+      "divider_id": 0
+    },
+    {
+      "case": 58,
+      "encoded_samples": [
+        4095,
+        820,
+        300
+      ],
+      "scaled_samples": [
+        4998,
+        1000,
+        366
+      ],
+      "source_type": 3,
+      "divider_id": 0
+    },
+    {
+      "case": 59,
+      "encoded_samples": [
+        4095,
+        1819,
+        300
+      ],
+      "scaled_samples": [
+        4998,
+        2220,
+        366
+      ],
+      "source_type": 3,
+      "divider_id": 0
+    },
+    {
+      "case": 60,
+      "encoded_samples": [
+        4095,
+        1820,
+        300
+      ],
+      "scaled_samples": [
+        4998,
+        2221,
+        366
+      ],
+      "source_type": 3,
+      "divider_id": 0
+    },
+    {
+      "case": 61,
+      "encoded_samples": [
+        4095,
+        2368,
+        300
+      ],
+      "scaled_samples": [
+        4998,
+        2890,
+        366
+      ],
+      "source_type": 4,
+      "divider_id": 6
+    },
+    {
+      "case": 62,
+      "encoded_samples": [
+        4095,
+        2369,
+        300
+      ],
+      "scaled_samples": [
+        4998,
+        2891,
+        366
+      ],
+      "source_type": 4,
+      "divider_id": 9
+    },
+    {
+      "case": 63,
+      "encoded_samples": [
+        4095,
+        4095,
+        300
+      ],
+      "scaled_samples": [
+        4998,
+        4998,
+        366
+      ],
+      "source_type": 4,
+      "divider_id": 9
+    },
+    {
+      "case": 64,
+      "encoded_samples": [
+        0,
+        0,
+        0
+      ],
+      "scaled_samples": [
+        0,
+        0,
+        0
+      ],
+      "source_type": 3,
+      "divider_id": 0
+    },
+    {
+      "case": 65,
+      "encoded_samples": [
+        0,
+        0,
+        205
+      ],
+      "scaled_samples": [
+        0,
+        0,
+        250
+      ],
+      "source_type": 3,
+      "divider_id": 0
+    },
+    {
+      "case": 66,
+      "encoded_samples": [
+        0,
+        0,
+        206
+      ],
+      "scaled_samples": [
+        0,
+        0,
+        251
+      ],
+      "source_type": 5,
+      "divider_id": 0
+    },
+    {
+      "case": 67,
+      "encoded_samples": [
+        0,
+        0,
+        654
+      ],
+      "scaled_samples": [
+        0,
+        0,
+        798
+      ],
+      "source_type": 5,
+      "divider_id": 0
+    },
+    {
+      "case": 68,
+      "encoded_samples": [
+        0,
+        0,
+        655
+      ],
+      "scaled_samples": [
+        0,
+        0,
+        799
+      ],
+      "source_type": 5,
+      "divider_id": 0
+    },
+    {
+      "case": 69,
+      "encoded_samples": [
+        0,
+        0,
+        656
+      ],
+      "scaled_samples": [
+        0,
+        0,
+        800
+      ],
+      "source_type": 3,
+      "divider_id": 0
+    },
+    {
+      "case": 70,
+      "encoded_samples": [
+        1802,
+        2457,
+        0
+      ],
+      "scaled_samples": [
+        2199,
+        2999,
+        0
+      ],
+      "source_type": 4,
+      "divider_id": 4
+    },
+    {
+      "case": 71,
+      "encoded_samples": [
+        2457,
+        1802,
+        0
+      ],
+      "scaled_samples": [
+        2999,
+        2199,
+        0
+      ],
+      "source_type": 4,
+      "divider_id": 2
+    }
+  ]
+}

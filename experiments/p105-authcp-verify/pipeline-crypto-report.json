@@ -1,0 +1,40 @@
+{
+  "scope": "synthetic signatures/leases/wire; actual unchanged whole Linux-C; real host crypto",
+  "source_pins": {
+    "experiments/p105-ths-idbus/cascadia-ths-idbus.c": "bd6da8ec07730a79c5d3bfc9b936085bd67016c02bfc70337a0b69978f5af61c",
+    "experiments/p105-authcp-aid/cascadia-authcp-aid.c": "382cc9dd37bd18d37e9466830fe109c0b29bbe1bdab6885bf65acdff2584b529",
+    "experiments/p105-ths-idbus/authcp-ths-window13-oracle.json": "78b0091f7f704676495e3121d378eba9d6abfe8234318f686af8aacb37e48e75",
+    "experiments/p105-ths-idbus/cascadia-ths-idbus.h": "7a29ca7b1eca0a85d1d5d212c429948179c7f86daf475619041b6c20b6a69f3d",
+    "experiments/p105-authcp-aid/cascadia-authcp-aid.h": "87f49ff6b1ad50869125612e9563d5d512aa800e3deb3a0a1fa8ce8f4d15fd33"
+  },
+  "cases": [
+    {
+      "version": 2,
+      "late_chunk_substitution": false,
+      "parser_completed_unverified": true,
+      "real_signature_valid": true,
+      "authorization_granted": false
+    },
+    {
+      "version": 2,
+      "late_chunk_substitution": true,
+      "parser_completed_unverified": true,
+      "real_signature_valid": false,
+      "authorization_granted": false
+    },
+    {
+      "version": 3,
+      "late_chunk_substitution": false,
+      "parser_completed_unverified": true,
+      "real_signature_valid": true,
+      "authorization_granted": false
+    },
+    {
+      "version": 3,
+      "late_chunk_substitution": true,
+      "parser_completed_unverified": true,
+      "real_signature_valid": false,
+      "authorization_granted": false
+    }
+  ]
+}

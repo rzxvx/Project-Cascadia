@@ -1,0 +1,17 @@
+{
+  "prior_commit": "b14e8f26dec544aff0cdde8a0515f2c671df4725",
+  "blocks": {
+    "power": {
+      "old": "if (!p->validate_epoch || !p->clock_membership)\n\t\treturn -ENODEV;",
+      "new": "if (!p->validate_epoch || !p->clock_membership) {\n\t\tret = -ENODEV;\n\t\tgoto failed;\n\t}"
+    },
+    "reset": {
+      "old": "if (!c->validate_epoch || !c->temporary_power_mask)\n\t\treturn -ENODEV;",
+      "new": "if (!c->validate_epoch || !c->temporary_power_mask) {\n\t\tret = -ENODEV;\n\t\tgoto failed;\n\t}"
+    },
+    "controller": {
+      "old": "if (!c->validate_epoch)\n\t\treturn -ENODEV;",
+      "new": "if (!c->validate_epoch)\n\t\treturn (c->touched || c->completed_operations) ?\n\t\t\tfault(c, -ENODEV) : -ENODEV;"
+    }
+  }
+}

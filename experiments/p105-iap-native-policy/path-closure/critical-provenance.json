@@ -1,0 +1,29 @@
+{
+  "frozen_manifest_SHA256": "b1756fe3f9517a78804e2478ad278486a823fc1eed330453fadb6047c3083a22",
+  "files": [
+    {
+      "path": "native13.py",
+      "sha256": "6f6aa9984ac1a9166296cb9f6b88ecd57dd8a88e844f840b6053ab0cf743edfe",
+      "size": 5536
+    },
+    {
+      "path": "emulate-critical-branch.py",
+      "sha256": "a20799af2d99d6620dcd7a4cd47754a6f29484d37eb1f066b33627c6ce0e772e",
+      "size": 3287
+    },
+    {
+      "path": "critical-oracle.json",
+      "sha256": "a36451950fb3687cdbb699e4e5965a1423423ec8b23ec03580ead585e6e3a5d9",
+      "size": 2976
+    },
+    {
+      "path": "CRITICAL_FALLBACK.md",
+      "sha256": "8f4e2448ec4999f5adea5c5327adb7b147e5e1549972874cbc40f00e194cf01b",
+      "size": 3329
+    }
+  ],
+  "independent_original_cases": 9,
+  "original_DER_decoder": false,
+  "full_trust": null,
+  "authorization_granted": false
+}

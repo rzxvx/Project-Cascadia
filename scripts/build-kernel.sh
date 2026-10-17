@@ -119,9 +119,10 @@ echo "==> Verifying critical config symbols"
 missing=0
 # ARM_GLOBAL_TIMER used to be here.  It is gone on purpose: the A9 global
 # timer is dead on this SoC (PERIPHCLK is not supplied) and requiring it only
-# taught us to ignore this list.  What IS load-bearing now is the USB path --
-# the system tick rides on the dwc2 SOF interrupt, so a kernel without a
-# working peripheral-mode gadget is a kernel with frozen jiffies.
+# taught us to ignore this list.  This script builds the reference peripheral
+# profile: require its USB console/network and the SOF fallback in case the
+# independent AIC timer fails its self-test.  The normal tick is now the AIC
+# timer; experimental host-only research uses a separate configuration/build.
 for sym in CONFIG_ARCH_APPLE_S5L CONFIG_APPLE_AIC1 CONFIG_SERIAL_SAMSUNG \
            CONFIG_SERIAL_EARLYCON CONFIG_FB_SIMPLE CONFIG_BLK_DEV_INITRD \
            CONFIG_SPI_SPIDEV CONFIG_INPUT_UINPUT CONFIG_DEVMEM \

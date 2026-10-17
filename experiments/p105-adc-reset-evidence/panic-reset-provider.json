@@ -1,0 +1,35 @@
+{
+  "format": "p105-native-panic-reset-provider-v1",
+  "adt_sha256": "e8277fd827ba250de3f46567cb1c910d4e1c80633d666510a7780e00f4ad4b59",
+  "parser_sha256": "caea6dc9165cf69183cbc65a98ec05b10e43abe2278adcd02db01951a2da95e8",
+  "source_artifact_sha256": "a1db9548d364647653fecd55e2f40b8262ff4ca1aad3888997b20e49868cd17c",
+  "PMU_callback": {
+    "property": "function-panic_reset",
+    "provider": "/device-tree/arm-io/wdt",
+    "dispatcher_integer": "0x57445472",
+    "dispatcher_fourcc": "WDTr",
+    "arguments": [
+      0
+    ]
+  },
+  "provider": {
+    "compatible": [
+      "wdt,s5l8940x",
+      "wdt,s5l8930x",
+      "wdt,s5l8920x"
+    ],
+    "reg_native_cells": [
+      252719136,
+      16
+    ],
+    "interrupt_controller_path": "/device-tree/arm-io/aic",
+    "interrupt_native_cells": [
+      4
+    ]
+  },
+  "limits": [
+    "authenticated ADT binding; no peripheral instruction path/emulation here",
+    "callback argument is not itself a hardware register value",
+    "no D1946 ADC reset or cancellation effect asserted"
+  ]
+}

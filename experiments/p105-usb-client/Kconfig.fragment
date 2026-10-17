@@ -1,0 +1,7 @@
+config CASCADIA_EXTERNAL_USB_CLIENT_RESEARCH
+ bool "Cascadia checked external USB client research component"
+ depends on ARCH_APPLE_S5L && USB_EHCI_HCD
+ default n
+ help
+   Compiles only a checked port-client lifetime component. No role switch,
+   HCD, PHY, connector route or power backend is registered by this option.

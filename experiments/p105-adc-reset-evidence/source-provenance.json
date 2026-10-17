@@ -1,0 +1,26 @@
+{
+  "format": "p105-adc-reset-source-evidence-v1",
+  "frozen_original_manifest_sha256": "05bc18e63dcd3910bfac6519cd29c953c03d2d539fbd094c4016f99e66c3ff86",
+  "inputs": {
+    "12H321": {
+      "sha256": "db1ddc8343aa9debc00e0a083fba59d9f555722db60957dc333b854fac21dd2c"
+    },
+    "13G36": {
+      "sha256": "8eae16f060a71d4f3790385951588f8198d0f21cdb74146f9750941a3d764125"
+    }
+  },
+  "original_tool_sha256": "64679d220995dccc967fc75f595c9f6a823e9e51aad2865c89c128fc49373e81",
+  "files": {
+    "README.md": "61e1489c299d63c12b9ad7d90e815b60eef6cad5cf84e9129bcc5209c6536c45",
+    "emulate-adc-reset-candidates.py": "64679d220995dccc967fc75f595c9f6a823e9e51aad2865c89c128fc49373e81",
+    "original12-results.json": "1a370d3d7dd8517af0f3191f5459ab80195efd5962c8ce7a63943d2a0cc6a87c",
+    "original13-results.json": "4ddeeef376e2879527c93357c71780b7b70dc5cd79e9d4b7f875101d305a5808",
+    "panic-reset-provider.json": "98356a3a2c249548b680632e452b133801783bd42b715ca8a55d659e7878ad18"
+  },
+  "new_fixture_count": 16,
+  "default_runtime_activation": false,
+  "physical_witness_produced": false,
+  "native_code_bytes_in_package": false,
+  "proposal_destination": "experiments/p105-adc-reset-evidence",
+  "original_review_README_SHA256": "e41983baa87f538468331e0862cd489f73b1b348dcc2a9313919e7660ba084e5"
+}

@@ -1,0 +1,8 @@
+{
+  "previous_source_SHA256": "08bd1069b9214b6d25427bb4bc12409cb87d45caa27d8efe5a2b2b3b538714d7",
+  "historical_failed_tail_SHA256": "869126581acc36376dbc3be58706df1509a66237b6dd7fe60050da00a21ba6fd",
+  "candidate_source_SHA256": "21b81092e6401085824fca850f577f699b03ef34032f2d8f3dfb8e3d537030c8",
+  "independent_readonly_peer_review": "confirmed documented adoption permits nonempty peer with no prior local write; old tests create peers via updates and set touched",
+  "normal_runtime_activation": false,
+  "hardware_access": false
+}

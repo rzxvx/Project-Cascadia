@@ -1,0 +1,3 @@
+make: Entering directory '/linux'
+  CC [M]  /stage/apple-pmu-i2c.o
+make: Leaving directory '/linux'

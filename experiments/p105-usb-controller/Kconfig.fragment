@@ -1,0 +1,7 @@
+config CASCADIA_USB_CONTROLLER_EXPERIMENT
+	bool "Cascadia source-only P105 controller primitives"
+	depends on ARCH_APPLE_S5L && REGMAP
+	default n
+	help
+	  Denied by default, no driver registration or DT match. Requires an
+	  unimplemented audited shared role/clock/PHY owner and full quiesce.

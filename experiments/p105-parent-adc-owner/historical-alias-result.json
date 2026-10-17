@@ -1,0 +1,9 @@
+{
+  "format": "p105-pmu-address-alias-control-v1",
+  "hardware_access": false,
+  "historical_source_sha256": "8932224533dcf5f69abea3a9bb9480e9f9d6dd6119182464e789c4bfb8571392",
+  "fixed_source_sha256": "e93ecda34f6ae49aefe4397f3f9f471808eda5573e87270c72753017c1f855fa",
+  "historical_returncode": -6,
+  "historical_stderr": "control: /tmp/tmphqgcinxw/fixture.c:114: address_alias: Assertion `__i2c_transfer(&adapter,&m,1)==-EINVAL&&!calls' failed.\n",
+  "expected_failure": "old exact-address filter allows0xbc although actual FIFO command equals PMU0x3c"
+}

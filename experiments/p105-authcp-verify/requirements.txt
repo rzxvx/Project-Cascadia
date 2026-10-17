@@ -1,0 +1,2 @@
+# Host/offline component; install only in an explicitly prepared isolated image.
+cryptography==41.0.7

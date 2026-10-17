@@ -1,0 +1,240 @@
+{
+  "format": "p105-actual-IRQ-drain-boundaries-v1",
+  "kernelcache_sha256": "db1ddc8343aa9debc00e0a083fba59d9f555722db60957dc333b854fac21dd2c",
+  "hardware_access": false,
+  "premises": [
+    "provider disable/enable interrupts mocked; no electrical line modeled",
+    "command gates/PMU byte reads synthetic",
+    "one queued software event before disable",
+    "failed read leaves deliberately stale stack bytes in selected counterexample",
+    "cached event flag+bitmap set explicitly in resume counterexample"
+  ],
+  "cases": {
+    "disabled_queued_event": {
+      "return_code": 0,
+      "before": {
+        "producer": 1,
+        "consumer": 0,
+        "enabled": 0
+      },
+      "after": {
+        "producer": 1,
+        "consumer": 1,
+        "enabled": 0
+      },
+      "ADC_state": 1,
+      "actions": [
+        {
+          "action": "actual PMU event dispatcher",
+          "before_state": 1
+        }
+      ],
+      "provider_calls": [
+        {
+          "mocked": "provider disableInterrupt",
+          "arguments": [
+            268484864,
+            0,
+            805306881
+          ],
+          "synthetic_return": 0
+        }
+      ],
+      "transactions": [
+        {
+          "direction": "read",
+          "register": "0x01",
+          "bytes": "000000000000000000"
+        }
+      ],
+      "gate_calls": [],
+      "injections": [],
+      "hardware_access": false,
+      "physical_quiescence_granted": false
+    },
+    "failed_read_stale_buffer": {
+      "return_code": 0,
+      "before": {
+        "producer": 1,
+        "consumer": 0,
+        "enabled": 0
+      },
+      "after": {
+        "producer": 1,
+        "consumer": 1,
+        "enabled": 0
+      },
+      "ADC_state": 2,
+      "actions": [
+        {
+          "action": "actual PMU event dispatcher",
+          "before_state": 1
+        }
+      ],
+      "provider_calls": [
+        {
+          "mocked": "provider disableInterrupt",
+          "arguments": [
+            268484864,
+            0,
+            805306881
+          ],
+          "synthetic_return": 0
+        }
+      ],
+      "transactions": [
+        {
+          "direction": "read",
+          "register": "0x01",
+          "bytes": null,
+          "error": "0xe00002c0 (synthetic transfer failure)"
+        }
+      ],
+      "gate_calls": [
+        {
+          "mocked": "commandWakeup",
+          "state": 2
+        }
+      ],
+      "injections": [
+        {
+          "mocked": "stale preexisting IRQ stack event buffer",
+          "address": "0x2000fea8"
+        }
+      ],
+      "hardware_access": false,
+      "physical_quiescence_granted": false
+    },
+    "cached_resume_completion": {
+      "return_code": 0,
+      "before": {
+        "producer": 1,
+        "consumer": 0,
+        "enabled": 0
+      },
+      "after": {
+        "producer": 1,
+        "consumer": 1,
+        "enabled": 0
+      },
+      "ADC_state": 2,
+      "actions": [
+        {
+          "action": "actual PMU event dispatcher",
+          "before_state": 1
+        }
+      ],
+      "provider_calls": [
+        {
+          "mocked": "provider disableInterrupt",
+          "arguments": [
+            268484864,
+            0,
+            805306881
+          ],
+          "synthetic_return": 0
+        }
+      ],
+      "transactions": [
+        {
+          "direction": "read",
+          "register": "0x01",
+          "bytes": "000000000000000000"
+        }
+      ],
+      "gate_calls": [
+        {
+          "mocked": "commandWakeup",
+          "state": 2
+        }
+      ],
+      "injections": [],
+      "hardware_access": false,
+      "physical_quiescence_granted": false
+    },
+    "auto_reenable_without_explicit_disable": {
+      "return_code": 0,
+      "before": {
+        "producer": 1,
+        "consumer": 0,
+        "enabled": 1
+      },
+      "after": {
+        "producer": 1,
+        "consumer": 1,
+        "enabled": 1
+      },
+      "ADC_state": 1,
+      "actions": [
+        {
+          "action": "actual PMU event dispatcher",
+          "before_state": 1
+        }
+      ],
+      "provider_calls": [
+        {
+          "mocked": "provider enableInterrupt",
+          "arguments": [
+            268484864,
+            0,
+            805306885
+          ],
+          "synthetic_return": 0
+        }
+      ],
+      "transactions": [
+        {
+          "direction": "read",
+          "register": "0x01",
+          "bytes": "000000000000000000"
+        }
+      ],
+      "gate_calls": [],
+      "injections": [],
+      "hardware_access": false,
+      "physical_quiescence_granted": false
+    },
+    "provider_disable_error_ignored": {
+      "return_code": 0,
+      "before": {
+        "producer": 1,
+        "consumer": 0,
+        "enabled": 0
+      },
+      "after": {
+        "producer": 1,
+        "consumer": 1,
+        "enabled": 0
+      },
+      "ADC_state": 1,
+      "actions": [
+        {
+          "action": "actual PMU event dispatcher",
+          "before_state": 1
+        }
+      ],
+      "provider_calls": [
+        {
+          "mocked": "provider disableInterrupt",
+          "arguments": [
+            268484864,
+            0,
+            805306881
+          ],
+          "synthetic_return": 3758097088
+        }
+      ],
+      "transactions": [
+        {
+          "direction": "read",
+          "register": "0x01",
+          "bytes": "000000000000000000"
+        }
+      ],
+      "gate_calls": [],
+      "injections": [],
+      "hardware_access": false,
+      "physical_quiescence_granted": false
+    }
+  }
+}

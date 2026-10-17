@@ -9,6 +9,9 @@
 
 extern bool early_boot_irqs_disabled;
 
+void apple_a9_periph_quiesce(void);
+void apple_a9_gic_drain(void);
+
 static inline bool apple_boot_irqs_off(void)
 {
 	return early_boot_irqs_disabled;

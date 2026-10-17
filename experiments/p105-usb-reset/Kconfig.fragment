@@ -1,0 +1,8 @@
+config CASCADIA_P105_USB_RESET_EXPERIMENT
+	bool "P105 standard reset ownership (source experiment)"
+	depends on ARCH_APPLE_S5L && REGMAP
+	default n
+	help
+	  Incomplete source-only checked standard reset clients. No registration,
+	  native power lease provider, connector policy or VBUS driver exists.
+	  Keep disabled in normal and experimental host builds.

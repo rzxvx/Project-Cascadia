@@ -1,0 +1,42 @@
+{
+  "scope": "isolated default-disabled Linux-C source/gauge adapter; no hardware access or fabricated source budget",
+  "linux_commit": "adc218676eef25575469234709c2d87185ca223a",
+  "normal_linux_config_sha256": "8b59b75e728cfacfb3441adf08b4de6e38c4ca53788fcee039ddddfdc43bed20",
+  "normal_composite_c_sha256": "dc216170a7c26d879a0e9765648694e1a442f9fe7320088c265ac27a3d4cf4f0",
+  "files": {
+    "p105-dwc2-source.c": "fe2bc1ab239bf37da84713980329fc237a70306c1fd62283f162aaae53467e67",
+    "p105-dwc2-source.h": "8f5ba6cc59c4738441fe7332e9e2c02e221293739a6a9d8c5949e8c05d2fecdf",
+    "p105-combined-provider.c": "48c0e6420af766cd4cf456b85ac10c17bc51cb02250c5231966b9bce7b025f70",
+    "p105-combined-provider.h": "dd7a4903214d6b8b358a5038fd8736029170ba289d2d12c360114243f2a3647f",
+    "p105-udc-observer.c": "80d9ed7036b86364f22012c74b1b9bf26d4a75e629265290b87504ca0e759a0e",
+    "p105-udc-observer.h": "01bf570893850c1dbb47b8df30980016816f461e21ecb86b81e53859c2ec1fb1",
+    "apple-hdq-battery.c": "a44ce674f4a8382a1bbc1b707c034cdf1749e0709f489e85dbb8b3036cc8a131",
+    "apple-hdq-snapshot.h": "42d98cd490a2e7a245dd12936f57d6fb0c6f6361d645bcd02161943e35298833",
+    "d1946-current-provider.h": "c63137a6ee30b039e8c321dbaf2e0736a05fcded4eec90264d4cc7f090a9521e",
+    "Kconfig": "abecd566d54721eb9ede415e0fc98114d4f4531facb75b80cdc2434edf7a7db6",
+    "Makefile": "58d0272bbda5d153c9023338228c1965be098161154c30540c550b4d0d6ec2cf",
+    "dwc2-source-reader.patch": "593fc85b2f0eb683988dc41f331c77e3264c3b45e523773249dcae96773d4c34"
+  },
+  "linux_notifier_c_sha256": "1f4a1b2384a8751d780d39a748ef5beda21149f6e715af54df131ff9add2c44e",
+  "historical_hdq_v3_copy_sha256": "c2177dda1c9b877c7660468679e207f05c39588b66f5ce089b507e67c998995c",
+  "hdq_snapshot_with_reviewed_transport_sha256": "a44ce674f4a8382a1bbc1b707c034cdf1749e0709f489e85dbb8b3036cc8a131",
+  "hdq_transport_followup": {
+    "base": "original HDQ-v3 reader/lifetime/cache API retained",
+    "reviewed_break_PR": 15,
+    "reviewed_echo_PR": 18,
+    "reviewed_present_PR": 12,
+    "guard": "read-only command range retained",
+    "scope": "experimental copy only, no normal source or activation change"
+  },
+  "charge_snapshot_followup": {
+    "fields": [
+      "capacity_percent",
+      "charge_now_uah",
+      "charge_full_uah"
+    ],
+    "export": "apple_hdq_reader_snapshot_v2",
+    "extra_hardware_reads": false,
+    "all_consumers_require_rebuild": true,
+    "hardware_qualified": false
+  }
+}

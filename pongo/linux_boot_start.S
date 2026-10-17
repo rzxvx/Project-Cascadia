@@ -21,7 +21,8 @@ _start:
 	str	r1, [r0, #0x08]
 	str	r1, [r0, #0x0C]
 
-	ldr	sp, =0x8000F000
+	/* Linker-reserved descending stack below the bundled zImage. */
+	ldr	sp, =__stack_top
 	bl	main
 	/* main returns DTB phys in r0 */
 	b	linux_boot_jump

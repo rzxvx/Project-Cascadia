@@ -1,0 +1,4 @@
+# Source-only alternative to the older standalone parent transport.
+# The actual A5 driver must contain the typed reserve/once helpers too.
+obj-$(CONFIG_APPLE_PMU_D1946_BANK0_EXPERIMENT) += apple-pmu-d1946-bank0.o
+obj-$(CONFIG_APPLE_PMU_D1946_ADC6_OWNER_EXPERIMENT) += p105-owned-adc6.o p105-adc6-poll.o

@@ -1,0 +1,24 @@
+{
+  "source_manifest_SHA256": "4dc36b12b6c087b4ae6719aedd91c6653175c3611267097e058e425508de6d90",
+  "files": {
+    "native13.py": "aba23d84b0c3103d55519399422ff125c56727726bd1256a39f72fb79662f9df",
+    "emulate-checkers.py": "f0f8499b2f887dd04ea132dcf2793cd1071abc9d3ca26f92719fbe436391ef9e",
+    "checkers-oracle.json": "842a0c1ccf644f2fe40a764cfc79da889c0d431200a4324eef56393072ca9f8d",
+    "emulate-trust-leaves.py": "1f2aabc084ed4f6670570eed6d29b3db773d73fe01a8f64bafd23718286aba46",
+    "trust-leaves-oracle.json": "50c3effc61266cecb2e24296a915b760cfbb711157afecc09e1eb145d4948cba",
+    "emulate-anchor-flow.py": "bd3e4fc093ad6c4854c1c9e00e1b91dcc4790342588efecb682dbf95b3b010cc",
+    "anchor-flow-oracle.json": "c791fe384f5b7e5af8e7d2cbc7e21df6510af9839662a189c2fcb11769f3e3fc",
+    "inspect_anchor_source.py": "781afa07245ca93f5613e5cc2f29832009b0d88aa86f6e031fcd1afc274fbe32",
+    "anchor-source-metadata.json": "fe5c87a4e69889f0772f8e20f216c4929d7527ca2ce34a43489d9efe254e2a88",
+    "IAP_TRUST_INTERFACE.md": "dec21f7adc208ca08393aae8809ab9b3d88a08e7e854c195ca2f4938ab1c1630"
+  },
+  "native_cases": {
+    "anchor_flow": 5,
+    "cache_api_leaves": 18,
+    "securityd_facets": 23
+  },
+  "root_exact_oracle_replay": true,
+  "complete_certificate_chain_trusted": null,
+  "authorization_granted": false,
+  "raw_source_files_included": false
+}

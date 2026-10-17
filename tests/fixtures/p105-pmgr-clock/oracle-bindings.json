@@ -1,0 +1,93 @@
+{
+  "kernelcache_sha256": "db1ddc8343aa9debc00e0a083fba59d9f555722db60957dc333b854fac21dd2c",
+  "hardware_access": false,
+  "minmax_producer": [
+    {
+      "present": true,
+      "native_minmax": [
+        56,
+        128
+      ],
+      "properties": [
+        "device-clocks-min",
+        "device-clocks-max"
+      ],
+      "steps": 37
+    },
+    {
+      "present": false,
+      "native_minmax": [
+        0,
+        0
+      ],
+      "properties": [
+        "device-clocks-min",
+        "device-clocks-max"
+      ],
+      "steps": 25
+    }
+  ],
+  "retained_map": {
+    "actual_retained_map": "0x12345000",
+    "provider_calls": [
+      [
+        "map_provider_index",
+        0,
+        0
+      ],
+      [
+        "fake_map_virtual",
+        305418240
+      ]
+    ],
+    "no_base_adjustment": true
+  },
+  "packed_clock_guard": [
+    {
+      "packed_clock_word": 0,
+      "accepted_by_original_startup": true,
+      "steps": 33
+    },
+    {
+      "packed_clock_word": 45,
+      "accepted_by_original_startup": true,
+      "steps": 33
+    },
+    {
+      "packed_clock_word": 109,
+      "accepted_by_original_startup": true,
+      "steps": 33
+    },
+    {
+      "packed_clock_word": 51,
+      "accepted_by_original_startup": true,
+      "steps": 33
+    },
+    {
+      "packed_clock_word": 52,
+      "accepted_by_original_startup": false,
+      "steps": 9
+    },
+    {
+      "packed_clock_word": 53,
+      "accepted_by_original_startup": false,
+      "steps": 9
+    },
+    {
+      "packed_clock_word": 255,
+      "accepted_by_original_startup": false,
+      "steps": 9
+    },
+    {
+      "packed_clock_word": 3353857,
+      "accepted_by_original_startup": true,
+      "steps": 33
+    }
+  ],
+  "mocks": [
+    "Named property lookup/OSData metacast/getBytes",
+    "Provider map index0/getVirtualAddress",
+    "Synthetic PMGR profile min56/max128 and packed-word negative inputs"
+  ],
+  "scope": "Actual parser/map/clock-input guard instructions. No registry association or physical memory mapping executes."
+}

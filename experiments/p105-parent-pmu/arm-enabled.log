@@ -1,0 +1,4 @@
+make: Entering directory '/linux'
+  CC [M]  /stage/apple-pmu-d1946-bank0.o
+  CC [M]  /stage/apple-pmu-i2c.o
+make: Leaving directory '/linux'

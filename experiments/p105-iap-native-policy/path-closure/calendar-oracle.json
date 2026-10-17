@@ -1,0 +1,101 @@
+{
+  "cache_sha256": "4f5b5d73244c53fd0bdc5b8012106b10d0dd7607cc850bf7c8f9e9ef3a3f733b",
+  "securityd_sha256": "1c12fbb48ead1edd3dbf2f4b0d635b45452573499fd9592562bbd76e40b56097",
+  "scope": "original queue/calendar/GMT0/setup/caller; synthetic CF arithmetic and dispatch execution model",
+  "cases": [
+    {
+      "synthetic_arithmetic_status": true,
+      "calls": [
+        {
+          "original_once_invoke": "0x20cc6190"
+        },
+        {
+          "synthetic_serial_queue": "ZuluCalendar"
+        },
+        {
+          "original_sync_invoke": "0x20cc5cc8"
+        },
+        {
+          "original_once_invoke": "0x20cc61b4"
+        },
+        {
+          "calendar_identifier": "gregorian"
+        },
+        {
+          "timezone_offset_seconds": 0.0
+        },
+        "set_calendar_timezone",
+        {
+          "synthetic_CF_arithmetic": {
+            "format": "yMd",
+            "year": 2006,
+            "month": 5,
+            "day": 31,
+            "computed_reference_seconds": 170726400.0,
+            "synthetic_status": true
+          }
+        },
+        {
+          "date_create_received_synthetic_value": 170726400.0
+        },
+        {
+          "date_property": "NotValidBefore"
+        },
+        {
+          "policy_oid": "iAP"
+        }
+      ],
+      "calendar_setup_original": true,
+      "CF_arithmetic_synthetic": true,
+      "received_date_value": 170726400.0,
+      "authorization_granted": false
+    },
+    {
+      "synthetic_arithmetic_status": false,
+      "calls": [
+        {
+          "original_once_invoke": "0x20cc6190"
+        },
+        {
+          "synthetic_serial_queue": "ZuluCalendar"
+        },
+        {
+          "original_sync_invoke": "0x20cc5cc8"
+        },
+        {
+          "original_once_invoke": "0x20cc61b4"
+        },
+        {
+          "calendar_identifier": "gregorian"
+        },
+        {
+          "timezone_offset_seconds": 0.0
+        },
+        "set_calendar_timezone",
+        {
+          "synthetic_CF_arithmetic": {
+            "format": "yMd",
+            "year": 2006,
+            "month": 5,
+            "day": 31,
+            "computed_reference_seconds": 567.0,
+            "synthetic_status": false
+          }
+        },
+        {
+          "date_create_received_synthetic_value": 567.0
+        },
+        {
+          "date_property": "NotValidBefore"
+        },
+        {
+          "policy_oid": "iAP"
+        }
+      ],
+      "calendar_setup_original": true,
+      "CF_arithmetic_synthetic": true,
+      "received_date_value": 567.0,
+      "authorization_granted": false
+    }
+  ]
+}

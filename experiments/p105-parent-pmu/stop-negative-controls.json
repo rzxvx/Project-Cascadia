@@ -1,0 +1,63 @@
+{
+  "historical_sha256": "c7ebe7cc893b962f9433f4a96dddd5aedba05813cbc56bf66a00b00f057d8761",
+  "fixed_sha256": "8ff37589343b506c4668da26a3701326fb916bea2e4056d3318c3d5f822265d1",
+  "hardware_access": false,
+  "cases": [
+    {
+      "source": "historical",
+      "stop_at": 1,
+      "return": 0,
+      "calls": 4,
+      "standby_byte": 165
+    },
+    {
+      "source": "historical",
+      "stop_at": 2,
+      "return": 0,
+      "calls": 4,
+      "standby_byte": 165
+    },
+    {
+      "source": "historical",
+      "stop_at": 3,
+      "return": 0,
+      "calls": 4,
+      "standby_byte": 165
+    },
+    {
+      "source": "historical",
+      "stop_at": 4,
+      "return": 0,
+      "calls": 4,
+      "standby_byte": 165
+    },
+    {
+      "source": "fixed",
+      "stop_at": 1,
+      "return": -108,
+      "calls": 1,
+      "standby_byte": 164
+    },
+    {
+      "source": "fixed",
+      "stop_at": 2,
+      "return": -108,
+      "calls": 2,
+      "standby_byte": 164
+    },
+    {
+      "source": "fixed",
+      "stop_at": 3,
+      "return": -108,
+      "calls": 3,
+      "standby_byte": 164
+    },
+    {
+      "source": "fixed",
+      "stop_at": 4,
+      "return": -108,
+      "calls": 4,
+      "standby_byte": 165
+    }
+  ]
+}

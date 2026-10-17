@@ -1,0 +1,27 @@
+{
+  "hardware_access": false,
+  "physical_quiescence_granted": false,
+  "raw_specifier_hex": "1300000001000000",
+  "actual_get_provider_result": 268451840,
+  "IOService_type": 1,
+  "GPIO_type_method": "0x80ded634",
+  "GPIO_virtual_slot": "0x348",
+  "actual_register_prefix": {
+    "vector_number": 19,
+    "vector_pointer": 268472928
+  },
+  "resolver_calls": [
+    {
+      "mocked": "IOService.resolveInterrupt",
+      "source": 0,
+      "controller": 268435456,
+      "binding": "pinned PMU interrupt-parent phandle0f => GPIO"
+    }
+  ],
+  "complete_registration_executed": false,
+  "limits": [
+    "provider relation supplied in coherent registry cache fixture",
+    "DT controller resolver mocked from exact pinned phandle match",
+    "native register prefix only; no interrupt enable/disable or physical line tested"
+  ]
+}

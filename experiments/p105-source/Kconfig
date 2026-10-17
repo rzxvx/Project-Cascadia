@@ -1,0 +1,14 @@
+config P105_DWC2_SOURCE_READER
+	bool "Private P105 fixed-peripheral composite source reader"
+	depends on USB_DWC2=y && USB_LIBCOMPOSITE=y && P105_DWC2_POWER_OBSERVER
+	default n
+	help
+	  USB2 completed-configuration allowance only. No external accessory grant.
+
+config P105_COMBINED_CURRENT_PROVIDER
+	tristate "Private P105 source/gauge current-provider adapter"
+	depends on P105_DWC2_SOURCE_READER && POWER_SUPPLY && BATTERY_APPLE_HDQ
+	default n
+	help
+	  API constructor only; no automatic charger binding or DT is supplied.
+	  Requires the separately reviewed opaque HDQ reader implementation.

@@ -1,0 +1,15 @@
+{
+  "frozen_manifest_SHA256": "ed4181921455dc4ba00ab5d65c33ac9c74df140d03575a87793cffcdc0fdb495",
+  "original_selected_hashes": {
+    "EVIDENCE.md": "104ad4fae9d665371307cf81aa2205ee65e1c7d6285fba9fcb56cd4dc003e7cd",
+    "emulate-continuation.py": "f70bfa3fd313dcdc054cb034ee5f163885e3f0d69eaf7a39281fc2760edcf4c7",
+    "inspect-continuation.py": "4cb63545fcddadba75fb1aa8b4258ba4df8f8ce55fc37f0bbb783166faaa5352",
+    "bindings.json": "0d270a4f8491caad92876f4ad71f69d34ad6d9090f21b32fe6fda5afa9bcefe8",
+    "continuation-traces.json": "ebeefd5733a53a248bf47508b63d680688d75a1137b24aab6b3286df34a1adbf"
+  },
+  "exported_EVIDENCE_SHA256": "478825715634d1b3a8789f1b689a1b41b657db09658104b1d9b08d3be40b9024",
+  "independent_original_cases": 24,
+  "normal_runtime_activation": false,
+  "physical_stop_fence": false,
+  "hardware_access": false
+}

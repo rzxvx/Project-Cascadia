@@ -1,0 +1,8 @@
+{
+  "previous_controller_SHA256": "99432542b0578cd8638d31e65596af834c8daff261dc0749b331dc0e28bc0153",
+  "historical_gate_ready_SHA256": "ca2a4c48817d86b0dbe6b3f9b78aefdefc969f2b680c020c483869c66953dd1a",
+  "candidate_controller_SHA256": "8829344184ad2fe870a6a72490df04363a933a1a93057777b4c9e995edce6d3e",
+  "normal_runtime_activation": false,
+  "hardware_access": false,
+  "physical_quiesce_or_VBUS_supplied": false
+}

@@ -1,0 +1,415 @@
+{
+  "cache_sha256": "4f5b5d73244c53fd0bdc5b8012106b10d0dd7607cc850bf7c8f9e9ef3a3f733b",
+  "cases": [
+    {
+      "calls": [
+        {
+          "actual_entry": "0x20c9b510"
+        },
+        {
+          "actual_entry": "0x20c9b4bc"
+        },
+        {
+          "actual_entry": "0x20ca84bc"
+        },
+        {
+          "actual_entry": "0x20cb1f9c"
+        },
+        {
+          "actual_entry": "0x20ca8638"
+        },
+        {
+          "requested": 16,
+          "synthetic_allocator": "CFInstance"
+        },
+        {
+          "actual_entry": "0x20cb1760"
+        },
+        {
+          "actual_entry": "0x2044d80c"
+        },
+        {
+          "requested": 208,
+          "synthetic_allocator": "calloc"
+        },
+        {
+          "actual_entry": "0x2044db28"
+        },
+        {
+          "native_import_result": 0
+        },
+        {
+          "actual_entry": "0x20cb1e38"
+        },
+        {
+          "native_blocksize": 64
+        },
+        {
+          "actual_entry": "0x20ca7ed8"
+        },
+        {
+          "native_algorithm_identifier": 1
+        },
+        {
+          "synthetic_release": true
+        }
+      ],
+      "instruction_count": 47694,
+      "native_weak": true,
+      "original_parent_processing": false,
+      "public_test_exponent": 65537,
+      "public_test_modulus_bits": 512,
+      "synthetic_truncated_der": false
+    },
+    {
+      "calls": [
+        {
+          "actual_entry": "0x20c9b510"
+        },
+        {
+          "actual_entry": "0x20c9b4bc"
+        },
+        {
+          "actual_entry": "0x20ca84bc"
+        },
+        {
+          "actual_entry": "0x20cb1f9c"
+        },
+        {
+          "actual_entry": "0x20ca8638"
+        },
+        {
+          "requested": 16,
+          "synthetic_allocator": "CFInstance"
+        },
+        {
+          "actual_entry": "0x20cb1760"
+        },
+        {
+          "actual_entry": "0x2044d80c"
+        },
+        {
+          "requested": 400,
+          "synthetic_allocator": "calloc"
+        },
+        {
+          "actual_entry": "0x2044db28"
+        },
+        {
+          "native_import_result": 0
+        },
+        {
+          "actual_entry": "0x20cb1e38"
+        },
+        {
+          "native_blocksize": 128
+        },
+        {
+          "actual_entry": "0x20ca7ed8"
+        },
+        {
+          "native_algorithm_identifier": 1
+        },
+        {
+          "synthetic_release": true
+        }
+      ],
+      "instruction_count": 171614,
+      "native_weak": false,
+      "original_parent_processing": false,
+      "public_test_exponent": 65537,
+      "public_test_modulus_bits": 1023,
+      "synthetic_truncated_der": false
+    },
+    {
+      "calls": [
+        {
+          "actual_entry": "0x20c9b510"
+        },
+        {
+          "actual_entry": "0x20c9b4bc"
+        },
+        {
+          "actual_entry": "0x20ca84bc"
+        },
+        {
+          "actual_entry": "0x20cb1f9c"
+        },
+        {
+          "actual_entry": "0x20ca8638"
+        },
+        {
+          "requested": 16,
+          "synthetic_allocator": "CFInstance"
+        },
+        {
+          "actual_entry": "0x20cb1760"
+        },
+        {
+          "actual_entry": "0x2044d80c"
+        },
+        {
+          "requested": 400,
+          "synthetic_allocator": "calloc"
+        },
+        {
+          "actual_entry": "0x2044db28"
+        },
+        {
+          "native_import_result": 0
+        },
+        {
+          "actual_entry": "0x20cb1e38"
+        },
+        {
+          "native_blocksize": 128
+        },
+        {
+          "actual_entry": "0x20ca7ed8"
+        },
+        {
+          "native_algorithm_identifier": 1
+        },
+        {
+          "synthetic_release": true
+        }
+      ],
+      "instruction_count": 164986,
+      "native_weak": false,
+      "original_parent_processing": false,
+      "public_test_exponent": 65537,
+      "public_test_modulus_bits": 1024,
+      "synthetic_truncated_der": false
+    },
+    {
+      "calls": [
+        {
+          "actual_entry": "0x20c9b510"
+        },
+        {
+          "actual_entry": "0x20c9b4bc"
+        },
+        {
+          "actual_entry": "0x20ca84bc"
+        },
+        {
+          "actual_entry": "0x20cb1f9c"
+        },
+        {
+          "actual_entry": "0x20ca8638"
+        },
+        {
+          "requested": 16,
+          "synthetic_allocator": "CFInstance"
+        },
+        {
+          "actual_entry": "0x20cb1760"
+        },
+        {
+          "actual_entry": "0x2044d80c"
+        },
+        {
+          "requested": 784,
+          "synthetic_allocator": "calloc"
+        },
+        {
+          "actual_entry": "0x2044db28"
+        },
+        {
+          "native_import_result": 0
+        },
+        {
+          "actual_entry": "0x20cb1e38"
+        },
+        {
+          "native_blocksize": 256
+        },
+        {
+          "actual_entry": "0x20ca7ed8"
+        },
+        {
+          "native_algorithm_identifier": 1
+        },
+        {
+          "synthetic_release": true
+        }
+      ],
+      "instruction_count": 632536,
+      "native_weak": false,
+      "original_parent_processing": false,
+      "public_test_exponent": 65537,
+      "public_test_modulus_bits": 2048,
+      "synthetic_truncated_der": false
+    },
+    {
+      "calls": [
+        {
+          "actual_entry": "0x20c9b510"
+        },
+        {
+          "actual_entry": "0x20c9b4bc"
+        },
+        {
+          "actual_entry": "0x20ca84bc"
+        },
+        {
+          "actual_entry": "0x20cb1f9c"
+        },
+        {
+          "actual_entry": "0x20ca8638"
+        },
+        {
+          "requested": 16,
+          "synthetic_allocator": "CFInstance"
+        },
+        {
+          "actual_entry": "0x20cb1760"
+        },
+        {
+          "actual_entry": "0x2044d80c"
+        },
+        {
+          "argument_r3": 550308058,
+          "synthetic_log_boundary": true
+        },
+        {
+          "synthetic_release": true
+        }
+      ],
+      "instruction_count": 319,
+      "native_weak": true,
+      "original_parent_processing": false,
+      "public_test_exponent": 65537,
+      "public_test_modulus_bits": 1024,
+      "synthetic_truncated_der": true
+    },
+    {
+      "calls": [
+        {
+          "original_weak_callback_in_parent": true
+        },
+        {
+          "actual_entry": "0x20c9b510"
+        },
+        {
+          "actual_entry": "0x20c9b4bc"
+        },
+        {
+          "actual_entry": "0x20ca84bc"
+        },
+        {
+          "actual_entry": "0x20cb1f9c"
+        },
+        {
+          "actual_entry": "0x20ca8638"
+        },
+        {
+          "requested": 16,
+          "synthetic_allocator": "CFInstance"
+        },
+        {
+          "actual_entry": "0x20cb1760"
+        },
+        {
+          "actual_entry": "0x2044d80c"
+        },
+        {
+          "requested": 208,
+          "synthetic_allocator": "calloc"
+        },
+        {
+          "actual_entry": "0x2044db28"
+        },
+        {
+          "native_import_result": 0
+        },
+        {
+          "actual_entry": "0x20cb1e38"
+        },
+        {
+          "native_blocksize": 64
+        },
+        {
+          "actual_entry": "0x20ca7ed8"
+        },
+        {
+          "native_algorithm_identifier": 1
+        },
+        {
+          "synthetic_release": true
+        }
+      ],
+      "instruction_count": 47785,
+      "native_weak": true,
+      "original_parent_processing": true,
+      "public_test_exponent": 65537,
+      "public_test_modulus_bits": 512,
+      "synthetic_truncated_der": false
+    },
+    {
+      "calls": [
+        {
+          "original_weak_callback_in_parent": true
+        },
+        {
+          "actual_entry": "0x20c9b510"
+        },
+        {
+          "actual_entry": "0x20c9b4bc"
+        },
+        {
+          "actual_entry": "0x20ca84bc"
+        },
+        {
+          "actual_entry": "0x20cb1f9c"
+        },
+        {
+          "actual_entry": "0x20ca8638"
+        },
+        {
+          "requested": 16,
+          "synthetic_allocator": "CFInstance"
+        },
+        {
+          "actual_entry": "0x20cb1760"
+        },
+        {
+          "actual_entry": "0x2044d80c"
+        },
+        {
+          "requested": 400,
+          "synthetic_allocator": "calloc"
+        },
+        {
+          "actual_entry": "0x2044db28"
+        },
+        {
+          "native_import_result": 0
+        },
+        {
+          "actual_entry": "0x20cb1e38"
+        },
+        {
+          "native_blocksize": 128
+        },
+        {
+          "actual_entry": "0x20ca7ed8"
+        },
+        {
+          "native_algorithm_identifier": 1
+        },
+        {
+          "synthetic_release": true
+        }
+      ],
+      "instruction_count": 165028,
+      "native_weak": false,
+      "original_parent_processing": true,
+      "public_test_exponent": 65537,
+      "public_test_modulus_bits": 1024,
+      "synthetic_truncated_der": false
+    }
+  ],
+  "scope": "actual RSA DER-import/key descriptor/blocksize/algo/weak path; certificate fields/CF/heap synthetic",
+  "securityd_sha256": "1c12fbb48ead1edd3dbf2f4b0d635b45452573499fd9592562bbd76e40b56097"
+}

@@ -163,6 +163,7 @@ static void apple_pmu_gpio_set(struct gpio_chip *gc, unsigned int n, int val)
 
 static int apple_pmu_gpio_direction_output(struct gpio_chip *gc, unsigned int n, int val)
 {
+    struct apple_pmu_i2c *pmu = gpiochip_get_data(gc);
     unsigned int cfg;
     int ret = apple_pmu_gpio_cfg(gc, n, &cfg);
 
@@ -170,13 +171,17 @@ static int apple_pmu_gpio_direction_output(struct gpio_chip *gc, unsigned int n,
         return ret;
     if (D1946_GPIO_IS_INPUT(cfg))
         return -EPERM;
-    apple_pmu_gpio_set(gc, n, val);
-    return 0;
+    return regmap_update_bits(pmu->regmap, D1946_GPIO_CFG + n,
+                              D1946_GPIO_LEVEL, val ? D1946_GPIO_LEVEL : 0);
 }
 
 static int apple_pmu_gpio_direction_input(struct gpio_chip *gc, unsigned int n)
 {
-    return apple_pmu_gpio_get_direction(gc, n) == GPIO_LINE_DIRECTION_IN ? 0 : -EPERM;
+    int direction = apple_pmu_gpio_get_direction(gc, n);
+
+    if (direction < 0)
+        return direction;
+    return direction == GPIO_LINE_DIRECTION_IN ? 0 : -EPERM;
 }
 
 static int apple_pmu_gpio_register(struct apple_pmu_i2c *pmu)
@@ -239,37 +244,9 @@ static int apple_pmu_i2c_probe(struct i2c_client *i2c)
         return ret;
     }
 
-    /* Bring-up: with the bus finally working, dump the chip once.  This is
-     * cheap now -- it only cost eighteen seconds of boot back when every
-     * transfer ran into the 100 ms timeout.
-     *
-     * What we are looking for: the ADT calls power_ana and power_ldo with
-     * 0x020c and 0x0213, which this tree reads as register addresses.  Both
-     * read 0x00 and stay 0x00 after a write, which is how a register that
-     * does not exist behaves.  AppleD1946PMU::_setLDO takes an LDO *index*
-     * (bounds-checked at 0x16) whose voltage register is index + 0x2f, with
-     * a shared enable bit at 0x7c for a few of them; read as index + flags,
-     * 0x20c and 0x213 are LDO 12 and LDO 19, both in range -- so the real
-     * registers would be 0x3b and 0x42.  The dump settles it. */
-    {
-        static const struct { unsigned first, last; } banks[] = {
-            { 0x00, 0xff },
-        };
-        unsigned b, r, c;
-        char line[80];
-
-        for (b = 0; b < ARRAY_SIZE(banks); b++)
-            for (r = banks[b].first; r <= banks[b].last; r += 16) {
-                int n = 0;
-                for (c = 0; c < 16 && r + c <= banks[b].last; c++) {
-                    unsigned int v = 0;
-                    n += scnprintf(line + n, sizeof(line) - n, "%s%02x",
-                                   c ? " " : "",
-                                   regmap_read(pmu->regmap, r + c, &v) ? 0xff : (v & 0xff));
-                }
-                dev_info(&i2c->dev, "PMU %03x: %s\n", r, line);
-            }
-    }
+    /* Do not dump the register file during probe: the D1946 IRQ handler
+     * consumes event registers 0x01..0x09. Diagnostic reads risk clearing
+     * pending events before child drivers can handle them. */
 
     if (info == &apple_pmu_i2c_d1946_info && of_device_is_system_power_controller(node)) {
         ret = devm_register_sys_off_handler(&i2c->dev, SYS_OFF_MODE_POWER_OFF_PREPARE,

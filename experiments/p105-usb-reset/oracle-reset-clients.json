@@ -1,0 +1,1206 @@
+{
+  "schema": 1,
+  "source": {
+    "build": "12H321",
+    "device": "p105ap",
+    "kernelcache_sha256": "db1ddc8343aa9debc00e0a083fba59d9f555722db60957dc333b854fac21dd2c",
+    "add_entry": "0x80cac59c",
+    "remove_entry": "0x80cac448",
+    "hsic_start_entry": "0x80c8c660"
+  },
+  "hardware_access": false,
+  "synthetic_initial_reset": 63,
+  "synthetic_providers": [
+    "OSSet membership/count",
+    "IOKit lock",
+    "Temporary shared power mask16/0 records only",
+    "HSIC property/OSData/bootarg provider"
+  ],
+  "standard_scenarios": [
+    {
+      "requests": [
+        [
+          "add",
+          1,
+          0
+        ],
+        [
+          "remove",
+          1,
+          0
+        ]
+      ],
+      "result": {
+        "states": [
+          {
+            "operation": "add",
+            "owner": 1,
+            "kind": 0,
+            "collections": [
+              [
+                1
+              ],
+              [],
+              [],
+              [],
+              [],
+              []
+            ],
+            "events": [
+              [
+                "temporary_power_mask",
+                16
+              ],
+              [
+                "phy",
+                8,
+                47
+              ],
+              [
+                "temporary_power_mask",
+                0
+              ]
+            ],
+            "reset": 47,
+            "return": "0x0"
+          },
+          {
+            "operation": "remove",
+            "owner": 1,
+            "kind": 0,
+            "collections": [
+              [],
+              [],
+              [],
+              [],
+              [],
+              []
+            ],
+            "events": [
+              [
+                "temporary_power_mask",
+                16
+              ],
+              [
+                "phy",
+                8,
+                63
+              ],
+              [
+                "delay",
+                20
+              ],
+              [
+                "temporary_power_mask",
+                0
+              ]
+            ],
+            "reset": 63,
+            "return": "0x0"
+          }
+        ],
+        "hardware_access": false,
+        "power_lease_and_collection_methods_stubbed": true
+      }
+    },
+    {
+      "requests": [
+        [
+          "add",
+          1,
+          1
+        ],
+        [
+          "remove",
+          1,
+          1
+        ]
+      ],
+      "result": {
+        "states": [
+          {
+            "operation": "add",
+            "owner": 1,
+            "kind": 1,
+            "collections": [
+              [],
+              [
+                1
+              ],
+              [],
+              [],
+              [],
+              []
+            ],
+            "events": [
+              [
+                "temporary_power_mask",
+                16
+              ],
+              [
+                "phy",
+                8,
+                47
+              ],
+              [
+                "temporary_power_mask",
+                0
+              ]
+            ],
+            "reset": 47,
+            "return": "0x0"
+          },
+          {
+            "operation": "remove",
+            "owner": 1,
+            "kind": 1,
+            "collections": [
+              [],
+              [],
+              [],
+              [],
+              [],
+              []
+            ],
+            "events": [
+              [
+                "temporary_power_mask",
+                16
+              ],
+              [
+                "phy",
+                8,
+                63
+              ],
+              [
+                "delay",
+                20
+              ],
+              [
+                "temporary_power_mask",
+                0
+              ]
+            ],
+            "reset": 63,
+            "return": "0x0"
+          }
+        ],
+        "hardware_access": false,
+        "power_lease_and_collection_methods_stubbed": true
+      }
+    },
+    {
+      "requests": [
+        [
+          "add",
+          1,
+          5
+        ],
+        [
+          "remove",
+          1,
+          5
+        ]
+      ],
+      "result": {
+        "states": [
+          {
+            "operation": "add",
+            "owner": 1,
+            "kind": 5,
+            "collections": [
+              [],
+              [],
+              [],
+              [],
+              [],
+              [
+                1
+              ]
+            ],
+            "events": [
+              [
+                "temporary_power_mask",
+                16
+              ],
+              [
+                "phy",
+                8,
+                47
+              ],
+              [
+                "temporary_power_mask",
+                0
+              ]
+            ],
+            "reset": 47,
+            "return": "0x0"
+          },
+          {
+            "operation": "remove",
+            "owner": 1,
+            "kind": 5,
+            "collections": [
+              [],
+              [],
+              [],
+              [],
+              [],
+              []
+            ],
+            "events": [
+              [
+                "temporary_power_mask",
+                16
+              ],
+              [
+                "phy",
+                8,
+                63
+              ],
+              [
+                "delay",
+                20
+              ],
+              [
+                "temporary_power_mask",
+                0
+              ]
+            ],
+            "reset": 63,
+            "return": "0x0"
+          }
+        ],
+        "hardware_access": false,
+        "power_lease_and_collection_methods_stubbed": true
+      }
+    },
+    {
+      "requests": [
+        [
+          "add",
+          1,
+          0
+        ],
+        [
+          "add",
+          2,
+          0
+        ],
+        [
+          "remove",
+          1,
+          0
+        ],
+        [
+          "remove",
+          2,
+          0
+        ]
+      ],
+      "result": {
+        "states": [
+          {
+            "operation": "add",
+            "owner": 1,
+            "kind": 0,
+            "collections": [
+              [
+                1
+              ],
+              [],
+              [],
+              [],
+              [],
+              []
+            ],
+            "events": [
+              [
+                "temporary_power_mask",
+                16
+              ],
+              [
+                "phy",
+                8,
+                47
+              ],
+              [
+                "temporary_power_mask",
+                0
+              ]
+            ],
+            "reset": 47,
+            "return": "0x0"
+          },
+          {
+            "operation": "add",
+            "owner": 2,
+            "kind": 0,
+            "collections": [
+              [
+                1,
+                2
+              ],
+              [],
+              [],
+              [],
+              [],
+              []
+            ],
+            "events": [
+              [
+                "temporary_power_mask",
+                16
+              ],
+              [
+                "temporary_power_mask",
+                0
+              ]
+            ],
+            "reset": 47,
+            "return": "0x0"
+          },
+          {
+            "operation": "remove",
+            "owner": 1,
+            "kind": 0,
+            "collections": [
+              [
+                2
+              ],
+              [],
+              [],
+              [],
+              [],
+              []
+            ],
+            "events": [
+              [
+                "temporary_power_mask",
+                16
+              ],
+              [
+                "temporary_power_mask",
+                0
+              ]
+            ],
+            "reset": 47,
+            "return": "0x0"
+          },
+          {
+            "operation": "remove",
+            "owner": 2,
+            "kind": 0,
+            "collections": [
+              [],
+              [],
+              [],
+              [],
+              [],
+              []
+            ],
+            "events": [
+              [
+                "temporary_power_mask",
+                16
+              ],
+              [
+                "phy",
+                8,
+                63
+              ],
+              [
+                "delay",
+                20
+              ],
+              [
+                "temporary_power_mask",
+                0
+              ]
+            ],
+            "reset": 63,
+            "return": "0x0"
+          }
+        ],
+        "hardware_access": false,
+        "power_lease_and_collection_methods_stubbed": true
+      }
+    },
+    {
+      "requests": [
+        [
+          "add",
+          1,
+          0
+        ],
+        [
+          "add",
+          2,
+          1
+        ],
+        [
+          "add",
+          3,
+          5
+        ],
+        [
+          "remove",
+          1,
+          0
+        ],
+        [
+          "remove",
+          2,
+          1
+        ],
+        [
+          "remove",
+          3,
+          5
+        ]
+      ],
+      "result": {
+        "states": [
+          {
+            "operation": "add",
+            "owner": 1,
+            "kind": 0,
+            "collections": [
+              [
+                1
+              ],
+              [],
+              [],
+              [],
+              [],
+              []
+            ],
+            "events": [
+              [
+                "temporary_power_mask",
+                16
+              ],
+              [
+                "phy",
+                8,
+                47
+              ],
+              [
+                "temporary_power_mask",
+                0
+              ]
+            ],
+            "reset": 47,
+            "return": "0x0"
+          },
+          {
+            "operation": "add",
+            "owner": 2,
+            "kind": 1,
+            "collections": [
+              [
+                1
+              ],
+              [
+                2
+              ],
+              [],
+              [],
+              [],
+              []
+            ],
+            "events": [
+              [
+                "temporary_power_mask",
+                16
+              ],
+              [
+                "temporary_power_mask",
+                0
+              ]
+            ],
+            "reset": 47,
+            "return": "0x0"
+          },
+          {
+            "operation": "add",
+            "owner": 3,
+            "kind": 5,
+            "collections": [
+              [
+                1
+              ],
+              [
+                2
+              ],
+              [],
+              [],
+              [],
+              [
+                3
+              ]
+            ],
+            "events": [
+              [
+                "temporary_power_mask",
+                16
+              ],
+              [
+                "temporary_power_mask",
+                0
+              ]
+            ],
+            "reset": 47,
+            "return": "0x0"
+          },
+          {
+            "operation": "remove",
+            "owner": 1,
+            "kind": 0,
+            "collections": [
+              [],
+              [
+                2
+              ],
+              [],
+              [],
+              [],
+              [
+                3
+              ]
+            ],
+            "events": [
+              [
+                "temporary_power_mask",
+                16
+              ],
+              [
+                "delay",
+                20
+              ],
+              [
+                "temporary_power_mask",
+                0
+              ]
+            ],
+            "reset": 47,
+            "return": "0x0"
+          },
+          {
+            "operation": "remove",
+            "owner": 2,
+            "kind": 1,
+            "collections": [
+              [],
+              [],
+              [],
+              [],
+              [],
+              [
+                3
+              ]
+            ],
+            "events": [
+              [
+                "temporary_power_mask",
+                16
+              ],
+              [
+                "delay",
+                20
+              ],
+              [
+                "temporary_power_mask",
+                0
+              ]
+            ],
+            "reset": 47,
+            "return": "0x0"
+          },
+          {
+            "operation": "remove",
+            "owner": 3,
+            "kind": 5,
+            "collections": [
+              [],
+              [],
+              [],
+              [],
+              [],
+              []
+            ],
+            "events": [
+              [
+                "temporary_power_mask",
+                16
+              ],
+              [
+                "phy",
+                8,
+                63
+              ],
+              [
+                "delay",
+                20
+              ],
+              [
+                "temporary_power_mask",
+                0
+              ]
+            ],
+            "reset": 63,
+            "return": "0x0"
+          }
+        ],
+        "hardware_access": false,
+        "power_lease_and_collection_methods_stubbed": true
+      }
+    },
+    {
+      "requests": [
+        [
+          "add",
+          1,
+          0
+        ],
+        [
+          "add",
+          1,
+          0
+        ],
+        [
+          "remove",
+          2,
+          0
+        ],
+        [
+          "remove",
+          1,
+          0
+        ],
+        [
+          "remove",
+          1,
+          0
+        ]
+      ],
+      "result": {
+        "states": [
+          {
+            "operation": "add",
+            "owner": 1,
+            "kind": 0,
+            "collections": [
+              [
+                1
+              ],
+              [],
+              [],
+              [],
+              [],
+              []
+            ],
+            "events": [
+              [
+                "temporary_power_mask",
+                16
+              ],
+              [
+                "phy",
+                8,
+                47
+              ],
+              [
+                "temporary_power_mask",
+                0
+              ]
+            ],
+            "reset": 47,
+            "return": "0x0"
+          },
+          {
+            "operation": "add",
+            "owner": 1,
+            "kind": 0,
+            "collections": [
+              [
+                1
+              ],
+              [],
+              [],
+              [],
+              [],
+              []
+            ],
+            "events": [
+              [
+                "temporary_power_mask",
+                16
+              ],
+              [
+                "temporary_power_mask",
+                0
+              ]
+            ],
+            "reset": 47,
+            "return": "0x0"
+          },
+          {
+            "operation": "remove",
+            "owner": 2,
+            "kind": 0,
+            "collections": [
+              [
+                1
+              ],
+              [],
+              [],
+              [],
+              [],
+              []
+            ],
+            "events": [
+              [
+                "temporary_power_mask",
+                16
+              ],
+              [
+                "temporary_power_mask",
+                0
+              ]
+            ],
+            "reset": 47,
+            "return": "0x0"
+          },
+          {
+            "operation": "remove",
+            "owner": 1,
+            "kind": 0,
+            "collections": [
+              [],
+              [],
+              [],
+              [],
+              [],
+              []
+            ],
+            "events": [
+              [
+                "temporary_power_mask",
+                16
+              ],
+              [
+                "phy",
+                8,
+                63
+              ],
+              [
+                "delay",
+                20
+              ],
+              [
+                "temporary_power_mask",
+                0
+              ]
+            ],
+            "reset": 63,
+            "return": "0x0"
+          },
+          {
+            "operation": "remove",
+            "owner": 1,
+            "kind": 0,
+            "collections": [
+              [],
+              [],
+              [],
+              [],
+              [],
+              []
+            ],
+            "events": [
+              [
+                "temporary_power_mask",
+                16
+              ],
+              [
+                "temporary_power_mask",
+                0
+              ]
+            ],
+            "reset": 63,
+            "return": "0x0"
+          }
+        ],
+        "hardware_access": false,
+        "power_lease_and_collection_methods_stubbed": true
+      }
+    }
+  ],
+  "foreign_domain_scenario": {
+    "requests": [
+      [
+        "add",
+        1,
+        2
+      ],
+      [
+        "add",
+        2,
+        3
+      ],
+      [
+        "add",
+        3,
+        0
+      ],
+      [
+        "remove",
+        3,
+        0
+      ],
+      [
+        "remove",
+        1,
+        2
+      ],
+      [
+        "remove",
+        2,
+        3
+      ]
+    ],
+    "result": {
+      "states": [
+        {
+          "operation": "add",
+          "owner": 1,
+          "kind": 2,
+          "collections": [
+            [],
+            [],
+            [
+              1
+            ],
+            [],
+            [],
+            []
+          ],
+          "events": [
+            [
+              "temporary_power_mask",
+              16
+            ],
+            [
+              "phy",
+              8,
+              55
+            ],
+            [
+              "temporary_power_mask",
+              0
+            ]
+          ],
+          "reset": 55,
+          "return": "0x0"
+        },
+        {
+          "operation": "add",
+          "owner": 2,
+          "kind": 3,
+          "collections": [
+            [],
+            [],
+            [
+              1
+            ],
+            [
+              2
+            ],
+            [],
+            []
+          ],
+          "events": [
+            [
+              "temporary_power_mask",
+              16
+            ],
+            [
+              "phy",
+              8,
+              51
+            ],
+            [
+              "temporary_power_mask",
+              0
+            ]
+          ],
+          "reset": 51,
+          "return": "0x0"
+        },
+        {
+          "operation": "add",
+          "owner": 3,
+          "kind": 0,
+          "collections": [
+            [
+              3
+            ],
+            [],
+            [
+              1
+            ],
+            [
+              2
+            ],
+            [],
+            []
+          ],
+          "events": [
+            [
+              "temporary_power_mask",
+              16
+            ],
+            [
+              "phy",
+              8,
+              35
+            ],
+            [
+              "temporary_power_mask",
+              0
+            ]
+          ],
+          "reset": 35,
+          "return": "0x0"
+        },
+        {
+          "operation": "remove",
+          "owner": 3,
+          "kind": 0,
+          "collections": [
+            [],
+            [],
+            [
+              1
+            ],
+            [
+              2
+            ],
+            [],
+            []
+          ],
+          "events": [
+            [
+              "temporary_power_mask",
+              16
+            ],
+            [
+              "phy",
+              8,
+              51
+            ],
+            [
+              "delay",
+              20
+            ],
+            [
+              "temporary_power_mask",
+              0
+            ]
+          ],
+          "reset": 51,
+          "return": "0x0"
+        },
+        {
+          "operation": "remove",
+          "owner": 1,
+          "kind": 2,
+          "collections": [
+            [],
+            [],
+            [],
+            [
+              2
+            ],
+            [],
+            []
+          ],
+          "events": [
+            [
+              "temporary_power_mask",
+              16
+            ],
+            [
+              "phy",
+              8,
+              59
+            ],
+            [
+              "delay",
+              20
+            ],
+            [
+              "temporary_power_mask",
+              0
+            ]
+          ],
+          "reset": 59,
+          "return": "0x0"
+        },
+        {
+          "operation": "remove",
+          "owner": 2,
+          "kind": 3,
+          "collections": [
+            [],
+            [],
+            [],
+            [],
+            [],
+            []
+          ],
+          "events": [
+            [
+              "temporary_power_mask",
+              16
+            ],
+            [
+              "phy",
+              8,
+              63
+            ],
+            [
+              "delay",
+              20
+            ],
+            [
+              "temporary_power_mask",
+              0
+            ]
+          ],
+          "reset": 63,
+          "return": "0x0"
+        }
+      ],
+      "hardware_access": false,
+      "power_lease_and_collection_methods_stubbed": true
+    }
+  },
+  "hsic_producer": {
+    "factory_arguments": {
+      "kind": 3,
+      "phy_id": 0,
+      "raw_clock_mask": 196626
+    },
+    "queries": [
+      "phy-port",
+      "port",
+      "phy-id",
+      "clock-mask"
+    ],
+    "hardware_access": false,
+    "factory_and_inherited_start_not_executed": true
+  },
+  "hsic_factory": {
+    "created": {
+      "kind": 3,
+      "role_membership_mask": "0x2",
+      "filtered_clock_mask": "0x30010",
+      "phy": "0x10001000",
+      "arbitrator": "0x10002000"
+    },
+    "transitions": [
+      {
+        "state": "0x5",
+        "return": "0x0",
+        "stored_state": "0x5",
+        "callbacks": [
+          {
+            "operation": "clock enable",
+            "owner": "0x10002000",
+            "client_or_argument": "0x10000000",
+            "mask_or_argument": "0x30010"
+          },
+          {
+            "operation": "phy client mask",
+            "owner": "0x10001000",
+            "client_or_argument": "0x10000000",
+            "mask_or_argument": "0x2"
+          },
+          {
+            "operation": "phy slot358",
+            "owner": "0x10001000",
+            "client_or_argument": "0x10000000",
+            "mask_or_argument": "0x3"
+          }
+        ]
+      },
+      {
+        "state": "0x19",
+        "return": "0x0",
+        "stored_state": "0x19",
+        "callbacks": [
+          {
+            "operation": "phy client mask",
+            "owner": "0x10001000",
+            "client_or_argument": "0x10000000",
+            "mask_or_argument": "0x2"
+          },
+          {
+            "operation": "static base clock mask",
+            "owner": "0x10002000",
+            "client_or_argument": "0x10006000",
+            "mask_or_argument": "0x30010"
+          },
+          {
+            "operation": "clock enable",
+            "owner": "0x10002000",
+            "client_or_argument": "0x10000000",
+            "mask_or_argument": "0x0"
+          }
+        ]
+      },
+      {
+        "state": "0xa",
+        "return": "0x0",
+        "stored_state": "0xa",
+        "callbacks": [
+          {
+            "operation": "phy slot354",
+            "owner": "0x10001000",
+            "client_or_argument": "0x10000000",
+            "mask_or_argument": "0x3"
+          },
+          {
+            "operation": "phy client mask",
+            "owner": "0x10001000",
+            "client_or_argument": "0x10000000",
+            "mask_or_argument": "0x0"
+          },
+          {
+            "operation": "clock enable",
+            "owner": "0x10002000",
+            "client_or_argument": "0x10006000",
+            "mask_or_argument": "0x30010"
+          },
+          {
+            "operation": "clock enable",
+            "owner": "0x10002000",
+            "client_or_argument": "0x10006000",
+            "mask_or_argument": "0x0"
+          }
+        ]
+      }
+    ],
+    "hardware_access": false,
+    "MMIO_mode_power_callbacks": false,
+    "physical_phy_behavior_verified": false
+  },
+  "limitations": [
+    "No physical timing/reset/WLAN continuity or power model",
+    "Original power provider is not executed",
+    "C deliberately skips temporary lease for duplicate/unowned no-op",
+    "No host-client5/MUX/authentication/VBUS proof"
+  ]
+}

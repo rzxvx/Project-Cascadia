@@ -1,0 +1,369 @@
+// SPDX-License-Identifier: GPL-2.0-only
+#define _GNU_SOURCE
+#include <assert.h>
+#include <errno.h>
+#include <pthread.h>
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdarg.h>
+#include <unistd.h>
+#include <sched.h>
+typedef uint8_t u8; typedef uint32_t u32; typedef uint64_t u64;
+#define GFP_KERNEL 0
+#define EPROBE_DEFER 517
+#define WARN_ONCE(c,...) fake_warn(c)
+static int fake_warn(bool condition){return condition;}
+#define THIS_MODULE NULL
+#define IS_ENABLED(x) (x)
+#define CONFIG_MTD_PARTITIONED_MASTER PARTITIONED_MASTER
+#ifndef CORE_BUILTIN
+#define CORE_BUILTIN 1
+#endif
+#define CONFIG_MTD CORE_BUILTIN
+#define IS_BUILTIN(x) (x)
+#define WARN_ON(c) (c)
+#define BUG_ON(c) assert(!(c))
+#define MTD_WRITEABLE 0x400
+#define MTD_POWERUP_LOCK 0x2000
+#define MTD_SLC_ON_MLC_EMULATION 0x4000
+#define MTD_BLOCK_MAJOR 31
+#define KERN_WARNING ""
+#define pr_debug(...) ((void)0)
+#define pr_info(...) ((void)0)
+#define pr_warn(...) ((void)0)
+#define printk(...) ((void)0)
+#define container_of(p,t,m) ((t *)((char *)(p)-offsetof(t,m)))
+#define READ_ONCE(x) __atomic_load_n(&(x),__ATOMIC_ACQUIRE)
+#define WRITE_ONCE(x,v) __atomic_store_n(&(x),(v),__ATOMIC_RELEASE)
+#define min_t(t,a,b) ((t)(a)<(t)(b)?(t)(a):(t)(b))
+#define max(a,b) ((a)>(b)?(a):(b))
+#define BUILD_BUG_ON(c) _Static_assert(!(c),"geometry")
+#define MTD_MLCNANDFLASH 8
+#define MTD_NO_ERASE 0x1000
+#define dev_err_ratelimited(...) ((void)0)
+#define dev_err(...) ((void)0)
+#define dev_info(...) ((void)0)
+#define IS_ERR(p) ((uintptr_t)(p)>=(uintptr_t)-4095)
+#define PTR_ERR(p) ((int)(intptr_t)(p))
+#define ERR_PTR(v) ((void *)(intptr_t)(v))
+/* GEOMETRY */
+struct rw_semaphore { pthread_rwlock_t lock; };
+static void init_rwsem(struct rw_semaphore *s) { assert(!pthread_rwlock_init(&s->lock,NULL)); }
+static void down_read(struct rw_semaphore *s) { assert(!pthread_rwlock_rdlock(&s->lock)); }
+static void up_read(struct rw_semaphore *s) { assert(!pthread_rwlock_unlock(&s->lock)); }
+static void down_write(struct rw_semaphore *s) { assert(!pthread_rwlock_wrlock(&s->lock)); }
+static void up_write(struct rw_semaphore *s) { assert(!pthread_rwlock_unlock(&s->lock)); }
+struct mutex { pthread_mutex_t lock; };
+static struct mutex mtd_table_mutex;
+static _Thread_local bool fake_table_owned, fake_work_draining;
+static void fake_drain_work(void);
+struct work_struct { void(*fn)(struct work_struct *); bool queued; };
+#define INIT_WORK(w,f) ((w)->fn=(f),(w)->queued=false)
+static struct work_struct *fake_work_queue[128];
+static unsigned fake_work_count;
+static pthread_mutex_t fake_work_lock=PTHREAD_MUTEX_INITIALIZER;
+static bool schedule_work(struct work_struct *w) {
+ pthread_mutex_lock(&fake_work_lock);assert(!w->queued&&fake_work_count<128);
+ w->queued=true;fake_work_queue[fake_work_count++]=w;pthread_mutex_unlock(&fake_work_lock);
+ if(!fake_table_owned)fake_drain_work();
+ return true;
+}
+static void fake_drain_work(void) {
+ if(fake_work_draining)return;
+ fake_work_draining=true;
+ for(;;){pthread_mutex_lock(&fake_work_lock);
+  if(!fake_work_count){pthread_mutex_unlock(&fake_work_lock);break;}
+  struct work_struct*w=fake_work_queue[0];memmove(fake_work_queue,fake_work_queue+1,--fake_work_count*sizeof(*fake_work_queue));
+  w->queued=false;void(*fn)(struct work_struct*)=w->fn;pthread_mutex_unlock(&fake_work_lock);fn(w);
+ }
+ fake_work_draining=false;
+}
+
+static void mutex_init(struct mutex *m) { assert(!pthread_mutex_init(&m->lock,NULL)); }
+static void mutex_lock(struct mutex *m) { assert(!pthread_mutex_lock(&m->lock));if(m==&mtd_table_mutex)fake_table_owned=true; }
+static void mutex_unlock(struct mutex *m) { if(m==&mtd_table_mutex)fake_table_owned=false;assert(!pthread_mutex_unlock(&m->lock));if(m==&mtd_table_mutex)fake_drain_work(); }
+typedef struct { int locked; } spinlock_t;
+static void spin_lock_init(spinlock_t *s) { s->locked=0; }
+static void spin_lock(spinlock_t *s) { assert(!s->locked);s->locked=1; }
+static void spin_unlock(spinlock_t *s) { assert(s->locked);s->locked=0; }
+struct kref { unsigned int count; };
+static void kref_init(struct kref *k) { k->count=1; }
+static void kref_get(struct kref *k) { assert(k->count); k->count++; }
+static void kref_put(struct kref *k,void(*release)(struct kref *)) { assert(k->count);if(!--k->count)release(k); }
+struct device_node {int unused;};
+struct device {bool registered;unsigned refs;unsigned long devt;void *parent,*data,*class;struct device_node *of_node;const void *type;};
+struct platform_device {struct device dev;void *data;};
+struct nvmem_device {void *priv;};
+struct nvmem_config {
+ int id;struct device *dev;const char *name;void *owner;
+ bool add_legacy_fixed_of_cells,read_only,root_only,ignore_wp;
+ int(*reg_read)(void*,unsigned int,void*,size_t);
+ size_t size;int word_size,stride;void *priv;
+};
+#define NVMEM_DEVID_NONE -1
+struct mtd_req_stats {unsigned uncorrectable_errors,corrected_bitflips,max_bitflips;};
+struct mtd_oob_ops {size_t len,retlen,ooblen,oobretlen;u32 ooboffs;u8 *datbuf,*oobbuf;struct mtd_req_stats *stats;};
+struct mtd_info {
+ void *priv,*owner;const char *name;struct device dev;struct mtd_info *parent;
+ struct kref refcnt;int index;u8 type;u64 size;u32 erasesize,writesize,writebufsize,oobsize,oobavail,flags,ecc_strength,bitflip_threshold;
+ unsigned erasesize_shift,writesize_shift,erasesize_mask,writesize_mask;
+ void *pairing,*_write,*_write_oob,*_writev,*_read,*_erase;struct {unsigned failed,corrected;}ecc_stats;struct{void *dfs_dir;}dbg;
+ int(*_get_device)(struct mtd_info*);void(*_put_device)(struct mtd_info*);
+ int(*_read_oob)(struct mtd_info*,loff_t,struct mtd_oob_ops*);
+ int(*_block_isbad)(struct mtd_info*,loff_t);
+ bool no_nvmem,retain_device_context,driver_device_ref,partition_constructor_ref;struct device *driver_parent_ref;struct work_struct device_release_work;void(*_reboot)(void);struct {void(*notifier_call)(void);} reboot_notifier;
+ struct nvmem_device *nvmem,*otp_user_nvmem,*otp_factory_nvmem;
+};
+/* DRIVER_STRUCTS */
+static struct h2fmi *last_context;
+struct allocation {void*p;size_t n;bool managed,live,logical_live;};
+static struct allocation allocations[100];static unsigned allocation_count,allocation_step,fail_allocation;
+static int fail_map=-1,fail_registration=-1,fail_unregister=-1,fail_parse=-1,fail_add=-1;
+static bool hold_failed_device;
+static struct device *failed_device;
+static int open_die=0;
+static unsigned maps,registrations,unregistrations,hardware_reads,nvmem_registrations,core_releases;
+static bool open_during_probe,module_get_ok=true,resources_available=true,block_read;
+static struct mtd_info *retained;
+static pthread_mutex_t progress_lock=PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t progress_cv=PTHREAD_COND_INITIALIZER;
+static bool entered_read,allow_read,remove_done;
+static int read_result;static size_t read_progress;
+static void *alloc(size_t n,bool managed) {
+ if(++allocation_step==fail_allocation)return NULL;
+ void*p=calloc(1,n);assert(p&&allocation_count<100);allocations[allocation_count++]=(struct allocation){p,n,managed,true,true};
+ if(n==sizeof(struct h2fmi))last_context=p;
+ return p;
+}
+static struct allocation *record(const void*p) {for(unsigned i=0;i<allocation_count;i++)if(allocations[i].p==p)return &allocations[i];assert(!"unknown allocation");return NULL;}
+static void *kzalloc(size_t n,int flags) {(void)flags;return alloc(n,false);}
+static void *devm_kzalloc(struct device*d,size_t n,int flags) {(void)d;(void)flags;return alloc(n,true);}
+static void *kmalloc(size_t n,int flags) {return kzalloc(n,flags);}
+static void kfree(const void*p) {if(!p)return;struct allocation*r=record(p);assert(r->live);r->live=r->logical_live=false;free((void*)p);}
+static char *name_alloc(bool managed,const char*fmt,int idx) {char*p=alloc(32,managed);if(p)snprintf(p,32,fmt,idx);return p;}
+static char *kasprintf(int flags,const char*fmt,int idx){(void)flags;return name_alloc(false,fmt,idx);}
+static char *devm_kasprintf(struct device*d,int flags,const char*fmt,int idx){(void)d;(void)flags;return name_alloc(true,fmt,idx);}
+static unsigned char regions[6][4096];
+static void *devm_platform_ioremap_resource(struct platform_device*d,unsigned int i){(void)d;assert(i<6);maps++;return (int)i==fail_map?ERR_PTR(-EIO):regions[i];}
+static u32 readl(void*p){assert(resources_available);return *(u32*)p;}
+static void platform_set_drvdata(struct platform_device*d,void*p){d->data=p;}
+static void *platform_get_drvdata(struct platform_device*d){return d->data;}
+static struct mtd_info *mtd_get_master(struct mtd_info*m){while(m->parent)m=m->parent;return m;}
+static bool mtd_is_partition(struct mtd_info*m){return m->parent!=NULL;}
+static struct mutex mtd_table_mutex={.lock=PTHREAD_MUTEX_INITIALIZER};
+static struct mtd_info *table[8];
+struct mtd_notifier{void(*add)(struct mtd_info*);void(*remove)(struct mtd_info*);};
+static int mtd_notifiers;
+#define list_for_each_entry(pos,head,member) for((void)(head),(pos)=NULL;(pos);(pos)=NULL)
+static void *mtd_idr;
+static struct mtd_info *idr_find(void*p,int i){(void)p;return i>=0&&i<8?table[i]:NULL;}
+#define MTD_CHAR_MAJOR 90
+#define MKDEV(a,b) (((a)<<20)|(b))
+typedef unsigned long dev_t_fake;
+#define MTD_DEVT(index) MKDEV(MTD_CHAR_MAJOR,(index)*2)
+static void *dev_get_drvdata(struct device*d){return d->data;}
+static void idr_remove(void*p,int i){(void)p;assert(i>=0&&i<8);table[i]=NULL;core_releases++;}
+static void of_node_put(struct device_node*n){(void)n;}
+static unsigned partition_releases;
+static void free_partition(struct mtd_info*m){kfree(m->name);kfree(m);}
+static void release_mtd_partition(struct mtd_info*m){partition_releases++;kfree(m->name);kfree(m);}
+static int mtd_class;
+static void device_destroy(void*c,dev_t dev){(void)c;(void)dev;}
+static void debugfs_remove_recursive(void*p){(void)p;}
+static void nvmem_unregister(struct nvmem_device*n){(void)n;}
+static void mtd_release(struct device*);
+static unsigned device_releases;
+static struct device *get_device(struct device*d){assert(d->refs);d->refs++;return d;}
+static void put_device(struct device*d){assert(d->refs);if(!--d->refs){device_releases++;mtd_release(d);}}
+static void device_unregister(struct device*d){d->registered=false;put_device(d);}
+static bool device_is_registered(struct device*d){return d->registered;}
+static void module_put(void*p){(void)p;}
+static bool try_module_get(void*p){(void)p;return module_get_ok;}
+static void unregister_reboot_notifier(void*p){(void)p;}
+static struct mtd_info *partition_child;
+int del_mtd_device(struct mtd_info*);
+static int del_mtd_partitions(struct mtd_info*m){if(m->index==fail_unregister)return -EIO;if(partition_child&&partition_child->parent==m){struct mtd_info *child=partition_child;partition_child=NULL;return del_mtd_device(child);}return 0;}
+static struct device_node *mtd_get_of_node(struct mtd_info*m){return m->dev.of_node;}
+static const char *dev_name(struct device*d){(void)d;return "fake-mtd";}
+static bool of_device_is_compatible(struct device_node*n,const char*s){(void)n;(void)s;return false;}
+static int dev_err_probe(struct device*d,int e,const char*s){(void)d;(void)s;return e;}
+static struct nvmem_device fake_nvmem[8];
+static struct nvmem_device *nvmem_register(const struct nvmem_config*c){unsigned i=nvmem_registrations++;assert(i<8);fake_nvmem[i].priv=c->priv;return &fake_nvmem[i];}
+static size_t mtd_oobavail(struct mtd_info*m,struct mtd_oob_ops*o){(void)o;return m->oobavail;}
+static int h2fmi_read_raw_page(struct h2fmi*f,struct h2fmi_bus*b,u32 row,u8*st){
+ (void)f;(void)row;assert(resources_available);hardware_reads++;
+ if(block_read){pthread_mutex_lock(&progress_lock);entered_read=true;pthread_cond_broadcast(&progress_cv);while(!allow_read)pthread_cond_wait(&progress_cv,&progress_lock);pthread_mutex_unlock(&progress_lock);}
+ memset(b->page,0xa5,H2FMI_PAGE_RAW);*st=0x40;return 0;
+}
+static int mtd_read(struct mtd_info*m,unsigned int off,size_t n,size_t*retlen,void*buf){struct mtd_oob_ops ops={.len=n,.datbuf=buf};int e=m->_read_oob(m,off,&ops);*retlen=ops.retlen;return e;}
+/* FORWARD_CORE */
+static int mtd_devtype;
+static unsigned long ROOT_DEV;
+static void __module_get(void*p){(void)p;}
+static int of_alias_get_id(struct device_node*n,const char*s){(void)n;(void)s;return -1;}
+static int idr_alloc(void*p,struct mtd_info*m,int lo,int hi,int flags){(void)p;(void)lo;(void)hi;(void)flags;int i=registrations++;if(i==fail_registration)return -EIO;assert(i<8);table[i]=m;return i;}
+static int is_power_of_2(unsigned x){return x&&!(x&(x-1));}
+static int mtd_pairing_groups(struct mtd_info*m){(void)m;assert(!"not SLC emulation");return 1;}
+static u64 mtd_div_by_eb(u64 sz,struct mtd_info*m){return sz/m->erasesize;}
+static int mtd_unlock(struct mtd_info*m,u64 from,u64 n){(void)m;(void)from;(void)n;assert(!"no unlock");return -EINVAL;}
+static void dev_set_name(struct device*d,const char*s,int i){(void)d;(void)s;(void)i;}
+static void dev_set_drvdata(struct device*d,void*p){d->data=p;}
+static void mtd_check_of_node(struct mtd_info*m){(void)m;}
+static void of_node_get(struct device_node*n){(void)n;}
+static void device_initialize(struct device*d){d->refs=1;}
+static int device_add(struct device*d){struct mtd_info*m=d->data;if(m->index==fail_add){if(hold_failed_device){get_device(d);failed_device=d;}return -EIO;}d->registered=true;return 0;}
+static int device_register(struct device*d){device_initialize(d);return device_add(d);}
+static void mtd_debugfs_populate(struct mtd_info*m){if(open_during_probe&&m->index==open_die&&!retained){assert(!__get_mtd_device(m));retained=m;}}
+static void device_create(void*c,void*p,dev_t dev,void*data,const char*s,int i){(void)c;(void)p;(void)dev;(void)data;(void)s;(void)i;}
+static bool of_property_read_bool(struct device_node*n,const char*s){(void)n;(void)s;return false;}
+struct mtd_part_parser_data {int unused;};
+struct mtd_partition {int unused;};
+static void mtd_set_dev_defaults(struct mtd_info*m){(void)m;}
+static int mtd_otp_nvmem_add(struct mtd_info*m){(void)m;return 0;}
+static int parse_mtd_partitions(struct mtd_info*m,const char *const*t,struct mtd_part_parser_data*d){(void)t;(void)d;if(open_during_probe&&m->index==open_die&&m->dev.registered&&!retained){assert(!__get_mtd_device(m));retained=m;}return m->index==fail_parse?-EPROBE_DEFER:0;}
+static int add_mtd_partitions(struct mtd_info*m,const struct mtd_partition*p,int n){(void)m;(void)p;(void)n;assert(!"no fallback partitions in H2FMI");return -EINVAL;}
+static void mtd_reboot_notifier(void){}
+static void register_reboot_notifier(void*p){(void)p;}
+/* ACTUAL_FUNCTIONS */
+static void cleanup_fixture(void){for(unsigned i=0;i<allocation_count;i++)if(allocations[i].live){free(allocations[i].p);allocations[i].live=false;}}
+static void fresh(void){cleanup_fixture();memset(allocations,0,sizeof(allocations));allocation_count=allocation_step=fail_allocation=0;fail_map=fail_registration=fail_unregister=fail_parse=fail_add=-1;hold_failed_device=false;failed_device=NULL;open_die=0;maps=registrations=unregistrations=hardware_reads=nvmem_registrations=core_releases=device_releases=0;open_during_probe=false;resources_available=module_get_ok=true;retained=NULL;last_context=NULL;partition_child=NULL;partition_releases=0;memset(table,0,sizeof(table));memset(regions,0,sizeof(regions));for(int i=0;i<6;i++)*(u32*)regions[i]=5;entered_read=allow_read=remove_done=block_read=false;}
+static void devres_cleanup(void){resources_available=false;for(unsigned i=0;i<allocation_count;i++)if(allocations[i].managed)allocations[i].logical_live=false;}
+static void partial_current_controls(struct platform_device *dev,unsigned *cases){
+#if PARTITIONED_MASTER
+ for(int failed=0;failed<4;failed++){
+  fresh();open_during_probe=true;open_die=failed;fail_parse=failed;
+  assert(h2fmi_probe(dev)==-EPROBE_DEFER);devres_cleanup();assert(retained);
+#ifndef HISTORICAL_CONTROL
+  assert(record(last_context)->live);assert(retained->_block_isbad(retained,0)==-ENODEV);
+#endif
+  __put_mtd_device(retained);
+#ifndef HISTORICAL_CONTROL
+  assert(!record(last_context)->live);
+#endif
+  (*cases)++;
+ }
+#else
+ (void)dev;(void)cases;
+#endif
+}
+static void deferred_device_controls(struct platform_device *dev,unsigned *cases){
+ for(unsigned fd=0;fd<2;fd++){
+  fresh();assert(!h2fmi_probe(dev));struct h2fmi*f=dev->data;struct mtd_info*m=&f->mtd[0];
+  get_device(&m->dev);if(fd)assert(!__get_mtd_device(m));
+  h2fmi_remove(dev);devres_cleanup();
+#ifdef HISTORICAL_CONTROL
+  assert(!record(f)->logical_live);
+  if(fd)__put_mtd_device(m);
+  /* Actual original core memset loses the deferred device's release data. */
+  assert(!m->dev.refs&&!m->dev.data);
+#else
+  assert(record(f)->live&&m->dev.data==m&&m->dev.refs);
+  assert(m->_block_isbad(m,0)==-ENODEV);
+  if(fd)__put_mtd_device(m);
+  assert(record(f)->live&&m->dev.refs==1);
+  put_device(&m->dev);assert(!record(f)->live);
+#endif
+  (*cases)++;
+ }
+}
+static void partition_controls(struct platform_device *dev,unsigned *cases){
+ fresh();assert(!h2fmi_probe(dev));struct h2fmi*f=dev->data;struct mtd_info*m=&f->mtd[0];
+ struct mtd_info *child=kzalloc(sizeof(*child),0);assert(child);child->parent=m;child->name=kasprintf(0,"partition%d",0);child->writesize=m->writesize;child->erasesize=m->erasesize;child->flags=m->flags;child->size=m->size;child->_read_oob=m->_read_oob;
+ unsigned nvmem_before=nvmem_registrations;(void)nvmem_before;
+ assert(!add_mtd_device(child));
+#ifndef HISTORICAL_CONTROL
+ put_partition_constructor(child);
+#endif
+ partition_child=child;
+#ifndef HISTORICAL_CONTROL
+ assert(nvmem_registrations==nvmem_before); /* master opt-out covers child */
+#endif
+ assert(!__get_mtd_device(child));get_device(&child->dev);h2fmi_remove(dev);devres_cleanup();
+#ifndef HISTORICAL_CONTROL
+ assert(record(f)->live);assert(m->_block_isbad(m,0)==-ENODEV);
+#endif
+ __put_mtd_device(child);
+#ifndef HISTORICAL_CONTROL
+ assert(record(f)->live&&!partition_releases);
+ put_device(&child->dev);assert(partition_releases==1&&!record(f)->live);
+#else
+ assert(!record(f)->logical_live);put_device(&child->dev);assert(partition_releases==1);
+#endif
+ (*cases)++;
+}
+static void failed_publication_controls(struct platform_device *dev,unsigned *cases){
+ for(int failed=0;failed<4;failed++)for(unsigned hold=0;hold<2;hold++){
+  fresh();fail_add=failed;hold_failed_device=hold;
+  assert(h2fmi_probe(dev)==-EIO);devres_cleanup();
+#ifndef HISTORICAL_CONTROL
+  if(hold){assert(failed_device&&record(last_context)->live);assert(table[failed]==failed_device->data);put_device(failed_device);assert(!record(last_context)->live&&!table[failed]);}
+  else assert(!record(last_context)->live);
+#else
+  if(hold){assert(failed_device&&!record(last_context)->logical_live);assert(!table[failed]);put_device(failed_device);}
+#endif
+  (*cases)++;
+ }
+}
+static void *read_thread(void*p){struct mtd_info*m=p;u8 out[32768];memset(out,0x55,sizeof(out));struct mtd_oob_ops ops={.len=sizeof(out),.datbuf=out};read_result=m->_read_oob(m,0,&ops);read_progress=ops.retlen;assert(read_result==0||read_result==-ENODEV);assert(out[16384]==0x55);return NULL;}
+static void *remove_thread(void*p){h2fmi_remove(p);devres_cleanup();pthread_mutex_lock(&progress_lock);remove_done=true;pthread_cond_broadcast(&progress_cv);pthread_mutex_unlock(&progress_lock);return NULL;}
+static int contract_get(struct mtd_info*m){(void)m;assert(!"must reject before callbacks");return 0;}
+static void contract_put(struct mtd_info*m){(void)m;assert(!"must reject before callbacks");}
+int main(void){
+#ifdef MODULE_PROBE_CONTROL
+ struct platform_device module_dev={0};fresh();assert(h2fmi_probe(&module_dev)==-EOPNOTSUPP);assert(!allocation_count&&!maps&&!registrations);cleanup_fixture();puts("PASS H2FMI module probe denied before allocation/publication");return 0;
+#endif
+#ifdef CONTRACT_REJECTION
+ fresh();struct mtd_info invalid={.writesize=16384,.retain_device_context=true,._get_device=contract_get,._put_device=contract_put};
+#if CORE_BUILTIN
+ invalid.owner=(void*)1;
+#endif
+ assert(add_mtd_device(&invalid)==-EINVAL&&!registrations&&!device_releases);puts("PASS built-in-only opt-in contract rejection before publication");return 0;
+#endif
+ unsigned cases=0;struct platform_device dev={0};
+#ifndef HISTORICAL_CONTROL
+ u8 out[8192];struct mtd_oob_ops ops;
+#endif
+ fresh();assert(!h2fmi_probe(&dev));struct h2fmi*f=dev.data;struct mtd_info*m=&f->mtd[0];assert(!__get_mtd_device(m));
+ h2fmi_remove(&dev);devres_cleanup();
+#ifdef HISTORICAL_CONTROL
+ assert(!record(f)->logical_live);assert(nvmem_registrations==4); /* actual original master open didn't retain devm context */
+#else
+ assert(record(f)->logical_live&&nvmem_registrations==0);assert(f->removed&&f->refs.count==1+PARTITIONED_MASTER);
+ memset(out,0x55,sizeof(out));ops=(struct mtd_oob_ops){.len=sizeof(out),.datbuf=out,.retlen=99,.oobretlen=77};assert(m->_read_oob(m,0,&ops)==-ENODEV&&ops.retlen==0&&ops.oobretlen==0&&!hardware_reads);assert(out[0]==0x55);assert(m->_block_isbad(m,0)==-ENODEV);assert(__get_mtd_device(m)==-ENODEV);
+#endif
+ __put_mtd_device(m);
+#ifndef HISTORICAL_CONTROL
+ assert(!record(f)->live);
+#endif
+ cases++;
+ for(unsigned fail=0;fail<6;fail++){fresh();fail_map=(int)fail;assert(h2fmi_probe(&dev)==-EIO);devres_cleanup();
+#ifndef HISTORICAL_CONTROL
+ assert(!record(last_context)->live);
+#endif
+ cases++;}
+ for(unsigned fail=1;fail<=7;fail++){fresh();fail_allocation=fail;int e=h2fmi_probe(&dev);assert(e==-ENOMEM);devres_cleanup();
+#ifndef HISTORICAL_CONTROL
+ for(unsigned i=0;i<allocation_count;i++)assert(!allocations[i].live);
+#endif
+ cases++;}
+ for(unsigned fail=1;fail<4;fail++){fresh();open_during_probe=true;fail_registration=(int)fail;assert(h2fmi_probe(&dev)==-EIO);devres_cleanup();assert(retained);
+#ifndef HISTORICAL_CONTROL
+ assert(record(last_context)->live);assert(retained->_block_isbad(retained,0)==-ENODEV);
+#endif
+ __put_mtd_device(retained);
+#ifndef HISTORICAL_CONTROL
+ assert(!record(last_context)->live);
+#endif
+ cases++;}
+#ifndef HISTORICAL_CONTROL
+ fresh();assert(!h2fmi_probe(&dev));m=&((struct h2fmi*)dev.data)->mtd[0];module_get_ok=false;unsigned refs=((struct h2fmi*)dev.data)->refs.count;assert(__get_mtd_device(m)==-ENODEV);assert(((struct h2fmi*)dev.data)->refs.count==refs);module_get_ok=true;h2fmi_remove(&dev);cases++;
+ fresh();assert(!h2fmi_probe(&dev));f=dev.data;fail_unregister=2;h2fmi_remove(&dev);devres_cleanup();assert(record(f)->live&&f->removed);assert(f->mtd[2]._block_isbad(&f->mtd[2],0)==-ENODEV);fail_unregister=-1;assert(!mtd_device_unregister(&f->mtd[2]));assert(record(f)->live&&f->refs.count==1);kref_put(&f->refs,h2fmi_release);assert(!record(f)->live);cases++;
+ fresh();assert(!h2fmi_probe(&dev));f=dev.data;m=&f->mtd[0];assert(!__get_mtd_device(m));block_read=true;pthread_t rd,rm;assert(!pthread_create(&rd,NULL,read_thread,m));pthread_mutex_lock(&progress_lock);while(!entered_read)pthread_cond_wait(&progress_cv,&progress_lock);pthread_mutex_unlock(&progress_lock);assert(!pthread_create(&rm,NULL,remove_thread,&dev));while(!READ_ONCE(f->removed))sched_yield();pthread_mutex_lock(&progress_lock);assert(!remove_done&&resources_available);allow_read=true;pthread_cond_broadcast(&progress_cv);pthread_mutex_unlock(&progress_lock);assert(!pthread_join(rd,NULL));assert(!pthread_join(rm,NULL));assert(read_result==-ENODEV&&read_progress==16384&&hardware_reads==1);assert(remove_done&&!resources_available&&record(f)->live);__put_mtd_device(m);assert(!record(f)->live);cases++;
+#endif
+ partial_current_controls(&dev,&cases);deferred_device_controls(&dev,&cases);partition_controls(&dev,&cases);failed_publication_controls(&dev,&cases);
+ cleanup_fixture();printf("PASS %u actual H2FMI/MTD lifetime controls, partitioned_master=%d, hardware_calls=0\n",cases,PARTITIONED_MASTER);return 0;
+}
