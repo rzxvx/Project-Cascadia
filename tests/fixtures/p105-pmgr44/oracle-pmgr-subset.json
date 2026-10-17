@@ -1,0 +1,114 @@
+{
+  "build": "12H321",
+  "adt_sha256": "5c346586116de1bb32606acb27cad3158bcaa8a1318a10ee9631de09884cfd72",
+  "device_clocks_property_length": 5104,
+  "actual_entry_size": 44,
+  "actual_entry_count": 116,
+  "subset_rows": [
+    {
+      "id": 40,
+      "words": [
+        679477248,
+        0,
+        84148994,
+        32,
+        25,
+        0,
+        0
+      ],
+      "name": "UPERF"
+    },
+    {
+      "id": 41,
+      "words": [
+        687865856,
+        0,
+        40,
+        35,
+        0,
+        0,
+        0
+      ],
+      "name": "USB11"
+    },
+    {
+      "id": 42,
+      "words": [
+        704643072,
+        0,
+        40,
+        38,
+        45,
+        0,
+        0
+      ],
+      "name": "USBREG"
+    },
+    {
+      "id": 87,
+      "words": [
+        1459617792,
+        0,
+        10792,
+        0,
+        0,
+        0,
+        0
+      ],
+      "name": "USB-PHY"
+    },
+    {
+      "id": 88,
+      "words": [
+        1476395010,
+        0,
+        40,
+        33,
+        0,
+        0,
+        0
+      ],
+      "name": "USB-OTG"
+    },
+    {
+      "id": 89,
+      "words": [
+        1493172224,
+        0,
+        40,
+        34,
+        0,
+        0,
+        0
+      ],
+      "name": "USB-EHCI"
+    },
+    {
+      "id": 90,
+      "words": [
+        1509949440,
+        0,
+        796968,
+        36,
+        0,
+        0,
+        0
+      ],
+      "name": "USB-OHCI0"
+    },
+    {
+      "id": 91,
+      "words": [
+        1526726656,
+        0,
+        705440040,
+        37,
+        0,
+        0,
+        0
+      ],
+      "name": "USB-OHCI1"
+    }
+  ],
+  "note": "Parsed nonbinary metadata subset; this synthetic table is not the entire original ADT."
+}

@@ -1171,7 +1171,7 @@ index 979202027..13d139468 100644
  
  static void hfsplus_free_inode(struct inode *inode)
 diff --git a/init/main.c b/init/main.c
-index c4778edae..296545649 100644
+index c4778edae..640bb5538 100644
 --- a/init/main.c
 +++ b/init/main.c
 @@ -698,6 +698,12 @@ static void __init setup_command_line(char *command_line)
@@ -1213,7 +1213,7 @@ index c4778edae..296545649 100644
  	}
  	WARN(msgbuf[0], "initcall %pS returned with %s\n", fn, msgbuf);
  
-@@ -1466,6 +1481,64 @@ static int __ref kernel_init(void *unused)
+@@ -1466,6 +1481,63 @@ static int __ref kernel_init(void *unused)
  	 */
  	wait_for_completion(&kthreadd_done);
  
@@ -1226,7 +1226,6 @@ index c4778edae..296545649 100644
 +		void apple_aic1_hw_quiesce(void);
 +		void apple_aic1_enable(void);
 +		void apple_aic1_arm_cpu0(void);
-+		extern bool apple_aic1_early_irq_escape;
 +
 +		p105_fb_dbg("irq_quiesce");
 +		apple_aic1_quiesce();
@@ -1278,7 +1277,7 @@ index c4778edae..296545649 100644
  	kernel_init_freeable();
  	/* need to finish all async __init code before freeing the memory */
  	async_synchronize_full();
-@@ -1475,6 +1548,13 @@ static int __ref kernel_init(void *unused)
+@@ -1475,6 +1547,13 @@ static int __ref kernel_init(void *unused)
  	ftrace_free_init_mem();
  	kgdb_free_init_mem();
  	exit_boot_config();
@@ -1292,7 +1291,7 @@ index c4778edae..296545649 100644
  	free_initmem();
  	mark_readonly();
  
-@@ -1492,7 +1572,10 @@ static int __ref kernel_init(void *unused)
+@@ -1492,7 +1571,10 @@ static int __ref kernel_init(void *unused)
  	do_sysctl_args();
  
  	if (ramdisk_execute_command) {
@@ -1456,21 +1455,23 @@ diff --git a/drivers/usb/dwc2/core_intr.c b/drivers/usb/dwc2/core_intr.c
 index 7d3e64180..e84cad0a1 100644
 --- a/drivers/usb/dwc2/core_intr.c
 +++ b/drivers/usb/dwc2/core_intr.c
-@@ -301,6 +301,9 @@ static void dwc2_handle_session_req_intr(struct dwc2_hsotg *hsotg)
+@@ -301,6 +301,10 @@ static void dwc2_handle_session_req_intr(struct dwc2_hsotg *hsotg)
  		hsotg->lx_state);
  
  	if (dwc2_is_device_mode(hsotg)) {
-+#ifdef CONFIG_ARCH_APPLE_S5L
++#if defined(CONFIG_ARCH_APPLE_S5L) && \
++    (IS_ENABLED(CONFIG_USB_DWC2_PERIPHERAL) || IS_ENABLED(CONFIG_USB_DWC2_DUAL_ROLE))
 +		bool ended = hsotg->lx_state != DWC2_L0;
 +#endif
  		if (hsotg->lx_state != DWC2_L0) {
  			if (hsotg->in_ppd) {
  				ret = dwc2_exit_partial_power_down(hsotg, 0,
-@@ -322,6 +325,17 @@ static void dwc2_handle_session_req_intr(struct dwc2_hsotg *hsotg)
+@@ -322,6 +326,18 @@ static void dwc2_handle_session_req_intr(struct dwc2_hsotg *hsotg)
  		 * established
  		 */
  		dwc2_hsotg_disconnect(hsotg);
-+#ifdef CONFIG_ARCH_APPLE_S5L
++#if defined(CONFIG_ARCH_APPLE_S5L) && \
++    (IS_ENABLED(CONFIG_USB_DWC2_PERIPHERAL) || IS_ENABLED(CONFIG_USB_DWC2_DUAL_ROLE))
 +		/* VBUS is back after the old session ended (not the first
 +		 * session at boot, which udc_start set up): no detector calls
 +		 * vbus_session() here, so start it ourselves (gadget.c) */

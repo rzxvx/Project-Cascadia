@@ -1,0 +1,535 @@
+Subject: [PATCH] phy and USB: retain failed power references and recover before resume
+
+A failed final PHY power-off leaves a reference owned by its consumer.
+Reject new acquisitions until explicit cleanup succeeds, and track USB
+roothub init and power references so resume cannot duplicate retained
+references. Propagate suspend failures and require pending recovery even
+on automatic HCD resume. Report failed teardown without pretending that
+provider references were put.
+
+Remove the set-mode unwind's unowned power-off. No provider register
+sequence or successful core count operation is changed. Permanent
+provider failures remain fail-closed; no forced reset or unconditional
+cleanup is attempted.
+---
+--- a/drivers/phy/phy-core.c
++++ b/drivers/phy/phy-core.c
+@@ -331,6 +331,13 @@
+ 	if (!phy)
+ 		goto out;
+ 
++	/* A failed final release leaves the existing reference owned. */
++	mutex_lock(&phy->mutex);
++	ret = phy->power_off_error;
++	mutex_unlock(&phy->mutex);
++	if (ret)
++		goto out;
++
+ 	if (phy->pwr) {
+ 		ret = regulator_enable(phy->pwr);
+ 		if (ret)
+@@ -344,6 +351,11 @@
+ 	ret = 0; /* Override possible ret == -ENOTSUPP */
+ 
+ 	mutex_lock(&phy->mutex);
++	/* Recheck after acquiring PM/supply refs: off may have raced us. */
++	if (phy->power_off_error) {
++		ret = phy->power_off_error;
++		goto err_pwr_on;
++	}
+ 	if (phy->power_count == 0 && phy->ops->power_on) {
+ 		ret = phy->ops->power_on(phy);
+ 		if (ret < 0) {
+@@ -382,14 +394,24 @@
+ 		return 0;
+ 
+ 	mutex_lock(&phy->mutex);
++	if (phy->power_count <= 0) {
++		mutex_unlock(&phy->mutex);
++		return -EINVAL;
++	}
+ 	if (phy->power_count == 1 && phy->ops->power_off) {
+ 		ret =  phy->ops->power_off(phy);
+ 		if (ret < 0) {
+ 			dev_err(&phy->dev, "phy poweroff failed --> %d\n", ret);
++			if (!phy->power_off_error)
++				phy->power_off_error = ret;
++			ret = phy->power_off_error;
+ 			mutex_unlock(&phy->mutex);
+ 			return ret;
+ 		}
+ 	}
++	/* Only a successful release clears the failed-off latch. */
++	if (phy->power_count == 1)
++		phy->power_off_error = 0;
+ 	--phy->power_count;
+ 	mutex_unlock(&phy->mutex);
+ 	phy_pm_runtime_put(phy);
+--- a/include/linux/phy/phy.h
++++ b/include/linux/phy/phy.h
+@@ -151,6 +151,7 @@
+  * @mutex: mutex to protect phy_ops
+  * @init_count: used to protect when the PHY is used by multiple consumers
+  * @power_count: used to protect when the PHY is used by multiple consumers
++ * @power_off_error: first failed final release; blocks new power references
+  * @attrs: used to specify PHY specific attributes
+  * @pwr: power regulator associated with the phy
+  * @debugfs: debugfs directory
+@@ -162,6 +163,7 @@
+ 	struct mutex		mutex;
+ 	int			init_count;
+ 	int			power_count;
++	int			power_off_error;
+ 	struct phy_attrs	attrs;
+ 	struct regulator	*pwr;
+ 	struct dentry		*debugfs;
+--- a/drivers/usb/core/phy.c
++++ b/drivers/usb/core/phy.c
+@@ -16,6 +16,12 @@
+ 
+ struct usb_phy_roothub {
+ 	struct phy		*phy;
++	bool			initialized;
++	bool			powered;
++	bool			init_acquired;
++	bool			power_acquired;
++	int			init_error;
++	int			power_off_error;
+ 	struct list_head	list;
+ };
+ 
+@@ -139,48 +145,69 @@
+ 
+ int usb_phy_roothub_init(struct usb_phy_roothub *phy_roothub)
+ {
+-	struct usb_phy_roothub *roothub_entry;
+-	struct list_head *head;
+-	int err;
+-
+-	if (!phy_roothub)
+-		return 0;
+-
+-	head = &phy_roothub->list;
+-
+-	list_for_each_entry(roothub_entry, head, list) {
+-		err = phy_init(roothub_entry->phy);
+-		if (err)
+-			goto err_exit_phys;
+-	}
+-
+-	return 0;
+-
+-err_exit_phys:
+-	list_for_each_entry_continue_reverse(roothub_entry, head, list)
+-		phy_exit(roothub_entry->phy);
+-
++	struct usb_phy_roothub *entry;
++	int err;
++
++	if (!phy_roothub)
++		return 0;
++	list_for_each_entry(entry, &phy_roothub->list, list)
++		entry->init_acquired = false;
++	list_for_each_entry(entry, &phy_roothub->list, list) {
++		if (entry->init_error) {
++			err = entry->init_error;
++			goto undo;
++		}
++		if (entry->initialized)
++			continue;
++		err = phy_init(entry->phy);
++		if (err)
++			goto undo;
++		entry->initialized = true;
++		entry->init_acquired = true;
++	}
++	return 0;
++undo:
++	list_for_each_entry_reverse(entry, &phy_roothub->list, list) {
++		int cleanup;
++
++		if (!entry->init_acquired)
++			continue;
++		cleanup = phy_exit(entry->phy);
++		if (cleanup)
++			entry->init_error = cleanup;
++		else
++			entry->initialized = false;
++		entry->init_acquired = false;
++	}
+ 	return err;
+ }
+ EXPORT_SYMBOL_GPL(usb_phy_roothub_init);
+ 
+ int usb_phy_roothub_exit(struct usb_phy_roothub *phy_roothub)
+ {
+-	struct usb_phy_roothub *roothub_entry;
+-	struct list_head *head;
++	struct usb_phy_roothub *entry;
+ 	int err, ret = 0;
+ 
+ 	if (!phy_roothub)
+ 		return 0;
+-
+-	head = &phy_roothub->list;
+-
+-	list_for_each_entry(roothub_entry, head, list) {
+-		err = phy_exit(roothub_entry->phy);
+-		if (err)
+-			ret = err;
+-	}
+-
++	list_for_each_entry_reverse(entry, &phy_roothub->list, list) {
++		if (!entry->initialized)
++			continue;
++		if (entry->powered)
++			err = entry->power_off_error ?: -EBUSY;
++		else
++			err = phy_exit(entry->phy);
++		if (err) {
++			if (!ret)
++				ret = err;
++			if (!entry->powered && !entry->init_error)
++				entry->init_error = err;
++		} else {
++			entry->initialized = false;
++			entry->init_error = 0;
++		}
++		entry->init_acquired = false;
++	}
+ 	return ret;
+ }
+ EXPORT_SYMBOL_GPL(usb_phy_roothub_exit);
+@@ -206,9 +233,7 @@
+ 	return 0;
+ 
+ err_out:
+-	list_for_each_entry_continue_reverse(roothub_entry, head, list)
+-		phy_power_off(roothub_entry->phy);
+-
++	/* No power reference was acquired by a mode request. */
+ 	return err;
+ }
+ EXPORT_SYMBOL_GPL(usb_phy_roothub_set_mode);
+@@ -292,76 +317,163 @@
+ }
+ EXPORT_SYMBOL_GPL(usb_phy_roothub_notify_disconnect);
+ 
++
++/* HCD serializes this wrapper's lifecycle; the generic PHY mutex protects
++ * the shared provider and its latched final-release error across consumers.
++ */
++static int usb_phy_roothub_release(struct usb_phy_roothub *entry)
++{
++	int err;
++
++	if (!entry->powered)
++		return 0;
++	err = phy_power_off(entry->phy);
++	if (err) {
++		if (!entry->power_off_error)
++			entry->power_off_error = err;
++		return entry->power_off_error;
++	}
++	entry->powered = false;
++	entry->power_off_error = 0;
++	return 0;
++}
++
++static int usb_phy_roothub_recover(struct usb_phy_roothub *root)
++{
++	struct usb_phy_roothub *entry;
++	int err;
++
++	list_for_each_entry_reverse(entry, &root->list, list) {
++		if (!entry->power_off_error)
++			continue;
++		err = usb_phy_roothub_release(entry);
++		if (err)
++			return err;
++	}
++	return 0;
++}
++
++bool usb_phy_roothub_needs_resume(struct usb_phy_roothub *root)
++{
++	struct usb_phy_roothub *entry;
++
++	if (!root)
++		return false;
++	list_for_each_entry(entry, &root->list, list)
++		if (!entry->initialized || !entry->powered ||
++		    entry->init_error || entry->power_off_error)
++			return true;
++	return false;
++}
++EXPORT_SYMBOL_GPL(usb_phy_roothub_needs_resume);
++
+ int usb_phy_roothub_power_on(struct usb_phy_roothub *phy_roothub)
+ {
+-	struct usb_phy_roothub *roothub_entry;
+-	struct list_head *head;
+-	int err;
+-
+-	if (!phy_roothub)
+-		return 0;
+-
+-	head = &phy_roothub->list;
+-
+-	list_for_each_entry(roothub_entry, head, list) {
+-		err = phy_power_on(roothub_entry->phy);
+-		if (err)
+-			goto err_out;
+-	}
+-
+-	return 0;
+-
+-err_out:
+-	list_for_each_entry_continue_reverse(roothub_entry, head, list)
+-		phy_power_off(roothub_entry->phy);
+-
++	struct usb_phy_roothub *entry;
++	int err;
++
++	if (!phy_roothub)
++		return 0;
++	/* Recover retained references before acquiring any new one, including
++	 * another entry backed by the same shared generic PHY.
++	 */
++	err = usb_phy_roothub_recover(phy_roothub);
++	if (err)
++		return err;
++	list_for_each_entry(entry, &phy_roothub->list, list)
++		entry->power_acquired = false;
++	list_for_each_entry(entry, &phy_roothub->list, list) {
++		if (entry->init_error) {
++			err = entry->init_error;
++			goto undo;
++		}
++		if (!entry->initialized) {
++			err = -EINVAL;
++			goto undo;
++		}
++		if (entry->powered)
++			continue;
++		err = phy_power_on(entry->phy);
++		if (err)
++			goto undo;
++		entry->powered = true;
++		entry->power_acquired = true;
++	}
++	list_for_each_entry(entry, &phy_roothub->list, list) {
++		entry->power_acquired = false;
++		entry->init_acquired = false;
++	}
++	return 0;
++undo:
++	list_for_each_entry_reverse(entry, &phy_roothub->list, list) {
++		if (!entry->power_acquired)
++			continue;
++		usb_phy_roothub_release(entry);
++		entry->power_acquired = false;
++	}
+ 	return err;
+ }
+ EXPORT_SYMBOL_GPL(usb_phy_roothub_power_on);
+ 
+-void usb_phy_roothub_power_off(struct usb_phy_roothub *phy_roothub)
+-{
+-	struct usb_phy_roothub *roothub_entry;
+-
+-	if (!phy_roothub)
+-		return;
+-
+-	list_for_each_entry_reverse(roothub_entry, &phy_roothub->list, list)
+-		phy_power_off(roothub_entry->phy);
++int usb_phy_roothub_power_off(struct usb_phy_roothub *phy_roothub)
++{
++	struct usb_phy_roothub *entry;
++	int err, ret = 0;
++
++	if (!phy_roothub)
++		return 0;
++	list_for_each_entry_reverse(entry, &phy_roothub->list, list) {
++		err = usb_phy_roothub_release(entry);
++		if (err && !ret)
++			ret = err;
++	}
++	return ret;
+ }
+ EXPORT_SYMBOL_GPL(usb_phy_roothub_power_off);
+ 
+ int usb_phy_roothub_suspend(struct device *controller_dev,
+ 			    struct usb_phy_roothub *phy_roothub)
+ {
+-	usb_phy_roothub_power_off(phy_roothub);
+-
+-	/* keep the PHYs initialized so the device can wake up the system */
++	int err = usb_phy_roothub_power_off(phy_roothub);
++
++	if (err)
++		return err;
+ 	if (device_may_wakeup(controller_dev))
+ 		return 0;
+-
+ 	return usb_phy_roothub_exit(phy_roothub);
+ }
+ EXPORT_SYMBOL_GPL(usb_phy_roothub_suspend);
+ 
+ int usb_phy_roothub_resume(struct device *controller_dev,
+-			   struct usb_phy_roothub *phy_roothub)
+-{
+-	int err;
+-
+-	/* if the device can't wake up the system _exit was called */
+-	if (!device_may_wakeup(controller_dev)) {
+-		err = usb_phy_roothub_init(phy_roothub);
+-		if (err)
+-			return err;
+-	}
+-
++			    struct usb_phy_roothub *phy_roothub)
++{
++	struct usb_phy_roothub *entry;
++	int err;
++
++	(void)controller_dev;
++	if (!phy_roothub)
++		return 0;
++	err = usb_phy_roothub_recover(phy_roothub);
++	if (err)
++		return err;
++	err = usb_phy_roothub_init(phy_roothub);
++	if (err)
++		return err;
+ 	err = usb_phy_roothub_power_on(phy_roothub);
+-
+-	/* undo _init if _power_on failed */
+-	if (err && !device_may_wakeup(controller_dev))
+-		usb_phy_roothub_exit(phy_roothub);
+-
++	if (err) {
++		list_for_each_entry_reverse(entry, &phy_roothub->list, list) {
++			int cleanup;
++
++			if (!entry->init_acquired || entry->powered)
++				continue;
++			cleanup = phy_exit(entry->phy);
++			if (cleanup)
++				entry->init_error = cleanup;
++			else
++				entry->initialized = false;
++			entry->init_acquired = false;
++		}
++	}
+ 	return err;
+ }
+ EXPORT_SYMBOL_GPL(usb_phy_roothub_resume);
+--- a/drivers/usb/core/phy.h
++++ b/drivers/usb/core/phy.h
+@@ -23,7 +23,9 @@
+ int usb_phy_roothub_notify_connect(struct usb_phy_roothub *phy_roothub, int port);
+ int usb_phy_roothub_notify_disconnect(struct usb_phy_roothub *phy_roothub, int port);
+ int usb_phy_roothub_power_on(struct usb_phy_roothub *phy_roothub);
+-void usb_phy_roothub_power_off(struct usb_phy_roothub *phy_roothub);
++int usb_phy_roothub_power_off(struct usb_phy_roothub *phy_roothub);
++
++bool usb_phy_roothub_needs_resume(struct usb_phy_roothub *phy_roothub);
+ 
+ int usb_phy_roothub_suspend(struct device *controller_dev,
+ 			    struct usb_phy_roothub *phy_roothub);
+--- a/drivers/usb/core/hcd.c
++++ b/drivers/usb/core/hcd.c
+@@ -2267,9 +2267,14 @@
+ 		usb_set_device_state(rhdev, USB_STATE_SUSPENDED);
+ 		hcd->state = HC_STATE_SUSPENDED;
+ 
+-		if (!PMSG_IS_AUTO(msg))
+-			usb_phy_roothub_suspend(hcd->self.sysdev,
+-						hcd->phy_roothub);
++		if (!PMSG_IS_AUTO(msg)) {
++			status = usb_phy_roothub_suspend(hcd->self.sysdev,
++						 hcd->phy_roothub);
++			if (status) {
++				dev_err(&rhdev->dev, "PHY suspend failed: %d\n", status);
++				return status;
++			}
++		}
+ 
+ 		/* Did we race with a root-hub wakeup event? */
+ 		if (rhdev->do_remote_wakeup) {
+@@ -2308,7 +2313,8 @@
+ 		return 0;
+ 	}
+ 
+-	if (!PMSG_IS_AUTO(msg)) {
++	if (!PMSG_IS_AUTO(msg) ||
++	    usb_phy_roothub_needs_resume(hcd->phy_roothub)) {
+ 		status = usb_phy_roothub_resume(hcd->self.sysdev,
+ 						hcd->phy_roothub);
+ 		if (status)
+@@ -2354,8 +2360,14 @@
+ 			}
+ 		}
+ 	} else {
++		int phy_status;
++
+ 		hcd->state = old_state;
+-		usb_phy_roothub_suspend(hcd->self.sysdev, hcd->phy_roothub);
++		phy_status = usb_phy_roothub_suspend(hcd->self.sysdev,
++						 hcd->phy_roothub);
++		if (phy_status)
++			dev_err(&rhdev->dev, "PHY resume cleanup failed: %d\n",
++				phy_status);
+ 		dev_dbg(&rhdev->dev, "bus %s fail, err %d\n",
+ 				"resume", status);
+ 		if (status != -ESHUTDOWN)
+@@ -2791,7 +2803,7 @@
+ int usb_add_hcd(struct usb_hcd *hcd,
+ 		unsigned int irqnum, unsigned long irqflags)
+ {
+-	int retval;
++	int retval, phy_status;
+ 	struct usb_device *rhdev;
+ 	struct usb_hcd *shared_hcd;
+ 
+@@ -2991,9 +3003,13 @@
+ err_register_bus:
+ 	hcd_buffer_destroy(hcd);
+ err_create_buf:
+-	usb_phy_roothub_power_off(hcd->phy_roothub);
++	phy_status = usb_phy_roothub_power_off(hcd->phy_roothub);
++	if (phy_status)
++		dev_err(hcd->self.sysdev, "PHY add cleanup failed: %d\n", phy_status);
+ err_usb_phy_roothub_power_on:
+-	usb_phy_roothub_exit(hcd->phy_roothub);
++	phy_status = usb_phy_roothub_exit(hcd->phy_roothub);
++	if (phy_status)
++		dev_err(hcd->self.sysdev, "PHY add exit failed: %d\n", phy_status);
+ 
+ 	return retval;
+ }
+@@ -3010,6 +3026,8 @@
+  */
+ void usb_remove_hcd(struct usb_hcd *hcd)
+ {
++	int phy_status;
++
+ 	struct usb_device *rhdev;
+ 	bool rh_registered;
+ 
+@@ -3067,8 +3085,12 @@
+ 	usb_deregister_bus(&hcd->self);
+ 	hcd_buffer_destroy(hcd);
+ 
+-	usb_phy_roothub_power_off(hcd->phy_roothub);
+-	usb_phy_roothub_exit(hcd->phy_roothub);
++	phy_status = usb_phy_roothub_power_off(hcd->phy_roothub);
++	if (phy_status)
++		dev_err(hcd->self.sysdev, "PHY remove failed: %d\n", phy_status);
++	phy_status = usb_phy_roothub_exit(hcd->phy_roothub);
++	if (phy_status)
++		dev_err(hcd->self.sysdev, "PHY remove exit failed: %d\n", phy_status);
+ 
+ 	usb_put_invalidate_rhdev(hcd);
+ 	hcd->flags = 0;

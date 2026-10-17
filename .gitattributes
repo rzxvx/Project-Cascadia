@@ -1,0 +1,2 @@
+patches/tree/*.patch whitespace=-blank-at-eol,-space-before-tab
+tests/fixtures/soc-gpio-mux-only.patch whitespace=-blank-at-eol,-space-before-tab

@@ -37,6 +37,7 @@
 #include <linux/mutex.h>
 #include <linux/platform_device.h>
 #include <linux/slab.h>
+#include <linux/spinlock.h>
 
 #define H2FMI_BUSES		2
 #define H2FMI_CAUS		2
@@ -125,6 +126,7 @@ struct h2fmi_die {
 	struct h2fmi *fmi;
 	u8 bus;
 	u8 cau;
+	spinlock_t ecc_lock;	/* serialize per-die diagnostic counters */
 };
 
 struct h2fmi {
@@ -324,7 +326,14 @@ static int h2fmi_read_raw_page(struct h2fmi *fmi, struct h2fmi_bus *b,
 	if (!ret)
 		ret = h2fmi_data_out(fmi, b, b->page, H2FMI_PAGE_RAW);
 
-	h2fmi_cmd1(fmi, b, 0x77);
+	/* A failed end-of-operation is a bus failure even when page bytes
+	 * arrived. Preserve an earlier transport error if there was one. */
+	{
+		int end_ret = h2fmi_cmd1(fmi, b, 0x77);
+
+		if (!ret)
+			ret = end_ret;
+	}
 	writel(0, b->fmc + FMC_CE_CTRL);
 	h2fmi_device_reset(b, on, if_ctrl);
 	return ret;
@@ -411,6 +420,32 @@ static int h2fmi_bitflips(struct mtd_info *mtd, u8 st)
 	}
 }
 
+/* Status 0x42 exposes only a refresh-needed sentinel, not an exact bit
+ * count. Keep that existing minimal value in MTD diagnostics. Request stats
+ * are local; per-die counters need a lock because reads release the bus lock
+ * after each raw page and another reader can update the same die then. */
+static void h2fmi_account_ecc(struct mtd_info *mtd, struct mtd_oob_ops *ops,
+			      int bitflips)
+{
+	struct h2fmi_die *die = mtd->priv;
+
+	spin_lock(&die->ecc_lock);
+	if (bitflips < 0)
+		mtd->ecc_stats.failed++;
+	else
+		mtd->ecc_stats.corrected += bitflips;
+	spin_unlock(&die->ecc_lock);
+	if (ops->stats) {
+		if (bitflips < 0)
+			ops->stats->uncorrectable_errors++;
+		else {
+			ops->stats->corrected_bitflips += bitflips;
+			ops->stats->max_bitflips = max(ops->stats->max_bitflips,
+						     (unsigned int)bitflips);
+		}
+	}
+}
+
 /*
  * The whole read path.  mtd_read() builds an mtd_oob_ops and comes through
  * here too, so this has to cope with an unaligned start, any length, and
@@ -426,6 +461,7 @@ static int h2fmi_mtd_read_oob(struct mtd_info *mtd, loff_t from,
 	u32 ooboffs = ops->ooboffs;
 	u8 oob[H2FMI_PAGE_OOB];
 	int maxbitflips = 0;
+	bool ecc_failed = false;
 	u8 *page = NULL;
 	int ret = 0;
 
@@ -467,11 +503,17 @@ static int h2fmi_mtd_read_oob(struct mtd_info *mtd, loff_t from,
 			break;
 
 		bf = h2fmi_bitflips(mtd, st);
-		if (bf < 0) {
-			ret = bf;
-			break;
+		if (bf) {
+			h2fmi_account_ecc(mtd, ops, bf);
+			if (bf < 0)
+				ecc_failed = true;
+			else
+				maxbitflips = max(maxbitflips, bf);
 		}
-		maxbitflips = max(maxbitflips, bf);
+		/* An ECC-failed page was physically read; consume its bytes/OOB
+		 * but mark the request uncorrectable. MEMREAD retries until
+		 * retlen advances and would loop forever on EBADMSG + zero
+		 * progress. Bus failures above never copy stale page buffers. */
 
 		if (len) {
 			size_t n = min_t(size_t, len, H2FMI_PAGE_DATA - skip);
@@ -498,7 +540,7 @@ static int h2fmi_mtd_read_oob(struct mtd_info *mtd, loff_t from,
 	}
 
 	kfree(page);
-	return ret ? ret : maxbitflips;
+	return ret ? ret : ecc_failed ? -EBADMSG : maxbitflips;
 }
 
 /*
@@ -525,6 +567,7 @@ static int h2fmi_setup_mtd(struct h2fmi *fmi, int idx)
 	die->fmi = fmi;
 	die->bus = idx / H2FMI_CAUS;
 	die->cau = idx % H2FMI_CAUS;
+	spin_lock_init(&die->ecc_lock);
 
 	mtd->priv = die;
 	mtd->dev.parent = fmi->dev;
@@ -533,7 +576,9 @@ static int h2fmi_setup_mtd(struct h2fmi *fmi, int idx)
 	if (!mtd->name)
 		return -ENOMEM;
 
-	mtd->type = MTD_NANDFLASH;
+	/* The fixed row mapping exposes 256-page MLC blocks.  PPN-managed ECC
+	 * does not make them SLC or establish SLC programming guarantees. */
+	mtd->type = MTD_MLCNANDFLASH;
 	/* No MTD_WRITEABLE on purpose: this driver cannot write, and the NAND
 	 * it is pointed at holds somebody's iOS.  MTD_NO_ERASE goes with it --
 	 * add_mtd_device() rejects an erasesize with no ->_erase behind it
