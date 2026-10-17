@@ -38,6 +38,10 @@ including the parts that didn't work.
 |--------|-------|------|----------|
 | iPad mini 1 (Wi-Fi) | iPad2,5 / A1432 | Apple A5 (S5L8942X) | p105ap |
 
+Experimental: the iPad 2 Wi-Fi (iPad2,1 / K93AP, S5L8940) now boots Linux
+6.12 to a RAM-only USB shell. This is not feature parity with the iPad mini;
+see [K93 bring-up and limitations](docs/k93-bringup.md).
+
 ## Current Status
 
 - [x] checkm8 via Raspberry Pi Pico (checkm8-a5)
