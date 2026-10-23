@@ -1,0 +1,33 @@
+apple-pmu-charger: the iPad mini 1's USB input current limit.
+
+    git diff -- drivers/power/supply/
+
+diff --git a/drivers/power/supply/Kconfig b/drivers/power/supply/Kconfig
+--- a/drivers/power/supply/Kconfig
++++ b/drivers/power/supply/Kconfig
+@@ -271,6 +271,14 @@
+ 	  through UART5 as iOS does it: charge, voltage, current, temperature,
+ 	  capacities and cycle count, as the "battery" power supply.
+ 
++config CHARGER_APPLE_PMU
++	tristate "Apple iPad mini 1 USB input current limit (D1946 PMU)"
++	depends on MFD_APPLE_PMU_I2C && POWER_SUPPLY
++	help
++	  Raises the D1946 PMU's USB input current limit (register 0x3d) the
++	  way iBEC does, so the iPad mini 1 charges under Linux.  It writes
++	  nothing until armed through its "armed" module parameter.
++
+ config BATTERY_BQ27XXX
+ 	tristate "BQ27xxx battery driver"
+ 	help
+diff --git a/drivers/power/supply/Makefile b/drivers/power/supply/Makefile
+--- a/drivers/power/supply/Makefile
++++ b/drivers/power/supply/Makefile
+@@ -45,6 +45,7 @@
+ obj-$(CONFIG_CHARGER_SBS)	+= sbs-charger.o
+ obj-$(CONFIG_MANAGER_SBS)	+= sbs-manager.o
+ obj-$(CONFIG_BATTERY_APPLE_HDQ)	+= apple-hdq-battery.o
++obj-$(CONFIG_CHARGER_APPLE_PMU)	+= apple-pmu-charger.o
+ obj-$(CONFIG_BATTERY_BQ27XXX)	+= bq27xxx_battery.o
+ obj-$(CONFIG_BATTERY_BQ27XXX_I2C) += bq27xxx_battery_i2c.o
+ obj-$(CONFIG_BATTERY_BQ27XXX_HDQ) += bq27xxx_battery_hdq.o

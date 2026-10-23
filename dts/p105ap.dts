@@ -922,6 +922,16 @@
                     apple,wled-enables = <0x3f>;
                 };
 
+                /* The USB input current limit, 0x3d: iBEC leaves it at 0x02
+                 * (about 100 mA) and the PMU never moves it itself, so
+                 * without this nothing charges.  The only register
+                 * apple-pmu-charger.c writes; it ramps it the way iBEC does,
+                 * and only once armed. */
+                charger@3d {
+                    compatible = "apple,pmu-d1946-charger";
+                    reg = <0x3d>;
+                };
+
                 /* No PMU GPIO0 here.  The ADT's function-clock_enable-pmu is
                  * GPIO0 (register 0x61), but iBEC makes it the digitizer's
                  * clock only on boards of revision <= 1, where it also turns

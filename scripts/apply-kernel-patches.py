@@ -56,6 +56,7 @@ NEW_FILES = [
     "drivers/mtd/devices/mtd-apple-h2fmi.c",
     "drivers/phy/phy-apple-s5l-usb.c",
     "drivers/power/supply/apple-hdq-battery.c",
+    "drivers/power/supply/apple-pmu-charger.c",
     "drivers/video/backlight/apple-pmu-wled.c",
     "sound/soc/apple/s5l-audio.c",
     "sound/soc/codecs/cs35l19.c",
