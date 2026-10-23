@@ -101,9 +101,15 @@ including the parts that didn't work.
       orange mark showing, the backlight (32 steps, 1 to 400 nits); the other
       way, the speakers' volume (16 steps of 4 dB, and off). Hold switches the
       screen off and on and ignores the touchscreen while it is dark
-      (`/sbin/p105-keys`, started at boot). The backlight is
-      `/sys/class/backlight/apple-pmu-wled`, 0..2047, the PMU's LED current
-      DAC; see `docs/research/p105-backlight.md`
+      (`/sbin/p105-keys`, started at boot); Home held is the rotation lock.
+      The backlight is `/sys/class/backlight/apple-pmu-wled`, 0..2047, the
+      PMU's LED current DAC; see `docs/research/p105-backlight.md`
+- [x] **The accelerometer, the screen turned with it** — an ST LIS3DSH on
+      the third I2C bus, read through IIO (`st_accel`, the part added to
+      it). In XFCE the screen and the touch turn with the iPad
+      (`autorotate`); the rotation lock is a panel button, or Home held. See
+      `docs/research/p105-sensors.md`. The gyro, the light sensor and the
+      compass are found, not driven yet
 - [x] **Speakers** — ALSA card `iPadMini`: both speakers, DMA, 32/44.1/48 kHz;
       `aplay`, SDL and OpenAL play through it, several at once (dmix);
       alsa-utils and the mixing come with the image. See

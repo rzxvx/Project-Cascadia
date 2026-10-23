@@ -312,6 +312,13 @@ from your IPSW) and `./cascadia mesa` (Mesa, about an hour the first time);
   right click.
 - **Keyboard.** The button next to the clock shows and hides an on-screen
   keyboard (svkbd). Ctrl is the `^` key.
+- **Turning.** The screen turns with the iPad, the touch with it. That needs
+  a kernel with the accelerometer (`./cascadia build`, from 2026-10-23) and,
+  from the host, `sh tools/desktop/install.sh`, which puts `autorotate` in
+  the session. The button next to the keyboard's locks the turn, and so does
+  Home held (0.8 s). With the patched X server
+  (`sh tools/desktop/xorg-server/build.sh install`) a turned screen is as
+  fast as an upright one.
 - **Timing.** About 40 s to a drawn desktop on the first login, then ~25 s to
   the session and ~40 s until the desktop has settled. The background is a
   solid colour on purpose: XFCE's default wallpaper is an SVG, and rasterising

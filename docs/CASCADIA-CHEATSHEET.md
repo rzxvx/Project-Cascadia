@@ -1422,6 +1422,19 @@ The buttons (`/sbin/p105-keys`, log in `/tmp/p105-keys.log`): side switch
 with the orange mark showing -> volume up/down set the backlight; the other
 way -> the speakers' volume, 16 steps of 4 dB (-48..+12 dB) and off, both
 amps. It works with the screen off too.
+Home held 0.8 s: the rotation lock on/off (the backlight dips once for on,
+twice for off).
+
+Turning the screen (XFCE): `autorotate`, started by the session, turns it
+with the iPad; `rotation-lock [on|off|toggle]` (the file
+`/run/rotation-lock`), also the panel button next to the keyboard's, and
+Home held. Installed from the host: `sh tools/desktop/install.sh` (rotate,
+autorotate, rotation-lock, the button, the autostart entry). The
+accelerometer: `/sys/bus/iio/devices/iio:device0` (`lis3dsh`;
+`in_accel_{x,y,z}_raw`, 0.000598 m/s2 a unit; face up z = +16 300);
+`i2cget -f -y 1 0x1d 0x0f` = `0x3f`. On a kernel from before it:
+`tools/sensors/dtmod` and the st_accel modules
+(docs/research/p105-sensors.md).
 
 Research tools (out of the image): `tools/audio/audmmio.c` (MMIO script
 runner: `r w m p d f t c q s`), `tools/audio/spk-tone.sh` (the speakers by

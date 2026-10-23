@@ -3033,6 +3033,9 @@ fps, every frame shown**; inverted 64-66. The desktop right in all four
 **What is next:** the accelerometer (an IIO device, a mount matrix),
 iio-sensor-proxy and a session daemon calling `rotate`; the side switch as
 the rotation lock; touch checked by hand in each turn.
+(Done without iio-sensor-proxy: `autorotate` reads IIO's sysfs itself, and
+the lock is a panel button and Home held -- the side switch stayed with the
+volume buttons. [p105-sensors.md](p105-sensors.md).)
 
 ## M42: a draw's vertices written once, into GPU memory
 
