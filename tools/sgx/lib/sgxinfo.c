@@ -5,7 +5,7 @@
  *                    one in the code zone, one at a fixed address), each
  *                    written and read back through its mapping
  *
- * No GPU work is submitted: sgx2d (sprites, demo2, supertux-gpu) does that.
+ * No GPU work is submitted: sgx2d (sprites, demo2) does that.
  * Exit status 0 when everything checked out. */
 #include <errno.h>
 #include <fcntl.h>

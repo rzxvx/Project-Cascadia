@@ -2,12 +2,12 @@
 #
 # Build tools/sgx/lib for the device without running any ARM code: Ubuntu's
 # arm-linux-gnueabihf gcc, pointed at a sysroot of Alpine's own armhf packages
-# (musl, its headers, the kernel headers, sdl2-compat) instead of at glibc.
+# (musl, its headers, the kernel headers) instead of at glibc.
 # Runs INSIDE the cascadia-build image (./cascadia gpu), like the rootfs
 # steps, and for the same reason (scripts/apk-unpack.py): a Linux host may
 # have no ARM emulation, and the result must not depend on it.
 #
-#   bash tools/sgx/lib/cross.sh    -> sprites demo2 sgxinfo libsgxsdl.so here
+#   bash tools/sgx/lib/cross.sh    -> sprites demo2 sgxinfo here
 #
 # The same Makefile also builds natively in an Alpine armv7 container (see
 # its header); both give the device the same ABI: EABI hard-float, musl,
@@ -21,15 +21,14 @@ ALPINE="${ALPINE_MIRROR:-https://dl-cdn.alpinelinux.org}/alpine/v3.24"
 CROSS=arm-linux-gnueabihf-
 
 if [ ! -f "$SR/.done" ]; then
-    echo "==> sysroot: Alpine v3.24 armhf musl, linux-headers, sdl2-compat"
+    echo "==> sysroot: Alpine v3.24 armhf musl, linux-headers"
     python3 - "$ROOT/scripts/apk-unpack.py" "$SR" "$ALPINE" <<'EOF'
 import importlib.util, os, shutil, sys
 apku, sr, base = sys.argv[1:]
 spec = importlib.util.spec_from_file_location('apku', apku)
 m = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(m)
-want = {'main': ['musl', 'musl-dev', 'linux-headers'],
-        'community': ['sdl2-compat', 'sdl2-compat-dev']}
+want = {'main': ['musl', 'musl-dev', 'linux-headers']}
 shutil.rmtree(sr, ignore_errors=True)
 os.makedirs(sr)
 for repo, pkgs in want.items():
@@ -62,6 +61,3 @@ for p in sprites demo2; do
 done
 # shellcheck disable=SC2086
 "${CROSS}gcc" $CFLAGS $LDFLAGS -o sgxinfo "$SR/usr/lib/crt1.o" $CRTI sgxinfo.c -lc "$LIBGCC" $CRTN
-# shellcheck disable=SC2086
-"${CROSS}gcc" $CFLAGS -fPIC -shared $LDFLAGS -I"$SR/usr/include/SDL2" -D_REENTRANT \
-    -o libsgxsdl.so $CRTI sgxsdl.c sgx2d.c -lSDL2 -lm -lc "$LIBGCC" $CRTN
