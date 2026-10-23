@@ -97,6 +97,7 @@ sgx-gl glvtx                     # the vertex path: layouts, formats, buffers, i
 sgx-gl glspeed 400 40 flush      # draws a second, a glFlush a frame: renders queued (M27)
 sgx-gl glspeed 1000 60 sprites   # SDL's way: textured blended quads from client arrays (M34)
 GLSPEED_FS=4 sgx-gl glspeed 8 30 fill   # 8 full-target layers: the GPU's cost a pixel
+sgx-gl glclock 10 64 256         # the GPU's clock from its arithmetic: 2.0 G instructions a second, 250 MHz
 sgx-gl glmip                     # mipmaps, mip filters, cube maps (M28)
 SGX_TEX_PROBE=1 sgx-gl glmip --probe 16 32   # where the sampler reads a cube map's levels
 sgx-gl glvary                    # 1 to 8 vec4 varyings, each read back; a mat3 varying (M30);

@@ -153,7 +153,9 @@ the old driver (`[drm] Initialized apple_sgx 0.1.0 ... on minor 0`), the
 microkernel starts as before, and:
 
 - `sgxinfo`: every parameter as expected (CORE_ID `0x01194201`, rev 1.2.2,
-  2 cores, 102.6 MHz, framebuffer 768x1024 at GPU `0x90000000`); a buffer the
+  2 cores, 102.6 MHz [the parameter was wrong: the core runs at 256.5,
+  p105-gpu.md "The GPU's clock, measured"], framebuffer 768x1024 at GPU
+  `0x90000000`); a buffer the
   kernel placed at `0xeffef000` (the top of the range, below its guard
   page), one in the code zone at `0x9affb000`, one at the fixed `0xc0000000`,
   each written and read back through its mapping.
