@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=screenpad editor
+Comment=Make on-screen game controls: buttons, d-pads and sticks
+Exec=/usr/local/bin/screenpad-editor
+Icon=input-gaming
+Terminal=false
+Categories=Settings;Game;
