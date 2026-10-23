@@ -312,10 +312,17 @@ static int apple_s5l8940x_i2c_xfer_msg(struct apple_s5l8940x_i2c *i2c, struct i2
 
     spin_unlock_irqrestore(&i2c->lock, flags);
 
-    /* This controller's interrupt (hwirq 10) never reaches us -- the AIC
-     * masks its lines after rearm -- so the transfer is driven by polling and
-     * we call the handler ourselves whenever the controller has something to
-     * service.
+    /* The transfer is driven by polling: we call the handler ourselves
+     * whenever the controller has something to service.  The interrupt does
+     * arrive -- i2c0's is hwirq 18, the ADT's 0x12, one for each message armed
+     * here (a backlight change is three, a single read one).  It was thought
+     * lost while the DTS gave i2c0 hwirq 10, which the ADT gives the scaler.
+     * Polling stays because it works with interrupts off: the PMU's power-off
+     * writes run that way, and the combined write-then-read above polls with
+     * IRQMASK at 0, as iBoot does.  The interrupt runs the same handler under
+     * the same lock, so whichever comes first services the controller and the
+     * other finds nothing to do; a second complete() is undone by
+     * reinit_completion() at the next message.
      *
      * The condition used to be MTN | RXDONE | ERROR, leaving out XEN.  XEN is
      * exactly the bit a write completes on, so every write to the PMU ran the

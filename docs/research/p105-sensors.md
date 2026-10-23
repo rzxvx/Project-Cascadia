@@ -28,10 +28,32 @@ i2c0 and i2c1 next to it) reads `0x2ff`, on, and its pins
 (`i2c-s5l8940x.c`) takes it as it is: "Hx I2C core rev 1, clkdiv 15".
 
 **The interrupt.** i2c2's `interrupts = <20>`, the ADT's `0x14`, arrives:
-9 interrupts while the three chips were probed. i2c0 sits in our DTS as
-`<10>`, but its ADT number is `0x12` (18). That is probably why i2c0's
-driver says its interrupt "never reaches us" and polls. Not changed yet:
-the PMU sits on that bus.
+9 interrupts while the three chips were probed. i2c0's was wrong. The DTS
+said `<10>`, which the ADT gives `arm-io/scaler`; i2c0's ADT number is
+`0x12` (18). No other node uses 18, and every other AIC number in the DTS
+matches the ADT. With `<18>` (kernel #314) it arrives,
+`APPLE-AIC1 18 ... 33200000.i2c`, where line 10's count had stayed 0. That
+was why the driver said the interrupt "never reaches us". One interrupt
+comes for each message the driver arms with `IRQMASK`, counted on the iPad:
+
+| on i2c0 | interrupts |
+|---|---|
+| the boot | 3 |
+| a backlight change (writes `0xd0`, `0xd1`, `0xd2`) | 3 |
+| a register read (`i2cget 0x3c 0xd0`, write and read as one) | 0 |
+| a plain one-message read (`i2cget 0x3c`) | 1 |
+| an address nobody answers (`0x50`) | 0 |
+
+A register read goes through the combined path, which polls iBoot's way with
+`IRQMASK` at 0, so it raises nothing. The PMU, the backlight
+(1500 → `0xd0 = 0xbb`, back to 1626), the touch rails (`0x22 = 0x67`,
+`0x23 = 0xe0`) and both amps (DEVID `0x35`, REV `0xb0` at `0x40` and `0x41`)
+read as before, with no timeouts. `Err:` did not move during the test.
+
+The driver still polls. The PMU's power-off writes run with interrupts off,
+and the combined read has no interrupt to wait on. The interrupt calls the
+same handler under the same lock, so whichever comes first does the work, as
+on i2c2. The poweroff path is unchanged.
 
 ## The LIS3DSH in st_accel
 
@@ -134,4 +156,5 @@ Then, on the iPad: `insmod p105-sensors-dt.ko`, then `st_sensors`,
   It needs `CONFIG_TSL2583` and a node, then automatic brightness.
 - The compass (AK8963 on i2c1): `CONFIG_AK8975` is built in, but there is
   no i2c1 node.
-- i2c0's interrupt, above.
+- i2c0's interrupt is settled (above). Transfers driven by the interrupt
+  instead of polling would still need a polled fallback for power-off.

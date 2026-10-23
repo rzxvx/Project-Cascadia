@@ -824,7 +824,12 @@
             compatible = "apple,s5l8940x-i2c";
             reg = <0x3200000 0x1000>;
             clock-frequency = <100000>;
-            interrupts = <10>;
+            /* The ADT's arm-io/i2c0 says 0x12 (i2c1 0x13, i2c2 0x14), and it
+             * arrives: one per message the driver arms.  This said 10, which
+             * the ADT gives the scaler: its count stayed 0 and the driver
+             * took the interrupt to be lost.  The driver still polls
+             * (i2c-s5l8940x.c, docs/research/p105-sensors.md). */
+            interrupts = <18>;
             clocks = <&refclk24mhz>;
             clock-names = "i2c";
             #address-cells = <1>;
@@ -958,7 +963,7 @@
          * part has) and als,tsl2581 at 0x39 (ID 0x93).  Only the first has
          * a driver here.  Its clock gate (PMGR 0x3f101120) is on from the
          * boot, its pins muxed as i2c0's are.  Interrupt 20 is the ADT's
-         * 0x14, and it arrives (i2c0's ADT number is 0x12). */
+         * 0x14, and it arrives (as i2c0's 18, the ADT's 0x12, does). */
         i2c2: i2c@3400000 {
             compatible = "apple,s5l8940x-i2c";
             reg = <0x3400000 0x1000>;
