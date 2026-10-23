@@ -15,10 +15,12 @@
 #include <linux/workqueue.h>
 
 struct apple_sgx_drm;
+struct apple_sgx_kms;
 struct clk_bulk_data;
 struct dentry;
 struct device;
 struct drm_device;
+struct drm_file;
 struct drm_gem_object;
 struct page;
 struct resource;
@@ -191,8 +193,9 @@ struct apple_sgx {
 	u32 blt_seq, r_seq;
 	u32 fb_w, fb_h, fb_stride;	/* the framebuffer: pixels, pixels, pixels */
 
-	/* the render node */
+	/* the render node, and its screen */
 	struct apple_sgx_drm *drm;
+	struct apple_sgx_kms *kms;
 };
 
 /* apple_sgx_hw.c */
@@ -207,8 +210,14 @@ bool apple_sgx_render_waiting(struct apple_sgx *sgx, u32 at, const u32 *details)
 int apple_sgx_render_rekick(struct apple_sgx *sgx);
 void apple_sgx_report(struct apple_sgx *sgx, const char *why);
 int apple_sgx_fb_find(struct apple_sgx *sgx, struct resource *res);
+/* the screen's overlay's part of a copy onto the screen (apple_sgx_kms.c) */
+struct apple_sgx_over {
+	u32 va, stride;		/* its rectangle's first pixel; pixels a line */
+	u32 w, h;		/* its size, as the source has it */
+	u32 x, y, dw, dh;	/* where it lands in the copy's box, turned */
+};
 int apple_sgx_fb_show(struct apple_sgx *sgx, u32 va, u32 stride, u32 w, u32 h, u32 x, u32 y,
-		      unsigned int rot);
+		      unsigned int rot, const struct apple_sgx_over *over);
 
 /* apple_sgx_drm.c */
 int apple_sgx_drm_init(struct apple_sgx *sgx);
@@ -219,6 +228,10 @@ void apple_sgx_drm_unreserve(struct apple_sgx *sgx, int slot);
 u32 apple_sgx_bo_va(struct drm_gem_object *obj);
 
 /* apple_sgx_kms.c */
+struct drm_apple_sgx_overlay;
 int apple_sgx_kms_init(struct drm_device *drm, struct apple_sgx *sgx);
+int apple_sgx_kms_overlay(struct apple_sgx *sgx, struct drm_file *file,
+			  struct drm_apple_sgx_overlay *args);
+void apple_sgx_kms_overlay_close(struct apple_sgx *sgx, struct drm_file *file);
 
 #endif

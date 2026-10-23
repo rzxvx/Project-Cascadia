@@ -53,6 +53,7 @@ extern "C" {
 #define DRM_APPLE_SGX_GEM_WAIT			0x03
 #define DRM_APPLE_SGX_SUBMIT			0x04
 #define DRM_APPLE_SGX_GEM_INFO			0x05
+#define DRM_APPLE_SGX_OVERLAY			0x06
 
 #define DRM_IOCTL_APPLE_SGX_GET_PARAM \
 	DRM_IOWR(DRM_COMMAND_BASE + DRM_APPLE_SGX_GET_PARAM, struct drm_apple_sgx_get_param)
@@ -66,6 +67,8 @@ extern "C" {
 	DRM_IOW(DRM_COMMAND_BASE + DRM_APPLE_SGX_SUBMIT, struct drm_apple_sgx_submit)
 #define DRM_IOCTL_APPLE_SGX_GEM_INFO \
 	DRM_IOWR(DRM_COMMAND_BASE + DRM_APPLE_SGX_GEM_INFO, struct drm_apple_sgx_gem_info)
+#define DRM_IOCTL_APPLE_SGX_OVERLAY \
+	DRM_IOWR(DRM_COMMAND_BASE + DRM_APPLE_SGX_OVERLAY, struct drm_apple_sgx_overlay)
 
 /* ---- GET_PARAM ---------------------------------------------------------- */
 
@@ -197,6 +200,49 @@ struct drm_apple_sgx_gem_info {
 	__u32 va;		/* out: its GPU address */
 	__u32 pad;		/* in: 0 */
 	__u64 size;		/* out: bytes */
+};
+
+/* ---- OVERLAY: a picture over the screen, whatever shows it -------------- */
+
+/*
+ * A buffer of the render node blended over the screen -- straight alpha,
+ * colour = overlay * a + screen * (1 - a) -- after every copy of KMS's
+ * plane onto it, and at once when it is set: an on-screen control over a
+ * fullscreen game, with no compositor (tools/screenpad).  Its pixels are
+ * the plane's, turned as the plane is; width x height must be the plane's
+ * size now (out_width x out_height), or it is not shown until it is set
+ * again for the new size.  The rectangles listed (out to 16 pixels on every
+ * side) say where it is: a copy that meets any of them blends the box
+ * round those it meets, so the buffer's pixels outside them must be
+ * transparent.  A change to its pixels shows when it is set again.  handle 0 takes it away, and so does closing the
+ * file that set it; one file at a time has it (-EBUSY for the others).
+ * Shown while a KMS client has a framebuffer on the plane (X, a game on
+ * KMS), not on the text console.  Root only.
+ *
+ * Kernels from 2026-10-23 on.  It changed nothing else, so it did not
+ * change APPLE_SGX_PARAM_UAPI_VERSION: Mesa (sgx_device.c) refuses a
+ * version it does not know and falls back to software -- XFCE on softpipe
+ * -- so a kernel that only adds to the interface keeps the number, and a
+ * program asks for the addition itself (QUERY: -EINVAL where there is
+ * none).
+ */
+#define APPLE_SGX_OVERLAY_QUERY		(1 << 0)	/* only the out fields */
+#define APPLE_SGX_OVERLAY_MAX_RECTS	16
+
+struct drm_apple_sgx_overlay_rect {
+	__u16 x, y, w, h;
+};
+
+struct drm_apple_sgx_overlay {
+	__u32 flags;		/* in: APPLE_SGX_OVERLAY_* */
+	__u32 handle;		/* in: the buffer (BGRA8888, its alpha used), or 0 */
+	__u32 pitch;		/* in: bytes a line, a multiple of 64 */
+	__u16 width, height;	/* in: pixels: the plane's size */
+	__u32 nrects;		/* in: how many rects are used */
+	struct drm_apple_sgx_overlay_rect rects[APPLE_SGX_OVERLAY_MAX_RECTS];
+	__u16 out_width;	/* out: the plane's size now; 0 x 0 with no */
+	__u16 out_height;	/*      framebuffer shown */
+	__u32 out_rotation;	/* out: the plane's DRM_MODE_ROTATE_* */
 };
 
 #if defined(__cplusplus)
