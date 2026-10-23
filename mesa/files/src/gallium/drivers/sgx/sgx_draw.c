@@ -1939,6 +1939,21 @@ submit(struct sgx_context *ctx)
 
             memcpy(sa + fs->scale_sa + 2 * i, scale, sizeof(scale));
          }
+         if (fs->size_sa >= 0) {
+            /* (M44) textureSize, texelFetch: the view's base level, the
+             * sampler's level 0 (sgx_compiler.h, SGX_FS_SIZE_WORDS) */
+            unsigned first = view->u.tex.first_level;
+            unsigned w = u_minify(t->base.width0, first);
+            unsigned h = t->base.target == PIPE_TEXTURE_1D ? 1 : u_minify(t->base.height0, first);
+            uint32_t *z = sa + fs->size_sa + SGX_FS_SIZE_WORDS * i;
+            float f[4] = { 1.0f / w, 1.0f / h, 0.5f / w, 0.5f / h };
+
+            z[0] = w;
+            z[1] = h;
+            z[2] = view->u.tex.last_level - first + 1;
+            z[3] = 0;
+            memcpy(z + 4, f, sizeof(f));
+         }
       }
       if (fs->blend_sa >= 0)
          memcpy(sa + fs->blend_sa, ctx->blend_color.color, 4 * sizeof(float));

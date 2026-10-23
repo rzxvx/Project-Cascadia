@@ -136,6 +136,10 @@ struct comp {
     * textures are 2D ones to the sampler) -- -1 none */
    int scale_sa;
    bool scales;
+   /* (M44) the textures' sizes, SGX_FS_SIZE_WORDS a texture after the
+    * scales (sgx_fs.size_sa): textureSize, texelFetch -- -1 none */
+   int size_sa;
+   bool sizes;
    int blend_sa;                        /* the blend colour's words, -1 none */
    /* GL's blending by a SOP2 on the colour packed to bytes and the tile's
     * (o0): src1 the colour unless swapped (M25) */
@@ -1023,10 +1027,76 @@ tex_operand(nir_tex_instr *tex, int src, unsigned comp)
    return resolve(nir_get_scalar(tex->src[src].src.ssa, comp));
 }
 
+/* (M44) textureSize (its level 0: nir_lower_tex's lower_txs_lod does the
+ * rest) and textureQueryLevels: the words the draw puts in sa (size_sa) --
+ * no instruction */
+static void
+texture_size(struct comp *c, nir_tex_instr *tex)
+{
+   unsigned id = tex->def.index * 4, z;
+
+   if (tex->texture_index >= MAX_UNITS || c->slot_of_unit[tex->texture_index] < 0 ||
+       c->size_sa < 0) {
+      fail(c, "a texture's size for a texture not sampled");
+      return;
+   }
+   z = c->size_sa + SGX_FS_SIZE_WORDS * c->slot_of_unit[tex->texture_index];
+   for (unsigned i = 0; i < tex->def.num_components; i++) {
+      c->loc[id + i] = usse_reg(USSE_SA, z + (tex->op == nir_texop_query_levels ? 2 : MIN2(i, 1)));
+      c->owned[id + i] = false;
+   }
+}
+
+/* (M44) texelFetch's coordinates as the sampler takes them: each whole
+ * number's texel centre over its level's size, (x + 0.5) / max(w >> lod,
+ * 1) -- at level 0 x * (1 / w) + 0.5 / w, both words the draw's -- into a
+ * pair; the level, a float, into lodreg, sampled at it */
+static void
+txf_coords(struct comp *c, nir_tex_instr *tex, struct scratch *s, struct usse_reg *coords,
+           struct usse_reg *lodreg)
+{
+   int ci = nir_tex_instr_src_index(tex, nir_tex_src_coord);
+   int li = nir_tex_instr_src_index(tex, nir_tex_src_lod);
+   struct operand lod = li >= 0 ? tex_operand(tex, li, 0) : (struct operand){ .is_const = true };
+   unsigned z = c->size_sa + SGX_FS_SIZE_WORDS * c->slot_of_unit[tex->texture_index];
+   unsigned pair = block(c, 2, 2);
+   bool level0 = lod.is_const && lod.u == 0;
+
+   for (unsigned i = 0; i < 2; i++) {
+      struct usse_reg u = treg(c, pair + i), x;
+
+      s->reg[s->n++] = pair + i;
+      x = i < tex->coord_components ? word(c, tex_operand(tex, ci, i), s) : constant_bits(c, s, 0);
+      emit_i2f(c, u, x, true);
+      if (level0) {
+         emit(c, usse_fmad(u, u, usse_reg(USSE_SA, z + 4 + i), usse_reg(USSE_SA, z + 6 + i)));
+      } else {
+         struct scratch t = { 0 };
+         struct usse_reg w = treg(c, scratch_take(c, &t)), l = word(c, lod, &t);
+
+         emit(c, usse_vbw(USSE_VBW_SHR, w, usse_reg(USSE_SA, z + i), l, false));
+         emit(c, usse_vtst_int(0, w, usse_reg(USSE_IMM, 1), true, false));
+         emit(c, usse_limm_pred(w, 1, 1));
+         emit_i2f(c, w, w, false);
+         emit(c, usse_fcomp(USSE_COMP_RCP, w, w));
+         emit(c, usse_fop(USSE_NMAD_ADD, u, u, constant(c, &t, 0.5f)));
+         emit(c, usse_fop(USSE_NMAD_MUL, u, u, w));
+         scratch_give_back(c, &t);
+      }
+   }
+   *coords = treg(c, pair);
+   *lodreg = treg(c, scratch_take(c, s));
+   if (level0)
+      emit(c, usse_limm(*lodreg, 0));
+   else
+      emit_i2f(c, *lodreg, word(c, lod, s), true);
+}
+
 /* texture2D and textureCube, with a bias or a level: the coordinates into
  * registers in a row (a pair; a cube map's direction three), SMP for the
  * texel, wait for it.  The texture's four state words are in sa, after the
- * uniforms (the draw puts them there, sgx_draw.c). */
+ * uniforms (the draw puts them there, sgx_draw.c).  (M44) And texelFetch:
+ * txf_coords() */
 static void
 texture(struct comp *c, nir_tex_instr *tex, struct scratch *s)
 {
@@ -1043,6 +1113,10 @@ texture(struct comp *c, nir_tex_instr *tex, struct scratch *s)
                    struct usse_reg, enum usse_smp_lod, struct usse_reg) =
       cube ? usse_smp3d : usse_smp2d;
 
+   if (tex->op == nir_texop_txs || tex->op == nir_texop_query_levels) {
+      texture_size(c, tex);
+      return;
+   }
    for (unsigned k = 0; k < c->nfetch; k++) {
       if (c->fetch[k] != tex)
          continue;
@@ -1057,14 +1131,21 @@ texture(struct comp *c, nir_tex_instr *tex, struct scratch *s)
    }
    /* (a rectangle texture's coordinates are scaled by now: load_texture_scale,
     * and the dimension left as it was) */
-   if ((tex->op != nir_texop_tex && tex->op != nir_texop_txb && tex->op != nir_texop_txl) ||
+   if ((tex->op != nir_texop_tex && tex->op != nir_texop_txb && tex->op != nir_texop_txl &&
+        tex->op != nir_texop_txf) ||
        (tex->sampler_dim != GLSL_SAMPLER_DIM_2D && tex->sampler_dim != GLSL_SAMPLER_DIM_EXTERNAL &&
         tex->sampler_dim != GLSL_SAMPLER_DIM_RECT && !cube) ||
+       (tex->op == nir_texop_txf && (cube || c->size_sa < 0)) ||
        tex->is_shadow || tex->is_array ||
        coord < 0 || tex->texture_index >= MAX_UNITS ||
        c->slot_of_unit[tex->texture_index] < 0) {
       fail(c, "no such texture lookups yet");
       return;
+   }
+   if (tex->op == nir_texop_txf) {
+      txf_coords(c, tex, s, &coords, &lodreg);
+      mode = USSE_SMP_LOD;
+      goto sample;
    }
    /* the coordinates where they are when they are registers in a row
     * from an even one -- a varying's x and y (M34) -- else moved there */
@@ -1106,6 +1187,7 @@ texture(struct comp *c, nir_tex_instr *tex, struct scratch *s)
       mesa_logw_once("sgx: a texture sampled in a program whose branches differ between "
                      "pixels: level 0");
    }
+sample:
    d = block(c, 4, 4);
    if (c->fs->blend.tex_f16 >> tex->texture_index & 1) {
       /* (M43) a copy of half floats: four F32 back, as they are */
@@ -1576,6 +1658,9 @@ scan(struct comp *c, nir_function_impl *impl)
                fail(c, "texture lookups in a vertex shader");
                return;
             }
+            if (tex->op == nir_texop_txs || tex->op == nir_texop_query_levels ||
+                tex->op == nir_texop_txf)
+               c->sizes = true;
             if (tex->texture_index < MAX_UNITS && c->slot_of_unit[tex->texture_index] < 0) {
                if (c->nsamplers == SGX_FS_MAX_SAMPLERS) {
                   fail(c, "more than %u textures", SGX_FS_MAX_SAMPLERS);
@@ -1599,7 +1684,8 @@ scan(struct comp *c, nir_function_impl *impl)
          nconst += SGX_ATTR_KIND(c->attr[a]) == SGX_ATTR_CONST;
       extra = c->vs ? 4 * nconst + 4 :
                       (c->nsamplers ? 3 + 4 * c->nsamplers : 0) + (c->blend_sa >= 0 ? 4 : 0) +
-                      (c->scales ? 4 + 2 * c->nsamplers : 0);
+                      (c->scales ? 4 + 2 * c->nsamplers : 0) +
+                      (c->sizes ? SGX_FS_SIZE_WORDS * c->nsamplers : 0);
       extra += util_bitcount(c->ubo_mask);
       c->ubuf = c->uwords + extra > 128;
       if (c->ubuf) {
@@ -1624,8 +1710,11 @@ scan(struct comp *c, nir_function_impl *impl)
       }
    if (c->scales)
       c->scale_sa = c->sampler_sa + 4 * c->nsamplers;
+   if (c->sizes)
+      c->size_sa = c->scales ? c->scale_sa + 2 * c->nsamplers : c->sampler_sa + 4 * c->nsamplers;
    if (c->blend_sa >= 0)
-      c->blend_sa = c->scales ? align(c->scale_sa + 2 * c->nsamplers, 4) :
+      c->blend_sa = c->sizes ? c->size_sa + SGX_FS_SIZE_WORDS * c->nsamplers :
+                    c->scales ? align(c->scale_sa + 2 * c->nsamplers, 4) :
                                 c->sampler_sa + 4 * c->nsamplers;
 }
 
@@ -2580,6 +2669,12 @@ lower_srgb_target(nir_builder *b, nir_intrinsic_instr *in, void *data)
    return true;
 }
 
+static bool
+lower_every_offset(const nir_instr *instr, const void *data)
+{
+   return true;
+}
+
 static void
 lower_blend(nir_shader *s, const struct sgx_blend_key *k)
 {
@@ -3363,6 +3458,7 @@ compile_fs(const nir_shader *fs, const struct sgx_blend_key *blend, char *why,
       c.slot_of_unit[i] = -1;
    c.blend_sa = -1;
    c.scale_sa = -1;
+   c.size_sa = -1;
    if (blend)
       c.fs->blend = *blend;
    else
@@ -3417,7 +3513,12 @@ compile_fs(const nir_shader *fs, const struct sgx_blend_key *blend, char *why,
    {
       /* (rectangle textures: the state tracker scales their coordinates
        * already -- caps.texrect off -- and leaves the dimension Rect) */
-      nir_lower_tex_options tex = { .lower_txp = ~0u, .lower_1d = true };
+      /* (M44) textureGrad as textureLod, offsets as coordinates, sizes at
+       * level 0 shifted: all built on textureSize (texture_size()) */
+      nir_lower_tex_options tex = {
+         .lower_txp = ~0u, .lower_1d = true, .lower_txd = true, .lower_txs_lod = true,
+         .lower_txf_offset = true, .lower_offset_filter = lower_every_offset,
+      };
 
       /* the linear sampler reads B G R A: other orders swizzled back --
        * and a view's swizzle on what that gives (M43) */
@@ -3584,10 +3685,12 @@ compile_fs(const nir_shader *fs, const struct sgx_blend_key *blend, char *why,
    c.fs->nsamplers = c.nsamplers;
    c.fs->sampler_sa = c.sampler_sa;
    c.fs->prog.nsa = c.blend_sa >= 0 ? c.blend_sa + 4 :
+                    c.sizes ? c.size_sa + SGX_FS_SIZE_WORDS * c.nsamplers :
                     c.scales ? c.scale_sa + 2 * c.nsamplers :
                     c.nsamplers ? c.sampler_sa + 4 * c.nsamplers : c.nuniforms;
    c.fs->blend_sa = c.blend_sa;
    c.fs->scale_sa = c.scale_sa;
+   c.fs->size_sa = c.size_sa;
 
 out:
    util_dynarray_fini(&c.code);
@@ -3636,6 +3739,7 @@ compile_vs(const nir_shader *vs, const unsigned *varying_slot, unsigned nvarying
       c.slot_of_unit[i] = -1;
    c.blend_sa = -1;
    c.scale_sa = -1;
+   c.size_sa = -1;
    c.varying_slot = varying_slot;
    c.nvaryings = nvaryings;
    memcpy(c.vs->varying_slot, varying_slot, nvaryings * sizeof(*varying_slot));

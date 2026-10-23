@@ -77,8 +77,12 @@ struct sgx_blend_key {
  * are constant buffer 0's words 0..nuniforms, then from sampler_sa four
  * state words for each texture it samples, sampler_unit[i] the unit of the
  * i-th, then (scale_sa) two words for each, 1 / its width and height, if a
- * rectangle texture is sampled (M35), then (blend_sa, if the blending reads
- * it) the blend colour. */
+ * rectangle texture is sampled (M35), then (size_sa, M44) eight words for
+ * each if it asks a size or fetches a texel -- its base level's width,
+ * height (integers), its levels, 0, then 1 / width, 1 / height, 0.5 /
+ * width, 0.5 / height -- then (blend_sa, if the blending reads it) the
+ * blend colour. */
+#define SGX_FS_SIZE_WORDS 8
 struct sgx_fs {
    struct sgx_pixel_program prog;
    unsigned input_slot[SGX_FRAME_MAX_VARYINGS];   /* gl_varying_slot, input i */
@@ -90,6 +94,7 @@ struct sgx_fs {
    unsigned sampler_unit[SGX_FS_MAX_SAMPLERS];
    int blend_sa;                                  /* -1: no blend colour */
    int scale_sa;              /* -1, or each texture's 1 / width, 1 / height (rectangles) */
+   int size_sa;               /* -1, or each texture's size words (M44) */
    struct sgx_blend_key blend;                    /* what it was compiled for */
    /* (M39) each varying's SGX_FIX_*, in varying_slot[]'s order */
    uint8_t vary_fix[SGX_FRAME_MAX_VARYINGS];

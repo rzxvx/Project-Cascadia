@@ -389,6 +389,9 @@ sgx_init_screen_caps(struct pipe_screen *pscreen)
    caps->max_point_size = caps->max_point_size_aa = 512;
    caps->point_size_granularity = caps->line_width_granularity = 0.1f;
    caps->max_texture_lod_bias = 15.0f;
+   /* (M44) GLSL 1.30: integers the hardware's own (sgx_compiler.c) -- the
+    * OpenGL version stays 2.1 until the rest of 3.0 is here */
+   caps->glsl_feature_level = caps->glsl_feature_level_compatibility = 130;
 }
 
 static uint64_t
