@@ -56,6 +56,23 @@ def validate(nodes):
     assert nodes['/soc@30000000/gpio@fa00000']['#interrupt-cells'] == struct.pack('>I',2)
     assert nodes['/soc@30000000/i2c@3200000/pmu@3c']['compatible'] == b'apple,pmu-d1946\0'
 
+def comparable_props(nodes, props):
+    """Compare clock providers and arguments, independent of dtc handle IDs."""
+    result = {k:v for k,v in props.items() if k not in ('phandle','linux,phandle')}
+    if 'clocks' in result:
+        handles = {v['phandle']: path for path, v in nodes.items() if 'phandle' in v}
+        data = result['clocks']; clocks = []
+        while data:
+            assert len(data) >= 4
+            provider = handles[data[:4]]
+            count, = struct.unpack('>I', nodes[provider]['#clock-cells'])
+            size = 4 * (count + 1)
+            assert len(data) >= size
+            clocks.append((provider, data[4:size]))
+            data = data[size:]
+        result['clocks'] = tuple(clocks)
+    return result
+
 def main():
     a = argparse.ArgumentParser(description=__doc__)
     a.add_argument('--dtc', required=True, type=Path, help='existing dtc executable')
@@ -75,9 +92,10 @@ def main():
         validate(new)
         assert set(new)-set(old)=={TARGET} and set(old)<=set(new)
         for path, props in old.items():
-            # New references may assign phandles to previously unreferenced
-            # labels. All existing non-phandle properties must stay identical.
-            assert {k:v for k,v in props.items() if k not in ('phandle','linux,phandle')} == {k:v for k,v in new[path].items() if k not in ('phandle','linux,phandle')},path
+            # Added references can renumber later handles, including audio
+            # clocks. Their provider paths and arguments must stay identical;
+            # all other existing non-phandle properties remain byte-exact.
+            assert comparable_props(old, props) == comparable_props(new, new[path]),path
         assert old_warnings == new_warnings,(old_warnings,new_warnings)
         print(f'PASS real compiled disabled wiring, {len(old)} existing nodes unchanged; {len(old_warnings)} baseline diagnostic lines, no new diagnostics')
         for prop, value in [('status',b'okay\0'),('interrupts',struct.pack('>II',23,8)),
@@ -89,6 +107,31 @@ def main():
             except (AssertionError,KeyError): pass
             else: raise AssertionError('invalid candidate accepted: '+prop)
         print('PASS 5 negative controls: activation, wrong pin/type/provider, permission assertion')
+        # Exercise provider changes and truncation with real compiled clocks.
+        clocks = [(path, props) for path, props in new.items() if 'clocks' in props]
+        changed_provider = False
+        for path, props in clocks:
+            expected = comparable_props(new, props)
+            handle = props['clocks'][:4]
+            providers = {v['phandle']: v for v in new.values() if 'phandle' in v}
+            count = providers[handle]['#clock-cells']
+            other = next((h for h, v in providers.items()
+                          if h != handle and v.get('#clock-cells') == count), None)
+            if other is not None:
+                bad = dict(props, clocks=other + props['clocks'][4:])
+                assert comparable_props(new, bad) != expected
+                changed_provider = True
+            try: comparable_props(new, dict(props, clocks=props['clocks'][:-1]))
+            except (AssertionError, KeyError): pass
+            else: raise AssertionError('truncated clock specifier accepted: ' + path)
+        assert changed_provider
+        # P105 currently uses zero-cell clocks. Cover argument preservation
+        # separately so future clock providers cannot silently lose arguments.
+        fixture = {'/clock': {'phandle': struct.pack('>I', 1),
+                             '#clock-cells': struct.pack('>I', 1)}}
+        assert comparable_props(fixture, {'clocks': struct.pack('>II', 1, 0)}) != comparable_props(
+            fixture, {'clocks': struct.pack('>II', 1, 1)})
+        print('PASS clock comparison negative controls: provider, arguments, truncation')
 
 if __name__ == '__main__':
     main()
