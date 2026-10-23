@@ -1,0 +1,205 @@
+From: Project Cascadia
+Subject: [PATCH] compositor: leave fullscreen windows that ask to bypass it out
+
+A fullscreen game under xfwm4 was always composited: its frame copied by
+the X server into its pixmap and the screen drawn again by the compositor
+for each frame (docs/research/p105-mesa.md, M40).  Three things:
+
+- _NET_WM_BYPASS_COMPOSITOR is the client's, on its own window (SDL's
+  fullscreen windows): xfwm4 read it from the frame, which nobody sets.
+  It is read from the client window now, also when the frame -- added to
+  the compositor before its client is known, at CreateNotify -- gets its
+  client, and a change of it on the client window is taken to the frame.
+- Unredirecting a mapped window does not unmap and map it again (the X
+  server's composite code does neither), so map_win () never counted a
+  window it unredirected and the overlay stayed over it.  bypass_win ()
+  counts it as a fullscreen window mapped unredirected is, the overlay
+  unmapped while one is out.
+- A window that becomes fullscreen after it is mapped (a configure) is
+  left out then; one that stops being fullscreen, loses the hint or is
+  unmapped is redirected again (unbypass_win ()).
+
+---
+--- a/src/compositor.c
++++ b/src/compositor.c
+@@ -163,6 +163,7 @@
+ 
+     guint32 opacity;
+     guint32 bypass_compositor;
++    gboolean bypassed;        /* left out by bypass_win () */
+ };
+ 
+ static CWindow*
+@@ -2181,10 +2182,98 @@
+         cw->redirected = FALSE;
+         TRACE ("window 0x%lx unredirected, wins_unredirected is %i",
+                cw->id, screen_info->wins_unredirected);
++    }
++}
++
++static void damage_screen (ScreenInfo *screen_info);
++
++/* A fullscreen window asking to bypass the compositor
++ * (_NET_WM_BYPASS_COMPOSITOR 1) out of the composition: unredirected and
++ * counted as map_win () counts a fullscreen window mapped unredirected --
++ * the overlay unmapped while one is there.  The X server neither unmaps nor
++ * maps a window whose redirection changes: map_win () is not called again
++ * for it. */
++static void
++bypass_win (CWindow *cw)
++{
++    ScreenInfo *screen_info = cw->screen_info;
++    DisplayInfo *display_info = screen_info->display_info;
++
++    if (!WIN_IS_REDIRECTED(cw))
++    {
++        return;
++    }
++    cw->opacity = NET_WM_OPAQUE;
++    unredirect_win (cw);
++    cw->bypassed = TRUE;
++    cw->fulloverlay = TRUE;
++    screen_info->wins_unredirected++;
++    TRACE ("bypassing window 0x%lx, wins_unredirected increased to %i", cw->id, screen_info->wins_unredirected);
++#if HAVE_OVERLAYS
++    if ((screen_info->wins_unredirected == 1) && (display_info->have_overlays))
++    {
++        XUnmapWindow (myScreenGetXDisplay (screen_info), screen_info->overlay);
+     }
++#endif /* HAVE_OVERLAYS */
+ }
+ 
++/* ... and back into it: redirected again (no longer fullscreen, the hint
++ * gone); unmap_win () counts it out when it is unmapped instead */
+ static void
++unbypass_win (CWindow *cw, gboolean count)
++{
++    ScreenInfo *screen_info = cw->screen_info;
++    DisplayInfo *display_info = screen_info->display_info;
++
++    if (!cw->bypassed)
++    {
++        return;
++    }
++    myDisplayErrorTrapPush (display_info);
++    XCompositeRedirectWindow (display_info->dpy, cw->id, CompositeRedirectManual);
++    myDisplayErrorTrapPopIgnored (display_info);
++    cw->bypassed = FALSE;
++    if (!count)
++    {
++        return;
++    }
++    cw->redirected = TRUE;
++    if (cw->fulloverlay)
++    {
++        cw->fulloverlay = FALSE;
++        if ((screen_info->wins_unredirected > 0) && !--screen_info->wins_unredirected)
++        {
++#if HAVE_OVERLAYS
++            if (display_info->have_overlays)
++            {
++                XMapWindow (myScreenGetXDisplay (screen_info), screen_info->overlay);
++            }
++#endif /* HAVE_OVERLAYS */
++        }
++    }
++    damage_screen (screen_info);
++}
++
++/* bypass_win () or unbypass_win () as the window is now */
++static void
++check_bypass (CWindow *cw)
++{
++    if (!WIN_IS_VIEWABLE(cw))
++    {
++        return;
++    }
++    if ((cw->bypass_compositor == 1) && WIN_IS_REDIRECTED(cw) && WIN_HAS_DAMAGE(cw) &&
++        WIN_IS_NATIVE_OPAQUE(cw) && !WIN_IS_SHAPED(cw) && is_fullscreen (cw))
++    {
++        bypass_win (cw);
++    }
++    else if (cw->bypassed && ((cw->bypass_compositor != 1) || !is_fullscreen (cw)))
++    {
++        unbypass_win (cw, TRUE);
++    }
++}
++
++static void
+ paint_root (ScreenInfo *screen_info, Picture paint_buffer)
+ {
+     g_return_if_fail (screen_info != NULL);
+@@ -3145,7 +3234,12 @@
+         /* For NET_WM_BYPASS_COMPOSITOR, 0 indicates no preference, 1 hints
+          * the compositor to disabling compositing.
+          */
+-        if ((cw->bypass_compositor == 1) ||
++        if ((cw->bypass_compositor == 1) && is_fullscreen (cw))
++        {
++            TRACE ("bypassing toplevel window 0x%lx", cw->id);
++            bypass_win (cw);
++        }
++        else if ((cw->bypass_compositor == 1) ||
+             (screen_info->params->unredirect_overlays &&
+              WIN_IS_OVERRIDE(cw) && cw->bypass_compositor == 0))
+         {
+@@ -3167,6 +3261,8 @@
+     screen_info = cw->screen_info;
+     display_info = screen_info->display_info;
+ 
++    /* (a bypassed window: redirected again, counted out below) */
++    unbypass_win (cw, FALSE);
+     if (!WIN_IS_REDIRECTED(cw) && (screen_info->wins_unredirected > 0))
+     {
+         if (cw->fulloverlay)
+@@ -3417,7 +3513,9 @@
+     {
+         update_opaque_region (new, id);
+     }
+-    getBypassCompositor (display_info, id, &new->bypass_compositor);
++    /* _NET_WM_BYPASS_COMPOSITOR is the client's, on its own window, not
++     * on the frame (SDL's fullscreen windows) */
++    getBypassCompositor (display_info, c ? c->window : id, &new->bypass_compositor);
+     init_opacity (new);
+     determine_mode (new);
+ 
+@@ -3579,6 +3677,8 @@
+     }
+ 
+     myDisplayErrorTrapPopIgnored (display_info);
++    /* (fullscreen after it was mapped, or no longer) */
++    check_bypass (cw);
+ }
+ 
+ static void
+@@ -3927,12 +4027,15 @@
+     }
+     else if (ev->atom == display_info->atoms[NET_WM_BYPASS_COMPOSITOR])
+     {
+-        CWindow *cw = find_cwindow_in_display (display_info, ev->window);
++        /* a client's window: its frame is what is composited */
++        Client *c = myDisplayGetClientFromWindow (display_info, ev->window, SEARCH_WINDOW);
++        CWindow *cw = find_cwindow_in_display (display_info, c ? c->frame : ev->window);
+         TRACE ("NET_WM_BYPASS_COMPOSITOR changed for id 0x%lx", ev->window);
+ 
+         if (is_on_compositor (cw))
+         {
+-            getBypassCompositor (display_info, cw->id, &cw->bypass_compositor);
++            getBypassCompositor (display_info, ev->window, &cw->bypass_compositor);
++            check_bypass (cw);
+         }
+     }
+     else if (ev->atom == display_info->atoms[NET_WM_OPAQUE_REGION])
+@@ -4468,6 +4571,12 @@
+         {
+             update_extents (cw);
+             cw->c = c;
++            /* the frame was added before its client: the hint is the
++             * client's */
++            if (c)
++            {
++                getBypassCompositor (display_info, c->window, &cw->bypass_compositor);
++            }
+         }
+         return TRUE;
+     }

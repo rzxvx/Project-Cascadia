@@ -244,7 +244,8 @@ if command -v fbkeyboard >/dev/null 2>&1; then
 fi
 
 # --------------------------------------------------------------- buttons ---
-# Volume sets the backlight, Hold puts the screen out and back (p105-keys.c).
+# Volume sets the speakers' volume or, with the side switch's orange showing,
+# the backlight; Hold puts the screen out and back (p105-keys.c).
 if [ -x /sbin/p105-keys ]; then
     setsid /sbin/p105-keys >/tmp/p105-keys.log 2>&1 </dev/null &
 fi

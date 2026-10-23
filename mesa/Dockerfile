@@ -9,7 +9,9 @@ RUN apk add --no-cache \
         build-base meson samurai pkgconf git \
         python3 py3-mako py3-yaml py3-packaging \
         bison flex \
-        libdrm-dev zlib-dev linux-headers \
-        wayland-dev wayland-protocols
+        libdrm-dev zlib-dev linux-headers expat-dev \
+        wayland-dev wayland-protocols \
+        libx11-dev libxext-dev libxfixes-dev libxcb-dev libxshmfence-dev \
+        libxxf86vm-dev libxrandr-dev
 
 WORKDIR /cascadia

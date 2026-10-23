@@ -23,7 +23,9 @@
  *    a channel into o0.
  *
  * Speed (F16 for mediump, two lanes an instruction, constants from the
- * hardware's table, sharing loaded constants) comes later.
+ * hardware's table, sharing loaded constants) comes later -- but for one
+ * kind of program, a colour of varyings and texels multiplied and added,
+ * which is all F16, four lanes an instruction (M38, f16_colour()).
  */
 #include "sgx_compiler.h"
 
@@ -36,6 +38,8 @@
 #include "compiler/glsl_types.h"
 #include "compiler/nir/nir.h"
 #include "compiler/nir/nir_builder.h"
+#include "util/bitscan.h"
+#include "compiler/nir/nir_format_convert.h"
 #include "compiler/nir/nir_lower_blend.h"
 #include "util/format/u_formats.h"
 #include "util/ralloc.h"
@@ -84,6 +88,10 @@ struct comp {
     * the rest -- otherwise words 0..sa_uniforms in sa, and all of them in
     * memory, read by VLDST from the address (less 4) in sa word ubuf_sa */
    unsigned uwords, sa_uniforms, ubuf_sa;
+   /* (M43) the uniform buffers read (bit k for buffer k), each one's
+    * address less 4 in sa word ubo_sa[k] */
+   uint16_t ubo_mask;
+   unsigned ubo_sa[SGX_FRAME_MAX_UBOS];
    bool ubuf;
    /* a fragment program whose branches go alike for every pixel (M33):
     * the pixels run together, the branches all of theirs -- or one with
@@ -97,11 +105,41 @@ struct comp {
    int colour_id[4];
    int slot_of_unit[MAX_UNITS];         /* a texture unit's state words, by slot */
    unsigned nsamplers, sampler_sa;
+   bool smp;                            /* an SMP in the program */
+   /* (M35) the lookups the PDS makes before the program runs -- a 2D
+    * texture at a varying's x and y, nothing else -- their varyings, and
+    * the varyings only they read (not iterated into the registers) */
+   const nir_tex_instr *fetch[SGX_FRAME_MAX_FETCH];
+   unsigned fetch_slot[SGX_FRAME_MAX_FETCH];
+   unsigned nfetch;
+   bool fetch_only[VARYING_SLOT_MAX];
+   /* (M39) lookups lower_fetch_coords() gave a varying's x and y as they
+    * are, the vertex side doing the rest: each one's SGX_FIX_*; and each
+    * lookup's of the PDS (fetch[k]'s) */
+   const nir_tex_instr *fixed[SGX_FRAME_MAX_FETCH];
+   uint8_t fixed_fix[SGX_FRAME_MAX_FETCH];
+   unsigned nfixed;
+   uint8_t fetch_fix[SGX_FRAME_MAX_FETCH];
+   const uint8_t *vary_fix;             /* a vertex shader's: each varying's SGX_FIX_* */
+   /* (M37) the flat-shaded varyings (st's nir_lower_flatshade: GL's
+    * glShadeModel(GL_FLAT) colours): the TA's colours, two at most, each
+    * iterated into one register after the inputs, its bytes as o0's --
+    * colour_of_slot[] their index, -1 not one */
+   bool flat[VARYING_SLOT_MAX];
+   int colour_of_slot[VARYING_SLOT_MAX];
+   unsigned colour_slot[2], ncolours;
+   /* a rectangle texture's 1 / width, 1 / height, two words a texture
+    * after their state words (nir_lower_tex's lower_rect: GL's rectangle
+    * textures are 2D ones to the sampler) -- -1 none */
+   int scale_sa;
+   bool scales;
    int blend_sa;                        /* the blend colour's words, -1 none */
    /* GL's blending by a SOP2 on the colour packed to bytes and the tile's
     * (o0): src1 the colour unless swapped (M25) */
    bool sop2, sop2_swap;
    struct usse_sop2 sop2_factors;
+   bool f16;                            /* the whole program F16's (M38: f16_colour) */
+   int logicop;                         /* GL's logic op (pipe_logicop), -1 none (M37) */
    struct operand colour[4];
    bool have_colour[4];
    int kill;                            /* the temporary that is not 0 for a pixel discarded, or -1 */
@@ -130,6 +168,7 @@ struct comp {
    char *why;
    unsigned why_size;
    bool failed;
+   bool keep_order;                     /* NIR's order, not nir_opt_move's (M36) */
 };
 
 static void
@@ -517,9 +556,23 @@ texture(struct comp *c, nir_tex_instr *tex, struct scratch *s)
                    struct usse_reg, enum usse_smp_lod, struct usse_reg) =
       cube ? usse_smp3d : usse_smp2d;
 
+   for (unsigned k = 0; k < c->nfetch; k++) {
+      if (c->fetch[k] != tex)
+         continue;
+      /* the PDS's lookup (M35): the texel in the primary attribute after
+       * the inputs, as it is -- two VPCKs to F32 0..1 */
+      d = block(c, 4, 4);
+      emit(c, usse_unpack_unorm8(treg(c, d),
+                                 usse_reg(USSE_PA, 4 * c->ninputs + c->ncolours + k), 0));
+      emit(c, usse_unpack_unorm8(treg(c, d + 2),
+                                 usse_reg(USSE_PA, 4 * c->ninputs + c->ncolours + k), 2));
+      goto out;
+   }
+   /* (a rectangle texture's coordinates are scaled by now: load_texture_scale,
+    * and the dimension left as it was) */
    if ((tex->op != nir_texop_tex && tex->op != nir_texop_txb && tex->op != nir_texop_txl) ||
        (tex->sampler_dim != GLSL_SAMPLER_DIM_2D && tex->sampler_dim != GLSL_SAMPLER_DIM_EXTERNAL &&
-        !cube) ||
+        tex->sampler_dim != GLSL_SAMPLER_DIM_RECT && !cube) ||
        tex->is_shadow || tex->is_array ||
        coord < 0 || tex->texture_index >= MAX_UNITS ||
        c->slot_of_unit[tex->texture_index] < 0) {
@@ -567,7 +620,13 @@ texture(struct comp *c, nir_tex_instr *tex, struct scratch *s)
                      "pixels: level 0");
    }
    d = block(c, 4, 4);
-   if (getenv("SGX_TEX_F32")) {
+   if (c->fs->blend.tex_f16 >> tex->texture_index & 1) {
+      /* (M43) a copy of half floats: four F32 back, as they are */
+      emit(c, smp(USSE_SMP_F32, USSE_SMP_COORD_F32, treg(c, d), coords,
+                  usse_reg(USSE_SA, c->sampler_sa + 4 * c->slot_of_unit[tex->texture_index]),
+                  mode, lodreg));
+      emit(c, USSE_WDF0);
+   } else if (getenv("SGX_TEX_F32")) {
       emit(c, smp(USSE_SMP_F32, USSE_SMP_COORD_F32, treg(c, d),
                          coords,
                          usse_reg(USSE_SA, c->sampler_sa + 4 * c->slot_of_unit[tex->texture_index]),
@@ -592,14 +651,389 @@ texture(struct comp *c, nir_tex_instr *tex, struct scratch *s)
                          usse_reg(USSE_SA, c->sampler_sa + 4 * c->slot_of_unit[tex->texture_index]),
                          mode, lodreg));
       emit(c, USSE_WDF0);
-      emit(c, usse_unpack_unorm8(treg(c, d), raw, 0));
-      emit(c, usse_unpack_unorm8(treg(c, d + 2), raw, 2));
+      if (c->fs->blend.tex_depth >> tex->texture_index & 1) {
+         /* a depth texture's texel is F32 (M37): d, 0, 0, 1 through the
+          * view's swizzle (a shadow lookup's comparison has its own) */
+         const uint8_t *swz = c->fs->blend.depth_swizzle[tex->texture_index];
+         bool shadow_done = c->fs->blend.tex_shadow >> tex->texture_index & 1;
+
+         for (unsigned i = 0; i < 4; i++) {
+            unsigned w = shadow_done ? PIPE_SWIZZLE_X : swz[i];
+
+            if (w == PIPE_SWIZZLE_X)
+               emit(c, usse_fmov(treg(c, d + i), raw));
+            else
+               emit(c, usse_fmov(treg(c, d + i), constant(c, s, w == PIPE_SWIZZLE_W ||
+                                                                 w == PIPE_SWIZZLE_1 ? 1.0f : 0.0f)));
+         }
+      } else {
+         emit(c, usse_unpack_unorm8(treg(c, d), raw, 0));
+         emit(c, usse_unpack_unorm8(treg(c, d + 2), raw, 2));
+      }
    }
+   c->smp = true;
+out:
    for (unsigned i = 0; i < 4; i++) {
       c->loc[id + i] = treg(c, d + i);
       c->owned[id + i] = i < tex->def.num_components && c->last_use[id + i] >= 0;
       if (!c->owned[id + i])
          give_back(c, d + i);
+   }
+}
+
+/* a varying the vertex side hands over as it does the generic ones: the
+ * colours, fog, texture coordinates -- and the back colours (M37: st's
+ * nir_lower_two_sided_color picks them by gl_FrontFacing in the program) */
+static bool
+colour_or_generic(int slot)
+{
+   return slot >= VARYING_SLOT_VAR0 ||
+          (slot >= VARYING_SLOT_COL0 && slot <= VARYING_SLOT_TEX7) ||
+          slot == VARYING_SLOT_BFC0 || slot == VARYING_SLOT_BFC1;
+}
+
+/* a fragment shader input's varying slot, -1 if it is not a varying read
+ * at a constant offset */
+static int
+input_slot(nir_intrinsic_instr *in)
+{
+   nir_src *offset;
+
+   if (in->intrinsic == nir_intrinsic_load_frag_coord)
+      return VARYING_SLOT_POS;
+   if (in->intrinsic != nir_intrinsic_load_input)
+      return -1;
+   offset = nir_get_io_offset_src(in);
+   if (!nir_src_is_const(*offset))
+      return -1;
+   return nir_intrinsic_io_semantics(in).location + nir_src_as_uint(*offset);
+}
+
+/* A lookup the PDS can make (M35): a 2D texture, the level of detail its
+ * own, at x and y of a varying as the PDS iterates it -- what iOS's driver
+ * does for them (corpus s00..s04, s11).  Its varying's slot. */
+static int
+fixed_index(const struct comp *c, const nir_tex_instr *tex)
+{
+   for (unsigned i = 0; i < c->nfixed; i++)
+      if (c->fixed[i] == tex)
+         return i;
+   return -1;
+}
+
+static int
+fetch_slot(const struct comp *c, nir_tex_instr *tex)
+{
+   int coord = nir_tex_instr_src_index(tex, nir_tex_src_coord), slot = -1;
+
+   /* (a rectangle texture's: when the vertex side scales the coordinates) */
+   if (tex->op != nir_texop_tex || tex->is_shadow || tex->is_array || tex->num_srcs != 1 ||
+       (tex->sampler_dim != GLSL_SAMPLER_DIM_2D &&
+        tex->sampler_dim != GLSL_SAMPLER_DIM_EXTERNAL &&
+        (tex->sampler_dim != GLSL_SAMPLER_DIM_RECT || fixed_index(c, tex) < 0)) ||
+       coord < 0 || tex->coord_components != 2 || tex->texture_index >= MAX_UNITS)
+      return -1;
+   for (unsigned i = 0; i < 2; i++) {
+      nir_scalar x = nir_scalar_chase_movs(nir_get_scalar(tex->src[coord].src.ssa, i));
+      nir_intrinsic_instr *in;
+      int at;
+
+      if (!nir_def_is_intrinsic(x.def) ||
+          (in = nir_def_as_intrinsic(x.def))->intrinsic != nir_intrinsic_load_input)
+         return -1;
+      at = input_slot(in);
+      if (at < 0 || !colour_or_generic(at) ||
+          nir_intrinsic_component(in) + x.comp != i || (i && at != slot))
+         return -1;
+      slot = at;
+   }
+   return slot;
+}
+
+/* ---- coordinates the vertex side makes ready (M39) ------------------------
+ *
+ * A projective lookup's coordinates (texture2DProj, the fixed function's
+ * TXP: x and y times 1 / z or w, NIR's lower_txp) and a rectangle
+ * texture's (x and y times 1 / its size, load_texture_scale), at a varying
+ * that nothing else reads: the lookup is made at the varying's x and y as
+ * they are, the PDS's -- its projective kind divides them -- and the
+ * vertex side does the rest to the varying (SGX_FIX_*: sgx_fs.vary_fix).
+ * xfwm4's composition, the fixed function's texture2DRect of TEX0 /
+ * TEX0.w, is one texel then. */
+
+/* a varying's component, as a load_input's scalar: its slot and which */
+static bool
+input_component(nir_scalar s, int *slot, unsigned *comp)
+{
+   nir_intrinsic_instr *in;
+   int at;
+
+   if (!nir_scalar_is_intrinsic(s) ||
+       (in = nir_def_as_intrinsic(s.def))->intrinsic != nir_intrinsic_load_input ||
+       (at = input_slot(in)) < 0 || !colour_or_generic(at) || (*slot >= 0 && at != *slot))
+      return false;
+   *slot = at;
+   *comp = nir_intrinsic_component(in) + s.comp;
+   return true;
+}
+
+/* coordinate i of tex, a product: of the varying's component i (bit 0 of
+ * have), the texture's scale's i (bit 1), 1 / the varying's z or w (bit 2,
+ * which in *div) -- each once, nothing else */
+static bool
+coord_factors(nir_scalar s, unsigned i, const nir_tex_instr *tex, unsigned *have, int *slot,
+              unsigned *div, unsigned depth)
+{
+   unsigned comp;
+
+   s = nir_scalar_chase_movs(s);
+   if (depth > 4)
+      return false;
+   if (nir_scalar_is_alu(s) && nir_scalar_alu_op(s) == nir_op_fmul)
+      return coord_factors(nir_scalar_chase_alu_src(s, 0), i, tex, have, slot, div, depth + 1) &&
+             coord_factors(nir_scalar_chase_alu_src(s, 1), i, tex, have, slot, div, depth + 1);
+   if (nir_scalar_is_alu(s) && nir_scalar_alu_op(s) == nir_op_frcp) {
+      if ((*have & 4) ||
+          !input_component(nir_scalar_chase_movs(nir_scalar_chase_alu_src(s, 0)), slot, &comp) ||
+          comp < 2 || comp > 3 || (*div && *div != comp))
+         return false;
+      *div = comp;
+      *have |= 4;
+      return true;
+   }
+   if (nir_scalar_is_intrinsic(s) &&
+       nir_def_as_intrinsic(s.def)->intrinsic == nir_intrinsic_load_texture_scale) {
+      nir_intrinsic_instr *in = nir_def_as_intrinsic(s.def);
+
+      if ((*have & 2) || tex->sampler_dim != GLSL_SAMPLER_DIM_RECT ||
+          !nir_src_is_const(in->src[0]) || nir_src_as_uint(in->src[0]) != tex->texture_index ||
+          s.comp != i)
+         return false;
+      *have |= 2;
+      return true;
+   }
+   if ((*have & 1) || !input_component(s, slot, &comp) || comp != i)
+      return false;
+   *have |= 1;
+   return true;
+}
+
+/* def's every use, through ALU instructions, ends in the coordinates of
+ * one of the lookups tex[] */
+static bool
+feeds_only(nir_def *def, nir_tex_instr *const *tex, unsigned n, unsigned depth)
+{
+   if (depth > 6)
+      return false;
+   nir_foreach_use_including_if(src, def) {
+      nir_instr *p;
+      bool ok = false;
+
+      if (nir_src_is_if(src))
+         return false;
+      p = nir_src_parent_instr(src);
+      if (p->type == nir_instr_type_alu) {
+         if (!feeds_only(&nir_instr_as_alu(p)->def, tex, n, depth + 1))
+            return false;
+         continue;
+      }
+      for (unsigned k = 0; k < n && !ok; k++)
+         ok = p == &tex[k]->instr;
+      if (!ok)
+         return false;
+   }
+   return true;
+}
+
+static void
+lower_fetch_coords(struct comp *c, nir_shader *s, nir_function_impl *impl)
+{
+   nir_tex_instr *cand[SGX_FRAME_MAX_FETCH];
+   int cand_slot[SGX_FRAME_MAX_FETCH];
+   uint8_t cand_fix[SGX_FRAME_MAX_FETCH];
+   unsigned ncand = 0, nplain = 0;
+   bool progress = false;
+
+   if (getenv("SGX_NOFETCH") || getenv("SGX_NO_PROJ_FETCH"))
+      return;
+   nir_foreach_block(block, impl) {
+      nir_foreach_instr(instr, block) {
+         nir_tex_instr *tex;
+         unsigned have[2] = { 0, 0 }, div = 0, fix;
+         int coord, slot = -1;
+
+         if (instr->type != nir_instr_type_tex)
+            continue;
+         tex = nir_instr_as_tex(instr);
+         coord = nir_tex_instr_src_index(tex, nir_tex_src_coord);
+         if (tex->op != nir_texop_tex || tex->is_shadow || tex->is_array ||
+             tex->num_srcs != 1 || coord < 0 || tex->coord_components != 2 ||
+             tex->texture_index >= MAX_UNITS ||
+             ((c->fs->blend.tex_depth | c->fs->blend.tex_f16) >> tex->texture_index & 1) ||
+             (tex->sampler_dim != GLSL_SAMPLER_DIM_2D &&
+              tex->sampler_dim != GLSL_SAMPLER_DIM_EXTERNAL &&
+              tex->sampler_dim != GLSL_SAMPLER_DIM_RECT))
+            continue;
+         for (unsigned i = 0; i < 2; i++)
+            if (!coord_factors(nir_get_scalar(tex->src[coord].src.ssa, i), i, tex, &have[i],
+                               &slot, &div, 0))
+               have[0] = 0;
+         if (!(have[0] & 1) || !(have[1] & 1) || ((have[0] ^ have[1]) & 6) ||
+             (tex->sampler_dim == GLSL_SAMPLER_DIM_RECT && !(have[0] & 2)) || c->flat[slot])
+            continue;
+         fix = (have[0] & 2 ? SGX_FIX_SCALE : 0) | (have[0] & 4 ? div : 0);
+         if (!fix) {
+            nplain++;            /* the PDS's already */
+            continue;
+         }
+         if (ncand == SGX_FRAME_MAX_FETCH)
+            continue;
+         cand[ncand] = tex;
+         cand_slot[ncand] = slot;
+         cand_fix[ncand++] = fix;
+      }
+   }
+   for (unsigned k = 0; k < ncand; k++) {
+      nir_tex_instr *same[SGX_FRAME_MAX_FETCH];
+      nir_intrinsic_instr *first = NULL;
+      unsigned n = 0;
+      bool ok = cand[k] != NULL && nplain + c->nfixed < SGX_FRAME_MAX_FETCH;
+
+      if (!cand[k])
+         continue;
+      /* every lookup of the varying the same (and the same texture's
+       * scale), nothing else reading it */
+      for (unsigned j = k; j < ncand; j++)
+         if (cand[j] && cand_slot[j] == cand_slot[k]) {
+            ok &= cand_fix[j] == cand_fix[k] &&
+                  (!(cand_fix[k] & SGX_FIX_SCALE) ||
+                   cand[j]->texture_index == cand[k]->texture_index);
+            same[n++] = cand[j];
+         }
+      nir_foreach_block(block, impl) {
+         nir_foreach_instr(instr, block) {
+            nir_intrinsic_instr *in;
+
+            if (!ok || instr->type != nir_instr_type_intrinsic ||
+                (in = nir_instr_as_intrinsic(instr))->intrinsic != nir_intrinsic_load_input ||
+                input_slot(in) != cand_slot[k])
+               continue;
+            ok = feeds_only(&in->def, same, n, 0) && nir_intrinsic_component(in) == 0 &&
+                 nir_src_is_const(*nir_get_io_offset_src(in));
+            if (!first)
+               first = in;
+         }
+      }
+      ok &= first != NULL && c->nfixed + n + nplain <= SGX_FRAME_MAX_FETCH;
+      for (unsigned j = k; j < ncand; j++) {
+         if (!cand[j] || cand_slot[j] != cand_slot[k])
+            continue;
+         if (ok) {
+            nir_tex_instr *tex = cand[j];
+            nir_builder b = nir_builder_at(nir_before_instr(&tex->instr));
+            nir_def *xy = nir_load_input(&b, 2, 32,
+                                         nir_imm_int(&b, nir_src_as_uint(*nir_get_io_offset_src(first))),
+                                         .base = nir_intrinsic_base(first), .component = 0,
+                                         .dest_type = nir_intrinsic_dest_type(first),
+                                         .io_semantics = nir_intrinsic_io_semantics(first));
+
+            nir_src_rewrite(&tex->src[nir_tex_instr_src_index(tex, nir_tex_src_coord)].src, xy);
+            c->fixed[c->nfixed] = tex;
+            c->fixed_fix[c->nfixed++] = cand_fix[j];
+            progress = true;
+         }
+         if (j != k)
+            cand[j] = NULL;
+      }
+   }
+   if (progress) {
+      nir_progress(true, impl, nir_metadata_control_flow);
+      NIR_PASS(_, s, nir_opt_dce);
+   }
+}
+
+static bool
+is_fetch(const struct comp *c, const nir_instr *instr)
+{
+   for (unsigned k = 0; k < c->nfetch; k++)
+      if (&c->fetch[k]->instr == instr)
+         return true;
+   return false;
+}
+
+/* Before anything is emitted, a fragment shader's lookups the PDS makes
+ * (M35; SGX_NOFETCH=1 none), the varyings only they read, and the inputs
+ * (the varyings iterated into the registers) in their order -- the
+ * texels go after them */
+static void
+plan_inputs(struct comp *c, nir_function_impl *impl)
+{
+   bool read[VARYING_SLOT_MAX] = { false };
+
+   if (!getenv("SGX_NOFETCH")) {
+      nir_foreach_block(block, impl) {
+         nir_foreach_instr(instr, block) {
+            int slot;
+
+            int fix;
+
+            if (instr->type != nir_instr_type_tex || c->nfetch == SGX_FRAME_MAX_FETCH ||
+                (slot = fetch_slot(c, nir_instr_as_tex(instr))) < 0 || c->flat[slot] ||
+                ((c->fs->blend.tex_depth | c->fs->blend.tex_f16) >>
+                 nir_instr_as_tex(instr)->texture_index & 1))
+               continue;
+            fix = fixed_index(c, nir_instr_as_tex(instr));
+            c->fetch_fix[c->nfetch] = fix < 0 ? 0 : c->fixed_fix[fix];
+            c->fetch_slot[c->nfetch] = slot;
+            c->fetch[c->nfetch++] = nir_instr_as_tex(instr);
+         }
+      }
+   }
+   /* the varyings something besides the lookups reads */
+   nir_foreach_block(block, impl) {
+      nir_foreach_instr(instr, block) {
+         nir_intrinsic_instr *in;
+         int slot;
+
+         if (instr->type != nir_instr_type_intrinsic ||
+             (slot = input_slot(in = nir_instr_as_intrinsic(instr))) < 0)
+            continue;
+         nir_foreach_use_including_if(src, &in->def)
+            read[slot] |= nir_src_is_if(src) || !is_fetch(c, nir_src_parent_instr(src));
+      }
+   }
+   for (unsigned k = 0; k < c->nfetch; k++)
+      c->fetch_only[c->fetch_slot[k]] = !read[c->fetch_slot[k]];
+   /* (a lookup lower_fetch_coords() made ready is the PDS's, its varying
+    * only the lookups') */
+   for (unsigned i = 0; i < c->nfixed; i++) {
+      bool ok = false;
+
+      for (unsigned k = 0; k < c->nfetch && !ok; k++)
+         ok = c->fetch[k] == c->fixed[i] && c->fetch_only[c->fetch_slot[k]];
+      if (!ok)
+         fail(c, "a lookup made ready for the PDS not its");
+   }
+   /* the inputs, as intrinsic() would number them */
+   nir_foreach_block(block, impl) {
+      nir_foreach_instr(instr, block) {
+         int slot;
+
+         if (instr->type != nir_instr_type_intrinsic ||
+             (slot = input_slot(nir_instr_as_intrinsic(instr))) < 0 ||
+             c->fetch_only[slot] || c->input_of_slot[slot] >= 0 ||
+             c->colour_of_slot[slot] >= 0 || c->ninputs == SGX_FRAME_MAX_VARYINGS)
+            continue;
+         /* (two of the TA's colours: flat shading with two-sided colours
+          * besides has its back ones smooth) */
+         if (c->flat[slot] && c->ncolours < 2) {
+            c->colour_slot[c->ncolours] = slot;
+            c->colour_of_slot[slot] = c->ncolours++;
+            continue;
+         }
+         c->fs->input_slot[c->ninputs] = slot;
+         c->input_of_slot[slot] = c->ninputs++;
+      }
    }
 }
 
@@ -614,13 +1048,22 @@ scan(struct comp *c, nir_function_impl *impl)
             nir_intrinsic_instr *in = nir_instr_as_intrinsic(instr);
             unsigned at;
 
-            if (in->intrinsic == nir_intrinsic_load_uniform &&
+            if (in->intrinsic == nir_intrinsic_load_ubo) {
+               /* (M43) a uniform buffer: its address in sa.  The uniforms
+                * are load_uniform's (lower_uniforms_to_ubo is off): block
+                * k is the state tracker's constant buffer k + 1 */
+               if (!nir_src_is_const(in->src[0]) ||
+                   nir_src_as_uint(in->src[0]) + 1 >= SGX_FRAME_MAX_UBOS) {
+                  fail(c, "a uniform buffer chosen by an index");
+                  return;
+               }
+               c->ubo_mask |= 1u << (nir_src_as_uint(in->src[0]) + 1);
+            } else if (in->intrinsic == nir_intrinsic_load_uniform &&
                 !nir_src_is_const(in->src[0])) {
                /* an array read through an index: all of it (M21) */
                at = (nir_intrinsic_base(in) + nir_intrinsic_range(in)) * 4;
                c->uwords = MAX2(c->uwords, at);
-            } else if ((in->intrinsic == nir_intrinsic_load_uniform ||
-                        in->intrinsic == nir_intrinsic_load_ubo) && uniform_word(c, in, &at)) {
+            } else if (in->intrinsic == nir_intrinsic_load_uniform && uniform_word(c, in, &at)) {
                c->uwords = MAX2(c->uwords, at + in->def.num_components);
             }
             if (in->intrinsic == nir_intrinsic_terminate ||
@@ -632,6 +1075,8 @@ scan(struct comp *c, nir_function_impl *impl)
                 nir_src_is_const(*nir_get_io_offset_src(in)))
                c->nattrs = MAX2(c->nattrs, nir_intrinsic_base(in) +
                                            nir_src_as_uint(*nir_get_io_offset_src(in)) + 1);
+            if (in->intrinsic == nir_intrinsic_load_texture_scale)
+               c->scales = true;
             if (in->intrinsic == nir_intrinsic_load_blend_const_color_r_float ||
                 in->intrinsic == nir_intrinsic_load_blend_const_color_g_float ||
                 in->intrinsic == nir_intrinsic_load_blend_const_color_b_float ||
@@ -666,7 +1111,9 @@ scan(struct comp *c, nir_function_impl *impl)
       for (unsigned a = 0; c->vs && a < c->nattrs; a++)
          nconst += SGX_ATTR_KIND(c->attr[a]) == SGX_ATTR_CONST;
       extra = c->vs ? 4 * nconst + 4 :
-                      (c->nsamplers ? 3 + 4 * c->nsamplers : 0) + (c->blend_sa >= 0 ? 4 : 0);
+                      (c->nsamplers ? 3 + 4 * c->nsamplers : 0) + (c->blend_sa >= 0 ? 4 : 0) +
+                      (c->scales ? 4 + 2 * c->nsamplers : 0);
+      extra += util_bitcount(c->ubo_mask);
       c->ubuf = c->uwords + extra > 128;
       if (c->ubuf) {
          c->sa_uniforms = MIN2(c->uwords, (128 - extra - 4) & ~3u);
@@ -675,6 +1122,9 @@ scan(struct comp *c, nir_function_impl *impl)
       } else {
          c->sa_uniforms = c->nuniforms = c->uwords;
       }
+      /* (M43) the uniform buffers' addresses */
+      u_foreach_bit(k, c->ubo_mask)
+         c->ubo_sa[k] = c->nuniforms++;
    }
    c->sampler_sa = align(c->nuniforms, 4);
    c->pa_base = 4 * MAX2(c->nattrs, 1);
@@ -685,8 +1135,11 @@ scan(struct comp *c, nir_function_impl *impl)
          c->vs->attr_sa[a] = c->nuniforms;
          c->nuniforms += 4;
       }
+   if (c->scales)
+      c->scale_sa = c->sampler_sa + 4 * c->nsamplers;
    if (c->blend_sa >= 0)
-      c->blend_sa = c->sampler_sa + 4 * c->nsamplers;
+      c->blend_sa = c->scales ? align(c->scale_sa + 2 * c->nsamplers, 4) :
+                                c->sampler_sa + 4 * c->nsamplers;
 }
 
 static int
@@ -700,21 +1153,12 @@ type_size_vec4(const struct glsl_type *type, bool bindless)
 static bool
 uniform_word(struct comp *c, nir_intrinsic_instr *in, unsigned *at)
 {
-   if (in->intrinsic == nir_intrinsic_load_uniform) {
-      /* vec4 slots (the screen does not pack uniforms) */
-      if (!nir_src_is_const(in->src[0])) {
-         fail(c, "an indirect uniform");
-         return false;
-      }
-      *at = (nir_intrinsic_base(in) + nir_src_as_uint(in->src[0])) * 4;
-   } else {
-      if (!nir_src_is_const(in->src[0]) || nir_src_as_uint(in->src[0]) ||
-          !nir_src_is_const(in->src[1])) {
-         fail(c, "an indirect or second constant buffer");
-         return false;
-      }
-      *at = nir_src_as_uint(in->src[1]) / 4;
+   /* vec4 slots (the screen does not pack uniforms) */
+   if (!nir_src_is_const(in->src[0])) {
+      fail(c, "an indirect uniform");
+      return false;
    }
+   *at = (nir_intrinsic_base(in) + nir_src_as_uint(in->src[0])) * 4;
    return true;
 }
 
@@ -784,6 +1228,54 @@ memory_uniform(struct comp *c, nir_intrinsic_instr *in, unsigned at, bool indexe
    }
 }
 
+/* (M43) a uniform buffer's words (ARB_uniform_buffer_object): VLDST from
+ * the buffer's address in sa word ubo_sa[k], at the offset in bytes --
+ * a constant, or the program's (a float, the integers being floats here:
+ * a quarter of it made an integer as memory_uniform() makes one) */
+static void
+ubo_load(struct comp *c, nir_intrinsic_instr *in, unsigned k)
+{
+   unsigned id = in->def.index * 4, n = in->def.num_components, r = block(c, n, 1);
+   unsigned sa = c->ubo_sa[k];
+   struct scratch s = { 0 };
+
+   if (nir_src_is_const(in->src[1])) {
+      /* (an offset made a float with the integers -- 16 bytes 0x41800000
+       * -- or one made after them, an integer: a multiple of 4 under
+       * 2^24, never as large as 1.0's bits) */
+      uint32_t bits = nir_src_as_uint(in->src[1]);
+      unsigned at = (bits >= 0x3f800000u ? (unsigned)nir_src_as_float(in->src[1]) : bits) / 4;
+
+      if (at < 128) {
+         emit(c, usse_ldr_imm(treg(c, r), sa, at, n));
+      } else {
+         struct usse_reg t = treg(c, scratch_take(c, &s));
+
+         emit(c, usse_limm(t, 4u << 16 | at));
+         emit(c, usse_ldr_reg(treg(c, r), sa, t, n));
+      }
+   } else {
+      struct operand off = resolve(nir_get_scalar(in->src[1].ssa, 0));
+      struct usse_reg t = treg(c, scratch_take(c, &s));
+
+      emit(c, usse_fmad(t, get(c, off, TAKES_ABS | TAKES_LANE_Y, &s), constant(c, &s, 0.25f),
+                        constant(c, &s, 8388608.0f)));
+      emit(c, usse_vbw_and(t, t, 0xffff));
+      emit(c, usse_vbw_or_rot(t, t, 4, 16));
+      emit(c, usse_ldr_reg(treg(c, r), sa, t, n));
+   }
+   emit(c, USSE_WDF0);
+   scratch_give_back(c, &s);
+   for (unsigned i = 0; i < n; i++) {
+      c->loc[id + i] = treg(c, r + i);
+      c->owned[id + i] = c->last_use[id + i] >= 0;
+      if (!c->owned[id + i])
+         give_back(c, r + i);
+   }
+}
+
+static void tile_read(struct comp *c, unsigned d);
+
 static void
 intrinsic(struct comp *c, nir_intrinsic_instr *in)
 {
@@ -830,11 +1322,36 @@ intrinsic(struct comp *c, nir_intrinsic_instr *in)
          }
          slot = nir_intrinsic_io_semantics(in).location + nir_src_as_uint(*offset);
          comp = nir_intrinsic_component(in);
-         if (slot < VARYING_SLOT_VAR0 &&
-             (slot < VARYING_SLOT_COL0 || slot > VARYING_SLOT_TEX7)) {
+         if (!colour_or_generic(slot)) {
             fail(c, "input %s", gl_varying_slot_name_for_stage(slot, MESA_SHADER_FRAGMENT));
             return;
          }
+      }
+      if (c->fetch_only[slot]) {
+         /* read by the PDS's lookups only (M35): not in the registers */
+         for (unsigned i = 0; i < in->def.num_components; i++)
+            c->loc[id + i] = usse_reg(USSE_PA, 0);
+         return;
+      }
+      if (c->colour_of_slot[slot] >= 0) {
+         /* one of the TA's colours (M37): its bytes, unpacked as o0's are
+          * for blending */
+         struct usse_reg raw = usse_reg(USSE_PA, 4 * c->ninputs + c->colour_of_slot[slot]);
+         unsigned d = block(c, 4, 4);
+
+         emit(c, usse_unpack_unorm8(treg(c, d), raw, 0));
+         emit(c, usse_unpack_unorm8(treg(c, d + 2), raw, 2));
+         for (unsigned i = 0; i < 4; i++) {
+            bool mine = i >= comp && i < comp + in->def.num_components;
+
+            if (mine) {
+               c->loc[id + i - comp] = treg(c, d + i);
+               c->owned[id + i - comp] = c->last_use[id + i - comp] >= 0;
+            }
+            if (!mine || c->last_use[id + i - comp] < 0)
+               give_back(c, d + i);
+         }
+         return;
       }
       if (c->input_of_slot[slot] < 0) {
          if (c->ninputs == SGX_FRAME_MAX_VARYINGS) {
@@ -858,8 +1375,6 @@ intrinsic(struct comp *c, nir_intrinsic_instr *in)
             indirect_uniform(c, in);
          return;
       }
-      FALLTHROUGH;
-   case nir_intrinsic_load_ubo:
       if (!uniform_word(c, in, &at))
          return;
       if (at + in->def.num_components > c->sa_uniforms) {
@@ -868,6 +1383,10 @@ intrinsic(struct comp *c, nir_intrinsic_instr *in)
       }
       for (unsigned i = 0; i < in->def.num_components; i++)
          c->loc[id + i] = usse_reg(USSE_SA, at + i);
+      return;
+   case nir_intrinsic_load_ubo:
+      /* (M43: block k, constant buffer k + 1 -- scan()) */
+      ubo_load(c, in, nir_src_as_uint(in->src[0]) + 1);
       return;
    case nir_intrinsic_ddx:
    case nir_intrinsic_ddx_fine:
@@ -952,8 +1471,10 @@ intrinsic(struct comp *c, nir_intrinsic_instr *in)
                continue;
             o = resolve(nir_get_scalar(in->src[0].ssa, i));
             c->have_vout[k][comp + i] = true;
-            if (k == 0) {
-               c->vout[0][comp + i] = o;
+            /* (the position, and a varying the vertex side does more to:
+             * at the end, vertex_output()) */
+            if (k == 0 || (c->vary_fix && c->vary_fix[k - 1])) {
+               c->vout[k][comp + i] = o;
             } else {
                /* a varying straight into its output register: kept until
                 * the end, eight vec4s took more temporaries than there
@@ -966,6 +1487,10 @@ intrinsic(struct comp *c, nir_intrinsic_instr *in)
          }
          return;
       }
+      /* (M43) the second colour of dual-source blending: nir_lower_blend
+       * took it into the blending; with no blending, nothing */
+      if (nir_intrinsic_io_semantics(in).dual_source_blend_index)
+         return;
       if (loc != FRAG_RESULT_COLOR && loc != FRAG_RESULT_DATA0) {
          fail(c, "output %s", gl_frag_result_name(loc));
          return;
@@ -1002,8 +1527,12 @@ intrinsic(struct comp *c, nir_intrinsic_instr *in)
             src = treg(c, k);
             emit(c, usse_limm(src, strtoul(dbg, NULL, 0)));
          }
-         emit(c, usse_unpack_unorm8(treg(c, d), src, 0));
-         emit(c, usse_unpack_unorm8(treg(c, d + 2), src, 2));
+         if (c->fs->blend.rt_kind != SGX_RT_UNORM8 && !dbg) {
+            tile_read(c, d);
+         } else {
+            emit(c, usse_unpack_unorm8(treg(c, d), src, 0));
+            emit(c, usse_unpack_unorm8(treg(c, d + 2), src, 2));
+         }
          for (unsigned i = 0; i < 4; i++) {
             c->loc[id + i] = treg(c, d + i);
             c->owned[id + i] = i < in->def.num_components && c->last_use[id + i] >= 0;
@@ -1013,6 +1542,17 @@ intrinsic(struct comp *c, nir_intrinsic_instr *in)
          if (dbg)
             give_back(c, k);
       }
+      return;
+   }
+   case nir_intrinsic_load_texture_scale: {
+      unsigned unit = nir_src_is_const(in->src[0]) ? nir_src_as_uint(in->src[0]) : MAX_UNITS;
+
+      if (unit >= MAX_UNITS || c->slot_of_unit[unit] < 0 || c->scale_sa < 0) {
+         fail(c, "a texture's size for a texture not sampled");
+         return;
+      }
+      c->loc[id] = usse_reg(USSE_SA, c->scale_sa + 2 * c->slot_of_unit[unit]);
+      c->loc[id + 1] = usse_reg(USSE_SA, c->scale_sa + 2 * c->slot_of_unit[unit] + 1);
       return;
    }
    case nir_intrinsic_load_blend_const_color_r_float:
@@ -1152,17 +1692,135 @@ release(struct comp *c, struct operand o, int index)
       for (unsigned i = 0; i < 4; i++)
          if (c->have_colour[i] && !c->colour[i].is_const && c->colour[i].id == o.id)
             return;
-   /* and the position's until vertex_output() has */
-   for (unsigned i = 0; c->vs && i < 4; i++)
-      if (c->have_vout[0][i] && !c->vout[0][i].is_const && c->vout[0][i].id == o.id)
-         return;
+   /* and the position's until vertex_output() has, and those of the
+    * varyings the vertex side does more to (M39) */
+   for (unsigned k = 0; c->vs && k <= c->nvaryings; k++) {
+      if (k && !(c->vary_fix && c->vary_fix[k - 1]))
+         continue;
+      for (unsigned i = 0; i < 4; i++)
+         if (c->have_vout[k][i] && !c->vout[k][i].is_const && c->vout[k][i].id == o.id)
+            return;
+   }
    if (!o.is_const && c->last_use[o.id] == index && c->owned[o.id]) {
       give_back(c, c->loc[o.id].num - (c->vs ? c->pa_base : 0));
       c->owned[o.id] = false;
    }
 }
 
+/* GL's logic op (M37) as iOS's driver does it (es1 e03..e10): the colour
+ * packed to bytes, then a VBW with the tile's (o0) -- `xor o0, pa0, o0`;
+ * not x is `and c56, ~x`, c56 all ones.  The colour mask after it, on the
+ * bytes (o0 is B G R A, as the target), and a discarded pixel keeps o0:
+ * both through a temporary, the result moved or unpacked at the end. */
+static void
+logic_output(struct comp *c, unsigned base)
+{
+   const unsigned mask = c->fs->blend.colormask;
+   const bool direct = c->kill < 0 && mask == 0xf;
+   struct usse_reg src = treg(c, take(c)), t = treg(c, take(c));
+   struct usse_reg o0 = usse_reg(USSE_OUTPUT, 0), ones = USSE_ALL_ONES;
+   struct usse_reg r = direct ? o0 : t;
+   uint64_t w;
+
+   emit(c, usse_pack_unorm8_to(src, treg(c, base)));
+   switch (c->logicop) {
+   case PIPE_LOGICOP_CLEAR:         w = usse_vbw(USSE_VBW_XOR, r, o0, o0, false); break;
+   case PIPE_LOGICOP_NOR:
+      emit(c, usse_vbw(USSE_VBW_OR, t, src, o0, false));
+      w = usse_vbw(USSE_VBW_AND, r, ones, t, true);
+      break;
+   case PIPE_LOGICOP_AND_INVERTED:  w = usse_vbw(USSE_VBW_AND, r, o0, src, true); break;
+   case PIPE_LOGICOP_COPY_INVERTED: w = usse_vbw(USSE_VBW_AND, r, ones, src, true); break;
+   case PIPE_LOGICOP_AND_REVERSE:   w = usse_vbw(USSE_VBW_AND, r, src, o0, true); break;
+   case PIPE_LOGICOP_INVERT:        w = usse_vbw(USSE_VBW_AND, r, ones, o0, true); break;
+   case PIPE_LOGICOP_XOR:           w = usse_vbw(USSE_VBW_XOR, r, src, o0, false); break;
+   case PIPE_LOGICOP_NAND:
+      emit(c, usse_vbw(USSE_VBW_AND, t, src, o0, false));
+      w = usse_vbw(USSE_VBW_AND, r, ones, t, true);
+      break;
+   case PIPE_LOGICOP_AND:           w = usse_vbw(USSE_VBW_AND, r, src, o0, false); break;
+   case PIPE_LOGICOP_EQUIV:
+      emit(c, usse_vbw(USSE_VBW_XOR, t, src, o0, false));
+      w = usse_vbw(USSE_VBW_AND, r, ones, t, true);
+      break;
+   case PIPE_LOGICOP_NOOP:          w = usse_vbw(USSE_VBW_OR, r, o0, o0, false); break;
+   case PIPE_LOGICOP_OR_INVERTED:   w = usse_vbw(USSE_VBW_OR, r, o0, src, true); break;
+   case PIPE_LOGICOP_COPY:          w = usse_vbw(USSE_VBW_OR, r, src, src, false); break;
+   case PIPE_LOGICOP_OR_REVERSE:    w = usse_vbw(USSE_VBW_OR, r, src, o0, true); break;
+   case PIPE_LOGICOP_OR:            w = usse_vbw(USSE_VBW_OR, r, src, o0, false); break;
+   default:                         w = usse_vbw(USSE_VBW_OR, r, o0, o0, true); break;  /* SET */
+   }
+   if (direct) {
+      emit(c, w | USSE_END);
+      return;
+   }
+   emit(c, w);
+   if (mask != 0xf) {
+      /* t = (t & m) | (o0 & ~m), m the bytes of the channels written */
+      struct usse_reg m = treg(c, take(c));
+      uint32_t bytes = (mask & PIPE_MASK_R ? 0x00ff0000u : 0) |
+                       (mask & PIPE_MASK_G ? 0x0000ff00u : 0) |
+                       (mask & PIPE_MASK_B ? 0x000000ffu : 0) |
+                       (mask & PIPE_MASK_A ? 0xff000000u : 0);
+
+      emit(c, usse_limm(m, bytes));
+      emit(c, usse_vbw(USSE_VBW_AND, t, t, m, false));
+      emit(c, usse_vbw(USSE_VBW_AND, src, o0, m, true));
+      emit(c, usse_vbw(USSE_VBW_OR, t, t, src, false));
+   }
+   if (c->kill < 0) {
+      emit(c, usse_vbw_or(o0, t, 0) | USSE_END);
+      return;
+   }
+   /* discarded: o0 as it was -- the result and the tile's unpacked, the
+    * channels chosen, packed again (exact for bytes) */
+   {
+      unsigned d = block(c, 4, 2);
+
+      emit(c, usse_fmov(treg(c, c->kill + 1), treg(c, c->kill)));
+      emit(c, usse_unpack_unorm8(treg(c, base), t, 0));
+      emit(c, usse_unpack_unorm8(treg(c, base + 2), t, 2));
+      emit(c, usse_unpack_unorm8(treg(c, d), o0, 0));
+      emit(c, usse_unpack_unorm8(treg(c, d + 2), o0, 2));
+      for (unsigned i = 0; i < 4; i++) {
+         usse_fmovc(&w, USSE_TEST_NE0, treg(c, base + i), treg(c, c->kill + (i & 1)),
+                    treg(c, d + i), treg(c, base + i));
+         emit(c, w);
+      }
+      emit(c, usse_pack_unorm8(0, treg(c, base)) | USSE_END);
+   }
+}
+
 /* the colour: four registers in a row, packed into o0 */
+/* (M43) the colour the tile holds, R G B A as F32 into d..d + 3 (d even),
+ * for a target not of RGBA bytes: half floats (o0, o1 or o0 alone), F32
+ * (o0, o1 or o0 alone); the channels it has not 0, alpha 1 */
+static void
+tile_read(struct comp *c, unsigned d)
+{
+   struct usse_reg o0 = usse_reg(USSE_OUTPUT, 0);
+
+   switch (c->fs->blend.rt_kind) {
+   case SGX_RT_F16X4:
+      emit(c, usse_unpack_f16(treg(c, d), o0, 0));
+      emit(c, usse_unpack_f16(treg(c, d + 2), o0, 2));
+      return;
+   case SGX_RT_F16X2:
+      emit(c, usse_unpack_f16(treg(c, d), o0, 0));
+      break;
+   case SGX_RT_F32:
+      emit(c, usse_fmov(treg(c, d), o0));
+      emit(c, usse_limm(treg(c, d + 1), 0));
+      break;
+   default:
+      emit(c, usse_fmov(treg(c, d), o0));
+      emit(c, usse_fmov(treg(c, d + 1), usse_reg(USSE_OUTPUT, 1)));
+      break;
+   }
+   emit(c, usse_limm(treg(c, d + 2), 0));
+   emit(c, usse_limm(treg(c, d + 3), 0x3f800000));
+}
+
 static void
 output(struct comp *c)
 {
@@ -1170,13 +1828,10 @@ output(struct comp *c)
    unsigned base;
 
    if (!c->have_colour[0] && !c->have_colour[1] && !c->have_colour[2] && !c->have_colour[3]) {
-      /* a colour mask of nothing (nir_lower_blend took the output away):
-       * o0 keeps the tile's colour, as it came in (M23) */
-      if (c->fs->blend.colormask == 0) {
-         emit(c, USSE_NOP_END);
-         return;
-      }
-      fail(c, "no colour written");
+      /* a colour mask of nothing (nir_lower_blend took the output away),
+       * or a shader that writes no colour (depth alone, M35): o0 keeps the
+       * tile's colour, as it came in (M23) */
+      emit(c, USSE_NOP_END);
       return;
    }
    base = c->out_base >= 0 ? (unsigned)c->out_base : block(c, 4, 2);
@@ -1194,6 +1849,10 @@ output(struct comp *c)
       move_into(c, treg(c, base + i), o, &s);
       scratch_give_back(c, &s);
    }
+   if (c->logicop >= 0) {
+      logic_output(c, base);
+      return;
+   }
    if (c->kill >= 0) {
       /* discarded: the pixel keeps the colour its tile holds (o0, as the
        * blending reads it) -- every draw is a translucent object, shaded in
@@ -1202,8 +1861,12 @@ output(struct comp *c)
       unsigned d = block(c, 4, 2);
 
       emit(c, usse_fmov(treg(c, c->kill + 1), treg(c, c->kill)));
-      emit(c, usse_unpack_unorm8(treg(c, d), usse_reg(USSE_OUTPUT, 0), 0));
-      emit(c, usse_unpack_unorm8(treg(c, d + 2), usse_reg(USSE_OUTPUT, 0), 2));
+      if (c->fs->blend.rt_kind != SGX_RT_UNORM8) {
+         tile_read(c, d);
+      } else {
+         emit(c, usse_unpack_unorm8(treg(c, d), usse_reg(USSE_OUTPUT, 0), 0));
+         emit(c, usse_unpack_unorm8(treg(c, d + 2), usse_reg(USSE_OUTPUT, 0), 2));
+      }
       for (unsigned i = 0; i < 4; i++) {
          uint64_t w;
 
@@ -1220,7 +1883,22 @@ output(struct comp *c)
                         &c->sop2_factors) | USSE_END);
       return;
    }
-   emit(c, usse_pack_unorm8(0, treg(c, base)) | USSE_END);
+   switch (c->fs->blend.rt_kind) {
+   case SGX_RT_F16X4:
+      emit(c, usse_pack_f16(usse_reg(USSE_OUTPUT, 0), treg(c, base), 0xf) | USSE_END);
+      break;
+   case SGX_RT_F16X2:
+      emit(c, usse_pack_f16(usse_reg(USSE_OUTPUT, 0), treg(c, base), 0x3) | USSE_END);
+      break;
+   case SGX_RT_F32:
+      emit(c, usse_fmov(usse_reg(USSE_OUTPUT, 0), treg(c, base)) | USSE_END);
+      break;
+   case SGX_RT_F32X2:
+      emit(c, usse_pack_f32x2(usse_reg(USSE_OUTPUT, 0), treg(c, base)) | USSE_END);
+      break;
+   default:
+      emit(c, usse_pack_unorm8(0, treg(c, base)) | USSE_END);
+   }
 }
 
 /* A blend factor as SOP2 takes it, the source being SOP2's first operand
@@ -1355,12 +2033,78 @@ optimize(nir_shader *s)
 
 /* GL's blending (and colour mask) for render target 0 into the shader:
  * NIR's own lowering, which reads the destination with load_output */
+/* (M43) the colour to an intensity target: R into all four channels */
+static bool
+lower_intensity_target(nir_builder *b, nir_intrinsic_instr *in, void *data)
+{
+   nir_io_semantics sem;
+   nir_def *v;
+
+   if (in->intrinsic != nir_intrinsic_store_output)
+      return false;
+   sem = nir_intrinsic_io_semantics(in);
+   if ((sem.location != FRAG_RESULT_COLOR && sem.location != FRAG_RESULT_DATA0) ||
+       sem.dual_source_blend_index || nir_intrinsic_component(in))
+      return false;
+   v = in->src[0].ssa;
+   b->cursor = nir_before_instr(&in->instr);
+   nir_src_rewrite(&in->src[0], nir_replicate(b, nir_channel(b, v, 0), 4));
+   nir_intrinsic_set_write_mask(in, 0xf);
+   return true;
+}
+
+/* (M43) the colour to an sRGB target: its RGB encoded on the way out (a
+ * store of the colour), decoded on the way in (blending's fetch of it) */
+static bool
+lower_srgb_target(nir_builder *b, nir_intrinsic_instr *in, void *data)
+{
+   nir_io_semantics sem;
+
+   if (in->intrinsic != nir_intrinsic_store_output && in->intrinsic != nir_intrinsic_load_output)
+      return false;
+   sem = nir_intrinsic_io_semantics(in);
+   if (sem.location != FRAG_RESULT_COLOR && sem.location != FRAG_RESULT_DATA0)
+      return false;
+   if (in->intrinsic == nir_intrinsic_store_output) {
+      nir_def *v = in->src[0].ssa;
+
+      if (v->num_components < 3)
+         return false;
+      b->cursor = nir_before_instr(&in->instr);
+      nir_def *rgb = nir_format_linear_to_srgb(b, nir_channels(b, v, 0x7));
+      nir_def *out = v->num_components == 4 ?
+                     nir_vec4(b, nir_channel(b, rgb, 0), nir_channel(b, rgb, 1),
+                              nir_channel(b, rgb, 2), nir_channel(b, v, 3)) : rgb;
+
+      nir_src_rewrite(&in->src[0], out);
+      return true;
+   }
+   if (!sem.fb_fetch_output || in->def.num_components < 3)
+      return false;
+   b->cursor = nir_after_instr(&in->instr);
+   {
+      nir_def *v = &in->def;
+      nir_def *rgb = nir_format_srgb_to_linear(b, nir_channels(b, v, 0x7));
+      nir_def *lin = v->num_components == 4 ?
+                     nir_vec4(b, nir_channel(b, rgb, 0), nir_channel(b, rgb, 1),
+                              nir_channel(b, rgb, 2), nir_channel(b, v, 3)) : rgb;
+
+      nir_def_rewrite_uses_after(v, lin);
+   }
+   return true;
+}
+
 static void
 lower_blend(nir_shader *s, const struct sgx_blend_key *k)
 {
    nir_lower_blend_options o = { .scalar_blend_const = true };
 
-   o.rt[0].format = PIPE_FORMAT_B8G8R8A8_UNORM;
+   /* (floats: not clamped, M43) */
+   o.rt[0].format = k->rt_kind == SGX_RT_F16X4 ? PIPE_FORMAT_R16G16B16A16_FLOAT :
+                    k->rt_kind == SGX_RT_F16X2 ? PIPE_FORMAT_R16G16_FLOAT :
+                    k->rt_kind == SGX_RT_F32 ? PIPE_FORMAT_R32_FLOAT :
+                    k->rt_kind == SGX_RT_F32X2 ? PIPE_FORMAT_R32G32_FLOAT :
+                    k->rt_srgb ? PIPE_FORMAT_B8G8R8A8_SRGB : PIPE_FORMAT_B8G8R8A8_UNORM;
    o.rt[0].colormask = k->colormask;
    if (k->enable) {
       o.rt[0].rgb.func = k->rgb_func;
@@ -1393,17 +2137,26 @@ vertex_output(struct comp *c)
       fail(c, "no position written");
       return;
    }
-   for (unsigned k = 0; k <= c->nvaryings; k++)
-      for (unsigned i = 0; i < 4; i++) {
-         struct operand o = c->vout[k][i];
+   for (unsigned k = 0, nscaled = 0; k <= c->nvaryings; k++) {
+      unsigned fix = k && c->vary_fix ? c->vary_fix[k - 1] : 0;
 
-         if (k && c->have_vout[k][i])
+      for (unsigned i = 0; i < 4; i++) {
+         /* (M39) a lookup's varying: the divisor where the PDS divides */
+         unsigned from = SGX_FIX_DIV(fix) && i == SGX_PROJ_DIV ? SGX_FIX_DIV(fix) : i;
+         struct operand o = c->vout[k][from];
+
+         if (k && c->have_vout[k][i] && !fix)
             continue;
-         if (!c->have_vout[k][i]) {
+         if (!c->have_vout[k][from]) {
             o.is_const = true;
-            o.c = i == 3 ? 1.0f : 0.0f;
+            o.c = from == 3 ? 1.0f : 0.0f;
          }
-         if (k == 0 && i < 2) {
+         if (i < 2 && (fix & SGX_FIX_SCALE)) {
+            /* x and y times a rectangle texture's 1 / width, 1 / height */
+            emit(c, usse_fop(USSE_NMAD_MUL, usse_reg(USSE_OUTPUT, 4 * k + i),
+                             get(c, o, TAKES_ALL, &s),
+                             usse_reg(USSE_SA, c->vs->fix_sa + 2 * nscaled + i)));
+         } else if (k == 0 && i < 2) {
             /* x and y as a x + b w, a and b the draw's (the TA's clip
              * rectangle, sgx_draw.c) */
             struct usse_reg t = treg(c, scratch_take(c, &s)), u = treg(c, scratch_take(c, &s));
@@ -1418,6 +2171,8 @@ vertex_output(struct comp *c)
          }
          scratch_give_back(c, &s);
       }
+      nscaled += !!(fix & SGX_FIX_SCALE);
+   }
    emit(c, USSE_EMIT_VERTEX_END);
 }
 
@@ -1773,6 +2528,174 @@ store_outputs_early(nir_shader *s)
    }
 }
 
+/* ---- a colour of four F16 at once (M38) -----------------------------------
+ *
+ * iOS's SDL sprite (corpus s00, s03, s11): the colour iterated and the
+ * texel fetched as F16 by the PDS, two registers each (four F16 a 64-bit
+ * register), then `mul.f16 pa0.xyzw, pa2.xyzw, pa0.xyzw`, `pck.u8.f16`,
+ * the SOP2 that blends -- four instructions where the general way takes
+ * nine (texels unpacked to F32, a channel an instruction).  A pixel's cost
+ * is its instructions (M34), and SuperTux's frame is SDL's sprites.
+ *
+ * Taken when the colour is, channel for channel, one tree of fmul and
+ * fadd over varyings (each channel its own: no swizzle) and the PDS's
+ * lookups, nothing else in the program: no other input, constant,
+ * uniform, discard, branch, blending in the program or logic op.  The
+ * colour goes to 8 bits: F16's 11 bits of mantissa are what mediump's are,
+ * and enough for highp's colour too. */
+#define F16_NODES 16
+
+struct f16_node {
+   enum { F16_INPUT, F16_TEXEL, F16_MUL, F16_ADD } kind;
+   unsigned a, b;                       /* the operands' nodes; a leaf's index */
+};
+
+struct f16_tree {
+   struct f16_node node[F16_NODES];
+   unsigned n;
+};
+
+/* channel chan of the colour, s, as tree t's nodes (from 0: the same
+ * shape for every channel), its root; -1 if it is not such a tree */
+static int
+f16_match(const struct comp *c, nir_scalar s, unsigned chan, struct f16_tree *t)
+{
+   s = nir_scalar_chase_movs(s);
+   if (nir_scalar_is_alu(s)) {
+      nir_op op = nir_scalar_alu_op(s);
+      int a, b;
+
+      if ((op != nir_op_fmul && op != nir_op_fadd) || t->n == F16_NODES ||
+          (a = f16_match(c, nir_scalar_chase_alu_src(s, 0), chan, t)) < 0 ||
+          (b = f16_match(c, nir_scalar_chase_alu_src(s, 1), chan, t)) < 0)
+         return -1;
+      t->node[t->n] = (struct f16_node){ op == nir_op_fmul ? F16_MUL : F16_ADD, a, b };
+      return t->n++;
+   }
+   if (nir_def_instr(s.def)->type == nir_instr_type_tex) {
+      for (unsigned k = 0; k < c->nfetch; k++)
+         if (&c->fetch[k]->instr == nir_def_instr(s.def) && s.comp == chan && t->n < F16_NODES) {
+            t->node[t->n] = (struct f16_node){ F16_TEXEL, k, 0 };
+            return t->n++;
+         }
+      return -1;
+   }
+   if (nir_scalar_is_intrinsic(s) &&
+       nir_def_as_intrinsic(s.def)->intrinsic == nir_intrinsic_load_input) {
+      nir_intrinsic_instr *in = nir_def_as_intrinsic(s.def);
+      int slot = input_slot(in);
+
+      if (slot < 0 || c->input_of_slot[slot] < 0 || t->n == F16_NODES ||
+          nir_intrinsic_component(in) + s.comp != chan)
+         return -1;
+      t->node[t->n] = (struct f16_node){ F16_INPUT, (unsigned)c->input_of_slot[slot], 0 };
+      return t->n++;
+   }
+   return -1;
+}
+
+static bool
+f16_colour(struct comp *c, nir_function_impl *impl)
+{
+   nir_intrinsic_instr *out = NULL;
+   struct f16_tree t[4] = { 0 };
+   int root[4];
+   unsigned reg[F16_NODES], ntemp = 0;
+   struct usse_reg o0 = usse_reg(USSE_OUTPUT, 0), colour;
+
+   if (getenv("SGX_NO_F16") || c->vs || c->kills || c->ncolours || c->logicop >= 0 ||
+       c->fs->blend.rt_kind != SGX_RT_UNORM8 || c->fs->blend.rt_srgb ||
+       c->fs->blend.rt_intensity ||
+       c->nuniforms || exec_list_length(&impl->body) != 1)
+      return false;
+   nir_foreach_block(block, impl) {
+      nir_foreach_instr(instr, block) {
+         if (instr->type == nir_instr_type_intrinsic) {
+            nir_intrinsic_instr *in = nir_instr_as_intrinsic(instr);
+
+            if (in->intrinsic == nir_intrinsic_store_output) {
+               if (out || nir_intrinsic_component(in) || nir_intrinsic_write_mask(in) != 0xf ||
+                   in->src[0].ssa->num_components != 4)
+                  return false;
+               out = in;
+            } else if (in->intrinsic != nir_intrinsic_load_input) {
+               return false;
+            }
+         } else if (instr->type == nir_instr_type_tex) {
+            if (!is_fetch(c, instr))
+               return false;
+         } else if (instr->type != nir_instr_type_alu &&
+                    instr->type != nir_instr_type_load_const) {
+            /* (constants: the outputs' offsets; one in the colour is not a
+             * leaf f16_match() takes) */
+            return false;
+         }
+      }
+   }
+   if (!out)
+      return false;
+   for (unsigned i = 0; i < c->ninputs; i++)
+      if (c->fs->input_slot[i] == VARYING_SLOT_POS)
+         return false;
+   for (unsigned ch = 0; ch < 4; ch++) {
+      if ((root[ch] = f16_match(c, nir_get_scalar(out->src[0].ssa, ch), ch, &t[ch])) < 0 ||
+          t[ch].n != t[0].n || root[ch] != root[0] ||
+          memcmp(t[ch].node, t[0].node, t[0].n * sizeof(t[0].node[0])))
+         return false;
+   }
+   /* every input and lookup the program reads is in the tree */
+   {
+      unsigned inputs = 0, fetches = 0;
+
+      for (unsigned k = 0; k < t[0].n; k++) {
+         if (t[0].node[k].kind == F16_INPUT)
+            inputs |= 1u << t[0].node[k].a;
+         else if (t[0].node[k].kind == F16_TEXEL)
+            fetches |= 1u << t[0].node[k].a;
+      }
+      if (inputs != (1u << c->ninputs) - 1 || fetches != (1u << c->nfetch) - 1)
+         return false;
+   }
+   /* the code: inputs in pa(2i), texels after them, two registers each;
+    * each operation into a temporary pair of its own */
+   util_dynarray_init(&c->code, NULL);
+   emit(c, USSE_PHAS);
+   for (unsigned k = 0; k < t[0].n; k++) {
+      const struct f16_node *nd = &t[0].node[k];
+
+      switch (nd->kind) {
+      case F16_INPUT:
+         reg[k] = 2 * nd->a;
+         break;
+      case F16_TEXEL:
+         reg[k] = 2 * c->ninputs + 2 * nd->a;
+         break;
+      default:
+         reg[k] = 0x100 + 2 * ntemp++;
+         emit(c, usse_hop(nd->kind == F16_MUL ? USSE_NMAD_MUL : USSE_NMAD_ADD,
+                          treg(c, reg[k] - 0x100),
+                          reg[nd->a] >= 0x100 ? treg(c, reg[nd->a] - 0x100) :
+                                                usse_reg(USSE_PA, reg[nd->a]),
+                          reg[nd->b] >= 0x100 ? treg(c, reg[nd->b] - 0x100) :
+                                                usse_reg(USSE_PA, reg[nd->b])));
+         break;
+      }
+   }
+   colour = reg[root[0]] >= 0x100 ? treg(c, reg[root[0]] - 0x100) : usse_reg(USSE_PA, reg[root[0]]);
+   if (c->sop2) {
+      struct usse_reg packed = treg(c, 2 * ntemp++);
+
+      emit(c, usse_pack_unorm8_f16(packed, colour));
+      emit(c, usse_sop2(o0, c->sop2_swap ? o0 : packed, c->sop2_swap ? packed : o0,
+                        &c->sop2_factors) | USSE_END);
+   } else {
+      emit(c, usse_pack_unorm8_f16(o0, colour) | USSE_END);
+   }
+   c->top = MAX2(c->top, 2 * ntemp);
+   c->f16 = true;
+   return true;
+}
+
 static bool
 translate(struct comp *c, nir_shader *s)
 {
@@ -1793,6 +2716,16 @@ translate(struct comp *c, nir_shader *s)
    NIR_PASS(_, s, nir_opt_dce);
    if (c->vs)
       store_outputs_early(s);
+   /* values made just before their first use, in their block (M35): a
+    * value takes a register pair here, 32 of them, and the GLSL compiler's
+    * order had piglit's varying-packing vertex shaders make all 32 sums of
+    * a uniform first and use them after -- more than the temporaries hold.
+    * (nir_schedule's least-pressure order made its fragment shader worse:
+    * 32 comparisons first, then the chain that reads them.)  NIR moves ALU
+    * operations with one source that is not a constant. */
+   if (!c->keep_order)
+      NIR_PASS(_, s, nir_opt_move, nir_move_const_undef | nir_move_load_uniform |
+                                   nir_move_load_input | nir_move_comparisons | nir_move_alu);
 
    impl = nir_shader_get_entrypoint(s);
    if (!c->vs && exec_list_length(&impl->body) != 1) {
@@ -1806,6 +2739,8 @@ translate(struct comp *c, nir_shader *s)
          c->divergent |= nif && nir_src_is_divergent(&nif->condition);
       }
    }
+   if (c->fs)
+      lower_fetch_coords(c, s, impl);
    /* control flow left: the phis' webs registers */
    if (exec_list_length(&impl->body) != 1)
       NIR_PASS(_, s, nir_convert_from_ssa, true, false);
@@ -1823,9 +2758,17 @@ translate(struct comp *c, nir_shader *s)
       c->last_use[i] = -1;
    util_dynarray_init(&c->loops, NULL);
 
+   /* SGX_DEBUG_NIR=1: the shader as the compiler takes it */
+   if (getenv("SGX_DEBUG_NIR"))
+      nir_print_shader(s, stderr);
+   if (c->fs)
+      plan_inputs(c, impl);
    scan(c, impl);
    if (c->failed)
       return false;
+   /* M38: a colour of four F16 at once -- the whole program */
+   if (c->fs && f16_colour(c, impl))
+      return true;
 
    /* the numbering, the liveness, then the code, in the same order */
    index = 0;
@@ -1894,58 +2837,124 @@ translate(struct comp *c, nir_shader *s)
    return !c->failed;
 }
 
-struct sgx_fs *
-sgx_compile_fs(const nir_shader *fs, const struct sgx_blend_key *blend, char *why,
-               unsigned why_size)
+static struct sgx_fs *
+compile_fs(const nir_shader *fs, const struct sgx_blend_key *blend, char *why,
+           unsigned why_size, bool keep_order)
 {
-   struct comp c = { 0 };
-   bool blending = blend && (blend->enable || blend->colormask != 0xf);
+   struct comp c = { .keep_order = keep_order };
+   bool blending = blend && (blend->enable || blend->colormask != 0xf || blend->rt_srgb ||
+                             blend->rt_intensity);
    nir_shader *s;
    unsigned out_at;
 
    c.why = why;
    c.kill = -1;
+   c.logicop = -1;
    c.why_size = why_size;
    why[0] = 0;
    if (!(c.fs = CALLOC_STRUCT(sgx_fs)))
       return NULL;
    for (unsigned i = 0; i < ARRAY_SIZE(c.input_of_slot); i++)
-      c.input_of_slot[i] = -1;
+      c.input_of_slot[i] = c.colour_of_slot[i] = -1;
 
    for (unsigned i = 0; i < ARRAY_SIZE(c.slot_of_unit); i++)
       c.slot_of_unit[i] = -1;
    c.blend_sa = -1;
+   c.scale_sa = -1;
    if (blend)
       c.fs->blend = *blend;
    else
       c.fs->blend.colormask = 0xf;
    /* (discard keeps the tile's colour as the colour: blended again, not
     * kept, M19) */
-   if (blending && !fs->info.fs.uses_discard && !getenv("SGX_NO_SOP2") &&
-       sop2_blend(blend, &c.sop2_factors, &c.sop2_swap)) {
+   if (blending && !fs->info.fs.uses_discard && !blend->logicop &&
+       blend->rt_kind == SGX_RT_UNORM8 && !blend->rt_srgb && !blend->rt_intensity &&
+       !getenv("SGX_NO_SOP2") && sop2_blend(blend, &c.sop2_factors, &c.sop2_swap)) {
       c.sop2 = true;
+      blending = false;
+   }
+   /* a logic op instead of the blending, and the colour mask with it: on
+    * the bytes, in output() (nir_lower_blend's are integer operations,
+    * which the compiler has not) */
+   if (blend && blend->logicop && blend->rt_kind == SGX_RT_UNORM8) {
+      c.logicop = blend->logicop - 1;
       blending = false;
    }
 
    s = nir_shader_clone(NULL, fs);
+   /* the flat-shaded colours: the TA's (M37) -- GL's flat shading.  Not
+    * other varyings: the linker makes one flat whose value is the same at
+    * every vertex (piglit's glsl-sin: a uniform's sine), and the TA's
+    * colours are bytes; a varying the same everywhere comes out so smooth */
+   nir_foreach_shader_in_variable(var, s) {
+      if (var->data.interpolation != INTERP_MODE_FLAT ||
+          (var->data.location != VARYING_SLOT_COL0 && var->data.location != VARYING_SLOT_COL1 &&
+           var->data.location != VARYING_SLOT_BFC0 && var->data.location != VARYING_SLOT_BFC1))
+         continue;
+      for (unsigned i = 0; i < glsl_count_attribute_slots(var->type, false); i++)
+         if (var->data.location + i < VARYING_SLOT_MAX)
+            c.flat[var->data.location + i] = true;
+   }
    if (blending)
       NIR_PASS(_, s, nir_lower_fragcolor, 1);
    NIR_PASS(_, s, nir_lower_io, nir_var_shader_in | nir_var_shader_out | nir_var_uniform,
             type_size_vec4, 0);
    if (blending)
       lower_blend(s, blend);
+   /* (M43) an sRGB target: the colour encoded as it goes out, the tile's
+    * decoded as blending reads it (nir_lower_blend leaves both to us) */
+   if (blend && blend->rt_srgb)
+      NIR_PASS(_, s, nir_shader_intrinsics_pass, lower_srgb_target, nir_metadata_control_flow,
+               NULL);
+   /* (M43) an intensity target keeps R in all four: blending later in the
+    * same render reads its alpha as the intensity, as GL has it (the
+    * background loads it R R R R too) */
+   if (blend && blend->rt_intensity)
+      NIR_PASS(_, s, nir_shader_intrinsics_pass, lower_intensity_target,
+               nir_metadata_control_flow, NULL);
    {
-      nir_lower_tex_options tex = { .lower_txp = ~0u };
+      /* (rectangle textures: the state tracker scales their coordinates
+       * already -- caps.texrect off -- and leaves the dimension Rect) */
+      nir_lower_tex_options tex = { .lower_txp = ~0u, .lower_1d = true };
 
-      /* the linear sampler reads B G R A: other orders swizzled back */
+      /* the linear sampler reads B G R A: other orders swizzled back --
+       * and a view's swizzle on what that gives (M43) */
       for (unsigned u = 0; blend && u < 8; u++) {
-         if (!((blend->tex_swap | blend->tex_x8) >> u & 1))
+         uint8_t base[4];
+
+         if (!((blend->tex_swap | blend->tex_x8 | blend->tex_swz) >> u & 1))
             continue;
+         base[0] = blend->tex_swap >> u & 1 ? 2 : 0;
+         base[1] = 1;
+         base[2] = blend->tex_swap >> u & 1 ? 0 : 2;
+         base[3] = blend->tex_x8 >> u & 1 ? PIPE_SWIZZLE_1 : 3;
          tex.swizzle_result |= 1u << u;
-         tex.swizzles[u][0] = blend->tex_swap >> u & 1 ? 2 : 0;
-         tex.swizzles[u][1] = 1;
-         tex.swizzles[u][2] = blend->tex_swap >> u & 1 ? 0 : 2;
-         tex.swizzles[u][3] = blend->tex_x8 >> u & 1 ? PIPE_SWIZZLE_1 : 3;
+         for (unsigned c = 0; c < 4; c++) {
+            unsigned v = blend->tex_swz >> u & 1 ? blend->tex_swizzle[u][c] : c;
+
+            tex.swizzles[u][c] = v <= PIPE_SWIZZLE_W ? base[v] : v;
+         }
+      }
+      if (blend)
+         tex.lower_srgb = blend->tex_srgb;
+      /* shadow samplers: the depth compared in the program (M37: iOS's
+       * m07 -- the reference clamped, `tex - ref >= 0`); one not compared
+       * by its sampler state (or before a variant says) passes */
+      {
+         enum compare_func func[8];
+         nir_lower_tex_shadow_swizzle swz[8];
+
+         for (unsigned u = 0; u < 8; u++) {
+            bool on = blend && (blend->tex_shadow >> u & 1);
+
+            func[u] = on ? blend->shadow_func[u] : COMPARE_FUNC_ALWAYS;
+            swz[u] = on ? (nir_lower_tex_shadow_swizzle){
+                             blend->depth_swizzle[u][0], blend->depth_swizzle[u][1],
+                             blend->depth_swizzle[u][2], blend->depth_swizzle[u][3] } :
+                          (nir_lower_tex_shadow_swizzle){
+                             PIPE_SWIZZLE_X, PIPE_SWIZZLE_X, PIPE_SWIZZLE_X, PIPE_SWIZZLE_1 };
+         }
+         NIR_PASS(_, s, nir_lower_tex_shadow, 8, func, swz, true);
       }
       NIR_PASS(_, s, nir_lower_tex, &tex);
    }
@@ -1956,16 +2965,18 @@ sgx_compile_fs(const nir_shader *fs, const struct sgx_blend_key *blend, char *wh
    if (!translate(&c, s))
       goto out;
    out_at = util_dynarray_num_elements(&c.code, uint64_t);
-   output(&c);
+   if (!c.f16)
+      output(&c);
    if (c.failed)
       goto out;
    /* a pixel's registers, primary attributes and temporaries: 65 (an
     * unrolled loop's) hung the GPU; 64 is what the temporaries alone may
     * take */
-   if (4 * c.ninputs + c.top > 64) {
-      fail(&c, "%u registers a pixel", 4 * c.ninputs + c.top);
+   if (align(4 * c.ninputs + c.ncolours + c.nfetch, 4) + c.top > 64) {
+      fail(&c, "%u registers a pixel", align(4 * c.ninputs + c.ncolours + c.nfetch, 4) + c.top);
       goto out;
    }
+   c.fs->prog.f16 = c.f16;
 
    c.fs->prog.ncode = util_dynarray_num_elements(&c.code, uint64_t);
    c.fs->prog.code = MALLOC(c.fs->prog.ncode * sizeof(uint64_t));
@@ -1988,7 +2999,9 @@ sgx_compile_fs(const nir_shader *fs, const struct sgx_blend_key *blend, char *wh
     * for ever, now and then (M20). */
    /* (and a program with derivatives: the pixels around the triangle in
     * its 2x2 blocks are what DSX and DSY read, glflow -- M33) */
-   if (c.nsamplers || c.branches || c.derivatives)
+   /* (the PDS's lookups take theirs from the iterated coordinates: as
+    * iOS's t00, the program keeps skipinv) */
+   if (c.smp || c.branches || c.derivatives)
       for (unsigned i = 0; i < out_at; i++)
          c.fs->prog.code[i] &= ~(1ull << 55);
    c.fs->prog.ntemps = c.top;
@@ -2015,18 +3028,58 @@ sgx_compile_fs(const nir_shader *fs, const struct sgx_blend_key *blend, char *wh
       mesa_logi("sgx: SGX_LDR_PROBE: %u words, samplers' state at sa%u", n, c.sampler_sa);
    }
    c.fs->prog.branches = c.branches && c.divergent;
-   c.fs->prog.ninputs = c.ninputs;
-   for (unsigned i = 0; i < c.ninputs; i++)
-      c.fs->prog.iter_src[i] = c.fs->input_slot[i] == VARYING_SLOT_POS ? SGX_ITERATE_POSITION :
-                               c.fs->prog.nvaryings++;
+   c.fs->prog.ninputs = c.ninputs + c.ncolours;
+   c.fs->prog.ncolours = c.ncolours;
+   c.fs->prog.nvaryings = c.ncolours;
+   for (unsigned j = 0; j < c.ncolours; j++) {
+      c.fs->input_slot[c.ninputs + j] = c.colour_slot[j];
+      c.fs->varying_slot[j] = c.colour_slot[j];
+      c.fs->prog.iter_src[c.ninputs + j] = j;
+   }
+   for (unsigned i = 0; i < c.ninputs; i++) {
+      if (c.fs->input_slot[i] == VARYING_SLOT_POS) {
+         c.fs->prog.iter_src[i] = SGX_ITERATE_POSITION;
+         continue;
+      }
+      c.fs->varying_slot[c.fs->prog.nvaryings] = c.fs->input_slot[i];
+      c.fs->prog.iter_src[i] = c.fs->prog.nvaryings++;
+   }
+   /* the lookups' varyings, those not iterated after the rest */
+   for (unsigned k = 0; k < c.nfetch; k++) {
+      unsigned v = 0;
+
+      while (v < c.fs->prog.nvaryings && c.fs->varying_slot[v] != c.fetch_slot[k])
+         v++;
+      if (v == SGX_FRAME_MAX_VARYINGS) {
+         fail(&c, "more than %u varyings", SGX_FRAME_MAX_VARYINGS);
+         goto out;
+      }
+      if (v == c.fs->prog.nvaryings)
+         c.fs->varying_slot[c.fs->prog.nvaryings++] = c.fetch_slot[k];
+      c.fs->prog.fetch_src[k] = v;
+      c.fs->prog.fetch_sa[k] = c.sampler_sa + 4 * c.slot_of_unit[c.fetch[k]->texture_index];
+      /* (M39) what the vertex side does to the varying, the PDS's kind */
+      if (SGX_FIX_DIV(c.fetch_fix[k]))
+         c.fs->prog.fetch_proj |= 1u << k;
+      if (c.fetch_fix[k]) {
+         c.fs->vary_fix[v] = c.fetch_fix[k];
+         c.fs->vary_unit[v] = c.fetch[k]->texture_index;
+      }
+   }
+   c.fs->prog.nfetch = c.nfetch;
    c.fs->nuniforms = c.sa_uniforms;
    c.fs->prog.nubuf = c.ubuf ? c.uwords : 0;
    c.fs->prog.ubuf_sa = c.ubuf_sa;
+   c.fs->prog.ubo_mask = c.ubo_mask;
+   for (unsigned k = 0; k < SGX_FRAME_MAX_UBOS; k++)
+      c.fs->prog.ubo_sa[k] = c.ubo_mask >> k & 1 ? c.ubo_sa[k] : 0;
    c.fs->nsamplers = c.nsamplers;
    c.fs->sampler_sa = c.sampler_sa;
    c.fs->prog.nsa = c.blend_sa >= 0 ? c.blend_sa + 4 :
+                    c.scales ? c.scale_sa + 2 * c.nsamplers :
                     c.nsamplers ? c.sampler_sa + 4 * c.nsamplers : c.nuniforms;
    c.fs->blend_sa = c.blend_sa;
+   c.fs->scale_sa = c.scale_sa;
 
 out:
    util_dynarray_fini(&c.code);
@@ -2053,16 +3106,18 @@ sgx_vs_attr_count(const nir_shader *vs)
    return MIN2(n, SGX_VS_MAX_ATTRIBS);
 }
 
-struct sgx_vs *
-sgx_compile_vs(const nir_shader *vs, const unsigned *varying_slot, unsigned nvaryings,
-               const uint8_t *attr, char *why, unsigned why_size)
+static struct sgx_vs *
+compile_vs(const nir_shader *vs, const unsigned *varying_slot, unsigned nvaryings,
+           const uint8_t *attr, const uint8_t *fix, char *why, unsigned why_size,
+           bool keep_order)
 {
-   struct comp c = { 0 };
+   struct comp c = { .keep_order = keep_order };
    unsigned out_at, nattr = sgx_vs_attr_count(vs);
    nir_shader *s;
 
    c.why = why;
    c.kill = -1;
+   c.logicop = -1;
    c.why_size = why_size;
    why[0] = 0;
    if (nvaryings > SGX_FRAME_MAX_VARYINGS || !(c.vs = CALLOC_STRUCT(sgx_vs)))
@@ -2070,10 +3125,14 @@ sgx_compile_vs(const nir_shader *vs, const unsigned *varying_slot, unsigned nvar
    for (unsigned i = 0; i < ARRAY_SIZE(c.slot_of_unit); i++)
       c.slot_of_unit[i] = -1;
    c.blend_sa = -1;
+   c.scale_sa = -1;
    c.varying_slot = varying_slot;
    c.nvaryings = nvaryings;
    memcpy(c.vs->varying_slot, varying_slot, nvaryings * sizeof(*varying_slot));
    c.vs->nvaryings = nvaryings;
+   if (fix)
+      memcpy(c.vs->vary_fix, fix, nvaryings);
+   c.vary_fix = c.vs->vary_fix;
    /* (past what the shader declares: constants, never read) */
    for (unsigned a = 0; a < SGX_VS_MAX_ATTRIBS; a++)
       c.vs->attr[a] = a < nattr ? attr[a] : SGX_ATTR(SGX_ATTR_CONST, 4);
@@ -2087,9 +3146,13 @@ sgx_compile_vs(const nir_shader *vs, const unsigned *varying_slot, unsigned nvar
       nir_print_shader(s, stderr);
    if (!translate(&c, s))
       goto out;
-   /* the draw's four words for the position, after the uniforms */
+   /* the draw's four words for the position, after the uniforms, then two
+    * for each varying it scales (M39) */
    c.vs->clip_sa = c.nuniforms;
    c.nuniforms += 4;
+   c.vs->fix_sa = c.nuniforms;
+   for (unsigned k = 0; k < nvaryings; k++)
+      c.nuniforms += c.vary_fix[k] & SGX_FIX_SCALE ? 2 : 0;
    if (c.nuniforms > 128) {
       fail(&c, "uniforms past word 128");
       goto out;
@@ -2123,6 +3186,9 @@ sgx_compile_vs(const nir_shader *vs, const unsigned *varying_slot, unsigned nvar
    c.vs->nuniforms = c.nuniforms;
    c.vs->nubuf = c.ubuf ? c.uwords : 0;
    c.vs->ubuf_sa = c.ubuf_sa;
+   c.vs->ubo_mask = c.ubo_mask;
+   for (unsigned k = 0; k < SGX_FRAME_MAX_UBOS; k++)
+      c.vs->ubo_sa[k] = c.ubo_mask >> k & 1 ? c.ubo_sa[k] : 0;
 
 out:
    util_dynarray_fini(&c.code);
@@ -2155,4 +3221,36 @@ sgx_fs_destroy(struct sgx_fs *fs)
       return;
    FREE(fs->prog.code);
    FREE(fs);
+}
+
+/* Short of registers, the shader compiled again in NIR's own order: values
+ * made just before their use keep fewer alive as a rule, not always
+ * (dEQP's tmp_array.vec3_dynamic_write_dynamic_read_fragment came to 67
+ * registers a pixel with them, 64 without -- M36) */
+static bool
+short_of_registers(const char *why)
+{
+   return strstr(why, "registers a pixel") || strstr(why, "temporaries hold");
+}
+
+struct sgx_fs *
+sgx_compile_fs(const nir_shader *fs, const struct sgx_blend_key *blend, char *why,
+               unsigned why_size)
+{
+   struct sgx_fs *f = compile_fs(fs, blend, why, why_size, false);
+
+   if (!f && short_of_registers(why))
+      f = compile_fs(fs, blend, why, why_size, true);
+   return f;
+}
+
+struct sgx_vs *
+sgx_compile_vs(const nir_shader *vs, const unsigned *varying_slot, unsigned nvaryings,
+               const uint8_t *attr, const uint8_t *fix, char *why, unsigned why_size)
+{
+   struct sgx_vs *v = compile_vs(vs, varying_slot, nvaryings, attr, fix, why, why_size, false);
+
+   if (!v && short_of_registers(why))
+      v = compile_vs(vs, varying_slot, nvaryings, attr, fix, why, why_size, true);
+   return v;
 }

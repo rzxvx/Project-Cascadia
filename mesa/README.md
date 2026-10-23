@@ -2,7 +2,10 @@
 
 A Gallium driver for the iPad mini's GPU, built into Mesa 26.1.8 for the
 device. The plan and the state of it: [docs/research/p105-mesa.md](../docs/research/p105-mesa.md)
-(M12 on). It runs OpenGL ES 2.0 programs: clears on the GPU (`sgx-gl
+(M12 on). It is the system's OpenGL once installed -- OpenGL ES 1 and 2,
+desktop OpenGL 2.1 through GLX and EGL (M35), dEQP-GLES2 16 859 / 91 and
+piglit's GL profile measured (M35, M36) -- and runs OpenGL ES 2.0 programs:
+clears on the GPU (`sgx-gl
 glclear 100`: every pixel right, ~60 ms a clear with its read-back), and
 draws on the GPU: vertex shaders (M18: with viewports and culling; points,
 lines, flat shading and clip planes still go through Gallium's draw module
@@ -25,8 +28,10 @@ window, M13a).
 | `fetch.sh` | Mesa at the pinned tag into `build/mesa/src`, on the host (git under emulation is far too slow) |
 | `build.sh` | put the driver in, configure, build, install, build `glclear`, `gltri` and `glfs` — inside the `cascadia-mesa` image |
 | `Dockerfile` | that image: Alpine 3.24 armv7 with Mesa's build tools |
-| `install.py` | onto the iPad, over ssh or into the NFS root, as `tools/sgx/mkpack.py` does it |
-| `sgx-gl` | on the device: run a program with this Mesa instead of the system's |
+| `install.py` | onto the iPad, over ssh or into the NFS root, as `tools/sgx/mkpack.py` does it; `/etc/ld-musl-armhf.path` makes it the system's OpenGL (M35) |
+| `sgx-gl` | on the device: run a program with this Mesa (or `SGX_MESA=dir`'s) instead of the system's |
+| `devbuild.sh` | a build beside the system's, unpacked on the iPad into `/root/devbuilds` (M36) |
+| `sgx-dev` | on the device (`/root/sgx-dev`, devbuild.sh puts it there): a program with `/root/sgx-mesa-cur` |
 | `frame-bisect` | on the device: a clear through each `SGX_FRAME` variant, to find a wrong piece of the template frame |
 | `host/` | the driver on a Linux PC through drm-shim: `build.sh [arm]`, `run`, a fake template frame, drm-shim's patch for armhf glibc; `usse-test.py`, the USSE encoder against the disassembler; `rt-test.py`, the render target code against the kext's (`rtemu.py`), 61 sizes; `tmpl-test.py`, the template frame Mesa builds against sgx2d's pack |
 
@@ -36,10 +41,27 @@ With the iPad running a kernel that has the render node, booted from NFS,
 and the template frame installed (`./cascadia gpu`):
 
 ```bash
-./cascadia mesa                  # build, then install where it fits
+./cascadia mesa                  # build (release), then install where it fits
 ./cascadia mesa --install HOST   # over ssh only
 ./cascadia mesa --root DIR       # into a root tree only
+MESA_BUILD=debug ./cascadia mesa # with Mesa's assertions
 ```
+
+The install makes it **the system's OpenGL** (M35): `/etc/ld-musl-armhf.path`
+puts `/usr/local/lib/sgx-mesa/lib` ahead of `/usr/lib`, so every program --
+SDL's, GLEW's, Xorg's glamor, weston -- loads this Mesa and no wrapper is
+needed; Alpine's Mesa stays installed, and deleting the file brings it back.
+It also puts X's configuration for the GPU in `/etc/X11/sgx.conf.d`
+(modesetting with glamor: `desktop` takes it) and links the driver where the
+X server's GLX looks for it.
+
+**Trying a change** without touching the system's: `mesa/devbuild.sh` (or
+`mesa/devbuild.sh release`) builds and unpacks into `/root/devbuilds/N` on
+the iPad, `/root/sgx-mesa-cur` (`-rel`) pointing at the newest; then
+`/root/sgx-dev PROGRAM` runs a program with it (`SGX_MESA=dir` another
+build), and `/root/hangs.sh` counts the renders that timed out since a
+point. dEQP-GLES2 (`tools/sgx/deqp-run.py`) and piglit (`tools/piglit`)
+take a build the same way (`SGX_WRAP=/root/sgx-dev`, `WRAP=/root/sgx-dev`).
 
 Mesa's source is cloned on the host first (`mesa/fetch.sh`, ~120 MB;
 `MESA_URL=` names another mirror). The build then runs Alpine's own armv7
@@ -48,8 +70,9 @@ host, install qemu-user-static's binfmt handlers). The first build takes a
 long time — expect the better part of an hour on a laptop; after that only
 what changed is compiled again, unless the build options changed (then
 everything is). Everything lands in `build/mesa` (out of git): `src` (Mesa),
-`build`, `install`; `MESA_BUILD=release` builds without assertions into
-`build-release`, `install-release` (for measuring speed).
+`build-release`, `install-release` -- and `build`, `install` for a debug
+build (`MESA_BUILD=debug`, assertions on: a program can stop on one of
+Mesa's own where a release build goes on).
 
 On the iPad:
 
@@ -80,6 +103,36 @@ sgx-gl glvary                    # 1 to 8 vec4 varyings, each read back; a mat3 
                                  # whole numbers through varyings as ints, int division (M31)
 sgx-gl glldr                     # uniforms past sa's 128 words, read from memory (M32)
 sgx-gl glflow                    # texture lookups, dFdx/dFdy in programs that branch (M33)
+sgx-gl glfetch                   # texture lookups the PDS makes before the program (M35);
+                                 # SGX_NOFETCH=1: all in the program
+sgx-gl gldesk                    # desktop OpenGL 2.1: 1D, sRGB and rectangle textures, the
+                                 # fixed-function pipeline (M35, M36); depth textures, shadow
+                                 # samplers, flat shading, occlusion queries, logic ops (M37)
+sgx-gl glupload                  # textures written between draws that read them, each format
+                                 # the sampler reads as it is, upload times (M37)
+sgx-gl gloffset                  # glPolygonOffset's units and factors (M37); --probe with
+                                 # SGX_STATE=2:mask, --clamp: whether a depth past 1 is clamped
+SGX_ISP_OFFSET=1 sgx-gl gloffset # the ISP's polygon offset instead of the draw module's
+SGX_DEBUG=copies sgx-gl glupload # each texture copy the CPU makes: whole, a box, a new buffer
+SGX_DEBUG=fps,flushes desktop    # the per-2 s report for the X server (it never swaps): its
+                                 # renders, where they were flushed from (M37)
+SGX_NO_F16=1 sgx-gl glfetch      # the colour as F32 even where it could be F16 (M38)
+sgx-gl kmsrot                    # the plane's four turns (M41), the screen read back through
+                                 # /dev/fb0, a DIRTYFB box too; with X stopped
+sgx-gl glproj                    # projective and rectangle lookups by the PDS, the vertex
+                                 # side scaling and moving the divisor (M39);
+                                 # SGX_NO_PROJ_FETCH=1: in the program
+SGX_DEBUG=fps PROGRAM            # also the target's size and the viewport at the frame's end
+python3 ukbd.py 20 & supertux-mesa.sh LEVEL   # SuperTux on KMS, Tux run right by a uinput
+                                 # keyboard (tools/sgx; M38)
+SGX_TEX_NATIVE=0 sgx-gl glupload # every texture copied as RGBA8 (M36's way)
+SGX_LINEAR_TEX=1 sgx-gl glupload # every texture of one level sampled linear (0: never)
+SGX_STATE=16:0x200 sgx-gl glflat # which vertex's colour a triangle takes (finding flat
+                                 # shading, M36)
+SGX_DEBUG_NIR=1 sgx-gl glfs mad  # the NIR the compiler takes (M36)
+SGX_ITER_XOR=0x20000 sgx-gl glflat   # flip bits of the iterates' control words (M36)
+/root/piglit/run.sh NAME         # piglit's GL profile, ~40 min (tools/piglit)
+python3 /root/pigsum.py /root/piglit-results/NAME   # what did not pass
 SGX_LDR_PROBE=e8870004a0008080 sgx-gl glldr --probe   # a program of those words: VLDST
 SGX_FETCH_TAG=9 sgx-gl glvary    # the vertices a vertex task takes, less one (M30: 9 is
                                  # what overlapped the outputs of three varyings and more)

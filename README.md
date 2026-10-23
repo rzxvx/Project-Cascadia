@@ -97,11 +97,17 @@ including the parts that didn't work.
       console. bluez is in the image: `bluetooth pair NAME`, `bluetooth auto
       on` to have it back at every boot. See `docs/research/p105-bluetooth.md`
 - [x] **Buttons and backlight** — Home, Hold, volume and the side switch are
-      `gpio-keys`. Volume up/down set the backlight (32 steps, 1 to 400 nits),
-      Hold switches the screen off and on and ignores the touchscreen while
-      it is dark (`/sbin/p105-keys`, started at boot). The backlight is
+      `gpio-keys`. The side switch picks what volume up/down set: with its
+      orange mark showing, the backlight (32 steps, 1 to 400 nits); the other
+      way, the speakers' volume (16 steps of 4 dB, and off). Hold switches the
+      screen off and on and ignores the touchscreen while it is dark
+      (`/sbin/p105-keys`, started at boot). The backlight is
       `/sys/class/backlight/apple-pmu-wled`, 0..2047, the PMU's LED current
       DAC; see `docs/research/p105-backlight.md`
+- [x] **Speakers** — ALSA card `iPadMini`: both speakers, DMA, 32/44.1/48 kHz;
+      `aplay`, SDL and OpenAL play through it, several at once (dmix);
+      alsa-utils and the mixing come with the image. See
+      `docs/research/p105-audio.md`
 - [x] **Battery gauge** — the bq27540 on its one-wire HDQ bus:
       `/sys/class/power_supply/battery` (charge, voltage, current,
       temperature, cycles), so `fastfetch` and desktop panels show it.
@@ -134,14 +140,22 @@ including the parts that didn't work.
       code under an emulator. On that sits `sgx2d`, a small 2D
       library (textured quads, colour modulation, three blend modes, full
       screen), and an SDL2 renderer shim: `supertux-gpu` runs SuperTux with a
-      touch gamepad. No OpenGL — that would take a shader compiler. Set up
+      touch gamepad (OpenGL came after: below). Set up
       with one command, `./cascadia gpu`; details and controls:
       [docs/GPU.md](docs/GPU.md); how it was found, wrong
       turns included: [docs/research/p105-gpu.md](docs/research/p105-gpu.md)
-- [ ] OpenGL through Mesa — under way: the kernel driver has a DRM render
-      node, and a Gallium driver in [mesa/](mesa/) runs OpenGL ES 2.0
-      programs with clears on the GPU — 100 of them, every pixel right
-      (2026-10-04); draws wait for the shader compiler. The plan:
+- [x] OpenGL through Mesa — **the system's OpenGL: ES 1.1 and 2.0, desktop
+      2.1 through GLX and EGL** (2026-10-15). A Gallium driver in
+      [mesa/](mesa/) with its own shader compiler (NIR to the GPU's USSE code:
+      branches, loops, texture lookups, derivatives) on the kernel's DRM
+      render node; `./cascadia mesa` builds it and makes it the system's.
+      **XFCE runs on Xorg with glamor on the GPU**, GLX programs beside it;
+      weston and its Wayland clients too; SuperTux through SDL's GL renderer.
+      Measured: dEQP-GLES2 16 859 of 16 950 run, piglit's GL profile 774
+      passing of the ~960 a 2.1 part runs. Not there yet: flat shading,
+      logic ops, discard writing no depth, polygon offset, 3D textures,
+      border colours, occlusion queries (most of it waits for a capture of
+      iOS's driver). How it was found:
       [docs/research/p105-mesa.md](docs/research/p105-mesa.md)
 
 ## Where Linux keeps its files
@@ -724,10 +738,13 @@ initramfs/      stage 1 (/init) and stage 2 (/sbin/p105-stage2) -- the boot
                 minirootfs; nothing is edited inside build/
 tools/          p105-peek.c (MMIO tool), build/flash wrappers, LZSS helpers,
                 nand/ (nandctl, iosnand: the NAND, read-only),
-                sgx/ (the GPU: sgx2d, the SDL shim, pack builder), iosgpu/
-                (the iOS capture tool, the kext emulator)
-mesa/           the GPU's Mesa driver (Gallium, OpenGL ES): its files, the
-                patch that registers it, the device build (./cascadia mesa)
+                sgx/ (the GPU: sgx2d, the SDL shim, pack builder, gl/: the
+                driver's tests), iosgpu/ (the iOS capture tool, the kext
+                emulator), piglit/ (the OpenGL test suite for the iPad),
+                desktop/ (XFCE's setup, X screenshots)
+mesa/           the GPU's Mesa driver (Gallium: OpenGL ES 1.1/2.0, OpenGL 2.1):
+                its files, the patch that registers it, the device build
+                (./cascadia mesa; mesa/devbuild.sh for a build beside it)
 docs/           QUICKSTART.md — clean machine to a shell on the device
                 CASCADIA-CHEATSHEET.md — the real reference for working on it
                 GPU.md — the GPU: building, playing SuperTux, how it works
@@ -751,12 +768,41 @@ Build products (`output/`) and stock firmware are not tracked; everything in
   ~~a desktop~~ ✓ (XFCE) → ~~the second core~~ ✓ → ~~Wi-Fi via HSIC/EHCI~~ ✓
   → ~~the L2 cache~~ ✓ → ~~iOS's files off the NAND~~ ✓ (read-only) → NAND
   as Linux's own storage.
-- **Phase 4** — A6 port (iPhone 5 / iPad mini 2), on this foundation.
-- **Phase 5** — A12/A13, longer term.
+- **Phase 4** — Newer chips
+
+The next in line with no particular order after the iPad mini 1 (Phase 4):
+- iPad 6 - A10
+- iPad Air 2 — A8X
+- iPad 4 - A6X
+- iPad mini 4 — A8
+- iPad 2 - A5
+- iPad 3 - A5X
+- iPad Pro 11" 2020 - A12Z (Most powerful iPad, Linux can be ported on (additional hardware required for boot))
+- iPad Pro 10.5" 2017 - A10X
+- iPad mini 5 — A12 (requires additional hardware for booting, just like the A5)
+- iPad 9 — A13 (requires additional hardware for booting)
+- iPad 5 — A9
 
 ![FastFetch written using screen keyboard](imgs/IMG_1196.jpg)
 
 ![XFCE on the iPad, read straight out of /dev/fb0](imgs/xfce-fb0.png)
+
+## Support the Research
+
+Project Cascadia is and always will be 100% free, open-source, and licensed under GPL-2.0. 
+
+However, testing low-level code on bare metal carries hardware risks, and further research into later Apple silicon (A6X-A13) requires purchasing additional test devices
+If you find this work valuable and wish to support ongoing research, donations are greatly appreciated:
+
+
+| Asset | Address |
+| :--- | :--- |
+| 🔵 **Litecoin (LTC)** | `LhxwyrfqN64KTfoS8Y8gAxoRjFp4t4RbCf` |
+| 🟠 **Bitcoin (BTC)** | `bc1qmuy5zkkq6lyyg3818quuvjehdwrzes6h96ledt` |
+| 🟢 **USDT (TRC-20)** | `0x3Df78641E76C7fDD8258E0e7e4389CFC5e7e6498` |
+
+
+
 
 ## Background
 

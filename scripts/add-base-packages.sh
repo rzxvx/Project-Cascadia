@@ -17,6 +17,11 @@
 #                       would have made is made below: the messagebus user
 #                       dbus-daemon --system drops to (Alpine's uid and gid),
 #                       and the empty state directories
+#   alsa-utils          the speakers: aplay, speaker-test, amixer, alsamixer,
+#                       and alsa-lib, which SDL and OpenAL play through.  The
+#                       card is in the kernel and /etc/asound.conf (dmix as
+#                       "default") in initramfs/, so sound works from the
+#                       first boot, RAM or NFS root, with nothing to install
 #
 # dropbear comes from add-dropbear.sh.  Called by build-alpine-rootfs.sh, and by
 # ./cascadia build for a tree made before this list grew.  An NFS root is
@@ -28,8 +33,19 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TREE="$ROOT/build/initramfs-root"
 
 bash "$ROOT/scripts/add-apk-packages.sh" \
-    nfs-utils busybox-static iw wpa_supplicant fbkeyboard font-dejavu bluez dbus
+    nfs-utils busybox-static iw wpa_supplicant fbkeyboard font-dejavu bluez dbus \
+    alsa-utils
 find "$TREE/usr/share/fonts/dejavu" -type f ! -name DejaVuSans.ttf -delete
+# alsa-utils: what the speakers need is aplay (and arecord), amixer, alsamixer
+# and speaker-test.  The rest goes, with the libraries only it uses -- fftw is
+# 1.3 MB for alsabat alone -- and speaker-test's spoken samples (-t wav, 1.2
+# MB; -t sine needs none).  `apk add alsa-utils` on an NFS root has them all.
+( cd "$TREE" && rm -f usr/bin/alsabat usr/bin/alsatplg usr/bin/alsaloop \
+    usr/bin/alsaucm usr/bin/aserver usr/bin/axfer usr/bin/iecset \
+    usr/bin/aconnect usr/bin/amidi usr/bin/aplaymidi usr/bin/aplaymidi2 \
+    usr/bin/arecordmidi usr/bin/arecordmidi2 usr/bin/aseqdump usr/bin/aseqnet \
+    usr/bin/aseqsend usr/lib/libfftw3f* usr/lib/libatopology* \
+    && rm -rf usr/share/sounds/alsa )
 grep -q '^messagebus:' "$TREE/etc/group" \
     || echo 'messagebus:x:101:messagebus' >> "$TREE/etc/group"
 grep -q '^messagebus:' "$TREE/etc/passwd" \

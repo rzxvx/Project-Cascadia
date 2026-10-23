@@ -128,3 +128,22 @@ index 55f10dc..2b46aef 100644
               [with_gallium_d3d12, ['d3d12']],
               [with_gallium_zink, ['zink']],
               [with_gallium_asahi, ['asahi']]]
+diff --git a/src/mesa/main/fbobject.c b/src/mesa/main/fbobject.c
+index bc2a9cd..1b70d7d 100644
+--- a/src/mesa/main/fbobject.c
++++ b/src/mesa/main/fbobject.c
+@@ -926,6 +926,14 @@ gles_check_float_renderable(const struct gl_context *ctx,
+    if (att->Texture->_IsHalfFloat && !_mesa_has_EXT_color_buffer_half_float(ctx))
+       return false;
+ 
++   /* And in OpenGL ES 2 only as RGBA: EXT_color_buffer_half_float makes
++    * RGBA textures of type HALF_FLOAT_OES color-renderable, not RGB ones
++    * (dEQP-GLES2's fbo.completeness...rgb_half_float_oes).
++    */
++   if (att->Texture->_IsHalfFloat && att->Renderbuffer->_BaseFormat == GL_RGB &&
++       !_mesa_is_gles3(ctx))
++      return false;
++
+    const struct gl_texture_object *texObj = att->Texture;
+    const struct gl_texture_image *texImage =
+       texObj->Image[att->CubeMapFace][att->TextureLevel];

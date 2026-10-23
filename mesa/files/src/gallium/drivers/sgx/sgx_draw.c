@@ -20,6 +20,7 @@
 
 #include <errno.h>
 #include <stdlib.h>
+#include <string.h>
 #include <time.h>
 
 #include "compiler/glsl_types.h"
@@ -29,6 +30,8 @@
 #include "draw/draw_vertex.h"
 #include "tgsi/tgsi_from_mesa.h"
 #include "util/format/u_format.h"
+#include "util/format_srgb.h"
+#include "util/half_float.h"
 #include "util/log.h"
 #include "util/os_time.h"
 #include "util/u_debug.h"
@@ -222,6 +225,38 @@ render_set_view_index(struct vbuf_render *r, unsigned view_index)
 {
 }
 
+/* (M39) unit's texture's 1 / width, 1 / height: a rectangle texture's
+ * coordinates scaled as the sampler takes them */
+static void
+fix_scale(struct sgx_context *ctx, unsigned unit, float *scale)
+{
+   struct pipe_sampler_view *view = unit < ARRAY_SIZE(ctx->fs_views) ? ctx->fs_views[unit] : NULL;
+
+   scale[0] = view && view->texture ? 1.0f / view->texture->width0 : 1;
+   scale[1] = view && view->texture ? 1.0f / view->texture->height0 : 1;
+}
+
+/* What the vertex side does to the varyings the PDS's lookups alone read
+ * (M39, sgx_fs.vary_fix): x and y scaled, the divisor where the PDS's
+ * projective lookup divides.  v: the varyings, four floats each. */
+static void
+fix_varyings(struct sgx_context *ctx, const struct sgx_fs *fs, unsigned n, float *v)
+{
+   for (unsigned k = 0; k < n; k++, v += 4) {
+      unsigned fix = fs->vary_fix[k];
+
+      if (fix & SGX_FIX_SCALE) {
+         float scale[2];
+
+         fix_scale(ctx, fs->vary_unit[k], scale);
+         v[0] *= scale[0];
+         v[1] *= scale[1];
+      }
+      if (SGX_FIX_DIV(fix) && SGX_FIX_DIV(fix) != SGX_PROJ_DIV)
+         v[SGX_PROJ_DIV] = v[SGX_FIX_DIV(fix)];
+   }
+}
+
 /* one vertex, as the frame's vertex side takes it: x y over the target, z
  * 0, w 1, then the varyings -- the colour, and with SGX_DRAW_LAYOUT the
  * fillers around it */
@@ -247,6 +282,7 @@ emit_vertex(struct sgx_render *sr, const float *in, float *out)
    if (ctx->draw_fs) {
       /* the program's inputs, as the draw module has them */
       memcpy(out + 4, in + 4, 4 * l->nvaryings * sizeof(float));
+      fix_varyings(ctx, ctx->draw_fs, l->nvaryings, out + 4);
       return;
    }
    for (unsigned k = 0; k < l->nvaryings; k++) {
@@ -281,7 +317,7 @@ emit_vertex(struct sgx_render *sr, const float *in, float *out)
 }
 
 static void
-render_index(struct sgx_render *sr, unsigned index)
+render_vertex(struct sgx_render *sr, const float *in)
 {
    struct sgx_context *ctx = sr->ctx;
    unsigned vf = sgx_frame_vertex_floats(&ctx->layout);
@@ -297,36 +333,160 @@ render_index(struct sgx_render *sr, unsigned index)
    }
    /* the triangles as the draw module wound them: the TA culls nothing
     * (state word 18, M18), and gl_FrontFacing reads the winding */
-   emit_vertex(sr, (const float *)(sr->vertices + index * sr->vertex_size),
-               ctx->verts + ctx->nverts++ * vf);
+   emit_vertex(sr, in, ctx->verts + ctx->nverts++ * vf);
+}
+
+/* (M43) ARB_depth_clamp: a triangle's depth clamped to the depth range,
+ * the near and far planes clipping nothing (the draw module's z clipping
+ * is off with them).  The ISP clamps no depth (gloffset --clamp, M38), so
+ * the triangle is cut where its depth crosses an end of the range -- a
+ * line across it on the screen, window z being linear there -- and the
+ * parts past the ends drawn at the end's depth, a fan each: exactly the
+ * clamped depths.  A new vertex's varyings are perspective-correct (1 / w
+ * and v / w linear on the screen); with flat shading every vertex has the
+ * provoking one's colours.  Without depth clamping the same keeps depth in
+ * 0..1 (the draw module's polygon offset may take it past). */
+#define CLAMP_FLOATS (4 + 4 * 16)
+#define CLAMP_MAX_VERTS 6
+
+struct clamp_poly {
+   float v[CLAMP_MAX_VERTS][CLAMP_FLOATS];
+   unsigned n;
+};
+
+/* the part of in on one side of window z = zc: below (z <= zc) or not */
+static void
+clamp_cut(const struct clamp_poly *in, unsigned nf, float zc, bool below, struct clamp_poly *out)
+{
+   out->n = 0;
+   for (unsigned i = 0; i < in->n; i++) {
+      const float *a = in->v[i], *b = in->v[(i + 1) % in->n];
+      bool ain = below ? a[2] <= zc : a[2] >= zc, bin = below ? b[2] <= zc : b[2] >= zc;
+
+      if (ain && out->n < CLAMP_MAX_VERTS)
+         memcpy(out->v[out->n++], a, nf * sizeof(float));
+      if (ain != bin && out->n < CLAMP_MAX_VERTS) {
+         float t = (zc - a[2]) / (b[2] - a[2]), *o = out->v[out->n++];
+         float q = a[3] + t * (b[3] - a[3]);
+
+         o[0] = a[0] + t * (b[0] - a[0]);
+         o[1] = a[1] + t * (b[1] - a[1]);
+         o[2] = zc;
+         o[3] = q;
+         for (unsigned k = 4; k < nf; k++)
+            o[k] = q != 0 ? (a[k] * a[3] + t * (b[k] * b[3] - a[k] * a[3])) / q : a[k];
+      }
+   }
+}
+
+static void
+clamp_emit(struct sgx_render *sr, struct clamp_poly *p, unsigned nf, const float *flat,
+           unsigned nflat, bool at, float z)
+{
+   for (unsigned i = 0; i < p->n; i++) {
+      if (at)
+         p->v[i][2] = z;
+      if (flat)
+         memcpy(p->v[i] + 4, flat + 4, nflat * sizeof(float));
+   }
+   for (unsigned i = 1; i + 1 < p->n; i++) {
+      render_vertex(sr, p->v[0]);
+      render_vertex(sr, p->v[i]);
+      render_vertex(sr, p->v[i + 1]);
+   }
+}
+
+static void
+render_triangle(struct sgx_render *sr, unsigned i0, unsigned i1, unsigned i2)
+{
+   struct sgx_context *ctx = sr->ctx;
+   const struct pipe_rasterizer_state *r = ctx->rast;
+   const float *v[3] = {
+      (const float *)(sr->vertices + i0 * sr->vertex_size),
+      (const float *)(sr->vertices + i1 * sr->vertex_size),
+      (const float *)(sr->vertices + i2 * sr->vertex_size),
+   };
+   unsigned nf = sr->vertex_size / sizeof(float);
+
+   if (r && nf <= CLAMP_FLOATS) {
+      float n = ctx->viewport.translate[2] - (r->clip_halfz ? 0 : ctx->viewport.scale[2]);
+      float f = ctx->viewport.translate[2] + ctx->viewport.scale[2];
+      float lo = ctx->depth_clamp ? CLAMP(MIN2(n, f), 0.0f, 1.0f) : 0;
+      float hi = ctx->depth_clamp ? CLAMP(MAX2(n, f), 0.0f, 1.0f) : 1;
+
+      if (v[0][2] < lo || v[1][2] < lo || v[2][2] < lo ||
+          v[0][2] > hi || v[1][2] > hi || v[2][2] > hi) {
+         struct clamp_poly t = { .n = 3 }, part, rest;
+         /* (the TA's flat colours: the layout's first ncolours varyings,
+          * from the triangle's last vertex) */
+         const float *flat = r->flatshade && ctx->layout.ncolours ? v[2] : NULL;
+         unsigned nflat = MIN2(4 * ctx->layout.ncolours, nf - 4);
+
+         for (unsigned i = 0; i < 3; i++)
+            memcpy(t.v[i], v[i], nf * sizeof(float));
+         clamp_cut(&t, nf, lo, true, &part);
+         clamp_emit(sr, &part, nf, flat, nflat, true, lo);
+         clamp_cut(&t, nf, lo, false, &rest);
+         clamp_cut(&rest, nf, hi, false, &part);
+         clamp_emit(sr, &part, nf, flat, nflat, true, hi);
+         clamp_cut(&rest, nf, hi, true, &part);
+         clamp_emit(sr, &part, nf, flat, nflat, false, 0);
+         return;
+      }
+   }
+   for (unsigned i = 0; i < 3; i++)
+      render_vertex(sr, v[i]);
+}
+
+static uint32_t isp_offset(const struct pipe_rasterizer_state *r);
+
+/* (M37) flat colours from a triangle's first vertex (ARB_provoking_vertex):
+ * the TSP takes its last one's whatever state word 18 says (gldesk), so
+ * each triangle is turned round to end with it -- the winding the same */
+static bool
+flat_first(const struct sgx_context *ctx)
+{
+   return ctx->draw_fs && ctx->draw_fs->prog.ncolours && ctx->rast &&
+          ctx->rast->flatshade_first;
+}
+
+/* the i-th vertex of a list of triangles, turned (b, c, a) or not */
+static inline unsigned
+turned(unsigned i, bool turn)
+{
+   return turn ? i - i % 3 + (i % 3 + 1) % 3 : i;
 }
 
 static void
 render_draw_elements(struct vbuf_render *r, const uint16_t *indices, unsigned n)
 {
    struct sgx_render *sr = sgx_render(r);
+   bool turn = flat_first(sr->ctx);
 
    if (sr->prim != MESA_PRIM_TRIANGLES) {
       mesa_logw_once("sgx: %s left over by the draw module: dropped",
                      u_prim_name(sr->prim));
       return;
    }
-   for (unsigned i = 0; i < n - n % 3; i++)
-      render_index(sr, indices[i]);
+   for (unsigned i = 0; i + 2 < n; i += 3)
+      render_triangle(sr, indices[turned(i, turn)], indices[turned(i + 1, turn)],
+                      indices[turned(i + 2, turn)]);
 }
 
 static void
 render_draw_arrays(struct vbuf_render *r, unsigned start, unsigned n)
 {
    struct sgx_render *sr = sgx_render(r);
+   bool turn = flat_first(sr->ctx);
 
    if (sr->prim != MESA_PRIM_TRIANGLES) {
       mesa_logw_once("sgx: %s left over by the draw module: dropped",
                      u_prim_name(sr->prim));
       return;
    }
-   for (unsigned i = 0; i < n - n % 3; i++)
-      render_index(sr, start + i);
+   for (unsigned i = 0; i + 2 < n; i += 3)
+      render_triangle(sr, start + turned(i, turn), start + turned(i + 1, turn),
+                      start + turned(i + 2, turn));
 }
 
 static void
@@ -417,13 +577,13 @@ update_vertex_info(struct sgx_context *ctx)
       /* a compiled fragment shader: its inputs, in its order, all F32 */
       const struct sgx_fs *fs = ctx->draw_fs;
 
-      for (unsigned i = 0; i < fs->prog.ninputs; i++)
-         if (fs->input_slot[i] != VARYING_SLOT_POS)     /* gl_FragCoord: iterated, not sent */
-            emit_varying(ctx, vinfo, fs->input_slot[i]);
+      for (unsigned i = 0; i < fs->prog.nvaryings; i++)
+         emit_varying(ctx, vinfo, fs->varying_slot[i]);
       draw_compute_vertex_size(vinfo);
       ctx->layout.nvaryings = fs->prog.nvaryings;
       ctx->layout.f32 = (1u << fs->prog.nvaryings) - 1;
       ctx->layout.colour = 0;
+      ctx->layout.ncolours = fs->prog.ncolours;
       return;
    }
    for (unsigned i = 0; c && c->ok && i < 4; i++) {
@@ -510,20 +670,22 @@ sgx_draw_fini(struct sgx_context *ctx)
    free(ctx->batch.dead_vs);
    free(ctx->batch.dead_fs);
    free(ctx->batch.verts);
-   free(ctx->batch.vdata);
    free(ctx->batch.sa);
    free(ctx->batch.idx);
    ctx->batch.verts = NULL;
-   ctx->batch.vdata = NULL;
    ctx->batch.sa = NULL;
    ctx->batch.idx = NULL;
+   /* (vertex chunks no draw used: the flush above had none to make) */
+   for (unsigned i = 0; i < ctx->batch.nvchunks; i++)
+      sgx_bo_destroy(ctx->batch.vchunk[i]);
+   ctx->batch.nvchunks = ctx->batch.vat = 0;
+   sgx_bo_destroy(ctx->vtx.vchunk);
+   ctx->vtx.vchunk = NULL;
    FREE(ctx->verts);
-   free(ctx->vdata);
    free(ctx->indices);
    ctx->verts = NULL;
-   ctx->vdata = NULL;
    ctx->indices = NULL;
-   ctx->nverts = ctx->maxfloats = ctx->maxvdata = ctx->maxindices = 0;
+   ctx->nverts = ctx->maxfloats = ctx->maxindices = 0;
 }
 
 /* ---- draw_vbo ----------------------------------------------------------- */
@@ -552,38 +714,81 @@ fs_for_draw(struct sgx_context *ctx)
          key.alpha_func = rt->alpha_func;
          key.alpha_src = rt->alpha_src_factor;
          key.alpha_dst = rt->alpha_dst_factor;
+         /* a target without alpha (RG8, R8, BGRX8): its alpha is 1
+          * (gallium's rule; M43 -- the background load of RG8 leaves 0) */
+         if (ctx->fb.nr_cbufs && ctx->fb.cbufs[0].texture &&
+             !util_format_has_alpha(ctx->fb.cbufs[0].format)) {
+            uint8_t *f[4] = { &key.rgb_src, &key.rgb_dst, &key.alpha_src, &key.alpha_dst };
+
+            for (unsigned i = 0; i < 4; i++) {
+               if (*f[i] == PIPE_BLENDFACTOR_DST_ALPHA)
+                  *f[i] = PIPE_BLENDFACTOR_ONE;
+               else if (*f[i] == PIPE_BLENDFACTOR_INV_DST_ALPHA ||
+                        *f[i] == PIPE_BLENDFACTOR_SRC_ALPHA_SATURATE)
+                  *f[i] = PIPE_BLENDFACTOR_ZERO;
+            }
+         }
       }
    }
-   /* textures sampled linear in other orders than B G R A (M16) */
-   for (unsigned i = 0; i < sh->compiled->nsamplers; i++) {
-      unsigned unit = sh->compiled->sampler_unit[i];
-      struct pipe_sampler_view *view = unit < ARRAY_SIZE(ctx->fs_views) ?
-                                       ctx->fs_views[unit] : NULL;
-      bool swap, x8;
+   /* GL's logic ops: the program's too, on the colour and the tile's as
+    * bytes (iOS's es1 e03..e10) */
+   if (ctx->blend && ctx->blend->logicop_enable)
+      key.logicop = ctx->blend->logicop_func + 1;
+   /* (textures sampled linear in other orders than B G R A, M16: their
+    * swizzle in the state words since M37, as a copy's) sRGB textures,
+    * depth ones -- the shader's, not its compiled form's (a shadow lookup
+    * compared ALWAYS is a constant there) */
+   for (unsigned unit = 0; unit < 8; unit++) {
+      struct pipe_sampler_view *view = ctx->fs_views[unit];
 
-      if (unit < 8 && view && sgx_resource_linear(sgx_resource(view->texture), &swap, &x8)) {
-         key.tex_swap |= swap << unit;
-         key.tex_x8 |= x8 << unit;
+      if (!BITSET_TEST(sh->nir->info.textures_used, unit))
+         continue;
+
+      if (unit < 8 && view && util_format_is_srgb(view->format))
+         key.tex_srgb |= 1u << unit;
+      if (unit < 8 && view && sgx_resource_copy_f16(view->texture))
+         key.tex_f16 |= 1u << unit;
+      if (unit < 8 && view && util_format_is_depth_or_stencil(view->texture->format)) {
+         const struct pipe_sampler_state *ss = unit < PIPE_MAX_SAMPLERS ?
+                                               ctx->fs_samplers[unit] : NULL;
+
+         key.tex_depth |= 1u << unit;
+         key.depth_swizzle[unit][0] = view->swizzle_r;
+         key.depth_swizzle[unit][1] = view->swizzle_g;
+         key.depth_swizzle[unit][2] = view->swizzle_b;
+         key.depth_swizzle[unit][3] = view->swizzle_a;
+         if (ss && ss->compare_mode == PIPE_TEX_COMPARE_R_TO_TEXTURE) {
+            key.tex_shadow |= 1u << unit;
+            key.shadow_func[unit] = ss->compare_func;
+         }
+      } else if (unit < 8 && view &&
+                 (view->swizzle_r != PIPE_SWIZZLE_X || view->swizzle_g != PIPE_SWIZZLE_Y ||
+                  view->swizzle_b != PIPE_SWIZZLE_Z || view->swizzle_a != PIPE_SWIZZLE_W)) {
+         /* a view's swizzle (M43): the program's, on the texel */
+         key.tex_swz |= 1u << unit;
+         key.tex_swizzle[unit][0] = view->swizzle_r;
+         key.tex_swizzle[unit][1] = view->swizzle_g;
+         key.tex_swizzle[unit][2] = view->swizzle_b;
+         key.tex_swizzle[unit][3] = view->swizzle_a;
       }
+   }
+   /* (M43) what the target's tile holds */
+   if (ctx->fb.nr_cbufs && ctx->fb.cbufs[0].texture) {
+      key.rt_kind = sgx_frame_rt_kind(ctx->fb.cbufs[0].format);
+      key.rt_srgb = util_format_is_srgb(ctx->fb.cbufs[0].format);
+      key.rt_intensity = util_format_is_intensity(ctx->fb.cbufs[0].format);
    }
    /* gl_FrontFacing: which winding is the front */
    if (ctx->rast && ctx->rast->front_ccw &&
        BITSET_TEST(sh->nir->info.system_values_read, SYSTEM_VALUE_FRONT_FACE))
       key.front_ccw = 1;
-   if (!key.enable && key.colormask == 0xf && !key.tex_swap && !key.tex_x8 && !key.front_ccw)
+   if (!key.enable && key.colormask == 0xf && !key.tex_swap && !key.tex_x8 && !key.tex_srgb &&
+       !key.front_ccw && !key.logicop && !key.tex_depth && !key.tex_swz && !key.tex_f16 &&
+       !key.rt_kind && !key.rt_srgb && !key.rt_intensity)
       return sh->compiled;
+   /* (the key is bytes, no padding) */
    for (unsigned i = 0; i < sh->nvariants; i++)
-      if (sh->variant[i]->blend.enable == key.enable &&
-          sh->variant[i]->blend.rgb_func == key.rgb_func &&
-          sh->variant[i]->blend.rgb_src == key.rgb_src &&
-          sh->variant[i]->blend.rgb_dst == key.rgb_dst &&
-          sh->variant[i]->blend.alpha_func == key.alpha_func &&
-          sh->variant[i]->blend.alpha_src == key.alpha_src &&
-          sh->variant[i]->blend.alpha_dst == key.alpha_dst &&
-          sh->variant[i]->blend.colormask == key.colormask &&
-          sh->variant[i]->blend.tex_swap == key.tex_swap &&
-          sh->variant[i]->blend.tex_x8 == key.tex_x8 &&
-          sh->variant[i]->blend.front_ccw == key.front_ccw)
+      if (!memcmp(&sh->variant[i]->blend, &key, sizeof(key)))
          return sh->variant[i];
    if (!(fs = sgx_compile_fs(sh->nir, &key, why, sizeof(why)))) {
       mesa_logw_once("sgx: a variant of a fragment shader (blending, texture orders) "
@@ -629,7 +834,7 @@ sgx_batch_uses(struct sgx_context *ctx, struct pipe_resource *p)
 
    if (!b->ndraws || !p)
       return false;
-   if (b->rt == p)
+   if (b->rt == p || b->zs == p)
       return true;
    for (unsigned i = 0; i < b->ntex; i++)
       if (b->tex[i] == p)
@@ -706,6 +911,35 @@ sgx_batch_bury_vs(struct sgx_context *ctx, struct sgx_vs *vs)
 
 static struct { const char *file; int line; unsigned n; } why[16];
 
+/* what a draw found the render out of, when it was made for want of room
+ * (SGX_DEBUG=fps: "renders from", M42) */
+enum { ROOM_DRAWS, ROOM_HANDLES, ROOM_TEXTURES, ROOM_BYTES, ROOM_N };
+static unsigned room_why[ROOM_N];
+
+static bool
+no_room(unsigned what)
+{
+   room_why[what]++;
+   return true;
+}
+
+/* what kept a draw from being merged into the last one (SGX_DEBUG=fps:
+ * "not merged", M42) */
+enum { MERGE_PROGRAM, MERGE_TEXTURES, MERGE_FS_SA, MERGE_LAYOUT, MERGE_STATE, MERGE_VS_SA,
+       MERGE_VERTICES, MERGE_PRIMS, MERGE_ROOM, MERGE_N };
+static const char *const merge_names[MERGE_N] = {
+   "programs", "textures", "pixel constants", "layout", "state", "vertex constants",
+   "vertices", "primitives", "room",
+};
+static unsigned merge_why[MERGE_N];
+
+static bool
+no_merge(unsigned what)
+{
+   merge_why[what]++;
+   return false;
+}
+
 /* SGX_TRACE=1: a thread waits for each render and says how long it took
  * from its kick, and how long since the last one ended (debugging speed) */
 #include <pthread.h>
@@ -780,7 +1014,23 @@ sgx_batch_why(struct sgx_context *ctx)
                     why[i].line, why[i].n);
       why[i].n = 0;
    }
+   if (room_why[ROOM_DRAWS] + room_why[ROOM_HANDLES] + room_why[ROOM_TEXTURES] + room_why[ROOM_BYTES])
+      snprintf(s + n, sizeof(s) - MIN2(n, sizeof(s)),
+               " (no room for: draws %u, buffers %u, textures %u, bytes %u)",
+               room_why[ROOM_DRAWS], room_why[ROOM_HANDLES], room_why[ROOM_TEXTURES],
+               room_why[ROOM_BYTES]);
+   memset(room_why, 0, sizeof(room_why));
    mesa_logi("sgx:  renders from%s", s);
+   n = 0;
+   s[0] = 0;
+   for (unsigned i = 0; i < MERGE_N; i++) {
+      if (merge_why[i])
+         n += snprintf(s + n, sizeof(s) - MIN2(n, sizeof(s)), "%s %s %u", n ? "," : "",
+                       merge_names[i], merge_why[i]);
+      merge_why[i] = 0;
+   }
+   if (n)
+      mesa_logi("sgx:  draws not merged, for their:%s", s);
 }
 
 void
@@ -790,11 +1040,26 @@ sgx_batch_flush_at(struct sgx_context *ctx, const char *file, int line)
    struct sgx_batch *b = &ctx->batch;
    struct sgx_frame_draw *d = b->fdraw;
    struct sgx_resource *zs = b->zs ? sgx_resource(b->zs) : NULL;
+   struct sgx_zls *zt = zs ? sgx_resource_zls(zs, b->zs_level, b->zs_layer) : NULL;
    struct sgx_frame_zls zls = { 0 };
+   struct sgx_bo *vis = NULL;
    struct sgx_fence *fence;
    int ret = -ENOMEM;
 
    if (!b->ndraws) {
+      /* a depth clear no draw came after: the depth buffer's own, noted
+       * for the next render of it or a map (M43: a level cleared, then
+       * the framebuffer changed to the next -- the clear was lost) */
+      if (b->zs_cleared && ctx->fb.zsbuf.texture) {
+         struct sgx_zls *z = sgx_resource_zls(sgx_resource(ctx->fb.zsbuf.texture),
+                                              ctx->fb.zsbuf.level, ctx->fb.zsbuf.first_layer);
+
+         if (z) {
+            z->cleared = true;
+            z->clear = b->depth_clear;
+         }
+         b->zs_cleared = false;
+      }
       bury(ctx);
       return;
    }
@@ -802,35 +1067,38 @@ sgx_batch_flush_at(struct sgx_context *ctx, const char *file, int line)
     * when a draw (or a clear's quad) writes depth, loaded at its start when
     * there is something there, no clear came first and a draw reads or
     * writes depth.  SGX_ZLS=0: never (depth lives in the tiles only) */
-   if (zs && b->zs->width0 && debug_get_bool_option("SGX_ZLS", true)) {
+   if (zt && b->zs->width0 && debug_get_bool_option("SGX_ZLS", true)) {
+      unsigned zw = u_minify(b->zs->width0, b->zs_level), zh = u_minify(b->zs->height0, b->zs_level);
       bool store, load;
 
       /* a clear no draw used is only noted: the next render starts from
        * it instead of loading */
-      if (zs->zls_cleared && !b->zs_cleared) {
+      if (zt->cleared && !b->zs_cleared) {
          b->zs_cleared = true;
-         b->depth_clear = zs->zls_clear;
+         b->depth_clear = zt->clear;
       }
-      zs->zls_cleared = false;
+      zt->cleared = false;
       store = b->zs_written;
-      load = zs->zls_valid && !b->zs_cleared && (store || b->zs_read);
+      load = zt->valid && !b->zs_cleared && (store || b->zs_read);
       if (b->zs_cleared && !store) {
-         zs->zls_cleared = true;
-         zs->zls_clear = b->depth_clear;
+         zt->cleared = true;
+         zt->clear = b->depth_clear;
       }
 
-      if ((load || store) && !zs->zls) {
-         zs->zls = sgx_bo_create(&screen->dev, sgx_frame_zls_size(b->zs->width0,
-                                                                  b->zs->height0), 0, 0);
-         zs->zls_valid = false;
+      /* (the level's own, M43) */
+      if ((load || store) && !zt->bo) {
+         zt->bo = sgx_bo_create(&screen->dev,
+                                sgx_frame_zls_size(zw, zh, sgx_zls_format(b->zs->format)), 0, 0);
+         zt->valid = false;
          load = false;
       }
-      if ((load || store) && zs->zls) {
-         zls.bo = zs->zls;
-         zls.w = b->zs->width0;
+      if ((load || store) && zt->bo) {
+         zls.bo = zt->bo;
+         zls.w = zw;
          zls.load = load;
          zls.store = store;
          zls.stencil = util_format_has_stencil(util_format_description(b->zs->format));
+         zls.format = sgx_zls_format(b->zs->format);
       }
    }
    /* a render that starts from a clear stores only the tiles it draws in:
@@ -854,19 +1122,35 @@ sgx_batch_flush_at(struct sgx_context *ctx, const char *file, int line)
       if (!bd->vs)
          d[i].verts = b->verts + bd->first;
       else if (bd->repacked)
-         d[i].vdata = b->vdata + bd->first;
+         d[i].vdata_va = bd->vdata_va;
    }
-   /* the buffers to list: the textures', then the buffers' */
+   /* the buffers to list: the textures', the buffers', the vertex chunks'
+    * (M42) */
    for (unsigned i = 0; i < b->nbos; i++)
       b->handles[b->ntex + i] = b->bos[i]->handle;
+   for (unsigned i = 0; i < b->nvchunks; i++)
+      b->handles[b->ntex + b->nbos + i] = b->vchunk[i]->handle;
+   /* an occlusion query's draws among them (M37): a visibility buffer of
+    * the render's, zeroed, for the query to read */
+   if (b->counted && ctx->query && (vis = sgx_bo_cache_get(&screen->dev, SGX_VIS_SIZE)))
+      memset(vis->map, 0, SGX_VIS_SIZE);
    if ((fence = sgx_fence_create(&screen->dev, false))) {
       simple_mtx_lock(&screen->frame_lock);
-      const struct sgx_frame_target t = { sgx_resource(b->rt), b->rt_level, b->rt_layer };
+      const struct sgx_frame_target t = { sgx_resource(b->rt), b->rt_level, b->rt_layer,
+                                          b->w, b->h };
 
       ret = sgx_frame_render(screen->frame, &t, d, b->ndraws, b->handles,
-                             b->ntex + b->nbos, b->depth_clear, zls.bo ? &zls : NULL, fence);
+                             b->ntex + b->nbos + b->nvchunks, b->depth_clear,
+                             zls.bo ? &zls : NULL, vis, fence);
       simple_mtx_unlock(&screen->frame_lock);
    }
+   if (vis && !ret) {
+      sgx_bo_set_busy(vis, fence);
+      sgx_query_add(ctx->query, vis);
+   } else {
+      sgx_bo_destroy(vis);
+   }
+   b->counted = false;
    if (!ret && ctx->debug_fps) {
       unsigned i;
 
@@ -896,8 +1180,10 @@ sgx_batch_flush_at(struct sgx_context *ctx, const char *file, int line)
       sgx_fence_reference(&ctx->last, fence);
       sgx_resource(b->rt)->seq++;
       sgx_resource(b->rt)->gpu_written = true;
-      if (zls.store)
-         zs->zls_valid = true;
+      if (zls.store) {
+         zt->valid = true;
+         zs->seq++;           /* (a depth texture's copy made again, M37) */
+      }
    } else {
       mesa_logw("sgx: a render of %u draws failed (%d)", b->ndraws, ret);
    }
@@ -905,15 +1191,29 @@ sgx_batch_flush_at(struct sgx_context *ctx, const char *file, int line)
    pipe_resource_reference(&b->rt, NULL);
    pipe_resource_reference(&b->zs, NULL);
    b->zs_cleared = b->zs_read = b->zs_written = false;
-   for (unsigned i = 0; i < b->ntex; i++)
+   for (unsigned i = 0; i < b->ntex; i++) {
       pipe_resource_reference(&b->tex[i], NULL);
+      if (!ret)
+         sgx_bo_set_busy(b->tex_bo[i], ctx->last);
+      sgx_bo_destroy(b->tex_bo[i]);
+      b->tex_bo[i] = NULL;
+   }
    /* (the kernel keeps the buffers for the render) */
    for (unsigned i = 0; i < b->nbos; i++) {
       if (!ret)
          sgx_bo_set_busy(b->bos[i], ctx->last);
       sgx_bo_destroy(b->bos[i]);
    }
+   /* the vertex chunks back to the cache, busy with the render (a stream
+    * written for a draw not added yet keeps its chunk: sgx_vtx.vchunk) */
+   for (unsigned i = 0; i < b->nvchunks; i++) {
+      if (!ret)
+         sgx_bo_set_busy(b->vchunk[i], ctx->last);
+      sgx_bo_destroy(b->vchunk[i]);
+   }
+   b->nvchunks = b->vat = 0;
    b->ndraws = b->ntex = b->nbos = b->nfloats = b->nbytes = b->nsa = b->nidx = 0;
+   b->tex_bytes = 0;
    b->seq++;
    bury(ctx);
 }
@@ -986,10 +1286,34 @@ static bool
 fb_target(struct sgx_context *ctx, struct sgx_frame_target *t)
 {
    struct pipe_surface *surf = &ctx->fb.cbufs[0];
+   struct pipe_resource *zs = ctx->fb.zsbuf.texture;
 
-   if (ctx->fb.nr_cbufs < 1 || !surf->texture)
+   if (ctx->fb.nr_cbufs >= 1 && surf->texture) {
+      *t = (struct sgx_frame_target){ sgx_resource(surf->texture), surf->level,
+                                      surf->first_layer, ctx->fb.width, ctx->fb.height };
+      return true;
+   }
+   /* depth and stencil alone (a shadow map, M35): the render still ends
+    * its tiles' colour somewhere -- a target of the depth buffer's size
+    * nobody reads */
+   if (!zs)
       return false;
-   *t = (struct sgx_frame_target){ sgx_resource(surf->texture), surf->level, surf->first_layer };
+   if (!ctx->no_colour || ctx->no_colour->width0 != zs->width0 ||
+       ctx->no_colour->height0 != zs->height0) {
+      const struct pipe_resource templ = {
+         .target = PIPE_TEXTURE_2D, .format = PIPE_FORMAT_B8G8R8A8_UNORM,
+         .width0 = zs->width0, .height0 = zs->height0, .depth0 = 1, .array_size = 1,
+         .bind = PIPE_BIND_RENDER_TARGET,
+      };
+
+      sgx_batch_flush(ctx);
+      pipe_resource_reference(&ctx->no_colour, NULL);
+      ctx->no_colour = ctx->base.screen->resource_create(ctx->base.screen, &templ);
+      if (!ctx->no_colour)
+         return false;
+   }
+   *t = (struct sgx_frame_target){ sgx_resource(ctx->no_colour), 0, 0, ctx->fb.width,
+                                   ctx->fb.height };
    return true;
 }
 
@@ -998,7 +1322,7 @@ static bool
 batch_elsewhere(const struct sgx_batch *b, const struct sgx_frame_target *t)
 {
    return b->ndraws && (b->rt != &t->res->base || b->rt_level != t->level ||
-                        b->rt_layer != t->layer);
+                        b->rt_layer != t->layer || b->w != t->w || b->h != t->h);
 }
 
 /* the gathered render's target and depth buffer, at its first draw */
@@ -1010,7 +1334,11 @@ batch_start(struct sgx_context *ctx, const struct sgx_frame_target *t)
    pipe_resource_reference(&b->rt, &t->res->base);
    b->rt_level = t->level;
    b->rt_layer = t->layer;
+   b->w = t->w;
+   b->h = t->h;
    pipe_resource_reference(&b->zs, ctx->fb.zsbuf.texture);
+   b->zs_level = ctx->fb.zsbuf.level;
+   b->zs_layer = ctx->fb.zsbuf.first_layer;
 }
 
 /* the vertices and indices gathered, in bytes (SGX_FRAME_MAX_BYTES) */
@@ -1018,6 +1346,67 @@ static unsigned
 batch_bytes(const struct sgx_batch *b)
 {
    return b->nfloats * sizeof(float) + b->nbytes + 2 * b->nidx;
+}
+
+/* The memory a texture holds, its content and the sampler's copy.  A
+ * render's textures stay referenced until it is made, so past
+ * SGX_BATCH_TEX_BYTES of them it goes first: a program making, drawing
+ * with and deleting textures (piglit's streaming-texture-leak: 5000 of 4
+ * MiB) kept them all for one render, and the kernel's pages ran out (M35).
+ * Only what the render alone keeps counts (M42): SuperTux 0.7.0's menu
+ * samples ~100 MiB of textures it keeps a frame, three renders when they
+ * all counted. */
+#define SGX_BATCH_TEX_BYTES (48u << 20)
+
+/* the render's entry for texture p as it is sampled now -- its copy then
+ * -- or b->ntex */
+static unsigned
+tex_entry(const struct sgx_batch *b, struct pipe_resource *p)
+{
+   unsigned k;
+
+   for (k = 0; k < b->ntex && (b->tex[k] != p || b->tex_bo[k] != sgx_resource(p)->sampled); k++)
+      ;
+   return k;
+}
+
+static uint64_t
+tex_bytes(struct pipe_resource *p)
+{
+   struct sgx_resource *r = sgx_resource(p);
+
+   return (r->bo ? r->bo->size : 0) + (r->tw ? r->tw->size : 0);
+}
+
+/* the memory of the render's textures that only the render keeps: those
+ * deleted since (its reference the last) and copies an upload replaced */
+static uint64_t
+dead_tex_bytes(const struct sgx_batch *b)
+{
+   uint64_t n = 0;
+
+   for (unsigned k = 0; k < b->ntex; k++) {
+      if (p_atomic_read(&b->tex[k]->reference.count) == 1)
+         n += tex_bytes(b->tex[k]);
+      else if (b->tex_bo[k] != sgx_resource(b->tex[k])->sampled)
+         n += b->tex_bo[k]->size;
+   }
+   return n;
+}
+
+/* whether these textures fit in the render with the ones it has (one
+ * draw's alone always do, and a draw adding none) */
+static bool
+tex_room(struct sgx_context *ctx, struct pipe_resource **tex, unsigned ntex)
+{
+   struct sgx_batch *b = &ctx->batch;
+   uint64_t n = b->tex_bytes;
+
+   for (unsigned i = 0; i < ntex; i++)
+      if (tex_entry(b, tex[i]) == b->ntex)
+         n += tex_bytes(tex[i]);
+   return !b->ndraws || n == b->tex_bytes || n <= SGX_BATCH_TEX_BYTES ||
+          dead_tex_bytes(b) <= SGX_BATCH_TEX_BYTES;
 }
 
 /* how many more buffers the render would list for the kernel with these
@@ -1029,13 +1418,8 @@ more_handles(struct sgx_context *ctx, struct pipe_resource **tex, unsigned ntex,
    struct sgx_batch *b = &ctx->batch;
    unsigned n = 0;
 
-   for (unsigned i = 0; i < ntex; i++) {
-      unsigned k;
-
-      for (k = 0; k < b->ntex && b->tex[k] != tex[i]; k++)
-         ;
-      n += k == b->ntex;
-   }
+   for (unsigned i = 0; i < ntex; i++)
+      n += tex_entry(b, tex[i]) == b->ntex;
    for (unsigned i = 0; i < nbos; i++)
       n += bos[i]->batch_ctx != ctx || bos[i]->batch_seq != b->seq;
    return n;
@@ -1050,13 +1434,17 @@ add_handles(struct sgx_context *ctx, struct pipe_resource **tex, unsigned ntex,
    struct sgx_batch *b = &ctx->batch;
 
    for (unsigned i = 0; i < ntex; i++) {
-      unsigned k;
+      struct sgx_bo *bo = sgx_resource(tex[i])->sampled;
 
-      for (k = 0; k < b->ntex && b->tex[k] != tex[i]; k++)
-         ;
-      if (k == b->ntex) {
+      if (tex_entry(b, tex[i]) == b->ntex) {
+         b->tex_bytes += tex_bytes(tex[i]);
          pipe_resource_reference(&b->tex[b->ntex], tex[i]);
-         b->handles[b->ntex++] = sgx_resource(tex[i])->sampled->handle;
+         sgx_bo_ref(bo);
+         /* (stamped: sgx_batch_reads() says the copy is the render's) */
+         bo->batch_ctx = ctx;
+         bo->batch_seq = b->seq;
+         b->tex_bo[b->ntex] = bo;
+         b->handles[b->ntex++] = bo->handle;
       }
    }
    for (unsigned i = 0; i < nbos; i++) {
@@ -1075,11 +1463,96 @@ note_zs(struct sgx_context *ctx, const struct sgx_frame_state *st)
 {
    struct sgx_batch *b = &ctx->batch;
 
+   /* (and an occlusion query's draw: the render counts, M37) */
+   b->counted |= st->count;
    if (!ctx->fb.zsbuf.texture)
       return;
    b->zs_written |= st->depth_write || (st->stencil_on && (st->stencil & 0xff));
    b->zs_read |= (st->depth_func != PIPE_FUNC_ALWAYS && st->depth_func != PIPE_FUNC_NEVER) ||
                  st->stencil_on;
+}
+
+/* ---- a vertex shader's stream straight into GPU memory (M42) -----------
+ *
+ * SDL's sprites are the CPU's stream: their vertices went into a buffer of
+ * the context's, then the batch's, then the render's memory -- three copies
+ * of every vertex, a sixth of SuperTux's CPU in its menu's heavy scene
+ * (memcpy-who).  gpu_vs_draw now writes the stream once, into the batch's
+ * vertex chunks (GPU memory from the buffer cache), and the render reads it
+ * there. */
+
+/* the batch's vertex chunks no render took (a flush of no draws) */
+static void
+drop_vchunks(struct sgx_batch *b)
+{
+   for (unsigned i = 0; i < b->nvchunks; i++)
+      sgx_bo_destroy(b->vchunk[i]);
+   b->nvchunks = b->vat = 0;
+}
+
+/* Room for n bytes of the stream after the batch's vertices (a new chunk
+ * when the last has none): the CPU's address to write it at, noted in
+ * ctx->vtx with its chunk referenced -- a flush before the draw is added
+ * hands that chunk to the render, and vtx_commit() copies the stream on.
+ * Right after them, dword aligned only: a draw merged into the last one
+ * needs its vertices to follow the last one's (aligned to 16, SDL's 120
+ * bytes a quad left a gap and nothing merged) */
+static uint8_t *
+vtx_reserve(struct sgx_context *ctx, unsigned n)
+{
+   struct sgx_screen *screen = sgx_screen(ctx->base.screen);
+   struct sgx_batch *b = &ctx->batch;
+   struct sgx_vtx *v = &ctx->vtx;
+   struct sgx_bo *bo = b->nvchunks ? b->vchunk[b->nvchunks - 1] : NULL;
+   uint32_t at = align(b->vat, 4);
+
+   if (!bo || at + n > bo->size) {
+      if (b->nvchunks == SGX_BATCH_VCHUNKS ||
+          b->ntex + b->nbos + b->nvchunks >= SGX_FRAME_MAX_HANDLES) {
+         sgx_batch_flush(ctx);
+         drop_vchunks(b);
+      }
+      if (!(bo = sgx_bo_cache_get(&screen->dev, MAX2(n, SGX_BATCH_VCHUNK))))
+         return NULL;
+      b->vchunk[b->nvchunks++] = bo;
+      at = 0;
+   }
+   sgx_bo_ref(bo);
+   sgx_bo_destroy(v->vchunk);
+   v->vchunk = bo;
+   v->vdata = bo->map + at;
+   v->vdata_va = bo->va + at;
+   v->vseq = b->seq;
+   return v->vdata;
+}
+
+/* The n bytes written at ctx->vtx's room made the batch's: their address
+ * for the GPU (0: no room).  Written for a batch flushed since, they are
+ * copied into this one's chunks first (once a render, at most). */
+static uint32_t
+vtx_commit(struct sgx_context *ctx, unsigned n)
+{
+   struct sgx_batch *b = &ctx->batch;
+   struct sgx_vtx *v = &ctx->vtx;
+
+   if (!v->vchunk)
+      return 0;
+   if (v->vseq != b->seq || !b->nvchunks || b->vchunk[b->nvchunks - 1] != v->vchunk) {
+      struct sgx_bo *old = v->vchunk;
+      const uint8_t *src = v->vdata;
+      uint8_t *dst;
+
+      sgx_bo_ref(old);
+      dst = vtx_reserve(ctx, n);
+      if (dst)
+         memcpy(dst, src, n);
+      sgx_bo_destroy(old);
+      if (!dst)
+         return 0;
+   }
+   b->vat = v->vdata_va - v->vchunk->va + n;
+   b->nbytes += n;
+   return v->vdata_va;
 }
 
 /* A vertex shader's draw (ctx->vtx) added to the last one gathered when
@@ -1104,19 +1577,30 @@ merge_vs_draw(struct sgx_context *ctx, struct sgx_vs *vs, const struct sgx_fs *f
    p = &b->draw[b->ndraws - 1];
    if (p->vs != vs || p->compiled != (fs != NULL) || p->repacked != v->repacked ||
        p->stride != v->stride ||
-       (fs && (p->prog.code_va != fs->prog.code_va || p->prog.pds_va != fs->prog.pds_va ||
-               !sgx_words_equal(b->sa + p->sa, sa, nsa))) ||
-       p->l.nvaryings != ctx->layout.nvaryings || p->l.f32 != ctx->layout.f32 ||
-       p->l.colour != ctx->layout.colour || !sgx_frame_state_equal(&p->st, st) ||
-       p->vs_sa + nvsa > b->nsa || !sgx_words_equal(b->sa + p->vs_sa, ctx->vs_sa, nvsa))
-      return false;
+       (fs && (p->prog.code_va != fs->prog.code_va || p->prog.pds_va != fs->prog.pds_va)))
+      return no_merge(MERGE_PROGRAM);
+   if (fs && !sgx_words_equal(b->sa + p->sa, sa, nsa)) {
+      unsigned t0 = fs->sampler_sa, t1 = fs->sampler_sa + 4 * fs->nsamplers;
+
+      /* (only the textures' words: another texture) */
+      return no_merge(fs->nsamplers && t1 <= nsa && sgx_words_equal(b->sa + p->sa, sa, t0) &&
+                      sgx_words_equal(b->sa + p->sa + t1, sa + t1, nsa - t1) ?
+                      MERGE_TEXTURES : MERGE_FS_SA);
+   }
+   if (p->l.nvaryings != ctx->layout.nvaryings || p->l.f32 != ctx->layout.f32 ||
+       p->l.colour != ctx->layout.colour || p->l.ncolours != ctx->layout.ncolours)
+      return no_merge(MERGE_LAYOUT);
+   if (!sgx_frame_state_equal(&p->st, st))
+      return no_merge(MERGE_STATE);
+   if (p->vs_sa + nvsa > b->nsa || !sgx_words_equal(b->sa + p->vs_sa, ctx->vs_sa, nvsa))
+      return no_merge(MERGE_VS_SA);
 
    /* where its vertex 0 is among the last draw's vertices: right after
     * them (the CPU's stream), or where its attributes' addresses say --
     * the same number of vertices on for each */
    if (v->repacked) {
-      if (p->first + p->nverts * p->stride != b->nbytes)
-         return false;
+      if (v->vseq != b->seq || p->vdata_va + p->nverts * p->stride != v->vdata_va)
+         return no_merge(MERGE_VERTICES);
       at = p->nverts;
    } else {
       for (unsigned a = 0; a < vs->nattrs; a++) {
@@ -1126,11 +1610,11 @@ merge_vs_draw(struct sgx_context *ctx, struct sgx_vs *vs, const struct sgx_fs *f
             continue;
          if (!found) {
             if (!v->stride || d % v->stride)
-               return false;
+               return no_merge(MERGE_VERTICES);
             at = d / v->stride;
             found = true;
          } else if (d != at * v->stride) {
-            return false;
+            return no_merge(MERGE_VERTICES);
          }
       }
    }
@@ -1138,18 +1622,18 @@ merge_vs_draw(struct sgx_context *ctx, struct sgx_vs *vs, const struct sgx_fs *f
     * its indices */
    if (!v->indexed && !p->nidx) {
       if (at != p->count || p->count + v->count > sgx_frame_list_max(screen->frame))
-         return false;
+         return no_merge(MERGE_PRIMS);
    } else if (v->indexed && p->nidx) {
       if (p->idx + p->nidx != b->nidx || at + v->max_index > 0xffff)
-         return false;
+         return no_merge(MERGE_PRIMS);
    } else {
-      return false;
+      return no_merge(MERGE_PRIMS);
    }
    if (batch_bytes(b) + nbytes + 2 * nidx > SGX_FRAME_MAX_BYTES ||
-       b->ntex + b->nbos + more_handles(ctx, NULL, 0, v->bos, v->nbos) > SGX_FRAME_MAX_HANDLES ||
-       !grow((void **)&b->vdata, &b->maxbytes, b->nbytes + nbytes, 1) ||
+       b->ntex + b->nbos + b->nvchunks + more_handles(ctx, NULL, 0, v->bos, v->nbos) >
+          SGX_FRAME_MAX_HANDLES ||
        !grow((void **)&b->idx, &b->maxidx, b->nidx + nidx, sizeof(uint16_t)))
-      return false;
+      return no_merge(MERGE_ROOM);
 
    add_handles(ctx, NULL, 0, v->bos, v->nbos);
    for (unsigned i = 0; i < nidx; i++)
@@ -1157,9 +1641,10 @@ merge_vs_draw(struct sgx_context *ctx, struct sgx_vs *vs, const struct sgx_fs *f
    p->nidx += nidx;
    b->nidx += nidx;
    p->max_index = MAX2(p->max_index, at + v->max_index);
-   memcpy(b->vdata + b->nbytes, ctx->vdata, nbytes);
+   /* (right after the last draw's in its chunk: nothing to copy) */
+   if (nbytes)
+      vtx_commit(ctx, nbytes);
    p->nverts += v->repacked ? v->nverts : 0;
-   b->nbytes += nbytes;
    p->count += v->count;
    return true;
 }
@@ -1176,6 +1661,7 @@ add_vs_draw(struct sgx_context *ctx, struct sgx_vs *vs, const struct sgx_fs *fs,
    struct sgx_vtx *v = &ctx->vtx;
    unsigned nvsa = vs->nuniforms + vs->nubuf, nidx = v->indexed ? v->count : 0;
    unsigned nbytes = v->repacked ? v->nverts * v->stride : 0, ntex = fs ? fs->nsamplers : 0;
+   uint32_t vdata_va = 0;
    struct sgx_batch_draw *bd;
 
    if (merge_vs_draw(ctx, vs, fs, sa, nsa, st)) {
@@ -1184,9 +1670,11 @@ add_vs_draw(struct sgx_context *ctx, struct sgx_vs *vs, const struct sgx_fs *fs,
    }
    /* room in this render: a draw, its vertices, indices, textures and
     * buffers */
-   if (b->ndraws == sgx_frame_max_draws(screen->frame) ||
-       b->ntex + b->nbos + more_handles(ctx, tex, ntex, v->bos, v->nbos) > SGX_FRAME_MAX_HANDLES ||
-       batch_bytes(b) + nbytes + 2 * nidx > SGX_FRAME_MAX_BYTES) {
+   if ((b->ndraws == sgx_frame_max_draws(screen->frame) && no_room(ROOM_DRAWS)) ||
+       (b->ntex + b->nbos + b->nvchunks + 1 + more_handles(ctx, tex, ntex, v->bos, v->nbos) >
+           SGX_FRAME_MAX_HANDLES && no_room(ROOM_HANDLES)) ||
+       (!tex_room(ctx, tex, ntex) && no_room(ROOM_TEXTURES)) ||
+       (batch_bytes(b) + nbytes + 2 * nidx > SGX_FRAME_MAX_BYTES && no_room(ROOM_BYTES))) {
       sgx_batch_flush(ctx);
       if (nbytes + 2 * nidx > SGX_FRAME_MAX_BYTES ||
           more_handles(ctx, tex, ntex, v->bos, v->nbos) > SGX_FRAME_MAX_HANDLES) {
@@ -1194,10 +1682,15 @@ add_vs_draw(struct sgx_context *ctx, struct sgx_vs *vs, const struct sgx_fs *fs,
          return;
       }
    }
-   if (!grow((void **)&b->vdata, &b->maxbytes, b->nbytes + nbytes, 1) ||
-       !grow((void **)&b->sa, &b->maxsa, b->nsa + nsa + nvsa, sizeof(uint32_t)) ||
+   if (!grow((void **)&b->sa, &b->maxsa, b->nsa + nsa + nvsa, sizeof(uint32_t)) ||
        !grow((void **)&b->idx, &b->maxidx, b->nidx + nidx, sizeof(uint16_t)))
       return;
+   /* the stream where gpu_vs_draw wrote it (copied on if a flush came
+    * between: before the render's start below) */
+   if (nbytes && !(vdata_va = vtx_commit(ctx, nbytes))) {
+      mesa_logw_once("sgx: no memory for a draw's vertices: dropped");
+      return;
+   }
    if (!b->ndraws)
       batch_start(ctx, t);
    /* from now on sampled linear: decided before any draw samples it */
@@ -1207,7 +1700,7 @@ add_vs_draw(struct sgx_context *ctx, struct sgx_vs *vs, const struct sgx_fs *fs,
 
    bd = &b->draw[b->ndraws++];
    bd->l = ctx->layout;
-   bd->first = b->nbytes;
+   bd->vdata_va = vdata_va;
    bd->nverts = v->repacked ? v->nverts : 0;
    bd->compiled = fs != NULL;
    if (fs)
@@ -1223,11 +1716,9 @@ add_vs_draw(struct sgx_context *ctx, struct sgx_vs *vs, const struct sgx_fs *fs,
    bd->count = v->count;
    bd->max_index = v->max_index;
    bd->repacked = v->repacked;
-   memcpy(b->vdata + b->nbytes, ctx->vdata, nbytes);
    memcpy(b->sa + b->nsa, sa, nsa * sizeof(uint32_t));
    memcpy(b->sa + b->nsa + nsa, ctx->vs_sa, nvsa * sizeof(uint32_t));
    memcpy(b->idx + b->nidx, ctx->indices, nidx * sizeof(uint16_t));
-   b->nbytes += nbytes;
    b->nsa += nsa + nvsa;
    b->nidx += nidx;
 }
@@ -1235,6 +1726,31 @@ add_vs_draw(struct sgx_context *ctx, struct sgx_vs *vs, const struct sgx_fs *fs,
 /* One draw added to the gathered render: the draw module's triangles
  * (ctx->verts, ctx->nverts), in pieces when they are more than one draw of
  * a render takes -- or, with ctx->gpu_vs, a vertex shader's (ctx->vtx) */
+/* (M43) A stage's uniform buffers (ARB_uniform_buffer_object): each one
+ * the program reads made the GPU's (its copy, M26), its address less 4 in
+ * the program's sa word for it, the buffer added to bos (once).  False if
+ * one is not there: the draw goes without. */
+static bool
+ubo_words(struct sgx_context *ctx, unsigned stage, uint16_t mask, const uint8_t *ubo_sa,
+          uint32_t *sa, struct sgx_bo **bos, unsigned *nbos)
+{
+   u_foreach_bit(k, mask) {
+      const struct pipe_constant_buffer *u = &ctx->ubo[stage][k];
+      struct sgx_bo *bo;
+      unsigned i;
+
+      if (!u->buffer || !(bo = sgx_buffer_bo(ctx, sgx_resource(u->buffer), u->buffer_offset,
+                                             u->buffer_offset + u->buffer_size)))
+         return false;
+      sa[ubo_sa[k]] = bo->va + u->buffer_offset - 4;
+      for (i = 0; i < *nbos && bos[i] != bo; i++)
+         ;
+      if (i == *nbos)
+         bos[(*nbos)++] = bo;
+   }
+   return true;
+}
+
 static void
 submit(struct sgx_context *ctx)
 {
@@ -1251,6 +1767,8 @@ submit(struct sgx_context *ctx)
    unsigned nsa = fs ? fs->prog.nsa + fs->prog.nubuf : 0;
    unsigned max, done = 0, npass = 1;
    uint32_t face_stencil[2];
+   struct sgx_bo *fs_bos[SGX_FRAME_MAX_UBOS];
+   unsigned nfs_bos = 0;
    bool two_sided = false;
    struct sgx_frame_state pass[2];
    struct sgx_frame_target target;
@@ -1258,6 +1776,8 @@ submit(struct sgx_context *ctx)
    struct sgx_frame_state st = {
       .depth_func = ctx->dsa && ctx->dsa->depth_enabled ? ctx->dsa->depth_func : PIPE_FUNC_ALWAYS,
       .depth_write = ctx->dsa && ctx->dsa->depth_enabled && ctx->dsa->depth_writemask,
+      /* an occlusion query's samples (M37) */
+      .count = ctx->query && !ctx->queries_off,
    };
 
    /* the stencil test (M23): ISP state B -- compare in 27:25 (as the depth
@@ -1308,6 +1828,14 @@ submit(struct sgx_context *ctx)
       else if (r->cull_face == PIPE_FACE_FRONT)
          st.cull = r->front_ccw ? SGX_CULL_CCW : SGX_CULL_CW;
    }
+   /* polygon offset (M37): the ISP's on the GPU's vertex path (the draw
+    * module offsets its vertices itself) */
+   if (vs && isp_offset(ctx->rast) != ~0u)
+      st.offset = isp_offset(ctx->rast);
+   /* flat shading (M37): iOS's word (the first vertex's colours by the
+    * triangles turned round: flat_first()) */
+   if (fs && fs->prog.ncolours)
+      st.flat = SGX_FLAT_LAST;
    if (ctx->debug_draw && !vs) {
       mesa_logi("sgx: %u triangles; the first:", ctx->nverts / 3);
       for (unsigned i = 0; i < MIN2(ctx->nverts, 3); i++) {
@@ -1334,7 +1862,7 @@ submit(struct sgx_context *ctx)
 
    /* SGX_FRAME=packvertex, packpixel: the pack's sides, a render a draw,
     * M13a's colour (debugging only) */
-   if (!vs && (sgx_frame_options() & (SGX_FRAME_PACKVTX | SGX_FRAME_PACKPIX)) &&
+   if (!vs && (sgx_frame_options() & (SGX_FRAME_PACKVTX | SGX_FRAME_PACKPIX)) && rt &&
        !surf->level && !surf->first_layer) {
       sgx_batch_flush(ctx);
       max = sgx_frame_max_vertices(screen->frame, &ctx->layout);
@@ -1379,29 +1907,38 @@ submit(struct sgx_context *ctx)
       if (fs->prog.nubuf && ctx->fs_constants)
          memcpy(sa + fs->prog.nsa, ctx->fs_constants,
                 MIN2(fs->prog.nubuf, ctx->fs_constants_size / 4) * sizeof(float));
+      /* (M43) its uniform buffers */
+      if (fs->prog.ubo_mask &&
+          !ubo_words(ctx, 1, fs->prog.ubo_mask, fs->prog.ubo_sa, sa, fs_bos, &nfs_bos)) {
+         mesa_logw_once("sgx: a uniform buffer the fragment shader reads is not bound: the "
+                        "draw dropped");
+         ctx->nverts = 0;
+         return;
+      }
       for (unsigned i = 0; i < fs->nsamplers; i++) {
          unsigned unit = fs->sampler_unit[i];
          struct pipe_sampler_view *view = unit < ARRAY_SIZE(ctx->fs_views) ?
                                           ctx->fs_views[unit] : NULL;
          struct sgx_resource *t = view ? sgx_resource(view->texture) : NULL;
-         bool swap, x8;
+         const struct pipe_sampler_state *ss = unit < PIPE_MAX_SAMPLERS ?
+                                               ctx->fs_samplers[unit] : NULL;
 
-         /* its copy is about to be made again (or it is the target):
-          * what was gathered reads the old one, so render that first --
-          * one sampled as it is has no copy */
-         if (t && sgx_batch_uses(ctx, &t->base) &&
-             (&t->base == b->rt ||
-              (!sgx_resource_linear(t, &swap, &x8) && (!t->tw || t->tw_seq != t->seq))))
+         /* the target itself: what was gathered goes first (a copy made
+          * again while draws read the old one is a new buffer, M37) */
+         if (t && &t->base == b->rt)
             sgx_batch_flush(ctx);
-         if (!t || !sgx_resource_texture(screen, t, unit < PIPE_MAX_SAMPLERS ?
-                                         ctx->fs_samplers[unit] : NULL,
-                                         sa + fs->sampler_sa + 4 * i)) {
+         if (!t || !sgx_resource_texture(ctx, t, view, ss, sa + fs->sampler_sa + 4 * i)) {
             mesa_logw_once("sgx: a draw samples a texture unit with nothing it can "
                            "sample bound: dropped");
             ctx->nverts = 0;
             return;
          }
          tex[i] = &t->base;
+         if (fs->scale_sa >= 0) {
+            float scale[2] = { 1.0f / t->base.width0, 1.0f / t->base.height0 };
+
+            memcpy(sa + fs->scale_sa + 2 * i, scale, sizeof(scale));
+         }
       }
       if (fs->blend_sa >= 0)
          memcpy(sa + fs->blend_sa, ctx->blend_color.color, 4 * sizeof(float));
@@ -1437,6 +1974,19 @@ submit(struct sgx_context *ctx)
       }
    }
 
+   {
+      /* (M43) the fragment shader's uniform buffers with the draw's */
+      struct sgx_vtx *v = &ctx->vtx;
+
+      for (unsigned i = 0; vs && i < nfs_bos; i++) {
+         unsigned j;
+
+         for (j = 0; j < v->nbos && v->bos[j] != fs_bos[i]; j++)
+            ;
+         if (j == v->nbos && v->nbos < ARRAY_SIZE(v->bos))
+            v->bos[v->nbos++] = fs_bos[i];
+      }
+   }
    for (unsigned k = 0; vs && k < npass; k++)
       add_vs_draw(ctx, vs, fs, sa, nsa, tex, &target, &pass[k]);
 
@@ -1447,9 +1997,11 @@ submit(struct sgx_context *ctx)
       struct sgx_batch_draw *bd;
 
       /* room in this render: a draw, its vertices, its textures */
-      if (b->ndraws == sgx_frame_max_draws(screen->frame) ||
-          b->ntex + b->nbos + more_handles(ctx, tex, ntex, NULL, 0) > SGX_FRAME_MAX_HANDLES ||
-          batch_bytes(b) + n * vf * sizeof(float) > SGX_FRAME_MAX_BYTES)
+      if ((b->ndraws == sgx_frame_max_draws(screen->frame) && no_room(ROOM_DRAWS)) ||
+          (b->ntex + b->nbos + b->nvchunks + more_handles(ctx, tex, ntex, fs_bos, nfs_bos) >
+              SGX_FRAME_MAX_HANDLES && no_room(ROOM_HANDLES)) ||
+          (!tex_room(ctx, tex, ntex) && no_room(ROOM_TEXTURES)) ||
+          (batch_bytes(b) + n * vf * sizeof(float) > SGX_FRAME_MAX_BYTES && no_room(ROOM_BYTES)))
          sgx_batch_flush(ctx);
       if (!grow((void **)&b->verts, &b->maxfloats, b->nfloats + n * vf, sizeof(float)) ||
           !grow((void **)&b->sa, &b->maxsa, b->nsa + nsa, sizeof(uint32_t)))
@@ -1457,8 +2009,8 @@ submit(struct sgx_context *ctx)
       if (!b->ndraws)
          batch_start(ctx, &target);
       /* from now on sampled linear: decided before any draw samples it */
-      rt->gpu_written = true;
-      add_handles(ctx, tex, ntex, NULL, 0);
+      target.res->gpu_written = true;
+      add_handles(ctx, tex, ntex, fs_bos, nfs_bos);
       note_zs(ctx, &st);
       bd = &b->draw[b->ndraws++];
       memset(bd, 0, sizeof(*bd));
@@ -1493,8 +2045,6 @@ quad(struct sgx_context *ctx, const struct pipe_scissor_state *sc, float d,
    static const struct sgx_frame_layout l = { .nvaryings = 1, .f32 = 1, .colour = 0 };
    struct sgx_screen *screen = sgx_screen(ctx->base.screen);
    struct sgx_batch *b = &ctx->batch;
-   struct pipe_surface *surf = &ctx->fb.cbufs[0];
-   struct sgx_resource *rt = surf->texture ? sgx_resource(surf->texture) : NULL;
    unsigned vf = sgx_frame_vertex_floats(&l);
    /* the rectangle in clip space, through the target's whole viewport (rows
     * from the first: gallium's framebuffer space), at the depth d */
@@ -1512,7 +2062,7 @@ quad(struct sgx_context *ctx, const struct pipe_scissor_state *sc, float d,
    struct sgx_batch_draw *bd;
    int ret;
 
-   if (!rt || !ctx->fb.width || !ctx->fb.height || !fb_target(ctx, &target) ||
+   if (!ctx->fb.width || !ctx->fb.height || !fb_target(ctx, &target) ||
        !sgx_frame_can_render(screen->frame, &target))
       return false;
    if (batch_elsewhere(b, &target)) {
@@ -1536,7 +2086,7 @@ quad(struct sgx_context *ctx, const struct pipe_scissor_state *sc, float d,
       return false;
    if (!b->ndraws)
       batch_start(ctx, &target);
-   rt->gpu_written = true;
+   target.res->gpu_written = true;
    bd = &b->draw[b->ndraws++];
    memset(bd, 0, sizeof(*bd));
    bd->l = l;
@@ -1593,8 +2143,36 @@ sgx_colour_clear(struct sgx_context *ctx, const union pipe_color_union *color,
       ctx->colour_prog.nvaryings = 1;
       ctx->colour_prog.nsa = 1;
    }
+   /* (M43) a target of floats: the colour's four F32 from sa, packed as
+    * the tile holds it by one instruction (two moves of raw words, o0 then
+    * o1, left o1 unwritten): a program for each kind of tile */
+   if (ctx->fb.nr_cbufs && ctx->fb.cbufs[0].texture &&
+       sgx_frame_rt_kind(ctx->fb.cbufs[0].format) != SGX_RT_UNORM8) {
+      enum sgx_rt_kind k = sgx_frame_rt_kind(ctx->fb.cbufs[0].format);
+      struct sgx_pixel_program *prog = &ctx->colour_float_prog[k];
+      uint64_t *code = ctx->colour_float_code[k];
+      struct usse_reg o0 = usse_reg(USSE_OUTPUT, 0), sa0 = usse_reg(USSE_SA, 0);
+
+      if (!prog->code) {
+         code[0] = USSE_PHAS;
+         code[1] = (k == SGX_RT_F16X4 ? usse_pack_f16(o0, sa0, 0xf) :
+                    k == SGX_RT_F16X2 ? usse_pack_f16(o0, sa0, 0x3) :
+                    k == SGX_RT_F32X2 ? usse_pack_f32x2(o0, sa0) :
+                                        usse_vbw_or(o0, sa0, 0)) | USSE_END;
+         prog->code = code;
+         prog->ncode = 2;
+         prog->ninputs = 1;
+         prog->nvaryings = 1;
+         prog->nsa = 4;
+      }
+      return quad(ctx, sc, 0.5f, &st, prog, (const uint32_t *)color->f, 4, true);
+   }
+   /* (an sRGB target's colour encoded, M43: what GL's clear writes there) */
    for (unsigned i = 0; i < 4; i++)
-      packed |= (uint32_t)float_to_ubyte(color->f[i]) << 8 * i;
+      packed |= (uint32_t)(i < 3 && ctx->fb.nr_cbufs && ctx->fb.cbufs[0].texture &&
+                                 util_format_is_srgb(ctx->fb.cbufs[0].format) ?
+                           util_format_linear_float_to_srgb_8unorm(color->f[i]) :
+                           float_to_ubyte(color->f[i])) << 8 * i;
    return quad(ctx, sc, 0.5f, &st, &ctx->colour_prog, &packed, 1, true);
 }
 
@@ -1653,18 +2231,19 @@ vs_for_draw(struct sgx_context *ctx, const struct sgx_fs *fs, const uint8_t *att
 
    if (!sh || !sh->nir || sh->vs_failed)
       return NULL;
-   for (unsigned i = 0; i < fs->prog.ninputs; i++)
-      if (fs->input_slot[i] != VARYING_SLOT_POS)
-         slot[n++] = fs->input_slot[i];
+   for (unsigned i = 0; i < fs->prog.nvaryings; i++)
+      slot[n++] = fs->varying_slot[i];
    /* (as sgx_compile_vs fills it in) */
    for (unsigned a = 0; a < SGX_VS_MAX_ATTRIBS; a++)
       key.b[a] = a < sh->vs_nattrs ? attr[a] : SGX_ATTR(SGX_ATTR_CONST, 4);
+   /* (and what it does to the varyings the PDS's lookups alone read, M39) */
    for (unsigned i = 0; i < sh->nvs; i++)
       if (sh->vs_variant[i]->nvaryings == n &&
           sgx_words_equal(sh->vs_variant[i]->varying_slot, slot, n) &&
-          sgx_words_equal(sh->vs_variant[i]->attr_words, key.w, ARRAY_SIZE(key.w)))
+          sgx_words_equal(sh->vs_variant[i]->attr_words, key.w, ARRAY_SIZE(key.w)) &&
+          !memcmp(sh->vs_variant[i]->vary_fix, fs->vary_fix, n))
          return sh->vs_variant[i];
-   if (!(vs = sgx_compile_vs(sh->nir, slot, n, attr, why, sizeof(why)))) {
+   if (!(vs = sgx_compile_vs(sh->nir, slot, n, attr, fs->vary_fix, why, sizeof(why)))) {
       mesa_logw("sgx: a vertex shader not compiled (%s): run on the CPU", why);
       sh->vs_failed = true;
       return NULL;
@@ -1695,6 +2274,26 @@ index_at(const void *indices, unsigned size, unsigned i, unsigned *out)
    }
 }
 
+/* GL's polygon offset as the ISP's (state word 2, M37): whole factors and
+ * units, -16..15 each (units GL's, the ISP's unit its r -- iOS's); 0 none,
+ * ~0u one it does not do.  Not unless SGX_ISP_OFFSET=1: the ISP does not
+ * clamp the depth it offsets to 0..1 (gloffset --clamp, every bit of the
+ * state words near flipped), and dEQP's result_depth_clamp and
+ * factor_1_slope cases want it -- the draw module's offset it is, its
+ * vertices' depth clamped. */
+static uint32_t
+isp_offset(const struct pipe_rasterizer_state *r)
+{
+   float u = r ? r->offset_units / SGX_OFFSET_SCALE : 0, f = r ? r->offset_scale : 0;
+
+   if (!r || !r->offset_tri || (u == 0.0f && f == 0.0f))
+      return 0;
+   if (SGX_OFFSET_SCALE != 16.0f || u != rintf(u) || f != rintf(f) || u < -16 || u > 15 || f < -16 || f > 15 ||
+       r->offset_clamp != 0.0f)
+      return ~0u;
+   return ((uint32_t)(int)f & 0x1f) << 21 | ((uint32_t)(int)u & 0x1f) << 16;
+}
+
 /* What the GPU's vertex side does not do yet: then the draw module's way */
 static bool
 gpu_vs_can_draw(struct sgx_context *ctx, const struct pipe_draw_info *info)
@@ -1709,29 +2308,15 @@ gpu_vs_can_draw(struct sgx_context *ctx, const struct pipe_draw_info *info)
    if (info->mode != MESA_PRIM_TRIANGLES && info->mode != MESA_PRIM_TRIANGLE_STRIP &&
        info->mode != MESA_PRIM_TRIANGLE_FAN)
       return false;
-   if (info->primitive_restart || info->instance_count != 1 ||
+   /* (instances, restarts and depth clamping: the draw module's, M43) */
+   if (info->primitive_restart || info->instance_count != 1 || info->start_instance ||
+       r->depth_clamp || !r->depth_clip_near || !r->depth_clip_far ||
        r->cull_face == PIPE_FACE_FRONT_AND_BACK ||
        r->fill_front != PIPE_POLYGON_MODE_FILL || r->fill_back != PIPE_POLYGON_MODE_FILL ||
-       r->clip_plane_enable || r->flatshade ||
-       /* polygon offset: the draw module's (the TA's not found yet) */
-       ((r->offset_tri || r->offset_point || r->offset_line) &&
-        (r->offset_units != 0.0f || r->offset_scale != 0.0f)))
+       r->clip_plane_enable ||
+       /* polygon offset the ISP has not: the draw module's */
+       isp_offset(r) == ~0u)
       return false;
-   return true;
-}
-
-static bool
-grow_bytes(uint8_t **p, unsigned *max, unsigned want)
-{
-   uint8_t *q;
-
-   if (want <= *max)
-      return true;
-   want = MAX2(want, 2 * *max);
-   if (!(q = realloc(*p, want)))
-      return false;
-   *p = q;
-   *max = want;
    return true;
 }
 
@@ -1753,6 +2338,7 @@ gpu_vs_draw(struct sgx_context *ctx, const struct pipe_draw_info *info,
    struct sgx_vtx *v = &ctx->vtx;
    struct sgx_screen *screen = sgx_screen(ctx->base.screen);
    const uint8_t *src[SGX_VS_MAX_ATTRIBS];
+   uint8_t *vdata = NULL;
    struct sgx_resource *res[SGX_VS_MAX_ATTRIBS];
    uint32_t off[SGX_VS_MAX_ATTRIBS];
    uint8_t attr[SGX_VS_MAX_ATTRIBS];
@@ -1852,7 +2438,7 @@ gpu_vs_draw(struct sgx_context *ctx, const struct pipe_draw_info *info,
    v->count = 3 * ntri;
    v->max_index = hi - vtx0;
    v->indexed = info->index_size || info->mode != MESA_PRIM_TRIANGLES ||
-                v->count > sgx_frame_list_max(screen->frame);
+                v->count > sgx_frame_list_max(screen->frame) || flat_first(ctx);
    if (v->indexed) {
       if (v->count > ctx->maxindices) {
          uint16_t *p = realloc(ctx->indices, v->count * sizeof(uint16_t));
@@ -1872,6 +2458,15 @@ gpu_vs_draw(struct sgx_context *ctx, const struct pipe_draw_info *info,
             k[0] = t + (t & 1), k[1] = t + 1 - (t & 1), k[2] = t + 2;
          } else {
             k[0] = 0, k[1] = t + 1, k[2] = t + 2;
+         }
+         /* the first vertex's colours (ARB_provoking_vertex's: a strip's
+          * triangle t takes vertex t's, a fan's vertex t + 1's) last */
+         if (flat_first(ctx)) {
+            unsigned p = info->mode == MESA_PRIM_TRIANGLES ||
+                         (info->mode == MESA_PRIM_TRIANGLE_STRIP && !(t & 1)) ? 0 : 1;
+            unsigned a = k[(p + 1) % 3], b = k[(p + 2) % 3], c = k[p];
+
+            k[0] = a, k[1] = b, k[2] = c;
          }
          for (unsigned i = 0; i < 3; i++) {
             if (indices)
@@ -1915,8 +2510,8 @@ gpu_vs_draw(struct sgx_context *ctx, const struct pipe_draw_info *info,
             at += 4 * sgx_attr_words(vs->attr[a]);
          }
       v->stride = MAX2(at, 4);
-      if (n * v->stride > SGX_FRAME_MAX_BYTES ||
-          !grow_bytes(&ctx->vdata, &ctx->maxvdata, n * v->stride))
+      /* (M42: written once, into the batch's GPU memory) */
+      if (n * v->stride > SGX_FRAME_MAX_BYTES || !(vdata = vtx_reserve(ctx, n * v->stride)))
          return false;
       /* the attributes one array of the application's laid out as the
        * stream is -- SDL's x y, r g b a, u v at stride 32 (M34): the
@@ -1937,14 +2532,14 @@ gpu_vs_draw(struct sgx_context *ctx, const struct pipe_draw_info *info,
                     util_format_get_blocksize(e->src_format) == 4 * sgx_attr_words(vs->attr[a]);
          }
          if (whole && first) {
-            memcpy(ctx->vdata, first + (lo + bias) * v->stride, n * v->stride);
+            memcpy(vdata, first + (lo + bias) * v->stride, n * v->stride);
             goto copied;
          }
       }
       for (unsigned a = 0; a < vs->nattrs; a++) {
          const struct pipe_vertex_element *e = &ve->e[a];
          const uint8_t *in;
-         uint8_t *out = ctx->vdata + v->base[a];
+         uint8_t *out = vdata + v->base[a];
          unsigned size;
 
          if (SGX_ATTR_KIND(vs->attr[a]) == SGX_ATTR_CONST)
@@ -1988,6 +2583,17 @@ gpu_vs_draw(struct sgx_context *ctx, const struct pipe_draw_info *info,
          memset((uint8_t *)(ctx->vs_sa + vs->nuniforms) + m, 0, vs->nubuf * 4 - m);
       }
    }
+   /* (M43) its uniform buffers: their addresses, the buffers the draw's
+    * (one not bound: the draw module's way, which reads them mapped) */
+   if (vs->ubo_mask && !ubo_words(ctx, 0, vs->ubo_mask, vs->ubo_sa, ctx->vs_sa, v->bos, &v->nbos))
+      return false;
+   /* (M39) a rectangle texture's 1 / width, 1 / height for each varying
+    * whose x and y the vertex side scales */
+   for (unsigned k = 0, n = 0; k < vs->nvaryings; k++) {
+      if (!(vs->vary_fix[k] & SGX_FIX_SCALE))
+         continue;
+      fix_scale(ctx, ctx->draw_fs->vary_unit[k], (float *)ctx->vs_sa + vs->fix_sa + 2 * n++);
+   }
    for (unsigned a = 0; a < vs->nattrs; a++) {
       float *c = (float *)ctx->vs_sa + vs->attr_sa[a];
 
@@ -2011,6 +2617,7 @@ gpu_vs_draw(struct sgx_context *ctx, const struct pipe_draw_info *info,
    ctx->layout.nvaryings = vs->nvaryings;
    ctx->layout.f32 = (1u << vs->nvaryings) - 1;
    ctx->layout.colour = 0;
+   ctx->layout.ncolours = ctx->draw_fs ? ctx->draw_fs->prog.ncolours : 0;
    ctx->gpu_vs = vs;
    submit(ctx);
    ctx->gpu_vs = NULL;
@@ -2029,6 +2636,9 @@ sgx_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info,
    unsigned i;
 
    if (indirect || !draw || !ctx->vs || !ctx->vs->draw)
+      return;
+   /* (M43) under a render condition that says no: nothing */
+   if (!sgx_render_condition_ok(ctx))
       return;
    ctx->stat_draws += num_draws;
    if (ctx->stat_swap) {
@@ -2108,6 +2718,20 @@ sgx_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info,
             p += cb->buffer_offset;
       }
       draw_set_mapped_constant_buffer(draw, MESA_SHADER_VERTEX, 0, p, p ? cb->buffer_size : 0);
+   }
+   /* (M43) and its uniform buffers, mapped */
+   for (unsigned k = 1; k < SGX_FRAME_MAX_UBOS; k++) {
+      const struct pipe_constant_buffer *u = &ctx->ubo[0][k];
+      const uint8_t *p = u->user_buffer;
+
+      if (!p && u->buffer) {
+         size_t whole;
+
+         p = map_buffer(u->buffer, &whole);
+         if (p)
+            p += u->buffer_offset;
+      }
+      draw_set_mapped_constant_buffer(draw, MESA_SHADER_VERTEX, k, p, p ? u->buffer_size : 0);
    }
 
    update_vertex_info(ctx);

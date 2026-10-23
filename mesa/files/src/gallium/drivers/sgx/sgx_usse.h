@@ -104,6 +104,27 @@ uint64_t usse_smp3d(enum usse_smp_out out, enum usse_smp_coord coord, struct uss
  * channel select reaches channel 2 but not 3). */
 uint64_t usse_unpack_unorm8(struct usse_reg dest, struct usse_reg src, unsigned chan);
 
+/* (M43) F32 channels (src, src + 1 and src + 2, src + 3; src even) as F16
+ * into dest.. -- mask 0xf: four, dest and dest + 1 (a target of half
+ * floats' o0, o1: R G, B A); 0x3: two, dest.  One instruction: o1 written
+ * by an instruction of its own never reached the target */
+uint64_t usse_pack_f16(struct usse_reg dest, struct usse_reg src, unsigned mask);
+/* (M43) F32 channels x, y of the pair src into dest, dest + 1 at once (a
+ * VPCK F32 to F32): a target of two F32's o0, o1 */
+uint64_t usse_pack_f32x2(struct usse_reg dest, struct usse_reg src);
+/* dest, dest + 1 (F32, dest even) = F16 channels chan, chan + 1 (0 or 2)
+ * of the four in src, src + 1 (src even): a target of half floats' tile,
+ * o0 and o1, read for blending */
+uint64_t usse_unpack_f16(struct usse_reg dest, struct usse_reg src, unsigned chan);
+
+/* (M38) four F16 at once, each a register pair (four F16): src1 op src2,
+ * channel for channel */
+uint64_t usse_hop(enum usse_nmad_op op, struct usse_reg dest, struct usse_reg src1,
+                  struct usse_reg src2);
+/* dest = the four F16 of the pair src packed to 8 bits each, scaled from
+ * [0, 1] */
+uint64_t usse_pack_unorm8_f16(struct usse_reg dest, struct usse_reg src);
+
 /* o<dest> = four F32 values packed to 8 bits each, scaled from [0, 1]:
  * src, src + 1 (a pair) and src + 2, src + 3; src even */
 uint64_t usse_pack_unorm8(unsigned dest_o, struct usse_reg src);
@@ -123,6 +144,14 @@ uint64_t usse_vbw_or(struct usse_reg dest, struct usse_reg src1, unsigned imm);
 /* dest = src1 | (imm rotated left by rot): bits past an immediate's 16
  * (M32: an LDR offset's multiplier, 4 << 16) */
 uint64_t usse_vbw_or_rot(struct usse_reg dest, struct usse_reg src1, unsigned imm, unsigned rot);
+/* VBW between two registers (M37, iOS's logic ops, es1 e03..e10): dest =
+ * src1 op src2, src2 inverted first with not2 (`and o0, c56, ~o0`: c56 is
+ * all ones) */
+enum usse_vbw_op { USSE_VBW_AND, USSE_VBW_OR, USSE_VBW_XOR };
+uint64_t usse_vbw(enum usse_vbw_op op, struct usse_reg dest, struct usse_reg src1,
+                  struct usse_reg src2, bool not2);
+/* c56: the constant whose bits are all set */
+#define USSE_ALL_ONES usse_reg(USSE_SPECIAL, 56)
 
 /* Memory loads (VLDST's, Vita3K's vldst; M32): count words in a row, from
  * the address in sa word base plus an offset plus 4 bytes, into dest..

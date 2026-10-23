@@ -174,7 +174,8 @@ rm -f "$OUTDIR/.alpine-build-stamp"
 # root filesystem; busybox-static, because stage 2 runs the ACM console from a
 # copy of it in RAM, so the cable still gives a shell when an NFS root has
 # wedged and taken every binary on it with it; iw and wpa_supplicant, because a
-# RAM boot's only network is Wi-Fi; and fbkeyboard, the only keyboard there is.
+# RAM boot's only network is Wi-Fi; fbkeyboard, the only keyboard there is; and
+# alsa-utils, so the speakers play from the first boot.
 # The list is scripts/add-base-packages.sh.  Everything else is `apk add`.
 #
 # Unpacking them needs the build image (readelf and a network), so a machine

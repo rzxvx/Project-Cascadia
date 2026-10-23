@@ -1,0 +1,266 @@
+From: Project Cascadia
+Subject: [PATCH] modesetting: let a plane that turns the picture do RandR's rotation
+
+With a KMS primary plane that has a "rotation" property (apple-sgx's,
+whose copy onto the screen turns it -- docs/research/p105-mesa.md, M41),
+a RandR rotation is the plane's: driverIsPerformingTransform is set, so
+there is no shadow buffer redrawn turned every frame, and page flips are
+kept.
+
+The kernel refuses an X server atomic modesetting ("broken atomic
+modeset userspace detected"), and without it modesetting never sees the
+primary plane: drmmode_crtc_find_rotation () asks for universal planes
+(allowed) and finds the CRTC's primary plane and its rotation itself.  A
+change of turn goes as legacy calls: the CRTC off, the plane's rotation
+set, then the SetCrtc with the buffer of the turned size -- the kernel
+checks a turn against the buffer shown, and its SetCrtc takes the plane's
+turn into account.  (With atomic, plane_add_props () adds the rotation
+and swaps the source's width and height.)  The DIRTYFB clips are the
+screen's own then, not turned as for a shadow buffer.
+
+---
+--- a/hw/xfree86/drivers/modesetting/drmmode_display.h
++++ b/hw/xfree86/drivers/modesetting/drmmode_display.h
+@@ -178,6 +178,17 @@
+     drmmode_prop_info_rec props[DRMMODE_CRTC__COUNT];
+     drmmode_prop_info_rec props_plane[DRMMODE_PLANE__COUNT];
+     uint32_t plane_id;
++    /* The primary plane (rotation_plane: modesetting's plane_id is found
++     * only with atomic, which the kernel refuses an X server) when its
++     * "rotation" (a bitmask property) turns the picture itself: its bits
++     * for RR_Rotate_0, _90, _180, _270, the RandR rotations it has, the
++     * quarter turns wanted and those the plane has now. */
++    uint32_t rotation_plane;
++    uint32_t rotation_prop_id;
++    uint64_t rotation_bits[4];
++    Rotation rotations;
++    int plane_quarter;
++    int plane_quarter_set;
+     drmmode_mode_ptr current_mode;
+     uint32_t num_formats;
+     drmmode_format_rec *formats;
+--- a/hw/xfree86/drivers/modesetting/drmmode_display.c
++++ b/hw/xfree86/drivers/modesetting/drmmode_display.c
+@@ -466,7 +466,15 @@
+                 uint32_t fb_id, int x, int y)
+ {
+     drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
++    /* a quarter turn: the buffer is the mode turned on its side */
++    Bool side = drmmode_crtc->plane_quarter & 1;
+     int ret = 0;
++
++    if (drmmode_crtc->rotation_prop_id && drmmode_crtc->rotation_plane == drmmode_crtc->plane_id &&
++        drmModeAtomicAddProperty(req, drmmode_crtc->plane_id,
++                                 drmmode_crtc->rotation_prop_id,
++                                 drmmode_crtc->rotation_bits[drmmode_crtc->plane_quarter]) <= 0)
++        ret = -1;
+ 
+     ret |= plane_add_prop(req, drmmode_crtc, DRMMODE_PLANE_FB_ID,
+                           fb_id);
+@@ -475,9 +483,9 @@
+     ret |= plane_add_prop(req, drmmode_crtc, DRMMODE_PLANE_SRC_X, x << 16);
+     ret |= plane_add_prop(req, drmmode_crtc, DRMMODE_PLANE_SRC_Y, y << 16);
+     ret |= plane_add_prop(req, drmmode_crtc, DRMMODE_PLANE_SRC_W,
+-                          crtc->mode.HDisplay << 16);
++                          (side ? crtc->mode.VDisplay : crtc->mode.HDisplay) << 16);
+     ret |= plane_add_prop(req, drmmode_crtc, DRMMODE_PLANE_SRC_H,
+-                          crtc->mode.VDisplay << 16);
++                          (side ? crtc->mode.HDisplay : crtc->mode.VDisplay) << 16);
+     ret |= plane_add_prop(req, drmmode_crtc, DRMMODE_PLANE_CRTC_X, 0);
+     ret |= plane_add_prop(req, drmmode_crtc, DRMMODE_PLANE_CRTC_Y, 0);
+     ret |= plane_add_prop(req, drmmode_crtc, DRMMODE_PLANE_CRTC_W,
+@@ -920,6 +928,23 @@
+     }
+ 
+     drmmode_ConvertToKMode(crtc->scrn, &kmode, &crtc->mode);
++    /* A turn for the plane: the kernel checks it against the buffer it
++     * shows, so the CRTC goes off first, then the turn, then the buffer of
++     * the turned size (the kernel's SetCrtc takes the plane's turn into
++     * account) */
++    if (drmmode_crtc->rotation_prop_id &&
++        drmmode_crtc->plane_quarter != drmmode_crtc->plane_quarter_set) {
++        drmModeSetCrtc(drmmode->fd, drmmode_crtc->mode_crtc->crtc_id,
++                       0, 0, 0, NULL, 0, NULL);
++        if (drmModeObjectSetProperty(drmmode->fd, drmmode_crtc->rotation_plane,
++                                     DRM_MODE_OBJECT_PLANE, drmmode_crtc->rotation_prop_id,
++                                     drmmode_crtc->rotation_bits[drmmode_crtc->plane_quarter]))
++            xf86DrvMsg(crtc->scrn->scrnIndex, X_ERROR,
++                       "failed to turn plane %u: %s\n", drmmode_crtc->rotation_plane,
++                       strerror(errno));
++        else
++            drmmode_crtc->plane_quarter_set = drmmode_crtc->plane_quarter;
++    }
+     ret = drmModeSetCrtc(drmmode->fd, drmmode_crtc->mode_crtc->crtc_id,
+                          fb_id, x, y, output_ids, output_count, &kmode);
+ 
+@@ -1556,7 +1581,7 @@
+     xf86CrtcConfigPtr xf86_config = XF86_CRTC_CONFIG_PTR(crtc->scrn);
+     drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
+     drmmode_ptr drmmode = drmmode_crtc->drmmode;
+-    int saved_x, saved_y;
++    int saved_x, saved_y, saved_quarter;
+     Rotation saved_rotation;
+     DisplayModeRec saved_mode;
+     Bool ret = TRUE;
+@@ -1567,6 +1592,7 @@
+     saved_x = crtc->x;
+     saved_y = crtc->y;
+     saved_rotation = crtc->rotation;
++    saved_quarter = drmmode_crtc->plane_quarter;
+ 
+     if (mode) {
+         crtc->mode = *mode;
+@@ -1574,6 +1600,20 @@
+         crtc->y = y;
+         crtc->rotation = rotation;
+ 
++        /* A plane that turns the picture itself does the rotation: no
++         * shadow buffer redrawn turned every frame (and page flips stay).
++         * drmmode_crtc_set_mode () hands it the turn. */
++        drmmode_crtc->plane_quarter = 0;
++        crtc->driverIsPerformingTransform &= ~XF86DriverTransformOutput;
++        if (drmmode_crtc->rotation_prop_id && !crtc->transformPresent) {
++            for (i = 1; i < 4; i++) {
++                if (rotation == (RR_Rotate_0 << i) && (drmmode_crtc->rotations & rotation)) {
++                    drmmode_crtc->plane_quarter = i;
++                    crtc->driverIsPerformingTransform |= XF86DriverTransformOutput;
++                }
++            }
++        }
++
+         if (!xf86CrtcRotate(crtc)) {
+             goto done;
+         }
+@@ -1626,6 +1666,11 @@
+         crtc->y = saved_y;
+         crtc->rotation = saved_rotation;
+         crtc->mode = saved_mode;
++        drmmode_crtc->plane_quarter = saved_quarter;
++        if (saved_quarter)
++            crtc->driverIsPerformingTransform |= XF86DriverTransformOutput;
++        else
++            crtc->driverIsPerformingTransform &= ~XF86DriverTransformOutput;
+     } else
+         crtc->active = TRUE;
+ 
+@@ -2167,8 +2212,95 @@
+ 
+     return TRUE;
+ }
++
++/* A plane's property by name: its id and (out) the property, or 0 */
++static uint32_t
++drmmode_plane_prop(drmmode_ptr drmmode, uint32_t plane, const char *name,
++                   uint64_t *value, drmModePropertyRes **out)
++{
++    drmModeObjectProperties *props;
++    uint32_t i, id = 0;
+ 
++    props = drmModeObjectGetProperties(drmmode->fd, plane, DRM_MODE_OBJECT_PLANE);
++    for (i = 0; props && i < props->count_props && !id; i++) {
++        drmModePropertyRes *prop = drmModeGetProperty(drmmode->fd, props->props[i]);
++
++        if (prop && !strcmp(prop->name, name)) {
++            id = prop->prop_id;
++            if (value)
++                *value = props->prop_values[i];
++            if (out) {
++                *out = prop;
++                continue;
++            }
++        }
++        drmModeFreeProperty(prop);
++    }
++    drmModeFreeObjectProperties(props);
++    return id;
++}
++
++/* The CRTC's primary plane and its "rotation" property, a bitmask: which of
++ * RandR's rotations the plane does itself, and its bits for each.  The
++ * primary plane is listed only to a client that asks for universal planes
++ * (an X server may; atomic, which implies them, the kernel refuses it). */
+ static void
++drmmode_crtc_find_rotation(xf86CrtcPtr crtc, int num)
++{
++    drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
++    drmmode_ptr drmmode = drmmode_crtc->drmmode;
++    static const char *const names[4] = {
++        "rotate-0", "rotate-90", "rotate-180", "rotate-270",
++    };
++    drmModePlaneRes *res;
++    drmModePropertyRes *rot = NULL;
++    uint64_t type, value = 0;
++    uint32_t i;
++    int j, k;
++
++    if (drmSetClientCap(drmmode->fd, DRM_CLIENT_CAP_UNIVERSAL_PLANES, 1))
++        return;
++    res = drmModeGetPlaneResources(drmmode->fd);
++    for (i = 0; res && i < res->count_planes && !drmmode_crtc->rotation_plane; i++) {
++        drmModePlane *plane = drmModeGetPlane(drmmode->fd, res->planes[i]);
++
++        if (plane && (plane->possible_crtcs & (1 << num)) &&
++            drmmode_plane_prop(drmmode, plane->plane_id, "type", &type, NULL) &&
++            type == DRM_PLANE_TYPE_PRIMARY)
++            drmmode_crtc->rotation_plane = plane->plane_id;
++        drmModeFreePlane(plane);
++    }
++    drmModeFreePlaneResources(res);
++    if (!drmmode_crtc->rotation_plane ||
++        !drmmode_plane_prop(drmmode, drmmode_crtc->rotation_plane, "rotation", &value, &rot))
++        return;
++    if (rot->flags & DRM_MODE_PROP_BITMASK) {
++        for (j = 0; j < rot->count_enums; j++) {
++            for (k = 0; k < 4; k++) {
++                if (!strcmp(rot->enums[j].name, names[k]) && rot->enums[j].value < 64) {
++                    drmmode_crtc->rotation_bits[k] = 1ULL << rot->enums[j].value;
++                    drmmode_crtc->rotations |= RR_Rotate_0 << k;
++                }
++            }
++        }
++    }
++    if (drmmode_crtc->rotations & RR_Rotate_0) {
++        drmmode_crtc->rotation_prop_id = rot->prop_id;
++        /* as the plane is now (a server started over a turned screen) */
++        for (k = 0; k < 4; k++)
++            if (value == drmmode_crtc->rotation_bits[k])
++                drmmode_crtc->plane_quarter_set = k;
++    } else {
++        drmmode_crtc->rotations = 0;
++    }
++    drmModeFreeProperty(rot);
++    if (drmmode_crtc->rotations & ~RR_Rotate_0)
++        xf86DrvMsg(drmmode->scrn->scrnIndex, X_INFO,
++                   "plane %u turns the picture itself (RandR rotations 0x%x)\n",
++                   drmmode_crtc->rotation_plane, drmmode_crtc->rotations);
++}
++
++static void
+ drmmode_crtc_create_planes(xf86CrtcPtr crtc, int num)
+ {
+     drmmode_crtc_private_ptr drmmode_crtc = crtc->driver_private;
+@@ -2393,6 +2525,7 @@
+                              DRMMODE_CRTC__COUNT, props);
+     drmModeFreeObjectProperties(props);
+     drmmode_crtc_create_planes(crtc, num);
++    drmmode_crtc_find_rotation(crtc, num);
+ 
+     /* Hide any cursors which may be active from previous users */
+     drmModeSetCursor(drmmode->fd, drmmode_crtc->mode_crtc->crtc_id, 0, 0, 0);
+--- a/hw/xfree86/drivers/modesetting/driver.c
++++ b/hw/xfree86/drivers/modesetting/driver.c
+@@ -564,9 +564,12 @@
+         if (!clip)
+             return -ENOMEM;
+ 
+-        /* Rotate and copy rects into clips */
++        /* Rotate and copy rects into clips -- not when the plane turns
++         * the picture itself: the buffer is the screen's, unturned */
+         for (i = 0; i < num_cliprects; i++, rect++)
+-	    rotate_clip(pixmap, rect, &clip[i], crtc->rotation);
++	    rotate_clip(pixmap, rect, &clip[i],
++	                (crtc->driverIsPerformingTransform & XF86DriverTransformOutput) ?
++	                RR_Rotate_0 : crtc->rotation);
+ 
+         /* TODO query connector property to see if this is needed */
+         ret = drmModeDirtyFB(ms->fd, fb_id, clip, num_cliprects);

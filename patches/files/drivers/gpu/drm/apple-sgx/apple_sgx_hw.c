@@ -1615,9 +1615,10 @@ static int sgx_blt_init(struct apple_sgx *sgx)
 }
 
 /* One job: src (or a fill colour, ABGR as the pixel program writes it)
- * onto dst, scaled.  Builds the pieces, queues the command, waits. */
+ * onto dst, scaled -- turned rot quarter turns anticlockwise (DRM's sense).
+ * Builds the pieces, queues the command, waits. */
 static int __sgx_blt_run(struct apple_sgx *sgx, const struct sgx_surf *src, u32 fill,
-			 const struct sgx_surf *dst)
+			 const struct sgx_surf *dst, unsigned int rot)
 {
 	u32 *blk = sgx->buf[B_BLT_BLOCK].cpu, *par = sgx->buf[B_BLT_PARAM].cpu;
 	u32 bva = sgx->buf[B_BLT_BLOCK].va, pva = sgx->buf[B_BLT_PARAM].va;
@@ -1689,10 +1690,16 @@ static int __sgx_blt_run(struct apple_sgx *sgx, const struct sgx_surf *src, u32 
 	q[11] = 0x01d80000;
 	q[12] = 0x4e504a30;
 	q[13] = 2;
-	q[15] = blt_xy(0, 0);
-	q[17] = blt_xy(0, dst->h);
-	q[19] = blt_xy(dst->w, dst->h);
-	q[21] = blt_xy(dst->w, 0);
+	/* the vertices' order is the texture's corners' (top-left, bottom-left,
+	 * bottom-right, top-right): a quarter turn anticlockwise puts the
+	 * source's top-left at the box's bottom-left, and so on round */
+	{
+		const u32 corner[4] = { blt_xy(0, 0), blt_xy(0, dst->h),
+					blt_xy(dst->w, dst->h), blt_xy(dst->w, 0) };
+
+		for (i = 0; i < 4; i++)
+			q[15 + 2 * i] = corner[(i + rot) % 4];
+	}
 	q[16] = q[18] = q[20] = q[22] = 0x3f800000;
 	r[0] = 0x80000000;		/* last region */
 	r[1] = 0x46400f03;		/* both triangles of the quad */
@@ -1753,13 +1760,13 @@ static int __sgx_blt_run(struct apple_sgx *sgx, const struct sgx_surf *src, u32 
  * the engine out of service (callers fall back to the CPU) until the next
  * microkernel boot. */
 static int sgx_blt_run(struct apple_sgx *sgx, const struct sgx_surf *src, u32 fill,
-		       const struct sgx_surf *dst)
+		       const struct sgx_surf *dst, unsigned int rot)
 {
 	unsigned long flags;
 	int ret;
 
 	spin_lock_irqsave(&sgx->blt_lock, flags);
-	ret = sgx->blt_broken ? -EIO : __sgx_blt_run(sgx, src, fill, dst);
+	ret = sgx->blt_broken ? -EIO : __sgx_blt_run(sgx, src, fill, dst, rot);
 	if (ret == -ETIMEDOUT)
 		sgx->blt_broken = true;
 	spin_unlock_irqrestore(&sgx->blt_lock, flags);
@@ -1791,7 +1798,7 @@ static int sgx_fb_fill(struct apple_sgx *sgx, u32 x, u32 y, u32 w, u32 h, u32 ar
 	sgx_fb_surf(sgx, &d, x, y, w, h);
 	/* the pixel program's output is ABGR */
 	return sgx_blt_run(sgx, NULL, (argb & 0xff00ff00) | (argb & 0xff) << 16 |
-			   (argb >> 16 & 0xff), &d);
+			   (argb >> 16 & 0xff), &d, 0);
 }
 
 /* "copy SX SY DX DY W H" within the framebuffer */
@@ -1803,20 +1810,24 @@ static int sgx_fb_copy(struct apple_sgx *sgx, u32 sx, u32 sy, u32 dx, u32 dy, u3
 		return -EINVAL;
 	sgx_fb_surf(sgx, &s, sx, sy, w, h);
 	sgx_fb_surf(sgx, &d, dx, dy, w, h);
-	return sgx_blt_run(sgx, &s, 0, &d);
+	return sgx_blt_run(sgx, &s, 0, &d, 0);
 }
 
-/* The render node's screen (apple_sgx_kms.c): a rectangle of a linear
- * BGRA surface -- va its first pixel, stride in pixels -- onto the screen
- * at x, y. */
-int apple_sgx_fb_show(struct apple_sgx *sgx, u32 va, u32 stride, u32 x, u32 y, u32 w, u32 h)
+/* The render node's screen (apple_sgx_kms.c): a w x h rectangle of a
+ * linear BGRA surface -- va its first pixel, stride in pixels -- onto the
+ * screen at x, y, turned rot quarter turns anticlockwise (h x w on the
+ * screen for an odd number). */
+int apple_sgx_fb_show(struct apple_sgx *sgx, u32 va, u32 stride, u32 w, u32 h, u32 x, u32 y,
+		      unsigned int rot)
 {
 	struct sgx_surf s = { .va = va, .w = w, .h = h, .stride = stride }, d;
 
+	if (rot & 1)
+		swap(w, h);
 	if (!sgx_fb_rect_ok(sgx, x, y, w, h))
 		return -EINVAL;
 	sgx_fb_surf(sgx, &d, x, y, w, h);
-	return sgx_blt_run(sgx, &s, 0, &d);
+	return sgx_blt_run(sgx, &s, 0, &d, rot & 3);
 }
 
 /* fbcon moves rectangles over themselves.  Up the screen is one job (see

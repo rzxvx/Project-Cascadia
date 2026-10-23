@@ -298,7 +298,8 @@
 	 * active low -- read live, docs/research/p105-gpio.md.  Hold is the
 	 * power key; Home is KEY_HOMEPAGE, as on Linux phones.  The side switch
 	 * (mute or rotation lock on iOS; the ADT's ringer A/B, pin 4) is a
-	 * switch, SW_MUTE_DEVICE -- its polarity not checked live yet.  The
+	 * switch, SW_MUTE_DEVICE: 1 with its orange mark showing (pin low, iOS's
+	 * "mute"); p105-keys makes it pick what the volume buttons set.  The
 	 * smart-cover sensors are PMU GPIOs, not these.  Codes: KEY_HOMEPAGE
 	 * 172, KEY_POWER 116, KEY_VOLUMEUP 115, KEY_VOLUMEDOWN 114, EV_SW 5,
 	 * SW_MUTE_DEVICE 14; flags 1 = GPIO_ACTIVE_LOW.  Interrupts through the
@@ -306,7 +307,7 @@
 	 */
 	gpio-keys {
 		compatible = "gpio-keys";
-		autorepeat;	/* a held volume button keeps changing the backlight */
+		autorepeat;	/* a held volume button keeps going (volume or backlight) */
 
 		home {
 			label = "Home";
@@ -755,6 +756,48 @@
             clock-output-names = "gfx_ps";
         };
 
+        /* The speakers' power states: MCA (device-clocks id 47, index 0x50)
+         * and I2S1 (id 116, index 0x29).  s5l-audio enables them. */
+        mca_ps: mca-ps@f101140 {
+            compatible = "apple,s5l8940x-pmgr-clk-gate";
+            #clock-cells = <0>;
+            reg = <0xf101140 0x4>;
+            clocks = <&refclk24mhz>;
+            clock-output-names = "mca_ps";
+        };
+
+        i2s1_ps: i2s1-ps@f1010a4 {
+            compatible = "apple,s5l8940x-pmgr-clk-gate";
+            #clock-cells = <0>;
+            reg = <0xf1010a4 0x4>;
+            clocks = <&refclk24mhz>;
+            clock-output-names = "i2s1_ps";
+        };
+
+        /* The speakers (docs/research/p105-audio.md, sound/soc/apple/
+         * s5l-audio.c): MCA0 sends the samples, CDMA channel 0x17 (request
+         * 0xb, as the ADT's mca0 dma-channels say) feeds it, NCO 6 clocks it
+         * (342 MHz reference), the i2s-switch puts it on pin group 1, and
+         * I2S1 gives the amps their 12 MHz MCLK -- offered as this node's
+         * clock.  The windows: MCA0, I2S1, AE2's MCS and ACS (the ports'
+         * kernel-clock sources and register gates), the i2s-switch, the
+         * PMGR's NCOs, CDMA. */
+        audio: audio-controller@4196000 {
+            compatible = "apple,s5l8942x-audio";
+            reg = <0x4196000 0x1000>, <0x4191000 0x1000>,
+                  <0x41e0000 0x1000>, <0x41a0000 0x1000>,
+                  <0xfa01000 0x1000>, <0xf100110 0x70>,
+                  <0x7000000 0x2d000>;
+            reg-names = "mca", "i2s", "mcs", "acs", "switch", "nco", "cdma";
+            clocks = <&mca_ps>, <&i2s1_ps>;
+            clock-names = "mca", "i2s";
+            #clock-cells = <0>;
+            #sound-dai-cells = <0>;
+            apple,dma-channel = <0x17 0xb>;
+            apple,nco-reference-hz = <342000000>;
+            apple,speaker-amps = <&spk_left>, <&spk_right>;
+        };
+
         /* PowerVR SGX543MP2 (ADT /arm-io/sgx, "gpu,s5l8940x", IRQ 49; the
          * ADT's second window, 0x3f10b000, reads all zero and is left out).
          * Six 16 KiB banks: 0 is broadcast and WRITE-ONLY -- a read hangs
@@ -879,6 +922,33 @@
                  * clock only on boards of revision <= 1, where it also turns
                  * grape-clk's GPIO 63 off; on this one the live ADT keeps
                  * function-clock_enable = Cmwp and iOS leaves 0x61 at 0x11. */
+            };
+
+            /* The speaker amps, CS35L19 (the ADT's audio-speaker0/1).  They
+             * share GPIO 5 (reset, GPIO_SPKAMP_RST_L on the board) and GPIO 6
+             * (KEEPALIVE: the amps stop when nobody toggles it; the left
+             * amp's driver flips it every 20 ms, as iOS does).  The ADT's
+             * speaker-config (20 bytes, the same for both) is the driver's
+             * default; the TDM slots are set by the card. */
+            spk_left: amp@40 {
+                compatible = "cirrus,cs35l19";
+                reg = <0x40>;
+                reset-gpios = <&gpio 5 1>;
+                cirrus,keepalive-gpios = <&gpio 6 0>;
+                clocks = <&audio>;
+                clock-names = "mclk";
+                #sound-dai-cells = <0>;
+                sound-name-prefix = "Left";
+            };
+
+            spk_right: amp@41 {
+                compatible = "cirrus,cs35l19";
+                reg = <0x41>;
+                reset-gpios = <&gpio 5 1>;
+                clocks = <&audio>;
+                clock-names = "mclk";
+                #sound-dai-cells = <0>;
+                sound-name-prefix = "Right";
             };
         };
 

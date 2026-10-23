@@ -7,14 +7,18 @@
 #include <dlfcn.h>
 
 #include <errno.h>
+#include <linux/sync_file.h>
+#include <sys/ioctl.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <unistd.h>
 #include <xf86drm.h>
 
 #include "drm-uapi/apple_sgx_drm.h"
 #include "util/hash_table.h"
 #include "util/log.h"
+#include "util/macros.h"
 #include "util/os_time.h"
 #include "util/u_math.h"
 #include "util/u_memory.h"
@@ -394,6 +398,26 @@ sgx_fence_reference(struct sgx_fence **ptr, struct sgx_fence *f)
 int64_t sgx_fence_waited;
 unsigned sgx_ioctls[SGX_IOCTL_KINDS];
 unsigned sgx_stat_same, sgx_stat_verts, sgx_stat_tex_changes, sgx_stat_merged;
+
+uint64_t
+sgx_fence_signal_time(struct sgx_fence *f)
+{
+   struct sync_fence_info fi[4] = { 0 };
+   struct sync_file_info info = {
+      .num_fences = 4,
+      .sync_fence_info = (uint64_t)(uintptr_t)fi,
+   };
+   uint64_t t = 0;
+   int fd = -1;
+
+   if (!f || drmSyncobjExportSyncFile(f->dev->fd, f->syncobj, &fd))
+      return 0;
+   if (!ioctl(fd, SYNC_IOC_FILE_INFO, &info) && info.status == 1)
+      for (unsigned i = 0; i < MIN2(info.num_fences, 4); i++)
+         t = MAX2(t, fi[i].timestamp_ns);
+   close(fd);
+   return t;
+}
 
 bool
 sgx_fence_wait(struct sgx_fence *f, uint64_t timeout_ns)

@@ -6,6 +6,7 @@
 #define SGX_CONTEXT_H
 
 #include "pipe/p_context.h"
+#include "util/u_debug.h"
 #include "pipe/p_state.h"
 #include "util/slab.h"
 
@@ -44,9 +45,11 @@ struct sgx_shader {
 struct sgx_batch_draw {
    struct sgx_frame_layout l;
    /* its vertices: the draw module's, floats from first in verts; a
-    * vertex shader's the CPU made one stream (M26), bytes from first in
-    * vdata -- or none, the fetch reading the application's buffers */
+    * vertex shader's the CPU made one stream (M26), at vdata_va in one of
+    * the batch's vertex chunks (M42) -- or none, the fetch reading the
+    * application's buffers */
    unsigned first, nverts;
+   uint32_t vdata_va;
    struct sgx_pixel_program prog;       /* a copy, uploaded */
    bool compiled;
    unsigned sa;                         /* its secondary attributes, from word sa */
@@ -62,27 +65,69 @@ struct sgx_batch_draw {
    bool repacked;
 };
 
+/* An occlusion query (M37): the renders made while it was active, each
+ * with a visibility buffer of its own -- the samples its draws passed, a
+ * word a core (sgx_frame_render's vis) -- and what those read already came
+ * to.  A render goes at each begin and end: the ISP has one count. */
+#define SGX_QUERY_BUFS 16
+struct sgx_query {
+   unsigned type;                       /* PIPE_QUERY_OCCLUSION_* */
+   struct sgx_bo *bo[SGX_QUERY_BUFS];
+   unsigned nbo;
+   uint64_t samples;
+   /* the last render made before its end: its result is there when every
+    * render before is done, its own or not (piglit's occlusion_query_order:
+    * a query with no draws after others) */
+   struct sgx_fence *last;
+   /* (M43) TIMESTAMP and TIME_ELAPSED: the render before each end (and its
+    * call's time), the GPU's time there the later of the two */
+   struct sgx_fence *begin_fence;
+   uint64_t begin_cpu, end_cpu;
+};
+
+/* a render's visibility buffer for q, busy with it (sgx_batch_flush) */
+void sgx_query_add(struct sgx_query *q, struct sgx_bo *bo);
+/* whether rendering goes ahead under the render condition (M43) */
+bool sgx_render_condition_ok(struct sgx_context *ctx);
+
+#define SGX_BATCH_VCHUNKS 40
+#define SGX_BATCH_VCHUNK  (256u << 10)
+
 struct sgx_batch {
    struct pipe_resource *rt;            /* referenced */
    unsigned rt_level, rt_layer;         /* its level and face (M29) */
+   unsigned w, h;                       /* its area (M43: sgx_frame_target) */
    struct sgx_batch_draw draw[SGX_FRAME_MAX_DRAWS];
    struct sgx_frame_draw fdraw[SGX_FRAME_MAX_DRAWS];    /* (sgx_batch_flush's) */
    unsigned ndraws;
    unsigned seq;                        /* this one's number, counted from 1 */
    float depth_clear;                   /* what the render's depth starts at */
    struct pipe_resource *zs;            /* the depth buffer, referenced (M24) */
+   unsigned zs_level, zs_layer;         /* its level and layer (M43) */
    bool zs_cleared;                     /* its depth cleared at the render's start */
    bool zs_read, zs_written;            /* a draw tests depth, writes it */
+   bool counted;                        /* a draw's samples counted (M37) */
    float *verts;
    unsigned nfloats, maxfloats;
-   uint8_t *vdata;                      /* vertex shaders' vertices made one stream */
-   unsigned nbytes, maxbytes;
+   /* vertex shaders' vertices made one stream (M26), written there by
+    * gpu_vs_draw straight into GPU memory (M42: once, not copied twice
+    * more) -- chunks from the buffer cache, listed for the render and busy
+    * with it; vat the next byte in the last; nbytes all of them told */
+   struct sgx_bo *vchunk[SGX_BATCH_VCHUNKS];
+   unsigned nvchunks;
+   uint32_t vat;
+   unsigned nbytes;
    uint32_t *sa;
    unsigned nsa, maxsa;
    uint16_t *idx;
    unsigned nidx, maxidx;
    struct pipe_resource *tex[SGX_FRAME_MAX_HANDLES];   /* sampled, referenced */
+   /* the buffer each was sampled from (its copy then, M37: a copy remade
+    * while draws read the old one is a new buffer -- the same texture
+    * twice), referenced, and busy with the render once it is made */
+   struct sgx_bo *tex_bo[SGX_FRAME_MAX_HANDLES];
    unsigned ntex;
+   uint64_t tex_bytes;                  /* the memory they hold (SGX_BATCH_TEX_BYTES) */
    /* the buffers the render lists for the kernel -- the textures' copies,
     * then buffers' (M26: their GPU copies, referenced in bos[], stamped
     * with seq) -- SGX_FRAME_MAX_HANDLES at most all told */
@@ -116,8 +161,17 @@ struct sgx_vtx {
    unsigned nverts;
    unsigned count, max_index;
    bool indexed;
-   struct sgx_bo *bos[SGX_VS_MAX_ATTRIBS];
+   /* the buffers the draw reads: its attributes', and (M43) its uniform
+    * buffers', both stages' */
+   struct sgx_bo *bos[SGX_VS_MAX_ATTRIBS + 2 * SGX_FRAME_MAX_UBOS];
    unsigned nbos;
+   /* repacked (M42): where the stream was written -- the batch's chunk
+    * vchunk (referenced), vdata for the CPU, vdata_va for the GPU -- when
+    * the batch was number vseq (a flush since: written again, there) */
+   struct sgx_bo *vchunk;
+   uint8_t *vdata;
+   uint32_t vdata_va;
+   unsigned vseq;
 };
 
 struct sgx_context {
@@ -127,6 +181,8 @@ struct sgx_context {
    struct pipe_vertex_buffer vb[PIPE_MAX_ATTRIBS];
    uint32_t vb_mask;
    struct pipe_constant_buffer cb[2];   /* buffer 0: the vertex, fragment shader's */
+   /* (M43) the uniform buffers, 1..15, of the vertex and fragment shader */
+   struct pipe_constant_buffer ubo[2][SGX_FRAME_MAX_UBOS];
    struct sgx_shader *vs, *fs;
    /* blending, depth (M14) */
    const struct pipe_blend_state *blend;
@@ -137,6 +193,9 @@ struct sgx_context {
    const struct pipe_sampler_state *fs_samplers[PIPE_MAX_SAMPLERS];
    struct pipe_sampler_view *fs_views[PIPE_MAX_SHADER_SAMPLER_VIEWS];
    struct sgx_fence *last;      /* the last render this context submitted */
+   /* a framebuffer of depth and stencil alone: the colour the tiles end in
+    * goes here (M35), the depth buffer's size */
+   struct pipe_resource *no_colour;
 
    /* draws (sgx_draw.c): the draw module, its back end, and the vertices
     * gathered for the template frame */
@@ -146,30 +205,40 @@ struct sgx_context {
    struct sgx_frame_layout layout;      /* of verts, for the bound shaders */
    float *verts;
    unsigned nverts, maxfloats;
-   /* M18: the vertex shader on the GPU -- its vertices (M26: vtx, vdata),
-    * the triangles indices into them, its uniforms */
+   /* M18: the vertex shader on the GPU -- its vertices (M26: vtx; M42: a
+    * stream the CPU makes in the batch's vertex chunks), the triangles
+    * indices into them, its uniforms */
    struct sgx_vs *gpu_vs;
    struct sgx_vtx vtx;
-   uint8_t *vdata;
-   unsigned maxvdata;
    uint16_t *indices;
    unsigned maxindices;
    uint32_t vs_sa[128 + SGX_UBUF_MAX];   /* (sa's, then the uniforms in memory, M32) */
    const struct pipe_rasterizer_state *rast;
    const struct sgx_vertex_elements *velems;
    struct pipe_viewport_state viewport;
+   bool depth_clamp;            /* the program's rasterizer state's (M43) */
    struct pipe_scissor_state scissor;
    struct pipe_stencil_ref stencil_ref;
    struct sgx_pixel_program clear_prog;  /* writes nothing: sgx_zs_clear() */
    struct sgx_pixel_program colour_prog; /* o0 = sa0: sgx_colour_clear() */
    uint64_t colour_code[2];
+   /* (M43) the colour clear's program for each kind of float tile */
+   struct sgx_pixel_program colour_float_prog[SGX_RT_F32X2 + 1];
+   uint64_t colour_float_code[SGX_RT_F32X2 + 1][2];
    struct sgx_batch batch;
+   struct sgx_query *query;             /* the active occlusion query (M37) */
+   bool queries_off;                    /* (set_active_query_state: meta ops) */
+   /* (M43) conditional rendering (NV_conditional_render): the query whose
+    * result decides, render_condition()'s condition and mode */
+   struct pipe_query *cond_query;
+   bool cond_condition;
+   enum pipe_render_cond_flag cond_mode;
    const float *fs_constants;
    unsigned fs_constants_size;  /* bytes */
    bool warned_fs, debug_draw;
    /* SGX_DEBUG=fps: frames (swaps), renders and draws counted, and said
     * every two seconds */
-   bool debug_fps, debug_sync;
+   bool debug_fps, debug_sync, debug_flushes;
    unsigned stat_frames, stat_renders, stat_draws;
    int64_t stat_t0, stat_cpu0, stat_gpu;
    int64_t stat_swap, stat_between;     /* the last frame's end; to the next draw */
@@ -181,6 +250,21 @@ sgx_context(struct pipe_context *p)
 {
    return (struct sgx_context *)p;
 }
+
+/* what the rasterizer state's polygon offset units are times GL's, for
+ * the draw module (sgx_create_rs_state): 4, or with the ISP's offset
+ * (SGX_ISP_OFFSET=1, M37) 16 -- its unit, 32 of 24-bit depth's at depths
+ * 0.5..1, the draw module doubling it -- the same on both vertex paths */
+static inline float
+sgx_offset_scale(void)
+{
+   static int isp = -1;
+
+   if (isp < 0)
+      isp = debug_get_bool_option("SGX_ISP_OFFSET", false);
+   return isp ? 16.0f : 4.0f;
+}
+#define SGX_OFFSET_SCALE sgx_offset_scale()
 
 /* whether the gathered draws read bo (a buffer's GPU copy, M26) */
 static inline bool

@@ -57,6 +57,8 @@ NEW_FILES = [
     "drivers/phy/phy-apple-s5l-usb.c",
     "drivers/power/supply/apple-hdq-battery.c",
     "drivers/video/backlight/apple-pmu-wled.c",
+    "sound/soc/apple/s5l-audio.c",
+    "sound/soc/codecs/cs35l19.c",
     "Documentation/devicetree/bindings/interrupt-controller/apple,aic1.yaml",
     "fs/hfsplus/decmpfs.c",
 ]

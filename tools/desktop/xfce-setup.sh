@@ -9,6 +9,10 @@
 # packages, ~490 MB on the NFS root, ~6 minutes over the cable.  Running it
 # again changes nothing that is already right.
 #
+# xfwm4 as Alpine has it composites fullscreen games too; the patched one
+# that leaves them out is built and installed from the host:
+# tools/desktop/xfwm4/build.sh install (docs/research/p105-mesa.md, M40).
+#
 # What each piece is for:
 #   xorg-server, xf86-video-fbdev   X on /dev/fb0 -- there is no DRM driver
 #   xf86-input-libinput, eudev      touch.  Xorg finds input devices through
@@ -96,17 +100,19 @@ pidof touchegg >/dev/null || nohup touchegg --daemon >/tmp/touchegg.log 2>&1 </d
 # wallpaper is an SVG, and rasterising it on this one core kept the screen
 # black for over a minute at every login; a colour takes a second.  Written
 # as xfconf's own file before the session starts, so even the first login is
-# spared.  The monitor is "default": fbdev has no RandR outputs, and X names
-# the one it makes up "default".
+# spared.  The monitor is "default" on fbdev (no RandR outputs: X names the
+# one it makes up "default") and "None-1" on modesetting (the GPU's X).
 x="$HOME/.config/xfce4/xfconf/xfce-perchannel-xml/xfce4-desktop.xml"
 if [ ! -e "$x" ]; then
     mkdir -p "$(dirname "$x")"
-    cat > "$x" <<'XML'
-<?xml version="1.0" encoding="UTF-8"?>
-<channel name="xfce4-desktop" version="1.0">
-  <property name="backdrop" type="empty">
-    <property name="screen0" type="empty">
-      <property name="monitordefault" type="empty">
+    {
+        echo '<?xml version="1.0" encoding="UTF-8"?>'
+        echo '<channel name="xfce4-desktop" version="1.0">'
+        echo '  <property name="backdrop" type="empty">'
+        echo '    <property name="screen0" type="empty">'
+        for m in monitordefault monitorNone-1; do
+            cat <<XML
+      <property name="$m" type="empty">
         <property name="workspace0" type="empty">
           <property name="color-style" type="int" value="0"/>
           <property name="image-style" type="int" value="0"/>
@@ -118,17 +124,28 @@ if [ ! -e "$x" ]; then
           </property>
         </property>
       </property>
-    </property>
-  </property>
-</channel>
 XML
+        done
+        echo '    </property>'
+        echo '  </property>'
+        echo '</channel>'
+    } > "$x"
+fi
+# The GPU (docs/research/p105-mesa.md, M36): when the driver's Mesa is the
+# system's OpenGL (mesa/install.py), X runs modesetting with glamor from
+# /etc/X11/sgx.conf.d instead of fbdev -- XFCE drawn by the GPU, GLX for its
+# programs.  DESKTOP_FB=1: fbdev as before.
+xargs=
+if [ -f /etc/X11/sgx.conf.d/20-sgx.conf ] && [ "${DESKTOP_FB:-0}" != 1 ]; then
+    xargs="-- -configdir /etc/X11/sgx.conf.d"
+    echo "X on the GPU (modesetting, glamor); DESKTOP_FB=1 desktop for fbdev"
 fi
 # When the session ends the text console is back on the glass -- with no
 # keyboard, since fbkeyboard was stopped above.  Start it again, the way
 # stage 2 did (it leaves its arguments in /run/fbkeyboard.args).  setsid, so
 # that the session outlives the ssh connection it was started from.
 setsid sh -c '
-    startxfce4 >/tmp/desktop.log 2>&1 </dev/null
+    startxfce4 '"$xargs"' >/tmp/desktop.log 2>&1 </dev/null
     if [ -s /run/fbkeyboard.args ] && ! pidof fbkeyboard >/dev/null; then
         exec fbkeyboard $(cat /run/fbkeyboard.args) >/tmp/fbkeyboard.log 2>&1 </dev/null
     fi

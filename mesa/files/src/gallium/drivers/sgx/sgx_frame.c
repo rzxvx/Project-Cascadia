@@ -57,6 +57,7 @@
 #include "sgx_resource.h"
 #include "sgx_rt.h"
 #include "sgx_template.h"
+#include "sgx_usse.h"
 
 /* the EXT window, as sgx2d uses it */
 #define EXT_TEX_END     0x280000
@@ -72,7 +73,13 @@
 #define ITER_PROG       0x20
 #define ITER_PROG_F32   0x30
 #define VERTEX_PROGS    0x40
-#define PROGS_SIZE      0x1e0
+/* (M43) the background's program for targets of four half floats:
+ * iOS's m28 pixel program, the texel's four F16 from pa0 into o0, o1 */
+#define BG64_PROG       0x1e0
+/* and of two F32: both registers moved by one VPCK F32 (an F16 move might
+ * not keep F32's bits) */
+#define BG64F32_PROG    0x1f0
+#define PROGS_SIZE      0x200
 #define EOT_SLOT        0x58
 #define MAX_EOT         256
 #define CODE_BO_SIZE    (PROGS_SIZE + MAX_EOT * EOT_SLOT)
@@ -187,6 +194,89 @@ pds_iterate(unsigned d, unsigned size)
    return 0x07000000u | ((d + 2) >> 2) << 18 | d << 10 | ((d + 1) & 3) << 8 | size;
 }
 #define ITER_TEMPS           6
+
+/* The PDS's texture lookups (M35; the 2026-10-10 corpus, s02 and s04): an
+ * iterate DOUT whose control word sends a varying's x and y to the
+ * texture unit -- no iterate into the registers (15:12 = 0xf), the
+ * varying in 3:0, 2D (10:8 = 1), the last lookup's bit 11 -- then a
+ * texture DOUT with the texture's four state words at data word s (even),
+ * the texel as it is (four bytes, one register) after the iterated inputs.
+ * The data word 1 of a program that has them: bit 3 (iOS: 0x0a, 0x0e with
+ * iterates besides). */
+#define FETCH_CONTROL_2D     0x0c00f100u   /* | varying, | FETCH_LAST */
+#define FETCH_CONTROL_PROJ   0x0c00f200u   /* x and y divided (iOS's s08: 0c00fa00) */
+#define FETCH_LAST           0x800u
+#define FETCH_SIZE_RAW       0x02u
+#define PDS_FLAGS_FETCH      8u
+
+/* SGX_ITER_XOR=mask: bits flipped in every iterate's control word (finding
+ * what the rest of them do) */
+static uint32_t
+iter_xor(void)
+{
+   static int64_t x = -1;
+
+   if (x < 0)
+      x = getenv("SGX_ITER_XOR") ? strtoul(getenv("SGX_ITER_XOR"), NULL, 0) : 0;
+   return x;
+}
+
+/* Input i's iterate (M37): a varying's four F32 into four registers, or
+ * one of the TA's colours (iter_src < ncolours: TSP varying 10, 11) into
+ * one, its bytes as o0's (iOS's es1 e00: control 0x0fc0a00f, DOUT size
+ * 0x02), shaded flat -- bit 26 clear (e01's 0x0bc0a00f).  The others'
+ * TSP varyings are the layout's less the colours. */
+static uint32_t
+iterate_control(const struct sgx_pixel_program *p, unsigned i)
+{
+   unsigned v = p->iter_src[i];
+   uint32_t w = i == p->ninputs - 1 ? ITERATE_F32_VEC4 : ITERATE_F32_VEC4_MORE;
+
+   /* (M38) as F16: format 2 (iOS's e20, s00: 2fc0x00f) */
+   if (p->f16)
+      w |= 2u << 28;
+
+   if (v == SGX_ITERATE_POSITION)
+      w |= v << 12;
+   else if (v < p->ncolours)
+      w = (w & ~(1u << 26)) | (10 + v) << 12;
+   else
+      w |= (v - p->ncolours) << 12;
+   return w ^ iter_xor();
+}
+
+static void layout_words(uint32_t *full, const struct sgx_frame_layout *l);
+
+static bool
+iterates_colour(const struct sgx_pixel_program *p, unsigned i)
+{
+   return p->iter_src[i] != SGX_ITERATE_POSITION && p->iter_src[i] < p->ncolours;
+}
+
+/* the primary attributes the PDS fills: four an input, one a colour, one a
+ * texel -- two each as F16 (M38) */
+static unsigned
+pixel_pa(const struct sgx_pixel_program *p)
+{
+   unsigned n = p->f16 ? 2 * p->nfetch : p->nfetch;
+
+   for (unsigned i = 0; i < p->ninputs; i++)
+      n += p->f16 ? 2 : iterates_colour(p, i) ? 1 : 4;
+   return n;
+}
+
+/* input i's iterate DOUT's size: four registers, one a colour, two F16 */
+static unsigned
+iterate_size(const struct sgx_pixel_program *p, unsigned i)
+{
+   return p->f16 ? 0x12 : iterates_colour(p, i) ? 0x02 : 0x32;
+}
+
+static uint32_t
+pds_texture(unsigned s)
+{
+   return 0x07000000u | ((s + 2) >> 2) << 18 | s << 10 | 0x004;
+}
 /* the pack's colour, for draws through its vertex side */
 #define PACK_COLOUR_VARYING  1
 
@@ -266,7 +356,97 @@ usse_limm_r(unsigned reg, uint32_t imm)
 
 struct sgx_eot {
    uint32_t va, w, h, stride;   /* the render target it writes */
+   /* (M43) its format: the pixel back end's word, a pixel's bytes, and the
+    * background object's load of it as a texture's format and swizzle */
+   uint32_t pbe, bytes, bg_fmt, bg_swizzle;
+   enum sgx_rt_kind kind;
 };
+
+/* The render target formats (M43).  The pixel back end's format words are
+ * GXM's colour formats (SceGxmColorFormat: the base format in bits 31:28
+ * and 24:23 -- U8 0x80800000, U8U8 0xb0800000 -- its swizzle in 21:20)
+ * with bit 16 set, as all of iOS's captures have it (m25..m28: 8888
+ * 0x00110000, 565 0x34110000, 4444 0x54110000, 5551 0x44110000, half
+ * floats 0x07010000).  Bit 26 there is GXM's tiled surface (each 32 x 32
+ * tile's pixels one after another: glfmt's half quad landed in whole
+ * rows); linear here, the pixel's size the format's.  The tile holds the
+ * program's colour as RGBA bytes whatever the target, and the PBE takes
+ * the target's channels from it (R, then G); the background object loads
+ * the target's texels back into the same places, alpha 1 where the target
+ * has none.  SGX_PBE_<FMT>, SGX_BG_<FMT> (format << 8 | swizzle): to try
+ * others. */
+static bool
+rt_format(enum pipe_format format, struct sgx_eot *to)
+{
+   static const struct {
+      enum pipe_format format;
+      const char *name;
+      uint32_t pbe, bytes, bg_fmt, bg_swizzle;
+      enum sgx_rt_kind kind;
+   } fmts[] = {
+      { PIPE_FORMAT_B8G8R8A8_UNORM, "BGRA8", 0x00110000, 4, 0x0c, 1, SGX_RT_UNORM8 },
+      { PIPE_FORMAT_B8G8R8X8_UNORM, "BGRX8", 0x00110000, 4, 0x0c, 1, SGX_RT_UNORM8 },
+      /* (M43) sRGB: the same bytes, the program encodes them (and decodes
+       * the tile's for blending: sgx_blend_key's rt_srgb); and R G B A in
+       * memory, GXM's ABGR */
+      { PIPE_FORMAT_B8G8R8A8_SRGB, "BGRA8S", 0x00110000, 4, 0x0c, 1, SGX_RT_UNORM8 },
+      { PIPE_FORMAT_B8G8R8X8_SRGB, "BGRX8S", 0x00110000, 4, 0x0c, 1, SGX_RT_UNORM8 },
+      { PIPE_FORMAT_R8G8B8A8_UNORM, "RGBA8", 0x00010000, 4, 0x0c, 0, SGX_RT_UNORM8 },
+      { PIPE_FORMAT_R8G8B8A8_SRGB, "RGBA8S", 0x00010000, 4, 0x0c, 0, SGX_RT_UNORM8 },
+      /* U8, R; L8's 1RRR */
+      { PIPE_FORMAT_R8_UNORM, "R8", 0x80810000, 1, 0x00, 5, SGX_RT_UNORM8 },
+      /* U8U8, GR */
+      { PIPE_FORMAT_R8G8_UNORM, "RG8", 0xb0810000, 2, 0x07, 0, SGX_RT_UNORM8 },
+      /* GL's intensity, luminance, luminance alpha and alpha targets (M43:
+       * Mesa's RGBA stand-in for them blends with the alpha drawn, not the
+       * intensity's or 1): loaded RRRR, 1RRR, GRRR (the sampler's
+       * swizzles, 3 found from L8's 5 and A8's 6), R000; LA8 written R
+       * then A (GXM's U8U8 AR), A8 its A (U8, swizzle 1) */
+      { PIPE_FORMAT_I8_UNORM, "I8", 0x80810000, 1, 0x00, 3, SGX_RT_UNORM8 },
+      { PIPE_FORMAT_L8_UNORM, "L8", 0x80810000, 1, 0x00, 5, SGX_RT_UNORM8 },
+      { PIPE_FORMAT_L8A8_UNORM, "LA8", 0xb0b10000, 2, 0x07, 2, SGX_RT_UNORM8 },
+      { PIPE_FORMAT_A8_UNORM, "A8", 0x80910000, 1, 0x00, 6, SGX_RT_UNORM8 },
+      /* F16F16F16F16 (iOS's m28 word less the tiled bit), loaded as the
+       * texture F16F16F16F16 handed back as F16 */
+      { PIPE_FORMAT_R16G16B16A16_FLOAT, "RGBA16F", 0x01010000, 8, 0x1b, 0, SGX_RT_F16X4 },
+      /* (GL's RGB16F: no alpha, so blending takes the target's as 1) */
+      { PIPE_FORMAT_R16G16B16X16_FLOAT, "RGBX16F", 0x01010000, 8, 0x1b, 0, SGX_RT_F16X4 },
+      /* F16F16 and F16, loaded raw (the tile's own bits) */
+      { PIPE_FORMAT_R16G16_FLOAT, "RG16F", 0x00810000, 4, 0x11, 0, SGX_RT_F16X2 },
+      { PIPE_FORMAT_R16_FLOAT, "R16F", 0xf0010000, 2, 0x0b, 0, SGX_RT_F16X2 },
+      /* F32, raw both ways; F32F32, two registers */
+      { PIPE_FORMAT_R32_FLOAT, "R32F", 0x10810000, 4, 0x12, 0, SGX_RT_F32 },
+      { PIPE_FORMAT_R32G32_FLOAT, "RG32F", 0x11010000, 8, 0x1e, 0, SGX_RT_F32X2 },
+      /* F11F11F10 (APPLE_color_buffer_packed_float): the PBE packs the
+       * tile's four F16 with bit 25 (iOS's m28 had it too; without it the
+       * PBE wrote o0's bits as they are -- for F16F16F16F16 either way);
+       * loaded as the texture handed back as F16 */
+      { PIPE_FORMAT_R11G11B10_FLOAT, "R11G11B10F", 0x23010000, 4, 0x1a, 0, SGX_RT_F16X4 },
+   };
+
+   for (unsigned i = 0; i < ARRAY_SIZE(fmts); i++) {
+      char name[32];
+      const char *e;
+
+      if (fmts[i].format != format)
+         continue;
+      to->pbe = fmts[i].pbe;
+      to->bytes = fmts[i].bytes;
+      to->bg_fmt = fmts[i].bg_fmt;
+      to->bg_swizzle = fmts[i].bg_swizzle;
+      to->kind = fmts[i].kind;
+      snprintf(name, sizeof(name), "SGX_PBE_%s", fmts[i].name);
+      if ((e = getenv(name)))
+         to->pbe = strtoul(e, NULL, 0);
+      snprintf(name, sizeof(name), "SGX_BG_%s", fmts[i].name);
+      if ((e = getenv(name))) {
+         to->bg_fmt = strtoul(e, NULL, 0) >> 8 & 0x1f;
+         to->bg_swizzle = strtoul(e, NULL, 0) & 7;
+      }
+      return true;
+   }
+   return false;
+}
 
 struct rt_set {
    struct sgx_rt rt;
@@ -465,14 +645,18 @@ sa_field(unsigned nsa)
 }
 
 /* State word 5 for a pixel program: the registers a pixel takes, primary
- * attributes and temporaries, in fours (bits 31:27); bits 26:23 as iOS has
+ * attributes and temporaries, in fours (bits 31:27) -- the temporaries
+ * from a four after the primary attributes (a texel the PDS fetched after
+ * the inputs, M35: one primary attribute and 27 temporaries counted as
+ * 28 registers, not 32, and the temporaries ran into the next pixel's
+ * texel, which read 0); bits 26:23 as iOS has
  * them for 2, 3 and 4 fours, 12 / fours (M13b), but 1 past 12 -- 0 there
  * and the program reads 0 for its inputs (M30); its secondary attributes
  * (sa_field) */
 static uint32_t
 pixel_word5(const struct sgx_pixel_program *pix)
 {
-   unsigned fours = DIV_ROUND_UP(4 * pix->ninputs + pix->ntemps, 4);
+   unsigned fours = DIV_ROUND_UP(pixel_pa(pix), 4) + DIV_ROUND_UP(pix->ntemps, 4);
 
    return fours << 27 | (fours > 1 ? MAX2(12 / fours, 1) : 0) << 23 | sa_field(pix->nsa);
 }
@@ -997,6 +1181,16 @@ put_ours(struct sgx_frame *f)
    memcpy(f->code_map, replace, sizeof(replace));
    memcpy(f->code_map + ITER_PROG, iterated, sizeof(iterated));
    memcpy(f->code_map + ITER_PROG_F32, iterated_f32, sizeof(iterated_f32));
+   {
+      /* PHAS; mov.f16 o0.xyzw, pa0.xyzw, end (iOS's m28) */
+      const uint64_t bg64[2] = { USSE_PHAS, 0x3884042185000000ull };
+      const uint64_t bg64f32[2] = {
+         USSE_PHAS, usse_pack_f32x2(usse_reg(USSE_OUTPUT, 0), usse_reg(USSE_PA, 0)) | USSE_END,
+      };
+
+      memcpy(f->code_map + BG64_PROG, bg64, sizeof(bg64));
+      memcpy(f->code_map + BG64F32_PROG, bg64f32, sizeof(bg64f32));
+   }
    for (unsigned n = 0; n <= SGX_FRAME_MAX_VARYINGS; n++) {
       uint64_t prog[8];
       unsigned len = vertex_program(prog, n);
@@ -1176,17 +1370,31 @@ sgx_frame_destroy(struct sgx_frame *f)
 }
 
 /* where a target's pixels are: its level's and layer's */
+enum sgx_rt_kind
+sgx_frame_rt_kind(enum pipe_format format)
+{
+   struct sgx_eot to = { 0 };
+
+   return rt_format(format, &to) ? to.kind : SGX_RT_UNORM8;
+}
+
 static struct sgx_eot
 target_eot(const struct sgx_frame_target *t)
 {
    const struct sgx_resource *r = t->res;
-
-   return (struct sgx_eot){
+   unsigned w = u_minify(r->base.width0, t->level), h = u_minify(r->base.height0, t->level);
+   struct sgx_eot to = {
       .va = r->bo->va + r->offset[t->level] + t->layer * r->layer_size[t->level],
-      .w = u_minify(r->base.width0, t->level), .h = u_minify(r->base.height0, t->level),
+      .w = t->w ? MIN2(t->w, w) : w, .h = t->h ? MIN2(t->h, h) : h,
       .stride = r->stride[t->level],
    };
+
+   if (!rt_format(r->base.format, &to))
+      rt_format(PIPE_FORMAT_B8G8R8A8_UNORM, &to);
+   return to;
 }
+
+static bool own_copies(const struct sgx_frame *f);
 
 bool
 sgx_frame_can_render(struct sgx_frame *f, const struct sgx_frame_target *t)
@@ -1195,9 +1403,13 @@ sgx_frame_can_render(struct sgx_frame *f, const struct sgx_frame_target *t)
    struct sgx_eot to;
 
    if (!f || !t->res->bo || t->level > p->last_level || t->layer >= p->array_size ||
-       (p->target != PIPE_TEXTURE_2D && p->target != PIPE_TEXTURE_CUBE) ||
-       (p->format != PIPE_FORMAT_B8G8R8A8_UNORM && p->format != PIPE_FORMAT_B8G8R8X8_UNORM) ||
-       p->nr_samples > 1)
+       (p->target != PIPE_TEXTURE_2D && p->target != PIPE_TEXTURE_CUBE &&
+        p->target != PIPE_TEXTURE_RECT && p->target != PIPE_TEXTURE_1D) ||
+       !rt_format(p->format, &(struct sgx_eot){ 0 }) || p->nr_samples > 1)
+      return false;
+   /* (the background of half floats is patched into a render's own copy
+    * of the PDS block) */
+   if (sgx_frame_rt_kind(p->format) != SGX_RT_UNORM8 && !own_copies(f))
       return false;
    to = target_eot(t);
    return to.w <= SGX_RT_MAX_SIZE && to.h <= SGX_RT_MAX_SIZE &&
@@ -1297,27 +1509,33 @@ state_size(uint32_t *full, unsigned w, unsigned h)
 }
 
 uint32_t
-sgx_frame_zls_size(unsigned w, unsigned h)
+sgx_frame_zls_size(unsigned w, unsigned h, enum sgx_zls_format format)
 {
-   return 2 * DIV_ROUND_UP(w, 64) * DIV_ROUND_UP(h, 32) * 4096;
+   return 2 * DIV_ROUND_UP(w, 64) * DIV_ROUND_UP(h, 32) * (format == SGX_ZLS_F32S8 ? 5120 : 4096);
 }
 
 /* ZLSCTL (register 0x480), from iOS's depth capture (0x0015100c, a store)
  * and flipping its bits (M23, M24): bit 2 stores the tiles' depth, 17 their
  * stencil (16 with it); 14 loads depth (1 with it), 13 stencil; the format
  * stored in bits 25:24, loaded in 22:21 -- 0 F32, 1 24-bit with stencil in
- * the top byte, 2 16-bit; bits 10:4 the rows of tiles in twos less 1 (tile
- * x, y at (x + y * 2 * (v + 1)) * 4 KiB); 12 and 18 needed.  Tiles a render
- * draws nothing in are neither loaded nor stored.  SGX_ZLS_CTL=value:
- * another (the extent put in). */
+ * the top byte, 2 16-bit, 3 F32 and stencil in 5 bytes (M43); bits 10:4
+ * the rows of tiles in twos less 1 (tile x, y at (x + y * 2 * (v + 1)) *
+ * 4 KiB, 5 KiB in format 3); 12 and 18 needed.  Tiles a render draws
+ * nothing in are neither loaded nor stored.  SGX_ZLS_CTL=value: another
+ * (the extent put in).  (vitasdk's GXM depth/stencil formats read as
+ * these bits: S8D24 0x01266000, D16 0x02444000, DF32M 0x00044000 and
+ * DF32M_S8 0x00066000, the last with a stencil surface of its own.  Format
+ * 0 with the stencil bits and a stencil buffer at the 3D block's +0x78,
+ * +0x7c -- registers 0x48c, 0x490, iOS's payload word 32, 0 there --
+ * neither stored nor loaded the stencil, as an offset from the ZLS base
+ * or an address.) */
 static uint32_t
 zls_ctl(const struct sgx_frame_zls *zls)
 {
    const char *e = getenv("SGX_ZLS_CTL");
    uint32_t ctl = 0x00151000;
 
-   if (zls->stencil)
-      ctl |= 0x01200000;
+   ctl |= (uint32_t)zls->format << 24 | (uint32_t)zls->format << 21;
    if (zls->store)
       ctl |= 0xc | (zls->stencil ? 0x20000 : 0);
    if (zls->load)
@@ -1333,11 +1551,11 @@ zls_ctl(const struct sgx_frame_zls *zls)
  * draws read besides */
 static int
 kick(struct sgx_frame *f, const struct sgx_frame_target *t, float depth,
-     const struct sgx_frame_zls *zls, const uint32_t *handles, unsigned nhandles, uint32_t vdm,
-     const struct own *o, struct sgx_fence *done)
+     const struct sgx_frame_zls *zls, struct sgx_bo *vis, const uint32_t *handles,
+     unsigned nhandles, uint32_t vdm, const struct own *o, struct sgx_fence *done)
 {
    struct sgx_eot to = target_eot(t);
-   uint32_t hs[MAX_PACK_BOS + 3 + 2 + 1 + SGX_FRAME_MAX_HANDLES + ARENA_MAX];
+   uint32_t hs[MAX_PACK_BOS + 3 + 2 + 1 + 1 + SGX_FRAME_MAX_HANDLES + ARENA_MAX];
    uint32_t cmd[APPLE_SGX_TA_CMD_MAX / 4];
    const uint32_t *pack = f->built ? f->cmd_tmpl :
                           (const uint32_t *)cpu_at(f, f->kick[2], APPLE_SGX_TA_CMD_MIN, NULL);
@@ -1401,12 +1619,27 @@ kick(struct sgx_frame *f, const struct sgx_frame_target *t, float depth,
    {
       uint32_t *b = (uint32_t *)(blk - 0x80), base = zls ? zls->bo->va & ~0xfffffu : 0;
 
+      /* (M43) a target of half floats: two output registers a pixel -- the
+       * one word of the 3D block iOS's kext sets apart for m28's target
+       * (its builder 0x80bf5eec run on m25's and m28's payloads, rtemu.py:
+       * payload word 34) */
+      b[0x4c / 4] = sgx_rt_kind_64(sgx_frame_rt_kind(t->res->base.format));
       b[0x14 / 4] = base;
       b[0x6c / 4] = zls ? zls_ctl(zls) : 0;
       b[0x70 / 4] = zls ? zls->bo->va - base : 0;
       b[0x74 / 4] = zls ? zls->bo->va - base : 0;
       if (zls)
          hs[n++] = zls->bo->handle;
+   }
+   /* the visibility buffer (M37): what iOS's GL hands the kext as payload
+    * words 42 and 43 (m29), the 3D block's first two words -- core 0's
+    * count at the buffer, core 1's SGX_VIS_CORE_STRIDE further */
+   if (vis) {
+      uint32_t *b = (uint32_t *)(blk - 0x80);
+
+      b[0] = vis->va;
+      b[1] = vis->va + SGX_VIS_CORE_STRIDE;
+      hs[n++] = vis->handle;
    }
    /* the stream: the render's own (M27), or the frame's */
    if (vdm)
@@ -1490,7 +1723,7 @@ static uint32_t
 eot_program(struct sgx_frame *f, const struct sgx_eot *want)
 {
    const uint32_t pbe[6] = {
-      0x00110000, want->va, want->stride / 4 / 2 - 1, 0, 0,
+      want->pbe, want->va, want->stride / want->bytes / 2 - 1, 0, 0,
       (want->h - 1) << 12 | (want->w - 1),
    };
    uint64_t prog[11];
@@ -1667,14 +1900,13 @@ upload(struct sgx_frame *f, struct sgx_pixel_program *p)
    pds[n++] = (p->ninputs ? ITER_TEMPS : 2) | p->branches;
    pds[n++] = 0;
    for (unsigned i = 0; i < p->ninputs; i++)
-      pds[n++] = (i == p->ninputs - 1 ? ITERATE_F32_VEC4 : ITERATE_F32_VEC4_MORE) |
-                 p->iter_src[i] << 12;
+      pds[n++] = iterate_control(p, i);
    while (n % 4)
       pds[n++] = 0;
    data = n;
    pds[n++] = PDS_DOUTU_ROW0_ITER;
    for (unsigned i = 0; i < p->ninputs; i++)
-      pds[n++] = pds_iterate(3 + i, 0x32);
+      pds[n++] = pds_iterate(3 + i, iterate_size(p, i));
    pds[n++] = PDS_END;
    p->pds_va = pds_va;
    p->pds_rows = data / 4;
@@ -1859,12 +2091,17 @@ begin_render(struct sgx_frame *f, const struct sgx_frame_target *t, struct sgx_e
       /* where the pack's own end of tile writes, if the kernel does not say */
       to.va = f->dev->fb_va ? f->dev->fb_va : 0x90000000u;
       to.stride = f->dev->fb_stride ? f->dev->fb_stride : f->w * 4;
+      rt_format(PIPE_FORMAT_B8G8R8A8_UNORM, &to);
    }
    eot = eot_program(f, &to);
    bg[0] = (to.stride / 4 / 4 - 2) << 16 | 0x0e90;
-   bg[1] = 0xcc000000 | (to.w - 1) << 12 | (to.h - 1);
+   bg[1] = 0xc0000000 | to.bg_fmt << 24 | (to.w - 1) << 12 | (to.h - 1);
+   /* (M43) four half floats: handed back as F16, two registers (R11G11B10F
+    * too: the tile's F16) */
+   if (to.kind == SGX_RT_F16X4)
+      bg[3] |= 0x80000000u;
    bg[2] = to.va;
-   bg[3] = 0x10000000;
+   bg[3] = to.bg_swizzle << 28;
    d0 = doutu(f, eot);
 
    if (o) {
@@ -1878,6 +2115,18 @@ begin_render(struct sgx_frame *f, const struct sgx_frame_target *t, struct sgx_e
       memcpy(p, pds, SGX_TMPL_PDS_SIZE);
       p[8 / 4] = d0;
       memcpy(p + 0x130 / 4, bg, 4 * sizeof(uint32_t));
+      /* (M43) the background of four half floats: its texel into two
+       * registers (iOS's F16 lookups: iterate size 0x52, texture DOUT kind
+       * 0x024) and our program moving both into o0, o1 */
+      if (to.kind == SGX_RT_F16X4) {
+         p[0x120 / 4] = doutu(f, f->code_va + BG64_PROG);
+         p[0x144 / 4] = (p[0x144 / 4] & ~0xffu) | 0x52;
+         p[0x148 / 4] = (p[0x148 / 4] & ~0xfffu) | 0x024;
+      } else if (to.kind == SGX_RT_F32X2) {
+         /* (two F32 raw: two registers, iterate size 0x12) */
+         p[0x120 / 4] = doutu(f, f->code_va + BG64F32_PROG);
+         p[0x144 / 4] = (p[0x144 / 4] & ~0xffu) | 0x12;
+      }
       memcpy(t, term, 0x60);
       t[0x10 / 4] = tiles;
    } else {
@@ -1942,8 +2191,9 @@ render(struct sgx_frame *f, struct sgx_resource *rt, const struct sgx_frame_layo
       /* our pixel program: its PDS (word 6), how many registers a pixel
        * takes (word 5) and its secondary attributes in sa0.. (word 4: a
        * DMA, then the empty program) */
-      /* (uniforms in memory only through draw_state(), M32) */
-      if (pix->nubuf)
+      /* (uniforms in memory and the PDS's lookups only through
+       * draw_state(), M32, M35) */
+      if (pix->nubuf || pix->nfetch)
          return -EINVAL;
       if ((ret = upload(f, pix)))
          return ret;
@@ -1959,15 +2209,8 @@ render(struct sgx_frame *f, struct sgx_resource *rt, const struct sgx_frame_layo
          full[4] = rows << 27 | (uni_pds >> 4 & 0x07ffffff);
       }
    }
-   if (l) {
-      /* the vertex's size in words (31:24); three bits a varying, 111 for
-       * four components; a bit a varying kept as F16 */
-      full[16] = (4 + 4 * l->nvaryings) << 24 | (full[16] & 0x00ffffff);
-      full[19] = 0;
-      for (i = 0; i < l->nvaryings; i++)
-         full[19] |= 7u << 3 * i;
-      full[20] = ~l->f32 & ((1u << l->nvaryings) - 1);
-   }
+   if (l)
+      layout_words(full, l);
    d0 = frame;
    memcpy(prog, f->tmpl + f->toff[T_FULLPROG], f->tsize[T_FULLPROG]);
    prog[0] = d0;
@@ -2042,7 +2285,7 @@ render(struct sgx_frame *f, struct sgx_resource *rt, const struct sgx_frame_layo
          mesa_logi("sgx:   VDM +%02x: %08x %08x %08x %08x %08x", i * 4, vdm[i], vdm[i + 1],
                    vdm[i + 2], vdm[i + 3], vdm[i + 4]);
    }
-   return kick(f, &t, 1.0f, NULL, handles, nhandles, 0, NULL, done);
+   return kick(f, &t, 1.0f, NULL, NULL, handles, nhandles, 0, NULL, done);
 }
 
 int
@@ -2061,6 +2304,23 @@ unsigned
 sgx_frame_max_draws(const struct sgx_frame *f)
 {
    return f->max_draws;
+}
+
+/* The layout's words of a draw's state: the vertex's size in words
+ * (16, bits 31:24), the TA's colours (16: bit 11 the base, 10 the offset
+ * colour -- iOS's es1 e00, e20), three bits each of the other varyings, 111
+ * for four components (19), a bit each of those kept as F16 (20) */
+static void
+layout_words(uint32_t *full, const struct sgx_frame_layout *l)
+{
+   unsigned ng = l->nvaryings - l->ncolours;
+
+   full[16] = (4 + 4 * l->nvaryings) << 24 | (full[16] & 0x00fff3ff) |
+              (l->ncolours > 0 ? 1u << 11 : 0) | (l->ncolours > 1 ? 1u << 10 : 0);
+   full[19] = 0;
+   for (unsigned i = 0; i < ng; i++)
+      full[19] |= 7u << 3 * i;
+   full[20] = (~l->f32 >> l->ncolours) & ((1u << ng) - 1);
 }
 
 /* SGX_STATE=word:mask[,word:mask...] flips bits of every draw's state
@@ -2111,6 +2371,58 @@ arena_uniforms(struct sgx_frame *f, const uint32_t *words, unsigned n, unsigned 
    return va + at;
 }
 
+/* A pixel program's PDS program with its texture lookups (M35), the
+ * draw's: its data -- the program to start, then the inputs' iterates'
+ * control words (as upload() has them), then each lookup's control word
+ * and the texture's state words (from the draw's sa words) -- and the
+ * DOUTs, into the render's memory.  Its address (*rows its data rows), 0
+ * if there is no room. */
+static uint32_t
+fetch_pds(struct sgx_frame *f, const struct sgx_pixel_program *p, const uint32_t *sa,
+          unsigned *rows)
+{
+   uint32_t pds[64], *dst, va;
+   unsigned n = 0, data, ctrl[SGX_FRAME_MAX_FETCH], state[SGX_FRAME_MAX_FETCH];
+
+   if (p->nfetch > SGX_FRAME_MAX_FETCH || p->ninputs > SGX_FRAME_MAX_VARYINGS)
+      return 0;
+   pds[n++] = doutu(f, p->code_va);
+   pds[n++] = (p->ninputs ? ITER_TEMPS : 2) | PDS_FLAGS_FETCH | p->branches;
+   pds[n++] = 0;
+   for (unsigned i = 0; i < p->ninputs; i++)
+      pds[n++] = iterate_control(p, i);
+   for (unsigned k = 0; k < p->nfetch; k++) {
+      ctrl[k] = n;
+      pds[n++] = (p->fetch_proj >> k & 1 ? FETCH_CONTROL_PROJ : FETCH_CONTROL_2D) |
+                 (k == p->nfetch - 1 ? FETCH_LAST : 0) | (p->fetch_src[k] - p->ncolours);
+      if (n & 1)
+         pds[n++] = 0;
+      state[k] = n;
+      memcpy(pds + n, sa + p->fetch_sa[k], 4 * sizeof(uint32_t));
+      /* (M38) the texel F16: state word 3's bit 31, as iOS's s00 */
+      if (p->f16)
+         pds[n + 3] |= 0x80000000u;
+      n += 4;
+   }
+   while (n % 4)
+      pds[n++] = 0;
+   data = n;
+   pds[n++] = PDS_DOUTU_ROW0_ITER;
+   for (unsigned i = 0; i < p->ninputs; i++)
+      pds[n++] = pds_iterate(3 + i, iterate_size(p, i));
+   /* (an F16 texel: iOS's 07040c52 and the texture DOUT of kind 024) */
+   for (unsigned k = 0; k < p->nfetch; k++) {
+      pds[n++] = pds_iterate(ctrl[k], p->f16 ? 0x52 : FETCH_SIZE_RAW);
+      pds[n++] = pds_texture(state[k]) | (p->f16 ? 0x020 : 0);
+   }
+   pds[n++] = PDS_END;
+   if (!(dst = (uint32_t *)arena_alloc(f, n * 4, 16, &va)))
+      return 0;
+   memcpy(dst, pds, n * 4);
+   *rows = data / 4;
+   return va;
+}
+
 /* A draw's whole state for our vertex side, its secondary attributes'
  * loader and words into the render's memory */
 static int
@@ -2126,9 +2438,10 @@ draw_state(struct sgx_frame *f, const struct sgx_frame_draw *d, const struct sgx
    state_size(full, to->w, to->h);
    /* ISP state B: the depth compare in bits 24:22, bit 20 set when depth
     * is not written */
-   full[1] = (full[1] & ~(7u << 22 | 1u << 20)) | (uint32_t)(d->st.depth_func & 7) << 22 |
-             (d->st.depth_write ? 0 : 1u << 20);
+   full[1] = (full[1] & ~(7u << 22 | 1u << 20 | 1u << 14)) | (uint32_t)(d->st.depth_func & 7) << 22 |
+             (d->st.depth_write ? 0 : 1u << 20) | (d->st.count ? 1u << 14 : 0);
    full[18] = (full[18] & ~3u) | d->st.cull;
+   full[2] = (full[2] & ~(0x3ffu << 16)) | d->st.offset;
    if (d->st.stencil_on) {
       full[3] = d->st.stencil;
       full[1] = (full[1] & ~0xffu) | d->st.stencil_ref;
@@ -2143,6 +2456,14 @@ draw_state(struct sgx_frame *f, const struct sgx_frame_draw *d, const struct sgx
       if (!pix->code_va || pix->nsa > 128)
          return -EINVAL;
       full[6] = pix->pds_rows << 27 | (pix->pds_va >> 4 & 0x07ffffff);
+      if (pix->nfetch) {
+         unsigned rows;
+         uint32_t pds = fetch_pds(f, pix, d->sa, &rows);
+
+         if (!pds)
+            return -ENOMEM;
+         full[6] = rows << 27 | (pds >> 4 & 0x07ffffff);
+      }
       full[5] = pixel_word5(pix);
       if (pix->nsa) {
          unsigned rows;
@@ -2157,11 +2478,9 @@ draw_state(struct sgx_frame *f, const struct sgx_frame_draw *d, const struct sgx
          return -EINVAL;
       full[6] = 1u << 27 | (iter_pds_at(f, l->colour, f32) >> 4 & 0x07ffffff);
    }
-   full[16] = (4 + 4 * l->nvaryings) << 24 | (full[16] & 0x00ffffff);
-   full[19] = 0;
-   for (unsigned i = 0; i < l->nvaryings; i++)
-      full[19] |= 7u << 3 * i;
-   full[20] = ~l->f32 & ((1u << l->nvaryings) - 1);
+   layout_words(full, l);
+   /* flat shading (M37): the provoking vertex (iOS's es1 e01: 3) */
+   full[18] = (full[18] & ~(3u << 17)) | (uint32_t)d->st.flat << 17;
    state_xor(full);
    if (f->debug_state) {
       fprintf(stderr, "sgx: state");
@@ -2179,7 +2498,7 @@ static bool
 same_state(const struct sgx_frame_draw *a, const struct sgx_frame_draw *b)
 {
    if (!a->prog != !b->prog || a->vs != b->vs || a->l.nvaryings != b->l.nvaryings ||
-       a->l.f32 != b->l.f32 || a->l.colour != b->l.colour)
+       a->l.f32 != b->l.f32 || a->l.colour != b->l.colour || a->l.ncolours != b->l.ncolours)
       return false;
    if (a->prog && (a->prog->code_va != b->prog->code_va || a->prog->pds_va != b->prog->pds_va ||
                    a->prog->nsa != b->prog->nsa ||
@@ -2192,7 +2511,7 @@ int
 sgx_frame_render(struct sgx_frame *f, const struct sgx_frame_target *t,
                  const struct sgx_frame_draw *draws, unsigned n, const uint32_t *handles,
                  unsigned nhandles, float depth_clear, const struct sgx_frame_zls *zls,
-                 struct sgx_fence *done)
+                 struct sgx_bo *vis, struct sgx_fence *done)
 {
    uint32_t full[32], prog[16], bg[4], eot, *v = f->vdmbuf, state_at = 0, ub_at = 0, vdm;
    unsigned total = 0, ub_rows = 0;
@@ -2229,7 +2548,9 @@ sgx_frame_render(struct sgx_frame *f, const struct sgx_frame_target *t,
       /* the vertices: the draw module's, or a vertex shader's the CPU made
        * one stream, into the render's memory (M26: else the fetch reads
        * them where they are) */
-      if (!d->vs || d->vdata) {
+      if (d->vs && d->vdata_va) {
+         vb = d->vdata_va;      /* (M42: written there, by the caller) */
+      } else if (!d->vs || d->vdata) {
          unsigned size = d->vs ? d->nverts * d->stride :
                                  d->nverts * sgx_frame_vertex_floats(&d->l) * sizeof(float);
 
@@ -2317,10 +2638,11 @@ sgx_frame_render(struct sgx_frame *f, const struct sgx_frame_target *t,
    }
 
    if (f->debug)
-      mesa_logi("sgx: a render of %u draws, %u vertices, into %ux%u at 0x%08x (end of tile "
-                "0x%08x), its own memory %u chunks%s", n, total, to.w, to.h, to.va, eot,
-                f->arena.n, o ? "" : " (the frame's words: after the last render)");
-   ret = kick(f, t, depth_clear, zls, handles, nhandles, vdm, o, done);
+      mesa_logi("sgx: a render of %u draws, %u vertices, into %ux%u %s at 0x%08x (end of tile "
+                "0x%08x, PBE 0x%08x), its own memory %u chunks%s", n, total, to.w, to.h,
+                util_format_short_name(t->res->base.format), to.va, eot, to.pbe, f->arena.n,
+                o ? "" : " (the frame's words: after the last render)");
+   ret = kick(f, t, depth_clear, zls, vis, handles, nhandles, vdm, o, done);
    if (!ret) {
       sgx_fence_reference(&f->queued[f->nqueued++ % MAX_QUEUED], done);
       for (unsigned i = 0; i < f->arena.n; i++)

@@ -9,10 +9,16 @@
     mesa/install.py --install [HOST]   over ssh (default root@10.55.0.2)
     mesa/install.py --root [DIR]       into a root filesystem tree
 
-Installs /usr/local/lib/sgx-mesa (libEGL, libGLESv2, libgbm, libgallium,
-glclear, gltri) and /usr/local/bin/sgx-gl, which runs a program with this Mesa
-instead of the system's.  Where things go is decided as tools/sgx/mkpack.py
-decides it for SuperTux, with its helpers.
+Installs /usr/local/lib/sgx-mesa (libGL, libEGL, libGLESv1_CM, libGLESv2,
+libgbm, libgallium, the test programs) and makes it the system's OpenGL:
+/etc/ld-musl-armhf.path puts its lib ahead of /usr/lib, so every program
+loads this Mesa, not Alpine's (which stays installed; the file taken away,
+it is back) -- and X's configuration for the GPU, /etc/X11/sgx.conf.d
+(modesetting and glamor, which `desktop` takes when it is there).
+/usr/local/bin/sgx-gl runs a program with another build
+(SGX_MESA=dir).  MESA_BUILD=release installs the release build.  Where
+things go is decided as tools/sgx/mkpack.py decides it for SuperTux, with
+its helpers.
 """
 import argparse, io, os, subprocess, sys, tarfile, time
 
@@ -23,7 +29,25 @@ import mkpack  # noqa: E402  (probe, ssh, default_root, sudo_for, is_root, DEVIC
 
 PREFIX = 'usr/local/lib/sgx-mesa'
 LAUNCHER = 'usr/local/bin/sgx-gl'
-BUILT = os.path.join(ROOT, 'build', 'mesa', 'install', PREFIX)
+BUILT = os.path.join(ROOT, 'build', 'mesa',
+                     'install-release' if os.environ.get('MESA_BUILD') == 'release' else 'install',
+                     PREFIX)
+# musl's library path (the default /lib:/usr/local/lib:/usr/lib), this
+# Mesa's ahead of the system's
+LD_PATH = 'etc/ld-musl-armhf.path'
+LD_PATH_TEXT = '/lib\n/%s/lib\n/usr/local/lib\n/usr/lib\n' % PREFIX
+# X on the GPU (M36): modesetting with glamor, a configuration directory of
+# its own (`desktop` uses it; tools/desktop/xfce-setup.sh) -- and the driver
+# where the X server's GLX looks for it (AIGLX: /usr/lib/dri)
+X_CONF = 'etc/X11/sgx.conf.d/20-sgx.conf'
+X_CONF_TEXT = '''Section "Device"
+    Identifier "SGX543MP2"
+    Driver     "modesetting"
+    Option     "kmsdev" "/dev/dri/card0"
+    Option     "AccelMethod" "glamor"
+EndSection
+'''
+AIGLX = 'usr/lib/dri/apple_sgx_dri.so'
 
 
 def fail(msg):
@@ -41,6 +65,14 @@ def tarball():
         t.add(BUILT, PREFIX, filter=own)
         ln = own(tarfile.TarInfo(LAUNCHER))
         ln.type, ln.linkname, ln.mode = tarfile.SYMTYPE, '/' + PREFIX + '/bin/sgx-gl', 0o777
+        ln.mtime = int(time.time())
+        t.addfile(ln)
+        for name, text in ((LD_PATH, LD_PATH_TEXT), (X_CONF, X_CONF_TEXT)):
+            f = own(tarfile.TarInfo(name))
+            f.size, f.mode, f.mtime = len(text), 0o644, int(time.time())
+            t.addfile(f, io.BytesIO(text.encode()))
+        ln = own(tarfile.TarInfo(AIGLX))
+        ln.type, ln.linkname, ln.mode = tarfile.SYMTYPE, '/' + PREFIX + '/lib/dri/apple_sgx_dri.so', 0o777
         ln.mtime = int(time.time())
         t.addfile(ln)
     return buf.getvalue()
@@ -80,8 +112,8 @@ def auto():
         fail('nowhere to install: no device at %s and no exported root at %s\n'
              '  (./cascadia nfs on).  Or name one: --install HOST / --root DIR.'
              % (mkpack.DEVICE, root))
-    print('\nOn the iPad: sgx-gl glclear 100      (sgx-gl glclear 1 --fb to see it)')
-    print('             sgx-gl gltri          (sgx-gl gltri --fb to see it)')
+    print('\nOn the iPad every program now takes this Mesa: eglinfo -B, glclear 100,')
+    print('             gltri --fb (to see it)')
 
 
 def main():
