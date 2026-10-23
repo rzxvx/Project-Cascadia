@@ -157,6 +157,12 @@ apple-sgx ── render queue: context + CCB + TA command ──> iOS's microker
   render target's details when the 3D pass is over. The kernel watches it
   and signals the render's fence, so the CPU builds the next while the GPU
   draws this one.
+- **The overlay**: a buffer of the render node that the kernel blends into
+  each copy onto the screen, turned with it (a second quad in the 2D
+  engine's job, a SOP2 pixel program; the render node's `OVERLAY` ioctl).
+  `screenpad`'s touch controls are drawn with it, over X, over a game that
+  bypasses the compositor, and over KMS programs:
+  [research/p105-screenpad.md](research/p105-screenpad.md).
 - **The render node** (`/dev/dri/renderD128`, driver `apple_sgx`) is how
   Mesa and sgx2d reach the GPU, side by side: each of the pack's GPU memory
   windows is a buffer at that address, mapped into the process, and a

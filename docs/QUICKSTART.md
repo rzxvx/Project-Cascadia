@@ -336,6 +336,55 @@ had that do not work here:
   for a device with multitouch axes X emulates the pointer itself, and evdev's
   emulation never runs.
 
+## Touch controls for games
+
+`screenpad` puts a game controller on the glass, over whatever runs (a
+fullscreen game included): buttons, d-pads and sticks, semi-transparent,
+from a preset you make on the iPad. It needs a kernel from 2026-10-23 or
+later (its GPU driver blends the controls into each frame; `./cascadia
+build`) and, from the host:
+
+```bash
+sh tools/screenpad/build.sh install
+```
+
+Then on the iPad, held landscape: **SuperTux (on-screen controls)** in the
+menu's Games, or from a terminal:
+
+```sh
+screenpad supertux -- supertux2
+```
+
+The d-pad moves, **Jump** is Space, **Run** is Ctrl and **Menu** is Esc. A
+finger that lands anywhere else is an ordinary touch. `screenpad gamepad`
+is an Xbox-style pad (a stick, a d-pad, ABXY, shoulders, Back and Start),
+which games see as a real one. `screenpad -l` lists the presets.
+
+**Your own presets:** **screenpad editor** in the menu (`screenpad-editor`).
+Add buttons, d-pads and sticks, drag them into place (the blue handle
+resizes), and choose each one's shape, label, colour, opacity and what it
+does: a key or a gamepad button. **▶ Try it** runs the preset over the
+screen with a Stop button above it; **Save** keeps it as `screenpad NAME`.
+A landscape preset shows only while the iPad is held landscape.
+
+**Playing with your preset.** The editor makes and saves presets; it does
+not start games. A game gets a preset in one of two ways:
+
+- **From the menu, SuperTux**: the menu entry runs the preset named
+  `supertux`. Save yours under the name **SuperTux**: your copy
+  (`~/.config/screenpad/supertux.json`) comes before the one that came with
+  screenpad, and the menu entry uses it from then on. Delete that file to
+  have the original back.
+- **Any preset, any game, from a terminal**: the preset's name (what Save
+  said: the name in lower case, spaces as `-`), then `--` and the game's
+  command, as in its menu entry:
+
+  ```sh
+  screenpad my-preset -- supertux2
+  ```
+
+  The controls are there while the game runs and go with it.
+
 ## The GPU demo
 
 Tux going round on the screen, drawn by the GPU through OpenGL ES -- his

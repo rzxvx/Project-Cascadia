@@ -1436,6 +1436,22 @@ accelerometer: `/sys/bus/iio/devices/iio:device0` (`lis3dsh`;
 `tools/sensors/dtmod` and the st_accel modules
 (docs/research/p105-sensors.md).
 
+On-screen controls: `screenpad PRESET [-- COMMAND]` (`-l` lists the
+presets), `screenpad-editor [PRESET]` makes them (GTK, in XFCE); the
+presets are in `~/.config/screenpad` and `/usr/local/share/screenpad/presets`.
+Installed from the host: `sh tools/screenpad/build.sh install`. They are
+drawn by the kernel, blended into each copy onto the screen (the render
+node's OVERLAY ioctl), so they show over X, over a game that bypasses the
+compositor, and over KMS programs; not on the text console. They hide
+when the screen is not turned the preset's way. X sees the touches that
+are not the controls' as `screenpad touch`, the keys as `screenpad keys`,
+the pad as `Microsoft X-Box 360 pad` (`evtest`). Tests:
+`tools/screenpad/ovtest.c` (the blend, against `xshot.py --screen`),
+`tools/screenpad/touchtest.py` (`SCREENPAD_TOUCH`: scripted fingers). The
+overlay quad's ISP word and cache control: `/sys/module/apple_sgx/
+parameters/overlay_isp` (0x03d80000), `overlay_cc`.
+docs/research/p105-screenpad.md.
+
 Research tools (out of the image): `tools/audio/audmmio.c` (MMIO script
 runner: `r w m p d f t c q s`), `tools/audio/spk-tone.sh` (the speakers by
 hand, no driver), `tools/audio/mca-emu.py` / `i2sswitch-emu.py` (iOS's own

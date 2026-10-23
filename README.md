@@ -110,6 +110,12 @@ including the parts that didn't work.
       (`autorotate`); the rotation lock is a panel button, or Home held. See
       `docs/research/p105-sensors.md`. The gyro, the light sensor and the
       compass are found, not driven yet
+- [x] **On-screen game controls** — `screenpad`: buttons, d-pads and sticks
+      of a preset you make on the iPad (`screenpad-editor`), semi-transparent
+      over a fullscreen game. The GPU driver blends them into every frame it
+      puts on the screen, so no compositor is needed (SuperTux's menu: about
+      2% of its frames). They send keys or an Xbox-style gamepad. See
+      `docs/research/p105-screenpad.md`
 - [x] **Speakers** — ALSA card `iPadMini`: both speakers, DMA, 32/44.1/48 kHz;
       `aplay`, SDL and OpenAL play through it, several at once (dmix);
       alsa-utils and the mixing come with the image. See
