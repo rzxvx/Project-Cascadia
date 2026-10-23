@@ -952,5 +952,37 @@
             };
         };
 
+        /* The ADT's arm-io/i2c2, the same block as i2c0, with the motion
+         * sensors on it: accelerometer,ap3dsh at 0x1d (WHO_AM_I 0x3f, an ST
+         * LIS3DSH), gyro,ap3gdl at 0x6a (WHO_AM_I 0xd5, which no st_gyro
+         * part has) and als,tsl2581 at 0x39 (ID 0x93).  Only the first has
+         * a driver here.  Its clock gate (PMGR 0x3f101120) is on from the
+         * boot, its pins muxed as i2c0's are.  Interrupt 20 is the ADT's
+         * 0x14, and it arrives (i2c0's ADT number is 0x12). */
+        i2c2: i2c@3400000 {
+            compatible = "apple,s5l8940x-i2c";
+            reg = <0x3400000 0x1000>;
+            clock-frequency = <100000>;
+            interrupts = <20>;
+            clocks = <&refclk24mhz>;
+            clock-names = "i2c";
+            #address-cells = <1>;
+            #size-cells = <0>;
+            status = "okay";
+
+            accelerometer@1d {
+                /* LIS3DSH: added to st_accel by patches/tree */
+                compatible = "st,lis3dsh-accel";
+                reg = <0x1d>;
+                /* the ADT's orientation is minus the identity: it takes the
+                 * chip to iOS's axes, where gravity reads -1 g.  IIO reads
+                 * the push against it, +1 g up, so the chip's axes are the
+                 * screen's: x right, y up (away from Home), z out */
+                mount-matrix = "1", "0", "0",
+                               "0", "1", "0",
+                               "0", "0", "1";
+            };
+        };
+
 	};
 };

@@ -1,0 +1,186 @@
+st_accel: the LIS3DSH, the iPad mini 1's accelerometer.
+
+The ADT's arm-io/i2c2/accelerometer (compatible "accelerometer,ap3dsh",
+address 0x1d) answers WHO_AM_I with 0x3f: an ST LIS3DSH, which st_accel does
+not know.  It is the LSM330's accelerometer on its own -- the same registers
+(ODR, BDU and the axes in 0x20, the range in 0x24, the data-ready interrupt
+in 0x23) -- so its entry is a copy of the LSM330's with its WHO_AM_I, and
+with ODR value 0x07 as 400 Hz, not 200: measured on the iPad by the FIFO's
+fill (0x06: 5 samples in 60 ms, 0x07: 22, 0x08: full), as the LIS3DSH's
+datasheet has it.
+
+    git diff -- drivers/iio/accel/
+
+diff --git a/drivers/iio/accel/Kconfig b/drivers/iio/accel/Kconfig
+index 8c3f7cf55..979259b39 100644
+--- a/drivers/iio/accel/Kconfig
++++ b/drivers/iio/accel/Kconfig
+@@ -418,7 +418,7 @@ config IIO_ST_ACCEL_3AXIS
+ 	  Say yes here to build support for STMicroelectronics accelerometers:
+ 	  LSM303C, LSM303DLH, LSM303DLHC, LIS3DH, LSM330D, LSM330DL, LSM330DLC,
+ 	  LIS331DLH, LSM303DL, LSM303DLM, LSM330, LIS2DH12, H3LIS331DL,
+-	  LNG2DM, LIS3DE, LIS2DE12, LIS2HH12
++	  LNG2DM, LIS3DE, LIS2DE12, LIS2HH12, LIS3DSH
+ 
+ 	  Also need to enable at least one of I2C and SPI interface drivers
+ 	  below.
+diff --git a/drivers/iio/accel/st_accel.h b/drivers/iio/accel/st_accel.h
+index 2659f536c..51277e9fa 100644
+--- a/drivers/iio/accel/st_accel.h
++++ b/drivers/iio/accel/st_accel.h
+@@ -27,6 +27,7 @@
+ #define LSM303DLH_ACCEL_DEV_NAME	"lsm303dlh_accel"
+ #define LSM303DLM_ACCEL_DEV_NAME	"lsm303dlm_accel"
+ #define LSM330_ACCEL_DEV_NAME		"lsm330_accel"
++#define LIS3DSH_ACCEL_DEV_NAME		"lis3dsh"
+ #define LSM303AGR_ACCEL_DEV_NAME	"lsm303agr_accel"
+ #define LIS2DH12_ACCEL_DEV_NAME		"lis2dh12_accel"
+ #define LIS3L02DQ_ACCEL_DEV_NAME	"lis3l02dq"
+diff --git a/drivers/iio/accel/st_accel_core.c b/drivers/iio/accel/st_accel_core.c
+index 0e371efbd..2f7b311b7 100644
+--- a/drivers/iio/accel/st_accel_core.c
++++ b/drivers/iio/accel/st_accel_core.c
+@@ -367,6 +367,97 @@ static const struct st_sensor_settings st_accel_sensors_settings[] = {
+ 		.multi_read_bit = false,
+ 		.bootime = 2,
+ 	},
++	{
++		/* the LSM330's accelerometer on its own: the same registers, its
++		 * own WHO_AM_I, and 400 Hz where the LSM330 table has 200 */
++		.wai = 0x3f,
++		.wai_addr = ST_SENSORS_DEFAULT_WAI_ADDRESS,
++		.sensors_supported = {
++			[0] = LIS3DSH_ACCEL_DEV_NAME,
++		},
++		.ch = (struct iio_chan_spec *)st_accel_16bit_channels,
++		.odr = {
++			.addr = 0x20,
++			.mask = 0xf0,
++			.odr_avl = {
++				{ .hz = 3, .value = 0x01, },
++				{ .hz = 6, .value = 0x02, },
++				{ .hz = 12, .value = 0x03, },
++				{ .hz = 25, .value = 0x04, },
++				{ .hz = 50, .value = 0x05, },
++				{ .hz = 100, .value = 0x06, },
++				{ .hz = 400, .value = 0x07, },
++				{ .hz = 800, .value = 0x08, },
++				{ .hz = 1600, .value = 0x09, },
++			},
++		},
++		.pw = {
++			.addr = 0x20,
++			.mask = 0xf0,
++			.value_off = ST_SENSORS_DEFAULT_POWER_OFF_VALUE,
++		},
++		.enable_axis = {
++			.addr = ST_SENSORS_DEFAULT_AXIS_ADDR,
++			.mask = ST_SENSORS_DEFAULT_AXIS_MASK,
++		},
++		.fs = {
++			.addr = 0x24,
++			.mask = 0x38,
++			.fs_avl = {
++				[0] = {
++					.num = ST_ACCEL_FS_AVL_2G,
++					.value = 0x00,
++					.gain = IIO_G_TO_M_S_2(61),
++				},
++				[1] = {
++					.num = ST_ACCEL_FS_AVL_4G,
++					.value = 0x01,
++					.gain = IIO_G_TO_M_S_2(122),
++				},
++				[2] = {
++					.num = ST_ACCEL_FS_AVL_6G,
++					.value = 0x02,
++					.gain = IIO_G_TO_M_S_2(183),
++				},
++				[3] = {
++					.num = ST_ACCEL_FS_AVL_8G,
++					.value = 0x03,
++					.gain = IIO_G_TO_M_S_2(244),
++				},
++				[4] = {
++					.num = ST_ACCEL_FS_AVL_16G,
++					.value = 0x04,
++					.gain = IIO_G_TO_M_S_2(732),
++				},
++			},
++		},
++		.bdu = {
++			.addr = 0x20,
++			.mask = 0x08,
++		},
++		.drdy_irq = {
++			.int1 = {
++				.addr = 0x23,
++				.mask = 0x80,
++			},
++			.addr_ihl = 0x23,
++			.mask_ihl = 0x40,
++			.stat_drdy = {
++				.addr = ST_SENSORS_DEFAULT_STAT_ADDR,
++				.mask = 0x07,
++			},
++			.ig1 = {
++				.en_addr = 0x23,
++				.en_mask = 0x08,
++			},
++		},
++		.sim = {
++			.addr = 0x24,
++			.value = BIT(0),
++		},
++		.multi_read_bit = false,
++		.bootime = 2,
++	},
+ 	{
+ 		.wai = 0x3a,
+ 		.wai_addr = ST_SENSORS_DEFAULT_WAI_ADDRESS,
+diff --git a/drivers/iio/accel/st_accel_i2c.c b/drivers/iio/accel/st_accel_i2c.c
+index 329a4d6fb..c7c237506 100644
+--- a/drivers/iio/accel/st_accel_i2c.c
++++ b/drivers/iio/accel/st_accel_i2c.c
+@@ -126,6 +126,10 @@ static const struct of_device_id st_accel_of_match[] = {
+ 		.compatible = "st,iis328dq",
+ 		.data = IIS328DQ_ACCEL_DEV_NAME,
+ 	},
++	{
++		.compatible = "st,lis3dsh-accel",
++		.data = LIS3DSH_ACCEL_DEV_NAME,
++	},
+ 	{},
+ };
+ MODULE_DEVICE_TABLE(of, st_accel_of_match);
+@@ -164,6 +168,7 @@ static const struct i2c_device_id st_accel_id_table[] = {
+ 	{ LSM303C_ACCEL_DEV_NAME },
+ 	{ SC7A20_ACCEL_DEV_NAME },
+ 	{ IIS328DQ_ACCEL_DEV_NAME },
++	{ LIS3DSH_ACCEL_DEV_NAME },
+ 	{},
+ };
+ MODULE_DEVICE_TABLE(i2c, st_accel_id_table);
+diff --git a/drivers/iio/accel/st_accel_spi.c b/drivers/iio/accel/st_accel_spi.c
+index 825adab37..774c63ace 100644
+--- a/drivers/iio/accel/st_accel_spi.c
++++ b/drivers/iio/accel/st_accel_spi.c
+@@ -108,6 +108,10 @@ static const struct of_device_id st_accel_of_match[] = {
+ 		.compatible = "st,iis328dq",
+ 		.data = IIS328DQ_ACCEL_DEV_NAME,
+ 	},
++	{
++		.compatible = "st,lis3dsh-accel",
++		.data = LIS3DSH_ACCEL_DEV_NAME,
++	},
+ 	{}
+ };
+ MODULE_DEVICE_TABLE(of, st_accel_of_match);
+@@ -167,6 +171,7 @@ static const struct spi_device_id st_accel_id_table[] = {
+ 	{ LIS302DL_ACCEL_DEV_NAME },
+ 	{ LSM303C_ACCEL_DEV_NAME },
+ 	{ IIS328DQ_ACCEL_DEV_NAME },
++	{ LIS3DSH_ACCEL_DEV_NAME },
+ 	{},
+ };
+ MODULE_DEVICE_TABLE(spi, st_accel_id_table);

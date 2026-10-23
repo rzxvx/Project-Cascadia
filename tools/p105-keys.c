@@ -13,6 +13,9 @@
  *   hold               screen off / on; while it is off the touchscreen is
  *                      grabbed, so a finger on the dark glass types nothing.
  *                      The volume still works with the screen off
+ *   home, held 0.8 s   the rotation lock on / off (/run/rotation-lock, the
+ *                      file tools/desktop/autorotate.sh obeys): the
+ *                      backlight dips once for on, twice for off
  *
  * It takes the buttons (gpio-keys) for itself with EVIOCGRAB, so nothing else
  * acts on them -- an XFCE session would otherwise offer to shut down on Hold.
@@ -23,11 +26,13 @@
 #include <dirent.h>
 #include <fcntl.h>
 #include <linux/input.h>
+#include <poll.h>
 #include <sound/asound.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
+#include <time.h>
 #include <unistd.h>
 
 #define BL "/sys/class/backlight/apple-pmu-wled/"
@@ -103,6 +108,44 @@ static int is_touch(int fd)
 }
 
 #define STEP 64		/* of 0..2047; 64 is about 1 nit, the bottom */
+
+#define LOCK "/run/rotation-lock"
+#define HOME_HOLD_MS 800
+
+static long now_ms(void)
+{
+	struct timespec t;
+
+	clock_gettime(CLOCK_MONOTONIC, &t);
+	return t.tv_sec * 1000L + t.tv_nsec / 1000000;
+}
+
+/*
+ * The rotation lock turned over.  autorotate shows it on the panel, but
+ * Home is held without looking there: the backlight dips once for on,
+ * twice for off (not with the screen off).
+ */
+static void rotation_lock(int off, int max)
+{
+	int on = access(LOCK, F_OK) != 0, level = rd_int(BL "brightness"), fd;
+
+	if (on) {
+		fd = open(LOCK, O_WRONLY | O_CREAT, 0644);
+		if (fd >= 0)
+			close(fd);
+	} else {
+		unlink(LOCK);
+	}
+	fprintf(stderr, "rotation lock %s\n", on ? "on" : "off");
+	if (off || max <= 0 || level <= 0)
+		return;
+	for (int i = 0; i < (on ? 1 : 2); i++) {
+		wr_int(BL "brightness", level / 4 > 0 ? level / 4 : 1);
+		usleep(120000);
+		wr_int(BL "brightness", level);
+		usleep(120000);
+	}
+}
 
 /*
  * The side switch's state (SW_MUTE_DEVICE) in which the volume buttons set
@@ -200,6 +243,7 @@ int main(void)
 	struct input_event ev;
 	unsigned long sw[BITS(SW_CNT)] = { 0 };
 	int keys, touch = -1, max, level, off = 0, backlight_mode;
+	long home = 0;		/* when Home went down, while it is held and has not acted */
 
 	for (int tries = 0; (keys = find(is_buttons, path, sizeof(path))) < 0; tries++) {
 		if (tries == 30) {
@@ -218,7 +262,22 @@ int main(void)
 	if (max <= 0 || level < 0)
 		fprintf(stderr, "p105-keys: no backlight at " BL "\n");
 
-	while (read(keys, &ev, sizeof(ev)) == sizeof(ev)) {
+	for (;;) {
+		if (home) {
+			struct pollfd p = { .fd = keys, .events = POLLIN };
+			long left = home + HOME_HOLD_MS - now_ms();
+			int r = left > 0 ? poll(&p, 1, left) : 0;
+
+			if (r < 0)
+				continue;
+			if (r == 0) {
+				rotation_lock(off, max);
+				home = 0;
+				continue;
+			}
+		}
+		if (read(keys, &ev, sizeof(ev)) != sizeof(ev))
+			break;
 		if (ev.type == EV_KEY && ev.value && (ev.code == KEY_VOLUMEUP || ev.code == KEY_VOLUMEDOWN) &&
 		    !backlight_mode) {
 			vol_step(ev.code == KEY_VOLUMEUP);
@@ -249,6 +308,8 @@ int main(void)
 			backlight_mode = ev.value == SWITCH_BACKLIGHT;
 			fprintf(stderr, "side switch %d: the buttons set the %s\n", ev.value,
 				backlight_mode ? "backlight" : "volume");
+		} else if (ev.type == EV_KEY && ev.code == KEY_HOMEPAGE && ev.value != 2) {
+			home = ev.value ? now_ms() : 0;
 		}
 	}
 	perror("p105-keys: read");

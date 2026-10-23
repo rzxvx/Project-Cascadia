@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Rotation: automatic
+Comment=Lock or unlock the screen's rotation
+Exec=/usr/local/bin/rotation-lock toggle
+Icon=cascadia-rotation
+Terminal=false
+Categories=Utility;Settings;

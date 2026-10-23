@@ -320,8 +320,8 @@ cmd_build() {
     [ -s "$ROOT/build/initramfs-root/sbin/z2-boot" ] || fail "z2-boot did not build"
     note "ok: /sbin/z2-boot ($(filesize "$ROOT/build/initramfs-root/sbin/z2-boot") bytes, static ARM)"
     # /sbin/p105-keys: the buttons -- volume sets the speakers' volume or the
-    # backlight (the side switch picks), Hold puts the screen out and back.
-    # Started by stage 2.
+    # backlight (the side switch picks), Hold puts the screen out and back,
+    # Home held is the rotation lock.  Started by stage 2.
     in_docker "arm-linux-gnueabihf-gcc -static -Os -Wall -o build/initramfs-root/sbin/p105-keys tools/p105-keys.c"
     [ -s "$ROOT/build/initramfs-root/sbin/p105-keys" ] || fail "p105-keys did not build"
     note "ok: /sbin/p105-keys (static ARM)"
