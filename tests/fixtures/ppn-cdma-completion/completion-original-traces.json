@@ -1,0 +1,4935 @@
+{
+  "result": "PASS",
+  "actual_original_runs": 274,
+  "hardware_calls": 0,
+  "rows": [
+    {
+      "version": "12H321",
+      "kind": "install",
+      "channel": 1,
+      "trace": [
+        [
+          "critical",
+          "0xb40c",
+          "0x2339"
+        ],
+        [
+          "aic-write",
+          "0x3f2030cc",
+          4
+        ],
+        [
+          "critical",
+          "0xb470",
+          "0x234f"
+        ]
+      ]
+    },
+    {
+      "version": "12H321",
+      "kind": "enable",
+      "channel": 1,
+      "trace": [
+        [
+          "aic-write",
+          "0x3f204184",
+          524288
+        ]
+      ]
+    },
+    {
+      "version": "12H321",
+      "kind": "install",
+      "channel": 5,
+      "trace": [
+        [
+          "critical",
+          "0xb40c",
+          "0x2339"
+        ],
+        [
+          "aic-write",
+          "0x3f2030dc",
+          4
+        ],
+        [
+          "critical",
+          "0xb470",
+          "0x234f"
+        ]
+      ]
+    },
+    {
+      "version": "12H321",
+      "kind": "enable",
+      "channel": 5,
+      "trace": [
+        [
+          "aic-write",
+          "0x3f204184",
+          8388608
+        ]
+      ]
+    },
+    {
+      "version": "12H321",
+      "kind": "install",
+      "channel": 6,
+      "trace": [
+        [
+          "critical",
+          "0xb40c",
+          "0x2339"
+        ],
+        [
+          "aic-write",
+          "0x3f2030e0",
+          4
+        ],
+        [
+          "critical",
+          "0xb470",
+          "0x234f"
+        ]
+      ]
+    },
+    {
+      "version": "12H321",
+      "kind": "enable",
+      "channel": 6,
+      "trace": [
+        [
+          "aic-write",
+          "0x3f204184",
+          16777216
+        ]
+      ]
+    },
+    {
+      "version": "12H321",
+      "kind": "install",
+      "channel": 7,
+      "trace": [
+        [
+          "critical",
+          "0xb40c",
+          "0x2339"
+        ],
+        [
+          "aic-write",
+          "0x3f2030e4",
+          4
+        ],
+        [
+          "critical",
+          "0xb470",
+          "0x234f"
+        ]
+      ]
+    },
+    {
+      "version": "12H321",
+      "kind": "enable",
+      "channel": 7,
+      "trace": [
+        [
+          "aic-write",
+          "0x3f204184",
+          33554432
+        ]
+      ]
+    },
+    {
+      "version": "12H321",
+      "kind": "install",
+      "channel": 8,
+      "trace": [
+        [
+          "critical",
+          "0xb40c",
+          "0x2339"
+        ],
+        [
+          "aic-write",
+          "0x3f2030e8",
+          4
+        ],
+        [
+          "critical",
+          "0xb470",
+          "0x234f"
+        ]
+      ]
+    },
+    {
+      "version": "12H321",
+      "kind": "enable",
+      "channel": 8,
+      "trace": [
+        [
+          "aic-write",
+          "0x3f204184",
+          67108864
+        ]
+      ]
+    },
+    {
+      "version": "12H321",
+      "kind": "install",
+      "channel": 13,
+      "trace": [
+        [
+          "critical",
+          "0xb40c",
+          "0x2339"
+        ],
+        [
+          "aic-write",
+          "0x3f2030fc",
+          4
+        ],
+        [
+          "critical",
+          "0xb470",
+          "0x234f"
+        ]
+      ]
+    },
+    {
+      "version": "12H321",
+      "kind": "enable",
+      "channel": 13,
+      "trace": [
+        [
+          "aic-write",
+          "0x3f204184",
+          2147483648
+        ]
+      ]
+    },
+    {
+      "version": "12H321",
+      "kind": "install",
+      "channel": 14,
+      "trace": [
+        [
+          "critical",
+          "0xb40c",
+          "0x2339"
+        ],
+        [
+          "aic-write",
+          "0x3f203100",
+          4
+        ],
+        [
+          "critical",
+          "0xb470",
+          "0x234f"
+        ]
+      ]
+    },
+    {
+      "version": "12H321",
+      "kind": "enable",
+      "channel": 14,
+      "trace": [
+        [
+          "aic-write",
+          "0x3f204188",
+          1
+        ]
+      ]
+    },
+    {
+      "version": "12H321",
+      "kind": "install",
+      "channel": 42,
+      "trace": [
+        [
+          "critical",
+          "0xb40c",
+          "0x2339"
+        ],
+        [
+          "aic-write",
+          "0x3f203170",
+          4
+        ],
+        [
+          "critical",
+          "0xb470",
+          "0x234f"
+        ]
+      ]
+    },
+    {
+      "version": "12H321",
+      "kind": "enable",
+      "channel": 42,
+      "trace": [
+        [
+          "aic-write",
+          "0x3f204188",
+          268435456
+        ]
+      ]
+    },
+    {
+      "version": "12H321",
+      "kind": "irq",
+      "channel": 5,
+      "initial": 524288,
+      "pending": 0,
+      "residue": 0,
+      "outcome": "returned",
+      "trace": [
+        [
+          "dma-read",
+          "0x37005000",
+          524288
+        ],
+        [
+          "dma-write",
+          "0x37005000",
+          524288
+        ],
+        [
+          "dma-read",
+          "0x3700500c",
+          0
+        ],
+        [
+          "dma-read",
+          "0x37000010",
+          32
+        ],
+        [
+          "dma-write",
+          "0x37000008",
+          32
+        ],
+        [
+          "callback",
+          4206887173
+        ]
+      ]
+    },
+    {
+      "version": "12H321",
+      "kind": "irq",
+      "channel": 5,
+      "initial": 262144,
+      "pending": 0,
+      "residue": 0,
+      "outcome": "require",
+      "trace": [
+        [
+          "dma-read",
+          "0x37005000",
+          262144
+        ],
+        [
+          "dma-read",
+          "0x37005018",
+          90
+        ]
+      ]
+    },
+    {
+      "version": "12H321",
+      "kind": "irq",
+      "channel": 5,
+      "initial": 1048576,
+      "pending": 0,
+      "residue": 0,
+      "outcome": "require",
+      "trace": [
+        [
+          "dma-read",
+          "0x37005000",
+          1048576
+        ]
+      ]
+    },
+    {
+      "version": "12H321",
+      "kind": "irq",
+      "channel": 5,
+      "initial": 0,
+      "pending": 0,
+      "residue": 0,
+      "outcome": "require",
+      "trace": [
+        [
+          "dma-read",
+          "0x37005000",
+          0
+        ]
+      ]
+    },
+    {
+      "version": "12H321",
+      "kind": "irq",
+      "channel": 5,
+      "initial": 786432,
+      "pending": 0,
+      "residue": 0,
+      "outcome": "require",
+      "trace": [
+        [
+          "dma-read",
+          "0x37005000",
+          786432
+        ],
+        [
+          "dma-read",
+          "0x37005018",
+          90
+        ]
+      ]
+    },
+    {
+      "version": "12H321",
+      "kind": "irq",
+      "channel": 5,
+      "initial": 1572864,
+      "pending": 0,
+      "residue": 0,
+      "outcome": "require",
+      "trace": [
+        [
+          "dma-read",
+          "0x37005000",
+          1572864
+        ]
+      ]
+    },
+    {
+      "version": "12H321",
+      "kind": "irq",
+      "channel": 5,
+      "initial": 524288,
+      "pending": 64,
+      "residue": 0,
+      "outcome": "returned",
+      "trace": [
+        [
+          "dma-read",
+          "0x37005000",
+          524288
+        ],
+        [
+          "dma-write",
+          "0x37005000",
+          524288
+        ],
+        [
+          "dma-read",
+          "0x37005000",
+          0
+        ],
+        [
+          "dma-read",
+          "0x3700500c",
+          0
+        ],
+        [
+          "refill",
+          5
+        ]
+      ]
+    },
+    {
+      "version": "12H321",
+      "kind": "irq",
+      "channel": 5,
+      "initial": 524288,
+      "pending": 0,
+      "residue": 64,
+      "outcome": "require",
+      "trace": [
+        [
+          "dma-read",
+          "0x37005000",
+          524288
+        ],
+        [
+          "dma-write",
+          "0x37005000",
+          524288
+        ],
+        [
+          "dma-read",
+          "0x3700500c",
+          64
+        ],
+        [
+          "dma-read",
+          "0x37005000",
+          0
+        ],
+        [
+          "dma-read",
+          "0x3700500c",
+          64
+        ]
+      ]
+    },
+    {
+      "version": "12H321",
+      "kind": "irq",
+      "channel": 5,
+      "initial": 524288,
+      "pending": 0,
+      "residue": 2147483647,
+      "outcome": "require",
+      "trace": [
+        [
+          "dma-read",
+          "0x37005000",
+          524288
+        ],
+        [
+          "dma-write",
+          "0x37005000",
+          524288
+        ],
+        [
+          "dma-read",
+          "0x3700500c",
+          2147483647
+        ],
+        [
+          "dma-read",
+          "0x37005000",
+          0
+        ],
+        [
+          "dma-read",
+          "0x3700500c",
+          2147483647
+        ]
+      ]
+    },
+    {
+      "version": "12H321",
+      "kind": "irq",
+      "channel": 5,
+      "initial": 524288,
+      "pending": 0,
+      "residue": 2147483648,
+      "outcome": "returned",
+      "trace": [
+        [
+          "dma-read",
+          "0x37005000",
+          524288
+        ],
+        [
+          "dma-write",
+          "0x37005000",
+          524288
+        ],
+        [
+          "dma-read",
+          "0x3700500c",
+          2147483648
+        ],
+        [
+          "dma-read",
+          "0x37000010",
+          32
+        ],
+        [
+          "dma-write",
+          "0x37000008",
+          32
+        ],
+        [
+          "callback",
+          4206887173
+        ]
+      ]
+    },
+    {
+      "version": "12H321",
+      "kind": "irq",
+      "channel": 5,
+      "initial": 524288,
+      "pending": 0,
+      "residue": 4294967295,
+      "outcome": "returned",
+      "trace": [
+        [
+          "dma-read",
+          "0x37005000",
+          524288
+        ],
+        [
+          "dma-write",
+          "0x37005000",
+          524288
+        ],
+        [
+          "dma-read",
+          "0x3700500c",
+          4294967295
+        ],
+        [
+          "dma-read",
+          "0x37000010",
+          32
+        ],
+        [
+          "dma-write",
+          "0x37000008",
+          32
+        ],
+        [
+          "callback",
+          4206887173
+        ]
+      ]
+    },
+    {
+      "version": "12H321",
+      "kind": "irq",
+      "channel": 5,
+      "initial": 524288,
+      "pending": 64,
+      "residue": 64,
+      "outcome": "returned",
+      "trace": [
+        [
+          "dma-read",
+          "0x37005000",
+          524288
+        ],
+        [
+          "dma-write",
+          "0x37005000",
+          524288
+        ],
+        [
+          "dma-read",
+          "0x37005000",
+          0
+        ],
+        [
+          "dma-read",
+          "0x3700500c",
+          64
+        ],
+        [
+          "refill",
+          5
+        ]
+      ]
+    },
+    {
+      "version": "12H321",
+      "kind": "irq",
+      "channel": 5,
+      "initial": 524288,
+      "pending": 64,
+      "residue": 32,
+      "outcome": "returned",
+      "trace": [
+        [
+          "dma-read",
+          "0x37005000",
+          524288
+        ],
+        [
+          "dma-write",
+          "0x37005000",
+          524288
+        ],
+        [
+          "dma-read",
+          "0x37005000",
+          0
+        ],
+        [
+          "dma-read",
+          "0x3700500c",
+          32
+        ],
+        [
+          "refill",
+          5
+        ]
+      ]
+    },
+    {
+      "version": "12H321",
+      "kind": "irq",
+      "channel": 5,
+      "initial": 524288,
+      "pending": 64,
+      "residue": 65,
+      "outcome": "require",
+      "trace": [
+        [
+          "dma-read",
+          "0x37005000",
+          524288
+        ],
+        [
+          "dma-write",
+          "0x37005000",
+          524288
+        ],
+        [
+          "dma-read",
+          "0x37005000",
+          0
+        ],
+        [
+          "dma-read",
+          "0x3700500c",
+          65
+        ]
+      ]
+    },
+    {
+      "version": "12H321",
+      "kind": "irq",
+      "channel": 6,
+      "initial": 524288,
+      "pending": 0,
+      "residue": 0,
+      "outcome": "returned",
+      "trace": [
+        [
+          "dma-read",
+          "0x37006000",
+          524288
+        ],
+        [
+          "dma-write",
+          "0x37006000",
+          524288
+        ],
+        [
+          "dma-read",
+          "0x3700600c",
+          0
+        ],
+        [
+          "dma-read",
+          "0x37000010",
+          64
+        ],
+        [
+          "dma-write",
+          "0x37000008",
+          64
+        ],
+        [
+          "callback",
+          4206887173
+        ]
+      ]
+    },
+    {
+      "version": "12H321",
+      "kind": "irq",
+      "channel": 6,
+      "initial": 262144,
+      "pending": 0,
+      "residue": 0,
+      "outcome": "require",
+      "trace": [
+        [
+          "dma-read",
+          "0x37006000",
+          262144
+        ],
+        [
+          "dma-read",
+          "0x37006018",
+          90
+        ]
+      ]
+    },
+    {
+      "version": "12H321",
+      "kind": "irq",
+      "channel": 6,
+      "initial": 1048576,
+      "pending": 0,
+      "residue": 0,
+      "outcome": "require",
+      "trace": [
+        [
+          "dma-read",
+          "0x37006000",
+          1048576
+        ]
+      ]
+    },
+    {
+      "version": "12H321",
+      "kind": "irq",
+      "channel": 6,
+      "initial": 0,
+      "pending": 0,
+      "residue": 0,
+      "outcome": "require",
+      "trace": [
+        [
+          "dma-read",
+          "0x37006000",
+          0
+        ]
+      ]
+    },
+    {
+      "version": "12H321",
+      "kind": "irq",
+      "channel": 6,
+      "initial": 786432,
+      "pending": 0,
+      "residue": 0,
+      "outcome": "require",
+      "trace": [
+        [
+          "dma-read",
+          "0x37006000",
+          786432
+        ],
+        [
+          "dma-read",
+          "0x37006018",
+          90
+        ]
+      ]
+    },
+    {
+      "version": "12H321",
+      "kind": "irq",
+      "channel": 6,
+      "initial": 1572864,
+      "pending": 0,
+      "residue": 0,
+      "outcome": "require",
+      "trace": [
+        [
+          "dma-read",
+          "0x37006000",
+          1572864
+        ]
+      ]
+    },
+    {
+      "version": "12H321",
+      "kind": "irq",
+      "channel": 6,
+      "initial": 524288,
+      "pending": 64,
+      "residue": 0,
+      "outcome": "returned",
+      "trace": [
+        [
+          "dma-read",
+          "0x37006000",
+          524288
+        ],
+        [
+          "dma-write",
+          "0x37006000",
+          524288
+        ],
+        [
+          "dma-read",
+          "0x37006000",
+          0
+        ],
+        [
+          "dma-read",
+          "0x3700600c",
+          0
+        ],
+        [
+          "refill",
+          6
+        ]
+      ]
+    },
+    {
+      "version": "12H321",
+      "kind": "irq",
+      "channel": 6,
+      "initial": 524288,
+      "pending": 0,
+      "residue": 64,
+      "outcome": "require",
+      "trace": [
+        [
+          "dma-read",
+          "0x37006000",
+          524288
+        ],
+        [
+          "dma-write",
+          "0x37006000",
+          524288
+        ],
+        [
+          "dma-read",
+          "0x3700600c",
+          64
+        ],
+        [
+          "dma-read",
+          "0x37006000",
+          0
+        ],
+        [
+          "dma-read",
+          "0x3700600c",
+          64
+        ]
+      ]
+    },
+    {
+      "version": "12H321",
+      "kind": "irq",
+      "channel": 6,
+      "initial": 524288,
+      "pending": 0,
+      "residue": 2147483647,
+      "outcome": "require",
+      "trace": [
+        [
+          "dma-read",
+          "0x37006000",
+          524288
+        ],
+        [
+          "dma-write",
+          "0x37006000",
+          524288
+        ],
+        [
+          "dma-read",
+          "0x3700600c",
+          2147483647
+        ],
+        [
+          "dma-read",
+          "0x37006000",
+          0
+        ],
+        [
+          "dma-read",
+          "0x3700600c",
+          2147483647
+        ]
+      ]
+    },
+    {
+      "version": "12H321",
+      "kind": "irq",
+      "channel": 6,
+      "initial": 524288,
+      "pending": 0,
+      "residue": 2147483648,
+      "outcome": "returned",
+      "trace": [
+        [
+          "dma-read",
+          "0x37006000",
+          524288
+        ],
+        [
+          "dma-write",
+          "0x37006000",
+          524288
+        ],
+        [
+          "dma-read",
+          "0x3700600c",
+          2147483648
+        ],
+        [
+          "dma-read",
+          "0x37000010",
+          64
+        ],
+        [
+          "dma-write",
+          "0x37000008",
+          64
+        ],
+        [
+          "callback",
+          4206887173
+        ]
+      ]
+    },
+    {
+      "version": "12H321",
+      "kind": "irq",
+      "channel": 6,
+      "initial": 524288,
+      "pending": 0,
+      "residue": 4294967295,
+      "outcome": "returned",
+      "trace": [
+        [
+          "dma-read",
+          "0x37006000",
+          524288
+        ],
+        [
+          "dma-write",
+          "0x37006000",
+          524288
+        ],
+        [
+          "dma-read",
+          "0x3700600c",
+          4294967295
+        ],
+        [
+          "dma-read",
+          "0x37000010",
+          64
+        ],
+        [
+          "dma-write",
+          "0x37000008",
+          64
+        ],
+        [
+          "callback",
+          4206887173
+        ]
+      ]
+    },
+    {
+      "version": "12H321",
+      "kind": "irq",
+      "channel": 6,
+      "initial": 524288,
+      "pending": 64,
+      "residue": 64,
+      "outcome": "returned",
+      "trace": [
+        [
+          "dma-read",
+          "0x37006000",
+          524288
+        ],
+        [
+          "dma-write",
+          "0x37006000",
+          524288
+        ],
+        [
+          "dma-read",
+          "0x37006000",
+          0
+        ],
+        [
+          "dma-read",
+          "0x3700600c",
+          64
+        ],
+        [
+          "refill",
+          6
+        ]
+      ]
+    },
+    {
+      "version": "12H321",
+      "kind": "irq",
+      "channel": 6,
+      "initial": 524288,
+      "pending": 64,
+      "residue": 32,
+      "outcome": "returned",
+      "trace": [
+        [
+          "dma-read",
+          "0x37006000",
+          524288
+        ],
+        [
+          "dma-write",
+          "0x37006000",
+          524288
+        ],
+        [
+          "dma-read",
+          "0x37006000",
+          0
+        ],
+        [
+          "dma-read",
+          "0x3700600c",
+          32
+        ],
+        [
+          "refill",
+          6
+        ]
+      ]
+    },
+    {
+      "version": "12H321",
+      "kind": "irq",
+      "channel": 6,
+      "initial": 524288,
+      "pending": 64,
+      "residue": 65,
+      "outcome": "require",
+      "trace": [
+        [
+          "dma-read",
+          "0x37006000",
+          524288
+        ],
+        [
+          "dma-write",
+          "0x37006000",
+          524288
+        ],
+        [
+          "dma-read",
+          "0x37006000",
+          0
+        ],
+        [
+          "dma-read",
+          "0x3700600c",
+          65
+        ]
+      ]
+    },
+    {
+      "version": "12H321",
+      "kind": "irq",
+      "channel": 7,
+      "initial": 524288,
+      "pending": 0,
+      "residue": 0,
+      "outcome": "returned",
+      "trace": [
+        [
+          "dma-read",
+          "0x37007000",
+          524288
+        ],
+        [
+          "dma-write",
+          "0x37007000",
+          524288
+        ],
+        [
+          "dma-read",
+          "0x3700700c",
+          0
+        ],
+        [
+          "dma-read",
+          "0x37000010",
+          128
+        ],
+        [
+          "dma-write",
+          "0x37000008",
+          128
+        ],
+        [
+          "callback",
+          4206887173
+        ]
+      ]
+    },
+    {
+      "version": "12H321",
+      "kind": "irq",
+      "channel": 7,
+      "initial": 262144,
+      "pending": 0,
+      "residue": 0,
+      "outcome": "require",
+      "trace": [
+        [
+          "dma-read",
+          "0x37007000",
+          262144
+        ],
+        [
+          "dma-read",
+          "0x37007018",
+          90
+        ]
+      ]
+    },
+    {
+      "version": "12H321",
+      "kind": "irq",
+      "channel": 7,
+      "initial": 1048576,
+      "pending": 0,
+      "residue": 0,
+      "outcome": "require",
+      "trace": [
+        [
+          "dma-read",
+          "0x37007000",
+          1048576
+        ]
+      ]
+    },
+    {
+      "version": "12H321",
+      "kind": "irq",
+      "channel": 7,
+      "initial": 0,
+      "pending": 0,
+      "residue": 0,
+      "outcome": "require",
+      "trace": [
+        [
+          "dma-read",
+          "0x37007000",
+          0
+        ]
+      ]
+    },
+    {
+      "version": "12H321",
+      "kind": "irq",
+      "channel": 7,
+      "initial": 786432,
+      "pending": 0,
+      "residue": 0,
+      "outcome": "require",
+      "trace": [
+        [
+          "dma-read",
+          "0x37007000",
+          786432
+        ],
+        [
+          "dma-read",
+          "0x37007018",
+          90
+        ]
+      ]
+    },
+    {
+      "version": "12H321",
+      "kind": "irq",
+      "channel": 7,
+      "initial": 1572864,
+      "pending": 0,
+      "residue": 0,
+      "outcome": "require",
+      "trace": [
+        [
+          "dma-read",
+          "0x37007000",
+          1572864
+        ]
+      ]
+    },
+    {
+      "version": "12H321",
+      "kind": "irq",
+      "channel": 7,
+      "initial": 524288,
+      "pending": 64,
+      "residue": 0,
+      "outcome": "returned",
+      "trace": [
+        [
+          "dma-read",
+          "0x37007000",
+          524288
+        ],
+        [
+          "dma-write",
+          "0x37007000",
+          524288
+        ],
+        [
+          "dma-read",
+          "0x37007000",
+          0
+        ],
+        [
+          "dma-read",
+          "0x3700700c",
+          0
+        ],
+        [
+          "refill",
+          7
+        ]
+      ]
+    },
+    {
+      "version": "12H321",
+      "kind": "irq",
+      "channel": 7,
+      "initial": 524288,
+      "pending": 0,
+      "residue": 64,
+      "outcome": "require",
+      "trace": [
+        [
+          "dma-read",
+          "0x37007000",
+          524288
+        ],
+        [
+          "dma-write",
+          "0x37007000",
+          524288
+        ],
+        [
+          "dma-read",
+          "0x3700700c",
+          64
+        ],
+        [
+          "dma-read",
+          "0x37007000",
+          0
+        ],
+        [
+          "dma-read",
+          "0x3700700c",
+          64
+        ]
+      ]
+    },
+    {
+      "version": "12H321",
+      "kind": "irq",
+      "channel": 7,
+      "initial": 524288,
+      "pending": 0,
+      "residue": 2147483647,
+      "outcome": "require",
+      "trace": [
+        [
+          "dma-read",
+          "0x37007000",
+          524288
+        ],
+        [
+          "dma-write",
+          "0x37007000",
+          524288
+        ],
+        [
+          "dma-read",
+          "0x3700700c",
+          2147483647
+        ],
+        [
+          "dma-read",
+          "0x37007000",
+          0
+        ],
+        [
+          "dma-read",
+          "0x3700700c",
+          2147483647
+        ]
+      ]
+    },
+    {
+      "version": "12H321",
+      "kind": "irq",
+      "channel": 7,
+      "initial": 524288,
+      "pending": 0,
+      "residue": 2147483648,
+      "outcome": "returned",
+      "trace": [
+        [
+          "dma-read",
+          "0x37007000",
+          524288
+        ],
+        [
+          "dma-write",
+          "0x37007000",
+          524288
+        ],
+        [
+          "dma-read",
+          "0x3700700c",
+          2147483648
+        ],
+        [
+          "dma-read",
+          "0x37000010",
+          128
+        ],
+        [
+          "dma-write",
+          "0x37000008",
+          128
+        ],
+        [
+          "callback",
+          4206887173
+        ]
+      ]
+    },
+    {
+      "version": "12H321",
+      "kind": "irq",
+      "channel": 7,
+      "initial": 524288,
+      "pending": 0,
+      "residue": 4294967295,
+      "outcome": "returned",
+      "trace": [
+        [
+          "dma-read",
+          "0x37007000",
+          524288
+        ],
+        [
+          "dma-write",
+          "0x37007000",
+          524288
+        ],
+        [
+          "dma-read",
+          "0x3700700c",
+          4294967295
+        ],
+        [
+          "dma-read",
+          "0x37000010",
+          128
+        ],
+        [
+          "dma-write",
+          "0x37000008",
+          128
+        ],
+        [
+          "callback",
+          4206887173
+        ]
+      ]
+    },
+    {
+      "version": "12H321",
+      "kind": "irq",
+      "channel": 7,
+      "initial": 524288,
+      "pending": 64,
+      "residue": 64,
+      "outcome": "returned",
+      "trace": [
+        [
+          "dma-read",
+          "0x37007000",
+          524288
+        ],
+        [
+          "dma-write",
+          "0x37007000",
+          524288
+        ],
+        [
+          "dma-read",
+          "0x37007000",
+          0
+        ],
+        [
+          "dma-read",
+          "0x3700700c",
+          64
+        ],
+        [
+          "refill",
+          7
+        ]
+      ]
+    },
+    {
+      "version": "12H321",
+      "kind": "irq",
+      "channel": 7,
+      "initial": 524288,
+      "pending": 64,
+      "residue": 32,
+      "outcome": "returned",
+      "trace": [
+        [
+          "dma-read",
+          "0x37007000",
+          524288
+        ],
+        [
+          "dma-write",
+          "0x37007000",
+          524288
+        ],
+        [
+          "dma-read",
+          "0x37007000",
+          0
+        ],
+        [
+          "dma-read",
+          "0x3700700c",
+          32
+        ],
+        [
+          "refill",
+          7
+        ]
+      ]
+    },
+    {
+      "version": "12H321",
+      "kind": "irq",
+      "channel": 7,
+      "initial": 524288,
+      "pending": 64,
+      "residue": 65,
+      "outcome": "require",
+      "trace": [
+        [
+          "dma-read",
+          "0x37007000",
+          524288
+        ],
+        [
+          "dma-write",
+          "0x37007000",
+          524288
+        ],
+        [
+          "dma-read",
+          "0x37007000",
+          0
+        ],
+        [
+          "dma-read",
+          "0x3700700c",
+          65
+        ]
+      ]
+    },
+    {
+      "version": "12H321",
+      "kind": "irq",
+      "channel": 8,
+      "initial": 524288,
+      "pending": 0,
+      "residue": 0,
+      "outcome": "returned",
+      "trace": [
+        [
+          "dma-read",
+          "0x37008000",
+          524288
+        ],
+        [
+          "dma-write",
+          "0x37008000",
+          524288
+        ],
+        [
+          "dma-read",
+          "0x3700800c",
+          0
+        ],
+        [
+          "dma-read",
+          "0x37000010",
+          256
+        ],
+        [
+          "dma-write",
+          "0x37000008",
+          256
+        ],
+        [
+          "callback",
+          4206887173
+        ]
+      ]
+    },
+    {
+      "version": "12H321",
+      "kind": "irq",
+      "channel": 8,
+      "initial": 262144,
+      "pending": 0,
+      "residue": 0,
+      "outcome": "require",
+      "trace": [
+        [
+          "dma-read",
+          "0x37008000",
+          262144
+        ],
+        [
+          "dma-read",
+          "0x37008018",
+          90
+        ]
+      ]
+    },
+    {
+      "version": "12H321",
+      "kind": "irq",
+      "channel": 8,
+      "initial": 1048576,
+      "pending": 0,
+      "residue": 0,
+      "outcome": "require",
+      "trace": [
+        [
+          "dma-read",
+          "0x37008000",
+          1048576
+        ]
+      ]
+    },
+    {
+      "version": "12H321",
+      "kind": "irq",
+      "channel": 8,
+      "initial": 0,
+      "pending": 0,
+      "residue": 0,
+      "outcome": "require",
+      "trace": [
+        [
+          "dma-read",
+          "0x37008000",
+          0
+        ]
+      ]
+    },
+    {
+      "version": "12H321",
+      "kind": "irq",
+      "channel": 8,
+      "initial": 786432,
+      "pending": 0,
+      "residue": 0,
+      "outcome": "require",
+      "trace": [
+        [
+          "dma-read",
+          "0x37008000",
+          786432
+        ],
+        [
+          "dma-read",
+          "0x37008018",
+          90
+        ]
+      ]
+    },
+    {
+      "version": "12H321",
+      "kind": "irq",
+      "channel": 8,
+      "initial": 1572864,
+      "pending": 0,
+      "residue": 0,
+      "outcome": "require",
+      "trace": [
+        [
+          "dma-read",
+          "0x37008000",
+          1572864
+        ]
+      ]
+    },
+    {
+      "version": "12H321",
+      "kind": "irq",
+      "channel": 8,
+      "initial": 524288,
+      "pending": 64,
+      "residue": 0,
+      "outcome": "returned",
+      "trace": [
+        [
+          "dma-read",
+          "0x37008000",
+          524288
+        ],
+        [
+          "dma-write",
+          "0x37008000",
+          524288
+        ],
+        [
+          "dma-read",
+          "0x37008000",
+          0
+        ],
+        [
+          "dma-read",
+          "0x3700800c",
+          0
+        ],
+        [
+          "refill",
+          8
+        ]
+      ]
+    },
+    {
+      "version": "12H321",
+      "kind": "irq",
+      "channel": 8,
+      "initial": 524288,
+      "pending": 0,
+      "residue": 64,
+      "outcome": "require",
+      "trace": [
+        [
+          "dma-read",
+          "0x37008000",
+          524288
+        ],
+        [
+          "dma-write",
+          "0x37008000",
+          524288
+        ],
+        [
+          "dma-read",
+          "0x3700800c",
+          64
+        ],
+        [
+          "dma-read",
+          "0x37008000",
+          0
+        ],
+        [
+          "dma-read",
+          "0x3700800c",
+          64
+        ]
+      ]
+    },
+    {
+      "version": "12H321",
+      "kind": "irq",
+      "channel": 8,
+      "initial": 524288,
+      "pending": 0,
+      "residue": 2147483647,
+      "outcome": "require",
+      "trace": [
+        [
+          "dma-read",
+          "0x37008000",
+          524288
+        ],
+        [
+          "dma-write",
+          "0x37008000",
+          524288
+        ],
+        [
+          "dma-read",
+          "0x3700800c",
+          2147483647
+        ],
+        [
+          "dma-read",
+          "0x37008000",
+          0
+        ],
+        [
+          "dma-read",
+          "0x3700800c",
+          2147483647
+        ]
+      ]
+    },
+    {
+      "version": "12H321",
+      "kind": "irq",
+      "channel": 8,
+      "initial": 524288,
+      "pending": 0,
+      "residue": 2147483648,
+      "outcome": "returned",
+      "trace": [
+        [
+          "dma-read",
+          "0x37008000",
+          524288
+        ],
+        [
+          "dma-write",
+          "0x37008000",
+          524288
+        ],
+        [
+          "dma-read",
+          "0x3700800c",
+          2147483648
+        ],
+        [
+          "dma-read",
+          "0x37000010",
+          256
+        ],
+        [
+          "dma-write",
+          "0x37000008",
+          256
+        ],
+        [
+          "callback",
+          4206887173
+        ]
+      ]
+    },
+    {
+      "version": "12H321",
+      "kind": "irq",
+      "channel": 8,
+      "initial": 524288,
+      "pending": 0,
+      "residue": 4294967295,
+      "outcome": "returned",
+      "trace": [
+        [
+          "dma-read",
+          "0x37008000",
+          524288
+        ],
+        [
+          "dma-write",
+          "0x37008000",
+          524288
+        ],
+        [
+          "dma-read",
+          "0x3700800c",
+          4294967295
+        ],
+        [
+          "dma-read",
+          "0x37000010",
+          256
+        ],
+        [
+          "dma-write",
+          "0x37000008",
+          256
+        ],
+        [
+          "callback",
+          4206887173
+        ]
+      ]
+    },
+    {
+      "version": "12H321",
+      "kind": "irq",
+      "channel": 8,
+      "initial": 524288,
+      "pending": 64,
+      "residue": 64,
+      "outcome": "returned",
+      "trace": [
+        [
+          "dma-read",
+          "0x37008000",
+          524288
+        ],
+        [
+          "dma-write",
+          "0x37008000",
+          524288
+        ],
+        [
+          "dma-read",
+          "0x37008000",
+          0
+        ],
+        [
+          "dma-read",
+          "0x3700800c",
+          64
+        ],
+        [
+          "refill",
+          8
+        ]
+      ]
+    },
+    {
+      "version": "12H321",
+      "kind": "irq",
+      "channel": 8,
+      "initial": 524288,
+      "pending": 64,
+      "residue": 32,
+      "outcome": "returned",
+      "trace": [
+        [
+          "dma-read",
+          "0x37008000",
+          524288
+        ],
+        [
+          "dma-write",
+          "0x37008000",
+          524288
+        ],
+        [
+          "dma-read",
+          "0x37008000",
+          0
+        ],
+        [
+          "dma-read",
+          "0x3700800c",
+          32
+        ],
+        [
+          "refill",
+          8
+        ]
+      ]
+    },
+    {
+      "version": "12H321",
+      "kind": "irq",
+      "channel": 8,
+      "initial": 524288,
+      "pending": 64,
+      "residue": 65,
+      "outcome": "require",
+      "trace": [
+        [
+          "dma-read",
+          "0x37008000",
+          524288
+        ],
+        [
+          "dma-write",
+          "0x37008000",
+          524288
+        ],
+        [
+          "dma-read",
+          "0x37008000",
+          0
+        ],
+        [
+          "dma-read",
+          "0x3700800c",
+          65
+        ]
+      ]
+    },
+    {
+      "version": "12H321",
+      "kind": "translate",
+      "pointer": 0,
+      "physical_result": 4294967295,
+      "oracle_mapping_found": false,
+      "trace": []
+    },
+    {
+      "version": "12H321",
+      "kind": "translate",
+      "pointer": 268435455,
+      "physical_result": 4294967295,
+      "oracle_mapping_found": false,
+      "trace": []
+    },
+    {
+      "version": "12H321",
+      "kind": "translate",
+      "pointer": 268435456,
+      "physical_result": 2147483648,
+      "oracle_mapping_found": true,
+      "trace": []
+    },
+    {
+      "version": "12H321",
+      "kind": "translate",
+      "pointer": 268435457,
+      "physical_result": 2147483649,
+      "oracle_mapping_found": true,
+      "trace": []
+    },
+    {
+      "version": "12H321",
+      "kind": "translate",
+      "pointer": 268439551,
+      "physical_result": 2147487743,
+      "oracle_mapping_found": true,
+      "trace": []
+    },
+    {
+      "version": "12H321",
+      "kind": "translate",
+      "pointer": 268439552,
+      "physical_result": 4294967295,
+      "oracle_mapping_found": false,
+      "trace": []
+    },
+    {
+      "version": "12H321",
+      "kind": "translate",
+      "pointer": 285212671,
+      "physical_result": 4294967295,
+      "oracle_mapping_found": false,
+      "trace": []
+    },
+    {
+      "version": "12H321",
+      "kind": "translate",
+      "pointer": 285212672,
+      "physical_result": 2147483648,
+      "oracle_mapping_found": true,
+      "trace": []
+    },
+    {
+      "version": "12H321",
+      "kind": "translate",
+      "pointer": 285212673,
+      "physical_result": 2147483649,
+      "oracle_mapping_found": true,
+      "trace": []
+    },
+    {
+      "version": "12H321",
+      "kind": "translate",
+      "pointer": 285216767,
+      "physical_result": 2147487743,
+      "oracle_mapping_found": true,
+      "trace": []
+    },
+    {
+      "version": "12H321",
+      "kind": "translate",
+      "pointer": 285216768,
+      "physical_result": 4294967295,
+      "oracle_mapping_found": false,
+      "trace": []
+    },
+    {
+      "version": "12H321",
+      "kind": "translate",
+      "pointer": 805306368,
+      "physical_result": 4294967295,
+      "oracle_mapping_found": false,
+      "trace": []
+    },
+    {
+      "version": "12H321",
+      "kind": "translate",
+      "pointer": 4294967295,
+      "physical_result": 4294967295,
+      "oracle_mapping_found": false,
+      "trace": []
+    },
+    {
+      "version": "12H321",
+      "kind": "translate",
+      "pointer": 0,
+      "physical_result": 4294967295,
+      "oracle_mapping_found": false,
+      "trace": []
+    },
+    {
+      "version": "12H321",
+      "kind": "translate",
+      "pointer": 285212671,
+      "physical_result": 4294967295,
+      "oracle_mapping_found": false,
+      "trace": []
+    },
+    {
+      "version": "12H321",
+      "kind": "translate",
+      "pointer": 285212672,
+      "physical_result": 2147483648,
+      "oracle_mapping_found": true,
+      "trace": []
+    },
+    {
+      "version": "12H321",
+      "kind": "translate",
+      "pointer": 285212673,
+      "physical_result": 2147483649,
+      "oracle_mapping_found": true,
+      "trace": []
+    },
+    {
+      "version": "12H321",
+      "kind": "translate",
+      "pointer": 285216767,
+      "physical_result": 2147487743,
+      "oracle_mapping_found": true,
+      "trace": []
+    },
+    {
+      "version": "12H321",
+      "kind": "translate",
+      "pointer": 285216768,
+      "physical_result": 4294967295,
+      "oracle_mapping_found": false,
+      "trace": []
+    },
+    {
+      "version": "12H321",
+      "kind": "translate",
+      "pointer": 805306368,
+      "physical_result": 4294967295,
+      "oracle_mapping_found": false,
+      "trace": []
+    },
+    {
+      "version": "12H321",
+      "kind": "translate",
+      "pointer": 4294967295,
+      "physical_result": 4294967295,
+      "oracle_mapping_found": false,
+      "trace": []
+    },
+    {
+      "version": "12H321",
+      "kind": "translate",
+      "pointer": 0,
+      "physical_result": 4294967295,
+      "oracle_mapping_found": false,
+      "trace": []
+    },
+    {
+      "version": "12H321",
+      "kind": "translate",
+      "pointer": 268435455,
+      "physical_result": 4294967295,
+      "oracle_mapping_found": false,
+      "trace": []
+    },
+    {
+      "version": "12H321",
+      "kind": "translate",
+      "pointer": 268435456,
+      "physical_result": 2147483648,
+      "oracle_mapping_found": true,
+      "trace": []
+    },
+    {
+      "version": "12H321",
+      "kind": "translate",
+      "pointer": 268435457,
+      "physical_result": 2147483649,
+      "oracle_mapping_found": true,
+      "trace": []
+    },
+    {
+      "version": "12H321",
+      "kind": "translate",
+      "pointer": 268439551,
+      "physical_result": 2147487743,
+      "oracle_mapping_found": true,
+      "trace": []
+    },
+    {
+      "version": "12H321",
+      "kind": "translate",
+      "pointer": 268439552,
+      "physical_result": 4294967295,
+      "oracle_mapping_found": false,
+      "trace": []
+    },
+    {
+      "version": "12H321",
+      "kind": "translate",
+      "pointer": 805306368,
+      "physical_result": 4294967295,
+      "oracle_mapping_found": false,
+      "trace": []
+    },
+    {
+      "version": "12H321",
+      "kind": "translate",
+      "pointer": 4294967295,
+      "physical_result": 4294967295,
+      "oracle_mapping_found": false,
+      "trace": []
+    },
+    {
+      "version": "12H321",
+      "kind": "translate",
+      "pointer": 0,
+      "physical_result": 4294967295,
+      "oracle_mapping_found": false,
+      "trace": []
+    },
+    {
+      "version": "12H321",
+      "kind": "translate",
+      "pointer": 268435455,
+      "physical_result": 4294967295,
+      "oracle_mapping_found": false,
+      "trace": []
+    },
+    {
+      "version": "12H321",
+      "kind": "translate",
+      "pointer": 268435456,
+      "physical_result": 2147483648,
+      "oracle_mapping_found": true,
+      "trace": []
+    },
+    {
+      "version": "12H321",
+      "kind": "translate",
+      "pointer": 268435457,
+      "physical_result": 2147483649,
+      "oracle_mapping_found": true,
+      "trace": []
+    },
+    {
+      "version": "12H321",
+      "kind": "translate",
+      "pointer": 268439551,
+      "physical_result": 2147487743,
+      "oracle_mapping_found": true,
+      "trace": []
+    },
+    {
+      "version": "12H321",
+      "kind": "translate",
+      "pointer": 268439552,
+      "physical_result": 4294967295,
+      "oracle_mapping_found": false,
+      "trace": []
+    },
+    {
+      "version": "12H321",
+      "kind": "translate",
+      "pointer": 285212671,
+      "physical_result": 4294967295,
+      "oracle_mapping_found": false,
+      "trace": []
+    },
+    {
+      "version": "12H321",
+      "kind": "translate",
+      "pointer": 285212672,
+      "physical_result": 2147483648,
+      "oracle_mapping_found": true,
+      "trace": []
+    },
+    {
+      "version": "12H321",
+      "kind": "translate",
+      "pointer": 285212673,
+      "physical_result": 2147483649,
+      "oracle_mapping_found": true,
+      "trace": []
+    },
+    {
+      "version": "12H321",
+      "kind": "translate",
+      "pointer": 285216767,
+      "physical_result": 2147487743,
+      "oracle_mapping_found": true,
+      "trace": []
+    },
+    {
+      "version": "12H321",
+      "kind": "translate",
+      "pointer": 285216768,
+      "physical_result": 4294967295,
+      "oracle_mapping_found": false,
+      "trace": []
+    },
+    {
+      "version": "12H321",
+      "kind": "translate",
+      "pointer": 536870911,
+      "physical_result": 4294967295,
+      "oracle_mapping_found": false,
+      "trace": []
+    },
+    {
+      "version": "12H321",
+      "kind": "translate",
+      "pointer": 536870912,
+      "physical_result": 2415919104,
+      "oracle_mapping_found": true,
+      "trace": []
+    },
+    {
+      "version": "12H321",
+      "kind": "translate",
+      "pointer": 536870913,
+      "physical_result": 2415919105,
+      "oracle_mapping_found": true,
+      "trace": []
+    },
+    {
+      "version": "12H321",
+      "kind": "translate",
+      "pointer": 536879103,
+      "physical_result": 2415927295,
+      "oracle_mapping_found": true,
+      "trace": []
+    },
+    {
+      "version": "12H321",
+      "kind": "translate",
+      "pointer": 536879104,
+      "physical_result": 4294967295,
+      "oracle_mapping_found": false,
+      "trace": []
+    },
+    {
+      "version": "12H321",
+      "kind": "translate",
+      "pointer": 553648127,
+      "physical_result": 4294967295,
+      "oracle_mapping_found": false,
+      "trace": []
+    },
+    {
+      "version": "12H321",
+      "kind": "translate",
+      "pointer": 553648128,
+      "physical_result": 2415919104,
+      "oracle_mapping_found": true,
+      "trace": []
+    },
+    {
+      "version": "12H321",
+      "kind": "translate",
+      "pointer": 553648129,
+      "physical_result": 2415919105,
+      "oracle_mapping_found": true,
+      "trace": []
+    },
+    {
+      "version": "12H321",
+      "kind": "translate",
+      "pointer": 553656319,
+      "physical_result": 2415927295,
+      "oracle_mapping_found": true,
+      "trace": []
+    },
+    {
+      "version": "12H321",
+      "kind": "translate",
+      "pointer": 553656320,
+      "physical_result": 4294967295,
+      "oracle_mapping_found": false,
+      "trace": []
+    },
+    {
+      "version": "12H321",
+      "kind": "translate",
+      "pointer": 805306368,
+      "physical_result": 4294967295,
+      "oracle_mapping_found": false,
+      "trace": []
+    },
+    {
+      "version": "12H321",
+      "kind": "translate",
+      "pointer": 4294967295,
+      "physical_result": 4294967295,
+      "oracle_mapping_found": false,
+      "trace": []
+    },
+    {
+      "version": "12H321",
+      "kind": "translate",
+      "pointer": 0,
+      "physical_result": 4294967295,
+      "oracle_mapping_found": false,
+      "trace": []
+    },
+    {
+      "version": "12H321",
+      "kind": "translate",
+      "pointer": 268435455,
+      "physical_result": 4294967295,
+      "oracle_mapping_found": false,
+      "trace": []
+    },
+    {
+      "version": "12H321",
+      "kind": "translate",
+      "pointer": 268435456,
+      "physical_result": 4294963200,
+      "oracle_mapping_found": true,
+      "trace": []
+    },
+    {
+      "version": "12H321",
+      "kind": "translate",
+      "pointer": 268435457,
+      "physical_result": 4294963201,
+      "oracle_mapping_found": true,
+      "trace": []
+    },
+    {
+      "version": "12H321",
+      "kind": "translate",
+      "pointer": 268439551,
+      "physical_result": 4294967295,
+      "oracle_mapping_found": true,
+      "trace": []
+    },
+    {
+      "version": "12H321",
+      "kind": "translate",
+      "pointer": 268439552,
+      "physical_result": 4294967295,
+      "oracle_mapping_found": false,
+      "trace": []
+    },
+    {
+      "version": "12H321",
+      "kind": "translate",
+      "pointer": 285212671,
+      "physical_result": 4294967295,
+      "oracle_mapping_found": false,
+      "trace": []
+    },
+    {
+      "version": "12H321",
+      "kind": "translate",
+      "pointer": 285212672,
+      "physical_result": 4294963200,
+      "oracle_mapping_found": true,
+      "trace": []
+    },
+    {
+      "version": "12H321",
+      "kind": "translate",
+      "pointer": 285212673,
+      "physical_result": 4294963201,
+      "oracle_mapping_found": true,
+      "trace": []
+    },
+    {
+      "version": "12H321",
+      "kind": "translate",
+      "pointer": 285216767,
+      "physical_result": 4294967295,
+      "oracle_mapping_found": true,
+      "trace": []
+    },
+    {
+      "version": "12H321",
+      "kind": "translate",
+      "pointer": 285216768,
+      "physical_result": 4294967295,
+      "oracle_mapping_found": false,
+      "trace": []
+    },
+    {
+      "version": "12H321",
+      "kind": "translate",
+      "pointer": 805306368,
+      "physical_result": 4294967295,
+      "oracle_mapping_found": false,
+      "trace": []
+    },
+    {
+      "version": "12H321",
+      "kind": "translate",
+      "pointer": 4294967295,
+      "physical_result": 4294967295,
+      "oracle_mapping_found": false,
+      "trace": []
+    },
+    {
+      "version": "13G36",
+      "kind": "install",
+      "channel": 1,
+      "trace": [
+        [
+          "critical",
+          "0xb3e8",
+          "0x237b"
+        ],
+        [
+          "aic-write",
+          "0x3f2030cc",
+          4
+        ],
+        [
+          "critical",
+          "0xb43c",
+          "0x239b"
+        ]
+      ]
+    },
+    {
+      "version": "13G36",
+      "kind": "enable",
+      "channel": 1,
+      "trace": [
+        [
+          "aic-write",
+          "0x3f204184",
+          524288
+        ]
+      ]
+    },
+    {
+      "version": "13G36",
+      "kind": "install",
+      "channel": 5,
+      "trace": [
+        [
+          "critical",
+          "0xb3e8",
+          "0x237b"
+        ],
+        [
+          "aic-write",
+          "0x3f2030dc",
+          4
+        ],
+        [
+          "critical",
+          "0xb43c",
+          "0x239b"
+        ]
+      ]
+    },
+    {
+      "version": "13G36",
+      "kind": "enable",
+      "channel": 5,
+      "trace": [
+        [
+          "aic-write",
+          "0x3f204184",
+          8388608
+        ]
+      ]
+    },
+    {
+      "version": "13G36",
+      "kind": "install",
+      "channel": 6,
+      "trace": [
+        [
+          "critical",
+          "0xb3e8",
+          "0x237b"
+        ],
+        [
+          "aic-write",
+          "0x3f2030e0",
+          4
+        ],
+        [
+          "critical",
+          "0xb43c",
+          "0x239b"
+        ]
+      ]
+    },
+    {
+      "version": "13G36",
+      "kind": "enable",
+      "channel": 6,
+      "trace": [
+        [
+          "aic-write",
+          "0x3f204184",
+          16777216
+        ]
+      ]
+    },
+    {
+      "version": "13G36",
+      "kind": "install",
+      "channel": 7,
+      "trace": [
+        [
+          "critical",
+          "0xb3e8",
+          "0x237b"
+        ],
+        [
+          "aic-write",
+          "0x3f2030e4",
+          4
+        ],
+        [
+          "critical",
+          "0xb43c",
+          "0x239b"
+        ]
+      ]
+    },
+    {
+      "version": "13G36",
+      "kind": "enable",
+      "channel": 7,
+      "trace": [
+        [
+          "aic-write",
+          "0x3f204184",
+          33554432
+        ]
+      ]
+    },
+    {
+      "version": "13G36",
+      "kind": "install",
+      "channel": 8,
+      "trace": [
+        [
+          "critical",
+          "0xb3e8",
+          "0x237b"
+        ],
+        [
+          "aic-write",
+          "0x3f2030e8",
+          4
+        ],
+        [
+          "critical",
+          "0xb43c",
+          "0x239b"
+        ]
+      ]
+    },
+    {
+      "version": "13G36",
+      "kind": "enable",
+      "channel": 8,
+      "trace": [
+        [
+          "aic-write",
+          "0x3f204184",
+          67108864
+        ]
+      ]
+    },
+    {
+      "version": "13G36",
+      "kind": "install",
+      "channel": 13,
+      "trace": [
+        [
+          "critical",
+          "0xb3e8",
+          "0x237b"
+        ],
+        [
+          "aic-write",
+          "0x3f2030fc",
+          4
+        ],
+        [
+          "critical",
+          "0xb43c",
+          "0x239b"
+        ]
+      ]
+    },
+    {
+      "version": "13G36",
+      "kind": "enable",
+      "channel": 13,
+      "trace": [
+        [
+          "aic-write",
+          "0x3f204184",
+          2147483648
+        ]
+      ]
+    },
+    {
+      "version": "13G36",
+      "kind": "install",
+      "channel": 14,
+      "trace": [
+        [
+          "critical",
+          "0xb3e8",
+          "0x237b"
+        ],
+        [
+          "aic-write",
+          "0x3f203100",
+          4
+        ],
+        [
+          "critical",
+          "0xb43c",
+          "0x239b"
+        ]
+      ]
+    },
+    {
+      "version": "13G36",
+      "kind": "enable",
+      "channel": 14,
+      "trace": [
+        [
+          "aic-write",
+          "0x3f204188",
+          1
+        ]
+      ]
+    },
+    {
+      "version": "13G36",
+      "kind": "install",
+      "channel": 42,
+      "trace": [
+        [
+          "critical",
+          "0xb3e8",
+          "0x237b"
+        ],
+        [
+          "aic-write",
+          "0x3f203170",
+          4
+        ],
+        [
+          "critical",
+          "0xb43c",
+          "0x239b"
+        ]
+      ]
+    },
+    {
+      "version": "13G36",
+      "kind": "enable",
+      "channel": 42,
+      "trace": [
+        [
+          "aic-write",
+          "0x3f204188",
+          268435456
+        ]
+      ]
+    },
+    {
+      "version": "13G36",
+      "kind": "irq",
+      "channel": 5,
+      "initial": 524288,
+      "pending": 0,
+      "residue": 0,
+      "outcome": "returned",
+      "trace": [
+        [
+          "dma-read",
+          "0x37005000",
+          524288
+        ],
+        [
+          "dma-write",
+          "0x37005000",
+          524288
+        ],
+        [
+          "dma-read",
+          "0x3700500c",
+          0
+        ],
+        [
+          "dma-read",
+          "0x37000010",
+          32
+        ],
+        [
+          "dma-write",
+          "0x37000008",
+          32
+        ],
+        [
+          "callback",
+          4206887173
+        ]
+      ]
+    },
+    {
+      "version": "13G36",
+      "kind": "irq",
+      "channel": 5,
+      "initial": 262144,
+      "pending": 0,
+      "residue": 0,
+      "outcome": "require",
+      "trace": [
+        [
+          "dma-read",
+          "0x37005000",
+          262144
+        ],
+        [
+          "dma-read",
+          "0x37005018",
+          90
+        ]
+      ]
+    },
+    {
+      "version": "13G36",
+      "kind": "irq",
+      "channel": 5,
+      "initial": 1048576,
+      "pending": 0,
+      "residue": 0,
+      "outcome": "require",
+      "trace": [
+        [
+          "dma-read",
+          "0x37005000",
+          1048576
+        ]
+      ]
+    },
+    {
+      "version": "13G36",
+      "kind": "irq",
+      "channel": 5,
+      "initial": 0,
+      "pending": 0,
+      "residue": 0,
+      "outcome": "require",
+      "trace": [
+        [
+          "dma-read",
+          "0x37005000",
+          0
+        ]
+      ]
+    },
+    {
+      "version": "13G36",
+      "kind": "irq",
+      "channel": 5,
+      "initial": 786432,
+      "pending": 0,
+      "residue": 0,
+      "outcome": "require",
+      "trace": [
+        [
+          "dma-read",
+          "0x37005000",
+          786432
+        ],
+        [
+          "dma-read",
+          "0x37005018",
+          90
+        ]
+      ]
+    },
+    {
+      "version": "13G36",
+      "kind": "irq",
+      "channel": 5,
+      "initial": 1572864,
+      "pending": 0,
+      "residue": 0,
+      "outcome": "require",
+      "trace": [
+        [
+          "dma-read",
+          "0x37005000",
+          1572864
+        ]
+      ]
+    },
+    {
+      "version": "13G36",
+      "kind": "irq",
+      "channel": 5,
+      "initial": 524288,
+      "pending": 64,
+      "residue": 0,
+      "outcome": "returned",
+      "trace": [
+        [
+          "dma-read",
+          "0x37005000",
+          524288
+        ],
+        [
+          "dma-write",
+          "0x37005000",
+          524288
+        ],
+        [
+          "dma-read",
+          "0x37005000",
+          0
+        ],
+        [
+          "dma-read",
+          "0x3700500c",
+          0
+        ],
+        [
+          "refill",
+          5
+        ]
+      ]
+    },
+    {
+      "version": "13G36",
+      "kind": "irq",
+      "channel": 5,
+      "initial": 524288,
+      "pending": 0,
+      "residue": 64,
+      "outcome": "require",
+      "trace": [
+        [
+          "dma-read",
+          "0x37005000",
+          524288
+        ],
+        [
+          "dma-write",
+          "0x37005000",
+          524288
+        ],
+        [
+          "dma-read",
+          "0x3700500c",
+          64
+        ],
+        [
+          "dma-read",
+          "0x37005000",
+          0
+        ],
+        [
+          "dma-read",
+          "0x3700500c",
+          64
+        ]
+      ]
+    },
+    {
+      "version": "13G36",
+      "kind": "irq",
+      "channel": 5,
+      "initial": 524288,
+      "pending": 0,
+      "residue": 2147483647,
+      "outcome": "require",
+      "trace": [
+        [
+          "dma-read",
+          "0x37005000",
+          524288
+        ],
+        [
+          "dma-write",
+          "0x37005000",
+          524288
+        ],
+        [
+          "dma-read",
+          "0x3700500c",
+          2147483647
+        ],
+        [
+          "dma-read",
+          "0x37005000",
+          0
+        ],
+        [
+          "dma-read",
+          "0x3700500c",
+          2147483647
+        ]
+      ]
+    },
+    {
+      "version": "13G36",
+      "kind": "irq",
+      "channel": 5,
+      "initial": 524288,
+      "pending": 0,
+      "residue": 2147483648,
+      "outcome": "returned",
+      "trace": [
+        [
+          "dma-read",
+          "0x37005000",
+          524288
+        ],
+        [
+          "dma-write",
+          "0x37005000",
+          524288
+        ],
+        [
+          "dma-read",
+          "0x3700500c",
+          2147483648
+        ],
+        [
+          "dma-read",
+          "0x37000010",
+          32
+        ],
+        [
+          "dma-write",
+          "0x37000008",
+          32
+        ],
+        [
+          "callback",
+          4206887173
+        ]
+      ]
+    },
+    {
+      "version": "13G36",
+      "kind": "irq",
+      "channel": 5,
+      "initial": 524288,
+      "pending": 0,
+      "residue": 4294967295,
+      "outcome": "returned",
+      "trace": [
+        [
+          "dma-read",
+          "0x37005000",
+          524288
+        ],
+        [
+          "dma-write",
+          "0x37005000",
+          524288
+        ],
+        [
+          "dma-read",
+          "0x3700500c",
+          4294967295
+        ],
+        [
+          "dma-read",
+          "0x37000010",
+          32
+        ],
+        [
+          "dma-write",
+          "0x37000008",
+          32
+        ],
+        [
+          "callback",
+          4206887173
+        ]
+      ]
+    },
+    {
+      "version": "13G36",
+      "kind": "irq",
+      "channel": 5,
+      "initial": 524288,
+      "pending": 64,
+      "residue": 64,
+      "outcome": "returned",
+      "trace": [
+        [
+          "dma-read",
+          "0x37005000",
+          524288
+        ],
+        [
+          "dma-write",
+          "0x37005000",
+          524288
+        ],
+        [
+          "dma-read",
+          "0x37005000",
+          0
+        ],
+        [
+          "dma-read",
+          "0x3700500c",
+          64
+        ],
+        [
+          "refill",
+          5
+        ]
+      ]
+    },
+    {
+      "version": "13G36",
+      "kind": "irq",
+      "channel": 5,
+      "initial": 524288,
+      "pending": 64,
+      "residue": 32,
+      "outcome": "returned",
+      "trace": [
+        [
+          "dma-read",
+          "0x37005000",
+          524288
+        ],
+        [
+          "dma-write",
+          "0x37005000",
+          524288
+        ],
+        [
+          "dma-read",
+          "0x37005000",
+          0
+        ],
+        [
+          "dma-read",
+          "0x3700500c",
+          32
+        ],
+        [
+          "refill",
+          5
+        ]
+      ]
+    },
+    {
+      "version": "13G36",
+      "kind": "irq",
+      "channel": 5,
+      "initial": 524288,
+      "pending": 64,
+      "residue": 65,
+      "outcome": "require",
+      "trace": [
+        [
+          "dma-read",
+          "0x37005000",
+          524288
+        ],
+        [
+          "dma-write",
+          "0x37005000",
+          524288
+        ],
+        [
+          "dma-read",
+          "0x37005000",
+          0
+        ],
+        [
+          "dma-read",
+          "0x3700500c",
+          65
+        ]
+      ]
+    },
+    {
+      "version": "13G36",
+      "kind": "irq",
+      "channel": 6,
+      "initial": 524288,
+      "pending": 0,
+      "residue": 0,
+      "outcome": "returned",
+      "trace": [
+        [
+          "dma-read",
+          "0x37006000",
+          524288
+        ],
+        [
+          "dma-write",
+          "0x37006000",
+          524288
+        ],
+        [
+          "dma-read",
+          "0x3700600c",
+          0
+        ],
+        [
+          "dma-read",
+          "0x37000010",
+          64
+        ],
+        [
+          "dma-write",
+          "0x37000008",
+          64
+        ],
+        [
+          "callback",
+          4206887173
+        ]
+      ]
+    },
+    {
+      "version": "13G36",
+      "kind": "irq",
+      "channel": 6,
+      "initial": 262144,
+      "pending": 0,
+      "residue": 0,
+      "outcome": "require",
+      "trace": [
+        [
+          "dma-read",
+          "0x37006000",
+          262144
+        ],
+        [
+          "dma-read",
+          "0x37006018",
+          90
+        ]
+      ]
+    },
+    {
+      "version": "13G36",
+      "kind": "irq",
+      "channel": 6,
+      "initial": 1048576,
+      "pending": 0,
+      "residue": 0,
+      "outcome": "require",
+      "trace": [
+        [
+          "dma-read",
+          "0x37006000",
+          1048576
+        ]
+      ]
+    },
+    {
+      "version": "13G36",
+      "kind": "irq",
+      "channel": 6,
+      "initial": 0,
+      "pending": 0,
+      "residue": 0,
+      "outcome": "require",
+      "trace": [
+        [
+          "dma-read",
+          "0x37006000",
+          0
+        ]
+      ]
+    },
+    {
+      "version": "13G36",
+      "kind": "irq",
+      "channel": 6,
+      "initial": 786432,
+      "pending": 0,
+      "residue": 0,
+      "outcome": "require",
+      "trace": [
+        [
+          "dma-read",
+          "0x37006000",
+          786432
+        ],
+        [
+          "dma-read",
+          "0x37006018",
+          90
+        ]
+      ]
+    },
+    {
+      "version": "13G36",
+      "kind": "irq",
+      "channel": 6,
+      "initial": 1572864,
+      "pending": 0,
+      "residue": 0,
+      "outcome": "require",
+      "trace": [
+        [
+          "dma-read",
+          "0x37006000",
+          1572864
+        ]
+      ]
+    },
+    {
+      "version": "13G36",
+      "kind": "irq",
+      "channel": 6,
+      "initial": 524288,
+      "pending": 64,
+      "residue": 0,
+      "outcome": "returned",
+      "trace": [
+        [
+          "dma-read",
+          "0x37006000",
+          524288
+        ],
+        [
+          "dma-write",
+          "0x37006000",
+          524288
+        ],
+        [
+          "dma-read",
+          "0x37006000",
+          0
+        ],
+        [
+          "dma-read",
+          "0x3700600c",
+          0
+        ],
+        [
+          "refill",
+          6
+        ]
+      ]
+    },
+    {
+      "version": "13G36",
+      "kind": "irq",
+      "channel": 6,
+      "initial": 524288,
+      "pending": 0,
+      "residue": 64,
+      "outcome": "require",
+      "trace": [
+        [
+          "dma-read",
+          "0x37006000",
+          524288
+        ],
+        [
+          "dma-write",
+          "0x37006000",
+          524288
+        ],
+        [
+          "dma-read",
+          "0x3700600c",
+          64
+        ],
+        [
+          "dma-read",
+          "0x37006000",
+          0
+        ],
+        [
+          "dma-read",
+          "0x3700600c",
+          64
+        ]
+      ]
+    },
+    {
+      "version": "13G36",
+      "kind": "irq",
+      "channel": 6,
+      "initial": 524288,
+      "pending": 0,
+      "residue": 2147483647,
+      "outcome": "require",
+      "trace": [
+        [
+          "dma-read",
+          "0x37006000",
+          524288
+        ],
+        [
+          "dma-write",
+          "0x37006000",
+          524288
+        ],
+        [
+          "dma-read",
+          "0x3700600c",
+          2147483647
+        ],
+        [
+          "dma-read",
+          "0x37006000",
+          0
+        ],
+        [
+          "dma-read",
+          "0x3700600c",
+          2147483647
+        ]
+      ]
+    },
+    {
+      "version": "13G36",
+      "kind": "irq",
+      "channel": 6,
+      "initial": 524288,
+      "pending": 0,
+      "residue": 2147483648,
+      "outcome": "returned",
+      "trace": [
+        [
+          "dma-read",
+          "0x37006000",
+          524288
+        ],
+        [
+          "dma-write",
+          "0x37006000",
+          524288
+        ],
+        [
+          "dma-read",
+          "0x3700600c",
+          2147483648
+        ],
+        [
+          "dma-read",
+          "0x37000010",
+          64
+        ],
+        [
+          "dma-write",
+          "0x37000008",
+          64
+        ],
+        [
+          "callback",
+          4206887173
+        ]
+      ]
+    },
+    {
+      "version": "13G36",
+      "kind": "irq",
+      "channel": 6,
+      "initial": 524288,
+      "pending": 0,
+      "residue": 4294967295,
+      "outcome": "returned",
+      "trace": [
+        [
+          "dma-read",
+          "0x37006000",
+          524288
+        ],
+        [
+          "dma-write",
+          "0x37006000",
+          524288
+        ],
+        [
+          "dma-read",
+          "0x3700600c",
+          4294967295
+        ],
+        [
+          "dma-read",
+          "0x37000010",
+          64
+        ],
+        [
+          "dma-write",
+          "0x37000008",
+          64
+        ],
+        [
+          "callback",
+          4206887173
+        ]
+      ]
+    },
+    {
+      "version": "13G36",
+      "kind": "irq",
+      "channel": 6,
+      "initial": 524288,
+      "pending": 64,
+      "residue": 64,
+      "outcome": "returned",
+      "trace": [
+        [
+          "dma-read",
+          "0x37006000",
+          524288
+        ],
+        [
+          "dma-write",
+          "0x37006000",
+          524288
+        ],
+        [
+          "dma-read",
+          "0x37006000",
+          0
+        ],
+        [
+          "dma-read",
+          "0x3700600c",
+          64
+        ],
+        [
+          "refill",
+          6
+        ]
+      ]
+    },
+    {
+      "version": "13G36",
+      "kind": "irq",
+      "channel": 6,
+      "initial": 524288,
+      "pending": 64,
+      "residue": 32,
+      "outcome": "returned",
+      "trace": [
+        [
+          "dma-read",
+          "0x37006000",
+          524288
+        ],
+        [
+          "dma-write",
+          "0x37006000",
+          524288
+        ],
+        [
+          "dma-read",
+          "0x37006000",
+          0
+        ],
+        [
+          "dma-read",
+          "0x3700600c",
+          32
+        ],
+        [
+          "refill",
+          6
+        ]
+      ]
+    },
+    {
+      "version": "13G36",
+      "kind": "irq",
+      "channel": 6,
+      "initial": 524288,
+      "pending": 64,
+      "residue": 65,
+      "outcome": "require",
+      "trace": [
+        [
+          "dma-read",
+          "0x37006000",
+          524288
+        ],
+        [
+          "dma-write",
+          "0x37006000",
+          524288
+        ],
+        [
+          "dma-read",
+          "0x37006000",
+          0
+        ],
+        [
+          "dma-read",
+          "0x3700600c",
+          65
+        ]
+      ]
+    },
+    {
+      "version": "13G36",
+      "kind": "irq",
+      "channel": 7,
+      "initial": 524288,
+      "pending": 0,
+      "residue": 0,
+      "outcome": "returned",
+      "trace": [
+        [
+          "dma-read",
+          "0x37007000",
+          524288
+        ],
+        [
+          "dma-write",
+          "0x37007000",
+          524288
+        ],
+        [
+          "dma-read",
+          "0x3700700c",
+          0
+        ],
+        [
+          "dma-read",
+          "0x37000010",
+          128
+        ],
+        [
+          "dma-write",
+          "0x37000008",
+          128
+        ],
+        [
+          "callback",
+          4206887173
+        ]
+      ]
+    },
+    {
+      "version": "13G36",
+      "kind": "irq",
+      "channel": 7,
+      "initial": 262144,
+      "pending": 0,
+      "residue": 0,
+      "outcome": "require",
+      "trace": [
+        [
+          "dma-read",
+          "0x37007000",
+          262144
+        ],
+        [
+          "dma-read",
+          "0x37007018",
+          90
+        ]
+      ]
+    },
+    {
+      "version": "13G36",
+      "kind": "irq",
+      "channel": 7,
+      "initial": 1048576,
+      "pending": 0,
+      "residue": 0,
+      "outcome": "require",
+      "trace": [
+        [
+          "dma-read",
+          "0x37007000",
+          1048576
+        ]
+      ]
+    },
+    {
+      "version": "13G36",
+      "kind": "irq",
+      "channel": 7,
+      "initial": 0,
+      "pending": 0,
+      "residue": 0,
+      "outcome": "require",
+      "trace": [
+        [
+          "dma-read",
+          "0x37007000",
+          0
+        ]
+      ]
+    },
+    {
+      "version": "13G36",
+      "kind": "irq",
+      "channel": 7,
+      "initial": 786432,
+      "pending": 0,
+      "residue": 0,
+      "outcome": "require",
+      "trace": [
+        [
+          "dma-read",
+          "0x37007000",
+          786432
+        ],
+        [
+          "dma-read",
+          "0x37007018",
+          90
+        ]
+      ]
+    },
+    {
+      "version": "13G36",
+      "kind": "irq",
+      "channel": 7,
+      "initial": 1572864,
+      "pending": 0,
+      "residue": 0,
+      "outcome": "require",
+      "trace": [
+        [
+          "dma-read",
+          "0x37007000",
+          1572864
+        ]
+      ]
+    },
+    {
+      "version": "13G36",
+      "kind": "irq",
+      "channel": 7,
+      "initial": 524288,
+      "pending": 64,
+      "residue": 0,
+      "outcome": "returned",
+      "trace": [
+        [
+          "dma-read",
+          "0x37007000",
+          524288
+        ],
+        [
+          "dma-write",
+          "0x37007000",
+          524288
+        ],
+        [
+          "dma-read",
+          "0x37007000",
+          0
+        ],
+        [
+          "dma-read",
+          "0x3700700c",
+          0
+        ],
+        [
+          "refill",
+          7
+        ]
+      ]
+    },
+    {
+      "version": "13G36",
+      "kind": "irq",
+      "channel": 7,
+      "initial": 524288,
+      "pending": 0,
+      "residue": 64,
+      "outcome": "require",
+      "trace": [
+        [
+          "dma-read",
+          "0x37007000",
+          524288
+        ],
+        [
+          "dma-write",
+          "0x37007000",
+          524288
+        ],
+        [
+          "dma-read",
+          "0x3700700c",
+          64
+        ],
+        [
+          "dma-read",
+          "0x37007000",
+          0
+        ],
+        [
+          "dma-read",
+          "0x3700700c",
+          64
+        ]
+      ]
+    },
+    {
+      "version": "13G36",
+      "kind": "irq",
+      "channel": 7,
+      "initial": 524288,
+      "pending": 0,
+      "residue": 2147483647,
+      "outcome": "require",
+      "trace": [
+        [
+          "dma-read",
+          "0x37007000",
+          524288
+        ],
+        [
+          "dma-write",
+          "0x37007000",
+          524288
+        ],
+        [
+          "dma-read",
+          "0x3700700c",
+          2147483647
+        ],
+        [
+          "dma-read",
+          "0x37007000",
+          0
+        ],
+        [
+          "dma-read",
+          "0x3700700c",
+          2147483647
+        ]
+      ]
+    },
+    {
+      "version": "13G36",
+      "kind": "irq",
+      "channel": 7,
+      "initial": 524288,
+      "pending": 0,
+      "residue": 2147483648,
+      "outcome": "returned",
+      "trace": [
+        [
+          "dma-read",
+          "0x37007000",
+          524288
+        ],
+        [
+          "dma-write",
+          "0x37007000",
+          524288
+        ],
+        [
+          "dma-read",
+          "0x3700700c",
+          2147483648
+        ],
+        [
+          "dma-read",
+          "0x37000010",
+          128
+        ],
+        [
+          "dma-write",
+          "0x37000008",
+          128
+        ],
+        [
+          "callback",
+          4206887173
+        ]
+      ]
+    },
+    {
+      "version": "13G36",
+      "kind": "irq",
+      "channel": 7,
+      "initial": 524288,
+      "pending": 0,
+      "residue": 4294967295,
+      "outcome": "returned",
+      "trace": [
+        [
+          "dma-read",
+          "0x37007000",
+          524288
+        ],
+        [
+          "dma-write",
+          "0x37007000",
+          524288
+        ],
+        [
+          "dma-read",
+          "0x3700700c",
+          4294967295
+        ],
+        [
+          "dma-read",
+          "0x37000010",
+          128
+        ],
+        [
+          "dma-write",
+          "0x37000008",
+          128
+        ],
+        [
+          "callback",
+          4206887173
+        ]
+      ]
+    },
+    {
+      "version": "13G36",
+      "kind": "irq",
+      "channel": 7,
+      "initial": 524288,
+      "pending": 64,
+      "residue": 64,
+      "outcome": "returned",
+      "trace": [
+        [
+          "dma-read",
+          "0x37007000",
+          524288
+        ],
+        [
+          "dma-write",
+          "0x37007000",
+          524288
+        ],
+        [
+          "dma-read",
+          "0x37007000",
+          0
+        ],
+        [
+          "dma-read",
+          "0x3700700c",
+          64
+        ],
+        [
+          "refill",
+          7
+        ]
+      ]
+    },
+    {
+      "version": "13G36",
+      "kind": "irq",
+      "channel": 7,
+      "initial": 524288,
+      "pending": 64,
+      "residue": 32,
+      "outcome": "returned",
+      "trace": [
+        [
+          "dma-read",
+          "0x37007000",
+          524288
+        ],
+        [
+          "dma-write",
+          "0x37007000",
+          524288
+        ],
+        [
+          "dma-read",
+          "0x37007000",
+          0
+        ],
+        [
+          "dma-read",
+          "0x3700700c",
+          32
+        ],
+        [
+          "refill",
+          7
+        ]
+      ]
+    },
+    {
+      "version": "13G36",
+      "kind": "irq",
+      "channel": 7,
+      "initial": 524288,
+      "pending": 64,
+      "residue": 65,
+      "outcome": "require",
+      "trace": [
+        [
+          "dma-read",
+          "0x37007000",
+          524288
+        ],
+        [
+          "dma-write",
+          "0x37007000",
+          524288
+        ],
+        [
+          "dma-read",
+          "0x37007000",
+          0
+        ],
+        [
+          "dma-read",
+          "0x3700700c",
+          65
+        ]
+      ]
+    },
+    {
+      "version": "13G36",
+      "kind": "irq",
+      "channel": 8,
+      "initial": 524288,
+      "pending": 0,
+      "residue": 0,
+      "outcome": "returned",
+      "trace": [
+        [
+          "dma-read",
+          "0x37008000",
+          524288
+        ],
+        [
+          "dma-write",
+          "0x37008000",
+          524288
+        ],
+        [
+          "dma-read",
+          "0x3700800c",
+          0
+        ],
+        [
+          "dma-read",
+          "0x37000010",
+          256
+        ],
+        [
+          "dma-write",
+          "0x37000008",
+          256
+        ],
+        [
+          "callback",
+          4206887173
+        ]
+      ]
+    },
+    {
+      "version": "13G36",
+      "kind": "irq",
+      "channel": 8,
+      "initial": 262144,
+      "pending": 0,
+      "residue": 0,
+      "outcome": "require",
+      "trace": [
+        [
+          "dma-read",
+          "0x37008000",
+          262144
+        ],
+        [
+          "dma-read",
+          "0x37008018",
+          90
+        ]
+      ]
+    },
+    {
+      "version": "13G36",
+      "kind": "irq",
+      "channel": 8,
+      "initial": 1048576,
+      "pending": 0,
+      "residue": 0,
+      "outcome": "require",
+      "trace": [
+        [
+          "dma-read",
+          "0x37008000",
+          1048576
+        ]
+      ]
+    },
+    {
+      "version": "13G36",
+      "kind": "irq",
+      "channel": 8,
+      "initial": 0,
+      "pending": 0,
+      "residue": 0,
+      "outcome": "require",
+      "trace": [
+        [
+          "dma-read",
+          "0x37008000",
+          0
+        ]
+      ]
+    },
+    {
+      "version": "13G36",
+      "kind": "irq",
+      "channel": 8,
+      "initial": 786432,
+      "pending": 0,
+      "residue": 0,
+      "outcome": "require",
+      "trace": [
+        [
+          "dma-read",
+          "0x37008000",
+          786432
+        ],
+        [
+          "dma-read",
+          "0x37008018",
+          90
+        ]
+      ]
+    },
+    {
+      "version": "13G36",
+      "kind": "irq",
+      "channel": 8,
+      "initial": 1572864,
+      "pending": 0,
+      "residue": 0,
+      "outcome": "require",
+      "trace": [
+        [
+          "dma-read",
+          "0x37008000",
+          1572864
+        ]
+      ]
+    },
+    {
+      "version": "13G36",
+      "kind": "irq",
+      "channel": 8,
+      "initial": 524288,
+      "pending": 64,
+      "residue": 0,
+      "outcome": "returned",
+      "trace": [
+        [
+          "dma-read",
+          "0x37008000",
+          524288
+        ],
+        [
+          "dma-write",
+          "0x37008000",
+          524288
+        ],
+        [
+          "dma-read",
+          "0x37008000",
+          0
+        ],
+        [
+          "dma-read",
+          "0x3700800c",
+          0
+        ],
+        [
+          "refill",
+          8
+        ]
+      ]
+    },
+    {
+      "version": "13G36",
+      "kind": "irq",
+      "channel": 8,
+      "initial": 524288,
+      "pending": 0,
+      "residue": 64,
+      "outcome": "require",
+      "trace": [
+        [
+          "dma-read",
+          "0x37008000",
+          524288
+        ],
+        [
+          "dma-write",
+          "0x37008000",
+          524288
+        ],
+        [
+          "dma-read",
+          "0x3700800c",
+          64
+        ],
+        [
+          "dma-read",
+          "0x37008000",
+          0
+        ],
+        [
+          "dma-read",
+          "0x3700800c",
+          64
+        ]
+      ]
+    },
+    {
+      "version": "13G36",
+      "kind": "irq",
+      "channel": 8,
+      "initial": 524288,
+      "pending": 0,
+      "residue": 2147483647,
+      "outcome": "require",
+      "trace": [
+        [
+          "dma-read",
+          "0x37008000",
+          524288
+        ],
+        [
+          "dma-write",
+          "0x37008000",
+          524288
+        ],
+        [
+          "dma-read",
+          "0x3700800c",
+          2147483647
+        ],
+        [
+          "dma-read",
+          "0x37008000",
+          0
+        ],
+        [
+          "dma-read",
+          "0x3700800c",
+          2147483647
+        ]
+      ]
+    },
+    {
+      "version": "13G36",
+      "kind": "irq",
+      "channel": 8,
+      "initial": 524288,
+      "pending": 0,
+      "residue": 2147483648,
+      "outcome": "returned",
+      "trace": [
+        [
+          "dma-read",
+          "0x37008000",
+          524288
+        ],
+        [
+          "dma-write",
+          "0x37008000",
+          524288
+        ],
+        [
+          "dma-read",
+          "0x3700800c",
+          2147483648
+        ],
+        [
+          "dma-read",
+          "0x37000010",
+          256
+        ],
+        [
+          "dma-write",
+          "0x37000008",
+          256
+        ],
+        [
+          "callback",
+          4206887173
+        ]
+      ]
+    },
+    {
+      "version": "13G36",
+      "kind": "irq",
+      "channel": 8,
+      "initial": 524288,
+      "pending": 0,
+      "residue": 4294967295,
+      "outcome": "returned",
+      "trace": [
+        [
+          "dma-read",
+          "0x37008000",
+          524288
+        ],
+        [
+          "dma-write",
+          "0x37008000",
+          524288
+        ],
+        [
+          "dma-read",
+          "0x3700800c",
+          4294967295
+        ],
+        [
+          "dma-read",
+          "0x37000010",
+          256
+        ],
+        [
+          "dma-write",
+          "0x37000008",
+          256
+        ],
+        [
+          "callback",
+          4206887173
+        ]
+      ]
+    },
+    {
+      "version": "13G36",
+      "kind": "irq",
+      "channel": 8,
+      "initial": 524288,
+      "pending": 64,
+      "residue": 64,
+      "outcome": "returned",
+      "trace": [
+        [
+          "dma-read",
+          "0x37008000",
+          524288
+        ],
+        [
+          "dma-write",
+          "0x37008000",
+          524288
+        ],
+        [
+          "dma-read",
+          "0x37008000",
+          0
+        ],
+        [
+          "dma-read",
+          "0x3700800c",
+          64
+        ],
+        [
+          "refill",
+          8
+        ]
+      ]
+    },
+    {
+      "version": "13G36",
+      "kind": "irq",
+      "channel": 8,
+      "initial": 524288,
+      "pending": 64,
+      "residue": 32,
+      "outcome": "returned",
+      "trace": [
+        [
+          "dma-read",
+          "0x37008000",
+          524288
+        ],
+        [
+          "dma-write",
+          "0x37008000",
+          524288
+        ],
+        [
+          "dma-read",
+          "0x37008000",
+          0
+        ],
+        [
+          "dma-read",
+          "0x3700800c",
+          32
+        ],
+        [
+          "refill",
+          8
+        ]
+      ]
+    },
+    {
+      "version": "13G36",
+      "kind": "irq",
+      "channel": 8,
+      "initial": 524288,
+      "pending": 64,
+      "residue": 65,
+      "outcome": "require",
+      "trace": [
+        [
+          "dma-read",
+          "0x37008000",
+          524288
+        ],
+        [
+          "dma-write",
+          "0x37008000",
+          524288
+        ],
+        [
+          "dma-read",
+          "0x37008000",
+          0
+        ],
+        [
+          "dma-read",
+          "0x3700800c",
+          65
+        ]
+      ]
+    },
+    {
+      "version": "13G36",
+      "kind": "translate",
+      "pointer": 0,
+      "physical_result": 4294967295,
+      "oracle_mapping_found": false,
+      "trace": []
+    },
+    {
+      "version": "13G36",
+      "kind": "translate",
+      "pointer": 268435455,
+      "physical_result": 4294967295,
+      "oracle_mapping_found": false,
+      "trace": []
+    },
+    {
+      "version": "13G36",
+      "kind": "translate",
+      "pointer": 268435456,
+      "physical_result": 2147483648,
+      "oracle_mapping_found": true,
+      "trace": []
+    },
+    {
+      "version": "13G36",
+      "kind": "translate",
+      "pointer": 268435457,
+      "physical_result": 2147483649,
+      "oracle_mapping_found": true,
+      "trace": []
+    },
+    {
+      "version": "13G36",
+      "kind": "translate",
+      "pointer": 268439551,
+      "physical_result": 2147487743,
+      "oracle_mapping_found": true,
+      "trace": []
+    },
+    {
+      "version": "13G36",
+      "kind": "translate",
+      "pointer": 268439552,
+      "physical_result": 4294967295,
+      "oracle_mapping_found": false,
+      "trace": []
+    },
+    {
+      "version": "13G36",
+      "kind": "translate",
+      "pointer": 285212671,
+      "physical_result": 4294967295,
+      "oracle_mapping_found": false,
+      "trace": []
+    },
+    {
+      "version": "13G36",
+      "kind": "translate",
+      "pointer": 285212672,
+      "physical_result": 2147483648,
+      "oracle_mapping_found": true,
+      "trace": []
+    },
+    {
+      "version": "13G36",
+      "kind": "translate",
+      "pointer": 285212673,
+      "physical_result": 2147483649,
+      "oracle_mapping_found": true,
+      "trace": []
+    },
+    {
+      "version": "13G36",
+      "kind": "translate",
+      "pointer": 285216767,
+      "physical_result": 2147487743,
+      "oracle_mapping_found": true,
+      "trace": []
+    },
+    {
+      "version": "13G36",
+      "kind": "translate",
+      "pointer": 285216768,
+      "physical_result": 4294967295,
+      "oracle_mapping_found": false,
+      "trace": []
+    },
+    {
+      "version": "13G36",
+      "kind": "translate",
+      "pointer": 805306368,
+      "physical_result": 4294967295,
+      "oracle_mapping_found": false,
+      "trace": []
+    },
+    {
+      "version": "13G36",
+      "kind": "translate",
+      "pointer": 4294967295,
+      "physical_result": 4294967295,
+      "oracle_mapping_found": false,
+      "trace": []
+    },
+    {
+      "version": "13G36",
+      "kind": "translate",
+      "pointer": 0,
+      "physical_result": 4294967295,
+      "oracle_mapping_found": false,
+      "trace": []
+    },
+    {
+      "version": "13G36",
+      "kind": "translate",
+      "pointer": 285212671,
+      "physical_result": 4294967295,
+      "oracle_mapping_found": false,
+      "trace": []
+    },
+    {
+      "version": "13G36",
+      "kind": "translate",
+      "pointer": 285212672,
+      "physical_result": 2147483648,
+      "oracle_mapping_found": true,
+      "trace": []
+    },
+    {
+      "version": "13G36",
+      "kind": "translate",
+      "pointer": 285212673,
+      "physical_result": 2147483649,
+      "oracle_mapping_found": true,
+      "trace": []
+    },
+    {
+      "version": "13G36",
+      "kind": "translate",
+      "pointer": 285216767,
+      "physical_result": 2147487743,
+      "oracle_mapping_found": true,
+      "trace": []
+    },
+    {
+      "version": "13G36",
+      "kind": "translate",
+      "pointer": 285216768,
+      "physical_result": 4294967295,
+      "oracle_mapping_found": false,
+      "trace": []
+    },
+    {
+      "version": "13G36",
+      "kind": "translate",
+      "pointer": 805306368,
+      "physical_result": 4294967295,
+      "oracle_mapping_found": false,
+      "trace": []
+    },
+    {
+      "version": "13G36",
+      "kind": "translate",
+      "pointer": 4294967295,
+      "physical_result": 4294967295,
+      "oracle_mapping_found": false,
+      "trace": []
+    },
+    {
+      "version": "13G36",
+      "kind": "translate",
+      "pointer": 0,
+      "physical_result": 4294967295,
+      "oracle_mapping_found": false,
+      "trace": []
+    },
+    {
+      "version": "13G36",
+      "kind": "translate",
+      "pointer": 268435455,
+      "physical_result": 4294967295,
+      "oracle_mapping_found": false,
+      "trace": []
+    },
+    {
+      "version": "13G36",
+      "kind": "translate",
+      "pointer": 268435456,
+      "physical_result": 2147483648,
+      "oracle_mapping_found": true,
+      "trace": []
+    },
+    {
+      "version": "13G36",
+      "kind": "translate",
+      "pointer": 268435457,
+      "physical_result": 2147483649,
+      "oracle_mapping_found": true,
+      "trace": []
+    },
+    {
+      "version": "13G36",
+      "kind": "translate",
+      "pointer": 268439551,
+      "physical_result": 2147487743,
+      "oracle_mapping_found": true,
+      "trace": []
+    },
+    {
+      "version": "13G36",
+      "kind": "translate",
+      "pointer": 268439552,
+      "physical_result": 4294967295,
+      "oracle_mapping_found": false,
+      "trace": []
+    },
+    {
+      "version": "13G36",
+      "kind": "translate",
+      "pointer": 805306368,
+      "physical_result": 4294967295,
+      "oracle_mapping_found": false,
+      "trace": []
+    },
+    {
+      "version": "13G36",
+      "kind": "translate",
+      "pointer": 4294967295,
+      "physical_result": 4294967295,
+      "oracle_mapping_found": false,
+      "trace": []
+    },
+    {
+      "version": "13G36",
+      "kind": "translate",
+      "pointer": 0,
+      "physical_result": 4294967295,
+      "oracle_mapping_found": false,
+      "trace": []
+    },
+    {
+      "version": "13G36",
+      "kind": "translate",
+      "pointer": 268435455,
+      "physical_result": 4294967295,
+      "oracle_mapping_found": false,
+      "trace": []
+    },
+    {
+      "version": "13G36",
+      "kind": "translate",
+      "pointer": 268435456,
+      "physical_result": 2147483648,
+      "oracle_mapping_found": true,
+      "trace": []
+    },
+    {
+      "version": "13G36",
+      "kind": "translate",
+      "pointer": 268435457,
+      "physical_result": 2147483649,
+      "oracle_mapping_found": true,
+      "trace": []
+    },
+    {
+      "version": "13G36",
+      "kind": "translate",
+      "pointer": 268439551,
+      "physical_result": 2147487743,
+      "oracle_mapping_found": true,
+      "trace": []
+    },
+    {
+      "version": "13G36",
+      "kind": "translate",
+      "pointer": 268439552,
+      "physical_result": 4294967295,
+      "oracle_mapping_found": false,
+      "trace": []
+    },
+    {
+      "version": "13G36",
+      "kind": "translate",
+      "pointer": 285212671,
+      "physical_result": 4294967295,
+      "oracle_mapping_found": false,
+      "trace": []
+    },
+    {
+      "version": "13G36",
+      "kind": "translate",
+      "pointer": 285212672,
+      "physical_result": 2147483648,
+      "oracle_mapping_found": true,
+      "trace": []
+    },
+    {
+      "version": "13G36",
+      "kind": "translate",
+      "pointer": 285212673,
+      "physical_result": 2147483649,
+      "oracle_mapping_found": true,
+      "trace": []
+    },
+    {
+      "version": "13G36",
+      "kind": "translate",
+      "pointer": 285216767,
+      "physical_result": 2147487743,
+      "oracle_mapping_found": true,
+      "trace": []
+    },
+    {
+      "version": "13G36",
+      "kind": "translate",
+      "pointer": 285216768,
+      "physical_result": 4294967295,
+      "oracle_mapping_found": false,
+      "trace": []
+    },
+    {
+      "version": "13G36",
+      "kind": "translate",
+      "pointer": 536870911,
+      "physical_result": 4294967295,
+      "oracle_mapping_found": false,
+      "trace": []
+    },
+    {
+      "version": "13G36",
+      "kind": "translate",
+      "pointer": 536870912,
+      "physical_result": 2415919104,
+      "oracle_mapping_found": true,
+      "trace": []
+    },
+    {
+      "version": "13G36",
+      "kind": "translate",
+      "pointer": 536870913,
+      "physical_result": 2415919105,
+      "oracle_mapping_found": true,
+      "trace": []
+    },
+    {
+      "version": "13G36",
+      "kind": "translate",
+      "pointer": 536879103,
+      "physical_result": 2415927295,
+      "oracle_mapping_found": true,
+      "trace": []
+    },
+    {
+      "version": "13G36",
+      "kind": "translate",
+      "pointer": 536879104,
+      "physical_result": 4294967295,
+      "oracle_mapping_found": false,
+      "trace": []
+    },
+    {
+      "version": "13G36",
+      "kind": "translate",
+      "pointer": 553648127,
+      "physical_result": 4294967295,
+      "oracle_mapping_found": false,
+      "trace": []
+    },
+    {
+      "version": "13G36",
+      "kind": "translate",
+      "pointer": 553648128,
+      "physical_result": 2415919104,
+      "oracle_mapping_found": true,
+      "trace": []
+    },
+    {
+      "version": "13G36",
+      "kind": "translate",
+      "pointer": 553648129,
+      "physical_result": 2415919105,
+      "oracle_mapping_found": true,
+      "trace": []
+    },
+    {
+      "version": "13G36",
+      "kind": "translate",
+      "pointer": 553656319,
+      "physical_result": 2415927295,
+      "oracle_mapping_found": true,
+      "trace": []
+    },
+    {
+      "version": "13G36",
+      "kind": "translate",
+      "pointer": 553656320,
+      "physical_result": 4294967295,
+      "oracle_mapping_found": false,
+      "trace": []
+    },
+    {
+      "version": "13G36",
+      "kind": "translate",
+      "pointer": 805306368,
+      "physical_result": 4294967295,
+      "oracle_mapping_found": false,
+      "trace": []
+    },
+    {
+      "version": "13G36",
+      "kind": "translate",
+      "pointer": 4294967295,
+      "physical_result": 4294967295,
+      "oracle_mapping_found": false,
+      "trace": []
+    },
+    {
+      "version": "13G36",
+      "kind": "translate",
+      "pointer": 0,
+      "physical_result": 4294967295,
+      "oracle_mapping_found": false,
+      "trace": []
+    },
+    {
+      "version": "13G36",
+      "kind": "translate",
+      "pointer": 268435455,
+      "physical_result": 4294967295,
+      "oracle_mapping_found": false,
+      "trace": []
+    },
+    {
+      "version": "13G36",
+      "kind": "translate",
+      "pointer": 268435456,
+      "physical_result": 4294963200,
+      "oracle_mapping_found": true,
+      "trace": []
+    },
+    {
+      "version": "13G36",
+      "kind": "translate",
+      "pointer": 268435457,
+      "physical_result": 4294963201,
+      "oracle_mapping_found": true,
+      "trace": []
+    },
+    {
+      "version": "13G36",
+      "kind": "translate",
+      "pointer": 268439551,
+      "physical_result": 4294967295,
+      "oracle_mapping_found": true,
+      "trace": []
+    },
+    {
+      "version": "13G36",
+      "kind": "translate",
+      "pointer": 268439552,
+      "physical_result": 4294967295,
+      "oracle_mapping_found": false,
+      "trace": []
+    },
+    {
+      "version": "13G36",
+      "kind": "translate",
+      "pointer": 285212671,
+      "physical_result": 4294967295,
+      "oracle_mapping_found": false,
+      "trace": []
+    },
+    {
+      "version": "13G36",
+      "kind": "translate",
+      "pointer": 285212672,
+      "physical_result": 4294963200,
+      "oracle_mapping_found": true,
+      "trace": []
+    },
+    {
+      "version": "13G36",
+      "kind": "translate",
+      "pointer": 285212673,
+      "physical_result": 4294963201,
+      "oracle_mapping_found": true,
+      "trace": []
+    },
+    {
+      "version": "13G36",
+      "kind": "translate",
+      "pointer": 285216767,
+      "physical_result": 4294967295,
+      "oracle_mapping_found": true,
+      "trace": []
+    },
+    {
+      "version": "13G36",
+      "kind": "translate",
+      "pointer": 285216768,
+      "physical_result": 4294967295,
+      "oracle_mapping_found": false,
+      "trace": []
+    },
+    {
+      "version": "13G36",
+      "kind": "translate",
+      "pointer": 805306368,
+      "physical_result": 4294967295,
+      "oracle_mapping_found": false,
+      "trace": []
+    },
+    {
+      "version": "13G36",
+      "kind": "translate",
+      "pointer": 4294967295,
+      "physical_result": 4294967295,
+      "oracle_mapping_found": false,
+      "trace": []
+    }
+  ]
+}

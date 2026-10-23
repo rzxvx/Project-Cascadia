@@ -1,0 +1,26 @@
+{
+  "frozen_manifest_SHA256": "3859ed25deeff583f95ba0f3901fc231a6782f652610d6835d7403342f410ee8",
+  "files": {
+    "native13.py": "6f6aa9984ac1a9166296cb9f6b88ecd57dd8a88e844f840b6053ab0cf743edfe",
+    "emulate-real-rsa-key.py": "b97a5917483ef3e75953bcb89264bc14192832409b21d1628733df8dcd9dd155",
+    "real-rsa-oracle.json": "11639939a6fe268eae035a40d357a6a67bd0f938db8f4f3b4d251c5e76dc5539",
+    "REAL_RSA_PROFILE.md": "48cc9b7ed56cddd15360458126e3e399a760c7689e87a672ae1427b8658e1f13"
+  },
+  "independent_root_review": {
+    "status": "PASS",
+    "cases": 7,
+    "original_manifest_SHA256": "3859ed25deeff583f95ba0f3901fc231a6782f652610d6835d7403342f410ee8",
+    "root_oracle_exactly_matches": true,
+    "max_instruction_count": 632536,
+    "native_1023_bit_block_size": 128,
+    "native_weak_threshold_units": "block bytes below 128",
+    "certificate_DER_parser_executed": false,
+    "full_chain_trust": null,
+    "authorization_granted": false,
+    "hardware_access": false
+  },
+  "normal_runtime_activation": false,
+  "full_chain_trust": null,
+  "authorization_granted": false,
+  "hardware_access": false
+}

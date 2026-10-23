@@ -1,0 +1,13 @@
+{
+  "private_freeze_SHA256": "08a382a6507fdd0f724c48d8de6358338c6c6b9f62796e46d78c834ddd17e4ef",
+  "original_frontend_SHA256": "eae946c7491c2e70412ff383e62c6efa4e86d6665025155b0a09fe3965444a55",
+  "candidate_frontend_SHA256": "632850dba93f9858177e542aa7a3fd6279cab13aaf352e177616507f308ff2f5",
+  "frozen_historical_setter_SHA256": "ba7ee519a754c1e8774ed15fa011ce4aec0c37a63d617aa4ebbdc46eb2938ca7",
+  "public_test_SHA256": "2fffee5c5bd0e74089ff0fd0a74f2d24dd2854ce950d2b1886b8ef79ad508291",
+  "root_export_test_changes": [
+    "seed nonzero prior desired values to verify refusal preserves them",
+    "bound compiler/each executable and use non-PIE sanitizer binaries"
+  ],
+  "new_hardware_IO": false,
+  "normal_runtime_activation": false
+}

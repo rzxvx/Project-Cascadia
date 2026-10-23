@@ -1,0 +1,2596 @@
+{
+  "input_sha256": "db1ddc8343aa9debc00e0a083fba59d9f555722db60957dc333b854fac21dd2c",
+  "actualread": "80ec8740",
+  "actualwrite": "80ec85e4",
+  "bankhelper": "80ec86d8",
+  "hardware_access": false,
+  "case_count": 84,
+  "cases": [
+    {
+      "logical_register": 1,
+      "count": 1,
+      "write": false,
+      "calls": [
+        {
+          "op": "write",
+          "prefix": [
+            30
+          ],
+          "data": [
+            0
+          ],
+          "bank": 0
+        },
+        {
+          "op": "read",
+          "prefix": [
+            1
+          ],
+          "data": [
+            1
+          ],
+          "bank": 0
+        }
+      ],
+      "output": [
+        1
+      ]
+    },
+    {
+      "logical_register": 2,
+      "count": 1,
+      "write": false,
+      "calls": [
+        {
+          "op": "write",
+          "prefix": [
+            30
+          ],
+          "data": [
+            0
+          ],
+          "bank": 0
+        },
+        {
+          "op": "read",
+          "prefix": [
+            2
+          ],
+          "data": [
+            2
+          ],
+          "bank": 0
+        }
+      ],
+      "output": [
+        2
+      ]
+    },
+    {
+      "logical_register": 3,
+      "count": 1,
+      "write": false,
+      "calls": [
+        {
+          "op": "write",
+          "prefix": [
+            30
+          ],
+          "data": [
+            0
+          ],
+          "bank": 0
+        },
+        {
+          "op": "read",
+          "prefix": [
+            3
+          ],
+          "data": [
+            3
+          ],
+          "bank": 0
+        }
+      ],
+      "output": [
+        3
+      ]
+    },
+    {
+      "logical_register": 4,
+      "count": 1,
+      "write": false,
+      "calls": [
+        {
+          "op": "write",
+          "prefix": [
+            30
+          ],
+          "data": [
+            0
+          ],
+          "bank": 0
+        },
+        {
+          "op": "read",
+          "prefix": [
+            4
+          ],
+          "data": [
+            4
+          ],
+          "bank": 0
+        }
+      ],
+      "output": [
+        4
+      ]
+    },
+    {
+      "logical_register": 5,
+      "count": 1,
+      "write": false,
+      "calls": [
+        {
+          "op": "write",
+          "prefix": [
+            30
+          ],
+          "data": [
+            0
+          ],
+          "bank": 0
+        },
+        {
+          "op": "read",
+          "prefix": [
+            5
+          ],
+          "data": [
+            5
+          ],
+          "bank": 0
+        }
+      ],
+      "output": [
+        5
+      ]
+    },
+    {
+      "logical_register": 6,
+      "count": 1,
+      "write": false,
+      "calls": [
+        {
+          "op": "write",
+          "prefix": [
+            30
+          ],
+          "data": [
+            0
+          ],
+          "bank": 0
+        },
+        {
+          "op": "read",
+          "prefix": [
+            6
+          ],
+          "data": [
+            6
+          ],
+          "bank": 0
+        }
+      ],
+      "output": [
+        6
+      ]
+    },
+    {
+      "logical_register": 7,
+      "count": 1,
+      "write": false,
+      "calls": [
+        {
+          "op": "write",
+          "prefix": [
+            30
+          ],
+          "data": [
+            0
+          ],
+          "bank": 0
+        },
+        {
+          "op": "read",
+          "prefix": [
+            7
+          ],
+          "data": [
+            7
+          ],
+          "bank": 0
+        }
+      ],
+      "output": [
+        7
+      ]
+    },
+    {
+      "logical_register": 8,
+      "count": 1,
+      "write": false,
+      "calls": [
+        {
+          "op": "write",
+          "prefix": [
+            30
+          ],
+          "data": [
+            0
+          ],
+          "bank": 0
+        },
+        {
+          "op": "read",
+          "prefix": [
+            8
+          ],
+          "data": [
+            8
+          ],
+          "bank": 0
+        }
+      ],
+      "output": [
+        8
+      ]
+    },
+    {
+      "logical_register": 9,
+      "count": 1,
+      "write": false,
+      "calls": [
+        {
+          "op": "write",
+          "prefix": [
+            30
+          ],
+          "data": [
+            0
+          ],
+          "bank": 0
+        },
+        {
+          "op": "read",
+          "prefix": [
+            9
+          ],
+          "data": [
+            9
+          ],
+          "bank": 0
+        }
+      ],
+      "output": [
+        9
+      ]
+    },
+    {
+      "logical_register": 18,
+      "count": 1,
+      "write": false,
+      "calls": [
+        {
+          "op": "write",
+          "prefix": [
+            30
+          ],
+          "data": [
+            0
+          ],
+          "bank": 0
+        },
+        {
+          "op": "read",
+          "prefix": [
+            18
+          ],
+          "data": [
+            18
+          ],
+          "bank": 0
+        }
+      ],
+      "output": [
+        18
+      ]
+    },
+    {
+      "logical_register": 18,
+      "count": 1,
+      "write": true,
+      "calls": [
+        {
+          "op": "write",
+          "prefix": [
+            30
+          ],
+          "data": [
+            0
+          ],
+          "bank": 0
+        },
+        {
+          "op": "write",
+          "prefix": [
+            18
+          ],
+          "data": [
+            165
+          ],
+          "bank": 0
+        }
+      ],
+      "output": [
+        165
+      ]
+    },
+    {
+      "logical_register": 19,
+      "count": 1,
+      "write": false,
+      "calls": [
+        {
+          "op": "write",
+          "prefix": [
+            30
+          ],
+          "data": [
+            0
+          ],
+          "bank": 0
+        },
+        {
+          "op": "read",
+          "prefix": [
+            19
+          ],
+          "data": [
+            19
+          ],
+          "bank": 0
+        }
+      ],
+      "output": [
+        19
+      ]
+    },
+    {
+      "logical_register": 19,
+      "count": 1,
+      "write": true,
+      "calls": [
+        {
+          "op": "write",
+          "prefix": [
+            30
+          ],
+          "data": [
+            0
+          ],
+          "bank": 0
+        },
+        {
+          "op": "write",
+          "prefix": [
+            19
+          ],
+          "data": [
+            165
+          ],
+          "bank": 0
+        }
+      ],
+      "output": [
+        165
+      ]
+    },
+    {
+      "logical_register": 20,
+      "count": 1,
+      "write": false,
+      "calls": [
+        {
+          "op": "write",
+          "prefix": [
+            30
+          ],
+          "data": [
+            0
+          ],
+          "bank": 0
+        },
+        {
+          "op": "read",
+          "prefix": [
+            20
+          ],
+          "data": [
+            20
+          ],
+          "bank": 0
+        }
+      ],
+      "output": [
+        20
+      ]
+    },
+    {
+      "logical_register": 20,
+      "count": 1,
+      "write": true,
+      "calls": [
+        {
+          "op": "write",
+          "prefix": [
+            30
+          ],
+          "data": [
+            0
+          ],
+          "bank": 0
+        },
+        {
+          "op": "write",
+          "prefix": [
+            20
+          ],
+          "data": [
+            165
+          ],
+          "bank": 0
+        }
+      ],
+      "output": [
+        165
+      ]
+    },
+    {
+      "logical_register": 21,
+      "count": 1,
+      "write": false,
+      "calls": [
+        {
+          "op": "write",
+          "prefix": [
+            30
+          ],
+          "data": [
+            0
+          ],
+          "bank": 0
+        },
+        {
+          "op": "read",
+          "prefix": [
+            21
+          ],
+          "data": [
+            21
+          ],
+          "bank": 0
+        }
+      ],
+      "output": [
+        21
+      ]
+    },
+    {
+      "logical_register": 21,
+      "count": 1,
+      "write": true,
+      "calls": [
+        {
+          "op": "write",
+          "prefix": [
+            30
+          ],
+          "data": [
+            0
+          ],
+          "bank": 0
+        },
+        {
+          "op": "write",
+          "prefix": [
+            21
+          ],
+          "data": [
+            165
+          ],
+          "bank": 0
+        }
+      ],
+      "output": [
+        165
+      ]
+    },
+    {
+      "logical_register": 22,
+      "count": 1,
+      "write": false,
+      "calls": [
+        {
+          "op": "write",
+          "prefix": [
+            30
+          ],
+          "data": [
+            0
+          ],
+          "bank": 0
+        },
+        {
+          "op": "read",
+          "prefix": [
+            22
+          ],
+          "data": [
+            22
+          ],
+          "bank": 0
+        }
+      ],
+      "output": [
+        22
+      ]
+    },
+    {
+      "logical_register": 22,
+      "count": 1,
+      "write": true,
+      "calls": [
+        {
+          "op": "write",
+          "prefix": [
+            30
+          ],
+          "data": [
+            0
+          ],
+          "bank": 0
+        },
+        {
+          "op": "write",
+          "prefix": [
+            22
+          ],
+          "data": [
+            165
+          ],
+          "bank": 0
+        }
+      ],
+      "output": [
+        165
+      ]
+    },
+    {
+      "logical_register": 23,
+      "count": 1,
+      "write": false,
+      "calls": [
+        {
+          "op": "write",
+          "prefix": [
+            30
+          ],
+          "data": [
+            0
+          ],
+          "bank": 0
+        },
+        {
+          "op": "read",
+          "prefix": [
+            23
+          ],
+          "data": [
+            23
+          ],
+          "bank": 0
+        }
+      ],
+      "output": [
+        23
+      ]
+    },
+    {
+      "logical_register": 23,
+      "count": 1,
+      "write": true,
+      "calls": [
+        {
+          "op": "write",
+          "prefix": [
+            30
+          ],
+          "data": [
+            0
+          ],
+          "bank": 0
+        },
+        {
+          "op": "write",
+          "prefix": [
+            23
+          ],
+          "data": [
+            165
+          ],
+          "bank": 0
+        }
+      ],
+      "output": [
+        165
+      ]
+    },
+    {
+      "logical_register": 24,
+      "count": 1,
+      "write": false,
+      "calls": [
+        {
+          "op": "write",
+          "prefix": [
+            30
+          ],
+          "data": [
+            0
+          ],
+          "bank": 0
+        },
+        {
+          "op": "read",
+          "prefix": [
+            24
+          ],
+          "data": [
+            24
+          ],
+          "bank": 0
+        }
+      ],
+      "output": [
+        24
+      ]
+    },
+    {
+      "logical_register": 24,
+      "count": 1,
+      "write": true,
+      "calls": [
+        {
+          "op": "write",
+          "prefix": [
+            30
+          ],
+          "data": [
+            0
+          ],
+          "bank": 0
+        },
+        {
+          "op": "write",
+          "prefix": [
+            24
+          ],
+          "data": [
+            165
+          ],
+          "bank": 0
+        }
+      ],
+      "output": [
+        165
+      ]
+    },
+    {
+      "logical_register": 25,
+      "count": 1,
+      "write": false,
+      "calls": [
+        {
+          "op": "write",
+          "prefix": [
+            30
+          ],
+          "data": [
+            0
+          ],
+          "bank": 0
+        },
+        {
+          "op": "read",
+          "prefix": [
+            25
+          ],
+          "data": [
+            25
+          ],
+          "bank": 0
+        }
+      ],
+      "output": [
+        25
+      ]
+    },
+    {
+      "logical_register": 25,
+      "count": 1,
+      "write": true,
+      "calls": [
+        {
+          "op": "write",
+          "prefix": [
+            30
+          ],
+          "data": [
+            0
+          ],
+          "bank": 0
+        },
+        {
+          "op": "write",
+          "prefix": [
+            25
+          ],
+          "data": [
+            165
+          ],
+          "bank": 0
+        }
+      ],
+      "output": [
+        165
+      ]
+    },
+    {
+      "logical_register": 26,
+      "count": 1,
+      "write": false,
+      "calls": [
+        {
+          "op": "write",
+          "prefix": [
+            30
+          ],
+          "data": [
+            0
+          ],
+          "bank": 0
+        },
+        {
+          "op": "read",
+          "prefix": [
+            26
+          ],
+          "data": [
+            26
+          ],
+          "bank": 0
+        }
+      ],
+      "output": [
+        26
+      ]
+    },
+    {
+      "logical_register": 26,
+      "count": 1,
+      "write": true,
+      "calls": [
+        {
+          "op": "write",
+          "prefix": [
+            30
+          ],
+          "data": [
+            0
+          ],
+          "bank": 0
+        },
+        {
+          "op": "write",
+          "prefix": [
+            26
+          ],
+          "data": [
+            165
+          ],
+          "bank": 0
+        }
+      ],
+      "output": [
+        165
+      ]
+    },
+    {
+      "logical_register": 27,
+      "count": 1,
+      "write": false,
+      "calls": [
+        {
+          "op": "write",
+          "prefix": [
+            30
+          ],
+          "data": [
+            0
+          ],
+          "bank": 0
+        },
+        {
+          "op": "read",
+          "prefix": [
+            27
+          ],
+          "data": [
+            27
+          ],
+          "bank": 0
+        }
+      ],
+      "output": [
+        27
+      ]
+    },
+    {
+      "logical_register": 27,
+      "count": 1,
+      "write": true,
+      "calls": [
+        {
+          "op": "write",
+          "prefix": [
+            30
+          ],
+          "data": [
+            0
+          ],
+          "bank": 0
+        },
+        {
+          "op": "write",
+          "prefix": [
+            27
+          ],
+          "data": [
+            165
+          ],
+          "bank": 0
+        }
+      ],
+      "output": [
+        165
+      ]
+    },
+    {
+      "logical_register": 34,
+      "count": 1,
+      "write": false,
+      "calls": [
+        {
+          "op": "write",
+          "prefix": [
+            30
+          ],
+          "data": [
+            0
+          ],
+          "bank": 0
+        },
+        {
+          "op": "read",
+          "prefix": [
+            34
+          ],
+          "data": [
+            34
+          ],
+          "bank": 0
+        }
+      ],
+      "output": [
+        34
+      ]
+    },
+    {
+      "logical_register": 34,
+      "count": 1,
+      "write": true,
+      "calls": [
+        {
+          "op": "write",
+          "prefix": [
+            30
+          ],
+          "data": [
+            0
+          ],
+          "bank": 0
+        },
+        {
+          "op": "write",
+          "prefix": [
+            34
+          ],
+          "data": [
+            165
+          ],
+          "bank": 0
+        }
+      ],
+      "output": [
+        165
+      ]
+    },
+    {
+      "logical_register": 35,
+      "count": 1,
+      "write": false,
+      "calls": [
+        {
+          "op": "write",
+          "prefix": [
+            30
+          ],
+          "data": [
+            0
+          ],
+          "bank": 0
+        },
+        {
+          "op": "read",
+          "prefix": [
+            35
+          ],
+          "data": [
+            35
+          ],
+          "bank": 0
+        }
+      ],
+      "output": [
+        35
+      ]
+    },
+    {
+      "logical_register": 35,
+      "count": 1,
+      "write": true,
+      "calls": [
+        {
+          "op": "write",
+          "prefix": [
+            30
+          ],
+          "data": [
+            0
+          ],
+          "bank": 0
+        },
+        {
+          "op": "write",
+          "prefix": [
+            35
+          ],
+          "data": [
+            165
+          ],
+          "bank": 0
+        }
+      ],
+      "output": [
+        165
+      ]
+    },
+    {
+      "logical_register": 91,
+      "count": 1,
+      "write": false,
+      "calls": [
+        {
+          "op": "write",
+          "prefix": [
+            30
+          ],
+          "data": [
+            0
+          ],
+          "bank": 0
+        },
+        {
+          "op": "read",
+          "prefix": [
+            91
+          ],
+          "data": [
+            91
+          ],
+          "bank": 0
+        }
+      ],
+      "output": [
+        91
+      ]
+    },
+    {
+      "logical_register": 91,
+      "count": 1,
+      "write": true,
+      "calls": [
+        {
+          "op": "write",
+          "prefix": [
+            30
+          ],
+          "data": [
+            0
+          ],
+          "bank": 0
+        },
+        {
+          "op": "write",
+          "prefix": [
+            91
+          ],
+          "data": [
+            165
+          ],
+          "bank": 0
+        }
+      ],
+      "output": [
+        165
+      ]
+    },
+    {
+      "logical_register": 97,
+      "count": 1,
+      "write": false,
+      "calls": [
+        {
+          "op": "write",
+          "prefix": [
+            30
+          ],
+          "data": [
+            0
+          ],
+          "bank": 0
+        },
+        {
+          "op": "read",
+          "prefix": [
+            97
+          ],
+          "data": [
+            97
+          ],
+          "bank": 0
+        }
+      ],
+      "output": [
+        97
+      ]
+    },
+    {
+      "logical_register": 97,
+      "count": 1,
+      "write": true,
+      "calls": [
+        {
+          "op": "write",
+          "prefix": [
+            30
+          ],
+          "data": [
+            0
+          ],
+          "bank": 0
+        },
+        {
+          "op": "write",
+          "prefix": [
+            97
+          ],
+          "data": [
+            165
+          ],
+          "bank": 0
+        }
+      ],
+      "output": [
+        165
+      ]
+    },
+    {
+      "logical_register": 98,
+      "count": 1,
+      "write": false,
+      "calls": [
+        {
+          "op": "write",
+          "prefix": [
+            30
+          ],
+          "data": [
+            0
+          ],
+          "bank": 0
+        },
+        {
+          "op": "read",
+          "prefix": [
+            98
+          ],
+          "data": [
+            98
+          ],
+          "bank": 0
+        }
+      ],
+      "output": [
+        98
+      ]
+    },
+    {
+      "logical_register": 98,
+      "count": 1,
+      "write": true,
+      "calls": [
+        {
+          "op": "write",
+          "prefix": [
+            30
+          ],
+          "data": [
+            0
+          ],
+          "bank": 0
+        },
+        {
+          "op": "write",
+          "prefix": [
+            98
+          ],
+          "data": [
+            165
+          ],
+          "bank": 0
+        }
+      ],
+      "output": [
+        165
+      ]
+    },
+    {
+      "logical_register": 99,
+      "count": 1,
+      "write": false,
+      "calls": [
+        {
+          "op": "write",
+          "prefix": [
+            30
+          ],
+          "data": [
+            0
+          ],
+          "bank": 0
+        },
+        {
+          "op": "read",
+          "prefix": [
+            99
+          ],
+          "data": [
+            99
+          ],
+          "bank": 0
+        }
+      ],
+      "output": [
+        99
+      ]
+    },
+    {
+      "logical_register": 99,
+      "count": 1,
+      "write": true,
+      "calls": [
+        {
+          "op": "write",
+          "prefix": [
+            30
+          ],
+          "data": [
+            0
+          ],
+          "bank": 0
+        },
+        {
+          "op": "write",
+          "prefix": [
+            99
+          ],
+          "data": [
+            165
+          ],
+          "bank": 0
+        }
+      ],
+      "output": [
+        165
+      ]
+    },
+    {
+      "logical_register": 100,
+      "count": 1,
+      "write": false,
+      "calls": [
+        {
+          "op": "write",
+          "prefix": [
+            30
+          ],
+          "data": [
+            0
+          ],
+          "bank": 0
+        },
+        {
+          "op": "read",
+          "prefix": [
+            100
+          ],
+          "data": [
+            100
+          ],
+          "bank": 0
+        }
+      ],
+      "output": [
+        100
+      ]
+    },
+    {
+      "logical_register": 100,
+      "count": 1,
+      "write": true,
+      "calls": [
+        {
+          "op": "write",
+          "prefix": [
+            30
+          ],
+          "data": [
+            0
+          ],
+          "bank": 0
+        },
+        {
+          "op": "write",
+          "prefix": [
+            100
+          ],
+          "data": [
+            165
+          ],
+          "bank": 0
+        }
+      ],
+      "output": [
+        165
+      ]
+    },
+    {
+      "logical_register": 101,
+      "count": 1,
+      "write": false,
+      "calls": [
+        {
+          "op": "write",
+          "prefix": [
+            30
+          ],
+          "data": [
+            0
+          ],
+          "bank": 0
+        },
+        {
+          "op": "read",
+          "prefix": [
+            101
+          ],
+          "data": [
+            101
+          ],
+          "bank": 0
+        }
+      ],
+      "output": [
+        101
+      ]
+    },
+    {
+      "logical_register": 101,
+      "count": 1,
+      "write": true,
+      "calls": [
+        {
+          "op": "write",
+          "prefix": [
+            30
+          ],
+          "data": [
+            0
+          ],
+          "bank": 0
+        },
+        {
+          "op": "write",
+          "prefix": [
+            101
+          ],
+          "data": [
+            165
+          ],
+          "bank": 0
+        }
+      ],
+      "output": [
+        165
+      ]
+    },
+    {
+      "logical_register": 102,
+      "count": 1,
+      "write": false,
+      "calls": [
+        {
+          "op": "write",
+          "prefix": [
+            30
+          ],
+          "data": [
+            0
+          ],
+          "bank": 0
+        },
+        {
+          "op": "read",
+          "prefix": [
+            102
+          ],
+          "data": [
+            102
+          ],
+          "bank": 0
+        }
+      ],
+      "output": [
+        102
+      ]
+    },
+    {
+      "logical_register": 102,
+      "count": 1,
+      "write": true,
+      "calls": [
+        {
+          "op": "write",
+          "prefix": [
+            30
+          ],
+          "data": [
+            0
+          ],
+          "bank": 0
+        },
+        {
+          "op": "write",
+          "prefix": [
+            102
+          ],
+          "data": [
+            165
+          ],
+          "bank": 0
+        }
+      ],
+      "output": [
+        165
+      ]
+    },
+    {
+      "logical_register": 103,
+      "count": 1,
+      "write": false,
+      "calls": [
+        {
+          "op": "write",
+          "prefix": [
+            30
+          ],
+          "data": [
+            0
+          ],
+          "bank": 0
+        },
+        {
+          "op": "read",
+          "prefix": [
+            103
+          ],
+          "data": [
+            103
+          ],
+          "bank": 0
+        }
+      ],
+      "output": [
+        103
+      ]
+    },
+    {
+      "logical_register": 103,
+      "count": 1,
+      "write": true,
+      "calls": [
+        {
+          "op": "write",
+          "prefix": [
+            30
+          ],
+          "data": [
+            0
+          ],
+          "bank": 0
+        },
+        {
+          "op": "write",
+          "prefix": [
+            103
+          ],
+          "data": [
+            165
+          ],
+          "bank": 0
+        }
+      ],
+      "output": [
+        165
+      ]
+    },
+    {
+      "logical_register": 104,
+      "count": 1,
+      "write": false,
+      "calls": [
+        {
+          "op": "write",
+          "prefix": [
+            30
+          ],
+          "data": [
+            0
+          ],
+          "bank": 0
+        },
+        {
+          "op": "read",
+          "prefix": [
+            104
+          ],
+          "data": [
+            104
+          ],
+          "bank": 0
+        }
+      ],
+      "output": [
+        104
+      ]
+    },
+    {
+      "logical_register": 104,
+      "count": 1,
+      "write": true,
+      "calls": [
+        {
+          "op": "write",
+          "prefix": [
+            30
+          ],
+          "data": [
+            0
+          ],
+          "bank": 0
+        },
+        {
+          "op": "write",
+          "prefix": [
+            104
+          ],
+          "data": [
+            165
+          ],
+          "bank": 0
+        }
+      ],
+      "output": [
+        165
+      ]
+    },
+    {
+      "logical_register": 105,
+      "count": 1,
+      "write": false,
+      "calls": [
+        {
+          "op": "write",
+          "prefix": [
+            30
+          ],
+          "data": [
+            0
+          ],
+          "bank": 0
+        },
+        {
+          "op": "read",
+          "prefix": [
+            105
+          ],
+          "data": [
+            105
+          ],
+          "bank": 0
+        }
+      ],
+      "output": [
+        105
+      ]
+    },
+    {
+      "logical_register": 105,
+      "count": 1,
+      "write": true,
+      "calls": [
+        {
+          "op": "write",
+          "prefix": [
+            30
+          ],
+          "data": [
+            0
+          ],
+          "bank": 0
+        },
+        {
+          "op": "write",
+          "prefix": [
+            105
+          ],
+          "data": [
+            165
+          ],
+          "bank": 0
+        }
+      ],
+      "output": [
+        165
+      ]
+    },
+    {
+      "logical_register": 106,
+      "count": 1,
+      "write": false,
+      "calls": [
+        {
+          "op": "write",
+          "prefix": [
+            30
+          ],
+          "data": [
+            0
+          ],
+          "bank": 0
+        },
+        {
+          "op": "read",
+          "prefix": [
+            106
+          ],
+          "data": [
+            106
+          ],
+          "bank": 0
+        }
+      ],
+      "output": [
+        106
+      ]
+    },
+    {
+      "logical_register": 106,
+      "count": 1,
+      "write": true,
+      "calls": [
+        {
+          "op": "write",
+          "prefix": [
+            30
+          ],
+          "data": [
+            0
+          ],
+          "bank": 0
+        },
+        {
+          "op": "write",
+          "prefix": [
+            106
+          ],
+          "data": [
+            165
+          ],
+          "bank": 0
+        }
+      ],
+      "output": [
+        165
+      ]
+    },
+    {
+      "logical_register": 107,
+      "count": 1,
+      "write": false,
+      "calls": [
+        {
+          "op": "write",
+          "prefix": [
+            30
+          ],
+          "data": [
+            0
+          ],
+          "bank": 0
+        },
+        {
+          "op": "read",
+          "prefix": [
+            107
+          ],
+          "data": [
+            107
+          ],
+          "bank": 0
+        }
+      ],
+      "output": [
+        107
+      ]
+    },
+    {
+      "logical_register": 107,
+      "count": 1,
+      "write": true,
+      "calls": [
+        {
+          "op": "write",
+          "prefix": [
+            30
+          ],
+          "data": [
+            0
+          ],
+          "bank": 0
+        },
+        {
+          "op": "write",
+          "prefix": [
+            107
+          ],
+          "data": [
+            165
+          ],
+          "bank": 0
+        }
+      ],
+      "output": [
+        165
+      ]
+    },
+    {
+      "logical_register": 108,
+      "count": 1,
+      "write": false,
+      "calls": [
+        {
+          "op": "write",
+          "prefix": [
+            30
+          ],
+          "data": [
+            0
+          ],
+          "bank": 0
+        },
+        {
+          "op": "read",
+          "prefix": [
+            108
+          ],
+          "data": [
+            108
+          ],
+          "bank": 0
+        }
+      ],
+      "output": [
+        108
+      ]
+    },
+    {
+      "logical_register": 108,
+      "count": 1,
+      "write": true,
+      "calls": [
+        {
+          "op": "write",
+          "prefix": [
+            30
+          ],
+          "data": [
+            0
+          ],
+          "bank": 0
+        },
+        {
+          "op": "write",
+          "prefix": [
+            108
+          ],
+          "data": [
+            165
+          ],
+          "bank": 0
+        }
+      ],
+      "output": [
+        165
+      ]
+    },
+    {
+      "logical_register": 109,
+      "count": 1,
+      "write": false,
+      "calls": [
+        {
+          "op": "write",
+          "prefix": [
+            30
+          ],
+          "data": [
+            0
+          ],
+          "bank": 0
+        },
+        {
+          "op": "read",
+          "prefix": [
+            109
+          ],
+          "data": [
+            109
+          ],
+          "bank": 0
+        }
+      ],
+      "output": [
+        109
+      ]
+    },
+    {
+      "logical_register": 109,
+      "count": 1,
+      "write": true,
+      "calls": [
+        {
+          "op": "write",
+          "prefix": [
+            30
+          ],
+          "data": [
+            0
+          ],
+          "bank": 0
+        },
+        {
+          "op": "write",
+          "prefix": [
+            109
+          ],
+          "data": [
+            165
+          ],
+          "bank": 0
+        }
+      ],
+      "output": [
+        165
+      ]
+    },
+    {
+      "logical_register": 110,
+      "count": 1,
+      "write": false,
+      "calls": [
+        {
+          "op": "write",
+          "prefix": [
+            30
+          ],
+          "data": [
+            0
+          ],
+          "bank": 0
+        },
+        {
+          "op": "read",
+          "prefix": [
+            110
+          ],
+          "data": [
+            110
+          ],
+          "bank": 0
+        }
+      ],
+      "output": [
+        110
+      ]
+    },
+    {
+      "logical_register": 110,
+      "count": 1,
+      "write": true,
+      "calls": [
+        {
+          "op": "write",
+          "prefix": [
+            30
+          ],
+          "data": [
+            0
+          ],
+          "bank": 0
+        },
+        {
+          "op": "write",
+          "prefix": [
+            110
+          ],
+          "data": [
+            165
+          ],
+          "bank": 0
+        }
+      ],
+      "output": [
+        165
+      ]
+    },
+    {
+      "logical_register": 111,
+      "count": 1,
+      "write": false,
+      "calls": [
+        {
+          "op": "write",
+          "prefix": [
+            30
+          ],
+          "data": [
+            0
+          ],
+          "bank": 0
+        },
+        {
+          "op": "read",
+          "prefix": [
+            111
+          ],
+          "data": [
+            111
+          ],
+          "bank": 0
+        }
+      ],
+      "output": [
+        111
+      ]
+    },
+    {
+      "logical_register": 111,
+      "count": 1,
+      "write": true,
+      "calls": [
+        {
+          "op": "write",
+          "prefix": [
+            30
+          ],
+          "data": [
+            0
+          ],
+          "bank": 0
+        },
+        {
+          "op": "write",
+          "prefix": [
+            111
+          ],
+          "data": [
+            165
+          ],
+          "bank": 0
+        }
+      ],
+      "output": [
+        165
+      ]
+    },
+    {
+      "logical_register": 112,
+      "count": 1,
+      "write": false,
+      "calls": [
+        {
+          "op": "write",
+          "prefix": [
+            30
+          ],
+          "data": [
+            0
+          ],
+          "bank": 0
+        },
+        {
+          "op": "read",
+          "prefix": [
+            112
+          ],
+          "data": [
+            112
+          ],
+          "bank": 0
+        }
+      ],
+      "output": [
+        112
+      ]
+    },
+    {
+      "logical_register": 112,
+      "count": 1,
+      "write": true,
+      "calls": [
+        {
+          "op": "write",
+          "prefix": [
+            30
+          ],
+          "data": [
+            0
+          ],
+          "bank": 0
+        },
+        {
+          "op": "write",
+          "prefix": [
+            112
+          ],
+          "data": [
+            165
+          ],
+          "bank": 0
+        }
+      ],
+      "output": [
+        165
+      ]
+    },
+    {
+      "logical_register": 113,
+      "count": 1,
+      "write": false,
+      "calls": [
+        {
+          "op": "write",
+          "prefix": [
+            30
+          ],
+          "data": [
+            0
+          ],
+          "bank": 0
+        },
+        {
+          "op": "read",
+          "prefix": [
+            113
+          ],
+          "data": [
+            113
+          ],
+          "bank": 0
+        }
+      ],
+      "output": [
+        113
+      ]
+    },
+    {
+      "logical_register": 113,
+      "count": 1,
+      "write": true,
+      "calls": [
+        {
+          "op": "write",
+          "prefix": [
+            30
+          ],
+          "data": [
+            0
+          ],
+          "bank": 0
+        },
+        {
+          "op": "write",
+          "prefix": [
+            113
+          ],
+          "data": [
+            165
+          ],
+          "bank": 0
+        }
+      ],
+      "output": [
+        165
+      ]
+    },
+    {
+      "logical_register": 114,
+      "count": 1,
+      "write": false,
+      "calls": [
+        {
+          "op": "write",
+          "prefix": [
+            30
+          ],
+          "data": [
+            0
+          ],
+          "bank": 0
+        },
+        {
+          "op": "read",
+          "prefix": [
+            114
+          ],
+          "data": [
+            114
+          ],
+          "bank": 0
+        }
+      ],
+      "output": [
+        114
+      ]
+    },
+    {
+      "logical_register": 114,
+      "count": 1,
+      "write": true,
+      "calls": [
+        {
+          "op": "write",
+          "prefix": [
+            30
+          ],
+          "data": [
+            0
+          ],
+          "bank": 0
+        },
+        {
+          "op": "write",
+          "prefix": [
+            114
+          ],
+          "data": [
+            165
+          ],
+          "bank": 0
+        }
+      ],
+      "output": [
+        165
+      ]
+    },
+    {
+      "logical_register": 161,
+      "count": 1,
+      "write": false,
+      "calls": [
+        {
+          "op": "write",
+          "prefix": [
+            30
+          ],
+          "data": [
+            0
+          ],
+          "bank": 0
+        },
+        {
+          "op": "read",
+          "prefix": [
+            161
+          ],
+          "data": [
+            161
+          ],
+          "bank": 0
+        }
+      ],
+      "output": [
+        161
+      ]
+    },
+    {
+      "logical_register": 161,
+      "count": 1,
+      "write": true,
+      "calls": [
+        {
+          "op": "write",
+          "prefix": [
+            30
+          ],
+          "data": [
+            0
+          ],
+          "bank": 0
+        },
+        {
+          "op": "write",
+          "prefix": [
+            161
+          ],
+          "data": [
+            165
+          ],
+          "bank": 0
+        }
+      ],
+      "output": [
+        165
+      ]
+    },
+    {
+      "logical_register": 175,
+      "count": 1,
+      "write": false,
+      "calls": [
+        {
+          "op": "write",
+          "prefix": [
+            30
+          ],
+          "data": [
+            0
+          ],
+          "bank": 0
+        },
+        {
+          "op": "read",
+          "prefix": [
+            175
+          ],
+          "data": [
+            175
+          ],
+          "bank": 0
+        }
+      ],
+      "output": [
+        175
+      ]
+    },
+    {
+      "logical_register": 175,
+      "count": 1,
+      "write": true,
+      "calls": [
+        {
+          "op": "write",
+          "prefix": [
+            30
+          ],
+          "data": [
+            0
+          ],
+          "bank": 0
+        },
+        {
+          "op": "write",
+          "prefix": [
+            175
+          ],
+          "data": [
+            165
+          ],
+          "bank": 0
+        }
+      ],
+      "output": [
+        165
+      ]
+    },
+    {
+      "logical_register": 208,
+      "count": 1,
+      "write": false,
+      "calls": [
+        {
+          "op": "write",
+          "prefix": [
+            30
+          ],
+          "data": [
+            0
+          ],
+          "bank": 0
+        },
+        {
+          "op": "read",
+          "prefix": [
+            208
+          ],
+          "data": [
+            208
+          ],
+          "bank": 0
+        }
+      ],
+      "output": [
+        208
+      ]
+    },
+    {
+      "logical_register": 208,
+      "count": 1,
+      "write": true,
+      "calls": [
+        {
+          "op": "write",
+          "prefix": [
+            30
+          ],
+          "data": [
+            0
+          ],
+          "bank": 0
+        },
+        {
+          "op": "write",
+          "prefix": [
+            208
+          ],
+          "data": [
+            165
+          ],
+          "bank": 0
+        }
+      ],
+      "output": [
+        165
+      ]
+    },
+    {
+      "logical_register": 209,
+      "count": 1,
+      "write": false,
+      "calls": [
+        {
+          "op": "write",
+          "prefix": [
+            30
+          ],
+          "data": [
+            0
+          ],
+          "bank": 0
+        },
+        {
+          "op": "read",
+          "prefix": [
+            209
+          ],
+          "data": [
+            209
+          ],
+          "bank": 0
+        }
+      ],
+      "output": [
+        209
+      ]
+    },
+    {
+      "logical_register": 209,
+      "count": 1,
+      "write": true,
+      "calls": [
+        {
+          "op": "write",
+          "prefix": [
+            30
+          ],
+          "data": [
+            0
+          ],
+          "bank": 0
+        },
+        {
+          "op": "write",
+          "prefix": [
+            209
+          ],
+          "data": [
+            165
+          ],
+          "bank": 0
+        }
+      ],
+      "output": [
+        165
+      ]
+    },
+    {
+      "logical_register": 210,
+      "count": 1,
+      "write": false,
+      "calls": [
+        {
+          "op": "write",
+          "prefix": [
+            30
+          ],
+          "data": [
+            0
+          ],
+          "bank": 0
+        },
+        {
+          "op": "read",
+          "prefix": [
+            210
+          ],
+          "data": [
+            210
+          ],
+          "bank": 0
+        }
+      ],
+      "output": [
+        210
+      ]
+    },
+    {
+      "logical_register": 210,
+      "count": 1,
+      "write": true,
+      "calls": [
+        {
+          "op": "write",
+          "prefix": [
+            30
+          ],
+          "data": [
+            0
+          ],
+          "bank": 0
+        },
+        {
+          "op": "write",
+          "prefix": [
+            210
+          ],
+          "data": [
+            165
+          ],
+          "bank": 0
+        }
+      ],
+      "output": [
+        165
+      ]
+    },
+    {
+      "logical_register": 1,
+      "count": 9,
+      "write": false,
+      "calls": [
+        {
+          "op": "write",
+          "prefix": [
+            30
+          ],
+          "data": [
+            0
+          ],
+          "bank": 0
+        },
+        {
+          "op": "read",
+          "prefix": [
+            1
+          ],
+          "data": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9
+          ],
+          "bank": 0
+        }
+      ],
+      "output": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9
+      ]
+    },
+    {
+      "logical_register": 18,
+      "count": 9,
+      "write": true,
+      "calls": [
+        {
+          "op": "write",
+          "prefix": [
+            30
+          ],
+          "data": [
+            0
+          ],
+          "bank": 0
+        },
+        {
+          "op": "write",
+          "prefix": [
+            18
+          ],
+          "data": [
+            165,
+            165,
+            165,
+            165,
+            165,
+            165,
+            165,
+            165,
+            165
+          ],
+          "bank": 0
+        }
+      ],
+      "output": [
+        165,
+        165,
+        165,
+        165,
+        165,
+        165,
+        165,
+        165,
+        165
+      ]
+    },
+    {
+      "logical_register": 97,
+      "count": 18,
+      "write": false,
+      "calls": [
+        {
+          "op": "write",
+          "prefix": [
+            30
+          ],
+          "data": [
+            0
+          ],
+          "bank": 0
+        },
+        {
+          "op": "read",
+          "prefix": [
+            97
+          ],
+          "data": [
+            97,
+            98,
+            99,
+            100,
+            101,
+            102,
+            103,
+            104,
+            105,
+            106,
+            107,
+            108,
+            109,
+            110,
+            111,
+            112,
+            113,
+            114
+          ],
+          "bank": 0
+        }
+      ],
+      "output": [
+        97,
+        98,
+        99,
+        100,
+        101,
+        102,
+        103,
+        104,
+        105,
+        106,
+        107,
+        108,
+        109,
+        110,
+        111,
+        112,
+        113,
+        114
+      ]
+    }
+  ]
+}

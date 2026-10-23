@@ -1,0 +1,8 @@
+config CASCADIA_ACCESSORY_ROLE_RESEARCH
+ bool "Cascadia offline-reviewed accessory role transport component"
+ depends on ARCH_APPLE_S5L && USB_GADGET
+ default n
+ help
+   Builds only a USB setup-request decoder with a deny-by-default policy.
+   It registers no gadget function, role switch, PHY or power provider.
+   Enabling this option alone cannot switch the connector or power VBUS.

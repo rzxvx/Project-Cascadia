@@ -1,0 +1,26 @@
+{
+  "format": "p105-adc-quiescence-boundaries-v1",
+  "inputs": {
+    "12H321": {
+      "sha256": "db1ddc8343aa9debc00e0a083fba59d9f555722db60957dc333b854fac21dd2c"
+    },
+    "13G36": {
+      "sha256": "8eae16f060a71d4f3790385951588f8198d0f21cdb74146f9750941a3d764125"
+    }
+  },
+  "dependencies": {
+    "tools/power/emulate-d1946-adc-lifecycle.py": "7b98e6eff14d3473a35809aa6e16febcc980b7a1dcdfc027e4837d6ae37661db",
+    "tools/power/emulate-source-events.py": "0c52273b32b877dbf25d5e1b431dd1cd2393c084c1d110890f2b07d9c9d8e4ae",
+    "tools/power/emulate-d1946.py": "96b671eaf66c5b315313cac8d1111f21b3ad6cb296f55fcd3f41b316b7596217"
+  },
+  "native_code_in_package": false,
+  "physical_witness_produced": false,
+  "fixtures": {
+    "gpio-fixture.py": "ce691d41e896ca7def2ab536d6060e8bd2682ed97ef364fd3954d83892a42eb1",
+    "emulate-provider-private.py": "085955e03116300650e3e71e0a8e4a46a29c73c47bf35136b2b3517fe9746b7e",
+    "emulate-drain-private.py": "0fff4f59e685a9d377c9c80d749f7bbb6242f35f1af2496c7b75fe32bad8278d",
+    "emulate-dispatch13-private.py": "56f535ceae2e59f1a591d65ab59a131bd71c9638945b5220e067fd461e292dc1"
+  },
+  "private_frozen_manifest_SHA256": "53199e5a763bc437d6f08d87459a34b3a0376c2080b181de6e6d2b11bef3027f",
+  "root_repeat_groups": 7
+}

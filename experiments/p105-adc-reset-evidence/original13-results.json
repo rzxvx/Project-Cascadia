@@ -1,0 +1,235 @@
+{
+  "format": "p105-native-ADC-reset-candidates-v1",
+  "build": "13",
+  "sha256": "8eae16f060a71d4f3790385951588f8198d0f21cdb74146f9750941a3d764125",
+  "hardware_access": false,
+  "physical_quiescence_granted": false,
+  "alternate": {
+    "complete": {
+      "return_code": 0,
+      "completed": true,
+      "transactions": [
+        {
+          "direction": "write",
+          "logical_register": "0x15d",
+          "count": 1,
+          "bytes": "86"
+        },
+        {
+          "direction": "read",
+          "logical_register": "0x15d",
+          "count": 1,
+          "bytes": "06"
+        },
+        {
+          "direction": "read",
+          "logical_register": "0x15e",
+          "count": 2,
+          "bytes": "abcd"
+        }
+      ],
+      "helpers": [
+        {
+          "mocked": "delay helper",
+          "arguments": [
+            1,
+            349,
+            536997867,
+            1
+          ]
+        }
+      ],
+      "output_word": 52651,
+      "config_cache": 0,
+      "fake43": 165,
+      "fake15d": 6,
+      "physical_quiescence_granted": false,
+      "hardware_access": false
+    },
+    "start_error": {
+      "return_code": 3758097088,
+      "completed": true,
+      "transactions": [
+        {
+          "direction": "write",
+          "logical_register": "0x15d",
+          "count": 1,
+          "error": 3758097088
+        }
+      ],
+      "helpers": [],
+      "output_word": 3735928559,
+      "config_cache": 0,
+      "fake43": 165,
+      "fake15d": 0,
+      "physical_quiescence_granted": false,
+      "hardware_access": false
+    },
+    "status_error": {
+      "return_code": 3758097088,
+      "completed": true,
+      "transactions": [
+        {
+          "direction": "write",
+          "logical_register": "0x15d",
+          "count": 1,
+          "bytes": "86"
+        },
+        {
+          "direction": "read",
+          "logical_register": "0x15d",
+          "count": 1,
+          "error": 3758097088
+        }
+      ],
+      "helpers": [
+        {
+          "mocked": "delay helper",
+          "arguments": [
+            1,
+            349,
+            536997867,
+            1
+          ]
+        }
+      ],
+      "output_word": 3735928559,
+      "config_cache": 0,
+      "fake43": 165,
+      "fake15d": 134,
+      "physical_quiescence_granted": false,
+      "hardware_access": false
+    },
+    "sample_error": {
+      "return_code": 3758097088,
+      "completed": true,
+      "transactions": [
+        {
+          "direction": "write",
+          "logical_register": "0x15d",
+          "count": 1,
+          "bytes": "86"
+        },
+        {
+          "direction": "read",
+          "logical_register": "0x15d",
+          "count": 1,
+          "bytes": "06"
+        },
+        {
+          "direction": "read",
+          "logical_register": "0x15e",
+          "count": 2,
+          "error": 3758097088
+        }
+      ],
+      "helpers": [
+        {
+          "mocked": "delay helper",
+          "arguments": [
+            1,
+            349,
+            536997867,
+            1
+          ]
+        }
+      ],
+      "output_word": 3735928559,
+      "config_cache": 0,
+      "fake43": 165,
+      "fake15d": 6,
+      "physical_quiescence_granted": false,
+      "hardware_access": false
+    },
+    "busy_abort": {
+      "return_code": 3758097110,
+      "completed": true,
+      "transactions": [
+        {
+          "direction": "write",
+          "logical_register": "0x15d",
+          "count": 1,
+          "bytes": "86"
+        },
+        {
+          "direction": "read",
+          "logical_register": "0x15d",
+          "count": 1,
+          "bytes": "86"
+        },
+        {
+          "direction": "write",
+          "logical_register": "0x15d",
+          "count": 1,
+          "bytes": "00"
+        }
+      ],
+      "helpers": [
+        {
+          "mocked": "delay helper",
+          "arguments": [
+            1,
+            349,
+            536997867,
+            1
+          ]
+        }
+      ],
+      "output_word": 3735928559,
+      "config_cache": 0,
+      "fake43": 165,
+      "fake15d": 0,
+      "physical_quiescence_granted": false,
+      "hardware_access": false
+    },
+    "busy_abort_error": {
+      "return_code": 3758097110,
+      "completed": true,
+      "transactions": [
+        {
+          "direction": "write",
+          "logical_register": "0x15d",
+          "count": 1,
+          "bytes": "86"
+        },
+        {
+          "direction": "read",
+          "logical_register": "0x15d",
+          "count": 1,
+          "bytes": "86"
+        },
+        {
+          "direction": "write",
+          "logical_register": "0x15d",
+          "count": 1,
+          "error": 3758097088
+        }
+      ],
+      "helpers": [
+        {
+          "mocked": "delay helper",
+          "arguments": [
+            1,
+            349,
+            536997867,
+            1
+          ]
+        }
+      ],
+      "output_word": 3735928559,
+      "config_cache": 0,
+      "fake43": 165,
+      "fake15d": 134,
+      "physical_quiescence_granted": false,
+      "hardware_access": false
+    }
+  },
+  "config_setter": {},
+  "limits": [
+    "15d/15e full logical native addresses; no bank remapping or register meaning inferred",
+    "all bus I/O/sample/status/delay/gate waits mocked",
+    "normal43 ADC engine not declared reset by alternate engine",
+    "config setter successful return can hide failed write",
+    "delay argument1 is not physical settle proof"
+  ]
+}

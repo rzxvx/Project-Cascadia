@@ -1,0 +1,1 @@
+obj-$(CONFIG_APPLE_PMU_D1946_BANK0_EXPERIMENT) += apple-pmu-d1946-bank0.o

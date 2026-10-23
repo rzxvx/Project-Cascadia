@@ -1,0 +1,305 @@
+{
+  "cache_sha256": "4f5b5d73244c53fd0bdc5b8012106b10d0dd7607cc850bf7c8f9e9ef3a3f733b",
+  "cases": [
+    {
+      "algorithm": "rsa-sha1",
+      "calls": [
+        {
+          "original_entry": "0x20c9a9d0"
+        },
+        {
+          "original_entry": "0x20ca8bcc"
+        },
+        {
+          "original_entry": "0x20ca8c48"
+        },
+        {
+          "original_entry": "0x20ca93cc"
+        },
+        {
+          "input": "synthetic-tbs",
+          "requested_digest_length": 20,
+          "synthetic_digest_backend": "0x204083f4"
+        },
+        {
+          "digest_info_prefix": "3021300906052b0e03021a05000414",
+          "digest_length": 20,
+          "padding_argument": 1,
+          "provider_result": 0,
+          "signature_length": 20,
+          "synthetic_key_verify": true,
+          "total_length": 35
+        }
+      ],
+      "instruction_count": 211,
+      "native_result": 0,
+      "synthetic_key_verify_result": 0,
+      "whole_native_path": false
+    },
+    {
+      "algorithm": "rsa-sha1",
+      "calls": [
+        {
+          "original_entry": "0x20c9a9d0"
+        },
+        {
+          "original_entry": "0x20ca8bcc"
+        },
+        {
+          "original_entry": "0x20ca8c48"
+        },
+        {
+          "original_entry": "0x20ca93cc"
+        },
+        {
+          "input": "synthetic-tbs",
+          "requested_digest_length": 20,
+          "synthetic_digest_backend": "0x204083f4"
+        },
+        {
+          "digest_info_prefix": "3021300906052b0e03021a05000414",
+          "digest_length": 20,
+          "padding_argument": 1,
+          "provider_result": -1,
+          "signature_length": 20,
+          "synthetic_key_verify": true,
+          "total_length": 35
+        }
+      ],
+      "instruction_count": 213,
+      "native_result": -26267,
+      "synthetic_key_verify_result": -1,
+      "whole_native_path": false
+    },
+    {
+      "algorithm": "rsa-sha256",
+      "calls": [
+        {
+          "original_entry": "0x20c9a9d0"
+        },
+        {
+          "original_entry": "0x20ca8bcc"
+        },
+        {
+          "original_entry": "0x20ca8c48"
+        },
+        {
+          "original_entry": "0x20ca93cc"
+        },
+        {
+          "input": "synthetic-tbs",
+          "requested_digest_length": 32,
+          "synthetic_digest_backend": "0x20408424"
+        },
+        {
+          "digest_info_prefix": "3031300d060960864801650304020105000420",
+          "digest_length": 32,
+          "padding_argument": 1,
+          "provider_result": 0,
+          "signature_length": 20,
+          "synthetic_key_verify": true,
+          "total_length": 51
+        }
+      ],
+      "instruction_count": 211,
+      "native_result": 0,
+      "synthetic_key_verify_result": 0,
+      "whole_native_path": false
+    },
+    {
+      "algorithm": "rsa-sha256",
+      "calls": [
+        {
+          "original_entry": "0x20c9a9d0"
+        },
+        {
+          "original_entry": "0x20ca8bcc"
+        },
+        {
+          "original_entry": "0x20ca8c48"
+        },
+        {
+          "original_entry": "0x20ca93cc"
+        },
+        {
+          "input": "synthetic-tbs",
+          "requested_digest_length": 32,
+          "synthetic_digest_backend": "0x20408424"
+        },
+        {
+          "digest_info_prefix": "3031300d060960864801650304020105000420",
+          "digest_length": 32,
+          "padding_argument": 1,
+          "provider_result": -1,
+          "signature_length": 20,
+          "synthetic_key_verify": true,
+          "total_length": 51
+        }
+      ],
+      "instruction_count": 213,
+      "native_result": -26267,
+      "synthetic_key_verify_result": -1,
+      "whole_native_path": false
+    },
+    {
+      "algorithm": "ecdsa-sha256",
+      "calls": [
+        {
+          "original_entry": "0x20c9a9d0"
+        },
+        {
+          "original_entry": "0x20ca8bcc"
+        },
+        {
+          "original_entry": "0x20ca8c48"
+        },
+        {
+          "input": "synthetic-tbs",
+          "requested_digest_length": 32,
+          "synthetic_digest_backend": "0x20408424"
+        },
+        {
+          "digest_info_prefix": "",
+          "digest_length": 32,
+          "padding_argument": 1,
+          "provider_result": 0,
+          "signature_length": 20,
+          "synthetic_key_verify": true,
+          "total_length": 32
+        }
+      ],
+      "instruction_count": 159,
+      "native_result": 0,
+      "synthetic_key_verify_result": 0,
+      "whole_native_path": false
+    },
+    {
+      "algorithm": "ecdsa-sha256",
+      "calls": [
+        {
+          "original_entry": "0x20c9a9d0"
+        },
+        {
+          "original_entry": "0x20ca8bcc"
+        },
+        {
+          "original_entry": "0x20ca8c48"
+        },
+        {
+          "input": "synthetic-tbs",
+          "requested_digest_length": 32,
+          "synthetic_digest_backend": "0x20408424"
+        },
+        {
+          "digest_info_prefix": "",
+          "digest_length": 32,
+          "padding_argument": 1,
+          "provider_result": -1,
+          "signature_length": 20,
+          "synthetic_key_verify": true,
+          "total_length": 32
+        }
+      ],
+      "instruction_count": 161,
+      "native_result": -26267,
+      "synthetic_key_verify_result": -1,
+      "whole_native_path": false
+    },
+    {
+      "algorithm": "unsupported",
+      "calls": [
+        {
+          "original_entry": "0x20c9a9d0"
+        },
+        {
+          "original_entry": "0x20ca8bcc"
+        },
+        {
+          "original_entry": "0x20ca8c48"
+        }
+      ],
+      "instruction_count": 161,
+      "native_result": -26267,
+      "synthetic_key_verify_result": 0,
+      "whole_native_path": false
+    },
+    {
+      "algorithm": "rsa-sha256",
+      "calls": [
+        {
+          "synthetic_path_issuer_public_key": true
+        },
+        {
+          "original_entry": "0x20c9a9d0"
+        },
+        {
+          "original_entry": "0x20ca8bcc"
+        },
+        {
+          "original_entry": "0x20ca8c48"
+        },
+        {
+          "original_entry": "0x20ca93cc"
+        },
+        {
+          "input": "synthetic-tbs",
+          "requested_digest_length": 32,
+          "synthetic_digest_backend": "0x20408424"
+        },
+        {
+          "digest_info_prefix": "3031300d060960864801650304020105000420",
+          "digest_length": 32,
+          "padding_argument": 1,
+          "provider_result": 0,
+          "signature_length": 20,
+          "synthetic_key_verify": true,
+          "total_length": 51
+        }
+      ],
+      "instruction_count": 250,
+      "native_result": 0,
+      "synthetic_key_verify_result": 0,
+      "whole_native_path": true
+    },
+    {
+      "algorithm": "rsa-sha256",
+      "calls": [
+        {
+          "synthetic_path_issuer_public_key": true
+        },
+        {
+          "original_entry": "0x20c9a9d0"
+        },
+        {
+          "original_entry": "0x20ca8bcc"
+        },
+        {
+          "original_entry": "0x20ca8c48"
+        },
+        {
+          "original_entry": "0x20ca93cc"
+        },
+        {
+          "input": "synthetic-tbs",
+          "requested_digest_length": 32,
+          "synthetic_digest_backend": "0x20408424"
+        },
+        {
+          "digest_info_prefix": "3031300d060960864801650304020105000420",
+          "digest_length": 32,
+          "padding_argument": 1,
+          "provider_result": -1,
+          "signature_length": 20,
+          "synthetic_key_verify": true,
+          "total_length": 51
+        }
+      ],
+      "instruction_count": 242,
+      "native_result": 1,
+      "synthetic_key_verify_result": -1,
+      "whole_native_path": true
+    }
+  ],
+  "scope": "actual routing and error normalization, synthetic certificate fields/digest/key verification",
+  "securityd_sha256": "1c12fbb48ead1edd3dbf2f4b0d635b45452573499fd9592562bbd76e40b56097"
+}

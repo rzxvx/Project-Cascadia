@@ -1,0 +1,2284 @@
+{
+  "source_sha256": "8eae16f060a71d4f3790385951588f8198d0f21cdb74146f9750941a3d764125",
+  "no_hardware": true,
+  "scope": "actual signer+data-chunk methods; fake provider transfer/continuation, OSData, version, interval, memcpy and delay APIs; synthetic replies only; no cryptography",
+  "cases": [
+    {
+      "version": 2,
+      "nonce_length": 20,
+      "max_tx": 64,
+      "max_rx": 64,
+      "input_capacity": 128,
+      "case": "success",
+      "return": "0x0",
+      "output_size": 128,
+      "output": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f",
+      "transfers": [
+        {
+          "tx": "94000102030405060708090a0b0c0d0e0f10111213",
+          "rx": "95ff00",
+          "capacity": 3,
+          "opaque_args": [
+            100000,
+            0,
+            0,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "96",
+          "rx": "97c0",
+          "capacity": 2,
+          "opaque_args": [
+            200000,
+            0,
+            12,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "9a",
+          "rx": "9b00",
+          "capacity": 2,
+          "opaque_args": [
+            100000,
+            0,
+            4,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "9a",
+          "rx": "9b00",
+          "capacity": 2,
+          "opaque_args": [
+            100000,
+            0,
+            8,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "980000003f",
+          "rx": "99000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e",
+          "capacity": 64,
+          "opaque_args": [
+            100000,
+            0,
+            0,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "98003f003f",
+          "rx": "993f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d",
+          "capacity": 64,
+          "opaque_args": [
+            100000,
+            0,
+            0,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "98007e0002",
+          "rx": "997e7f",
+          "capacity": 3,
+          "opaque_args": [
+            100000,
+            0,
+            0,
+            0,
+            0
+          ],
+          "error": "0x0"
+        }
+      ],
+      "mock_calls": [
+        "version getter",
+        "interval conversion fake",
+        "version getter",
+        "interval conversion fake",
+        "version getter",
+        "interval conversion fake",
+        "OSData allocator fake"
+      ]
+    },
+    {
+      "version": 3,
+      "nonce_length": 32,
+      "max_tx": 64,
+      "max_rx": 64,
+      "input_capacity": 128,
+      "case": "success",
+      "return": "0x0",
+      "output_size": 64,
+      "output": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3fcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "transfers": [
+        {
+          "tx": "9400000020000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+          "rx": "95ff00",
+          "capacity": 3,
+          "opaque_args": [
+            100000,
+            0,
+            0,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "96",
+          "rx": "97c0",
+          "capacity": 2,
+          "opaque_args": [
+            200000,
+            0,
+            12,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "9a",
+          "rx": "9b00",
+          "capacity": 2,
+          "opaque_args": [
+            100000,
+            0,
+            4,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "9a",
+          "rx": "9b00",
+          "capacity": 2,
+          "opaque_args": [
+            100000,
+            0,
+            8,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "980000003f",
+          "rx": "99000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e",
+          "capacity": 64,
+          "opaque_args": [
+            100000,
+            0,
+            0,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "98003f0001",
+          "rx": "993f",
+          "capacity": 2,
+          "opaque_args": [
+            100000,
+            0,
+            0,
+            0,
+            0
+          ],
+          "error": "0x0"
+        }
+      ],
+      "mock_calls": [
+        "version getter",
+        "interval conversion fake",
+        "version getter",
+        "interval conversion fake",
+        "version getter",
+        "interval conversion fake",
+        "OSData allocator fake"
+      ]
+    },
+    {
+      "version": 3,
+      "nonce_length": 32,
+      "max_tx": 32,
+      "max_rx": 64,
+      "input_capacity": 128,
+      "case": "success",
+      "return": "0x0",
+      "output_size": 64,
+      "output": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3fcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "transfers": [
+        {
+          "tx": "9400000010000102030405060708090a0b0c0d0e0f",
+          "rx": "95ff00",
+          "capacity": 3,
+          "opaque_args": [
+            100000,
+            0,
+            0,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "9400100010101112131415161718191a1b1c1d1e1f",
+          "rx": "95ff00",
+          "capacity": 3,
+          "opaque_args": [
+            100000,
+            0,
+            0,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "96",
+          "rx": "97c0",
+          "capacity": 2,
+          "opaque_args": [
+            200000,
+            0,
+            12,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "9a",
+          "rx": "9b00",
+          "capacity": 2,
+          "opaque_args": [
+            100000,
+            0,
+            4,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "9a",
+          "rx": "9b00",
+          "capacity": 2,
+          "opaque_args": [
+            100000,
+            0,
+            8,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "980000003f",
+          "rx": "99000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e",
+          "capacity": 64,
+          "opaque_args": [
+            100000,
+            0,
+            0,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "98003f0001",
+          "rx": "993f",
+          "capacity": 2,
+          "opaque_args": [
+            100000,
+            0,
+            0,
+            0,
+            0
+          ],
+          "error": "0x0"
+        }
+      ],
+      "mock_calls": [
+        "version getter",
+        "interval conversion fake",
+        "version getter",
+        "interval conversion fake",
+        "version getter",
+        "interval conversion fake",
+        "OSData allocator fake"
+      ]
+    },
+    {
+      "version": 2,
+      "nonce_length": 20,
+      "max_tx": 64,
+      "max_rx": 17,
+      "input_capacity": 128,
+      "case": "success",
+      "return": "0x0",
+      "output_size": 128,
+      "output": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f",
+      "transfers": [
+        {
+          "tx": "94000102030405060708090a0b0c0d0e0f10111213",
+          "rx": "95ff00",
+          "capacity": 3,
+          "opaque_args": [
+            100000,
+            0,
+            0,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "96",
+          "rx": "97c0",
+          "capacity": 2,
+          "opaque_args": [
+            200000,
+            0,
+            12,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "9a",
+          "rx": "9b00",
+          "capacity": 2,
+          "opaque_args": [
+            100000,
+            0,
+            4,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "9a",
+          "rx": "9b00",
+          "capacity": 2,
+          "opaque_args": [
+            100000,
+            0,
+            8,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "9800000010",
+          "rx": "99000102030405060708090a0b0c0d0e0f",
+          "capacity": 17,
+          "opaque_args": [
+            100000,
+            0,
+            0,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "9800100010",
+          "rx": "99101112131415161718191a1b1c1d1e1f",
+          "capacity": 17,
+          "opaque_args": [
+            100000,
+            0,
+            0,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "9800200010",
+          "rx": "99202122232425262728292a2b2c2d2e2f",
+          "capacity": 17,
+          "opaque_args": [
+            100000,
+            0,
+            0,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "9800300010",
+          "rx": "99303132333435363738393a3b3c3d3e3f",
+          "capacity": 17,
+          "opaque_args": [
+            100000,
+            0,
+            0,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "9800400010",
+          "rx": "99404142434445464748494a4b4c4d4e4f",
+          "capacity": 17,
+          "opaque_args": [
+            100000,
+            0,
+            0,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "9800500010",
+          "rx": "99505152535455565758595a5b5c5d5e5f",
+          "capacity": 17,
+          "opaque_args": [
+            100000,
+            0,
+            0,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "9800600010",
+          "rx": "99606162636465666768696a6b6c6d6e6f",
+          "capacity": 17,
+          "opaque_args": [
+            100000,
+            0,
+            0,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "9800700010",
+          "rx": "99707172737475767778797a7b7c7d7e7f",
+          "capacity": 17,
+          "opaque_args": [
+            100000,
+            0,
+            0,
+            0,
+            0
+          ],
+          "error": "0x0"
+        }
+      ],
+      "mock_calls": [
+        "version getter",
+        "interval conversion fake",
+        "version getter",
+        "interval conversion fake",
+        "version getter",
+        "interval conversion fake",
+        "OSData allocator fake"
+      ]
+    },
+    {
+      "version": 3,
+      "nonce_length": 32,
+      "max_tx": 64,
+      "max_rx": 17,
+      "input_capacity": 128,
+      "case": "success",
+      "return": "0x0",
+      "output_size": 64,
+      "output": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3fcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "transfers": [
+        {
+          "tx": "9400000020000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+          "rx": "95ff00",
+          "capacity": 3,
+          "opaque_args": [
+            100000,
+            0,
+            0,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "96",
+          "rx": "97c0",
+          "capacity": 2,
+          "opaque_args": [
+            200000,
+            0,
+            12,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "9a",
+          "rx": "9b00",
+          "capacity": 2,
+          "opaque_args": [
+            100000,
+            0,
+            4,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "9a",
+          "rx": "9b00",
+          "capacity": 2,
+          "opaque_args": [
+            100000,
+            0,
+            8,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "9800000010",
+          "rx": "99000102030405060708090a0b0c0d0e0f",
+          "capacity": 17,
+          "opaque_args": [
+            100000,
+            0,
+            0,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "9800100010",
+          "rx": "99101112131415161718191a1b1c1d1e1f",
+          "capacity": 17,
+          "opaque_args": [
+            100000,
+            0,
+            0,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "9800200010",
+          "rx": "99202122232425262728292a2b2c2d2e2f",
+          "capacity": 17,
+          "opaque_args": [
+            100000,
+            0,
+            0,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "9800300010",
+          "rx": "99303132333435363738393a3b3c3d3e3f",
+          "capacity": 17,
+          "opaque_args": [
+            100000,
+            0,
+            0,
+            0,
+            0
+          ],
+          "error": "0x0"
+        }
+      ],
+      "mock_calls": [
+        "version getter",
+        "interval conversion fake",
+        "version getter",
+        "interval conversion fake",
+        "version getter",
+        "interval conversion fake",
+        "OSData allocator fake"
+      ]
+    },
+    {
+      "version": 2,
+      "nonce_length": 20,
+      "max_tx": 64,
+      "max_rx": 64,
+      "input_capacity": 64,
+      "case": "success",
+      "return": "0xe00002c2",
+      "output_size": 64,
+      "output": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "transfers": [],
+      "mock_calls": []
+    },
+    {
+      "version": 2,
+      "nonce_length": 19,
+      "max_tx": 64,
+      "max_rx": 64,
+      "input_capacity": 128,
+      "case": "success",
+      "return": "0xe00002c2",
+      "output_size": 128,
+      "output": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "transfers": [],
+      "mock_calls": []
+    },
+    {
+      "version": 3,
+      "nonce_length": 20,
+      "max_tx": 64,
+      "max_rx": 64,
+      "input_capacity": 128,
+      "case": "success",
+      "return": "0xe00002c2",
+      "output_size": 128,
+      "output": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "transfers": [],
+      "mock_calls": [
+        "version getter"
+      ]
+    },
+    {
+      "version": 2,
+      "nonce_length": 32,
+      "max_tx": 64,
+      "max_rx": 64,
+      "input_capacity": 128,
+      "case": "success",
+      "return": "0xe00002c2",
+      "output_size": 128,
+      "output": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "transfers": [],
+      "mock_calls": [
+        "version getter"
+      ]
+    },
+    {
+      "version": 2,
+      "nonce_length": 20,
+      "max_tx": 64,
+      "max_rx": 64,
+      "input_capacity": 128,
+      "case": "transport_error",
+      "return": "0xe00002bc",
+      "output_size": 128,
+      "output": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "transfers": [
+        {
+          "tx": "94000102030405060708090a0b0c0d0e0f10111213",
+          "rx": "95ff00",
+          "capacity": 3,
+          "opaque_args": [
+            100000,
+            0,
+            0,
+            0,
+            0
+          ],
+          "error": "0xe00002bc"
+        }
+      ],
+      "mock_calls": [
+        "version getter",
+        "interval conversion fake",
+        "version getter",
+        "retry/continuation provider fake false"
+      ]
+    },
+    {
+      "version": 2,
+      "nonce_length": 20,
+      "max_tx": 64,
+      "max_rx": 64,
+      "input_capacity": 128,
+      "case": "malformed_nonce",
+      "return": "0xe00002c6",
+      "output_size": 128,
+      "output": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "transfers": [
+        {
+          "tx": "94000102030405060708090a0b0c0d0e0f10111213",
+          "rx": "000000",
+          "capacity": 3,
+          "opaque_args": [
+            100000,
+            0,
+            0,
+            0,
+            0
+          ],
+          "error": "0x0"
+        }
+      ],
+      "mock_calls": [
+        "version getter",
+        "interval conversion fake",
+        "version getter",
+        "retry/continuation provider fake false"
+      ]
+    },
+    {
+      "version": 2,
+      "nonce_length": 20,
+      "max_tx": 64,
+      "max_rx": 64,
+      "input_capacity": 128,
+      "case": "zero_ack",
+      "return": "0xe00002c6",
+      "output_size": 128,
+      "output": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "transfers": [
+        {
+          "tx": "94000102030405060708090a0b0c0d0e0f10111213",
+          "rx": "950000",
+          "capacity": 3,
+          "opaque_args": [
+            100000,
+            0,
+            0,
+            0,
+            0
+          ],
+          "error": "0x0"
+        }
+      ],
+      "mock_calls": [
+        "version getter",
+        "interval conversion fake",
+        "version getter",
+        "retry/continuation provider fake false"
+      ]
+    },
+    {
+      "version": 2,
+      "nonce_length": 20,
+      "max_tx": 64,
+      "max_rx": 64,
+      "input_capacity": 128,
+      "case": "not_ready",
+      "return": "0xe00002c6",
+      "output_size": 128,
+      "output": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "transfers": [
+        {
+          "tx": "94000102030405060708090a0b0c0d0e0f10111213",
+          "rx": "95ff00",
+          "capacity": 3,
+          "opaque_args": [
+            100000,
+            0,
+            0,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "96",
+          "rx": "9780",
+          "capacity": 2,
+          "opaque_args": [
+            200000,
+            0,
+            12,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "96",
+          "rx": "9780",
+          "capacity": 2,
+          "opaque_args": [
+            200000,
+            0,
+            8,
+            0,
+            0
+          ],
+          "error": "0x0"
+        }
+      ],
+      "mock_calls": [
+        "version getter",
+        "interval conversion fake",
+        "version getter",
+        "interval conversion fake",
+        "delay fake",
+        "retry/continuation provider fake false"
+      ]
+    },
+    {
+      "version": 2,
+      "nonce_length": 20,
+      "max_tx": 64,
+      "max_rx": 64,
+      "input_capacity": 128,
+      "case": "busy",
+      "return": "0xe00002d6",
+      "output_size": 128,
+      "output": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "transfers": [
+        {
+          "tx": "94000102030405060708090a0b0c0d0e0f10111213",
+          "rx": "95ff00",
+          "capacity": 3,
+          "opaque_args": [
+            100000,
+            0,
+            0,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "96",
+          "rx": "9700",
+          "capacity": 2,
+          "opaque_args": [
+            200000,
+            0,
+            12,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "96",
+          "rx": "9700",
+          "capacity": 2,
+          "opaque_args": [
+            200000,
+            0,
+            8,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "94000102030405060708090a0b0c0d0e0f10111213",
+          "rx": "95ff00",
+          "capacity": 3,
+          "opaque_args": [
+            100000,
+            0,
+            0,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "96",
+          "rx": "9700",
+          "capacity": 2,
+          "opaque_args": [
+            200000,
+            0,
+            12,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "96",
+          "rx": "9700",
+          "capacity": 2,
+          "opaque_args": [
+            200000,
+            0,
+            8,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "94000102030405060708090a0b0c0d0e0f10111213",
+          "rx": "95ff00",
+          "capacity": 3,
+          "opaque_args": [
+            100000,
+            0,
+            0,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "96",
+          "rx": "9700",
+          "capacity": 2,
+          "opaque_args": [
+            200000,
+            0,
+            12,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "96",
+          "rx": "9700",
+          "capacity": 2,
+          "opaque_args": [
+            200000,
+            0,
+            8,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "94000102030405060708090a0b0c0d0e0f10111213",
+          "rx": "95ff00",
+          "capacity": 3,
+          "opaque_args": [
+            100000,
+            0,
+            0,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "96",
+          "rx": "9700",
+          "capacity": 2,
+          "opaque_args": [
+            200000,
+            0,
+            12,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "96",
+          "rx": "9700",
+          "capacity": 2,
+          "opaque_args": [
+            200000,
+            0,
+            8,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "94000102030405060708090a0b0c0d0e0f10111213",
+          "rx": "95ff00",
+          "capacity": 3,
+          "opaque_args": [
+            100000,
+            0,
+            0,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "96",
+          "rx": "9700",
+          "capacity": 2,
+          "opaque_args": [
+            200000,
+            0,
+            12,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "96",
+          "rx": "9700",
+          "capacity": 2,
+          "opaque_args": [
+            200000,
+            0,
+            8,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "94000102030405060708090a0b0c0d0e0f10111213",
+          "rx": "95ff00",
+          "capacity": 3,
+          "opaque_args": [
+            100000,
+            0,
+            0,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "96",
+          "rx": "9700",
+          "capacity": 2,
+          "opaque_args": [
+            200000,
+            0,
+            12,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "96",
+          "rx": "9700",
+          "capacity": 2,
+          "opaque_args": [
+            200000,
+            0,
+            8,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "94000102030405060708090a0b0c0d0e0f10111213",
+          "rx": "95ff00",
+          "capacity": 3,
+          "opaque_args": [
+            100000,
+            0,
+            0,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "96",
+          "rx": "9700",
+          "capacity": 2,
+          "opaque_args": [
+            200000,
+            0,
+            12,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "96",
+          "rx": "9700",
+          "capacity": 2,
+          "opaque_args": [
+            200000,
+            0,
+            8,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "94000102030405060708090a0b0c0d0e0f10111213",
+          "rx": "95ff00",
+          "capacity": 3,
+          "opaque_args": [
+            100000,
+            0,
+            0,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "96",
+          "rx": "9700",
+          "capacity": 2,
+          "opaque_args": [
+            200000,
+            0,
+            12,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "96",
+          "rx": "9700",
+          "capacity": 2,
+          "opaque_args": [
+            200000,
+            0,
+            8,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "94000102030405060708090a0b0c0d0e0f10111213",
+          "rx": "95ff00",
+          "capacity": 3,
+          "opaque_args": [
+            100000,
+            0,
+            0,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "96",
+          "rx": "9700",
+          "capacity": 2,
+          "opaque_args": [
+            200000,
+            0,
+            12,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "96",
+          "rx": "9700",
+          "capacity": 2,
+          "opaque_args": [
+            200000,
+            0,
+            8,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "94000102030405060708090a0b0c0d0e0f10111213",
+          "rx": "95ff00",
+          "capacity": 3,
+          "opaque_args": [
+            100000,
+            0,
+            0,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "96",
+          "rx": "9700",
+          "capacity": 2,
+          "opaque_args": [
+            200000,
+            0,
+            12,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "96",
+          "rx": "9700",
+          "capacity": 2,
+          "opaque_args": [
+            200000,
+            0,
+            8,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "94000102030405060708090a0b0c0d0e0f10111213",
+          "rx": "95ff00",
+          "capacity": 3,
+          "opaque_args": [
+            100000,
+            0,
+            0,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "96",
+          "rx": "9700",
+          "capacity": 2,
+          "opaque_args": [
+            200000,
+            0,
+            12,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "96",
+          "rx": "9700",
+          "capacity": 2,
+          "opaque_args": [
+            200000,
+            0,
+            8,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "94000102030405060708090a0b0c0d0e0f10111213",
+          "rx": "95ff00",
+          "capacity": 3,
+          "opaque_args": [
+            100000,
+            0,
+            0,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "96",
+          "rx": "9700",
+          "capacity": 2,
+          "opaque_args": [
+            200000,
+            0,
+            12,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "96",
+          "rx": "9700",
+          "capacity": 2,
+          "opaque_args": [
+            200000,
+            0,
+            8,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "94000102030405060708090a0b0c0d0e0f10111213",
+          "rx": "95ff00",
+          "capacity": 3,
+          "opaque_args": [
+            100000,
+            0,
+            0,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "96",
+          "rx": "9700",
+          "capacity": 2,
+          "opaque_args": [
+            200000,
+            0,
+            12,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "96",
+          "rx": "9700",
+          "capacity": 2,
+          "opaque_args": [
+            200000,
+            0,
+            8,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "94000102030405060708090a0b0c0d0e0f10111213",
+          "rx": "95ff00",
+          "capacity": 3,
+          "opaque_args": [
+            100000,
+            0,
+            0,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "96",
+          "rx": "9700",
+          "capacity": 2,
+          "opaque_args": [
+            200000,
+            0,
+            12,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "96",
+          "rx": "9700",
+          "capacity": 2,
+          "opaque_args": [
+            200000,
+            0,
+            8,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "94000102030405060708090a0b0c0d0e0f10111213",
+          "rx": "95ff00",
+          "capacity": 3,
+          "opaque_args": [
+            100000,
+            0,
+            0,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "96",
+          "rx": "9700",
+          "capacity": 2,
+          "opaque_args": [
+            200000,
+            0,
+            12,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "96",
+          "rx": "9700",
+          "capacity": 2,
+          "opaque_args": [
+            200000,
+            0,
+            8,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "94000102030405060708090a0b0c0d0e0f10111213",
+          "rx": "95ff00",
+          "capacity": 3,
+          "opaque_args": [
+            100000,
+            0,
+            0,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "96",
+          "rx": "9700",
+          "capacity": 2,
+          "opaque_args": [
+            200000,
+            0,
+            12,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "96",
+          "rx": "9700",
+          "capacity": 2,
+          "opaque_args": [
+            200000,
+            0,
+            8,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "94000102030405060708090a0b0c0d0e0f10111213",
+          "rx": "95ff00",
+          "capacity": 3,
+          "opaque_args": [
+            100000,
+            0,
+            0,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "96",
+          "rx": "9700",
+          "capacity": 2,
+          "opaque_args": [
+            200000,
+            0,
+            12,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "96",
+          "rx": "9700",
+          "capacity": 2,
+          "opaque_args": [
+            200000,
+            0,
+            8,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "94000102030405060708090a0b0c0d0e0f10111213",
+          "rx": "95ff00",
+          "capacity": 3,
+          "opaque_args": [
+            100000,
+            0,
+            0,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "96",
+          "rx": "9700",
+          "capacity": 2,
+          "opaque_args": [
+            200000,
+            0,
+            12,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "96",
+          "rx": "9700",
+          "capacity": 2,
+          "opaque_args": [
+            200000,
+            0,
+            8,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "94000102030405060708090a0b0c0d0e0f10111213",
+          "rx": "95ff00",
+          "capacity": 3,
+          "opaque_args": [
+            100000,
+            0,
+            0,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "96",
+          "rx": "9700",
+          "capacity": 2,
+          "opaque_args": [
+            200000,
+            0,
+            12,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "96",
+          "rx": "9700",
+          "capacity": 2,
+          "opaque_args": [
+            200000,
+            0,
+            8,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "94000102030405060708090a0b0c0d0e0f10111213",
+          "rx": "95ff00",
+          "capacity": 3,
+          "opaque_args": [
+            100000,
+            0,
+            0,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "96",
+          "rx": "9700",
+          "capacity": 2,
+          "opaque_args": [
+            200000,
+            0,
+            12,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "96",
+          "rx": "9700",
+          "capacity": 2,
+          "opaque_args": [
+            200000,
+            0,
+            8,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "94000102030405060708090a0b0c0d0e0f10111213",
+          "rx": "95ff00",
+          "capacity": 3,
+          "opaque_args": [
+            100000,
+            0,
+            0,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "96",
+          "rx": "9700",
+          "capacity": 2,
+          "opaque_args": [
+            200000,
+            0,
+            12,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "96",
+          "rx": "9700",
+          "capacity": 2,
+          "opaque_args": [
+            200000,
+            0,
+            8,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "94000102030405060708090a0b0c0d0e0f10111213",
+          "rx": "95ff00",
+          "capacity": 3,
+          "opaque_args": [
+            100000,
+            0,
+            0,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "96",
+          "rx": "9700",
+          "capacity": 2,
+          "opaque_args": [
+            200000,
+            0,
+            12,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "96",
+          "rx": "9700",
+          "capacity": 2,
+          "opaque_args": [
+            200000,
+            0,
+            8,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "94000102030405060708090a0b0c0d0e0f10111213",
+          "rx": "95ff00",
+          "capacity": 3,
+          "opaque_args": [
+            100000,
+            0,
+            0,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "96",
+          "rx": "9700",
+          "capacity": 2,
+          "opaque_args": [
+            200000,
+            0,
+            12,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "96",
+          "rx": "9700",
+          "capacity": 2,
+          "opaque_args": [
+            200000,
+            0,
+            8,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "94000102030405060708090a0b0c0d0e0f10111213",
+          "rx": "95ff00",
+          "capacity": 3,
+          "opaque_args": [
+            100000,
+            0,
+            0,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "96",
+          "rx": "9700",
+          "capacity": 2,
+          "opaque_args": [
+            200000,
+            0,
+            12,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "96",
+          "rx": "9700",
+          "capacity": 2,
+          "opaque_args": [
+            200000,
+            0,
+            8,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "94000102030405060708090a0b0c0d0e0f10111213",
+          "rx": "95ff00",
+          "capacity": 3,
+          "opaque_args": [
+            100000,
+            0,
+            0,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "96",
+          "rx": "9700",
+          "capacity": 2,
+          "opaque_args": [
+            200000,
+            0,
+            12,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "96",
+          "rx": "9700",
+          "capacity": 2,
+          "opaque_args": [
+            200000,
+            0,
+            8,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "94000102030405060708090a0b0c0d0e0f10111213",
+          "rx": "95ff00",
+          "capacity": 3,
+          "opaque_args": [
+            100000,
+            0,
+            0,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "96",
+          "rx": "9700",
+          "capacity": 2,
+          "opaque_args": [
+            200000,
+            0,
+            12,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "96",
+          "rx": "9700",
+          "capacity": 2,
+          "opaque_args": [
+            200000,
+            0,
+            8,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "94000102030405060708090a0b0c0d0e0f10111213",
+          "rx": "95ff00",
+          "capacity": 3,
+          "opaque_args": [
+            100000,
+            0,
+            0,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "96",
+          "rx": "9700",
+          "capacity": 2,
+          "opaque_args": [
+            200000,
+            0,
+            12,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "96",
+          "rx": "9700",
+          "capacity": 2,
+          "opaque_args": [
+            200000,
+            0,
+            8,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "94000102030405060708090a0b0c0d0e0f10111213",
+          "rx": "95ff00",
+          "capacity": 3,
+          "opaque_args": [
+            100000,
+            0,
+            0,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "96",
+          "rx": "9700",
+          "capacity": 2,
+          "opaque_args": [
+            200000,
+            0,
+            12,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "96",
+          "rx": "9700",
+          "capacity": 2,
+          "opaque_args": [
+            200000,
+            0,
+            8,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "94000102030405060708090a0b0c0d0e0f10111213",
+          "rx": "95ff00",
+          "capacity": 3,
+          "opaque_args": [
+            100000,
+            0,
+            0,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "96",
+          "rx": "9700",
+          "capacity": 2,
+          "opaque_args": [
+            200000,
+            0,
+            12,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "96",
+          "rx": "9700",
+          "capacity": 2,
+          "opaque_args": [
+            200000,
+            0,
+            8,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "94000102030405060708090a0b0c0d0e0f10111213",
+          "rx": "95ff00",
+          "capacity": 3,
+          "opaque_args": [
+            100000,
+            0,
+            0,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "96",
+          "rx": "9700",
+          "capacity": 2,
+          "opaque_args": [
+            200000,
+            0,
+            12,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "96",
+          "rx": "9700",
+          "capacity": 2,
+          "opaque_args": [
+            200000,
+            0,
+            8,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "94000102030405060708090a0b0c0d0e0f10111213",
+          "rx": "95ff00",
+          "capacity": 3,
+          "opaque_args": [
+            100000,
+            0,
+            0,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "96",
+          "rx": "9700",
+          "capacity": 2,
+          "opaque_args": [
+            200000,
+            0,
+            8,
+            0,
+            0
+          ],
+          "error": "0x0"
+        }
+      ],
+      "mock_calls": [
+        "version getter",
+        "interval conversion fake",
+        "version getter",
+        "interval conversion fake",
+        "version getter",
+        "interval conversion fake",
+        "version getter",
+        "interval conversion fake",
+        "version getter",
+        "interval conversion fake",
+        "version getter",
+        "interval conversion fake",
+        "version getter",
+        "interval conversion fake",
+        "version getter",
+        "interval conversion fake",
+        "version getter",
+        "interval conversion fake",
+        "version getter",
+        "interval conversion fake",
+        "version getter",
+        "interval conversion fake",
+        "version getter",
+        "interval conversion fake",
+        "version getter",
+        "interval conversion fake",
+        "version getter",
+        "interval conversion fake",
+        "version getter",
+        "interval conversion fake",
+        "version getter",
+        "interval conversion fake",
+        "version getter",
+        "interval conversion fake",
+        "version getter",
+        "interval conversion fake",
+        "version getter",
+        "interval conversion fake",
+        "version getter",
+        "interval conversion fake",
+        "version getter",
+        "interval conversion fake",
+        "version getter",
+        "interval conversion fake",
+        "version getter",
+        "interval conversion fake",
+        "version getter",
+        "interval conversion fake",
+        "version getter",
+        "interval conversion fake",
+        "version getter",
+        "interval conversion fake",
+        "version getter",
+        "interval conversion fake",
+        "version getter",
+        "interval conversion fake",
+        "version getter",
+        "interval conversion fake",
+        "version getter",
+        "interval conversion fake",
+        "version getter",
+        "interval conversion fake",
+        "version getter",
+        "interval conversion fake"
+      ]
+    },
+    {
+      "version": 2,
+      "nonce_length": 20,
+      "max_tx": 64,
+      "max_rx": 64,
+      "input_capacity": 128,
+      "case": "signature_status_error",
+      "return": "0xe3ff8001",
+      "output_size": 128,
+      "output": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "transfers": [
+        {
+          "tx": "94000102030405060708090a0b0c0d0e0f10111213",
+          "rx": "95ff00",
+          "capacity": 3,
+          "opaque_args": [
+            100000,
+            0,
+            0,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "96",
+          "rx": "97c0",
+          "capacity": 2,
+          "opaque_args": [
+            200000,
+            0,
+            12,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "9a",
+          "rx": "9b01",
+          "capacity": 2,
+          "opaque_args": [
+            100000,
+            0,
+            4,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "9a",
+          "rx": "9b01",
+          "capacity": 2,
+          "opaque_args": [
+            100000,
+            0,
+            8,
+            0,
+            0
+          ],
+          "error": "0x0"
+        }
+      ],
+      "mock_calls": [
+        "version getter",
+        "interval conversion fake",
+        "version getter",
+        "interval conversion fake"
+      ]
+    },
+    {
+      "version": 2,
+      "nonce_length": 20,
+      "max_tx": 64,
+      "max_rx": 64,
+      "input_capacity": 128,
+      "case": "bad_signature_opcode",
+      "return": "0xe00002cd",
+      "output_size": 128,
+      "output": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "transfers": [
+        {
+          "tx": "94000102030405060708090a0b0c0d0e0f10111213",
+          "rx": "95ff00",
+          "capacity": 3,
+          "opaque_args": [
+            100000,
+            0,
+            0,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "96",
+          "rx": "97c0",
+          "capacity": 2,
+          "opaque_args": [
+            200000,
+            0,
+            12,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "9a",
+          "rx": "9b00",
+          "capacity": 2,
+          "opaque_args": [
+            100000,
+            0,
+            4,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "9a",
+          "rx": "9b00",
+          "capacity": 2,
+          "opaque_args": [
+            100000,
+            0,
+            8,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "980000003f",
+          "rx": "00000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e",
+          "capacity": 64,
+          "opaque_args": [
+            100000,
+            0,
+            0,
+            0,
+            0
+          ],
+          "error": "0x0"
+        }
+      ],
+      "mock_calls": [
+        "version getter",
+        "interval conversion fake",
+        "version getter",
+        "interval conversion fake",
+        "version getter",
+        "interval conversion fake",
+        "OSData allocator fake",
+        "retry/continuation provider fake false",
+        "OSData release fake"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,39 @@
+{
+  "scope": "isolated default-disabled source/gauge integration, bounded work/IRQ/fault lifetime and drained atomic source invalidation; further default-false owned USB2 nominal-current selection",
+  "linux_commit": "adc218676eef25575469234709c2d87185ca223a",
+  "core_identical_to_v2": false,
+  "historical_v3_source_sha256": "a8a7787b0241169d6b914f84c140c177aab13fd1ac88ee9a2ce4b03845409c25",
+  "normal_config_sha256": "8b59b75e728cfacfb3441adf08b4de6e38c4ca53788fcee039ddddfdc43bed20",
+  "files": {
+    "apple-d1946-current-only.c": "683c4f016a3a1c99794ed99137a086169c276b283bc7c0fa719fabaacf55ca29",
+    "d1946-current-core.c": "d62ce528cdd1975681e7a0bdce73e57dc023301d1bf17eaa360cc5f149a8ba99",
+    "d1946-current-core.h": "0d3bb90835b9cb4c0eed87da54a3018a61cb87ce8a53a24e953b9e2641b64565",
+    "d1946-current-provider.h": "c63137a6ee30b039e8c321dbaf2e0736a05fcded4eec90264d4cc7f090a9521e",
+    "Kconfig": "7cca24edc283be6cdffbf529ed2f3980abb06979d8227176ab2ea5ced1b90fb7",
+    "Makefile": "1b89d1440b999e842c3abb85dd47243dd735f9d1e3fc2ad720dbecb16447db3f",
+    "core-fixture.c": "dbd89fbfa153a8ba89a6ef655120bf826c0cb7a52ae44a63e8baf49a79821d06",
+    "oracle-registers.json": "64b6d10fc29268675b9797006cf60030057e4c8939f674032a6c6bd8c945336d",
+    "historical-d-fault.c": "a5aa55fc53b5105b8364bb668fa51a56743b02aec1a314b17c857d62af54ac19",
+    "historical-v4-d-stop.c": "b94d17d3bab6db32f5ad355588a5f8b23a2a220ec671a1c3258093b8d4a67104",
+    "historical-d-worker-epoch.c": "1501b8fb2b96241621eb10c83efe124bfcb2fb5ef7845bc0dfde0b19a5a90256",
+    "historical-d-probe-unbanked.c": "276419df5efe6ee73d3abeb7400405672cb4be72825b2404555bd035d7376cec",
+    "historical-d-worker-input-revocation.c": "3e5aa9e3f06d16f592de9b2de01f0656c566d33157834ffa4ac6ce3acd48c65d",
+    "historical-d-queue-postponed-urgent.c": "5aabb130f1efc79126ae3c344f0762cbd5278683597efe36e2a6522995b148a5"
+  },
+  "inactive_zero_fix": "supported zero setter refuses -EAGAIN before desired-state mutation when events are disabled",
+  "validator_epoch_fix": "Recheck frontend epoch after external source validation at fastpath, pre-enable and post-enable guards; no atomic bus/revocation guarantee",
+  "parent_transport_binding": "Both routes require the actual bound P105/D1946 parent shared-bank0 accessor before allocation/provider/PMU I/O; default-disabled config rejects unsupported transport",
+  "input_revocation_fix": "Unconditional inhibit retained; before positive input plan, revalidate epoch/lease/epoch; zero input remains allowed; no physical draw/atomic cutoff claim",
+  "urgent_requeue_fix": {
+    "description": "Periodic queue_delayed_work preserves a pending urgent event; zero-delay mod_delayed_work still advances a pending poll. No physical cutoff deadline claim.",
+    "linux_workqueue_c_sha256": "0596a9529ba2e35fe25df06e78640887fe40b9f0c4bfd93ca2f5ce4e1ab41e77",
+    "source": "Linux 6.12 kernel/workqueue.c:2489-2591,3195,3228",
+    "test": "tests/test-experimental-current-urgent-queue.py"
+  },
+  "input_handoff_revision": {
+    "scope": "Positive input programs checked ISET before releasing battery suspend; zero retains suspend-first. Positive worker plans validate inherited programmed-limit mode and bus-not-suspended including unchanged-plan path. No automatic mode repair.",
+    "hardware_validated": false,
+    "charge_guards_changed": false,
+    "test": "tests/test-experimental-current-handoff.py"
+  }
+}

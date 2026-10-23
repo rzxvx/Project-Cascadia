@@ -14,6 +14,7 @@
 #include <linux/of_address.h>
 #include <linux/sched.h>
 #include <linux/sched/task.h>
+#include <asm/apple_boot.h>
 #include <asm/cputype.h>
 #include <asm/barrier.h>
 #include <asm/thread_info.h>
@@ -214,7 +215,7 @@ static void __noclone noinline apple_spawn_fn(void *a)
 	s->pid = user_mode_thread(s->fn, s->arg, s->flags);
 }
 
-static noinline pid_t apple_spawn_on_alt_stack(int (*fn)(void *), void *arg,
+static noinline __maybe_unused pid_t apple_spawn_on_alt_stack(int (*fn)(void *), void *arg,
 					       unsigned long flags)
 {
 	struct apple_spawn_args s = {

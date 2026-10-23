@@ -1,0 +1,139 @@
+{
+  "format": "p105-first-quiescence-counterexample-v1",
+  "kernelcache_sha256": "db1ddc8343aa9debc00e0a083fba59d9f555722db60957dc333b854fac21dd2c",
+  "tool_sha256": "7b98e6eff14d3473a35809aa6e16febcc980b7a1dcdfc027e4837d6ae37661db",
+  "hardware_access": false,
+  "premises": [
+    "PMU bytes are RAM",
+    "deadline timeout injected",
+    "first cleanup write fails without clearing fake control",
+    "second start write fails without modifying fake control",
+    "old completion event and old raw value deliberately injected; physical ordering unproved"
+  ],
+  "first_timeout": {
+    "channel": 15,
+    "raw_fixture": 273,
+    "mode": "timeout",
+    "return_code": 3758097110,
+    "output": 12648430,
+    "output_untouched": true,
+    "state": 0,
+    "event_pending": 0,
+    "control_43": 47,
+    "calls": [
+      {
+        "mocked": "clock_interval_to_deadline",
+        "interval": 1000,
+        "scale": 1000000
+      },
+      {
+        "mocked": "commandSleep deadline",
+        "result": 1,
+        "event": null,
+        "state": 1
+      },
+      {
+        "mocked": "logging"
+      },
+      {
+        "mocked": "commandWakeup",
+        "state": 0
+      },
+      {
+        "mocked": "logging"
+      }
+    ],
+    "transactions": [
+      {
+        "direction": "write",
+        "register": "0x43",
+        "bytes": "2f"
+      },
+      {
+        "direction": "write",
+        "register": "0x43",
+        "bytes": null,
+        "error": "0xe00002c0 (synthetic transfer failure)"
+      }
+    ],
+    "hardware_access": false
+  },
+  "second_failed_start_old_completion": {
+    "channel": 6,
+    "raw_fixture": 273,
+    "mode": "complete",
+    "return_code": 0,
+    "output": 273,
+    "output_untouched": false,
+    "state": 0,
+    "event_pending": 0,
+    "control_43": 6,
+    "calls": [
+      {
+        "mocked": "clock_interval_to_deadline",
+        "interval": 1000,
+        "scale": 1000000
+      },
+      {
+        "mocked": "commandSleep deadline",
+        "result": 0,
+        "event": 288,
+        "state": 1
+      },
+      {
+        "mocked": "commandWakeup",
+        "state": 2
+      },
+      {
+        "mocked": "commandWakeup",
+        "state": 0
+      }
+    ],
+    "transactions": [
+      {
+        "direction": "write",
+        "register": "0x43",
+        "bytes": null,
+        "error": "0xe00002c0 (synthetic transfer failure)"
+      },
+      {
+        "direction": "read",
+        "register": "0x01",
+        "bytes": "002000000000000000"
+      },
+      {
+        "direction": "read",
+        "register": "0x44",
+        "bytes": "0111"
+      },
+      {
+        "direction": "write",
+        "register": "0x43",
+        "bytes": "06"
+      }
+    ],
+    "hardware_access": false,
+    "requested_transfers": [
+      {
+        "register": 67,
+        "direction": "write",
+        "requested": "26"
+      },
+      {
+        "register": 1,
+        "direction": "read",
+        "requested": null
+      },
+      {
+        "register": 68,
+        "direction": "read",
+        "requested": null
+      },
+      {
+        "register": 67,
+        "direction": "write",
+        "requested": "06"
+      }
+    ]
+  }
+}

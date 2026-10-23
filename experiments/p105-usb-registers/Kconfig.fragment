@@ -1,0 +1,8 @@
+config CASCADIA_P105_USB_REGISTER_EXPERIMENT
+	bool "P105 USB register backend primitives (source experiment)"
+	depends on ARCH_APPLE_S5L && REGMAP
+	default n
+	help
+	  Incomplete source-only clock-membership and PHY-tuning primitives.
+	  No driver/DT registration, connector policy, controller role switching
+	  or VBUS provider exists. Keep disabled in normal and host builds.

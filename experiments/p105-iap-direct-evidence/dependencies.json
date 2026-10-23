@@ -1,0 +1,9 @@
+{
+  "cryptography": "41.0.7",
+  "host_python": "3.10 or newer",
+  "nonce_verifier": {
+    "repository_path": "experiments/p105-authcp-verify/authcp_verify.py",
+    "sha256": "330a2e9ad53288490c3c73d61c6aa802d9eeb666a447e216b1280bb6fb8b04dd"
+  },
+  "requirements_installation_performed": false
+}

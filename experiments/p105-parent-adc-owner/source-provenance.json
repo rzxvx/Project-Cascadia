@@ -1,0 +1,51 @@
+{
+  "format": "p105-parent-adc-owner-source-v1",
+  "base_cascadia_revision": "3cf90cafbc295e87d1ff7a1436efc8667201be51",
+  "linux_revision": "adc218676eef25575469234709c2d87185ca223a",
+  "kernelcache12_sha256": "db1ddc8343aa9debc00e0a083fba59d9f555722db60957dc333b854fac21dd2c",
+  "normal_child_sources": {
+    "patches/files/drivers/video/backlight/apple-pmu-wled.c": "797d77c882d36c832085dc8e11d710da53190ea715c725095ea8c055935f6801",
+    "patches/files-sandcastle-port/drivers/regulator/apple-pmu-pwrsw.c": "2acffd17c5703b553f1cf3353c3f9a306f63a20c15ceefaa2dc64b3c0eb9b504",
+    "patches/files-sandcastle-port/drivers/mfd/apple-pmu-i2c.c": "b9c382ead87ee0ab1061011705dc9447dd286f3a60f17b32ad83472d321bdbc2",
+    "patches/files-sandcastle-port/drivers/i2c/busses/i2c-s5l8940x.c": "7fd59fc21919da7ff69d57b4d1e95711832083c689898b957828d18e28c687c7",
+    "dts/p105ap.dts": "cc0f97f49f64b8424278c638d63f503da4424a2b5da7a605251b577062263276"
+  },
+  "fixture_hashes": {
+    "a5-address-command-fixture.h": "94346ff46bbbfeb864477b9368f3d060e5efe97cb324b38da14318967d1eb8a5",
+    "historical-raw-address-filter.inc": "8932224533dcf5f69abea3a9bb9480e9f9d6dd6119182464e789c4bfb8571392",
+    "fake-linux.h": "8d6d63a2276522b8d75b7e8529354c1c6cd41c43e41c0f32327ffed79d973ff4",
+    "system-boundary-fixture.h": "80b11a76c026481999d9513f31c8ae504303d3b87fe742946c1b8a652f4b98e8",
+    "core-retry-fixture.h": "89861d5b64274cbb096aefbb9f5b700ad0a9911451f76a3d67eb7ad36aa0af1d",
+    "regmap-entrypoints-fixture.h": "6480dab7d41910c16898d324b9c28689f958d81ddcff89d4b935ca3f53b961e0",
+    "normal-child-fixture.h": "f39144f7523fc72f64f85949d4db2e5f219256f25a74fa977c18e3f799aad784",
+    "mfd-parent-constructor-fixture.h": "35d017e6e6fd5764d47985821f1b5dc5dd57e896984e9e5709144bfb238fcad9",
+    "a5-entrypoints-fixture.h": "60d404f2a73fcffcbd32228ccf4ebfe393ece11464cf91ed6c8583cc91ada937",
+    "historical-probe-constructor.h": "4d9df9967ce062217f68feab26a0777aab28ba96533aedd5216efc457a09a129",
+    "historical-no-probe-rollback.c": "591a16d7f4fd1ce6717a7a0916eed5189bf54c4f8dfa2f84c35b9effafd7fda6",
+    "historical-attached-facade.c": "cf2868943e9ff37b5e3db8769c27e679fab28a04d0e164e1b3f74e51b44c8da6",
+    "native-parent-oracle.json": "f87764d51e58c404de87d30185a4835945a2caa3591bac3b146ad881748ffd2c"
+  },
+  "body_sha256": {
+    "apple_s5l8940x_i2c_start_write": "bba4ae0fea7fdf4edfe436a00551b83f311400f396c8ab57661eec87a16c54c3",
+    "regmap_read": "fac3361c8d5f7ae691a2986022b0b799da86dba998bab084a7baa5f7a1c85658",
+    "regmap_write": "926ae04b7630bd6fa933d01b0f4d4aa138cfd5e4f3b82be1f37153be41e1e61e",
+    "_regmap_update_bits": "4ccd368e88fa4431812e8dd581ace2128dbc0b98efa142e25d227a3963c98f70",
+    "regmap_update_bits_base": "abd9f9fd1a80cde18a3c5f4000bb7e7b10099b52118ef2be7a0cacfc7d5f343f",
+    "__i2c_transfer": "ad5a0099bf1494fcae8d20ef105e96e4b74390f2114fdedf8fe490025c41917b",
+    "apple_s5l8940x_i2c_xfer": "c8a6b38b88e305ec2cc199cbe4350e4819858fe3ab213f90e46aaec29c1dcf12",
+    "apple_s5l8940x_i2c_xfer_atomic": "1f17f74863f077091a398d8fa35a194a9f9b8c53323a1eb53bb34a8d1aa0b9c7",
+    "apple_pmu_d1946_owned_parent_init": "3b9e1d6396e115f4349e14526c59ee54ed773def368d3d2637a362c30de83d8c",
+    "apple_pmu_d1946_power_off_prepare": "1288043402f84d3d531f7339286a963a03027d60917be5a836299e36912d48e9",
+    "apple_pmu_p105_suspend": "aac69cf926638b7bd6022929366bb2232bbec460405f3401e6d29a7073b9977b"
+  },
+  "linux_source_sha256": {
+    "drivers/base/regmap/regmap.c": "405be7c9fd3f91fa82be98e35c1c6129d45e7e9eb4089572d38829fa277ab8a4",
+    "drivers/i2c/i2c-core-base.c": "1e080fd32e4361f6e0db643de8c081c675133b5712dc812fc1d7a8f3e12fd38a",
+    "drivers/i2c/i2c-dev.c": "2b49dd9a1228d415711c812e3b6e3de6ac4ac2ebd557e28b7a20ea87c064ed37",
+    "drivers/i2c/i2c-core.h": "736b33e5476037c4a5d5235d2580735030d13fcc1d0fa905eee74fafa0d99858",
+    "include/linux/i2c.h": "d7fb4889110a719eb3f7ffec0befce406f889ad78872108eb3c52136292b5acc"
+  },
+  "physical_admission_factory": false,
+  "normal_default_enabled": false,
+  "native_parent_case_count": 84
+}

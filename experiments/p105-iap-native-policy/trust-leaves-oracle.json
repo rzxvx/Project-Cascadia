@@ -1,0 +1,248 @@
+{
+  "cache_sha256": "4f5b5d73244c53fd0bdc5b8012106b10d0dd7607cc850bf7c8f9e9ef3a3f733b",
+  "scope": "original API leaves; synthetic CF/public-key providers, no cert trust or parsing",
+  "function_pins": {
+    "_SecTrustSetAnchorCertificates": "0x20cb44a0",
+    "_SecTrustSetAnchorCertificatesOnly": "0x20cb4484",
+    "_SecCertificateIsWeak": "0x20c9b510",
+    "_SecCertificateCopyPublicKey": "0x20c9b4bc",
+    "_SecKeyGetBlockSize": "0x20ca8860",
+    "_SecKeyGetAlgorithmIdentifier": "0x20ca7ed8",
+    "_CFRetain": "0x20808d4c",
+    "_CFRelease": "0x2080b5ec"
+  },
+  "anchor_cases": [
+    {
+      "supplied_array": true,
+      "synthetic_array_count": 2,
+      "old_array": true,
+      "null_trust": false,
+      "return": 0,
+      "anchors_only": true,
+      "trust_result": 0,
+      "stored_array": "new",
+      "calls": [
+        {
+          "retain": "new"
+        },
+        {
+          "release": "old"
+        }
+      ]
+    },
+    {
+      "supplied_array": true,
+      "synthetic_array_count": 0,
+      "old_array": true,
+      "null_trust": false,
+      "return": 0,
+      "anchors_only": true,
+      "trust_result": 0,
+      "stored_array": "new",
+      "calls": [
+        {
+          "retain": "new"
+        },
+        {
+          "release": "old"
+        }
+      ]
+    },
+    {
+      "supplied_array": false,
+      "synthetic_array_count": 2,
+      "old_array": true,
+      "null_trust": false,
+      "return": 0,
+      "anchors_only": false,
+      "trust_result": 0,
+      "stored_array": "null",
+      "calls": [
+        {
+          "release": "old"
+        }
+      ]
+    },
+    {
+      "supplied_array": true,
+      "synthetic_array_count": 2,
+      "old_array": false,
+      "null_trust": false,
+      "return": 0,
+      "anchors_only": true,
+      "trust_result": 0,
+      "stored_array": "new",
+      "calls": [
+        {
+          "retain": "new"
+        }
+      ]
+    },
+    {
+      "supplied_array": true,
+      "synthetic_array_count": 2,
+      "old_array": true,
+      "null_trust": true,
+      "return": -50,
+      "anchors_only": false,
+      "trust_result": 4,
+      "stored_array": "old",
+      "calls": []
+    }
+  ],
+  "weak_cases": [
+    {
+      "algorithm_id": 1,
+      "block_size": 0,
+      "key_present": true,
+      "weak": true,
+      "calls": [
+        "copy_public_key",
+        "block_size",
+        "algorithm_id",
+        "release_public_key"
+      ]
+    },
+    {
+      "algorithm_id": 1,
+      "block_size": 127,
+      "key_present": true,
+      "weak": true,
+      "calls": [
+        "copy_public_key",
+        "block_size",
+        "algorithm_id",
+        "release_public_key"
+      ]
+    },
+    {
+      "algorithm_id": 1,
+      "block_size": 128,
+      "key_present": true,
+      "weak": false,
+      "calls": [
+        "copy_public_key",
+        "block_size",
+        "algorithm_id",
+        "release_public_key"
+      ]
+    },
+    {
+      "algorithm_id": 1,
+      "block_size": 129,
+      "key_present": true,
+      "weak": false,
+      "calls": [
+        "copy_public_key",
+        "block_size",
+        "algorithm_id",
+        "release_public_key"
+      ]
+    },
+    {
+      "algorithm_id": 1,
+      "block_size": 256,
+      "key_present": true,
+      "weak": false,
+      "calls": [
+        "copy_public_key",
+        "block_size",
+        "algorithm_id",
+        "release_public_key"
+      ]
+    },
+    {
+      "algorithm_id": 3,
+      "block_size": 0,
+      "key_present": true,
+      "weak": true,
+      "calls": [
+        "copy_public_key",
+        "block_size",
+        "algorithm_id",
+        "release_public_key"
+      ]
+    },
+    {
+      "algorithm_id": 3,
+      "block_size": 19,
+      "key_present": true,
+      "weak": true,
+      "calls": [
+        "copy_public_key",
+        "block_size",
+        "algorithm_id",
+        "release_public_key"
+      ]
+    },
+    {
+      "algorithm_id": 3,
+      "block_size": 20,
+      "key_present": true,
+      "weak": false,
+      "calls": [
+        "copy_public_key",
+        "block_size",
+        "algorithm_id",
+        "release_public_key"
+      ]
+    },
+    {
+      "algorithm_id": 3,
+      "block_size": 21,
+      "key_present": true,
+      "weak": false,
+      "calls": [
+        "copy_public_key",
+        "block_size",
+        "algorithm_id",
+        "release_public_key"
+      ]
+    },
+    {
+      "algorithm_id": 3,
+      "block_size": 32,
+      "key_present": true,
+      "weak": false,
+      "calls": [
+        "copy_public_key",
+        "block_size",
+        "algorithm_id",
+        "release_public_key"
+      ]
+    },
+    {
+      "algorithm_id": 0,
+      "block_size": 128,
+      "key_present": true,
+      "weak": true,
+      "calls": [
+        "copy_public_key",
+        "block_size",
+        "algorithm_id",
+        "release_public_key"
+      ]
+    },
+    {
+      "algorithm_id": 2,
+      "block_size": 128,
+      "key_present": true,
+      "weak": true,
+      "calls": [
+        "copy_public_key",
+        "block_size",
+        "algorithm_id",
+        "release_public_key"
+      ]
+    },
+    {
+      "algorithm_id": 1,
+      "block_size": 128,
+      "key_present": false,
+      "weak": true,
+      "calls": [
+        "copy_public_key"
+      ]
+    }
+  ]
+}

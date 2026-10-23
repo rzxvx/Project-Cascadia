@@ -1,0 +1,9 @@
+config APPLE_D1946_CURRENT_EXPERIMENTAL
+	tristate "Experimental P105 inherited-state current controller"
+	depends on OF && REGMAP && POWER_SUPPLY && IRQ_DOMAIN
+	default n
+	help
+	  Private unvalidated prototype. No default DT node or enabling path.
+	  Requires a verified inherited analog protection configuration, authoritative
+	  coherent source/gauge provider and explicit runtime experiment parameters.
+	  Does not configure CV, termination, watchdog or OTP. Not hardware tested.

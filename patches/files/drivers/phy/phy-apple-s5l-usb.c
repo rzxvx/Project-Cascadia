@@ -1,10 +1,13 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Apple S5L USB PHY driver (otgphyctrl,s5l8940x)
- * Register values taken from a live iBoot/DFU PHY dump on real hardware
- * (see docs/PHY-DUMP.md): OPHYPWR=0x6 OPHYCLK=0x1 UNK1_1C=0x6 UNK2_44=0xF8
- * UNK4_60=0x200 ORSTCON=0x0 -- these are the exact bits iBoot leaves set
- * while its own USB (DFU) is actively enumerated, i.e. known-working state.
+ * Upstream's live iBoot/DFU dump: OPHYPWR=0x6, OPHYCLK=0x1,
+ * U1C=0x6, UOTGTUNE1(+0x40)=0x549, UOTGTUNE2(+0x44)=0x2ff3,
+ * U60=0x200, ORSTCON=0x0.  Preserve that working peripheral state.
+ * The old +0x44=0xf8 claim was wrong and is not an initialization value.
+ * Exact 12H321 firmware maps tuning at +0x40/+0x44; see
+ * docs/research/p105-usb-host.md.  This driver does not enable external host
+ * mode or supply Lightning VBUS.
  */
 
 #include <linux/delay.h>
@@ -27,11 +30,6 @@
 #define OPHYCLK_CLKSEL_MASK		0x3
 #define OPHYCLK_CLKSEL_24MHZ		0x1
 #define ORSTCON_PHYSWRESET		BIT(0)
-
-/* Values as observed live from iBoot's working PHY state */
-#define OPHYUNK4_START			0x200
-#define OPHYUNK1_START			0x6
-#define OPHYUNK2_START			0xF8
 
 #define PMGR_BASE		0x3F100000
 #define PMGR_GATE_ON		0xF
@@ -62,7 +60,7 @@
  *
  * `clock-ids` is a different property in a different namespace -- a reference
  * to a clock source, not to a gate.  otgphyctrl's `clock-ids = <5>` is
- * PREDIV3-CLK (clock register 0x3f10001c); usb-complex's `clock-ids = <292>`
+ * PREDIV3-CLK (clock register 0x3f100054); usb-complex's `clock-ids = <292>`
  * is not a device-clocks entry at all.  Writing a gate value at `base + 5 * 4`
  * and `base + 292 * 4`, as this driver did, hit PERFCNT's gate and an empty
  * address respectively.  Neither has anything to do with USB. */
@@ -71,14 +69,14 @@
 #define PMGR_USB_OHCI0		0x1090
 #define PMGR_USB_OHCI1		0x1094
 
-/* Tuning constants from ADT otgphyctrl node (device-mode values):
+/* Tuning constants from the actual P105 12H321 ADT:
  *   uotgtune1-device = 0x549, uotgtune2-device = 0x2ff3
+ *   uotgtune1-host   = 0x54f, uotgtune2-host   = 0x6df3
  *   ref-clock-sel    = 3
  *   usbhostset-en-incrx = 0xE0
- * Register offsets are guesses matching Samsung Exynos S5L OTG PHY layout
- * (which the Apple block is derived from). To be verified by XNU-hook dump. */
-#define OPHY_UOTGTUNE1		0x30
-#define OPHY_UOTGTUNE2		0x34
+ * AppleS5L8930XUSBPhy::enableHostMode in that firmware writes the tuning
+ * words to +0x40 and +0x44, not the unused guessed offsets +0x30/+0x34.
+ * Host routing and VBUS remain unverified: no tuning writes are added here. */
 
 /* The host side: EHCI and its HSIC port, where the Wi-Fi chip is.
  *
@@ -130,7 +128,9 @@ static int s5l_pmgr_on(struct s5l_usbphy *p, u32 off)
 	writel((v & ~0x10f) | PMGR_GATE_ON, p->pmgr + off);
 	for (n = 0; n < 1000; n++) {
 		v = readl(p->pmgr + off);
-		if (!((v ^ (v >> 4)) & 0xf))
+		/* Matching OFF or intermediate nibbles do not acknowledge ON. */
+		if ((v & 0xf) == PMGR_GATE_ON &&
+		    ((v >> 4) & 0xf) == PMGR_GATE_ON)
 			return 0;
 		udelay(1);
 	}
@@ -144,8 +144,8 @@ static void phy_dump_regs(struct s5l_usbphy *p, const char *tag)
 	 *   0x00 OPHYPWR    (was 0x6 from iBoot)
 	 *   0x04 OPHYCLK    (was 0x1 = 24MHz)
 	 *   0x08 ORSTCON    (was 0x0)
-	 *   0x1C OPHYUNK1   (was 0x6)   -- probably uotgtune1
-	 *   0x40 ???        (probe, might also be tuning)
+	 *   0x1C OPHYUNK1   (was 0x6; device-mode enable is bit 1 in XNU)
+	 *   0x40 UOTGTUNE1  (was 0x549 == ADT uotgtune1-device)
 	 *   0x44 OPHYUNK2   (was 0x2ff3 == ADT uotgtune2-device)
 	 *   0x60 OPHYUNK4   (was 0x200)
 	 * We keep 0x30 and 0x34 in the dump only to confirm they are unused
@@ -166,6 +166,7 @@ static void phy_dump_regs(struct s5l_usbphy *p, const char *tag)
 static int s5l_usbphy_init(struct phy *phy)
 {
 	struct s5l_usbphy *p = phy_get_drvdata(phy);
+	int ret;
 
 	dev_info(p->dev, "PHY init start\n");
 
@@ -184,7 +185,9 @@ static int s5l_usbphy_init(struct phy *phy)
 		 readl(p->pmgr + PMGR_USB_OTG), readl(p->pmgr + PMGR_USB_EHCI),
 		 readl(p->pmgr + PMGR_USB_OHCI0), readl(p->pmgr + PMGR_USB_OHCI1));
 
-	s5l_pmgr_on(p, PMGR_USB_OTG);
+	ret = s5l_pmgr_on(p, PMGR_USB_OTG);
+	if (ret)
+		return ret;
 
 	dev_info(p->dev, "usb-complex OTG(88) now 0x%08x\n",
 		 readl(p->pmgr + PMGR_USB_OTG));
@@ -239,9 +242,26 @@ static const struct phy_ops s5l_usbphy_ops = {
 	.owner = THIS_MODULE,
 };
 
+/* These flags track our enable references, not the physical rail state.
+ * P105's supplies have no parent, coupling or consumer load; a provider
+ * disable error precedes reference release. Revisit error/retry accounting
+ * if that topology changes: regulator_disable() can otherwise fail late. */
+static int s5l_supply_disable(struct regulator *supply, bool *on)
+{
+	int ret;
+
+	if (!*on)
+		return 0;
+	ret = regulator_disable(supply);
+	if (!ret)
+		*on = false;
+	return ret;
+}
+
 static int s5l_hostphy_power_on(struct phy *phy)
 {
 	struct s5l_usbphy *p = phy_get_drvdata(phy);
+	bool enabled_lpo = false, enabled_hsic = false;
 	int ret;
 
 	/* The 32 kHz clock first, the way a chip expects its sleep clock
@@ -250,8 +270,8 @@ static int s5l_hostphy_power_on(struct phy *phy)
 		struct regulator *r = devm_regulator_get_optional(p->dev, "lpo");
 
 		if (IS_ERR(r)) {
-			if (PTR_ERR(r) == -EPROBE_DEFER)
-				return -EPROBE_DEFER;
+			if (PTR_ERR(r) != -ENODEV)
+				return PTR_ERR(r);
 		} else {
 			p->lpo_supply = r;
 		}
@@ -261,6 +281,7 @@ static int s5l_hostphy_power_on(struct phy *phy)
 		if (ret)
 			return ret;
 		p->lpo_supply_on = true;
+		enabled_lpo = true;
 		msleep(10);
 	}
 
@@ -268,8 +289,10 @@ static int s5l_hostphy_power_on(struct phy *phy)
 		struct regulator *r = devm_regulator_get_optional(p->dev, "hsic");
 
 		if (IS_ERR(r)) {
-			if (PTR_ERR(r) == -EPROBE_DEFER)
-				return -EPROBE_DEFER;
+			if (PTR_ERR(r) != -ENODEV) {
+				ret = PTR_ERR(r);
+				goto undo_supplies;
+			}
 			dev_warn(p->dev, "no hsic-supply (%ld): the HSIC device stays unpowered\n",
 				 PTR_ERR(r));
 		} else {
@@ -279,15 +302,18 @@ static int s5l_hostphy_power_on(struct phy *phy)
 	if (p->hsic_supply && !p->hsic_supply_on) {
 		ret = regulator_enable(p->hsic_supply);
 		if (ret)
-			return ret;
+			goto undo_supplies;
 		p->hsic_supply_on = true;
+		enabled_hsic = true;
 		msleep(10);
 	}
 
 	ret = s5l_pmgr_on(p, PMGR_USB_EHCI);
 	if (ret)
-		return ret;
-	s5l_pmgr_on(p, PMGR_USB_OHCI0);
+		goto undo_supplies;
+	ret = s5l_pmgr_on(p, PMGR_USB_OHCI0);
+	if (ret)
+		goto undo_supplies;
 	if (p->usbcplx)
 		writel(readl(p->usbcplx) | USBCPLX_HSIC_EN, p->usbcplx);
 
@@ -295,21 +321,27 @@ static int s5l_hostphy_power_on(struct phy *phy)
 		 readl(p->pmgr + PMGR_USB_EHCI), readl(p->pmgr + PMGR_USB_OHCI0),
 		 p->usbcplx ? readl(p->usbcplx) : 0);
 	return 0;
+
+undo_supplies:
+	/* Undo only references acquired by this call. PMGR rollback is not
+	 * defined here; do not invent a gate-off/reset sequence on a timeout. */
+	if (enabled_hsic &&
+	    s5l_supply_disable(p->hsic_supply, &p->hsic_supply_on))
+		dev_warn(p->dev, "could not undo HSIC supply enable\n");
+	if (enabled_lpo &&
+	    s5l_supply_disable(p->lpo_supply, &p->lpo_supply_on))
+		dev_warn(p->dev, "could not undo LPO supply enable\n");
+	return ret;
 }
 
 static int s5l_hostphy_power_off(struct phy *phy)
 {
 	struct s5l_usbphy *p = phy_get_drvdata(phy);
+	int ret, lpo_ret;
 
-	if (p->hsic_supply_on) {
-		regulator_disable(p->hsic_supply);
-		p->hsic_supply_on = false;
-	}
-	if (p->lpo_supply_on) {
-		regulator_disable(p->lpo_supply);
-		p->lpo_supply_on = false;
-	}
-	return 0;
+	ret = s5l_supply_disable(p->hsic_supply, &p->hsic_supply_on);
+	lpo_ret = s5l_supply_disable(p->lpo_supply, &p->lpo_supply_on);
+	return ret ? ret : lpo_ret;
 }
 
 static const struct phy_ops s5l_hostphy_ops = {
@@ -361,7 +393,7 @@ static int s5l_usbphy_probe(struct platform_device *pdev)
 	if (platform_get_resource(pdev, IORESOURCE_MEM, 1)) {
 		p->usbcplx = devm_platform_ioremap_resource(pdev, 1);
 		if (IS_ERR(p->usbcplx))
-			p->usbcplx = NULL;
+			return PTR_ERR(p->usbcplx);
 	}
 	platform_set_drvdata(pdev, p);
 

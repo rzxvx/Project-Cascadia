@@ -1,0 +1,14 @@
+# Unified-diff context prefixes contain legitimate leading spaces before tabs.
+# Check added kernel lines with git apply --whitespace=error-all/checkpatch.
+patches/tree/*.patch -whitespace
+
+tests/fixtures/*.patch -whitespace
+
+# Experimental unified diffs: verify their applied source with strict git apply.
+experiments/**/*.patch -whitespace
+
+# Preserve the exact SHA-pinned GPL baseline, including upstream trailing spaces.
+tests/fixtures/h2fmi-lifetime/original-mtdcore.c whitespace=-blank-at-eol
+
+# Exact preserved earlier GPL source fixture.
+tests/fixtures/h2fmi-lifetime/prior-lifetime-mtdcore.c whitespace=-blank-at-eol

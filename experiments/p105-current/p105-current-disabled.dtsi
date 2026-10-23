@@ -1,0 +1,15 @@
+// SPDX-License-Identifier: GPL-2.0-only
+/* Explicit offline candidate only. Not included by the normal build.
+ * Existing P105 ADT/native GPIO evidence: vector19, low level. Numeric Linux
+ * IRQ_TYPE_LEVEL_LOW=8 because the normal DTS build does not run a C parser.
+ * No calibration/retention assertions, bootargs or activation are supplied. */
+&pmu {
+    current-controller {
+        compatible = "apple,d1946-current-only-experimental";
+        status = "disabled";
+        interrupt-parent = <&gpio>;
+        interrupts = <19 8>;
+        apple,battery-supply = <&battery>;
+        apple,usb-source-controller = <&dwc2>;
+    };
+};

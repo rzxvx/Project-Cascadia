@@ -1,0 +1,12 @@
+{
+  "frozen_manifest_SHA256": "c144572eb477d83c5683891b0ecf35049ac2ce8c8712c2069326f5f0c699bab0",
+  "files": {
+    "native13.py": "6f6aa9984ac1a9166296cb9f6b88ecd57dd8a88e844f840b6053ab0cf743edfe",
+    "emulate-calendar.py": "814552e2ff896dbcd829ee48229c6f3b0b36ef05189876211134bd5f19dc54bc",
+    "calendar-oracle.json": "6cec7f41ac58c1e03debc637969104344a0771f77ad02c89ba1e16eacf6fddcc",
+    "CALENDAR.md": "9bd62eed8dad187f0f536cef68133bef3a188cc91f666c4714e1740580addb2f"
+  },
+  "root_independent_replay_cases": 2,
+  "full_trust": null,
+  "authorization_granted": false
+}

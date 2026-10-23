@@ -1,0 +1,31 @@
+{
+  "frozen_manifest_SHA256": "6793ba34d351c76c14f9ec76d01382c51172f2b4941552df4a30be64d9a90652",
+  "files": {
+    "native13.py": "6f6aa9984ac1a9166296cb9f6b88ecd57dd8a88e844f840b6053ab0cf743edfe",
+    "emulate-native-link.py": "b8f7feb7d5ce6f764a7e0d88b18877017bbc39538458416daa371a035e11332c",
+    "synthetic-public-link.json": "b62e73b2ffa0041bd1aa6bf0e3683d1d56d89023d0d18850cb01e2b5716dea35",
+    "native-link-oracle.json": "61445311e593da51e01aeba306819bd9ccdd1f0aad0f79b202d8f5a323a272ae",
+    "test_public_link.py": "71dc56040b4d5e73c296b1ccb11d828c0493803cb0f6f5e0886f5c3dd5d43e67",
+    "NATIVE_LINK.md": "cb9fbb74b63902f9ca901c18d62d5b8f2e99496b5b5ec276499e39e2cef36f13"
+  },
+  "independent_root_review": {
+    "status": "PASS",
+    "native_cases": 3,
+    "independent_crypto_tests": 3,
+    "original_manifest_SHA256": "6793ba34d351c76c14f9ec76d01382c51172f2b4941552df4a30be64d9a90652",
+    "root_oracle_exactly_matches": true,
+    "max_instruction_count": 537227,
+    "real_RSA_modexp_cases": 3,
+    "missing_parameters_case_still_runs_verification": true,
+    "certificate_DER_parser_executed": false,
+    "native_hash_execution": false,
+    "python_SHA256_provider": true,
+    "full_chain_trust": null,
+    "authorization_granted": false,
+    "hardware_access": false
+  },
+  "normal_runtime_activation": false,
+  "full_chain_trust": null,
+  "authorization_granted": false,
+  "hardware_access": false
+}

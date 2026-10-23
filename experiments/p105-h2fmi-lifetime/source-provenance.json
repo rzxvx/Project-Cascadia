@@ -1,0 +1,17 @@
+{
+  "kernel_pin": "adc218676eef25575469234709c2d87185ca223a",
+  "private_frozen_manifest_sha256": "b595dad68e9c003a5e73b23437b81f601fe31c690653f852655194531f41ee7a",
+  "driver_SHA256": "cab5b9a796d0d8e67f6484c6e51ba0839eb5a69f313257ba06ec74c536eb06fa",
+  "core_patch_SHA256": "df1ed9aaedc712a82f98f02876575372d41946a659fb0bf8f1807c34981b8041",
+  "reconstructed_core_SHA256": "fc6b3a8056d16832e014fe4cffdb4bc091afde5948ba7a469e371686450590d4",
+  "reconstructed_header_SHA256": "2ced38a2a796b13a5bfcc0492972683d8dddc4c9fecbde501baba715ee7d3aa9",
+  "baseline_core_SHA256": "a14842ae73acebc5601e74bcbde1b2dfac594979fd2512a38ea30d406b57540e",
+  "baseline_header_SHA256": "7ffee580bb12556e4074f07e6fdf13d56d9a5ca18d2eb69ebb4d3c0c9896badb",
+  "normal_image_activation": false,
+  "physical_IOP_fence": false,
+  "hardware_access": false,
+  "previous_context_proposal_manifest_SHA256": "b595dad68e9c003a5e73b23437b81f601fe31c690653f852655194531f41ee7a",
+  "baseline_partition_SHA256": "33f69ba6f9d8ff0445790b8d7cf5bf279dfe79856a0dc362bd9a8e8dd7c89a8f",
+  "reconstructed_partition_SHA256": "8adbf30aea21f169a18dffb32a9f0d90236dd302d7d92dea903c363e8431fb5e",
+  "final_device_cleanup": "retained-context cleanup queued under mtd_table_mutex; nested parent device references retained; constructor holds initialized partition through final caller access"
+}

@@ -1,0 +1,324 @@
+{
+  "kernelcache_sha256": "db1ddc8343aa9debc00e0a083fba59d9f555722db60957dc333b854fac21dd2c",
+  "iop_sha256": "6dfa5dcc6f8cb38be41e48c0edc543b2014a026f7909c35c9ef050ffd23c22d4",
+  "emulator_staging_sha256": "965f0dd7b36ee75b40f8b4a395a6d605917e8ebfa34796cce3bd8ae9e63cb033",
+  "synthetic_hardware_responses": true,
+  "cases": [
+    {
+      "bus": 0,
+      "count": 1,
+      "groups": [
+        1,
+        0
+      ],
+      "status": 64,
+      "wait_failure": null,
+      "original_require": false,
+      "result": 1,
+      "aggregate": 64,
+      "geb_latched": 0,
+      "failing_ce": 0,
+      "entry_status": [
+        64
+      ],
+      "trace": [
+        [
+          "virtual-mmio",
+          4,
+          6
+        ],
+        [
+          "virtual-mmio",
+          786476,
+          24000
+        ],
+        [
+          "virtual-mmio",
+          4,
+          256
+        ],
+        [
+          "virtual-mmio",
+          786464,
+          4294967295
+        ],
+        [
+          "virtual-mmio",
+          0,
+          5
+        ],
+        [
+          "virtual-mmio",
+          52,
+          545521668
+        ],
+        [
+          "virtual-mmio",
+          262176,
+          2
+        ],
+        [
+          "virtual-mmio",
+          4,
+          4356
+        ],
+        [
+          "dma-start",
+          5,
+          824180756,
+          16384,
+          4,
+          8,
+          0
+        ],
+        [
+          "dma-start",
+          6,
+          824180760,
+          64,
+          1,
+          1,
+          0
+        ],
+        [
+          "virtual-mmio",
+          786432,
+          150994945
+        ],
+        [
+          "virtual-mmio",
+          786452,
+          8388608
+        ],
+        [
+          "virtual-mmio",
+          786452,
+          138
+        ],
+        [
+          "virtual-mmio",
+          786432,
+          285218569
+        ],
+        [
+          "virtual-mmio",
+          786432,
+          184549376
+        ],
+        [
+          "virtual-mmio",
+          786432,
+          184549376
+        ],
+        [
+          "virtual-mmio",
+          786432,
+          184549376
+        ],
+        [
+          "virtual-mmio",
+          786432,
+          184549376
+        ],
+        [
+          "virtual-mmio",
+          786432,
+          134217751
+        ],
+        [
+          "original-drain",
+          1,
+          64
+        ],
+        [
+          "virtual-mmio",
+          786432,
+          285214213
+        ],
+        [
+          "virtual-mmio",
+          786464,
+          1
+        ],
+        [
+          "virtual-mmio",
+          4,
+          4356
+        ],
+        [
+          "virtual-mmio",
+          786432,
+          150994944
+        ],
+        [
+          "dma-wait",
+          5,
+          2000000
+        ],
+        [
+          "dma-wait",
+          6,
+          2000000
+        ]
+      ]
+    },
+    {
+      "bus": 1,
+      "count": 1,
+      "groups": [
+        1,
+        0
+      ],
+      "status": 64,
+      "wait_failure": null,
+      "original_require": false,
+      "result": 1,
+      "aggregate": 64,
+      "geb_latched": 0,
+      "failing_ce": 0,
+      "entry_status": [
+        64
+      ],
+      "trace": [
+        [
+          "virtual-mmio",
+          4,
+          6
+        ],
+        [
+          "virtual-mmio",
+          786476,
+          24000
+        ],
+        [
+          "virtual-mmio",
+          4,
+          256
+        ],
+        [
+          "virtual-mmio",
+          786464,
+          4294967295
+        ],
+        [
+          "virtual-mmio",
+          0,
+          5
+        ],
+        [
+          "virtual-mmio",
+          52,
+          545521668
+        ],
+        [
+          "virtual-mmio",
+          262176,
+          2
+        ],
+        [
+          "virtual-mmio",
+          4,
+          4356
+        ],
+        [
+          "dma-start",
+          7,
+          825229332,
+          16384,
+          4,
+          8,
+          0
+        ],
+        [
+          "dma-start",
+          8,
+          825229336,
+          64,
+          1,
+          1,
+          0
+        ],
+        [
+          "virtual-mmio",
+          786432,
+          150994945
+        ],
+        [
+          "virtual-mmio",
+          786452,
+          8388608
+        ],
+        [
+          "virtual-mmio",
+          786452,
+          138
+        ],
+        [
+          "virtual-mmio",
+          786432,
+          285218569
+        ],
+        [
+          "virtual-mmio",
+          786432,
+          184549376
+        ],
+        [
+          "virtual-mmio",
+          786432,
+          184549376
+        ],
+        [
+          "virtual-mmio",
+          786432,
+          184549376
+        ],
+        [
+          "virtual-mmio",
+          786432,
+          184549376
+        ],
+        [
+          "virtual-mmio",
+          786432,
+          134217751
+        ],
+        [
+          "original-drain",
+          1,
+          64
+        ],
+        [
+          "virtual-mmio",
+          786432,
+          285214213
+        ],
+        [
+          "virtual-mmio",
+          786464,
+          1
+        ],
+        [
+          "virtual-mmio",
+          4,
+          4356
+        ],
+        [
+          "virtual-mmio",
+          786432,
+          150994944
+        ],
+        [
+          "dma-wait",
+          7,
+          2000000
+        ],
+        [
+          "dma-wait",
+          8,
+          2000000
+        ]
+      ]
+    }
+  ]
+}

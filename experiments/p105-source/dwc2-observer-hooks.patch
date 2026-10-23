@@ -1,0 +1,160 @@
+--- a/drivers/usb/dwc2/core.h
++++ b/drivers/usb/dwc2/core.h
+@@ -15,6 +15,7 @@
+ #include <linux/usb/otg.h>
+ #include <linux/usb/phy.h>
+ #include "hw.h"
++#include "p105-udc-observer.h"
+ 
+ /*
+  * Suggested defines for tracers:
+@@ -168,6 +169,7 @@
+ 	struct usb_request      req;
+ 	struct list_head        queue;
+ 	void *saved_req_buf;
++	u64 p105_power_cookie;
+ };
+ 
+ #if IS_ENABLED(CONFIG_USB_DWC2_PERIPHERAL) || \
+@@ -1052,6 +1054,7 @@
+  *
+  */
+ struct dwc2_hsotg {
++	struct p105_udc_observer p105_power_observer;
+ 	struct device *dev;
+ 	void __iomem *regs;
+ 	/** Params detected from hardware */
+--- a/drivers/usb/dwc2/gadget.c
++++ b/drivers/usb/dwc2/gadget.c
+@@ -1473,6 +1473,8 @@
+ 			return ret;
+ 	}
+ 
++	hs_req->p105_power_cookie = !hs_ep->index && hs->ep0_state == DWC2_EP0_STATUS_IN ?
++		p105_udc_pending_cookie(&hs->p105_power_observer) : 0;
+ 	first = list_empty(&hs_ep->queue);
+ 	list_add_tail(&hs_req->queue, &hs_ep->queue);
+ 
+@@ -1935,6 +1937,9 @@
+ 	struct dwc2_hsotg_ep *ep0 = hsotg->eps_out[0];
+ 	int ret = 0;
+ 	u32 dcfg;
++	u64 p105_cookie = p105_udc_setup_begin(&hsotg->p105_power_observer,
++		ctrl->bRequestType == 0 && ctrl->bRequest == USB_REQ_SET_CONFIGURATION &&
++		ctrl->wIndex == 0 && ctrl->wLength == 0, le16_to_cpu(ctrl->wValue));
+ 
+ 	dev_dbg(hsotg->dev,
+ 		"ctrl Type=%02x, Req=%02x, V=%04x, I=%04x, L=%04x\n",
+@@ -1988,6 +1993,8 @@
+ 			dev_dbg(hsotg->dev, "driver->setup() ret %d\n", ret);
+ 	}
+ 
++	p105_udc_setup_result(&hsotg->p105_power_observer, p105_cookie, ret,
++		ret == USB_GADGET_DELAYED_STATUS);
+ 	hsotg->delayed_status = false;
+ 	if (ret == USB_GADGET_DELAYED_STATUS)
+ 		hsotg->delayed_status = true;
+@@ -2704,6 +2711,8 @@
+ 		 */
+ 		hs_ep->dir_in = 0;
+ 
++		p105_udc_status_complete(&hsotg->p105_power_observer,
++			hs_req->p105_power_cookie, 0);
+ 		dwc2_hsotg_complete_request(hsotg, hs_ep, hs_req, 0);
+ 		if (hsotg->test_mode) {
+ 			int ret;
+@@ -3316,6 +3325,7 @@
+ {
+ 	unsigned int ep;
+ 
++	p105_udc_invalidate(&hsotg->p105_power_observer, P105_UDC_DISCONNECT);
+ 	if (!hsotg->connected)
+ 		return;
+ 
+@@ -3806,6 +3816,8 @@
+ 	if (gintsts & (GINTSTS_USBRST | GINTSTS_RESETDET)) {
+ 		u32 usb_status = dwc2_readl(hsotg, GOTGCTL);
+ 		u32 connected = hsotg->connected;
++
++		p105_udc_invalidate(&hsotg->p105_power_observer, P105_UDC_RESET);
+ 
+ #ifdef CONFIG_ARCH_APPLE_S5L
+ 		/* The session request was missed: start the session now.  The
+@@ -4822,6 +4834,8 @@
+ static int dwc2_hsotg_vbus_draw(struct usb_gadget *gadget, unsigned int mA)
+ {
+ 	struct dwc2_hsotg *hsotg = to_hsotg(gadget);
++
++	p105_udc_observe_draw(&hsotg->p105_power_observer, mA);
+ 
+ 	if (IS_ERR_OR_NULL(hsotg->uphy))
+ 		return -ENOTSUPP;
+--- a/drivers/usb/dwc2/core_intr.c
++++ b/drivers/usb/dwc2/core_intr.c
+@@ -592,6 +592,7 @@
+ 			hsotg->lx_state = DWC2_L2;
+ 
+ 			/* Call gadget suspend callback */
++			p105_udc_invalidate(&hsotg->p105_power_observer, P105_UDC_SUSPEND);
+ 			call_gadget(hsotg, suspend);
+ 		}
+ 	} else {
+@@ -668,6 +669,7 @@
+ 				"Core is in L1 sleep glpmcfg=%08x\n", glpmcfg);
+ 
+ 			/* Inform gadget that we are in L1 state */
++			p105_udc_invalidate(&hsotg->p105_power_observer, P105_UDC_SUSPEND);
+ 			call_gadget(hsotg, suspend);
+ 		}
+ 	}
+--- a/drivers/usb/dwc2/platform.c
++++ b/drivers/usb/dwc2/platform.c
+@@ -338,6 +338,7 @@
+ 			dwc2_host_exit_clock_gating(hsotg, 0);
+ 	}
+ 
++	p105_udc_invalidate(&hsotg->p105_power_observer, P105_UDC_REMOVE);
+ 	dwc2_debugfs_exit(hsotg);
+ 	if (hsotg->hcd_enabled)
+ 		dwc2_hcd_remove(hsotg);
+@@ -468,6 +469,7 @@
+ 		return retval;
+ 
+ 	spin_lock_init(&hsotg->lock);
++	p105_udc_observer_init(&hsotg->p105_power_observer);
+ 
+ 	hsotg->vbus_supply = devm_regulator_get_optional(hsotg->dev, "vbus");
+ 	if (IS_ERR(hsotg->vbus_supply)) {
+--- a/drivers/usb/dwc2/drd.c
++++ b/drivers/usb/dwc2/drd.c
+@@ -117,6 +117,7 @@
+ 			return ret;
+ 	}
+ 
++	p105_udc_invalidate(&hsotg->p105_power_observer, P105_UDC_ROLE);
+ 	spin_lock_irqsave(&hsotg->lock, flags);
+ 
+ 	if (role == USB_ROLE_NONE) {
+--- a/drivers/usb/dwc2/Makefile
++++ b/drivers/usb/dwc2/Makefile
+@@ -27,3 +27,6 @@
+ 
+ obj-$(CONFIG_USB_DWC2_PCI)		+= dwc2_pci.o
+ dwc2_pci-y				:= pci.o
++
++# Private observation-only option, default n.
++dwc2-$(CONFIG_P105_DWC2_POWER_OBSERVER) += p105-udc-observer.o
+--- a/drivers/usb/dwc2/Kconfig
++++ b/drivers/usb/dwc2/Kconfig
+@@ -95,3 +95,11 @@
+ 	  incomplete. Note that this also disables some debug messages
+ 	  for which the transfer type cannot be deduced.
+ endif
++
++config P105_DWC2_POWER_OBSERVER
++	bool "Private P105 DWC2 configuration/current observations"
++	depends on USB_DWC2
++	default n
++	help
++	  Records requested current and completed EP0 configuration transfers.
++	  This grants no charging permission and adds no PMU operations.

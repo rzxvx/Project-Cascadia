@@ -1,6 +1,9 @@
 /* ppn.h -- the A5's NAND (two Hynix PPN packages on two H2FMI buses), driven
  * from userspace through /dev/mem, by PIO.  Read side only: see ppn.c for the
- * opcode allowlist and where every sequence comes from.
+ * opcode allowlist and where every sequence comes from. Raw open/claim refuse
+ * a bound apple-h2fmi kernel driver or unreadable/ambiguous sysfs. An unbound
+ * driver is not exclusive IOP/DMA ownership; this guard does not prevent a
+ * concurrent bind or replace a qualified kernel/backend handoff.
  *
  * Geometry (p105): one PPN on CE0 of each bus, 2 CAUs per PPN, 1064 blocks per
  * CAU, 256 pages per block.  A "die" here is a (bus, CAU) pair, 0-3 =

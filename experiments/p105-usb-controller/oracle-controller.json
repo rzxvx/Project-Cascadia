@@ -1,0 +1,434 @@
+{
+  "schema": 1,
+  "source": {
+    "build": "12H321",
+    "hardware": "p105ap",
+    "kernelcache_sha256": "db1ddc8343aa9debc00e0a083fba59d9f555722db60957dc333b854fac21dd2c",
+    "adt_sha256": "5c346586116de1bb32606acb27cad3158bcaa8a1318a10ee9631de09884cfd72",
+    "arst_le_index": 34,
+    "reset_action": "0x80b8d154",
+    "selector_leaf": "0x80b3a238"
+  },
+  "hardware_access": false,
+  "fake_providers": [
+    "Inherited init/metacast",
+    "OSData storage",
+    "CommandGate trampoline",
+    "Delay",
+    "Fake MMIO RAM",
+    "Already-decided host boolean; not role policy"
+  ],
+  "reset_cases": [
+    {
+      "index": 34,
+      "argument": 0,
+      "initial": 511,
+      "final": 511,
+      "return": 0,
+      "init_return": 1,
+      "events": [
+        [
+          "fake_inherited_init",
+          true
+        ],
+        [
+          "fake_metacast"
+        ],
+        [
+          "fake_OSData_bytes"
+        ]
+      ],
+      "instructions": 38
+    },
+    {
+      "index": 34,
+      "argument": 1,
+      "initial": 511,
+      "final": 511,
+      "return": 0,
+      "init_return": 1,
+      "events": [
+        [
+          "fake_inherited_init",
+          true
+        ],
+        [
+          "fake_metacast"
+        ],
+        [
+          "fake_OSData_bytes"
+        ],
+        [
+          "fake_CommandGate_runAction",
+          "0x80b8d155",
+          34
+        ],
+        [
+          "fake_pmgr_read",
+          "0x1088",
+          511
+        ],
+        [
+          "fake_pmgr_write",
+          "0x1088",
+          2147484159
+        ],
+        [
+          "fake_IODelay_us",
+          1
+        ],
+        [
+          "fake_pmgr_write",
+          "0x1088",
+          511
+        ]
+      ],
+      "instructions": 99
+    },
+    {
+      "index": 34,
+      "argument": 2,
+      "initial": 2768241151,
+      "final": 2768241151,
+      "return": 0,
+      "init_return": 1,
+      "events": [
+        [
+          "fake_inherited_init",
+          true
+        ],
+        [
+          "fake_metacast"
+        ],
+        [
+          "fake_OSData_bytes"
+        ],
+        [
+          "fake_CommandGate_runAction",
+          "0x80b8d155",
+          34
+        ],
+        [
+          "fake_pmgr_read",
+          "0x1088",
+          2768241151
+        ],
+        [
+          "fake_pmgr_write",
+          "0x1088",
+          2768241151
+        ],
+        [
+          "fake_IODelay_us",
+          1
+        ],
+        [
+          "fake_pmgr_write",
+          "0x1088",
+          2768241151
+        ]
+      ],
+      "instructions": 99
+    },
+    {
+      "index": 34,
+      "argument": 4294967295,
+      "initial": 351,
+      "final": 351,
+      "return": 0,
+      "init_return": 1,
+      "events": [
+        [
+          "fake_inherited_init",
+          true
+        ],
+        [
+          "fake_metacast"
+        ],
+        [
+          "fake_OSData_bytes"
+        ],
+        [
+          "fake_CommandGate_runAction",
+          "0x80b8d155",
+          34
+        ],
+        [
+          "fake_pmgr_read",
+          "0x1088",
+          351
+        ],
+        [
+          "fake_pmgr_write",
+          "0x1088",
+          2147483999
+        ],
+        [
+          "fake_IODelay_us",
+          1
+        ],
+        [
+          "fake_pmgr_write",
+          "0x1088",
+          351
+        ]
+      ],
+      "instructions": 99
+    },
+    {
+      "index": 87,
+      "argument": 1,
+      "initial": 15,
+      "final": 15,
+      "return": 0,
+      "init_return": 1,
+      "events": [
+        [
+          "fake_inherited_init",
+          true
+        ],
+        [
+          "fake_metacast"
+        ],
+        [
+          "fake_OSData_bytes"
+        ],
+        [
+          "fake_CommandGate_runAction",
+          "0x80b8d155",
+          87
+        ],
+        [
+          "fake_pmgr_read",
+          "0x115c",
+          15
+        ],
+        [
+          "fake_pmgr_write",
+          "0x115c",
+          2147483663
+        ],
+        [
+          "fake_IODelay_us",
+          1
+        ],
+        [
+          "fake_pmgr_write",
+          "0x115c",
+          15
+        ]
+      ],
+      "instructions": 99
+    },
+    {
+      "index": 88,
+      "argument": 1,
+      "initial": 15,
+      "final": 15,
+      "return": 0,
+      "init_return": 1,
+      "events": [
+        [
+          "fake_inherited_init",
+          true
+        ],
+        [
+          "fake_metacast"
+        ],
+        [
+          "fake_OSData_bytes"
+        ],
+        [
+          "fake_CommandGate_runAction",
+          "0x80b8d155",
+          88
+        ]
+      ],
+      "instructions": 67
+    },
+    {
+      "index": 34,
+      "argument": 1,
+      "initial": 2147483663,
+      "final": 2147483663,
+      "return": 0,
+      "init_return": 1,
+      "events": [
+        [
+          "fake_inherited_init",
+          true
+        ],
+        [
+          "fake_metacast"
+        ],
+        [
+          "fake_OSData_bytes"
+        ],
+        [
+          "fake_CommandGate_runAction",
+          "0x80b8d155",
+          34
+        ],
+        [
+          "fake_pmgr_read",
+          "0x1088",
+          2147483663
+        ],
+        [
+          "fake_pmgr_write",
+          "0x1088",
+          2147483663
+        ],
+        [
+          "fake_IODelay_us",
+          1
+        ],
+        [
+          "fake_pmgr_write",
+          "0x1088",
+          2147483663
+        ]
+      ],
+      "instructions": 99
+    },
+    {
+      "index": 34,
+      "argument": 1,
+      "initial": 511,
+      "final": 511,
+      "return": null,
+      "init_return": 0,
+      "events": [
+        [
+          "fake_inherited_init",
+          false
+        ]
+      ],
+      "instructions": 14
+    },
+    {
+      "index": 34,
+      "argument": 1,
+      "initial": 620757503,
+      "final": 620757503,
+      "return": 0,
+      "init_return": 1,
+      "events": [
+        [
+          "fake_inherited_init",
+          true
+        ],
+        [
+          "fake_metacast"
+        ],
+        [
+          "fake_OSData_bytes"
+        ],
+        [
+          "fake_CommandGate_runAction",
+          "0x80b8d155",
+          34
+        ],
+        [
+          "fake_pmgr_read",
+          "0x1088",
+          620757503
+        ],
+        [
+          "fake_pmgr_write",
+          "0x1088",
+          2768241151
+        ],
+        [
+          "fake_IODelay_us",
+          1
+        ],
+        [
+          "fake_pmgr_write",
+          "0x1088",
+          620757503
+        ]
+      ],
+      "instructions": 99
+    }
+  ],
+  "mux_cases": [
+    {
+      "saved": 0,
+      "host": 0,
+      "writes": [
+        0,
+        0
+      ],
+      "final": 0
+    },
+    {
+      "saved": 0,
+      "host": 1,
+      "writes": [
+        0,
+        1
+      ],
+      "final": 1
+    },
+    {
+      "saved": 1,
+      "host": 0,
+      "writes": [
+        0,
+        0
+      ],
+      "final": 0
+    },
+    {
+      "saved": 1,
+      "host": 1,
+      "writes": [
+        0,
+        1
+      ],
+      "final": 1
+    },
+    {
+      "saved": 2768240864,
+      "host": 0,
+      "writes": [
+        2768240864,
+        2768240864
+      ],
+      "final": 2768240864
+    },
+    {
+      "saved": 2768240864,
+      "host": 1,
+      "writes": [
+        2768240864,
+        2768240865
+      ],
+      "final": 2768240865
+    },
+    {
+      "saved": 4294967295,
+      "host": 0,
+      "writes": [
+        4294967294,
+        4294967294
+      ],
+      "final": 4294967294
+    },
+    {
+      "saved": 4294967295,
+      "host": 1,
+      "writes": [
+        4294967294,
+        4294967295
+      ],
+      "final": 4294967295
+    }
+  ],
+  "limits": [
+    "No electrical MMIO semantics",
+    "No physical connector/authentication/USB data-transfer proof",
+    "Gate/quiesce/power contract supplied by candidate fixture; actual firmware does not check our additional guards"
+  ]
+}

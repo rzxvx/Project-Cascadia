@@ -1,0 +1,1 @@
+obj-$(CONFIG_CASCADIA_ACCESSORY_ROLE_RESEARCH) += cascadia-accessory-role.o

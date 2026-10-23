@@ -1,0 +1,7 @@
+config CASCADIA_THS_IDBUS_EXPERIMENT
+	bool "Compile unregistered THS7383 IDbus primitive"
+	depends on REGMAP
+	default n
+	help
+	  Source-only experimental transport. No IRQ, device binding, lease
+	  provider, authentication, power, or USB role driver is registered.

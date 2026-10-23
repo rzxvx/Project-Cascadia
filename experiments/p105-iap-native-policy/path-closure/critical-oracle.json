@@ -1,0 +1,101 @@
+{
+  "cache_sha256": "4f5b5d73244c53fd0bdc5b8012106b10d0dd7607cc850bf7c8f9e9ef3a3f733b",
+  "cases": [
+    {
+      "calls": [
+        {
+          "matches_public_namespace_prefix": true,
+          "synthetic_memcmp_length": 8
+        }
+      ],
+      "label": "apple-private-36",
+      "native_unknown_flag": false,
+      "synthetic_critical": true,
+      "synthetic_prior_unknown_flag": false,
+      "synthetic_unregistered_oid_hex": "2a864886f763640624"
+    },
+    {
+      "calls": [
+        {
+          "matches_public_namespace_prefix": true,
+          "synthetic_memcmp_length": 8
+        }
+      ],
+      "label": "apple-private-other",
+      "native_unknown_flag": false,
+      "synthetic_critical": true,
+      "synthetic_prior_unknown_flag": false,
+      "synthetic_unregistered_oid_hex": "2a864886f76364067f"
+    },
+    {
+      "calls": [
+        {
+          "matches_public_namespace_prefix": true,
+          "synthetic_memcmp_length": 8
+        }
+      ],
+      "label": "apple-long",
+      "native_unknown_flag": false,
+      "synthetic_critical": true,
+      "synthetic_prior_unknown_flag": false,
+      "synthetic_unregistered_oid_hex": "2a864886f76364068100"
+    },
+    {
+      "calls": [],
+      "label": "exact-eight-prefix",
+      "native_unknown_flag": true,
+      "synthetic_critical": true,
+      "synthetic_prior_unknown_flag": false,
+      "synthetic_unregistered_oid_hex": "2a864886f7636406"
+    },
+    {
+      "calls": [
+        {
+          "matches_public_namespace_prefix": false,
+          "synthetic_memcmp_length": 8
+        }
+      ],
+      "label": "different-namespace",
+      "native_unknown_flag": true,
+      "synthetic_critical": true,
+      "synthetic_prior_unknown_flag": false,
+      "synthetic_unregistered_oid_hex": "2a864886f763640724"
+    },
+    {
+      "calls": [],
+      "label": "unrelated",
+      "native_unknown_flag": true,
+      "synthetic_critical": true,
+      "synthetic_prior_unknown_flag": false,
+      "synthetic_unregistered_oid_hex": "2a030405"
+    },
+    {
+      "calls": [],
+      "label": "noncritical-unrelated",
+      "native_unknown_flag": false,
+      "synthetic_critical": false,
+      "synthetic_prior_unknown_flag": false,
+      "synthetic_unregistered_oid_hex": "2a030405"
+    },
+    {
+      "calls": [],
+      "label": "prior-latched-noncritical",
+      "native_unknown_flag": true,
+      "synthetic_critical": false,
+      "synthetic_prior_unknown_flag": true,
+      "synthetic_unregistered_oid_hex": "2a030405"
+    },
+    {
+      "calls": [],
+      "label": "internal-null-oid",
+      "native_unknown_flag": true,
+      "synthetic_critical": true,
+      "synthetic_prior_unknown_flag": false,
+      "synthetic_unregistered_oid_hex": null
+    }
+  ],
+  "entry": "0x20c98a86",
+  "scope": "original unregistered-extension fallback only; no original DER parser/dictionary handler/name/policy",
+  "securityd_sha256": "1c12fbb48ead1edd3dbf2f4b0d635b45452573499fd9592562bbd76e40b56097",
+  "stop": "0x20c98ab2"
+}

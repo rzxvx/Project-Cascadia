@@ -1,0 +1,272 @@
+{
+  "source_sha256": "8eae16f060a71d4f3790385951588f8198d0f21cdb74146f9750941a3d764125",
+  "signer_emulator_sha256": "d33a063308d4026e6cc21b5af1bb5e7ffad264ef2b688b1b297198fa18a95c23",
+  "scope": "original signer method + synthetic provider advertised 32/32, matching independently emulated THS capability. No real provider ownership/transport/electrical access",
+  "cases": [
+    {
+      "version": 2,
+      "nonce_length": 20,
+      "max_tx": 32,
+      "max_rx": 32,
+      "input_capacity": 128,
+      "case": "success",
+      "return": "0x0",
+      "output_size": 128,
+      "output": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f",
+      "transfers": [
+        {
+          "tx": "94000102030405060708090a0b0c0d0e0f10111213",
+          "rx": "95ff00",
+          "capacity": 3,
+          "opaque_args": [
+            100000,
+            0,
+            0,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "96",
+          "rx": "97c0",
+          "capacity": 2,
+          "opaque_args": [
+            200000,
+            0,
+            12,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "9a",
+          "rx": "9b00",
+          "capacity": 2,
+          "opaque_args": [
+            100000,
+            0,
+            4,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "9a",
+          "rx": "9b00",
+          "capacity": 2,
+          "opaque_args": [
+            100000,
+            0,
+            8,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "980000001f",
+          "rx": "99000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e",
+          "capacity": 32,
+          "opaque_args": [
+            100000,
+            0,
+            0,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "98001f001f",
+          "rx": "991f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d",
+          "capacity": 32,
+          "opaque_args": [
+            100000,
+            0,
+            0,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "98003e001f",
+          "rx": "993e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c",
+          "capacity": 32,
+          "opaque_args": [
+            100000,
+            0,
+            0,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "98005d001f",
+          "rx": "995d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b",
+          "capacity": 32,
+          "opaque_args": [
+            100000,
+            0,
+            0,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "98007c0004",
+          "rx": "997c7d7e7f",
+          "capacity": 5,
+          "opaque_args": [
+            100000,
+            0,
+            0,
+            0,
+            0
+          ],
+          "error": "0x0"
+        }
+      ],
+      "mock_calls": [
+        "version getter",
+        "interval conversion fake",
+        "version getter",
+        "interval conversion fake",
+        "version getter",
+        "interval conversion fake",
+        "OSData allocator fake"
+      ]
+    },
+    {
+      "version": 3,
+      "nonce_length": 32,
+      "max_tx": 32,
+      "max_rx": 32,
+      "input_capacity": 128,
+      "case": "success",
+      "return": "0x0",
+      "output_size": 64,
+      "output": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3fcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "transfers": [
+        {
+          "tx": "9400000010000102030405060708090a0b0c0d0e0f",
+          "rx": "95ff00",
+          "capacity": 3,
+          "opaque_args": [
+            100000,
+            0,
+            0,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "9400100010101112131415161718191a1b1c1d1e1f",
+          "rx": "95ff00",
+          "capacity": 3,
+          "opaque_args": [
+            100000,
+            0,
+            0,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "96",
+          "rx": "97c0",
+          "capacity": 2,
+          "opaque_args": [
+            200000,
+            0,
+            12,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "9a",
+          "rx": "9b00",
+          "capacity": 2,
+          "opaque_args": [
+            100000,
+            0,
+            4,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "9a",
+          "rx": "9b00",
+          "capacity": 2,
+          "opaque_args": [
+            100000,
+            0,
+            8,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "980000001f",
+          "rx": "99000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e",
+          "capacity": 32,
+          "opaque_args": [
+            100000,
+            0,
+            0,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "98001f001f",
+          "rx": "991f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d",
+          "capacity": 32,
+          "opaque_args": [
+            100000,
+            0,
+            0,
+            0,
+            0
+          ],
+          "error": "0x0"
+        },
+        {
+          "tx": "98003e0002",
+          "rx": "993e3f",
+          "capacity": 3,
+          "opaque_args": [
+            100000,
+            0,
+            0,
+            0,
+            0
+          ],
+          "error": "0x0"
+        }
+      ],
+      "mock_calls": [
+        "version getter",
+        "interval conversion fake",
+        "version getter",
+        "interval conversion fake",
+        "version getter",
+        "interval conversion fake",
+        "OSData allocator fake"
+      ]
+    }
+  ]
+}
