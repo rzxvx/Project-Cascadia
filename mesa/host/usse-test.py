@@ -74,6 +74,40 @@ CASES = {
     'and_r2_r0': ('VBW', 'and r2, r0, #0x1f', 0x500100002040001f),
     'and_index1': ('VBW', 'and index1, r6, #0xffff', None),
     'or_r3_idx1_sa2': ('VBW', 'or r3, idx198, #0x0', None),
+    # M44: integers -- the words the device ran (glldr --probe), DEVICE below
+    'imad_r0_r2_r4_r2': ('I32MAD2', None, None),
+    'isub_r0_r2_r4': ('I32MAD2', None, None),
+    'ineg_r0_r2': ('I32MAD2', None, None),
+    'shl_r0_r2_3': ('VBW', 'shl r0, r2, #0x3', None),
+    'asr_r0_r2_r4': ('VBW', 'asr r0, r2, r4', None),
+    'xor_r0_r2_sign': ('VBW', 'xor r0, r2, #0x80000000', None),
+    'not_r0_r2': ('VBW', 'xor r0, r2, c56', None),
+    'imovc_lt': ('VMOV', 'movc.s32 r0.x, r2 < 0 ? r4 : r6', None),
+    'imovc_bool': ('VMOV', 'movc.s32 r0.x, r2 == 0 ? c56 : c0', None),
+    'vtst_slt': ('VTST', 'tst p0.x = sub.s32(r2, r4) lt 0 (and)', None),
+    'vtst_ult': ('VTST', 'tst p0.x = sub.u32(r2, r4) lt 0 (and)', None),
+    'vtst_ieq': ('VTST', 'tst p0.x = sub.s32(r2, r4) eq 0 (and)', None),
+    'vtst_flt': ('VTST', 'tst p0.x = sub.f32(r2, r4) lt 0 (and)', None),
+    'vtst_flt_y': ('VTST', 'tst p0.y = sub.f32(r2, r4) lt 0 (and)', None),
+    'cvt_s16hi_f32': ('VPCK', 'pck.f32.s16 r0.x, r2.yyzw', None),
+    'cvt_u16lo_f32': ('VPCK', 'pck.f32.u16 r0.x, r2.xyzw', None),
+    'cvt_f32_s16lo': ('VPCK', 'pck.s16.f32 r0.x, r2.xxzw', None),
+    'cvt_f32_s16hi': ('VPCK', 'pck.s16.f32 r0.y, r2.xxzw', None),
+    'limm_p0': ('LIMM', 'r0 <- #0xffffffff', None),
+}
+
+# (M44) words the device ran through glldr --probe and gave the right answer
+DEVICE = {
+    'imad_r0_r2_r4_r2': 0xd000020000008202, 'isub_r0_r2_r4': 0xd002028080008084,
+    'ineg_r0_r2': 0xd0030300a0008080, 'shl_r0_r2_3': 0x6081000020000103,
+    'asr_r0_r2_r4': 0x6880000800000104, 'xor_r0_r2_sign': 0x5881042020000100,
+    'not_r0_r2': 0x5881000010000138, 'imovc_lt': 0x38c0420001002106,
+    'imovc_bool': 0x3883420051002e00, 'vtst_slt': 0x4880048000078104,
+    'vtst_ult': 0x488004800007c104, 'vtst_ieq': 0x4880018000078104,
+    'vtst_flt': 0x4880868000038082, 'vtst_flt_y': 0x4880869000038082,
+    'cvt_s16hi_f32': 0x4081098420198101, 'cvt_u16lo_f32': 0x4081078420198100,
+    'cvt_f32_s16lo': 0x40810d0420188100, 'cvt_f32_s16hi': 0x40810d0820188100,
+    'limm_p0': 0xfca3f3f0001fffff,
 }
 
 
@@ -101,6 +135,8 @@ def main():
             problems.append('reads "%s"' % ops)
         if ios is not None and w != ios:
             problems.append("is not iOS's %016x (xor %016x)" % (ios, w ^ ios))
+        if name in DEVICE and w != DEVICE[name]:
+            problems.append("is not the word the device ran, %016x" % DEVICE[name])
         bad += bool(problems)
         print('%-20s %016x %-8s %s%s' % (name, w, got, ops, '' if not problems else
                                           '   <-- ' + '; '.join(problems)))

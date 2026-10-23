@@ -29,6 +29,8 @@ enum usse_bank {
    USSE_INDEX,       /* index1 (num 1), index2 (num 2): destinations only */
    USSE_IDX1,        /* a source through index1: num = bank << 5 | offset (bank 0
                       * temp, 1 output, 2 pa, 3 sa), 32-bit words */
+   USSE_IMM,         /* (M44) an integer instruction's immediate source, num
+                      * 0..127 (I32MAD2's src1 and src2) */
 };
 
 struct usse_reg {
@@ -146,12 +148,56 @@ uint64_t usse_vbw_or(struct usse_reg dest, struct usse_reg src1, unsigned imm);
 uint64_t usse_vbw_or_rot(struct usse_reg dest, struct usse_reg src1, unsigned imm, unsigned rot);
 /* VBW between two registers (M37, iOS's logic ops, es1 e03..e10): dest =
  * src1 op src2, src2 inverted first with not2 (`and o0, c56, ~o0`: c56 is
- * all ones) */
-enum usse_vbw_op { USSE_VBW_AND, USSE_VBW_OR, USSE_VBW_XOR };
+ * all ones).  (M44) And the shifts, Vita3K's op1 4 and 5: by src2's value
+ * as it is -- 32 or more shifts every bit out (not taken modulo 32) */
+enum usse_vbw_op {
+   USSE_VBW_AND, USSE_VBW_OR, USSE_VBW_XOR, USSE_VBW_SHL, USSE_VBW_SHR, USSE_VBW_ASR,
+};
 uint64_t usse_vbw(enum usse_vbw_op op, struct usse_reg dest, struct usse_reg src1,
                   struct usse_reg src2, bool not2);
-/* c56: the constant whose bits are all set */
+/* (M44) the same with src2 an immediate: 16 bits rotated left by rot */
+uint64_t usse_vbw_imm(enum usse_vbw_op op, struct usse_reg dest, struct usse_reg src1,
+                      unsigned imm, unsigned rot);
+/* c56: the constant whose bits are all set; c0 is 0 (both as 32-bit
+ * words: VBW's, VMOV's integer moves) */
 #define USSE_ALL_ONES usse_reg(USSE_SPECIAL, 56)
+#define USSE_ZERO     usse_reg(USSE_SPECIAL, 0)
+
+/* (M44) an instruction run under an extended predicate (VBW, VMOV, VPCK,
+ * VTST, I32MAD2 -- bits 58:56; not LIMM's, usse_limm_pred()): 1 p0, 2 p1,
+ * 5 !p0, 6 !p1 */
+uint64_t usse_pred(uint64_t w, unsigned pred);
+
+/* (M44) I32MAD2, 32-bit integers: dest = src0 * src1 + src2, src1 and
+ * src2 negated by their neg, each an immediate (USSE_IMM, unsigned 0..127)
+ * or a register -- of src1 only the low 16 bits are multiplied, unsigned
+ * (0x12345 * 0x10001 is 0x2468a less 0x12345); src0 temp, pa, output or sa */
+uint64_t usse_imad(struct usse_reg dest, struct usse_reg src0, struct usse_reg src1,
+                   struct usse_reg src2, bool is_signed);
+/* (M44) VMOV of 32-bit integers (type INT32), conditional: dest = src0
+ * TEST 0 ? src1 : src2, src0 tested as a signed integer (0x80000000 is
+ * below 0).  Registers named in 32-bit units, 0..63 -- false (and no
+ * word) when one is past that, or src0 is not a temporary, pa or output */
+bool usse_imovc(uint64_t *out, enum usse_test test, struct usse_reg dest,
+                struct usse_reg src0, struct usse_reg src1, struct usse_reg src2);
+/* (M44) VTST: p<pdst> = src1 - src2 < 0 (lt) or == 0 (eq), as 32-bit
+ * integers, signed or not -- the hardware's comparison, right where the
+ * difference overflows (0x80000000 < 1, 0x7fffffff > -1).  src2 may be an
+ * immediate, seven bits sign-extended (#64 is -64); src1 may not (#4 < 5
+ * came out false) */
+uint64_t usse_vtst_int(unsigned pdst, struct usse_reg src1, struct usse_reg src2,
+                       bool is_signed, bool eq);
+/* (M44) VTST on F32 values: p<pdst> = src1 - src2 < 0 or == 0 (-0 == 0);
+ * src1 and src2 in the same lane (false and no word if not) */
+bool usse_vtst_f32(uint64_t *out, unsigned pdst, struct usse_reg src1, struct usse_reg src2,
+                   bool eq);
+/* (M44) VPCK of a 16-bit half (half 0 the low one) of src, signed or not,
+ * to F32 in dest (any lane) */
+uint64_t usse_cvt16_f32(struct usse_reg dest, struct usse_reg src, unsigned half, bool is_signed);
+/* (M44) VPCK of the F32 value src (any lane) into half `half` of dest, the
+ * other half kept: S16 or U16, rounded to the nearest (2.5 to 2) and
+ * saturated */
+uint64_t usse_cvt_f32_16(struct usse_reg dest, struct usse_reg src, unsigned half, bool is_signed);
 
 /* Memory loads (VLDST's, Vita3K's vldst; M32): count words in a row, from
  * the address in sa word base plus an offset plus 4 bytes, into dest..
