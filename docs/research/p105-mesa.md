@@ -3478,6 +3478,121 @@ the border colour (every `texwrap formats bordercolor`); `gl_FragDepth`
 is -3.875 .. 4: `tex-miplevel-selection` with a bias of 5); gl_PointCoord;
 MSAA (`ext_framebuffer_multisample` with 0 samples).
 
+## M44: integers the hardware's own
+
+M42's plan has the compiler next: GLSL 1.30 wants integers that are
+integers -- bit operations, unsigned values, all 32 bits -- where until now
+NIR's `nir_lower_int_to_float` made every int a float and every boolean
+0.0 or 1.0 (M13c). The USSE has integer instructions (PS Vita's shaders use
+them; Vita3K decodes them), but nothing of iOS's GLES 2 driver shows them:
+each was found on the device.
+
+**Finding them.** `SGX_LDR_PROBE=word,... glldr --probe` (M32) runs a
+program of those words and reads r0 back through o0 (a pixel's bytes are
+o0's in R G B A order: the word is A B G R). `tools/sgx/usse-probe.py`
+assembles probes from Vita3K's bitstrings (the table `usse-dis.py` decodes
+with) and runs a file of them in one ssh -- `limm r2 0x80000005; shl r0 r2
+#3; out r0` gives 0x00000028; `SGX_LDR_PROBE_BRANCHES=1` (its `ENV=`) runs
+them as a program whose pixels each go their own way (PHAS mode 1, M20).
+`mesa/host/usse-test.py` checks the encoder against the words the device
+ran. What came out:
+
+| what | instruction | found |
+|---|---|---|
+| a + b, a - b, -a | I32MAD2 (11010): src0 * src1 + src2, src1 and src2 negated by their own bits | src1's low 16 bits only, unsigned: 0x12345 * 0x10001 + 0x12345 is 0x2468a. Wraps mod 2^32. Immediates 0..127, unsigned |
+| a * b | two I32MAD2 and two shifts: a * (b >> 16) << 16, + a * lo16(b) | one when NIR's range analysis knows either operand fits 16 bits |
+| and, or, xor, not | VBW op1 2 (op2 0/1), 3; not as xor with c56 (all ones) | as M37 had them; immediates 16 bits rotated |
+| <<, >>, >>> | VBW op1 4 (shl), 5 (shr; asr with op2) | the count as it is: 36 shifts everything out (NIR takes it modulo 32: an `and 31` unless the range says < 32) |
+| a < b, a == b (signed, unsigned) | VTST, ALU 1, ISUB32 (14) / ISUBU32 (15), sign test 1 or zero test 1, both required | right where the difference overflows: 0x80000000 < 1 and 0x7fffffff > -1 come out true and false. src2 may be an immediate, seven bits sign-extended (#64 is -64: 3 < #100 is false); src1 may not |
+| a < b, a == b (F32) | VTST, ALU 0 at F32 precision, VSUB (14); the registers 64-bit ones, the channel the lane | below 0 is the sign test and the zero test's "not zero" (2): -0 - 0 is -0, its sign set (piglit's faceforward of a -0 dot product); -0 == 0. M20's "wrong answers" were 32-bit register numbers |
+| select | VMOV of type 2 (INT32), conditional: src0 < 0, <= 0, == 0, != 0 as a signed integer | 32-bit registers, six bits: 0..63; c56 and c0 are ~0 and 0 |
+| int <-> float | VPCK S16/U16 to F32 (a half by channel 0's select: bit 0 the half, bit 7 the register's parity), F32 to S16/U16 into a half (mask 1, 2), rounded to the nearest even and saturated | an F32 dest's first channel is the register named, odd ones too |
+
+F32 moves keep a NaN's bits (0xffffffff through `mov.f32` is 0xffffffff),
+so booleans may go through the float paths. Predicated LIMMs, VBWs and
+VMOVs (the extended predicate in 58:56, LIMM's in 43:41) work in either
+PHAS mode, skipinv set or not.
+
+**The compiler** (`sgx_compiler.c`, "32-bit integers") takes NIR's integers
+as they are: `nir_lower_idiv` for division (exact; the high half of its
+products from 16-bit ones, `nir_lower_alu` with `lower_mul_high`),
+`nir_lower_bool_to_int32` for booleans -- 0 and ~0, so a comparison is a
+VTST into p0 and then `limm d, 0; p0? limm d, ~0` (3 instructions; 4 as
+floats before), a select one INT32 VMOV, `b2f` an `and` with 1.0's bits.
+A constant operand keeps its bits (`struct operand.u`). Conversions:
+
+- `i2f`: the halves to F32 by two VPCKs, then hi * 65536 + lo -- exact,
+  one rounding (4 instructions with the constant's LIMM);
+- `f2i`, `f2u`: |x| truncated in F32 (|x| - fract |x|), split into hi =
+  floor(t / 65536) and lo = t - 65536 hi -- whole numbers, so VPCK's
+  rounding does nothing -- packed into the word's halves, and the sign put
+  back by an INT32 VMOV on x's own bits. `f2i` keeps M31's 2^-13 (`int()`
+  of an interpolated 24 that comes as 23.9995 is 24); `f2u`, which only
+  `nir_lower_idiv`'s reciprocal makes here, is exact.
+
+Uniform arrays through an index, uniforms in memory and UBO offsets are
+integer arithmetic now (M21, M32 and M43 made a float an integer by
+2^23's low bits). A word an integer instruction makes takes any
+temporary, odd ones too (`define_word()`): every value in an even one,
+atan's copysign -- bits now -- took 67 registers a pixel (dEQP's
+`atan2.*_vec4_fragment`).
+
+**A Mesa bug on the way.** With native integers the draw module's
+`nir_to_tgsi` lowers uniforms to a UBO by bytes, and
+`nir_lower_uniforms_to_ubo` set a constant offset's alignment from the
+offset in vec4s (1 + base * 16, not (1 + base) * 16): `nir_lower_ubo_vec4`
+asserted on a matrix's second column (gltri, glfs, glldr). Fixed in
+`mesa/mesa.patch`; upstream's main has it too.
+
+**GLSL 1.30.** The screen says 130 now; Mesa still lines the GLSL version
+up with the GL version (2.1: 1.20), so GLSL 1.30's shaders are tested with
+`MESA_GL_VERSION_OVERRIDE=3.0 MESA_GLSL_VERSION_OVERRIDE=130` until the rest
+of 3.0 is here. textureSize, textureQueryLevels: words the draw puts after
+the textures' (`size_sa`, eight a texture: width, height, levels, 0, 1 /
+width, 1 / height, 0.5 / width, 0.5 / height) -- no instruction;
+`nir_lower_tex` builds the rest on them (`lower_txs_lod`, `lower_txd`,
+offsets). texelFetch: x * (1 / w) + 0.5 / w for each coordinate at level 0,
+(x + 0.5) / max(w >> lod, 1) at another, sampled in LOD mode.
+
+**Two more of Mesa's own** (`mesa/mesa.patch`): NIR's roundEven lowering
+for parts without a round (`lower_fround_even`) made 0.5 2.0 and -1.5 0.0
+-- upstream's rule since, taken as it is; and late's lowerings run before
+the booleans are words now (roundEven's `feq` came after
+`nir_lower_bool_to_int32`, a 1-bit boolean the compiler has not), with
+`nir_opt_algebraic` again until nothing changes (ffloor, then its fsub).
+`isinf` (|x| == inf) compares bits: inf - inf is NaN, which passes no zero
+test.
+
+**Measured**, the build before (M43's) against this one, release builds:
+
+| | M43 | M44 |
+|---|---|---|
+| the regression programs (glfs ... glfmt, glchurn) | all | all |
+| dEQP-GLES2 whole | 16 901 pass, 90 fail | **16 903, 88**: `indexing.tmp_array.vec4_dynamic_write_dynamic_read_fragment` and `matrix_subscript.mat4_dynamic_write_dynamic_read_fragment` (M36's, registers), nothing that passed fails |
+| piglit's glsl-1.10 and glsl-1.20 groups, quick_shader and quick_gl (3271) | 3092 pass | **3100**: the temporary mat3 and mat4 arrays written through an index; 13 tests that skipped run now (integer varyings: flat) |
+| piglit's glsl-1.30 groups (2188), as GL 3.0 | -- | **1845 pass**, 237 fail, 104 skip; every built-in function (the integers' and bits' 1420 among them) |
+| glspeed 1000 30 sprites; 8 layers of fill | 43.3, 9.9 ms | the same |
+
+GLSL 1.30's failures: tex-miplevel-selection 128 (3D, array and cube
+shadow samplers, a bias past +4), interpolation 69 (flat, noperspective),
+texelFetch, its offsets and textureSize 25 (flat integer coordinates,
+arrays, 3D), lookups in a vertex shader 4, the packed colours' clamping
+3, isinf-and-isnan 3, a clip distance, the built-in constants.
+
+**Left of GLSL 1.30**, what piglit's groups fail on:
+
+- `flat` varyings. Nothing iterates a varying flat but the TA's two
+  colours (M37), whose bytes come into the program as they are: a flat
+  32-bit word could go through one as four bytes the vertex side writes
+  as b / 255 -- two such words at most; past that, the draw module's flat
+  vertices. Integer varyings are flat by the language, so every
+  `flat in ivec*` (most of piglit's texelFetch tests, the interpolation
+  and varying-packing groups) waits for it.
+- `noperspective`: gl_FragCoord.w times the varying iterated with w
+  multiplied in, or the iterator's own mode if it has one.
+- Texture lookups in a vertex shader, 3D and array textures (M43's gaps,
+  piglit's tex-miplevel-selection).
+
 ## Testing, without and with the device
 
 - **Host, every change:** the kernel driver builds with `W=1` against the

@@ -1355,6 +1355,15 @@ frames and touches in dmesg; `z2-boot -p N -N` reads the frames itself, without 
   = tiled), `SGX_PBE_R8=0x...` to try words. Don't rebuild
   `/root/sgx-mesa-rel` while a piglit run uses it (`mesa/devbuild.sh`
   without `release` builds `/root/sgx-mesa-cur` instead).
+- M44 (integers the hardware's own, GLSL 1.30's start): an instruction tried
+  on the GPU -- `python3 tools/sgx/usse-probe.py batch FILE` (a probe a line,
+  `limm r2 3; limm r4 5; imad r0 r2 r4 r2; out r0`; `MESA=` the build,
+  `ENV=SGX_LDR_PROBE_BRANCHES=1` PHAS mode 1). piglit's shader tests
+  (quick_shader, which run.sh's quick_gl has not): `/root/piglit/shaders.sh
+  NAME /root/sgx-mesa-rel spec@glsl-1.20 ...`; GLSL 1.30's with `130` after
+  the build (MESA_GL_VERSION_OVERRIDE=3.0: Mesa keeps GLSL at 1.20 under GL
+  2.1). dEQP-GLES2 whole: `cd /root/deqp; SGX_MESA=DIR SGX_WRAP=/root/sgx-dev
+  python3 deqp-run.py /root/deqp OUT $(cat groups.txt)`.
 - iOS's GL driver as the oracle: `bash tools/shadercap.sh` with the iPad in iOS
   (corpus + OpenGL ES 1 cases, render commands logged), then
   `python3 tools/iosgpu/corpus.py logs/ios/corpus/DATE [--pds|--state|--own] [CASE]`.

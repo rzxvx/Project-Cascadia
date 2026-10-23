@@ -134,6 +134,7 @@ SGX_ITER_XOR=0x20000 sgx-gl glflat   # flip bits of the iterates' control words 
 /root/piglit/run.sh NAME         # piglit's GL profile, ~40 min (tools/piglit)
 python3 /root/pigsum.py /root/piglit-results/NAME   # what did not pass
 SGX_LDR_PROBE=e8870004a0008080 sgx-gl glldr --probe   # a program of those words: VLDST
+                                 # (M44: tools/sgx/usse-probe.py writes and runs them)
 SGX_FETCH_TAG=9 sgx-gl glvary    # the vertices a vertex task takes, less one (M30: 9 is
                                  # what overlapped the outputs of three varyings and more)
 SGX_REPACK=1 sgx-gl glvtx        # every draw's vertices made one stream by the CPU
