@@ -1,0 +1,65 @@
+# SuperTux 0.7.0 for the iPad (docs/research/p105-mesa.md, M42): Alpine 3.24
+# has 0.6.3 only.  Alpine's community/supertux APKBUILD brought to 0.7.0 --
+# its CMake build (no 0.6.3 patches), upstream's choices (GLEW), the bundled
+# libraries static, an optimised build (sdl2-compat-static: its CMake files
+# name libSDL2main.a), and no glibc backtrace() on musl (the patch).  The
+# game as it is: what its renderers need from OpenGL is the driver's to
+# give.  Built by tools/desktop/supertux/build.sh.
+pkgname=supertux
+pkgver=0.7.0
+pkgrel=102
+pkgdesc="Open-source classic 2D jump'n run sidescroller game"
+url="https://www.supertux.org/"
+arch="all"
+license="GPL-3.0-or-later"
+depends="$pkgname-data"
+makedepends="
+	cmake
+	curl-dev
+	freetype-dev
+	fmt-dev
+	fribidi-dev
+	glew-dev
+	glm-dev
+	harfbuzz-dev
+	libogg-dev
+	libpng-dev
+	libraqm-dev
+	libvorbis-dev
+	mesa-dev
+	openal-soft-dev
+	physfs-dev
+	samurai
+	sdl2-compat-dev
+	sdl2-compat-static
+	sdl2_image-dev
+	zlib-dev
+	"
+subpackages="$pkgname-doc $pkgname-data::noarch"
+options="!check" # no test suite
+source="https://github.com/SuperTux/supertux/releases/download/v$pkgver/SuperTux-v$pkgver-Source.tar.gz
+	supertux-musl-no-execinfo.patch
+	"
+builddir="$srcdir/SuperTux-v$pkgver-Source"
+
+build() {
+	cmake -B build -G Ninja \
+		-DCMAKE_INSTALL_PREFIX=/usr \
+		-DCMAKE_INSTALL_LIBDIR=lib \
+		-DCMAKE_BUILD_TYPE=Release \
+		-DINSTALL_SUBDIR_BIN=bin \
+		-DUSE_STATIC_SIMPLESQUIRREL=ON \
+		-DSUPERTUX_LTO=OFF
+	# (C++ under emulation: a few compilers at once, docker's memory)
+	cmake --build build -j "${SUPERTUX_JOBS:-6}"
+}
+
+package() {
+	DESTDIR="$pkgdir" cmake --install build
+}
+
+data() {
+	pkgdesc="$pkgdesc (data files)"
+
+	amove usr/share/games
+}

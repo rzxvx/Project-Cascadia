@@ -17,9 +17,20 @@ echo 0 > /sys/class/vtconsole/vtcon1/bind
 pkill -x fbkeyboard 2>/dev/null
 sleep 0.3
 pkill -9 -x fbkeyboard 2>/dev/null
+# --geometry is also SuperTux's fullscreen size, and it keeps it in its
+# config: the desktop's SuperTux then asked for a 1024 x 768 screen the
+# portrait one is not, and drew its menu off to the right.  Put back what
+# was there (0 x 0: the desktop's size).
+C="${XDG_DATA_HOME:-$HOME/.local/share}/supertux2/config"
+FW=$(sed -n 's/.*(fullscreen_width \([0-9]*\)).*/\1/p' "$C" 2>/dev/null)
+FH=$(sed -n 's/.*(fullscreen_height \([0-9]*\)).*/\1/p' "$C" 2>/dev/null)
 LD_PRELOAD="$D/libsgxsdl.so" SGXSDL_PACK="$D" SDL_VIDEODRIVER=offscreen \
 	supertux2 --renderer sdl --geometry 1024x768 "$@"
 status=$?
+if [ -f "$C" ]; then
+	sed -i "s/(fullscreen_width [0-9]*)/(fullscreen_width ${FW:-0})/;
+		s/(fullscreen_height [0-9]*)/(fullscreen_height ${FH:-0})/" "$C"
+fi
 echo 1 > /sys/class/vtconsole/vtcon1/bind
 if [ -s /run/fbkeyboard.args ] && ! pidof fbkeyboard >/dev/null; then
 	setsid sh -c 'exec fbkeyboard $(cat /run/fbkeyboard.args) >/tmp/fbkeyboard.log 2>&1 </dev/null' &

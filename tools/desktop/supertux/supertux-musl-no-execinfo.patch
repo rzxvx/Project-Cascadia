@@ -1,0 +1,25 @@
+musl has no execinfo.h (backtrace() is glibc's, and Alpine no longer
+has libexecinfo): the crash dialog without a stack trace there.
+
+--- a/src/supertux/error_handler.cpp
++++ b/src/supertux/error_handler.cpp
+@@ -50,7 +50,10 @@
+ #endif
+ #elif defined(UNIX)
+ #include <sys/utsname.h>
++#if __has_include(<execinfo.h>)
+ #include <execinfo.h>
++#define HAVE_EXECINFO
++#endif
+ #include <unistd.h>
+ #endif
+ 
+@@ -228,7 +231,7 @@
+   }
+ 
+   return callstack.str();
+-#elif defined(UNIX)
++#elif defined(UNIX) && defined(HAVE_EXECINFO)
+   void* array[128];
+   size_t size;
+ 

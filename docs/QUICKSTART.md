@@ -287,9 +287,10 @@ System mounts: iOS's Data partition (apps, photos) is encrypted file by file.
 
 ## A desktop
 
-XFCE runs off the NFS root with touch as the pointer — all of it software
-rendered on the two CPU cores: the GPU only has the 2D path below, and X
-does not use it. One script sets it
+XFCE runs off the NFS root with touch as the pointer — drawn by the GPU
+when the GPU's OpenGL is installed (`./cascadia mesa`: X then runs
+modesetting with glamor on it, and GL programs get GLX), by the two CPU
+cores otherwise (fbdev; `DESKTOP_FB=1 desktop` asks for it). One script sets it
 up. From the host, with the iPad booted from NFS and `./cascadia net on`:
 
 ```bash
@@ -301,6 +302,10 @@ Then on the iPad, from the glass or over ssh:
 ```sh
 desktop
 ```
+
+For the GPU, beforehand on the host: `./cascadia gpu` (the template frame
+from your IPSW) and `./cascadia mesa` (Mesa, about an hour the first time);
+`desktop` says "X on the GPU" when it takes it.
 
 - **Touch.** Tap = click. A quick swipe scrolls (a finger that rests before it
   moves selects instead — that is GTK's rule, not a fault). A two-finger tap =

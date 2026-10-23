@@ -1,0 +1,14 @@
+#!/bin/sh
+# sgx-dev PROGRAM [ARGS] -- on the iPad: PROGRAM with a build beside the
+# system's (mesa/devbuild.sh puts it in /root): /root/sgx-mesa-cur, or
+# SGX_MESA=dir another.  SGX_PRELOAD=1: its libraries preloaded, ahead of a
+# system libGL a program links -- needed only while the system's OpenGL is
+# not this Mesa (mesa/install.py makes it so).
+P=${SGX_MESA:-/root/sgx-mesa-cur}
+export LD_LIBRARY_PATH="$P/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+export GBM_BACKENDS_PATH="$P/lib/gbm"
+export PATH="$P/bin:$PATH"
+if [ "${SGX_PRELOAD:-}" = 1 ]; then
+	export LD_PRELOAD="$(ls "$P"/lib/libgallium-*.so) $P/lib/libEGL.so.1 $P/lib/libGLESv2.so.2${LD_PRELOAD:+ $LD_PRELOAD}"
+fi
+exec "$@"

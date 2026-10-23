@@ -207,7 +207,8 @@ bool apple_sgx_render_waiting(struct apple_sgx *sgx, u32 at, const u32 *details)
 int apple_sgx_render_rekick(struct apple_sgx *sgx);
 void apple_sgx_report(struct apple_sgx *sgx, const char *why);
 int apple_sgx_fb_find(struct apple_sgx *sgx, struct resource *res);
-int apple_sgx_fb_show(struct apple_sgx *sgx, u32 va, u32 stride, u32 x, u32 y, u32 w, u32 h);
+int apple_sgx_fb_show(struct apple_sgx *sgx, u32 va, u32 stride, u32 w, u32 h, u32 x, u32 y,
+		      unsigned int rot);
 
 /* apple_sgx_drm.c */
 int apple_sgx_drm_init(struct apple_sgx *sgx);

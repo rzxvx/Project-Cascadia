@@ -143,7 +143,7 @@ the device:
 ssh root@10.55.0.2 'dmesg | grep -E "AIC1-REARM|LATE-SMOKE|SOF-TIMER|AIC-TIMER|P105:"'
 ```
 
-## Where it stands (2026-09-27)
+## Where it stands (2026-10-15)
 
 Everything below this section is the lab log, oldest first; a status line in it
 is true as of its date. Now:
@@ -153,11 +153,14 @@ is true as of its date. Now:
 - Wi-Fi (BCM4334 over HSIC): `wifi` on the device — see "WI-FI" at the end
 - the NAND, read-only: `ios mount` puts iOS's System partition on /mnt/ios;
   `nandctl` for the chips themselves — see "THE NAND" at the end
-- XFCE: `tools/desktop/xfce-setup.sh`, then `desktop`
-- the GPU, 2D: `./cascadia gpu`, then `supertux-gpu` (docs/GPU.md); a render node
-  (`/dev/dri/renderD128`) for the Mesa driver to come (docs/research/p105-mesa.md);
-  no OpenGL yet
-- not there: USB host, NAND as Linux's own storage (planned for Pi Pico
+- XFCE: `tools/desktop/xfce-setup.sh`, then `desktop` -- on the GPU (Xorg,
+  glamor) once the GPU's OpenGL is installed
+- the GPU, 2D: `./cascadia gpu`, then `supertux-gpu` (docs/GPU.md)
+- the GPU's OpenGL: `./cascadia mesa` -- the system's OpenGL ES 1.1/2.0 and desktop
+  OpenGL 2.1 (GLX, EGL, GBM); see "THE GPU'S OPENGL" at the end
+- sound: the speakers, ALSA card `iPadMini` (DMA, 32/44.1/48 kHz, S16/S32),
+  alsa-utils and dmix in the image -- see "SOUND" at the end
+- not there: the headphone jack and the microphones (CS42L81), USB host, NAND as Linux's own storage (planned for Pi Pico
   users, at the cost of iOS — README, "Where Linux keeps its files")
 
 On the device:
@@ -1265,3 +1268,164 @@ frames and touches in dmesg; `z2-boot -p N -N` reads the frames itself, without 
 - Storage policy (README, "Where Linux keeps its files"): with kDFU the NAND stays
   iOS's (NFS or RAM for Linux); with a Pi Pico it can be Linux's, iOS erased —
   planned, not written.
+
+# ═══════════════════════════════════════════════════════════════
+# THE GPU'S OPENGL (2026-10-15) — Mesa, docs/research/p105-mesa.md
+# ═══════════════════════════════════════════════════════════════
+
+- The driver: `mesa/files/src/gallium/drivers/sgx` (Gallium; the compiler is
+  `sgx_compiler.c`, NIR to USSE), built into Mesa 26.1.8 in the `cascadia-mesa`
+  image (`mesa/build.sh`, Alpine armv7 under emulation: the first build ~1 h, a
+  change ~3-5 min). Needs `./cascadia gpu` first (the template frame).
+- `./cascadia mesa`: a release build into `/usr/local/lib/sgx-mesa`, made the
+  system's OpenGL by `/etc/ld-musl-armhf.path` (its lib ahead of `/usr/lib`;
+  Alpine's Mesa stays installed -- delete the file to go back), X's GPU
+  configuration in `/etc/X11/sgx.conf.d`, `/usr/lib/dri/apple_sgx_dri.so` for
+  AIGLX. `MESA_BUILD=debug ./cascadia mesa` for assertions.
+- A build beside the system's, to try a change: `mesa/devbuild.sh [release]`
+  -> `/root/devbuilds/N`, `/root/sgx-mesa-cur` (`-rel`); run with
+  `/root/sgx-dev PROGRAM` (`SGX_MESA=dir` another build). GPU hangs since a
+  point: `T=$(/root/hangs.sh now); ...; sleep 3; /root/hangs.sh $T`.
+- Tests on the iPad: `sgx-gl glfs`, `gltex`, `glflow`, `glfetch`, `gldesk`, ...
+  (`tools/sgx/gl`, mesa/README.md lists them); dEQP-GLES2 in `/root/deqp`
+  (`tools/sgx/deqp-run.py`, ~30 min: 16 859 pass / 91 fail); piglit in
+  `/root/piglit` (`tools/piglit`: build.sh, install.sh, run.sh NAME, ~40-90
+  min; `python3 /root/pigsum.py /root/piglit-results/NAME`; p5 2026-10-15:
+  807 pass / 161 fail, ~826 with M37's last fixes). A release build beside
+  the system's for it: `mesa/devbuild.sh release`, then
+  `WRAP="env SGX_MESA=/root/sgx-mesa-rel /root/sgx-dev" /root/piglit/run.sh NAME`.
+- Packages for the iPad without its network: `tools/device-apk.sh PKG...`
+  (armhf from docker, installed offline). On it now: binutils, gdb, waffle,
+  py3-mako, xwd, xdotool, sdl3-dbg, musl-dbg.
+- X screenshots: `python3 tools/desktop/xshot.py out.png [:0]`.
+- M37 (p105-mesa.md): `glupload` (texture uploads between draws, each
+  format), `gloffset` (polygon offset; `--probe`, `--clamp`), gldesk's depth,
+  shadow, flat, occlusion and logic op cases. The X server's renders:
+  `SGX_DEBUG=fps,flushes desktop` (it never swaps: a report per flush);
+  texture copies: `SGX_DEBUG=copies`. A window drag in XFCE: drive it with
+  xdotool (`mousemove X Y mousedown 1`, steps, `mouseup 1`) and read the X
+  server's CPU in `/proc/$(pidof Xorg)/stat` or `perf record -p`.
+- M38 (p105-mesa.md): F16 colour programs (`SGX_NO_F16=1`: none). SuperTux
+  on KMS with Tux running: `python3 tools/sgx/ukbd.py 20 & TIME=34
+  SGX_DEBUG=fps supertux-mesa.sh .../world1/welcome_antarctica.stl` (a
+  uinput keyboard; under X `xdotool`). Who waits for a fence:
+  `SGX_TRACE_WAITS=1` (the caller of each wait of 1 ms or more).
+- M39: `glproj` (projective and rectangle lookups the PDS makes, the
+  vertex side scaling the coordinates; `SGX_NO_PROJ_FETCH=1` in the
+  program). A program the X server or xfwm4 compiles: restart it with the
+  variables, e.g. `SGX_DEBUG_NIR=1 xfwm4 --replace` with the session's
+  environment (`/proc/$(pgrep -x xfwm4)/environ`).
+- M40: xfwm4 patched so that fullscreen games bypass the compositor
+  (`tools/desktop/xfwm4/xfwm4-bypass-client-window.patch`):
+  `sh tools/desktop/xfwm4/build.sh install` builds Alpine's package with it
+  in docker (armhf, ~3 min) and installs it (4.20.0-r102), then `xfwm4
+  --replace` in the session. Back to Alpine's: `apk add xfwm4=4.20.0-r1`
+  (with a network). A new Alpine xfwm4 release replaces it on `apk upgrade`.
+- M41: the screen turned by the plane (the kernel's copy turned):
+  `rotate left|right|inverted|normal` (no argument: the turn now) turns X
+  and the touch screen; it needs the patched X server
+  (`sh tools/desktop/xorg-server/build.sh install`, 21.1.25-r103, ~10 min
+  in docker), otherwise X turns a shadow buffer (24 fps). `sgx-gl kmsrot`
+  (X stopped) checks the four turns pixel by pixel. The physical screen:
+  `cat /dev/fb0` (768 x 1024 BGRA) -- xwd shows the unturned one.
+- M42: who copies how much: `tools/sgx/memcpy-who.c` (build line in it;
+  `LD_PRELOAD=/root/memcpy-who.so MEMCPY_WHO_TOP=20 PROGRAM`, the report
+  at exit, library + offset for addr2line in the cascadia-mesa image, an
+  odd Thumb address minus one). A draw's vertices now go straight into the
+  render's vertex chunks in GPU memory (one copy, was three). Compare fps
+  from one boot only: SuperTux's menu dip was ~37 one boot, ~45 the next.
+  SuperTux 0.7.0 (Alpine has 0.6.3; upstream's code, only a musl patch):
+  `sh tools/desktop/supertux/build.sh install` (docker, ~12 min; then ~4
+  min to copy the 283 MB of data). Renderers: `sdl` (default, fastest: 43
+  fps in the menu), `opengl20` (33); `opengl` is 3.3 core and fails here
+  (the driver's gap, not the game's). Why a frame is several renders, why
+  draws do not merge: `SGX_DEBUG=fps`'s "renders from ... (no room for:
+  ...)" and "draws not merged, for their: ...". Who raised a GL error:
+  `gdb -ex 'break _mesa_error'` (`sdl2-dbg` is on the iPad for SDL's
+  names). A fullscreen game flipped (vsync): `xshot.py --screen` (xwd
+  shows the desktop under it).
+- M43 (towards OpenGL 3, p105-mesa.md's plan): ARB_framebuffer_object,
+  EXT_texture_swizzle, ARB_texture_float, EXT_texture_snorm,
+  EXT_texture_shared_exponent, ARB_texture_rg. `sgx-gl glfmt` (formats
+  sampled and filtered, R8/RG8 targets). Each item: piglit's groups, base
+  against new -- `/root/piglit/run.sh NAME-base -t GROUP ...` then
+  `WRAP="env SGX_MESA=/root/sgx-mesa-rel /root/sgx-dev" /root/piglit/run.sh
+  NAME -t GROUP ...`, and `comm` of `pigsum.py DIR pass` lists. Render
+  target formats: `rt_format()` in sgx_frame.c (GXM colour formats, bit 26
+  = tiled), `SGX_PBE_R8=0x...` to try words. Don't rebuild
+  `/root/sgx-mesa-rel` while a piglit run uses it (`mesa/devbuild.sh`
+  without `release` builds `/root/sgx-mesa-cur` instead).
+- iOS's GL driver as the oracle: `bash tools/shadercap.sh` with the iPad in iOS
+  (corpus + OpenGL ES 1 cases, render commands logged), then
+  `python3 tools/iosgpu/corpus.py logs/ios/corpus/DATE [--pds|--state|--own] [CASE]`.
+
+| trap | what to do |
+|---|---|
+| a program crashes on an assertion inside Mesa (`maxLevels != 0`, edge flags) | a debug build: the system's should be the release one (`./cascadia mesa` is) |
+| piglit: `No module named 'framework.backends.'` | a Mac's tar added `._*` files: `tools/piglit/install.sh` (COPYFILE_DISABLE, deletes them) |
+| piglit's test binaries: `symbol not found` | `LD_LIBRARY_PATH=/root/piglit/lib/piglit/lib` (run.sh sets it) |
+| piglit with `PIGLIT_PLATFORM=surfaceless_egl` aborts | GBM (`run.sh` uses it) |
+| the OOM killer during piglit | a test making textures without end: renders now go when they hold 48 MiB of textures; `streaming-texture-leak` is left out of run.sh (25 min alone) |
+| `dmesg \| grep -c "not done after"` counts old hangs | the ring buffer rolls and the message comes ~2 s late: `hangs.sh` with a timestamp, `sleep 3` first |
+| a scratch script named `dis.py` breaks Python (`import dis`) | don't name helpers after stdlib modules; run tools with `python3 -I` |
+| SuperTux `--renderer opengl` exits ("Missing GL version") | it asks an OpenGL 3.3 core context and the driver has 2.1 (M42: the driver's to fix); `sdl` or `opengl20` meanwhile |
+| a screenshot shows the desktop while a fullscreen game runs | the game is page flipped and xwd reads X's front buffer: `python3 tools/desktop/xshot.py --screen out.png` |
+| `apk add` of a big package over ssh: "No space left on device" | the iPad's /tmp is 128 MB of RAM: copy it to /var/tmp (the NFS root) |
+| `perf probe -x libgallium ...` (uprobes) and the renders fail | the driver is Thumb code and the probes break it: remove them (`echo > /sys/kernel/tracing/uprobe_events`); count with `perf record -e raw_syscalls:sys_enter --filter 'id == 54'` (ioctls) instead |
+| `ssh cascadia 'pkill -f NAME ...'` and the ssh session dies | `-f` matches the ssh's own shell, whose command line has NAME: `pkill -x` |
+| SuperTux drawn in a corner, or its menu off to the right | its config (`~/.local/share/supertux2/config`) keeps the last `--geometry` as `fullscreen_width`/`_height` (a test's 384 x 512, supertux-gpu's 1024 x 768): set both to 0 (the desktop's size) with SuperTux closed -- it writes the config when it exits; supertux-gpu puts them back itself now. `SGX_DEBUG=fps` prints the target's size and the viewport |
+| SuperTux 355 draws a frame on KMS, 31 under X | SDL batches only when no renderer is named: `SDL_RENDER_BATCHING=1` with `SDL_RENDER_DRIVER` (supertux-mesa.sh has it) |
+| SuperTux under X slower than on KMS while its CPU idles | the X server's and xfwm4's renders share the GPU: compare with X itself on the build (`SGX_MESA=/root/sgx-mesa-rel /root/sgx-dev desktop`), not SuperTux alone |
+| a program's fps under X is not what the screen shows | composited, the screen shows xfwm4's frames: count the X server's page flips and DIRTYFBs (`perf record -e raw_syscalls:sys_enter -e raw_syscalls:sys_exit --filter 'id == 54' -p $(pidof Xorg)`, `python3 tools/sgx/ioret.py`: `c01864b0`, `c01864b1`); a window's bypass hint and depth: `tools/sgx/xwinfo.py` |
+| `Option "Atomic" "on"` in X's config does nothing | the kernel refuses atomic to any process named X* (`broken atomic modeset userspace detected` in dmesg): the patched modesetting turns the plane with legacy calls |
+| `xfconf-query` over ssh changes nothing (compositing "off" and still on) | it needs the session's D-Bus: `export $(tr '\0' '\n' < /proc/$(pgrep -x xfwm4)/environ \| grep -E '^(DBUS_SESSION_BUS_ADDRESS\|DISPLAY)=' \| xargs)` first |
+| SuperTux stuck at 66.7 fps | its own limit: 64 logical frames a second, 15 ms a step |
+
+# ═══════════════════════════════════════════════════════════════
+# SOUND (2026-10-16)
+# ═══════════════════════════════════════════════════════════════
+
+The speakers: card `iPadMini` (`cat /proc/asound/cards`), one playback device.
+MCA0 sends the samples, CDMA channel 0x17 feeds it from a ring of commands,
+the two CS35L19 amps take one 32-bit TDM slot each (left 0x40, right 0x41).
+Drivers: `sound/soc/apple/s5l-audio.c` (MCA0, CDMA, the NCOs, the
+i2s-switch, the amps' MCLK; also the card) and `sound/soc/codecs/cs35l19.c`
+(the amps). Everything about the hardware: `docs/research/p105-audio.md`.
+
+alsa-utils is a base package of the image and `/etc/asound.conf` (dmix as
+`default`, `initramfs/etc/asound.conf`) is copied onto the NFS root at every
+boot. An NFS root seeded before that lacks only the package:
+```
+ssh root@10.55.0.2 sh -s < tools/audio/audio-setup.sh
+```
+On the device:
+```
+speaker-test -c 2 -t sine -l 1          left, then right (each ~3 s)
+aplay FILE.wav                          through dmix (several clients at once)
+aplay -D hw:iPadMini,0 FILE.wav         the card alone, no mixing
+amixer -c iPadMini                      Left/Right Speaker Volume: 0..228,
+                                        0.5 dB a step, 204 = 0 dB
+```
+SDL (SuperTux) and OpenAL use ALSA's `default`, nothing to set.
+
+The buttons (`/sbin/p105-keys`, log in `/tmp/p105-keys.log`): side switch
+with the orange mark showing -> volume up/down set the backlight; the other
+way -> the speakers' volume, 16 steps of 4 dB (-48..+12 dB) and off, both
+amps. It works with the screen off too.
+
+Research tools (out of the image): `tools/audio/audmmio.c` (MMIO script
+runner: `r w m p d f t c q s`), `tools/audio/spk-tone.sh` (the speakers by
+hand, no driver), `tools/audio/mca-emu.py` / `i2sswitch-emu.py` (iOS's own
+MCA and switch code in unicorn), `tools/audio/dtmod` (adds the audio DT
+nodes to a running kernel, to develop the drivers as modules).
+
+| trap | what to do |
+|---|---|
+| silence, `0x16` of an amp reads `0x01` | the amp never left power-down: no MCLK (I2S1's, through the switch's reg 0x11) |
+| silence with everything running | the volume: 0x34 in reg 0x10 is -102 dB (iOS's "volume 0"), 0x19 is mute |
+| `speaker-test` "drops out" or clicks every ~3 s | it switches channels and cuts the sine mid-wave; a continuous tone in both: `aplay` a WAV |
+| a CDMA channel's DCR will not change | bit 0 of DCR locks the register until the next boot: never write it |
+| `CDMA ERR = 4` | a byte count that is negative as a signed number or not a multiple of 16 |
+| the CDMA does nothing, ERR 0x100 | a register written while the channel runs |
+| `i2cget` on 0x40/0x41: Resource busy | the driver owns them: `i2cget -f` |
+

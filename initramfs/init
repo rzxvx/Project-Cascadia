@@ -156,6 +156,7 @@ if [ -f /etc/nfsroot ] && [ -x /sbin/mount.nfs ]; then
         settle
     done
     if [ $nfs_ok = 1 ]; then
+        msg "P105: NFS root mounted (try $nfs_try)"
         if [ -x /newroot/sbin/p105-stage2 ]; then
             cp /etc/resolv.conf /newroot/etc/resolv.conf 2>/dev/null || true
             cp /etc/build-date  /newroot/etc/build-date  2>/dev/null || true
@@ -178,11 +179,13 @@ if [ -f /etc/nfsroot ] && [ -x /sbin/mount.nfs ]; then
             # banner, which otherwise stays whatever the seed said.  And the
             # GPU's microkernel: apple-sgx asks for it when it is started,
             # long after this switch_root.  And `bluetooth`, with the
-            # patchram hci_bcm reloads whenever the chip is reset.
+            # patchram hci_bcm reloads whenever the chip is reset.  And the
+            # speakers' ALSA setup (dmix as "default"); alsa-utils itself
+            # comes with the seed, or tools/audio/audio-setup.sh.
             for f in /sbin/z2-boot /sbin/p105-keys /lib/firmware/P105.mtprops /lib/firmware/mtcal.bin /bin/busybox.static /usr/bin/wifi \
                      /usr/bin/bluetooth /lib/firmware/brcm/BCM4334B0.hcd \
                      /lib/firmware/brcm/brcmfmac4334.bin /sbin/nandctl /sbin/iosnand /usr/bin/ios \
-                     /lib/firmware/apple/sgx543.fw /etc/motd; do
+                     /lib/firmware/apple/sgx543.fw /etc/motd /etc/asound.conf; do
                 [ -f "$f" ] || continue
                 mkdir -p "/newroot${f%/*}" 2>/dev/null
                 cp -p "$f" "/newroot$f" 2>/dev/null || true
@@ -203,12 +206,16 @@ if [ -f /etc/nfsroot ] && [ -x /sbin/mount.nfs ]; then
             # log in, on either root.  Ownership and modes are set here rather
             # than preserved: dropbear refuses a key whose ~, ~/.ssh or
             # authorized_keys is not root's or is writable by anyone else, and
-            # refuses it the same silent way.
+            # refuses it the same silent way.  Those three and nothing under
+            # them: a recursive chown walks all of ~ over NFS, one RPC a file,
+            # and a ~ grown to 74k files (deqp, builds) held the boot 48 s
+            # between this point and stage 2 (2026-10-16).
             if [ -s /root/.ssh/authorized_keys ]; then
                 mkdir -p /newroot/root/.ssh 2>/dev/null
                 cp /root/.ssh/authorized_keys \
                     /newroot/root/.ssh/authorized_keys 2>/dev/null || true
-                chown -R 0:0 /newroot/root 2>/dev/null || true
+                chown 0:0 /newroot/root /newroot/root/.ssh \
+                    /newroot/root/.ssh/authorized_keys 2>/dev/null || true
                 chmod 700 /newroot/root /newroot/root/.ssh 2>/dev/null || true
                 chmod 600 /newroot/root/.ssh/authorized_keys 2>/dev/null || true
             fi
@@ -216,10 +223,11 @@ if [ -f /etc/nfsroot ] && [ -x /sbin/mount.nfs ]; then
             # Move rather than remount: /dev in particular is devtmpfs with the
             # devpts and shm instances already mounted underneath it, and
             # rebuilding that on the far side is pointless work that can fail.
+            # The last word stage 1 can log: /dev/kmsg goes with /dev.
+            msg "P105: switching root to $NFSROOT"
             mount --move /dev  /newroot/dev  2>/dev/null
             mount --move /proc /newroot/proc 2>/dev/null
             mount --move /sys  /newroot/sys  2>/dev/null
-            msg "P105: switching root to $NFSROOT"
             exec switch_root /newroot /sbin/p105-stage2
         fi
         msg "P105: $NFSROOT has no /sbin/p105-stage2 -- staying in RAM"

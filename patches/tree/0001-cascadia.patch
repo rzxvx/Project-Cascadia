@@ -1604,3 +1604,72 @@ index 0bbad90dd..34eeb6dd6 100644
  					   info->bdaddr_type, NULL, 0,
  					   HCI_ADV_PHY_1M, 0, rssi,
  					   info->data, info->length, false,
+diff --git a/sound/soc/apple/Kconfig b/sound/soc/apple/Kconfig
+index 793f7782e..70a816e90 100644
+--- a/sound/soc/apple/Kconfig
++++ b/sound/soc/apple/Kconfig
+@@ -6,3 +6,14 @@ config SND_SOC_APPLE_MCA
+ 	help
+ 	  This option enables an ASoC platform driver for MCA peripherals found
+ 	  on Apple Silicon SoCs.
++
++config SND_SOC_APPLE_S5L_AUDIO
++	tristate "iPad mini 1 speakers (Apple A5 MCA, CDMA, CS35L19)"
++	depends on ARCH_APPLE_S5L || COMPILE_TEST
++	depends on COMMON_CLK && I2C
++	select SND_SOC_CS35L19
++	default ARCH_APPLE_S5L
++	help
++	  The iPad mini 1 (A5, S5L8942X) speakers: the MCA audio port, its
++	  CDMA channel and the clocks and pin routing they need, as an ALSA
++	  card with the two CS35L19 amplifiers.
+diff --git a/sound/soc/apple/Makefile b/sound/soc/apple/Makefile
+index 1eb8fbef6..75185dfb5 100644
+--- a/sound/soc/apple/Makefile
++++ b/sound/soc/apple/Makefile
+@@ -1,3 +1,6 @@
+ snd-soc-apple-mca-y	:= mca.o
+ 
+ obj-$(CONFIG_SND_SOC_APPLE_MCA)	+= snd-soc-apple-mca.o
++
++snd-soc-apple-s5l-audio-y	:= s5l-audio.o
++obj-$(CONFIG_SND_SOC_APPLE_S5L_AUDIO)	+= snd-soc-apple-s5l-audio.o
+diff --git a/sound/soc/codecs/Kconfig b/sound/soc/codecs/Kconfig
+index 709284248..b79cfc97c 100644
+--- a/sound/soc/codecs/Kconfig
++++ b/sound/soc/codecs/Kconfig
+@@ -762,6 +762,14 @@ config SND_SOC_CS35L32
+ 	tristate "Cirrus Logic CS35L32 CODEC"
+ 	depends on I2C
+ 
++config SND_SOC_CS35L19
++	tristate "Cirrus Logic CS35L19 speaker amplifier"
++	depends on I2C
++	select REGMAP_I2C
++	help
++	  The boosted class-D speaker amplifier of the iPad mini 1, a
++	  sibling of the CS35L33, with Apple's power-on sequence.
++
+ config SND_SOC_CS35L33
+ 	tristate "Cirrus Logic CS35L33 CODEC"
+ 	depends on I2C
+diff --git a/sound/soc/codecs/Makefile b/sound/soc/codecs/Makefile
+index 54cbc3fea..afd58747c 100644
+--- a/sound/soc/codecs/Makefile
++++ b/sound/soc/codecs/Makefile
+@@ -63,6 +63,7 @@ snd-soc-cros-ec-codec-y := cros_ec_codec.o
+ snd-soc-cs-amp-lib-y := cs-amp-lib.o
+ snd-soc-cs-amp-lib-test-y := cs-amp-lib-test.o
+ snd-soc-cs35l32-y := cs35l32.o
++snd-soc-cs35l19-y := cs35l19.o
+ snd-soc-cs35l33-y := cs35l33.o
+ snd-soc-cs35l34-y := cs35l34.o
+ snd-soc-cs35l35-y := cs35l35.o
+@@ -470,6 +471,7 @@ obj-$(CONFIG_SND_SOC_CROS_EC_CODEC)	+= snd-soc-cros-ec-codec.o
+ obj-$(CONFIG_SND_SOC_CS_AMP_LIB)	+= snd-soc-cs-amp-lib.o
+ obj-$(CONFIG_SND_SOC_CS_AMP_LIB_TEST)	+= snd-soc-cs-amp-lib-test.o
+ obj-$(CONFIG_SND_SOC_CS35L32)	+= snd-soc-cs35l32.o
++obj-$(CONFIG_SND_SOC_CS35L19)	+= snd-soc-cs35l19.o
+ obj-$(CONFIG_SND_SOC_CS35L33)	+= snd-soc-cs35l33.o
+ obj-$(CONFIG_SND_SOC_CS35L34)	+= snd-soc-cs35l34.o
+ obj-$(CONFIG_SND_SOC_CS35L35)	+= snd-soc-cs35l35.o

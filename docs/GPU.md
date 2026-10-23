@@ -150,12 +150,16 @@ apple-sgx ── render queue: context + CCB + TA command ──> iOS's microker
 - No render targets: SuperTux's lightmap reads as white, so dark levels are
   not darkened.
 - Blend mode NONE is drawn as BLEND (the same for opaque textures).
-- No custom shaders — that would need a GLSL to USSE compiler — so no
-  OpenGL: programs that use SDL's 2D renderer work, GL programs do not.
+- No custom shaders in sgx2d: programs that use SDL's 2D renderer work
+  through the shim, GL programs do not. **OpenGL is the Mesa driver's**
+  ([mesa/](../mesa/), `./cascadia mesa`): OpenGL ES 1.1 and 2.0 and desktop
+  OpenGL 2.1 for every program, X with glamor, weston; SuperTux through
+  SDL's GL renderer runs at ~26 fps there, this 2D path's 60 fps coming from
+  skipping SDL and the GL state machine altogether
+  ([research/p105-mesa.md](research/p105-mesa.md), M25 on).
 - No sound (there is no audio device yet).
-- The render node is new (M9 in [research/p105-mesa.md](research/p105-mesa.md))
-  and its interface will change while the Mesa driver is written; Mesa and
-  OpenGL are the plan there.
+- The render node (M9 in [research/p105-mesa.md](research/p105-mesa.md)) is
+  shared with the Mesa driver: sgx2d and Mesa programs run side by side.
 - About 390 draws (texture or blend-mode changes) fit in one frame; quads
   beyond that are dropped. SuperTux's title screen uses ~60.
 

@@ -8,7 +8,8 @@
 #   bash tools/shadercap.sh                        iPad booted into iOS, on USB
 #   IOS_HOST=192.168.1.20 bash tools/shadercap.sh  the same over Wi-Fi
 #   bash tools/shadercap.sh f0*.glsl               only some cases (names in
-#                                                  tools/iosgpu/corpus)
+#                                                  tools/iosgpu/corpus; the
+#                                                  GLES 1 cases then not)
 #
 # gltrace has to be built with the corpus mode (tools/iosgpu/build.sh: macOS
 # with Xcode and ldid); this builds it when build/gltrace is missing or older
@@ -137,8 +138,22 @@ for f in $(ios "cd $D/out && ls"); do
     n=$(wc -c < "$OUT/$f" | tr -d ' ')
     [ $((n % 4100)) -eq 0 ] || fail "$f came back cut off ($n bytes) -- try again (Wi-Fi from a Mac: IOS_HOST=)"
 done
-ios rm -rf "$D"
 echo "    $(ls "$OUT" | wc -l | tr -d ' ') files, $(du -sh "$OUT" | cut -f1) in ${OUT#$ROOT/}"
+
+# OpenGL ES 1's fixed function (M35: flat shading, logic ops, the alpha
+# test, clip planes, point sprites, fog): gltrace's es1 mode, its own cases,
+# into $OUT/es1/.  SHADERCAP_ES1=0: not.
+if [ "${SHADERCAP_ES1:-1}" != 0 ] && [ $# -eq 0 ]; then
+    echo "==> OpenGL ES 1's fixed function (gltrace es1)"
+    ios "mkdir -p $D/es1 && cd $D && ./gltrace es1 $D/es1" > "$WORK/es1.txt" 2>&1 || true
+    grep '^== es1\|drawn:' "$WORK/es1.txt" | sed 's/^/    /' | tail -n 60 || true
+    mkdir -p "$OUT/es1"
+    cp "$WORK/es1.txt" "$OUT/es1/log.txt"
+    for f in $(ios "cd $D/es1 && ls"); do
+        ios "cat $D/es1/$f" > "$OUT/es1/$f"
+    done
+fi
+ios rm -rf "$D"
 
 echo "==> reading the programs (tools/iosgpu/corpus.py)"
 python3 "$ROOT/tools/iosgpu/corpus.py" "$OUT" > "$OUT/programs.txt" \

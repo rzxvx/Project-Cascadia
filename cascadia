@@ -13,7 +13,9 @@
 #   ./cascadia net on|off  share this host's internet with it  (macOS or Linux)
 #   ./cascadia nfs on|off  export a root filesystem to it      (macOS or Linux)
 #   ./cascadia gpu         SuperTux on the GPU: build and install, in one go
-#   ./cascadia mesa        Mesa with the GPU's driver (OpenGL ES): build and install
+#   ./cascadia mesa        Mesa with the GPU's driver: the system's OpenGL (ES 1.1 and
+#                          2.0, desktop 2.1, GLX): build and install (release; a
+#                          debug build: MESA_BUILD=debug)
 #   ./cascadia image       rebuild the build image if the Dockerfile changed
 #
 # Everything is relative to this file, so the repository works wherever it is
@@ -316,8 +318,9 @@ cmd_build() {
     in_docker "arm-linux-gnueabihf-gcc -static -Os -o build/initramfs-root/sbin/z2-boot tools/z2-boot.c"
     [ -s "$ROOT/build/initramfs-root/sbin/z2-boot" ] || fail "z2-boot did not build"
     note "ok: /sbin/z2-boot ($(filesize "$ROOT/build/initramfs-root/sbin/z2-boot") bytes, static ARM)"
-    # /sbin/p105-keys: the buttons -- volume sets the backlight, Hold puts the
-    # screen out and back.  Started by stage 2.
+    # /sbin/p105-keys: the buttons -- volume sets the speakers' volume or the
+    # backlight (the side switch picks), Hold puts the screen out and back.
+    # Started by stage 2.
     in_docker "arm-linux-gnueabihf-gcc -static -Os -Wall -o build/initramfs-root/sbin/p105-keys tools/p105-keys.c"
     [ -s "$ROOT/build/initramfs-root/sbin/p105-keys" ] || fail "p105-keys did not build"
     note "ok: /sbin/p105-keys (static ARM)"
@@ -333,11 +336,12 @@ cmd_build() {
         || [ ! -x "$ROOT/build/initramfs-root/usr/sbin/iw" ] \
         || [ ! -x "$ROOT/build/initramfs-root/usr/bin/fbkeyboard" ] \
         || [ ! -x "$ROOT/build/initramfs-root/usr/lib/bluetooth/bluetoothd" ] \
-        || [ ! -s "$ROOT/build/initramfs-root/etc/netconfig" ]; then
+        || [ ! -s "$ROOT/build/initramfs-root/etc/netconfig" ] \
+        || [ ! -x "$ROOT/build/initramfs-root/usr/bin/aplay" ]; then
         bash "$ROOT/scripts/add-base-packages.sh" >/dev/null \
             || fail "could not add the base packages (scripts/add-base-packages.sh)"
     fi
-    note "ok: iw, wpa_supplicant, fbkeyboard, bluez, dbus, NFS RPC configuration"
+    note "ok: iw, wpa_supplicant, fbkeyboard, bluez, dbus, alsa-utils, NFS RPC configuration"
     # dropbear's host key, made once and kept in build/keep so it outlives a
     # rootfs rebuild.  Without it dropbear -R made a new one at every boot of the
     # RAM root, and every boot met ssh with REMOTE HOST IDENTIFICATION HAS
@@ -451,7 +455,8 @@ so this is a file in build/initramfs-root owned by some third uid."
 
     # Not fatal: a tree without these still boots and still gives both consoles.
     for s in bin/peek usr/sbin/dropbear etc/dropbear/dropbear_ed25519_host_key sbin/mount.nfs etc/netconfig \
-             usr/sbin/iw sbin/wpa_supplicant usr/bin/fbkeyboard usr/lib/bluetooth/bluetoothd; do
+             usr/sbin/iw sbin/wpa_supplicant usr/bin/fbkeyboard usr/lib/bluetooth/bluetoothd \
+             usr/bin/aplay etc/asound.conf; do
         if LC_ALL=C grep -aFq "$s" "$CPIO"; then note "ok:      $s"
         else note "missing: $s  -- ./cascadia rootfs installs it when docker is up"; fi
     done
@@ -506,9 +511,12 @@ cmd_mesa() {
         || fail "could not build the cascadia-mesa image -- does docker run linux/arm/v7 here?"
     duser=()
     [ "$(uname -s)" = "Linux" ] && duser=(--user "$(id -u):$(id -g)")
+    # The system's OpenGL is a release build (no assertions: a debug build
+    # stops a program on Mesa's own, M36); install.py takes the same one
+    export MESA_BUILD="${MESA_BUILD:-release}"
     # --init: without it the build is PID 1, which ignores ^C
     docker run --rm --init --platform linux/arm/v7 ${duser[@]+"${duser[@]}"} \
-        -v "$ROOT":/cascadia -w /cascadia cascadia-mesa sh mesa/build.sh
+        -e MESA_BUILD -v "$ROOT":/cascadia -w /cascadia cascadia-mesa sh mesa/build.sh
     if [ $# -gt 0 ]; then
         python3 "$ROOT/mesa/install.py" "$@"
     else

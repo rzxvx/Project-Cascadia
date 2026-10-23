@@ -18,6 +18,9 @@
 // drawn once; the pages of the GL driver's GPU buffers the draw changed
 // (the new USSE and PDS programs among them) go to OUTDIR/NAME.pages.
 // tools/shadercap.sh runs it, tools/iosgpu/corpus.py reads the result.
+// "gltrace es1 OUTDIR [CASE...]" does the same for OpenGL ES 1's fixed
+// function: flat shading, logic ops, the alpha test, clip planes, point
+// sprites, fog (M35).  Both log each case's render commands.
 //
 // Build: tools/iosgpu/build.sh (macOS + Xcode; stubs/*.tbd, ldid, no entitlements).
 #import <OpenGLES/EAGL.h>
@@ -29,6 +32,46 @@
 #include <string.h>
 #include <fcntl.h>
 #include "fishhook.h"
+
+/* (extension and OpenGL ES 1 names the corpus's cases use, M35) */
+#ifndef GL_TEXTURE_COMPARE_MODE_EXT
+#define GL_TEXTURE_COMPARE_MODE_EXT 0x884C
+#define GL_TEXTURE_COMPARE_FUNC_EXT 0x884D
+#define GL_COMPARE_REF_TO_TEXTURE_EXT 0x884E
+#endif
+#ifndef GL_TEXTURE_MAX_LEVEL_APPLE
+#define GL_TEXTURE_MAX_LEVEL_APPLE 0x813D
+#endif
+#ifndef GL_TEXTURE_MAX_ANISOTROPY_EXT
+#define GL_TEXTURE_MAX_ANISOTROPY_EXT 0x84FE
+#endif
+#ifndef GL_ANY_SAMPLES_PASSED_EXT
+#define GL_ANY_SAMPLES_PASSED_EXT 0x8C2F
+#define GL_QUERY_RESULT_EXT 0x8866
+#endif
+#ifndef GL_HALF_FLOAT_OES
+#define GL_HALF_FLOAT_OES 0x8D61
+#endif
+#ifndef GL_DEPTH_STENCIL_OES
+#define GL_DEPTH_STENCIL_OES 0x84F9
+#define GL_UNSIGNED_INT_24_8_OES 0x84FA
+#endif
+#ifndef GL_BGRA_EXT
+#define GL_BGRA_EXT 0x80E1
+#endif
+#ifndef GL_SRGB_ALPHA_EXT
+#define GL_SRGB_ALPHA_EXT 0x8C42
+#endif
+#ifndef GL_RGBA8_OES
+#define GL_RGBA8_OES 0x8058
+#endif
+#ifndef GL_RGBA16F_EXT
+#define GL_RGBA16F_EXT 0x881A
+#endif
+void glGenQueriesEXT(GLsizei n, GLuint *ids);
+void glBeginQueryEXT(GLenum target, GLuint id);
+void glEndQueryEXT(GLenum target);
+void glGetQueryObjectuivEXT(GLuint id, GLenum pname, GLuint *params);
 
 typedef unsigned int mach_port_t;
 typedef int kern_return_t;
@@ -347,6 +390,70 @@ static void scan_payloads(const char *label)
     free(img);
     printf("== %s: %u render, %u transfer command(s) in the arena\n",
            label, nrender, ntransfer);
+}
+
+/* The render commands (type 1) in the arena that are new or changed since
+ * the last call, printed whole -- header, payload, records: what a case's
+ * draw asked of the kernel (the 3D registers the kext builds from it,
+ * rtemu.py).  M35: the punch-through pass's flags, an occlusion query's. */
+static struct { uint32_t at; uint64_t hash; } seen_render[256];
+static int nseen_render;
+
+static void new_render_payloads(const char *label)
+{
+    unsigned span = ARENA_HI - ARENA_LO;
+    unsigned char *img = malloc(span);
+    static struct { uint32_t at; uint64_t hash; } now[256];
+    int nnow = 0, printed = 0;
+
+    if (!img)
+        return;
+    memset(img, 0, span);
+    for (unsigned off = 0; off < span; off += 0x1000) {
+        vm_size_t got = 0;
+        vm_read_overwrite(mach_task_self(), ARENA_LO + off, 0x1000,
+                          (vm_address_t)(img + off), &got);
+    }
+    for (unsigned p = 0; p + 0x200 < span && nnow < 256; p += 4) {
+        const uint32_t *h = (const uint32_t *)(img + p), *pl;
+        uint32_t off = h[4];
+        uint64_t hash = 0xcbf29ce484222325ull;
+        int old = 0;
+
+        if (off < 0x14 || off > 0x80 || (off & 3) || img[p + off] != 1 ||
+            (h[0] != off + 0xdc && h[1] != off + 0xdc && h[2] != off + 0xdc &&
+             h[3] != off + 0xdc))
+            continue;
+        pl = (const uint32_t *)(img + p + off);
+        for (unsigned i = 0; i < 0xdc / 4; i++)
+            hash = (hash ^ pl[i]) * 0x100000001b3ull;
+        now[nnow].at = ARENA_LO + p;
+        now[nnow++].hash = hash;
+        for (int i = 0; i < nseen_render; i++)
+            old |= seen_render[i].at == ARENA_LO + p && seen_render[i].hash == hash;
+        if (old)
+            continue;
+        printed++;
+        printf("   render command at 0x%08x, header", ARENA_LO + p);
+        for (unsigned i = 0; i < off / 4; i++)
+            printf(" %08x", h[i]);
+        printf("\n   payload:");
+        for (unsigned i = 0; i < 0xdc / 4; i++)
+            printf("%s%08x", i % 8 ? " " : "\n     ", pl[i]);
+        printf("\n   records (%u at +0x%x):", h[1], h[2]);
+        for (unsigned i = 0; i < h[1] && i < 64 && p + h[2] + 8 * i + 8 <= span; i++)
+            printf("%s%08x %08x", i % 4 ? "  " : "\n     ",
+                   ((const uint32_t *)(img + p + h[2]))[2 * i],
+                   ((const uint32_t *)(img + p + h[2]))[2 * i + 1]);
+        printf("\n");
+    }
+    for (int i = 0; i < nnow; i++) {
+        seen_render[i].at = now[i].at;
+        seen_render[i].hash = now[i].hash;
+    }
+    nseen_render = nnow;
+    free(img);
+    printf("   %s: %d new render command(s)\n", label, printed);
 }
 
 /* Walk every writable region of the process: print the map, find words equal
@@ -824,7 +931,21 @@ static GLuint make_shader(GLenum type, const char *src)
  * shaders, their constants, the draw's state and command.  A first draw
  * with a trivial shader takes the driver's own setup out of the way; every
  * page that is not zero after it goes to OUTDIR/baseline.pages, so what
- * each case changed can be told byte by byte. */
+ * each case changed can be told byte by byte.
+ *
+ * A case's file may say how it is drawn, a line each (M34):
+ *   // mode: points|lines|line_strip|line_loop|triangle_strip|triangle_fan
+ *            (triangles by default; "p" then a few vertices across the target)
+ *   // width: N        glLineWidth(N)
+ *   // blend: alpha|add   SRC_ALPHA, ONE_MINUS_SRC_ALPHA -- or ONE, ONE
+ *   // depth: less     a depth buffer, the test and the writes on
+ *   // tex2d: W H [mip] [linear]   the 2D texture: its size, every level
+ *                      (glGenerateMipmap), linear filters
+ *   // cube: N [linear]   the cube map's faces N x N
+ *   // draws: N        drawn N times in the frame, the 2D texture another
+ *                      (a second of the same size) every other draw
+ *   // indexed         glDrawElements, 16-bit indices
+ *   // pages: all      every page that is not zero, not only those changed */
 
 struct page_hash {
     uint32_t addr;
@@ -986,11 +1107,140 @@ static GLuint link_logged(const char *vs, const char *fs)
     return p;
 }
 
-static float attr_data[16][3][4];
+static float attr_data[16][8][4];
+
+/* how a case is drawn (its "// key: value" lines) */
+struct case_opts {
+    GLenum mode;
+    int nverts;
+    float width;
+    int blend;          /* 0 off, 1 alpha, 2 add */
+    int depth;
+    int tex_w, tex_h, tex_mip, tex_linear;
+    int cube_n, cube_linear;
+    int draws;
+    int indexed;
+    int all_pages;
+    /* M35 */
+    int texfmt;         /* TEXFMT_* */
+    int compare;        /* the 2D texture's compare mode on (EXT_shadow_samplers) */
+    int maxlevel;       /* GL_TEXTURE_MAX_LEVEL_APPLE, -1 not set */
+    int aniso;          /* GL_TEXTURE_MAX_ANISOTROPY_EXT, 0 not set */
+    int wrap;           /* 0 clamp to edge, 1 repeat, 2 mirrored repeat */
+    int rtfmt;          /* the target: 0 the RGBA8 texture, else a renderbuffer of RT_* */
+    int query;          /* an occlusion query around the draws */
+    float offset_f, offset_u;   /* glPolygonOffset, when either is set */
+};
+
+enum { TEXFMT_RGBA8, TEXFMT_RGB565, TEXFMT_RGBA4444, TEXFMT_RGBA5551, TEXFMT_RGB8, TEXFMT_L8,
+       TEXFMT_A8, TEXFMT_LA8, TEXFMT_HALF, TEXFMT_FLOAT, TEXFMT_BGRA8, TEXFMT_SRGB8A8,
+       TEXFMT_DEPTH16, TEXFMT_DEPTH32, TEXFMT_DEPTH24S8, TEXFMT_N };
+static const char *texfmt_names[TEXFMT_N] = {
+    "rgba8", "rgb565", "rgba4444", "rgba5551", "rgb8", "l8", "a8", "la8", "half", "float",
+    "bgra8", "srgb8a8", "depth16", "depth32", "depth24s8",
+};
+enum { RT_TEX, RT_RGB565, RT_RGBA4, RT_RGB5A1, RT_RGBA8, RT_HALF, RT_N };
+static const char *rt_names[RT_N] = { "tex", "rgb565", "rgba4", "rgb5a1", "rgba8", "half" };
+
+static const char *opt_value(const char *text, const char *key)
+{
+    char pat[64];
+    const char *at;
+
+    snprintf(pat, sizeof pat, "// %s", key);
+    at = strstr(text, pat);
+    if (!at)
+        return NULL;
+    at += strlen(pat);
+    while (*at == ':' || *at == ' ')
+        at++;
+    return at;
+}
+
+static void case_options(const char *text, struct case_opts *o)
+{
+    const char *v;
+
+    memset(o, 0, sizeof(*o));
+    o->mode = GL_TRIANGLES;
+    o->nverts = 3;
+    o->draws = 1;
+    o->tex_w = o->tex_h = 4;
+    o->cube_n = 4;
+    if ((v = opt_value(text, "mode"))) {
+        static const struct { const char *name; GLenum mode; int n; } m[] = {
+            { "points", GL_POINTS, 3 }, { "line_strip", GL_LINE_STRIP, 4 },
+            { "line_loop", GL_LINE_LOOP, 4 }, { "lines", GL_LINES, 4 },
+            { "triangle_strip", GL_TRIANGLE_STRIP, 4 }, { "triangle_fan", GL_TRIANGLE_FAN, 4 },
+        };
+        for (unsigned i = 0; i < sizeof(m) / sizeof(m[0]); i++)
+            if (!strncmp(v, m[i].name, strlen(m[i].name))) {
+                o->mode = m[i].mode;
+                o->nverts = m[i].n;
+                break;
+            }
+    }
+    if ((v = opt_value(text, "width")))
+        o->width = atof(v);
+    if ((v = opt_value(text, "blend")))
+        o->blend = !strncmp(v, "add", 3) ? 2 : 1;
+    o->depth = opt_value(text, "depth") != NULL;
+    if ((v = opt_value(text, "tex2d"))) {
+        o->tex_w = atoi(v);
+        while (*v && *v != ' ')
+            v++;
+        o->tex_h = atoi(v);
+        o->tex_mip = strstr(v, "mip") && strstr(v, "mip") < strchr(v, '\n');
+        o->tex_linear = strstr(v, "linear") && strstr(v, "linear") < strchr(v, '\n');
+    }
+    if ((v = opt_value(text, "cube"))) {
+        o->cube_n = atoi(v);
+        o->cube_linear = strstr(v, "linear") && strstr(v, "linear") < strchr(v, '\n');
+    }
+    if ((v = opt_value(text, "draws")))
+        o->draws = atoi(v) > 0 ? atoi(v) : 1;
+    o->indexed = opt_value(text, "indexed") != NULL;
+    o->all_pages = (v = opt_value(text, "pages")) && !strncmp(v, "all", 3);
+    o->maxlevel = -1;
+    if ((v = opt_value(text, "texfmt")))
+        for (int i = 0; i < TEXFMT_N; i++)
+            if (!strncmp(v, texfmt_names[i], strlen(texfmt_names[i])) &&
+                (v[strlen(texfmt_names[i])] == '\n' || v[strlen(texfmt_names[i])] == ' ' ||
+                 !v[strlen(texfmt_names[i])]))
+                o->texfmt = i;
+    o->compare = opt_value(text, "compare") != NULL;
+    if ((v = opt_value(text, "maxlevel")))
+        o->maxlevel = atoi(v);
+    if ((v = opt_value(text, "aniso")))
+        o->aniso = atoi(v);
+    if ((v = opt_value(text, "wrap")))
+        o->wrap = !strncmp(v, "repeat", 6) ? 1 : !strncmp(v, "mirror", 6) ? 2 : 0;
+    if ((v = opt_value(text, "rt")))
+        for (int i = 1; i < RT_N; i++)
+            if (!strncmp(v, rt_names[i], strlen(rt_names[i])))
+                o->rtfmt = i;
+    o->query = opt_value(text, "query") != NULL;
+    if ((v = opt_value(text, "offset"))) {
+        o->offset_f = atof(v);
+        while (*v && *v != ' ' && *v != '\n')
+            v++;
+        o->offset_u = atof(v);
+    }
+}
+
+static struct case_opts copt;
+static GLuint corpus_target_tex;    /* the 64 x 64 texture the FBO draws into (main's) */
 
 static void corpus_attribs(GLuint prog)
 {
     static const float tri[3][4] = { { -1, -1, 0, 1 }, { 3, -1, 0, 1 }, { -1, 3, 0, 1 } };
+    /* for the other modes: a quad's corners, in strip order for the
+     * strips and lines, round it for the fans and loops */
+    static const float quad[4][4] = { { -0.75f, -0.75f, 0, 1 }, { 0.75f, -0.75f, 0, 1 },
+                                      { -0.75f, 0.75f, 0, 1 }, { 0.75f, 0.75f, 0, 1 } };
+    static const float round[4][4] = { { -0.75f, -0.75f, 0, 1 }, { 0.75f, -0.75f, 0, 1 },
+                                       { 0.75f, 0.75f, 0, 1 }, { -0.75f, 0.75f, 0, 1 } };
+    int round_mode = copt.mode == GL_TRIANGLE_FAN || copt.mode == GL_LINE_LOOP;
     GLint n = 0;
 
     for (int l = 0; l < 16; l++)
@@ -1010,10 +1260,12 @@ static void corpus_attribs(GLuint prog)
                 type == GL_FLOAT_VEC3 || type == GL_FLOAT_MAT3 ? 3 : 4;
         printf("   attribute %s: type 0x%x, %d, location %d\n", name, type, size, loc);
         for (int c = 0; c < cols && loc >= 0 && loc + c < 16; c++) {
-            for (int k = 0; k < 3; k++)
+            for (int k = 0; k < copt.nverts; k++)
                 for (int j = 0; j < 4; j++)
-                    attr_data[loc + c][k][j] = !strcmp(name, "p") ? tri[k][j] :
-                        0.25f * (loc + c + 1) + 0.0625f * k + 0.015625f * j;
+                    attr_data[loc + c][k][j] = strcmp(name, "p") ?
+                        0.25f * (loc + c + 1) + 0.0625f * k + 0.015625f * j :
+                        copt.mode == GL_TRIANGLES ? tri[k][j] :
+                        round_mode ? round[k][j] : quad[k][j];
             glEnableVertexAttribArray(loc + c);
             glVertexAttribPointer(loc + c, comps, GL_FLOAT, GL_FALSE, 16, attr_data[loc + c]);
         }
@@ -1073,24 +1325,171 @@ static void corpus_uniforms(GLuint prog, GLuint tex2d, GLuint texcube)
     }
 }
 
+/* a float as a half (no denormals; the corpus's values are 0..1) */
+static unsigned short to_half(float f)
+{
+    union { float f; uint32_t u; } v = { f };
+    int e = (int)((v.u >> 23) & 0xff) - 127 + 15;
+
+    if (f == 0 || e <= 0)
+        return 0;
+    return (unsigned short)((v.u >> 16 & 0x8000) | (e > 30 ? 0x7c00 : e << 10 |
+                                                     (v.u >> 13 & 0x3ff)));
+}
+
+/* a w x h texture of the corpus's texels (texel i: (i & 3) * 64, (i >> 2) *
+ * 64 on a 4 x 4 -- the same pattern repeated), blue b -- in the case's
+ * format (M35: the texture words iOS writes for each), its compare mode,
+ * maximum level, anisotropy and wrap */
+static void corpus_tex2d(GLuint tex, int w, int h, int mip, int linear, int b)
+{
+    unsigned char *t = malloc((size_t)w * h * 16);
+    GLenum internal = GL_RGBA, format = GL_RGBA, type = GL_UNSIGNED_BYTE;
+    static const GLenum wraps[3] = { GL_CLAMP_TO_EDGE, GL_REPEAT, GL_MIRRORED_REPEAT };
+
+    for (int y = 0; y < h; y++)
+        for (int x = 0; x < w; x++) {
+            int i = y * w + x;
+            unsigned r = (x & 3) * 64, g = (y & 3) * 64, a = 255 - 16 * ((x + y) & 3);
+            unsigned short *q16 = (unsigned short *)t + i;
+
+            switch (copt.texfmt) {
+            case TEXFMT_RGB565:
+                *q16 = (unsigned short)((r >> 3) << 11 | (g >> 2) << 5 | b >> 3);
+                format = internal = GL_RGB;
+                type = GL_UNSIGNED_SHORT_5_6_5;
+                break;
+            case TEXFMT_RGBA4444:
+                *q16 = (unsigned short)((r >> 4) << 12 | (g >> 4) << 8 | (b >> 4) << 4 | a >> 4);
+                type = GL_UNSIGNED_SHORT_4_4_4_4;
+                break;
+            case TEXFMT_RGBA5551:
+                *q16 = (unsigned short)((r >> 3) << 11 | (g >> 3) << 6 | (b >> 3) << 1 | a >> 7);
+                type = GL_UNSIGNED_SHORT_5_5_5_1;
+                break;
+            case TEXFMT_RGB8:
+                t[3 * i] = r, t[3 * i + 1] = g, t[3 * i + 2] = b;
+                format = internal = GL_RGB;
+                break;
+            case TEXFMT_L8:
+                t[i] = r + g / 4;
+                format = internal = GL_LUMINANCE;
+                break;
+            case TEXFMT_A8:
+                t[i] = r + g / 4;
+                format = internal = GL_ALPHA;
+                break;
+            case TEXFMT_LA8:
+                t[2 * i] = r, t[2 * i + 1] = g;
+                format = internal = GL_LUMINANCE_ALPHA;
+                break;
+            case TEXFMT_HALF:
+                q16 = (unsigned short *)t + 4 * i;
+                q16[0] = to_half(r / 255.0f), q16[1] = to_half(g / 255.0f);
+                q16[2] = to_half(b / 255.0f), q16[3] = to_half(a / 255.0f);
+                type = GL_HALF_FLOAT_OES;
+                break;
+            case TEXFMT_FLOAT:
+                ((float *)t)[4 * i] = r / 255.0f, ((float *)t)[4 * i + 1] = g / 255.0f;
+                ((float *)t)[4 * i + 2] = b / 255.0f, ((float *)t)[4 * i + 3] = a / 255.0f;
+                type = GL_FLOAT;
+                break;
+            case TEXFMT_BGRA8:
+                t[4 * i] = b, t[4 * i + 1] = g, t[4 * i + 2] = r, t[4 * i + 3] = a;
+                format = internal = GL_BGRA_EXT;
+                break;
+            case TEXFMT_SRGB8A8:
+                t[4 * i] = r, t[4 * i + 1] = g, t[4 * i + 2] = b, t[4 * i + 3] = a;
+                format = internal = GL_SRGB_ALPHA_EXT;
+                break;
+            case TEXFMT_DEPTH16:
+                *q16 = (unsigned short)(i * 65535 / (w * h));
+                format = internal = GL_DEPTH_COMPONENT;
+                type = GL_UNSIGNED_SHORT;
+                break;
+            case TEXFMT_DEPTH32:
+                ((uint32_t *)t)[i] = (uint32_t)((double)i / (w * h) * 4294967295.0);
+                format = internal = GL_DEPTH_COMPONENT;
+                type = GL_UNSIGNED_INT;
+                break;
+            case TEXFMT_DEPTH24S8:
+                ((uint32_t *)t)[i] = (uint32_t)(i * 0xffffff / (w * h)) << 8 | (i & 0xff);
+                format = internal = GL_DEPTH_STENCIL_OES;
+                type = GL_UNSIGNED_INT_24_8_OES;
+                break;
+            default:
+                t[4 * i] = r, t[4 * i + 1] = g, t[4 * i + 2] = b, t[4 * i + 3] = 255;
+            }
+        }
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    glTexImage2D(GL_TEXTURE_2D, 0, internal, w, h, 0, format, type, t);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+    if (mip)
+        glGenerateMipmap(GL_TEXTURE_2D);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER,
+                    mip ? (linear ? GL_LINEAR_MIPMAP_LINEAR : GL_NEAREST_MIPMAP_NEAREST) :
+                    linear ? GL_LINEAR : GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, linear ? GL_LINEAR : GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, wraps[copt.wrap]);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, wraps[copt.wrap]);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_COMPARE_MODE_EXT,
+                    copt.compare ? GL_COMPARE_REF_TO_TEXTURE_EXT : GL_NONE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_COMPARE_FUNC_EXT, GL_LEQUAL);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL_APPLE, copt.maxlevel >= 0 ? copt.maxlevel : 1000);
+    if (copt.aniso)
+        glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MAX_ANISOTROPY_EXT, copt.aniso);
+    else if (strstr((const char *)glGetString(GL_EXTENSIONS), "anisotropic"))
+        glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MAX_ANISOTROPY_EXT, 1);
+    glGetError();       /* (a parameter this iOS does not take) */
+    free(t);
+}
+
+static void corpus_cube(GLuint tex, int n, int linear)
+{
+    unsigned char *t = malloc((size_t)n * n * 4);
+
+    glBindTexture(GL_TEXTURE_CUBE_MAP, tex);
+    for (int face = 0; face < 6; face++) {
+        for (int i = 0; i < n * n; i++) {
+            t[i * 4] = (i % n & 3) * 64;
+            t[i * 4 + 1] = (i / n & 3) * 64;
+            t[i * 4 + 2] = 40 * face;
+            t[i * 4 + 3] = 255;
+        }
+        glTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + face, 0, GL_RGBA, n, n, 0, GL_RGBA,
+                     GL_UNSIGNED_BYTE, t);
+    }
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MIN_FILTER, linear ? GL_LINEAR : GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAG_FILTER, linear ? GL_LINEAR : GL_NEAREST);
+    free(t);
+}
+
 static int corpus(int argc, char **argv)
 {
     static const char *vs0 = "attribute vec4 p; void main() { gl_Position = p; }";
     static const char *fs0 = "void main() { gl_FragColor = vec4(1.0); }";
     unsigned char texels[4 * 4 * 4];
-    GLuint tex2d, texcube, p0;
+    GLuint tex2d, tex2d_b, texcube, p0, depth;
     const char *out = argv[2];
     char path0[512];
     int n0;
     int ok = 0;
 
     quiet = 1;
+    printf("== extensions: %s\n", (const char *)glGetString(GL_EXTENSIONS));
     for (int i = 0; i < 16; i++) {
         texels[i * 4] = (i & 3) * 64;
         texels[i * 4 + 1] = (i >> 2) * 64;
         texels[i * 4 + 2] = 128;
         texels[i * 4 + 3] = 255;
     }
+    /* a depth buffer for the cases that test depth */
+    glGenRenderbuffers(1, &depth);
+    glBindRenderbuffer(GL_RENDERBUFFER, depth);
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT16, 64, 64);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, depth);
+    glGenTextures(1, &tex2d_b);
     glGenTextures(1, &tex2d);
     glBindTexture(GL_TEXTURE_2D, tex2d);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 4, 4, 0, GL_RGBA, GL_UNSIGNED_BYTE, texels);
@@ -1124,6 +1523,7 @@ static int corpus(int argc, char **argv)
     snprintf(path0, sizeof path0, "%s/baseline.pages", out);
     n0 = changed_pages(path0, 1);
     printf("== corpus: %d pages in the GPU buffers, %d not zero -> %s\n", nph, n0, path0);
+    new_render_payloads("baseline");
 
     for (int i = 3; i < argc; i++) {
         const char *vs, *fs, *base = strrchr(argv[i], '/'), *dot;
@@ -1140,6 +1540,26 @@ static int corpus(int argc, char **argv)
             printf("   no \"// fragment\" line in %s\n", argv[i]);
             continue;
         }
+        case_options(vs, &copt);
+        if (copt.mode != GL_TRIANGLES || copt.width || copt.blend || copt.depth ||
+            copt.tex_w != 4 || copt.tex_h != 4 || copt.tex_mip || copt.tex_linear ||
+            copt.cube_n != 4 || copt.cube_linear || copt.draws > 1 || copt.indexed)
+            printf("   drawn: mode 0x%x, %d vertices, width %g, blend %d, depth %d, tex2d %dx%d%s%s, "
+                   "cube %d%s, %d draws%s\n", copt.mode, copt.nverts, copt.width, copt.blend,
+                   copt.depth, copt.tex_w, copt.tex_h, copt.tex_mip ? " mip" : "",
+                   copt.tex_linear ? " linear" : "", copt.cube_n, copt.cube_linear ? " linear" : "",
+                   copt.draws, copt.indexed ? ", indexed" : "");
+        if (copt.texfmt || copt.compare || copt.maxlevel >= 0 || copt.aniso || copt.wrap ||
+            copt.rtfmt || copt.query || copt.offset_f || copt.offset_u)
+            printf("   texture %s%s, maxlevel %d, aniso %d, wrap %d; target %s; query %d; "
+                   "offset %g %g\n", texfmt_names[copt.texfmt], copt.compare ? " compare" : "",
+                   copt.maxlevel, copt.aniso, copt.wrap, rt_names[copt.rtfmt], copt.query,
+                   copt.offset_f, copt.offset_u);
+        /* the textures as the case wants them, made before the pages are
+         * taken: their upload is not the draw's */
+        corpus_tex2d(tex2d, copt.tex_w, copt.tex_h, copt.tex_mip, copt.tex_linear, 128);
+        corpus_tex2d(tex2d_b, copt.tex_w, copt.tex_h, copt.tex_mip, copt.tex_linear, 32);
+        corpus_cube(texcube, copt.cube_n, copt.cube_linear);
         changed_pages(0, 0);	/* whatever happened since the last case */
         prog = link_logged(vs, fs);
         if (!prog)
@@ -1147,18 +1567,347 @@ static int corpus(int argc, char **argv)
         glUseProgram(prog);
         corpus_attribs(prog);
         corpus_uniforms(prog, tex2d, texcube);
+        if (copt.width)
+            glLineWidth(copt.width);
+        if (copt.blend) {
+            glEnable(GL_BLEND);
+            if (copt.blend == 2)
+                glBlendFunc(GL_ONE, GL_ONE);
+            else
+                glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        }
+        if (copt.depth) {
+            glEnable(GL_DEPTH_TEST);
+            glDepthFunc(GL_LESS);
+            glDepthMask(GL_TRUE);
+        }
+        /* another target format: a renderbuffer of it in the texture's place */
+        GLuint rb = 0, query = 0, passed = 0;
+        if (copt.rtfmt) {
+            static const GLenum rtf[RT_N] = { 0, GL_RGB565, GL_RGBA4, GL_RGB5_A1, GL_RGBA8_OES,
+                                              GL_RGBA16F_EXT };
+            glGenRenderbuffers(1, &rb);
+            glBindRenderbuffer(GL_RENDERBUFFER, rb);
+            glRenderbufferStorage(GL_RENDERBUFFER, rtf[copt.rtfmt], 64, 64);
+            glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, rb);
+            printf("   target %s: framebuffer status 0x%x\n", rt_names[copt.rtfmt],
+                   glCheckFramebufferStatus(GL_FRAMEBUFFER));
+        }
+        if (copt.offset_f || copt.offset_u) {
+            glEnable(GL_POLYGON_OFFSET_FILL);
+            glPolygonOffset(copt.offset_f, copt.offset_u);
+        }
         glClearColor(0, 0, 0, 0);
-        glClear(GL_COLOR_BUFFER_BIT);
-        glDrawArrays(GL_TRIANGLES, 0, 3);
+        glClearDepthf(1.0f);
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        if (copt.query) {
+            glGenQueriesEXT(1, &query);
+            glBeginQueryEXT(GL_ANY_SAMPLES_PASSED_EXT, query);
+        }
+        for (int d = 0; d < copt.draws; d++) {
+            static const GLushort idx[8] = { 0, 1, 2, 3, 0, 2, 1, 3 };
+            if (copt.draws > 1) {
+                glActiveTexture(GL_TEXTURE0);
+                glBindTexture(GL_TEXTURE_2D, d & 1 ? tex2d_b : tex2d);
+            }
+            if (copt.indexed)
+                glDrawElements(copt.mode, copt.nverts, GL_UNSIGNED_SHORT, idx);
+            else
+                glDrawArrays(copt.mode, 0, copt.nverts);
+        }
+        if (copt.query)
+            glEndQueryEXT(GL_ANY_SAMPLES_PASSED_EXT);
         glFinish();
         glReadPixels(32, 32, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
+        if (copt.query) {
+            glGetQueryObjectuivEXT(query, GL_QUERY_RESULT_EXT, &passed);
+            printf("   occlusion query: %u\n", passed);
+        }
+        if (copt.offset_f || copt.offset_u)
+            glDisable(GL_POLYGON_OFFSET_FILL);
+        if (rb) {
+            glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
+                                   corpus_target_tex, 0);
+            glDeleteRenderbuffers(1, &rb);
+        }
+        if (copt.blend)
+            glDisable(GL_BLEND);
+        if (copt.depth)
+            glDisable(GL_DEPTH_TEST);
+        if (copt.width)
+            glLineWidth(1);
         snprintf(path, sizeof path, "%s/%s.pages", out, name);
-        n = changed_pages(path, 0);
+        n = changed_pages(path, copt.all_pages);
         printf("   drawn: GL error 0x%x, centre pixel %02x %02x %02x %02x, %d pages changed -> %s\n",
                glGetError(), px[0], px[1], px[2], px[3], n, path);
+        new_render_payloads(name);
         ok++;
     }
     printf("== corpus done: %d of %d cases drawn\n", ok, argc - 3);
+    return 0;
+}
+
+
+/* ---- "gltrace es1 OUTDIR [CASE...]": OpenGL ES 1's fixed function (M35) ----
+ *
+ * The same GPU, the same driver: what GLES 2 has no word for -- flat shading,
+ * logic ops, the alpha test, user clip planes, point sprites, fog, two-sided
+ * lighting -- shows how the hardware does it.  Each case draws a triangle
+ * over the 64 x 64 target (red, green, blue at its corners, texture
+ * coordinates 0..1) -- points or lines where it says -- as corpus mode does:
+ * OUTDIR/NAME.pages (the pages that are not zero), the render commands in
+ * the log.  No CASE: all of them. */
+#define GL_FLAT_ 0x1D00
+#define GL_SMOOTH_ 0x1D01
+#define GL_COLOR_LOGIC_OP_ 0x0BF2
+#define GL_ALPHA_TEST_ 0x0BC0
+#define GL_CLIP_PLANE0_ 0x3000
+#define GL_POINT_SPRITE_OES_ 0x8861
+#define GL_COORD_REPLACE_OES_ 0x8862
+#define GL_POINT_SIZE_ARRAY_OES_ 0x8B9C
+#define GL_FOG_ 0x0B60
+#define GL_FOG_MODE_ 0x0B65
+#define GL_FOG_START_ 0x0B63
+#define GL_FOG_END_ 0x0B64
+#define GL_FOG_COLOR_ 0x0B66
+#define GL_LINE_SMOOTH_ 0x0B20
+#define GL_LIGHTING_ 0x0B50
+#define GL_LIGHT0_ 0x4000
+#define GL_LIGHT_MODEL_TWO_SIDE_ 0x0B52
+#define GL_DIFFUSE_ 0x1201
+#define GL_POSITION_ 0x1203
+#define GL_AMBIENT_AND_DIFFUSE_ 0x1602
+#define GL_TEXTURE_ENV_ 0x2300
+#define GL_TEXTURE_ENV_MODE_ 0x2200
+#define GL_ADD_ 0x0104
+#define GL_MODULATE_ 0x2100
+#define GL_VERTEX_ARRAY_ 0x8074
+#define GL_NORMAL_ARRAY_ 0x8075
+#define GL_COLOR_ARRAY_ 0x8076
+#define GL_TEXTURE_COORD_ARRAY_ 0x8078
+#define GL_MODELVIEW_ 0x1700
+#define GL_PROJECTION_ 0x1701
+#define GL_FRAMEBUFFER_OES_ 0x8D40
+#define GL_RENDERBUFFER_OES_ 0x8D41
+#define GL_COLOR_ATTACHMENT0_OES_ 0x8CE0
+#define GL_DEPTH_ATTACHMENT_OES_ 0x8D00
+#define GL_DEPTH_COMPONENT16_OES_ 0x81A5
+void glShadeModel(GLenum mode);
+void glLogicOp(GLenum opcode);
+void glAlphaFunc(GLenum func, GLclampf ref);
+void glClipPlanef(GLenum plane, const GLfloat *equation);
+void glPointSize(GLfloat size);
+void glTexEnvi(GLenum target, GLenum pname, GLint param);
+void glFogf(GLenum pname, GLfloat param);
+void glFogfv(GLenum pname, const GLfloat *params);
+void glEnableClientState(GLenum array);
+void glDisableClientState(GLenum array);
+void glVertexPointer(GLint size, GLenum type, GLsizei stride, const GLvoid *pointer);
+void glColorPointer(GLint size, GLenum type, GLsizei stride, const GLvoid *pointer);
+void glTexCoordPointer(GLint size, GLenum type, GLsizei stride, const GLvoid *pointer);
+void glNormalPointer(GLenum type, GLsizei stride, const GLvoid *pointer);
+void glPointSizePointerOES(GLenum type, GLsizei stride, const GLvoid *pointer);
+void glMatrixMode(GLenum mode);
+void glLoadIdentity(void);
+void glLightModelf(GLenum pname, GLfloat param);
+void glLightfv(GLenum light, GLenum pname, const GLfloat *params);
+void glMaterialfv(GLenum face, GLenum pname, const GLfloat *params);
+void glGenFramebuffersOES(GLsizei n, GLuint *framebuffers);
+void glBindFramebufferOES(GLenum target, GLuint framebuffer);
+void glFramebufferTexture2DOES(GLenum target, GLenum attachment, GLenum textarget,
+                               GLuint texture, GLint level);
+void glGenRenderbuffersOES(GLsizei n, GLuint *renderbuffers);
+void glBindRenderbufferOES(GLenum target, GLuint renderbuffer);
+void glRenderbufferStorageOES(GLenum target, GLenum internalformat, GLsizei width,
+                              GLsizei height);
+void glFramebufferRenderbufferOES(GLenum target, GLenum attachment, GLenum renderbuffertarget,
+                                  GLuint renderbuffer);
+
+static const char *es1_names[] = {
+    "e00_smooth", "e01_flat", "e02_flat_textured", "e03_logic_xor", "e04_logic_and",
+    "e05_logic_or", "e06_logic_invert", "e07_logic_copy_inverted", "e08_logic_nand",
+    "e09_logic_set", "e10_logic_clear", "e11_alpha_greater", "e12_alpha_greater_depth",
+    "e13_alpha_less", "e14_clip_plane", "e15_point_sprite", "e16_point_size_array",
+    "e17_fog_linear", "e18_line_smooth", "e19_polygon_offset", "e20_two_side_light",
+    "e21_texenv_add", "e22_points", "e23_lines", "e24_flat_lines",
+};
+#define NES1 (int)(sizeof(es1_names) / sizeof(es1_names[0]))
+
+static void es1_case(int k)
+{
+    static const float tri[3][2] = { { -1, -1 }, { 3, -1 }, { -1, 3 } };
+    static const float pts[4][2] = { { -0.5f, -0.5f }, { 0.5f, -0.5f }, { -0.5f, 0.5f },
+                                     { 0.5f, 0.5f } };
+    static const float col[4][4] = { { 1, 0, 0, 0.25f }, { 0, 1, 0, 0.75f }, { 0, 0, 1, 1 },
+                                     { 1, 1, 0, 0.5f } };
+    static const float tc[4][2] = { { 0, 0 }, { 2, 0 }, { 0, 2 }, { 1, 1 } };
+    static const float nrm[4][3] = { { 0, 0, 1 }, { 0, 0, 1 }, { 0, 0, 1 }, { 0, 0, 1 } };
+    static const float sizes[4] = { 4, 8, 16, 32 };
+    static const GLenum ops[] = { 0x1506 /* XOR */, 0x1501 /* AND */, 0x1507 /* OR */,
+                                  0x150A /* INVERT */, 0x150C /* COPY_INVERTED */,
+                                  0x150E /* NAND */, 0x150F /* SET */, 0x1500 /* CLEAR */ };
+    GLenum mode = GL_TRIANGLES;
+    int n = 3;
+
+    glEnableClientState(GL_VERTEX_ARRAY_);
+    glEnableClientState(GL_COLOR_ARRAY_);
+    glEnableClientState(GL_TEXTURE_COORD_ARRAY_);
+    glVertexPointer(2, GL_FLOAT, 0, k >= 15 && k != 17 && k != 19 && k != 20 && k != 21 ? pts : tri);
+    glColorPointer(4, GL_FLOAT, 0, col);
+    glTexCoordPointer(2, GL_FLOAT, 0, tc);
+    switch (k) {
+    case 1: glShadeModel(GL_FLAT_); break;
+    case 2: glShadeModel(GL_FLAT_); glEnable(GL_TEXTURE_2D); break;
+    case 3: case 4: case 5: case 6: case 7: case 8: case 9: case 10:
+        glEnable(GL_COLOR_LOGIC_OP_);
+        glLogicOp(ops[k - 3]);
+        break;
+    case 11: glEnable(GL_ALPHA_TEST_); glAlphaFunc(GL_GREATER, 0.5f); break;
+    case 12:
+        glEnable(GL_ALPHA_TEST_);
+        glAlphaFunc(GL_GREATER, 0.5f);
+        glEnable(GL_DEPTH_TEST);
+        glDepthFunc(GL_LESS);
+        break;
+    case 13: glEnable(GL_ALPHA_TEST_); glAlphaFunc(GL_LESS, 0.5f); break;
+    case 14: {
+        static const float eq[4] = { 1, 1, 0, 0 };
+        glClipPlanef(GL_CLIP_PLANE0_, eq);
+        glEnable(GL_CLIP_PLANE0_);
+        break;
+    }
+    case 15:
+        glEnable(GL_TEXTURE_2D);
+        glEnable(GL_POINT_SPRITE_OES_);
+        glTexEnvi(GL_POINT_SPRITE_OES_, GL_COORD_REPLACE_OES_, GL_TRUE);
+        glPointSize(16);
+        mode = GL_POINTS, n = 4;
+        break;
+    case 16:
+        glEnableClientState(GL_POINT_SIZE_ARRAY_OES_);
+        glPointSizePointerOES(GL_FLOAT, 0, sizes);
+        mode = GL_POINTS, n = 4;
+        break;
+    case 17: {
+        static const float fogc[4] = { 1, 1, 1, 1 };
+        glEnable(GL_FOG_);
+        glFogf(GL_FOG_MODE_, GL_LINEAR);
+        glFogf(GL_FOG_START_, 0);
+        glFogf(GL_FOG_END_, 1);
+        glFogfv(GL_FOG_COLOR_, fogc);
+        break;
+    }
+    case 18: glEnable(GL_LINE_SMOOTH_); mode = GL_LINES, n = 4; break;
+    case 19:
+        glEnable(GL_DEPTH_TEST);
+        glEnable(GL_POLYGON_OFFSET_FILL);
+        glPolygonOffset(1, 2);
+        break;
+    case 20: {
+        static const float pos[4] = { 0, 0, 1, 0 }, dif[4] = { 1, 1, 1, 1 };
+        glEnable(GL_LIGHTING_);
+        glEnable(GL_LIGHT0_);
+        glLightfv(GL_LIGHT0_, GL_POSITION_, pos);
+        glLightfv(GL_LIGHT0_, GL_DIFFUSE_, dif);
+        glMaterialfv(GL_FRONT_AND_BACK, GL_AMBIENT_AND_DIFFUSE_, dif);
+        glLightModelf(GL_LIGHT_MODEL_TWO_SIDE_, 1);
+        glEnableClientState(GL_NORMAL_ARRAY_);
+        glNormalPointer(GL_FLOAT, 0, nrm);
+        break;
+    }
+    case 21: glEnable(GL_TEXTURE_2D); glTexEnvi(GL_TEXTURE_ENV_, GL_TEXTURE_ENV_MODE_, GL_ADD_); break;
+    case 22: mode = GL_POINTS, n = 4; glPointSize(8); break;
+    case 23: mode = GL_LINES, n = 4; break;
+    case 24: glShadeModel(GL_FLAT_); mode = GL_LINES, n = 4; break;
+    }
+    glDrawArrays(mode, 0, n);
+    glFinish();
+    glShadeModel(GL_SMOOTH_);
+    glDisable(GL_TEXTURE_2D);
+    glDisable(GL_COLOR_LOGIC_OP_);
+    glDisable(GL_ALPHA_TEST_);
+    glDisable(GL_DEPTH_TEST);
+    glDisable(GL_CLIP_PLANE0_);
+    glDisable(GL_POINT_SPRITE_OES_);
+    glDisableClientState(GL_POINT_SIZE_ARRAY_OES_);
+    glDisable(GL_FOG_);
+    glDisable(GL_LINE_SMOOTH_);
+    glDisable(GL_POLYGON_OFFSET_FILL);
+    glDisable(GL_LIGHTING_);
+    glDisable(GL_LIGHT0_);
+    glDisableClientState(GL_NORMAL_ARRAY_);
+    glTexEnvi(GL_TEXTURE_ENV_, GL_TEXTURE_ENV_MODE_, GL_MODULATE_);
+    glPointSize(1);
+}
+
+static int es1_corpus(int argc, char **argv)
+{
+    const char *out = argv[2];
+    unsigned char texels[4 * 4 * 4];
+    GLuint tex, rt, fbo, depth;
+    char path[512];
+    int ok = 0;
+
+    quiet = 1;
+    printf("== extensions: %s\n", (const char *)glGetString(GL_EXTENSIONS));
+    glGenTextures(1, &rt);
+    glBindTexture(GL_TEXTURE_2D, rt);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 64, 64, 0, GL_RGBA, GL_UNSIGNED_BYTE, 0);
+    glGenFramebuffersOES(1, &fbo);
+    glBindFramebufferOES(GL_FRAMEBUFFER_OES_, fbo);
+    glFramebufferTexture2DOES(GL_FRAMEBUFFER_OES_, GL_COLOR_ATTACHMENT0_OES_, GL_TEXTURE_2D, rt, 0);
+    glGenRenderbuffersOES(1, &depth);
+    glBindRenderbufferOES(GL_RENDERBUFFER_OES_, depth);
+    glRenderbufferStorageOES(GL_RENDERBUFFER_OES_, GL_DEPTH_COMPONENT16_OES_, 64, 64);
+    glFramebufferRenderbufferOES(GL_FRAMEBUFFER_OES_, GL_DEPTH_ATTACHMENT_OES_,
+                                 GL_RENDERBUFFER_OES_, depth);
+    glViewport(0, 0, 64, 64);
+    glMatrixMode(GL_PROJECTION_);
+    glLoadIdentity();
+    glMatrixMode(GL_MODELVIEW_);
+    glLoadIdentity();
+    for (int i = 0; i < 16; i++) {
+        texels[i * 4] = (i & 3) * 64;
+        texels[i * 4 + 1] = (i >> 2) * 64;
+        texels[i * 4 + 2] = 128;
+        texels[i * 4 + 3] = 255;
+    }
+    glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 4, 4, 0, GL_RGBA, GL_UNSIGNED_BYTE, texels);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+
+    /* the driver's own first-use setup, out of the way */
+    for (int k = 0; k < 2; k++) {
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        es1_case(0);
+    }
+    snprintf(path, sizeof path, "%s/baseline.pages", out);
+    printf("== es1: %d pages not zero -> %s\n", changed_pages(path, 1), path);
+    new_render_payloads("baseline");
+    for (int k = 0; k < NES1; k++) {
+        unsigned char px[4] = { 0 };
+        int want = argc <= 3;
+
+        for (int i = 3; i < argc; i++)
+            want |= !strcmp(argv[i], es1_names[k]);
+        if (!want)
+            continue;
+        printf("== case %s\n", es1_names[k]);
+        glClearColor(0, 0, 0, 0);
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        glFinish();
+        changed_pages(0, 0);
+        es1_case(k);
+        glReadPixels(32, 32, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
+        snprintf(path, sizeof path, "%s/%s.pages", out, es1_names[k]);
+        printf("   drawn: GL error 0x%x, centre pixel %02x %02x %02x %02x, %d pages -> %s\n",
+               glGetError(), px[0], px[1], px[2], px[3], changed_pages(path, 1), path);
+        new_render_payloads(es1_names[k]);
+        ok++;
+    }
+    printf("== es1 done: %d cases drawn\n", ok);
     return 0;
 }
 
@@ -1184,14 +1933,18 @@ int main(int argc, char **argv)
     }
     setvbuf(stdout, 0, _IONBF, 0);	/* the GPU reset may take the process down */
     install_hooks();
-    printf("== hooks installed; creating GLES2 context\n");
+    int es1 = argc > 2 && !strcmp(argv[1], "es1");
+    printf("== hooks installed; creating GLES%d context\n", es1 ? 1 : 2);
 
-    id ctx = [[EAGLContext alloc] initWithAPI:kEAGLRenderingAPIOpenGLES2];
+    id ctx = [[EAGLContext alloc] initWithAPI:es1 ? kEAGLRenderingAPIOpenGLES1 :
+                                                    kEAGLRenderingAPIOpenGLES2];
     if (!ctx || ![EAGLContext setCurrentContext:ctx]) {
-        printf("no GLES2 context -- headless EAGL may be denied on this build\n");
+        printf("no GLES context -- headless EAGL may be denied on this build\n");
         return 1;
     }
     printf("== context ok, renderer \"%s\"\n", (const char *)glGetString(GL_RENDERER));
+    if (es1)
+        return es1_corpus(argc, argv);
 
     GLuint tex, fbo;
     glGenTextures(1, &tex);
@@ -1201,8 +1954,10 @@ int main(int argc, char **argv)
     glBindFramebuffer(GL_FRAMEBUFFER, fbo);
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex, 0);
 
-    if (argc > 2 && !strcmp(argv[1], "corpus"))
+    if (argc > 2 && !strcmp(argv[1], "corpus")) {
+        corpus_target_tex = tex;
         return corpus(argc, argv);
+    }
 
     const char *vs = "attribute vec4 p; void main(){ gl_Position = p; }";
     /* two fragment programs differing by ONE op: prog1 outputs the uniform,

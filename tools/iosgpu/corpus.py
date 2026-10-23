@@ -446,32 +446,52 @@ def tag5_va(w):
 # PDS instruction words iOS's GL driver writes (tools/sgx/pds.py)
 PDS_NAMES = {0xaf000000: 'end', 0x070001b5: 'doutu row0 (then iterate/fetch)',
              0x07000185: 'doutu row0', 0x070401a5: 'doutu row1 (after)',
-             0x07018113: 'dma row0', 0x07000c02: 'iterate (background)',
-             0x07041004: 'texture fetch, state row1', 0x67800072: 'fetch index'}
+             0x07018113: 'dma row0',
+             0x67800072: 'fetch index'}
 
 
-ITERATE_SIZE = {0x02: 'one register', 0x12: 'two registers', 0x32: 'four registers'}
+ITERATE_SIZE = {0x02: 'one register', 0x12: 'two registers', 0x32: 'four registers',
+                0x52: 'two registers, F16 texel'}
 
 
 def iterate_word(w):
     """an iterate DOUT: its control word's index in the data segment (row
     in bits 17:12, word in the row in 11:10) and the size of what it writes
     to the primary attributes (bits 5:4) -- from the 2026-10-04 corpus"""
-    if w >> 24 == 0x07 and (w & 0xcf) == 0x02:
+    if w >> 24 == 0x07 and (w & 0x8f) == 0x02:
         return (w >> 12 & 0x3f) * 4 + (w >> 10 & 3), ITERATE_SIZE.get(w & 0x3f, '%#x' % (w & 0x3f))
     return None
 
 
 def iterate_control(c):
-    """a varying's iterate control word (0x2fc0000f: the last, F16, four
-    components, varying 0): F16 when bits 29:28 are 2 (0: F32), bit 25 the
-    last iterate, bits 23:22 components - 1, bits 15:12 which varying of the
-    vertex (in words 19/20's order; 13 is the position: gl_FragCoord)"""
-    if c & 0x0d00000f != 0x0d00000f:
-        return 'texture coordinates or other (%08x)' % c
-    return '%s, %d component%s, varying %d%s' % (
-        {2: 'F16', 0: 'F32'}.get(c >> 28 & 3, 'format %d' % (c >> 28 & 3)), (c >> 22 & 3) + 1,
-        '' if c >> 22 & 3 == 0 else 's', c >> 12 & 0xf, ', last' if c >> 25 & 1 else '')
+    """an iterate's control word, two halves (the 2026-10-10 corpus, s*):
+    what goes into the primary attributes -- format in bits 29:28 (0 F32,
+    1 U8, 2 F16), bit 25 the last such iterate, bits 23:22 components - 1,
+    bits 15:12 which varying of the vertex (in words 19/20's order; 13 the
+    position, gl_FragCoord; 15 none) -- and what goes to the texture unit
+    for the texture DOUT after it: bits 3:0 the varying whose x, y (z) are
+    the coordinates (15 none), bits 10:8 1 2D, 2 projective, 3 a cube map,
+    bit 11 the last lookup"""
+    out = []
+    if c >> 12 & 0xf != 0xf:
+        out.append('%s %d component%s of varying %d%s' % (
+            {0: 'F32', 1: 'U8', 2: 'F16'}.get(c >> 28 & 3, 'format %d' % (c >> 28 & 3)),
+            (c >> 22 & 3) + 1, '' if c >> 22 & 3 == 0 else 's', c >> 12 & 0xf,
+            ' (last)' if c >> 25 & 1 else ''))
+    if c & 0xf != 0xf:
+        out.append('texture at varying %d (%s%s)' % (
+            c & 0xf, {0: 'kind 0, the driver\'s own', 1: '2D', 2: 'projective',
+                      3: 'cube'}.get(c >> 8 & 7, 'kind %d' % (c >> 8 & 7)),
+            ', last' if c >> 11 & 1 else ''))
+    return '; '.join(out) or 'nothing (%08x)' % c
+
+
+def texture_word(w):
+    """a texture DOUT (kind 004, 024 for an F16 texel): its four state words
+    from data word (17:10) -- (s + 2) >> 2 in 23:18"""
+    if w >> 24 == 0x07 and w & 0x8f == 0x04:
+        return w >> 10 & 0xff, 'F16' if w & 0x20 else 'as it is'
+    return None
 
 
 def pds_name(w):
@@ -480,11 +500,51 @@ def pds_name(w):
     it = iterate_word(w)
     if it:
         return 'iterate into %s, control: word %d' % (it[1], it[0])
+    tx = texture_word(w)
+    if tx:
+        return 'texture, state words %d.., the texel %s' % tx
     if w & 0xffc0ffff == 0x2f0091a3:
         return 'fetch attribute, row %d' % ((w >> 16 & 0x3f) // 4)
     if w >> 24 == 0x07:
         return 'dout %03x, operands at %03x' % (w & 0xfff, w >> 12 & 0xfff)
     return ''
+
+
+def pds_by_shape(name, mem_after, mem_before):
+    """the PDS programs that start a USSE program, found by their shape: a
+    DOUT that starts it from data row 0 (kind 185, 1a5, 1b5, 1f5), then the
+    iterate and texture DOUTs, up to the end -- the data rows before it --
+    that the case changed.  (The DOUTU's address is relative to a code base
+    the CPU addresses need not show: the 2026-10-10 corpus's is not 64 KiB
+    aligned.)"""
+    for addr in sorted(mem_after):
+        ws = struct.unpack('<1024I', mem_after[addr])
+        old = struct.unpack('<1024I', mem_before.get(addr, bytes(PAGE)))
+        for k, w in enumerate(ws):
+            if w >> 24 != 0x07 or w & 0xfff not in (0x185, 0x1a5, 0x1b5, 0x1f5) or w >> 12 & 0xfff:
+                continue
+            end = next((e for e in range(k, min(k + 16, 1024)) if ws[e] == 0xaf000000), None)
+            if end is None or not any(iterate_word(x) or texture_word(x) for x in ws[k + 1:end]):
+                continue
+            # the data rows: as many as the DOUTs' operands reach
+            words = 2
+            for x in ws[k + 1:end]:
+                it, tx = iterate_word(x), texture_word(x)
+                words = max(words, it[0] + 1 if it else 0, tx[0] + 4 if tx else 0)
+            first = k - 4 * ((words + 3) // 4)
+            if first < 0:
+                continue
+            if ws[first:end + 1] == old[first:end + 1]:
+                continue
+            print('-- PDS at CPU %08x' % (addr + 4 * first))
+            for e in range(first, end + 1):
+                print('   %08x %s %08x  %s' % (addr + 4 * e, '=' if ws[e] == old[e] else ' ', ws[e],
+                                              pds_name(ws[e]) if e >= k else ''))
+            for e in range(k + 1, end):
+                it = iterate_word(ws[e])
+                if it and first + it[0] < 1024:
+                    print('      control word %d = %08x: %s' % (it[0], ws[first + it[0]],
+                                                              iterate_control(ws[first + it[0]])))
 
 
 def pds_programs(name, case_pages, mem_after, mem_before):
@@ -493,8 +553,9 @@ def pds_programs(name, case_pages, mem_after, mem_before):
     | 3 or 8, the code base 64 KiB-aligned) that lands on a PHAS, and the
     PDS shape (data rows, then instruction words up to an end, 0xaf000000).
     Words the draw left as they were are marked '=' (often the rest of an
-    older, longer program)."""
+    older, longer program).  Then those found by shape alone."""
     print('== %s' % name)
+    pds_by_shape(name, mem_after, mem_before)
     done = set()
     for addr in sorted(case_pages):
         ws = struct.unpack('<1024I', mem_after[addr])

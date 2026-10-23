@@ -72,6 +72,10 @@ struct sgx_fence {
    uint32_t syncobj;
 };
 
+/* (M43) when f was signalled, CLOCK_MONOTONIC ns (the kernel's dma-fence
+ * timestamp, through a sync file); 0 if not yet or not known */
+uint64_t sgx_fence_signal_time(struct sgx_fence *f);
+
 bool sgx_device_init(struct sgx_device *dev, int fd);
 void sgx_device_fini(struct sgx_device *dev);
 uint64_t sgx_device_param(struct sgx_device *dev, uint32_t param);

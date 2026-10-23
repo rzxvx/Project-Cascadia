@@ -67,7 +67,7 @@ bash ~/flashdrive/boot-gpio-poll.sh
 | hold | 1 | **yes** | Side; active-low; Samsung MENU line aliases this |
 | volup | 2 | **yes** | active-low |
 | voldown | 3 | **yes** | active-low |
-| ringerab | 4 | not tested | |
+| ringerab | 4 | **yes** (2026-10-16) | the side switch: pin low (SW_MUTE_DEVICE 1) with the orange mark showing; p105-keys: brightness there, volume the other way |
 
 **Read recipe (use this):**
 

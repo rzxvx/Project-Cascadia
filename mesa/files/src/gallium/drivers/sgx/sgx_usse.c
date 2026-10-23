@@ -8,6 +8,8 @@
  */
 #include "sgx_usse.h"
 
+#include <stdlib.h>
+
 #include <assert.h>
 #include <stdio.h>
 
@@ -91,6 +93,30 @@ usse_fop(enum usse_nmad_op op, struct usse_reg dest, struct usse_reg src1,
           bits(sw1 >> 10 & 3, 54, 53) | bits(dext, 51, 51) | bits(sw1 >> 9 & 1, 50, 50) |
           bits(ext1, 49, 49) | bits(ext2, 48, 48) | bits(sw2, 47, 44) |
           bits(1u << lane(dest), 42, 39) |                /* the dest mask */
+          bits(modifier(src1), 38, 37) | bits(src2.abs, 36, 36) |
+          bits(sw1 >> 7 & 3, 35, 34) | bits(dbank, 33, 32) | bits(bank1, 31, 30) |
+          bits(bank2, 29, 28) | bits(pair(dest), 27, 22) | bits(sw1 & 0x7f, 21, 15) |
+          bits(op, 14, 12) | bits(pair(src1), 11, 6) | bits(pair(src2), 5, 0);
+}
+
+/* V16NMAD on four F16 at once (M38, iOS's SDL sprite: `mul.f16 pa0.xyzw,
+ * pa2.xyzw, pa0.xyzw`): the same fields as V32NMAD's, a register pair each
+ * operand, src1's swizzle xyzw (three bits a channel), src2's the table's
+ * xyzw (4), the mask all four */
+uint64_t
+usse_hop(enum usse_nmad_op op, struct usse_reg dest, struct usse_reg src1,
+         struct usse_reg src2)
+{
+   unsigned dext, dbank, ext1, bank1, ext2, bank2;
+   const unsigned sw1 = 0 | 1 << 3 | 2 << 6 | 3 << 9, sw2 = 4;
+
+   assert(!(dest.num & 1) && !(src1.num & 1) && !(src2.num & 1) && !src2.neg);
+   dest_bank(dest, &dext, &dbank);
+   src_bank(src1, &ext1, &bank1);
+   src_bank(src2, &ext2, &bank2);
+   return bits(0x02, 63, 59) | SKIPINV |
+          bits(sw1 >> 10 & 3, 54, 53) | bits(dext, 51, 51) | bits(sw1 >> 9 & 1, 50, 50) |
+          bits(ext1, 49, 49) | bits(ext2, 48, 48) | bits(sw2, 47, 44) | bits(0xf, 42, 39) |
           bits(modifier(src1), 38, 37) | bits(src2.abs, 36, 36) |
           bits(sw1 >> 7 & 3, 35, 34) | bits(dbank, 33, 32) | bits(bank1, 31, 30) |
           bits(bank2, 29, 28) | bits(pair(dest), 27, 22) | bits(sw1 & 0x7f, 21, 15) |
@@ -211,6 +237,94 @@ usse_pack_unorm8_to(struct usse_reg dest, struct usse_reg src)
           bits(src.num >> 1, 13, 8) | bits(0, 7, 7) | bits((src.num >> 1) + 1, 6, 1);
 }
 
+/* SGX_USSE_XOR_PACKF16 / _UNPACKF16=mask: bits flipped in those words (to
+ * find their encoding) */
+static uint64_t
+usse_xor(const char *name)
+{
+   const char *e = getenv(name);
+
+   return e ? strtoull(e, NULL, 0) : 0;
+}
+
+/* VPCK F32 to F16 (M43): usse_pack_unorm8_to's word with dest format 5
+ * (F16) and no scale -- F16 from src's pair and src + 2's, as mask says */
+static uint64_t
+vpck_f32_to(unsigned fmt, struct usse_reg dest, struct usse_reg src, unsigned mask)
+{
+   unsigned ext, bank, dext, dbank;
+
+   assert(!(src.num & 1));
+   src_bank(src, &ext, &bank);
+   dest_bank(dest, &dext, &dbank);
+   return bits(0x08, 63, 59) | SKIPINV | bits(dext, 51, 51) | bits(ext, 49, 49) |
+          bits(ext, 48, 48) | bits(6, 43, 41) | bits(fmt, 40, 38) | bits(mask, 37, 34) |
+          bits(dbank, 33, 32) | bits(bank, 31, 30) | bits(bank, 29, 28) |
+          bits(dest.num, 27, 21) | bits(3, 20, 19) | bits(1, 17, 16) | bits(2, 15, 14) |
+          bits(src.num >> 1, 13, 8) | bits(0, 7, 7) | bits((src.num >> 1) + 1, 6, 1);
+}
+
+uint64_t
+usse_pack_f32x2(struct usse_reg dest, struct usse_reg src)
+{
+   return vpck_f32_to(6, dest, src, 0x3) ^ usse_xor("SGX_USSE_XOR_PACKF32");
+}
+
+uint64_t
+usse_pack_f16(struct usse_reg dest, struct usse_reg src, unsigned mask)
+{
+   unsigned ext, bank, dext, dbank;
+
+   assert(!(src.num & 1));
+   src_bank(src, &ext, &bank);
+   dest_bank(dest, &dext, &dbank);
+   return (bits(0x08, 63, 59) | SKIPINV | bits(dext, 51, 51) | bits(ext, 49, 49) |
+           bits(ext, 48, 48) | bits(6, 43, 41) | bits(5, 40, 38) | bits(mask, 37, 34) |
+           bits(dbank, 33, 32) | bits(bank, 31, 30) | bits(bank, 29, 28) |
+           bits(dest.num, 27, 21) | bits(3, 20, 19) | bits(1, 17, 16) | bits(2, 15, 14) |
+           bits(src.num >> 1, 13, 8) | bits(0, 7, 7) | bits((src.num >> 1) + 1, 6, 1)) ^
+          usse_xor("SGX_USSE_XOR_PACKF16");
+}
+
+/* VPCK F16 to F32 (M43): usse_unpack_unorm8's word with source format 5
+ * (F16) and no scale -- channels chan, chan + 1 of the pair src: as for
+ * bytes, the select's low bit at 0, its high bit the second source's low
+ * bit (o1's halves are channels 2 and 3 of o0's pair, not o1's 0 and 1:
+ * glfmt's blend read o0 twice that way) */
+uint64_t
+usse_unpack_f16(struct usse_reg dest, struct usse_reg src, unsigned chan)
+{
+   unsigned dext, dbank, ext, bank;
+
+   assert(!(dest.num & 1) && !(src.num & 1) && (chan == 0 || chan == 2));
+   dest_bank(dest, &dext, &dbank);
+   src_bank(src, &ext, &bank);
+   return (bits(0x08, 63, 59) | SKIPINV | bits(dext, 51, 51) | bits(ext, 49, 49) |
+           bits(1, 48, 48) | bits(5, 43, 41) | bits(6, 40, 38) | bits(3, 37, 34) |
+           bits(dbank, 33, 32) | bits(bank, 31, 30) | bits(2, 29, 28) | bits(dest.num, 27, 21) |
+           bits(3, 20, 19) | bits(chan + 1, 17, 16) | bits(2, 15, 14) |
+           bits(src.num >> 1, 13, 8) | bits(chan >> 1, 6, 1)) ^
+          usse_xor("SGX_USSE_XOR_UNPACKF16");
+}
+
+/* VPCK from four F16 in a register pair (M38: iOS's `pck.u8.f16 o0.xyzw,
+ * pa0.xyzw scale`): source format 5, the channels x y z w of the one pair,
+ * no second source (bit 48: its bank the immediate) */
+uint64_t
+usse_pack_unorm8_f16(struct usse_reg dest, struct usse_reg src)
+{
+   unsigned ext, bank, dext, dbank;
+
+   assert(!(src.num & 1));
+   src_bank(src, &ext, &bank);
+   dest_bank(dest, &dext, &dbank);
+   return bits(0x08, 63, 59) | SKIPINV | bits(dext, 51, 51) | bits(ext, 49, 49) |
+          bits(1, 48, 48) | bits(5, 43, 41) | bits(0, 40, 38) | bits(0xf, 37, 34) |
+          bits(dbank, 33, 32) | bits(bank, 31, 30) | bits(bank, 29, 28) | bits(dest.num, 27, 21) |
+          bits(3, 20, 19) | bits(1, 18, 18) | bits(1, 17, 16) | bits(2, 15, 14) |
+          bits(src.num >> 1, 13, 8);
+}
+
 static uint64_t
 smp(unsigned dim, enum usse_smp_out out, enum usse_smp_coord coord, struct usse_reg dest,
     struct usse_reg coords, struct usse_reg state, enum usse_smp_lod mode, struct usse_reg lod)
@@ -325,6 +439,24 @@ usse_vbw_or_rot(struct usse_reg dest, struct usse_reg src1, unsigned imm, unsign
 {
    /* (Vita3K's src2_rot, bits 42:38) */
    return vbw_logic(true, dest, src1, imm) | bits(rot, 42, 38);
+}
+
+/* VBW's op 2 (and, or by bit 35) or 3 (xor), src2 a register; bit 43
+ * inverts it (iOS's `and o0, c56, ~pa0`, `or o0, o0, ~o0`) */
+uint64_t
+usse_vbw(enum usse_vbw_op op, struct usse_reg dest, struct usse_reg src1, struct usse_reg src2,
+         bool not2)
+{
+   unsigned dext, dbank, ext1, bank1, ext2, bank2;
+
+   dest_bank(dest, &dext, &dbank);
+   src_bank(src1, &ext1, &bank1);
+   src_bank(src2, &ext2, &bank2);
+   return bits(1, 63, 62) | bits(op == USSE_VBW_XOR ? 3 : 2, 61, 59) | SKIPINV |
+          bits(dext, 51, 51) | bits(ext1, 49, 49) | bits(ext2, 48, 48) | bits(not2, 43, 43) |
+          bits(op == USSE_VBW_OR, 35, 35) | bits(dbank, 33, 32) | bits(bank1, 31, 30) |
+          bits(bank2, 29, 28) | bits(dest.num, 27, 21) | bits(src1.num, 13, 7) |
+          bits(src2.num, 6, 0);
 }
 
 /* VLDST: 111, op 1 (a load), no MOE expansion (with it, more than a word
