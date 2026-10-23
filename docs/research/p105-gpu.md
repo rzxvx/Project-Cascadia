@@ -960,6 +960,8 @@ framebuffer). The real SDL keeps the window, events and bookkeeping; every
 drawing call goes to the GPU. Input is a touch gamepad drawn over the frame:
 the touchscreen (`event0`, 0..4096, multitouch) is read on a thread and its
 buttons pushed as SDL key events. The user played it: stable 60 fps.
+(The shim and its launcher are gone since M44 of p105-mesa.md: OpenGL runs
+SuperTux itself, and the GPU's demo is `tux-gpudemo`, docs/GPU.md.)
 
 What it took, in order:
 

@@ -117,6 +117,8 @@ SGX_DEBUG=copies sgx-gl glupload # each texture copy the CPU makes: whole, a box
 SGX_DEBUG=fps,flushes desktop    # the per-2 s report for the X server (it never swaps): its
                                  # renders, where they were flushed from (M37)
 SGX_NO_F16=1 sgx-gl glfetch      # the colour as F32 even where it could be F16 (M38)
+tux-gpudemo                      # the GPU demo, fullscreen on KMS (tools/sgx/tux, docs/GPU.md):
+                                 # EXIT top right; TUX_NOFLIP=1 tux-gpudemo 30 for the GPU's pace
 sgx-gl kmsrot                    # the plane's four turns (M41), the screen read back through
                                  # /dev/fb0, a DIRTYFB box too; with X stopped
 sgx-gl glproj                    # projective and rectangle lookups by the PDS, the vertex

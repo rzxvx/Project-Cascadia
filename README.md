@@ -129,19 +129,17 @@ including the parts that didn't work.
       ADT carries Apple's host-mode PHY tuning; the port costs the console and
       the network, which Wi-Fi now covers, and the open question is VBUS — in
       host mode the iPad has to power the bus itself
-- [x] Graphical Acceleration (SGX543MP2) — **2D on the GPU; SuperTux plays
-      at 60 fps** (2026-10-02). A kernel driver (`drivers/gpu/drm/apple-sgx`)
+- [x] Graphical Acceleration (SGX543MP2) — **the GPU draws** (2026-10-02).
+      A kernel driver (`drivers/gpu/drm/apple-sgx`)
       powers the GPU with iOS's own sequence and boots **iOS's own GPU
       microkernel** (taken from your IPSW by `./cascadia firmware`); the
       shaders and the frame's state are this repository's own (a USSE
       assembler and PDS builder, checked word by word against iOS's GL
       driver), with the kernel's share computed by running the kext's own
-      code under an emulator. On that sits `sgx2d`, a small 2D
+      code under an emulator. On that sat `sgx2d` first, a small 2D
       library (textured quads, colour modulation, three blend modes, full
-      screen), and an SDL2 renderer shim: `supertux-gpu` runs SuperTux with a
-      touch gamepad (OpenGL came after: below). Set up
-      with one command, `./cascadia gpu`; details and controls:
-      [docs/GPU.md](docs/GPU.md); how it was found, wrong
+      screen); OpenGL came after (below). Set up with one command, `./cascadia
+      gpu`; details: [docs/GPU.md](docs/GPU.md); how it was found, wrong
       turns included: [docs/research/p105-gpu.md](docs/research/p105-gpu.md)
 - [x] OpenGL through Mesa — **the system's OpenGL: ES 1.1 and 2.0, desktop
       2.1 through GLX and EGL** (2026-10-15). A Gallium driver in
@@ -150,6 +148,9 @@ including the parts that didn't work.
       render node; `./cascadia mesa` builds it and makes it the system's.
       **XFCE runs on Xorg with glamor on the GPU**, GLX programs beside it;
       weston and its Wayland clients too; SuperTux through SDL's GL renderer.
+      **`tux-gpudemo`**, the GPU demo: Tux going round, his light baked, at
+      about 58 fps fullscreen ([docs/GPU.md](docs/GPU.md#the-demo); the model:
+      teutekeune).
       Measured: dEQP-GLES2 16 859 of 16 950 run, piglit's GL profile 774
       passing of the ~960 a 2.1 part runs. Not there yet: flat shading,
       logic ops, discard writing no depth, polygon offset, 3D textures,
@@ -809,7 +810,8 @@ pretty far.
 
 ## Credits
 
-- **teutekeune** — iBSSloader: kernel patches, boot chain, the original AIC1 driver
+- **teutekeune** — iBSSloader: kernel patches, boot chain, the original AIC1 driver;
+  the Tux of the GPU demo (`tux-gpudemo`)
 - **axi0mX** — checkm8 BootROM exploit
 - **LukeZGD** — Legacy iOS Kit, EverPwnage, checkm8-a5 Pico firmware
 - **NyanSatan** — checkm8_bootkit, iBoot research

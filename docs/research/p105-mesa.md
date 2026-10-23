@@ -146,7 +146,7 @@ the new pack and binaries):
 3. `/usr/local/lib/sgx2d/sprites /usr/local/lib/sgx2d 200 600` -- the same
    frame rate as through debugfs (~220 fps); `renders done` in sgxinfo
    counts them.
-4. `supertux-gpu`.
+4. SuperTux through sgx2d's SDL shim (M7's; gone since M44, OpenGL runs it).
 
 **On the device, 2026-10-03: it works.** The render node registers next to
 the old driver (`[drm] Initialized apple_sgx 0.1.0 ... on minor 0`), the

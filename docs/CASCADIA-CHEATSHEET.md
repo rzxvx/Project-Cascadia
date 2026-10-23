@@ -155,7 +155,8 @@ is true as of its date. Now:
   `nandctl` for the chips themselves — see "THE NAND" at the end
 - XFCE: `tools/desktop/xfce-setup.sh`, then `desktop` -- on the GPU (Xorg,
   glamor) once the GPU's OpenGL is installed
-- the GPU, 2D: `./cascadia gpu`, then `supertux-gpu` (docs/GPU.md)
+- the GPU: `./cascadia gpu` (the pack: the template frame, sgx2d's demos), then
+  `./cascadia mesa`; the GPU demo: `tux-gpudemo` (EXIT top right; docs/GPU.md)
 - the GPU's OpenGL: `./cascadia mesa` -- the system's OpenGL ES 1.1/2.0 and desktop
   OpenGL 2.1 (GLX, EGL, GBM); see "THE GPU'S OPENGL" at the end
 - sound: the speakers, ALSA card `iPadMini` (DMA, 32/44.1/48 kHz, S16/S32),
@@ -1382,7 +1383,7 @@ frames and touches in dmesg; `z2-boot -p N -N` reads the frames itself, without 
 | `apk add` of a big package over ssh: "No space left on device" | the iPad's /tmp is 128 MB of RAM: copy it to /var/tmp (the NFS root) |
 | `perf probe -x libgallium ...` (uprobes) and the renders fail | the driver is Thumb code and the probes break it: remove them (`echo > /sys/kernel/tracing/uprobe_events`); count with `perf record -e raw_syscalls:sys_enter --filter 'id == 54'` (ioctls) instead |
 | `ssh cascadia 'pkill -f NAME ...'` and the ssh session dies | `-f` matches the ssh's own shell, whose command line has NAME: `pkill -x` |
-| SuperTux drawn in a corner, or its menu off to the right | its config (`~/.local/share/supertux2/config`) keeps the last `--geometry` as `fullscreen_width`/`_height` (a test's 384 x 512, supertux-gpu's 1024 x 768): set both to 0 (the desktop's size) with SuperTux closed -- it writes the config when it exits; supertux-gpu puts them back itself now. `SGX_DEBUG=fps` prints the target's size and the viewport |
+| SuperTux drawn in a corner, or its menu off to the right | its config (`~/.local/share/supertux2/config`) keeps the last `--geometry` as `fullscreen_width`/`_height` (a test's 384 x 512): set both to 0 (the desktop's size) with SuperTux closed -- it writes the config when it exits. `SGX_DEBUG=fps` prints the target's size and the viewport |
 | SuperTux 355 draws a frame on KMS, 31 under X | SDL batches only when no renderer is named: `SDL_RENDER_BATCHING=1` with `SDL_RENDER_DRIVER` (supertux-mesa.sh has it) |
 | SuperTux under X slower than on KMS while its CPU idles | the X server's and xfwm4's renders share the GPU: compare with X itself on the build (`SGX_MESA=/root/sgx-mesa-rel /root/sgx-dev desktop`), not SuperTux alone |
 | a program's fps under X is not what the screen shows | composited, the screen shows xfwm4's frames: count the X server's page flips and DIRTYFBs (`perf record -e raw_syscalls:sys_enter -e raw_syscalls:sys_exit --filter 'id == 54' -p $(pidof Xorg)`, `python3 tools/sgx/ioret.py`: `c01864b0`, `c01864b1`); a window's bypass hint and depth: `tools/sgx/xwinfo.py` |

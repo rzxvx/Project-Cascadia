@@ -329,17 +329,24 @@ had that do not work here:
   for a device with multitouch axes X emulates the pointer itself, and evdev's
   emulation never runs.
 
-## Games on the GPU
+## The GPU demo
 
-SuperTux runs on the GPU at 60 fps, played with a touch gamepad. With the
-iPad booted from NFS and `./cascadia net on`:
+Tux going round on the screen, drawn by the GPU through OpenGL ES -- his
+light baked in Blender, the logo over his head glowing -- at about 58 frames
+a second, fullscreen. The model is teutekeune's. With the iPad booted from NFS:
 
 ```bash
 ./cascadia gpu
 ```
 
-then `supertux-gpu` on the iPad. It needs only the IPSW the port is built
-from; [GPU.md](GPU.md) has the details, the controls and how it works.
+```bash
+./cascadia mesa
+```
+
+then `tux-gpudemo` on the iPad's console (not under X); the **EXIT** button
+in the top right corner ends it. It needs only the IPSW the port is built
+from; `./cascadia mesa` also makes the GPU every program's OpenGL (XFCE,
+SuperTux). [GPU.md](GPU.md) has the details and how it works.
 
 ## When it goes wrong
 
