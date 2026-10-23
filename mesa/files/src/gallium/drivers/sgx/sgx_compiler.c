@@ -5,8 +5,9 @@
  * NIR to USSE, fragment shaders (sgx_compiler.h; docs/research/p105-mesa.md,
  * M13c).  The first compiler is deliberately plain:
  *
- *  - every value is a scalar F32 (NIR scalarised, ints and bools lowered to
- *    floats as for the other float-only GPUs);
+ *  - every value is a scalar 32-bit word (NIR scalarised): an F32, or
+ *    (M44) an integer -- the hardware's own, booleans 0 and ~0; until M44
+ *    ints and bools were lowered to floats, as for the float-only GPUs;
  *  - the shader is one block: NIR unrolls loops and turns ifs into
  *    selects, and what it cannot flatten is not compiled;
  *  - values live in temporaries, one each, always the even (x) lane of a
@@ -42,6 +43,7 @@
 #include "compiler/nir/nir_format_convert.h"
 #include "compiler/nir/nir_lower_blend.h"
 #include "util/format/u_formats.h"
+#include "util/hash_table.h"
 #include "util/ralloc.h"
 #include "util/u_dynarray.h"
 #include "util/u_math.h"
@@ -59,6 +61,7 @@ struct operand {
    bool neg, abs;
    bool is_const;
    float c;
+   uint32_t u;          /* (M44) a constant's bits: an integer's, or c's */
 };
 
 /* temporaries made for one instruction, given back after it */
@@ -169,6 +172,10 @@ struct comp {
    unsigned why_size;
    bool failed;
    bool keep_order;                     /* NIR's order, not nir_opt_move's (M36) */
+   /* (M44) the shader and NIR's range analysis of it: an integer known
+    * small enough for one instruction (a product, a shift) */
+   nir_shader *nir;
+   struct hash_table *range;
 };
 
 static void
@@ -277,14 +284,20 @@ f32_bits(float f)
    return u;
 }
 
-/* a constant in a temporary made for this instruction */
+/* a constant's bits in a temporary made for this instruction */
 static struct usse_reg
-constant(struct comp *c, struct scratch *s, float f)
+constant_bits(struct comp *c, struct scratch *s, uint32_t u)
 {
    struct usse_reg r = treg(c, scratch_take(c, s));
 
-   emit(c, usse_limm(r, f32_bits(f)));
+   emit(c, usse_limm(r, u));
    return r;
+}
+
+static struct usse_reg
+constant(struct comp *c, struct scratch *s, float f)
+{
+   return constant_bits(c, s, f32_bits(f));
 }
 
 /* The value a source reads, through moves, vectors, negation and absolute
@@ -311,11 +324,15 @@ resolve(nir_scalar s)
    }
    o.id = s.def->index * 4 + s.comp;
    if (nir_scalar_is_const(s)) {
-      float f = nir_scalar_as_float(s);
+      /* (M44) the bits as they are -- an integer's, or a float's with the
+       * float modifiers applied to its sign bit */
+      uint32_t u = (uint32_t)nir_scalar_as_uint(s);
 
       o.is_const = true;
-      o.c = o.abs ? fabsf(f) : f;
-      o.c = o.neg ? -o.c : o.c;
+      u = o.abs ? u & 0x7fffffffu : u;
+      u = o.neg ? u ^ 0x80000000u : u;
+      o.u = u;
+      memcpy(&o.c, &u, 4);
       o.neg = o.abs = false;
    }
    return o;
@@ -344,7 +361,7 @@ get(struct comp *c, struct operand o, unsigned takes, struct scratch *s)
    struct usse_reg r, t;
 
    if (o.is_const)
-      return constant(c, s, o.c);
+      return constant_bits(c, s, o.u);
    r = c->loc[o.id];
    r.neg = o.neg;
    r.abs = o.abs;
@@ -390,6 +407,25 @@ define(struct comp *c, nir_def *def)
    return c->loc[id];
 }
 
+/* (M44) the same for a 32-bit word an integer instruction makes (VBW,
+ * I32MAD2, VMOV's INT32 moves, LIMM): any temporary, odd ones too -- a
+ * float instruction that wants lane x moves it first (get()).  atan's
+ * copysign, bits, took 67 registers a pixel in even ones alone (dEQP's
+ * atan2.*_vec4_fragment) */
+static struct usse_reg
+define_word(struct comp *c, nir_def *def)
+{
+   unsigned id = def->index * 4, r = block(c, 1, 1);
+
+   c->loc[id] = treg(c, r);
+   c->owned[id] = true;
+   if (c->last_use[id] < 0) {
+      give_back(c, r);
+      c->owned[id] = false;
+   }
+   return c->loc[id];
+}
+
 static void
 binary(struct comp *c, enum usse_nmad_op op, nir_alu_instr *alu, struct scratch *s)
 {
@@ -423,7 +459,7 @@ comparison(struct comp *c, nir_alu_instr *alu, struct scratch *s)
    /* a - b = -b + a */
    b.neg = !b.neg;
    if (b.is_const)
-      b.c = -b.c, b.neg = false;
+      b.c = -b.c, b.u ^= 0x80000000u, b.neg = false;
    ra = get(c, a, TAKES_ALL & ~TAKES_NEG, s);
    rb = get(c, b, TAKES_ALL, s);
    emit(c, usse_fop(USSE_NMAD_ADD, diff, rb, ra));
@@ -449,6 +485,455 @@ select_(struct comp *c, nir_alu_instr *alu, struct scratch *s)
    emit(c, w);
 }
 
+/* ---- 32-bit integers (M44) ------------------------------------------------
+ *
+ * NIR's integers, the hardware's own; booleans 0 and ~0
+ * (nir_lower_bool_to_int32).  Each instruction found on the device (glldr
+ * --probe; docs/research/p105-mesa.md, M44): I32MAD2 for sums, differences
+ * and products (it multiplies src1's low 16 bits, unsigned: a full product
+ * is two of them and two shifts), VBW for the bits and the shifts (by the
+ * count as it is: NIR's is taken modulo 32), VTST's integer subtraction for
+ * the comparisons -- right where the difference overflows -- into p0 and
+ * then the word under it, VMOV's INT32 moves for the selects, VPCK through
+ * 16-bit halves for the conversions. */
+
+/* an operand as a 32-bit word: any register, any lane, a constant in a
+ * temporary */
+static struct usse_reg
+word(struct comp *c, struct operand o, struct scratch *s)
+{
+   return get(c, o, TAKES_SA | TAKES_LANE_Y, s);
+}
+
+/* the same, an immediate where it fits one (I32MAD2's and VTST's sources:
+ * 0..127) */
+static struct usse_reg
+word_or_imm(struct comp *c, struct operand o, struct scratch *s)
+{
+   if (o.is_const && o.u < 128)
+      return usse_reg(USSE_IMM, o.u);
+   return word(c, o, s);
+}
+
+/* the same for VMOV's INT32 moves, which name registers 0..63 -- and its
+ * test (src0) not in sa (M31's VMOV read 0 there); the constants 0 and ~0
+ * are the hardware's own (c0, c56) */
+static struct usse_reg
+word64(struct comp *c, struct operand o, bool test, struct scratch *s)
+{
+   struct usse_reg r, t;
+
+   if (o.is_const && !test && (o.u == 0 || o.u == ~0u))
+      return o.u ? USSE_ALL_ONES : USSE_ZERO;
+   r = word(c, o, s);
+   if (r.num < 64 && !(test && r.bank == USSE_SA))
+      return r;
+   t = treg(c, scratch_take(c, s));
+   emit(c, usse_vbw_or(t, r, 0));
+   return t;
+}
+
+/* v as VBW's immediate: 16 bits, rotated left */
+static bool
+vbw_immediate(uint32_t v, unsigned *imm, unsigned *rot)
+{
+   for (unsigned r = 0; r < 32; r++) {
+      uint32_t x = r ? v >> r | v << (32 - r) : v;
+
+      if (x <= 0xffff) {
+         *imm = x;
+         *rot = r;
+         return true;
+      }
+   }
+   return false;
+}
+
+/* the largest value source i of alu can have, unsigned (NIR's range
+ * analysis; a constant's own) */
+static uint32_t
+upper_bound(struct comp *c, nir_alu_instr *alu, unsigned i)
+{
+   return nir_unsigned_upper_bound(c->nir, c->range,
+                                   nir_get_scalar(alu->src[i].src.ssa, alu->src[i].swizzle[0]));
+}
+
+/* iadd, isub: src0 * 1 + src2, src2 negated for a difference */
+static void
+int_add(struct comp *c, nir_alu_instr *alu, struct scratch *s)
+{
+   struct operand a = alu_operand(alu, 0), b = alu_operand(alu, 1), t;
+   struct usse_reg one = usse_reg(USSE_IMM, 1), ra, rb;
+   bool sub = alu->op == nir_op_isub;
+
+   if (a.is_const && !b.is_const) {
+      /* the constant src2: b + a, or -b + a */
+      t = a;
+      a = b;
+      b = t;
+      one.neg = sub;
+      sub = false;
+   }
+   ra = word(c, a, s);
+   rb = word_or_imm(c, b, s);
+   rb.neg = sub;
+   emit(c, usse_imad(define_word(c, &alu->def), ra, one, rb, true));
+}
+
+/* imul: one I32MAD2 when either operand fits its 16 bits, else a * hi16(b)
+ * shifted up, plus a * lo16(b) */
+static void
+int_mul(struct comp *c, nir_alu_instr *alu, struct scratch *s)
+{
+   struct operand a = alu_operand(alu, 0), b = alu_operand(alu, 1), t;
+   uint32_t bound_a = upper_bound(c, alu, 0), bound_b = upper_bound(c, alu, 1);
+   struct usse_reg ra, rb, h;
+
+   if (bound_b > 0xffff && bound_a <= 0xffff) {
+      t = a;
+      a = b;
+      b = t;
+      bound_b = bound_a;
+   }
+   ra = word(c, a, s);
+   if (bound_b <= 0xffff) {
+      rb = word_or_imm(c, b, s);
+      emit(c, usse_imad(define_word(c, &alu->def), ra, rb, usse_reg(USSE_IMM, 0), true));
+      return;
+   }
+   rb = word(c, b, s);
+   h = treg(c, scratch_take(c, s));
+   emit(c, usse_vbw_imm(USSE_VBW_SHR, h, rb, 16, 0));
+   emit(c, usse_imad(h, ra, h, usse_reg(USSE_IMM, 0), true));
+   emit(c, usse_vbw_imm(USSE_VBW_SHL, h, h, 16, 0));
+   emit(c, usse_imad(define_word(c, &alu->def), ra, rb, h, true));
+}
+
+static void
+bitwise(struct comp *c, nir_alu_instr *alu, struct scratch *s)
+{
+   enum usse_vbw_op op = alu->op == nir_op_iand ? USSE_VBW_AND :
+                         alu->op == nir_op_ior ? USSE_VBW_OR : USSE_VBW_XOR;
+   struct operand a = alu_operand(alu, 0), b = alu_operand(alu, 1), t;
+   unsigned imm, rot;
+   struct usse_reg ra;
+
+   if (a.is_const && !b.is_const) {
+      t = a;
+      a = b;
+      b = t;
+   }
+   ra = word(c, a, s);
+   if (b.is_const && vbw_immediate(b.u, &imm, &rot)) {
+      emit(c, usse_vbw_imm(op, define_word(c, &alu->def), ra, imm, rot));
+      return;
+   }
+   {
+      struct usse_reg rb = word(c, b, s);
+
+      emit(c, usse_vbw(op, define_word(c, &alu->def), ra, rb, false));
+   }
+}
+
+static void
+shift(struct comp *c, nir_alu_instr *alu, struct scratch *s)
+{
+   enum usse_vbw_op op = alu->op == nir_op_ishl ? USSE_VBW_SHL :
+                         alu->op == nir_op_ishr ? USSE_VBW_ASR : USSE_VBW_SHR;
+   struct operand b = alu_operand(alu, 1);
+   struct usse_reg ra = word(c, alu_operand(alu, 0), s), rb;
+
+   if (b.is_const) {
+      emit(c, usse_vbw_imm(op, define_word(c, &alu->def), ra, b.u & 31, 0));
+      return;
+   }
+   rb = word(c, b, s);
+   if (upper_bound(c, alu, 1) > 31) {
+      /* (the hardware shifts by the count as it is: 36 is all out) */
+      struct usse_reg t = treg(c, scratch_take(c, s));
+
+      emit(c, usse_vbw_imm(USSE_VBW_AND, t, rb, 31, 0));
+      rb = t;
+   }
+   emit(c, usse_vbw(op, define_word(c, &alu->def), ra, rb, false));
+}
+
+/* two F32 operands in one lane, for VTST: the one in lane y moved */
+static void
+same_lane(struct comp *c, struct usse_reg *ra, struct usse_reg *rb, struct scratch *s)
+{
+   struct usse_reg *y, t;
+
+   if ((ra->bank == USSE_SPECIAL || !(ra->num & 1)) == (rb->bank == USSE_SPECIAL || !(rb->num & 1)))
+      return;
+   y = ra->bank != USSE_SPECIAL && (ra->num & 1) ? ra : rb;
+   t = treg(c, scratch_take(c, s));
+   emit(c, usse_fmov(t, *y));
+   *y = t;
+}
+
+/* a comparison into p0: integers by VTST's ISUB32 / ISUBU32, floats by its
+ * F32 subtraction; lt or eq -- the rest their inverse */
+static void
+test_p0(struct comp *c, nir_alu_instr *alu, bool fl, bool is_signed, bool eq, struct scratch *s)
+{
+   struct operand a = alu_operand(alu, 0), b = alu_operand(alu, 1);
+   struct usse_reg ra, rb;
+   uint64_t w;
+
+   /* an equality with an infinity (isinf: |x| == inf): its bits, as an
+    * integer's -- inf - inf is NaN, which no zero test passes */
+   if (fl && eq && ((b.is_const && (b.u & 0x7fffffffu) == 0x7f800000u) ||
+                    (a.is_const && (a.u & 0x7fffffffu) == 0x7f800000u)))
+      fl = false;
+   if (!fl) {
+      /* (VTST's immediate is src2's alone, seven bits sign-extended: #64
+       * is -64, and 3 < #100 false -- glldr --probe) */
+      ra = word(c, a, s);
+      rb = b.is_const && (b.u < 64 || b.u >= 0xffffffc0u) ? usse_reg(USSE_IMM, b.u & 0x7f) :
+                                                            word(c, b, s);
+      emit(c, usse_vtst_int(0, ra, rb, is_signed, eq));
+      return;
+   }
+   ra = get(c, a, TAKES_SA | TAKES_LANE_Y, s);
+   rb = get(c, b, TAKES_SA | TAKES_LANE_Y, s);
+   same_lane(c, &ra, &rb, s);
+   if (!usse_vtst_f32(&w, 0, ra, rb, eq))
+      fail(c, "a comparison's operands in different lanes");
+   emit(c, w);
+}
+
+/* a comparison as a boolean: p0, then 0 or ~0 under it */
+static void
+compare32(struct comp *c, nir_alu_instr *alu, struct scratch *s)
+{
+   bool fl = false, is_signed = true, eq = false, inv = false;
+   struct usse_reg d;
+
+   switch (alu->op) {
+   case nir_op_ilt32: break;
+   case nir_op_ige32: inv = true; break;
+   case nir_op_ult32: is_signed = false; break;
+   case nir_op_uge32: is_signed = false; inv = true; break;
+   case nir_op_ieq32: eq = true; break;
+   case nir_op_ine32: eq = inv = true; break;
+   case nir_op_flt32: fl = true; break;
+   case nir_op_fge32: fl = inv = true; break;
+   case nir_op_feq32: fl = eq = true; break;
+   default:           fl = eq = inv = true; break;  /* fneu32 */
+   }
+   test_p0(c, alu, fl, is_signed, eq, s);
+   d = define_word(c, &alu->def);
+   emit(c, usse_limm(d, inv ? ~0u : 0));
+   emit(c, usse_limm_pred(d, inv ? 0 : ~0u, 1));
+}
+
+/* imin, imax, umin, umax: a < b into p0, then one moved and the other
+ * under it */
+static void
+min_max(struct comp *c, nir_alu_instr *alu, struct scratch *s)
+{
+   bool is_signed = alu->op == nir_op_imin || alu->op == nir_op_imax;
+   bool min = alu->op == nir_op_imin || alu->op == nir_op_umin;
+   struct usse_reg ra = word(c, alu_operand(alu, 0), s), rb = word(c, alu_operand(alu, 1), s);
+   struct usse_reg d;
+
+   emit(c, usse_vtst_int(0, ra, rb, is_signed, false));
+   d = define_word(c, &alu->def);
+   emit(c, usse_vbw_or(d, min ? rb : ra, 0));
+   emit(c, usse_pred(usse_vbw_or(d, min ? ra : rb, 0), 1));
+}
+
+/* b32csel: c != 0 ? a : b, a 32-bit move whatever the words are */
+static void
+select32(struct comp *c, nir_alu_instr *alu, struct scratch *s)
+{
+   struct usse_reg rc = word64(c, alu_operand(alu, 0), true, s);
+   struct usse_reg ra = word64(c, alu_operand(alu, 1), false, s);
+   struct usse_reg rb = word64(c, alu_operand(alu, 2), false, s);
+   uint64_t w;
+
+   if (!usse_imovc(&w, USSE_TEST_NE0, define_word(c, &alu->def), rc, ra, rb))
+      fail(c, "a select past register 63");
+   emit(c, w);
+}
+
+/* d = the integer r as F32: the two halves to F32, hi * 65536 + lo --
+ * exact, rounded once */
+static void
+emit_i2f(struct comp *c, struct usse_reg d, struct usse_reg r, bool is_signed)
+{
+   struct scratch s = { 0 };
+   struct usse_reg hi = treg(c, scratch_take(c, &s)), lo = treg(c, scratch_take(c, &s));
+
+   emit(c, usse_cvt16_f32(hi, r, 1, is_signed));
+   emit(c, usse_cvt16_f32(lo, r, 0, false));
+   emit(c, usse_fmad(d, hi, constant(c, &s, 65536.0f), lo));
+   scratch_give_back(c, &s);
+}
+
+/* i2f32, u2f32 */
+static void
+int_to_float(struct comp *c, nir_alu_instr *alu, struct scratch *s)
+{
+   struct usse_reg r = word(c, alu_operand(alu, 0), s);
+
+   emit_i2f(c, define(c, &alu->def), r, alu->op == nir_op_i2f32);
+}
+
+/* f2i32, f2u32: |x| truncated in F32 (|x| - fract |x|), split into its 16-bit
+ * halves -- hi = floor(t / 65536), lo = t - 65536 hi, both exact whole
+ * numbers -- packed into the word's halves by VPCK (which rounds: they are
+ * whole already), and the sign put back for f2i.  f2i makes |x| larger by
+ * 2^-13 of itself first (1/16 at most), as lower_ftrunc() does: a whole
+ * number interpolated a little short is that number (M31: 24 comes as
+ * 23.9995) -- not f2u, which only nir_lower_idiv's reciprocal makes here. */
+static void
+float_to_int(struct comp *c, nir_alu_instr *alu, struct scratch *s)
+{
+   bool is_signed = alu->op == nir_op_f2i32;
+   struct operand o = alu_operand(alu, 0);
+   struct usse_reg x = { 0 }, a, k, p, q, r, u, d;
+
+   /* (f2i: x as it is, modifiers applied -- its sign tested at the end) */
+   if (is_signed)
+      a = x = word64(c, o, true, s);
+   else
+      a = get(c, o, TAKES_ALL, s);
+   a.neg = false;
+   a.abs = true;
+   k = treg(c, scratch_take(c, s));
+   p = treg(c, scratch_take(c, s));
+   q = treg(c, scratch_take(c, s));
+   r = treg(c, scratch_take(c, s));
+   if (is_signed) {
+      emit(c, usse_limm(k, f32_bits(1.0f / (1 << 13))));
+      emit(c, usse_fop(USSE_NMAD_MUL, p, a, k));
+      emit(c, usse_limm(k, f32_bits(0.0625f)));
+      emit(c, usse_fop(USSE_NMAD_MIN, p, p, k));
+      emit(c, usse_fop(USSE_NMAD_ADD, q, a, p));
+      a = q;
+   }
+   emit(c, usse_fop(USSE_NMAD_FRC, p, a, a));
+   p.neg = true;
+   emit(c, usse_fop(USSE_NMAD_ADD, r, p, a));           /* t */
+   p.neg = false;
+   emit(c, usse_limm(k, f32_bits(1.0f / 65536.0f)));
+   emit(c, usse_fop(USSE_NMAD_MUL, p, r, k));           /* t / 65536 */
+   emit(c, usse_fop(USSE_NMAD_FRC, q, p, p));
+   q.neg = true;
+   emit(c, usse_fop(USSE_NMAD_ADD, p, q, p));           /* hi */
+   q.neg = false;
+   emit(c, usse_limm(k, f32_bits(-65536.0f)));
+   emit(c, usse_fmad(q, p, k, r));                       /* lo */
+   u = is_signed ? r : define_word(c, &alu->def);
+   emit(c, usse_cvt_f32_16(u, q, 0, false));
+   emit(c, usse_cvt_f32_16(u, p, 1, false));
+   if (is_signed) {
+      struct usse_reg n = usse_reg(USSE_IMM, 1);
+      uint64_t w;
+
+      n.neg = true;
+      emit(c, usse_imad(p, u, n, usse_reg(USSE_IMM, 0), true));
+      d = define_word(c, &alu->def);
+      if (!usse_imovc(&w, USSE_TEST_LT0, d, x, p, u))
+         fail(c, "a conversion past register 63");
+      emit(c, w);
+   }
+}
+
+/* the integer and boolean operations; false: not one */
+static bool
+int_alu(struct comp *c, nir_alu_instr *alu, struct scratch *s)
+{
+   struct usse_reg ra, n;
+   uint64_t w;
+
+   switch (alu->op) {
+   case nir_op_iadd:
+   case nir_op_isub:
+      int_add(c, alu, s);
+      return true;
+   case nir_op_ineg:
+      n = usse_reg(USSE_IMM, 1);
+      n.neg = true;
+      ra = word(c, alu_operand(alu, 0), s);
+      emit(c, usse_imad(define_word(c, &alu->def), ra, n, usse_reg(USSE_IMM, 0), true));
+      return true;
+   case nir_op_iabs:
+      /* x < 0 ? -x : x */
+      ra = word64(c, alu_operand(alu, 0), true, s);
+      n = usse_reg(USSE_IMM, 1);
+      n.neg = true;
+      {
+         struct usse_reg t = treg(c, scratch_take(c, s));
+
+         emit(c, usse_imad(t, ra, n, usse_reg(USSE_IMM, 0), true));
+         if (!usse_imovc(&w, USSE_TEST_LT0, define_word(c, &alu->def), ra, t, ra))
+            fail(c, "an iabs past register 63");
+         emit(c, w);
+      }
+      return true;
+   case nir_op_imul:
+      int_mul(c, alu, s);
+      return true;
+   case nir_op_iand:
+   case nir_op_ior:
+   case nir_op_ixor:
+      bitwise(c, alu, s);
+      return true;
+   case nir_op_inot:
+      ra = word(c, alu_operand(alu, 0), s);
+      emit(c, usse_vbw(USSE_VBW_XOR, define_word(c, &alu->def), ra, USSE_ALL_ONES, false));
+      return true;
+   case nir_op_ishl:
+   case nir_op_ishr:
+   case nir_op_ushr:
+      shift(c, alu, s);
+      return true;
+   case nir_op_imin:
+   case nir_op_imax:
+   case nir_op_umin:
+   case nir_op_umax:
+      min_max(c, alu, s);
+      return true;
+   case nir_op_ilt32:
+   case nir_op_ige32:
+   case nir_op_ult32:
+   case nir_op_uge32:
+   case nir_op_ieq32:
+   case nir_op_ine32:
+   case nir_op_flt32:
+   case nir_op_fge32:
+   case nir_op_feq32:
+   case nir_op_fneu32:
+      compare32(c, alu, s);
+      return true;
+   case nir_op_b32csel:
+      select32(c, alu, s);
+      return true;
+   case nir_op_b2f32:
+      /* ~0 & 1.0's bits */
+      ra = word(c, alu_operand(alu, 0), s);
+      emit(c, usse_vbw_imm(USSE_VBW_AND, define_word(c, &alu->def), ra, 0x3f80, 16));
+      return true;
+   case nir_op_b2i32:
+      ra = word(c, alu_operand(alu, 0), s);
+      emit(c, usse_vbw_imm(USSE_VBW_AND, define_word(c, &alu->def), ra, 1, 0));
+      return true;
+   case nir_op_i2f32:
+   case nir_op_u2f32:
+      int_to_float(c, alu, s);
+      return true;
+   case nir_op_f2i32:
+   case nir_op_f2u32:
+      float_to_int(c, alu, s);
+      return true;
+   default:
+      return false;
+   }
+}
+
 static void
 alu(struct comp *c, nir_alu_instr *alu, struct scratch *s)
 {
@@ -462,6 +947,8 @@ alu(struct comp *c, nir_alu_instr *alu, struct scratch *s)
            alu->def.bit_size);
       return;
    }
+   if (int_alu(c, alu, s))
+      return;
    switch (alu->op) {
    case nir_op_fadd: binary(c, USSE_NMAD_ADD, alu, s); return;
    case nir_op_fmul: binary(c, USSE_NMAD_MUL, alu, s); return;
@@ -518,7 +1005,7 @@ move_into(struct comp *c, struct usse_reg d, struct operand o, struct scratch *s
    struct usse_reg r;
 
    if (o.is_const) {
-      emit(c, usse_limm(d, f32_bits(o.c)));
+      emit(c, usse_limm(d, o.u));
       return;
    }
    r = c->loc[o.id];
@@ -1163,20 +1650,24 @@ uniform_word(struct comp *c, nir_intrinsic_instr *in, unsigned *at)
 }
 
 /* A uniform array's element through an index (M21): index1 = its first
- * sa word -- 4 x the offset (an integer as a float here) + the array's base,
- * made an integer in the low bits of 2^23 + it -- then each word read
- * through index1 by a 32-bit move, as iOS's c04_loop_break reads its
- * array */
+ * sa word -- 4 x the offset + the array's base (M44: integers; a float's
+ * low bits of 2^23 + it before) -- then each word read through index1 by
+ * a 32-bit move, as iOS's c04_loop_break reads its array */
+static struct usse_reg
+imm_or_constant(struct comp *c, uint32_t v, struct scratch *s)
+{
+   return v < 128 ? usse_reg(USSE_IMM, v) : constant_bits(c, s, v);
+}
+
 static void
 indirect_uniform(struct comp *c, nir_intrinsic_instr *in)
 {
    unsigned id = in->def.index * 4, base = nir_intrinsic_base(in) * 4;
    struct operand off = resolve(nir_get_scalar(in->src[0].ssa, 0));
    struct scratch s = { 0 };
-   struct usse_reg t = treg(c, scratch_take(c, &s));
+   struct usse_reg t = treg(c, scratch_take(c, &s)), ro = word(c, off, &s);
 
-   emit(c, usse_fmad(t, get(c, off, TAKES_ABS | TAKES_LANE_Y, &s), constant(c, &s, 4.0f),
-                     constant(c, &s, 8388608.0f + base)));
+   emit(c, usse_imad(t, ro, usse_reg(USSE_IMM, 4), imm_or_constant(c, base, &s), true));
    emit(c, usse_vbw_and(usse_reg(USSE_INDEX, 1), t, 0xffff));
    for (unsigned i = 0; i < in->def.num_components; i++) {
       unsigned r;
@@ -1192,9 +1683,8 @@ indirect_uniform(struct comp *c, nir_intrinsic_instr *in)
 }
 
 /* Uniform words from memory (M32): VLDST of the value's words from word
- * at of the block -- through an index, at + 4 x the offset: made an integer
- * as indirect_uniform() makes it, with 4 in the high half (4 bytes a word)
- * -- into temporaries in a row, then WDF0 */
+ * at of the block -- through an index, at + 4 x the offset, with 4 in the
+ * high half (4 bytes a word) -- into temporaries in a row, then WDF0 */
 static void
 memory_uniform(struct comp *c, nir_intrinsic_instr *in, unsigned at, bool indexed)
 {
@@ -1203,11 +1693,9 @@ memory_uniform(struct comp *c, nir_intrinsic_instr *in, unsigned at, bool indexe
 
    if (indexed) {
       struct operand off = resolve(nir_get_scalar(in->src[0].ssa, 0));
-      struct usse_reg t = treg(c, scratch_take(c, &s));
+      struct usse_reg t = treg(c, scratch_take(c, &s)), ro = word(c, off, &s);
 
-      emit(c, usse_fmad(t, get(c, off, TAKES_ABS | TAKES_LANE_Y, &s), constant(c, &s, 4.0f),
-                        constant(c, &s, 8388608.0f + at)));
-      emit(c, usse_vbw_and(t, t, 0xffff));
+      emit(c, usse_imad(t, ro, usse_reg(USSE_IMM, 4), imm_or_constant(c, at, &s), true));
       emit(c, usse_vbw_or_rot(t, t, 4, 16));
       emit(c, usse_ldr_reg(treg(c, r), c->ubuf_sa, t, n));
    } else if (at < 128) {
@@ -1230,8 +1718,7 @@ memory_uniform(struct comp *c, nir_intrinsic_instr *in, unsigned at, bool indexe
 
 /* (M43) a uniform buffer's words (ARB_uniform_buffer_object): VLDST from
  * the buffer's address in sa word ubo_sa[k], at the offset in bytes --
- * a constant, or the program's (a float, the integers being floats here:
- * a quarter of it made an integer as memory_uniform() makes one) */
+ * a constant, or the program's (a quarter of it the words) */
 static void
 ubo_load(struct comp *c, nir_intrinsic_instr *in, unsigned k)
 {
@@ -1240,11 +1727,7 @@ ubo_load(struct comp *c, nir_intrinsic_instr *in, unsigned k)
    struct scratch s = { 0 };
 
    if (nir_src_is_const(in->src[1])) {
-      /* (an offset made a float with the integers -- 16 bytes 0x41800000
-       * -- or one made after them, an integer: a multiple of 4 under
-       * 2^24, never as large as 1.0's bits) */
-      uint32_t bits = nir_src_as_uint(in->src[1]);
-      unsigned at = (bits >= 0x3f800000u ? (unsigned)nir_src_as_float(in->src[1]) : bits) / 4;
+      unsigned at = nir_src_as_uint(in->src[1]) / 4;
 
       if (at < 128) {
          emit(c, usse_ldr_imm(treg(c, r), sa, at, n));
@@ -1258,9 +1741,7 @@ ubo_load(struct comp *c, nir_intrinsic_instr *in, unsigned k)
       struct operand off = resolve(nir_get_scalar(in->src[1].ssa, 0));
       struct usse_reg t = treg(c, scratch_take(c, &s));
 
-      emit(c, usse_fmad(t, get(c, off, TAKES_ABS | TAKES_LANE_Y, &s), constant(c, &s, 0.25f),
-                        constant(c, &s, 8388608.0f)));
-      emit(c, usse_vbw_and(t, t, 0xffff));
+      emit(c, usse_vbw_imm(USSE_VBW_SHR, t, word(c, off, &s), 2, 0));
       emit(c, usse_vbw_or_rot(t, t, 4, 16));
       emit(c, usse_ldr_reg(treg(c, r), sa, t, n));
    }
@@ -1569,13 +2050,13 @@ intrinsic(struct comp *c, nir_intrinsic_instr *in)
    case nir_intrinsic_terminate_if:
    case nir_intrinsic_demote:
    case nir_intrinsic_demote_if: {
-      /* discard: the conditions gathered (their largest) into a temporary of
-       * its own (two: output() copies it to the odd one), which output()
-       * tests */
+      /* discard: the conditions gathered (or'ed: booleans 0 and ~0, M44)
+       * into a temporary of its own (two: output() copies it to the odd
+       * one, made 0.0 or 1.0 first), which output() tests */
       bool cond = in->intrinsic == nir_intrinsic_terminate_if ||
                   in->intrinsic == nir_intrinsic_demote_if;
       struct operand o = cond ? resolve(nir_get_scalar(in->src[0].ssa, 0)) :
-                                (struct operand){ .is_const = true, .c = 1.0f };
+                                (struct operand){ .is_const = true, .u = ~0u };
       struct scratch sc = { 0 };
 
       if (!c->fs || c->kill < 0) {
@@ -1584,11 +2065,12 @@ intrinsic(struct comp *c, nir_intrinsic_instr *in)
       }
       /* (kill is 0 from the program's start: a discard in a branch may
        * not run) */
-      if (o.is_const)
-         emit(c, usse_limm(treg(c, c->kill), f32_bits(o.c ? 1.0f : 0.0f)));
-      else
-         emit(c, usse_fop(USSE_NMAD_MAX, treg(c, c->kill), treg(c, c->kill),
-                          get(c, o, TAKES_ALL & ~TAKES_NEG, &sc)));
+      if (o.is_const) {
+         if (o.u)
+            emit(c, usse_limm(treg(c, c->kill), ~0u));
+      } else {
+         emit(c, usse_vbw(USSE_VBW_OR, treg(c, c->kill), treg(c, c->kill), word(c, o, &sc), false));
+      }
       scratch_give_back(c, &sc);
       break;
    }
@@ -1777,6 +2259,7 @@ logic_output(struct comp *c, unsigned base)
    {
       unsigned d = block(c, 4, 2);
 
+      emit(c, usse_vbw_imm(USSE_VBW_AND, treg(c, c->kill), treg(c, c->kill), 0x3f80, 16));
       emit(c, usse_fmov(treg(c, c->kill + 1), treg(c, c->kill)));
       emit(c, usse_unpack_unorm8(treg(c, base), t, 0));
       emit(c, usse_unpack_unorm8(treg(c, base + 2), t, 2));
@@ -1841,6 +2324,7 @@ output(struct comp *c)
       if (!c->have_colour[i]) {
          o.is_const = true;
          o.c = i == 3 ? 1.0f : 0.0f;
+         o.u = f32_bits(o.c);
       }
       /* (made where it goes already) */
       if (!o.is_const && !o.neg && !o.abs && c->colour_id[i] == (int)o.id &&
@@ -1860,6 +2344,8 @@ output(struct comp *c)
        * pass, two phases, `p1? KILL`), does not work here yet (M19). */
       unsigned d = block(c, 4, 2);
 
+      /* (the booleans or'ed: 0.0 or 1.0, as the F32 tests below take it) */
+      emit(c, usse_vbw_imm(USSE_VBW_AND, treg(c, c->kill), treg(c, c->kill), 0x3f80, 16));
       emit(c, usse_fmov(treg(c, c->kill + 1), treg(c, c->kill)));
       if (c->fs->blend.rt_kind != SGX_RT_UNORM8) {
          tile_read(c, d);
@@ -2150,6 +2636,7 @@ vertex_output(struct comp *c)
          if (!c->have_vout[k][from]) {
             o.is_const = true;
             o.c = from == 3 ? 1.0f : 0.0f;
+            o.u = f32_bits(o.c);
          }
          if (i < 2 && (fix & SGX_FIX_SCALE)) {
             /* x and y times a rectangle texture's 1 / width, 1 / height */
@@ -2176,9 +2663,9 @@ vertex_output(struct comp *c)
    emit(c, USSE_EMIT_VERTEX_END);
 }
 
-/* A uniform's constant offset into its base: nir_lower_int_to_float makes
- * the integer constants floats, an offset of 1 among them (0x3f800000: a
- * matrix's second column read as word 4261412864) */
+/* A uniform's constant offset into its base (until M44 nir_lower_int_to_float
+ * made the integer constants floats, an offset of 1 among them -- 0x3f800000:
+ * a matrix's second column read as word 4261412864) */
 static bool
 fold_uniform_offset(nir_builder *b, nir_intrinsic_instr *in, void *data)
 {
@@ -2191,13 +2678,12 @@ fold_uniform_offset(nir_builder *b, nir_intrinsic_instr *in, void *data)
    return true;
 }
 
-/* ftrunc (int(x), made by nir_lower_int_to_float after the options'
- * lowering ran) as its sign times floor(|x|), floor y as y - fract y --
- * |x| a little larger first, by 2^-13 of itself (1/16 at most): a whole
- * number that comes a bit short is that number still.  An int division is
- * trunc(x * rcp(y)), and 24 / -3 came out -7.9999995; a varying that is 24
- * at every vertex comes 23.9995 into a viewport of 128 x 112 (dEQP's div
- * cases, glvary; M31) */
+/* ftrunc (GLSL's trunc(); int(x) until M44, made by nir_lower_int_to_float)
+ * as its sign times floor(|x|), floor y as y - fract y -- |x| a little
+ * larger first, by 2^-13 of itself (1/16 at most): a whole number that
+ * comes a bit short is that number still.  A varying that is 24 at every
+ * vertex comes 23.9995 into a viewport of 128 x 112 (dEQP's div cases,
+ * glvary; M31).  f2i32 does the same (float_to_int()) */
 static bool
 lower_ftrunc(nir_builder *b, nir_alu_instr *alu, void *data)
 {
@@ -2702,13 +3188,27 @@ translate(struct comp *c, nir_shader *s)
    nir_function_impl *impl;
    unsigned n;
    int index;
+   bool progress;
 
    optimize(s);
    NIR_PASS(_, s, nir_shader_intrinsics_pass, fold_uniform_offset, nir_metadata_control_flow,
             NULL);
-   NIR_PASS(_, s, nir_lower_int_to_float);
+   /* (M44) the integers the hardware's: divisions exact (nir_lower_idiv,
+    * the high halves of its products from 16-bit ones: nir_lower_alu),
+    * booleans 0 and ~0 */
+   NIR_PASS(_, s, nir_lower_idiv, &(nir_lower_idiv_options){ .allow_fp16 = false });
+   NIR_PASS(_, s, nir_lower_alu);
    NIR_PASS(_, s, nir_shader_alu_pass, lower_ftrunc, nir_metadata_control_flow, NULL);
-   NIR_PASS(_, s, nir_lower_bool_to_float, true);
+   NIR_PASS(_, s, nir_opt_algebraic);
+   /* (late's lowerings before the booleans are words: roundEven's bcsel of
+    * an feq, its ffloor for the rules above) */
+   NIR_PASS(_, s, nir_opt_algebraic_late);
+   do {
+      progress = false;
+      NIR_PASS(progress, s, nir_opt_algebraic);      /* (ffloor, then its fsub) */
+   } while (progress);
+   NIR_PASS(_, s, nir_opt_constant_folding);
+   NIR_PASS(_, s, nir_lower_bool_to_int32);
    NIR_PASS(_, s, nir_opt_algebraic_late);
    NIR_PASS(_, s, nir_lower_alu_to_scalar, NULL, NULL);
    NIR_PASS(_, s, nir_opt_copy_prop);
@@ -2757,6 +3257,8 @@ translate(struct comp *c, nir_shader *s)
    for (unsigned i = 0; i < n; i++)
       c->last_use[i] = -1;
    util_dynarray_init(&c->loops, NULL);
+   c->nir = s;
+   c->range = _mesa_pointer_hash_table_create(NULL);
 
    /* SGX_DEBUG_NIR=1: the shader as the compiler takes it */
    if (getenv("SGX_DEBUG_NIR"))
@@ -3026,6 +3528,12 @@ compile_fs(const nir_shader *fs, const struct sgx_blend_key *blend, char *why,
       c.fs->prog.ncode = n;
       c.fs->prog.ntemps = MAX2(c.fs->prog.ntemps, 8);
       mesa_logi("sgx: SGX_LDR_PROBE: %u words, samplers' state at sa%u", n, c.sampler_sa);
+      /* (M44) SGX_LDR_PROBE_BRANCHES=1: run them as a program whose pixels
+       * each go their own way (PHAS mode 1, M20) */
+      if (getenv("SGX_LDR_PROBE_BRANCHES")) {
+         c.fs->prog.code[0] = USSE_PHAS_BRANCHES;
+         c.branches = c.divergent = true;
+      }
    }
    c.fs->prog.branches = c.branches && c.divergent;
    c.fs->prog.ninputs = c.ninputs + c.ncolours;
@@ -3088,6 +3596,8 @@ out:
    free(c.last_use);
    free(c.def_at);
    util_dynarray_fini(&c.loops);
+   if (c.range)
+      _mesa_hash_table_destroy(c.range, NULL);
    ralloc_free(s);
    if (c.failed) {
       sgx_fs_destroy(c.fs);
@@ -3197,6 +3707,8 @@ out:
    free(c.last_use);
    free(c.def_at);
    util_dynarray_fini(&c.loops);
+   if (c.range)
+      _mesa_hash_table_destroy(c.range, NULL);
    ralloc_free(s);
    if (c.failed) {
       sgx_vs_destroy(c.vs);
