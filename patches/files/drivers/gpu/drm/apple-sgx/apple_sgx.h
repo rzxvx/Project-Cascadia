@@ -103,8 +103,12 @@ struct resource;
 #define SGX_TA_HEAP_END			0x97800000u
 #define SGX_TILED_VA_START		0xe0000000u
 
-/* The GPU clock in kHz: GFX-CLK, PLL@0x18 (513 MHz) / 5 in perf state 2. */
-#define SGX_CLOCK_KHZ			102600
+/* The GPU's core clock in kHz: PLL@0x18 (513 MHz) / 2, as measured -- the
+ * microkernel's timer ticked 2500 times a second when told 102600 kHz, and
+ * the USSEs run 2.0 G instructions a second, 8 a clock.  (GFX-CLK, 513 / 5,
+ * is not the core's clock: docs/research/p105-gpu.md, "The GPU's clock,
+ * measured".) */
+#define SGX_CLOCK_KHZ			256500
 
 /* The DDK's SGXMKIF_CC_* (sgx_mkif_km.h): what a kernel CCB command asks
  * the microkernel to invalidate before it runs. */

@@ -39,7 +39,7 @@ sgx_ioctl_get_param(int fd, unsigned long request, void *arg)
    case APPLE_SGX_PARAM_CORE_ID:       gp->value = 0x01194201; break;
    case APPLE_SGX_PARAM_CORE_REVISION: gp->value = 0x00010202; break;
    case APPLE_SGX_PARAM_NUM_CORES:     gp->value = 2; break;
-   case APPLE_SGX_PARAM_CLOCK_KHZ:     gp->value = 102600; break;
+   case APPLE_SGX_PARAM_CLOCK_KHZ:     gp->value = 256500; break;
    case APPLE_SGX_PARAM_UKERNEL_UP:    gp->value = 1; break;
    case APPLE_SGX_PARAM_VA_START:      gp->value = 0x80800000; break;
    case APPLE_SGX_PARAM_VA_END:        gp->value = 0xf0000000; break;

@@ -16,8 +16,8 @@
  *
  * Power is two PMGR power states, GFX_SYS (0x3f101024) then GFX
  * (0x3f101028), taken as clocks from the gate driver in the order the DT
- * lists them.  Nothing else: the GFX clocks already run off PLL@0x18
- * (~102.6 and ~128 MHz in perf state 2), and HPERF-NRT is not needed.
+ * lists them.  Nothing else: the GFX clocks already run off PLL@0x18 (the
+ * core at 256.5 MHz, measured: SGX_CLOCK_KHZ), and HPERF-NRT is not needed.
  *
  * The register window is six 16 KiB banks (the DDK's sgx_mkif_km.h, and iOS
  * addresses the cores the same way):
