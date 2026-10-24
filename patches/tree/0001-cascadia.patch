@@ -1494,10 +1494,10 @@ index 7d3e64180..e84cad0a1 100644
  		/* Turn on the port power bit. */
  		hprt0 = dwc2_read_hprt0(hsotg);
 diff --git a/drivers/usb/dwc2/params.c b/drivers/usb/dwc2/params.c
-index 4d73fae80..ba8584c97 100644
+index 4d73fae80..97d1d24ff 100644
 --- a/drivers/usb/dwc2/params.c
 +++ b/drivers/usb/dwc2/params.c
-@@ -106,6 +106,31 @@ static void dwc2_set_s3c6400_params(struct dwc2_hsotg *hsotg)
+@@ -106,6 +106,23 @@ static void dwc2_set_s3c6400_params(struct dwc2_hsotg *hsotg)
  	p->phy_utmi_width = 8;
  }
  
@@ -1516,20 +1516,12 @@ index 4d73fae80..ba8584c97 100644
 +
 +	p->power_down = DWC2_POWER_DOWN_PARAM_NONE;
 +	p->no_clock_gating = true;
-+	/*
-+	 * DMA in 16-beat bursts, not "INCR" of no stated length (snps,dwc2's
-+	 * default), which this bus takes a beat at a time: the receive FIFO
-+	 * drained so slowly that the host's packets were NAKed, and the NFS
-+	 * root read at 10 MB/s, 27 with INCR16 (INCR4 23, INCR8 27; checked
-+	 * on 172 MB both ways, 2026-10-24).
-+	 */
-+	p->ahbcfg = GAHBCFG_HBSTLEN_INCR16 << GAHBCFG_HBSTLEN_SHIFT;
 +}
 +
  static void dwc2_set_socfpga_agilex_params(struct dwc2_hsotg *hsotg)
  {
  	struct dwc2_core_params *p = &hsotg->params;
-@@ -319,6 +344,7 @@ const struct of_device_id dwc2_of_match_table[] = {
+@@ -319,6 +336,7 @@ const struct of_device_id dwc2_of_match_table[] = {
  	{ .compatible = "lantiq,arx100-usb", .data = &dwc2_set_ltq_ase_params },
  	{ .compatible = "lantiq,xrx200-usb", .data = &dwc2_set_ltq_xrx200_params },
  	{ .compatible = "lantiq,xrx300-usb", .data = &dwc2_set_ltq_xrx200_params },
