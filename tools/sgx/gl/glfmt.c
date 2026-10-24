@@ -1,7 +1,10 @@
 /* glfmt -- texture formats beyond 8-bit RGBA through the driver (docs/
  * research/p105-mesa.md, M43): float and half float textures
  * (ARB_texture_float), signed (EXT_texture_snorm), 16-bit and 10-bit
- * channels, the shared exponent format (EXT_texture_shared_exponent).  A
+ * channels, the shared exponent format (EXT_texture_shared_exponent), and
+ * R8 and RG8 (ARB_texture_rg, M45: the sampler's own formats, the rest of
+ * GL's texel the program's) -- R8 also as glamor's a8 pixmaps take it, its
+ * view swizzled 0 0 0 R (ARB_texture_swizzle).  A
  * 2 x 2 texture each, its texels sampled at their centres (and between
  * them, filtered), brought into [0, 1] by the program -- value * scale +
  * bias -- so that values past [0, 1] can be seen on an RGBA8 target, and
@@ -34,14 +37,16 @@ static const char *only;
 static GLuint prog;
 
 /* how a format keeps a value: what GL hands back for it */
-enum keep { F32, F16, SNORM8, UNORM16, UNORM10_2, E5 };
+enum keep { F32, F16, SNORM8, UNORM16, UNORM10_2, E5, UNORM8 };
 
 struct fmt_case {
 	const char *name;
 	GLenum ifmt, fmt;
 	enum keep keep;
 	int channels;        /* the internal format's: 1 L or A or I by kind, 3 RGB, 4 RGBA */
-	char kind;           /* 'c' colour, 'l' luminance, 'a' alpha, 'L' luminance alpha, 'i' intensity */
+	/* 'c' colour, 'l' luminance, 'a' alpha, 'L' luminance alpha, 'i'
+	 * intensity, 's' R swizzled to alpha (glamor's a8) */
+	char kind;
 };
 
 static const struct fmt_case fmts[] = {
@@ -57,6 +62,9 @@ static const struct fmt_case fmts[] = {
 	{ "rgba16", GL_RGBA16, GL_RGBA, UNORM16, 4, 'c' },
 	{ "rgb10-a2", GL_RGB10_A2, GL_RGBA, UNORM10_2, 4, 'c' },
 	{ "rgb9-e5", GL_RGB9_E5_EXT, GL_RGB, E5, 3, 'c' },
+	{ "r8", GL_R8, GL_RED, UNORM8, 1, 'c' },
+	{ "rg8", GL_RG8, GL_RG, UNORM8, 2, 'c' },
+	{ "r8-as-alpha", GL_R8, GL_RED, UNORM8, 1, 's' },
 };
 
 static float
@@ -82,6 +90,7 @@ kept(enum keep k, int c, float v)
 		return c == 3 ? roundf(fminf(fmaxf(v, 0), 1) * 3) / 3 :
 		                roundf(fminf(fmaxf(v, 0), 1) * 1023) / 1023;
 	case E5:       return fmaxf(v, 0);
+	case UNORM8:   return roundf(fminf(fmaxf(v, 0), 1) * 255) / 255;
 	}
 	return v;
 }
@@ -99,8 +108,10 @@ looked_up(const struct fmt_case *f, const float t[4], float out[4])
 	case 'a': out[0] = out[1] = out[2] = 0, out[3] = kept(f->keep, 3, t[0]); break;
 	case 'L': out[0] = out[1] = out[2] = r, out[3] = kept(f->keep, 3, t[1]); break;
 	case 'i': out[0] = out[1] = out[2] = out[3] = r; break;
+	case 's': out[0] = out[1] = out[2] = 0, out[3] = r; break;
 	default:
-		out[0] = r, out[1] = g, out[2] = b, out[3] = f->channels == 4 ? a : 1;
+		out[0] = r, out[1] = f->channels > 1 ? g : 0, out[2] = f->channels > 2 ? b : 0;
+		out[3] = f->channels == 4 ? a : 1;
 	}
 }
 
@@ -201,9 +212,9 @@ run(const struct fmt_case *f, const char *what, const float t[4][4], float scale
 	for (int i = 0; i < 4; i++)
 		for (int c = 0; c < 4; c++)
 			data[i][c] = t[i][c];
-	if (f->fmt == GL_RGB)
+	if (f->kind == 'c' && f->channels < 4)
 		for (int i = 0; i < 4; i++)
-			memcpy(&((float *)data)[3 * i], t[i], 3 * sizeof(float));
+			memcpy(&((float *)data)[f->channels * i], t[i], f->channels * sizeof(float));
 	/* (luminance, alpha, intensity: a value a texel; luminance alpha two) */
 	if (f->kind != 'c')
 		for (int i = 0; i < 4; i++)
@@ -213,9 +224,14 @@ run(const struct fmt_case *f, const char *what, const float t[4][4], float scale
 		;
 	glGenTextures(1, &id);
 	glBindTexture(GL_TEXTURE_2D, id);
-	glTexImage2D(GL_TEXTURE_2D, 0, f->ifmt, 2, 2, 0, f->kind == 'c' ? f->fmt :
+	glTexImage2D(GL_TEXTURE_2D, 0, f->ifmt, 2, 2, 0, f->kind == 'c' || f->kind == 's' ? f->fmt :
 	             f->kind == 'a' ? GL_ALPHA : f->kind == 'L' ? GL_LUMINANCE_ALPHA : GL_LUMINANCE,
 	             GL_FLOAT, data);
+	if (f->kind == 's') {
+		static const GLint swz[4] = { GL_ZERO, GL_ZERO, GL_ZERO, GL_RED };
+
+		glTexParameteriv(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_RGBA, swz);
+	}
 	if (glGetError()) {
 		printf("%-30s not here\n", name);
 		skipped++;

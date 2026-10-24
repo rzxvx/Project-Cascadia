@@ -48,6 +48,7 @@
 #include "drm-uapi/apple_sgx_drm.h"
 #include "util/log.h"
 #include "util/os_time.h"
+#include "util/u_call_once.h"
 #include "util/u_math.h"
 #include "util/u_memory.h"
 #include "util/vma.h"
@@ -375,74 +376,86 @@ struct sgx_eot {
  * the target's texels back into the same places, alpha 1 where the target
  * has none.  SGX_PBE_<FMT>, SGX_BG_<FMT> (format << 8 | swizzle): to try
  * others. */
-static bool
-rt_format(enum pipe_format format, struct sgx_eot *to)
-{
-   static const struct {
-      enum pipe_format format;
-      const char *name;
-      uint32_t pbe, bytes, bg_fmt, bg_swizzle;
-      enum sgx_rt_kind kind;
-   } fmts[] = {
-      { PIPE_FORMAT_B8G8R8A8_UNORM, "BGRA8", 0x00110000, 4, 0x0c, 1, SGX_RT_UNORM8 },
-      { PIPE_FORMAT_B8G8R8X8_UNORM, "BGRX8", 0x00110000, 4, 0x0c, 1, SGX_RT_UNORM8 },
-      /* (M43) sRGB: the same bytes, the program encodes them (and decodes
-       * the tile's for blending: sgx_blend_key's rt_srgb); and R G B A in
-       * memory, GXM's ABGR */
-      { PIPE_FORMAT_B8G8R8A8_SRGB, "BGRA8S", 0x00110000, 4, 0x0c, 1, SGX_RT_UNORM8 },
-      { PIPE_FORMAT_B8G8R8X8_SRGB, "BGRX8S", 0x00110000, 4, 0x0c, 1, SGX_RT_UNORM8 },
-      { PIPE_FORMAT_R8G8B8A8_UNORM, "RGBA8", 0x00010000, 4, 0x0c, 0, SGX_RT_UNORM8 },
-      { PIPE_FORMAT_R8G8B8A8_SRGB, "RGBA8S", 0x00010000, 4, 0x0c, 0, SGX_RT_UNORM8 },
-      /* U8, R; L8's 1RRR */
-      { PIPE_FORMAT_R8_UNORM, "R8", 0x80810000, 1, 0x00, 5, SGX_RT_UNORM8 },
-      /* U8U8, GR */
-      { PIPE_FORMAT_R8G8_UNORM, "RG8", 0xb0810000, 2, 0x07, 0, SGX_RT_UNORM8 },
-      /* GL's intensity, luminance, luminance alpha and alpha targets (M43:
-       * Mesa's RGBA stand-in for them blends with the alpha drawn, not the
-       * intensity's or 1): loaded RRRR, 1RRR, GRRR (the sampler's
-       * swizzles, 3 found from L8's 5 and A8's 6), R000; LA8 written R
-       * then A (GXM's U8U8 AR), A8 its A (U8, swizzle 1) */
-      { PIPE_FORMAT_I8_UNORM, "I8", 0x80810000, 1, 0x00, 3, SGX_RT_UNORM8 },
-      { PIPE_FORMAT_L8_UNORM, "L8", 0x80810000, 1, 0x00, 5, SGX_RT_UNORM8 },
-      { PIPE_FORMAT_L8A8_UNORM, "LA8", 0xb0b10000, 2, 0x07, 2, SGX_RT_UNORM8 },
-      { PIPE_FORMAT_A8_UNORM, "A8", 0x80910000, 1, 0x00, 6, SGX_RT_UNORM8 },
-      /* F16F16F16F16 (iOS's m28 word less the tiled bit), loaded as the
-       * texture F16F16F16F16 handed back as F16 */
-      { PIPE_FORMAT_R16G16B16A16_FLOAT, "RGBA16F", 0x01010000, 8, 0x1b, 0, SGX_RT_F16X4 },
-      /* (GL's RGB16F: no alpha, so blending takes the target's as 1) */
-      { PIPE_FORMAT_R16G16B16X16_FLOAT, "RGBX16F", 0x01010000, 8, 0x1b, 0, SGX_RT_F16X4 },
-      /* F16F16 and F16, loaded raw (the tile's own bits) */
-      { PIPE_FORMAT_R16G16_FLOAT, "RG16F", 0x00810000, 4, 0x11, 0, SGX_RT_F16X2 },
-      { PIPE_FORMAT_R16_FLOAT, "R16F", 0xf0010000, 2, 0x0b, 0, SGX_RT_F16X2 },
-      /* F32, raw both ways; F32F32, two registers */
-      { PIPE_FORMAT_R32_FLOAT, "R32F", 0x10810000, 4, 0x12, 0, SGX_RT_F32 },
-      { PIPE_FORMAT_R32G32_FLOAT, "RG32F", 0x11010000, 8, 0x1e, 0, SGX_RT_F32X2 },
-      /* F11F11F10 (APPLE_color_buffer_packed_float): the PBE packs the
-       * tile's four F16 with bit 25 (iOS's m28 had it too; without it the
-       * PBE wrote o0's bits as they are -- for F16F16F16F16 either way);
-       * loaded as the texture handed back as F16 */
-      { PIPE_FORMAT_R11G11B10_FLOAT, "R11G11B10F", 0x23010000, 4, 0x1a, 0, SGX_RT_F16X4 },
-   };
+static struct {
+   enum pipe_format format;
+   const char *name;
+   uint32_t pbe, bytes, bg_fmt, bg_swizzle;
+   enum sgx_rt_kind kind;
+} rt_fmts[] = {
+   { PIPE_FORMAT_B8G8R8A8_UNORM, "BGRA8", 0x00110000, 4, 0x0c, 1, SGX_RT_UNORM8 },
+   { PIPE_FORMAT_B8G8R8X8_UNORM, "BGRX8", 0x00110000, 4, 0x0c, 1, SGX_RT_UNORM8 },
+   /* (M43) sRGB: the same bytes, the program encodes them (and decodes
+    * the tile's for blending: sgx_blend_key's rt_srgb); and R G B A in
+    * memory, GXM's ABGR */
+   { PIPE_FORMAT_B8G8R8A8_SRGB, "BGRA8S", 0x00110000, 4, 0x0c, 1, SGX_RT_UNORM8 },
+   { PIPE_FORMAT_B8G8R8X8_SRGB, "BGRX8S", 0x00110000, 4, 0x0c, 1, SGX_RT_UNORM8 },
+   { PIPE_FORMAT_R8G8B8A8_UNORM, "RGBA8", 0x00010000, 4, 0x0c, 0, SGX_RT_UNORM8 },
+   { PIPE_FORMAT_R8G8B8A8_SRGB, "RGBA8S", 0x00010000, 4, 0x0c, 0, SGX_RT_UNORM8 },
+   /* U8, R; L8's 1RRR */
+   { PIPE_FORMAT_R8_UNORM, "R8", 0x80810000, 1, 0x00, 5, SGX_RT_UNORM8 },
+   /* U8U8, GR */
+   { PIPE_FORMAT_R8G8_UNORM, "RG8", 0xb0810000, 2, 0x07, 0, SGX_RT_UNORM8 },
+   /* GL's intensity, luminance, luminance alpha and alpha targets (M43:
+    * Mesa's RGBA stand-in for them blends with the alpha drawn, not the
+    * intensity's or 1): loaded RRRR, 1RRR, GRRR (the sampler's
+    * swizzles, 3 found from L8's 5 and A8's 6), R000; LA8 written R
+    * then A (GXM's U8U8 AR), A8 its A (U8, swizzle 1) */
+   { PIPE_FORMAT_I8_UNORM, "I8", 0x80810000, 1, 0x00, 3, SGX_RT_UNORM8 },
+   { PIPE_FORMAT_L8_UNORM, "L8", 0x80810000, 1, 0x00, 5, SGX_RT_UNORM8 },
+   { PIPE_FORMAT_L8A8_UNORM, "LA8", 0xb0b10000, 2, 0x07, 2, SGX_RT_UNORM8 },
+   { PIPE_FORMAT_A8_UNORM, "A8", 0x80910000, 1, 0x00, 6, SGX_RT_UNORM8 },
+   /* F16F16F16F16 (iOS's m28 word less the tiled bit), loaded as the
+    * texture F16F16F16F16 handed back as F16 */
+   { PIPE_FORMAT_R16G16B16A16_FLOAT, "RGBA16F", 0x01010000, 8, 0x1b, 0, SGX_RT_F16X4 },
+   /* (GL's RGB16F: no alpha, so blending takes the target's as 1) */
+   { PIPE_FORMAT_R16G16B16X16_FLOAT, "RGBX16F", 0x01010000, 8, 0x1b, 0, SGX_RT_F16X4 },
+   /* F16F16 and F16, loaded raw (the tile's own bits) */
+   { PIPE_FORMAT_R16G16_FLOAT, "RG16F", 0x00810000, 4, 0x11, 0, SGX_RT_F16X2 },
+   { PIPE_FORMAT_R16_FLOAT, "R16F", 0xf0010000, 2, 0x0b, 0, SGX_RT_F16X2 },
+   /* F32, raw both ways; F32F32, two registers */
+   { PIPE_FORMAT_R32_FLOAT, "R32F", 0x10810000, 4, 0x12, 0, SGX_RT_F32 },
+   { PIPE_FORMAT_R32G32_FLOAT, "RG32F", 0x11010000, 8, 0x1e, 0, SGX_RT_F32X2 },
+   /* F11F11F10 (APPLE_color_buffer_packed_float): the PBE packs the
+    * tile's four F16 with bit 25 (iOS's m28 had it too; without it the
+    * PBE wrote o0's bits as they are -- for F16F16F16F16 either way);
+    * loaded as the texture handed back as F16 */
+   { PIPE_FORMAT_R11G11B10_FLOAT, "R11G11B10F", 0x23010000, 4, 0x1a, 0, SGX_RT_F16X4 },
+};
 
-   for (unsigned i = 0; i < ARRAY_SIZE(fmts); i++) {
+/* the table as SGX_PBE_<FMT> and SGX_BG_<FMT> change it, once (M45: the
+ * names were made and looked up at every draw, sgx_frame_rt_kind()) */
+static void
+rt_fmts_env(void)
+{
+   for (unsigned i = 0; i < ARRAY_SIZE(rt_fmts); i++) {
       char name[32];
       const char *e;
 
-      if (fmts[i].format != format)
-         continue;
-      to->pbe = fmts[i].pbe;
-      to->bytes = fmts[i].bytes;
-      to->bg_fmt = fmts[i].bg_fmt;
-      to->bg_swizzle = fmts[i].bg_swizzle;
-      to->kind = fmts[i].kind;
-      snprintf(name, sizeof(name), "SGX_PBE_%s", fmts[i].name);
+      snprintf(name, sizeof(name), "SGX_PBE_%s", rt_fmts[i].name);
       if ((e = getenv(name)))
-         to->pbe = strtoul(e, NULL, 0);
-      snprintf(name, sizeof(name), "SGX_BG_%s", fmts[i].name);
+         rt_fmts[i].pbe = strtoul(e, NULL, 0);
+      snprintf(name, sizeof(name), "SGX_BG_%s", rt_fmts[i].name);
       if ((e = getenv(name))) {
-         to->bg_fmt = strtoul(e, NULL, 0) >> 8 & 0x1f;
-         to->bg_swizzle = strtoul(e, NULL, 0) & 7;
+         rt_fmts[i].bg_fmt = strtoul(e, NULL, 0) >> 8 & 0x1f;
+         rt_fmts[i].bg_swizzle = strtoul(e, NULL, 0) & 7;
       }
+   }
+}
+
+static bool
+rt_format(enum pipe_format format, struct sgx_eot *to)
+{
+   static util_once_flag once = UTIL_ONCE_FLAG_INIT;
+
+   util_call_once(&once, rt_fmts_env);
+   for (unsigned i = 0; i < ARRAY_SIZE(rt_fmts); i++) {
+      if (rt_fmts[i].format != format)
+         continue;
+      to->pbe = rt_fmts[i].pbe;
+      to->bytes = rt_fmts[i].bytes;
+      to->bg_fmt = rt_fmts[i].bg_fmt;
+      to->bg_swizzle = rt_fmts[i].bg_swizzle;
+      to->kind = rt_fmts[i].kind;
       return true;
    }
    return false;

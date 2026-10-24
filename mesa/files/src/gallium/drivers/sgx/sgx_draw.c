@@ -761,15 +761,20 @@ fs_for_draw(struct sgx_context *ctx)
             key.tex_shadow |= 1u << unit;
             key.shadow_func[unit] = ss->compare_func;
          }
-      } else if (unit < 8 && view &&
-                 (view->swizzle_r != PIPE_SWIZZLE_X || view->swizzle_g != PIPE_SWIZZLE_Y ||
-                  view->swizzle_b != PIPE_SWIZZLE_Z || view->swizzle_a != PIPE_SWIZZLE_W)) {
-         /* a view's swizzle (M43): the program's, on the texel */
-         key.tex_swz |= 1u << unit;
-         key.tex_swizzle[unit][0] = view->swizzle_r;
-         key.tex_swizzle[unit][1] = view->swizzle_g;
-         key.tex_swizzle[unit][2] = view->swizzle_b;
-         key.tex_swizzle[unit][3] = view->swizzle_a;
+      } else if (unit < 8 && view) {
+         /* a view's swizzle (M43): the program's, on the texel -- on the
+          * format's own first (M45: R8's, RG8's, sgx_resource_swizzle) */
+         const uint8_t v[4] = { view->swizzle_r, view->swizzle_g, view->swizzle_b,
+                                view->swizzle_a };
+         uint8_t f[4] = { PIPE_SWIZZLE_X, PIPE_SWIZZLE_Y, PIPE_SWIZZLE_Z, PIPE_SWIZZLE_W };
+         bool own = sgx_resource_swizzle(view->texture, f);
+
+         if (own || v[0] != PIPE_SWIZZLE_X || v[1] != PIPE_SWIZZLE_Y ||
+             v[2] != PIPE_SWIZZLE_Z || v[3] != PIPE_SWIZZLE_W) {
+            key.tex_swz |= 1u << unit;
+            for (unsigned c = 0; c < 4; c++)
+               key.tex_swizzle[unit][c] = v[c] <= PIPE_SWIZZLE_W ? f[v[c]] : v[c];
+         }
       }
    }
    /* (M43) what the target's tile holds */
@@ -1180,6 +1185,9 @@ sgx_batch_flush_at(struct sgx_context *ctx, const char *file, int line)
       sgx_fence_reference(&ctx->last, fence);
       sgx_resource(b->rt)->seq++;
       sgx_resource(b->rt)->gpu_written = true;
+      /* (M45: a target's buffer from the cache goes back to it busy, as a
+       * texture's does) */
+      sgx_bo_set_busy(sgx_resource(b->rt)->bo, ctx->last);
       if (zls.store) {
          zt->valid = true;
          zs->seq++;           /* (a depth texture's copy made again, M37) */
