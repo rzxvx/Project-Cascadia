@@ -195,6 +195,8 @@ struct apple_sgx {
 	phys_addr_t fb_pa;
 	u64 *blt_code;			/* CPU side of the code page at GPU 0x1000 */
 	u32 blt_seq, r_seq;
+	u32 blt_pending;		/* the job queued and not seen done; 0: none (blt_lock) */
+	unsigned long blt_since;	/* when it was queued, jiffies */
 	u32 fb_w, fb_h, fb_stride;	/* the framebuffer: pixels, pixels, pixels */
 
 	/* the render node, and its screen */
@@ -222,6 +224,9 @@ struct apple_sgx_over {
 };
 int apple_sgx_fb_show(struct apple_sgx *sgx, u32 va, u32 stride, u32 w, u32 h, u32 x, u32 y,
 		      unsigned int rot, const struct apple_sgx_over *over);
+/* until the 2D engine has no job running -- fb_show's copies are queued,
+ * not waited for (sleeps); -EIO: the engine is out of service */
+int apple_sgx_blt_sync(struct apple_sgx *sgx);
 
 /* apple_sgx_drm.c */
 int apple_sgx_drm_init(struct apple_sgx *sgx);

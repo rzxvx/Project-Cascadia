@@ -272,13 +272,16 @@ static const struct drm_simple_display_pipe_funcs sgx_kms_pipe_funcs = {
 };
 
 /* drm_atomic_helper_commit_tail() but for the vblank: the planes' copies
- * are done when commit_planes returns, so a commit's event goes then, with
- * the vblank count it is (not at the next vblank), and nothing waits for
- * one before the old framebuffers go. */
+ * are queued when commit_planes returns, so a commit's event goes then,
+ * with the vblank count it is (not at the next vblank) -- the program
+ * draws its next frame into the other buffer meanwhile; the next copy
+ * waits for this one.  An old framebuffer goes once no copy reads it. */
 static void sgx_kms_commit_tail(struct drm_atomic_state *state)
 {
 	struct drm_device *drm = state->dev;
+	struct drm_plane_state *old_ps, *new_ps;
 	struct drm_crtc_state *crtc_state;
+	struct drm_plane *plane;
 	struct drm_crtc *crtc;
 	int i;
 
@@ -296,6 +299,12 @@ static void sgx_kms_commit_tail(struct drm_atomic_state *state)
 		spin_unlock_irqrestore(&drm->event_lock, flags);
 	}
 	drm_atomic_helper_commit_hw_done(state);
+	for_each_oldnew_plane_in_state(state, plane, old_ps, new_ps, i) {
+		struct apple_sgx_kms *kms = container_of(plane, struct apple_sgx_kms, pipe.plane);
+
+		if (old_ps->fb && old_ps->fb != new_ps->fb)
+			apple_sgx_blt_sync(kms->sgx);
+	}
 	drm_atomic_helper_cleanup_planes(drm, state);
 }
 
@@ -353,8 +362,11 @@ static void sgx_kms_overlay_redraw(struct apple_sgx_kms *kms, const struct drm_r
 
 static void sgx_kms_overlay_drop(struct apple_sgx_kms *kms)
 {
-	if (kms->ov_obj)
+	/* (a copy queued may still be reading it) */
+	if (kms->ov_obj) {
+		apple_sgx_blt_sync(kms->sgx);
 		drm_gem_object_put(kms->ov_obj);
+	}
 	kms->ov_obj = NULL;
 	kms->ov_owner = NULL;
 	kms->ov_n = 0;
