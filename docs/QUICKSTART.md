@@ -207,7 +207,7 @@ There are two consoles besides ssh, and both are useful when ssh is not:
 
 Linux 6.12 booting to an interactive shell in about five seconds, with
 interrupts, a working tick and correct wall-clock time; a framebuffer console;
-CDC ACM and CDC ECM over the Lightning cable; ssh; `apk`, the whole Alpine
+CDC ACM and CDC NCM over the Lightning cable; ssh; `apk`, the whole Alpine
 repository, over that link; `/bin/peek` for poking at MMIO; and multitouch,
 brought up the way iOS brings it up, as an evdev device; both CPU cores and the
 L2 cache; Wi-Fi (below); and iOS's own files, read-only (below).

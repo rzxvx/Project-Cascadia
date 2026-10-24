@@ -55,9 +55,9 @@ including the parts that didn't work.
 - [x] Interactive shell on tty0 (framebuffer console)
 - [x] **USB gadget enumerates** — dwc2 peripheral mode, full SET_CONFIGURATION
 - [x] **Interactive shell over USB** — CDC ACM, `screen /dev/cu.usbmodem* 115200`
-- [x] **USB networking** — CDC ECM on the same port as the console (`g_cdc`),
-      10.55.0.2, ~0.7 ms RTT to the host
-- [x] **SSH** — dropbear, key-only, over the ECM link
+- [x] **USB networking** — CDC NCM on the same port as the console (`g_cdc`),
+      10.55.0.2, ~0.6 ms RTT to the host, 27 MB/s to the iPad
+- [x] **SSH** — dropbear, key-only, over the USB link
 - [x] **`apk` works on the device** — the whole Alpine repository, over the cable
 - [x] **NFS root** — the root filesystem lives on the host's disk, so installed
       packages survive a reboot and the disk is no longer 512 MB of RAM
@@ -192,26 +192,37 @@ driver for the PPN chips with UBI/UBIFS on the blocks iOS's FTL uses now, block
 
 ### How fast each one actually is
 
-Measured on the device, 2026-09-29:
+Measured on the device, 2026-09-29, the NFS row again 2026-10-24:
 
 | Where | Write | Read |
 |---|---|---|
 | RAM (`tmpfs`) | 272.8 MB/s | 415.4 MB/s |
-| NFS root, over the Lightning cable | 5.5 MB/s | 7.0 MB/s |
+| NFS root, over the Lightning cable | 18.3 MB/s | 27.1 MB/s |
 | The NAND, read-only, userspace PIO | — | 14.6 MB/s |
 | A USB flash drive in host mode | *unproven, see below* | |
 
-Do not blame NFS for the second row: raw TCP over the same cable manages
-5.9 MB/s, so NFS is keeping 93% of what the link gives it. **The link is the
-bottleneck** — 47 Mbit/s on a bus rated 480 — and not because the CPU cannot
-keep up, which sits 95% idle while it happens. CDC ECM sends one 1500-byte
-frame per USB transaction and only keeps ten requests in flight
-(`g_cdc.qmult` is 5, and the queue is twice that), so the bus spends its time
-waiting. That is a fixable number, not a law.
+The NFS row was 5.5 and 7.0 MB/s until 2026-10-24 (9 MB/s on a later
+kernel), and NFS was never the reason: neither the rsize nor the
+readahead changed it, ssh was slower still, the CPU sat idle and the Mac's
+nfsd at 8%. Nor was it the gadget's queue -- its ten receive requests were
+queued at every sample. The USB controller's DMA was. dwc2 moves what
+arrives from its 2 KB receive FIFO to memory in AHB bursts, and the generic
+`snps,dwc2` default is INCR, bursts of no stated length, which this bus takes
+a beat at a time: the FIFO drained slowly, and the iPad NAKed the Mac's
+packets while it did. In 16-beat bursts (INCR16, `dwc2_set_s5l8940x_params`)
+it reads at 27 MB/s; INCR4 gave 23, INCR8 27; 172 MB came back with the same
+checksum both ways. The link is also CDC NCM now instead of ECM: macOS
+drives ECM through a user-space DriverKit driver, a USB transfer per frame,
+and NCM through its kernel driver, frames batched -- with f_ncm's batching
+timer cut from 300 to 50 µs, since over NFS most frames go alone and each
+used to wait for it. A cold metadata walk (`find /usr/share`) takes 3.0 s
+(3.5 on ECM), a terminal opened with nothing cached 2.7-3.1 s (3.8-4.9).
+The first time the Mac sees the NCM gadget it asks whether to allow the
+accessory.
 
-Which makes the third row worth reading twice: **the NAND is already 2.5× faster
-than the filesystem this port roots on**, on userspace PIO through `/dev/mem`,
-before any of the DMA work a real driver would bring.
+So the NAND's 14.6 MB/s on userspace PIO through `/dev/mem` is no longer the
+faster column -- but that is before any of the DMA work a real driver would
+bring, and the NAND does not need the Mac at all.
 
 ### A USB flash drive, which would suit the first column
 

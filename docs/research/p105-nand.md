@@ -24,6 +24,11 @@ userspace PIO through `/dev/mem`, before any of the DMA work below. And a dump
 that reports 14 MB/s is still filling the page cache faster than it drains, so
 the wall-clock time of a large dump is set by NFS, not by the flash.
 
+(2026-10-24: no longer. The NFS root's limit was the USB controller's DMA
+bursts, not the link -- README, "How fast each one actually is" -- and it now
+writes 18.3 MB/s and reads 27.1, so a dump's time is the flash's again, and
+PIO's 14.6 MB/s is the number a real driver has to beat.)
+
 ## What the NAND is
 
 Two Hynix PPN packages, one per bus, each on CE0 (ADT `ce-bitmap 0x101`).
