@@ -100,11 +100,12 @@ V="$TREE/vmlinux"
 CPIO="$TREE/usr/initramfs_data.cpio"
 rc=0
 # Every string here was checked to exist verbatim in the source it comes from;
-# "CDC Composite Gadget" is cdc2.c's DRIVER_DESC and "CDC Ethernet Control
-# Model (ECM)" is f_ecm.c's string table, so their presence proves g_cdc and
-# its ECM half actually got linked in rather than silently dropped by kconfig.
+# "CDC Composite Gadget" is cdc2.c's DRIVER_DESC and "CDC Network Control
+# Model (NCM)" is f_ncm.c's string table, so their presence proves g_cdc and
+# its network half (NCM since 2026-10-24, ECM before) actually got linked in
+# rather than silently dropped by kconfig.
 for s in AIC1-REARM irq_rearm LATE-SMOKE ttyGS CALIB PMU-TIMER SOF-TIMER apple-usb-sof \
-         "CDC Composite Gadget" "CDC Ethernet Control Model (ECM)"; do
+         "CDC Composite Gadget" "CDC Network Control Model (NCM)"; do
     if LC_ALL=C grep -aFq "$s" "$V"; then echo "    ok: $s in vmlinux"; else echo "    FAIL: $s missing from vmlinux"; rc=1; fi
 done
 # /init lives in the initramfs archive, not as plain text in vmlinux -- check it there.
@@ -112,10 +113,10 @@ for s in "P105: stage1 start" p105-stage2 getty ttyGS0 10.55.0.2; do
     if LC_ALL=C grep -aFq "$s" "$CPIO"; then echo "    ok: $s in initramfs"; else echo "    FAIL: $s missing from initramfs"; rc=1; fi
 done
 # Gadget: exactly ONE legacy gadget may be built in, and as of 2026-09-16 it is
-# g_cdc (ECM + ACM together).  g_serial and g_ether must both be off, or they
+# g_cdc (ECM + ACM together; NCM + ACM since 2026-10-24).  g_serial and g_ether must both be off, or they
 # race for the UDC and whichever loses takes the console or the network with it.
 grep -q "^CONFIG_USB_CDC_COMPOSITE=y" "$TREE/.config" || { echo "    FAIL: g_cdc not built in"; rc=1; }
-grep -q "^CONFIG_USB_F_ECM=y" "$TREE/.config" || { echo "    FAIL: CDC ECM function not built in"; rc=1; }
+grep -q "^CONFIG_USB_F_NCM=y" "$TREE/.config" || { echo "    FAIL: CDC NCM function not built in"; rc=1; }
 grep -q "^CONFIG_USB_F_ACM=y" "$TREE/.config" || { echo "    FAIL: CDC ACM function not built in"; rc=1; }
 grep -q "^CONFIG_NFS_FS=y" "$TREE/.config" || { echo "    FAIL: NFS client not built in"; rc=1; }
 grep -q "^CONFIG_NFS_V3=y" "$TREE/.config" || { echo "    FAIL: NFSv3 not built in (macOS nfsd serves v2/v3 only)"; rc=1; }

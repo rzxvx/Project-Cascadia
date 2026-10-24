@@ -88,7 +88,7 @@ for u in /sys/class/udc/*; do
 done
 
 # ------------------------------------------------------------------- usb0 ---
-# g_cdc gives both halves of the port: usb0 (CDC ECM) and /dev/ttyGS0 (ACM).
+# g_cdc gives both halves of the port: usb0 (CDC NCM) and /dev/ttyGS0 (ACM).
 # Static addressing: no DHCP server in this initramfs, it is a point-to-point
 # link, and the MACs are pinned in bootargs so the host keeps one interface
 # name across boots.  10.55.0.0/24 stays clear of the usual home ranges.
@@ -120,7 +120,7 @@ if [ -d /sys/class/net/usb0 ]; then
         "carrier=$(cat /sys/class/net/usb0/carrier 2>/dev/null)" \
         "mac=$(cat /sys/class/net/usb0/address 2>/dev/null)"
 else
-    msg "  usb0: MISSING -- g_cdc did not create the ECM netdev."
+    msg "  usb0: MISSING -- g_cdc did not create the NCM netdev."
 fi
 msg "P105: ACM nodes: $(ls -d /dev/ttyGS* 2>/dev/null | tr '\n' ' ')"
 
