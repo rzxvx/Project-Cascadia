@@ -1,0 +1,26 @@
+#!/bin/sh
+# Runs after squash-init moved pseudo-filesystems into the RAM overlay root.
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+export TERM=dumb
+export HOME=/root
+mkdir -p /dev/pts /dev/shm /tmp
+mount -t devpts devpts /dev/pts
+mount -t tmpfs -o size=32m,nr_inodes=4096 tmpfs /tmp
+mount -t tmpfs -o size=32m,nr_inodes=2048,mode=1777 tmpfs /dev/shm || echo 'K93 shared-memory mount failed; diagnostic shell remains available' >/dev/tty0
+busybox ip link set lo up || echo 'K93 loopback setup failed; diagnostic shell remains available' >/dev/tty0
+busybox hostname -F /etc/hostname || echo 'K93 configured hostname setup failed; diagnostic shell remains available' >/dev/tty0
+echo 'K93 Alpine compressed RAM root: userspace reached' >/dev/tty0
+uname -a >/dev/tty0
+if [ -d /sys/class/net/usb0 ]; then
+    busybox ip -4 address show dev usb0 | busybox grep -q '10.93.0.2/30' || busybox ip address add 10.93.0.2/30 dev usb0
+    busybox ip link set usb0 up
+fi
+# No desktop, network listener, package scripts, touch firmware or storage
+# initialization is auto-started. First validate root/USB/memory on hardware.
+while :; do
+    if [ -c /dev/ttyGS0 ]; then
+        stty -F /dev/ttyGS0 -echo -ixon -ixoff
+        setsid sh -c 'echo K93_ALPINE_OVERLAY_READY; cat /etc/alpine-release; uname -a; exec sh' </dev/ttyGS0 >/dev/ttyGS0 2>&1
+    fi
+    sleep 1
+done
