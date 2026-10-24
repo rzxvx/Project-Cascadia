@@ -79,13 +79,16 @@ static int hdq_read8(struct hdq_battery *b, u8 reg)
 {
 	u8 rx[40];
 	unsigned long end;
-	int i, n = 0, v = 0;
+	int i, v = 0;
+	unsigned int n = 0;
 
 	hdq_drain(b);
 	writel(readl(b->base + UCON) | UCON_SBREAK, b->base + UCON);
 	end = jiffies + msecs_to_jiffies(5);
 	while ((readl(b->base + UCON) & UCON_SBREAK) && time_before(jiffies, end))
 		udelay(10);
+	if (readl(b->base + UCON) & UCON_SBREAK)
+		return -ETIMEDOUT;
 	udelay(200);			/* break recovery */
 	hdq_drain(b);
 
@@ -105,13 +108,23 @@ static int hdq_read8(struct hdq_battery *b, u8 reg)
 
 static int hdq_read16(struct hdq_battery *b, u8 reg)
 {
-	int lo, hi, tries;
+	int before, after, low, tries;
 
+	/* No HDQ write command can be emitted, including reg+1. */
+	if (reg > 0x7e)
+		return -EINVAL;
 	for (tries = 0; tries < 3; tries++) {
-		lo = hdq_read8(b, reg);
-		hi = lo < 0 ? lo : hdq_read8(b, reg + 1);
-		if (lo >= 0 && hi >= 0)
-			return lo | hi << 8;
+		before = hdq_read8(b, reg + 1);
+		if (before < 0)
+			return before;
+		low = hdq_read8(b, reg);
+		if (low < 0)
+			return low;
+		after = hdq_read8(b, reg + 1);
+		if (after < 0)
+			return after;
+		if (before == after)
+			return low | after << 8;
 	}
 	return -EIO;
 }
@@ -124,7 +137,8 @@ static int hdq_refresh(struct hdq_battery *b)
 		{ BQ_TEMP, &b->temp }, { BQ_RM, &b->rm }, { BQ_FCC, &b->fcc },
 		{ BQ_FLAGS, &b->flags }, { BQ_CYCT, &b->cyct }, { BQ_DCAP, &b->dcap },
 	};
-	int i, v;
+	int v, sample[ARRAY_SIZE(r)];
+	unsigned int i;
 
 	if (b->valid && time_before(jiffies, b->stamp + 5 * HZ))
 		return 0;
@@ -134,8 +148,14 @@ static int hdq_refresh(struct hdq_battery *b)
 			dev_warn_ratelimited(b->dev, "no answer for %#x\n", r[i].reg);
 			return v;
 		}
-		*r[i].dst = v;
+		/* Capacity's power-supply ABI is a percentage, never raw noise. */
+		if (r[i].reg == BQ_SOC && v > 100)
+			return -ERANGE;
+		sample[i] = v;
 	}
+	/* Do not publish a partial sample if a later HDQ transaction fails. */
+	for (i = 0; i < ARRAY_SIZE(r); i++)
+		*r[i].dst = sample[i];
 	b->ai = (s16)b->ai;
 	b->stamp = jiffies;
 	b->valid = true;
@@ -154,13 +174,13 @@ static int hdq_get_property(struct power_supply *psy, enum power_supply_property
 	}
 	mutex_lock(&b->lock);
 	ret = hdq_refresh(b);
-	mutex_unlock(&b->lock);
 	if (psp == POWER_SUPPLY_PROP_PRESENT) {
 		val->intval = ret == 0;
-		return 0;
+		ret = 0;
+		goto out;
 	}
 	if (ret)
-		return ret;
+		goto out;
 
 	switch (psp) {
 	case POWER_SUPPLY_PROP_STATUS:
@@ -168,7 +188,7 @@ static int hdq_get_property(struct power_supply *psy, enum power_supply_property
 			val->intval = POWER_SUPPLY_STATUS_FULL;
 		else if (b->ai > 0)
 			val->intval = POWER_SUPPLY_STATUS_CHARGING;
-		else if (b->flags & BQ_FLAG_DSG)
+		else if (b->ai < 0 || (b->flags & BQ_FLAG_DSG))
 			val->intval = POWER_SUPPLY_STATUS_DISCHARGING;
 		else
 			val->intval = POWER_SUPPLY_STATUS_NOT_CHARGING;
@@ -198,9 +218,11 @@ static int hdq_get_property(struct power_supply *psy, enum power_supply_property
 		val->intval = b->cyct;
 		break;
 	default:
-		return -EINVAL;
+		ret = -EINVAL;
 	}
-	return 0;
+out:
+	mutex_unlock(&b->lock);
+	return ret;
 }
 
 static const enum power_supply_property hdq_props[] = {

@@ -70,6 +70,10 @@ struct apple_s5l8940x_gpio_pinctrl {
 #define    REG_GPIOx_IRQ_ANY    (6 << 1)
 #define    REG_GPIOx_IRQ_OFF    (7 << 1)
 #define  REG_GPIOx_PERIPH       (1 << 5)
+/* 12H321 GPIOIC modes 2/3/4 select 0x20/0x40/0x60; GPIO modes clear both.
+ * PERIPH remains the one exposed function value, not the selector clear mask.
+ */
+#define  REG_GPIOx_MUX_MASK     (3u << 5)
 #define  REG_GPIOx_CFG_DONE     (1 << 9)
 #define  REG_GPIOx_GRP_MASK     (7 << 16)
 #define    REG_GPIOx_GRP_SHIFT  16
@@ -126,21 +130,21 @@ static void apple_s5l8940x_gpio_refresh_reg(struct apple_s5l8940x_gpio_pinctrl *
     struct apple_s5l8940x_gpio_pincfg *pincfg = &pctl->pin_cfgs[pin];
 
     if(pincfg->stat & PINCFG_STAT_PERIPH) {
-        apple_s5l8940x_gpio_set_reg(pctl, pin, REG_GPIOx_IRQ_MASK | REG_GPIOx_DATA, REG_GPIOx_PERIPH | REG_GPIOx_CFG_DONE | (pincfg->stat & PINCFG_STAT_OUTVAL));
+        apple_s5l8940x_gpio_set_reg(pctl, pin, REG_GPIOx_IRQ_MASK | REG_GPIOx_DATA | REG_GPIOx_MUX_MASK, REG_GPIOx_PERIPH | REG_GPIOx_CFG_DONE | (pincfg->stat & PINCFG_STAT_OUTVAL));
         return;
     }
 
     if(pincfg->stat & PINCFG_STAT_OUTEN) {
-        apple_s5l8940x_gpio_set_reg(pctl, pin, REG_GPIOx_IRQ_MASK | REG_GPIOx_DATA | REG_GPIOx_PERIPH, REG_GPIOx_CFG_DONE | REG_GPIOx_IRQ_OUT | (pincfg->stat & PINCFG_STAT_OUTVAL));
+        apple_s5l8940x_gpio_set_reg(pctl, pin, REG_GPIOx_IRQ_MASK | REG_GPIOx_DATA | REG_GPIOx_MUX_MASK, REG_GPIOx_CFG_DONE | REG_GPIOx_IRQ_OUT | (pincfg->stat & PINCFG_STAT_OUTVAL));
         return;
     }
 
     if(pincfg->stat & PINCFG_STAT_IRQEN) {
-        apple_s5l8940x_gpio_set_reg(pctl, pin, REG_GPIOx_IRQ_MASK | REG_GPIOx_DATA | REG_GPIOx_PERIPH, REG_GPIOx_CFG_DONE | pincfg->irqtype | (pincfg->stat & PINCFG_STAT_OUTVAL));
+        apple_s5l8940x_gpio_set_reg(pctl, pin, REG_GPIOx_IRQ_MASK | REG_GPIOx_DATA | REG_GPIOx_MUX_MASK, REG_GPIOx_CFG_DONE | pincfg->irqtype | (pincfg->stat & PINCFG_STAT_OUTVAL));
         return;
     }
 
-    apple_s5l8940x_gpio_set_reg(pctl, pin, REG_GPIOx_IRQ_MASK | REG_GPIOx_DATA | REG_GPIOx_PERIPH, REG_GPIOx_CFG_DONE | REG_GPIOx_IRQ_OFF | (pincfg->stat & PINCFG_STAT_OUTVAL));
+    apple_s5l8940x_gpio_set_reg(pctl, pin, REG_GPIOx_IRQ_MASK | REG_GPIOx_DATA | REG_GPIOx_MUX_MASK, REG_GPIOx_CFG_DONE | REG_GPIOx_IRQ_OFF | (pincfg->stat & PINCFG_STAT_OUTVAL));
 }
 
 static uint32_t apple_s5l8940x_gpio_get_reg(struct apple_s5l8940x_gpio_pinctrl *pctl, unsigned pin)
@@ -292,7 +296,7 @@ static int apple_s5l8940x_gpio_gpio_direction_input(struct gpio_chip *chip, unsi
 {
     struct apple_s5l8940x_gpio_pinctrl *pctl = gpiochip_get_data(chip);
 
-    pctl->pin_cfgs[offset].stat &= ~PINCFG_STAT_OUTEN;
+    pctl->pin_cfgs[offset].stat &= ~(PINCFG_STAT_OUTEN | PINCFG_STAT_PERIPH);
     apple_s5l8940x_gpio_refresh_reg(pctl, offset);
     return 0;
 }

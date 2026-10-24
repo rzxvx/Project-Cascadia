@@ -327,9 +327,10 @@ cmd_build() {
     note "ok: /sbin/p105-keys (static ARM)"
     # The NAND, read-only: nandctl pokes the PPN chips, iosnand serves iOS's
     # partitions as block devices (`ios mount`).  docs/research/p105-nand.md.
-    in_docker "arm-linux-gnueabihf-gcc -static -Os -D_FILE_OFFSET_BITS=64 -o build/initramfs-root/sbin/nandctl tools/nand/nandctl.c tools/nand/ppn.c && arm-linux-gnueabihf-gcc -static -O2 -D_FILE_OFFSET_BITS=64 -o build/initramfs-root/sbin/iosnand tools/nand/iosnand.c tools/nand/ppn.c"
+    in_docker "arm-linux-gnueabihf-gcc -static -Os -D_FILE_OFFSET_BITS=64 -o build/initramfs-root/sbin/nandctl tools/nand/nandctl.c tools/nand/ppn.c && arm-linux-gnueabihf-gcc -static -O2 -D_FILE_OFFSET_BITS=64 -o build/initramfs-root/sbin/iosnand tools/nand/iosnand.c tools/nand/ppn.c && arm-linux-gnueabihf-gcc -static -Os -D_FILE_OFFSET_BITS=64 -o build/initramfs-root/sbin/iosnandctl tools/nand/iosnandctl.c"
     [ -s "$ROOT/build/initramfs-root/sbin/iosnand" ] || fail "iosnand did not build"
-    note "ok: /sbin/nandctl, /sbin/iosnand (static ARM)"
+    [ -s "$ROOT/build/initramfs-root/sbin/iosnandctl" ] || fail "iosnandctl did not build"
+    note "ok: /sbin/nandctl, /sbin/iosnand, /sbin/iosnandctl (static ARM)"
     # Wi-Fi's tools and the on-screen keyboard ride in the image (a RAM boot
     # has no network to apk add them with).  A tree made by an older
     # ./cascadia rootfs lacks them; add them rather than make it start over.
@@ -466,7 +467,7 @@ so this is a file in build/initramfs-root owned by some third uid."
     want=$(( $(filesize "$ROOT/build/linux/arch/arm/boot/zImage") + $(filesize "$ROOT/dtb/p105ap.dtb") ))
     got=$(filesize "$ROOT/output/zImage-dtb")
     [ "$want" = "$got" ] || fail "zImage-dtb is $got bytes, expected $want"
-    in_docker "bash build-bundle.sh 2>&1 | tail -5"
+    in_docker "set -o pipefail; bash build-bundle.sh 2>&1 | tail -5"
     cp "$ROOT/output/linux-boot.bin" "$ROOT/output/staging-loader.bin"
     bs=$(filesize "$ROOT/output/staging-bundle.bin")
     [ "$bs" = "$(( got + 32768 ))" ] || fail "staging-bundle.bin is $bs bytes, expected $(( got + 32768 ))"
