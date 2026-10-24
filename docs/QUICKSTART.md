@@ -207,7 +207,7 @@ There are two consoles besides ssh, and both are useful when ssh is not:
 
 Linux 6.12 booting to an interactive shell in about five seconds, with
 interrupts, a working tick and correct wall-clock time; a framebuffer console;
-CDC ACM and CDC NCM over the Lightning cable; ssh; `apk`, the whole Alpine
+CDC ACM and CDC ECM over the Lightning cable; ssh; `apk`, the whole Alpine
 repository, over that link; `/bin/peek` for poking at MMIO; and multitouch,
 brought up the way iOS brings it up, as an evdev device; both CPU cores and the
 L2 cache; Wi-Fi (below); and iOS's own files, read-only (below).
@@ -412,6 +412,7 @@ SuperTux). [GPU.md](GPU.md) has the details and how it works.
 | `ssh` asks for a **passphrase** and then gives up | That is your own key on this host, not the device: ssh could not decrypt it, so it never offered it. `ssh-add ~/.ssh/id_ed25519` once, or keep a passphrase-less `~/.ssh/cascadia` (see *Prerequisites*). Nothing is wrong with the image — rebuilding will not help. |
 | `ssh` hangs, no error | This host has no address on the link. `./cascadia link`. |
 | `ssh` hangs, but `ping 10.55.0.2` answers and the glass says `nfs: server ... not responding, still trying` | The NFS root lost its server, and a hard-mounted root blocks everything that touches it until the server returns — the kernel is fine, the cursor still blinks, and the console over the cable still works (it runs from RAM). This is the host's side, not the iPad's: seen with macOS's nfsd and on an Ubuntu host, never on the Arch one. On a NetworkManager host it was NM taking 10.55.0.1 off the link; `./cascadia link` (and so `flash`) now gives NM a profile that keeps it. Otherwise only a reboot gets out of it today; `./cascadia nfs off` and a rebuild boot from RAM instead. |
+| `ssh` hangs, `ping` does not answer, the console over the cable says nothing, but the glass's cursor blinks and it shows `task ... blocked for more than ... seconds` in `nfs_...` | The gadget stopped sending to the host; the kernel is fine and the NFS root waits for it. Seen after the link was down for minutes (the Mac asleep, or `ip link set usb0 down` and the serial console reopened meanwhile) on any kernel, and on its own after boot with the fast DMA bursts of 2026-10-24 (reverted). Only a reboot gets out of it today; before rebooting, a photo of the glass is what tells it apart. |
 | `REMOTE HOST IDENTIFICATION HAS CHANGED` | The device's host key changed. Images built before 2026-09-19 made a new one on every boot from RAM; `./cascadia build` now makes it once and prints its fingerprint. Once: `ssh-keygen -R 10.55.0.2`, then compare the fingerprint ssh shows with the build's. |
 | kDFU: "Unable to connect to device", the iPad never reacted | Legacy iOS Kit spent the run installing its own dependencies. Run it once on its own; on Arch `pacman -Syu` first. |
 | kDFU: the iBEC uploads to 100%, then the device looks switched off | An encrypted iBEC. After iOS has booted the AES GID key is gone, so the KBAG decrypts to nothing. `--kdfu` picks the plaintext image by itself unless `--ibec` or `--known-good` pinned one. |

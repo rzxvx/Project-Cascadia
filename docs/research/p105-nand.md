@@ -24,10 +24,9 @@ userspace PIO through `/dev/mem`, before any of the DMA work below. And a dump
 that reports 14 MB/s is still filling the page cache faster than it drains, so
 the wall-clock time of a large dump is set by NFS, not by the flash.
 
-(2026-10-24: no longer. The NFS root's limit was the USB controller's DMA
-bursts, not the link -- README, "How fast each one actually is" -- and it now
-writes 18.3 MB/s and reads 27.1, so a dump's time is the flash's again, and
-PIO's 14.6 MB/s is the number a real driver has to beat.)
+(2026-10-24: the NFS root's limit is the USB controller's DMA bursts, not
+the link -- README, "How fast each one actually is". With 16-beat bursts it
+read 27 MB/s, but the link did not stay up, and it is back at 9.)
 
 ## What the NAND is
 
