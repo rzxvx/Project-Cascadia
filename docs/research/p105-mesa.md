@@ -3598,6 +3598,155 @@ arrays, 3D), lookups in a vertex shader 4, the packed colours' clamping
 - Texture lookups in a vertex shader, 3D and array textures (M43's gaps,
   piglit's tex-miplevel-selection).
 
+## M45: what XFCE's X server costs -- the driver's part, and pixman's
+
+With the GPU's clock what it is (256.5 MHz, p105-gpu.md) the CPU is where
+XFCE waits, and most of it is the X server: glamor drawing through this
+driver, and what glamor leaves to fb and pixman. The yardstick is a
+terminal opened (`tools/desktop/xopen-time.sh`: `xfce4-terminal
+--disable-server` until its window shows, six times, the first left out;
+the X server's CPU from /proc). The system's build (M44, release) and
+Alpine's pixman: **1130-1140 ms of the X server's CPU a window, the window
+there in 2.44-2.55 s.**
+
+**Where the time went.** perf's flat profile of Xorg over three windows;
+call graphs only in the kernel (`perf record -g`: the userland has no frame
+pointers, and DWARF unwinding stops in musl's assembler memcpy). For the
+rest, counters preloaded into the X server through `~/.xserverrc` (`exec env
+LD_PRELOAD=... /usr/libexec/Xorg "$@"`): `tools/sgx/memcpy-who.c`, which
+counts memset now too, and `tools/sgx/composite-who.c` (pixman's composites
+by operator, formats, sizes and caller -- what glamor hands fb), both with a
+report on demand (`touch /tmp/<name>-dump`) to take one stretch of a server
+that runs on; `SGX_DEBUG=copies`; `strace -X raw -e trace=ioctl`; gdb
+breakpoints with `bt` (never a function called from them: that aborted the
+server).
+
+| what | of Xorg's CPU | why |
+|---|---|---|
+| `util_format_r8_unorm_unpack_rgba_8unorm`, `copy_level` | 14% | glamor's a8 pixmaps -- every mask the programs draw with -- are GL_R8 textures (it has ARB_texture_rg and the swizzle). R8 was no format of the sampler's: each was made RGBA8 and twiddled, a window-sized mask (851 x 549) into 4 MiB. 162 copies over three windows |
+| the kernel: `l2c210_clean_range`, `v7_dma_clean_range`, pages cleared | 15% | a new buffer is shmem pages cleared and then cleaned out of the CPU's caches (`drm_gem_shmem_get_pages_sgt`, `dma_map_sgtable`). glamor makes a texture for every pixmap: 193 GEM_CREATE a window |
+| `memset` (pixman's `general_composite_rect`) | 12% | xfwm4's frame shape: a1 pixmaps (glamor draws no depth 1, fb does), a source 4 pixels wide repeated over a mask of the window's width. `fast_composite_tiled_repeat` calls `general_composite_rect` for each tile of each row, and that clears its 24 KiB stack buffer whole every time (since 2020's "Initialize temporary buffers"): 16 000 calls, 380 MB a window |
+| `memcpy` | 9-13% | uploads, most of it xfdesktop's SHM image (cairo's pool) composited whole: glamor uploads it whole for each composite (`glamor_upload_picture_to_texture`, 768 x 1024, 3 MiB) -- see below |
+| `_raw_spin_unlock_irqrestore` | 2.5-4.5% | the kernel's copy onto the screen (DIRTYFB) waits for the 2D job with interrupts off -- see below |
+
+**R8 and RG8, the sampler's own** (`native_format`): U8 swizzled RRRR and
+U8U8 GRRR, the swizzles I8's and LA8's are (M37, M43). GXM's lists have
+none that gives GL's alpha of 1 with zeros besides (SWIZZLE1: R, 000R,
+111R, RRRR, 0RRR, 1RRR, R000, R111), so the rest is the program's:
+`sgx_resource_swizzle()` says X 0 0 1 of RRRR and X W 0 1 of GRRR, and
+sgx_draw.c puts the view's swizzle (M43's `tex_swizzle`) on top of it --
+glamor's a8 view, 0 0 0 R, becomes 0 0 0 X. An R8 texture sampled nearest
+and clamped, as glamor's masks are, is now read linear where it is, no copy
+at all; one filtered is copied a byte a texel. glfmt has R8, RG8 and R8
+swizzled as glamor does it sampled, unit and filtered (51 cases).
+
+**Textures' and targets' buffers from the cache** (M26's, which had buffers'
+GPU copies, vertex chunks and the twiddled copies): `sgx_resource_create`
+takes one from `sgx_bo_cache_get` unless the resource is to be shared
+(SHARED, SCANOUT, DISPLAY_TARGET) or is depth (its tiles are buffers of
+their own). The cache hands a buffer out again only when the last render
+that listed it is done (`sgx_bo_idle`): a render's target is marked busy
+with it now (`sgx_bo_set_busy` in `sgx_batch_flush_at`), as its textures
+were. A buffer exported later (`resource_get_handle`) leaves the cache's
+hands: another process may hold it. GEM_CREATE 193 -> 83 a window.
+
+**And:** `rt_format()` made the names `SGX_PBE_<FMT>`, `SGX_BG_<FMT>` with
+snprintf and looked them up at every draw (`sgx_frame_rt_kind`, for the
+program's variant key): resolved once now.
+
+**pixman** (`tools/desktop/pixman`: Alpine's 0.46.4 with
+`pixman-scanline-clear.patch`, 0.46.4-r100, abuild in docker in a minute
+and a half): the stack buffer cleared only as far as the three scanlines
+take -- `width * Bpp * 3 + 15 * 3` bytes, as the heap buffer of a wider
+composite already was. pixman's master has the same code as 0.46.4.
+
+**Measured**, release builds, the same boot:
+
+| | M44, Alpine's pixman | M45 | M45, pixman r100 |
+|---|---|---|---|
+| Xorg's CPU a window | 1130-1140 ms | 768 ms | **665-670 ms** |
+| the window there (mean of five) | 2.44-2.55 s | 2.07 s | **2.03-2.15 s** |
+| texture copies over three windows | 162 | 31, none over 90 KB | -- |
+| memset over three windows | 1137 MB | -- | 23 MB |
+| the regression programs (glfs ... glfmt, glchurn) | all | all | -- |
+| piglit's arb_texture_rg, ext_texture_swizzle (222) | 107 pass | 107, the same | -- |
+| dEQP-GLES2 whole | 16 903 pass, 88 fail | 16 903, 88: the same cases, group by group | -- |
+
+**The copies onto the screen** (apple-sgx, `sgx_blt_run`). A copy (DIRTYFB,
+a page flip) was a 2D job waited for with interrupts off -- `blt_lock`
+taken irqsave, `read_poll_timeout_atomic` -- because fbcon draws through the
+same engine from any context: 35 copies a window, ~3 ms each, the X server
+and everything else stopped meanwhile. And a job not done in 200 ms put
+the engine out of service until the microkernel was started again: during
+dEQP's flush_finish, whose renders are long and which the microkernel runs
+the transfer queue behind, a copy took longer, and from then on every copy
+was -EIO -- X ran on, the glass stood still (fixed then without a reboot:
+X stopped, `echo 1 > /sys/kernel/debug/apple-sgx/boot`, X again). Now:
+
+- A caller that may sleep waits sleeping (`usleep_range` polls of the
+  completion word), for `blt_timeout_ms` (3000: past the render node's 2 s
+  render timeout, after which it restarts the microkernel). fbcon spins as
+  before but never waits for another's job: -EBUSY, and it draws on the CPU.
+- A job past its time takes the engine out of service only until it is
+  seen done after all (`sgx_blt_reap`: the next call reads the completion
+  word) or the microkernel starts again; a waiter that sees a restart
+  (`boots`) does not mark the engine broken.
+- The render node's copies are queued, not waited for (BLT_ASYNC): DIRTYFB
+  returns once the job is in, and the next copy waits for this one. A page
+  flip's event goes when the copy is queued -- the program draws its next
+  frame into its other buffer meanwhile. What a queued copy reads must stay:
+  the commit waits (`apple_sgx_blt_sync`) before an old framebuffer goes,
+  the overlay before its buffer is let go. A frame drawn into the buffer
+  being copied may show torn until the next copy.
+
+Measured on the M45 stack: DIRTYFB 0.86 ms on average (max 4.9) when a
+window opens; under dEQP's flush_finish, a terminal printing ten lines a
+second, 4.2 ms on average and up to 494 ms -- a copy queued behind the
+test's renders -- and no error; the glass and X's own buffer agree once
+idle but for the cursor and the copy's sampling (1-10 levels in noisy
+pixels, as before). Xorg's CPU a window 665-670 -> 628-638 ms; the window
+there in the same 2.0-2.15 s: the rest is the programs'.
+
+**Where a window's 2 s go now.** xfce4-terminal itself takes ~960 ms of
+CPU to its first window: a third in musl's dynamic linker and allocator
+(no lazy binding: `gnu_lookup_filtered`, `find_sym`, `do_relocs` 11%;
+mallocng's `malloc`/`free`/`get_meta` 13%), a quarter GLib, GTK and
+GObject; and every start sandboxes a glycin image loader (bwrap,
+`glycin-image-rs` over D-Bus) for its icon. A second window of a running
+terminal (as the panel opens it, server mode) still takes 1.58 s: the
+client starts whole to hand the request over. Around it:
+
+- xfdesktop redraws its whole window at every window opened or closed --
+  80 ms of its CPU, and in the X server three or four uploads of a 768 x
+  1024 image from its SHM pool (cairo's): the table's memcpy, which glamor
+  uploads whole because the composite covers it whole.
+  Without desktop icons half of it (35 ms, 6 uploads in two windows
+  instead of 13). The backdrop is not why: a solid colour redraws as much.
+- xfwm4's compositor: off, a window is there in 1.80 s instead of 2.02 s,
+  xfwm4 58 ms of CPU a window instead of 90.
+- The solid backdrop `desktop` writes for modesetting's monitor (None-1)
+  is written only when xfce4-desktop.xml does not exist yet; this one is
+  older and has `monitordefault` alone, so on the GPU's X xfdesktop shows
+  its default image (the cost the script's comment is about).
+- From ssh, `xfconf-query` without the session's DBUS_SESSION_BUS_ADDRESS
+  starts a bus and an xfconfd of its own: the session's programs never see
+  what it sets, and it writes the session's settings files behind the
+  session's xfconfd. Take the address from `/proc/$(pidof
+  xfce4-session)/environ` (xopen-time.sh does).
+
+**Left**, the X server's next costs:
+
+- Each of the X server's ~310 renders a window asks the kernel how many
+  renders timed out (GET_PARAM) and polls fences without waiting (two
+  SYNCOBJ_WAITs): ~1000 ioctls, a few ms. (Renders through the render's own
+  memory, M27, do not wait for the one before; only a whole-target clear
+  through the pack's render does.)
+- glamor makes and fills ~500 textures a window (glTexImage2D), one for
+  every pixmap; with the buffers from the cache (above) the kernel's part is
+  gone, Mesa's own remains.
+- Mesa's `texture_error_check` formats "glTexImage%dD" for every
+  glTexImage, whether or not there is an error.
+
 ## Testing, without and with the device
 
 - **Host, every change:** the kernel driver builds with `W=1` against the

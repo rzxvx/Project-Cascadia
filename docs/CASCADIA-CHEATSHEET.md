@@ -1365,6 +1365,26 @@ frames and touches in dmesg; `z2-boot -p N -N` reads the frames itself, without 
   the build (MESA_GL_VERSION_OVERRIDE=3.0: Mesa keeps GLSL at 1.20 under GL
   2.1). dEQP-GLES2 whole: `cd /root/deqp; SGX_MESA=DIR SGX_WRAP=/root/sgx-dev
   python3 deqp-run.py /root/deqp OUT $(cat groups.txt)`.
+- M45 (what the X server costs): `sh tools/desktop/xopen-time.sh` on the
+  iPad in the session (a terminal opened 6 times: ms each, the mean, Xorg's
+  CPU a window; M44's 1130 ms and 2.5 s, M45's 670 ms and 2.1 s). Another
+  build or library in the X server only: `~/.xserverrc` with `exec env
+  SGX_MESA=/root/sgx-mesa-rel LD_LIBRARY_PATH=/root/pixman-test
+  /root/sgx-dev /usr/libexec/Xorg "$@"`, `kill $(pidof xfce4-session)`,
+  `desktop`, a minute to settle; delete the file afterwards. What glamor
+  leaves to pixman: `tools/sgx/composite-who.c` preloaded the same way,
+  `touch /tmp/composite-who-dump` around what you do (stderr: the X log's
+  2>). Who clears: memcpy-who's second table. pixman with the scanline fix:
+  `sh tools/desktop/pixman/build.sh install` (0.46.4-r100, ~2 min); back:
+  `apk add pixman=0.46.4-r0` (with a network). Never call a function from a
+  gdb breakpoint in the X server: it aborted. The glass frozen but X alive
+  (dmesg: "the 2D engine's copy to the screen: -5", a kernel before M45's):
+  stop X, `echo 1 > /sys/kernel/debug/apple-sgx/boot`, `desktop`; since
+  M45 a late copy brings the engine back by itself, and a copy may take
+  `/sys/module/apple_sgx/parameters/blt_timeout_ms` (3000). From ssh,
+  xfconf-query needs the session's bus: `eval export $(tr '\0' '\n' <
+  /proc/$(pidof xfce4-session)/environ | grep ^DBUS_SESSION_BUS_ADDRESS=)`
+  -- without it, it talks to an xfconfd of its own.
 - iOS's GL driver as the oracle: `bash tools/shadercap.sh` with the iPad in iOS
   (corpus + OpenGL ES 1 cases, render commands logged), then
   `python3 tools/iosgpu/corpus.py logs/ios/corpus/DATE [--pds|--state|--own] [CASE]`.
