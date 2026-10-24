@@ -98,6 +98,10 @@ static int hdq_read8(struct hdq_battery *b, u8 reg)
 		rx[n++] = readl(b->base + URXH) & 0xff;
 	if (n < 16)
 		return -EIO;
+	/* Reject a damaged command echo before accepting the gauge's reply. */
+	for (i = 0; i < 8; i++)
+		if (rx[i] != (((reg >> i) & 1) ? 0xFE : 0xE0))
+			return -EIO;
 	for (i = 0; i < 8; i++)		/* the last 8 are the gauge's */
 		v |= ((rx[n - 8 + i] & 0x04) ? 1 : 0) << i;
 	return v;
