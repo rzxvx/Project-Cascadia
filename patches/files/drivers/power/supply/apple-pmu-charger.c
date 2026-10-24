@@ -22,9 +22,14 @@
  * Online is 0x0a bit 6: 0x6b plugged, 0x03 or 0x23 not, the same for a host
  * port and a charger -- telling those apart takes the D+/D- measurement on
  * the PMU's ADC that iBEC makes, which is not here.  Until it is, the
- * target is 500 mA, what any USB 2.0 port gives once configured and what
- * iOS itself takes from a Linux host, and a charger has to be asked for by
- * hand: raise max_input_ma, then write input_current_limit.
+ * target is 1000 mA (Cascadia's choice: iBEC's for a charger it does not
+ * know; a Mac's USB-C port gave it with no sag, +752 mA into the battery
+ * against +253 at 500), and a source that cannot give it sags: the limit
+ * then stays 8 codes under where it sagged until the cable comes out (a
+ * cable out and in again within the 1 s poll looks like a sag: 900 mA until
+ * the next time).  More
+ * has to be asked for by hand: raise max_input_ma, then write
+ * input_current_limit.
  *
  * The rules this file keeps:
  *  - 0x3d is the only register it writes.  pmu_chg_write() refuses any
@@ -56,10 +61,9 @@
 #define ILIM_STEP		8	/* codes per ramp step, 100 mA */
 #define ILIM_STEP_MS		10
 #define ILIM_HARD_MAX_MA	2100
-#define ILIM_DEFAULT_MA		500
+#define ILIM_DEFAULT_MA		1000
 
 #define POLL_MS			1000
-#define SAG_HOLD_MS		60000
 #define HOT_DECI_C		450
 #define COOL_DECI_C		400
 
@@ -69,7 +73,7 @@ MODULE_PARM_DESC(armed, "write 0x3d (default off: log only)");
 
 static int max_input_ma = ILIM_DEFAULT_MA;
 module_param(max_input_ma, int, 0644);
-MODULE_PARM_DESC(max_input_ma, "ceiling for input_current_limit, 100..2100 mA (default 500)");
+MODULE_PARM_DESC(max_input_ma, "ceiling for input_current_limit, 100..2100 mA (default 1000)");
 
 struct pmu_chg {
 	struct device *dev;
@@ -80,8 +84,7 @@ struct pmu_chg {
 	unsigned int req_ma;		/* asked for: default or input_current_limit */
 	u8 probe_code;			/* 0x3d as iBEC left it */
 	u8 last_written;		/* 0 = nothing written while online */
-	u8 ceiling;			/* after a sag; 0xff = none */
-	unsigned long ceiling_until;
+	u8 ceiling;			/* after a sag, until unplugged; 0xff = none */
 	bool online;
 	bool was_armed;
 	bool hot;
@@ -142,8 +145,7 @@ static int pmu_chg_read(struct pmu_chg *c, unsigned int reg, u8 *val)
 static void pmu_chg_sagged(struct pmu_chg *c, u8 at)
 {
 	c->ceiling = max_t(int, ILIM_MIN_CODE, at - ILIM_STEP);
-	c->ceiling_until = jiffies + msecs_to_jiffies(SAG_HOLD_MS);
-	dev_warn(c->dev, "VBUS sagged at 0x%02x: limiting USB input current to %u mA\n",
+	dev_warn(c->dev, "VBUS sagged at 0x%02x: limiting USB input current to %u mA until unplugged\n",
 		 at, pmu_chg_code_to_ma(c->ceiling));
 }
 
@@ -200,10 +202,8 @@ static u8 pmu_chg_target(struct pmu_chg *c)
 				clamp(READ_ONCE(max_input_ma), 100, ILIM_HARD_MAX_MA));
 	u8 code = pmu_chg_ma_to_code(ma);
 
-	if (c->ceiling != 0xff && time_before(jiffies, c->ceiling_until))
+	if (c->ceiling != 0xff)
 		code = min(code, c->ceiling);
-	else
-		c->ceiling = 0xff;
 	if (pmu_chg_battery_hot(c))
 		code = ILIM_MIN_CODE;
 	return code;
@@ -221,8 +221,12 @@ static void pmu_chg_work(struct work_struct *w)
 	online = st & PMU_STATUS0_VBUS;
 	changed = online != c->online;
 	c->online = online;
-	if (changed && online)
-		c->last_written = 0;	/* a new session: a low 0x3d now is not a sag */
+	if (changed) {
+		/* a source's sag is that source's: a new cable starts afresh */
+		c->ceiling = 0xff;
+		if (online)
+			c->last_written = 0;	/* a new session: a low 0x3d now is not a sag */
+	}
 
 	if (c->was_armed && !is_armed) {
 		dev_info(c->dev, "disarmed: 0x3d back to 0x%02x\n", c->probe_code);
