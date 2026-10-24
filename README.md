@@ -124,8 +124,16 @@ including the parts that didn't work.
       `/sys/class/power_supply/battery` (charge, voltage, current,
       temperature, cycles), so `fastfetch` and desktop panels show it.
       A full charge lasts about 5½ hours with the screen off, 4½ at medium
-      brightness and 2 at full (idle, Wi-Fi up). Charging is not set up yet:
-      on a cable or a wall charger the iPad still drains, only slower
+      brightness and 2 at full (idle, Wi-Fi up)
+- [x] **Charging** — `apple-pmu-charger` (liquidmetal-Hg, issue #23): iBEC
+      leaves the PMU's USB input limit (`0x3d`) at about 100 mA, so the iPad
+      drained on any cable; the driver ramps it the way iBEC does, to
+      1000 mA from boot, and backs off for that cable when the supply sags.
+      From a Mac's USB-C port the battery takes +620 to +750 mA (it drained
+      at −240 before). `/sys/class/power_supply/apple-pmu-usb`; more than
+      1 A from a big charger by hand (`max_input_ma`, `input_current_limit`)
+      — a host port and a charger are not told apart yet. See
+      `docs/research/p105-charging.md`
 - [x] **Power off** — `poweroff` switches the PMU off the way iOS does
       (`apple-pmu-i2c.c`); Hold starts the iPad again, into iOS. No restart
       yet: `reboot` powers off as well, and says so

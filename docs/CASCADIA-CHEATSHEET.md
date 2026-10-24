@@ -1385,6 +1385,17 @@ frames and touches in dmesg; `z2-boot -p N -N` reads the frames itself, without 
   xfconf-query needs the session's bus: `eval export $(tr '\0' '\n' <
   /proc/$(pidof xfce4-session)/environ | grep ^DBUS_SESSION_BUS_ADDRESS=)`
   -- without it, it talks to an xfconfd of its own.
+- Charging (`apple-pmu-charger.c`, issue #23): the PMU's USB input limit,
+  register `0x3d` (i2c-0, address 0x3c; code = (8 mA - 600) / 100, iBEC's
+  corrections; `0x02` = about 100 mA, also what the PMU drops to when VBUS
+  sags, and what it resets to at every plug-in). Armed from the bootargs
+  (`apple_pmu_charger.armed=1`), 1000 mA. Look: `cat
+  /sys/class/power_supply/battery/current_now` (positive: charging),
+  `i2cget -f -y 0 0x3c 0x3d` (0x48 = 1000 mA), dmesg `apple-pmu-charger`
+  (a sag says "limiting ... until unplugged"). A 2 A charger: `echo 2100 >
+  /sys/module/apple_pmu_charger/parameters/max_input_ma; echo 2100000 >
+  /sys/class/power_supply/apple-pmu-usb/input_current_limit`. Never read
+  PMU registers 0x01..0x09: they clear on read.
 - iOS's GL driver as the oracle: `bash tools/shadercap.sh` with the iPad in iOS
   (corpus + OpenGL ES 1 cases, render commands logged), then
   `python3 tools/iosgpu/corpus.py logs/ios/corpus/DATE [--pds|--state|--own] [CASE]`.
