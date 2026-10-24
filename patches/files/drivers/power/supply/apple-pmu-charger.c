@@ -212,7 +212,7 @@ static u8 pmu_chg_target(struct pmu_chg *c)
 static void pmu_chg_work(struct work_struct *w)
 {
 	struct pmu_chg *c = container_of(to_delayed_work(w), struct pmu_chg, work);
-	bool is_armed = READ_ONCE(armed), online, changed;
+	bool is_armed = READ_ONCE(armed), online, changed = false;
 	u8 st, cur, target;
 
 	mutex_lock(&c->lock);
