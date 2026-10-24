@@ -416,7 +416,8 @@ int ppn_read_page(int bus, int ce, uint32_t row, uint8_t *buf, uint32_t len, uin
     *st = 0;
     W(fmc[bus], FMC_CE_CTRL, 1u << ce);
     clear_irqs(bus);
-    if (ppn_cmd_addr_cmd(bus, 0x0a, 0x37, row, 3) == 0 && ppn_status(bus, st) == 0)
+    /* P105's documented PPN 1.5.x profile needs the fourth row byte too. */
+    if (ppn_cmd_addr_cmd(bus, 0x0a, 0x37, row, 4) == 0 && ppn_status(bus, st) == 0)
         r = ppn_data_out(bus, buf, len);
     ppn_cmd1(bus, 0x77);
     W(fmc[bus], FMC_CE_CTRL, 0);
