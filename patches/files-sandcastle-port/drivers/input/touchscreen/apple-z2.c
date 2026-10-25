@@ -38,6 +38,7 @@ struct hxt_metrics {
 #define HXT_IOC_SETUP_IRQ       _IO(HXT_IOC_MAGIC, 4)
 #define HXT_IOC_WAIT_IRQ        _IOW(HXT_IOC_MAGIC, 5, __u32)
 #define HXT_IOC_METRICS         _IOW(HXT_IOC_MAGIC, 6, struct hxt_metrics)
+#define HXT_IOC_SET_DL          _IOW(HXT_IOC_MAGIC, 7, __u32)
 
 #define MAX_DATA_CHUNK          16384
 
@@ -65,6 +66,7 @@ struct hx_touch_data {
     struct gpio_desc *gpiod_reset;
     struct gpio_desc *gpiod_cs;
     struct gpio_desc *gpiod_irq;
+    struct gpio_desc *gpiod_dl;
     struct input_dev *input_dev;
     struct regulator *regu_hv;
     struct regulator *regu_core;
@@ -477,6 +479,13 @@ static long hx_touch_misc_dev_ioctl(struct file *filp, unsigned int cmd, unsigne
             return -EINVAL;
         gpiod_direction_output(hxt->gpiod_cs, !arg);
         return 0;
+    case HXT_IOC_SET_DL:
+        if(hxt->ready)
+            return -EINVAL;
+        if(!hxt->gpiod_dl)
+            return -ENODEV;
+        gpiod_direction_output(hxt->gpiod_dl, !!arg);
+        return 0;
     case HXT_IOC_RESET:
         mutex_lock(&hxt->mutex);
         hxt->ready = 0;
@@ -647,6 +656,10 @@ static int hx_touch_spi_probe(struct spi_device *spi)
             dev_err(&spi->dev, "failed to get 'irq-gpios': %ld\n", PTR_ERR(hxt->gpiod_irq));
         return PTR_ERR(hxt->gpiod_irq);
     }
+
+    hxt->gpiod_dl = devm_gpiod_get_optional(&spi->dev, "download", GPIOD_OUT_LOW);
+    if(IS_ERR(hxt->gpiod_dl))
+        return PTR_ERR(hxt->gpiod_dl);
 
     hxt->clk = devm_clk_get(&spi->dev, NULL);
     if(IS_ERR(hxt->clk))
