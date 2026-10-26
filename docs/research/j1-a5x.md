@@ -14,9 +14,10 @@ arm-io is where the mini has it: AIC `aic,1` at `0x0f200000`, UART0 at
 `0x02500000` (IRQ 21), DWC2 at `0x06100000` (IRQ 11, 14 endpoints, fifo
 `0x820`), the OTG PHY at `0x06000000`, PMGR at `0x0f100000`, the watchdog
 tick at `0x0f103020` (IRQ 4), the PL310 at `0x3e000000`, and GPIO at
-`0x0fa00000` (`gpio,s5l8945x`, IRQ 119, 28 ports of 8). The AIC, UART,
-gadget, PHY, tick, GPIO, I2C and SPI drivers bind as they are, by their
-s5l8940x compatibles.
+`0x0fa00000` (`gpio,s5l8945x`, IRQ 119, 28 ports of 8). The AIC, gadget,
+PHY, tick, GPIO, I2C and SPI drivers bind as they are, by their s5l8940x
+compatibles. UART0 is in the tree but disabled: the 30-pin cable does not
+carry it, so it has not been tried.
 
 ## Boot chain
 

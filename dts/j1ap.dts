@@ -41,7 +41,7 @@
 		 * The 30-pin cable does not carry UART0, and earlycon on that
 		 * port spins forever if iBoot left the UART clock off, so the
 		 * first console is the gadget's ACM port. maxcpus=1 keeps CPU1
-		 * parked (SMP on the A5X is not tried yet). SMP stays compiled
+		 * parked (it is not brought up on the A5X yet). SMP stays compiled
 		 * in: turning it off selects the A9 global timer, which has no
 		 * clock here. lpj is the 1 GHz A5's; the A5X is 1 GHz too.
 		 * rdinit=/init is the initramfs linked into the zImage; an empty
@@ -55,9 +55,10 @@
 	 * S5L894x DRAM starts at 0x80000000. iPad3,1 has 1 GiB
 	 * (hw.memsize 1034944512, and this iBEC is linked at 0xBFF00000,
 	 * 1 MiB under the 0xC0000000 end). The static ADT memory node is
-	 * zero. The top 16 MiB is left out until the live scanout address
-	 * is known: a 2048x1536x4 framebuffer is 12 MiB, and iBEC itself
-	 * sits at 0xBFF00000 while it hands off.
+	 * zero. The node ends at 0xbdb00000, where iBoot's scanout starts
+	 * (the framebuffer node below): everything from there to the top,
+	 * the 12 MiB scanout and iBEC at 0xBFF00000 while it hands off
+	 * included, stays out of the kernel's hands.
 	 */
 	/*
 	 * RAM starts 2 MiB in. TEXT_OFFSET is 0x208000 (multi_v7), so the
