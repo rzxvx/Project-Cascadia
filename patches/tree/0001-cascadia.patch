@@ -382,7 +382,7 @@ index 349aa3439..2b54e536c 100644
  	}
  
 diff --git a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/usb.c b/drivers/net/wireless/broadcom/brcm80211/brcmfmac/usb.c
-index 8afbf529c..53de6e8f2 100644
+index 8afbf529c..5ea0eb0c6 100644
 --- a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/usb.c
 +++ b/drivers/net/wireless/broadcom/brcm80211/brcmfmac/usb.c
 @@ -6,6 +6,7 @@
@@ -393,7 +393,7 @@ index 8afbf529c..53de6e8f2 100644
  #include <linux/usb.h>
  #include <linux/vmalloc.h>
  
-@@ -40,6 +41,10 @@ BRCMF_FW_DEF(43236B, "brcmfmac43236b");
+@@ -40,6 +41,13 @@ BRCMF_FW_DEF(43236B, "brcmfmac43236b");
  BRCMF_FW_DEF(43242A, "brcmfmac43242a");
  BRCMF_FW_DEF(43569, "brcmfmac43569");
  BRCMF_FW_DEF(4373, "brcmfmac4373");
@@ -401,21 +401,27 @@ index 8afbf529c..53de6e8f2 100644
 + * host.  Apple's firmware for it is a TRX image (wifi/4334b1/borg.trx in the
 + * iOS root filesystem), the format this driver downloads over USB. */
 +BRCMF_FW_DEF(4334, "brcmfmac4334");
++/* J1: the iPad 3's BCM4330 B2 on HSIC, Apple's wifi/4330b2/mike.trx with
++ * its NVRAM (mike.txt) appended by scripts/trx-add-nvram.py. */
++BRCMF_FW_DEF(4330, "brcmfmac4330");
  
  static const struct brcmf_firmware_mapping brcmf_usb_fwnames[] = {
  	BRCMF_FW_ENTRY(BRCM_CC_43143_CHIP_ID, 0xFFFFFFFF, 43143),
-@@ -49,14 +54,26 @@ static const struct brcmf_firmware_mapping brcmf_usb_fwnames[] = {
+@@ -49,14 +57,29 @@ static const struct brcmf_firmware_mapping brcmf_usb_fwnames[] = {
  	BRCMF_FW_ENTRY(BRCM_CC_43242_CHIP_ID, 0xFFFFFFFF, 43242A),
  	BRCMF_FW_ENTRY(BRCM_CC_43566_CHIP_ID, 0xFFFFFFFF, 43569),
  	BRCMF_FW_ENTRY(BRCM_CC_43569_CHIP_ID, 0xFFFFFFFF, 43569),
 -	BRCMF_FW_ENTRY(CY_CC_4373_CHIP_ID, 0xFFFFFFFF, 4373)
 +	BRCMF_FW_ENTRY(CY_CC_4373_CHIP_ID, 0xFFFFFFFF, 4373),
-+	BRCMF_FW_ENTRY(BRCM_CC_4334_CHIP_ID, 0xFFFFFFFF, 4334)
++	BRCMF_FW_ENTRY(BRCM_CC_4334_CHIP_ID, 0xFFFFFFFF, 4334),
++	BRCMF_FW_ENTRY(BRCM_CC_4330_CHIP_ID, 0xFFFFFFFF, 4330)
  };
  
 +/* Cascadia: the iPad mini 1's BCM4334 on HSIC, as both its boot ROM and
 + * Apple's firmware enumerate ("M=HEIN m=2.6 V=t", bcdDevice 0.01). */
 +#define BRCM_USB_4334_HSIC_DEVICE_ID	0xbd1a
++/* J1: the iPad 3's BCM4330 B2 boot ROM on HSIC */
++#define BRCM_USB_4330_HSIC_DEVICE_ID	0xbd19
 +/* Cascadia: how long that firmware gets to start before its bus is reset */
 +#define BRCMF_USB_HSIC_BOOT_WAIT	500	/* in unit of ms */
 +
@@ -432,7 +438,7 @@ index 8afbf529c..53de6e8f2 100644
  
  /* Control messages: bRequest values */
  #define DL_GETSTATE	0	/* returns the rdl_state_t struct */
-@@ -125,6 +142,12 @@ struct brcmf_usbdev_info {
+@@ -125,6 +148,12 @@ struct brcmf_usbdev_info {
  	struct list_head tx_freeq;
  	struct list_head tx_postq;
  	uint rx_pipe, tx_pipe;
@@ -445,7 +451,7 @@ index 8afbf529c..53de6e8f2 100644
  
  	int rx_low_watermark;
  	int tx_low_watermark;
-@@ -141,6 +164,7 @@ struct brcmf_usbdev_info {
+@@ -141,6 +170,7 @@ struct brcmf_usbdev_info {
  	int image_len;
  
  	struct usb_device *usbdev;
@@ -453,7 +459,7 @@ index 8afbf529c..53de6e8f2 100644
  	struct device *dev;
  	struct completion dev_init_done;
  
-@@ -662,6 +686,54 @@ static int brcmf_usb_tx(struct device *dev, struct sk_buff *skb)
+@@ -662,6 +692,54 @@ static int brcmf_usb_tx(struct device *dev, struct sk_buff *skb)
  }
  
  
@@ -508,7 +514,7 @@ index 8afbf529c..53de6e8f2 100644
  static int brcmf_usb_up(struct device *dev)
  {
  	struct brcmf_usbdev_info *devinfo = brcmf_usb_get_businfo(dev);
-@@ -691,6 +763,7 @@ static int brcmf_usb_up(struct device *dev)
+@@ -691,6 +769,7 @@ static int brcmf_usb_up(struct device *dev)
  		devinfo->ctl_read.wValue = cpu_to_le16(0);
  		devinfo->ctl_read.wIndex = cpu_to_le16(devinfo->ifnum);
  	}
@@ -516,7 +522,7 @@ index 8afbf529c..53de6e8f2 100644
  	brcmf_usb_rx_fill_all(devinfo);
  	return 0;
  }
-@@ -703,6 +776,8 @@ static void brcmf_cancel_all_urbs(struct brcmf_usbdev_info *devinfo)
+@@ -703,6 +782,8 @@ static void brcmf_cancel_all_urbs(struct brcmf_usbdev_info *devinfo)
  		usb_kill_urb(devinfo->ctl_urb);
  	if (devinfo->bulk_urb)
  		usb_kill_urb(devinfo->bulk_urb);
@@ -525,7 +531,7 @@ index 8afbf529c..53de6e8f2 100644
  	if (devinfo->tx_reqs)
  		for (i = 0; i < devinfo->bus_pub.ntxq; i++)
  			usb_kill_urb(devinfo->tx_reqs[i].urb);
-@@ -737,6 +812,8 @@ brcmf_usb_sync_complete(struct urb *urb)
+@@ -737,6 +818,8 @@ brcmf_usb_sync_complete(struct urb *urb)
  	brcmf_usb_ioctl_resp_wake(devinfo);
  }
  
@@ -534,7 +540,7 @@ index 8afbf529c..53de6e8f2 100644
  static int brcmf_usb_dl_cmd(struct brcmf_usbdev_info *devinfo, u8 cmd,
  			    void *buffer, int buflen)
  {
-@@ -758,6 +835,9 @@ static int brcmf_usb_dl_cmd(struct brcmf_usbdev_info *devinfo, u8 cmd,
+@@ -758,6 +841,9 @@ static int brcmf_usb_dl_cmd(struct brcmf_usbdev_info *devinfo, u8 cmd,
  	devinfo->ctl_read.bRequestType = USB_DIR_IN | USB_TYPE_VENDOR |
  		USB_RECIP_INTERFACE;
  	devinfo->ctl_read.bRequest = cmd;
@@ -544,7 +550,7 @@ index 8afbf529c..53de6e8f2 100644
  
  	usb_fill_control_urb(devinfo->ctl_urb,
  		devinfo->usbdev,
-@@ -781,10 +861,46 @@ static int brcmf_usb_dl_cmd(struct brcmf_usbdev_info *devinfo, u8 cmd,
+@@ -781,10 +867,48 @@ static int brcmf_usb_dl_cmd(struct brcmf_usbdev_info *devinfo, u8 cmd,
  	}
  
  finalize:
@@ -563,8 +569,10 @@ index 8afbf529c..53de6e8f2 100644
 + */
 +static bool brcmf_usb_is_hsic(struct brcmf_usbdev_info *devinfo)
 +{
-+	return le16_to_cpu(devinfo->usbdev->descriptor.idProduct) ==
-+	       BRCM_USB_4334_HSIC_DEVICE_ID;
++	u16 pid = le16_to_cpu(devinfo->usbdev->descriptor.idProduct);
++
++	return pid == BRCM_USB_4334_HSIC_DEVICE_ID ||
++	       pid == BRCM_USB_4330_HSIC_DEVICE_ID;
 +}
 +
 +/* Cascadia: HOST_READY high -- the host awake -- and with cycle, low for a
@@ -591,7 +599,7 @@ index 8afbf529c..53de6e8f2 100644
  static bool
  brcmf_usb_dlneeded(struct brcmf_usbdev_info *devinfo)
  {
-@@ -809,7 +925,12 @@ brcmf_usb_dlneeded(struct brcmf_usbdev_info *devinfo)
+@@ -809,7 +933,12 @@ brcmf_usb_dlneeded(struct brcmf_usbdev_info *devinfo)
  		brcmf_dbg(USB, "chip %d rev 0x%x\n", chipid, chiprev);
  	if (chipid == BRCMF_POSTBOOT_ID) {
  		brcmf_dbg(USB, "firmware already downloaded\n");
@@ -605,10 +613,34 @@ index 8afbf529c..53de6e8f2 100644
  		return false;
  	} else {
  		devinfo->bus_pub.devid = chipid;
-@@ -1006,6 +1127,15 @@ static int brcmf_usb_dlrun(struct brcmf_usbdev_info *devinfo)
+@@ -1006,6 +1135,39 @@ static int brcmf_usb_dlrun(struct brcmf_usbdev_info *devinfo)
  	if (state.state == cpu_to_le32(DL_RUNNABLE)) {
  		if (brcmf_usb_dl_cmd(devinfo, DL_GO, &state, sizeof(state)))
  			return -ENODEV;
++		/* J1: the BCM4330's firmware stays on the boot ROM's
++		 * connection and answers there; a bus reset only loses
++		 * it.  Wait up to 2 s for it, without DL_RESETCFG (iOS
++		 * never sends it).  Errors other than a timeout end the
++		 * wait, as in brcmf_usb_resetcfg(). */
++		if (le16_to_cpu(devinfo->usbdev->descriptor.idProduct) ==
++		    BRCM_USB_4330_HSIC_DEVICE_ID) {
++			unsigned long end = jiffies + msecs_to_jiffies(2000);
++			struct bootrom_id_le id;
++			int err;
++
++			do {
++				msleep(50);
++				id.chip = cpu_to_le32(0xDEAD);
++				err = brcmf_usb_dl_cmd(devinfo, DL_GETVER, &id,
++						       sizeof(id));
++				if (err && err != -ETIMEDOUT)
++					return err;
++				if (id.chip == cpu_to_le32(BRCMF_POSTBOOT_ID))
++					return 0;
++			} while (time_before(jiffies, end));
++			brcmf_err("BCM4330 firmware did not come up\n");
++			return -ENODEV;
++		}
 +		/* Cascadia: on HSIC the firmware answers nothing on the boot
 +		 * ROM's connection; let it start, give up this device, and
 +		 * reset the bus (brcmf_usb_probe_phase2).  It enumerates
@@ -621,7 +653,7 @@ index 8afbf529c..53de6e8f2 100644
  		if (brcmf_usb_resetcfg(devinfo))
  			return -ENODEV;
  		/* The Dongle may go for re-enumeration. */
-@@ -1061,6 +1191,8 @@ static void brcmf_usb_detach(struct brcmf_usbdev_info *devinfo)
+@@ -1061,6 +1223,8 @@ static void brcmf_usb_detach(struct brcmf_usbdev_info *devinfo)
  
  	usb_free_urb(devinfo->ctl_urb);
  	usb_free_urb(devinfo->bulk_urb);
@@ -630,7 +662,7 @@ index 8afbf529c..53de6e8f2 100644
  
  	kfree(devinfo->tx_reqs);
  	kfree(devinfo->rx_reqs);
-@@ -1084,7 +1216,8 @@ static int check_file(const u8 *headers)
+@@ -1084,7 +1248,8 @@ static int check_file(const u8 *headers)
  	headers += sizeof(struct trx_header_le);
  
  	if (le32_to_cpu(trx->flag_version) & TRX_UNCOMP_IMAGE) {
@@ -640,7 +672,7 @@ index 8afbf529c..53de6e8f2 100644
  		return actual_len + sizeof(struct trx_header_le);
  	}
  	return -1;
-@@ -1170,6 +1303,7 @@ static void brcmf_usb_probe_phase2(struct device *dev, int ret,
+@@ -1170,6 +1335,7 @@ static void brcmf_usb_probe_phase2(struct device *dev, int ret,
  {
  	struct brcmf_bus *bus = dev_get_drvdata(dev);
  	struct brcmf_usbdev_info *devinfo = bus->bus_priv.usb->devinfo;
@@ -648,7 +680,7 @@ index 8afbf529c..53de6e8f2 100644
  	const struct firmware *fw;
  
  	if (ret)
-@@ -1208,6 +1342,23 @@ static void brcmf_usb_probe_phase2(struct device *dev, int ret,
+@@ -1208,6 +1374,23 @@ static void brcmf_usb_probe_phase2(struct device *dev, int ret,
  	return;
  error:
  	brcmf_dbg(TRACE, "failed: dev=%s, err=%d\n", dev_name(dev), ret);
@@ -672,7 +704,7 @@ index 8afbf529c..53de6e8f2 100644
  	complete(&devinfo->dev_init_done);
  	device_release_driver(dev);
  }
-@@ -1287,6 +1438,9 @@ static int brcmf_usb_probe_cb(struct brcmf_usbdev_info *devinfo,
+@@ -1287,6 +1470,9 @@ static int brcmf_usb_probe_cb(struct brcmf_usbdev_info *devinfo,
  	bus->chip = bus_pub->devid;
  	bus->chiprev = bus_pub->chiprev;
  
@@ -682,7 +714,7 @@ index 8afbf529c..53de6e8f2 100644
  	fwreq = brcmf_usb_prepare_fw_request(devinfo);
  	if (!fwreq) {
  		ret = -ENOMEM;
-@@ -1395,6 +1549,10 @@ brcmf_usb_probe(struct usb_interface *intf, const struct usb_device_id *id)
+@@ -1395,6 +1581,10 @@ brcmf_usb_probe(struct usb_interface *intf, const struct usb_device_id *id)
  	for (ep = 0; ep < num_of_eps; ep++) {
  		endpoint = &intf->cur_altsetting->endpoint[ep].desc;
  		endpoint_num = usb_endpoint_num(endpoint);
@@ -693,11 +725,12 @@ index 8afbf529c..53de6e8f2 100644
  		if (!usb_endpoint_xfer_bulk(endpoint))
  			continue;
  		if (usb_endpoint_dir_in(endpoint)) {
-@@ -1540,6 +1698,7 @@ static const struct usb_device_id brcmf_usb_devid_table[] = {
+@@ -1540,6 +1730,8 @@ static const struct usb_device_id brcmf_usb_devid_table[] = {
  	BRCMF_USB_DEVICE(BRCM_USB_43236_DEVICE_ID),
  	BRCMF_USB_DEVICE(BRCM_USB_43242_DEVICE_ID),
  	BRCMF_USB_DEVICE(BRCM_USB_43569_DEVICE_ID),
 +	BRCMF_USB_DEVICE(BRCM_USB_4334_HSIC_DEVICE_ID),	/* Cascadia */
++	BRCMF_USB_DEVICE(BRCM_USB_4330_HSIC_DEVICE_ID),	/* J1 */
  	LINKSYS_USB_DEVICE(BRCM_USB_43235_LINKSYS_DEVICE_ID),
  	CYPRESS_USB_DEVICE(CY_USB_4373_DEVICE_ID),
  	{ USB_DEVICE(BRCM_USB_VENDOR_ID_LG, BRCM_USB_43242_LG_DEVICE_ID) },
