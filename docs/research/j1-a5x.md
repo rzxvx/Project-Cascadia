@@ -49,6 +49,14 @@ What does not carry over from the mini's chain:
   mapping (`0x0F103020`; the physical `0x3F103020` is the wrong address while
   the MMU is on), cleans L1 and the PL310, turns the MMU off and enters the
   zImage at `0x80008000` with `r0=0`, `r1=~0` and `r2` = the appended DTB.
+- **The early console is required.** `earlycon=j1fb`
+  (`arch/arm/mach-apple/j1_earlyfb.c`) draws the boot log on iBoot's
+  scanout with an 8x8 font at scale 2, putting its section mappings back
+  while `prepare_page_table` and `devicemaps_init` clear them. Without it
+  the kernel stops before the gadget comes up and the screen stays blank
+  under the backlight. Booted both ways with nothing else changed; it is the
+  only kernel change the J1 needs beyond the drivers below. Why it matters
+  is not found. The console is slow, and that is the suspect.
 
 ## Memory
 
@@ -62,7 +70,8 @@ iBoot's scanout is at `0xbdb00000`, 2048 x 1536 x 4 (pitch 8192, 12 MiB),
 found by searching RAM from the loader; the ADT's framebuffer values are
 zero. The memory node stops below it, and `simple-framebuffer` uses it as
 is. The mini's framebuffer `memblock_remove` (`0x9f600000`) is ordinary RAM
-here and costs about 1 MiB; it was left alone.
+here and costs about 1 MiB; it was left alone, and the J1 boots with it
+in place.
 
 ## PMGR: 44-byte device-clocks entries
 
@@ -152,6 +161,7 @@ page reads return status `0x40` and repeat byte for byte.
 
 ## Not done
 
+- The early fault that `earlycon=j1fb` hides.
 - CPU1 (`maxcpus=1`).
 - The GPU and a display driver: the panel is eDP (`edp@9500000`) fed by
   CLCD through a highland-park scaler at `0x0b020000`, not MIPI-DSI.

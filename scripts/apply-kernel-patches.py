@@ -45,6 +45,7 @@ NEW_FILES = [
     "arch/arm/mach-apple/p105_fb_dbg.c",
     "arch/arm/mach-apple/p105_fb_dbg.h",
     "arch/arm/mach-apple/font8x8.h",
+    "arch/arm/mach-apple/j1_earlyfb.c",
     "drivers/irqchip/irq-apple-aic1.c",
     "drivers/gpu/drm/apple-sgx/Kconfig",
     "drivers/gpu/drm/apple-sgx/Makefile",

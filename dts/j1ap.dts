@@ -40,15 +40,24 @@
 		/*
 		 * The 30-pin cable does not carry UART0, and earlycon on that
 		 * port spins forever if iBoot left the UART clock off, so the
-		 * first console is the gadget's ACM port. maxcpus=1 keeps CPU1
-		 * parked (it is not brought up on the A5X yet). SMP stays compiled
-		 * in: turning it off selects the A9 global timer, which has no
-		 * clock here. lpj is the 1 GHz A5's; the A5X is 1 GHz too.
+		 * first console is the gadget's ACM port.
+		 *
+		 * earlycon=j1fb (arch/arm/mach-apple/j1_earlyfb.c) draws the
+		 * boot log on iBoot's scanout, and the boot needs it: without
+		 * it the kernel stops before the gadget comes up, with nothing
+		 * on the screen. Why is not known yet; the console is slow,
+		 * and that is the suspect. Booted both ways, nothing else
+		 * changed.
+		 *
+		 * maxcpus=1 keeps CPU1 parked (it is not brought up on the A5X
+		 * yet). SMP stays compiled in: turning it off selects the A9
+		 * global timer, which has no clock here. lpj is the 1 GHz A5's;
+		 * the A5X is 1 GHz too.
 		 * rdinit=/init is the initramfs linked into the zImage; an empty
 		 * external initrd here would make the kernel look for a second
 		 * archive.
 		 */
-		bootargs = "console=ttyGS0,115200 maxcpus=1 lpj=5000000 rdinit=/init panic=10 loglevel=8 ignore_loglevel g_cdc.host_addr=02:10:5a:31:00:01 g_cdc.dev_addr=02:10:5a:31:00:02";
+		bootargs = "earlycon=j1fb console=ttyGS0,115200 maxcpus=1 lpj=5000000 rdinit=/init panic=10 loglevel=8 ignore_loglevel g_cdc.host_addr=02:10:5a:31:00:01 g_cdc.dev_addr=02:10:5a:31:00:02";
 	};
 
 	/*
