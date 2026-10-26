@@ -480,6 +480,8 @@ static long hx_touch_misc_dev_ioctl(struct file *filp, unsigned int cmd, unsigne
         gpiod_direction_output(hxt->gpiod_cs, !arg);
         return 0;
     case HXT_IOC_SET_DL:
+        /* 1 asserts enable_download, like SET_CS; the line's polarity
+         * is the DT's (active-low on J1). */
         if(hxt->ready)
             return -EINVAL;
         if(!hxt->gpiod_dl)
@@ -500,6 +502,8 @@ static long hx_touch_misc_dev_ioctl(struct file *filp, unsigned int cmd, unsigne
         if(hxt->ready)
             return -EINVAL;
         gpiod_direction_output(hxt->gpiod_cs, 1);
+        if(hxt->gpiod_dl)
+            gpiod_direction_output(hxt->gpiod_dl, 0);
 
         mutex_lock(&hxt->mutex);
         hxt_trace(hxt, "READY after %u ATTN, %u other transfers (%u bytes); metrics x %d..%d y %d..%d\n",
@@ -658,8 +662,11 @@ static int hx_touch_spi_probe(struct spi_device *spi)
     }
 
     hxt->gpiod_dl = devm_gpiod_get_optional(&spi->dev, "download", GPIOD_OUT_LOW);
-    if(IS_ERR(hxt->gpiod_dl))
+    if(IS_ERR(hxt->gpiod_dl)) {
+        if(PTR_ERR(hxt->gpiod_dl) != -EPROBE_DEFER)
+            dev_err(&spi->dev, "failed to get 'download-gpios': %ld\n", PTR_ERR(hxt->gpiod_dl));
         return PTR_ERR(hxt->gpiod_dl);
+    }
 
     hxt->clk = devm_clk_get(&spi->dev, NULL);
     if(IS_ERR(hxt->clk))
