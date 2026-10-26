@@ -382,7 +382,7 @@ index 349aa3439..2b54e536c 100644
  	}
  
 diff --git a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/usb.c b/drivers/net/wireless/broadcom/brcm80211/brcmfmac/usb.c
-index 8afbf529c..a2bffbcc7 100644
+index 8afbf529c..5ea0eb0c6 100644
 --- a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/usb.c
 +++ b/drivers/net/wireless/broadcom/brcm80211/brcmfmac/usb.c
 @@ -6,6 +6,7 @@
@@ -613,27 +613,31 @@ index 8afbf529c..a2bffbcc7 100644
  		return false;
  	} else {
  		devinfo->bus_pub.devid = chipid;
-@@ -1006,6 +1135,35 @@ static int brcmf_usb_dlrun(struct brcmf_usbdev_info *devinfo)
+@@ -1006,6 +1135,39 @@ static int brcmf_usb_dlrun(struct brcmf_usbdev_info *devinfo)
  	if (state.state == cpu_to_le32(DL_RUNNABLE)) {
  		if (brcmf_usb_dl_cmd(devinfo, DL_GO, &state, sizeof(state)))
  			return -ENODEV;
 +		/* J1: the BCM4330's firmware stays on the boot ROM's
 +		 * connection and answers there; a bus reset only loses
-+		 * it.  Wait for it, without DL_RESETCFG (iOS never sends
-+		 * it). */
++		 * it.  Wait up to 2 s for it, without DL_RESETCFG (iOS
++		 * never sends it).  Errors other than a timeout end the
++		 * wait, as in brcmf_usb_resetcfg(). */
 +		if (le16_to_cpu(devinfo->usbdev->descriptor.idProduct) ==
 +		    BRCM_USB_4330_HSIC_DEVICE_ID) {
++			unsigned long end = jiffies + msecs_to_jiffies(2000);
 +			struct bootrom_id_le id;
-+			int i;
++			int err;
 +
-+			for (i = 0; i < 40; i++) {
++			do {
 +				msleep(50);
 +				id.chip = cpu_to_le32(0xDEAD);
-+				brcmf_usb_dl_cmd(devinfo, DL_GETVER, &id,
-+						 sizeof(id));
++				err = brcmf_usb_dl_cmd(devinfo, DL_GETVER, &id,
++						       sizeof(id));
++				if (err && err != -ETIMEDOUT)
++					return err;
 +				if (id.chip == cpu_to_le32(BRCMF_POSTBOOT_ID))
 +					return 0;
-+			}
++			} while (time_before(jiffies, end));
 +			brcmf_err("BCM4330 firmware did not come up\n");
 +			return -ENODEV;
 +		}
@@ -649,7 +653,7 @@ index 8afbf529c..a2bffbcc7 100644
  		if (brcmf_usb_resetcfg(devinfo))
  			return -ENODEV;
  		/* The Dongle may go for re-enumeration. */
-@@ -1061,6 +1219,8 @@ static void brcmf_usb_detach(struct brcmf_usbdev_info *devinfo)
+@@ -1061,6 +1223,8 @@ static void brcmf_usb_detach(struct brcmf_usbdev_info *devinfo)
  
  	usb_free_urb(devinfo->ctl_urb);
  	usb_free_urb(devinfo->bulk_urb);
@@ -658,7 +662,7 @@ index 8afbf529c..a2bffbcc7 100644
  
  	kfree(devinfo->tx_reqs);
  	kfree(devinfo->rx_reqs);
-@@ -1084,7 +1244,8 @@ static int check_file(const u8 *headers)
+@@ -1084,7 +1248,8 @@ static int check_file(const u8 *headers)
  	headers += sizeof(struct trx_header_le);
  
  	if (le32_to_cpu(trx->flag_version) & TRX_UNCOMP_IMAGE) {
@@ -668,7 +672,7 @@ index 8afbf529c..a2bffbcc7 100644
  		return actual_len + sizeof(struct trx_header_le);
  	}
  	return -1;
-@@ -1170,6 +1331,7 @@ static void brcmf_usb_probe_phase2(struct device *dev, int ret,
+@@ -1170,6 +1335,7 @@ static void brcmf_usb_probe_phase2(struct device *dev, int ret,
  {
  	struct brcmf_bus *bus = dev_get_drvdata(dev);
  	struct brcmf_usbdev_info *devinfo = bus->bus_priv.usb->devinfo;
@@ -676,7 +680,7 @@ index 8afbf529c..a2bffbcc7 100644
  	const struct firmware *fw;
  
  	if (ret)
-@@ -1208,6 +1370,23 @@ static void brcmf_usb_probe_phase2(struct device *dev, int ret,
+@@ -1208,6 +1374,23 @@ static void brcmf_usb_probe_phase2(struct device *dev, int ret,
  	return;
  error:
  	brcmf_dbg(TRACE, "failed: dev=%s, err=%d\n", dev_name(dev), ret);
@@ -700,7 +704,7 @@ index 8afbf529c..a2bffbcc7 100644
  	complete(&devinfo->dev_init_done);
  	device_release_driver(dev);
  }
-@@ -1287,6 +1466,9 @@ static int brcmf_usb_probe_cb(struct brcmf_usbdev_info *devinfo,
+@@ -1287,6 +1470,9 @@ static int brcmf_usb_probe_cb(struct brcmf_usbdev_info *devinfo,
  	bus->chip = bus_pub->devid;
  	bus->chiprev = bus_pub->chiprev;
  
@@ -710,7 +714,7 @@ index 8afbf529c..a2bffbcc7 100644
  	fwreq = brcmf_usb_prepare_fw_request(devinfo);
  	if (!fwreq) {
  		ret = -ENOMEM;
-@@ -1395,6 +1577,10 @@ brcmf_usb_probe(struct usb_interface *intf, const struct usb_device_id *id)
+@@ -1395,6 +1581,10 @@ brcmf_usb_probe(struct usb_interface *intf, const struct usb_device_id *id)
  	for (ep = 0; ep < num_of_eps; ep++) {
  		endpoint = &intf->cur_altsetting->endpoint[ep].desc;
  		endpoint_num = usb_endpoint_num(endpoint);
@@ -721,7 +725,7 @@ index 8afbf529c..a2bffbcc7 100644
  		if (!usb_endpoint_xfer_bulk(endpoint))
  			continue;
  		if (usb_endpoint_dir_in(endpoint)) {
-@@ -1540,6 +1726,8 @@ static const struct usb_device_id brcmf_usb_devid_table[] = {
+@@ -1540,6 +1730,8 @@ static const struct usb_device_id brcmf_usb_devid_table[] = {
  	BRCMF_USB_DEVICE(BRCM_USB_43236_DEVICE_ID),
  	BRCMF_USB_DEVICE(BRCM_USB_43242_DEVICE_ID),
  	BRCMF_USB_DEVICE(BRCM_USB_43569_DEVICE_ID),
