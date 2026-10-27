@@ -813,7 +813,7 @@ The next in line with no particular order after the iPad mini 1 (Phase 4):
 
 Bonus:
 
--iPhone 11 - A13 (RP2350 required) 
+- iPhone 11 - A13 (RP2350 required) 
 
 ![FastFetch written using screen keyboard](imgs/IMG_1196.jpg)
 
