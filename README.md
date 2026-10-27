@@ -803,11 +803,16 @@ The next in line with no particular order after the iPad mini 1 (Phase 4):
 - iPad mini 4 — A8
 - iPad 2 - A5
 - iPad 3 - A5X
-- iPad Pro 11" 2020 - A12Z (Most powerful iPad, Linux can be ported on (additional hardware required for boot))
+- iPad mini 2 - A7
+- iPad mini 3 - A7
+- iPad Air 3 - A12 (requires additional hardware for booting - RP2350)
 - iPad Pro 10.5" 2017 - A10X
-- iPad mini 5 — A12 (requires additional hardware for booting, just like the A5)
-- iPad 9 — A13 (requires additional hardware for booting)
+- iPad mini 5 — A12 (requires additional hardware for booting)
 - iPad 5 — A9
+- iPad 8 - A12 (requires additional hardware)
+
+Bonus:
+-iPhone 11 - A13 (RP2350 required) 
 
 ![FastFetch written using screen keyboard](imgs/IMG_1196.jpg)
 
