@@ -3,6 +3,8 @@
 Mainline Linux 6.12 on an iPad mini 1 (iPad2,5 / S5L8942X), booting to an
 interactive shell — on the glass and over USB — and on to an XFCE desktop you
 drive with your fingers.
+[![Discord](https://shields.io)]([https://discord.gg](https://discord.gg/Q4MHhq9s6k))
+
 
 > **Status: Phases 1 & 2 complete, Phase 3 all but NAND.** Linux boots on both
 > cores, takes interrupts, keeps time, gives you a shell and a network over the
