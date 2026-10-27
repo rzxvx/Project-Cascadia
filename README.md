@@ -4,12 +4,8 @@ Mainline Linux 6.12 on an iPad mini 1 (iPad2,5 / S5L8942X), booting to an
 interactive shell — on the glass and over USB — and on to an XFCE desktop you
 drive with your fingers.
 
-[![Discord](https://shields.io\
-discord/156406382333618176?\
-style=for-the-badge&\
-logo=discord&\
-logoColor=white)](\
-https://discord.gg)
+![Discord](https://img.shields.io/discord/1564063823336579072)
+
 
 
 
