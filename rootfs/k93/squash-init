@@ -1,0 +1,78 @@
+#!/bin/sh
+# K93 RAM-only bootstrap. Never mounts internal storage or pets the watchdog.
+set -eu
+bb() { /bin/busybox "$@"; }
+rescue() {
+    trap - EXIT INT TERM
+    echo 'K93 compressed-root setup failed; USB rescue only' >/dev/tty0 2>/dev/null || :
+    while :; do
+        if bb test -c /dev/ttyGS0; then
+            bb stty -F /dev/ttyGS0 -echo -ixon -ixoff || :
+            bb setsid /bin/sh </dev/ttyGS0 >/dev/ttyGS0 2>&1 || :
+        fi
+        bb sleep 1
+    done
+}
+trap rescue EXIT INT TERM
+cd /
+bb mount -t proc proc /proc
+bb mount -t sysfs sysfs /sys
+bb mount -t devtmpfs dev /dev
+bb grep -q 'apple,k93ap' /proc/device-tree/compatible
+if bb test -f /root-transfer-network; then
+    RUN_LIMIT_MIB=$(bb cat /root-run-limit)
+    case "$RUN_LIMIT_MIB" in 96|192) ;; *) exit 1;; esac
+    bb mount -t tmpfs -o "size=${RUN_LIMIT_MIB}m,nr_inodes=2048" tmpfs /run
+    bb ip address add 10.93.0.2/30 dev usb0
+    bb ip link set usb0 up
+    # A single peer-restricted raw file receiver, NOT a remote command shell.
+    # tmpfs capacity and timeout bound even a malformed/overlong transfer.
+    bb timeout 80 /bin/busybox nc -l -n -p 48932 -s 10.93.0.2 -w 75 10.93.0.1 </dev/null >/run/root.squashfs
+    ROOT_IMAGE=/run/root.squashfs
+else
+    bb mount -t tmpfs -o size=8m,nr_inodes=2048 tmpfs /run
+    ROOT_IMAGE=/root.squashfs
+fi
+bb sha256sum -c /root.squashfs.sha256
+# This exact loop device must be unused. Never choose another device on error.
+bb test ! -e /sys/block/loop0/loop/backing_file
+bb losetup -r /dev/loop0 "$ROOT_IMAGE"
+bb mkdir -p /run/k93-lower /run/k93-write
+bb mount -t squashfs -o ro /dev/loop0 /run/k93-lower
+bb mount -t tmpfs -o size=64m,nr_inodes=8192 tmpfs /run/k93-write
+bb mkdir -p /run/k93-write/upper /run/k93-write/work
+bb mount -t overlay -o lowerdir=/run/k93-lower,upperdir=/run/k93-write/upper,workdir=/run/k93-write/work overlay /newroot
+bb test -x /newroot/bin/busybox
+# Only the writable RAM overlay receives the stage2 script.
+bb cp /k93-stage2 /newroot/k93-init
+bb chmod 700 /newroot/k93-init
+if bb test -f /k93-desktop-test.sh; then
+    for file in k93-desktop-test.sh k93-xorg.conf k93-twm.conf k93-fb-read; do
+        bb cp "/$file" "/newroot/$file"
+    done
+    bb chmod 700 /newroot/k93-desktop-test.sh /newroot/k93-fb-read
+fi
+if bb test -f /k93-browser-test.sh; then
+    for file in k93-browser-test.sh k93-browser-test.html k93-browser-prefs.js; do
+        bb cp "/$file" "/newroot/$file"
+    done
+    bb chmod 700 /newroot/k93-browser-test.sh
+fi
+if bb test -f /k93-strace; then
+    bb cp /k93-strace /newroot/k93-strace
+    bb chmod 700 /newroot/k93-strace
+    bb mkdir -p /newroot/k93-strace-libs
+    for file in libdw.so.1 libfts.so.0; do
+        bb cp "/k93-strace-libs/$file" "/newroot/k93-strace-libs/$file"
+    done
+fi
+if bb test -f /k93-xorg-pc; then
+    bb cp /k93-xorg-pc /newroot/k93-xorg-pc
+    bb chmod 700 /newroot/k93-xorg-pc
+fi
+bb mount --move /dev /newroot/dev
+bb mount --move /proc /newroot/proc
+bb mount --move /sys /newroot/sys
+bb mount --move /run /newroot/run
+echo 'K93 compressed root verified; switching to RAM overlay' >/newroot/dev/tty0
+exec /bin/busybox switch_root /newroot /k93-init

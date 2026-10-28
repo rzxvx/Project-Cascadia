@@ -17,6 +17,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TREE="$ROOT/build/linux"
 OUT="$ROOT/build/out"
 LOGS="$ROOT/logs"
+CONFIG_FRAGMENT="${CONFIG_FRAGMENT:-$ROOT/config/p105ap.config}"
 
 export ARCH=arm
 export CROSS_COMPILE=arm-linux-gnueabihf-
@@ -72,14 +73,14 @@ fi
 # section and trims what multi_v7_defconfig drags in somewhere else, and the two
 # can contradict each other.  merge_config takes the last word, silently.
 echo "==> Checking the config fragment for self-contradictions"
-awk -f "$ROOT/scripts/check-config-fragment.awk" "$ROOT/config/p105ap.config" \
-    || { echo "config/p105ap.config contradicts itself; see above" >&2; exit 1; }
+awk -f "$ROOT/scripts/check-config-fragment.awk" "$CONFIG_FRAGMENT" \
+    || { echo "$CONFIG_FRAGMENT contradicts itself; see above" >&2; exit 1; }
 echo "    ok: no symbol is both enabled and disabled"
 
-echo "==> Configuring (multi_v7_defconfig + config/p105ap.config)"
+echo "==> Configuring (multi_v7_defconfig + $CONFIG_FRAGMENT)"
 make -C "$TREE" multi_v7_defconfig > "$LOGS/kernel-config.log" 2>&1
 "$TREE/scripts/kconfig/merge_config.sh" -m -O "$TREE" \
-    "$TREE/.config" "$ROOT/config/p105ap.config" >> "$LOGS/kernel-config.log" 2>&1
+    "$TREE/.config" "$CONFIG_FRAGMENT" >> "$LOGS/kernel-config.log" 2>&1
 
 # Build the rootfs into the kernel rather than shipping it separately.  iBoot's
 # "go" jumps without setting r0-r2, so there is no way to hand the kernel an

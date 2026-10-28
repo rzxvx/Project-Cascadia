@@ -1,0 +1,19 @@
+#!/bin/sh
+export PATH=/bin:/sbin
+mount -t proc proc /proc
+mount -t sysfs sysfs /sys
+mount -t devtmpfs dev /dev
+mkdir -p /dev/pts /run /tmp
+mount -t devpts devpts /dev/pts
+mount -t tmpfs tmpfs /run
+mount -t tmpfs tmpfs /tmp
+echo 'K93 Linux RAM boot: userspace reached' >/dev/tty0
+uname -a >/dev/tty0
+# Root filesystem is RAM only; there are no storage mount commands.
+# USB serial is the initial control channel. No network listener is started.
+while :; do
+    if [ -c /dev/ttyGS0 ]; then
+        setsid sh -c 'echo K93_USB_SHELL_READY; uname -a; exec sh' </dev/ttyGS0 >/dev/ttyGS0 2>&1
+    fi
+    sleep 1
+done
