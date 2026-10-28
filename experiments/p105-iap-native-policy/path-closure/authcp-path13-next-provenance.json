@@ -1,0 +1,12 @@
+{
+  "frozen_manifest_SHA256": "f560cdbb43c768f8d0891060dcb58f090ae4fba0374fb27de58b9c4b58b0ec24",
+  "files": {
+    "native13.py": "6f6aa9984ac1a9166296cb9f6b88ecd57dd8a88e844f840b6053ab0cf743edfe",
+    "emulate-basic.py": "c6f27b9dc4abc9a1a35978d4efdc7f0bfaa831a09e49a616dd5fed35ca67db6f",
+    "basic-oracle.json": "ccf42d8f5cc18bfe845e1b578d6b424a67ac2fb36d5e746d18e6ce8efb9d634c",
+    "BASIC_PATH.md": "0e4901d43caa1fddbc6cbdf6b43fc23fa28455ad2ad607dbf8675bb99908df46"
+  },
+  "root_independent_replay_cases": 6,
+  "full_trust": null,
+  "authorization_granted": false
+}

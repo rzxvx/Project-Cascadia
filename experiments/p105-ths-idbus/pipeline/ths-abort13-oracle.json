@@ -1,0 +1,140 @@
+{
+  "source_sha256": "8eae16f060a71d4f3790385951588f8198d0f21cdb74146f9750941a3d764125",
+  "hardware_access": false,
+  "scope": "original write/delay helpers, I2C+delay fake. No physical FIFO drain/reset/late-reply fence proof",
+  "cases": [
+    {
+      "entry": "0x809eec60",
+      "fail_write": -1,
+      "return": "0x0",
+      "writes": [
+        {
+          "register": 65,
+          "value": 1,
+          "error": 0
+        }
+      ],
+      "delay_calls": [],
+      "pending_rx_after": 32,
+      "no_source_read_or_idle_ack_observed": true
+    },
+    {
+      "entry": "0x809eec60",
+      "fail_write": 0,
+      "return": "0xfffffffb",
+      "writes": [
+        {
+          "register": 65,
+          "value": 1,
+          "error": -5
+        }
+      ],
+      "delay_calls": [],
+      "pending_rx_after": 32,
+      "no_source_read_or_idle_ack_observed": true
+    },
+    {
+      "entry": "0x809eec80",
+      "fail_write": -1,
+      "return": "0x0",
+      "writes": [
+        {
+          "register": 5,
+          "value": 4,
+          "error": 0
+        }
+      ],
+      "delay_calls": [
+        {
+          "boundary": "0x809ef59c",
+          "literal_argument": 20,
+          "physical_time_unit": "not qualified here"
+        }
+      ],
+      "pending_rx_after": 32,
+      "no_source_read_or_idle_ack_observed": true
+    },
+    {
+      "entry": "0x809eec80",
+      "fail_write": 0,
+      "return": "0xfffffffb",
+      "writes": [
+        {
+          "register": 5,
+          "value": 4,
+          "error": -5
+        }
+      ],
+      "delay_calls": [],
+      "pending_rx_after": 32,
+      "no_source_read_or_idle_ack_observed": true
+    },
+    {
+      "entry": "0x809eecac",
+      "fail_write": -1,
+      "return": "0x0",
+      "writes": [
+        {
+          "register": 5,
+          "value": 8,
+          "error": 0
+        },
+        {
+          "register": 5,
+          "value": 0,
+          "error": 0
+        }
+      ],
+      "delay_calls": [
+        {
+          "boundary": "0x809ef5fc",
+          "literal_argument": 500,
+          "physical_time_unit": "not qualified here"
+        }
+      ],
+      "pending_rx_after": 32,
+      "no_source_read_or_idle_ack_observed": true
+    },
+    {
+      "entry": "0x809eecac",
+      "fail_write": 0,
+      "return": "0xfffffffb",
+      "writes": [
+        {
+          "register": 5,
+          "value": 8,
+          "error": -5
+        }
+      ],
+      "delay_calls": [],
+      "pending_rx_after": 32,
+      "no_source_read_or_idle_ack_observed": true
+    },
+    {
+      "entry": "0x809eecac",
+      "fail_write": 1,
+      "return": "0xfffffffb",
+      "writes": [
+        {
+          "register": 5,
+          "value": 8,
+          "error": 0
+        },
+        {
+          "register": 5,
+          "value": 0,
+          "error": -5
+        }
+      ],
+      "delay_calls": [
+        {
+          "boundary": "0x809ef5fc",
+          "literal_argument": 500,
+          "physical_time_unit": "not qualified here"
+        }
+      ],
+      "pending_rx_after": 32,
+      "no_source_read_or_idle_ack_observed": true
+    }
+  ]
+}

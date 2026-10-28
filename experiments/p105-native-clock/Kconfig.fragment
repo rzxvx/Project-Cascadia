@@ -1,0 +1,10 @@
+config CASCADIA_EXPERIMENTAL_NATIVE_CLOCK
+	bool "Source-only P105 native host clock broker experiment"
+	depends on ARM && REGMAP
+	default n
+	help
+	  Compile checked P105 12H321 host87/89 clock graph primitives only.
+	  No clock provider, platform probe, DT binding or role is registered.
+	  Activation requires externally proven adoption of every global owner,
+	  inherited references, physical state and power policy. Those bindings
+	  are unresolved; this experiment supplies no activation path.

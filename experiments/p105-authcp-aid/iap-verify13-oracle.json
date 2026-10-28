@@ -1,0 +1,569 @@
+{
+  "cache_sha256": "4f5b5d73244c53fd0bdc5b8012106b10d0dd7607cc850bf7c8f9e9ef3a3f733b",
+  "no_hardware": true,
+  "no_real_crypto": true,
+  "cases": [
+    {
+      "version": 2,
+      "case": "success",
+      "result": 1,
+      "calls": [
+        {
+          "mock": "source certificate/anchor parser boundary",
+          "input_length": 16
+        },
+        {
+          "mock": "_CFArrayCreateMutable"
+        },
+        {
+          "mock": "_CFArrayAppendValue",
+          "array_kind": "chain"
+        },
+        {
+          "mock": "_SecPolicyCreateiAP"
+        },
+        {
+          "mock": "_SecTrustCreateWithCertificates"
+        },
+        {
+          "mock": "_CFArrayCreateMutable"
+        },
+        {
+          "mock": "_SecCertificateCreateWithBytes",
+          "source_anchor_number": 1,
+          "input_length": 1091
+        },
+        {
+          "mock": "_CFArrayAppendValue",
+          "array_kind": "anchors"
+        },
+        {
+          "mock": "_SecCertificateCreateWithBytes",
+          "source_anchor_number": 2,
+          "input_length": 1026
+        },
+        {
+          "mock": "_CFArrayAppendValue",
+          "array_kind": "anchors"
+        },
+        {
+          "mock": "_SecTrustSetAnchorCertificates"
+        },
+        {
+          "mock": "_SecTrustEvaluate",
+          "synthetic_error": 0,
+          "synthetic_result": 4
+        },
+        {
+          "mock": "_SecTrustCopyPublicKey"
+        },
+        {
+          "mock": "_SecKeyRawVerify",
+          "padding": "0x8002",
+          "nonce_length": 20,
+          "signature_length": 128,
+          "synthetic_error": 0
+        }
+      ],
+      "scope": "actual verify control flow with synthetic certificate parse/CF/Security/crypto/once context; no real trust or signature verification"
+    },
+    {
+      "version": 3,
+      "case": "success",
+      "result": 1,
+      "calls": [
+        {
+          "mock": "source certificate/anchor parser boundary",
+          "input_length": 16
+        },
+        {
+          "mock": "_CFArrayCreateMutable"
+        },
+        {
+          "mock": "_CFArrayAppendValue",
+          "array_kind": "chain"
+        },
+        {
+          "mock": "_SecPolicyCreateiAP"
+        },
+        {
+          "mock": "_SecTrustCreateWithCertificates"
+        },
+        {
+          "mock": "_CFArrayCreateMutable"
+        },
+        {
+          "mock": "_SecTrustSetAnchorCertificates"
+        },
+        {
+          "mock": "_SecTrustEvaluate",
+          "synthetic_error": 0,
+          "synthetic_result": 4
+        },
+        {
+          "mock": "_SecTrustCopyPublicKey"
+        },
+        {
+          "mock": "_SecKeyRawVerify",
+          "padding": "0x4000",
+          "nonce_length": 32,
+          "signature_length": 64,
+          "synthetic_error": 0
+        }
+      ],
+      "scope": "actual verify control flow with synthetic certificate parse/CF/Security/crypto/once context; no real trust or signature verification"
+    },
+    {
+      "version": 2,
+      "case": "bad_signature",
+      "result": 0,
+      "calls": [
+        {
+          "mock": "source certificate/anchor parser boundary",
+          "input_length": 16
+        },
+        {
+          "mock": "_CFArrayCreateMutable"
+        },
+        {
+          "mock": "_CFArrayAppendValue",
+          "array_kind": "chain"
+        },
+        {
+          "mock": "_SecPolicyCreateiAP"
+        },
+        {
+          "mock": "_SecTrustCreateWithCertificates"
+        },
+        {
+          "mock": "_CFArrayCreateMutable"
+        },
+        {
+          "mock": "_SecCertificateCreateWithBytes",
+          "source_anchor_number": 1,
+          "input_length": 1091
+        },
+        {
+          "mock": "_CFArrayAppendValue",
+          "array_kind": "anchors"
+        },
+        {
+          "mock": "_SecCertificateCreateWithBytes",
+          "source_anchor_number": 2,
+          "input_length": 1026
+        },
+        {
+          "mock": "_CFArrayAppendValue",
+          "array_kind": "anchors"
+        },
+        {
+          "mock": "_SecTrustSetAnchorCertificates"
+        },
+        {
+          "mock": "_SecTrustEvaluate",
+          "synthetic_error": 0,
+          "synthetic_result": 4
+        },
+        {
+          "mock": "_SecTrustCopyPublicKey"
+        },
+        {
+          "mock": "_SecKeyRawVerify",
+          "padding": "0x8002",
+          "nonce_length": 20,
+          "signature_length": 128,
+          "synthetic_error": -1
+        },
+        {
+          "mock": "diagnostic log"
+        },
+        {
+          "mock": "diagnostic cert helper"
+        }
+      ],
+      "scope": "actual verify control flow with synthetic certificate parse/CF/Security/crypto/once context; no real trust or signature verification"
+    },
+    {
+      "version": 3,
+      "case": "bad_signature",
+      "result": 0,
+      "calls": [
+        {
+          "mock": "source certificate/anchor parser boundary",
+          "input_length": 16
+        },
+        {
+          "mock": "_CFArrayCreateMutable"
+        },
+        {
+          "mock": "_CFArrayAppendValue",
+          "array_kind": "chain"
+        },
+        {
+          "mock": "_SecPolicyCreateiAP"
+        },
+        {
+          "mock": "_SecTrustCreateWithCertificates"
+        },
+        {
+          "mock": "_CFArrayCreateMutable"
+        },
+        {
+          "mock": "_SecTrustSetAnchorCertificates"
+        },
+        {
+          "mock": "_SecTrustEvaluate",
+          "synthetic_error": 0,
+          "synthetic_result": 4
+        },
+        {
+          "mock": "_SecTrustCopyPublicKey"
+        },
+        {
+          "mock": "_SecKeyRawVerify",
+          "padding": "0x4000",
+          "nonce_length": 32,
+          "signature_length": 64,
+          "synthetic_error": -1
+        },
+        {
+          "mock": "diagnostic log"
+        },
+        {
+          "mock": "diagnostic cert helper"
+        }
+      ],
+      "scope": "actual verify control flow with synthetic certificate parse/CF/Security/crypto/once context; no real trust or signature verification"
+    },
+    {
+      "version": 2,
+      "case": "proceed_not_native_four",
+      "result": 0,
+      "calls": [
+        {
+          "mock": "source certificate/anchor parser boundary",
+          "input_length": 16
+        },
+        {
+          "mock": "_CFArrayCreateMutable"
+        },
+        {
+          "mock": "_CFArrayAppendValue",
+          "array_kind": "chain"
+        },
+        {
+          "mock": "_SecPolicyCreateiAP"
+        },
+        {
+          "mock": "_SecTrustCreateWithCertificates"
+        },
+        {
+          "mock": "_CFArrayCreateMutable"
+        },
+        {
+          "mock": "_SecCertificateCreateWithBytes",
+          "source_anchor_number": 1,
+          "input_length": 1091
+        },
+        {
+          "mock": "_CFArrayAppendValue",
+          "array_kind": "anchors"
+        },
+        {
+          "mock": "_SecCertificateCreateWithBytes",
+          "source_anchor_number": 2,
+          "input_length": 1026
+        },
+        {
+          "mock": "_CFArrayAppendValue",
+          "array_kind": "anchors"
+        },
+        {
+          "mock": "_SecTrustSetAnchorCertificates"
+        },
+        {
+          "mock": "_SecTrustEvaluate",
+          "synthetic_error": 0,
+          "synthetic_result": 1
+        },
+        {
+          "mock": "diagnostic log"
+        },
+        {
+          "mock": "diagnostic cert helper"
+        }
+      ],
+      "scope": "actual verify control flow with synthetic certificate parse/CF/Security/crypto/once context; no real trust or signature verification"
+    },
+    {
+      "version": 2,
+      "case": "untrusted_result",
+      "result": 0,
+      "calls": [
+        {
+          "mock": "source certificate/anchor parser boundary",
+          "input_length": 16
+        },
+        {
+          "mock": "_CFArrayCreateMutable"
+        },
+        {
+          "mock": "_CFArrayAppendValue",
+          "array_kind": "chain"
+        },
+        {
+          "mock": "_SecPolicyCreateiAP"
+        },
+        {
+          "mock": "_SecTrustCreateWithCertificates"
+        },
+        {
+          "mock": "_CFArrayCreateMutable"
+        },
+        {
+          "mock": "_SecCertificateCreateWithBytes",
+          "source_anchor_number": 1,
+          "input_length": 1091
+        },
+        {
+          "mock": "_CFArrayAppendValue",
+          "array_kind": "anchors"
+        },
+        {
+          "mock": "_SecCertificateCreateWithBytes",
+          "source_anchor_number": 2,
+          "input_length": 1026
+        },
+        {
+          "mock": "_CFArrayAppendValue",
+          "array_kind": "anchors"
+        },
+        {
+          "mock": "_SecTrustSetAnchorCertificates"
+        },
+        {
+          "mock": "_SecTrustEvaluate",
+          "synthetic_error": 0,
+          "synthetic_result": 2
+        },
+        {
+          "mock": "diagnostic log"
+        },
+        {
+          "mock": "diagnostic cert helper"
+        }
+      ],
+      "scope": "actual verify control flow with synthetic certificate parse/CF/Security/crypto/once context; no real trust or signature verification"
+    },
+    {
+      "version": 3,
+      "case": "untrusted_result",
+      "result": 0,
+      "calls": [
+        {
+          "mock": "source certificate/anchor parser boundary",
+          "input_length": 16
+        },
+        {
+          "mock": "_CFArrayCreateMutable"
+        },
+        {
+          "mock": "_CFArrayAppendValue",
+          "array_kind": "chain"
+        },
+        {
+          "mock": "_SecPolicyCreateiAP"
+        },
+        {
+          "mock": "_SecTrustCreateWithCertificates"
+        },
+        {
+          "mock": "_CFArrayCreateMutable"
+        },
+        {
+          "mock": "_SecTrustSetAnchorCertificates"
+        },
+        {
+          "mock": "_SecTrustEvaluate",
+          "synthetic_error": 0,
+          "synthetic_result": 2
+        },
+        {
+          "mock": "diagnostic log"
+        },
+        {
+          "mock": "diagnostic cert helper"
+        }
+      ],
+      "scope": "actual verify control flow with synthetic certificate parse/CF/Security/crypto/once context; no real trust or signature verification"
+    },
+    {
+      "version": 2,
+      "case": "trust_API_error",
+      "result": 0,
+      "calls": [
+        {
+          "mock": "source certificate/anchor parser boundary",
+          "input_length": 16
+        },
+        {
+          "mock": "_CFArrayCreateMutable"
+        },
+        {
+          "mock": "_CFArrayAppendValue",
+          "array_kind": "chain"
+        },
+        {
+          "mock": "_SecPolicyCreateiAP"
+        },
+        {
+          "mock": "_SecTrustCreateWithCertificates"
+        },
+        {
+          "mock": "_CFArrayCreateMutable"
+        },
+        {
+          "mock": "_SecCertificateCreateWithBytes",
+          "source_anchor_number": 1,
+          "input_length": 1091
+        },
+        {
+          "mock": "_CFArrayAppendValue",
+          "array_kind": "anchors"
+        },
+        {
+          "mock": "_SecCertificateCreateWithBytes",
+          "source_anchor_number": 2,
+          "input_length": 1026
+        },
+        {
+          "mock": "_CFArrayAppendValue",
+          "array_kind": "anchors"
+        },
+        {
+          "mock": "_SecTrustSetAnchorCertificates"
+        },
+        {
+          "mock": "_SecTrustEvaluate",
+          "synthetic_error": -1,
+          "synthetic_result": 4
+        },
+        {
+          "mock": "diagnostic log"
+        },
+        {
+          "mock": "diagnostic cert helper"
+        }
+      ],
+      "scope": "actual verify control flow with synthetic certificate parse/CF/Security/crypto/once context; no real trust or signature verification"
+    },
+    {
+      "version": 3,
+      "case": "missing_public_key",
+      "result": 0,
+      "calls": [
+        {
+          "mock": "source certificate/anchor parser boundary",
+          "input_length": 16
+        },
+        {
+          "mock": "_CFArrayCreateMutable"
+        },
+        {
+          "mock": "_CFArrayAppendValue",
+          "array_kind": "chain"
+        },
+        {
+          "mock": "_SecPolicyCreateiAP"
+        },
+        {
+          "mock": "_SecTrustCreateWithCertificates"
+        },
+        {
+          "mock": "_CFArrayCreateMutable"
+        },
+        {
+          "mock": "_SecTrustSetAnchorCertificates"
+        },
+        {
+          "mock": "_SecTrustEvaluate",
+          "synthetic_error": 0,
+          "synthetic_result": 4
+        },
+        {
+          "mock": "_SecTrustCopyPublicKey"
+        },
+        {
+          "mock": "diagnostic log"
+        },
+        {
+          "mock": "diagnostic cert helper"
+        }
+      ],
+      "scope": "actual verify control flow with synthetic certificate parse/CF/Security/crypto/once context; no real trust or signature verification"
+    },
+    {
+      "version": 2,
+      "case": "parse_failed",
+      "result": 0,
+      "calls": [
+        {
+          "mock": "source certificate/anchor parser boundary",
+          "input_length": 16
+        },
+        {
+          "mock": "diagnostic log"
+        },
+        {
+          "mock": "diagnostic cert helper"
+        }
+      ],
+      "scope": "actual verify control flow with synthetic certificate parse/CF/Security/crypto/once context; no real trust or signature verification"
+    },
+    {
+      "version": 4,
+      "case": "unknown_version",
+      "result": 0,
+      "calls": [
+        {
+          "mock": "source certificate/anchor parser boundary",
+          "input_length": 16
+        },
+        {
+          "mock": "_CFArrayCreateMutable"
+        },
+        {
+          "mock": "_CFArrayAppendValue",
+          "array_kind": "chain"
+        },
+        {
+          "mock": "_SecPolicyCreateiAP"
+        },
+        {
+          "mock": "_SecTrustCreateWithCertificates"
+        },
+        {
+          "mock": "_CFArrayCreateMutable"
+        },
+        {
+          "mock": "_SecTrustSetAnchorCertificates"
+        },
+        {
+          "mock": "_SecTrustEvaluate",
+          "synthetic_error": 0,
+          "synthetic_result": 4
+        },
+        {
+          "mock": "_SecTrustCopyPublicKey"
+        },
+        {
+          "mock": "diagnostic log"
+        },
+        {
+          "mock": "diagnostic cert helper"
+        }
+      ],
+      "scope": "actual verify control flow with synthetic certificate parse/CF/Security/crypto/once context; no real trust or signature verification"
+    }
+  ]
+}

@@ -1,0 +1,617 @@
+{
+  "result": "PASS",
+  "cases": 24,
+  "rows": [
+    {
+      "profile": "12H321",
+      "key": "quiesce",
+      "software_running": 1,
+      "output_present": true,
+      "cached_provider": true,
+      "provider_present": true,
+      "synthetic_provider_status": 0,
+      "outcome": "require",
+      "trace": [
+        [
+          "require"
+        ]
+      ],
+      "original_instructions": 18,
+      "physical_fence": "UNPROVEN"
+    },
+    {
+      "profile": "12H321",
+      "key": "quiesce",
+      "software_running": 0,
+      "output_present": true,
+      "cached_provider": true,
+      "provider_present": false,
+      "synthetic_provider_status": 0,
+      "outcome": "returned",
+      "trace": [
+        [
+          "synthetic-symbol-compare",
+          false
+        ]
+      ],
+      "original_instructions": 59,
+      "physical_fence": "UNPROVEN"
+    },
+    {
+      "profile": "12H321",
+      "key": "quiesce",
+      "software_running": 0,
+      "output_present": true,
+      "cached_provider": false,
+      "provider_present": false,
+      "synthetic_provider_status": 0,
+      "outcome": "returned",
+      "trace": [
+        [
+          "synthetic-symbol-compare",
+          false
+        ],
+        [
+          "synthetic-registry-parent",
+          0
+        ],
+        [
+          "write",
+          "0x10001018",
+          4,
+          0
+        ],
+        [
+          "write",
+          "0x1000101c",
+          4,
+          305419896
+        ]
+      ],
+      "original_instructions": 72,
+      "physical_fence": "UNPROVEN"
+    },
+    {
+      "profile": "12H321",
+      "key": "quiesce",
+      "software_running": 0,
+      "output_present": true,
+      "cached_provider": true,
+      "provider_present": true,
+      "synthetic_provider_status": 0,
+      "outcome": "returned",
+      "trace": [
+        [
+          "synthetic-symbol-compare",
+          false
+        ],
+        [
+          "synthetic-provider-function",
+          0
+        ]
+      ],
+      "original_instructions": 63,
+      "physical_fence": "UNPROVEN"
+    },
+    {
+      "profile": "12H321",
+      "key": "quiesce",
+      "software_running": 0,
+      "output_present": true,
+      "cached_provider": false,
+      "provider_present": true,
+      "synthetic_provider_status": 3758097095,
+      "outcome": "returned",
+      "trace": [
+        [
+          "synthetic-symbol-compare",
+          false
+        ],
+        [
+          "synthetic-registry-parent",
+          268451840
+        ],
+        [
+          "write",
+          "0x10001018",
+          4,
+          268451840
+        ],
+        [
+          "write",
+          "0x1000101c",
+          4,
+          305419896
+        ],
+        [
+          "synthetic-provider-function",
+          3758097095
+        ]
+      ],
+      "original_instructions": 76,
+      "physical_fence": "UNPROVEN"
+    },
+    {
+      "profile": "12H321",
+      "key": "quiesce",
+      "software_running": 0,
+      "output_present": false,
+      "cached_provider": true,
+      "provider_present": true,
+      "synthetic_provider_status": 2147483648,
+      "outcome": "returned",
+      "trace": [
+        [
+          "synthetic-symbol-compare",
+          false
+        ],
+        [
+          "synthetic-provider-function",
+          2147483648
+        ]
+      ],
+      "original_instructions": 63,
+      "physical_fence": "UNPROVEN"
+    },
+    {
+      "profile": "12H321",
+      "key": "coherent",
+      "software_running": 1,
+      "output_present": true,
+      "cached_provider": true,
+      "provider_present": true,
+      "synthetic_provider_status": 0,
+      "outcome": "returned",
+      "trace": [
+        [
+          "synthetic-symbol-compare",
+          true
+        ],
+        [
+          "write",
+          "0x10006000",
+          1,
+          1
+        ]
+      ],
+      "original_instructions": 29,
+      "physical_fence": "UNPROVEN"
+    },
+    {
+      "profile": "12H321",
+      "key": "coherent",
+      "software_running": 0,
+      "output_present": false,
+      "cached_provider": false,
+      "provider_present": false,
+      "synthetic_provider_status": 0,
+      "outcome": "returned",
+      "trace": [
+        [
+          "synthetic-symbol-compare",
+          true
+        ]
+      ],
+      "original_instructions": 26,
+      "physical_fence": "UNPROVEN"
+    },
+    {
+      "profile": "12H321",
+      "key": "other",
+      "software_running": 1,
+      "output_present": true,
+      "cached_provider": true,
+      "provider_present": true,
+      "synthetic_provider_status": 2147483648,
+      "outcome": "returned",
+      "trace": [
+        [
+          "synthetic-symbol-compare",
+          false
+        ],
+        [
+          "synthetic-provider-function",
+          2147483648
+        ]
+      ],
+      "original_instructions": 61,
+      "physical_fence": "UNPROVEN"
+    },
+    {
+      "profile": "12H321",
+      "key": "other",
+      "software_running": 1,
+      "output_present": false,
+      "cached_provider": false,
+      "provider_present": true,
+      "synthetic_provider_status": 3758097095,
+      "outcome": "returned",
+      "trace": [
+        [
+          "synthetic-symbol-compare",
+          false
+        ],
+        [
+          "synthetic-registry-parent",
+          268451840
+        ],
+        [
+          "write",
+          "0x10001018",
+          4,
+          268451840
+        ],
+        [
+          "write",
+          "0x1000101c",
+          4,
+          305419896
+        ],
+        [
+          "synthetic-provider-function",
+          3758097095
+        ]
+      ],
+      "original_instructions": 74,
+      "physical_fence": "UNPROVEN"
+    },
+    {
+      "profile": "12H321",
+      "key": "other",
+      "software_running": 0,
+      "output_present": true,
+      "cached_provider": true,
+      "provider_present": false,
+      "synthetic_provider_status": 0,
+      "outcome": "returned",
+      "trace": [
+        [
+          "synthetic-symbol-compare",
+          false
+        ]
+      ],
+      "original_instructions": 57,
+      "physical_fence": "UNPROVEN"
+    },
+    {
+      "profile": "12H321",
+      "key": "other",
+      "software_running": 0,
+      "output_present": false,
+      "cached_provider": false,
+      "provider_present": false,
+      "synthetic_provider_status": 0,
+      "outcome": "returned",
+      "trace": [
+        [
+          "synthetic-symbol-compare",
+          false
+        ],
+        [
+          "synthetic-registry-parent",
+          0
+        ],
+        [
+          "write",
+          "0x10001018",
+          4,
+          0
+        ],
+        [
+          "write",
+          "0x1000101c",
+          4,
+          305419896
+        ]
+      ],
+      "original_instructions": 70,
+      "physical_fence": "UNPROVEN"
+    },
+    {
+      "profile": "13G36",
+      "key": "quiesce",
+      "software_running": 1,
+      "output_present": true,
+      "cached_provider": true,
+      "provider_present": true,
+      "synthetic_provider_status": 0,
+      "outcome": "require",
+      "trace": [
+        [
+          "require"
+        ]
+      ],
+      "original_instructions": 18,
+      "physical_fence": "UNPROVEN"
+    },
+    {
+      "profile": "13G36",
+      "key": "quiesce",
+      "software_running": 0,
+      "output_present": true,
+      "cached_provider": true,
+      "provider_present": false,
+      "synthetic_provider_status": 0,
+      "outcome": "returned",
+      "trace": [
+        [
+          "synthetic-symbol-compare",
+          false
+        ]
+      ],
+      "original_instructions": 59,
+      "physical_fence": "UNPROVEN"
+    },
+    {
+      "profile": "13G36",
+      "key": "quiesce",
+      "software_running": 0,
+      "output_present": true,
+      "cached_provider": false,
+      "provider_present": false,
+      "synthetic_provider_status": 0,
+      "outcome": "returned",
+      "trace": [
+        [
+          "synthetic-symbol-compare",
+          false
+        ],
+        [
+          "synthetic-registry-parent",
+          0
+        ],
+        [
+          "write",
+          "0x10001018",
+          4,
+          0
+        ],
+        [
+          "write",
+          "0x1000101c",
+          4,
+          305419896
+        ]
+      ],
+      "original_instructions": 72,
+      "physical_fence": "UNPROVEN"
+    },
+    {
+      "profile": "13G36",
+      "key": "quiesce",
+      "software_running": 0,
+      "output_present": true,
+      "cached_provider": true,
+      "provider_present": true,
+      "synthetic_provider_status": 0,
+      "outcome": "returned",
+      "trace": [
+        [
+          "synthetic-symbol-compare",
+          false
+        ],
+        [
+          "synthetic-provider-function",
+          0
+        ]
+      ],
+      "original_instructions": 63,
+      "physical_fence": "UNPROVEN"
+    },
+    {
+      "profile": "13G36",
+      "key": "quiesce",
+      "software_running": 0,
+      "output_present": true,
+      "cached_provider": false,
+      "provider_present": true,
+      "synthetic_provider_status": 3758097095,
+      "outcome": "returned",
+      "trace": [
+        [
+          "synthetic-symbol-compare",
+          false
+        ],
+        [
+          "synthetic-registry-parent",
+          268451840
+        ],
+        [
+          "write",
+          "0x10001018",
+          4,
+          268451840
+        ],
+        [
+          "write",
+          "0x1000101c",
+          4,
+          305419896
+        ],
+        [
+          "synthetic-provider-function",
+          3758097095
+        ]
+      ],
+      "original_instructions": 76,
+      "physical_fence": "UNPROVEN"
+    },
+    {
+      "profile": "13G36",
+      "key": "quiesce",
+      "software_running": 0,
+      "output_present": false,
+      "cached_provider": true,
+      "provider_present": true,
+      "synthetic_provider_status": 2147483648,
+      "outcome": "returned",
+      "trace": [
+        [
+          "synthetic-symbol-compare",
+          false
+        ],
+        [
+          "synthetic-provider-function",
+          2147483648
+        ]
+      ],
+      "original_instructions": 63,
+      "physical_fence": "UNPROVEN"
+    },
+    {
+      "profile": "13G36",
+      "key": "coherent",
+      "software_running": 1,
+      "output_present": true,
+      "cached_provider": true,
+      "provider_present": true,
+      "synthetic_provider_status": 0,
+      "outcome": "returned",
+      "trace": [
+        [
+          "synthetic-symbol-compare",
+          true
+        ],
+        [
+          "write",
+          "0x10006000",
+          1,
+          1
+        ]
+      ],
+      "original_instructions": 29,
+      "physical_fence": "UNPROVEN"
+    },
+    {
+      "profile": "13G36",
+      "key": "coherent",
+      "software_running": 0,
+      "output_present": false,
+      "cached_provider": false,
+      "provider_present": false,
+      "synthetic_provider_status": 0,
+      "outcome": "returned",
+      "trace": [
+        [
+          "synthetic-symbol-compare",
+          true
+        ]
+      ],
+      "original_instructions": 26,
+      "physical_fence": "UNPROVEN"
+    },
+    {
+      "profile": "13G36",
+      "key": "other",
+      "software_running": 1,
+      "output_present": true,
+      "cached_provider": true,
+      "provider_present": true,
+      "synthetic_provider_status": 2147483648,
+      "outcome": "returned",
+      "trace": [
+        [
+          "synthetic-symbol-compare",
+          false
+        ],
+        [
+          "synthetic-provider-function",
+          2147483648
+        ]
+      ],
+      "original_instructions": 61,
+      "physical_fence": "UNPROVEN"
+    },
+    {
+      "profile": "13G36",
+      "key": "other",
+      "software_running": 1,
+      "output_present": false,
+      "cached_provider": false,
+      "provider_present": true,
+      "synthetic_provider_status": 3758097095,
+      "outcome": "returned",
+      "trace": [
+        [
+          "synthetic-symbol-compare",
+          false
+        ],
+        [
+          "synthetic-registry-parent",
+          268451840
+        ],
+        [
+          "write",
+          "0x10001018",
+          4,
+          268451840
+        ],
+        [
+          "write",
+          "0x1000101c",
+          4,
+          305419896
+        ],
+        [
+          "synthetic-provider-function",
+          3758097095
+        ]
+      ],
+      "original_instructions": 74,
+      "physical_fence": "UNPROVEN"
+    },
+    {
+      "profile": "13G36",
+      "key": "other",
+      "software_running": 0,
+      "output_present": true,
+      "cached_provider": true,
+      "provider_present": false,
+      "synthetic_provider_status": 0,
+      "outcome": "returned",
+      "trace": [
+        [
+          "synthetic-symbol-compare",
+          false
+        ]
+      ],
+      "original_instructions": 57,
+      "physical_fence": "UNPROVEN"
+    },
+    {
+      "profile": "13G36",
+      "key": "other",
+      "software_running": 0,
+      "output_present": false,
+      "cached_provider": false,
+      "provider_present": false,
+      "synthetic_provider_status": 0,
+      "outcome": "returned",
+      "trace": [
+        [
+          "synthetic-symbol-compare",
+          false
+        ],
+        [
+          "synthetic-registry-parent",
+          0
+        ],
+        [
+          "write",
+          "0x10001018",
+          4,
+          0
+        ],
+        [
+          "write",
+          "0x1000101c",
+          4,
+          305419896
+        ]
+      ],
+      "original_instructions": 70,
+      "physical_fence": "UNPROVEN"
+    }
+  ],
+  "hardware_calls": 0
+}

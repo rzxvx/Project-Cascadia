@@ -1,0 +1,10 @@
+config APPLE_PMU_D1946_BANK0_EXPERIMENT
+	bool "Experimental P105 global D1946 bank0 parent transport"
+	depends on MFD_APPLE_PMU_I2C=y
+	depends on I2C_CHARDEV = n
+	default n
+	help
+	  Source-only unvalidated option. Also requires explicit readonly opt-in
+	  parameter; no charger activation, firmware replay or analog safety grant.
+	  Requires i2c-dev disabled (including its module): its retry ioctl can
+	  change the adapter policy without the transfer lock.

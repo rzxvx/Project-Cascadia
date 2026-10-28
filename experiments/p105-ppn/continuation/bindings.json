@@ -1,0 +1,28 @@
+[
+  {
+    "profile": "12H321",
+    "kernel_sha256": "db1ddc8343aa9debc00e0a083fba59d9f555722db60957dc333b854fac21dd2c",
+    "platform": "0x80f418cc",
+    "parent_pointer": "0x80f4204c",
+    "parent_vtable": "0x804f19a0",
+    "parent_target": "0x802ed664",
+    "symbols": [
+      "__ZN9IOService20callPlatformFunctionEPK8OSSymbolbPvS3_S3_S3_",
+      "__ZNK9IOService11getProviderEv"
+    ],
+    "getter": "0x802ed368"
+  },
+  {
+    "profile": "13G36",
+    "kernel_sha256": "8eae16f060a71d4f3790385951588f8198d0f21cdb74146f9750941a3d764125",
+    "platform": "0x811b48a8",
+    "parent_pointer": "0x811b504c",
+    "parent_vtable": "0x8059b958",
+    "parent_target": "0x80333c1c",
+    "symbols": [
+      "__ZN9IOService20callPlatformFunctionEPK8OSSymbolbPvS3_S3_S3_",
+      "__ZNK9IOService11getProviderEv"
+    ],
+    "getter": "0x8033390c"
+  }
+]

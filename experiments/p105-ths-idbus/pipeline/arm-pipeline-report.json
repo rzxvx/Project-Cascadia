@@ -1,0 +1,9 @@
+{
+  "source_sha256": {
+    "experiments/p105-ths-idbus/cascadia-ths-idbus.c": "bd6da8ec07730a79c5d3bfc9b936085bd67016c02bfc70337a0b69978f5af61c",
+    "experiments/p105-authcp-aid/cascadia-authcp-aid.c": "382cc9dd37bd18d37e9466830fe109c0b29bbe1bdab6885bf65acdff2584b529"
+  },
+  "ARM_compile": "PASS strictwarnings",
+  "relocatable_link": "PASS",
+  "scope": "existing source-only transport+parser; no IRQ backend or device activation"
+}

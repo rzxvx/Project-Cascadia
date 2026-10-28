@@ -1,0 +1,8 @@
+{
+  "previous_source_SHA256": "b78c89dc57581aea82601bf568cf221020de7506f807efbaee0fe577db82aab5",
+  "historical_fault_SHA256": "c95ace0117be027d048a029944e4aef57a7d79007bfd728696ab2edc74981de7",
+  "candidate_source_SHA256": "2160ddbec9ae56143168b05b1f1c915ae3c79dd22fa81148cea0e7ae08a9bc25",
+  "independent_readonly_peer_review": "confirmed supported normal API can commit ready-gate membership without local writes; fault must retain any of16 masks",
+  "normal_runtime_activation": false,
+  "hardware_access": false
+}

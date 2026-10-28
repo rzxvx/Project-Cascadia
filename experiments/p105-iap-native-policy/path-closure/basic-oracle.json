@@ -1,0 +1,321 @@
+{
+  "cache_sha256": "4f5b5d73244c53fd0bdc5b8012106b10d0dd7607cc850bf7c8f9e9ef3a3f733b",
+  "securityd_sha256": "1c12fbb48ead1edd3dbf2f4b0d635b45452573499fd9592562bbd76e40b56097",
+  "scope": "original basic processor under synthetic direct anchored two-cert metadata; no signature or full trust",
+  "cases": [
+    {
+      "kind": "basic",
+      "synthetic_common_names": [
+        "IPA_synthetic"
+      ],
+      "synthetic_not_before": 10.0,
+      "synthetic_cutoff": 0.0,
+      "synthetic_valid": true,
+      "synthetic_weak": false,
+      "synthetic_anchored": true,
+      "synthetic_is_ca": false,
+      "synthetic_ku": 0,
+      "synthetic_ski": null,
+      "synthetic_aki": null,
+      "synthetic_force": false,
+      "synthetic_leaf_critical": false,
+      "synthetic_root_critical": false,
+      "policy_options": [
+        "BasicContraints",
+        "CriticalExtensions",
+        "IdLinkage",
+        "NonEmptySubject",
+        "NotValidBefore",
+        "QualifiedCertStatements",
+        "SubjectCommonNamePrefix",
+        "WeakIntermediates",
+        "WeakLeaf",
+        "WeakRoot"
+      ],
+      "native_result_flag": true,
+      "failure_setter_attempts": [],
+      "calls": [
+        {
+          "synthetic_zero_allocator": 24
+        },
+        {
+          "synthetic_zero_allocator": 12
+        },
+        {
+          "is_valid": "leaf"
+        },
+        {
+          "is_weak": "leaf"
+        },
+        {
+          "unknown_critical": "leaf"
+        }
+      ]
+    },
+    {
+      "kind": "basic",
+      "synthetic_common_names": [
+        "IPA_synthetic"
+      ],
+      "synthetic_not_before": 10.0,
+      "synthetic_cutoff": 0.0,
+      "synthetic_valid": true,
+      "synthetic_weak": false,
+      "synthetic_anchored": true,
+      "synthetic_is_ca": false,
+      "synthetic_ku": 0,
+      "synthetic_ski": null,
+      "synthetic_aki": null,
+      "synthetic_force": false,
+      "synthetic_leaf_critical": false,
+      "synthetic_root_critical": true,
+      "policy_options": [
+        "BasicContraints",
+        "CriticalExtensions",
+        "IdLinkage",
+        "NonEmptySubject",
+        "NotValidBefore",
+        "QualifiedCertStatements",
+        "SubjectCommonNamePrefix",
+        "WeakIntermediates",
+        "WeakLeaf",
+        "WeakRoot"
+      ],
+      "native_result_flag": true,
+      "failure_setter_attempts": [],
+      "calls": [
+        {
+          "synthetic_zero_allocator": 24
+        },
+        {
+          "synthetic_zero_allocator": 12
+        },
+        {
+          "is_valid": "leaf"
+        },
+        {
+          "is_weak": "leaf"
+        },
+        {
+          "unknown_critical": "leaf"
+        }
+      ]
+    },
+    {
+      "kind": "basic",
+      "synthetic_common_names": [
+        "IPA_synthetic"
+      ],
+      "synthetic_not_before": 10.0,
+      "synthetic_cutoff": 0.0,
+      "synthetic_valid": true,
+      "synthetic_weak": false,
+      "synthetic_anchored": true,
+      "synthetic_is_ca": false,
+      "synthetic_ku": 0,
+      "synthetic_ski": null,
+      "synthetic_aki": null,
+      "synthetic_force": false,
+      "synthetic_leaf_critical": true,
+      "synthetic_root_critical": false,
+      "policy_options": [
+        "BasicContraints",
+        "CriticalExtensions",
+        "IdLinkage",
+        "NonEmptySubject",
+        "NotValidBefore",
+        "QualifiedCertStatements",
+        "SubjectCommonNamePrefix",
+        "WeakIntermediates",
+        "WeakLeaf",
+        "WeakRoot"
+      ],
+      "native_result_flag": false,
+      "failure_setter_attempts": [
+        {
+          "key": "CriticalExtensions",
+          "index": 0,
+          "forced": false,
+          "policy_contains": true
+        }
+      ],
+      "calls": [
+        {
+          "synthetic_zero_allocator": 24
+        },
+        {
+          "synthetic_zero_allocator": 12
+        },
+        {
+          "is_valid": "leaf"
+        },
+        {
+          "is_weak": "leaf"
+        },
+        {
+          "unknown_critical": "leaf"
+        }
+      ]
+    },
+    {
+      "kind": "basic",
+      "synthetic_common_names": [
+        "IPA_synthetic"
+      ],
+      "synthetic_not_before": 10.0,
+      "synthetic_cutoff": 0.0,
+      "synthetic_valid": false,
+      "synthetic_weak": false,
+      "synthetic_anchored": true,
+      "synthetic_is_ca": false,
+      "synthetic_ku": 0,
+      "synthetic_ski": null,
+      "synthetic_aki": null,
+      "synthetic_force": false,
+      "synthetic_leaf_critical": false,
+      "synthetic_root_critical": false,
+      "policy_options": [
+        "BasicContraints",
+        "CriticalExtensions",
+        "IdLinkage",
+        "NonEmptySubject",
+        "NotValidBefore",
+        "QualifiedCertStatements",
+        "SubjectCommonNamePrefix",
+        "WeakIntermediates",
+        "WeakLeaf",
+        "WeakRoot"
+      ],
+      "native_result_flag": true,
+      "failure_setter_attempts": [
+        {
+          "key": "ValidLeaf",
+          "index": 0,
+          "forced": false,
+          "policy_contains": false
+        }
+      ],
+      "calls": [
+        {
+          "synthetic_zero_allocator": 24
+        },
+        {
+          "synthetic_zero_allocator": 12
+        },
+        {
+          "is_valid": "leaf"
+        },
+        {
+          "is_weak": "leaf"
+        },
+        {
+          "unknown_critical": "leaf"
+        }
+      ]
+    },
+    {
+      "kind": "basic",
+      "synthetic_common_names": [
+        "IPA_synthetic"
+      ],
+      "synthetic_not_before": 10.0,
+      "synthetic_cutoff": 0.0,
+      "synthetic_valid": false,
+      "synthetic_weak": false,
+      "synthetic_anchored": true,
+      "synthetic_is_ca": false,
+      "synthetic_ku": 0,
+      "synthetic_ski": null,
+      "synthetic_aki": null,
+      "synthetic_force": false,
+      "synthetic_leaf_critical": false,
+      "synthetic_root_critical": false,
+      "policy_options": [
+        "BasicContraints",
+        "CriticalExtensions",
+        "IdLinkage",
+        "NonEmptySubject",
+        "NotValidBefore",
+        "QualifiedCertStatements",
+        "SubjectCommonNamePrefix",
+        "ValidLeaf",
+        "WeakIntermediates",
+        "WeakLeaf",
+        "WeakRoot"
+      ],
+      "native_result_flag": false,
+      "failure_setter_attempts": [
+        {
+          "key": "ValidLeaf",
+          "index": 0,
+          "forced": false,
+          "policy_contains": true
+        }
+      ],
+      "calls": [
+        {
+          "synthetic_zero_allocator": 24
+        },
+        {
+          "synthetic_zero_allocator": 12
+        },
+        {
+          "is_valid": "leaf"
+        }
+      ]
+    },
+    {
+      "kind": "basic",
+      "synthetic_common_names": [
+        "IPA_synthetic"
+      ],
+      "synthetic_not_before": 10.0,
+      "synthetic_cutoff": 0.0,
+      "synthetic_valid": true,
+      "synthetic_weak": true,
+      "synthetic_anchored": true,
+      "synthetic_is_ca": false,
+      "synthetic_ku": 0,
+      "synthetic_ski": null,
+      "synthetic_aki": null,
+      "synthetic_force": false,
+      "synthetic_leaf_critical": false,
+      "synthetic_root_critical": false,
+      "policy_options": [
+        "BasicContraints",
+        "CriticalExtensions",
+        "IdLinkage",
+        "NonEmptySubject",
+        "NotValidBefore",
+        "QualifiedCertStatements",
+        "SubjectCommonNamePrefix",
+        "WeakIntermediates",
+        "WeakLeaf",
+        "WeakRoot"
+      ],
+      "native_result_flag": false,
+      "failure_setter_attempts": [
+        {
+          "key": "WeakLeaf",
+          "index": 0,
+          "forced": false,
+          "policy_contains": true
+        }
+      ],
+      "calls": [
+        {
+          "synthetic_zero_allocator": 24
+        },
+        {
+          "synthetic_zero_allocator": 12
+        },
+        {
+          "is_valid": "leaf"
+        },
+        {
+          "is_weak": "leaf"
+        }
+      ]
+    }
+  ]
+}

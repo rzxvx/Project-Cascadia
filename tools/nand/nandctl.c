@@ -113,6 +113,10 @@ int main(int argc, char **argv)
         if (!ppn_claim(bus))
             return 1;
         int r = ppn_read_id(bus, ce, addr, id);
+        if (r) {
+            printf("FMI%d CE%d read ID failed\n", bus, ce);
+            return 1;
+        }
         print_id(bus, ce, addr, id);
         return r ? 1 : 0;
     }
@@ -137,6 +141,8 @@ int main(int argc, char **argv)
             return 1;
         int r = ppn_get_feature(bus, ce, feat, buf, len, &st);
         printf("FMI%d CE%d feature 0x%04x: status 0x%02x%s\n", bus, ce, feat, st, r ? " (failed)" : "");
+        if (r)
+            return 1;
         hexdump(buf, len);
         return r ? 1 : 0;
     }
@@ -149,19 +155,30 @@ int main(int argc, char **argv)
             return 1;
         int r = ppn_params(bus, ce, buf, &st);
         printf("FMI%d CE%d device parameters: status 0x%02x%s\n", bus, ce, st, r ? " (failed)" : "");
+        if (r)
+            return 1;
         hexdump(buf, sizeof(buf));
         return r ? 1 : 0;
     }
     if (argc >= 2 && !strcmp(argv[1], "ppninfo")) {
+        int failed = 0;
         for (int b = 0; b < 2; b++) {
             uint8_t buf[16] = { 0 }, st = 0;
-            if (!ppn_claim(b))
+            if (!ppn_claim(b)) {
+                failed = 1;
                 continue;
+            }
             int r = ppn_get_feature(b, 0, 0x9080, buf, 16, &st);
-            printf("FMI%d CE0 firmware (0x9080): status 0x%02x%s \"%.16s\"\n", b, st,
-                   r ? " (failed)" : "", (char *)buf);
+            printf("FMI%d CE0 firmware (0x9080): status 0x%02x%s", b, st,
+                   r ? " (failed)" : "");
+            if (r) {
+                putchar('\n');
+                failed = 1;
+            } else {
+                printf(" \"%.16s\"\n", (char *)buf);
+            }
         }
-        return 0;
+        return failed;
     }
     if (argc >= 5 && !strcmp(argv[1], "bootpage")) {
         int bus = atoi(argv[2]) & 1, ce = atoi(argv[3]);
@@ -172,9 +189,11 @@ int main(int argc, char **argv)
         if (!ppn_claim(bus))
             return 1;
         int r = ppn_read_page(bus, ce, row, raw, sizeof(raw) & ~3u, &st);
+        printf("FMI%d CE%d boot page 0x%06x: status 0x%02x%s\n", bus, ce, row, st, r ? " (failed)" : "");
+        if (r)
+            return 1;
         for (int i = 0; i < 3; i++)
             memcpy(buf + i * 512, raw + i * 565, 512);
-        printf("FMI%d CE%d boot page 0x%06x: status 0x%02x%s\n", bus, ce, row, st, r ? " (failed)" : "");
         if (argc >= 6) {
             FILE *f = fopen(argv[5], "wb");
             if (!f || fwrite(buf, 1, sizeof(buf), f) != sizeof(buf)) {
@@ -194,8 +213,13 @@ int main(int argc, char **argv)
         ppn_recover(bus);
         uint8_t buf[16] = { 0 }, st = 0;
         int r = ppn_get_feature(bus, 0, 0x9080, buf, 16, &st);
-        printf("FMI%d recovered: firmware query status 0x%02x%s \"%.16s\"\n", bus, st,
-               r ? " (failed)" : "", (char *)buf);
+        printf("FMI%d recovered: firmware query status 0x%02x%s", bus, st,
+               r ? " (failed)" : "");
+        if (r) {
+            putchar('\n');
+            return 1;
+        }
+        printf(" \"%.16s\"\n", (char *)buf);
         return r ? 1 : 0;
     }
     if (argc >= 3 && !strcmp(argv[1], "sdr")) {
@@ -233,6 +257,8 @@ int main(int argc, char **argv)
         int r = ppn_read_page(bus, ce, row, buf, len, &st);
         printf("FMI%d CE%d page 0x%06x, %u bytes: status 0x%02x%s\n",
                bus, ce, row, len, st, r ? " (failed)" : "");
+        if (r)
+            return 1;
         FILE *f = fopen(argv[5], "wb");
         if (!f || fwrite(buf, 1, len, f) != len) {
             perror(argv[5]);

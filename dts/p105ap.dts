@@ -73,11 +73,11 @@
 		 *   ...:01 = host side (the Mac's enN)
 		 *   ...:02 = device side (usb0 here)
 		 *
-		 * apple_pmu_charger.armed=1: the USB input current limit raised
-		 * from boot (apple-pmu-charger.c, 1000 mA, less after a sag until
-		 * unplugged); the driver alone only logs what it would set.
+		 * Research branch: automatic charger arming is deliberately omitted.
+		 * Upstream enables a 1000 mA target here. Our attended test admission
+		 * and source-budget qualification must precede any charge activation.
 		 */
-		bootargs = "earlycon=s3c6400,0x32500000 keep_bootcon lpj=5000000 root=/dev/ram0 rw rootwait panic=10 loglevel=8 ignore_loglevel g_cdc.host_addr=02:10:5a:05:00:01 g_cdc.dev_addr=02:10:5a:05:00:02 apple_pmu_charger.armed=1";
+		bootargs = "earlycon=s3c6400,0x32500000 keep_bootcon lpj=5000000 root=/dev/ram0 rw rootwait panic=10 loglevel=8 ignore_loglevel g_cdc.host_addr=02:10:5a:05:00:01 g_cdc.dev_addr=02:10:5a:05:00:02";
 
 		/*
 		 * Placeholders.  The loader MUST overwrite both before jumping;

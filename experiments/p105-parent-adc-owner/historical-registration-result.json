@@ -1,0 +1,9 @@
+{
+  "format": "p105-private-facade-control-v1",
+  "hardware_access": false,
+  "historical_source_sha256": "cf2868943e9ff37b5e3db8769c27e679fab28a04d0e164e1b3f74e51b44c8da6",
+  "fixed_source_sha256": "baf5b24ebf0163b6467e71e9c859528250e5e2c49578448376ebfb4a3be000a9",
+  "historical_returncode": -6,
+  "historical_stderr": "control: /tmp/tmp0r64e_jw/fixture.c:78: defaults: Assertion `sample(&out)==-EUCLEAN&&!calls&&!map_attachments' failed.\n",
+  "expected_failure": "owned facade attached to parent device, visible in unnamed regmap lookup"
+}

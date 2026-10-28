@@ -1,0 +1,271 @@
+{
+  "sha256": "db1ddc8343aa9debc00e0a083fba59d9f555722db60957dc333b854fac21dd2c",
+  "physical_transitions_verified": false,
+  "experiments": [
+    {
+      "stage": "will",
+      "state": 2,
+      "self_device": true,
+      "return": "0x0",
+      "callbacks": [
+        {
+          "operation": "parent-clock-mask",
+          "mask": "0x30002",
+          "synthetic_return": 0
+        },
+        {
+          "operation": "phy-client-state",
+          "state": 5,
+          "synthetic_return": 0
+        },
+        {
+          "operation": "inherited-will",
+          "state": 2,
+          "self_device": true,
+          "synthetic_return": 0
+        }
+      ],
+      "hardware_access": false
+    },
+    {
+      "stage": "will",
+      "state": 1,
+      "self_device": true,
+      "return": "0x0",
+      "callbacks": [
+        {
+          "operation": "parent-clock-mask",
+          "mask": "0x30002",
+          "synthetic_return": 0
+        },
+        {
+          "operation": "inherited-will",
+          "state": 1,
+          "self_device": true,
+          "synthetic_return": 0
+        }
+      ],
+      "hardware_access": false
+    },
+    {
+      "stage": "will",
+      "state": 2,
+      "self_device": false,
+      "return": "0x0",
+      "callbacks": [
+        {
+          "operation": "inherited-will",
+          "state": 2,
+          "self_device": false,
+          "synthetic_return": 0
+        }
+      ],
+      "hardware_access": false
+    },
+    {
+      "stage": "did",
+      "state": 0,
+      "self_device": true,
+      "return": "0x0",
+      "callbacks": [
+        {
+          "operation": "inherited-did",
+          "state": 0,
+          "self_device": true,
+          "synthetic_return": 0
+        },
+        {
+          "operation": "phy-client-state",
+          "state": 10,
+          "synthetic_return": 0
+        },
+        {
+          "operation": "parent-clock-mask",
+          "mask": "0x0",
+          "synthetic_return": 0
+        }
+      ],
+      "hardware_access": false
+    },
+    {
+      "stage": "did",
+      "state": 1,
+      "self_device": true,
+      "return": "0x0",
+      "callbacks": [
+        {
+          "operation": "inherited-did",
+          "state": 1,
+          "self_device": true,
+          "synthetic_return": 0
+        },
+        {
+          "operation": "phy-client-state",
+          "state": 25,
+          "synthetic_return": 0
+        },
+        {
+          "operation": "parent-clock-mask",
+          "mask": "0x10002",
+          "synthetic_return": 0
+        }
+      ],
+      "hardware_access": false
+    },
+    {
+      "stage": "did",
+      "state": 2,
+      "self_device": true,
+      "return": "0x0",
+      "callbacks": [
+        {
+          "operation": "inherited-did",
+          "state": 2,
+          "self_device": true,
+          "synthetic_return": 0
+        }
+      ],
+      "hardware_access": false
+    },
+    {
+      "stage": "did",
+      "state": 0,
+      "self_device": false,
+      "return": "0x0",
+      "callbacks": [
+        {
+          "operation": "inherited-did",
+          "state": 0,
+          "self_device": false,
+          "synthetic_return": 0
+        }
+      ],
+      "hardware_access": false
+    },
+    {
+      "stage": "will",
+      "state": 2,
+      "self_device": true,
+      "return": "0xfffffffb",
+      "callbacks": [
+        {
+          "operation": "parent-clock-mask",
+          "mask": "0x30002",
+          "synthetic_return": 0
+        },
+        {
+          "operation": "phy-client-state",
+          "state": 5,
+          "synthetic_return": 0
+        },
+        {
+          "operation": "inherited-will",
+          "state": 2,
+          "self_device": true,
+          "synthetic_return": -5
+        }
+      ],
+      "hardware_access": false
+    },
+    {
+      "stage": "did",
+      "state": 0,
+      "self_device": true,
+      "return": "0xfffffffb",
+      "callbacks": [
+        {
+          "operation": "inherited-did",
+          "state": 0,
+          "self_device": true,
+          "synthetic_return": -5
+        },
+        {
+          "operation": "phy-client-state",
+          "state": 10,
+          "synthetic_return": 0
+        },
+        {
+          "operation": "parent-clock-mask",
+          "mask": "0x0",
+          "synthetic_return": 0
+        }
+      ],
+      "hardware_access": false
+    },
+    {
+      "stage": "will",
+      "state": 2,
+      "self_device": true,
+      "return": "0x0",
+      "callbacks": [
+        {
+          "operation": "parent-clock-mask",
+          "mask": "0x30002",
+          "synthetic_return": -5
+        },
+        {
+          "operation": "phy-client-state",
+          "state": 5,
+          "synthetic_return": 0
+        },
+        {
+          "operation": "inherited-will",
+          "state": 2,
+          "self_device": true,
+          "synthetic_return": 0
+        }
+      ],
+      "hardware_access": false
+    },
+    {
+      "stage": "will",
+      "state": 2,
+      "self_device": true,
+      "return": "0x0",
+      "callbacks": [
+        {
+          "operation": "parent-clock-mask",
+          "mask": "0x30002",
+          "synthetic_return": 0
+        },
+        {
+          "operation": "phy-client-state",
+          "state": 5,
+          "synthetic_return": -5
+        },
+        {
+          "operation": "inherited-will",
+          "state": 2,
+          "self_device": true,
+          "synthetic_return": 0
+        }
+      ],
+      "hardware_access": false
+    },
+    {
+      "stage": "did",
+      "state": 0,
+      "self_device": true,
+      "return": "0x0",
+      "callbacks": [
+        {
+          "operation": "inherited-did",
+          "state": 0,
+          "self_device": true,
+          "synthetic_return": 0
+        },
+        {
+          "operation": "phy-client-state",
+          "state": 10,
+          "synthetic_return": -5
+        },
+        {
+          "operation": "parent-clock-mask",
+          "mask": "0x0",
+          "synthetic_return": 0
+        }
+      ],
+      "hardware_access": false
+    }
+  ]
+}

@@ -1,0 +1,980 @@
+--- a/drivers/mfd/apple-pmu-d1946-bank0.c
++++ b/drivers/mfd/apple-pmu-d1946-bank0.c
+@@ -7,6 +7,8 @@
+ #include <linux/lockdep.h>
+ #include <linux/string.h>
+ #include "apple-pmu-d1946-bank0.h"
++#include <linux/apple-pmu-a5-once.h>
++#include <linux/sched.h>
+ #define BANK0_RUNNING 0
+ #define BANK0_SEALED 1
+ #define BANK0_STOPPED 2
+@@ -15,15 +17,22 @@
+ 
+ int d1946_bank0_init(struct d1946_bank0_bus *b, struct i2c_client *client)
+ {
++	int ret;
++
+ 	if (IS_ERR_OR_NULL(b) || IS_ERR_OR_NULL(client) ||
+ 	    IS_ERR_OR_NULL(client->adapter) || client->addr != BANK0_ADDR ||
+ 	    client->flags || IS_ERR_OR_NULL(client->adapter->algo) ||
+-	    client->adapter->retries ||
+ 	    !i2c_check_functionality(client->adapter, I2C_FUNC_I2C))
+ 		return -EINVAL;
+ 	if (memchr_inv(b, 0, sizeof(*b)))
+ 		return -EALREADY;
++	i2c_lock_bus(client->adapter, I2C_LOCK_SEGMENT);
++	ret = apple_s5l8940x_i2c_pmu_reserve(client);
++	i2c_unlock_bus(client->adapter, I2C_LOCK_SEGMENT);
++	if (ret)
++		return ret;
+ 	b->client = client;
++	b->reservation_held = true;
+ 	mutex_init(&b->map_lock);
+ 	atomic_set(&b->state, BANK0_RUNNING);
+ 	atomic_set(&b->fault, 0);
+@@ -41,14 +50,12 @@
+ 	return ret;
+ }
+ 
+-/* Caller holds adapter segment lock; __i2c_transfer must never relock it. */
++/* Caller holds adapter segment lock; typed once-leaf does not relock it. */
+ static int bank0_xfer(struct d1946_bank0_bus *b, struct i2c_msg *msgs, int n)
+ {
+ 	int ret;
+ 
+-	if (b->client->adapter->retries)
+-		return -EOPNOTSUPP; /* Do not mutate global retry policy. */
+-	ret = __i2c_transfer(b->client->adapter, msgs, n);
++	ret = apple_s5l8940x_i2c_pmu_once(b->client, msgs, n, irqs_disabled());
+ 	return ret == n ? 0 : bank0_failed(b, ret);
+ }
+ 
+@@ -93,6 +100,14 @@
+ 	return 0;
+ }
+ 
++static int bank0_adc_admit(struct d1946_bank0_bus *b, u8 reg, size_t count)
++{
++	if (b->adc_claimed && reg <= 0x45 && reg + count > 0x43 &&
++	    b->adc_task != current)
++		return -EBUSY;
++	return 0;
++}
++
+ static int bank0_write(void *context, const void *data, size_t count)
+ {
+ 	struct d1946_bank0_bus *b = context;
+@@ -104,6 +119,9 @@
+ 	    !bank0_range(wire[0], count - 1))
+ 		return -EINVAL;
+ 	ret = bank0_admit(b);
++	if (ret)
++		return ret;
++	ret = bank0_adc_admit(b, wire[0], count - 1);
+ 	if (ret)
+ 		return ret;
+ 	ret = bank0_select(b);
+@@ -132,6 +150,9 @@
+ 	    !bank0_range(*(const u8 *)reg, count))
+ 		return -EINVAL;
+ 	ret = bank0_admit(b);
++	if (ret)
++		return ret;
++	ret = bank0_adc_admit(b, *(const u8 *)reg, count);
+ 	if (ret)
+ 		return ret;
+ 	ret = bank0_select(b);
+@@ -210,6 +231,13 @@
+ 	i2c_unlock_bus(b->client->adapter, I2C_LOCK_SEGMENT);
+ 	/* No nested reverse lock order: finish any map unlock after adapter drain. */
+ 	mutex_lock(&b->map_lock);
++	i2c_lock_bus(b->client->adapter, I2C_LOCK_SEGMENT);
++	if (b->reservation_held) {
++		b->release_error = apple_s5l8940x_i2c_pmu_release(b->client);
++		if (!b->release_error)
++			b->reservation_held = false;
++	}
++	i2c_unlock_bus(b->client->adapter, I2C_LOCK_SEGMENT);
+ 	mutex_unlock(&b->map_lock);
+ }
+ 
+@@ -245,7 +273,7 @@
+ 	int ret = -EOPNOTSUPP;
+ 
+ 	if (!irqs_disabled() || system_state <= SYSTEM_RUNNING ||
+-	    !adap->algo->master_xfer_atomic || adap->retries) {
++	    !adap->algo->master_xfer_atomic) {
+ 		atomic_set(&b->off_ready, 0);
+ 		return ret;
+ 	} /* Core's atomic path must not fall back to sleeping xfer. */
+@@ -277,3 +305,103 @@
+ 	i2c_unlock_bus(adap, I2C_LOCK_SEGMENT);
+ 	return ret;
+ }
++
++/* Claim is irreversible for this parent lifetime. All existing parent regmap
++ * accesses to the ADC window now require this actual task-owned transaction. */
++int d1946_bank0_adc_claim(struct d1946_bank0_bus *b)
++{
++	int ret;
++
++	bank0_map_lock(b);
++	ret = bank0_admit(b);
++	if (!ret && b->adc_claimed)
++		ret = -EALREADY;
++	if (!ret) {
++		b->adc_claimed = true;
++		atomic64_set(&b->adc_epoch, 1);
++		/* No source-backed physical first-quiescence witness exists yet. */
++		atomic_set(&b->adc_quiescent, 0);
++	}
++	bank0_map_unlock(b);
++	return ret;
++}
++
++void d1946_bank0_adc_invalidate(struct d1946_bank0_bus *b)
++{
++	atomic64_inc_return(&b->adc_epoch);
++	atomic64_set(&b->adc_witness_epoch, 0);
++	atomic_set(&b->adc_quiescent, 0);
++}
++
++int d1946_bank0_adc_begin(struct d1946_bank0_bus *b, u64 *epoch)
++{
++	u64 generation;
++	int ret;
++
++	bank0_map_lock(b);
++	ret = bank0_admit(b);
++	if (!ret && (!b->adc_claimed || !atomic_read(&b->adc_quiescent)))
++		ret = -EUCLEAN;
++	generation = atomic64_read(&b->adc_epoch);
++	if (!ret && (!generation || b->adc_task ||
++		    atomic64_read(&b->adc_witness_epoch) != generation))
++		ret = -ESTALE;
++	/* A physical witness is single-use, never a permanent initialized bit. */
++	if (!ret && atomic_cmpxchg(&b->adc_quiescent, 1, 0) != 1)
++		ret = -EUCLEAN;
++	if (!ret && (atomic64_read(&b->adc_epoch) != generation ||
++		     atomic64_read(&b->adc_witness_epoch) != generation))
++		ret = -ESTALE;
++	if (ret) {
++		bank0_map_unlock(b);
++		return ret;
++	}
++	b->adc_task = current;
++	*epoch = generation;
++	return 0; /* Both locks retained across the full conversion and waits. */
++}
++
++int d1946_bank0_adc_valid(struct d1946_bank0_bus *b, u64 epoch)
++{
++	int ret = bank0_admit(b);
++
++	if (!ret && (b->adc_task != current || !epoch ||
++		    atomic64_read(&b->adc_epoch) != epoch))
++		ret = -ESTALE;
++	return ret;
++}
++
++void d1946_bank0_adc_end(struct d1946_bank0_bus *b)
++{
++	lockdep_assert_held(&b->map_lock);
++	WARN_ON(b->adc_task != current);
++	b->adc_task = NULL;
++	bank0_map_unlock(b);
++}
++
++/* Private facade: no lock recursion, no reference returned to child users. */
++int d1946_bank0_adc_write(void *context, const void *data, size_t count)
++{
++	struct d1946_bank0_bus *b = context;
++	const u8 *wire = data;
++
++	if (b->adc_task != current || IS_ERR_OR_NULL(data) || count != 2 ||
++	    wire[0] != 0x43 || (wire[1] != 0 && wire[1] != 0x26))
++		return -EPERM;
++	return bank0_write(b, data, count);
++}
++
++int d1946_bank0_adc_read(void *context, const void *reg, size_t reg_size,
++		       void *value, size_t count)
++{
++	struct d1946_bank0_bus *b = context;
++	const u8 *r = reg;
++
++	if (b->adc_task != current || IS_ERR_OR_NULL(reg) || reg_size != 1 ||
++	    !((*r == 0x43 && count == 1) || (*r == 0x44 && count == 2))) {
++		if (!IS_ERR_OR_NULL(value) && count <= 2)
++			memset(value, 0, count);
++		return -EPERM;
++	}
++	return bank0_read(b, reg, reg_size, value, count);
++}
+--- a/drivers/mfd/apple-pmu-d1946-bank0.h
++++ b/drivers/mfd/apple-pmu-d1946-bank0.h
+@@ -12,6 +12,13 @@
+ 	atomic_t state;
+ 	atomic_t fault;
+ 	atomic_t off_ready;
++	bool reservation_held;
++	int release_error;
++	bool adc_claimed;
++	struct task_struct *adc_task;
++	atomic64_t adc_epoch;
++	atomic_t adc_quiescent;
++	atomic64_t adc_witness_epoch;
+ 	int first_error; /* Adapter lock protects diagnostic writes. */
+ };
+ int d1946_bank0_init(struct d1946_bank0_bus *b, struct i2c_client *client);
+@@ -20,4 +27,12 @@
+ int d1946_bank0_seal(struct d1946_bank0_bus *b, int prepare_error);
+ void d1946_bank0_stop(void *context);
+ int d1946_bank0_power_off_atomic(struct d1946_bank0_bus *b);
++int d1946_bank0_adc_claim(struct d1946_bank0_bus *b);
++void d1946_bank0_adc_invalidate(struct d1946_bank0_bus *b);
++int d1946_bank0_adc_begin(struct d1946_bank0_bus *b, u64 *epoch);
++int d1946_bank0_adc_valid(struct d1946_bank0_bus *b, u64 epoch);
++void d1946_bank0_adc_end(struct d1946_bank0_bus *b);
++int d1946_bank0_adc_write(void *context, const void *data, size_t count);
++int d1946_bank0_adc_read(void *context, const void *reg, size_t reg_size,
++		       void *value, size_t count);
+ #endif
+--- a/drivers/mfd/apple-pmu-i2c.c
++++ b/drivers/mfd/apple-pmu-i2c.c
+@@ -13,6 +13,7 @@
+ #include <linux/i2c.h>
+ #include <linux/of.h>
+ #include <linux/of_platform.h>
++#include <linux/pm.h>
+ #include <linux/of_device.h>
+ #include <linux/regmap.h>
+ #include <linux/reboot.h>
+@@ -23,6 +24,12 @@
+ #include "apple-pmu-d1946-bank0.h"
+ 
+ #if IS_ENABLED(CONFIG_APPLE_PMU_D1946_BANK0_EXPERIMENT)
++#if IS_ENABLED(CONFIG_APPLE_PMU_D1946_ADC6_OWNER_EXPERIMENT)
++#include "p105-owned-adc6.h"
++static bool p105_adc6_owner;
++module_param(p105_adc6_owner, bool, 0444);
++MODULE_PARM_DESC(p105_adc6_owner, "Experimental shared ADC owner; physical quiescence unavailable, default off");
++#endif
+ static bool p105_bank0;
+ module_param(p105_bank0, bool, 0444);
+ MODULE_PARM_DESC(p105_bank0, "Experimental D1946 parent bank0 transport; default off");
+@@ -146,6 +153,10 @@
+     int ret;
+ 
+     if (pmu->bank0) {
++#if IS_ENABLED(CONFIG_APPLE_PMU_D1946_ADC6_OWNER_EXPERIMENT)
++        if (pmu->adc6)
++            p105_owned_adc6_close(pmu->adc6);
++#endif
+         ret = apple_pmu_d1946_prepare_checked(pmu);
+         ret = d1946_bank0_seal(pmu->bank0, ret);
+         if (ret)
+@@ -289,6 +300,43 @@
+     { },
+ };
+ 
++#if IS_ENABLED(CONFIG_APPLE_PMU_D1946_BANK0_EXPERIMENT)
++static int apple_pmu_d1946_owned_parent_init(struct apple_pmu_i2c *pmu,
++					   struct i2c_client *client)
++{
++	int ret;
++
++	pmu->bank0 = devm_kzalloc(&client->dev, sizeof(*pmu->bank0), GFP_KERNEL);
++	if (!pmu->bank0)
++		return -ENOMEM;
++	ret = d1946_bank0_init(pmu->bank0, client);
++	if (ret)
++		return ret;
++	/* Immediate rollback for failures before the map/late-stop exists. */
++	ret = devm_add_action_or_reset(&client->dev, d1946_bank0_stop, pmu->bank0);
++	if (ret)
++		return ret;
++	d1946_bank0_config(pmu->bank0, &pmu->config);
++	pmu->regmap = devm_regmap_init(&client->dev, d1946_bank0_regmap_bus(),
++				     pmu->bank0, &pmu->config);
++	if (IS_ERR(pmu->regmap))
++		return PTR_ERR(pmu->regmap);
++	/* Before children/sys-off, after map: drain before map destruction.
++	 * The earlier rollback action is idempotent and never releases twice. */
++	ret = devm_add_action_or_reset(&client->dev, d1946_bank0_stop, pmu->bank0);
++	if (ret)
++		return ret;
++#if IS_ENABLED(CONFIG_APPLE_PMU_D1946_ADC6_OWNER_EXPERIMENT)
++	if (p105_adc6_owner) {
++		pmu->adc6 = p105_owned_adc6_create(&client->dev, pmu->bank0);
++		if (IS_ERR(pmu->adc6))
++			return PTR_ERR(pmu->adc6);
++	}
++#endif
++	return 0;
++}
++#endif
++
+ static int apple_pmu_i2c_probe(struct i2c_client *i2c)
+ {
+     struct device_node *node = i2c->dev.of_node, *child;
+@@ -320,15 +368,9 @@
+         if (info != &apple_pmu_i2c_d1946_info ||
+             !of_machine_is_compatible("apple,p105ap"))
+             return -EOPNOTSUPP;
+-        pmu->bank0 = devm_kzalloc(&i2c->dev, sizeof(*pmu->bank0), GFP_KERNEL);
+-        if (!pmu->bank0)
+-            return -ENOMEM;
+-        ret = d1946_bank0_init(pmu->bank0, i2c);
++        ret = apple_pmu_d1946_owned_parent_init(pmu, i2c);
+         if (ret)
+             return ret;
+-        d1946_bank0_config(pmu->bank0, &pmu->config);
+-        pmu->regmap = devm_regmap_init(&i2c->dev, d1946_bank0_regmap_bus(),
+-                                       pmu->bank0, &pmu->config);
+     } else
+ #endif
+         pmu->regmap = devm_regmap_init_i2c(i2c, &pmu->config);
+@@ -337,15 +379,6 @@
+         dev_err(&i2c->dev, "failed to create regmap: %d.\n", ret);
+         return ret;
+     }
+-
+-#if IS_ENABLED(CONFIG_APPLE_PMU_D1946_BANK0_EXPERIMENT)
+-    if (pmu->bank0) {
+-        /* Registered before children/GPIO/sys-off: all drain before bus stop. */
+-        ret = devm_add_action_or_reset(&i2c->dev, d1946_bank0_stop, pmu->bank0);
+-        if (ret)
+-            return ret;
+-    }
+-#endif
+ 
+     /* Do not dump the register file during probe: the D1946 IRQ handler
+      * consumes event registers 0x01..0x09. Diagnostic reads risk clearing
+@@ -396,8 +429,25 @@
+     return 0;
+ }
+ 
++#if IS_ENABLED(CONFIG_APPLE_PMU_D1946_ADC6_OWNER_EXPERIMENT)
++static int __maybe_unused apple_pmu_p105_suspend(struct device *dev)
++{
++	struct apple_pmu_i2c *pmu = dev_get_drvdata(dev);
++
++	if (pmu->adc6)
++		p105_owned_adc6_close(pmu->adc6);
++	/* No resume callback recreates a physical quiescence witness. */
++	return 0;
++}
++static DEFINE_SIMPLE_DEV_PM_OPS(apple_pmu_p105_pm_ops,
++			      apple_pmu_p105_suspend, NULL);
++#endif
++
+ static struct i2c_driver apple_pmu_i2c_driver = {
+     .driver = {
++#if IS_ENABLED(CONFIG_APPLE_PMU_D1946_ADC6_OWNER_EXPERIMENT)
++        .pm = pm_sleep_ptr(&apple_pmu_p105_pm_ops),
++#endif
+         .name = "apple-pmu-i2c",
+         .of_match_table = of_match_ptr(apple_pmu_i2c_of_match),
+     },
+--- a/include/linux/apple-pmu-i2c.h
++++ b/include/linux/apple-pmu-i2c.h
+@@ -11,12 +11,16 @@
+ #include <linux/regmap.h>
+ 
+ struct d1946_bank0_bus;
++struct p105_owned_adc6;
+ 
+ struct apple_pmu_i2c {
+     struct device *dev;
+     struct regmap *regmap;
+     struct regmap_config config;
+-    struct d1946_bank0_bus *bank0; /* Optional experimental parent transport. */
++    struct d1946_bank0_bus *bank0;
++#if IS_ENABLED(CONFIG_APPLE_PMU_D1946_ADC6_OWNER_EXPERIMENT)
++    struct p105_owned_adc6 *adc6;
++#endif /* Optional experimental parent transport. */
+ };
+ 
+ #endif
+--- a/drivers/i2c/busses/i2c-s5l8940x.c
++++ b/drivers/i2c/busses/i2c-s5l8940x.c
+@@ -10,6 +10,8 @@
+  * but that driver is polling and we can do better.
+  */
+ 
++#include <linux/err.h>
++#include <linux/lockdep.h>
+ #include <linux/clk.h>
+ #include <linux/completion.h>
+ #include <linux/delay.h>
+@@ -78,6 +80,7 @@
+ 
+ struct apple_s5l8940x_i2c {
+     struct i2c_adapter adap;
++    struct i2c_client *pmu_owner; /* Only optional parent reservation. */
+     struct device *dev;
+     void __iomem *base;
+     struct clk *clk;
+@@ -399,10 +402,16 @@
+     return num;
+ }
+ 
++#include "a5-pmu-raw-filter.inc"
++
+ static int apple_s5l8940x_i2c_xfer(struct i2c_adapter *adap, struct i2c_msg *msgs, int num)
+ {
+     struct apple_s5l8940x_i2c *i2c = adap->algo_data;
+     int ret;
++
++    ret = apple_s5l8940x_i2c_raw_admit(i2c, msgs, num);
++    if (ret)
++        return ret;
+ 
+     /* An early version returned from inside the transfer with this still
+      * held, so the very next transfer blocked for good and the boot stopped
+@@ -418,7 +427,12 @@
+  * bus).  The transfer polls anyway, so it is the same code without the lock. */
+ static int apple_s5l8940x_i2c_xfer_atomic(struct i2c_adapter *adap, struct i2c_msg *msgs, int num)
+ {
+-    return apple_s5l8940x_i2c_do_xfer(adap->algo_data, msgs, num);
++    struct apple_s5l8940x_i2c *i2c = adap->algo_data;
++    int ret = apple_s5l8940x_i2c_raw_admit(i2c, msgs, num);
++
++    if (ret)
++        return ret;
++    return apple_s5l8940x_i2c_do_xfer(i2c, msgs, num);
+ }
+ 
+ static int apple_s5l8940x_i2c_init_hw(struct apple_s5l8940x_i2c *i2c)
+@@ -457,6 +471,9 @@
+     .master_xfer_atomic = apple_s5l8940x_i2c_xfer_atomic,
+     .functionality  = apple_s5l8940x_i2c_func,
+ };
++
++#include <linux/apple-pmu-a5-once.h>
++#include "a5-pmu-once.inc"
+ 
+ static int apple_s5l8940x_i2c_probe(struct platform_device *pdev)
+ {
+--- /dev/null
++++ b/include/linux/apple-pmu-a5-once.h
+@@ -0,0 +1,9 @@
++// SPDX-License-Identifier: GPL-2.0-only
++#ifndef A5_PMU_ONCE_H
++#define A5_PMU_ONCE_H
++#include <linux/i2c.h>
++int apple_s5l8940x_i2c_pmu_reserve(struct i2c_client *client);
++int apple_s5l8940x_i2c_pmu_release(struct i2c_client *client);
++int apple_s5l8940x_i2c_pmu_once(struct i2c_client *client,
++			      struct i2c_msg *msgs, int num, bool atomic);
++#endif
+--- /dev/null
++++ b/drivers/i2c/busses/a5-pmu-once.inc
+@@ -0,0 +1,83 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++/* Included in actual A5 driver. Every entry requires adapter segment lock.
++ * No generic core retries, mutable timeout policy, or adapter proxy copy. */
++static struct apple_s5l8940x_i2c *pmu_controller(struct i2c_client *client)
++{
++	struct i2c_adapter *adap;
++
++	if (IS_ERR_OR_NULL(client) || IS_ERR_OR_NULL(client->adapter) ||
++	    client->addr != 0x3c || client->flags)
++		return ERR_PTR(-EINVAL);
++	adap = client->adapter;
++	if (adap->algo != &apple_s5l8940x_i2c_algorithm ||
++	    IS_ERR_OR_NULL(adap->algo_data) || adap->quirks)
++		return ERR_PTR(-EOPNOTSUPP);
++	lockdep_assert_held(&adap->bus_lock);
++	return adap->algo_data;
++}
++
++int apple_s5l8940x_i2c_pmu_reserve(struct i2c_client *client)
++{
++	struct apple_s5l8940x_i2c *i2c = pmu_controller(client);
++
++	if (IS_ERR(i2c))
++		return PTR_ERR(i2c);
++	if (i2c->pmu_owner)
++		return -EBUSY;
++	if (test_bit(I2C_ALF_IS_SUSPENDED, &client->adapter->locked_flags))
++		return -ESHUTDOWN;
++	i2c->pmu_owner = client;
++	return 0;
++}
++EXPORT_SYMBOL_GPL(apple_s5l8940x_i2c_pmu_reserve);
++
++int apple_s5l8940x_i2c_pmu_release(struct i2c_client *client)
++{
++	struct apple_s5l8940x_i2c *i2c = pmu_controller(client);
++
++	if (IS_ERR(i2c))
++		return PTR_ERR(i2c);
++	if (i2c->pmu_owner != client)
++		return -EPERM;
++	i2c->pmu_owner = NULL;
++	return 0;
++}
++EXPORT_SYMBOL_GPL(apple_s5l8940x_i2c_pmu_release);
++
++int apple_s5l8940x_i2c_pmu_once(struct i2c_client *client,
++			      struct i2c_msg *msgs, int num, bool atomic)
++{
++	struct apple_s5l8940x_i2c *i2c = pmu_controller(client);
++	struct i2c_adapter *adap;
++	int i, ret;
++
++	if (IS_ERR(i2c))
++		return PTR_ERR(i2c);
++	adap = client->adapter;
++	if (i2c->pmu_owner != client)
++		return -EPERM;
++	if (test_bit(I2C_ALF_IS_SUSPENDED, &adap->locked_flags))
++		return -ESHUTDOWN;
++	if (IS_ERR_OR_NULL(msgs) || (num != 1 && num != 2))
++		return -EINVAL;
++	for (i = 0; i < num; i++) {
++		if (msgs[i].addr != 0x3c || IS_ERR_OR_NULL(msgs[i].buf) ||
++		    !msgs[i].len || msgs[i].len > 257 ||
++		    msgs[i].flags != (i == 1 ? I2C_M_RD : 0))
++			return -EINVAL;
++	}
++	if (num == 2 && (msgs[0].len != 1 || msgs[1].len > 256))
++		return -EINVAL;
++	if (atomic) {
++		if (!irqs_disabled() || system_state <= SYSTEM_RUNNING)
++			return -EOPNOTSUPP;
++		return apple_s5l8940x_i2c_do_xfer(i2c, msgs, num);
++	}
++	if (irqs_disabled() || in_atomic())
++		return -EOPNOTSUPP;
++	mutex_lock(&i2c->mtx);
++	ret = apple_s5l8940x_i2c_do_xfer(i2c, msgs, num);
++	mutex_unlock(&i2c->mtx);
++	return ret;
++}
++EXPORT_SYMBOL_GPL(apple_s5l8940x_i2c_pmu_once);
+--- /dev/null
++++ b/drivers/i2c/busses/a5-pmu-raw-filter.inc
+@@ -0,0 +1,20 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++/* Generic algorithm path under existing adapter-lock contract. */
++static int apple_s5l8940x_i2c_raw_admit(struct apple_s5l8940x_i2c *i2c,
++				     struct i2c_msg *msgs, int num)
++{
++	int i;
++
++	lockdep_assert_held(&i2c->adap.bus_lock);
++	if (!i2c->pmu_owner)
++		return 0;
++	for (i = 0; i < num; i++) {
++		/* Controller shifts into the FIFO command word without masking:
++		 * an unsupported high address can alias the reserved 7-bit PMU. */
++		if (msgs[i].addr > 0x7f || (msgs[i].flags & I2C_M_TEN))
++			return -EINVAL;
++		if (msgs[i].addr == 0x3c)
++			return -EBUSY;
++	}
++	return 0;
++}
+--- /dev/null
++++ b/drivers/mfd/p105-owned-adc6.c
+@@ -0,0 +1,147 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/* Private, uninstalled owner: real shared exclusion; physical admission closed. */
++#include <linux/err.h>
++#include <linux/errno.h>
++#include <linux/slab.h>
++#include <linux/string.h>
++#include "p105-owned-adc6.h"
++
++struct p105_owned_adc6 {
++	struct mutex serial;
++	atomic_t stopping;
++	struct d1946_bank0_bus *bus;
++	struct p105_adc6 poll;
++	u64 epoch;
++};
++
++static int owned_valid(void *context, const struct p105_adc6_lease *lease)
++{
++	struct p105_owned_adc6 *o = context;
++
++	if (atomic_read(&o->stopping) || lease->owner_generation != o->epoch)
++		return -ESHUTDOWN;
++	return d1946_bank0_adc_valid(o->bus, o->epoch);
++}
++
++static int owned_hold(void *context, const struct p105_adc6_lease *lease, int error)
++{
++	struct p105_owned_adc6 *o = context;
++
++	(void)lease;
++	(void)error;
++	d1946_bank0_adc_invalidate(o->bus);
++	return 0;
++}
++
++static const struct p105_adc6_ops owned_ops = {
++	.valid = owned_valid,
++	.hold_unknown = owned_hold,
++};
++
++static const struct regmap_bus owned_bus = {
++	.write = d1946_bank0_adc_write,
++	.read = d1946_bank0_adc_read,
++	.max_raw_read = 2,
++	.max_raw_write = 1,
++};
++
++static void owned_regmap_exit(void *context)
++{
++	regmap_exit(context);
++}
++
++struct p105_owned_adc6 *p105_owned_adc6_create(struct device *dev,
++					    struct d1946_bank0_bus *bus)
++{
++	const struct regmap_config cfg = {
++		.reg_bits = 8,
++		.val_bits = 8,
++		.max_register = 0x45,
++		.cache_type = REGCACHE_NONE,
++		.disable_locking = true, /* Parent transaction holds both locks. */
++		.can_sleep = true,
++	};
++	struct p105_owned_adc6 *o;
++	int ret;
++
++	if (IS_ERR_OR_NULL(dev) || IS_ERR_OR_NULL(bus) ||
++	    IS_ERR_OR_NULL(bus->client) || dev != &bus->client->dev)
++		return ERR_PTR(-EINVAL);
++	o = devm_kzalloc(dev, sizeof(*o), GFP_KERNEL);
++	if (!o)
++		return ERR_PTR(-ENOMEM);
++	mutex_init(&o->serial);
++	atomic_set(&o->stopping, 0);
++	o->bus = bus;
++	ret = p105_adc6_init(&o->poll);
++	if (ret)
++		return ERR_PTR(ret);
++	/* NULL device prevents dev_get_regmap(parent, NULL) from seeing the
++	 * lockless private facade; disable_locking also disables its debugfs. */
++	o->poll.pmu = regmap_init(NULL, &owned_bus, bus, &cfg);
++	if (IS_ERR(o->poll.pmu))
++		return ERR_CAST(o->poll.pmu);
++	ret = devm_add_action_or_reset(dev, owned_regmap_exit, o->poll.pmu);
++	if (ret)
++		return ERR_PTR(ret);
++	o->poll.ops = &owned_ops;
++	o->poll.ctx = o;
++	ret = d1946_bank0_adc_claim(bus);
++	if (ret)
++		return ERR_PTR(ret);
++	ret = devm_add_action_or_reset(dev, p105_owned_adc6_close, o);
++	if (ret)
++		return ERR_PTR(ret);
++	/* Software ready, but begin denies EUCLEAN before any PMU access.
++	 * No current API can mint a physical first-quiescence witness. */
++	o->poll.enabled = true;
++	return o;
++}
++
++int p105_owned_adc6_read(struct p105_owned_adc6 *o, struct p105_adc6_sample *out)
++{
++	struct p105_adc6_lease lease;
++	int ret;
++
++	if (IS_ERR_OR_NULL(out))
++		return -EINVAL;
++	memset(out, 0, sizeof(*out));
++	if (IS_ERR_OR_NULL(o))
++		return -EINVAL;
++	mutex_lock(&o->serial);
++	if (atomic_read(&o->stopping)) {
++		ret = -ESHUTDOWN;
++		goto unlock;
++	}
++	ret = d1946_bank0_adc_begin(o->bus, &o->epoch);
++	if (ret)
++		goto unlock;
++	lease = (struct p105_adc6_lease){
++		.owner_generation = o->epoch,
++		.exclusive_all_adc = true, /* Actual map+adapter locks held. */
++		.quiescence_proven = true, /* Begin checked parent's witness. */
++	};
++	ret = p105_adc6_read(&o->poll, &lease, out);
++	if (!ret)
++		ret = owned_valid(o, &lease);
++	if (ret) {
++		memset(out, 0, sizeof(*out));
++		d1946_bank0_adc_invalidate(o->bus);
++	}
++	d1946_bank0_adc_end(o->bus);
++unlock:
++	mutex_unlock(&o->serial);
++	return ret;
++}
++
++void p105_owned_adc6_close(void *context)
++{
++	struct p105_owned_adc6 *o = context;
++
++	atomic_set(&o->stopping, 1);
++	d1946_bank0_adc_invalidate(o->bus);
++	mutex_lock(&o->serial);
++	mutex_unlock(&o->serial);
++	/* Calling framework must have stopped new users before devres free.
++	 * This drains admitted calls, not escaped handle lifetime. */
++}
+--- /dev/null
++++ b/drivers/mfd/p105-owned-adc6.h
+@@ -0,0 +1,14 @@
++// SPDX-License-Identifier: GPL-2.0-only
++#ifndef P105_OWNED_ADC6_H
++#define P105_OWNED_ADC6_H
++#include <linux/device.h>
++#include "apple-pmu-d1946-bank0.h"
++#include "p105-adc6-poll.h"
++struct p105_owned_adc6;
++/* Only parent probe may create, before children. No first-quiescence grant. */
++struct p105_owned_adc6 *p105_owned_adc6_create(struct device *dev,
++					    struct d1946_bank0_bus *bus);
++int p105_owned_adc6_read(struct p105_owned_adc6 *owner,
++			struct p105_adc6_sample *out);
++void p105_owned_adc6_close(void *context);
++#endif
+--- /dev/null
++++ b/drivers/mfd/p105-adc6-poll.c
+@@ -0,0 +1,178 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/* Source-only checked polling counterpart to pinned13G36 iBoot c88c ADC6. */
++#include <linux/delay.h>
++#include <linux/err.h>
++#include <linux/errno.h>
++#include <linux/ktime.h>
++#include <linux/string.h>
++#include "p105-adc6-poll.h"
++#define ADC6_INTERVAL_US 1000
++#define ADC6_TIMEOUT_NS (50000ULL * 1000)
++#define ADC6_MAX_POLLS 64
++
++/* Caller supplies fresh zeroed storage; never reset a live lock/fault/lease. */
++int p105_adc6_init(struct p105_adc6 *a)
++{
++	if (IS_ERR_OR_NULL(a))
++		return -EINVAL;
++	if (a->initialized)
++		return -EALREADY;
++	if (memchr_inv(a, 0, sizeof(*a)))
++		return -EINVAL;
++	mutex_init(&a->io_lock);
++	atomic64_set(&a->generation, 1);
++	atomic_set(&a->unknown, 0);
++	a->initialized = true;
++	return 0;
++}
++
++void p105_adc6_invalidate(struct p105_adc6 *a)
++{
++	if (!IS_ERR_OR_NULL(a) && a->initialized &&
++	    !atomic64_inc_return(&a->generation))
++		atomic_set(&a->unknown, 1);
++}
++
++static int adc6_checked(int ret)
++{
++	return ret > 0 ? -EPROTO : ret;
++}
++
++static int adc6_valid(struct p105_adc6 *a, const struct p105_adc6_lease *lease,
++		      u64 generation)
++{
++	int ret;
++
++	if (atomic_read(&a->unknown) || atomic64_read(&a->generation) != generation)
++		return -ESTALE;
++	ret = adc6_checked(a->ops->valid(a->ctx, lease));
++	if (ret)
++		return ret;
++	if (atomic_read(&a->unknown) || atomic64_read(&a->generation) != generation)
++		return -ESTALE;
++	return 0;
++}
++
++int p105_adc6_read(struct p105_adc6 *a, const struct p105_adc6_lease *lease,
++		   struct p105_adc6_sample *out)
++{
++	struct p105_adc6_sample candidate = {};
++	u64 generation, now;
++	unsigned int control, polls;
++	u8 raw[2];
++	bool started = false, uncertain = false;
++	int ret, cleanup_ret = 0, hold_ret;
++
++	if (IS_ERR_OR_NULL(out))
++		return -EINVAL;
++	memset(out, 0, sizeof(*out));
++	if (IS_ERR_OR_NULL(a) || !a->initialized || IS_ERR_OR_NULL(lease))
++		return -EINVAL;
++	mutex_lock(&a->io_lock);
++	ret = -EACCES;
++	if (!a->enabled || atomic_read(&a->unknown))
++		goto unlock;
++	ret = -EOPNOTSUPP;
++	if (IS_ERR_OR_NULL(a->pmu) || IS_ERR_OR_NULL(a->ops) ||
++	    !a->ops->valid || !a->ops->hold_unknown ||
++	    !lease->exclusive_all_adc || !lease->quiescence_proven)
++		goto unlock;
++	generation = atomic64_read(&a->generation);
++	ret = adc6_valid(a, lease, generation);
++	if (ret)
++		goto unlock;
++	ret = regmap_read(a->pmu, 0x43, &control);
++	if (ret)
++		goto unknown;
++	/* A read alone cannot prove this; the owner's quiescence proof is mandatory. */
++	if (control != 0) {
++		ret = -EBUSY;
++		goto unknown;
++	}
++	ret = adc6_valid(a, lease, generation);
++	if (ret)
++		goto unlock;
++	candidate.started_ns = ktime_get_ns();
++	started = true; /* Even a failed I2C write may have reached the PMU. */
++	ret = regmap_write(a->pmu, 0x43, 6 | 0x20);
++	if (ret)
++		goto cleanup;
++	for (polls = 0; polls < ADC6_MAX_POLLS; polls++) {
++		usleep_range(ADC6_INTERVAL_US, ADC6_INTERVAL_US + 100);
++		now = ktime_get_ns();
++		if (now < candidate.started_ns ||
++		    now - candidate.started_ns > ADC6_TIMEOUT_NS) {
++			ret = -ETIMEDOUT;
++			goto cleanup;
++		}
++		ret = adc6_valid(a, lease, generation);
++		if (ret)
++			goto cleanup;
++		ret = regmap_read(a->pmu, 0x43, &control);
++		if (ret)
++			goto cleanup;
++		/* Busy20 can legitimately clear before the first read. */
++		if (control != 6 && control != (6 | 0x20)) {
++			ret = -ESTALE;
++			goto cleanup;
++		}
++		if (!(control & 0x20))
++			break;
++	}
++	if (polls == ADC6_MAX_POLLS) {
++		ret = -ETIMEDOUT;
++		goto cleanup;
++	}
++	ret = adc6_valid(a, lease, generation);
++	if (ret)
++		goto cleanup;
++	ret = regmap_bulk_read(a->pmu, 0x44, raw, sizeof(raw));
++	if (ret)
++		goto cleanup;
++	candidate.raw = (raw[0] & 15) | ((u16)raw[1] << 4);
++	candidate.completed_ns = ktime_get_ns();
++	if (candidate.completed_ns < candidate.started_ns ||
++	    candidate.completed_ns - candidate.started_ns > ADC6_TIMEOUT_NS) {
++		ret = -ETIMEDOUT;
++		goto cleanup;
++	}
++	ret = adc6_valid(a, lease, generation);
++cleanup:
++	uncertain = ret != 0;
++	/* Stop is allowed with the held resource lifetime even after epoch invalidation. */
++	if (started) {
++		cleanup_ret = regmap_write(a->pmu, 0x43, 0);
++		if (!cleanup_ret) {
++			cleanup_ret = regmap_read(a->pmu, 0x43, &control);
++			if (!cleanup_ret && control != 0)
++				cleanup_ret = -EIO;
++		}
++		if (cleanup_ret) {
++			if (!ret)
++				ret = cleanup_ret;
++			uncertain = true;
++		}
++	}
++	if (!ret)
++		ret = adc6_valid(a, lease, generation);
++	if (ret)
++		uncertain = true;
++	if (uncertain)
++		goto unknown;
++	candidate.generation = generation;
++	*out = candidate;
++	goto unlock;
++unknown:
++	/* Checked stop does not prove cancellation/late-completion quiescence. */
++	atomic_set(&a->unknown, 1);
++	atomic64_inc_return(&a->generation);
++	a->retained_lease = *lease;
++	a->retained_lease_valid = true;
++	a->first_error = ret;
++	a->cleanup_error = cleanup_ret;
++	hold_ret = adc6_checked(a->ops->hold_unknown(a->ctx, lease, ret));
++	a->hold_error = hold_ret;
++unlock:
++	mutex_unlock(&a->io_lock);
++	return ret;
++}
+--- /dev/null
++++ b/drivers/mfd/p105-adc6-poll.h
+@@ -0,0 +1,48 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/* Unregistered ADC6 research candidate. No device, IRQ or current authorization. */
++#ifndef P105_ADC6_POLL_H
++#define P105_ADC6_POLL_H
++#include <linux/atomic.h>
++#include <linux/mutex.h>
++#include <linux/regmap.h>
++#include <linux/types.h>
++struct p105_adc6_lease {
++	u64 owner_generation;
++	/* Real owner must prove ALL-ADC exclusion, no outstanding/late conversion. */
++	bool exclusive_all_adc;
++	bool quiescence_proven;
++};
++/* Callback results use0/negative errno; positive values are protocol errors. */
++struct p105_adc6_ops {
++	int (*valid)(void *ctx, const struct p105_adc6_lease *lease);
++	/* Quarantine all ADC users on uncertainty; lifetime held through this call. */
++	int (*hold_unknown)(void *ctx, const struct p105_adc6_lease *lease, int reason);
++};
++struct p105_adc6 {
++	struct mutex io_lock;
++	atomic64_t generation;
++	atomic_t unknown;
++	struct regmap *pmu;
++	const struct p105_adc6_ops *ops;
++	void *ctx;
++	bool initialized;
++	bool enabled; /* false at init, no activation/registration implementation */
++	bool retained_lease_valid;
++	struct p105_adc6_lease retained_lease;
++	int first_error;
++	int cleanup_error;
++	int hold_error;
++};
++struct p105_adc6_sample {
++	u16 raw;
++	u64 generation;
++	u64 started_ns;
++	u64 completed_ns;
++};
++int p105_adc6_init(struct p105_adc6 *a);
++void p105_adc6_invalidate(struct p105_adc6 *a);
++/* Initialized resources/config stay live and immutable; output must be
++ * disjoint from context/lease storage. Callbacks must not reenter io_lock. */
++int p105_adc6_read(struct p105_adc6 *a, const struct p105_adc6_lease *lease,
++		   struct p105_adc6_sample *out);
++#endif

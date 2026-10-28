@@ -1,0 +1,23 @@
+{
+  "result": "PASS",
+  "source_hashes": {
+    "kernel/irq/manage.c": "764415dc7e1732033e3b6dce8227190287546055a75c4fd5122293e0c710e96a",
+    "irq-apple-aic1.c": "5001ada7042ca42d884f71f191ffe2ee0ed9a8bd6811b4881933c2793d64edf6"
+  },
+  "actual_source_bodies_sha256": {
+    "/* ACTUAL_LINUX_IRQ_GET_STATE */": "ec9399b5317ffc1f8fc1e328b4adde286e6bab4c28df2c948dd1fb45cbe67c70",
+    "/* ACTUAL_LINUX_SYNCHRONIZE_HARDIRQ */": "9a5e9a41817355c6036d31df5af5ae950bd910772c06f4fbb505fdc04cbe013e",
+    "/* ACTUAL_LINUX_SYNCHRONIZE_IRQ */": "9661e3e4dab8c4267910c3fe4146aa3f959fc7139c4e9fd00c0a3febc661ea02"
+  },
+  "hardware_calls": 0,
+  "results": [
+    {
+      "hierarchy": false,
+      "result": "PASS 189 assertions; actual Linux IRQ functions; hierarchy=0; missing-hook/EIO/pending/thread/nonreturn controls"
+    },
+    {
+      "hierarchy": true,
+      "result": "PASS 192 assertions; actual Linux IRQ functions; hierarchy=1; missing-hook/EIO/pending/thread/nonreturn controls"
+    }
+  ]
+}

@@ -1,0 +1,8 @@
+config CASCADIA_P105_USB_POWER_EXPERIMENT
+	bool "P105 staged PHY power primitive (source experiment)"
+	depends on ARCH_APPLE_S5L && REGMAP && COMMON_CLK
+	default n
+	help
+	  Incomplete source-only checked power stages with named clock input.
+	  No DT/driver registration, owner migration, role switching, accessory
+	  policy or VBUS provider exists. Keep disabled in normal and host builds.

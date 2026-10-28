@@ -1,0 +1,62 @@
+{
+  "kernelcache_sha256": "db1ddc8343aa9debc00e0a083fba59d9f555722db60957dc333b854fac21dd2c",
+  "original_entry": "0x80c519c0",
+  "synthetic_clock_provider": true,
+  "cases": [
+    {
+      "hclk_value": 0,
+      "command_b8": 0,
+      "steps": 58
+    },
+    {
+      "hclk_value": 1,
+      "command_b8": 0,
+      "steps": 58
+    },
+    {
+      "hclk_value": 999,
+      "command_b8": 0,
+      "steps": 65
+    },
+    {
+      "hclk_value": 1000,
+      "command_b8": 1,
+      "steps": 65
+    },
+    {
+      "hclk_value": 1001,
+      "command_b8": 1,
+      "steps": 65
+    },
+    {
+      "hclk_value": 24000000,
+      "command_b8": 24000,
+      "steps": 110
+    },
+    {
+      "hclk_value": 100000000,
+      "command_b8": 100000,
+      "steps": 125
+    },
+    {
+      "hclk_value": 200000000,
+      "command_b8": 200000,
+      "steps": 125
+    },
+    {
+      "hclk_value": 4294967295999,
+      "command_b8": 4294967295,
+      "steps": 753
+    },
+    {
+      "hclk_value": 4294967296000,
+      "command_b8": 0,
+      "steps": 753
+    },
+    {
+      "hclk_value": 18446744073709551615,
+      "command_b8": 1271310319,
+      "steps": 1193
+    }
+  ]
+}

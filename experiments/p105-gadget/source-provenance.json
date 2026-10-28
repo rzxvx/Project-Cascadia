@@ -1,0 +1,11 @@
+{
+  "scope": "isolated opt-in descriptor change; no normal overlay/default/hardware change",
+  "linux_commit": "adc218676eef25575469234709c2d87185ca223a",
+  "original_cdc2_sha256": "a5508550e99d3db8de44a9d42f2a3e5ee1b97a25faa0e5024852a44c80c3c763",
+  "original_composite_sha256": "dc216170a7c26d879a0e9765648694e1a442f9fe7320088c265ac27a3d4cf4f0",
+  "candidate_cdc2_sha256": "b322140555b217f05255ef95183e5c967bc7f31d8c9ef553c75d7861777a35b9",
+  "primary_usb_if_compliance": "https://compliance.usb.org/index.asp?UpdateFile=Electrical",
+  "consulted": "2026-10-12",
+  "public_default_ma": 0,
+  "patch_sha256": "7ca9a7bc6a622a8f7351e37b01ff748c27a709fd8f4cc1f02b6117fcf78eb77f"
+}

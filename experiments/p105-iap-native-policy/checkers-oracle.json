@@ -1,0 +1,826 @@
+{
+  "cache_sha256": "4f5b5d73244c53fd0bdc5b8012106b10d0dd7607cc850bf7c8f9e9ef3a3f733b",
+  "securityd_sha256": "1c12fbb48ead1edd3dbf2f4b0d635b45452573499fd9592562bbd76e40b56097",
+  "scope": "actual bounded option/parent/setter facets; CF/certificate/path metadata synthetic; not full chain trust",
+  "function_pins": {
+    "_SecPolicyCheckSubjectCommonNamePrefix": "0x329ec",
+    "_SecPolicyCheckNotValidBefore": "0x32b5c",
+    "_SecPVCSetResultForced": "0x33840",
+    "_SecPVCParentCertificateChecks": "0x33980",
+    "_SecPolicyCheckIdLinkage": "0x32038",
+    "_SecPolicyCheckCriticalExtensions": "0x32034",
+    "_SecPolicyCheckBasicContraints": "0x3220c"
+  },
+  "cases": [
+    {
+      "kind": "prefix",
+      "synthetic_common_names": [
+        "IPA_synthetic"
+      ],
+      "synthetic_not_before": 10.0,
+      "synthetic_cutoff": 0.0,
+      "synthetic_valid": true,
+      "synthetic_weak": false,
+      "synthetic_anchored": true,
+      "synthetic_is_ca": false,
+      "synthetic_ku": 0,
+      "synthetic_ski": null,
+      "synthetic_aki": null,
+      "synthetic_force": false,
+      "policy_options": [
+        "BasicContraints",
+        "CriticalExtensions",
+        "IdLinkage",
+        "NonEmptySubject",
+        "NotValidBefore",
+        "QualifiedCertStatements",
+        "SubjectCommonNamePrefix",
+        "WeakIntermediates",
+        "WeakLeaf",
+        "WeakRoot"
+      ],
+      "native_result_flag": true,
+      "failure_setter_attempts": [],
+      "calls": []
+    },
+    {
+      "kind": "prefix",
+      "synthetic_common_names": [
+        "IAP_synthetic"
+      ],
+      "synthetic_not_before": 10.0,
+      "synthetic_cutoff": 0.0,
+      "synthetic_valid": true,
+      "synthetic_weak": false,
+      "synthetic_anchored": true,
+      "synthetic_is_ca": false,
+      "synthetic_ku": 0,
+      "synthetic_ski": null,
+      "synthetic_aki": null,
+      "synthetic_force": false,
+      "policy_options": [
+        "BasicContraints",
+        "CriticalExtensions",
+        "IdLinkage",
+        "NonEmptySubject",
+        "NotValidBefore",
+        "QualifiedCertStatements",
+        "SubjectCommonNamePrefix",
+        "WeakIntermediates",
+        "WeakLeaf",
+        "WeakRoot"
+      ],
+      "native_result_flag": false,
+      "failure_setter_attempts": [
+        {
+          "key": "SubjectCommonNamePrefix",
+          "index": 0,
+          "forced": false,
+          "policy_contains": true
+        }
+      ],
+      "calls": []
+    },
+    {
+      "kind": "prefix",
+      "synthetic_common_names": [],
+      "synthetic_not_before": 10.0,
+      "synthetic_cutoff": 0.0,
+      "synthetic_valid": true,
+      "synthetic_weak": false,
+      "synthetic_anchored": true,
+      "synthetic_is_ca": false,
+      "synthetic_ku": 0,
+      "synthetic_ski": null,
+      "synthetic_aki": null,
+      "synthetic_force": false,
+      "policy_options": [
+        "BasicContraints",
+        "CriticalExtensions",
+        "IdLinkage",
+        "NonEmptySubject",
+        "NotValidBefore",
+        "QualifiedCertStatements",
+        "SubjectCommonNamePrefix",
+        "WeakIntermediates",
+        "WeakLeaf",
+        "WeakRoot"
+      ],
+      "native_result_flag": false,
+      "failure_setter_attempts": [
+        {
+          "key": "SubjectCommonNamePrefix",
+          "index": 0,
+          "forced": false,
+          "policy_contains": true
+        }
+      ],
+      "calls": []
+    },
+    {
+      "kind": "prefix",
+      "synthetic_common_names": [
+        "IPA_a",
+        "IPA_b"
+      ],
+      "synthetic_not_before": 10.0,
+      "synthetic_cutoff": 0.0,
+      "synthetic_valid": true,
+      "synthetic_weak": false,
+      "synthetic_anchored": true,
+      "synthetic_is_ca": false,
+      "synthetic_ku": 0,
+      "synthetic_ski": null,
+      "synthetic_aki": null,
+      "synthetic_force": false,
+      "policy_options": [
+        "BasicContraints",
+        "CriticalExtensions",
+        "IdLinkage",
+        "NonEmptySubject",
+        "NotValidBefore",
+        "QualifiedCertStatements",
+        "SubjectCommonNamePrefix",
+        "WeakIntermediates",
+        "WeakLeaf",
+        "WeakRoot"
+      ],
+      "native_result_flag": false,
+      "failure_setter_attempts": [
+        {
+          "key": "SubjectCommonNamePrefix",
+          "index": 0,
+          "forced": false,
+          "policy_contains": true
+        }
+      ],
+      "calls": []
+    },
+    {
+      "kind": "prefix",
+      "synthetic_common_names": null,
+      "synthetic_not_before": 10.0,
+      "synthetic_cutoff": 0.0,
+      "synthetic_valid": true,
+      "synthetic_weak": false,
+      "synthetic_anchored": true,
+      "synthetic_is_ca": false,
+      "synthetic_ku": 0,
+      "synthetic_ski": null,
+      "synthetic_aki": null,
+      "synthetic_force": false,
+      "policy_options": [
+        "BasicContraints",
+        "CriticalExtensions",
+        "IdLinkage",
+        "NonEmptySubject",
+        "NotValidBefore",
+        "QualifiedCertStatements",
+        "SubjectCommonNamePrefix",
+        "WeakIntermediates",
+        "WeakLeaf",
+        "WeakRoot"
+      ],
+      "native_result_flag": false,
+      "failure_setter_attempts": [
+        {
+          "key": "SubjectCommonNamePrefix",
+          "index": 0,
+          "forced": false,
+          "policy_contains": true
+        }
+      ],
+      "calls": []
+    },
+    {
+      "kind": "date",
+      "synthetic_common_names": [
+        "IPA_synthetic"
+      ],
+      "synthetic_not_before": -1.0,
+      "synthetic_cutoff": 0.0,
+      "synthetic_valid": true,
+      "synthetic_weak": false,
+      "synthetic_anchored": true,
+      "synthetic_is_ca": false,
+      "synthetic_ku": 0,
+      "synthetic_ski": null,
+      "synthetic_aki": null,
+      "synthetic_force": false,
+      "policy_options": [
+        "BasicContraints",
+        "CriticalExtensions",
+        "IdLinkage",
+        "NonEmptySubject",
+        "NotValidBefore",
+        "QualifiedCertStatements",
+        "SubjectCommonNamePrefix",
+        "WeakIntermediates",
+        "WeakLeaf",
+        "WeakRoot"
+      ],
+      "native_result_flag": false,
+      "failure_setter_attempts": [
+        {
+          "key": "NotValidBefore",
+          "index": 0,
+          "forced": false,
+          "policy_contains": true
+        }
+      ],
+      "calls": []
+    },
+    {
+      "kind": "date",
+      "synthetic_common_names": [
+        "IPA_synthetic"
+      ],
+      "synthetic_not_before": 0.0,
+      "synthetic_cutoff": 0.0,
+      "synthetic_valid": true,
+      "synthetic_weak": false,
+      "synthetic_anchored": true,
+      "synthetic_is_ca": false,
+      "synthetic_ku": 0,
+      "synthetic_ski": null,
+      "synthetic_aki": null,
+      "synthetic_force": false,
+      "policy_options": [
+        "BasicContraints",
+        "CriticalExtensions",
+        "IdLinkage",
+        "NonEmptySubject",
+        "NotValidBefore",
+        "QualifiedCertStatements",
+        "SubjectCommonNamePrefix",
+        "WeakIntermediates",
+        "WeakLeaf",
+        "WeakRoot"
+      ],
+      "native_result_flag": false,
+      "failure_setter_attempts": [
+        {
+          "key": "NotValidBefore",
+          "index": 0,
+          "forced": false,
+          "policy_contains": true
+        }
+      ],
+      "calls": []
+    },
+    {
+      "kind": "date",
+      "synthetic_common_names": [
+        "IPA_synthetic"
+      ],
+      "synthetic_not_before": 1.0,
+      "synthetic_cutoff": 0.0,
+      "synthetic_valid": true,
+      "synthetic_weak": false,
+      "synthetic_anchored": true,
+      "synthetic_is_ca": false,
+      "synthetic_ku": 0,
+      "synthetic_ski": null,
+      "synthetic_aki": null,
+      "synthetic_force": false,
+      "policy_options": [
+        "BasicContraints",
+        "CriticalExtensions",
+        "IdLinkage",
+        "NonEmptySubject",
+        "NotValidBefore",
+        "QualifiedCertStatements",
+        "SubjectCommonNamePrefix",
+        "WeakIntermediates",
+        "WeakLeaf",
+        "WeakRoot"
+      ],
+      "native_result_flag": true,
+      "failure_setter_attempts": [],
+      "calls": []
+    },
+    {
+      "kind": "linkage",
+      "synthetic_common_names": [
+        "IPA_synthetic"
+      ],
+      "synthetic_not_before": 10.0,
+      "synthetic_cutoff": 0.0,
+      "synthetic_valid": true,
+      "synthetic_weak": false,
+      "synthetic_anchored": true,
+      "synthetic_is_ca": false,
+      "synthetic_ku": 0,
+      "synthetic_ski": null,
+      "synthetic_aki": null,
+      "synthetic_force": false,
+      "policy_options": [
+        "BasicContraints",
+        "CriticalExtensions",
+        "IdLinkage",
+        "NonEmptySubject",
+        "NotValidBefore",
+        "QualifiedCertStatements",
+        "SubjectCommonNamePrefix",
+        "WeakIntermediates",
+        "WeakLeaf",
+        "WeakRoot"
+      ],
+      "native_result_flag": true,
+      "failure_setter_attempts": [],
+      "calls": []
+    },
+    {
+      "kind": "linkage",
+      "synthetic_common_names": [
+        "IPA_synthetic"
+      ],
+      "synthetic_not_before": 10.0,
+      "synthetic_cutoff": 0.0,
+      "synthetic_valid": true,
+      "synthetic_weak": false,
+      "synthetic_anchored": true,
+      "synthetic_is_ca": false,
+      "synthetic_ku": 0,
+      "synthetic_ski": "a",
+      "synthetic_aki": null,
+      "synthetic_force": false,
+      "policy_options": [
+        "BasicContraints",
+        "CriticalExtensions",
+        "IdLinkage",
+        "NonEmptySubject",
+        "NotValidBefore",
+        "QualifiedCertStatements",
+        "SubjectCommonNamePrefix",
+        "WeakIntermediates",
+        "WeakLeaf",
+        "WeakRoot"
+      ],
+      "native_result_flag": true,
+      "failure_setter_attempts": [],
+      "calls": []
+    },
+    {
+      "kind": "linkage",
+      "synthetic_common_names": [
+        "IPA_synthetic"
+      ],
+      "synthetic_not_before": 10.0,
+      "synthetic_cutoff": 0.0,
+      "synthetic_valid": true,
+      "synthetic_weak": false,
+      "synthetic_anchored": true,
+      "synthetic_is_ca": false,
+      "synthetic_ku": 0,
+      "synthetic_ski": null,
+      "synthetic_aki": "a",
+      "synthetic_force": false,
+      "policy_options": [
+        "BasicContraints",
+        "CriticalExtensions",
+        "IdLinkage",
+        "NonEmptySubject",
+        "NotValidBefore",
+        "QualifiedCertStatements",
+        "SubjectCommonNamePrefix",
+        "WeakIntermediates",
+        "WeakLeaf",
+        "WeakRoot"
+      ],
+      "native_result_flag": true,
+      "failure_setter_attempts": [],
+      "calls": []
+    },
+    {
+      "kind": "linkage",
+      "synthetic_common_names": [
+        "IPA_synthetic"
+      ],
+      "synthetic_not_before": 10.0,
+      "synthetic_cutoff": 0.0,
+      "synthetic_valid": true,
+      "synthetic_weak": false,
+      "synthetic_anchored": true,
+      "synthetic_is_ca": false,
+      "synthetic_ku": 0,
+      "synthetic_ski": "a",
+      "synthetic_aki": "a",
+      "synthetic_force": false,
+      "policy_options": [
+        "BasicContraints",
+        "CriticalExtensions",
+        "IdLinkage",
+        "NonEmptySubject",
+        "NotValidBefore",
+        "QualifiedCertStatements",
+        "SubjectCommonNamePrefix",
+        "WeakIntermediates",
+        "WeakLeaf",
+        "WeakRoot"
+      ],
+      "native_result_flag": true,
+      "failure_setter_attempts": [],
+      "calls": []
+    },
+    {
+      "kind": "linkage",
+      "synthetic_common_names": [
+        "IPA_synthetic"
+      ],
+      "synthetic_not_before": 10.0,
+      "synthetic_cutoff": 0.0,
+      "synthetic_valid": true,
+      "synthetic_weak": false,
+      "synthetic_anchored": true,
+      "synthetic_is_ca": false,
+      "synthetic_ku": 0,
+      "synthetic_ski": "a",
+      "synthetic_aki": "b",
+      "synthetic_force": false,
+      "policy_options": [
+        "BasicContraints",
+        "CriticalExtensions",
+        "IdLinkage",
+        "NonEmptySubject",
+        "NotValidBefore",
+        "QualifiedCertStatements",
+        "SubjectCommonNamePrefix",
+        "WeakIntermediates",
+        "WeakLeaf",
+        "WeakRoot"
+      ],
+      "native_result_flag": false,
+      "failure_setter_attempts": [
+        {
+          "key": "IdLinkage",
+          "index": 0,
+          "forced": false,
+          "policy_contains": true
+        }
+      ],
+      "calls": []
+    },
+    {
+      "kind": "setter",
+      "synthetic_common_names": [
+        "IPA_synthetic"
+      ],
+      "synthetic_not_before": 10.0,
+      "synthetic_cutoff": 0.0,
+      "synthetic_valid": true,
+      "synthetic_weak": false,
+      "synthetic_anchored": true,
+      "synthetic_is_ca": false,
+      "synthetic_ku": 0,
+      "synthetic_ski": null,
+      "synthetic_aki": null,
+      "synthetic_force": false,
+      "policy_options": [],
+      "native_result_flag": true,
+      "failure_setter_attempts": [
+        {
+          "key": "ValidRoot",
+          "index": 1,
+          "forced": false,
+          "policy_contains": false
+        }
+      ],
+      "calls": []
+    },
+    {
+      "kind": "setter",
+      "synthetic_common_names": [
+        "IPA_synthetic"
+      ],
+      "synthetic_not_before": 10.0,
+      "synthetic_cutoff": 0.0,
+      "synthetic_valid": true,
+      "synthetic_weak": false,
+      "synthetic_anchored": true,
+      "synthetic_is_ca": false,
+      "synthetic_ku": 0,
+      "synthetic_ski": null,
+      "synthetic_aki": null,
+      "synthetic_force": false,
+      "policy_options": [
+        "ValidRoot"
+      ],
+      "native_result_flag": false,
+      "failure_setter_attempts": [
+        {
+          "key": "ValidRoot",
+          "index": 1,
+          "forced": false,
+          "policy_contains": true
+        }
+      ],
+      "calls": []
+    },
+    {
+      "kind": "setter",
+      "synthetic_common_names": [
+        "IPA_synthetic"
+      ],
+      "synthetic_not_before": 10.0,
+      "synthetic_cutoff": 0.0,
+      "synthetic_valid": true,
+      "synthetic_weak": false,
+      "synthetic_anchored": true,
+      "synthetic_is_ca": false,
+      "synthetic_ku": 0,
+      "synthetic_ski": null,
+      "synthetic_aki": null,
+      "synthetic_force": true,
+      "policy_options": [],
+      "native_result_flag": false,
+      "failure_setter_attempts": [
+        {
+          "key": "ValidRoot",
+          "index": 1,
+          "forced": true,
+          "policy_contains": false
+        }
+      ],
+      "calls": []
+    },
+    {
+      "kind": "parent",
+      "synthetic_common_names": [
+        "IPA_synthetic"
+      ],
+      "synthetic_not_before": 10.0,
+      "synthetic_cutoff": 0.0,
+      "synthetic_valid": true,
+      "synthetic_weak": false,
+      "synthetic_anchored": true,
+      "synthetic_is_ca": false,
+      "synthetic_ku": 0,
+      "synthetic_ski": null,
+      "synthetic_aki": null,
+      "synthetic_force": false,
+      "policy_options": [
+        "BasicContraints",
+        "CriticalExtensions",
+        "IdLinkage",
+        "NonEmptySubject",
+        "NotValidBefore",
+        "QualifiedCertStatements",
+        "SubjectCommonNamePrefix",
+        "WeakIntermediates",
+        "WeakLeaf",
+        "WeakRoot"
+      ],
+      "native_result_flag": true,
+      "failure_setter_attempts": [],
+      "calls": [
+        "is_valid",
+        "is_weak"
+      ]
+    },
+    {
+      "kind": "parent",
+      "synthetic_common_names": [
+        "IPA_synthetic"
+      ],
+      "synthetic_not_before": 10.0,
+      "synthetic_cutoff": 0.0,
+      "synthetic_valid": false,
+      "synthetic_weak": false,
+      "synthetic_anchored": true,
+      "synthetic_is_ca": false,
+      "synthetic_ku": 0,
+      "synthetic_ski": null,
+      "synthetic_aki": null,
+      "synthetic_force": false,
+      "policy_options": [
+        "BasicContraints",
+        "CriticalExtensions",
+        "IdLinkage",
+        "NonEmptySubject",
+        "NotValidBefore",
+        "QualifiedCertStatements",
+        "SubjectCommonNamePrefix",
+        "WeakIntermediates",
+        "WeakLeaf",
+        "WeakRoot"
+      ],
+      "native_result_flag": true,
+      "failure_setter_attempts": [
+        {
+          "key": "ValidRoot",
+          "index": 1,
+          "forced": false,
+          "policy_contains": false
+        }
+      ],
+      "calls": [
+        "is_valid",
+        "is_weak"
+      ]
+    },
+    {
+      "kind": "parent",
+      "synthetic_common_names": [
+        "IPA_synthetic"
+      ],
+      "synthetic_not_before": 10.0,
+      "synthetic_cutoff": 0.0,
+      "synthetic_valid": true,
+      "synthetic_weak": true,
+      "synthetic_anchored": true,
+      "synthetic_is_ca": false,
+      "synthetic_ku": 0,
+      "synthetic_ski": null,
+      "synthetic_aki": null,
+      "synthetic_force": false,
+      "policy_options": [
+        "BasicContraints",
+        "CriticalExtensions",
+        "IdLinkage",
+        "NonEmptySubject",
+        "NotValidBefore",
+        "QualifiedCertStatements",
+        "SubjectCommonNamePrefix",
+        "WeakIntermediates",
+        "WeakLeaf",
+        "WeakRoot"
+      ],
+      "native_result_flag": false,
+      "failure_setter_attempts": [
+        {
+          "key": "WeakRoot",
+          "index": 1,
+          "forced": false,
+          "policy_contains": true
+        }
+      ],
+      "calls": [
+        "is_valid",
+        "is_weak"
+      ]
+    },
+    {
+      "kind": "parent",
+      "synthetic_common_names": [
+        "IPA_synthetic"
+      ],
+      "synthetic_not_before": 10.0,
+      "synthetic_cutoff": 0.0,
+      "synthetic_valid": true,
+      "synthetic_weak": false,
+      "synthetic_anchored": false,
+      "synthetic_is_ca": false,
+      "synthetic_ku": 0,
+      "synthetic_ski": null,
+      "synthetic_aki": null,
+      "synthetic_force": false,
+      "policy_options": [
+        "BasicContraints",
+        "CriticalExtensions",
+        "IdLinkage",
+        "NonEmptySubject",
+        "NotValidBefore",
+        "QualifiedCertStatements",
+        "SubjectCommonNamePrefix",
+        "WeakIntermediates",
+        "WeakLeaf",
+        "WeakRoot"
+      ],
+      "native_result_flag": false,
+      "failure_setter_attempts": [
+        {
+          "key": "BasicContraints",
+          "index": 1,
+          "forced": true,
+          "policy_contains": true
+        }
+      ],
+      "calls": [
+        "is_valid",
+        "is_weak",
+        "basic_constraints"
+      ]
+    },
+    {
+      "kind": "parent",
+      "synthetic_common_names": [
+        "IPA_synthetic"
+      ],
+      "synthetic_not_before": 10.0,
+      "synthetic_cutoff": 0.0,
+      "synthetic_valid": true,
+      "synthetic_weak": false,
+      "synthetic_anchored": false,
+      "synthetic_is_ca": true,
+      "synthetic_ku": 32,
+      "synthetic_ski": null,
+      "synthetic_aki": null,
+      "synthetic_force": false,
+      "policy_options": [
+        "BasicContraints",
+        "CriticalExtensions",
+        "IdLinkage",
+        "NonEmptySubject",
+        "NotValidBefore",
+        "QualifiedCertStatements",
+        "SubjectCommonNamePrefix",
+        "WeakIntermediates",
+        "WeakLeaf",
+        "WeakRoot"
+      ],
+      "native_result_flag": true,
+      "failure_setter_attempts": [],
+      "calls": [
+        "is_valid",
+        "is_weak",
+        "basic_constraints",
+        "key_usage"
+      ]
+    },
+    {
+      "kind": "parent",
+      "synthetic_common_names": [
+        "IPA_synthetic"
+      ],
+      "synthetic_not_before": 10.0,
+      "synthetic_cutoff": 0.0,
+      "synthetic_valid": true,
+      "synthetic_weak": false,
+      "synthetic_anchored": false,
+      "synthetic_is_ca": true,
+      "synthetic_ku": 1,
+      "synthetic_ski": null,
+      "synthetic_aki": null,
+      "synthetic_force": false,
+      "policy_options": [
+        "BasicContraints",
+        "CriticalExtensions",
+        "IdLinkage",
+        "NonEmptySubject",
+        "NotValidBefore",
+        "QualifiedCertStatements",
+        "SubjectCommonNamePrefix",
+        "WeakIntermediates",
+        "WeakLeaf",
+        "WeakRoot"
+      ],
+      "native_result_flag": false,
+      "failure_setter_attempts": [
+        {
+          "key": "KeyUsage",
+          "index": 1,
+          "forced": true,
+          "policy_contains": false
+        }
+      ],
+      "calls": [
+        "is_valid",
+        "is_weak",
+        "basic_constraints",
+        "key_usage"
+      ]
+    },
+    {
+      "kind": "parent",
+      "synthetic_common_names": [
+        "IPA_synthetic"
+      ],
+      "synthetic_not_before": 10.0,
+      "synthetic_cutoff": 0.0,
+      "synthetic_valid": false,
+      "synthetic_weak": false,
+      "synthetic_anchored": true,
+      "synthetic_is_ca": false,
+      "synthetic_ku": 0,
+      "synthetic_ski": null,
+      "synthetic_aki": null,
+      "synthetic_force": false,
+      "policy_options": [
+        "BasicContraints",
+        "CriticalExtensions",
+        "IdLinkage",
+        "NonEmptySubject",
+        "NotValidBefore",
+        "QualifiedCertStatements",
+        "SubjectCommonNamePrefix",
+        "ValidRoot",
+        "WeakIntermediates",
+        "WeakLeaf",
+        "WeakRoot"
+      ],
+      "native_result_flag": false,
+      "failure_setter_attempts": [
+        {
+          "key": "ValidRoot",
+          "index": 1,
+          "forced": false,
+          "policy_contains": true
+        }
+      ],
+      "calls": [
+        "is_valid"
+      ]
+    }
+  ]
+}

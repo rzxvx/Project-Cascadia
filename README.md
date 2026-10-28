@@ -135,7 +135,9 @@ including the parts that didn't work.
 - [x] **Charging** — `apple-pmu-charger` (liquidmetal-Hg, issue #23): iBEC
       leaves the PMU's USB input limit (`0x3d`) at about 100 mA, so the iPad
       drained on any cable; the driver ramps it the way iBEC does, to
-      1000 mA from boot, and backs off for that cable when the supply sags.
+      1000 mA from boot in upstream main, and backs off when the supply sags.
+      **This research branch keeps automatic arming off** pending a bounded
+      device qualification; the measurements below are upstream reports.
       From a Mac's USB-C port the battery takes +620 to +750 mA (it drained
       at −240 before). `/sys/class/power_supply/apple-pmu-usb`; more than
       1 A from a big charger by hand (`max_input_ma`, `input_current_limit`)
@@ -152,10 +154,11 @@ including the parts that didn't work.
 - [ ] NAND as Linux's own storage — for Pi Pico users, at the cost of iOS;
       see *Where Linux keeps its files* below
 - [ ] USB host mode — a flash drive, or a keyboard, or both behind a hub. The
-      controller is a full OTG core with internal DMA and hub support, and the
-      ADT carries Apple's host-mode PHY tuning; the port costs the console and
-      the network, which Wi-Fi now covers, and the open question is VBUS — in
-      host mode the iPad has to power the bus itself
+      original P105 host path has an external EHCI Port1 and OHCI0 companion,
+      separate from Wi-Fi's HSIC Port3. Accessory routing, shared PHY ownership
+      and bus power still need Linux implementation and hardware validation.
+      Apple's powered Camera Adapter provides a documented external supply
+      architecture; it has not been tested under this Linux port
 - [x] Graphical Acceleration (SGX543MP2) — **the GPU draws** (2026-10-02).
       A kernel driver (`drivers/gpu/drm/apple-sgx`)
       powers the GPU with iOS's own sequence and boots **iOS's own GPU
@@ -237,16 +240,19 @@ than the filesystem this port roots on**, on userspace PIO through
 
 ### A USB flash drive, which would suit the first column
 
-The controller can do it: `GHWCFG2` reads back a full HNP/SRP-capable OTG core
-with **internal DMA**, 14 host channels and hub support, and the ADT carries
-Apple's host-mode PHY tuning beside the device-mode values this port uses —
-this is the Camera Connection Kit path. A stick should land around 15–30 MB/s,
-limited first by the stick and then by the controller's 8 KB of FIFO.
+`GHWCFG2` describes a capable OTG core, and the ADT includes host PHY tuning.
+Those facts alone do not identify the external Lightning host route. Both
+official P105 ADTs examined here describe an external EHCI Port1 and its OHCI0
+companion, separately from Wi-Fi on HSIC Port3; original firmware constructs
+the removable ports. See [the external-port evidence](docs/research/p105-usb-ehci.md).
 
-What is not solved: in host mode the iPad has to supply VBUS itself, which is a
-PMU function nobody has looked for yet, and it does not charge while it is the
-host. The port also stops being the console and the network — survivable now
-that Wi-Fi works, but not free.
+Linux still needs the actual accessory role/mux and controller/PHY lifecycle.
+Bus power can initially use Apple's documented externally powered
+[Lightning-to-USB3 Camera Adapter](https://support.apple.com/en-us/111811),
+which supplies the iOS device and attached USB device. This manufacturer-backed
+topology is not a Linux charging or host test. Native iPad VBUS sourcing remains
+separate research. The shared connector cannot provide the usual USB console
+and gadget network while its data lines serve an external host port.
 
 ### Why there is no third column
 
@@ -581,17 +587,22 @@ clocks whatever iOS had powered. (Moot now: the clock was never what stopped
 touch -- a 5 V LDO no device-tree function names, the calibration, and two
 reports iOS userspace sets were.)
 
-**No free USB host port.** The ADT puts the Wi-Fi part (`wlan`) as a child node
-of `usb-ehci` — BCM4334 is HSIC-attached, not SDIO — and that is EHCI's only
-child: ports 1 and 2 are not described, so nothing is wired to them. Anything
-plugged into the Lightning port therefore has to come from dwc2 in host mode,
-which is mutually exclusive with the ACM console and the network there.
+**External USB host is not yet implemented.** The P105 ADTs from iOS 8.4.1
+(12H321) and 9.3.5 (13G36) describe removable Port1 on EHCI and its OHCI0
+companion, separately from BCM4334 Wi-Fi on HSIC Port3. Actual Apple firmware
+instantiates these ports and responds to host cable roles; see
+[the EHCI/OHCI investigation](docs/research/p105-usb-ehci.md). Missing child
+nodes would not by themselves prove an unwired port, and these trees contain
+Port1 explicitly. The isolated DWC2 host build does not establish the external
+Lightning host route.
 
-That was written when the cable was the only way in. It is less final now: Wi-Fi
-carries the network, the UART and the glass carry the console, `GHWCFG2` says the
-core is HNP/SRP-capable with hub support, so one port can still host a keyboard
-and a disk at once. What has not been looked for is VBUS — the host has to power
-the bus, and on this board that is the PMU's job.
+The remaining work is connector/accessory role detection, shared PHY and clock
+ownership, data-line routing and verified bus power. Apple documents an external
+power path through its Lightning-to-USB3 Camera Adapter, compatible with iPad
+mini 1 and requiring iOS 9.3 or later ([Apple support](https://support.apple.com/en-us/111811),
+[compatibility list](https://www.apple.com/shop/ipad/accessories/chargers-adapters/ipad-mini-1st-generation-usb-3)).
+This is not yet Linux-tested. Native iPad 5 V boost must not be inferred from
+the accessory 3.3 V rail or PMULDO5.
 
 ## Technical notes
 

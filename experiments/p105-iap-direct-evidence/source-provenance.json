@@ -1,0 +1,18 @@
+{
+  "frozen_manifest_SHA256": "272d7b8ba894c78b1ecf884766433e28bc1fea11a95c98c12370758d80eda086",
+  "selected_source_hashes": {
+    "native13.py": "6f6aa9984ac1a9166296cb9f6b88ecd57dd8a88e844f840b6053ab0cf743edfe",
+    "emulate-cert-signature.py": "9a6db082bebc081ed8ec1b52864b1b3dcb3ca9db0950c6947903e1171a0912c1",
+    "cert-routing-oracle.json": "54baf98e44eb96c8c3deb88dfc8fd7211eb01b4a0f47ae317ccbcb6a4ffdbc61",
+    "direct_evidence.py": "3ffc5396c3ec5c428760808901f87fd6875ec49ad93f6b3c8bfdef899cfc1d18",
+    "test_direct_evidence.py": "ea9aa51d353904e537de80aac4ad965d81ab67c2a65cdf8b972da3b68e2c7a43",
+    "dependencies.json": "6be1750743437466efcad9a26d4b646b199b8c4b84751c3befa5883a7c364945",
+    "requirements.txt": "81575cc31b03bf5ec4a366c8892ed9635e4b38f7855fedf27780e491d10f9017",
+    "DIRECT_EVIDENCE.md": "cf330af07ae80be95ceb91e19325e447e2cd66e919f12545439271d9034cceeb"
+  },
+  "root_independent_review": true,
+  "normal_runtime_activation": false,
+  "hardware_access": false,
+  "authorization_granted": false,
+  "Apple_binary_bytes_exported": false
+}

@@ -1,0 +1,32 @@
+{
+  "cache_sha256": "4f5b5d73244c53fd0bdc5b8012106b10d0dd7607cc850bf7c8f9e9ef3a3f733b",
+  "iap_text_sha256": "03164548d75eb991bedb9bd523d4e684eeba43c5c43cd2cfc36530962f091fea",
+  "scope": "embedded public CA metadata only; no leaf/policy/trust proof",
+  "certificates": [
+    {
+      "address": "0x31a111c0",
+      "length": 1091,
+      "certificate_sha256": "884bf87d549f2de7c4fceb4284a8cff9f8b817f36dcf77a40660b33b8afefd0d",
+      "key_algorithm": "RSA",
+      "key_bits": 2048,
+      "basic_constraints_ca": true
+    },
+    {
+      "address": "0x31a11608",
+      "length": 1026,
+      "certificate_sha256": "2eb53dbefdc6f5e7e13d6690fc8cbf9cf4c3f7e501feafb3bc052431dbc83180",
+      "key_algorithm": "RSA",
+      "key_bits": 2048,
+      "basic_constraints_ca": true
+    },
+    {
+      "address": "0x31a11a3d",
+      "length": 588,
+      "certificate_sha256": "81da17dabaf55012d1ea3946c02c3a423405bc290403cc54cdb88bfe95677472",
+      "key_algorithm": "EC",
+      "key_bits": 256,
+      "basic_constraints_ca": null,
+      "curve": "secp256r1"
+    }
+  ]
+}

@@ -1,0 +1,278 @@
+--- a/patches/files-sandcastle-port/drivers/mfd/apple-pmu-i2c.c
++++ b/patches/files-sandcastle-port/drivers/mfd/apple-pmu-i2c.c
+@@ -19,6 +19,15 @@
+ #include <linux/delay.h>
+ #include <linux/gpio/driver.h>
+ #include <linux/apple-pmu-i2c.h>
++#include <linux/module.h>
++#include <linux/platform_device.h>
++#include "apple-pmu-d1946-bank0.h"
++
++#if IS_ENABLED(CONFIG_APPLE_PMU_D1946_BANK0_EXPERIMENT)
++static bool p105_bank0;
++module_param(p105_bank0, bool, 0444);
++MODULE_PARM_DESC(p105_bank0, "Experimental D1946 parent bank0 transport; default off");
++#endif
+ 
+ struct apple_pmu_i2c_info {
+     unsigned reg_bits, val_bits;
+@@ -86,10 +95,65 @@
+     0x88, 0xff, 0xff, 0xff, 0xff, 0xff, 0xae, 0xff, 0xff,
+ };
+ 
++#if IS_ENABLED(CONFIG_APPLE_PMU_D1946_BANK0_EXPERIMENT)
++static int apple_pmu_d1946_prepare_checked(struct apple_pmu_i2c *pmu)
++{
++    struct regmap *map = pmu->regmap;
++    unsigned int i, v;
++    int ret;
++
++    ret = regmap_write(map, D1946_WLED_ENABLE, 0);
++    if (ret)
++        return ret;
++    for (i = 0; i < D1946_NEVENTS; i++) {
++        ret = regmap_read(map, D1946_EVENTS + i, &v);
++        if (ret)
++            return ret;
++    }
++    for (i = 0; i < D1946_NEVENTS; i++) {
++        ret = regmap_write(map, D1946_EVENT_MASKS + i, d1946_off_masks[i]);
++        if (ret)
++            return ret;
++    }
++    ret = regmap_write(map, D1946_ALARM_CTRL, 0x01);
++    if (ret)
++        return ret;
++    ret = regmap_write(map, D1946_REG_A1, 0);
++    if (ret)
++        return ret;
++    ret = regmap_update_bits(map, D1946_BOOT_FLAGS, 0xd0, 0);
++    if (ret)
++        return ret;
++    for (i = 0; i < D1946_NGPIO; i++) {
++        ret = regmap_read(map, D1946_GPIO_CFG + i, &v);
++        if (ret)
++            return ret;
++        if (v >= 0x60 && (v & D1946_GPIO_WAKE)) {
++            ret = regmap_write(map, D1946_GPIO_CFG + i, v & ~D1946_GPIO_WAKE);
++            if (ret)
++                return ret;
++        }
++    }
++    return 0;
++}
++#endif
++
+ static int apple_pmu_d1946_power_off_prepare(struct sys_off_data *data)
+ {
+     struct regmap *map = ((struct apple_pmu_i2c *)data->cb_data)->regmap;
+     unsigned int i, v;
++#if IS_ENABLED(CONFIG_APPLE_PMU_D1946_BANK0_EXPERIMENT)
++    struct apple_pmu_i2c *pmu = data->cb_data;
++    int ret;
++
++    if (pmu->bank0) {
++        ret = apple_pmu_d1946_prepare_checked(pmu);
++        ret = d1946_bank0_seal(pmu->bank0, ret);
++        if (ret)
++            dev_err(pmu->dev, "bank0 power-off preparation failed: %d\n", ret);
++        return NOTIFY_DONE;
++    }
++#endif
+ 
+     regmap_write(map, D1946_WLED_ENABLE, 0);
+     for (i = 0; i < D1946_NEVENTS; i++)
+@@ -108,7 +172,22 @@
+ static int apple_pmu_d1946_power_off(struct sys_off_data *data)
+ {
+     struct i2c_client *client = to_i2c_client(((struct apple_pmu_i2c *)data->cb_data)->dev);
+-    int v = i2c_smbus_read_byte_data(client, D1946_STANDBY);
++    int v;
++#if IS_ENABLED(CONFIG_APPLE_PMU_D1946_BANK0_EXPERIMENT)
++    struct apple_pmu_i2c *pmu = data->cb_data;
++
++    if (pmu->bank0) {
++        v = d1946_bank0_power_off_atomic(pmu->bank0);
++        if (v) {
++            pr_emerg("apple-pmu-i2c: bank0 atomic power-off denied: %d\n", v);
++            return NOTIFY_DONE;
++        }
++        mdelay(1000);
++        pr_emerg("apple-pmu-i2c: bank0 standby acknowledged but still running\n");
++        return NOTIFY_DONE;
++    }
++#endif
++    v = i2c_smbus_read_byte_data(client, D1946_STANDBY);
+ 
+     if (v >= 0)
+         i2c_smbus_write_byte_data(client, D1946_STANDBY, v | 0x01);
+@@ -237,12 +316,37 @@
+     pmu->config.val_bits = info->val_bits;
+     pmu->config.max_register = (1u << pmu->config.reg_bits) - 1u;
+ 
+-    pmu->regmap = devm_regmap_init_i2c(i2c, &pmu->config);
++#if IS_ENABLED(CONFIG_APPLE_PMU_D1946_BANK0_EXPERIMENT)
++    if (p105_bank0) {
++        if (info != &apple_pmu_i2c_d1946_info ||
++            !of_machine_is_compatible("apple,p105ap"))
++            return -EOPNOTSUPP;
++        pmu->bank0 = devm_kzalloc(&i2c->dev, sizeof(*pmu->bank0), GFP_KERNEL);
++        if (!pmu->bank0)
++            return -ENOMEM;
++        ret = d1946_bank0_init(pmu->bank0, i2c);
++        if (ret)
++            return ret;
++        d1946_bank0_config(pmu->bank0, &pmu->config);
++        pmu->regmap = devm_regmap_init(&i2c->dev, d1946_bank0_regmap_bus(),
++                                       pmu->bank0, &pmu->config);
++    } else
++#endif
++        pmu->regmap = devm_regmap_init_i2c(i2c, &pmu->config);
+     if(IS_ERR(pmu->regmap)) {
+         ret = PTR_ERR(pmu->regmap);
+         dev_err(&i2c->dev, "failed to create regmap: %d.\n", ret);
+         return ret;
+     }
++
++#if IS_ENABLED(CONFIG_APPLE_PMU_D1946_BANK0_EXPERIMENT)
++    if (pmu->bank0) {
++        /* Registered before children/GPIO/sys-off: all drain before bus stop. */
++        ret = devm_add_action_or_reset(&i2c->dev, d1946_bank0_stop, pmu->bank0);
++        if (ret)
++            return ret;
++    }
++#endif
+ 
+     /* Do not dump the register file during probe: the D1946 IRQ handler
+      * consumes event registers 0x01..0x09. Diagnostic reads risk clearing
+@@ -256,16 +360,37 @@
+             ret = devm_register_sys_off_handler(&i2c->dev, SYS_OFF_MODE_POWER_OFF,
+                                                 SYS_OFF_PRIO_DEFAULT,
+                                                 apple_pmu_d1946_power_off, pmu);
+-        if (ret)
++        if (ret) {
++#if IS_ENABLED(CONFIG_APPLE_PMU_D1946_BANK0_EXPERIMENT)
++            if (pmu->bank0)
++                return ret;
++#endif
+             dev_warn(&i2c->dev, "no power-off: %d\n", ret);
++        }
+     }
+ 
+     if (info == &apple_pmu_i2c_d1946_info && of_property_read_bool(node, "gpio-controller")) {
+         ret = apple_pmu_gpio_register(pmu);
+-        if (ret)
++        if (ret) {
++#if IS_ENABLED(CONFIG_APPLE_PMU_D1946_BANK0_EXPERIMENT)
++            if (pmu->bank0)
++                return ret;
++#endif
+             dev_warn(&i2c->dev, "no GPIOs: %d\n", ret);
+-    }
+-
++        }
++    }
++
++#if IS_ENABLED(CONFIG_APPLE_PMU_D1946_BANK0_EXPERIMENT)
++    if (pmu->bank0) {
++        ret = devm_of_platform_populate(&i2c->dev);
++        if (ret) {
++            /* populate may have created a partial set without a devres action. */
++            of_platform_depopulate(&i2c->dev);
++            return ret;
++        }
++        return 0;
++    }
++#endif
+     for_each_child_of_node(node, child)
+         of_platform_device_create(child, NULL, &i2c->dev);
+ 
+@@ -280,6 +405,67 @@
+     .probe = apple_pmu_i2c_probe,
+ };
+ 
++
++#if IS_ENABLED(CONFIG_APPLE_PMU_D1946_BANK0_EXPERIMENT)
++/* Probe-time direct child only. The managed link keeps parent devres alive until
++ * child probe unwind/remove drains its users. No parent lock: children may first
++ * probe inside OF population while the parent is still probing; defer instead.
++ * This observes real transport identity/health, not analog charger permission. */
++struct regmap *apple_pmu_d1946_bank0_get_for_child(struct device *child)
++{
++    struct device *parent;
++    struct i2c_client *client;
++    struct device_link *link;
++    const struct of_device_id *match;
++    struct apple_pmu_i2c *pmu;
++    enum device_link_state status;
++    int ret;
++
++    if (IS_ERR_OR_NULL(child) || !dev_is_platform(child) ||
++        READ_ONCE(child->links.status) != DL_DEV_PROBING)
++        return ERR_PTR(-EINVAL);
++    parent = child->parent;
++    if (IS_ERR_OR_NULL(parent) || parent == child)
++        return ERR_PTR(-EINVAL);
++    client = i2c_verify_client(parent);
++    if (!client)
++        return ERR_PTR(-ENODEV);
++    if (READ_ONCE(parent->driver) != &apple_pmu_i2c_driver.driver)
++        return ERR_PTR(READ_ONCE(parent->driver) ? -ENODEV : -EPROBE_DEFER);
++    if (READ_ONCE(parent->links.status) != DL_DEV_DRIVER_BOUND)
++        return ERR_PTR(-EPROBE_DEFER);
++    match = of_match_device(apple_pmu_i2c_of_match, parent);
++    if (!match || match->data != &apple_pmu_i2c_d1946_info ||
++        !of_machine_is_compatible("apple,p105ap"))
++        return ERR_PTR(-EOPNOTSUPP);
++
++    link = device_link_add(child, parent, DL_FLAG_AUTOREMOVE_CONSUMER);
++    if (!link)
++        return ERR_PTR(-EPROBE_DEFER);
++    status = READ_ONCE(link->status);
++    if ((status != DL_STATE_CONSUMER_PROBE && status != DL_STATE_ACTIVE) ||
++        READ_ONCE(parent->links.status) != DL_DEV_DRIVER_BOUND ||
++        READ_ONCE(parent->driver) != &apple_pmu_i2c_driver.driver)
++        return ERR_PTR(-EPROBE_DEFER);
++    /* Only a correctly bound, lifetime-guarded parent may expose its drvdata. */
++    pmu = dev_get_drvdata(parent);
++    if (IS_ERR_OR_NULL(pmu) || pmu->dev != parent ||
++        IS_ERR_OR_NULL(pmu->regmap))
++        return ERR_PTR(-ENODEV);
++    if (!pmu->bank0)
++        return ERR_PTR(-EOPNOTSUPP);
++    ret = d1946_bank0_check_running(pmu->bank0, client);
++    if (ret)
++        return ERR_PTR(ret);
++    if (dev_get_regmap(parent, NULL) != pmu->regmap)
++        return ERR_PTR(-ENODEV);
++    /* State can change after this snapshot; every regmap callback rechecks its
++     * own admission under the existing map/adapter locks before data access. */
++    return pmu->regmap;
++}
++EXPORT_SYMBOL_GPL(apple_pmu_d1946_bank0_get_for_child);
++#endif
++
+ static int __init apple_pmu_i2c_init(void)
+ {
+     return i2c_add_driver(&apple_pmu_i2c_driver);
+--- a/patches/files-sandcastle-port/include/linux/apple-pmu-i2c.h
++++ b/patches/files-sandcastle-port/include/linux/apple-pmu-i2c.h
+@@ -10,10 +10,18 @@
+ #include <linux/device.h>
+ #include <linux/regmap.h>
+ 
++struct d1946_bank0_bus;
++
+ struct apple_pmu_i2c {
+     struct device *dev;
+     struct regmap *regmap;
+     struct regmap_config config;
++    struct d1946_bank0_bus *bank0; /* Optional experimental parent transport. */
+ };
+ 
++#if IS_ENABLED(CONFIG_APPLE_PMU_D1946_BANK0_EXPERIMENT)
++/* Probe-time direct-child API. Managed supplier link; no I/O or safety grant. */
++struct regmap *apple_pmu_d1946_bank0_get_for_child(struct device *child);
+ #endif
++
++#endif

@@ -1,0 +1,22 @@
+{
+  "scope": "real offline mathematical verification only; no certificate trust or accessory/electrical grant",
+  "tested_runtime": {
+    "python": "3.12.3",
+    "cryptography": "41.0.7",
+    "openssl": "OpenSSL 3.0.13 30 Jan 2024"
+  },
+  "native_control_source": {
+    "cache_sha256": "4f5b5d73244c53fd0bdc5b8012106b10d0dd7607cc850bf7c8f9e9ef3a3f733b",
+    "emulator_relative": "experiments/p105-authcp-aid/emulate-iap-verify13.py",
+    "emulator_sha256": "bc96afe3736d4732a3258168205259fd4881d8845029d36b251ab1fdd0007a29",
+    "oracle_relative": "experiments/p105-authcp-aid/iap-verify13-oracle.json",
+    "oracle_sha256": "84f96a1db4ae64d6a8104921dae8437142344a8d44b71f67a12f0b9885a8cec8"
+  },
+  "real_crypto_test_groups": 11,
+  "individual_byte_corruption_controls": 244,
+  "coupled_actual_C_cases": 4,
+  "synthetic_private_keys": "in-memory generation only; no exported keys",
+  "source_metadata": "embedded-ca-metadata.json",
+  "authorization_granted": false,
+  "trust_policy_qualified": false
+}

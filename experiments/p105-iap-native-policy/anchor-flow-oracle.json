@@ -1,0 +1,221 @@
+{
+  "cache_sha256": "4f5b5d73244c53fd0bdc5b8012106b10d0dd7607cc850bf7c8f9e9ef3a3f733b",
+  "scope": "actual anchor selection/once/parser caller; CF/CMS/trust/crypto are synthetic boundaries; no actual trust result",
+  "cases": [
+    {
+      "version": 2,
+      "synthetic_supported_preference": false,
+      "synthetic_leaf_container_count": 1,
+      "synthetic_trust_result": 4,
+      "caller_result": 1,
+      "calls": [
+        {
+          "certificates_only_parser_boundary": {
+            "kind": "synthetic-peer-container",
+            "length": 16
+          }
+        },
+        {
+          "select_certificate_index": 0,
+          "source": "synthetic-peer-container"
+        },
+        {
+          "trust_peer_certificate_count": 1,
+          "whole_input_container_certificate_count": 1
+        },
+        {
+          "source-v2-DER-anchor": {
+            "address": "0x31a111c0",
+            "length": 1091,
+            "sha256": "884bf87d549f2de7c4fceb4284a8cff9f8b817f36dcf77a40660b33b8afefd0d"
+          }
+        },
+        {
+          "source-v2-DER-anchor": {
+            "address": "0x31a11608",
+            "length": 1026,
+            "sha256": "2eb53dbefdc6f5e7e13d6690fc8cbf9cf4c3f7e501feafb3bc052431dbc83180"
+          }
+        },
+        {
+          "supplied_anchor_count": 2,
+          "synthetic_API_return": 0
+        },
+        {
+          "synthetic_trust_result": 4
+        },
+        {
+          "synthetic_raw_verify_success": true,
+          "padding": "0x8002"
+        }
+      ]
+    },
+    {
+      "version": 3,
+      "synthetic_supported_preference": true,
+      "synthetic_leaf_container_count": 1,
+      "synthetic_trust_result": 4,
+      "caller_result": 1,
+      "calls": [
+        {
+          "certificates_only_parser_boundary": {
+            "kind": "synthetic-peer-container",
+            "length": 16
+          }
+        },
+        {
+          "select_certificate_index": 0,
+          "source": "synthetic-peer-container"
+        },
+        {
+          "trust_peer_certificate_count": 1,
+          "whole_input_container_certificate_count": 1
+        },
+        {
+          "native_once_block": "0x31a0f97c"
+        },
+        {
+          "preferences": {
+            "key": "AppleIDAuth30Supported",
+            "domain": "com.apple.iaptransportd",
+            "synthetic_value": true
+          }
+        },
+        {
+          "certificates_only_parser_boundary": {
+            "kind": "source-v3-container",
+            "address": "0x31a11a10",
+            "length": 637,
+            "sha256": "ad270bdad5be67e79070701c435710e87a1e1dc2faa38ddc3a9018c1eba8a416"
+          }
+        },
+        {
+          "select_certificate_index": 0,
+          "source": "source-v3-container"
+        },
+        {
+          "supplied_anchor_count": 1,
+          "synthetic_API_return": 0
+        },
+        {
+          "synthetic_trust_result": 4
+        },
+        {
+          "synthetic_raw_verify_success": true,
+          "padding": "0x4000"
+        }
+      ]
+    },
+    {
+      "version": 3,
+      "synthetic_supported_preference": false,
+      "synthetic_leaf_container_count": 1,
+      "synthetic_trust_result": 5,
+      "caller_result": 0,
+      "calls": [
+        {
+          "certificates_only_parser_boundary": {
+            "kind": "synthetic-peer-container",
+            "length": 16
+          }
+        },
+        {
+          "select_certificate_index": 0,
+          "source": "synthetic-peer-container"
+        },
+        {
+          "trust_peer_certificate_count": 1,
+          "whole_input_container_certificate_count": 1
+        },
+        {
+          "native_once_block": "0x31a0f97c"
+        },
+        {
+          "preferences": {
+            "key": "AppleIDAuth30Supported",
+            "domain": "com.apple.iaptransportd",
+            "synthetic_value": false
+          }
+        },
+        {
+          "supplied_anchor_count": 0,
+          "synthetic_API_return": 0
+        },
+        {
+          "synthetic_trust_result": 5
+        }
+      ]
+    },
+    {
+      "version": 3,
+      "synthetic_supported_preference": true,
+      "synthetic_leaf_container_count": 2,
+      "synthetic_trust_result": 4,
+      "caller_result": 1,
+      "calls": [
+        {
+          "certificates_only_parser_boundary": {
+            "kind": "synthetic-peer-container",
+            "length": 16
+          }
+        },
+        {
+          "select_certificate_index": 0,
+          "source": "synthetic-peer-container"
+        },
+        {
+          "trust_peer_certificate_count": 1,
+          "whole_input_container_certificate_count": 2
+        },
+        {
+          "native_once_block": "0x31a0f97c"
+        },
+        {
+          "preferences": {
+            "key": "AppleIDAuth30Supported",
+            "domain": "com.apple.iaptransportd",
+            "synthetic_value": true
+          }
+        },
+        {
+          "certificates_only_parser_boundary": {
+            "kind": "source-v3-container",
+            "address": "0x31a11a10",
+            "length": 637,
+            "sha256": "ad270bdad5be67e79070701c435710e87a1e1dc2faa38ddc3a9018c1eba8a416"
+          }
+        },
+        {
+          "select_certificate_index": 0,
+          "source": "source-v3-container"
+        },
+        {
+          "supplied_anchor_count": 1,
+          "synthetic_API_return": 0
+        },
+        {
+          "synthetic_trust_result": 4
+        },
+        {
+          "synthetic_raw_verify_success": true,
+          "padding": "0x4000"
+        }
+      ]
+    },
+    {
+      "version": 2,
+      "synthetic_supported_preference": false,
+      "synthetic_leaf_container_count": 0,
+      "synthetic_trust_result": 4,
+      "caller_result": 0,
+      "calls": [
+        {
+          "certificates_only_parser_boundary": {
+            "kind": "synthetic-peer-container",
+            "length": 16
+          }
+        }
+      ]
+    }
+  ]
+}

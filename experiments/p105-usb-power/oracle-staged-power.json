@@ -1,0 +1,2164 @@
+{
+  "schema": 1,
+  "source": {
+    "build": "12H321",
+    "device": "p105ap",
+    "kernelcache_sha256": "db1ddc8343aa9debc00e0a083fba59d9f555722db60957dc333b854fac21dd2c",
+    "power_entry": "0x80cabea8",
+    "complex_control_helper": "0x80b3a78c"
+  },
+  "hardware_access": false,
+  "synthetic_providers": [
+    "Clock membership records raw20010/0",
+    "Absent-property powergate membership callback records, does not dispatch",
+    "Named reference clock hz is synthetic input",
+    "IODelay records microseconds"
+  ],
+  "synthetic_initial_registers": {
+    "phy0": 6,
+    "phy4": 1,
+    "phy8": 48,
+    "phy40": 1353,
+    "phy44": 12275,
+    "complex0": 2147483872
+  },
+  "level_scenarios": [
+    {
+      "initial_level": 0,
+      "requests": [
+        0
+      ],
+      "reference_clock_hz": 24000000,
+      "result": {
+        "states": [
+          {
+            "requested": 0,
+            "stored_level": 0,
+            "events": [],
+            "regs": {
+              "0x0": "0x6",
+              "0x4": "0x1",
+              "0x8": "0x30",
+              "0x40": "0x549",
+              "0x44": "0x2ff3",
+              "0x60": "0x0"
+            },
+            "complex": "0x800000e0"
+          }
+        ],
+        "clock_and_powergate_providers_stubbed": true,
+        "hardware_access": false,
+        "reference_clock_hz_synthetic": 24000000
+      }
+    },
+    {
+      "initial_level": 0,
+      "requests": [
+        1
+      ],
+      "reference_clock_hz": 24000000,
+      "result": {
+        "states": [
+          {
+            "requested": 1,
+            "stored_level": 1,
+            "events": [
+              [
+                "clock_membership",
+                131088
+              ],
+              [
+                "powergate_membership",
+                131088
+              ],
+              [
+                "phy",
+                8,
+                63
+              ],
+              [
+                "phy",
+                96,
+                736
+              ],
+              [
+                "phy",
+                0,
+                15
+              ],
+              [
+                "phy",
+                4,
+                17
+              ],
+              [
+                "phy",
+                64,
+                1353
+              ],
+              [
+                "phy",
+                68,
+                12275
+              ],
+              [
+                "delay",
+                20
+              ],
+              [
+                "phy",
+                8,
+                61
+              ],
+              [
+                "delay",
+                1000
+              ],
+              [
+                "clock_membership",
+                0
+              ]
+            ],
+            "regs": {
+              "0x0": "0xf",
+              "0x4": "0x11",
+              "0x8": "0x3d",
+              "0x40": "0x549",
+              "0x44": "0x2ff3",
+              "0x60": "0x2e0"
+            },
+            "complex": "0x800000e0"
+          }
+        ],
+        "clock_and_powergate_providers_stubbed": true,
+        "hardware_access": false,
+        "reference_clock_hz_synthetic": 24000000
+      }
+    },
+    {
+      "initial_level": 0,
+      "requests": [
+        2
+      ],
+      "reference_clock_hz": 24000000,
+      "result": {
+        "states": [
+          {
+            "requested": 2,
+            "stored_level": 2,
+            "events": [
+              [
+                "clock_membership",
+                131088
+              ],
+              [
+                "powergate_membership",
+                131088
+              ],
+              [
+                "phy",
+                8,
+                63
+              ],
+              [
+                "phy",
+                96,
+                736
+              ],
+              [
+                "phy",
+                0,
+                15
+              ],
+              [
+                "phy",
+                4,
+                17
+              ],
+              [
+                "phy",
+                64,
+                1353
+              ],
+              [
+                "phy",
+                68,
+                12275
+              ],
+              [
+                "delay",
+                20
+              ],
+              [
+                "phy",
+                8,
+                61
+              ],
+              [
+                "delay",
+                1000
+              ],
+              [
+                "clock_membership",
+                0
+              ],
+              [
+                "clock_membership",
+                131088
+              ],
+              [
+                "complex",
+                2147483872
+              ],
+              [
+                "phy",
+                0,
+                14
+              ],
+              [
+                "delay",
+                20
+              ],
+              [
+                "phy",
+                8,
+                60
+              ],
+              [
+                "delay",
+                1000
+              ]
+            ],
+            "regs": {
+              "0x0": "0xe",
+              "0x4": "0x11",
+              "0x8": "0x3c",
+              "0x40": "0x549",
+              "0x44": "0x2ff3",
+              "0x60": "0x2e0"
+            },
+            "complex": "0x800000e0"
+          }
+        ],
+        "clock_and_powergate_providers_stubbed": true,
+        "hardware_access": false,
+        "reference_clock_hz_synthetic": 24000000
+      }
+    },
+    {
+      "initial_level": 0,
+      "requests": [
+        3
+      ],
+      "reference_clock_hz": 24000000,
+      "result": {
+        "states": [
+          {
+            "requested": 3,
+            "stored_level": 3,
+            "events": [
+              [
+                "clock_membership",
+                131088
+              ],
+              [
+                "powergate_membership",
+                131088
+              ],
+              [
+                "phy",
+                8,
+                63
+              ],
+              [
+                "phy",
+                96,
+                736
+              ],
+              [
+                "phy",
+                0,
+                15
+              ],
+              [
+                "phy",
+                4,
+                17
+              ],
+              [
+                "phy",
+                64,
+                1353
+              ],
+              [
+                "phy",
+                68,
+                12275
+              ],
+              [
+                "delay",
+                20
+              ],
+              [
+                "phy",
+                8,
+                61
+              ],
+              [
+                "delay",
+                1000
+              ],
+              [
+                "clock_membership",
+                0
+              ],
+              [
+                "clock_membership",
+                131088
+              ],
+              [
+                "complex",
+                2147483872
+              ],
+              [
+                "phy",
+                0,
+                14
+              ],
+              [
+                "delay",
+                20
+              ],
+              [
+                "phy",
+                8,
+                60
+              ],
+              [
+                "delay",
+                1000
+              ],
+              [
+                "phy",
+                0,
+                6
+              ]
+            ],
+            "regs": {
+              "0x0": "0x6",
+              "0x4": "0x11",
+              "0x8": "0x3c",
+              "0x40": "0x549",
+              "0x44": "0x2ff3",
+              "0x60": "0x2e0"
+            },
+            "complex": "0x800000e0"
+          }
+        ],
+        "clock_and_powergate_providers_stubbed": true,
+        "hardware_access": false,
+        "reference_clock_hz_synthetic": 24000000
+      }
+    },
+    {
+      "initial_level": 0,
+      "requests": [
+        4
+      ],
+      "reference_clock_hz": 24000000,
+      "result": {
+        "states": [
+          {
+            "requested": 4,
+            "stored_level": 4,
+            "events": [
+              [
+                "clock_membership",
+                131088
+              ],
+              [
+                "powergate_membership",
+                131088
+              ],
+              [
+                "phy",
+                8,
+                63
+              ],
+              [
+                "phy",
+                96,
+                736
+              ],
+              [
+                "phy",
+                0,
+                15
+              ],
+              [
+                "phy",
+                4,
+                17
+              ],
+              [
+                "phy",
+                64,
+                1353
+              ],
+              [
+                "phy",
+                68,
+                12275
+              ],
+              [
+                "delay",
+                20
+              ],
+              [
+                "phy",
+                8,
+                61
+              ],
+              [
+                "delay",
+                1000
+              ],
+              [
+                "clock_membership",
+                0
+              ],
+              [
+                "clock_membership",
+                131088
+              ],
+              [
+                "complex",
+                2147483872
+              ],
+              [
+                "phy",
+                0,
+                14
+              ],
+              [
+                "delay",
+                20
+              ],
+              [
+                "phy",
+                8,
+                60
+              ],
+              [
+                "delay",
+                1000
+              ],
+              [
+                "phy",
+                0,
+                6
+              ]
+            ],
+            "regs": {
+              "0x0": "0x6",
+              "0x4": "0x11",
+              "0x8": "0x3c",
+              "0x40": "0x549",
+              "0x44": "0x2ff3",
+              "0x60": "0x2e0"
+            },
+            "complex": "0x800000e0"
+          }
+        ],
+        "clock_and_powergate_providers_stubbed": true,
+        "hardware_access": false,
+        "reference_clock_hz_synthetic": 24000000
+      }
+    },
+    {
+      "initial_level": 1,
+      "requests": [
+        0
+      ],
+      "reference_clock_hz": 24000000,
+      "result": {
+        "states": [
+          {
+            "requested": 0,
+            "stored_level": 0,
+            "events": [
+              [
+                "clock_membership",
+                131088
+              ],
+              [
+                "phy",
+                0,
+                25
+              ],
+              [
+                "phy",
+                8,
+                63
+              ],
+              [
+                "powergate_membership",
+                0
+              ],
+              [
+                "clock_membership",
+                0
+              ]
+            ],
+            "regs": {
+              "0x0": "0x19",
+              "0x4": "0x1",
+              "0x8": "0x3f",
+              "0x40": "0x549",
+              "0x44": "0x2ff3",
+              "0x60": "0x0"
+            },
+            "complex": "0x800000e0"
+          }
+        ],
+        "clock_and_powergate_providers_stubbed": true,
+        "hardware_access": false,
+        "reference_clock_hz_synthetic": 24000000
+      }
+    },
+    {
+      "initial_level": 1,
+      "requests": [
+        1
+      ],
+      "reference_clock_hz": 24000000,
+      "result": {
+        "states": [
+          {
+            "requested": 1,
+            "stored_level": 1,
+            "events": [],
+            "regs": {
+              "0x0": "0x6",
+              "0x4": "0x1",
+              "0x8": "0x30",
+              "0x40": "0x549",
+              "0x44": "0x2ff3",
+              "0x60": "0x0"
+            },
+            "complex": "0x800000e0"
+          }
+        ],
+        "clock_and_powergate_providers_stubbed": true,
+        "hardware_access": false,
+        "reference_clock_hz_synthetic": 24000000
+      }
+    },
+    {
+      "initial_level": 1,
+      "requests": [
+        2
+      ],
+      "reference_clock_hz": 24000000,
+      "result": {
+        "states": [
+          {
+            "requested": 2,
+            "stored_level": 2,
+            "events": [
+              [
+                "clock_membership",
+                131088
+              ],
+              [
+                "complex",
+                2147483872
+              ],
+              [
+                "phy",
+                0,
+                6
+              ],
+              [
+                "delay",
+                20
+              ],
+              [
+                "phy",
+                8,
+                48
+              ],
+              [
+                "delay",
+                1000
+              ]
+            ],
+            "regs": {
+              "0x0": "0x6",
+              "0x4": "0x1",
+              "0x8": "0x30",
+              "0x40": "0x549",
+              "0x44": "0x2ff3",
+              "0x60": "0x0"
+            },
+            "complex": "0x800000e0"
+          }
+        ],
+        "clock_and_powergate_providers_stubbed": true,
+        "hardware_access": false,
+        "reference_clock_hz_synthetic": 24000000
+      }
+    },
+    {
+      "initial_level": 1,
+      "requests": [
+        3
+      ],
+      "reference_clock_hz": 24000000,
+      "result": {
+        "states": [
+          {
+            "requested": 3,
+            "stored_level": 3,
+            "events": [
+              [
+                "clock_membership",
+                131088
+              ],
+              [
+                "complex",
+                2147483872
+              ],
+              [
+                "phy",
+                0,
+                6
+              ],
+              [
+                "delay",
+                20
+              ],
+              [
+                "phy",
+                8,
+                48
+              ],
+              [
+                "delay",
+                1000
+              ],
+              [
+                "phy",
+                0,
+                6
+              ]
+            ],
+            "regs": {
+              "0x0": "0x6",
+              "0x4": "0x1",
+              "0x8": "0x30",
+              "0x40": "0x549",
+              "0x44": "0x2ff3",
+              "0x60": "0x0"
+            },
+            "complex": "0x800000e0"
+          }
+        ],
+        "clock_and_powergate_providers_stubbed": true,
+        "hardware_access": false,
+        "reference_clock_hz_synthetic": 24000000
+      }
+    },
+    {
+      "initial_level": 1,
+      "requests": [
+        4
+      ],
+      "reference_clock_hz": 24000000,
+      "result": {
+        "states": [
+          {
+            "requested": 4,
+            "stored_level": 4,
+            "events": [
+              [
+                "clock_membership",
+                131088
+              ],
+              [
+                "complex",
+                2147483872
+              ],
+              [
+                "phy",
+                0,
+                6
+              ],
+              [
+                "delay",
+                20
+              ],
+              [
+                "phy",
+                8,
+                48
+              ],
+              [
+                "delay",
+                1000
+              ],
+              [
+                "phy",
+                0,
+                6
+              ]
+            ],
+            "regs": {
+              "0x0": "0x6",
+              "0x4": "0x1",
+              "0x8": "0x30",
+              "0x40": "0x549",
+              "0x44": "0x2ff3",
+              "0x60": "0x0"
+            },
+            "complex": "0x800000e0"
+          }
+        ],
+        "clock_and_powergate_providers_stubbed": true,
+        "hardware_access": false,
+        "reference_clock_hz_synthetic": 24000000
+      }
+    },
+    {
+      "initial_level": 2,
+      "requests": [
+        0
+      ],
+      "reference_clock_hz": 24000000,
+      "result": {
+        "states": [
+          {
+            "requested": 0,
+            "stored_level": 0,
+            "events": [
+              [
+                "phy",
+                0,
+                7
+              ],
+              [
+                "phy",
+                8,
+                49
+              ],
+              [
+                "complex",
+                2147483744
+              ],
+              [
+                "clock_membership",
+                0
+              ],
+              [
+                "clock_membership",
+                131088
+              ],
+              [
+                "phy",
+                0,
+                25
+              ],
+              [
+                "phy",
+                8,
+                63
+              ],
+              [
+                "powergate_membership",
+                0
+              ],
+              [
+                "clock_membership",
+                0
+              ]
+            ],
+            "regs": {
+              "0x0": "0x19",
+              "0x4": "0x1",
+              "0x8": "0x3f",
+              "0x40": "0x549",
+              "0x44": "0x2ff3",
+              "0x60": "0x0"
+            },
+            "complex": "0x80000060"
+          }
+        ],
+        "clock_and_powergate_providers_stubbed": true,
+        "hardware_access": false,
+        "reference_clock_hz_synthetic": 24000000
+      }
+    },
+    {
+      "initial_level": 2,
+      "requests": [
+        1
+      ],
+      "reference_clock_hz": 24000000,
+      "result": {
+        "states": [
+          {
+            "requested": 1,
+            "stored_level": 1,
+            "events": [
+              [
+                "phy",
+                0,
+                7
+              ],
+              [
+                "phy",
+                8,
+                49
+              ],
+              [
+                "complex",
+                2147483744
+              ],
+              [
+                "clock_membership",
+                0
+              ]
+            ],
+            "regs": {
+              "0x0": "0x7",
+              "0x4": "0x1",
+              "0x8": "0x31",
+              "0x40": "0x549",
+              "0x44": "0x2ff3",
+              "0x60": "0x0"
+            },
+            "complex": "0x80000060"
+          }
+        ],
+        "clock_and_powergate_providers_stubbed": true,
+        "hardware_access": false,
+        "reference_clock_hz_synthetic": 24000000
+      }
+    },
+    {
+      "initial_level": 2,
+      "requests": [
+        2
+      ],
+      "reference_clock_hz": 24000000,
+      "result": {
+        "states": [
+          {
+            "requested": 2,
+            "stored_level": 2,
+            "events": [],
+            "regs": {
+              "0x0": "0x6",
+              "0x4": "0x1",
+              "0x8": "0x30",
+              "0x40": "0x549",
+              "0x44": "0x2ff3",
+              "0x60": "0x0"
+            },
+            "complex": "0x800000e0"
+          }
+        ],
+        "clock_and_powergate_providers_stubbed": true,
+        "hardware_access": false,
+        "reference_clock_hz_synthetic": 24000000
+      }
+    },
+    {
+      "initial_level": 2,
+      "requests": [
+        3
+      ],
+      "reference_clock_hz": 24000000,
+      "result": {
+        "states": [
+          {
+            "requested": 3,
+            "stored_level": 3,
+            "events": [
+              [
+                "phy",
+                0,
+                6
+              ]
+            ],
+            "regs": {
+              "0x0": "0x6",
+              "0x4": "0x1",
+              "0x8": "0x30",
+              "0x40": "0x549",
+              "0x44": "0x2ff3",
+              "0x60": "0x0"
+            },
+            "complex": "0x800000e0"
+          }
+        ],
+        "clock_and_powergate_providers_stubbed": true,
+        "hardware_access": false,
+        "reference_clock_hz_synthetic": 24000000
+      }
+    },
+    {
+      "initial_level": 2,
+      "requests": [
+        4
+      ],
+      "reference_clock_hz": 24000000,
+      "result": {
+        "states": [
+          {
+            "requested": 4,
+            "stored_level": 4,
+            "events": [
+              [
+                "phy",
+                0,
+                6
+              ]
+            ],
+            "regs": {
+              "0x0": "0x6",
+              "0x4": "0x1",
+              "0x8": "0x30",
+              "0x40": "0x549",
+              "0x44": "0x2ff3",
+              "0x60": "0x0"
+            },
+            "complex": "0x800000e0"
+          }
+        ],
+        "clock_and_powergate_providers_stubbed": true,
+        "hardware_access": false,
+        "reference_clock_hz_synthetic": 24000000
+      }
+    },
+    {
+      "initial_level": 3,
+      "requests": [
+        0
+      ],
+      "reference_clock_hz": 24000000,
+      "result": {
+        "states": [
+          {
+            "requested": 0,
+            "stored_level": 0,
+            "events": [
+              [
+                "phy",
+                0,
+                14
+              ],
+              [
+                "phy",
+                0,
+                15
+              ],
+              [
+                "phy",
+                8,
+                49
+              ],
+              [
+                "complex",
+                2147483744
+              ],
+              [
+                "clock_membership",
+                0
+              ],
+              [
+                "clock_membership",
+                131088
+              ],
+              [
+                "phy",
+                0,
+                25
+              ],
+              [
+                "phy",
+                8,
+                63
+              ],
+              [
+                "powergate_membership",
+                0
+              ],
+              [
+                "clock_membership",
+                0
+              ]
+            ],
+            "regs": {
+              "0x0": "0x19",
+              "0x4": "0x1",
+              "0x8": "0x3f",
+              "0x40": "0x549",
+              "0x44": "0x2ff3",
+              "0x60": "0x0"
+            },
+            "complex": "0x80000060"
+          }
+        ],
+        "clock_and_powergate_providers_stubbed": true,
+        "hardware_access": false,
+        "reference_clock_hz_synthetic": 24000000
+      }
+    },
+    {
+      "initial_level": 3,
+      "requests": [
+        1
+      ],
+      "reference_clock_hz": 24000000,
+      "result": {
+        "states": [
+          {
+            "requested": 1,
+            "stored_level": 1,
+            "events": [
+              [
+                "phy",
+                0,
+                14
+              ],
+              [
+                "phy",
+                0,
+                15
+              ],
+              [
+                "phy",
+                8,
+                49
+              ],
+              [
+                "complex",
+                2147483744
+              ],
+              [
+                "clock_membership",
+                0
+              ]
+            ],
+            "regs": {
+              "0x0": "0xf",
+              "0x4": "0x1",
+              "0x8": "0x31",
+              "0x40": "0x549",
+              "0x44": "0x2ff3",
+              "0x60": "0x0"
+            },
+            "complex": "0x80000060"
+          }
+        ],
+        "clock_and_powergate_providers_stubbed": true,
+        "hardware_access": false,
+        "reference_clock_hz_synthetic": 24000000
+      }
+    },
+    {
+      "initial_level": 3,
+      "requests": [
+        2
+      ],
+      "reference_clock_hz": 24000000,
+      "result": {
+        "states": [
+          {
+            "requested": 2,
+            "stored_level": 2,
+            "events": [
+              [
+                "phy",
+                0,
+                14
+              ]
+            ],
+            "regs": {
+              "0x0": "0xe",
+              "0x4": "0x1",
+              "0x8": "0x30",
+              "0x40": "0x549",
+              "0x44": "0x2ff3",
+              "0x60": "0x0"
+            },
+            "complex": "0x800000e0"
+          }
+        ],
+        "clock_and_powergate_providers_stubbed": true,
+        "hardware_access": false,
+        "reference_clock_hz_synthetic": 24000000
+      }
+    },
+    {
+      "initial_level": 3,
+      "requests": [
+        3
+      ],
+      "reference_clock_hz": 24000000,
+      "result": {
+        "states": [
+          {
+            "requested": 3,
+            "stored_level": 3,
+            "events": [],
+            "regs": {
+              "0x0": "0x6",
+              "0x4": "0x1",
+              "0x8": "0x30",
+              "0x40": "0x549",
+              "0x44": "0x2ff3",
+              "0x60": "0x0"
+            },
+            "complex": "0x800000e0"
+          }
+        ],
+        "clock_and_powergate_providers_stubbed": true,
+        "hardware_access": false,
+        "reference_clock_hz_synthetic": 24000000
+      }
+    },
+    {
+      "initial_level": 3,
+      "requests": [
+        4
+      ],
+      "reference_clock_hz": 24000000,
+      "result": {
+        "states": [
+          {
+            "requested": 4,
+            "stored_level": 4,
+            "events": [],
+            "regs": {
+              "0x0": "0x6",
+              "0x4": "0x1",
+              "0x8": "0x30",
+              "0x40": "0x549",
+              "0x44": "0x2ff3",
+              "0x60": "0x0"
+            },
+            "complex": "0x800000e0"
+          }
+        ],
+        "clock_and_powergate_providers_stubbed": true,
+        "hardware_access": false,
+        "reference_clock_hz_synthetic": 24000000
+      }
+    },
+    {
+      "initial_level": 4,
+      "requests": [
+        0
+      ],
+      "reference_clock_hz": 24000000,
+      "result": {
+        "states": [
+          {
+            "requested": 0,
+            "stored_level": 0,
+            "events": [
+              [
+                "phy",
+                0,
+                14
+              ],
+              [
+                "phy",
+                0,
+                15
+              ],
+              [
+                "phy",
+                8,
+                49
+              ],
+              [
+                "complex",
+                2147483744
+              ],
+              [
+                "clock_membership",
+                0
+              ],
+              [
+                "clock_membership",
+                131088
+              ],
+              [
+                "phy",
+                0,
+                25
+              ],
+              [
+                "phy",
+                8,
+                63
+              ],
+              [
+                "powergate_membership",
+                0
+              ],
+              [
+                "clock_membership",
+                0
+              ]
+            ],
+            "regs": {
+              "0x0": "0x19",
+              "0x4": "0x1",
+              "0x8": "0x3f",
+              "0x40": "0x549",
+              "0x44": "0x2ff3",
+              "0x60": "0x0"
+            },
+            "complex": "0x80000060"
+          }
+        ],
+        "clock_and_powergate_providers_stubbed": true,
+        "hardware_access": false,
+        "reference_clock_hz_synthetic": 24000000
+      }
+    },
+    {
+      "initial_level": 4,
+      "requests": [
+        1
+      ],
+      "reference_clock_hz": 24000000,
+      "result": {
+        "states": [
+          {
+            "requested": 1,
+            "stored_level": 1,
+            "events": [
+              [
+                "phy",
+                0,
+                14
+              ],
+              [
+                "phy",
+                0,
+                15
+              ],
+              [
+                "phy",
+                8,
+                49
+              ],
+              [
+                "complex",
+                2147483744
+              ],
+              [
+                "clock_membership",
+                0
+              ]
+            ],
+            "regs": {
+              "0x0": "0xf",
+              "0x4": "0x1",
+              "0x8": "0x31",
+              "0x40": "0x549",
+              "0x44": "0x2ff3",
+              "0x60": "0x0"
+            },
+            "complex": "0x80000060"
+          }
+        ],
+        "clock_and_powergate_providers_stubbed": true,
+        "hardware_access": false,
+        "reference_clock_hz_synthetic": 24000000
+      }
+    },
+    {
+      "initial_level": 4,
+      "requests": [
+        2
+      ],
+      "reference_clock_hz": 24000000,
+      "result": {
+        "states": [
+          {
+            "requested": 2,
+            "stored_level": 2,
+            "events": [
+              [
+                "phy",
+                0,
+                14
+              ]
+            ],
+            "regs": {
+              "0x0": "0xe",
+              "0x4": "0x1",
+              "0x8": "0x30",
+              "0x40": "0x549",
+              "0x44": "0x2ff3",
+              "0x60": "0x0"
+            },
+            "complex": "0x800000e0"
+          }
+        ],
+        "clock_and_powergate_providers_stubbed": true,
+        "hardware_access": false,
+        "reference_clock_hz_synthetic": 24000000
+      }
+    },
+    {
+      "initial_level": 4,
+      "requests": [
+        3
+      ],
+      "reference_clock_hz": 24000000,
+      "result": {
+        "states": [
+          {
+            "requested": 3,
+            "stored_level": 3,
+            "events": [],
+            "regs": {
+              "0x0": "0x6",
+              "0x4": "0x1",
+              "0x8": "0x30",
+              "0x40": "0x549",
+              "0x44": "0x2ff3",
+              "0x60": "0x0"
+            },
+            "complex": "0x800000e0"
+          }
+        ],
+        "clock_and_powergate_providers_stubbed": true,
+        "hardware_access": false,
+        "reference_clock_hz_synthetic": 24000000
+      }
+    },
+    {
+      "initial_level": 4,
+      "requests": [
+        4
+      ],
+      "reference_clock_hz": 24000000,
+      "result": {
+        "states": [
+          {
+            "requested": 4,
+            "stored_level": 4,
+            "events": [],
+            "regs": {
+              "0x0": "0x6",
+              "0x4": "0x1",
+              "0x8": "0x30",
+              "0x40": "0x549",
+              "0x44": "0x2ff3",
+              "0x60": "0x0"
+            },
+            "complex": "0x800000e0"
+          }
+        ],
+        "clock_and_powergate_providers_stubbed": true,
+        "hardware_access": false,
+        "reference_clock_hz_synthetic": 24000000
+      }
+    }
+  ],
+  "cycle_scenarios": [
+    {
+      "initial_level": 0,
+      "requests": [
+        1,
+        2,
+        3,
+        4,
+        3,
+        2,
+        1,
+        0,
+        4,
+        4,
+        0
+      ],
+      "reference_clock_hz": 24000000,
+      "result": {
+        "states": [
+          {
+            "requested": 1,
+            "stored_level": 1,
+            "events": [
+              [
+                "clock_membership",
+                131088
+              ],
+              [
+                "powergate_membership",
+                131088
+              ],
+              [
+                "phy",
+                8,
+                63
+              ],
+              [
+                "phy",
+                96,
+                736
+              ],
+              [
+                "phy",
+                0,
+                15
+              ],
+              [
+                "phy",
+                4,
+                17
+              ],
+              [
+                "phy",
+                64,
+                1353
+              ],
+              [
+                "phy",
+                68,
+                12275
+              ],
+              [
+                "delay",
+                20
+              ],
+              [
+                "phy",
+                8,
+                61
+              ],
+              [
+                "delay",
+                1000
+              ],
+              [
+                "clock_membership",
+                0
+              ]
+            ],
+            "regs": {
+              "0x0": "0xf",
+              "0x4": "0x11",
+              "0x8": "0x3d",
+              "0x40": "0x549",
+              "0x44": "0x2ff3",
+              "0x60": "0x2e0"
+            },
+            "complex": "0x800000e0"
+          },
+          {
+            "requested": 2,
+            "stored_level": 2,
+            "events": [
+              [
+                "clock_membership",
+                131088
+              ],
+              [
+                "complex",
+                2147483872
+              ],
+              [
+                "phy",
+                0,
+                14
+              ],
+              [
+                "delay",
+                20
+              ],
+              [
+                "phy",
+                8,
+                60
+              ],
+              [
+                "delay",
+                1000
+              ]
+            ],
+            "regs": {
+              "0x0": "0xe",
+              "0x4": "0x11",
+              "0x8": "0x3c",
+              "0x40": "0x549",
+              "0x44": "0x2ff3",
+              "0x60": "0x2e0"
+            },
+            "complex": "0x800000e0"
+          },
+          {
+            "requested": 3,
+            "stored_level": 3,
+            "events": [
+              [
+                "phy",
+                0,
+                6
+              ]
+            ],
+            "regs": {
+              "0x0": "0x6",
+              "0x4": "0x11",
+              "0x8": "0x3c",
+              "0x40": "0x549",
+              "0x44": "0x2ff3",
+              "0x60": "0x2e0"
+            },
+            "complex": "0x800000e0"
+          },
+          {
+            "requested": 4,
+            "stored_level": 4,
+            "events": [],
+            "regs": {
+              "0x0": "0x6",
+              "0x4": "0x11",
+              "0x8": "0x3c",
+              "0x40": "0x549",
+              "0x44": "0x2ff3",
+              "0x60": "0x2e0"
+            },
+            "complex": "0x800000e0"
+          },
+          {
+            "requested": 3,
+            "stored_level": 3,
+            "events": [],
+            "regs": {
+              "0x0": "0x6",
+              "0x4": "0x11",
+              "0x8": "0x3c",
+              "0x40": "0x549",
+              "0x44": "0x2ff3",
+              "0x60": "0x2e0"
+            },
+            "complex": "0x800000e0"
+          },
+          {
+            "requested": 2,
+            "stored_level": 2,
+            "events": [
+              [
+                "phy",
+                0,
+                14
+              ]
+            ],
+            "regs": {
+              "0x0": "0xe",
+              "0x4": "0x11",
+              "0x8": "0x3c",
+              "0x40": "0x549",
+              "0x44": "0x2ff3",
+              "0x60": "0x2e0"
+            },
+            "complex": "0x800000e0"
+          },
+          {
+            "requested": 1,
+            "stored_level": 1,
+            "events": [
+              [
+                "phy",
+                0,
+                15
+              ],
+              [
+                "phy",
+                8,
+                61
+              ],
+              [
+                "complex",
+                2147483744
+              ],
+              [
+                "clock_membership",
+                0
+              ]
+            ],
+            "regs": {
+              "0x0": "0xf",
+              "0x4": "0x11",
+              "0x8": "0x3d",
+              "0x40": "0x549",
+              "0x44": "0x2ff3",
+              "0x60": "0x2e0"
+            },
+            "complex": "0x80000060"
+          },
+          {
+            "requested": 0,
+            "stored_level": 0,
+            "events": [
+              [
+                "clock_membership",
+                131088
+              ],
+              [
+                "phy",
+                0,
+                25
+              ],
+              [
+                "phy",
+                8,
+                63
+              ],
+              [
+                "powergate_membership",
+                0
+              ],
+              [
+                "clock_membership",
+                0
+              ]
+            ],
+            "regs": {
+              "0x0": "0x19",
+              "0x4": "0x11",
+              "0x8": "0x3f",
+              "0x40": "0x549",
+              "0x44": "0x2ff3",
+              "0x60": "0x2e0"
+            },
+            "complex": "0x80000060"
+          },
+          {
+            "requested": 4,
+            "stored_level": 4,
+            "events": [
+              [
+                "clock_membership",
+                131088
+              ],
+              [
+                "powergate_membership",
+                131088
+              ],
+              [
+                "phy",
+                8,
+                63
+              ],
+              [
+                "phy",
+                96,
+                736
+              ],
+              [
+                "phy",
+                0,
+                15
+              ],
+              [
+                "phy",
+                4,
+                17
+              ],
+              [
+                "phy",
+                64,
+                1353
+              ],
+              [
+                "phy",
+                68,
+                12275
+              ],
+              [
+                "delay",
+                20
+              ],
+              [
+                "phy",
+                8,
+                61
+              ],
+              [
+                "delay",
+                1000
+              ],
+              [
+                "clock_membership",
+                0
+              ],
+              [
+                "clock_membership",
+                131088
+              ],
+              [
+                "complex",
+                2147483872
+              ],
+              [
+                "phy",
+                0,
+                14
+              ],
+              [
+                "delay",
+                20
+              ],
+              [
+                "phy",
+                8,
+                60
+              ],
+              [
+                "delay",
+                1000
+              ],
+              [
+                "phy",
+                0,
+                6
+              ]
+            ],
+            "regs": {
+              "0x0": "0x6",
+              "0x4": "0x11",
+              "0x8": "0x3c",
+              "0x40": "0x549",
+              "0x44": "0x2ff3",
+              "0x60": "0x2e0"
+            },
+            "complex": "0x800000e0"
+          },
+          {
+            "requested": 4,
+            "stored_level": 4,
+            "events": [],
+            "regs": {
+              "0x0": "0x6",
+              "0x4": "0x11",
+              "0x8": "0x3c",
+              "0x40": "0x549",
+              "0x44": "0x2ff3",
+              "0x60": "0x2e0"
+            },
+            "complex": "0x800000e0"
+          },
+          {
+            "requested": 0,
+            "stored_level": 0,
+            "events": [
+              [
+                "phy",
+                0,
+                14
+              ],
+              [
+                "phy",
+                0,
+                15
+              ],
+              [
+                "phy",
+                8,
+                61
+              ],
+              [
+                "complex",
+                2147483744
+              ],
+              [
+                "clock_membership",
+                0
+              ],
+              [
+                "clock_membership",
+                131088
+              ],
+              [
+                "phy",
+                0,
+                25
+              ],
+              [
+                "phy",
+                8,
+                63
+              ],
+              [
+                "powergate_membership",
+                0
+              ],
+              [
+                "clock_membership",
+                0
+              ]
+            ],
+            "regs": {
+              "0x0": "0x19",
+              "0x4": "0x11",
+              "0x8": "0x3f",
+              "0x40": "0x549",
+              "0x44": "0x2ff3",
+              "0x60": "0x2e0"
+            },
+            "complex": "0x80000060"
+          }
+        ],
+        "clock_and_powergate_providers_stubbed": true,
+        "hardware_access": false,
+        "reference_clock_hz_synthetic": 24000000
+      }
+    }
+  ],
+  "rate_scenarios": [
+    {
+      "initial_level": 0,
+      "requests": [
+        2
+      ],
+      "reference_clock_hz": 12000000,
+      "result": {
+        "states": [
+          {
+            "requested": 2,
+            "stored_level": 2,
+            "events": [
+              [
+                "clock_membership",
+                131088
+              ],
+              [
+                "powergate_membership",
+                131088
+              ],
+              [
+                "phy",
+                8,
+                63
+              ],
+              [
+                "phy",
+                96,
+                736
+              ],
+              [
+                "phy",
+                0,
+                15
+              ],
+              [
+                "phy",
+                4,
+                16
+              ],
+              [
+                "phy",
+                64,
+                1353
+              ],
+              [
+                "phy",
+                68,
+                12275
+              ],
+              [
+                "delay",
+                20
+              ],
+              [
+                "phy",
+                8,
+                61
+              ],
+              [
+                "delay",
+                1000
+              ],
+              [
+                "clock_membership",
+                0
+              ],
+              [
+                "clock_membership",
+                131088
+              ],
+              [
+                "complex",
+                2147483872
+              ],
+              [
+                "phy",
+                0,
+                14
+              ],
+              [
+                "delay",
+                20
+              ],
+              [
+                "phy",
+                8,
+                60
+              ],
+              [
+                "delay",
+                1000
+              ]
+            ],
+            "regs": {
+              "0x0": "0xe",
+              "0x4": "0x10",
+              "0x8": "0x3c",
+              "0x40": "0x549",
+              "0x44": "0x2ff3",
+              "0x60": "0x2e0"
+            },
+            "complex": "0x800000e0"
+          }
+        ],
+        "clock_and_powergate_providers_stubbed": true,
+        "hardware_access": false,
+        "reference_clock_hz_synthetic": 12000000
+      }
+    },
+    {
+      "initial_level": 0,
+      "requests": [
+        2
+      ],
+      "reference_clock_hz": 24000000,
+      "result": {
+        "states": [
+          {
+            "requested": 2,
+            "stored_level": 2,
+            "events": [
+              [
+                "clock_membership",
+                131088
+              ],
+              [
+                "powergate_membership",
+                131088
+              ],
+              [
+                "phy",
+                8,
+                63
+              ],
+              [
+                "phy",
+                96,
+                736
+              ],
+              [
+                "phy",
+                0,
+                15
+              ],
+              [
+                "phy",
+                4,
+                17
+              ],
+              [
+                "phy",
+                64,
+                1353
+              ],
+              [
+                "phy",
+                68,
+                12275
+              ],
+              [
+                "delay",
+                20
+              ],
+              [
+                "phy",
+                8,
+                61
+              ],
+              [
+                "delay",
+                1000
+              ],
+              [
+                "clock_membership",
+                0
+              ],
+              [
+                "clock_membership",
+                131088
+              ],
+              [
+                "complex",
+                2147483872
+              ],
+              [
+                "phy",
+                0,
+                14
+              ],
+              [
+                "delay",
+                20
+              ],
+              [
+                "phy",
+                8,
+                60
+              ],
+              [
+                "delay",
+                1000
+              ]
+            ],
+            "regs": {
+              "0x0": "0xe",
+              "0x4": "0x11",
+              "0x8": "0x3c",
+              "0x40": "0x549",
+              "0x44": "0x2ff3",
+              "0x60": "0x2e0"
+            },
+            "complex": "0x800000e0"
+          }
+        ],
+        "clock_and_powergate_providers_stubbed": true,
+        "hardware_access": false,
+        "reference_clock_hz_synthetic": 24000000
+      }
+    },
+    {
+      "initial_level": 0,
+      "requests": [
+        2
+      ],
+      "reference_clock_hz": 48000000,
+      "result": {
+        "states": [
+          {
+            "requested": 2,
+            "stored_level": 2,
+            "events": [
+              [
+                "clock_membership",
+                131088
+              ],
+              [
+                "powergate_membership",
+                131088
+              ],
+              [
+                "phy",
+                8,
+                63
+              ],
+              [
+                "phy",
+                96,
+                736
+              ],
+              [
+                "phy",
+                0,
+                15
+              ],
+              [
+                "phy",
+                4,
+                18
+              ],
+              [
+                "phy",
+                64,
+                1353
+              ],
+              [
+                "phy",
+                68,
+                12275
+              ],
+              [
+                "delay",
+                20
+              ],
+              [
+                "phy",
+                8,
+                61
+              ],
+              [
+                "delay",
+                1000
+              ],
+              [
+                "clock_membership",
+                0
+              ],
+              [
+                "clock_membership",
+                131088
+              ],
+              [
+                "complex",
+                2147483872
+              ],
+              [
+                "phy",
+                0,
+                14
+              ],
+              [
+                "delay",
+                20
+              ],
+              [
+                "phy",
+                8,
+                60
+              ],
+              [
+                "delay",
+                1000
+              ]
+            ],
+            "regs": {
+              "0x0": "0xe",
+              "0x4": "0x12",
+              "0x8": "0x3c",
+              "0x40": "0x549",
+              "0x44": "0x2ff3",
+              "0x60": "0x2e0"
+            },
+            "complex": "0x800000e0"
+          }
+        ],
+        "clock_and_powergate_providers_stubbed": true,
+        "hardware_access": false,
+        "reference_clock_hz_synthetic": 48000000
+      }
+    }
+  ],
+  "limitations": [
+    "Initial software level/register image is arbitrary fake RAM, not verified native state",
+    "No native clock-parent/power provider or physical electrical model",
+    "No VBUS/charge/accessory/host-client5 proof"
+  ]
+}

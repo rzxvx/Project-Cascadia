@@ -1,0 +1,131 @@
+{
+  "cache_sha256": "4f5b5d73244c53fd0bdc5b8012106b10d0dd7607cc850bf7c8f9e9ef3a3f733b",
+  "scope": "actual embedded anchor provenance/metadata; source root provenance is not a validated peer chain",
+  "certificate_chain_trusted": null,
+  "authorization_granted": false,
+  "anchors": [
+    {
+      "version": 2,
+      "ordinal": 1,
+      "byte_pointer_address": "0x3674c068",
+      "length_pointer_address": "0x3674c06c",
+      "source_blob_address": "0x31a111c0",
+      "source_blob_length": 1091,
+      "source_blob_sha256": "884bf87d549f2de7c4fceb4284a8cff9f8b817f36dcf77a40660b33b8afefd0d",
+      "container": "DER",
+      "parsed_certificate_count": 1,
+      "certificate_sha256": "884bf87d549f2de7c4fceb4284a8cff9f8b817f36dcf77a40660b33b8afefd0d",
+      "certificate_length": 1091,
+      "subject": "CN=Apple iPod Accessories Certificate Authority,OU=Apple Computer Certificate Authority,O=Apple Computer\\, Inc.,C=US",
+      "issuer": "CN=Apple Root Certificate Authority,OU=Apple Computer Certificate Authority,O=Apple Computer\\, Inc.,C=US",
+      "basic_constraints_ca": true,
+      "key_algorithm": "RSA",
+      "key_bits": 2048,
+      "curve": null,
+      "public_key_spki_sha256": "0a0fcbfad61413cab728d75f317e05f74f671607ba7e7a3023d8717e914b64e7",
+      "signature_algorithm_oid": "1.2.840.113549.1.1.5",
+      "signature_hash": "sha1",
+      "self_signature_mathematically_valid": null,
+      "extensions": [
+        {
+          "oid": "2.5.29.15",
+          "critical": true
+        },
+        {
+          "oid": "2.5.29.19",
+          "critical": true
+        },
+        {
+          "oid": "2.5.29.14",
+          "critical": false,
+          "key_id_sha256": "195aa71186d7739277633b1d6bd4a739df39e324dd6924dc537bc9dc06bd56a3"
+        },
+        {
+          "oid": "2.5.29.35",
+          "critical": false,
+          "key_id_sha256": "e38e9781f1db7fabfe83c081aa0928290d52e5b404a7622cf5e177ce14b8840e"
+        },
+        {
+          "oid": "2.5.29.31",
+          "critical": false
+        }
+      ]
+    },
+    {
+      "version": 2,
+      "ordinal": 2,
+      "byte_pointer_address": "0x3674c070",
+      "length_pointer_address": "0x3674c074",
+      "source_blob_address": "0x31a11608",
+      "source_blob_length": 1026,
+      "source_blob_sha256": "2eb53dbefdc6f5e7e13d6690fc8cbf9cf4c3f7e501feafb3bc052431dbc83180",
+      "container": "DER",
+      "parsed_certificate_count": 1,
+      "certificate_sha256": "2eb53dbefdc6f5e7e13d6690fc8cbf9cf4c3f7e501feafb3bc052431dbc83180",
+      "certificate_length": 1026,
+      "subject": "CN=Apple iPod Accessories Certification Authority,OU=Apple Certification Authority,O=Apple Inc.,C=US",
+      "issuer": "CN=Apple Root CA,OU=Apple Certification Authority,O=Apple Inc.,C=US",
+      "basic_constraints_ca": true,
+      "key_algorithm": "RSA",
+      "key_bits": 2048,
+      "curve": null,
+      "public_key_spki_sha256": "c723280c0b08122dec63ceab464c244271f84b88070e1c046262000277f8f5b0",
+      "signature_algorithm_oid": "1.2.840.113549.1.1.5",
+      "signature_hash": "sha1",
+      "self_signature_mathematically_valid": null,
+      "extensions": [
+        {
+          "oid": "2.5.29.15",
+          "critical": true
+        },
+        {
+          "oid": "2.5.29.19",
+          "critical": true
+        },
+        {
+          "oid": "2.5.29.14",
+          "critical": false,
+          "key_id_sha256": "fa4490f6e92f0c95717824b5bc2c669a849a5b7203584af9e4f87c984e3ac429"
+        },
+        {
+          "oid": "2.5.29.35",
+          "critical": false,
+          "key_id_sha256": "e38e9781f1db7fabfe83c081aa0928290d52e5b404a7622cf5e177ce14b8840e"
+        },
+        {
+          "oid": "2.5.29.31",
+          "critical": false
+        }
+      ]
+    },
+    {
+      "version": 3,
+      "ordinal": 1,
+      "byte_pointer_address": "0x3674c078",
+      "length_pointer_address": "0x3674c07c",
+      "source_blob_address": "0x31a11a10",
+      "source_blob_length": 637,
+      "source_blob_sha256": "ad270bdad5be67e79070701c435710e87a1e1dc2faa38ddc3a9018c1eba8a416",
+      "container": "PKCS7-certificates-only",
+      "parsed_certificate_count": 1,
+      "certificate_sha256": "81da17dabaf55012d1ea3946c02c3a423405bc290403cc54cdb88bfe95677472",
+      "certificate_length": 588,
+      "subject": "CN=Apple Accessories Certification Authority - 00000001,OU=Apple Certification Authority,O=Apple Inc.,C=US",
+      "issuer": "CN=Apple Accessories Certification Authority - 00000001,OU=Apple Certification Authority,O=Apple Inc.,C=US",
+      "basic_constraints_ca": null,
+      "key_algorithm": "EC",
+      "key_bits": 256,
+      "curve": "secp256r1",
+      "public_key_spki_sha256": "e7ff94230d5a64e8b73a7cea5ed993960fcba1db2cec28ef26f8ab40ad1f9d8f",
+      "signature_algorithm_oid": "1.2.840.10045.4.3.2",
+      "signature_hash": "sha256",
+      "self_signature_mathematically_valid": true,
+      "extensions": [
+        {
+          "oid": "1.2.840.113635.100.6.36",
+          "critical": true
+        }
+      ]
+    }
+  ]
+}

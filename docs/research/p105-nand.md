@@ -1,10 +1,20 @@
 # P105AP NAND — H2FMI + PPN, read-only bring-up
 
 **Rule for everything below:** the NAND holds the iPad's iOS install.  Nothing
-here programs or erases it.  `tools/nandctl.c` sends NAND opcodes only through
+here programs or erases it.  `tools/nand/ppn.c` gates ordinary commands through
 an allowlist (reset, read ID, status, PPN get-feature / device parameters /
-data out); program (80/10), erase (60/D0) and PPN set-features (EF) are not in
-it.
+data out); program (80/10) and erase (60/D0) are not in it.  There is a separate,
+restricted EF set-feature path for the volatile interface power state only:
+feature 0x180, values 1 (async) or 0x0a (DDR).  It is not a data-program path,
+but reset/interface changes can still disrupt the current session.
+
+**Current source update (2026-10-11):** a read-only kernel MTD driver now exists
+at `patches/files/drivers/mtd/devices/mtd-apple-h2fmi.c`.  It exports four dies,
+has no write/erase callbacks and no `MTD_WRITEABLE`, and gates all NAND commands
+through a read-only allowlist.  The dated measurements below describe upstream
+hardware, not the Firebat-connected iPad.  See
+[Linux storage assessment](p105-linux-storage.md) for the write-side blockers,
+offline parser corrections and persistence alternatives.
 
 ## Status (2026-09-27)
 
@@ -12,7 +22,7 @@ From Linux, over `/dev/mem`, both buses answer: read ID, PPN firmware version
 and the PPN device-parameter page, all matching what iOS reports.  Page reads
 work (PIO, 14.6 MB/s, measured 2026-09-29 with `nandctl dump` into tmpfs) and are
 bit-for-bit repeatable; the flash partition table reads back and decodes.
-No kernel driver yet, no FTL yet.
+At this dated bring-up point there was no kernel driver or writable FTL yet.
 
 That number used to read "through `nandctl dump` to the NFS root", which made it
 look like an NFS figure as much as a NAND one. It never was: `nandctl` times its
@@ -195,14 +205,18 @@ mappings instead of 3, two pointing past the code signature).
 ## iosnand: iOS's partitions as Linux block devices
 
 `tools/nand/iosnand.c` (with `ppn.c`, the read-only PPN layer `nandctl` uses
-too) keeps a page table -- per page the sequence and the four LBAs, 26 MB,
-`/var/lib/iosnand/pages.v1` -- and serves LwVM partitions through the kernel's
+too) keeps a page table -- per page four exact u48 sequences and four LBAs,
+43.58 MB, `/var/lib/iosnand/pages.v2` -- and serves LwVM partitions through the kernel's
 NBD ioctls (a socketpair, no nbd-client).  First run: every page's metadata,
-714 s (2944 blocks with data, 1277 erased, 31 retired).  Later runs read page
+714 s (2944 blocks with data, 1277 erased, 31 retired) in the earlier upstream
+v1 measurement, not tested on our device. Later PIO runs read page
 0 of every block (a block the FTL erased and wrote again has a new sequence
 there) and the old write pointer of blocks that were still filling: 1.0 s when
-nothing changed.  Each read checks the LBA in the page's metadata, the way
-SFTL's `s_verify_meta` does.  Checked against the dump: LBA 0, System's first
+nothing changed in that earlier measurement. MTD mode scans every page. Each
+read now checks both the LBA and exact sequence in the page metadata. The new
+v2 cache has a payload CRC32 and retains v1 files without guessing the missing
+chunk values; see [current local storage research](p105-linux-storage.md).
+Earlier upstream checks against the dump: LBA 0, System's first
 16 MB and 8 MB at LBA 1000000 read back with the same MD5.  `ios mount` puts
 System on /mnt/ios through Linux's hfsplus.
 

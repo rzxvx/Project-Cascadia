@@ -1,0 +1,160 @@
+{
+  "authorization_granted": false,
+  "cache_sha256": "4f5b5d73244c53fd0bdc5b8012106b10d0dd7607cc850bf7c8f9e9ef3a3f733b",
+  "cases": [
+    {
+      "calls": [
+        {
+          "actual_entry": "0x20c9e638"
+        },
+        {
+          "actual_entry": "0x20c9e488"
+        },
+        {
+          "actual_factory_public_der_sha256": "8352c37fd93838f543ccaa1807a9807f5b51332d800a003659fefcabc8385f98",
+          "parameter_present": true,
+          "selected_parameter_length": 2
+        },
+        {
+          "requested": 16,
+          "synthetic_allocator": "CFInstance"
+        },
+        {
+          "requested": 400,
+          "synthetic_allocator": "calloc"
+        },
+        {
+          "native_public_import_result": 0
+        },
+        {
+          "actual_entry": "0x20c9a9d0"
+        },
+        {
+          "actual_entry": "0x20ca8bcc"
+        },
+        {
+          "digest_length": 32,
+          "python_sha256_digest_provider": "0x20408424"
+        },
+        {
+          "original_RSA_public_verify": true
+        },
+        {
+          "original_corecrypto_RSA_public_modexp": true
+        },
+        {
+          "synthetic_release": true
+        }
+      ],
+      "instruction_count": 537225,
+      "native_completed_links": 1,
+      "native_path_verify_result": 0,
+      "synthetic_corrupt_signature": false,
+      "synthetic_missing_issuer_parameters": false
+    },
+    {
+      "calls": [
+        {
+          "actual_entry": "0x20c9e638"
+        },
+        {
+          "actual_entry": "0x20c9e488"
+        },
+        {
+          "actual_factory_public_der_sha256": "8352c37fd93838f543ccaa1807a9807f5b51332d800a003659fefcabc8385f98",
+          "parameter_present": true,
+          "selected_parameter_length": 2
+        },
+        {
+          "requested": 16,
+          "synthetic_allocator": "CFInstance"
+        },
+        {
+          "requested": 400,
+          "synthetic_allocator": "calloc"
+        },
+        {
+          "native_public_import_result": 0
+        },
+        {
+          "actual_entry": "0x20c9a9d0"
+        },
+        {
+          "actual_entry": "0x20ca8bcc"
+        },
+        {
+          "digest_length": 32,
+          "python_sha256_digest_provider": "0x20408424"
+        },
+        {
+          "original_RSA_public_verify": true
+        },
+        {
+          "original_corecrypto_RSA_public_modexp": true
+        },
+        {
+          "synthetic_release": true
+        }
+      ],
+      "instruction_count": 536742,
+      "native_completed_links": 0,
+      "native_path_verify_result": 1,
+      "synthetic_corrupt_signature": true,
+      "synthetic_missing_issuer_parameters": false
+    },
+    {
+      "calls": [
+        {
+          "actual_entry": "0x20c9e638"
+        },
+        {
+          "actual_entry": "0x20c9e488"
+        },
+        {
+          "actual_factory_public_der_sha256": "8352c37fd93838f543ccaa1807a9807f5b51332d800a003659fefcabc8385f98",
+          "parameter_present": false,
+          "selected_parameter_length": 0
+        },
+        {
+          "requested": 16,
+          "synthetic_allocator": "CFInstance"
+        },
+        {
+          "requested": 400,
+          "synthetic_allocator": "calloc"
+        },
+        {
+          "native_public_import_result": 0
+        },
+        {
+          "actual_entry": "0x20c9a9d0"
+        },
+        {
+          "actual_entry": "0x20ca8bcc"
+        },
+        {
+          "digest_length": 32,
+          "python_sha256_digest_provider": "0x20408424"
+        },
+        {
+          "original_RSA_public_verify": true
+        },
+        {
+          "original_corecrypto_RSA_public_modexp": true
+        },
+        {
+          "synthetic_release": true
+        }
+      ],
+      "instruction_count": 537227,
+      "native_completed_links": 1,
+      "native_path_verify_result": 0,
+      "synthetic_corrupt_signature": false,
+      "synthetic_missing_issuer_parameters": true
+    }
+  ],
+  "certificate_chain_trusted": null,
+  "fixture_sha256": "b62e73b2ffa0041bd1aa6bf0e3683d1d56d89023d0d18850cb01e2b5716dea35",
+  "scope": "actual native two-node RSA certificate-link crypto; synthetic certificate fields/CF/heap, Python real SHA256 provider; no native X509 parser/full trust",
+  "securityd_sha256": "1c12fbb48ead1edd3dbf2f4b0d635b45452573499fd9592562bbd76e40b56097"
+}

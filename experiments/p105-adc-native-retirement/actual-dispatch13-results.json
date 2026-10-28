@@ -1,0 +1,108 @@
+{
+  "format": "p105-actual-ADC-dispatch13-v1",
+  "kernelcache_sha256": "8eae16f060a71d4f3790385951588f8198d0f21cdb74146f9750941a3d764125",
+  "hardware_access": false,
+  "physical_quiescence_granted": false,
+  "actual_constructor_vptr": "0x8114d214",
+  "bounded_getter_arrival": [
+    {
+      "entry": "0x811472ac",
+      "arguments": [
+        536875008,
+        6,
+        0,
+        536997864
+      ],
+      "vptr": "0x8114d214"
+    }
+  ],
+  "generic_slots_actual_stubs": [
+    {
+      "slot": "0x38c",
+      "target": "0x81149b89",
+      "return": 0
+    },
+    {
+      "slot": "0x390",
+      "target": "0x81149b8d",
+      "return": 0
+    },
+    {
+      "slot": "0x394",
+      "target": "0x81149b91",
+      "return": 3758097095
+    },
+    {
+      "slot": "0x398",
+      "target": "0x81149b99",
+      "return": 1
+    }
+  ],
+  "completion_callbacks": [
+    {
+      "before_state": 0,
+      "after_state": 0,
+      "wakeup": []
+    },
+    {
+      "before_state": 1,
+      "after_state": 2,
+      "wakeup": [
+        {
+          "mocked": "gate commandWakeup",
+          "arguments": [
+            536883200,
+            536875112,
+            0,
+            805306373
+          ]
+        }
+      ]
+    },
+    {
+      "before_state": 2,
+      "after_state": 2,
+      "wakeup": []
+    },
+    {
+      "before_state": 3,
+      "after_state": 3,
+      "wakeup": []
+    }
+  ],
+  "mocks": [
+    {
+      "mocked": "constructor allocation",
+      "arguments": [
+        280,
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "mocked": "base/context initialization",
+      "arguments": [
+        536875008,
+        2165630424,
+        0,
+        0
+      ]
+    },
+    {
+      "mocked": "constructor context cleanup",
+      "arguments": [
+        2165630424,
+        2165630424,
+        0,
+        0
+      ]
+    }
+  ],
+  "limits": [
+    "constructor allocation/base init/context helper calls mocked",
+    "getter stopped at actual ADC entry; conversion not executed",
+    "callback gate wake mocked; no event origin/epoch or electrical completion tested",
+    "base generic acquisition not assumed active hardware path"
+  ]
+}

@@ -1,0 +1,38 @@
+{
+  "base_cascadia_revision": "7b560b141dfec51c949ff94536c8e38aefbc25f8",
+  "linux_revision": "adc218676eef25575469234709c2d87185ca223a",
+  "kernelcache12_sha256": "db1ddc8343aa9debc00e0a083fba59d9f555722db60957dc333b854fac21dd2c",
+  "normal_default_enabled": false,
+  "physical_charging_claim": false,
+  "regmap_fixture_sha256": "6480dab7d41910c16898d324b9c28689f958d81ddcff89d4b935ca3f53b961e0",
+  "normal_child_sources": {
+    "patches/files/drivers/video/backlight/apple-pmu-wled.c": "797d77c882d36c832085dc8e11d710da53190ea715c725095ea8c055935f6801",
+    "patches/files-sandcastle-port/drivers/regulator/apple-pmu-pwrsw.c": "2acffd17c5703b553f1cf3353c3f9a306f63a20c15ceefaa2dc64b3c0eb9b504",
+    "dts/p105ap.dts": "cc0f97f49f64b8424278c638d63f503da4424a2b5da7a605251b577062263276"
+  },
+  "parent_current_binding": {
+    "scope": "source-only, no normal activation; managed direct-child accessor and transport admission snapshot",
+    "files": {
+      "experiments/p105-parent-pmu/apple-pmu-i2c.c": "520ca9684e94fc4ed63d861176400ecf2e6b58fe96b7498a339c8638ff9cb023",
+      "experiments/p105-parent-pmu/apple-pmu-d1946-bank0.c": "c9cc8b04c93ddd166a4f17b490819db3fd59e7f980b7b9d94006970b3304f8f0",
+      "experiments/p105-parent-pmu/apple-pmu-d1946-bank0.h": "ee3400994f0c8471b6e2dd1c6b7f35631737a400ffe9348d875f1bb5e0579eae",
+      "experiments/p105-current/apple-d1946-current-only.c": "cc0f19b781986b1ec3895541e986395580ebf3290d1808e1bdd4861355d45f98",
+      "experiments/p105-parent-pmu/parent-regmap.patch": "29ebe0abf17b63a22858fbb8569981cbdd82fd0ebda441e6480ffd22449fea7f",
+      "experiments/p105-parent-pmu/include/linux/apple-pmu-i2c.h": "920cede5e24f78111e6f26f7a01b7e6b8296ee1bbcc0566d2749b05a70e83b4f",
+      "experiments/p105-current/historical-d-probe-unbanked.c": "276419df5efe6ee73d3abeb7400405672cb4be72825b2404555bd035d7376cec",
+      "tests/test-experimental-parent-current-binding.py": "240c9738311a1a2ef760d0c54978dcfe588a03248b019a9eb44ab9fef6468a08"
+    },
+    "runtime_transport_guarantee": "checked implementation identity/running-state snapshot only; does not enforce global adapter/retry immutability or analog protection",
+    "test_entrypoint": "tests/test-experimental-parent-current-binding.py",
+    "historical_full_probe_sha256": "276419df5efe6ee73d3abeb7400405672cb4be72825b2404555bd035d7376cec"
+  },
+  "i2c_dev_exclusion": {
+    "scope": "Exclude known in-tree unlocked retry ioctl; not universal adapter immutability or analog protection",
+    "files": {
+      "apple-pmu-d1946-bank0.c": "c9cc8b04c93ddd166a4f17b490819db3fd59e7f980b7b9d94006970b3304f8f0",
+      "Kconfig.fragment": "f6dfdcbc9d00e4e31eea2d3bc9538a0085464e9df3bf4b3a23afc2e7612c477d",
+      "../../tests/test-experimental-parent-no-i2cdev.py": "4be7385a91d7c3305163079d4985fb17124d5706331946bed3537cebcb0bb24d"
+    },
+    "historical_init_function_sha256": "00b534d05597e48dd073b19b7d634eca46b066d3e20bf8cf5b1fb8682db2e14a"
+  }
+}

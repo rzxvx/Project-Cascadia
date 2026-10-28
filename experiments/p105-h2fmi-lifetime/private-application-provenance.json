@@ -1,0 +1,19 @@
+{
+  "frozen_review_manifest_SHA256": "99c0d97eb16b50b590290cf2d787d0b1a9ad972c07e93b84d05c5dc791cdbdcf",
+  "files": {
+    "prepare-lifetime.py": "78c013557e95106135c51475fc4d1b0c1a40ec50c85a9dbe4bbee277bbef8336",
+    "PRIVATE_APPLICATION.md": "ac018646061093834ef307bc55771f14f3d36ea1c76aa9c26969af5d8a5cbc70"
+  },
+  "public_boundary_test_SHA256": "1e5b71e243098ceabb6447b5e25e94828732eb0dc9af02d7f2b54e16de36fa70",
+  "root_independent_filesystem_regression_cases": 24,
+  "root_independent_historical_fixed_containment_cases": 11,
+  "original_shell_environment_forwarding_reproduced": true,
+  "automatic_build_wrapper_exported": false,
+  "normal_runtime_activation": false,
+  "hardware_access": false,
+  "portable_real_Git_boundary_cases_new_four_source_proposal": 9,
+  "latest_test_log": "h2fmi-private-application-new-v1.log",
+  "earlier_24_and_11_controls": "11 historical/fixed containment controls belong to earlier three-source revision; current installer gets 24 regression plus 9 portable Git controls",
+  "root_independent_filesystem_regression_cases_current_four_source_proposal": 24,
+  "current_regression_log": "h2fmi-installer-four-source-regression-v2.log"
+}

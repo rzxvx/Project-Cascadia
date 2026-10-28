@@ -1,0 +1,11 @@
+# SPDX-License-Identifier: GPL-2.0-only
+# Additional dependency for the once-leaf parent candidate, not a default enable:
+# existing APPLE_PMU_D1946_BANK0_EXPERIMENT must depend on I2C_S5L8940X=y.
+config APPLE_PMU_D1946_ADC6_OWNER_EXPERIMENT
+	bool "P105 shared-parent ADC6 owner research candidate"
+	depends on APPLE_PMU_D1946_BANK0_EXPERIMENT && I2C_S5L8940X=y
+	default n
+	help
+	  Uninstalled research draft. Requires explicit runtime parameter too.
+	  The shared locks and typed A5 transfer are implemented, but physical
+	  first-quiescence is not evidenced, so sampling returns EUCLEAN.

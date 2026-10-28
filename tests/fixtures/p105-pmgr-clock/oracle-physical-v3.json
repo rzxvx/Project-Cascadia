@@ -1,0 +1,4953 @@
+{
+  "kernelcache_sha256": "db1ddc8343aa9debc00e0a083fba59d9f555722db60957dc333b854fac21dd2c",
+  "adt_sha256": "5c346586116de1bb32606acb27cad3158bcaa8a1318a10ee9631de09884cfd72",
+  "actual_stride": 44,
+  "native_min": 56,
+  "native_max": 128,
+  "scope": "Actual Performance+350\u2192original+3e8 recursion\u2192real+448(null observer)\u2192real+3ec deferred apply\u2192real+488 gate primitive\u2192real+490/+494 accessors. Synthetic PMGR object with actual P105 limits, null observer/domain-specific frequency flag0; dynamicUSBplatformassociation unproven.",
+  "fake_MMIO_model": "Ordinary initialized RAM+auto target-nibble acknowledgement at original read accessor, except explicit negative controls; not electrical or inherited-state proof",
+  "cases": [
+    {
+      "states": [
+        {
+          "request": [
+            89,
+            1
+          ],
+          "counts": {
+            "29": 0,
+            "35": 0,
+            "40": 1,
+            "41": 0,
+            "42": 0,
+            "87": 0,
+            "88": 0,
+            "89": 0,
+            "90": 0,
+            "91": 0
+          },
+          "active_ids": [
+            2,
+            3,
+            4,
+            5,
+            40,
+            89
+          ],
+          "pending_gate_bits": [
+            0,
+            5,
+            0
+          ],
+          "dirty_gate_bits": [
+            0,
+            0,
+            0
+          ],
+          "events": [
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c93f4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9404"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ],
+            [
+              "fake_memcpy",
+              12
+            ],
+            [
+              "fake_memcpy",
+              12
+            ],
+            [
+              "fake_memcpy",
+              12
+            ],
+            [
+              "fake_memcpy",
+              12
+            ],
+            [
+              "fake_memcpy",
+              12
+            ],
+            [
+              "fake_memcpy",
+              12
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c93f4"
+            ],
+            [
+              "fake_pmgr_read",
+              "0x48",
+              610271232
+            ],
+            [
+              "fake_pmgr_write",
+              "0x48",
+              2757754880
+            ],
+            [
+              "fake_pmgr_read",
+              "0x48",
+              2757754880
+            ],
+            [
+              "fake_pmgr_read",
+              "0x4c",
+              610271232
+            ],
+            [
+              "fake_pmgr_write",
+              "0x4c",
+              2757754880
+            ],
+            [
+              "fake_pmgr_read",
+              "0x4c",
+              2757754880
+            ],
+            [
+              "fake_pmgr_read",
+              "0x50",
+              610271232
+            ],
+            [
+              "fake_pmgr_write",
+              "0x50",
+              2757754880
+            ],
+            [
+              "fake_pmgr_read",
+              "0x50",
+              2757754880
+            ],
+            [
+              "fake_pmgr_read",
+              "0x54",
+              610271232
+            ],
+            [
+              "fake_pmgr_write",
+              "0x54",
+              2757754880
+            ],
+            [
+              "fake_pmgr_read",
+              "0x54",
+              2757754880
+            ],
+            [
+              "fake_pmgr_read",
+              "0x9c",
+              610271232
+            ],
+            [
+              "fake_pmgr_write",
+              "0x9c",
+              2757754880
+            ],
+            [
+              "fake_pmgr_read",
+              "0x9c",
+              2757754880
+            ],
+            [
+              "fake_pmgr_read",
+              "0x1080",
+              610271232
+            ],
+            [
+              "fake_pmgr_write",
+              "0x1080",
+              610271247
+            ],
+            [
+              "fake_pmgr_read",
+              "0x1080",
+              610271487
+            ],
+            [
+              "fake_pmgr_read",
+              "0x1088",
+              610271232
+            ],
+            [
+              "fake_pmgr_write",
+              "0x1088",
+              610271247
+            ],
+            [
+              "fake_pmgr_read",
+              "0x1088",
+              610271487
+            ],
+            [
+              "fake_bzero",
+              12
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9404"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c93f4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9404"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ]
+          ],
+          "recursion_flags": 0,
+          "return": 0,
+          "instructions": 4094
+        },
+        {
+          "request": [
+            87,
+            1
+          ],
+          "counts": {
+            "29": 0,
+            "35": 0,
+            "40": 3,
+            "41": 0,
+            "42": 1,
+            "87": 0,
+            "88": 0,
+            "89": 0,
+            "90": 0,
+            "91": 0
+          },
+          "active_ids": [
+            2,
+            3,
+            4,
+            5,
+            40,
+            42,
+            87,
+            89
+          ],
+          "pending_gate_bits": [
+            0,
+            69,
+            0
+          ],
+          "dirty_gate_bits": [
+            0,
+            0,
+            0
+          ],
+          "events": [
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c93f4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9404"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ],
+            [
+              "fake_memcpy",
+              12
+            ],
+            [
+              "fake_memcpy",
+              12
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c93f4"
+            ],
+            [
+              "fake_pmgr_read",
+              "0xec",
+              610271232
+            ],
+            [
+              "fake_pmgr_write",
+              "0xec",
+              2757754880
+            ],
+            [
+              "fake_pmgr_read",
+              "0xec",
+              2757754880
+            ],
+            [
+              "fake_pmgr_read",
+              "0x1098",
+              610271232
+            ],
+            [
+              "fake_pmgr_write",
+              "0x1098",
+              610271247
+            ],
+            [
+              "fake_pmgr_read",
+              "0x1098",
+              610271487
+            ],
+            [
+              "fake_bzero",
+              12
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9404"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c93f4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9404"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ]
+          ],
+          "recursion_flags": 0,
+          "return": 0,
+          "instructions": 3201
+        },
+        {
+          "request": [
+            89,
+            0
+          ],
+          "counts": {
+            "29": 0,
+            "35": 0,
+            "40": 2,
+            "41": 0,
+            "42": 1,
+            "87": 0,
+            "88": 0,
+            "89": 0,
+            "90": 0,
+            "91": 0
+          },
+          "active_ids": [
+            2,
+            3,
+            4,
+            5,
+            40,
+            42,
+            87
+          ],
+          "pending_gate_bits": [
+            0,
+            65,
+            0
+          ],
+          "dirty_gate_bits": [
+            0,
+            0,
+            0
+          ],
+          "events": [
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c93f4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9404"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ],
+            [
+              "fake_memcpy",
+              12
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c93f4"
+            ],
+            [
+              "fake_pmgr_read",
+              "0x1088",
+              610271487
+            ],
+            [
+              "fake_pmgr_write",
+              "0x1088",
+              610271476
+            ],
+            [
+              "fake_pmgr_read",
+              "0x1088",
+              610271300
+            ],
+            [
+              "fake_bzero",
+              12
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9404"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c93f4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9404"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ]
+          ],
+          "recursion_flags": 0,
+          "return": 0,
+          "instructions": 2855
+        },
+        {
+          "request": [
+            87,
+            0
+          ],
+          "counts": {
+            "29": 0,
+            "35": 0,
+            "40": 0,
+            "41": 0,
+            "42": 0,
+            "87": 0,
+            "88": 0,
+            "89": 0,
+            "90": 0,
+            "91": 0
+          },
+          "active_ids": [],
+          "pending_gate_bits": [
+            0,
+            0,
+            0
+          ],
+          "dirty_gate_bits": [
+            0,
+            0,
+            0
+          ],
+          "events": [
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c93f4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9404"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ],
+            [
+              "fake_memcpy",
+              12
+            ],
+            [
+              "fake_memcpy",
+              12
+            ],
+            [
+              "fake_memcpy",
+              12
+            ],
+            [
+              "fake_memcpy",
+              12
+            ],
+            [
+              "fake_memcpy",
+              12
+            ],
+            [
+              "fake_memcpy",
+              12
+            ],
+            [
+              "fake_memcpy",
+              12
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c93f4"
+            ],
+            [
+              "fake_pmgr_read",
+              "0x1098",
+              610271487
+            ],
+            [
+              "fake_pmgr_write",
+              "0x1098",
+              610271476
+            ],
+            [
+              "fake_pmgr_read",
+              "0x1098",
+              610271300
+            ],
+            [
+              "fake_pmgr_read",
+              "0x1080",
+              610271487
+            ],
+            [
+              "fake_pmgr_write",
+              "0x1080",
+              610271476
+            ],
+            [
+              "fake_pmgr_read",
+              "0x1080",
+              610271300
+            ],
+            [
+              "fake_bzero",
+              12
+            ],
+            [
+              "fake_pmgr_read",
+              "0xec",
+              2757754880
+            ],
+            [
+              "fake_pmgr_write",
+              "0xec",
+              610271232
+            ],
+            [
+              "fake_pmgr_read",
+              "0xec",
+              610271232
+            ],
+            [
+              "fake_pmgr_read",
+              "0x9c",
+              2757754880
+            ],
+            [
+              "fake_pmgr_write",
+              "0x9c",
+              610271232
+            ],
+            [
+              "fake_pmgr_read",
+              "0x9c",
+              610271232
+            ],
+            [
+              "fake_pmgr_read",
+              "0x54",
+              2757754880
+            ],
+            [
+              "fake_pmgr_write",
+              "0x54",
+              610271232
+            ],
+            [
+              "fake_pmgr_read",
+              "0x54",
+              610271232
+            ],
+            [
+              "fake_pmgr_read",
+              "0x50",
+              2757754880
+            ],
+            [
+              "fake_pmgr_write",
+              "0x50",
+              610271232
+            ],
+            [
+              "fake_pmgr_read",
+              "0x50",
+              610271232
+            ],
+            [
+              "fake_pmgr_read",
+              "0x4c",
+              2757754880
+            ],
+            [
+              "fake_pmgr_write",
+              "0x4c",
+              610271232
+            ],
+            [
+              "fake_pmgr_read",
+              "0x4c",
+              610271232
+            ],
+            [
+              "fake_pmgr_read",
+              "0x48",
+              2757754880
+            ],
+            [
+              "fake_pmgr_write",
+              "0x48",
+              610271232
+            ],
+            [
+              "fake_pmgr_read",
+              "0x48",
+              610271232
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9404"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c93f4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9404"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ]
+          ],
+          "recursion_flags": 0,
+          "return": 0,
+          "instructions": 4388
+        }
+      ],
+      "synthetic_options": {
+        "clock_word_override": null,
+        "initial_reg_seed": 610271232,
+        "auto_ack": true,
+        "off_zero_indices": []
+      },
+      "hardware_access": false
+    },
+    {
+      "states": [
+        {
+          "request": [
+            89,
+            1
+          ],
+          "counts": {
+            "29": 0,
+            "35": 0,
+            "40": 1,
+            "41": 0,
+            "42": 0,
+            "87": 0,
+            "88": 0,
+            "89": 0,
+            "90": 0,
+            "91": 0
+          },
+          "active_ids": [
+            2,
+            3,
+            4,
+            5,
+            40,
+            89
+          ],
+          "pending_gate_bits": [
+            0,
+            5,
+            0
+          ],
+          "dirty_gate_bits": [
+            0,
+            0,
+            0
+          ],
+          "events": [
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c93f4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9404"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ],
+            [
+              "fake_memcpy",
+              12
+            ],
+            [
+              "fake_memcpy",
+              12
+            ],
+            [
+              "fake_memcpy",
+              12
+            ],
+            [
+              "fake_memcpy",
+              12
+            ],
+            [
+              "fake_memcpy",
+              12
+            ],
+            [
+              "fake_memcpy",
+              12
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c93f4"
+            ],
+            [
+              "fake_pmgr_read",
+              "0x48",
+              610271232
+            ],
+            [
+              "fake_pmgr_write",
+              "0x48",
+              2757754880
+            ],
+            [
+              "fake_pmgr_read",
+              "0x48",
+              2757754880
+            ],
+            [
+              "fake_pmgr_read",
+              "0x4c",
+              610271232
+            ],
+            [
+              "fake_pmgr_write",
+              "0x4c",
+              2757754880
+            ],
+            [
+              "fake_pmgr_read",
+              "0x4c",
+              2757754880
+            ],
+            [
+              "fake_pmgr_read",
+              "0x50",
+              610271232
+            ],
+            [
+              "fake_pmgr_write",
+              "0x50",
+              2757754880
+            ],
+            [
+              "fake_pmgr_read",
+              "0x50",
+              2757754880
+            ],
+            [
+              "fake_pmgr_read",
+              "0x54",
+              610271232
+            ],
+            [
+              "fake_pmgr_write",
+              "0x54",
+              2757754880
+            ],
+            [
+              "fake_pmgr_read",
+              "0x54",
+              2757754880
+            ],
+            [
+              "fake_pmgr_read",
+              "0x9c",
+              610271232
+            ],
+            [
+              "fake_pmgr_write",
+              "0x9c",
+              2757754880
+            ],
+            [
+              "fake_pmgr_read",
+              "0x9c",
+              2757754880
+            ],
+            [
+              "fake_pmgr_read",
+              "0x1080",
+              610271232
+            ],
+            [
+              "fake_pmgr_write",
+              "0x1080",
+              610271247
+            ],
+            [
+              "fake_pmgr_read",
+              "0x1080",
+              610271487
+            ],
+            [
+              "fake_pmgr_read",
+              "0x1088",
+              610271232
+            ],
+            [
+              "fake_pmgr_write",
+              "0x1088",
+              610271247
+            ],
+            [
+              "fake_pmgr_read",
+              "0x1088",
+              610271487
+            ],
+            [
+              "fake_bzero",
+              12
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9404"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c93f4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9404"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ]
+          ],
+          "recursion_flags": 0,
+          "return": 0,
+          "instructions": 4094
+        },
+        {
+          "request": [
+            89,
+            1
+          ],
+          "counts": {
+            "29": 0,
+            "35": 0,
+            "40": 1,
+            "41": 0,
+            "42": 0,
+            "87": 0,
+            "88": 0,
+            "89": 0,
+            "90": 0,
+            "91": 0
+          },
+          "active_ids": [
+            2,
+            3,
+            4,
+            5,
+            40,
+            89
+          ],
+          "pending_gate_bits": [
+            0,
+            5,
+            0
+          ],
+          "dirty_gate_bits": [
+            0,
+            0,
+            0
+          ],
+          "events": [
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c93f4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9404"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c93f4"
+            ],
+            [
+              "fake_bzero",
+              12
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9404"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c93f4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9404"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ]
+          ],
+          "recursion_flags": 0,
+          "return": 0,
+          "instructions": 2619
+        },
+        {
+          "request": [
+            89,
+            0
+          ],
+          "counts": {
+            "29": 0,
+            "35": 0,
+            "40": 0,
+            "41": 0,
+            "42": 0,
+            "87": 0,
+            "88": 0,
+            "89": 0,
+            "90": 0,
+            "91": 0
+          },
+          "active_ids": [],
+          "pending_gate_bits": [
+            0,
+            0,
+            0
+          ],
+          "dirty_gate_bits": [
+            0,
+            0,
+            0
+          ],
+          "events": [
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c93f4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9404"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ],
+            [
+              "fake_memcpy",
+              12
+            ],
+            [
+              "fake_memcpy",
+              12
+            ],
+            [
+              "fake_memcpy",
+              12
+            ],
+            [
+              "fake_memcpy",
+              12
+            ],
+            [
+              "fake_memcpy",
+              12
+            ],
+            [
+              "fake_memcpy",
+              12
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c93f4"
+            ],
+            [
+              "fake_pmgr_read",
+              "0x1088",
+              610271487
+            ],
+            [
+              "fake_pmgr_write",
+              "0x1088",
+              610271476
+            ],
+            [
+              "fake_pmgr_read",
+              "0x1088",
+              610271300
+            ],
+            [
+              "fake_pmgr_read",
+              "0x1080",
+              610271487
+            ],
+            [
+              "fake_pmgr_write",
+              "0x1080",
+              610271476
+            ],
+            [
+              "fake_pmgr_read",
+              "0x1080",
+              610271300
+            ],
+            [
+              "fake_bzero",
+              12
+            ],
+            [
+              "fake_pmgr_read",
+              "0x9c",
+              2757754880
+            ],
+            [
+              "fake_pmgr_write",
+              "0x9c",
+              610271232
+            ],
+            [
+              "fake_pmgr_read",
+              "0x9c",
+              610271232
+            ],
+            [
+              "fake_pmgr_read",
+              "0x54",
+              2757754880
+            ],
+            [
+              "fake_pmgr_write",
+              "0x54",
+              610271232
+            ],
+            [
+              "fake_pmgr_read",
+              "0x54",
+              610271232
+            ],
+            [
+              "fake_pmgr_read",
+              "0x50",
+              2757754880
+            ],
+            [
+              "fake_pmgr_write",
+              "0x50",
+              610271232
+            ],
+            [
+              "fake_pmgr_read",
+              "0x50",
+              610271232
+            ],
+            [
+              "fake_pmgr_read",
+              "0x4c",
+              2757754880
+            ],
+            [
+              "fake_pmgr_write",
+              "0x4c",
+              610271232
+            ],
+            [
+              "fake_pmgr_read",
+              "0x4c",
+              610271232
+            ],
+            [
+              "fake_pmgr_read",
+              "0x48",
+              2757754880
+            ],
+            [
+              "fake_pmgr_write",
+              "0x48",
+              610271232
+            ],
+            [
+              "fake_pmgr_read",
+              "0x48",
+              610271232
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9404"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c93f4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9404"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ]
+          ],
+          "recursion_flags": 0,
+          "return": 0,
+          "instructions": 4070
+        },
+        {
+          "request": [
+            89,
+            0
+          ],
+          "counts": {
+            "29": 0,
+            "35": 0,
+            "40": 0,
+            "41": 0,
+            "42": 0,
+            "87": 0,
+            "88": 0,
+            "89": 0,
+            "90": 0,
+            "91": 0
+          },
+          "active_ids": [],
+          "pending_gate_bits": [
+            0,
+            0,
+            0
+          ],
+          "dirty_gate_bits": [
+            0,
+            0,
+            0
+          ],
+          "events": [
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c93f4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9404"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c93f4"
+            ],
+            [
+              "fake_bzero",
+              12
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9404"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c93f4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9404"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ]
+          ],
+          "recursion_flags": 0,
+          "return": 0,
+          "instructions": 2584
+        }
+      ],
+      "synthetic_options": {
+        "clock_word_override": null,
+        "initial_reg_seed": 610271232,
+        "auto_ack": true,
+        "off_zero_indices": []
+      },
+      "hardware_access": false
+    },
+    {
+      "states": [
+        {
+          "request": [
+            87,
+            1
+          ],
+          "counts": {
+            "29": 0,
+            "35": 0,
+            "40": 2,
+            "41": 0,
+            "42": 1,
+            "87": 0,
+            "88": 0,
+            "89": 0,
+            "90": 0,
+            "91": 0
+          },
+          "active_ids": [
+            2,
+            3,
+            4,
+            5,
+            40,
+            42,
+            87
+          ],
+          "pending_gate_bits": [
+            0,
+            65,
+            0
+          ],
+          "dirty_gate_bits": [
+            0,
+            0,
+            0
+          ],
+          "events": [
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c93f4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9404"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ],
+            [
+              "fake_memcpy",
+              12
+            ],
+            [
+              "fake_memcpy",
+              12
+            ],
+            [
+              "fake_memcpy",
+              12
+            ],
+            [
+              "fake_memcpy",
+              12
+            ],
+            [
+              "fake_memcpy",
+              12
+            ],
+            [
+              "fake_memcpy",
+              12
+            ],
+            [
+              "fake_memcpy",
+              12
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c93f4"
+            ],
+            [
+              "fake_pmgr_read",
+              "0x48",
+              610271232
+            ],
+            [
+              "fake_pmgr_write",
+              "0x48",
+              2757754880
+            ],
+            [
+              "fake_pmgr_read",
+              "0x48",
+              2757754880
+            ],
+            [
+              "fake_pmgr_read",
+              "0x4c",
+              610271232
+            ],
+            [
+              "fake_pmgr_write",
+              "0x4c",
+              2757754880
+            ],
+            [
+              "fake_pmgr_read",
+              "0x4c",
+              2757754880
+            ],
+            [
+              "fake_pmgr_read",
+              "0x50",
+              610271232
+            ],
+            [
+              "fake_pmgr_write",
+              "0x50",
+              2757754880
+            ],
+            [
+              "fake_pmgr_read",
+              "0x50",
+              2757754880
+            ],
+            [
+              "fake_pmgr_read",
+              "0x54",
+              610271232
+            ],
+            [
+              "fake_pmgr_write",
+              "0x54",
+              2757754880
+            ],
+            [
+              "fake_pmgr_read",
+              "0x54",
+              2757754880
+            ],
+            [
+              "fake_pmgr_read",
+              "0x9c",
+              610271232
+            ],
+            [
+              "fake_pmgr_write",
+              "0x9c",
+              2757754880
+            ],
+            [
+              "fake_pmgr_read",
+              "0x9c",
+              2757754880
+            ],
+            [
+              "fake_pmgr_read",
+              "0xec",
+              610271232
+            ],
+            [
+              "fake_pmgr_write",
+              "0xec",
+              2757754880
+            ],
+            [
+              "fake_pmgr_read",
+              "0xec",
+              2757754880
+            ],
+            [
+              "fake_pmgr_read",
+              "0x1080",
+              610271232
+            ],
+            [
+              "fake_pmgr_write",
+              "0x1080",
+              610271247
+            ],
+            [
+              "fake_pmgr_read",
+              "0x1080",
+              610271487
+            ],
+            [
+              "fake_pmgr_read",
+              "0x1098",
+              610271232
+            ],
+            [
+              "fake_pmgr_write",
+              "0x1098",
+              610271247
+            ],
+            [
+              "fake_pmgr_read",
+              "0x1098",
+              610271487
+            ],
+            [
+              "fake_bzero",
+              12
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9404"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c93f4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9404"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ]
+          ],
+          "recursion_flags": 0,
+          "return": 0,
+          "instructions": 4410
+        },
+        {
+          "request": [
+            87,
+            0
+          ],
+          "counts": {
+            "29": 0,
+            "35": 0,
+            "40": 0,
+            "41": 0,
+            "42": 0,
+            "87": 0,
+            "88": 0,
+            "89": 0,
+            "90": 0,
+            "91": 0
+          },
+          "active_ids": [],
+          "pending_gate_bits": [
+            0,
+            0,
+            0
+          ],
+          "dirty_gate_bits": [
+            0,
+            0,
+            0
+          ],
+          "events": [
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c93f4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9404"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ],
+            [
+              "fake_memcpy",
+              12
+            ],
+            [
+              "fake_memcpy",
+              12
+            ],
+            [
+              "fake_memcpy",
+              12
+            ],
+            [
+              "fake_memcpy",
+              12
+            ],
+            [
+              "fake_memcpy",
+              12
+            ],
+            [
+              "fake_memcpy",
+              12
+            ],
+            [
+              "fake_memcpy",
+              12
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c93f4"
+            ],
+            [
+              "fake_pmgr_read",
+              "0x1098",
+              610271487
+            ],
+            [
+              "fake_pmgr_write",
+              "0x1098",
+              610271476
+            ],
+            [
+              "fake_pmgr_read",
+              "0x1098",
+              610271300
+            ],
+            [
+              "fake_pmgr_read",
+              "0x1080",
+              610271487
+            ],
+            [
+              "fake_pmgr_write",
+              "0x1080",
+              610271476
+            ],
+            [
+              "fake_pmgr_read",
+              "0x1080",
+              610271300
+            ],
+            [
+              "fake_bzero",
+              12
+            ],
+            [
+              "fake_pmgr_read",
+              "0xec",
+              2757754880
+            ],
+            [
+              "fake_pmgr_write",
+              "0xec",
+              610271232
+            ],
+            [
+              "fake_pmgr_read",
+              "0xec",
+              610271232
+            ],
+            [
+              "fake_pmgr_read",
+              "0x9c",
+              2757754880
+            ],
+            [
+              "fake_pmgr_write",
+              "0x9c",
+              610271232
+            ],
+            [
+              "fake_pmgr_read",
+              "0x9c",
+              610271232
+            ],
+            [
+              "fake_pmgr_read",
+              "0x54",
+              2757754880
+            ],
+            [
+              "fake_pmgr_write",
+              "0x54",
+              610271232
+            ],
+            [
+              "fake_pmgr_read",
+              "0x54",
+              610271232
+            ],
+            [
+              "fake_pmgr_read",
+              "0x50",
+              2757754880
+            ],
+            [
+              "fake_pmgr_write",
+              "0x50",
+              610271232
+            ],
+            [
+              "fake_pmgr_read",
+              "0x50",
+              610271232
+            ],
+            [
+              "fake_pmgr_read",
+              "0x4c",
+              2757754880
+            ],
+            [
+              "fake_pmgr_write",
+              "0x4c",
+              610271232
+            ],
+            [
+              "fake_pmgr_read",
+              "0x4c",
+              610271232
+            ],
+            [
+              "fake_pmgr_read",
+              "0x48",
+              2757754880
+            ],
+            [
+              "fake_pmgr_write",
+              "0x48",
+              610271232
+            ],
+            [
+              "fake_pmgr_read",
+              "0x48",
+              610271232
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9404"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c93f4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9404"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ]
+          ],
+          "recursion_flags": 0,
+          "return": 0,
+          "instructions": 4388
+        }
+      ],
+      "synthetic_options": {
+        "clock_word_override": null,
+        "initial_reg_seed": 610271232,
+        "auto_ack": true,
+        "off_zero_indices": []
+      },
+      "hardware_access": false
+    },
+    {
+      "states": [
+        {
+          "request": [
+            89,
+            0
+          ],
+          "counts": {
+            "29": 0,
+            "35": 0,
+            "40": 0,
+            "41": 0,
+            "42": 0,
+            "87": 0,
+            "88": 0,
+            "89": 0,
+            "90": 0,
+            "91": 0
+          },
+          "active_ids": [],
+          "pending_gate_bits": [
+            0,
+            0,
+            0
+          ],
+          "dirty_gate_bits": [
+            0,
+            0,
+            0
+          ],
+          "events": [
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c93f4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9404"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c93f4"
+            ],
+            [
+              "fake_bzero",
+              12
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9404"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c93f4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9404"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ]
+          ],
+          "recursion_flags": 0,
+          "return": 0,
+          "instructions": 2584
+        }
+      ],
+      "synthetic_options": {
+        "clock_word_override": null,
+        "initial_reg_seed": 610271232,
+        "auto_ack": true,
+        "off_zero_indices": []
+      },
+      "hardware_access": false
+    },
+    {
+      "states": [
+        {
+          "request": [
+            88,
+            1
+          ],
+          "counts": {
+            "29": 0,
+            "35": 0,
+            "40": 1,
+            "41": 0,
+            "42": 0,
+            "87": 0,
+            "88": 0,
+            "89": 0,
+            "90": 0,
+            "91": 0
+          },
+          "active_ids": [
+            2,
+            3,
+            4,
+            5,
+            40,
+            88
+          ],
+          "pending_gate_bits": [
+            0,
+            3,
+            0
+          ],
+          "dirty_gate_bits": [
+            0,
+            0,
+            0
+          ],
+          "events": [
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c93f4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9404"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ],
+            [
+              "fake_memcpy",
+              12
+            ],
+            [
+              "fake_memcpy",
+              12
+            ],
+            [
+              "fake_memcpy",
+              12
+            ],
+            [
+              "fake_memcpy",
+              12
+            ],
+            [
+              "fake_memcpy",
+              12
+            ],
+            [
+              "fake_memcpy",
+              12
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c93f4"
+            ],
+            [
+              "fake_pmgr_read",
+              "0x48",
+              610271232
+            ],
+            [
+              "fake_pmgr_write",
+              "0x48",
+              2757754880
+            ],
+            [
+              "fake_pmgr_read",
+              "0x48",
+              2757754880
+            ],
+            [
+              "fake_pmgr_read",
+              "0x4c",
+              610271232
+            ],
+            [
+              "fake_pmgr_write",
+              "0x4c",
+              2757754880
+            ],
+            [
+              "fake_pmgr_read",
+              "0x4c",
+              2757754880
+            ],
+            [
+              "fake_pmgr_read",
+              "0x50",
+              610271232
+            ],
+            [
+              "fake_pmgr_write",
+              "0x50",
+              2757754880
+            ],
+            [
+              "fake_pmgr_read",
+              "0x50",
+              2757754880
+            ],
+            [
+              "fake_pmgr_read",
+              "0x54",
+              610271232
+            ],
+            [
+              "fake_pmgr_write",
+              "0x54",
+              2757754880
+            ],
+            [
+              "fake_pmgr_read",
+              "0x54",
+              2757754880
+            ],
+            [
+              "fake_pmgr_read",
+              "0x9c",
+              610271232
+            ],
+            [
+              "fake_pmgr_write",
+              "0x9c",
+              2757754880
+            ],
+            [
+              "fake_pmgr_read",
+              "0x9c",
+              2757754880
+            ],
+            [
+              "fake_pmgr_read",
+              "0x1080",
+              610271232
+            ],
+            [
+              "fake_pmgr_write",
+              "0x1080",
+              610271247
+            ],
+            [
+              "fake_pmgr_read",
+              "0x1080",
+              610271487
+            ],
+            [
+              "fake_pmgr_read",
+              "0x1084",
+              610271232
+            ],
+            [
+              "fake_pmgr_write",
+              "0x1084",
+              610271247
+            ],
+            [
+              "fake_pmgr_read",
+              "0x1084",
+              610271487
+            ],
+            [
+              "fake_bzero",
+              12
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9404"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c93f4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9404"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ]
+          ],
+          "recursion_flags": 1,
+          "return": 0,
+          "instructions": 4095
+        },
+        {
+          "request": [
+            89,
+            1
+          ],
+          "counts": {
+            "29": 0,
+            "35": 0,
+            "40": 2,
+            "41": 0,
+            "42": 0,
+            "87": 0,
+            "88": 0,
+            "89": 0,
+            "90": 0,
+            "91": 0
+          },
+          "active_ids": [
+            2,
+            3,
+            4,
+            5,
+            40,
+            88,
+            89
+          ],
+          "pending_gate_bits": [
+            0,
+            7,
+            0
+          ],
+          "dirty_gate_bits": [
+            0,
+            0,
+            0
+          ],
+          "events": [
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c93f4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9404"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ],
+            [
+              "fake_memcpy",
+              12
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c93f4"
+            ],
+            [
+              "fake_pmgr_read",
+              "0x1088",
+              610271232
+            ],
+            [
+              "fake_pmgr_write",
+              "0x1088",
+              610271247
+            ],
+            [
+              "fake_pmgr_read",
+              "0x1088",
+              610271487
+            ],
+            [
+              "fake_bzero",
+              12
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9404"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c93f4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9404"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ]
+          ],
+          "recursion_flags": 0,
+          "return": 0,
+          "instructions": 2885
+        },
+        {
+          "request": [
+            89,
+            0
+          ],
+          "counts": {
+            "29": 0,
+            "35": 0,
+            "40": 1,
+            "41": 0,
+            "42": 0,
+            "87": 0,
+            "88": 0,
+            "89": 0,
+            "90": 0,
+            "91": 0
+          },
+          "active_ids": [
+            2,
+            3,
+            4,
+            5,
+            40,
+            88
+          ],
+          "pending_gate_bits": [
+            0,
+            3,
+            0
+          ],
+          "dirty_gate_bits": [
+            0,
+            0,
+            0
+          ],
+          "events": [
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c93f4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9404"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ],
+            [
+              "fake_memcpy",
+              12
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c93f4"
+            ],
+            [
+              "fake_pmgr_read",
+              "0x1088",
+              610271487
+            ],
+            [
+              "fake_pmgr_write",
+              "0x1088",
+              610271476
+            ],
+            [
+              "fake_pmgr_read",
+              "0x1088",
+              610271300
+            ],
+            [
+              "fake_bzero",
+              12
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9404"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c93f4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9404"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ]
+          ],
+          "recursion_flags": 0,
+          "return": 0,
+          "instructions": 2855
+        },
+        {
+          "request": [
+            88,
+            0
+          ],
+          "counts": {
+            "29": 0,
+            "35": 0,
+            "40": 0,
+            "41": 0,
+            "42": 0,
+            "87": 0,
+            "88": 0,
+            "89": 0,
+            "90": 0,
+            "91": 0
+          },
+          "active_ids": [],
+          "pending_gate_bits": [
+            0,
+            0,
+            0
+          ],
+          "dirty_gate_bits": [
+            0,
+            0,
+            0
+          ],
+          "events": [
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c93f4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9404"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ],
+            [
+              "fake_memcpy",
+              12
+            ],
+            [
+              "fake_memcpy",
+              12
+            ],
+            [
+              "fake_memcpy",
+              12
+            ],
+            [
+              "fake_memcpy",
+              12
+            ],
+            [
+              "fake_memcpy",
+              12
+            ],
+            [
+              "fake_memcpy",
+              12
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c93f4"
+            ],
+            [
+              "fake_pmgr_read",
+              "0x1084",
+              610271487
+            ],
+            [
+              "fake_pmgr_write",
+              "0x1084",
+              610271476
+            ],
+            [
+              "fake_pmgr_read",
+              "0x1084",
+              610271300
+            ],
+            [
+              "fake_pmgr_read",
+              "0x1080",
+              610271487
+            ],
+            [
+              "fake_pmgr_write",
+              "0x1080",
+              610271476
+            ],
+            [
+              "fake_pmgr_read",
+              "0x1080",
+              610271300
+            ],
+            [
+              "fake_bzero",
+              12
+            ],
+            [
+              "fake_pmgr_read",
+              "0x9c",
+              2757754880
+            ],
+            [
+              "fake_pmgr_write",
+              "0x9c",
+              610271232
+            ],
+            [
+              "fake_pmgr_read",
+              "0x9c",
+              610271232
+            ],
+            [
+              "fake_pmgr_read",
+              "0x54",
+              2757754880
+            ],
+            [
+              "fake_pmgr_write",
+              "0x54",
+              610271232
+            ],
+            [
+              "fake_pmgr_read",
+              "0x54",
+              610271232
+            ],
+            [
+              "fake_pmgr_read",
+              "0x50",
+              2757754880
+            ],
+            [
+              "fake_pmgr_write",
+              "0x50",
+              610271232
+            ],
+            [
+              "fake_pmgr_read",
+              "0x50",
+              610271232
+            ],
+            [
+              "fake_pmgr_read",
+              "0x4c",
+              2757754880
+            ],
+            [
+              "fake_pmgr_write",
+              "0x4c",
+              610271232
+            ],
+            [
+              "fake_pmgr_read",
+              "0x4c",
+              610271232
+            ],
+            [
+              "fake_pmgr_read",
+              "0x48",
+              2757754880
+            ],
+            [
+              "fake_pmgr_write",
+              "0x48",
+              610271232
+            ],
+            [
+              "fake_pmgr_read",
+              "0x48",
+              610271232
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9404"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c93f4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9404"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ]
+          ],
+          "recursion_flags": 1,
+          "return": 0,
+          "instructions": 4071
+        }
+      ],
+      "synthetic_options": {
+        "clock_word_override": null,
+        "initial_reg_seed": 610271232,
+        "auto_ack": true,
+        "off_zero_indices": []
+      },
+      "hardware_access": false
+    },
+    {
+      "states": [
+        {
+          "request": [
+            90,
+            1
+          ],
+          "counts": {
+            "29": 0,
+            "35": 0,
+            "40": 2,
+            "41": 1,
+            "42": 0,
+            "87": 0,
+            "88": 0,
+            "89": 0,
+            "90": 0,
+            "91": 0
+          },
+          "active_ids": [
+            2,
+            3,
+            4,
+            5,
+            12,
+            40,
+            41,
+            90
+          ],
+          "pending_gate_bits": [
+            0,
+            25,
+            0
+          ],
+          "dirty_gate_bits": [
+            0,
+            0,
+            0
+          ],
+          "events": [
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c93f4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9404"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ],
+            [
+              "fake_memcpy",
+              12
+            ],
+            [
+              "fake_memcpy",
+              12
+            ],
+            [
+              "fake_memcpy",
+              12
+            ],
+            [
+              "fake_memcpy",
+              12
+            ],
+            [
+              "fake_memcpy",
+              12
+            ],
+            [
+              "fake_memcpy",
+              12
+            ],
+            [
+              "fake_memcpy",
+              12
+            ],
+            [
+              "fake_memcpy",
+              12
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c93f4"
+            ],
+            [
+              "fake_pmgr_read",
+              "0x48",
+              610271232
+            ],
+            [
+              "fake_pmgr_write",
+              "0x48",
+              2757754880
+            ],
+            [
+              "fake_pmgr_read",
+              "0x48",
+              2757754880
+            ],
+            [
+              "fake_pmgr_read",
+              "0x4c",
+              610271232
+            ],
+            [
+              "fake_pmgr_write",
+              "0x4c",
+              2757754880
+            ],
+            [
+              "fake_pmgr_read",
+              "0x4c",
+              2757754880
+            ],
+            [
+              "fake_pmgr_read",
+              "0x50",
+              610271232
+            ],
+            [
+              "fake_pmgr_write",
+              "0x50",
+              2757754880
+            ],
+            [
+              "fake_pmgr_read",
+              "0x50",
+              2757754880
+            ],
+            [
+              "fake_pmgr_read",
+              "0x54",
+              610271232
+            ],
+            [
+              "fake_pmgr_write",
+              "0x54",
+              2757754880
+            ],
+            [
+              "fake_pmgr_read",
+              "0x54",
+              2757754880
+            ],
+            [
+              "fake_pmgr_read",
+              "0x9c",
+              610271232
+            ],
+            [
+              "fake_pmgr_write",
+              "0x9c",
+              2757754880
+            ],
+            [
+              "fake_pmgr_read",
+              "0x9c",
+              2757754880
+            ],
+            [
+              "fake_pmgr_read",
+              "0xd0",
+              610271232
+            ],
+            [
+              "fake_pmgr_write",
+              "0xd0",
+              2757754880
+            ],
+            [
+              "fake_pmgr_read",
+              "0xd0",
+              2757754880
+            ],
+            [
+              "fake_pmgr_read",
+              "0x1080",
+              610271232
+            ],
+            [
+              "fake_pmgr_write",
+              "0x1080",
+              610271247
+            ],
+            [
+              "fake_pmgr_read",
+              "0x1080",
+              610271487
+            ],
+            [
+              "fake_pmgr_read",
+              "0x108c",
+              610271232
+            ],
+            [
+              "fake_pmgr_write",
+              "0x108c",
+              610271247
+            ],
+            [
+              "fake_pmgr_read",
+              "0x108c",
+              610271487
+            ],
+            [
+              "fake_pmgr_read",
+              "0x1090",
+              610271232
+            ],
+            [
+              "fake_pmgr_write",
+              "0x1090",
+              610271247
+            ],
+            [
+              "fake_pmgr_read",
+              "0x1090",
+              610271487
+            ],
+            [
+              "fake_bzero",
+              12
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9404"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c93f4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9404"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ]
+          ],
+          "recursion_flags": 0,
+          "return": 0,
+          "instructions": 4676
+        },
+        {
+          "request": [
+            90,
+            0
+          ],
+          "counts": {
+            "29": 0,
+            "35": 0,
+            "40": 0,
+            "41": 0,
+            "42": 0,
+            "87": 0,
+            "88": 0,
+            "89": 0,
+            "90": 0,
+            "91": 0
+          },
+          "active_ids": [],
+          "pending_gate_bits": [
+            0,
+            0,
+            0
+          ],
+          "dirty_gate_bits": [
+            0,
+            0,
+            0
+          ],
+          "events": [
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c93f4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9404"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ],
+            [
+              "fake_memcpy",
+              12
+            ],
+            [
+              "fake_memcpy",
+              12
+            ],
+            [
+              "fake_memcpy",
+              12
+            ],
+            [
+              "fake_memcpy",
+              12
+            ],
+            [
+              "fake_memcpy",
+              12
+            ],
+            [
+              "fake_memcpy",
+              12
+            ],
+            [
+              "fake_memcpy",
+              12
+            ],
+            [
+              "fake_memcpy",
+              12
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c93f4"
+            ],
+            [
+              "fake_pmgr_read",
+              "0x1090",
+              610271487
+            ],
+            [
+              "fake_pmgr_write",
+              "0x1090",
+              610271476
+            ],
+            [
+              "fake_pmgr_read",
+              "0x1090",
+              610271300
+            ],
+            [
+              "fake_pmgr_read",
+              "0x108c",
+              610271487
+            ],
+            [
+              "fake_pmgr_write",
+              "0x108c",
+              610271476
+            ],
+            [
+              "fake_pmgr_read",
+              "0x108c",
+              610271300
+            ],
+            [
+              "fake_pmgr_read",
+              "0x1080",
+              610271487
+            ],
+            [
+              "fake_pmgr_write",
+              "0x1080",
+              610271476
+            ],
+            [
+              "fake_pmgr_read",
+              "0x1080",
+              610271300
+            ],
+            [
+              "fake_bzero",
+              12
+            ],
+            [
+              "fake_pmgr_read",
+              "0xd0",
+              2757754880
+            ],
+            [
+              "fake_pmgr_write",
+              "0xd0",
+              610271232
+            ],
+            [
+              "fake_pmgr_read",
+              "0xd0",
+              610271232
+            ],
+            [
+              "fake_pmgr_read",
+              "0x9c",
+              2757754880
+            ],
+            [
+              "fake_pmgr_write",
+              "0x9c",
+              610271232
+            ],
+            [
+              "fake_pmgr_read",
+              "0x9c",
+              610271232
+            ],
+            [
+              "fake_pmgr_read",
+              "0x54",
+              2757754880
+            ],
+            [
+              "fake_pmgr_write",
+              "0x54",
+              610271232
+            ],
+            [
+              "fake_pmgr_read",
+              "0x54",
+              610271232
+            ],
+            [
+              "fake_pmgr_read",
+              "0x50",
+              2757754880
+            ],
+            [
+              "fake_pmgr_write",
+              "0x50",
+              610271232
+            ],
+            [
+              "fake_pmgr_read",
+              "0x50",
+              610271232
+            ],
+            [
+              "fake_pmgr_read",
+              "0x4c",
+              2757754880
+            ],
+            [
+              "fake_pmgr_write",
+              "0x4c",
+              610271232
+            ],
+            [
+              "fake_pmgr_read",
+              "0x4c",
+              610271232
+            ],
+            [
+              "fake_pmgr_read",
+              "0x48",
+              2757754880
+            ],
+            [
+              "fake_pmgr_write",
+              "0x48",
+              610271232
+            ],
+            [
+              "fake_pmgr_read",
+              "0x48",
+              610271232
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9404"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c93f4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9404"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ]
+          ],
+          "recursion_flags": 0,
+          "return": 0,
+          "instructions": 4657
+        }
+      ],
+      "synthetic_options": {
+        "clock_word_override": null,
+        "initial_reg_seed": 610271232,
+        "auto_ack": true,
+        "off_zero_indices": []
+      },
+      "hardware_access": false
+    },
+    {
+      "states": [
+        {
+          "request": [
+            91,
+            1
+          ],
+          "counts": {
+            "29": 0,
+            "35": 0,
+            "40": 3,
+            "41": 1,
+            "42": 1,
+            "87": 0,
+            "88": 0,
+            "89": 0,
+            "90": 0,
+            "91": 0
+          },
+          "active_ids": [
+            2,
+            3,
+            4,
+            5,
+            12,
+            40,
+            41,
+            42,
+            91
+          ],
+          "pending_gate_bits": [
+            0,
+            105,
+            0
+          ],
+          "dirty_gate_bits": [
+            0,
+            0,
+            0
+          ],
+          "events": [
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c93f4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9404"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ],
+            [
+              "fake_memcpy",
+              12
+            ],
+            [
+              "fake_memcpy",
+              12
+            ],
+            [
+              "fake_memcpy",
+              12
+            ],
+            [
+              "fake_memcpy",
+              12
+            ],
+            [
+              "fake_memcpy",
+              12
+            ],
+            [
+              "fake_memcpy",
+              12
+            ],
+            [
+              "fake_memcpy",
+              12
+            ],
+            [
+              "fake_memcpy",
+              12
+            ],
+            [
+              "fake_memcpy",
+              12
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c93f4"
+            ],
+            [
+              "fake_pmgr_read",
+              "0x48",
+              610271232
+            ],
+            [
+              "fake_pmgr_write",
+              "0x48",
+              2757754880
+            ],
+            [
+              "fake_pmgr_read",
+              "0x48",
+              2757754880
+            ],
+            [
+              "fake_pmgr_read",
+              "0x4c",
+              610271232
+            ],
+            [
+              "fake_pmgr_write",
+              "0x4c",
+              2757754880
+            ],
+            [
+              "fake_pmgr_read",
+              "0x4c",
+              2757754880
+            ],
+            [
+              "fake_pmgr_read",
+              "0x50",
+              610271232
+            ],
+            [
+              "fake_pmgr_write",
+              "0x50",
+              2757754880
+            ],
+            [
+              "fake_pmgr_read",
+              "0x50",
+              2757754880
+            ],
+            [
+              "fake_pmgr_read",
+              "0x54",
+              610271232
+            ],
+            [
+              "fake_pmgr_write",
+              "0x54",
+              2757754880
+            ],
+            [
+              "fake_pmgr_read",
+              "0x54",
+              2757754880
+            ],
+            [
+              "fake_pmgr_read",
+              "0x9c",
+              610271232
+            ],
+            [
+              "fake_pmgr_write",
+              "0x9c",
+              2757754880
+            ],
+            [
+              "fake_pmgr_read",
+              "0x9c",
+              2757754880
+            ],
+            [
+              "fake_pmgr_read",
+              "0xd0",
+              610271232
+            ],
+            [
+              "fake_pmgr_write",
+              "0xd0",
+              2757754880
+            ],
+            [
+              "fake_pmgr_read",
+              "0xd0",
+              2757754880
+            ],
+            [
+              "fake_pmgr_read",
+              "0xec",
+              610271232
+            ],
+            [
+              "fake_pmgr_write",
+              "0xec",
+              2757754880
+            ],
+            [
+              "fake_pmgr_read",
+              "0xec",
+              2757754880
+            ],
+            [
+              "fake_pmgr_read",
+              "0x1080",
+              610271232
+            ],
+            [
+              "fake_pmgr_write",
+              "0x1080",
+              610271247
+            ],
+            [
+              "fake_pmgr_read",
+              "0x1080",
+              610271487
+            ],
+            [
+              "fake_pmgr_read",
+              "0x108c",
+              610271232
+            ],
+            [
+              "fake_pmgr_write",
+              "0x108c",
+              610271247
+            ],
+            [
+              "fake_pmgr_read",
+              "0x108c",
+              610271487
+            ],
+            [
+              "fake_pmgr_read",
+              "0x1094",
+              610271232
+            ],
+            [
+              "fake_pmgr_write",
+              "0x1094",
+              610271247
+            ],
+            [
+              "fake_pmgr_read",
+              "0x1094",
+              610271487
+            ],
+            [
+              "fake_pmgr_read",
+              "0x1098",
+              610271232
+            ],
+            [
+              "fake_pmgr_write",
+              "0x1098",
+              610271247
+            ],
+            [
+              "fake_pmgr_read",
+              "0x1098",
+              610271487
+            ],
+            [
+              "fake_bzero",
+              12
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9404"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c93f4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9404"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ]
+          ],
+          "recursion_flags": 0,
+          "return": 0,
+          "instructions": 5070
+        },
+        {
+          "request": [
+            91,
+            0
+          ],
+          "counts": {
+            "29": 0,
+            "35": 0,
+            "40": 0,
+            "41": 0,
+            "42": 0,
+            "87": 0,
+            "88": 0,
+            "89": 0,
+            "90": 0,
+            "91": 0
+          },
+          "active_ids": [],
+          "pending_gate_bits": [
+            0,
+            0,
+            0
+          ],
+          "dirty_gate_bits": [
+            0,
+            0,
+            0
+          ],
+          "events": [
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c93f4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9404"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ],
+            [
+              "fake_memcpy",
+              12
+            ],
+            [
+              "fake_memcpy",
+              12
+            ],
+            [
+              "fake_memcpy",
+              12
+            ],
+            [
+              "fake_memcpy",
+              12
+            ],
+            [
+              "fake_memcpy",
+              12
+            ],
+            [
+              "fake_memcpy",
+              12
+            ],
+            [
+              "fake_memcpy",
+              12
+            ],
+            [
+              "fake_memcpy",
+              12
+            ],
+            [
+              "fake_memcpy",
+              12
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c93f4"
+            ],
+            [
+              "fake_pmgr_read",
+              "0x1098",
+              610271487
+            ],
+            [
+              "fake_pmgr_write",
+              "0x1098",
+              610271476
+            ],
+            [
+              "fake_pmgr_read",
+              "0x1098",
+              610271300
+            ],
+            [
+              "fake_pmgr_read",
+              "0x1094",
+              610271487
+            ],
+            [
+              "fake_pmgr_write",
+              "0x1094",
+              610271476
+            ],
+            [
+              "fake_pmgr_read",
+              "0x1094",
+              610271300
+            ],
+            [
+              "fake_pmgr_read",
+              "0x108c",
+              610271487
+            ],
+            [
+              "fake_pmgr_write",
+              "0x108c",
+              610271476
+            ],
+            [
+              "fake_pmgr_read",
+              "0x108c",
+              610271300
+            ],
+            [
+              "fake_pmgr_read",
+              "0x1080",
+              610271487
+            ],
+            [
+              "fake_pmgr_write",
+              "0x1080",
+              610271476
+            ],
+            [
+              "fake_pmgr_read",
+              "0x1080",
+              610271300
+            ],
+            [
+              "fake_bzero",
+              12
+            ],
+            [
+              "fake_pmgr_read",
+              "0xec",
+              2757754880
+            ],
+            [
+              "fake_pmgr_write",
+              "0xec",
+              610271232
+            ],
+            [
+              "fake_pmgr_read",
+              "0xec",
+              610271232
+            ],
+            [
+              "fake_pmgr_read",
+              "0xd0",
+              2757754880
+            ],
+            [
+              "fake_pmgr_write",
+              "0xd0",
+              610271232
+            ],
+            [
+              "fake_pmgr_read",
+              "0xd0",
+              610271232
+            ],
+            [
+              "fake_pmgr_read",
+              "0x9c",
+              2757754880
+            ],
+            [
+              "fake_pmgr_write",
+              "0x9c",
+              610271232
+            ],
+            [
+              "fake_pmgr_read",
+              "0x9c",
+              610271232
+            ],
+            [
+              "fake_pmgr_read",
+              "0x54",
+              2757754880
+            ],
+            [
+              "fake_pmgr_write",
+              "0x54",
+              610271232
+            ],
+            [
+              "fake_pmgr_read",
+              "0x54",
+              610271232
+            ],
+            [
+              "fake_pmgr_read",
+              "0x50",
+              2757754880
+            ],
+            [
+              "fake_pmgr_write",
+              "0x50",
+              610271232
+            ],
+            [
+              "fake_pmgr_read",
+              "0x50",
+              610271232
+            ],
+            [
+              "fake_pmgr_read",
+              "0x4c",
+              2757754880
+            ],
+            [
+              "fake_pmgr_write",
+              "0x4c",
+              610271232
+            ],
+            [
+              "fake_pmgr_read",
+              "0x4c",
+              610271232
+            ],
+            [
+              "fake_pmgr_read",
+              "0x48",
+              2757754880
+            ],
+            [
+              "fake_pmgr_write",
+              "0x48",
+              610271232
+            ],
+            [
+              "fake_pmgr_read",
+              "0x48",
+              610271232
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9404"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c93f4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9404"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ]
+          ],
+          "recursion_flags": 0,
+          "return": 0,
+          "instructions": 5055
+        }
+      ],
+      "synthetic_options": {
+        "clock_word_override": null,
+        "initial_reg_seed": 610271232,
+        "auto_ack": true,
+        "off_zero_indices": []
+      },
+      "hardware_access": false
+    }
+  ],
+  "negative_controls": [
+    {
+      "states": [
+        {
+          "request": [
+            87,
+            1
+          ],
+          "counts": {
+            "29": 0,
+            "35": 0,
+            "40": 2,
+            "41": 0,
+            "42": 1,
+            "87": 0,
+            "88": 0,
+            "89": 0,
+            "90": 0,
+            "91": 0
+          },
+          "active_ids": [
+            2,
+            3,
+            4,
+            5,
+            40,
+            42,
+            87
+          ],
+          "pending_gate_bits": [
+            0,
+            65,
+            0
+          ],
+          "dirty_gate_bits": [
+            0,
+            0,
+            0
+          ],
+          "events": [
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c93f4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9404"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ],
+            [
+              "fake_memcpy",
+              12
+            ],
+            [
+              "fake_memcpy",
+              12
+            ],
+            [
+              "fake_memcpy",
+              12
+            ],
+            [
+              "fake_memcpy",
+              12
+            ],
+            [
+              "fake_memcpy",
+              12
+            ],
+            [
+              "fake_memcpy",
+              12
+            ],
+            [
+              "fake_memcpy",
+              12
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c93f4"
+            ],
+            [
+              "fake_pmgr_read",
+              "0x48",
+              610271232
+            ],
+            [
+              "fake_pmgr_write",
+              "0x48",
+              2757754880
+            ],
+            [
+              "fake_pmgr_read",
+              "0x48",
+              2757754880
+            ],
+            [
+              "fake_pmgr_read",
+              "0x4c",
+              610271232
+            ],
+            [
+              "fake_pmgr_write",
+              "0x4c",
+              2757754880
+            ],
+            [
+              "fake_pmgr_read",
+              "0x4c",
+              2757754880
+            ],
+            [
+              "fake_pmgr_read",
+              "0x50",
+              610271232
+            ],
+            [
+              "fake_pmgr_write",
+              "0x50",
+              2757754880
+            ],
+            [
+              "fake_pmgr_read",
+              "0x50",
+              2757754880
+            ],
+            [
+              "fake_pmgr_read",
+              "0x54",
+              610271232
+            ],
+            [
+              "fake_pmgr_write",
+              "0x54",
+              2757754880
+            ],
+            [
+              "fake_pmgr_read",
+              "0x54",
+              2757754880
+            ],
+            [
+              "fake_pmgr_read",
+              "0x9c",
+              610271232
+            ],
+            [
+              "fake_pmgr_write",
+              "0x9c",
+              2757754880
+            ],
+            [
+              "fake_pmgr_read",
+              "0x9c",
+              2757754880
+            ],
+            [
+              "fake_pmgr_read",
+              "0x1080",
+              610271232
+            ],
+            [
+              "fake_pmgr_write",
+              "0x1080",
+              610271247
+            ],
+            [
+              "fake_pmgr_read",
+              "0x1080",
+              610271487
+            ],
+            [
+              "fake_pmgr_read",
+              "0x1098",
+              610271232
+            ],
+            [
+              "fake_pmgr_write",
+              "0x1098",
+              610271247
+            ],
+            [
+              "fake_pmgr_read",
+              "0x1098",
+              610271487
+            ],
+            [
+              "fake_bzero",
+              12
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9404"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c93f4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9404"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ]
+          ],
+          "recursion_flags": 0,
+          "return": 0,
+          "instructions": 4354
+        }
+      ],
+      "synthetic_options": {
+        "clock_word_override": 0,
+        "initial_reg_seed": 610271232,
+        "auto_ack": true,
+        "off_zero_indices": []
+      },
+      "hardware_access": false
+    },
+    {
+      "states": [
+        {
+          "request": [
+            87,
+            1
+          ],
+          "counts": {
+            "29": 0,
+            "35": 0,
+            "40": 2,
+            "41": 0,
+            "42": 1,
+            "87": 0,
+            "88": 0,
+            "89": 0,
+            "90": 0,
+            "91": 0
+          },
+          "active_ids": [
+            2,
+            3,
+            4,
+            5,
+            40,
+            42,
+            87
+          ],
+          "pending_gate_bits": [
+            0,
+            65,
+            0
+          ],
+          "dirty_gate_bits": [
+            0,
+            0,
+            0
+          ],
+          "events": [
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c93f4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9404"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ],
+            [
+              "fake_memcpy",
+              12
+            ],
+            [
+              "fake_memcpy",
+              12
+            ],
+            [
+              "fake_memcpy",
+              12
+            ],
+            [
+              "fake_memcpy",
+              12
+            ],
+            [
+              "fake_memcpy",
+              12
+            ],
+            [
+              "fake_memcpy",
+              12
+            ],
+            [
+              "fake_memcpy",
+              12
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c93f4"
+            ],
+            [
+              "fake_pmgr_read",
+              "0x48",
+              610271232
+            ],
+            [
+              "fake_pmgr_write",
+              "0x48",
+              2757754880
+            ],
+            [
+              "fake_pmgr_read",
+              "0x48",
+              2757754880
+            ],
+            [
+              "fake_pmgr_read",
+              "0x4c",
+              610271232
+            ],
+            [
+              "fake_pmgr_write",
+              "0x4c",
+              2757754880
+            ],
+            [
+              "fake_pmgr_read",
+              "0x4c",
+              2757754880
+            ],
+            [
+              "fake_pmgr_read",
+              "0x50",
+              610271232
+            ],
+            [
+              "fake_pmgr_write",
+              "0x50",
+              2757754880
+            ],
+            [
+              "fake_pmgr_read",
+              "0x50",
+              2757754880
+            ],
+            [
+              "fake_pmgr_read",
+              "0x54",
+              610271232
+            ],
+            [
+              "fake_pmgr_write",
+              "0x54",
+              2757754880
+            ],
+            [
+              "fake_pmgr_read",
+              "0x54",
+              2757754880
+            ],
+            [
+              "fake_pmgr_read",
+              "0x9c",
+              610271232
+            ],
+            [
+              "fake_pmgr_write",
+              "0x9c",
+              2757754880
+            ],
+            [
+              "fake_pmgr_read",
+              "0x9c",
+              2757754880
+            ],
+            [
+              "fake_pmgr_read",
+              "0x1080",
+              610271232
+            ],
+            [
+              "fake_pmgr_write",
+              "0x1080",
+              610271247
+            ],
+            [
+              "fake_pmgr_read",
+              "0x1080",
+              610271487
+            ],
+            [
+              "fake_pmgr_read",
+              "0x1098",
+              610271232
+            ],
+            [
+              "fake_pmgr_write",
+              "0x1098",
+              610271247
+            ],
+            [
+              "fake_pmgr_read",
+              "0x1098",
+              610271487
+            ],
+            [
+              "fake_bzero",
+              12
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9404"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c93f4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9404"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ]
+          ],
+          "recursion_flags": 0,
+          "return": 0,
+          "instructions": 4356
+        }
+      ],
+      "synthetic_options": {
+        "clock_word_override": 109,
+        "initial_reg_seed": 610271232,
+        "auto_ack": true,
+        "off_zero_indices": []
+      },
+      "hardware_access": false
+    },
+    {
+      "states": [
+        {
+          "request": [
+            89,
+            1
+          ],
+          "counts": {
+            "29": 0,
+            "35": 0,
+            "40": 1,
+            "41": 0,
+            "42": 0,
+            "87": 0,
+            "88": 0,
+            "89": 0,
+            "90": 0,
+            "91": 0
+          },
+          "active_ids": [
+            2,
+            3,
+            4,
+            5,
+            40,
+            89
+          ],
+          "pending_gate_bits": [
+            0,
+            5,
+            0
+          ],
+          "dirty_gate_bits": [
+            0,
+            0,
+            0
+          ],
+          "events": [
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c93f4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9404"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ],
+            [
+              "fake_memcpy",
+              12
+            ],
+            [
+              "fake_memcpy",
+              12
+            ],
+            [
+              "fake_memcpy",
+              12
+            ],
+            [
+              "fake_memcpy",
+              12
+            ],
+            [
+              "fake_memcpy",
+              12
+            ],
+            [
+              "fake_memcpy",
+              12
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c93f4"
+            ],
+            [
+              "fake_pmgr_read",
+              "0x48",
+              610271232
+            ],
+            [
+              "fake_pmgr_write",
+              "0x48",
+              2757754880
+            ],
+            [
+              "fake_pmgr_read",
+              "0x48",
+              2757754880
+            ],
+            [
+              "fake_pmgr_read",
+              "0x4c",
+              610271232
+            ],
+            [
+              "fake_pmgr_write",
+              "0x4c",
+              2757754880
+            ],
+            [
+              "fake_pmgr_read",
+              "0x4c",
+              2757754880
+            ],
+            [
+              "fake_pmgr_read",
+              "0x50",
+              610271232
+            ],
+            [
+              "fake_pmgr_write",
+              "0x50",
+              2757754880
+            ],
+            [
+              "fake_pmgr_read",
+              "0x50",
+              2757754880
+            ],
+            [
+              "fake_pmgr_read",
+              "0x54",
+              610271232
+            ],
+            [
+              "fake_pmgr_write",
+              "0x54",
+              2757754880
+            ],
+            [
+              "fake_pmgr_read",
+              "0x54",
+              2757754880
+            ],
+            [
+              "fake_pmgr_read",
+              "0x9c",
+              610271232
+            ],
+            [
+              "fake_pmgr_write",
+              "0x9c",
+              2757754880
+            ],
+            [
+              "fake_pmgr_read",
+              "0x9c",
+              2757754880
+            ],
+            [
+              "fake_pmgr_read",
+              "0x1080",
+              610271232
+            ],
+            [
+              "fake_pmgr_write",
+              "0x1080",
+              610271247
+            ],
+            [
+              "fake_pmgr_read",
+              "0x1080",
+              610271487
+            ],
+            [
+              "fake_pmgr_read",
+              "0x1088",
+              610271232
+            ],
+            [
+              "fake_pmgr_write",
+              "0x1088",
+              610271247
+            ],
+            [
+              "fake_pmgr_read",
+              "0x1088",
+              610271487
+            ],
+            [
+              "fake_bzero",
+              12
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9404"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c93f4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9404"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ]
+          ],
+          "recursion_flags": 0,
+          "return": 0,
+          "instructions": 4094
+        },
+        {
+          "request": [
+            89,
+            0
+          ],
+          "counts": {
+            "29": 0,
+            "35": 0,
+            "40": 0,
+            "41": 0,
+            "42": 0,
+            "87": 0,
+            "88": 0,
+            "89": 0,
+            "90": 0,
+            "91": 0
+          },
+          "active_ids": [],
+          "pending_gate_bits": [
+            0,
+            0,
+            0
+          ],
+          "dirty_gate_bits": [
+            0,
+            0,
+            0
+          ],
+          "events": [
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c93f4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9404"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ],
+            [
+              "fake_memcpy",
+              12
+            ],
+            [
+              "fake_memcpy",
+              12
+            ],
+            [
+              "fake_memcpy",
+              12
+            ],
+            [
+              "fake_memcpy",
+              12
+            ],
+            [
+              "fake_memcpy",
+              12
+            ],
+            [
+              "fake_memcpy",
+              12
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c93f4"
+            ],
+            [
+              "fake_pmgr_read",
+              "0x1088",
+              610271487
+            ],
+            [
+              "fake_pmgr_write",
+              "0x1088",
+              610271472
+            ],
+            [
+              "fake_pmgr_read",
+              "0x1088",
+              610271232
+            ],
+            [
+              "fake_pmgr_read",
+              "0x1080",
+              610271487
+            ],
+            [
+              "fake_pmgr_write",
+              "0x1080",
+              610271476
+            ],
+            [
+              "fake_pmgr_read",
+              "0x1080",
+              610271300
+            ],
+            [
+              "fake_bzero",
+              12
+            ],
+            [
+              "fake_pmgr_read",
+              "0x9c",
+              2757754880
+            ],
+            [
+              "fake_pmgr_write",
+              "0x9c",
+              610271232
+            ],
+            [
+              "fake_pmgr_read",
+              "0x9c",
+              610271232
+            ],
+            [
+              "fake_pmgr_read",
+              "0x54",
+              2757754880
+            ],
+            [
+              "fake_pmgr_write",
+              "0x54",
+              610271232
+            ],
+            [
+              "fake_pmgr_read",
+              "0x54",
+              610271232
+            ],
+            [
+              "fake_pmgr_read",
+              "0x50",
+              2757754880
+            ],
+            [
+              "fake_pmgr_write",
+              "0x50",
+              610271232
+            ],
+            [
+              "fake_pmgr_read",
+              "0x50",
+              610271232
+            ],
+            [
+              "fake_pmgr_read",
+              "0x4c",
+              2757754880
+            ],
+            [
+              "fake_pmgr_write",
+              "0x4c",
+              610271232
+            ],
+            [
+              "fake_pmgr_read",
+              "0x4c",
+              610271232
+            ],
+            [
+              "fake_pmgr_read",
+              "0x48",
+              2757754880
+            ],
+            [
+              "fake_pmgr_write",
+              "0x48",
+              610271232
+            ],
+            [
+              "fake_pmgr_read",
+              "0x48",
+              610271232
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9404"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c93f4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9404"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ]
+          ],
+          "recursion_flags": 0,
+          "return": 0,
+          "instructions": 4071
+        }
+      ],
+      "synthetic_options": {
+        "clock_word_override": null,
+        "initial_reg_seed": 610271232,
+        "auto_ack": true,
+        "off_zero_indices": [
+          34
+        ]
+      },
+      "hardware_access": false
+    },
+    {
+      "states": [
+        {
+          "request": [
+            89,
+            1
+          ],
+          "completed": false,
+          "error": "bounded instruction cap stops original poll",
+          "io_reads": 1056,
+          "io_writes": 1,
+          "writes_before_stop": [
+            [
+              "fake_pmgr_write",
+              "0x48",
+              3831496704
+            ]
+          ],
+          "instructions": 12001
+        }
+      ],
+      "synthetic_options": {
+        "clock_word_override": null,
+        "initial_reg_seed": 1684013056,
+        "auto_ack": true,
+        "off_zero_indices": []
+      },
+      "hardware_access": false
+    },
+    {
+      "states": [
+        {
+          "request": [
+            89,
+            1
+          ],
+          "completed": false,
+          "error": "bounded instruction cap stops original poll",
+          "io_reads": 819,
+          "io_writes": 6,
+          "writes_before_stop": [
+            [
+              "fake_pmgr_write",
+              "0x48",
+              2757754880
+            ],
+            [
+              "fake_pmgr_write",
+              "0x4c",
+              2757754880
+            ],
+            [
+              "fake_pmgr_write",
+              "0x50",
+              2757754880
+            ],
+            [
+              "fake_pmgr_write",
+              "0x54",
+              2757754880
+            ],
+            [
+              "fake_pmgr_write",
+              "0x9c",
+              2757754880
+            ],
+            [
+              "fake_pmgr_write",
+              "0x1080",
+              610271247
+            ]
+          ],
+          "instructions": 12001
+        }
+      ],
+      "synthetic_options": {
+        "clock_word_override": null,
+        "initial_reg_seed": 610271232,
+        "auto_ack": false,
+        "off_zero_indices": []
+      },
+      "hardware_access": false
+    },
+    {
+      "states": [
+        {
+          "request": [
+            89,
+            1
+          ],
+          "counts": {
+            "29": 0,
+            "35": 0,
+            "40": 1,
+            "41": 0,
+            "42": 0,
+            "87": 0,
+            "88": 0,
+            "89": 0,
+            "90": 0,
+            "91": 0
+          },
+          "active_ids": [
+            2,
+            3,
+            4,
+            5,
+            40,
+            89
+          ],
+          "pending_gate_bits": [
+            0,
+            5,
+            0
+          ],
+          "dirty_gate_bits": [
+            0,
+            0,
+            0
+          ],
+          "events": [
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c93f4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9404"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ],
+            [
+              "fake_memcpy",
+              12
+            ],
+            [
+              "fake_memcpy",
+              12
+            ],
+            [
+              "fake_memcpy",
+              12
+            ],
+            [
+              "fake_memcpy",
+              12
+            ],
+            [
+              "fake_memcpy",
+              12
+            ],
+            [
+              "fake_memcpy",
+              12
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c93f4"
+            ],
+            [
+              "fake_pmgr_read",
+              "0x48",
+              610271247
+            ],
+            [
+              "fake_pmgr_write",
+              "0x48",
+              2757754895
+            ],
+            [
+              "fake_pmgr_read",
+              "0x48",
+              2757754895
+            ],
+            [
+              "fake_pmgr_read",
+              "0x4c",
+              610271247
+            ],
+            [
+              "fake_pmgr_write",
+              "0x4c",
+              2757754895
+            ],
+            [
+              "fake_pmgr_read",
+              "0x4c",
+              2757754895
+            ],
+            [
+              "fake_pmgr_read",
+              "0x50",
+              610271247
+            ],
+            [
+              "fake_pmgr_write",
+              "0x50",
+              2757754895
+            ],
+            [
+              "fake_pmgr_read",
+              "0x50",
+              2757754895
+            ],
+            [
+              "fake_pmgr_read",
+              "0x54",
+              610271247
+            ],
+            [
+              "fake_pmgr_write",
+              "0x54",
+              2757754895
+            ],
+            [
+              "fake_pmgr_read",
+              "0x54",
+              2757754895
+            ],
+            [
+              "fake_pmgr_read",
+              "0x9c",
+              610271247
+            ],
+            [
+              "fake_pmgr_write",
+              "0x9c",
+              2757754895
+            ],
+            [
+              "fake_pmgr_read",
+              "0x9c",
+              2757754895
+            ],
+            [
+              "fake_pmgr_read",
+              "0x1080",
+              610271247
+            ],
+            [
+              "fake_pmgr_read",
+              "0x1088",
+              610271247
+            ],
+            [
+              "fake_bzero",
+              12
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9404"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c93f4"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9404"
+            ],
+            [
+              "fake_irq_or_lock",
+              "0x804c9da4"
+            ]
+          ],
+          "recursion_flags": 0,
+          "return": 0,
+          "instructions": 4042
+        }
+      ],
+      "synthetic_options": {
+        "clock_word_override": null,
+        "initial_reg_seed": 610271247,
+        "auto_ack": false,
+        "off_zero_indices": []
+      },
+      "hardware_access": false
+    }
+  ]
+}

@@ -1,0 +1,1 @@
+obj-$(CONFIG_CASCADIA_EXTERNAL_USB_CLIENT_RESEARCH) += cascadia-external-client.o

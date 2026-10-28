@@ -1,0 +1,9 @@
+{
+  "build/linux/drivers/base/dd.c": "405ff5610410ddc30dec483423f54c9be46c8d307f930989cfd44860a1185930",
+  "build/linux/drivers/mtd/mtdcore.c": "a14842ae73acebc5601e74bcbde1b2dfac594979fd2512a38ea30d406b57540e",
+  "patches/files/drivers/mtd/devices/mtd-apple-h2fmi.c": "820ce09ca39bef023ec4289f05bc2110d5e415b48e0a6f1d43b503dead83a58a",
+  "patches/files/drivers/irqchip/irq-apple-aic1.c": "5001ada7042ca42d884f71f191ffe2ee0ed9a8bd6811b4881933c2793d64edf6",
+  "build/linux/include/linux/dmaengine.h": "a1041fddb0ec26c888320ddca5f55da17e58b4c559e534f5b24e59fafe273c1e",
+  "build/linux/drivers/dma/tegra186-gpc-dma.c": "b4f39876aec6d57324d3ff3f79976daae6b9bc19b2872007ef6621bcc85bc65e",
+  "build/linux/drivers/dma/sh/rcar-dmac.c": "a1dd70bee92df4dbb30b39fac050cc7660429883708be134872637078f216c5c"
+}

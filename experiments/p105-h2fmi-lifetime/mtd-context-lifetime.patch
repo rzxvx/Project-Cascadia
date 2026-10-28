@@ -1,0 +1,271 @@
+--- a/drivers/mtd/mtdcore.c
++++ b/drivers/mtd/mtdcore.c
+@@ -89,11 +89,19 @@ static LIST_HEAD(mtd_notifiers);
+ /* REVISIT once MTD uses the driver model better, whoever allocates
+  * the mtd_info will probably want to use the release() hook...
+  */
+-static void mtd_release(struct device *dev)
++static void mtd_release_final(struct mtd_info *mtd)
+ {
+-	struct mtd_info *mtd = dev_get_drvdata(dev);
++	struct mtd_info *master = NULL;
++	void (*put_driver)(struct mtd_info *) = NULL;
++	struct device *parent = mtd->driver_parent_ref;
+ 	dev_t index = MTD_DEVT(mtd->index);
+ 
++	if (mtd->driver_device_ref) {
++		master = mtd_get_master(mtd);
++		mtd->driver_device_ref = false;
++		put_driver = master->_put_device;
++	}
++
+ 	idr_remove(&mtd_idr, mtd->index);
+ 	of_node_put(mtd_get_of_node(mtd));
+ 
+@@ -102,12 +110,44 @@ static void mtd_release(struct device *dev)
+ 
+ 	/* remove /dev/mtdXro node */
+ 	device_destroy(&mtd_class, index + 1);
++
++	if (parent)
++		put_device(parent);
++
++	/* Last: this may free the driver-owned master/context. */
++	if (put_driver)
++		put_driver(master);
++}
++
++static void mtd_release_work(struct work_struct *work)
++{
++	struct mtd_info *mtd = container_of(work, struct mtd_info,
++					  device_release_work);
++
++	/* A final device ref may be dropped outside the MTD table lock.
++	 * The retained driver/parent refs cover this work and its allocation. */
++	mutex_lock(&mtd_table_mutex);
++	mtd_release_final(mtd);
++	mutex_unlock(&mtd_table_mutex);
+ }
+ 
++static void mtd_release(struct device *dev)
++{
++	struct mtd_info *mtd = dev_get_drvdata(dev);
++
++	if (mtd->driver_device_ref) {
++		schedule_work(&mtd->device_release_work);
++		return;
++	}
++	mtd_release_final(mtd);
++}
++
++
+ static void mtd_device_release(struct kref *kref)
+ {
+ 	struct mtd_info *mtd = container_of(kref, struct mtd_info, refcnt);
+ 	bool is_partition = mtd_is_partition(mtd);
++	bool driver_device_ref = mtd->driver_device_ref;
+ 
+ 	debugfs_remove_recursive(mtd->dbg.dfs_dir);
+ 
+@@ -121,7 +161,7 @@ static void mtd_device_release(struct kref *kref)
+ 	 *  Should not be done for partition,
+ 	 *  as it was already destroyed in device_unregister().
+ 	 */
+-	if (!is_partition)
++	if (!is_partition && !driver_device_ref)
+ 		memset(&mtd->dev, 0, sizeof(mtd->dev));
+ 
+ 	module_put(THIS_MODULE);
+@@ -549,6 +589,9 @@ static int mtd_nvmem_add(struct mtd_info *mtd)
+ 	struct device_node *node = mtd_get_of_node(mtd);
+ 	struct nvmem_config config = {};
+ 
++	if (mtd_get_master(mtd)->no_nvmem)
++		return 0;
++
+ 	config.id = NVMEM_DEVID_NONE;
+ 	config.dev = &mtd->dev;
+ 	config.name = dev_name(&mtd->dev);
+@@ -655,6 +698,18 @@ int add_mtd_device(struct mtd_info *mtd)
+ 	if (WARN_ONCE(mtd->dev.type, "MTD already registered\n"))
+ 		return -EEXIST;
+ 
++	/* This opt-in currently supports built-in providers only: an external
++	 * struct device reference does not pin a loadable driver module. */
++	if (master->retain_device_context &&
++	    (!IS_BUILTIN(CONFIG_MTD) || master->owner ||
++	     !master->_get_device || !master->_put_device))
++		return -EINVAL;
++
++	/* Reset only core-owned state of a fresh, unregistered object. */
++	mtd->driver_device_ref = false;
++	mtd->partition_constructor_ref = false;
++	mtd->driver_parent_ref = NULL;
++
+ 	BUG_ON(mtd->writesize == 0);
+ 
+ 	/*
+@@ -745,7 +800,35 @@ int add_mtd_device(struct mtd_info *mtd)
+ 	dev_set_drvdata(&mtd->dev, mtd);
+ 	mtd_check_of_node(mtd);
+ 	of_node_get(mtd_get_of_node(mtd));
+-	error = device_register(&mtd->dev);
++	/* Retain before publication; even partial device_add failure can leave
++	 * externally held device refs.  The probe owner covers this unwind. */
++	if (master->retain_device_context) {
++		device_initialize(&mtd->dev);
++		INIT_WORK(&mtd->device_release_work, mtd_release_work);
++		if (mtd_is_partition(mtd)) {
++			/* Publication/unwind must not free the caller's child. */
++			get_device(&mtd->dev);
++			mtd->partition_constructor_ref = true;
++			if (mtd_is_partition(mtd->parent)) {
++				if (!device_is_registered(&mtd->parent->dev)) {
++					error = -ENODEV;
++					put_device(&mtd->dev);
++					goto fail_added;
++				}
++				mtd->driver_parent_ref =
++					get_device(&mtd->parent->dev);
++			}
++		}
++		error = master->_get_device(mtd);
++		if (error) {
++			put_device(&mtd->dev);
++			goto fail_added;
++		}
++		mtd->driver_device_ref = true;
++		error = device_add(&mtd->dev);
++	} else {
++		error = device_register(&mtd->dev);
++	}
+ 	if (error) {
+ 		put_device(&mtd->dev);
+ 		goto fail_added;
+@@ -789,8 +872,12 @@ int add_mtd_device(struct mtd_info *mtd)
+ fail_nvmem_add:
+ 	device_unregister(&mtd->dev);
+ fail_added:
+-	of_node_put(mtd_get_of_node(mtd));
+-	idr_remove(&mtd_idr, i);
++	/* Opt-in devices retain their ID/node until actual final release, even
++	 * when publication failed.  Do not duplicate or race that cleanup. */
++	if (!master->retain_device_context) {
++		of_node_put(mtd_get_of_node(mtd));
++		idr_remove(&mtd_idr, i);
++	}
+ fail_locked:
+ 	mutex_unlock(&mtd_table_mutex);
+ 	return error;
+@@ -1243,6 +1330,10 @@ int __get_mtd_device(struct mtd_info *mtd)
+ 	struct mtd_info *master = mtd_get_master(mtd);
+ 	int err;
+ 
++	if (master->retain_device_context &&
++	    !device_is_registered(&mtd->dev))
++		return -ENODEV;
++
+ 	if (master->_get_device) {
+ 		err = master->_get_device(mtd);
+ 		if (err)
+--- a/drivers/mtd/mtdpart.c
++++ b/drivers/mtd/mtdpart.c
+@@ -32,6 +32,31 @@ static inline void free_partition(struct mtd_info *mtd)
+ 	kfree(mtd);
+ }
+ 
++/* Only initialized opt-in partitions carry this constructor reference. */
++static void put_partition_constructor(struct mtd_info *mtd)
++{
++	if (!mtd->partition_constructor_ref)
++		return;
++	mtd->partition_constructor_ref = false;
++	if (mtd->driver_device_ref) {
++		put_device(&mtd->dev);
++		return;
++	}
++	/* _get_device failed before publication: there is no async driver ref.
++	 * Its final cleanup still owns an ID reservation. */
++	mutex_lock(&mtd_table_mutex);
++	put_device(&mtd->dev);
++	mutex_unlock(&mtd_table_mutex);
++}
++
++static void free_unpublished_partition(struct mtd_info *mtd)
++{
++	if (mtd->partition_constructor_ref)
++		put_partition_constructor(mtd);
++	else
++		free_partition(mtd);
++}
++
+ void release_mtd_partition(struct mtd_info *mtd)
+ {
+ 	WARN_ON(!list_empty(&mtd->part.node));
+@@ -281,6 +306,7 @@ int mtd_add_partition(struct mtd_info *parent, const char *name,
+ 		goto err_remove_part;
+ 
+ 	mtd_add_partition_attrs(child);
++	put_partition_constructor(child);
+ 
+ 	return 0;
+ 
+@@ -289,7 +315,7 @@ err_remove_part:
+ 	list_del(&child->part.node);
+ 	mutex_unlock(&master->master.partitions_lock);
+ 
+-	free_partition(child);
++	free_unpublished_partition(child);
+ 
+ 	return ret;
+ }
+@@ -419,7 +445,7 @@ int add_mtd_partitions(struct mtd_info *parent,
+ 			list_del(&child->part.node);
+ 			mutex_unlock(&master->master.partitions_lock);
+ 
+-			free_partition(child);
++			free_unpublished_partition(child);
+ 			goto err_del_partitions;
+ 		}
+ 
+@@ -429,10 +455,12 @@ int add_mtd_partitions(struct mtd_info *parent,
+ 		ret = parse_mtd_partitions(child, parts[i].types, NULL);
+ 		if (ret < 0) {
+ 			pr_err("Failed to parse subpartitions: %d\n", ret);
++			put_partition_constructor(child);
+ 			goto err_del_partitions;
+ 		}
+ 
+ 		cur_offset = child->part.offset + child->part.size;
++		put_partition_constructor(child);
+ 	}
+ 
+ 	return 0;
+--- a/include/linux/mtd/mtd.h
++++ b/include/linux/mtd/mtd.h
+@@ -10,6 +10,7 @@
+ #include <linux/uio.h>
+ #include <linux/list.h>
+ #include <linux/notifier.h>
++#include <linux/workqueue.h>
+ #include <linux/device.h>
+ #include <linux/of.h>
+ #include <linux/nvmem-provider.h>
+@@ -381,6 +382,17 @@ struct mtd_info {
+ 	struct device dev;
+ 	struct kref refcnt;
+ 	struct mtd_debug_info dbg;
++	/* Opt out when driver lifetime cannot support an independent provider. */
++	bool no_nvmem;
++	/* Opt-in: _get/_put retain driver context until final struct device
++	 * release.  Built-in providers only (owner must be NULL).  Such masters
++	 * cannot be re-registered after unregister. */
++	bool retain_device_context;
++	/* MTD core private: one retained driver context ref per device. */
++	bool driver_device_ref;
++	bool partition_constructor_ref;
++	struct device *driver_parent_ref;
++	struct work_struct device_release_work;
+ 	struct nvmem_device *nvmem;
+ 	struct nvmem_device *otp_user_nvmem;
+ 	struct nvmem_device *otp_factory_nvmem;

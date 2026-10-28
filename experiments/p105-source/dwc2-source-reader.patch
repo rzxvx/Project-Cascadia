@@ -1,0 +1,154 @@
+--- a/drivers/usb/dwc2/platform.c
++++ b/drivers/usb/dwc2/platform.c
+@@ -21,6 +21,7 @@
+ #include <linux/usb/of.h>
+ 
+ #include "core.h"
++#include "p105-dwc2-source.h"
+ #include "hcd.h"
+ #include "debug.h"
+ 
+@@ -763,3 +764,9 @@
+ };
+ 
+ module_platform_driver(dwc2_platform_driver);
++
++/* Internal same-module identity check for the managed source reader. */
++bool p105_dwc2_matches(struct device *dev)
++{
++ return READ_ONCE(dev->driver) == &dwc2_platform_driver.driver;
++}
+--- a/drivers/usb/dwc2/Makefile
++++ b/drivers/usb/dwc2/Makefile
+@@ -30,3 +30,5 @@
+ 
+ # Private observation-only option, default n.
+ dwc2-$(CONFIG_P105_DWC2_POWER_OBSERVER) += p105-udc-observer.o
++
++dwc2-$(CONFIG_P105_DWC2_SOURCE_READER) += p105-dwc2-source.o
+--- a/drivers/usb/dwc2/Kconfig
++++ b/drivers/usb/dwc2/Kconfig
+@@ -103,3 +103,18 @@
+ 	help
+ 	  Records requested current and completed EP0 configuration transfers.
+ 	  This grants no charging permission and adds no PMU operations.
++
++config P105_DWC2_SOURCE_READER
++	bool "Private P105 fixed-peripheral composite source reader"
++	depends on USB_DWC2=y && USB_LIBCOMPOSITE=y && P105_DWC2_POWER_OBSERVER
++	default n
++	help
++	  USB2 completed-configuration allowance only. No external accessory grant.
++
++config P105_COMBINED_CURRENT_PROVIDER
++	tristate "Private P105 source/gauge current-provider adapter"
++	depends on P105_DWC2_SOURCE_READER && POWER_SUPPLY && BATTERY_APPLE_HDQ
++	default n
++	help
++	  API constructor only; no automatic charger binding or DT is supplied.
++	  Requires the separately reviewed opaque HDQ reader implementation.
+--- a/drivers/usb/dwc2/p105-udc-observer.c
++++ b/drivers/usb/dwc2/p105-udc-observer.c
+@@ -6,6 +6,7 @@
+ {
+ 	memset(o, 0, sizeof(*o));
+ 	spin_lock_init(&o->lock);
++	ATOMIC_INIT_NOTIFIER_HEAD(&o->changes);
+ 	o->seen.generation = 1;
+ 	o->seen.uncertain = true;
+ }
+@@ -20,6 +21,7 @@
+ 	o->seen.completed_draw_seen = o->pending_draw_seen;
+ 	o->seen.completed = true;
+ 	o->seen.uncertain = false;
++	atomic_notifier_call_chain(&o->changes, 0, NULL);
+ 	o->seen.pending = false;
+ }
+ u64 p105_udc_setup_begin(struct p105_udc_observer *o, bool configuration,
+@@ -32,6 +34,7 @@
+ 		o->seen.generation++;
+ 		o->seen.completed = false;
+ 		o->seen.uncertain = true;
++		atomic_notifier_call_chain(&o->changes, 0, NULL);
+ 	}
+ 	o->seen.pending = configuration;
+ 	o->seen.setup_ok = false;
+@@ -106,6 +109,7 @@
+ 	o->seen.completed = false;
+ 	o->seen.uncertain = true;
+ 	o->seen.invalidation_reason = reason;
++	atomic_notifier_call_chain(&o->changes, reason, NULL);
+ 	spin_unlock_irqrestore(&o->lock, flags);
+ }
+ void p105_udc_observer_read(struct p105_udc_observer *o,
+@@ -116,3 +120,28 @@
+ 	*out = o->seen;
+ 	spin_unlock_irqrestore(&o->lock, flags);
+ }
++
++bool p105_udc_observer_try_read(struct p105_udc_observer *o,
++				struct p105_udc_observation *out)
++{
++	unsigned long flags;
++	if (!spin_trylock_irqsave(&o->lock, flags))
++		return false;
++	*out = o->seen;
++	spin_unlock_irqrestore(&o->lock, flags);
++	return true;
++}
++
++/* Register/unregister only in process context. Callbacks run under observer and
++ * often controller locks with IRQs disabled: no snapshot, I/O, sleep or recursive
++ * observer access. Unregister waits RCU before caller destroys its callback. */
++int p105_udc_observer_register(struct p105_udc_observer *o,
++			       struct notifier_block *nb)
++{
++	return atomic_notifier_chain_register(&o->changes, nb);
++}
++int p105_udc_observer_unregister(struct p105_udc_observer *o,
++				 struct notifier_block *nb)
++{
++	return atomic_notifier_chain_unregister(&o->changes, nb);
++}
+--- a/drivers/usb/dwc2/p105-udc-observer.h
++++ b/drivers/usb/dwc2/p105-udc-observer.h
+@@ -3,8 +3,9 @@
+ #define P105_UDC_OBSERVER_H
+ #include <linux/types.h>
+ #include <linux/spinlock.h>
+-/* Controller-owned observations only. No consumer pointer/export, source
+- * classification, physical current measurement or charging permission. */
++#include <linux/notifier.h>
++/* Controller-owned observations with explicitly drained atomic listeners.
++ * No physical-current measurement or charging permission is introduced. */
+ struct p105_udc_observation {
+ 	u64 generation, control_cookie, completed_cookie;
+ 	unsigned int last_draw_request_ma, completed_draw_request_ma;
+@@ -16,6 +17,7 @@
+ };
+ struct p105_udc_observer {
+ 	spinlock_t lock;
++	struct atomic_notifier_head changes;
+ 	struct p105_udc_observation seen;
+ 	u16 pending_configuration;
+ 	unsigned int pending_draw_request_ma;
+@@ -29,6 +31,10 @@
+ 	P105_UDC_REMOVE,
+ };
+ #if defined(CONFIG_P105_DWC2_POWER_OBSERVER)
++int p105_udc_observer_register(struct p105_udc_observer *,
++			       struct notifier_block *);
++int p105_udc_observer_unregister(struct p105_udc_observer *,
++				 struct notifier_block *);
+ void p105_udc_observer_init(struct p105_udc_observer *);
+ u64 p105_udc_setup_begin(struct p105_udc_observer *, bool, u16);
+ void p105_udc_setup_result(struct p105_udc_observer *, u64, int, bool);
+@@ -36,6 +42,8 @@
+ u64 p105_udc_pending_cookie(struct p105_udc_observer *);
+ void p105_udc_status_complete(struct p105_udc_observer *, u64, int);
+ void p105_udc_invalidate(struct p105_udc_observer *, unsigned int);
++bool p105_udc_observer_try_read(struct p105_udc_observer *,
++				struct p105_udc_observation *);
+ void p105_udc_observer_read(struct p105_udc_observer *,
+ 			    struct p105_udc_observation *);
+ #else

@@ -1,0 +1,137 @@
+{
+  "kernelcache_sha256": "8eae16f060a71d4f3790385951588f8198d0f21cdb74146f9750941a3d764125",
+  "limitations": [
+    "policy callbacks and command gate provider are synthetic",
+    "USBd transition intercepted; no PHY/MMIO/VBUS execution",
+    "no identified camera adapter ID or authentication transcript"
+  ],
+  "experiments": [
+    {
+      "setup": "c053000000000400",
+      "mask_first": "0x1234",
+      "mask_second": "0x5678",
+      "policy_synthetic": 1,
+      "handled": 1,
+      "status": "0x0",
+      "returned_length": 4,
+      "descriptor": "0x10006500",
+      "response": [
+        "34127856"
+      ],
+      "manager_override": 0,
+      "calls": [],
+      "hardware_access": false
+    },
+    {
+      "setup": "4051340078000000",
+      "mask_first": "0x1234",
+      "mask_second": "0x5678",
+      "policy_synthetic": 1,
+      "handled": 1,
+      "status": "0x0",
+      "returned_length": 2779096485,
+      "descriptor": "0xa5a5a5a5",
+      "response": [],
+      "manager_override": 1,
+      "calls": [
+        {
+          "command_gate_callback": "0x807f7b31",
+          "argument": 1,
+          "synthetic_error": 0
+        },
+        {
+          "command_gate_callback": "0x807f703d",
+          "argument": 3,
+          "synthetic_error": 0
+        },
+        {
+          "requested_USBd_control": 5,
+          "force_flags": 0,
+          "note": "transition implementation deliberately intercepted"
+        },
+        {
+          "IOService_message": "0xe3ff8022",
+          "size": 8,
+          "payload": "4051340078000000"
+        }
+      ],
+      "hardware_access": false
+    },
+    {
+      "setup": "4051008078000000",
+      "mask_first": "0x1234",
+      "mask_second": "0x5678",
+      "policy_synthetic": 1,
+      "handled": 1,
+      "status": "0xe00002bc",
+      "returned_length": 2779096485,
+      "descriptor": "0xa5a5a5a5",
+      "response": [],
+      "manager_override": 0,
+      "calls": [],
+      "hardware_access": false
+    },
+    {
+      "setup": "4051340000800000",
+      "mask_first": "0x1234",
+      "mask_second": "0x5678",
+      "policy_synthetic": 1,
+      "handled": 1,
+      "status": "0xe00002bc",
+      "returned_length": 2779096485,
+      "descriptor": "0xa5a5a5a5",
+      "response": [],
+      "manager_override": 0,
+      "calls": [],
+      "hardware_access": false
+    },
+    {
+      "setup": "c053000000000300",
+      "mask_first": "0x1234",
+      "mask_second": "0x5678",
+      "policy_synthetic": 1,
+      "handled": 0,
+      "status": "0xa5a5a5a5",
+      "returned_length": 2779096485,
+      "descriptor": "0xa5a5a5a5",
+      "response": [],
+      "manager_override": 0,
+      "calls": [],
+      "hardware_access": false
+    },
+    {
+      "setup": "4051340078000100",
+      "mask_first": "0x1234",
+      "mask_second": "0x5678",
+      "policy_synthetic": 1,
+      "handled": 0,
+      "status": "0xa5a5a5a5",
+      "returned_length": 2779096485,
+      "descriptor": "0xa5a5a5a5",
+      "response": [],
+      "manager_override": 0,
+      "calls": [],
+      "hardware_access": false
+    },
+    {
+      "setup": "4051340078000000",
+      "mask_first": "0x1234",
+      "mask_second": "0x5678",
+      "policy_synthetic": 1,
+      "handled": 1,
+      "status": "0xfffffffb",
+      "returned_length": 2779096485,
+      "descriptor": "0xa5a5a5a5",
+      "response": [],
+      "manager_override": 0,
+      "calls": [
+        {
+          "command_gate_callback": "0x807f7b31",
+          "argument": 1,
+          "synthetic_error": -5
+        }
+      ],
+      "hardware_access": false
+    }
+  ]
+}
