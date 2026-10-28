@@ -5,6 +5,9 @@
 #
 #   nfs-utils           mount.nfs -- an NFS root cannot be mounted by a binary
 #                       that lives on it
+#   libtirpc-conf       /etc/netconfig, which mount.nfs needs to select TCP.
+#                       This data-only dependency is not an ELF DT_NEEDED entry,
+#                       so add-apk-packages.sh cannot discover it automatically.
 #   busybox-static      stage 2 runs the cable console from a RAM copy of it
 #   iw, wpa_supplicant  Wi-Fi.  A RAM boot has no NFS root and no network but
 #                       Wi-Fi, and apk cannot fetch what Wi-Fi itself needs
@@ -33,8 +36,12 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TREE="$ROOT/build/initramfs-root"
 
 bash "$ROOT/scripts/add-apk-packages.sh" \
-    nfs-utils busybox-static iw wpa_supplicant fbkeyboard font-dejavu bluez dbus \
+    nfs-utils libtirpc-conf busybox-static iw wpa_supplicant fbkeyboard font-dejavu bluez dbus \
     alsa-utils
+[ -s "$TREE/etc/netconfig" ] || {
+    echo "missing /etc/netconfig: libtirpc-conf was not installed" >&2
+    exit 1
+}
 find "$TREE/usr/share/fonts/dejavu" -type f ! -name DejaVuSans.ttf -delete
 # alsa-utils: what the speakers need is aplay (and arecord), amixer, alsamixer
 # and speaker-test.  The rest goes, with the libraries only it uses -- fftw is
