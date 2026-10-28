@@ -90,6 +90,17 @@ sgx_resource_create(struct pipe_screen *pscreen, const struct pipe_resource *tem
    if ((templ->bind & PIPE_BIND_RENDER_TARGET) && templ->target != PIPE_BUFFER &&
        (sgx_frame_options() & SGX_FRAME_ALIGN))
       res->bo = aligned_bo(&screen->dev, size);
+   /* (M45) a texture or a target of this process's alone from the cache,
+    * as buffers' GPU copies are (M26): glamor makes one for every pixmap,
+    * and a new buffer is the kernel's pages cleared and cleaned out of the
+    * CPU's cache -- 190 of them a terminal opened, 15% of Xorg's time.  Its
+    * content is no one's (GL's new texture is undefined).  Not one to be
+    * shared (sgx_resource_get_handle takes it out of the cache's hands
+    * later), nor depth: its tiles are buffers of their own */
+   if (!res->bo &&
+       !(templ->bind & (PIPE_BIND_SHARED | PIPE_BIND_SCANOUT | PIPE_BIND_DISPLAY_TARGET)) &&
+       !util_format_is_depth_or_stencil(templ->format))
+      res->bo = sgx_bo_cache_get(&screen->dev, size);
    if (!res->bo)
       res->bo = sgx_bo_create(&screen->dev, size, 0, 0);
    if (!res->bo) {
@@ -127,6 +138,9 @@ sgx_resource_get_handle(struct pipe_screen *pscreen, struct pipe_context *pctx,
 
    if (prsc->target == PIPE_BUFFER || !res->bo)
       return false;
+   /* (M45) another process's too from now on: closed when it goes, not
+    * handed to another resource by the cache */
+   res->bo->cached = false;
    handle->stride = res->stride[0];
    handle->offset = 0;
    handle->modifier = DRM_FORMAT_MOD_LINEAR;
@@ -302,7 +316,37 @@ native_format(const struct pipe_resource *p, uint32_t *fmt, uint32_t *swizzle)
    case PIPE_FORMAT_A8_UNORM:       *fmt = 0x00; *swizzle = 6; return 1;  /* R000: A8 */
    case PIPE_FORMAT_I8_UNORM:       *fmt = 0x00; *swizzle = 3; return 1;  /* RRRR: I8 (M43) */
    case PIPE_FORMAT_L8A8_UNORM:     *fmt = 0x07; *swizzle = 2; return 2;  /* GRRR: LA8 */
+   /* (M45) R8, RG8 -- glamor's a8 pixmaps, every mask XFCE's programs
+    * draw with: RRRR and GRRR, the rest the program's (sgx_resource_swizzle) */
+   case PIPE_FORMAT_R8_UNORM:       *fmt = 0x00; *swizzle = 3; return 1;
+   case PIPE_FORMAT_R8G8_UNORM:     *fmt = 0x07; *swizzle = 2; return 2;
    default:                         return 0;
+   }
+}
+
+/* (M45) What the program makes of the sampler's texel for p, as a
+ * pipe_swizzle each of R G B A, where the sampler's own swizzles cannot give
+ * GL's: U8 and U8U8 have none with a 1 for alpha and zeros besides (GXM's
+ * SWIZZLE1 and SWIZZLE2 lists, whose numbers native_format's are) -- R8's X 0
+ * 0 1 of RRRR, RG8's X W 0 1 of GRRR.  false: the texel as it comes. */
+bool
+sgx_resource_swizzle(const struct pipe_resource *p, uint8_t swz[4])
+{
+   uint32_t fmt, swizzle;
+
+   if (!native_format(p, &fmt, &swizzle))
+      return false;
+   switch (util_format_linear(p->format)) {
+   case PIPE_FORMAT_R8_UNORM:
+      swz[0] = PIPE_SWIZZLE_X, swz[1] = PIPE_SWIZZLE_0, swz[2] = PIPE_SWIZZLE_0;
+      swz[3] = PIPE_SWIZZLE_1;
+      return true;
+   case PIPE_FORMAT_R8G8_UNORM:
+      swz[0] = PIPE_SWIZZLE_X, swz[1] = PIPE_SWIZZLE_W, swz[2] = PIPE_SWIZZLE_0;
+      swz[3] = PIPE_SWIZZLE_1;
+      return true;
+   default:
+      return false;
    }
 }
 

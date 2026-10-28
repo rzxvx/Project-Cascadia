@@ -1,7 +1,7 @@
 #!/bin/sh
 # supertux-mesa.sh [ARGS] -- SuperTux through the Mesa driver: SDL's
 # renderer on GLES 2, on KMS (docs/research/p105-mesa.md, M25).  The console
-# and fbkeyboard are taken off the screen while it runs, as supertux.sh does.
+# and fbkeyboard are taken off the screen while it runs, as tux-gpudemo does.
 #
 #   SGX_DEBUG=fps supertux-mesa.sh       the frame rate, every 2 s
 #   TIME=30 supertux-mesa.sh             at most 30 s

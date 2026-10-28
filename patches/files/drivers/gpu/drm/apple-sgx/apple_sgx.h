@@ -15,10 +15,12 @@
 #include <linux/workqueue.h>
 
 struct apple_sgx_drm;
+struct apple_sgx_kms;
 struct clk_bulk_data;
 struct dentry;
 struct device;
 struct drm_device;
+struct drm_file;
 struct drm_gem_object;
 struct page;
 struct resource;
@@ -101,8 +103,12 @@ struct resource;
 #define SGX_TA_HEAP_END			0x97800000u
 #define SGX_TILED_VA_START		0xe0000000u
 
-/* The GPU clock in kHz: GFX-CLK, PLL@0x18 (513 MHz) / 5 in perf state 2. */
-#define SGX_CLOCK_KHZ			102600
+/* The GPU's core clock in kHz: PLL@0x18 (513 MHz) / 2, as measured -- the
+ * microkernel's timer ticked 2500 times a second when told 102600 kHz, and
+ * the USSEs run 2.0 G instructions a second, 8 a clock.  (GFX-CLK, 513 / 5,
+ * is not the core's clock: docs/research/p105-gpu.md, "The GPU's clock,
+ * measured".) */
+#define SGX_CLOCK_KHZ			256500
 
 /* The DDK's SGXMKIF_CC_* (sgx_mkif_km.h): what a kernel CCB command asks
  * the microkernel to invalidate before it runs. */
@@ -189,10 +195,13 @@ struct apple_sgx {
 	phys_addr_t fb_pa;
 	u64 *blt_code;			/* CPU side of the code page at GPU 0x1000 */
 	u32 blt_seq, r_seq;
+	u32 blt_pending;		/* the job queued and not seen done; 0: none (blt_lock) */
+	unsigned long blt_since;	/* when it was queued, jiffies */
 	u32 fb_w, fb_h, fb_stride;	/* the framebuffer: pixels, pixels, pixels */
 
-	/* the render node */
+	/* the render node, and its screen */
 	struct apple_sgx_drm *drm;
+	struct apple_sgx_kms *kms;
 };
 
 /* apple_sgx_hw.c */
@@ -207,8 +216,17 @@ bool apple_sgx_render_waiting(struct apple_sgx *sgx, u32 at, const u32 *details)
 int apple_sgx_render_rekick(struct apple_sgx *sgx);
 void apple_sgx_report(struct apple_sgx *sgx, const char *why);
 int apple_sgx_fb_find(struct apple_sgx *sgx, struct resource *res);
+/* the screen's overlay's part of a copy onto the screen (apple_sgx_kms.c) */
+struct apple_sgx_over {
+	u32 va, stride;		/* its rectangle's first pixel; pixels a line */
+	u32 w, h;		/* its size, as the source has it */
+	u32 x, y, dw, dh;	/* where it lands in the copy's box, turned */
+};
 int apple_sgx_fb_show(struct apple_sgx *sgx, u32 va, u32 stride, u32 w, u32 h, u32 x, u32 y,
-		      unsigned int rot);
+		      unsigned int rot, const struct apple_sgx_over *over);
+/* until the 2D engine has no job running -- fb_show's copies are queued,
+ * not waited for (sleeps); -EIO: the engine is out of service */
+int apple_sgx_blt_sync(struct apple_sgx *sgx);
 
 /* apple_sgx_drm.c */
 int apple_sgx_drm_init(struct apple_sgx *sgx);
@@ -219,6 +237,10 @@ void apple_sgx_drm_unreserve(struct apple_sgx *sgx, int slot);
 u32 apple_sgx_bo_va(struct drm_gem_object *obj);
 
 /* apple_sgx_kms.c */
+struct drm_apple_sgx_overlay;
 int apple_sgx_kms_init(struct drm_device *drm, struct apple_sgx *sgx);
+int apple_sgx_kms_overlay(struct apple_sgx *sgx, struct drm_file *file,
+			  struct drm_apple_sgx_overlay *args);
+void apple_sgx_kms_overlay_close(struct apple_sgx *sgx, struct drm_file *file);
 
 #endif

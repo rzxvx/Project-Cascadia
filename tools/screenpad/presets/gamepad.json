@@ -1,0 +1,26 @@
+{
+  "name": "Gamepad",
+  "screen": "landscape",
+  "controls": [
+    { "type": "stick", "x": 48, "y": 452, "w": 250, "h": 250, "color": "#ffffff", "opacity": 0.3,
+      "action": "pad:LSTICK" },
+    { "type": "dpad", "x": 318, "y": 568, "w": 176, "h": 176, "color": "#ffffff", "opacity": 0.3,
+      "up": "pad:UP", "down": "pad:DOWN", "left": "pad:LEFT", "right": "pad:RIGHT" },
+    { "type": "button", "shape": "circle", "x": 840, "y": 628, "w": 96, "h": 96,
+      "color": "#22c55e", "opacity": 0.42, "label": "A", "action": "pad:A" },
+    { "type": "button", "shape": "circle", "x": 916, "y": 552, "w": 96, "h": 96,
+      "color": "#ef4444", "opacity": 0.42, "label": "B", "action": "pad:B" },
+    { "type": "button", "shape": "circle", "x": 764, "y": 552, "w": 96, "h": 96,
+      "color": "#3b82f6", "opacity": 0.42, "label": "X", "action": "pad:X" },
+    { "type": "button", "shape": "circle", "x": 840, "y": 476, "w": 96, "h": 96,
+      "color": "#eab308", "opacity": 0.42, "label": "Y", "action": "pad:Y" },
+    { "type": "button", "shape": "rect", "x": 24, "y": 24, "w": 150, "h": 64, "radius": 18,
+      "color": "#ffffff", "opacity": 0.28, "label": "LB", "action": "pad:LB" },
+    { "type": "button", "shape": "rect", "x": 850, "y": 24, "w": 150, "h": 64, "radius": 18,
+      "color": "#ffffff", "opacity": 0.28, "label": "RB", "action": "pad:RB" },
+    { "type": "button", "shape": "rect", "x": 400, "y": 28, "w": 96, "h": 48, "radius": 24,
+      "color": "#ffffff", "opacity": 0.28, "label": "Back", "action": "pad:BACK" },
+    { "type": "button", "shape": "rect", "x": 528, "y": 28, "w": 96, "h": 48, "radius": 24,
+      "color": "#ffffff", "opacity": 0.28, "label": "Start", "action": "pad:START" }
+  ]
+}

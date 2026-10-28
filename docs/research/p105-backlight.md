@@ -50,6 +50,13 @@ into `0x4b`/`0x4d`/`0x4f`/`0x51`/`0x53` and switches them with bit 6 of
 them — any level, or bit 6 for off — changes nothing: not the picture, not
 the battery current. That code serves other boards.
 
+(Corrected 2026-10-24, from liquidmetal-Hg's reading of the kernelcache in
+issue #23: `0x4b`..`0x53` and `0x3f` bit 6 are the charge current per
+battery-temperature band -- `AppleD1946PMUPowerSource`'s set-charge-current
+method, code = mA / 40 -- not WLED. The battery current did not move
+because the input was held at ~100 mA by `0x3d`, the USB input limit, which
+`apple-pmu-charger.c` now raises.)
+
 ## Wrong turn 2: DWI
 
 The ADT points `/backlight`'s `function-backlight_update` at `arm-io/dwi`

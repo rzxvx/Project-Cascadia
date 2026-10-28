@@ -8,8 +8,9 @@
 # Reads, plus one kind of write: switching power domains on the way
 # AppleS5L8940XIO::clock_gate_switch does -- (v & ~0x10f) | 0xf, then wait for
 # bits 7:4 to follow -- and back to how they were at the end.  No clock
-# register is written: GFX-CLK and GFX_SYS-CLK already run off PLL@0x18
-# (~102.6 and ~128 MHz in perf state 2, docs/research/p105-gpu.md).
+# register is written: the GPU's clocks already run off PLL@0x18 (the core
+# at 256.5 MHz, measured; docs/research/p105-gpu.md, "The GPU's clock,
+# measured").
 #
 #   SGX_READ unset  switch the domains on and off again, touch no SGX register
 #   SGX_READ=1      also read the master bank (proven safe 2026-09-30)

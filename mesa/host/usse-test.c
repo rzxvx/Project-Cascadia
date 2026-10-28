@@ -18,6 +18,7 @@ neg(struct usse_reg r)
 }
 
 #define T(n)  usse_reg(USSE_TEMP, n)
+#define I(n)  usse_reg(USSE_IMM, n)
 #define PA(n) usse_reg(USSE_PA, n)
 #define SA(n) usse_reg(USSE_SA, n)
 #define O(n)  usse_reg(USSE_OUTPUT, n)
@@ -80,5 +81,29 @@ main(void)
    P("and_r2_r0", usse_vbw_and(T(2), T(0), 0x1f) & ~(1ull << 55));
    P("and_index1", usse_vbw_and(usse_reg(USSE_INDEX, 1), T(6), 0xffff));
    P("or_r3_idx1_sa2", usse_vbw_or(T(3), usse_reg(USSE_IDX1, 0x60 | 2), 0));
+   /* M44: the integer instructions, as glldr --probe ran them */
+   P("imad_r0_r2_r4_r2", usse_imad(T(0), T(2), T(4), T(2), true));
+   P("isub_r0_r2_r4", usse_imad(T(0), T(2), I(1), neg(T(4)), true));
+   P("ineg_r0_r2", usse_imad(T(0), T(2), neg(I(1)), I(0), true));
+   P("shl_r0_r2_3", usse_vbw_imm(USSE_VBW_SHL, T(0), T(2), 3, 0));
+   P("asr_r0_r2_r4", usse_vbw(USSE_VBW_ASR, T(0), T(2), T(4), false));
+   P("xor_r0_r2_sign", usse_vbw_imm(USSE_VBW_XOR, T(0), T(2), 0x8000, 16));
+   P("not_r0_r2", usse_vbw(USSE_VBW_XOR, T(0), T(2), USSE_ALL_ONES, false));
+   usse_imovc(&w, USSE_TEST_LT0, T(0), T(2), T(4), T(6));
+   P("imovc_lt", w);
+   usse_imovc(&w, USSE_TEST_EQ0, T(0), T(2), USSE_ALL_ONES, USSE_ZERO);
+   P("imovc_bool", w);
+   P("vtst_slt", usse_vtst_int(0, T(2), T(4), true, false));
+   P("vtst_ult", usse_vtst_int(0, T(2), T(4), false, false));
+   P("vtst_ieq", usse_vtst_int(0, T(2), T(4), true, true));
+   usse_vtst_f32(&w, 0, T(2), T(4), false);
+   P("vtst_flt", w);
+   usse_vtst_f32(&w, 0, T(3), T(5), false);
+   P("vtst_flt_y", w);
+   P("cvt_s16hi_f32", usse_cvt16_f32(T(0), T(2), 1, true));
+   P("cvt_u16lo_f32", usse_cvt16_f32(T(0), T(2), 0, false));
+   P("cvt_f32_s16lo", usse_cvt_f32_16(T(0), T(2), 0, true));
+   P("cvt_f32_s16hi", usse_cvt_f32_16(T(0), T(2), 1, true));
+   P("limm_p0", usse_limm_pred(T(0), 0xffffffff, 1));
    return 0;
 }

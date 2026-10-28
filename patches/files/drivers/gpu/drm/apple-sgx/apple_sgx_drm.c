@@ -439,7 +439,7 @@ static int sgx_ioctl_get_param(struct drm_device *drm, void *data, struct drm_fi
 		return -EINVAL;
 	switch (args->param) {
 	case APPLE_SGX_PARAM_UAPI_VERSION:
-		args->value = 3;
+		args->value = 3;	/* (not for OVERLAY: apple_sgx_drm.h) */
 		break;
 	case APPLE_SGX_PARAM_CORE_ID:
 		args->value = sgx->core_id;
@@ -1040,11 +1040,18 @@ static int sgx_open(struct drm_device *drm, struct drm_file *file)
 	return 0;
 }
 
+/* the screen's overlay (apple_sgx_kms.c) */
+static int sgx_ioctl_overlay(struct drm_device *drm, void *data, struct drm_file *file)
+{
+	return apple_sgx_kms_overlay(to_sgx_drm(drm)->sgx, file, data);
+}
+
 static void sgx_postclose(struct drm_device *drm, struct drm_file *file)
 {
 	struct apple_sgx_drm *sdrm = to_sgx_drm(drm);
 	struct apple_sgx_file *fpriv = file->driver_priv;
 
+	apple_sgx_kms_overlay_close(sdrm->sgx, file);
 	drm_sched_entity_destroy(&fpriv->entity);
 	kfree(fpriv);
 	atomic_dec(&sdrm->clients);
@@ -1057,6 +1064,7 @@ static const struct drm_ioctl_desc sgx_ioctls[] = {
 	DRM_IOCTL_DEF_DRV(APPLE_SGX_GEM_WAIT, sgx_ioctl_gem_wait, DRM_RENDER_ALLOW),
 	DRM_IOCTL_DEF_DRV(APPLE_SGX_SUBMIT, sgx_ioctl_submit, DRM_RENDER_ALLOW),
 	DRM_IOCTL_DEF_DRV(APPLE_SGX_GEM_INFO, sgx_ioctl_gem_info, DRM_RENDER_ALLOW),
+	DRM_IOCTL_DEF_DRV(APPLE_SGX_OVERLAY, sgx_ioctl_overlay, DRM_RENDER_ALLOW | DRM_ROOT_ONLY),
 };
 
 DEFINE_DRM_GEM_FOPS(sgx_drm_fops);

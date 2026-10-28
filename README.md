@@ -4,6 +4,13 @@ Mainline Linux 6.12 on an iPad mini 1 (iPad2,5 / S5L8942X), booting to an
 interactive shell — on the glass and over USB — and on to an XFCE desktop you
 drive with your fingers.
 
+![Discord](https://img.shields.io/discord/1564063823336579072?logo=discord)
+
+
+
+
+
+
 > **Status: Phases 1 & 2 complete, Phase 3 all but NAND.** Linux boots on both
 > cores, takes interrupts, keeps time, gives you a shell and a network over the
 > Lightning cable, takes multi-touch, brings up Wi-Fi, and runs XFCE with an
@@ -57,7 +64,7 @@ including the parts that didn't work.
 - [x] **Interactive shell over USB** — CDC ACM, `screen /dev/cu.usbmodem* 115200`
 - [x] **USB networking** — CDC ECM on the same port as the console (`g_cdc`),
       10.55.0.2, ~0.7 ms RTT to the host
-- [x] **SSH** — dropbear, key-only, over the ECM link
+- [x] **SSH** — dropbear, key-only, over the USB link
 - [x] **`apk` works on the device** — the whole Alpine repository, over the cable
 - [x] **NFS root** — the root filesystem lives on the host's disk, so installed
       packages survive a reboot and the disk is no longer 512 MB of RAM
@@ -101,9 +108,21 @@ including the parts that didn't work.
       orange mark showing, the backlight (32 steps, 1 to 400 nits); the other
       way, the speakers' volume (16 steps of 4 dB, and off). Hold switches the
       screen off and on and ignores the touchscreen while it is dark
-      (`/sbin/p105-keys`, started at boot). The backlight is
-      `/sys/class/backlight/apple-pmu-wled`, 0..2047, the PMU's LED current
-      DAC; see `docs/research/p105-backlight.md`
+      (`/sbin/p105-keys`, started at boot); Home held is the rotation lock.
+      The backlight is `/sys/class/backlight/apple-pmu-wled`, 0..2047, the
+      PMU's LED current DAC; see `docs/research/p105-backlight.md`
+- [x] **The accelerometer, the screen turned with it** — an ST LIS3DSH on
+      the third I2C bus, read through IIO (`st_accel`, the part added to
+      it). In XFCE the screen and the touch turn with the iPad
+      (`autorotate`); the rotation lock is a panel button, or Home held. See
+      `docs/research/p105-sensors.md`. The gyro, the light sensor and the
+      compass are found, not driven yet
+- [x] **On-screen game controls** — `screenpad`: buttons, d-pads and sticks
+      of a preset you make on the iPad (`screenpad-editor`), semi-transparent
+      over a fullscreen game. The GPU driver blends them into every frame it
+      puts on the screen, so no compositor is needed (SuperTux's menu: about
+      2% of its frames). They send keys or an Xbox-style gamepad. See
+      `docs/research/p105-screenpad.md`
 - [x] **Speakers** — ALSA card `iPadMini`: both speakers, DMA, 32/44.1/48 kHz;
       `aplay`, SDL and OpenAL play through it, several at once (dmix);
       alsa-utils and the mixing come with the image. See
@@ -112,8 +131,18 @@ including the parts that didn't work.
       `/sys/class/power_supply/battery` (charge, voltage, current,
       temperature, cycles), so `fastfetch` and desktop panels show it.
       A full charge lasts about 5½ hours with the screen off, 4½ at medium
-      brightness and 2 at full (idle, Wi-Fi up). Charging is not set up yet:
-      on a cable or a wall charger the iPad still drains, only slower
+      brightness and 2 at full (idle, Wi-Fi up)
+- [x] **Charging** — `apple-pmu-charger` (liquidmetal-Hg, issue #23): iBEC
+      leaves the PMU's USB input limit (`0x3d`) at about 100 mA, so the iPad
+      drained on any cable; the driver ramps it the way iBEC does, to
+      1000 mA from boot in upstream main, and backs off when the supply sags.
+      **This research branch keeps automatic arming off** pending a bounded
+      device qualification; the measurements below are upstream reports.
+      From a Mac's USB-C port the battery takes +620 to +750 mA (it drained
+      at −240 before). `/sys/class/power_supply/apple-pmu-usb`; more than
+      1 A from a big charger by hand (`max_input_ma`, `input_current_limit`)
+      — a host port and a charger are not told apart yet. See
+      `docs/research/p105-charging.md`
 - [x] **Power off** — `poweroff` switches the PMU off the way iOS does
       (`apple-pmu-i2c.c`); Hold starts the iPad again, into iOS. No restart
       yet: `reboot` powers off as well, and says so
@@ -130,19 +159,17 @@ including the parts that didn't work.
       and bus power still need Linux implementation and hardware validation.
       Apple's powered Camera Adapter provides a documented external supply
       architecture; it has not been tested under this Linux port
-- [x] Graphical Acceleration (SGX543MP2) — **2D on the GPU; SuperTux plays
-      at 60 fps** (2026-10-02). A kernel driver (`drivers/gpu/drm/apple-sgx`)
+- [x] Graphical Acceleration (SGX543MP2) — **the GPU draws** (2026-10-02).
+      A kernel driver (`drivers/gpu/drm/apple-sgx`)
       powers the GPU with iOS's own sequence and boots **iOS's own GPU
       microkernel** (taken from your IPSW by `./cascadia firmware`); the
       shaders and the frame's state are this repository's own (a USSE
       assembler and PDS builder, checked word by word against iOS's GL
       driver), with the kernel's share computed by running the kext's own
-      code under an emulator. On that sits `sgx2d`, a small 2D
+      code under an emulator. On that sat `sgx2d` first, a small 2D
       library (textured quads, colour modulation, three blend modes, full
-      screen), and an SDL2 renderer shim: `supertux-gpu` runs SuperTux with a
-      touch gamepad (OpenGL came after: below). Set up
-      with one command, `./cascadia gpu`; details and controls:
-      [docs/GPU.md](docs/GPU.md); how it was found, wrong
+      screen); OpenGL came after (below). Set up with one command, `./cascadia
+      gpu`; details: [docs/GPU.md](docs/GPU.md); how it was found, wrong
       turns included: [docs/research/p105-gpu.md](docs/research/p105-gpu.md)
 - [x] OpenGL through Mesa — **the system's OpenGL: ES 1.1 and 2.0, desktop
       2.1 through GLX and EGL** (2026-10-15). A Gallium driver in
@@ -151,6 +178,9 @@ including the parts that didn't work.
       render node; `./cascadia mesa` builds it and makes it the system's.
       **XFCE runs on Xorg with glamor on the GPU**, GLX programs beside it;
       weston and its Wayland clients too; SuperTux through SDL's GL renderer.
+      **`tux-gpudemo`**, the GPU demo: Tux going round, his light baked, at
+      about 58 fps fullscreen ([docs/GPU.md](docs/GPU.md#the-demo); the model:
+      teutekeune).
       Measured: dEQP-GLES2 16 859 of 16 950 run, piglit's GL profile 774
       passing of the ~960 a 2.1 part runs. Not there yet: flat shading,
       logic ops, discard writing no depth, polygon offset, 3D textures,
@@ -180,26 +210,33 @@ driver for the PPN chips with UBI/UBIFS on the blocks iOS's FTL uses now, block
 
 ### How fast each one actually is
 
-Measured on the device, 2026-09-29:
+Measured on the device, 2026-09-29 (the NFS row again 2026-10-24):
 
 | Where | Write | Read |
 |---|---|---|
 | RAM (`tmpfs`) | 272.8 MB/s | 415.4 MB/s |
-| NFS root, over the Lightning cable | 5.5 MB/s | 7.0 MB/s |
+| NFS root, over the Lightning cable | 7.0 MB/s | 8.9 MB/s |
 | The NAND, read-only, userspace PIO | — | 14.6 MB/s |
 | A USB flash drive in host mode | *unproven, see below* | |
 
-Do not blame NFS for the second row: raw TCP over the same cable manages
-5.9 MB/s, so NFS is keeping 93% of what the link gives it. **The link is the
-bottleneck** — 47 Mbit/s on a bus rated 480 — and not because the CPU cannot
-keep up, which sits 95% idle while it happens. CDC ECM sends one 1500-byte
-frame per USB transaction and only keeps ten requests in flight
-(`g_cdc.qmult` is 5, and the queue is twice that), so the bus spends its time
-waiting. That is a fixable number, not a law.
+NFS is not what limits the second row: neither the rsize nor the readahead
+changes it, ssh is slower still, the CPU sits idle and the Mac's nfsd at 8%,
+and the gadget's ten receive requests are queued at every sample. The USB
+controller's DMA is. dwc2 moves what arrives from its 2 KB receive FIFO to
+memory in AHB bursts, and `snps,dwc2`'s default is INCR, bursts of no stated
+length, which this bus takes a beat at a time: the FIFO drains slowly and the
+iPad NAKs the Mac's packets meanwhile. In 16-beat bursts (INCR16) the root
+read 27 MB/s and wrote 18, with INCR4 23 -- and for a day the link was CDC
+NCM instead of ECM as well. It did not hold: now and then every transfer from
+the iPad to the host stopped for good, the network's and the ACM console's
+alike, and the NFS root with them -- once 34 s after a boot with nothing else
+going on, once overnight, again 35-40 s after a boot with INCR4. Reverted
+(2026-10-24): ECM and the default bursts, which ran for weeks. The bursts are
+still the way to a fast link, once what stops the transmit side is found.
 
-Which makes the third row worth reading twice: **the NAND is already 2.5× faster
-than the filesystem this port roots on**, on userspace PIO through `/dev/mem`,
-before any of the DMA work a real driver would bring.
+Which makes the third row worth reading twice: **the NAND is already faster
+than the filesystem this port roots on**, on userspace PIO through
+`/dev/mem`, before any of the DMA work a real driver would bring.
 
 ### A USB flash drive, which would suit the first column
 
@@ -777,11 +814,17 @@ The next in line with no particular order after the iPad mini 1 (Phase 4):
 - iPad mini 4 — A8
 - iPad 2 - A5
 - iPad 3 - A5X
-- iPad Pro 11" 2020 - A12Z (Most powerful iPad, Linux can be ported on (additional hardware required for boot))
+- iPad mini 2 - A7
+- iPad mini 3 - A7
+- iPad Air 3 - A12 (requires additional hardware for booting - RP2350)
 - iPad Pro 10.5" 2017 - A10X
-- iPad mini 5 — A12 (requires additional hardware for booting, just like the A5)
-- iPad 9 — A13 (requires additional hardware for booting)
+- iPad mini 5 — A12 (requires additional hardware for booting)
 - iPad 5 — A9
+- iPad 8 - A12 (requires additional hardware)
+
+Bonus:
+
+- iPhone 11 - A13 (RP2350 required) 
 
 ![FastFetch written using screen keyboard](imgs/IMG_1196.jpg)
 
@@ -818,7 +861,8 @@ pretty far.
 
 ## Credits
 
-- **teutekeune** — iBSSloader: kernel patches, boot chain, the original AIC1 driver
+- **teutekeune** — iBSSloader: kernel patches, boot chain, the original AIC1 driver;
+  the Tux of the GPU demo (`tux-gpudemo`)
 - **axi0mX** — checkm8 BootROM exploit
 - **LukeZGD** — Legacy iOS Kit, EverPwnage, checkm8-a5 Pico firmware
 - **NyanSatan** — checkm8_bootkit, iBoot research

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""mkpack.py -- build sgx2d + SuperTux-on-the-GPU for the device, and install it.
+"""mkpack.py -- build the GPU's pack for the device (the template frame the Mesa
+driver takes, and sgx2d's demos), and install it.
 
     ./cascadia gpu [--install [HOST] | --root [DIR]]      (the usual way)
 
@@ -15,15 +16,15 @@ Building:
    run under unicorn (tools/iosgpu/rtemu.py) out of the decrypted 8.4.1
    kernelcache (build/firmware; KC841= overrides)
 3. the template pack (tools/sgx/rpack.py)
-4. libsgxsdl.so and the demos, cross-built against Alpine's armhf musl
-   (tools/sgx/lib/cross.sh), and supertux.sh
+4. sgx2d's demos and sgxinfo, cross-built against Alpine's armhf musl
+   (tools/sgx/lib/cross.sh)
 The image has unicorn, capstone and the ARM cross compiler, so the host needs
 nothing beyond docker and python3, and no ARM emulation.  Everything comes
 from the IPSW and this repository: no capture from the device's iOS.
 
-Installing, as /usr/local/lib/sgx2d and /usr/local/bin/supertux-gpu:
-   --auto     the running device's NFS root (with apk add supertux there),
-              else this host's exported root -- what ./cascadia gpu does
+Installing, as /usr/local/lib/sgx2d:
+   --auto     the running device's NFS root, else this host's exported
+              root -- what ./cascadia gpu does
    --install  over ssh into the root the device is running now
               (HOST, default root@10.55.0.2)
    --root     into a root filesystem tree on this machine, such as the one
@@ -32,7 +33,7 @@ Installing, as /usr/local/lib/sgx2d and /usr/local/bin/supertux-gpu:
 build/sgx2d holds data derived from Apple's kext and GL driver (from the
 IPSW): it stays out of git, like the rest of build/.
 """
-import argparse, io, os, platform, subprocess, sys, tarfile, time
+import argparse, io, os, platform, subprocess, sys, tarfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import frame
@@ -44,9 +45,11 @@ KC = os.path.join(ROOT, 'build', 'firmware', 'kernelcache.12H321.macho')
 EVENT = os.path.join(ROOT, 'build', 'firmware', 'gl-event.pds')
 W, H = 768, 1024
 RT_GPU_BASE = '0x87c00000'
-DEVICE_FILES = ('libsgxsdl.so', 'sprites', 'demo2', 'sgxinfo', 'supertux.sh')
+DEVICE_FILES = ('sprites', 'demo2', 'sgxinfo')
 PREFIX = 'usr/local/lib/sgx2d'
-LAUNCHER = 'usr/local/bin/supertux-gpu'
+# what an install before M44 left that is gone since: SuperTux's SDL shim
+# and its launcher (OpenGL runs SuperTux now)
+STALE = ('usr/local/bin/supertux-gpu', PREFIX + '/supertux.sh', PREFIX + '/libsgxsdl.so')
 DEVICE = 'root@10.55.0.2'
 
 def run(cmd, **kw):
@@ -79,9 +82,14 @@ def build_lib(pack):
     run(['bash', os.path.join(LIB, 'cross.sh')])
     for f in DEVICE_FILES:
         run(['cp', os.path.join(LIB, f), pack])
+    # (a pack built before M44 has them still: the install would put them back)
+    for f in STALE:
+        old = os.path.join(pack, os.path.basename(f))
+        if f.startswith(PREFIX) and os.path.exists(old):
+            os.remove(old)
 
 def tarball(pack):
-    """/usr/local/lib/sgx2d and the supertux-gpu link, every entry root's"""
+    """/usr/local/lib/sgx2d, every entry root's"""
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode='w', format=tarfile.USTAR_FORMAT) as t:
         def own(ti):
@@ -89,10 +97,6 @@ def tarball(pack):
             ti.uname = ti.gname = 'root'
             return ti
         t.add(pack, PREFIX, filter=own)
-        ln = own(tarfile.TarInfo(LAUNCHER))
-        ln.type, ln.linkname, ln.mode = tarfile.SYMTYPE, '/' + PREFIX + '/supertux.sh', 0o777
-        ln.mtime = int(time.time())
-        t.addfile(ln)
     return buf.getvalue()
 
 def ssh(host, cmd, **kw):
@@ -110,27 +114,18 @@ def probe(host):
     fs, sgx = r.stdout.split()
     return fs, sgx == 'sgx'
 
-def supertux(host):
-    """SuperTux itself, from Alpine, if the device does not have it yet"""
-    if ssh(host, 'command -v supertux2 >/dev/null').returncode == 0:
-        return
-    print('==> SuperTux itself: apk add supertux, on the device')
-    if ssh(host, 'apk update -q && apk add supertux').returncode:
-        fail('apk could not fetch it.  The device reaches the internet through this\n'
-             '  host: ./cascadia net on, then ./cascadia gpu again.')
-
 def install_ssh(pack, host):
     # The device's live root: an NFS root keeps it, a RAM root loses it at reboot
-    p = subprocess.Popen(['ssh', host, 'tar xf - -C / && echo "installed: /%s"' % LAUNCHER],
+    p = subprocess.Popen(['ssh', host, 'rm -f %s && tar xf - -C / && echo "installed: /%s"'
+                          % (' '.join('/' + f for f in STALE), PREFIX)],
                          stdin=subprocess.PIPE)
     p.communicate(tarball(pack))
     if p.returncode:
         fail('install over ssh to %s failed' % host)
-    supertux(host)
 
 def auto(pack):
-    """Where it can go: the running device's NFS root, over ssh (and SuperTux
-    with it), or else the root this host exports."""
+    """Where it can go: the running device's NFS root, over ssh, or else the
+    root this host exports."""
     dev = probe(DEVICE)
     root = default_root()
     have_root = is_root(root)
@@ -141,14 +136,15 @@ def auto(pack):
     elif have_root:
         install_root(pack, root)
         if dev:
-            print('note: the device runs from RAM now; play once it boots from this root')
+            print('note: the device runs from RAM now; the pack is there once it boots from this root')
     elif dev:
-        fail('the device runs from its RAM root, which has no room for SuperTux.\n'
+        fail('the device runs from its RAM root, which keeps nothing past a reboot.\n'
              '  Boot it from NFS (./cascadia nfs on, then flash) and run ./cascadia gpu again.')
     else:
         fail('nowhere to install: no device at %s and no exported root at %s\n'
              '  (./cascadia nfs on).  Or name one: --install HOST / --root DIR.' % (DEVICE, root))
-    print('\nOn the iPad: supertux-gpu')
+    print('\nOn the iPad: the template frame for the Mesa driver (./cascadia mesa next),')
+    print('             sgx2d\'s demos in /%s (sprites, demo2, sgxinfo)' % PREFIX)
 
 def default_root():
     if os.environ.get('DST'):
@@ -176,17 +172,15 @@ def install_root(pack, root):
     if not os.path.isdir(root) or not in_root(root, 'sbin/p105-stage2', sudo):
         fail('%s is not a cascadia root filesystem (no sbin/p105-stage2); '
              'give its path to --root' % root)
+    subprocess.call(sudo + ['rm', '-f'] + [os.path.join(root, f) for f in STALE])
     p = subprocess.Popen(sudo + ['tar', 'xf', '-', '-C', root], stdin=subprocess.PIPE)
     p.communicate(tarball(pack))
     if p.returncode:
         fail('could not unpack into %s' % root)
-    print('installed: %s/%s' % (root, LAUNCHER))
-    if not in_root(root, 'usr/bin/supertux2', sudo):
-        print('note: SuperTux itself is not in that root yet.  Run ./cascadia gpu again\n'
-              '      with the device up (it adds it there), or: apk add supertux on it')
+    print('installed: %s/%s' % (root, PREFIX))
 
 def main():
-    ap = argparse.ArgumentParser(description='build sgx2d and SuperTux-on-the-GPU')
+    ap = argparse.ArgumentParser(description='build the GPU\'s pack and sgx2d\'s demos')
     to = ap.add_mutually_exclusive_group()
     to.add_argument('--install', nargs='?', const=DEVICE, metavar='HOST',
                     help='install the build over ssh (default %s)' % DEVICE)
@@ -202,7 +196,7 @@ def main():
         build_lib(pack)
         print('built: %s' % os.path.relpath(pack, ROOT))
         return
-    if not os.path.exists(os.path.join(pack, 'supertux.sh')):
+    if not os.path.exists(os.path.join(pack, 'sgxinfo')):
         fail('nothing built in %s -- ./cascadia gpu builds it' % os.path.relpath(pack, ROOT))
     if a.auto:
         auto(pack)

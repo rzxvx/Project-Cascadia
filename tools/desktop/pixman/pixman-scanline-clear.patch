@@ -1,0 +1,32 @@
+From: Project Cascadia
+Subject: [PATCH] general: clear only the scanline buffers' bytes, not all 24 KiB
+
+general_composite_rect () clears its stack buffer for the three
+scanlines whole -- 3 * SCANLINE_BUFFER_LENGTH, 24 KiB -- at every call,
+since "Initialize temporary buffers in general_composite_rect()" (2020),
+whatever the width.  fast_composite_tiled_repeat () calls it for each
+tile of each row of a narrow repeating source that has no fast path of
+its own; a1 has none.  xfwm4's frame shape is such composites, a1 tiles
+4 pixels wide over an a1 mask of the window's width: about 16000 calls a
+window opened, 380 MB cleared, an eighth of the X server's time on the
+iPad's Cortex-A9 (docs/research/p105-mesa.md, M45).  The heap buffer of
+a wider composite was already cleared only as far as it is used; the
+stack one is now the same: the three buffers, each aligned, take at most
+width * Bpp * 3 + 15 * 3 bytes of it.
+
+---
+--- a/pixman/pixman-general.c
++++ b/pixman/pixman-general.c
+@@ -170,7 +170,11 @@
+     }
+     else
+     {
+-	memset (stack_scanline_buffer, 0, sizeof (stack_scanline_buffer));
++	/* Only what the three buffers take: a composite of a narrow
++	 * repeating source (fast_composite_tiled_repeat) is a call here for
++	 * each tile of each row, and the whole 24 KiB cleared each time was
++	 * most of a desktop's software compositing. */
++	memset (stack_scanline_buffer, 0, width * Bpp * 3 + 15 * 3);
+     }
+ 
+     src_buffer = ALIGN (scanline_buffer);

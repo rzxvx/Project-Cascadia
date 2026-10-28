@@ -6,12 +6,10 @@
 CFLAGS ?= -O2 -Wall -D_FILE_OFFSET_BITS=64
 # drm.h (linux-headers), and the render node's header from this tree
 CFLAGS += -I/usr/include/drm -I../../../patches/files/include/uapi/drm
-all: sprites demo2 sgxinfo libsgxsdl.so
-libsgxsdl.so: sgxsdl.c sgx2d.c sgx2d.h
-	$(CC) $(CFLAGS) -shared -fPIC -o $@ sgxsdl.c sgx2d.c $$(sdl2-config --cflags --libs) -ldl -lm -pthread
+all: sprites demo2 sgxinfo
 sgxinfo: sgxinfo.c
 	$(CC) $(CFLAGS) -o $@ $<
 %: %.c sgx2d.c sgx2d.h
 	$(CC) $(CFLAGS) -o $@ $< sgx2d.c -lm
 clean:
-	rm -f sprites demo2 sgxinfo libsgxsdl.so
+	rm -f sprites demo2 sgxinfo

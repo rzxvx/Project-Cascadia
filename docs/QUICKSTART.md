@@ -312,6 +312,13 @@ from your IPSW) and `./cascadia mesa` (Mesa, about an hour the first time);
   right click.
 - **Keyboard.** The button next to the clock shows and hides an on-screen
   keyboard (svkbd). Ctrl is the `^` key.
+- **Turning.** The screen turns with the iPad, the touch with it. That needs
+  a kernel with the accelerometer (`./cascadia build`, from 2026-10-23) and,
+  from the host, `sh tools/desktop/install.sh`, which puts `autorotate` in
+  the session. The button next to the keyboard's locks the turn, and so does
+  Home held (0.8 s). With the patched X server
+  (`sh tools/desktop/xorg-server/build.sh install`) a turned screen is as
+  fast as an upright one.
 - **Timing.** About 40 s to a drawn desktop on the first login, then ~25 s to
   the session and ~40 s until the desktop has settled. The background is a
   solid colour on purpose: XFCE's default wallpaper is an SVG, and rasterising
@@ -329,17 +336,73 @@ had that do not work here:
   for a device with multitouch axes X emulates the pointer itself, and evdev's
   emulation never runs.
 
-## Games on the GPU
+## Touch controls for games
 
-SuperTux runs on the GPU at 60 fps, played with a touch gamepad. With the
-iPad booted from NFS and `./cascadia net on`:
+`screenpad` puts a game controller on the glass, over whatever runs (a
+fullscreen game included): buttons, d-pads and sticks, semi-transparent,
+from a preset you make on the iPad. It needs a kernel from 2026-10-23 or
+later (its GPU driver blends the controls into each frame; `./cascadia
+build`) and, from the host:
+
+```bash
+sh tools/screenpad/build.sh install
+```
+
+Then on the iPad, held landscape: **SuperTux (on-screen controls)** in the
+menu's Games, or from a terminal:
+
+```sh
+screenpad supertux -- supertux2
+```
+
+The d-pad moves, **Jump** is Space, **Run** is Ctrl and **Menu** is Esc. A
+finger that lands anywhere else is an ordinary touch. `screenpad gamepad`
+is an Xbox-style pad (a stick, a d-pad, ABXY, shoulders, Back and Start),
+which games see as a real one. `screenpad -l` lists the presets.
+
+**Your own presets:** **screenpad editor** in the menu (`screenpad-editor`).
+Add buttons, d-pads and sticks, drag them into place (the blue handle
+resizes), and choose each one's shape, label, colour, opacity and what it
+does: a key or a gamepad button. **▶ Try it** runs the preset over the
+screen with a Stop button above it; **Save** keeps it as `screenpad NAME`.
+A landscape preset shows only while the iPad is held landscape.
+
+**Playing with your preset.** The editor makes and saves presets; it does
+not start games. A game gets a preset in one of two ways:
+
+- **From the menu, SuperTux**: the menu entry runs the preset named
+  `supertux`. Save yours under the name **SuperTux**: your copy
+  (`~/.config/screenpad/supertux.json`) comes before the one that came with
+  screenpad, and the menu entry uses it from then on. Delete that file to
+  have the original back.
+- **Any preset, any game, from a terminal**: the preset's name (what Save
+  said: the name in lower case, spaces as `-`), then `--` and the game's
+  command, as in its menu entry:
+
+  ```sh
+  screenpad my-preset -- supertux2
+  ```
+
+  The controls are there while the game runs and go with it.
+
+## The GPU demo
+
+Tux going round on the screen, drawn by the GPU through OpenGL ES -- his
+light baked in Blender, the logo over his head glowing -- at about 58 frames
+a second, fullscreen. The model is teutekeune's. With the iPad booted from NFS:
 
 ```bash
 ./cascadia gpu
 ```
 
-then `supertux-gpu` on the iPad. It needs only the IPSW the port is built
-from; [GPU.md](GPU.md) has the details, the controls and how it works.
+```bash
+./cascadia mesa
+```
+
+then `tux-gpudemo` on the iPad's console (not under X); the **EXIT** button
+in the top right corner ends it. It needs only the IPSW the port is built
+from; `./cascadia mesa` also makes the GPU every program's OpenGL (XFCE,
+SuperTux). [GPU.md](GPU.md) has the details and how it works.
 
 ## When it goes wrong
 
@@ -349,6 +412,7 @@ from; [GPU.md](GPU.md) has the details, the controls and how it works.
 | `ssh` asks for a **passphrase** and then gives up | That is your own key on this host, not the device: ssh could not decrypt it, so it never offered it. `ssh-add ~/.ssh/id_ed25519` once, or keep a passphrase-less `~/.ssh/cascadia` (see *Prerequisites*). Nothing is wrong with the image — rebuilding will not help. |
 | `ssh` hangs, no error | This host has no address on the link. `./cascadia link`. |
 | `ssh` hangs, but `ping 10.55.0.2` answers and the glass says `nfs: server ... not responding, still trying` | The NFS root lost its server, and a hard-mounted root blocks everything that touches it until the server returns — the kernel is fine, the cursor still blinks, and the console over the cable still works (it runs from RAM). This is the host's side, not the iPad's: seen with macOS's nfsd and on an Ubuntu host, never on the Arch one. On a NetworkManager host it was NM taking 10.55.0.1 off the link; `./cascadia link` (and so `flash`) now gives NM a profile that keeps it. Otherwise only a reboot gets out of it today; `./cascadia nfs off` and a rebuild boot from RAM instead. |
+| `ssh` hangs, `ping` does not answer, the console over the cable says nothing, but the glass's cursor blinks and it shows `task ... blocked for more than ... seconds` in `nfs_...` | The gadget stopped sending to the host; the kernel is fine and the NFS root waits for it. Seen after the link was down for minutes (the Mac asleep, or `ip link set usb0 down` and the serial console reopened meanwhile) on any kernel, and on its own after boot with the fast DMA bursts of 2026-10-24 (reverted). Only a reboot gets out of it today; before rebooting, a photo of the glass is what tells it apart. |
 | `REMOTE HOST IDENTIFICATION HAS CHANGED` | The device's host key changed. Images built before 2026-09-19 made a new one on every boot from RAM; `./cascadia build` now makes it once and prints its fingerprint. Once: `ssh-keygen -R 10.55.0.2`, then compare the fingerprint ssh shows with the build's. |
 | kDFU: "Unable to connect to device", the iPad never reacted | Legacy iOS Kit spent the run installing its own dependencies. Run it once on its own; on Arch `pacman -Syu` first. |
 | kDFU: the iBEC uploads to 100%, then the device looks switched off | An encrypted iBEC. After iOS has booted the AES GID key is gone, so the KBAG decrypts to nothing. `--kdfu` picks the plaintext image by itself unless `--ibec` or `--known-good` pinned one. |

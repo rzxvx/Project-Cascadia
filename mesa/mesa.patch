@@ -23,6 +23,56 @@ index 220d46e..3fdab70 100644
    ],
    description : 'List of gallium drivers to build. If this is set to auto ' +
                  'all drivers applicable to the target OS/architecture ' +
+diff --git a/src/compiler/nir/nir_lower_uniforms_to_ubo.c b/src/compiler/nir/nir_lower_uniforms_to_ubo.c
+index 717b87d..a616f90 100644
+--- a/src/compiler/nir/nir_lower_uniforms_to_ubo.c
++++ b/src/compiler/nir/nir_lower_uniforms_to_ubo.c
+@@ -97,9 +97,13 @@ nir_lower_uniforms_to_ubo_instr(nir_builder *b, nir_instr *instr, void *data)
+           * nir_lower_ubo_vec4.c)
+           */
+          if (nir_src_is_const(intr->src[0])) {
++            /* (the offset in the multiplier's units too, as the address
++             * has it: an offset of 1 vec4 is 16 bytes, not 1 --
++             * nir_lower_ubo_vec4 asserted on a matrix's second column)
++             */
+             nir_intrinsic_set_align(load, NIR_ALIGN_MUL_MAX,
+-                                    (nir_src_as_uint(intr->src[0]) +
+-                                     nir_intrinsic_base(intr) * multiplier) %
++                                    ((nir_src_as_uint(intr->src[0]) +
++                                      nir_intrinsic_base(intr)) * multiplier) %
+                                        NIR_ALIGN_MUL_MAX);
+          } else {
+             nir_intrinsic_set_align(load, MAX2(multiplier, intr->def.bit_size / 8), 0);
+diff --git a/src/compiler/nir/nir_opt_algebraic.py b/src/compiler/nir/nir_opt_algebraic.py
+index 4ad4193..7268b30 100644
+--- a/src/compiler/nir/nir_opt_algebraic.py
++++ b/src/compiler/nir/nir_opt_algebraic.py
+@@ -3791,14 +3791,17 @@ late_optimizations.extend([
+ 
+    (('~flrp', ('fadd(is_used_once)', a, b), ('fadd(is_used_once)', a, c), d), ('fadd', ('flrp', b, c, d), a)),
+ 
+-   # Approximate handling of fround_even for DX9 addressing from gallium nine on
+-   # DX9-class hardware with no proper fround support.  This is in
+-   # late_optimizations so that the is_integral() opts in the main pass get a
+-   # chance to eliminate the fround_even first.
+-   (('fround_even', a), ('bcsel',
+-                         ('feq', ('ffract', a), 0.5),
+-                         ('fadd', ('ffloor', ('fadd', a, 0.5)), 1.0),
+-                         ('ffloor', ('fadd', a, 0.5))), 'options->lower_fround_even'),
++   # Lower roundEven for hardware without a native round instruction.
++   # Round to the nearest integer using ffloor and ffract, and on a half break
++   # the tie towards the even neighbour. Kept in late_optimizations so that
++   # is_integral() can remove the roundEven first.  (Upstream's rule: the
++   # old one made 0.5 2 and -1.5 0 -- piglit's glsl-1.30 roundeven tests.)
++   (('fround_even', a), ('fadd', ('ffloor', a),
++                         ('bcsel', ('flt', 0.5, ('ffract', a)),
++                          1.0,
++                          ('bcsel', ('feq', ('ffract', a), 0.5),
++                           ('fmul', ('ffract', ('fmul', ('ffloor', a), 0.5)), 2.0),
++                           0.0))), 'options->lower_fround_even'),
+ 
+    # A similar operation could apply to any ffma(#a, b, #(-a/2)), but this
+    # particular operation is common for expanding values stored in a texture
 diff --git a/src/gallium/auxiliary/pipe-loader/pipe_loader_drm.c b/src/gallium/auxiliary/pipe-loader/pipe_loader_drm.c
 index dc631b4..96a7737 100644
 --- a/src/gallium/auxiliary/pipe-loader/pipe_loader_drm.c

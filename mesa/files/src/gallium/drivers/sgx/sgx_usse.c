@@ -39,8 +39,19 @@ src_bank(struct usse_reg r, unsigned *ext, unsigned *bank)
    case USSE_SA:      *ext = 0; *bank = 3; break;
    case USSE_SPECIAL: *ext = 1; *bank = 1; break;
    case USSE_IDX1:    *ext = 1; *bank = 0; break;
+   case USSE_IMM:     *ext = 1; *bank = 2; break;
    default:           assert(0); *ext = *bank = 0; break;
    }
+}
+
+/* (M44) a src0 (I32MAD2's, VMOV's test): temp, pa; output, sa extended */
+static void
+src0_bank(struct usse_reg r, unsigned *ext, unsigned *bank)
+{
+   assert(r.bank == USSE_TEMP || r.bank == USSE_PA || r.bank == USSE_OUTPUT ||
+          r.bank == USSE_SA);
+   *ext = r.bank == USSE_OUTPUT || r.bank == USSE_SA;
+   *bank = r.bank == USSE_PA || r.bank == USSE_SA;
 }
 
 /* a destination: temp, output, pa; sa in the extended set */
@@ -419,30 +430,48 @@ usse_kill(unsigned pred)
    return (0xf9340426c0000280ull & ~USSE_END & ~bits(3, 42, 41)) | bits(pred, 42, 41);
 }
 
-/* VBW's op 2 (and, or by bit 35), src2 the immediate (extended bank 2):
- * its bits 15:14 at 37:36, 13:7 at 20:14, 6:0 at 6:0 */
+/* VBW's operation: Vita3K's op1 (bits 61:59) and op2 (bit 35) -- 2 and,
+ * or; 3 xor; 4 shl (rol with op2); 5 shr, asr (M44: each checked on the
+ * device, glldr --probe) */
 static uint64_t
-vbw_logic(bool or_, struct usse_reg dest, struct usse_reg src1, unsigned imm)
+vbw_op(enum usse_vbw_op op)
+{
+   static const uint8_t op1[] = { 2, 2, 3, 4, 5, 5 }, op2[] = { 0, 1, 0, 0, 0, 1 };
+
+   return bits(op1[op], 61, 59) | bits(op2[op], 35, 35);
+}
+
+/* VBW with src2 the immediate (extended bank 2): its bits 15:14 at 37:36,
+ * 13:7 at 20:14, 6:0 at 6:0, rotated left by bits 42:38 (Vita3K's
+ * src2_rot) */
+uint64_t
+usse_vbw_imm(enum usse_vbw_op op, struct usse_reg dest, struct usse_reg src1, unsigned imm,
+             unsigned rot)
 {
    unsigned dext, dbank, ext, bank;
 
    dest_bank(dest, &dext, &dbank);
    src_bank(src1, &ext, &bank);
-   return bits(1, 63, 62) | bits(2, 61, 59) | SKIPINV | bits(dext, 51, 51) | bits(ext, 49, 49) |
-          bits(1, 48, 48) | bits(imm >> 14, 37, 36) | bits(or_, 35, 35) | bits(dbank, 33, 32) |
+   return bits(1, 63, 62) | vbw_op(op) | SKIPINV | bits(dext, 51, 51) | bits(ext, 49, 49) |
+          bits(1, 48, 48) | bits(rot, 42, 38) | bits(imm >> 14, 37, 36) | bits(dbank, 33, 32) |
           bits(bank, 31, 30) | bits(2, 29, 28) | bits(dest.num, 27, 21) |
           bits(imm >> 7 & 0x7f, 20, 14) | bits(src1.num, 13, 7) | bits(imm & 0x7f, 6, 0);
+}
+
+static uint64_t
+vbw_logic(bool or_, struct usse_reg dest, struct usse_reg src1, unsigned imm)
+{
+   return usse_vbw_imm(or_ ? USSE_VBW_OR : USSE_VBW_AND, dest, src1, imm, 0);
 }
 
 uint64_t
 usse_vbw_or_rot(struct usse_reg dest, struct usse_reg src1, unsigned imm, unsigned rot)
 {
-   /* (Vita3K's src2_rot, bits 42:38) */
-   return vbw_logic(true, dest, src1, imm) | bits(rot, 42, 38);
+   return usse_vbw_imm(USSE_VBW_OR, dest, src1, imm, rot);
 }
 
-/* VBW's op 2 (and, or by bit 35) or 3 (xor), src2 a register; bit 43
- * inverts it (iOS's `and o0, c56, ~pa0`, `or o0, o0, ~o0`) */
+/* VBW, src2 a register; bit 43 inverts it (iOS's `and o0, c56, ~pa0`, `or
+ * o0, o0, ~o0`) */
 uint64_t
 usse_vbw(enum usse_vbw_op op, struct usse_reg dest, struct usse_reg src1, struct usse_reg src2,
          bool not2)
@@ -452,11 +481,136 @@ usse_vbw(enum usse_vbw_op op, struct usse_reg dest, struct usse_reg src1, struct
    dest_bank(dest, &dext, &dbank);
    src_bank(src1, &ext1, &bank1);
    src_bank(src2, &ext2, &bank2);
-   return bits(1, 63, 62) | bits(op == USSE_VBW_XOR ? 3 : 2, 61, 59) | SKIPINV |
+   return bits(1, 63, 62) | vbw_op(op) | SKIPINV |
           bits(dext, 51, 51) | bits(ext1, 49, 49) | bits(ext2, 48, 48) | bits(not2, 43, 43) |
-          bits(op == USSE_VBW_OR, 35, 35) | bits(dbank, 33, 32) | bits(bank1, 31, 30) |
+          bits(dbank, 33, 32) | bits(bank1, 31, 30) |
           bits(bank2, 29, 28) | bits(dest.num, 27, 21) | bits(src1.num, 13, 7) |
           bits(src2.num, 6, 0);
+}
+
+uint64_t
+usse_pred(uint64_t w, unsigned pred)
+{
+   return (w & ~bits(7, 58, 56)) | bits(pred, 58, 56);
+}
+
+/* I32MAD2 (Vita3K's i32mad2, sn 0): 11010 ppp - n ss d e r(src1 ext)
+ * c(src2 ext) b(src0 ext) ooo 00 i(signed) g(-src1) a(-src2) 0000
+ * k(src0 bank) tt ff hh, then dest, src0, src1, src2 seven bits each */
+uint64_t
+usse_imad(struct usse_reg dest, struct usse_reg src0, struct usse_reg src1,
+          struct usse_reg src2, bool is_signed)
+{
+   unsigned dext, dbank, ext0, bank0, ext1, bank1, ext2, bank2;
+
+   dest_bank(dest, &dext, &dbank);
+   src0_bank(src0, &ext0, &bank0);
+   src_bank(src1, &ext1, &bank1);
+   src_bank(src2, &ext2, &bank2);
+   return bits(0x1a, 63, 59) | bits(dext, 51, 51) | bits(ext1, 49, 49) | bits(ext2, 48, 48) |
+          bits(ext0, 47, 47) | bits(is_signed, 41, 41) | bits(src1.neg, 40, 40) |
+          bits(src2.neg, 39, 39) | bits(bank0, 34, 34) | bits(dbank, 33, 32) |
+          bits(bank1, 31, 30) | bits(bank2, 29, 28) | bits(dest.num, 27, 21) |
+          bits(src0.num, 20, 14) | bits(src1.num, 13, 7) | bits(src2.num, 6, 0);
+}
+
+/* VMOV of type 2 (INT32): registers in 32-bit units, six bits each */
+bool
+usse_imovc(uint64_t *out, enum usse_test test, struct usse_reg dest, struct usse_reg src0,
+           struct usse_reg src1, struct usse_reg src2)
+{
+   unsigned dext, dbank, ext0, bank0, ext1, bank1, ext2, bank2;
+
+   if (dest.num >= 64 || src0.num >= 64 || src1.num >= 64 || src2.num >= 64 ||
+       (src0.bank != USSE_TEMP && src0.bank != USSE_PA && src0.bank != USSE_OUTPUT))
+      return false;
+   dest_bank(dest, &dext, &dbank);
+   src0_bank(src0, &ext0, &bank0);
+   src_bank(src1, &ext1, &bank1);
+   src_bank(src2, &ext2, &bank2);
+   *out = bits(0x07, 63, 59) | SKIPINV | bits(test >> 1, 54, 54) | bits(dext, 51, 51) |
+          bits(ext0, 50, 50) | bits(ext1, 49, 49) | bits(ext2, 48, 48) | bits(1, 47, 46) |
+          bits(2, 42, 40) | bits(test & 1, 39, 39) | bits(bank0, 34, 34) |
+          bits(dbank, 33, 32) | bits(bank1, 31, 30) | bits(bank2, 29, 28) |
+          bits(1, 27, 24) | bits(dest.num, 23, 18) | bits(src0.num, 17, 12) |
+          bits(src1.num, 11, 6) | bits(src2.num, 5, 0);
+   return true;
+}
+
+/* VTST (Vita3K's vtst): the ALU's operation (sel, op) on src1 and src2,
+ * its result's sign test (1 below 0) and zero test (1 zero, 2 not), both
+ * required (bit 39), into p<pdst>; the result not written */
+static uint64_t
+vtst(unsigned pdst, unsigned alu_sel, unsigned alu_op, unsigned prec, unsigned chan,
+     struct usse_reg src1, unsigned n1, struct usse_reg src2, unsigned n2, unsigned sign,
+     unsigned zero)
+{
+   unsigned ext1, bank1, ext2, bank2;
+
+   src_bank(src1, &ext1, &bank1);
+   src_bank(src2, &ext2, &bank2);
+   return bits(0x09, 63, 59) | SKIPINV | bits(ext1, 49, 49) | bits(ext2, 48, 48) |
+          bits(prec, 47, 47) | bits(sign, 43, 42) | bits(zero, 41, 40) |
+          bits(1, 39, 39) | bits(chan, 38, 36) | bits(pdst, 35, 34) | bits(bank1, 31, 30) |
+          bits(bank2, 29, 28) | bits(alu_sel, 19, 18) | bits(alu_op, 17, 14) |
+          bits(n1, 13, 7) | bits(n2, 6, 0);
+}
+
+uint64_t
+usse_vtst_int(unsigned pdst, struct usse_reg src1, struct usse_reg src2, bool is_signed, bool eq)
+{
+   /* ALU 1, ISUB32 (14) or ISUBU32 (15) */
+   return vtst(pdst, 1, is_signed ? 14 : 15, 0, 0, src1, src1.num, src2, src2.num,
+               eq ? 0 : 1, eq ? 1 : 0);
+}
+
+bool
+usse_vtst_f32(uint64_t *out, unsigned pdst, struct usse_reg src1, struct usse_reg src2, bool eq)
+{
+   /* ALU 0 at F32 precision, VSUB (14); the registers 64-bit ones, the
+    * channel tested their lane.  Below 0 is the sign and not zero: -0 - 0
+    * is -0, whose sign is set (faceforward of a -0 dot product) */
+   if (lane(src1) != lane(src2))
+      return false;
+   *out = vtst(pdst, 0, 14, 1, lane(src1), src1, pair(src1), src2, pair(src2),
+               eq ? 0 : 1, eq ? 1 : 2);
+   return true;
+}
+
+/* VPCK of one channel, src2 the immediate 0: the channels' selects 3:2:1
+ * as iOS's words have them, channel 0's (bit 0, and bit 7 for a 32-bit
+ * register's parity in a 16-bit source) given */
+static uint64_t
+vpck1(unsigned sfmt, unsigned dfmt, unsigned mask, struct usse_reg dest, unsigned dest_n,
+      struct usse_reg src, unsigned src_n, unsigned sel0, unsigned sel1)
+{
+   unsigned ext, bank, dext, dbank;
+
+   src_bank(src, &ext, &bank);
+   dest_bank(dest, &dext, &dbank);
+   return bits(0x08, 63, 59) | SKIPINV | bits(dext, 51, 51) | bits(ext, 49, 49) |
+          bits(1, 48, 48) | bits(sfmt, 43, 41) | bits(dfmt, 40, 38) | bits(mask, 37, 34) |
+          bits(dbank, 33, 32) | bits(bank, 31, 30) | bits(2, 29, 28) | bits(dest_n, 27, 21) |
+          bits(3, 20, 19) | bits(sel1, 17, 16) | bits(2, 15, 14) | bits(src_n >> 1, 13, 8) |
+          bits(src_n & 1, 7, 7) | bits(sel0, 0, 0);
+}
+
+uint64_t
+usse_cvt16_f32(struct usse_reg dest, struct usse_reg src, unsigned half, bool is_signed)
+{
+   /* S16 (4) or U16 (3) to F32 (6): src named in 32-bit units, the half
+    * by channel 0's select; the dest too, its first channel (mask x) the
+    * register named -- an odd one with mask x, not y (glldr --probe) */
+   return vpck1(is_signed ? 4 : 3, 6, 1, dest, dest.num, src, src.num, half, 1);
+}
+
+uint64_t
+usse_cvt_f32_16(struct usse_reg dest, struct usse_reg src, unsigned half, bool is_signed)
+{
+   /* F32 (6) to S16 (4) or U16 (3): src's pair and lane (channels 0 and 1
+    * both select it), the dest's half by the mask */
+   return vpck1(6, is_signed ? 4 : 3, 1u << half, dest, dest.num, src, pair(src) << 1,
+                lane(src), lane(src));
 }
 
 /* VLDST: 111, op 1 (a load), no MOE expansion (with it, more than a word

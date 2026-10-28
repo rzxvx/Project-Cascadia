@@ -12,10 +12,11 @@
 #   ./cascadia link        give this host 10.55.0.1 on the device's link (flash does it)
 #   ./cascadia net on|off  share this host's internet with it  (macOS or Linux)
 #   ./cascadia nfs on|off  export a root filesystem to it      (macOS or Linux)
-#   ./cascadia gpu         SuperTux on the GPU: build and install, in one go
+#   ./cascadia gpu         the GPU's pack (the template frame Mesa takes, sgx2d's
+#                          demos): build and install, in one go
 #   ./cascadia mesa        Mesa with the GPU's driver: the system's OpenGL (ES 1.1 and
-#                          2.0, desktop 2.1, GLX): build and install (release; a
-#                          debug build: MESA_BUILD=debug)
+#                          2.0, desktop 2.1, GLX), and the GPU demo tux-gpudemo: build
+#                          and install (release; a debug build: MESA_BUILD=debug)
 #   ./cascadia image       rebuild the build image if the Dockerfile changed
 #
 # Everything is relative to this file, so the repository works wherever it is
@@ -319,8 +320,8 @@ cmd_build() {
     [ -s "$ROOT/build/initramfs-root/sbin/z2-boot" ] || fail "z2-boot did not build"
     note "ok: /sbin/z2-boot ($(filesize "$ROOT/build/initramfs-root/sbin/z2-boot") bytes, static ARM)"
     # /sbin/p105-keys: the buttons -- volume sets the speakers' volume or the
-    # backlight (the side switch picks), Hold puts the screen out and back.
-    # Started by stage 2.
+    # backlight (the side switch picks), Hold puts the screen out and back,
+    # Home held is the rotation lock.  Started by stage 2.
     in_docker "arm-linux-gnueabihf-gcc -static -Os -Wall -o build/initramfs-root/sbin/p105-keys tools/p105-keys.c"
     [ -s "$ROOT/build/initramfs-root/sbin/p105-keys" ] || fail "p105-keys did not build"
     note "ok: /sbin/p105-keys (static ARM)"
@@ -477,13 +478,13 @@ so this is a file in build/initramfs-root owned by some third uid."
     ls -l "$ROOT/output/staging-bundle.bin" "$ROOT/output/staging-loader.bin"
 }
 
-# SuperTux on the GPU (docs/GPU.md), in one command.  It needs the IPSW's
-# kernelcache and the GL driver's event template from ./cascadia firmware
-# (run here if it has not been), nothing from the device.  Built in the
-# build image -- unicorn for the kext's emulated code, the ARM cross compiler
-# for the device's binaries -- and installed from the host: into the running
-# device's NFS root over ssh, with SuperTux itself from apk, or else into the
-# root this host exports.
+# The GPU's pack (docs/GPU.md), in one command: the template frame Mesa
+# takes, and sgx2d's demos.  It needs the IPSW's kernelcache and the GL
+# driver's event template from ./cascadia firmware (run here if it has not
+# been), nothing from the device.  Built in the build image -- unicorn for
+# the kext's emulated code, the ARM cross compiler for the device's
+# binaries -- and installed from the host: into the running device's NFS
+# root over ssh, or else into the root this host exports.
 cmd_gpu() {
     if [ ! -f "$ROOT/build/firmware/kernelcache.12H321.macho" ] || [ ! -f "$ROOT/build/firmware/gl-event.pds" ]; then
         say "the GPU pack is made from the IPSW: ./cascadia firmware"
@@ -502,7 +503,7 @@ cmd_gpu() {
 # against the libraries the device's root has.  The source is fetched here
 # first, natively (mesa/fetch.sh): the first try cloned it inside the image
 # and sat there for over an hour.  mesa/build.sh does the build;
-# mesa/install.py puts it where ./cascadia gpu would put SuperTux.
+# mesa/install.py puts it where ./cascadia gpu puts the GPU's pack.
 cmd_mesa() {
     require_docker
     bash "$ROOT/mesa/fetch.sh"

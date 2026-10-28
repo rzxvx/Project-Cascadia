@@ -19,6 +19,11 @@
  * has no MSC without one, and GL programs under X go unpaced.  fbcon still
  * draws into the same memory when it has something to show.
  * docs/research/p105-mesa.md, M16, M38.
+ *
+ * Over the plane, the overlay (the render node's OVERLAY ioctl): a buffer
+ * whose listed rectangles are blended over the plane in each copy that
+ * reaches them, the same 2D job -- an on-screen control over whatever runs,
+ * with no compositor (tools/screenpad).
  */
 
 #include <linux/hrtimer.h>
@@ -31,6 +36,7 @@
 #include <drm/drm_connector.h>
 #include <drm/drm_damage_helper.h>
 #include <drm/drm_drv.h>
+#include <drm/drm_file.h>
 #include <drm/drm_fourcc.h>
 #include <drm/drm_framebuffer.h>
 #include <drm/drm_gem.h>
@@ -42,6 +48,7 @@
 #include <drm/drm_print.h>
 #include <drm/drm_simple_kms_helper.h>
 #include <drm/drm_vblank.h>
+#include <drm/apple_sgx_drm.h>
 
 #include "apple_sgx.h"
 
@@ -61,6 +68,16 @@ struct apple_sgx_kms {
 	struct drm_display_mode mode;
 	struct hrtimer vblank_timer;
 	ktime_t vblank_period;
+
+	/* the overlay: its buffer, owner and rectangles (the plane's source
+	 * coordinates less its origin, out to 16 pixels); the lock keeps them
+	 * still through the copies of one commit */
+	struct mutex ov_lock;
+	struct drm_file *ov_owner;
+	struct drm_gem_object *ov_obj;
+	u32 ov_pitch, ov_w, ov_h;
+	unsigned int ov_n;
+	struct drm_rect ov_rects[APPLE_SGX_OVERLAY_MAX_RECTS];
 };
 
 static const u32 sgx_kms_formats[] = { DRM_FORMAT_XRGB8888, DRM_FORMAT_ARGB8888 };
@@ -105,10 +122,54 @@ static int sgx_kms_check(struct drm_simple_display_pipe *pipe,
 	return 0;
 }
 
+/* The overlay's part of r (framebuffer coordinates, as copied): the box of
+ * its rectangles that meet r, where it lands in r's copy turned.  0: none.
+ * Under ov_lock. */
+static bool sgx_kms_over(struct apple_sgx_kms *kms, const struct drm_plane_state *state,
+			 const struct drm_rect *r, struct apple_sgx_over *over)
+{
+	u32 sx = state->src.x1 >> 16, sy = state->src.y1 >> 16;
+	u32 sw = drm_rect_width(&state->src) >> 16, sh = drm_rect_height(&state->src) >> 16;
+	struct drm_rect box = { 0 }, o;
+	unsigned int i;
+
+	if (!kms->ov_obj || kms->ov_w != sw || kms->ov_h != sh)
+		return false;
+	for (i = 0; i < kms->ov_n; i++) {
+		o = kms->ov_rects[i];
+		drm_rect_translate(&o, sx, sy);
+		if (!drm_rect_intersect(&o, r))
+			continue;
+		if (!drm_rect_visible(&box)) {
+			box = o;
+		} else {
+			box.x1 = min(box.x1, o.x1);
+			box.y1 = min(box.y1, o.y1);
+			box.x2 = max(box.x2, o.x2);
+			box.y2 = max(box.y2, o.y2);
+		}
+	}
+	if (!drm_rect_visible(&box))
+		return false;
+	over->va = apple_sgx_bo_va(kms->ov_obj) + (box.y1 - sy) * kms->ov_pitch + (box.x1 - sx) * 4;
+	over->stride = kms->ov_pitch / 4;
+	over->w = drm_rect_width(&box);
+	over->h = drm_rect_height(&box);
+	drm_rect_translate(&box, -r->x1, -r->y1);
+	drm_rect_rotate(&box, drm_rect_width(r), drm_rect_height(r),
+			state->rotation & DRM_MODE_ROTATE_MASK);
+	over->x = box.x1;
+	over->y = box.y1;
+	over->dw = drm_rect_width(&box);
+	over->dh = drm_rect_height(&box);
+	return true;
+}
+
 /* One damaged rectangle (framebuffer coordinates) onto the screen, turned
  * as the plane is (M41: the 2D engine's quad turned -- the copy costs the
- * same).  Its edges go out to 16 pixels in the framebuffer's x, and in its
- * y too when that is the screen's x. */
+ * same), the overlay blended over it in the same job.  Its edges go out to
+ * 16 pixels in the framebuffer's x, and in its y too when that is the
+ * screen's x.  Under ov_lock. */
 static void sgx_kms_show(struct apple_sgx_kms *kms, const struct drm_plane_state *state,
 			 const struct drm_rect *clip)
 {
@@ -117,6 +178,7 @@ static void sgx_kms_show(struct apple_sgx_kms *kms, const struct drm_plane_state
 	u32 sx = state->src.x1 >> 16, sy = state->src.y1 >> 16;
 	u32 sw = drm_rect_width(&state->src) >> 16, sh = drm_rect_height(&state->src) >> 16;
 	struct drm_rect src = DRM_RECT_INIT(sx, sy, sw, sh), r = *clip, on;
+	struct apple_sgx_over over;
 	u32 va;
 	int ret;
 
@@ -134,7 +196,8 @@ static void sgx_kms_show(struct apple_sgx_kms *kms, const struct drm_plane_state
 	drm_rect_rotate(&on, sw, sh, state->rotation & DRM_MODE_ROTATE_MASK);
 	va = apple_sgx_bo_va(fb->obj[0]) + fb->offsets[0] + r.y1 * fb->pitches[0] + r.x1 * 4;
 	ret = apple_sgx_fb_show(kms->sgx, va, fb->pitches[0] / 4, drm_rect_width(&r),
-				drm_rect_height(&r), on.x1, on.y1, rot);
+				drm_rect_height(&r), on.x1, on.y1, rot,
+				sgx_kms_over(kms, state, &r, &over) ? &over : NULL);
 	if (ret)
 		drm_err_ratelimited(fb->dev, "the 2D engine's copy to the screen: %d\n", ret);
 }
@@ -150,9 +213,11 @@ static void sgx_kms_update(struct drm_simple_display_pipe *pipe,
 
 	if (!state->fb || !state->visible || !pipe->crtc.state->active)
 		return;
+	mutex_lock(&kms->ov_lock);
 	drm_atomic_helper_damage_iter_init(&iter, old_state, state);
 	drm_atomic_for_each_plane_damage(&iter, &clip)
 		sgx_kms_show(kms, state, &clip);
+	mutex_unlock(&kms->ov_lock);
 }
 
 static void sgx_kms_enable(struct drm_simple_display_pipe *pipe,
@@ -207,13 +272,16 @@ static const struct drm_simple_display_pipe_funcs sgx_kms_pipe_funcs = {
 };
 
 /* drm_atomic_helper_commit_tail() but for the vblank: the planes' copies
- * are done when commit_planes returns, so a commit's event goes then, with
- * the vblank count it is (not at the next vblank), and nothing waits for
- * one before the old framebuffers go. */
+ * are queued when commit_planes returns, so a commit's event goes then,
+ * with the vblank count it is (not at the next vblank) -- the program
+ * draws its next frame into the other buffer meanwhile; the next copy
+ * waits for this one.  An old framebuffer goes once no copy reads it. */
 static void sgx_kms_commit_tail(struct drm_atomic_state *state)
 {
 	struct drm_device *drm = state->dev;
+	struct drm_plane_state *old_ps, *new_ps;
 	struct drm_crtc_state *crtc_state;
+	struct drm_plane *plane;
 	struct drm_crtc *crtc;
 	int i;
 
@@ -231,6 +299,12 @@ static void sgx_kms_commit_tail(struct drm_atomic_state *state)
 		spin_unlock_irqrestore(&drm->event_lock, flags);
 	}
 	drm_atomic_helper_commit_hw_done(state);
+	for_each_oldnew_plane_in_state(state, plane, old_ps, new_ps, i) {
+		struct apple_sgx_kms *kms = container_of(plane, struct apple_sgx_kms, pipe.plane);
+
+		if (old_ps->fb && old_ps->fb != new_ps->fb)
+			apple_sgx_blt_sync(kms->sgx);
+	}
 	drm_atomic_helper_cleanup_planes(drm, state);
 }
 
@@ -254,11 +328,154 @@ static const struct drm_mode_config_funcs sgx_kms_mode_config_funcs = {
 	.atomic_commit = drm_atomic_helper_commit,
 };
 
+static void sgx_kms_overlay_drop(struct apple_sgx_kms *kms);
+
 static void sgx_kms_fini(struct drm_device *drm, void *data)
 {
 	struct apple_sgx_kms *kms = data;
 
+	kms->sgx->kms = NULL;
+	sgx_kms_overlay_drop(kms);
+
 	hrtimer_cancel(&kms->vblank_timer);
+}
+
+/* ---- the overlay ---------------------------------------------------------- */
+
+/* The screen under rects (overlay coordinates) shown again: the plane's
+ * copy, the overlay's blend.  Under the modeset locks and ov_lock. */
+static void sgx_kms_overlay_redraw(struct apple_sgx_kms *kms, const struct drm_rect *rects,
+				   unsigned int n)
+{
+	struct drm_plane_state *state = kms->pipe.plane.state;
+	struct drm_rect r;
+	unsigned int i;
+
+	if (!state || !state->fb || !state->visible || !kms->pipe.crtc.state->active)
+		return;
+	for (i = 0; i < n; i++) {
+		r = rects[i];
+		drm_rect_translate(&r, state->src.x1 >> 16, state->src.y1 >> 16);
+		sgx_kms_show(kms, state, &r);
+	}
+}
+
+static void sgx_kms_overlay_drop(struct apple_sgx_kms *kms)
+{
+	/* (a copy queued may still be reading it) */
+	if (kms->ov_obj) {
+		apple_sgx_blt_sync(kms->sgx);
+		drm_gem_object_put(kms->ov_obj);
+	}
+	kms->ov_obj = NULL;
+	kms->ov_owner = NULL;
+	kms->ov_n = 0;
+}
+
+/* DRM_IOCTL_APPLE_SGX_OVERLAY (apple_sgx_drm.c): set, change or take away
+ * the overlay, or (QUERY) say what the plane is now. */
+int apple_sgx_kms_overlay(struct apple_sgx *sgx, struct drm_file *file,
+			  struct drm_apple_sgx_overlay *args)
+{
+	struct apple_sgx_kms *kms = sgx->kms;
+	struct drm_rect rects[APPLE_SGX_OVERLAY_MAX_RECTS], old[APPLE_SGX_OVERLAY_MAX_RECTS];
+	struct drm_modeset_acquire_ctx ctx;
+	struct drm_gem_object *obj = NULL;
+	struct drm_plane_state *state;
+	struct drm_device *drm;
+	unsigned int i, j, n = 0, nold;
+	int ret;
+
+	if (!kms)
+		return -ENODEV;
+	drm = kms->pipe.plane.dev;
+	if (args->flags & ~APPLE_SGX_OVERLAY_QUERY || args->nrects > APPLE_SGX_OVERLAY_MAX_RECTS)
+		return -EINVAL;
+	if (!(args->flags & APPLE_SGX_OVERLAY_QUERY) && args->handle) {
+		if (!args->width || !args->height || args->pitch % SGX_KMS_ALIGN ||
+		    args->pitch < args->width * 4)
+			return -EINVAL;
+		obj = drm_gem_object_lookup(file, args->handle);
+		if (!obj)
+			return -ENOENT;
+		if (obj->size < (size_t)args->pitch * args->height) {
+			drm_gem_object_put(obj);
+			return -EINVAL;
+		}
+		/* each rectangle out to 16 pixels, within the buffer */
+		for (i = 0; i < args->nrects; i++) {
+			const struct drm_apple_sgx_overlay_rect *a = &args->rects[i];
+			struct drm_rect r = DRM_RECT_INIT(a->x, a->y, a->w, a->h);
+			struct drm_rect all = DRM_RECT_INIT(0, 0, args->width, args->height);
+
+			r.x1 = round_down(r.x1, SGX_KMS_ALIGN_PX);
+			r.y1 = round_down(r.y1, SGX_KMS_ALIGN_PX);
+			r.x2 = round_up(r.x2, SGX_KMS_ALIGN_PX);
+			r.y2 = round_up(r.y2, SGX_KMS_ALIGN_PX);
+			if (drm_rect_intersect(&r, &all))
+				rects[n++] = r;
+		}
+	}
+
+	DRM_MODESET_LOCK_ALL_BEGIN(drm, ctx, 0, ret);
+	mutex_lock(&kms->ov_lock);
+	if (!(args->flags & APPLE_SGX_OVERLAY_QUERY)) {
+		if (kms->ov_owner && kms->ov_owner != file) {
+			ret = -EBUSY;
+		} else {
+			/* (an old rectangle inside a new one is redrawn with it) */
+			for (i = nold = 0; i < kms->ov_n; i++) {
+				for (j = 0; j < n; j++) {
+					struct drm_rect in = kms->ov_rects[i];
+
+					if (obj && drm_rect_intersect(&in, &rects[j]) &&
+					    drm_rect_equals(&in, &kms->ov_rects[i]))
+						break;
+				}
+				if (!obj || j == n)
+					old[nold++] = kms->ov_rects[i];
+			}
+			sgx_kms_overlay_drop(kms);
+			if (obj) {
+				kms->ov_obj = obj;
+				obj = NULL;
+				kms->ov_owner = file;
+				kms->ov_pitch = args->pitch;
+				kms->ov_w = args->width;
+				kms->ov_h = args->height;
+				kms->ov_n = n;
+				memcpy(kms->ov_rects, rects, sizeof(rects[0]) * n);
+			}
+			/* what was under the old rectangles, then the new ones */
+			sgx_kms_overlay_redraw(kms, old, nold);
+			sgx_kms_overlay_redraw(kms, kms->ov_rects, kms->ov_n);
+		}
+	}
+	state = kms->pipe.plane.state;
+	if (state && state->fb && state->visible) {
+		args->out_width = drm_rect_width(&state->src) >> 16;
+		args->out_height = drm_rect_height(&state->src) >> 16;
+		args->out_rotation = state->rotation;
+	} else {
+		args->out_width = args->out_height = 0;
+		args->out_rotation = DRM_MODE_ROTATE_0;
+	}
+	mutex_unlock(&kms->ov_lock);
+	DRM_MODESET_LOCK_ALL_END(drm, ctx, ret);
+	if (obj)
+		drm_gem_object_put(obj);
+	return ret;
+}
+
+/* The file that set the overlay closed: it goes, and the screen under it
+ * is shown again. */
+void apple_sgx_kms_overlay_close(struct apple_sgx *sgx, struct drm_file *file)
+{
+	struct apple_sgx_kms *kms = sgx->kms;
+	struct drm_apple_sgx_overlay args = { 0 };
+
+	if (kms && READ_ONCE(kms->ov_owner) == file)
+		apple_sgx_kms_overlay(sgx, file, &args);
 }
 
 /* Before the device is registered.  -ENODEV: no framebuffer, no screen. */
@@ -276,6 +493,9 @@ int apple_sgx_kms_init(struct drm_device *drm, struct apple_sgx *sgx)
 	if (!kms)
 		return -ENOMEM;
 	kms->sgx = sgx;
+	ret = drmm_mutex_init(drm, &kms->ov_lock);
+	if (ret)
+		return ret;
 
 	/* the one mode: the framebuffer's size, a 60 Hz refresh with token
 	 * blanking (nothing is programmed from it) */
@@ -337,6 +557,7 @@ int apple_sgx_kms_init(struct drm_device *drm, struct apple_sgx *sgx)
 	if (ret)
 		return ret;
 	drm_mode_config_reset(drm);
+	sgx->kms = kms;
 	drm_info(drm, "screen: %ux%u at %pa, through the 2D engine\n", sgx->fb_w, sgx->fb_h,
 		 &fb.start);
 	return 0;

@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=SuperTux (on-screen controls)
+Comment=SuperTux with screenpad's touch controls; turn the iPad landscape
+Exec=/usr/local/bin/screenpad supertux -- supertux2
+Icon=supertux2
+Terminal=false
+Categories=Game;ArcadeGame;

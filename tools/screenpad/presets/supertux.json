@@ -1,0 +1,14 @@
+{
+  "name": "SuperTux",
+  "screen": "landscape",
+  "controls": [
+    { "type": "dpad", "x": 36, "y": 440, "w": 290, "h": 290, "color": "#ffffff", "opacity": 0.32,
+      "up": "key:UP", "down": "key:DOWN", "left": "key:LEFT", "right": "key:RIGHT" },
+    { "type": "button", "shape": "circle", "x": 866, "y": 590, "w": 132, "h": 132,
+      "color": "#3b82f6", "opacity": 0.42, "label": "Jump", "action": "key:SPACE" },
+    { "type": "button", "shape": "circle", "x": 726, "y": 626, "w": 112, "h": 112,
+      "color": "#ef4444", "opacity": 0.42, "label": "Run", "action": "key:LEFTCTRL" },
+    { "type": "button", "shape": "rect", "x": 24, "y": 24, "w": 112, "h": 56, "radius": 14,
+      "color": "#ffffff", "opacity": 0.28, "label": "Menu", "action": "key:ESC" }
+  ]
+}

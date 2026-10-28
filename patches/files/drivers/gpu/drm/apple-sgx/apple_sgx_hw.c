@@ -16,8 +16,8 @@
  *
  * Power is two PMGR power states, GFX_SYS (0x3f101024) then GFX
  * (0x3f101028), taken as clocks from the gate driver in the order the DT
- * lists them.  Nothing else: the GFX clocks already run off PLL@0x18
- * (~102.6 and ~128 MHz in perf state 2), and HPERF-NRT is not needed.
+ * lists them.  Nothing else: the GFX clocks already run off PLL@0x18 (the
+ * core at 256.5 MHz, measured: SGX_CLOCK_KHZ), and HPERF-NRT is not needed.
  *
  * The register window is six 16 KiB banks (the DDK's sgx_mkif_km.h, and iOS
  * addresses the cores the same way):
@@ -1486,7 +1486,8 @@ static int sgx_r_kick(struct apple_sgx *sgx, u32 pb, u32 det, u32 cmdva, u32 cc)
  *   block   B_BLT_BLOCK   the end-of-tile PDS program, and per object a PDS
  *                         program with its data: pixel program + texture
  *   param   B_BLT_PARAM   at BIF_3D_REQ_BASE (1 MiB aligned): the background
- *                         object, the quad, one region header for the box
+ *                         object, the quad (and the overlay's), one region
+ *                         header for the box
  *   command               0x140 bytes in the transfer CCB
  *
  * Surfaces are linear BGRA8888.  One job at a time: each is waited for.
@@ -1494,11 +1495,13 @@ static int sgx_r_kick(struct apple_sgx *sgx, u32 pb, u32 det, u32 cmdva, u32 cc)
 #define SGX_BLT_CODE_VA		0x00001000u
 #define SGX_BLT_PROG_COPY	0x1400u		/* o0 = the sampled texel */
 #define SGX_BLT_PROG_FILL	0x1500u		/* o0 = a constant */
+#define SGX_BLT_PROG_BLEND	0x1600u		/* o0 = the texel over o0, by its alpha */
 #define SGX_BLT_PROG_EOT0	0x1c00u
 #define SGX_BLT_PROG_EOT1	0x1c40u
 #define SGX_BLT_PROG_EMIT	0x1d40u		/* loads the six PBE words, emits */
 #define SGX_BLT_BG_OFF		0x6000u		/* in the parameter page */
 #define SGX_BLT_QUAD_OFF	0x6100u
+#define SGX_BLT_QUAD2_OFF	0x6180u		/* the overlay's quad */
 #define SGX_BLT_RGN_OFF		0x6200u
 #define USSE_PHAS		0xfa44070000000000ull
 
@@ -1535,6 +1538,45 @@ struct sgx_surf {		/* a rectangle of a linear BGRA8888 surface */
 	u32 va;			/* its first pixel */
 	u32 w, h, stride;	/* pixels */
 };
+
+/* the overlay's quad's ISP word: every transfer's, 0x01d80000, and bit 25,
+ * blending, as sgx2d's translucent quads have it.  Without it the ISP keeps
+ * only the front object at each pixel (it is a deferred renderer): the
+ * overlay was shaded and the copy under it dropped. */
+static unsigned int overlay_isp = 0x03d80000;
+module_param(overlay_isp, uint, 0644);
+MODULE_PARM_DESC(overlay_isp, "ISP word of the screen overlay's quad (0x03d80000)");
+
+/* what a job with the overlay asks the microkernel to invalidate first
+ * (SGX_CC_*).  Its buffer is written by the CPU between jobs; none was
+ * needed so far -- the blends read back exact, presses showed at once */
+static unsigned int overlay_cc;
+module_param(overlay_cc, uint, 0644);
+MODULE_PARM_DESC(overlay_cc, "cache control with each overlay job (8: data caches)");
+
+/* A quad over the w x h box at x, y, its PDS program at pds; its vertices'
+ * order is the texture's corners' (top-left, bottom-left, bottom-right,
+ * top-right): a quarter turn anticlockwise puts the source's top-left at
+ * the box's bottom-left, and so on round. */
+static void blt_quad(u32 *q, u32 pds, u32 x, u32 y, u32 w, u32 h, unsigned int rot,
+		     u32 isp)
+{
+	const u32 corner[4] = { blt_xy(x, y), blt_xy(x, y + h), blt_xy(x + w, y + h),
+				blt_xy(x + w, y) };
+	int i;
+
+	q[0] = blt_pds_ptr(pds, 0);
+	q[1] = 0x0801e000;
+	q[2] = blt_pds_ptr(pds + 0x20, 1);
+	q[6] = q[7] = q[8] = q[9] = 0x3f800000;
+	q[11] = isp;
+	q[12] = 0x4e504a30;
+	q[13] = 2;
+	for (i = 0; i < 4; i++) {
+		q[15 + 2 * i] = corner[(i + rot) % 4];
+		q[16 + 2 * i] = 0x3f800000;
+	}
+}
 
 /* texture state for a linear BGRA source (from iOS sampling an IOSurface) */
 static void blt_tex(u32 *t, const struct sgx_surf *s)
@@ -1582,6 +1624,10 @@ static int sgx_blt_init(struct apple_sgx *sgx)
 		       USSE_PHAS, usse_limm(2, 1, 0, false), usse_limm(2, 2, 1, false),
 		       usse_limm(2, 4, 2, false), usse_limm(2, 8, 3, true) };
 	u64 copy[] = { USSE_PHAS, 0x50850009a0000000ull };
+	/* SOP2, as sgx2d's pixel_blend: o0 = pa0 * a + o0 * (1 - a), a the
+	 * texel's alpha (tools/sgx/programs.py) -- o0 being what the quad under
+	 * it drew */
+	u64 blend[] = { USSE_PHAS, 0x809482dd90000000ull };
 	struct resource fb;
 	size_t avail;
 	int ret;
@@ -1596,6 +1642,7 @@ static int sgx_blt_init(struct apple_sgx *sgx)
 		return -ENOMEM;
 	memset(sgx->blt_code, 0, SGX_PAGE_SIZE);
 	blt_put_prog(sgx, SGX_BLT_PROG_COPY, copy, ARRAY_SIZE(copy));
+	blt_put_prog(sgx, SGX_BLT_PROG_BLEND, blend, ARRAY_SIZE(blend));
 	blt_put_prog(sgx, SGX_BLT_PROG_EOT0, eot0, ARRAY_SIZE(eot0));
 	blt_put_prog(sgx, SGX_BLT_PROG_EOT1, eot1, ARRAY_SIZE(eot1));
 
@@ -1615,15 +1662,25 @@ static int sgx_blt_init(struct apple_sgx *sgx)
 }
 
 /* One job: src (or a fill colour, ABGR as the pixel program writes it)
- * onto dst, scaled -- turned rot quarter turns anticlockwise (DRM's sense).
- * Builds the pieces, queues the command, waits. */
-static int __sgx_blt_run(struct apple_sgx *sgx, const struct sgx_surf *src, u32 fill,
-			 const struct sgx_surf *dst, unsigned int rot)
+ * onto dst, scaled -- turned rot quarter turns anticlockwise (DRM's sense);
+ * over: the overlay blended over that, by its alpha, at its place in the
+ * box, in the same job.  Builds the pieces and queues the command: *seq
+ * is the job's, written to the scratch word when it is done (sgx_blt_run
+ * waits).  Under blt_lock, with no job of the engine's still running.
+ *
+ * (The overlay is not blended over what the screen already has: the
+ * background object, the one thing that reads dst, does not read it pixel
+ * for pixel -- its triangle takes the texture's corners as the quad does,
+ * a squeezed, sheared copy.  A copy or a fill covers it whole, so it never
+ * showed.) */
+static int __sgx_blt_submit(struct apple_sgx *sgx, const struct sgx_surf *src, u32 fill,
+			    const struct sgx_surf *dst, unsigned int rot,
+			    const struct apple_sgx_over *over, u32 *seqp)
 {
 	u32 *blk = sgx->buf[B_BLT_BLOCK].cpu, *par = sgx->buf[B_BLT_PARAM].cpu;
 	u32 bva = sgx->buf[B_BLT_BLOCK].va, pva = sgx->buf[B_BLT_PARAM].va;
 	u32 *ctl = sgx->buf[B_TQ_CTL].cpu, *ctx = sgx->buf[B_TQ_CTX].cpu;
-	u32 *scratch = sgx->buf[B_SCRATCH].cpu, *bg, *q, *r, *c, wo, got, seq, size;
+	u32 *scratch = sgx->buf[B_SCRATCH].cpu, *bg, *q, *r, *c, wo, seq, size;
 	u64 emit[11], fillp[2];
 	int i, ret;
 
@@ -1652,29 +1709,38 @@ static int __sgx_blt_run(struct apple_sgx *sgx, const struct sgx_surf *src, u32 
 	}
 
 	/* the PDS block */
-	memset(blk, 0, 0x1c0);
+	memset(blk, 0, 0x220);
 	blk[0x00 / 4] = blt_doutu(SGX_BLT_PROG_EOT1);
 	blk[0x08 / 4] = blt_doutu(SGX_BLT_PROG_EMIT);
 	blk[0x10 / 4] = blt_doutu(SGX_BLT_PROG_EOT0);
 	memcpy(&blk[0x1c / 4], blt_pds_const, sizeof(blt_pds_const));
 	memcpy(&blk[0x50 / 4], blt_pds_main, sizeof(blt_pds_main));
-	for (i = 0; i < 2; i++) {	/* 0: background (reads dst), 1: the quad */
+	/* 0: the background (reads dst), 1: the quad, 2: the overlay */
+	for (i = 0; i < (over ? 3 : 2); i++) {
 		u32 *o = &blk[(0x100 + 0x60 * i) / 4];
+		struct sgx_surf ov;
 
 		o[0] = 0xaf000000;
-		o[8] = blt_doutu(i && !src ? SGX_BLT_PROG_FILL : SGX_BLT_PROG_COPY);
+		o[8] = blt_doutu(i == 0 ? SGX_BLT_PROG_COPY : i == 2 ? SGX_BLT_PROG_BLEND :
+				 !src ? SGX_BLT_PROG_FILL : SGX_BLT_PROG_COPY);
 		o[9] = 0xa;
 		o[11] = 0xf800;
-		blt_tex(&o[12], i && src ? src : dst);
+		if (i == 2) {
+			ov = (struct sgx_surf){ .va = over->va, .w = over->w, .h = over->h,
+						.stride = over->stride };
+			blt_tex(&o[12], &ov);
+		} else {
+			blt_tex(&o[12], i && src ? src : dst);
+		}
 		memcpy(&o[16], blt_pds_tex, sizeof(blt_pds_tex));
 	}
 
-	/* the parameter page: background triangle over the box, the quad
-	 * (top-left, bottom-left, bottom-right, top-right), one region header */
+	/* the parameter page: background triangle over the box, the quad (or
+	 * two), one region header */
 	bg = &par[SGX_BLT_BG_OFF / 4];
 	q = &par[SGX_BLT_QUAD_OFF / 4];
 	r = &par[SGX_BLT_RGN_OFF / 4];
-	memset(bg, 0, 0x210);
+	memset(bg, 0, 0x220);
 	bg[0] = blt_pds_ptr(bva + 0x100, 0);
 	bg[1] = 0x0801e000;
 	bg[2] = blt_pds_ptr(bva + 0x120, 1);
@@ -1683,28 +1749,19 @@ static int __sgx_blt_run(struct apple_sgx *sgx, const struct sgx_surf *src, u32 
 	bg[11] = blt_xy(0, 0);
 	bg[13] = blt_xy(0, 2 * dst->h);
 	bg[15] = blt_xy(2 * dst->w, 0);
-	q[0] = blt_pds_ptr(bva + 0x160, 0);
-	q[1] = 0x0801e000;
-	q[2] = blt_pds_ptr(bva + 0x180, 1);
-	q[6] = q[7] = q[8] = q[9] = 0x3f800000;
-	q[11] = 0x01d80000;
-	q[12] = 0x4e504a30;
-	q[13] = 2;
-	/* the vertices' order is the texture's corners' (top-left, bottom-left,
-	 * bottom-right, top-right): a quarter turn anticlockwise puts the
-	 * source's top-left at the box's bottom-left, and so on round */
-	{
-		const u32 corner[4] = { blt_xy(0, 0), blt_xy(0, dst->h),
-					blt_xy(dst->w, dst->h), blt_xy(dst->w, 0) };
-
-		for (i = 0; i < 4; i++)
-			q[15 + 2 * i] = corner[(i + rot) % 4];
-	}
-	q[16] = q[18] = q[20] = q[22] = 0x3f800000;
+	blt_quad(q, bva + 0x160, 0, 0, dst->w, dst->h, rot, 0x01d80000);
 	r[0] = 0x80000000;		/* last region */
 	r[1] = 0x46400f03;		/* both triangles of the quad */
 	r[2] = 0x0c000000 | SGX_BLT_QUAD_OFF >> 2 | 0xb;
-	r[3] = 0xc0000000;		/* end of the stream */
+	if (over) {			/* and the overlay's */
+		blt_quad(&par[SGX_BLT_QUAD2_OFF / 4], bva + 0x1c0, over->x, over->y, over->dw,
+			 over->dh, rot, overlay_isp);
+		r[3] = 0x46400f03;
+		r[4] = 0x0c000000 | SGX_BLT_QUAD2_OFF >> 2 | 0xb;
+		r[5] = 0xc0000000;	/* end of the stream */
+	} else {
+		r[3] = 0xc0000000;
+	}
 
 	/* the command, as iOS places it (0x80bfd364): 16-bit offsets, and the
 	 * last command before the end is stretched to reach it, so the next
@@ -1741,34 +1798,120 @@ static int __sgx_blt_run(struct apple_sgx *sgx, const struct sgx_surf *src, u32 
 	WRITE_ONCE(ctx[0], 1);
 	wmb();
 	sgx->quiet = true;
-	ret = sgx_send_cmd(sgx, SGX_CMD_TRANSFER, 0, 0, sgx->buf[B_TQ_CTX].va);
+	ret = sgx_send_cmd(sgx, SGX_CMD_TRANSFER, over ? overlay_cc : 0, 0,
+			   sgx->buf[B_TQ_CTX].va);
 	sgx->quiet = false;
 	if (ret)
 		return ret;
-	ret = read_poll_timeout_atomic(READ_ONCE, got, got == seq, 1, 200000, false,
-				       scratch[0]);
-	if (ret)
-		dev_err(sgx->dev, "2D job %u not done: completion 0x%08x, tq read 0x%x, "
-			"BIF_FAULT core0 0x%08x master 0x%08x, lockups %u\n", seq, got,
-			READ_ONCE(ctl[1]), sgx_read(sgx, SGX_CORE(0) + SGX_BIF_FAULT),
-			sgx_read(sgx, SGX_MASTER_BIF_FAULT),
-			READ_ONCE(sgx->buf[B_HOST].cpu[HOST_UK_LOCKUPS]));
-	return ret;
+	sgx->blt_pending = seq;
+	sgx->blt_since = jiffies;
+	*seqp = seq;
+	return 0;
 }
 
-/* One job at a time, from any context.  A job that does not finish takes
- * the engine out of service (callers fall back to the CPU) until the next
- * microkernel boot. */
-static int sgx_blt_run(struct apple_sgx *sgx, const struct sgx_surf *src, u32 fill,
-		       const struct sgx_surf *dst, unsigned int rot)
+/* How long a job may take: the microkernel runs it after the 3D render it
+ * is busy with, and a render may take render_timeout_ms (2 s) before the
+ * render node restarts it all.  fbcon, which cannot sleep, gives up after
+ * 200 ms and draws on the CPU. */
+static unsigned int blt_timeout_ms = 3000;
+module_param(blt_timeout_ms, uint, 0644);
+MODULE_PARM_DESC(blt_timeout_ms, "a 2D job (a copy onto the screen) not done after this puts the engine out of service until it is done");
+
+/* The job queued last, if it is done now -- even one that ran out of time:
+ * the engine is back then; one past its time takes the engine out of
+ * service until it is done after all, or the microkernel is started again.
+ * Under blt_lock. */
+static void sgx_blt_reap(struct apple_sgx *sgx)
+{
+	u32 *scratch = sgx->buf[B_SCRATCH].cpu;
+
+	if (!sgx->blt_pending)
+		return;
+	if (READ_ONCE(scratch[0]) == sgx->blt_pending) {
+		if (sgx->blt_broken)
+			dev_info(sgx->dev, "2D job %u done after all: the engine is back\n",
+				 sgx->blt_pending);
+		sgx->blt_pending = 0;
+		sgx->blt_broken = false;
+	} else if (!sgx->blt_broken &&
+		   time_after(jiffies, sgx->blt_since + msecs_to_jiffies(blt_timeout_ms))) {
+		sgx->blt_broken = true;
+		dev_err(sgx->dev, "2D job %u not done after %u ms: completion 0x%08x, tq read "
+			"0x%x, BIF_FAULT core0 0x%08x master 0x%08x, lockups %u\n",
+			sgx->blt_pending, blt_timeout_ms, READ_ONCE(scratch[0]),
+			READ_ONCE(sgx->buf[B_TQ_CTL].cpu[1]),
+			sgx_read(sgx, SGX_CORE(0) + SGX_BIF_FAULT),
+			sgx_read(sgx, SGX_MASTER_BIF_FAULT),
+			READ_ONCE(sgx->buf[B_HOST].cpu[HOST_UK_LOCKUPS]));
+	}
+}
+
+/* Until the engine has no job running, sleeping: 0, or -EIO when it is out
+ * of service.  What a caller does before memory a job may read goes (the
+ * render node's screen: a framebuffer or the overlay let go). */
+int apple_sgx_blt_sync(struct apple_sgx *sgx)
 {
 	unsigned long flags;
 	int ret;
 
+	for (;;) {
+		spin_lock_irqsave(&sgx->blt_lock, flags);
+		sgx_blt_reap(sgx);
+		ret = sgx->blt_broken ? -EIO : sgx->blt_pending ? -EAGAIN : 0;
+		spin_unlock_irqrestore(&sgx->blt_lock, flags);
+		if (ret != -EAGAIN)
+			return ret;
+		usleep_range(100, 300);
+	}
+}
+
+/* One job at a time, from any context, the job before waited for -- by a
+ * caller that may sleep, sleeping, interrupts on.  It used to spin with them
+ * off for as long as the job took, 200 ms at most: a copy queued behind a
+ * long render of dEQP's took longer, and that put the engine out of service
+ * for good, the screen frozen.  BLT_ASYNC (the render node's copies onto
+ * the screen) returns once the job is queued: the X server goes on drawing
+ * while the GPU copies.  BLT_SYNC waits for it, sleeping (debugfs);
+ * BLT_ATOMIC (fbcon) spins for it, 200 ms at most, and does not wait for
+ * another's: -EBUSY, and fbcon draws on the CPU. */
+enum sgx_blt_wait { BLT_ATOMIC, BLT_SYNC, BLT_ASYNC };
+
+static int sgx_blt_run(struct apple_sgx *sgx, const struct sgx_surf *src, u32 fill,
+		       const struct sgx_surf *dst, unsigned int rot,
+		       const struct apple_sgx_over *over, enum sgx_blt_wait wait)
+{
+	u32 *scratch = sgx->buf[B_SCRATCH].cpu;
+	unsigned long flags;
+	u32 seq = 0, got;
+	bool raced;
+	int ret;
+
+	do {
+		if (wait != BLT_ATOMIC) {
+			ret = apple_sgx_blt_sync(sgx);
+			if (ret)
+				return ret;
+		}
+		spin_lock_irqsave(&sgx->blt_lock, flags);
+		sgx_blt_reap(sgx);
+		raced = !sgx->blt_broken && sgx->blt_pending;
+		ret = sgx->blt_broken ? -EIO : raced ? -EBUSY :
+		      __sgx_blt_submit(sgx, src, fill, dst, rot, over, &seq);
+		spin_unlock_irqrestore(&sgx->blt_lock, flags);
+		/* (another's job got in between: wait for it too) */
+	} while (raced && wait != BLT_ATOMIC);
+	if (ret || wait == BLT_ASYNC)
+		return ret;
+	if (wait == BLT_SYNC)
+		return apple_sgx_blt_sync(sgx);
+	ret = read_poll_timeout_atomic(READ_ONCE, got, got == seq, 1, 200000, false, scratch[0]);
 	spin_lock_irqsave(&sgx->blt_lock, flags);
-	ret = sgx->blt_broken ? -EIO : __sgx_blt_run(sgx, src, fill, dst, rot);
-	if (ret == -ETIMEDOUT)
+	sgx_blt_reap(sgx);
+	if (ret && sgx->blt_pending == seq && !sgx->blt_broken) {
 		sgx->blt_broken = true;
+		dev_err(sgx->dev, "2D job %u (fbcon's) not done after 200 ms: completion 0x%08x\n",
+			seq, got);
+	}
 	spin_unlock_irqrestore(&sgx->blt_lock, flags);
 	return ret;
 }
@@ -1789,7 +1932,8 @@ static void sgx_fb_surf(struct apple_sgx *sgx, struct sgx_surf *s, u32 x, u32 y,
 }
 
 /* "fill X Y W H ARGB" on the framebuffer */
-static int sgx_fb_fill(struct apple_sgx *sgx, u32 x, u32 y, u32 w, u32 h, u32 argb)
+static int sgx_fb_fill(struct apple_sgx *sgx, u32 x, u32 y, u32 w, u32 h, u32 argb,
+		       enum sgx_blt_wait wait)
 {
 	struct sgx_surf d;
 
@@ -1798,11 +1942,12 @@ static int sgx_fb_fill(struct apple_sgx *sgx, u32 x, u32 y, u32 w, u32 h, u32 ar
 	sgx_fb_surf(sgx, &d, x, y, w, h);
 	/* the pixel program's output is ABGR */
 	return sgx_blt_run(sgx, NULL, (argb & 0xff00ff00) | (argb & 0xff) << 16 |
-			   (argb >> 16 & 0xff), &d, 0);
+			   (argb >> 16 & 0xff), &d, 0, NULL, wait);
 }
 
 /* "copy SX SY DX DY W H" within the framebuffer */
-static int sgx_fb_copy(struct apple_sgx *sgx, u32 sx, u32 sy, u32 dx, u32 dy, u32 w, u32 h)
+static int sgx_fb_copy(struct apple_sgx *sgx, u32 sx, u32 sy, u32 dx, u32 dy, u32 w, u32 h,
+		       enum sgx_blt_wait wait)
 {
 	struct sgx_surf s, d;
 
@@ -1810,15 +1955,16 @@ static int sgx_fb_copy(struct apple_sgx *sgx, u32 sx, u32 sy, u32 dx, u32 dy, u3
 		return -EINVAL;
 	sgx_fb_surf(sgx, &s, sx, sy, w, h);
 	sgx_fb_surf(sgx, &d, dx, dy, w, h);
-	return sgx_blt_run(sgx, &s, 0, &d, 0);
+	return sgx_blt_run(sgx, &s, 0, &d, 0, NULL, wait);
 }
 
 /* The render node's screen (apple_sgx_kms.c): a w x h rectangle of a
  * linear BGRA surface -- va its first pixel, stride in pixels -- onto the
  * screen at x, y, turned rot quarter turns anticlockwise (h x w on the
- * screen for an odd number). */
+ * screen for an odd number).  Queued, once the copy before is done: the
+ * surface must stay until apple_sgx_blt_sync() says so. */
 int apple_sgx_fb_show(struct apple_sgx *sgx, u32 va, u32 stride, u32 w, u32 h, u32 x, u32 y,
-		      unsigned int rot)
+		      unsigned int rot, const struct apple_sgx_over *over)
 {
 	struct sgx_surf s = { .va = va, .w = w, .h = h, .stride = stride }, d;
 
@@ -1826,8 +1972,10 @@ int apple_sgx_fb_show(struct apple_sgx *sgx, u32 va, u32 stride, u32 w, u32 h, u
 		swap(w, h);
 	if (!sgx_fb_rect_ok(sgx, x, y, w, h))
 		return -EINVAL;
+	if (over && (!over->dw || !over->dh || over->x + over->dw > w || over->y + over->dh > h))
+		return -EINVAL;
 	sgx_fb_surf(sgx, &d, x, y, w, h);
-	return sgx_blt_run(sgx, &s, 0, &d, rot & 3);
+	return sgx_blt_run(sgx, &s, 0, &d, rot & 3, over, BLT_ASYNC);
 }
 
 /* fbcon moves rectangles over themselves.  Up the screen is one job (see
@@ -1841,7 +1989,7 @@ static int sgx_fb_copy_safe(struct apple_sgx *sgx, u32 sx, u32 sy, u32 dx, u32 d
 	int ret = 0;
 
 	if (!overlap || (fast_scroll && dx == sx && dy < sy))
-		return sgx_fb_copy(sgx, sx, sy, dx, dy, w, h);
+		return sgx_fb_copy(sgx, sx, sy, dx, dy, w, h, BLT_ATOMIC);
 	if (dy != sy) {
 		d = dy > sy ? dy - sy : sy - dy;
 		n = DIV_ROUND_UP(h, d);
@@ -1849,7 +1997,7 @@ static int sgx_fb_copy_safe(struct apple_sgx *sgx, u32 sx, u32 sy, u32 dx, u32 d
 			u32 k = dy > sy ? n - 1 - i : i;	/* down: last band first */
 			u32 y = k * d, bh = min(d, h - y);
 
-			ret = sgx_fb_copy(sgx, sx, sy + y, dx, dy + y, w, bh);
+			ret = sgx_fb_copy(sgx, sx, sy + y, dx, dy + y, w, bh, BLT_ATOMIC);
 		}
 		return ret;
 	}
@@ -1859,7 +2007,7 @@ static int sgx_fb_copy_safe(struct apple_sgx *sgx, u32 sx, u32 sy, u32 dx, u32 d
 		u32 k = dx > sx ? n - 1 - i : i;		/* right: last band first */
 		u32 x = k * d, bw = min(d, w - x);
 
-		ret = sgx_fb_copy(sgx, sx + x, sy, dx + x, dy, bw, h);
+		ret = sgx_fb_copy(sgx, sx + x, sy, dx + x, dy, bw, h, BLT_ATOMIC);
 	}
 	return ret;
 }
@@ -1877,7 +2025,8 @@ static void sgx_fbcon_fillrect(struct fb_info *info, const struct fb_fillrect *r
 
 	if (info->fix.visual == FB_VISUAL_TRUECOLOR || info->fix.visual == FB_VISUAL_DIRECTCOLOR)
 		c = ((u32 *)info->pseudo_palette)[r->color];
-	if (r->rop != ROP_COPY || sgx_fb_fill(sgx_fbcon, r->dx, r->dy, r->width, r->height, c))
+	if (r->rop != ROP_COPY ||
+	    sgx_fb_fill(sgx_fbcon, r->dx, r->dy, r->width, r->height, c, BLT_ATOMIC))
 		sgx_fbcon_cpu->fb_fillrect(info, r);
 }
 
@@ -1920,7 +2069,7 @@ static int sgx_fb_bench(struct apple_sgx *sgx, u32 n)
 	int ret = 0;
 
 	for (i = 0; i < n && !ret; i++)
-		ret = sgx_fb_fill(sgx, 0, 0, 64, 64, 0xff000000 | (i * 0x0a1f3d));
+		ret = sgx_fb_fill(sgx, 0, 0, 64, 64, 0xff000000 | (i * 0x0a1f3d), BLT_SYNC);
 	us = ktime_us_delta(ktime_get(), t0);
 	dev_info(sgx->dev, "bench: %u of %u fills done in %lld us (%lld us each)%s\n",
 		 ret ? i - 1 : i, n, us, i ? div_s64(us, i) : 0, ret ? ", stopped on an error" : "");
@@ -2048,6 +2197,7 @@ static int sgx_boot(struct apple_sgx *sgx)
 	sgx->boot_result = ret ? ret : 1;
 	sgx->boots++;
 	sgx->blt_broken = false;
+	sgx->blt_pending = 0;
 	spin_unlock_irqrestore(&sgx->blt_lock, flags);
 	if (!ret && fbcon_gpu)
 		sgx_fbcon_hook(sgx);
@@ -2152,9 +2302,9 @@ static ssize_t sgx_cmd_write(struct file *file, const char __user *ubuf,
 	else if (!strcmp(word, "rkick"))
 		ret = sgx_r_kick(sgx, arg, arg2, a[0], a[1]);
 	else if (!strcmp(word, "fill"))
-		ret = sgx_fb_fill(sgx, arg, arg2, a[0], a[1], a[2]);
+		ret = sgx_fb_fill(sgx, arg, arg2, a[0], a[1], a[2], BLT_SYNC);
 	else if (!strcmp(word, "copy"))
-		ret = sgx_fb_copy(sgx, arg, arg2, a[0], a[1], a[2], a[3]);
+		ret = sgx_fb_copy(sgx, arg, arg2, a[0], a[1], a[2], a[3], BLT_SYNC);
 	else if (!strcmp(word, "bench"))
 		ret = sgx_fb_bench(sgx, arg);
 	else if (!strcmp(word, "fbcon")) {

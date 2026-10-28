@@ -1,0 +1,6 @@
+[Desktop Entry]
+Type=Application
+Name=Cascadia: the screen turned with the iPad
+Exec=/usr/local/bin/autorotate
+OnlyShowIn=XFCE;
+NoDisplay=true

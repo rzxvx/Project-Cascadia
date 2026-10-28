@@ -86,7 +86,7 @@ DESTDIR="$ID" ninja -C "$BD" install >/dev/null
 
 I=$ID$PREFIX
 mkdir -p "$I/bin"
-for t in glclear gltri glfs gltex glblend gldepth glspeed glpersp glsize glseam glcull gldiscard glstencil glchurn glwrap glvtx glmip glvary glldr glflow glfetch glflat glupload; do
+for t in glclear gltri glfs gltex glblend gldepth glspeed glclock glpersp glsize glseam glcull gldiscard glstencil glchurn glwrap glvtx glmip glvary glldr glflow glfetch glflat glupload; do
     cc -O2 -Wall -I"$I/include" "$ROOT/tools/sgx/gl/$t.c" -L"$I/lib" -lEGL -lGLESv2 -lm \
         -Wl,-rpath-link,"$I/lib" -Wl,-rpath,"$PREFIX/lib" -o "$I/bin/$t"
 done
@@ -99,6 +99,15 @@ done
 cc -O2 -Wall -I"$I/include" $(pkg-config --cflags libdrm) "$ROOT/tools/sgx/gl/glkms.c" \
     -L"$I/lib" -lEGL -lGLESv2 -lgbm $(pkg-config --libs libdrm) -lm \
     -Wl,-rpath-link,"$I/lib" -Wl,-rpath,"$PREFIX/lib" -o "$I/bin/glkms"
+# the GPU demo (tools/sgx/tux, tux-gpudemo): the glb and the PNG read by
+# cgltf and stb_image, the scene in share/tux-gpudemo
+cc -O2 -Wall -Wno-unused-function -I"$I/include" $(pkg-config --cflags libdrm) \
+    "$ROOT/tools/sgx/tux/tuxorbit.c" -L"$I/lib" -lEGL -lGLESv2 -lgbm $(pkg-config --libs libdrm) -lm \
+    -Wl,-rpath-link,"$I/lib" -Wl,-rpath,"$PREFIX/lib" -o "$I/bin/tuxorbit"
+cp "$ROOT/tools/sgx/tux/tux-gpudemo.sh" "$I/bin/tux-gpudemo"
+mkdir -p "$I/share/tux-gpudemo"
+cp "$ROOT/tools/sgx/tux/assets/tux.glb" "$ROOT/tools/sgx/tux/assets/tux-baked.png" \
+    "$I/share/tux-gpudemo/"
 # the screen turned by the plane (M41): libdrm alone
 cc -O2 -Wall $(pkg-config --cflags libdrm) "$ROOT/tools/sgx/gl/kmsrot.c" $(pkg-config --libs libdrm) \
     -o "$I/bin/kmsrot"

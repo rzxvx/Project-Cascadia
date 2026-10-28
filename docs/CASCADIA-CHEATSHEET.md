@@ -155,7 +155,8 @@ is true as of its date. Now:
   `nandctl` for the chips themselves — see "THE NAND" at the end
 - XFCE: `tools/desktop/xfce-setup.sh`, then `desktop` -- on the GPU (Xorg,
   glamor) once the GPU's OpenGL is installed
-- the GPU, 2D: `./cascadia gpu`, then `supertux-gpu` (docs/GPU.md)
+- the GPU: `./cascadia gpu` (the pack: the template frame, sgx2d's demos), then
+  `./cascadia mesa`; the GPU demo: `tux-gpudemo` (EXIT top right; docs/GPU.md)
 - the GPU's OpenGL: `./cascadia mesa` -- the system's OpenGL ES 1.1/2.0 and desktop
   OpenGL 2.1 (GLX, EGL, GBM); see "THE GPU'S OPENGL" at the end
 - sound: the speakers, ALSA card `iPadMini` (DMA, 32/44.1/48 kHz, S16/S32),
@@ -1355,6 +1356,46 @@ frames and touches in dmesg; `z2-boot -p N -N` reads the frames itself, without 
   = tiled), `SGX_PBE_R8=0x...` to try words. Don't rebuild
   `/root/sgx-mesa-rel` while a piglit run uses it (`mesa/devbuild.sh`
   without `release` builds `/root/sgx-mesa-cur` instead).
+- M44 (integers the hardware's own, GLSL 1.30's start): an instruction tried
+  on the GPU -- `python3 tools/sgx/usse-probe.py batch FILE` (a probe a line,
+  `limm r2 3; limm r4 5; imad r0 r2 r4 r2; out r0`; `MESA=` the build,
+  `ENV=SGX_LDR_PROBE_BRANCHES=1` PHAS mode 1). piglit's shader tests
+  (quick_shader, which run.sh's quick_gl has not): `/root/piglit/shaders.sh
+  NAME /root/sgx-mesa-rel spec@glsl-1.20 ...`; GLSL 1.30's with `130` after
+  the build (MESA_GL_VERSION_OVERRIDE=3.0: Mesa keeps GLSL at 1.20 under GL
+  2.1). dEQP-GLES2 whole: `cd /root/deqp; SGX_MESA=DIR SGX_WRAP=/root/sgx-dev
+  python3 deqp-run.py /root/deqp OUT $(cat groups.txt)`.
+- M45 (what the X server costs): `sh tools/desktop/xopen-time.sh` on the
+  iPad in the session (a terminal opened 6 times: ms each, the mean, Xorg's
+  CPU a window; M44's 1130 ms and 2.5 s, M45's 670 ms and 2.1 s). Another
+  build or library in the X server only: `~/.xserverrc` with `exec env
+  SGX_MESA=/root/sgx-mesa-rel LD_LIBRARY_PATH=/root/pixman-test
+  /root/sgx-dev /usr/libexec/Xorg "$@"`, `kill $(pidof xfce4-session)`,
+  `desktop`, a minute to settle; delete the file afterwards. What glamor
+  leaves to pixman: `tools/sgx/composite-who.c` preloaded the same way,
+  `touch /tmp/composite-who-dump` around what you do (stderr: the X log's
+  2>). Who clears: memcpy-who's second table. pixman with the scanline fix:
+  `sh tools/desktop/pixman/build.sh install` (0.46.4-r100, ~2 min); back:
+  `apk add pixman=0.46.4-r0` (with a network). Never call a function from a
+  gdb breakpoint in the X server: it aborted. The glass frozen but X alive
+  (dmesg: "the 2D engine's copy to the screen: -5", a kernel before M45's):
+  stop X, `echo 1 > /sys/kernel/debug/apple-sgx/boot`, `desktop`; since
+  M45 a late copy brings the engine back by itself, and a copy may take
+  `/sys/module/apple_sgx/parameters/blt_timeout_ms` (3000). From ssh,
+  xfconf-query needs the session's bus: `eval export $(tr '\0' '\n' <
+  /proc/$(pidof xfce4-session)/environ | grep ^DBUS_SESSION_BUS_ADDRESS=)`
+  -- without it, it talks to an xfconfd of its own.
+- Charging (`apple-pmu-charger.c`, issue #23): the PMU's USB input limit,
+  register `0x3d` (i2c-0, address 0x3c; code = (8 mA - 600) / 100, iBEC's
+  corrections; `0x02` = about 100 mA, also what the PMU drops to when VBUS
+  sags, and what it resets to at every plug-in). Armed from the bootargs
+  (`apple_pmu_charger.armed=1`), 1000 mA. Look: `cat
+  /sys/class/power_supply/battery/current_now` (positive: charging),
+  `i2cget -f -y 0 0x3c 0x3d` (0x48 = 1000 mA), dmesg `apple-pmu-charger`
+  (a sag says "limiting ... until unplugged"). A 2 A charger: `echo 2100 >
+  /sys/module/apple_pmu_charger/parameters/max_input_ma; echo 2100000 >
+  /sys/class/power_supply/apple-pmu-usb/input_current_limit`. Never read
+  PMU registers 0x01..0x09: they clear on read.
 - iOS's GL driver as the oracle: `bash tools/shadercap.sh` with the iPad in iOS
   (corpus + OpenGL ES 1 cases, render commands logged), then
   `python3 tools/iosgpu/corpus.py logs/ios/corpus/DATE [--pds|--state|--own] [CASE]`.
@@ -1373,7 +1414,7 @@ frames and touches in dmesg; `z2-boot -p N -N` reads the frames itself, without 
 | `apk add` of a big package over ssh: "No space left on device" | the iPad's /tmp is 128 MB of RAM: copy it to /var/tmp (the NFS root) |
 | `perf probe -x libgallium ...` (uprobes) and the renders fail | the driver is Thumb code and the probes break it: remove them (`echo > /sys/kernel/tracing/uprobe_events`); count with `perf record -e raw_syscalls:sys_enter --filter 'id == 54'` (ioctls) instead |
 | `ssh cascadia 'pkill -f NAME ...'` and the ssh session dies | `-f` matches the ssh's own shell, whose command line has NAME: `pkill -x` |
-| SuperTux drawn in a corner, or its menu off to the right | its config (`~/.local/share/supertux2/config`) keeps the last `--geometry` as `fullscreen_width`/`_height` (a test's 384 x 512, supertux-gpu's 1024 x 768): set both to 0 (the desktop's size) with SuperTux closed -- it writes the config when it exits; supertux-gpu puts them back itself now. `SGX_DEBUG=fps` prints the target's size and the viewport |
+| SuperTux drawn in a corner, or its menu off to the right | its config (`~/.local/share/supertux2/config`) keeps the last `--geometry` as `fullscreen_width`/`_height` (a test's 384 x 512): set both to 0 (the desktop's size) with SuperTux closed -- it writes the config when it exits. `SGX_DEBUG=fps` prints the target's size and the viewport |
 | SuperTux 355 draws a frame on KMS, 31 under X | SDL batches only when no renderer is named: `SDL_RENDER_BATCHING=1` with `SDL_RENDER_DRIVER` (supertux-mesa.sh has it) |
 | SuperTux under X slower than on KMS while its CPU idles | the X server's and xfwm4's renders share the GPU: compare with X itself on the build (`SGX_MESA=/root/sgx-mesa-rel /root/sgx-dev desktop`), not SuperTux alone |
 | a program's fps under X is not what the screen shows | composited, the screen shows xfwm4's frames: count the X server's page flips and DIRTYFBs (`perf record -e raw_syscalls:sys_enter -e raw_syscalls:sys_exit --filter 'id == 54' -p $(pidof Xorg)`, `python3 tools/sgx/ioret.py`: `c01864b0`, `c01864b1`); a window's bypass hint and depth: `tools/sgx/xwinfo.py` |
@@ -1412,6 +1453,35 @@ The buttons (`/sbin/p105-keys`, log in `/tmp/p105-keys.log`): side switch
 with the orange mark showing -> volume up/down set the backlight; the other
 way -> the speakers' volume, 16 steps of 4 dB (-48..+12 dB) and off, both
 amps. It works with the screen off too.
+Home held 0.8 s: the rotation lock on/off (the backlight dips once for on,
+twice for off).
+
+Turning the screen (XFCE): `autorotate`, started by the session, turns it
+with the iPad; `rotation-lock [on|off|toggle]` (the file
+`/run/rotation-lock`), also the panel button next to the keyboard's, and
+Home held. Installed from the host: `sh tools/desktop/install.sh` (rotate,
+autorotate, rotation-lock, the button, the autostart entry). The
+accelerometer: `/sys/bus/iio/devices/iio:device0` (`lis3dsh`;
+`in_accel_{x,y,z}_raw`, 0.000598 m/s2 a unit; face up z = +16 300);
+`i2cget -f -y 1 0x1d 0x0f` = `0x3f`. On a kernel from before it:
+`tools/sensors/dtmod` and the st_accel modules
+(docs/research/p105-sensors.md).
+
+On-screen controls: `screenpad PRESET [-- COMMAND]` (`-l` lists the
+presets), `screenpad-editor [PRESET]` makes them (GTK, in XFCE); the
+presets are in `~/.config/screenpad` and `/usr/local/share/screenpad/presets`.
+Installed from the host: `sh tools/screenpad/build.sh install`. They are
+drawn by the kernel, blended into each copy onto the screen (the render
+node's OVERLAY ioctl), so they show over X, over a game that bypasses the
+compositor, and over KMS programs; not on the text console. They hide
+when the screen is not turned the preset's way. X sees the touches that
+are not the controls' as `screenpad touch`, the keys as `screenpad keys`,
+the pad as `Microsoft X-Box 360 pad` (`evtest`). Tests:
+`tools/screenpad/ovtest.c` (the blend, against `xshot.py --screen`),
+`tools/screenpad/touchtest.py` (`SCREENPAD_TOUCH`: scripted fingers). The
+overlay quad's ISP word and cache control: `/sys/module/apple_sgx/
+parameters/overlay_isp` (0x03d80000), `overlay_cc`.
+docs/research/p105-screenpad.md.
 
 Research tools (out of the image): `tools/audio/audmmio.c` (MMIO script
 runner: `r w m p d f t c q s`), `tools/audio/spk-tone.sh` (the speakers by

@@ -84,6 +84,10 @@ struct sgx_zls *sgx_resource_zls(struct sgx_resource *res, unsigned level, unsig
 /* whether p's copy for the sampler is four half floats (M43) */
 bool sgx_resource_copy_f16(const struct pipe_resource *p);
 
+/* the program's swizzle on the sampler's texel for p's format (M45: R8,
+ * RG8), pipe_swizzle each; false when there is none */
+bool sgx_resource_swizzle(const struct pipe_resource *p, uint8_t swz[4]);
+
 struct sgx_transfer {
    struct pipe_transfer base;
 };

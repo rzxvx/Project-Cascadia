@@ -72,6 +72,10 @@
 		 * octet is 2), so they cannot collide with a real vendor OUI.
 		 *   ...:01 = host side (the Mac's enN)
 		 *   ...:02 = device side (usb0 here)
+		 *
+		 * Research branch: automatic charger arming is deliberately omitted.
+		 * Upstream enables a 1000 mA target here. Our attended test admission
+		 * and source-budget qualification must precede any charge activation.
 		 */
 		bootargs = "earlycon=s3c6400,0x32500000 keep_bootcon lpj=5000000 root=/dev/ram0 rw rootwait panic=10 loglevel=8 ignore_loglevel g_cdc.host_addr=02:10:5a:05:00:01 g_cdc.dev_addr=02:10:5a:05:00:02";
 
@@ -824,7 +828,12 @@
             compatible = "apple,s5l8940x-i2c";
             reg = <0x3200000 0x1000>;
             clock-frequency = <100000>;
-            interrupts = <10>;
+            /* The ADT's arm-io/i2c0 says 0x12 (i2c1 0x13, i2c2 0x14), and it
+             * arrives: one per message the driver arms.  This said 10, which
+             * the ADT gives the scaler: its count stayed 0 and the driver
+             * took the interrupt to be lost.  The driver still polls
+             * (i2c-s5l8940x.c, docs/research/p105-sensors.md). */
+            interrupts = <18>;
             clocks = <&refclk24mhz>;
             clock-names = "i2c";
             #address-cells = <1>;
@@ -917,6 +926,16 @@
                     apple,wled-enables = <0x3f>;
                 };
 
+                /* The USB input current limit, 0x3d: iBEC leaves it at 0x02
+                 * (about 100 mA) and the PMU never moves it itself, so
+                 * without this nothing charges.  The only register
+                 * apple-pmu-charger.c writes; it ramps it the way iBEC does,
+                 * and only once armed. */
+                charger@3d {
+                    compatible = "apple,pmu-d1946-charger";
+                    reg = <0x3d>;
+                };
+
                 /* No PMU GPIO0 here.  The ADT's function-clock_enable-pmu is
                  * GPIO0 (register 0x61), but iBEC makes it the digitizer's
                  * clock only on boards of revision <= 1, where it also turns
@@ -949,6 +968,38 @@
                 clock-names = "mclk";
                 #sound-dai-cells = <0>;
                 sound-name-prefix = "Right";
+            };
+        };
+
+        /* The ADT's arm-io/i2c2, the same block as i2c0, with the motion
+         * sensors on it: accelerometer,ap3dsh at 0x1d (WHO_AM_I 0x3f, an ST
+         * LIS3DSH), gyro,ap3gdl at 0x6a (WHO_AM_I 0xd5, which no st_gyro
+         * part has) and als,tsl2581 at 0x39 (ID 0x93).  Only the first has
+         * a driver here.  Its clock gate (PMGR 0x3f101120) is on from the
+         * boot, its pins muxed as i2c0's are.  Interrupt 20 is the ADT's
+         * 0x14, and it arrives (as i2c0's 18, the ADT's 0x12, does). */
+        i2c2: i2c@3400000 {
+            compatible = "apple,s5l8940x-i2c";
+            reg = <0x3400000 0x1000>;
+            clock-frequency = <100000>;
+            interrupts = <20>;
+            clocks = <&refclk24mhz>;
+            clock-names = "i2c";
+            #address-cells = <1>;
+            #size-cells = <0>;
+            status = "okay";
+
+            accelerometer@1d {
+                /* LIS3DSH: added to st_accel by patches/tree */
+                compatible = "st,lis3dsh-accel";
+                reg = <0x1d>;
+                /* the ADT's orientation is minus the identity: it takes the
+                 * chip to iOS's axes, where gravity reads -1 g.  IIO reads
+                 * the push against it, +1 g up, so the chip's axes are the
+                 * screen's: x right, y up (away from Home), z out */
+                mount-matrix = "1", "0", "0",
+                               "0", "1", "0",
+                               "0", "0", "1";
             };
         };
 

@@ -146,14 +146,16 @@ the new pack and binaries):
 3. `/usr/local/lib/sgx2d/sprites /usr/local/lib/sgx2d 200 600` -- the same
    frame rate as through debugfs (~220 fps); `renders done` in sgxinfo
    counts them.
-4. `supertux-gpu`.
+4. SuperTux through sgx2d's SDL shim (M7's; gone since M44, OpenGL runs it).
 
 **On the device, 2026-10-03: it works.** The render node registers next to
 the old driver (`[drm] Initialized apple_sgx 0.1.0 ... on minor 0`), the
 microkernel starts as before, and:
 
 - `sgxinfo`: every parameter as expected (CORE_ID `0x01194201`, rev 1.2.2,
-  2 cores, 102.6 MHz, framebuffer 768x1024 at GPU `0x90000000`); a buffer the
+  2 cores, 102.6 MHz [the parameter was wrong: the core runs at 256.5,
+  p105-gpu.md "The GPU's clock, measured"], framebuffer 768x1024 at GPU
+  `0x90000000`); a buffer the
   kernel placed at `0xeffef000` (the top of the range, below its guard
   page), one in the code zone at `0x9affb000`, one at the fixed `0xc0000000`,
   each written and read back through its mapping.
@@ -3033,6 +3035,9 @@ fps, every frame shown**; inverted 64-66. The desktop right in all four
 **What is next:** the accelerometer (an IIO device, a mount matrix),
 iio-sensor-proxy and a session daemon calling `rotate`; the side switch as
 the rotation lock; touch checked by hand in each turn.
+(Done without iio-sensor-proxy: `autorotate` reads IIO's sysfs itself, and
+the lock is a panel button and Home held -- the side switch stayed with the
+volume buttons. [p105-sensors.md](p105-sensors.md).)
 
 ## M42: a draw's vertices written once, into GPU memory
 
@@ -3477,6 +3482,270 @@ the border colour (every `texwrap formats bordercolor`); `gl_FragDepth`
 (`depth-clear-precision-check`); a sampler LOD bias past +4 (word 0's field
 is -3.875 .. 4: `tex-miplevel-selection` with a bias of 5); gl_PointCoord;
 MSAA (`ext_framebuffer_multisample` with 0 samples).
+
+## M44: integers the hardware's own
+
+M42's plan has the compiler next: GLSL 1.30 wants integers that are
+integers -- bit operations, unsigned values, all 32 bits -- where until now
+NIR's `nir_lower_int_to_float` made every int a float and every boolean
+0.0 or 1.0 (M13c). The USSE has integer instructions (PS Vita's shaders use
+them; Vita3K decodes them), but nothing of iOS's GLES 2 driver shows them:
+each was found on the device.
+
+**Finding them.** `SGX_LDR_PROBE=word,... glldr --probe` (M32) runs a
+program of those words and reads r0 back through o0 (a pixel's bytes are
+o0's in R G B A order: the word is A B G R). `tools/sgx/usse-probe.py`
+assembles probes from Vita3K's bitstrings (the table `usse-dis.py` decodes
+with) and runs a file of them in one ssh -- `limm r2 0x80000005; shl r0 r2
+#3; out r0` gives 0x00000028; `SGX_LDR_PROBE_BRANCHES=1` (its `ENV=`) runs
+them as a program whose pixels each go their own way (PHAS mode 1, M20).
+`mesa/host/usse-test.py` checks the encoder against the words the device
+ran. What came out:
+
+| what | instruction | found |
+|---|---|---|
+| a + b, a - b, -a | I32MAD2 (11010): src0 * src1 + src2, src1 and src2 negated by their own bits | src1's low 16 bits only, unsigned: 0x12345 * 0x10001 + 0x12345 is 0x2468a. Wraps mod 2^32. Immediates 0..127, unsigned |
+| a * b | two I32MAD2 and two shifts: a * (b >> 16) << 16, + a * lo16(b) | one when NIR's range analysis knows either operand fits 16 bits |
+| and, or, xor, not | VBW op1 2 (op2 0/1), 3; not as xor with c56 (all ones) | as M37 had them; immediates 16 bits rotated |
+| <<, >>, >>> | VBW op1 4 (shl), 5 (shr; asr with op2) | the count as it is: 36 shifts everything out (NIR takes it modulo 32: an `and 31` unless the range says < 32) |
+| a < b, a == b (signed, unsigned) | VTST, ALU 1, ISUB32 (14) / ISUBU32 (15), sign test 1 or zero test 1, both required | right where the difference overflows: 0x80000000 < 1 and 0x7fffffff > -1 come out true and false. src2 may be an immediate, seven bits sign-extended (#64 is -64: 3 < #100 is false); src1 may not |
+| a < b, a == b (F32) | VTST, ALU 0 at F32 precision, VSUB (14); the registers 64-bit ones, the channel the lane | below 0 is the sign test and the zero test's "not zero" (2): -0 - 0 is -0, its sign set (piglit's faceforward of a -0 dot product); -0 == 0. M20's "wrong answers" were 32-bit register numbers |
+| select | VMOV of type 2 (INT32), conditional: src0 < 0, <= 0, == 0, != 0 as a signed integer | 32-bit registers, six bits: 0..63; c56 and c0 are ~0 and 0 |
+| int <-> float | VPCK S16/U16 to F32 (a half by channel 0's select: bit 0 the half, bit 7 the register's parity), F32 to S16/U16 into a half (mask 1, 2), rounded to the nearest even and saturated | an F32 dest's first channel is the register named, odd ones too |
+
+F32 moves keep a NaN's bits (0xffffffff through `mov.f32` is 0xffffffff),
+so booleans may go through the float paths. Predicated LIMMs, VBWs and
+VMOVs (the extended predicate in 58:56, LIMM's in 43:41) work in either
+PHAS mode, skipinv set or not.
+
+**The compiler** (`sgx_compiler.c`, "32-bit integers") takes NIR's integers
+as they are: `nir_lower_idiv` for division (exact; the high half of its
+products from 16-bit ones, `nir_lower_alu` with `lower_mul_high`),
+`nir_lower_bool_to_int32` for booleans -- 0 and ~0, so a comparison is a
+VTST into p0 and then `limm d, 0; p0? limm d, ~0` (3 instructions; 4 as
+floats before), a select one INT32 VMOV, `b2f` an `and` with 1.0's bits.
+A constant operand keeps its bits (`struct operand.u`). Conversions:
+
+- `i2f`: the halves to F32 by two VPCKs, then hi * 65536 + lo -- exact,
+  one rounding (4 instructions with the constant's LIMM);
+- `f2i`, `f2u`: |x| truncated in F32 (|x| - fract |x|), split into hi =
+  floor(t / 65536) and lo = t - 65536 hi -- whole numbers, so VPCK's
+  rounding does nothing -- packed into the word's halves, and the sign put
+  back by an INT32 VMOV on x's own bits. `f2i` keeps M31's 2^-13 (`int()`
+  of an interpolated 24 that comes as 23.9995 is 24); `f2u`, which only
+  `nir_lower_idiv`'s reciprocal makes here, is exact.
+
+Uniform arrays through an index, uniforms in memory and UBO offsets are
+integer arithmetic now (M21, M32 and M43 made a float an integer by
+2^23's low bits). A word an integer instruction makes takes any
+temporary, odd ones too (`define_word()`): every value in an even one,
+atan's copysign -- bits now -- took 67 registers a pixel (dEQP's
+`atan2.*_vec4_fragment`).
+
+**A Mesa bug on the way.** With native integers the draw module's
+`nir_to_tgsi` lowers uniforms to a UBO by bytes, and
+`nir_lower_uniforms_to_ubo` set a constant offset's alignment from the
+offset in vec4s (1 + base * 16, not (1 + base) * 16): `nir_lower_ubo_vec4`
+asserted on a matrix's second column (gltri, glfs, glldr). Fixed in
+`mesa/mesa.patch`; upstream's main has it too.
+
+**GLSL 1.30.** The screen says 130 now; Mesa still lines the GLSL version
+up with the GL version (2.1: 1.20), so GLSL 1.30's shaders are tested with
+`MESA_GL_VERSION_OVERRIDE=3.0 MESA_GLSL_VERSION_OVERRIDE=130` until the rest
+of 3.0 is here. textureSize, textureQueryLevels: words the draw puts after
+the textures' (`size_sa`, eight a texture: width, height, levels, 0, 1 /
+width, 1 / height, 0.5 / width, 0.5 / height) -- no instruction;
+`nir_lower_tex` builds the rest on them (`lower_txs_lod`, `lower_txd`,
+offsets). texelFetch: x * (1 / w) + 0.5 / w for each coordinate at level 0,
+(x + 0.5) / max(w >> lod, 1) at another, sampled in LOD mode.
+
+**Two more of Mesa's own** (`mesa/mesa.patch`): NIR's roundEven lowering
+for parts without a round (`lower_fround_even`) made 0.5 2.0 and -1.5 0.0
+-- upstream's rule since, taken as it is; and late's lowerings run before
+the booleans are words now (roundEven's `feq` came after
+`nir_lower_bool_to_int32`, a 1-bit boolean the compiler has not), with
+`nir_opt_algebraic` again until nothing changes (ffloor, then its fsub).
+`isinf` (|x| == inf) compares bits: inf - inf is NaN, which passes no zero
+test.
+
+**Measured**, the build before (M43's) against this one, release builds:
+
+| | M43 | M44 |
+|---|---|---|
+| the regression programs (glfs ... glfmt, glchurn) | all | all |
+| dEQP-GLES2 whole | 16 901 pass, 90 fail | **16 903, 88**: `indexing.tmp_array.vec4_dynamic_write_dynamic_read_fragment` and `matrix_subscript.mat4_dynamic_write_dynamic_read_fragment` (M36's, registers), nothing that passed fails |
+| piglit's glsl-1.10 and glsl-1.20 groups, quick_shader and quick_gl (3271) | 3092 pass | **3100**: the temporary mat3 and mat4 arrays written through an index; 13 tests that skipped run now (integer varyings: flat) |
+| piglit's glsl-1.30 groups (2188), as GL 3.0 | -- | **1845 pass**, 237 fail, 104 skip; every built-in function (the integers' and bits' 1420 among them) |
+| glspeed 1000 30 sprites; 8 layers of fill | 43.3, 9.9 ms | the same |
+
+GLSL 1.30's failures: tex-miplevel-selection 128 (3D, array and cube
+shadow samplers, a bias past +4), interpolation 69 (flat, noperspective),
+texelFetch, its offsets and textureSize 25 (flat integer coordinates,
+arrays, 3D), lookups in a vertex shader 4, the packed colours' clamping
+3, isinf-and-isnan 3, a clip distance, the built-in constants.
+
+**Left of GLSL 1.30**, what piglit's groups fail on:
+
+- `flat` varyings. Nothing iterates a varying flat but the TA's two
+  colours (M37), whose bytes come into the program as they are: a flat
+  32-bit word could go through one as four bytes the vertex side writes
+  as b / 255 -- two such words at most; past that, the draw module's flat
+  vertices. Integer varyings are flat by the language, so every
+  `flat in ivec*` (most of piglit's texelFetch tests, the interpolation
+  and varying-packing groups) waits for it.
+- `noperspective`: gl_FragCoord.w times the varying iterated with w
+  multiplied in, or the iterator's own mode if it has one.
+- Texture lookups in a vertex shader, 3D and array textures (M43's gaps,
+  piglit's tex-miplevel-selection).
+
+## M45: what XFCE's X server costs -- the driver's part, and pixman's
+
+With the GPU's clock what it is (256.5 MHz, p105-gpu.md) the CPU is where
+XFCE waits, and most of it is the X server: glamor drawing through this
+driver, and what glamor leaves to fb and pixman. The yardstick is a
+terminal opened (`tools/desktop/xopen-time.sh`: `xfce4-terminal
+--disable-server` until its window shows, six times, the first left out;
+the X server's CPU from /proc). The system's build (M44, release) and
+Alpine's pixman: **1130-1140 ms of the X server's CPU a window, the window
+there in 2.44-2.55 s.**
+
+**Where the time went.** perf's flat profile of Xorg over three windows;
+call graphs only in the kernel (`perf record -g`: the userland has no frame
+pointers, and DWARF unwinding stops in musl's assembler memcpy). For the
+rest, counters preloaded into the X server through `~/.xserverrc` (`exec env
+LD_PRELOAD=... /usr/libexec/Xorg "$@"`): `tools/sgx/memcpy-who.c`, which
+counts memset now too, and `tools/sgx/composite-who.c` (pixman's composites
+by operator, formats, sizes and caller -- what glamor hands fb), both with a
+report on demand (`touch /tmp/<name>-dump`) to take one stretch of a server
+that runs on; `SGX_DEBUG=copies`; `strace -X raw -e trace=ioctl`; gdb
+breakpoints with `bt` (never a function called from them: that aborted the
+server).
+
+| what | of Xorg's CPU | why |
+|---|---|---|
+| `util_format_r8_unorm_unpack_rgba_8unorm`, `copy_level` | 14% | glamor's a8 pixmaps -- every mask the programs draw with -- are GL_R8 textures (it has ARB_texture_rg and the swizzle). R8 was no format of the sampler's: each was made RGBA8 and twiddled, a window-sized mask (851 x 549) into 4 MiB. 162 copies over three windows |
+| the kernel: `l2c210_clean_range`, `v7_dma_clean_range`, pages cleared | 15% | a new buffer is shmem pages cleared and then cleaned out of the CPU's caches (`drm_gem_shmem_get_pages_sgt`, `dma_map_sgtable`). glamor makes a texture for every pixmap: 193 GEM_CREATE a window |
+| `memset` (pixman's `general_composite_rect`) | 12% | xfwm4's frame shape: a1 pixmaps (glamor draws no depth 1, fb does), a source 4 pixels wide repeated over a mask of the window's width. `fast_composite_tiled_repeat` calls `general_composite_rect` for each tile of each row, and that clears its 24 KiB stack buffer whole every time (since 2020's "Initialize temporary buffers"): 16 000 calls, 380 MB a window |
+| `memcpy` | 9-13% | uploads, most of it xfdesktop's SHM image (cairo's pool) composited whole: glamor uploads it whole for each composite (`glamor_upload_picture_to_texture`, 768 x 1024, 3 MiB) -- see below |
+| `_raw_spin_unlock_irqrestore` | 2.5-4.5% | the kernel's copy onto the screen (DIRTYFB) waits for the 2D job with interrupts off -- see below |
+
+**R8 and RG8, the sampler's own** (`native_format`): U8 swizzled RRRR and
+U8U8 GRRR, the swizzles I8's and LA8's are (M37, M43). GXM's lists have
+none that gives GL's alpha of 1 with zeros besides (SWIZZLE1: R, 000R,
+111R, RRRR, 0RRR, 1RRR, R000, R111), so the rest is the program's:
+`sgx_resource_swizzle()` says X 0 0 1 of RRRR and X W 0 1 of GRRR, and
+sgx_draw.c puts the view's swizzle (M43's `tex_swizzle`) on top of it --
+glamor's a8 view, 0 0 0 R, becomes 0 0 0 X. An R8 texture sampled nearest
+and clamped, as glamor's masks are, is now read linear where it is, no copy
+at all; one filtered is copied a byte a texel. glfmt has R8, RG8 and R8
+swizzled as glamor does it sampled, unit and filtered (51 cases).
+
+**Textures' and targets' buffers from the cache** (M26's, which had buffers'
+GPU copies, vertex chunks and the twiddled copies): `sgx_resource_create`
+takes one from `sgx_bo_cache_get` unless the resource is to be shared
+(SHARED, SCANOUT, DISPLAY_TARGET) or is depth (its tiles are buffers of
+their own). The cache hands a buffer out again only when the last render
+that listed it is done (`sgx_bo_idle`): a render's target is marked busy
+with it now (`sgx_bo_set_busy` in `sgx_batch_flush_at`), as its textures
+were. A buffer exported later (`resource_get_handle`) leaves the cache's
+hands: another process may hold it. GEM_CREATE 193 -> 83 a window.
+
+**And:** `rt_format()` made the names `SGX_PBE_<FMT>`, `SGX_BG_<FMT>` with
+snprintf and looked them up at every draw (`sgx_frame_rt_kind`, for the
+program's variant key): resolved once now.
+
+**pixman** (`tools/desktop/pixman`: Alpine's 0.46.4 with
+`pixman-scanline-clear.patch`, 0.46.4-r100, abuild in docker in a minute
+and a half): the stack buffer cleared only as far as the three scanlines
+take -- `width * Bpp * 3 + 15 * 3` bytes, as the heap buffer of a wider
+composite already was. pixman's master has the same code as 0.46.4.
+
+**Measured**, release builds, the same boot:
+
+| | M44, Alpine's pixman | M45 | M45, pixman r100 |
+|---|---|---|---|
+| Xorg's CPU a window | 1130-1140 ms | 768 ms | **665-670 ms** |
+| the window there (mean of five) | 2.44-2.55 s | 2.07 s | **2.03-2.15 s** |
+| texture copies over three windows | 162 | 31, none over 90 KB | -- |
+| memset over three windows | 1137 MB | -- | 23 MB |
+| the regression programs (glfs ... glfmt, glchurn) | all | all | -- |
+| piglit's arb_texture_rg, ext_texture_swizzle (222) | 107 pass | 107, the same | -- |
+| dEQP-GLES2 whole | 16 903 pass, 88 fail | 16 903, 88: the same cases, group by group | -- |
+
+**The copies onto the screen** (apple-sgx, `sgx_blt_run`). A copy (DIRTYFB,
+a page flip) was a 2D job waited for with interrupts off -- `blt_lock`
+taken irqsave, `read_poll_timeout_atomic` -- because fbcon draws through the
+same engine from any context: 35 copies a window, ~3 ms each, the X server
+and everything else stopped meanwhile. And a job not done in 200 ms put
+the engine out of service until the microkernel was started again: during
+dEQP's flush_finish, whose renders are long and which the microkernel runs
+the transfer queue behind, a copy took longer, and from then on every copy
+was -EIO -- X ran on, the glass stood still (fixed then without a reboot:
+X stopped, `echo 1 > /sys/kernel/debug/apple-sgx/boot`, X again). Now:
+
+- A caller that may sleep waits sleeping (`usleep_range` polls of the
+  completion word), for `blt_timeout_ms` (3000: past the render node's 2 s
+  render timeout, after which it restarts the microkernel). fbcon spins as
+  before but never waits for another's job: -EBUSY, and it draws on the CPU.
+- A job past its time takes the engine out of service only until it is
+  seen done after all (`sgx_blt_reap`: the next call reads the completion
+  word) or the microkernel starts again; a waiter that sees a restart
+  (`boots`) does not mark the engine broken.
+- The render node's copies are queued, not waited for (BLT_ASYNC): DIRTYFB
+  returns once the job is in, and the next copy waits for this one. A page
+  flip's event goes when the copy is queued -- the program draws its next
+  frame into its other buffer meanwhile. What a queued copy reads must stay:
+  the commit waits (`apple_sgx_blt_sync`) before an old framebuffer goes,
+  the overlay before its buffer is let go. A frame drawn into the buffer
+  being copied may show torn until the next copy.
+
+Measured on the M45 stack: DIRTYFB 0.86 ms on average (max 4.9) when a
+window opens; under dEQP's flush_finish, a terminal printing ten lines a
+second, 4.2 ms on average and up to 494 ms -- a copy queued behind the
+test's renders -- and no error; the glass and X's own buffer agree once
+idle but for the cursor and the copy's sampling (1-10 levels in noisy
+pixels, as before). Xorg's CPU a window 665-670 -> 628-638 ms; the window
+there in the same 2.0-2.15 s: the rest is the programs'.
+
+**Where a window's 2 s go now.** xfce4-terminal itself takes ~960 ms of
+CPU to its first window: a third in musl's dynamic linker and allocator
+(no lazy binding: `gnu_lookup_filtered`, `find_sym`, `do_relocs` 11%;
+mallocng's `malloc`/`free`/`get_meta` 13%), a quarter GLib, GTK and
+GObject; and every start sandboxes a glycin image loader (bwrap,
+`glycin-image-rs` over D-Bus) for its icon. A second window of a running
+terminal (as the panel opens it, server mode) still takes 1.58 s: the
+client starts whole to hand the request over. Around it:
+
+- xfdesktop redraws its whole window at every window opened or closed --
+  80 ms of its CPU, and in the X server three or four uploads of a 768 x
+  1024 image from its SHM pool (cairo's): the table's memcpy, which glamor
+  uploads whole because the composite covers it whole.
+  Without desktop icons half of it (35 ms, 6 uploads in two windows
+  instead of 13). The backdrop is not why: a solid colour redraws as much.
+- xfwm4's compositor: off, a window is there in 1.80 s instead of 2.02 s,
+  xfwm4 58 ms of CPU a window instead of 90.
+- The solid backdrop `desktop` writes for modesetting's monitor (None-1)
+  is written only when xfce4-desktop.xml does not exist yet; this one is
+  older and has `monitordefault` alone, so on the GPU's X xfdesktop shows
+  its default image (the cost the script's comment is about).
+- From ssh, `xfconf-query` without the session's DBUS_SESSION_BUS_ADDRESS
+  starts a bus and an xfconfd of its own: the session's programs never see
+  what it sets, and it writes the session's settings files behind the
+  session's xfconfd. Take the address from `/proc/$(pidof
+  xfce4-session)/environ` (xopen-time.sh does).
+
+**Left**, the X server's next costs:
+
+- Each of the X server's ~310 renders a window asks the kernel how many
+  renders timed out (GET_PARAM) and polls fences without waiting (two
+  SYNCOBJ_WAITs): ~1000 ioctls, a few ms. (Renders through the render's own
+  memory, M27, do not wait for the one before; only a whole-target clear
+  through the pack's render does.)
+- glamor makes and fills ~500 textures a window (glTexImage2D), one for
+  every pixmap; with the buffers from the cache (above) the kernel's part is
+  gone, Mesa's own remains.
+- Mesa's `texture_error_check` formats "glTexImage%dD" for every
+  glTexImage, whether or not there is an error.
 
 ## Testing, without and with the device
 

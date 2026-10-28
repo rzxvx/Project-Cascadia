@@ -10,15 +10,16 @@
     mesa/install.py --root [DIR]       into a root filesystem tree
 
 Installs /usr/local/lib/sgx-mesa (libGL, libEGL, libGLESv1_CM, libGLESv2,
-libgbm, libgallium, the test programs) and makes it the system's OpenGL:
+libgbm, libgallium, the test programs, the GPU demo -- /usr/local/bin/tux-gpudemo)
+and makes it the system's OpenGL:
 /etc/ld-musl-armhf.path puts its lib ahead of /usr/lib, so every program
 loads this Mesa, not Alpine's (which stays installed; the file taken away,
 it is back) -- and X's configuration for the GPU, /etc/X11/sgx.conf.d
 (modesetting and glamor, which `desktop` takes when it is there).
 /usr/local/bin/sgx-gl runs a program with another build
 (SGX_MESA=dir).  MESA_BUILD=release installs the release build.  Where
-things go is decided as tools/sgx/mkpack.py decides it for SuperTux, with
-its helpers.
+things go is decided as tools/sgx/mkpack.py decides it for the GPU's pack,
+with its helpers.
 """
 import argparse, io, os, subprocess, sys, tarfile, time
 
@@ -29,6 +30,7 @@ import mkpack  # noqa: E402  (probe, ssh, default_root, sudo_for, is_root, DEVIC
 
 PREFIX = 'usr/local/lib/sgx-mesa'
 LAUNCHER = 'usr/local/bin/sgx-gl'
+DEMO = 'usr/local/bin/tux-gpudemo'      # the GPU demo (tools/sgx/tux)
 BUILT = os.path.join(ROOT, 'build', 'mesa',
                      'install-release' if os.environ.get('MESA_BUILD') == 'release' else 'install',
                      PREFIX)
@@ -63,10 +65,11 @@ def tarball():
             ti.uname = ti.gname = 'root'
             return ti
         t.add(BUILT, PREFIX, filter=own)
-        ln = own(tarfile.TarInfo(LAUNCHER))
-        ln.type, ln.linkname, ln.mode = tarfile.SYMTYPE, '/' + PREFIX + '/bin/sgx-gl', 0o777
-        ln.mtime = int(time.time())
-        t.addfile(ln)
+        for name, target in ((LAUNCHER, 'sgx-gl'), (DEMO, 'tux-gpudemo')):
+            ln = own(tarfile.TarInfo(name))
+            ln.type, ln.linkname, ln.mode = tarfile.SYMTYPE, '/' + PREFIX + '/bin/' + target, 0o777
+            ln.mtime = int(time.time())
+            t.addfile(ln)
         for name, text in ((LD_PATH, LD_PATH_TEXT), (X_CONF, X_CONF_TEXT)):
             f = own(tarfile.TarInfo(name))
             f.size, f.mode, f.mtime = len(text), 0o644, int(time.time())
@@ -113,7 +116,7 @@ def auto():
              '  (./cascadia nfs on).  Or name one: --install HOST / --root DIR.'
              % (mkpack.DEVICE, root))
     print('\nOn the iPad every program now takes this Mesa: eglinfo -B, glclear 100,')
-    print('             gltri --fb (to see it)')
+    print('             gltri --fb (to see it); the GPU demo: tux-gpudemo')
 
 
 def main():

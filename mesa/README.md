@@ -97,6 +97,7 @@ sgx-gl glvtx                     # the vertex path: layouts, formats, buffers, i
 sgx-gl glspeed 400 40 flush      # draws a second, a glFlush a frame: renders queued (M27)
 sgx-gl glspeed 1000 60 sprites   # SDL's way: textured blended quads from client arrays (M34)
 GLSPEED_FS=4 sgx-gl glspeed 8 30 fill   # 8 full-target layers: the GPU's cost a pixel
+sgx-gl glclock 10 64 256         # the GPU's clock from its arithmetic: 2.0 G instructions a second, 250 MHz
 sgx-gl glmip                     # mipmaps, mip filters, cube maps (M28)
 SGX_TEX_PROBE=1 sgx-gl glmip --probe 16 32   # where the sampler reads a cube map's levels
 sgx-gl glvary                    # 1 to 8 vec4 varyings, each read back; a mat3 varying (M30);
@@ -117,6 +118,8 @@ SGX_DEBUG=copies sgx-gl glupload # each texture copy the CPU makes: whole, a box
 SGX_DEBUG=fps,flushes desktop    # the per-2 s report for the X server (it never swaps): its
                                  # renders, where they were flushed from (M37)
 SGX_NO_F16=1 sgx-gl glfetch      # the colour as F32 even where it could be F16 (M38)
+tux-gpudemo                      # the GPU demo, fullscreen on KMS (tools/sgx/tux, docs/GPU.md):
+                                 # EXIT top right; TUX_NOFLIP=1 tux-gpudemo 30 for the GPU's pace
 sgx-gl kmsrot                    # the plane's four turns (M41), the screen read back through
                                  # /dev/fb0, a DIRTYFB box too; with X stopped
 sgx-gl glproj                    # projective and rectangle lookups by the PDS, the vertex
@@ -134,6 +137,7 @@ SGX_ITER_XOR=0x20000 sgx-gl glflat   # flip bits of the iterates' control words 
 /root/piglit/run.sh NAME         # piglit's GL profile, ~40 min (tools/piglit)
 python3 /root/pigsum.py /root/piglit-results/NAME   # what did not pass
 SGX_LDR_PROBE=e8870004a0008080 sgx-gl glldr --probe   # a program of those words: VLDST
+                                 # (M44: tools/sgx/usse-probe.py writes and runs them)
 SGX_FETCH_TAG=9 sgx-gl glvary    # the vertices a vertex task takes, less one (M30: 9 is
                                  # what overlapped the outputs of three varyings and more)
 SGX_REPACK=1 sgx-gl glvtx        # every draw's vertices made one stream by the CPU

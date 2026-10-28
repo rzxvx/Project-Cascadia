@@ -81,7 +81,9 @@ CLKGATECTL2, `0x4024` CLKGATESTATUS2. MASTER_CORE's "+ 1" in the DDK is right
   array is indexed with OSC = 0 and the PLLs at 1..6 (`0x00, 0x08, 0x10, 0x18,
   0x20, 0x28`), so parents `[0,3,4,5]` are OSC, PLL@0x10, **PLL@0x18 (513 MHz,
   running)**, PLL@0x20. The GFX parents `0x48/0x4c/0x50` select PLL@0x18: GFX-CLK
-  ≈ 513/5 = 102.6 MHz, GFX_SYS ≈ 513/2/2 = 128 MHz, in perf state 2. The
+  ≈ 513/5 = 102.6 MHz, GFX_SYS ≈ 513/2/2 = 128 MHz, in perf state 2. (The
+  core does not run on GFX-CLK: it runs at 256.5 MHz, measured -- "The GPU's
+  clock, measured", 2026-10-23.) The
   section "The GFX clock tree, fully decoded" below says PLL@0x20 (off) — that
   is the error.
 - **`0x70`/`0x74` are perf-state outputs, not locked registers.** The walker
@@ -960,6 +962,8 @@ framebuffer). The real SDL keeps the window, events and bookkeeping; every
 drawing call goes to the GPU. Input is a touch gamepad drawn over the frame:
 the touchscreen (`event0`, 0..4096, multitouch) is read on a thread and its
 buttons pushed as SDL key events. The user played it: stable 60 fps.
+(The shim and its launcher are gone since M44 of p105-mesa.md: OpenGL runs
+SuperTux itself, and the GPU's demo is `tux-gpudemo`, docs/GPU.md.)
 
 What it took, in order:
 
@@ -2412,3 +2416,48 @@ validated frequencies, and that **bringing up the GPU requires turning on and
 programming PLL@0x20 (≈1000 MHz), then routing GFX-CLK (source 0 → reg0x48÷5,
 GFX÷1) and opening the `0x3f101024/28` gate** — the PLL-enable being the same
 HW-locked operation that must be done in iBEC context or via the clock router.
+
+## The GPU's clock, measured (2026-10-23)
+
+The question: the GPU was taken to run at GFX-CLK, PLL@`0x18` (513 MHz) / 5 =
+102.6 MHz, where the SGX543MP2 runs at some 250 MHz under iOS. Would a faster
+clock make it faster? It runs at 256.5 MHz already; GFX-CLK is not its clock.
+
+**GFX-CLK can be moved.** It reads `80000001` (source 0, the clock at
+`0x48`, ÷5); its four sources (iBEC's descriptor table, 12 bytes a clock at
+`0x9ff42974` in iBEC-2261) are the clocks at `0x48`, `0x4c`, `0x50`, `0x54`
+(÷5, ÷2, ÷3, off, all from PLL@`0x18`), and those are the parents of a dozen
+other clocks too (`0x68`-`0xa0`, `0xf8`, `0xfc`): not to be touched. A write
+to `0x70` does nothing: it is an output of the perf state. Its byte in the
+current state's row (state 2, row `0x220`, word 0's top byte, `01`: source 0,
+÷1; the other rows have ÷2, ÷4, ÷31, none faster) does: `41` and state 2
+applied again (`2` to `+0x300`) turns GFX-CLK to `a0000001`, source `0x50`,
+171 MHz -- and changes nothing:
+
+| GFX-CLK | tux-gpudemo unshown, no bloom / bloom | microkernel ticks a second |
+|---|---|---|
+| `80000001` (÷5, "102.6") | 199-212 / 68-72 fps | 2502 |
+| `a0000001` (÷3, "171") | 199-212 / 68-71 fps | 2498 |
+| `90000001` (÷2, "256.5") | -- | the SoC froze: no ping, a reboot |
+
+**The microkernel's timer** is set up from the clock the driver gives it,
+`HOST_UK_TIMER_CLOCK` = 102600 kHz, a tick a millisecond. It ticked 2500
+times a second ("time wraps" in debugfs `apple-sgx/regs`, over 5 s): the only
+clock of the tree that gives that is 256.5 MHz (PLL@`0x18` / 2; 200 MHz would
+give 1949, 240 MHz 2339, GFX_SYS's 128 MHz 1250).
+
+**The USSEs' arithmetic** (`tools/sgx/gl/glclock.c`): a 768 x 1024 target
+filled with N dependent `x = x * a + b`, x from `gl_FragCoord` and a, b
+uniforms of 0.999 and 0.001. (With a varying the chain is moved to the
+vertices, linear as it is; with 1 and 0 the inlined uniforms fold it away.)
+Each is two instructions as compiled, a multiply and an add. The time is
+linear in N: 1.0 ns a pixel and multiply-add, 2.0 G instructions a second;
+at one instruction a clock in each of the 2 x 4 pipelines, **250 MHz**. At
+102.6 MHz that would be 19.5 a clock.
+
+So the core runs at PLL@`0x18` / 2 = 256.5 MHz, iOS's clock, from the boot;
+GFX-CLK feeds something else of the GPU's, and moving it to `0x4c` hangs the
+SoC. There is no faster clock to be had. What was wrong is the driver's
+number: the microkernel was told 102600 kHz, so its milliseconds were 0.4 ms
+and its lockup check ran 2.5 times as often as it should; `SGX_CLOCK_KHZ` is
+256500 now. (`APPLE_SGX_PARAM_CLOCK_KHZ` says so too; Mesa does not use it.)

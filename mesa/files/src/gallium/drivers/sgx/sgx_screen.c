@@ -24,9 +24,35 @@
 #include "sgx_resource.h"
 
 static const struct nir_shader_compiler_options sgx_nir_options = {
-   /* integers are floats (nir_lower_int_to_float): NIR's builtins (atan's
-    * copysign) built without integer bit operations */
-   .no_integers = true,
+   /* (M44) integers the hardware's own (sgx_compiler.c): what it has not
+    * built from what it has -- the high half of a product from 16-bit
+    * ones (nir_lower_alu), the bit fields from shifts and masks */
+   .lower_mul_high = true,
+   .lower_uadd_carry = true,
+   .lower_usub_borrow = true,
+   .lower_bitfield_extract = true,
+   .lower_bitfield_insert = true,
+   .lower_bitfield_reverse = true,
+   .lower_bit_count = true,
+   .lower_ifind_msb = true,
+   .lower_ufind_msb = true,
+   .lower_find_lsb = true,
+   .lower_isign = true,
+   .lower_hadd = true,
+   .lower_uadd_sat = true,
+   .lower_iadd_sat = true,
+   .lower_mul_2x32_64 = true,
+   .lower_scmp = true,
+   .lower_pack_half_2x16 = true,
+   .lower_pack_unorm_2x16 = true,
+   .lower_pack_snorm_2x16 = true,
+   .lower_pack_unorm_4x8 = true,
+   .lower_pack_snorm_4x8 = true,
+   .lower_unpack_half_2x16 = true,
+   .lower_unpack_unorm_2x16 = true,
+   .lower_unpack_snorm_2x16 = true,
+   .lower_unpack_unorm_4x8 = true,
+   .lower_unpack_snorm_4x8 = true,
    .scalarize_ddx = true,
    .lower_fdiv = true,
    /* rectangle textures' coordinates scaled by load_texture_scale (M35) */
@@ -45,7 +71,6 @@ static const struct nir_shader_compiler_options sgx_nir_options = {
    .lower_sincos = true,
    .lower_flrp32 = true,
    .lower_ffma32 = true,
-   .lower_bitops = true,
    .lower_insert_byte = true,
    .lower_insert_word = true,
    .lower_extract_byte = true,
@@ -250,6 +275,9 @@ sgx_init_shader_caps(struct pipe_screen *pscreen)
    caps->max_const_buffers = SGX_FRAME_MAX_UBOS;
    caps->indirect_const_addr = true;
    caps->max_temps = 64;
+   /* (M44) 32-bit integers, booleans 0 and ~0: the state tracker's
+    * NativeIntegers, its uniforms' ints as they are */
+   caps->integers = true;
 
    caps = (struct pipe_shader_caps *)&pscreen->shader_caps[MESA_SHADER_FRAGMENT];
    caps->max_instructions = caps->max_alu_instructions = 16384;
@@ -265,6 +293,7 @@ sgx_init_shader_caps(struct pipe_screen *pscreen)
    caps->indirect_const_addr = true;
    caps->max_temps = 64;
    caps->max_texture_samplers = caps->max_sampler_views = 8;
+   caps->integers = true;
 }
 
 static void
@@ -360,6 +389,9 @@ sgx_init_screen_caps(struct pipe_screen *pscreen)
    caps->max_point_size = caps->max_point_size_aa = 512;
    caps->point_size_granularity = caps->line_width_granularity = 0.1f;
    caps->max_texture_lod_bias = 15.0f;
+   /* (M44) GLSL 1.30: integers the hardware's own (sgx_compiler.c) -- the
+    * OpenGL version stays 2.1 until the rest of 3.0 is here */
+   caps->glsl_feature_level = caps->glsl_feature_level_compatibility = 130;
 }
 
 static uint64_t
