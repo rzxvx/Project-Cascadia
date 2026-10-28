@@ -1,27 +1,44 @@
 #!/usr/bin/env python3
 import sys, struct
 
+# Malformed trees must fail with ValueError before recursive Python limits or
+# enormous iteration budgets. These limits exceed the actual P105 firmware ADT.
+MAX_DEPTH = 128
+MAX_NODES = 16384
+MAX_PROPERTY_BYTES = 16 * 1024 * 1024
+
 def read_u32(data, off):
-    if off + 4 > len(data):
+    if off < 0 or off + 4 > len(data):
         raise ValueError(f"read_u32 out of bounds at off={off:#x} (file len={len(data):#x})")
     return struct.unpack_from('<I', data, off)[0], off + 4
 
 def parse_property(data, off, path):
-    if off + 36 > len(data):
+    if off < 0 or off + 36 > len(data):
         raise ValueError(f"property header out of bounds at off={off:#x} in {path}")
     name = data[off:off+32].split(b'\x00', 1)[0].decode('ascii', errors='replace')
     off += 32
     raw_len, off = read_u32(data, off)
     length = raw_len & 0x7fffffff
+    if length > MAX_PROPERTY_BYTES:
+        raise ValueError(f"property '{name}' in {path} exceeds bounded property size")
     if off + length > len(data):
         raise ValueError(f"property '{name}' in {path} claims length={length:#x} (raw={raw_len:#x}) "
                           f"at off={off:#x}, but file len={len(data):#x} -- OVERRUN")
     value = data[off:off+length]
     padded_len = (length + 3) & ~3
+    if off + padded_len > len(data):
+        raise ValueError(f"property '{name}' in {path} has truncated alignment padding")
     off += padded_len
     return name, value, off
 
-def parse_node(data, off, path="/"):
+def parse_node(data, off, path="/", *, _depth=0, _budget=None):
+    if _depth > MAX_DEPTH:
+        raise ValueError("ADT node nesting exceeds bounded recursion depth")
+    if _budget is None:
+        _budget = [min(MAX_NODES, len(data) // 8)]
+    if _budget[0] <= 0:
+        raise ValueError("ADT exceeds bounded total node count")
+    _budget[0] -= 1
     nprops, off = read_u32(data, off)
     nchildren, off = read_u32(data, off)
     if nprops > 1000 or nchildren > 1000:
@@ -29,11 +46,14 @@ def parse_node(data, off, path="/"):
     props = {}
     for _ in range(nprops):
         name, value, off = parse_property(data, off, path)
+        if name in props:
+            raise ValueError(f"duplicate property '{name}' in {path}")
         props[name] = value
     node_name = props.get('name', b'?').split(b'\x00')[0].decode('ascii', errors='replace')
     children = []
     for idx in range(nchildren):
-        child, off = parse_node(data, off, path + node_name + "/")
+        child, off = parse_node(data, off, path + node_name + "/",
+                               _depth=_depth + 1, _budget=_budget)
         children.append(child)
     return {'props': props, 'children': children}, off
 

@@ -1,0 +1,76 @@
+{
+  "source_sha256": "db1ddc8343aa9debc00e0a083fba59d9f555722db60957dc333b854fac21dd2c",
+  "hardware_access": false,
+  "count_cases": [
+    {
+      "OSData_length": 0,
+      "actual_count": 0,
+      "actual_retained_pointer": "0x10004000",
+      "mock_calls": [
+        "OSData_getLength",
+        "OSData_getBytes"
+      ],
+      "steps": 15
+    },
+    {
+      "OSData_length": 43,
+      "actual_count": 0,
+      "actual_retained_pointer": "0x10004000",
+      "mock_calls": [
+        "OSData_getLength",
+        "OSData_getBytes"
+      ],
+      "steps": 15
+    },
+    {
+      "OSData_length": 44,
+      "actual_count": 1,
+      "actual_retained_pointer": "0x10004000",
+      "mock_calls": [
+        "OSData_getLength",
+        "OSData_getBytes"
+      ],
+      "steps": 15
+    },
+    {
+      "OSData_length": 88,
+      "actual_count": 2,
+      "actual_retained_pointer": "0x10004000",
+      "mock_calls": [
+        "OSData_getLength",
+        "OSData_getBytes"
+      ],
+      "steps": 15
+    },
+    {
+      "OSData_length": 4176,
+      "actual_count": 94,
+      "actual_retained_pointer": "0x10004000",
+      "mock_calls": [
+        "OSData_getLength",
+        "OSData_getBytes"
+      ],
+      "steps": 15
+    },
+    {
+      "OSData_length": 5104,
+      "actual_count": 116,
+      "actual_retained_pointer": "0x10004000",
+      "mock_calls": [
+        "OSData_getLength",
+        "OSData_getBytes"
+      ],
+      "steps": 15
+    },
+    {
+      "OSData_length": 4294967295,
+      "actual_count": 97612893,
+      "actual_retained_pointer": "0x10004000",
+      "mock_calls": [
+        "OSData_getLength",
+        "OSData_getBytes"
+      ],
+      "steps": 15
+    }
+  ]
+}
