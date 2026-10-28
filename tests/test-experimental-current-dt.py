@@ -56,6 +56,14 @@ def validate(nodes):
     assert nodes['/soc@30000000/gpio@fa00000']['#interrupt-cells'] == struct.pack('>I',2)
     assert nodes['/soc@30000000/i2c@3200000/pmu@3c']['compatible'] == b'apple,pmu-d1946\0'
 
+def validate_unarmed_charger(nodes):
+    # Upstream now builds a separate charger driver. In this research branch,
+    # adding inactive current wiring must not accidentally arm that driver.
+    args = nodes['/chosen']['bootargs'].rstrip(b'\0').decode().split()
+    for arg in args:
+        if arg.startswith('apple_pmu_charger.armed='):
+            assert arg == 'apple_pmu_charger.armed=0'
+
 def comparable_props(nodes, props):
     """Compare clock providers and arguments, independent of dtc handle IDs."""
     result = {k:v for k,v in props.items() if k not in ('phandle','linux,phandle')}
@@ -90,6 +98,16 @@ def main():
             outputs.append((tree(dst.read_bytes()),warnings))
         old, old_warnings=outputs[0];new,new_warnings=outputs[1]
         validate(new)
+        validate_unarmed_charger(old)
+        validate_unarmed_charger(new)
+        for suffix in (b' apple_pmu_charger.armed=1',
+                       b' apple_pmu_charger.armed=0 apple_pmu_charger.armed=1'):
+            bad = {k: dict(v) for k, v in old.items()}
+            bad['/chosen']['bootargs'] = old['/chosen']['bootargs'].rstrip(b'\0') + suffix + b'\0'
+            try: validate_unarmed_charger(bad)
+            except AssertionError: pass
+            else: raise AssertionError('upstream charger auto-arming accepted')
+        print('PASS compiled research bootargs deny charger auto-arming; 2 negative controls')
         assert set(new)-set(old)=={TARGET} and set(old)<=set(new)
         for path, props in old.items():
             # Added references can renumber later handles, including audio

@@ -103,6 +103,39 @@ After `poweroff` iOS came up charging normally on his mini: nothing sticks.
   path (`0x80ecec80`) writes `0xaf = (0xaf & 0x2f) | 0x90`, `0xa1 = 0`, then
   `0x2b` to `0x80`. Untried here.
 
+## Research-branch integration and error-path fixes — 28 October 2026
+
+The upstream implementation is retained as the input-limit driver, separately
+from the uninstalled experiments. Its sustained charging report changes the
+available evidence: positive charging has been reported on other P105 devices.
+It does not qualify our device, boot chain or source/fault response.
+
+Two error paths were reproduced using the actual C functions with fake regmap
+and power-supply operations, then corrected:
+
+- Missing battery or failed temperature read previously preserved a cold state
+  and could permit a higher input limit. They now select the existing minimum
+  input profile and keep the existing cool-down hysteresis. This profile is
+  nominally 100 mA; it is **not zero input or demonstrated charge inhibition**.
+- Disarming previously required two successful PMU reads and acknowledged a
+  failed restore write as complete. Restoration now precedes those reads, and
+  the state is cleared only after a successful write. A failed write leaves
+  restoration pending for a later poll. This restores the probe-time input code;
+  that code is not necessarily low and this is **not an emergency cutoff**.
+
+`tests/test-pmu-charger-faults.py` covers seven scenarios, including unchanged
+normal ramp/disarmed behavior. The upstream revision fails five error scenarios;
+these are negative controls, not device tests. The compiled-DT test also rejects
+accidental automatic arming of the upstream driver in this branch.
+
+Remaining integration constraints: no negotiated USB budget is consumed by this
+new driver; a missing voltage/presence admission check, source loss during a ramp,
+I/O faults, shutdown and analog retention still need qualification. The upstream
+45 °C fallback remains its policy; it does not replace our 10–40 °C / 4.10 V
+experiment window. The frozen experimental RAM image predates this new driver
+and DT child; integrating the source does not add them to that image. No frozen
+RAM image was modified or booted by this integration.
+
 ---
 
 # Historical P105 source evidence and offline experiments
