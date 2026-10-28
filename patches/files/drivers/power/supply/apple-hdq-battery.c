@@ -11,7 +11,7 @@
  * (start + five, ~104 us).  The line is shared, so the receiver sees the host's
  * own 8 bits and then the gauge's 8, each again a low pulse whose length
  * leaves bit 2 of the received byte set for a 1 and clear for a 0.
- * A transaction starts with a break (UCON bit 4: one frame low).
+ * A transaction starts with a software-controlled break (UCON bit 4).
  *
  * Only reads (command bit 7 clear) are ever sent: register numbers are the
  * bq27541 family's standard commands, 16 bits as two 8-bit reads.
@@ -19,6 +19,7 @@
  */
 #include <linux/delay.h>
 #include <linux/io.h>
+#include <linux/iopoll.h>
 #include <linux/jiffies.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
@@ -78,15 +79,20 @@ static void hdq_drain(struct hdq_battery *b)
 static int hdq_read8(struct hdq_battery *b, u8 reg)
 {
 	u8 rx[40];
-	unsigned long end;
+	u32 ucon;
+	int ret;
 	int i, n = 0, v = 0;
 
 	hdq_drain(b);
 	writel(readl(b->base + UCON) | UCON_SBREAK, b->base + UCON);
-	end = jiffies + msecs_to_jiffies(5);
-	while ((readl(b->base + UCON) & UCON_SBREAK) && time_before(jiffies, end))
-		udelay(10);
-	udelay(200);			/* break recovery */
+	/* iBEC/iBoot drive UART5's break explicitly: 200 us low, 40 us idle. */
+	udelay(200);
+	writel(readl(b->base + UCON) & ~UCON_SBREAK, b->base + UCON);
+	ret = readl_poll_timeout(b->base + UCON, ucon,
+				!(ucon & UCON_SBREAK), 10, 5000);
+	if (ret)
+		return ret;
+	udelay(40);			/* break recovery */
 	hdq_drain(b);
 
 	for (i = 0; i < 8; i++)		/* LSB first; bit 7 clear: read */
