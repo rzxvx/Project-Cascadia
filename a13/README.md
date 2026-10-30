@@ -5,7 +5,7 @@ screen and over the Lightning cable: USB serial, USB networking and SSH.
 
 > **Status: experimental, Phase 2 reached.** The kernel boots, the framebuffer
 > console works, the USB gadget gives a shell and a network, the clock and the
-> timer are right. One CPU core out of six, no frequency scaling, no touch yet.
+> timer are right, all six cores run. No frequency scaling, no touch yet.
 > The boot is tethered and needs the usbliter8 RP2350 board.
 
 This is the A13 track of Project Cascadia. The iPad mini 1 (A5) lives in the
@@ -21,10 +21,11 @@ repository root; this directory is self-contained.
 | Clock, timer | arch timer at 24 MHz (FIQ through the AIC), PMIC RTC sets the wall clock |
 | SMC | RTKit, GPIO, RTC, reboot / poweroff, power-button events |
 | Storage | the internal NVMe (ANS2) is detected — **it holds iOS; never mount or write it** |
-| Not yet | the other five cores, cpufreq (`cpufreq.off=1`), touch, Wi-Fi, Bluetooth, audio, native display, GPU |
+| CPU | all six cores (4x Thunder, 2x Lightning), started by m1n1 through the PMGR |
+| Not yet | cpufreq (`cpufreq.off=1`), touch, Wi-Fi, Bluetooth, audio, native display, GPU |
 
-The UART on a DCSD cable shows m1n1 only, up to `Vectoring to next stage...`;
-that is expected (see `docs/research/console-investigation.md`).
+The DCSD cable carries the s5l UART0: m1n1 and then the whole kernel log
+(`earlycon=applefb keep_bootcon`, 115200 8N1).
 
 ## Boot it
 

@@ -198,3 +198,26 @@ on the screen), and once at boot `charger.cpp:2278: Not charging:200001`.
 its protection works without Linux. What iOS normally tells the SMC about
 charging (limits, inhibit keys) is not known yet — until it is, do not leave
 the phone on the cable under Linux for hours, and watch the temperature.
+
+## 2026-10-31: all six cores
+
+`smp: Brought up 1 node, 6 CPUs` (CPU1-3 Thunder 0x611f0130, CPU4-5
+Lightning 0x611f0120). Two m1n1 changes:
+
+1. **CPU start** (`m1n1/0002-*`): m1n1 had no PMGR CPU-start offset for
+   T8030. It is 0xd4000 as on A11 (+0x4 system start bits, +0x8 + 4*cluster
+   core start): the ADT's `function-enable_core` on every cpu points at the
+   PMGR with mask `1 << (4*cluster + core)`, and the t8030 QEMU model that
+   boots iOS releases CPUs on a write to PMGR 0xd4004. IORVBAR (`cpu-impl-reg`,
+   0x210050000 + 0x100000 per E-core, 0x211050000 per P-core) is locked by
+   iBoot (bit 0) but to m1n1's own `_vectors_start` (iBoot points it at the
+   start of the "kernelcache"), so m1n1's reset path catches the cores.
+2. **CYC_OVRD** (`m1n1/0003-*`): with the cores started, Linux brought up
+   CPU1-3 and then died with an Oops on an idle E-core: IABT at pc 0, lr 0,
+   every GPR zero, the idle stack intact — WFI without state retention, then
+   `ret` to the zeroed x30. A13 was "CPU: Unknown" in m1n1, so `init_cpu()`
+   skipped the CYC_OVRD set-up (WFI mode "up", retention on, IRQ/FIQ unmasked)
+   on the cores m1n1 starts; the boot CPU had iBoot's setting. A13
+   Lightning/Thunder now have a `midr_parts[]` entry with
+   `apple_sysregs_unlocked` and `fast_ipi` only — no chicken bits, no deep
+   sleep, none of A11/M1's cache and power tweaks until they are checked.

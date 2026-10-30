@@ -31,8 +31,9 @@ Same order as the iPad mini 1. Each step notes what already exists (Hoolock
 
 ## Phase 3 — Hardware, in A5 order
 
-- [ ] All six cores: CPU start in m1n1 for T8030, A12/A13 in m1n1's
-      `midr_parts[]` (chicken bits).
+- [x] All six cores: PMGR CPU start at 0xd4000 in m1n1 for T8030, A13
+      Lightning/Thunder in m1n1's `midr_parts[]` (CYC_OVRD; chicken bits
+      still unknown).
 - [ ] cpufreq: cluster DVFS set-up in m1n1 for T8030 (the kernel driver exists).
 - [ ] Touch: SPI HID on `spi1`, HBPP firmware (`wftm`), MtCl calibration. Closest
       to the A5 Z2 work; no Linux driver exists.
