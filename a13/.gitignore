@@ -1,0 +1,5 @@
+# your boot inputs (Apple-derived, device-specific) and the packed image
+boot/inputs/*
+!boot/inputs/README.md
+boot/out/
+boot/payload/

@@ -1,0 +1,1 @@
+chosen.bootargs=console=tty0 cpufreq.off=1 ignore_loglevel loglevel=8 rdinit=/init panic=0

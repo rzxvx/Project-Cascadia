@@ -1,0 +1,249 @@
+
+
+
+BusyBox v1.35.0 (Debian 1:1.35.0-4+deb12u1+b1) built-in shell (ash)
+Enter 'help' for a list of built-in commands.
+
+/ # [6ndmesg; echo; cat /proc/cpuinfo; cat /proc/meminfo | head -3; cat /proc/inter
+rupts; ls /sys/class/udc
+[    0.000000] Booting Linux on physical CPU 0x0000000000 [0x611f0130]
+[    0.000000] Linux version 7.2.0-rc1-g2f2662c87fff-dirty (root@0f40d8ebf738) (Ubuntu clang version 18.1.3 (1ubuntu1), Ubuntu LLD 18.1.3) #6 SMP PREEMPT Fri Oct 30 15:28:16 UTC 2026
+[    0.000000] KASLR enabled
+[    0.000000] random: crng init done
+[    0.000000] Machine model: Apple iPhone 11
+[    0.000000] printk: debug: ignoring loglevel setting.
+[    0.000000] OF: reserved mem: 0x00000008e7694000..0x00000008e7697fff (16 KiB) map non-reusable flash@8e7694000
+[    0.000000] OF: reserved mem: 0x00000008033d8000..0x0000000803417fff (256 KiB) map non-reusable flash@8033d8000
+[    0.000000] cma: Reserved 16 MiB at 0x0000000804000000
+[    0.000000] Zone ranges:
+[    0.000000]   DMA      [mem 0x0000000800160000-0x00000008e7697fff]
+[    0.000000]   DMA32    empty
+[    0.000000]   Normal   empty
+[    0.000000] Movable zone start for each node
+[    0.000000] Early memory node ranges
+[    0.000000]   node   0: [mem 0x0000000800160000-0x00000008e768ffff]
+[    0.000000]   node   0: [mem 0x00000008e7694000-0x00000008e7697fff]
+[    0.000000] Initmem setup node 0 [mem 0x0000000800160000-0x00000008e7697fff]
+[    0.000000] On node 0, zone DMA: 88 pages in unavailable ranges
+[    0.000000] On node 0, zone DMA: 1 pages in unavailable ranges
+[    0.000000] On node 0, zone DMA: 602 pages in unavailable ranges
+[    0.000000] percpu: Embedded 8 pages/cpu s90904 r8192 d31976 u131072
+[    0.000000] pcpu-alloc: s90904 r8192 d31976 u131072 alloc=8*16384
+[    0.000000] pcpu-alloc: [0] 0 
+[    0.000000] Detected PIPT I-cache on CPU0
+[    0.000000] CPU features: detected: Spectre-v2
+[    0.000000] CPU features: detected: Spectre-v4
+[    0.000000] CPU features: detected: Spectre-BHB
+[    0.000000] CPU features: kernel page table isolation forced ON by KASLR
+[    0.000000] CPU features: detected: Kernel page table isolation (KPTI)
+[    0.000000] alternatives: applying boot alternatives
+[    0.000000] Kernel command line: console=tty0 cpufreq.off=1 ignore_loglevel loglevel=8 rdinit=/init panic=0
+[    0.000000] printk: log buffer data + meta data: 131072 + 458752 = 589824 bytes
+[    0.000000] Dentry cache hash table entries: 524288 (order: 8, 4194304 bytes, linear)
+[    0.000000] Inode-cache hash table entries: 262144 (order: 7, 2097152 bytes, linear)
+[    0.000000] software IO TLB: SWIOTLB bounce buffer size adjusted to 3MB
+[    0.000000] software IO TLB: area num 1.
+[    0.000000] software IO TLB: SWIOTLB bounce buffer size roundup to 4MB
+[    0.000000] software IO TLB: mapped [mem 0x00000008e5bec000-0x00000008e5fec000] (4MB)
+[    0.000000] Built 1 zonelists, mobility grouping on.  Total pages: 236877
+[    0.000000] mem auto-init: stack:off, heap alloc:off, heap free:off
+[    0.000000] SLUB: HWalign=64, Order=0-3, MinObjects=0, CPUs=1, Nodes=1
+[    0.000000] rcu: Preemptible hierarchical RCU implementation.
+[    0.000000] rcu:     RCU event tracing is enabled.
+[    0.000000] rcu:     RCU restricting CPUs from NR_CPUS=8 to nr_cpu_ids=1.
+[    0.000000]  Trampoline variant of Tasks RCU enabled.
+[    0.000000]  Tracing variant of Tasks RCU enabled.
+[    0.000000] rcu: RCU calculated value of scheduler-enlistment delay is 100 jiffies.
+[    0.000000] rcu: Adjusting geometry for rcu_fanout_leaf=16, nr_cpu_ids=1
+[    0.000000] RCU Tasks: Setting shift to 0 and lim to 1 rcu_task_cb_adjust=1 rcu_task_cpu_ids=1.
+[    0.000000] NR_IRQS: 64, nr_irqs: 64, preallocated irqs: 0
+[    0.000000] Root IRQ handler: aic_handle_irq
+[    0.000000] Root FIQ handler: aic_handle_fiq
+[    0.000000] irq_apple_aic: Kernel running in EL1, mapping interrupts
+[    0.000000] irq_apple_aic: Using Fast IPIs
+[    0.000000] irq_apple_aic: Initialized with 576/1024 IRQs * 1/1 die(s), 7 FIQs, 32 vIPIs
+[    0.000000] rcu: srcu_init: Setting srcu_struct sizes based on contention.
+[    0.000000] clocksource: jiffies: mask: 0xffffffff max_cycles: 0xffffffff, max_idle_ns: 1911260446275000 ns
+[    0.000000] arch_timer: cp15 timer running at 24.00MHz (virt).
+[    0.000000] clocksource: arch_sys_counter: mask: 0xffffffffffffff max_cycles: 0x588fe9dc0, max_idle_ns: 440795202592 ns
+[    0.000000] sched_clock: 56 bits at 24MHz, resolution 41ns, wraps every 4398046511097ns
+[    0.000284] Console: colour dummy device 80x25
+[    0.000294] printk: legacy console [tty0] enabled
+[    0.000802] Calibrating delay loop (skipped), value calculated using timer frequency.. 48.00 BogoMIPS (lpj=24000)
+[    0.000826] pid_max: default: 32768 minimum: 301
+[    0.001033] Mount-cache hash table entries: 8192 (order: 2, 65536 bytes, linear)
+[    0.001058] Mountpoint-cache hash table entries: 8192 (order: 2, 65536 bytes, linear)
+[    0.001251] VFS: Finished mounting rootfs on nullfs
+[    0.001721] cacheinfo: Unable to detect cache hierarchy for CPU 0
+[    0.002383] rcu: Hierarchical SRCU implementation.
+[    0.002396] rcu:     Max phase no-delay instances is 400.
+[    0.002907] smp: Bringing up secondary CPUs ...
+[    0.002925] smp: Brought up 1 node, 1 CPU
+[    0.002938] SMP: Total of 1 processors activated.
+[    0.002948] CPU: All CPU(s) started at EL1
+[    0.002961] CPU features: detected: ARMv8.4 Translation Table Level
+[    0.002975] CPU features: detected: Common not Private translations
+[    0.002987] CPU features: detected: CRC32 instructions
+[    0.002998] CPU features: detected: Data independent timing control (DIT)
+[    0.003031] CPU features: detected: RCpc load-acquire (LDAPR)
+[    0.003044] CPU features: detected: LSE atomic instructions
+[    0.003056] CPU features: detected: Privileged Access Never
+[    0.003068] CPU features: detected: RAS Extension Support
+[    0.003081] CPU features: detected: TLB range maintenance instructions
+[    0.003134] alternatives: applying system-wide alternatives
+[    0.008205] Memory: 3704304K/3790032K available (10816K kernel code, 1710K rwdata, 4448K rodata, 1152K init, 401K bss, 49552K reserved, 32768K cma-reserved)
+[    0.008486] devtmpfs: initialized
+[    0.010531] posixtimers hash table entries: 512 (order: 0, 8192 bytes, linear)
+[    0.010558] futex hash table entries: 256 (16384 bytes on 1 NUMA nodes, total 16 KiB, linear).
+[    0.010665] 2G module region forced by RANDOMIZE_MODULE_REGION_FULL
+[    0.010678] 0 pages in range for non-PLT usage
+[    0.010681] 129892 pages in range for PLT usage
+[    0.011115] NET: Registered PF_NETLINK/PF_ROUTE protocol family
+[    0.011876] DMA: preallocated 512 KiB GFP_KERNEL|GFP_DMA pool for atomic allocations
+[    0.011916] audit: initializing netlink subsys (disabled)
+[    0.011994] audit: type=2000 audit(0.007:1): state=initialized audit_enabled=0 res=1
+[    0.012293] thermal_sys: Registered thermal governor 'step_wise'
+[    0.012318] cpuidle: using governor menu
+[    0.012431] hw-breakpoint: found 6 breakpoint and 4 watchpoint registers.
+[    0.012462] ASID allocator initialised with 128 entries
+[    0.018346] HugeTLB: registered 1.00 GiB page size, pre-allocated 0 pages
+[    0.018363] HugeTLB: 0 KiB vmemmap can be freed for a 1.00 GiB page
+[    0.018378] HugeTLB: registered 32.0 MiB page size, pre-allocated 0 pages
+[    0.018391] HugeTLB: 0 KiB vmemmap can be freed for a 32.0 MiB page
+[    0.018404] HugeTLB: registered 2.00 MiB page size, pre-allocated 0 pages
+[    0.018416] HugeTLB: 0 KiB vmemmap can be freed for a 2.00 MiB page
+[    0.020422] fbcon: Taking over console
+[    0.020477] iommu: Default domain type: Translated
+[    0.020489] iommu: DMA domain TLB invalidation policy: strict mode
+[    0.020618] usbcore: registered new interface driver usbfs
+[    0.020651] usbcore: registered new interface driver hub
+[    0.020677] usbcore: registered new device driver usb
+[    0.022547] vgaarb: loaded
+[    0.022720] clocksource: Switched to clocksource arch_sys_counter
+[    0.023050] VFS: Disk quotas dquot_6.6.0
+[    0.023077] VFS: Dquot-cache hash table entries: 2048 (16384 bytes)
+[    0.033229] NET: Registered PF_INET protocol family
+[    0.033329] IP idents hash table entries: 65536 (order: 5, 524288 bytes, linear)
+[    0.042563] tcp_listen_portaddr_hash hash table entries: 2048 (order: 1, 32768 bytes, linear)
+[    0.042605] Table-perturb hash table entries: 65536 (order: 4, 262144 bytes, linear)
+[    0.042628] TCP established hash table entries: 32768 (order: 4, 262144 bytes, linear)
+[    0.043843] TCP bind hash table entries: 32768 (order: 6, 1048576 bytes, linear)
+[    0.044434] TCP: Hash tables configured (established 32768 bind 32768)
+[    0.044475] UDP hash table entries: 2048 (order: 3, 131072 bytes, linear)
+[    0.044638] NET: Registered PF_UNIX/PF_LOCAL protocol family
+[    0.044667] PCI: CLS 0 bytes, default 64
+[    0.045818] Unpacking initramfs...
+[    0.047450] Initialise system trusted keyrings
+[    0.048748] workingset: timestamp_bits=46 (anon: 41) max_order=18 bucket_order=0 (anon: 0)
+[    0.049935] Freeing initrd memory: 1792K
+[    0.050250] cryptd: max_cpu_qlen set to 1000
+[    0.121952] NET: Registered PF_ALG protocol family
+[    0.122007] Key type asymmetric registered
+[    0.122019] Asymmetric key parser 'x509' registered
+[    0.122058] io scheduler mq-deadline registered
+[    0.122071] io scheduler kyber registered
+[    0.138157] 235200000.serial: ttySAC0 at MMIO 0x235200000 (irq = 44, base_baud = 0) is a APPLE S5L
+[    0.140003] apple-dart 239024000.iommu: DART [pagesize 4000, 16 streams, bypass support: 1, bypass forced: 0, AS 32 -> 36] initialized
+[    0.140341] platform 239010000.usb: Adding to iommu group 0
+[    0.140414] apple-dart 239028000.iommu: DART [pagesize 4000, 16 streams, bypass support: 1, bypass forced: 0, AS 32 -> 36] initialized
+[    0.141924] [drm] Initialized simpledrm 1.0.0 for 8fa298000.framebuffer on minor 0
+[    0.186152] Console: switching to colour frame buffer device 103x112
+[    0.217522] simple-framebuffer 8fa298000.framebuffer: [drm] fb0: simpledrmdrmfb frame buffer device
+[    0.224590] loop: module loaded
+[    0.273141] zram: Added device: zram0
+[    0.273591] macsmc 23e400000.smc: RTKit: Initializing (protocol version 12)
+[    0.274867] macsmc-gpio macsmc-gpio: First GPIO key: gP00 (0x67503030)
+[    0.282081] OF: Bad cell count for /soc/spmi@23d180700/pmic@f
+[    0.282137] OF: Bad cell count for /soc/spmi@23d180700/pmic@f
+[    0.282314] OF: Bad cell count for /soc/spmi@23d180700/pmic@f
+[    0.282359] OF: Bad cell count for /soc/spmi@23d180700/pmic@f
+[    0.282600] tun: Universal TUN/TAP device driver, 1.6
+[    0.284963] gadgetfs: USB Gadget filesystem, version 24 Aug 2004
+[    0.285013] file system registered
+[    0.285851] input: Apple SMC power/lid events as /devices/platform/soc/23e400000.smc/macsmc-input/input/input0
+[    0.289627] macsmc-hwmon macsmc-hwmon: No valid sensors found of any supported type
+[    0.290404] device-mapper: ioctl: 4.50.0-ioctl (2025-04-28) initialised: dm-devel@lists.linux.dev
+[    0.291084] usbcore: registered new interface driver usbhid
+[    0.291124] usbhid: USB HID core driver
+[    0.292708]  cs_system_cfg: CoreSight Configuration manager initialised
+[    0.295061] NET: Registered PF_INET6 protocol family
+[    0.295833] Segment Routing with IPv6
+[    0.295887] In-situ OAM (IOAM) with IPv6
+[    0.295984] sit: IPv6, IPv4 and MPLS over IPv4 tunneling driver
+[    0.296373] NET: Registered PF_PACKET protocol family
+[    0.296422] Key type dns_resolver registered
+[    0.303525] registered taskstats version 1
+[    0.303848] Loading compiled-in X.509 certificates
+[    0.311280] zswap: loaded using pool zstd
+[    0.313490] nvme-apple 27acc0000.nvme: RTKit: Initializing (protocol version 12)
+[    0.328840] nvme-apple 27acc0000.nvme: RTKit: syslog message: pre_nand_eng.c:7119: MSP_SCD: Link speed drop recovery is not supported
+[    0.330313] nvme-apple 27acc0000.nvme: RTKit: syslog message: cmd.c:5464:  boot mode normal
+[    0.330371] nvme-apple 27acc0000.nvme: RTKit: syslog message: clog_v2.c:1342: Cxt Sync 0 Bands 1 1 FlowAccum 33 pendingBands 0
+[    0.330451] nvme-apple 27acc0000.nvme: RTKit: syslog message: push.c:1407: Push is skipping band:0096 flow:HST_DYN
+[    0.330519] nvme-apple 27acc0000.nvme: RTKit: syslog message: band.c:3408: Push abandoning non-blank band:0096 flow:HST_DYN Validity 000002eb Age 5 uncleanReboot yes
+[    0.330600] nvme-apple 27acc0000.nvme: RTKit: syslog message: push.c:1407: Push is skipping band:0105 flow:PARITY
+[    0.330660] nvme-apple 27acc0000.nvme: RTKit: syslog message: band.c:3408: Push abandoning non-blank band:0105 flow:PARITY  Validity 00000090 Age 5 uncleanReboot yes
+[    0.331730] nvme-apple 27acc0000.nvme: RTKit: syslog message: push.c:1407: Push is skipping band:0113 flow:INDIREC
+[    0.331794] nvme-apple 27acc0000.nvme: RTKit: syslog message: band.c:3408: Push abandoning non-blank band:0113 flow:INDIREC Validity 00000000 Age 5 uncleanReboot yes
+[    0.331875] nvme-apple 27acc0000.nvme: RTKit: syslog message: push.c:1407: Push is skipping band:0057 flow:CLOG
+[    0.331934] nvme-apple 27acc0000.nvme: RTKit: syslog message: band.c:3408: Push abandoning non-blank band:0057 flow:CLOG    Validity 00000000 Age 5 uncleanReboot yes
+[    0.358286] nvme-apple 27acc0000.nvme: RTKit: syslog message: push.c:2280: Finished abort skip flow:CLOG    band:0057 boff 9960 abort_band0:0057 abort_band1:0000
+[    0.358383] nvme-apple 27acc0000.nvme: RTKit: syslog message: push.c:2280: Finished abort skip flow:INDIREC band:0113 boff 1700 abort_band0:0113 abort_band1:0000
+[    0.358462] nvme-apple 27acc0000.nvme: RTKit: syslog message: push.c:2280: Finished abort skip flow:PARITY  band:0105 boff 8792 abort_band0:0105 abort_band1:0000
+[    0.358541] nvme-apple 27acc0000.nvme: RTKit: syslog message: push.c:2280: Finished abort skip flow:HST_DYN band:0096 boff 884 abort_band0:0096 abort_band1:0000
+[    0.358619] nvme-apple 27acc0000.nvme: RTKit: syslog message: raid_mpbx_int.c:1091: MPBX no parity to save for flow 0, band 96
+[    0.376898] rtc-apple-pmic 23d180700.spmi:pmic@f:rtc@1100: registered as rtc0
+[    0.380834] rtc-apple-pmic 23d180700.spmi:pmic@f:rtc@1100: setting system clock to 2026-10-30T19:18:31 UTC (1793387911)
+[    0.381713] macsmc-rtc macsmc-rtc: registered as rtc1
+[    0.392826] macsmc-reboot macsmc-reboot: PMU logged 1 boot error(s) and 0 panic(s)
+[    0.409342] macsmc-reboot macsmc-reboot: Handling reboot and poweroff requests via SMC
+[    0.409915] clk: Disabling unused clocks
+[    0.409947] PM: genpd: Disabling unused power domains
+[    0.442492] nvme-apple 27acc0000.nvme: RTKit: syslog message: blog.c:104: New BlogBuf low 8
+[    0.580376] nvme-apple 27acc0000.nvme: RTKit: syslog message: blog.c:104: New BlogBuf low 7
+[    1.208047] nvme-apple 27acc0000.nvme: RTKit: syslog message: cmd.c:5267: Emergency GC: must = 4, special=5
+[    1.695407] nvme nvme0: passthrough uses implicit buffer lengths
+[    1.703123]  nvme0n1: p1
+[    1.717879] Freeing unused kernel memory: 1152K
+[    1.718016] Run /init as init process
+[    1.718044]   with arguments:
+[    1.718068]     /init
+[    1.718088]   with environment:
+[    1.718113]     HOME=/
+[    1.718134]     TERM=linux
+[    1.752296] configfs-gadget.g1 gadget.0: HOST MAC 02:00:00:00:01:01
+[    1.758737] configfs-gadget.g1 gadget.0: MAC 02:00:00:00:01:04
+[  264.253163] dwc3-apple 239010000.usb: request 000000008b9b0fef was not queued to ep1in
+
+processor       : 0
+BogoMIPS        : 48.00
+Features        : fp asimd evtstrm aes pmull sha1 sha2 crc32 atomics fphp asimdhp cpuid asimdrdm jscvt fcma lrcpc dcpop sha3 asimddp sha512 asimdfhm dit uscat ilrcpc flagm
+CPU implementer : 0x61
+CPU architecture: 8
+CPU variant     : 0x1
+CPU part        : 0x013
+CPU revision    : 0
+
+MemTotal:        3743424 kB
+MemFree:         3709616 kB
+MemAvailable:    3431344 kB
+            CPU0       
+  34:       4725  AIC-FIQ     1 Level     arch_timer
+  42:        163  AIC      65809 Level     23e408000.mbox-recv
+  43:          0  AIC      65806 Level     23e408000.mbox-send
+  45:          0  AIC      66037 Level     apple-dart fault handler, apple-dart fault handler
+  46:         36  AIC      65955 Level     277408000.mbox-recv
+  47:          0  AIC      65897 Level     277408000.mbox-send
+  48:         30  AIC      65958 Level     nvme-apple
+  49:       2072  AIC      66033 Level     dwc3
+IPI0:          0  Rescheduling interrupts
+IPI1:          0  Function call interrupts
+IPI2:          0  CPU stop interrupts
+IPI3:          0  CPU stop NMIs
+IPI4:          0  Timer broadcast interrupts
+IPI5:         25  IRQ work interrupts
+IPI6:          0  CPU backtrace interrupts
+IPI7:          0  KGDB roundup interrupts
+ Err:          0
+239010000.usb
+/ # [6n

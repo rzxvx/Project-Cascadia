@@ -1,4 +1,7 @@
 # ---- Large binaries / stock firmware (never belongs in git) ----
+# the usbliter8 client and irecovery's history: third-party / per-device
+usbliter8ctl
+.irecovery
 *.ipsw
 *.dmg
 *.raw

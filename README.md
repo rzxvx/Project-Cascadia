@@ -15,6 +15,9 @@ drive with your fingers.
 > cores, takes interrupts, keeps time, gives you a shell and a network over the
 > Lightning cable, takes multi-touch, brings up Wi-Fi, and runs XFCE with an
 > on-screen keyboard.
+>
+> **New, experimental: iPhone 11 (A13).** Linux 7.2 boots to a shell on the
+> screen and over USB (serial, network, SSH). See [`a13/`](a13/README.md).
 
 ![Boot](imgs/dualcoreboot.png)
 
@@ -41,9 +44,10 @@ including the parts that didn't work.
 
 ## Supported Devices
 
-| Device | Model | Chip | Board ID |
-|--------|-------|------|----------|
-| iPad mini 1 (Wi-Fi) | iPad2,5 / A1432 | Apple A5 (S5L8942X) | p105ap |
+| Device | Model | Chip | Board ID | Status | Where |
+|--------|-------|------|----------|--------|-------|
+| iPad mini 1 (Wi-Fi) | iPad2,5 / A1432 | Apple A5 (S5L8942X) | p105ap | desktop, touch, Wi-Fi, GPU | this README, repository root |
+| iPhone 11 | iPhone12,1 | Apple A13 (T8030) | n104ap | experimental: shell over USB | [`a13/`](a13/README.md) |
 
 ## Current Status
 
@@ -779,12 +783,16 @@ docs/research/  one file per investigation; several are dead ends, on purpose
 pongo/          pongoOS module (ADT read, DT fixup)
 mt-hook/        XNU multitouch hook (RE infrastructure)
 attic/          superseded experiments, kept for provenance — see attic/README.md
+a13/            the A13 track (iPhone 11): self-contained, its own README,
+                build scripts, m1n1 patch, docs and roadmap
 ```
 
 Build products (`output/`) and stock firmware are not tracked; everything in
 `output/` is reproducible from `patches/ + config/ + scripts/`.
 
 ## Roadmap
+
+### iPad mini 1 — A5
 
 - **Phase 1 ✓** — Linux boots to an interactive shell. Serial logs. Framebuffer console.
 - **Phase 2 ✓** — USB gadget, CDC ACM shell, CDC ECM networking, SSH, working
@@ -794,9 +802,22 @@ Build products (`output/`) and stock firmware are not tracked; everything in
   ~~a desktop~~ ✓ (XFCE) → ~~the second core~~ ✓ → ~~Wi-Fi via HSIC/EHCI~~ ✓
   → ~~the L2 cache~~ ✓ → ~~iOS's files off the NAND~~ ✓ (read-only) → NAND
   as Linux's own storage.
-- **Phase 4** — Newer chips
 
-The next in line with no particular order after the iPad mini 1 (Phase 4):
+### iPhone 11 — A13 (experimental)
+
+The same phases, in the same order; details in
+[`a13/docs/ROADMAP.md`](a13/docs/ROADMAP.md).
+
+- **Phase 1 ✓** — m1n1 → Linux 7.2 boots to a shell, framebuffer console.
+- **Phase 2** — ~~USB gadget: ACM shell, ECM network, SSH~~ ✓ → ~~tick and
+  wall clock~~ ✓ → a root file system beyond the initramfs → one host command
+  to boot.
+- **Phase 3** — all six cores → cpufreq → touch → on-screen keyboard →
+  desktop → Wi-Fi → internal storage → native display → …
+
+### Next devices
+
+In no particular order:
 - iPad 6 - A10
 - iPad Air 2 — A8X
 - iPad 4 - A6X
@@ -810,10 +831,7 @@ The next in line with no particular order after the iPad mini 1 (Phase 4):
 - iPad mini 5 — A12 (requires additional hardware for booting)
 - iPad 5 — A9
 - iPad 8 - A12 (requires additional hardware)
-
-Bonus:
-
-- iPhone 11 - A13 (RP2350 required) 
+- iPad 9 - A13 (same T8030 as the iPhone 11; notes in `a13/docs/ipad9/`)
 
 ![FastFetch written using screen keyboard](imgs/IMG_1196.jpg)
 

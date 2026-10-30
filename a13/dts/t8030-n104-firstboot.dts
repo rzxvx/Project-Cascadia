@@ -1,0 +1,139 @@
+/dts-v1/;
+
+/*
+ * t8030-n104-firstboot.dts - minimal first-boot device tree for iPhone 11
+ * (iPhone12,1 / N104AP, Apple A13 / t8030).
+ *
+ * Goal: the smallest tree that lets m1n1 hand off to Linux and get an early
+ * console on UART0. Not a full port - no PMGR, no display, no peripherals yet.
+ *
+ * Every address/topology value here is taken from this device's own Apple ADT
+ * dump: apple/adt/n104ap-adt.txt. Binding names (apple,s5l-uart, apple,aic2,
+ * arm,armv8-timer) follow the public mainline Apple-SoC conventions; the exact
+ * SoC/AIC compatibles and AIC interrupt-cell count must match whatever t8030
+ * kernel we build against - see docs. m1n1 fixes up /memory and the CPU
+ * spin-table release addresses at boot.
+ *
+ * ADT facts used:
+ *   arm-io base          : 0x2_0000_0000  (ranges child 0 -> parent 0x200000000)
+ *   uart0  (uart-1,samsung) reg 0x35200000/0x4000 -> phys 0x235200000, irq 435
+ *   aic    (aic,1 v2)       reg 0x3b100000/0x8000 -> phys 0x23b100000
+ *   aic-timebase            reg 0x3b108000/0x1000 -> phys 0x23b108000
+ *   cpus: cl0 "E" apple,thunder   x4  reg 0x0,0x1,0x2,0x3
+ *         cl1 "P" apple,lightning x2  reg 0x100,0x101
+ */
+
+/ {
+	compatible = "apple,t8030", "apple,arm-platform";
+	#address-cells = <2>;
+	#size-cells = <2>;
+	model = "Apple iPhone 11 (N104AP)";
+
+	chosen {
+		/* earlycon is polled, so it works before the AIC/clocks are up */
+		bootargs = "earlycon=apple_s5l,0x235200000 console=ttySAC0 debug";
+		stdout-path = &serial0;
+	};
+
+	/*
+	 * iPhone 11 = 4 GiB. t8030 DRAM base is 0x8_0000_0000.
+	 * m1n1 overwrites this from the real ADT, so a single bank is enough here.
+	 */
+	memory@800000000 {
+		device_type = "memory";
+		reg = <0x8 0x00000000 0x1 0x00000000>;
+	};
+
+	cpus {
+		#address-cells = <2>;
+		#size-cells = <0>;
+
+		/* cluster 0 - Thunder (efficiency), 4 cores, MPIDR aff 0x0..0x3 */
+		cpu0: cpu@0 {
+			device_type = "cpu";
+			compatible = "apple,thunder";
+			reg = <0x0 0x0>;
+			enable-method = "spin-table";
+		};
+		cpu1: cpu@1 {
+			device_type = "cpu";
+			compatible = "apple,thunder";
+			reg = <0x0 0x1>;
+			enable-method = "spin-table";
+		};
+		cpu2: cpu@2 {
+			device_type = "cpu";
+			compatible = "apple,thunder";
+			reg = <0x0 0x2>;
+			enable-method = "spin-table";
+		};
+		cpu3: cpu@3 {
+			device_type = "cpu";
+			compatible = "apple,thunder";
+			reg = <0x0 0x3>;
+			enable-method = "spin-table";
+		};
+
+		/* cluster 1 - Lightning (performance), 2 cores, MPIDR aff 0x100..0x101 */
+		cpu4: cpu@100 {
+			device_type = "cpu";
+			compatible = "apple,lightning";
+			reg = <0x0 0x100>;
+			enable-method = "spin-table";
+		};
+		cpu5: cpu@101 {
+			device_type = "cpu";
+			compatible = "apple,lightning";
+			reg = <0x0 0x101>;
+			enable-method = "spin-table";
+		};
+	};
+
+	/* 24 MHz reference for the UART. Placeholder - verify against PMGR/NCO. */
+	clk_uart: clock-uart {
+		compatible = "fixed-clock";
+		#clock-cells = <0>;
+		clock-frequency = <24000000>;
+		clock-output-names = "uart-ref";
+	};
+
+	timer {
+		compatible = "arm,armv8-timer";
+		/*
+		 * Apple wires the arch timer through AIC FIQ. Cells follow the AIC
+		 * binding (AIC_FIQ = 1). Harmless for a polled earlycon bring-up.
+		 */
+		interrupt-parent = <&aic>;
+		interrupts = <1 0 0>,   /* phys secure   */
+			     <1 1 0>,   /* phys          */
+			     <1 2 0>,   /* virt          */
+			     <1 3 0>;   /* hyp           */
+	};
+
+	soc {
+		compatible = "simple-bus";
+		#address-cells = <2>;
+		#size-cells = <2>;
+		/* identity map - children carry full physical addresses */
+		ranges;
+		nonposted-mmio;
+
+		aic: interrupt-controller@23b100000 {
+			compatible = "apple,t8030-aic", "apple,aic2";
+			#interrupt-cells = <3>;
+			interrupt-controller;
+			reg = <0x2 0x3b100000 0x0 0x8000>,
+			      <0x2 0x3b108000 0x0 0x1000>;
+		};
+
+		serial0: serial@235200000 {
+			compatible = "apple,s5l-uart";
+			reg = <0x2 0x35200000 0x0 0x4000>;
+			reg-io-width = <4>;
+			interrupt-parent = <&aic>;
+			interrupts = <0 435 0>; /* AIC_IRQ 435, from ADT */
+			clocks = <&clk_uart>, <&clk_uart>;
+			clock-names = "uart", "clk_uart_baud0";
+		};
+	};
+};
