@@ -37,7 +37,7 @@ on)
     if [ -d "$DST" ] && [ -n "$(ls -A "$DST" 2>/dev/null)" ] && [ "${FORCE_SYNC:-0}" != "1" ]; then
         echo "==> $DST already populated -- NOT overwriting it (FORCE_SYNC=1 to reseed)"
     else
-        [ -f "$TARBALL" ] || fail "no $TARBALL -- run a13/rootfs/build-alpine-rootfs.sh first"
+        [ -f "$TARBALL" ] || fail "no $TARBALL -- run: a13/cascadia build rootfs"
         echo "==> unpacking $TARBALL -> $DST"
         sudo rm -rf "$DST"
         sudo mkdir -p "$DST"
@@ -62,7 +62,7 @@ on)
     echo "$IP_HOST:$DST" > "$A13/build/nfsroot"
     echo
     echo "==> NFS root = $IP_HOST:$DST (in a13/build/nfsroot)"
-    echo "    Now: sh a13/boot/package.sh && boot as usual"
+    echo "    Now: a13/cascadia pack && a13/cascadia boot"
     ;;
 off)
     TMP=$(mktemp)

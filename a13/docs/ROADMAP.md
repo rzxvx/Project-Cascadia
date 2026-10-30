@@ -20,14 +20,15 @@ Same order as the iPad mini 1. Each step notes what already exists (Hoolock
 - [x] Framebuffer console (simpledrm), early text on the framebuffer
       (`earlycon=applefb`).
 
-## Phase 2 — Usable from the Mac (mostly ✓)
+## Phase 2 — Usable from the Mac ✓
 
 - [x] USB gadget: CDC ACM shell, CDC ECM network, SSH (m1n1 kept disabling
       the controller; fixed).
 - [x] Working tick (arch timer), wall clock from the PMIC RTC.
 - [x] A root file system beyond the initramfs: Alpine 3.24 over NFS from the
       Mac, `apk` through the Mac's NAT.
-- [ ] One host command to boot (the `./cascadia` of this device).
+- [x] One host command to boot: `a13/cascadia` (doctor, build, pack, boot,
+      nfs, net, release), macOS and Linux.
 
 ## Phase 3 — Hardware, in A5 order
 

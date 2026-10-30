@@ -1,0 +1,223 @@
+#!/usr/bin/env bash
+#
+# Project Cascadia — A13 / iPhone 11 (N104AP).  One entry point.
+#
+#   a13/cascadia doctor          check that this machine has what the build needs
+#   a13/cascadia build           m1n1 + kernel + initramfs (the whole payload)
+#   a13/cascadia build m1n1      just m1n1
+#   a13/cascadia build kernel    just the kernel + DTB
+#   a13/cascadia build initramfs just the initramfs
+#   a13/cascadia build rootfs    the Alpine aarch64 rootfs tarball (for NFS)
+#   a13/cascadia pack            wrap the payload into the bootable IMG4
+#   a13/cascadia boot            pwned DFU → iBSS → boot (needs usbliter8)
+#   a13/cascadia nfs on|off      export a root filesystem to it  (macOS or Linux)
+#   a13/cascadia net on|off      share this host's internet with it
+#   a13/cascadia release TAG     assemble a release archive
+#
+# Everything is relative to this file; the repository works wherever it is
+# cloned.
+set -euo pipefail
+
+A13="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$(cd "$A13/.." && pwd)"
+cd "$A13"
+
+say()  { printf '==> %s\n' "$*"; }
+note() { printf '    %s\n' "$*"; }
+fail() { printf 'error: %s\n' "$*" >&2; exit 1; }
+have() { command -v "$1" >/dev/null 2>&1; }
+
+# ---------- doctor -----------------------------------------------------------
+
+cmd_doctor() {
+    rc=0
+    say "host"
+    note "uname: $(uname -srm)"
+    for t in git python3 bash; do
+        if have "$t"; then note "ok:      $t"; else note "MISSING: $t"; rc=1; fi
+    done
+
+    # docker -- reachability, not just the binary
+    if ! have docker; then
+        note "MISSING: docker"; rc=1
+    elif docker info >/dev/null 2>&1; then
+        note "ok:      docker (daemon reachable)"
+    else
+        note "BROKEN:  docker is installed but its daemon is not reachable"; rc=1
+    fi
+
+    # m1n1 build needs: clang/lld (Homebrew llvm on macOS), Rust, GNU make
+    for t in clang lld rustc cargo; do
+        if have "$t"; then note "ok:      $t"
+        else note "MISSING: $t -- m1n1 needs it"; rc=1; fi
+    done
+    if have gmake || have make; then
+        note "ok:      $(have gmake && echo gmake || echo make)"
+    else
+        note "MISSING: make (or gmake) -- m1n1 needs it"; rc=1
+    fi
+
+    # boot chain tools
+    if have ipsw; then
+        iv=$(ipsw version 2>/dev/null || echo "?")
+        case "$iv" in
+            *3.1.714*) note "ok:      ipsw ($iv)" ;;
+            *)         note "WARNING: ipsw $iv -- tested with 3.1.714; other versions may differ"; rc=1 ;;
+        esac
+    else
+        note "MISSING: ipsw -- pack needs it (https://github.com/blacktop/ipsw)"; rc=1
+    fi
+    if have irecovery; then note "ok:      irecovery"
+    else note "MISSING: irecovery -- boot needs it"; rc=1; fi
+
+    # usbliter8ctl (may live in the repo root or on PATH)
+    if have usbliter8ctl || [ -x "$ROOT/usbliter8ctl" ]; then
+        note "ok:      usbliter8ctl"
+    else
+        note "MISSING: usbliter8ctl -- boot needs it (the repo root has one)"
+    fi
+
+    # host-side helpers
+    case "$(uname -s)" in
+        Darwin)
+            note "ok:      macOS -- build, pack, boot, nfs, net all run here" ;;
+        Linux)
+            note "ok:      Linux -- build, pack, boot, nfs, net all run here"
+            for t in exportfs rpcinfo; do
+                if have "$t"; then note "ok:      $t"
+                else note "missing: $t -- nfs needs nfs-utils"; fi
+            done
+            if have iptables || have nft; then
+                note "ok:      $(have iptables && echo iptables || echo nft) (net)"
+            else
+                note "missing: iptables or nft -- net needs one"
+            fi ;;
+        *)
+            note "note:    $(uname -s) -- untested" ;;
+    esac
+
+    say "inputs (boot/inputs/)"
+    for f in iBSS.n104.20E247.sigpatched.raw IM4M DeviceTree.n104.rdtr.img4 empty.rtsc.img4; do
+        if [ -f "boot/inputs/$f" ]; then note "ok:      $f"
+        else note "missing: $f  (see boot/inputs/README.md)"; fi
+    done
+
+    say "build output (build/payload/)"
+    for f in m1n1-idevice.macho Image.gz t8030-n104.dtb initramfs.cpio.gz; do
+        if [ -f "build/payload/$f" ]; then note "ok:      $f"
+        else
+            case $f in
+                m1n1*)     hint="a13/cascadia build m1n1" ;;
+                Image*|t8*) hint="a13/cascadia build kernel" ;;
+                initramfs*) hint="a13/cascadia build initramfs" ;;
+            esac
+            note "missing: $f    ($hint)"
+        fi
+    done
+    if [ -f "boot/out/m1n1-linux.rkrn.img4" ]; then
+        note "ok:      boot/out/m1n1-linux.rkrn.img4 (packed)"
+    else
+        note "missing: boot/out/m1n1-linux.rkrn.img4    (a13/cascadia pack)"
+    fi
+
+    [ "$rc" -eq 0 ] || fail "install what is missing above and re-run"
+    say "ready"
+}
+
+# ---------- build ------------------------------------------------------------
+
+cmd_build() {
+    case "${1:-all}" in
+        all)
+            cmd_build m1n1
+            cmd_build kernel
+            cmd_build initramfs
+            ;;
+        m1n1)
+            say "building m1n1"
+            bash "$A13/m1n1/build-m1n1.sh"
+            ;;
+        kernel)
+            say "building kernel"
+            bash "$A13/kernel/build-kernel.sh"
+            ;;
+        initramfs)
+            say "building initramfs"
+            bash "$A13/initramfs/make-initramfs.sh"
+            ;;
+        rootfs)
+            say "building Alpine rootfs"
+            bash "$A13/rootfs/build-alpine-rootfs.sh"
+            ;;
+        *)
+            fail "unknown build target '$1' -- use: m1n1, kernel, initramfs, rootfs, or nothing for all" ;;
+    esac
+}
+
+# ---------- pack -------------------------------------------------------------
+
+cmd_pack() {
+    for f in m1n1-idevice.macho Image.gz t8030-n104.dtb initramfs.cpio.gz; do
+        [ -f "build/payload/$f" ] || [ -f "boot/payload/$f" ] \
+            || fail "no $f -- run: a13/cascadia build"
+    done
+    [ -f "boot/inputs/IM4M" ] || fail "no boot/inputs/IM4M -- see boot/inputs/README.md"
+    say "packing the boot image"
+    sh "$A13/boot/package.sh"
+}
+
+# ---------- boot -------------------------------------------------------------
+
+cmd_boot() {
+    [ -f "boot/out/m1n1-linux.rkrn.img4" ] \
+        || fail "no boot/out/m1n1-linux.rkrn.img4 -- run: a13/cascadia pack"
+
+    IBSS="boot/inputs/iBSS.n104.20E247.sigpatched.raw"
+    [ -f "$IBSS" ] || fail "no $IBSS -- see boot/inputs/README.md"
+
+    # Find usbliter8ctl
+    if have usbliter8ctl; then
+        U8=usbliter8ctl
+    elif [ -x "$ROOT/usbliter8ctl" ]; then
+        U8="$ROOT/usbliter8ctl"
+    else
+        fail "usbliter8ctl not found -- put it on PATH or in the repo root"
+    fi
+
+    say "pwned DFU → iBSS (usbliter8)"
+    note "plug in the iPhone in DFU, then connect usbliter8"
+    "$U8" boot "$IBSS"
+
+    say "iBSS → Recovery → bootx"
+    sh "$A13/boot/boot-from-recovery.sh"
+}
+
+# ---------- nfs, net ---------------------------------------------------------
+
+host_tool() {
+    case "$(uname -s)" in
+        Darwin) echo "$A13/host/mac-$1.sh" ;;
+        Linux)  echo "$A13/host/linux-$1.sh" ;;
+        *)      fail "no host-side '$1' for $(uname -s) -- macOS and Linux only" ;;
+    esac
+}
+
+# ---------- release ----------------------------------------------------------
+
+cmd_release() {
+    [ -n "${1:-}" ] || fail "usage: a13/cascadia release TAG"
+    sh "$A13/boot/make-release.sh" "$1"
+}
+
+# ---------- dispatch ---------------------------------------------------------
+
+case "${1:-}" in
+    doctor)  cmd_doctor ;;
+    build)   shift; cmd_build "$@" ;;
+    pack)    cmd_pack ;;
+    boot)    cmd_boot ;;
+    nfs)     t=$(host_tool nfs-export);     shift; bash "$t" "$@" ;;
+    net)     t=$(host_tool share-internet); shift; bash "$t" "$@" ;;
+    release) shift; cmd_release "$@" ;;
+    *)       sed -n '2,17p' "$A13/cascadia" | sed 's/^# \{0,1\}//'; exit 2 ;;
+esac

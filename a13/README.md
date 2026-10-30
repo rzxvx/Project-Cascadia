@@ -29,28 +29,28 @@ The DCSD cable carries the s5l UART0: m1n1 and then the whole kernel log
 
 ## Boot it
 
-You need: an iPhone 11 (iPhone12,1), the usbliter8 board, a Mac (Apple silicon
-tested) with Docker, Homebrew `llvm` + `lld`, Rust, `ipsw` 3.1.714, `irecovery`,
-Python 3.
+You need: an iPhone 11 (iPhone12,1), the usbliter8 board, a Mac or Linux host
+with Docker, `llvm` + `lld`, Rust, `ipsw` 3.1.714, `irecovery`, Python 3.
+
+```bash
+a13/cascadia doctor                         # check everything
+```
 
 1. **Inputs** — make the four Apple-derived files yourself, as described in
    [`boot/inputs/README.md`](boot/inputs/README.md). Nothing from Apple is in this
    repository.
 2. **Build** (or take the payload from a release and put it in `boot/payload/`):
    ```bash
-   bash a13/m1n1/build-m1n1.sh
-   bash a13/kernel/build-kernel.sh
-   bash a13/initramfs/make-initramfs.sh
+   a13/cascadia build                       # m1n1 + kernel + initramfs
    ```
 3. **Pack** — adds your `~/.ssh/*.pub` as root's authorized keys and wraps
    everything with your IM4M:
    ```bash
-   sh a13/boot/package.sh
+   a13/cascadia pack
    ```
-4. **Boot** — pwned DFU with usbliter8, send the iBSS, then:
+4. **Boot** — plug in the iPhone in DFU, connect usbliter8, then:
    ```bash
-   usbliter8ctl boot a13/boot/inputs/iBSS.n104.20E247.sigpatched.raw
-   sh a13/boot/boot-from-recovery.sh
+   a13/cascadia boot
    ```
 5. **Connect** — about 30 s later:
    ```bash
@@ -66,10 +66,10 @@ The initramfs is a small RAM system. For a persistent one (`apk add` that
 survives a reboot), the phone can run Alpine Linux from a directory on the Mac:
 
 ```bash
-bash a13/rootfs/build-alpine-rootfs.sh     # Alpine 3.24 aarch64 -> a13/build/alpine-a13.tar.gz
-bash a13/host/mac-nfs-export.sh on         # sudo: unpack to ~/cascadia-a13-root, export it (NFSv3)
-sh a13/boot/package.sh                     # picks the export up; boot as above
-bash a13/host/mac-share-internet.sh on     # sudo, after boot: NAT for apk (pf anchor)
+a13/cascadia build rootfs                  # Alpine 3.24 aarch64 -> a13/build/alpine-a13.tar.gz
+a13/cascadia nfs on                        # sudo: unpack, export over the USB network (macOS or Linux)
+a13/cascadia pack                          # picks the export up; boot as above
+a13/cascadia net on                        # sudo, after boot: NAT for apk
 ```
 
 The initramfs brings up USB, waits for the Mac's DHCP address, mounts the
@@ -88,7 +88,8 @@ kernel/      build-kernel.sh (yhavry/Hoolock-linux t8030, pinned), n104.fragment
 initramfs/   make-initramfs.sh: busybox, USB gadget (configfs), udhcpd, dropbear,
              the switch to an NFS root
 rootfs/      build-alpine-rootfs.sh + overlay/ (inittab, a13-init): the NFS root
-host/        Mac side: mac-nfs-export.sh (nfsd), mac-share-internet.sh (pf NAT)
+host/        mac-nfs-export.sh, linux-nfs-export.sh (nfsd),
+             mac-share-internet.sh (pf NAT), linux-share-internet.sh (iptables/nft)
 dts/         our first, ADT-derived minimal DT (historical; the kernel's
              t8030-n104.dts is the one used)
 tools/       fb-stubs/: bare-metal payloads used to prove the hand-off works;
