@@ -22,7 +22,7 @@ repository root; this directory is self-contained.
 | SMC | RTKit, GPIO, RTC, reboot / poweroff, power-button events |
 | Storage | the internal NVMe (ANS2) is detected — **it holds iOS; never mount or write it** |
 | CPU | all six cores (4x Thunder, 2x Lightning), started by m1n1 through the PMGR |
-| Not yet | cpufreq (`cpufreq.off=1`), touch, Wi-Fi, Bluetooth, audio, native display, GPU |
+| Not yet | cpufreq (parked, `cpufreq.off=1`: the clusters' DVFS hangs now and then), touch, Wi-Fi, Bluetooth, audio, native display, GPU |
 
 The DCSD cable carries the s5l UART0: m1n1 and then the whole kernel log
 (`earlycon=applefb keep_bootcon`, 115200 8N1).
@@ -91,7 +91,8 @@ rootfs/      build-alpine-rootfs.sh + overlay/ (inittab, a13-init): the NFS root
 host/        Mac side: mac-nfs-export.sh (nfsd), mac-share-internet.sh (pf NAT)
 dts/         our first, ADT-derived minimal DT (historical; the kernel's
              t8030-n104.dts is the one used)
-tools/       fb-stubs/: bare-metal payloads used to prove the hand-off works
+tools/       fb-stubs/: bare-metal payloads used to prove the hand-off works;
+             peek/: peek (physical read/write), dvfs-time, spin (on the phone)
 docs/        ROADMAP.md, research/ (one file per investigation, the first dmesg),
              ipad9/ (iPad 9, same T8030: recon notes)
 ```

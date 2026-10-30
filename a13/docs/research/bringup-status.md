@@ -253,3 +253,18 @@ transitions), `spin` (pinned integer loop, to see the clock).
 Left in place: `kernel/patches/0001` takes the P-cluster out of cpufreq in the
 n104 DT. Next: read what XNU does with these registers in the (unencrypted)
 20E247 kernelcache.
+
+## Open small things (2026-10-31)
+
+- **Boot logo.** fbcon's Tux (one per CPU, `fbcon=logo-pos:center`) is not
+  seen, even after the earlycon hands the screen over at simpledrm's bind.
+  `LOGO_LINUX_CLUT224=y`; likely scrolled away by the `loglevel=8` log right
+  after fbcon takes over. Cosmetic, later.
+- **SMC battery log.** With the phone on the cable at 100 %, the SMC firmware
+  logs `battery.cpp:823 Battery OverCharged: 1` once a second (it stopped
+  charging itself; see above). Harmless, but noisy on the console.
+- **Hoolock D421 vs N104.** Hoolock lists cpufreq as validated on the D421
+  with the same m1n1 (no T8030 cpufreq code) and, presumably, the same
+  iBSS-only entry (no iBEC keys exist for A13 iPhones), so
+  whatever makes it work there is either in the kernel driver's usage pattern
+  or not yet understood — worth asking them before reversing XNU.

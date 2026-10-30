@@ -34,7 +34,11 @@ Same order as the iPad mini 1. Each step notes what already exists (Hoolock
 - [x] All six cores: PMGR CPU start at 0xd4000 in m1n1 for T8030, A13
       Lightning/Thunder in m1n1's `midr_parts[]` (CYC_OVRD; chicken bits
       still unknown).
-- [ ] cpufreq: cluster DVFS set-up in m1n1 for T8030 (the kernel driver exists).
+- [ ] cpufreq — **parked** (`cpufreq.off=1`). The cluster DVFS works at M1's
+      offsets and needs no m1n1 set-up, but transitions sometimes never drop
+      BUSY and the cluster then hangs until reset (P-cluster on upward steps,
+      E-cluster under schedutil). Next: what XNU does with these registers, from
+      the unencrypted 20E247 kernelcache. Details: `research/bringup-status.md`.
 - [ ] Touch: SPI HID on `spi1`, HBPP firmware (`wftm`), MtCl calibration. Closest
       to the A5 Z2 work; no Linux driver exists.
 - [ ] On-screen keyboard, desktop (XFCE on simpledrm first).
