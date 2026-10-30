@@ -36,9 +36,11 @@ with Docker, `llvm` + `lld`, Rust, `ipsw` 3.1.714, `irecovery`, Python 3.
 a13/cascadia doctor                         # check everything
 ```
 
-1. **Inputs** — make the four Apple-derived files yourself, as described in
-   [`boot/inputs/README.md`](boot/inputs/README.md). Nothing from Apple is in this
-   repository.
+1. **Inputs** — the four Apple-derived files, downloaded and prepared from
+   Apple's CDN (nothing from Apple is in this repository):
+   ```bash
+   a13/cascadia inputs                      # downloads, decrypts, patches
+   ```
 2. **Build** (or take the payload from a release and put it in `boot/payload/`):
    ```bash
    a13/cascadia build                       # m1n1 + kernel + initramfs

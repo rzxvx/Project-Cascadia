@@ -3,6 +3,7 @@
 # Project Cascadia — A13 / iPhone 11 (N104AP).  One entry point.
 #
 #   a13/cascadia doctor          check that this machine has what the build needs
+#   a13/cascadia inputs          make the four boot inputs from Apple's CDN
 #   a13/cascadia build           m1n1 + kernel + initramfs (the whole payload)
 #   a13/cascadia build m1n1      just m1n1
 #   a13/cascadia build kernel    just the kernel + DTB
@@ -70,11 +71,15 @@ cmd_doctor() {
     if have irecovery; then note "ok:      irecovery"
     else note "MISSING: irecovery -- boot needs it"; rc=1; fi
 
-    # usbliter8ctl (may live in the repo root or on PATH)
-    if have usbliter8ctl || [ -x "$ROOT/usbliter8ctl" ]; then
-        note "ok:      usbliter8ctl"
+    # usbliter8ctl (in the repo root, or on PATH via pip install pyusb)
+    if have usbliter8ctl; then
+        note "ok:      usbliter8ctl (on PATH)"
+    elif [ -x "$ROOT/usbliter8ctl" ]; then
+        note "ok:      usbliter8ctl ($ROOT/usbliter8ctl)"
     else
-        note "MISSING: usbliter8ctl -- boot needs it (the repo root has one)"
+        note "MISSING: usbliter8ctl -- boot needs it"
+        note "         pip3 install pyusb && it is in the repo root"
+        rc=1
     fi
 
     # host-side helpers
@@ -97,10 +102,12 @@ cmd_doctor() {
     esac
 
     say "inputs (boot/inputs/)"
+    inputs_ok=true
     for f in iBSS.n104.20E247.sigpatched.raw IM4M DeviceTree.n104.rdtr.img4 empty.rtsc.img4; do
         if [ -f "boot/inputs/$f" ]; then note "ok:      $f"
-        else note "missing: $f  (see boot/inputs/README.md)"; fi
+        else note "missing: $f"; inputs_ok=false; fi
     done
+    $inputs_ok || note "         run: a13/cascadia inputs"
 
     say "build output (build/payload/)"
     for f in m1n1-idevice.macho Image.gz t8030-n104.dtb initramfs.cpio.gz; do
@@ -161,7 +168,7 @@ cmd_pack() {
         [ -f "build/payload/$f" ] || [ -f "boot/payload/$f" ] \
             || fail "no $f -- run: a13/cascadia build"
     done
-    [ -f "boot/inputs/IM4M" ] || fail "no boot/inputs/IM4M -- see boot/inputs/README.md"
+    [ -f "boot/inputs/IM4M" ] || fail "no boot/inputs/IM4M -- run: a13/cascadia inputs"
     say "packing the boot image"
     sh "$A13/boot/package.sh"
 }
@@ -173,7 +180,7 @@ cmd_boot() {
         || fail "no boot/out/m1n1-linux.rkrn.img4 -- run: a13/cascadia pack"
 
     IBSS="boot/inputs/iBSS.n104.20E247.sigpatched.raw"
-    [ -f "$IBSS" ] || fail "no $IBSS -- see boot/inputs/README.md"
+    [ -f "$IBSS" ] || fail "no $IBSS -- run: a13/cascadia inputs"
 
     # Find usbliter8ctl
     if have usbliter8ctl; then
@@ -213,11 +220,12 @@ cmd_release() {
 
 case "${1:-}" in
     doctor)  cmd_doctor ;;
+    inputs)  bash "$A13/tools/make-inputs.sh" ;;
     build)   shift; cmd_build "$@" ;;
     pack)    cmd_pack ;;
     boot)    cmd_boot ;;
     nfs)     t=$(host_tool nfs-export);     shift; bash "$t" "$@" ;;
     net)     t=$(host_tool share-internet); shift; bash "$t" "$@" ;;
     release) shift; cmd_release "$@" ;;
-    *)       sed -n '2,17p' "$A13/cascadia" | sed 's/^# \{0,1\}//'; exit 2 ;;
+    *)       sed -n '2,18p' "$A13/cascadia" | sed 's/^# \{0,1\}//'; exit 2 ;;
 esac
