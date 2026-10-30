@@ -1,5 +1,17 @@
 # How to get early kernel logs on N104 — what works and what doesn't
 
+> **Resolved 2026-10-31: the DCSD cable carries the s5l UART0 (0x235200000),
+> not the dockchannel.** m1n1's console writes every byte to *both* UARTs
+> (`iodev_console_write` → `IODEV_UART` and `IODEV_DOCKCHANNEL_UART`), so
+> seeing m1n1 on the cable never proved which one it was; and every earlier
+> kernel-side s5l test ran on the 4K-page kernel that hung before any console.
+> `earlycon=applefb keep_bootcon` (`a13/kernel/extras/apple_fb_earlycon.c`)
+> now prints the whole kernel log to UART0 — nGnRnE mapping and 32-bit
+> accesses, as samsung_tty's own s5l earlycon does — and to the whole screen.
+> The dockchannel findings below stand (the payload's writes to it never
+> drained) but no longer matter. The rest of this file is the history.
+
+
 The hardest part of this bring-up was not booting Linux (it executes), it was
 *seeing* it. This records what was tried so nobody repeats it. Summary:
 

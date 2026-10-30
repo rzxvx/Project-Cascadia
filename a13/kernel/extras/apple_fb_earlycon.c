@@ -1,90 +1,114 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * Apple simple-framebuffer earlycon - iPhone (t8030/N104) Linux bring-up.
+ * Early console for the iPhone 11 (t8030/N104) bring-up: the kernel log on
+ * the whole screen and on the debug UART, from parse_early_param() on.
  *
- * On this device the dockchannel UART can't be driven from the booted payload
- * and the s5l UART isn't on the serial cable, so the on-screen framebuffer is
- * the only early console we have. This earlycon renders the kernel log as text
- * straight into the framebuffer using the kernel's built-in 8x8 font (drawn 2x),
- * so we can see how far early boot gets before it hangs.
+ * Screen: the framebuffer iBoot left (base 0x8fa298000, stride 0xd00,
+ * 828x1792, 30bpp x2r10g10b10), text in the 8x16 font between the sensor
+ * notch and the rounded bottom corners. Lines wrap around to the top; the
+ * newest line is the one above the blank one. Before ioremap exists only the
+ * current text line is mapped (one early_ioremap slot, remapped on each new
+ * line); from core_initcall the whole framebuffer is. At device_initcall_sync
+ * the screen is left to simpledrm/fbcon.
  *
- * The text area sits in the MIDDLE of the panel: the top ~90 px rows of the
- * iPhone 11 panel are hidden by the sensor notch and the rounded corners (the
- * first version drew there and looked "silent").
+ * UART: the s5l UART0 (0x235200000) that m1n1 also prints to. Apple wants
+ * nGnRnE mappings and 32-bit accesses for it, as in samsung_tty's s5l
+ * earlycon. The TX wait is bounded: a UART that never drains is dropped,
+ * not waited on.
  *
- * Geometry is hardcoded for N104 (from m1n1's boot_args):
- *   base 0x8fa298000, stride 0xd00 bytes, 828x1792, 30bpp x2r10g10b10.
- *
- * early_ioremap() maps at most 256K per slot, so the text area is mapped as
- * NCHUNK bands of CHUNK_ROWS pixel rows, one slot each (7 slots exist; one is
- * left free for other early users).
- *
- * Use: earlycon=applefb keep_bootcon      (no address needed)
- * Needs CONFIG_FONTS + CONFIG_FONT_8x8 for font_vga_8x8.
+ * Use: earlycon=applefb keep_bootcon      options: ,nofb ,nos5l
+ * Needs CONFIG_FONTS + CONFIG_FONT_8x16.
  */
 #include <linux/console.h>
+#include <linux/font.h>
 #include <linux/init.h>
 #include <linux/io.h>
 #include <linux/serial_core.h>
-#include <linux/font.h>
+#include <linux/string.h>
 #include <asm/early_ioremap.h>
+#include <asm/fixmap.h>
 
 #define FB_PHYS		0x8fa298000UL
 #define FB_STRIDE	0xd00		/* bytes per scanline */
 #define FB_WIDTH	828
-#define TOP_ROW		640		/* first pixel row of the text area */
-#define CHUNK_ROWS	64		/* 64 * 0xd00 = 208K per early_ioremap slot */
-#define NCHUNK		6		/* 384 pixel rows total */
-#define SCALE		2
-#define CELL_W		(8 * SCALE)
-#define CELL_H		(8 * SCALE)
+#define FB_HEIGHT	1792
+#define TOP_ROW		96		/* below the notch */
+#define BOTTOM_ROW	1744		/* above the rounded bottom corners */
+#define FONT_W		8
+#define FONT_H		16
+#define LINE_BYTES	(FONT_H * FB_STRIDE)
 #define WHITE		0x3fffffff	/* x2r10g10b10 all-ones */
 
-static void __iomem *band[NCHUNK];
-static const struct font_desc *fbfont;
-static int fb_cols, fb_rows, cx, cy;
+#define S5L_PHYS	0x235200000UL
+#define UTRSTAT		0x10
+#define UTRSTAT_TXBE	BIT(1)
+#define UTXH		0x20
+#define S5L_SPINS	100000
 
-static void __iomem *fb_row(int y)
+static const struct font_desc *font;
+static void __iomem *line_map;	/* early: the band of text line line_mapped */
+static int line_mapped = -1;
+static void __iomem *full_map;	/* from core_initcall: the whole framebuffer */
+static bool fb_on, s5l_on;
+static void __iomem *s5l;
+static int cols, rows, cx, cy;
+
+static void map_line(int line)
 {
-	return band[y / CHUNK_ROWS] + (size_t)(y % CHUNK_ROWS) * FB_STRIDE;
+	if (full_map || line == line_mapped)
+		return;
+	if (line_map)
+		early_iounmap(line_map, LINE_BYTES);
+	line_map = early_ioremap(FB_PHYS + (size_t)(TOP_ROW + line * FONT_H) * FB_STRIDE,
+				 LINE_BYTES);
+	line_mapped = line_map ? line : -1;
 }
 
-static void fb_clear_line(int row)
+/* pixel row y (0..FONT_H-1) of the current text line, or NULL */
+static void __iomem *line_row(int y)
+{
+	if (full_map)
+		return full_map + (size_t)(TOP_ROW + cy * FONT_H + y) * FB_STRIDE;
+	return line_map ? line_map + (size_t)y * FB_STRIDE : NULL;
+}
+
+static void fb_clear_line(void)
 {
 	int y;
 
-	for (y = row * CELL_H; y < (row + 1) * CELL_H; y++)
-		memset_io(fb_row(y), 0, FB_WIDTH * 4);
+	for (y = 0; y < FONT_H; y++) {
+		void __iomem *row = line_row(y);
+
+		if (row)
+			memset_io(row, 0, FB_WIDTH * 4);
+	}
 }
 
 static void fb_newline(void)
 {
 	cx = 0;
-	if (++cy >= fb_rows)
-		cy = 0;
-	fb_clear_line(cy);
+	cy = (cy + 1) % rows;
+	map_line(cy);
+	fb_clear_line();
 }
 
 static void fb_glyph(unsigned char c)
 {
-	const u8 *g = (const u8 *)fbfont->data + (size_t)c * 8;
-	int px = cx * CELL_W, py = cy * CELL_H, gy, gx, s, t;
+	const u8 *g = (const u8 *)font->data + (size_t)c * FONT_H;
+	int y, x;
 
-	for (gy = 0; gy < 8; gy++) {
-		u8 bits = g[gy];
+	for (y = 0; y < FONT_H; y++) {
+		void __iomem *row = line_row(y);
 
-		for (s = 0; s < SCALE; s++) {
-			void __iomem *row = fb_row(py + gy * SCALE + s);
-
-			for (gx = 0; gx < 8; gx++)
-				for (t = 0; t < SCALE; t++)
-					writel_relaxed((bits & (0x80 >> gx)) ? WHITE : 0,
-						       row + (px + gx * SCALE + t) * 4);
-		}
+		if (!row)
+			return;
+		row += cx * FONT_W * 4;
+		for (x = 0; x < FONT_W; x++)
+			writel_relaxed((g[y] & (0x80 >> x)) ? WHITE : 0, row + x * 4);
 	}
 }
 
-static void fb_putc(struct uart_port *port, unsigned char c)
+static void fb_putc(unsigned char c)
 {
 	if (c == '\n') {
 		fb_newline();
@@ -96,40 +120,96 @@ static void fb_putc(struct uart_port *port, unsigned char c)
 	}
 	if (c < 0x20 || c > 0x7e)
 		c = '?';
-	if (cx >= fb_cols)
+	if (cx >= cols)
 		fb_newline();
 	fb_glyph(c);
 	cx++;
 }
 
-static void fb_write(struct console *con, const char *s, unsigned int n)
+static void s5l_putc(unsigned char c)
+{
+	int i;
+
+	for (i = 0; i < S5L_SPINS; i++)
+		if (readl(s5l + UTRSTAT) & UTRSTAT_TXBE)
+			break;
+	if (i == S5L_SPINS) {
+		s5l_on = false;		/* never drains: stop trying */
+		return;
+	}
+	writel(c, s5l + UTXH);
+}
+
+static void applefb_putc(struct uart_port *port, unsigned char c)
+{
+	if (fb_on)
+		fb_putc(c);
+	if (s5l_on)
+		s5l_putc(c);
+}
+
+static void applefb_write(struct console *con, const char *s, unsigned int n)
 {
 	struct earlycon_device *dev = con->data;
 
-	uart_console_write(&dev->port, s, n, fb_putc);
+	uart_console_write(&dev->port, s, n, applefb_putc);
 	wmb();
 }
 
-static int __init fb_early_setup(struct earlycon_device *dev, const char *opt)
+static int __init applefb_setup(struct earlycon_device *dev, const char *opt)
 {
-	int i, y;
+	fb_on = !(opt && strstr(opt, "nofb"));
+	s5l_on = !(opt && strstr(opt, "nos5l"));
 
-	fbfont = &font_vga_8x8;
-	for (i = 0; i < NCHUNK; i++) {
-		band[i] = early_ioremap(FB_PHYS + (size_t)(TOP_ROW + i * CHUNK_ROWS) * FB_STRIDE,
-					CHUNK_ROWS * FB_STRIDE);
-		if (!band[i])
-			return -ENODEV;
+	if (s5l_on) {
+		__set_fixmap(FIX_EARLYCON_MEM_BASE, S5L_PHYS & PAGE_MASK,
+			     __pgprot(PROT_DEVICE_nGnRnE));
+		s5l = (void __iomem *)__fix_to_virt(FIX_EARLYCON_MEM_BASE) +
+		      (S5L_PHYS & ~PAGE_MASK);
 	}
 
-	fb_cols = FB_WIDTH / CELL_W;
-	fb_rows = NCHUNK * CHUNK_ROWS / CELL_H;
-	cx = cy = 0;
-	for (y = 0; y < NCHUNK * CHUNK_ROWS; y++)	/* black background */
-		memset_io(fb_row(y), 0, FB_WIDTH * 4);
+	if (fb_on) {
+		font = &font_vga_8x16;
+		cols = FB_WIDTH / FONT_W;
+		rows = (BOTTOM_ROW - TOP_ROW) / FONT_H;
+		cx = cy = 0;
+		map_line(0);
+		fb_clear_line();
+	}
 
-	dev->con->write = fb_write;
+	dev->con->write = applefb_write;
 	return 0;
 }
+EARLYCON_DECLARE(applefb, applefb_setup);
 
-EARLYCON_DECLARE(applefb, fb_early_setup);
+/* ioremap works now: map the whole framebuffer, drop the per-line window */
+static int __init applefb_map_full(void)
+{
+	void __iomem *m;
+
+	if (!fb_on)
+		return 0;
+	m = ioremap_wc(FB_PHYS, (size_t)FB_STRIDE * FB_HEIGHT);
+	if (!m)
+		return 0;
+	console_lock();
+	full_map = m;
+	if (line_map) {
+		early_iounmap(line_map, LINE_BYTES);
+		line_map = NULL;
+		line_mapped = -1;
+	}
+	console_unlock();
+	return 0;
+}
+core_initcall(applefb_map_full);
+
+/* simpledrm and fbcon own the screen from here; the UART keeps going */
+static int __init applefb_screen_handover(void)
+{
+	console_lock();
+	fb_on = false;
+	console_unlock();
+	return 0;
+}
+device_initcall_sync(applefb_screen_handover);

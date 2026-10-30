@@ -25,10 +25,10 @@ CONFIG_VT_CONSOLE=y
 CONFIG_BLK_DEV_INITRD=y
 CONFIG_DEVTMPFS=y
 CONFIG_DEVTMPFS_MOUNT=y
-# earlycon=applefb (extras/apple_fb_earlycon.c) draws with font_vga_8x8
+# earlycon=applefb (extras/apple_fb_earlycon.c): screen in font_vga_8x16 + s5l UART0
 CONFIG_SERIAL_EARLYCON=y
 CONFIG_FONTS=y
-CONFIG_FONT_8x8=y
+CONFIG_FONT_8x16=y
 # NFS root on the host over the USB network (initramfs mounts it, v3 because
 # macOS's nfsd serves v2/v3 only; v4 for Linux hosts)
 CONFIG_NETWORK_FILESYSTEMS=y
