@@ -8,7 +8,7 @@
 # trust cache.  Nothing from Apple is shipped; the user's machine fetches and
 # transforms them.
 #
-# Needs: ipsw (3.1.714 tested), python3.
+# Needs: ipsw (3.1.714+ tested), python3.
 # Output: a13/boot/inputs/{iBSS.n104.20E247.sigpatched.raw, IM4M,
 #         DeviceTree.n104.rdtr.img4, empty.rtsc.img4}
 #
@@ -26,11 +26,12 @@ note() { printf '    %s\n' "$*"; }
 fail() { printf 'error: %s\n' "$*" >&2; exit 1; }
 have() { command -v "$1" >/dev/null 2>&1; }
 
-have ipsw  || fail "ipsw not found (https://github.com/blacktop/ipsw)"
+have ipsw    || fail "ipsw not found (https://github.com/blacktop/ipsw)"
 have python3 || fail "python3 not found"
 
-BUILD=20E247
-DEVICE=iPhone12,1
+# The one IPSW this port is pinned to.  Apple still serves it; the URL is
+# Apple's own CDN, nothing here redistributes the firmware.
+IPSW_URL="https://updates.cdn-apple.com/2023SpringFCS/fullrestores/032-67885/8B726A7C-722A-4D2D-8BEF-5A702FFEC8D5/iPhone12,1_16.4_20E247_Restore.ipsw"
 
 # iBSS AES key (IV + Key), from pwnerblu/surrealra1n keys/iPhone12,1.txt
 IBSS_IV=98df294debc43c1488cb4c563f5d3b1f
@@ -40,22 +41,31 @@ IBSS_KEY=6aaddc1c0a47f9e149ca175cc7eb02e7af4225489093aee6770f61f136f587ef
 IBSS_SHA256=5b77df1fceb136c42ced74003f6d8b5b1acacb56bda5f88d112895e4853034f2
 DT_SHA256=62b7e44eb0b3f220124283d012cacb7cfdef259444c6cf8e0539ad255dafe9e2
 
+# shasum on macOS, sha256sum on Linux
+if have shasum; then
+    sha256() { shasum -a 256 "$1" | awk '{print $1}'; }
+elif have sha256sum; then
+    sha256() { sha256sum "$1" | awk '{print $1}'; }
+else
+    fail "no shasum or sha256sum"
+fi
+
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
 # ---------- 1. download from Apple's CDN ------------------------------------
+# ipsw-partial.py extracts individual files from the remote IPSW (ZIP) using
+# HTTP range requests: ~1.5 MB downloaded instead of 6.4 GB.  This avoids
+# `ipsw download`, whose iTunes API lookup fails on Linux.
 
-say "downloading iBSS and DeviceTree from Apple (build $BUILD)"
-ipsw download ipsw --device "$DEVICE" --build "$BUILD" \
-    --pattern 'Firmware/dfu/iBSS.n104.RELEASE.im4p' \
-    -o "$tmp" --confirm
-ipsw download ipsw --device "$DEVICE" --build "$BUILD" \
-    --pattern 'Firmware/all_flash/DeviceTree.n104ap.im4p' \
-    -o "$tmp" --confirm
+say "downloading iBSS and DeviceTree from Apple"
+python3 -I "$A13/tools/ipsw-partial.py" "$IPSW_URL" \
+    'Firmware/dfu/iBSS.n104.RELEASE.im4p' \
+    'Firmware/all_flash/DeviceTree.n104ap.im4p' \
+    -o "$tmp"
 
-IPSW_DIR="$tmp/${BUILD}__${DEVICE}"
-IBSS_IM4P="$IPSW_DIR/Firmware/dfu/iBSS.n104.RELEASE.im4p"
-DT_IM4P="$IPSW_DIR/Firmware/all_flash/DeviceTree.n104ap.im4p"
+IBSS_IM4P="$tmp/iBSS.n104.RELEASE.im4p"
+DT_IM4P="$tmp/DeviceTree.n104ap.im4p"
 [ -f "$IBSS_IM4P" ] || fail "iBSS download failed"
 [ -f "$DT_IM4P" ]   || fail "DeviceTree download failed"
 
@@ -79,7 +89,7 @@ data[off:off+4] = new
 open(sys.argv[2], 'wb').write(data)
 " "$tmp/iBSS.raw" "$INPUTS/iBSS.n104.20E247.sigpatched.raw"
 
-sha=$(shasum -a 256 "$INPUTS/iBSS.n104.20E247.sigpatched.raw" | awk '{print $1}')
+sha=$(sha256 "$INPUTS/iBSS.n104.20E247.sigpatched.raw")
 if [ "$sha" = "$IBSS_SHA256" ]; then
     note "ok: iBSS checksum matches"
 else
@@ -128,7 +138,7 @@ print(f'    wrote {len(im4m)} bytes')
 say "preparing DeviceTree"
 ipsw img4 im4p extract "$DT_IM4P" -o "$tmp/dt.raw"
 
-sha=$(shasum -a 256 "$tmp/dt.raw" | awk '{print $1}')
+sha=$(sha256 "$tmp/dt.raw")
 if [ "$sha" = "$DT_SHA256" ]; then
     note "ok: DeviceTree checksum matches"
 else

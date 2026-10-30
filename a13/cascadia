@@ -71,14 +71,16 @@ cmd_doctor() {
     if have irecovery; then note "ok:      irecovery"
     else note "MISSING: irecovery -- boot needs it"; rc=1; fi
 
-    # usbliter8ctl (in the repo root, or on PATH via pip install pyusb)
-    if have usbliter8ctl; then
-        note "ok:      usbliter8ctl (on PATH)"
-    elif [ -x "$ROOT/usbliter8ctl" ]; then
-        note "ok:      usbliter8ctl ($ROOT/usbliter8ctl)"
+    # usbliter8ctl lives in the repo root; its only dependency is pyusb
+    if have usbliter8ctl || [ -x "$ROOT/usbliter8ctl" ]; then
+        if python3 -c 'import usb' 2>/dev/null; then
+            note "ok:      usbliter8ctl + pyusb"
+        else
+            note "ok:      usbliter8ctl (./usbliter8ctl in the repo root)"
+            note "MISSING: pyusb -- pip3 install pyusb"; rc=1
+        fi
     else
-        note "MISSING: usbliter8ctl -- boot needs it"
-        note "         pip3 install pyusb && it is in the repo root"
+        note "MISSING: usbliter8ctl -- should be in the repo root (./usbliter8ctl)"
         rc=1
     fi
 
