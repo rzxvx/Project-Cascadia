@@ -11,6 +11,9 @@
 # volume: the macOS file system is case-insensitive, which the kernel tree is
 # not. On Apple silicon this runs natively.
 #
+# Our changes to the tree: kernel/patches/*.patch (git apply, in order) and
+# kernel/extras/ (new files).
+#
 # Output: a13/build/payload/{Image.gz,t8030-n104.dtb}, a13/build/kernel.config
 set -euo pipefail
 
@@ -50,6 +53,9 @@ docker run --rm --platform linux/arm64 \
     git fetch --depth=1 origin "$COMMIT"
     git checkout -q -f "$COMMIT"
     sh /extras/apply.sh
+    for p in /kernel/patches/*.patch; do
+      [ -f "$p" ] && git apply "$p"
+    done
     export ARCH=arm64 LLVM=1
     cp /a13build/config_16k .config
     ./scripts/kconfig/merge_config.sh -m .config /kernel/n104.fragment

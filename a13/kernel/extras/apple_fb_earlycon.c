@@ -8,8 +8,10 @@
  * notch and the rounded bottom corners. Lines wrap around to the top; the
  * newest line is the one above the blank one. Before ioremap exists only the
  * current text line is mapped (one early_ioremap slot, remapped on each new
- * line); from core_initcall the whole framebuffer is. At device_initcall_sync
- * the screen is left to simpledrm/fbcon.
+ * line); from core_initcall the whole framebuffer is. The screen is left to
+ * simpledrm/fbcon the moment a driver binds to the simple-framebuffer device
+ * (or at device_initcall_sync, if none does), so the two never draw at once
+ * and fbcon's boot logo survives.
  *
  * UART: the s5l UART0 (0x235200000) that m1n1 also prints to. Apple wants
  * nGnRnE mappings and 32-bit accesses for it, as in samsung_tty's s5l
@@ -23,6 +25,8 @@
 #include <linux/font.h>
 #include <linux/init.h>
 #include <linux/io.h>
+#include <linux/of.h>
+#include <linux/platform_device.h>
 #include <linux/serial_core.h>
 #include <linux/string.h>
 #include <asm/early_ioremap.h>
@@ -182,6 +186,28 @@ static int __init applefb_setup(struct earlycon_device *dev, const char *opt)
 }
 EARLYCON_DECLARE(applefb, applefb_setup);
 
+static void applefb_stop_screen(void)
+{
+	console_lock();
+	fb_on = false;
+	console_unlock();
+}
+
+/* simpledrm is about to probe the framebuffer: it and fbcon own the screen now */
+static int applefb_bus_notify(struct notifier_block *nb, unsigned long action, void *data)
+{
+	struct device *dev = data;
+
+	if (action == BUS_NOTIFY_BIND_DRIVER && fb_on && dev->of_node &&
+	    of_device_is_compatible(dev->of_node, "simple-framebuffer"))
+		applefb_stop_screen();
+	return NOTIFY_DONE;
+}
+
+static struct notifier_block applefb_nb = {
+	.notifier_call = applefb_bus_notify,
+};
+
 /* ioremap works now: map the whole framebuffer, drop the per-line window */
 static int __init applefb_map_full(void)
 {
@@ -189,6 +215,7 @@ static int __init applefb_map_full(void)
 
 	if (!fb_on)
 		return 0;
+	bus_register_notifier(&platform_bus_type, &applefb_nb);
 	m = ioremap_wc(FB_PHYS, (size_t)FB_STRIDE * FB_HEIGHT);
 	if (!m)
 		return 0;
@@ -204,12 +231,11 @@ static int __init applefb_map_full(void)
 }
 core_initcall(applefb_map_full);
 
-/* simpledrm and fbcon own the screen from here; the UART keeps going */
+/* no driver took the framebuffer: hand the screen over anyway; the UART keeps going */
 static int __init applefb_screen_handover(void)
 {
-	console_lock();
-	fb_on = false;
-	console_unlock();
+	if (fb_on)
+		applefb_stop_screen();
 	return 0;
 }
 device_initcall_sync(applefb_screen_handover);

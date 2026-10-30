@@ -1,0 +1,30 @@
+diff --git a/arch/arm64/boot/dts/apple/t8030-n104.dts b/arch/arm64/boot/dts/apple/t8030-n104.dts
+index 4be6ea501..df246e100 100644
+--- a/arch/arm64/boot/dts/apple/t8030-n104.dts
++++ b/arch/arm64/boot/dts/apple/t8030-n104.dts
+@@ -44,3 +44,25 @@ &usb_drd {
+ 	maximum-speed = "high-speed";
+ 	status = "okay";
+ };
++
++/*
++ * No cpufreq on the P-cluster yet: it stays at the P-state iBoot left (2,
++ * 912 MHz). Its DVFS transitions upwards reach the new state but sometimes
++ * never drop BUSY (bit 31 of the cluster PSTATE register); the cluster then
++ * takes no further command until reset, and apple-soc-cpufreq fails every
++ * request with -EIO. The E-cluster ran 5000 transitions over its whole range
++ * without one. What XNU does for the P-cluster is not known yet.
++ */
++&{/cpus/cpu@10100} {
++	/delete-property/ performance-domains;
++	/delete-property/ operating-points-v2;
++};
++
++&{/cpus/cpu@10101} {
++	/delete-property/ performance-domains;
++	/delete-property/ operating-points-v2;
++};
++
++&cpufreq_p {
++	status = "disabled";
++};

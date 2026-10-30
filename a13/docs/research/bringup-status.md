@@ -221,3 +221,35 @@ Lightning 0x611f0120). Two m1n1 changes:
    Lightning/Thunder now have a `midr_parts[]` entry with
    `apple_sysregs_unlocked` and `fast_ipi` only — no chicken bits, no deep
    sleep, none of A11/M1's cache and power tweaks until they are checked.
+
+## 2026-10-31: cpufreq — parked (`cpufreq.off=1`)
+
+The cluster DVFS registers sit at the M1 (T8103) offsets — E-cluster
+0x210e00000, P-cluster 0x211e00000; PSTATE +0x20020 (DESIRED1 [4:0],
+DESIRED2 [15:12], SET 25, BUSY 31), STATUS +0x20050 (current [7:4]) — and the
+PMGR's ADT feature set is M1's (`cpu-apsc`, `ppt-thrtl`, `llc-thrtl`,
+`amx-thrtl`, `cpu-fixed-freq-pll-relock`). Tools in `a13/tools/peek/`: `peek`
+(physical read/write through /dev/mem), `dvfs-time` (timed and stress P-state
+transitions), `spin` (pinned integer loop, to see the clock).
+
+- Transitions need no m1n1 set-up and take 5-8 us; the clock really changes
+  (`spin` on CPU0: 49 / 143 / 239 M/s at E-states 1 / 3 / 5).
+- **They stick.** Now and then a transition reaches its state (STATUS = target)
+  but BUSY never drops; the cluster then takes no command until reset, and
+  apple-soc-cpufreq returns -EIO for every request after that (the old log
+  spam). The P-cluster sticks on upward steps, often on the first one; the
+  E-cluster passed 5000 x 1<->5 and 2000 x 2<->4 by hand but stuck at state 4
+  in all three schedutil runs. Not the cause: cpuidle's "CPU PD" (same with
+  `cpuidle.off=1`), a write to the current state, concurrency between the
+  clusters, the 400 us driver timeout, writing 1 to cluster +0x440f8 (what
+  m1n1 does on M1).
+- P-state 6 on the P-cluster froze the P-cores outright (no UART output).
+- **Do not read cluster +0x40240 or +0x40250** (M1's llc/amx-thrtl): there is
+  no register there on A13; the read raises an asynchronous SError and the
+  kernel panics.
+- No iBEC route: no iBEC keys exist for iPhone12,1; surrealra1n boots the
+  patched iBSS in iBEC's place too.
+
+Left in place: `kernel/patches/0001` takes the P-cluster out of cpufreq in the
+n104 DT. Next: read what XNU does with these registers in the (unencrypted)
+20E247 kernelcache.
