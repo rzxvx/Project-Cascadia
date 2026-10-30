@@ -1,4 +1,4 @@
-# Project Cascadia — Native Linux on Apple A5
+# Project Cascadia — Native Linux on Apple Silicons
 
 Mainline Linux 6.12 on an iPad mini 1 (iPad2,5 / S5L8942X), booting to an
 interactive shell — on the glass and over USB — and on to an XFCE desktop you
