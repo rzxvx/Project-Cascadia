@@ -1,0 +1,9 @@
+# /etc/inittab - BusyBox init for N104AP. The initramfs has done the boot
+# (USB gadget, usb0, the NFS mount); a13-init starts the services.
+::sysinit:/sbin/a13-init
+
+# shell on the USB serial (no login: a cable you plugged in yourself)
+ttyGS0::respawn:/sbin/getty -n -l /bin/sh -L 115200 ttyGS0 vt100
+
+::ctrlaltdel:/sbin/reboot
+::shutdown:/bin/umount -a -r

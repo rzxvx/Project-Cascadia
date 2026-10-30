@@ -29,3 +29,9 @@ CONFIG_DEVTMPFS_MOUNT=y
 CONFIG_SERIAL_EARLYCON=y
 CONFIG_FONTS=y
 CONFIG_FONT_8x8=y
+# NFS root on the host over the USB network (initramfs mounts it, v3 because
+# macOS's nfsd serves v2/v3 only; v4 for Linux hosts)
+CONFIG_NETWORK_FILESYSTEMS=y
+CONFIG_NFS_FS=y
+CONFIG_NFS_V3=y
+CONFIG_NFS_V4=y

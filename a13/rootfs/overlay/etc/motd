@@ -1,0 +1,4 @@
+
+Cascadia — Alpine Linux on the iPhone 11 (N104AP), root over NFS.
+Never mount or write nvme0n1: it is the phone's iOS storage.
+

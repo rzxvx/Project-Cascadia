@@ -8,6 +8,7 @@
 # Yours:   inputs/IM4M     the IM4M of YOUR device (see inputs/README.md)
 #          ~/.ssh/*.pub    become root's authorized_keys on the phone
 #                          (override: SSH_KEYS="a.pub b.pub")
+#          NFS root        optional, see ../host/mac-nfs-export.sh (NFSROOT=)
 # Output:  out/m1n1-linux.rkrn.img4
 set -eu
 cd "$(dirname "$0")"
@@ -37,6 +38,14 @@ SSH_KEYS=${SSH_KEYS:-$(ls ~/.ssh/*.pub 2>/dev/null || true)}
 set -- "root/.ssh/authorized_keys=$tmp/authorized_keys:600"
 HOSTKEY=../build/ssh/dropbear_ed25519_host_key
 [ -f "$HOSTKEY" ] && set -- "$@" "etc/dropbear/dropbear_ed25519_host_key=$HOSTKEY:600"
+# NFS root ("host:/path"): NFSROOT=..., or the one ../host/mac-nfs-export.sh on
+# wrote; NFSROOT=none packs a RAM-only image
+[ -z "${NFSROOT:-}" ] && [ -f ../build/nfsroot ] && NFSROOT=$(cat ../build/nfsroot)
+if [ -n "${NFSROOT:-}" ] && [ "$NFSROOT" != none ]; then
+    echo "$NFSROOT" > "$tmp/nfsroot"
+    set -- "$@" "etc/nfsroot=$tmp/nfsroot:644"
+fi
+echo "nfs root: ${NFSROOT:-none (RAM only)}"
 python3 overlay_cpio.py "$tmp/overlay.cpio" "$@"
 { gzip -dc "$P/initramfs.cpio.gz"; cat "$tmp/overlay.cpio"; } | gzip -9 > "$tmp/initramfs.cpio.gz"
 echo "ssh keys: $(grep -c . "$tmp/authorized_keys") (from: ${SSH_KEYS:-none})"

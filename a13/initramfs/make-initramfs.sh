@@ -114,6 +114,51 @@ else
     ifconfig usb0 172.16.42.1 netmask 255.255.255.0 up && \
         echo "[usb] usb0 = 172.16.42.1 (Mac gets 172.16.42.2 by DHCP)"
     touch /tmp/udhcpd.leases && udhcpd /etc/udhcpd.conf
+
+    # NFS root: /etc/nfsroot ("host:/path", added by boot/package.sh) names
+    # the host export. Wait for the host to take its DHCP address, mount over
+    # NFSv3 (macOS nfsd has no v4), hand over to the root and its own init.
+    # Anything that fails here stays in RAM: an initramfs that always boots
+    # beats a root that sometimes does.
+    if [ -f /etc/nfsroot ]; then
+        NFSROOT=$(cat /etc/nfsroot)
+        HOST=${NFSROOT%%:*}
+        echo "[nfs] waiting for the host $HOST"
+        for i in $(seq 1 30); do
+            ping -c 1 -W 1 "$HOST" >/dev/null 2>&1 && break
+        done
+        mkdir -p /newroot
+        nfs_ok=0
+        for i in 1 2 3 4 5; do
+            if mount -t nfs -o vers=3,proto=tcp,mountproto=tcp,nolock,addr=$HOST,mountaddr=$HOST,rsize=65536,wsize=65536,timeo=50,retrans=2 \
+                    "$NFSROOT" /newroot; then
+                nfs_ok=1; break
+            fi
+            sleep 2
+        done
+        if [ $nfs_ok = 1 ] && [ -x /newroot/sbin/init ]; then
+            echo "[nfs] root $NFSROOT mounted"
+            # who may log in, and the host key, come from this image
+            mkdir -p /newroot/root/.ssh /newroot/etc/dropbear
+            [ -s /root/.ssh/authorized_keys ] && \
+                cp /root/.ssh/authorized_keys /newroot/root/.ssh/authorized_keys
+            [ -f /etc/dropbear/dropbear_ed25519_host_key ] && \
+                cp /etc/dropbear/dropbear_ed25519_host_key /newroot/etc/dropbear/
+            chown 0:0 /newroot/root /newroot/root/.ssh /newroot/root/.ssh/authorized_keys 2>/dev/null
+            chmod 700 /newroot/root /newroot/root/.ssh
+            chmod 600 /newroot/root/.ssh/authorized_keys 2>/dev/null
+            killall udhcpd 2>/dev/null
+            umount /tmp
+            mkdir -p /newroot/dev /newroot/proc /newroot/sys
+            mount --move /dev /newroot/dev
+            mount --move /proc /newroot/proc
+            mount --move /sys /newroot/sys
+            exec switch_root /newroot /sbin/init
+        fi
+        echo "[nfs] no NFS root (mounted=$nfs_ok) - staying in RAM"
+        umount /newroot 2>/dev/null
+    fi
+
     dropbear -R -E 2>/tmp/dropbear.log && echo "[usb] ssh: ssh root@172.16.42.1"
     telnetd -l /bin/sh
     # shell on the USB serial, respawned

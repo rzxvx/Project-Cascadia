@@ -1,0 +1,13 @@
+#!/bin/sh
+# a13-init - sysinit for the Alpine root on N104AP (run by BusyBox init).
+# /dev, /proc and /sys were moved here by the initramfs; usb0 is already up.
+mountpoint -q /dev/pts || { mkdir -p /dev/pts; mount -t devpts devpts /dev/pts; }
+mountpoint -q /run || mount -t tmpfs -o mode=755 tmpfs /run
+mountpoint -q /tmp || mount -t tmpfs -o mode=1777 tmpfs /tmp
+mkdir -p /run/lock /var/log
+hostname -F /etc/hostname
+# the Mac (172.16.42.2) routes to the internet when host/mac-share-internet.sh is on
+route add default gw 172.16.42.2 2>/dev/null
+touch /run/udhcpd.leases && udhcpd /etc/udhcpd.conf
+dropbear -R
+echo "n104: Alpine $(cat /etc/alpine-release) up, ssh root@172.16.42.1" > /dev/kmsg

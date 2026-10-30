@@ -25,7 +25,8 @@ Same order as the iPad mini 1. Each step notes what already exists (Hoolock
 - [x] USB gadget: CDC ACM shell, CDC ECM network, SSH (m1n1 kept disabling
       the controller; fixed).
 - [x] Working tick (arch timer), wall clock from the PMIC RTC.
-- [ ] A root file system beyond the initramfs (`apk`, NFS root as on the A5).
+- [x] A root file system beyond the initramfs: Alpine 3.24 over NFS from the
+      Mac, `apk` through the Mac's NAT.
 - [ ] One host command to boot (the `./cascadia` of this device).
 
 ## Phase 3 — Hardware, in A5 order

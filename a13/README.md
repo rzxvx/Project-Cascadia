@@ -59,6 +59,22 @@ Python 3.
 
 The kernel command line is `boot/bootargs.txt`.
 
+## A real system: Alpine over NFS
+
+The initramfs is a small RAM system. For a persistent one (`apk add` that
+survives a reboot), the phone can run Alpine Linux from a directory on the Mac:
+
+```bash
+bash a13/rootfs/build-alpine-rootfs.sh     # Alpine 3.24 aarch64 -> a13/build/alpine-a13.tar.gz
+bash a13/host/mac-nfs-export.sh on         # sudo: unpack to ~/cascadia-a13-root, export it (NFSv3)
+sh a13/boot/package.sh                     # picks the export up; boot as above
+bash a13/host/mac-share-internet.sh on     # sudo, after boot: NAT for apk (pf anchor)
+```
+
+The initramfs brings up USB, waits for the Mac's DHCP address, mounts the
+export and switches to it; if anything fails it stays in RAM. Pack with
+`NFSROOT=none` for a RAM-only image.
+
 ## Layout
 
 ```
@@ -68,7 +84,10 @@ boot/        package.sh, boot-from-recovery.sh, bootargs.txt, the LZSS IMG4 fix,
 m1n1/        our patch to HoolockLinux/m1n1 (idevice) + build-m1n1.sh
 kernel/      build-kernel.sh (yhavry/Hoolock-linux t8030, pinned), n104.fragment
              on top of Hoolock's config_16k, extras/ (framebuffer earlycon)
-initramfs/   make-initramfs.sh: busybox, USB gadget (configfs), udhcpd, dropbear
+initramfs/   make-initramfs.sh: busybox, USB gadget (configfs), udhcpd, dropbear,
+             the switch to an NFS root
+rootfs/      build-alpine-rootfs.sh + overlay/ (inittab, a13-init): the NFS root
+host/        Mac side: mac-nfs-export.sh (nfsd), mac-share-internet.sh (pf NAT)
 dts/         our first, ADT-derived minimal DT (historical; the kernel's
              t8030-n104.dts is the one used)
 tools/       fb-stubs/: bare-metal payloads used to prove the hand-off works

@@ -810,8 +810,7 @@ The same phases, in the same order; details in
 
 - **Phase 1 ✓** — m1n1 → Linux 7.2 boots to a shell, framebuffer console.
 - **Phase 2** — ~~USB gadget: ACM shell, ECM network, SSH~~ ✓ → ~~tick and
-  wall clock~~ ✓ → a root file system beyond the initramfs → one host command
-  to boot.
+  wall clock~~ ✓ → ~~Alpine over NFS~~ ✓ → one host command to boot.
 - **Phase 3** — all six cores → cpufreq → touch → on-screen keyboard →
   desktop → Wi-Fi → internal storage → native display → …
 
