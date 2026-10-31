@@ -406,3 +406,20 @@ taps click.
 Open: the interrupt line (polling costs ~5 % of a core idle); what the boot
 really needs (LDO, gP00 and the 0xab mode were all set when it first worked);
 a calibration finer than four corners; suspend/resume.
+
+## Dropped taps (2026-10-31)
+
+Quick taps were lost now and then: polled every 25 ms idle / 8 ms active,
+while the firmware makes a frame every ~8 ms, so a tap's down frames could
+fall between two polls; a finger first seen lifted was dropped. Now: 8 / 4 ms
+(~7.5 % of one core), a finger first seen lifted -- or seen only in its
+"gone" frame -- is reported down and up, and after a new frame the driver
+polls again at once until the packet repeats (the firmware may queue).
+
+The A5 way (read on the ATTN interrupt, through the GPIO controller's
+interrupt status latch) does not work here yet: gpiomon on AOP GPIO 34 with
+both edges got the interrupt (`Apple-GPIO 34 Edge`) and **zero** edges over a
+minute of taps. Either ATTN is elsewhere on the N104, or the AOP GPIO
+interrupt block of the T8030 is not laid out as pinctrl-apple-gpio (M1)
+thinks -- the A5's Sandcastle driver had exactly that bug
+(ipad-mini-linux docs/research/p105-gpio.md). Open.

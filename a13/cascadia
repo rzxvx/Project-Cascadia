@@ -3,7 +3,12 @@
 # Project Cascadia — A13 / iPhone 11 (N104AP).  One entry point.
 #
 #   a13/cascadia doctor          check that this machine has what the build needs
-#   a13/cascadia inputs          make the four boot inputs from Apple's CDN
+#   a13/cascadia inputs          make the boot inputs from Apple's CDN
+#   a13/cascadia periphery       touch, on-screen keyboard, Wi-Fi/BT: firmware
+#                                and this phone's calibration (run it again
+#                                once the phone has booted)
+#   a13/cascadia recalibrate     touchscreen: tap the four corners on the running
+#                                phone; pack puts the result into the DT
 #   a13/cascadia build           m1n1 + kernel + initramfs (the whole payload)
 #   a13/cascadia build m1n1      just m1n1
 #   a13/cascadia build kernel    just the kernel + DTB
@@ -110,6 +115,16 @@ cmd_doctor() {
         else note "missing: $f"; inputs_ok=false; fi
     done
     $inputs_ok || note "         run: a13/cascadia inputs"
+
+    say "periphery (a13/cascadia periphery; none of it is needed to boot)"
+    [ -f boot/inputs/n104-mtfw.bin ] && note "ok:      touch firmware" \
+        || note "missing: touch firmware -- no touchscreen"
+    [ -x build/fbkeyboard/usr/bin/fbkeyboard ] && note "ok:      fbkeyboard (on-screen keyboard)" \
+        || note "none:    fbkeyboard (on-screen keyboard)"
+    ls boot/inputs/brcm/brcmfmac4378* >/dev/null 2>&1 && note "ok:      Wi-Fi/BT firmware" \
+        || note "missing: Wi-Fi/BT firmware -- no Wi-Fi"
+    [ -s boot/inputs/syscfg.bin ] && note "ok:      this phone's calibration (syscfg)" \
+        || note "missing: this phone's calibration -- boot once, then run periphery again"
 
     say "build output (build/payload/)"
     for f in m1n1-idevice.macho Image.gz t8030-n104.dtb initramfs.cpio.gz; do
@@ -237,6 +252,9 @@ cmd_release() {
 case "${1:-}" in
     doctor)  cmd_doctor ;;
     inputs)  bash "$A13/tools/make-inputs.sh" ;;
+    periphery) bash "$A13/tools/make-periphery.sh" ;;
+    recalibrate) python3 -I "$A13/tools/touchcal.py" "${PHONE:-root@172.16.42.1}" \
+                     "$A13/boot/inputs/touch-calibration" ;;
     build)   shift; cmd_build "$@" ;;
     pack)    cmd_pack ;;
     boot)    cmd_boot ;;

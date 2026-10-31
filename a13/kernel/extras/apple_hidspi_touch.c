@@ -28,7 +28,10 @@
  *    enumeration; touches simply arrive on interface 0.
  *
  * The interrupt line (AOP GPIO 34) does not move here, so the controller is
- * polled: often while a finger is down, rarely otherwise.
+ * polled: every 4 ms while fingers are about, every 8 ms otherwise -- the
+ * firmware makes a frame every ~8 ms, and a quick tap is only a few frames.
+ * A tap whose down frames were missed anyway is still reported (see
+ * report_touches).
  */
 
 #include <linux/crc16.h>
@@ -93,7 +96,11 @@ struct finger {
 struct ahtouch {
 	struct spi_device *spi;
 	struct input_dev *input;
-	struct touchscreen_properties props;
+	struct touchscreen_properties props;	/* swap only; inversion below */
+	int min_x, max_x, min_y, max_y;		/* the panel's raw range, from the DT */
+	bool inv_x, inv_y;
+	DECLARE_BITMAP(down, 256);		/* finger ids reported down */
+	DECLARE_BITMAP(prev, 256);		/* finger ids in the previous frame */
 	struct task_struct *thread;
 	const char *fw_name;
 	const char *cal_name;
@@ -108,10 +115,18 @@ struct ahtouch {
 	u32 smc_key, smc_val;
 };
 
-static unsigned int poll_active_ms = 8;
+static unsigned int poll_active_ms = 4;
 module_param(poll_active_ms, uint, 0644);
 MODULE_PARM_DESC(poll_active_ms, "poll period while a finger is down");
-static unsigned int poll_idle_ms = 25;
+static bool raw;
+module_param(raw, bool, 0644);
+MODULE_PARM_DESC(raw, "report the panel's raw positions (for a13/cascadia recalibrate)");
+
+static unsigned int release_ms = 60;
+module_param(release_ms, uint, 0644);
+MODULE_PARM_DESC(release_ms, "let go of fingers after this long without a frame");
+
+static unsigned int poll_idle_ms = 8;
 module_param(poll_idle_ms, uint, 0644);
 MODULE_PARM_DESC(poll_idle_ms, "poll period otherwise");
 
@@ -349,9 +364,45 @@ static bool hs_exchange(struct ahtouch *ts)
 	return ok && get_unaligned_le32(ts->rx) == 0xdeadbeef;
 }
 
+static void report_finger(struct ahtouch *ts, const struct finger *f, bool down)
+{
+	struct input_dev *input = ts->input;
+	int slot = input_mt_get_slot_by_key(input, f->id);
+	int x, y;
+
+	if (slot < 0)
+		return;
+	input_mt_slot(input, slot);
+	if (!input_mt_report_slot_state(input, MT_TOOL_FINGER, down))
+		return;
+	x = (s16)le16_to_cpu(f->abs_x);
+	y = (s16)le16_to_cpu(f->abs_y);
+	if (!raw) {
+		/*
+		 * touchscreen-inverted-* turns around the range the DT gives
+		 * (min..max), not 0..max: the panel's edges are not at 0, and a
+		 * flipped axis keeps its offset.
+		 */
+		if (ts->inv_x)
+			x = ts->min_x + ts->max_x - x;
+		if (ts->inv_y)
+			y = ts->min_y + ts->max_y - y;
+		x = clamp(x, ts->min_x, ts->max_x);
+		y = clamp(y, ts->min_y, ts->max_y);
+	}
+	touchscreen_report_pos(input, &ts->props, max(x, 0), max(y, 0), true);
+	input_report_abs(input, ABS_MT_WIDTH_MAJOR, le16_to_cpu(f->tool_major));
+	input_report_abs(input, ABS_MT_WIDTH_MINOR, le16_to_cpu(f->tool_minor));
+	input_report_abs(input, ABS_MT_ORIENTATION, (s16)le16_to_cpu(f->orientation));
+	input_report_abs(input, ABS_MT_TOUCH_MAJOR, le16_to_cpu(f->touch_major));
+	input_report_abs(input, ABS_MT_TOUCH_MINOR, le16_to_cpu(f->touch_minor));
+}
+
 static void report_touches(struct ahtouch *ts, const u8 *p, size_t len)
 {
 	struct input_dev *input = ts->input;
+	const struct finger *f;
+	bool missed = false;
 	u32 bytes;
 	int i, n;
 
@@ -359,24 +410,48 @@ static void report_touches(struct ahtouch *ts, const u8 *p, size_t len)
 		return;
 	bytes = get_unaligned_le32(p + 16);
 	n = min_t(int, bytes / FINGER_LEN, (len - FINGERS_OFFSET) / FINGER_LEN);
-	for (i = 0; i < n; i++) {
-		const struct finger *f = (const void *)(p + FINGERS_OFFSET + i * FINGER_LEN);
-		int slot = input_mt_get_slot_by_key(input, f->id);
-		bool down = f->state == STATE_DOWN || f->state == STATE_MOVED;
+	f = (const void *)(p + FINGERS_OFFSET);
 
-		if (slot < 0)
-			continue;
-		input_mt_slot(input, slot);
-		if (!input_mt_report_slot_state(input, MT_TOOL_FINGER, down))
-			continue;
-		touchscreen_report_pos(input, &ts->props,
-				       max_t(int, (s16)le16_to_cpu(f->abs_x), 0),
-				       max_t(int, (s16)le16_to_cpu(f->abs_y), 0), true);
-		input_report_abs(input, ABS_MT_WIDTH_MAJOR, le16_to_cpu(f->tool_major));
-		input_report_abs(input, ABS_MT_WIDTH_MINOR, le16_to_cpu(f->tool_minor));
-		input_report_abs(input, ABS_MT_ORIENTATION, (s16)le16_to_cpu(f->orientation));
-		input_report_abs(input, ABS_MT_TOUCH_MAJOR, le16_to_cpu(f->touch_major));
-		input_report_abs(input, ABS_MT_TOUCH_MINOR, le16_to_cpu(f->touch_minor));
+	/*
+	 * A finger already lifted (state 7) that was never reported down: its
+	 * down frames came and went between two polls -- a quick tap. Report
+	 * it down at that spot first, then up, so the tap is not lost.
+	 */
+	/*
+	 * The same for a finger seen only in its last frame (state 0, gone):
+	 * the whole tap fell between polls. Not if it was in the frame before
+	 * -- then it is the normal end of a touch already reported.
+	 */
+	for (i = 0; i < n; i++) {
+		bool up = f[i].state != STATE_DOWN && f[i].state != STATE_MOVED;
+		bool m = up && !test_bit(f[i].id, ts->down) &&
+			 (f[i].state != 0 || !test_bit(f[i].id, ts->prev));
+
+		if (m)
+			missed = true;
+	}
+	if (missed) {
+		for (i = 0; i < n; i++) {
+			bool down = f[i].state == STATE_DOWN || f[i].state == STATE_MOVED;
+
+			report_finger(ts, &f[i], down || (!test_bit(f[i].id, ts->down) &&
+				      (f[i].state != 0 || !test_bit(f[i].id, ts->prev))));
+		}
+		input_mt_sync_frame(input);
+		input_sync(input);
+	}
+	bitmap_zero(ts->prev, 256);
+	for (i = 0; i < n; i++)
+		set_bit(f[i].id, ts->prev);
+
+	for (i = 0; i < n; i++) {
+		bool down = f[i].state == STATE_DOWN || f[i].state == STATE_MOVED;
+
+		report_finger(ts, &f[i], down);
+		if (down)
+			set_bit(f[i].id, ts->down);
+		else
+			clear_bit(f[i].id, ts->down);
 	}
 	input_mt_sync_frame(input);
 	input_sync(input);
@@ -460,6 +535,8 @@ static int boot(struct ahtouch *ts)
 		return ret;
 	msleep(40);
 	memset(ts->last, 0, HS_XFER);
+	bitmap_zero(ts->down, 256);
+	bitmap_zero(ts->prev, 256);
 	ts->fails = 0;
 	dev_info(dev, "firmware running\n");
 	return 0;
@@ -468,7 +545,7 @@ static int boot(struct ahtouch *ts)
 static int ahtouch_thread(void *data)
 {
 	struct ahtouch *ts = data;
-	unsigned long active_until = 0;
+	unsigned long active_until = 0, last_frame = jiffies;
 
 	while (!kthread_should_stop()) {
 		if (boot(ts)) {
@@ -476,8 +553,28 @@ static int ahtouch_thread(void *data)
 			continue;
 		}
 		while (!kthread_should_stop() && ts->fails < 20) {
-			if (hs_poll(ts))
+			if (hs_poll(ts)) {
+				/* the firmware may hold more than one frame: drain it */
+				int more = 8;
+
+				while (more-- && hs_poll(ts))
+					;
 				active_until = jiffies + msecs_to_jiffies(300);
+				last_frame = jiffies;
+			} else if (!bitmap_empty(ts->down, 256) &&
+				   time_after(jiffies, last_frame + msecs_to_jiffies(release_ms))) {
+				/*
+				 * Fingers still down, but no frame for a while: the
+				 * firmware streams frames as long as a finger is on
+				 * the glass (~120/s), so the lift and "gone" frames
+				 * fell between polls. Let go of everything, or the
+				 * touch sticks (a held key on the on-screen keyboard).
+				 */
+				input_mt_sync_frame(ts->input);
+				input_sync(ts->input);
+				bitmap_zero(ts->down, 256);
+				bitmap_zero(ts->prev, 256);
+			}
 			{
 				unsigned int ms = time_before(jiffies, active_until) ?
 						  poll_active_ms : poll_idle_ms;
@@ -558,6 +655,14 @@ static int ahtouch_probe(struct spi_device *spi)
 	input_set_abs_params(ts->input, ABS_MT_POSITION_X, 0, 0, 0, 0);
 	input_set_abs_params(ts->input, ABS_MT_POSITION_Y, 0, 0, 0, 0);
 	touchscreen_parse_properties(ts->input, true, &ts->props);
+	ts->min_x = input_abs_get_min(ts->input, ABS_MT_POSITION_X);
+	ts->max_x = input_abs_get_max(ts->input, ABS_MT_POSITION_X);
+	ts->min_y = input_abs_get_min(ts->input, ABS_MT_POSITION_Y);
+	ts->max_y = input_abs_get_max(ts->input, ABS_MT_POSITION_Y);
+	ts->inv_x = ts->props.invert_x;
+	ts->inv_y = ts->props.invert_y;
+	ts->props.invert_x = false;
+	ts->props.invert_y = false;
 	input_abs_set_res(ts->input, ABS_MT_POSITION_X, 100);
 	input_abs_set_res(ts->input, ABS_MT_POSITION_Y, 100);
 	input_set_abs_params(ts->input, ABS_MT_WIDTH_MAJOR, 0, 65535, 0, 0);

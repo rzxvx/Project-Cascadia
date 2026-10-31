@@ -1,0 +1,50 @@
+diff --git a/drivers/soc/apple/rtkit-internal.h b/drivers/soc/apple/rtkit-internal.h
+--- a/drivers/soc/apple/rtkit-internal.h
++++ b/drivers/soc/apple/rtkit-internal.h
+@@ -52,6 +52,8 @@
+ 	char *syslog_msg_buffer;
+ 	size_t syslog_n_entries;
+ 	size_t syslog_msg_size;
++	u32 syslog_last_hash;		/* the last message printed, to fold repeats */
++	unsigned int syslog_repeats;
+ 
+ 	struct workqueue_struct *wq;
+ };
+diff --git a/drivers/soc/apple/rtkit.c b/drivers/soc/apple/rtkit.c
+--- a/drivers/soc/apple/rtkit.c
++++ b/drivers/soc/apple/rtkit.c
+@@ -4,6 +4,7 @@
+  * Copyright (C) The Asahi Linux Contributors
+  */
+ 
++#include <linux/crc32.h>
+ #include "rtkit-internal.h"
+ 
+ enum {
+@@ -489,6 +490,26 @@
+ 		msglen--;
+ 
+ 	rtk->syslog_msg_buffer[msglen] = 0;
++
++	/*
++	 * Fold repeats, as syslogd does: some firmware says the same thing
++	 * every second for as long as it holds (the iPhone's SMC: "battery.cpp:
++	 * ... Battery OverCharged: 1" while on the cable at 100 %).
++	 */
++	{
++		u32 hash = crc32(0, log_context, strlen(log_context));
++
++		hash = crc32(hash, rtk->syslog_msg_buffer, msglen);
++		if (hash == rtk->syslog_last_hash) {
++			rtk->syslog_repeats++;
++			goto done;
++		}
++		if (rtk->syslog_repeats)
++			dev_info(rtk->dev, "RTKit: syslog: last message repeated %u times\n",
++				 rtk->syslog_repeats);
++		rtk->syslog_last_hash = hash;
++		rtk->syslog_repeats = 0;
++	}
+ 	dev_info(rtk->dev, "RTKit: syslog message: %s: %s\n", log_context,
+ 		 rtk->syslog_msg_buffer);
+ 

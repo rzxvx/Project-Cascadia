@@ -57,6 +57,48 @@ lease_file /tmp/udhcpd.leases
 option subnet 255.255.255.0
 option lease 86400
 EOF2
+    # usbwatch: keeps the USB link usable across unplug/replug (the phone
+    # Lightning port is flaky). Runs from RAM only -- with an NFS root it is
+    # started from a tmpfs (/run/cascadia) with this static busybox, so it
+    # keeps working while the cable is out and the root is unreachable.
+    cat > "$root/sbin/usbwatch" <<"EOW"
+#!/bin/sh
+# BB: the busybox to use (the one in /run/cascadia under an NFS root)
+BB=${BB:-busybox}
+G=/sys/kernel/config/usb_gadget/g1
+udc=$($BB ls /sys/class/udc 2>/dev/null | $BB head -n1)
+[ -n "$udc" ] || exit 0
+bad=0
+next=5
+while :; do
+    $BB sleep 2
+    if [ "$($BB cat /sys/class/udc/$udc/state 2>/dev/null)" = configured ]; then
+        bad=0
+        next=5
+    else
+        bad=$((bad + 1))
+    fi
+    # no host for ~10 s: re-plug the gadget in software (unbind and bind
+    # the UDC: the controller stops and starts, the pull-up comes back);
+    # then every ~30 s while it stays away
+    if [ $bad -ge $next ]; then
+        echo "usbwatch: no host, re-binding the gadget to $udc" > /dev/kmsg
+        echo "" > $G/UDC 2>/dev/null
+        $BB sleep 1
+        echo "$udc" > $G/UDC 2>/dev/null
+        bad=0
+        next=15
+    fi
+    # the address and the DHCP server the host needs to come back
+    $BB ifconfig usb0 2>/dev/null | $BB grep -q "inet addr:172.16.42.1 " \
+        || $BB ifconfig usb0 172.16.42.1 netmask 255.255.255.0 up
+    $BB pidof udhcpd >/dev/null 2>&1 || {
+        $BB touch /tmp/udhcpd.leases 2>/dev/null
+        $BB udhcpd ${UDHCPD_CONF:-/etc/udhcpd.conf}
+    }
+done
+EOW
+    chmod 755 "$root/sbin/usbwatch"
     cat > "$root/init" <<"EOF"
 #!/bin/sh
 /bin/busybox --install -s
@@ -72,6 +114,32 @@ echo "########################################"
 echo "##  N104AP: Linux reached userspace.  ##"
 echo "########################################"
 uname -a
+
+# On-screen keyboard, when a13/cascadia periphery put it in (boot/package.sh
+# adds it): fbkeyboard draws a keyboard at the bottom of the framebuffer and
+# types into the console through uinput. Started here, before an NFS root is
+# switched to: it holds the framebuffer, the touchscreen and uinput open, so
+# it keeps working after switch_root -- one place for RAM and NFS boots.
+# The touchscreen is found by name (fbkeyboard adds an event node of its own).
+if [ -x /usr/bin/fbkeyboard ]; then
+    ln -sf ld-musl-aarch64.so.1 /lib/libc.musl-aarch64.so.1
+    ts=
+    for i in 1 2 3 4 5 6; do
+        for n in /sys/class/input/event*; do
+            [ "$(cat "$n/device/name" 2>/dev/null)" = "Apple iPhone touchscreen" ] \
+                && ts=/dev/input/${n##*/} && break
+        done
+        [ -n "$ts" ] && break
+        sleep 1
+    done
+    if [ -n "$ts" ]; then
+        setsid /usr/bin/fbkeyboard -d "$ts" -f /usr/share/fonts/dejavu/DejaVuSans.ttf \
+            >/dev/null 2>&1 </dev/null &
+        echo "[kbd] fbkeyboard on $ts"
+    else
+        echo "[kbd] fbkeyboard: no touchscreen"
+    fi
+fi
 
 # USB gadget: wait for the DWC3 UDC to register (dwc3-apple may defer).
 udc=""
@@ -153,25 +221,41 @@ else
             mount --move /dev /newroot/dev
             mount --move /proc /newroot/proc
             mount --move /sys /newroot/sys
+            # the USB watchdog lives in RAM (a tmpfs /run, which a13-init
+            # keeps), chrooted into the new root: it must not need NFS
+            mkdir -p /newroot/run
+            mount -t tmpfs -o mode=755 tmpfs /newroot/run
+            mkdir -p /newroot/run/cascadia
+            cp /bin/busybox /sbin/usbwatch /etc/udhcpd.conf /newroot/run/cascadia/
+            BB=/run/cascadia/busybox UDHCPD_CONF=/run/cascadia/udhcpd.conf \
+                setsid chroot /newroot /run/cascadia/busybox sh /run/cascadia/usbwatch \
+                </dev/null >/dev/null 2>&1 &
             exec switch_root /newroot /sbin/init
         fi
         echo "[nfs] no NFS root (mounted=$nfs_ok) - staying in RAM"
         umount /newroot 2>/dev/null
     fi
 
+    setsid /sbin/usbwatch </dev/null >/dev/null 2>&1 &
     dropbear -R -E 2>/tmp/dropbear.log && echo "[usb] ssh: ssh root@172.16.42.1"
     telnetd -l /bin/sh
-    # shell on the USB serial, respawned
+    # shell on the USB serial, respawned; cttyhack makes ttyGS0 its
+    # controlling terminal (job control, Ctrl-C)
     ( while true; do
-        setsid sh -c "exec sh -i </dev/ttyGS0 >/dev/ttyGS0 2>&1"
+        setsid cttyhack sh -l </dev/ttyGS0 >/dev/ttyGS0 2>&1
         sleep 1
       done ) &
     sleep 3
     echo "[usb] state: $(cat /sys/class/udc/$udc/state 2>/dev/null)"
     dmesg | grep -iE "dwc3|ausb|gadget" | tail -n 8
 fi
-echo "[init] shell on console"
-exec sh
+# shell on the screen (tty1, where fbkeyboard types), respawned, with tty1
+# as its controlling terminal
+echo "[init] shell on the screen (tty1)"
+while true; do
+    setsid cttyhack sh -l </dev/tty1 >/dev/tty1 2>&1
+    sleep 1
+done
 EOF
     chmod +x "$root/init"
     ( cd "$root" && find . | cpio -o -H newc | gzip -9 ) > /out/initramfs.cpio.gz

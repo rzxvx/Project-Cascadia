@@ -4,6 +4,9 @@
 
 # shell on the USB serial (no login: a cable you plugged in yourself)
 ttyGS0::respawn:/sbin/getty -n -l /bin/sh -L 115200 ttyGS0 vt100
+# and on the screen, where the on-screen keyboard (fbkeyboard) types: the
+# phone in your hand is as much yours as the cable
+tty1::respawn:/sbin/getty -n -l /bin/sh 38400 tty1 linux
 
 ::ctrlaltdel:/sbin/reboot
 ::shutdown:/bin/umount -a -r

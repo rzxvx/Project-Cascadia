@@ -272,7 +272,9 @@ has a valid CRC and sends the firmware back to its bootloader.
   0.19 s, logos are freed at 1.7 s. Dropped for now (cosmetic).
 - **SMC battery log.** With the phone on the cable at 100 %, the SMC firmware
   logs `battery.cpp:823 Battery OverCharged: 1` once a second (it stopped
-  charging itself; see above). Harmless, but noisy on the console.
+  charging itself; see above). Folded now (kernel patch 0005): RTKit prints
+  a repeated syslog line once, then "last message repeated N times" when
+  something else comes.
 - **Hoolock D421 vs N104.** Hoolock lists cpufreq as validated on the D421
   with the same m1n1 (no T8030 cpufreq code) and, presumably, the same
   iBSS-only entry (no iBEC keys exist for A13 iPhones), so

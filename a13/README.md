@@ -41,34 +41,57 @@ with Docker, `llvm` + `lld`, Rust, `ipsw` 3.1.714, `irecovery`, Python 3.
 a13/cascadia doctor                         # check everything
 ```
 
-1. **Inputs** — the Apple-derived files (iBSS, DeviceTree, trust cache, the
-   touchscreen firmware), downloaded and prepared from
+1. **Inputs** — the Apple-derived files the boot needs (iBSS, DeviceTree,
+   trust cache), downloaded and prepared from
    Apple's CDN (nothing from Apple is in this repository). The IM4M cannot be
    made up -- iBoot needs a real iPhone12,1 manifest (with `rdtr`, `rtsc`,
    `rkrn` entries), e.g. from a saved SHSH blob; give it once:
    ```bash
    IM4M=/path/to/IM4M a13/cascadia inputs   # downloads, decrypts, patches
    ```
-2. **Build** (or take the payload from a release and put it in `boot/payload/`):
+2. **Periphery** — touch, the on-screen keyboard (it asks; Enter = yes),
+   Wi-Fi/Bluetooth: the firmware from Apple's CDN (the Wi-Fi firmware needs the
+   4.9 GB root filesystem image, downloaded once into `build/cache/`), and the
+   phone's own Wi-Fi/BT calibration from its syscfg -- read over ssh once the
+   phone has booted, so run it again after the first boot. Optional: without
+   it the phone boots without these.
+   ```bash
+   a13/cascadia periphery
+   ```
+3. **Build** (or take the payload from a release and put it in `boot/payload/`):
    ```bash
    a13/cascadia build                       # m1n1 + kernel + initramfs
    ```
-3. **Pack** — adds your `~/.ssh/*.pub` as root's authorized keys and wraps
-   everything with your IM4M:
+4. **Pack** — adds your `~/.ssh/*.pub` as root's authorized keys and what
+   periphery made, and wraps everything with your IM4M:
    ```bash
    a13/cascadia pack
    ```
-4. **Boot** — plug in the iPhone in DFU, connect usbliter8, then:
+5. **Boot** — plug in the iPhone in DFU, connect usbliter8, then:
    ```bash
    a13/cascadia boot
    ```
-5. **Connect** — about 30 s later:
+6. **Connect** — about 30 s later:
    ```bash
    ssh root@172.16.42.1                      # the Mac gets 172.16.42.2 by DHCP
    screen /dev/cu.usbmodemN104AP_linux1      # serial shell, no password
    ```
 
 The kernel command line is `boot/bootargs.txt`.
+
+**The cable can come and go.** If the phone loses its host for ~10 s (a
+flaky Lightning port, an unplugged cable), a small watchdog that runs from
+RAM re-plugs the USB gadget in software and keeps `usb0` and the phone's DHCP
+server up; the NFS root is a hard mount and carries on where it stopped once
+the cable is back. Nothing to do on the Mac: its address comes back by DHCP,
+and the NAT and the export go by subnet, not by interface.
+
+**Touchscreen calibration.** The DT carries a calibration made on one phone.
+For yours, with the phone booted and the touchscreen up:
+```bash
+a13/cascadia recalibrate                    # tap the four corners when asked
+a13/cascadia pack                           # then boot
+```
 
 ## A real system: Alpine over NFS
 
