@@ -197,7 +197,21 @@ cmd_boot() {
     note "plug in the iPhone in DFU, then connect usbliter8"
     "$U8" boot "$IBSS"
 
-    say "iBSS → Recovery → bootx"
+    say "waiting for Recovery mode"
+    tries=0
+    while [ "$tries" -lt 20 ]; do
+        sleep 1
+        if irecovery -q 2>/dev/null | grep -q 'MODE: Recovery'; then
+            note "device is in Recovery"
+            break
+        fi
+        tries=$((tries + 1))
+    done
+    if [ "$tries" -ge 20 ]; then
+        fail "device did not enter Recovery within 20 s — check usbliter8 and iBSS"
+    fi
+
+    say "Recovery → bootx"
     sh "$A13/boot/boot-from-recovery.sh"
 }
 
