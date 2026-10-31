@@ -37,9 +37,11 @@ a13/cascadia doctor                         # check everything
 ```
 
 1. **Inputs** — the four Apple-derived files, downloaded and prepared from
-   Apple's CDN (nothing from Apple is in this repository):
+   Apple's CDN (nothing from Apple is in this repository). The IM4M cannot be
+   made up -- iBoot needs a real iPhone12,1 manifest (with `rdtr`, `rtsc`,
+   `rkrn` entries), e.g. from a saved SHSH blob; give it once:
    ```bash
-   a13/cascadia inputs                      # downloads, decrypts, patches
+   IM4M=/path/to/IM4M a13/cascadia inputs   # downloads, decrypts, patches
    ```
 2. **Build** (or take the payload from a release and put it in `boot/payload/`):
    ```bash

@@ -8,7 +8,8 @@
 # trust cache.  Nothing from Apple is shipped; the user's machine fetches and
 # transforms them.
 #
-# Needs: ipsw (3.1.714+ tested), python3.
+# Needs: ipsw (3.1.714+ tested), python3, and an IM4M from an iPhone12,1
+# SHSH blob (IM4M=path, or already in boot/inputs/IM4M).
 # Output: a13/boot/inputs/{iBSS.n104.20E247.sigpatched.raw, IM4M,
 #         DeviceTree.n104.rdtr.img4, empty.rtsc.img4}
 #
@@ -96,42 +97,28 @@ else
     fail "iBSS checksum mismatch: expected $IBSS_SHA256, got $sha"
 fi
 
-# ---------- 3. IM4M: minimal manifest (CHIP 0x8030, BORD 0x04) --------------
+# ---------- 3. IM4M: a real iPhone12,1 manifest ------------------------------
 
-# The patched iBSS does not verify the signature, so the IM4M is only the
-# container's shape.  A minimal DER-encoded IM4M with the right chip and
-# board IDs satisfies ipsw img4 create and the iBSS's IMG4 parser.
+# The patched iBSS skips the signature check, but iBoot still parses the
+# manifest and looks up each image's tag in it: an IM4M without rdtr / rtsc /
+# rkrn entries (or not a real Apple manifest at all) gets "Device Tree image
+# not valid".  So it cannot be generated -- it has to come from a saved SHSH
+# blob of any iPhone12,1 (`ipsw img4 im4m extract`).  Given as IM4M=path, or
+# already in boot/inputs/IM4M.
 
-say "generating IM4M (CHIP 0x8030, BORD 0x04)"
-python3 -c "
-import sys
+im4m="${IM4M:-$INPUTS/IM4M}"
+[ -f "$im4m" ] || fail "no IM4M -- give one from an iPhone12,1 SHSH blob: IM4M=/path/to/IM4M a13/cascadia inputs  (see boot/inputs/README.md)"
 
-def tl(tag, d):
-    l = len(d)
-    if l < 0x80:     h = bytes([tag, l])
-    elif l < 0x100:  h = bytes([tag, 0x81, l])
-    elif l < 0x10000: h = bytes([tag, 0x82, l >> 8, l & 0xff])
-    else:            h = bytes([tag, 0x83, l >> 16, (l >> 8) & 0xff, l & 0xff])
-    return h + d
-
-def seq(d):   return tl(0x30, d)
-def sett(d):  return tl(0x31, d)
-def integer(v):
-    b = v.to_bytes((v.bit_length() + 8) // 8, 'big') if v else b'\x00'
-    return tl(0x02, b)
-def ia5(s):   return tl(0x16, s.encode())
-def octet(d): return tl(0x04, d)
-
-chip = seq(ia5('CHIP') + integer(0x8030))
-bord = seq(ia5('BORD') + integer(0x04))
-manp = seq(ia5('MANP') + sett(chip + bord))
-manb = seq(ia5('MANB') + sett(manp))
-im4m = seq(ia5('IM4M') + integer(0) + sett(manb) + octet(b'\x00' * 64))
-
-with open(sys.argv[1], 'wb') as f:
-    f.write(im4m)
-print(f'    wrote {len(im4m)} bytes')
-" "$INPUTS/IM4M"
+say "checking IM4M ($im4m)"
+info=$(ipsw img4 im4m info "$im4m" 2>&1) || fail "$im4m is not an IM4M"
+printf '%s\n' "$info" | grep -q 'CHIP (ApChipID): 32816$' || fail "$im4m is not for CHIP 0x8030"
+printf '%s\n' "$info" | grep -q 'BORD (ApBoardID): 4$'     || fail "$im4m is not for BORD 0x04 (iPhone12,1)"
+printf '%s\n' "$info" | grep -q 'Certificate Chain: none' && fail "$im4m has no certificate chain -- not a real manifest"
+for t in rdtr rtsc rkrn; do
+    printf '%s\n' "$info" | grep -q "^ *$t (" || fail "$im4m has no $t entry"
+done
+note "ok: CHIP 0x8030, BORD 0x04, rdtr/rtsc/rkrn present"
+[ "$im4m" = "$INPUTS/IM4M" ] || cp "$im4m" "$INPUTS/IM4M"
 
 # ---------- 4. DeviceTree: extract and wrap as rdtr IMG4 ---------------------
 
