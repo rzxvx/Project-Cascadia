@@ -40,9 +40,14 @@ Same order as the iPad mini 1. Each step notes what already exists (Hoolock
       BUSY and the cluster then hangs until reset (P-cluster on upward steps,
       E-cluster under schedutil). Next: what XNU does with these registers, from
       the unencrypted 20E247 kernelcache. Details: `research/bringup-status.md`.
-- [ ] Touch: SPI HID on `spi1`, HBPP firmware (`wftm`), MtCl calibration. Closest
-      to the A5 Z2 work; no Linux driver exists.
-- [ ] On-screen keyboard, desktop (XFCE on simpledrm first).
+- [x] Touch: `spi1` (`spi-1,samsung`, our `spi-apple-s5l`), the controller's
+      firmware from the IPSW (`N104_Multitouch.im4p`) loaded through its HBPP
+      bootloader, Apple's HID-over-SPI (iOS's AppleHIDTransportSPI, reversed),
+      report 0x75 -> input-mt; analog LDO on the display PMU Chestnut.
+      Driver `kernel/extras/apple_hidspi_touch.c`, notes `research/touch.md`.
+      Polled: the AOP GPIO interrupt line does not move yet.
+- [x] Desktop: XFCE on simpledrm with the touchscreen (udev in the root).
+- [ ] On-screen keyboard.
 - [ ] Wi-Fi: BCM4378 over PCIe (`apcie,t8030`), brcmfmac; firmware + NVRAM from
       the IPSW, MAC from syscfg.
 - [ ] Internal storage: iOS's files read-only, then a Linux partition of its own.
@@ -78,9 +83,9 @@ Addresses relative to the arm-io window at 0x2_0000_0000.
 | Storage | ANS2 + `sart,t8030` | detected (holds iOS) |
 | USB | `usb-drd,t8030` + `atc-phy,t8030`, Lightning via `tristar,cbtl1612` | gadget ✓ |
 | Display | `disp0,t8030` → `mipi-dsim-1,synopsys` → panel `lcd,pinot` | simpledrm on iBoot's framebuffer |
-| Display power | `display-pmu,chestnut` | — |
+| Display power | `display-pmu,chestnut` (I2C2 @0x27) | LDO 2 for touch ✓ |
 | Backlight | `backlight,lm3539` (I2C) | — |
-| Touch | `multi-touch` on `spi1`, HID over SPI, HBPP fw `wftm`, cal `syscfg/MtCl` | — |
+| Touch | `multi-touch` on `spi1`, HID over SPI, HBPP fw `wftm`, cal `syscfg/MtCl` | ✓ (`apple_hidspi_touch`) |
 | Wi-Fi / BT | `wlan-pcie,bcm4378` / `bluetooth,n88` on `apcie,t8030` | — (the M1 chips) |
 | Audio | `cs42l77`, `cs35l27`, `mca,t8030` | — |
 | GPU | `gpu,t8030` (AGX G12) | parked |

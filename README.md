@@ -16,8 +16,9 @@ drive with your fingers.
 > Lightning cable, takes multi-touch, brings up Wi-Fi, and runs XFCE with an
 > on-screen keyboard.
 >
-> **New, experimental: iPhone 11 (A13).** Linux 7.2 boots to a shell on the
-> screen and over USB (serial, network, SSH). See [`a13/`](a13/README.md).
+> **iPhone 11 (A13).** Linux 7.2 boots on all six cores to an Alpine system
+> over USB (serial, network, SSH) and runs XFCE with multi-touch -- the
+> touchscreen's firmware loaded by our own driver. See [`a13/`](a13/README.md).
 
 ![Boot](imgs/dualcoreboot.png)
 
@@ -47,7 +48,7 @@ including the parts that didn't work.
 | Device | Model | Chip | Board ID | Status | Where |
 |--------|-------|------|----------|--------|-------|
 | iPad mini 1 (Wi-Fi) | iPad2,5 / A1432 | Apple A5 (S5L8942X) | p105ap | desktop, touch, Wi-Fi, GPU | this README, repository root |
-| iPhone 11 | iPhone12,1 | Apple A13 (T8030) | n104ap | experimental: shell over USB | [`a13/`](a13/README.md) |
+| iPhone 11 | iPhone12,1 | Apple A13 (T8030) | n104ap | shell, network over USB, touch, XFCE | [`a13/`](a13/README.md) |
 
 ## Current Status
 
@@ -803,16 +804,17 @@ Build products (`output/`) and stock firmware are not tracked; everything in
   → ~~the L2 cache~~ ✓ → ~~iOS's files off the NAND~~ ✓ (read-only) → NAND
   as Linux's own storage.
 
-### iPhone 11 — A13 (experimental)
+### iPhone 11 — A13
 
 The same phases, in the same order; details in
 [`a13/docs/ROADMAP.md`](a13/docs/ROADMAP.md).
 
 - **Phase 1 ✓** — m1n1 → Linux 7.2 boots to a shell, framebuffer console.
-- **Phase 2** — ~~USB gadget: ACM shell, ECM network, SSH~~ ✓ → ~~tick and
-  wall clock~~ ✓ → ~~Alpine over NFS~~ ✓ → one host command to boot.
-- **Phase 3** — ~~all six cores~~ ✓ → cpufreq (parked) → touch → on-screen keyboard →
-  desktop → Wi-Fi → internal storage → native display → …
+- **Phase 2 ✓** — ~~USB gadget: ACM shell, ECM network, SSH~~ ✓ → ~~tick and
+  wall clock~~ ✓ → ~~Alpine over NFS~~ ✓ → ~~one host command to boot~~ ✓.
+- **Phase 3** — ~~all six cores~~ ✓ → cpufreq (parked) → ~~touch~~ ✓ →
+  ~~desktop~~ ✓ (XFCE) → Wi-Fi / internal storage (to work without the
+  cable) → on-screen keyboard → native display → …
 
 ### Next devices
 

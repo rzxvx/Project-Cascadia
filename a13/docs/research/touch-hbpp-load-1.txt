@@ -1,0 +1,104 @@
+before:
+  HBPP check -> 1f 01 48 79 4b c1 4a d1 49 69 48 79 48 79 48 79
+  HBPP check -> 48 79 48 79 48 79 48 79 4c 39 02 03 00 00 00 05
+upload:
+  data 00000000 +1008           1024 B  rx head 4b c1 48 79  status 4bc1
+  data 000003f0 +1008           1024 B  rx head 4b c1 48 79  status 4bc1
+  data 000007e0 +1008           1024 B  rx head 4b c1 48 79  status 4bc1
+  data 00000bd0 +1008           1024 B  rx head 4b c1 48 79  status 4bc1
+  data 00000fc0 +1008           1024 B  rx head 4b c1 48 79  status 4bc1
+  data 000013b0 +1008           1024 B  rx head 4b c1 48 79  status 4bc1
+  data 000017a0 +1008           1024 B  rx head 4b c1 48 79  status 4bc1
+  data 00001b90 +1008           1024 B  rx head 4b c1 48 79  status 4bc1
+  data 00001f80 +1008           1024 B  rx head 4b c1 48 79  status 4bc1
+  data 00002370 +1008           1024 B  rx head 4b c1 48 79  status 4bc1
+  data 00002760 +1008           1024 B  rx head 4b c1 48 79  status 4bc1
+  data 00002b50 +1008           1024 B  rx head 4b c1 48 79  status 4bc1
+  data 00002f40 +1008           1024 B  rx head 4b c1 48 79  status 4bc1
+  data 00003330 +1008           1024 B  rx head 4b c1 48 79  status 4bc1
+  data 00003720 +1008           1024 B  rx head 4b c1 48 79  status 4bc1
+  data 00003b10 +1008           1024 B  rx head 4b c1 48 79  status 4bc1
+  data 00003f00 +1008           1024 B  rx head 4b c1 48 79  status 4bc1
+  data 000042f0 +1008           1024 B  rx head 4b c1 48 79  status 4bc1
+  data 000046e0 +1008           1024 B  rx head 4b c1 48 79  status 4bc1
+  data 00004ad0 +1008           1024 B  rx head 4b c1 48 79  status 4bc1
+  data 00004ec0 +1008           1024 B  rx head 4b c1 48 79  status 4bc1
+  data 000052b0 +1008           1024 B  rx head 4b c1 48 79  status 4bc1
+  data 000056a0 +1008           1024 B  rx head 4b c1 48 79  status 4bc1
+  data 00005a90 +1008           1024 B  rx head 4b c1 48 79  status 4bc1
+  data 00005e80 +1008           1024 B  rx head 4b c1 48 79  status 4bc1
+  data 00006270 +1008           1024 B  rx head 4b c1 48 79  status 4bc1
+  data 00006660 +1008           1024 B  rx head 4b c1 48 79  status 4bc1
+  data 00006a50 +1008           1024 B  rx head 4b c1 48 79  status 4bc1
+  data 00006e40 +1008           1024 B  rx head 4b c1 48 79  status 4bc1
+  data 00007230 +1008           1024 B  rx head 4b c1 48 79  status 4bc1
+  data 00007620 +1008           1024 B  rx head 4b c1 48 79  status 4bc1
+  data 00007a10 +1008           1024 B  rx head 4b c1 48 79  status 4bc1
+  data 00007e00 +1008           1024 B  rx head 4b c1 48 79  status 4bc1
+  data 000081f0 +1008           1024 B  rx head 4b c1 48 79  status 4bc1
+  data 000085e0 +1008           1024 B  rx head 4b c1 48 79  status 4bc1
+  data 000089d0 +1008           1024 B  rx head 4b c1 48 79  status 4bc1
+  data 00008dc0 +1008           1024 B  rx head 4b c1 48 79  status 4bc1
+  data 000091b0 +1008           1024 B  rx head 4b c1 48 79  status 4bc1
+  data 000095a0 +1008           1024 B  rx head 4b c1 48 79  status 4bc1
+  data 00009990 +1008           1024 B  rx head 4b c1 48 79  status 4bc1
+  data 00009d80 +1008           1024 B  rx head 4b c1 48 79  status 4bc1
+  data 0000a170 +1008           1024 B  rx head 4b c1 48 79  status 4bc1
+  data 0000a560 +1008           1024 B  rx head 4b c1 48 79  status 4bc1
+  data 0000a950 +1008           1024 B  rx head 4b c1 48 79  status 4bc1
+  data 0000ad40 +1008           1024 B  rx head 4b c1 48 79  status 4bc1
+  data 0000b130 +1008           1024 B  rx head 4b c1 48 79  status 4bc1
+  data 0000b520 +1008           1024 B  rx head 4b c1 48 79  status 4bc1
+  data 0000b910 +1008           1024 B  rx head 4b c1 48 79  status 4bc1
+  data 0000bd00 +1008           1024 B  rx head 4b c1 48 79  status 4bc1
+  data 0000c0f0 +1008           1024 B  rx head 4b c1 48 79  status 4bc1
+  data 0000c4e0 +1008           1024 B  rx head 4b c1 48 79  status 4bc1
+  data 0000c8d0 +1008           1024 B  rx head 4b c1 48 79  status 4bc1
+  data 0000ccc0 +1008           1024 B  rx head 4b c1 48 79  status 4bc1
+  data 0000d0b0 +1008           1024 B  rx head 4b c1 48 79  status 4bc1
+  data 0000d4a0 +1008           1024 B  rx head 4b c1 48 79  status 4bc1
+  data 0000d890 +1008           1024 B  rx head 4b c1 48 79  status 4bc1
+  data 0000dc80 +1008           1024 B  rx head 4b c1 48 79  status 4bc1
+  data 0000e070 +1008           1024 B  rx head 4b c1 48 79  status 4bc1
+  data 0000e460 +1008           1024 B  rx head 4b c1 48 79  status 4bc1
+  data 0000e850 +1008           1024 B  rx head 4b c1 48 79  status 4bc1
+  data 0000ec40 +1008           1024 B  rx head 4b c1 48 79  status 4bc1
+  data 0000f030 +1008           1024 B  rx head 4b c1 48 79  status 4bc1
+  data 0000f420 +268             284 B  rx head 4b c1 48 79  status 4bc1
+  data 00400000 +1008           1024 B  rx head 4b c1 48 79  status 4bc1
+  data 004003f0 +1008           1024 B  rx head 4b c1 48 79  status 4bc1
+  data 004007e0 +1008           1024 B  rx head 4b c1 48 79  status 4bc1
+  data 00400bd0 +1008           1024 B  rx head 4b c1 48 79  status 4bc1
+  data 00400fc0 +1008           1024 B  rx head 4b c1 48 79  status 4bc1
+  data 004013b0 +1008           1024 B  rx head 4b c1 48 79  status 4bc1
+  data 004017a0 +1008           1024 B  rx head 4b c1 48 79  status 4bc1
+  data 00401b90 +1008           1024 B  rx head 4b c1 48 79  status 4bc1
+  data 00401f80 +1008           1024 B  rx head 4b c1 48 79  status 4bc1
+  data 00402370 +1008           1024 B  rx head 4b c1 48 79  status 4bc1
+  data 00402760 +1008           1024 B  rx head 4b c1 48 79  status 4bc1
+  data 00402b50 +1008           1024 B  rx head 4b c1 48 79  status 4bc1
+  data 00402f40 +1008           1024 B  rx head 4b c1 48 79  status 4bc1
+  data 00403330 +1008           1024 B  rx head 4b c1 48 79  status 4bc1
+  data 00403720 +1008           1024 B  rx head 4b c1 48 79  status 4bc1
+  data 00403b10 +1008           1024 B  rx head 4b c1 48 79  status 4bc1
+  data 00403f00 +1008           1024 B  rx head 4b c1 48 79  status 4bc1
+  data 004042f0 +176             192 B  rx head 4b c1 48 79  status 4bc1
+  calibration @0040dd14: 2156 bytes
+  data 0040dd14 +1008           1024 B  rx head 4b c1 48 79  status 4bc1
+  data 0040e104 +1008           1024 B  rx head 4b c1 48 79  status 4bc1
+  data 0040e4f4 +140             156 B  rx head 4b c1 48 79  status 4bc1
+  register write 10001110=554c    16 B  rx head 4a d1 48 79  status 4ad1
+  data 1000c000 +1008           1024 B  rx head 4b c1 48 79  status 4bc1
+  data 1000c3f0 +1008           1024 B  rx head 4b c1 48 79  status 4bc1
+  data 1000c7e0 +408             424 B  rx head 4b c1 48 79  status 4bc1
+  register write 10001110=0       16 B  rx head 4a d1 48 79  status 4ad1
+  register write 10003060=1725    16 B  rx head 4a d1 48 79  status 4ad1
+  register write 1000305c=2       16 B  rx head 4a d1 48 79  status 4ad1
+  register write 10003058=6       16 B  rx head 4a d1 48 79  status 4ad1
+  register write 10003000=3       16 B  rx head 4a d1 48 79  status 4ad1
+  register write 10003518=1       16 B  rx head 4a d1 48 79  status 4ad1
+  request calibration              2 B  rx head 49 69 48 79  status 4969
+  register write 10003400=1       16 B  rx head 4a d1 48 79  status 4ad1
+after:
+  HBPP check -> ef be ad de 20 d0 00 00 00 00 04 00 a0 80 00 00
+  64 zero bytes -> 48 79 48 79 48 79 48 79 4c 39 02 03 00 00 00 05 4c 39 02 06 00 00 00 08 00 00 50 32 32 50 32 5a 5a ff ff ff ff ff ff ff ff ff 50 32 32 50 32 5a 5a ff ff ff ff ff ff ff ff ff 50 32 32 50 32 5a

@@ -254,12 +254,22 @@ Left in place: `kernel/patches/0001` takes the P-cluster out of cpufreq in the
 n104 DT. Next: read what XNU does with these registers in the (unencrypted)
 20E247 kernelcache.
 
+## 2026-10-31: touch -- works, XFCE with multi-touch
+
+The whole story (ADT, the IPSW's firmware plist, SPI1 bring-up, the HBPP
+bootloader, the kernelcache reversing of power and of the HID-over-SPI
+transport, the frame format, the driver) is in `touch.md`. Short version: the
+controller is powered and in its bootloader when Linux starts; the driver
+turns on its analog LDO (Chestnut reg 5 bit 0x10), loads the firmware from
+the IPSW through the bootloader, and polls HID-over-SPI for report 0x75.
+The trap that cost the most: reading with zeros on MOSI -- an all-zero packet
+has a valid CRC and sends the firmware back to its bootloader.
+
 ## Open small things (2026-10-31)
 
 - **Boot logo.** fbcon's Tux (one per CPU, `fbcon=logo-pos:center`) is not
-  seen, even after the earlycon hands the screen over at simpledrm's bind.
-  `LOGO_LINUX_CLUT224=y`; likely scrolled away by the `loglevel=8` log right
-  after fbcon takes over. Cosmetic, later.
+  seen at all, even for a moment. `LOGO_LINUX_CLUT224=y`, fbcon takes over at
+  0.19 s, logos are freed at 1.7 s. Dropped for now (cosmetic).
 - **SMC battery log.** With the phone on the cable at 100 %, the SMC firmware
   logs `battery.cpp:823 Battery OverCharged: 1` once a second (it stopped
   charging itself; see above). Harmless, but noisy on the console.
