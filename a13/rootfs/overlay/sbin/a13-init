@@ -6,6 +6,13 @@ mountpoint -q /run || mount -t tmpfs -o mode=755 tmpfs /run
 mountpoint -q /tmp || mount -t tmpfs -o mode=1777 tmpfs /tmp
 mkdir -p /run/lock /var/log
 hostname -F /etc/hostname
+# udev, when installed (apk add eudev): device nodes and the input devices X
+# (libinput) finds through it -- the touchscreen, the buttons
+if [ -x /sbin/udevd ]; then
+    /sbin/udevd --daemon
+    udevadm trigger --action=add
+    udevadm settle --timeout=10
+fi
 # the Mac (172.16.42.2) routes to the internet when host/mac-share-internet.sh is on
 route add default gw 172.16.42.2 2>/dev/null
 touch /run/udhcpd.leases && udhcpd /etc/udhcpd.conf

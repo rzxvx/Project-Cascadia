@@ -6,6 +6,8 @@
 # Payload: ./payload/ (release archive) or ../build/payload/ (built here):
 #   m1n1-idevice.macho, t8030-n104.dtb, initramfs.cpio.gz, Image.gz
 # Yours:   inputs/IM4M     the IM4M of YOUR device (see inputs/README.md)
+#          inputs/n104-mtfw.bin, n104-mtcal.bin   touchscreen firmware
+#                          (a13/cascadia inputs), into /lib/firmware/apple
 #          ~/.ssh/*.pub    become root's authorized_keys on the phone
 #                          (override: SSH_KEYS="a.pub b.pub")
 #          NFS root        optional, see ../host/mac-nfs-export.sh (NFSROOT=)
@@ -46,6 +48,15 @@ if [ -n "${NFSROOT:-}" ] && [ "$NFSROOT" != none ]; then
     set -- "$@" "etc/nfsroot=$tmp/nfsroot:644"
 fi
 echo "nfs root: ${NFSROOT:-none (RAM only)}"
+# touchscreen firmware and default calibration (made by `a13/cascadia inputs`
+# from the IPSW's N104_Multitouch.im4p), where the driver asks for them
+for f in n104-mtfw.bin n104-mtcal.bin; do
+    if [ -f "inputs/$f" ]; then
+        set -- "$@" "lib/firmware/apple/$f=inputs/$f:644"
+    else
+        echo "note: no inputs/$f -- no touchscreen (run: a13/cascadia inputs)" >&2
+    fi
+done
 python3 overlay_cpio.py "$tmp/overlay.cpio" "$@"
 { gzip -dc "$P/initramfs.cpio.gz"; cat "$tmp/overlay.cpio"; } | gzip -9 > "$tmp/initramfs.cpio.gz"
 echo "ssh keys: $(grep -c . "$tmp/authorized_keys") (from: ${SSH_KEYS:-none})"

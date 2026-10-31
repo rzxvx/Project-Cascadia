@@ -11,7 +11,7 @@
 set -euo pipefail
 
 ALPINE_VER="${ALPINE_VER:-3.24}"
-PACKAGES="alpine-base dropbear dropbear-scp openssh-sftp-server htop nano"
+PACKAGES="alpine-base dropbear dropbear-scp openssh-sftp-server htop nano eudev"
 A13="$(cd "$(dirname "$0")/.." && pwd)"
 mkdir -p "$A13/build"
 

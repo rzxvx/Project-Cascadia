@@ -15,7 +15,7 @@ cp inputs/README.md "$R/inputs/"
 cp "$P/m1n1-idevice.macho" "$P/t8030-n104.dtb" "$P/initramfs.cpio.gz" "$P/Image.gz" "$R/payload/"
 cp ../build/kernel.config "$R/payload/kernel.config"
 cat > "$R/README.md" <<EOT
-# Cascadia $TAG — Linux on the iPhone 11 (experimental)
+# Cascadia $TAG — Linux on the iPhone 11
 
 Prebuilt payload for iPhone12,1 / N104AP. Full instructions, sources and
 status: https://github.com/rzxvx/Project-Cascadia/tree/main/a13

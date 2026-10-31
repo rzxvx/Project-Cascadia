@@ -41,6 +41,7 @@ IBSS_KEY=6aaddc1c0a47f9e149ca175cc7eb02e7af4225489093aee6770f61f136f587ef
 # Expected checksums (from boot/inputs/README.md)
 IBSS_SHA256=5b77df1fceb136c42ced74003f6d8b5b1acacb56bda5f88d112895e4853034f2
 DT_SHA256=62b7e44eb0b3f220124283d012cacb7cfdef259444c6cf8e0539ad255dafe9e2
+MTFW_SHA256=de5dd11f00abae27b07f1a637686fcd03df748d1d4712a01592ac4bea4015036
 
 # shasum on macOS, sha256sum on Linux
 if have shasum; then
@@ -63,6 +64,7 @@ say "downloading iBSS and DeviceTree from Apple"
 python3 -I "$A13/tools/ipsw-partial.py" "$IPSW_URL" \
     'Firmware/dfu/iBSS.n104.RELEASE.im4p' \
     'Firmware/all_flash/DeviceTree.n104ap.im4p' \
+    'Firmware/N104_Multitouch.im4p' \
     -o "$tmp"
 
 IBSS_IM4P="$tmp/iBSS.n104.RELEASE.im4p"
@@ -142,12 +144,30 @@ say "creating empty trust cache"
 ipsw img4 create --input "$tmp/empty_trustcache" --type rtsc \
     --im4m "$INPUTS/IM4M" --output "$INPUTS/empty.rtsc.img4"
 
+# ---------- 6. touchscreen firmware -------------------------------------------
+
+# N104_Multitouch.im4p (tag mtfw, not encrypted) is an IOKit plist with the
+# controller's firmware and boot recipe for each panel personality; the ADT's
+# hid-merge-personality is C1FC2,2. mtfw.py turns it into the "Z2FW" file the
+# kernel driver loads, and saves the plist's default calibration (used when
+# the boot chain gives no MtCl).
+
+say "preparing touchscreen firmware"
+[ -f "$tmp/N104_Multitouch.im4p" ] || fail "N104_Multitouch.im4p download failed"
+ipsw img4 im4p extract "$tmp/N104_Multitouch.im4p" -o "$tmp/mt.raw" >/dev/null
+python3 -I "$A13/tools/mtfw.py" "$tmp/mt.raw" C1FC2,2 \
+    "$INPUTS/n104-mtfw.bin" "$INPUTS/n104-mtcal.bin" >/dev/null
+sha=$(sha256 "$INPUTS/n104-mtfw.bin")
+[ "$sha" = "$MTFW_SHA256" ] || fail "n104-mtfw.bin checksum mismatch: expected $MTFW_SHA256, got $sha"
+note "ok: n104-mtfw.bin checksum matches, n104-mtcal.bin"
+
 # ---------- done -------------------------------------------------------------
 
-say "done — all four inputs are in boot/inputs/"
+say "done — the inputs are in boot/inputs/"
 ls -l "$INPUTS/iBSS.n104.20E247.sigpatched.raw" \
       "$INPUTS/IM4M" \
       "$INPUTS/DeviceTree.n104.rdtr.img4" \
-      "$INPUTS/empty.rtsc.img4"
+      "$INPUTS/empty.rtsc.img4" \
+      "$INPUTS/n104-mtfw.bin" "$INPUTS/n104-mtcal.bin"
 echo
 note "next: a13/cascadia build && a13/cascadia pack"

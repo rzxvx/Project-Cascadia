@@ -35,3 +35,10 @@ CONFIG_NETWORK_FILESYSTEMS=y
 CONFIG_NFS_FS=y
 CONFIG_NFS_V3=y
 CONFIG_NFS_V4=y
+# Touch bring-up: userspace SPI (spidev, bound by driver_override to the
+# touchscreen node) and I2C (i2c-dev, for the display PMU's touch rail)
+CONFIG_SPI_SPIDEV=y
+CONFIG_I2C_CHARDEV=y
+# The touchscreen driver (extras/apple_hidspi_touch.c) lives in
+# drivers/input/touchscreen/
+CONFIG_INPUT_TOUCHSCREEN=y

@@ -1,0 +1,132 @@
+diff --git a/arch/arm64/boot/dts/apple/t8030-n104.dts b/arch/arm64/boot/dts/apple/t8030-n104.dts
+--- a/arch/arm64/boot/dts/apple/t8030-n104.dts
++++ b/arch/arm64/boot/dts/apple/t8030-n104.dts
+@@ -66,3 +66,128 @@
+ &cpufreq_p {
+ 	status = "disabled";
+ };
++
++/*
++ * Touch bring-up: the multitouch controller on spi1, its interrupt on the
++ * AOP GPIO block, and I2C2 (the display PMU "Chestnut", which also has the
++ * touch controller's analog rail). Addresses, interrupts and power-state
++ * registers are from the ADT (/arm-io/spi1, /arm-io/aop-gpio, /arm-io/i2c2,
++ * /arm-io/pmgr). No pinctrl: the SPI1 data pins and the I2C2 pins are left
++ * as iBoot set them; CS (GPIO 95) is driven as a GPIO.
++ */
++&pmgr {
++	ps_sio_busif: power-controller@80180 {
++		compatible = "apple,t8030-pmgr-pwrstate",
++			     "apple,t8103-pmgr-pwrstate";
++		reg = <0x80180 4>;
++		#power-domain-cells = <0>;
++		#reset-cells = <0>;
++		label = "sio_busif";
++	};
++
++	ps_sio: power-controller@80188 {
++		compatible = "apple,t8030-pmgr-pwrstate",
++			     "apple,t8103-pmgr-pwrstate";
++		reg = <0x80188 4>;
++		#power-domain-cells = <0>;
++		#reset-cells = <0>;
++		label = "sio";
++		power-domains = <&ps_sio_busif>;
++	};
++
++	ps_i2c2: power-controller@801b0 {
++		compatible = "apple,t8030-pmgr-pwrstate",
++			     "apple,t8103-pmgr-pwrstate";
++		reg = <0x801b0 4>;
++		#power-domain-cells = <0>;
++		#reset-cells = <0>;
++		label = "i2c2";
++		power-domains = <&ps_sio>;
++	};
++
++	ps_spi_p: power-controller@801c8 {
++		compatible = "apple,t8030-pmgr-pwrstate",
++			     "apple,t8103-pmgr-pwrstate";
++		reg = <0x801c8 4>;
++		#power-domain-cells = <0>;
++		#reset-cells = <0>;
++		label = "spi_p";
++		power-domains = <&ps_sio>;
++	};
++
++	ps_spi1: power-controller@801f8 {
++		compatible = "apple,t8030-pmgr-pwrstate",
++			     "apple,t8103-pmgr-pwrstate";
++		reg = <0x801f8 4>;
++		#power-domain-cells = <0>;
++		#reset-cells = <0>;
++		label = "spi1";
++		power-domains = <&ps_spi_p>;
++	};
++};
++
++/ {
++	aliases {
++		touchscreen0 = &touchscreen;
++	};
++
++	soc {
++		pinctrl_aop: pinctrl@24a820000 {
++			compatible = "apple,t8030-pinctrl", "apple,t8103-pinctrl";
++			reg = <0x2 0x4a820000 0x0 0x4000>;
++
++			gpio-controller;
++			#gpio-cells = <2>;
++			gpio-ranges = <&pinctrl_aop 0 0 49>;
++			apple,npins = <49>;
++
++			interrupt-controller;
++			#interrupt-cells = <2>;
++			interrupt-parent = <&aic>;
++			interrupts = <AIC_IRQ 196 IRQ_TYPE_LEVEL_HIGH>,
++				     <AIC_IRQ 197 IRQ_TYPE_LEVEL_HIGH>,
++				     <AIC_IRQ 198 IRQ_TYPE_LEVEL_HIGH>,
++				     <AIC_IRQ 199 IRQ_TYPE_LEVEL_HIGH>,
++				     <AIC_IRQ 200 IRQ_TYPE_LEVEL_HIGH>,
++				     <AIC_IRQ 201 IRQ_TYPE_LEVEL_HIGH>,
++				     <AIC_IRQ 202 IRQ_TYPE_LEVEL_HIGH>;
++		};
++
++		i2c2: i2c@235018000 {
++			compatible = "apple,t8030-i2c", "apple,i2c";
++			reg = <0x2 0x35018000 0x0 0x1000>;
++			clocks = <&clkref>;
++			interrupt-parent = <&aic>;
++			interrupts = <AIC_IRQ 459 IRQ_TYPE_LEVEL_HIGH>;
++			power-domains = <&ps_i2c2>;
++			#address-cells = <1>;
++			#size-cells = <0>;
++		};
++
++		spi1: spi@235104000 {
++			compatible = "apple,t8030-spi", "apple,s5l-spi";
++			reg = <0x2 0x35104000 0x0 0x4000>;
++			interrupt-parent = <&aic>;
++			interrupts = <AIC_IRQ 445 IRQ_TYPE_LEVEL_HIGH>;
++			power-domains = <&ps_spi1>;
++			cs-gpios = <&pinctrl_ap 95 GPIO_ACTIVE_LOW>;
++			#address-cells = <1>;
++			#size-cells = <0>;
++
++			/*
++			 * No driver yet: spidev binds to it by driver_override.
++			 * The ADT's power sequence (power_ana on Chestnut,
++			 * power_ldo and clock_enable as SMC key writes) is done
++			 * by hand while the controller is brought up.
++			 */
++			touchscreen: touchscreen@0 {
++				compatible = "apple,n104-multitouch", "apple,hbpp-multitouch";
++				reg = <0>;
++				spi-max-frequency = <8000000>;
++				reset-gpios = <&pinctrl_ap 197 GPIO_ACTIVE_LOW>;
++				interrupts-extended = <&pinctrl_aop 34 IRQ_TYPE_LEVEL_LOW>;
++				firmware-name = "apple/n104-mtfw.bin";
++			};
++		};
++	};
++};

@@ -1,0 +1,55 @@
+diff --git a/arch/arm64/boot/dts/apple/t8030-n104.dts b/arch/arm64/boot/dts/apple/t8030-n104.dts
+--- a/arch/arm64/boot/dts/apple/t8030-n104.dts
++++ b/arch/arm64/boot/dts/apple/t8030-n104.dts
+@@ -162,6 +162,16 @@
+ 			power-domains = <&ps_i2c2>;
+ 			#address-cells = <1>;
+ 			#size-cells = <0>;
++
++			/*
++			 * The display PMU. No driver: the touchscreen writes its
++			 * LDO enable itself (register 5, bit 4 << ldo, as iOS's
++			 * AppleChestnutDisplayPMU::setLDO does).
++			 */
++			display_pmu: pmu@27 {
++				compatible = "apple,chestnut";
++				reg = <0x27>;
++			};
+ 		};
+ 
+ 		spi1: spi@235104000 {
+@@ -175,10 +185,9 @@
+ 			#size-cells = <0>;
+ 
+ 			/*
+-			 * No driver yet: spidev binds to it by driver_override.
+-			 * The ADT's power sequence (power_ana on Chestnut,
+-			 * power_ldo and clock_enable as SMC key writes) is done
+-			 * by hand while the controller is brought up.
++			 * apple-hidspi-touch (kernel/extras): loads the firmware
++			 * through the HBPP bootloader, then reads touches over
++			 * HID-over-SPI. power_ldo (SMC rBK3) is on from iBoot.
+ 			 */
+ 			touchscreen: touchscreen@0 {
+ 				compatible = "apple,n104-multitouch", "apple,hbpp-multitouch";
+@@ -187,6 +196,20 @@
+ 				reset-gpios = <&pinctrl_ap 197 GPIO_ACTIVE_LOW>;
+ 				interrupts-extended = <&pinctrl_aop 34 IRQ_TYPE_LEVEL_LOW>;
+ 				firmware-name = "apple/n104-mtfw.bin";
++				apple,calibration-name = "apple/n104-mtcal.bin";
++				/* ADT function-power_ana: Chestnut LDO 2 = reg 5 bit 0x10 */
++				apple,pmu-ldo = <&display_pmu 0x05 0x10>;
++				/* ADT function-clock_enable: SMC key gP00 <- 0x08000000 | 1 */
++				apple,smc-function = <&smc 0x67503030 0x08000000>;
++				/*
++				 * Panel units, ~1/100 mm. Measured at the corners
++				 * (finger centres a few mm in): left ~214-310, right
++				 * ~5640-5770, bottom ~228, top ~13170-13420; y grows
++				 * upwards.
++				 */
++				touchscreen-size-x = <6000>;
++				touchscreen-size-y = <13650>;
++				touchscreen-inverted-y;
+ 			};
+ 		};
+ 	};
