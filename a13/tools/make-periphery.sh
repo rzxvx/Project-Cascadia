@@ -8,12 +8,15 @@
 #                IPSW's N104_Multitouch.im4p
 #   fbkeyboard   the on-screen keyboard (asked, Enter = yes; FBKEYBOARD=y|n)
 #   Wi-Fi / BT   the BCM4378 firmware from the IPSW's root filesystem (one
-#                4.9 GB download, kept in build/cache), and the phone's own
-#                calibration, MAC addresses and antenna SKU from its syscfg
-#                (read over ssh from the phone running Linux, read-only)
+#                4.9 GB download, kept in build/cache), iw + wpa_supplicant
+#                (Alpine) so the image can join a network on its own, and the
+#                phone's own calibration, MAC addresses and antenna SKU from
+#                its syscfg (read over ssh from the phone running Linux,
+#                read-only)
 #
 # Output (boot/inputs/, not tracked): n104-mtfw.bin, n104-mtcal.bin, brcm/,
-# syscfg.bin; build/fbkeyboard/ (a small tree for the initramfs).
+# syscfg.bin; build/fbkeyboard/, build/wifitools/ (small trees for the
+# initramfs).
 # `a13/cascadia pack` puts whatever is there into the boot image.
 set -euo pipefail
 
@@ -159,6 +162,43 @@ E
     python3 -I "$A13/tools/btfw.py" "$bt" "$INPUTS" "${ant:-R}" >/dev/null
     unmount
     note "ok: brcm/ ($(ls "$INPUTS/brcm" | wc -l | tr -d ' ') files: BCM4378 Wi-Fi + Bluetooth, moana, antenna ${ant:-R})"
+fi
+
+# ---------- Wi-Fi tools ---------------------------------------------------------
+# iw and wpa_supplicant in the image itself: Wi-Fi is how a phone without the
+# USB network gets online, so the tools to join cannot wait for apk. Alpine's
+# builds with their libraries and their own musl loader under /opt/wifi; the
+# bin/ wrappers start them through that loader, so they run in a RAM boot and
+# under any root (the `wifi` command finds them there).
+
+say "Wi-Fi tools (iw, wpa_supplicant)"
+if [ -x "$A13/build/wifitools/opt/wifi/libexec/wpa_supplicant" ]; then
+    note "ok: iw, wpa_supplicant (already there)"
+else
+    have docker || fail "docker is needed to fetch iw and wpa_supplicant"
+    rm -rf "$A13/build/wifitools"
+    mkdir -p "$A13/build/wifitools"
+    docker run --rm --platform linux/arm64 -v "$A13/build/wifitools":/out alpine:3.24 sh -ec '
+        apk add -q iw wpa_supplicant >/dev/null
+        W=/out/opt/wifi
+        mkdir -p $W/bin $W/libexec $W/lib $W/share
+        progs="iw wpa_supplicant wpa_cli wpa_passphrase"
+        for p in $progs; do
+            cp -L "$(command -v $p)" $W/libexec/
+            printf "%s\n" "#!/bin/sh" \
+                "# $p from Alpine, through its own musl loader (a13/cascadia periphery)" \
+                "W=\$(dirname \"\$(dirname \"\$(readlink -f \"\$0\")\")\")" \
+                "exec \"\$W/lib/ld-musl-aarch64.so.1\" --library-path \"\$W/lib\" \"\$W/libexec/$p\" \"\$@\"" \
+                > $W/bin/$p
+        done
+        cp -L /lib/ld-musl-aarch64.so.1 $W/lib/
+        # one ldd per program: musl ldd reads only its first argument
+        for f in $(for p in $progs; do ldd $W/libexec/$p; done 2>/dev/null | sed -n "s/.*=> \([^ ]*\).*/\1/p" | sort -u); do
+            cp -L "$f" $W/lib/
+        done
+        cp -L /usr/share/udhcpc/default.script $W/share/udhcpc.script
+        chmod 755 $W/bin/* $W/libexec/* $W/lib/ld-musl-aarch64.so.1 $W/share/udhcpc.script' || fail "could not fetch iw and wpa_supplicant"
+    note "ok: iw, wpa_supplicant + their libraries -> build/wifitools"
 fi
 
 # ---------- this phone's calibration (syscfg) -------------------------------------

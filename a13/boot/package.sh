@@ -9,11 +9,15 @@
 #          from a13/cascadia periphery: inputs/n104-mt*.bin (touch) and
 #          inputs/brcm/ (Wi-Fi/BT) into /lib/firmware, inputs/syscfg.bin
 #          (this phone's Wi-Fi/BT calibration and addresses) into the DT,
-#          ../build/fbkeyboard/ (the on-screen keyboard) into the initramfs
+#          ../build/fbkeyboard/ (the on-screen keyboard) and
+#          ../build/wifitools/ (iw, wpa_supplicant: /opt/wifi) into the initramfs
 #          ~/.ssh/*.pub    become root's authorized_keys on the phone
 #                          (override: SSH_KEYS="a.pub b.pub")
 #          NFS root        optional, see ../host/mac-nfs-export.sh (NFSROOT=)
-# Output:  out/m1n1-linux.rkrn.img4
+#          ../build/alpine-a13.tar.gz (a13/cascadia build rootfs): the root
+#                          the phone runs in RAM when there is no NFS root
+# Output:  out/m1n1-linux.rkrn.img4, out/alpine.rdsk.img4 (the Alpine root as
+#          an iBoot ramdisk: iBoot refuses a large kernel image)
 set -eu
 cd "$(dirname "$0")"
 
@@ -49,7 +53,7 @@ if [ -n "${NFSROOT:-}" ] && [ "$NFSROOT" != none ]; then
     echo "$NFSROOT" > "$tmp/nfsroot"
     set -- "$@" "etc/nfsroot=$tmp/nfsroot:644"
 fi
-echo "nfs root: ${NFSROOT:-none (RAM only)}"
+echo "nfs root: ${NFSROOT:-none}"
 # the peripherals (a13/cascadia periphery): touch and Wi-Fi/BT firmware where
 # the drivers ask for them, the on-screen keyboard
 for f in n104-mtfw.bin n104-mtcal.bin; do
@@ -68,6 +72,12 @@ if [ -d ../build/fbkeyboard ]; then
     for f in $(cd ../build/fbkeyboard && find . -type f | sed 's|^\./||'); do
         case "$f" in usr/bin/*|lib/ld-*) m=755 ;; *) m=644 ;; esac
         set -- "$@" "$f=../build/fbkeyboard/$f:$m"
+    done
+fi
+if [ -d ../build/wifitools ]; then
+    for f in $(cd ../build/wifitools && find . -type f | sed 's|^\./||'); do
+        case "$f" in */bin/*|*/libexec/*|*/lib/ld-*|*.script) m=755 ;; *) m=644 ;; esac
+        set -- "$@" "$f=../build/wifitools/$f:$m"
     done
 fi
 python3 overlay_cpio.py "$tmp/overlay.cpio" "$@"
@@ -119,3 +129,18 @@ ipsw img4 create --input out/m1n1-linux.macho --type rkrn --compress lzss \
 # ipsw 3.1.714 appends a bad ASN.1 compression record; drop it
 python3 repair_lzss_img4.py "$tmp/kernel.img4" out/m1n1-linux.rkrn.img4
 echo "wrote out/m1n1-linux.rkrn.img4"
+
+# Alpine in RAM: the initramfs unpacks it into a tmpfs when there is no NFS
+# root (none packed, or the host not there: no cable) -- the same system,
+# without the cable. It travels as a ramdisk (rdsk), a gzip'd cpio holding
+# /alpine.tar.gz; m1n1 appends it to the initramfs (patch 0006).
+rm -f out/alpine.rdsk.img4
+if [ -f ../build/alpine-a13.tar.gz ]; then
+    python3 overlay_cpio.py "$tmp/alpine.cpio" "alpine.tar.gz=../build/alpine-a13.tar.gz:644"
+    gzip -1 < "$tmp/alpine.cpio" > "$tmp/alpine.cpio.gz"
+    ipsw img4 create --input "$tmp/alpine.cpio.gz" --type rdsk \
+        --im4m inputs/IM4M --output out/alpine.rdsk.img4 >/dev/null
+    echo "wrote out/alpine.rdsk.img4 (Alpine in RAM when there is no NFS root)"
+else
+    echo "note: no build/alpine-a13.tar.gz -- without NFS the phone stays in the initramfs (a13/cascadia build rootfs)" >&2
+fi

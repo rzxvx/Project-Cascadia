@@ -19,6 +19,11 @@ irecovery -f inputs/DeviceTree.n104.rdtr.img4
 irecovery -c devicetree
 irecovery -f inputs/empty.rtsc.img4
 irecovery -c firmware
+# the Alpine root for RAM boots, as a ramdisk (m1n1 hands it to Linux)
+if [ -f out/alpine.rdsk.img4 ]; then
+    irecovery -f out/alpine.rdsk.img4
+    irecovery -c ramdisk
+fi
 irecovery -f out/m1n1-linux.rkrn.img4
 irecovery -c bootx
 echo 'bootx submitted. ~30 s later: ssh root@172.16.42.1  (or screen /dev/cu.usbmodemN104AP_linux1)'

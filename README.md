@@ -17,8 +17,9 @@ drive with your fingers.
 > on-screen keyboard.
 >
 > **iPhone 11 (A13).** Linux 7.2 boots on all six cores to an Alpine system
-> over USB (serial, network, SSH) and runs XFCE with multi-touch -- the
-> touchscreen's firmware loaded by our own driver. See [`a13/`](a13/README.md).
+> and runs XFCE with multi-touch -- the touchscreen's firmware loaded by our
+> own driver. Wi-Fi and Bluetooth work, and after the boot the cable can go:
+> Alpine runs in RAM, ssh over Wi-Fi. See [`a13/`](a13/README.md).
 
 ![Boot](imgs/dualcoreboot.png)
 
@@ -48,7 +49,7 @@ including the parts that didn't work.
 | Device | Model | Chip | Board ID | Status | Where |
 |--------|-------|------|----------|--------|-------|
 | iPad mini 1 (Wi-Fi) | iPad2,5 / A1432 | Apple A5 (S5L8942X) | p105ap | desktop, touch, Wi-Fi, GPU | this README, repository root |
-| iPhone 11 | iPhone12,1 | Apple A13 (T8030) | n104ap | shell, network over USB, touch, XFCE | [`a13/`](a13/README.md) |
+| iPhone 11 | iPhone12,1 | Apple A13 (T8030) | n104ap | shell, network over USB, touch, XFCE, Wi-Fi, Bluetooth | [`a13/`](a13/README.md) |
 
 ## Current Status
 
@@ -813,8 +814,9 @@ The same phases, in the same order; details in
 - **Phase 2 ✓** — ~~USB gadget: ACM shell, ECM network, SSH~~ ✓ → ~~tick and
   wall clock~~ ✓ → ~~Alpine over NFS~~ ✓ → ~~one host command to boot~~ ✓.
 - **Phase 3** — ~~all six cores~~ ✓ → cpufreq (parked) → ~~touch~~ ✓ →
-  ~~desktop~~ ✓ (XFCE) → Wi-Fi / internal storage (to work without the
-  cable) → on-screen keyboard → native display → …
+  ~~desktop~~ ✓ (XFCE) → ~~Wi-Fi, Bluetooth~~ ✓ → ~~on-screen keyboard~~ ✓ →
+  ~~no cable after the boot~~ ✓ (Alpine in RAM) → internal storage → native
+  display → …
 
 ### Next devices
 

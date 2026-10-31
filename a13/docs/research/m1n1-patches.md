@@ -106,6 +106,18 @@ stub now executes with the real (MMU-off) handoff — the screen turns the colou
 the stub writes. This is also what lets Linux execute (it just hangs later for
 the config reason in [bringup-status.md](./bringup-status.md)).
 
+## Later patches
+
+- `0005-pcie-t8030-controller.patch` -- `apcie,t8030`: the t8103 layout plus
+  what `AppleT803xPCIe` does differently (one PHY IP tunables property, two
+  fuse fields, `rc+0x34`, no `rc+0x4`, a missing bridge still steps the ECAM
+  base, optional shadow tunables). See `wifi.md`.
+- `0006-kboot-append-iboot-ramdisk.patch` -- a ramdisk iBoot loaded
+  (`/chosen/memory-map` "RAMDisk") is copied behind the payload's initramfs:
+  the Alpine root for RAM boots, which does not fit into the kernel image.
+
+All of these are Cascadia's own, downstream; not for upstream m1n1.
+
 ## Diagnostic toggles used (currently reverted)
 
 While debugging the silent payload, `main.c` was temporarily edited to (a) keep

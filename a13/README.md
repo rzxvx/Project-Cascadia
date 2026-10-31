@@ -7,8 +7,8 @@ the host), and XFCE on the screen with multi-touch.
 > **Status: Phase 3.** The kernel boots on all six cores, the framebuffer
 > console works, the USB gadget gives a shell and a network, the clock and the
 > timer are right, and the touchscreen works -- its firmware loaded through
-> the controller's bootloader by our own driver. No frequency scaling, Wi-Fi
-> or internal storage yet, so the phone still lives on the cable. The boot is
+> the controller's bootloader by our own driver, and Wi-Fi works. No frequency
+> scaling or internal storage yet. The boot is
 > tethered and needs the usbliter8 RP2350 board.
 
 This is the A13 track of Project Cascadia. The iPad mini 1 (A5) lives in the
@@ -27,7 +27,10 @@ repository root; this directory is self-contained.
 | CPU | all six cores (4x Thunder, 2x Lightning), started by m1n1 through the PMGR |
 | Touch | multi-touch on `/dev/input/eventN` ("Apple iPhone touchscreen"): our SPI controller driver for `spi-1,samsung`, then our driver loads the controller's firmware (from your IPSW) through its HBPP bootloader and reads Apple's HID-over-SPI; a pointer in X with libinput. Polled (~5 % of a core when idle) |
 | Desktop | XFCE on simpledrm with the touchscreen (the Alpine root needs eudev; `a13-init` starts udevd) |
-| Not yet | cpufreq (parked, `cpufreq.off=1`: the clusters' DVFS hangs now and then), Wi-Fi, internal storage of its own, Bluetooth, audio, native display, GPU |
+| Wi-Fi | BCM4378 on PCIe: our m1n1 patch brings the T8030 controller up from the ADT's tunables, `pcie-apple` powers the module through the SMC, brcmfmac with the IPSW's firmware and the phone's own calibration; `wifi` to use it (below). L1 ASPM is off for now |
+| Bluetooth | the same module's second function, `hci_bcm4377`: `hci0` comes up |
+| Without the cable | after the boot: the Alpine root in RAM (an iBoot ramdisk) when there is no NFS root, Wi-Fi, ssh over Wi-Fi; the on-screen keyboard on the screen console |
+| Not yet | cpufreq (parked, `cpufreq.off=1`: the clusters' DVFS hangs now and then), internal storage of its own, audio, native display, GPU |
 
 The DCSD cable carries the s5l UART0: m1n1 and then the whole kernel log
 (`earlycon=applefb keep_bootcon`, 115200 8N1).
@@ -50,7 +53,7 @@ a13/cascadia doctor                         # check everything
    IM4M=/path/to/IM4M a13/cascadia inputs   # downloads, decrypts, patches
    ```
 2. **Periphery** — touch, the on-screen keyboard (it asks; Enter = yes),
-   Wi-Fi/Bluetooth: the firmware from Apple's CDN (the Wi-Fi firmware needs the
+   Wi-Fi/Bluetooth with `iw` and `wpa_supplicant`: the firmware from Apple's CDN (the Wi-Fi firmware needs the
    4.9 GB root filesystem image, downloaded once into `build/cache/`), and the
    phone's own Wi-Fi/BT calibration from its syscfg -- read over ssh once the
    phone has booted, so run it again after the first boot. Optional: without
@@ -93,6 +96,22 @@ a13/cascadia recalibrate                    # tap the four corners when asked
 a13/cascadia pack                           # then boot
 ```
 
+## Wi-Fi
+
+`a13/cascadia periphery` gets the firmware and the phone's calibration (see
+Boot it). On the phone:
+```bash
+wifi                            # where things stand
+wifi scan                       # networks in range
+wifi connect "My network" PASS  # join, get an address, remember it
+wifi auto on                    # join the remembered networks at boot
+```
+`wifi up`, `wifi down`, `wifi forget SSID`, `wifi reset` (restarts the chip).
+When Wi-Fi is up, the internet goes over it and the cable stays the second
+way out. `iw` and `wpa_supplicant` come with the image (periphery fetches
+Alpine's, with their libraries and loader), so Wi-Fi works without the USB
+network, in a RAM boot and under any root. wlan0 comes some 15 s after boot.
+
 ## A real system: Alpine over NFS
 
 The initramfs is a small RAM system. For a persistent one (`apk add` that
@@ -106,8 +125,13 @@ a13/cascadia net on                        # sudo, after boot: NAT for apk
 ```
 
 The initramfs brings up USB, waits for the Mac's DHCP address, mounts the
-export and switches to it; if anything fails it stays in RAM. Pack with
-`NFSROOT=none` for a RAM-only image.
+export and switches to it. Without it (packed with `NFSROOT=none`, or no
+cable, or the Mac not there) the phone runs the same Alpine in RAM: `pack`
+makes `boot/out/alpine.rdsk.img4` from `build/alpine-a13.tar.gz`, `boot`
+sends it as an iBoot ramdisk (iBoot refuses a kernel image that large), m1n1
+hands it to Linux, and the initramfs unpacks it into a tmpfs -- changes last
+until the next boot. Only without that tarball does it stay in the small
+initramfs. So: boot with the cable, pull it, and work over Wi-Fi.
 
 ## Layout
 
@@ -121,6 +145,7 @@ kernel/      build-kernel.sh (yhavry/Hoolock-linux t8030, pinned), n104.fragment
              AOP GPIO, I2C2, the touchscreen), extras/ (framebuffer earlycon,
              spi-apple-s5l, apple_hidspi_touch, apple_smc_keys for bring-up)
 initramfs/   make-initramfs.sh: busybox, USB gadget (configfs), udhcpd, dropbear,
+             wifi (the Wi-Fi command),
              the switch to an NFS root
 rootfs/      build-alpine-rootfs.sh + overlay/ (inittab, a13-init): the NFS root
 host/        mac-nfs-export.sh, linux-nfs-export.sh (nfsd),

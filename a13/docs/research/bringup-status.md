@@ -265,6 +265,25 @@ the IPSW through the bootloader, and polls HID-over-SPI for report 0x75.
 The trap that cost the most: reading with zeros on MOSI -- an all-zero packet
 has a valid CRC and sends the firmware back to its bootloader.
 
+## 2026-10-31 / 11-01: Wi-Fi, Bluetooth, Alpine in RAM
+
+- **Wi-Fi and Bluetooth** work: m1n1 brings the T8030 PCIe controller up from
+  the live ADT's tunables (m1n1 patch 0005), `pcie-apple` powers the module
+  through the SMC (`gP11`, kernel patch 0006), brcmfmac and hci_bcm4377 load
+  the IPSW's firmware with the phone's own calibration. `wifi` joins
+  networks; `iw` / `wpa_supplicant` come with the image. Story in `wifi.md`.
+- **Alpine in RAM**: without an NFS root (none packed, no cable, the Mac
+  away) the initramfs unpacks the same Alpine into a tmpfs and switches to
+  it. iBoot panics on a 36 MB kernel image (`__firebloom_panic`; 22 MB is
+  fine), so Alpine travels as a separate ramdisk (`out/alpine.rdsk.img4`,
+  `irecovery -c ramdisk`); m1n1 (patch 0006) finds it in the ADT's
+  `/chosen/memory-map` "RAMDisk" (physical, below `top_of_kernel_data`, so
+  below m1n1's heap) and appends it to the initramfs.
+- **Screen console**: stray characters after Enter came from a second shell
+  on the screen -- busybox `cttyhack` ignores its stdin and takes the console
+  (`tty0`), so the USB serial's shell sat on the screen as well. The shells
+  now open their own terminal in a new session.
+
 ## Open small things (2026-10-31)
 
 - **Boot logo.** fbcon's Tux (one per CPU, `fbcon=logo-pos:center`) is not

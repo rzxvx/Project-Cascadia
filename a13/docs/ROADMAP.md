@@ -47,14 +47,18 @@ Same order as the iPad mini 1. Each step notes what already exists (Hoolock
       Driver `kernel/extras/apple_hidspi_touch.c`, notes `research/touch.md`.
       Polled: the AOP GPIO interrupt line does not move yet.
 - [x] Desktop: XFCE on simpledrm with the touchscreen (udev in the root).
-- [ ] On-screen keyboard.
-- [ ] Wi-Fi: BCM4378 over PCIe (`apcie,t8030`), brcmfmac; firmware + NVRAM from
-      the IPSW, MAC from syscfg.
+- [x] On-screen keyboard: fbkeyboard on the screen console (periphery asks).
+- [x] No cable needed after the boot: the Alpine root in RAM (an iBoot
+      ramdisk), Wi-Fi with its tools in the image.
+- [x] Wi-Fi: BCM4378 over PCIe (`apcie,t8030`, brought up by our m1n1 patch
+      from the ADT's tunables), powered through the SMC (`gP11`), brcmfmac;
+      firmware + NVRAM from the IPSW, MAC and calibration from syscfg; the
+      `wifi` command. L1 ASPM off for now (`pcie_aspm.policy=performance`).
 - [ ] Internal storage: iOS's files read-only, then a Linux partition of its own.
 - [ ] Native display: `disp0` + Synopsys MIPI DSIM + panel "pinot" + display
       PMU "chestnut".
 - [ ] Backlight (LM3539, I2C), battery, charging (SMC).
-- [ ] Bluetooth: BCM4378 PCIe, `hci_bcm4377`.
+- [x] Bluetooth: BCM4378 PCIe, `hci_bcm4377` (hci0; nothing on top yet).
 - [ ] Audio: cs42l77 codec + cs35l27 amp over MCA.
 - [ ] Buttons, haptics.
 

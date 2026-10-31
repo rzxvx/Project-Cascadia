@@ -398,9 +398,32 @@ static void report_finger(struct ahtouch *ts, const struct finger *f, bool down)
 	input_report_abs(input, ABS_MT_TOUCH_MINOR, le16_to_cpu(f->touch_minor));
 }
 
+/*
+ * End of a frame. Lifted contacts forget their position: evdev drops a value
+ * equal to the slot's last one, so a new tap on the very spot of the one
+ * before would come without coordinates -- and a consumer that waits for X
+ * and Y of each new contact (fbkeyboard) misses it, fast taps on one key
+ * most of all.
+ */
+static void sync_frame(struct ahtouch *ts)
+{
+	struct input_mt *mt = ts->input->mt;
+	int i;
+
+	input_mt_sync_frame(ts->input);
+	input_sync(ts->input);
+	for (i = 0; i < mt->num_slots; i++) {
+		struct input_mt_slot *slot = &mt->slots[i];
+
+		if (input_mt_get_value(slot, ABS_MT_TRACKING_ID) < 0) {
+			input_mt_set_value(slot, ABS_MT_POSITION_X, INT_MIN);
+			input_mt_set_value(slot, ABS_MT_POSITION_Y, INT_MIN);
+		}
+	}
+}
+
 static void report_touches(struct ahtouch *ts, const u8 *p, size_t len)
 {
-	struct input_dev *input = ts->input;
 	const struct finger *f;
 	bool missed = false;
 	u32 bytes;
@@ -437,8 +460,7 @@ static void report_touches(struct ahtouch *ts, const u8 *p, size_t len)
 			report_finger(ts, &f[i], down || (!test_bit(f[i].id, ts->down) &&
 				      (f[i].state != 0 || !test_bit(f[i].id, ts->prev))));
 		}
-		input_mt_sync_frame(input);
-		input_sync(input);
+		sync_frame(ts);
 	}
 	bitmap_zero(ts->prev, 256);
 	for (i = 0; i < n; i++)
@@ -453,8 +475,7 @@ static void report_touches(struct ahtouch *ts, const u8 *p, size_t len)
 		else
 			clear_bit(f[i].id, ts->down);
 	}
-	input_mt_sync_frame(input);
-	input_sync(input);
+	sync_frame(ts);
 }
 
 /* returns true if a touch frame was reported */
@@ -570,8 +591,7 @@ static int ahtouch_thread(void *data)
 				 * fell between polls. Let go of everything, or the
 				 * touch sticks (a held key on the on-screen keyboard).
 				 */
-				input_mt_sync_frame(ts->input);
-				input_sync(ts->input);
+				sync_frame(ts);
 				bitmap_zero(ts->down, 256);
 				bitmap_zero(ts->prev, 256);
 			}

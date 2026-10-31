@@ -1,7 +1,7 @@
 diff --git a/arch/arm64/boot/dts/apple/t8030-n104.dts b/arch/arm64/boot/dts/apple/t8030-n104.dts
 --- a/arch/arm64/boot/dts/apple/t8030-n104.dts
 +++ b/arch/arm64/boot/dts/apple/t8030-n104.dts
-@@ -212,5 +212,93 @@
+@@ -212,5 +212,96 @@
  				touchscreen-inverted-y;
  			};
  		};
@@ -60,23 +60,26 @@ diff --git a/arch/arm64/boot/dts/apple/t8030-n104.dts b/arch/arm64/boot/dts/appl
 +};
 +
 +/*
-+ * Off for now: nothing brings the PCIe controller up on T8030. m1n1's
-+ * pcie_init() knows apcie,t8103 and newer, not apcie,t8030, and Linux's
-+ * pcie-apple expects m1n1 to have done the PHY and tunables. With power and
-+ * PCIE_REF on, the DART's first register read is still an SError. A full
-+ * iBoot leaves PCIe initialised; this boot chain does not. Next: T8030 in
-+ * m1n1's pcie.c from the ADT's apcie tunables.
++ * m1n1 brings the controller up -- the PHY, the PMGR fuses and the ADT's
++ * apcie tunables (Cascadia's m1n1 patch 0005, after iOS's AppleT803xPCIe);
++ * pcie-apple then does the port: refclk, PERST, link training.
 + */
 +&pcie_dart2 {
-+	status = "disabled";
++	status = "okay";
 +};
 +
 +&pcie0 {
-+	status = "disabled";
++	status = "okay";
 +};
 +
 +&port02 {
 +	bus-range = <1 1>;
++	/*
++	 * The module's power (WL_REG_ON): the ADT's /amfm function-reg_on, SMC
++	 * GPIO key gP11, written as ARG | 1 by pcie-apple (patch 0006) before
++	 * the link comes up. A full iBoot leaves it on; this boot chain does not.
++	 */
++	apple,power-function = <&smc 0x67503131 0x0>;
 +
 +	wifi0: wifi@0,0 {
 +		compatible = "pci14e4,4425";

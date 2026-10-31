@@ -27,12 +27,15 @@ mkdir -p "$OUT" "$A13/build/ssh"
 docker run --rm --platform linux/arm64 \
   -v "$OUT":/out \
   -v "$A13/build/ssh":/keys \
+  -v "$A13/initramfs/wifi":/src/wifi:ro \
   arm64v8/debian:bookworm bash -euxc '
     apt-get update
     apt-get install -y --no-install-recommends busybox-static cpio gzip dropbear-bin
     root=$(mktemp -d)
     mkdir -p "$root"/{bin,sbin,usr/bin,usr/sbin,proc,sys,dev,tmp,etc,root,var/run}
     cp /bin/busybox "$root/bin/busybox"
+    # the wifi command (initramfs/wifi), also put into an NFS root at boot
+    install -m 755 /src/wifi "$root/usr/bin/wifi"
     ln -sf busybox "$root/bin/sh"
     # dropbear + the shared libraries it links against
     cp /usr/sbin/dropbear "$root/usr/sbin/"
@@ -70,6 +73,10 @@ udc=$($BB ls /sys/class/udc 2>/dev/null | $BB head -n1)
 [ -n "$udc" ] || exit 0
 bad=0
 next=5
+# the one DHCP server, kept as our own child: started as "busybox udhcpd",
+# it is invisible to pidof, so check our child instead
+$BB killall udhcpd 2>/dev/null
+dhcp=
 while :; do
     $BB sleep 2
     if [ "$($BB cat /sys/class/udc/$udc/state 2>/dev/null)" = configured ]; then
@@ -82,7 +89,6 @@ while :; do
     # the UDC: the controller stops and starts, the pull-up comes back);
     # then every ~30 s while it stays away
     if [ $bad -ge $next ]; then
-        echo "usbwatch: no host, re-binding the gadget to $udc" > /dev/kmsg
         echo "" > $G/UDC 2>/dev/null
         $BB sleep 1
         echo "$udc" > $G/UDC 2>/dev/null
@@ -92,9 +98,10 @@ while :; do
     # the address and the DHCP server the host needs to come back
     $BB ifconfig usb0 2>/dev/null | $BB grep -q "inet addr:172.16.42.1 " \
         || $BB ifconfig usb0 172.16.42.1 netmask 255.255.255.0 up
-    $BB pidof udhcpd >/dev/null 2>&1 || {
+    [ -n "$dhcp" ] && kill -0 "$dhcp" 2>/dev/null || {
         $BB touch /tmp/udhcpd.leases 2>/dev/null
-        $BB udhcpd ${UDHCPD_CONF:-/etc/udhcpd.conf}
+        $BB udhcpd -f ${UDHCPD_CONF:-/etc/udhcpd.conf} </dev/null >/dev/null 2>&1 &
+        dhcp=$!
     }
 done
 EOW
@@ -141,6 +148,70 @@ if [ -x /usr/bin/fbkeyboard ]; then
     fi
 fi
 
+# Hand over to the root mounted on /newroot (NFS, or Alpine in RAM) and its
+# own init: what this image brings goes along -- keys, firmware, the USB
+# watchdog, the wifi command and its tools.
+enter_root() {
+    # who may log in, and the host key, come from this image
+    mkdir -p /newroot/root/.ssh /newroot/etc/dropbear
+    [ -s /root/.ssh/authorized_keys ] && \
+        cp /root/.ssh/authorized_keys /newroot/root/.ssh/authorized_keys
+    [ -f /etc/dropbear/dropbear_ed25519_host_key ] && \
+        cp /etc/dropbear/dropbear_ed25519_host_key /newroot/etc/dropbear/
+    chown 0:0 /newroot/root /newroot/root/.ssh /newroot/root/.ssh/authorized_keys 2>/dev/null
+    chmod 700 /newroot/root /newroot/root/.ssh
+    chmod 600 /newroot/root/.ssh/authorized_keys 2>/dev/null
+    killall udhcpd 2>/dev/null
+    umount /tmp
+    mkdir -p /newroot/dev /newroot/proc /newroot/sys
+    mount --move /dev /newroot/dev
+    mount --move /proc /newroot/proc
+    mount --move /sys /newroot/sys
+    # the USB watchdog lives in RAM (a tmpfs /run, which a13-init
+    # keeps), chrooted into the new root: it must not need the root (NFS: the cable)
+    mkdir -p /newroot/run
+    mount -t tmpfs -o mode=755 tmpfs /newroot/run
+    mkdir -p /newroot/run/cascadia
+    cp /bin/busybox /sbin/usbwatch /etc/udhcpd.conf /newroot/run/cascadia/
+    # the firmware in this image (touch, Wi-Fi, Bluetooth) stays in
+    # reach after the switch: Wi-Fi and Bluetooth load theirs only once
+    # the module is powered, with the new root in place
+    if [ -d /lib/firmware ]; then
+        cp -a /lib/firmware /newroot/run/cascadia/firmware
+        echo -n /run/cascadia/firmware > /newroot/sys/module/firmware_class/parameters/path
+    fi
+    # iw and wpa_supplicant of this image, for a root without them
+    [ -d /opt/wifi ] && cp -a /opt/wifi /newroot/run/cascadia/wifi
+    BB=/run/cascadia/busybox UDHCPD_CONF=/run/cascadia/udhcpd.conf \
+        setsid chroot /newroot /run/cascadia/busybox sh /run/cascadia/usbwatch \
+        </dev/null >/dev/null 2>&1 &
+    # the wifi command, as this image has it; with "wifi auto on" it
+    # joins the remembered networks (it waits for wlan0 itself)
+    mkdir -p /newroot/usr/bin
+    cp /usr/bin/wifi /newroot/usr/bin/wifi 2>/dev/null
+    if [ -e /newroot/etc/wifi/auto ]; then
+        setsid chroot /newroot /usr/bin/wifi up </dev/null >/newroot/run/wifi.log 2>&1 &
+    fi
+    exec switch_root /newroot /sbin/init
+}
+
+# Alpine in RAM: the image carries the Alpine root (boot/package.sh adds it
+# when there is no NFS root) and unpacks it into a tmpfs -- the same system as
+# over NFS, without the cable; changes last until the next boot.
+ram_root() {
+    [ -f /alpine.tar.gz ] || return 0
+    echo "[ram] unpacking Alpine into RAM"
+    mkdir -p /newroot
+    mount -t tmpfs -o mode=755 tmpfs /newroot
+    if tar xzf /alpine.tar.gz -C /newroot && [ -x /newroot/sbin/init ]; then
+        rm -f /alpine.tar.gz
+        echo "[ram] Alpine $(cat /newroot/etc/alpine-release) in RAM"
+        enter_root
+    fi
+    echo "[ram] could not unpack Alpine - staying in the initramfs"
+    umount /newroot 2>/dev/null
+}
+
 # USB gadget: wait for the DWC3 UDC to register (dwc3-apple may defer).
 udc=""
 for i in $(seq 1 30); do
@@ -151,6 +222,7 @@ done
 if [ -z "$udc" ]; then
     echo "[usb] NO UDC after 30s. Kernel USB messages:"
     dmesg | grep -iE "dwc3|usb|ausb|phy|dart|usbcomplex" | tail -n 25
+    ram_root
 else
     echo "[usb] UDC = $udc"
     G=/sys/kernel/config/usb_gadget/g1
@@ -188,7 +260,15 @@ else
     # NFSv3 (macOS nfsd has no v4), hand over to the root and its own init.
     # Anything that fails here stays in RAM: an initramfs that always boots
     # beats a root that sometimes does.
-    if [ -f /etc/nfsroot ]; then
+    # No host on the cable (the gadget is not configured within 10 s): no
+    # NFS to wait for, straight to Alpine in RAM.
+    for i in $(seq 1 10); do
+        [ "$(cat /sys/class/udc/$udc/state 2>/dev/null)" = configured ] && break
+        sleep 1
+    done
+    if [ "$(cat /sys/class/udc/$udc/state 2>/dev/null)" != configured ]; then
+        echo "[usb] no host on the cable"
+    elif [ -f /etc/nfsroot ]; then
         NFSROOT=$(cat /etc/nfsroot)
         HOST=${NFSROOT%%:*}
         echo "[nfs] waiting for the host $HOST"
@@ -206,43 +286,22 @@ else
         done
         if [ $nfs_ok = 1 ] && [ -x /newroot/sbin/init ]; then
             echo "[nfs] root $NFSROOT mounted"
-            # who may log in, and the host key, come from this image
-            mkdir -p /newroot/root/.ssh /newroot/etc/dropbear
-            [ -s /root/.ssh/authorized_keys ] && \
-                cp /root/.ssh/authorized_keys /newroot/root/.ssh/authorized_keys
-            [ -f /etc/dropbear/dropbear_ed25519_host_key ] && \
-                cp /etc/dropbear/dropbear_ed25519_host_key /newroot/etc/dropbear/
-            chown 0:0 /newroot/root /newroot/root/.ssh /newroot/root/.ssh/authorized_keys 2>/dev/null
-            chmod 700 /newroot/root /newroot/root/.ssh
-            chmod 600 /newroot/root/.ssh/authorized_keys 2>/dev/null
-            killall udhcpd 2>/dev/null
-            umount /tmp
-            mkdir -p /newroot/dev /newroot/proc /newroot/sys
-            mount --move /dev /newroot/dev
-            mount --move /proc /newroot/proc
-            mount --move /sys /newroot/sys
-            # the USB watchdog lives in RAM (a tmpfs /run, which a13-init
-            # keeps), chrooted into the new root: it must not need NFS
-            mkdir -p /newroot/run
-            mount -t tmpfs -o mode=755 tmpfs /newroot/run
-            mkdir -p /newroot/run/cascadia
-            cp /bin/busybox /sbin/usbwatch /etc/udhcpd.conf /newroot/run/cascadia/
-            BB=/run/cascadia/busybox UDHCPD_CONF=/run/cascadia/udhcpd.conf \
-                setsid chroot /newroot /run/cascadia/busybox sh /run/cascadia/usbwatch \
-                </dev/null >/dev/null 2>&1 &
-            exec switch_root /newroot /sbin/init
+            enter_root
         fi
-        echo "[nfs] no NFS root (mounted=$nfs_ok) - staying in RAM"
+        echo "[nfs] no NFS root (mounted=$nfs_ok)"
         umount /newroot 2>/dev/null
     fi
+    ram_root
 
     setsid /sbin/usbwatch </dev/null >/dev/null 2>&1 &
     dropbear -R -E 2>/tmp/dropbear.log && echo "[usb] ssh: ssh root@172.16.42.1"
     telnetd -l /bin/sh
-    # shell on the USB serial, respawned; cttyhack makes ttyGS0 its
-    # controlling terminal (job control, Ctrl-C)
+    # shell on the USB serial, respawned. ttyGS0 becomes its controlling
+    # terminal (job control, Ctrl-C) by being opened in the new session; not
+    # cttyhack, which ignores stdin and takes the console (tty0, the screen):
+    # two shells reading the screen, each key to one or the other
     ( while true; do
-        setsid cttyhack sh -l </dev/ttyGS0 >/dev/ttyGS0 2>&1
+        setsid sh -c "exec sh -l </dev/ttyGS0 >/dev/ttyGS0 2>&1"
         sleep 1
       done ) &
     sleep 3
@@ -253,7 +312,7 @@ fi
 # as its controlling terminal
 echo "[init] shell on the screen (tty1)"
 while true; do
-    setsid cttyhack sh -l </dev/tty1 >/dev/tty1 2>&1
+    setsid sh -c "exec sh -l </dev/tty1 >/dev/tty1 2>&1"
     sleep 1
 done
 EOF

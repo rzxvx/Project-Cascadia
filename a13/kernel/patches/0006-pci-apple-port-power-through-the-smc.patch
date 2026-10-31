@@ -1,0 +1,66 @@
+diff --git a/drivers/pci/controller/pcie-apple.c b/drivers/pci/controller/pcie-apple.c
+--- a/drivers/pci/controller/pcie-apple.c
++++ b/drivers/pci/controller/pcie-apple.c
+@@ -26,9 +26,11 @@
+ #include <linux/irqchip/irq-msi-lib.h>
+ #include <linux/irqdomain.h>
+ #include <linux/list.h>
++#include <linux/mfd/macsmc.h>
+ #include <linux/module.h>
+ #include <linux/msi.h>
+ #include <linux/of_irq.h>
++#include <linux/of_platform.h>
+ #include <linux/pci-ecam.h>
+ 
+ #include "pci-host-common.h"
+@@ -550,6 +552,36 @@
+ 	return readl_relaxed(port_rid2sid_addr(port, idx));
+ }
+ 
++/*
++ * A device behind the port that is powered through the SMC, as iOS's
++ * function-reg_on: apple,power-function = <&smc KEY ARG>, written ARG | 1.
++ */
++static int apple_pcie_port_power_on(struct apple_pcie *pcie,
++				    struct device_node *np)
++{
++	struct of_phandle_args args;
++	struct platform_device *pdev;
++	struct apple_smc *smc;
++	int ret;
++
++	if (of_parse_phandle_with_fixed_args(np, "apple,power-function", 2, 0, &args))
++		return 0;
++
++	pdev = of_find_device_by_node(args.np);
++	of_node_put(args.np);
++	if (!pdev)
++		return -EPROBE_DEFER;
++	smc = platform_get_drvdata(pdev);
++	put_device(&pdev->dev);
++	if (!smc)
++		return -EPROBE_DEFER;
++
++	ret = apple_smc_write_u32(smc, args.args[0], args.args[1] | 1);
++	if (ret)
++		dev_err(pcie->dev, "%pOF: power-on through the SMC failed: %d\n", np, ret);
++	return ret;
++}
++
+ static int apple_pcie_setup_port(struct apple_pcie *pcie,
+ 				 struct device_node *np)
+ {
+@@ -606,6 +638,13 @@
+ 	/* Assert PERST# before setting up the clock */
+ 	gpiod_set_value_cansleep(reset, 1);
+ 
++	/* Power the device up, if the SMC does that, while in reset */
++	ret = apple_pcie_port_power_on(pcie, np);
++	if (ret)
++		return ret;
++	if (of_property_present(np, "apple,power-function"))
++		msleep(50);
++
+ 	ret = apple_pcie_setup_refclk(pcie, port);
+ 	if (ret < 0)
+ 		return ret;

@@ -15,6 +15,6 @@ if [ -x /sbin/udevd ]; then
 fi
 # the Mac (172.16.42.2) routes to the internet when host/mac-share-internet.sh is on
 route add default gw 172.16.42.2 2>/dev/null
-touch /run/udhcpd.leases && udhcpd /etc/udhcpd.conf
+# the Mac's DHCP server on usb0 is the initramfs's usbwatch (one, kept alive)
 dropbear -R
 echo "n104: Alpine $(cat /etc/alpine-release) up, ssh root@172.16.42.1" > /dev/kmsg

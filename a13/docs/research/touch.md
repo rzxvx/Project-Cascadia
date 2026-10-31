@@ -423,3 +423,16 @@ minute of taps. Either ATTN is elsewhere on the N104, or the AOP GPIO
 interrupt block of the T8030 is not laid out as pinctrl-apple-gpio (M1)
 thinks -- the A5's Sandcastle driver had exactly that bug
 (ipad-mini-linux docs/research/p105-gpio.md). Open.
+
+## Fast taps on one key (2026-11-01)
+
+Typing on fbkeyboard "overheated": quick taps on one key were taken now and
+then, and it came back after a pause. A capture of the touchscreen and of
+fbkeyboard's keys showed the driver delivered every tap on time (29 taps, up
+to 7 a second) and fbkeyboard made 10 key presses of them. fbkeyboard's
+`check_input_events` waits for both `ABS_MT_POSITION_X` and `_Y` of each new
+contact, and evdev drops a value equal to the slot's last one -- a tap on
+the very spot of the one before came without coordinates and was ignored.
+The driver now resets the position of every lifted slot after each frame
+(`sync_frame()`, `input_mt_set_value(..., INT_MIN)`), so each new contact
+reports its own. Confirmed on the phone: no more "overheating".
