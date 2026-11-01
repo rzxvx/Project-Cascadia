@@ -35,10 +35,12 @@
  * Physical access goes through a normal cacheable mapping: device registers
  * (MMIO) read that way can stop the SoC, so anything outside the DRAM that
  * /chosen describes is refused there.  mmio/mmiowatch map the registers
- * themselves into this process as device memory instead (Dopamine's
- * pmap_map_in_with_flags, the PTE of its pmap_map_in with AttrIndx 5 =
- * XNU's CACHE_ATTRINDX_POSTED, nGnRE, as iOS maps registers) and read them
- * 32 bits at a time.
+ * into this process uncached instead, the way kmap maps (an IOSurface whose
+ * memory descriptor Dopamine points at the physical range), with the cache
+ * mode kIOMapInhibitCache = device memory, and read them 32 bits at a time.
+ * Writing PTEs into this process directly (pmap_map_in_with_flags) read one
+ * PMGR register fine and then took the phone down, at exit most likely: the
+ * kernel did not know the mapping it tore down (2026-11-02).
  */
 #include <CoreFoundation/CoreFoundation.h>
 #include <IOKit/IOKitLib.h>
@@ -77,9 +79,7 @@ static int (*jb_kcall)(uint64_t *, uint64_t, int, const uint64_t *);
 static int (*jb_get_kcall)(void);
 static uint64_t (*jb_task_self)(void);
 static uint64_t (*jb_port_kobject)(uint64_t, mach_port_t);
-static uint64_t (*jb_pmap_self)(void);
-static int (*jb_pmap_map_in_with_flags)(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);
-static void (*jb_flush_tlb)(void);
+static int (*jb_iosurface_map_cache)(uint64_t, uint64_t, void **, uint32_t);
 static struct kconst *kc;
 static uint64_t dram_base, dram_size;
 
@@ -112,9 +112,8 @@ static void jb_open(void)
 	jb_get_kcall = sym(h, "jbclient_get_fugu14_kcall");
 	jb_task_self = sym(h, "task_self");
 	jb_port_kobject = sym(h, "task_get_ipc_port_kobject");
-	jb_pmap_self = sym(h, "pmap_self");
-	jb_pmap_map_in_with_flags = sym(h, "pmap_map_in_with_flags");
-	jb_flush_tlb = sym(h, "flush_tlb");
+	/* kmap is IOSurface_map = this with cache mode 0 */
+	jb_iosurface_map_cache = sym(h, "IOSurface_map_withCacheMode");
 	kc = sym(h, "gSystemInfo");
 	if (getuid() != 0) {
 		fprintf(stderr, "kmem: run as root\n");
@@ -536,15 +535,9 @@ static void wr(int phys, uint64_t a, int width, uint64_t v)
 	printf("%s 0x%llx = 0x%llx\n", phys ? "PA" : "VA", a, back);
 }
 
-/*
- * Device registers, mapped as device memory (see the top).  pmap_map_in's
- * own PTE is 0x0060000000000e43 (UXN|PXN, AF, inner shareable, EL0 RW,
- * AttrIndx 0 = write-back); AttrIndx 5 makes it nGnRE.  The VA range comes
- * from vm_allocate and is never touched before the PTEs are in, so no
- * cacheable translation of it can be in the TLB.
- */
-#define PTE_DEVICE (0x0060000000000e43ULL | (5ULL << 2))
-#define MMIO_MAX 0x20000
+/* Device registers, mapped uncached (see the top) */
+#define kIOMapInhibitCache 0x100
+#define MMIO_MAX 0x10000
 
 static volatile uint32_t *mmio_map(uint64_t pa, uint64_t len)
 {
@@ -564,18 +557,12 @@ static volatile uint32_t *mmio_map(uint64_t pa, uint64_t len)
 	}
 	uint64_t pg = pa & ~(uint64_t)(CHUNK - 1);
 	uint64_t sz = (pa + len - pg + CHUNK - 1) & ~(uint64_t)(CHUNK - 1);
-	vm_address_t ua = 0;
-	if (vm_allocate(mach_task_self(), &ua, sz, VM_FLAGS_ANYWHERE) != KERN_SUCCESS) {
-		fprintf(stderr, "kmem: vm_allocate 0x%llx failed\n", sz);
+	void *u = NULL;
+	if (jb_iosurface_map_cache(pg, sz, &u, kIOMapInhibitCache) || !u) {
+		fprintf(stderr, "kmem: uncached map of 0x%llx+0x%llx failed\n", pg, sz);
 		exit(1);
 	}
-	int r = jb_pmap_map_in_with_flags(jb_pmap_self(), ua, pg, sz, PTE_DEVICE);
-	if (r) {
-		fprintf(stderr, "kmem: pmap_map_in_with_flags(0x%llx, 0x%llx) = %d\n", pg, sz, r);
-		exit(1);
-	}
-	jb_flush_tlb();
-	return (volatile uint32_t *)(ua + (pa - pg));
+	return (volatile uint32_t *)((uint8_t *)u + (pa - pg));
 }
 
 static void mmio_dump(uint64_t pa, uint64_t len)
