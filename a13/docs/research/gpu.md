@@ -437,6 +437,29 @@ configured PMP got no answer and did not move Fender: the device numbering
 or the message for this PMP version is still to be found (ApplePMGR's
 notify-PMP path in the kernelcache; the PMP firmware's type-2 handler).
 
+**iOS PMGR -> PMP** (kernelcache `com.apple.driver.ApplePMGR`, also
+`AppleT8030PMGR`, `ApplePMP` with class `ApplePMPv2`): no mailbox message --
+a "dashboard": `_pmpWriteDashBoard(PMPCommand, ...)`,
+`_pmpWriteDashBoardSetDeviceState(DeviceID, level, die)` reads a 64-bit PTD
+register (`PTD-SOC-DEV-PS-REQ: Device=%x level=%d psEntry=%llx`), sets or
+clears the device's bit (index from a per-device table, -1 = not PMP
+managed), writes it back and waits for the PMP to mirror it ("PMP-DevHandle
+... Expected/Actual"); `_ringPMPDoorbell` writes doorbell bits (PMGR offsets
+0xb8000 + 4 * n); `PMP_EXT_SW_GEN`, `PMP_STATUS` registers; `_initPMP` and
+`_initPMPv2` fill the PTD ranges and the PMP device list (`_pmpPtdRangeCount`,
+`_pmpDeviceCount`). The A13's ADT has no `ptd-range` (Asahi's PMP v2 script
+`experiments/pmp_init.py` writes `SOC-DEV-PS-REQ` from it); where iOS gets
+the PTD layout on the A13 is the next question (`_initPMP`).
+
+The configured PMP's shared buffer (Configure, Asahi v1) holds its
+energy-model view: rails SOC/DCS/DISP/AVE with VMIN/VNOM/VMAX, accounting
+groups CPU/ECPU/PCPU/GPU/ISP/VDD_AVE/DISP0/VENC/VDEC/JPEG/MSR/ANE/PCIE/SBR/SEP
+(+0x40a8, 0x18 bytes each), telemetry channels (+0x6000: VDD_MAIN, PCPU/GPU/
+SOC [V]/[T]/[I], CPU_SRAM, GPU_SRAM, DCS, ECPU...).
+
+**Do not bulk-read 0x23bc1c000** (PMGR reg 19, inside the PMP's ASC block):
+reading it through the proxy killed m1n1 (the USB link dropped).
+
 Crash logs: m1n1 gives the firmware a crash buffer ("[crash] buf <phys>");
 `m1n1.fw.asc.crash.CrashLogParser(data).dump()` decodes it (message,
 backtrace, the mailbox history both ways).
