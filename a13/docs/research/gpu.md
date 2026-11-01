@@ -416,9 +416,26 @@ PMP shows nothing from the GPU in its mailbox log. The PMP is given only
 Fender's +0x14000 page, so the +0x1000 request bit is cleared by Fender's own
 sequencer. PMGR: `GFX` (parent) and `PMP` are on; `GFX-SGX`, `GFX-ASC`,
 `GFX-BUSY` are not PS-managed. m1n1's M1 "poke" (Fender+0x14000 = 0x70001)
-reads back 0x30001 here. Open: what iOS's AGX driver writes to Fender
-before the firmware's first power request (static RE of `com.apple.AGXG12P`
-next).
+reads back 0x30001 here.
+
+**What the iOS side does around Fender** (static, kernelcache 20E247):
+`com.apple.AGXG12P` has an `AGXFender` class (`agxk_fender.h`,
+`agxk_fender_common.cpp`, `G12::AGXFenderCommon`): config-RAM commands
+(`initConfigRAMOffset`, `writeConfigRAMCommand32/64`,
+`terminateConfigRAMSequence`), `isPoweredOffWaitingOnHost`,
+`isPoweredOffWaitingForKicks`, `resetGPCSleepStateBits`,
+`enableGPCPerfStateOverride`; the base class's are panicking stubs in this
+build. "PMPDoorbell (unused)" is one of its register names. The GPU firmware
+runs its own register init sequence (a static table in its image, fw
+0xffffff8000010cb4: entries {value, offset, type 0-3}) -- nothing to give it.
+
+**PMGR's GFX domain has `notify_pmp`** (ADT pmgr devices: GFX id1 129, flags
+perf + notify_pmp; GFX-SGX 208, GFX-ASC 209, GFX-BUSY 210 are `no_ps`
+virtual devices). m1n1 sets the PS register only and never tells the PMP.
+A first `DevPwr` (m1n1 fw/pmp.py type 0x20e, DEV 129, STATE 0xf) to the
+configured PMP got no answer and did not move Fender: the device numbering
+or the message for this PMP version is still to be found (ApplePMGR's
+notify-PMP path in the kernelcache; the PMP firmware's type-2 handler).
 
 Crash logs: m1n1 gives the firmware a crash buffer ("[crash] buf <phys>");
 `m1n1.fw.asc.crash.CrashLogParser(data).dump()` decodes it (message,
