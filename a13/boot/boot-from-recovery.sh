@@ -4,13 +4,15 @@ set -eu
 cd "$(dirname "$0")"
 query=$(irecovery -q)
 printf '%s\n' "$query"
+# CPID + BDID say iPhone12,1; PRODUCT / MODEL are checked when irecovery
+# prints them (1.0.0, the one Debian / Ubuntu ship, does not)
 if ! printf '%s\n' "$query" | awk '
-    $1 == "CPID:" && $2 == "0x8030" { chip=1 }
-    $1 == "BDID:" && $2 == "0x04" { board=1 }
-    $1 == "MODEL:" && $2 == "n104ap" { model=1 }
-    $1 == "PRODUCT:" && $2 == "iPhone12,1" { product=1 }
+    $1 == "CPID:" { chip = ($2 == "0x8030") }
+    $1 == "BDID:" { board = ($2 == "0x04") }
+    $1 == "MODEL:" { badmodel = ($2 != "n104ap") }
+    $1 == "PRODUCT:" { badproduct = ($2 != "iPhone12,1") }
     $1 == "MODE:" && $2 == "Recovery" { recovery=1 }
-    END { exit !(chip && board && model && product && recovery) }
+    END { exit !(chip && board && !badmodel && !badproduct && recovery) }
 '; then
     echo 'Expected iPhone12,1 / n104ap / 8030 / 04 in patched iBSS Recovery.' >&2
     exit 1

@@ -13,10 +13,12 @@
 #                phone's own calibration, MAC addresses and antenna SKU from
 #                its syscfg (read over ssh from the phone running Linux,
 #                read-only)
+#   NVMe         all of the internal storage for Linux, iOS erased (asked,
+#                type ERASE; NVME=erase): a GPT, ext4, the Alpine root on it
 #
 # Output (boot/inputs/, not tracked): n104-mtfw.bin, n104-mtcal.bin, brcm/,
-# syscfg.bin; build/fbkeyboard/, build/wifitools/ (small trees for the
-# initramfs).
+# syscfg.bin, nvme-linux (the decision), nvme-backup/; build/fbkeyboard/,
+# build/wifitools/ (small trees for the initramfs).
 # `a13/cascadia pack` puts whatever is there into the boot image.
 set -euo pipefail
 
@@ -86,14 +88,16 @@ case "$ans" in
             have docker || fail "docker is needed to fetch fbkeyboard"
             rm -rf "$A13/build/fbkeyboard"
             mkdir -p "$A13/build/fbkeyboard"
-            docker run --rm --platform linux/arm64 -v "$A13/build/fbkeyboard":/out alpine:3.24 sh -ec '
+            docker run --rm --platform linux/arm64 -e HOST_IDS="$(id -u):$(id -g)" \
+                -v "$A13/build/fbkeyboard":/out alpine:3.24 sh -ec '
                 apk add -q fbkeyboard font-dejavu >/dev/null
                 for f in /usr/bin/fbkeyboard /lib/ld-musl-aarch64.so.1 \
                          $(ldd /usr/bin/fbkeyboard | sed -n "s/.*=> \([^ ]*\).*/\1/p") \
                          /usr/share/fonts/dejavu/DejaVuSans.ttf; do
                     mkdir -p "/out$(dirname "$f")"
                     cp -L "$f" "/out$f"
-                done' || fail "could not fetch fbkeyboard"
+                done
+                chown -R "$HOST_IDS" /out' || fail "could not fetch fbkeyboard"
             note "ok: fbkeyboard + its libraries + DejaVu Sans -> build/fbkeyboard"
         fi
         ;;
@@ -134,20 +138,24 @@ E
         fi
     done
     echo
-    mnt="$tmp/os"
+    # the two firmware directories out of the DMG (APFS inside UDIF) with
+    # 7-Zip in a container: the same on macOS and Linux, no mounting, no FUSE
+    # or root. iOS 16 keeps the Wi-Fi firmware in its DriverKit extension,
+    # the Bluetooth firmware in usr/share/firmware/bluetooth.
+    mnt="$CACHE/osfw"
+    rm -rf "$mnt"
     mkdir -p "$mnt"
-    case "$(uname -s)" in
-        Darwin) hdiutil attach -readonly -nobrowse -noverify -mountpoint "$mnt" "$dmg" >/dev/null \
-                    || fail "could not mount $dmg" ;;
-        *)      have apfs-fuse || fail "mounting the iOS root filesystem on Linux needs apfs-fuse"
-                apfs-fuse "$dmg" "$mnt" || fail "could not mount $dmg"
-                mnt="$mnt/root" ;;
-    esac
-    # iOS 16 keeps the Wi-Fi firmware in its DriverKit extension, the
-    # Bluetooth firmware in usr/share/firmware/bluetooth
-    wifi="$mnt/System/Library/DriverExtensions/com.apple.DriverKit-AppleBCMWLAN.dext/Firmware"
-    bt="$mnt/usr/share/firmware/bluetooth"
-    unmount() { case "$(uname -s)" in Darwin) hdiutil detach "$tmp/os" >/dev/null ;; *) fusermount -u "$tmp/os" ;; esac; }
+    wifi_dir=System/Library/DriverExtensions/com.apple.DriverKit-AppleBCMWLAN.dext/Firmware
+    bt_dir=usr/share/firmware/bluetooth
+    have docker || fail "docker is needed to read the iOS root filesystem"
+    docker run --rm -v "$CACHE":/c alpine:3.24 sh -ec "
+        apk add -q --no-cache 7zip >/dev/null 2>&1 || { echo 'apk add 7zip failed' >&2; exit 1; }
+        7zz x -y -bso0 -bsp0 -o/c/osfw /c/$OSDMG '$wifi_dir' '$bt_dir'
+        chown -R $(id -u):$(id -g) /c/osfw" \
+        || fail "could not read the firmware out of $OSDMG"
+    wifi="$mnt/$wifi_dir"
+    bt="$mnt/$bt_dir"
+    unmount() { rm -rf "$mnt"; }
     [ -d "$wifi" ] && [ -d "$bt" ] || { unmount; fail "no Wi-Fi/Bluetooth firmware in $OSDMG"; }
     rm -rf "$INPUTS/brcm"
     # the iPhone 11's module is "moana" (the ADT's wlan module-instance); the
@@ -178,7 +186,8 @@ else
     have docker || fail "docker is needed to fetch iw and wpa_supplicant"
     rm -rf "$A13/build/wifitools"
     mkdir -p "$A13/build/wifitools"
-    docker run --rm --platform linux/arm64 -v "$A13/build/wifitools":/out alpine:3.24 sh -ec '
+    docker run --rm --platform linux/arm64 -e HOST_IDS="$(id -u):$(id -g)" \
+        -v "$A13/build/wifitools":/out alpine:3.24 sh -ec '
         apk add -q iw wpa_supplicant >/dev/null
         W=/out/opt/wifi
         mkdir -p $W/bin $W/libexec $W/lib $W/share
@@ -197,7 +206,8 @@ else
             cp -L "$f" $W/lib/
         done
         cp -L /usr/share/udhcpc/default.script $W/share/udhcpc.script
-        chmod 755 $W/bin/* $W/libexec/* $W/lib/ld-musl-aarch64.so.1 $W/share/udhcpc.script' || fail "could not fetch iw and wpa_supplicant"
+        chmod 755 $W/bin/* $W/libexec/* $W/lib/ld-musl-aarch64.so.1 $W/share/udhcpc.script
+        chown -R "$HOST_IDS" /out' || fail "could not fetch iw and wpa_supplicant"
     note "ok: iw, wpa_supplicant + their libraries -> build/wifitools"
 fi
 
@@ -219,6 +229,79 @@ elif ssh -o ConnectTimeout=5 -o BatchMode=yes "$PHONE" \
 else
     note "not yet: the phone is not reachable at $PHONE -- boot it once and run"
     note "         a13/cascadia periphery again (Wi-Fi then gets its calibration)"
+fi
+
+# ---------- internal storage (NVMe) --------------------------------------------
+# All of NVMe namespace 1 for Linux, iOS erased: a GPT with one ext4 partition
+# "cascadia-root" holding the Alpine root (build/alpine-a13.tar.gz); the phone
+# boots from it from then on. Namespaces 2-7 (firmware, syscfg, nvram,
+# effaceable) are never written: the NVMe driver's write gate opens namespace
+# 1 only, and only in an image packed after the yes here. iOS comes back by a
+# restore in Finder / iTunes (the Linux disk goes then). Two runs:
+#   1. the yes (type ERASE, or NVME=erase): pack opens the gate; boot
+#   2. periphery again, the phone booted from that image: namespaces 2-7 are
+#      copied to boot/inputs/nvme-backup/, one more ERASE, then partition,
+#      format, unpack Alpine (and the Wi-Fi networks the phone knows)
+
+say "internal storage (NVMe)"
+phone() { ssh -o ConnectTimeout=5 -o BatchMode=yes "$PHONE" "$@"; }
+erase_ok() {
+    ans=${NVME:-}
+    if [ -z "$ans" ] && [ -t 0 ]; then
+        read -r -p "    $1 " ans || ans=
+    fi
+    [ "$ans" = ERASE ] || [ "$ans" = erase ]
+}
+if [ ! -f "$INPUTS/nvme-linux" ]; then
+    note "the internal storage holds iOS; Linux can have all of it -- this ERASES"
+    note "iOS and everything on the phone (apps, photos, data)"
+    if erase_ok "Give the internal storage to Linux? Type ERASE to agree, Enter to keep iOS:"; then
+        date > "$INPUTS/nvme-linux"
+        note "decided -- next: a13/cascadia pack, boot, then a13/cascadia periphery again"
+    else
+        note "skipped: iOS stays; the phone runs from NFS or in RAM"
+    fi
+elif ! phone true 2>/dev/null; then
+    note "decided, not done yet: boot the phone (packed after the decision), run periphery again"
+elif phone blkid 2>/dev/null | grep -q 'LABEL="cascadia-root"'; then
+    note "ok: the Linux disk is there (nvme0n1, cascadia-root)"
+elif ! phone 'ls /proc/device-tree/soc/nvme@*/apple,write-ranges' >/dev/null 2>&1; then
+    note "the phone runs an image with the NVMe closed: a13/cascadia pack, boot, run periphery again"
+else
+    bk="$INPUTS/nvme-backup"
+    mkdir -p "$bk"
+    chmod 700 "$bk"
+    for n in 2 3 4 5 6 7; do
+        [ -s "$bk/nvme0n$n.bin" ] && continue
+        phone "dd if=/dev/nvme0n$n bs=4096 2>/dev/null" > "$bk/nvme0n$n.bin"
+        [ -s "$bk/nvme0n$n.bin" ] || fail "could not copy nvme0n$n"
+        chmod 600 "$bk/nvme0n$n.bin"
+    done
+    note "namespaces 2-7 copied to boot/inputs/nvme-backup/ (private: serial numbers)"
+    phone 'command -v sgdisk && command -v mkfs.ext4' >/dev/null \
+        || fail "the phone has no sgdisk / mkfs.ext4: boot it into Alpine in RAM (a fresh a13/cascadia build rootfs + pack), or: apk add sgdisk e2fsprogs"
+    [ -f "$A13/build/alpine-a13.tar.gz" ] || fail "no build/alpine-a13.tar.gz: a13/cascadia build rootfs"
+    size=$(phone 'blockdev --getsize64 /dev/nvme0n1')
+    if erase_ok "Erase nvme0n1 now ($((size >> 30)) GiB, iOS and all on it)? Type ERASE:"; then
+        phone 'set -e
+            blockdev --setrw /dev/nvme0n1
+            sgdisk --zap-all /dev/nvme0n1 >/dev/null
+            sgdisk -n 1:0:0 -t 1:8305 -c 1:cascadia-root /dev/nvme0n1 >/dev/null
+            blockdev --rereadpt /dev/nvme0n1
+            sleep 1
+            mkfs.ext4 -q -F -L cascadia-root /dev/nvme0n1p1' || fail "partitioning / formatting failed (dmesg on the phone)"
+        note "nvme0n1: GPT, nvme0n1p1 = ext4 cascadia-root; unpacking Alpine..."
+        phone 'set -e
+            mkdir -p /mnt/cascadia
+            mount -t ext4 /dev/nvme0n1p1 /mnt/cascadia
+            tar xzf - -C /mnt/cascadia
+            [ -d /etc/wifi ] && cp -a /etc/wifi /mnt/cascadia/etc/
+            sync
+            umount /mnt/cascadia' < "$A13/build/alpine-a13.tar.gz" || fail "unpacking Alpine failed"
+        note "ok: Alpine on the internal storage -- boot the phone (a13/cascadia boot): it starts from it"
+    else
+        note "not erased"
+    fi
 fi
 
 say "done -- next: a13/cascadia pack"

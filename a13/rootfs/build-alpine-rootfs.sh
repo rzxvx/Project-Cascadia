@@ -11,7 +11,7 @@
 set -euo pipefail
 
 ALPINE_VER="${ALPINE_VER:-3.24}"
-PACKAGES="alpine-base dropbear dropbear-scp openssh-sftp-server htop nano eudev wpa_supplicant iw wireless-regdb"
+PACKAGES="alpine-base dropbear dropbear-scp openssh-sftp-server htop nano eudev wpa_supplicant iw wireless-regdb sgdisk e2fsprogs"
 A13="$(cd "$(dirname "$0")/.." && pwd)"
 mkdir -p "$A13/build"
 
@@ -29,5 +29,6 @@ docker run --rm --platform linux/arm64 \
     mkdir -p /r/root/.ssh /r/etc/dropbear
     chmod 700 /r/root /r/root/.ssh
     tar -C /r -czf /dist/alpine-a13.tar.gz .
+    chown $(id -u):$(id -g) /dist/alpine-a13.tar.gz
   "
 ls -la "$A13/build/alpine-a13.tar.gz"

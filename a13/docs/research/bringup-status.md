@@ -284,6 +284,19 @@ has a valid CRC and sends the firmware back to its bootloader.
   (`tty0`), so the USB serial's shell sat on the screen as well. The shells
   now open their own terminal in a new session.
 
+## 2026-11-01: the internal storage is Linux's
+
+The user's call: iOS is not kept. Read-only first: the APFS container
+surveyed from Linux (119 GiB, 102 free), namespaces 2-7 and the GPT areas
+copied to the host. A write gate in the NVMe driver (kernel patch 0007)
+refuses every write outside the DT's ranges -- tested closed (a rewrite on
+`nvme0n7` refused, the block unchanged). `periphery` (type `ERASE`, twice)
+then `pack` opens namespace 1, and the next `periphery` run partitions,
+formats and installs Alpine; the initramfs boots from `LABEL=cascadia-root`
+before NFS and RAM. The first boot after the install still came up in RAM:
+the initramfs busybox (Debian's busybox-static) has no `blkid` -- `findfs`
+now. Then: booted from the NVMe. Details: `nvme-plan.md`.
+
 ## Open small things (2026-10-31)
 
 - **Boot logo.** fbcon's Tux (one per CPU, `fbcon=logo-pos:center`) is not

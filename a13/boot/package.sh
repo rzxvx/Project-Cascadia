@@ -104,6 +104,15 @@ elif [ -n "$wifi" ]; then
     echo "note: no inputs/syscfg.bin -- Wi-Fi without calibration (boot, then: a13/cascadia periphery)" >&2
 fi
 
+# the internal NVMe given to Linux (a13/cascadia periphery: inputs/nvme-linux):
+# the NVMe driver's write gate opens namespace 1, all of it; the small
+# namespaces (firmware, syscfg, nvram, effaceable) stay closed
+nvme=$(fdtget -l "$tmp/dtb" /soc 2>/dev/null | grep '^nvme@' | head -n 1 || true)
+if [ -f inputs/nvme-linux ] && [ -n "$nvme" ]; then
+    fdtput -t u "$tmp/dtb" "/soc/$nvme" apple,write-ranges 1 0 0 0 0
+    echo "NVMe: namespace 1 is Linux's (the write gate opens there only)"
+fi
+
 # this phone's touchscreen calibration (a13/cascadia recalibrate)
 ts=$(fdtget "$tmp/dtb" /aliases touchscreen0 2>/dev/null || true)
 if [ -f inputs/touch-calibration ] && [ -n "$ts" ]; then

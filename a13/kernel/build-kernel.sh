@@ -7,9 +7,10 @@
 # PTR_AUTH/BTI off and the Apple platform drivers built in; a `make defconfig`
 # kernel (4K pages, PAC+BTI, Apple drivers as modules) hangs in early boot.
 #
-# Built in an arm64 Ubuntu 24.04 container (clang 18), the source in a Docker
-# volume: the macOS file system is case-insensitive, which the kernel tree is
-# not. On Apple silicon this runs natively.
+# Built in an Ubuntu 24.04 container (clang 18) of the host's own
+# architecture -- clang cross-compiles (LLVM=1 ARCH=arm64), so an x86_64 Linux
+# host needs no emulation -- the source in a Docker volume: the macOS file
+# system is case-insensitive, which the kernel tree is not.
 #
 # Our changes to the tree: kernel/patches/*.patch (git apply, in order) and
 # kernel/extras/ (new files).
@@ -28,17 +29,21 @@ OUT="$A13/build/payload"
 mkdir -p "$OUT"
 
 curl -fsSL "$CONFIG_URL" -o "$A13/build/config_16k"
-echo "$CONFIG_SHA256  $A13/build/config_16k" | shasum -a 256 -c -
+if command -v sha256sum >/dev/null; then
+    echo "$CONFIG_SHA256  $A13/build/config_16k" | sha256sum -c -
+else
+    echo "$CONFIG_SHA256  $A13/build/config_16k" | shasum -a 256 -c -
+fi
 
 docker volume create hoolock-ksrc >/dev/null
-docker run --rm --platform linux/arm64 \
+docker run --rm \
   -v hoolock-ksrc:/src \
   -v "$OUT":/out \
   -v "$A13/build":/a13build \
   -v "$HERE":/kernel:ro \
   -v "$HERE/extras":/extras:ro \
-  -e JOBS="$JOBS" -e REPO="$REPO" -e COMMIT="$COMMIT" \
-  arm64v8/ubuntu:24.04 bash -euxc '
+  -e JOBS="$JOBS" -e REPO="$REPO" -e COMMIT="$COMMIT" -e HOST_IDS="$(id -u):$(id -g)" \
+  ubuntu:24.04 bash -euxc '
     export DEBIAN_FRONTEND=noninteractive
     apt-get update
     apt-get install -y --no-install-recommends \
@@ -65,6 +70,8 @@ docker run --rm --platform linux/arm64 \
     cp .config /a13build/kernel.config
     make -j"$JOBS" Image.gz dtbs
     cp -v arch/arm64/boot/Image.gz arch/arm64/boot/dts/apple/t8030-n104.dtb /out/
+    # the files go to the host user (Docker on Linux writes them as root)
+    chown "$HOST_IDS" /out/Image.gz /out/t8030-n104.dtb /a13build/kernel.config
     echo "KERNEL BUILD OK"
   '
 ls -la "$OUT"

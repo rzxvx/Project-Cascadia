@@ -54,7 +54,10 @@ Same order as the iPad mini 1. Each step notes what already exists (Hoolock
       from the ADT's tunables), powered through the SMC (`gP11`), brcmfmac;
       firmware + NVRAM from the IPSW, MAC and calibration from syscfg; the
       `wifi` command. L1 ASPM off for now (`pcie_aspm.policy=performance`).
-- [ ] Internal storage: iOS's files read-only, then a Linux partition of its own.
+- [x] Internal storage: all of NVMe namespace 1 for Linux (iOS erased, asked),
+      one ext4 root, booted before NFS and RAM; a write gate in the NVMe driver
+      keeps the other namespaces unwritable. (Side by side with iOS: planned,
+      not done -- see research/nvme-plan.md.)
 - [ ] Native display: `disp0` + Synopsys MIPI DSIM + panel "pinot" + display
       PMU "chestnut".
 - [ ] Backlight (LM3539, I2C), battery, charging (SMC).

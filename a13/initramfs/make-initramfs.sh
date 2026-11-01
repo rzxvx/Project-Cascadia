@@ -28,6 +28,7 @@ docker run --rm --platform linux/arm64 \
   -v "$OUT":/out \
   -v "$A13/build/ssh":/keys \
   -v "$A13/initramfs/wifi":/src/wifi:ro \
+  -e HOST_IDS="$(id -u):$(id -g)" \
   arm64v8/debian:bookworm bash -euxc '
     apt-get update
     apt-get install -y --no-install-recommends busybox-static cpio gzip dropbear-bin
@@ -212,6 +213,37 @@ ram_root() {
     umount /newroot 2>/dev/null
 }
 
+# The NVMe: every namespace read-only for a start -- but namespace 1 when
+# it is the Linux disk (the DT opens the write gate of the NVMe driver for
+# it; the gate refuses writes outside the DT ranges anyway).
+linux_disk=0
+ls /proc/device-tree/soc/nvme@*/apple,write-ranges >/dev/null 2>&1 && linux_disk=1
+for d in /dev/nvme0n*; do
+    case "$d" in
+        /dev/nvme0n1|/dev/nvme0n1p*) [ $linux_disk = 1 ] && continue ;;
+    esac
+    [ -b "$d" ] && blockdev --setro "$d"
+done
+
+# The Linux disk on the internal NVMe (a13/cascadia periphery makes it): the
+# root of choice when it is there -- before NFS, before RAM.
+nvme_root() {
+    [ $linux_disk = 1 ] || return 0
+    # findfs: this busybox has no blkid
+    dev=$(findfs LABEL=cascadia-root 2>/dev/null)
+    case "$dev" in
+        /dev/nvme0n1p*) ;;
+        *) return 0 ;;
+    esac
+    mkdir -p /newroot
+    if mount -t ext4 -o noatime "$dev" /newroot && [ -x /newroot/sbin/init ]; then
+        echo "[nvme] root $dev"
+        enter_root
+    fi
+    echo "[nvme] $dev is no root - going on"
+    umount /newroot 2>/dev/null
+}
+
 # USB gadget: wait for the DWC3 UDC to register (dwc3-apple may defer).
 udc=""
 for i in $(seq 1 30); do
@@ -222,6 +254,7 @@ done
 if [ -z "$udc" ]; then
     echo "[usb] NO UDC after 30s. Kernel USB messages:"
     dmesg | grep -iE "dwc3|usb|ausb|phy|dart|usbcomplex" | tail -n 25
+    nvme_root
     ram_root
 else
     echo "[usb] UDC = $udc"
@@ -260,6 +293,8 @@ else
     # NFSv3 (macOS nfsd has no v4), hand over to the root and its own init.
     # Anything that fails here stays in RAM: an initramfs that always boots
     # beats a root that sometimes does.
+    nvme_root
+
     # No host on the cable (the gadget is not configured within 10 s): no
     # NFS to wait for, straight to Alpine in RAM.
     for i in $(seq 1 10); do
@@ -318,6 +353,8 @@ done
 EOF
     chmod +x "$root/init"
     ( cd "$root" && find . | cpio -o -H newc | gzip -9 ) > /out/initramfs.cpio.gz
+    # the files go to the host user (Docker on Linux writes them as root)
+    chown "$HOST_IDS" /out/initramfs.cpio.gz /keys/dropbear_ed25519_host_key
     echo "INITRAMFS OK"
   '
 

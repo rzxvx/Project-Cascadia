@@ -1,15 +1,18 @@
 # Cascadia on Apple A13 — iPhone 11
 
-Linux on the iPhone 11 (iPhone12,1 / N104AP, T8030): an Alpine system over
-the Lightning cable (USB serial, USB networking, SSH, the root over NFS from
-the host), and XFCE on the screen with multi-touch.
+Linux on the iPhone 11 (iPhone12,1 / N104AP, T8030): an Alpine system on the
+phone's own internal storage (or in RAM, or over NFS), Wi-Fi and Bluetooth,
+XFCE on the screen with multi-touch, an on-screen keyboard -- and after the
+boot, no cable.
 
-> **Status: Phase 3.** The kernel boots on all six cores, the framebuffer
-> console works, the USB gadget gives a shell and a network, the clock and the
-> timer are right, and the touchscreen works -- its firmware loaded through
-> the controller's bootloader by our own driver, and Wi-Fi works. No frequency
-> scaling or internal storage yet. The boot is
-> tethered and needs the usbliter8 RP2350 board.
+**Start here: [docs/QUICKSTART.md](docs/QUICKSTART.md)** -- from a clean
+machine (macOS or Linux) to a phone that runs on its own.
+
+> **Status: Phase 3.** All six cores, the framebuffer console, USB (shell,
+> network, SSH), the touchscreen (its firmware loaded through the controller's
+> bootloader by our own driver), Wi-Fi, Bluetooth, the internal storage as
+> Linux's disk. No frequency scaling, no native display, no GPU yet. The boot
+> is tethered and needs the usbliter8 RP2350 board.
 
 This is the A13 track of Project Cascadia. The iPad mini 1 (A5) lives in the
 repository root; this directory is self-contained.
@@ -23,7 +26,7 @@ repository root; this directory is self-contained.
 | USB | DWC3 in device mode: ACM serial shell + CDC-ECM network, DHCP for the host, dropbear SSH |
 | Clock, timer | arch timer at 24 MHz (FIQ through the AIC), PMIC RTC sets the wall clock |
 | SMC | RTKit, GPIO, RTC, reboot / poweroff, power-button events |
-| Storage | the internal NVMe (ANS2) is detected — **it holds iOS; never mount or write it** |
+| Storage | the internal NVMe (ANS2): iOS is left alone unless you give the storage to Linux (`periphery`, type `ERASE`) -- then namespace 1 is one ext4 root; a write gate in the NVMe driver keeps every other namespace (syscfg, nvram, firmware) unwritable |
 | CPU | all six cores (4x Thunder, 2x Lightning), started by m1n1 through the PMGR |
 | Touch | multi-touch on `/dev/input/eventN` ("Apple iPhone touchscreen"): our SPI controller driver for `spi-1,samsung`, then our driver loads the controller's firmware (from your IPSW) through its HBPP bootloader and reads Apple's HID-over-SPI; a pointer in X with libinput. Polled (~5 % of a core when idle) |
 | Desktop | XFCE on simpledrm with the touchscreen (the Alpine root needs eudev; `a13-init` starts udevd) |
@@ -38,7 +41,10 @@ The DCSD cable carries the s5l UART0: m1n1 and then the whole kernel log
 ## Boot it
 
 You need: an iPhone 11 (iPhone12,1), the usbliter8 board, a Mac or Linux host
-with Docker, `llvm` + `lld`, Rust, `ipsw` 3.1.714, `irecovery`, Python 3.
+with Docker, `dtc`, `ipsw` 3.1.714, `irecovery`, Python 3 with pyusb; on macOS
+also Homebrew `llvm` + `lld` and Rust (m1n1 builds on the host there, in a
+container on Linux). The packages per system:
+[docs/QUICKSTART.md](docs/QUICKSTART.md).
 
 ```bash
 a13/cascadia doctor                         # check everything
@@ -150,6 +156,7 @@ initramfs/   make-initramfs.sh: busybox, USB gadget (configfs), udhcpd, dropbear
 rootfs/      build-alpine-rootfs.sh + overlay/ (inittab, a13-init): the NFS root
 host/        mac-nfs-export.sh, linux-nfs-export.sh (nfsd),
              mac-share-internet.sh (pf NAT), linux-share-internet.sh (iptables/nft)
+docs/QUICKSTART.md  start here
 dts/         our first, ADT-derived minimal DT (historical; the kernel's
              t8030-n104.dts is the one used)
 tools/       make-inputs.sh, ipsw-partial.py, mtfw.py (touch firmware plist ->

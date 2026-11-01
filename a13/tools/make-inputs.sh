@@ -118,6 +118,9 @@ for t in rdtr rtsc rkrn; do
     printf '%s\n' "$info" | grep -q "^ *$t (" || fail "$im4m has no $t entry"
 done
 note "ok: CHIP 0x8030, BORD 0x04, rdtr/rtsc/rkrn present"
+# rdsk carries the Alpine root for boots without NFS (an iBoot ramdisk)
+printf '%s\n' "$info" | grep -q "^ *rdsk (" \
+    || note "warning: $im4m has no rdsk entry -- no Alpine in RAM (NFS or the internal storage still work)"
 [ "$im4m" = "$INPUTS/IM4M" ] || cp "$im4m" "$INPUTS/IM4M"
 
 # ---------- 4. DeviceTree: extract and wrap as rdtr IMG4 ---------------------

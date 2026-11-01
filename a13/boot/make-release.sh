@@ -31,6 +31,8 @@ Linux $(gzip -dc "$P/Image.gz" | strings | grep -m1 -o 'Linux version [^ ]*' | c
 t8030-n104.dtb, initramfs (busybox + dropbear from Debian bookworm), kernel.config.
 Never mount or write nvme0n1 from Linux: it is the phone's iOS storage.
 EOT
-(cd "$R" && find . -type f ! -name SHA256SUMS | sort | xargs shasum -a 256 > SHA256SUMS)
-(cd ../build/release && tar czf "$NAME.tar.gz" "$NAME" && shasum -a 256 "$NAME.tar.gz" > "$NAME.tar.gz.sha256")
+if command -v sha256sum >/dev/null; then sha256s() { sha256sum "$@"; }
+else sha256s() { shasum -a 256 "$@"; }; fi
+(cd "$R" && find . -type f ! -name SHA256SUMS | sort | xargs sha256s > SHA256SUMS)
+(cd ../build/release && tar czf "$NAME.tar.gz" "$NAME" && sha256s "$NAME.tar.gz" > "$NAME.tar.gz.sha256")
 ls -la ../build/release

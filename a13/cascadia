@@ -4,16 +4,17 @@
 #
 #   a13/cascadia doctor          check that this machine has what the build needs
 #   a13/cascadia inputs          make the boot inputs from Apple's CDN
-#   a13/cascadia periphery       touch, on-screen keyboard, Wi-Fi/BT: firmware
-#                                and this phone's calibration (run it again
-#                                once the phone has booted)
+#   a13/cascadia periphery       touch, on-screen keyboard, Wi-Fi/BT (firmware,
+#                                iw, wpa_supplicant, this phone's calibration),
+#                                the internal storage for Linux (asked; erases
+#                                iOS) -- run it again once the phone has booted
 #   a13/cascadia recalibrate     touchscreen: tap the four corners on the running
 #                                phone; pack puts the result into the DT
-#   a13/cascadia build           m1n1 + kernel + initramfs (the whole payload)
+#   a13/cascadia build           m1n1 + kernel + initramfs + Alpine root (all)
 #   a13/cascadia build m1n1      just m1n1
 #   a13/cascadia build kernel    just the kernel + DTB
 #   a13/cascadia build initramfs just the initramfs
-#   a13/cascadia build rootfs    the Alpine aarch64 rootfs tarball (for NFS)
+#   a13/cascadia build rootfs    the Alpine aarch64 root (NFS, RAM, internal storage)
 #   a13/cascadia pack            wrap the payload into the bootable IMG4
 #   a13/cascadia boot            pwned DFU → iBSS → boot (needs usbliter8)
 #   a13/cascadia nfs on|off      export a root filesystem to it  (macOS or Linux)
@@ -39,28 +40,50 @@ cmd_doctor() {
     rc=0
     say "host"
     note "uname: $(uname -srm)"
-    for t in git python3 bash; do
+    for t in git python3 bash curl ssh; do
         if have "$t"; then note "ok:      $t"; else note "MISSING: $t"; rc=1; fi
     done
+    # pack edits the device tree
+    if have fdtput && have fdtget; then note "ok:      fdtput, fdtget"
+    else note "MISSING: fdtput / fdtget -- pack needs them (dtc; Debian/Ubuntu: device-tree-compiler)"; rc=1; fi
 
     # docker -- reachability, not just the binary
     if ! have docker; then
         note "MISSING: docker"; rc=1
     elif docker info >/dev/null 2>&1; then
         note "ok:      docker (daemon reachable)"
+        # the initramfs, the Alpine root and periphery run arm64 containers:
+        # native on Apple silicon / arm64, qemu (binfmt) on x86_64
+        if docker run --rm --platform linux/arm64 alpine:3.24 true >/dev/null 2>&1; then
+            note "ok:      docker runs arm64 containers"
+        else
+            note "MISSING: arm64 containers -- on x86_64: docker run --privileged --rm tonistiigi/binfmt --install arm64"
+            rc=1
+        fi
     else
         note "BROKEN:  docker is installed but its daemon is not reachable"; rc=1
     fi
 
-    # m1n1 build needs: clang/lld (Homebrew llvm on macOS), Rust, GNU make
-    for t in clang lld rustc cargo; do
-        if have "$t"; then note "ok:      $t"
-        else note "MISSING: $t -- m1n1 needs it"; rc=1; fi
-    done
-    if have gmake || have make; then
-        note "ok:      $(have gmake && echo gmake || echo make)"
+    # m1n1: on macOS built with the host's toolchain; elsewhere in a container
+    if [ "$(uname -s)" = Darwin ]; then
+        for t in rustc cargo; do
+            if have "$t"; then note "ok:      $t"
+            else note "MISSING: $t -- m1n1 needs it (rustup)"; rc=1; fi
+        done
+        if have brew && [ -x "$(brew --prefix llvm 2>/dev/null)/bin/clang" ]; then
+            note "ok:      Homebrew llvm"
+        else
+            note "MISSING: Homebrew llvm + lld -- m1n1 needs them (brew install llvm lld)"; rc=1
+        fi
+        if have rustup && rustup target list --installed 2>/dev/null | grep -qx aarch64-unknown-none-softfloat; then
+            note "ok:      Rust target aarch64-unknown-none-softfloat"
+        else
+            note "MISSING: rustup target add aarch64-unknown-none-softfloat -- m1n1 needs it"; rc=1
+        fi
+        if have gmake || have make; then note "ok:      $(have gmake && echo gmake || echo make)"
+        else note "MISSING: make -- m1n1 needs it"; rc=1; fi
     else
-        note "MISSING: make (or gmake) -- m1n1 needs it"; rc=1
+        note "ok:      m1n1 builds in a container (no host toolchain needed)"
     fi
 
     # boot chain tools
@@ -103,7 +126,9 @@ cmd_doctor() {
                 note "ok:      $(have iptables && echo iptables || echo nft) (net)"
             else
                 note "missing: iptables or nft -- net needs one"
-            fi ;;
+            fi
+            note "note:    irecovery and usbliter8ctl talk to USB: run boot as root (sudo -E),"
+            note "         or give your user the Apple devices (udev rule for vendor 05ac)" ;;
         *)
             note "note:    $(uname -s) -- untested" ;;
     esac
@@ -125,6 +150,10 @@ cmd_doctor() {
         || note "missing: Wi-Fi/BT firmware -- no Wi-Fi"
     [ -s boot/inputs/syscfg.bin ] && note "ok:      this phone's calibration (syscfg)" \
         || note "missing: this phone's calibration -- boot once, then run periphery again"
+    [ -f boot/inputs/nvme-linux ] && note "ok:      internal storage given to Linux (iOS erased)" \
+        || note "none:    internal storage (iOS kept; the root comes over NFS or runs in RAM)"
+    [ -f build/alpine-a13.tar.gz ] && note "ok:      Alpine root (build/alpine-a13.tar.gz)" \
+        || note "missing: Alpine root -- a13/cascadia build rootfs (for RAM and NVMe)"
 
     say "build output (build/payload/)"
     for f in m1n1-idevice.macho Image.gz t8030-n104.dtb initramfs.cpio.gz; do
@@ -156,6 +185,7 @@ cmd_build() {
             cmd_build m1n1
             cmd_build kernel
             cmd_build initramfs
+            cmd_build rootfs
             ;;
         m1n1)
             say "building m1n1"
@@ -261,5 +291,5 @@ case "${1:-}" in
     nfs)     t=$(host_tool nfs-export);     shift; bash "$t" "$@" ;;
     net)     t=$(host_tool share-internet); shift; bash "$t" "$@" ;;
     release) shift; cmd_release "$@" ;;
-    *)       sed -n '2,18p' "$A13/cascadia" | sed 's/^# \{0,1\}//'; exit 2 ;;
+    *)       sed -n '2,25p' "$A13/cascadia" | sed 's/^# \{0,1\}//'; exit 2 ;;
 esac
