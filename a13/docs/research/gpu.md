@@ -643,6 +643,15 @@ auto-PM handshake with the PMGR) gets no answer. `agx-start.py` prints the
 GFX and PMP power-state registers; `--gfx-auto` sets GFX's AUTO_ENABLE
 after powering it on.
 
+Tried (proxy, 2026-11-02, `--boot-pmp --gfx-auto --fender`): GFX ps
+0x0f0000ff -> 0x1f0000ff, and after the firmware's request 0x1f0003ff (the
+was-power/clock-gated bits: auto-PM does act), PMP ps 0x0f0f00ff (iOS:
+0x1f0f03ff). Fender+0x1000 still 0x11. Next difference: Fender +0x14000,
+0 on iOS, 0x30001 here -- m1n1's `AGX.poke_sgx` (M1 "Early init, needed?")
+writes 0x70001 there. `agx-start.py` now skips that poke (`--poke` keeps
+it) and prints Fender's +0x1000 and +0x14000 pages before the GPU and after
+its request, for a word-by-word comparison with iOS's.
+
 **Do not bulk-read 0x23bc1c000** (PMGR reg 19, inside the PMP's ASC block):
 reading it through the proxy killed m1n1 (the USB link dropped).
 

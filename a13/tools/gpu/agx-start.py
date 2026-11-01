@@ -3,7 +3,7 @@
 """G4 (a13/docs/research/gpu.md): start the A13's GPU firmware from the Mac
 through m1n1's proxy, with m1n1's own Python AGX driver.
 
-    M1N1DEVICE=/dev/cu.usbmodemXXXX agx-start.py [--boot-pmp|--pmp-dvfs|--pmp-doorbell] [--fender] [--gpu-trig] [--gfx-auto] [SECONDS]
+    M1N1DEVICE=/dev/cu.usbmodemXXXX agx-start.py [--boot-pmp|--pmp-dvfs|--pmp-doorbell] [--fender] [--gpu-trig] [--gfx-auto] [--poke] [SECONDS]
 
 The phone runs `a13/cascadia boot proxy` (m1n1 alone; iBoot has loaded the
 GPU firmware: G3). Needs a13/build/m1n1 with patch 0007 (T8030 / G12) and the
@@ -33,6 +33,11 @@ GPU's DVFM trigger control, PMGR reg 0 + 0xfd000 (GPU_TRIG_CTL) |= gpu-trig
 (0x23b080390), as iOS has it: there the hardware moves GFX between states 0,
 4 and 0xf by itself, and Fender's 0x11 -> 0x01 takes ~16 us with +0x1010 = 0
 (kmem mmiowatch, 2026-11-02). Printed either way.
+--poke: keep m1n1's M1 "early init" (AGX.poke_sgx: sgx+0xd14000 = Fender
++0x14000 = 0x70001, reads back 0x30001 here). Skipped by default: iOS leaves
++0x14000 at 0 (+0x14004 = 1). Fender's +0x1000 and +0x14000 pages (nonzero
+words) are printed before the GPU starts and after its request, to compare
+with iOS's (gpu.md).
 """
 import os
 import sys
@@ -58,6 +63,7 @@ boot_pmp = "--boot-pmp" in sys.argv[1:] or pmp_dvfs or pmp_doorbell
 fender = "--fender" in sys.argv[1:]
 gpu_trig = "--gpu-trig" in sys.argv[1:]
 gfx_auto = "--gfx-auto" in sys.argv[1:]
+poke = "--poke" in sys.argv[1:]
 seconds = float(args[0]) if args else 10.0
 
 # the power-management coprocessor carries out the GPU's power state changes
@@ -209,6 +215,16 @@ if fender:
     fender_regs("after +0x1010 |= 1")
 
 
+def fender_pages(when):
+    for base, n in ((0x1000, 0x40), (0x14000, 0x80)):
+        words = [(o, p.read32(FENDER + o)) for o in range(base, base + n * 4, 4)]
+        print(f"[agx-start] Fender +{base:#x} page {when}: " + (" ".join(
+            f"+{o:#x}={v:#x}" for o, v in words if v) or "all 0"))
+
+
+fender_pages("before the GPU")
+
+
 def fender_ack():
     # G12::AGXFenderCommon (AGXG12P 20E247, fn 0xfffffff00851f7fc): write
     # back +0x1014 & 7
@@ -218,6 +234,9 @@ def fender_ack():
         print(f"[agx-start] Fender interrupt {st:#x} acked, +0x1000="
               f"{p.read32(FENDER + 0x1000):#x}")
 
+if not poke:
+    # iOS never writes Fender +0x14000 (m1n1's M1 "Early init, needed?")
+    AGX.poke_sgx = lambda self: setattr(self, "sgx_base", self.sgx_dev.get_reg(0)[0])
 agx = AGX(u)
 agx.verbose = 10
 try:
@@ -230,6 +249,7 @@ try:
         if fender:
             fender_ack()
     fender_regs("after the GPU's request")
+    fender_pages("after the GPU's request")
     trig_regs("after the GPU's request")
     print("[agx-start] DevCtrl read ptr:", agx.ch.devctrl.state.READ_PTR.val)
     if pmp_asc:
