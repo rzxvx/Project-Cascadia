@@ -425,7 +425,7 @@ reads back 0x30001 here.
 `terminateConfigRAMSequence`), `isPoweredOffWaitingOnHost`,
 `isPoweredOffWaitingForKicks`, `resetGPCSleepStateBits`,
 `enableGPCPerfStateOverride`; the base class's are panicking stubs in this
-build. "PMPDoorbell (unused)" is one of its register names. The GPU firmware
+build (G12's own methods: below). The GPU firmware
 runs its own register init sequence (a static table in its image, fw
 0xffffff8000010cb4: entries {value, offset, type 0-3}) -- nothing to give it.
 
@@ -481,10 +481,47 @@ from the request). Tried (proxy, `agx-start.py --pmp-dvfs` + by hand): command 6
 the PMP -- **the PMP has 7 DVFS domains**. Fender+0x1000 stays 0x11 with all
 seven set: the DVFS ranges are not what the transition waits for.
 
-Left to look at: the iOS AGX driver's Fender side (`G12::AGXFenderCommon`:
-config RAM, `isPoweredOffWaitingOnHost`, the timer power interrupt status --
-the host may have to answer Fender), and Fender's registers on a running iOS
-(needs MMIO reads from iOS, which kmem cannot do yet).
+**iOS's Fender driver, read** (2026-11-01, `com.apple.AGXG12P` and
+`com.apple.AGXFirmwareKextG12PRTBuddy`, 20E247). The `AGXFender` methods
+named above are panicking stubs in the vtable `G12::AGXFenderCommon` uses
+(0xfffffff0079b9240; found by the stubs' addresses, the kext's pointers are
+fileset fixups: target = 0xfffffff007004000 + low 30 bits): **G12 has no
+config RAM, no "waiting on host", no timer power interrupt**. Its own
+methods (the object: +0x10 Fender's mapping, +0xc "power management on",
++0xd a flag) are tiny:
+
+| fn (0xfffffff00851....) | does |
+|---|---|
+| f8c4 | init: keep the mapping, PM off |
+| f860 | state = +0x1000 & 0xf (only with PM on; "Fender State" in IOReport) |
+| f824 | control: +0x1010 \|= 1, 2 or 4 for mode 0, 1, 2; any other mode writes 0; then reads it back |
+| f7fc | interrupt ack (PM on): v = +0x1014; if v, write v & 7 back |
+| f7e4 / f7d8 | set the +0xc / +0xd flags (software only) |
+| f7c0 | dummy reads of +0x1010, +0x1014, +0x1000 |
+| f7a4 | +0x1010 & 1 |
+
+Who calls them: the GPU interrupt handler (fn 0xfffffff0084c78e0) passes the
+interrupt index to the firmware object (fn 0xfffffff0084f4e48): **indices
+1-3 go to the Fender ack** (+0x1014), 0 to the firmware path, 4 to another.
+The sgx node has six interrupts (AIC 0x18d, 0x18e, 0x18f, 0x190, 0x19c,
+0x19e), so 0x18e-0x190 are Fender's. The idle path (fn 0xfffffff0084c79e8,
+after a firmware interrupt) writes +0x1010 = 0 (control mode 3) before the
+GPU powers down and +0x1010 |= 1 (mode 0) otherwise (fn 0xfffffff0084f4b80:
+`x ? 0 : 3`). RTBuddy's `powerStateChangeGated` panics with "trying to change
+power state with disabled fender power management" if PM is off, and turns
+it on (+0xc) on the way up. The firmware itself never names +0x1010, +0x1014
+or +0x1018 (no such immediate offsets in `armfw_g12p`): they face the host.
+"PMPDoorbell (unused)" is the G12 IO-mapping table's name for the slot
+(fn 0xfffffff0084cbd24; "FenderRegs" size 0x5000 there); the firmware still
+rings 0x23bc34000 when its flag at fw 0xffffff80000bf1a8 is 0. The PMP's
+"GFX_FENDER" is an energy-meter node name, not a control.
+
+So our stuck state reads as: the firmware asked (+0x1000 = 0x11), Fender
+raised a host interrupt (+0x1014 = 2, sgx interrupt index 2) that nobody
+acknowledged, and +0x1010 (host power management) may be 0.
+`agx-start.py --fender` prints +0x1000/+0x1010/+0x1014/+0x1018 before the
+GPU and after its request, then sets +0x1010 bit 0, acknowledges +0x1014 and
+watches +0x1000 for 3 s (acking again as interrupts come).
 
 **Do not bulk-read 0x23bc1c000** (PMGR reg 19, inside the PMP's ASC block):
 reading it through the proxy killed m1n1 (the USB link dropped).

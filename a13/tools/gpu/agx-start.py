@@ -3,7 +3,7 @@
 """G4 (a13/docs/research/gpu.md): start the A13's GPU firmware from the Mac
 through m1n1's proxy, with m1n1's own Python AGX driver.
 
-    M1N1DEVICE=/dev/cu.usbmodemXXXX agx-start.py [--boot-pmp|--pmp-dvfs] [SECONDS]
+    M1N1DEVICE=/dev/cu.usbmodemXXXX agx-start.py [--boot-pmp|--pmp-dvfs] [--fender] [SECONDS]
 
 The phone runs `a13/cascadia boot proxy` (m1n1 alone; iBoot has loaded the
 GPU firmware: G3). Needs a13/build/m1n1 with patch 0007 (T8030 / G12) and the
@@ -16,6 +16,10 @@ session: each proxyclient session starts m1n1's heap afresh and a second one
 overwrites the first one's memory (the GPU's page tables).
 --pmp-dvfs: --boot-pmp, then PM command 6 (a DVFS domain's state range) with
 the full range for domains 0-6 (all of them), before the GPU starts.
+--fender: what iOS's G12::AGXFenderCommon does to Fender, the only Fender
+registers the host touches: after SECONDS, set +0x1010 bit 0 (Fender power
+management on) and acknowledge +0x1014 (interrupt status, write-1-to-clear:
+sgx interrupts 1-3), then watch +0x1000 for the firmware's request to finish.
 """
 import os
 import sys
@@ -37,6 +41,7 @@ pmp_asc = None
 args = [a for a in sys.argv[1:] if not a.startswith("--")]
 boot_pmp = "--boot-pmp" in sys.argv[1:] or "--pmp-dvfs" in sys.argv[1:]
 pmp_dvfs = "--pmp-dvfs" in sys.argv[1:]
+fender = "--fender" in sys.argv[1:]
 seconds = float(args[0]) if args else 10.0
 
 # the power-management coprocessor carries out the GPU's power state changes
@@ -129,8 +134,19 @@ try:
 except Exception as e:
     print(f"[agx-start] PMP: {e!r}")
 
+FENDER = 0x204d00000
+
+
+def fender_regs(when):
+    # +0x1000 state (low 4 bits) | 0x10 request pending, +0x1010 host control,
+    # +0x1014 interrupt status, +0x1018
+    print(f"[agx-start] Fender {when}: " + " ".join(
+        f"+{o:#x}={p.read32(FENDER + o):#x}" for o in (0x1000, 0x1010, 0x1014, 0x1018)))
+
+
 p.pmgr_adt_power_enable("/arm-io/gfx-asc")
 p.pmgr_adt_power_enable("/arm-io/sgx")
+fender_regs("before the GPU")
 
 agx = AGX(u)
 agx.verbose = 10
@@ -141,8 +157,28 @@ try:
         agx.work()
         if pmp_asc:
             pmp_asc.work()
-    print("[agx-start] Fender+0x1000:", hex(p.read32(0x204d01000)),
-          "DevCtrl read ptr:", agx.ch.devctrl.state.READ_PTR.val)
+    fender_regs("after the GPU's request")
+    if fender:
+        # G12::AGXFenderCommon (AGXG12P 20E247, fn 0xfffffff00851f824 and
+        # 0xfffffff00851f7fc): power management on = +0x1010 |= 1; interrupt
+        # ack = write back +0x1014 & 7
+        p.write32(FENDER + 0x1010, p.read32(FENDER + 0x1010) | 1)
+        fender_regs("after +0x1010 |= 1")
+        st = p.read32(FENDER + 0x1014) & 7
+        if st:
+            p.write32(FENDER + 0x1014, st)
+        fender_regs(f"after acking +0x1014 ({st:#x})")
+        end = time.time() + 3
+        while time.time() < end:
+            agx.work()
+            if pmp_asc:
+                pmp_asc.work()
+            st = p.read32(FENDER + 0x1014) & 7
+            if st:
+                p.write32(FENDER + 0x1014, st)
+                print(f"[agx-start] Fender interrupt {st:#x} acked")
+        fender_regs("3 s later")
+    print("[agx-start] DevCtrl read ptr:", agx.ch.devctrl.state.READ_PTR.val)
     if pmp_asc:
         pmp_asc.dart.show_error()
 except Exception as e:
