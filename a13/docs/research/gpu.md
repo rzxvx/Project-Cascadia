@@ -535,6 +535,24 @@ result was from sends by hand.) The PMP image's strings are all telemetry
 carry out a GFX power state, so the 0x10 in +0x1000 is Fender's/PMGR's to
 clear.
 
+**PMP doorbells are registered by the host** (static, `t8030pmp`, 20E247).
+Live probes of Fender (+0x1010 = 1, 2, 4, 3, 7) never moved +0x1000 (0x11);
+Fender +0x14000 page: 0x30001, 1, then at +0x80 ffff 340b 2025 1824 11fc d76
+8e9 ffff... The PMP's PM-command handler (fn 0x100c004, jump table 0x10272fa;
+cmd = bits 51:44, domain 43:40, arg1 31:16, arg2 15:0): cmd 0xe = DevPwr
+(arg1 device id, arg2 on/off), 0x8 (reply 9), 0xa (reply 0xb), **0xc =
+register a doorbell for a device** (arg1 device id, arg2 doorbell n >= 0x20;
+reply 0xd carrying arg1/arg2 on success, zeros on failure). Registration (fn
+0x10112c4) keeps name, handler, page 0x23bc1c000 + (n >> 3) * 0x4000 and bit
+n & 7. The GPU firmware rings 0x23bc34000 with 1 = **n 0x30**; nothing
+registers it under m1n1, so the GPU's power request goes nowhere. Device ids
+are looked up in a table at config+0x170 (count +0x16c, 0x88-byte entries, id
+u16 at +0xe, name pointer at +0); config = the pointer set at fn 0x1003a38
+(probably the host's Configure buffer, which m1n1 leaves zero). Next: find who
+fills that table on iOS (ApplePMGR `initPMP` / `ApplePMPControlFunction`,
+PMGR `function-pmp_control` "PMPC", GFX has `notify_pmp`), then send cmd 0xc
+(device GFX, n 0x30) before the GPU starts.
+
 **Do not bulk-read 0x23bc1c000** (PMGR reg 19, inside the PMP's ASC block):
 reading it through the proxy killed m1n1 (the USB link dropped).
 
