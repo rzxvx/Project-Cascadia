@@ -15,7 +15,7 @@ its RTKit first (it carries out the GPU's power state changes), in this same
 session: each proxyclient session starts m1n1's heap afresh and a second one
 overwrites the first one's memory (the GPU's page tables).
 --pmp-dvfs: --boot-pmp, then PM command 6 (a DVFS domain's state range) with
-the full range for domains 0-7, before the GPU starts.
+the full range for domains 0-6 (all of them), before the GPU starts.
 """
 import os
 import sys
@@ -115,14 +115,14 @@ try:
             return (0x0020000000000000 | (cmd & 0xff) << 44 | (domain & 0xf) << 40
                     | (device & 0xff) << 32 | (arg1 & 0xffff) << 16 | (arg2 & 0xffff))
         if pmp_dvfs:
-            for d in range(8):
+            for d in range(7):   # 7 domains; an 8th crashes the PMP
                 pmp_asc.send(pm(6, d, 0, 0, 0xf), 0x20)
                 end = time.time() + 0.5
                 ack = None
                 while time.time() < end and ack is None:
                     m = pmp_asc.recv()
-                    if m and m[1] is not None:
-                        ack = (m[1].EP, m[0])
+                    if m:
+                        ack = (int(m[1]) & 0xff, m[0])
                 print(f"[agx-start] PMP DVFS domain {d}: sent {pm(6, d, 0, 0, 0xf):#018x}, "
                       f"got {'nothing' if ack is None else f'EP {ack[0]:#x} {ack[1]:#018x}'}")
         pdart.show_error()
