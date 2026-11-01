@@ -7,12 +7,80 @@ On the iPhone 11 m1n1 brings up no USB: its ADT has one unnumbered usb-drd /
 atc-phy / dart-usb (mapper-usb-drd, SID 3), and the phy (atc-phy,t8030) is
 an AUSB USB2 phy at reg 1, not the Mac's Type-C one. Fall back to the
 unnumbered nodes for port 0 and, for the AUSB phy, apply its ADT
-tunable-device and power it up as Linux's phy-apple-ausb does. The dwc3
-core, its DART and m1n1's USB2 gadget are unchanged; this gives m1n1's
+tunable-device and power it up as Linux's phy-apple-ausb does. dwc3 sits
+behind both dart-usb instances (TRADDARTLLT, TRADDARTBLK), as in Linux:
+instance 0 is pointed at instance 1's tables (dart_mirror), or the host's
+data never arrives. The dwc3 core and m1n1's USB2 gadget are unchanged; this gives m1n1's
 proxy a USB link (the DCSD cable's host-to-phone line carries nothing).
 ---
+diff --git a/src/dart.c b/src/dart.c
+index abb0201..a243221 100644
+--- a/src/dart.c
++++ b/src/dart.c
+@@ -119,6 +119,7 @@ struct dart_dev {
+     u64 vm_base;
+ 
+     u64 *l1[DART_MAX_TTBR_COUNT];
++    uintptr_t mirror; /* a second instance walking the same tables (dart_mirror) */
+ };
+ 
+ static void dart_t8020_tlb_invalidate(dart_dev_t *dart)
+@@ -131,6 +132,14 @@ static void dart_t8020_tlb_invalidate(dart_dev_t *dart)
+ 
+     if (poll32(dart->regs + DART_T8020_STREAM_COMMAND, DART_T8020_STREAM_COMMAND_BUSY, 0, 100))
+         printf("dart: DART_T8020_STREAM_COMMAND_BUSY did not clear.\n");
++
++    if (dart->mirror) {
++        write32(dart->mirror + DART_T8020_STREAM_SELECT, BIT(dart->device));
++        write32(dart->mirror + DART_T8020_STREAM_COMMAND, DART_T8020_STREAM_COMMAND_INVALIDATE);
++        if (poll32(dart->mirror + DART_T8020_STREAM_COMMAND, DART_T8020_STREAM_COMMAND_BUSY, 0,
++                   100))
++            printf("dart: mirror STREAM_COMMAND_BUSY did not clear.\n");
++    }
+ }
+ 
+ static void dart_t8110_tlb_invalidate(dart_dev_t *dart)
+@@ -274,6 +283,26 @@ error:
+     return NULL;
+ }
+ 
++/*
++ * Point a second DART instance of the same type at this one's page tables for
++ * the same stream, so a master behind both (the A13's USB: TRADDARTLLT and
++ * TRADDARTBLK) sees one address space, as Linux sets it up. Cascadia
++ * downstream.
++ */
++void dart_mirror(dart_dev_t *dart, uintptr_t base)
++{
++    dart_dev_t copy = *dart;
++    dart_dev_t *other = &copy;
++
++    other->regs = base;
++    other->mirror = 0;
++    for (int i = 0; i < dart->params->ttbr_count; i++)
++        write32(DART_TTBR(other, i), read32(DART_TTBR(dart, i)));
++    write32(DART_TCR(other), read32(DART_TCR(dart)));
++    dart->mirror = base;
++    dart->params->tlb_invalidate(dart);
++}
++
+ dart_dev_t *dart_init_adt(const char *path, int instance, int device, bool keep_pts)
+ {
+     int dart_path[8];
+diff --git a/src/dart.h b/src/dart.h
+index cc91f14..bf14bb1 100644
+--- a/src/dart.h
++++ b/src/dart.h
+@@ -18,6 +18,7 @@ enum dart_type_t {
+ 
+ dart_dev_t *dart_init(uintptr_t base, u8 device, bool keep_pts, enum dart_type_t type);
+ dart_dev_t *dart_init_adt(const char *path, int instance, int device, bool keep_pts);
++void dart_mirror(dart_dev_t *dart, uintptr_t base);
+ void dart_lock_adt(const char *path, int instance);
+ dart_dev_t *dart_init_fdt(void *dt, u32 phandle, int device, bool keep_pts);
+ int dart_setup_pt_region(dart_dev_t *dart, const char *path, int device, u64 vm_base);
 diff --git a/src/usb.c b/src/usb.c
-index fce0d5d..12d260c 100644
+index fce0d5d..4c87426 100644
 --- a/src/usb.c
 +++ b/src/usb.c
 @@ -23,6 +23,7 @@ struct usb_drd_regs {
@@ -152,3 +220,24 @@ index fce0d5d..12d260c 100644
      snprintf(path, sizeof(path), FMT_DART_PATH, idx);
      if (pmgr_adt_power_enable(path) < 0)
          return -1;
+@@ -174,6 +236,20 @@ dwc3_dev_t *usb_iodev_bringup(u32 idx)
+     if (usb_drd_get_regs(idx, &usb_reg) < 0)
+         return NULL;
+ 
++    /* the AUSB port's dwc3 sits behind both instances of dart-usb */
++    if (usb_reg.ausb) {
++        char path[24];
++        u64 base;
++        snprintf(path, sizeof(path), FMT_DART_PATH, idx);
++        usb_bare_path(path, sizeof(path), "/arm-io/dart-usb", idx);
++        int node[8];
++        if (adt_path_offset_trace(adt, path, node) >= 0 &&
++            adt_get_reg(adt, node, "reg", 0, &base, NULL) >= 0) {
++            dart_mirror(usb_dart, base);
++            printf("usb: %s instance 0 @0x%lx mirrors instance 1\n", path, (uintptr_t)base);
++        }
++    }
++
+     return usb_dwc3_init(usb_reg.drd_regs, usb_dart);
+ }
+ 
