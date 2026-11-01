@@ -471,9 +471,15 @@ m1n1's `Init1`/`Init2` are commands 0 and 2; its `DevPwr` (0x20e) is command
 `_getNumDVFSStates`, `_setDVFSStates(domain, ...)` with a watchdog,
 `cpu-power-limit-cluster-*`, the fast-die controller, telemetry: the GPU's
 voltage rail ("GPU [V]") and DVFS are the PMP's, and the Fender transition
-probably waits on them. Next experiment: find which command sets a domain's
-DVFS state and ask for the GPU's (domain/device numbering from the PMP's
-energy-model tables in the shared buffer).
+probably waits on them. `_setDVFSStates(minMask, maxMask, ...)` (fn 0xfffffff0091e1b44) sends, for
+every DVFS domain index d (0 .. `_getNumDVFSDomains()`), **command 6**,
+domain d, device 0, arg1/arg2 from d's 4-bit fields of the two masks (state
+indices; arg2 = number of states - 1 - field); the PMP's message handler
+(fn 0xfffffff0091df2f4) answers some PMP requests with **command 4** (domain
+from the request). Next experiment (proxy): after Configure/Init, send
+command 6 for each domain with the full range (arg1 0, arg2 n-1), log any PM
+message the PMP sends after the GPU's doorbell, and see whether Fender+0x1000
+moves.
 
 **Do not bulk-read 0x23bc1c000** (PMGR reg 19, inside the PMP's ASC block):
 reading it through the proxy killed m1n1 (the USB link dropped).
