@@ -523,6 +523,18 @@ acknowledged, and +0x1010 (host power management) may be 0.
 GPU and after its request, then sets +0x1010 bit 0, acknowledges +0x1014 and
 watches +0x1000 for 3 s (acking again as interrupts come).
 
+Tried (proxy, `agx-start-12.log`): Fender reads all zero before the GPU
+starts (+0x1000/+0x1010/+0x1014/+0x1018 = 0); after the firmware's request
++0x1000 = 0x11, +0x1014 = 2, +0x1018 = 0x10, +0x1010 = 0. Setting +0x1010
+bit 0 and acknowledging +0x1014 (it clears, no new interrupt) leaves +0x1000
+at 0x11 for 3 s more. `agx-start.py --fender` now sets +0x1010 before the GPU
+starts and acks +0x1014 as it runs. (The `--pmp-dvfs` loop had been failing
+since 3776b6f: m1n1's `send()` wants an `R_INBOX1`, fixed; the earlier DVFS
+result was from sends by hand.) The PMP image's strings are all telemetry
+(energy meters, DCS bandwidth, PMU ADC, "Perf Drivers"): nothing that would
+carry out a GFX power state, so the 0x10 in +0x1000 is Fender's/PMGR's to
+clear.
+
 **Do not bulk-read 0x23bc1c000** (PMGR reg 19, inside the PMP's ASC block):
 reading it through the proxy killed m1n1 (the USB link dropped).
 

@@ -17,9 +17,10 @@ overwrites the first one's memory (the GPU's page tables).
 --pmp-dvfs: --boot-pmp, then PM command 6 (a DVFS domain's state range) with
 the full range for domains 0-6 (all of them), before the GPU starts.
 --fender: what iOS's G12::AGXFenderCommon does to Fender, the only Fender
-registers the host touches: after SECONDS, set +0x1010 bit 0 (Fender power
-management on) and acknowledge +0x1014 (interrupt status, write-1-to-clear:
-sgx interrupts 1-3), then watch +0x1000 for the firmware's request to finish.
+registers the host touches: set +0x1010 bit 0 (Fender power management on)
+before the GPU starts, acknowledge +0x1014 (interrupt status,
+write-1-to-clear: sgx interrupts 1-3) whenever it is set, and after SECONDS
+watch +0x1000 for the firmware's request to finish.
 """
 import os
 import sys
@@ -56,6 +57,7 @@ try:
         import struct
         from m1n1.fw.asc import StandardASC
         from m1n1.hw.dart import DART
+        from m1n1.hw.asc import R_INBOX1
         p.pmgr_adt_power_enable("/arm-io/pmp")
         p.pmgr_adt_power_enable("/arm-io/dart-pmp")
 
@@ -121,13 +123,14 @@ try:
                     | (device & 0xff) << 32 | (arg1 & 0xffff) << 16 | (arg2 & 0xffff))
         if pmp_dvfs:
             for d in range(7):   # 7 domains; an 8th crashes the PMP
-                pmp_asc.send(pm(6, d, 0, 0, 0xf), 0x20)
+                # hw/asc.py: send(msg0, msg1 register), recv() -> (msg0, msg1)
+                pmp_asc.send(pm(6, d, 0, 0, 0xf), R_INBOX1(EP=0x20))
                 end = time.time() + 0.5
                 ack = None
                 while time.time() < end and ack is None:
-                    m = pmp_asc.recv()
-                    if m:
-                        ack = (int(m[1]) & 0xff, m[0])
+                    m0, m1 = pmp_asc.recv()
+                    if m0 is not None:
+                        ack = (m1.EP, m0)
                 print(f"[agx-start] PMP DVFS domain {d}: sent {pm(6, d, 0, 0, 0xf):#018x}, "
                       f"got {'nothing' if ack is None else f'EP {ack[0]:#x} {ack[1]:#018x}'}")
         pdart.show_error()
@@ -147,6 +150,19 @@ def fender_regs(when):
 p.pmgr_adt_power_enable("/arm-io/gfx-asc")
 p.pmgr_adt_power_enable("/arm-io/sgx")
 fender_regs("before the GPU")
+if fender:
+    p.write32(FENDER + 0x1010, p.read32(FENDER + 0x1010) | 1)
+    fender_regs("after +0x1010 |= 1")
+
+
+def fender_ack():
+    # G12::AGXFenderCommon (AGXG12P 20E247, fn 0xfffffff00851f7fc): write
+    # back +0x1014 & 7
+    st = p.read32(FENDER + 0x1014) & 7
+    if st:
+        p.write32(FENDER + 0x1014, st)
+        print(f"[agx-start] Fender interrupt {st:#x} acked, +0x1000="
+              f"{p.read32(FENDER + 0x1000):#x}")
 
 agx = AGX(u)
 agx.verbose = 10
@@ -157,27 +173,9 @@ try:
         agx.work()
         if pmp_asc:
             pmp_asc.work()
+        if fender:
+            fender_ack()
     fender_regs("after the GPU's request")
-    if fender:
-        # G12::AGXFenderCommon (AGXG12P 20E247, fn 0xfffffff00851f824 and
-        # 0xfffffff00851f7fc): power management on = +0x1010 |= 1; interrupt
-        # ack = write back +0x1014 & 7
-        p.write32(FENDER + 0x1010, p.read32(FENDER + 0x1010) | 1)
-        fender_regs("after +0x1010 |= 1")
-        st = p.read32(FENDER + 0x1014) & 7
-        if st:
-            p.write32(FENDER + 0x1014, st)
-        fender_regs(f"after acking +0x1014 ({st:#x})")
-        end = time.time() + 3
-        while time.time() < end:
-            agx.work()
-            if pmp_asc:
-                pmp_asc.work()
-            st = p.read32(FENDER + 0x1014) & 7
-            if st:
-                p.write32(FENDER + 0x1014, st)
-                print(f"[agx-start] Fender interrupt {st:#x} acked")
-        fender_regs("3 s later")
     print("[agx-start] DevCtrl read ptr:", agx.ch.devctrl.state.READ_PTR.val)
     if pmp_asc:
         pmp_asc.dart.show_error()
