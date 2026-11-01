@@ -29,6 +29,17 @@ from m1n1.agx import AGX  # noqa: E402
 
 seconds = float(sys.argv[1]) if len(sys.argv) > 1 else 10.0
 
+# the power-management coprocessor carries out the GPU's power state changes
+# (the GPU firmware rings it, then waits for Fender+0x1000): is it there?
+try:
+    pmp = u.adt["/arm-io/pmp"]
+    nub = u.adt["/arm-io/pmp/iop-pmp-nub"]
+    pbase = pmp.get_reg(0)[0]
+    print(f"[agx-start] PMP @ {pbase:#x}: pre-loaded {getattr(nub, 'pre_loaded', None)}, "
+          f"CPU_CONTROL {p.read32(pbase + 0x44):#x} CPU_STATUS {p.read32(pbase + 0x48):#x}")
+except Exception as e:
+    print(f"[agx-start] PMP: {e!r}")
+
 p.pmgr_adt_power_enable("/arm-io/gfx-asc")
 p.pmgr_adt_power_enable("/arm-io/sgx")
 
@@ -39,7 +50,8 @@ try:
     end = time.time() + seconds
     while time.time() < end:
         agx.work()
-    print("[agx-start] fw_status:", agx.fw_status)
+    print("[agx-start] Fender+0x1000:", hex(p.read32(0x204d01000)),
+          "DevCtrl read ptr:", agx.ch.devctrl.state.READ_PTR.val)
 except Exception as e:
     print(f"[agx-start] stopped: {e!r}")
 

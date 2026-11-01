@@ -25,11 +25,14 @@ irecovery -c devicetree
 irecovery -f inputs/empty.rtsc.img4
 irecovery -c firmware
 # the GPU firmware (gfxf), loaded and set up by iBoot as for iOS: segments,
-# its RTKit boot arguments, gfx-asc segment-ranges + pre-loaded in the ADT
-if [ -f inputs/gfx.gfxf.img4 ]; then
-    irecovery -f inputs/gfx.gfxf.img4
+# its RTKit boot arguments, gfx-asc segment-ranges + pre-loaded in the ADT;
+# and the power-management coprocessor's (pmpf), which carries out the GPU's
+# power state changes
+for fw in inputs/gfx.gfxf.img4 inputs/pmp.pmpf.img4; do
+    [ -f "$fw" ] || continue
+    irecovery -f "$fw"
     irecovery -c firmware
-fi
+done
 if [ "${1:-}" = proxy ]; then
     irecovery -f out/m1n1-proxy.rkrn.img4
     irecovery -c bootx
