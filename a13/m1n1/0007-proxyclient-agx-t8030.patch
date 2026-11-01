@@ -14,7 +14,9 @@ proxy drained the GPU firmware's empty outbox and the firmware panicked
 (Mbox:underflow). RTKit boot on the A13's GPU also needs the AP's power state (SetAPPower
 0x20) after the endpoint map, as Linux's rtkit sends it; without it the
 firmware never reports boot done. The A13's sgx node has no
-gpu-avg-power-filter-tc-ms: default it to iOS's 1008 ms (HwDataA). ADT properties typed for Macs that an
+gpu-avg-power-filter-tc-ms: default it to iOS's 1008 ms (HwDataA). The
+firmware checks InitData.ver_info against (0x6b88, 0xc128, 0x600, 0xb0)
+("Host and FW Interface is mismatched" otherwise). ADT properties typed for Macs that an
 iPhone carries
 differently are kept as bytes instead of failing the whole tree.
 ---
@@ -52,7 +54,7 @@ index 6e9e952..211d0ec 100644
                      self._types[k] = t, is_template
                      self._properties[k] = v
 diff --git a/proxyclient/m1n1/agx/initdata.py b/proxyclient/m1n1/agx/initdata.py
-index aa9b826..65fe409 100644
+index aa9b826..37dc916 100644
 --- a/proxyclient/m1n1/agx/initdata.py
 +++ b/proxyclient/m1n1/agx/initdata.py
 @@ -13,8 +13,26 @@ def build_iomappings(agx, chip_id):
@@ -137,7 +139,20 @@ index aa9b826..65fe409 100644
      0x8103: Container(
          chip_id = 0x8103,
          min_sram_volt = 850,
-@@ -636,7 +701,7 @@ def build_initdata(agx):
+@@ -475,7 +540,11 @@ def build_initdata(agx):
+ 
+     initdata = agx.kshared.new(InitData)
+ 
+-    if Ver.check("V >= V13_3 && G == G14X"):
++    if Ver.check("V >= V13_3 && G == G12"):
++        # what the A13's (iOS 16.4) GPU firmware compares against
++        # (armfw_g12p, fw VA 0xffffff80000275f8)
++        initdata.ver_info = (0x6b88, 0xc128, 0x600, 0xb0)
++    elif Ver.check("V >= V13_3 && G == G14X"):
+         initdata.ver_info = (0xb390, 0x70f8, 0x601, 0xb0)
+     elif Ver.check("V >= V13_3 && G != G14X"):
+         initdata.ver_info = (0x6ba0, 0x1f28, 0x601, 0xb0)
+@@ -636,7 +705,7 @@ def build_initdata(agx):
      initdata.uat_page_bits = 14
      initdata.uat_page_size = 0x4000
  
