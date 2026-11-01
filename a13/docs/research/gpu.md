@@ -371,8 +371,31 @@ message would go to FWLog, which stays empty. Doorbell decoding in the G12
 firmware (fw 0xffffff800002bccc): bits 53:48 type (3 doorbell, 4 FWCtl, 5
 halt), for type 3 bits 1:0 = TA/3D/CL, bits 4:2 = queue (4 = none counted).
 
-Open: what iOS has in Fender (and in HwDataB +0x16fc) when the GPU is up; the
-power-up the firmware expects from the host before it (PMGR domains, PMP).
+**The Fender wait is the PMP's job.** The firmware's power function (fw
+0xffffff8000023fcc) writes `state | 0x10` to Fender+0x1000, writes 1 to the
+PMP doorbell (0x23bc34000, `io_mappings` "PMPDoorbell") and waits for the 0x10
+to clear: the power-management coprocessor (PMP, ASC 0x23bc00000, firmware
+`t8030pmp`, IPSW `Firmware/pmp/t8030pmp.im4p`, tag `pmpf`) carries GPU power
+states out. Our boot never loaded it. HwDataB +0x16fc is a clock offset the
+firmware adds to "now" for deadlines (iOS: about -173 s), not the cause.
+
+With `pmp.pmpf.img4` also handed to iBoot (periphery makes it), the PMP is
+`pre-loaded` but stopped (iBoot does not start it). Booted from the proxy
+(`agx-start.py --boot-pmp`): RTKit v12 hello, endpoints 1-4 and 0x20, the
+crash and kdebug endpoints ask for buffers -- then nothing. `dart-pmp`
+(0x23b300000) tells why: ERROR 0x80000401 at 0x19dbc000 = the crash buffer we
+gave as a physical address; SID 0 translates (TCR 0x80) with no tables. The
+PMP sees memory and its registers only through `dart-pmp`: SID 0
+(`mapper-pmp`), `pio-vm-base` 0xc0000000, `pio-granularity` 0x1000000, and the
+26 register windows of `mapper-pmp/pio-range` (MCC 0x2000x0000, Fender's
+0x204d14000, CPU cluster DVFS 0x210/0x211..., 0x23500c000, 0x23c100000,
+0x23d100000.., 0x26b854000, 0x26b8f0000). The PMP image holds no such table
+(its boot arguments: STKG, DBUG, DART=1, PWRG, CLKG, NRGD, PMON, ... the GFX
+set): the iOS kernel's `dart-pmp` page tables decide where each window sits.
+
+Next: read those tables from a running iOS (kernel memory, kmem) -- the iova
+layout of the windows and of the buffers -- and set `dart-pmp` up the same
+way before booting the PMP.
 
 Crash logs: m1n1 gives the firmware a crash buffer ("[crash] buf <phys>");
 `m1n1.fw.asc.crash.CrashLogParser(data).dump()` decodes it (message,
