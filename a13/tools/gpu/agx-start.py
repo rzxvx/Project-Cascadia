@@ -11,7 +11,9 @@ venv a13/build/venv-gpu (construct, pyserial). Powers gfx-asc and sgx, boots
 the RTKit firmware, builds initdata (CHIP_INFO 0x8030), sends it and DC_Init,
 then runs the firmware's channels for SECONDS (default 10) and leaves a shell.
 --boot-pmp: if iBoot loaded the PMP's firmware but left the PMP stopped, boot
-its RTKit first (it carries out the GPU's power state changes).
+its RTKit first (it carries out the GPU's power state changes), in this same
+session: each proxyclient session starts m1n1's heap afresh and a second one
+overwrites the first one's memory (the GPU's page tables).
 """
 import os
 import sys
@@ -29,6 +31,7 @@ print(f"[agx-start] firmware interface {Ver._version}")
 from m1n1.shell import run_shell  # noqa: E402
 from m1n1.agx import AGX  # noqa: E402
 
+pmp_asc = None
 args = [a for a in sys.argv[1:] if a != "--boot-pmp"]
 boot_pmp = "--boot-pmp" in sys.argv[1:]
 seconds = float(args[0]) if args else 10.0
@@ -45,9 +48,14 @@ try:
         from m1n1.fw.asc import StandardASC
         p.pmgr_adt_power_enable("/arm-io/pmp")
         pmp_asc = StandardASC(u, pbase)
-        pmp_asc.verbose = 1
-        pmp_asc.start()
-        print(f"[agx-start] PMP booted: CPU_CONTROL {p.read32(pbase + 0x44):#x}")
+        pmp_asc.verbose = 3
+        pmp_asc.mgmt.verbose = 1
+        try:
+            pmp_asc.start()
+        except Exception as e:
+            print(f"[agx-start] PMP boot: {e!r} (going on)")
+        print(f"[agx-start] PMP: CPU_CONTROL {p.read32(pbase + 0x44):#x} "
+              f"CPU_STATUS {p.read32(pbase + 0x48):#x}")
 except Exception as e:
     print(f"[agx-start] PMP: {e!r}")
 
@@ -61,6 +69,8 @@ try:
     end = time.time() + seconds
     while time.time() < end:
         agx.work()
+        if pmp_asc:
+            pmp_asc.work()
     print("[agx-start] Fender+0x1000:", hex(p.read32(0x204d01000)),
           "DevCtrl read ptr:", agx.ch.devctrl.state.READ_PTR.val)
 except Exception as e:
