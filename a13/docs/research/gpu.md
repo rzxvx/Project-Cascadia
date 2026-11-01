@@ -64,9 +64,9 @@ planned.
 
 **G1 — an iOS kernel memory tool. DONE 2026-11-01.** See "G1 results" below.
 
-**G2 — dump what iOS gives the firmware. Mostly done 2026-11-01** (see "G2
-results"); left: RegionA, fw_status, the UAT layout, `CHIP_INFO[0x8030]` written
-out for m1n1.
+**G2 — dump what iOS gives the firmware. DONE 2026-11-01** (see "G2 results"):
+all of RegionB/C, HwDataA/B, fw_status found and parsed, `CHIP_INFO[0x8030]`
+for m1n1 built from them. `tiling_control` (render only) comes with G5.
 
 **G3 — the firmware is there under Linux (70 %).** Does our boot (sig-patched iBSS
 in Recovery → `bootx`) load `gfxf` like iOS's iBoot does? Check on Linux: the live
@@ -193,8 +193,68 @@ The firmware's MMIO windows (`HwDataB.io_mappings`, GPU VA → phys, size):
 (0x5000 RW), 0xffffffa010081000 → 0x204d71000 (0x1000 RW), 0xffffffa010088000 →
 0x200000000 (0xd6400 RW), 0xffffffa01016a000 → 0x23b102000 (0x1000 RO).
 
+Also found: **fw_status** at 0xffffffa0000b8000 (`InitData_FWStatus`: the
+fwctl channel, `unk_ctr` counting), **RegionA** = an empty 0x4000 buffer (m1n1
+makes it empty too). The GPU VA space constants in HwDataB (`unk_8`
+0x1400000000, `unk_18` 0xffc00000, `unk_20`/`unk_28` 0x1100000000, `unk_30`
+0x6fffff8000) are M1's (t8103): the UAT layout to start G4 with is m1n1's
+t8103 one (L0 at bit 39, 16 KiB pages, 3 levels, 40-bit physical mask).
+
 So the host↔firmware interface of G12 on iOS 16.4 is Asahi's `V13_3` almost
 field for field; the chip values come from these dumps, not guesses.
+
+**`CHIP_INFO[0x8030]` for m1n1** (`a13/tools/gpu/chipinfo.py DUMPDIR HWDATA_A
+HWDATA_B REGION_C`, every field read back from where m1n1 writes it):
+
+```python
+    0x8030: Container(
+        chip_id = 0x8030,
+        min_sram_volt = 753,          # lowest voltages_sram (field pre-13.0 only)
+        max_power = 9220,
+        max_freq_mhz = 1194,
+        unk_87c = 0,
+        unk_8cc = 10000,
+        unk_924 = [[0.0] * 8] * 8,
+        unk_e48 = [[0.0] * 8] * 8,
+        unk_e24 = 120,
+        gpu_fast_die0_sensor_mask64 = 0xc,
+        gpu_fast_die1_sensor_mask64 = 0,
+        gpu_fast_die0_sensor_mask64_alt = 0xc,
+        gpu_fast_die1_sensor_mask64_alt = 0,
+        gpu_fast_die0_sensor_present = 0x1,  # pre-13.0 only
+        shared1_tab = [-1, 0x340b, 0x2025, 0x1824, 0x11fc, 0xd76, 0x8e9] + [-1] * 9,
+        shared1_a4 = 0xffff,
+        shared2_tab = [0x400, 0x800, -2, -1, -1, -1, -1, -1, 0, 0],
+        shared2_unk_508 = 0xc00001,
+        unk_3cf4 = [302.0, 0, 0, 0, 0, 0, 0, 0],
+        unk_3d14 = [11.0, 0, 0, 0, 0, 0, 0, 0],
+        unk_3d34_0 = [0] * 8,
+        unk_118ec = None,
+        hwdb_4e0 = 0,
+        hwdb_534 = 0,
+        num_cores = 4,
+        gpu_core = 9,
+        gpu_rev = 3,
+        hwdb_ab8 = 0,                 # pre-13.0 only
+        hwdb_abc = 0,                 # pre-13.0 only
+        hwdb_b30 = 0,
+        rel_max_powers = [0, 17, 26, 36, 51, 71, 100],
+        shared2_t1_coef = None,
+        shared3_tab = [0] * 16,
+        shared3_unk = 0,
+        sram_base = 0,
+        sram_size = 0,
+        rc_unk_54 = 0xffff,
+        unk_hws2_0 = 0,
+        unk_hws2_4 = [0.0] * 8,
+        unk_hws2_24 = 0,
+        tiling_control = None,        # render only: from an iOS render capture (G5)
+    ),
+```
+
+For G4, m1n1 also needs to know G12: `Ver.set_version` turns ADT `soc-generation`
+"H12" into "G12", which its version matrix (G13, G14, G14X) lacks; HwDataB's
+`pad_b14` (+0x16fc) is the one field to take from iOS as is.
 
 ## Not possible / ruled out
 

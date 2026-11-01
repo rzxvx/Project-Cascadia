@@ -3,28 +3,22 @@
 """Parses GPU firmware structures dumped from the iPhone's iOS 16.4 with
 m1n1's AGX definitions (Asahi, firmware interface V13_3).
 
-    agxparse.py [-n] DUMPDIR STRUCT GPUVA [M1N1_PROXYCLIENT]
+    agxparse.py [-n] DUMPDIR STRUCT GPUVA
 
 DUMPDIR holds bufs.list ("kernelVA gpuVA size" per line) and the dumps
 bufs/b_<gpuVA>.bin (kmem kd / pd).  STRUCT: a class in m1n1.fw.agx.initdata,
 e.g. InitData_RegionB.  Pointers inside are followed through the dumps,
-unless -n.
+unless -n.  m1n1's proxyclient: a13/build/m1n1/proxyclient, or
+$M1N1_PROXYCLIENT.  Also a module (GpuMem, parse) for chipinfo.py.
 """
 import io
 import os
 import sys
 
-args = sys.argv[1:]
-recurse = True
-if args[0] == "-n":
-    recurse = False
-    args = args[1:]
-dumpdir, struct_name, va = args[0], args[1], int(args[2], 0)
-proxy = args[3] if len(args) > 3 else os.path.join(
-    os.path.dirname(__file__), "../../build/m1n1/proxyclient")
+PROXY = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../../build/m1n1/proxyclient")
 os.environ.setdefault("AGX_FWVER", "V13_3")
 os.environ.setdefault("AGX_GPU", "G13")
-sys.path.insert(0, os.path.abspath(proxy))
+sys.path.insert(0, os.environ.get("M1N1_PROXYCLIENT", PROXY))
 
 import construct  # noqa: E402
 from m1n1.fw.agx import initdata  # noqa: E402
@@ -88,13 +82,23 @@ class GpuMem(io.RawIOBase):
         return bytes(n)
 
 
-mem = GpuMem(dumpdir)
-mem.recurse = recurse
-cls = getattr(initdata, struct_name)
-mem.seek(va)
-obj = cls.parse_stream(mem)
-print(obj)
-for path, pos, want, got in mismatches:
-    print(f"CONST MISMATCH {path} @ {pos:#x}: m1n1 {want!r}, here {got!r}")
-if mem.misses:
-    print("not dumped:", " ".join(hex(m) for m in sorted(mem.misses)), file=sys.stderr)
+def parse(mem, struct_name, va):
+    mem.seek(va)
+    return getattr(initdata, struct_name).parse_stream(mem)
+
+
+if __name__ == "__main__":
+    args = sys.argv[1:]
+    recurse = True
+    if args and args[0] == "-n":
+        recurse = False
+        args = args[1:]
+    if len(args) != 3:
+        sys.exit(__doc__)
+    mem = GpuMem(args[0])
+    mem.recurse = recurse
+    print(parse(mem, args[1], int(args[2], 0)))
+    for path, pos, want, got in mismatches:
+        print(f"CONST MISMATCH {path} @ {pos:#x}: m1n1 {want!r}, here {got!r}")
+    if mem.misses:
+        print("not dumped:", " ".join(hex(m) for m in sorted(mem.misses)), file=sys.stderr)
