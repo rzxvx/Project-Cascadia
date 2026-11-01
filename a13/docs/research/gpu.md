@@ -72,11 +72,10 @@ for m1n1 built from them. `tiling_control` (render only) comes with G5.
 with the `firmware` command, iBoot loads and sets it up exactly as for iOS
 (see "G3 results").
 
-**G4 — m1n1 proxy on A13 (65 %).** m1n1 in proxy mode over our USB (dwc3) instead
-of chainloading Linux, so the Python side on the Mac can drive the hardware. Then
-`agx_boot.py`: power `gfx-asc`/`sgx`, boot the RTKit firmware, hand it initdata
-from G2. Check: the firmware logs, no "interface mismatched", the power/stats
-rings move.
+**G4 — m1n1 proxy on A13, the firmware started. Mostly done 2026-11-01** (see
+"G4 results"): the firmware takes initdata and DC_Init, runs, writes Stats.
+Left: it does not read the DevCtrl channel yet (doorbell?), Stats records are
+0x40 bytes, not m1n1's 0x60.
 
 **G5 — first triangle (45 %).** `agx_1tri.py` with G12 shaders. Unknown: how far
 the G12 ISA is from G13. Compile small Metal shaders on the phone, dump the
@@ -299,6 +298,68 @@ from the G1 recipe.
 
 So under Linux the GPU firmware sits loaded, configured and not yet started,
 as iOS's kext finds it; G4 starts it. `__DATA` was not read (resets on iOS).
+
+## G4 results (2026-11-01)
+
+**Transport.** `a13/cascadia boot proxy` boots m1n1 alone (iBoot still loads the
+GPU firmware). The DCSD cable carries nothing from the Mac to the phone (UART0
+RX is on: UCON 0x5c85, m1n1's REQ_BOOT goes out, nothing comes in), so m1n1
+got USB on the A13 (patches 0009, 0010):
+
+- the ADT's `usb-drd`, `atc-phy`, `dart-usb` are unnumbered; the phy is an AUSB
+  USB2 phy (`atc-phy,t8030`, reg 1 = 0x239000060) brought up with its ADT
+  `tunable-device` as Linux's `phy-apple-ausb` does; the live ADT `usb-drd`
+  has no reg 3 (the Type-C pipehandler);
+- dwc3 sits behind both `dart-usb` instances (TRADDARTLLT, TRADDARTBLK, SID 3
+  `mapper-usb-drd`); instance 0 is pointed at instance 1's tables
+  (`dart_mirror`);
+- the A13's dwc3 sets bit 26 in a completed TRB's size word: m1n1 took the
+  whole word as BUFSIZ and pushed 16 KiB of filler into the proxy's ring
+  (found with a temporary UART trace of the bulk OUT events).
+
+The phone then shows up as `/dev/cu.usbmodem<serial>1` and `3`; the proxy
+reads 1 MB in 0.14 s.
+
+**proxyclient for T8030** (patch 0007, the Mac side only):
+
+- `G12` in the version matrix, `CHIP_INFO[0x8030]` (G2), the firmware's MMIO
+  windows (`build_iomappings`, from iOS's HwDataB), t8103's 40-bit physical
+  mask;
+- the ASC mailbox: the A13 has the A11's control registers (0x8108 / 0x810c;
+  Linux: `apple,t8030-asc-mailbox`, `apple,t8015-asc-mailbox`). With the M1's
+  the proxyclient popped the empty outbox and the firmware panicked
+  `Mbox:underflow`;
+- RTKit boot needs `SetAPPower(0x20)` from the AP after the endpoint map (Linux
+  sends it; m1n1's ASC code did not): sent by hand, the firmware acked at once;
+- the A13's `sgx` has no `gpu-avg-power-filter-tc-ms`: iOS's 1008 ms;
+- `InitData.ver_info` must be `(0x6b88, 0xc128, 0x600, 0xb0)`, not G13's 13.3
+  value: the firmware compares the first 64 bits (fw VA 0xffffff80000275f8)
+  and panics "Host and FW Interface is mismatched" otherwise (found from the
+  panic string's `adr` back to the branch);
+- ADT properties typed for Macs that do not parse on an iPhone are kept as bytes.
+
+**Where it stands** (`a13/tools/gpu/agx-start.py`, one fresh proxy boot per
+try -- restarting the firmware in place panics it, "Invalid AP power"):
+
+```
+[mgmt] Supported versions 12 .. 12
+[Handoff] Waiting for FW PPL init... Initialized!
+[UAT] TTBR1[0] = 0x8fffb8000
+[mgmt] Startup complete
+Starting endpoint #0x20 (fw) / #0x21 (db)
+Sending initdata / Sending DC_Init / Sending DC_UpdateIdleTS
+```
+
+No panic. Read back through the GPU page tables (TTBR1 in the shared region):
+`InitData.ver_info` as set, the firmware wrote two Stats records (type 0x0c,
+its timestamps; 0x40 bytes apart), `gpu_idle` 1. Not yet: it has not read the
+DevCtrl channel (read pointer 0, ours 2), `fw_status.unk_ctr` stays 0 (iOS:
+counting), RegionB's 0xabcdabcd marker not set. The GPU regions that reset
+iOS when read are written here by m1n1 without trouble.
+
+Crash logs: m1n1 gives the firmware a crash buffer ("[crash] buf <phys>");
+`m1n1.fw.asc.crash.CrashLogParser(data).dump()` decodes it (message,
+backtrace, the mailbox history both ways).
 
 ## Not possible / ruled out
 
