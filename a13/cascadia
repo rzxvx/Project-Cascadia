@@ -4,7 +4,7 @@
 #
 #   a13/cascadia doctor          check that this machine has what the build needs
 #   a13/cascadia inputs          make the boot inputs from Apple's CDN
-#   a13/cascadia periphery       touch, on-screen keyboard, Wi-Fi/BT (firmware,
+#   a13/cascadia periphery       touch, GPU firmware, on-screen keyboard, Wi-Fi/BT (firmware,
 #                                iw, wpa_supplicant, this phone's calibration),
 #                                the internal storage for Linux (asked; erases
 #                                iOS) -- run it again once the phone has booted

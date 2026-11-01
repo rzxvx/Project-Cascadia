@@ -6,6 +6,9 @@
 #
 #   touch        the controller's firmware + default calibration, from the
 #                IPSW's N104_Multitouch.im4p
+#   GPU          the GPU firmware (armfw_g12p, IPSW Firmware/agx/) as an IMG4
+#                with inputs/IM4M: the boot hands it to iBoot, which loads it
+#                as for iOS (docs/research/gpu.md, G3)
 #   fbkeyboard   the on-screen keyboard (asked, Enter = yes; FBKEYBOARD=y|n)
 #   Wi-Fi / BT   the BCM4378 firmware from the IPSW's root filesystem (one
 #                4.9 GB download, kept in build/cache), iw + wpa_supplicant
@@ -16,7 +19,8 @@
 #   NVMe         all of the internal storage for Linux, iOS erased (asked,
 #                type ERASE; NVME=erase): a GPT, ext4, the Alpine root on it
 #
-# Output (boot/inputs/, not tracked): n104-mtfw.bin, n104-mtcal.bin, brcm/,
+# Output (boot/inputs/, not tracked): n104-mtfw.bin, n104-mtcal.bin,
+# gfx.gfxf.img4, brcm/,
 # syscfg.bin, nvme-linux (the decision), nvme-backup/; build/fbkeyboard/,
 # build/wifitools/ (small trees for the initramfs).
 # `a13/cascadia pack` puts whatever is there into the boot image.
@@ -39,6 +43,7 @@ have python3 || fail "python3 not found"
 
 IPSW_URL="https://updates.cdn-apple.com/2023SpringFCS/fullrestores/032-67885/8B726A7C-722A-4D2D-8BEF-5A702FFEC8D5/iPhone12,1_16.4_20E247_Restore.ipsw"
 MTFW_SHA256=de5dd11f00abae27b07f1a637686fcd03df748d1d4712a01592ac4bea4015036
+GFXF_SHA256=77c16cca6606153d16b6c8c0770316b75d2d4b194262aabb45d0461ba8d5edf7   # armfw_g12p.im4p
 OSDMG=078-23869-318.dmg                 # the root filesystem ("OS" in BuildManifest)
 PHONE=${PHONE:-root@172.16.42.1}
 
@@ -60,6 +65,23 @@ else
         "$INPUTS/n104-mtfw.bin" "$INPUTS/n104-mtcal.bin" >/dev/null
     [ "$(sha256 "$INPUTS/n104-mtfw.bin")" = "$MTFW_SHA256" ] || fail "n104-mtfw.bin checksum mismatch"
     note "ok: n104-mtfw.bin, n104-mtcal.bin"
+fi
+
+# ---------- GPU firmware -------------------------------------------------------
+# armfw_g12p.im4p (tag gfxf, not encrypted): the GPU's RTKit firmware. Our boot
+# sends it to iBoot with the firmware command (boot-from-recovery.sh); iBoot
+# places it, fills its boot arguments and the ADT, as for iOS.
+
+say "GPU firmware"
+if [ -f "$INPUTS/gfx.gfxf.img4" ]; then
+    note "ok: gfx.gfxf.img4 (already there)"
+else
+    [ -f "$INPUTS/IM4M" ] || fail "no boot/inputs/IM4M -- run a13/cascadia inputs first"
+    python3 -I "$A13/tools/ipsw-partial.py" "$IPSW_URL" 'Firmware/agx/armfw_g12p.im4p' -o "$tmp" >/dev/null
+    [ "$(sha256 "$tmp/armfw_g12p.im4p")" = "$GFXF_SHA256" ] || fail "armfw_g12p.im4p checksum mismatch"
+    ipsw img4 create --im4p "$tmp/armfw_g12p.im4p" --im4m "$INPUTS/IM4M" \
+        --output "$INPUTS/gfx.gfxf.img4" >/dev/null
+    note "ok: gfx.gfxf.img4"
 fi
 
 # ---------- on-screen keyboard -------------------------------------------------
