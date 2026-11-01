@@ -68,9 +68,9 @@ planned.
 all of RegionB/C, HwDataA/B, fw_status found and parsed, `CHIP_INFO[0x8030]`
 for m1n1 built from them. `tiling_control` (render only) comes with G5.
 
-**G3 — the firmware is there under Linux.** First check 2026-11-01: **no**
-(see "G3 results"). Being tried: hand the firmware to iBoot like a restore
-does (`firmware` command), so iBoot loads and sets it up as for iOS.
+**G3 — the firmware is there under Linux. DONE 2026-11-01:** handed to iBoot
+with the `firmware` command, iBoot loads and sets it up exactly as for iOS
+(see "G3 results").
 
 **G4 — m1n1 proxy on A13 (65 %).** m1n1 in proxy mode over our USB (dwc3) instead
 of chainloading Linux, so the Python side on the Mac can drive the hardware. Then
@@ -279,6 +279,26 @@ So our boot does not load the GPU firmware. Our iBSS has the code for it (the
 `gfxf` tag) that way when it exists. If iBoot does it, it also fills the RTKit
 boot-argument table and the ADT exactly as for iOS; if not, m1n1 does the same
 from the G1 recipe.
+
+**Second boot, with `gfx.gfxf.img4` sent: iBoot does it all.**
+
+- breadcrumbs: `f0008(gfxf) ... f0100(gfxf) f0106(b000) ... f0009(gfxf)` --
+  loaded, its `rkosftab` entry `b000` placed;
+- ADT: `iop-gfx-nub` `pre-loaded` = 1, `gfx-asc` `segment-ranges` = `__TEXT`
+  phys 0x800160000 (0x4c000, fw VA 0xffffff8000000000), `__DATA` phys
+  0x8001ac000 (0x78000, fw VA 0xffffff800004c000);
+- iBoot moves the start of usable RAM past it: m1n1 hands Linux 0x800224000
+  up (= end of `__DATA`), so Linux never touches the firmware;
+- `__TEXT` read under Linux (`a13/tools/peek/memdump`: /dev/mem `read()`
+  fails outside RAM with EFAULT, `mmap` works, Device-nGnRnE) = the IPSW
+  except iBoot's fill-ins, and = iOS's except the `__DATA` address in the
+  segment table and the random `STKG`. The RTKit boot-argument table is
+  iOS's: `PTPB` 0x8fffb8000, `PTPS` 0x40000, `PTVB` 0xffffff8000000000, `GptB`
+  0x8ffff8000, `PplB` 0x8fffb4000, `SOC_` 0x8030, `SOCR` 0x11, `CpAd`
+  0x206000000, `WrAd` 0x206400000.
+
+So under Linux the GPU firmware sits loaded, configured and not yet started,
+as iOS's kext finds it; G4 starts it. `__DATA` was not read (resets on iOS).
 
 ## Not possible / ruled out
 

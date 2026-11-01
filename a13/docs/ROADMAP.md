@@ -66,7 +66,8 @@ Same order as the iPad mini 1. Each step notes what already exists (Hoolock
 - [ ] Buttons, haptics.
 - [ ] GPU (AGX G12): started 2026-11-01 -- firmware interface = Asahi's `V13_3`
       (iOS 16.4's iBoot is macOS 13.3's), the iOS driver observed through
-      Dopamine; plan G1-G7 in `research/gpu.md`.
+      Dopamine; firmware structures dumped and parsed, the firmware loaded
+      by iBoot under Linux (G1-G3); plan G1-G7 in `research/gpu.md`.
 
 ## Phase 4 — For non-experts
 
