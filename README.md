@@ -22,7 +22,7 @@ drive with your fingers.
 > and after the boot the cable can go. See [`a13/`](a13/README.md) and its
 > [quickstart](a13/docs/QUICKSTART.md).
 
-![iPhone 11](imgs/i11xfcechromium)
+![iPhone 11](imgs/i11xfcechromium.png)
 ![Boot](imgs/dualcoreboot.png)
 
 ## What is this?
