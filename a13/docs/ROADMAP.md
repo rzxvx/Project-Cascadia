@@ -64,6 +64,9 @@ Same order as the iPad mini 1. Each step notes what already exists (Hoolock
 - [x] Bluetooth: BCM4378 PCIe, `hci_bcm4377` (hci0; nothing on top yet).
 - [ ] Audio: cs42l77 codec + cs35l27 amp over MCA.
 - [ ] Buttons, haptics.
+- [ ] GPU (AGX G12): started 2026-11-01 -- firmware interface = Asahi's `V13_3`
+      (iOS 16.4's iBoot is macOS 13.3's), the iOS driver observed through
+      Dopamine; plan G1-G7 in `research/gpu.md`.
 
 ## Phase 4 — For non-experts
 
@@ -73,7 +76,6 @@ Same order as the iPad mini 1. Each step notes what already exists (Hoolock
 
 ## Parked
 
-- GPU (AGX G12): after Phase 3.
 - Cameras, baseband, GPS, sensors, SEP.
 
 ## Hardware map (from the N104AP ADT)
@@ -95,4 +97,4 @@ Addresses relative to the arm-io window at 0x2_0000_0000.
 | Touch | `multi-touch` on `spi1`, HID over SPI, HBPP fw `wftm`, cal `syscfg/MtCl` | ✓ (`apple_hidspi_touch`) |
 | Wi-Fi / BT | `wlan-pcie,bcm4378` / `bluetooth,n88` on `apcie,t8030` | — (the M1 chips) |
 | Audio | `cs42l77`, `cs35l27`, `mca,t8030` | — |
-| GPU | `gpu,t8030` (AGX G12) | parked |
+| GPU | `gpu,t8030` (AGX G12) + `gfx-asc` (RTKit) | started (`research/gpu.md`) |
