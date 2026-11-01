@@ -64,12 +64,9 @@ planned.
 
 **G1 — an iOS kernel memory tool. DONE 2026-11-01.** See "G1 results" below.
 
-**G2 — dump what iOS gives the firmware (75 %).** Find the AGX driver's objects
-(from `AGXAcceleratorG12P_B0` in the IORegistry) and the firmware's page tables
-(UAT), then dump initdata and everything it points to (HwDataA/B, globals, the
-rings) from a running iOS. Parse with m1n1's `fw/agx/initdata.py` at `V13_3`
-(as `agx_dumpstructs.py` does). Result: every G12 field and where 13.3's layout
-differs on G12; a `CHIP_INFO[0x8030]` for m1n1 filled from iOS, not guessed.
+**G2 — dump what iOS gives the firmware. Mostly done 2026-11-01** (see "G2
+results"); left: RegionA, fw_status, the UAT layout, `CHIP_INFO[0x8030]` written
+out for m1n1.
 
 **G3 — the firmware is there under Linux (70 %).** Does our boot (sig-patched iBSS
 in Recovery → `bootx`) load `gfxf` like iOS's iBoot does? Check on Linux: the live
@@ -140,6 +137,64 @@ libjailbreak (`dlopen`, no headers).
   `DSZS`, `DSZL`, `TUNS`, `TUNZ`, `RTTO`, `DEVf`, `IOBA`, `IOSZ`) stay 0. This is
   the recipe for G3 if our boot does not load the firmware: copy `__TEXT` and
   `__DATA` to the ADT's `segment-ranges`, fill this table, start the ASC.
+
+## G2 results (2026-11-01)
+
+**Three more resets, and the rule they teach.** Reading `gpu-region` (0x8ffff8000,
+through a 64 KiB cacheable window) reset the phone like `__DATA` did. `kmem
+ptscan` (XNU's own page tables, read from the physmap -- safe) shows how XNU maps
+the GPU's carve-outs: `gfx-shared-region` cacheable read-only, `gfx-handoff` and
+`gpu-region` write-combined read-only, each with a second read-write mapping
+(PPL's: `PplB` in the boot-argument table), firmware `__DATA` cacheable
+read-only, `__TEXT` as device memory. `__DATA` is reset-on-read although XNU maps
+it, so the attributes do not explain it; the memory controller guards these.
+kmem now refuses all of them. Kernel calls (`kcall`) are not available on this
+phone (jailbreakd will not sign a thread: no PAC bypass), so reading through
+XNU's own mappings is out too. Everything below came from the physmap.
+
+**Finding the driver's memory** (all in `kmem`, see its header):
+
+1. `kmem obj AGXAcceleratorG12P_B0` -- the IOService port turned into the kernel
+   object (libjailbreak `task_get_ipc_port_kobject`).
+2. `kmem ptrs VA LEN | kclass.py` -- every pointer in an object, named by the
+   class of what it points at. The class map is `iometa -a` (Siguza) of the
+   20E247 kernelcache (2617 classes with vtables and sizes); a vtable pointer
+   minus the slide is iometa's `vtab`.
+3. Accelerator (0x9bb0 bytes) → `AGXArmFirmwareChinookV4` at +0x440 (0x1a98
+   bytes) → its allocations, each `AGXAllocation` (size at +0x30, an
+   `IOBufferMemoryDescriptor` at +0x80) + `AGXSecureMemoryMap` (GPU VA at +0x28,
+   size at +0x48) + kernel VA. The descriptor's buffer is at +0xb8; some buffers
+   have no kernel mapping left, their pages are in the descriptor's ioGMDData
+   (page numbers from +0x30).
+4. The firmware object keeps the GPU VAs of what it built at +0x288: RegionB
+   0xffffffa00c3d0000 and its parts (+0x6bc0 stats TA, +0x7240 stats 3D, +0x7980
+   stats CP, +0x8080 HwDataA, +0xc280 fault info, +0xc300 HwDataB, ...), RegionC
+   0xffffffa000020000 at +0x300. GPU kernel VAs are 0xffffffa0_..., as on M1.
+
+`InitData` itself was not found: the buffers that could hold it are all zero
+after boot (iOS seems to drop it once the firmware took it). Not needed: what it
+points at is all there.
+
+**Parsed with m1n1's own definitions** (`a13/tools/gpu/agxparse.py`, `V13_3`,
+`G13` as the closest; constants that differ are reported, not fatal):
+
+| structure | GPU VA | against `V13_3` |
+|---|---|---|
+| `InitData_RegionB` | 0xffffffa00c3d0000 | matches: 13 channels (TA/3D/CL x4, DevCtrl, Event, FWLog, KTrace, Stats), `gpu_idle` 1, marker 0xabcdabcd, `buffer_mgr_ctl` 0x1500000000 (Asahi's address) |
+| `AGXHWDataA` | 0xffffffa00c3d8080 | matches; values agree with the ADT (`max_freq_mhz` 1194, fast-die sensor mask 0xc, power zones target 25000, 24 MHz `clocks_per_period` 0x5dc00), `max_power` 9220 mW |
+| `AGXHWDataB` | 0xffffffa00c3dc300 | one difference: `pad_b14` (+0x16fc) holds 0xffffffff08957fc4 (m1n1: zero). `chip_id` 0x8030, `gpu_core` 9, `gpu_rev` 3, `num_cores` 4, `num_frags` 4, `base_clock_khz` 24000, `gpu_region_base` 0x8ffff8000, frequencies/voltages = the ADT `perf-states`, `rel_max_powers` 0,17,26,36,51,71,100 |
+| `InitData_RegionC` | 0xffffffa000020000 | matches; `shared1` table -1, 0x340b, 0x2025, 0x1824, 0x11fc, 0xd76, 0x8e9; `shared2` 0x400, 0x800, -2; `unk_508` 0xc00001; `unk_89bc` 10000 |
+
+The firmware's MMIO windows (`HwDataB.io_mappings`, GPU VA → phys, size):
+0xffffffa010000000 → 0x204d00000 (0x20000 RW), 0xffffffa010028000 → 0x20e100000
+(0x4000 RO), 0xffffffa010030000 → 0x23b104000 (0x4000 RW), 0xffffffa010038000 →
+0x204000000 (0x20000 RW), 0xffffffa010060000 → 0x23b2ec000 (0x1000 RO),
+0xffffffa010068000 → 0x23bc34000 (0x1000 RW), 0xffffffa010070000 → 0x204d80000
+(0x5000 RW), 0xffffffa010081000 → 0x204d71000 (0x1000 RW), 0xffffffa010088000 →
+0x200000000 (0xd6400 RW), 0xffffffa01016a000 → 0x23b102000 (0x1000 RO).
+
+So the host↔firmware interface of G12 on iOS 16.4 is Asahi's `V13_3` almost
+field for field; the chip values come from these dumps, not guesses.
 
 ## Not possible / ruled out
 
