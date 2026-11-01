@@ -11,7 +11,10 @@ soc-generation H12 becomes G12, below G13 in the version matrix; G15,
 which hw/uat.py already tests for, is added at the top. The A13's ASC
 mailbox has the A11's control registers (0x8108/0x810c): with the M1's the
 proxy drained the GPU firmware's empty outbox and the firmware panicked
-(Mbox:underflow). ADT properties typed for Macs that an iPhone carries
+(Mbox:underflow). RTKit boot on the A13's GPU also needs the AP's power state (SetAPPower
+0x20) after the endpoint map, as Linux's rtkit sends it; without it the
+firmware never reports boot done. ADT properties typed for Macs that an
+iPhone carries
 differently are kept as bytes instead of failing the whole tree.
 ---
 diff --git a/proxyclient/m1n1/adt.py b/proxyclient/m1n1/adt.py
@@ -155,6 +158,21 @@ index 7b507b1..689ae42 100644
      }
  
      def __init__(self, version, subcon):
+diff --git a/proxyclient/m1n1/fw/asc/mgmt.py b/proxyclient/m1n1/fw/asc/mgmt.py
+index e545ad6..1c892d8 100644
+--- a/proxyclient/m1n1/fw/asc/mgmt.py
++++ b/proxyclient/m1n1/fw/asc/mgmt.py
+@@ -87,6 +87,10 @@ class ASCManagementEndpoint(ASCBaseEndpoint):
+                 if ep == 0: continue
+                 if ep < 0x10:
+                     self.asc.start_ep(ep)
++            # The A13's GPU firmware waits for the AP's power state before
++            # it reports its own boot done (Linux's rtkit does this for all)
++            if getattr(self.asc, "chip_id", 0) == 0x8030:
++                self.boot_done()
+ 
+         return True
+ 
 diff --git a/proxyclient/m1n1/hw/asc.py b/proxyclient/m1n1/hw/asc.py
 index 099ce0a..074b3a6 100644
 --- a/proxyclient/m1n1/hw/asc.py
