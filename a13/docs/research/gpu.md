@@ -357,6 +357,23 @@ DevCtrl channel (read pointer 0, ours 2), `fw_status.unk_ctr` stays 0 (iOS:
 counting), RegionB's 0xabcdabcd marker not set. The GPU regions that reset
 iOS when read are written here by m1n1 without trouble.
 
+**Why DevCtrl is not read** (2026-11-01, same boot): a soft crash (`0x40` on
+the crash endpoint) dumps every firmware task. The mailbox history shows both
+DevCtrl doorbells (`0x83..11`) arrived. `agx_background` reads HwDataB +0x16fc
+(the one field that differs from iOS: iOS 0xffffffff08957fc4, m1n1 0), sets a
+request bit for the power task and sleeps; `agx_power` sits in
+`agfPollFenderRegIgnoreRecovery` (fw 0xffffff8000023fcc): it polls
+**Fender** (the GPU power controller, `io_mappings[0]`, 0x204d00000)
++0x1000, low 5 bits, for a target state. Fender+0x1000 reads 0x11 and stays
+(+0x1018 = 0x10, +0x1014 = 2); the firmware has programmed Fender
+(+0x14080.. = HwDataA's shared1 table, +0x14000 = 0x30001). Its timeout
+message would go to FWLog, which stays empty. Doorbell decoding in the G12
+firmware (fw 0xffffff800002bccc): bits 53:48 type (3 doorbell, 4 FWCtl, 5
+halt), for type 3 bits 1:0 = TA/3D/CL, bits 4:2 = queue (4 = none counted).
+
+Open: what iOS has in Fender (and in HwDataB +0x16fc) when the GPU is up; the
+power-up the firmware expects from the host before it (PMGR domains, PMP).
+
 Crash logs: m1n1 gives the firmware a crash buffer ("[crash] buf <phys>");
 `m1n1.fw.asc.crash.CrashLogParser(data).dump()` decodes it (message,
 backtrace, the mailbox history both ways).
