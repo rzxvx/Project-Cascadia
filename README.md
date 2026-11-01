@@ -823,7 +823,8 @@ The same phases, in the same order; details in
 ### Next devices
 
 In no particular order:
-- iPad 6 - A10
+- iPad 6 - A10 (2Gb ram)
+- iPad 7 - A10 (3Gb ram)
 - iPad Air 2 — A8X
 - iPad 4 - A6X
 - iPad mini 4 — A8
