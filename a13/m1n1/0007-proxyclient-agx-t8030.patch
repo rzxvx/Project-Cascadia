@@ -13,7 +13,8 @@ mailbox has the A11's control registers (0x8108/0x810c): with the M1's the
 proxy drained the GPU firmware's empty outbox and the firmware panicked
 (Mbox:underflow). RTKit boot on the A13's GPU also needs the AP's power state (SetAPPower
 0x20) after the endpoint map, as Linux's rtkit sends it; without it the
-firmware never reports boot done. ADT properties typed for Macs that an
+firmware never reports boot done. The A13's sgx node has no
+gpu-avg-power-filter-tc-ms: default it to iOS's 1008 ms (HwDataA). ADT properties typed for Macs that an
 iPhone carries
 differently are kept as bytes instead of failing the whole tree.
 ---
@@ -158,6 +159,37 @@ index 7b507b1..689ae42 100644
      }
  
      def __init__(self, version, subcon):
+diff --git a/proxyclient/m1n1/fw/agx/initdata.py b/proxyclient/m1n1/fw/agx/initdata.py
+index 0f834c2..4f85e10 100644
+--- a/proxyclient/m1n1/fw/agx/initdata.py
++++ b/proxyclient/m1n1/fw/agx/initdata.py
+@@ -923,7 +923,7 @@ class AGXHWDataA(ConstructClass):
+         self.unk_c58_4 = 0
+ 
+         # Note: integer rounding
+-        avg_power_filter_tc_periods = sgx.gpu_avg_power_filter_tc_ms // period_ms
++        avg_power_filter_tc_periods = sgx.getprop("gpu-avg-power-filter-tc-ms", 1008) // period_ms
+         gpu_avg_power_filter_tc_ms_round = avg_power_filter_tc_periods * period_ms
+ 
+         self.avg_power_filter_tc_periods_x4 = avg_power_filter_tc_periods * 4
+@@ -947,7 +947,7 @@ class AGXHWDataA(ConstructClass):
+         self.max_power_7 = chip_info.max_power
+         self.max_power_8 = chip_info.max_power
+         self.unk_d48 = 0
+-        self.avg_power_filter_tc_ms = sgx.gpu_avg_power_filter_tc_ms
++        self.avg_power_filter_tc_ms = sgx.getprop("gpu-avg-power-filter-tc-ms", 1008)
+         self.unk_d50 = 0
+         self.avg_power_filter_tc_clks = gpu_avg_power_filter_tc_ms_round * base_clock_khz
+         self.unk_d54_4 = bytes(0xc)
+@@ -1933,7 +1933,7 @@ class InitData_RegionC(ConstructClass):
+ 
+     def __init__(self, sgx, chip_info):
+         period_ms = sgx.gpu_power_sample_period
+-        avg_power_filter_tc_periods = sgx.gpu_avg_power_filter_tc_ms // period_ms
++        avg_power_filter_tc_periods = sgx.getprop("gpu-avg-power-filter-tc-ms", 1008) // period_ms
+ 
+         self.ktrace_enable = 0# 0xffffffff
+         self.unk_4 = bytes(0x20)
 diff --git a/proxyclient/m1n1/fw/asc/mgmt.py b/proxyclient/m1n1/fw/asc/mgmt.py
 index e545ad6..1c892d8 100644
 --- a/proxyclient/m1n1/fw/asc/mgmt.py
