@@ -553,6 +553,28 @@ fills that table on iOS (ApplePMGR `initPMP` / `ApplePMPControlFunction`,
 PMGR `function-pmp_control` "PMPC", GFX has `notify_pmp`), then send cmd 0xc
 (device GFX, n 0x30) before the GPU starts.
 
+**The PMP's device table is its own** (static, 20E247). The config pointer
+(VA 0x1045000, loaded at fn 0x1003a38) is set by the firmware's static
+initialiser (fn 0x102630c) to a struct at 0x1044de8 that it fills itself:
++0x16c = 15, +0x170 = 0x1045050. `a13/tools/gpu/pmp-devtable.py` runs that
+initialiser in unicorn and prints the table:
+
+| # | name | id | doorbell (+0x28) |
+|---|---|---|---|
+| 0-2 | CPU, ECPU, PCPU | 0 | 0, 0x10, 0x11 |
+| 3 | **GPU** | **0x81** (= PMGR GFX, 129) | **0x30** |
+| 4-14 | ISP, VDD_AVE, DISP0, VENC, VDEC, JPEG, MSR, ANE, PCIE, SBR, SEP | 0x82, 0, 0x6e, 0x83, 0x84, 0x78, 0x79, 0x85, 0x7d, 0x30, 0xf6 | -- |
+
+So nothing from the host is missing in the table: the GPU entry already
+knows doorbell 0x30, it just was never registered. PM command 0xc
+(dispatcher: domain = bits 43:40, arg1 = 31:16 matched against the ids,
+arg2 = 15:0; every command needs the PMP's state at 0x1046018 != 0, which
+DVFS commands showed it is after Init) with arg1 0x81, arg2 0x30: per-device
+slot (0x58 bytes at *0x1045e90, +0x1c = registered) must be free and n >=
+0x20; it hooks interrupt 0x10000 | n (handler 0x1011598) and replies 0xd with
+the message's arg1/arg2. `agx-start.py --pmp-doorbell` sends it after the PMP
+is configured, before the GPU starts.
+
 **Do not bulk-read 0x23bc1c000** (PMGR reg 19, inside the PMP's ASC block):
 reading it through the proxy killed m1n1 (the USB link dropped).
 

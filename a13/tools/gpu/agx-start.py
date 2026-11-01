@@ -3,7 +3,7 @@
 """G4 (a13/docs/research/gpu.md): start the A13's GPU firmware from the Mac
 through m1n1's proxy, with m1n1's own Python AGX driver.
 
-    M1N1DEVICE=/dev/cu.usbmodemXXXX agx-start.py [--boot-pmp|--pmp-dvfs] [--fender] [SECONDS]
+    M1N1DEVICE=/dev/cu.usbmodemXXXX agx-start.py [--boot-pmp|--pmp-dvfs|--pmp-doorbell] [--fender] [SECONDS]
 
 The phone runs `a13/cascadia boot proxy` (m1n1 alone; iBoot has loaded the
 GPU firmware: G3). Needs a13/build/m1n1 with patch 0007 (T8030 / G12) and the
@@ -16,6 +16,10 @@ session: each proxyclient session starts m1n1's heap afresh and a second one
 overwrites the first one's memory (the GPU's page tables).
 --pmp-dvfs: --boot-pmp, then PM command 6 (a DVFS domain's state range) with
 the full range for domains 0-6 (all of them), before the GPU starts.
+--pmp-doorbell: --boot-pmp, then PM command 0xc (register a device's doorbell)
+for the GPU: device id 0x81 (the PMP's own device table, entry "GPU"),
+doorbell 0x30 (the GPU firmware rings 0x23bc34000 with 1); the ack is 0xd
+with the same arguments, zeros if refused.
 --fender: what iOS's G12::AGXFenderCommon does to Fender, the only Fender
 registers the host touches: set +0x1010 bit 0 (Fender power management on)
 before the GPU starts, acknowledge +0x1014 (interrupt status,
@@ -40,8 +44,9 @@ from m1n1.agx import AGX  # noqa: E402
 
 pmp_asc = None
 args = [a for a in sys.argv[1:] if not a.startswith("--")]
-boot_pmp = "--boot-pmp" in sys.argv[1:] or "--pmp-dvfs" in sys.argv[1:]
 pmp_dvfs = "--pmp-dvfs" in sys.argv[1:]
+pmp_doorbell = "--pmp-doorbell" in sys.argv[1:]
+boot_pmp = "--boot-pmp" in sys.argv[1:] or pmp_dvfs or pmp_doorbell
 fender = "--fender" in sys.argv[1:]
 seconds = float(args[0]) if args else 10.0
 
@@ -116,23 +121,33 @@ try:
         print(f"[agx-start] PMP: CPU_CONTROL {p.read32(pbase + 0x44):#x} "
               f"CPU_STATUS {p.read32(pbase + 0x48):#x}")
 
-        # PM command 6 = a DVFS domain's allowed state range (ApplePMP::
-        # _setDVFSStates): give every domain all its states; acks are 7
         def pm(cmd, domain=0, device=0, arg1=0, arg2=0):
             return (0x0020000000000000 | (cmd & 0xff) << 44 | (domain & 0xf) << 40
                     | (device & 0xff) << 32 | (arg1 & 0xffff) << 16 | (arg2 & 0xffff))
+
+        def pm_send(what, msg):
+            # hw/asc.py: send(msg0, msg1 register), recv() -> (msg0, msg1)
+            pmp_asc.send(msg, R_INBOX1(EP=0x20))
+            end = time.time() + 0.5
+            ack = None
+            while time.time() < end and ack is None:
+                m0, m1 = pmp_asc.recv()
+                if m0 is not None:
+                    ack = (m1.EP, m0)
+            print(f"[agx-start] PMP {what}: sent {msg:#018x}, "
+                  f"got {'nothing' if ack is None else f'EP {ack[0]:#x} {ack[1]:#018x}'}")
+
+        # PM command 6 = a DVFS domain's allowed state range (ApplePMP::
+        # _setDVFSStates): give every domain all its states; acks are 7
         if pmp_dvfs:
             for d in range(7):   # 7 domains; an 8th crashes the PMP
-                # hw/asc.py: send(msg0, msg1 register), recv() -> (msg0, msg1)
-                pmp_asc.send(pm(6, d, 0, 0, 0xf), R_INBOX1(EP=0x20))
-                end = time.time() + 0.5
-                ack = None
-                while time.time() < end and ack is None:
-                    m0, m1 = pmp_asc.recv()
-                    if m0 is not None:
-                        ack = (m1.EP, m0)
-                print(f"[agx-start] PMP DVFS domain {d}: sent {pm(6, d, 0, 0, 0xf):#018x}, "
-                      f"got {'nothing' if ack is None else f'EP {ack[0]:#x} {ack[1]:#018x}'}")
+                pm_send(f"DVFS domain {d}", pm(6, d, 0, 0, 0xf))
+        # PM command 0xc = register a doorbell (t8030pmp fn 0x100c004): arg1 a
+        # device id from the PMP's table (15 entries at VA 0x1045050, 20E247:
+        # GPU = 0x81), arg2 the doorbell (>= 0x20; page 0x23bc1c000 +
+        # (n >> 3) * 0x4000, bit n & 7: the GPU rings 0x23bc34000 = 0x30)
+        if pmp_doorbell:
+            pm_send("GPU doorbell", pm(0xc, 0, 0, 0x81, 0x30))
         pdart.show_error()
 except Exception as e:
     print(f"[agx-start] PMP: {e!r}")
