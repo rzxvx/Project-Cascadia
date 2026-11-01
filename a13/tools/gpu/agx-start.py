@@ -3,7 +3,7 @@
 """G4 (a13/docs/research/gpu.md): start the A13's GPU firmware from the Mac
 through m1n1's proxy, with m1n1's own Python AGX driver.
 
-    M1N1DEVICE=/dev/cu.usbmodemXXXX agx-start.py [--boot-pmp|--pmp-dvfs|--pmp-doorbell] [--fender] [SECONDS]
+    M1N1DEVICE=/dev/cu.usbmodemXXXX agx-start.py [--boot-pmp|--pmp-dvfs|--pmp-doorbell] [--fender] [--gpu-trig] [SECONDS]
 
 The phone runs `a13/cascadia boot proxy` (m1n1 alone; iBoot has loaded the
 GPU firmware: G3). Needs a13/build/m1n1 with patch 0007 (T8030 / G12) and the
@@ -25,6 +25,10 @@ registers the host touches: set +0x1010 bit 0 (Fender power management on)
 before the GPU starts, acknowledge +0x1014 (interrupt status,
 write-1-to-clear: sgx interrupts 1-3) whenever it is set, and after SECONDS
 watch +0x1000 for the firmware's request to finish.
+--gpu-trig: what iOS's PMGR driver does at start for every `*-trig` property
+of /arm-io/pmgr (ApplePMGR setTrigger, AppleT8030PMGR register groups): the
+GPU's DVFM trigger control, PMGR reg 0 + 0xfd000 (GPU_TRIG_CTL) |= gpu-trig
+(0x20007). The trigger controls are printed either way.
 """
 import os
 import sys
@@ -48,6 +52,7 @@ pmp_dvfs = "--pmp-dvfs" in sys.argv[1:]
 pmp_doorbell = "--pmp-doorbell" in sys.argv[1:]
 boot_pmp = "--boot-pmp" in sys.argv[1:] or pmp_dvfs or pmp_doorbell
 fender = "--fender" in sys.argv[1:]
+gpu_trig = "--gpu-trig" in sys.argv[1:]
 seconds = float(args[0]) if args else 10.0
 
 # the power-management coprocessor carries out the GPU's power state changes
@@ -162,9 +167,28 @@ def fender_regs(when):
         f"+{o:#x}={p.read32(FENDER + o):#x}" for o in (0x1000, 0x1010, 0x1014, 0x1018)))
 
 
+# PMGR trigger controls (AppleT8030PMGR register groups 10, 11, 13 and 15,
+# PMGR reg 0 + 0xdc000 + ...: ECPU, PCPU, ANE, GPU; T8030 has no PCPU1, ANE1,
+# GPU1-3): iOS ORs in the pmgr node's ecpu-/pcpu-/ane-/gpu-trig at start
+# (ApplePMGR 20E247 fn 0xfffffff0091b2eb4, called for each from fn
+# 0xfffffff0091b07bc)
+PMGR0 = u.adt["/arm-io/pmgr"].get_reg(0)[0]
+TRIG_CTL = {"ECPU": 0xe8000, "PCPU": 0xe9000, "ANE": 0xf9000, "GPU": 0xfd000}
+
+
+def trig_regs(when):
+    print(f"[agx-start] PMGR TRIG_CTL {when}: " + " ".join(
+        f"{n}={p.read32(PMGR0 + o):#x}" for n, o in TRIG_CTL.items()))
+
+
 p.pmgr_adt_power_enable("/arm-io/gfx-asc")
 p.pmgr_adt_power_enable("/arm-io/sgx")
 fender_regs("before the GPU")
+trig_regs("before the GPU")
+if gpu_trig:
+    trig = getattr(u.adt["/arm-io/pmgr"], "gpu-trig", 0x20007)
+    p.set32(PMGR0 + TRIG_CTL["GPU"], trig)
+    trig_regs(f"after GPU |= {trig:#x}")
 if fender:
     p.write32(FENDER + 0x1010, p.read32(FENDER + 0x1010) | 1)
     fender_regs("after +0x1010 |= 1")
@@ -191,6 +215,7 @@ try:
         if fender:
             fender_ack()
     fender_regs("after the GPU's request")
+    trig_regs("after the GPU's request")
     print("[agx-start] DevCtrl read ptr:", agx.ch.devctrl.state.READ_PTR.val)
     if pmp_asc:
         pmp_asc.dart.show_error()

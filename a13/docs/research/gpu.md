@@ -575,6 +575,33 @@ slot (0x58 bytes at *0x1045e90, +0x1c = registered) must be free and n >=
 the message's arg1/arg2. `agx-start.py --pmp-doorbell` sends it after the PMP
 is configured, before the GPU starts.
 
+Tried (proxy, 2026-11-02): the PMP acks the registration
+(`0x0020d00000810030`), yet after the firmware's request Fender+0x1000 stays
+0x11 and the PMP sends nothing. Why, from the PMP image: the doorbell's work
+function (0x10115c8) reads the device's request from a PMGR register and
+compares it with three thresholds in the device's entry (+0x2a, +0x2c,
++0x2e); the GPU's are 0 (the static initialiser writes 0; ISP's are 300,
+427, 533), so it returns at once. DevPwr (command 0xe) ignores "on" for
+devices of type 4 (entry +8: GPU, VDEC, JPEG, ...). PM command 2 is the
+PMP's state (arg1 0-3; the doorbell work runs only in states 1-2) and m1n1's
+Init2 already sends `2, arg1 1`. **The PMP does not power the GPU on.** The
+firmware's flag that skips the PMP doorbell (fw 0xffffff80000bf1a8) comes
+from HwDataB +0x964 (copied at fw 0xffffff80000276e8) and is 0 on iOS too.
+
+**PMGR trigger controls** (`com.apple.driver.ApplePMGR` /
+`AppleT8030PMGR`, 20E247). At start ApplePMGR calls its `setTrigger(n, 1)`
+(fn 0xfffffff0091b2eb4, from fn 0xfffffff0091b07bc) for each `*-trig`
+property the pmgr node has: read the trigger's register group, OR in the
+property's value, write it back (per die). The A13's node has `ecpu-trig` 7,
+`pcpu-trig` 7, `ane-trig` 7 and **`gpu-trig` 0x20007**. AppleT8030PMGR maps
+the groups (fn 0xfffffff00945e034, `setRegGroup(group, slot, offset)`; slot
+0 = pmgr reg 0 = 0x23b000000): ECPU_TRIG_CTL +0xe8000, PCPU_TRIG_CTL
++0xe9000, ANE_TRIG_CTL +0xf9000, **GPU_TRIG_CTL +0xfd000 (0x23b0fd000)**.
+m1n1 never sets it. If it is what lets Fender's power/perf request reach the
+PMGR, it is the missing piece: `agx-start.py` prints the four trigger
+controls before and after the GPU's request, and `--gpu-trig` sets
+GPU_TRIG_CTL |= 0x20007 before the GPU starts.
+
 **Do not bulk-read 0x23bc1c000** (PMGR reg 19, inside the PMP's ASC block):
 reading it through the proxy killed m1n1 (the USB link dropped).
 
