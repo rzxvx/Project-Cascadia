@@ -1,5 +1,8 @@
 #!/bin/sh
 # Run only after USBLiter8 -> patched iBSS has reached Recovery.
+#   boot-from-recovery.sh          Linux
+#   boot-from-recovery.sh proxy    m1n1 alone: its proxy, for the Mac's
+#                                  proxyclient (the GPU work, research/gpu.md)
 set -eu
 cd "$(dirname "$0")"
 query=$(irecovery -q)
@@ -26,6 +29,12 @@ irecovery -c firmware
 if [ -f inputs/gfx.gfxf.img4 ]; then
     irecovery -f inputs/gfx.gfxf.img4
     irecovery -c firmware
+fi
+if [ "${1:-}" = proxy ]; then
+    irecovery -f out/m1n1-proxy.rkrn.img4
+    irecovery -c bootx
+    echo 'bootx submitted: m1n1 proxy. On the Mac: ls /dev/cu.usbmodem*'
+    exit 0
 fi
 # the Alpine root for RAM boots, as a ramdisk (m1n1 hands it to Linux)
 if [ -f out/alpine.rdsk.img4 ]; then

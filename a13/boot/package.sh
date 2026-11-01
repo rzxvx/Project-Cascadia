@@ -17,7 +17,8 @@
 #          ../build/alpine-a13.tar.gz (a13/cascadia build rootfs): the root
 #                          the phone runs in RAM when there is no NFS root
 # Output:  out/m1n1-linux.rkrn.img4, out/alpine.rdsk.img4 (the Alpine root as
-#          an iBoot ramdisk: iBoot refuses a large kernel image)
+#          an iBoot ramdisk: iBoot refuses a large kernel image),
+#          out/m1n1-proxy.rkrn.img4 (m1n1 with no payload: it runs its proxy)
 set -eu
 cd "$(dirname "$0")"
 
@@ -138,6 +139,14 @@ ipsw img4 create --input out/m1n1-linux.macho --type rkrn --compress lzss \
 # ipsw 3.1.714 appends a bad ASN.1 compression record; drop it
 python3 repair_lzss_img4.py "$tmp/kernel.img4" out/m1n1-linux.rkrn.img4
 echo "wrote out/m1n1-linux.rkrn.img4"
+
+# m1n1 alone: with nothing appended it stays in its proxy (USB + UART), for
+# the Mac's proxyclient
+{ cat "$P/m1n1-idevice.macho"; printf '\000\000\000\000'; } > "$tmp/m1n1-proxy.macho"
+ipsw img4 create --input "$tmp/m1n1-proxy.macho" --type rkrn --compress lzss \
+    --im4m inputs/IM4M --output "$tmp/proxy.img4" >/dev/null
+python3 repair_lzss_img4.py "$tmp/proxy.img4" out/m1n1-proxy.rkrn.img4
+echo "wrote out/m1n1-proxy.rkrn.img4"
 
 # Alpine in RAM: the initramfs unpacks it into a tmpfs when there is no NFS
 # root (none packed, or the host not there: no cable) -- the same system,

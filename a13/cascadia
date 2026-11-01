@@ -17,6 +17,8 @@
 #   a13/cascadia build rootfs    the Alpine aarch64 root (NFS, RAM, internal storage)
 #   a13/cascadia pack            wrap the payload into the bootable IMG4
 #   a13/cascadia boot            pwned DFU → iBSS → boot (needs usbliter8)
+#   a13/cascadia boot proxy      the same, into m1n1's proxy instead of Linux
+#                                (driven from the Mac: m1n1 proxyclient)
 #   a13/cascadia nfs on|off      export a root filesystem to it  (macOS or Linux)
 #   a13/cascadia net on|off      share this host's internet with it
 #   a13/cascadia release TAG     assemble a release archive
@@ -223,8 +225,9 @@ cmd_pack() {
 # ---------- boot -------------------------------------------------------------
 
 cmd_boot() {
-    [ -f "boot/out/m1n1-linux.rkrn.img4" ] \
-        || fail "no boot/out/m1n1-linux.rkrn.img4 -- run: a13/cascadia pack"
+    img=m1n1-linux.rkrn.img4
+    [ "${1:-}" = proxy ] && img=m1n1-proxy.rkrn.img4
+    [ -f "boot/out/$img" ] || fail "no boot/out/$img -- run: a13/cascadia pack"
 
     IBSS="boot/inputs/iBSS.n104.20E247.sigpatched.raw"
     [ -f "$IBSS" ] || fail "no $IBSS -- run: a13/cascadia inputs"
@@ -257,7 +260,7 @@ cmd_boot() {
     fi
 
     say "Recovery → bootx"
-    sh "$A13/boot/boot-from-recovery.sh"
+    sh "$A13/boot/boot-from-recovery.sh" "${1:-}"
 }
 
 # ---------- nfs, net ---------------------------------------------------------
@@ -287,7 +290,7 @@ case "${1:-}" in
                      "$A13/boot/inputs/touch-calibration" ;;
     build)   shift; cmd_build "$@" ;;
     pack)    cmd_pack ;;
-    boot)    cmd_boot ;;
+    boot)    shift; cmd_boot "$@" ;;
     nfs)     t=$(host_tool nfs-export);     shift; bash "$t" "$@" ;;
     net)     t=$(host_tool share-internet); shift; bash "$t" "$@" ;;
     release) shift; cmd_release "$@" ;;
