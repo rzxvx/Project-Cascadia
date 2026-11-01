@@ -393,9 +393,32 @@ PMP sees memory and its registers only through `dart-pmp`: SID 0
 (its boot arguments: STKG, DBUG, DART=1, PWRG, CLKG, NRGD, PMON, ... the GFX
 set): the iOS kernel's `dart-pmp` page tables decide where each window sits.
 
-Next: read those tables from a running iOS (kernel memory, kmem) -- the iova
-layout of the windows and of the buffers -- and set `dart-pmp` up the same
-way before booting the PMP.
+iOS's tables could not be read (no TTBR or table address in
+`AppleT8020DART` / `IODARTMapper`; iOS 16 keeps them elsewhere). Not needed:
+**m1n1 already has the PMP's host driver** (Asahi's v1 protocol,
+`proxyclient/m1n1/fw/pmp.py`), and the A13 PMP speaks it (its endpoint-0x20
+dispatch: subtype 1 = map a 0xf000 host buffer = `Configure`).
+`agx-start.py --boot-pmp` (one session with the GPU):
+
+- `dart-pmp` initialized (SID 15 bypass); the PMP's RTKit boots fully
+  (crash, syslog, kdebug, iorep buffers through the DART; IOP and AP power
+  0x20; "Startup complete");
+- endpoint 0x20: `Startup` -> shared buffer (energy-model DRAM configs at
+  +0x2000, the register-window table at +0xe000: `pmp` reg[3..] laid out from
+  0xc0000000, Fender's page 0x204d14000 at 0xc0024000) -> `Configure` (ack
+  0x200000023b53f) -> `Init1(1, 3)`, `Init2(1, 0)`, `Unk(0x3bc, 2)`, all acked;
+  the PMP's syslog: "[main.cpp:3295] PMP started";
+- its tasks (soft crash dump): rtk_ep_work, power, main, pm_work, pm_rt_work,
+  pmu_telemetry_work.
+
+**Still: Fender+0x1000 = 0x11 after the GPU firmware's request**, and the
+PMP shows nothing from the GPU in its mailbox log. The PMP is given only
+Fender's +0x14000 page, so the +0x1000 request bit is cleared by Fender's own
+sequencer. PMGR: `GFX` (parent) and `PMP` are on; `GFX-SGX`, `GFX-ASC`,
+`GFX-BUSY` are not PS-managed. m1n1's M1 "poke" (Fender+0x14000 = 0x70001)
+reads back 0x30001 here. Open: what iOS's AGX driver writes to Fender
+before the firmware's first power request (static RE of `com.apple.AGXG12P`
+next).
 
 Crash logs: m1n1 gives the firmware a crash buffer ("[crash] buf <phys>");
 `m1n1.fw.asc.crash.CrashLogParser(data).dump()` decodes it (message,
