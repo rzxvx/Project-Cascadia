@@ -614,6 +614,35 @@ into kmem as device memory (Dopamine's `pmap_map_in_with_flags` with
 AttrIndx 5, nGnRE) instead of the cacheable kmap that reset the phone on
 carve-outs.
 
+That first version (PTEs written into kmem's own page tables) read one
+register and then took the phone down, at exit most likely (the kernel tore
+down a mapping it did not know). kmap itself is `IOSurface_map` (an
+IOSurface whose memory descriptor Dopamine points at the range);
+`IOSurface_map_withCacheMode(pa, size, &uaddr, 0x100 kIOMapInhibitCache)` is
+the same path uncached, and that is what `kmem mmio` uses now: no trouble.
+
+**iOS reference** (2026-11-02, idle phone, then apps opened with `uiopen`):
+
+| register | iOS |
+|---|---|
+| PMGR GFX ps 0x23b080390 | 0x1400034f / 0x1000030f / 0x1f0003ff: **AUTO_ENABLE (bit 28) set**, the auto state (27:24) and actual (7:4) flip between 0, 4 and 0xf every few tens of us by themselves, target 0xf |
+| PMGR PMP ps 0x23b080368 | 0x1f0f03ff |
+| GPU_TRIG_CTL 0x23b0fd000 | 0x22437 (ECPU/PCPU/ANE 0x2107) |
+| Fender +0x1000 / +0x1010 / +0x1014 idle | 0 / 0 / 0 or 3 |
+| Fender +0x1018 | flips 0 / 8 with the GFX ps |
+| Fender +0x14000 / +0x14004 | 0 / 1; +0x14020 0x0694f470, +0x14028 0x003f6b87; +0x14080.. = shared1 table (ffff, 340b, 2025, 1824, 11fc, d76, 8e9, then ffff) |
+
+`kmem mmiowatch` on Fender while apps open: **+0x1000 goes 0x11 -> 0x01 in
+about 16 us** on its own, +0x1014 = 2 then 3, acknowledged by the host
+(cleared) ~200 ms later; then 0x01 -> 0x00 (or 0x10 -> 0x00) on power-down.
+**+0x1010 stays 0 throughout**: neither the host's control bit nor the PMP
+is in the power-up path. What differs from ours is the PMGR: m1n1's
+`pmgr_set_mode` clears AUTO_ENABLE when it powers a device on, so GFX runs
+under m1n1 as plain "on, no auto" -- and Fender's request (presumably an
+auto-PM handshake with the PMGR) gets no answer. `agx-start.py` prints the
+GFX and PMP power-state registers; `--gfx-auto` sets GFX's AUTO_ENABLE
+after powering it on.
+
 **Do not bulk-read 0x23bc1c000** (PMGR reg 19, inside the PMP's ASC block):
 reading it through the proxy killed m1n1 (the USB link dropped).
 

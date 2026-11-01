@@ -3,7 +3,7 @@
 """G4 (a13/docs/research/gpu.md): start the A13's GPU firmware from the Mac
 through m1n1's proxy, with m1n1's own Python AGX driver.
 
-    M1N1DEVICE=/dev/cu.usbmodemXXXX agx-start.py [--boot-pmp|--pmp-dvfs|--pmp-doorbell] [--fender] [--gpu-trig] [SECONDS]
+    M1N1DEVICE=/dev/cu.usbmodemXXXX agx-start.py [--boot-pmp|--pmp-dvfs|--pmp-doorbell] [--fender] [--gpu-trig] [--gfx-auto] [SECONDS]
 
 The phone runs `a13/cascadia boot proxy` (m1n1 alone; iBoot has loaded the
 GPU firmware: G3). Needs a13/build/m1n1 with patch 0007 (T8030 / G12) and the
@@ -29,6 +29,10 @@ watch +0x1000 for the firmware's request to finish.
 of /arm-io/pmgr (ApplePMGR setTrigger, AppleT8030PMGR register groups): the
 GPU's DVFM trigger control, PMGR reg 0 + 0xfd000 (GPU_TRIG_CTL) |= gpu-trig
 (0x20007). The trigger controls are printed either way.
+--gfx-auto: set AUTO_ENABLE (bit 28) in PMGR's GFX power-state register
+(0x23b080390), as iOS has it: there the hardware moves GFX between states 0,
+4 and 0xf by itself, and Fender's 0x11 -> 0x01 takes ~16 us with +0x1010 = 0
+(kmem mmiowatch, 2026-11-02). Printed either way.
 """
 import os
 import sys
@@ -53,6 +57,7 @@ pmp_doorbell = "--pmp-doorbell" in sys.argv[1:]
 boot_pmp = "--boot-pmp" in sys.argv[1:] or pmp_dvfs or pmp_doorbell
 fender = "--fender" in sys.argv[1:]
 gpu_trig = "--gpu-trig" in sys.argv[1:]
+gfx_auto = "--gfx-auto" in sys.argv[1:]
 seconds = float(args[0]) if args else 10.0
 
 # the power-management coprocessor carries out the GPU's power state changes
@@ -176,9 +181,16 @@ PMGR0 = u.adt["/arm-io/pmgr"].get_reg(0)[0]
 TRIG_CTL = {"ECPU": 0xe8000, "PCPU": 0xe9000, "ANE": 0xf9000, "GPU": 0xfd000}
 
 
+# power-state registers (bit 28 AUTO_ENABLE, 27:24 auto state, 7:4 actual,
+# 3:0 target); iOS idle: GFX 0x1400034f / 0x1000030f / 0x1f0003ff (flickers),
+# PMP 0x1f0f03ff
+PS = {"GFX": 0x23b080390, "PMP": 0x23b080368}
+
+
 def trig_regs(when):
     print(f"[agx-start] PMGR TRIG_CTL {when}: " + " ".join(
-        f"{n}={p.read32(PMGR0 + o):#x}" for n, o in TRIG_CTL.items()))
+        f"{n}={p.read32(PMGR0 + o):#x}" for n, o in TRIG_CTL.items()) + "; ps " + " ".join(
+        f"{n}={p.read32(a):#x}" for n, a in PS.items()))
 
 
 p.pmgr_adt_power_enable("/arm-io/gfx-asc")
@@ -189,6 +201,9 @@ if gpu_trig:
     trig = getattr(u.adt["/arm-io/pmgr"], "gpu-trig", 0x20007)
     p.set32(PMGR0 + TRIG_CTL["GPU"], trig)
     trig_regs(f"after GPU |= {trig:#x}")
+if gfx_auto:
+    p.set32(PS["GFX"], 1 << 28)
+    trig_regs("after GFX AUTO_ENABLE")
 if fender:
     p.write32(FENDER + 0x1010, p.read32(FENDER + 0x1010) | 1)
     fender_regs("after +0x1010 |= 1")
