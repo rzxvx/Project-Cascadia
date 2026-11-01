@@ -21,6 +21,12 @@ irecovery -f inputs/DeviceTree.n104.rdtr.img4
 irecovery -c devicetree
 irecovery -f inputs/empty.rtsc.img4
 irecovery -c firmware
+# the GPU firmware (gfxf), loaded and set up by iBoot as for iOS: segments,
+# its RTKit boot arguments, gfx-asc segment-ranges + pre-loaded in the ADT
+if [ -f inputs/gfx.gfxf.img4 ]; then
+    irecovery -f inputs/gfx.gfxf.img4
+    irecovery -c firmware
+fi
 # the Alpine root for RAM boots, as a ramdisk (m1n1 hands it to Linux)
 if [ -f out/alpine.rdsk.img4 ]; then
     irecovery -f out/alpine.rdsk.img4

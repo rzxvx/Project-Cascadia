@@ -68,11 +68,9 @@ planned.
 all of RegionB/C, HwDataA/B, fw_status found and parsed, `CHIP_INFO[0x8030]`
 for m1n1 built from them. `tiling_control` (render only) comes with G5.
 
-**G3 — the firmware is there under Linux (70 %).** Does our boot (sig-patched iBSS
-in Recovery → `bootx`) load `gfxf` like iOS's iBoot does? Check on Linux: the live
-ADT (`/dev/mtd1`) `iop-gfx-nub` `pre-loaded` and `segment-ranges`, and the bytes at
-0x8002c0000. If not loaded: send `gfxf` from Recovery (`irecovery` firmware
-command), or have m1n1 place the Mach-O segments itself.
+**G3 — the firmware is there under Linux.** First check 2026-11-01: **no**
+(see "G3 results"). Being tried: hand the firmware to iBoot like a restore
+does (`firmware` command), so iBoot loads and sets it up as for iOS.
 
 **G4 — m1n1 proxy on A13 (65 %).** m1n1 in proxy mode over our USB (dwc3) instead
 of chainloading Linux, so the Python side on the Mac can drive the hardware. Then
@@ -255,6 +253,32 @@ HWDATA_B REGION_C`, every field read back from where m1n1 writes it):
 For G4, m1n1 also needs to know G12: `Ver.set_version` turns ADT `soc-generation`
 "H12" into "G12", which its version matrix (G13, G14, G14X) lacks; HwDataB's
 `pad_b14` (+0x16fc) is the one field to take from iOS as is.
+
+## G3 results (2026-11-01)
+
+Linux booted the usual way (iBSS in Recovery → `devicetree`, trust cache via
+`firmware`, `bootx`), checked with `a13/tools/gpu/g3-check.sh` (phone: live ADT
+from `/dev/mtd1`, the firmware `__TEXT` via `/dev/mem`) and `g3-compare.py`
+(Mac; a raw ADT walker, m1n1's ADT parser chokes on an iPhone audio property):
+
+- iBoot's breadcrumbs list `rdtr`, `trst`, `rdsk`, `rkrn` -- no `gfxf`;
+- `gfx-asc` has no `segment-ranges`, `iop-gfx-nub` no `pre-loaded`;
+- 0x8002c0000 is plain Linux RAM (a kernel pointer there);
+- the GPU regions are still assigned in `sgx` (handoff 0x8fffb4000, shared
+  0x8fffb8000, gpu-region 0x8ffff8000), above Linux's RAM (which ends at
+  0x8e7690000): nothing in Linux touches them;
+- m1n1 already tries to describe the GPU to Linux (Asahi's `kboot_gpu.c`):
+  "ADT: GPU: unsupported chip!".
+
+So our boot does not load the GPU firmware. Our iBSS has the code for it (the
+`firmware` command, which already takes the trust cache, and the strings
+`rkosftab`, `segment-ranges`, `pre-loaded`), as a restore sends every
+`IsLoadedByiBoot` component with `firmware` (idevicerestore
+`recovery_send_loaded_by_iboot`). `boot-from-recovery.sh` now sends
+`inputs/gfx.gfxf.img4` (the IPSW's `armfw_g12p.im4p` + our IM4M, which has the
+`gfxf` tag) that way when it exists. If iBoot does it, it also fills the RTKit
+boot-argument table and the ADT exactly as for iOS; if not, m1n1 does the same
+from the G1 recipe.
 
 ## Not possible / ruled out
 
