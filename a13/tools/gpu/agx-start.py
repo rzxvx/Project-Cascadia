@@ -45,9 +45,46 @@ try:
     print(f"[agx-start] PMP @ {pbase:#x}: pre-loaded {getattr(nub, 'pre_loaded', None)}, "
           f"CPU_CONTROL {p.read32(pbase + 0x44):#x} CPU_STATUS {p.read32(pbase + 0x48):#x}")
     if boot_pmp and getattr(nub, "pre_loaded", 0) and not p.read32(pbase + 0x44) & 0x10:
+        import struct
         from m1n1.fw.asc import StandardASC
+        from m1n1.hw.dart import DART
         p.pmgr_adt_power_enable("/arm-io/pmp")
-        pmp_asc = StandardASC(u, pbase)
+        p.pmgr_adt_power_enable("/arm-io/dart-pmp")
+
+        # the PMP's RTKit boot arguments as iBoot left them in its SRAM
+        # (image VA 0x1000000 at region-base; table at VA 0x1032800 in 20E247)
+        sram = nub.region_base
+        tab = iface.readmem(sram + 0x32800, 0x2d0)
+        o, bootargs = 0, {}
+        while o < len(tab) - 8:
+            tag = tab[o:o + 4][::-1].decode("latin1")
+            sz = struct.unpack_from("<I", tab, o + 4)[0]
+            if sz not in (1, 2, 4, 8):
+                break
+            bootargs[tag] = int.from_bytes(tab[o + 8:o + 8 + sz], "little")
+            o += 8 + sz
+        print("[agx-start] PMP boot args:", " ".join(f"{k}={v:#x}" for k, v in bootargs.items()))
+
+        # its DART: SID 0 translates (buffers + register windows), SID 15 bypass
+        dnode = u.adt["/arm-io/dart-pmp"]
+        pdart = DART.from_adt(u, "/arm-io/dart-pmp")
+        pdart.initialize()
+        pio_base = bootargs.get("IOBA") or dnode.pio_vm_base
+        gran = dnode.pio_granularity
+        raw = u.adt["/arm-io/dart-pmp/mapper-pmp"].pio_range
+        raw = raw if isinstance(raw, bytes) else bytes(raw)
+        ranges = [struct.unpack_from("<QQ", raw, i) for i in range(0, len(raw), 16)]
+        blocks = []
+        for pa, size in ranges:
+            if pa // gran not in blocks:
+                blocks.append(pa // gran)
+            va = pio_base + blocks.index(pa // gran) * gran + pa % gran
+            pdart.iomap_at(0, va & ~0x3fff, pa & ~0x3fff, (size + (pa & 0x3fff) + 0x3fff) & ~0x3fff)
+        pdart.invalidate_streams(1)
+        print(f"[agx-start] dart-pmp: {len(ranges)} register windows from {pio_base:#x} "
+              f"({len(blocks)} blocks of {gran:#x})")
+
+        pmp_asc = StandardASC(u, pbase, dart=pdart, stream=0)
         pmp_asc.verbose = 3
         pmp_asc.mgmt.verbose = 1
         try:
@@ -56,6 +93,7 @@ try:
             print(f"[agx-start] PMP boot: {e!r} (going on)")
         print(f"[agx-start] PMP: CPU_CONTROL {p.read32(pbase + 0x44):#x} "
               f"CPU_STATUS {p.read32(pbase + 0x48):#x}")
+        pdart.show_error()
 except Exception as e:
     print(f"[agx-start] PMP: {e!r}")
 
@@ -73,6 +111,8 @@ try:
             pmp_asc.work()
     print("[agx-start] Fender+0x1000:", hex(p.read32(0x204d01000)),
           "DevCtrl read ptr:", agx.ch.devctrl.state.READ_PTR.val)
+    if pmp_asc:
+        pmp_asc.dart.show_error()
 except Exception as e:
     print(f"[agx-start] stopped: {e!r}")
 

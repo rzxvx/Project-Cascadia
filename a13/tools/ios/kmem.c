@@ -20,6 +20,8 @@
  *                                 needs Dopamine's kcall, which this phone
  *                                 does not get (no PAC bypass)
  *   kmem obj CLASS                kernel address of each IOService of CLASS
+ *   kmem obj name:NAME            ... of each IOService named NAME (an ADT
+ *                                 node), and of its children
  *   kmem ptrs VA LEN              for each kernel pointer in VA..VA+LEN: what
  *                                 it points at (its first word: a vtable for
  *                                 C++ objects); physmap reads only
@@ -364,7 +366,9 @@ static void objs(const char *cls)
 {
 	io_iterator_t it;
 	io_service_t o;
-	if (IOServiceGetMatchingServices(kIOMainPortDefault, IOServiceMatching(cls), &it)) {
+	int by_name = !strncmp(cls, "name:", 5);
+	CFMutableDictionaryRef match = by_name ? IOServiceNameMatching(cls + 5) : IOServiceMatching(cls);
+	if (IOServiceGetMatchingServices(kIOMainPortDefault, match, &it)) {
 		fprintf(stderr, "kmem: no %s\n", cls);
 		exit(1);
 	}
@@ -376,6 +380,20 @@ static void objs(const char *cls)
 		if (k)
 			jb_kreadbuf(KSTRIP(k), &vt, 8);
 		printf("%s 0x%llx vtable 0x%llx (raw 0x%llx)\n", name, KSTRIP(k), KSTRIP(vt), vt);
+		io_iterator_t ci;
+		io_registry_entry_t c;
+		if (by_name && !IORegistryEntryGetChildIterator(o, kIOServicePlane, &ci)) {
+			while ((c = IOIteratorNext(ci))) {
+				io_name_t cn = "";
+				uint64_t ck = jb_port_kobject(task, c), cvt = 0;
+				IORegistryEntryGetName(c, cn);
+				if (ck)
+					jb_kreadbuf(KSTRIP(ck), &cvt, 8);
+				printf("  child %s 0x%llx vtable 0x%llx\n", cn, KSTRIP(ck), KSTRIP(cvt));
+				IOObjectRelease(c);
+			}
+			IOObjectRelease(ci);
+		}
 		IOObjectRelease(o);
 	}
 	IOObjectRelease(it);
