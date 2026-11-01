@@ -65,32 +65,44 @@ try:
             o += 8 + sz
         print("[agx-start] PMP boot args:", " ".join(f"{k}={v:#x}" for k, v in bootargs.items()))
 
-        # its DART: SID 0 translates (buffers + register windows), SID 15 bypass
-        dnode = u.adt["/arm-io/dart-pmp"]
+        # its DART (SID 0 translates, SID 15 bypass) and m1n1's PMP driver
+        # (Asahi's v1 protocol, fw/pmp.py): it lays the PMP's register windows
+        # (pmp reg[3..]) out from 0xc0000000 in that DART, hands the table
+        # over in a shared buffer (Configure), then Init1/Init2
+        from m1n1.fw import pmp as fwpmp
+        from m1n1.fw.asc.base import ASCTimeout
+
+        class PMPEndpoint(fwpmp.PMPEndpoint):
+            # log what the host sends (m1n1 logs only what it receives)
+            def send(self, msg):
+                print(f"[pmp] > {msg}")
+                return super().send(msg)
+
+        class PMPClient(fwpmp.PMPClient):
+            ENDPOINTS = {0x20: PMPEndpoint}
+
+        # bound the endless "while not acked: work()" loops of fw/pmp.py
+        def patched_work(self):
+            if getattr(self, "_deadline", None) and time.time() > self._deadline:
+                raise ASCTimeout("PMP: no ack within 3 s")
+            return fwpmp.PMPClient.work(self)
+        PMPClient.work = patched_work
         pdart = DART.from_adt(u, "/arm-io/dart-pmp")
         pdart.initialize()
-        pio_base = bootargs.get("IOBA") or dnode.pio_vm_base
-        gran = dnode.pio_granularity
-        raw = u.adt["/arm-io/dart-pmp/mapper-pmp"].pio_range
-        raw = raw if isinstance(raw, bytes) else bytes(raw)
-        ranges = [struct.unpack_from("<QQ", raw, i) for i in range(0, len(raw), 16)]
-        blocks = []
-        for pa, size in ranges:
-            if pa // gran not in blocks:
-                blocks.append(pa // gran)
-            va = pio_base + blocks.index(pa // gran) * gran + pa % gran
-            pdart.iomap_at(0, va & ~0x3fff, pa & ~0x3fff, (size + (pa & 0x3fff) + 0x3fff) & ~0x3fff)
-        pdart.invalidate_streams(1)
-        print(f"[agx-start] dart-pmp: {len(ranges)} register windows from {pio_base:#x} "
-              f"({len(blocks)} blocks of {gran:#x})")
-
-        pmp_asc = StandardASC(u, pbase, dart=pdart, stream=0)
+        pmp_asc = PMPClient(u, pbase, dart=pdart)
         pmp_asc.verbose = 3
         pmp_asc.mgmt.verbose = 1
         try:
             pmp_asc.start()
         except Exception as e:
             print(f"[agx-start] PMP boot: {e!r} (going on)")
+        try:
+            pmp_asc._deadline = time.time() + 5
+            pmp_asc.start_ep(0x20)
+            pmp_asc.work_for(3)
+        except Exception as e:
+            print(f"[agx-start] PMP endpoint 0x20: {e!r}")
+        pmp_asc._deadline = None
         print(f"[agx-start] PMP: CPU_CONTROL {p.read32(pbase + 0x44):#x} "
               f"CPU_STATUS {p.read32(pbase + 0x48):#x}")
         pdart.show_error()
