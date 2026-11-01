@@ -457,6 +457,24 @@ groups CPU/ECPU/PCPU/GPU/ISP/VDD_AVE/DISP0/VENC/VDEC/JPEG/MSR/ANE/PCIE/SBR/SEP
 (+0x40a8, 0x18 bytes each), telemetry channels (+0x6000: VDD_MAIN, PCPU/GPU/
 SOC [V]/[T]/[I], CPU_SRAM, GPU_SRAM, DCS, ECPU...).
 
+**The PMP's PM commands** (`ApplePMP::_sendPMCommand(command, domain,
+device, arg1, arg2)`, kernelcache `com.apple.driver.ApplePMP`; class
+`ApplePMP` is the v1 host driver, `ApplePMPv2` the PTD one):
+
+    msg = 0x0020000000000000 | (command & 0xff) << 44 | (domain & 0xf) << 40
+        | (device & 0xff) << 32 | (arg1 & 0xffff) << 16 | (arg2 & 0xffff)
+
+commands below 0x11; those below 0xd wait for an ack with command + 1 and
+the same domain and device (for 0xa and 0xc the ack's arg1 must be 0).
+m1n1's `Init1`/`Init2` are commands 0 and 2; its `DevPwr` (0x20e) is command
+0xe: no ack is expected, which is why none came. The kext also has
+`_getNumDVFSStates`, `_setDVFSStates(domain, ...)` with a watchdog,
+`cpu-power-limit-cluster-*`, the fast-die controller, telemetry: the GPU's
+voltage rail ("GPU [V]") and DVFS are the PMP's, and the Fender transition
+probably waits on them. Next experiment: find which command sets a domain's
+DVFS state and ask for the GPU's (domain/device numbering from the PMP's
+energy-model tables in the shared buffer).
+
 **Do not bulk-read 0x23bc1c000** (PMGR reg 19, inside the PMP's ASC block):
 reading it through the proxy killed m1n1 (the USB link dropped).
 
