@@ -602,6 +602,18 @@ PMGR, it is the missing piece: `agx-start.py` prints the four trigger
 controls before and after the GPU's request, and `--gpu-trig` sets
 GPU_TRIG_CTL |= 0x20007 before the GPU starts.
 
+Tried (proxy, 2026-11-02): under m1n1 the trigger controls read ECPU =
+PCPU = ANE = 0x2100 (iBoot does not set the CPUs' 7 either, and the CPUs
+run) and GPU = 0x2430; `--gpu-trig` makes it 0x22437, and Fender+0x1000
+still stays 0x11 (+0x1018 = 0x10). Not it, or not alone.
+
+**Next: registers on the live iOS.** Static reading keeps producing
+candidates; a reference of Fender and the PMGR as iOS leaves them is
+cheaper. `kmem mmio PA [LEN]` / `kmem mmiowatch SECS PA...` map registers
+into kmem as device memory (Dopamine's `pmap_map_in_with_flags` with
+AttrIndx 5, nGnRE) instead of the cacheable kmap that reset the phone on
+carve-outs.
+
 **Do not bulk-read 0x23bc1c000** (PMGR reg 19, inside the PMP's ASC block):
 reading it through the proxy killed m1n1 (the USB link dropped).
 

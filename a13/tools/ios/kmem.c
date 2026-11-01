@@ -27,19 +27,29 @@
  *                                 C++ objects); physmap reads only
  *   kmem ptscan PA LEN            kernel virtual mappings of a physical range,
  *                                 from XNU's own page tables (only reads those)
+ *   kmem mmio PA [LEN]            device registers: the nonzero 32-bit words
+ *                                 of PA..PA+LEN (LEN 0x100, at most 0x20000)
+ *   kmem mmiowatch SECS PA...     sample 32-bit registers for SECS seconds,
+ *                                 print each change with its time
  *
  * Physical access goes through a normal cacheable mapping: device registers
  * (MMIO) read that way can stop the SoC, so anything outside the DRAM that
- * /chosen describes is refused here.
+ * /chosen describes is refused there.  mmio/mmiowatch map the registers
+ * themselves into this process as device memory instead (Dopamine's
+ * pmap_map_in_with_flags, the PTE of its pmap_map_in with AttrIndx 5 =
+ * XNU's CACHE_ATTRINDX_POSTED, nGnRE, as iOS maps registers) and read them
+ * 32 bits at a time.
  */
 #include <CoreFoundation/CoreFoundation.h>
 #include <IOKit/IOKitLib.h>
 #include <dlfcn.h>
+#include <mach/mach.h>
 #include <errno.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/time.h>
 #include <unistd.h>
 
 #define LIBJB "/var/jb/basebin/libjailbreak.dylib"
@@ -67,6 +77,9 @@ static int (*jb_kcall)(uint64_t *, uint64_t, int, const uint64_t *);
 static int (*jb_get_kcall)(void);
 static uint64_t (*jb_task_self)(void);
 static uint64_t (*jb_port_kobject)(uint64_t, mach_port_t);
+static uint64_t (*jb_pmap_self)(void);
+static int (*jb_pmap_map_in_with_flags)(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);
+static void (*jb_flush_tlb)(void);
 static struct kconst *kc;
 static uint64_t dram_base, dram_size;
 
@@ -99,6 +112,9 @@ static void jb_open(void)
 	jb_get_kcall = sym(h, "jbclient_get_fugu14_kcall");
 	jb_task_self = sym(h, "task_self");
 	jb_port_kobject = sym(h, "task_get_ipc_port_kobject");
+	jb_pmap_self = sym(h, "pmap_self");
+	jb_pmap_map_in_with_flags = sym(h, "pmap_map_in_with_flags");
+	jb_flush_tlb = sym(h, "flush_tlb");
 	kc = sym(h, "gSystemInfo");
 	if (getuid() != 0) {
 		fprintf(stderr, "kmem: run as root\n");
@@ -520,6 +536,95 @@ static void wr(int phys, uint64_t a, int width, uint64_t v)
 	printf("%s 0x%llx = 0x%llx\n", phys ? "PA" : "VA", a, back);
 }
 
+/*
+ * Device registers, mapped as device memory (see the top).  pmap_map_in's
+ * own PTE is 0x0060000000000e43 (UXN|PXN, AF, inner shareable, EL0 RW,
+ * AttrIndx 0 = write-back); AttrIndx 5 makes it nGnRE.  The VA range comes
+ * from vm_allocate and is never touched before the PTEs are in, so no
+ * cacheable translation of it can be in the TLB.
+ */
+#define PTE_DEVICE (0x0060000000000e43ULL | (5ULL << 2))
+#define MMIO_MAX 0x20000
+
+static volatile uint32_t *mmio_map(uint64_t pa, uint64_t len)
+{
+	if (pa & 3 || !len || len > MMIO_MAX) {
+		fprintf(stderr, "kmem: mmio wants a 4-byte aligned PA and 0 < LEN <= 0x%x\n", MMIO_MAX);
+		exit(1);
+	}
+	if (pa < dram_base + dram_size && dram_base < pa + len) {
+		fprintf(stderr, "kmem: 0x%llx+0x%llx is DRAM: use pr\n", pa, len);
+		exit(1);
+	}
+	/* PMGR reg 19 (inside the PMP's ASC block): one bulk read through m1n1's
+	 * proxy killed it (2026-11-01) */
+	if (pa < 0x23bc1c000ULL + 0x40000 && 0x23bc1c000ULL < pa + len) {
+		fprintf(stderr, "kmem: 0x%llx+0x%llx touches PMGR 0x23bc1c000+0x40000 (killed m1n1 once)\n", pa, len);
+		exit(1);
+	}
+	uint64_t pg = pa & ~(uint64_t)(CHUNK - 1);
+	uint64_t sz = (pa + len - pg + CHUNK - 1) & ~(uint64_t)(CHUNK - 1);
+	vm_address_t ua = 0;
+	if (vm_allocate(mach_task_self(), &ua, sz, VM_FLAGS_ANYWHERE) != KERN_SUCCESS) {
+		fprintf(stderr, "kmem: vm_allocate 0x%llx failed\n", sz);
+		exit(1);
+	}
+	int r = jb_pmap_map_in_with_flags(jb_pmap_self(), ua, pg, sz, PTE_DEVICE);
+	if (r) {
+		fprintf(stderr, "kmem: pmap_map_in_with_flags(0x%llx, 0x%llx) = %d\n", pg, sz, r);
+		exit(1);
+	}
+	jb_flush_tlb();
+	return (volatile uint32_t *)(ua + (pa - pg));
+}
+
+static void mmio_dump(uint64_t pa, uint64_t len)
+{
+	volatile uint32_t *m = mmio_map(pa, len);
+	for (uint64_t o = 0; o < len; o += 4) {
+		uint32_t v = m[o / 4];
+		if (v)
+			printf("0x%llx = 0x%08x\n", pa + o, v);
+	}
+}
+
+static double now(void)
+{
+	struct timeval tv;
+	gettimeofday(&tv, NULL);
+	return tv.tv_sec + tv.tv_usec / 1e6;
+}
+
+static void mmio_watch(double secs, int n, char **pas)
+{
+	volatile uint32_t *m[16];
+	uint32_t last[16];
+	uint64_t pa[16];
+	if (n > 16)
+		n = 16;
+	for (int i = 0; i < n; i++) {
+		pa[i] = num(pas[i]);
+		m[i] = mmio_map(pa[i], 4);
+		last[i] = *m[i];
+		printf("%9.6f 0x%llx = 0x%08x\n", 0.0, pa[i], last[i]);
+	}
+	fflush(stdout);
+	double t0 = now();
+	unsigned long samples = 0;
+	while (now() - t0 < secs) {
+		for (int i = 0; i < n; i++) {
+			uint32_t v = *m[i];
+			if (v != last[i]) {
+				printf("%9.6f 0x%llx = 0x%08x (was 0x%08x)\n", now() - t0, pa[i], v, last[i]);
+				fflush(stdout);
+				last[i] = v;
+			}
+		}
+		samples++;
+	}
+	printf("%lu samples in %.1f s\n", samples, secs);
+}
+
 static int usage(void)
 {
 	fprintf(stderr,
@@ -530,7 +635,8 @@ static int usage(void)
 		"       kmem kw VA 32|64 VALUE | pw PA 32|64 VALUE\n"
 		"       kmem kcr VA [LEN]\n"
 		"       kmem obj CLASS | ptrs VA LEN\n"
-		"       kmem ptscan PA LEN\n");
+		"       kmem ptscan PA LEN\n"
+		"       kmem mmio PA [LEN] | mmiowatch SECS PA...\n");
 	return 2;
 }
 
@@ -612,6 +718,14 @@ int main(int argc, char **argv)
 	}
 	if (!strcmp(c, "ptscan") && argc == 4) {
 		ptscan(num(argv[2]), num(argv[3]));
+		return 0;
+	}
+	if (!strcmp(c, "mmio") && (argc == 3 || argc == 4)) {
+		mmio_dump(num(argv[2]), argc == 4 ? num(argv[3]) : 0x100);
+		return 0;
+	}
+	if (!strcmp(c, "mmiowatch") && argc >= 4) {
+		mmio_watch(atof(argv[2]), argc - 3, argv + 3);
 		return 0;
 	}
 	return usage();
