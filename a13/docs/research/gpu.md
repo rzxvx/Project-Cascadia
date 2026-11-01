@@ -476,10 +476,15 @@ every DVFS domain index d (0 .. `_getNumDVFSDomains()`), **command 6**,
 domain d, device 0, arg1/arg2 from d's 4-bit fields of the two masks (state
 indices; arg2 = number of states - 1 - field); the PMP's message handler
 (fn 0xfffffff0091df2f4) answers some PMP requests with **command 4** (domain
-from the request). Next experiment (proxy): after Configure/Init, send
-command 6 for each domain with the full range (arg1 0, arg2 n-1), log any PM
-message the PMP sends after the GPU's doorbell, and see whether Fender+0x1000
-moves.
+from the request). Tried (proxy, `agx-start.py --pmp-dvfs` + by hand): command 6 with range
+(0, 0xf) is acked (command 7, same domain) for domains 0-6; domain 7 crashes
+the PMP -- **the PMP has 7 DVFS domains**. Fender+0x1000 stays 0x11 with all
+seven set: the DVFS ranges are not what the transition waits for.
+
+Left to look at: the iOS AGX driver's Fender side (`G12::AGXFenderCommon`:
+config RAM, `isPoweredOffWaitingOnHost`, the timer power interrupt status --
+the host may have to answer Fender), and Fender's registers on a running iOS
+(needs MMIO reads from iOS, which kmem cannot do yet).
 
 **Do not bulk-read 0x23bc1c000** (PMGR reg 19, inside the PMP's ASC block):
 reading it through the proxy killed m1n1 (the USB link dropped).
