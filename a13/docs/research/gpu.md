@@ -1161,6 +1161,13 @@ First try (`agx-start-28.log`): GFX goes off (0x1f0000ff -> 0x0f000300,
 actual 0, was-power/clock-gated set); reading Fender then hung m1n1 (the
 GPU block does not answer with GFX off -- the cycle now does not read it).
 
+Second try (`agx-start-29.log`): GFX off (0x0f000300) and on again
+(0x0f0001ff), auto back on, then a RESET/DEV_DISABLE pulse (0x1f0000ff):
+Fender reads all 0 at +0x1000 afterwards and +0x1401c = 0x64 survives (iOS
+idle 0, on 1); the host's own request then stops at **step 0x10 again**,
+and the firmware takes the same SError (FAR 0x204010190). **A GFX power
+cycle or reset does not clear it.**
+
 **Do not bulk-read 0x23bc1c000** (PMGR reg 19, inside the PMP's ASC block):
 reading it through the proxy killed m1n1 (the USB link dropped).
 
