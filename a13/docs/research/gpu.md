@@ -1026,6 +1026,22 @@ on ours), and what iOS's driver does just before its own Fender request --
 two calls on its provider (vtable +0x568 (1, 0), +0x570 (1, &out, 0), AGXG12P
 fn 0xfffffff0084f1b54) that were not followed yet.
 
+Followed (static, 20E247): the provider is the sgx node's
+**AppleARMIODevice**; its +0x568 (state, index) takes `index` into the
+node's **`power-gates`** list (<0xd0, 0xd2>: GFX-SGX, GFX-BUSY) and its
++0x570 into **`clock-gates`**, then calls the same slot on its own provider
+(`[this+0x88]`; kdebug codes 0x5070000/0x5070004). So **just before its own
+Fender request, iOS's AGX driver enables power-gate 0 (GFX-SGX, 208) and a
+clock gate through the platform's power-gate interface**; m1n1 skips both
+(they are `no_ps` virtual PMGR devices). The provider is not AppleARMIO (its
+slots return kIOReturnUnsupported) nor AppleARMPE; ApplePMGR's slot goes to
+fn 0xfffffff0091c2240 -- what it writes for a no_ps device (the PMGR's
+`_pwrGateRegToPowerDomainIDMap`, built at run time from `pwrgate-regs` and
+`power-domains`, GFX = domain 14, perf index 71) is the open question.
+The perf block 0x23b0b4000 is all {1, count} on iOS and all 0 on ours, for
+every index (residency counters ApplePMGR switches on, it seems; GFX device
+at +0x1e0, GFX domain at +0x470).
+
 **Do not bulk-read 0x23bc1c000** (PMGR reg 19, inside the PMP's ASC block):
 reading it through the proxy killed m1n1 (the USB link dropped).
 
