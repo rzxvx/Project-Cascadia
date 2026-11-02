@@ -27,11 +27,67 @@ from m1n1.fw.agx.microsequence import (StartComputeCmd, FinalizeComputeCmd,
                                        TimeStamp, TimeStampPointers, Attachment,
                                        StampCounter, WrappedPointer)
 from m1n1.agx.context import GPUContext, GPUWorkQueue, GPUMicroSequence
-from construct import Int64ul, Int32ul
+from m1n1.constructutils import ConstructClass, ROPointer
+from construct import (Int64ul, Int32ul, Int16ul, Int8ul, Struct, Const, Hex,
+                       HexDump, Bytes, Tell, this)
 
 
 class GPUComputeWorkQueue(GPUWorkQueue):
     TYPE = 2    # RunCmdQueue queue_type: TA 0, 3D 1, CP 2
+
+
+class G12EncoderParams(ConstructClass):
+    # drm/asahi EncoderParams without the sampler fields (0x18, not 0x28)
+    subcon = Struct(
+        "unk_0" / Int32ul,
+        "unk_4" / Int32ul,
+        "unk_8" / Int32ul,
+        "encoder_id" / Int32ul,
+        "unk_10" / Int32ul,
+        "iogpu_compute_unk44" / Int32ul,
+    )
+
+
+class G12WorkCommandCP(ConstructClass):
+    """The G12 firmware's compute work command (0x2e0 bytes: armfw_g12p
+    flushes 0x2e0 for type 3, fw 0x20150), from what it reads (gpu.md, G5.1):
+    V13_3's head (counter at +4, context_id +0x10, event_control +0x14,
+    microsequence +0x1f0 / +0x1f8), JobMeta at +0x274 (no_preemption byte
+    +0x277, stamp +0x278, stamp_value +0x288, stamp_slot +0x28c, evctl_index
+    +0x290, flush +0x294, uuid +0x298), timestamps at +0x2a0.., so 0x10 less
+    between ComputeInfo2 and JobMeta than V13_3: taken here as EncoderParams
+    without its sampler fields."""
+    subcon = Struct(
+        "addr" / Tell,
+        "magic" / Const(0x3, Hex(Int32ul)),
+        "counter" / Int64ul,
+        "unk_4" / Hex(Int32ul),
+        "context_id" / Hex(Int32ul),
+        "event_control_addr" / Hex(Int64ul),
+        "event_control" / ROPointer(this.event_control_addr, EventControl),
+        "unk_2c" / Int32ul,
+        "unk_buf" / HexDump(Bytes(0x50)),
+        "compute_info" / ComputeInfo,
+        "registers_addr" / Int64ul,
+        "register_count" / Int16ul,
+        "registers_length" / Int16ul,
+        "unk_pad" / HexDump(Bytes(0x24)),
+        "microsequence_ptr" / Hex(Int64ul),
+        "microsequence_size" / Hex(Int32ul),
+        "compute_info2" / ComputeInfo2,
+        "encoder_params" / G12EncoderParams,
+        "job_meta" / JobMeta,
+        "ts1" / TimeStamp,
+        "ts_pointers" / TimeStampPointers,
+        "user_ts_pointers" / TimeStampPointers,
+        "client_sequence" / Int8ul,
+        "pad_2c9" / HexDump(Bytes(3)),
+        "unk_flag" / Flag,
+        # Timestamp ops and StartCompute only point at unk_ts / unk_flag,
+        # so where they sit in the tail is ours to choose
+        "unk_ts" / TimeStamp,
+        "pad_2d8" / HexDump(Bytes(8)),
+    )
 
 
 PIPELINE_BASE = 0x1100000000
@@ -154,7 +210,7 @@ class ComputeJob:
         self.event_control.event_count.val += 1
         self.event_control.event_count.push()
 
-        wc = agx.cmdbuf.new(WorkCommandCP, track=False, align=0x20)
+        wc = agx.cmdbuf.new(G12WorkCommandCP, track=False, align=0x20)
         self.wc = wc
         wc.counter = 1
         wc.unk_4 = 0
@@ -196,15 +252,13 @@ class ComputeJob:
         ci2.unk_58 = 0
         wc.compute_info2 = ci2
 
-        ep = EncoderParams()
+        ep = G12EncoderParams()
         ep.unk_0 = 0
         ep.unk_4 = 0
         ep.unk_8 = 0
         ep.encoder_id = 0x1
         ep.unk_10 = 0
         ep.iogpu_compute_unk44 = 0xffffffff
-        ep.seq_buffer = 0
-        ep.unk_1c = 0
         wc.encoder_params = ep
 
         jm = JobMeta()
@@ -223,12 +277,10 @@ class ComputeJob:
         wc.ts_pointers = TimeStampPointers(self.ts_start._addr, self.ts_end._addr)
         wc.user_ts_pointers = TimeStampPointers(self.uts_start._addr, self.uts_end._addr)
         wc.client_sequence = 1
-        wc.unk_ts2 = TimeStamp()
-        wc.unk_ts = TimeStamp()
-        wc.unk_2e1 = bytes(0x1c)
+        wc.pad_2c9 = bytes(3)
         wc.unk_flag = Flag()
-        wc.unk_pad2 = bytes(0x10)
-        wc.pad_2d9 = bytes(7)
+        wc.unk_ts = TimeStamp()
+        wc.pad_2d8 = bytes(8)
         # placeholders until the microsequence exists
         wc.microsequence_ptr = 0
         wc.microsequence_size = 0

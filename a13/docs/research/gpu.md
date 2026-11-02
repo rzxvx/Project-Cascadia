@@ -218,6 +218,42 @@ m1n1 never sends, or a field in initdata / the work command that names
 the event's stamp objects. `g5compute.py` now checks the crash buffer
 itself after a timeout.
 
+**Cause: the work command layout.** The firmware's queue loop (fn 0x1fefc)
+walks the ring, dispatches on the command's type word through a jump
+table (0x2079c) and flushes the command's size from the cache first:
+type 0 TA 0x5e0, 1 3D 0x940, 2 0x650, 3 **CP 0x2e0**, 4 0x20, 5 0x18, 6
+0x20, 7 0x50, 9 0x58. m1n1's V13_3 structures are TA 0x61c, 3D 0x9b0, CP
+0x320 (V12_3: 0x5e0, 0x928, 0x2d8): **this firmware's interface is "V13_3"
+for initdata but its work commands are of the 12.x line**, with V13's
+counter at +4. Then it calls fn 0x1dcfc(cmd, slot byte, stamp_value,
+queue, type) with the event slot and stamp value from the command's
+JobMeta: TA +0x574 / +0x570, 3D +0x8d8 / +0x8d4, CP **+0x28c / +0x288**.
+With our 0x320-byte V13_3 layout +0x28c was the high half of the stamp
+pointer (0xffffffa0...): slot 0xa0, beyond the 128-entry event table --
+the NULL.
+
+G12 CP layout from the firmware's reads (`g5compute.G12WorkCommandCP`,
+0x2e0, offsets checked on the fake AGX): V13_3's head -- counter +4,
+context_id +0x10 (fw 0x20390), event_control +0x14, ComputeInfo +0x70,
+microsequence pointer / size +0x1f0 / +0x1f8 (fw 0x101ec), ComputeInfo2
++0x1fc; **JobMeta at +0x274** (no_preemption byte +0x277 fw 0x10450,
+stamp +0x278 stored as event_control's pstamp, stamp_value +0x288, slot
++0x28c, evctl_index +0x290 indexes event_control+0x74, flush +0x294 ORed
+into event_control+0x20, uuid +0x298); ts1 +0x2a0, ts_pointers +0x2a8 /
++0x2b0, user_ts_pointers +0x2b8 / +0x2c0 (fw 0x1038c..0x103a0). The 0x10
+bytes less between ComputeInfo2 and JobMeta are taken as EncoderParams
+without its sampler fields (a guess: nothing read there seen yet).
+
+Microsequence ops (interpreter fn 0x17970, dispatch `op & 0x3f` through
+halfword table 0x495be, handler = 0x180e4 + 4 * entry): StartCompute 0x29
+at 0x198b4 is V13_3's 0x16c-byte layout (computeinfo +0xc, cmdqueue +0x1c,
+computeinfo2 +0x3c, unk_flag +0x154, counter +0x15c, event_ctrl_buf +0x164;
+it advances 0x168 from op + 4); Timestamp 0x19 at 0x187f8 is V13_3's too
+(ts0 +4, ts_pointers +0xc, cmdqueue +0x1c, user_ts +0x24, unk_ts +0x2c,
+uuid +0x34). StartCompute copies **only ComputeInfo's first six qwords**
+(+0x0..+0x28) into GPU state and tests bit 0 of the sixth (a helper /
+enable flag?) -- the G12 ComputeInfo may differ from M1's too; still open.
+
 **Offline G12 compiler.** Xcode's Metal Toolchain (`xcodebuild
 -downloadComponent MetalToolchain`, 27A5228f) has `metal-tt` and the
 translator `applegpu-nt`; `applegpu-nt -available-archs ios 16.4` lists
