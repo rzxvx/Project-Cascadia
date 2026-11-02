@@ -33,6 +33,11 @@
  *                                 print each change with its time
  *   kmem mmiowatchr SECS PA LEN [PA2 LEN2]  the same for every word of one
  *                                 or two ranges (LEN at most 0x400 each)
+ *   kmem spmir SLAVE ADDR [LEN]   read a PMU's registers over spmi0
+ *                                 (0x23d180700): extended-long reads of 8
+ *                                 bytes, LEN at most 0x100; gives up if the
+ *                                 controller's FIFOs are not idle (the
+ *                                 kernel uses the same bus)
  *
  * Physical access goes through a normal cacheable mapping: device registers
  * (MMIO) read that way can stop the SoC, so anything outside the DRAM that
@@ -656,6 +661,53 @@ static void mmio_watch_ranges(double secs, int n, uint64_t *pa, uint64_t *len)
 	printf("%lu samples in %.1f s\n", samples, secs);
 }
 
+#define SPMI0 0x23d180700ULL
+
+static int spmi_read(volatile uint32_t *r, unsigned slave, unsigned addr, unsigned n, uint8_t *out)
+{
+	/* STATUS +0: bit 24 RX empty, bit 8 TX empty; CMD +4; REPLY +8 */
+	if (!(r[0] & (1u << 24)) || !(r[0] & (1u << 8)))
+		return -1;	/* someone else's transaction */
+	unsigned opc = 0x38 | (n - 1);
+	r[1] = (addr << 16) | (1u << 15) | (slave << 8) | opc;
+	for (int i = 0; i < 100000 && (r[0] & (1u << 24)); i++)
+		;
+	if (r[0] & (1u << 24))
+		return -2;
+	uint32_t reply = r[2];
+	if ((reply & 0xff) != opc || ((reply >> 8) & 0x7f) != slave)
+		return -3;
+	for (unsigned got = 0; got < n; got += 4) {
+		for (int i = 0; i < 100000 && (r[0] & (1u << 24)); i++)
+			;
+		uint32_t w = r[2];
+		for (unsigned b = 0; b < 4 && got + b < n; b++)
+			out[got + b] = w >> (8 * b);
+	}
+	return (reply >> 16) == (1u << n) - 1 ? 0 : -4;
+}
+
+static void spmi_dump(unsigned slave, unsigned addr, unsigned len)
+{
+	volatile uint32_t *r = mmio_map(SPMI0, 0x10);
+	if (len > 0x100)
+		len = 0x100;
+	for (unsigned a = addr; a < addr + len; a += 8) {
+		uint8_t b[8] = {0};
+		int e = spmi_read(r, slave, a, 8, b);
+		printf("%04x:", a);
+		if (e) {
+			printf(" error %d\n", e);
+			if (e == -1)
+				return;
+			continue;
+		}
+		for (int i = 0; i < 8; i++)
+			printf(" %02x", b[i]);
+		printf("\n");
+	}
+}
+
 static int usage(void)
 {
 	fprintf(stderr,
@@ -667,7 +719,8 @@ static int usage(void)
 		"       kmem kcr VA [LEN]\n"
 		"       kmem obj CLASS | ptrs VA LEN\n"
 		"       kmem ptscan PA LEN\n"
-		"       kmem mmio PA [LEN] | mmiowatch SECS PA... | mmiowatchr SECS PA LEN [PA2 LEN2]\n");
+		"       kmem mmio PA [LEN] | mmiowatch SECS PA... | mmiowatchr SECS PA LEN [PA2 LEN2]\n"
+		"       kmem spmir SLAVE ADDR [LEN]\n");
 	return 2;
 }
 
@@ -753,6 +806,11 @@ int main(int argc, char **argv)
 	}
 	if (!strcmp(c, "mmio") && (argc == 3 || argc == 4)) {
 		mmio_dump(num(argv[2]), argc == 4 ? num(argv[3]) : 0x100);
+		return 0;
+	}
+	if (!strcmp(c, "spmir") && (argc == 4 || argc == 5)) {
+		spmi_dump((unsigned)num(argv[2]) & 0xf, (unsigned)num(argv[3]) & 0xffff,
+			  argc == 5 ? (unsigned)num(argv[4]) : 8);
 		return 0;
 	}
 	if (!strcmp(c, "mmiowatchr") && (argc == 5 || argc == 7)) {

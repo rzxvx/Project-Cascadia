@@ -932,6 +932,26 @@ extended-long reads) before the GPU starts and with its request pending and
 prints the bytes that changed: a buck's voltage register moving would show
 the GPU's rail; nothing moving would say the PMGR never reached the PMU.
 
+Tried (proxy, `agx-start-23.log`; `a13/build/gpu/pmgr-diff/proxy-pmu-
+{before,after}.bin`): all 8192 reads answered (22 s each). 296 bytes
+changed, all of them logs and counters: the PMU firmware's ASCII log at
++0x8840.. ("ibat ..., vbat ..., rtc ..."), RTC/ADC words (+0x80.., +0x1102,
++0x2820.., +0x81xx-+0x82xx). **No regulator register moved: nothing asked
+the PMU for anything during the GPU's request.**
+
+The PMU's regulator blocks (one per 0x100, same layout): **bucks** at
+0x4000, 0x4100, 0x4200, 0x4300, 0x4400, 0x4500, 0x4b00 (+0x0 = on, +0x1 =
+voltage code: 0x68, **0x00**, 0x5a, 0x4d, 0x94, 0x70, 0x68), LDO-like
+blocks at 0x4600-0x4a00, 0x4c00. **0x4100 is off** (+0x0 = 0, code 0,
++0x4 = 0x0f where the others have 0). 0x4000 and 0x4100 share a richer
+configuration (+0x12/+0x13, +0x42..+0x60, +0x73..): two phases of one
+multi-phase buck, or two bucks of a kind. Whether 0x4100 is the GPU's rail
+(off on our boot) or a second phase shed at light load needs iOS's values:
+**no blind writes to the PMU** (a wrong rail or phase could damage
+hardware). `kmem spmir SLAVE ADDR [LEN]` reads PMU registers on iOS
+through the spmi0 controller (STATUS +0, CMD +4, REPLY +8, extended-long
+reads of 8 bytes; gives up if the FIFOs are busy).
+
 **Do not bulk-read 0x23bc1c000** (PMGR reg 19, inside the PMP's ASC block):
 reading it through the proxy killed m1n1 (the USB link dropped).
 
