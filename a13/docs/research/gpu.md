@@ -910,6 +910,14 @@ wait, 12-95 us on iOS) waiting forever. Test: with the request pending,
 `--try 0x23b2000d0=0x2ee00 ... --try 0x23b200010=0x800000ff --try
 0x23b200020=0x200 --try 0x23b200004=0x78` (`--try` now takes ADDR=VAL).
 
+Tried (proxy, `agx-start-22.log`, request pending): writing +0xd0 sets
++0xd0..+0xdc together (one register, mirrored) to 0x2ee00; +0x4 takes 0x78;
+**+0x10 and +0x20 read back 0 after writing** -- status, not configuration:
+on iOS they hold the trace of DWI transactions (bit 31 + 0xff), on ours
+nothing has gone over DWI. Fender stays at step 0x10 after each. So DWI's
+own settings are not it; whether the PMGR ever sends the GPU's voltage over
+DWI (on iOS, at GPU power-up) is not known.
+
 **Do not bulk-read 0x23bc1c000** (PMGR reg 19, inside the PMP's ASC block):
 reading it through the proxy killed m1n1 (the USB link dropped).
 
