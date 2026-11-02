@@ -772,6 +772,32 @@ the second PMGR (reg 1, 0x23d200000: ps 0x23d280000, pwrgate 0x23d29c000,
 perf 0x23d2b4000), and the GPU firmware's own steps before it writes
 Fender (what iOS's firmware has done by then that ours has not).
 
+**Outside reading (2026-11-02).** Nothing public on Fender or the A13/G12
+GPU (Asahi docs, drm/asahi, the pyre t8030 emulator's GPU scoping study:
+high-level emulation, no power-up). The M3 forks (aurora-silicon/linux,
+omacom/linux-aurora) say the M3 Pro GPU "needs the PMP's AGX power vote
+before its firmware can start": an untagged message on the PMP's endpoint
+0x20, `0x0020f50100000000` (command 0xf), reply `0x0021000000000000`
+(aurora-silicon/linux#358, `drivers/soc/apple/pmp-display.c`); the M3
+Max's GPU runs on its PMGR domain alone. SGX+0xd14000 = 0x70001 is their
+"sgx_setup" and makes no difference to the firmware there either.
+
+**Our PMP has command 0xf too** (t8030pmp fn 0x100c228): domain = bits
+43:40, below the count of the config's domain list (config +0x28: 4
+domains **SOC, DCS, DISP, AVE**, 3 levels each), device = the table index
+in bits 39:32 (GPU = 3), arg1 = level (taken if below the domain's count,
+else 0); it stores the level in the device's vote table (entry +0x68,
+per domain; **the GPU's has slots for SOC and DCS**, the CPUs' none),
+recomputes the domain's level (fn 0x100f1e4, table 0x1045f50) and, if it
+changed, applies it (fn 0x100e134). No reply. ApplePMGR has per-device
+perf-state requirements on PMP-managed perf domains
+(`devicePerfStateRequirements`, `kPerfDomainFlagPMPManaged`) and GFX has
+`notify_pmp`: on iOS, GFX powering up most likely raises SOC/DCS through
+this vote; m1n1 never sends it. Fender's step 0x10 waiting 12-95 us fits a
+voltage or memory-clock change. `agx-start.py --pmp-vote 0:2,1:2` sends
+the GPU's votes (SOC 2, DCS 2) after the PMP is configured, before the
+GPU starts.
+
 **Do not bulk-read 0x23bc1c000** (PMGR reg 19, inside the PMP's ASC block):
 reading it through the proxy killed m1n1 (the USB link dropped).
 

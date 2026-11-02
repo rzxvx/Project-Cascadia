@@ -3,7 +3,7 @@
 """G4 (a13/docs/research/gpu.md): start the A13's GPU firmware from the Mac
 through m1n1's proxy, with m1n1's own Python AGX driver.
 
-    M1N1DEVICE=/dev/cu.usbmodemXXXX agx-start.py [--boot-pmp|--pmp-dvfs|--pmp-doorbell] [--fender] [--gpu-trig] [--gfx-auto] [--poke] [--ios-pmgr [--fabric-auto]] [--fender-ios] [--fender-dump] [--dump-regions] [--pll-probe] [--try ADDR|=MASK ...] [SECONDS]
+    M1N1DEVICE=/dev/cu.usbmodemXXXX agx-start.py [--boot-pmp|--pmp-dvfs|--pmp-doorbell] [--fender] [--gpu-trig] [--gfx-auto] [--poke] [--ios-pmgr [--fabric-auto]] [--fender-ios] [--fender-dump] [--dump-regions] [--pll-probe] [--try ADDR|=MASK ...] [--pmp-vote DOM:LVL,...] [SECONDS]
 
 The phone runs `a13/cascadia boot proxy` (m1n1 alone; iBoot has loaded the
 GPU firmware: G3). Needs a13/build/m1n1 with patch 0007 (T8030 / G12) and the
@@ -62,6 +62,12 @@ is off may not answer, so this may end the proxy too.
 0x11), OR each MASK into ADDR in turn, pump the firmware for 1 s and print
 Fender after each; stops at the first that moves it. For hypotheses from
 the iOS diffs without a fresh proxy boot apiece.
+--pmp-vote DOM:LVL,...: (implies --boot-pmp) PM command 0xf for the GPU
+(device index 3 in the PMP's table) before the GPU starts: a minimum level
+LVL (0-2, the PMP's domains have 3) on rail/perf domain DOM (0 SOC, 1 DCS,
+2 DISP, 3 AVE; the GPU's entry takes votes on SOC and DCS only). M3 Pro's
+GPU needs the same kind of PMP vote (0x0020f50100000000) before its
+firmware can start (aurora-silicon/linux#358). No reply in this PMP version.
 """
 import os
 import sys
@@ -87,10 +93,15 @@ while "--try" in argv:
     a, m = argv[i + 1].split("|=")
     tries.append((int(a, 0), int(m, 0)))
     del argv[i:i + 2]
+votes = []
+if "--pmp-vote" in argv:
+    i = argv.index("--pmp-vote")
+    votes = [tuple(int(x, 0) for x in v.split(":")) for v in argv[i + 1].split(",")]
+    del argv[i:i + 2]
 args = [a for a in argv if not a.startswith("--")]
 pmp_dvfs = "--pmp-dvfs" in sys.argv[1:]
 pmp_doorbell = "--pmp-doorbell" in sys.argv[1:]
-boot_pmp = "--boot-pmp" in sys.argv[1:] or pmp_dvfs or pmp_doorbell
+boot_pmp = "--boot-pmp" in sys.argv[1:] or pmp_dvfs or pmp_doorbell or bool(votes)
 fender = "--fender" in sys.argv[1:]
 gpu_trig = "--gpu-trig" in sys.argv[1:]
 gfx_auto = "--gfx-auto" in sys.argv[1:]
@@ -202,6 +213,12 @@ try:
         # (n >> 3) * 0x4000, bit n & 7: the GPU rings 0x23bc34000 = 0x30)
         if pmp_doorbell:
             pm_send("GPU doorbell", pm(0xc, 0, 0, 0x81, 0x30))
+        # PM command 0xf = a device's vote for a minimum level on a domain
+        # (t8030pmp fn 0x100c228: domain = bits 43:40 < 4, device = the
+        # table index in bits 39:32, arg1 = level below the domain's count;
+        # recomputes the domain's level and applies it, fn 0x100e134)
+        for d, lvl in votes:
+            pm_send(f"GPU vote domain {d} level {lvl}", pm(0xf, d, 3, lvl, 0))
         pdart.show_error()
 except Exception as e:
     print(f"[agx-start] PMP: {e!r}")
