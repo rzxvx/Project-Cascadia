@@ -1082,6 +1082,18 @@ indexed by a byte of its device record (+0x19; GFX-SGX's looks zero, and
 zero is skipped). So iOS's clock-gate call for GFX-SGX comes down to GFX
 (parent) on -- ours is on -- plus the PMP notice for GFX.
 
+More (iOS): the PMGR perf block's entries are {1 = enabled, 64-bit count
+at ~24 MHz} (GFX device +0x1e0, GFX domain +0x470): residency counters,
+not clock settings. The ADT's `perf-domains` are SOC, ECPU, DCS, PCPU, ANE,
+AVE, DISP -- **no GPU**: the PMGR's DVFM does not manage the GPU's voltage
+(`voltage-states9`). Bucks on iOS over a few seconds: 0x4000 (with its
+second phase 0x4100) follows CPU load (codes 0x30..0xa1), 0x4b00 and
+0x4200 move too, also with the GPU off; 0x4500 steady. `kmem gpuvwatch
+SECS ADDR...` samples Fender +0x1000 and PMU registers in turns to find
+the GPU's rail; **with the screen on it took iOS down within seconds**
+(SPMI reads racing the kernel's own PMU traffic, most likely) -- with the
+screen off it ran (the GPU never woke).
+
 **Do not bulk-read 0x23bc1c000** (PMGR reg 19, inside the PMP's ASC block):
 reading it through the proxy killed m1n1 (the USB link dropped).
 

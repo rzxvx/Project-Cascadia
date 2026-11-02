@@ -40,6 +40,10 @@
  *                                 read, check it is still 0x1; the GPU must
  *                                 be kept busy meanwhile.  Can still stop
  *                                 iOS if the GPU powers down mid-read
+ *   kmem gpuvwatch SECS ADDR...   sample Fender +0x1000 and PMU registers
+ *                                 (slave 0xf, 2 bytes each, up to 4) in turns
+ *                                 and print every change: which rail moves
+ *                                 with the GPU's power state
  *   kmem spmir SLAVE ADDR [LEN]   read a PMU's registers over spmi0
  *                                 (0x23d180700): extended-long reads of 8
  *                                 bytes, LEN at most 0x100; gives up if the
@@ -743,6 +747,46 @@ static void spmi_dump(unsigned slave, unsigned addr, unsigned len)
 	}
 }
 
+static void gpuv_watch(double secs, int n, char **addrs)
+{
+	volatile uint32_t *f = mmio_map(FENDER + 0x1000, 4);
+	volatile uint32_t *r = mmio_map(SPMI0, 0x10);
+	unsigned a[4], last[5];
+	if (n > 4)
+		n = 4;
+	for (int i = 0; i < n; i++)
+		a[i] = (unsigned)num(addrs[i]) & 0xffff;
+	for (int i = 0; i <= n; i++)
+		last[i] = 0xffffffff;
+	double t0 = now();
+	unsigned long samples = 0, busy = 0;
+	while (now() - t0 < secs) {
+		unsigned v[5];
+		v[0] = *f;
+		for (int i = 0; i < n; i++) {
+			uint8_t b[2] = {0};
+			if (spmi_read(r, 0xf, a[i], 2, b)) {
+				busy++;
+				v[i + 1] = last[i + 1];
+			} else
+				v[i + 1] = b[0] | b[1] << 8;
+		}
+		int ch = 0;
+		for (int i = 0; i <= n; i++)
+			ch |= v[i] != last[i];
+		if (ch) {
+			printf("%9.6f fender %02x", now() - t0, v[0]);
+			for (int i = 0; i < n; i++)
+				printf("  %04x: %04x", a[i], v[i + 1]);
+			printf("\n");
+			for (int i = 0; i <= n; i++)
+				last[i] = v[i];
+		}
+		samples++;
+	}
+	printf("%lu samples, %lu busy\n", samples, busy);
+}
+
 static int usage(void)
 {
 	fprintf(stderr,
@@ -845,6 +889,10 @@ int main(int argc, char **argv)
 	}
 	if (!strcmp(c, "agxr") && (argc == 4 || argc == 5)) {
 		agx_read(num(argv[2]), num(argv[3]), argc == 5 ? atof(argv[4]) : 30);
+		return 0;
+	}
+	if (!strcmp(c, "gpuvwatch") && argc >= 4) {
+		gpuv_watch(atof(argv[2]), argc - 3, argv + 3);
 		return 0;
 	}
 	if (!strcmp(c, "spmir") && (argc == 4 || argc == 5)) {
