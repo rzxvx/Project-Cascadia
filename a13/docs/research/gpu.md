@@ -760,6 +760,18 @@ seems to happen after every agx-start session now. `--try ADDR|=MASK`
 (repeatable) applies such candidates one by one with the request pending,
 printing Fender after each, so one boot tests several.
 
+Tried (proxy, `agx-start-17.log`, request pending): MISC_ACG 0 -> 1,
+SOC_TVM 0x300 -> 0x301, PLL4 word 1 0x404800a8 -> 0xc04800a8: Fender stays
+0x11 / step 0x10 after each. **Ruled out so far for step 0x10:** PMP
+(doorbell registered), GPU_TRIG_CTL, GFX and fabric auto-PM, pwrgate +0,
+Fender's own registers (whole 0x20000 alike but +0x4200/+0x409c), the
+m1n1 poke, MISC_ACG, SOC_TVM, PLL4 word 1. Not compared yet: the AGX core
+registers (sgx 0x204000000, 16 MiB; reads while the GPU is off may stop
+iOS like the PLL window did -- keep the GPU busy on iOS while reading),
+the second PMGR (reg 1, 0x23d200000: ps 0x23d280000, pwrgate 0x23d29c000,
+perf 0x23d2b4000), and the GPU firmware's own steps before it writes
+Fender (what iOS's firmware has done by then that ours has not).
+
 **Do not bulk-read 0x23bc1c000** (PMGR reg 19, inside the PMP's ASC block):
 reading it through the proxy killed m1n1 (the USB link dropped).
 
