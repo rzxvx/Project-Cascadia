@@ -33,6 +33,13 @@
  *                                 print each change with its time
  *   kmem mmiowatchr SECS PA LEN [PA2 LEN2]  the same for every word of one
  *                                 or two ranges (LEN at most 0x400 each)
+ *   kmem agxr PA LEN [SECS]       read GPU-block registers only while the
+ *                                 GPU is powered: before each word, wait
+ *                                 (up to SECS, default 30) for Fender
+ *                                 +0x1000 == 0x1 (on, no power-down asked),
+ *                                 read, check it is still 0x1; the GPU must
+ *                                 be kept busy meanwhile.  Can still stop
+ *                                 iOS if the GPU powers down mid-read
  *   kmem spmir SLAVE ADDR [LEN]   read a PMU's registers over spmi0
  *                                 (0x23d180700): extended-long reads of 8
  *                                 bytes, LEN at most 0x100; gives up if the
@@ -662,6 +669,34 @@ static void mmio_watch_ranges(double secs, int n, uint64_t *pa, uint64_t *len)
 }
 
 #define SPMI0 0x23d180700ULL
+#define FENDER 0x204d00000ULL
+
+static void agx_read(uint64_t pa, uint64_t len, double secs)
+{
+	volatile uint32_t *f = mmio_map(FENDER + 0x1000, 4);
+	volatile uint32_t *m = mmio_map(pa, len);
+	double t0 = now();
+	unsigned long waits = 0, retries = 0;
+	for (uint64_t o = 0; o < len; o += 4) {
+		uint32_t v;
+		for (;;) {
+			while (*f != 1) {
+				waits++;
+				if (now() - t0 > secs) {
+					printf("timeout at 0x%llx (GPU not on)\n", pa + o);
+					return;
+				}
+			}
+			v = m[o / 4];
+			if (*f == 1)
+				break;
+			retries++;
+		}
+		if (v)
+			printf("0x%llx = 0x%08x\n", pa + o, v);
+	}
+	printf("done in %.2f s (%lu waits, %lu retries)\n", now() - t0, waits, retries);
+}
 
 static int spmi_read(volatile uint32_t *r, unsigned slave, unsigned addr, unsigned n, uint8_t *out)
 {
@@ -720,7 +755,7 @@ static int usage(void)
 		"       kmem obj CLASS | ptrs VA LEN\n"
 		"       kmem ptscan PA LEN\n"
 		"       kmem mmio PA [LEN] | mmiowatch SECS PA... | mmiowatchr SECS PA LEN [PA2 LEN2]\n"
-		"       kmem spmir SLAVE ADDR [LEN]\n");
+		"       kmem spmir SLAVE ADDR [LEN] | agxr PA LEN [SECS]\n");
 	return 2;
 }
 
@@ -806,6 +841,10 @@ int main(int argc, char **argv)
 	}
 	if (!strcmp(c, "mmio") && (argc == 3 || argc == 4)) {
 		mmio_dump(num(argv[2]), argc == 4 ? num(argv[3]) : 0x100);
+		return 0;
+	}
+	if (!strcmp(c, "agxr") && (argc == 4 || argc == 5)) {
+		agx_read(num(argv[2]), num(argv[3]), argc == 5 ? atof(argv[4]) : 30);
 		return 0;
 	}
 	if (!strcmp(c, "spmir") && (argc == 4 || argc == 5)) {

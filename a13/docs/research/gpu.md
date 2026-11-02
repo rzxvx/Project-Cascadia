@@ -967,6 +967,29 @@ mpmgr.txt`) reads fine on iOS: its PS block holds the AON "nub" devices
 pwrgate group 0x23d29c000.. a dozen entries. Added to `pmgr-regions.txt`
 for the m1n1 side.
 
+**GPU-block registers on iOS with the GPU on** (`kmem agxr PA LEN`: before
+each word, wait for Fender +0x1000 == 0x1, read, check it still is; apps
+opened in a loop to keep the GPU waking; files `a13/build/gpu/pmgr-diff/
+ios-{gmgifaf,rgx-10000,fender-on-*,metrology}.txt`):
+
+- Fender while on vs idle: +0x1000 1 / 0, +0x1014 7 / 3, +0x1018 5 / 0,
+  +0x1100 0xe0000000 / 0xe0000001, +0x4064 1 / 0, the +0x8000 block (1,
+  0x3680d8, 0x3680d8, 0x23fffe) 0 while on, +0x1401c 1 / 0. Ours after the
+  request: +0x1100 like "on", the rest like "off".
+- **GMGIFAF** (0x204d71000, the GPU's fabric interface): +0x0 0x100, +0x20
+  0x20, +0x24 0x0049494c, +0x28 0x303, +0x2c 0x003a3c3c, +0x30 2, +0x40
+  0x00140014, +0x44 0x801d0005, +0x48 0x8404, +0x4c 4, +0x60 0xc0800080,
+  +0x70 5, +0x78 0x180a151f, +0x80 0x00ea0155, +0x84 0x01000071, +0x88 1,
+  +0x90 0x40b, +0x94/+0x98 0x180000, +0x200 0x01000080, +0x204 0x02000180,
+  +0x20c 0x20000000, +0x800 0x100.
+- RGX 0x204010000..+0x400: only +0x2e4 = 0xd5. **Reading RGX from
+  0x204000000 (64 KiB window) stopped iOS** even gated.
+- Metrology (0x204d80000): sensor tables (+0x0 0x7530, +0x4 0x00100010,
+  +0x8 0xf0100063, +0x1400.. 0x03000009 ... per block).
+
+Whether ours has GMGIFAF/Metrology set (they may answer with the GPU off,
+or not): `agx-start.py --risky-dump` reads them last of all.
+
 **Do not bulk-read 0x23bc1c000** (PMGR reg 19, inside the PMP's ASC block):
 reading it through the proxy killed m1n1 (the USB link dropped).
 

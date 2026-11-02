@@ -3,7 +3,7 @@
 """G4 (a13/docs/research/gpu.md): start the A13's GPU firmware from the Mac
 through m1n1's proxy, with m1n1's own Python AGX driver.
 
-    M1N1DEVICE=/dev/cu.usbmodemXXXX agx-start.py [--boot-pmp|--pmp-dvfs|--pmp-doorbell] [--fender] [--gpu-trig] [--gfx-auto] [--poke] [--ios-pmgr [--fabric-auto]] [--fender-ios] [--fender-dump] [--dump-regions] [--pll-probe] [--try ADDR|=MASK|ADDR=VAL ...] [--pmp-vote DOM:LVL,...] [--fender-init] [--pmu-dump] [SECONDS]
+    M1N1DEVICE=/dev/cu.usbmodemXXXX agx-start.py [--boot-pmp|--pmp-dvfs|--pmp-doorbell] [--fender] [--gpu-trig] [--gfx-auto] [--poke] [--ios-pmgr [--fabric-auto]] [--fender-ios] [--fender-dump] [--dump-regions] [--pll-probe] [--try ADDR|=MASK|ADDR=VAL ...] [--pmp-vote DOM:LVL,...] [--fender-init] [--pmu-dump] [--risky-dump] [SECONDS]
 
 The phone runs `a13/cascadia boot proxy` (m1n1 alone; iBoot has loaded the
 GPU firmware: G3). Needs a13/build/m1n1 with patch 0007 (T8030 / G12) and the
@@ -78,6 +78,10 @@ by 8-byte extended-long reads; addresses that do not answer are skipped)
 before the GPU starts and with its request pending, into a13/build/gpu/
 pmgr-diff/proxy-pmu-{before,after}.bin, and the bytes that changed: if the
 PMGR asked the PMU for the GPU's voltage, a buck's voltage register moves.
+--risky-dump: last of all, read GMGIFAF (0x204d71000, 0x1000) and Metrology
+(0x204d80000, 0x5000), the GPU-block windows iOS has full of settings while
+the GPU is on (kmem agxr), into pmgr-diff/proxy-{gmgifaf,metrology}.txt.
+With the GPU off these may not answer (an SError would end m1n1).
 """
 import os
 import sys
@@ -128,6 +132,7 @@ dump_regions = "--dump-regions" in sys.argv[1:]
 pll_probe = "--pll-probe" in sys.argv[1:]
 fender_init = "--fender-init" in sys.argv[1:]
 pmu_dump = "--pmu-dump" in sys.argv[1:]
+risky_dump = "--risky-dump" in sys.argv[1:]
 gfx_auto = gfx_auto or ios_pmgr
 seconds = float(args[0]) if args else 10.0
 
@@ -471,6 +476,17 @@ try:
     print("[agx-start] DevCtrl read ptr:", agx.ch.devctrl.state.READ_PTR.val)
     if pll_probe:
         plls("after the GPU's request")
+    if risky_dump:
+        for tag, base, ln in (("gmgifaf", 0x204d71000, 0x1000), ("metrology", 0x204d80000, 0x5000)):
+            fn = os.path.join(DUMPS, f"proxy-{tag}.txt")
+            print(f"[agx-start] reading {tag} {base:#x}+{ln:#x} ...", flush=True)
+            with open(fn, "w") as fo:
+                for o in range(0, ln, 4):
+                    v = p.read32(base + o)
+                    if v:
+                        fo.write(f"0x{base + o:x} = 0x{v:08x}\n")
+                        fo.flush()
+            print(f"[agx-start] {tag} dumped to {fn}", flush=True)
     if pmp_asc:
         pmp_asc.dart.show_error()
 except Exception as e:
