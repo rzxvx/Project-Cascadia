@@ -800,8 +800,11 @@ GPU starts.
 
 Tried (proxy, `agx-start-18.log`): `0x0020f00300020000` and
 `0x0020f10300020000` sent (no reply, as expected), PMP alive; Fender still
-0x11 / step 0x10. Not it in this form (or the votes did not take: no way
-yet to see the domains' levels). Next on iOS: `kmem mmiowatchr SECS PA LEN
+0x11 / step 0x10. The votes do take: the screen (m1n1's framebuffer) turned
+to coloured noise during that run -- the DCS (memory controller) level
+changed under the display, which iOS would coordinate. So command 0xf
+works, and raising SOC/DCS does not move Fender's step 0x10. **Do not vote
+on DCS (domain 1) again under m1n1.** Next on iOS: `kmem mmiowatchr SECS PA LEN
 [PA2 LEN2]` watches whole ranges, to catch which pwrgate entry (0x23b09c000
 .. +0x300) or PS register changes in step with Fender's +0x1018 when iOS
 powers the GPU up.
