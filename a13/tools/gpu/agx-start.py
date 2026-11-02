@@ -3,7 +3,7 @@
 """G4 (a13/docs/research/gpu.md): start the A13's GPU firmware from the Mac
 through m1n1's proxy, with m1n1's own Python AGX driver.
 
-    M1N1DEVICE=/dev/cu.usbmodemXXXX agx-start.py [--boot-pmp|--pmp-dvfs|--pmp-doorbell] [--fender] [--gpu-trig] [--gfx-auto] [--poke] [--ios-pmgr [--fabric-auto]] [--fender-ios] [--fender-dump] [--dump-regions] [--pll-probe] [SECONDS]
+    M1N1DEVICE=/dev/cu.usbmodemXXXX agx-start.py [--boot-pmp|--pmp-dvfs|--pmp-doorbell] [--fender] [--gpu-trig] [--gfx-auto] [--poke] [--ios-pmgr [--fabric-auto]] [--fender-ios] [--fender-dump] [--dump-regions] [--pll-probe] [--try ADDR|=MASK ...] [SECONDS]
 
 The phone runs `a13/cascadia boot proxy` (m1n1 alone; iBoot has loaded the
 GPU firmware: G3). Needs a13/build/m1n1 with patch 0007 (T8030 / G12) and the
@@ -58,6 +58,10 @@ a13/build/gpu/pmgr-diff/proxy-regions-{before,after}.txt.
 0x23b010000/14000/18000 (PLL4-6?), before the GPU and last of all after its
 request. On idle iOS a read from 0x23b010000 took the phone down: a PLL that
 is off may not answer, so this may end the proxy too.
+--try ADDR|=MASK (repeatable): with the GPU's request pending (Fender still
+0x11), OR each MASK into ADDR in turn, pump the firmware for 1 s and print
+Fender after each; stops at the first that moves it. For hypotheses from
+the iOS diffs without a fresh proxy boot apiece.
 """
 import os
 import sys
@@ -76,7 +80,14 @@ from m1n1.shell import run_shell  # noqa: E402
 from m1n1.agx import AGX  # noqa: E402
 
 pmp_asc = None
-args = [a for a in sys.argv[1:] if not a.startswith("--")]
+tries = []
+argv = sys.argv[1:]
+while "--try" in argv:
+    i = argv.index("--try")
+    a, m = argv[i + 1].split("|=")
+    tries.append((int(a, 0), int(m, 0)))
+    del argv[i:i + 2]
+args = [a for a in argv if not a.startswith("--")]
 pmp_dvfs = "--pmp-dvfs" in sys.argv[1:]
 pmp_doorbell = "--pmp-doorbell" in sys.argv[1:]
 boot_pmp = "--boot-pmp" in sys.argv[1:] or pmp_dvfs or pmp_doorbell
@@ -348,6 +359,18 @@ try:
         if fender:
             fender_ack()
     fender_regs("after the GPU's request")
+    for a, m in tries:
+        if not p.read32(FENDER + 0x1000) & 0x10:
+            break
+        old = p.read32(a)
+        p.write32(a, old | m)
+        print(f"[agx-start] try {a:#x}: {old:#x} -> {p.read32(a):#x}", flush=True)
+        end = time.time() + 1
+        while time.time() < end:
+            agx.work()
+            if pmp_asc:
+                pmp_asc.work()
+        fender_regs(f"after {a:#x} |= {m:#x}")
     if ios_pmgr and fabric and p.read32(FENDER + 0x1000) & 0x10:
         print(f"[agx-start] pwrgate +0: {p.read32(PWRGATE0):#x}; step 2: fabric AUTO_ENABLE")
         fabric_auto()

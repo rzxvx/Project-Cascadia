@@ -742,6 +742,24 @@ PLL being started and locked: iOS keeps the GPU's PLL off while the GPU
 idles and Fender brings it up. `agx-start.py --pll-probe` reads PLL0-6 one
 word at a time before the GPU and, last of all, after its request.
 
+Tried (proxy, `agx-start-16.log`): under m1n1 all seven read, all on, and
+the GPU's request changes none of them: PLL0-3 as on iOS; PLL4 0x804b0100
+**0x404800a8** (word 1 bit 31 clear, the others have 0x8048....) 0x804f0424;
+PLL5 0x800e4001 0x810000f0 0xce59cb39; PLL6 0x80320100 0x804800c0
+0x804f0224. Which PLL the GPU runs from, and which one did not answer on
+iOS, is not known.
+
+PMGR groups, iOS vs m1n1 (`--dump-regions`): **MISC_ACG +0 (0x23b0dc000)
+iOS 1, ours 0** -- bit 0 is set and cleared by an ApplePMGR function (fn
+0xfffffff0091b27d4: read, `& ~1 | on`, write): global automatic clock
+gating, it seems; +0x84/+0x8c/+0x90 ours 1, iOS 0. MISC_CORES +0/+4 ours
+0x3e, iOS 0 (an ApplePMGR core-mask writer, fn 0xfffffff0091b1530: CPU
+cores, likely). SOC_TVM +0 iOS 0x301, ours 0x300. ISP_REF0 clock configs
+differ (sensor clocks). m1n1's USB was gone after this session again; it
+seems to happen after every agx-start session now. `--try ADDR|=MASK`
+(repeatable) applies such candidates one by one with the request pending,
+printing Fender after each, so one boot tests several.
+
 **Do not bulk-read 0x23bc1c000** (PMGR reg 19, inside the PMP's ASC block):
 reading it through the proxy killed m1n1 (the USB link dropped).
 
