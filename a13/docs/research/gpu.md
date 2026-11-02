@@ -652,6 +652,34 @@ writes 0x70001 there. `agx-start.py` now skips that poke (`--poke` keeps
 it) and prints Fender's +0x1000 and +0x14000 pages before the GPU and after
 its request, for a word-by-word comparison with iOS's.
 
+Tried (proxy, no poke): Fender's +0x14000 page is now iOS's (+0x14004 = 1,
+the shared1 table), +0x1000 still 0x11. So Fender is set up alike and what
+it waits on is outside it.
+
+**PMGR, iOS vs m1n1** (`a13/tools/gpu/pmgr-regions.txt`, `pmgr-dump.py`
+through the proxy, `kmem mmio` on iOS, `pmgr-names.py ADT ios proxy`; dumps
+in `a13/build/gpu/pmgr-diff/`, iOS idle, proxy after the GPU's request):
+
+- **pwrgate block (pmgr `pwrgate-regs`, 0x23b09c000..)**: 16-byte entries;
+  the first word of most is 0x80000000 on both, but **0x23b09c000 itself
+  is 0x80000000 on iOS and 0 under m1n1**. The other differences (bit 30 of
+  word 0 and 0x0c000000 in word 3 of some entries) follow domains that iOS
+  runs in auto and flip with them.
+- **AUTO_ENABLE**: iOS runs the fabric and memory domains in auto (MCC,
+  DCS0-3, SMX, IMX, RMX, MMX, SBR, PMS*, PMP, DISP0_GP*, SIO*, SOC_SPMI*,
+  PCIE_REF, APCIE*, ANS2, SEP); m1n1 clears it everywhere.
+- trigger controls: iOS ECPU/PCPU/ANE 0x2107, GPU 0x22437.
+- the rest are devices one side uses and the other does not (I2C, SPI,
+  MCA, USB, ...).
+
+ApplePMGR reads `pwrgate-regs` into its PwrGate register groups (fn
+0xfffffff00919d894; fn 0xfffffff0091a4168 only logs them); who sets
+0x23b09c000 bit 31 was not found statically. `agx-start.py --ios-pmgr`
+tries it on the hardware in two steps: 0x23b09c000 |= 0x80000000 and GFX
+auto before the GPU starts; if Fender still waits, AUTO_ENABLE on the
+fabric/memory domains (MCC, DCS0-3, SMX, IMX, RMX, MMX, SBR, PMS_BUSIF,
+PMS, PMS_SRAM, PMP) with the request pending.
+
 **Do not bulk-read 0x23bc1c000** (PMGR reg 19, inside the PMP's ASC block):
 reading it through the proxy killed m1n1 (the USB link dropped).
 
