@@ -1112,6 +1112,31 @@ boot stage. Fender's power sequencer still stops at step 0x10 even for the
 host's own request with no firmware running, and the RGX core then is
 unpowered. What step 0x10 waits for is not visible from outside the GPU.
 
+**What Asahi does on M1** (drm/asahi `regs.rs`, `driver.rs`, `gpu.rs`;
+m1n1 `kboot_gpu.c`, `proxyclient/m1n1/agx`, `hv/trace_agx.py`; t8103
+device tree): nothing special for the GPU's power. m1n1 calls
+`pmgr_adt_power_enable("/arm-io/sgx")` and reads the core masks at
+sgx+0xd01500/0xd01514 (Fender +0x1500); the driver reads the ID registers at
+sgx+0xd04000.. (Fender +0x4000, the block that matches iOS here) before the
+firmware runs, starts the ASC and sends initdata; the proxyclient's only
+poke is sgx+0xd14000 = 0x70001 ("Early init, needed?"). The DT gives the
+GPU one power domain, `ps_gfx`, whose parent is `ps_pmp`. The firmware does
+all GPU power management after that. So on Macs the GPU powers up "by
+itself" after iBoot (normal boot mode) -- ours is booted through DFU
+(iBSS/iBEC).
+
+**PMGR bridge settings.** The pmgr node has 18 fabric bridges (`#bridges`,
+`bridge-reg-index` 26: pmgr reg 26.. = 0x262000000, 0x264000000, ...,
+**0x205000000** (bridge 7, right after sgx), 0x60c000000, ...) and
+`bridge-settings-N` tunables, (offset, value) pairs. **bridge-settings-7,
+the GPU's bridge**: +0x0 0x410, +0x400 0x40010001, +0x600 0x01ffffff, +0x708
+0x02000000, +0x70c..+0x718 0x00400080, +0x71c 0x00100010, +0x800 0x101.
+iBoot applies bridge settings (`bridge-settings-%d`, "pmgr %s %x bridge %d
+doesn't exist" in its strings); m1n1 does not, and with the GPU domain off
+at our iBoot's time the GPU's bridge may never have been set (or lost it).
+Next: read 0x205000000 on ours (added to `pmgr-regions.txt`) and apply the
+pairs with `--try` while the request is pending.
+
 **Do not bulk-read 0x23bc1c000** (PMGR reg 19, inside the PMP's ASC block):
 reading it through the proxy killed m1n1 (the USB link dropped).
 
