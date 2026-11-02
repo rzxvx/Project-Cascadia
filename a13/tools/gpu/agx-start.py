@@ -3,7 +3,7 @@
 """G4 (a13/docs/research/gpu.md): start the A13's GPU firmware from the Mac
 through m1n1's proxy, with m1n1's own Python AGX driver.
 
-    M1N1DEVICE=/dev/cu.usbmodemXXXX agx-start.py [--boot-pmp|--pmp-dvfs|--pmp-doorbell] [--fender] [--gpu-trig] [--gfx-auto] [--poke] [--ios-pmgr [--fabric-auto]] [--fender-ios] [--fender-dump] [--dump-regions] [--pll-probe] [--try ADDR|=MASK|ADDR=VAL ...] [--pmp-vote DOM:LVL,...] [--fender-init] [--pmu-dump] [--risky-dump] [SECONDS]
+    M1N1DEVICE=/dev/cu.usbmodemXXXX agx-start.py [--boot-pmp|--pmp-dvfs|--pmp-doorbell] [--fender] [--gpu-trig] [--gfx-auto] [--poke] [--ios-pmgr [--fabric-auto]] [--fender-ios] [--fender-dump] [--dump-regions] [--pll-probe] [--try ADDR|=MASK|ADDR=VAL ...] [--pmp-vote DOM:LVL,...] [--fender-init] [--pmu-dump] [--risky-dump] [--gfx-cycle] [--gfx-reset] [SECONDS]
 
 The phone runs `a13/cascadia boot proxy` (m1n1 alone; iBoot has loaded the
 GPU firmware: G3). Needs a13/build/m1n1 with patch 0007 (T8030 / G12) and the
@@ -78,6 +78,13 @@ by 8-byte extended-long reads; addresses that do not answer are skipped)
 before the GPU starts and with its request pending, into a13/build/gpu/
 pmgr-diff/proxy-pmu-{before,after}.bin, and the bytes that changed: if the
 PMGR asked the PMU for the GPU's voltage, a buck's voltage register moves.
+--gfx-cycle: before the firmware starts, power PMGR's GFX domain off (target
+0, wait for actual 0) and on again: iOS's AGX driver gates GFX-SGX off and
+on around its re-init, and our GFX was only ever switched on from whatever
+iBoot (DFU path, GPU firmware loaded) left; a power cycle resets the GPU
+block, Fender included. Fender's pages are printed after it.
+--gfx-reset: then pulse GFX's RESET + DEV_DISABLE bits (m1n1's
+pmgr_reset_device: set bit 10, set bit 31, 10 us, clear both).
 --risky-dump: last of all, read GMGIFAF (0x204d71000, 0x1000) and Metrology
 (0x204d80000, 0x5000), the GPU-block windows iOS has full of settings while
 the GPU is on (kmem agxr), into pmgr-diff/proxy-{gmgifaf,metrology}.txt.
@@ -133,6 +140,8 @@ pll_probe = "--pll-probe" in sys.argv[1:]
 fender_init = "--fender-init" in sys.argv[1:]
 pmu_dump = "--pmu-dump" in sys.argv[1:]
 risky_dump = "--risky-dump" in sys.argv[1:]
+gfx_cycle = "--gfx-cycle" in sys.argv[1:]
+gfx_reset = "--gfx-reset" in sys.argv[1:]
 gfx_auto = gfx_auto or ios_pmgr
 seconds = float(args[0]) if args else 10.0
 
@@ -407,6 +416,39 @@ def pmu_snapshot(tag):
 
 if pmu_dump:
     pmu_snapshot("before")
+
+def ps_wait(addr, actual, ms=200):
+    end = time.time() + ms / 1000
+    while time.time() < end:
+        v = p.read32(addr)
+        if (v >> 4) & 0xf == actual:
+            return v
+    return p.read32(addr)
+
+
+if gfx_cycle:
+    g = PS["GFX"]
+    v = p.read32(g)
+    print(f"[agx-start] GFX ps before cycle {v:#x}", flush=True)
+    p.write32(g, (v & ~((1 << 28) | 0xf)) | 0x0)
+    print(f"[agx-start] GFX ps after target 0: {ps_wait(g, 0):#x}", flush=True)
+    fender_regs("with GFX off (reads may be 0 or stale)")
+    v = p.read32(g)
+    p.write32(g, (v & ~0xf) | 0xf)
+    print(f"[agx-start] GFX ps after target f: {ps_wait(g, 0xf):#x}", flush=True)
+    if gfx_auto:
+        p.set32(g, 1 << 28)
+    fender_regs("after the GFX power cycle")
+    fender_pages("after the GFX power cycle")
+if gfx_reset:
+    g = PS["GFX"]
+    p.set32(g, 1 << 10)
+    p.set32(g, 1 << 31)
+    time.sleep(0.001)
+    p.clear32(g, (1 << 31) | (1 << 10))
+    print(f"[agx-start] GFX ps after reset pulse: {p.read32(g):#x}", flush=True)
+    fender_regs("after the GFX reset pulse")
+    fender_pages("after the GFX reset pulse")
 
 if fender_init:
     # AGXG12P 20E247 fn 0xfffffff0084f1b54: unless a platform flag says

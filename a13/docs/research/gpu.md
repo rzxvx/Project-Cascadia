@@ -1141,6 +1141,22 @@ Tried (proxy, `agx-start-27.log`): **every bridge-settings-7 value is
 already in place on ours** (iBoot applied it in our boot too: +0x0 0x410,
 +0x400 0x40010001, ..., +0x800 0x101 read back before writing). Not it.
 
+**Outside reading, third pass:** surrealra1n's A12/A13 tethered downgrades
+boot iOS 14/15 through iBSS -> iBEC -> DeviceTree -> trust cache ->
+kernelcache -> `bootx` (no GPU firmware sent) and are usable phones: the
+DFU path does not leave the GPU unusable for iOS -- iOS's kernel does what
+is needed, in a way that leaves no trace in the registers compared so far.
+A reset or a power cycle would be such a thing. AGXG12P calls on its nub
+only clock/power-gate (slots 0x568/0x570) and slot 0x38 (bookkeeping), no
+reset; but its re-init path gates GFX-SGX **off** (0x...84f1c94/1cd8, w1 =
+0) before gating it on again, and switching off GFX-SGX can take its parent
+GFX with it: a GFX power cycle. Our GFX was only ever switched on, from
+the state iBoot's DFU path left (with the GPU firmware loaded).
+`agx-start.py --gfx-cycle` (GFX target 0 until actual 0, then 0xf) and
+`--gfx-reset` (RESET/DEV_DISABLE pulse) try that before the firmware
+starts; with `--fender-init` the host's own power-up request follows at
+once, so Fender's answer shows even if the cycle upsets gfx-asc.
+
 **Do not bulk-read 0x23bc1c000** (PMGR reg 19, inside the PMP's ASC block):
 reading it through the proxy killed m1n1 (the USB link dropped).
 
