@@ -141,6 +141,24 @@ itself**: +0x1000 = 0x10 -> state 0, step 0, VOLMAN +0x38 = 0x01000000
 Fender both ways. Next run: `--fender` as well (PM on before the firmware
 starts, acks in the loop), to see the firmware power the GPU down itself.
 
+**Run 2** (`agx-start-39.log`, fresh boot, `--volman-gpu --fender-init
+--fender --watch 30`): +0x1010 = 1 before the firmware, interrupt 2 acked
+at once, the same five Stats records -- and still **no power-down** in
+30 s. GFX AUTO_ENABLE set afterwards on the spent session: GFX goes to
+auto state 0xf (0x1f0000ff) and stays (iOS idle: auto state 4,
+0x1400034f), i.e. GFX follows Fender, and nobody asks Fender for state 0.
+
+Firmware side (static, `gfx-text.bin`): fn 0x23fcc(state, ?, timeout,
+?) is the firmware's GPU power-state setter (returns at once if the
+current state, [[0xbec80]+0x188]+0x38, already matches). State 0 is asked
+in two places: 0xded4 (the big scheduler loop, under w27) and 0x126dc in
+fn 0x12280, which looks like the idle power-down (stats/timestamps,
+per-channel bits at +0x398c cleared, KTrace 0x200, then state 0); state 1
+at 0x12004; the rest ask state 2 (timeout 0xfa). Under m1n1 the firmware
+never gets there. Not a blocker for G5.1-G5.4 (the GPU just stays on;
+the host can switch it off through Fender); left as an open item.
+`agx-start.py` now reads Fender only while PMGR GFX is on.
+
 **Offline G12 compiler.** Xcode's Metal Toolchain (`xcodebuild
 -downloadComponent MetalToolchain`, 27A5228f) has `metal-tt` and the
 translator `applegpu-nt`; `applegpu-nt -available-archs ios 16.4` lists

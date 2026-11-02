@@ -103,6 +103,7 @@ pmgr_reset_device: set bit 10, set bit 31, 10 us, clear both).
 (0x204d80000, 0x5000), the GPU-block windows iOS has full of settings while
 the GPU is on (kmem agxr), into pmgr-diff/proxy-{gmgifaf,metrology}.txt.
 With the GPU off these may not answer (an SError would end m1n1).
+Fender is read only while PMGR GFX is on (any option).
 --watch: G5.0, the firmware left running: Stats records decoded (0x40
 bytes on G12) and, every 0.5 s, PMGR GFX's power state, Fender +0x1000 /
 +0x1018, VOLMAN +0x38 and (with --volman-gpu) PMU buck 0x4100, printed when
@@ -291,11 +292,20 @@ FENDER = 0x204d00000
 VOLMAN = 0x23b0a0000     # PMGR reg 0 + 0xa0000 (AppleT8030PMGR PMGR_VOLMAN_*)
 
 
+def gfx_on():
+    # PMGR GFX actual state (bits 7:4) on: reading Fender with GFX off hangs
+    # m1n1; with --gfx-auto the hardware switches GFX by itself
+    return (p.read32(0x23b080390) >> 4) & 0xf == 0xf
+
+
 def fender_regs(when):
     # +0x1000 state (low 4 bits) | 0x10 request pending, +0x1010 host control,
     # +0x1014 interrupt status, +0x1018
-    print(f"[agx-start] Fender {when}: " + " ".join(
-        f"+{o:#x}={p.read32(FENDER + o):#x}" for o in (0x1000, 0x1010, 0x1014, 0x1018)))
+    if not gfx_on():
+        print(f"[agx-start] Fender {when}: GFX off, not read")
+    else:
+        print(f"[agx-start] Fender {when}: " + " ".join(
+            f"+{o:#x}={p.read32(FENDER + o):#x}" for o in (0x1000, 0x1010, 0x1014, 0x1018)))
     # the PMGR's voltage manager: controls +0x4..+0x1c (bit 0 manual; iOS
     # +0x4..+0x14 2, +0x18/+0x1c 0), channels +0x28..+0x40 (bit 24 on, bit
     # 31 busy, voltage codes); +0x38 drives PMU buck 0x4100, which iOS keeps
@@ -366,6 +376,9 @@ if fender:
 
 
 def fender_pages(when):
+    if not gfx_on():
+        print(f"[agx-start] Fender pages {when}: GFX off, not read")
+        return
     for base, n in ((0x1000, 0x40), (0x14000, 0x80)):
         words = [(o, p.read32(FENDER + o)) for o in range(base, base + n * 4, 4)]
         print(f"[agx-start] Fender +{base:#x} page {when}: " + (" ".join(
@@ -433,6 +446,8 @@ if fender_ios:
 def fender_ack():
     # G12::AGXFenderCommon (AGXG12P 20E247, fn 0xfffffff00851f7fc): write
     # back +0x1014 & 7
+    if not gfx_on():
+        return
     st = p.read32(FENDER + 0x1014) & 7
     if st:
         p.write32(FENDER + 0x1014, st)
