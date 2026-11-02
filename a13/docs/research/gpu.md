@@ -112,9 +112,38 @@ Steps (2026-11-03), each one checkable on its own:
 - **G5.4 the triangle.** VDM stream, vertex and fragment shaders,
   `agx_1tri.py`'s path; then the framebuffer on the screen.
 
-Reference G12 machine code: Xcode's Metal toolchain (offline binary
-archives for iOS GPUs, if it has a G12 target) or the iOS compiler on the
-phone (MTLBinaryArchive from a jailbroken command-line tool).
+Reference G12 machine code: **Xcode's Metal toolchain compiles for the
+A13 offline** (target `applegpu_g12p`, backend `libapplegpuG9G12-nt`;
+`a13/tools/gpu/isa/metal-isa.sh SRC.metal FUNC...`, see "G5 results").
+The iOS compiler on the phone (MTLBinaryArchive) is the fallback.
+
+## G5 results (2026-11-03)
+
+**Offline G12 compiler.** Xcode's Metal Toolchain (`xcodebuild
+-downloadComponent MetalToolchain`, 27A5228f) has `metal-tt` and the
+translator `applegpu-nt`; `applegpu-nt -available-archs ios 16.4` lists
+`applegpu_g12p` (A13) next to g13p/g13g. `metal-tt -arch applegpu_g12p
+-platform_version ios 16.4 16.4 LIB.metallib PIPELINES.mtlp-json -o
+OUT.metallib` writes a Mach-O "GPU executable applegpu_g12p" whose
+`__compute` section holds one Mach-O per pipeline with the shader in
+`__TEXT,__text` (`a13/tools/gpu/isa/gpumacho.py` prints it). AIR has to
+be built for iOS 16.4 (`-std=metal3.0 -mios-version-min=16.4`; AIR 2.9
+is refused, the G12 backend takes 2.5); `metal-objdump` has no
+disassembler for these, dougallj's applegpu (G13) decodes by hand.
+
+First comparison (`isa/g5-kernels.metal`: `out[tid] = 0xcafe0000 + tid`,
+and an empty kernel):
+
+| | G12 (applegpu_g12p) | G13 (applegpu_g13g) |
+|---|---|---|
+| store_const | `f2051004` `0e01424a18000000` `4501200e00c01200` `0801` | 0x40 zero bytes, then the same, ending `8800` |
+| empty | `0801` | 0x40 zero bytes, `8800` |
+
+`get_sr` (thread_position_in_grid), `iadd` and `device_store` are
+**byte-identical**. Only the end differs: **G12 ends a shader with
+0x0108**, G13 with `stop` 0x0088 (in G13's map 0x0008 is `trap`). G13's
+code also starts after 0x40 zero bytes; G12's at once. So for G5.1 the
+empty compute shader on the A13 is the two bytes `08 01`.
 
 **G6 — kernel driver (35 %).** `drm/asahi` (Rust) with a G12/13.3 entry, in our
 Hoolock-based kernel (needs Rust support in the tree) — or a C port of the parts
