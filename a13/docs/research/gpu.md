@@ -798,6 +798,14 @@ voltage or memory-clock change. `agx-start.py --pmp-vote 0:2,1:2` sends
 the GPU's votes (SOC 2, DCS 2) after the PMP is configured, before the
 GPU starts.
 
+Tried (proxy, `agx-start-18.log`): `0x0020f00300020000` and
+`0x0020f10300020000` sent (no reply, as expected), PMP alive; Fender still
+0x11 / step 0x10. Not it in this form (or the votes did not take: no way
+yet to see the domains' levels). Next on iOS: `kmem mmiowatchr SECS PA LEN
+[PA2 LEN2]` watches whole ranges, to catch which pwrgate entry (0x23b09c000
+.. +0x300) or PS register changes in step with Fender's +0x1018 when iOS
+powers the GPU up.
+
 **Do not bulk-read 0x23bc1c000** (PMGR reg 19, inside the PMP's ASC block):
 reading it through the proxy killed m1n1 (the USB link dropped).
 

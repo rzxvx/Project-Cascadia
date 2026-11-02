@@ -31,6 +31,8 @@
  *                                 of PA..PA+LEN (LEN 0x100, at most 0x20000)
  *   kmem mmiowatch SECS PA...     sample 32-bit registers for SECS seconds,
  *                                 print each change with its time
+ *   kmem mmiowatchr SECS PA LEN [PA2 LEN2]  the same for every word of one
+ *                                 or two ranges (LEN at most 0x400 each)
  *
  * Physical access goes through a normal cacheable mapping: device registers
  * (MMIO) read that way can stop the SoC, so anything outside the DRAM that
@@ -619,6 +621,35 @@ static void mmio_watch(double secs, int n, char **pas)
 	printf("%lu samples in %.1f s\n", samples, secs);
 }
 
+static void mmio_watch_ranges(double secs, int n, uint64_t *pa, uint64_t *len)
+{
+	volatile uint32_t *m[2];
+	uint32_t *last[2];
+	for (int r = 0; r < n; r++) {
+		if (len[r] > 0x400)
+			len[r] = 0x400;
+		m[r] = mmio_map(pa[r], len[r]);
+		last[r] = calloc(len[r] / 4, 4);
+		for (uint64_t o = 0; o < len[r] / 4; o++)
+			last[r][o] = m[r][o];
+	}
+	double t0 = now();
+	unsigned long samples = 0;
+	while (now() - t0 < secs) {
+		for (int r = 0; r < n; r++)
+			for (uint64_t o = 0; o < len[r] / 4; o++) {
+				uint32_t v = m[r][o];
+				if (v != last[r][o]) {
+					printf("%9.6f 0x%llx = 0x%08x (was 0x%08x)\n", now() - t0, pa[r] + o * 4, v, last[r][o]);
+					last[r][o] = v;
+				}
+			}
+		samples++;
+	}
+	fflush(stdout);
+	printf("%lu samples in %.1f s\n", samples, secs);
+}
+
 static int usage(void)
 {
 	fprintf(stderr,
@@ -630,7 +661,7 @@ static int usage(void)
 		"       kmem kcr VA [LEN]\n"
 		"       kmem obj CLASS | ptrs VA LEN\n"
 		"       kmem ptscan PA LEN\n"
-		"       kmem mmio PA [LEN] | mmiowatch SECS PA...\n");
+		"       kmem mmio PA [LEN] | mmiowatch SECS PA... | mmiowatchr SECS PA LEN [PA2 LEN2]\n");
 	return 2;
 }
 
@@ -716,6 +747,12 @@ int main(int argc, char **argv)
 	}
 	if (!strcmp(c, "mmio") && (argc == 3 || argc == 4)) {
 		mmio_dump(num(argv[2]), argc == 4 ? num(argv[3]) : 0x100);
+		return 0;
+	}
+	if (!strcmp(c, "mmiowatchr") && (argc == 5 || argc == 7)) {
+		uint64_t pa[2] = {num(argv[3]), argc == 7 ? num(argv[5]) : 0};
+		uint64_t len[2] = {num(argv[4]), argc == 7 ? num(argv[6]) : 0};
+		mmio_watch_ranges(atof(argv[2]), argc == 7 ? 2 : 1, pa, len);
 		return 0;
 	}
 	if (!strcmp(c, "mmiowatch") && argc >= 4) {
