@@ -1042,6 +1042,28 @@ The perf block 0x23b0b4000 is all {1, count} on iOS and all 0 on ours, for
 every index (residency counters ApplePMGR switches on, it seems; GFX device
 at +0x1e0, GFX domain at +0x470).
 
+Followed further (static): the sgx nub's provider is **AppleT803xIO**
+(`com.apple.driver.AppleT8030`, it creates the arm-io nubs, vtable slot
+0x580); its clock-gate (+0x568) and power-gate (+0x570) call platform
+function objects' +0x80: `ApplePMGRFunctionClockGate` -> fn
+0xfffffff0091bdc2c -> (PMGR workloop) fn 0xfffffff0091bdd18, the PMGR's
+generic set-device-state; `ApplePMGRFunctionPowerGate` -> fn
+0xfffffff0091becb0, which only **queries** (no_ps devices -> "off"). The
+set-device-state engine skips devices that are both `perf` and `no_ps`;
+GFX-SGX is `no_ps` only, so it runs: it resolves parents (GFX), programs
+PS registers (fn 0xfffffff0091be3d8), and **for devices with `notify_pmp`
+(GFX) tells the PMP**: fn 0xfffffff0091adcd4, PM command **0xe, or 0xf when
+the device's flag bit 7 is set -- GFX has it** -- through ApplePMP's
+platform function (fn 0xfffffff0091e05a4 -> `_sendPMCommand(cmd, args[0],
+args[1], args[2], args[3])`, packed `0x0020000000000000 | cmd<<44 |
+args[0]<<40 (4 bits) | args[1]<<32 (8 bits) | args[2]<<16 | args[3]`).
+Which values ApplePMGR passes for GFX goes through its vote list (fn
+0xfffffff0091a8130) and was not pinned down. The PMP keeps the result in
+its __DATA, in SRAM (0x23b500000 = VA 0x1000000): the GPU's vote slots
+(SOC 0x102bb20, DCS 0x102bb4c), domain levels (0x1045f50). Next: read the
+PMP's whole __DATA (0x23b52a000, 0x1d000) on iOS and on ours and compare
+(added to `pmgr-regions.txt`).
+
 **Do not bulk-read 0x23bc1c000** (PMGR reg 19, inside the PMP's ASC block):
 reading it through the proxy killed m1n1 (the USB link dropped).
 

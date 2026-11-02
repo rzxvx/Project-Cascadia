@@ -30,3 +30,5 @@
 0x23d29c000 0x300
 0x23d280000 0x200
 # PMU bucks are read with kmem spmir on iOS / --pmu-dump on m1n1
+# the PMP's own state in its SRAM (pmp reg 2, 0x23b500000; image VA 0x1000000): its __DATA (VA 0x102a000..0x1047000) -- device vote tables (GPU entry +0x68 -> SOC slot 0x102bb20, DCS slot 0x102bb4c), domain levels (0x1045f50), doorbell slots
+0x23b52a000 0x1d000
