@@ -67,7 +67,11 @@ Same order as the iPad mini 1. Each step notes what already exists (Hoolock
 - [ ] GPU (AGX G12): started 2026-11-01 -- firmware interface = Asahi's `V13_3`
       (iOS 16.4's iBoot is macOS 13.3's), the iOS driver observed through
       Dopamine; firmware structures dumped and parsed, the firmware loaded
-      by iBoot under Linux (G1-G3); plan G1-G7 in `research/gpu.md`.
+      by iBoot under Linux (G1-G3); **2026-11-03 (G4): the GPU powers up
+      and its firmware runs under the m1n1 proxy** once the PMGR voltage
+      manager's GPU channel is handed to the hardware (VOLMAN +0x14 bit 0,
+      which iBoot leaves set); next G5, a first job. Plan G1-G7 in
+      `research/gpu.md`.
 
 ## Phase 4 — For non-experts
 
@@ -98,4 +102,4 @@ Addresses relative to the arm-io window at 0x2_0000_0000.
 | Touch | `multi-touch` on `spi1`, HID over SPI, HBPP fw `wftm`, cal `syscfg/MtCl` | ✓ (`apple_hidspi_touch`) |
 | Wi-Fi / BT | `wlan-pcie,bcm4378` / `bluetooth,n88` on `apcie,t8030` | — (the M1 chips) |
 | Audio | `cs42l77`, `cs35l27`, `mca,t8030` | — |
-| GPU | `gpu,t8030` (AGX G12) + `gfx-asc` (RTKit) | started (`research/gpu.md`) |
+| GPU | `gpu,t8030` (AGX G12) + `gfx-asc` (RTKit) | powers up, firmware runs under m1n1 (`research/gpu.md`) |

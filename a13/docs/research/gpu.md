@@ -1,7 +1,10 @@
 # GPU (AGX G12) — plan and what is known
 
-Status 2026-11-01: started. Nothing runs on the GPU from Linux yet. This page is
-the plan and the facts gathered so far; it grows as the work goes.
+Status 2026-11-03: **G4 done in one run** -- under the m1n1 proxy the GPU powers
+up and its firmware runs (see "G4 summary: how the A13 GPU powers up" right
+after the plan); a second clean run and a longer one are still to do. Nothing
+runs on the GPU from Linux yet. This page is the plan and the facts gathered so
+far, in the order they were found; the summary sections say what holds now.
 
 The phone for this work runs **iOS 16.4 (20E247) with Dopamine 3.0.12** (rootless,
 OpenSSH). Linux boots the usual way (usbliter8 → iBSS → m1n1) and does not touch
@@ -94,6 +97,141 @@ we need. Check: Mesa's `asahi` driver allocates, submits, waits.
 
 **G7 — Mesa + desktop (30 %).** Mesa `asahi` with G12 compiler changes; glmark2,
 XFCE on GL. Native display (still simpledrm) is a separate item in the roadmap.
+
+## G4 summary: how the A13 GPU powers up (2026-11-03)
+
+The long "G4 results" section below is the search log. This is what holds.
+
+**The power chain.** The GPU firmware (or the host, for a test) asks
+**Fender** (sgx + 0xd00000 = 0x204d00000) to power the GPU: +0x1000 = 0x11
+(state 1 + request pending 0x10). Fender's sequencer steps through +0x1018
+= 0 -> 2 -> 0x10 -> 5; at **step 0x10 it waits for the GPU's power rail**.
+The rail is **PMU buck 0x4100** (spmi0 slave 0xf, `avus`). Fender's request
+reaches the PMU through the PMGR's hardware voltage manager **VOLMAN**
+(0x23b0a0000): Fender writes the rail's code (0x3a) into VOLMAN channel
++0x38, and VOLMAN, if that channel is under hardware control, sends it to
+the PMU through spmi0's hardware queues. Then +0x1000 reads 1, the GPU
+core answers, the firmware runs.
+
+**What was missing.** iBoot leaves every VOLMAN channel in **manual mode**
+(control bit 0 = 1); XNU's AppleT8030PMGR switches them to the hardware at
+boot (fn 0xfffffff009463e6c). With the GPU's channel manual, the request
+lands in VOLMAN (+0x38 = 0x3a3a, no bit 24) and stops there; Fender waits
+at 0x10 for ever and the firmware's first GPU access is an SError (FAR
+0x204010190). **The fix: clear bit 0 of VOLMAN +0x14** (control of channel
++0x38) before the GPU is used -- `agx-start.py --volman-gpu`.
+
+**VOLMAN** (PMGR reg 0 + 0xa0000; read as 32-bit words):
+
+| offset | meaning | iBoot (m1n1) | iOS |
+|---|---|---|---|
+| +0x0 | global | 0x01000000 | 0x01000000 |
+| +0x4..+0x1c | 7 controls, bit 0 = manual; control +0x4 + 4i pairs with channel +0x28 + 4i | +0x4..+0x14 3, +0x18/+0x1c 1 | +0x4..+0x14 2, +0x18/+0x1c 0 |
+| +0x20 | status (`PMGR_VOLMAN_STATUS`, `DVC_DONE_ERR` if & 0x7f) | 0 | 0 |
+| +0x24 | config | 0x0851b092 | 0x0851b092 |
+| +0x28..+0x40 | 7 channels: bit 31 busy, **bit 24 on (under hardware)**, bytes = voltage codes | codes, no bit 24 | 0x01xxxxxx |
+
+Channels, the code XNU writes at boot (`a13/tools/gpu/volman-codes.py`,
+read-only; under m1n1 every one equals what iBoot already put there) and
+the PMU buck it follows on iOS:
+
+| channel | control | source of XNU's code (PMGR = 0x23b000000) | m1n1 | iOS | buck |
+|---|---|---|---|---|---|
+| +0x28 | +0x4 | ([PMGR+0x58018 + 20 v] >> 8) & 0xff, v = [PMGR+0x58000] & 0xf | 0x5a | 0x3e..0x70 | 0x4200 |
+| +0x2c | +0x8 | [PMGR+0x5c008 + 8 v] >> 24, v = [PMGR+0x5c000] & 7 | 0x61 | 0x40..0x8f | ? (no `avus` buck matched; `dotara`, slave 0xe?) |
+| +0x30 | +0xc | CPU cluster 1: [0x211e70000 + 0x20 s] >> 56, s = [0x211e20020] & 0xf | 0x39 | 0x30..0x81 | 0x4000 |
+| +0x34 | +0x10 | CPU cluster 0: the same at 0x210e70000 / 0x210e20020 | 0x3e | 0x35..0xb0 | 0x4b00 |
+| **+0x38** | **+0x14** | **not written by XNU: Fender's power request (GPU on 0x3a / 0x31, idle 0)** | 0 | 0 / 0x313a31 | **0x4100** |
+| +0x3c | +0x18 | GPU perf: [PMGR+0x64008 + 8 v] >> 24, v = [PMGR+0x64000] & 7 | 0x43 | 0x3b/0x43 | 0x4500 |
+| +0x40 | +0x1c | [PMGR+0x60008 + 8 v] >> 24, v = [PMGR+0x60000] & 7 | 0x34 | not read | ? |
+
+(XNU's channel base is VOLMAN + 4: `mov w23, #4; movk w23, #0xa, lsl #16`.
+The cluster codes come through vtable +0xa60, fn 0xfffffff009466b4c, which
+maps cluster-relative addresses onto pmgr regs 3-11 / 12-18.)
+
+**Proof** (`a13/build/gpu/agx-start-37.log`, fresh proxy boot,
+`--volman-gpu --fender-init`, only +0x14 changed): Fender +0x1000 = 1,
++0x1018 = 5; VOLMAN +0x38 = 0x013a3a3a; buck 0x4100 `09 3a` (iOS with the
+GPU on: `09 31` / `09 3a`); the firmware takes initdata, DC_Init,
+DC_UpdateIdleTS, reads DevCtrl (read pointer 2) and runs 5 s with no
+crash. Every earlier run, whatever else was changed, stopped at 0x10.
+
+**Why it took so long.** Every iOS reference was taken with the GPU idle,
+and at idle iOS has the rail off too (+0x38 code 0, buck 0x4100 `00 00`), so
+everything "matched" -- including the wrong conclusion that 0x4100 is a
+spare phase. What found it: iOS's own PMGR log (debug-enabled iBoot,
+pmgr-debug) showed no hidden kernel step; booting iOS's kernel by our own
+boot path showed the hardware hand-off is fine (the firmware ran there);
+sampling the rails with the GPU busy (`rails-gpu.sh`) showed 0x4100 / VOLMAN
++0x38 switching with the GPU; comparing VOLMAN under m1n1 showed the
+manual bits.
+
+**Open.**
+- A second clean run, and a longer one (firmware Stats / FWLog over 30 s,
+  idle power-off and wake-up of the GPU).
+- Stats records are 0x40 bytes, m1n1 expects 0x60 (G5).
+- The other VOLMAN channels stay manual under m1n1: the CPU and SoC rails
+  stay at iBoot's codes (e.g. buck 0x4000 at 0x68 where XNU's table says
+  0x39 for cluster 1's state 2), and the GPU-perf channel +0x3c will not
+  follow GPU DVFS. Fine for bring-up; for Linux, decide whether to hand
+  all seven to the hardware as XNU does.
+- Linux: the same bit has to be cleared before the GPU is used -- in
+  m1n1 (where the boot-time power setup lives) or in the kernel's PMGR /
+  GPU driver.
+
+**Do not.**
+- Write the spmi0 hardware-queue words (+0x400.., +0x500.., +0x600..):
+  not plain registers, a write zeroed them (`agx-start-36.log`).
+- Read spmi0's +0x400..+0x6ff as a block: it disturbed the controller
+  (new fault counts, +0xd00 changed); single config words are fine.
+- Write PMU registers directly: VOLMAN and the queues are the way in.
+- (Older, still true) read the GPU firmware's __DATA through kmem (resets
+  the phone), bulk-read PMGR 0x23bc1c000, read Fender with GFX off.
+
+## Tools and methods (state 2026-11-03)
+
+**Proxy side** (`a13/tools/gpu/`, run on the Mac with
+`M1N1DEVICE=/dev/cu.usbmodem…1`, phone booted with `a13/cascadia boot
+proxy`; each run wants a fresh boot, a stalled Fender request does not
+repeat):
+
+| tool | what for |
+|---|---|
+| `agx-start.py [opts] [SECS]` | starts the GPU firmware with m1n1's AGX driver and prints Fender / VOLMAN (and with `--volman-gpu` buck 0x4100) before and after. **The working run: `--volman-gpu --fender-init SECS`.** Other options are the experiments of the search (each documented in the script's header); `--pre ADDR=VAL` writes before the request, `--try` while it is pending |
+| `volman-codes.py` | read-only: the codes XNU would write into VOLMAN, the channels, the PMU bucks |
+| `pmgr-dump.py`, `pmgr-names.py`, `pmgr-regions.txt` | dump / compare PMGR and related regions (`--dump-regions`); VOLMAN 0x23b0a0000 is in the list now |
+| `pmp-devtable.py` | the PMP firmware's device table |
+
+**iOS side** (`a13/tools/ios/`, phone on iOS 16.4 + Dopamine, `ssh
+iphone11-ios`; `kmem` built with `build.sh`):
+
+| tool | what for |
+|---|---|
+| `kmem` | kernel / physical / MMIO reads and writes, `obj CLASS`, `spmir SLAVE ADDR LEN` (one SPMI read; loops of them with the screen on crash iOS) |
+| `rails-gpu.sh [SECS]` | samples Fender +0x1000, VOLMAN +0x0..+0x3c and one PMU block every 0.3 s -- how the GPU's rail was found (screen off, then busy) |
+| `pmgr-log.sh [SECS [MASK]]`, `pmgr-log.sh off` | turns ApplePMGR's debug log on in the running kernel (writes the `pmgr-debug` field, ApplePMGR +0xe0) and collects dmesg; bits: 1 PS config, 2 gating, 3 state changes, 11 PMP requests, 15 IOLog (default 0x880e) |
+| `debug-ibss.py IN OUT [ARGS]` | makes an iBSS that sets `/chosen/debug-enabled` (nop at 0x29bf4) and carries our boot-args (cave 0xaf020); IN = surrealra1n's `iBSS.boot` (boots iOS from disk) or `inputs/iBSS…sigpatched.raw` (stays in Recovery) |
+| `serial-log.sh` | records the DCSD serial port (or use SerialMonster; never both on one port) |
+| `retag-img4.py IM4P TYPE IM4M OUT` | wraps Apple's IM4P byte for byte with another type and our IM4M (`ipsw img4 create` re-encodes LZFSE kernelcaches into something iBoot refuses) |
+
+**iOS's own log of a GPU power-up at boot.** iOS ignores `pmgr-debug`
+unless `debug-enabled`; boot surrealra1n's local-boot image patched by
+`debug-ibss.py` (boot-args `-v serial=3 pmgr-debug=0x880e`) and record the
+serial port. What it showed is in "G4 results" (the boot log).
+
+**iOS's kernel by our boot path (the bisect).** `IBSS=$PWD/a13/build/gpu/
+ibss-debug/iBSS.recovery.raw a13/cascadia boot ios` sends what our Linux
+boot sends (stock DeviceTree, gfx and pmp firmware) but the root volume's
+trust cache and iOS's kernel instead of m1n1. Needed, in
+`a13/build/gpu/ios-recovery/` (not in git): the phone's own
+`apticket.der` (the root snapshot's name is derived from it; kernel, trust
+cache and DeviceTree are wrapped in it), the phone's `firmware/`
+(`/usr/standalone/firmware`, for `sep-firmware.img4`, sent with
+`rsepfirmware`), and a kernel with APFS's root-hash requirement patched
+off (`mov w20, #1` -> `#0` at raw offset 0x313909c, repacked LZSS +
+`repair_lzss_img4.py`; the `arp0` boot-arg does not help). It gets to
+launchd, which dies on the missing OS cryptex (`libSystem.B.dylib`) --
+far enough: AGX starts long before.
 
 ## G1 results (2026-11-01)
 
@@ -960,7 +1098,8 @@ reads of 8 bytes; gives up if the FIFOs are busy).
 
 iOS (`kmem spmir 0xf 0x4N00 0x10`, `a13/build/gpu/pmgr-diff/ios-pmu-
 bucks.txt`): **0x4100 is off on iOS too** -- a spare or shed phase, not the
-GPU's rail. Every other buck is on in both boots; four run at other, moving
+GPU's rail. *(Wrong, 2026-11-03: read with the GPU idle. 0x4100 is the
+GPU's rail and is off at idle on iOS too; see the G4 summary.)* Every other buck is on in both boots; four run at other, moving
 voltage codes on iOS (0x4000: 0x44 then 0x30, ours 0x68; 0x4200 0x3e vs
 0x5a; 0x4500 0x3b vs 0x70; 0x4b00 0xb0 vs 0x68 -- DVFS at work), 0x4300
 (0x4d) and 0x4400 (0x94) are the same. **The supply is on; the PMU is not
@@ -1109,7 +1248,9 @@ AGXG12P or its RTBuddy (one PAC-diversifier hit was another object's
 +0xa0). AGX's other gate calls (fns 0xfffffff0084cfea0, ...84d8904,
 ...850f210, ...850f358) are power-down / query paths.
 
-**Status (2026-11-02, end of day):** everything outside the GPU block that
+**Status (2026-11-02, end of day; superseded 2026-11-03 -- the comparison
+missed VOLMAN and was done with the GPU idle, see the G4 summary):**
+everything outside the GPU block that
 could be read and compared matches iOS or was set like iOS without effect:
 PMGR (PS/auto, triggers, pwrgate, groups, perf counters, second PMGR),
 PLLs, DWI, PMU bucks, PMP (state, votes, doorbells -- iOS has none for the
@@ -1419,7 +1560,10 @@ and comes on in bursts with activity is the GPU's (iOS powers the GPU off
 within ms of idling). **This corrects the earlier "0x4100 is off on iOS
 too -- a spare phase"**: that was read with the GPU idle. So Fender's step
 0x10 is most likely the wait for the GPU rail, which on iOS VOLMAN raises
-(channel +0x38 -> buck 0x4100) and on our boot never comes up.
+(channel +0x38 -> buck 0x4100) and on our boot never comes up. *(Channel
+words in this paragraph are right; the first VOLMAN offsets below, +0x24 as
+a channel and control +0x18 for +0x38, are off by 4 -- see the correction
+further down and the G4 summary.)*
 `agx-start.py` now prints VOLMAN +0x0..+0x3c with every Fender readout.
 
 **VOLMAN under m1n1 (`agx-start-32.log`): iBoot leaves it in manual
