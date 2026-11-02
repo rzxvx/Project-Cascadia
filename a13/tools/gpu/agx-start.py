@@ -3,7 +3,7 @@
 """G4 (a13/docs/research/gpu.md): start the A13's GPU firmware from the Mac
 through m1n1's proxy, with m1n1's own Python AGX driver.
 
-    M1N1DEVICE=/dev/cu.usbmodemXXXX agx-start.py [--boot-pmp|--pmp-dvfs|--pmp-doorbell] [--fender] [--gpu-trig] [--gfx-auto] [--poke] [--ios-pmgr [--fabric-auto]] [--fender-ios] [--fender-dump] [--dump-regions] [--pll-probe] [--try ADDR|=MASK|ADDR=VAL ...] [--pmp-vote DOM:LVL,...] [--fender-init] [SECONDS]
+    M1N1DEVICE=/dev/cu.usbmodemXXXX agx-start.py [--boot-pmp|--pmp-dvfs|--pmp-doorbell] [--fender] [--gpu-trig] [--gfx-auto] [--poke] [--ios-pmgr [--fabric-auto]] [--fender-ios] [--fender-dump] [--dump-regions] [--pll-probe] [--try ADDR|=MASK|ADDR=VAL ...] [--pmp-vote DOM:LVL,...] [--fender-init] [--pmu-dump] [SECONDS]
 
 The phone runs `a13/cascadia boot proxy` (m1n1 alone; iBoot has loaded the
 GPU firmware: G3). Needs a13/build/m1n1 with patch 0007 (T8030 / G12) and the
@@ -73,6 +73,11 @@ fn 0xfffffff0084f1b54, at 0xfffffff0084f2340): Fender +0x10000 = 0xffff0000,
 +0x0 = 0x40000000, then +0x1000 = 0x11 and wait for bit 4 (pending) to
 clear -- the host powers the GPU up once before its firmware runs. Done here
 before the firmware starts, printing +0x1000/+0x1018 while it waits (1 s).
+--pmu-dump: the PMU's registers (spmi0, slave from its ADT reg, 0x0000-0xffff
+by 8-byte extended-long reads; addresses that do not answer are skipped)
+before the GPU starts and with its request pending, into a13/build/gpu/
+pmgr-diff/proxy-pmu-{before,after}.bin, and the bytes that changed: if the
+PMGR asked the PMU for the GPU's voltage, a buck's voltage register moves.
 """
 import os
 import sys
@@ -122,6 +127,7 @@ fender_dump = "--fender-dump" in sys.argv[1:]
 dump_regions = "--dump-regions" in sys.argv[1:]
 pll_probe = "--pll-probe" in sys.argv[1:]
 fender_init = "--fender-init" in sys.argv[1:]
+pmu_dump = "--pmu-dump" in sys.argv[1:]
 gfx_auto = gfx_auto or ios_pmgr
 seconds = float(args[0]) if args else 10.0
 
@@ -371,6 +377,32 @@ def fender_ack():
         print(f"[agx-start] Fender interrupt {st:#x} acked, +0x1000="
               f"{p.read32(FENDER + 0x1000):#x}")
 
+PMU_SNAP = {}
+
+
+def pmu_snapshot(tag):
+    from m1n1.hw.spmi import SPMI
+    node = u.adt["/arm-io/spmi0/spmi-pmu"]
+    slave = node.reg[0] if isinstance(node.reg[0], int) else node.reg[0].addr
+    slave = int(slave) & 0xf
+    spmi = SPMI(u, "/arm-io/spmi0")
+    img, bad = bytearray(0x10000), 0
+    t0 = time.time()
+    for a in range(0, 0x10000, 8):
+        try:
+            img[a:a + 8] = spmi.read_extl(slave, a, 8)
+        except Exception:
+            bad += 1
+    os.makedirs(DUMPS, exist_ok=True)
+    open(os.path.join(DUMPS, f"proxy-pmu-{tag}.bin"), "wb").write(img)
+    PMU_SNAP[tag] = img
+    print(f"[agx-start] PMU (slave {slave:#x}) dumped {tag}: {bad} of 8192 reads failed, "
+          f"{time.time() - t0:.0f} s", flush=True)
+
+
+if pmu_dump:
+    pmu_snapshot("before")
+
 if fender_init:
     # AGXG12P 20E247 fn 0xfffffff0084f1b54: unless a platform flag says
     # otherwise, these two, then the power request, then a busy-wait
@@ -428,6 +460,13 @@ try:
         fender_full("after")
     if dump_regions:
         regions("after")
+    if pmu_dump:
+        pmu_snapshot("after")
+        a, b = PMU_SNAP["before"], PMU_SNAP["after"]
+        diff = [i for i in range(0x10000) if a[i] != b[i]]
+        print(f"[agx-start] PMU bytes changed by the GPU's request: {len(diff)}")
+        for i in diff[:64]:
+            print(f"[agx-start]   PMU +{i:#06x}: {a[i]:#04x} -> {b[i]:#04x}")
     trig_regs("after the GPU's request")
     print("[agx-start] DevCtrl read ptr:", agx.ch.devctrl.state.READ_PTR.val)
     if pll_probe:

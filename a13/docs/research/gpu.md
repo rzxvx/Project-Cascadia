@@ -918,6 +918,20 @@ nothing has gone over DWI. Fender stays at step 0x10 after each. So DWI's
 own settings are not it; whether the PMGR ever sends the GPU's voltage over
 DWI (on iOS, at GPU power-up) is not known.
 
+**Outside reading, second pass (2026-11-02):** nothing public on DWI's
+role, Fender, or the GPU's supply; Corellium's M1 talk only names PMGR,
+DWI, SPMI and PMP as blocks (A10+ PMP; their A10 PMP log shows the same
+RTKit start). An M-series sleep study (JJRPF/Aurora-DeepIdle#5) lists
+AppleS8000DWI among the wake actions and an `AGX_PMGR` block (+0x100 = 0,
+polled with timeout 0x2ee00). In the A13's ADT only the backlight uses DWI,
+so DWI's status words on iOS are most likely the backlight's: **DWI is
+probably not the GPU's path**. The likelier one is the PMGR's own SPMI
+masters (SOC_SPMI0-2) writing the PMU (`spmi0`, slave 0xf) directly.
+`agx-start.py --pmu-dump` reads the PMU's whole register space (8-byte
+extended-long reads) before the GPU starts and with its request pending and
+prints the bytes that changed: a buck's voltage register moving would show
+the GPU's rail; nothing moving would say the PMGR never reached the PMU.
+
 **Do not bulk-read 0x23bc1c000** (PMGR reg 19, inside the PMP's ASC block):
 reading it through the proxy killed m1n1 (the USB link dropped).
 
