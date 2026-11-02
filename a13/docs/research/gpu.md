@@ -188,6 +188,36 @@ built at all (fixed in patch 0007: the V13 one is `unk_pad2`). Check on
 the phone: stamp 1 reaches the value, the event fires, no firmware
 crash; then the store kernel (G5.2).
 
+**G5.1 run 1** (`agx-start-40.log`, `--volman-gpu --fender-init --compute
+5`): **the firmware crashed 0.3 ms after the CL_0 doorbell** and did not
+tell the host (no crash message on EP1; m1n1 waited 5 s, stamps 0,
+timestamps 0, queue done pointer 0). Found afterwards: the crash buffer
+held a log (`CLHE`), read through a bare proxy connection word by word
+(`a13/build/gpu/g5-crash-40.bin`; `readmem` gave checksum errors there).
+Task `agx_background`, data abort ESR 0x96000006 (translation fault),
+**FAR 0x20, PC fw 0x1e0b4**: `ldr w8, [x19, #0x20]` with x19 = NULL.
+
+- fn 0x1e010(queue, idx) takes x19 = [0x70c38 + idx * 0x38 + 0x18]: a
+  firmware __DATA table of 128 entries (7-bit index, also packed into
+  records at bits 14-20, fn 0x1ddb4). Its caller is the RunCmdQueue
+  handler (fn 0x8a14, the CL branch at 0x9934: `x0 = [x23]` = our
+  CommandQueueInfo, `w1 = [x23 + 0xc] & 0xff`, x23 = ring element + 4) --
+  i.e. idx = the message's **event_number** (0 here).
+- The live table (fw __DATA, read from PA 0x8001fcc38: the crash log's
+  Ccdp gives DATA VA 0xffffff800004c000 -> PA 0x8001d8000, not the
+  segment-ranges address) is **all zero**: no event slot is set up, so the
+  first RunCmdQueue that names one dereferences NULL. TA/3D take the
+  same path (fn 0x1fc14 is called from all three branches), so render
+  would crash the same way.
+- Not the cause: fn 0x28570 also fills 0x38-byte entries, but its table is
+  RegionC.unkptr_88b4 (perf sources; [0xbfae8] = RegionC, perf_source_count
+  0 on iOS too).
+
+Next: who fills the event table entries (+0x10, +0x18) -- a host message
+m1n1 never sends, or a field in initdata / the work command that names
+the event's stamp objects. `g5compute.py` now checks the crash buffer
+itself after a timeout.
+
 **Offline G12 compiler.** Xcode's Metal Toolchain (`xcodebuild
 -downloadComponent MetalToolchain`, 27A5228f) has `metal-tt` and the
 translator `applegpu-nt`; `applegpu-nt -available-archs ios 16.4` lists

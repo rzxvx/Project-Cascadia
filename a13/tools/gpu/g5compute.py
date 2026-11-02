@@ -305,17 +305,53 @@ class ComputeJob:
                 f"stamp {self.stamp_value:#x}")
         self.wq.submit(wc)
 
+    def crash_check(self):
+        # the firmware may crash without telling the host (G5.1 run 1: a
+        # NULL dereference 0.3 ms after the CL doorbell, no crash message)
+        crash = self.agx.asc.crash
+        buf = getattr(crash, "iobuffer", None)
+        if buf is None or self.agx.p.read32(buf) != 0x434c4845:  # "EHLC"
+            return False
+        self.agx.log("[G5] the firmware crashed (crash log in its buffer):")
+        from m1n1.fw.asc.crash import CrashLogParser
+        data = self.agx.u.iface.readmem(buf, 0x4000)
+        open("g5-crash.bin", "wb").write(data)
+        try:
+            CrashLogParser(data, self.agx.asc).dump()
+        except Exception as e:
+            self.agx.log(f"[G5] crash log parse stopped: {e!r}")
+        return True
+
     def run(self):
         self.agx.log("[G5] RunCmdQueue CL")
         self.agx.ch.queue[self.queue].q_CL.run(self.wq, self.ev.id)
 
-    def wait(self, timeout=5.0):
+    def state(self, when):
+        ch = self.agx.ch.queue[self.queue].q_CL
+        pm = self.wq.pmap
+        self.agx.log(f"[G5] {when}: CL_{self.queue} channel read {ch.state.READ_PTR.val} "
+                     f"write {ch.state.WRITE_PTR.val}; queue GPU_RPTR "
+                     f"{pm.GPU_RPTR.val} GPU_DONEPTR {pm.GPU_DONEPTR.val} "
+                     f"CPU_WPTR {pm.CPU_WPTR.val}")
+
+    def _wait(self, timeout):
         end = time.time() + timeout
         while time.time() < end:
             self.agx.work()
             self.stamp1.pull()
             if self.stamp1.value >= self.stamp_value or self.ev.fired:
-                break
+                return True
+        return False
+
+    def wait(self, timeout=5.0, kick=True, soft_crash=True):
+        self.state("after RunCmdQueue")
+        if not self._wait(timeout) and kick:
+            # drm/asahi rings doorbell 0x10 (kick firmware) after a submission
+            self.state(f"after {timeout} s")
+            self.agx.log("[G5] kick_firmware (doorbell 0x10)")
+            self.agx.kick_firmware()
+            self._wait(3.0)
+            self.state("after kick")
         self.stamp1.pull()
         self.stamp2.pull()
         self.ts_start.pull()
@@ -327,5 +363,18 @@ class ComputeJob:
                      f"{self.ev.fired}, ts {self.ts_start.val:#x} -> "
                      f"{self.ts_end.val:#x}, queue done ptr "
                      f"{self.wq.pmap.GPU_DONEPTR.val}")
+        if not done and self.crash_check():
+            return done
+        if not done and soft_crash:
+            # the firmware dumps its tasks (what they wait on) and stops
+            self.agx.log("[G5] soft crash for a task dump")
+            self.agx.asc.crash.crash_soft()
+            end = time.time() + 3
+            while time.time() < end:
+                try:
+                    self.agx.work()
+                except Exception as e:
+                    self.agx.log(f"[G5] after soft crash: {e!r}")
+                    break
         return done
 
