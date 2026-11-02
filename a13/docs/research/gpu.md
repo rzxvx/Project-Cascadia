@@ -855,6 +855,19 @@ wrote +0x10000 or +0x0: both read 0 on idle iOS, so they look like
 triggers/masks, not state, which is why the dumps did not show them.
 `agx-start.py --fender-init` does the same before the firmware starts.
 
+Tried (proxy, `agx-start-20.log`): the writes read back 0 (write-only or
+self-clearing), and **the host's own request, before any GPU firmware runs,
+stops at the same place**: +0x1000 = 0x11, +0x1014 = 2, +0x1018 = 0x10 for
+the whole second. Then the firmware, finding Fender already mid-request,
+took an **SError at FAR 0x204010190** (sgx +0x10190, an RGX register: the
+GPU core is not powered). So the stall has nothing to do with the GPU
+firmware: Fender cannot bring the core's power island up on this boot.
+What iOS has and we do not is now most likely below the SoC's registers --
+the GPU's supply (VDD_GPU on the PMU, `avus` on spmi0, 0x23d180700; its
+register map is not in the ADT) or something the PMU/SPMI side does for
+GPU power-up. The PMP's telemetry table names GPU [V]/[T]/[I] and
+GPU_SRAM [I] (shmem +0x6070..; the values live elsewhere).
+
 **Do not bulk-read 0x23bc1c000** (PMGR reg 19, inside the PMP's ASC block):
 reading it through the proxy killed m1n1 (the USB link dropped).
 
