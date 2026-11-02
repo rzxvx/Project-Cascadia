@@ -809,6 +809,29 @@ on DCS (domain 1) again under m1n1.** Next on iOS: `kmem mmiowatchr SECS PA LEN
 .. +0x300) or PS register changes in step with Fender's +0x1018 when iOS
 powers the GPU up.
 
+**On iOS the GPU wakes ~370 times in 6 s** (`kmem mmiowatchr`, apps
+opening): GFX's PS register 0x1400034f -> 0x1f0003ff ~7 us *before* the
+firmware writes Fender (auto-PM wakes the domain), then Fender 0x11 / step
+2 -> (0x10) -> 5 and +0x1000 = 0x01 ~105 us later; on the way down GFX
+returns to 0x1400034f (clock-gated). No pwrgate entry and no other PS
+register moves with it beyond chance (a13/build/gpu/pmgr-diff/ios-watch-
+{pwrgate,ps}.txt). Ours (`--gfx-auto`) has GFX at 0x1f0003ff during the
+request, as iOS: **the PMGR side matches; step 0x10 waits on something
+inside the GPU block.**
+
+**Our boot skips the second stage.** `boot-from-recovery.sh` sends
+devicetree, firmware and `bootx` straight to the patched **iBSS**; every
+iOS boot runs a second stage (iBoot from NAND, or iBEC for restores), and
+surrealra1n's A12/A13 tethered boots send the same patched image again
+tagged `ibec` before the devicetree (`surrealra1n.sh`: `img4 -i iBSS.patch
+-o ... -A -T ibec`; boot: iBSS, iBEC, DeviceTree, trust cache, kernel,
+bootx). The image is one unified iBoot (8422.100.650; it knows `/boot/
+iBEC`, "load upgrade iBEC"); what it sets up only as a second stage is
+unknown, GPU-side setup among the candidates. `IBEC=1 a13/cascadia boot
+proxy` now sends `inputs/iBEC.ibec.img4` first (the patched iBSS tagged
+ibec, made with `ipsw img4 create --type ibec`), waits for Recovery again,
+then the usual sequence.
+
 **Do not bulk-read 0x23bc1c000** (PMGR reg 19, inside the PMP's ASC block):
 reading it through the proxy killed m1n1 (the USB link dropped).
 

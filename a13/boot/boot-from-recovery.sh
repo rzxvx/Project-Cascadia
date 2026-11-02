@@ -20,6 +20,26 @@ if ! printf '%s\n' "$query" | awk '
     echo 'Expected iPhone12,1 / n104ap / 8030 / 04 in patched iBSS Recovery.' >&2
     exit 1
 fi
+# IBEC=1: a second stage first, as every iOS boot has one (iBoot, or iBEC for
+# restores) and surrealra1n's A12/A13 tethered boots do: the same patched
+# image tagged ibec (inputs/iBEC.ibec.img4: ipsw img4 create --input
+# inputs/iBSS.n104.20E247.sigpatched.raw --type ibec --im4m inputs/IM4M
+# --output inputs/iBEC.ibec.img4). Booting straight from iBSS may skip
+# platform setup that only the second stage does (research/gpu.md, G4).
+if [ "${IBEC:-0}" = 1 ]; then
+    irecovery -f inputs/iBEC.ibec.img4
+    tries=0
+    sleep 3
+    until irecovery -q 2>/dev/null | grep -q 'MODE: Recovery'; do
+        tries=$((tries + 1))
+        if [ "$tries" -ge 20 ]; then
+            echo 'iBEC did not come back in Recovery.' >&2
+            exit 1
+        fi
+        sleep 1
+    done
+    echo 'iBEC up.'
+fi
 irecovery -f inputs/DeviceTree.n104.rdtr.img4
 irecovery -c devicetree
 irecovery -f inputs/empty.rtsc.img4
