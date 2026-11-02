@@ -952,6 +952,21 @@ hardware). `kmem spmir SLAVE ADDR [LEN]` reads PMU registers on iOS
 through the spmi0 controller (STATUS +0, CMD +4, REPLY +8, extended-long
 reads of 8 bytes; gives up if the FIFOs are busy).
 
+iOS (`kmem spmir 0xf 0x4N00 0x10`, `a13/build/gpu/pmgr-diff/ios-pmu-
+bucks.txt`): **0x4100 is off on iOS too** -- a spare or shed phase, not the
+GPU's rail. Every other buck is on in both boots; four run at other, moving
+voltage codes on iOS (0x4000: 0x44 then 0x30, ours 0x68; 0x4200 0x3e vs
+0x5a; 0x4500 0x3b vs 0x70; 0x4b00 0xb0 vs 0x68 -- DVFS at work), 0x4300
+(0x4d) and 0x4400 (0x94) are the same. **The supply is on; the PMU is not
+the cause.**
+
+The second PMGR (pmgr reg 1, 0x23d200000; `a13/build/gpu/pmgr-diff/ios-
+mpmgr.txt`) reads fine on iOS: its PS block holds the AON "nub" devices
+(NUB_SPMI0-2 0x1400024f, NUB_AON 0x1f0002ff, NUB_GPIO 0xff, NUB_FABRIC
+0x1f00030f, NUB_SRAM 0x1000230f, DEBUG_USB 0x1000030f, DEBUG 0x2ff), its
+pwrgate group 0x23d29c000.. a dozen entries. Added to `pmgr-regions.txt`
+for the m1n1 side.
+
 **Do not bulk-read 0x23bc1c000** (PMGR reg 19, inside the PMP's ASC block):
 reading it through the proxy killed m1n1 (the USB link dropped).
 

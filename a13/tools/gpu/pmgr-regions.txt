@@ -26,3 +26,7 @@
 0x23b0dc000 0x100
 # DWI (pmgr device 50, the SoC's voltage interface to the PMU's bucks)
 0x23b200000 0x100
+# the second PMGR (pmgr reg 1, 0x23d200000): its pwrgate group (pwrgate-regs[0]) and ps block (ps-regs[0])
+0x23d29c000 0x300
+0x23d280000 0x200
+# PMU bucks are read with kmem spmir on iOS / --pmu-dump on m1n1
