@@ -91,6 +91,31 @@ the G12 ISA is from G13. Compile small Metal shaders on the phone, dump the
 binaries the iOS compiler makes, compare with Mesa's (asahi) output for the same
 NIR. Check: a triangle in memory, then on the screen.
 
+Steps (2026-11-03), each one checkable on its own:
+
+- **G5.0 the firmware stays up.** Second clean run, 30 s: Stats records
+  decoded (0x40 bytes on G12; m1n1's driver read 0x60 -- fixed in patch
+  0007), FWLog, the GPU's idle power-off and wake-up (Fender +0x1000 back
+  to 0 and up again, VOLMAN +0x38 / buck 0x4100 following).
+- **G5.1 an empty compute job.** WorkCommandCP on CL_0 with a shader that
+  is only `stop`: the smallest work that goes through the firmware's
+  queue, the CDM and the USC. m1n1's Python driver submits render work
+  only (render.py); compute after drm/asahi's compute.rs, control words
+  from Mesa's genxml (CDM_LAUNCH, USC). Check: the completion stamp moves,
+  no fault, no firmware panic.
+- **G5.2 a compute store.** The shader writes a constant (then its thread
+  id) to a buffer. First real G12 ISA test: compare `device_store`
+  encodings with the iOS compiler's output for the same kernel.
+- **G5.3 a clear-only render.** TA + 3D with no draws, the background
+  program writing a colour: tile buffers, ZLS, the render target in
+  memory.
+- **G5.4 the triangle.** VDM stream, vertex and fragment shaders,
+  `agx_1tri.py`'s path; then the framebuffer on the screen.
+
+Reference G12 machine code: Xcode's Metal toolchain (offline binary
+archives for iOS GPUs, if it has a G12 target) or the iOS compiler on the
+phone (MTLBinaryArchive from a jailbroken command-line tool).
+
 **G6 — kernel driver (35 %).** `drm/asahi` (Rust) with a G12/13.3 entry, in our
 Hoolock-based kernel (needs Rust support in the tree) — or a C port of the parts
 we need. Check: Mesa's `asahi` driver allocates, submits, waits.

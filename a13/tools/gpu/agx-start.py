@@ -3,7 +3,7 @@
 """G4 (a13/docs/research/gpu.md): start the A13's GPU firmware from the Mac
 through m1n1's proxy, with m1n1's own Python AGX driver.
 
-    M1N1DEVICE=/dev/cu.usbmodemXXXX agx-start.py [--boot-pmp|--pmp-dvfs|--pmp-doorbell] [--fender] [--gpu-trig] [--gfx-auto] [--poke] [--ios-pmgr [--fabric-auto]] [--fender-ios] [--fender-dump] [--dump-regions] [--pll-probe] [--try ADDR|=MASK|ADDR=VAL ...] [--pre ADDR=VAL ...] [--pmp-vote DOM:LVL,...] [--fender-init] [--pmu-dump] [--risky-dump] [--volman-gpu] [--gfx-cycle] [--gfx-off SECS] [--gfx-reset] [SECONDS]
+    M1N1DEVICE=/dev/cu.usbmodemXXXX agx-start.py [--boot-pmp|--pmp-dvfs|--pmp-doorbell] [--fender] [--gpu-trig] [--gfx-auto] [--poke] [--ios-pmgr [--fabric-auto]] [--fender-ios] [--fender-dump] [--dump-regions] [--pll-probe] [--try ADDR|=MASK|ADDR=VAL ...] [--pre ADDR=VAL ...] [--pmp-vote DOM:LVL,...] [--fender-init] [--pmu-dump] [--risky-dump] [--volman-gpu] [--gfx-cycle] [--gfx-off SECS] [--gfx-reset] [--watch] [SECONDS]
 
 The phone runs `a13/cascadia boot proxy` (m1n1 alone; iBoot has loaded the
 GPU firmware: G3). Needs a13/build/m1n1 with patch 0007 (T8030 / G12) and the
@@ -103,6 +103,11 @@ pmgr_reset_device: set bit 10, set bit 31, 10 us, clear both).
 (0x204d80000, 0x5000), the GPU-block windows iOS has full of settings while
 the GPU is on (kmem agxr), into pmgr-diff/proxy-{gmgifaf,metrology}.txt.
 With the GPU off these may not answer (an SError would end m1n1).
+--watch: G5.0, the firmware left running: Stats records decoded (0x40
+bytes on G12) and, every 0.5 s, PMGR GFX's power state, Fender +0x1000 /
++0x1018, VOLMAN +0x38 and (with --volman-gpu) PMU buck 0x4100, printed when
+they change -- the GPU's idle power-off and its wake-up. Fender is read only
+while GFX is on (reading it with GFX off hung m1n1).
 """
 import os
 import sys
@@ -168,6 +173,7 @@ pmu_dump = "--pmu-dump" in sys.argv[1:]
 risky_dump = "--risky-dump" in sys.argv[1:]
 gfx_cycle = "--gfx-cycle" in argv
 volman_gpu = "--volman-gpu" in argv
+watch = "--watch" in argv
 
 gfx_reset = "--gfx-reset" in sys.argv[1:]
 gfx_auto = gfx_auto or ios_pmgr
@@ -526,15 +532,53 @@ if not poke:
     AGX.poke_sgx = lambda self: setattr(self, "sgx_base", self.sgx_dev.get_reg(0)[0])
 agx = AGX(u)
 agx.verbose = 10
+if watch:
+    from m1n1.fw.agx.channels import StatsMsg
+
+    def stats_message(msg, _ch=None):
+        try:
+            print(f"[Stats] {StatsMsg.parse(msg)}", flush=True)
+        except Exception:
+            print(f"[Stats] {msg.hex()}", flush=True)
+    agx.show_stats = True
+
+WATCH_LAST = [None]
+
+
+def watch_sample():
+    gfx = p.read32(PS["GFX"])
+    vals = [gfx]
+    if (gfx >> 4) & 0xf == 0xf:
+        vals += [p.read32(FENDER + 0x1000), p.read32(FENDER + 0x1018)]
+    else:
+        vals += [None, None]
+    vals.append(p.read32(VOLMAN + 0x38))
+    if volman_gpu:
+        from m1n1.hw.spmi import SPMI
+        vals.append(SPMI(u, "/arm-io/spmi0").read_extl(0xf, 0x4100, 2).hex(" "))
+    if vals != WATCH_LAST[0]:
+        WATCH_LAST[0] = vals
+        f = "off" if vals[1] is None else f"+0x1000={vals[1]:#x} +0x1018={vals[2]:#x}"
+        b = f" buck 0x4100 {vals[4]}" if volman_gpu else ""
+        print(f"[watch {time.time() - agx.start_time:8.3f}] GFX ps {gfx:#x} Fender {f} VOLMAN +0x38={vals[3]:#x}{b}", flush=True)
+
+
 try:
     agx.start()
+    if watch:
+        agx.ch.stats.handle_message = lambda msg: stats_message(msg.value if hasattr(msg, "value") else msg)
     end = time.time() + seconds
+    next_sample = 0
     while time.time() < end:
         agx.work()
         if pmp_asc:
             pmp_asc.work()
         if fender:
             fender_ack()
+        if watch and time.time() >= next_sample:
+            next_sample = time.time() + 0.5
+            agx.poll_channels()
+            watch_sample()
     fender_regs("after the GPU's request")
     for a, m, orr in tries:
         if not p.read32(FENDER + 0x1000) & 0x10:
