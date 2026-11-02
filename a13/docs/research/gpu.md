@@ -119,6 +119,28 @@ The iOS compiler on the phone (MTLBinaryArchive) is the fallback.
 
 ## G5 results (2026-11-03)
 
+**G5.0, first run** (`agx-start-38.log`, fresh proxy boot, `--volman-gpu
+--fender-init --watch 30`). G4 repeats: Fender 1 / step 5, VOLMAN +0x38
+0x013a3a3a, buck 0x4100 `09 3a`, initdata / DC_Init / DC_UpdateIdleTS,
+DevCtrl read pointer 2. Stats records decode at 0x40 bytes: five "FW
+active" records (False, True, False, True, False) by 0.76 s, then nothing
+for 30 s. **The GPU never powered down**: GFX, Fender, VOLMAN and the buck
+unchanged for the whole run and still 1.5 min later; the crash buffer
+untouched (0xefefefef filler). initdata has iOS-like delays
+(idle_to_off 2 ms, fender_idle_to_off 40 ms) and Fender +0x1010 (host
+power management) was 0, +0x1014 = 2 unacknowledged -- the firmware went
+idle while PM was off.
+
+Afterwards on the same session, through a bare proxy connection (no
+`m1n1.setup`): +0x1010 |= 1 and +0x1014 acknowledged -> no change in 10 s
+(the firmware's idle decision had passed). **The host can cycle the GPU
+itself**: +0x1000 = 0x10 -> state 0, step 0, VOLMAN +0x38 = 0x01000000
+(code 0, still under hardware), +0x1014 = 1, in under 1 ms; +0x1000 =
+0x11 -> state 1, step 5, +0x38 0x013a3a3a, +0x1014 = 2; repeatable. So
++0x1014 bit 1 = powered up, bit 0 = powered down, and the rail follows
+Fender both ways. Next run: `--fender` as well (PM on before the firmware
+starts, acks in the loop), to see the firmware power the GPU down itself.
+
 **Offline G12 compiler.** Xcode's Metal Toolchain (`xcodebuild
 -downloadComponent MetalToolchain`, 27A5228f) has `metal-tt` and the
 translator `applegpu-nt`; `applegpu-nt -available-archs ios 16.4` lists
