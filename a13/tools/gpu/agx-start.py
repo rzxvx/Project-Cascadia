@@ -432,7 +432,9 @@ if gfx_cycle:
     print(f"[agx-start] GFX ps before cycle {v:#x}", flush=True)
     p.write32(g, (v & ~((1 << 28) | 0xf)) | 0x0)
     print(f"[agx-start] GFX ps after target 0: {ps_wait(g, 0):#x}", flush=True)
-    fender_regs("with GFX off (reads may be 0 or stale)")
+    # nothing in the GPU block answers now: a read of Fender with GFX off
+    # was an SError that hung m1n1 (2026-11-02)
+    time.sleep(0.05)
     v = p.read32(g)
     p.write32(g, (v & ~0xf) | 0xf)
     print(f"[agx-start] GFX ps after target f: {ps_wait(g, 0xf):#x}", flush=True)

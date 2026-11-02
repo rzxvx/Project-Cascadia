@@ -1157,6 +1157,10 @@ the state iBoot's DFU path left (with the GPU firmware loaded).
 starts; with `--fender-init` the host's own power-up request follows at
 once, so Fender's answer shows even if the cycle upsets gfx-asc.
 
+First try (`agx-start-28.log`): GFX goes off (0x1f0000ff -> 0x0f000300,
+actual 0, was-power/clock-gated set); reading Fender then hung m1n1 (the
+GPU block does not answer with GFX off -- the cycle now does not read it).
+
 **Do not bulk-read 0x23bc1c000** (PMGR reg 19, inside the PMP's ASC block):
 reading it through the proxy killed m1n1 (the USB link dropped).
 
