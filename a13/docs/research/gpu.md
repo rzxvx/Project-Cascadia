@@ -1064,6 +1064,24 @@ its __DATA, in SRAM (0x23b500000 = VA 0x1000000): the GPU's vote slots
 PMP's whole __DATA (0x23b52a000, 0x1d000) on iOS and on ours and compare
 (added to `pmgr-regions.txt`).
 
+**The PMP's __DATA on iOS** (`kmem mmio`, all of it readable;
+`a13/build/gpu/pmgr-diff/ios-pmp-data.txt`): state 0x1046018 = 1; the
+device table (0x1045050..) is byte for byte the static image's (the GPU's
+thresholds +0x2a..+0x2e are 0 on iOS too); **only ISP (slot 4) has a
+doorbell registered (n 0x21) -- the GPU has none on iOS**; the GPU's vote
+slots hold a per-perf-state table, SOC 0 0 1 2 2 2 2 and DCS the same
+(words +4..+0x18 -- the `pm-gpu-constraint-p1..p6-soc/dcs` settings the
+PMP lists in its shared memory), not what command 0xf writes (one level in
+all ten words). So on iOS the PMP plays no part in powering the GPU up
+either; the constraints only matter once the GPU changes performance
+states.
+
+The PMGR's apply step (fn 0xfffffff0091be3d8), for `no_ps` devices
+(flag bit 4), touches no PS register: it signals a per-device "event"
+indexed by a byte of its device record (+0x19; GFX-SGX's looks zero, and
+zero is skipped). So iOS's clock-gate call for GFX-SGX comes down to GFX
+(parent) on -- ours is on -- plus the PMP notice for GFX.
+
 **Do not bulk-read 0x23bc1c000** (PMGR reg 19, inside the PMP's ASC block):
 reading it through the proxy killed m1n1 (the USB link dropped).
 
