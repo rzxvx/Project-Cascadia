@@ -24,3 +24,5 @@
 0x23b0c8000 0x100
 0x23b0d4000 0x100
 0x23b0dc000 0x100
+# DWI (pmgr device 50, the SoC's voltage interface to the PMU's bucks)
+0x23b200000 0x100

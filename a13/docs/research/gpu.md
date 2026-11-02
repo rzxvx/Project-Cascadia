@@ -868,6 +868,22 @@ register map is not in the ADT) or something the PMU/SPMI side does for
 GPU power-up. The PMP's telemetry table names GPU [V]/[T]/[I] and
 GPU_SRAM [I] (shmem +0x6070..; the values live elsewhere).
 
+**The GPU's supply, what is known** (20E247): iOS's kernel does not switch
+bucks for the GPU. `com.apple.driver.AppleSPMIPMU` / `AppleARMPMU` deal with
+battery, RTC, LPEM, AAPF; the ADT's `spmi-pmu` (`pmu,avus`, `has-fw 1`) lists
+fault names and PTMU regions, no bucks. The SoC's fast voltage path to the
+PMU is **DWI** (`/arm-io/dwi`, `dwi,t8030`, 0x23b200000, PMGR device 50,
+on in both boots, PS 0xff): `com.apple.driver.AppleS8000DWI` reads
+`dwi-version`, `nclk-div`, `polarity-config`, `lockout-us`, `str-delay`
+(and `soc-buck`, `slave-select`, `voltages-buck%x`, absent on the A13) and
+writes three registers at start and on wake (+0x0, +0xd0, +0x80, from its
+fields +0xb0/+0xb4/+0xbc); it exports `AppleS8000DWIVoltageFunction` and a
+backlight function, but in the A13's ADT only `/backlight`'s
+`function-backlight_update` points at DWI (phandle 40). The GPU's voltage
+moves are then hardware (PMGR's GFX perf / Fender -> DWI or SPMI -> PMU),
+set up by iBoot or the PMU's own firmware. DWI +0x0..+0x100 is added to
+`pmgr-regions.txt`, for the next iOS/m1n1 pair of dumps.
+
 **Do not bulk-read 0x23bc1c000** (PMGR reg 19, inside the PMP's ASC block):
 reading it through the proxy killed m1n1 (the USB link dropped).
 
