@@ -680,6 +680,16 @@ auto before the GPU starts; if Fender still waits, AUTO_ENABLE on the
 fabric/memory domains (MCC, DCS0-3, SMX, IMX, RMX, MMX, SBR, PMS_BUSIF,
 PMS, PMS_SRAM, PMP) with the request pending.
 
+Tried (proxy, `agx-start-14.log`): 0x23b09c000 takes 0x80000000; GFX auto;
+Fender 0x11. Step 2: the fabric domains go into auto and flip by themselves
+(DCS0 0x1400024f, MMX 0x14000340, RMX 0x1000030f, as on iOS); Fender still
+0x11 after 5 s more, and m1n1's USB was gone after the session (step 2 is
+now `--fabric-auto`, opt-in). **Neither pwrgate +0 nor auto-PM is what
+Fender waits on.** Next block to compare: PMGR perf-regs (GFX device
+perf_idx 30 and power domain GFX perf_idx 71 in perf block 0 =
+0x23b0b4000; blocks 2/3 at 0x23b0fc000/0x23b0f8000): clocks and DVFM;
+added to `pmgr-regions.txt`.
+
 **Do not bulk-read 0x23bc1c000** (PMGR reg 19, inside the PMP's ASC block):
 reading it through the proxy killed m1n1 (the USB link dropped).
 

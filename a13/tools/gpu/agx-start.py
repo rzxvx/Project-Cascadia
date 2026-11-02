@@ -3,7 +3,7 @@
 """G4 (a13/docs/research/gpu.md): start the A13's GPU firmware from the Mac
 through m1n1's proxy, with m1n1's own Python AGX driver.
 
-    M1N1DEVICE=/dev/cu.usbmodemXXXX agx-start.py [--boot-pmp|--pmp-dvfs|--pmp-doorbell] [--fender] [--gpu-trig] [--gfx-auto] [--poke] [--ios-pmgr] [SECONDS]
+    M1N1DEVICE=/dev/cu.usbmodemXXXX agx-start.py [--boot-pmp|--pmp-dvfs|--pmp-doorbell] [--fender] [--gpu-trig] [--gfx-auto] [--poke] [--ios-pmgr [--fabric-auto]] [SECONDS]
 
 The phone runs `a13/cascadia boot proxy` (m1n1 alone; iBoot has loaded the
 GPU firmware: G3). Needs a13/build/m1n1 with patch 0007 (T8030 / G12) and the
@@ -38,13 +38,13 @@ GPU's DVFM trigger control, PMGR reg 0 + 0xfd000 (GPU_TRIG_CTL) |= gpu-trig
 +0x14000 at 0 (+0x14004 = 1). Fender's +0x1000 and +0x14000 pages (nonzero
 words) are printed before the GPU starts and after its request, to compare
 with iOS's (gpu.md).
---ios-pmgr: PMGR as the iOS diff (gpu.md, a13/build/gpu/pmgr-diff) has it, in
-two steps: before the GPU starts, the pwrgate block's first word 0x23b09c000
-|= 0x80000000 (0 under m1n1) and GFX AUTO_ENABLE; if Fender is still 0x11
-after SECONDS, AUTO_ENABLE on the fabric/memory domains iOS runs in auto
-(MCC, DCS0-3, SMX, IMX, RMX, MMX, SBR, PMS_BUSIF, PMS, PMS_SRAM, PMP) while
-the request is pending, then SECONDS more. USB, SIO and the rest are left
-alone (the proxy needs them).
+--ios-pmgr: PMGR as the iOS diff (gpu.md, a13/build/gpu/pmgr-diff) has it:
+before the GPU starts, the pwrgate block's first word 0x23b09c000 |=
+0x80000000 (0 under m1n1) and GFX AUTO_ENABLE. With --fabric-auto also,
+if Fender is still 0x11 after SECONDS, AUTO_ENABLE on the fabric/memory
+domains iOS runs in auto (MCC, DCS0-3, SMX, IMX, RMX, MMX, SBR, PMS_BUSIF,
+PMS, PMS_SRAM, PMP) while the request is pending, then SECONDS more: it did
+not move Fender, and m1n1's USB was gone after the session (2026-11-02).
 """
 import os
 import sys
@@ -72,6 +72,7 @@ gpu_trig = "--gpu-trig" in sys.argv[1:]
 gfx_auto = "--gfx-auto" in sys.argv[1:]
 poke = "--poke" in sys.argv[1:]
 ios_pmgr = "--ios-pmgr" in sys.argv[1:]
+fabric = "--fabric-auto" in sys.argv[1:]
 gfx_auto = gfx_auto or ios_pmgr
 seconds = float(args[0]) if args else 10.0
 
@@ -275,7 +276,7 @@ try:
         if fender:
             fender_ack()
     fender_regs("after the GPU's request")
-    if ios_pmgr and p.read32(FENDER + 0x1000) & 0x10:
+    if ios_pmgr and fabric and p.read32(FENDER + 0x1000) & 0x10:
         print(f"[agx-start] pwrgate +0: {p.read32(PWRGATE0):#x}; step 2: fabric AUTO_ENABLE")
         fabric_auto()
         end = time.time() + seconds
