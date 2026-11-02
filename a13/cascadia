@@ -227,9 +227,10 @@ cmd_pack() {
 cmd_boot() {
     img=m1n1-linux.rkrn.img4
     [ "${1:-}" = proxy ] && img=m1n1-proxy.rkrn.img4
-    [ -f "boot/out/$img" ] || fail "no boot/out/$img -- run: a13/cascadia pack"
+    # ios: the GPU bisect, iOS's kernel by this path (boot-from-recovery.sh)
+    [ "${1:-}" = ios ] || [ -f "boot/out/$img" ] || fail "no boot/out/$img -- run: a13/cascadia pack"
 
-    IBSS="boot/inputs/iBSS.n104.20E247.sigpatched.raw"
+    IBSS="${IBSS:-boot/inputs/iBSS.n104.20E247.sigpatched.raw}"
     [ -f "$IBSS" ] || fail "no $IBSS -- run: a13/cascadia inputs"
 
     # Find usbliter8ctl

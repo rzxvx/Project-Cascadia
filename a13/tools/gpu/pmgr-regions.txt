@@ -34,3 +34,4 @@
 0x23b52a000 0x1d000
 # the GPU's fabric bridge (pmgr reg 26+7, bridge-settings-7 in the ADT; iBoot applies bridge settings, m1n1 does not)
 0x205000000 0x1000
+0x23b0a0000 0x40

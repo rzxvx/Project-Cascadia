@@ -3,6 +3,11 @@
 #   boot-from-recovery.sh          Linux
 #   boot-from-recovery.sh proxy    m1n1 alone: its proxy, for the Mac's
 #                                  proxyclient (the GPU work, research/gpu.md)
+#   boot-from-recovery.sh ios      iOS 16.4's own kernel by the same path (the
+#                                  GPU bisect, research/gpu.md): the root
+#                                  volume's trust cache and the stock
+#                                  kernelcache from IOS_DIR instead of the
+#                                  empty trust cache and m1n1
 set -eu
 cd "$(dirname "$0")"
 query=$(irecovery -q)
@@ -40,9 +45,28 @@ if [ "${IBEC:-0}" = 1 ]; then
     done
     echo 'iBEC up.'
 fi
-irecovery -f inputs/DeviceTree.n104.rdtr.img4
+IOS_DIR=${IOS_DIR:-../build/gpu/ios-recovery}
+# ios: the same DeviceTree payload, wrapped (like the kernel and the trust
+# cache) in the phone's own apticket.der: iBoot derives boot-manifest-hash
+# from it, and iOS mounts the snapshot com.apple.os.update-<that hash>
+if [ "${1:-}" = ios ]; then
+    irecovery -f "$IOS_DIR/devicetree.rdtr.img4"
+else
+    irecovery -f inputs/DeviceTree.n104.rdtr.img4
+fi
 irecovery -c devicetree
-irecovery -f inputs/empty.rtsc.img4
+# ios: the phone's own SEP firmware (Preboot /usr/standalone/firmware, the
+# one iBoot loads in a local boot; SEP's ROM checks it against apticket.der,
+# so it is sent as it is), without which the Data volume stays locked
+if [ "${1:-}" = ios ] && [ -f "$IOS_DIR/firmware/sep-firmware.img4" ]; then
+    irecovery -f "$IOS_DIR/firmware/sep-firmware.img4"
+    irecovery -c rsepfirmware || echo 'rsepfirmware failed, going on' >&2
+fi
+if [ "${1:-}" = ios ]; then
+    irecovery -f "$IOS_DIR/rootfs.rtsc.img4"
+else
+    irecovery -f inputs/empty.rtsc.img4
+fi
 irecovery -c firmware
 # the GPU firmware (gfxf), loaded and set up by iBoot as for iOS: segments,
 # its RTKit boot arguments, gfx-asc segment-ranges + pre-loaded in the ADT;
@@ -53,6 +77,14 @@ for fw in inputs/gfx.gfxf.img4 inputs/pmp.pmpf.img4; do
     irecovery -f "$fw"
     irecovery -c firmware
 done
+if [ "${1:-}" = ios ]; then
+    # the stock kernel with APFS's root-hash requirement off (mov w20, #1
+    # -> #0 at file offset 0x313909c of the raw 20E247 kernelcache)
+    irecovery -f "$IOS_DIR/kernelcache.patched.rkrn.img4"
+    irecovery -c bootx
+    echo 'bootx submitted: iOS kernel. Watch the screen / serial console.'
+    exit 0
+fi
 if [ "${1:-}" = proxy ]; then
     irecovery -f out/m1n1-proxy.rkrn.img4
     irecovery -c bootx

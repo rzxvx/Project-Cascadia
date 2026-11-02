@@ -3,7 +3,7 @@
 """G4 (a13/docs/research/gpu.md): start the A13's GPU firmware from the Mac
 through m1n1's proxy, with m1n1's own Python AGX driver.
 
-    M1N1DEVICE=/dev/cu.usbmodemXXXX agx-start.py [--boot-pmp|--pmp-dvfs|--pmp-doorbell] [--fender] [--gpu-trig] [--gfx-auto] [--poke] [--ios-pmgr [--fabric-auto]] [--fender-ios] [--fender-dump] [--dump-regions] [--pll-probe] [--try ADDR|=MASK|ADDR=VAL ...] [--pmp-vote DOM:LVL,...] [--fender-init] [--pmu-dump] [--risky-dump] [--gfx-cycle] [--gfx-reset] [SECONDS]
+    M1N1DEVICE=/dev/cu.usbmodemXXXX agx-start.py [--boot-pmp|--pmp-dvfs|--pmp-doorbell] [--fender] [--gpu-trig] [--gfx-auto] [--poke] [--ios-pmgr [--fabric-auto]] [--fender-ios] [--fender-dump] [--dump-regions] [--pll-probe] [--try ADDR|=MASK|ADDR=VAL ...] [--pre ADDR=VAL ...] [--pmp-vote DOM:LVL,...] [--fender-init] [--pmu-dump] [--risky-dump] [--volman-gpu] [--gfx-cycle] [--gfx-off SECS] [--gfx-reset] [SECONDS]
 
 The phone runs `a13/cascadia boot proxy` (m1n1 alone; iBoot has loaded the
 GPU firmware: G3). Needs a13/build/m1n1 with patch 0007 (T8030 / G12) and the
@@ -83,6 +83,20 @@ PMGR asked the PMU for the GPU's voltage, a buck's voltage register moves.
 on around its re-init, and our GFX was only ever switched on from whatever
 iBoot (DFU path, GPU firmware loaded) left; a power cycle resets the GPU
 block, Fender included. Fender's pages are printed after it.
+--gfx-off SECS: the cycle with GFX off for SECS (default 0.05) and AUTO_ENABLE
+cleared while off, as iOS has it: ApplePMGR's start writes GFX_PS = MANUAL 0,
+AUTO_PM_EN off (switching off the GFX iBoot left on), and GFX stays off for
+the seconds until AGX starts (boot log with pmgr-debug, gpu.md).
+--volman-gpu: hand the GPU's power channel to VOLMAN's hardware control the
+way XNU does at boot (AppleT8030PMGR fn 0xfffffff009463e6c clears bit 0,
+manual, of the controls +0x4..+0x1c; control +0x4 + 4i pairs with channel
++0x28 + 4i): control +0x14 for channel +0x38, the one the GPU's power-up
+request writes (code 0x3a) and which drives PMU buck 0x4100. iBoot leaves
+3, iOS has 2. XNU never writes +0x38 itself; the other channels stay as
+iBoot left them.
+--pre ADDR=VAL: written after the GFX cycle/reset, before --fender-init and
+the firmware (--try writes only while the request is pending), e.g.
+Fender +0x1401c (0x64 here, iOS 0 idle / 1 on, kept through GFX off).
 --gfx-reset: then pulse GFX's RESET + DEV_DISABLE bits (m1n1's
 pmgr_reset_device: set bit 10, set bit 31, 10 us, clear both).
 --risky-dump: last of all, read GMGIFAF (0x204d71000, 0x1000) and Metrology
@@ -123,6 +137,18 @@ if "--pmp-vote" in argv:
     i = argv.index("--pmp-vote")
     votes = [tuple(int(x, 0) for x in v.split(":")) for v in argv[i + 1].split(",")]
     del argv[i:i + 2]
+pres = []
+while "--pre" in argv:
+    i = argv.index("--pre")
+    a, v = argv[i + 1].split("=")
+    pres.append((int(a, 0), int(v, 0)))
+    del argv[i:i + 2]
+gfx_off = 0.05
+if "--gfx-off" in argv:
+    i = argv.index("--gfx-off")
+    gfx_off = float(argv[i + 1])
+    del argv[i:i + 2]
+    argv.append("--gfx-cycle")
 args = [a for a in argv if not a.startswith("--")]
 pmp_dvfs = "--pmp-dvfs" in sys.argv[1:]
 pmp_doorbell = "--pmp-doorbell" in sys.argv[1:]
@@ -140,7 +166,9 @@ pll_probe = "--pll-probe" in sys.argv[1:]
 fender_init = "--fender-init" in sys.argv[1:]
 pmu_dump = "--pmu-dump" in sys.argv[1:]
 risky_dump = "--risky-dump" in sys.argv[1:]
-gfx_cycle = "--gfx-cycle" in sys.argv[1:]
+gfx_cycle = "--gfx-cycle" in argv
+volman_gpu = "--volman-gpu" in argv
+
 gfx_reset = "--gfx-reset" in sys.argv[1:]
 gfx_auto = gfx_auto or ios_pmgr
 seconds = float(args[0]) if args else 10.0
@@ -254,6 +282,7 @@ except Exception as e:
     print(f"[agx-start] PMP: {e!r}")
 
 FENDER = 0x204d00000
+VOLMAN = 0x23b0a0000     # PMGR reg 0 + 0xa0000 (AppleT8030PMGR PMGR_VOLMAN_*)
 
 
 def fender_regs(when):
@@ -261,6 +290,19 @@ def fender_regs(when):
     # +0x1014 interrupt status, +0x1018
     print(f"[agx-start] Fender {when}: " + " ".join(
         f"+{o:#x}={p.read32(FENDER + o):#x}" for o in (0x1000, 0x1010, 0x1014, 0x1018)))
+    # the PMGR's voltage manager: controls +0x4..+0x1c (bit 0 manual; iOS
+    # +0x4..+0x14 2, +0x18/+0x1c 0), channels +0x28..+0x40 (bit 24 on, bit
+    # 31 busy, voltage codes); +0x38 drives PMU buck 0x4100, which iOS keeps
+    # at code 0 (off) with the GPU idle and at 0x31/0x3a when it is on
+    # (ios-rails-gpu-005902.txt): the GPU's rail
+    print(f"[agx-start] VOLMAN {when}: " + " ".join(
+        f"+{o:#x}={p.read32(VOLMAN + o):#x}" for o in range(0, 0x48, 4)))
+    if volman_gpu:
+        # PMU (spmi0 slave 0xf) buck 0x4100: +0 on, +1 voltage code; iOS reads
+        # 09 31 with the GPU on, 00 00 off
+        from m1n1.hw.spmi import SPMI
+        b = SPMI(u, "/arm-io/spmi0").read_extl(0xf, 0x4100, 8)
+        print(f"[agx-start] PMU buck 0x4100 {when}: {b.hex(' ')}", flush=True)
 
 
 # PMGR trigger controls (AppleT8030PMGR register groups 10, 11, 13 and 15,
@@ -434,8 +476,10 @@ if gfx_cycle:
     print(f"[agx-start] GFX ps after target 0: {ps_wait(g, 0):#x}", flush=True)
     # nothing in the GPU block answers now: a read of Fender with GFX off
     # was an SError that hung m1n1 (2026-11-02)
-    time.sleep(0.05)
+    print(f"[agx-start] GFX off for {gfx_off} s", flush=True)
+    time.sleep(gfx_off)
     v = p.read32(g)
+    print(f"[agx-start] GFX ps before target f: {v:#x}", flush=True)
     p.write32(g, (v & ~0xf) | 0xf)
     print(f"[agx-start] GFX ps after target f: {ps_wait(g, 0xf):#x}", flush=True)
     if gfx_auto:
@@ -451,6 +495,17 @@ if gfx_reset:
     print(f"[agx-start] GFX ps after reset pulse: {p.read32(g):#x}", flush=True)
     fender_regs("after the GFX reset pulse")
     fender_pages("after the GFX reset pulse")
+
+if volman_gpu:
+    p.clear32(VOLMAN + 0x14, 1)
+    fender_regs("after VOLMAN's GPU channel went to the hardware")
+
+for a, v in pres:
+    old = p.read32(a)
+    p.write32(a, v)
+    print(f"[agx-start] pre {a:#x}: {old:#x} -> {p.read32(a):#x}", flush=True)
+if pres:
+    fender_regs("after the --pre writes")
 
 if fender_init:
     # AGXG12P 20E247 fn 0xfffffff0084f1b54: unless a platform flag says
