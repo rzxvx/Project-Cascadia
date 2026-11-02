@@ -890,6 +890,26 @@ DWI on iOS (`a13/build/gpu/pmgr-diff/ios-dwi.txt`): +0x0 1, +0x4 0x78, +0x8 1,
 +0xd0..+0xdc 0x2ee00, +0xe0..+0xfc 0x40. **Reading on from 0x23b200100
 stalled iOS** (a hang, not a reset); kmem refuses DWI past +0x100.
 
+**DWI, iOS vs m1n1** (`agx-start-21.log`, `--dump-regions`; same before
+the GPU and after its request):
+
+| DWI | iOS | m1n1 |
+|---|---|---|
+| +0x4 | 0x78 | 0x3c |
+| **+0x10** | **0x800000ff** | **0** |
+| +0x20 | 0x200 | 0 |
+| +0x84 | 0xa00004e4 | 0xa00005ad (backlight level, it seems) |
+| **+0xd0..+0xdc** | **0x2ee00 each** | **0** |
+
+The rest (+0x0 1, +0x8 1, +0xc 2, +0x60.. -1, +0x80 0x1070, +0x8c.. 1,
++0xa0/+0xc0 0x70, +0xe0.. 0x40) is the same. iOS has a channel enabled
+with a mask of 0xff at +0x10 (the driver logs a "buck mask") and per-channel
+timings at +0xd0; m1n1's boot has them off -- **the SoC's voltage path to
+the PMU may be closed**, which would leave Fender's step 0x10 (a voltage
+wait, 12-95 us on iOS) waiting forever. Test: with the request pending,
+`--try 0x23b2000d0=0x2ee00 ... --try 0x23b200010=0x800000ff --try
+0x23b200020=0x200 --try 0x23b200004=0x78` (`--try` now takes ADDR=VAL).
+
 **Do not bulk-read 0x23bc1c000** (PMGR reg 19, inside the PMP's ASC block):
 reading it through the proxy killed m1n1 (the USB link dropped).
 
