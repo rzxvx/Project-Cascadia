@@ -564,6 +564,12 @@ static volatile uint32_t *mmio_map(uint64_t pa, uint64_t len)
 		fprintf(stderr, "kmem: 0x%llx+0x%llx touches PMGR 0x23b010000-0x23b03ffff (took iOS down once)\n", pa, len);
 		exit(1);
 	}
+	/* DWI past its first 0x100 bytes: reading 0x23b200100.. stalled iOS
+	 * (no reset, a hang; 2026-11-02) */
+	if (pa < 0x23b204000ULL && 0x23b200100ULL < pa + len) {
+		fprintf(stderr, "kmem: 0x%llx+0x%llx touches DWI past +0x100 (stalled iOS once)\n", pa, len);
+		exit(1);
+	}
 	uint64_t pg = pa & ~(uint64_t)(CHUNK - 1);
 	uint64_t sz = (pa + len - pg + CHUNK - 1) & ~(uint64_t)(CHUNK - 1);
 	void *u = NULL;

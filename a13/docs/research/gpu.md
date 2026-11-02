@@ -884,6 +884,12 @@ moves are then hardware (PMGR's GFX perf / Fender -> DWI or SPMI -> PMU),
 set up by iBoot or the PMU's own firmware. DWI +0x0..+0x100 is added to
 `pmgr-regions.txt`, for the next iOS/m1n1 pair of dumps.
 
+DWI on iOS (`a13/build/gpu/pmgr-diff/ios-dwi.txt`): +0x0 1, +0x4 0x78, +0x8 1,
++0xc 2, +0x10 0x800000ff, +0x20 0x200, +0x60..+0x7c 0xffffffff, +0x80
+0x1070, +0x84 0xa00004e4, +0x8c..+0x9c 1, +0xa0 0x70, +0xc0 0x70,
++0xd0..+0xdc 0x2ee00, +0xe0..+0xfc 0x40. **Reading on from 0x23b200100
+stalled iOS** (a hang, not a reset); kmem refuses DWI past +0x100.
+
 **Do not bulk-read 0x23bc1c000** (PMGR reg 19, inside the PMP's ASC block):
 reading it through the proxy killed m1n1 (the USB link dropped).
 
