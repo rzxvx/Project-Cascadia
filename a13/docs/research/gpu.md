@@ -1094,6 +1094,24 @@ the GPU's rail; **with the screen on it took iOS down within seconds**
 (SPMI reads racing the kernel's own PMU traffic, most likely) -- with the
 screen off it ran (the GPU never woke).
 
+PMP __DATA, iOS vs ours (`agx-start-26.log`, `--dump-regions`): ~5400
+words differ, almost all heap (different allocation order) and the PMP's
+window table (iOS maps the register windows at 0xc0e..., m1n1's driver at
+0xc08...); nothing GPU-specific stands out. The sgx nub's `clock-ids`
+(<0x13b>) methods (AppleARMIODevice slots 0x548-0x560) are not called by
+AGXG12P or its RTBuddy (one PAC-diversifier hit was another object's
++0xa0). AGX's other gate calls (fns 0xfffffff0084cfea0, ...84d8904,
+...850f210, ...850f358) are power-down / query paths.
+
+**Status (2026-11-02, end of day):** everything outside the GPU block that
+could be read and compared matches iOS or was set like iOS without effect:
+PMGR (PS/auto, triggers, pwrgate, groups, perf counters, second PMGR),
+PLLs, DWI, PMU bucks, PMP (state, votes, doorbells -- iOS has none for the
+GPU), Fender's registers and its iOS driver's init writes, GMGIFAF, the
+boot stage. Fender's power sequencer still stops at step 0x10 even for the
+host's own request with no firmware running, and the RGX core then is
+unpowered. What step 0x10 waits for is not visible from outside the GPU.
+
 **Do not bulk-read 0x23bc1c000** (PMGR reg 19, inside the PMP's ASC block):
 reading it through the proxy killed m1n1 (the USB link dropped).
 
