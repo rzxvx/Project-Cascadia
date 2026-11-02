@@ -690,6 +690,24 @@ perf_idx 30 and power domain GFX perf_idx 71 in perf block 0 =
 0x23b0b4000; blocks 2/3 at 0x23b0fc000/0x23b0f8000): clocks and DVFM;
 added to `pmgr-regions.txt`.
 
+On iOS the perf blocks are pairs {1, a growing count} every 0x10 bytes
+(residency counters, it seems), nothing that gates a power-up.
+
+**Fender +0x1018 is the power sequencer's step** (iOS, `kmem mmiowatch`,
+apps opened): power-up 0 -> 2 -> **0x10** (~12-95 us) -> 5 (with +0x1000
+0x11 -> 0x01), power-down 6 -> 0; one wake went 2 -> 0xc instead. Ours
+stops at **step 0x10**. The pwrgate entries 0x23b09c180/190/1a0 flip on
+their own, not with Fender (not the GPU's gates). Whole of Fender on iOS
+(idle; `a13/build/gpu/pmgr-diff/ios-fender-{lo,hi}.txt`): +0x50 1, +0x5c
+0xc01, +0x64 1, +0x1100 0xe0000001, **+0x4000..+0x4510** (0x03001000,
+0x00090000, 0x00030c00, 0x000c0404, 0x00020202, 0x01320100, 0x00001311,
++0x4048 0xf, +0x404c 0x2f, +0x4060 2, +0x4080.. 0x5a 8 2 1 2 0x00204080
+0xe 0x00030101, +0x4200 0x10000, +0x4500 0xf, +0x4510 0x100), +0x8000 1,
++0x800c/+0x8010 0x003680d8, +0x8024 0x0023fffe, +0x14004 1, +0x18080..
+0xffff x16, +0x18100 1, +0x18110/+0x1811c -1, +0x18140 1, +0x18150/
++0x1815c -1. `agx-start.py` writes the same full dump under m1n1 before
+the GPU and after its request (`proxy-fender-{before,after}.txt`).
+
 **Do not bulk-read 0x23bc1c000** (PMGR reg 19, inside the PMP's ASC block):
 reading it through the proxy killed m1n1 (the USB link dropped).
 

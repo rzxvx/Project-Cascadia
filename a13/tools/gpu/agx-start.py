@@ -251,6 +251,24 @@ def fender_pages(when):
 
 fender_pages("before the GPU")
 
+DUMPS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../../build/gpu/pmgr-diff")
+
+
+def fender_full(tag):
+    # all of Fender (0x20000) in kmem mmio's format, for diffing with iOS's
+    # (a13/build/gpu/pmgr-diff/ios-fender-{lo,hi}.txt)
+    os.makedirs(DUMPS, exist_ok=True)
+    fn = os.path.join(DUMPS, f"proxy-fender-{tag}.txt")
+    with open(fn, "w") as f:
+        for o in range(0, 0x20000, 4):
+            v = p.read32(FENDER + o)
+            if v:
+                f.write(f"0x{FENDER + o:x} = 0x{v:08x}\n")
+    print(f"[agx-start] Fender dumped to {fn}")
+
+
+fender_full("before")
+
 
 def fender_ack():
     # G12::AGXFenderCommon (AGXG12P 20E247, fn 0xfffffff00851f7fc): write
@@ -288,6 +306,7 @@ try:
                 fender_ack()
         fender_regs("after fabric AUTO_ENABLE")
     fender_pages("after the GPU's request")
+    fender_full("after")
     trig_regs("after the GPU's request")
     print("[agx-start] DevCtrl read ptr:", agx.ch.devctrl.state.READ_PTR.val)
     if pmp_asc:
