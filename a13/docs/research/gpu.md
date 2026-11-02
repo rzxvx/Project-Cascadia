@@ -837,6 +837,24 @@ step 0x10 as before, PLLs and PMGR as before. **The second stage is not it**
 (as far as m1n1 can tell the boot is the same; nothing in the ADT says which
 stage booted it).
 
+**iOS's AGX driver powers the GPU up itself, once, at init** (AGXG12P
+20E247, fn 0xfffffff0084f1b54 -- the one that reads `model-slow`, `no-gpc`,
+`has-kf` from the sgx node; Fender's mapping through vtable +0x78):
+
+    if (!(platform flags & 8)) {          // global at 0xfffffff00a4fa0ca
+        Fender[+0x10000] = 0xffff0000;
+        Fender[+0x0]     = 0x40000000;
+    }
+    Fender[+0x1000] = 0x11;               // state 1, pending
+    while (Fender[+0x1000] & 0x10) ;      // busy-wait
+
+(0xfffffff0084f2340..2360; before it, two calls through the power object,
+vtable +0x568 (1, 0) and +0x570 (1, &out, 0).) A re-init path in the same
+function writes +0x1000 = 0x10 and waits likewise (power down). We never
+wrote +0x10000 or +0x0: both read 0 on idle iOS, so they look like
+triggers/masks, not state, which is why the dumps did not show them.
+`agx-start.py --fender-init` does the same before the firmware starts.
+
 **Do not bulk-read 0x23bc1c000** (PMGR reg 19, inside the PMP's ASC block):
 reading it through the proxy killed m1n1 (the USB link dropped).
 

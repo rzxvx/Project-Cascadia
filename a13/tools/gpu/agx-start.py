@@ -3,7 +3,7 @@
 """G4 (a13/docs/research/gpu.md): start the A13's GPU firmware from the Mac
 through m1n1's proxy, with m1n1's own Python AGX driver.
 
-    M1N1DEVICE=/dev/cu.usbmodemXXXX agx-start.py [--boot-pmp|--pmp-dvfs|--pmp-doorbell] [--fender] [--gpu-trig] [--gfx-auto] [--poke] [--ios-pmgr [--fabric-auto]] [--fender-ios] [--fender-dump] [--dump-regions] [--pll-probe] [--try ADDR|=MASK ...] [--pmp-vote DOM:LVL,...] [SECONDS]
+    M1N1DEVICE=/dev/cu.usbmodemXXXX agx-start.py [--boot-pmp|--pmp-dvfs|--pmp-doorbell] [--fender] [--gpu-trig] [--gfx-auto] [--poke] [--ios-pmgr [--fabric-auto]] [--fender-ios] [--fender-dump] [--dump-regions] [--pll-probe] [--try ADDR|=MASK ...] [--pmp-vote DOM:LVL,...] [--fender-init] [SECONDS]
 
 The phone runs `a13/cascadia boot proxy` (m1n1 alone; iBoot has loaded the
 GPU firmware: G3). Needs a13/build/m1n1 with patch 0007 (T8030 / G12) and the
@@ -68,6 +68,11 @@ LVL (0-2, the PMP's domains have 3) on rail/perf domain DOM (0 SOC, 1 DCS,
 2 DISP, 3 AVE; the GPU's entry takes votes on SOC and DCS only). M3 Pro's
 GPU needs the same kind of PMP vote (0x0020f50100000000) before its
 firmware can start (aurora-silicon/linux#358). No reply in this PMP version.
+--fender-init: what iOS's AGX driver does itself at init (AGXG12P 20E247,
+fn 0xfffffff0084f1b54, at 0xfffffff0084f2340): Fender +0x10000 = 0xffff0000,
++0x0 = 0x40000000, then +0x1000 = 0x11 and wait for bit 4 (pending) to
+clear -- the host powers the GPU up once before its firmware runs. Done here
+before the firmware starts, printing +0x1000/+0x1018 while it waits (1 s).
 """
 import os
 import sys
@@ -112,6 +117,7 @@ fender_ios = "--fender-ios" in sys.argv[1:]
 fender_dump = "--fender-dump" in sys.argv[1:]
 dump_regions = "--dump-regions" in sys.argv[1:]
 pll_probe = "--pll-probe" in sys.argv[1:]
+fender_init = "--fender-init" in sys.argv[1:]
 gfx_auto = gfx_auto or ios_pmgr
 seconds = float(args[0]) if args else 10.0
 
@@ -360,6 +366,20 @@ def fender_ack():
         p.write32(FENDER + 0x1014, st)
         print(f"[agx-start] Fender interrupt {st:#x} acked, +0x1000="
               f"{p.read32(FENDER + 0x1000):#x}")
+
+if fender_init:
+    # AGXG12P 20E247 fn 0xfffffff0084f1b54: unless a platform flag says
+    # otherwise, these two, then the power request, then a busy-wait
+    p.write32(FENDER + 0x10000, 0xffff0000)
+    p.write32(FENDER + 0x0, 0x40000000)
+    fender_regs("after +0x10000/+0x0 init writes")
+    p.write32(FENDER + 0x1000, 0x11)
+    end = time.time() + 1
+    while time.time() < end and p.read32(FENDER + 0x1000) & 0x10:
+        pass
+    fender_regs("after the host's own power-up request (iOS: 0x11 -> 0x01)")
+    print(f"[agx-start] Fender +0x0={p.read32(FENDER):#x} +0x10000={p.read32(FENDER + 0x10000):#x}",
+          flush=True)
 
 if not poke:
     # iOS never writes Fender +0x14000 (m1n1's M1 "Early init, needed?")
