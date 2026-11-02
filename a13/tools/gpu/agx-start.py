@@ -3,7 +3,7 @@
 """G4 (a13/docs/research/gpu.md): start the A13's GPU firmware from the Mac
 through m1n1's proxy, with m1n1's own Python AGX driver.
 
-    M1N1DEVICE=/dev/cu.usbmodemXXXX agx-start.py [--boot-pmp|--pmp-dvfs|--pmp-doorbell] [--fender] [--gpu-trig] [--gfx-auto] [--poke] [--ios-pmgr [--fabric-auto]] [--fender-ios] [--fender-dump] [--dump-regions] [SECONDS]
+    M1N1DEVICE=/dev/cu.usbmodemXXXX agx-start.py [--boot-pmp|--pmp-dvfs|--pmp-doorbell] [--fender] [--gpu-trig] [--gfx-auto] [--poke] [--ios-pmgr [--fabric-auto]] [--fender-ios] [--fender-dump] [--dump-regions] [--pll-probe] [SECONDS]
 
 The phone runs `a13/cascadia boot proxy` (m1n1 alone; iBoot has loaded the
 GPU firmware: G3). Needs a13/build/m1n1 with patch 0007 (T8030 / G12) and the
@@ -53,6 +53,11 @@ proxy-fender-{before,after}.txt (m1n1's USB was gone after the session that
 did this, maybe by chance).
 --dump-regions: the blocks of pmgr-regions.txt (as pmgr-dump.py) into
 a13/build/gpu/pmgr-diff/proxy-regions-{before,after}.txt.
+--pll-probe: read the PMGR PLL words one at a time: PLL0-3 (0x23b000000 +
+0x4000 * n, iOS: 0x80c80300, 0x80590100, 0x80320181, 0x803d0101) and then
+0x23b010000/14000/18000 (PLL4-6?), before the GPU and last of all after its
+request. On idle iOS a read from 0x23b010000 took the phone down: a PLL that
+is off may not answer, so this may end the proxy too.
 """
 import os
 import sys
@@ -84,6 +89,7 @@ fabric = "--fabric-auto" in sys.argv[1:]
 fender_ios = "--fender-ios" in sys.argv[1:]
 fender_dump = "--fender-dump" in sys.argv[1:]
 dump_regions = "--dump-regions" in sys.argv[1:]
+pll_probe = "--pll-probe" in sys.argv[1:]
 gfx_auto = gfx_auto or ios_pmgr
 seconds = float(args[0]) if args else 10.0
 
@@ -296,6 +302,17 @@ def regions(tag):
     print(f"[agx-start] regions dumped to {fn}")
 
 
+
+
+def plls(when):
+    for n in range(7):
+        a = 0x23b000000 + 0x4000 * n
+        print(f"[agx-start] PLL{n} {when} @ {a:#x}: " + " ".join(
+            f"{p.read32(a + o):#x}" for o in (0, 4, 8)), flush=True)
+
+
+if pll_probe:
+    plls("before the GPU")
 if fender_dump:
     fender_full("before")
 if dump_regions:
@@ -349,6 +366,8 @@ try:
         regions("after")
     trig_regs("after the GPU's request")
     print("[agx-start] DevCtrl read ptr:", agx.ch.devctrl.state.READ_PTR.val)
+    if pll_probe:
+        plls("after the GPU's request")
     if pmp_asc:
         pmp_asc.dart.show_error()
 except Exception as e:

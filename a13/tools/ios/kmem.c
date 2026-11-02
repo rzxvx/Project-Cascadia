@@ -555,6 +555,13 @@ static volatile uint32_t *mmio_map(uint64_t pa, uint64_t len)
 		fprintf(stderr, "kmem: 0x%llx+0x%llx touches PMGR 0x23bc1c000+0x40000 (killed m1n1 once)\n", pa, len);
 		exit(1);
 	}
+	/* PMGR reg 0 past the first four PLLs (0x23b000000-0x23b00ffff read
+	 * fine): a 64 KiB read from 0x23b010000 took iOS down (2026-11-02);
+	 * PLLs that are off may not answer */
+	if (pa < 0x23b040000ULL && 0x23b010000ULL < pa + len) {
+		fprintf(stderr, "kmem: 0x%llx+0x%llx touches PMGR 0x23b010000-0x23b03ffff (took iOS down once)\n", pa, len);
+		exit(1);
+	}
 	uint64_t pg = pa & ~(uint64_t)(CHUNK - 1);
 	uint64_t sz = (pa + len - pg + CHUNK - 1) & ~(uint64_t)(CHUNK - 1);
 	void *u = NULL;

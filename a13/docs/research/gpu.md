@@ -725,6 +725,23 @@ CLUSTER_CTL +0x98000, SOC_TVM +0xc8000, MISC_CORES +0xd4000, MISC_ACG
 `agx-start.py --dump-regions` dumps the whole list before the GPU and
 after its request.
 
+iOS, idle (`a13/build/gpu/pmgr-diff/ios-groups.txt`): ISP_REF0 +0x40200..
+0x80000101 0x85000001 0x80000101 0x80000101 0x83000101 0x03000101
+0x03000101 0x8200011e; CLUSTER_CTL 0xf 0xf; SOC_TVM a table (+0xc8000
+0x301, +0x60.. 0x0028001e 0x000501fb 0x000a01f6 0x000a01ec repeated);
+MISC_CORES all 0; MISC_ACG +0 1, +0x20 0x7fff, +0x50 1, +0x68 0x1801,
++0x88 1.
+
+**PMGR reg 0 starts with the PLLs**, 0x4000 apart: 0x23b000000 0x80c80300
+0x80480168 0x804f012b..., +0x4000 0x80590100, +0x8000 0x80320181, +0xc000
+0x803d0101 (bit 31 on, then the dividers; the rest of each the same).
+**Reading on at 0x23b010000 took iOS down at once** (64 KiB window;
+`kmem` now refuses 0x23b010000-0x23b03ffff): the next PLLs do not answer on
+idle iOS -- off, most likely. Fender's step 0x10 (12-95 us) looks like a
+PLL being started and locked: iOS keeps the GPU's PLL off while the GPU
+idles and Fender brings it up. `agx-start.py --pll-probe` reads PLL0-6 one
+word at a time before the GPU and, last of all, after its request.
+
 **Do not bulk-read 0x23bc1c000** (PMGR reg 19, inside the PMP's ASC block):
 reading it through the proxy killed m1n1 (the USB link dropped).
 
