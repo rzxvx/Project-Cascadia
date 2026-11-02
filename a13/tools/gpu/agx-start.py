@@ -3,7 +3,7 @@
 """G4 (a13/docs/research/gpu.md): start the A13's GPU firmware from the Mac
 through m1n1's proxy, with m1n1's own Python AGX driver.
 
-    M1N1DEVICE=/dev/cu.usbmodemXXXX agx-start.py [--boot-pmp|--pmp-dvfs|--pmp-doorbell] [--fender] [--gpu-trig] [--gfx-auto] [--poke] [--ios-pmgr [--fabric-auto]] [--fender-ios] [--fender-dump] [--dump-regions] [--pll-probe] [--try ADDR|=MASK|ADDR=VAL ...] [--pre ADDR=VAL ...] [--pmp-vote DOM:LVL,...] [--fender-init] [--pmu-dump] [--risky-dump] [--volman-gpu] [--gfx-cycle] [--gfx-off SECS] [--gfx-reset] [--watch] [SECONDS]
+    M1N1DEVICE=/dev/cu.usbmodemXXXX agx-start.py [--boot-pmp|--pmp-dvfs|--pmp-doorbell] [--fender] [--gpu-trig] [--gfx-auto] [--poke] [--ios-pmgr [--fabric-auto]] [--fender-ios] [--fender-dump] [--dump-regions] [--pll-probe] [--try ADDR|=MASK|ADDR=VAL ...] [--pre ADDR=VAL ...] [--pmp-vote DOM:LVL,...] [--fender-init] [--pmu-dump] [--risky-dump] [--volman-gpu] [--gfx-cycle] [--gfx-off SECS] [--gfx-reset] [--watch] [--compute [HEX]] [SECONDS]
 
 The phone runs `a13/cascadia boot proxy` (m1n1 alone; iBoot has loaded the
 GPU firmware: G3). Needs a13/build/m1n1 with patch 0007 (T8030 / G12) and the
@@ -103,6 +103,10 @@ pmgr_reset_device: set bit 10, set bit 31, 10 us, clear both).
 (0x204d80000, 0x5000), the GPU-block windows iOS has full of settings while
 the GPU is on (kmem agxr), into pmgr-diff/proxy-{gmgifaf,metrology}.txt.
 With the GPU off these may not answer (an SError would end m1n1).
+--compute [HEX]: G5.1, after the firmware is up submit one compute job
+(a13/tools/gpu/g5compute.py: WorkCommandCP on CL_0, CDM stream, USC words)
+running the G12 shader HEX (default 0801, the empty kernel) on a 1x1x1
+grid, and wait 5 s for its stamp / event.
 Fender is read only while PMGR GFX is on (any option).
 --watch: G5.0, the firmware left running: Stats records decoded (0x40
 bytes on G12) and, every 0.5 s, PMGR GFX's power state, Fender +0x1000 /
@@ -150,6 +154,16 @@ while "--pre" in argv:
     pres.append((int(a, 0), int(v, 0)))
     del argv[i:i + 2]
 gfx_off = 0.05
+compute = None
+if "--compute" in argv:
+    i = argv.index("--compute")
+    compute = "0801"
+    if i + 1 < len(argv) and not argv[i + 1].startswith("--") and \
+            all(c in "0123456789abcdefABCDEF" for c in argv[i + 1]) and len(argv[i + 1]) % 2 == 0 \
+            and len(argv[i + 1]) > 2:
+        compute = argv[i + 1]
+        del argv[i + 1]
+    del argv[i]
 if "--gfx-off" in argv:
     i = argv.index("--gfx-off")
     gfx_off = float(argv[i + 1])
@@ -580,6 +594,15 @@ def watch_sample():
 
 try:
     agx.start()
+    if compute:
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        import g5compute
+        for _ in range(20):
+            agx.work()
+        job = g5compute.ComputeJob(agx)
+        job.submit(bytes.fromhex(compute))
+        job.run()
+        job.wait(5.0)
     if watch:
         agx.ch.stats.handle_message = lambda msg: stats_message(msg.value if hasattr(msg, "value") else msg)
     end = time.time() + seconds

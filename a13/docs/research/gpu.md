@@ -159,6 +159,35 @@ never gets there. Not a blocker for G5.1-G5.4 (the GPU just stays on;
 the host can switch it off through Fender); left as an open item.
 `agx-start.py` now reads Fender only while PMGR GFX is on.
 
+**G5.1 code** (`a13/tools/gpu/g5compute.py`, `agx-start.py --compute
+[HEX]`; not run yet). m1n1's Python driver submits render work only, so
+the compute job is built by hand: firmware side after render.py's TA path
+and drm/asahi's compute.rs, command stream after Mesa's genxml
+(`~/Desktop/ipad-mini-linux/build/mesa/src/src/asahi/genxml/cmdbuf.xml`,
+gallium `agx_build_pipeline` / `agx_cdm_launch` / `agx_cdm_barrier`):
+
+- shader (G12 code, default `08 01`) and USC words in the pipeline region
+  (offsets from 0x11_00000000): Shared `4d 90 00 00` (layout 0x24, 64 KiB,
+  none used), Shader `0d 0c` + code offset (unk_2 = 3), Registers `8d 01
+  00 00` (8 GPRs), No preshader `88 00`;
+- CDM stream: Launch word 0 `0x1012` (uniform / texture / preshader
+  counts at one group each, no samplers, Direct), word 1 = USC offset
+  (64-byte aligned), Global size 1,1,1, Local size 1,1,1, Barrier
+  `0x600fffff` (Mesa's bits 0-19), Stream Terminate `0x40000000 0`;
+  encoder_end points at the Terminate;
+- WorkCommandCP (0x320 bytes) on queue type 2 (CL_0): ComputeInfo
+  (preempt buffer 0x7fa0 with slots at +0x7f80.., pipeline_base, unk_38
+  0x8c60, unk_58 1), ComputeInfo2 (encoder_end), EncoderParams (unk mask
+  0xffffffff), JobMeta (stamp / fw stamp / value / event slot), the
+  microsequence StartCompute -> Timestamp -> WaitForInterrupt(0, 0, 1) ->
+  Timestamp -> FinalizeCompute -> End.
+
+Dry run on a fake AGX (flat memory, fake UAT) builds everything; it found
+that m1n1's WorkCommandCP had two fields named `unk_pad` and could not be
+built at all (fixed in patch 0007: the V13 one is `unk_pad2`). Check on
+the phone: stamp 1 reaches the value, the event fires, no firmware
+crash; then the store kernel (G5.2).
+
 **Offline G12 compiler.** Xcode's Metal Toolchain (`xcodebuild
 -downloadComponent MetalToolchain`, 27A5228f) has `metal-tt` and the
 translator `applegpu-nt`; `applegpu-nt -available-archs ios 16.4` lists

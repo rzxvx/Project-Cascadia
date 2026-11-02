@@ -20,7 +20,8 @@ firmware checks InitData.ver_info against (0x6b88, 0xc128, 0x600, 0xb0)
 iPhone carries
 differently are kept as bytes instead of failing the whole tree. The
 G12 firmware writes 0x40-byte Stats records, not the 0x60 the driver
-reads.
+reads. WorkCommandCP had two fields named unk_pad (0x24 and, from
+V13_0B4, 0x10 bytes) and could not be built; the second is unk_pad2.
 ---
 diff --git a/proxyclient/m1n1/adt.py b/proxyclient/m1n1/adt.py
 index 6e9e952..211d0ec 100644
@@ -198,6 +199,19 @@ index 7b507b1..689ae42 100644
      }
  
      def __init__(self, version, subcon):
+diff --git a/proxyclient/m1n1/fw/agx/cmdqueue.py b/proxyclient/m1n1/fw/agx/cmdqueue.py
+index 6b427a5..68ced5e 100644
+--- a/proxyclient/m1n1/fw/agx/cmdqueue.py
++++ b/proxyclient/m1n1/fw/agx/cmdqueue.py
+@@ -185,7 +185,7 @@ class WorkCommandCP(ConstructClass):
+         Ver("V >= V13_0B4", "unk_ts" / TimeStamp),
+         Ver("V >= V13_0B4", "unk_2e1" / Default(HexDump(Bytes(0x1c)), bytes(0x1c))),
+         Ver("V >= V13_0B4", "unk_flag" / Flag),
+-        Ver("V >= V13_0B4", "unk_pad" / Default(HexDump(Bytes(0x10)), bytes(0x10))),
++        Ver("V >= V13_0B4", "unk_pad2" / Default(HexDump(Bytes(0x10)), bytes(0x10))),
+         "pad_2d9" / Default(HexDump(Bytes(0x7)), bytes(0x7)),
+     )
+ 
 diff --git a/proxyclient/m1n1/fw/agx/initdata.py b/proxyclient/m1n1/fw/agx/initdata.py
 index 0f834c2..4f85e10 100644
 --- a/proxyclient/m1n1/fw/agx/initdata.py
