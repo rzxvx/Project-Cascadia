@@ -1010,6 +1010,22 @@ the second PMGR differs only in its nub domains' auto modes. Next try, with
 the request pending: GMGIFAF +0x30 bit 9 (clear it, or write 0x200 in case
 it is write-1-to-clear), then iOS's QoS words.
 
+Tried (proxy, `agx-start-25.log`, request pending): +0x30 takes 0x200 and
+0x2 (a setting, not status), +0x2c, +0x60, +0x78, +0x80, +0x84 take iOS's
+values, +0x90..+0x98 are read-only; Fender stays at step 0x10 after each.
+**GMGIFAF is not it.**
+
+**Ruled out for Fender's step 0x10, all told:** the GPU firmware and its
+interface (the host's own request stalls too), the PMP (doorbell, votes,
+DevPwr), PMGR GFX/fabric auto-PM, GPU_TRIG_CTL, pwrgate +0, MISC_ACG,
+SOC_TVM, the PLLs (all on), DWI settings, the PMU's supply (bucks on as on
+iOS), the boot stage (iBEC), Fender's own registers (+0x10000/+0x0 init
+writes, +0x4200, +0x409c, the m1n1 poke), GMGIFAF. Left: the AGX core
+itself (RGX, 0x204000000: unreadable on iOS even with the GPU on, an SError
+on ours), and what iOS's driver does just before its own Fender request --
+two calls on its provider (vtable +0x568 (1, 0), +0x570 (1, &out, 0), AGXG12P
+fn 0xfffffff0084f1b54) that were not followed yet.
+
 **Do not bulk-read 0x23bc1c000** (PMGR reg 19, inside the PMP's ASC block):
 reading it through the proxy killed m1n1 (the USB link dropped).
 
