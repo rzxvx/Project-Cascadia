@@ -3,7 +3,7 @@
 """G4 (a13/docs/research/gpu.md): start the A13's GPU firmware from the Mac
 through m1n1's proxy, with m1n1's own Python AGX driver.
 
-    M1N1DEVICE=/dev/cu.usbmodemXXXX agx-start.py [--boot-pmp|--pmp-dvfs|--pmp-doorbell] [--fender] [--gpu-trig] [--gfx-auto] [--poke] [--ios-pmgr [--fabric-auto]] [SECONDS]
+    M1N1DEVICE=/dev/cu.usbmodemXXXX agx-start.py [--boot-pmp|--pmp-dvfs|--pmp-doorbell] [--fender] [--gpu-trig] [--gfx-auto] [--poke] [--ios-pmgr [--fabric-auto]] [--fender-ios] [--fender-dump] [--dump-regions] [SECONDS]
 
 The phone runs `a13/cascadia boot proxy` (m1n1 alone; iBoot has loaded the
 GPU firmware: G3). Needs a13/build/m1n1 with patch 0007 (T8030 / G12) and the
@@ -45,6 +45,14 @@ if Fender is still 0x11 after SECONDS, AUTO_ENABLE on the fabric/memory
 domains iOS runs in auto (MCC, DCS0-3, SMX, IMX, RMX, MMX, SBR, PMS_BUSIF,
 PMS, PMS_SRAM, PMP) while the request is pending, then SECONDS more: it did
 not move Fender, and m1n1's USB was gone after the session (2026-11-02).
+--fender-ios: the two Fender config words iOS has and m1n1 does not (whole-
+Fender diff, gpu.md): +0x4200 = 0x10000 and +0x409c |= 0x100, before the GPU
+starts; +0x1018 (the power sequencer's step, stuck at 0x10 here) is printed.
+--fender-dump: all of Fender (0x20000) into a13/build/gpu/pmgr-diff/
+proxy-fender-{before,after}.txt (m1n1's USB was gone after the session that
+did this, maybe by chance).
+--dump-regions: the blocks of pmgr-regions.txt (as pmgr-dump.py) into
+a13/build/gpu/pmgr-diff/proxy-regions-{before,after}.txt.
 """
 import os
 import sys
@@ -73,6 +81,9 @@ gfx_auto = "--gfx-auto" in sys.argv[1:]
 poke = "--poke" in sys.argv[1:]
 ios_pmgr = "--ios-pmgr" in sys.argv[1:]
 fabric = "--fabric-auto" in sys.argv[1:]
+fender_ios = "--fender-ios" in sys.argv[1:]
+fender_dump = "--fender-dump" in sys.argv[1:]
+dump_regions = "--dump-regions" in sys.argv[1:]
 gfx_auto = gfx_auto or ios_pmgr
 seconds = float(args[0]) if args else 10.0
 
@@ -267,7 +278,33 @@ def fender_full(tag):
     print(f"[agx-start] Fender dumped to {fn}")
 
 
-fender_full("before")
+
+
+def regions(tag):
+    fn = os.path.join(DUMPS, f"proxy-regions-{tag}.txt")
+    os.makedirs(DUMPS, exist_ok=True)
+    with open(fn, "w") as f:
+        for line in open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pmgr-regions.txt")):
+            line = line.split("#")[0].split()
+            if not line:
+                continue
+            pa, ln = int(line[0], 0), int(line[1], 0)
+            for o in range(0, ln, 4):
+                v = p.read32(pa + o)
+                if v:
+                    f.write(f"0x{pa + o:x} = 0x{v:08x}\n")
+    print(f"[agx-start] regions dumped to {fn}")
+
+
+if fender_dump:
+    fender_full("before")
+if dump_regions:
+    regions("before")
+if fender_ios:
+    p.write32(FENDER + 0x4200, 0x10000)
+    p.set32(FENDER + 0x409c, 0x100)
+    print(f"[agx-start] Fender +0x4200={p.read32(FENDER + 0x4200):#x} "
+          f"+0x409c={p.read32(FENDER + 0x409c):#x}")
 
 
 def fender_ack():
@@ -306,7 +343,10 @@ try:
                 fender_ack()
         fender_regs("after fabric AUTO_ENABLE")
     fender_pages("after the GPU's request")
-    fender_full("after")
+    if fender_dump:
+        fender_full("after")
+    if dump_regions:
+        regions("after")
     trig_regs("after the GPU's request")
     print("[agx-start] DevCtrl read ptr:", agx.ch.devctrl.state.READ_PTR.val)
     if pmp_asc:

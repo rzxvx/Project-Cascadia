@@ -708,6 +708,23 @@ their own, not with Fender (not the GPU's gates). Whole of Fender on iOS
 +0x1815c -1. `agx-start.py` writes the same full dump under m1n1 before
 the GPU and after its request (`proxy-fender-{before,after}.txt`).
 
+Whole-Fender diff (proxy `agx-start-15.log`, iOS idle): everything the
+same (the +0x4000 block, +0x8000, +0x18080..) except +0x4200 (iOS
+0x10000, ours 0), +0x409c (iOS 0x00030101, ours 0x00030001), +0x1100 bit 0
+(iOS 0xe0000001), +0x54 (ours 6 before the GPU). +0x4200 |= 0x10000 is the
+firmware's own write (fw 0xffffff80000234dc, on its power-up path, when
+HwDataA +0x4158 is set): a consequence, not the cause. Nothing writes
++0x409c by immediate. Not tried yet: `--fender-ios` sets both before the
+GPU starts. m1n1's USB was gone after this session too (no fabric auto this
+time): the full Fender read is now opt-in (`--fender-dump`).
+
+Next to compare: the other PMGR register groups AppleT8030PMGR maps
+(slot 0 = 0x23b000000: ISP_REF0_CLK_CFG +0x40210, TOUCH +0x78000,
+CLUSTER_CTL +0x98000, SOC_TVM +0xc8000, MISC_CORES +0xd4000, MISC_ACG
++0xdc000; GFX_TVM is not mapped on T8030); added to `pmgr-regions.txt`,
+`agx-start.py --dump-regions` dumps the whole list before the GPU and
+after its request.
+
 **Do not bulk-read 0x23bc1c000** (PMGR reg 19, inside the PMP's ASC block):
 reading it through the proxy killed m1n1 (the USB link dropped).
 
