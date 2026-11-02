@@ -1137,6 +1137,10 @@ at our iBoot's time the GPU's bridge may never have been set (or lost it).
 Next: read 0x205000000 on ours (added to `pmgr-regions.txt`) and apply the
 pairs with `--try` while the request is pending.
 
+Tried (proxy, `agx-start-27.log`): **every bridge-settings-7 value is
+already in place on ours** (iBoot applied it in our boot too: +0x0 0x410,
++0x400 0x40010001, ..., +0x800 0x101 read back before writing). Not it.
+
 **Do not bulk-read 0x23bc1c000** (PMGR reg 19, inside the PMP's ASC block):
 reading it through the proxy killed m1n1 (the USB link dropped).
 
