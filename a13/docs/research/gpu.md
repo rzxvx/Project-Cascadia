@@ -832,6 +832,11 @@ proxy` now sends `inputs/iBEC.ibec.img4` first (the patched iBSS tagged
 ibec, made with `ipsw img4 create --type ibec`), waits for Recovery again,
 then the usual sequence.
 
+Tried (`IBEC=1 a13/cascadia boot proxy`, `agx-start-19.log`): Fender 0x11 /
+step 0x10 as before, PLLs and PMGR as before. **The second stage is not it**
+(as far as m1n1 can tell the boot is the same; nothing in the ADT says which
+stage booted it).
+
 **Do not bulk-read 0x23bc1c000** (PMGR reg 19, inside the PMP's ASC block):
 reading it through the proxy killed m1n1 (the USB link dropped).
 
