@@ -990,6 +990,26 @@ ios-{gmgifaf,rgx-10000,fender-on-*,metrology}.txt`):
 Whether ours has GMGIFAF/Metrology set (they may answer with the GPU off,
 or not): `agx-start.py --risky-dump` reads them last of all.
 
+Ours (proxy, `agx-start-24.log`, after the request): **GMGIFAF answers with
+the GPU off** and is mostly iOS's; it differs in what look like fabric
+QoS/bandwidth settings and one status-like word:
+
+| GMGIFAF | iOS (GPU on) | m1n1 |
+|---|---|---|
+| **+0x30** | **0x2** | **0x202** (bit 9) |
+| +0x2c | 0x003a3c3c | 0x003a3a3c |
+| +0x60 | 0xc0800080 | 0xc0600060 |
+| +0x78 | 0x180a151f | 0x080a141d |
+| +0x80 | 0x00ea0155 | 0x00d20134 |
+| +0x84 | 0x01000071 | 0x00010068 |
+| +0x90 | 0x40b | 0x207 |
+| +0x94/+0x98 | 0x180000 | 0x80000 |
+
+Metrology is half-filled on ours (the firmware's sensor setup stops early);
+the second PMGR differs only in its nub domains' auto modes. Next try, with
+the request pending: GMGIFAF +0x30 bit 9 (clear it, or write 0x200 in case
+it is write-1-to-clear), then iOS's QoS words.
+
 **Do not bulk-read 0x23bc1c000** (PMGR reg 19, inside the PMP's ASC block):
 reading it through the proxy killed m1n1 (the USB link dropped).
 
