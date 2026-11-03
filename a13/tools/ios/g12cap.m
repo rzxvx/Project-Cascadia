@@ -9,7 +9,10 @@
 // code. Every hit is dumped with its surroundings, and each region that
 // holds one is saved whole, into OUTDIR (default /var/mobile/g12cap).
 //
-//   g12cap [OUTDIR] [REPEAT]
+//   g12cap [OUTDIR] [REPEAT] [all]
+// "all": also save every region the GPU driver maps (VM tag 100) whole.
+// G12CAP_SLEEP=SECS: stay alive that long after the scan (the GPU context
+// and the kernel's work command with it, for kmem).
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
 #include <mach/mach.h>
@@ -17,6 +20,7 @@
 #include <string.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include <unistd.h>
 
 static NSString *const kSource =
     @"#include <metal_stdlib>\n"
@@ -36,6 +40,7 @@ struct pattern {
 
 static struct pattern pats[16];
 static int npats;
+static int save_all;
 
 static void add_u32s(const char *name, const uint32_t *v, int n)
 {
@@ -156,7 +161,7 @@ static int scan(const char *outdir, vm_address_t skip_lo, vm_address_t skip_hi)
                 hexdump(hits, addr + lo, buf + lo, hi - lo);
             }
         }
-        if (region_hit) {
+        if (region_hit || (save_all && info->user_tag == 100)) {
             snprintf(path, sizeof(path), "%s/region-%016lx.bin", outdir, addr);
             FILE *f = fopen(path, "wb");
             if (f) {
@@ -177,6 +182,7 @@ int main(int argc, char **argv)
     @autoreleasepool {
         const char *outdir = argc > 1 ? argv[1] : "/var/mobile/g12cap";
         int repeat = argc > 2 ? atoi(argv[2]) : 1;
+        save_all = argc > 3 && !strcmp(argv[3], "all");
         mkdir(outdir, 0755);
 
         id<MTLDevice> dev = MTLCreateSystemDefaultDevice();
@@ -246,6 +252,13 @@ int main(int argc, char **argv)
         // skip our own __TEXT/__DATA (the patterns are constants there)
         extern const struct mach_header_64 _mh_execute_header;
         vm_address_t lo = (vm_address_t)&_mh_execute_header;
-        return scan(outdir, lo, lo + 0x100000);
+        int ret = scan(outdir, lo, lo + 0x100000);
+        const char *sl = getenv("G12CAP_SLEEP");
+        if (sl) {
+            printf("sleeping %s s (pid %d)\n", sl, getpid());
+            fflush(stdout);
+            sleep(atoi(sl));
+        }
+        return ret;
     }
 }

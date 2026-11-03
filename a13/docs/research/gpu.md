@@ -321,6 +321,60 @@ type-3 command (0x2e0 bytes, ComputeInfo +8 = that address) in the AGX
 allocations (`kmem obj` -> fw object -> AGXAllocation kva / GPU VA, as
 for `bufs.list` in G2) with `kmem kd`.
 
+**iOS reference: captured** (2026-11-03, `a13/build/gpu/g12cap-{1,2,3}`).
+g12cap needs the GPU user-client entitlements (`g12cap.entitlements`:
+AGXDeviceUserClient, AGXSharedUserClient, IOGPUDeviceUserClient, ...;
+without them MTLCreateSystemDefaultDevice is nil); Metal's result is
+right (1001 of 1001 words). The out buffer is CPU 0x1030f4000 but GPU
+0x1500018000: user GPU VAs are their own space (0x15_....).
+
+User side (AGXMetalG12's words, found in its CPU-mapped regions, VM tag
+100):
+
+- **CDM stream** (GPU 0x15000a0000): `00000002` (launch word 0), `00018004`
+  (word 1: USC at pipeline offset 0x18000, low bits 4), global size
+  **1001, 1, 1 -- in threads**, local size 32, 1, 1 (the driver re-blocked
+  13 to 32: the kernel only uses thread_position_in_grid), barrier
+  `60000160`, terminate `40000000 00000000`; 0x24 bytes to the
+  terminate (= the command's encoder_end).
+- **USC control program** (pipeline offset 0x18000): `03 00 40 f0 0a 08 00
+  15` and `03 04 40 20 00 00 00 15` (tag 0x03 = uniform load, Mesa's
+  Uniform field layout: halfs 0-3 from 0x1500080af0 = the argument table
+  holding the out buffer's address, halfs 4-7 from 0x1500000020 =
+  constants), `1f 80 00 90 40 00 00 00` (tag 0x1f = shader, flags 80 00
+  90, code at pipeline offset 0x40), `00 00`, **`08 01` = G12's end of
+  shader** (Mesa's G13 words end with `88 00` = G13's stop: the USC words
+  are a small program in the shader ISA's encoding).
+- **Code heap** at pipeline offset 0: entries with a 0x40-byte header
+  (`80 00 ...`), the kernel's code at +0x40: `f2051004 e2000000 52288242
+  10000e09 426a1800 00004511 200e00c0 1200520e 00000000 0801`.
+
+Kernel side (`kmem` walk: accelerator +0x440 -> fw object -> 15
+AGXAllocation / AGXSecureMemoryMap pairs, kva from the descriptor +0xb8;
+dumps with g12cap alive; the CP commands sit in fw buffer
+0xffffffa00c178000 at +0xc000, +0xc600, +0xc900):
+
+- **WorkCommandCP = our G12 layout** (0x2e0): context_id 7 at +0x10,
+  event_control +0x14, microsequence 0xffffffa00c3a4000 / 0x280 at
+  +0x1f0, ComputeInfo2 +0x1fc (deflake_1 +0x224, encoder_end +0x22c),
+  EncoderParams encoder_id 0x0c00ab92 at +0x268 and 0xffffffff at +0x270,
+  JobMeta +0x274 (stamp +0x278, fw stamp +0x280, value 0x13d00, slot 5,
+  uuid +0x298), ts_pointers +0x2a8, unk_ts +0x2d0, unk_flag +0x2d8.
+- **ComputeInfo (G12): +0x0 0x1500080000 (a 0x8000 scratch buffer; the
+  argument table is inside it), +0x8 the CDM stream, +0x10 0, +0x18
+  pipeline base 0x11_0000_0000, +0x20 0, +0x28 0** -- everything else zero
+  (M1's has the pipeline base at +0x30 and 0x8c60 / unk_58 1).
+- Microsequence 0x258 bytes: StartCompute 0x16c (V13_3; unk_28 0,
+  counter 0, unk_flag -> cmd +0x2d8, event_ctrl_buf -> event_control
+  +0xa8), Timestamp 0x3c (unk_3 0x80; unk_addr = ts_pointers start, not
+  0xdeadbeef), **WaitForInterrupt `01 00 80 00`** (we had 0, 0, 1),
+  Timestamp (unk_addr = ts_pointers end), **FinalizeCompute 0x6c** (V13_3's
+  up to restart_branch_offset +0x58, then one byte and the unk_flag
+  pointer at +0x5d, 7 bytes pad), End `18 00 00 40`.
+
+g5compute now builds all of this the same way (USC program, CDM words,
+ComputeInfo, wait, the 0x6c Finalize); dry-run offsets equal Apple's.
+
 **Offline G12 compiler.** Xcode's Metal Toolchain (`xcodebuild
 -downloadComponent MetalToolchain`, 27A5228f) has `metal-tt` and the
 translator `applegpu-nt`; `applegpu-nt -available-archs ios 16.4` lists

@@ -28,8 +28,8 @@ from m1n1.fw.agx.microsequence import (StartComputeCmd, FinalizeComputeCmd,
                                        StampCounter, WrappedPointer)
 from m1n1.agx.context import GPUContext, GPUWorkQueue, GPUMicroSequence
 from m1n1.constructutils import ConstructClass, ROPointer
-from construct import (Int64ul, Int32ul, Int16ul, Int8ul, Struct, Const, Hex,
-                       HexDump, Bytes, Tell, this)
+from construct import (Int64ul, Int32ul, Int32sl, Int16ul, Int8ul, Struct, Const,
+                       Hex, HexDump, Bytes, Tell, this)
 
 
 class GPUComputeWorkQueue(GPUWorkQueue):
@@ -94,37 +94,57 @@ PIPELINE_BASE = 0x1100000000
 EMPTY_SHADER = bytes.fromhex("0801")
 
 
-def usc_words(code_off, nr_gprs=8):
-    # Mesa agx_build_pipeline for a compute shader without uniforms,
-    # textures, samplers or preamble (cmdbuf.xml "USC ...")
+def usc_words(code_off, uniforms=()):
+    """The G12 USC control program, as iOS 16.4's AGXMetalG12 writes it
+    (gpu.md, "iOS reference", a13/build/gpu/g12cap-2): it is itself G12
+    code-like, ended by G12's 0x0108 as Mesa's G13 words end with G13's
+    stop 0x88. uniforms: (start_halfs, size_halfs, gpu_addr) loads, tag
+    0x03 with Mesa's Uniform field layout."""
     w = b""
-    # Shared: layout Vertex/compute (0x24), 64 KiB per threadgroup (the
-    # all-groups encoding 0), no shared memory
-    w += struct.pack("<I", 0x4d | (0x24 << 10))
-    # Shader: unk_2 = 3 (Mesa), code = offset from the pipeline base
-    w += struct.pack("<HI", 0x0d | (3 << 10), code_off)
-    # Registers: count in groups of 8
-    w += struct.pack("<I", 0x8d | (((nr_gprs + 7) // 8) << 8))
-    # No preshader
-    w += struct.pack("<H", 0x88)
+    for start, size, addr in uniforms:
+        w += struct.pack("<Q", 0x03 | (start << 8) | (size << 20) | ((addr >> 2) << 26))
+    # shader: tag 0x1f, flags 80 00 90 as Apple's, code = offset from the
+    # pipeline base
+    w += bytes.fromhex("1f800090") + struct.pack("<I", code_off)
+    w += bytes.fromhex("0000")
+    w += bytes.fromhex("0801")
     return w
 
 
-def cdm_stream(usc_off, grid=(1, 1, 1), local=(1, 1, 1), barrier=True):
-    # Launch word 0: uniform / texture / preshader register counts at their
-    # minimum (one group each: 0 is not representable), sampler states 0,
-    # mode Direct, block type Launch
-    w0 = (1 << 1) | (1 << 4) | (1 << 12)
-    s = struct.pack("<II", w0, usc_off & ~0x3f)
-    s += struct.pack("<III", *grid)
+def cdm_stream(usc_off, threads=(1, 1, 1), local=(1, 1, 1), barrier=True):
+    """CDM stream as AGXMetalG12 writes it: launch word 0 = 0x2, word 1 =
+    USC offset | 4, the global size in threads (not groups), the local
+    size, barrier 0x60000160 (Mesa's base bits 5, 6, 8), terminate."""
+    s = struct.pack("<II", 0x2, (usc_off & ~0x3f) | 4)
+    s += struct.pack("<III", *threads)
     s += struct.pack("<III", *local)
     if barrier:
-        # Mesa agx_cdm_barrier: bits 0-19, block type Barrier (3)
-        s += struct.pack("<I", (3 << 29) | 0xfffff)
+        s += struct.pack("<I", 0x60000160)
     end = len(s)
-    # Stream Terminate (block type 2), 8 bytes
     s += struct.pack("<II", 2 << 29, 0)
     return s, end
+
+
+class G12FinalizeComputeCmd(ConstructClass):
+    """0x6c bytes on G12 (Apple's microsequence, g12cap-3): V13_3's up to
+    restart_branch_offset, then one byte and the unk_flag pointer
+    (unaligned at +0x5d), not V13_3's unk_60 / unk_64[0xd] / unkptr_71."""
+    subcon = Struct(
+        "magic" / Const(0x2a, Int32ul),
+        "unkptr_4" / Int64ul,
+        "cmdqueue_ptr" / Int64ul,
+        "context_id" / Int32ul,
+        "computeinfo2_addr" / Int64ul,
+        "unk_24" / Int32ul,
+        "uuid" / Int32ul,
+        "stamp" / Int64ul,
+        "stamp_value" / Int32ul,
+        "unk_38" / HexDump(Bytes(0x24)),
+        "restart_branch_offset" / Int32sl,
+        "unk_60" / Int8ul,
+        "unkptr_61" / Int64ul,
+        "pad_69" / HexDump(Bytes(7)),
+    )
 
 
 class ComputeJob:
@@ -166,7 +186,7 @@ class ComputeJob:
         self.ev = agx.event_mgr.allocate_event()
 
     def submit(self, shader=EMPTY_SHADER, grid=(1, 1, 1), local=(1, 1, 1),
-               nr_gprs=8, barrier=True, uuid=0xc0de0001):
+               uniforms=(), barrier=True, uuid=0xc0de0001):
         agx, ctx = self.agx, self.ctx
 
         # shader and USC words in the pipeline region (32-bit offsets from
@@ -176,7 +196,7 @@ class ComputeJob:
         code.push()
         code_off = code._addr - PIPELINE_BASE
         usc = ctx.pobj.new_buf(0x40, "G5 USC words", track=False)
-        uw = usc_words(code_off, nr_gprs)
+        uw = usc_words(code_off, uniforms)
         usc.val = uw + bytes(0x40 - len(uw))
         usc.push()
         usc_off = usc._addr - PIPELINE_BASE
@@ -191,9 +211,9 @@ class ComputeJob:
                 f"{usc._addr:#x} ({uw.hex()}), CDM @ {enc._addr:#x} "
                 f"({cdm.hex()})")
 
-        # drm/asahi: preempt buffer, its four 8-byte slots after
-        # compute_preempt1_size (0x7f80 on t8103)
-        preempt = ctx.uobj.new_buf(0x7fa0, "G5 preempt", track=False).push()
+        # ComputeInfo +0x0: a per-submission scratch buffer (Apple's is
+        # 0x8000, with the argument table inside it)
+        preempt = ctx.uobj.new_buf(0x8000, "G5 scratch", track=False).push()
 
         def ts(alloc, name):
             t = alloc.new(Int64ul, name=name)
@@ -212,28 +232,31 @@ class ComputeJob:
 
         wc = agx.cmdbuf.new(G12WorkCommandCP, track=False, align=0x20)
         self.wc = wc
-        wc.counter = 1
+        wc.counter = 0     # Apple: 0
         wc.unk_4 = 0
         wc.context_id = self.ctx_id
         wc.event_control = self.event_control
         wc.unk_2c = 0
         wc.unk_buf = bytes(0x50)
 
+        # G12 ComputeInfo (Apple's, g12cap-3): only the six qwords the
+        # firmware copies: +0x0 scratch, +0x8 CDM stream, +0x18 pipeline
+        # base (M1's +0x30), the rest zero
         ci = ComputeInfo()
         ci.iogpu_deflake_1 = preempt._addr
         ci.encoder = enc._addr
-        ci.iogpu_deflake_2 = preempt._addr + 0x7f80
-        ci.iogpu_deflake_3 = preempt._addr + 0x7f88
-        ci.iogpu_deflake_4 = preempt._addr + 0x7f90
-        ci.iogpu_deflake_5 = preempt._addr + 0x7f98
-        ci.pipeline_base = PIPELINE_BASE
-        ci.unk_38 = 0x8c60
+        ci.iogpu_deflake_2 = 0
+        ci.iogpu_deflake_3 = PIPELINE_BASE
+        ci.iogpu_deflake_4 = 0
+        ci.iogpu_deflake_5 = 0
+        ci.pipeline_base = 0
+        ci.unk_38 = 0
         ci.helper_program = 0
         ci.unk_44 = 0
         ci.helper_arg = 0
         ci.helper_cfg = 0
         ci.unk_54 = 0
-        ci.unk_58 = 1
+        ci.unk_58 = 0
         ci.unk_5c = 0
         ci.iogpu_unk_40 = 0
         wc.compute_info = ci
@@ -296,7 +319,7 @@ class ComputeJob:
         st.stats_ptr = stats_addr
         st.cmdqueue_ptr = self.wq.info._addr
         st.context_id = self.ctx_id
-        st.unk_28 = 1
+        st.unk_28 = 0
         st.counter1 = 0
         st.counter2 = 0
         st.unk_34 = 0
@@ -312,26 +335,27 @@ class ComputeJob:
         st.event_ctrl_buf_addr = self.event_control.unk_buf._addr
         start_off = ms.append(st)
 
-        def tscmd(unk_3):
+        def tscmd(unk_3, end):
             t = TimestampCmd()
             t.unk_1 = 0
             t.unk_2 = 0
             t.unk_3 = unk_3
             t.ts0_addr = wc.ts1._addr
             t.ts_pointers_addr = wc.ts_pointers._addr
-            t.unk_addr = 0xdeadbeef
+            # Apple: the start / end slot of ts_pointers
+            t.unk_addr = wc.ts_pointers._addr + (8 if end else 0)
             t.cmdqueue_ptr = self.wq.info._addr
             t.user_ts_pointers_addr = wc.user_ts_pointers._addr
             t.unk_ts_addr = wc.unk_ts._addr
             t.uuid = uuid
             t.unk_30 = 0
             return t
-        ms.append(tscmd(0x80))
-        # TA waits with (1, 0, 0), 3D with (0, 1, 0): compute (0, 0, 1)
-        ms.append(WaitForInterruptCmd(0, 0, 1))
-        ms.append(tscmd(0))
+        ms.append(tscmd(0x80, False))
+        # Apple's compute wait on G12: 01 00 80 00
+        ms.append(WaitForInterruptCmd(0, 0x80, 0))
+        ms.append(tscmd(0, True))
 
-        fin = FinalizeComputeCmd()
+        fin = G12FinalizeComputeCmd()
         fin.unkptr_4 = stats_addr
         fin.cmdqueue_ptr = self.wq.info._addr
         fin.context_id = self.ctx_id
@@ -340,12 +364,11 @@ class ComputeJob:
         fin.uuid = uuid
         fin.stamp = self.stamp2._addr
         fin.stamp_value = self.stamp_value
-        for f in ("unk_38", "unk_3c", "unk_40", "unk_44", "unk_48", "unk_4c",
-                  "unk_50", "unk_54", "unk_58", "unk_60"):
-            setattr(fin, f, 0)
+        fin.unk_38 = bytes(0x24)
         fin.restart_branch_offset = start_off - ms.off
-        fin.unk_64 = bytes(0xd)
-        fin.unkptr_71 = wc.addrof("unk_flag")
+        fin.unk_60 = 0
+        fin.unkptr_61 = wc.addrof("unk_flag")
+        fin.pad_69 = bytes(7)
         ms.append(fin)
         ms.finalize()
         self.ms = ms

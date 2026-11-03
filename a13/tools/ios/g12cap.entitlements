@@ -6,7 +6,22 @@
 	<true/>
 	<key>com.apple.private.security.no-sandbox</key>
 	<true/>
-	<key>get-task-allow</key>
+	<key>com.apple.security.exception.iokit-user-client-class</key>
+	<array>
+		<string>AGXDeviceUserClient</string>
+		<string>AGXSharedUserClient</string>
+		<string>AGXCommandQueue</string>
+		<string>IOGPUDeviceUserClient</string>
+		<string>IOSurfaceRootUserClient</string>
+		<string>IOSurfaceAcceleratorClient</string>
+		<string>IOAccelDevice2</string>
+		<string>IOAccelSharedUserClient2</string>
+		<string>IOAccelSubmitter2</string>
+		<string>IOAccelContext2</string>
+	</array>
+	<key>com.apple.private.gpu-restricted</key>
+	<true/>
+	<key>com.apple.developer.kernel.increased-memory-limit</key>
 	<true/>
 </dict>
 </plist>
