@@ -304,6 +304,23 @@ firmware copies only ComputeInfo's first six qwords into GPU state and
 pipeline_base (+0x30) is not among them. Unconfirmed; the G12 ComputeInfo
 / CDM words need a reference from iOS.
 
+**iOS reference capture (planned).** `a13/tools/ios/g12cap` (built by
+`a13/tools/ios/build.sh`): runs the same kernel through Metal with an
+unusual grid (77 threadgroups x 13 = 1001 threads), checks the output,
+then reads its own address space (regions listed first; its scratch
+mapping, its image and the dyld shared cache skipped) for what
+AGXMetalG12 wrote with the CPU: the CDM sizes (1001,1,1 / 77,1,1 /
+13,1,1), the offline G12 code's first word (`f2051004`) and the out
+buffer's gpuAddress. Each hit goes to `hits.txt` with 0x300 bytes around
+it, each region with a hit to `region-<addr>.bin`, the region map to
+`regions.txt` (default `/var/mobile/g12cap`). On the phone (iOS 16.4 +
+Dopamine): `g12cap /var/mobile/g12cap 1`, then copy the directory back.
+Kernel side next: the WorkCommandCP and ComputeInfo are the kernel's;
+with the CDM stream's GPU address from the user-side dump, look for a
+type-3 command (0x2e0 bytes, ComputeInfo +8 = that address) in the AGX
+allocations (`kmem obj` -> fw object -> AGXAllocation kva / GPU VA, as
+for `bufs.list` in G2) with `kmem kd`.
+
 **Offline G12 compiler.** Xcode's Metal Toolchain (`xcodebuild
 -downloadComponent MetalToolchain`, 27A5228f) has `metal-tt` and the
 translator `applegpu-nt`; `applegpu-nt -available-archs ios 16.4` lists
