@@ -24,6 +24,8 @@ reads. WorkCommandCP had two fields named unk_pad (0x24 and, from
 V13_0B4, 0x10 bytes) and could not be built; the second is unk_pad2.
 The G12 firmware initialises its scheduler on DeviceControl message
 0x10, not 0x1a (which there only sets a flag): DC_Init is 0x10 on G12.
+It does so only if RegionC +0xb1dc is set (and clears it), so the
+A13 initdata sets it.
 ---
 diff --git a/proxyclient/m1n1/adt.py b/proxyclient/m1n1/adt.py
 index 6e9e952..211d0ec 100644
@@ -81,7 +83,7 @@ index 3a9f30e..d166d32 100644
      def handle_message(self, msg):
          if self.agx.show_stats:
 diff --git a/proxyclient/m1n1/agx/initdata.py b/proxyclient/m1n1/agx/initdata.py
-index aa9b826..37dc916 100644
+index aa9b826..e5488d6 100644
 --- a/proxyclient/m1n1/agx/initdata.py
 +++ b/proxyclient/m1n1/agx/initdata.py
 @@ -13,8 +13,26 @@ def build_iomappings(agx, chip_id):
@@ -188,6 +190,22 @@ index aa9b826..37dc916 100644
          phys_mask = 0xffffffc000
      else:
          phys_mask = 0x3ffffffc000
+@@ -655,6 +724,15 @@ def build_initdata(agx):
+     #initdata.regionC.idle_unk = 0x5b2e8
+     #initdata.regionC.idle_to_off_timeout_ms = 20000
+ 
++    if chosen.chip_id == 0x8030:
++        # RegionC +0xb1dc (inside unk_9100): "initialise the scheduler" --
++        # the G12 firmware's DC_Init handler (fw 0x2a61c) fills its per-pipe
++        # handler and event tables (fn 0x1fa80) only if it is set, then
++        # clears it; zero leaves every queue's handler NULL
++        blob = bytearray(initdata.regionC.unk_9100)
++        blob[0xb1dc - 0x9254:0xb1dc - 0x9254 + 4] = (1).to_bytes(4, "little")
++        initdata.regionC.unk_9100 = bytes(blob)
++
+     initdata.regionC.push()
+     initdata.push()
+ 
 diff --git a/proxyclient/m1n1/constructutils.py b/proxyclient/m1n1/constructutils.py
 index 7b507b1..689ae42 100644
 --- a/proxyclient/m1n1/constructutils.py

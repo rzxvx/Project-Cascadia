@@ -270,6 +270,16 @@ DC_UpdateIdleTS 0x23 is the same in both (fw 0xab44 copies RegionC
 +0xb368 to 0xbee78). Fixed in patch 0007: DC_Init is 0x10 on G12. This
 may also be why the GPU never powered down in G5.0.
 
+**G5.1 run 3** (`agx-start-42.log`, DC_Init 0x10): the firmware is busier
+(255 Stats records "FW active" toggling instead of 5) but crashes the same
+way, the handler table still empty. fn 0x2a61c (the 0x10 handler) runs
+the scheduler init (0x1fa80 at 0x2ab24) only if **RegionC +0xb1dc** is
+nonzero, and then clears it (`str wzr` at 0x2ab30; the same check and
+clear in the scheduler at 0xdee0 / 0xec4c). That word lies in m1n1's
+opaque `unk_9100` blob (RegionC 0x9254..0x10154), all zero; on iOS it
+reads 0 too, but that dump was taken long after the firmware had cleared
+it. Patch 0007 sets it to 1 for the A13.
+
 **Offline G12 compiler.** Xcode's Metal Toolchain (`xcodebuild
 -downloadComponent MetalToolchain`, 27A5228f) has `metal-tt` and the
 translator `applegpu-nt`; `applegpu-nt -available-archs ios 16.4` lists
