@@ -38,6 +38,7 @@ struct hxt_metrics {
 #define HXT_IOC_SETUP_IRQ       _IO(HXT_IOC_MAGIC, 4)
 #define HXT_IOC_WAIT_IRQ        _IOW(HXT_IOC_MAGIC, 5, __u32)
 #define HXT_IOC_METRICS         _IOW(HXT_IOC_MAGIC, 6, struct hxt_metrics)
+#define HXT_IOC_SET_DL          _IOW(HXT_IOC_MAGIC, 7, __u32)
 
 #define MAX_DATA_CHUNK          16384
 
@@ -65,6 +66,7 @@ struct hx_touch_data {
     struct gpio_desc *gpiod_reset;
     struct gpio_desc *gpiod_cs;
     struct gpio_desc *gpiod_irq;
+    struct gpio_desc *gpiod_dl;
     struct input_dev *input_dev;
     struct regulator *regu_hv;
     struct regulator *regu_core;
@@ -477,6 +479,15 @@ static long hx_touch_misc_dev_ioctl(struct file *filp, unsigned int cmd, unsigne
             return -EINVAL;
         gpiod_direction_output(hxt->gpiod_cs, !arg);
         return 0;
+    case HXT_IOC_SET_DL:
+        /* 1 asserts enable_download, like SET_CS; the line's polarity
+         * is the DT's (active-low on J1). */
+        if(hxt->ready)
+            return -EINVAL;
+        if(!hxt->gpiod_dl)
+            return -ENODEV;
+        gpiod_direction_output(hxt->gpiod_dl, !!arg);
+        return 0;
     case HXT_IOC_RESET:
         mutex_lock(&hxt->mutex);
         hxt->ready = 0;
@@ -491,6 +502,8 @@ static long hx_touch_misc_dev_ioctl(struct file *filp, unsigned int cmd, unsigne
         if(hxt->ready)
             return -EINVAL;
         gpiod_direction_output(hxt->gpiod_cs, 1);
+        if(hxt->gpiod_dl)
+            gpiod_direction_output(hxt->gpiod_dl, 0);
 
         mutex_lock(&hxt->mutex);
         hxt_trace(hxt, "READY after %u ATTN, %u other transfers (%u bytes); metrics x %d..%d y %d..%d\n",
@@ -646,6 +659,13 @@ static int hx_touch_spi_probe(struct spi_device *spi)
         if(PTR_ERR(hxt->gpiod_irq) != -EPROBE_DEFER)
             dev_err(&spi->dev, "failed to get 'irq-gpios': %ld\n", PTR_ERR(hxt->gpiod_irq));
         return PTR_ERR(hxt->gpiod_irq);
+    }
+
+    hxt->gpiod_dl = devm_gpiod_get_optional(&spi->dev, "download", GPIOD_OUT_LOW);
+    if(IS_ERR(hxt->gpiod_dl)) {
+        if(PTR_ERR(hxt->gpiod_dl) != -EPROBE_DEFER)
+            dev_err(&spi->dev, "failed to get 'download-gpios': %ld\n", PTR_ERR(hxt->gpiod_dl));
+        return PTR_ERR(hxt->gpiod_dl);
     }
 
     hxt->clk = devm_clk_get(&spi->dev, NULL);
