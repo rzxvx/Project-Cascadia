@@ -254,6 +254,22 @@ uuid +0x34). StartCompute copies **only ComputeInfo's first six qwords**
 (+0x0..+0x28) into GPU state and tests bit 0 of the sixth (a helper /
 enable flag?) -- the G12 ComputeInfo may differ from M1's too; still open.
 
+**G5.1 run 2** (`agx-start-41.log`, G12 layout): the firmware took the
+command (queue GPU_RPTR 1) and crashed -- this time with a crash message
+-- on an instruction abort at address 0: `blr` at fw 0x1e19c through the
+per-pipe handler table at 0x7c8d0 + 0x150 (5 pipes x 3 function
+pointers, filled by fn 0x1fa80 from the static sets at DATA 0x4c000..
+0x4c070), which was **all zero**: the scheduler had never been
+initialised. fn 0x1fa80 (also clearing the event table 0x70c38, 0x1c00
+bytes) runs from fn 0x2a61c, which the DeviceControl handler (fn 0x8a14,
+0x30-byte messages, `switch (type - 4)` through table 0xb8c0) calls for
+**message type 0x10** when its word +4 is 0. m1n1 sends DC_Init as 0x1a
+(V13_3), which this firmware handles at 0xa9e4 by only setting the flag
+at 0xbedb0 (also set before the firmware's own GPU power-down at 0xdec0).
+DC_UpdateIdleTS 0x23 is the same in both (fw 0xab44 copies RegionC
++0xb368 to 0xbee78). Fixed in patch 0007: DC_Init is 0x10 on G12. This
+may also be why the GPU never powered down in G5.0.
+
 **Offline G12 compiler.** Xcode's Metal Toolchain (`xcodebuild
 -downloadComponent MetalToolchain`, 27A5228f) has `metal-tt` and the
 translator `applegpu-nt`; `applegpu-nt -available-archs ios 16.4` lists

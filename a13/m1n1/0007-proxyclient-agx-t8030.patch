@@ -22,6 +22,8 @@ differently are kept as bytes instead of failing the whole tree. The
 G12 firmware writes 0x40-byte Stats records, not the 0x60 the driver
 reads. WorkCommandCP had two fields named unk_pad (0x24 and, from
 V13_0B4, 0x10 bytes) and could not be built; the second is unk_pad2.
+The G12 firmware initialises its scheduler on DeviceControl message
+0x10, not 0x1a (which there only sets a flag): DC_Init is 0x10 on G12.
 ---
 diff --git a/proxyclient/m1n1/adt.py b/proxyclient/m1n1/adt.py
 index 6e9e952..211d0ec 100644
@@ -199,6 +201,24 @@ index 7b507b1..689ae42 100644
      }
  
      def __init__(self, version, subcon):
+diff --git a/proxyclient/m1n1/fw/agx/channels.py b/proxyclient/m1n1/fw/agx/channels.py
+index 872f5fe..f160da7 100644
+--- a/proxyclient/m1n1/fw/agx/channels.py
++++ b/proxyclient/m1n1/fw/agx/channels.py
+@@ -86,8 +86,11 @@ class DC_Write32B(ConstructClass):
+ 
+ class DC_Init(ConstructClass):
+     subcon =  Struct (
+-        Ver("V < V13_3", "msg_type" / Const(0x19, Int32ul)),
+-        Ver("V >= V13_3", "msg_type" / Const(0x1a, Int32ul)),
++        Ver("V < V13_3 && G >= G13", "msg_type" / Const(0x19, Int32ul)),
++        Ver("V >= V13_3 && G >= G13", "msg_type" / Const(0x1a, Int32ul)),
++        # G12 (armfw_g12p, iOS 16.4): 0x10 initialises the scheduler (fw
++        # 0xa6c0 -> 0x2a61c); its 0x1a only sets a flag
++        Ver("G < G13", "msg_type" / Const(0x10, Int32ul)),
+         "data" / HexDump(Default(Bytes(0x2c), bytes(0x2c))),
+         Ver("G == G14 && V >= V13_2", ZPadding(0x10)),
+     )
 diff --git a/proxyclient/m1n1/fw/agx/cmdqueue.py b/proxyclient/m1n1/fw/agx/cmdqueue.py
 index 6b427a5..68ced5e 100644
 --- a/proxyclient/m1n1/fw/agx/cmdqueue.py
