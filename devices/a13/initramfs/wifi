@@ -1,0 +1,268 @@
+#!/bin/sh
+# wifi -- Wi-Fi on the iPhone 11 (BCM4378 on PCIe, wlan0), the short way.
+#
+#   wifi                        where things stand, and what to type next
+#   wifi scan                   the networks in range
+#   wifi connect SSID [PASS]    join (open without PASS), get an address,
+#                               and remember the network
+#   wifi up                     join the remembered networks
+#   wifi down                   leave; stop wpa_supplicant and DHCP
+#   wifi forget SSID            drop a remembered network
+#   wifi auto on|off            join the remembered networks at boot
+#   wifi reset                  restart the chip (it comes up again on its
+#                               own if it ever does not at boot)
+#
+# Networks live one per file in /etc/wifi/networks/, SSID in hex so that no
+# name can break the config, a WPA password only as its PSK.  iw and
+# wpa_supplicant: the root's own (the Alpine root has them), else the image's
+# (./cascadia a13 periphery: /opt/wifi, copied to /run/cascadia/wifi under an
+# NFS root) -- Wi-Fi is how a phone without the USB network gets online.
+# Comes with the image: the initramfs puts it into /usr/bin of the NFS root
+# on every boot, and starts `wifi up` there when /etc/wifi/auto exists.
+
+IF=wlan0
+DIR=/etc/wifi
+NETS=$DIR/networks
+RUN=/run/wifi
+CONF=$RUN/wpa_supplicant.conf
+# the module's Wi-Fi function on the PCIe bus (Bluetooth is function 1)
+PCIDEV=0000:01:00.0
+# the way out over the cable: the Mac, when ./cascadia a13 net is on
+CABLE_GW=172.16.42.2
+
+# the image's iw and wpa_supplicant, behind the root's own
+for W in /opt/wifi /run/cascadia/wifi; do
+    [ -x $W/bin/wpa_supplicant ] && { PATH=$PATH:$W/bin; break; }
+done
+UDHCPC_SCRIPT=
+[ -e /usr/share/udhcpc/default.script ] || UDHCPC_SCRIPT=$W/share/udhcpc.script
+
+say()  { printf '%s\n' "$*"; }
+die()  { printf 'wifi: %s\n' "$*" >&2; exit 1; }
+hexof() { printf '%s' "$1" | od -An -tx1 | tr -d ' \n'; }
+
+need_tools() {
+    command -v iw >/dev/null 2>&1 && command -v wpa_supplicant >/dev/null 2>&1 && return 0
+    [ -x /sbin/apk ] || die "iw and wpa_supplicant are not here: ./cascadia a13 periphery, then pack"
+    say "iw and wpa_supplicant are not installed; installing (needs the internet over the cable: ./cascadia a13 net on)..."
+    apk add iw wpa_supplicant wireless-regdb >/dev/null 2>&1 || die "apk add iw wpa_supplicant failed -- is ./cascadia a13 net on?"
+}
+
+# The chip's restart: take its Wi-Fi function off the bus and find it again;
+# brcmfmac resets the chip and loads the firmware anew.  The module stays
+# powered (pcie-apple switched it on at boot), and Bluetooth keeps running.
+chip_cycle() {
+    [ -e /sys/bus/pci/devices/$PCIDEV ] && echo 1 > /sys/bus/pci/devices/$PCIDEV/remove
+    sleep 1
+    echo 1 > /sys/bus/pci/rescan
+}
+
+# brcmfmac makes wlan0 some 15 s after the chip is found (firmware download,
+# then its own start); at boot this may run first.  If it never comes:
+# restart the chip, twice at most.
+need_chip() {
+    tries=0; i=0
+    while [ ! -d /sys/class/net/$IF ]; do
+        if [ $i -ge 90 ]; then
+            [ $tries -ge 2 ] && die "no $IF: the Wi-Fi chip did not come up, restarted twice (dmesg | grep -i 'brcmf\|pcie')"
+            say "The Wi-Fi chip did not come up; restarting it..."
+            chip_cycle; tries=$((tries + 1)); i=0
+        fi
+        sleep 0.5; i=$((i + 1))
+    done
+}
+
+need_if() {
+    need_chip
+    ip link set $IF up 2>/dev/null || die "$IF does not come up (dmesg | grep brcmf); 'wifi reset' restarts the chip"
+}
+
+connected() { iw dev $IF link 2>/dev/null | grep -q '^Connected'; }
+addr4() { ip -4 addr show $IF 2>/dev/null | awk '/inet /{ print $2; exit }'; }
+
+# Wi-Fi is the way out when it is up, the cable the fallback: the cable's
+# default route (a13-init adds it with metric 0) moves behind the one DHCP
+# gives wlan0 (udhcpc's script: metric 300 + the interface's index).
+cable_second() {
+    ip route show default 2>/dev/null | grep -q "via $CABLE_GW dev usb0" || return 0
+    ip route show default 2>/dev/null | grep -q "via $CABLE_GW dev usb0 *metric 1000" && return 0
+    while ip route del default via $CABLE_GW dev usb0 2>/dev/null; do :; done
+    ip route add default via $CABLE_GW dev usb0 metric 1000 2>/dev/null
+}
+
+stop() {
+    for p in $RUN/udhcpc.pid $RUN/wpa.pid; do
+        [ -s "$p" ] && kill "$(cat "$p")" 2>/dev/null
+        rm -f "$p"
+    done
+    # and whatever was started by hand before this script
+    pkill -f "wpa_supplicant.*-i *$IF" 2>/dev/null
+    pkill -f "udhcpc.*-i *$IF" 2>/dev/null
+    iw dev $IF disconnect 2>/dev/null
+    ip -4 addr flush dev $IF 2>/dev/null
+    # udhcpc pointed DNS at this network's router; the cable's way out needs
+    # public resolvers again
+    if [ -n "$(sed -n 's/^nameserver //p' /etc/resolv.conf 2>/dev/null)" ] &&
+       ! grep -q '^nameserver 1\.1\.1\.1' /etc/resolv.conf 2>/dev/null; then
+        printf 'nameserver 1.1.1.1\nnameserver 8.8.8.8\n' > /etc/resolv.conf
+    fi
+}
+
+# network_block SSID [PASS] -- one wpa_supplicant network, SSID in hex
+network_block() {
+    printf 'network={\n\tssid=%s\n\tscan_ssid=1\n' "$(hexof "$1")"
+    if [ -n "$2" ]; then
+        psk=$(wpa_passphrase "$1" "$2" 2>/dev/null | sed -n 's/^[[:space:]]*psk=\([0-9a-f]\{64\}\)$/\1/p')
+        [ -n "$psk" ] || die "a WPA password is 8 to 63 characters"
+        printf '\tkey_mgmt=WPA-PSK\n\tpsk=%s\n' "$psk"
+    else
+        printf '\tkey_mgmt=NONE\n'
+    fi
+    printf '}\n'
+}
+
+# start FILE... -- wpa_supplicant on these networks, then DHCP
+start() {
+    mkdir -p $RUN
+    # no P2P: brcmfmac refuses its p2p-dev interface and wpa_supplicant
+    # would log that every half minute
+    { echo "ctrl_interface=$RUN/ctrl"; echo "p2p_disabled=1"; cat "$@"; } > $CONF
+    stop
+    wpa_supplicant -B -i $IF -c $CONF -P $RUN/wpa.pid >/dev/null 2>&1 \
+        || die "wpa_supplicant did not start"
+    # brcmfmac starts with power save on; on the iPad that made the chip stop
+    # answering ARP after a minute without traffic ("No route to host" until
+    # the device sent something itself).  Off costs a little battery.
+    iw dev $IF set power_save off 2>/dev/null
+    i=0
+    until connected; do
+        if [ $i -ge 40 ]; then
+            st=$(wpa_cli -p $RUN/ctrl -i $IF status 2>/dev/null | sed -n 's/^wpa_state=//p')
+            say "not connected after 20 s (wpa_state ${st:-?})."
+            [ "$st" = "4WAY_HANDSHAKE" ] || [ "$st" = "DISCONNECTED" ] \
+                && say "With a password that usually means a wrong one."
+            say "Still trying in the background; 'wifi down' stops it."
+            return 1
+        fi
+        sleep 0.5; i=$((i + 1))
+    done
+    setsid udhcpc -f -i $IF -p $RUN/udhcpc.pid -S ${UDHCPC_SCRIPT:+-s $UDHCPC_SCRIPT} \
+        >$RUN/udhcpc.log 2>&1 </dev/null &
+    i=0
+    until [ -n "$(addr4)" ]; do
+        if [ $i -ge 30 ]; then
+            say "joined, but no address from DHCP in 15 s (log: $RUN/udhcpc.log)"
+            return 1
+        fi
+        sleep 0.5; i=$((i + 1))
+    done
+    cable_second
+    return 0
+}
+
+ssid_of() { sed -n 's/^# ssid: //p' "$1"; }
+
+status() {
+    if ! command -v iw >/dev/null 2>&1; then
+        say "Wi-Fi tools not installed yet: 'wifi scan' or 'wifi connect' installs them."
+    elif [ ! -d /sys/class/net/$IF ]; then
+        say "No $IF -- the Wi-Fi chip is not up (yet: it takes ~15 s after boot); 'wifi reset' restarts it."
+    elif connected; then
+        iw dev $IF link | awk '
+            /^Connected/  { bssid = $3 }
+            /SSID:/       { sub(/^[ \t]*SSID: /, ""); ssid = $0 }
+            /freq:/       { freq = int($2) }
+            /signal:/     { sig = $2 " dBm" }
+            /tx bitrate:/ { tx = $3 " Mbit/s" }
+            END { printf "Connected to %s (%s), %s MHz, signal %s, tx %s\n", ssid, bssid, freq, sig, tx }'
+        a=$(addr4)
+        say "Address: ${a:-none yet}"
+        r=$(ip route show default 2>/dev/null | head -1 | sed 's/ *$//')
+        case "$r" in
+            *"dev $IF"*) say "Internet goes over Wi-Fi." ;;
+            *)           say "Internet still goes over the cable (${r:-no default route}); Wi-Fi is the second way out." ;;
+        esac
+    else
+        say "Wi-Fi is up, not connected."
+    fi
+    set -- $NETS/*.conf
+    if [ -e "$1" ]; then
+        printf 'Remembered:'
+        for f; do printf ' "%s"' "$(ssid_of "$f")"; done
+        printf '\n'
+    fi
+    [ -e $DIR/auto ] && say "Joins at boot: on." || say "Joins at boot: off."
+    say ""
+    say "  wifi scan                  networks in range"
+    say "  wifi connect SSID [PASS]   join one (quotes around names with spaces)"
+    say "  wifi up | down             join the remembered ones | leave"
+    say "  wifi forget SSID           drop one"
+    say "  wifi auto on|off           join at boot"
+}
+
+scan() {
+    need_tools; need_if
+    iw dev $IF scan 2>/dev/null | awk '
+        function out() {
+            if (bss == "") return
+            if (ssid == "") ssid = "(hidden)"
+            sec = rsn ? "WPA2" : wpa ? "WPA" : priv ? "WEP" : "open"
+            printf "%5s dBm  %4d MHz  %-5s %s\n", sig, freq, sec, ssid
+        }
+        /^BSS /           { out(); bss = $2; ssid = ""; sig = ""; freq = 0; rsn = wpa = priv = 0 }
+        /^\tfreq:/        { freq = $2 }
+        /^\tsignal:/      { sig = int($2) }
+        /^\tSSID:/        { sub(/^\tSSID: ?/, ""); ssid = $0 }
+        /^\tcapability:/  { if ($0 ~ /Privacy/) priv = 1 }
+        /^\tRSN:/         { rsn = 1 }
+        /^\tWPA:/         { wpa = 1 }
+        END { out() }' | sort -rn
+}
+
+case "$1" in
+    ""|status)
+        status ;;
+    scan)
+        scan ;;
+    connect)
+        [ -n "$2" ] || die "usage: wifi connect SSID [PASSWORD]"
+        need_tools; need_if
+        mkdir -p $NETS $RUN
+        f=$RUN/new.conf
+        { printf '# ssid: %s\n' "$2"; network_block "$2" "$3"; } > $f || exit 1
+        say "Joining \"$2\"..."
+        if start $f; then
+            mv $f "$NETS/$(hexof "$2").conf"
+            say "Connected: $(addr4). Remembered -- 'wifi up' joins it again."
+        else
+            mv $f "$NETS/$(hexof "$2").conf"
+            exit 1
+        fi ;;
+    up)
+        set -- $NETS/*.conf
+        [ -e "$1" ] || die "no remembered networks: wifi connect SSID [PASSWORD]"
+        need_tools; need_if
+        say "Joining a remembered network..."
+        start "$@" && say "Connected: $(iw dev $IF link | sed -n 's/^[[:space:]]*SSID: //p'), $(addr4)" ;;
+    down)
+        stop; say "Wi-Fi disconnected." ;;
+    reset)
+        stop; say "Restarting the Wi-Fi chip..."; chip_cycle; need_chip
+        say "$IF is back."
+        [ -e $DIR/auto ] && exec "$0" up ;;
+    forget)
+        [ -n "$2" ] || die "usage: wifi forget SSID"
+        f="$NETS/$(hexof "$2").conf"
+        [ -e "$f" ] || die "\"$2\" is not remembered"
+        rm -f "$f"; say "Forgot \"$2\"." ;;
+    auto)
+        case "$2" in
+            on)  mkdir -p $DIR; touch $DIR/auto; say "Joins the remembered networks at boot." ;;
+            off) rm -f $DIR/auto; say "No Wi-Fi at boot." ;;
+            *)   die "usage: wifi auto on|off" ;;
+        esac ;;
+    -h|--help|help)
+        sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//' ;;
+    *)
+        die "unknown command '$1' -- 'wifi' alone lists them" ;;
+esac

@@ -1,0 +1,299 @@
+#!/usr/bin/env bash
+#
+# Project Cascadia — A13 / iPhone 11 (N104AP), through ./cascadia a13 at the
+# repository's top (this file is devices/a13/cascadia).
+#
+#   ./cascadia a13 doctor          check that this machine has what the build needs
+#   ./cascadia a13 inputs          make the boot inputs from Apple's CDN
+#   ./cascadia a13 periphery       touch, GPU firmware, on-screen keyboard, Wi-Fi/BT (firmware,
+#                                  iw, wpa_supplicant, this phone's calibration),
+#                                  the internal storage for Linux (asked; erases
+#                                  iOS) -- run it again once the phone has booted
+#   ./cascadia a13 recalibrate     touchscreen: tap the four corners on the running
+#                                  phone; pack puts the result into the DT
+#   ./cascadia a13 build           m1n1 + kernel + initramfs + Alpine root (all)
+#   ./cascadia a13 build m1n1      just m1n1
+#   ./cascadia a13 build kernel    just the kernel + DTB
+#   ./cascadia a13 build initramfs just the initramfs
+#   ./cascadia a13 build rootfs    the Alpine aarch64 root (NFS, RAM, internal storage)
+#   ./cascadia a13 pack            wrap the payload into the bootable IMG4
+#   ./cascadia a13 boot            pwned DFU → iBSS → boot (needs usbliter8)
+#   ./cascadia a13 boot proxy      the same, into m1n1's proxy instead of Linux
+#                                  (driven from the Mac: m1n1 proxyclient)
+#   ./cascadia a13 nfs on|off      export a root filesystem to it  (macOS or Linux)
+#   ./cascadia a13 net on|off      share this host's internet with it
+#   ./cascadia a13 release TAG     assemble a release archive
+#
+# Everything is relative to this file; the repository works wherever it is
+# cloned.
+set -euo pipefail
+
+A13="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$A13"
+
+say()  { printf '==> %s\n' "$*"; }
+note() { printf '    %s\n' "$*"; }
+fail() { printf 'error: %s\n' "$*" >&2; exit 1; }
+have() { command -v "$1" >/dev/null 2>&1; }
+
+# ---------- doctor -----------------------------------------------------------
+
+cmd_doctor() {
+    rc=0
+    say "host"
+    note "uname: $(uname -srm)"
+    for t in git python3 bash curl ssh; do
+        if have "$t"; then note "ok:      $t"; else note "MISSING: $t"; rc=1; fi
+    done
+    # pack edits the device tree
+    if have fdtput && have fdtget; then note "ok:      fdtput, fdtget"
+    else note "MISSING: fdtput / fdtget -- pack needs them (dtc; Debian/Ubuntu: device-tree-compiler)"; rc=1; fi
+
+    # docker -- reachability, not just the binary
+    if ! have docker; then
+        note "MISSING: docker"; rc=1
+    elif docker info >/dev/null 2>&1; then
+        note "ok:      docker (daemon reachable)"
+        # the initramfs, the Alpine root and periphery run arm64 containers:
+        # native on Apple silicon / arm64, qemu (binfmt) on x86_64
+        if docker run --rm --platform linux/arm64 alpine:3.24 true >/dev/null 2>&1; then
+            note "ok:      docker runs arm64 containers"
+        else
+            note "MISSING: arm64 containers -- on x86_64: docker run --privileged --rm tonistiigi/binfmt --install arm64"
+            rc=1
+        fi
+    else
+        note "BROKEN:  docker is installed but its daemon is not reachable"; rc=1
+    fi
+
+    # m1n1: on macOS built with the host's toolchain; elsewhere in a container
+    if [ "$(uname -s)" = Darwin ]; then
+        for t in rustc cargo; do
+            if have "$t"; then note "ok:      $t"
+            else note "MISSING: $t -- m1n1 needs it (rustup)"; rc=1; fi
+        done
+        if have brew && [ -x "$(brew --prefix llvm 2>/dev/null)/bin/clang" ]; then
+            note "ok:      Homebrew llvm"
+        else
+            note "MISSING: Homebrew llvm + lld -- m1n1 needs them (brew install llvm lld)"; rc=1
+        fi
+        if have rustup && rustup target list --installed 2>/dev/null | grep -qx aarch64-unknown-none-softfloat; then
+            note "ok:      Rust target aarch64-unknown-none-softfloat"
+        else
+            note "MISSING: rustup target add aarch64-unknown-none-softfloat -- m1n1 needs it"; rc=1
+        fi
+        if have gmake || have make; then note "ok:      $(have gmake && echo gmake || echo make)"
+        else note "MISSING: make -- m1n1 needs it"; rc=1; fi
+    else
+        note "ok:      m1n1 builds in a container (no host toolchain needed)"
+    fi
+
+    # boot chain tools
+    if have ipsw; then
+        iv=$(ipsw version 2>/dev/null || echo "?")
+        case "$iv" in
+            *3.1.714*) note "ok:      ipsw ($iv)" ;;
+            *)         note "WARNING: ipsw $iv -- tested with 3.1.714; other versions may differ"; rc=1 ;;
+        esac
+    else
+        note "MISSING: ipsw -- pack needs it (https://github.com/blacktop/ipsw)"; rc=1
+    fi
+    if have irecovery; then note "ok:      irecovery"
+    else note "MISSING: irecovery -- boot needs it"; rc=1; fi
+
+    # usbliter8ctl lives next to this file (devices/a13); its only dependency is pyusb
+    if have usbliter8ctl || [ -x "$A13/usbliter8ctl" ]; then
+        if python3 -c 'import usb' 2>/dev/null; then
+            note "ok:      usbliter8ctl + pyusb"
+        else
+            note "ok:      usbliter8ctl (devices/a13/usbliter8ctl)"
+            note "MISSING: pyusb -- pip3 install pyusb"; rc=1
+        fi
+    else
+        note "MISSING: usbliter8ctl -- should be at devices/a13/usbliter8ctl"
+        rc=1
+    fi
+
+    # host-side helpers
+    case "$(uname -s)" in
+        Darwin)
+            note "ok:      macOS -- build, pack, boot, nfs, net all run here" ;;
+        Linux)
+            note "ok:      Linux -- build, pack, boot, nfs, net all run here"
+            for t in exportfs rpcinfo; do
+                if have "$t"; then note "ok:      $t"
+                else note "missing: $t -- nfs needs nfs-utils"; fi
+            done
+            if have iptables || have nft; then
+                note "ok:      $(have iptables && echo iptables || echo nft) (net)"
+            else
+                note "missing: iptables or nft -- net needs one"
+            fi
+            note "note:    irecovery and usbliter8ctl talk to USB: run boot as root (sudo -E),"
+            note "         or give your user the Apple devices (udev rule for vendor 05ac)" ;;
+        *)
+            note "note:    $(uname -s) -- untested" ;;
+    esac
+
+    say "inputs (boot/inputs/)"
+    inputs_ok=true
+    for f in iBSS.n104.20E247.sigpatched.raw IM4M DeviceTree.n104.rdtr.img4 empty.rtsc.img4; do
+        if [ -f "boot/inputs/$f" ]; then note "ok:      $f"
+        else note "missing: $f"; inputs_ok=false; fi
+    done
+    $inputs_ok || note "         run: ./cascadia a13 inputs"
+
+    say "periphery (./cascadia a13 periphery; none of it is needed to boot)"
+    [ -f boot/inputs/n104-mtfw.bin ] && note "ok:      touch firmware" \
+        || note "missing: touch firmware -- no touchscreen"
+    [ -x build/fbkeyboard/usr/bin/fbkeyboard ] && note "ok:      fbkeyboard (on-screen keyboard)" \
+        || note "none:    fbkeyboard (on-screen keyboard)"
+    ls boot/inputs/brcm/brcmfmac4378* >/dev/null 2>&1 && note "ok:      Wi-Fi/BT firmware" \
+        || note "missing: Wi-Fi/BT firmware -- no Wi-Fi"
+    [ -s boot/inputs/syscfg.bin ] && note "ok:      this phone's calibration (syscfg)" \
+        || note "missing: this phone's calibration -- boot once, then run periphery again"
+    [ -f boot/inputs/nvme-linux ] && note "ok:      internal storage given to Linux (iOS erased)" \
+        || note "none:    internal storage (iOS kept; the root comes over NFS or runs in RAM)"
+    [ -f build/alpine-a13.tar.gz ] && note "ok:      Alpine root (build/alpine-a13.tar.gz)" \
+        || note "missing: Alpine root -- ./cascadia a13 build rootfs (for RAM and NVMe)"
+
+    say "build output (build/payload/)"
+    for f in m1n1-idevice.macho Image.gz t8030-n104.dtb initramfs.cpio.gz; do
+        if [ -f "build/payload/$f" ]; then note "ok:      $f"
+        else
+            case $f in
+                m1n1*)     hint="./cascadia a13 build m1n1" ;;
+                Image*|t8*) hint="./cascadia a13 build kernel" ;;
+                initramfs*) hint="./cascadia a13 build initramfs" ;;
+            esac
+            note "missing: $f    ($hint)"
+        fi
+    done
+    if [ -f "boot/out/m1n1-linux.rkrn.img4" ]; then
+        note "ok:      boot/out/m1n1-linux.rkrn.img4 (packed)"
+    else
+        note "missing: boot/out/m1n1-linux.rkrn.img4    (./cascadia a13 pack)"
+    fi
+
+    [ "$rc" -eq 0 ] || fail "install what is missing above and re-run"
+    say "ready"
+}
+
+# ---------- build ------------------------------------------------------------
+
+cmd_build() {
+    case "${1:-all}" in
+        all)
+            cmd_build m1n1
+            cmd_build kernel
+            cmd_build initramfs
+            cmd_build rootfs
+            ;;
+        m1n1)
+            say "building m1n1"
+            bash "$A13/m1n1/build-m1n1.sh"
+            ;;
+        kernel)
+            say "building kernel"
+            bash "$A13/kernel/build-kernel.sh"
+            ;;
+        initramfs)
+            say "building initramfs"
+            bash "$A13/initramfs/make-initramfs.sh"
+            ;;
+        rootfs)
+            say "building Alpine rootfs"
+            bash "$A13/rootfs/build-alpine-rootfs.sh"
+            ;;
+        *)
+            fail "unknown build target '$1' -- use: m1n1, kernel, initramfs, rootfs, or nothing for all" ;;
+    esac
+}
+
+# ---------- pack -------------------------------------------------------------
+
+cmd_pack() {
+    for f in m1n1-idevice.macho Image.gz t8030-n104.dtb initramfs.cpio.gz; do
+        [ -f "build/payload/$f" ] || [ -f "boot/payload/$f" ] \
+            || fail "no $f -- run: ./cascadia a13 build"
+    done
+    [ -f "boot/inputs/IM4M" ] || fail "no boot/inputs/IM4M -- run: ./cascadia a13 inputs"
+    say "packing the boot image"
+    sh "$A13/boot/package.sh"
+}
+
+# ---------- boot -------------------------------------------------------------
+
+cmd_boot() {
+    img=m1n1-linux.rkrn.img4
+    [ "${1:-}" = proxy ] && img=m1n1-proxy.rkrn.img4
+    # ios: the GPU bisect, iOS's kernel by this path (boot-from-recovery.sh)
+    [ "${1:-}" = ios ] || [ -f "boot/out/$img" ] || fail "no boot/out/$img -- run: ./cascadia a13 pack"
+
+    IBSS="${IBSS:-boot/inputs/iBSS.n104.20E247.sigpatched.raw}"
+    [ -f "$IBSS" ] || fail "no $IBSS -- run: ./cascadia a13 inputs"
+
+    # Find usbliter8ctl
+    if have usbliter8ctl; then
+        U8=usbliter8ctl
+    elif [ -x "$A13/usbliter8ctl" ]; then
+        U8="$A13/usbliter8ctl"
+    else
+        fail "usbliter8ctl not found -- put it on PATH or at devices/a13/usbliter8ctl"
+    fi
+
+    say "pwned DFU → iBSS (usbliter8)"
+    note "plug in the iPhone in DFU, then connect usbliter8"
+    "$U8" boot "$IBSS"
+
+    say "waiting for Recovery mode"
+    tries=0
+    while [ "$tries" -lt 20 ]; do
+        sleep 1
+        if irecovery -q 2>/dev/null | grep -q 'MODE: Recovery'; then
+            note "device is in Recovery"
+            break
+        fi
+        tries=$((tries + 1))
+    done
+    if [ "$tries" -ge 20 ]; then
+        fail "device did not enter Recovery within 20 s — check usbliter8 and iBSS"
+    fi
+
+    say "Recovery → bootx"
+    sh "$A13/boot/boot-from-recovery.sh" "${1:-}"
+}
+
+# ---------- nfs, net ---------------------------------------------------------
+
+host_tool() {
+    case "$(uname -s)" in
+        Darwin) echo "$A13/host/mac-$1.sh" ;;
+        Linux)  echo "$A13/host/linux-$1.sh" ;;
+        *)      fail "no host-side '$1' for $(uname -s) -- macOS and Linux only" ;;
+    esac
+}
+
+# ---------- release ----------------------------------------------------------
+
+cmd_release() {
+    [ -n "${1:-}" ] || fail "usage: ./cascadia a13 release TAG"
+    sh "$A13/boot/make-release.sh" "$1"
+}
+
+# ---------- dispatch ---------------------------------------------------------
+
+case "${1:-}" in
+    doctor)  cmd_doctor ;;
+    inputs)  bash "$A13/tools/make-inputs.sh" ;;
+    periphery) bash "$A13/tools/make-periphery.sh" ;;
+    recalibrate) python3 -I "$A13/tools/touchcal.py" "${PHONE:-root@172.16.42.1}" \
+                     "$A13/boot/inputs/touch-calibration" ;;
+    build)   shift; cmd_build "$@" ;;
+    pack)    cmd_pack ;;
+    boot)    shift; cmd_boot "$@" ;;
+    nfs)     t=$(host_tool nfs-export);     shift; bash "$t" "$@" ;;
+    net)     t=$(host_tool share-internet); shift; bash "$t" "$@" ;;
+    release) shift; cmd_release "$@" ;;
+    *)       sed -n '2,26p' "$A13/cascadia" | sed 's/^# \{0,1\}//'; exit 2 ;;
+esac

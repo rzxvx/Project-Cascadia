@@ -1,0 +1,64 @@
+# Applied on top of Hoolock's config_16k (see build-kernel.sh).
+#
+# USB device mode on t8030 = DWC3 (usb@239010000) + Apple glue + AUSB PHY.
+# config_16k has the gadget stack but not DWC3 itself. The gadget is set up
+# by the initramfs through configfs, so the legacy g_multi is off.
+CONFIG_USB_DWC3=y
+CONFIG_USB_DWC3_DUAL_ROLE=y
+CONFIG_USB_DWC3_APPLE=y
+CONFIG_PHY_APPLE_AUSB=y
+CONFIG_APPLE_USBCOMPLEX=y
+CONFIG_USB_CONFIGFS=y
+CONFIG_USB_CONFIGFS_ACM=y
+CONFIG_USB_CONFIGFS_ECM=y
+CONFIG_USB_CONFIGFS_NCM=y
+CONFIG_U_SERIAL_CONSOLE=y
+# CONFIG_USB_G_MULTI is not set
+# On-screen console: m1n1 hands over a 30bpp apple,simple-framebuffer, which
+# only simpledrm can drive; fbcon over DRM fbdev emulation.
+CONFIG_DRM=y
+CONFIG_DRM_SIMPLEDRM=y
+CONFIG_DRM_FBDEV_EMULATION=y
+CONFIG_FRAMEBUFFER_CONSOLE=y
+CONFIG_VT=y
+CONFIG_VT_CONSOLE=y
+CONFIG_BLK_DEV_INITRD=y
+CONFIG_DEVTMPFS=y
+CONFIG_DEVTMPFS_MOUNT=y
+# earlycon=applefb (extras/apple_fb_earlycon.c): screen in font_vga_8x16 + s5l UART0
+CONFIG_SERIAL_EARLYCON=y
+CONFIG_FONTS=y
+CONFIG_FONT_8x16=y
+# NFS root on the host over the USB network (initramfs mounts it, v3 because
+# macOS's nfsd serves v2/v3 only; v4 for Linux hosts)
+CONFIG_NETWORK_FILESYSTEMS=y
+CONFIG_NFS_FS=y
+CONFIG_NFS_V3=y
+CONFIG_NFS_V4=y
+# Touch bring-up: userspace SPI (spidev, bound by driver_override to the
+# touchscreen node) and I2C (i2c-dev, for the display PMU's touch rail)
+CONFIG_SPI_SPIDEV=y
+CONFIG_I2C_CHARDEV=y
+# The touchscreen driver (extras/apple_hidspi_touch.c) lives in
+# drivers/input/touchscreen/
+CONFIG_INPUT_TOUCHSCREEN=y
+# Wi-Fi: BCM4378 on apcie port 2 (brcmfmac, a FullMAC chip: cfg80211 only).
+# Firmware, NVRAM, CLM and TxCap blobs from the IPSW (./cascadia a13 inputs),
+# calibration, MAC and antenna SKU from the phone's syscfg.
+CONFIG_WIRELESS=y
+CONFIG_CFG80211=y
+CONFIG_CFG80211_DEFAULT_PS=y
+CONFIG_WLAN=y
+CONFIG_WLAN_VENDOR_BROADCOM=y
+CONFIG_BRCMFMAC=y
+CONFIG_BRCMFMAC_PCIE=y
+CONFIG_RFKILL=y
+# Bluetooth: the same module's PCIe function 1 (hci_bcm4377)
+CONFIG_BT=y
+CONFIG_BT_BREDR=y
+CONFIG_BT_LE=y
+CONFIG_BT_HCIBCM4377=y
+# No firmware fallback to a userspace helper: nothing here answers it (eudev
+# does not), so every missing name (brcmfmac tries several, regulatory.db)
+# would stall its driver for 60 s
+# CONFIG_FW_LOADER_USER_HELPER is not set
