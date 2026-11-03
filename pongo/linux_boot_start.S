@@ -3,7 +3,13 @@
 	.arm
 
 	.equ	KERNEL_ENTRY,	0x80008000
-	.equ	WDT_BASE,	0x0F103020
+#ifndef BOOT_WDT_BASE
+#define BOOT_WDT_BASE 0x0F103020
+#endif
+#ifndef BOOT_STACK_TOP
+#define BOOT_STACK_TOP 0x8000F000
+#endif
+	.equ	WDT_BASE,	BOOT_WDT_BASE
 	.equ	PL310_BASE,	0x3e000000
 
 	.section .text.start, "ax"
@@ -16,12 +22,23 @@ _start:
 
 	ldr	r0, =WDT_BASE
 	mov	r1, #0
+	str	r1, [r0, #0x0C]
+	dsb
 	str	r1, [r0, #0x00]
+#ifdef BOOT_WDT_SECONDS
+	ldr	r1, =(BOOT_WDT_SECONDS * 24000000)
+	str	r1, [r0, #0x04]
+	mov	r1, #0
+	str	r1, [r0, #0x08]
+	mov	r1, #4
+	str	r1, [r0, #0x0C]
+	dsb
+#else
 	str	r1, [r0, #0x04]
 	str	r1, [r0, #0x08]
-	str	r1, [r0, #0x0C]
+#endif
 
-	ldr	sp, =0x8000F000
+	ldr	sp, =BOOT_STACK_TOP
 	bl	main
 	/* main returns DTB phys in r0 */
 	b	linux_boot_jump
@@ -34,8 +51,20 @@ _start:
 linux_boot_jump:
 	mov	r4, r0			/* save DTB */
 
+#ifdef K93_BOOT_TRACE
+	mov	r0, #0
+	bl	k93_trace_block
+#endif
 	bl	v7_flush_dcache_all
+#ifdef K93_BOOT_TRACE
+	mov	r0, #1
+	bl	k93_trace_block
+#endif
 	bl	l2x0_flush_all
+#ifdef K93_BOOT_TRACE
+	mov	r0, #2
+	bl	k93_trace_block
+#endif
 
 	mrc	p15, 0, r0, c1, c0, 0
 	bic	r0, r0, #(1 << 0)	/* MMU */
@@ -52,6 +81,10 @@ linux_boot_jump:
 	dsb
 	isb
 
+#ifdef K93_BOOT_TRACE
+	mov	r0, #3
+	bl	k93_trace_block
+#endif
 	mov	r0, #0
 	mvn	r1, #0
 	mov	r2, r4
@@ -60,6 +93,38 @@ linux_boot_jump:
 
 1:	wfi
 	b	1b
+
+#ifdef K93_BOOT_TRACE
+/* Trace only: known framebuffer RAM, no peripheral register accesses.
+ * No stack writes; preserve r4 (DTB) and r5-r11. Clean each modified L1 line
+ * while caching is enabled. A missing block alone is not proof of a stall:
+ * external-cache/scanout visibility is still being validated on this board.
+ */
+k93_trace_block:
+	ldr	r1, =(0x9f6fc000 + 280 * 4096 + 8 * 4)
+	add	r1, r1, r0, lsl #7
+	ldr	r2, =0xff00ff88
+	mov	r3, #16
+1:
+	mov	r12, #16
+	mov	r0, r1
+2:
+	str	r2, [r0], #4
+	subs	r12, r12, #1
+	bne	2b
+	mrc	p15, 0, r12, c1, c0, 0
+	tst	r12, #(1 << 2)
+	beq	3f
+	mcr	p15, 0, r1, c7, c10, 1
+	add	r0, r1, #32
+	mcr	p15, 0, r0, c7, c10, 1
+3:
+	add	r1, r1, #4096
+	subs	r3, r3, #1
+	bne	1b
+	dsb
+	bx	lr
+#endif
 
 v7_flush_dcache_all:
 	push	{r4-r11, lr}

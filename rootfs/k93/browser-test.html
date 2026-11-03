@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width">
+<title>K93_BROWSER_LOADING</title>
+<style>
+body{background:#102030;color:#e5f2ff;font:22px sans-serif;margin:36px}
+main{display:grid;gap:20px;max-width:850px}h1{color:#9fffc8}
+input,button{font:inherit;padding:16px}#result{padding:20px;border:2px solid #9fffc8}
+</style>
+<main><h1>Native Firefox on iPad 2</h1>
+<div>Offline diagnostic — not an Internet compatibility test.</div>
+<div id="engine">JavaScript is starting…</div>
+<input id="entry" aria-label="Input check" autofocus placeholder="Type k93-input">
+<button id="check">Check keyboard and click</button>
+<div id="result">Waiting for input</div></main>
+<script>
+(async () => {
+  const values = await Promise.all([1,2,3].map(async x => x * x));
+  const bytes = new TextEncoder().encode('K93');
+  if (values.reduce((a,b) => a+b,0) !== 14 || bytes.length !== 3)
+    throw new Error('JavaScript result mismatch');
+  document.querySelector('#engine').textContent = 'JavaScript, promises, typed arrays and DOM: PASS';
+  document.querySelector('#check').addEventListener('click', () => {
+    const ok = document.querySelector('#entry').value === 'k93-input';
+    document.querySelector('#result').textContent = ok ? 'Keyboard and button: PASS' : 'Input does not match';
+    document.title = ok ? 'K93_INPUT_PASS' : 'K93_INPUT_FAIL';
+  });
+  document.querySelector('#entry').focus();
+  document.title = 'K93_JS_READY';
+})().catch(error => {
+  document.querySelector('#result').textContent = String(error);
+  document.title = 'K93_JS_FAIL';
+});
+</script></html>
