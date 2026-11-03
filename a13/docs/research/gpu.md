@@ -280,6 +280,30 @@ opaque `unk_9100` blob (RegionC 0x9254..0x10154), all zero; on iOS it
 reads 0 too, but that dump was taken long after the firmware had cleared
 it. Patch 0007 sets it to 1 for the A13.
 
+**G5.1 run 4** (`agx-start-43.log`, RegionC +0xb1dc = 1): **no firmware
+crash any more; the GPU ran our job and did not finish it.** The
+firmware took the command (CL_0 channel read 1, queue GPU_RPTR 1), but
+GPU_DONEPTR stayed 0, stamps and timestamps 0, the event never fired, not
+even after kick_firmware (doorbell 0x10). Meanwhile it ran the GPU on
+its own: Stats "Utilization 0% 0% 100% 100%" and "PowerState ACT ps=6"
+(9081 Stats records in 10 s), Fender state 6, VOLMAN +0x38 0x01aaaaaa,
+buck 0x4100 `09 aa` -- DVFS works now (G5.0's open item: the firmware
+manages power once its scheduler is initialised). EP 0x20 messages
+0x0042... every ~0.4 s are m1n1's "poll channels" events. A soft crash
+afterwards: agx_background busy, no crash of its own.
+
+GPU MMU (sgx + 0x17030, read once with the GPU on after the run):
+FAULT_INFO 0x1600027fe2862210 -- **address 0x1600027fc0, context 3
+(ours), unit 0x11 = UL1C1 (VDM/PDM/CDM L1), read, reason INVALID
+(unmapped)**, FAULTED bit 0 (handled or latched). Our buffers: CDM stream
+0x1600003f00, preempt 0x1600008060..0x1600010000, USC words at pipeline
+offset 0x1bfc0, shader at 0x13f00. Nothing is mapped at 0x1600027fc0. One
+reading: the CDM used a pipeline base of 0x160000c000 instead of
+0x11_00000000 (0x160000c000 + 0x1bfc0 = 0x1600027fc0) -- the G12
+firmware copies only ComputeInfo's first six qwords into GPU state and
+pipeline_base (+0x30) is not among them. Unconfirmed; the G12 ComputeInfo
+/ CDM words need a reference from iOS.
+
 **Offline G12 compiler.** Xcode's Metal Toolchain (`xcodebuild
 -downloadComponent MetalToolchain`, 27A5228f) has `metal-tt` and the
 translator `applegpu-nt`; `applegpu-nt -available-archs ios 16.4` lists
