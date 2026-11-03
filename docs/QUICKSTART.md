@@ -324,6 +324,12 @@ from your IPSW) and `./cascadia mesa` (Mesa, about an hour the first time);
   solid colour on purpose: XFCE's default wallpaper is an SVG, and rasterising
   it on one core kept the screen black for over a minute.
 
+`desktop` checks that the system D-Bus actually answers before starting the
+session. If a stopped daemon left a socket and pid file behind, it removes
+only the pid file of a process that no longer exists and starts a new bus.
+An unresponsive live process, malformed pid file or socket without a known
+owner stops startup for inspection; the script does not kill an existing bus.
+
 The script's header says what each package is for. Three things older recipes
 had that do not work here:
 
