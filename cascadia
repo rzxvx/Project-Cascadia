@@ -1,0 +1,92 @@
+#!/usr/bin/env bash
+#
+# Project Cascadia -- the one entry point, for every device.
+#
+#   ./cascadia a5 <command> ...     iPad mini 1 (iPad2,5 / p105ap, A5)
+#   ./cascadia a13 <command> ...    iPhone 11 (iPhone12,1 / n104ap, A13)
+#   ./cascadia <command> ...        the device chosen last (./cascadia device)
+#   ./cascadia device [a5|a13]      show or choose that device
+#   ./cascadia a5 | a13             that device's commands
+#
+# Each device's tree lives in devices/<soc>/, with its own cascadia there
+# doing the work; this file only picks which one.  ipad-mini1 and iphone11
+# are accepted for a5 and a13.
+set -euo pipefail
+
+REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SAVED="$REPO/.cascadia-device"
+
+fail() { printf 'error: %s\n' "$*" >&2; exit 1; }
+
+# a name as typed -> the devices/ directory, or nothing
+soc() {
+    case "$1" in
+        a5|A5|ipad-mini1|ipad-mini|p105|p105ap|iPad2,5) echo a5 ;;
+        a13|A13|iphone11|n104|n104ap|iPhone12,1)        echo a13 ;;
+        *) return 1 ;;
+    esac
+}
+
+name() {
+    case "$1" in
+        a5)  echo "iPad mini 1 (A5)" ;;
+        a13) echo "iPhone 11 (A13)" ;;
+    esac
+}
+
+saved() { [ -s "$SAVED" ] && soc "$(cat "$SAVED")"; }
+
+# asks on the terminal; only the answer goes to stdout
+choose() {
+    {
+        echo "Which device?"
+        echo "  1) iPad mini 1, Wi-Fi (iPad2,5)   -- a5"
+        echo "  2) iPhone 11 (iPhone12,1)         -- a13"
+        printf 'Choose 1 or 2: '
+    } >&2
+    read -r ans || ans=
+    case "$ans" in
+        1|a5)  echo a5 ;;
+        2|a13) echo a13 ;;
+        *) fail "no device chosen -- run: ./cascadia device a5 (or a13)" ;;
+    esac
+}
+
+usage() {
+    sed -n '2,13p' "$REPO/cascadia" | sed 's/^# \{0,1\}//'
+    if d=$(saved); then echo; echo "Chosen now: $d, $(name "$d")."; fi
+}
+
+run() {
+    local d=$1; shift
+    exec bash "$REPO/devices/$d/cascadia" "$@"
+}
+
+case "${1:-}" in
+    ''|-h|--help|help)
+        usage; exit 0 ;;
+    device)
+        if [ -n "${2:-}" ]; then
+            d=$(soc "$2") || fail "unknown device '$2' -- a5 or a13"
+        elif [ -t 0 ]; then
+            if d=$(saved); then echo "now: $d, $(name "$d")"; exit 0; fi
+            d=$(choose)
+        else
+            d=$(saved) || fail "no device chosen yet -- ./cascadia device a5 (or a13)"
+            echo "$d"; exit 0
+        fi
+        echo "$d" > "$SAVED"
+        echo "==> device: $d, $(name "$d") -- ./cascadia <command> now means ./cascadia $d <command>" ;;
+    *)
+        if d=$(soc "$1"); then
+            shift
+            echo "$d" > "$SAVED"
+            run "$d" "$@"
+        fi
+        if ! d=$(saved); then
+            [ -t 0 ] || fail "which device? ./cascadia a5 $1 ... or ./cascadia a13 $1 ...  (or ./cascadia device a5)"
+            d=$(choose)
+            echo "$d" > "$SAVED"
+        fi
+        run "$d" "$@" ;;
+esac
