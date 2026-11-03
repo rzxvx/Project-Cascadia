@@ -514,7 +514,17 @@ static int h2fmi_mtd_block_isbad(struct mtd_info *mtd, loff_t ofs)
 	ret = h2fmi_read_page_at(mtd, ofs, NULL, NULL, &st);
 	if (ret)
 		return ret;
-	return st == PPN_ST_RETIRED;
+	switch (st) {
+	case PPN_ST_GOOD:
+	case PPN_ST_REFRESH:
+	case PPN_ST_ERASED:
+		return 0;
+	case PPN_ST_RETIRED:
+		return 1;
+	default:
+		/* An unknown status does not establish that the block is good. */
+		return -EIO;
+	}
 }
 
 static int h2fmi_setup_mtd(struct h2fmi *fmi, int idx)
