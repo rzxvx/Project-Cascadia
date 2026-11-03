@@ -26,6 +26,10 @@ MACADDR goes in as macaddr= when the file has none -- and Apple's module files
 have none: the MAC lives in the device's syscfg, not in the chip, and iOS adds
 it.  Without it the firmware starts, answers the bus, and its wl half never
 attaches: the first ioctl halts it (TRAP in proto_ctrldispatch).
+
+The iPad 3's BCM4330 runs wifi/4330b2/mike.trx, whose header already counts
+28 bytes of NVRAM (offsets[2] = 0x1c), all of them zero.  A placeholder like
+that is replaced; NVRAM with anything in it is still refused.
 """
 import struct
 import sys
@@ -68,7 +72,10 @@ def main():
     if trx_crc(fw[:ln]) != crc:
         sys.exit("trx-add-nvram: the input's own CRC does not check -- wrong idea of the format")
     if offs[2]:
-        sys.exit("trx-add-nvram: the input already carries %d bytes of NVRAM" % offs[2])
+        old = fw[HDR + offs[0]:HDR + offs[0] + offs[2]]
+        if any(old):
+            sys.exit("trx-add-nvram: the input already carries %d bytes of NVRAM" % offs[2])
+        print("    replacing a %d-byte all-zero NVRAM placeholder" % offs[2])
 
     nv = nvram_blob(open(sys.argv[2], encoding="ascii", errors="strict").read(), mac)
     img = bytearray(fw[:HDR + offs[0]] + nv)
