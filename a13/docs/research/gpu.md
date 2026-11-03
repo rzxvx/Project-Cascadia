@@ -97,7 +97,7 @@ Steps (2026-11-03), each one checkable on its own:
   decoded (0x40 bytes on G12; m1n1's driver read 0x60 -- fixed in patch
   0007), FWLog, the GPU's idle power-off and wake-up (Fender +0x1000 back
   to 0 and up again, VOLMAN +0x38 / buck 0x4100 following).
-- **G5.1 an empty compute job.** WorkCommandCP on CL_0 with a shader that
+- **G5.1 an empty compute job. DONE 2026-11-03** (see "G5 results"). WorkCommandCP on CL_0 with a shader that
   is only `stop`: the smallest work that goes through the firmware's
   queue, the CDM and the USC. m1n1's Python driver submits render work
   only (render.py); compute after drm/asahi's compute.rs, control words
@@ -374,6 +374,20 @@ dumps with g12cap alive; the CP commands sit in fw buffer
 
 g5compute now builds all of this the same way (USC program, CDM words,
 ComputeInfo, wait, the 0x6c Finalize); dry-run offsets equal Apple's.
+
+**G5.1 DONE (run 5, `agx-start-44.log`, 2026-11-03): the first job on the
+A13's GPU completed.** `--volman-gpu --fender-init --compute --watch 10`,
+the empty kernel (`08 01`): the firmware took the command, the queue's
+done pointer moved to 1, both stamps reached 0xc0000100, event 0 fired,
+GPU timestamps 0x114d03d5d -> 0x114d03dca (109 ticks of 24 MHz, ~4.5 us),
+no firmware crash, no fault. What it took, in order (runs 1-5): the G12
+work-command layout (12.x line sizes, JobMeta +0x274), DC_Init = 0x10,
+RegionC +0xb1dc = 1 (scheduler init), and Apple's ComputeInfo / USC
+program / CDM words / wait op / 0x6c Finalize from the iOS reference.
+Still open: the GPU stays on after the job (Fender 1, VOLMAN 0x3a; Stats
+"Utilization 0% 0% 100% 100%" throughout) -- no idle power-down yet.
+Next, G5.2: the store kernel with Apple's on-device code and its two
+uniform loads (argument table, constants).
 
 **Offline G12 compiler.** Xcode's Metal Toolchain (`xcodebuild
 -downloadComponent MetalToolchain`, 27A5228f) has `metal-tt` and the
