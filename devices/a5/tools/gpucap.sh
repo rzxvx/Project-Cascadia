@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # A capture of what iOS's GL driver sets up for a textured quad, from this
-# iPad's own jailbroken iOS -- a research tool.  ./cascadia a5 gpu does not need
+# iPad's own jailbroken iOS -- a research tool.  ./cascadia a5 dev gpu does not need
 # it any more: tools/sgx/frame.py builds the same frame from our own programs
 # (frame.py --check compares the two, word by word).
 #

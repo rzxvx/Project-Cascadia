@@ -8,7 +8,7 @@
  * back each time and checks it; with --fb the last frame is also copied to
  * /dev/fb0 (the console is in the way: echo 0 > .../vtcon1/bind first).
  * A full-screen clear is a render on the GPU when the template frame is
- * installed (./cascadia a5 gpu), and done by the CPU otherwise; the driver
+ * installed (./cascadia a5 dev gpu), and done by the CPU otherwise; the driver
  * says which when it starts.
  *
  * docs/research/p105-mesa.md, M12.  Exit status 0 when every pixel was right.

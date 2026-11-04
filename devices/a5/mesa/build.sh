@@ -7,7 +7,7 @@
 # libgallium with only the sgx driver in it, glclear, gltri, sgx-gl.
 #
 # Mesa itself is fetched on the host beforehand (mesa/fetch.sh, which
-# ./cascadia a5 mesa runs first: git under emulation is far too slow); this
+# ./cascadia a5 dev mesa runs first: git under emulation is far too slow); this
 # repository has the driver (mesa/files, copied into the tree) and the few
 # lines that register it, with the fixes to Mesa's own code the driver's
 # tests ran into (mesa/mesa.patch).  The first build takes long
@@ -26,7 +26,7 @@ fail() { printf 'error: %s\n' "$*" >&2; exit 1; }
 g() { git -c safe.directory='*' -c core.checkStat=minimal -c core.trustctime=false -C "$B/src" "$@"; }
 
 [ "$(g rev-parse -q --verify HEAD 2>/dev/null)" = "$COMMIT" ] \
-    || fail "build/mesa/src is not Mesa at $COMMIT -- ./cascadia a5 mesa fetches it (mesa/fetch.sh)"
+    || fail "build/mesa/src is not Mesa at $COMMIT -- ./cascadia a5 dev mesa fetches it (mesa/fetch.sh)"
 
 say "the sgx driver into the tree"
 # copy only what changed, so ninja rebuilds only that

@@ -174,7 +174,7 @@ see [K93 bring-up and limitations](docs/k93-bringup.md).
       2.1 through GLX and EGL** (2026-10-15). A Gallium driver in
       [mesa/](mesa/) with its own shader compiler (NIR to the GPU's USSE code:
       branches, loops, texture lookups, derivatives) on the kernel's DRM
-      render node; `./cascadia a5 mesa` builds it and makes it the system's.
+      render node; `./cascadia a5 dev mesa` builds it and makes it the system's.
       **XFCE runs on Xorg with glamor on the GPU**, GLX programs beside it;
       weston and its Wayland clients too; SuperTux through SDL's GL renderer.
       **`tux-gpudemo`**, the GPU demo: Tux going round, his light baked, at
@@ -774,7 +774,7 @@ tools/          p105-peek.c (MMIO tool), build/flash wrappers, LZSS helpers,
                 desktop/ (XFCE's setup, X screenshots)
 mesa/           the GPU's Mesa driver (Gallium: OpenGL ES 1.1/2.0, OpenGL 2.1):
                 its files, the patch that registers it, the device build
-                (./cascadia a5 mesa; mesa/devbuild.sh for a build beside it)
+                (./cascadia a5 dev mesa; mesa/devbuild.sh for a build beside it)
 docs/           QUICKSTART.md — clean machine to a shell on the device
                 CASCADIA-CHEATSHEET.md — the real reference for working on it
                 GPU.md — the GPU: building, playing SuperTux, how it works

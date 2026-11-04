@@ -2,7 +2,7 @@
 """mkpack.py -- build the GPU's pack for the device (the template frame the Mesa
 driver takes, and sgx2d's demos), and install it.
 
-    ./cascadia a5 gpu [--install [HOST] | --root [DIR]]      (the usual way)
+    ./cascadia a5 dev gpu [--install [HOST] | --root [DIR]]      (the usual way)
 
     tools/sgx/mkpack.py                  build, inside the cascadia-build image
     tools/sgx/mkpack.py --install [HOST] then install, on the host
@@ -24,7 +24,7 @@ from the IPSW and this repository: no capture from the device's iOS.
 
 Installing, as /usr/local/lib/sgx2d:
    --auto     the running device's NFS root, else this host's exported
-              root -- what ./cascadia a5 gpu does
+              root -- what ./cascadia a5 dev gpu does
    --install  over ssh into the root the device is running now
               (HOST, default root@10.55.0.2)
    --root     into a root filesystem tree on this machine, such as the one
@@ -139,11 +139,11 @@ def auto(pack):
             print('note: the device runs from RAM now; the pack is there once it boots from this root')
     elif dev:
         fail('the device runs from its RAM root, which keeps nothing past a reboot.\n'
-             '  Boot it from NFS (./cascadia a5 nfs on, then flash) and run ./cascadia a5 gpu again.')
+             '  Boot it from NFS (./cascadia a5 nfs on, then flash) and run ./cascadia a5 dev gpu again.')
     else:
         fail('nowhere to install: no device at %s and no exported root at %s\n'
              '  (./cascadia a5 nfs on).  Or name one: --install HOST / --root DIR.' % (DEVICE, root))
-    print('\nOn the iPad: the template frame for the Mesa driver (./cascadia a5 mesa next),')
+    print('\nOn the iPad: the template frame for the Mesa driver (./cascadia a5 dev mesa next),')
     print('             sgx2d\'s demos in /%s (sprites, demo2, sgxinfo)' % PREFIX)
 
 def default_root():
@@ -197,7 +197,7 @@ def main():
         print('built: %s' % os.path.relpath(pack, ROOT))
         return
     if not os.path.exists(os.path.join(pack, 'sgxinfo')):
-        fail('nothing built in %s -- ./cascadia a5 gpu builds it' % os.path.relpath(pack, ROOT))
+        fail('nothing built in %s -- ./cascadia a5 dev gpu builds it' % os.path.relpath(pack, ROOT))
     if a.auto:
         auto(pack)
     elif a.install:

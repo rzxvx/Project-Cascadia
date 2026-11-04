@@ -4,7 +4,7 @@
     python3 mesa/host/fakepack.py OUTDIR
 
 Writes pack.txt, tmpl.bin and the two images the way rpack.py packs the
-real one (./cascadia a5 gpu), from tools/sgx/frame.py's GL window, with two
+real one (./cascadia a5 dev gpu), from tools/sgx/frame.py's GL window, with two
 differences: the 3D pass's event program (iOS's GL driver's, from the
 IPSW) is zeros, and there is no microkernel data. Nothing in it comes from
 Apple, so it can be made anywhere; the GPU could not run it, but through

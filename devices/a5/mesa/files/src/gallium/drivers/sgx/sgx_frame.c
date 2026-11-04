@@ -833,7 +833,7 @@ load_pack(struct sgx_frame *f, const char *dir)
 
    snprintf(path, sizeof(path), "%s/pack.txt", dir);
    if (!(fp = fopen(path, "r"))) {
-      mesa_logw("sgx: no template frame at %s (./cascadia a5 gpu installs it); "
+      mesa_logw("sgx: no template frame at %s (./cascadia a5 dev gpu installs it); "
                 "clears go through the CPU", path);
       return false;
    }
@@ -884,7 +884,7 @@ load_pack(struct sgx_frame *f, const char *dir)
    }
    if (ok && poke_value != f->dev->code_base >> 6) {
       mesa_logw("sgx: %s was built for code base 0x%x, the kernel's is 0x%x -- "
-                "./cascadia a5 gpu rebuilds it", dir, poke_value << 6, f->dev->code_base);
+                "./cascadia a5 dev gpu rebuilds it", dir, poke_value << 6, f->dev->code_base);
       ok = false;
    }
    fclose(fp);
@@ -1007,7 +1007,7 @@ build_frame(struct sgx_frame *f, const char *dir)
 
    f->built = true;
    if (!event_template(dir, ev)) {
-      mesa_logw("sgx: no 3D event program in %s (./cascadia a5 gpu installs it)", dir);
+      mesa_logw("sgx: no 3D event program in %s (./cascadia a5 dev gpu installs it)", dir);
       return false;
    }
    if (!(prog = new_bo(f, 0x1000, APPLE_SGX_BO_USSE_CODE)) ||

@@ -13,14 +13,17 @@
 #   ./cascadia a5 link        give this host 10.55.0.1 on the device's link (flash does it)
 #   ./cascadia a5 net on|off  share this host's internet with it  (macOS or Linux)
 #   ./cascadia a5 nfs on|off  export a root filesystem to it      (macOS or Linux)
-#   ./cascadia a5 gpu         the GPU's pack (the template frame Mesa takes, sgx2d's
-#                             demos): build and install, in one go
-#   ./cascadia a5 mesa        Mesa with the GPU's driver: the system's OpenGL (ES 1.1 and
-#                             2.0, desktop 2.1, GLX), and the GPU demo tux-gpudemo: build
-#                             and install (release; a debug build: MESA_BUILD=debug)
 #   ./cascadia a5 desktop-root  a root with XFCE, the GPU's Mesa and pack, SuperTux,
 #                             screenpad, autorotate, built here; nfs on seeds
 #                             a new root from it
+#
+# For working on the port (desktop-root runs these itself):
+#   ./cascadia a5 dev gpu     the GPU's pack (the template frame Mesa takes, sgx2d's
+#                             demos): build, and install onto the iPad (or --install
+#                             HOST, --root DIR)
+#   ./cascadia a5 dev mesa    Mesa with the GPU's driver (OpenGL ES 1.1/2.0, desktop
+#                             2.1, GLX, tux-gpudemo): build, and install the same way
+#                             (release; a debug build: MESA_BUILD=debug)
 #   ./cascadia a5 image       rebuild the build image if the Dockerfile changed
 #
 # Everything is relative to this file, so the repository works wherever it is
@@ -522,7 +525,7 @@ cmd_gpu() {
 # against the libraries the device's root has.  The source is fetched here
 # first, natively (mesa/fetch.sh): the first try cloned it inside the image
 # and sat there for over an hour.  mesa/build.sh does the build;
-# mesa/install.py puts it where ./cascadia a5 gpu puts the GPU's pack.
+# mesa/install.py puts it where ./cascadia a5 dev gpu puts the GPU's pack.
 cmd_mesa() {
     require_docker
     bash "$ROOT/mesa/fetch.sh"
@@ -566,8 +569,13 @@ case "${1:-}" in
     image)  ensure_image; say "$IMAGE is current" ;;
     net)    t=$(host_tool share-internet); shift; bash "$t" "$@" ;;
     nfs)    t=$(host_tool nfs-export);     shift; bash "$t" "$@" ;;
-    gpu)    shift; cmd_gpu "$@" ;;
-    mesa)   shift; cmd_mesa "$@" ;;
+    dev)    shift
+            case "${1:-}" in
+                gpu)  shift; cmd_gpu "$@" ;;
+                mesa) shift; cmd_mesa "$@" ;;
+                *)    fail "./cascadia a5 dev gpu | mesa  (./cascadia a5 lists them)" ;;
+            esac ;;
     desktop-root) bash "$ROOT/tools/desktop/make-root.sh" ;;
-    *)      sed -n '2,23p' "$ROOT/cascadia" | sed 's/^# \{0,1\}//'; exit 2 ;;
+    mesa|gpu) fail "./cascadia a5 $1 is ./cascadia a5 dev $1 now (desktop-root puts both into the root for you)" ;;
+    *)      sed -n '2,30p' "$ROOT/cascadia" | sed 's/^# \{0,1\}//'; exit 2 ;;
 esac

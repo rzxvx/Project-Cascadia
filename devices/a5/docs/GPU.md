@@ -23,17 +23,17 @@ is how to use it and how the pieces fit.
 With the iPad running this port from an NFS root (`./cascadia a5 nfs on`):
 
 ```bash
-./cascadia a5 gpu
+./cascadia a5 dev gpu
 ```
 
 ```bash
-./cascadia a5 mesa
+./cascadia a5 dev mesa
 ```
 
 Then, on the iPad: `tux-gpudemo`.
 
 Nothing from the iPad's iOS is needed, only the IPSW the port is built from
-anyway. `./cascadia a5 gpu` builds and installs the GPU's pack, in
+anyway. `./cascadia a5 dev gpu` builds and installs the GPU's pack, in
 `/usr/local/lib/sgx2d`:
 
 - it runs `./cascadia a5 firmware` if it has not been run: besides the boot
@@ -50,17 +50,17 @@ anyway. `./cascadia a5 gpu` builds and installs the GPU's pack, in
 - it installs it: over ssh into the running iPad's root, or, if the iPad is
   not up, into the root this host exports.
 
-`./cascadia a5 mesa` then builds Mesa with the driver (the first time takes
+`./cascadia a5 dev mesa` then builds Mesa with the driver (the first time takes
 the better part of an hour, under ARM emulation) and makes it the iPad's
 OpenGL, the demo with it: [mesa/README.md](../mesa/README.md).
 
 Needs a kernel with the `apple-sgx` driver and its render node from this
-tree (`./cascadia a5 build`); `./cascadia a5 gpu` warns if the running one has
-none. Run `./cascadia a5 gpu` again after updating the kernel.
+tree (`./cascadia a5 build`); `./cascadia a5 dev gpu` warns if the running one has
+none. Run `./cascadia a5 dev gpu` again after updating the kernel.
 
-**By hand**: `./cascadia a5 gpu --install [HOST]` (over ssh only) or
-`./cascadia a5 gpu --root [DIR]` (into a root tree only), the same for
-`./cascadia a5 mesa`. The NFS root lives on the host that exports it: a device
+**By hand**: `./cascadia a5 dev gpu --install [HOST]` (over ssh only) or
+`./cascadia a5 dev gpu --root [DIR]` (into a root tree only), the same for
+`./cascadia a5 dev mesa`. The NFS root lives on the host that exports it: a device
 booted from another host's root needs them installed there too. Everything
 built stays in `build/`, out of git.
 
@@ -183,10 +183,10 @@ apple-sgx ── render queue: context + CCB + TA command ──> iOS's microker
 |---|---|
 | `patches/files/drivers/gpu/drm/apple-sgx/` | the kernel driver: power, clocks, MMU, microkernel, queues, debugfs (`apple_sgx_hw.c`), the render node (`apple_sgx_drm.c`) |
 | `patches/files/include/uapi/drm/apple_sgx_drm.h` | the render node's interface |
-| `mesa/` | the Mesa driver, its build and install (`./cascadia a5 mesa`): [mesa/README.md](../mesa/README.md) |
+| `mesa/` | the Mesa driver, its build and install (`./cascadia a5 dev mesa`): [mesa/README.md](../mesa/README.md) |
 | `tools/sgx/tux/` | the GPU demo: `tuxorbit.c`, its launcher `tux-gpudemo.sh`, the scene (`assets/`), its bake (`make_tux.py`, `preview_tux.py`) |
 | `tools/sgx/lib/sgx2d.{c,h}` | the 2D library |
-| `tools/sgx/mkpack.py` | build and install the pack (`./cascadia a5 gpu`) |
+| `tools/sgx/mkpack.py` | build and install the pack (`./cascadia a5 dev gpu`) |
 | `tools/sgx/programs.py`, `usse.py` | the USSE programs, and their assembler |
 | `tools/sgx/pds.py` | the PDS programs |
 | `tools/sgx/frame.py` | the template frame: state, layout, render command |

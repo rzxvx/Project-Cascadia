@@ -160,9 +160,9 @@ is true as of its date. Now:
   `nandctl` for the chips themselves — see "THE NAND" at the end
 - XFCE: `tools/desktop/xfce-setup.sh`, then `desktop` -- on the GPU (Xorg,
   glamor) once the GPU's OpenGL is installed
-- the GPU: `./cascadia a5 gpu` (the pack: the template frame, sgx2d's demos), then
-  `./cascadia a5 mesa`; the GPU demo: `tux-gpudemo` (EXIT top right; docs/GPU.md)
-- the GPU's OpenGL: `./cascadia a5 mesa` -- the system's OpenGL ES 1.1/2.0 and desktop
+- the GPU: `./cascadia a5 dev gpu` (the pack: the template frame, sgx2d's demos), then
+  `./cascadia a5 dev mesa`; the GPU demo: `tux-gpudemo` (EXIT top right; docs/GPU.md)
+- the GPU's OpenGL: `./cascadia a5 dev mesa` -- the system's OpenGL ES 1.1/2.0 and desktop
   OpenGL 2.1 (GLX, EGL, GBM); see "THE GPU'S OPENGL" at the end
 - sound: the speakers, ALSA card `iPadMini` (DMA, 32/44.1/48 kHz, S16/S32),
   alsa-utils and dmix in the image -- see "SOUND" at the end
@@ -1282,12 +1282,12 @@ frames and touches in dmesg; `z2-boot -p N -N` reads the frames itself, without 
 - The driver: `mesa/files/src/gallium/drivers/sgx` (Gallium; the compiler is
   `sgx_compiler.c`, NIR to USSE), built into Mesa 26.1.8 in the `cascadia-mesa`
   image (`mesa/build.sh`, Alpine armv7 under emulation: the first build ~1 h, a
-  change ~3-5 min). Needs `./cascadia a5 gpu` first (the template frame).
-- `./cascadia a5 mesa`: a release build into `/usr/local/lib/sgx-mesa`, made the
+  change ~3-5 min). Needs `./cascadia a5 dev gpu` first (the template frame).
+- `./cascadia a5 dev mesa`: a release build into `/usr/local/lib/sgx-mesa`, made the
   system's OpenGL by `/etc/ld-musl-armhf.path` (its lib ahead of `/usr/lib`;
   Alpine's Mesa stays installed -- delete the file to go back), X's GPU
   configuration in `/etc/X11/sgx.conf.d`, `/usr/lib/dri/apple_sgx_dri.so` for
-  AIGLX. `MESA_BUILD=debug ./cascadia a5 mesa` for assertions.
+  AIGLX. `MESA_BUILD=debug ./cascadia a5 dev mesa` for assertions.
 - A build beside the system's, to try a change: `mesa/devbuild.sh [release]`
   -> `/root/devbuilds/N`, `/root/sgx-mesa-cur` (`-rel`); run with
   `/root/sgx-dev PROGRAM` (`SGX_MESA=dir` another build). GPU hangs since a
@@ -1407,7 +1407,7 @@ frames and touches in dmesg; `z2-boot -p N -N` reads the frames itself, without 
 
 | trap | what to do |
 |---|---|
-| a program crashes on an assertion inside Mesa (`maxLevels != 0`, edge flags) | a debug build: the system's should be the release one (`./cascadia a5 mesa` is) |
+| a program crashes on an assertion inside Mesa (`maxLevels != 0`, edge flags) | a debug build: the system's should be the release one (`./cascadia a5 dev mesa` is) |
 | piglit: `No module named 'framework.backends.'` | a Mac's tar added `._*` files: `tools/piglit/install.sh` (COPYFILE_DISABLE, deletes them) |
 | piglit's test binaries: `symbol not found` | `LD_LIBRARY_PATH=/root/piglit/lib/piglit/lib` (run.sh sets it) |
 | piglit with `PIGLIT_PLATFORM=surfaceless_egl` aborts | GBM (`run.sh` uses it) |

@@ -396,7 +396,7 @@ int sgx2d_open(const char *dir)
 			/* USE_CODE_BASE_3: the kernel sets it, the pack must agree */
 			if (strtoull(b, 0, 0) != D.code_base >> 6) {
 				fprintf(stderr, "sgx2d: %s was built for code base 0x%llx, the "
-					"kernel's is 0x%llx -- ./cascadia a5 gpu rebuilds it\n", dir,
+					"kernel's is 0x%llx -- ./cascadia a5 dev gpu rebuilds it\n", dir,
 					strtoull(b, 0, 0) << 6, (unsigned long long)D.code_base);
 				fclose(f);
 				return -EINVAL;

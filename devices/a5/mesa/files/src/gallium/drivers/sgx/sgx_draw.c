@@ -1855,7 +1855,7 @@ submit(struct sgx_context *ctx)
       }
    }
    if (!screen->frame) {
-      mesa_logw_once("sgx: no template frame (./cascadia a5 gpu installs it): draws are dropped");
+      mesa_logw_once("sgx: no template frame (./cascadia a5 dev gpu installs it): draws are dropped");
       ctx->nverts = 0;
       return;
    }

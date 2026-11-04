@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """install.py -- put the Mesa mesa/build.sh built onto the iPad.
 
-    ./cascadia a5 mesa [--install [HOST] | --root [DIR]]     (the usual way)
+    ./cascadia a5 dev mesa [--install [HOST] | --root [DIR]]     (the usual way)
 
     mesa/install.py --auto       the running device's NFS root over ssh, else
                                  this host's exported root (what ./cascadia
@@ -110,7 +110,7 @@ def auto():
         install_root(root)
     elif dev:
         fail('the device runs from its RAM root, which has no room for Mesa.\n'
-             '  Boot it from NFS (./cascadia a5 nfs on, then flash) and run ./cascadia a5 mesa again.')
+             '  Boot it from NFS (./cascadia a5 nfs on, then flash) and run ./cascadia a5 dev mesa again.')
     else:
         fail('nowhere to install: no device at %s and no exported root at %s\n'
              '  (./cascadia a5 nfs on).  Or name one: --install HOST / --root DIR.'
@@ -127,7 +127,7 @@ def main():
     to.add_argument('--root', nargs='?', const='', metavar='DIR')
     a = ap.parse_args()
     if not os.path.exists(os.path.join(BUILT, 'bin', 'glclear')):
-        fail('nothing built in %s -- ./cascadia a5 mesa builds it' % os.path.relpath(BUILT, ROOT))
+        fail('nothing built in %s -- ./cascadia a5 dev mesa builds it' % os.path.relpath(BUILT, ROOT))
     if a.auto:
         auto()
     elif a.install:

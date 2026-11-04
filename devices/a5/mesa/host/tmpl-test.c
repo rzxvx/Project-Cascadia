@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: MIT
  *
  * tmpl-test.c -- the template frame as sgx_template.c builds it, at the
- * pack's addresses, against the pack (./cascadia a5 gpu's build/sgx2d/pack):
+ * pack's addresses, against the pack (./cascadia a5 dev gpu's build/sgx2d/pack):
  *
  *   tmpl-test PACKDIR
  *

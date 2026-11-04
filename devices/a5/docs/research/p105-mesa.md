@@ -137,7 +137,7 @@ waits on. `SGX2D_DEBUGFS=1` forces the old way. The pack's code base moved to
 `0x9a000000` to match the kernel's (`rpack.py`; sgx2d refuses a pack built
 for another). `sgxinfo` prints the parameters and checks three buffers.
 
-On the device (kernel from this tree, `./cascadia a5 build`; `./cascadia a5 gpu` for
+On the device (kernel from this tree, `./cascadia a5 build`; `./cascadia a5 dev gpu` for
 the new pack and binaries):
 
 1. `dmesg | grep -i sgx` -- `render node: buffers at GPU 0x80800000-0xf0000000`
@@ -248,7 +248,7 @@ and the parameter buffer's layout from `rgen.py` (`pb_image()`) with it.
 Validation is offline, against the code it replaces: `rtemu.py` for a sweep of
 sizes (every power of two from 32 to 1024 on each side, the odd sizes a window
 gets, 768x1024 and 1024x768) dumps every buffer and the payload; the C
-version must give the same bytes at the same addresses. Then `./cascadia a5 gpu`
+version must give the same bytes at the same addresses. Then `./cascadia a5 dev gpu`
 no longer needs the kernelcache.
 
 Unknowns: what each buffer is for beyond its size (region arrays per core,
@@ -315,7 +315,7 @@ unchanged at the screen's size, now through our set (glfs 23/23, gltex
 draws a second).
 
 Still from the kernelcache: the pack's own render target data (`rtemu.py` at
-`./cascadia a5 gpu`; sgx2d uses them) and the parameter buffer image; neither
+`./cascadia a5 dev gpu`; sgx2d uses them) and the parameter buffer image; neither
 is needed by Mesa now. Not ported: the multi-sample paths, the 4x4
 macrotiles (an RT field the init sets to -1), and copy 1 of everything,
 which renders here never use.
@@ -612,7 +612,7 @@ copied for the shapes above.
 the few lines that register it with Mesa (`mesa/mesa.patch`: the
 `gallium-drivers` choice `sgx`, the meson subdirectories, the
 `apple_sgx` DRM driver descriptor for the pipe loader, the dril entry point),
-and the build (`mesa/build.sh`, `./cascadia a5 mesa`). Mesa is 26.1.8, at the
+and the build (`mesa/build.sh`, `./cascadia a5 dev mesa`). Mesa is 26.1.8, at the
 tag, checked by commit; `mesa/fetch.sh` clones it on the host (freedesktop.org,
 a GitHub mirror if that does not answer).
 
@@ -658,8 +658,8 @@ background descriptor `00be0e90 cc2ff3ff ...` = FB_LOAD for 768 pixels).
 `mesa/build.sh` runs end to end the same way (configure, build, install,
 glclear linked against the result).
 
-**On the device** (kernel with the render node; `./cascadia a5 gpu` for the pack,
-then `./cascadia a5 mesa`, which builds in an Alpine armv7 container -- slow the
+**On the device** (kernel with the render node; `./cascadia a5 dev gpu` for the pack,
+then `./cascadia a5 dev mesa`, which builds in an Alpine armv7 container -- slow the
 first time, under ARM emulation -- and installs to `/usr/local/lib/sgx-mesa`
 with `sgx-gl` to run things with it):
 
@@ -2566,7 +2566,7 @@ screenshots.
 `tools/device-apk.sh PKG...` (Alpine's armhf packages onto the iPad without
 its network: binutils, gdb, waffle, mako, xwd and xdotool went that way),
 `tools/piglit/install.sh` and `pigsum.py`, `tools/desktop/xshot.py` (X
-screenshots, as PNG). `./cascadia a5 mesa` builds and installs the release
+screenshots, as PNG). `./cascadia a5 dev mesa` builds and installs the release
 build now (`MESA_BUILD=debug` for assertions).
 
 dEQP-GLES2 after all of it: 16 859 pass, 91 fail, as before M35.

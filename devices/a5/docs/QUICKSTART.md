@@ -320,20 +320,18 @@ built (`FRESH=1` starts the root again from the current image). An existing
 `~/cascadia-root` is never overwritten: it is the iPad's live disk
 (`FORCE_SYNC=1 ./cascadia a5 nfs on` reseeds it). Each piece can still go
 onto a running iPad on its own, as before: `ssh root@10.55.0.2 sh -s <
-tools/desktop/xfce-setup.sh`, `./cascadia a5 gpu`, `./cascadia a5 mesa`.
+tools/desktop/xfce-setup.sh`, `./cascadia a5 dev gpu`, `./cascadia a5 dev mesa`.
 
 - **Touch.** Tap = click. A quick swipe scrolls (a finger that rests before it
   moves selects instead — that is GTK's rule, not a fault). A two-finger tap =
   right click.
 - **Keyboard.** The button next to the clock shows and hides an on-screen
   keyboard (svkbd). Ctrl is the `^` key.
-- **Turning.** The screen turns with the iPad, the touch with it. That needs
-  a kernel with the accelerometer (`./cascadia a5 build`, from 2026-10-23) and,
-  from the host, `sh tools/desktop/install.sh`, which puts `autorotate` in
-  the session. The button next to the keyboard's locks the turn, and so does
-  Home held (0.8 s). With the patched X server
-  (`sh tools/desktop/xorg-server/build.sh install`) a turned screen is as
-  fast as an upright one.
+- **Turning.** The screen turns with the iPad, the touch with it
+  (`autorotate`, started with the session). The button next to the
+  keyboard's locks the turn, and so does Home held (0.8 s). The desktop
+  root's X server is the patched one, so a turned screen is as fast as an
+  upright one.
 - **Timing.** About 40 s to a drawn desktop on the first login, then ~25 s to
   the session and ~40 s until the desktop has settled. The background is a
   solid colour on purpose: XFCE's default wallpaper is an SVG, and rasterising
@@ -361,15 +359,8 @@ had that do not work here:
 
 `screenpad` puts a game controller on the glass, over whatever runs (a
 fullscreen game included): buttons, d-pads and sticks, semi-transparent,
-from a preset you make on the iPad. It needs a kernel from 2026-10-23 or
-later (its GPU driver blends the controls into each frame; `./cascadia
-build`) and, from the host:
-
-```bash
-sh tools/screenpad/build.sh install
-```
-
-Then on the iPad, held landscape: **SuperTux (on-screen controls)** in the
+from a preset you make on the iPad. It is in the desktop root (its GPU
+driver blends the controls into each frame). On the iPad, held landscape: **SuperTux (on-screen controls)** in the
 menu's Games, or from a terminal:
 
 ```sh
@@ -410,20 +401,18 @@ not start games. A game gets a preset in one of two ways:
 
 Tux going round on the screen, drawn by the GPU through OpenGL ES -- his
 light baked in Blender, the logo over his head glowing -- at about 58 frames
-a second, fullscreen. The model is teutekeune's. With the iPad booted from NFS:
+a second, fullscreen. The model is teutekeune's. It is in the desktop root:
+on the iPad's console (not under X),
 
-```bash
-./cascadia a5 gpu
+```sh
+tux-gpudemo
 ```
 
-```bash
-./cascadia a5 mesa
-```
-
-then `tux-gpudemo` on the iPad's console (not under X); the **EXIT** button
-in the top right corner ends it. It needs only the IPSW the port is built
-from; `./cascadia a5 mesa` also makes the GPU every program's OpenGL (XFCE,
-SuperTux). [GPU.md](GPU.md) has the details and how it works.
+and the **EXIT** button in the top right corner ends it. The same Mesa is
+every program's OpenGL there (XFCE, SuperTux). [GPU.md](GPU.md) has the
+details, how it works, and how to rebuild Mesa or the GPU's pack onto a
+running iPad while working on the driver (`./cascadia a5 dev mesa`, `dev
+gpu`).
 
 ## When it goes wrong
 

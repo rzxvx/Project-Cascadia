@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 #
 # Put Mesa's source at build/mesa/src, pinned to the release the driver is
-# written against.  ./cascadia a5 mesa runs it on the host before the build.
+# written against.  ./cascadia a5 dev mesa runs it on the host before the build.
 #
 #   bash mesa/fetch.sh
 #   MESA_URL=https://... bash mesa/fetch.sh     # another mirror of it
 #
 # On the host, not in the cascadia-mesa image: git there runs under ARM
-# emulation, and the first ./cascadia a5 mesa on a Mac sat in its clone for
+# emulation, and the first ./cascadia a5 dev mesa on a Mac sat in its clone for
 # over an hour with nothing to show.  Here it is native and shows progress,
 # a stalled download gives up after a minute instead of hanging, and a
 # mirror is tried when freedesktop.org does not answer.  Any mirror will
@@ -46,4 +46,4 @@ done
 rm -rf "$SRC"
 fail "could not fetch Mesa $TAG.  Clone it yourself into build/mesa/src
        (git clone --depth 1 --branch $TAG URL build/mesa/src), or name a
-       mirror: MESA_URL=URL ./cascadia a5 mesa"
+       mirror: MESA_URL=URL ./cascadia a5 dev mesa"

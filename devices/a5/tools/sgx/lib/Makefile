@@ -1,4 +1,4 @@
-# Built for the device (armv7, musl).  ./cascadia a5 gpu cross-builds the three
+# Built for the device (armv7, musl).  ./cascadia a5 dev gpu cross-builds the three
 # that ship (cross.sh, no ARM emulation needed).  For the diagnostics too, in
 # an Alpine arm/v7 container, on a host that can run one:
 #   docker run --rm --platform linux/arm/v7 -v "$PWD":/w -w /w cascadia-armdev make

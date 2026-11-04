@@ -3,7 +3,7 @@
 # Build tools/sgx/lib for the device without running any ARM code: Ubuntu's
 # arm-linux-gnueabihf gcc, pointed at a sysroot of Alpine's own armhf packages
 # (musl, its headers, the kernel headers) instead of at glibc.
-# Runs INSIDE the cascadia-build image (./cascadia a5 gpu), like the rootfs
+# Runs INSIDE the cascadia-build image (./cascadia a5 dev gpu), like the rootfs
 # steps, and for the same reason (scripts/apk-unpack.py): a Linux host may
 # have no ARM emulation, and the result must not depend on it.
 #

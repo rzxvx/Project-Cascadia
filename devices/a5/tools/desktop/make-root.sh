@@ -7,8 +7,8 @@
 #   XFCE with touch           tools/desktop/xfce-setup.sh
 #   X, xfwm4, pixman patched  tools/desktop/{xorg-server,xfwm4,pixman}/build.sh
 #   autorotate                tools/desktop/install.sh
-#   Mesa on the GPU           ./cascadia a5 mesa (the system's OpenGL, tux-gpudemo)
-#   the GPU's pack            ./cascadia a5 gpu (from your IPSW)
+#   Mesa on the GPU           ./cascadia a5 dev mesa (the system's OpenGL, tux-gpudemo)
+#   the GPU's pack            ./cascadia a5 dev gpu (from your IPSW)
 #   SuperTux 0.7.0            tools/desktop/supertux/build.sh
 #   screenpad                 tools/screenpad/build.sh
 #
@@ -99,8 +99,8 @@ step patched    sh -c "sh '$ROOT/tools/desktop/pixman/build.sh' install &&
                        sh '$ROOT/tools/desktop/xorg-server/build.sh' install &&
                        sh '$ROOT/tools/desktop/xfwm4/build.sh' install"
 step autorotate sh "$ROOT/tools/desktop/install.sh"
-step mesa       bash "$ROOT/cascadia" mesa --install "$DEV"
-step gpu        bash "$ROOT/cascadia" gpu --install "$DEV"
+step mesa       bash "$ROOT/cascadia" dev mesa --install "$DEV"
+step gpu        bash "$ROOT/cascadia" dev gpu --install "$DEV"
 step supertux   sh "$ROOT/tools/desktop/supertux/build.sh" install
 step screenpad  sh "$ROOT/tools/screenpad/build.sh" install
 

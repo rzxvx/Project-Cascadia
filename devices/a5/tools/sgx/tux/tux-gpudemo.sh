@@ -1,7 +1,7 @@
 #!/bin/sh
 # tux-gpudemo [SECONDS [PERIOD]] -- the GPU demo (tuxorbit.c): Tux going
 # round on the screen through OpenGL ES and KMS, until its EXIT button.
-# Installed with the Mesa (./cascadia a5 mesa) as /usr/local/bin/tux-gpudemo,
+# Installed with the Mesa (./cascadia a5 dev mesa) as /usr/local/bin/tux-gpudemo,
 # the scene in ../share/tux-gpudemo.  While it runs, the console is unbound
 # from the framebuffer and fbkeyboard is stopped -- both draw on the screen
 # -- and they come back however it ends, Ctrl-C and kill too.  Needs no X

@@ -6,7 +6,7 @@ against sgx2d's pack, byte for byte, at the pack's addresses.
 
 Builds tmpl-test.c with sgx_template.c and sgx_rt.c and runs it: the PDS
 block, the state area, the index buffer, the programs, the stream's tail,
-the TA command and the 3D register block.  The pack is ./cascadia a5 gpu's.
+the TA command and the 3D register block.  The pack is ./cascadia a5 dev gpu's.
 """
 import os, subprocess, sys, tempfile
 

@@ -38,13 +38,13 @@ window, M13a).
 ## Building and installing
 
 With the iPad running a kernel that has the render node, booted from NFS,
-and the template frame installed (`./cascadia a5 gpu`):
+and the template frame installed (`./cascadia a5 dev gpu`):
 
 ```bash
-./cascadia a5 mesa                  # build (release), then install where it fits
-./cascadia a5 mesa --install HOST   # over ssh only
-./cascadia a5 mesa --root DIR       # into a root tree only
-MESA_BUILD=debug ./cascadia a5 mesa # with Mesa's assertions
+./cascadia a5 dev mesa                  # build (release), then install where it fits
+./cascadia a5 dev mesa --install HOST   # over ssh only
+./cascadia a5 dev mesa --root DIR       # into a root tree only
+MESA_BUILD=debug ./cascadia a5 dev mesa # with Mesa's assertions
 ```
 
 The install makes it **the system's OpenGL** (M35): `/etc/ld-musl-armhf.path`

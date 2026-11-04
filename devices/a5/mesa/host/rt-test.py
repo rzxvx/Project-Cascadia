@@ -7,7 +7,7 @@ against the kext's own (tools/iosgpu/rtemu.py), size by size.
 
 The first runs rtemu.py for each size (WxH; a sweep by default) in a
 temporary directory -- it needs the decrypted 8.4.1 kernelcache, and the
-GL driver's payload words that ./cascadia a5 gpu leaves in
+GL driver's payload words that ./cascadia a5 dev gpu leaves in
 build/sgx2d/rtemu/payload.txt; the second takes rtemu.py's output from
 DIR/WxH/.  Builds rt-test.c with sgx_rt.c, runs it on rtemu.py's
 addresses, and compares every buffer, the payload words, the 3D block and
