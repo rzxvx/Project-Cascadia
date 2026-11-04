@@ -672,7 +672,9 @@ Two more gotchas worth recording:
 needs and carries on after a stop); **[docs/QUICKSTART.md](docs/QUICKSTART.md)
 is the walkthrough** — hardware,
 host setup, the IPSW, pwned DFU, the first shell, and what the failures
-look like. The short version follows.
+look like. `install` takes the kernel and the desktop root from the
+prebuilt release (`prebuilt/stable/`, `./cascadia a5 get`); what follows is
+building them from source.
 
 Needs git, docker (with a running daemon), python3 and rsync.  Everything else
 happens inside the build image.  Verified on macOS/arm64 and Arch Linux/x86_64.
