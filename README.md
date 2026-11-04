@@ -27,8 +27,8 @@ One command for every device, from the repository's top:
 ```bash
 git clone https://github.com/rzxvx/Project-Cascadia.git
 cd Project-Cascadia
-./cascadia a5 doctor          # iPad mini 1: what this machine is missing
-./cascadia a13 doctor         # iPhone 11
+./cascadia a5 install         # iPad mini 1: everything, step by step
+./cascadia a13 doctor         # iPhone 11: what this machine is missing
 ```
 
 `./cascadia a5 …` and `./cascadia a13 …` are the device's own commands

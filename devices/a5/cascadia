@@ -3,6 +3,11 @@
 # Project Cascadia -- iPad mini 1 / A5 (p105ap), through ./cascadia a5 at the
 # repository's top (this file is devices/a5/cascadia).
 #
+#   ./cascadia a5 install     everything, from nothing to Linux on the iPad, step by
+#                             step (run it again to carry on after a stop)
+#   ./cascadia a5 setup       put on this computer what the build needs (asks first)
+#   ./cascadia a5 ssh         a shell on the iPad
+#
 #   ./cascadia a5 doctor      check that this machine has what the build needs
 #   ./cascadia a5 kernel      fetch the pinned Linux source into build/linux
 #   ./cascadia a5 rootfs      build the Alpine armhf rootfs for the initramfs
@@ -213,18 +218,12 @@ cmd_doctor() {
     if p=$(find_ipsw); then note "ok:      IPSW ${p#$REPO/} (./cascadia a5 firmware)"
     else note "missing: $IPSW_NAME for ./cascadia a5 firmware"
          note "         curl -LO '$IPSW_URL'"; fi
-    # flash talks USB through lib/appleusb.py: pyusb, and libusb under it.
-    # usb.core.find() and not the import alone: without libusb the import
-    # works and the first call raises NoBackendError.
-    if python3 -c 'import usb.core; usb.core.find()' >/dev/null 2>&1; then
+    # flash talks USB through lib/appleusb.py: pyusb (the system's or
+    # build/pylib's), and libusb under it -- `mode` needs both to answer
+    if python3 "$REPO/lib/appleusb.py" mode >/dev/null 2>&1; then
         note "ok:      pyusb + libusb (./cascadia a5 flash)"
     else
-        note "MISSING: pyusb or libusb -- ./cascadia a5 flash needs them"
-        case "$(uname -s)" in
-            Darwin) note "         brew install libusb && pip3 install pyusb" ;;
-            *)      note "         Debian/Ubuntu: sudo apt install python3-usb   Arch: sudo pacman -S python-pyusb"
-                    note "         Fedora: sudo dnf install python3-pyusb" ;;
-        esac
+        note "MISSING: pyusb or libusb -- ./cascadia a5 flash needs them: ./cascadia a5 setup"
         rc=1
     fi
     note "         into pwned DFU: a Pi Pico with checkm8-a5, or --kdfu from a jailbroken iOS"
@@ -256,6 +255,160 @@ cmd_doctor() {
 }
 
 cmd_kernel() { bash "$ROOT/scripts/fetch-kernel.sh"; }
+
+# ---------- setup: this computer ---------------------------------------------
+# What the rest needs, installed after asking (lib/host.sh knows brew, apt,
+# pacman and dnf); then doctor says what is still missing, if anything.
+cmd_setup() {
+    . "$REPO/lib/host.sh"
+    say "packages"
+    if [ "$HOST_OS" = Darwin ]; then
+        have git && have python3 || { note "the Command Line Tools first:"; run xcode-select --install || true
+                                       fail "run this again once they are installed"; }
+        [ "$(host_pm)" = brew ] || note "no Homebrew (https://brew.sh): libusb and Docker Desktop then by hand"
+        pm_install libusb || true
+    else
+        pm_install base libusb nfs firewall usbmuxd || true
+    fi
+    say "docker"
+    ensure_docker
+    ensure_binfmt linux/arm/v6
+    say "USB"
+    pylib_pyusb
+    ensure_udev
+    say "ssh"
+    ensure_sshkey
+    echo
+    cmd_doctor
+}
+
+# ---------- install: from nothing to Linux on the iPad -----------------------
+# Every step in order, each skipped when its result is already there, so
+# running it again after a stop carries on where it stopped.  The answers
+# (desktop or not, Pico or kDFU) are kept in build/install.conf.
+INSTALL_CONF="$ROOT/build/install.conf"
+
+istep() {   # N TITLE [HOW-LONG]
+    ISTEP=$1
+    echo
+    if [ -t 1 ]; then printf '\033[1m[%s/%s] %s\033[0m%s\n' "$1" "$ITOTAL" "$2" "${3:+  ($3)}"
+    else printf '[%s/%s] %s%s\n' "$1" "$ITOTAL" "$2" "${3:+  ($3)}"; fi
+}
+iskip() { note "done already -- $*"; }
+inone() { note "not needed -- $*"; }
+isub() { bash "$ROOT/cascadia" "$@" || fail "step $ISTEP stopped (above).  Fix what it says and run ./cascadia a5 install again: it carries on from here."; }
+
+install_conf() {   # KEY QUESTION -> y|n, asked once
+    local v
+    v=$(sed -n "s/^$1=//p" "$INSTALL_CONF" 2>/dev/null | tail -1)
+    if [ -z "$v" ]; then
+        if ask "$2"; then v=y; else v=n; fi
+        # kept only when someone answered (or YES=1 did): a run without a
+        # terminal takes the default for now and asks again next time
+        if [ -t 0 ] || [ "${YES:-0}" = 1 ]; then mkdir -p "$ROOT/build"; echo "$1=$v" >> "$INSTALL_CONF"; fi
+    fi
+    echo "$v"
+}
+
+nfs_dst() { [ "$(uname -s)" = Darwin ] && echo "$HOME/cascadia-root" || echo /srv/cascadia-root; }
+
+cmd_install() {
+    . "$REPO/lib/host.sh"
+    local FW="$ROOT/build/firmware" desktop route
+    ITOTAL=8
+    echo "Linux on the iPad mini 1 (iPad2,5), from the start.  Each step says what it"
+    echo "does; one that is done already is skipped, so this can be run again any time."
+
+    istep 1 "this computer: what the build needs"
+    isub setup
+
+    istep 2 "Linux's source, pinned to 6.12" "a few hundred MB"
+    if [ -f "$ROOT/build/linux/Makefile" ]; then iskip "build/linux"; else isub kernel; fi
+
+    istep 3 "the Alpine system the iPad boots into" "a few minutes"
+    if [ -x "$ROOT/build/initramfs-root/sbin/p105-stage2" ] && [ -x "$ROOT/build/initramfs-root/usr/sbin/dropbear" ]; then
+        iskip "build/initramfs-root"
+    else isub rootfs; fi
+
+    istep 4 "Apple's files, from the iPad's own iOS 8.4.1 IPSW" "1.4 GB download the first time"
+    if [ -f "$FW/iBEC.patched.autogo.plain.dfu" ] && [ -f "$FW/P105.mtprops" ] && [ -f "$FW/sgx543.fw" ]; then
+        iskip "build/firmware"
+    else isub firmware; fi
+
+    echo
+    echo "    The desktop (XFCE on the GPU, SuperTux, an on-screen keyboard and game"
+    echo "    controls) lives on this computer, which the iPad uses as its disk over the"
+    echo "    cable (NFS, ~1.5 GB).  Without it the iPad runs a small system in its RAM."
+    desktop=$(install_conf desktop "the desktop?")
+
+    istep 5 "the kernel and the boot image" "~15 min the first time, a few on an M-series Mac"
+    if [ -f "$ROOT/output/staging-bundle.bin" ] && [ -z "$(find "$ROOT/build/initramfs-root" -newer "$ROOT/output/staging-bundle.bin" -type f -print -quit 2>/dev/null)" ]; then
+        iskip "output/staging-bundle.bin is newer than everything in it"
+    else isub build; fi
+
+    istep 6 "the desktop's root" "minutes; up to two hours the very first time"
+    if [ "$desktop" != y ]; then inone "no desktop: the iPad runs from RAM"
+    elif [ -f "$ROOT/build/desktop-root.tar" ]; then iskip "build/desktop-root.tar"
+    else isub desktop-root; fi
+
+    istep 7 "the iPad's disk on this computer (NFS)"
+    if [ "$desktop" != y ]; then inone "no desktop"
+    elif [ -s "$ROOT/build/initramfs-root/etc/nfsroot" ] && [ -e "$(nfs_dst)/sbin/p105-stage2" ]; then
+        iskip "$(nfs_dst), exported"
+    else
+        isub nfs on
+        # the image has to carry the export's address: build again (only
+        # the initramfs changed, so it is quick)
+        isub build
+    fi
+
+    istep 8 "boot the iPad"
+    route=$(sed -n 's/^route=//p' "$INSTALL_CONF" 2>/dev/null | tail -1)
+    if [ -z "$route" ]; then
+        echo "    How does the iPad get into pwned DFU?"
+        echo "      1) a Raspberry Pi Pico with checkm8-a5 (docs/QUICKSTART.md, \"Into pwned DFU\")"
+        echo "      2) its own jailbroken iOS (EverPwnage, OpenSSH from Cydia): nothing else needed"
+        route=2
+        if [ -t 0 ] && [ "${YES:-0}" != 1 ]; then read -r -p "    1 or 2 [2]: " route || route=2; fi
+        case "${route:-2}" in 1) route=pico ;; *) route=kdfu ;; esac
+        if [ -t 0 ]; then echo "route=$route" >> "$INSTALL_CONF"; fi
+    fi
+    if [ "$route" = pico ]; then
+        echo "    Put the iPad into DFU (hold Power + Home 10 s, then let go of Power and keep"
+        echo "    Home 10 s more: the screen stays black), plug it into the Pico, wait for the"
+        echo "    Pico's LED to say done, then plug the iPad into this computer."
+        ask "ready?" || fail "run ./cascadia a5 install again when it is"
+        isub flash
+    else
+        echo "    Boot the iPad into its jailbroken iOS, unlock it, and plug it into this computer."
+        ask "ready?" || fail "run ./cascadia a5 install again when it is"
+        isub flash --kdfu
+    fi
+
+    echo
+    say "done: Linux is booting on the iPad (about 30 s)"
+    echo "    a shell:      ./cascadia a5 ssh       (or on the glass, with its keyboard)"
+    [ "$desktop" = y ] && echo "    the desktop:  desktop                 (on the iPad: on the glass, or over ssh)"
+    echo "    internet for it through this computer:  ./cascadia a5 net on   (or Wi-Fi: wifi, on the iPad)"
+    echo "    every later boot: ./cascadia a5 flash$([ "$route" = kdfu ] && echo ' --kdfu')"
+}
+
+# ---------- ssh: a shell on the iPad -----------------------------------------
+# With ~/.ssh/cascadia when there is one, and a known_hosts of its own in
+# build/, so a rebuilt image's new host key meets no warning about anyone's
+# ~/.ssh/known_hosts.  IPAD= another address (its Wi-Fi one).
+cmd_ssh() {
+    local key=() rc=0
+    [ -f "$HOME/.ssh/cascadia" ] && key=(-i "$HOME/.ssh/cascadia")
+    mkdir -p "$ROOT/build"
+    ssh ${key[@]+"${key[@]}"} -o ConnectTimeout=8 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR \
+        -o UserKnownHostsFile="$ROOT/build/known_hosts" "root@${IPAD:-10.55.0.2}" "$@" || rc=$?
+    if [ $rc = 255 ]; then
+        echo "no ssh to ${IPAD:-10.55.0.2}.  Booted and on the cable?  ./cascadia a5 link gives this" >&2
+        echo "computer its address on the iPad's link (flash does it at every boot)." >&2
+    fi
+    return $rc
+}
 
 cmd_rootfs() {
     [ -x "$ROOT/scripts/build-alpine-rootfs.sh" ] || fail "scripts/build-alpine-rootfs.sh is missing"
@@ -597,6 +750,9 @@ case "${1:-}" in
                 *)    fail "./cascadia a5 dev gpu | mesa  (./cascadia a5 lists them)" ;;
             esac ;;
     desktop-root) bash "$ROOT/tools/desktop/make-root.sh" ;;
+    setup)  cmd_setup ;;
+    install) cmd_install ;;
+    ssh)    shift; cmd_ssh "$@" ;;
     mesa|gpu) fail "./cascadia a5 $1 is ./cascadia a5 dev $1 now (desktop-root puts both into the root for you)" ;;
-    *)      sed -n '2,30p' "$ROOT/cascadia" | sed 's/^# \{0,1\}//'; exit 2 ;;
+    *)      sed -n '2,35p' "$ROOT/cascadia" | sed 's/^# \{0,1\}//'; exit 2 ;;
 esac

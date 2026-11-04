@@ -31,67 +31,38 @@ because the auto-go hook patches an address inside that exact iBEC.
 flash script captures it when it is there. The early boot log also goes to the
 framebuffer, so its absence is a nuisance rather than a blocker.
 
-**A host.** macOS or Linux, with `git`, `python3`, `rsync` and a running
-`docker`. Everything else lives inside the build image. Budget about 12 GB:
-a shallow kernel clone, its objects, the build image and the IPSW.
+**A computer.** macOS, or Linux (Debian / Ubuntu, Arch or Fedora), with
+about 12 GB free. `./cascadia a5 setup` installs what it needs (it asks
+first): Docker, libusb and pyusb, an NFS server and usbmuxd on Linux, a
+udev rule for the iPad's USB, and an ssh key without a passphrase,
+`~/.ssh/cascadia`, which the build puts into the image. On macOS, the
+Command Line Tools and [Homebrew](https://brew.sh) first.
+
+## The short way
 
 ```bash
-# Arch -- the only Linux this has been walked end to end on
-sudo pacman -Syu
-sudo pacman -S --needed git python rsync docker python-pyusb   # pyusb: flash
-sudo pacman -S --needed nfs-utils      # ./cascadia a5 nfs; ./cascadia a5 net uses docker's iptables
-sudo pacman -S --needed usbmuxd               # flash --kdfu, mtcal: ssh to iOS over USB
-sudo systemctl enable --now docker
-sudo usermod -aG docker "$USER" && newgrp docker
+git clone https://github.com/rzxvx/Project-Cascadia.git
+cd Project-Cascadia
+./cascadia a5 install
 ```
 
-The same for the other two package managers. **Untested**: the package names
-are the distributions' own, but nothing here has been run on either yet —
-only Arch with pacman, and macOS, have been.
+It goes through every step below in order, says what each does and how
+long it takes, and skips what is done already: stopped anywhere (a reboot,
+a failed download, Docker not running yet), run it again and it carries on.
+It asks three things: what to install on this computer, whether you want
+the desktop (it then lives on this computer as the iPad's disk, over the
+cable), and how the iPad gets into pwned DFU (a Pi Pico, or its jailbroken
+iOS). At the end it boots the iPad; then
 
 ```bash
-# Debian / Ubuntu (apt)
-sudo apt update
-sudo apt install git python3 rsync docker.io python3-usb   # pyusb: flash
-sudo apt install nfs-kernel-server rpcbind          # ./cascadia a5 nfs
-sudo apt install usbmuxd                            # flash --kdfu, mtcal
-sudo systemctl enable --now docker
-sudo usermod -aG docker "$USER" && newgrp docker
-
-# Fedora (dnf)
-sudo dnf install git python3 rsync moby-engine python3-pyusb   # pyusb: flash
-sudo dnf install nfs-utils                          # ./cascadia a5 nfs
-sudo dnf install usbmuxd                            # flash --kdfu, mtcal
-sudo systemctl enable --now docker
-sudo usermod -aG docker "$USER" && newgrp docker
-# firewalld is on by default: let the iPad's link through, NFS and forwarding
-sudo firewall-cmd --permanent --zone=trusted --add-source=10.55.0.0/24
-sudo firewall-cmd --reload
+./cascadia a5 ssh            # a shell on the iPad
 ```
 
-**An SSH key on the host**, if you want ssh on the device. The build installs
-the public key of the machine it runs on, and every `~/.ssh/cascadia*.pub`
-besides. There is no password login: root's password is blank and dropbear is
-started with password authentication switched off, so a key is the only way in.
+and `desktop` on the iPad for XFCE. Every later boot is `./cascadia a5
+flash` (`--kdfu` from iOS). The rest of this page is the same road one
+step at a time, and what to do on the iPad once it is there.
 
-```bash
-ls ~/.ssh/id_*.pub || ssh-keygen -t ed25519
-```
-
-**Make it a key without a passphrase**, or keep a second one that has none:
-
-```bash
-ssh-keygen -t ed25519 -N '' -f ~/.ssh/cascadia -C cascadia
-```
-
-Anything matching `~/.ssh/cascadia*.pub` is baked in by name, so this works
-without `PUBKEY=`, and it is the difference between `ssh root@10.55.0.2` and a
-passphrase prompt every time you want to look at a register. If your only key
-has a passphrase, unlock it once per session instead — `ssh-add ~/.ssh/id_ed25519`
-— because an ssh that cannot decrypt a key does not say so: it skips the key and
-fails as though the device had never heard of you.
-
-## Build
+## Step by step: build
 
 ```bash
 git clone https://github.com/rzxvx/Project-Cascadia.git
@@ -185,7 +156,7 @@ because only a Mac can build it (`tools/mtdump/build.sh`, Xcode); its source is
 cd Project-Cascadia
 ./cascadia a5 flash            # pwned by the Pi Pico, now on this computer
 ./cascadia a5 flash --kdfu     # from a jailbroken iOS, no extra hardware
-ssh root@10.55.0.2
+./cascadia a5 ssh              # = ssh root@10.55.0.2, with ~/.ssh/cascadia
 ```
 
 `sudo` is asked for once: for the address this host puts on its end of the
@@ -420,7 +391,7 @@ gpu`).
 | What you see | What it is |
 |---|---|
 | `ssh` says `Permission denied (publickey)` | The image does not carry the key ssh offered — `ssh -v` shows which one that was, and `dmesg` on the ACM console shows dropbear's side. `./cascadia a5 build` adds the building machine's key every time; from any other machine, `PUBKEY=that.pub ./cascadia a5 build`, or append the key to `/root/.ssh/authorized_keys` on the ACM console for this boot. |
-| `ssh` asks for a **passphrase** and then gives up | That is your own key on this host, not the device: ssh could not decrypt it, so it never offered it. `ssh-add ~/.ssh/id_ed25519` once, or keep a passphrase-less `~/.ssh/cascadia` (see *Prerequisites*). Nothing is wrong with the image — rebuilding will not help. |
+| `ssh` asks for a **passphrase** and then gives up | That is your own key on this host, not the device: ssh could not decrypt it, so it never offered it. `ssh-add ~/.ssh/id_ed25519` once, or keep a passphrase-less `~/.ssh/cascadia` (`./cascadia a5 setup` makes one). Nothing is wrong with the image — rebuilding will not help. |
 | `ssh` hangs, no error | This host has no address on the link. `./cascadia a5 link`. |
 | `ssh` hangs, but `ping 10.55.0.2` answers and the glass says `nfs: server ... not responding, still trying` | The NFS root lost its server, and a hard-mounted root blocks everything that touches it until the server returns — the kernel is fine, the cursor still blinks, and the console over the cable still works (it runs from RAM). This is the host's side, not the iPad's: seen with macOS's nfsd and on an Ubuntu host, never on the Arch one. On a NetworkManager host it was NM taking 10.55.0.1 off the link; `./cascadia a5 link` (and so `flash`) now gives NM a profile that keeps it. Otherwise only a reboot gets out of it today; `./cascadia a5 nfs off` and a rebuild boot from RAM instead. |
 | `ssh` hangs, `ping` does not answer, the console over the cable says nothing, but the glass's cursor blinks and it shows `task ... blocked for more than ... seconds` in `nfs_...` | The gadget stopped sending to the host; the kernel is fine and the NFS root waits for it. Seen after the link was down for minutes (the Mac asleep, or `ip link set usb0 down` and the serial console reopened meanwhile) on any kernel, and on its own after boot with the fast DMA bursts of 2026-10-24 (reverted). Only a reboot gets out of it today; before rebooting, a photo of the glass is what tells it apart. |

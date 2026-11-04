@@ -78,8 +78,7 @@ if [ "$PWN_MODE" = kdfu ] && [ "$IBEC_PINNED" = 0 ]; then
 fi
 
 # pyusb (and the libusb under it) is the one thing the USB side needs.
-python3 -c 'import usb.core' 2>/dev/null || fail "python3 has no pyusb: pip3 install pyusb
-  (Debian/Ubuntu: sudo apt install python3-usb; macOS: brew install libusb as well)"
+python3 "$REPO/lib/appleusb.py" mode >/dev/null || fail "no pyusb or libusb (above): ./cascadia a5 setup"
 
 NEED=("$IBEC" "$ROOT/output/staging-bundle.bin" "$ROOT/output/staging-loader.bin")
 # --skip-pwn means something already started an iBSS; the other two start

@@ -28,14 +28,35 @@ import sys
 import time
 import zlib
 
+# pyusb: the system's, or the copy `setup` puts in build/pylib (no pip)
+sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'build', 'pylib'))
 try:
     import usb.core
     import usb.util
+    import usb.backend.libusb1
 except ImportError:                                    # pragma: no cover
-    sys.stderr.write("error: python3 has no pyusb -- pip3 install pyusb "
-                     "(Debian/Ubuntu: apt install python3-usb; it needs libusb: "
-                     "brew install libusb on macOS)\n")
+    sys.stderr.write("error: no pyusb -- ./cascadia a5 setup puts it in build/pylib\n")
     sys.exit(1)
+
+# libusb itself.  ctypes' search does not look in Homebrew's lib directory,
+# so a python that is not Homebrew's own finds no backend at all on a Mac
+# whose libusb is installed; try the places it lives as well.
+LIBUSB_PATHS = ('/opt/homebrew/lib/libusb-1.0.dylib', '/usr/local/lib/libusb-1.0.dylib')
+BACKEND = None
+
+
+def backend():
+    global BACKEND
+    if BACKEND is None:
+        BACKEND = usb.backend.libusb1.get_backend()
+        for p in LIBUSB_PATHS:
+            if BACKEND is not None:
+                break
+            if os.path.exists(p):
+                BACKEND = usb.backend.libusb1.get_backend(find_library=lambda _n, p=p: p)
+        if BACKEND is None:
+            raise Fail("no libusb -- ./cascadia a5 setup installs it (macOS: brew install libusb)")
+    return BACKEND
 
 APPLE = 0x05AC
 DFU, WTF = 0x1227, 0x1222
@@ -84,7 +105,7 @@ def permission_hint():
 
 
 def find():
-    for d in usb.core.find(find_all=True, idVendor=APPLE):
+    for d in usb.core.find(find_all=True, idVendor=APPLE, backend=backend()):
         if d.idProduct in MODES:
             return d
     return None
