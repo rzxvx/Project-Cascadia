@@ -121,7 +121,8 @@ inroot 'chroot /target apk info -e xorg-server xfce4 eudev touchegg svkbd supert
 inroot 'chroot /target apk -s add --no-network >/dev/null' \
     || fail "apk cannot resolve the root's world -- something was installed broken (above)"
 for f in usr/local/bin/desktop usr/local/bin/autorotate usr/bin/xrandr usr/bin/xinput usr/local/bin/screenpad usr/local/bin/tux-gpudemo \
-         usr/local/lib/sgx-mesa/lib/libGLESv2.so.2 usr/local/lib/sgx2d etc/ld-musl-armhf.path; do
+         usr/local/lib/sgx-mesa/lib/libGLESv2.so.2 etc/ld-musl-armhf.path \
+         $([ "${PUBLIC:-0}" = 1 ] || echo usr/local/lib/sgx2d); do
     inroot "chroot /target test -e /$f" || fail "no /$f in the root"
 done
 echo "    ok: XFCE, X, SuperTux, screenpad, autorotate, Mesa, the GPU's pack"
