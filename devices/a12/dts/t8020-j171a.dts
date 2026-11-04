@@ -1,0 +1,49 @@
+// SPDX-License-Identifier: GPL-2.0+ OR MIT
+/* Minimal first-boot description for iPad 8 Wi-Fi (J171aAP, T8020). */
+/dts-v1/;
+#include "t8020.dtsi"
+
+/ {
+	compatible = "apple,j171a", "apple,t8020", "apple,arm-platform";
+	model = "Apple iPad 8 (Wi-Fi)";
+	chassis-type = "tablet";
+
+	aliases {
+		serial0 = &serial0;
+		ausbphy0 = &ausbphy0;
+	};
+
+	chosen {
+		#address-cells = <2>;
+		#size-cells = <2>;
+		ranges;
+		stdout-path = "serial0";
+		framebuffer0: framebuffer@0 {
+			compatible = "apple,simple-framebuffer", "simple-framebuffer";
+			reg = <0 0 0 0>;
+			power-domains = <&ps_disp0_be &ps_mipi_dsi
+					 &ps_disp0_hilo &ps_disp0_ppp>;
+			status = "disabled";
+		};
+	};
+
+	memory@800000000 {
+		device_type = "memory";
+		reg = <0x8 0 0 0>;
+	};
+
+	reserved-memory {
+		#address-cells = <2>;
+		#size-cells = <2>;
+		ranges;
+	};
+};
+
+&serial0 { status = "okay"; };
+
+/* Board-specific PCIe, radio and touch descriptions come after first boot. */
+&pcie0 { status = "disabled"; };
+&serial1 { status = "disabled"; };
+&i2c2 { status = "disabled"; };
+&i2c3 { status = "disabled"; };
+&spi1 { status = "disabled"; };
