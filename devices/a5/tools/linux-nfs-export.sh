@@ -21,6 +21,7 @@ KEEP="$ROOT/build/keep"                    # survives a rootfs rebuild; the asse
                                            # copies it back over the fresh tree
 SRC="${SRC:-$ROOT/build/initramfs-root}"   # the tree ./cascadia a5 rootfs builds and
                                            # ./cascadia a5 build embeds
+DESKTOP_TAR="$ROOT/build/desktop-root.tar"  # ./cascadia a5 desktop-root
 DST="${DST:-/srv/cascadia-root}"           # not under $HOME: a 0700 home, an
                                            # encrypted one or a systemd-homed one
                                            # is no place for nfsd
@@ -64,8 +65,16 @@ on)
         echo "    It is the device's live root now; anything installed there"
         echo "    would be deleted.  To reseed it from the initramfs anyway:"
         echo "      FORCE_SYNC=1 $0 on"
+    elif [ -f "$DESKTOP_TAR" ] && [ "${DESKTOP:-1}" != 0 ]; then
+        # The root with the desktop (./cascadia a5 desktop-root): built in a
+        # Linux container, owners and modes already right, kept by number.
+        echo "==> seeding $DST from $DESKTOP_TAR (the desktop root; DESKTOP=0 for the plain one)"
+        sudo mkdir -p "$DST"
+        sudo tar -xpf "$DESKTOP_TAR" --numeric-owner -C "$DST"
+        sudo mkdir -p "$DST/dev" "$DST/proc" "$DST/sys"
     else
         echo "==> copying $SRC -> $DST"
+        [ -f "$DESKTOP_TAR" ] || echo "    (no desktop yet: ./cascadia a5 desktop-root builds a root with XFCE, the GPU, SuperTux)"
         sudo mkdir -p "$DST"
         # Device nodes and the kernel's filesystems are left out: stage 1 moves
         # devtmpfs, proc and sys onto the new root itself.

@@ -17,6 +17,7 @@ ALPINE="${ALPINE:-3.24}"
 DEVICE="${DEVICE:-root@10.55.0.2}"
 OUT="$ROOT/build/xorg-server"
 AP="https://gitlab.alpinelinux.org/alpine/aports/-/raw/$ALPINE-stable/community/xorg-server"
+build() {
 mkdir -p "$OUT/src"
 curl -sfL -o "$OUT/src/APKBUILD" "$AP/APKBUILD"
 # Alpine's own patches, as its APKBUILD names them
@@ -52,6 +53,12 @@ docker run --rm --platform linux/arm/v6 -v "$OUT":/out "alpine:$ALPINE" sh -ec '
     cp /home/builder/packages/*/*/xorg-server-[0-9]*.apk /home/builder/packages/*/*/xorg-server-common-[0-9]*.apk \
        /home/builder/build.log /out/
     cp /home/builder/xorg-server/APKBUILD /out/APKBUILD.built'
+}
+# "install" takes the package already built (built first if there is none);
+# without it this builds again
+if [ "${1:-}" != install ] || ! ls "$OUT"/xorg-server-[0-9]*.apk >/dev/null 2>&1; then
+    build
+fi
 ls -l "$OUT"/*.apk
 if [ "${1:-}" = install ]; then
     for P in "$OUT"/xorg-server-common-[0-9]*.apk "$OUT"/xorg-server-[0-9]*.apk; do

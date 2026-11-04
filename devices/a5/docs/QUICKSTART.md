@@ -295,14 +295,16 @@ System mounts: iOS's Data partition (apps, photos) is encrypted file by file.
 
 ## A desktop
 
-XFCE runs off the NFS root with touch as the pointer — drawn by the GPU
-when the GPU's OpenGL is installed (`./cascadia a5 mesa`: X then runs
-modesetting with glamor on it, and GL programs get GLX), by the two CPU
-cores otherwise (fbdev; `DESKTOP_FB=1 desktop` asks for it). One script sets it
-up. From the host, with the iPad booted from NFS and `./cascadia a5 net on`:
+XFCE runs off the NFS root with touch as the pointer, drawn by the GPU (X
+runs modesetting with glamor on the GPU's Mesa, and GL programs get GLX; the
+two CPU cores draw instead with `DESKTOP_FB=1 desktop`). Everything for it is
+built on the host into the root a new NFS export starts from:
 
 ```bash
-ssh root@10.55.0.2 sh -s < tools/desktop/xfce-setup.sh   # ~280 packages, ~6 min
+./cascadia a5 desktop-root     # once: XFCE, patched X/xfwm4/pixman, Mesa, the GPU's pack,
+                               # SuperTux, screenpad, autorotate -> build/desktop-root.tar
+./cascadia a5 nfs on           # a NEW root starts from it
+./cascadia a5 build && ./cascadia a5 flash --kdfu      # (or flash, with the Pico)
 ```
 
 Then on the iPad, from the glass or over ssh:
@@ -311,9 +313,14 @@ Then on the iPad, from the glass or over ssh:
 desktop
 ```
 
-For the GPU, beforehand on the host: `./cascadia a5 gpu` (the template frame
-from your IPSW) and `./cascadia a5 mesa` (Mesa, about an hour the first time);
-`desktop` says "X on the GPU" when it takes it.
+`desktop` says "X on the GPU" when it takes it. The first `desktop-root` is
+long -- XFCE is ~280 packages under ARM emulation, and Mesa and SuperTux
+build for the better part of an hour each -- and later runs reuse what is
+built (`FRESH=1` starts the root again from the current image). An existing
+`~/cascadia-root` is never overwritten: it is the iPad's live disk
+(`FORCE_SYNC=1 ./cascadia a5 nfs on` reseeds it). Each piece can still go
+onto a running iPad on its own, as before: `ssh root@10.55.0.2 sh -s <
+tools/desktop/xfce-setup.sh`, `./cascadia a5 gpu`, `./cascadia a5 mesa`.
 
 - **Touch.** Tap = click. A quick swipe scrolls (a finger that rests before it
   moves selects instead — that is GTK's rule, not a fault). A two-finger tap =

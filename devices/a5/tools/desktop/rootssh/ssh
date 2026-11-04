@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+#
+# ssh, for tools/desktop/make-root.sh: put first on PATH, it runs the command
+# an installer would have sent to the iPad (`ssh "$DEVICE" 'apk add ...'`)
+# inside the root filesystem make-root.sh is building -- a chroot in an
+# armhf container (CASCADIA_ROOT_CONTAINER) -- with stdin and stdout passed
+# through.  So every installer that works on the running iPad builds the
+# root on this machine unchanged.  Options are read the way ssh reads them
+# and ignored; the host name is ignored too.
+set -euo pipefail
+C="${CASCADIA_ROOT_CONTAINER:?make-root.sh sets CASCADIA_ROOT_CONTAINER}"
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -[bcDEeFIiJLlmOopQRSWw]) shift 2 ;;          # options that take a value
+        -[bcDEeFIiJLlmOopQRSWw]?*) shift ;;           # ... given in the same word
+        --) shift; break ;;
+        -*) shift ;;                                  # flags: -t -T -q -n -4 ...
+        *) break ;;
+    esac
+done
+[ $# -gt 0 ] || { echo "rootssh: no host" >&2; exit 255; }
+shift                                                 # the host
+[ $# -gt 0 ] || { echo "rootssh: an interactive shell is not offered here" >&2; exit 255; }
+exec docker exec -i -e CASCADIA_ROOT_BUILD=1 "$C" chroot /target /bin/sh -c "$*"

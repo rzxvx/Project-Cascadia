@@ -1,4 +1,5 @@
-# Runs ON THE iPad, NFS root and ./cascadia a5 net on:
+# Runs ON THE iPad, NFS root and ./cascadia a5 net on (or, unchanged, inside the
+# root ./cascadia a5 desktop-root builds on the host):
 #   ssh root@10.55.0.2 sh -s < tools/desktop/xfce-setup.sh
 # then, on the glass or over ssh:
 #   desktop
@@ -251,8 +252,10 @@ NoDisplay=true
 END
 
 # udev has to be running before X starts.  Stage 2 starts it at boot once
-# eudev is installed; on the boot that installed it, nobody has yet.
-if ! pidof udevd >/dev/null; then
+# eudev is installed; on the boot that installed it, nobody has yet.  Not
+# while make-root.sh builds a root on the host (CASCADIA_ROOT_BUILD): there
+# is no iPad there to start it for.
+if [ -z "${CASCADIA_ROOT_BUILD:-}" ] && ! pidof udevd >/dev/null; then
     udevd --daemon
     udevadm trigger --action=add
     udevadm settle -t 10 || true

@@ -26,6 +26,8 @@ SRC="${SRC:-$ROOT/build/initramfs-root}"   # the tree ./cascadia a5 rootfs build
 DST="${DST:-$HOME/cascadia-root}"          # deliberately not under Desktop/Documents/
                                            # Downloads: those are TCC-protected and
                                            # nfsd cannot read them
+DESKTOP_TAR="$ROOT/build/desktop-root.tar"  # ./cascadia a5 desktop-root; a new root
+                                           # starts from it when it is there
 LAN_NET="${LAN_NET:-10.55.0.0}"
 LAN_MASK="${LAN_MASK:-255.255.255.0}"
 IP_HOST="${IP_HOST:-10.55.0.1}"
@@ -56,8 +58,17 @@ on)
         echo "    It is the device's live root now; anything installed there"
         echo "    would be deleted.  To reseed it from the initramfs anyway:"
         echo "      FORCE_SYNC=1 $0 on"
+    elif [ -f "$DESKTOP_TAR" ] && [ "${DESKTOP:-1}" != 0 ]; then
+        # The root with the desktop (./cascadia a5 desktop-root): built in a
+        # Linux container, so owners and modes are already Linux's -- kept
+        # by number, there being no messagebus on this Mac.
+        echo "==> seeding $DST from $DESKTOP_TAR (the desktop root; DESKTOP=0 for the plain one)"
+        sudo mkdir -p "$DST"
+        sudo tar -xpf "$DESKTOP_TAR" --numeric-owner -C "$DST"
+        sudo mkdir -p "$DST/dev" "$DST/proc" "$DST/sys"
     else
         echo "==> copying $SRC -> $DST"
+        [ -f "$DESKTOP_TAR" ] || echo "    (no desktop yet: ./cascadia a5 desktop-root builds a root with XFCE, the GPU, SuperTux)"
         sudo mkdir -p "$DST"
         # Device nodes are excluded on purpose: stage 1 mount --moves devtmpfs onto
         # the new root, so an empty /dev is all that is wanted, and macOS has no

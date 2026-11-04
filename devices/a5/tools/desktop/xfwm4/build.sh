@@ -13,6 +13,7 @@ ALPINE="${ALPINE:-3.24}"
 DEVICE="${DEVICE:-root@10.55.0.2}"
 OUT="$ROOT/build/xfwm4"
 AP="https://gitlab.alpinelinux.org/alpine/aports/-/raw/$ALPINE-stable/community/xfwm4"
+build() {
 mkdir -p "$OUT/src"
 curl -sfL -o "$OUT/src/APKBUILD" "$AP/APKBUILD"
 curl -sfL -o "$OUT/src/compositor-render-full-screen-after-startup.patch" \
@@ -39,6 +40,12 @@ docker run --rm --platform linux/arm/v6 -v "$OUT":/out "alpine:$ALPINE" sh -ec '
                    abuild -r >/home/builder/build.log 2>&1" || { tail -30 /home/builder/build.log; exit 1; }
     cp /home/builder/packages/*/*/xfwm4-[0-9]*.apk /home/builder/build.log /out/
     cp /home/builder/xfwm4/APKBUILD /out/APKBUILD.built'
+}
+# "install" takes the package already built (built first if there is none);
+# without it this builds again
+if [ "${1:-}" != install ] || ! ls "$OUT"/xfwm4-[0-9]*.apk >/dev/null 2>&1; then
+    build
+fi
 ls -l "$OUT"/xfwm4-*.apk
 if [ "${1:-}" = install ]; then
     P=$(ls "$OUT"/xfwm4-[0-9]*.apk | tail -1)

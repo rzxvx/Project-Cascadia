@@ -34,8 +34,15 @@ if [ "${1:-}" != install ] || ! ls "$OUT"/supertux-[0-9]*.apk >/dev/null 2>&1; t
 fi
 ls -l "$OUT"/*.apk
 if [ "${1:-}" = install ]; then
-    # (0.7.0 needs libraqm, which 0.6.3 did not: offline, from docker)
-    DEVICE="$DEVICE" sh "$ROOT/tools/device-apk.sh" libraqm
+    # Its libraries first, offline, from docker: every depend of the package
+    # (so:libGLEW, SDL2, OpenAL, ... and libraqm, which 0.6.3 did not need).
+    # Not only libraqm: a root without SuperTux's old 0.6.3 has none of
+    # them, and --force-broken-world below would then skip supertux itself
+    # in silence and leave a world every later apk add trips over.
+    DEPS=$(for P in "$OUT"/supertux-[0-9]*.apk; do tar -xzOf "$P" .PKGINFO 2>/dev/null; done |
+           sed -n 's/^depend = //p' | grep -v -e '^supertux' -e '^so:libc\.musl' | sort -u | tr '\n' ' ')
+    [ -n "$DEPS" ] || { echo "no depends in $OUT/supertux-*.apk's .PKGINFO" >&2; exit 1; }
+    DEVICE="$DEVICE" sh "$ROOT/tools/device-apk.sh" $DEPS
     # (in /var/tmp, the NFS root: the data are 283 MB, /tmp is 128 MB of RAM)
     for P in "$OUT"/supertux-data-*.apk "$OUT"/supertux-[0-9]*.apk; do
         ssh "$DEVICE" "cat > /var/tmp/$(basename "$P")" < "$P"

@@ -18,6 +18,9 @@
 #   ./cascadia a5 mesa        Mesa with the GPU's driver: the system's OpenGL (ES 1.1 and
 #                             2.0, desktop 2.1, GLX), and the GPU demo tux-gpudemo: build
 #                             and install (release; a debug build: MESA_BUILD=debug)
+#   ./cascadia a5 desktop-root  a root with XFCE, the GPU's Mesa and pack, SuperTux,
+#                             screenpad, autorotate, built here; nfs on seeds
+#                             a new root from it
 #   ./cascadia a5 image       rebuild the build image if the Dockerfile changed
 #
 # Everything is relative to this file, so the repository works wherever it is
@@ -565,5 +568,6 @@ case "${1:-}" in
     nfs)    t=$(host_tool nfs-export);     shift; bash "$t" "$@" ;;
     gpu)    shift; cmd_gpu "$@" ;;
     mesa)   shift; cmd_mesa "$@" ;;
-    *)      sed -n '2,19p' "$ROOT/cascadia" | sed 's/^# \{0,1\}//'; exit 2 ;;
+    desktop-root) bash "$ROOT/tools/desktop/make-root.sh" ;;
+    *)      sed -n '2,23p' "$ROOT/cascadia" | sed 's/^# \{0,1\}//'; exit 2 ;;
 esac
