@@ -51,6 +51,11 @@ cd Project-Cascadia
 It goes through every step below in order, says what each does and how
 long it takes, and skips what is done already: stopped anywhere (a reboot,
 a failed download, Docker not running yet), run it again and it carries on.
+When there is a prebuilt release (`prebuilt/`), the kernel and the desktop
+root are downloaded (~460 MB) instead of built -- minutes instead of hours
+-- and what is yours is added here: the firmware and the GPU's pack from
+your IPSW, your ssh key, the iPad's host key. `INSTALL_FROM=source
+./cascadia a5 install` builds everything instead.
 It asks three things: what to install on this computer, whether you want
 the desktop (it then lives on this computer as the iPad's disk, over the
 cable), and how the iPad gets into pwned DFU (a Pi Pico, or its jailbroken

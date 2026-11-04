@@ -102,6 +102,7 @@ def manifest(d, version, urlbase, commit, out):
         files.append({'name': n, 'url': urlbase.rstrip('/') + '/' + n,
                       'size': os.path.getsize(p), 'sha256': sha256(p)})
     m = {'version': version, 'commit': commit, 'files': files}
+    os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
     with open(out, 'w') as f:
         json.dump(m, f, indent=1)
         f.write('\n')
