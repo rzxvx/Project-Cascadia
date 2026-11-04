@@ -1,9 +1,11 @@
 # Quickstart
 
-From a clean machine to a shell on the iPad. Every step here has been walked
-end to end twice: on macOS / Apple Silicon, and on a fresh Arch Linux install
-on an x86_64 Core i3 — clone, build, flash, ssh, with nothing borrowed from the
-author's machine.
+From a clean machine to a shell on the iPad. `./cascadia a5 install` has been
+walked end to end on macOS / Apple Silicon -- clone, build, the desktop root,
+flash through kDFU, NFS, ssh. On Linux the steps one by one were walked on a
+fresh Arch install (x86_64) before `install` existed, and `setup` is checked on
+Debian, Ubuntu, Arch and Fedora; a whole `install` on Linux is next -- if
+something here does not match what you see there, that is a bug.
 
 Nothing is written to the device's storage. The kernel is uploaded into RAM and
 run from there; iOS is untouched (Linux can read its files, and never writes

@@ -668,7 +668,9 @@ Two more gotchas worth recording:
 
 ## Building
 
-**[docs/QUICKSTART.md](docs/QUICKSTART.md) is the walkthrough** — hardware,
+**`./cascadia a5 install` does all of this in order** (it asks what it
+needs and carries on after a stop); **[docs/QUICKSTART.md](docs/QUICKSTART.md)
+is the walkthrough** — hardware,
 host setup, the IPSW, pwned DFU, the first shell, and what the failures
 look like. The short version follows.
 
