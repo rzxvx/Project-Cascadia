@@ -716,9 +716,13 @@ cmd_mesa() {
     # The system's OpenGL is a release build (no assertions: a debug build
     # stops a program on Mesa's own, M36); install.py takes the same one
     export MESA_BUILD="${MESA_BUILD:-release}"
+    # jobs by docker's memory, about a GB each (ninja's own count, the cores
+    # plus two, ran a 4 GB machine short under ARM emulation)
+    export MESA_JOBS="${MESA_JOBS:-$(docker info --format '{{.MemTotal}} {{.NCPU}}' 2>/dev/null |
+        awk '{ j = int($1 / 1073741824); if (j > $2) j = $2; if (j < 1) j = 1; print j }')}"
     # --init: without it the build is PID 1, which ignores ^C
     docker run --rm --init --platform linux/arm/v7 ${duser[@]+"${duser[@]}"} \
-        -e MESA_BUILD -v "$ROOT":/cascadia -w /cascadia cascadia-mesa sh mesa/build.sh
+        -e MESA_BUILD -e MESA_JOBS -v "$ROOT":/cascadia -w /cascadia cascadia-mesa sh mesa/build.sh
     if [ $# -gt 0 ]; then
         python3 "$ROOT/mesa/install.py" "$@"
     else
