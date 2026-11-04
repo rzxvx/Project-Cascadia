@@ -99,7 +99,11 @@ step() {
     case " $STEPS " in *" $name "*) ;; *) return 0 ;; esac
     say "$name"
     local t0=$SECONDS
-    "$@" || fail "step '$name' failed (above); run again to retry, ONLY=\"$name\" for just this one"
+    # once more on a failure: every step is safe to repeat, and a download
+    # cut short (a 40 MB llvm package, "Connection aborted") stopped a
+    # whole release once
+    "$@" || { echo "    $name failed -- once more"; "$@"; } \
+        || fail "step '$name' failed (above); run again to retry, ONLY=\"$name\" for just this one"
     printf '    %s: %d s\n' "$name" $((SECONDS - t0))
 }
 
