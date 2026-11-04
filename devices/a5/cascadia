@@ -342,7 +342,12 @@ cmd_install() {
     desktop=$(install_conf desktop "the desktop?")
 
     istep 5 "the kernel and the boot image" "~15 min the first time, a few on an M-series Mac"
-    if [ -f "$ROOT/output/staging-bundle.bin" ] && [ -z "$(find "$ROOT/build/initramfs-root" -newer "$ROOT/output/staging-bundle.bin" -type f -print -quit 2>/dev/null)" ]; then
+    # fresh: the bundle is newer than the tree it embeds and than the
+    # sources a build lays over it (an edit to initramfs/init reaches the
+    # tree only when the build runs)
+    if [ -f "$ROOT/output/staging-bundle.bin" ] && [ -z "$(find "$ROOT/build/initramfs-root" \
+            "$ROOT/initramfs" "$ROOT/rootfs/alpine" "$ROOT/dts" "$ROOT/patches" "$ROOT/config" \
+            "$ROOT/build/keep" -newer "$ROOT/output/staging-bundle.bin" -type f -print -quit 2>/dev/null)" ]; then
         iskip "output/staging-bundle.bin is newer than everything in it"
     else isub build; fi
 
