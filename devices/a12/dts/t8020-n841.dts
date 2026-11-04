@@ -1,0 +1,151 @@
+// SPDX-License-Identifier: GPL-2.0+ OR MIT
+/* Minimal Linux bring-up description for iPhone XR (N841AP, T8020). */
+/dts-v1/;
+#include <dt-bindings/pinctrl/apple.h>
+#include "t8020.dtsi"
+
+/ {
+    compatible = "apple,n841", "apple,t8020", "apple,arm-platform";
+    model = "Apple iPhone XR";
+    chassis-type = "handset";
+
+    aliases {
+        serial0 = &serial0;
+        serial1 = &serial1;
+        ausbphy0 = &ausbphy0;
+        touchscreen0 = &touchscreen;
+        wifi0 = &wifi0;
+        bluetooth0 = &bluetooth0;
+    };
+
+    chosen {
+        #address-cells = <2>;
+        #size-cells = <2>;
+        ranges;
+        stdout-path = "serial0";
+        framebuffer0: framebuffer@0 {
+            compatible = "apple,simple-framebuffer", "simple-framebuffer";
+            reg = <0 0 0 0>;
+            power-domains = <&ps_disp0_be &ps_mipi_dsi &ps_disp0_hilo &ps_disp0_ppp>;
+            status = "disabled";
+        };
+    };
+
+    memory@800000000 {
+        device_type = "memory";
+        reg = <0x8 0 0 0>;
+    };
+
+    reserved-memory {
+        #address-cells = <2>;
+        #size-cells = <2>;
+        ranges;
+    };
+};
+
+&serial0 { status = "okay"; };
+
+/*
+ * N841 UART1 is the four-pin group retained on AP GPIOs 30..33.  The Apple
+ * ADT explicitly names TX30 and RTS32; RX31/CTS33 are the intervening pins
+ * retained in peripheral function 1.  Select the complete group before the
+ * serdev child opens, matching the working T8010 Bluetooth lifecycle.
+ */
+&pinctrl_ap {
+    bluetooth_uart1_pins: bluetooth-uart1-pins {
+        pinmux = <APPLE_PINMUX(30, 1)>,
+                 <APPLE_PINMUX(31, 1)>,
+                 <APPLE_PINMUX(32, 1)>,
+                 <APPLE_PINMUX(33, 1)>;
+    };
+};
+
+/*
+ * N841 ADT: /arm-io/uart1/bluetooth, compatible bluetooth,n88.
+ * UART1 is 0x235204000 / IRQ 387; transport-speed is 3 Mbit/s.
+ * The controller's exact Broadcom revision is learned via HCI, so use the
+ * generic Broadcom H4 serdev binding rather than XS Max's PCIe BT device.
+ * function-power_enable resolves to the SMC gP09 key; function-bt_wake is
+ * AP GPIO 6.  The parent UART explicitly selects pins 30..33 as function 1.
+ */
+&serial1 {
+    status = "okay";
+    pinctrl-0 = <&bluetooth_uart1_pins>;
+    pinctrl-names = "default";
+    uart-has-rtscts;
+
+    bluetooth0: bluetooth {
+        compatible = "brcm,bcm4329-bt";
+        /* Firmware build 1072 rejects LE extended scan opcode 0x2041. */
+        brcm,broken-ext-scan;
+        /* Broadcom reset/identification rate, then the ADT operational rate. */
+        current-speed = <115200>;
+        max-speed = <3000000>;
+        /* ADT function-power_enable: pKW4(gP09, 0 | enabled). */
+        apple,power-function = <&smc 0x67503039 0>;
+        device-wakeup-gpios = <&pinctrl_ap 6 0>;
+        /* The pack step replaces this with reversed syscfg/BMac bytes. */
+        local-bd-address = [00 00 00 00 00 00];
+    };
+};
+
+/* N841 ADT: Chestnut display PMU on I2C2, address 0x27. */
+&i2c2 {
+    status = "okay";
+
+    display_pmu: pmu@27 {
+        compatible = "apple,chestnut";
+        reg = <0x27>;
+    };
+};
+
+/*
+ * N841 multitouch: spi-1,samsung, CS 67, reset 5, AOP interrupt 19.
+ * The firmware is generated from N841_Multitouch.im4p personality C1FC2,1.
+ * The driver polls HIDSPI, so the interrupt description is retained for the
+ * eventual IRQ path but is not required for first bring-up.
+ */
+&spi1 {
+    status = "okay";
+
+    touchscreen: touchscreen@0 {
+        compatible = "apple,n841-multitouch", "apple,hbpp-multitouch";
+        reg = <0>;
+        spi-max-frequency = <8000000>;
+        reset-gpios = <&pinctrl_ap 5 1>;
+        interrupts-extended = <&pinctrl_aop 19 8>;
+        firmware-name = "apple/n841-mtfw.bin";
+        apple,calibration-name = "apple/n841-mtcal.bin";
+
+        /* function-power_ana: Chestnut LDO 2 = register 5, bit 0x10. */
+        apple,pmu-ldo = <&display_pmu 0x05 0x10>;
+        /* function-power_ldo rBK3, then function-clock_enable gP00. */
+        apple,smc-function = <&smc 0x72424b33 0x05020000>;
+        apple,smc-function2 = <&smc 0x67503030 0x08000000>;
+
+        /* Approximate 1/100 mm ranges; calibrate from raw reports later. */
+        touchscreen-size-x = <6500>;
+        touchscreen-size-y = <14000>;
+        touchscreen-inverted-y;
+    };
+};
+
+/*
+ * N841 Wi-Fi: Apple/Broadcom BCM4357 B1 (PCI 14e4:440a), module-instance
+ * "yodak", on APCIE port 2. Bluetooth is the separate N88 UART device and
+ * must not be described as PCI function 1 as it is on D331p/N104.
+ *
+ * m1n1 can replace the placeholders from the live Apple ADT. A later pack
+ * step also supplies this phone's WMac/WSKU/WCAL from syscfg when available.
+ */
+&port02 {
+    bus-range = <1 1>;
+
+    wifi0: wifi@0,0 {
+        compatible = "pci14e4,440a";
+        reg = <0x10000 0x0 0x0 0x0 0x0>;
+        local-mac-address = [00 00 00 00 00 00];
+        apple,antenna-sku = "R";
+        brcm,board-type = "apple,yodak";
+    };
+};

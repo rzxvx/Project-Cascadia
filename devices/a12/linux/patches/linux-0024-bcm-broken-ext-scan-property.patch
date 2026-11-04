@@ -1,0 +1,14 @@
+diff --git a/drivers/bluetooth/hci_bcm.c b/drivers/bluetooth/hci_bcm.c
+--- a/drivers/bluetooth/hci_bcm.c
++++ b/drivers/bluetooth/hci_bcm.c
+@@ -652,6 +652,10 @@ static int bcm_setup(struct hci_uart *hu)
+ 	if (err)
+ 		return err;
+ 
++	if (bcm->dev && device_property_read_bool(bcm->dev->dev,
++						  "brcm,broken-ext-scan"))
++		hci_set_quirk(hu->hdev, HCI_QUIRK_BROKEN_EXT_SCAN);
++
+ 	/* Some devices ship with the controller default address.
+ 	 * Allow the bootloader to set a valid address through the
+ 	 * device tree.

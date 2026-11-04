@@ -1,0 +1,60 @@
+diff --git a/drivers/soc/apple/sart.c b/drivers/soc/apple/sart.c
+index 66b99955b..168f40050 100644
+--- a/drivers/soc/apple/sart.c
++++ b/drivers/soc/apple/sart.c
+@@ -140,6 +140,33 @@ static void sart2_set_entry(struct apple_sart *sart, int index, u8 flags,
+ 	writel(cfg, sart->regs + APPLE_SART2_CONFIG(index));
+ }
+ 
++/*
++ * T8020 reports sart-version 1, which upstream has no case for.
++ *
++ * The register layout is v2's: iBoot leaves entries reading 0x2f000004 and
++ * 0x6f003288, and bit 29 and bit 30 are set, neither of which fits v0's five
++ * bit flags field at 28:24. The paddr shift is 12, since every entry iBoot
++ * writes lands inside DRAM at that shift and nowhere near it at 14.
++ *
++ * What differs is the allow value. v2 writes 0xff, and this part never does:
++ * iBoot uses 0x2f for an MMIO window, 0x6a for what looks like the firmware
++ * image, and 0x6f for data buffers, so 0x6f is what a data region gets here.
++ *
++ * This was once credited with fixing the firmware's "rresp code 2" on its
++ * first fetch of the admin submission queue. It does not: that was a stale
++ * queue address left by iBoot, and 0xff behaves the same as 0x6f on this part
++ * as far as anything here can tell. Matching the bootloader is still the right
++ * default for a field whose bits are unknown.
++ */
++static struct apple_sart_ops sart_ops_v1 = {
++	.get_entry = sart2_get_entry,
++	.set_entry = sart2_set_entry,
++	.flags_allow = 0x6f,
++	.size_shift = APPLE_SART2_CONFIG_SIZE_SHIFT,
++	.paddr_shift = APPLE_SART2_PADDR_SHIFT,
++	.size_max = APPLE_SART2_CONFIG_SIZE_MAX,
++};
++
+ static struct apple_sart_ops sart_ops_v2 = {
+ 	.get_entry = sart2_get_entry,
+ 	.set_entry = sart2_set_entry,
+@@ -289,8 +316,8 @@ int apple_sart_add_allowed_region(struct apple_sart *sart, phys_addr_t paddr,
+ 			return ret;
+ 		}
+ 
+-		dev_dbg(sart->dev, "wrote [%pa, 0x%zx] to %d\n", &paddr, size,
+-			i);
++		dev_dbg(sart->dev, "wrote [%pa, 0x%zx] to entry %d flags 0x%02x\n",
++			&paddr, size, i, sart->ops->flags_allow);
+ 		return 0;
+ 	}
+ 
+@@ -360,6 +387,10 @@ static const struct of_device_id apple_sart_of_match[] = {
+ 		.compatible = "apple,t8103-sart",
+ 		.data = &sart_ops_v2,
+ 	},
++	{
++		.compatible = "apple,t8020-sart",
++		.data = &sart_ops_v1,
++	},
+ 	{
+ 		.compatible = "apple,t8015-sart",
+ 		.data = &sart_ops_v0,

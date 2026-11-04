@@ -1,0 +1,42 @@
+diff --git a/drivers/pci/controller/pcie-apple.c b/drivers/pci/controller/pcie-apple.c
+index c2cffc065..541715cf5 100644
+--- a/drivers/pci/controller/pcie-apple.c
++++ b/drivers/pci/controller/pcie-apple.c
+@@ -555,7 +555,7 @@ static int apple_pcie_setup_port(struct apple_pcie *pcie,
+ {
+ 	struct platform_device *platform = to_platform_device(pcie->dev);
+ 	struct apple_pcie_port *port;
+-	struct gpio_desc *reset;
++	struct gpio_desc *reset, *pwren;
+ 	struct resource *res;
+ 	char name[16];
+ 	u32 stat, idx;
+@@ -566,6 +566,14 @@ static int apple_pcie_setup_port(struct apple_pcie *pcie,
+ 	if (IS_ERR(reset))
+ 		return PTR_ERR(reset);
+ 
++	/* Some devices, like the wifi on A12 iPhones, have their own power switch. */
++	pwren = devm_fwnode_gpiod_get_optional(pcie->dev, of_fwnode_handle(np), "pwren",
++					       GPIOD_OUT_HIGH, "PWREN");
++	if (IS_ERR(pwren))
++		return PTR_ERR(pwren);
++	if (pwren)
++		msleep(100);
++
+ 	port = devm_kzalloc(pcie->dev, sizeof(*port), GFP_KERNEL);
+ 	if (!port)
+ 		return -ENOMEM;
+@@ -762,6 +770,13 @@ static int apple_pcie_enable_device(struct pci_host_bridge *bridge, struct pci_d
+ 	if (!port)
+ 		return 0;
+ 
++	/*
++	 * No RID/SID table, as behind a DART with a single SID on T8020:
++	 * everything on the port already lands on SID 0.
++	 */
++	if (!port->sid_map_sz)
++		return 0;
++
+ 	dev_dbg(&pdev->dev, "added to bus %s, index %d\n",
+ 		pci_name(pdev->bus->self), port->idx);
+ 

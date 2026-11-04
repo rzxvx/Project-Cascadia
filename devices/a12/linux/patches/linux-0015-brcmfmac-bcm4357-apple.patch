@@ -1,0 +1,48 @@
+diff --git a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/pcie.c b/drivers/net/wireless/broadcom/brcm80211/brcmfmac/pcie.c
+index 55f4d7b97..2a06a932e 100644
+--- a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/pcie.c
++++ b/drivers/net/wireless/broadcom/brcm80211/brcmfmac/pcie.c
+@@ -54,6 +54,7 @@ BRCMF_FW_DEF(4350, "brcmfmac4350-pcie");
+ BRCMF_FW_DEF(4350C, "brcmfmac4350c2-pcie");
+ BRCMF_FW_CLM_DEF(4355, "brcmfmac4355-pcie");
+ BRCMF_FW_CLM_DEF(4355C1, "brcmfmac4355c1-pcie");
++BRCMF_FW_CLM_DEF(4357B1, "brcmfmac4357b1-pcie");
+ BRCMF_FW_CLM_DEF(4356, "brcmfmac4356-pcie");
+ BRCMF_FW_CLM_DEF(43570, "brcmfmac43570-pcie");
+ BRCMF_FW_DEF(4358, "brcmfmac4358-pcie");
+@@ -91,6 +92,7 @@ static const struct brcmf_firmware_mapping brcmf_pcie_fwnames[] = {
+ 	BRCMF_FW_ENTRY(BRCM_CC_4355_CHIP_ID, 0x000007FF, 4355),
+ 	BRCMF_FW_ENTRY(BRCM_CC_4355_CHIP_ID, 0x00002000, 54591),
+ 	BRCMF_FW_ENTRY(BRCM_CC_4355_CHIP_ID, 0xFFFFF800, 4355C1), /* rev ID 12/C2 seen */
++	BRCMF_FW_ENTRY(BRCM_CC_4357_CHIP_ID, 0xFFFFFFFF, 4357B1),
+ 	BRCMF_FW_ENTRY(BRCM_CC_4356_CHIP_ID, 0xFFFFFFFF, 4356),
+ 	BRCMF_FW_ENTRY(BRCM_CC_43567_CHIP_ID, 0xFFFFFFFF, 43570),
+ 	BRCMF_FW_ENTRY(BRCM_CC_43569_CHIP_ID, 0xFFFFFFFF, 43570),
+@@ -2738,6 +2740,7 @@ static const struct pci_device_id brcmf_pcie_devid_table[] = {
+ 	BRCMF_PCIE_DEVICE(BRCM_PCIE_4354_RAW_DEVICE_ID, WCC),
+ 	BRCMF_PCIE_DEVICE(BRCM_PCIE_4355_DEVICE_ID, WCC_SEED),
+ 	BRCMF_PCIE_DEVICE(BRCM_PCIE_4356_DEVICE_ID, WCC),
++	BRCMF_PCIE_DEVICE(BRCM_PCIE_4357_APPLE_DEVICE_ID, WCC_SEED),
+ 	BRCMF_PCIE_DEVICE(BRCM_PCIE_43567_DEVICE_ID, WCC),
+ 	BRCMF_PCIE_DEVICE(BRCM_PCIE_43570_DEVICE_ID, WCC),
+ 	BRCMF_PCIE_DEVICE(BRCM_PCIE_43570_RAW_DEVICE_ID, WCC),
+diff --git a/drivers/net/wireless/broadcom/brcm80211/include/brcm_hw_ids.h b/drivers/net/wireless/broadcom/brcm80211/include/brcm_hw_ids.h
+index df3b67ba4..a090100f3 100644
+--- a/drivers/net/wireless/broadcom/brcm80211/include/brcm_hw_ids.h
++++ b/drivers/net/wireless/broadcom/brcm80211/include/brcm_hw_ids.h
+@@ -39,6 +39,7 @@
+ #define BRCM_CC_4354_CHIP_ID		0x4354
+ #define BRCM_CC_4355_CHIP_ID		0x4355
+ #define BRCM_CC_4356_CHIP_ID		0x4356
++#define BRCM_CC_4357_CHIP_ID		0x4357
+ #define BRCM_CC_43566_CHIP_ID		43566
+ #define BRCM_CC_43567_CHIP_ID		43567
+ #define BRCM_CC_43569_CHIP_ID		43569
+@@ -77,6 +78,7 @@
+ #define BRCM_PCIE_4354_RAW_DEVICE_ID	0x4354
+ #define BRCM_PCIE_4355_DEVICE_ID	0x43dc
+ #define BRCM_PCIE_4356_DEVICE_ID	0x43ec
++#define BRCM_PCIE_4357_APPLE_DEVICE_ID	0x440a
+ #define BRCM_PCIE_43567_DEVICE_ID	0x43d3
+ #define BRCM_PCIE_43570_DEVICE_ID	0x43d9
+ #define BRCM_PCIE_43570_RAW_DEVICE_ID	0xaa31

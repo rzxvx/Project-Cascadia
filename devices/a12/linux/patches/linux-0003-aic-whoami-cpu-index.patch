@@ -1,0 +1,82 @@
+diff --git a/drivers/irqchip/irq-apple-aic.c b/drivers/irqchip/irq-apple-aic.c
+index 4a3141d9f..64d9001d7 100644
+--- a/drivers/irqchip/irq-apple-aic.c
++++ b/drivers/irqchip/irq-apple-aic.c
+@@ -442,6 +442,20 @@ static void __exception_irq_entry aic_handle_irq(struct pt_regs *regs)
+ 	}
+ }
+ 
++/*
++ * AIC numbers CPUs itself, and that numbering is not the kernel's logical one.
++ * On a Mac the two agree because iBoot boots the first core AIC knows about,
++ * so upstream only warns about a mismatch and leaves a note that a mapping
++ * table would be needed if one ever turned up. On an iPhone one does: the A12
++ * starts on cluster 1 core 0, which is logical CPU 0 to the kernel and a
++ * different index to AIC, so every interrupt routed with BIT(0) goes to a
++ * Tempest core that maxcpus=1 never brings up and nothing is ever delivered.
++ *
++ * Each CPU reads its own index out of AIC_WHOAMI, so record it on the way in
++ * and use that rather than the logical number.
++ */
++static DEFINE_PER_CPU(u32, aic_cpu_index);
++
+ static int aic_irq_set_affinity(struct irq_data *d,
+ 				const struct cpumask *mask_val, bool force)
+ {
+@@ -456,7 +470,8 @@ static int aic_irq_set_affinity(struct irq_data *d,
+ 	else
+ 		cpu = cpumask_any_and(mask_val, cpu_online_mask);
+ 
+-	aic_ic_write(ic, ic->info.target_cpu + AIC_HWIRQ_IRQ(hwirq) * 4, BIT(cpu));
++	aic_ic_write(ic, ic->info.target_cpu + AIC_HWIRQ_IRQ(hwirq) * 4,
++		     BIT(per_cpu(aic_cpu_index, cpu)));
+ 	irq_data_update_effective_affinity(d, cpumask_of(cpu));
+ 
+ 	return IRQ_SET_MASK_OK;
+@@ -892,12 +907,7 @@ static int aic_init_cpu(unsigned int cpu)
+ 	isb();
+ 
+ 	if (aic_irqc->info.version == 1) {
+-		/*
+-		 * Make sure the kernel's idea of logical CPU order is the same as AIC's
+-		 * If we ever end up with a mismatch here, we will have to introduce
+-		 * a mapping table similar to what other irqchip drivers do.
+-		 */
+-		WARN_ON(aic_ic_read(aic_irqc, AIC_WHOAMI) != smp_processor_id());
++		__this_cpu_write(aic_cpu_index, aic_ic_read(aic_irqc, AIC_WHOAMI));
+ 
+ 		/*
+ 		 * Always keep IPIs unmasked at the hardware level (except auto-masking
+@@ -1076,9 +1086,30 @@ static int __init aic_of_ic_init(struct device_node *node, struct device_node *p
+ 			aic_ic_write(irqc, irqc->info.mask_set + off + i * 4, U32_MAX);
+ 		for (i = 0; i < BITS_TO_U32(irqc->nr_irq); i++)
+ 			aic_ic_write(irqc, irqc->info.sw_clr + off + i * 4, U32_MAX);
+-		if (irqc->info.target_cpu)
++		/*
++		 * Point every interrupt at CPU0.
++		 *
++		 * Dropping this loop looked harmless because the mailbox and
++		 * the UART kept working, but those are the lines iBoot had
++		 * already aimed here. The ANS completion interrupt, hwirq 371,
++		 * was aimed somewhere else, so with maxcpus=1 it was raised on
++		 * a core that never runs: the NVMe admin command completed in
++		 * memory and the handler was never entered once.
++		 *
++		 * The target is a mask over AIC's own CPU numbering, not the
++		 * kernel's, so this is BIT(AIC_WHOAMI) for the core running
++		 * init rather than the BIT(0) upstream writes. Writing 1 here
++		 * aims everything at a Tempest core and even the mailbox stops
++		 * being delivered.
++		 */
++		if (irqc->info.target_cpu) {
++			u32 self = BIT(aic_ic_read(irqc, AIC_WHOAMI));
++
+ 			for (i = 0; i < irqc->nr_irq; i++)
+-				aic_ic_write(irqc, irqc->info.target_cpu + off + i * 4, 1);
++				aic_ic_write(irqc,
++					     irqc->info.target_cpu + off + i * 4,
++					     self);
++		}
+ 		off += irqc->info.die_stride;
+ 	}
+ 

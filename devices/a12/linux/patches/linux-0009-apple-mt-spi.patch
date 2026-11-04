@@ -1,0 +1,863 @@
+diff --git a/drivers/input/touchscreen/Kconfig b/drivers/input/touchscreen/Kconfig
+index 9b9ae8ac3..f91f17474 100644
+--- a/drivers/input/touchscreen/Kconfig
++++ b/drivers/input/touchscreen/Kconfig
+@@ -103,6 +103,17 @@ config TOUCHSCREEN_ADC
+ 	  To compile this driver as a module, choose M here: the
+ 	  module will be called resistive-adc-touch.ko.
+ 
++config TOUCHSCREEN_APPLE_MT_SPI
++	tristate "Apple multitouch over SPI, T8020"
++	depends on SPI && I2C && (ARCH_APPLE || COMPILE_TEST)
++	help
++	  Say Y here if you have an iPhone with an A12 SoC and want its
++	  touchscreen. It needs the controller firmware, made from the IPSW
++	  with tools/mtfw.py.
++
++	  To compile this driver as a module, choose M here: the
++	  module will be called apple-mt-spi.
++
+ config TOUCHSCREEN_APPLE_Z2
+ 	tristate "Apple Z2 touchscreens"
+ 	depends on SPI && (ARCH_APPLE || COMPILE_TEST)
+diff --git a/drivers/input/touchscreen/Makefile b/drivers/input/touchscreen/Makefile
+index bfd9de833..de76bf1fc 100644
+--- a/drivers/input/touchscreen/Makefile
++++ b/drivers/input/touchscreen/Makefile
+@@ -15,6 +15,7 @@ obj-$(CONFIG_TOUCHSCREEN_AD7879_I2C)	+= ad7879-i2c.o
+ obj-$(CONFIG_TOUCHSCREEN_AD7879_SPI)	+= ad7879-spi.o
+ obj-$(CONFIG_TOUCHSCREEN_ADC)		+= resistive-adc-touch.o
+ obj-$(CONFIG_TOUCHSCREEN_ADS7846)	+= ads7846.o
++obj-$(CONFIG_TOUCHSCREEN_APPLE_MT_SPI)	+= apple-mt-spi.o
+ obj-$(CONFIG_TOUCHSCREEN_APPLE_Z2)	+= apple_z2.o
+ obj-$(CONFIG_TOUCHSCREEN_AR1021_I2C)	+= ar1021_i2c.o
+ obj-$(CONFIG_TOUCHSCREEN_ATMEL_MXT)	+= atmel_mxt_ts.o
+diff --git a/drivers/input/touchscreen/apple-mt-spi.c b/drivers/input/touchscreen/apple-mt-spi.c
+new file mode 100644
+index 000000000..778fa2947
+--- /dev/null
++++ b/drivers/input/touchscreen/apple-mt-spi.c
+@@ -0,0 +1,823 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * Apple multitouch over SPI, as found on T8020
++ *
++ * Copyright (c) 2026 kiki <kieran@lavato.net>
++ *
++ * The touchscreen on A12 iPhones. This powers the controller the way iOS
++ * does, boots it over HBPP by replaying the firmware's own boot script, and
++ * then reads touch reports over HIDSPI into a multitouch input device.
++ *
++ * The firmware is Apple's, so it is not here. tools/mtfw.py turns the one in
++ * the IPSW into the op list this reads.
++ *
++ * Still missing: power off on remove and suspend, and the force sensor on
++ * the second interface.
++ *
++ * Where every number here comes from is in docs/touch.md in the project.
++ */
++
++#include <linux/crc16.h>
++#include <linux/delay.h>
++#include <linux/firmware.h>
++#include <linux/gpio/consumer.h>
++#include <linux/i2c.h>
++#include <linux/input.h>
++#include <linux/input/mt.h>
++#include <linux/input/touchscreen.h>
++#include <linux/interrupt.h>
++#include <linux/io.h>
++#include <linux/iopoll.h>
++#include <linux/module.h>
++#include <linux/of.h>
++#include <linux/property.h>
++#include <linux/slab.h>
++#include <linux/spi/spi.h>
++#include <linux/unaligned.h>
++
++/* Acorn display PMU registers, from AppleAcornDisplayPMU. */
++#define ACORN_STATUS		0x04
++#define ACORN_STATUS_CLEAR	0x80
++#define ACORN_LDO		0x05
++#define ACORN_LDO_PULLDOWN	0x40	/* touch rail pulldown, set while off */
++#define ACORN_LDO_ANA		0x06	/* touch analog rails */
++#define ACORN_SEQ_TRG		0x22
++
++/*
++ * What the ADT's display-pmu node asks for, and AppleAcornDisplayPMU writes
++ * at start: seq_trg = 4 and enable = 9. Touch does not answer without the
++ * enable bits.
++ */
++#define ACORN_SEQ_TRG_ADT	0x04
++#define ACORN_LDO_ADT		0x09
++
++/* PMGR touch clock control, PMGR reg 0 + 0x78000, from AppleT8020PMGR. */
++#define TOUCH_CLK		0x23b078000ULL
++#define TOUCH_CLK_OFF		BIT(31)
++#define TOUCH_CLK_ENABLE	BIT(19)
++#define TOUCH_CLK_BUSY		BIT(18)
++/* What ApplePMGR::enableTouchClock keeps of the old value. */
++#define TOUCH_CLK_KEEP		0x7ffffc00
++/* 24 MHz in, 24 MHz wanted. */
++#define TOUCH_CLK_DIV		1
++
++#define HBPP_LEN		8
++
++/* Acknowledges, AHTProtocol for hbpp-version 0x105, +0x58 and +0x60. */
++#define HBPP_ACK_WRITE		0x4bc1
++#define HBPP_ACK_RMW		0x4ad1
++
++/* tools/mtfw.py */
++#define MTFW_MAGIC		0x5746544d	/* "MTFW" */
++#define MTFW_OP_WRITE		1
++#define MTFW_OP_RMW		2
++#define MTFW_OP_POLL		3
++#define MTFW_RMW_SKIP_CHECK	BIT(0)
++
++struct mtfw_op {
++	__le16 type;
++	__le16 flags;
++	__le32 len;
++	__le32 addr;
++	__le32 arg[];
++};
++
++/*
++ * HIDSPI, the transport the firmware speaks once it runs, from
++ * AppleHIDTransportSPI. Every transaction is the packet stage: 4 bytes of
++ * padding and a 512 byte packet each way, full duplex. If the device sent a
++ * real packet, or a broken one, a status stage follows: padding and a 32 bit
++ * word each way, ACK or NAK from the host and the device's answer to the
++ * packet the host sent. The packet is applespi's: flags, device, offset,
++ * remaining, length, data, and a CRC-16/ARC of everything before it.
++ */
++#define HIDSPI_PAD		4
++#define HIDSPI_PKT		512
++#define HIDSPI_XFER		(HIDSPI_PAD + HIDSPI_PKT)
++#define HIDSPI_DATA		(HIDSPI_PKT - 10)
++#define HIDSPI_READ		0x20
++#define HIDSPI_WRITE		0x40
++#define HIDSPI_NONE		0x80
++#define HIDSPI_ACK		0xd56827ac
++#define HIDSPI_NAK		0x0e4fb139
++
++/*
++ * The multitouch interface, grape, sends report 0x44 as a message of type
++ * 0x10. Its payload is the Touch Bar's Z2 report: the finger count at 16 and
++ * 30 byte finger records from 24, the same as apple_z2 reads, with positions
++ * in hundredths of a millimetre.
++ */
++#define GRAPE_IFACE		0
++#define GRAPE_REPORT_TOUCH	0x44
++#define MT_NUM_FINGERS		16
++#define MT_FINGERS		24
++#define MT_TOUCH_STARTED	3
++#define MT_TOUCH_MOVED		4
++#define MT_MAX_FINGERS		10
++
++struct apple_mt_finger {
++	u8 finger;
++	u8 state;
++	__le16 unknown2;
++	__le16 abs_x;
++	__le16 abs_y;
++	__le16 rel_x;
++	__le16 rel_y;
++	__le16 tool_major;
++	__le16 tool_minor;
++	__le16 orientation;
++	__le16 touch_major;
++	__le16 touch_minor;
++	__le16 unused[2];
++	__le16 pressure;
++	__le16 multi;
++} __packed;
++
++struct apple_mt {
++	struct device *dev;
++	struct spi_device *spi;
++	struct i2c_adapter *pmu;
++	u16 pmu_addr;
++	struct gpio_desc *reset;
++	void __iomem *clk;
++	u8 *tx;
++	u8 *rx;
++	u8 *pkt;
++	u8 *htx;
++	u8 *hrx;
++	struct input_dev *input;
++	struct touchscreen_properties props;
++};
++
++static int acorn_read(struct apple_mt *mt, u8 reg)
++{
++	union i2c_smbus_data data;
++	int ret;
++
++	ret = i2c_smbus_xfer(mt->pmu, mt->pmu_addr, 0, I2C_SMBUS_READ, reg,
++			     I2C_SMBUS_BYTE_DATA, &data);
++
++	return ret < 0 ? ret : data.byte;
++}
++
++static int acorn_write(struct apple_mt *mt, u8 reg, u8 val)
++{
++	union i2c_smbus_data data = { .byte = val };
++
++	return i2c_smbus_xfer(mt->pmu, mt->pmu_addr, 0, I2C_SMBUS_WRITE, reg,
++			      I2C_SMBUS_BYTE_DATA, &data);
++}
++
++/* AppleAcornDisplayPMU's start, for the registers this ADT sets. */
++static int acorn_start(struct apple_mt *mt)
++{
++	int ret;
++
++	ret = acorn_write(mt, ACORN_STATUS, ACORN_STATUS_CLEAR);
++	if (ret)
++		return ret;
++	udelay(2);
++
++	ret = acorn_write(mt, ACORN_SEQ_TRG, ACORN_SEQ_TRG_ADT);
++	if (ret)
++		return ret;
++
++	return acorn_write(mt, ACORN_LDO, ACORN_LDO_ADT);
++}
++
++/* ApplePMGR::enableTouchClock(true, 8, 1) */
++static int touch_clk_on(struct apple_mt *mt)
++{
++	u32 v = readl(mt->clk);
++
++	writel(v & ~TOUCH_CLK_OFF, mt->clk);
++	udelay(8);
++	writel((v & TOUCH_CLK_KEEP) | TOUCH_CLK_DIV | TOUCH_CLK_ENABLE, mt->clk);
++
++	return readl_poll_timeout(mt->clk, v, !(v & TOUCH_CLK_BUSY), 1, 10000);
++}
++
++/* ApplePMGR::enableTouchClock(false, 100, 0) */
++static int touch_clk_off(struct apple_mt *mt)
++{
++	u32 v = readl(mt->clk) & ~TOUCH_CLK_ENABLE;
++	int ret;
++
++	writel(v, mt->clk);
++	ret = readl_poll_timeout(mt->clk, v, !(v & TOUCH_CLK_BUSY), 1, 10000);
++	writel(readl(mt->clk) | TOUCH_CLK_OFF, mt->clk);
++	udelay(100);
++
++	return ret;
++}
++
++/*
++ * The ADT's power-sequence, where each entry is a function and four bytes:
++ * assert ms, deassert ms, the value on power on, the value on power off.
++ * power_pulldown is 0,0,0,1, power_ana 0,0,1,0 and clock_enable 10,0,3,0.
++ * AppleHIDTransportSPI adds enable_cs, which here is the chip select pin
++ * already sitting high.
++ */
++static int apple_mt_power_on(struct apple_mt *mt)
++{
++	int ldo, ret;
++
++	ldo = acorn_read(mt, ACORN_LDO);
++	if (ldo < 0)
++		return ldo;
++
++	ldo &= ~ACORN_LDO_PULLDOWN;
++	ret = acorn_write(mt, ACORN_LDO, ldo);
++	if (ret)
++		return ret;
++
++	ret = acorn_write(mt, ACORN_LDO, ldo | ACORN_LDO_ANA);
++	if (ret)
++		return ret;
++
++	msleep(10);
++
++	return touch_clk_on(mt);
++}
++
++static void apple_mt_power_off(struct apple_mt *mt)
++{
++	int ldo;
++
++	gpiod_set_value_cansleep(mt->reset, 1);
++	touch_clk_off(mt);
++
++	ldo = acorn_read(mt, ACORN_LDO);
++	if (ldo < 0)
++		return;
++	acorn_write(mt, ACORN_LDO, ldo & ~ACORN_LDO_ANA);
++	acorn_write(mt, ACORN_LDO, (ldo & ~ACORN_LDO_ANA) | ACORN_LDO_PULLDOWN);
++}
++
++/*
++ * 32 bit fields go on the wire as two 16 bit halves, each high byte first,
++ * low half first: 0x400b0fd4 is sent 0f d4 40 0b. Checksums are the byte sum
++ * of the fields, sent high byte first.
++ */
++static void hbpp_put32(u8 *p, u32 v)
++{
++	p[0] = v >> 8;
++	p[1] = v;
++	p[2] = v >> 24;
++	p[3] = v >> 16;
++}
++
++static u32 hbpp_get32(const u8 *p)
++{
++	return p[0] << 8 | p[1] | p[2] << 24 | p[3] << 16;
++}
++
++static u16 hbpp_sum(const u8 *p, int len)
++{
++	u16 sum = 0;
++
++	while (len--)
++		sum += *p++;
++
++	return sum;
++}
++
++/*
++ * AppleHIDTransportBootloaderHBPP's readWord: the command, then, in a
++ * transfer of its own, the acknowledge and filler while the reply comes back.
++ * With chip select held between the two the reply arrives two bytes late.
++ */
++static int hbpp_read_word(struct apple_mt *mt, u32 addr, u32 *val)
++{
++	struct spi_transfer xfer[2] = {
++		{
++			.tx_buf = mt->tx,
++			.len = HBPP_LEN,
++			/* "Inter Transaction Us" in the firmware's HIDSPI config */
++			.delay = { .value = 250, .unit = SPI_DELAY_UNIT_USECS },
++			.cs_change = 1,
++		}, {
++			.tx_buf = mt->tx + HBPP_LEN,
++			.rx_buf = mt->rx,
++			.len = HBPP_LEN,
++		},
++	};
++	u16 sum;
++	int ret;
++
++	mt->tx[0] = 0x1c;
++	mt->tx[1] = 0x73;
++	hbpp_put32(mt->tx + 2, addr);
++	sum = hbpp_sum(mt->tx + 2, 4);
++	mt->tx[6] = sum >> 8;
++	mt->tx[7] = sum;
++
++	mt->tx[8] = 0x1a;
++	mt->tx[9] = 0xa1;
++	mt->tx[10] = mt->tx[12] = mt->tx[14] = 0x18;
++	mt->tx[11] = mt->tx[13] = mt->tx[15] = 0xe1;
++
++	ret = spi_sync_transfer(mt->spi, xfer, ARRAY_SIZE(xfer));
++	if (ret)
++		return ret;
++
++	if (mt->rx[0] != 0x4c || mt->rx[1] != 0x39) {
++		dev_err(mt->dev, "read %08x: %*ph\n", addr, HBPP_LEN, mt->rx);
++		return -EIO;
++	}
++	if ((mt->rx[6] << 8 | mt->rx[7]) != hbpp_sum(mt->rx + 2, 4))
++		return -EBADMSG;
++
++	*val = hbpp_get32(mt->rx + 2);
++
++	return 0;
++}
++
++/* The 1a a1 acknowledge, in a transfer of its own. */
++static int hbpp_ack(struct apple_mt *mt, u16 *ack)
++{
++	struct spi_transfer xfer = {
++		.tx_buf = mt->tx,
++		.rx_buf = mt->rx,
++		.len = 2,
++	};
++	int ret;
++
++	usleep_range(250, 300);
++	mt->tx[0] = 0x1a;
++	mt->tx[1] = 0xa1;
++	ret = spi_sync_transfer(mt->spi, &xfer, 1);
++	*ack = mt->rx[0] << 8 | mt->rx[1];
++
++	return ret;
++}
++
++/*
++ * A blob: 30 01, the length in words less one, the address, a sum of those,
++ * then the payload in the same swapped halves and a 32 bit sum of its bytes.
++ * The same layout apple_z2 uses, except for the length.
++ */
++static int hbpp_write(struct apple_mt *mt, u32 addr, const u8 *data, u32 len)
++{
++	u8 *p = mt->pkt;
++	u32 sum = 0, i;
++	u16 hsum, ack;
++	int ret;
++
++	if (!len || len % 4)
++		return -EINVAL;
++
++	p[0] = 0x30;
++	p[1] = 0x01;
++	p[2] = (len / 4 - 1) >> 8;
++	p[3] = len / 4 - 1;
++	hbpp_put32(p + 4, addr);
++	hsum = hbpp_sum(p + 2, 6);
++	p[8] = hsum >> 8;
++	p[9] = hsum;
++
++	for (i = 0; i < len; i += 4) {
++		p[10 + i] = data[i + 1];
++		p[11 + i] = data[i];
++		p[12 + i] = data[i + 3];
++		p[13 + i] = data[i + 2];
++		sum += data[i] + data[i + 1] + data[i + 2] + data[i + 3];
++	}
++	hbpp_put32(p + 10 + len, sum);
++
++	ret = spi_write(mt->spi, p, 14 + len);
++	if (ret)
++		return ret;
++
++	ret = hbpp_ack(mt, &ack);
++	if (ret)
++		return ret;
++	if (ack != HBPP_ACK_WRITE) {
++		dev_err(mt->dev, "write %08x, %u bytes: ack %04x\n", addr, len, ack);
++		return -EIO;
++	}
++
++	return 0;
++}
++
++/* 1e 33, the address, the mask, the value, and a sum of all three. */
++static int hbpp_rmw(struct apple_mt *mt, u32 addr, u32 mask, u32 value,
++		    bool check)
++{
++	u16 sum, ack;
++	int ret;
++
++	mt->tx[0] = 0x1e;
++	mt->tx[1] = 0x33;
++	hbpp_put32(mt->tx + 2, addr);
++	hbpp_put32(mt->tx + 6, mask);
++	hbpp_put32(mt->tx + 10, value);
++	sum = hbpp_sum(mt->tx + 2, 12);
++	mt->tx[14] = sum >> 8;
++	mt->tx[15] = sum;
++
++	ret = spi_write(mt->spi, mt->tx, 16);
++	if (ret)
++		return ret;
++
++	/* The acknowledge is clocked out either way, only the check is skipped. */
++	ret = hbpp_ack(mt, &ack);
++	if (ret)
++		return ret;
++	if (check && ack != HBPP_ACK_RMW) {
++		dev_err(mt->dev, "rmw %08x: ack %04x\n", addr, ack);
++		return -EIO;
++	}
++
++	return 0;
++}
++
++static int hbpp_poll(struct apple_mt *mt, u32 addr, u32 mask, u32 value,
++		     u32 timeout_ms, u32 read_on_error)
++{
++	unsigned long deadline = jiffies + msecs_to_jiffies(timeout_ms);
++	u32 v;
++	int ret;
++
++	for (;;) {
++		ret = hbpp_read_word(mt, addr, &v);
++		if (ret)
++			return ret;
++		if ((v & mask) == value)
++			return 0;
++		if (time_after(jiffies, deadline))
++			break;
++		usleep_range(1000, 2000);
++	}
++
++	dev_err(mt->dev, "poll %08x & %08x == %08x timed out, last %08x\n",
++		addr, mask, value, v);
++	if (read_on_error != ~0U && !hbpp_read_word(mt, read_on_error, &v))
++		dev_err(mt->dev, "error word %08x = %08x\n", read_on_error, v);
++
++	return -ETIMEDOUT;
++}
++
++/* Replay tools/mtfw.py's op list, the firmware's boot script. */
++static int apple_mt_boot(struct apple_mt *mt, const struct firmware *fw)
++{
++	const u8 *pos = fw->data + 12, *end = fw->data + fw->size;
++	const struct mtfw_op *op;
++	u32 count, len, biggest = 0, i;
++	int ret = 0;
++
++	if (fw->size < 12 || get_unaligned_le32(fw->data) != MTFW_MAGIC ||
++	    get_unaligned_le32(fw->data + 4) != 1)
++		return -EINVAL;
++	count = get_unaligned_le32(fw->data + 8);
++
++	/* Check the whole list first, and size the packet buffer. */
++	for (i = 0; i < count; i++) {
++		if (end - pos < sizeof(*op))
++			return -EINVAL;
++		op = (const void *)pos;
++		len = le32_to_cpu(op->len);
++		if (len < 4 || len % 4 || end - pos - 8 < len)
++			return -EINVAL;
++		if (le16_to_cpu(op->type) == MTFW_OP_WRITE)
++			biggest = max(biggest, len - 4);
++		pos += 8 + len;
++	}
++	if (pos != end)
++		return -EINVAL;
++
++	mt->pkt = kmalloc(biggest + 14, GFP_KERNEL);
++	if (!mt->pkt)
++		return -ENOMEM;
++
++	pos = fw->data + 12;
++	for (i = 0; i < count && !ret; i++) {
++		op = (const void *)pos;
++		len = le32_to_cpu(op->len);
++
++		switch (le16_to_cpu(op->type)) {
++		case MTFW_OP_WRITE:
++			ret = hbpp_write(mt, le32_to_cpu(op->addr),
++					 (const u8 *)op->arg, len - 4);
++			break;
++		case MTFW_OP_RMW:
++			ret = len < 12 ? -EINVAL :
++			      hbpp_rmw(mt, le32_to_cpu(op->addr),
++				       le32_to_cpu(op->arg[0]), le32_to_cpu(op->arg[1]),
++				       !(le16_to_cpu(op->flags) & MTFW_RMW_SKIP_CHECK));
++			break;
++		case MTFW_OP_POLL:
++			ret = len < 20 ? -EINVAL :
++			      hbpp_poll(mt, le32_to_cpu(op->addr),
++					le32_to_cpu(op->arg[0]), le32_to_cpu(op->arg[1]),
++					le32_to_cpu(op->arg[2]), le32_to_cpu(op->arg[3]));
++			break;
++		default:
++			ret = -EINVAL;
++		}
++
++		if (ret)
++			dev_err(mt->dev, "boot script stopped at op %u of %u: %d\n",
++				i + 1, count, ret);
++		pos += 8 + len;
++	}
++
++	kfree(mt->pkt);
++	mt->pkt = NULL;
++
++	return ret;
++}
++
++static void apple_mt_unmap(void *addr)
++{
++	iounmap(addr);
++}
++
++/* An empty packet, for when the host has nothing to say. */
++static void hidspi_tx_none(struct apple_mt *mt)
++{
++	u8 *pkt = mt->htx + HIDSPI_PAD;
++
++	memset(mt->htx, 0, HIDSPI_XFER);
++	pkt[0] = HIDSPI_NONE;
++	put_unaligned_le16(crc16(0, pkt, HIDSPI_PKT - 2), pkt + HIDSPI_PKT - 2);
++}
++
++/*
++ * One transaction. The host's packet goes out in mt->htx while the device's
++ * comes back in mt->hrx.
++ */
++static int hidspi_xfer(struct apple_mt *mt)
++{
++	struct spi_transfer pkt_xfer = {
++		.tx_buf = mt->htx,
++		.rx_buf = mt->hrx,
++		.len = HIDSPI_XFER,
++	};
++	struct spi_transfer status_xfer = {
++		.tx_buf = mt->htx,
++		.rx_buf = mt->hrx + HIDSPI_XFER,
++		.len = HIDSPI_PAD + 4,
++	};
++	u8 *pkt = mt->hrx + HIDSPI_PAD;
++	bool crc_ok, real;
++	u16 len;
++	int ret;
++
++	ret = spi_sync_transfer(mt->spi, &pkt_xfer, 1);
++	if (ret)
++		return ret;
++
++	len = get_unaligned_le16(pkt + 6);
++	crc_ok = crc16(0, pkt, HIDSPI_PKT - 2) ==
++		 get_unaligned_le16(pkt + HIDSPI_PKT - 2);
++	real = crc_ok && len <= HIDSPI_DATA &&
++	       (pkt[0] == 0x10 || pkt[0] == HIDSPI_READ || pkt[0] == HIDSPI_WRITE);
++
++	/* AppleHIDTransportSPI skips the status stage for empty packets. */
++	if (real || !crc_ok || (pkt[0] != HIDSPI_NONE && pkt[0] != 0x11 &&
++				pkt[0] != 0x21)) {
++		usleep_range(200, 250);
++		memset(mt->htx, 0, HIDSPI_PAD);
++		put_unaligned_le32(real ? HIDSPI_ACK : HIDSPI_NAK,
++				   mt->htx + HIDSPI_PAD);
++		ret = spi_sync_transfer(mt->spi, &status_xfer, 1);
++		if (ret)
++			return ret;
++	}
++
++	if (!crc_ok)
++		dev_warn_ratelimited(mt->dev, "bad packet crc\n");
++	usleep_range(250, 300);
++
++	return real ? pkt[0] : 0;
++}
++
++static void apple_mt_touches(struct apple_mt *mt, const u8 *p, size_t len)
++{
++	const struct apple_mt_finger *f;
++	int n, i, slot, x, y;
++
++	if (len <= MT_NUM_FINGERS)
++		return;
++	n = min_t(int, p[MT_NUM_FINGERS], MT_MAX_FINGERS);
++	if (len < MT_FINGERS + n * sizeof(*f))
++		return;
++	f = (const void *)(p + MT_FINGERS);
++
++	for (i = 0; i < n; i++) {
++		slot = input_mt_get_slot_by_key(mt->input, f[i].finger);
++		if (slot < 0)
++			continue;
++
++		input_mt_slot(mt->input, slot);
++		if (!input_mt_report_slot_state(mt->input, MT_TOOL_FINGER,
++						f[i].state == MT_TOUCH_STARTED ||
++						f[i].state == MT_TOUCH_MOVED))
++			continue;
++
++		/* Signed: a finger at the very edge reads slightly negative. */
++		x = clamp_t(int, (s16)le16_to_cpu(f[i].abs_x), 0, mt->props.max_x);
++		y = clamp_t(int, (s16)le16_to_cpu(f[i].abs_y), 0, mt->props.max_y);
++
++		touchscreen_report_pos(mt->input, &mt->props, x, y, true);
++		input_report_abs(mt->input, ABS_MT_WIDTH_MAJOR,
++				 le16_to_cpu(f[i].tool_major));
++		input_report_abs(mt->input, ABS_MT_WIDTH_MINOR,
++				 le16_to_cpu(f[i].tool_minor));
++		input_report_abs(mt->input, ABS_MT_ORIENTATION,
++				 (s16)le16_to_cpu(f[i].orientation));
++		input_report_abs(mt->input, ABS_MT_TOUCH_MAJOR,
++				 le16_to_cpu(f[i].touch_major));
++		input_report_abs(mt->input, ABS_MT_TOUCH_MINOR,
++				 le16_to_cpu(f[i].touch_minor));
++	}
++
++	input_mt_sync_frame(mt->input);
++	input_sync(mt->input);
++}
++
++/* A packet that holds a whole message, which every touch report so far has. */
++static void apple_mt_packet(struct apple_mt *mt)
++{
++	const u8 *pkt = mt->hrx + HIDSPI_PAD;
++	const u8 *msg = pkt + 8;
++	u16 len = get_unaligned_le16(pkt + 6);
++	u16 plen;
++
++	if (pkt[0] != HIDSPI_READ || pkt[1] != GRAPE_IFACE ||
++	    get_unaligned_le16(pkt + 2) || get_unaligned_le16(pkt + 4) ||
++	    len < 10)
++		return;
++	if (crc16(0, msg, len - 2) != get_unaligned_le16(msg + len - 2))
++		return;
++
++	plen = get_unaligned_le16(msg + 6);
++	if (msg[0] != 0x10 || plen + 10 > len || !plen ||
++	    msg[8] != GRAPE_REPORT_TOUCH)
++		return;
++
++	apple_mt_touches(mt, msg + 8, plen);
++}
++
++/* The line stays low while the device has data, so this runs until it is out. */
++static irqreturn_t apple_mt_irq(int irq, void *data)
++{
++	struct apple_mt *mt = data;
++
++	hidspi_tx_none(mt);
++	if (hidspi_xfer(mt) > 0)
++		apple_mt_packet(mt);
++
++	return IRQ_HANDLED;
++}
++
++static int apple_mt_input(struct apple_mt *mt)
++{
++	struct input_dev *input;
++	int ret;
++
++	input = devm_input_allocate_device(mt->dev);
++	if (!input)
++		return -ENOMEM;
++
++	input->name = "Apple multitouch";
++	input->phys = "apple-mt-spi/input0";
++	input->id.bustype = BUS_SPI;
++
++	input_set_abs_params(input, ABS_MT_POSITION_X, 0, 0, 0, 0);
++	input_set_abs_params(input, ABS_MT_POSITION_Y, 0, 0, 0, 0);
++	touchscreen_parse_properties(input, true, &mt->props);
++	input_set_abs_params(input, ABS_MT_WIDTH_MAJOR, 0, 65535, 0, 0);
++	input_set_abs_params(input, ABS_MT_WIDTH_MINOR, 0, 65535, 0, 0);
++	input_set_abs_params(input, ABS_MT_TOUCH_MAJOR, 0, 65535, 0, 0);
++	input_set_abs_params(input, ABS_MT_TOUCH_MINOR, 0, 65535, 0, 0);
++	input_set_abs_params(input, ABS_MT_ORIENTATION, -32768, 32767, 0, 0);
++
++	ret = input_mt_init_slots(input, MT_MAX_FINGERS,
++				  INPUT_MT_DIRECT | INPUT_MT_DROP_UNUSED);
++	if (ret)
++		return ret;
++
++	mt->input = input;
++
++	return input_register_device(input);
++}
++
++static int apple_mt_probe(struct spi_device *spi)
++{
++	struct device *dev = &spi->dev;
++	struct device_node *np;
++	struct apple_mt *mt;
++	const struct firmware *fw = NULL;
++	const char *fw_name;
++	u32 addr;
++	int ret;
++
++	mt = devm_kzalloc(dev, sizeof(*mt), GFP_KERNEL);
++	if (!mt)
++		return -ENOMEM;
++
++	mt->dev = dev;
++	mt->spi = spi;
++	mt->tx = devm_kzalloc(dev, 2 * HBPP_LEN, GFP_KERNEL);
++	mt->rx = devm_kzalloc(dev, HBPP_LEN, GFP_KERNEL);
++	mt->htx = devm_kzalloc(dev, HIDSPI_XFER, GFP_KERNEL);
++	mt->hrx = devm_kzalloc(dev, HIDSPI_XFER + HIDSPI_PAD + 4, GFP_KERNEL);
++	if (!mt->tx || !mt->rx || !mt->htx || !mt->hrx)
++		return -ENOMEM;
++
++	spi->mode = SPI_MODE_0;
++	spi->bits_per_word = 8;
++	/* "CS Delay" in the firmware's SPI config, 200000 ns. */
++	spi->cs_setup.value = 200;
++	spi->cs_setup.unit = SPI_DELAY_UNIT_USECS;
++	ret = spi_setup(spi);
++	if (ret)
++		return ret;
++
++	/* iBoot leaves it driven low, which is reset asserted. */
++	mt->reset = devm_gpiod_get(dev, "reset", GPIOD_OUT_HIGH);
++	if (IS_ERR(mt->reset))
++		return PTR_ERR(mt->reset);
++
++	/*
++	 * Non-posted, like everything else on this SoC: a posted write to
++	 * PMGR is dropped without an error.
++	 */
++	mt->clk = ioremap_np(TOUCH_CLK, 4);
++	if (!mt->clk)
++		return -ENOMEM;
++	ret = devm_add_action_or_reset(dev, apple_mt_unmap, mt->clk);
++	if (ret)
++		return ret;
++
++	ret = of_property_read_u32(dev->of_node, "apple,pmu-addr", &addr);
++	if (ret)
++		return ret;
++	mt->pmu_addr = addr;
++
++	ret = device_property_read_string(dev, "firmware-name", &fw_name);
++	if (ret)
++		return ret;
++
++	np = of_parse_phandle(dev->of_node, "apple,pmu-bus", 0);
++	if (!np)
++		return -ENODEV;
++	mt->pmu = of_get_i2c_adapter_by_node(np);
++	of_node_put(np);
++	if (!mt->pmu)
++		return -EPROBE_DEFER;
++
++	ret = acorn_start(mt);
++	if (!ret)
++		ret = apple_mt_power_on(mt);
++	if (!ret) {
++		gpiod_set_value_cansleep(mt->reset, 0);
++		/* The chip pulls its interrupt line within a millisecond. */
++		msleep(20);
++		ret = request_firmware(&fw, fw_name, dev);
++	}
++	if (!ret)
++		ret = apple_mt_boot(mt, fw);
++	release_firmware(fw);
++	if (!ret)
++		ret = apple_mt_input(mt);
++	if (!ret)
++		ret = devm_request_threaded_irq(dev, spi->irq, NULL, apple_mt_irq,
++						IRQF_ONESHOT, "apple-mt", mt);
++	if (ret) {
++		dev_err(dev, "bring-up failed: %d\n", ret);
++		apple_mt_power_off(mt);
++		goto put_pmu;
++	}
++
++put_pmu:
++	i2c_put_adapter(mt->pmu);
++	return ret;
++}
++
++static const struct of_device_id apple_mt_of_match[] = {
++	{ .compatible = "apple,t8020-multitouch" },
++	{}
++};
++MODULE_DEVICE_TABLE(of, apple_mt_of_match);
++
++static const struct spi_device_id apple_mt_spi_ids[] = {
++	{ "t8020-multitouch" },
++	{}
++};
++MODULE_DEVICE_TABLE(spi, apple_mt_spi_ids);
++
++static struct spi_driver apple_mt_driver = {
++	.driver = {
++		.name = "apple-mt-spi",
++		.of_match_table = apple_mt_of_match,
++	},
++	.id_table = apple_mt_spi_ids,
++	.probe = apple_mt_probe,
++};
++module_spi_driver(apple_mt_driver);
++
++MODULE_DESCRIPTION("Apple multitouch over SPI");
++MODULE_LICENSE("GPL");

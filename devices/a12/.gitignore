@@ -1,0 +1,10 @@
+# Apple firmware, per-device data, build products and boot logs stay local.
+boot/inputs/
+boot/extracted/
+boot/logs/
+build/
+*.aea
+*.dmg
+*.pem
+*.im4m
+__pycache__/
