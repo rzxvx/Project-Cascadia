@@ -49,6 +49,9 @@ pm_names() {
         dnf/nfs)         echo nfs-utils ;;
         dnf/firewall)    echo iptables-nft ;;
         dnf/usbmuxd)     echo usbmuxd ;;
+        apt/qemu)        echo qemu-user-static binfmt-support ;;
+        pacman/qemu)     echo qemu-user-static qemu-user-static-binfmt ;;
+        dnf/qemu)        echo qemu-user-static ;;
     esac
 }
 
@@ -125,15 +128,33 @@ ensure_docker() {
 }
 
 # the device's userland is ARM: on an x86_64 Linux docker runs it through
-# qemu, which a fresh install does not have registered (Docker Desktop does)
+# qemu, which a fresh install does not have registered (Docker Desktop does).
+# The distribution's qemu-user-static first: it registers through
+# systemd-binfmt at every boot.  tonistiigi/binfmt only as a fallback -- its
+# registration is gone after a reboot.  And a local image of the same tag for
+# another platform is pulled again for this one: docker does not always do
+# that by itself.
+binfmt_try() { BINFMT_ERR=$(docker run --rm --platform "$1" alpine:3.24 true 2>&1); }
 ensure_binfmt() {
     local plat=$1
-    docker run --rm --platform "$plat" alpine:3.24 true >/dev/null 2>&1 && { note "ok: $plat containers"; return 0; }
-    ask "let docker run $plat containers (qemu: docker run --privileged tonistiigi/binfmt --install arm,arm64)?" \
-        && run docker run --privileged --rm tonistiigi/binfmt --install arm,arm64 >/dev/null
-    docker run --rm --platform "$plat" alpine:3.24 true >/dev/null 2>&1 \
-        || fail "docker still cannot run $plat containers"
-    note "ok: $plat containers"
+    binfmt_try "$plat" && { note "ok: $plat containers"; return 0; }
+    if echo "$BINFMT_ERR" | grep -q -i -e 'does not match the specified platform' -e 'no matching manifest'; then
+        run docker pull -q --platform "$plat" alpine:3.24 >/dev/null || true
+        binfmt_try "$plat" && { note "ok: $plat containers"; return 0; }
+    fi
+    if [ "$HOST_OS" = Linux ]; then
+        note "docker cannot run $plat containers yet: $(echo "$BINFMT_ERR" | tail -1)"
+        if pm_install qemu; then
+            command -v systemctl >/dev/null 2>&1 && run $SUDO systemctl restart systemd-binfmt 2>/dev/null || true
+            binfmt_try "$plat" && { note "ok: $plat containers (qemu-user-static)"; return 0; }
+        fi
+        if ask "register qemu with docker's tonistiigi/binfmt instead (until the next reboot)?"; then
+            run docker run --privileged --rm tonistiigi/binfmt --install arm,arm64 >/dev/null
+            binfmt_try "$plat" && { note "ok: $plat containers (until the next reboot)"; return 0; }
+        fi
+    fi
+    printf '%s\n' "$BINFMT_ERR" | sed 's/^/    docker: /' >&2
+    fail "docker still cannot run $plat containers (its words above)"
 }
 
 # Apple's USB devices for this user (Linux; macOS needs nothing)
