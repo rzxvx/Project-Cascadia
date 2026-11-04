@@ -72,31 +72,40 @@ icon() {
     done
 }
 
-# The button, once: next to the keyboard's (or before the clock).  After
-# xfce-setup.sh's first run has put the keyboard's there -- both edit the
-# panel's list of plugins.
+# The button, once: next to the keyboard's (or before the clock).  Both
+# edit the panel's list of plugins, so this waits until xfce-setup.sh's first
+# run has the keyboard's IN the list -- its launcher on disk comes first, and
+# waiting only for that once let this write back a list read before the
+# keyboard's went in, which dropped it.  A launcher the list lost is put back.
+panel_ids() { xfconf-query -c xfce4-panel -p /panels/panel-1/plugin-ids 2>/dev/null | tail -n +3; }
+launcher_of() { ls "$LAUNCHERS"/launcher-*/"$1" 2>/dev/null | sed -n '1s|.*/launcher-\([0-9]*\)/.*|\1|p'; }
 panel_button() {
-    ls "$LAUNCHERS"/launcher-*/rotation-lock.desktop >/dev/null 2>&1 && return
     [ -f /usr/share/applications/rotation-lock.desktop ] || return
     n=0
-    while [ -e /etc/xdg/autostart/cascadia-xfce-firstrun.desktop ] &&
-          ! ls "$LAUNCHERS"/launcher-*/kbd-toggle.desktop >/dev/null 2>&1; do
-        n=$((n + 1)); [ $n -gt 60 ] && break
-        sleep 1
-    done
-    n=0
-    until ids=$(xfconf-query -c xfce4-panel -p /panels/panel-1/plugin-ids 2>/dev/null | tail -n +3) && [ -n "$ids" ]; do
+    until ids=$(panel_ids) && [ -n "$ids" ]; do
         n=$((n + 1)); [ $n -gt 30 ] && return
         sleep 1
     done
-    max=0
-    for k in $(xfconf-query -c xfce4-panel -l | sed -n 's|^/plugins/plugin-\([0-9]*\)$|\1|p'); do
-        [ "$k" -gt "$max" ] && max=$k
+    new=$(launcher_of rotation-lock.desktop)
+    [ -n "$new" ] && echo "$ids" | grep -qx "$new" && return
+    n=0
+    while [ -e /etc/xdg/autostart/cascadia-xfce-firstrun.desktop ]; do
+        kbd=$(launcher_of kbd-toggle.desktop)
+        [ -n "$kbd" ] && panel_ids | grep -qx "$kbd" && break
+        n=$((n + 1)); [ $n -gt 60 ] && break
+        sleep 1
     done
-    new=$((max + 1))
-    kbd=$(ls "$LAUNCHERS"/launcher-*/kbd-toggle.desktop 2>/dev/null | sed -n '1s|.*/launcher-\([0-9]*\)/.*|\1|p')
-    mkdir -p "$LAUNCHERS/launcher-$new"
-    cp /usr/share/applications/rotation-lock.desktop "$LAUNCHERS/launcher-$new/"
+    ids=$(panel_ids)
+    kbd=$(launcher_of kbd-toggle.desktop)
+    if [ -z "$new" ]; then
+        max=0
+        for k in $(xfconf-query -c xfce4-panel -l | sed -n 's|^/plugins/plugin-\([0-9]*\)$|\1|p'); do
+            [ "$k" -gt "$max" ] && max=$k
+        done
+        new=$((max + 1))
+        mkdir -p "$LAUNCHERS/launcher-$new"
+        cp /usr/share/applications/rotation-lock.desktop "$LAUNCHERS/launcher-$new/"
+    fi
     icon
     xfconf-query -c xfce4-panel -p /plugins/plugin-$new -n -t string -s launcher
     xfconf-query -c xfce4-panel -p /plugins/plugin-$new/items -n -a -t string -s rotation-lock.desktop

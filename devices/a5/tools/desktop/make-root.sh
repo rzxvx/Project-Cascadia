@@ -111,7 +111,7 @@ inroot 'chroot /target apk info -e xorg-server xfce4 eudev touchegg svkbd supert
     || fail "a package is missing from the root (apk info above)"
 inroot 'chroot /target apk -s add --no-network >/dev/null' \
     || fail "apk cannot resolve the root's world -- something was installed broken (above)"
-for f in usr/local/bin/desktop usr/local/bin/autorotate usr/local/bin/screenpad usr/local/bin/tux-gpudemo \
+for f in usr/local/bin/desktop usr/local/bin/autorotate usr/bin/xrandr usr/bin/xinput usr/local/bin/screenpad usr/local/bin/tux-gpudemo \
          usr/local/lib/sgx-mesa/lib/libGLESv2.so.2 usr/local/lib/sgx2d etc/ld-musl-armhf.path; do
     inroot "chroot /target test -e /$f" || fail "no /$f in the root"
 done

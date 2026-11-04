@@ -31,6 +31,8 @@
 #                                   X).  A button on the top panel shows and
 #                                   hides it.  Ctrl is the "^" key
 #   xinit                           startxfce4 needs it and nothing pulls it in
+#   xrandr, xinput                  the screen's turn and the touch screen's
+#                                   with it (rotate, autorotate: install.sh)
 #
 # Not used, although older recipes have them: setup-xorg-base (alpine-conf,
 # which also drags in openrc), xf86-video-vesa (x86 only; for armv7 it does not
@@ -39,7 +41,7 @@
 set -e
 
 apk add --no-progress xorg-server xf86-video-fbdev xf86-input-libinput eudev \
-    xinit xfce4 xfce4-terminal svkbd touchegg
+    xinit xfce4 xfce4-terminal svkbd touchegg xrandr xinput
 
 mkdir -p /etc/X11/xorg.conf.d /usr/local/bin /usr/share/applications \
          /usr/share/icons/hicolor/scalable/apps /etc/xdg/autostart
@@ -182,19 +184,28 @@ cat > /usr/local/bin/cascadia-xfce-firstrun <<'END'
 # XFCE autostart, for each user until it has done its work: the keyboard
 # toggle on the top panel, next to the clock.  On a first login the panel
 # writes its default layout into xfconf while this runs, so it waits for that.
-[ -n "$(ls "$HOME"/.config/xfce4/panel/launcher-*/kbd-toggle.desktop 2>/dev/null)" ] && exit 0
+# Done is the button in the panel's list, not its launcher on disk: autorotate
+# edits the same list at the same first login, and a list it had read before
+# this wrote it once dropped the keyboard's -- so a launcher the list lost is
+# put back, under the number it has.
 n=0
 until ids=$(xfconf-query -c xfce4-panel -p /panels/panel-1/plugin-ids 2>/dev/null | tail -n +3) && [ -n "$ids" ]; do
     n=$((n + 1)); [ $n -gt 30 ] && exit 0
     sleep 1
 done
-max=0
-for k in $(xfconf-query -c xfce4-panel -l | sed -n 's|^/plugins/plugin-\([0-9]*\)$|\1|p'); do
-    [ "$k" -gt "$max" ] && max=$k
-done
-new=$((max + 1))
-mkdir -p "$HOME/.config/xfce4/panel/launcher-$new"
-cp /usr/share/applications/kbd-toggle.desktop "$HOME/.config/xfce4/panel/launcher-$new/"
+new=$(ls "$HOME"/.config/xfce4/panel/launcher-*/kbd-toggle.desktop 2>/dev/null |
+      sed -n '1s|.*/launcher-\([0-9]*\)/.*|\1|p')
+if [ -n "$new" ]; then
+    echo "$ids" | grep -qx "$new" && exit 0
+else
+    max=0
+    for k in $(xfconf-query -c xfce4-panel -l | sed -n 's|^/plugins/plugin-\([0-9]*\)$|\1|p'); do
+        [ "$k" -gt "$max" ] && max=$k
+    done
+    new=$((max + 1))
+    mkdir -p "$HOME/.config/xfce4/panel/launcher-$new"
+    cp /usr/share/applications/kbd-toggle.desktop "$HOME/.config/xfce4/panel/launcher-$new/"
+fi
 xfconf-query -c xfce4-panel -p /plugins/plugin-$new -n -t string -s launcher
 xfconf-query -c xfce4-panel -p /plugins/plugin-$new/items -n -a -t string -s kbd-toggle.desktop
 args=""
