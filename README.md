@@ -15,7 +15,7 @@ XFCE desktop you drive with your fingers.
 | Device | Model | Chip | What works | Start here |
 |---|---|---|---|---|
 | iPad mini 1 (Wi-Fi) | iPad2,5 / A1432 / p105ap | Apple A5 (S5L8942X) | Linux 6.12: both cores, touch, Wi-Fi, Bluetooth, speakers, battery, the GPU (OpenGL ES 2.0 / GL 2.1), XFCE; iOS's files read-only | [devices/a5](devices/a5/README.md) · [quickstart](devices/a5/docs/QUICKSTART.md) |
-| iPhone XR | iPhone11,8 / N841AP | Apple A12 (T8020) | Linux 7.3: framebuffer, touch, USB networking/SSH, Wi-Fi, UART Bluetooth, Debian/XFCE over NFS | [devices/a12](devices/a12/README.md) · [Debian/XFCE](devices/a12/DEBIAN_XFCE_NFS.md) |
+| iPhone XR *(experimental, contributed)* | iPhone11,8 / N841AP | Apple A12 (T8020) | as its author reports it: Linux 7.3, framebuffer, touch, USB networking/SSH, Wi-Fi, UART Bluetooth, Debian/XFCE over NFS -- not built or tested by the maintainer | [devices/a12](devices/a12/README.md) · [Debian/XFCE](devices/a12/DEBIAN_XFCE_NFS.md) |
 | iPhone 11 | iPhone12,1 / n104ap | Apple A13 (T8030) | Linux 7.2: all six cores, touch, Wi-Fi, Bluetooth, XFCE, the internal storage as Linux's disk, no cable after the boot | [devices/a13](devices/a13/README.md) · [quickstart](devices/a13/docs/QUICKSTART.md) |
 
 Experimental: the iPad 2 Wi-Fi (iPad2,1 / K93AP, S5L8940) boots Linux 6.12 to
@@ -30,7 +30,7 @@ One command for every device, from the repository's top:
 git clone https://github.com/rzxvx/Project-Cascadia.git
 cd Project-Cascadia
 ./cascadia a5 install         # iPad mini 1: everything, step by step
-./cascadia a12 doctor         # iPhone XR: check the A12 host requirements
+./cascadia a12 doctor         # iPhone XR (experimental, contributed): its host requirements
 ./cascadia a13 doctor         # iPhone 11: what this machine is missing
 ```
 
@@ -72,8 +72,10 @@ IPSW (or Apple's CDN) on your machine.
 
 - **iPad mini 1 (A5)** — phases 1 and 2 done; phase 3 all but NAND as
   Linux's own storage. [devices/a5/README.md](devices/a5/README.md#roadmap)
-- **iPhone XR (A12)** — tethered Linux with framebuffer/touch, USB, Wi-Fi,
-  Bluetooth and Debian/XFCE over NFS; next native display and power work.
+- **iPhone XR (A12)** — contributed (#31), experimental: tethered Linux with
+  framebuffer/touch, USB, Wi-Fi, Bluetooth and Debian/XFCE over NFS as its
+  author reports; it builds on devices/a13's m1n1 patches, which still
+  change.
   [devices/a12/LINUX_PLAN.md](devices/a12/LINUX_PLAN.md)
 - **iPhone 11 (A13)** — phases 1 and 2 done; phase 3 up to the internal
   storage; next the native display and the GPU.
