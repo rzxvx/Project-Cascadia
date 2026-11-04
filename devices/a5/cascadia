@@ -359,7 +359,7 @@ cmd_install() {
 
     istep 7 "the iPad's disk on this computer (NFS)"
     if [ "$desktop" != y ]; then inone "no desktop"
-    elif [ -s "$ROOT/build/initramfs-root/etc/nfsroot" ] && [ -e "$(nfs_dst)/sbin/p105-stage2" ] &&
+    elif [ -s "$ROOT/build/keep/etc/nfsroot" ] && [ -e "$(nfs_dst)/sbin/p105-stage2" ] &&
          ! grep -q '^desktop' "$(nfs_dst)/etc/cascadia-root" 2>/dev/null && [ -f "$ROOT/build/desktop-root.tar" ]; then
         # a root from before the desktop root (no /etc/cascadia-root): the
         # iPad would boot that one, not what step 6 made
@@ -371,7 +371,7 @@ cmd_install() {
         else
             inone "keeping $(nfs_dst) as it is"
         fi
-    elif [ -s "$ROOT/build/initramfs-root/etc/nfsroot" ] && [ -e "$(nfs_dst)/sbin/p105-stage2" ]; then
+    elif [ -s "$ROOT/build/keep/etc/nfsroot" ] && [ -e "$(nfs_dst)/sbin/p105-stage2" ]; then
         iskip "$(nfs_dst), exported"
     else
         isub nfs on
@@ -471,6 +471,22 @@ cmd_build() {
     note "ok: fresh dtb, gadget MACs pinned"
 
     say "2/6 initramfs extras"
+    # Two trees from here.  build/initramfs-root is the BASE the kernel
+    # embeds: the Alpine system, the boot scripts, our tools -- the same for
+    # everyone, which is what lets a kernel be prebuilt.  build/overlay is
+    # this machine's LAYER: the firmware from its IPSW, its ssh keys, the
+    # device's host key, build/keep (the NFS root's address, the panel's own
+    # calibration).  scripts/assemble.py puts the layer into the bundle and
+    # the kernel unpacks it over the base at boot.
+    OVL="$ROOT/build/overlay"
+    rm -rf "$OVL"; mkdir -p "$OVL"
+    # what older builds copied into the base belongs to the layer now
+    ( cd "$ROOT/build/initramfs-root" && rm -f lib/firmware/P105.mtprops lib/firmware/brcm/brcmfmac4334.bin \
+          lib/firmware/brcm/BCM4334B0.hcd lib/firmware/apple/sgx543.fw root/.ssh/authorized_keys \
+          etc/dropbear/dropbear_ed25519_host_key etc/nfsroot etc/build-date )
+    if [ -d "$ROOT/build/keep" ]; then
+        ( cd "$ROOT/build/keep" && find . -type f ) | while read -r f; do rm -f "$ROOT/build/initramfs-root/$f"; done
+    fi
     # initramfs/ is the source of truth for the boot scripts, but only
     # ./cascadia a5 rootfs used to copy it in -- an edit to initramfs/init followed
     # by ./cascadia a5 build shipped the old init.  Overlay it on every build.
@@ -484,16 +500,16 @@ cmd_build() {
     # with the boot chain rather than out of the repository.  Before build/keep
     # is laid over the tree, so a copy there still wins.
     if [ -s "$ROOT/build/firmware/P105.mtprops" ]; then
-        mkdir -p "$ROOT/build/initramfs-root/lib/firmware"
-        cp "$ROOT/build/firmware/P105.mtprops" "$ROOT/build/initramfs-root/lib/firmware/"
+        mkdir -p "$OVL/lib/firmware"
+        cp "$ROOT/build/firmware/P105.mtprops" "$OVL/lib/firmware/"
         note "ok: touch firmware from the IPSW (build/firmware/P105.mtprops)"
     fi
     # The same for Wi-Fi: brcmfmac is built in and asks for brcm/<name> as soon
     # as the chip enumerates, which is long before any NFS root is mounted --
     # so it has to be in the image itself.
     if [ -s "$ROOT/build/firmware/brcmfmac4334.bin" ]; then
-        mkdir -p "$ROOT/build/initramfs-root/lib/firmware/brcm"
-        cp "$ROOT/build/firmware/brcmfmac4334.bin" "$ROOT/build/initramfs-root/lib/firmware/brcm/"
+        mkdir -p "$OVL/lib/firmware/brcm"
+        cp "$ROOT/build/firmware/brcmfmac4334.bin" "$OVL/lib/firmware/brcm/"
         note "ok: Wi-Fi firmware from the IPSW (build/firmware/brcmfmac4334.bin)"
     else
         note "note: no Wi-Fi firmware -- ./cascadia a5 firmware extracts it from the IPSW"
@@ -501,8 +517,8 @@ cmd_build() {
     # Bluetooth's patchram, from BlueTool in the same IPSW.  btbcm asks for it
     # by the chip's subversion as soon as hci_bcm attaches, at boot.
     if [ -s "$ROOT/build/firmware/BCM4334B0.hcd" ]; then
-        mkdir -p "$ROOT/build/initramfs-root/lib/firmware/brcm"
-        cp "$ROOT/build/firmware/BCM4334B0.hcd" "$ROOT/build/initramfs-root/lib/firmware/brcm/"
+        mkdir -p "$OVL/lib/firmware/brcm"
+        cp "$ROOT/build/firmware/BCM4334B0.hcd" "$OVL/lib/firmware/brcm/"
         note "ok: Bluetooth firmware from the IPSW (build/firmware/BCM4334B0.hcd)"
     else
         note "note: no Bluetooth firmware -- ./cascadia a5 firmware extracts it from the IPSW"
@@ -510,17 +526,17 @@ cmd_build() {
     # The GPU's microkernel, for drivers/gpu/drm/apple-sgx.  Apple's, so it
     # comes out of the kernelcache like the rest (scripts/extract-sgx-firmware.py).
     if [ -s "$ROOT/build/firmware/sgx543.fw" ]; then
-        mkdir -p "$ROOT/build/initramfs-root/lib/firmware/apple"
-        cp "$ROOT/build/firmware/sgx543.fw" "$ROOT/build/initramfs-root/lib/firmware/apple/"
+        mkdir -p "$OVL/lib/firmware/apple"
+        cp "$ROOT/build/firmware/sgx543.fw" "$OVL/lib/firmware/apple/"
         note "ok: GPU microkernel from the IPSW (build/firmware/sgx543.fw)"
     else
         note "note: no GPU microkernel -- ./cascadia a5 firmware extracts it from the IPSW"
     fi
     # No RTC on this board: without a stamp it boots at the epoch and every TLS
-    # handshake fails on notBefore.  Written before the kernel build so it lands
-    # inside the embedded initramfs.
-    date -u "+%Y-%m-%d %H:%M:%S" > "$ROOT/build/initramfs-root/etc/build-date"
-    note "ok: build date $(cat "$ROOT/build/initramfs-root/etc/build-date") UTC"
+    # handshake fails on notBefore.  In the local layer, so each assembly of
+    # the bundle -- a prebuilt kernel's too -- carries the day it was made.
+    mkdir -p "$OVL/etc"; date -u "+%Y-%m-%d %H:%M:%S" > "$OVL/etc/build-date"
+    note "ok: build date $(cat "$OVL/etc/build-date") UTC"
     # /bin/peek is the MMIO tool every lab note in docs/ uses, and this busybox
     # has no devmem applet.  Built here rather than committed: the source is
     # ours, and the cross-compiler is already in the image.
@@ -576,11 +592,11 @@ cmd_build() {
     # only ./cascadia a5 rootfs used to copy it in, so a firmware added later
     # never reached the image.  Every build now.
     if [ -d "$ROOT/build/keep" ]; then
-        cp -a "$ROOT/build/keep/." "$ROOT/build/initramfs-root/"
-        note "ok: build/keep/ -> image ($(cd "$ROOT/build/keep" && find . -type f | wc -l | tr -d ' ') files)"
+        cp -a "$ROOT/build/keep/." "$OVL/"
+        note "ok: build/keep/ -> the local layer ($(cd "$ROOT/build/keep" && find . -type f | wc -l | tr -d ' ') files)"
     fi
     # Not fatal: without it the image boots as before, just without touch.
-    if [ ! -s "$ROOT/build/initramfs-root/lib/firmware/P105.mtprops" ]; then
+    if [ ! -s "$OVL/lib/firmware/P105.mtprops" ]; then
         note "note: no touch firmware -- touch stays off; ./cascadia a5 firmware extracts it from the IPSW"
     fi
     if [ -f "$ROOT/build/keep/lib/firmware/mtcal.bin" ]; then
@@ -598,7 +614,7 @@ cmd_build() {
         # (cascadia_claude, the passphrase-less one the assistant logs in
         # with).  Stage 1 copies the image's list over the NFS root's at every
         # boot, so a key appended on the device by hand is gone after a reboot.
-        AK="$ROOT/build/initramfs-root/root/.ssh/authorized_keys"
+        AK="$OVL/root/.ssh/authorized_keys"
         PUB="${PUBKEY:-}"
         if [ -z "$PUB" ]; then
             for c in ~/.ssh/id_ed25519.pub ~/.ssh/id_rsa.pub ~/.ssh/id_ecdsa.pub; do
@@ -669,7 +685,7 @@ so this is a file in build/initramfs-root owned by some third uid."
     [ "$bad_gid" = "-" ] || note "note: some entries keep a non-root group ($bad_gid) -- harmless; rootfs and build ran under different groups"
 
     # Not fatal: a tree without these still boots and still gives both consoles.
-    for s in bin/peek usr/sbin/dropbear etc/dropbear/dropbear_ed25519_host_key sbin/mount.nfs etc/netconfig \
+    for s in bin/peek usr/sbin/dropbear sbin/mount.nfs etc/netconfig \
              usr/sbin/iw sbin/wpa_supplicant usr/bin/fbkeyboard usr/lib/bluetooth/bluetoothd \
              usr/bin/aplay etc/asound.conf; do
         if LC_ALL=C grep -aFq "$s" "$CPIO"; then note "ok:      $s"
@@ -682,12 +698,20 @@ so this is a file in build/initramfs-root owned by some third uid."
     got=$(filesize "$ROOT/output/zImage-dtb")
     [ "$want" = "$got" ] || fail "zImage-dtb is $got bytes, expected $want"
     in_docker "bash build-bundle.sh 2>&1 | tail -5"
-    cp "$ROOT/output/linux-boot.bin" "$ROOT/output/staging-loader.bin"
-    bs=$(filesize "$ROOT/output/staging-bundle.bin")
-    [ "$bs" = "$(( got + 32768 ))" ] || fail "staging-bundle.bin is $bs bytes, expected $(( got + 32768 ))"
-    note "ok: bundle = 32K loader + this exact zImage-dtb"
-
     DOCKER_EXTRA=()
+    assemble
+}
+
+# The bundle from the kernel half (linux-boot.bin + zImage-dtb: built above,
+# or a prebuilt release's) and build/overlay, this machine's layer.
+assemble() {
+    [ -f "$ROOT/build/overlay/etc/dropbear/dropbear_ed25519_host_key" ] \
+        && note "ok: the layer carries the ssh host key" \
+        || note "note: no ssh host key in the layer -- the device makes one at boot, a new one every boot"
+    python3 "$ROOT/scripts/assemble.py" "$ROOT/output/linux-boot.bin" "$ROOT/output/zImage-dtb" \
+        "$ROOT/build/overlay" "$ROOT/output/staging-bundle.bin" | sed 's/^/    /' \
+        || fail "could not assemble the bundle"
+    cp "$ROOT/output/linux-boot.bin" "$ROOT/output/staging-loader.bin"
     say "done"
     ls -l "$ROOT/output/staging-bundle.bin" "$ROOT/output/staging-loader.bin"
 }

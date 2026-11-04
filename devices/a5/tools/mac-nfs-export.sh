@@ -115,17 +115,14 @@ on)
     showmount -e localhost || true
 
     # Stage 1 reads this at boot; absent, it stays in RAM.  It goes in the
-    # initramfs, so it takes effect on the NEXT kernel build, not this instant.
-    #
-    # Written twice on purpose.  The copy in build/keep/ is what survives
-    # ./cascadia a5 rootfs, which rebuilds the tree from scratch; without it,
-    # re-running rootfs would quietly take the device back to the RAM root and
-    # nothing would say why.
-    echo "$IP_HOST:$DST" > "$SRC/etc/nfsroot"
+    # local layer (build/keep -> build/overlay), which the bundle carries
+    # next to the kernel: the next ./cascadia a5 build puts it in, in seconds
+    # with a prebuilt kernel.  Never into build/initramfs-root, the base a
+    # kernel embeds and a release ships.
     mkdir -p "$KEEP/etc"
     echo "$IP_HOST:$DST" > "$KEEP/etc/nfsroot"
     echo
-    echo "==> /etc/nfsroot in the initramfs = $IP_HOST:$DST"
+    echo "==> /etc/nfsroot in the local layer = $IP_HOST:$DST"
     echo "    Rebuild and flash for it to take effect:"
     echo "      ./cascadia a5 build && ./cascadia a5 flash"
     ;;
@@ -144,8 +141,7 @@ status)
     awk -v p="$DST " 'index($0, p) == 1' /etc/exports 2>/dev/null | grep . || echo "(none)"
     echo "--- nfsd ---"; sudo nfsd status 2>&1 | head -3 || true
     echo "--- exported now ---"; showmount -e localhost 2>&1 | head -5 || true
-    echo "--- initramfs /etc/nfsroot ---"; cat "$SRC/etc/nfsroot" 2>/dev/null || echo "(none: device will boot from RAM)"
-    echo "--- build/keep copy (survives ./cascadia a5 rootfs) ---"; cat "$KEEP/etc/nfsroot" 2>/dev/null || echo "(none)"
+    echo "--- the image's /etc/nfsroot (build/keep, the local layer) ---"; cat "$KEEP/etc/nfsroot" 2>/dev/null || echo "(none: the device boots from RAM)"
     ;;
 *)
     sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'
