@@ -26,8 +26,10 @@ SRC="${SRC:-$ROOT/build/initramfs-root}"   # the tree ./cascadia a5 rootfs build
 DST="${DST:-$HOME/cascadia-root}"          # deliberately not under Desktop/Documents/
                                            # Downloads: those are TCC-protected and
                                            # nfsd cannot read them
-DESKTOP_TAR="$ROOT/build/desktop-root.tar"  # ./cascadia a5 desktop-root; a new root
-                                           # starts from it when it is there
+# A new root starts from the desktop root when there is one: built here
+# (./cascadia a5 desktop-root), else a release's (./cascadia a5 get).
+DESKTOP_TAR="$ROOT/build/desktop-root.tar"
+[ -f "$DESKTOP_TAR" ] || DESKTOP_TAR="$ROOT/build/prebuilt/current/desktop-root.tar.xz"
 LAN_NET="${LAN_NET:-10.55.0.0}"
 LAN_MASK="${LAN_MASK:-255.255.255.0}"
 IP_HOST="${IP_HOST:-10.55.0.1}"

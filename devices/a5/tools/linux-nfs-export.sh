@@ -21,7 +21,10 @@ KEEP="$ROOT/build/keep"                    # survives a rootfs rebuild; the asse
                                            # copies it back over the fresh tree
 SRC="${SRC:-$ROOT/build/initramfs-root}"   # the tree ./cascadia a5 rootfs builds and
                                            # ./cascadia a5 build embeds
-DESKTOP_TAR="$ROOT/build/desktop-root.tar"  # ./cascadia a5 desktop-root
+# A new root starts from the desktop root when there is one: built here
+# (./cascadia a5 desktop-root), else a release's (./cascadia a5 get).
+DESKTOP_TAR="$ROOT/build/desktop-root.tar"
+[ -f "$DESKTOP_TAR" ] || DESKTOP_TAR="$ROOT/build/prebuilt/current/desktop-root.tar.xz"
 DST="${DST:-/srv/cascadia-root}"           # not under $HOME: a 0700 home, an
                                            # encrypted one or a systemd-homed one
                                            # is no place for nfsd

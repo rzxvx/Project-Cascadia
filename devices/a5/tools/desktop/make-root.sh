@@ -21,6 +21,10 @@
 #   FRESH=1   start again from the current image (build/initramfs-root);
 #             otherwise the volume from last time is reused and every step
 #             runs again over it (they are all safe to repeat)
+#   PUBLIC=1  the root a release ships: no GPU pack (it is made from the
+#             user's own IPSW, by nfs on), its own docker volume, started
+#             fresh, the package list beside it (OUT.packages)
+#   OUT=      where the tar goes (build/desktop-root.tar)
 #   ONLY="mesa gpu"   just those steps (xfce, patched, autorotate, mesa, gpu,
 #             supertux, screenpad)
 #
@@ -32,8 +36,12 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 SRC="$ROOT/build/initramfs-root"
-OUT="$ROOT/build/desktop-root.tar"
+OUT="${OUT:-$ROOT/build/desktop-root.tar}"
 VOL="${VOL:-cascadia-a5-desktop-root}"
+if [ "${PUBLIC:-0}" = 1 ]; then
+    VOL=cascadia-a5-desktop-root-public FRESH=1
+    ONLY="${ONLY:-xfce patched autorotate mesa supertux screenpad}"
+fi
 C=cascadia-a5-root
 DEV=root@desktop-root
 ALPINE="${ALPINE:-3.24}"
@@ -56,6 +64,7 @@ cleanup() {
 trap cleanup EXIT
 
 docker rm -f "$C" >/dev/null 2>&1 || true
+[ "${PUBLIC:-0}" = 1 ] && say "PUBLIC=1: the root for a release, in volume $VOL, from scratch"
 if [ "${FRESH:-0}" = 1 ]; then
     say "FRESH=1: the root starts again from $SRC"
     docker volume rm "$VOL" >/dev/null 2>&1 || true
@@ -116,6 +125,13 @@ for f in usr/local/bin/desktop usr/local/bin/autorotate usr/bin/xrandr usr/bin/x
     inroot "chroot /target test -e /$f" || fail "no /$f in the root"
 done
 echo "    ok: XFCE, X, SuperTux, screenpad, autorotate, Mesa, the GPU's pack"
+
+if [ "${PUBLIC:-0}" = 1 ]; then
+    inroot 'test ! -e /target/usr/local/lib/sgx2d' || fail "PUBLIC=1 and the root has a GPU pack"
+    inroot 'chroot /target apk info -v 2>/dev/null | sort' > "$OUT.packages"
+    note_pk=$(wc -l < "$OUT.packages" | tr -d ' ')
+    echo "    the package list: $OUT.packages ($note_pk packages)"
+fi
 
 say "packing $OUT"
 # what this root is, for ./cascadia a5 install to tell it from an older one
