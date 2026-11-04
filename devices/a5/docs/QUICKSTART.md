@@ -119,12 +119,12 @@ No Apple firmware ships with this repository. `./cascadia a5 firmware` derives
 iBSS and iBEC from a stock IPSW, which Apple still serves:
 
 ```bash
-curl -LO 'https://secure-appldnld.apple.com/ios8.4.1/031-31249-20150812-75235CC6-3C8F-11E5-848D-BE1A3A53DB92/iPad2,5_8.4.1_12H321_Restore.ipsw'
-./cascadia a5 firmware
+./cascadia a5 firmware         # no IPSW yet: "Download it now? [Y/n]" -- Enter downloads it
 ```
 
-Downloaded into the repository's top (or `devices/a5/`) under that name, it
-is found without being told. Both images are checked against reference hashes; they reproduce byte for
+It goes into the repository's top (about 1.4 GB; an interrupted download
+resumes when you run it again). One you already have is found there or in
+`devices/a5/` under its own name, or `IPSW=/path/to/it`. Both images are checked against reference hashes; they reproduce byte for
 byte on macOS/arm64 and on Linux/x86_64.
 
 ## Into pwned DFU
@@ -146,9 +146,10 @@ done, then the iPad into this computer and `./cascadia a5 flash`.
 
 **From a jailbroken iOS** (`--kdfu`): OpenSSH from Cydia on the iPad, the
 iPad booted into iOS and unlocked, on the cable. `flash --kdfu` logs in as
-root (the password is asked once, "alpine" unless changed), runs kloader with
-our iBSS, and waits for the iPad to come back in DFU -- unplug and replug the
-cable, or press Home, if it does not on its own. kloader has no licence, so it
+root (the password is asked once: Enter is "alpine", iOS's default; a key is
+used if one gets in), runs kloader with
+our iBSS, and waits for the iPad to come back in DFU: as soon as the screen
+goes dark, press Power or Home once. kloader has no licence, so it
 is not in this repository: it is fetched once, from a pinned commit, and
 checked by hash. Over Wi-Fi instead of the cable: `IOS_HOST=<the iPad's IP>`.
 
@@ -168,7 +169,7 @@ work, possibly a little less precisely than it could.
 jailbroken iOS, OpenSSH installed, on the cable:
 
 ```bash
-./cascadia a5 mtcal            # asks for iOS's root password once ("alpine")
+./cascadia a5 mtcal            # iOS's root password once (Enter = "alpine")
 ./cascadia a5 build            # lays it over the default
 ```
 

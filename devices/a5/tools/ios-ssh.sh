@@ -12,7 +12,9 @@
 # usbmuxd package, which starts when an iOS device is plugged in.
 # IOS_HOST=<the iPad's IP> (IOS_PORT=, default 22) goes over Wi-Fi instead.
 # One ssh connection is shared by every step, so iOS's root password is
-# asked for once -- "alpine" unless it was changed.  The sshd (OpenSSH from
+# asked for once, and only when a key does not get in: Enter is "alpine",
+# iOS's own default; another is typed.  It reaches ssh through SSH_ASKPASS
+# (OpenSSH 8.4+), so no sshpass.  The sshd (OpenSSH from
 # Cydia) has only ssh-rsa host keys: tools/mtdump/ssh_config allows them.
 
 IOS_REPO="$(cd "$ROOT/../.." && pwd)"
@@ -47,13 +49,45 @@ ios_cleanup() {
     rm -rf "$WORK"
 }
 
+IOS_EXTRA=()
 ios() {
     ssh -F "$ROOT/tools/mtdump/ssh_config" -o ControlMaster=auto -o ControlPath="$CM" \
-        -o ControlPersist=300 -o ConnectTimeout=10 "${IOS_SSH[@]}" "$@"
+        -o ControlPersist=300 -o ConnectTimeout=10 ${IOS_EXTRA[@]+"${IOS_EXTRA[@]}"} \
+        "${IOS_SSH[@]}" "$@"
+}
+
+# The shared connection, opened once: a key if one gets in, else the password.
+ios_connect() {
+    echo "==> connecting to iOS"
+    IOS_EXTRA=(-o BatchMode=yes -o PreferredAuthentications=publickey)
+    if ios true </dev/null 2>/dev/null; then IOS_EXTRA=(); return 0; fi
+    printf '#!/bin/sh\nprintf "%%s\\n" "$CASCADIA_IOS_PW"\n' > "$WORK/askpass"
+    chmod 700 "$WORK/askpass"
+    IOS_EXTRA=(-o NumberOfPasswordPrompts=1 -o PreferredAuthentications=keyboard-interactive,password)
+    local n=0 pw
+    while [ $n -lt 3 ]; do
+        pw=
+        if [ -t 0 ]; then
+            read -r -s -p "    iOS root password [Enter = alpine]: " pw || pw=
+            echo
+        fi
+        if CASCADIA_IOS_PW="${pw:-alpine}" SSH_ASKPASS="$WORK/askpass" SSH_ASKPASS_REQUIRE=force \
+                ios true </dev/null 2>"$WORK/ssh.err"; then
+            IOS_EXTRA=(); return 0
+        fi
+        grep -q -i 'permission denied' "$WORK/ssh.err" || break      # not the password
+        echo "    not that one"
+        [ -t 0 ] || break
+        n=$((n + 1))
+    done
+    IOS_EXTRA=()
+    sed 's/^/    /' "$WORK/ssh.err" >&2
+    return 1
 }
 
 ios_check_model() {
-    echo "==> connecting (iOS root password, 'alpine' unless changed)"
+    ios_connect \
+        || fail "no ssh to iOS -- is the iPad in iOS, unlocked, with OpenSSH installed (Cydia)?"
     IOS_MODEL=$(ios uname -m) \
         || fail "no ssh to iOS -- is the iPad in iOS, unlocked, with OpenSSH installed (Cydia)?"
     [ "$IOS_MODEL" = "iPad2,5" ] || fail "this is a $IOS_MODEL; this port is for iPad2,5 (p105ap)"

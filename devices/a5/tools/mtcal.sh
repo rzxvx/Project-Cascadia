@@ -17,8 +17,8 @@
 #
 # Over USB this goes through usbmuxd (tools/ios-ssh.sh, lib/usbmux.py):
 # part of macOS, the usbmuxd package on Linux.  One ssh connection is shared
-# by every step, so iOS's root password is asked for once -- "alpine" unless
-# it was changed.
+# by every step, so iOS's root password is asked for once (Enter is "alpine",
+# iOS's default).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

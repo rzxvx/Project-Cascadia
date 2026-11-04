@@ -56,6 +56,7 @@ ios "rm -rf $T && mkdir $T && cat > $T/kloader && chmod 755 $T/kloader" < "$KLOA
 ios "cat > $T/ibss" < "$IBSS"
 
 echo "==> running kloader -- the iPad's screen goes dark and it leaves USB"
+echo "    as soon as the screen goes dark, press Power or Home once"
 # In the background: the connection dies with iOS, and ssh would sit on it.
 ios "$T/kloader $T/ibss" >"$WORK/kloader.log" 2>&1 &
 KPID=$!
@@ -69,8 +70,8 @@ while [ $SECONDS -lt $end ]; do
         "${USB[@]}" query 2>/dev/null | grep -E '^(CPID|SRTG|MODE)' | sed 's/^/    /' || true
         exit 0
     fi
-    if [ $told = 0 ] && [ $SECONDS -gt $((end - WAIT + 10)) ]; then
-        echo "    not back yet: unplug the cable and plug it in again (or press Home)"
+    if [ $told = 0 ] && [ $SECONDS -gt $((end - WAIT + 15)) ]; then
+        echo "    not back yet: press Power or Home once more, or unplug the cable and plug it in again"
         told=1
     fi
     sleep 1
