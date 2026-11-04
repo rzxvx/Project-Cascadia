@@ -119,11 +119,28 @@ fi
 # framebuffer, and the UART capture has a habit of truncating partway through a
 # boot anyway, so a missing cable is a nuisance rather than a blocker.
 CAP=""
+SUDO_KEEP=""
 # Without this the capture outlives the script: on a failure `set -e` takes the
 # shell down mid-flash and the python sits on the serial port for the rest of
 # UART_SECONDS.
-cleanup() { if [ -n "$CAP" ]; then kill "$CAP" 2>/dev/null || true; fi; }
+cleanup() {
+    if [ -n "$CAP" ]; then kill "$CAP" 2>/dev/null || true; fi
+    if [ -n "$SUDO_KEEP" ]; then kill "$SUDO_KEEP" 2>/dev/null || true; fi
+}
 trap cleanup EXIT
+
+# sudo for the link, asked NOW.  The address goes on this computer's end of
+# the link while the iPad boots, and stage 1 gives up on the NFS root ~30 s
+# after its USB comes up; a sudo password asked at that moment -- a cached
+# one expires after five minutes, and a kDFU or the install before it takes
+# longer -- was typed too late, and the iPad came up from RAM.  So the
+# password comes first, and is kept fresh until the end.
+if [ "$WANT_LINK" = 1 ] && [ "$(id -u)" != 0 ]; then
+    echo "==> sudo, for this computer's address on the iPad's link (asked now, not mid-boot)"
+    sudo -v || fail "the link needs sudo -- or --no-link, and ./cascadia a5 link yourself"
+    ( while kill -0 $$ 2>/dev/null; do sudo -n -v 2>/dev/null || true; sleep 50; done ) &
+    SUDO_KEEP=$!
+fi
 
 if [ "$WANT_UART" = 1 ]; then
     PORT="${UART_PORT:-}"

@@ -137,15 +137,17 @@ if [ -f /etc/nfsroot ] && [ -x /sbin/mount.nfs ]; then
     NFSROOT=$(cat /etc/nfsroot)
     msg "P105: trying NFS root $NFSROOT"
     mkdir -p /newroot
-    # retry=0 with a short timeo, tried a handful of times, rather than one
+    # retry=0 with a short timeo, tried ten times (~30 s), rather than one
     # call with mount.nfs's defaults.  Its default retry window is two minutes,
     # and the usual reason for failing here is that the host has not put
     # 10.55.0.1 on the link yet -- which either resolves within seconds or not
     # at all.  Two minutes of silence during boot is a worse answer than the
     # RAM root, and it is exactly what a flash without ./cascadia a5 link produced.
+    # Five tries (~13 s) were too few for a host still asking for its sudo
+    # password, so ten, and the screen says what it waits for.
     nfs_try=0
     nfs_ok=0
-    while [ $nfs_try -lt 5 ]; do
+    while [ $nfs_try -lt 10 ]; do
         nfs_try=$((nfs_try+1))
         if mount -t nfs \
                 -o nolock,vers=3,proto=tcp,rsize=8192,wsize=8192,retry=0,timeo=50,retrans=1 \
@@ -153,6 +155,7 @@ if [ -f /etc/nfsroot ] && [ -x /sbin/mount.nfs ]; then
             nfs_ok=1
             break
         fi
+        [ $nfs_try = 1 ] && msg "P105: waiting for the host ${NFSROOT%%:*} (./cascadia a5 flash gives it its address; or ./cascadia a5 link)"
         settle
     done
     if [ $nfs_ok = 1 ]; then

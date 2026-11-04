@@ -403,7 +403,7 @@ gpu`).
 | kDFU: the iBEC uploads to 100%, then the device looks switched off | An encrypted iBEC. After iOS has booted the AES GID key is gone, so the KBAG decrypts to nothing. `--kdfu` picks the plaintext image by itself unless `--ibec` or `--known-good` pinned one. |
 | `no iBoot32Patcher ... rebuild the image` | The build image predates a change to the Dockerfile. `./cascadia a5 image` (and `./cascadia a5 firmware` now does this itself). |
 | `mount.nfs` reports `Failed to find 'tcp' protocol` (or `Protocol not supported`) and `/etc/netconfig` is missing | Rebuild with the current base-package list, which includes `libtirpc-conf`. To repair a running image with package access, use `apk add libtirpc-conf`. The binary and its shared libraries alone are insufficient. |
-| The device boots, but from RAM when you expected NFS | The host's address arrived after stage 1 had given up. `flash` now sets it while the device boots; check `./cascadia a5 nfs status`. |
+| The device boots, but from RAM when you expected NFS (`mount ... failed: Host is unreachable`) | This computer's address on the link arrived after stage 1 had given up (~30 s). `flash` asks for sudo before the boot now, so the address is set in time; check `./cascadia a5 nfs status`, then flash again. |
 | The UART log stops mid-boot | Normal. It truncates late in boot; the framebuffer and `dmesg` over ssh have the rest. |
 
 `docs/CASCADIA-CHEATSHEET.md` is the full reference: every address, every
