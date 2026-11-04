@@ -105,6 +105,17 @@ def encode_adrp(reg: int, pc: int, target: int) -> int:
     return 0x90000000 | (immlo << 29) | (immhi << 5) | (reg & 0x1F)
 
 
+def encode_adr(reg: int, pc: int, target: int) -> int:
+    """ADR Xreg, target. The immediate is a signed 21-bit byte offset."""
+    imm21 = target - pc
+    if imm21 < -(1 << 20) or imm21 >= (1 << 20):
+        raise ValueError(f"ADR imm21 out of range: {imm21}")
+    imm21 &= 0x1FFFFF
+    immlo = imm21 & 3
+    immhi = (imm21 >> 2) & 0x7FFFF
+    return 0x10000000 | (immlo << 29) | (immhi << 5) | (reg & 0x1F)
+
+
 def encode_add_imm(dst: int, src: int, imm: int) -> int:
     """ADD (immediate), 64-bit, with optional LSL #12."""
     if imm < 0x1000:
@@ -467,18 +478,17 @@ def resolve_bootargs_ipad11_6_17_1_1(
     assert args and "\x00" not in args and "%" not in args
     payload = args.encode("ascii") + b"\x00"
 
-    # In sub_19C081F04 this pair forms X21 = final boot-args destination.
-    # The following formatter copies the current boot-args through "%s" into
-    # that buffer.  Pointing X21 at our literal slot makes the later kernel
-    # handoff consume the requested Linux arguments.
-    adrp_off = 0x32418
-    add_off = 0x3241C
-    orig_adrp = 0xF0000EB5  # ADRP X21, 0x19C259000
-    orig_add = 0x913C32B5   # ADD  X21, X21, #0xF0C
+    # sub_19C081F04 formats the final boot arguments into its normal writable
+    # 0x400-byte destination. Replace only its "%s" format pointer with our
+    # literal. Do not redirect X21 (the destination): its companion bounds and
+    # allocator metadata still describe the original buffer.
+    format_off = 0x32444
+    orig_format = 0x10626302  # ADR X2, "%s"
+    write_off = 0xAD090       # guarded zero padding, within ADR's +/-1 MiB
     guards = {
-        adrp_off: orig_adrp,
-        add_off: orig_add,
-        0x32444: 0x10626302,  # ADR X2, "%s"
+        0x32418: 0xF0000EB5,  # original writable destination page
+        0x3241C: 0x913C32B5,  # original writable destination offset
+        format_off: orig_format,
         0x3244C: 0xD103A3A0,  # SUB X0, X29, #-var_E8
         0x32450: 0x52808001,  # MOV W1, #0x400
         0x32454: 0x94017989,  # BL formatter
@@ -491,20 +501,17 @@ def resolve_bootargs_ipad11_6_17_1_1(
                 f"expected 0x{word:08x}, got 0x{got:08x}"
             )
 
-    write_off, _run_end, _capacity = find_page_tail_slot(data, len(payload))
+    if write_off + len(payload) > 0xAD800:
+        raise RuntimeError("J171aAP boot-args literal exceeds verified padding")
+    if any(data[write_off : write_off + len(payload)]):
+        raise RuntimeError("J171aAP boot-args padding is not empty")
     target = text_base + write_off
     return [
         (
-            adrp_off,
-            orig_adrp,
-            encode_adrp(21, text_base + adrp_off, target),
-            "ipad.ibss.boot-args.adrp",
-        ),
-        (
-            add_off,
-            orig_add,
-            encode_add_imm(21, 21, target & 0xFFF),
-            "ipad.ibss.boot-args.add",
+            format_off,
+            orig_format,
+            encode_adr(2, text_base + format_off, target),
+            "ipad.ibss.boot-args.format-adr",
         ),
         ("STR", write_off, payload, f"ipad.ibss.boot-args.string@{hex(write_off)}"),
     ]
