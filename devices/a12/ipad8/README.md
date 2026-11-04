@@ -50,6 +50,23 @@ https://updates.cdn-apple.com/2023FallFCS/fullrestores/042-95894/E5C89FEE-E10A-4
 
 Apple firmware and generated boot artifacts remain untracked.
 
+### Hardware result
+
+The serial profile was tested on the physical iPad11,6. USBLiter8 loaded the
+raw patched iBSS, the device re-enumerated as `05ac:1281`, `irecovery -q`
+reported `CPID 8020`, `BDID 24`, `PRODUCT iPad11,6`, and the DCSD console
+reached:
+
+```text
+Microkernel iBoot for ipad11b
+Remote boot, Board 0x24 (j171aap)/Rev 0x5
+BUILD_TAG: iBoot-10151.42.2
+Entering recovery mode, starting command prompt
+```
+
+This verifies the first-stage patched iBSS handoff and serial capture. It does
+not yet verify loading the unsigned DeviceTree or m1n1 payload.
+
 ## Next increments
 
 1. Produce and test the patched serial iBSS through USBLiter8.
