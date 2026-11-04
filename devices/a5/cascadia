@@ -270,6 +270,7 @@ cmd_setup() {
     else
         pm_install base libusb nfs firewall usbmuxd || true
     fi
+    ensure_python
     say "docker"
     ensure_docker
     ensure_binfmt linux/arm/v6
@@ -358,6 +359,18 @@ cmd_install() {
 
     istep 7 "the iPad's disk on this computer (NFS)"
     if [ "$desktop" != y ]; then inone "no desktop"
+    elif [ -s "$ROOT/build/initramfs-root/etc/nfsroot" ] && [ -e "$(nfs_dst)/sbin/p105-stage2" ] &&
+         ! grep -q '^desktop' "$(nfs_dst)/etc/cascadia-root" 2>/dev/null && [ -f "$ROOT/build/desktop-root.tar" ]; then
+        # a root from before the desktop root (no /etc/cascadia-root): the
+        # iPad would boot that one, not what step 6 made
+        echo "    $(nfs_dst) is an older root, not the desktop's: anything installed there"
+        echo "    stays, and the desktop root is not used."
+        if ask "replace it with the desktop root (deletes what is in $(nfs_dst))?"; then
+            FORCE_SYNC=1 isub nfs on
+            isub build
+        else
+            inone "keeping $(nfs_dst) as it is"
+        fi
     elif [ -s "$ROOT/build/initramfs-root/etc/nfsroot" ] && [ -e "$(nfs_dst)/sbin/p105-stage2" ]; then
         iskip "$(nfs_dst), exported"
     else

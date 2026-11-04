@@ -63,8 +63,18 @@ on)
         # Linux container, so owners and modes are already Linux's -- kept
         # by number, there being no messagebus on this Mac.
         echo "==> seeding $DST from $DESKTOP_TAR (the desktop root; DESKTOP=0 for the plain one)"
+        # FORCE_SYNC over a populated root: start it empty, as rsync --delete
+        # does on the other path -- unpacked over the old one, the two mix
+        if [ -n "$(ls -A "$DST" 2>/dev/null)" ]; then
+            case "$DST" in /|"$HOME"|"") fail "refusing to empty $DST" ;; esac
+            echo "    emptying $DST first (FORCE_SYNC=1)"
+            sudo find "$DST" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+        fi
         sudo mkdir -p "$DST"
         sudo tar -xpf "$DESKTOP_TAR" --numeric-owner -C "$DST"
+        # a tar from before make-root marked its roots still is the desktop's
+        [ -s "$DST/etc/cascadia-root" ] ||
+            echo "desktop unknown $(date -u +%Y-%m-%d)" | sudo tee "$DST/etc/cascadia-root" >/dev/null
         sudo mkdir -p "$DST/dev" "$DST/proc" "$DST/sys"
     else
         echo "==> copying $SRC -> $DST"

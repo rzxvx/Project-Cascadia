@@ -118,6 +118,9 @@ done
 echo "    ok: XFCE, X, SuperTux, screenpad, autorotate, Mesa, the GPU's pack"
 
 say "packing $OUT"
+# what this root is, for ./cascadia a5 install to tell it from an older one
+rev=$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)
+inroot "printf 'desktop %s %s\n' '$rev' '$(date -u +%Y-%m-%d)' > /target/etc/cascadia-root"
 inroot "$UNMOUNT"
 inroot 'awk "\$2 ~ \"^/target/\"" /proc/mounts | grep -q . && { echo "still mounted under /target:"; grep " /target/" /proc/mounts; exit 1; }; true' \
     || fail "could not unmount the root's /proc and /dev"

@@ -83,11 +83,30 @@ pm_install() {
                 run brew install $miss ;;
         apt)    ask "install $pkgs with apt (sudo)?" || return 1
                 run $SUDO apt-get update -q && run $SUDO env DEBIAN_FRONTEND=noninteractive apt-get install -y $pkgs ;;
+        # -S, not -Sy: refreshing the lists without upgrading is the partial
+        # upgrade Arch does not support; a package the old lists cannot get
+        # says so, and the answer is a full -Syu
         pacman) ask "install $pkgs with pacman (sudo)?" || return 1
-                run $SUDO pacman -Sy --needed --noconfirm $pkgs ;;
+                run $SUDO pacman -S --needed --noconfirm $pkgs \
+                    || { note "if pacman could not get a package: sudo pacman -Syu first"; return 1; } ;;
         dnf)    ask "install $pkgs with dnf (sudo)?" || return 1
                 run $SUDO dnf install -y $pkgs ;;
         *)      note "no package manager found: install $pkgs yourself"; return 1 ;;
+    esac
+}
+
+# A python that can do what the tools ask of it.  A partly upgraded Arch had a
+# python 3.14 whose pyexpat wanted a newer expat than the one installed, and
+# lib/usbmux.py died importing plistlib, in the middle of a flash.
+ensure_python() {
+    local err
+    if err=$(python3 -c 'import plistlib, ssl, zipfile, hashlib, lzma, ctypes' 2>&1); then
+        note "ok: python3 ($(python3 -c 'import sys; print("%d.%d" % sys.version_info[:2])'))"; return 0
+    fi
+    printf '%s\n' "$err" | tail -1 | sed 's/^/    python3: /' >&2
+    case "$(host_pm)" in
+        pacman) fail "this python3 is broken (above) -- a partly upgraded Arch: sudo pacman -Syu, then run this again" ;;
+        *)      fail "this python3 is broken (above): reinstall it, or update the system, then run this again" ;;
     esac
 }
 
