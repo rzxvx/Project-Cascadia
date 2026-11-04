@@ -41,14 +41,27 @@ What does not carry over from the mini's chain:
   (`0xbff1d89c`), which quiesces the machine and `blx`es the parsed entry. A
   raw loader fails the parse and `go` returns. Eight bytes at iBEC file
   offset `0x119e` (the parser call) become a store of `0x80000000` into the
-  entry slot and a branch to the existing jump path; the helper itself is
-  untouched, so the entry must be ARM, not Thumb. The helper takes USB down
-  before the `blx`, so the kernel has to bring the gadget back
-  (`console=ttyGS0`).
+  entry slot and a branch to the existing jump path. The helper still
+  `blx`es the entry, so it must be ARM, not Thumb. Its teardown calls
+  before the `blx` (28 bytes at file `0x1d8b0`, USB and the panel) are
+  NOPs, so iBoot's scanout is still live for the early console. The
+  kernel brings up its own USB gadget (`console=ttyGS0`).
 - **The loader** (ARM, at `0x80000000`) stops the watchdog through iBoot's
   mapping (`0x0F103020`; the physical `0x3F103020` is the wrong address while
   the MMU is on), cleans L1 and the PL310, turns the MMU off and enters the
   zImage at `0x80008000` with `r0=0`, `r1=~0` and `r2` = the appended DTB.
+  It also plants four hooks in the relocated decompressor, without which
+  decompression did not get through:
+  - `cache_on`'s SCTLR write loses M and C.
+  - At `decompress_kernel` the DTB is copied to `0x84000000`.
+  - `do_decompress` runs with DRAM identity-mapped and the caches on, L1
+    and L2 cleaned first.
+  - After it, L1 and L2 are cleaned and the MMU and caches turned off
+    before `__enter_kernel`.
+
+  The hook sites are offsets into the decompressor, so they hold for one
+  compiler (GCC 11.4 here) and are checked against the zImage's words
+  before packing.
 - **The early console is required.** `earlycon=j1fb`
   (`arch/arm/mach-apple/j1_earlyfb.c`) draws the boot log on iBoot's
   scanout with an 8x8 font at scale 2, putting its section mappings back
@@ -101,6 +114,10 @@ the GPIO controller (its registers differ, below) or `system-power-controller`
 - Backlight: an 11-bit DAC at `0xd3` (bits 10:3) and `0xd4` (bits 2:0), the
   string enable at `0xd5` (`0x3f` lit). The mini's `0xd0`/`0xd1` are
   something else on this chip. The DTS has no backlight node yet.
+- Input-current limit: `0x3e`. iBEC leaves it at `0x02`, about 100 mA, and
+  the battery drains under Linux even on a charger. `0x4a` is 1000 mA: at
+  idle that turned about -190 mA into about +210 mA. It is written by hand
+  from userspace for now; there is no charger driver.
 
 ## Touch
 
@@ -166,5 +183,5 @@ page reads return status `0x40` and repeat byte for byte.
 - The GPU and a display driver: the panel is eDP (`edp@9500000`) fed by
   CLCD through a highland-park scaler at `0x0b020000`, not MIPI-DSI.
 - A PHY driver for the second USB complex.
-- A backlight node, charging (the D1974's input limit), the battery, audio,
-  Bluetooth, NAND writes.
+- A backlight node, a charger driver (the input limit above is set by hand),
+  the battery, audio, Bluetooth, NAND writes.
