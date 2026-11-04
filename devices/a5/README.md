@@ -50,7 +50,7 @@ see [K93 bring-up and limitations](docs/k93-bringup.md).
 ## Current Status
 
 - [x] checkm8 via Raspberry Pi Pico (checkm8-a5)
-- [x] Full boot chain: primepwn → autogo iBEC → staging-bundle → Linux
+- [x] Full boot chain: checkm8 (Pico) or kDFU → patched iBSS → autogo iBEC → staging-bundle → Linux
 - [x] Linux 6.12 boots on hardware
 - [x] Apple DeviceTree fully parsed, all hardware addresses extracted
 - [x] Custom Linux DTS (memory, UART0, AIC1, simplefb, PL310 L2, dwc2, SPI, I2C)
@@ -619,7 +619,7 @@ datasheet.
 | GPIO | `0x3FA00000` | IRQ 119 |
 | RAM base | `0x80000000` | 512 MB |
 
-Boot chain: `primepwn` → patched `iBSS` → `iBEC.patched.autogo.lk.dfu` →
+Boot chain: checkm8 (Pico) or kDFU → patched `iBSS` → `iBEC.patched.autogo.lk.dfu` →
 `staging-bundle.bin` → `staging-loader.bin` → `zImage-dtb` at `0x80008000`.
 Built on teutekeune/iBSSloader.
 
@@ -669,7 +669,7 @@ Two more gotchas worth recording:
 ## Building
 
 **[docs/QUICKSTART.md](docs/QUICKSTART.md) is the walkthrough** — hardware,
-host setup, the IPSW, Legacy iOS Kit, the first shell, and what the failures
+host setup, the IPSW, pwned DFU, the first shell, and what the failures
 look like. The short version follows.
 
 Needs git, docker (with a running daemon), python3 and rsync.  Everything else
@@ -707,9 +707,8 @@ thing it skipped was the `apple_aic1_rearm()` call, so a clean tree built green
 and took no interrupts at all. `./cascadia a5 build` re-checks both the config
 symbols and the boot stamps in `vmlinux` for that reason.
 
-Flashing needs the device, a Lightning cable, a way into pwned DFU, and
-[Legacy iOS Kit](https://github.com/LukeZGD/Legacy-iOS-Kit) for `primepwn` and
-`irecovery`:
+Flashing needs the device, a Lightning cable, a way into pwned DFU, and pyusb
+(the USB side is `lib/appleusb.py` at the repository's top: no irecovery):
 
 ```bash
 ./cascadia a5 firmware   # patch iBSS/iBEC out of your own IPSW
@@ -729,12 +728,13 @@ or an Arduino with a USB host shield. If you have neither, `./cascadia a5 flash
 iBSS directly, with no extra hardware.
 [EverPwnage](https://github.com/LukeZGD/EverPwnage) jailbreaks A5 on iOS
 7–9.3.6 untethered, so the device comes up jailbroken every time and this stays
-a one-command step. Both routes are Legacy iOS Kit's; Cascadia calls it rather
-than reimplementing either.
+a one-command step. Both are ours: the Pico runs LukeZGD's checkm8-a5 build and
+`lib/appleusb.py` starts the iBSS on the pwned iPad; `tools/kdfu.sh` runs
+kloader (fetched by hash, it has no licence) over ssh through usbmuxd.
 
 The two routes do not take the same image. Anything sent after kDFU has to be
 unencrypted: once iOS has booted, the AES GID key is gone, so a stock-layout
-KBAG decrypts to nothing and the iBSS jumps into garbage — while `irecovery`
+KBAG decrypts to nothing and the iBSS jumps into garbage — while the upload
 reports a clean 100% upload and the device simply looks switched off. So
 `./cascadia a5 firmware` packs the patched iBEC twice, once like the stock image
 and once as a plain img3 with no KBAG, and `--kdfu` picks the second. Legacy

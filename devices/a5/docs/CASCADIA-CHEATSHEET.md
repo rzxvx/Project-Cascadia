@@ -19,7 +19,7 @@ anything any more: dts, config, patches, the rootfs overlay and the boot chain l
 ./cascadia a5 kernel      # clone Linux pinned at v6.12 into build/linux
 ./cascadia a5 rootfs      # build Alpine armhf for the initramfs
 ./cascadia a5 build       # dtb + kernel + output/staging-bundle.bin
-./cascadia a5 firmware    # iBSS/iBEC from your own IPSW (needs Legacy iOS Kit + ipad25.ipsw)
+./cascadia a5 firmware    # iBSS/iBEC from your own IPSW
 ./cascadia a5 flash       # flash:  iBSS → iBEC → bundle → loader
 ```
 
@@ -75,7 +75,7 @@ because the kernel version is pinned.
 
 ### Flashing
 ```bash
-./cascadia a5 flash                 # freshly built iBEC, checkm8 via primepwn
+./cascadia a5 flash                 # freshly built iBEC, the iPad pwned by the Pico
 ./cascadia a5 flash --kdfu          # the same, but WITHOUT the Pico — via the jailbreak
 ./cascadia a5 flash --skip-pwn      # the device is already in pwned DFU
 ./cascadia a5 flash --known-good    # the August image — tells a bad build
@@ -97,22 +97,27 @@ usb0, and `mount.nfs` gives up after about two minutes — after that the root
 stays in RAM.
 
 ### Two ways into pwned DFU
-**primepwn** — checkm8, needs a Pi Pico or an Arduino with a USB host shield: on
-A5 the exploit needs USB timing an ordinary host does not deliver.
+**checkm8** — needs a Pi Pico (LukeZGD's checkm8-a5 UF2, the 8942 one) or an
+Arduino with a USB host shield: on A5 the exploit needs USB timing an ordinary
+host does not deliver. The pwned iPad then comes back to the computer in DFU,
+and `lib/appleusb.py boot-pwned` starts our iBSS on it (the request ipwndfu's
+`-l` and primepwn send: an empty block, the image, UPLOAD with wValue 0xffff).
 
 **kDFU** — from a jailbroken iOS, `kloader` loads a patched iBSS directly, no
 hardware needed at all. EverPwnage jailbreaks A5 on 7–9.3.6 **untethered**, so the
 device comes up jailbroken every time and the step stays a single command.
 
-Both are implemented in Legacy iOS Kit; we call them. One nuance: kDFU sends
-**its own** pwned iBSS, not ours. They differ only in the boot-args iBoot32Patcher
-wrote; what matters is the signature patch, which both have, and the boot-args
-are set by iBEC anyway.
+Both are ours now (`lib/appleusb.py`, `tools/kdfu.sh`); until 2026-11-04 they
+were Legacy iOS Kit's. kDFU used to send LIK's pwned iBSS; it sends ours now
+(`build/firmware/iBSS.patched`, raw). They differ only in the boot-args
+iBoot32Patcher wrote; what matters is the signature patch, which both have, and
+the boot-args are set by iBEC anyway. kloader itself (winocm's ios-kexec-utils,
+no licence) is fetched from LIK's repository at a pinned commit, by hash.
 
 A second nuance, which cost one flash cycle: **after kloader the image has to be
 decrypted**. By the time iOS has booted, the AES engine's GID key is already
 disabled, so there is nothing to decrypt the KBAG with — iBSS gets garbage and
-jumps into it. From outside it is deceptive: `irecovery` reports 100%, then the
+jumps into it. From outside it is deceptive: the upload reports 100%, then the
 device drops off the bus and looks switched off. That is why `./cascadia a5 firmware`
 builds iBEC in two forms:
 
@@ -126,10 +131,10 @@ override it. LIK's pwnediBSS is built exactly the same way: `xpwntool ... -iv -k
 decrypts, `iBoot32Patcher --rsa` patches, `xpwntool ... -t iBSS` packs it back
 **without** encryption, zeroing sigCheckArea. `scripts/img3pack.py` repeats that
 layout rather than inventing its own.
-The upload order and the pauses are not decoration: `primepwn` runs checkm8 and
-leaves a pwned iBSS running; that accepts the unsigned iBEC; the autogo hook in
-iBEC fires at the end of the bundle upload and starts the loader — which is why
-the loader is sent last and there is no `irecovery -c go` anywhere.
+The upload order and the pauses are not decoration: our patched iBSS runs first
+(on the Pico-pwned iPad, or by kloader); that accepts the unsigned iBEC; the
+autogo hook in iBEC fires at the end of the bundle upload and starts the loader —
+which is why the loader is sent last and there is no `go` anywhere.
 
 The UART port is found automatically (`/dev/cu.usbserial-*`, `/dev/ttyUSB*`), and
 the capture is optional. The early log is duplicated to the framebuffer, and the

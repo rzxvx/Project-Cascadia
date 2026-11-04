@@ -13,14 +13,13 @@
 #
 # gltrace has to be built with the corpus mode (tools/iosgpu/build.sh: macOS
 # with Xcode and ldid); this builds it when build/gltrace is missing or older
-# than gltrace.m.  The connection is gpucap.sh's: usbmuxd and iproxy over
+# than gltrace.m.  The connection is gpucap.sh's (tools/ios-ssh.sh): usbmuxd over
 # USB, or IOS_HOST= over Wi-Fi; iOS's root password, "alpine" unless
 # changed.  The result goes to logs/ios/corpus/<date>/ (out of git: it is
 # Apple's compiler's output), a few MB.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-LIK="${LIK:-$HOME/Legacy-iOS-Kit}"
 HELPER="$ROOT/build/gltrace"
 CORPUS="$ROOT/tools/iosgpu/corpus"
 OUT="$ROOT/logs/ios/corpus/$(date +%Y%m%d-%H%M%S)"
@@ -49,66 +48,10 @@ else
 fi
 [ ${#cases[@]} -gt 0 ] || fail "no cases in $CORPUS (python3 tools/iosgpu/corpus/make.py writes them)"
 
-# /tmp and not $TMPDIR: the ssh control socket's path has to fit in a
-# sockaddr_un, and macOS's TMPDIR alone takes half of it.
-WORK=$(mktemp -d /tmp/cascadia-shadercap.XXXXXX)
-IPROXY_PID=""
-CM="$WORK/cm"
-cleanup() {
-    ssh -o ControlPath="$CM" -O exit x 2>/dev/null || true
-    if [ -n "$IPROXY_PID" ]; then kill "$IPROXY_PID" 2>/dev/null || true; fi
-    rm -rf "$WORK"
-}
-trap cleanup EXIT
-
-if [ -n "${IOS_HOST:-}" ]; then
-    HOST="$IOS_HOST"; PORT="${IOS_PORT:-22}"
-    echo "==> iOS at $HOST:$PORT"
-else
-    HOST=127.0.0.1; PORT="${IOS_PORT:-$(python3 -c '
-import socket
-for p in range(2222, 2300):
-    s = socket.socket()
-    try:
-        s.bind(("", p)); print(p); break
-    except OSError:
-        pass
-    finally:
-        s.close()')}"
-    # The first iproxy that runs, PATH's then Legacy iOS Kit's: Homebrew's
-    # has been seen broken by a libplist upgrade under it ("Library not
-    # loaded: libplist-2.0.4.dylib", abort trap) -- brew reinstall libusbmuxd.
-    IPROXY=""
-    case "$(uname -s)/$(uname -m)" in
-        Darwin/*)                     lik="$LIK/bin/macos/iproxy" ;;
-        Linux/aarch64|Linux/arm64)    lik="$LIK/bin/linux/arm64/iproxy" ;;
-        *)                            lik="$LIK/bin/linux/x86_64/iproxy" ;;
-    esac
-    for c in "$(command -v iproxy || true)" "$lik"; do
-        [ -n "$c" ] && [ -x "$c" ] || continue
-        rc=$( { "$c" -h >/dev/null 2>&1; echo $?; } 2>/dev/null )
-        if [ "$rc" -lt 127 ]; then IPROXY="$c"; break; fi
-        echo "    $c does not run (exit $rc); trying the next one" >&2
-    done
-    [ -n "$IPROXY" ] || fail "no iproxy: not on PATH and not in Legacy iOS Kit ($LIK).
-  macOS: brew install libusbmuxd (or brew reinstall libusbmuxd if it is broken)
-  Or over Wi-Fi: IOS_HOST=<the iPad's IP>"
-    echo "==> iOS over USB: $IPROXY $PORT 22"
-    "$IPROXY" "$PORT" 22 >"$WORK/iproxy.log" 2>&1 &
-    IPROXY_PID=$!
-    disown "$IPROXY_PID" 2>/dev/null || true     # no "Terminated" when cleanup stops it
-    sleep 1
-    kill -0 "$IPROXY_PID" 2>/dev/null || fail "iproxy exited: $(cat "$WORK/iproxy.log")"
-fi
-
-ios() {
-    ssh -F "$ROOT/tools/mtdump/ssh_config" -o ControlMaster=auto -o ControlPath="$CM" \
-        -o ControlPersist=300 -o ConnectTimeout=10 -p "$PORT" "root@$HOST" "$@"
-}
-
-echo "==> connecting (iOS root password, 'alpine' unless changed)"
-model=$(ios uname -m) || fail "no ssh to iOS on $HOST:$PORT -- is the iPad in iOS, unlocked, with OpenSSH installed?"
-[ "$model" = "iPad2,5" ] || fail "this is a $model; this port is for iPad2,5 (p105ap)"
+. "$ROOT/tools/ios-ssh.sh"
+ios_setup shadercap
+ios_check_model
+model=$IOS_MODEL
 build=$(ios sysctl -n kern.osversion 2>/dev/null || true)
 [ -z "$build" ] || [ "$build" = "12H321" ] || echo "warning: iOS build $build, not 8.4.1's 12H321 -- another compiler"
 echo "    $model ${build:-}"

@@ -19,9 +19,10 @@ because the auto-go hook patches an address inside that exact iBEC.
 
 **A way into pwned DFU**, one of:
 
-- a **Raspberry Pi Pico** running LukeZGD's checkm8-a5 firmware (or an Arduino
-  with a USB host shield). checkm8 on A5 needs tighter USB timing than a
-  general-purpose host manages, which is why the hardware is required; or
+- a **Raspberry Pi Pico** (RP2040; not the Pico 2) running the checkm8-a5
+  firmware (below), or an Arduino with a USB host shield. checkm8 on A5 needs
+  tighter USB timing than a general-purpose host manages, which is why the
+  hardware is required; or
 - a **jailbroken iOS 7–9.3.6** on the iPad itself, for `./cascadia a5 flash
   --kdfu`. [EverPwnage](https://github.com/LukeZGD/EverPwnage) is untethered on
   A5, so this stays a one-command step. No extra hardware at all.
@@ -36,10 +37,10 @@ a shallow kernel clone, its objects, the build image and the IPSW.
 
 ```bash
 # Arch -- the only Linux this has been walked end to end on
-sudo pacman -Syu                       # not optional; see "Legacy iOS Kit" below
-sudo pacman -S --needed git python rsync docker
+sudo pacman -Syu
+sudo pacman -S --needed git python rsync docker python-pyusb   # pyusb: flash
 sudo pacman -S --needed nfs-utils      # ./cascadia a5 nfs; ./cascadia a5 net uses docker's iptables
-sudo pacman -S --needed usbmuxd libusbmuxd   # ./cascadia a5 mtcal (iproxy)
+sudo pacman -S --needed usbmuxd               # flash --kdfu, mtcal: ssh to iOS over USB
 sudo systemctl enable --now docker
 sudo usermod -aG docker "$USER" && newgrp docker
 ```
@@ -51,16 +52,16 @@ only Arch with pacman, and macOS, have been.
 ```bash
 # Debian / Ubuntu (apt)
 sudo apt update
-sudo apt install git python3 rsync docker.io
+sudo apt install git python3 rsync docker.io python3-usb   # pyusb: flash
 sudo apt install nfs-kernel-server rpcbind          # ./cascadia a5 nfs
-sudo apt install usbmuxd libusbmuxd-tools           # ./cascadia a5 mtcal
+sudo apt install usbmuxd                            # flash --kdfu, mtcal
 sudo systemctl enable --now docker
 sudo usermod -aG docker "$USER" && newgrp docker
 
 # Fedora (dnf)
-sudo dnf install git python3 rsync moby-engine
+sudo dnf install git python3 rsync moby-engine python3-pyusb   # pyusb: flash
 sudo dnf install nfs-utils                          # ./cascadia a5 nfs
-sudo dnf install usbmuxd libusbmuxd-utils           # ./cascadia a5 mtcal
+sudo dnf install usbmuxd                            # flash --kdfu, mtcal
 sudo systemctl enable --now docker
 sudo usermod -aG docker "$USER" && newgrp docker
 # firewalld is on by default: let the iPad's link through, NFS and forwarding
@@ -126,23 +127,30 @@ Downloaded into the repository's top (or `devices/a5/`) under that name, it
 is found without being told. Both images are checked against reference hashes; they reproduce byte for
 byte on macOS/arm64 and on Linux/x86_64.
 
-## Legacy iOS Kit
+## Into pwned DFU
 
-Flashing calls [Legacy iOS Kit](https://github.com/LukeZGD/Legacy-iOS-Kit) for
-the two things that get a device into pwned DFU — `primepwn` (checkm8) and
-kDFU — rather than reimplementing either. It brings its own `irecovery`, so
-there is nothing else to install.
+Flashing needs nothing beyond pyusb: `lib/appleusb.py` does the USB side
+(what irecovery and primepwn did), and `--kdfu` is our own
+(`tools/kdfu.sh`). On macOS pyusb wants libusb too: `brew install libusb &&
+pip3 install pyusb`. On Linux, the first `flash` says which udev rule gives
+your user the iPad's USB device, if it does not have it yet.
 
-```bash
-git clone https://github.com/LukeZGD/Legacy-iOS-Kit.git ~/Legacy-iOS-Kit
-cd ~/Legacy-iOS-Kit && ./restore.sh     # ONCE, on its own, before the first flash
-```
+**With a Pi Pico.** Once: the firmware is LukeZGD's build of checkm8-a5,
+[checkm8-pico.zip](https://github.com/LukeZGD/Legacy-iOS-Kit-Keys/releases/download/a/checkm8-pico.zip)
+(from the [Legacy iOS Kit wiki](https://github.com/LukeZGD/Legacy-iOS-Kit/wiki/checkm8-a5)).
+Hold the Pico's BOOTSEL button while plugging it into the computer, and copy
+the **8942** UF2 (the iPad mini 1's chip) onto the `RPI-RP2` drive that
+appears; its LED then blinks once a second, waiting for a device. Every boot:
+the iPad in DFU, into the Pico (wired as the wiki shows), wait for the LED to say it is
+done, then the iPad into this computer and `./cascadia a5 flash`.
 
-On Linux its first run installs its own dependencies and exits with "run the
-script again" — successfully, having never touched the device. Run it once by
-hand and leave it when it reaches its menu. On Arch, `pacman -Syu` first: Legacy
-iOS Kit's installer pulls `udev`, which is systemd, and a partially upgraded
-system refuses the transaction.
+**From a jailbroken iOS** (`--kdfu`): OpenSSH from Cydia on the iPad, the
+iPad booted into iOS and unlocked, on the cable. `flash --kdfu` logs in as
+root (the password is asked once, "alpine" unless changed), runs kloader with
+our iBSS, and waits for the iPad to come back in DFU -- unplug and replug the
+cable, or press Home, if it does not on its own. kloader has no licence, so it
+is not in this repository: it is fetched once, from a pinned commit, and
+checked by hash. Over Wi-Fi instead of the cable: `IOS_HOST=<the iPad's IP>`.
 
 ## Touch
 
@@ -174,18 +182,18 @@ because only a Mac can build it (`tools/mtdump/build.sh`, Xcode); its source is
 
 ```bash
 cd Project-Cascadia
-./cascadia a5 flash            # Pi Pico in DFU, checkm8 via primepwn
+./cascadia a5 flash            # pwned by the Pi Pico, now on this computer
 ./cascadia a5 flash --kdfu     # from a jailbroken iOS, no extra hardware
 ssh root@10.55.0.2
 ```
 
-`sudo` is asked for twice over: raw USB to a device in DFU needs it, and so
-does the address this host puts on its end of the link.
+`sudo` is asked for once: for the address this host puts on its end of the
+link. The USB side runs as you.
 
-The order matters and is not decoration: `primepwn` (or kDFU) leaves a pwned
-iBSS running, that iBSS accepts the unsigned iBEC, and the iBEC's auto-go hook
-fires when the bundle upload ends and runs the loader — which is why the loader
-goes last and why nothing here sends `irecovery -c go`.
+The order matters and is not decoration: our patched iBSS is started first
+(on the Pico-pwned iPad, or by kloader), that iBSS accepts the unsigned iBEC,
+and the iBEC's auto-go hook fires when the bundle upload ends and runs the
+loader — which is why the loader goes last and why nothing here sends `go`.
 
 `flash` finishes by giving this machine `10.55.0.1` on the gadget's network
 interface and waiting for the device to answer. That has to happen on every
@@ -420,7 +428,10 @@ SuperTux). [GPU.md](GPU.md) has the details and how it works.
 | `ssh` hangs, but `ping 10.55.0.2` answers and the glass says `nfs: server ... not responding, still trying` | The NFS root lost its server, and a hard-mounted root blocks everything that touches it until the server returns — the kernel is fine, the cursor still blinks, and the console over the cable still works (it runs from RAM). This is the host's side, not the iPad's: seen with macOS's nfsd and on an Ubuntu host, never on the Arch one. On a NetworkManager host it was NM taking 10.55.0.1 off the link; `./cascadia a5 link` (and so `flash`) now gives NM a profile that keeps it. Otherwise only a reboot gets out of it today; `./cascadia a5 nfs off` and a rebuild boot from RAM instead. |
 | `ssh` hangs, `ping` does not answer, the console over the cable says nothing, but the glass's cursor blinks and it shows `task ... blocked for more than ... seconds` in `nfs_...` | The gadget stopped sending to the host; the kernel is fine and the NFS root waits for it. Seen after the link was down for minutes (the Mac asleep, or `ip link set usb0 down` and the serial console reopened meanwhile) on any kernel, and on its own after boot with the fast DMA bursts of 2026-10-24 (reverted). Only a reboot gets out of it today; before rebooting, a photo of the glass is what tells it apart. |
 | `REMOTE HOST IDENTIFICATION HAS CHANGED` | The device's host key changed. Images built before 2026-09-19 made a new one on every boot from RAM; `./cascadia a5 build` now makes it once and prints its fingerprint. Once: `ssh-keygen -R 10.55.0.2`, then compare the fingerprint ssh shows with the build's. |
-| kDFU: "Unable to connect to device", the iPad never reacted | Legacy iOS Kit spent the run installing its own dependencies. Run it once on its own; on Arch `pacman -Syu` first. |
+| `flash`: "the device is in DFU but not pwned" | The Pico's checkm8 did not land (or the iPad went into DFU again afterwards). DFU again, through the Pico, back to this computer. |
+| `flash`: "no permission for the device" | Linux without a udev rule for Apple's devices; the message has the rule to add. |
+| kDFU: "no ssh to iOS" | The iPad is not in iOS, is locked, or has no OpenSSH (Cydia). Over Wi-Fi: `IOS_HOST=<its IP> ./cascadia a5 flash --kdfu`. |
+| kDFU: the iPad goes dark but never comes back | Unplug and replug the cable, or press Home; it waits 90 s. Then `./cascadia a5 flash --skip-pwn --ibec build/firmware/iBEC.patched.autogo.plain.dfu`. |
 | kDFU: the iBEC uploads to 100%, then the device looks switched off | An encrypted iBEC. After iOS has booted the AES GID key is gone, so the KBAG decrypts to nothing. `--kdfu` picks the plaintext image by itself unless `--ibec` or `--known-good` pinned one. |
 | `no iBoot32Patcher ... rebuild the image` | The build image predates a change to the Dockerfile. `./cascadia a5 image` (and `./cascadia a5 firmware` now does this itself). |
 | `mount.nfs` reports `Failed to find 'tcp' protocol` (or `Protocol not supported`) and `/etc/netconfig` is missing | Rebuild with the current base-package list, which includes `libtirpc-conf`. To repair a running image with package access, use `apk add libtirpc-conf`. The binary and its shared libraries alone are insufficient. |

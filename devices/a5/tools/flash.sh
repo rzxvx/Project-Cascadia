@@ -9,23 +9,25 @@
 #   ./cascadia a5 flash --kdfu          reach pwned DFU without a Pi Pico
 #   ./cascadia a5 flash --skip-pwn      the device is already in pwned DFU
 #
-# The order and the pauses are not decoration.  primepwn runs checkm8 and leaves
-# a pwned iBSS running; that iBSS accepts the unsigned iBEC; the iBEC's auto-go
-# hook fires when the bundle upload ends and runs the loader, which is why the
-# loader is sent last and why nothing here passes `irecovery -c go`.
+# The order and the pauses are not decoration.  Our patched iBSS is started
+# first; it accepts the unsigned iBEC; the iBEC's auto-go hook fires when the
+# bundle upload ends and runs the loader, which is why the loader is sent last
+# and why nothing here sends "go".
 #
 # Getting to "a pwned iBSS is running" has two routes.  checkm8 on A5 needs
 # hardware that can drive USB with tighter timing than a general-purpose host
-# manages -- a Raspberry Pi Pico or an Arduino with a USB host shield -- which
-# is a real barrier for someone who owns the iPad and nothing else.  kDFU is the
-# other route: from a jailbroken iOS, kloader boots a patched iBSS directly, no
-# extra hardware at all.  EverPwnage jailbreaks A5 on iOS 7-9.3.6 untethered, so
-# the device comes up jailbroken every time and this stays a one-command step.
-# Legacy iOS Kit implements both; this calls it rather than reimplementing it.
+# manages -- a Raspberry Pi Pico (or an Arduino with a USB host shield) runs it,
+# and the iPad, pwned, comes back to this computer in DFU; lib/appleusb.py then
+# starts the iBSS on it.  kDFU is the other route: from a jailbroken iOS,
+# kloader boots the iBSS directly (tools/kdfu.sh), no extra hardware at all.
+# EverPwnage jailbreaks A5 on iOS 7-9.3.6 untethered, so the device comes up
+# jailbroken every time and this stays a one-command step.  The USB side is
+# lib/appleusb.py (pyusb): no irecovery, primepwn or Legacy iOS Kit.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-LIK="${LIK:-$HOME/Legacy-iOS-Kit}"
+REPO="$(cd "$ROOT/../.." && pwd)"
+USB=(python3 "$REPO/lib/appleusb.py")
 FW="$ROOT/build/firmware"
 LOG="${LOG:-$ROOT/uart.txt}"
 UART_SECONDS="${UART_SECONDS:-}"   # the default depends on the route; see below
@@ -36,7 +38,7 @@ IBEC_PINNED=0          # --known-good and --ibec pin the image; kDFU must not
                        # then quietly swap it for another one
 WANT_UART=1
 WANT_LINK=1
-PWN_MODE=primepwn
+PWN_MODE=pico
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -58,8 +60,8 @@ fail() { echo "error: $*" >&2; exit 1; }
 # key is no longer usable, so the KBAG of a stock-layout img3 decrypts to
 # nothing and the pwned iBSS jumps into garbage.  Nothing says so at the time:
 # irecovery reports 100%, and then the device drops off the bus and looks
-# switched off.  Legacy iOS Kit's own pwned iBSS is plaintext for this reason,
-# and ./cascadia a5 firmware builds the same iBEC both ways for this reason.
+# switched off.  ./cascadia a5 firmware builds the iBEC both ways for this
+# reason.
 # The capture starts before the boot chain does, and kDFU's first half is a
 # person: a Trust prompt, a root password, an unplug and replug.  240 s can be
 # spent before the kernel even starts, so that route gets a longer window.
@@ -75,51 +77,15 @@ if [ "$PWN_MODE" = kdfu ] && [ "$IBEC_PINNED" = 0 ]; then
     IBEC_WHICH="freshly built, unencrypted for kDFU"
 fi
 
-# primepwn and irecovery come from Legacy iOS Kit rather than being vendored.
-# The path used to be /Users/<someone>/Legacy-iOS-Kit/bin/macos/arm64/primepwn,
-# which is why nobody else could run this.
-case "$(uname -s)" in
-    Darwin) LOS=macos ;;
-    Linux)  LOS=linux ;;
-    *) fail "unsupported host: $(uname -s)" ;;
-esac
-case "$(uname -m)" in
-    arm64|aarch64) LARCH=arm64 ;;
-    *) LARCH=x86_64 ;;
-esac
-# Linux builds come per architecture (bin/linux/arm64, bin/linux/x86_64); the
-# macOS ones are universal binaries straight in bin/macos.  Asking for
-# bin/macos/arm64 is what made a plain flash say "no primepwn" on a Mac
-# whose Legacy iOS Kit had it all along (--kdfu only goes through restore.sh).
-LBIN="$LIK/bin/$LOS/$LARCH"
-[ -d "$LBIN" ] || LBIN="$LIK/bin/$LOS"
-LIKMSG="    git clone https://github.com/LukeZGD/Legacy-iOS-Kit.git ~/Legacy-iOS-Kit
-Or set LIK=/path/to/it."
-
-# Only demand what this run will actually use.  With irecovery installed
-# system-wide -- which it is on most Linux boxes, from libimobiledevice --
-# --skip-pwn needs nothing from Legacy iOS Kit at all.
-PRIMEPWN="$LBIN/primepwn"
-IRECOVERY="$(command -v irecovery || echo "$LBIN/irecovery")"
-[ -x "$IRECOVERY" ] || fail "no irecovery: not on PATH and not at $LBIN/irecovery
-$LIKMSG"
-case "$PWN_MODE" in
-    primepwn) [ -x "$PRIMEPWN" ] || fail "no primepwn at $PRIMEPWN
-It runs checkm8 on A5 and needs a Pi Pico or an Arduino with a USB host shield.
-Without that hardware use --kdfu, which boots a patched iBSS from a jailbroken
-iOS instead and needs nothing extra.
-$LIKMSG" ;;
-    kdfu)     [ -x "$LIK/restore.sh" ] || fail "no $LIK/restore.sh
-kDFU is Legacy iOS Kit's; this calls it rather than reimplementing it.
-$LIKMSG" ;;
-esac
+# pyusb (and the libusb under it) is the one thing the USB side needs.
+python3 -c 'import usb.core' 2>/dev/null || fail "python3 has no pyusb: pip3 install pyusb
+  (Debian/Ubuntu: sudo apt install python3-usb; macOS: brew install libusb as well)"
 
 NEED=("$IBEC" "$ROOT/output/staging-bundle.bin" "$ROOT/output/staging-loader.bin")
-# Only the primepwn route uploads our own iBSS.  kDFU boots Legacy iOS Kit's
-# pwned iBSS from inside iOS, and --skip-pwn means something already did.
-# `if`, not `[ ... ] && ...`: under set -e a failing test takes the script
-# down, and here it fails in exactly the modes this is meant to support.
-if [ "$PWN_MODE" = primepwn ]; then NEED+=("$FW/iBSS.patched"); fi
+# --skip-pwn means something already started an iBSS; the other two start
+# ours.  `if`, not `[ ... ] && ...`: under set -e a failing test takes the
+# script down, and here it fails in exactly the modes this is meant to support.
+if [ "$PWN_MODE" != none ]; then NEED+=("$FW/iBSS.patched"); fi
 for f in "${NEED[@]}"; do
     [ -f "$f" ] || fail "missing $f
     ./cascadia a5 firmware   builds iBSS/iBEC
@@ -127,8 +93,8 @@ for f in "${NEED[@]}"; do
 done
 
 case "$PWN_MODE" in
-    primepwn) echo "==> pwn:    checkm8 via primepwn, with $FW/iBSS.patched" ;;
-    kdfu)     echo "==> pwn:    kDFU via $LIK/restore.sh --kdfu (no extra hardware)" ;;
+    pico)     echo "==> pwn:    checkm8 from the Pi Pico, then $FW/iBSS.patched" ;;
+    kdfu)     echo "==> pwn:    kDFU from the jailbroken iOS (tools/kdfu.sh, no extra hardware)" ;;
     none)     echo "==> pwn:    skipped -- assuming the device is already in pwned DFU" ;;
 esac
 echo "==> iBEC:   $IBEC  ($IBEC_WHICH)"
@@ -195,45 +161,24 @@ PY
 fi
 
 # --------------------------------------------------------------- upload ----
-# sudo: raw USB to a device in DFU needs it on macOS, and on Linux without udev
-# rules granting the device to your user.
+# No sudo: on macOS libusb reaches a device in DFU as the user, and on Linux
+# appleusb.py says which udev rule gives it to you when it cannot.
 echo "==> boot chain"
 case "$PWN_MODE" in
-    primepwn)
-        sudo "$PRIMEPWN" "$FW/iBSS.patched"; sleep 1 ;;
+    pico)
+        echo "==> waiting for the iPad in DFU (pwned by the Pico, now on this computer)"
+        "${USB[@]}" wait DFU 60 || fail "no device in DFU.  Plug the iPad (in DFU) into the Pico, wait
+for its LED to say done, then plug it into this computer and run this again."
+        "${USB[@]}" boot-pwned "$FW/iBSS.patched"
+        sleep 2 ;;
     kdfu)
-        # restore.sh resolves its own resources relatively, so it has to run
-        # from its own directory.  It is interactive by design -- it will say
-        # what to do with the device -- so it is not piped or backgrounded.
-        #
-        # Note it sends ITS pwned iBSS, not ours.  Ours differs only in the
-        # boot-args iBoot32Patcher wrote in; what matters is the signature
-        # patch, which both have, and iBEC sets its own boot-args anyway.
-        ( cd "$LIK" && ./restore.sh --kdfu )
-        # restore.sh returning is not the device being in kDFU.  On its first
-        # run on Linux it installs its own dependencies instead, says "run the
-        # script again", and exits -- with success -- having never touched the
-        # device, and this used to carry on into an iBEC upload that could only
-        # fail with irecovery's "Unable to connect to device".  So ask the
-        # device, the same way restore.sh itself checks for kDFU.
-        echo "==> waiting for the device in DFU (kDFU)"
-        indfu=0
-        for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
-            if sudo "$IRECOVERY" -q 2>/dev/null | grep -q "MODE: DFU"; then indfu=1; break; fi
-            sleep 1
-        done
-        if [ "$indfu" = 0 ]; then
-            fail "Legacy iOS Kit returned, but no device is in DFU mode -- kloader never ran.
-Scroll up to its output.  The usual cause is a first run on Linux: it installs
-its own dependencies instead, says \"run the script again\" and exits without
-touching the device.  Run it once on its own until it reaches its menu, then
-flash again:
-    cd $LIK && ./restore.sh"
-        fi
-        echo "==> device is in kDFU" ;;
+        # kdfu.sh returns once the iPad is back in DFU, with our iBSS running
+        bash "$ROOT/tools/kdfu.sh" ;;
     none) : ;;
 esac
-sudo "$IRECOVERY" -f "$IBEC";                               sleep 1
+echo "==> waiting for the iBSS (DFU)"
+"${USB[@]}" wait DFU 15 || fail "the iBSS did not come up in DFU (the device is: $("${USB[@]}" mode))"
+"${USB[@]}" send "$IBEC";                                  sleep 1
 
 # An iBEC upload always "succeeds": it means the host finished sending, not
 # that anything is still listening.  Ask the device what it is before throwing
@@ -243,13 +188,10 @@ sudo "$IRECOVERY" -f "$IBEC";                               sleep 1
 # working bench over.
 echo "==> waiting for the iBEC to come up in Recovery"
 back=0
-for _ in 1 2 3 4 5 6 7 8 9 10; do
-    if sudo "$IRECOVERY" -q 2>/dev/null | grep -q "MODE: Recovery"; then back=1; break; fi
-    sleep 1
-done
+"${USB[@]}" wait Recovery 10 2>/dev/null && back=1
 if [ "$back" = 0 ]; then
-    echo "    it did not.  The device is: $(sudo "$IRECOVERY" -q 2>/dev/null | grep -w MODE || echo "not on the bus at all")" >&2
-    if [ "$PWN_MODE" != primepwn ]; then
+    echo "    it did not.  The device is: $("${USB[@]}" mode | sed 's/^none$/not on the bus at all/')" >&2
+    if [ "$PWN_MODE" != pico ]; then
         case "$IBEC" in
             *.plain.dfu)
                 echo "    The image was already the unencrypted one, so it is not the KBAG." >&2
@@ -264,8 +206,8 @@ if [ "$back" = 0 ]; then
     fi
 fi
 
-sudo "$IRECOVERY" -f "$ROOT/output/staging-bundle.bin";     sleep 1
-sudo "$IRECOVERY" -f "$ROOT/output/staging-loader.bin"
+"${USB[@]}" send "$ROOT/output/staging-bundle.bin";        sleep 1
+"${USB[@]}" send "$ROOT/output/staging-loader.bin"
 
 # This host's end of the link, now, while the device boots.  Until the gadget
 # interface here has 10.55.0.1 nothing reaches the device over the network --
