@@ -66,7 +66,10 @@ def check(label, members, bad_hashes, problems):
             h = hashlib.sha256(data).hexdigest()
             if h in bad_hashes:
                 problems.append('%s: %s is %s' % (label, name, bad_hashes[h]))
-            if KEY.search(data):
+            # not inside programs: libraries carry public test keys (GnuTLS's
+            # self-tests); a key of one's own would be a file -- and ours are
+            # caught above by their sha256 and their names
+            if not data.startswith(b'\x7fELF') and KEY.search(data):
                 problems.append('%s: %s holds a private key' % (label, name))
     print('    checked %s: %d entries' % (label, n))
 
