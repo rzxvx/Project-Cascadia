@@ -1,0 +1,61 @@
+diff --git a/drivers/bluetooth/hci_bcm4377.c b/drivers/bluetooth/hci_bcm4377.c
+index 66d49b471..8906161d4 100644
+--- a/drivers/bluetooth/hci_bcm4377.c
++++ b/drivers/bluetooth/hci_bcm4377.c
+@@ -66,6 +66,9 @@ enum bcm4377_chip {
+ #define BCM4377_BAR0_SLEEP_CONTROL_AWAKE      2
+ #define BCM4377_BAR0_SLEEP_CONTROL_QUIESCE    3
+ 
++/* iOS writes 1 here before it reads the bootstage */
++#define BCM4377_BAR0_WAKE 0x154
++
+ #define BCM4377_BAR0_DOORBELL	    0x174
+ #define BCM4377_BAR0_DOORBELL_VALUE GENMASK(31, 16)
+ #define BCM4377_BAR0_DOORBELL_IDX   GENMASK(15, 8)
+@@ -82,7 +85,8 @@ enum bcm4377_chip {
+ #define BCM4377_BAR2_FW_SIZE 0x200480
+ 
+ #define BCM4377_BAR2_CONTEXT_ADDR_LO 0x20048c
+-#define BCM4377_BAR2_CONTEXT_ADDR_HI 0x200450
++/* iOS writes the high word here. 0x200450 is the device caps register. */
++#define BCM4377_BAR2_CONTEXT_ADDR_HI 0x200490
+ 
+ #define BCM4377_BAR2_RTI_STATUS	     0x20045c
+ #define BCM4377_BAR2_RTI_WINDOW_LO   0x200494
+@@ -1831,8 +1835,16 @@ static int bcm4377_boot(struct bcm4377_data *bcm4377)
+ 	dma_addr_t fw_dma;
+ 	int ret = 0;
+ 	u32 bootstage, rti_status;
++	int i;
+ 
+-	bootstage = ioread32(bcm4377->bar2 + bcm4377->hw->bar2_offset + BCM4377_BAR2_BOOTSTAGE);
++	/* iOS tries this up to four times while the bootstage reads > 3 */
++	for (i = 0; i < 4; i++) {
++		iowrite32(1, bcm4377->bar0 + BCM4377_BAR0_WAKE);
++		udelay(25);
++		bootstage = ioread32(bcm4377->bar2 + bcm4377->hw->bar2_offset + BCM4377_BAR2_BOOTSTAGE);
++		if (bootstage <= 3)
++			break;
++	}
+ 	rti_status = ioread32(bcm4377->bar2 + bcm4377->hw->bar2_offset + BCM4377_BAR2_RTI_STATUS);
+ 
+ 	if (bootstage != 0) {
+@@ -2225,14 +2237,13 @@ static int bcm4377_probe_of(struct bcm4377_data *bcm4377)
+ 		return ret;
+ 	}
+ 
++	/*
++	 * Only some 4378 and 4387 steppings use the beamforming blob, and the
++	 * ADTs of A12 iPhones, with a 4377, do not have one.
++	 */
+ 	bcm4377->taurus_beamforming_cal_blob =
+ 		of_get_property(np, "brcm,taurus-bf-cal-blob",
+ 				&bcm4377->taurus_beamforming_cal_size);
+-	if (!bcm4377->taurus_beamforming_cal_blob) {
+-		dev_err(&bcm4377->pdev->dev,
+-			"no brcm,taurus-bf-cal-blob property\n");
+-		return -ENOENT;
+-	}
+ 	bcm4377->taurus_cal_blob = of_get_property(np, "brcm,taurus-cal-blob",
+ 						   &bcm4377->taurus_cal_size);
+ 	if (!bcm4377->taurus_cal_blob) {

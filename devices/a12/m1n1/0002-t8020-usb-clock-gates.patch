@@ -1,0 +1,73 @@
+--- a/src/usb.c
++++ b/src/usb.c
+@@ -413,6 +413,7 @@
+                     USBX_REMAP_TO_DRAM_BITS_S5L8960X);
+             break;
+         case USBCOMPLEX_T8011:
++        case USBCOMPLEX_T8020:
+             write32(config->USBComplexBase + USBX_CTL_T8011, USBX_CTL_EN_T8011);
+             write32(config->USBComplexBase + USBX_USB2DEV_REMAP_CTL_T8011,
+                     USBX_REMAP_TO_DRAM_BITS_T8011);
+@@ -526,7 +527,9 @@
+     // the usb-device on iPad Pro 2 is some USB3 device so derive dwc2 base from phy base instead
+     DWC2Base = (USB2Phy_Base & ~0xfffULL) + 0x100000;
+ 
+-    if (adt_is_compatible(adt, usbComplex_offset, "usb-complex,s5l8960x")) {
++    if (adt_is_compatible(adt, usbComplex_offset, "usb-complex,t8020")) {
++        type = USBCOMPLEX_T8020;
++    } else if (adt_is_compatible(adt, usbComplex_offset, "usb-complex,s5l8960x")) {
+         type = USBCOMPLEX_S5L8960X;
+     } else if (adt_is_compatible(adt, usbComplex_offset, "usb-complex,t8015")) {
+         type = USBCOMPLEX_T8015;
+@@ -539,16 +542,34 @@
+         return -1;
+     }
+ 
+-    if (pmgr_adt_power_enable_index("/arm-io/usb-complex", 0) < 0) {
+-        printf("usb: could not enable /arm-io/usb-complex power domain 0\n");
+-        return -1;
+-    }
++    /*
++     * T8020 advertises four clock-gates (0x66, 0x67, 0x68, 0xf5).  The old
++     * T8011 path only enabled indices 0 and 1, leaving the usb-device/DWC2
++     * register block powered off.  The resulting first read at DWC2+0x40
++     * raises a synchronous external abort on the XR.  Enable every gate on
++     * T8020; retain the narrow historical sequence for older SoCs.
++     */
++    if (type == USBCOMPLEX_T8020) {
++        printf("usb: T8020 enabling every usb-complex clock gate\n");
++        if (pmgr_adt_power_enable("/arm-io/usb-complex") < 0) {
++            printf("usb: could not enable all T8020 usb-complex power domains\n");
++            return -1;
++        }
++    } else {
++        if (pmgr_adt_power_enable_index("/arm-io/usb-complex", 0) < 0) {
++            printf("usb: could not enable /arm-io/usb-complex power domain 0\n");
++            return -1;
++        }
+ 
+-    if (pmgr_adt_power_enable_index("/arm-io/usb-complex", 1) < 0) {
+-        printf("usb: could not enable /arm-io/usb-complex power domain 1\n");
+-        return -1;
++        if (pmgr_adt_power_enable_index("/arm-io/usb-complex", 1) < 0) {
++            printf("usb: could not enable /arm-io/usb-complex power domain 1\n");
++            return -1;
++        }
+     }
+ 
++    printf("usb: complex=%p phy=%p dwc2=%p cfg0=%08x cfg1=%08x type=%d\n",
++           (void *)USBComplexBase, (void *)USB2Phy_Base, (void *)DWC2Base, cfg0, cfg1, type);
++
+     struct usb_complex_config config = {
+         .USBComplexBase = USBComplexBase,
+         .USB2Phy_Base = USB2Phy_Base,
+--- a/src/usb_complex.h
++++ b/src/usb_complex.h
+@@ -95,6 +95,7 @@
+     USBCOMPLEX_S5L8960X,
+     USBCOMPLEX_T8011,
+     USBCOMPLEX_T8015,
++    USBCOMPLEX_T8020,
+ };
+ 
+ struct usb_complex_config {

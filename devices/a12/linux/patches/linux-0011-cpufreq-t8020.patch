@@ -1,0 +1,215 @@
+diff --git a/drivers/cpufreq/apple-soc-cpufreq.c b/drivers/cpufreq/apple-soc-cpufreq.c
+index 7c50ce74f..92edea6dd 100644
+--- a/drivers/cpufreq/apple-soc-cpufreq.c
++++ b/drivers/cpufreq/apple-soc-cpufreq.c
+@@ -60,6 +60,19 @@
+ 
+ #define APPLE_DVFS_TRANSITION_TIMEOUT 400
+ 
++/*
++ * T8020: m1n1 hands the CPU rails to software, so the voltage follows only
++ * what is written to the cluster's rail register, in the same 3.125 mV steps
++ * as the top byte of each pstate's row in the cluster's pstate table. Bit 31
++ * is set while the PMU catches up.
++ */
++#define APPLE_DVFS_ROWS			0x50000
++#define APPLE_DVFS_ROW_STRIDE		0x20
++#define APPLE_DVFS_ROW_VOLTAGE		GENMASK_ULL(63, 56)
++#define APPLE_RAIL_CODE			GENMASK(7, 0)
++#define APPLE_RAIL_BUSY			BIT(31)
++#define APPLE_RAIL_TIMEOUT_US		2000
++
+ struct apple_soc_cpufreq_info {
+ 	bool has_ps2;
+ 	u64 max_pstate;
+@@ -67,11 +80,13 @@ struct apple_soc_cpufreq_info {
+ 	u64 cur_pstate_shift;
+ 	u64 ps1_mask;
+ 	u64 ps1_shift;
++	bool has_rail;
+ };
+ 
+ struct apple_cpu_priv {
+ 	struct device *cpu_dev;
+ 	void __iomem *reg_base;
++	void __iomem *rail;
+ 	const struct apple_soc_cpufreq_info *info;
+ };
+ 
+@@ -95,6 +110,16 @@ static const struct apple_soc_cpufreq_info soc_t8103_info = {
+ 	.ps1_shift = APPLE_DVFS_CMD_PS1_SHIFT,
+ };
+ 
++static const struct apple_soc_cpufreq_info soc_t8020_info = {
++	.has_ps2 = true,
++	.max_pstate = 15,
++	.cur_pstate_mask = APPLE_DVFS_STATUS_CUR_PS_T8103,
++	.cur_pstate_shift = APPLE_DVFS_STATUS_CUR_PS_SHIFT_T8103,
++	.ps1_mask = APPLE_DVFS_CMD_PS1,
++	.ps1_shift = APPLE_DVFS_CMD_PS1_SHIFT,
++	.has_rail = true,
++};
++
+ static const struct apple_soc_cpufreq_info soc_t8112_info = {
+ 	.has_ps2 = false,
+ 	.max_pstate = 31,
+@@ -117,6 +142,10 @@ static const struct of_device_id apple_soc_cpufreq_of_match[] __maybe_unused = {
+ 		.compatible = "apple,s5l8960x-cluster-cpufreq",
+ 		.data = &soc_s5l8960x_info,
+ 	},
++	{
++		.compatible = "apple,t8020-cluster-cpufreq",
++		.data = &soc_t8020_info,
++	},
+ 	{
+ 		.compatible = "apple,t8103-cluster-cpufreq",
+ 		.data = &soc_t8103_info,
+@@ -168,6 +197,60 @@ static unsigned int apple_soc_cpufreq_get_rate(unsigned int cpu)
+ 	return 0;
+ }
+ 
++static int apple_soc_cpufreq_set_rail(struct apple_cpu_priv *priv, u32 code)
++{
++	u32 reg;
++	int ret;
++
++	writel_relaxed(code, priv->rail);
++	ret = readl_poll_timeout_atomic(priv->rail, reg, !(reg & APPLE_RAIL_BUSY), 2,
++					APPLE_RAIL_TIMEOUT_US);
++	if (ret)
++		dev_warn_ratelimited(priv->cpu_dev, "rail stuck at %08x\n", reg);
++
++	return ret;
++}
++
++/* T8020: set the voltage around the switch and wait for the switch to finish. */
++static int apple_soc_cpufreq_set_target_rail(struct apple_cpu_priv *priv,
++					     unsigned int pstate, u64 cmd)
++{
++	u32 want, have;
++	u64 reg;
++	int ret;
++
++	want = FIELD_GET(APPLE_DVFS_ROW_VOLTAGE,
++			 readq_relaxed(priv->reg_base + APPLE_DVFS_ROWS +
++				       pstate * APPLE_DVFS_ROW_STRIDE));
++
++	/* Raise the voltage before the clock, and lower it after. */
++	have = FIELD_GET(APPLE_RAIL_CODE, readl_relaxed(priv->rail));
++	if (want > have) {
++		ret = apple_soc_cpufreq_set_rail(priv, want);
++		if (ret)
++			return ret;
++	}
++
++	writeq_relaxed(cmd, priv->reg_base + APPLE_DVFS_CMD);
++
++	ret = readq_poll_timeout_atomic(priv->reg_base + APPLE_DVFS_STATUS, reg,
++					((reg & priv->info->cur_pstate_mask) >>
++					 priv->info->cur_pstate_shift) == pstate &&
++					!(readq_relaxed(priv->reg_base + APPLE_DVFS_CMD) &
++					  APPLE_DVFS_CMD_BUSY),
++					2, APPLE_RAIL_TIMEOUT_US);
++	if (ret) {
++		dev_warn_ratelimited(priv->cpu_dev, "pstate %u did not finish, CMD %016llx\n",
++				     pstate, readq_relaxed(priv->reg_base + APPLE_DVFS_CMD));
++		return ret;
++	}
++
++	if (want < have)
++		return apple_soc_cpufreq_set_rail(priv, want);
++
++	return 0;
++}
++
+ static int apple_soc_cpufreq_set_target(struct cpufreq_policy *policy,
+ 					unsigned int index)
+ {
+@@ -191,6 +274,9 @@ static int apple_soc_cpufreq_set_target(struct cpufreq_policy *policy,
+ 		FIELD_MODIFY(APPLE_DVFS_CMD_PS2, &reg, pstate);
+ 	reg |= APPLE_DVFS_CMD_SET;
+ 
++	if (priv->rail)
++		return apple_soc_cpufreq_set_target_rail(priv, pstate, reg);
++
+ 	writeq_relaxed(reg, priv->reg_base + APPLE_DVFS_CMD);
+ 
+ 	return 0;
+@@ -206,7 +292,7 @@ static unsigned int apple_soc_cpufreq_fast_switch(struct cpufreq_policy *policy,
+ }
+ 
+ static int apple_soc_cpufreq_find_cluster(struct cpufreq_policy *policy,
+-					  void __iomem **reg_base,
++					  void __iomem **reg_base, void __iomem **rail,
+ 					  const struct apple_soc_cpufreq_info **info)
+ {
+ 	struct of_phandle_args args;
+@@ -220,15 +306,21 @@ static int apple_soc_cpufreq_find_cluster(struct cpufreq_policy *policy,
+ 		return ret;
+ 
+ 	match = of_match_node(apple_soc_cpufreq_of_match, args.np);
+-	of_node_put(args.np);
+-	if (!match)
++	if (!match) {
++		of_node_put(args.np);
+ 		return -ENODEV;
++	}
+ 
+ 	*info = match->data;
+ 
+ 	*reg_base = of_iomap(args.np, 0);
+-	if (!*reg_base)
++	*rail = (*info)->has_rail ? of_iomap(args.np, 1) : NULL;
++	of_node_put(args.np);
++	if (!*reg_base || ((*info)->has_rail && !*rail)) {
++		if (*reg_base)
++			iounmap(*reg_base);
+ 		return -ENOMEM;
++	}
+ 
+ 	return 0;
+ }
+@@ -237,7 +329,7 @@ static int apple_soc_cpufreq_init(struct cpufreq_policy *policy)
+ {
+ 	int ret, i;
+ 	unsigned int transition_latency;
+-	void __iomem *reg_base;
++	void __iomem *reg_base, *rail;
+ 	struct device *cpu_dev;
+ 	struct apple_cpu_priv *priv;
+ 	const struct apple_soc_cpufreq_info *info;
+@@ -253,7 +345,7 @@ static int apple_soc_cpufreq_init(struct cpufreq_policy *policy)
+ 	if (!priv)
+ 		return -ENOMEM;
+ 
+-	ret = apple_soc_cpufreq_find_cluster(policy, &reg_base, &info);
++	ret = apple_soc_cpufreq_find_cluster(policy, &reg_base, &rail, &info);
+ 	if (ret) {
+ 		dev_err(cpu_dev, "%s: failed to get cluster info: %d\n", __func__, ret);
+ 		goto out_free_priv;
+@@ -293,6 +385,7 @@ static int apple_soc_cpufreq_init(struct cpufreq_policy *policy)
+ 
+ 	priv->cpu_dev = cpu_dev;
+ 	priv->reg_base = reg_base;
++	priv->rail = rail;
+ 	priv->info = info;
+ 	policy->driver_data = priv;
+ 	policy->freq_table = freq_table;
+@@ -313,6 +406,8 @@ static int apple_soc_cpufreq_init(struct cpufreq_policy *policy)
+ out_free_table:
+ 	dev_pm_opp_of_cpumask_remove_table(policy->cpus);
+ out_iounmap:
++	if (rail)
++		iounmap(rail);
+ 	iounmap(reg_base);
+ out_free_priv:
+ 	kfree(priv);
+@@ -325,6 +420,8 @@ static void apple_soc_cpufreq_exit(struct cpufreq_policy *policy)
+ 
+ 	dev_pm_opp_free_cpufreq_table(priv->cpu_dev, &policy->freq_table);
+ 	dev_pm_opp_of_cpumask_remove_table(policy->cpus);
++	if (priv->rail)
++		iounmap(priv->rail);
+ 	iounmap(priv->reg_base);
+ 	kfree(priv);
+ }

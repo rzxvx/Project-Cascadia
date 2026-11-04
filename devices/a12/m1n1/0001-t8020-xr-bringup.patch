@@ -1,0 +1,83 @@
+From: Project Cascadia <noreply@cascadia>
+Subject: [PATCH] m1n1: add the T8020/A12 XR bring-up path
+
+The A13 downstream stack already supplies the cache-clean handoff and the
+minimal Apple-core setup needed by Linux, but only recognizes T8030.  The
+iPhone XR ADT identifies T8020 with four Tempest and two Vortex cores.  Add
+those MIDRs, use the A11-family PMGR CPU-start register layout exposed by the
+ADT, program IORVBAR like T8030, and avoid probing the M4-only CTRR registers.
+
+This is deliberately only the SoC/CPU handoff.  The XR's Lightning block is
+the older usb-complex,t8020 (with a t8011 fallback), which m1n1 already drives
+through its DWC2 usb-complex path; it must not use the T8030 DWC3/AUSB path.
+
+diff --git a/src/chickens.c b/src/chickens.c
+index 2f2eda7..f3ea5e0 100644
+--- a/src/chickens.c
++++ b/src/chickens.c
+@@ -150,6 +150,8 @@ const struct midr_part_info midr_parts[] = {
+      &features_a10},
+     {MIDR_PART_T8015_MONSOON, "A11 Monsoon", init_t8015_monsoon, &features_a11},
+     {MIDR_PART_T8015_MISTRAL, "A11 Mistral", init_t8015_mistral, &features_a11},
++    {MIDR_PART_T8020_VORTEX, "A12 Vortex", NULL, &features_a13},
++    {MIDR_PART_T8020_TEMPSET, "A12 Tempest", NULL, &features_a13},
+     {MIDR_PART_T8030_LIGHTNING, "A13 Lightning", NULL, &features_a13},
+     {MIDR_PART_T8030_THUNDER, "A13 Thunder", NULL, &features_a13},
+     {MIDR_PART_T8103_FIRESTORM, "M1 Firestorm", init_t8103_firestorm, &features_m1},
+diff --git a/src/kboot.c b/src/kboot.c
+index 1bdbfac..2d3e2bf 100644
+--- a/src/kboot.c
++++ b/src/kboot.c
+@@ -2940,7 +2940,7 @@ int kboot_prepare_dt(void *fdt)
+ 
+     /* A13 (chip 0x8030) uses features_unknown, whose false apple_sysregs_unlocked
+      * does NOT imply the M4-only CTRR registers exist; they trap at EL1 on N104. */
+-    if (chip_id != 0x8030 && !cpu_features->apple_sysregs_unlocked) {
++    if (chip_id != 0x8020 && chip_id != 0x8030 && !cpu_features->apple_sysregs_unlocked) {
+         // On M4* / A18 Pro / M5*, there is a CTRR instance left enabled only
+         // on the secondary (non-boot) cores. Add a reserved-memory region to
+         // prevent Linux from crashing when allocating this memory and writing
+@@ -2950,8 +2950,8 @@ int kboot_prepare_dt(void *fdt)
+             printf("WARNING: M4+ SMP-RO is large (48KB)");
+         if (fdt_add_mem_rsv(dt, ro_start, ro_end - ro_start))
+             bail("FDT: couldn't add reservation for M4+ SMP-RO CTRR area\n");
+-    } else if (chip_id == 0x8030) {
+-        printf("FDT: skipping M4-only CTRR reservation on A13\n");
++    } else if (chip_id == 0x8020 || chip_id == 0x8030) {
++        printf("FDT: skipping M4-only CTRR reservation on A12/A13\n");
+     }
+ 
+     /* setup console log buffer early to capture as much log as possible */
+diff --git a/src/smp.c b/src/smp.c
+index f69e732..e57114a 100644
+--- a/src/smp.c
++++ b/src/smp.c
+@@ -124,7 +124,7 @@ static void smp_start_cpu(int index, int die, int cluster, int core, u64 impl, u
+     if (spin_table[index].flag)
+         return;
+ 
+-    if (chip_id == T8030) {
++    if (chip_id == T8020 || chip_id == T8030) {
+         /*
+          * A13 runs with features_unknown (no A12/A13 entry in midr_parts[]),
+          * so the generic path below would leave RVBAR alone. IORVBAR is MMIO,
+@@ -302,6 +302,7 @@ void smp_start_secondaries(void)
+         case T8011:
+         case T8012:
+         case T8015:
++        case T8020: // A12: PMGR CPU start layout exposed by function-enable_core
+         case T8030: // A13: PMGR CPU start at 0xd4004/0xd4008 as on A11
+             cpu_start_off = CPU_START_OFF_S8000;
+             break;
+diff --git a/src/soc.h b/src/soc.h
+index 63ca5af..ce3d5e4 100644
+--- a/src/soc.h
++++ b/src/soc.h
+@@ -15,6 +15,7 @@
+ #define T8011    0x8011
+ #define T8012    0x8012
+ #define T8015    0x8015
++#define T8020    0x8020
+ #define T8030    0x8030
+ 
+ #define T8103 0x8103

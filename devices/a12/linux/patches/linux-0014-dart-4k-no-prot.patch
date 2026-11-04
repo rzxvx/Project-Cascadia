@@ -1,0 +1,26 @@
+diff --git a/drivers/iommu/io-pgtable-dart.c b/drivers/iommu/io-pgtable-dart.c
+index cbc5d6aa2..f154ac13a 100644
+--- a/drivers/iommu/io-pgtable-dart.c
++++ b/drivers/iommu/io-pgtable-dart.c
+@@ -206,10 +206,17 @@ static dart_iopte dart_prot_to_pte(struct dart_io_pgtable *data,
+ 
+ 	if (data->iop.fmt == APPLE_DART) {
+ 		pte |= APPLE_DART1_PTE_PROT_SP_DIS;
+-		if (!(prot & IOMMU_WRITE))
+-			pte |= APPLE_DART1_PTE_PROT_NO_WRITE;
+-		if (!(prot & IOMMU_READ))
+-			pte |= APPLE_DART1_PTE_PROT_NO_READ;
++		/*
++		 * The 4K page DART in front of T8020's PCIe takes NO_WRITE as no
++		 * read: device reads of a read-only mapping fault with
++		 * READ_FAULT and a valid PTE. Leave both off there.
++		 */
++		if (data->iop.cfg.pgsize_bitmap == SZ_16K) {
++			if (!(prot & IOMMU_WRITE))
++				pte |= APPLE_DART1_PTE_PROT_NO_WRITE;
++			if (!(prot & IOMMU_READ))
++				pte |= APPLE_DART1_PTE_PROT_NO_READ;
++		}
+ 	}
+ 	if (data->iop.fmt == APPLE_DART2) {
+ 		if (!(prot & IOMMU_WRITE))

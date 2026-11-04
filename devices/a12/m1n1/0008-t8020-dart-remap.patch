@@ -1,0 +1,68 @@
+--- a/src/usb.c
++++ b/src/usb.c
+@@ -6,6 +6,7 @@
+ #include "i2c.h"
+ #include "iodev.h"
+ #include "malloc.h"
++#include "memory.h"
+ #include "pmgr.h"
+ #include "soc.h"
+ #include "string.h"
+@@ -395,6 +396,23 @@
+     return 0;
+ }
+ 
++static void usb_t8020_dart_setup(void)
++{
++    if (pmgr_adt_power_enable("/arm-io/dart-usb") < 0)
++        printf("usb: could not power dart-usb, trying it anyway\n");
++
++    dart_dev_t *dart = dart_init_adt("/arm-io/dart-usb", 0, 0, false);
++    if (!dart) {
++        printf("usb: no dart-usb; DMA translation unavailable\n");
++        return;
++    }
++
++    if (dart_map(dart, ram_base & 0xffffffff, (void *)ram_base, mem_size_actual) < 0)
++        printf("usb: dart-usb flat map at 0x%lx failed\n", ram_base & 0xffffffff);
++    else
++        printf("usb: dart-usb stream 0 mapped for 32-bit DWC2 DMA\n");
++}
++
+ int usb_complex_init(struct usb_complex_config *config)
+ {
+     usb_type = USB_TYPE_DWC2;
+@@ -413,13 +431,20 @@
+                     USBX_REMAP_TO_DRAM_BITS_S5L8960X);
+             break;
+         case USBCOMPLEX_T8011:
+-        case USBCOMPLEX_T8020:
+             write32(config->USBComplexBase + USBX_CTL_T8011, USBX_CTL_EN_T8011);
+             write32(config->USBComplexBase + USBX_USB2DEV_REMAP_CTL_T8011,
+                     USBX_REMAP_TO_DRAM_BITS_T8011);
+             write32(config->USBComplexBase + USBX_EHCI_REMAP_CTL_T8011,
+                     USBX_REMAP_TO_DRAM_BITS_T8011);
+             break;
++        case USBCOMPLEX_T8020:
++            /* T8020 uses the T8015 device-widget offset.  Keep address bits
++             * zero for the DART IOVA and retain both DMA enable bits. */
++            write32(config->USBComplexBase + USBX_CTL_T8011, USBX_CTL_EN_T8011);
++            write32(config->USBComplexBase + USBX_USBDEV_REMAP_CTL_T8015,
++                    USBX_REMAP_DMA_EN_ONLY_T8020);
++            usb_t8020_dart_setup();
++            break;
+         case USBCOMPLEX_T8015:
+             write32(config->USBComplexBase + USBX_CTL_T8011, USBX_CTL_EN_T8011);
+             write32(config->USBComplexBase + USBX_EHCI0_REMAP_CTL_T8015,
+--- a/src/usb_complex.h
++++ b/src/usb_complex.h
+@@ -51,6 +51,9 @@
+ #define USBX_EHCI1_REMAP_CTL_T8015  0x38
+ #define USBX_USBDEV_REMAP_CTL_T8015 0x48
+ 
++#define USBX_REMAP_DMA_EN_ONLY_T8020 \
++    (USBX_REMAP_DMA_TO_DEVICE_EN_T8011 | USBX_REMAP_DMA_FROM_DEVICE_EN_T8011)
++
+ /* USB PHY registers */
+ 
+ #define USBX_OTG_CTL       0x00

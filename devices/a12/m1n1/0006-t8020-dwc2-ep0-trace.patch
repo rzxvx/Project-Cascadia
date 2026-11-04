@@ -1,0 +1,36 @@
+--- a/src/usb_dwc2.c
++++ b/src/usb_dwc2.c
+@@ -896,6 +896,10 @@
+     const union usb_setup_packet *setup = dev->endpoints[USB_LEP_CTRL_OUT].xfer_buffer;
+     dev->setup_pkt = setup;
+ 
++    uart_printf("usb-dwc2: SETUP bm=%02x req=%02x value=%04x index=%04x len=%u\n",
++                setup->raw.bmRequestType, setup->raw.bRequest, setup->raw.wValue,
++                setup->raw.wIndex, setup->raw.wLength);
++
+     // usb_debug_printf("ep0_handle_setup: setup->raw.bmRequestType = %u\n",
+     // setup->raw.bmRequestType);
+ 
+@@ -1118,6 +1122,9 @@
+     if (daint & BIT(0)) { // ep0_in
+         u32 diepint = read32(dev->regs + DWC2_DIEPINT(0));
+         write32(dev->regs + DWC2_DIEPINT(0), diepint);
++        uart_printf("usb-dwc2: EP0 IN int=%x state=%s tsiz=%x ctl=%x\n", diepint,
++                    ep0_state_names[dev->ep0_state], read32(dev->regs + DWC2_DIEPTSIZ(0)),
++                    read32(dev->regs + DWC2_DIEPCTL(0)));
+         usb_debug_printf("ep0_in_handle_interrupt:  DWC2_DIEPINT(0)=%x\n", diepint);
+         if (diepint & DWC2_DOEPINT_XFER_COMPL) { // XferCompl
+             usb_dwc2_ep0_handle_xfer_done(dev);
+@@ -1292,6 +1299,12 @@
+     write32(dev->regs + DWC2_DIEPTSIZ(pep), (packet_count << 19) | hw_xfer_size);
+     set32(dev->regs + DWC2_DIEPCTL(pep), DWC2_DXEPCTLi_EnableEP | DWC2_DXEPCTL_ClearNAK);
+     if (pep == 0)
++        uart_printf("usb-dwc2: EP0 IN arm dma=%x size=%u packets=%u tsiz=%x ctl=%x daintmsk=%x\n",
++                    (u32)(uintptr_t)dev->endpoints[ep].xfer_buffer, hw_xfer_size, packet_count,
++                    read32(dev->regs + DWC2_DIEPTSIZ(pep)),
++                    read32(dev->regs + DWC2_DIEPCTL(pep)),
++                    read32(dev->regs + DWC2_DAINTMSK));
++    if (pep == 0)
+         set32(dev->regs + DWC2_DOEPCTL(pep), DWC2_DXEPCTL_ClearNAK); // set cak
+     dev->endpoints[ep].in_flight = hw_xfer_size;
+ }

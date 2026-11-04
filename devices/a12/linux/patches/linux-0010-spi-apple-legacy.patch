@@ -1,0 +1,205 @@
+diff --git a/drivers/spi/spi-apple.c b/drivers/spi/spi-apple.c
+index 61eefb08d..d03a6153c 100644
+--- a/drivers/spi/spi-apple.c
++++ b/drivers/spi/spi-apple.c
+@@ -11,10 +11,12 @@
+ #include <linux/clk.h>
+ #include <linux/interrupt.h>
+ #include <linux/io.h>
++#include <linux/math64.h>
+ #include <linux/module.h>
+ #include <linux/of.h>
+ #include <linux/platform_device.h>
+ #include <linux/pm_runtime.h>
++#include <linux/property.h>
+ #include <linux/spi/spi.h>
+ 
+ #define APPLE_SPI_CTRL			0x000
+@@ -108,6 +110,19 @@
+ 
+ #define APPLE_SPI_FIFO_DEPTH		16
+ 
++/*
++ * The older block found on A series SoCs, spi-1,samsung with spi-version 1
++ * in the ADT. It has the registers above up to 0x4c and nothing from 0x10c
++ * on: FIFO levels and completion live in STATUS instead, and the controller
++ * has to be put in master mode, which the newer block does not need. All of
++ * this is from AppleSamsungSPI.
++ */
++#define APPLE_SPI_LEGACY_CFG_MASTER	GENMASK(4, 3)
++#define APPLE_SPI_LEGACY_CFG_DEFAULT	BIT(14)
++#define APPLE_SPI_LEGACY_STATUS_TXLVL	GENMASK(10, 6)
++#define APPLE_SPI_LEGACY_STATUS_RXLVL	GENMASK(15, 11)
++#define APPLE_SPI_LEGACY_STATUS_CLEAR	0x40000f
++
+ /*
+  * The slowest refclock available is 24MHz, the highest divider is 0x7ff,
+  * the largest word size is 32 bits, the FIFO depth is 16, the maximum
+@@ -124,6 +139,7 @@ struct apple_spi {
+ 	void __iomem      *regs;        /* MMIO register address */
+ 	struct clk        *clk;         /* bus clock */
+ 	struct completion done;         /* wake-up from interrupt */
++	bool              legacy;       /* the older spi-1,samsung block */
+ };
+ 
+ static inline void reg_write(struct apple_spi *spi, int offset, u32 value)
+@@ -454,6 +470,117 @@ static int apple_spi_transfer_one(struct spi_controller *ctlr, struct spi_device
+ 	return ret;
+ }
+ 
++/*
++ * The width of the count registers on this block is not known, so long
++ * transfers go in pieces this size. Chip select stays where the core put it
++ * in between, so the device sees one transfer with short pauses.
++ */
++#define APPLE_SPI_LEGACY_MAX_WORDS	0xffff
++
++/*
++ * One piece of a transfer, polled, and always full duplex: the block clocks
++ * out as many words as it clocks in, so the side the caller did not ask for
++ * is padded with 0xff or thrown away, the way AppleSamsungSPI does it.
++ */
++static int apple_spi_legacy_run(struct spi_controller *ctlr, u32 cfg,
++				const u8 **tx, u8 **rx, u32 words,
++				unsigned int bytes, u32 speed_hz)
++{
++	struct apple_spi *spi = spi_controller_get_devdata(ctlr);
++	u64 ms = div_u64((u64)words * bytes * 8 * 2 * MSEC_PER_SEC, speed_hz);
++	unsigned long timeout = jiffies +
++		msecs_to_jiffies(APPLE_SPI_TIMEOUT_MS + ms);
++	u32 tx_left = words, rx_left = words;
++	u32 status, n, v;
++
++	reg_write(spi, APPLE_SPI_STATUS, APPLE_SPI_LEGACY_STATUS_CLEAR);
++	reg_write(spi, APPLE_SPI_CFG, cfg);
++	reg_write(spi, APPLE_SPI_TXCNT, words);
++	reg_write(spi, APPLE_SPI_RXCNT, words);
++	reg_write(spi, APPLE_SPI_CTRL, APPLE_SPI_CTRL_RUN |
++		  APPLE_SPI_CTRL_TX_RESET | APPLE_SPI_CTRL_RX_RESET);
++
++	while (rx_left) {
++		if (time_after(jiffies, timeout)) {
++			dev_err(&ctlr->dev, "transfer timed out (%u tx, %u rx left)\n",
++				tx_left, rx_left);
++			reg_write(spi, APPLE_SPI_CTRL, 0);
++			return -ETIMEDOUT;
++		}
++
++		status = reg_read(spi, APPLE_SPI_STATUS);
++		reg_write(spi, APPLE_SPI_STATUS, status);
++
++		n = min(FIELD_GET(APPLE_SPI_LEGACY_STATUS_RXLVL, status), rx_left);
++		rx_left -= n;
++		while (n--) {
++			v = reg_read(spi, APPLE_SPI_RXDATA);
++			if (*rx) {
++				memcpy(*rx, &v, bytes);
++				*rx += bytes;
++			}
++		}
++
++		n = FIELD_GET(APPLE_SPI_LEGACY_STATUS_TXLVL, status);
++		n = n < APPLE_SPI_FIFO_DEPTH ? APPLE_SPI_FIFO_DEPTH - n : 0;
++		n = min(n, tx_left);
++		tx_left -= n;
++		while (n--) {
++			v = ~0;
++			if (*tx) {
++				v = 0;
++				memcpy(&v, *tx, bytes);
++				*tx += bytes;
++			}
++			reg_write(spi, APPLE_SPI_TXDATA, v);
++		}
++
++		cond_resched();
++	}
++
++	reg_write(spi, APPLE_SPI_CTRL, 0);
++
++	return 0;
++}
++
++/*
++ * Every register it uses is written again here, because the power domain may
++ * have been off since the last transfer.
++ */
++static int apple_spi_legacy_transfer_one(struct spi_controller *ctlr,
++					 struct spi_device *device,
++					 struct spi_transfer *t)
++{
++	struct apple_spi *spi = spi_controller_get_devdata(ctlr);
++	unsigned int bytes = DIV_ROUND_UP(t->bits_per_word, 8);
++	const u8 *tx = t->tx_buf;
++	u8 *rx = t->rx_buf;
++	u32 words = t->len / bytes;
++	u32 cfg, n;
++	int ret;
++
++	cfg = APPLE_SPI_LEGACY_CFG_MASTER | APPLE_SPI_LEGACY_CFG_DEFAULT |
++	      FIELD_PREP(APPLE_SPI_CFG_WORD_SIZE, bytes == 4 ? 2 : bytes - 1) |
++	      (device->mode & SPI_CPHA ? APPLE_SPI_CFG_CPHA : 0) |
++	      (device->mode & SPI_CPOL ? APPLE_SPI_CFG_CPOL : 0) |
++	      (device->mode & SPI_LSB_FIRST ? APPLE_SPI_CFG_LSB_FIRST : 0);
++
++	reg_write(spi, APPLE_SPI_CLKDIV,
++		  min_t(u32, DIV_ROUND_UP(clk_get_rate(spi->clk), t->speed_hz),
++			APPLE_SPI_CLKDIV_MAX));
++
++	while (words) {
++		n = min(words, APPLE_SPI_LEGACY_MAX_WORDS);
++		ret = apple_spi_legacy_run(ctlr, cfg, &tx, &rx, n, bytes,
++					   t->speed_hz);
++		if (ret)
++			return ret;
++		words -= n;
++	}
++
++	return 0;
++}
++
+ static int apple_spi_probe(struct platform_device *pdev)
+ {
+ 	struct apple_spi *spi;
+@@ -476,6 +603,33 @@ static int apple_spi_probe(struct platform_device *pdev)
+ 		return dev_err_probe(&pdev->dev, PTR_ERR(spi->clk),
+ 				     "Unable to find or enable bus clock\n");
+ 
++	spi->legacy = (uintptr_t)device_get_match_data(&pdev->dev);
++	if (spi->legacy) {
++		ctlr->bus_num = pdev->id;
++		ctlr->num_chipselect = 1;
++		ctlr->mode_bits = SPI_CPHA | SPI_CPOL | SPI_LSB_FIRST;
++		ctlr->bits_per_word_mask = SPI_BPW_MASK(8) | SPI_BPW_MASK(16) |
++					   SPI_BPW_MASK(32);
++		ctlr->set_cs = apple_spi_set_cs;
++		ctlr->transfer_one = apple_spi_legacy_transfer_one;
++		ctlr->use_gpio_descriptors = true;
++
++		/*
++		 * No runtime PM: suspended between transfers, the spi1 power
++		 * domain fails to come back ("Failed to reach power state
++		 * 0xf (now: 0xa4f)") and every transfer after that times
++		 * out. Without it the domain stays on while this is bound.
++		 */
++		reg_write(spi, APPLE_SPI_CTRL, 0);
++		reg_write(spi, APPLE_SPI_PIN, APPLE_SPI_PIN_CS);
++
++		ret = devm_spi_register_controller(&pdev->dev, ctlr);
++		if (ret < 0)
++			return dev_err_probe(&pdev->dev, ret,
++					     "devm_spi_register_controller failed\n");
++		return 0;
++	}
++
+ 	irq = platform_get_irq(pdev, 0);
+ 	if (irq < 0)
+ 		return irq;
+@@ -510,6 +664,7 @@ static int apple_spi_probe(struct platform_device *pdev)
+ }
+ 
+ static const struct of_device_id apple_spi_of_match[] = {
++	{ .compatible = "apple,t8020-spi", .data = (void *)true },
+ 	{ .compatible = "apple,t8103-spi", },
+ 	{ .compatible = "apple,spi", },
+ 	{}

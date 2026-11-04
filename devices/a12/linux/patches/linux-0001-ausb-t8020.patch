@@ -1,0 +1,111 @@
+diff --git a/drivers/phy/apple/ausb.c b/drivers/phy/apple/ausb.c
+index 39ba39d83..56a75e49c 100644
+--- a/drivers/phy/apple/ausb.c
++++ b/drivers/phy/apple/ausb.c
+@@ -35,6 +35,7 @@ struct ausb_usbphy {
+ 	struct device *dev;
+ 	struct phy *phy;
+ 	void __iomem *base;
++	void __iomem *complex;
+ 	struct phy_provider *phy_provider;
+ 	u32 cfg0_device;
+ 	u32 cfg1_device;
+@@ -94,10 +95,49 @@ static __maybe_unused int ausb_phy_usb2_set_mode(struct phy *phy, enum phy_mode
+ }
+ #endif
+ 
++/* The USB complex, the second reg. */
++#define AUSB_COMPLEX_CTL		0x00
++#define AUSB_COMPLEX_CTL_EN		BIT(0)
++#define AUSB_COMPLEX_REMAP		0x48
++#define AUSB_COMPLEX_REMAP_FIELDS	0x030000ff
++#define AUSB_COMPLEX_REMAP_DMA_EN	(BIT(24) | BIT(25))
++
+ static int ausb_phy_usb2_power_on(struct phy *phy)
+ {
+ 	struct ausb_usbphy *aphy = phy_get_drvdata(phy);
+ 
++	/*
++	 * Enable the USB complex before touching anything else. Nothing else in
++	 * Linux does this: the complex is bound to simple-pm-bus, which powers
++	 * the domain but never writes the enable bit. m1n1 does it explicitly
++	 * and its gadget works on this SoC, and m1n1 disables USB again on
++	 * handoff, so by the time Linux runs the block is off.
++	 *
++	 * The mapping has to be non-posted. A posted write to CTL raises an
++	 * asynchronous SError that only E cores report, which showed up as a
++	 * random SMP hang.
++	 */
++	set32(aphy->complex + AUSB_COMPLEX_CTL, AUSB_COMPLEX_CTL_EN);
++
++	/*
++	 * The two top bits of this widget register are the DMA enables,
++	 * both directions, and the low byte is a value it splices into
++	 * bits 35:32 of every address the controller emits. Clearing
++	 * the enables on a live gadget leaves it enumerated and kills
++	 * every transfer, so they go on.
++	 *
++	 * The splice value stays zero. The widget is in front of the
++	 * DART, so anything spliced in here is what the DART has to
++	 * have a mapping for, and dwc2 is a 32 bit master: the DMA
++	 * layer will never hand it an address above 4GB to match. The
++	 * DART is what reaches DRAM, which starts at 0x800000000.
++	 *
++	 * Masked rather than written whole, the way the ADT's own
++	 * usb_widget_with_mask entry for this offset does it.
++	 */
++	mask32(aphy->complex + AUSB_COMPLEX_REMAP, AUSB_COMPLEX_REMAP_FIELDS,
++	       AUSB_COMPLEX_REMAP_DMA_EN);
++
+ 	/* set a sane tunable */
+ 	writel(aphy->cfg0_device, aphy->base + AUSB_CFG0);
+ 	writel(aphy->cfg1_device, aphy->base + AUSB_CFG1);
+@@ -108,6 +148,24 @@ static int ausb_phy_usb2_power_on(struct phy *phy)
+ 	udelay(20);
+ 	clear32(aphy->base + AUSB_CTL, AUSB_CTL_RESET);
+ 	udelay(1500);
++
++	/*
++	 * AUSB_SIG_HOST is not cleared here. On T8020 every SIG bit above 1 is
++	 * eight places further up than this driver's defines say, so 7 << 12
++	 * clears three bits that are not the role field, and the role field
++	 * sits at 7 << 20. m1n1 never touches it at all and its gadget works
++	 * on this phone, so leave it as iBoot left it.
++	 */
++
++	/*
++	 * Force VBUS detection on, which is what this driver has always done
++	 * and what works on T8015. An earlier version of this patch cleared it
++	 * instead, on the theory that the real detector was being pinned to a
++	 * value sampled while the PHY was still settling. That reading came
++	 * from a run where no write to dwc2 landed at all, so it proved
++	 * nothing. m1n1 ends up with this bit set too: its PHY reads 0x1c103
++	 * with the proxy running, against 0x1c101 here without it.
++	 */
+ 	set32(aphy->base + AUSB_SIG, AUSB_SIG_VBUSDET_FORCE_EN);
+ 
+ 	return 0;
+@@ -140,7 +198,6 @@ static int ausb_usbphy_probe(struct platform_device *pdev) {
+ 	struct ausb_usbphy *aphy;
+ 	struct device *dev = &pdev->dev;
+ 	struct device_node *np = dev->of_node;
+-	struct resource *res;
+ 
+ 	aphy = devm_kzalloc(&pdev->dev, sizeof(*aphy), GFP_KERNEL);
+ 	if (!aphy)
+@@ -157,10 +214,14 @@ static int ausb_usbphy_probe(struct platform_device *pdev) {
+ 
+ 	aphy->dev = dev;
+ 
+-	aphy->base = devm_platform_get_and_ioremap_resource(pdev, 0, &res);
++	aphy->base = devm_platform_ioremap_resource(pdev, 0);
+ 	if (IS_ERR(aphy->base))
+ 		return PTR_ERR(aphy->base);
+ 
++	aphy->complex = devm_platform_ioremap_resource(pdev, 1);
++	if (IS_ERR(aphy->complex))
++		return PTR_ERR(aphy->complex);
++
+ 	aphy->phy = devm_phy_create(aphy->dev, NULL, &ausb_phy_usb2_ops);
+ 	if (IS_ERR(aphy->phy))
+ 		return PTR_ERR(aphy->phy);

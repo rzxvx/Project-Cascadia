@@ -7,6 +7,7 @@ XFCE desktop you drive with your fingers.
 ![Discord](https://img.shields.io/discord/1564063823336579072?logo=discord)
 
 ![iPhone 11](imgs/i11xfcechromium.png)
+![iPhone XR running Debian XFCE from a Kali NetHunter NFS host](imgs/iphone-xr-debian-nethunter.png)
 ![Boot](imgs/dualcoreboot.png)
 
 ## Devices
@@ -14,6 +15,7 @@ XFCE desktop you drive with your fingers.
 | Device | Model | Chip | What works | Start here |
 |---|---|---|---|---|
 | iPad mini 1 (Wi-Fi) | iPad2,5 / A1432 / p105ap | Apple A5 (S5L8942X) | Linux 6.12: both cores, touch, Wi-Fi, Bluetooth, speakers, battery, the GPU (OpenGL ES 2.0 / GL 2.1), XFCE; iOS's files read-only | [devices/a5](devices/a5/README.md) · [quickstart](devices/a5/docs/QUICKSTART.md) |
+| iPhone XR | iPhone11,8 / N841AP | Apple A12 (T8020) | Linux 7.3: framebuffer, touch, USB networking/SSH, Wi-Fi, UART Bluetooth, Debian/XFCE over NFS | [devices/a12](devices/a12/README.md) · [Debian/XFCE](devices/a12/DEBIAN_XFCE_NFS.md) |
 | iPhone 11 | iPhone12,1 / n104ap | Apple A13 (T8030) | Linux 7.2: all six cores, touch, Wi-Fi, Bluetooth, XFCE, the internal storage as Linux's disk, no cable after the boot | [devices/a13](devices/a13/README.md) · [quickstart](devices/a13/docs/QUICKSTART.md) |
 
 Experimental: the iPad 2 Wi-Fi (iPad2,1 / K93AP, S5L8940) boots Linux 6.12 to
@@ -28,10 +30,11 @@ One command for every device, from the repository's top:
 git clone https://github.com/rzxvx/Project-Cascadia.git
 cd Project-Cascadia
 ./cascadia a5 install         # iPad mini 1: everything, step by step
+./cascadia a12 doctor         # iPhone XR: check the A12 host requirements
 ./cascadia a13 doctor         # iPhone 11: what this machine is missing
 ```
 
-`./cascadia a5 …` and `./cascadia a13 …` are the device's own commands
+`./cascadia a5 …`, `./cascadia a12 …` and `./cascadia a13 …` are the device's own commands
 (`./cascadia a5` alone lists them). The device used last is remembered, so
 after the first one a plain `./cascadia build` means the same device again;
 `./cascadia device` shows or changes it. The quickstarts above walk through
@@ -53,6 +56,8 @@ device.
 cascadia        the entry point: ./cascadia <device> <command>
 devices/a5/     the A5 tree (iPad mini 1, iPad 2): kernel patches, device
                 tree, initramfs, Mesa's GPU driver, tools, docs, research
+devices/a12/    the A12 tree (iPhone XR): m1n1/kernel patches, N841 DT,
+                Debian NFS root, touch and radio firmware recipes
 devices/a13/    the A13 tree (iPhone 11): m1n1 and kernel patches, boot,
                 initramfs, Alpine root, tools, docs, research
 imgs/           pictures for the READMEs
@@ -67,6 +72,9 @@ IPSW (or Apple's CDN) on your machine.
 
 - **iPad mini 1 (A5)** — phases 1 and 2 done; phase 3 all but NAND as
   Linux's own storage. [devices/a5/README.md](devices/a5/README.md#roadmap)
+- **iPhone XR (A12)** — tethered Linux with framebuffer/touch, USB, Wi-Fi,
+  Bluetooth and Debian/XFCE over NFS; next native display and power work.
+  [devices/a12/LINUX_PLAN.md](devices/a12/LINUX_PLAN.md)
 - **iPhone 11 (A13)** — phases 1 and 2 done; phase 3 up to the internal
   storage; next the native display and the GPU.
   [devices/a13/docs/ROADMAP.md](devices/a13/docs/ROADMAP.md)

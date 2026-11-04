@@ -1,0 +1,171 @@
+diff --git a/drivers/usb/dwc2/gadget.c b/drivers/usb/dwc2/gadget.c
+index 102169b40..2c1bc8d7e 100644
+--- a/drivers/usb/dwc2/gadget.c
++++ b/drivers/usb/dwc2/gadget.c
+@@ -22,6 +22,7 @@
+ #include <linux/delay.h>
+ #include <linux/io.h>
+ #include <linux/slab.h>
++#include <linux/of.h>
+ 
+ #include <linux/usb/ch9.h>
+ #include <linux/usb/gadget.h>
+@@ -4522,6 +4523,79 @@ static void dwc2_hsotg_init(struct dwc2_hsotg *hsotg)
+ 		dwc2_set_bit(hsotg, GAHBCFG, GAHBCFG_DMA_EN);
+ }
+ 
++/*
++ * Apple A-series: re-announce the gadget until the host addresses it.
++ *
++ * On roughly half of boots the host resets the port, the gadget logs "new
++ * device is high-speed", and then SET_ADDRESS is never answered: the host says
++ * "device not accepting address, error -71" and DOEPINT0 has OUTTknEPdis set,
++ * an OUT token arriving while EP0 OUT was not armed. Unplugging the cable and
++ * plugging it back in always fixes it, however many tries that takes.
++ *
++ * Toggling the soft disconnect bit is that replug, done from this side, so do
++ * it on a timer until the gadget is configured. Each toggle gives the host a
++ * fresh attach, which is the thing that works.
++ *
++ * The stop condition is the configured state and not a non-zero device
++ * address: the host sometimes assigns an address, fails the descriptor read
++ * anyway, and resets the port, which puts the address back to zero. Watching
++ * the address tore down sessions that were about to succeed.
++ *
++ * ponytail: one static instance, because this SoC has one device controller.
++ */
++#define DWC2_APPLE_RETRY_DELAY_MS	3000
++#define DWC2_APPLE_RETRY_LIMIT		10
++
++static struct dwc2_hsotg *dwc2_apple_hsotg;
++static int dwc2_apple_retries;
++
++static void dwc2_apple_readdress(struct work_struct *work);
++static DECLARE_DELAYED_WORK(dwc2_apple_retry_work, dwc2_apple_readdress);
++
++static void dwc2_apple_readdress(struct work_struct *work)
++{
++	struct dwc2_hsotg *hsotg = dwc2_apple_hsotg;
++	unsigned long flags;
++
++	if (hsotg->gadget.state == USB_STATE_CONFIGURED) {
++		dev_info(hsotg->dev, "apple: configured after %d retries\n",
++			 dwc2_apple_retries);
++		return;
++	}
++
++	if (++dwc2_apple_retries > DWC2_APPLE_RETRY_LIMIT) {
++		dev_warn(hsotg->dev, "apple: never configured, giving up\n");
++		return;
++	}
++
++	spin_lock_irqsave(&hsotg->lock, flags);
++
++	/*
++	 * An address means the host is partway through and the descriptor
++	 * reads are still to come, so leave it alone and look again later.
++	 * Toggling here cost whole sessions that were about to configure.
++	 */
++	if (dwc2_readl(hsotg, DCFG) & DCFG_DEVADDR_MASK) {
++		spin_unlock_irqrestore(&hsotg->lock, flags);
++		dev_info(hsotg->dev, "apple: addressed, waiting (pass %d)\n",
++			 dwc2_apple_retries);
++		goto again;
++	}
++
++	dwc2_set_bit(hsotg, DCTL, DCTL_SFTDISCON);
++	mdelay(20);
++	dwc2_clear_bit(hsotg, DCTL, DCTL_SFTDISCON);
++
++	spin_unlock_irqrestore(&hsotg->lock, flags);
++
++	dev_info(hsotg->dev, "apple: no address, replug %d\n",
++		 dwc2_apple_retries);
++
++again:
++	schedule_delayed_work(&dwc2_apple_retry_work,
++			      msecs_to_jiffies(DWC2_APPLE_RETRY_DELAY_MS));
++}
++
+ /**
+  * dwc2_hsotg_udc_start - prepare the udc for work
+  * @gadget: The usb gadget state
+@@ -4577,6 +4651,59 @@ static int dwc2_hsotg_udc_start(struct usb_gadget *gadget,
+ 	}
+ 
+ 	hsotg->enabled = 0;
++
++	/*
++	 * Apple A-series: nothing wires VBUS sensing, so the controller never
++	 * asserts B-session valid and dwc2_hsotg_pullup() bails out early
++	 * because op_state is not B_PERIPHERAL, leaving the soft disconnect
++	 * set. The gadget then binds, logs "bound driver", and is invisible to
++	 * every host. Force the session, claim peripheral role, and connect
++	 * here rather than waiting for a VBUS event that cannot arrive.
++	 */
++	if (of_device_is_compatible(hsotg->dev->of_node, "apple,dwc2")) {
++		u32 gotgctl = dwc2_readl(hsotg, GOTGCTL);
++
++		gotgctl |= GOTGCTL_DBNCE_FLTR_BYPASS;
++		gotgctl |= GOTGCTL_BVALOEN | GOTGCTL_BVALOVAL;
++		gotgctl |= GOTGCTL_AVALOEN | GOTGCTL_VBVALOEN;
++		dwc2_writel(hsotg, gotgctl, GOTGCTL);
++
++		hsotg->op_state = OTG_STATE_B_PERIPHERAL;
++		hsotg->enabled = 1;
++
++		/*
++		 * The delays replace four dev_info calls that used to sit in
++		 * these exact spots and turned out to be load bearing: with
++		 * them the gadget enumerated, without them the host gave up
++		 * with "device descriptor read/64, error -110". The console is
++		 * a 155x168 simpledrm framebuffer, so every line cost
++		 * milliseconds, and that was the only thing separating the
++		 * session force, dwc2_force_mode() and the connect.
++		 *
++		 * simpledrm paints in bursts, so the amount of delay varied
++		 * per boot, which fits the gadget only being addressed on
++		 * roughly half of boots. mdelay, not msleep: the caller holds
++		 * hsotg->lock with interrupts off.
++		 */
++		mdelay(50);
++
++		/*
++		 * Device registers are inert while the core sits in host mode,
++		 * which is why DCTL writes were being swallowed. Force device
++		 * mode before touching anything else.
++		 */
++		dwc2_force_mode(hsotg, false);
++		mdelay(50);
++
++		dwc2_hsotg_core_connect(hsotg);
++		mdelay(50);
++
++		dwc2_apple_hsotg = hsotg;
++		dwc2_apple_retries = 0;
++		schedule_delayed_work(&dwc2_apple_retry_work,
++				      msecs_to_jiffies(DWC2_APPLE_RETRY_DELAY_MS));
++	}
++
+ 	spin_unlock_irqrestore(&hsotg->lock, flags);
+ 
+ 	gadget->sg_supported = using_desc_dma(hsotg);
+@@ -4705,6 +4832,18 @@ static int dwc2_hsotg_pullup(struct usb_gadget *gadget, int is_on)
+ 		/* Enable ACG feature in device mode,if supported */
+ 		dwc2_enable_acg(hsotg);
+ 		dwc2_hsotg_core_connect(hsotg);
++
++		/*
++		 * Nothing in the peripheral only path ever sets the global
++		 * interrupt enable. dwc2_enable_global_interrupts() is reached
++		 * from hcd.c, or from the core_intr.c handlers, which cannot
++		 * run until interrupts already work. With dr_mode =
++		 * "peripheral" this platform never goes near the HCD, so
++		 * GAHBCFG stays 0, dwc2_read_common_intr() returns 0 for every
++		 * interrupt, and USBRst and EnumDone are never handled, so
++		 * enumeration cannot complete.
++		 */
++		dwc2_set_bit(hsotg, GAHBCFG, GAHBCFG_GLBL_INTR_EN);
+ 	} else {
+ 		dwc2_hsotg_core_disconnect(hsotg);
+ 		dwc2_hsotg_disconnect(hsotg);

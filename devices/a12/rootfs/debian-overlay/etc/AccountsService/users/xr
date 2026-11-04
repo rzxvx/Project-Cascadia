@@ -1,0 +1,5 @@
+[User]
+SystemAccount=false
+Session=gnome-xorg
+XSession=gnome-xorg
+Icon=/var/lib/AccountsService/icons/xr

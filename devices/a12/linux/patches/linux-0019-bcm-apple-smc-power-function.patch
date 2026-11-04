@@ -1,0 +1,88 @@
+diff --git a/drivers/bluetooth/hci_bcm.c b/drivers/bluetooth/hci_bcm.c
+--- a/drivers/bluetooth/hci_bcm.c
++++ b/drivers/bluetooth/hci_bcm.c
+@@ -11,9 +11,11 @@
+ #include <linux/skbuff.h>
+ #include <linux/firmware.h>
+ #include <linux/module.h>
++#include <linux/mfd/macsmc.h>
+ #include <linux/acpi.h>
+ #include <linux/of.h>
+ #include <linux/of_irq.h>
++#include <linux/of_platform.h>
+ #include <linux/property.h>
+ #include <linux/platform_data/x86/apple.h>
+ #include <linux/platform_device.h>
+@@ -120,6 +122,9 @@
+ 	struct gpio_desc	*device_wakeup;
+ 	struct gpio_desc	*shutdown;
+ 	struct gpio_desc	*reset;
++	struct apple_smc	*apple_power_smc;
++	u32			apple_power_key;
++	u32			apple_power_arg;
+ 	int			(*set_device_wakeup)(struct bcm_device *, bool);
+ 	int			(*set_shutdown)(struct bcm_device *, bool);
+ #ifdef CONFIG_ACPI
+@@ -1059,6 +1064,43 @@
+ 	return 0;
+ }
+ 
++/* N841's ADT function-power_enable is pKW4(gP09, ARG | enabled), not
++ * macsmc-gpio's CMD_OUTPUT | enabled encoding. */
++static int bcm_apple_smc_set_shutdown(struct bcm_device *dev, bool powered)
++{
++	return apple_smc_write_u32(dev->apple_power_smc, dev->apple_power_key,
++				   dev->apple_power_arg | (powered ? 1 : 0));
++}
++
++static int bcm_apple_smc_get_power(struct bcm_device *dev)
++{
++	struct of_phandle_args args;
++	struct platform_device *pdev;
++	int err;
++
++	if (!dev->dev->of_node ||
++	    !of_property_present(dev->dev->of_node, "apple,power-function"))
++		return 0;
++
++	err = of_parse_phandle_with_fixed_args(dev->dev->of_node,
++					     "apple,power-function", 2, 0, &args);
++	if (err)
++		return err;
++	pdev = of_find_device_by_node(args.np);
++	of_node_put(args.np);
++	if (!pdev)
++		return -EPROBE_DEFER;
++	dev->apple_power_smc = platform_get_drvdata(pdev);
++	put_device(&pdev->dev);
++	if (!dev->apple_power_smc)
++		return -EPROBE_DEFER;
++
++	dev->apple_power_key = args.args[0];
++	dev->apple_power_arg = args.args[1];
++	dev->set_shutdown = bcm_apple_smc_set_shutdown;
++	return 0;
++}
++
+ /* Try a bunch of names for TXCO */
+ static struct clk *bcm_get_txco(struct device *dev)
+ {
+@@ -1120,6 +1162,9 @@
+ 
+ 	dev->set_device_wakeup = bcm_gpio_set_device_wakeup;
+ 	dev->set_shutdown = bcm_gpio_set_shutdown;
++	err = bcm_apple_smc_get_power(dev);
++	if (err)
++		return err;
+ 
+ 	dev->supplies[0].supply = "vbat";
+ 	dev->supplies[1].supply = "vddio";
+@@ -1535,7 +1580,7 @@
+ 	if (err)
+ 		return err;
+ 
+-	if (!bcmdev->shutdown) {
++	if (!bcmdev->shutdown && !bcmdev->apple_power_smc) {
+ 		dev_warn(&serdev->dev,
+ 			 "No reset resource, using default baud rate\n");
+ 		bcmdev->oper_speed = bcmdev->init_speed;

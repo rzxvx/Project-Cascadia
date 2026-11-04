@@ -1,0 +1,29 @@
+diff --git a/drivers/tty/serial/samsung_tty.c b/drivers/tty/serial/samsung_tty.c
+index 63d0232df..f2a2b7ba6 100644
+--- a/drivers/tty/serial/samsung_tty.c
++++ b/drivers/tty/serial/samsung_tty.c
+@@ -1506,6 +1506,24 @@ static void s3c24xx_serial_set_termios(struct uart_port *port,
+ 		ourport->baudclk_rate = clk ? clk_get_rate(clk) : 0;
+ 	}
+ 
++	/*
++	 * Apple S5L UARTs encode a variable oversampling factor in UBRDIV
++	 * bits 19:16: the field contains (16 - oversample). The ordinary
++	 * Samsung divisor alone tops out at uartclk / 16 (1.5 Mbit/s with
++	 * T8020's 24 MHz clock), but N841's Bluetooth UART runs at 3 Mbit/s.
++	 * Match m1n1's UART_CLOCK/baud oversampling rule; other Samsung UARTs
++	 * retain the existing divisor calculation.
++	 */
++	if (ourport->info->type == TYPE_APPLE_S5L) {
++		unsigned int oversample = min_t(unsigned int, 16,
++					       ourport->baudclk_rate / baud);
++
++		oversample = max(oversample, 1U);
++		quot = DIV_ROUND_CLOSEST(ourport->baudclk_rate,
++					 baud * oversample) - 1;
++		quot |= (16 - oversample) << 16;
++	}
++
+ 	if (ourport->info->has_divslot) {
+ 		unsigned int div = ourport->baudclk_rate / baud;
+ 
