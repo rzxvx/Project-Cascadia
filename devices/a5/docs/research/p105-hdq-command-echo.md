@@ -1,8 +1,11 @@
 # Reject damaged HDQ command echoes
 
-Independent change against main `7373331a9f1c88d347773736a19dc3166947864d`.
+Rebased onto main `5e40bfb537327f02aa298e2c2e00e116aecbec1d` and the
+`devices/a5/` layout on 4 November 2026. The runtime observation below is
+historical; this rebased PR has not been booted.
 Only four lines in `hdq_read8()` change. Read16, cache, PRESENT, UART setup,
-break timing and response decoding are unchanged; PR9/12/15 remain separate.
+break timing and response decoding are unchanged. Main already includes
+PR12; PR15 remains an independent change.
 
 The driver expects eight echoed command pulses followed by eight gauge
 response pulses. Previously it checked only `n >= 16`, then decoded the last
@@ -29,7 +32,7 @@ mocked; the original command encoder and echo comparison executed. No
 firmware bytes are included in this patch or regression test.
 
 ```sh
-python3 tests/test-hdq-command-echo.py -v
+python3 devices/a5/tests/test-hdq-command-echo.py -v
 ```
 
 The portable test extracts the actual driver's `hdq_drain/read8` bodies.
@@ -54,12 +57,8 @@ control passes both on PR9's source and with this comparison integrated
 privately. Its existing transport/cache assertions remain applicable. No production
 read16 or cache changes from PR9 are included here.
 
-No additional cache or unit defect was established beyond the existing
-reviewed fixes. Gauge telemetry alone does not activate charging: the normal
-driver has no charger setter, the observed USB gadget declares zero bus current, and the
-separate current/source/PMU-owner candidates remain uninstalled/default-off.
-Analog CV/termination/fault-retention qualification and a real source budget
-are still required before those experimental charging paths can be activated.
+This change validates gauge reads only; it does not modify the separate PMU
+charger driver or establish physical charging protection.
 
 ## Reversible live acceptance check — 14 October 2026
 
