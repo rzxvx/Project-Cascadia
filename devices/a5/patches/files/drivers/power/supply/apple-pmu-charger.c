@@ -38,7 +38,8 @@
  *    then it logs what it would do.  Disarming puts back the value it found
  *    at probe.
  *  - Above 45 C on the battery gauge it drops to 100 mA, and stays there
- *    until below 40 C.  iBEC's charge table ends at 45 C.
+ *    until below 40 C. Missing/failed temperature also selects this fallback.
+ *    iBEC's charge table ends at 45 C. This is derating, not charge inhibition.
  */
 #include <linux/delay.h>
 #include <linux/devm-helpers.h>
@@ -180,9 +181,17 @@ static bool pmu_chg_battery_hot(struct pmu_chg *c)
 	union power_supply_propval t;
 	struct power_supply *bat = power_supply_get_by_name("battery");
 
-	if (!bat)
-		return c->hot;
-	if (!power_supply_get_property(bat, POWER_SUPPLY_PROP_TEMP, &t)) {
+	if (!bat) {
+		c->hot = true;
+		return true;
+	}
+	if (power_supply_get_property(bat, POWER_SUPPLY_PROP_TEMP, &t)) {
+		/* Missing temperature is not permission to raise the input limit.
+		 * Keep the existing hysteresis before accepting a cool sample again.
+		 * The minimum input profile is derating, not proven charge cutoff.
+		 */
+		c->hot = true;
+	} else {
 		if (!c->hot && t.intval > HOT_DECI_C) {
 			c->hot = true;
 			dev_warn(c->dev, "battery at %d.%d C: input limited to 100 mA\n",
@@ -216,6 +225,15 @@ static void pmu_chg_work(struct work_struct *w)
 	u8 st, cur, target;
 
 	mutex_lock(&c->lock);
+	if (c->was_armed && !is_armed) {
+		if (pmu_chg_write(c, PMU_ILIM, c->probe_code))
+			goto out; /* Leave restoration pending for the next poll. */
+		dev_info(c->dev, "disarmed: 0x3d back to 0x%02x\n", c->probe_code);
+		c->last_written = 0;
+		c->logged_code = 0;
+		c->was_armed = false;
+		goto out;
+	}
 	if (pmu_chg_read(c, PMU_STATUS0, &st) || pmu_chg_read(c, PMU_ILIM, &cur))
 		goto out;
 	online = st & PMU_STATUS0_VBUS;
@@ -228,14 +246,6 @@ static void pmu_chg_work(struct work_struct *w)
 			c->last_written = 0;	/* a new session: a low 0x3d now is not a sag */
 	}
 
-	if (c->was_armed && !is_armed) {
-		dev_info(c->dev, "disarmed: 0x3d back to 0x%02x\n", c->probe_code);
-		pmu_chg_write(c, PMU_ILIM, c->probe_code);
-		c->last_written = 0;
-		c->logged_code = 0;
-		c->was_armed = false;
-		goto out;
-	}
 	if (!online)
 		goto out;
 
