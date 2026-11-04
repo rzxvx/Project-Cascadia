@@ -1,6 +1,8 @@
 # UART5 HDQ break pulse
 
-Independent candidate based on `7373331a9f1c88d347773736a19dc3166947864d`.
+Rebased onto main `5e40bfb537327f02aa298e2c2e00e116aecbec1d` and the
+`devices/a5/` layout on 4 November 2026. The runtime observation below is
+historical; this rebased PR has not been booted.
 Candidate preparation was offline; the separate runtime comparison is described
 below. The read16,
 cache, property/PRESENT and UART setup code is unchanged. PR9's bounded
@@ -48,7 +50,7 @@ actual pin timing and clock frequency were not measured. The source proves
 explicit clearing, not a universal claim that A5 hardware never self-clears.
 
 ```sh
-python3 tests/test-hdq-explicit-break.py -v
+python3 devices/a5/tests/test-hdq-explicit-break.py -v
 ```
 
 Four actual-driver C tests pass with UBSan and `-Werror`: explicit operation
@@ -57,7 +59,7 @@ non-break UCON bits preserved; short/no RX response still returns `-EIO`.
 The same tests against unchanged main using `CASCADIA_HDQ_SOURCE` fail all
 four groups. MMIO, time, delays and responses are declared fakes. The small
 Linux6.12 polling macro fixture retains its GPL header, exact upstream source
-URL/revision and SHA256 in `tests/fixtures/hdq-explicit-break/source-provenance.json`;
+URL/revision and SHA256 in `devices/a5/tests/fixtures/hdq-explicit-break/source-provenance.json`;
 the test checks its SHA before compilation. Native iBoot helper emulation was
 separately verified against three fake UART/drain cases, with actual descriptor
 lookup and bit operations and declared mock delay/RX providers.
