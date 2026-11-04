@@ -1,0 +1,36 @@
+{
+ "version": "a5-2026.11.04-e06bdc3",
+ "commit": "e06bdc3",
+ "files": [
+  {
+   "name": "NOTES.md",
+   "url": "https://github.com/rzxvx/Project-Cascadia/releases/download/a5-2026.11.04-e06bdc3/NOTES.md",
+   "size": 918,
+   "sha256": "d9f83cbc86bd65aa387bf3f8283597491388a285c630c27b79b7e324005f58df"
+  },
+  {
+   "name": "desktop-root.tar.xz",
+   "url": "https://github.com/rzxvx/Project-Cascadia/releases/download/a5-2026.11.04-e06bdc3/desktop-root.tar.xz",
+   "size": 454667560,
+   "sha256": "7804c49f96e668aab38fefa7f694e6a239ba607e41fc7a6bf9256915216d21a9"
+  },
+  {
+   "name": "linux-boot.bin",
+   "url": "https://github.com/rzxvx/Project-Cascadia/releases/download/a5-2026.11.04-e06bdc3/linux-boot.bin",
+   "size": 2060,
+   "sha256": "c427a21566131039a3dcddc8d0fc9922843bf7d041c215355c5e37a121d104c2"
+  },
+  {
+   "name": "packages.txt",
+   "url": "https://github.com/rzxvx/Project-Cascadia/releases/download/a5-2026.11.04-e06bdc3/packages.txt",
+   "size": 7668,
+   "sha256": "7499f7ae400de119c59ef71b3447cab65151ddadaa908a8a1c6c03d5d06316ba"
+  },
+  {
+   "name": "zImage-dtb",
+   "url": "https://github.com/rzxvx/Project-Cascadia/releases/download/a5-2026.11.04-e06bdc3/zImage-dtb",
+   "size": 28175299,
+   "sha256": "aae6b7c4631ecaa4232daa18f2e346e19d3e845bb6d8b9044b7f59741d820ea5"
+  }
+ ]
+}

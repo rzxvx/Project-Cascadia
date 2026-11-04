@@ -33,6 +33,7 @@
 #   ./cascadia a5 dev release experimental|stable
 #                             a prebuilt release from source: checked, packed,
 #                             its manifest written; prints how to publish it
+#   ./cascadia a5 dev promote the experimental release becomes the stable one
 #   ./cascadia a5 image       rebuild the build image if the Dockerfile changed
 #
 # Everything is relative to this file, so the repository works wherever it is
@@ -894,6 +895,21 @@ EOT
     echo "      git add prebuilt/$ch/a5.json && git commit -m 'prebuilt: a5 $ch $ver' && git push"
 }
 
+# dev promote: the experimental release becomes the stable one -- the same
+# files, so only the manifest moves; the GitHub release loses its
+# pre-release mark with the gh command this prints.
+cmd_promote() {
+    local e="$REPO/prebuilt/experimental/a5.json" st="$REPO/prebuilt/stable/a5.json" ver
+    [ -f "$e" ] || fail "no experimental release to promote (prebuilt/experimental/a5.json)"
+    ver=$(sed -n 's/.*"version": "\([^"]*\)".*/\1/p' "$e" | head -1)
+    mkdir -p "$(dirname "$st")"
+    cp "$e" "$st"
+    say "stable is now $ver (prebuilt/stable/a5.json)"
+    echo "    To publish it:"
+    echo "      gh release edit $ver -R $GH_REPO --prerelease=false --latest"
+    echo "      git add prebuilt/stable/a5.json && git commit -m 'prebuilt: a5 stable $ver' && git push"
+}
+
 # A desktop root from a release has no GPU pack -- it is made from the user's
 # own IPSW -- so the first nfs on puts one in (./cascadia a5 dev gpu --root).
 nfs_gpu_pack() {
@@ -932,8 +948,9 @@ case "${1:-}" in
             case "${1:-}" in
                 gpu)  shift; cmd_gpu "$@" ;;
                 release) shift; cmd_release "$@" ;;
+                promote) cmd_promote ;;
                 mesa) shift; cmd_mesa "$@" ;;
-                *)    fail "./cascadia a5 dev gpu | mesa | release  (./cascadia a5 lists them)" ;;
+                *)    fail "./cascadia a5 dev gpu | mesa | release | promote  (./cascadia a5 lists them)" ;;
             esac ;;
     desktop-root) bash "$ROOT/tools/desktop/make-root.sh" ;;
     setup)  cmd_setup ;;
@@ -941,5 +958,5 @@ case "${1:-}" in
     install) cmd_install ;;
     ssh)    shift; cmd_ssh "$@" ;;
     mesa|gpu) fail "./cascadia a5 $1 is ./cascadia a5 dev $1 now (desktop-root puts both into the root for you)" ;;
-    *)      sed -n '2,39p' "$ROOT/cascadia" | sed 's/^# \{0,1\}//'; exit 2 ;;
+    *)      sed -n '2,40p' "$ROOT/cascadia" | sed 's/^# \{0,1\}//'; exit 2 ;;
 esac
