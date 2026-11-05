@@ -113,17 +113,21 @@
 		#size-cells = <0>;
 		apple,cpu-reset-page = <&cpu_reset_page>;
 
-		cpu0: cpu@a00 {
+		/* MPIDR 0x80000900 on CPU0 (the boot log's "mpidr"), so the
+		 * cluster id is 9, not the mini's 0xa. With 0xa00 here Linux
+		 * found no node for the boot CPU and fell back to one possible
+		 * CPU, so CPU1 could not even be onlined. */
+		cpu0: cpu@900 {
 			device_type = "cpu";
 			compatible = "arm,cortex-a9";
-			reg = <0xa00>;
+			reg = <0x900>;
 			enable-method = "apple,pmgr-core";
 		};
 
-		cpu1: cpu@a01 {
+		cpu1: cpu@901 {
 			device_type = "cpu";
 			compatible = "arm,cortex-a9";
-			reg = <0xa01>;
+			reg = <0x901>;
 			enable-method = "apple,pmgr-core";
 		};
 	};
@@ -204,6 +208,29 @@
 			clock-output-names = "spi1_ps";
 		};
 
+		/* UART5's power-state switch, for the battery gauge: gate id 77,
+		 * power-state index 0x4a. iBoot leaves it off on the J1 (0x200;
+		 * the mini's iBoot leaves UART5 running), with ULCON, UCON and
+		 * UBRDIV already at the gauge's 8N2 57600. */
+		uart5_ps: uart5-ps@f101128 {
+			compatible = "apple,s5l8940x-pmgr-clk-gate";
+			#clock-cells = <0>;
+			reg = <0xf101128 0x4>;
+			clocks = <&uart_clk>;
+			clock-output-names = "uart5_ps";
+		};
+
+		/* UART5 as the battery gauge's HDQ bus: the ADT's uart5/gas-gauge,
+		 * a bq27540 as on the mini. Pin 196 is in peripheral mode as
+		 * iBoot leaves it. Read from userspace with UART5 powered: 97%,
+		 * 4138 mV, design 11560 mAh. */
+		battery: hdq@2a00000 {
+			compatible = "apple,s5l8940x-hdq-battery";
+			reg = <0x2a00000 0x1000>;
+			clocks = <&uart5_ps>;
+			status = "okay";
+		};
+
 		/* ADT /arm-io/i2c0: i2c,s5l8945x, irq 18, clock-gates 0x50. */
 		i2c0: i2c@3200000 {
 			compatible = "apple,s5l8940x-i2c";
@@ -254,15 +281,19 @@
 				};
 
 				/*
-				 * No backlight node yet. The D1974's LED DAC is 11
-				 * bits like the D1946's, but at 0xd3 (bits 10:3) and
-				 * 0xd4 (bits 2:0), with the string enable at 0xd5
-				 * (0x3f with the panel lit) -- AppleD1974PMU's
-				 * backlight update. 0xd0/0xd1, the mini's DAC, are
-				 * something else on this chip. apple-pmu-wled with
-				 * reg 0xd3 and apple,enable-reg 0xd5 should fit, but
-				 * has not been run here.
+				 * The backlight. The D1974's LED DAC is 11 bits like
+				 * the D1946's, but at 0xd3 (bits 10:3) and 0xd4 (bits
+				 * 2:0), with the string enable at 0xd5 (0x3f with the
+				 * panel lit; iBoot leaves 0xd3 = 0x40, level 512) --
+				 * AppleD1974PMU's backlight update. 0xd0/0xd1, the
+				 * mini's DAC, read 0 here.
 				 */
+				backlight: wled@d3 {
+					compatible = "apple,pmu-wled";
+					reg = <0xd3>;
+					apple,enable-reg = <0xd5>;
+					apple,wled-enables = <0x3f>;
+				};
 			};
 		};
 
