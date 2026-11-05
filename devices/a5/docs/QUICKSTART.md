@@ -197,7 +197,16 @@ it goes away, twice per boot — and without it `ssh` does not fail, it hangs.
 There are two consoles besides ssh, and both are useful when ssh is not:
 
 - **the glass**: a shell on the framebuffer, with an on-screen keyboard
-  (`fbkeyboard`) under it from boot (no arrow keys);
+  (`fbkeyboard`) under it from boot. While the soft keyboard lacks dedicated arrow
+  key buttons, `fbkeyboard` maps the terminal area above the keyboard into a
+  **3×3 touch navigation grid**:
+  - **Top Center**: Up arrow (`↑`) — previous command in shell history
+  - **Bottom Center** (just above keyboard): Down arrow (`↓`) — next command
+  - **Middle Left**: Left arrow (`←`) — move cursor backward
+  - **Middle Right**: Right arrow (`→`) — move cursor forward
+  - **Exact Center**: Enter (`↵`)
+  - **Corners**: Home (top-left), PageUp (top-right), End (bottom-left), PageDown (bottom-right)
+  *(Standard terminal Readline shortcuts like `Ctrl+P`/`Ctrl+N` and `Ctrl+B`/`Ctrl+F` also work).*
 - **the cable**: CDC ACM, no credentials at all —
   `screen /dev/cu.usbmodem* 115200` on macOS, `sudo picocom -b 115200
   /dev/ttyACM0` on Linux (picocom exits with `C-a C-x`).
