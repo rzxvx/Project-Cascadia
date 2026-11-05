@@ -81,7 +81,10 @@ see [K93 bring-up and limitations](docs/k93-bringup.md).
       own from its jailbroken iOS (`./cascadia a5 mtcal`, optional). See
       `docs/research/p105-z2-boot.md`
 - [x] **On-screen keyboard** — `fbkeyboard` under the console on the glass,
-      in the image and up from boot, NFS root or not (no arrow keys)
+      in the image and up from boot, NFS root or not (navigation gestures:
+      the upper terminal screen acts as an invisible 3×3 directional touch grid:
+      top/bottom for Up/Down arrow history, left/right for Left/Right cursor movement,
+      center for Enter, and corners for Home/End/PageUp/PageDown)
 - [x] **A desktop** — XFCE on the framebuffer, touch as the pointer (a
       two-finger tap is a right click), `svkbd` as the keyboard behind a panel
       button. One script sets it up: `tools/desktop/xfce-setup.sh`, then
