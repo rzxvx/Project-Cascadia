@@ -2,10 +2,11 @@
 
 The iPad 3 Wi-Fi (iPad3,1, board J1AP, S5L8945X) runs Linux 6.12 from RAM
 with this repository's drivers: the gadget console and network over the
-30-pin cable, SSH, the framebuffer iBoot left, multi-touch and Wi-Fi. iOS
-9.3.5 stays on the NAND and is what starts it. `dts/j1ap.dts` is the tree it
-boots with. This is what differs from the mini and what was measured on one
-iPad; issue #22 asked about this machine.
+30-pin cable, SSH, the framebuffer iBoot left, multi-touch, Wi-Fi,
+Bluetooth and the speaker. iOS 9.3.5 stays on the NAND and is what starts
+it. `dts/j1ap.dts` is the tree it boots with. This is what differs from
+the mini and what was measured on one iPad; issue #22 asked about this
+machine.
 
 ## What carries over unchanged
 
@@ -241,6 +242,56 @@ the 4334's placeholder, and btbcm treats both as one. The UART runs at
 Tested: hci0 comes up at boot (chip id 62, build 1367 after the patch),
 and a 12 s passive LE scan heard 251 reports from 12 advertisers.
 
+## Audio
+
+The speaker plays: I2S0 sends 16-bit stereo to a Cirrus CS42L63 codec on
+I2C0 (`0x4a`), and the codec's line out 2 drives the speaker through an
+external amplifier. `s5l-audio.c` has an S5L8945X variant for the SoC side;
+`cs42l63.c` is new. Headphones, microphones and headset detection are not
+done.
+
+The SoC side is not the mini's. The mini sends audio through the MCA; here
+it goes through the older I2S0 block at `0x34190000`, fed by CDMA channel
+`0x1f`, request 1 (the ADT's `i2s0` `dma-channels`), into the FIFO at
+I2S0 + `0x10`. I2S0 is the clock master. What was measured:
+
+| What | Value | Note |
+|---|---|---|
+| Power states | AUDIO `0x3f1010b8`, I2S0 `0x3f1010bc` | I2S0 is a child of AUDIO in the DT. Otherwise AUDIO is switched off with the unused clocks |
+| NCO reference | 342 MHz | Not the A5's 24 MHz: with 24 MHz the port ran 14–17 times too fast. NCO *n* is at PMGR + `0x130` + 16*n* |
+| Bit clock | NCO 0 = 32 fs | 1.536 MHz at 48 kHz drained 95,935 words/s |
+| MCS + `0x10` + 4*i* | NCO selector for lane *i* | Reset values 0..4. Lane 0 must stay 0; 1–3 stop I2S0 |
+| MCLK | CLKCON `0x181` = 6 MHz | Not from the NCO; the codec needs it before it powers up |
+| i2s-switch (`0x3fa01000`) | reg 0 = `0x44`, reg 12 (+`0x30`) = 1 | reg 12 enables pin group 0's MCK. Without it there is no MCLK |
+| Pads | 115 MCK, 116 LRCK, 117 BCLK, 118 DOUT | |
+| TXCOM | `0x01feca06` run, `0x01feca04` idle | BCLK and LRCK run only while TXCOM is not 0. The FIFO drops words while it is 0 |
+| FIFO level | STATUS bits 7–12 | Depth 32 |
+
+Between streams, the driver keeps the port at the idle TXCOM value while
+the codec has MCLK. If the port stops instead (TXCOM 0), the bit and frame
+clocks stop under the codec, and you hear a tick at the end of each stream.
+
+The CS42L63 is Apple's part and has no public datasheet. Its ID registers
+read `42 a6 3x` (revision `b0` on this iPad). Its volume coding and rate
+codes are the CS42L73's; its register map is not. The driver writes the
+register sequences that iOS 9.3.5's codec driver writes: power-up,
+power-down, and speaker on/off. They were recorded by running that driver
+in an emulator, then played back by hand on the device. The meaning of most
+registers is not known.
+
+- Power-up and power-down set bit 7 of `0x62` when they finish (it clears
+  when read). Power-up does not finish without MCLK.
+- Line out 2's volume is `0x21`/`0x22`: `0x40` mutes, and `0x41`..`0x7f` is
+  −76 dB to −1 dB (2 dB steps to −50 dB, then 1 dB steps). iOS goes no
+  higher than `0x7f`. The "Speaker Playback Volume" control maps 0..62 onto
+  this range.
+- GPIO 75 high turns the speaker amplifier on. The ADT's flag reads like an
+  active-low mute, but the tone is heard only with 75 high. The driver
+  turns it on after the path is up and off before the path goes down.
+
+Tested: 1 kHz sines at 44.1 and 48 kHz, at volumes −32 to −8 dB, through
+ALSA. There were no underruns, and the end of a stream does not tick.
+
 ## NAND
 
 Read-only so far: Cascadia's PPN tool, with the bus power-state set-feature
@@ -253,5 +304,5 @@ page reads return status `0x40` and repeat byte for byte.
   test image above (not reproduced; the AIC timer was up by then).
 - The GPU and a display driver: the panel is eDP (`edp@9500000`) fed by
   CLCD through a highland-park scaler at `0x0b020000`, not MIPI-DSI.
-- A charger driver (the input limit above is set by hand), audio, NAND
-  writes.
+- A charger driver (the input limit above is set by hand), NAND writes.
+- Headphones, the microphones and headset detection.
