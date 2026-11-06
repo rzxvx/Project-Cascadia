@@ -141,6 +141,7 @@ struct s5l_variant {
 	int (*port_prepare)(struct s5l_audio *a);
 	void (*port_start)(struct s5l_audio *a);
 	void (*port_stop)(struct s5l_audio *a);
+	void (*port_close)(struct s5l_audio *a);	/* optional */
 };
 
 struct s5l_audio {
@@ -160,6 +161,8 @@ struct s5l_audio {
 	unsigned int buf_bytes, period_bytes, periods;
 	unsigned int width;		/* bytes per sample */
 	unsigned int rate;
+	unsigned int port_rate;		/* A5X: the rate I2S0 runs at, 0 = stopped */
+	bool mclk_on;			/* A5X: the codec has MCLK */
 	unsigned int last_period;
 	struct hrtimer timer;
 	ktime_t tick;
@@ -247,7 +250,8 @@ static const struct clk_ops s5l_mclk_ops = {
  * I2S0 configured as iOS's configure writes it, but with TX left on and no
  * DMA requests: BCLK and LRCK run only while TX is on, and a codec whose
  * frame clocks stop under a live output ticks.  So the bus runs, carrying
- * silence, for as long as the codec has MCLK.
+ * silence, for as long as the codec has MCLK, and is configured again only
+ * when it is stopped or the rate changes.
  */
 static void s5x_i2s_configure(struct s5l_audio *a)
 {
@@ -261,18 +265,33 @@ static void s5x_i2s_configure(struct s5l_audio *a)
 	writel(I2S_TXCOM_IDLE, a->i2s + I2S_TXCOM);
 }
 
+/* 2 x 16-bit slots: BCLK = 32 fs, straight from NCO 0 */
+static int s5x_port_run(struct s5l_audio *a, unsigned int rate)
+{
+	int ret;
+
+	if (a->port_rate == rate)
+		return 0;
+	writel(0, a->acs + AE2_LANE(S5X_AE2_I2S0));	/* registers ungated */
+	ret = s5l_nco_set(a, S5X_NCO_I2S0, 32 * rate);
+	if (ret)
+		return ret;
+	s5x_i2s_configure(a);
+	a->port_rate = rate;
+	return 0;
+}
+
 static int s5x_mclk_enable(struct clk_hw *hw)
 {
 	struct s5l_audio *a = mclk_to_audio(hw);
 	int ret;
 
-	writel(0, a->acs + AE2_LANE(S5X_AE2_I2S0));	/* registers ungated */
-	/* the port wants a bit clock too; prepare sets it for the stream */
-	ret = s5l_nco_set(a, S5X_NCO_I2S0, 32 * (a->rate ?: 48000));
+	/* already running if the stream's prepare came first */
+	ret = s5x_port_run(a, a->rate ?: 48000);
 	if (ret)
 		return ret;
-	s5x_i2s_configure(a);
 	writel(1, a->sw + SW1_PIN0_MCK);
+	a->mclk_on = true;
 	return 0;
 }
 
@@ -280,6 +299,8 @@ static void s5x_mclk_disable(struct clk_hw *hw)
 {
 	struct s5l_audio *a = mclk_to_audio(hw);
 
+	a->mclk_on = false;
+	a->port_rate = 0;
 	writel(0, a->i2s + I2S_TXCOM);
 	writel(0, a->sw + SW1_PIN0_MCK);
 	writel(0, a->sw + SW1_PIN0);
@@ -300,17 +321,14 @@ static const struct clk_ops s5x_mclk_ops = {
 
 /* --- I2S0 as the A5X's data port ----------------------------------------- */
 
+/*
+ * A stream that follows another within the codec's pmdown time finds the
+ * port running, with the codec and its amplifier on: leave it running.
+ * Only a rate change reconfigures it (and briefly stops its clocks).
+ */
 static int s5x_port_prepare(struct s5l_audio *a)
 {
-	int ret;
-
-	/* 2 x 16-bit slots: BCLK = 32 fs, straight from NCO 0 */
-	writel(0, a->acs + AE2_LANE(S5X_AE2_I2S0));
-	ret = s5l_nco_set(a, S5X_NCO_I2S0, 32 * a->rate);
-	if (ret)
-		return ret;
-	s5x_i2s_configure(a);
-	return 0;
+	return s5x_port_run(a, a->rate);
 }
 
 /* the FIFO takes words only while TXCOM is on; the DMA is already running */
@@ -323,6 +341,13 @@ static void s5x_port_start(struct s5l_audio *a)
 static void s5x_port_stop(struct s5l_audio *a)
 {
 	writel(I2S_TXCOM_IDLE, a->i2s + I2S_TXCOM);
+}
+
+/* without MCLK, I2S0's power state goes off with the PCM's */
+static void s5x_port_close(struct s5l_audio *a)
+{
+	if (!a->mclk_on)
+		a->port_rate = 0;
 }
 
 /* --- MCA0 ----------------------------------------------------------------- */
@@ -540,6 +565,8 @@ static int s5l_pcm_close(struct snd_soc_component *component,
 	struct s5l_audio *a = snd_soc_component_get_drvdata(component);
 
 	hrtimer_cancel(&a->timer);
+	if (a->v->port_close)
+		a->v->port_close(a);
 	clk_disable_unprepare(a->port_clk);
 	a->substream = NULL;
 	return 0;
@@ -887,6 +914,7 @@ static const struct s5l_variant s5l8945x_variant = {
 	.port_prepare = s5x_port_prepare,
 	.port_start = s5x_port_start,
 	.port_stop = s5x_port_stop,
+	.port_close = s5x_port_close,
 };
 
 static const struct of_device_id s5l_audio_of_match[] = {

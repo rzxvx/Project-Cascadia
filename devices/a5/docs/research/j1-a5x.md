@@ -261,7 +261,7 @@ I2S0 + `0x10`. I2S0 is the clock master. What was measured:
 | NCO reference | 342 MHz | Not the A5's 24 MHz: with 24 MHz the port ran 14–17 times too fast. NCO *n* is at PMGR + `0x130` + 16*n* |
 | Bit clock | NCO 0 = 32 fs | 1.536 MHz at 48 kHz drained 95,935 words/s |
 | MCS + `0x10` + 4*i* | NCO selector for lane *i* | Reset values 0..4. Lane 0 must stay 0; 1–3 stop I2S0 |
-| MCLK | CLKCON `0x181` = 6 MHz | Not from the NCO; the codec needs it before it powers up |
+| MCLK | CLKCON `0x181`: nclk / 4 | Not from the NCO. 6 MHz if nclk is 24 MHz, as iOS's choice of divider implies; not measured. The codec needs it before it powers up |
 | i2s-switch (`0x3fa01000`) | reg 0 = `0x44`, reg 12 (+`0x30`) = 1 | reg 12 enables pin group 0's MCK. Without it there is no MCLK |
 | Pads | 115 MCK, 116 LRCK, 117 BCLK, 118 DOUT | |
 | TXCOM | `0x01feca06` run, `0x01feca04` idle | BCLK and LRCK run only while TXCOM is not 0. The FIFO drops words while it is 0 |
@@ -270,6 +270,8 @@ I2S0 + `0x10`. I2S0 is the clock master. What was measured:
 Between streams, the driver keeps the port at the idle TXCOM value while
 the codec has MCLK. If the port stops instead (TXCOM 0), the bit and frame
 clocks stop under the codec, and you hear a tick at the end of each stream.
+A stream that starts within the codec's power-down delay finds the port
+running and leaves it as it is. Only a change of rate configures it again.
 
 The CS42L63 is Apple's part and has no public datasheet. Its ID registers
 read `42 a6 3x` (revision `b0` on this iPad). Its volume coding and rate

@@ -55,7 +55,7 @@ struct cs42l63 {
 	struct gpio_desc *amp;
 	unsigned int rate_code;
 	unsigned int vol[2];		/* control values, 0 .. CS42L63_VOL_MAX */
-	bool powered, speaker_on;
+	bool mclk_on, powered, speaker_on;
 };
 
 struct cs42l63_reg_upd {
@@ -202,29 +202,26 @@ static int cs42l63_power_event(struct snd_soc_dapm_widget *w,
 
 	switch (event) {
 	case SND_SOC_DAPM_PRE_PMU:
-		/*
-		 * Looked up here, not at probe: MCLK's provider is the sound
-		 * card's own driver, which waits for this one to probe.
-		 */
-		if (!cs->mclk) {
-			struct clk *mclk = devm_clk_get(cs->dev, "mclk");
-
-			if (IS_ERR(mclk))
-				return dev_err_probe(cs->dev, PTR_ERR(mclk), "no MCLK\n");
-			cs->mclk = mclk;
-		}
 		ret = clk_prepare_enable(cs->mclk);
-		if (ret)
+		if (ret) {
+			dev_err(cs->dev, "no MCLK: %d\n", ret);
 			return ret;
+		}
 		ret = cs42l63_power_up(cs);
 		if (ret) {
 			dev_err(cs->dev, "power-up failed: %d\n", ret);
 			clk_disable_unprepare(cs->mclk);
+			return ret;
 		}
-		return ret;
+		cs->mclk_on = true;
+		return 0;
 	case SND_SOC_DAPM_POST_PMD:
+		/* DAPM goes on after a failed PRE_PMU: undo only what was done */
+		if (!cs->mclk_on)
+			return 0;
 		cs42l63_power_down(cs);
 		clk_disable_unprepare(cs->mclk);
+		cs->mclk_on = false;
 		return 0;
 	}
 	return 0;
@@ -239,6 +236,8 @@ static int cs42l63_speaker_event(struct snd_soc_dapm_widget *w,
 
 	switch (event) {
 	case SND_SOC_DAPM_POST_PMU:
+		if (!cs->powered)		/* the power-up failed */
+			return -EIO;
 		ret = cs42l63_run(cs, cs42l63_speaker_seq, ARRAY_SIZE(cs42l63_speaker_seq));
 		if (!ret)
 			ret = cs42l63_write_volume(cs);
@@ -263,7 +262,7 @@ static int cs42l63_speaker_event(struct snd_soc_dapm_widget *w,
 /* -76 dB in 2 dB steps to -50, then 1 dB steps (the CS42L73's coding) */
 static const DECLARE_TLV_DB_RANGE(cs42l63_vol_tlv,
 	0, 13, TLV_DB_SCALE_ITEM(-7600, 200, 0),
-	14, 75, TLV_DB_SCALE_ITEM(-4900, 100, 0)
+	14, CS42L63_VOL_MAX, TLV_DB_SCALE_ITEM(-4900, 100, 0)
 );
 
 /*
@@ -443,6 +442,14 @@ static int cs42l63_i2c_probe(struct i2c_client *client)
 	cs->regmap = devm_regmap_init_i2c(client, &cs42l63_regmap);
 	if (IS_ERR(cs->regmap))
 		return PTR_ERR(cs->regmap);
+
+	/*
+	 * MCLK comes from the SoC's audio node, which registers it before it
+	 * creates the sound card: until then, this probe is deferred.
+	 */
+	cs->mclk = devm_clk_get(dev, "mclk");
+	if (IS_ERR(cs->mclk))
+		return dev_err_probe(dev, PTR_ERR(cs->mclk), "no MCLK\n");
 
 	/* the speaker amplifier, off until a stream needs it */
 	cs->amp = devm_gpiod_get(dev, "speaker-amp", GPIOD_OUT_LOW);
