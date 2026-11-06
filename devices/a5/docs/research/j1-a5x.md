@@ -65,7 +65,11 @@ What does not carry over from the mini's chain:
 - **The early console is required.** `earlycon=j1fb`
   (`arch/arm/mach-apple/j1_earlyfb.c`) draws the boot log on iBoot's
   scanout with an 8x8 font at scale 2, putting its section mappings back
-  while `prepare_page_table` and `devicemaps_init` clear them. Without it
+  while `prepare_page_table` and `devicemaps_init` clear them. It draws
+  portrait (home button at the bottom) and stops once simplefb registers;
+  from there fbcon has the panel (`console=tty0 fbcon=rotate:1`), with a
+  penguin per core and the log in TER16x32 if the kernel has the font.
+  Without it
   the kernel stops before the gadget comes up and the screen stays blank
   under the backlight. Booted both ways with nothing else changed; it is the
   only kernel change the J1 needs beyond the drivers below. Why it matters
@@ -113,11 +117,33 @@ the GPIO controller (its registers differ, below) or `system-power-controller`
 - PMU GPIO *n* is configured at `0x64 + n` (the D1946's is `0x61 + n`).
 - Backlight: an 11-bit DAC at `0xd3` (bits 10:3) and `0xd4` (bits 2:0), the
   string enable at `0xd5` (`0x3f` lit). The mini's `0xd0`/`0xd1` are
-  something else on this chip. The DTS has no backlight node yet.
+  something else on this chip. `wled@d3` in the DTS binds `apple-pmu-wled`
+  with `apple,enable-reg = <0xd5>`; iOS leaves it at 1669 of 2047.
 - Input-current limit: `0x3e`. iBEC leaves it at `0x02`, about 100 mA, and
   the battery drains under Linux even on a charger. `0x4a` is 1000 mA: at
   idle that turned about -190 mA into about +210 mA. It is written by hand
   from userspace for now; there is no charger driver.
+
+## CPUs
+
+CPU0's MPIDR is `0x80000900`: cluster 9, not the mini's `0xa`. With the
+mini's `0xa00`/`0xa01` in the cpu nodes Linux found no node for the boot
+CPU, fell back to one possible CPU, and CPU1 could not even be onlined.
+With `0x900`/`0x901` the mini's `platsmp.c` starts CPU1 unchanged (core
+mask 2 to PMGR `+0x1214`/`+0x1220`, the trampoline in the reset page at
+`0x80000000`), and its power-down idle works the same: about 2 cycles a
+second at idle, none lost. Tested with both cores busy, Wi-Fi bring-up and
+scans under that load.
+
+## Battery
+
+The gauge is the mini's bq27540 on HDQ through UART5 (`0x32a00000`, pin 196
+in peripheral mode), and the mini's driver reads it. The difference: J1's
+iBoot sets UART5's registers up but leaves its power state off
+(`0x3f101128`, PMGR power-state index `0x4a`, reads `0x200`), so every read
+returned nothing. The DTS gives the gauge a `uart5-ps` clock gate on that
+register, which the driver turns on when it has one. Design capacity
+11560 mAh.
 
 ## Touch
 
@@ -179,9 +205,8 @@ page reads return status `0x40` and repeat byte for byte.
 ## Not done
 
 - The early fault that `earlycon=j1fb` hides.
-- CPU1 (`maxcpus=1`).
 - The GPU and a display driver: the panel is eDP (`edp@9500000`) fed by
   CLCD through a highland-park scaler at `0x0b020000`, not MIPI-DSI.
 - A PHY driver for the second USB complex.
-- A backlight node, a charger driver (the input limit above is set by hand),
-  the battery, audio, Bluetooth, NAND writes.
+- A charger driver (the input limit above is set by hand), audio,
+  Bluetooth, NAND writes.
