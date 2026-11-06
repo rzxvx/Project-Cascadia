@@ -49,19 +49,14 @@ What does not carry over from the mini's chain:
 - **The loader** (ARM, at `0x80000000`) stops the watchdog through iBoot's
   mapping (`0x0F103020`; the physical `0x3F103020` is the wrong address while
   the MMU is on), cleans L1 and the PL310, turns the MMU off and enters the
-  zImage at `0x80008000` with `r0=0`, `r1=~0` and `r2` = the appended DTB.
-  It also plants four hooks in the relocated decompressor, without which
-  decompression did not get through:
-  - `cache_on`'s SCTLR write loses M and C.
-  - At `decompress_kernel` the DTB is copied to `0x84000000`.
-  - `do_decompress` runs with DRAM identity-mapped and the caches on, L1
-    and L2 cleaned first.
-  - After it, L1 and L2 are cleaned and the MMU and caches turned off
-    before `__enter_kernel`.
-
-  The hook sites are offsets into the decompressor, so they hold for one
-  compiler (GCC 11.4 here) and are checked against the zImage's words
-  before packing.
+  uncompressed kernel `Image` at `0x80008000` with `r0=0`, `r1=~0` and `r2` =
+  the DTB, which it first copies to `0x84000000`, clear of the kernel's BSS.
+  It also sets the Cortex-A9 errata bits 743622 and 751472, which the kernel
+  only sets after `paging_init` has done the page-table writes they guard.
+  A header before the Image (`J1IM`, the DTB's offset and size) says where
+  the DTB is. No decompressor runs: an earlier loader entered the zImage and
+  had to patch four sites in the decompressor (its `cache_on` MMU enable
+  never returned on this board), at offsets that held for one compiler only.
 - **The early console.** `earlycon=j1fb`
   (`arch/arm/mach-apple/j1_earlyfb.c`) draws the boot log on iBoot's
   scanout with an 8x8 font at scale 2, putting its section mappings back

@@ -1331,7 +1331,7 @@ index c4778edae..296545649 100644
  	free_initmem();
  	mark_readonly();
  
-@@ -1492,7 +1572,10 @@ static int __ref kernel_init(void *unused)
+@@ -1492,7 +1578,10 @@ static int __ref kernel_init(void *unused)
  	do_sysctl_args();
  
  	if (ramdisk_execute_command) {

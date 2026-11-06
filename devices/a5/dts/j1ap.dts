@@ -370,7 +370,8 @@
 				 * The backlight. The D1974's LED DAC is 11 bits like
 				 * the D1946's, but at 0xd3 (bits 10:3) and 0xd4 (bits
 				 * 2:0), with the string enable at 0xd5 (0x3f with the
-				 * panel lit; iBoot leaves 0xd3 = 0x40, level 512) --
+				 * panel lit; iBoot leaves 0xd3 = 0x40, level 512, and booted
+				 * from iOS through kloader it is iOS's level, 1669 here) --
 				 * AppleD1974PMU's backlight update. 0xd0/0xd1, the
 				 * mini's DAC, read 0 here.
 				 */
