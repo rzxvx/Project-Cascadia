@@ -174,8 +174,10 @@ status of `4969` is normal. With the scan started (`bf 9f 0b 0b 02`, `af
 
 A BCM4330 B2 on HSIC port 2 of a second USB complex (`usb1-complex`,
 `0x3f109000`; its EHCI at `0x36c00000`, IRQ 162), not on the mini's EHCI.
-iBoot leaves that complex off and there is no PHY driver for it yet, so
-it is brought up by hand from a running system:
+iBoot leaves that complex off. The PHY driver
+(`apple,s5l8945x-usb1-phy` in `phy-apple-s5l-usb.c`) powers it at boot the
+way iOS's setPower(1) does, and EHCI waits for it; `wlan0` is up about 7 s
+into the boot. The sequence, first worked out by hand:
 
 1. PMGR: USB1-REG `0x3f1010b4` (the PHY's parent; without it the PHY reads
    bus junk) and USB1-EHCI `0x3f1010a4`, `0x20f` → `0x2ff`.
@@ -183,10 +185,11 @@ it is brought up by hand from a running system:
 3. The PHY at `0x36800000`, as iOS's setPower(1) does it: +`0x08` |= `0x3f`,
    +`0x60` = `0x2e0`, +`0x00` = `0x0f`, +`0x04` = `0x11`, +`0x40` = `0x349`,
    +`0x44` = `0x733`, 20 µs, +`0x08` &= ~`0x02`, 1 ms, +`0x08` &= ~`0x08`.
-4. EHCI +`0xb0` = `0x2` (HSIC port mask); REG_ON is PMU GPIO 3 (`0x67` =
-   `0x0b`).
-5. Bind `36c00000.usb` to ehci-platform again (the probe at boot fails -110
-   while the domain is off).
+4. REG_ON, PMU GPIO 3 (`0x67` = `0x0b`; the DTS's `wlan_reg_on`).
+
+EHCI +`0xb0` = `0x2` (an HSIC port mask) was part of the hand bring-up and
+is not needed: with it at 0 the chip enumerates and its firmware loads the
+same.
 
 The boot ROM then enumerates as `0a5c:bd19`. The firmware is iOS's
 `4330b2/mike.trx` with its NVRAM (`mike.txt`) and a `macaddr=` appended,
@@ -207,6 +210,5 @@ page reads return status `0x40` and repeat byte for byte.
 - The early fault that `earlycon=j1fb` hides.
 - The GPU and a display driver: the panel is eDP (`edp@9500000`) fed by
   CLCD through a highland-park scaler at `0x0b020000`, not MIPI-DSI.
-- A PHY driver for the second USB complex.
 - A charger driver (the input limit above is set by hand), audio,
   Bluetooth, NAND writes.

@@ -7,6 +7,7 @@
  * while its own USB (DFU) is actively enumerated, i.e. known-working state.
  */
 
+#include <linux/clk.h>
 #include <linux/delay.h>
 #include <linux/io.h>
 #include <linux/module.h>
@@ -318,6 +319,127 @@ static const struct phy_ops s5l_hostphy_ops = {
 	.owner     = THIS_MODULE,
 };
 
+/*
+ * The A5X's second USB complex (iPad3,1: the Wi-Fi's HSIC port), a PHY of
+ * its own -- ADT otgphyctrl1 at 0x36800000 -- that iBoot leaves off, with
+ * its EHCI at 0x36c00000.  This is what iOS's setPower(1) does, measured on
+ * the J1 (docs/research/j1-a5x.md, "Wi-Fi"):
+ *
+ *   clocks       the PMGR power states USB1-REG (0x3f1010b4, the PHY's
+ *                parent: without it the PHY reads bus junk) and USB1-EHCI
+ *                (0x3f1010a4), in that order
+ *   reg 1        usb1-complex USB_CTL (0x3f109000) = 0x84: HSIC on, no
+ *                automatic clock gating
+ *   reg 0        the PHY: all resets asserted, the 24 MHz reference and
+ *                tuning, then reset bit 1 released and, 1 ms later, bit 3
+ *                (port 2)
+ *   hsic-supply  the BCM4330's REG_ON (PMU GPIO 3), last; its boot ROM then
+ *                connects on port 2 as 0a5c:bd19
+ *
+ * EHCI's +0xb0, which the hand bring-up also wrote (0x2), is not needed:
+ * with it at 0 the chip enumerates and its firmware comes up the same.
+ */
+#define USB1_CTL_HSIC_ON	0x84
+#define USB1_RST_ALL		0x3f
+#define USB1_RST_PHY		BIT(1)
+#define USB1_RST_PORT2		BIT(3)
+
+struct s5l_usb1phy {
+	void __iomem *base;
+	void __iomem *ctl;
+	struct clk_bulk_data *clks;
+	int num_clks;
+	struct regulator *hsic_supply;
+	bool on;
+};
+
+static int s5l_usb1phy_power_on(struct phy *phy)
+{
+	struct s5l_usb1phy *p = phy_get_drvdata(phy);
+	int ret;
+
+	if (p->on)
+		return 0;
+	ret = clk_bulk_prepare_enable(p->num_clks, p->clks);
+	if (ret)
+		return ret;
+
+	writel(USB1_CTL_HSIC_ON, p->ctl);
+	writel(readl(p->base + ORSTCON) | USB1_RST_ALL, p->base + ORSTCON);
+	writel(0x2e0, p->base + OPHYUNK4);
+	writel(0x0f, p->base + OPHYPWR);
+	writel(0x11, p->base + OPHYCLK);	/* 24 MHz reference */
+	writel(0x349, p->base + 0x40);
+	writel(0x733, p->base + OPHYUNK2);
+	udelay(20);
+	writel(readl(p->base + ORSTCON) & ~USB1_RST_PHY, p->base + ORSTCON);
+	usleep_range(1000, 1500);
+	writel(readl(p->base + ORSTCON) & ~USB1_RST_PORT2, p->base + ORSTCON);
+
+	ret = regulator_enable(p->hsic_supply);
+	if (ret) {
+		writel(readl(p->base + ORSTCON) | USB1_RST_ALL, p->base + ORSTCON);
+		clk_bulk_disable_unprepare(p->num_clks, p->clks);
+		return ret;
+	}
+	p->on = true;
+	dev_info(&phy->dev, "usb1 PHY on: PWR=0x%x CLK=0x%x RST=0x%x USB_CTL=0x%x\n",
+		 readl(p->base + OPHYPWR), readl(p->base + OPHYCLK),
+		 readl(p->base + ORSTCON), readl(p->ctl));
+	return 0;
+}
+
+static int s5l_usb1phy_power_off(struct phy *phy)
+{
+	struct s5l_usb1phy *p = phy_get_drvdata(phy);
+
+	if (!p->on)
+		return 0;
+	regulator_disable(p->hsic_supply);
+	writel(readl(p->base + ORSTCON) | USB1_RST_ALL, p->base + ORSTCON);
+	clk_bulk_disable_unprepare(p->num_clks, p->clks);
+	p->on = false;
+	return 0;
+}
+
+static const struct phy_ops s5l_usb1phy_ops = {
+	.power_on  = s5l_usb1phy_power_on,
+	.power_off = s5l_usb1phy_power_off,
+	.owner     = THIS_MODULE,
+};
+
+static int s5l_usb1phy_probe(struct platform_device *pdev)
+{
+	struct device *dev = &pdev->dev;
+	struct phy_provider *provider;
+	struct s5l_usb1phy *p;
+	struct phy *phy;
+
+	p = devm_kzalloc(dev, sizeof(*p), GFP_KERNEL);
+	if (!p)
+		return -ENOMEM;
+	p->base = devm_platform_ioremap_resource(pdev, 0);
+	if (IS_ERR(p->base))
+		return PTR_ERR(p->base);
+	p->ctl = devm_platform_ioremap_resource(pdev, 1);
+	if (IS_ERR(p->ctl))
+		return PTR_ERR(p->ctl);
+	p->num_clks = devm_clk_bulk_get_all(dev, &p->clks);
+	if (p->num_clks < 0)
+		return dev_err_probe(dev, p->num_clks, "power states\n");
+	/* The PMU is behind I2C: wait for it.  EHCI waits for this PHY. */
+	p->hsic_supply = devm_regulator_get(dev, "hsic");
+	if (IS_ERR(p->hsic_supply))
+		return dev_err_probe(dev, PTR_ERR(p->hsic_supply), "hsic-supply\n");
+
+	phy = devm_phy_create(dev, NULL, &s5l_usb1phy_ops);
+	if (IS_ERR(phy))
+		return PTR_ERR(phy);
+	phy_set_drvdata(phy, p);
+	provider = devm_of_phy_provider_register(dev, of_phy_simple_xlate);
+	return PTR_ERR_OR_ZERO(provider);
+}
+
 /* <&otgphy 0> is the OTG PHY dwc2 has always had, <&otgphy 1> the host
  * side.  With #phy-cells = <0> there are no args, and that is the OTG PHY. */
 static struct phy *s5l_usbphy_xlate(struct device *dev,
@@ -336,6 +458,9 @@ static int s5l_usbphy_probe(struct platform_device *pdev)
 	struct s5l_usbphy *p;
 	struct phy *phy;
 	struct phy_provider *provider;
+
+	if (of_device_is_compatible(pdev->dev.of_node, "apple,s5l8945x-usb1-phy"))
+		return s5l_usb1phy_probe(pdev);
 
 	dev_info(&pdev->dev, "Apple S5L USB PHY probe\n");
 
@@ -392,6 +517,7 @@ static int s5l_usbphy_probe(struct platform_device *pdev)
 static const struct of_device_id s5l_usbphy_of_match[] = {
 	{ .compatible = "apple,s5l8940x-otgphy" },
 	{ .compatible = "apple,s5l8930x-otgphy" },
+	{ .compatible = "apple,s5l8945x-usb1-phy" },
 	{ },
 };
 MODULE_DEVICE_TABLE(of, s5l_usbphy_of_match);

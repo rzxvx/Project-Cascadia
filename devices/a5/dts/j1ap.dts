@@ -224,6 +224,25 @@
 			clock-output-names = "uart5_ps";
 		};
 
+		/* The second USB complex's power states (the Wi-Fi's EHCI):
+		 * USB1-REG, the PHY's parent, and USB1-EHCI. iBoot leaves both
+		 * off (0x200). The PHY driver turns them on in this order. */
+		usb1_reg_ps: usb1-reg-ps@f1010b4 {
+			compatible = "apple,s5l8940x-pmgr-clk-gate";
+			#clock-cells = <0>;
+			reg = <0xf1010b4 0x4>;
+			clocks = <&uart_clk>;
+			clock-output-names = "usb1_reg_ps";
+		};
+
+		usb1_ehci_ps: usb1-ehci-ps@f1010a4 {
+			compatible = "apple,s5l8940x-pmgr-clk-gate";
+			#clock-cells = <0>;
+			reg = <0xf1010a4 0x4>;
+			clocks = <&uart_clk>;
+			clock-output-names = "usb1_ehci_ps";
+		};
+
 		/* UART5 as the battery gauge's HDQ bus: the ADT's uart5/gas-gauge,
 		 * a bq27540 as on the mini. Pin 196 is in peripheral mode as
 		 * iBoot leaves it. Read from userspace with UART5 powered: 97%,
@@ -282,6 +301,18 @@
 					reg = <0x64>;
 					mask = <0x40>;
 					enable = <0x40>;
+				};
+
+				/* The BCM4330's REG_ON: the ADT's wlan
+				 * function-device_reset is PMU GPIO 3, config
+				 * register 0x64 + 3. Linux boots with 0x09; bit 1 is
+				 * the output level (0x0b with Wi-Fi up). The usb1 PHY
+				 * takes it as hsic-supply. */
+				wlan_reg_on: wlan_reg_on@67 {
+					compatible = "apple,pmu-pwrsw";
+					reg = <0x67>;
+					mask = <0x02>;
+					enable = <0x02>;
 				};
 
 				/*
@@ -371,19 +402,30 @@
 		};
 
 		/*
-		 * Wi-Fi: the second USB complex's EHCI, ADT
-		 * usb1-complex/usb1-ehci at 0x36c00000, irq 162. Its PHY
-		 * (otgphyctrl1, 0x36800000) is left off by iBoot and has no
-		 * Linux driver yet, so for now it is powered by hand (PMGR,
-		 * PHY, USB_CTL, then REG_ON; docs/research/j1-a5x.md) and this
-		 * controller is bound again after that -- the probe at boot
-		 * fails -110 while the domain is off. The BCM4330 is on HSIC
-		 * port 2.
+		 * Wi-Fi: the second USB complex. Its PHY (ADT otgphyctrl1)
+		 * is left off by iBoot; the PHY driver powers it the way iOS
+		 * does (PMGR, USB_CTL at usb1-complex 0x3f109000, the PHY,
+		 * then REG_ON; docs/research/j1-a5x.md), and EHCI waits for
+		 * it.
 		 */
+		usb1phy: phy@6800000 {
+			compatible = "apple,s5l8945x-usb1-phy";
+			reg = <0x6800000 0x1000>,
+			      <0xf109000 0x4>;
+			clocks = <&usb1_reg_ps>, <&usb1_ehci_ps>;
+			hsic-supply = <&wlan_reg_on>;
+			#phy-cells = <0>;
+			status = "okay";
+		};
+
+		/* ADT usb1-complex/usb1-ehci at 0x36c00000, irq 162. The
+		 * BCM4330 is on HSIC port 2. */
 		ehci1: usb@6c00000 {
 			compatible = "apple,s5l8945x-ehci", "generic-ehci";
 			reg = <0x6c00000 0x10000>;
 			interrupts = <162>;
+			phys = <&usb1phy>;
+			phy-names = "usb";
 			apple,hsic-ports = <0x2>;
 			#address-cells = <1>;
 			#size-cells = <0>;
