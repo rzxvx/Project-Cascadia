@@ -43,11 +43,9 @@
 		 * first console is the gadget's ACM port.
 		 *
 		 * earlycon=j1fb (arch/arm/mach-apple/j1_earlyfb.c) draws the
-		 * boot log on iBoot's scanout, and the boot needs it: without
-		 * it the kernel stops before the gadget comes up, with nothing
-		 * on the screen. Why is not known yet; the console is slow,
-		 * and that is the suspect. Booted both ways, nothing else
-		 * changed.
+		 * boot log on iBoot's scanout until fbcon takes over. It is
+		 * optional: the J1 used to hang without it, from the missing
+		 * tick before the AIC timer (patches/tree/0003).
 		 *
 		 * console=tty0 also sends the log to fbcon, which takes the
 		 * panel over from j1fb when simplefb registers: the penguins and

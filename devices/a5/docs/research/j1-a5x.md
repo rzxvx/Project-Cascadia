@@ -62,18 +62,25 @@ What does not carry over from the mini's chain:
   The hook sites are offsets into the decompressor, so they hold for one
   compiler (GCC 11.4 here) and are checked against the zImage's words
   before packing.
-- **The early console is required.** `earlycon=j1fb`
+- **The early console.** `earlycon=j1fb`
   (`arch/arm/mach-apple/j1_earlyfb.c`) draws the boot log on iBoot's
   scanout with an 8x8 font at scale 2, putting its section mappings back
   while `prepare_page_table` and `devicemaps_init` clear them. It draws
   portrait (home button at the bottom) and stops once simplefb registers;
   from there fbcon has the panel (`console=tty0 fbcon=rotate:1`), with a
   penguin per core and the log in TER16x32 if the kernel has the font.
-  Without it
-  the kernel stops before the gadget comes up and the screen stays blank
-  under the backlight. Booted both ways with nothing else changed; it is the
-  only kernel change the J1 needs beyond the drivers below. Why it matters
-  is not found. The console is slow, and that is the suspect.
+  It used to be required: without it the kernel hung before the gadget,
+  with a blank screen. Keeping the console registered and taking its parts
+  away: a do-nothing console, the section mappings alone, and a cheap one
+  (a block per message) all hung; 2 ms of delay per message got past it.
+  The block count put the hang between `smp_prepare_cpus()` and the first
+  early initcall, where `workqueue_init()` makes kernel threads -- before
+  `aic1_timer_init` (an early_initcall) registers the first clockevent.
+  From the code, the likely mechanism: `kthread_bind()` ->
+  `wait_task_inactive()` sleeps one tick on an hrtimer when the new thread
+  was preempted before it slept, and with no clockevent that sleep never
+  ends; how slow the console is changes the scheduling. `kernel_init()` now starts the AIC timer right after the AIC is
+  re-armed (`patches/tree/0003`), and the J1 boots with no early console.
 
 ## Memory
 
@@ -207,7 +214,8 @@ page reads return status `0x40` and repeat byte for byte.
 
 ## Not done
 
-- The early fault that `earlycon=j1fb` hides.
+- One hang at 7.2 s, during the touch firmware download, on the 2 ms
+  test image above (not reproduced; the AIC timer was up by then).
 - The GPU and a display driver: the panel is eDP (`edp@9500000`) fed by
   CLCD through a highland-park scaler at `0x0b020000`, not MIPI-DSI.
 - A charger driver (the input limit above is set by hand), audio,

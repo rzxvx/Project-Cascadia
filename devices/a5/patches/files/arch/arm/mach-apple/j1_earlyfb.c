@@ -24,8 +24,10 @@
  * boot console whose code is in init memory, so this hands the panel back
  * (to simplefb/fbcon and userspace) at late_initcall time.
  *
- * Without a console this slow, the kernel dies early in boot on J1; with
- * it, it boots. The underlying fault is not found yet.
+ * It used to be required: without it the J1 hung early in boot. That was
+ * the missing tick before the AIC timer (irq-apple-aic1.c,
+ * apple_aic1_timer_start), which a slow console happened to hide. It is
+ * the boot log on the glass now, nothing more.
  */
 #include <linux/console.h>
 #include <linux/init.h>
