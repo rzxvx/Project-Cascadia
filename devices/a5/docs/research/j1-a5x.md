@@ -80,7 +80,7 @@ What does not carry over from the mini's chain:
   `wait_task_inactive()` sleeps one tick on an hrtimer when the new thread
   was preempted before it slept, and with no clockevent that sleep never
   ends; how slow the console is changes the scheduling. `kernel_init()` now starts the AIC timer right after the AIC is
-  re-armed (`patches/tree/0003`), and the J1 boots with no early console.
+  re-armed (in `patches/tree/0001`, `init/main.c`), and the J1 boots with no early console.
 
 ## Memory
 
@@ -115,9 +115,11 @@ SPI1 off every SPI read returned one repeated junk byte.
 ## PMU: D1974
 
 `pmu,d1974` at I2C0 `0x3c` (I2C0 is IRQ 18). It takes the same 8-bit
-register addresses as the D1946 and binds as `apple,pmu-d1946`, without
-the GPIO controller (its registers differ, below) or `system-power-controller`
-(the D1946's power-off is not checked against this chip).
+register addresses as the D1946. It binds as `apple,pmu-d1974`, which
+`apple-pmu-i2c.c` treats as a D1946 with its GPIO configuration registers at
+`0x64 + n` instead of `0x61 + n` (below), and without
+`system-power-controller` (the D1946's power-off is not checked against this
+chip).
 
 - LDO index 0 (touch, `function-power_ldo 0x200`): enable `0x23` bit `0x20`,
   voltage `0x31` (2.50–3.00 V), from AppleD1974PMU's LDO table.
@@ -206,6 +208,32 @@ second; the bus reset brcmfmac does for the 4334 loses it (-71 from then
 on). The brcmfmac change is a separate PR. With it, wlan0 scans 2.4 and
 5 GHz and joins WPA2.
 
+## Bluetooth
+
+The BCM4330's Bluetooth half, on UART3 (`0x32800000`, IRQ 24, clock gate 75:
+power state `0x3f101120`), not the mini's UART1. From the ADT
+(`uart3/bluetooth`, "bluetooth,n88", 3 Mbaud):
+
+| Property | Value | Meaning |
+|---|---|---|
+| uart3 `function-tx` | GPIO `0x0a06` | pin 86; RX 87, RTS 88, CTS 89 |
+| uart3 `function-rts` | GPIO `0x0b00` | pin 88 |
+| `function-bt_reset` | PMU (`pmu,d1974`), GPIO 2 | REG_ON, config register `0x64 + 2` |
+| `function-bt_wake` | SoC GPIO `0x0501` | pin 41 |
+
+The mini's five steps (`p105-bluetooth.md`) carry over. The patchram is
+iOS 9.3.5's `/usr/sbin/BlueTool` image "BCM4330B1 37.4 MHz Class 1.5 Olympic
+Mike Module" (67030 bytes, sha256 `a88eee64…`; Mike is the J1's module, as
+in `wifi/4330b2/mike.trx`), which `extract-bt-firmware.py` cuts out
+unchanged and btbcm loads as `brcm/BCM4330B1.hcd`. REG_ON is a GPIO through
+`apple-pmu-i2c.c`'s gpiochip, which now knows the D1974's base. With
+Apple's patchram the chip reports `43:30:43:30:1F:AC`, the 4330's version of
+the 4334's placeholder, and btbcm treats both as one. The UART runs at
+1.5 Mbaud for the same reason as the mini's.
+
+Tested: hci0 comes up at boot (chip id 62, build 1367 after the patch),
+and a 12 s passive LE scan heard 251 reports from 12 advertisers.
+
 ## NAND
 
 Read-only so far: Cascadia's PPN tool, with the bus power-state set-feature
@@ -218,5 +246,5 @@ page reads return status `0x40` and repeat byte for byte.
   test image above (not reproduced; the AIC timer was up by then).
 - The GPU and a display driver: the panel is eDP (`edp@9500000`) fed by
   CLCD through a highland-park scaler at `0x0b020000`, not MIPI-DSI.
-- A charger driver (the input limit above is set by hand), audio,
-  Bluetooth, NAND writes.
+- A charger driver (the input limit above is set by hand), audio, NAND
+  writes.

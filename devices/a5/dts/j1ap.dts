@@ -34,6 +34,7 @@
 
 	aliases {
 		serial0 = &uart0;
+		serial3 = &uart3;
 	};
 
 	chosen {
@@ -45,7 +46,7 @@
 		 * earlycon=j1fb (arch/arm/mach-apple/j1_earlyfb.c) draws the
 		 * boot log on iBoot's scanout until fbcon takes over. It is
 		 * optional: the J1 used to hang without it, from the missing
-		 * tick before the AIC timer (patches/tree/0003).
+		 * tick before the AIC timer (init/main.c, patches/tree/0001).
 		 *
 		 * console=tty0 also sends the log to fbcon, which takes the
 		 * panel over from j1fb when simplefb registers: the penguins and
@@ -164,6 +165,37 @@
 			status = "disabled";
 		};
 
+		/*
+		 * UART3: the BCM4330's Bluetooth half (ADT uart3/bluetooth,
+		 * "bluetooth,n88", transport-speed 3 Mbaud; the mini's is on
+		 * UART1). 24 MHz / 16 makes 1.5 Mbaud the fastest rate here.
+		 * From the ADT:
+		 *   function-bt_reset  PMU GPIO 2 (0x64 + 2 on the D1974)
+		 *   function-bt_wake   SoC GPIO 0x0501 = pin 41
+		 * The address is a fixed one in the gadget's family
+		 * (02:10:5A:31:00:04, bytes reversed); the patchram's own is a
+		 * placeholder.
+		 */
+		uart3: serial@2800000 {
+			compatible = "apple,s5l8940x-uart", "apple,s5l-uart",
+				     "samsung,s3c6400-uart";
+			reg = <0x2800000 0x1000>;
+			interrupts = <24>;
+			clocks = <&uart3_ps>, <&uart_clk>;
+			clock-names = "uart", "clk_uart_baud0";
+			pinctrl-names = "default";
+			pinctrl-0 = <&uart3_pins>;
+			status = "okay";
+
+			bluetooth {
+				compatible = "brcm,bcm4330-bt";
+				shutdown-gpios = <&pmu 2 0>;
+				device-wakeup-gpios = <&gpio 41 0>;
+				max-speed = <1500000>;
+				local-bd-address = [04 00 31 5a 10 02];
+			};
+		};
+
 		wdt: timer@f103020 {
 			compatible = "apple,s5l8940x-wdt-timer";
 			reg = <0xf103020 0x10>;
@@ -195,6 +227,14 @@
 			pin-count = <224>;
 			interrupt-groups = <1>;
 			status = "okay";
+
+			/* UART3, the Bluetooth chip's: the ADT's uart3 function-tx
+			 * and function-rts name 86 and 88, so TX 86, RX 87, RTS 88,
+			 * CTS 89 (the mini's UART1 is 40-43 the same way). */
+			uart3_pins: uart3-pins {
+				pins = "gpio86", "gpio87", "gpio88", "gpio89";
+				function = "periph";
+			};
 		};
 
 		/* SPI1's power-state switch. The pmgr node's device-clocks
@@ -208,6 +248,16 @@
 			reg = <0xf101104 0x4>;
 			clocks = <&uart_clk>;
 			clock-output-names = "spi1_ps";
+		};
+
+		/* UART3's power-state switch (gate 75, index 0x48), for
+		 * Bluetooth. */
+		uart3_ps: uart3-ps@f101120 {
+			compatible = "apple,s5l8940x-pmgr-clk-gate";
+			#clock-cells = <0>;
+			reg = <0xf101120 0x4>;
+			clocks = <&uart_clk>;
+			clock-output-names = "uart3_ps";
 		};
 
 		/* UART5's power-state switch, for the battery gauge: gate id 77,
@@ -266,14 +316,17 @@
 
 			/*
 			 * ADT pmu,d1974 at 0x3c. It takes an 8-bit register
-			 * address like the mini's D1946, so it binds as one. No
-			 * gpio-controller (the D1946 GPIO base 0x61 is 0x64 here)
-			 * and no system-power-controller (the D1946 power-off
-			 * masks are not checked against this chip).
+			 * address like the mini's D1946. apple-pmu-i2c.c knows it
+			 * as apple,pmu-d1974 for its GPIOs alone (0x64 + n, the
+			 * D1946's are 0x61 + n). No system-power-controller (the
+			 * D1946 power-off masks are not checked against this chip).
 			 */
 			pmu: pmu@3c {
-				compatible = "apple,pmu-d1946";
+				compatible = "apple,pmu-d1974", "apple,pmu-d1946";
 				reg = <0x3c>;
+				/* its output GPIOs, 0x64 + n: Bluetooth's reset is 2 */
+				gpio-controller;
+				#gpio-cells = <2>;
 				#address-cells = <1>;
 				#size-cells = <0>;
 
