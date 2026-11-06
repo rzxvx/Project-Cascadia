@@ -3,9 +3,15 @@
  * earlycon=j1fb: the boot log on iBoot's scanout, from parse_early_param on.
  *
  * iPad3,1 (J1) panel: 2048x1536, x8r8g8b8, stride 8192, at 0xbdb00000 (the
- * address the loader's framebuffer search found). Text is the 8x8 font at
- * scale 2, so 128 columns by 96 rows; it wraps to the top and clears the
- * line ahead instead of scrolling.
+ * address the loader's framebuffer search found). The panel scans out
+ * landscape with the home button on the left; the text is drawn portrait,
+ * home button at the bottom (rotated 90 degrees clockwise, as
+ * fbcon=rotate:1 does). The 8x8 font at scale 2 gives 96 columns by 128
+ * rows; it wraps to the top and clears the line ahead instead of scrolling.
+ *
+ * Once a framebuffer is registered (simplefb, a device_initcall) fbcon owns
+ * the panel -- with console=tty0 it redraws the log under the penguins --
+ * so this stops drawing there rather than at late_initcall.
  *
  * This runs before the kernel has any mapping for the panel, and while
  * prepare_page_table and devicemaps_init are still clearing kernel page
@@ -39,12 +45,24 @@
 #define J1FB_STRIDE	8192
 #define J1FB_SCALE	2
 #define J1FB_CELL	(FONT8_W * J1FB_SCALE)
-#define J1FB_COLS	(J1FB_W / J1FB_CELL)
-#define J1FB_ROWS	(J1FB_H / J1FB_CELL)
+/* Portrait: logical x runs down the scanout, logical y right to left. */
+#define J1FB_LW		J1FB_H
+#define J1FB_LH		J1FB_W
+#define J1FB_COLS	(J1FB_LW / J1FB_CELL)
+#define J1FB_ROWS	(J1FB_LH / J1FB_CELL)
 #define J1FB_FG		0x00ffffffu
 #define J1FB_BG		0x00000000u
 
 static unsigned int j1fb_col __initdata, j1fb_row __initdata;
+
+/* fbdev's count (fbmem.c); not in <linux/fb.h> */
+extern int num_registered_fb;
+
+/* The scanout address of logical (portrait) pixel lx, ly. */
+static inline u8 __iomem *j1fb_px(unsigned int lx, unsigned int ly)
+{
+	return (u8 __iomem *)J1FB_VIRT + lx * J1FB_STRIDE + (J1FB_W - 1 - ly) * 4;
+}
 
 /* Shared device, kernel RW, never executable. */
 #define J1FB_SECT_PROT	(PMD_TYPE_SECT | PMD_SECT_AP_WRITE | PMD_SECT_BUFFERABLE | \
@@ -75,33 +93,30 @@ static bool __init j1fb_mapped(void)
 
 static void __init j1fb_fill(unsigned int row, u32 color)
 {
-	u8 __iomem *base = (u8 __iomem *)J1FB_VIRT +
-			   row * J1FB_CELL * J1FB_STRIDE;
-	unsigned int y, x;
+	unsigned int x, y;
 
-	for (y = 0; y < J1FB_CELL; y++)
-		for (x = 0; x < J1FB_W; x++)
-			writel_relaxed(color, base + y * J1FB_STRIDE + x * 4);
+	for (x = 0; x < J1FB_LW; x++)
+		for (y = 0; y < J1FB_CELL; y++)
+			writel_relaxed(color, j1fb_px(x, row * J1FB_CELL + y));
 }
 
 static void __init j1fb_glyph(unsigned int col, unsigned int row, char ch)
 {
-	u8 __iomem *base = (u8 __iomem *)J1FB_VIRT +
-			   row * J1FB_CELL * J1FB_STRIDE + col * J1FB_CELL * 4;
 	const unsigned char *g;
 	unsigned int y, x;
 
 	if (ch < FONT8_FIRST || ch > FONT8_LAST)
 		ch = '?';
 	g = &font8x8[(ch - FONT8_FIRST) * FONT8_H];
-	for (y = 0; y < J1FB_CELL; y++) {
-		u8 bits = g[y / J1FB_SCALE];
-
-		for (x = 0; x < J1FB_CELL; x++) {
+	/* x outer: each x is one scanout line, so the writes stay close */
+	for (x = 0; x < J1FB_CELL; x++) {
+		for (y = 0; y < J1FB_CELL; y++) {
 			/* font8x8 stores the leftmost pixel in bit 0. */
+			u8 bits = g[y / J1FB_SCALE];
 			u32 c = (bits >> (x / J1FB_SCALE)) & 1 ? J1FB_FG : J1FB_BG;
 
-			writel_relaxed(c, base + y * J1FB_STRIDE + x * 4);
+			writel_relaxed(c, j1fb_px(col * J1FB_CELL + x,
+						  row * J1FB_CELL + y));
 		}
 	}
 }
@@ -117,6 +132,8 @@ static void __init j1fb_newline(void)
 
 static void __init j1fb_write(struct console *con, const char *s, unsigned int n)
 {
+	if (IS_BUILTIN(CONFIG_FB_CORE) && READ_ONCE(num_registered_fb))
+		return;		/* fbcon has the panel */
 	if (!j1fb_mapped())
 		return;
 	while (n--) {
@@ -141,7 +158,10 @@ static int __init j1fb_setup(struct earlycon_device *dev, const char *opt)
 		return -EBUSY;
 	j1fb_col = 0;
 	j1fb_row = 0;
-	j1fb_fill(0, J1FB_BG);
+	/* iBoot's picture off: a black screen, as a normal boot starts */
+	for (j1fb_row = 0; j1fb_row < J1FB_ROWS; j1fb_row++)
+		j1fb_fill(j1fb_row, J1FB_BG);
+	j1fb_row = 0;
 	j1fb_fill(1, 0x00404040u);
 	dev->con->write = j1fb_write;
 	return 0;
