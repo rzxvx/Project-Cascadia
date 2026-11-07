@@ -1,9 +1,15 @@
 #!/usr/bin/env bash
-# Project Cascadia — A12 / iPhone XR (N841AP), called by ./cascadia a12.
+# Project Cascadia — A12 / N841 XR and J171a iPad 8, called by ./cascadia a12.
 set -euo pipefail
 
 A12="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$A12"
+if [ "${1:-}" = --device ]; then
+    [ $# -ge 2 ] || { echo '--device requires xr or ipad8' >&2; exit 2; }
+    export A12_DEVICE="$2"
+    shift 2
+fi
+source "$A12/profile.sh"
 
 say()  { printf '==> %s\n' "$*"; }
 note() { printf '    %s\n' "$*"; }
@@ -12,7 +18,10 @@ have() { command -v "$1" >/dev/null 2>&1; }
 
 usage() {
     cat <<'EOF'
-Project Cascadia — iPhone XR (A12/N841)
+Project Cascadia — Apple A12 (XR / iPad 8 Wi-Fi)
+
+Select: ./cascadia a12 --device xr|ipad8 COMMAND
+        A12_DEVICE=xr|ipad8 ./cascadia a12 COMMAND
 
   ./cascadia a12 doctor              check host tools and local inputs
   ./cascadia a12 inputs              fetch/patch first-stage inputs (IM4M=...)
@@ -32,36 +41,40 @@ cmd_doctor() {
     for t in bash git python3 curl ssh sha256sum dtc cpp fdtget fdtput img4 irecovery ipsw; do
         if have "$t"; then note "ok:      $t"; else note "MISSING: $t"; rc=1; fi
     done
-    if have usbliter8ctl || [ -x "$A12/../a13/usbliter8ctl" ] || \
+    if have usbliter8ctl || [ -x "$A12/vendor/a13-tools/usbliter8ctl" ] || \
        [ -x /picotool/spironolactone/Linux/aarch64/usbliter8ctl ]; then
         note "ok:      usbliter8ctl"
     else
-        note "MISSING: usbliter8ctl (PATH, devices/a13, or USBLITER8CTL=...)"; rc=1
+        note "MISSING: usbliter8ctl (PATH, devices/a12/vendor/a13-tools, or USBLITER8CTL=...)"; rc=1
     fi
-    [ -s boot/extracted/iBSS.raw ] && note "ok:      XR iBSS" || note "missing: XR iBSS — run inputs"
-    [ -s boot/extracted/DeviceTree.raw ] && note "ok:      XR DeviceTree" || note "missing: XR DeviceTree — run inputs"
-    [ -s boot/inputs/syscfg.bin ] && note "ok:      private SysCfg (ignored)" || note "optional: private SysCfg"
-    [ -s boot/inputs/brcm/BCM4349B1.apple,n841.hcd ] && note "ok:      radio firmware" || note "optional: radio firmware — run periphery OS.dmg"
+    [ -s "$A12_EXTRACTED/iBSS.raw" ] && note "ok:      selected iBSS" || note "missing: selected iBSS — run inputs"
+    [ -s "$A12_EXTRACTED/DeviceTree.raw" ] && note "ok:      selected DeviceTree" || note "missing: selected DeviceTree — run inputs"
+    [ -s "$A12_SYSCFG" ] && note "ok:      private SysCfg (ignored)" || note "optional: private SysCfg"
+    [ -d "$A12_INPUTS/brcm" ] || [ -d "$A12_INPUTS/radios" ] && note "ok:      radio firmware" || note "optional: radio firmware — run periphery OS.dmg"
     [ -s build/payload/Image.gz ] && note "ok:      kernel" || note "missing: kernel — run build kernel"
-    [ -s boot/inputs/m1n1-linux.img4 ] && note "ok:      packed Linux IMG4" || note "missing: packed image — run pack"
+    [ -s "$A12_BOOT/linux.img4" ] && note "ok:      packed Linux IMG4" || note "missing: packed image — run pack"
     [ "$rc" -eq 0 ] || fail "install the missing host tools and re-run doctor"
 }
 
 need_im4m() {
     [ -n "${IM4M:-}" ] && [ -s "$IM4M" ] || \
-        fail "set IM4M=/path/to/this-XR/apticket.im4m"
+        fail "set IM4M=/path/to/selected-device/apticket.im4m"
 }
 
 cmd_inputs() {
     need_im4m
-    bash boot/make-inputs.sh
-    python3 boot/prepare-xr-linux-bootset.py --ticket "$IM4M" "$@"
+    python3 boot/fetch-device-inputs.py
+    python3 boot/prepare-device-bootset.py --ticket "$IM4M" "$@"
 }
 
 cmd_periphery() {
-    bash boot/make-touch-firmware.sh
+    bash boot/make-touch-firmware.sh "$A12_BOARD"
     if [ -n "${1:-}" ]; then
-        bash boot/make-radio-firmware.sh "$1"
+        if [ "$A12_DEVICE" = xr ]; then
+            bash boot/make-radio-firmware.sh "$1"
+        else
+            fail 'iPad radio conversion: use prepare-ipad-radio.py --wifi-dir DIR --bluetool FILE (read-only OS extraction; see DEVICE_SEPARATION.md)'
+        fi
     else
         note "touch prepared; pass the matching OS .dmg.aea/.dmg to extract Wi-Fi/Bluetooth"
     fi
@@ -72,8 +85,14 @@ cmd_build() {
         all)
             cmd_build m1n1; cmd_build kernel; cmd_build dtb; cmd_build initramfs ;;
         m1n1)     bash m1n1/build-m1n1.sh ;;
-        kernel)   bash linux/prepare-kernel.sh; bash linux/build-kernel.sh ;;
-        dtb)      bash dts/build-dtb.sh ;;
+        kernel)
+            # Preparation cleans its script-owned checkout. Do not repeat it
+            # implicitly for an incremental build.
+            [ -d build/linux/.git ] && [ -s build/hoolock-docs/config_16k ] || bash linux/prepare-kernel.sh
+            bash linux/prepare-kernel.sh --check
+            bash linux/build-kernel.sh ;;
+        kernel-clean) bash linux/prepare-kernel.sh; bash linux/build-kernel.sh ;;
+        dtb)      bash dts/build-dtb.sh "$A12_BOARD" ;;
         initramfs) bash initramfs/make-initramfs.sh ;;
         rootfs)   bash rootfs/build-debian-rootfs.sh ;;
         *) fail "unknown build target '$1'" ;;
@@ -82,28 +101,26 @@ cmd_build() {
 
 cmd_pack() {
     need_im4m
-    python3 boot/prepare-xr-linux-bootset.py --ticket "$IM4M"
-    if [ -n "${SYSCFG:-}" ]; then
-        XR_SYSCFG="$SYSCFG" XR_IM4M="$IM4M" python3 boot/package-linux.py
-    elif [ -s boot/inputs/syscfg.bin ]; then
-        XR_SYSCFG="$A12/boot/inputs/syscfg.bin" XR_IM4M="$IM4M" python3 boot/package-linux.py
-    else
-        note "packing without private SysCfg; radios will lack board calibration/address"
-        XR_IM4M="$IM4M" python3 boot/package-linux.py
-    fi
+    python3 boot/prepare-device-bootset.py --ticket "$IM4M" "$@"
+    python3 boot/package-device-linux.py
 }
 
 case "${1:-}" in
-    doctor) cmd_doctor ;;
+    doctor)
+        note "selected: $A12_LABEL ($A12_PRODUCT / $A12_BOARD)"
+        note "inputs:   $A12_INPUTS"
+        note "outputs:  $A12_BOOT"
+        note "NFS config: $A12_NFSROOT"
+        cmd_doctor ;;
     inputs) shift; cmd_inputs "$@" ;;
     periphery) shift; cmd_periphery "$@" ;;
     build) shift; cmd_build "$@" ;;
-    pack) cmd_pack ;;
+    pack) shift; cmd_pack "$@" ;;
     boot)
         shift
         case "${1:-}" in
-            ''|linux) bash boot/boot-xr-linux.sh ;;
-            radios|full) bash boot/boot-and-load-xr.sh ;;
+            ''|linux) python3 boot/boot-device.py ;;
+            radios|full) python3 boot/boot-device.py --radios ;;
             *) fail "unknown boot mode '$1' — use linux or radios" ;;
         esac ;;
     nfs) shift; bash host/linux-nfs-export.sh "$@" ;;

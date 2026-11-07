@@ -1,0 +1,19 @@
+#!/usr/bin/python3
+"""Launch Onboard without LightDM's automatic XEmbed special case."""
+import os
+import gi
+gi.require_version('Gdk', '3.0')
+from gi.repository import Gdk, Gio
+# Tested on the J171 greeter: GTK events did not reach visible keys.
+settings = Gio.Settings.new("org.onboard.keyboard")
+for key, value in (("input-event-source", "XInput"),
+                   ("touch-input", "single"), ("key-synth", "XTest")):
+    settings.set_string(key, value)
+Gio.Settings.sync()
+display = Gdk.Display.get_default()
+monitor = display.get_primary_monitor() or display.get_monitor(0)
+r = monitor.get_geometry()
+w, h = int(r.width * .92), int(r.height * .30)
+os.execvp('onboard', ['onboard', '--size=%dx%d' % (w, h),
+                     '-x', str(r.x + (r.width-w)//2),
+                     '-y', str(r.y+r.height-h-24)])

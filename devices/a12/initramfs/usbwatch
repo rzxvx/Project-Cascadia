@@ -1,0 +1,34 @@
+#!/bin/sh
+BB=${BB:-/bin/busybox-static}
+STATE=${STATE:-/tmp/cascadia}
+UDHCPD_CONF=${UDHCPD_CONF:-/etc/udhcpd.conf}
+$BB mkdir -p "$STATE"
+cd "$STATE"
+G=/sys/kernel/config/usb_gadget/g1
+LOG="$STATE/usbwatch.log"
+udc=$($BB ls /sys/class/udc | $BB head -n1)
+[ -n "$udc" ] && [ -d "$G" ] || exit 1
+log() { echo "$( $BB cut -d ' ' -f1 /proc/uptime) $*" >> "$LOG"; }
+log "start pid=$$ udc=$udc static-busybox"
+bad=0; next=5; dhcp=; previous=
+trap '[ -z "$dhcp" ] || kill "$dhcp" 2>/dev/null; exit 0' TERM INT
+while :; do
+    $BB sleep 2
+    state=$($BB cat "/sys/class/udc/$udc/state" 2>/dev/null)
+    if [ "$state" != "$previous" ]; then log "state=$state"; previous=$state; fi
+    if [ "$state" = configured ]; then bad=0; next=5; else bad=$((bad+1)); fi
+    if [ "$bad" -ge "$next" ]; then
+        log 'rebind begin'
+        echo '' > "$G/UDC"
+        $BB sleep 1
+        echo "$udc" > "$G/UDC"
+        log 'rebind end'
+        bad=0; next=15
+    fi
+    $BB ifconfig usb0 | $BB grep -q '172.16.42.1' || $BB ifconfig usb0 172.16.42.1 netmask 255.255.255.0 up
+    if [ -z "$dhcp" ] || ! kill -0 "$dhcp" 2>/dev/null; then
+        $BB touch "$STATE/udhcpd.leases"
+        $BB udhcpd -f "$UDHCPD_CONF" >> "$LOG" 2>&1 &
+        dhcp=$!; log "dhcp=$dhcp"
+    fi
+done

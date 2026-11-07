@@ -1,0 +1,39 @@
+#!/bin/sh
+# BB: the busybox to use (the one in /run/cascadia under an NFS root)
+BB=${BB:-busybox}
+G=/sys/kernel/config/usb_gadget/g1
+udc=$($BB ls /sys/class/udc 2>/dev/null | $BB head -n1)
+[ -n "$udc" ] || exit 0
+bad=0
+next=5
+# the one DHCP server, kept as our own child: started as "busybox udhcpd",
+# it is invisible to pidof, so check our child instead
+$BB killall udhcpd 2>/dev/null
+dhcp=
+while :; do
+    $BB sleep 2
+    if [ "$($BB cat /sys/class/udc/$udc/state 2>/dev/null)" = configured ]; then
+        bad=0
+        next=5
+    else
+        bad=$((bad + 1))
+    fi
+    # no host for ~10 s: re-plug the gadget in software (unbind and bind
+    # the UDC: the controller stops and starts, the pull-up comes back);
+    # then every ~30 s while it stays away
+    if [ $bad -ge $next ]; then
+        echo "" > $G/UDC 2>/dev/null
+        $BB sleep 1
+        echo "$udc" > $G/UDC 2>/dev/null
+        bad=0
+        next=15
+    fi
+    # the address and the DHCP server the host needs to come back
+    $BB ifconfig usb0 2>/dev/null | $BB grep -q "inet addr:172.16.42.1 " \
+        || $BB ifconfig usb0 172.16.42.1 netmask 255.255.255.0 up
+    [ -n "$dhcp" ] && kill -0 "$dhcp" 2>/dev/null || {
+        $BB touch /tmp/udhcpd.leases 2>/dev/null
+        $BB udhcpd -f ${UDHCPD_CONF:-/etc/udhcpd.conf} </dev/null >/dev/null 2>&1 &
+        dhcp=$!
+    }
+done
