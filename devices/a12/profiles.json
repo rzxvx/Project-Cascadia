@@ -1,0 +1,66 @@
+{
+  "xr": {
+    "aliases": [
+      "xr",
+      "n841",
+      "iphone-xr",
+      "iPhone11,8"
+    ],
+    "label": "iPhone XR",
+    "board": "n841",
+    "apple_board": "n841ap",
+    "product": "iPhone11,8",
+    "cpid": "0x8020",
+    "bdid": "0x0c",
+    "build": "22H374",
+    "version": "18.7.10",
+    "ipsw": "https://updates.cdn-apple.com/2026WinterFCS/fullrestores/140-97953/5F3051CD-5405-4FEF-889E-C3B78E0F376F/iPhone11,8_18.7.10_22H374_Restore.ipsw",
+    "ibss_member": "Firmware/dfu/iBSS.n841.RELEASE.im4p",
+    "adt_member": "Firmware/all_flash/DeviceTree.n841ap.im4p",
+    "ibss_sha256": "8d748ce2190a5889ecd4933bd212f90d1308d44d8cee1880ed92b4bbeb057753",
+    "adt_sha256": "a62d565e5c7537a7aca96b5cce89f6f1111ca48a3b06c179cf0ee570bc6be269",
+    "touch_tag": "N841",
+    "touch_personality": "C1FC2,1",
+    "wifi_board": "yodak",
+    "bluetooth": "BCM4349B1.apple,n841.hcd",
+    "smartio_member": null,
+    "models": [
+      "A1984",
+      "A2105",
+      "A2106",
+      "A2107",
+      "A2108"
+    ]
+  },
+  "ipad8": {
+    "aliases": [
+      "ipad8",
+      "j171a",
+      "ipad8-wifi",
+      "iPad11,6"
+    ],
+    "label": "iPad 8 Wi-Fi",
+    "board": "j171a",
+    "apple_board": "j171aap",
+    "product": "iPad11,6",
+    "cpid": "0x8020",
+    "bdid": "0x24",
+    "build": "21B91",
+    "version": "17.1.1",
+    "ipsw": "https://updates.cdn-apple.com/2023FallFCS/fullrestores/042-95894/E5C89FEE-E10A-4B33-8D69-973EDF7DB0A7/iPad_10.2_2020_17.1.1_21B91_Restore.ipsw",
+    "ibss_member": "Firmware/dfu/iBSS.ipad11b.RELEASE.im4p",
+    "adt_member": "Firmware/all_flash/DeviceTree.j171aap.im4p",
+    "ibss_sha256": "feeaf79f8a11dffaafe5d4f334f6a6b868c29bc9117f716a4fbfa7e8d2f82fde",
+    "adt_sha256": "8a3375be8736e8aced4ce909602d7a87d8ba70b351da8e74ce965d89c626772e",
+    "touch_tag": "J171a",
+    "touch_personality": "K1F19,9",
+    "wifi_board": "magnoliaa",
+    "bluetooth": "BCM.apple,j171a.hcd",
+    "smartio_member": "Firmware/SmartIOFirmware_ASCv2.im4p",
+    "smartio_im4p_sha256": "1a5c30d40a2c905bf523d26a38352fbe97bf90cc225a7534e27eac87901bc7fe",
+    "models": [
+      "A2270"
+    ],
+    "smartio_raw_sha256": "f6e5c80434c3a02a7ab715102d60a0abf0b95ce9ca98645d012a39896314d13c"
+  }
+}

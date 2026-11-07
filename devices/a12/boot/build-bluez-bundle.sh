@@ -2,8 +2,10 @@
 set -euo pipefail
 
 A12="$(cd "$(dirname "$0")/.." && pwd)"
-ROOT="$A12/build/bluez-root"
-OUT="$A12/boot/inputs/bluez-root.tar.gz"
+source "$A12/profile.sh"
+ROOT="$A12/build/devices/$A12_DEVICE/bluez-root"
+OUT="$A12_INPUTS/bluez-root.tar.gz"
+mkdir -p "$A12_INPUTS"
 rm -rf "$ROOT"
 mkdir -p "$ROOT"/{usr/bin,usr/sbin,usr/share/dbus-1/system.d,usr/share/dbus-1/system-services,etc/bluetooth,sbin}
 

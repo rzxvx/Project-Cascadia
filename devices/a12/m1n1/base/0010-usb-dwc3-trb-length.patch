@@ -1,0 +1,32 @@
+From: Project Cascadia <noreply@cascadia>
+Subject: [PATCH] usb_dwc3: take only BUFSIZ from a completed bulk OUT TRB
+
+Cascadia downstream patch, not for upstream m1n1.
+
+On the iPhone 11 (A13) the dwc3 sets bit 26 of the size word in a completed
+TRB (seen: 0x4003fc0 after a 64-byte transfer into a 16 KiB buffer). m1n1
+subtracted the whole word, got a huge length and wrote the full buffer --
+the request plus 0xaa filler -- into the host-to-device ring: the proxy
+answered now and then. Use BUFSIZ only, and never more than the ring takes.
+---
+diff --git a/src/usb_dwc3.c b/src/usb_dwc3.c
+index 14db08f..ec10757 100644
+--- a/src/usb_dwc3.c
++++ b/src/usb_dwc3.c
+@@ -963,9 +963,14 @@ static void usb_dwc3_cdc_handle_bulk_out_xfer_done(dwc3_dev_t *dev,
+     ringbuffer_t *host2device = usb_dwc3_cdc_get_ringbuffer(dev, event.endpoint_number);
+     if (!host2device)
+         return;
+-    size_t len = min(XFER_SIZE, ringbuffer_get_free(host2device));
++    /*
++     * Only BUFSIZ (bits 23:0) is the length left: the A13's dwc3 also sets
++     * bit 26 in the completed TRB, which made the length negative and
++     * pushed the whole buffer (0xaa filler) into the ring.
++     */
++    size_t got = XFER_SIZE - DWC3_TRB_SIZE_LENGTH(dev->endpoints[event.endpoint_number].trb->size);
+     ringbuffer_write(dev->endpoints[event.endpoint_number].xfer_buffer,
+-                     len - dev->endpoints[event.endpoint_number].trb->size, host2device);
++                     min(got, ringbuffer_get_free(host2device)), host2device);
+ }
+ 
+ static void usb_dwc3_handle_event_ep(dwc3_dev_t *dev, const struct dwc3_event_depevt event)

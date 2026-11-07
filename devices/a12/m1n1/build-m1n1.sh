@@ -23,7 +23,7 @@ git -C "$SRC" checkout -q -f FETCH_HEAD
 git -C "$SRC" clean -qfdx
 git -C "$SRC" submodule update --init --recursive
 
-for p in "$ROOT"/a13/m1n1/0*.patch; do
+for p in "$HERE"/base/0*.patch; do
     git -C "$SRC" apply "$p"
 done
 for p in "$HERE"/0*.patch; do

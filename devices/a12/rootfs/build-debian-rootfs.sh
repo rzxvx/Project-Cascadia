@@ -2,19 +2,24 @@
 set -euo pipefail
 
 A12="$(cd "$(dirname "$0")/.." && pwd)"
+source "$A12/rootfs/debian-profile.sh"
 SUITE="${DEBIAN_SUITE:-trixie}"
-DESKTOP="${XR_DESKTOP:-xfce}"
+DESKTOP="${A12_DESKTOP:-${XR_DESKTOP:-xfce}}"
 case "$DESKTOP" in
     xfce) DISPLAY_MANAGER=lightdm
-          DESKTOP_PACKAGES="lightdm xfce4 xfce4-terminal thunar xfce4-settings xfce4-power-manager xfce4-notifyd xfce4-whiskermenu-plugin onboard" ;;
+          DESKTOP_PACKAGES="lightdm lightdm-gtk-greeter xfce4 xfce4-terminal thunar xfce4-settings xfce4-power-manager xfce4-notifyd xfce4-whiskermenu-plugin onboard" ;;
     gnome) DISPLAY_MANAGER=gdm3
            DESKTOP_PACKAGES="gdm3 gnome-shell gnome-session gnome-session-xsession gnome-control-center gnome-terminal nautilus gnome-backgrounds gnome-calculator" ;;
-    *) echo "XR_DESKTOP must be xfce or gnome" >&2; exit 2 ;;
+    *) echo "A12_DESKTOP must be xfce or gnome" >&2; exit 2 ;;
 esac
 MIRROR="${DEBIAN_MIRROR:-http://deb.debian.org/debian}"
-ROOT="$A12/build/debian-xr-root"
-OUT="$A12/build/debian-xr.tar.gz"
-PACKAGES="ca-certificates dbus dbus-user-session udev dropbear openssh-sftp-server sudo locales network-manager network-manager-gnome wireless-regdb iw wpasupplicant bluez bluez-tools firmware-brcm80211 xserver-xorg-core xserver-xorg-input-libinput xserver-xorg-video-fbdev xinit xinput upower power-profiles-daemon iio-sensor-proxy gsettings-desktop-schemas adwaita-icon-theme fonts-cantarell mesa-utils libgl1-mesa-dri librsvg2-common libgtk-3-bin shared-mime-info fonts-dejavu-core procps psmisc iproute2 iputils-ping kmod $DESKTOP_PACKAGES"
+ROOT="$A12/build/debian-$PROFILE-root"
+OUT="$A12/build/debian-$PROFILE.tar.gz"
+PACKAGES="ca-certificates dbus dbus-user-session udev dropbear openssh-sftp-server sudo locales polkitd lxpolkit network-manager network-manager-gnome wireless-regdb iw wpasupplicant bluez bluez-tools firmware-brcm80211 xserver-xorg-core xserver-xorg-input-libinput xserver-xorg-video-fbdev xinit xinput upower power-profiles-daemon iio-sensor-proxy gsettings-desktop-schemas adwaita-icon-theme fonts-cantarell mesa-utils libgl1-mesa-dri librsvg2-common libgtk-3-bin shared-mime-info fonts-dejavu-core procps psmisc iproute2 iputils-ping kmod $DESKTOP_PACKAGES"
+
+# Native A12 RTC time is not yet reliable in this port. Keep signed APT/TLS
+# verification enabled and synchronize the clock once networking is online.
+PACKAGES="$PACKAGES systemd-timesyncd"
 
 command -v debootstrap >/dev/null || {
     echo "install debootstrap first" >&2
@@ -61,46 +66,45 @@ if [ "$DESKTOP" = xfce ]; then
     rm -f "$ROOT/etc/gdm3/daemon.conf"
     rm -f "$ROOT/etc/AccountsService/users/xr"
     install -d "$ROOT/etc/lightdm/lightdm.conf.d"
-    cat > "$ROOT/etc/lightdm/lightdm.conf.d/50-xr-autologin.conf" <<'EOF'
+    cat > "$ROOT/etc/lightdm/lightdm.conf.d/50-cascadia-autologin.conf" <<EOF
 [Seat:*]
-autologin-user=xr
+autologin-user=$DESKTOP_USER
 autologin-user-timeout=0
 user-session=xfce
 EOF
     install -d "$ROOT/var/lib/AccountsService/users"
-    cat > "$ROOT/var/lib/AccountsService/users/xr" <<'EOF'
+    cat > "$ROOT/var/lib/AccountsService/users/$DESKTOP_USER" <<'EOF'
 [User]
 SystemAccount=false
 Session=xfce
 XSession=xfce
 EOF
 else
-    rm -rf "$ROOT/etc/lightdm/lightdm.conf.d/50-xr-autologin.conf"
+    rm -rf "$ROOT/etc/lightdm/lightdm.conf.d/50-cascadia-autologin.conf"
 fi
-mkdir -p "$ROOT/lib/firmware/apple"
-for name in n841-mtfw.bin n841-mtcal.bin; do
-    test -s "$A12/build/touch/$name" || {
-        echo "missing XR touch firmware: $A12/build/touch/$name" >&2
-        exit 1
-    }
-    install -m 644 "$A12/build/touch/$name" "$ROOT/lib/firmware/apple/$name"
-done
+bash "$A12/rootfs/install-touch-firmware.sh" "$ROOT"
 mkdir -p "$ROOT/root/.ssh" "$ROOT/dev" "$ROOT/proc" "$ROOT/sys" "$ROOT/run"
 chmod 700 "$ROOT/root" "$ROOT/root/.ssh"
 
 # The desktop runs as an unprivileged autologin user. Xorg is used because
 # the XR currently exposes a simple framebuffer rather than a DRM/KMS device.
-chroot "$ROOT" useradd -m -s /bin/bash xr
+chroot "$ROOT" useradd -m -c "$DISPLAY_NAME" -s /bin/bash "$DESKTOP_USER"
 for group in video input render audio netdev bluetooth; do
     chroot "$ROOT" getent group "$group" >/dev/null 2>&1 &&
-        chroot "$ROOT" usermod -aG "$group" xr || true
+        chroot "$ROOT" usermod -aG "$group" "$DESKTOP_USER" || true
 done
-chroot "$ROOT" passwd -d xr >/dev/null
-mkdir -p "$ROOT/home/xr/.config"
-touch "$ROOT/home/xr/.config/gnome-initial-setup-done"
-chroot "$ROOT" chown -R xr:xr /home/xr
+if [ "$A12_AUTOLOGIN" = 1 ]; then
+    chroot "$ROOT" passwd -d "$DESKTOP_USER" >/dev/null
+else
+    # Prompt; never ship a shared default password.
+    chroot "$ROOT" passwd "$DESKTOP_USER"
+fi
+mkdir -p "$ROOT/home/$DESKTOP_USER/.config"
+touch "$ROOT/home/$DESKTOP_USER/.config/gnome-initial-setup-done"
+chroot "$ROOT" chown -R "$DESKTOP_USER:$DESKTOP_USER" "/home/$DESKTOP_USER"
+bash "$A12/rootfs/configure-debian-profile.sh" "$ROOT"
 systemctl --root="$ROOT" enable "$DISPLAY_MANAGER.service" NetworkManager.service \
-    bluetooth.service dropbear.service >/dev/null
+    bluetooth.service dropbear.service systemd-timesyncd.service >/dev/null
 systemctl --root="$ROOT" disable NetworkManager-wait-online.service \
     >/dev/null 2>&1 || true
 ln -sfn /usr/lib/systemd/system/graphical.target \
