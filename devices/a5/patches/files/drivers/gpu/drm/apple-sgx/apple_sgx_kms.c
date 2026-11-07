@@ -68,7 +68,8 @@
 
 #include "apple_sgx.h"
 
-/* the iPad mini's panel: 163 pixels an inch */
+/* a pixel's size on the panel, in micrometres: the node's
+ * apple,pixel-pitch-um, or the iPad mini's (163 pixels an inch) */
 #define SGX_KMS_UM_PER_PX	156
 /* the 2D engine is given surfaces that start on 64 bytes: framebuffers'
  * pitches and offsets are multiples of it, and copies start and end on
@@ -667,8 +668,10 @@ int apple_sgx_kms_init(struct drm_device *drm, struct apple_sgx *sgx)
 	struct apple_sgx_kms *kms;
 	struct drm_display_mode *m;
 	struct resource fb;
+	u32 um = SGX_KMS_UM_PER_PX;
 	int ret;
 
+	of_property_read_u32(sgx->dev->of_node, "apple,pixel-pitch-um", &um);
 	ret = apple_sgx_fb_find(sgx, &fb);
 	if (ret)
 		return -ENODEV;
@@ -692,8 +695,8 @@ int apple_sgx_kms_init(struct drm_device *drm, struct apple_sgx *sgx)
 	m->vsync_end = sgx->fb_h + 4;
 	m->vtotal = sgx->fb_h + 8;
 	m->clock = DIV_ROUND_UP(m->htotal * m->vtotal * 60, 1000);
-	m->width_mm = sgx->fb_w * SGX_KMS_UM_PER_PX / 1000;
-	m->height_mm = sgx->fb_h * SGX_KMS_UM_PER_PX / 1000;
+	m->width_mm = sgx->fb_w * um / 1000;
+	m->height_mm = sgx->fb_h * um / 1000;
 	m->type = DRM_MODE_TYPE_DRIVER | DRM_MODE_TYPE_PREFERRED;
 	drm_mode_set_name(m);
 

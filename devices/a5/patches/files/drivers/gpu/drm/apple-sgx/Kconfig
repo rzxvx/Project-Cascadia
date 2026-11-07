@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-2.0-only
 config DRM_APPLE_SGX
-	tristate "Apple S5L8940X PowerVR SGX543MP2"
+	tristate "Apple S5L8940X/S5L8945X PowerVR SGX543MP2/MP4"
 	depends on DRM
 	depends on ARCH_APPLE_S5L || COMPILE_TEST
 	depends on COMMON_CLK && OF
@@ -9,7 +9,8 @@ config DRM_APPLE_SGX
 	select DRM_KMS_HELPER
 	select DRM_SCHED
 	help
-	  The GPU of the Apple A5 (S5L8940X/8942X), a PowerVR SGX543MP2.
+	  The GPU of the Apple A5 (S5L8940X/8942X), a PowerVR SGX543MP2,
+	  and of the A5X (S5L8945X), an SGX543MP4.
 	  Switches it on with the initialisation iOS runs, starts iOS's GPU
 	  microkernel (from /lib/firmware/apple/sgx543.fw, which the user
 	  takes out of their own IPSW), and offers a render node for Mesa

@@ -312,6 +312,26 @@
 			clock-output-names = "i2s0_ps";
 		};
 
+		/* The GPU's two power states, as on the mini: GFX_SYS-CLK
+		 * (device-clocks id 31, index 9) and GFX-CLK (id 32, index
+		 * 0xa), the same registers. The SGX's own gate (id 94) has no
+		 * register. apple-sgx enables them in this order. */
+		gfx_sys_ps: gfx-sys-ps@f101024 {
+			compatible = "apple,s5l8940x-pmgr-clk-gate";
+			#clock-cells = <0>;
+			reg = <0xf101024 0x4>;
+			clocks = <&uart_clk>;
+			clock-output-names = "gfx-sys-ps";
+		};
+
+		gfx_ps: gfx-ps@f101028 {
+			compatible = "apple,s5l8940x-pmgr-clk-gate";
+			#clock-cells = <0>;
+			reg = <0xf101028 0x4>;
+			clocks = <&uart_clk>;
+			clock-output-names = "gfx-ps";
+		};
+
 		/*
 		 * The speaker (sound/soc/apple/s5l-audio.c; docs/research/
 		 * j1-a5x.md): I2S0 sends the samples as clock master, 2 x 16
@@ -334,6 +354,21 @@
 			apple,dma-channel = <0x1f 0x1>;
 			apple,nco-reference-hz = <342000000>;
 			apple,audio-codec = <&codec>;
+		};
+
+		/* PowerVR SGX543MP4 (ADT /arm-io/sgx, "gpu,s5l8945x", IRQ 49):
+		 * the mini's six 16 KiB banks, here with four cores behind the
+		 * master. Bank 0 is broadcast and write-only: a read hangs the
+		 * bus. The ADT has no brn_31195, so this node has no
+		 * apple,brn-31195. drivers/gpu/drm/apple-sgx, docs/GPU.md. */
+		sgx: gpu@5100000 {
+			compatible = "apple,s5l8945x-sgx", "apple,s5l8940x-sgx";
+			reg = <0x5100000 0x18000>;
+			interrupts = <49>;
+			clocks = <&gfx_sys_ps>, <&gfx_ps>;
+			clock-names = "gfx_sys", "gfx";
+			/* 264 pixels an inch: KMS reports 196 x 147 mm */
+			apple,pixel-pitch-um = <96>;
 		};
 
 		/* UART5 as the battery gauge's HDQ bus: the ADT's uart5/gas-gauge,
