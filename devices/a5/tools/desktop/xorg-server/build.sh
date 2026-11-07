@@ -14,6 +14,11 @@
 set -eu
 ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
 ALPINE="${ALPINE:-3.24}"
+# Jobs by the memory docker has, about a GB each, at most 8 and the cores:
+# under ARM emulation every compiler takes several times its native size,
+# and a 4 GB machine ran out with the old fixed count.  XORG_JOBS= overrides.
+XORG_JOBS="${XORG_JOBS:-$(docker info --format '{{.MemTotal}} {{.NCPU}}' 2>/dev/null |
+    awk '{ j = int($1 / 1073741824); if (j > $2) j = $2; if (j > 8) j = 8; if (j < 1) j = 1; print j }')}"
 DEVICE="${DEVICE:-root@10.55.0.2}"
 OUT="$ROOT/build/xorg-server"
 AP="https://gitlab.alpinelinux.org/alpine/aports/-/raw/$ALPINE-stable/community/xorg-server"
@@ -43,16 +48,18 @@ grep -q xorg-server-plane-rotation.patch "$OUT/src/APKBUILD" && grep -q "meson c
     grep -q "b_lto_threads=2" "$OUT/src/APKBUILD" ||
     { echo "build.sh: the APKBUILD changed" >&2; exit 1; }
 rm -f "$OUT"/*.apk
-docker run --rm --platform linux/arm/v6 -v "$OUT":/out "alpine:$ALPINE" sh -ec '
-    apk add -q alpine-sdk sudo >/dev/null
-    adduser -D builder && addgroup builder abuild
-    echo "builder ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/builder
-    cp -r /out/src /home/builder/xorg-server && chown -R builder /home/builder/xorg-server
-    su builder -c "cd ~/xorg-server && export XORG_JOBS=${XORG_JOBS:-8} && abuild-keygen -a -i -n >/dev/null 2>&1 && abuild checksum >/dev/null &&
-                   abuild -r >/home/builder/build.log 2>&1" || { tail -40 /home/builder/build.log; cp /home/builder/build.log /out/; exit 1; }
-    cp /home/builder/packages/*/*/xorg-server-[0-9]*.apk /home/builder/packages/*/*/xorg-server-common-[0-9]*.apk \
-       /home/builder/build.log /out/
-    cp /home/builder/xorg-server/APKBUILD /out/APKBUILD.built'
+# As root (abuild -F), not a sudo user: under qemu registered without the
+# C flag (Arch's qemu-user-static-binfmt) setuid does nothing, and sudo
+# in here failed with "effective uid is not 0" before the build began.
+# The key goes in by hand: abuild-keygen -i calls doas, even as root.
+docker run --rm --platform linux/arm/v6 -e XORG_JOBS="$XORG_JOBS" -v "$OUT":/out "alpine:$ALPINE" sh -ec '
+    apk add -q alpine-sdk >/dev/null
+    cp -r /out/src /root/xorg-server
+    ( cd /root/xorg-server && export XORG_JOBS=${XORG_JOBS:-8} && abuild-keygen -a -n >/root/build.log 2>&1 && cp /root/.abuild/*.rsa.pub /etc/apk/keys/ &&
+                   abuild -F checksum >>/root/build.log 2>&1 && abuild -F -r >>/root/build.log 2>&1 ) || { tail -40 /root/build.log; cp /root/build.log /out/; exit 1; }
+    cp /root/packages/*/*/xorg-server-[0-9]*.apk /root/packages/*/*/xorg-server-common-[0-9]*.apk \
+       /root/build.log /out/
+    cp /root/xorg-server/APKBUILD /out/APKBUILD.built'
 }
 # "install" takes the package already built (built first if there is none);
 # without it this builds again

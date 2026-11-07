@@ -1,11 +1,11 @@
 # Quickstart
 
-From a clean machine to a shell on the iPad. `./cascadia a5 install` has been
-walked end to end on macOS / Apple Silicon -- clone, build, the desktop root,
-flash through kDFU, NFS, ssh. On Linux the steps one by one were walked on a
-fresh Arch install (x86_64) before `install` existed, and `setup` is checked on
-Debian, Ubuntu, Arch and Fedora; a whole `install` on Linux is next -- if
-something here does not match what you see there, that is a bug.
+From a clean machine to a shell on the iPad, and on to its desktop.
+`./cascadia a5 install` has been walked end to end on macOS (Apple Silicon)
+and on Arch Linux (x86_64) -- from the prebuilt release and from source:
+the boot through kDFU, the NFS root, ssh, XFCE on the GPU, SuperTux.
+`setup` is checked on Debian, Ubuntu, Arch and Fedora. If something here
+does not match what you see, that is a bug.
 
 Nothing is written to the device's storage. The kernel is uploaded into RAM and
 run from there; iOS is untouched (Linux can read its files, and never writes
@@ -34,10 +34,11 @@ flash script captures it when it is there. The early boot log also goes to the
 framebuffer, so its absence is a nuisance rather than a blocker.
 
 **A computer.** macOS, or Linux (Debian / Ubuntu, Arch or Fedora), with
-about 12 GB free. `./cascadia a5 setup` installs what it needs (it asks
-first): Docker, libusb and pyusb, an NFS server and usbmuxd on Linux, a
-udev rule for the iPad's USB, and an ssh key without a passphrase,
-`~/.ssh/cascadia`, which the build puts into the image. On macOS, the
+about 5 GB free (12 GB to build everything from source). `./cascadia a5
+setup` installs what it needs (it asks first): Docker -- still needed, for
+the files made from your IPSW --, libusb and pyusb, an NFS server and
+usbmuxd on Linux, a udev rule for the iPad's USB, and an ssh key without a
+passphrase, `~/.ssh/cascadia`, which goes into the image. On macOS, the
 Command Line Tools and [Homebrew](https://brew.sh) first.
 
 ## The short way
@@ -51,6 +52,12 @@ cd Project-Cascadia
 It goes through every step below in order, says what each does and how
 long it takes, and skips what is done already: stopped anywhere (a reboot,
 a failed download, Docker not running yet), run it again and it carries on.
+The kernel and the desktop root come prebuilt (the release in
+`prebuilt/stable/`, ~460 MB) instead of being built -- minutes instead of
+hours --, and what is yours is added on this computer: the firmware and the
+GPU's pack from your IPSW, your ssh key, the iPad's host key.
+`INSTALL_FROM=source ./cascadia a5 install` builds everything instead (the
+newer release, when there is one: `CHANNEL=experimental`).
 It asks three things: what to install on this computer, whether you want
 the desktop (it then lives on this computer as the iPad's disk, over the
 cable), and how the iPad gets into pwned DFU (a Pi Pico, or its jailbroken
@@ -64,23 +71,35 @@ and `desktop` on the iPad for XFCE. Every later boot is `./cascadia a5
 flash` (`--kdfu` from iOS). The rest of this page is the same road one
 step at a time, and what to do on the iPad once it is there.
 
-## Step by step: build
+## Step by step: the image
+
+The boot image is two halves: a kernel with its base system, the same for
+everyone, and a small layer of this computer's own -- the firmware from your
+IPSW, your ssh key, the iPad's host key, the NFS root's address --, which
+`build` puts next to it (`build/overlay`, `scripts/assemble.py`).
 
 ```bash
-git clone https://github.com/rzxvx/Project-Cascadia.git
-cd Project-Cascadia
-./cascadia a5 doctor        # says what this machine is missing
-./cascadia a5 kernel        # shallow clone of Linux, pinned to v6.12
-./cascadia a5 rootfs        # Alpine armhf + the boot scripts + dropbear + mount.nfs
-./cascadia a5 build         # dtb + kernel + output/staging-bundle.bin
+./cascadia a5 setup         # this computer: what the rest needs
+./cascadia a5 get           # the prebuilt kernel and desktop root (~460 MB)
+./cascadia a5 firmware      # Apple's files, from the IPSW (next section)
+./cascadia a5 build         # the bundle: the kernel + your layer, in seconds
 ```
 
-`doctor` is worth reading rather than skipping; it checks reachability, not
-just presence. `kernel` downloads a few hundred MB. `build` takes about fifteen
-minutes on a 2012 Core i3 and a few on an M-series Mac, and ends by checking
-that the archive it just embedded really contains stage 1, stage 2, the USB
-console and the pinned address — a build that skips any of them fails here
-rather than on the device.
+**From source** instead of `get`: the kernel tree is the switch -- with one
+here, `build` builds the kernel too.
+
+```bash
+./cascadia a5 kernel        # shallow clone of Linux, pinned to v6.12
+./cascadia a5 rootfs        # Alpine armhf + the boot scripts + dropbear + mount.nfs
+./cascadia a5 build         # dtb + kernel + the bundle
+```
+
+`kernel` downloads a few hundred MB. That `build` takes about fifteen minutes
+on a 2012 Core i3 and a few on an M-series Mac, and ends by checking that the
+base it just embedded really contains stage 1, stage 2, the USB console and
+the pinned address — a build that skips any of them fails here rather than on
+the device. `./cascadia a5 doctor` says what this machine is missing, at any
+point.
 
 Noise you can ignore on a first run: git warns that the annotated `v6.12` tag
 "is not a commit", and docker may say the legacy builder is deprecated
@@ -102,11 +121,11 @@ byte on macOS/arm64 and on Linux/x86_64.
 
 ## Into pwned DFU
 
-Flashing needs nothing beyond pyusb: `lib/appleusb.py` does the USB side
-(what irecovery and primepwn did), and `--kdfu` is our own
-(`tools/kdfu.sh`). On macOS pyusb wants libusb too: `brew install libusb &&
-pip3 install pyusb`. On Linux, the first `flash` says which udev rule gives
-your user the iPad's USB device, if it does not have it yet.
+Flashing needs nothing beyond pyusb and libusb, which `setup` puts here
+(pyusb in `build/pylib`, no pip): `lib/appleusb.py` does the USB side (what
+irecovery and primepwn did), and `--kdfu` is our own (`tools/kdfu.sh`). On
+Linux, `setup` also adds the udev rule that gives your user the iPad's USB
+device.
 
 **With a Pi Pico.** Once: the firmware is LukeZGD's build of checkm8-a5,
 [checkm8-pico.zip](https://github.com/LukeZGD/Legacy-iOS-Kit-Keys/releases/download/a/checkm8-pico.zip)
@@ -178,9 +197,7 @@ it goes away, twice per boot — and without it `ssh` does not fail, it hangs.
 There are two consoles besides ssh, and both are useful when ssh is not:
 
 - **the glass**: a shell on the framebuffer, with an on-screen keyboard
-  (`fbkeyboard`) under it from boot (no arrow keys). An NFS root seeded
-  before the keyboard joined the image needs `apk add fbkeyboard
-  font-dejavu` once;
+  (`fbkeyboard`) under it from boot (no arrow keys);
 - **the cable**: CDC ACM, no credentials at all —
   `screen /dev/cu.usbmodem* 115200` on macOS, `sudo picocom -b 115200
   /dev/ttyACM0` on Linux (picocom exits with `C-a C-x`).
@@ -196,7 +213,8 @@ L2 cache; Wi-Fi (below); and iOS's own files, read-only (below).
 
 The root filesystem is the initramfs, in RAM, so anything installed with `apk`
 is gone on the next boot. `./cascadia a5 nfs on` moves the root onto the host's
-disk over the same cable, which fixes both that and the 512 MB ceiling.
+disk over the same cable, which fixes both that and the 512 MB ceiling (then
+`./cascadia a5 build` and a flash: the root's address goes in the image).
 `./cascadia a5 net on` shares the host's internet with the device. On macOS they
 drive nfsd and pf; on Linux, nfs-utils and iptables (nftables without it), from
 `tools/linux-*.sh`. The export is `~/cascadia-root` on the Mac and
@@ -222,9 +240,7 @@ wifi forget "Home"
 ```
 
 `iw` and `wpa_supplicant` are in the image, so Wi-Fi works from a RAM boot,
-with no cable network at all. (An NFS root seeded before they joined the image
-lacks them; `wifi` then installs them with `apk` the first time, over the
-cable.) Networks are remembered in `/etc/wifi/networks/`, a WPA password only
+with no cable network at all. Networks are remembered in `/etc/wifi/networks/`, a WPA password only
 as its PSK -- on the NFS root for good, in a RAM boot until the next reboot. Once Wi-Fi is up, ssh works over it too, at the
 address `wifi` prints.
 
@@ -271,13 +287,13 @@ System mounts: iOS's Data partition (apps, photos) is encrypted file by file.
 
 XFCE runs off the NFS root with touch as the pointer, drawn by the GPU (X
 runs modesetting with glamor on the GPU's Mesa, and GL programs get GLX; the
-two CPU cores draw instead with `DESKTOP_FB=1 desktop`). Everything for it is
-built on the host into the root a new NFS export starts from:
+two CPU cores draw instead with `DESKTOP_FB=1 desktop`). It comes as a whole
+root -- XFCE, the patched X/xfwm4/pixman, Mesa, SuperTux, screenpad,
+autorotate --, the one `get` downloads; a new NFS export starts from it, and
+gets the GPU's pack from your IPSW:
 
 ```bash
-./cascadia a5 desktop-root     # once: XFCE, patched X/xfwm4/pixman, Mesa, the GPU's pack,
-                               # SuperTux, screenpad, autorotate -> build/desktop-root.tar
-./cascadia a5 nfs on           # a NEW root starts from it
+./cascadia a5 nfs on           # a NEW root, from the desktop root
 ./cascadia a5 build && ./cascadia a5 flash --kdfu      # (or flash, with the Pico)
 ```
 
@@ -287,12 +303,16 @@ Then on the iPad, from the glass or over ssh:
 desktop
 ```
 
-`desktop` says "X on the GPU" when it takes it. The first `desktop-root` is
-long -- XFCE is ~280 packages under ARM emulation, and Mesa and SuperTux
-build for the better part of an hour each -- and later runs reuse what is
-built (`FRESH=1` starts the root again from the current image). An existing
-`~/cascadia-root` is never overwritten: it is the iPad's live disk
-(`FORCE_SYNC=1 ./cascadia a5 nfs on` reseeds it). Each piece can still go
+`desktop` says "X on the GPU" when it takes it. An existing `~/cascadia-root`
+is never overwritten: it is the iPad's live disk (`FORCE_SYNC=1 ./cascadia a5
+nfs on` reseeds it, deleting what is there).
+
+To build the desktop root yourself instead, `./cascadia a5 desktop-root`
+(into `build/desktop-root.tar`, which `nfs on` then prefers). It is long the
+first time -- XFCE is ~280 packages under ARM emulation, and Mesa and
+SuperTux build for the better part of an hour each on a Mac, hours on an
+older PC -- and later runs reuse what is built (`FRESH=1` starts the root
+again from the current image). Each piece can still go
 onto a running iPad on its own, as before: `ssh root@10.55.0.2 sh -s <
 tools/desktop/xfce-setup.sh`, `./cascadia a5 dev gpu`, `./cascadia a5 dev mesa`.
 
@@ -397,7 +417,7 @@ gpu`).
 | `ssh` hangs, no error | This host has no address on the link. `./cascadia a5 link`. |
 | `ssh` hangs, but `ping 10.55.0.2` answers and the glass says `nfs: server ... not responding, still trying` | The NFS root lost its server, and a hard-mounted root blocks everything that touches it until the server returns — the kernel is fine, the cursor still blinks, and the console over the cable still works (it runs from RAM). This is the host's side, not the iPad's: seen with macOS's nfsd and on an Ubuntu host, never on the Arch one. On a NetworkManager host it was NM taking 10.55.0.1 off the link; `./cascadia a5 link` (and so `flash`) now gives NM a profile that keeps it. Otherwise only a reboot gets out of it today; `./cascadia a5 nfs off` and a rebuild boot from RAM instead. |
 | `ssh` hangs, `ping` does not answer, the console over the cable says nothing, but the glass's cursor blinks and it shows `task ... blocked for more than ... seconds` in `nfs_...` | The gadget stopped sending to the host; the kernel is fine and the NFS root waits for it. Seen after the link was down for minutes (the Mac asleep, or `ip link set usb0 down` and the serial console reopened meanwhile) on any kernel, and on its own after boot with the fast DMA bursts of 2026-10-24 (reverted). Only a reboot gets out of it today; before rebooting, a photo of the glass is what tells it apart. |
-| `REMOTE HOST IDENTIFICATION HAS CHANGED` | The device's host key changed. Images built before 2026-09-19 made a new one on every boot from RAM; `./cascadia a5 build` now makes it once and prints its fingerprint. Once: `ssh-keygen -R 10.55.0.2`, then compare the fingerprint ssh shows with the build's. |
+| `REMOTE HOST IDENTIFICATION HAS CHANGED` | The device's host key changed (a new `build/keep`, another computer). `./cascadia a5 build` makes it once and prints its fingerprint; `./cascadia a5 ssh` keeps its own known_hosts in `build/` and accepts a new one. For plain ssh: `ssh-keygen -R 10.55.0.2`, then compare the fingerprint ssh shows with the build's. |
 | `flash`: "the device is in DFU but not pwned" | The Pico's checkm8 did not land (or the iPad went into DFU again afterwards). DFU again, through the Pico, back to this computer. |
 | `flash`: "no permission for the device" | Linux without a udev rule for Apple's devices; the message has the rule to add. |
 | kDFU: "no ssh to iOS" | The iPad is not in iOS, is locked, or has no OpenSSH (Cydia). Over Wi-Fi: `IOS_HOST=<its IP> ./cascadia a5 flash --kdfu`. |

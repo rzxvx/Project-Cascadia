@@ -80,7 +80,7 @@ elif [ "$(cat "$BD/.cascadia-options" 2>/dev/null)" != "$OPTS" ]; then
 fi
 
 say "building (the first time is slow under emulation)"
-ninja -C "$BD"
+ninja -C "$BD" ${MESA_JOBS:+-j "$MESA_JOBS"}
 rm -rf "$ID"
 DESTDIR="$ID" ninja -C "$BD" install >/dev/null
 

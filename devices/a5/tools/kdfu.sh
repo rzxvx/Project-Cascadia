@@ -29,8 +29,10 @@ WAIT="${KDFU_WAIT:-90}"
 USB=(python3 "$REPO/lib/appleusb.py")
 
 fail() { echo "error: $*" >&2; exit 1; }
-if command -v shasum >/dev/null 2>&1; then sha256() { shasum -a 256 "$1" | awk '{print $1}'; }
-else sha256() { sha256sum "$1" | awk '{print $1}'; }; fi
+# sha256sum where there is one: shasum is perl, and a perl with a broken
+# locale fills the screen with warnings
+if command -v sha256sum >/dev/null 2>&1; then sha256() { sha256sum "$1" | awk '{print $1}'; }
+else sha256() { shasum -a 256 "$1" | awk '{print $1}'; }; fi
 
 [ -s "$IBSS" ] || fail "no $IBSS -- ./cascadia a5 firmware makes it"
 # raw ARM code (a branch at 0), not an img3: kloader copies it as it is

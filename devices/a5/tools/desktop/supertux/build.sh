@@ -9,6 +9,11 @@
 set -eu
 ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
 ALPINE="${ALPINE:-3.24}"
+# Jobs by the memory docker has, about a GB each, at most 8 and the cores:
+# under ARM emulation every compiler takes several times its native size,
+# and a 4 GB machine ran out with the old fixed count.  SUPERTUX_JOBS= overrides.
+SUPERTUX_JOBS="${SUPERTUX_JOBS:-$(docker info --format '{{.MemTotal}} {{.NCPU}}' 2>/dev/null |
+    awk '{ j = int($1 / 1073741824); if (j > $2) j = $2; if (j > 8) j = 8; if (j < 1) j = 1; print j }')}"
 DEVICE="${DEVICE:-root@10.55.0.2}"
 OUT="$ROOT/build/supertux"
 build() {
@@ -16,18 +21,20 @@ build() {
     rm -rf "$OUT/src" && mkdir "$OUT/src"
     cp "$ROOT"/tools/desktop/supertux/APKBUILD "$ROOT"/tools/desktop/supertux/*.patch "$OUT/src/"
     rm -f "$OUT"/*.apk
-    docker run --rm --platform linux/arm/v6 -v "$OUT":/out -v "$OUT/distfiles":/var/cache/distfiles \
+    # As root (abuild -F), not a sudo user: under qemu registered without the
+    # C flag (Arch's qemu-user-static-binfmt) setuid does nothing, and sudo
+    # in here failed with "effective uid is not 0" before the build began.
+    # The key goes in by hand: abuild-keygen -i calls doas, even as root.
+    docker run --rm --platform linux/arm/v6 -e SUPERTUX_JOBS="$SUPERTUX_JOBS" -v "$OUT":/out -v "$OUT/distfiles":/var/cache/distfiles \
         "alpine:$ALPINE" sh -ec '
-        apk add -q alpine-sdk sudo >/dev/null
-        adduser -D builder && addgroup builder abuild
-        echo "builder ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/builder
+        apk add -q alpine-sdk >/dev/null
         chmod 777 /var/cache/distfiles
-        cp -r /out/src /home/builder/supertux && chown -R builder /home/builder/supertux
-        su builder -c "cd ~/supertux && export SUPERTUX_JOBS=${SUPERTUX_JOBS:-6} &&
-                       abuild-keygen -a -i -n >/dev/null 2>&1 && abuild checksum >/dev/null &&
-                       abuild -r >/home/builder/build.log 2>&1" ||
-            { tail -40 /home/builder/build.log; cp /home/builder/build.log /out/; exit 1; }
-        cp /home/builder/packages/*/*/supertux-*.apk /home/builder/build.log /out/'
+        cp -r /out/src /root/supertux
+        ( cd /root/supertux && export SUPERTUX_JOBS=${SUPERTUX_JOBS:-6} &&
+                       abuild-keygen -a -n >/root/build.log 2>&1 && cp /root/.abuild/*.rsa.pub /etc/apk/keys/ &&
+                   abuild -F checksum >>/root/build.log 2>&1 && abuild -F -r >>/root/build.log 2>&1 ) ||
+            { tail -40 /root/build.log; cp /root/build.log /out/; exit 1; }
+        cp /root/packages/*/*/supertux-*.apk /root/build.log /out/'
 }
 if [ "${1:-}" != install ] || ! ls "$OUT"/supertux-[0-9]*.apk >/dev/null 2>&1; then
     build

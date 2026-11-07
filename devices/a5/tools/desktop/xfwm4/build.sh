@@ -31,15 +31,17 @@ s = s.replace("\tcompositor-render-full-screen-after-startup.patch\n",
 open(p, "w").write(s)
 PY
 grep -q xfwm4-bypass-client-window.patch "$OUT/src/APKBUILD" || { echo "build.sh: the APKBUILD changed" >&2; exit 1; }
+# As root (abuild -F), not a sudo user: under qemu registered without the
+# C flag (Arch's qemu-user-static-binfmt) setuid does nothing, and sudo
+# in here failed with "effective uid is not 0" before the build began.
+# The key goes in by hand: abuild-keygen -i calls doas, even as root.
 docker run --rm --platform linux/arm/v6 -v "$OUT":/out "alpine:$ALPINE" sh -ec '
-    apk add -q alpine-sdk sudo >/dev/null
-    adduser -D builder && addgroup builder abuild
-    echo "builder ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/builder
-    cp -r /out/src /home/builder/xfwm4 && chown -R builder /home/builder/xfwm4
-    su builder -c "cd ~/xfwm4 && abuild-keygen -a -i -n >/dev/null 2>&1 && abuild checksum >/dev/null &&
-                   abuild -r >/home/builder/build.log 2>&1" || { tail -30 /home/builder/build.log; exit 1; }
-    cp /home/builder/packages/*/*/xfwm4-[0-9]*.apk /home/builder/build.log /out/
-    cp /home/builder/xfwm4/APKBUILD /out/APKBUILD.built'
+    apk add -q alpine-sdk >/dev/null
+    cp -r /out/src /root/xfwm4
+    ( cd /root/xfwm4 && abuild-keygen -a -n >/root/build.log 2>&1 && cp /root/.abuild/*.rsa.pub /etc/apk/keys/ &&
+                   abuild -F checksum >>/root/build.log 2>&1 && abuild -F -r >>/root/build.log 2>&1 ) || { tail -30 /root/build.log; exit 1; }
+    cp /root/packages/*/*/xfwm4-[0-9]*.apk /root/build.log /out/
+    cp /root/xfwm4/APKBUILD /out/APKBUILD.built'
 }
 # "install" takes the package already built (built first if there is none);
 # without it this builds again

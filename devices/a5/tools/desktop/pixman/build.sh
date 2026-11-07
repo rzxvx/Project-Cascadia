@@ -36,15 +36,17 @@ PY
 grep -q pixman-scanline-clear.patch "$OUT/src/APKBUILD" && grep -q '^options="!check"' "$OUT/src/APKBUILD" ||
     { echo "build.sh: the APKBUILD changed" >&2; exit 1; }
 rm -f "$OUT"/*.apk
+# As root (abuild -F), not a sudo user: under qemu registered without the
+# C flag (Arch's qemu-user-static-binfmt) setuid does nothing, and sudo
+# in here failed with "effective uid is not 0" before the build began.
+# The key goes in by hand: abuild-keygen -i calls doas, even as root.
 docker run --rm --platform linux/arm/v6 -v "$OUT":/out "alpine:$ALPINE" sh -ec '
-    apk add -q alpine-sdk sudo >/dev/null
-    adduser -D builder && addgroup builder abuild
-    echo "builder ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/builder
-    cp -r /out/src /home/builder/pixman && chown -R builder /home/builder/pixman
-    su builder -c "cd ~/pixman && abuild-keygen -a -i -n >/dev/null 2>&1 && abuild checksum >/dev/null &&
-                   abuild -r >/home/builder/build.log 2>&1" || { tail -40 /home/builder/build.log; cp /home/builder/build.log /out/; exit 1; }
-    cp /home/builder/packages/*/*/pixman-[0-9]*.apk /home/builder/build.log /out/
-    cp /home/builder/pixman/APKBUILD /out/APKBUILD.built'
+    apk add -q alpine-sdk >/dev/null
+    cp -r /out/src /root/pixman
+    ( cd /root/pixman && abuild-keygen -a -n >/root/build.log 2>&1 && cp /root/.abuild/*.rsa.pub /etc/apk/keys/ &&
+                   abuild -F checksum >>/root/build.log 2>&1 && abuild -F -r >>/root/build.log 2>&1 ) || { tail -40 /root/build.log; cp /root/build.log /out/; exit 1; }
+    cp /root/packages/*/*/pixman-[0-9]*.apk /root/build.log /out/
+    cp /root/pixman/APKBUILD /out/APKBUILD.built'
 }
 # "install" takes the package already built (built first if there is none);
 # without it this builds again

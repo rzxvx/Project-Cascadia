@@ -21,6 +21,10 @@
 #   FRESH=1   start again from the current image (build/initramfs-root);
 #             otherwise the volume from last time is reused and every step
 #             runs again over it (they are all safe to repeat)
+#   PUBLIC=1  the root a release ships: no GPU pack (it is made from the
+#             user's own IPSW, by nfs on), its own docker volume, started
+#             fresh, the package list beside it (OUT.packages)
+#   OUT=      where the tar goes (build/desktop-root.tar)
 #   ONLY="mesa gpu"   just those steps (xfce, patched, autorotate, mesa, gpu,
 #             supertux, screenpad)
 #
@@ -32,8 +36,12 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 SRC="$ROOT/build/initramfs-root"
-OUT="$ROOT/build/desktop-root.tar"
+OUT="${OUT:-$ROOT/build/desktop-root.tar}"
 VOL="${VOL:-cascadia-a5-desktop-root}"
+if [ "${PUBLIC:-0}" = 1 ]; then
+    VOL=cascadia-a5-desktop-root-public FRESH=1
+    ONLY="${ONLY:-xfce patched autorotate mesa supertux screenpad}"
+fi
 C=cascadia-a5-root
 DEV=root@desktop-root
 ALPINE="${ALPINE:-3.24}"
@@ -56,6 +64,7 @@ cleanup() {
 trap cleanup EXIT
 
 docker rm -f "$C" >/dev/null 2>&1 || true
+[ "${PUBLIC:-0}" = 1 ] && say "PUBLIC=1: the root for a release, in volume $VOL, from scratch"
 if [ "${FRESH:-0}" = 1 ]; then
     say "FRESH=1: the root starts again from $SRC"
     docker volume rm "$VOL" >/dev/null 2>&1 || true
@@ -90,7 +99,11 @@ step() {
     case " $STEPS " in *" $name "*) ;; *) return 0 ;; esac
     say "$name"
     local t0=$SECONDS
-    "$@" || fail "step '$name' failed (above); run again to retry, ONLY=\"$name\" for just this one"
+    # once more on a failure: every step is safe to repeat, and a download
+    # cut short (a 40 MB llvm package, "Connection aborted") stopped a
+    # whole release once
+    "$@" || { echo "    $name failed -- once more"; "$@"; } \
+        || fail "step '$name' failed (above); run again to retry, ONLY=\"$name\" for just this one"
     printf '    %s: %d s\n' "$name" $((SECONDS - t0))
 }
 
@@ -112,12 +125,23 @@ inroot 'chroot /target apk info -e xorg-server xfce4 eudev touchegg svkbd supert
 inroot 'chroot /target apk -s add --no-network >/dev/null' \
     || fail "apk cannot resolve the root's world -- something was installed broken (above)"
 for f in usr/local/bin/desktop usr/local/bin/autorotate usr/bin/xrandr usr/bin/xinput usr/local/bin/screenpad usr/local/bin/tux-gpudemo \
-         usr/local/lib/sgx-mesa/lib/libGLESv2.so.2 usr/local/lib/sgx2d etc/ld-musl-armhf.path; do
+         usr/local/lib/sgx-mesa/lib/libGLESv2.so.2 etc/ld-musl-armhf.path \
+         $([ "${PUBLIC:-0}" = 1 ] || echo usr/local/lib/sgx2d); do
     inroot "chroot /target test -e /$f" || fail "no /$f in the root"
 done
 echo "    ok: XFCE, X, SuperTux, screenpad, autorotate, Mesa, the GPU's pack"
 
+if [ "${PUBLIC:-0}" = 1 ]; then
+    inroot 'test ! -e /target/usr/local/lib/sgx2d' || fail "PUBLIC=1 and the root has a GPU pack"
+    inroot 'chroot /target apk info -v 2>/dev/null | sort' > "$OUT.packages"
+    note_pk=$(wc -l < "$OUT.packages" | tr -d ' ')
+    echo "    the package list: $OUT.packages ($note_pk packages)"
+fi
+
 say "packing $OUT"
+# what this root is, for ./cascadia a5 install to tell it from an older one
+rev=$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)
+inroot "printf 'desktop %s %s\n' '$rev' '$(date -u +%Y-%m-%d)' > /target/etc/cascadia-root"
 inroot "$UNMOUNT"
 inroot 'awk "\$2 ~ \"^/target/\"" /proc/mounts | grep -q . && { echo "still mounted under /target:"; grep " /target/" /proc/mounts; exit 1; }; true' \
     || fail "could not unmount the root's /proc and /dev"

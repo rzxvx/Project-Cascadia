@@ -7,6 +7,7 @@
 #                             step (run it again to carry on after a stop)
 #   ./cascadia a5 setup       put on this computer what the build needs (asks first)
 #   ./cascadia a5 ssh         a shell on the iPad
+#   ./cascadia a5 get         the prebuilt kernel and desktop root (CHANNEL=experimental)
 #
 #   ./cascadia a5 doctor      check that this machine has what the build needs
 #   ./cascadia a5 kernel      fetch the pinned Linux source into build/linux
@@ -29,6 +30,10 @@
 #   ./cascadia a5 dev mesa    Mesa with the GPU's driver (OpenGL ES 1.1/2.0, desktop
 #                             2.1, GLX, tux-gpudemo): build, and install the same way
 #                             (release; a debug build: MESA_BUILD=debug)
+#   ./cascadia a5 dev release experimental|stable
+#                             a prebuilt release from source: checked, packed,
+#                             its manifest written; prints how to publish it
+#   ./cascadia a5 dev promote the experimental release becomes the stable one
 #   ./cascadia a5 image       rebuild the build image if the Dockerfile changed
 #
 # Everything is relative to this file, so the repository works wherever it is
@@ -270,6 +275,7 @@ cmd_setup() {
     else
         pm_install base libusb nfs firewall usbmuxd || true
     fi
+    ensure_python
     say "docker"
     ensure_docker
     ensure_binfmt linux/arm/v6
@@ -322,13 +328,31 @@ cmd_install() {
     istep 1 "this computer: what the build needs"
     isub setup
 
-    istep 2 "Linux's source, pinned to 6.12" "a few hundred MB"
-    if [ -f "$ROOT/build/linux/Makefile" ]; then iskip "build/linux"; else isub kernel; fi
+    # Prebuilt when there is a release (prebuilt/<channel>/a5.json) and
+    # nothing says otherwise: the kernel and the desktop root are downloaded,
+    # not built -- minutes instead of hours.  INSTALL_FROM=source builds them.
+    local from=source m
+    if [ "${INSTALL_FROM:-}" != source ] && m=$(a5_manifest) && [ ! -f "$ROOT/build/linux/Makefile" ]; then
+        from=prebuilt
+    fi
 
-    istep 3 "the Alpine system the iPad boots into" "a few minutes"
-    if [ -x "$ROOT/build/initramfs-root/sbin/p105-stage2" ] && [ -x "$ROOT/build/initramfs-root/usr/sbin/dropbear" ]; then
-        iskip "build/initramfs-root"
-    else isub rootfs; fi
+    if [ $from = prebuilt ]; then
+        istep 2 "the prebuilt kernel and desktop root" "~400 MB to download"
+        local want; want=$(sed -n 's/.*"version": "\([^"]*\)".*/\1/p' "$m" | head -1)
+        if [ "$(python3 "$REPO/lib/prebuilt.py" current "$ROOT/build/prebuilt" 2>/dev/null)" = "$want" ]; then
+            iskip "build/prebuilt/$want"
+        else isub get; fi
+        istep 3 "the Alpine system the iPad boots into"
+        inone "it is in the prebuilt kernel"
+    else
+        istep 2 "Linux's source, pinned to 6.12" "a few hundred MB"
+        if [ -f "$ROOT/build/linux/Makefile" ]; then iskip "build/linux"; else isub kernel; fi
+
+        istep 3 "the Alpine system the iPad boots into" "a few minutes"
+        if [ -x "$ROOT/build/initramfs-root/sbin/p105-stage2" ] && [ -x "$ROOT/build/initramfs-root/usr/sbin/dropbear" ]; then
+            iskip "build/initramfs-root"
+        else isub rootfs; fi
+    fi
 
     istep 4 "Apple's files, from the iPad's own iOS 8.4.1 IPSW" "1.4 GB download the first time"
     if [ -f "$FW/iBEC.patched.autogo.plain.dfu" ] && [ -f "$FW/P105.mtprops" ] && [ -f "$FW/sgx543.fw" ]; then
@@ -341,11 +365,13 @@ cmd_install() {
     echo "    cable (NFS, ~1.5 GB).  Without it the iPad runs a small system in its RAM."
     desktop=$(install_conf desktop "the desktop?")
 
-    istep 5 "the kernel and the boot image" "~15 min the first time, a few on an M-series Mac"
+    if [ $from = prebuilt ]; then istep 5 "the boot image: the kernel and this computer's layer" "seconds"
+    else istep 5 "the kernel and the boot image" "~15 min the first time, a few on an M-series Mac"; fi
     # fresh: the bundle is newer than the tree it embeds and than the
     # sources a build lays over it (an edit to initramfs/init reaches the
     # tree only when the build runs)
-    if [ -f "$ROOT/output/staging-bundle.bin" ] && [ -z "$(find "$ROOT/build/initramfs-root" \
+    if [ $from = prebuilt ]; then isub build
+    elif [ -f "$ROOT/output/staging-bundle.bin" ] && [ -z "$(find "$ROOT/build/initramfs-root" \
             "$ROOT/initramfs" "$ROOT/rootfs/alpine" "$ROOT/dts" "$ROOT/patches" "$ROOT/config" \
             "$ROOT/build/keep" -newer "$ROOT/output/staging-bundle.bin" -type f -print -quit 2>/dev/null)" ]; then
         iskip "output/staging-bundle.bin is newer than everything in it"
@@ -353,12 +379,26 @@ cmd_install() {
 
     istep 6 "the desktop's root" "minutes; up to two hours the very first time"
     if [ "$desktop" != y ]; then inone "no desktop: the iPad runs from RAM"
+    elif [ $from = prebuilt ]; then inone "it came with the prebuilt release"
     elif [ -f "$ROOT/build/desktop-root.tar" ]; then iskip "build/desktop-root.tar"
     else isub desktop-root; fi
 
     istep 7 "the iPad's disk on this computer (NFS)"
     if [ "$desktop" != y ]; then inone "no desktop"
-    elif [ -s "$ROOT/build/initramfs-root/etc/nfsroot" ] && [ -e "$(nfs_dst)/sbin/p105-stage2" ]; then
+    elif [ -s "$ROOT/build/keep/etc/nfsroot" ] && [ -e "$(nfs_dst)/sbin/p105-stage2" ] &&
+         ! grep -q '^desktop' "$(nfs_dst)/etc/cascadia-root" 2>/dev/null &&
+         { [ -f "$ROOT/build/desktop-root.tar" ] || [ -f "$PREBUILT/desktop-root.tar.xz" ]; }; then
+        # a root from before the desktop root (no /etc/cascadia-root): the
+        # iPad would boot that one, not what step 6 made
+        echo "    $(nfs_dst) is an older root, not the desktop's: anything installed there"
+        echo "    stays, and the desktop root is not used."
+        if ask "replace it with the desktop root (deletes what is in $(nfs_dst))?"; then
+            FORCE_SYNC=1 isub nfs on
+            isub build
+        else
+            inone "keeping $(nfs_dst) as it is"
+        fi
+    elif [ -s "$ROOT/build/keep/etc/nfsroot" ] && [ -e "$(nfs_dst)/sbin/p105-stage2" ]; then
         iskip "$(nfs_dst), exported"
     else
         isub nfs on
@@ -420,8 +460,157 @@ cmd_rootfs() {
     bash "$ROOT/scripts/build-alpine-rootfs.sh"
 }
 
+# This machine's layer of the image, build/overlay (see build's step 2): made
+# at every build, from source or around a prebuilt kernel alike.
+make_overlay() {
+    OVL="$ROOT/build/overlay"
+    rm -rf "$OVL"; mkdir -p "$OVL"
+    # The digitizer's firmware is Apple's, so it comes out of the user's IPSW
+    # with the boot chain rather than out of the repository.  Before build/keep
+    # is laid over the tree, so a copy there still wins.
+    if [ -s "$ROOT/build/firmware/P105.mtprops" ]; then
+        mkdir -p "$OVL/lib/firmware"
+        cp "$ROOT/build/firmware/P105.mtprops" "$OVL/lib/firmware/"
+        note "ok: touch firmware from the IPSW (build/firmware/P105.mtprops)"
+    fi
+    # The same for Wi-Fi: brcmfmac is built in and asks for brcm/<name> as soon
+    # as the chip enumerates, which is long before any NFS root is mounted --
+    # so it has to be in the image itself.
+    if [ -s "$ROOT/build/firmware/brcmfmac4334.bin" ]; then
+        mkdir -p "$OVL/lib/firmware/brcm"
+        cp "$ROOT/build/firmware/brcmfmac4334.bin" "$OVL/lib/firmware/brcm/"
+        note "ok: Wi-Fi firmware from the IPSW (build/firmware/brcmfmac4334.bin)"
+    else
+        note "note: no Wi-Fi firmware -- ./cascadia a5 firmware extracts it from the IPSW"
+    fi
+    # Bluetooth's patchram, from BlueTool in the same IPSW.  btbcm asks for it
+    # by the chip's subversion as soon as hci_bcm attaches, at boot.
+    if [ -s "$ROOT/build/firmware/BCM4334B0.hcd" ]; then
+        mkdir -p "$OVL/lib/firmware/brcm"
+        cp "$ROOT/build/firmware/BCM4334B0.hcd" "$OVL/lib/firmware/brcm/"
+        note "ok: Bluetooth firmware from the IPSW (build/firmware/BCM4334B0.hcd)"
+    else
+        note "note: no Bluetooth firmware -- ./cascadia a5 firmware extracts it from the IPSW"
+    fi
+    # The GPU's microkernel, for drivers/gpu/drm/apple-sgx.  Apple's, so it
+    # comes out of the kernelcache like the rest (scripts/extract-sgx-firmware.py).
+    if [ -s "$ROOT/build/firmware/sgx543.fw" ]; then
+        mkdir -p "$OVL/lib/firmware/apple"
+        cp "$ROOT/build/firmware/sgx543.fw" "$OVL/lib/firmware/apple/"
+        note "ok: GPU microkernel from the IPSW (build/firmware/sgx543.fw)"
+    else
+        note "note: no GPU microkernel -- ./cascadia a5 firmware extracts it from the IPSW"
+    fi
+    # No RTC on this board: without a stamp it boots at the epoch and every TLS
+    # handshake fails on notBefore.  In the local layer, so each assembly of
+    # the bundle -- a prebuilt kernel's too -- carries the day it was made.
+    mkdir -p "$OVL/etc"; date -u "+%Y-%m-%d %H:%M:%S" > "$OVL/etc/build-date"
+    note "ok: build date $(cat "$OVL/etc/build-date") UTC"
+    # dropbear's host key, made once and kept in build/keep so it outlives a
+    # rootfs rebuild.  Without it dropbear -R made a new one at every boot of the
+    # RAM root, and every boot met ssh with REMOTE HOST IDENTIFICATION HAS
+    # CHANGED.  The fingerprint printed here is the one ssh shows the first time.
+    if command -v ssh-keygen >/dev/null 2>&1; then
+        HOSTKEY=etc/dropbear/dropbear_ed25519_host_key
+        hk=$(python3 "$ROOT/scripts/dropbear-hostkey.py" "$ROOT/build/keep/$HOSTKEY") \
+            || fail "could not make the ssh host key"
+        note "ok: ssh host key, ${hk%% *} ed25519 ${hk#* }"
+    else
+        note "note: no ssh-keygen here, so the device makes its host key at boot -- a new one every boot"
+    fi
+    # build/keep holds what the repository cannot reproduce -- the touch
+    # daemon, the digitizer firmware, the ssh host key made just above -- and
+    # only ./cascadia a5 rootfs used to copy it in, so a firmware added later
+    # never reached the image.  Every build now.
+    if [ -d "$ROOT/build/keep" ]; then
+        cp -a "$ROOT/build/keep/." "$OVL/"
+        note "ok: build/keep/ -> the local layer ($(cd "$ROOT/build/keep" && find . -type f | wc -l | tr -d ' ') files)"
+    fi
+    # Not fatal: without it the image boots as before, just without touch.
+    if [ ! -s "$OVL/lib/firmware/P105.mtprops" ]; then
+        note "note: no touch firmware -- touch stays off; ./cascadia a5 firmware extracts it from the IPSW"
+    fi
+    if [ -f "$ROOT/build/keep/lib/firmware/mtcal.bin" ]; then
+        note "ok: touch calibration: this iPad's own (build/keep, ./cascadia a5 mtcal)"
+    else
+        note "ok: touch calibration: the default (initramfs/lib/firmware/mtcal.bin)"
+    fi
+    # The image always lets in the machine that builds it.  add-dropbear.sh
+    # bakes a key once, at rootfs time, so a key made after that -- another
+    # ssh-keygen, another laptop -- left an image that met every login with
+    # a password prompt for a password that does not exist.  This machine's
+    # key is added if the image does not carry it yet; nothing is removed.
+    # So is every ~/.ssh/cascadia*.pub: keys made for this device alone
+    # (cascadia_claude, the passphrase-less one the assistant logs in
+    # with).  Stage 1 copies the image's list over the NFS root's at every
+    # boot, so a key appended on the device by hand is gone after a reboot.
+    AK="$OVL/root/.ssh/authorized_keys"
+    PUB="${PUBKEY:-}"
+    if [ -z "$PUB" ]; then
+        for c in ~/.ssh/id_ed25519.pub ~/.ssh/id_rsa.pub ~/.ssh/id_ecdsa.pub; do
+            if [ -f "$c" ]; then PUB="$c"; break; fi
+        done
+    fi
+    [ -n "$PUB" ] || note "note: no ssh public key on this machine -- the image keeps whatever keys it had"
+    for PUB in $PUB ~/.ssh/cascadia*.pub; do
+        [ -f "$PUB" ] || continue
+        blob=$(awk 'NR == 1 { print $2 }' "$PUB")
+        case "$(head -c 12 "$PUB" 2>/dev/null)" in
+            ssh-*|ecdsa-*|sk-*) : ;;
+            *) blob= ;;
+        esac
+        if [ -z "$blob" ]; then
+            note "note: $PUB is not an OpenSSH public key -- skipped"
+        elif [ -f "$AK" ] && grep -qF "$blob" "$AK"; then
+            note "ok: ssh lets in $PUB"
+        else
+            mkdir -p "$(dirname "$AK")"
+            chmod 700 "$(dirname "$AK")"
+            { [ -s "$AK" ] && echo; cat "$PUB"; } >> "$AK"
+            chmod 600 "$AK"
+            note "ok: ssh lets in $PUB -- added to the image"
+        fi
+    done
+}
+
+# The prebuilt kernel half (./cascadia a5 get), when there is one.
+PREBUILT="$ROOT/build/prebuilt/current"
+have_prebuilt() { [ -f "$PREBUILT/linux-boot.bin" ] && [ -f "$PREBUILT/zImage-dtb" ]; }
+
+# Without a kernel tree here -- or with PREBUILT_KERNEL=1 -- the image is the
+# prebuilt kernel plus this machine's layer: seconds, and no docker.
+build_prebuilt() {
+    local v
+    v=$(basename "$(cd "$PREBUILT" && pwd -P)")
+    say "the kernel: prebuilt $v (./cascadia a5 kernel and rootfs build one here instead)"
+    mkdir -p "$ROOT/output"
+    cp "$PREBUILT/linux-boot.bin" "$PREBUILT/zImage-dtb" "$ROOT/output/"
+    say "this machine's layer"
+    make_overlay
+    assemble
+}
+
+# ./cascadia a5 get: the release a manifest in prebuilt/ names, into
+# build/prebuilt/<version>/ (CHANNEL=experimental for the newer one)
+a5_manifest() {
+    local ch="${CHANNEL:-stable}"
+    if [ -f "$REPO/prebuilt/$ch/a5.json" ]; then echo "$REPO/prebuilt/$ch/a5.json"
+    elif [ "$ch" = stable ] && [ -f "$REPO/prebuilt/experimental/a5.json" ]; then echo "$REPO/prebuilt/experimental/a5.json"
+    else return 1; fi
+}
+cmd_get() {
+    local m
+    m=$(a5_manifest) || fail "no prebuilt release for the iPad mini 1 yet (prebuilt/${CHANNEL:-stable}/a5.json)"
+    case "$m" in */experimental/*) [ "${CHANNEL:-stable}" = experimental ] || note "no stable release yet: the experimental one" ;; esac
+    say "prebuilt: $(sed -n 's/.*"version": "\([^"]*\)".*/\1/p' "$m" | head -1)"
+    python3 "$REPO/lib/prebuilt.py" get "$m" "$ROOT/build/prebuilt" || fail "the download stopped (above); run it again to resume"
+}
+
 cmd_build() {
-    [ -f "$ROOT/build/linux/Makefile" ] || fail "no kernel source -- run: ./cascadia a5 kernel"
+    if have_prebuilt && { [ "${PREBUILT_KERNEL:-}" = 1 ] || [ ! -f "$ROOT/build/linux/Makefile" ]; }; then
+        build_prebuilt; return
+    fi
+    [ -f "$ROOT/build/linux/Makefile" ] || fail "no kernel here -- ./cascadia a5 get (prebuilt), or ./cascadia a5 kernel (to build one)"
     [ -d "$ROOT/build/initramfs-root" ] || fail "no rootfs -- run: ./cascadia a5 rootfs"
     mkdir -p "$ROOT/build/out" "$ROOT/output"
 
@@ -458,6 +647,20 @@ cmd_build() {
     note "ok: fresh dtb, gadget MACs pinned"
 
     say "2/6 initramfs extras"
+    # Two trees from here.  build/initramfs-root is the BASE the kernel
+    # embeds: the Alpine system, the boot scripts, our tools -- the same for
+    # everyone, which is what lets a kernel be prebuilt.  build/overlay is
+    # this machine's LAYER: the firmware from its IPSW, its ssh keys, the
+    # device's host key, build/keep (the NFS root's address, the panel's own
+    # calibration).  scripts/assemble.py puts the layer into the bundle and
+    # the kernel unpacks it over the base at boot.
+    # what older builds copied into the base belongs to the layer now
+    ( cd "$ROOT/build/initramfs-root" && rm -f lib/firmware/P105.mtprops lib/firmware/brcm/brcmfmac4334.bin \
+          lib/firmware/brcm/BCM4334B0.hcd lib/firmware/apple/sgx543.fw root/.ssh/authorized_keys \
+          etc/dropbear/dropbear_ed25519_host_key etc/nfsroot etc/build-date )
+    if [ -d "$ROOT/build/keep" ]; then
+        ( cd "$ROOT/build/keep" && find . -type f ) | while read -r f; do rm -f "$ROOT/build/initramfs-root/$f"; done
+    fi
     # initramfs/ is the source of truth for the boot scripts, but only
     # ./cascadia a5 rootfs used to copy it in -- an edit to initramfs/init followed
     # by ./cascadia a5 build shipped the old init.  Overlay it on every build.
@@ -467,47 +670,6 @@ cmd_build() {
     cp -a "$ROOT/rootfs/alpine/." "$ROOT/build/initramfs-root/"
     cp -a "$ROOT/initramfs/." "$ROOT/build/initramfs-root/"
     note "ok: rootfs/alpine/ and boot scripts from initramfs/"
-    # The digitizer's firmware is Apple's, so it comes out of the user's IPSW
-    # with the boot chain rather than out of the repository.  Before build/keep
-    # is laid over the tree, so a copy there still wins.
-    if [ -s "$ROOT/build/firmware/P105.mtprops" ]; then
-        mkdir -p "$ROOT/build/initramfs-root/lib/firmware"
-        cp "$ROOT/build/firmware/P105.mtprops" "$ROOT/build/initramfs-root/lib/firmware/"
-        note "ok: touch firmware from the IPSW (build/firmware/P105.mtprops)"
-    fi
-    # The same for Wi-Fi: brcmfmac is built in and asks for brcm/<name> as soon
-    # as the chip enumerates, which is long before any NFS root is mounted --
-    # so it has to be in the image itself.
-    if [ -s "$ROOT/build/firmware/brcmfmac4334.bin" ]; then
-        mkdir -p "$ROOT/build/initramfs-root/lib/firmware/brcm"
-        cp "$ROOT/build/firmware/brcmfmac4334.bin" "$ROOT/build/initramfs-root/lib/firmware/brcm/"
-        note "ok: Wi-Fi firmware from the IPSW (build/firmware/brcmfmac4334.bin)"
-    else
-        note "note: no Wi-Fi firmware -- ./cascadia a5 firmware extracts it from the IPSW"
-    fi
-    # Bluetooth's patchram, from BlueTool in the same IPSW.  btbcm asks for it
-    # by the chip's subversion as soon as hci_bcm attaches, at boot.
-    if [ -s "$ROOT/build/firmware/BCM4334B0.hcd" ]; then
-        mkdir -p "$ROOT/build/initramfs-root/lib/firmware/brcm"
-        cp "$ROOT/build/firmware/BCM4334B0.hcd" "$ROOT/build/initramfs-root/lib/firmware/brcm/"
-        note "ok: Bluetooth firmware from the IPSW (build/firmware/BCM4334B0.hcd)"
-    else
-        note "note: no Bluetooth firmware -- ./cascadia a5 firmware extracts it from the IPSW"
-    fi
-    # The GPU's microkernel, for drivers/gpu/drm/apple-sgx.  Apple's, so it
-    # comes out of the kernelcache like the rest (scripts/extract-sgx-firmware.py).
-    if [ -s "$ROOT/build/firmware/sgx543.fw" ]; then
-        mkdir -p "$ROOT/build/initramfs-root/lib/firmware/apple"
-        cp "$ROOT/build/firmware/sgx543.fw" "$ROOT/build/initramfs-root/lib/firmware/apple/"
-        note "ok: GPU microkernel from the IPSW (build/firmware/sgx543.fw)"
-    else
-        note "note: no GPU microkernel -- ./cascadia a5 firmware extracts it from the IPSW"
-    fi
-    # No RTC on this board: without a stamp it boots at the epoch and every TLS
-    # handshake fails on notBefore.  Written before the kernel build so it lands
-    # inside the embedded initramfs.
-    date -u "+%Y-%m-%d %H:%M:%S" > "$ROOT/build/initramfs-root/etc/build-date"
-    note "ok: build date $(cat "$ROOT/build/initramfs-root/etc/build-date") UTC"
     # /bin/peek is the MMIO tool every lab note in docs/ uses, and this busybox
     # has no devmem applet.  Built here rather than committed: the source is
     # ours, and the cross-compiler is already in the image.
@@ -544,75 +706,7 @@ cmd_build() {
             || fail "could not add the base packages (scripts/add-base-packages.sh)"
     fi
     note "ok: iw, wpa_supplicant, fbkeyboard, bluez, dbus, alsa-utils, NFS RPC configuration"
-    # dropbear's host key, made once and kept in build/keep so it outlives a
-    # rootfs rebuild.  Without it dropbear -R made a new one at every boot of the
-    # RAM root, and every boot met ssh with REMOTE HOST IDENTIFICATION HAS
-    # CHANGED.  The fingerprint printed here is the one ssh shows the first time.
-    if [ -x "$ROOT/build/initramfs-root/usr/sbin/dropbear" ]; then
-        if command -v ssh-keygen >/dev/null 2>&1; then
-            HOSTKEY=etc/dropbear/dropbear_ed25519_host_key
-            hk=$(python3 "$ROOT/scripts/dropbear-hostkey.py" "$ROOT/build/keep/$HOSTKEY") \
-                || fail "could not make the ssh host key"
-            note "ok: ssh host key, ${hk%% *} ed25519 ${hk#* }"
-        else
-            note "note: no ssh-keygen here, so the device makes its host key at boot -- a new one every boot"
-        fi
-    fi
-    # build/keep holds what the repository cannot reproduce -- the touch
-    # daemon, the digitizer firmware, the ssh host key made just above -- and
-    # only ./cascadia a5 rootfs used to copy it in, so a firmware added later
-    # never reached the image.  Every build now.
-    if [ -d "$ROOT/build/keep" ]; then
-        cp -a "$ROOT/build/keep/." "$ROOT/build/initramfs-root/"
-        note "ok: build/keep/ -> image ($(cd "$ROOT/build/keep" && find . -type f | wc -l | tr -d ' ') files)"
-    fi
-    # Not fatal: without it the image boots as before, just without touch.
-    if [ ! -s "$ROOT/build/initramfs-root/lib/firmware/P105.mtprops" ]; then
-        note "note: no touch firmware -- touch stays off; ./cascadia a5 firmware extracts it from the IPSW"
-    fi
-    if [ -f "$ROOT/build/keep/lib/firmware/mtcal.bin" ]; then
-        note "ok: touch calibration: this iPad's own (build/keep, ./cascadia a5 mtcal)"
-    else
-        note "ok: touch calibration: the default (initramfs/lib/firmware/mtcal.bin)"
-    fi
-    if [ -x "$ROOT/build/initramfs-root/usr/sbin/dropbear" ]; then
-        # The image always lets in the machine that builds it.  add-dropbear.sh
-        # bakes a key once, at rootfs time, so a key made after that -- another
-        # ssh-keygen, another laptop -- left an image that met every login with
-        # a password prompt for a password that does not exist.  This machine's
-        # key is added if the image does not carry it yet; nothing is removed.
-        # So is every ~/.ssh/cascadia*.pub: keys made for this device alone
-        # (cascadia_claude, the passphrase-less one the assistant logs in
-        # with).  Stage 1 copies the image's list over the NFS root's at every
-        # boot, so a key appended on the device by hand is gone after a reboot.
-        AK="$ROOT/build/initramfs-root/root/.ssh/authorized_keys"
-        PUB="${PUBKEY:-}"
-        if [ -z "$PUB" ]; then
-            for c in ~/.ssh/id_ed25519.pub ~/.ssh/id_rsa.pub ~/.ssh/id_ecdsa.pub; do
-                if [ -f "$c" ]; then PUB="$c"; break; fi
-            done
-        fi
-        [ -n "$PUB" ] || note "note: no ssh public key on this machine -- the image keeps whatever keys it had"
-        for PUB in $PUB ~/.ssh/cascadia*.pub; do
-            [ -f "$PUB" ] || continue
-            blob=$(awk 'NR == 1 { print $2 }' "$PUB")
-            case "$(head -c 12 "$PUB" 2>/dev/null)" in
-                ssh-*|ecdsa-*|sk-*) : ;;
-                *) blob= ;;
-            esac
-            if [ -z "$blob" ]; then
-                note "note: $PUB is not an OpenSSH public key -- skipped"
-            elif [ -f "$AK" ] && grep -qF "$blob" "$AK"; then
-                note "ok: ssh lets in $PUB"
-            else
-                mkdir -p "$(dirname "$AK")"
-                chmod 700 "$(dirname "$AK")"
-                { [ -s "$AK" ] && echo; cat "$PUB"; } >> "$AK"
-                chmod 600 "$AK"
-                note "ok: ssh lets in $PUB -- added to the image"
-            fi
-        done
-    fi
+    make_overlay
 
     say "3/6 kernel"
     # set -o pipefail INSIDE the container shell: without it a failed build
@@ -656,7 +750,7 @@ so this is a file in build/initramfs-root owned by some third uid."
     [ "$bad_gid" = "-" ] || note "note: some entries keep a non-root group ($bad_gid) -- harmless; rootfs and build ran under different groups"
 
     # Not fatal: a tree without these still boots and still gives both consoles.
-    for s in bin/peek usr/sbin/dropbear etc/dropbear/dropbear_ed25519_host_key sbin/mount.nfs etc/netconfig \
+    for s in bin/peek usr/sbin/dropbear sbin/mount.nfs etc/netconfig \
              usr/sbin/iw sbin/wpa_supplicant usr/bin/fbkeyboard usr/lib/bluetooth/bluetoothd \
              usr/bin/aplay etc/asound.conf; do
         if LC_ALL=C grep -aFq "$s" "$CPIO"; then note "ok:      $s"
@@ -669,12 +763,20 @@ so this is a file in build/initramfs-root owned by some third uid."
     got=$(filesize "$ROOT/output/zImage-dtb")
     [ "$want" = "$got" ] || fail "zImage-dtb is $got bytes, expected $want"
     in_docker "bash build-bundle.sh 2>&1 | tail -5"
-    cp "$ROOT/output/linux-boot.bin" "$ROOT/output/staging-loader.bin"
-    bs=$(filesize "$ROOT/output/staging-bundle.bin")
-    [ "$bs" = "$(( got + 32768 ))" ] || fail "staging-bundle.bin is $bs bytes, expected $(( got + 32768 ))"
-    note "ok: bundle = 32K loader + this exact zImage-dtb"
-
     DOCKER_EXTRA=()
+    assemble
+}
+
+# The bundle from the kernel half (linux-boot.bin + zImage-dtb: built above,
+# or a prebuilt release's) and build/overlay, this machine's layer.
+assemble() {
+    [ -f "$ROOT/build/overlay/etc/dropbear/dropbear_ed25519_host_key" ] \
+        && note "ok: the layer carries the ssh host key" \
+        || note "note: no ssh host key in the layer -- the device makes one at boot, a new one every boot"
+    python3 "$ROOT/scripts/assemble.py" "$ROOT/output/linux-boot.bin" "$ROOT/output/zImage-dtb" \
+        "$ROOT/build/overlay" "$ROOT/output/staging-bundle.bin" | sed 's/^/    /' \
+        || fail "could not assemble the bundle"
+    cp "$ROOT/output/linux-boot.bin" "$ROOT/output/staging-loader.bin"
     say "done"
     ls -l "$ROOT/output/staging-bundle.bin" "$ROOT/output/staging-loader.bin"
 }
@@ -716,14 +818,107 @@ cmd_mesa() {
     # The system's OpenGL is a release build (no assertions: a debug build
     # stops a program on Mesa's own, M36); install.py takes the same one
     export MESA_BUILD="${MESA_BUILD:-release}"
+    # jobs by docker's memory, about a GB each (ninja's own count, the cores
+    # plus two, ran a 4 GB machine short under ARM emulation)
+    export MESA_JOBS="${MESA_JOBS:-$(docker info --format '{{.MemTotal}} {{.NCPU}}' 2>/dev/null |
+        awk '{ j = int($1 / 1073741824); if (j > $2) j = $2; if (j < 1) j = 1; print j }')}"
     # --init: without it the build is PID 1, which ignores ^C
     docker run --rm --init --platform linux/arm/v7 ${duser[@]+"${duser[@]}"} \
-        -e MESA_BUILD -v "$ROOT":/cascadia -w /cascadia cascadia-mesa sh mesa/build.sh
+        -e MESA_BUILD -e MESA_JOBS -v "$ROOT":/cascadia -w /cascadia cascadia-mesa sh mesa/build.sh
     if [ $# -gt 0 ]; then
         python3 "$ROOT/mesa/install.py" "$@"
     else
         python3 "$ROOT/mesa/install.py" --auto
     fi
+}
+
+# ---------- dev release: what ./cascadia a5 get fetches ---------------------
+# Built from source here, checked for anything of this machine's, packed
+# into build/release/<version>/, and named by prebuilt/<channel>/a5.json.
+# Publishing is yours: it prints the gh command, and the manifest is a
+# change to commit.
+GH_REPO="${GH_REPO:-rzxvx/Project-Cascadia}"
+cmd_release() {
+    local ch="${1:-experimental}" rev ver R kv
+    case "$ch" in experimental|stable) ;; *) fail "./cascadia a5 dev release experimental|stable" ;; esac
+    [ -f "$ROOT/build/linux/Makefile" ] || fail "a release is built from source: ./cascadia a5 kernel, ./cascadia a5 rootfs first"
+    [ -z "$(git -C "$REPO" status --porcelain --untracked-files=no)" ] \
+        || fail "commit first: a release names the commit it is built from, and that has to be all of it"
+    rev=$(git -C "$REPO" rev-parse --short HEAD)
+    ver="a5-$(date -u +%Y.%m.%d)-$rev"
+    R="$ROOT/build/release/$ver"
+    rm -rf "$R"; mkdir -p "$R"
+    local CHECK=(python3 "$ROOT/scripts/release-check.py" --forbid "$ROOT/build/firmware" "$ROOT/build/keep" "$ROOT/build/overlay")
+
+    say "1/5 the kernel, from source (commit $rev)"
+    PREBUILT_KERNEL=0 bash "$ROOT/cascadia" build >"$R/build.log" 2>&1 || { tail -20 "$R/build.log"; fail "the build failed (above)"; }
+    cp "$ROOT/output/linux-boot.bin" "$ROOT/output/zImage-dtb" "$R/"
+    say "2/5 the base the kernel embeds: nothing of this machine's"
+    "${CHECK[@]}" --cpio "$ROOT/build/linux/usr/initramfs_data.cpio" || fail "the base is not for release (above)"
+
+    say "3/5 the desktop root, for everyone (PUBLIC=1)"
+    PUBLIC=1 OUT="$R/desktop-root.tar" bash "$ROOT/tools/desktop/make-root.sh" || fail "the desktop root failed (above)"
+    mv "$R/desktop-root.tar.packages" "$R/packages.txt"
+    say "4/5 checking it, then xz"
+    "${CHECK[@]}" --tar "$R/desktop-root.tar" || fail "the desktop root is not for release (above)"
+    docker run --rm -v "$R":/r "alpine:3.24" sh -c 'apk add -q xz >/dev/null && xz -T0 -6 /r/desktop-root.tar' \
+        || fail "could not compress the desktop root"
+
+    say "5/5 notes and the manifest"
+    kv=$(LC_ALL=C grep -a -o -m1 'Linux version [^ ]*' "$ROOT/build/linux/vmlinux" 2>/dev/null | cut -d' ' -f3 || true)
+    cat > "$R/NOTES.md" <<EOT
+# Cascadia $ver -- iPad mini 1 (iPad2,5)
+
+Prebuilt halves for \`./cascadia a5 get\` (then \`./cascadia a5 install\`): the
+kernel ${kv:-6.12} with its base system, and the desktop root (XFCE on the GPU,
+SuperTux, screenpad, the on-screen keyboard).  Built from commit $rev.
+
+No Apple files and nothing of anyone's machine: the firmware from the IPSW,
+the GPU's pack, ssh keys and the device's host key are made on the user's
+own computer and go into the image there.
+
+- linux-boot.bin, zImage-dtb -- the loader and the kernel (GPL-2.0: Linux
+  v6.12 with this repository's patches at $rev)
+- desktop-root.tar.xz -- Alpine 3.24 armhf; packages.txt lists every package
+  and version (their sources: Alpine's aports), plus this repository's
+  patched xorg-server, xfwm4, pixman and SuperTux 0.7.0 (APKBUILDs and patches
+  in devices/a5/tools/desktop/ at $rev) and its Mesa driver (devices/a5/mesa/)
+EOT
+    python3 "$REPO/lib/prebuilt.py" manifest "$R" "$ver" \
+        "https://github.com/$GH_REPO/releases/download/$ver" "$rev" "$REPO/prebuilt/$ch/a5.json" \
+        || fail "could not write the manifest"
+    rm -f "$R/build.log"
+    ls -lh "$R"
+    echo
+    echo "    To publish it:"
+    echo "      gh release create $ver $R/* -R $GH_REPO --title 'iPad mini 1 $ver' --notes-file $R/NOTES.md$([ "$ch" = experimental ] && echo ' --prerelease')"
+    echo "      git add prebuilt/$ch/a5.json && git commit -m 'prebuilt: a5 $ch $ver' && git push"
+}
+
+# dev promote: the experimental release becomes the stable one -- the same
+# files, so only the manifest moves; the GitHub release loses its
+# pre-release mark with the gh command this prints.
+cmd_promote() {
+    local e="$REPO/prebuilt/experimental/a5.json" st="$REPO/prebuilt/stable/a5.json" ver
+    [ -f "$e" ] || fail "no experimental release to promote (prebuilt/experimental/a5.json)"
+    ver=$(sed -n 's/.*"version": "\([^"]*\)".*/\1/p' "$e" | head -1)
+    mkdir -p "$(dirname "$st")"
+    cp "$e" "$st"
+    say "stable is now $ver (prebuilt/stable/a5.json)"
+    echo "    To publish it:"
+    echo "      gh release edit $ver -R $GH_REPO --prerelease=false --latest"
+    echo "      git add prebuilt/stable/a5.json && git commit -m 'prebuilt: a5 stable $ver' && git push"
+}
+
+# A desktop root from a release has no GPU pack -- it is made from the user's
+# own IPSW -- so the first nfs on puts one in (./cascadia a5 dev gpu --root).
+nfs_gpu_pack() {
+    local dst
+    [ "$(uname -s)" = Darwin ] && dst="${DST:-$HOME/cascadia-root}" || dst="${DST:-/srv/cascadia-root}"
+    grep -q '^desktop' "$dst/etc/cascadia-root" 2>/dev/null || return 0
+    [ -e "$dst/usr/local/lib/sgx2d/pack.txt" ] && return 0
+    say "the GPU's pack into $dst (from your IPSW)"
+    cmd_gpu --root "$dst"
 }
 
 # net and nfs have one script per host OS: they share the interface and not
@@ -747,17 +942,21 @@ case "${1:-}" in
     link)   bash "$ROOT/tools/host-link.sh" ;;
     image)  ensure_image; say "$IMAGE is current" ;;
     net)    t=$(host_tool share-internet); shift; bash "$t" "$@" ;;
-    nfs)    t=$(host_tool nfs-export);     shift; bash "$t" "$@" ;;
+    nfs)    t=$(host_tool nfs-export);     shift; bash "$t" "$@"
+            [ "${1:-}" = on ] && nfs_gpu_pack ;;
     dev)    shift
             case "${1:-}" in
                 gpu)  shift; cmd_gpu "$@" ;;
+                release) shift; cmd_release "$@" ;;
+                promote) cmd_promote ;;
                 mesa) shift; cmd_mesa "$@" ;;
-                *)    fail "./cascadia a5 dev gpu | mesa  (./cascadia a5 lists them)" ;;
+                *)    fail "./cascadia a5 dev gpu | mesa | release | promote  (./cascadia a5 lists them)" ;;
             esac ;;
     desktop-root) bash "$ROOT/tools/desktop/make-root.sh" ;;
     setup)  cmd_setup ;;
+    get)    cmd_get ;;
     install) cmd_install ;;
     ssh)    shift; cmd_ssh "$@" ;;
     mesa|gpu) fail "./cascadia a5 $1 is ./cascadia a5 dev $1 now (desktop-root puts both into the root for you)" ;;
-    *)      sed -n '2,35p' "$ROOT/cascadia" | sed 's/^# \{0,1\}//'; exit 2 ;;
+    *)      sed -n '2,40p' "$ROOT/cascadia" | sed 's/^# \{0,1\}//'; exit 2 ;;
 esac

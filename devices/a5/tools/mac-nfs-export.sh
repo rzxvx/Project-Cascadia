@@ -26,8 +26,10 @@ SRC="${SRC:-$ROOT/build/initramfs-root}"   # the tree ./cascadia a5 rootfs build
 DST="${DST:-$HOME/cascadia-root}"          # deliberately not under Desktop/Documents/
                                            # Downloads: those are TCC-protected and
                                            # nfsd cannot read them
-DESKTOP_TAR="$ROOT/build/desktop-root.tar"  # ./cascadia a5 desktop-root; a new root
-                                           # starts from it when it is there
+# A new root starts from the desktop root when there is one: built here
+# (./cascadia a5 desktop-root), else a release's (./cascadia a5 get).
+DESKTOP_TAR="$ROOT/build/desktop-root.tar"
+[ -f "$DESKTOP_TAR" ] || DESKTOP_TAR="$ROOT/build/prebuilt/current/desktop-root.tar.xz"
 LAN_NET="${LAN_NET:-10.55.0.0}"
 LAN_MASK="${LAN_MASK:-255.255.255.0}"
 IP_HOST="${IP_HOST:-10.55.0.1}"
@@ -63,8 +65,18 @@ on)
         # Linux container, so owners and modes are already Linux's -- kept
         # by number, there being no messagebus on this Mac.
         echo "==> seeding $DST from $DESKTOP_TAR (the desktop root; DESKTOP=0 for the plain one)"
+        # FORCE_SYNC over a populated root: start it empty, as rsync --delete
+        # does on the other path -- unpacked over the old one, the two mix
+        if [ -n "$(ls -A "$DST" 2>/dev/null)" ]; then
+            case "$DST" in /|"$HOME"|"") fail "refusing to empty $DST" ;; esac
+            echo "    emptying $DST first (FORCE_SYNC=1)"
+            sudo find "$DST" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+        fi
         sudo mkdir -p "$DST"
         sudo tar -xpf "$DESKTOP_TAR" --numeric-owner -C "$DST"
+        # a tar from before make-root marked its roots still is the desktop's
+        [ -s "$DST/etc/cascadia-root" ] ||
+            echo "desktop unknown $(date -u +%Y-%m-%d)" | sudo tee "$DST/etc/cascadia-root" >/dev/null
         sudo mkdir -p "$DST/dev" "$DST/proc" "$DST/sys"
     else
         echo "==> copying $SRC -> $DST"
@@ -105,17 +117,14 @@ on)
     showmount -e localhost || true
 
     # Stage 1 reads this at boot; absent, it stays in RAM.  It goes in the
-    # initramfs, so it takes effect on the NEXT kernel build, not this instant.
-    #
-    # Written twice on purpose.  The copy in build/keep/ is what survives
-    # ./cascadia a5 rootfs, which rebuilds the tree from scratch; without it,
-    # re-running rootfs would quietly take the device back to the RAM root and
-    # nothing would say why.
-    echo "$IP_HOST:$DST" > "$SRC/etc/nfsroot"
+    # local layer (build/keep -> build/overlay), which the bundle carries
+    # next to the kernel: the next ./cascadia a5 build puts it in, in seconds
+    # with a prebuilt kernel.  Never into build/initramfs-root, the base a
+    # kernel embeds and a release ships.
     mkdir -p "$KEEP/etc"
     echo "$IP_HOST:$DST" > "$KEEP/etc/nfsroot"
     echo
-    echo "==> /etc/nfsroot in the initramfs = $IP_HOST:$DST"
+    echo "==> /etc/nfsroot in the local layer = $IP_HOST:$DST"
     echo "    Rebuild and flash for it to take effect:"
     echo "      ./cascadia a5 build && ./cascadia a5 flash"
     ;;
@@ -134,8 +143,7 @@ status)
     awk -v p="$DST " 'index($0, p) == 1' /etc/exports 2>/dev/null | grep . || echo "(none)"
     echo "--- nfsd ---"; sudo nfsd status 2>&1 | head -3 || true
     echo "--- exported now ---"; showmount -e localhost 2>&1 | head -5 || true
-    echo "--- initramfs /etc/nfsroot ---"; cat "$SRC/etc/nfsroot" 2>/dev/null || echo "(none: device will boot from RAM)"
-    echo "--- build/keep copy (survives ./cascadia a5 rootfs) ---"; cat "$KEEP/etc/nfsroot" 2>/dev/null || echo "(none)"
+    echo "--- the image's /etc/nfsroot (build/keep, the local layer) ---"; cat "$KEEP/etc/nfsroot" 2>/dev/null || echo "(none: the device boots from RAM)"
     ;;
 *)
     sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'

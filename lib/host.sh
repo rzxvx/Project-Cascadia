@@ -49,6 +49,9 @@ pm_names() {
         dnf/nfs)         echo nfs-utils ;;
         dnf/firewall)    echo iptables-nft ;;
         dnf/usbmuxd)     echo usbmuxd ;;
+        apt/qemu)        echo qemu-user-static binfmt-support ;;
+        pacman/qemu)     echo qemu-user-static qemu-user-static-binfmt ;;
+        dnf/qemu)        echo qemu-user-static ;;
     esac
 }
 
@@ -80,11 +83,30 @@ pm_install() {
                 run brew install $miss ;;
         apt)    ask "install $pkgs with apt (sudo)?" || return 1
                 run $SUDO apt-get update -q && run $SUDO env DEBIAN_FRONTEND=noninteractive apt-get install -y $pkgs ;;
+        # -S, not -Sy: refreshing the lists without upgrading is the partial
+        # upgrade Arch does not support; a package the old lists cannot get
+        # says so, and the answer is a full -Syu
         pacman) ask "install $pkgs with pacman (sudo)?" || return 1
-                run $SUDO pacman -Sy --needed --noconfirm $pkgs ;;
+                run $SUDO pacman -S --needed --noconfirm $pkgs \
+                    || { note "if pacman could not get a package: sudo pacman -Syu first"; return 1; } ;;
         dnf)    ask "install $pkgs with dnf (sudo)?" || return 1
                 run $SUDO dnf install -y $pkgs ;;
         *)      note "no package manager found: install $pkgs yourself"; return 1 ;;
+    esac
+}
+
+# A python that can do what the tools ask of it.  A partly upgraded Arch had a
+# python 3.14 whose pyexpat wanted a newer expat than the one installed, and
+# lib/usbmux.py died importing plistlib, in the middle of a flash.
+ensure_python() {
+    local err
+    if err=$(python3 -c 'import plistlib, ssl, zipfile, hashlib, lzma, ctypes' 2>&1); then
+        note "ok: python3 ($(python3 -c 'import sys; print("%d.%d" % sys.version_info[:2])'))"; return 0
+    fi
+    printf '%s\n' "$err" | tail -1 | sed 's/^/    python3: /' >&2
+    case "$(host_pm)" in
+        pacman) fail "this python3 is broken (above) -- a partly upgraded Arch: sudo pacman -Syu, then run this again" ;;
+        *)      fail "this python3 is broken (above): reinstall it, or update the system, then run this again" ;;
     esac
 }
 
@@ -125,15 +147,33 @@ ensure_docker() {
 }
 
 # the device's userland is ARM: on an x86_64 Linux docker runs it through
-# qemu, which a fresh install does not have registered (Docker Desktop does)
+# qemu, which a fresh install does not have registered (Docker Desktop does).
+# The distribution's qemu-user-static first: it registers through
+# systemd-binfmt at every boot.  tonistiigi/binfmt only as a fallback -- its
+# registration is gone after a reboot.  And a local image of the same tag for
+# another platform is pulled again for this one: docker does not always do
+# that by itself.
+binfmt_try() { BINFMT_ERR=$(docker run --rm --platform "$1" alpine:3.24 true 2>&1); }
 ensure_binfmt() {
     local plat=$1
-    docker run --rm --platform "$plat" alpine:3.24 true >/dev/null 2>&1 && { note "ok: $plat containers"; return 0; }
-    ask "let docker run $plat containers (qemu: docker run --privileged tonistiigi/binfmt --install arm,arm64)?" \
-        && run docker run --privileged --rm tonistiigi/binfmt --install arm,arm64 >/dev/null
-    docker run --rm --platform "$plat" alpine:3.24 true >/dev/null 2>&1 \
-        || fail "docker still cannot run $plat containers"
-    note "ok: $plat containers"
+    binfmt_try "$plat" && { note "ok: $plat containers"; return 0; }
+    if echo "$BINFMT_ERR" | grep -q -i -e 'does not match the specified platform' -e 'no matching manifest'; then
+        run docker pull -q --platform "$plat" alpine:3.24 >/dev/null || true
+        binfmt_try "$plat" && { note "ok: $plat containers"; return 0; }
+    fi
+    if [ "$HOST_OS" = Linux ]; then
+        note "docker cannot run $plat containers yet: $(echo "$BINFMT_ERR" | tail -1)"
+        if pm_install qemu; then
+            command -v systemctl >/dev/null 2>&1 && run $SUDO systemctl restart systemd-binfmt 2>/dev/null || true
+            binfmt_try "$plat" && { note "ok: $plat containers (qemu-user-static)"; return 0; }
+        fi
+        if ask "register qemu with docker's tonistiigi/binfmt instead (until the next reboot)?"; then
+            run docker run --privileged --rm tonistiigi/binfmt --install arm,arm64 >/dev/null
+            binfmt_try "$plat" && { note "ok: $plat containers (until the next reboot)"; return 0; }
+        fi
+    fi
+    printf '%s\n' "$BINFMT_ERR" | sed 's/^/    docker: /' >&2
+    fail "docker still cannot run $plat containers (its words above)"
 }
 
 # Apple's USB devices for this user (Linux; macOS needs nothing)
