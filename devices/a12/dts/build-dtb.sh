@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
-OUT="$HERE/../build/payload"
-BOARD="${1:-n841}"
+if [ -n "${1:-}" ]; then export A12_DEVICE="$1"; fi
+source "$HERE/../profile.sh"
+OUT="$A12_PAYLOAD"
+BOARD="$A12_BOARD"
 case "$BOARD" in
   n841) NAME=t8020-n841; LABEL=XR ;;
   j171a) NAME=t8020-j171a; LABEL='iPad 8' ;;
