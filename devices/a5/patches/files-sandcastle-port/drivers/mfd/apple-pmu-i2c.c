@@ -22,6 +22,7 @@
 
 struct apple_pmu_i2c_info {
     unsigned reg_bits, val_bits;
+    unsigned gpio_cfg;      /* GPIO n's configuration register: gpio_cfg + n */
 };
 
 static const struct apple_pmu_i2c_info apple_pmu_i2c_d2333_info = { .reg_bits = 16, .val_bits = 8 };
@@ -44,7 +45,19 @@ static const struct apple_pmu_i2c_info apple_pmu_i2c_chestnut_info = { .reg_bits
  * at all but flags 0x02 plus an index -- LDO 12 and LDO 19, both inside
  * _setLDO's bounds check of 0x16.
  */
-static const struct apple_pmu_i2c_info apple_pmu_i2c_d1946_info = { .reg_bits = 8, .val_bits = 8 };
+static const struct apple_pmu_i2c_info apple_pmu_i2c_d1946_info = {
+    .reg_bits = 8, .val_bits = 8, .gpio_cfg = 0x61,
+};
+/*
+ * The iPad 3's D1974 (ADT "pmu,d1974") takes the same 8-bit addressing and
+ * the same GPIO configuration bits, but its GPIO n is at 0x64 + n: the
+ * Wi-Fi's REG_ON (GPIO 3) is 0x67, the Bluetooth reset (GPIO 2) 0x66, the
+ * touch clock (GPIO 0) 0x64.  Only the GPIOs are taken from here; the
+ * D1946's power-off is not checked against this chip.
+ */
+static const struct apple_pmu_i2c_info apple_pmu_i2c_d1974_info = {
+    .reg_bits = 8, .val_bits = 8, .gpio_cfg = 0x64,
+};
 /*
  * Power-off, the way AppleD1946PMU::_shutdownGated does it (kernelcache
  * 12H321, 0x80ecec80; vtable slot 0x3a4).  In order:
@@ -128,11 +141,17 @@ static int apple_pmu_d1946_power_off(struct sys_off_data *data)
 #define D1946_GPIO_IS_INPUT(cfg)    ((cfg) >= 0x60)
 #define D1946_GPIO_LEVEL            0x02
 
+struct apple_pmu_gpio {
+    struct gpio_chip gc;
+    struct apple_pmu_i2c *pmu;
+    unsigned int cfg_base;
+};
+
 static int apple_pmu_gpio_cfg(struct gpio_chip *gc, unsigned int n, unsigned int *cfg)
 {
-    struct apple_pmu_i2c *pmu = gpiochip_get_data(gc);
+    struct apple_pmu_gpio *g = gpiochip_get_data(gc);
 
-    return regmap_read(pmu->regmap, D1946_GPIO_CFG + n, cfg);
+    return regmap_read(g->pmu->regmap, g->cfg_base + n, cfg);
 }
 
 static int apple_pmu_gpio_get_direction(struct gpio_chip *gc, unsigned int n)
@@ -155,9 +174,9 @@ static int apple_pmu_gpio_get(struct gpio_chip *gc, unsigned int n)
 
 static void apple_pmu_gpio_set(struct gpio_chip *gc, unsigned int n, int val)
 {
-    struct apple_pmu_i2c *pmu = gpiochip_get_data(gc);
+    struct apple_pmu_gpio *g = gpiochip_get_data(gc);
 
-    regmap_update_bits(pmu->regmap, D1946_GPIO_CFG + n, D1946_GPIO_LEVEL,
+    regmap_update_bits(g->pmu->regmap, g->cfg_base + n, D1946_GPIO_LEVEL,
                        val ? D1946_GPIO_LEVEL : 0);
 }
 
@@ -179,12 +198,16 @@ static int apple_pmu_gpio_direction_input(struct gpio_chip *gc, unsigned int n)
     return apple_pmu_gpio_get_direction(gc, n) == GPIO_LINE_DIRECTION_IN ? 0 : -EPERM;
 }
 
-static int apple_pmu_gpio_register(struct apple_pmu_i2c *pmu)
+static int apple_pmu_gpio_register(struct apple_pmu_i2c *pmu, unsigned int cfg_base)
 {
-    struct gpio_chip *gc = devm_kzalloc(pmu->dev, sizeof(*gc), GFP_KERNEL);
+    struct apple_pmu_gpio *g = devm_kzalloc(pmu->dev, sizeof(*g), GFP_KERNEL);
+    struct gpio_chip *gc;
 
-    if (!gc)
+    if (!g)
         return -ENOMEM;
+    g->pmu = pmu;
+    g->cfg_base = cfg_base;
+    gc = &g->gc;
     gc->label = "apple-pmu-gpio";
     gc->parent = pmu->dev;
     gc->owner = THIS_MODULE;
@@ -196,10 +219,11 @@ static int apple_pmu_gpio_register(struct apple_pmu_i2c *pmu)
     gc->direction_output = apple_pmu_gpio_direction_output;
     gc->get = apple_pmu_gpio_get;
     gc->set = apple_pmu_gpio_set;
-    return devm_gpiochip_add_data(pmu->dev, gc, pmu);
+    return devm_gpiochip_add_data(pmu->dev, gc, g);
 }
 
 static const struct of_device_id apple_pmu_i2c_of_match[] = {
+    { .compatible = "apple,pmu-d1974", .data = &apple_pmu_i2c_d1974_info },
     { .compatible = "apple,pmu-d1946", .data = &apple_pmu_i2c_d1946_info },
     { .compatible = "apple,pmu-d2333", .data = &apple_pmu_i2c_d2333_info },
     { .compatible = "apple,pmu-chestnut", .data = &apple_pmu_i2c_chestnut_info },
@@ -283,8 +307,8 @@ static int apple_pmu_i2c_probe(struct i2c_client *i2c)
             dev_warn(&i2c->dev, "no power-off: %d\n", ret);
     }
 
-    if (info == &apple_pmu_i2c_d1946_info && of_property_read_bool(node, "gpio-controller")) {
-        ret = apple_pmu_gpio_register(pmu);
+    if (info->gpio_cfg && of_property_read_bool(node, "gpio-controller")) {
+        ret = apple_pmu_gpio_register(pmu, info->gpio_cfg);
         if (ret)
             dev_warn(&i2c->dev, "no GPIOs: %d\n", ret);
     }
