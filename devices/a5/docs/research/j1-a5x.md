@@ -71,11 +71,23 @@ What does not carry over from the mini's chain:
   The block count put the hang between `smp_prepare_cpus()` and the first
   early initcall, where `workqueue_init()` makes kernel threads -- before
   `aic1_timer_init` (an early_initcall) registers the first clockevent.
-  From the code, the likely mechanism: `kthread_bind()` ->
-  `wait_task_inactive()` sleeps one tick on an hrtimer when the new thread
-  was preempted before it slept, and with no clockevent that sleep never
-  ends; how slow the console is changes the scheduling. `kernel_init()` now starts the AIC timer right after the AIC is
-  re-armed (in `patches/tree/0001`, `init/main.c`), and the J1 boots with no early console.
+  There, `kthread_bind()` -> `wait_task_inactive()` sleeps one tick on an
+  hrtimer when the new thread was preempted before it slept, and with no
+  clockevent that sleep never ends. How slow the console is changes the
+  scheduling, and with it whether the boot reaches that sleep.
+
+  Confirmed on the device (2026-11-07). The test used the console that
+  draws a block per message, which always hung, with the early timer start
+  turned off and a mark drawn on each side of that sleep:
+  - With the sleep unchanged, the boot stopped after the first mark of the
+    first sleep, and the second mark never appeared.
+  - With the sleep replaced by a `yield()`, the boot went on to `/init`.
+    The kernel reported 17011 passes through that wait before
+    `late_initcall`.
+
+  `kernel_init()` now starts the AIC timer right after the AIC is re-armed
+  (in `patches/tree/0001`, `init/main.c`), and the J1 boots with no early
+  console.
 
 ## Memory
 
