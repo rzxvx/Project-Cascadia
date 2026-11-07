@@ -2,10 +2,11 @@
 
 The iPad 3 Wi-Fi (iPad3,1, board J1AP, S5L8945X) runs Linux 6.12 from RAM
 with this repository's drivers: the gadget console and network over the
-30-pin cable, SSH, the framebuffer iBoot left, multi-touch and Wi-Fi. iOS
-9.3.5 stays on the NAND and is what starts it. `dts/j1ap.dts` is the tree it
-boots with. This is what differs from the mini and what was measured on one
-iPad; issue #22 asked about this machine.
+30-pin cable, SSH, the framebuffer iBoot left, multi-touch, Wi-Fi,
+Bluetooth and the speaker. iOS 9.3.5 stays on the NAND and is what starts
+it. `dts/j1ap.dts` is the tree it boots with. This is what differs from
+the mini and what was measured on one iPad; issue #22 asked about this
+machine.
 
 ## What carries over unchanged
 
@@ -49,27 +50,45 @@ What does not carry over from the mini's chain:
 - **The loader** (ARM, at `0x80000000`) stops the watchdog through iBoot's
   mapping (`0x0F103020`; the physical `0x3F103020` is the wrong address while
   the MMU is on), cleans L1 and the PL310, turns the MMU off and enters the
-  zImage at `0x80008000` with `r0=0`, `r1=~0` and `r2` = the appended DTB.
-  It also plants four hooks in the relocated decompressor, without which
-  decompression did not get through:
-  - `cache_on`'s SCTLR write loses M and C.
-  - At `decompress_kernel` the DTB is copied to `0x84000000`.
-  - `do_decompress` runs with DRAM identity-mapped and the caches on, L1
-    and L2 cleaned first.
-  - After it, L1 and L2 are cleaned and the MMU and caches turned off
-    before `__enter_kernel`.
-
-  The hook sites are offsets into the decompressor, so they hold for one
-  compiler (GCC 11.4 here) and are checked against the zImage's words
-  before packing.
-- **The early console is required.** `earlycon=j1fb`
+  uncompressed kernel `Image` at `0x80008000` with `r0=0`, `r1=~0` and `r2` =
+  the DTB, which it first copies to `0x84000000`, clear of the kernel's BSS.
+  It also sets the Cortex-A9 errata bits 743622 and 751472, which the kernel
+  only sets after `paging_init` has done the page-table writes they guard.
+  A header before the Image (`J1IM`, the DTB's offset and size) says where
+  the DTB is. No decompressor runs: an earlier loader entered the zImage and
+  had to patch four sites in the decompressor (its `cache_on` MMU enable
+  never returned on this board), at offsets that held for one compiler only.
+- **The early console.** `earlycon=j1fb`
   (`arch/arm/mach-apple/j1_earlyfb.c`) draws the boot log on iBoot's
   scanout with an 8x8 font at scale 2, putting its section mappings back
-  while `prepare_page_table` and `devicemaps_init` clear them. Without it
-  the kernel stops before the gadget comes up and the screen stays blank
-  under the backlight. Booted both ways with nothing else changed; it is the
-  only kernel change the J1 needs beyond the drivers below. Why it matters
-  is not found. The console is slow, and that is the suspect.
+  while `prepare_page_table` and `devicemaps_init` clear them. It draws
+  portrait (home button at the bottom) and stops once simplefb registers;
+  from there fbcon has the panel (`console=tty0 fbcon=rotate:1`), with a
+  penguin per core and the log in TER16x32 if the kernel has the font.
+  It used to be required: without it the kernel hung before the gadget,
+  with a blank screen. Keeping the console registered and taking its parts
+  away: a do-nothing console, the section mappings alone, and a cheap one
+  (a block per message) all hung; 2 ms of delay per message got past it.
+  The block count put the hang between `smp_prepare_cpus()` and the first
+  early initcall, where `workqueue_init()` makes kernel threads -- before
+  `aic1_timer_init` (an early_initcall) registers the first clockevent.
+  There, `kthread_bind()` -> `wait_task_inactive()` sleeps one tick on an
+  hrtimer when the new thread was preempted before it slept, and with no
+  clockevent that sleep never ends. How slow the console is changes the
+  scheduling, and with it whether the boot reaches that sleep.
+
+  Confirmed on the device (2026-11-07). The test used the console that
+  draws a block per message, which always hung, with the early timer start
+  turned off and a mark drawn on each side of that sleep:
+  - With the sleep unchanged, the boot stopped after the first mark of the
+    first sleep, and the second mark never appeared.
+  - With the sleep replaced by a `yield()`, the boot went on to `/init`.
+    The kernel reported 17011 passes through that wait before
+    `late_initcall`.
+
+  `kernel_init()` now starts the AIC timer right after the AIC is re-armed
+  (in `patches/tree/0001`, `init/main.c`), and the J1 boots with no early
+  console.
 
 ## Memory
 
@@ -104,20 +123,44 @@ SPI1 off every SPI read returned one repeated junk byte.
 ## PMU: D1974
 
 `pmu,d1974` at I2C0 `0x3c` (I2C0 is IRQ 18). It takes the same 8-bit
-register addresses as the D1946 and binds as `apple,pmu-d1946`, without
-the GPIO controller (its registers differ, below) or `system-power-controller`
-(the D1946's power-off is not checked against this chip).
+register addresses as the D1946. It binds as `apple,pmu-d1974`, which
+`apple-pmu-i2c.c` treats as a D1946 with its GPIO configuration registers at
+`0x64 + n` instead of `0x61 + n` (below), and without
+`system-power-controller` (the D1946's power-off is not checked against this
+chip).
 
 - LDO index 0 (touch, `function-power_ldo 0x200`): enable `0x23` bit `0x20`,
   voltage `0x31` (2.50–3.00 V), from AppleD1974PMU's LDO table.
 - PMU GPIO *n* is configured at `0x64 + n` (the D1946's is `0x61 + n`).
 - Backlight: an 11-bit DAC at `0xd3` (bits 10:3) and `0xd4` (bits 2:0), the
   string enable at `0xd5` (`0x3f` lit). The mini's `0xd0`/`0xd1` are
-  something else on this chip. The DTS has no backlight node yet.
+  something else on this chip. `wled@d3` in the DTS binds `apple-pmu-wled`
+  with `apple,enable-reg = <0xd5>`; iOS leaves it at 1669 of 2047.
 - Input-current limit: `0x3e`. iBEC leaves it at `0x02`, about 100 mA, and
   the battery drains under Linux even on a charger. `0x4a` is 1000 mA: at
   idle that turned about -190 mA into about +210 mA. It is written by hand
   from userspace for now; there is no charger driver.
+
+## CPUs
+
+CPU0's MPIDR is `0x80000900`: cluster 9, not the mini's `0xa`. With the
+mini's `0xa00`/`0xa01` in the cpu nodes Linux found no node for the boot
+CPU, fell back to one possible CPU, and CPU1 could not even be onlined.
+With `0x900`/`0x901` the mini's `platsmp.c` starts CPU1 unchanged (core
+mask 2 to PMGR `+0x1214`/`+0x1220`, the trampoline in the reset page at
+`0x80000000`), and its power-down idle works the same: about 2 cycles a
+second at idle, none lost. Tested with both cores busy, Wi-Fi bring-up and
+scans under that load.
+
+## Battery
+
+The gauge is the mini's bq27540 on HDQ through UART5 (`0x32a00000`, pin 196
+in peripheral mode), and the mini's driver reads it. The difference: J1's
+iBoot sets UART5's registers up but leaves its power state off
+(`0x3f101128`, PMGR power-state index `0x4a`, reads `0x200`), so every read
+returned nothing. The DTS gives the gauge a `uart5-ps` clock gate on that
+register, which the driver turns on when it has one. Design capacity
+11560 mAh.
 
 ## Touch
 
@@ -148,8 +191,10 @@ status of `4969` is normal. With the scan started (`bf 9f 0b 0b 02`, `af
 
 A BCM4330 B2 on HSIC port 2 of a second USB complex (`usb1-complex`,
 `0x3f109000`; its EHCI at `0x36c00000`, IRQ 162), not on the mini's EHCI.
-iBoot leaves that complex off and there is no PHY driver for it yet, so
-it is brought up by hand from a running system:
+iBoot leaves that complex off. The PHY driver
+(`apple,s5l8945x-usb1-phy` in `phy-apple-s5l-usb.c`) powers it at boot the
+way iOS's setPower(1) does, and EHCI waits for it; `wlan0` is up about 7 s
+into the boot. The sequence, first worked out by hand:
 
 1. PMGR: USB1-REG `0x3f1010b4` (the PHY's parent; without it the PHY reads
    bus junk) and USB1-EHCI `0x3f1010a4`, `0x20f` → `0x2ff`.
@@ -157,10 +202,11 @@ it is brought up by hand from a running system:
 3. The PHY at `0x36800000`, as iOS's setPower(1) does it: +`0x08` |= `0x3f`,
    +`0x60` = `0x2e0`, +`0x00` = `0x0f`, +`0x04` = `0x11`, +`0x40` = `0x349`,
    +`0x44` = `0x733`, 20 µs, +`0x08` &= ~`0x02`, 1 ms, +`0x08` &= ~`0x08`.
-4. EHCI +`0xb0` = `0x2` (HSIC port mask); REG_ON is PMU GPIO 3 (`0x67` =
-   `0x0b`).
-5. Bind `36c00000.usb` to ehci-platform again (the probe at boot fails -110
-   while the domain is off).
+4. REG_ON, PMU GPIO 3 (`0x67` = `0x0b`; the DTS's `wlan_reg_on`).
+
+EHCI +`0xb0` = `0x2` (an HSIC port mask) was part of the hand bring-up and
+is not needed: with it at 0 the chip enumerates and its firmware loads the
+same.
 
 The boot ROM then enumerates as `0a5c:bd19`. The firmware is iOS's
 `4330b2/mike.trx` with its NVRAM (`mike.txt`) and a `macaddr=` appended,
@@ -170,6 +216,84 @@ second; the bus reset brcmfmac does for the 4334 loses it (-71 from then
 on). The brcmfmac change is a separate PR. With it, wlan0 scans 2.4 and
 5 GHz and joins WPA2.
 
+## Bluetooth
+
+The BCM4330's Bluetooth half, on UART3 (`0x32800000`, IRQ 24, clock gate 75:
+power state `0x3f101120`), not the mini's UART1. From the ADT
+(`uart3/bluetooth`, "bluetooth,n88", 3 Mbaud):
+
+| Property | Value | Meaning |
+|---|---|---|
+| uart3 `function-tx` | GPIO `0x0a06` | pin 86; RX 87, RTS 88, CTS 89 |
+| uart3 `function-rts` | GPIO `0x0b00` | pin 88 |
+| `function-bt_reset` | PMU (`pmu,d1974`), GPIO 2 | REG_ON, config register `0x64 + 2` |
+| `function-bt_wake` | SoC GPIO `0x0501` | pin 41 |
+
+The mini's five steps (`p105-bluetooth.md`) carry over. The patchram is
+iOS 9.3.5's `/usr/sbin/BlueTool` image "BCM4330B1 37.4 MHz Class 1.5 Olympic
+Mike Module" (67030 bytes, sha256 `a88eee64…`; Mike is the J1's module, as
+in `wifi/4330b2/mike.trx`), which `extract-bt-firmware.py` cuts out
+unchanged and btbcm loads as `brcm/BCM4330B1.hcd`. REG_ON is a GPIO through
+`apple-pmu-i2c.c`'s gpiochip, which now knows the D1974's base. With
+Apple's patchram the chip reports `43:30:43:30:1F:AC`, the 4330's version of
+the 4334's placeholder, and btbcm treats both as one. The UART runs at
+1.5 Mbaud for the same reason as the mini's.
+
+Tested: hci0 comes up at boot (chip id 62, build 1367 after the patch),
+and a 12 s passive LE scan heard 251 reports from 12 advertisers.
+
+## Audio
+
+The speaker plays: I2S0 sends 16-bit stereo to a Cirrus CS42L63 codec on
+I2C0 (`0x4a`), and the codec's line out 2 drives the speaker through an
+external amplifier. `s5l-audio.c` has an S5L8945X variant for the SoC side;
+`cs42l63.c` is new. Headphones, microphones and headset detection are not
+done.
+
+The SoC side is not the mini's. The mini sends audio through the MCA; here
+it goes through the older I2S0 block at `0x34190000`, fed by CDMA channel
+`0x1f`, request 1 (the ADT's `i2s0` `dma-channels`), into the FIFO at
+I2S0 + `0x10`. I2S0 is the clock master. What was measured:
+
+| What | Value | Note |
+|---|---|---|
+| Power states | AUDIO `0x3f1010b8`, I2S0 `0x3f1010bc` | I2S0 is a child of AUDIO in the DT. Otherwise AUDIO is switched off with the unused clocks |
+| NCO reference | 342 MHz | Not the A5's 24 MHz: with 24 MHz the port ran 14–17 times too fast. NCO *n* is at PMGR + `0x130` + 16*n* |
+| Bit clock | NCO 0 = 32 fs | 1.536 MHz at 48 kHz drained 95,935 words/s |
+| MCS + `0x10` + 4*i* | NCO selector for lane *i* | Reset values 0..4. Lane 0 must stay 0; 1–3 stop I2S0 |
+| MCLK | CLKCON `0x181`: nclk / 4 | Not from the NCO. 6 MHz if nclk is 24 MHz, as iOS's choice of divider implies; not measured. The codec needs it before it powers up |
+| i2s-switch (`0x3fa01000`) | reg 0 = `0x44`, reg 12 (+`0x30`) = 1 | reg 12 enables pin group 0's MCK. Without it there is no MCLK |
+| Pads | 115 MCK, 116 LRCK, 117 BCLK, 118 DOUT | |
+| TXCOM | `0x01feca06` run, `0x01feca04` idle | BCLK and LRCK run only while TXCOM is not 0. The FIFO drops words while it is 0 |
+| FIFO level | STATUS bits 7–12 | Depth 32 |
+
+Between streams, the driver keeps the port at the idle TXCOM value while
+the codec has MCLK. If the port stops instead (TXCOM 0), the bit and frame
+clocks stop under the codec, and you hear a tick at the end of each stream.
+A stream that starts within the codec's power-down delay finds the port
+running and leaves it as it is. Only a change of rate configures it again.
+
+The CS42L63 is Apple's part and has no public datasheet. Its ID registers
+read `42 a6 3x` (revision `b0` on this iPad). Its volume coding and rate
+codes are the CS42L73's; its register map is not. The driver writes the
+register sequences that iOS 9.3.5's codec driver writes: power-up,
+power-down, and speaker on/off. They were recorded by running that driver
+in an emulator, then played back by hand on the device. The meaning of most
+registers is not known.
+
+- Power-up and power-down set bit 7 of `0x62` when they finish (it clears
+  when read). Power-up does not finish without MCLK.
+- Line out 2's volume is `0x21`/`0x22`: `0x40` mutes, and `0x41`..`0x7f` is
+  −76 dB to −1 dB (2 dB steps to −50 dB, then 1 dB steps). iOS goes no
+  higher than `0x7f`. The "Speaker Playback Volume" control maps 0..62 onto
+  this range.
+- GPIO 75 high turns the speaker amplifier on. The ADT's flag reads like an
+  active-low mute, but the tone is heard only with 75 high. The driver
+  turns it on after the path is up and off before the path goes down.
+
+Tested: 1 kHz sines at 44.1 and 48 kHz, at volumes −32 to −8 dB, through
+ALSA. There were no underruns, and the end of a stream does not tick.
+
 ## NAND
 
 Read-only so far: Cascadia's PPN tool, with the bus power-state set-feature
@@ -178,10 +302,9 @@ page reads return status `0x40` and repeat byte for byte.
 
 ## Not done
 
-- The early fault that `earlycon=j1fb` hides.
-- CPU1 (`maxcpus=1`).
+- One hang at 7.2 s, during the touch firmware download, on the 2 ms
+  test image above (not reproduced; the AIC timer was up by then).
 - The GPU and a display driver: the panel is eDP (`edp@9500000`) fed by
   CLCD through a highland-park scaler at `0x0b020000`, not MIPI-DSI.
-- A PHY driver for the second USB complex.
-- A backlight node, a charger driver (the input limit above is set by hand),
-  the battery, audio, Bluetooth, NAND writes.
+- A charger driver (the input limit above is set by hand), NAND writes.
+- Headphones, the microphones and headset detection.

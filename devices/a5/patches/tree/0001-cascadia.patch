@@ -1246,7 +1246,7 @@ index c4778edae..296545649 100644
  	}
  	WARN(msgbuf[0], "initcall %pS returned with %s\n", fn, msgbuf);
  
-@@ -1466,6 +1481,64 @@ static int __ref kernel_init(void *unused)
+@@ -1466,6 +1481,70 @@ static int __ref kernel_init(void *unused)
  	 */
  	wait_for_completion(&kthreadd_done);
  
@@ -1287,6 +1287,7 @@ index c4778edae..296545649 100644
 +		void apple_aic1_quiesce(void);
 +		void apple_aic1_hw_quiesce_quiet(void);
 +		void apple_aic1_rearm(void);
++		int apple_aic1_timer_start(void);
 +
 +		p105_fb_dbg("init_go");
 +		apple_aic1_quiesce();
@@ -1303,6 +1304,11 @@ index c4778edae..296545649 100644
 +		p105_fb_dbg("thaw_on");
 +		apple_aic1_release_escape();
 +		p105_fb_dbg("esc_off");
++		/* The tick, before workqueue_init() makes the first kernel
++		 * threads: kthread_bind() can sleep one tick in
++		 * wait_task_inactive(), and with no clockevent yet that sleep
++		 * never ends (irq-apple-aic1.c, apple_aic1_timer_start). */
++		apple_aic1_timer_start();
 +	}
 +#endif
 +#ifdef CONFIG_ARCH_APPLE_S5L
@@ -1311,7 +1317,7 @@ index c4778edae..296545649 100644
  	kernel_init_freeable();
  	/* need to finish all async __init code before freeing the memory */
  	async_synchronize_full();
-@@ -1475,6 +1548,13 @@ static int __ref kernel_init(void *unused)
+@@ -1475,6 +1554,13 @@ static int __ref kernel_init(void *unused)
  	ftrace_free_init_mem();
  	kgdb_free_init_mem();
  	exit_boot_config();
@@ -1325,7 +1331,7 @@ index c4778edae..296545649 100644
  	free_initmem();
  	mark_readonly();
  
-@@ -1492,7 +1572,10 @@ static int __ref kernel_init(void *unused)
+@@ -1492,7 +1578,10 @@ static int __ref kernel_init(void *unused)
  	do_sysctl_args();
  
  	if (ramdisk_execute_command) {
@@ -1596,32 +1602,35 @@ diff --git a/drivers/bluetooth/btbcm.c b/drivers/bluetooth/btbcm.c
 index eef004679..060ddcbb9 100644
 --- a/drivers/bluetooth/btbcm.c
 +++ b/drivers/bluetooth/btbcm.c
-@@ -31,6 +31,7 @@
+@@ -31,6 +31,8 @@
  #define BDADDR_BCM4334B0 (&(bdaddr_t) {{0x00, 0x00, 0x00, 0xb0, 0x34, 0x43}})
  #define BDADDR_BCM4345C5 (&(bdaddr_t) {{0xac, 0x1f, 0x00, 0xc5, 0x45, 0x43}})
  #define BDADDR_BCM43341B (&(bdaddr_t) {{0xac, 0x1f, 0x00, 0x1b, 0x34, 0x43}})
 +#define BDADDR_BCM4334B1_APPLE (&(bdaddr_t) {{0xac, 0x1f, 0x34, 0x43, 0x34, 0x43}})
++#define BDADDR_BCM4330B1_APPLE (&(bdaddr_t) {{0xac, 0x1f, 0x30, 0x43, 0x30, 0x43}})
  
  #define BCM_FW_NAME_LEN			64
  #define BCM_FW_NAME_COUNT_MAX		4
-@@ -120,6 +121,10 @@ int btbcm_check_bdaddr(struct hci_dev *hdev)
+@@ -120,6 +122,11 @@ int btbcm_check_bdaddr(struct hci_dev *hdev)
  	 *
  	 * The address AA:AA:AA:AA:AA:AA indicates a BCM43430A1 controller
  	 * with no configured address.
 +	 *
 +	 * The address 43:34:43:34:1F:AC indicates a BCM4334 running Apple's
 +	 * patchram (iPad mini, iOS's BlueTool), which leaves the address to
-+	 * the host.
++	 * the host; 43:30:43:30:1F:AC the same for the iPad 3's BCM4330
++	 * ("BCM4330B1 37.4 MHz Class 1.5 Olympic Mike Module").
  	 */
  	if (!bacmp(&bda->bdaddr, BDADDR_BCM20702A0) ||
  	    !bacmp(&bda->bdaddr, BDADDR_BCM20702A1) ||
-@@ -130,7 +135,8 @@ int btbcm_check_bdaddr(struct hci_dev *hdev)
+@@ -130,7 +137,9 @@ int btbcm_check_bdaddr(struct hci_dev *hdev)
  	    !bacmp(&bda->bdaddr, BDADDR_BCM4345C5) ||
  	    !bacmp(&bda->bdaddr, BDADDR_BCM43430A0) ||
  	    !bacmp(&bda->bdaddr, BDADDR_BCM43430A1) ||
 -	    !bacmp(&bda->bdaddr, BDADDR_BCM43341B)) {
 +	    !bacmp(&bda->bdaddr, BDADDR_BCM43341B) ||
-+	    !bacmp(&bda->bdaddr, BDADDR_BCM4334B1_APPLE)) {
++	    !bacmp(&bda->bdaddr, BDADDR_BCM4334B1_APPLE) ||
++	    !bacmp(&bda->bdaddr, BDADDR_BCM4330B1_APPLE)) {
  		/* Try falling back to BDADDR EFI variable */
  		if (btbcm_set_bdaddr_from_efi(hdev) != 0) {
  			bt_dev_info(hdev, "BCM: Using default device address (%pMR)",
@@ -1650,21 +1659,23 @@ diff --git a/sound/soc/apple/Kconfig b/sound/soc/apple/Kconfig
 index 793f7782e..70a816e90 100644
 --- a/sound/soc/apple/Kconfig
 +++ b/sound/soc/apple/Kconfig
-@@ -6,3 +6,14 @@ config SND_SOC_APPLE_MCA
+@@ -6,3 +6,16 @@ config SND_SOC_APPLE_MCA
  	help
  	  This option enables an ASoC platform driver for MCA peripherals found
  	  on Apple Silicon SoCs.
 +
 +config SND_SOC_APPLE_S5L_AUDIO
-+	tristate "iPad mini 1 speakers (Apple A5 MCA, CDMA, CS35L19)"
++	tristate "iPad mini 1 and iPad 3 speakers (Apple A5/A5X, CDMA)"
 +	depends on ARCH_APPLE_S5L || COMPILE_TEST
 +	depends on COMMON_CLK && I2C
 +	select SND_SOC_CS35L19
++	select SND_SOC_CS42L63
 +	default ARCH_APPLE_S5L
 +	help
 +	  The iPad mini 1 (A5, S5L8942X) speakers: the MCA audio port, its
 +	  CDMA channel and the clocks and pin routing they need, as an ALSA
-+	  card with the two CS35L19 amplifiers.
++	  card with the two CS35L19 amplifiers.  The iPad 3 (A5X, S5L8945X)
++	  speaker: the I2S0 port, its CDMA channel and the CS42L63 codec.
 diff --git a/sound/soc/apple/Makefile b/sound/soc/apple/Makefile
 index 1eb8fbef6..75185dfb5 100644
 --- a/sound/soc/apple/Makefile
@@ -1680,7 +1691,7 @@ diff --git a/sound/soc/codecs/Kconfig b/sound/soc/codecs/Kconfig
 index 709284248..b79cfc97c 100644
 --- a/sound/soc/codecs/Kconfig
 +++ b/sound/soc/codecs/Kconfig
-@@ -762,6 +762,14 @@ config SND_SOC_CS35L32
+@@ -762,6 +762,22 @@ config SND_SOC_CS35L32
  	tristate "Cirrus Logic CS35L32 CODEC"
  	depends on I2C
  
@@ -1692,6 +1703,14 @@ index 709284248..b79cfc97c 100644
 +	  The boosted class-D speaker amplifier of the iPad mini 1, a
 +	  sibling of the CS35L33, with Apple's power-on sequence.
 +
++config SND_SOC_CS42L63
++	tristate "Cirrus Logic CS42L63 codec (iPad 3 speaker path)"
++	depends on I2C
++	select REGMAP_I2C
++	help
++	  The iPad 3's audio codec, a sibling of the CS42L73, driven with
++	  the register sequences iOS uses.  Only the speaker path.
++
  config SND_SOC_CS35L33
  	tristate "Cirrus Logic CS35L33 CODEC"
  	depends on I2C
@@ -1699,19 +1718,21 @@ diff --git a/sound/soc/codecs/Makefile b/sound/soc/codecs/Makefile
 index 54cbc3fea..afd58747c 100644
 --- a/sound/soc/codecs/Makefile
 +++ b/sound/soc/codecs/Makefile
-@@ -63,6 +63,7 @@ snd-soc-cros-ec-codec-y := cros_ec_codec.o
+@@ -63,6 +63,8 @@ snd-soc-cros-ec-codec-y := cros_ec_codec.o
  snd-soc-cs-amp-lib-y := cs-amp-lib.o
  snd-soc-cs-amp-lib-test-y := cs-amp-lib-test.o
  snd-soc-cs35l32-y := cs35l32.o
 +snd-soc-cs35l19-y := cs35l19.o
++snd-soc-cs42l63-y := cs42l63.o
  snd-soc-cs35l33-y := cs35l33.o
  snd-soc-cs35l34-y := cs35l34.o
  snd-soc-cs35l35-y := cs35l35.o
-@@ -470,6 +471,7 @@ obj-$(CONFIG_SND_SOC_CROS_EC_CODEC)	+= snd-soc-cros-ec-codec.o
+@@ -470,6 +472,8 @@ obj-$(CONFIG_SND_SOC_CROS_EC_CODEC)	+= snd-soc-cros-ec-codec.o
  obj-$(CONFIG_SND_SOC_CS_AMP_LIB)	+= snd-soc-cs-amp-lib.o
  obj-$(CONFIG_SND_SOC_CS_AMP_LIB_TEST)	+= snd-soc-cs-amp-lib-test.o
  obj-$(CONFIG_SND_SOC_CS35L32)	+= snd-soc-cs35l32.o
 +obj-$(CONFIG_SND_SOC_CS35L19)	+= snd-soc-cs35l19.o
++obj-$(CONFIG_SND_SOC_CS42L63)	+= snd-soc-cs42l63.o
  obj-$(CONFIG_SND_SOC_CS35L33)	+= snd-soc-cs35l33.o
  obj-$(CONFIG_SND_SOC_CS35L34)	+= snd-soc-cs35l34.o
  obj-$(CONFIG_SND_SOC_CS35L35)	+= snd-soc-cs35l35.o
