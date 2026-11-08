@@ -141,6 +141,8 @@ python3 "$ROOT/scripts/verify-ibss-clean.py" "$OUT/iBSS.patched"
 build_one iBEC "$IBEC_IV" "$IBEC_KEY"
 echo "==> iBEC: auto-go hook"
 python3 "$ROOT/scripts/patch-ibec-autogo.py" "$OUT/iBEC.patched" "$OUT/iBEC.autogo"
+echo "==> iBEC: the PC-less image (boots from the NAND, docs/research/p105-pcless-boot.md)"
+python3 "$ROOT/scripts/patch-ibec-upgrade.py" "$OUT/iBEC.patched" "$OUT/iBEC.upgrade"
 echo "==> iBEC: repack as img3 (encrypted -- the checkm8 route)"
 python3 "$ROOT/scripts/img3encrypt.py" \
     "$OUT/iBEC.p105.RELEASE.dfu" "$OUT/iBEC.autogo" \

@@ -52,25 +52,35 @@ iOS (jailbroken)                    -- app / command: cascadia-boot
 Linux: root on /dev/ftl0p2 (nand-rw) or the RAM root
 ```
 
-## iBEC patches (all small, on top of iBoot32Patcher's signature patches)
+## iBEC patches (`scripts/patch-ibec-upgrade.py`, on top of iBoot32Patcher's signature patches)
 
-1. `boot-command` default: the literal at `0x9ff0121c` points to "fsboot";
-   point it at "upgrade" (`0x9ff347e7`).
-2. Which partition is "upgrade": change the UTF-16 `Update` at `0x9ff439e4`
-   to `System`.  System is HFS+, not encrypted, and writable from the
-   jailbroken iOS, so the files live in `/boot` on it.  (Alternative: a
-   real LwVM partition named `Update`, HFS+, from another native Data
-   shrink -- cleaner, more work; also what an OTA to 9.3.5 would claim.)
-3. Failure path: replace "record failure + reboot" with a plain reboot, so
-   a bad payload never writes NVRAM.
-4. Perhaps: the final jump.  `prepare_and_jump(3, ...)` quiesces the
-   platform (USB, caches, MMU) before entering the "kernel"; today our loader
-   is entered from iBEC's USB callback with all that still running.  If the
-   loader or Linux depends on that, replace the call at `0x9ff014d0` by the
-   same cache-flush-and-`blx` the auto-go hook uses.
+Each site is checked against the expected original instruction; 22 bytes
+change in all.  The output is `build/firmware/iBEC.upgrade`, raw, for kloader.
 
-Nothing here touches iBEC's NAND write paths; with patch 3 the boot is
-read-only on the NAND.
+1. **autoboot** `0x9ff00cb2`: the `bne` taken when `auto-boot` is not true
+   becomes a nop.  NVRAM can override the built-in default, so neither that
+   nor `boot-command` is left to the environment.
+2. **command** `0x9ff00e30` / `0x9ff00d02`: the dispatcher's literal becomes
+   the string "upgrade" itself and the `getenv` call goes.  Only that one
+   `ldr` reads the literal (the patcher checks).
+3. **partition** `0x9ff439e4`: UTF-16 `Update` becomes `System`.  System is
+   HFS+, not encrypted, and writable from the jailbroken iOS, so the files
+   live in `/boot` on it.  (Alternative: a real LwVM partition named `Update`
+   from another native Data shrink -- cleaner, more work; also what an OTA to
+   9.3.5 would claim.)
+4. **no-saveenv** `0x9ff01486`: `upgrade` starts with unsetenv(boot-command) +
+   `saveenv()` (`0x9ff1c358`, the `saveenv` command's own body); that call goes.
+5. **no-record** `0x9ff01504`: on a failure `upgrade` stores `ota-result` /
+   `ota-failure-reason` and saves them (`0x9ff01438`); that call goes, and a
+   failed boot just reboots.
+
+With 4 and 5 nothing in this path writes the NAND.
+
+Perhaps later: the final jump.  `prepare_and_jump(3, ...)` quiesces the
+platform (USB, caches, MMU) before entering the "kernel"; today our loader is
+entered from iBEC's USB callback with all that still running.  If the loader
+or Linux depends on that, replace the call at `0x9ff014d0` by the same
+cache-flush-and-`blx` the auto-go hook uses.
 
 ## Files and where they come from
 
@@ -78,17 +88,23 @@ read-only on the NAND.
 |---|---|---|
 | `iBEC.raw` | IPSW iBEC, decrypted with the public key (`build-firmware.sh`), patched | Apple's code: built locally, never shipped |
 | `/boot/devicetree` | DeviceTree img3, **plaintext** | after kloader the GID key is locked, so iBEC cannot decrypt a KBAG; the 12H321 DeviceTree key is not in the repo yet (theiphonewiki was down 2026-11-07); a decrypted iOS 6.1.3 p105ap DeviceTree exists locally for a first try -- Linux ignores the ADT, iBEC only needs it to parse (`/chosen`) |
-| `/boot/ramdisk` | `build/overlay` as cpio, img3 `rdsk` | the machine's layer; the loader already expects it at `0x88000000` |
-| `/boot/kernelcache` | `linux-boot.bin` + `zImage-dtb` at `0x80000000`, as a Mach-O segment (file offset `0x1000`), entry `0x80000000` (ARM), complzss, img3 `krnl` | the Linux half, same as the USB bundle |
+| `/boot/ramdisk` | a page of zeroes, img3 `rdsk` | iBEC requires one; the machine's layer already travels inside the bundle and the loader copies it to `0x88000000` |
+| `/boot/kernelcache` | `staging-bundle.bin` unchanged, as a Mach-O segment at `0x80000000` (file offset `0x1000`), entry `0x80000000` (ARM), complzss (all literals: a zImage does not compress), img3 `krnl` | about 32.6 MB; built by `scripts/make-pcless.py` |
 | `kloader` | Legacy iOS Kit's, pinned by hash (as `tools/kdfu.sh`) | later: our own, tfp0 is available |
 
-System's free space has to hold ~30 MB (the kernel with its built-in base
+System's free space has to hold ~33 MB (the kernel with its built-in base
 initramfs); check with `df` on iOS first.
+
+Limits in iBEC: the img3 is loaded at `0x84000000` (at most `0x3f00000` bytes);
+the compressed data is copied to the heap, whose large chunk is 48 MiB at
+`0x8c000000` (a `malloc` that does not fit panics); the Mach-O must end below
+`0x84000000`.  `make-pcless.py` enforces these.
 
 ## Packaging
 
 A `.deb` with only our code: `cascadia-boot` (runs kloader on `iBEC.raw`),
-a home-screen app that calls it, and the directory layout.  The Apple-derived
+a minimal home-screen app with one action -- enter Linux with a single tap --
+and the directory layout.  The Apple-derived
 files (`iBEC.raw`, the DeviceTree) and the machine's layer come from
 `./cascadia a5 ...` on a computer once (an `ios-install` step over ssh);
 later the app could fetch the IPSW pieces from Apple's servers itself.  No
@@ -97,10 +113,12 @@ auto-boot into Linux at iOS start-up: a bad payload must never cost iOS.
 ## Ladder
 
 - **P1** (static, done above): the chain exists in iBEC.
-- **P2** host tooling: `patch-ibec-upgrade.py` (1-3, verified like the
-  auto-go patcher), `make-kernelcache.py` (Mach-O + complzss + img3), img3
-  packing for `rdsk` / `dtre`.  Round-trip tests: our own complzss decoder
-  and Mach-O reader on the output.
+- **P2** (done, 2026-11-08): `scripts/patch-ibec-upgrade.py`,
+  `scripts/make-pcless.py`.  `tests/test-pcless.py` reads the output back with
+  independent decoders; `tests/test-pcless-ibec.py` runs iBEC's own LZSS
+  decoder, adler32 and Mach-O segment loader on it under Unicorn: the 29 MB
+  nand-rw bundle decodes exactly, lands at `0x80000000..0x81bac000`, entry
+  `0x80000000`.  Not shown by this: iBEC's mount, img3 and jump paths.
 - **P3** device, no Linux yet: kloader the stock-behaviour patched iBEC with
   an *empty* `/boot` -> expect "failed to mount" or "failed to load
   devicetree" -> reboot into iOS.  Proves kloader -> iBEC and that the
