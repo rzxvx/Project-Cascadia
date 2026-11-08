@@ -2,7 +2,7 @@
 /*
  * Apple S5L USB PHY driver (otgphyctrl,s5l8940x)
  * Register values taken from a live iBoot/DFU PHY dump on real hardware
- * (see docs/PHY-DUMP.md): OPHYPWR=0x6 OPHYCLK=0x1 UNK1_1C=0x6 UNK2_44=0xF8
+ * (see docs/PHY-DUMP.md): OPHYPWR=0x6 OPHYCLK=0x1 UNK1_1C=0x6 UNK2_44=0x2FF3
  * UNK4_60=0x200 ORSTCON=0x0 -- these are the exact bits iBoot leaves set
  * while its own USB (DFU) is actively enumerated, i.e. known-working state.
  */
@@ -31,7 +31,8 @@
 /* Values as observed live from iBoot's working PHY state */
 #define OPHYUNK4_START			0x200
 #define OPHYUNK1_START			0x6
-#define OPHYUNK2_START			0xF8
+#define OPHYPWR_ON			0x6
+#define OPHYUNK2_START			0x2FF3
 
 #define PMGR_BASE		0x3F100000
 #define PMGR_GATE_ON		0xF
@@ -66,6 +67,11 @@
  * is not a device-clocks entry at all.  Writing a gate value at `base + 5 * 4`
  * and `base + 292 * 4`, as this driver did, hit PERFCNT's gate and an empty
  * address respectively.  Neither has anything to do with USB. */
+/* Two more of the block's power states.  iBoot's DFU leaves all three of these
+ * on, its jump to a kernel turns them off (docs/research/p105-pcless-boot.md).
+ * Which device each one is has not been established. */
+#define PMGR_USB_AUX0		0x1080
+#define PMGR_USB_AUX1		0x1098
 #define PMGR_USB_OTG		0x1084
 #define PMGR_USB_EHCI		0x1088
 #define PMGR_USB_OHCI0		0x1090
@@ -184,6 +190,8 @@ static int s5l_usbphy_init(struct phy *phy)
 		 readl(p->pmgr + PMGR_USB_OTG), readl(p->pmgr + PMGR_USB_EHCI),
 		 readl(p->pmgr + PMGR_USB_OHCI0), readl(p->pmgr + PMGR_USB_OHCI1));
 
+	s5l_pmgr_on(p, PMGR_USB_AUX0);
+	s5l_pmgr_on(p, PMGR_USB_AUX1);
 	s5l_pmgr_on(p, PMGR_USB_OTG);
 
 	dev_info(p->dev, "usb-complex OTG(88) now 0x%08x\n",
@@ -211,7 +219,23 @@ static int s5l_usbphy_init(struct phy *phy)
 	 * problem is easy to spot in the UART log.
 	 *
 	 * Old comment claimed "OPHYUNK2=0xF8 is what iBoot's DFU state
-	 * leaves set". That was wrong; the correct DFU state is 0x2ff3. */
+	 * leaves set". That was wrong; the correct DFU state is 0x2ff3.
+	 *
+	 * The exception: booted from the NAND, iBEC's jump to the kernel has
+	 * powered the PHY down and left none of this set.  OPHYPWR tells the
+	 * two apart, and then this writes the values a DFU boot leaves. */
+	if (readl(p->base + OPHYPWR) != OPHYPWR_ON) {
+		dev_info(p->dev, "PHY left off by the boot loader: programming it\n");
+		writel(OPHYCLK_CLKSEL_24MHZ, p->base + OPHYCLK);
+		writel(0xc, p->base + 0x14);
+		writel(OPHYUNK1_START, p->base + OPHYUNK1);
+		writel(0xc00, p->base + 0x20);
+		writel(0x549, p->base + 0x40);
+		writel(OPHYUNK2_START, p->base + OPHYUNK2);
+		writel(OPHYUNK4_START, p->base + OPHYUNK4);
+		writel(OPHYPWR_ON, p->base + OPHYPWR);
+		udelay(100);
+	}
 
 	udelay(10);
 

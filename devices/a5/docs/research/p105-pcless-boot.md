@@ -165,8 +165,16 @@ auto-boot into Linux at iOS start-up: a bad payload must never cost iOS.
   8-entry vector table at `0x80000000` and a green fill + pause at entry; which
   of the two matters is unknown.  What the loader saw of this path: CPU in SVC,
   caches apparently off.  Only whole-screen fills are reliably visible.
-- **P6** move the gates and PHY setup into `phy-apple-s5l-usb` (only when iBoot
-  left the PHY off), drop the loader diagnostics, then boot the NAND root.
+- **P6**, the driver half (done, 2026-11-08): `phy-apple-s5l-usb` turns on the
+  three gates and programs the PHY only when `OPHYPWR` is not `0x6`, i.e. when
+  the boot left it off.  Checked both ways on the iPad with kernel #9: from
+  the NAND with a loader that no longer touches USB (the "left off" path runs,
+  gadget and Wi-Fi firmware come up), and over USB with the NFS root (no "left
+  off" line, iBEC's own PHY setup kept).  `+0x44` is `0x2ff3`, the ADT's
+  `uotgtune2-device`; the bring-up loader's `0xF8` came from a stale comment.
+  `+0x14` reads `0x8` under Linux on both paths, against `0xc` at loader entry.
+- **P6**, still open: drop the loader diagnostics (one change at a time, as what
+  stopped the flicker is unknown), then boot the NAND root.
   The AIC timer already gives the tick without a USB host (see the boot log);
   the PPN probe still waits for USB -- check that with no cable attached.
 - **P7** `.deb`, `cascadia-boot`, the app; `./cascadia a5 ios-install`.
