@@ -24,14 +24,14 @@ def main():
     parser.add_argument('--startup-pc-sample',action='store_true',help='Include bounded Xorg-only ARM register sampler; no process memory reads')
     parser.add_argument('--run-limit-mib',type=int,choices=[96,192],default=96)
     parser.add_argument('--touch-firmware',help='K93.mtprops (Z2F13,2), from the unit\'s iOS; enables touch at boot')
-    parser.add_argument('--touch-calibration',help='the unit\'s 1024-byte multi-touch calibration')
+    parser.add_argument('--touch-calibration',default=str(ROOT/'rootfs/k93/k93-mtcal.bin'),
+                        help='1024-byte multi-touch calibration; default: one K93 unit\'s (rootfs/k93/k93-mtcal.bin)')
     args=parser.parse_args()
     assert not args.desktop_test or args.network_root,'Desktop diagnostic requires split root'
     assert not args.browser_test or args.desktop_test,'Browser diagnostic requires desktop assets'
     assert not args.startup_strace or args.browser_test,'Startup tracer requires browser diagnostic'
     assert not args.startup_pc_sample or args.startup_strace,'PC sampler requires startup diagnostics'
     assert args.network_root or args.run_limit_mib==96
-    assert bool(args.touch_firmware)==bool(args.touch_calibration),'Touch needs both firmware and calibration'
     assert not args.touch_firmware or args.desktop_test,'Touch at boot is staged with the desktop assets'
     output=(ROOT/args.output).resolve()
     assert output.is_relative_to(ROOT/'build/k93') and not output.exists()
