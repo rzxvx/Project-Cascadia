@@ -49,6 +49,7 @@ hostname -F /etc/hostname 2>/dev/null || hostname p105 2>/dev/null || true
 # an NFS root at every boot, so the line is filled in here, every boot.
 case "$ROOTTYPE" in
     nfs*) where="the root is NFS\n  from the host's machine." ;;
+    ext4) where="the root is on the NAND." ;;
     *)    where="the root sits in RAM." ;;
 esac
 if grep -q @ROOT@ /etc/motd 2>/dev/null; then
@@ -291,6 +292,8 @@ p105_down() {
     "$B" sleep 2
     kill -KILL -1 2>/dev/null
     "$B" sync
+    # A local root closes its journal; nothing is left running to write to it.
+    [ "$ROOTTYPE" = ext4 ] && "$B" mount -o remount,ro /
     "$B" "$2" -f
 }
 trap 'p105_down "powering off" poweroff' USR2
