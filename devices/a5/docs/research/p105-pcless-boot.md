@@ -65,7 +65,7 @@ change in all.  The output is `build/firmware/iBEC.upgrade`, raw, for kloader.
    `ldr` reads the literal (the patcher checks).
 3. **partition** `0x9ff439e4`: UTF-16 `Update` becomes `System`.  System is
    HFS+, not encrypted, and writable from the jailbroken iOS, so the files
-   live in `/boot` on it.  (Alternative: a real LwVM partition named `Update`
+   live at its root.  (Alternative: a real LwVM partition named `Update`
    from another native Data shrink -- cleaner, more work; also what an OTA to
    9.3.5 would claim.)
 4. **no-saveenv** `0x9ff01486`: `upgrade` starts with unsetenv(boot-command) +
@@ -84,12 +84,16 @@ cache-flush-and-`blx` the auto-go hook uses.
 
 ## Files and where they come from
 
+iBEC mounts the partition at `/boot` of its own namespace (`0x9ff00a56`), so
+its `/boot/kernelcache` is **`/kernelcache` at the root of System**, not a
+file in a `/boot` directory.
+
 | file | from | note |
 |---|---|---|
 | `iBEC.raw` | IPSW iBEC, decrypted with the public key (`build-firmware.sh`), patched | Apple's code: built locally, never shipped |
-| `/boot/devicetree` | DeviceTree img3, **plaintext** | after kloader the GID key is locked, so iBEC cannot decrypt a KBAG; the 12H321 DeviceTree key is not in the repo yet (theiphonewiki was down 2026-11-07); a decrypted iOS 6.1.3 p105ap DeviceTree exists locally for a first try -- Linux ignores the ADT, iBEC only needs it to parse (`/chosen`) |
-| `/boot/ramdisk` | a page of zeroes, img3 `rdsk` | iBEC requires one; the machine's layer already travels inside the bundle and the loader copies it to `0x88000000` |
-| `/boot/kernelcache` | `staging-bundle.bin` unchanged, as a Mach-O segment at `0x80000000` (file offset `0x1000`), entry `0x80000000` (ARM), complzss (all literals: a zImage does not compress), img3 `krnl` | about 32.6 MB; built by `scripts/make-pcless.py` |
+| `/devicetree` | the IPSW's DeviceTree, decrypted with its public key (`build-firmware.sh`), plaintext img3 | after kloader the GID key is locked, so iBEC cannot open a KBAG.  It must be 12H321's own: iBEC **hangs** on the iOS 6.1.3 tree (P4) |
+| `/ramdisk` | a page of zeroes, img3 `rdsk` | iBEC requires one; the machine's layer already travels inside the bundle and the loader copies it to `0x88000000` |
+| `/kernelcache` | `staging-bundle.bin` unchanged, as a Mach-O segment at `0x80000000` (file offset `0x1000`), entry `0x80000000` (ARM), complzss (all literals: a zImage does not compress), img3 `krnl` | about 32.6 MB; built by `scripts/make-pcless.py` |
 | `kloader` | Legacy iOS Kit's, pinned by hash (as `tools/kdfu.sh`) | later: our own, tfp0 is available |
 
 System's free space has to hold ~33 MB (the kernel with its built-in base
@@ -119,7 +123,7 @@ auto-boot into Linux at iOS start-up: a bad payload must never cost iOS.
   decoder, adler32 and Mach-O segment loader on it under Unicorn: the 29 MB
   nand-rw bundle decodes exactly, lands at `0x80000000..0x81bac000`, entry
   `0x80000000`.  Not shown by this: iBEC's mount, img3 and jump paths.
-- **P3** (done, 2026-11-08): kloader on iOS with `/boot` empty.  The plain
+- **P3** (done, 2026-11-08): kloader on iOS with none of the files present.  The plain
   image ended in a reboot to iOS, which proved nothing (a kloader failure looks
   the same), so `patch-ibec-upgrade.py --stay` returns to the dispatcher on a
   failure instead.  With it the iPad came up in **Recovery 18 s after
@@ -133,8 +137,15 @@ auto-boot into Linux at iOS start-up: a bad payload must never cost iOS.
   repeats the previous reply, or stalls if there is none.  Side note: the first
   boot after the plain run panicked in `everuntether` (the jailbreak's own
   process, pid 17) and the next boot was fine; no link to this test shown.
-- **P4** a tiny payload kernelcache (fill the framebuffer, spin) -> proves
-  the format and the jump.
+- **P4** (done, 2026-11-08): `tools/pcless/fill.S`, a payload that fills the
+  framebuffer at `0x9F6FC000` green, as `/kernelcache`, with `/ramdisk` and
+  `/devicetree` at System's root (sha1 checked on the iPad; `sync`, 40 s,
+  `sync` for the HFS journal, since iBEC does not replay it).
+  With the iOS 6.1.3 tree iBEC hung before the end of the load.  `--stop
+  STAGE` (without `--stay`) tells the outcomes apart: Recovery = reached,
+  reboot to iOS = a failure exit, neither = a hang.  With 12H321's DeviceTree
+  `--stop kernelcache` reached Recovery in 15 s, and without the stop the
+  screen went **green**: kloader -> iBEC -> NAND -> our code, no USB involved.
 - **P5** the real bundle with the RAM root, then with the NAND root.
 - **P6** the USB dependency in Linux (PPN probe and clockevents waiting for
   USB) -- the cable must not matter.
