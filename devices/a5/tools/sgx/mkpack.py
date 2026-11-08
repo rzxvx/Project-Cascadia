@@ -45,6 +45,9 @@ OUT = os.path.join(ROOT, 'build', 'sgx2d')
 KC = os.path.join(ROOT, 'build', 'firmware', 'kernelcache.12H321.macho')
 EVENT = os.path.join(ROOT, 'build', 'firmware', 'gl-event.pds')
 W, H = 768, 1024
+# the GPU's cores, for the kext's render-target code: 2 on the mini's MP2,
+# 4 on the iPad 3's MP4 (SGX_NCORES=4)
+NCORES = os.environ.get('SGX_NCORES', '2')
 RT_GPU_BASE = '0x87c00000'
 DEVICE_FILES = ('sprites', 'demo2', 'sgxinfo')
 PREFIX = 'usr/local/lib/sgx2d'
@@ -75,7 +78,7 @@ def build_pack(pack):
     open(os.path.join(emu, 'payload.txt'), 'w').write(' '.join(w) + '\n')
     env = dict(os.environ, RT_GPU_BASE=RT_GPU_BASE, KC841=os.path.abspath(kc))
     run([sys.executable, os.path.join(ROOT, 'tools', 'iosgpu', 'rtemu.py'), str(W), str(H),
-         '1', '2', 'payload.txt'], cwd=emu, env=env, stdout=subprocess.DEVNULL)
+         '1', NCORES, 'payload.txt'], cwd=emu, env=env, stdout=subprocess.DEVNULL)
     run([sys.executable, os.path.join(ROOT, 'tools', 'sgx', 'rpack.py'), capdir, emu, pack],
         stdout=subprocess.DEVNULL)
 

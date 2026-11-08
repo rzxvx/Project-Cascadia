@@ -3,10 +3,10 @@
 The iPad 3 Wi-Fi (iPad3,1, board J1AP, S5L8945X) runs Linux 6.12 from RAM
 with this repository's drivers: the gadget console and network over the
 30-pin cable, SSH, the framebuffer iBoot left, multi-touch, Wi-Fi,
-Bluetooth, the speaker, and the GPU's 2D engine and KMS. iOS 9.3.5 stays
-on the NAND and is what starts it. `dts/j1ap.dts` is the tree it boots
-with. This is what differs from the mini and what was measured on one
-iPad; issue #22 asked about this machine.
+Bluetooth, the speaker, and the GPU (2D engine, KMS and OpenGL through
+Mesa). iOS 9.3.5 stays on the NAND and is what starts it. `dts/j1ap.dts`
+is the tree it boots with. This is what differs from the mini and what
+was measured on one iPad; issue #22 asked about this machine.
 
 ## What carries over unchanged
 
@@ -306,10 +306,11 @@ iOS does.
 microkernel, byte for byte, as the 8.4.1 (12H321) kext the driver was
 written against. Only the three tables after the boot program are in a
 different order, and they start 8 bytes earlier. `extract-sgx-firmware.py`
-reads either build, from the IPSW or from a decrypted kernelcache. It puts
-the tables back in 12H321's order and checks the result by hash. The file
-holds `__data` only up to the end of the tables, `0x15fe8`: what follows is
-the kext's `kmod_info`, which changes with each kernelcache's load address.
+(`--board j1`, or told by the IPSW) reads either build, from the IPSW or
+from a decrypted kernelcache. It puts the tables back in 12H321's order
+and checks the result by hash. The file holds `__data` only up to the end
+of the tables, `0x15fe8`: what follows is the kext's `kmod_info`, which
+changes with each kernelcache's load address.
 The host-side code in the kext is the same logic in both builds. In 13G36
 the `SGXDriver543` fields above about `+0x1e4` sit 4 bytes lower.
 
@@ -326,8 +327,8 @@ duty-cycle values.
 
 **On the device:**
 
-- The microkernel answers (`host[0] 0x00000001`) about 100 ms after it is
-  loaded.
+- The microkernel answers (`host[0] 0x00000001`) 2 to 100 ms after it is
+  started (four boots: 1.6, 1.9, 76 and 103 ms).
 - 2D-engine fills and copies are exact to the pixel, up to the full
   2048 x 1536 screen. A 64 x 64 fill takes 370 us; a full-screen fill takes
   about 3.5 ms.
@@ -342,8 +343,28 @@ duty-cycle values.
 - The panel is 264 pixels an inch: the node's `apple,pixel-pitch-um = <96>`
   makes KMS report 196 x 147 mm.
 
-Mesa is not done on the J1: the pack tools assume 768 x 1024 and two
-cores.
+**OpenGL.** Mesa's `apple_sgx` driver runs unchanged. It takes the core
+count and the screen size from the render node, and it builds its own
+render targets for any size. From the GPU pack it uses the template frame,
+not the pack's 768 x 1024 render-target set. The pack was built with
+`SGX_NCORES=4 tools/sgx/mkpack.py`, from the mini's 12H321 kernelcache.
+Its GL event template came from the J1's own iOS: the 168 bytes in
+13G36's `dyld_shared_cache_armv7` (at `0xfffb950`, in
+`IMGSGX543GLDriver`'s `__TEXT`) are the same as 12H321's, by hash. The
+userland was an Alpine root over NFS on the gadget's Ethernet.
+
+- `glsize`: 15 of 15 render-target sizes right, every pixel read back,
+  1 x 1 to 2048 x 2048.
+- `tux-gpudemo` at 2048 x 1536 with the bloom (6 renders and 10 draws a
+  frame): about 63 frames a second with two renders in flight and flips
+  that point the display at the buffer (#44), about 40 before them. The
+  mini did 57-58 at 768 x 1024, a quarter of the pixels, before them. The
+  demo draws in the panel's native landscape; the console is turned
+  (`fbcon=rotate:1`), so held upright the demo is on its side.
+- `glkms`: 300 frames at 2048 x 1536, each shown with a page flip, at
+  126 a second, and the last frame right in every pixel of the screen.
+
+The sgx2d demos are still sized for the mini's 768 x 1024 screen.
 
 ## NAND
 
@@ -355,8 +376,8 @@ page reads return status `0x40` and repeat byte for byte.
 
 - One hang at 7.2 s, during the touch firmware download, on the 2 ms
   test image above (not reproduced; the AIC timer was up by then).
-- OpenGL (Mesa) on the GPU. A display-controller driver: the panel is eDP
-  (`edp@9500000`) fed by CLCD through a highland-park scaler at
-  `0x0b020000`, not MIPI-DSI. KMS shows only the scanout iBoot set up.
+- A display-controller driver: the panel is eDP (`edp@9500000`) fed by
+  CLCD through a highland-park scaler at `0x0b020000`, not MIPI-DSI. KMS
+  shows only the scanout iBoot set up.
 - A charger driver (the input limit above is set by hand), NAND writes.
 - Headphones, the microphones and headset detection.
