@@ -27,7 +27,19 @@ if bb test -f /root-transfer-network; then
     bb ip link set usb0 up
     # A single peer-restricted raw file receiver, NOT a remote command shell.
     # tmpfs capacity and timeout bound even a malformed/overlong transfer.
-    bb timeout 80 /bin/busybox nc -l -n -p 48932 -s 10.93.0.2 -w 75 10.93.0.1 </dev/null >/run/root.squashfs
+    # Early-boot transfers have arrived short (about 1.3 MB of 73 MB); an
+    # image that fails its hash is dropped and the receiver listens again,
+    # within the same 80-second budget.
+    deadline=$(( $(bb cut -d. -f1 /proc/uptime) + 80 ))
+    while :; do
+        left=$(( deadline - $(bb cut -d. -f1 /proc/uptime) ))
+        [ "$left" -gt 0 ] || break
+        bb rm -f /run/root.squashfs
+        bb timeout "$left" /bin/busybox nc -l -n -p 48932 -s 10.93.0.2 -w 75 10.93.0.1 </dev/null >/run/root.squashfs || :
+        bb sha256sum -c /root.squashfs.sha256 >/dev/null 2>&1 && break
+        echo "K93 root image rejected ($(bb stat -c %s /run/root.squashfs) bytes); listening again" 2>/dev/null >/dev/tty0 || :
+        bb sleep 1
+    done
     ROOT_IMAGE=/run/root.squashfs
 else
     bb mount -t tmpfs -o size=8m,nr_inodes=2048 tmpfs /run
@@ -51,6 +63,15 @@ if bb test -f /k93-desktop-test.sh; then
         bb cp "/$file" "/newroot/$file"
     done
     bb chmod 700 /newroot/k93-desktop-test.sh /newroot/k93-fb-read
+fi
+if bb test -d /k93-touch; then
+    # Touch at boot: tool, Z2 firmware and calibration; alpine-init starts it.
+    bb mkdir -p /newroot/sbin /newroot/lib/firmware
+    bb cp /k93-touch/k93-z2-boot /newroot/sbin/k93-z2-boot
+    bb chmod 755 /newroot/sbin/k93-z2-boot
+    for file in K93.mtprops k93-mtcal.bin; do
+        bb cp "/k93-touch/$file" "/newroot/lib/firmware/$file"
+    done
 fi
 if bb test -f /k93-browser-test.sh; then
     for file in k93-browser-test.sh k93-browser-test.html k93-browser-prefs.js; do

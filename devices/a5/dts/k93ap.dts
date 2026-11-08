@@ -59,6 +59,20 @@
         #clock-cells = <0>;
         clock-frequency = <24000000>;
     };
+    refclk24mhz: refclk24mhz {
+        compatible = "fixed-clock";
+        #clock-cells = <0>;
+        clock-frequency = <24000000>;
+    };
+    /* Handle for apple-z2's mandatory clock; no hardware behind it. The K93 ADT
+     * has no PWM node: the digitizer's 32 kHz clock is enabled through PMU
+     * GPIO0 (multi-touch function-clock_enable), modelled as touch_clk below. */
+    touchclk: touchclk-32768 {
+        compatible = "fixed-clock";
+        #clock-cells = <0>;
+        clock-frequency = <32768>;
+        clock-output-names = "touchclk";
+    };
     soc@30000000 {
         compatible = "simple-bus";
         #address-cells = <1>;
@@ -105,6 +119,124 @@
             g-rx-fifo-size = <512>;
             g-np-tx-fifo-size = <128>;
             g-tx-fifo-size = <128 128 128 128 128 128 128 128>;
+        };
+        /* I2C0 controller (phys 0x33200000). Ported from the driver-debugged
+         * p105ap node; same S5L8940 base. Bare controller only, to bring up
+         * /dev/i2c-0 for the first-light PMU poke at 7-bit 0x3c -- no pmu child
+         * is declared, so no unconfirmed rail nodes are baked in. The Linux
+         * driver matches apple,s5l8940x-i2c (i2c-s5l8940x, "hx-i2c"); binding
+         * the generic s3c2410 driver instead drives Apple registers with
+         * Samsung's map and silently fails (p105 note). */
+        i2c0: i2c@3200000 {
+            compatible = "apple,s5l8940x-i2c";
+            reg = <0x3200000 0x1000>;
+            clock-frequency = <100000>;
+            interrupts = <18>; // K93/12H321 ADT: i2c0 interrupt 0x12.
+            clocks = <&refclk24mhz>;
+            clock-names = "i2c";
+            #address-cells = <1>;
+            #size-cells = <0>;
+            status = "okay";
+
+            /* PMU (Dialog D1946), ADT pmu,d1946 at 7-bit 0x3c. Provides the
+             * digitizer rails as apple,pmu-pwrsw regulators. K93 LDO registers
+             * are from the LDO table in AppleD1946PMU (iPad2,1 12H321):
+             * LDO0 (core) enable reg 0x20 bit 0x20 (P105 used 0x23/0x40).
+             * No system-power-controller / gpio-controller: the D1946 power-off
+             * sequence and PMU GPIOs are unverified on K93 and unused by touch. */
+            pmu: pmu@3c {
+                compatible = "apple,pmu-d1946";
+                reg = <0x3c>;
+                #address-cells = <1>;
+                #size-cells = <0>;
+
+                touch_ldo: touch_ldo@20 {       /* core-supply, LDO0 */
+                    compatible = "apple,pmu-pwrsw";
+                    reg = <0x20>;
+                    mask = <0x20>;
+                    enable = <0x20>;
+                };
+                /* pmuclk-supply: PMU GPIO0 config (D1946_GPIO_CFG 0x61). ADT
+                 * multi-touch function-clock_enable = PMU GPIO pin 0. Idle 0x11;
+                 * iOS runs the digitizer with 0x51, and the Z2 firmware answers
+                 * only then (0x13 boots it but leaves it silent), so bit 0x40 is
+                 * switched: enable 0x51, disable back to 0x11. The ADT names no
+                 * analog rail (only power_ldo = LDO0), so LDO15 is not modelled. */
+                touch_clk: touch_clk@61 {
+                    compatible = "apple,pmu-pwrsw";
+                    reg = <0x61>;
+                    mask = <0x40>;
+                    enable = <0x40>;
+                };
+            };
+        };
+
+        /* GPIO block (pinctrl-s5l8940x-gpio). Needed for the touch reset/cs/irq
+         * lines. gpiochip offset == linear pin index. AIC irq 119 (SoC-common);
+         * apple-z2 polls the irq gpio, so the hard-irq line is not load-bearing. */
+        gpio: gpio@fa00000 {
+            compatible = "apple,s5l8940x-gpio";
+            reg = <0xfa00000 0x100000>;
+            interrupts = <119>;
+            gpio-controller;
+            #gpio-cells = <2>;
+            interrupt-controller;
+            #interrupt-cells = <2>;
+            #address-cells = <0>;
+            pin-count = <224>;
+            interrupt-groups = <1>;
+            status = "okay";
+        };
+
+        /* SPI1 power-state switch (clock-gates id 68), exposed as the SPI clock. */
+        spi1_ps: spi1-ps@f1010e8 {
+            compatible = "apple,s5l8940x-pmgr-clk-gate";
+            #clock-cells = <0>;
+            reg = <0xf1010e8 0x4>;
+            clocks = <&refclk24mhz>;
+            clock-output-names = "spi1_ps";
+        };
+
+        /* SPI1 transport for the Z2 digitizer (apple,s5l8940x-spi). K93 ADT:
+         * reg 0x2100000/0x1000, AIC irq 29, clock-gates 68, clock-ids 304/307. */
+        spi1: spi@2100000 {
+            compatible = "apple,s5l8940x-spi";
+            reg = <0x2100000 0x1000>;
+            interrupts = <29>;
+            clocks = <&spi1_ps>;
+            /* The driver ignores spi-max-frequency; the bus clock is set by this
+             * divider alone (default 4, MHz range).  The K93 multi-touch reg
+             * gives spiClockPeriod 5000 / 10000 ns (200 / 100 kHz): the Z2
+             * bootloader answers at the default, the running firmware does
+             * not.  119 is 100-200 kHz under either divider formula. */
+            apple,clkdiv = <119>;
+            #address-cells = <1>;
+            #size-cells = <0>;
+            status = "okay";
+
+            /* K93 pins (port<<8|pin -> port*8+pin): reset 0x1105 -> 141,
+             * enable_cs 0x1307 -> 159, ATTN interrupt 0x15 -> 21 (confirmed on
+             * hardware). P105 used 21/103/22, which do not apply here. */
+            touch@0 {
+                compatible = "apple,z2-multitouch";
+                reg = <0>;
+                spi-max-frequency = <5000000>;
+                generation = <1>;
+                core-supply = <&touch_ldo>;
+                pmuclk-supply = <&touch_clk>;
+                reset-gpios = <&gpio 141 0>;
+                cs-gpios = <&gpio 159 0>;
+                irq-gpios = <&gpio 21 1>;
+                /* ADT function-enable_download 0x1104 -> 140, active low;
+                 * userspace asserts it for the bootload (HXT_IOC_SET_DL). */
+                download-gpios = <&gpio 140 1>;
+                /* Reports are read only while ATTN is asserted, with a short
+                 * CS settle and a level trigger once READY: a query sent
+                 * while ATTN is idle puts this controller's output out of
+                 * step (docs/k93-bringup.md). */
+                apple,attn-gated-reads;
+                clocks = <&touchclk>;
+            };
         };
     };
 };
