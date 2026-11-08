@@ -146,7 +146,27 @@ auto-boot into Linux at iOS start-up: a bad payload must never cost iOS.
   reboot to iOS = a failure exit, neither = a hang.  With 12H321's DeviceTree
   `--stop kernelcache` reached Recovery in 15 s, and without the stop the
   screen went **green**: kloader -> iBEC -> NAND -> our code, no USB involved.
-- **P5** the real bundle with the RAM root, then with the NAND root.
-- **P6** the USB dependency in Linux (PPN probe and clockevents waiting for
-  USB) -- the cable must not matter.
+- **P5** (Linux up, 2026-11-08; the loader is still a bring-up build):
+  the real bundle through kloader -> iBEC -> NAND boots Linux, repeatedly, no
+  USB transfer.  `prepare_and_jump(3)` leaves the USB side off, and comparing
+  184 registers printed over UART at loader entry, against the same loader
+  booted over USB, showed exactly what: the PMGR gates `0x3F101080`,
+  `0x3F101084`, `0x3F101098` are off (`0x200`, not `0x2ff`) and the OTG PHY at
+  `0x36000000` is powered down, while `phy-apple-s5l-usb` deliberately keeps
+  iBoot's PHY setup.  Restoring them before the kernel -- the three gates, then
+  PHY `+0x04=1 +0x14=0xc +0x1c=6 +0x20=0xc00 +0x40=0x549 +0x44=0xf8 +0x60=0x200
+  +0=6`, reset pulse on `+0x08` -- brings up the OTG gadget (ssh over USB) and
+  EHCI, and with it the Wi-Fi chip on HSIC (firmware runs).  `usb-complex+0`
+  bit 31 cannot be set by a write and follows by itself.
+  Also: the loader's watchdog address `0x0F103020` is arm-io relative; the
+  physical one is `0x3F103020` (`-DBOOT_WDT_BASE=`).
+  Bring-up build: `build/pcless-phy`.  Still unexplained: the loader flickered
+  (re-entered) with only the watchdog address fixed, and stopped with the
+  8-entry vector table at `0x80000000` and a green fill + pause at entry; which
+  of the two matters is unknown.  What the loader saw of this path: CPU in SVC,
+  caches apparently off.  Only whole-screen fills are reliably visible.
+- **P6** move the gates and PHY setup into `phy-apple-s5l-usb` (only when iBoot
+  left the PHY off), drop the loader diagnostics, then boot the NAND root.
+  The AIC timer already gives the tick without a USB host (see the boot log);
+  the PPN probe still waits for USB -- check that with no cable attached.
 - **P7** `.deb`, `cascadia-boot`, the app; `./cascadia a5 ios-install`.
