@@ -7,8 +7,8 @@ on:
       - a12-xr
     paths:
       - .github/workflows/build-ios-kmem.yml
-      - devices/a13/tools/ios/kmem.c
-      - devices/a13/tools/ios/kmem.entitlements
+      - devices/a12/tools/ios/kmem.c
+      - devices/a12/tools/ios/kmem.entitlements
 
 jobs:
   kmem:
@@ -29,9 +29,9 @@ jobs:
             -arch arm64 -miphoneos-version-min=15.0 -isysroot "$sdk" \
             -Os -Wall -Wextra -Wno-unused-parameter \
             -framework CoreFoundation -framework IOKit \
-            devices/a13/tools/ios/kmem.c \
+            devices/a12/tools/ios/kmem.c \
             -o devices/a12/build/ios/kmem
-          ldid -Sdevices/a13/tools/ios/kmem.entitlements devices/a12/build/ios/kmem
+          ldid -Sdevices/a12/tools/ios/kmem.entitlements devices/a12/build/ios/kmem
           file devices/a12/build/ios/kmem
           ldid -e devices/a12/build/ios/kmem
       - name: Upload kmem
