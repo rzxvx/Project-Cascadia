@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Patch iBEC to boot Linux from the NAND by itself: the PC-less route.
 
-    patch-ibec-upgrade.py IBEC_PATCHED OUT
+    patch-ibec-upgrade.py [--stay] IBEC_PATCHED OUT
 
 IBEC_PATCHED is the plaintext iBEC after iBoot32Patcher (signature checks
 off), as ./cascadia a5 firmware leaves it in build/firmware/iBEC.patched;
@@ -22,6 +22,11 @@ patches make that the boot, from System, and keep it read-only on the NAND:
               the saveenv() goes, so a boot never writes NVRAM
   no-record   on a failure upgrade stores ota-result / ota-failure-reason and
               saves them; that goes too -- a failed boot just reboots to iOS
+
+--stay is for bring-up: a failed boot returns to iBEC's dispatcher instead of
+rebooting, so the iPad stays in Recovery where a computer can see it -- the
+proof that kloader started iBEC and `upgrade` ran.  Not for the real image: a
+failed boot has to end in iOS.
 
 Every site is checked against the expected original instruction (or the
 patched one, so running it twice is harmless); anything else stops.
@@ -49,6 +54,9 @@ SITE_SAVEENV = 0x9FF01486         # bl saveenv (0x9ff1c358)
 SAVEENV = 0x9FF1C358
 SITE_RECORD = 0x9FF01504          # bl record_upgrade_failure (0x9ff01438)
 RECORD = 0x9FF01438
+SITE_REBOOT = 0x9FF01510          # bl reboot-ish (0x9ff1f224), end of upgrade's failure path
+REBOOT = 0x9FF1F224
+POP_R3_R4_R7_PC = b"\x98\xbd"     # undoes the handler's push {r3, r4, r7, lr}
 UPGRADE_HANDLER = 0x9FF0147C
 BOOT_TABLE = 0x9FF44040           # {"upgrade", handler}, ...
 
@@ -109,7 +117,7 @@ def site(img: bytearray, name: str, va: int, orig: bytes, new: bytes) -> str:
     return f"{name:<11} {va:#x}: {orig.hex()} -> {new.hex()}"
 
 
-def patch(img: bytearray) -> list[str]:
+def patch(img: bytearray, stay: bool = False) -> list[str]:
     if img[0x200:0x20D] != b"iBEC for p105" or not img[0x280:0x290].startswith(b"iBoot-2261.30.37"):
         raise SystemExit("not the iBEC this patcher knows (iBEC for p105, iBoot-2261.30.37)")
     if cstr(img, STR_UPGRADE) != b"upgrade" or cstr(img, STR_BOOT_COMMAND) != b"boot-command":
@@ -131,15 +139,19 @@ def patch(img: bytearray) -> list[str]:
         site(img, "no-saveenv", SITE_SAVEENV, thumb_bl(SITE_SAVEENV, SAVEENV), NOP32),
         site(img, "no-record", SITE_RECORD, thumb_bl(SITE_RECORD, RECORD), NOP32),
     ]
+    if stay:
+        out.append(site(img, "stay", SITE_REBOOT, thumb_bl(SITE_REBOOT, REBOOT), POP_R3_R4_R7_PC + NOP16))
     return out
 
 
 def main(argv: list[str]) -> int:
+    stay = "--stay" in argv
+    argv = [a for a in argv if a != "--stay"]
     if len(argv) != 2:
         sys.stderr.write(__doc__)
         return 2
     img = bytearray(Path(argv[0]).read_bytes())
-    for line in patch(img):
+    for line in patch(img, stay):
         print("  " + line)
     Path(argv[1]).write_bytes(img)
     print(f"wrote {argv[1]}")

@@ -119,11 +119,20 @@ auto-boot into Linux at iOS start-up: a bad payload must never cost iOS.
   decoder, adler32 and Mach-O segment loader on it under Unicorn: the 29 MB
   nand-rw bundle decodes exactly, lands at `0x80000000..0x81bac000`, entry
   `0x80000000`.  Not shown by this: iBEC's mount, img3 and jump paths.
-- **P3** device, no Linux yet: kloader the stock-behaviour patched iBEC with
-  an *empty* `/boot` -> expect "failed to mount" or "failed to load
-  devicetree" -> reboot into iOS.  Proves kloader -> iBEC and that the
-  failure path is harmless.  Serial/UART if the Pico is attached; otherwise
-  the screen.
+- **P3** (done, 2026-11-08): kloader on iOS with `/boot` empty.  The plain
+  image ended in a reboot to iOS, which proved nothing (a kloader failure looks
+  the same), so `patch-ibec-upgrade.py --stay` returns to the dispatcher on a
+  failure instead.  With it the iPad came up in **Recovery 18 s after
+  kloader**, `build-version` iBoot-2261.30.37, `auto-boot` true and
+  `boot-command` unset, which only our `upgrade` path does (stock iBoot has
+  `fsboot`).  So kloader starts iBEC directly, the forced dispatch works and
+  `upgrade` runs.  Not shown: which step failed -- mount and missing
+  devicetree leave by the same exit, and there is no console -- so whether
+  iBEC mounts System is P4's question.  `reboot` over USB returned to iOS.
+  Reading a variable over USB (`getenv`, then a control read): an unset one
+  repeats the previous reply, or stalls if there is none.  Side note: the first
+  boot after the plain run panicked in `everuntether` (the jailbreak's own
+  process, pid 17) and the next boot was fine; no link to this test shown.
 - **P4** a tiny payload kernelcache (fill the framebuffer, spin) -> proves
   the format and the jump.
 - **P5** the real bundle with the RAM root, then with the NAND root.

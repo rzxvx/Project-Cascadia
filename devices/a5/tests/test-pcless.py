@@ -162,6 +162,10 @@ def main():
             pass
         else:
             raise AssertionError("a wrong original was accepted")
+        st = bytearray(src)
+        pi.patch(st, stay=True)
+        diff = [i for i in range(len(src)) if st[i] != img[i]]
+        assert diff and set(diff) <= {pi.off(pi.SITE_REBOOT) + k for k in range(4)}, "--stay touched something else"
         print(f"patch-ibec-upgrade: {len(changed)} bytes, only at the known sites, idempotent: PASS")
     else:
         print("patch-ibec-upgrade: skipped (no --ibec)")
