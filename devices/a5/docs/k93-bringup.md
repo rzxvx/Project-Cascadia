@@ -135,13 +135,27 @@ Reproduce: `k93.config` plus `CONFIG_TOUCHSCREEN_APPLE_Z2`,
 above (late trace, `--counter-clock --untimed`). Build the tool with
 `tools/k93-build-z2-boot.sh` and the initramfs with
 `tools/k93-prepare-gui-initramfs.py --network-root --desktop-test
---touch-firmware K93.mtprops`.
+--touch-firmware build/firmware/K93.mtprops`.
 `squash-init` copies the tool, the firmware and the calibration into the
 overlay root and `alpine-init` starts `/sbin/k93-z2-boot -E` (log in
 `/run/k93-z2.log`); `xorg-fbdev.conf` declares the panel, so the stock
 `/k93-desktop-test.sh` has touch. Without `--touch-firmware` the image is
-unchanged and stage 2 reports touch as not started. `K93.mtprops` (the
-`Z2F13,2` firmware) is Apple's and is not in the repository.
+unchanged and stage 2 reports touch as not started.
+
+`K93.mtprops` (the `Z2F13,2` firmware) is Apple's and is not in the
+repository. `scripts/k93-touch-firmware.sh` takes it out of the stock
+iPad2,1 iOS 8.4.1 / 12H321 IPSW (Apple serves it as
+`iPad2,1_8.4.1_12H321_Restore.ipsw`, about 1.4 GB) and checks it against the
+copy read from a K93 unit's iOS (sha256 `71bf5e82…081190`, 70 355 bytes),
+in the build container:
+
+```sh
+docker run --rm -v "$PWD":/cascadia -w /cascadia cascadia-build \
+    bash scripts/k93-touch-firmware.sh
+```
+
+with the IPSW in `devices/a5/`, or `IPSW=` pointing at it inside the
+container.
 
 The calibration differs per panel. The default, `rootfs/k93/k93-mtcal.bin`
 (1024 bytes, sha256 `f78ccc84…f61c09`), is the ADT's `multi-touch-calibration`

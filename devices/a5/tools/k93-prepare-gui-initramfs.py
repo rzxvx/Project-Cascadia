@@ -23,7 +23,7 @@ def main():
     parser.add_argument('--startup-strace',action='store_true',help='Include verified optional syscall-metadata tracer for browser startup failure')
     parser.add_argument('--startup-pc-sample',action='store_true',help='Include bounded Xorg-only ARM register sampler; no process memory reads')
     parser.add_argument('--run-limit-mib',type=int,choices=[96,192],default=96)
-    parser.add_argument('--touch-firmware',help='K93.mtprops (Z2F13,2), from the unit\'s iOS; enables touch at boot')
+    parser.add_argument('--touch-firmware',help='K93.mtprops (Z2F13,2), from scripts/k93-touch-firmware.sh; enables touch at boot')
     parser.add_argument('--touch-calibration',default=str(ROOT/'rootfs/k93/k93-mtcal.bin'),
                         help='1024-byte multi-touch calibration; default: one K93 unit\'s (rootfs/k93/k93-mtcal.bin)')
     args=parser.parse_args()

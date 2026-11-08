@@ -16,7 +16,7 @@ import re
 import sys
 import tarfile
 
-NAMES = re.compile(r'(^|/)(P105\.mtprops|brcmfmac4334[^/]*|BCM4334B0[^/]*|sgx543\.fw|authorized_keys|'
+NAMES = re.compile(r'(^|/)(P105\.mtprops|K93\.mtprops|brcmfmac4334[^/]*|BCM4334B0[^/]*|sgx543\.fw|authorized_keys|'
                    r'dropbear_[a-z0-9]+_host_key|nfsroot|[^/]*\.ipsw|kernelcache[^/]*|gl-event\.pds)$'
                    r'|(^|/)usr/local/lib/sgx2d(/|$)')
 # a real key: the header and then base64, not the bare header string that
