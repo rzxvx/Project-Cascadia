@@ -14,6 +14,7 @@
 #include <string.h>
 
 #define HELPER "/usr/libexec/cascadia-helper"
+#define FETCH "/usr/libexec/cascadia-fetch"
 
 typedef struct { float x, y, w, h; } Rect;
 
@@ -88,6 +89,26 @@ static id C(const char *n) { return (id)objc_getClass(n); }
 		out[n] = 0;
 		if (asprintf(&js, "cascadiaStatus(%s,%.3f)", n ? out : "null",
 			     level) < 0)
+			return;
+		[self js:js];
+		free(js);
+	});
+}
+
+- (void)runLatest
+{
+	dispatch_async(dispatch_get_global_queue(0, 0), ^{
+		char out[256], *js;
+		size_t n = 0;
+		FILE *p = popen(FETCH, "r");
+
+		if (p) {
+			n = fread(out, 1, sizeof(out) - 1, p);
+			pclose(p);
+		}
+		out[n] = 0;
+		out[strcspn(out, "\r\n")] = 0;
+		if (asprintf(&js, "cascadiaLatest(%s)", out[0] ? out : "null") < 0)
 			return;
 		[self js:js];
 		free(js);
@@ -170,6 +191,8 @@ static id C(const char *n) { return (id)objc_getClass(n); }
 		[self runStatus];
 	else if (!strcmp(cmd, "boot"))
 		[self runBoot];
+	else if (!strcmp(cmd, "latest"))
+		[self runLatest];
 	else if (!strcmp(cmd, "copy"))
 		[[C("UIPasteboard") generalPasteboard] setString:
 			[web stringByEvaluatingJavaScriptFromString:S("logText()")]];

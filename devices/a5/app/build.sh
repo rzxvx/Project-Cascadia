@@ -5,14 +5,31 @@
 # the linker asks); -marm for the Thumb entryoff bug; ldid fake-signs, with no
 # entitlements (they panic this jailbreak).
 #
-# The package carries only our own code.  kloader, iBEC and the boot files come
-# from the computer once and are checked against /var/root/cascadia/manifest.
+# The package carries our own code and BearSSL (MIT).  kloader, iBEC and the boot
+# files come from the computer once and are checked against
+# /var/root/cascadia/manifest.
+#
+# BearSSL is not in this repository.  Put it in build/cache first:
+#   curl -fsSLO https://bearssl.org/bearssl-0.6.tar.gz && tar xzf bearssl-0.6.tar.gz
 set -e
 cd "$(dirname "$0")"
 B=../build/app
 SDK=$(xcrun --sdk iphoneos --show-sdk-path)
 CFLAGS="-arch armv7 -miphoneos-version-min=8.0 -isysroot $SDK -marm -Os -Wall -fno-stack-protector"
 LD="clang -arch armv7 -miphoneos-version-min=8.0 -nostdlib"
+
+BSSL=../build/cache/bearssl-0.6
+BSSL_SHA=6705bba1714961b41a728dfc5debbe348d2966c117649392f8c8139efc83ff14
+BLIB=../build/bearssl-armv7/libbearssl.a
+[ "$(shasum -a 256 "$BSSL.tar.gz" 2>/dev/null | cut -d' ' -f1)" = "$BSSL_SHA" ] &&
+    [ -d "$BSSL/src" ] || { echo "no BearSSL 0.6 in build/cache, see the top of this file" >&2; exit 1; }
+if [ ! -f "$BLIB" ]; then
+    mkdir -p "$(dirname "$BLIB")"
+    find "$BSSL/src" -name '*.c' | while read -r f; do
+        echo "$f $(dirname "$BLIB")/$(echo "$f" | sed 's|.*/src/||; s|/|_|g; s|\.c$|.o|')"
+    done | xargs -P 8 -L 1 sh -c "clang $CFLAGS -w -I$BSSL/inc -I$BSSL/src -c \"\$0\" -o \"\$1\""
+    xcrun libtool -static -o "$BLIB" "$(dirname "$BLIB")"/*.o 2>/dev/null
+fi
 
 rm -rf "$B"
 mkdir -p "$B/pkg/DEBIAN" "$B/pkg/usr/libexec" "$B/pkg/Applications/Cascadia.app/www"
@@ -23,12 +40,18 @@ $LD "$B/helper.o" stubs/libSystem.tbd -o "$B/pkg/usr/libexec/cascadia-helper"
 ldid -S "$B/pkg/usr/libexec/cascadia-helper"
 chmod 4755 "$B/pkg/usr/libexec/cascadia-helper"
 
+clang $CFLAGS -I"$BSSL/inc" -c fetch.c -o "$B/fetch.o"
+$LD "$B/fetch.o" "$BLIB" stubs/libSystem.tbd -o "$B/pkg/usr/libexec/cascadia-fetch"
+ldid -S "$B/pkg/usr/libexec/cascadia-fetch"
+chmod 755 "$B/pkg/usr/libexec/cascadia-fetch"
+
 clang $CFLAGS -fblocks -c app.m -o "$B/app.o"
 $LD "$B/app.o" stubs/libSystem.tbd stubs/libobjc.tbd stubs/UIKit.tbd -o "$A/Cascadia"
 ldid -S "$A/Cascadia"
 
 cp Info.plist "$A/Info.plist"
 cp www/index.html "$A/www/index.html"
+cp "$BSSL/LICENSE.txt" "$A/LICENSE-BearSSL.txt"
 # Tux from the iPad's own GPU, cut square around the penguin and the mat.
 sips -c 768 768 --cropOffset 125 0 tux-source.png --out "$B/icon-square.png" >/dev/null
 sips -z 76 76 "$B/icon-square.png" --out "$A/icon.png" >/dev/null

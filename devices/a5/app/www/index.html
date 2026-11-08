@@ -95,27 +95,15 @@ h1 { margin: 0; font-size: 30px; font-weight: 500; }
   var lines = [], busy = false, held = false, start = 0, low = -1;
   var checked = false, installed = '', latest = '', newer = '', updateNote = '', last = null, lastLevel = -1;
 
-  /* Published releases only, never commits.  Offline or refused just means no prompt. */
-  function checkRelease() {
-    var x = new XMLHttpRequest();
-    x.open('GET', RELEASES, true);
-    x.timeout = 10000;
-    x.setRequestHeader('Accept', 'application/vnd.github+json');
-    x.onload = function () {
-      var list, i, t;
-      try { list = JSON.parse(x.responseText); } catch (e) { list = null; }
-      if (x.status !== 200 || !list || !list.length) { updateNote = 'update check failed (' + x.status + ')'; refresh(); return; }
-      for (i = 0; i < list.length; i++) {
-        t = list[i].tag_name || '';
-        if (!list[i].draft && t.indexOf('a5-') === 0 && t > latest) latest = t;
-      }
-      newer = installed && latest > installed ? latest : '';
-      updateNote = '';
-      refresh();
-    };
-    x.onerror = x.ontimeout = function () { updateNote = 'update check failed: this iOS cannot reach GitHub'; refresh(); };
-    x.send();
-  }
+  /* Published releases only, never commits: cascadia-fetch reads the feed.
+     Offline or refused just means no prompt. */
+  window.cascadiaLatest = function (r) {
+    if (!r || !r.ok) { updateNote = 'update check failed' + (r ? ': ' + r.error : ''); refresh(); return; }
+    latest = r.latest;
+    newer = installed && latest > installed ? latest : '';
+    updateNote = '';
+    refresh();
+  };
   function refresh() { if (last && !busy && !held) window.cascadiaStatus(last, lastLevel); }
 
   function call(cmd) {
@@ -214,7 +202,7 @@ h1 { margin: 0; font-size: 30px; font-weight: 500; }
     if (newer) line('wa', 'new images out: ' + newer + ', installed ' + installed);
     else if (updateNote) line('wa', updateNote);
     else if (latest) line('ok', installed ? 'images up to date, ' + installed : 'images not from a release, latest is ' + latest);
-    if (!checked) { checked = true; checkRelease(); }
+    if (!checked) { checked = true; call('latest'); }
 
     $('checks').innerHTML = h;
     setBlocked(block);
