@@ -100,7 +100,6 @@ h1 { margin: 0; font-size: 30px; font-weight: 500; }
   window.cascadiaLatest = function (r) {
     if (!r || !r.ok) { updateNote = 'update check failed' + (r ? ': ' + r.error : ''); refresh(); return; }
     latest = r.latest;
-    newer = installed && latest > installed ? latest : '';
     updateNote = '';
     refresh();
   };
@@ -198,6 +197,7 @@ h1 { margin: 0; font-size: 30px; font-weight: 500; }
     h += row(s.root ? '' : 'bad', 'Helper', s.root ? 'running as root' : 'no root');
 
     installed = s.release || '';
+    newer = installed && latest > installed ? latest : '';
     h += row(newer ? 'warn' : '', 'Images', newer ? 'update available' : installed || 'not from a release');
     if (newer) line('wa', 'new images out: ' + newer + ', installed ' + installed);
     else if (updateNote) line('wa', updateNote);
