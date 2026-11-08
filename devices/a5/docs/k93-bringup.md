@@ -165,10 +165,12 @@ ASCII identifier at offset 9 replaced by zeroes; it has not been tried on
 other units. `--touch-calibration <file>` replaces it with another unit's own
 1024 bytes.
 
-Verified on hardware with this image and the unit's unaltered calibration:
-touch started by stage 2 with no host steps, and the pointer followed the
-finger in the stock desktop test. Not yet booted: the zeroed default. Not yet
-tested separately: `apple,clkdiv` and the shorter CS settle.
+Verified on hardware, first with the unit's unaltered calibration and then
+with this image built as above, i.e. with the zeroed default and the
+IPSW-extracted `K93.mtprops`: touch started by stage 2 with no host steps
+(firmware accepted, READY, input device on `event0`), and the pointer
+followed the finger in the stock desktop test. Not yet tested separately:
+`apple,clkdiv` and the shorter CS settle.
 
 The split-root transfer arrived about 1.3 MB short in two of three early
 touch boots, varying in size, with the first stage then falling back to its
@@ -176,10 +178,12 @@ rescue shell; the same receiver run later received the image complete.
 `rootfs/k93/squash-init` now drops an image that fails its hash and listens
 again within its 80-second budget. The host sender (not in this repository)
 should resend when the receiver accepts a connection again after a push;
-no listener for about 20 s means the root switch went ahead. The retry path is
-covered by `tools/k93-test-squash-init.py` only: on the hardware boot with this
-init the image arrived complete, so a resend has not yet been observed on the
-device.
+no listener for about 20 s means the root switch went ahead. Besides
+`tools/k93-test-squash-init.py`, the retry path was exercised on the device
+with a forced failure: the host first sent half of the image (36 513 792 of
+73 027 584 bytes), the receiver rejected it and accepted a connection again
+3 s later, and the full resend booted the Alpine root. The original
+truncations themselves remain unexplained.
 
 ## Important calibration dependency
 
