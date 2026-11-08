@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Patch iBEC to boot Linux from the NAND by itself: the PC-less route.
 
-    patch-ibec-upgrade.py [--stay] IBEC_PATCHED OUT
+    patch-ibec-upgrade.py [--stay] [--stop STAGE] IBEC_PATCHED OUT
 
 IBEC_PATCHED is the plaintext iBEC after iBoot32Patcher (signature checks
 off), as ./cascadia a5 firmware leaves it in build/firmware/iBEC.patched;
@@ -27,6 +27,11 @@ patches make that the boot, from System, and keep it read-only on the NAND:
 rebooting, so the iPad stays in Recovery where a computer can see it -- the
 proof that kloader started iBEC and `upgrade` ran.  Not for the real image: a
 failed boot has to end in iOS.
+
+--stop STAGE is for bring-up too: `upgrade` returns to the dispatcher right
+after STAGE has succeeded (mount, devicetree, ramdisk, kernelcache), so without
+--stay the outcomes differ -- Recovery: everything up to STAGE worked; a reboot
+to iOS: a failure exit; neither: a hang before STAGE's end.
 
 Every site is checked against the expected original instruction (or the
 patched one, so running it twice is harmless); anything else stops.
@@ -58,6 +63,13 @@ SITE_REBOOT = 0x9FF01510          # bl reboot-ish (0x9ff1f224), end of upgrade's
 REBOOT = 0x9FF1F224
 POP_R3_R4_R7_PC = b"\x98\xbd"     # undoes the handler's push {r3, r4, r7, lr}
 UPGRADE_HANDLER = 0x9FF0147C
+# (first instruction reached only after that stage succeeded, 16-bit original)
+STOPS = {
+    "mount": (0x9FF01492, 0x4825),        # ldr r0, =/boot/apticket.der
+    "devicetree": (0x9FF014B2, 0x4822),   # ldr r0, =/boot/ramdisk
+    "ramdisk": (0x9FF014BC, 0x4822),      # ldr r0, =/boot/kernelcache
+    "kernelcache": (0x9FF014CA, 0x4925),  # ldr r1, =boot args, before the jump
+}
 BOOT_TABLE = 0x9FF44040           # {"upgrade", handler}, ...
 
 
@@ -117,7 +129,7 @@ def site(img: bytearray, name: str, va: int, orig: bytes, new: bytes) -> str:
     return f"{name:<11} {va:#x}: {orig.hex()} -> {new.hex()}"
 
 
-def patch(img: bytearray, stay: bool = False) -> list[str]:
+def patch(img: bytearray, stay: bool = False, stop: str | None = None) -> list[str]:
     if img[0x200:0x20D] != b"iBEC for p105" or not img[0x280:0x290].startswith(b"iBoot-2261.30.37"):
         raise SystemExit("not the iBEC this patcher knows (iBEC for p105, iBoot-2261.30.37)")
     if cstr(img, STR_UPGRADE) != b"upgrade" or cstr(img, STR_BOOT_COMMAND) != b"boot-command":
@@ -141,17 +153,27 @@ def patch(img: bytearray, stay: bool = False) -> list[str]:
     ]
     if stay:
         out.append(site(img, "stay", SITE_REBOOT, thumb_bl(SITE_REBOOT, REBOOT), POP_R3_R4_R7_PC + NOP16))
+    if stop:
+        va, orig = STOPS[stop]
+        out.append(site(img, f"stop:{stop}"[:11], va, struct.pack("<H", orig), POP_R3_R4_R7_PC))
     return out
 
 
 def main(argv: list[str]) -> int:
     stay = "--stay" in argv
     argv = [a for a in argv if a != "--stay"]
+    stop = None
+    if "--stop" in argv:
+        i = argv.index("--stop")
+        stop = argv[i + 1]
+        if stop not in STOPS:
+            raise SystemExit(f"--stop: one of {', '.join(STOPS)}")
+        del argv[i:i + 2]
     if len(argv) != 2:
         sys.stderr.write(__doc__)
         return 2
     img = bytearray(Path(argv[0]).read_bytes())
-    for line in patch(img, stay):
+    for line in patch(img, stay, stop):
         print("  " + line)
     Path(argv[1]).write_bytes(img)
     print(f"wrote {argv[1]}")

@@ -166,6 +166,11 @@ def main():
         pi.patch(st, stay=True)
         diff = [i for i in range(len(src)) if st[i] != img[i]]
         assert diff and set(diff) <= {pi.off(pi.SITE_REBOOT) + k for k in range(4)}, "--stay touched something else"
+        for stage, (va, _orig) in pi.STOPS.items():
+            one = bytearray(src)
+            pi.patch(one, stop=stage)
+            d = [i for i in range(len(src)) if one[i] != img[i]]
+            assert set(d) <= {pi.off(va), pi.off(va) + 1} and d, stage
         print(f"patch-ibec-upgrade: {len(changed)} bytes, only at the known sites, idempotent: PASS")
     else:
         print("patch-ibec-upgrade: skipped (no --ibec)")

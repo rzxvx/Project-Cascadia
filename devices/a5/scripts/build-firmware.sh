@@ -64,6 +64,8 @@ IBSS_IV="b21abc8689b0dea8f6e613f9f970e241"
 IBSS_KEY="b9ed63e4a31f5d9d4d7dddc527e65fd31d1ea48c70204e6b44551c1e6dfc52b5"
 IBEC_IV="8460cab6348e74ba7134ba0f9462b632"
 IBEC_KEY="485ddb5f7e70cecfc25c036f812641b9e55bd97783de1488306e3a80abf6950b"
+DTRE_IV="c9c12cfe3a16823f1d678775c7aedc88"
+DTRE_KEY="050f2457801615132e7455b622c8c8dfb65f09d4ff1eb86b5c0a1160678117c2"
 ROOTFS_DMG="058-24036-023.dmg"
 ROOTFS_KEY="21862ddcc49a861ffda17f7c6eca65355d2d1e762026cca60aabc726cd48b9e4cff214ff"
 MTPROPS=/usr/share/firmware/multitouch/P105.mtprops
@@ -143,6 +145,10 @@ echo "==> iBEC: auto-go hook"
 python3 "$ROOT/scripts/patch-ibec-autogo.py" "$OUT/iBEC.patched" "$OUT/iBEC.autogo"
 echo "==> iBEC: the PC-less image (boots from the NAND, docs/research/p105-pcless-boot.md)"
 python3 "$ROOT/scripts/patch-ibec-upgrade.py" "$OUT/iBEC.patched" "$OUT/iBEC.upgrade"
+echo "==> DeviceTree: plaintext, iBEC cannot open a KBAG after kloader"
+unzip -o -j "$IPSW" "Firmware/all_flash/all_flash.p105ap.production/DeviceTree.p105ap.img3" -d "$OUT" >/dev/null \
+    || fail "DeviceTree not found in $IPSW"
+python3 "$ROOT/scripts/img3decrypt.py" "$OUT/DeviceTree.p105ap.img3" "$OUT/DeviceTree.dec" "$DTRE_IV" "$DTRE_KEY"
 echo "==> iBEC: repack as img3 (encrypted -- the checkm8 route)"
 python3 "$ROOT/scripts/img3encrypt.py" \
     "$OUT/iBEC.p105.RELEASE.dfu" "$OUT/iBEC.autogo" \
