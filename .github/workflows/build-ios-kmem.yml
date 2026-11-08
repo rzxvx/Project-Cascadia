@@ -1,0 +1,42 @@
+name: Build iOS kmem
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - a12-xr
+    paths:
+      - .github/workflows/build-ios-kmem.yml
+      - devices/a13/tools/ios/kmem.c
+      - devices/a13/tools/ios/kmem.entitlements
+
+jobs:
+  kmem:
+    runs-on: macos-15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Mach-O signer
+        run: brew install ldid
+      - name: Build and sign arm64 iOS kmem
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p devices/a12/build/ios
+          sdk="$(xcrun --sdk iphoneos --show-sdk-path)"
+          xcrun --sdk iphoneos clang \
+            -arch arm64 -miphoneos-version-min=15.0 -isysroot "$sdk" \
+            -Os -Wall -Wextra -Wno-unused-parameter \
+            -framework CoreFoundation -framework IOKit \
+            devices/a13/tools/ios/kmem.c \
+            -o devices/a12/build/ios/kmem
+          ldid -Sdevices/a13/tools/ios/kmem.entitlements devices/a12/build/ios/kmem
+          file devices/a12/build/ios/kmem
+          ldid -e devices/a12/build/ios/kmem
+      - name: Upload kmem
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-kmem-arm64
+          path: devices/a12/build/ios/kmem
+          if-no-files-found: error
