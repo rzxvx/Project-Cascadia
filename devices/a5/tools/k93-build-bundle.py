@@ -17,6 +17,7 @@ parser.add_argument('--mmu-watchdog', action='store_true', help='Use checkpoints
 parser.add_argument('--init-watchdog', action='store_true', help='Trace C kernel startup through console initialization')
 parser.add_argument('--late-watchdog', action='store_true', help='Trace post-console startup and scheduling init')
 parser.add_argument('--counter-clock', action='store_true', help='V8 late trace with K93 watchdog counter clock enabled')
+parser.add_argument('--untimed', action='store_true', help='Leave watchdog CTRL=0; kernel checkpoints only update BITE_TIME')
 args = parser.parse_args()
 if args.counter_clock:
     args.late_watchdog = True
@@ -44,6 +45,11 @@ if args.late_watchdog:
     OUT = ROOT / 'build/k93/bundle-diag-v7'
 if args.counter_clock:
     OUT = ROOT / 'build/k93/bundle-diag-v8'
+if args.untimed:
+    if not args.stage_watchdog:
+        parser.error('--untimed applies to stage-watchdog trace builds')
+    args.watchdog_seconds = None
+    OUT = OUT.with_name(OUT.name + '-untimed')
 if args.watchdog_seconds:
     OUT = OUT.with_name(OUT.name + f'-wdt{args.watchdog_seconds}')
 OUT.mkdir(parents=True, exist_ok=True)
@@ -116,6 +122,9 @@ if 0x80000000 + len(bundle) >= 0x90000000:
 manifest = {'board': 'K93AP', 'dtb_phys': hex(dtb_phys), 'stack_top': '0x80007000', 'watchdog_physical': '0x3f103020', 'files': {}}
 if args.watchdog_seconds:
     manifest['watchdog_timeout_seconds'] = args.watchdog_seconds
+if args.untimed:
+    manifest['watchdog_timeout_seconds'] = None
+    manifest['watchdog_note'] = 'loader leaves CTRL=0; checkpoint deadlines below are written but not armed'
 if args.diagnostic:
     manifest['diagnostic'] = {'scanout': '1024x768 stride4096 (readable hardware diagnostic)', 'cpu_mpidr': '0x900', 'markers': ['before L1 flush', 'after L1 flush', 'after L2 flush', 'MMU/caches off, before kernel branch']}
     manifest['diagnostic']['zimage_entry_trace'] = 'white band at y320..335; only first32 bytes replaced, original +0x20 branch preserved'
