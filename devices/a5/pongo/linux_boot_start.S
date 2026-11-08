@@ -4,7 +4,8 @@
 
 	.equ	KERNEL_ENTRY,	0x80008000
 #ifndef BOOT_WDT_BASE
-#define BOOT_WDT_BASE 0x0F103020
+/* 0x3F103020 physical; the ADT's 0x0F103020 is relative to arm-io (0x30000000) */
+#define BOOT_WDT_BASE 0x3F103020
 #endif
 #ifndef BOOT_STACK_TOP
 #define BOOT_STACK_TOP 0x8000F000
@@ -19,6 +20,14 @@
 _start:
 	cpsid	if
 	msr	cpsr_c, #0xd3
+
+	/* Only the boot CPU runs this.  Started from the NAND, by iBEC's own jump
+	 * to a kernel, the loader ran twice over itself until the other core
+	 * was stopped here (docs/research/p105-pcless-boot.md).  Linux starts
+	 * that core itself later. */
+	mrc	p15, 0, r0, c0, c0, 5	/* MPIDR */
+	ands	r0, r0, #3
+	bne	.Lpark_secondary
 
 	ldr	r0, =WDT_BASE
 	mov	r1, #0
@@ -93,6 +102,11 @@ linux_boot_jump:
 
 1:	wfi
 	b	1b
+
+	/* a core that is not the boot CPU never leaves here */
+.Lpark_secondary:
+	wfi
+	b	.Lpark_secondary
 
 #ifdef K93_BOOT_TRACE
 /* Trace only: known framebuffer RAM, no peripheral register accesses.

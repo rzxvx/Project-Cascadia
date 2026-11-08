@@ -173,8 +173,19 @@ auto-boot into Linux at iOS start-up: a bad payload must never cost iOS.
   off" line, iBEC's own PHY setup kept).  `+0x44` is `0x2ff3`, the ADT's
   `uotgtune2-device`; the bring-up loader's `0xF8` came from a stale comment.
   `+0x14` reads `0x8` under Linux on both paths, against `0xc` at loader entry.
-- **P6**, still open: drop the loader diagnostics (one change at a time, as what
-  stopped the flicker is unknown), then boot the NAND root.
+- **P6**, the loader (done, 2026-11-08): the flicker was the loader running
+  twice over itself.  Removed one change at a time: without the green pause and
+  UART dump it still booted; without the 8-entry vector table it flickered
+  again; with the plain loader plus a check of MPIDR that parks any core but
+  the boot CPU it boots cleanly, and Linux still brings up both CPUs.  So only
+  the boot CPU may run the loader on this path.  That the other core starts
+  at `0x80000000` is inferred from this, not observed directly (the kernel
+  reserves that page as `cpu-reset`).  The watchdog is written at its physical
+  `0x3F103020`; whether the old address mattered was not isolated.  Both are in
+  `pongo/linux_boot_start.S`; the loader also boots normally over USB (NFS root).
+  NAND root (`nand-rw`) boots through this path, read-write.
+- Still open for a cable-free boot: stage 1 waits for USB to be `configured`
+  before it mounts the NAND root.
   The AIC timer already gives the tick without a USB host (see the boot log);
   the PPN probe still waits for USB -- check that with no cable attached.
 - **P7** `.deb`, `cascadia-boot`, the app; `./cascadia a5 ios-install`.
