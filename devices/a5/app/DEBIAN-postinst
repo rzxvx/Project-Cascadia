@@ -1,0 +1,5 @@
+#!/bin/sh
+chown root:wheel /usr/libexec/cascadia-helper
+chmod 4755 /usr/libexec/cascadia-helper
+su -c uicache mobile
+exit 0

@@ -1,0 +1,9 @@
+--- !tapi-tbd
+tbd-version:     4
+targets:         [ armv7-ios ]
+install-name:    '/usr/lib/libobjc.A.dylib'
+exports:
+  - targets:         [ armv7-ios ]
+    symbols:         [ _objc_msgSend, _objc_msgSend_stret, _objc_getClass, _objc_alloc, _objc_alloc_init, __objc_empty_cache, __objc_empty_vtable, _objc_retain, _objc_release ]
+    objc-classes:    [ NSObject ]
+...

@@ -77,6 +77,8 @@ while [ $n -lt 150 ]; do
     st=""
     for u in /sys/class/udc/*/state; do st=$(cat "$u" 2>/dev/null); done
     [ "$st" = "configured" ] && break
+    # No cable: nothing will come, so do not spin out the whole wait.
+    [ "$st" = "not attached" ] && [ $n -ge 40 ] && break
     blip
 done
 msg "P105: UDC state=$st after $n polls"

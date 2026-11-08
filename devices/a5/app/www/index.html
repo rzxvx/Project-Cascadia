@@ -1,0 +1,288 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>Cascadia</title>
+<style>
+/* Literal colours and -webkit- prefixes: this runs in the web view of iOS 8. */
+* { box-sizing: border-box; -webkit-tap-highlight-color: rgba(0,0,0,0); }
+[hidden] { display: none !important; }
+html, body { margin: 0; background: #1d323f; }
+body { color: #e4eff3; font-family: "Avenir Next", "Helvetica Neue", Helvetica, sans-serif; font-size: 16px; -webkit-text-size-adjust: 100%; }
+.wrap { max-width: 768px; margin: 0 auto; padding: 30px 16px 28px; }
+.top { display: -webkit-flex; -webkit-justify-content: space-between; -webkit-align-items: baseline; padding: 0 4px; }
+h1 { margin: 0; font-size: 30px; font-weight: 500; }
+.device { font-family: Menlo, monospace; font-size: 12px; color: #9db4c0; text-align: right; }
+.hero { position: relative; margin-top: 8px; padding: 26px 0 92px; text-align: center; overflow: hidden; }
+.ridges { position: absolute; left: 0; right: 0; bottom: 0; width: 100%; height: 150px; display: block; }
+.boot { position: relative; z-index: 1; display: inline-block; width: 264px; height: 264px; padding: 0; border: 0; border-radius: 50%; background: #142530; color: #e4eff3; font-family: inherit; -webkit-user-select: none; -webkit-touch-callout: none; -webkit-appearance: none; }
+.boot:focus { outline: none; }
+.boot svg { position: absolute; left: 0; top: 0; width: 100%; height: 100%; -webkit-transform: rotate(-90deg); }
+.boot .label { position: relative; display: block; }
+.boot .big { display: block; font-size: 36px; font-weight: 500; }
+.boot .small { display: block; margin-top: 4px; font-size: 16px; color: #9db4c0; }
+.boot[disabled] { color: #9db4c0; }
+.reason { position: relative; z-index: 1; min-height: 24px; margin: 18px auto 0; max-width: 460px; line-height: 1.4; color: #9db4c0; }
+.reason.block { color: #ecc873; }
+.ask { position: relative; z-index: 2; margin: 14px auto 0; max-width: 420px; padding: 14px 16px; background: #142530; border: 1px solid #ecc873; border-radius: 8px; }
+.ask p { margin: 0 0 12px; line-height: 1.4; }
+.ask button { font: inherit; padding: 9px 16px; border-radius: 6px; margin: 0 5px; -webkit-appearance: none; }
+.ask label { display: block; margin: 0 0 14px; color: #9db4c0; }
+.ask input { margin-right: 8px; }
+.ask .yes { color: #142530; background: #ecc873; border: 1px solid #ecc873; }
+.ask .no { color: #e4eff3; background: none; border: 1px solid #36566a; }
+.checks { list-style: none; margin: 0; padding: 0; border-top: 1px solid #36566a; }
+.checks li { display: -webkit-flex; -webkit-align-items: baseline; padding: 11px 4px; border-bottom: 1px solid #36566a; }
+.dot { -webkit-flex: none; width: 9px; height: 9px; border-radius: 50%; margin-right: 12px; background: #86d3a8; position: relative; top: -1px; }
+.wait .dot { background: #36566a; }
+.bad .dot { background: #f08d80; }
+.warn .dot { background: #ecc873; border-radius: 2px; }
+.name { -webkit-flex: 1 1 auto; min-width: 0; }
+.val { font-family: Menlo, monospace; font-size: 13px; color: #9db4c0; text-align: right; margin-left: 12px; word-break: break-all; }
+.bad .val { color: #f08d80; }
+.warn .val { color: #ecc873; }
+.loghead { display: -webkit-flex; -webkit-justify-content: space-between; -webkit-align-items: center; margin-top: 22px; padding: 0 4px 6px; }
+.loghead h2 { margin: 0; font-size: 13px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: #9db4c0; }
+.copy { font: inherit; font-size: 14px; color: #e4eff3; background: none; border: 1px solid #36566a; border-radius: 5px; padding: 5px 11px; -webkit-appearance: none; }
+.log { height: 190px; overflow-y: auto; -webkit-overflow-scrolling: touch; background: #142530; border-radius: 6px; padding: 10px 12px; font-family: Menlo, monospace; font-size: 12px; line-height: 1.6; }
+.log div { white-space: pre-wrap; word-break: break-word; color: #9db4c0; }
+.log .ok b { color: #86d3a8; font-weight: normal; }
+.log .no b { color: #f08d80; font-weight: normal; }
+.log .go b { color: #ff9e6d; font-weight: normal; }
+.log .wa b { color: #ecc873; font-weight: normal; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="top">
+    <h1>Cascadia</h1>
+    <div class="device" id="device">checking</div>
+  </div>
+  <div class="hero">
+    <svg class="ridges" viewBox="0 0 768 150" preserveAspectRatio="none">
+      <polygon fill="#274352" points="0,150 0,96 70,62 128,88 196,38 262,80 330,52 402,92 470,44 548,84 618,56 690,90 768,60 768,150"/>
+      <polyline id="glow" fill="none" stroke="#ff9e6d" stroke-width="2.5" opacity="0" points="0,96 70,62 128,88 196,38 262,80 330,52 402,92 470,44 548,84 618,56 690,90 768,60"/>
+      <polygon fill="#142530" points="0,150 0,126 92,104 170,128 256,96 344,130 438,106 520,132 610,102 700,128 768,110 768,150"/>
+    </svg>
+    <button class="boot" id="boot" type="button" disabled>
+      <svg viewBox="0 0 264 264">
+        <circle cx="132" cy="132" r="124" fill="none" stroke="#36566a" stroke-width="6"/>
+        <circle id="ring" cx="132" cy="132" r="124" fill="none" stroke="#ff9e6d" stroke-width="6" stroke-linecap="round" stroke-dasharray="779.1" stroke-dashoffset="779.1"/>
+      </svg>
+      <span class="label"><span class="big" id="big">Linux</span><span class="small" id="small">Checking</span></span>
+    </button>
+    <p class="reason" id="reason"></p>
+    <div class="ask" id="ask" hidden>
+      <p id="ask-text"></p>
+      <p id="ask-dark" hidden>Your screen will go dark after you start. This is normal. Press Home or Power once.</p>
+      <label id="ask-nomore" hidden><input type="checkbox" id="ask-check">Don't show this again</label>
+      <button class="yes" id="ask-yes" type="button">Start anyway</button>
+      <button class="no" id="ask-no" type="button">Cancel</button>
+    </div>
+  </div>
+  <ul class="checks" id="checks"></ul>
+  <div class="loghead"><h2>Log</h2><button class="copy" id="copy" type="button">Copy</button></div>
+  <div class="log" id="log"></div>
+</div>
+<script>
+(function () {
+  var $ = function (id) { return document.getElementById(id); };
+  var C = 779.1, HOLD = 1200, LOW = 10;
+  var NORMAL = 'iOS stops when Linux starts. Save your work first.';
+  var raf = window.requestAnimationFrame || window.webkitRequestAnimationFrame;
+  var RELEASES = 'https://api.github.com/repos/rzxvx/Project-Cascadia/releases?per_page=30';
+  var lines = [], busy = false, held = false, start = 0, low = -1;
+  var checked = false, installed = '', latest = '', newer = '', updateNote = '', last = null, lastLevel = -1;
+
+  /* Published releases only, never commits.  Offline or refused just means no prompt. */
+  function checkRelease() {
+    var x = new XMLHttpRequest();
+    x.open('GET', RELEASES, true);
+    x.timeout = 10000;
+    x.setRequestHeader('Accept', 'application/vnd.github+json');
+    x.onload = function () {
+      var list, i, t;
+      try { list = JSON.parse(x.responseText); } catch (e) { list = null; }
+      if (x.status !== 200 || !list || !list.length) { updateNote = 'update check failed (' + x.status + ')'; refresh(); return; }
+      for (i = 0; i < list.length; i++) {
+        t = list[i].tag_name || '';
+        if (!list[i].draft && t.indexOf('a5-') === 0 && t > latest) latest = t;
+      }
+      newer = installed && latest > installed ? latest : '';
+      updateNote = '';
+      refresh();
+    };
+    x.onerror = x.ontimeout = function () { updateNote = 'update check failed: this iOS cannot reach GitHub'; refresh(); };
+    x.send();
+  }
+  function refresh() { if (last && !busy && !held) window.cascadiaStatus(last, lastLevel); }
+
+  function call(cmd) {
+    var f = document.createElement('iframe');
+    f.style.display = 'none';
+    f.src = 'cascadia:' + cmd;
+    document.documentElement.appendChild(f);
+    document.documentElement.removeChild(f);
+  }
+  function esc(s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;'); }
+
+  function line(kind, text) {
+    var d = document.createElement('div'), b = document.createElement('b');
+    var tag = kind === 'no' ? 'FAIL' : kind === 'go' ? ' >> ' : kind === 'wa' ? 'WARN' : ' ok ';
+    d.className = kind;
+    b.textContent = tag;
+    d.appendChild(b);
+    d.appendChild(document.createTextNode(' ' + text));
+    $('log').appendChild(d);
+    $('log').scrollTop = $('log').scrollHeight;
+    lines.push(tag + ' ' + text);
+  }
+  function ring(p) {
+    $('ring').setAttribute('stroke-dashoffset', String(C * (1 - p)));
+    $('glow').setAttribute('opacity', String(p));
+  }
+  function row(cls, name, val) {
+    return '<li class="' + cls + '"><span class="dot"></span><span class="name">' + esc(name) +
+           '</span><span class="val">' + esc(val) + '</span></li>';
+  }
+  function setBlocked(text) {
+    $('boot').disabled = !!text;
+    $('small').textContent = text ? 'Not ready' : 'Hold to start';
+    $('reason').textContent = text || NORMAL;
+    $('reason').className = text ? 'reason block' : 'reason';
+  }
+
+  window.logText = function () { return lines.join('\n'); };
+  window.cascadiaLine = function (kind, text) { line(kind, text); };
+  window.cascadiaBootEnd = function () {
+    busy = false;
+    ring(0);
+    $('big').textContent = 'Linux';
+    line('no', 'iOS is still running, Linux did not start');
+    call('status');
+  };
+
+  window.cascadiaStatus = function (s, level) {
+    var h = '', i, bad = 0, first = '', block = null, pct, f;
+    if (busy || held) return;
+    last = s; lastLevel = level;
+    $('log').innerHTML = ''; lines = [];
+    if (!s) {
+      $('checks').innerHTML = row('bad', 'Helper', 'not installed');
+      line('no', 'cascadia-helper did not answer');
+      setBlocked('The helper is missing. Reinstall the Cascadia package.');
+      return;
+    }
+    $('device').innerHTML = esc(s.model) + ' &middot; iOS 8.4.1<br>' + esc(s.build);
+    line(s.model === 'iPad2,5' && s.build === '12H321' ? 'ok' : 'no', s.model + ', iOS ' + s.build);
+    if (s.model !== 'iPad2,5' || s.build !== '12H321') block = 'This build is for iPad2,5 on iOS 8.4.1 (12H321).';
+
+    line(s.root ? 'ok' : 'no', s.root ? 'helper running as root' : 'helper is not running as root');
+    if (!s.root) block = block || 'The helper has no root access. Reinstall the Cascadia package.';
+
+    line(s.volumeMiB >= 1024 ? 'ok' : 'no', s.volumeMiB ? 'LwVM volume "Linux", ' + s.volumeMiB + ' MiB' : 'no Linux volume');
+    if (s.volumeMiB < 1024) block = block || 'The Linux volume is missing. Set up Cascadia from a computer.';
+    h += row(s.volumeMiB >= 1024 ? '' : 'bad', 'Linux volume', s.volumeMiB ? (s.volumeMiB / 1024).toFixed(1) + ' GiB' : 'missing');
+
+    if (!s.manifest) {
+      line('no', 'manifest missing');
+      block = block || 'Boot files are not set up. Set up Cascadia from a computer.';
+    }
+    for (i = 0; i < s.files.length; i++) {
+      f = s.files[i];
+      if (f.ok) line('ok', f.path + ' ' + f.have.slice(0, 8));
+      else {
+        bad++;
+        first = first || f.path;
+        line('no', f.path + ' ' + (f.have ? f.have.slice(0, 8) : 'missing') + ', expected ' + f.want.slice(0, 8));
+      }
+    }
+    if (bad) block = block || 'A boot file does not match. Set up Cascadia again from a computer.';
+    h += row(bad || !s.manifest ? 'bad' : '', 'Boot files',
+             bad ? first + ' differs' : s.manifest ? s.files.length + ' of ' + s.files.length + ' match' : 'not set up');
+
+    pct = level >= 0 ? Math.round(level * 100) : -1;
+    low = pct >= 0 && pct < LOW ? pct : -1;
+    if (pct < 0) line('wa', 'battery level unknown');
+    else line(low >= 0 ? 'wa' : 'ok', 'battery ' + pct + '%' + (low >= 0 ? ', below ' + LOW + '%' : ''));
+    h += row(low >= 0 || pct < 0 ? 'warn' : '', 'Battery', pct >= 0 ? pct + '%' : 'unknown');
+    h += row(s.root ? '' : 'bad', 'Helper', s.root ? 'running as root' : 'no root');
+
+    installed = s.release || '';
+    h += row(newer ? 'warn' : '', 'Images', newer ? 'update available' : installed || 'not from a release');
+    if (newer) line('wa', 'new images out: ' + newer + ', installed ' + installed);
+    else if (updateNote) line('wa', updateNote);
+    else if (latest) line('ok', installed ? 'images up to date, ' + installed : 'images not from a release, latest is ' + latest);
+    if (!checked) { checked = true; checkRelease(); }
+
+    $('checks').innerHTML = h;
+    setBlocked(block);
+    if (!block && low >= 0) {
+      $('reason').textContent = 'Battery is low. You will be asked to confirm.';
+      $('reason').className = 'reason block';
+    } else if (!block && newer) {
+      $('reason').textContent = 'New images are out. You will be asked before starting.';
+      $('reason').className = 'reason block';
+    }
+  };
+
+  /* A convenience only: if storage is unavailable the notice just comes back. */
+  function noticeOff() { try { return localStorage.getItem('cascadia.darkNotice') === 'off'; } catch (e) { return false; } }
+  function setNoticeOff() { try { localStorage.setItem('cascadia.darkNotice', 'off'); } catch (e) {} }
+
+  function launch() {
+    busy = true;
+    $('big').textContent = 'Starting';
+    $('small').textContent = 'Do not close';
+    call('boot');
+  }
+  function tick() {
+    if (!held) return;
+    var p = Math.min((Date.now() - start) / HOLD, 1);
+    ring(p);
+    if (p >= 1) {
+      held = false;
+      var warned = low >= 0 || !!newer, notice = !noticeOff();
+      if (warned || notice) {
+        busy = true;
+        $('ask-text').textContent = (low >= 0 ? 'Battery is at ' + low + '%. ' : '') +
+          (newer ? 'New images are out (' + newer + '), and these are not updated. ' : '') +
+          'Start Linux anyway?';
+        $('ask-text').hidden = !warned;
+        $('ask-dark').hidden = !notice;
+        $('ask-nomore').hidden = !notice;
+        $('ask-yes').textContent = warned ? 'Start anyway' : 'Start';
+        $('ask').hidden = false;
+      } else launch();
+      return;
+    }
+    raf(tick);
+  }
+  function press(e) {
+    e.preventDefault();
+    if (busy || held || $('boot').disabled) return;
+    held = true; start = Date.now(); tick();
+  }
+  function release() { if (held) { held = false; ring(0); } }
+
+  var b = $('boot');
+  b.addEventListener('touchstart', press, false);
+  b.addEventListener('touchend', release, false);
+  b.addEventListener('touchcancel', release, false);
+  $('ask-yes').addEventListener('click', function () {
+    if ($('ask-check').checked) setNoticeOff();
+    $('ask').hidden = true;
+    launch();
+  }, false);
+  $('ask-no').addEventListener('click', function () { $('ask').hidden = true; busy = false; ring(0); }, false);
+  $('copy').addEventListener('click', function () {
+    var btn = this;
+    call('copy');
+    btn.textContent = 'Copied';
+    setTimeout(function () { btn.textContent = 'Copy'; }, 1200);
+  }, false);
+})();
+</script>
+</body>
+</html>
