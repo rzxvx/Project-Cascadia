@@ -29,11 +29,11 @@ are included. This workflow does not mount or write internal storage.
   of rendering; the separate GUI4 framebuffer capture below provides that.
 
 Direct USB IP networking is now verified by repeated scoped host/guest ping
-tests (V41–V44), without Internet routing. Touch, Wi-Fi, audio, suspend, CPU1,
+tests (V41–V44), without Internet routing. Wi-Fi, audio, suspend, CPU1,
 persistent storage and browser usability are **not verified on K93**.
-Do not inherit P105 support claims. Current touch diagnostic sessions reset
-after120s; the original V8 session described below used105s. See
-the GUI4 evidence section below for the newer userspace result.
+Do not inherit P105 support claims. Touch is verified separately; see the
+Z2 touch section below. The original V8 session described below used 105s.
+See the GUI4 evidence section below for the newer userspace result.
 
 ## GUI4 native framebuffer desktop (2026-10-18)
 
@@ -89,6 +89,67 @@ python3 tools/k93-test-desktop-frame.py
 python3 tools/k93-test-squash-init.py
 python3 tools/k93-test-alpine-root.py
 ```
+
+## Z2 touch on SPI1 (2026-11-08)
+
+On physical K93 hardware the Z2 digitizer loads and runs its firmware, the
+kernel reports multitouch on `/dev/input/event0`, and Xorg on the GUI4
+desktop uses it as the core pointer; the pointer followed the finger
+(operator observation, three desktop runs, the last on this tree).
+
+- **Device tree** (`dts/k93ap.dts`): `spi@2100000` with `apple,clkdiv = <119>`
+  (the ADT gives 100–200 kHz; the driver ignores `spi-max-frequency`), the
+  GPIO controller, and `pmu@3c` with two `apple,pmu-pwrsw` switches: LDO0
+  (`0x20` bit `0x20`, core-supply) and PMU GPIO0 (`0x61` bit `0x40`,
+  pmuclk-supply). iOS runs the digitizer with `0x61 = 0x51`; at `0x13` the
+  firmware starts but answers only zeros. Touch pins from the ADT
+  (`port << 8 | pin` -> `port * 8 + pin`): reset 141, CS 159, ATTN 21 (active
+  low), download 140 (active low, `download-gpios`). No analog rail is needed.
+- **Firmware load** (`tools/k93-z2-boot.c`, from `tools/z2-boot.c`): K93 uses
+  `MTSPIBootloader_Z2`: firmware, calibration to `0x1000c000`, chip version at
+  `0x10008ffc` (`0x5a02002a` here) and, for versions other than `0x5a020028`,
+  four masked writes (FLL `0x18da` at `0x10001c04`, then `0x10001c08`,
+  `0x1000300c`, `0x1000304c`), execute at `0x10001800`. Start-up then
+  matches iOS: `e2` device info twice, reports `d1 d3 d0 a1 d9`, `bf = 9f 03
+  0b 02` and `af = 00` twice, no `ee 00` wake. `-E` asserts the download line
+  through `HXT_IOC_SET_DL` from the HBPP check to execute; without it the
+  bootloader answers zeros. The whole sequence matches a log of the iOS
+  driver's SPI traffic on this unit byte for byte.
+- **Report reads** (`apple-z2.c`): a query sent while ATTN is idle can put the
+  controller's output out of step (queries answered with frame bytes, a
+  repeating `00 22 00 00` pattern) for seconds or for the rest of the session;
+  iOS reads only after the interrupt. With `apple,attn-gated-reads`, set only
+  in `k93ap.dts`, the driver therefore reads only while ATTN is asserted,
+  settles CS for 50–100 us instead of 1 ms, switches ATTN to level-low at
+  `READY` (falling edge during the bootload) and idles 50 ms after a failed
+  read. Without the property (P105, J1) the driver behaves as before. A userspace poll with the same rules read 1567 of 1567
+  frames in 30 s; the kernel path delivered 6020 events in 15 s with no read
+  errors.
+- **Xorg**: auto-discovery stays off, so the panel is an explicit evdev
+  `InputDevice` on `/dev/input/event0` (`CorePointer`) with
+  `Option "SwapAxes" "true"`: held corners read top-left `ABS_X 194 / ABS_Y
+  219` and top-right `210 / 3817` (0–4096).
+
+Reproduce: `k93.config` plus `CONFIG_TOUCHSCREEN_APPLE_Z2`,
+`CONFIG_MFD_APPLE_PMU_I2C` and `CONFIG_REGULATOR_APPLE_PMU_PWRSW`, built as
+above (late trace, `--counter-clock --untimed`). After the root switch, run
+`k93-z2-boot -E -c <calibration> K93.mtprops` in the background (it loads the
+firmware, issues `READY` and keeps `/dev/hx-touch` open), then the desktop
+test with the touch `InputDevice` added. `K93.mtprops` (the `Z2F13,2`
+firmware) and the 1024-byte calibration come from the unit's iOS and are not
+in the repository. Limits: the load is started from the host, not by stage 2;
+`apple,clkdiv` and the shorter CS settle have not been tested separately.
+
+The split-root transfer arrived about 1.3 MB short in two of three early
+touch boots, varying in size, with the first stage then falling back to its
+rescue shell; the same receiver run later received the image complete.
+`rootfs/k93/squash-init` now drops an image that fails its hash and listens
+again within its 80-second budget. The host sender (not in this repository)
+should resend when the receiver accepts a connection again after a push;
+no listener for about 20 s means the root switch went ahead. The retry path is
+covered by `tools/k93-test-squash-init.py` only: on the hardware boot with this
+init the image arrived complete, so a resend has not yet been observed on the
+device.
 
 ## Important calibration dependency
 

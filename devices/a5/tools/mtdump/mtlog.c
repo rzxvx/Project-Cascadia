@@ -80,9 +80,12 @@ int main(int argc, char **argv)
     setvbuf(stdout, NULL, _IOLBF, 0);
     mach_timebase_info(&tb);
 
+    /* P105's driver class, then K93's */
     svc = IOServiceGetMatchingService(0, IOServiceMatching("AppleMultitouchN1SPI"));
+    if(!svc)
+        svc = IOServiceGetMatchingService(0, IOServiceMatching("AppleMultitouchZ2SPI"));
     if(!svc) {
-        printf("no AppleMultitouchN1SPI\n");
+        printf("no AppleMultitouchN1SPI or AppleMultitouchZ2SPI\n");
         return 1;
     }
     for(type = 0; type < 4; type++) {
