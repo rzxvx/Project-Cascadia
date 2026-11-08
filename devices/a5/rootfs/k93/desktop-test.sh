@@ -50,7 +50,7 @@ while [ ! -S /tmp/.X11-unix/X0 ]; do
 done
 busybox timeout -k 2 30 /usr/bin/twm -f /k93-twm.conf >/run/k93-twm.log 2>&1 &
 wm_pid=$!
-busybox timeout -k 2 30 /usr/bin/xterm -title 'K93 native Alpine desktop' -geometry 100x38+35+60 -fn 9x15 -bg '#102030' -fg '#e5f2ff' -e /bin/sh -c 'printf "Native Linux on iPad 2\nAlpine ARMv7 framebuffer desktop\n\n"; uname -a; printf "\nTouch and persistence: under development\n"; exec /bin/sh' >/run/k93-xterm.log 2>&1 &
+busybox timeout -k 2 30 /usr/bin/xterm -title 'K93 native Alpine desktop' -geometry 100x38+35+60 -fn 9x15 -bg '#102030' -fg '#e5f2ff' -e /bin/sh -c 'printf "Native Linux on iPad 2\nAlpine ARMv7 framebuffer desktop\n\n"; uname -a; printf "\nTouch: Z2 panel when k93-z2-boot runs; persistence: under development\n"; exec /bin/sh' >/run/k93-xterm.log 2>&1 &
 term_pid=$!
 sleep 4
 kill -0 "$server_pid"

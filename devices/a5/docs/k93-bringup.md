@@ -95,7 +95,7 @@ python3 tools/k93-test-alpine-root.py
 On physical K93 hardware the Z2 digitizer loads and runs its firmware, the
 kernel reports multitouch on `/dev/input/event0`, and Xorg on the GUI4
 desktop uses it as the core pointer; the pointer followed the finger
-(operator observation, three desktop runs, the last on this tree).
+(operator observation, four desktop runs, the last two on this tree).
 
 - **Device tree** (`dts/k93ap.dts`): `spi@2100000` with `apple,clkdiv = <119>`
   (the ADT gives 100–200 kHz; the driver ignores `spi-max-frequency`), the
@@ -132,13 +132,19 @@ desktop uses it as the core pointer; the pointer followed the finger
 
 Reproduce: `k93.config` plus `CONFIG_TOUCHSCREEN_APPLE_Z2`,
 `CONFIG_MFD_APPLE_PMU_I2C` and `CONFIG_REGULATOR_APPLE_PMU_PWRSW`, built as
-above (late trace, `--counter-clock --untimed`). After the root switch, run
-`k93-z2-boot -E -c <calibration> K93.mtprops` in the background (it loads the
-firmware, issues `READY` and keeps `/dev/hx-touch` open), then the desktop
-test with the touch `InputDevice` added. `K93.mtprops` (the `Z2F13,2`
-firmware) and the 1024-byte calibration come from the unit's iOS and are not
-in the repository. Limits: the load is started from the host, not by stage 2;
-`apple,clkdiv` and the shorter CS settle have not been tested separately.
+above (late trace, `--counter-clock --untimed`). Build the tool with
+`tools/k93-build-z2-boot.sh` and the initramfs with
+`tools/k93-prepare-gui-initramfs.py --network-root --desktop-test
+--touch-firmware K93.mtprops --touch-calibration <1024-byte calibration>`.
+`squash-init` copies the three files into the overlay root and `alpine-init`
+starts `/sbin/k93-z2-boot -E` (log in `/run/k93-z2.log`); `xorg-fbdev.conf`
+declares the panel, so the stock `/k93-desktop-test.sh` has touch. Without
+the two options the image is unchanged and stage 2 reports touch as not
+started. `K93.mtprops` (the `Z2F13,2` firmware) and the calibration come from
+the unit's iOS and are not in the repository. Verified on hardware with this
+image: touch started by stage 2 with no host steps, and the pointer followed
+the finger in the stock desktop test. Not yet tested separately:
+`apple,clkdiv` and the shorter CS settle.
 
 The split-root transfer arrived about 1.3 MB short in two of three early
 touch boots, varying in size, with the first stage then falling back to its

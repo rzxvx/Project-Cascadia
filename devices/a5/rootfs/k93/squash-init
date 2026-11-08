@@ -64,6 +64,15 @@ if bb test -f /k93-desktop-test.sh; then
     done
     bb chmod 700 /newroot/k93-desktop-test.sh /newroot/k93-fb-read
 fi
+if bb test -d /k93-touch; then
+    # Touch at boot: tool, Z2 firmware and calibration; alpine-init starts it.
+    bb mkdir -p /newroot/sbin /newroot/lib/firmware
+    bb cp /k93-touch/k93-z2-boot /newroot/sbin/k93-z2-boot
+    bb chmod 755 /newroot/sbin/k93-z2-boot
+    for file in K93.mtprops k93-mtcal.bin; do
+        bb cp "/k93-touch/$file" "/newroot/lib/firmware/$file"
+    done
+fi
 if bb test -f /k93-browser-test.sh; then
     for file in k93-browser-test.sh k93-browser-test.html k93-browser-prefs.js; do
         bb cp "/$file" "/newroot/$file"
