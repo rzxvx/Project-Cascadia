@@ -289,7 +289,7 @@ static int tree_ingest(struct sftl *fs, const u8 *lba_img, u32 *cursor,
 /* Read one context copy; on success its map and SB tables are loaded. */
 static int context_try(struct sftl *fs, u32 sb)
 {
-	u32 cursor = 0, runs = 0, used = 0, tree_lbas;
+	u32 cursor = 0, runs = 0, used = 0;
 	u32 i;
 	u64 base = fs->probe[sb].first_weave;
 	u32 sec = 0, sec_idx = 0;
@@ -364,54 +364,58 @@ static int context_try(struct sftl *fs, u32 sb)
 			fs->reads[i] = sftl_get32(p + 4 * i);
 	}
 
-	/* Tree: 32 LBAs, pages 6..13. */
-	fs->total_lbas = 0;
+	/*
+	 * Tree: from page 6, 32 LBAs in the contexts iOS writes, and for as long
+	 * as the metadata continues the section in contexts with a longer one.
+	 */
+	sftl_map_free(&fs->map);
+	fs->total_lbas = SFTL_TOTAL_LBAS;
+	ret = sftl_map_init(&fs->map, fs->total_lbas);
+	if (ret)
+		goto out;
 	{
-		const u8 *last = pagebuf + 6 * SFTL_PAGE_SIZE;
-		u32 t;
+		u32 t, limit = sftl_capacity(fs, sb) - 24;
 
-		/* First pass: find the extent of the tree to size the map. */
-		for (t = 0; t < SFTL_TREE_LBAS; t++) {
-			const u8 *img = last + t * SFTL_LBA_SIZE;
-			u32 r;
+		for (t = 0; t < limit; t++) {
+			const u8 *img;
 
+			if (t < SFTL_TREE_LBAS) {
+				img = pagebuf + 6 * SFTL_PAGE_SIZE + t * SFTL_LBA_SIZE;
+			} else {
+				u32 o = 24 + t, bank, page, slot;
+				u8 st;
+				const u8 *m;
+
+				if (!sftl_locate(fs, sftl_vba(sb, o), &bank, &page, &slot))
+					break;
+				if (slot == 0) {
+					ret = read_page(fs, bank, sb, page, false, fs->io_data,
+							fs->io_meta, &st);
+					if (ret)
+						goto out;
+					if (!status_ok(st))
+						break;
+				}
+				m = fs->io_meta + slot * SFTL_META_LBA;
+				if (m[0] != SFTL_MT_CONTEXT || m[1] != 4 ||
+				    sftl_get48(m + 2) != base + o)
+					break;
+				img = fs->io_data + slot * SFTL_LBA_SIZE;
+			}
 			if (sftl_get32(img) == 0xffffffffu &&
 			    sftl_get32(img + 4) == 0xffffffffu)
 				break;
-			if (sftl_get32(img + 4) != 0xfffffff0u) {
-				ret = -EIO;
-				goto out;
-			}
-			for (r = 0; r < 511; r++) {
-				u32 v = sftl_get32(img + 8 + 8 * r);
-
-				if (v == 0xffffffffu)
-					break;
-				fs->total_lbas += sftl_get32(img + 12 + 8 * r);
-			}
-			used++;
-		}
-		tree_lbas = fs->total_lbas;
-		/* A tree may stop short of the hidden LBAs; the space does not. */
-		if (fs->total_lbas < SFTL_TOTAL_LBAS)
-			fs->total_lbas = SFTL_TOTAL_LBAS;
-		sftl_map_free(&fs->map);
-		ret = sftl_map_init(&fs->map, fs->total_lbas);
-		if (ret)
-			goto out;
-		for (t = 0; t < used; t++) {
-			ret = tree_ingest(fs, last + t * SFTL_LBA_SIZE, &cursor, &runs);
+			ret = tree_ingest(fs, img, &cursor, &runs);
 			if (ret)
 				goto out;
+			used++;
 		}
-		if (cursor != tree_lbas) {
-			ret = -EIO;
-			goto out;
-		}
-		if (tree_lbas != SFTL_TOTAL_LBAS)
-			sftl_info("context sb %u: tree covers %u LBAs of %u", sb, tree_lbas,
-				  SFTL_TOTAL_LBAS);
 	}
+	if (used > SFTL_TREE_LBAS)
+		sftl_warn("context sb %u: tree of %u LBAs, longer than the usual %u",
+			  sb, used, SFTL_TREE_LBAS);
+	if (cursor != fs->total_lbas)
+		sftl_info("context sb %u: tree covers %u LBAs of %u", sb, cursor, fs->total_lbas);
 
 	fs->ctx_sb = sb;
 	fs->ctx_weave = base;

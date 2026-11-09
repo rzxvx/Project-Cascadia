@@ -88,6 +88,14 @@ Results, none of which is a fix:
   is `0x40` throughout. A delay of up to 500 us before the status does not change this.
 - A second status poll straight after a first one that returned `0x40` times out.
 
+### Rung 1, 2026-11-09: context on the media with a tree longer than 32 LBAs
+
+On the media now (context sb 555, written by the earlier Linux driver), the tree does not
+stop at 32 LBAs: tree metadata (section 4, consecutive weaves) continues in pages 14 and on,
+and the first word of each LBA continues the LBA count. Spec 4.5 says 32 LBAs always, which
+holds for the iOS context in w0c only. The reader follows the metadata. **The writer still
+keeps a tree within 32 LBAs** (D3).
+
 ## Decisions the spec left open
 
 **D1. Closing a partly written superblock.** The spec says "write the BTOC in the
