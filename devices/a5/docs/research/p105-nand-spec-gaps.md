@@ -55,6 +55,39 @@ data-out and the next operation on the CE**, and is the PIO burst pattern
 that was used? iBEC's only direct page read is the boot-page path, which uses
 `CONFIG = 0xF5`; its PPN pages go through the sequencer.
 
+### Update, 2026-11-09, after spec commit b65857c
+
+Each §2.5 item was tried alone and together on the first and following reads (read-only
+build, bus 1 and bus 0): 8-byte full address; 4 x 1028 transfer; software reset before and
+after the read. **None of them, nor all three, fixes the second read.** The 4 x 1028 shape
+and the 8-byte address do return correct data on the first read. The failure is unchanged:
+status poll times out with `C+0x48 = 0x00`, later operations answer `0x51`.
+
+New observation: a status `0x77 0x7D` issued while no operation is pending, read straight
+through the FIFO, returns `0x00`, and afterwards the package answers `0x11` / `0x51` to
+everything until a full reset. Read ID still works in that state; the firmware feature
+then fails. A status byte of 0 has bit 6 clear, which reads as "busy".
+
+### Update 2, 2026-11-09, after spec commit 7c69941
+
+Tried: `IF_CTRL = 0xffff` from the NAND reset until the power state is set, then the
+working value; software reset around every operation, including ID, parameters and
+features; the event clear and poll set-up of the spec (they already matched); a
+2 s status timeout; a PMGR pulse after a read.
+
+Results, none of which is a fix:
+- Plain sequence of page reads on one CE: first read correct, second read hangs in
+  status as before. The PMGR pulse after a read could not be judged: its only runs
+  ended at the firmware check, before any page read.
+- Setting the power state before ID and parameters breaks the firmware read (zeros).
+  ID, parameters and firmware before the power state, at the slow timing, pass.
+- If several feature reads come first (firmware x3, parameters, firmware), the hang goes
+  away but the data is off by one operation: firmware #0 is right, #1 and #2 are zeros,
+  the parameter read returns the firmware bytes, and each later page read returns the
+  page requested **before** it (p1 returns p0, p2 returns p1, across CAUs too). Status
+  is `0x40` throughout. A delay of up to 500 us before the status does not change this.
+- A second status poll straight after a first one that returned `0x40` times out.
+
 ## Decisions the spec left open
 
 **D1. Closing a partly written superblock.** The spec says "write the BTOC in the
