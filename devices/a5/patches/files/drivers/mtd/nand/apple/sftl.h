@@ -377,12 +377,28 @@ void sftl_btoc_append(struct sftl_btoc_entry *ent, u32 *n, u64 first_weave,
 u32 sftl_btoc_build(const struct sftl_btoc_entry *ent, u32 n, u8 *img, u32 *nb_out,
 		    u32 force_nb);
 
-/* sftl_write.c */
+/* sftl_write.c; absent from a read-only build */
+#ifdef SFTL_NO_WRITE
+static inline int sftl_writer_start(struct sftl *fs, unsigned int verify_every)
+{
+	return -EROFS;
+}
+static inline void sftl_writer_stop(struct sftl *fs) { }
+static inline int sftl_write(struct sftl *fs, u32 lba, u32 count, const u8 *src)
+{
+	return -EROFS;
+}
+static inline int sftl_checkpoint(struct sftl *fs)
+{
+	return 0;
+}
+#else
 int sftl_writer_start(struct sftl *fs, unsigned int verify_every);
 void sftl_writer_stop(struct sftl *fs);
 int sftl_write(struct sftl *fs, u32 lba, u32 count, const u8 *src);
 int sftl_checkpoint(struct sftl *fs);
 int sftl_checkpoint_due(struct sftl *fs);
+#endif
 
 /* sftl_lwvm.c */
 u32 sftl_crc32(const u8 *p, u32 len);

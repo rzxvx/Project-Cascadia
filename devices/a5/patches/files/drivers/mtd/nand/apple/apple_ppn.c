@@ -196,6 +196,7 @@ static int cmd_addr_cmd(const struct ppn_bus *b, u32 op1, u32 op2, u32 addr,
 	return wait_phase(b, RW_CMD1 | RW_CMD2 | RW_ADDR);
 }
 
+#ifndef SFTL_NO_WRITE
 static int cmd_addr(const struct ppn_bus *b, u32 op, u32 addr, unsigned int nbytes)
 {
 	wr(b, C_CMD, op);
@@ -203,6 +204,7 @@ static int cmd_addr(const struct ppn_bus *b, u32 op, u32 addr, unsigned int nbyt
 	wr(b, C_RW_CTRL, RW_CMD1 | RW_ADDR);
 	return wait_phase(b, RW_CMD1 | RW_ADDR);
 }
+#endif
 
 /*
  * Arm a status poll on the bus.  Separated from waiting for it so the program
@@ -285,6 +287,7 @@ static int rx_burst(const struct ppn_bus *b, u8 *buf, unsigned int n)
 	return 0;
 }
 
+#ifndef SFTL_NO_WRITE
 static int tx_burst(const struct ppn_bus *b, const u8 *buf, unsigned int n)
 {
 	int ret;
@@ -298,6 +301,8 @@ static int tx_burst(const struct ppn_bus *b, const u8 *buf, unsigned int n)
 	iowrite32_rep(b->fmi + F_DATA, buf, n / 4);
 	return 0;
 }
+
+#endif
 
 /*
  * Move one whole page.  On this SoC's PIO path the 16 bytes of metadata of
@@ -327,6 +332,7 @@ static int rx_page(const struct ppn_bus *b, u8 *data, u8 *meta)
 	return 0;
 }
 
+#ifndef SFTL_NO_WRITE
 static int tx_page(const struct ppn_bus *b, const u8 *data, const u8 *meta)
 {
 	unsigned int u;
@@ -350,6 +356,8 @@ static int tx_page(const struct ppn_bus *b, const u8 *data, const u8 *meta)
 	}
 	return 0;
 }
+
+#endif
 
 static u32 make_row(unsigned int cau, unsigned int block, unsigned int page, bool slc)
 {
@@ -578,6 +586,21 @@ out:
 }
 EXPORT_SYMBOL_GPL(apple_ppn_read_page);
 
+#ifdef SFTL_NO_WRITE
+/* The read-only build carries no program or erase sequence at all. */
+int apple_ppn_erase(struct apple_ppn *p, unsigned int bank, unsigned int block)
+{
+	return -EPERM;
+}
+EXPORT_SYMBOL_GPL(apple_ppn_erase);
+
+int apple_ppn_program(struct apple_ppn *p, const struct sftl_prog *pages, unsigned int n)
+{
+	return -EPERM;
+}
+EXPORT_SYMBOL_GPL(apple_ppn_program);
+
+#else
 int apple_ppn_erase(struct apple_ppn *p, unsigned int bank, unsigned int block)
 {
 	const struct ppn_bus *b = &p->bus[bank & 1];
@@ -726,6 +749,7 @@ out:
 	return ret;
 }
 EXPORT_SYMBOL_GPL(apple_ppn_program);
+#endif
 
 bool apple_ppn_write_allowed(struct apple_ppn *p)
 {
@@ -810,6 +834,7 @@ static void apple_ppn_remove(struct platform_device *pdev)
 
 static const struct of_device_id apple_ppn_of_match[] = {
 	{ .compatible = "apple,s5l8942-ppn" },
+	{ .compatible = "apple,s5l8940x-ppn" },
 	{ }
 };
 MODULE_DEVICE_TABLE(of, apple_ppn_of_match);
