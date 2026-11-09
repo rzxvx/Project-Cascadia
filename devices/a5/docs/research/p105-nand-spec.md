@@ -68,7 +68,9 @@ never select a CE outside the bitmap; the only way out is the block reset of
 ### 1.2 Registers used
 
 Offsets from the FMI base (`F+`) or from the FMC base (`C+` = FMI + 0x40000).
-Registers not listed are not needed for PIO.
+Registers not listed are not needed for PIO. iBEC's NAND code touches no FMC offset other than
+those listed here: `0x08, 0x0c, 0x10, 0x14, 0x18, 0x1c, 0x20, 0x24, 0x40, 0x44, 0x48, 0x4c, 0x70, 0x74, 0x78`
+plus `ON` `[THIS: census of the iBEC NAND code's FMC offsets]`.
 
 | register | behaviour | evidence |
 |---|---|---|
@@ -164,7 +166,12 @@ All addresses little-endian. After each phase wait for the phase bits in
   `RW_CTRL = 0x50`, wait for status match (bit 5 of `C+0x44`) with a timeout,
   read `C+0x48`, then `RW_CTRL = 0` `[iBEC 0x9ff0807c–0x9ff080ee]`.
 - **Operation status**: `CMD = 0x7d77`, `RW_CTRL = 3`, wait 3, then the poll
-  above. Status `0x40` = ready, no error `[iBEC 0x9ff07834]`.
+  above, up to 2 s `[iBEC 0x9ff0829c]`. The poll runs from the FMC's own status match:
+  iBEC waits for its interrupt, the device-tested dump tool polls bit 5 of `C+0x44`
+  with `F+0x10 = 0x100` set and no interrupt line, so the line is not required
+  `[DEV 2026-09-27]`. Issued with no operation outstanding on an idle package it
+  returns `0x00` and leaves the package in general error until a full reset
+  `[DEV 2026-11-09]`. Status `0x40` = ready, no error `[iBEC 0x9ff07834]`.
 - **Read ID**: `CMD = 0x90`, addr byte `0`, `ADDRNUM = 0`, `RW_CTRL = 9`,
   `CONFIG = 0`, `PIO = 0x801`, `CONTROL = 3`, read 8 bytes; returns
   `50 50 4E 01 05 05` ("PPN" 1.5.5). In DDR each ID byte is repeated
@@ -236,7 +243,7 @@ bytes, `CONTROL = 6`, `0x77` `[iBEC 0x9ff07564–0x9ff07652]`.
 | `0x84 \| cau<<8` | bad-block bitmap of that CAU, `blocks_per_cau/8` bytes, get | `[iBEC 0x9ff07b04–0x9ff07b60]` |
 | `0x3080`, `0x3180`, `0x3280` | program error lists (failed, retire, pending), 512 bytes each, get | `[iBEC 0x9ff0b744–0x9ff0b7e8]` |
 | `0x3380` | clears / acknowledges the lists, set | `[iBEC 0x9ff0b814]` |
-| `0x0180` | power state (async/DDR) | `[iBEC 0x9ff08c0a]` |
+| `0x0180` | power state: 1 low power, 2 async (SDR), `0xa` DDR. A NAND reset leaves the package in low power. iBEC writes the transition from low power to async as `0x10002` to its helper, and leaves DDR in two steps, `0xa0001` then `0x10002`. While the state is low power iBEC holds `IF_CTRL` at `0xffff`, and it installs the working value when the target state is not 1 | `[iBEC 0x9ff08c0a, 0x9ff08be6, 0x9ff08c60, 0x9ff04d36, 0x9ff04d5e, 0x9ff05bc2, 0x9ff08c28–0x9ff08c34]`; values 2 and `0xa` also `[DEV 2026-09-27, 2026-11-09]` |
 | `0x0480`, `0x00a0`, `0x01a0` | optional signal configuration used by iBEC in DDR | `[iBEC 0x9ff08a4a, 0x9ff08a84, 0x9ff08abc]` |
 
 ### 2.3 Status bytes
@@ -339,8 +346,10 @@ not last": every operation's reset writes it back). iBEC's direct paths end the
 same way, deselect then a reset of the bus, there with the PMGR pulse included
 `[iBEC 0x9ff079e8, 0x9ff079f6, 0x9ff077b0, 0x9ff077be, 0x9ff050e8–0x9ff0511c]`.
 
-Clearing pending events: `C+0x40 = 0`, `F+0x10 = 0`, then write-1-clear of all bits
-in `C+0x44` and in `F+0x0c` `[EARLIER]`.
+Clearing pending events, in this order: `C+0x40 = 0`, `F+0x10 = 0`, `C+0x44 = 0x31ffff`,
+`F+0x0c = 0xf` `[iBEC 0x9ff05914–0x9ff0592c]`. iBEC does this right after selecting a CE,
+before the command, and again at the start of every status poll
+`[iBEC 0x9ff07584, 0x9ff08084]`.
 
 Between reads nothing else is kept or needed. The full reset of §1.3 (PMGR pulse,
 NAND reset, power state) is for bring-up and recovery only.
