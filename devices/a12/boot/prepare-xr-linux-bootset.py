@@ -28,7 +28,8 @@ DEFAULT_OUT = ROOT / f"a12/boot/inputs{SUB}"
 DEFAULT_IBSS = ROOT / f"a12/boot/extracted{SUB}/iBSS.raw"
 DEFAULT_ADT = ROOT / f"a12/boot/extracted{SUB}/DeviceTree.raw"
 DEFAULT_TICKET = ROOT / f"a12/boot/extracted{SUB}/apticket.im4m"
-DEFAULT_M1N1 = ROOT / "a12/build/payload/m1n1-idevice.macho"
+DEFAULT_M1N1 = ROOT / ("a12/build/payload/m1n1-idevice.macho" if BOARD == "n841"
+                       else f"a12/build/payload/m1n1-{BOARD}.macho")
 
 # These are consumed by iBoot; the Linux command line is carried separately.
 IBSS_BOOTARGS = "-v wdt=-1"
@@ -112,7 +113,10 @@ def main() -> None:
     ibss_input = out / ".iBSS.pristine.raw"
     shutil.copy2(args.ibss, ibss_input)
     run(sys.executable, Path(__file__).with_name("patch_iboot.py"), ibss_input,
-        boot_args, "--serial" if args.serial else "--no-serial")
+        boot_args, "--serial" if args.serial else "--no-serial",
+        # The XS Max boots with any IM4M, as in badapple. Its own ticket
+        # alone left iBoot in recovery at bootx.
+        *(["--any-im4m"] if BOARD == "d331p" else []))
     generated = Path(str(ibss_input) + ".patched")
     if not generated.is_file():
         raise SystemExit("patch_iboot did not produce its .patched output")

@@ -1,12 +1,30 @@
-# iPhone XR (A12)
+# iPhone XR and XS Max (A12)
 
-Linux on the iPhone XR (`iPhone11,8`, N841AP, T8020), booted tethered from
-DFU into Debian with XFCE over NFS. State, hardware and to do are in
-[LINUX_PLAN.md](LINUX_PLAN.md). Contributed, and tested by its author only.
+Linux on the A12 (T8020), booted tethered from DFU.
+
+| Board | Phone | `A12_BOARD` | Tested |
+|---|---|---|---|
+| N841AP | iPhone XR (`iPhone11,8`) | `n841`, the default | by its author: Debian with XFCE over NFS |
+| D331pAP | iPhone XS Max (`iPhone11,6`) | `d331p` | initramfs shell: SSH, display, touch, Wi-Fi and Bluetooth come up |
+
+State, hardware and to do are in [LINUX_PLAN.md](LINUX_PLAN.md).
 
 The boot reuses the A13 track's method. The T8020 DTS and most kernel
 patches come from [badapple](https://forgejo.toe.quest/kiki/badapple), the
-iPhone XS Max port.
+iPhone XS Max port. One kernel serves both phones; the DTB, m1n1, initramfs
+and firmware are per board.
+
+## XS Max
+
+Prefix every command below with `A12_BOARD=d331p`. The differences:
+
+- `periphery` takes a 16.6.1 (20G81) `.ipsw` for the radio firmware, whose
+  root is not encrypted, instead of the OS image.
+- m1n1 is badapple's series (`m1n1/d331p/`). The XR's starts on the XS Max
+  but never reaches Linux.
+- The iBSS is patched with `--any-im4m`, so iBoot loads m1n1 with any ticket.
+- The touch and radio firmware are in the initramfs, there is nothing to
+  load after boot, and there is no SysCfg step.
 
 ## Host
 

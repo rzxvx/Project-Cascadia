@@ -87,6 +87,10 @@ messagebus:x:100:
 bluetooth:x:101:
 EOF
 echo /bin/sh > "$ROOT/etc/shells"
+case "$BOARD" in
+n841) echo xr-linux > "$ROOT/etc/hostname"; echo 'iPhone XR Linux' > "$ROOT/etc/usb-product" ;;
+d331p) echo xsmax-linux > "$ROOT/etc/hostname"; echo 'iPhone XS Max Linux' > "$ROOT/etc/usb-product" ;;
+esac
 [ ! -s "$A12/build/nfsroot" ] || install -m 644 "$A12/build/nfsroot" "$ROOT/etc/nfsroot"
 cat > "$ROOT/etc/udhcpd.conf" <<'EOF'
 start 172.16.42.2
@@ -173,10 +177,10 @@ mount -t configfs configfs /sys/kernel/config
 mount -t tmpfs tmpfs /tmp
 mkdir -p /dev/pts
 mount -t devpts devpts /dev/pts
-hostname xr-linux
+hostname -F /etc/hostname
 echo
 echo '########################################'
-echo '## Project Cascadia XR reached /init  ##'
+echo '## Project Cascadia reached /init     ##'
 echo '########################################'
 uname -a
 echo '[xr] CPUs:'; grep -E 'processor|model name' /proc/cpuinfo
@@ -207,7 +211,7 @@ if [ -n "$udc" ]; then
     mkdir -p strings/0x409 configs/c.1/strings/0x409
     echo XR-Linux > strings/0x409/serialnumber
     echo 'Project Cascadia' > strings/0x409/manufacturer
-    echo 'iPhone XR Linux' > strings/0x409/product
+    cat /etc/usb-product > strings/0x409/product
     echo 'ACM + ECM' > configs/c.1/strings/0x409/configuration
     echo 250 > configs/c.1/MaxPower
     mkdir -p functions/acm.GS0 functions/ecm.usb0
@@ -292,12 +296,14 @@ mkdir -p "$OUT"
 # archive.  Besides making the payload non-reproducible, one such regenerated
 # stream reproducibly triggered an A12 m1n1 L2 SError during gzip CRC
 # verification.  This exact normalized form is phone-boot tested on N841.
+# Everything is owned by root, also when a user builds it: dropbear refuses
+# authorized_keys in a home directory root does not own.
 SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-1700000000}"
 case "$SOURCE_DATE_EPOCH" in
     ''|*[!0-9]*) echo "invalid SOURCE_DATE_EPOCH: $SOURCE_DATE_EPOCH" >&2; exit 1 ;;
 esac
 find "$ROOT" -exec touch -h -d "@$SOURCE_DATE_EPOCH" {} +
 (cd "$ROOT" && LC_ALL=C find . -print0 | LC_ALL=C sort -z | \
-    cpio --null --reproducible -o -H newc 2>/dev/null | gzip -9 -n) \
+    cpio --null --reproducible -R 0:0 -o -H newc 2>/dev/null | gzip -9 -n) \
     > "$OUT/$INITRAMFS"
 echo "$BOARD initramfs OK: $OUT/$INITRAMFS"

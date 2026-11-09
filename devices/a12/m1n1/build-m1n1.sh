@@ -23,12 +23,21 @@ git -C "$SRC" checkout -q -f FETCH_HEAD
 git -C "$SRC" clean -qfdx
 git -C "$SRC" submodule update --init --recursive
 
-for p in "$ROOT"/a13/m1n1/0*.patch; do
-    git -C "$SRC" apply "$p"
-done
-for p in "$HERE"/0*.patch; do
-    git -C "$SRC" apply "$p"
-done
+# The XS Max (A12_BOARD=d331p) takes badapple's series instead: the XR's
+# boots m1n1 there but never reaches Linux.
+BOARD="${A12_BOARD:-n841}"
+if [ "$BOARD" = d331p ]; then
+    for p in "$HERE"/d331p/*.patch; do
+        git -C "$SRC" apply "$p"
+    done
+else
+    for p in "$ROOT"/a13/m1n1/0*.patch; do
+        git -C "$SRC" apply "$p"
+    done
+    for p in "$HERE"/0*.patch; do
+        git -C "$SRC" apply "$p"
+    done
+fi
 
 # Docker by default on Linux, when it is there. M1N1_DOCKER=0 builds natively.
 if [ "${M1N1_DOCKER:-}" = 1 ] || { [ -z "${M1N1_DOCKER:-}" ] && [ "$(uname -s)" != Darwin ] &&
@@ -59,5 +68,7 @@ else
     "$MAKE" -C "$SRC" CHAINLOADING=1 $native build/m1n1-idevice.macho
 fi
 
-cp "$SRC/build/m1n1-idevice.macho" "$OUT/"
-echo "XR m1n1 OK: $OUT/m1n1-idevice.macho"
+NAME=m1n1-idevice.macho
+[ "$BOARD" = n841 ] || NAME="m1n1-$BOARD.macho"
+cp "$SRC/build/m1n1-idevice.macho" "$OUT/$NAME"
+echo "$BOARD m1n1 OK: $OUT/$NAME"

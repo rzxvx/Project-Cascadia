@@ -9,7 +9,7 @@ sub = '' if board == 'n841' else '/' + board
 out = a12 / f'boot/inputs{sub}'
 out.mkdir(parents=True, exist_ok=True)
 parts = [
-    payload / 'm1n1-idevice.macho',
+    payload / ('m1n1-idevice.macho' if board == 'n841' else f'm1n1-{board}.macho'),
     payload / f't8020-{board}.dtb',
     payload / 'Image.gz',
     payload / ('initramfs.cpio.gz' if board == 'n841' else f'initramfs-{board}.cpio.gz'),
