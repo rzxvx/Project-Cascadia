@@ -1,0 +1,41 @@
+diff --git a/proxyclient/m1n1/adt.py b/proxyclient/m1n1/adt.py
+index 6e9e952..3ce1481 100644
+--- a/proxyclient/m1n1/adt.py
++++ b/proxyclient/m1n1/adt.py
+@@ -535,6 +535,7 @@ class ADTNode:
+             path = self._parent_path + _name
+ 
+             raw = {}
++            unparsed = set()
+             for p in val.properties:
+                 raw[p.name] = p.value
+                 is_template = bool(p.size & 0x80000000)
+@@ -543,12 +544,23 @@ class ADTNode:
+                     self._types[p.name] = t, is_template
+                     self._properties[p.name] = v
+                 except Exception as e:
+-                    print(f"Exception parsing {path}.{p.name} value {p.value.hex()}:", file=sys.stderr)
+-                    raise
+-
+-            # Second pass
++                    # Do not let an unparseable property be fatal. These
++                    # templates are per-SoC, so a new SoC will always have some
++                    # property whose layout does not match, and it is usually
++                    # nothing to do with what we are trying to do. On T8020 it
++                    # is /product/audio.speaker-thiele-small, a speaker tuning
++                    # blob. Keep the raw bytes and carry on.
++                    print(f"Exception parsing {path}.{p.name} value {p.value.hex()}: {e}",
++                          file=sys.stderr)
++                    print(f"  keeping {p.name} as raw bytes", file=sys.stderr)
++                    unparsed.add(p.name)
++                    self._types[p.name] = None, is_template
++                    self._properties[p.name] = p.value
++
++            # Second pass. Skip the ones that already failed above, otherwise
++            # they get retried here and raise for the same reason.
+             for k, (t, is_template) in self._types.items():
+-                if t is None:
++                if t is None and k not in unparsed:
+                     t, v = parse_prop(self, path, _name, k, self._properties[k], is_template)
+                     self._types[k] = t, is_template
+                     self._properties[k] = v

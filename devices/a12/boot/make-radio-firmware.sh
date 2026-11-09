@@ -14,6 +14,21 @@ BLUETOOL_SHA=296cc1b898c38c0f8fa4de9f30342f6d78228c1a267360a4d4b7e5cdcd66ccd6
 HCD_SHA=9cbde2943a779a4e5bfd7ab2ed6bd96598c40699609fd9f718041a6aee84e365
 WIFI_DIR=System/Library/DriverExtensions/com.apple.DriverKit-AppleBCMWLAN.dext/Firmware
 
+# The XS Max (A12_BOARD=d331p) has a BCM4377 for both radios on PCIe. Its
+# firmware is in the root filesystem of an .ipsw whose root is not encrypted,
+# such as 16.6.1 (20G81): make-radio-firmware.sh /path/to/that.ipsw
+if [[ "${A12_BOARD:-n841}" == d331p ]]; then
+  [[ $# == 1 && -s "$1" ]] || { echo "usage: A12_BOARD=d331p $0 /path/to/16.6.1.ipsw" >&2; exit 2; }
+  tmp="$(mktemp -d)"
+  trap 'rm -rf -- "$tmp"' EXIT
+  ipsw extract --files --pattern '.*(C-4377__s-B2/|bluetooth/BCM4377B2).*' -o "$tmp" "$1"
+  python3 "$A12/boot/d331p-bcmfw.py" "$(ls -d "$tmp"/*/root | head -1)" "$tmp/out"
+  mkdir -p "$A12/boot/inputs/d331p/brcm"
+  cp "$tmp/out/lib/firmware/brcm/"* "$A12/boot/inputs/d331p/brcm/"
+  echo "XS Max Wi-Fi and Bluetooth firmware ready in $A12/boot/inputs/d331p/brcm"
+  exit 0
+fi
+
 [[ $# == 1 && -s "$1" ]] || {
   echo "usage: $0 /path/to/094-31934-038.dmg[.aea]" >&2; exit 2;
 }
