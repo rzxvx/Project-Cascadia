@@ -38,6 +38,7 @@ typedef uint64_t u64;
 #define SFTL_META_PAGE		(SFTL_META_LBA * SFTL_LBAS_PER_PAGE)
 #define SFTL_LBAS_PER_SB	4096u
 #define SFTL_NUM_SB		1055u
+#define SFTL_TOTAL_LBAS		3906266u	/* reported + 16 hidden */
 #define SFTL_CTX_LBAS		56u
 #define SFTL_CTX_PAGES		14u
 #define SFTL_TREE_LBAS		32u

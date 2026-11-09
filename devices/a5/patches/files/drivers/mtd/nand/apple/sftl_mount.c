@@ -289,7 +289,7 @@ static int tree_ingest(struct sftl *fs, const u8 *lba_img, u32 *cursor,
 /* Read one context copy; on success its map and SB tables are loaded. */
 static int context_try(struct sftl *fs, u32 sb)
 {
-	u32 cursor = 0, runs = 0, used = 0;
+	u32 cursor = 0, runs = 0, used = 0, tree_lbas;
 	u32 i;
 	u64 base = fs->probe[sb].first_weave;
 	u32 sec = 0, sec_idx = 0;
@@ -391,6 +391,10 @@ static int context_try(struct sftl *fs, u32 sb)
 			}
 			used++;
 		}
+		tree_lbas = fs->total_lbas;
+		/* A tree may stop short of the hidden LBAs; the space does not. */
+		if (fs->total_lbas < SFTL_TOTAL_LBAS)
+			fs->total_lbas = SFTL_TOTAL_LBAS;
 		sftl_map_free(&fs->map);
 		ret = sftl_map_init(&fs->map, fs->total_lbas);
 		if (ret)
@@ -400,10 +404,13 @@ static int context_try(struct sftl *fs, u32 sb)
 			if (ret)
 				goto out;
 		}
-		if (cursor != fs->total_lbas) {
+		if (cursor != tree_lbas) {
 			ret = -EIO;
 			goto out;
 		}
+		if (tree_lbas != SFTL_TOTAL_LBAS)
+			sftl_info("context sb %u: tree covers %u LBAs of %u", sb, tree_lbas,
+				  SFTL_TOTAL_LBAS);
 	}
 
 	fs->ctx_sb = sb;
@@ -685,8 +692,10 @@ static int replay_sb_walk(struct sftl *fs, struct replay_state *rs, u32 sb,
 			return ret;
 		if (st == SFTL_ST_ERASED)
 			return 0;
-		if (!status_ok(st))
+		if (!status_ok(st)) {
+			sftl_err("replay walk sb %u offset %u: status %#x", sb, o, st);
 			return -EIO;
+		}
 		if (fs->io_meta[0] == SFTL_MT_BTOC)
 			return 0;
 		for (i = 0; i < SFTL_LBAS_PER_PAGE; i++) {
@@ -708,8 +717,11 @@ static int replay_sb_walk(struct sftl *fs, struct replay_state *rs, u32 sb,
 					return ret;
 				continue;
 			}
-			if (lba >= fs->total_lbas)
+			if (lba >= fs->total_lbas) {
+				sftl_err("replay walk sb %u offset %u: lba %#x type %#x weave %llu",
+					 sb, o + i, lba, m[0], (unsigned long long)weave);
 				return -EIO;
+			}
 			ret = apply_data(fs, rs, lba, weave, sftl_vba(sb, o + i));
 			if (ret)
 				return ret;
