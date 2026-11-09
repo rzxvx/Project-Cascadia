@@ -2,7 +2,9 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+# A12_BOARD: n841 (XR, the default) or d331p (XS Max)
 IN="$ROOT/a12/boot/inputs"
+[[ "${A12_BOARD:-n841}" == n841 ]] || IN="$IN/$A12_BOARD"
 LINUX_IMG4="${XR_LINUX_IMG4:-$IN/m1n1-linux.img4}"
 LOGDIR="$ROOT/a12/boot/logs"
 if [[ -n "${USBLITER8CTL:-}" ]]; then
@@ -42,8 +44,10 @@ else
   echo "No DCSD logger at /dev/ttyACM0; booting without a serial log"
 fi
 
+# The iBSS takes over before the last request's status comes back, which
+# some exploit builds report as a USB error. Recovery mode below is the check.
 python3 "$USBLITER8CTL" boot "$IN/iBSS.linux.serial.raw" \
-  >"$LOGDIR/usbliter8-last.log" 2>&1
+  >"$LOGDIR/usbliter8-last.log" 2>&1 || true
 for _ in $(seq 1 50); do
   if irecovery -q >/dev/null 2>&1; then
     sleep .5

@@ -1,28 +1,46 @@
 #!/usr/bin/env bash
-# Rebuild XR 22H374 first-stage inputs from Apple's CDN, without a full IPSW.
+# Fetch the 22H374 iBSS and DeviceTree for A12_BOARD (n841, the default, or
+# d331p) from Apple's CDN, without the whole IPSW. IPSW=/path/to.ipsw reads a
+# local copy instead.
 set -euo pipefail
 A12="$(cd "$(dirname "$0")/.." && pwd)"
-URL='https://updates.cdn-apple.com/2026WinterFCS/fullrestores/140-97953/5F3051CD-5405-4FEF-889E-C3B78E0F376F/iPhone11,8_18.7.10_22H374_Restore.ipsw'
-DEST="$A12/boot/extracted"
-IBSS_SHA=8d748ce2190a5889ecd4933bd212f90d1308d44d8cee1880ed92b4bbeb057753
-DT_SHA=a62d565e5c7537a7aca96b5cce89f6f1111ca48a3b06c179cf0ee570bc6be269
+BOARD="${A12_BOARD:-n841}"
+case "$BOARD" in
+n841)
+    URL='https://updates.cdn-apple.com/2026WinterFCS/fullrestores/140-97953/5F3051CD-5405-4FEF-889E-C3B78E0F376F/iPhone11,8_18.7.10_22H374_Restore.ipsw'
+    DEST="$A12/boot/extracted"
+    IBSS_SHA=8d748ce2190a5889ecd4933bd212f90d1308d44d8cee1880ed92b4bbeb057753
+    DT_SHA=a62d565e5c7537a7aca96b5cce89f6f1111ca48a3b06c179cf0ee570bc6be269 ;;
+d331p)
+    URL='https://updates.cdn-apple.com/2026WinterFCS/fullrestores/140-97977/CB8B320D-008B-4FC2-8256-56A1DB86C586/iPhone11,2,iPhone11,4,iPhone11,6_18.7.10_22H374_Restore.ipsw'
+    DEST="$A12/boot/extracted/d331p"
+    IBSS_SHA=53f5171fa86a0953065ec16b971bd0e861497cf042e071801d55d83ef275c22c
+    DT_SHA=752a1eead27fba2ed275b8866d81a4eeb4db9777dd8b903d745267eb7df8aaac ;;
+*) echo "A12_BOARD must be n841 or d331p" >&2; exit 2 ;;
+esac
+IBSS="Firmware/dfu/iBSS.$BOARD.RELEASE.im4p"
+DT="Firmware/all_flash/DeviceTree.${BOARD}ap.im4p"
 for tool in ipsw img4 python3 sha256sum; do command -v "$tool" >/dev/null || { echo "missing $tool" >&2; exit 1; }; done
 mkdir -p "$DEST"
-ipsw extract --remote --pattern '^(BuildManifest\.plist|Firmware/dfu/iBSS\.n841\.RELEASE\.im4p|Firmware/all_flash/DeviceTree\.n841ap\.im4p)$' -o "$DEST" "$URL"
-SRC="$DEST/22H374__iPhone11,8"
-python3 - "$SRC/BuildManifest.plist" <<'PY'
+pattern="^(BuildManifest\\.plist|${IBSS//./\\.}|${DT//./\\.})\$"
+if [ -n "${IPSW:-}" ]; then
+    ipsw extract --pattern "$pattern" -o "$DEST" "$IPSW"
+else
+    ipsw extract --remote --pattern "$pattern" -o "$DEST" "$URL"
+fi
+SRC="$(ls -d "$DEST"/22H374__*/ | head -1)"
+python3 - "$SRC/BuildManifest.plist" "${BOARD}ap" "$IBSS" "$DT" <<'PY'
 import plistlib, sys
 p = plistlib.load(open(sys.argv[1], 'rb'))
 assert p['ProductBuildVersion'] == '22H374'
-identities = [i for i in p['BuildIdentities'] if i.get('Info', {}).get('DeviceClass') == 'n841ap']
+identities = [i for i in p['BuildIdentities'] if i.get('Info', {}).get('DeviceClass') == sys.argv[2]]
 assert identities
 for i in identities:
     m = i['Manifest']
-    assert m['iBSS']['Info']['Path'] == 'Firmware/dfu/iBSS.n841.RELEASE.im4p'
-    assert m['DeviceTree']['Info']['Path'] == 'Firmware/all_flash/DeviceTree.n841ap.im4p'
+    assert m['iBSS']['Info']['Path'] == sys.argv[3]
+    assert m['DeviceTree']['Info']['Path'] == sys.argv[4]
 PY
-img4 -i "$SRC/Firmware/dfu/iBSS.n841.RELEASE.im4p" -o "$DEST/iBSS.raw"
-img4 -i "$SRC/Firmware/all_flash/DeviceTree.n841ap.im4p" -o "$DEST/DeviceTree.raw"
+img4 -i "$SRC/$IBSS" -o "$DEST/iBSS.raw"
+img4 -i "$SRC/$DT" -o "$DEST/DeviceTree.raw"
 printf '%s  %s\n' "$IBSS_SHA" "$DEST/iBSS.raw" "$DT_SHA" "$DEST/DeviceTree.raw" | sha256sum -c -
-echo "XR 22H374 iBSS and pristine DeviceTree ready in $DEST"
-echo "Next: python3 devices/a12/boot/prepare-xr-linux-bootset.py --ticket /path/to/your/apticket.im4m [--serial|--no-serial]"
+echo "$BOARD 22H374 iBSS and DeviceTree ready in $DEST"

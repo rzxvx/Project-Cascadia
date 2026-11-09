@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -19,10 +20,14 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_OUT = ROOT / "a12/boot/inputs"
-DEFAULT_IBSS = ROOT / "a12/boot/extracted/iBSS.raw"
-DEFAULT_ADT = ROOT / "a12/boot/extracted/DeviceTree.raw"
-DEFAULT_TICKET = ROOT / "a12/boot/extracted/apticket.im4m"
+# A12_BOARD: n841 (XR, the default) or d331p (XS Max), which has its own
+# directories under the ignored boot/inputs and boot/extracted.
+BOARD = os.environ.get("A12_BOARD", "n841")
+SUB = "" if BOARD == "n841" else "/" + BOARD
+DEFAULT_OUT = ROOT / f"a12/boot/inputs{SUB}"
+DEFAULT_IBSS = ROOT / f"a12/boot/extracted{SUB}/iBSS.raw"
+DEFAULT_ADT = ROOT / f"a12/boot/extracted{SUB}/DeviceTree.raw"
+DEFAULT_TICKET = ROOT / f"a12/boot/extracted{SUB}/apticket.im4m"
 DEFAULT_M1N1 = ROOT / "a12/build/payload/m1n1-idevice.macho"
 
 # These are consumed by iBoot; the Linux command line is carried separately.
@@ -95,7 +100,7 @@ def main() -> None:
     if scratch.exists():
         shutil.rmtree(scratch)
     for name in (
-        "iBSS.linux.serial.raw", "DeviceTree.n841ap.raw",
+        "iBSS.linux.serial.raw", f"DeviceTree.{BOARD}ap.raw",
         "RestoreTrustCache.empty.raw", "DeviceTree.img4",
         "RestoreTrustCache.img4", "m1n1.img4", "m1n1-idevice.macho",
         "bootset.json", "SHA256SUMS",
@@ -121,7 +126,7 @@ def main() -> None:
     if not args.serial and b"serial=3\0" in data:
         raise SystemExit("serial boot argument unexpectedly present")
 
-    pristine_adt = out / "DeviceTree.n841ap.raw"
+    pristine_adt = out / f"DeviceTree.{BOARD}ap.raw"
     shutil.copy2(args.devicetree, pristine_adt)
     m1n1 = out / "m1n1-idevice.macho"
     shutil.copy2(args.m1n1, m1n1)
@@ -147,7 +152,7 @@ def main() -> None:
     records = {p.name: {"bytes": p.stat().st_size, "sha256": sha256(p)} for p in artifacts}
     manifest = {
         "schema": 1,
-        "target": "iPhone11,8/N841AP/T8020",
+        "target": f"{BOARD}ap/T8020",
         "purpose": "m1n1 proxy bring-up",
         "ibssBootArgs": boot_args,
         "serial": 3 if args.serial else None,

@@ -1,0 +1,177 @@
+// SPDX-License-Identifier: GPL-2.0+ OR MIT
+/*
+ * Apple iPhone XS Max (Global), D331p, iPhone11,6
+ *
+ * The SoC blocks in t8020.dtsi were diffed against the D321AP (iPhone XS)
+ * DeviceTree and come out identical, so only this board file differs.
+ *
+ * Copyright (c) 2026, kiki <kieran@lavato.net>
+ */
+
+/dts-v1/;
+
+#include "t8020.dtsi"
+
+/ {
+	compatible = "apple,d331p", "apple,t8020", "apple,arm-platform";
+	model = "Apple iPhone XS Max (Global)";
+	chassis-type = "handset";
+
+	aliases {
+		serial0 = &serial0;
+		/*
+		 * m1n1 looks this up with fdt_get_alias("ausbphy0") and copies
+		 * cfg0-device, cfg1-device, cfg0-host and cfg1-host from the
+		 * ADT's /arm-io/otgphyctrl into the node. Without the alias it
+		 * returns 0 and silently copies nothing, the Linux ausb driver
+		 * then fails of_property_read_u32("apple,cfg0-device") with
+		 * -ENODEV, dwc2 never gets a PHY, no UDC is registered, and the
+		 * gadget dies with "couldn't find an available UDC". A label is
+		 * not enough, it has to be an alias.
+		 */
+		ausbphy0 = &ausbphy0;
+		/* m1n1 enables it when iBoot preloaded its firmware. */
+		gfxasc = &gfx_asc;
+		/* m1n1 fills MAC addresses, antenna SKU and calibration through these. */
+		wifi0 = &wifi0;
+		bluetooth0 = &bluetooth0;
+	};
+
+	chosen {
+		#address-cells = <2>;
+		#size-cells = <2>;
+		ranges;
+
+		stdout-path = "serial0";
+
+		/*
+		 * This is the console you can actually read without a serial
+		 * cable. m1n1 fills in the address and the format properties
+		 * from the framebuffer iBoot already set up, then deletes the
+		 * status property to enable it.
+		 *
+		 * The power-domains are load bearing, exactly as on T8015.
+		 * Nothing else claims the display domains, so without this
+		 * apple-pmgr-pwrstate powers them down as unused once boot gets
+		 * far enough, and the screen goes black mid-boot with no error.
+		 * An earlier version of this node left them out on the grounds
+		 * that there was no pmgr node to gate anything; pmgr was added
+		 * later and that reasoning silently stopped being true.
+		 */
+		framebuffer0: framebuffer@0 {
+			compatible = "apple,simple-framebuffer", "simple-framebuffer";
+			reg = <0 0 0 0>; /* To be filled by loader */
+			power-domains = <&ps_disp0_be &ps_mipi_dsi &ps_disp0_hilo &ps_disp0_ppp>;
+			status = "disabled";
+		};
+	};
+
+	memory@800000000 {
+		device_type = "memory";
+		reg = <0x8 0 0 0>; /* To be filled by loader */
+	};
+
+	reserved-memory {
+		#address-cells = <2>;
+		#size-cells = <2>;
+		ranges;
+
+		/* To be filled by loader */
+	};
+};
+
+&serial0 {
+	status = "okay";
+};
+
+&i2c3 {
+	status = "okay";
+};
+
+/*
+ * Bring-up only: the driver powers the controller, reads one word from its
+ * bootloader, and powers it down again. Reset is pin 5, active low, and the
+ * power comes from the Acorn display PMU at 0x2a on i2c3, all from
+ * /arm-io/spi1/multi-touch in the ADT. See docs/touch.md.
+ */
+&spi1 {
+	status = "okay";
+
+	touchscreen@0 {
+		compatible = "apple,t8020-multitouch";
+		reg = <0>;
+		spi-max-frequency = <4000000>;
+		/* Low while the controller has data, "touch" in the ADT. */
+		interrupts-extended = <&pinctrl_aop 19 IRQ_TYPE_LEVEL_LOW>;
+		reset-gpios = <&pinctrl_ap 5 1>;
+		firmware-name = "apple/d331p-mtfw.bin";
+		/*
+		 * Positions come in hundredths of a millimetre over the whole
+		 * panel, notch rows included: 1242x2688 at 458 ppi. Measured on
+		 * the phone, x grows left to right and y bottom to top.
+		 */
+		touchscreen-size-x = <6890>;
+		touchscreen-size-y = <14910>;
+		touchscreen-inverted-y;
+		apple,pmu-bus = <&i2c3>;
+		apple,pmu-addr = <0x2a>;
+	};
+};
+
+&dsi_out {
+	dsi_out_panel: endpoint {
+		remote-endpoint = <&panel_in>;
+	};
+};
+
+/*
+ * The ADT calls the panel lcd,summit, the same name as the Touch Bar's, and
+ * AppleSummitLCD sets brightness the same way: DCS 0x51, low byte first for
+ * an 11 bit level, which is what panel-summit sends. The range is the ADT's
+ * /backlight DBVMax. DBVMin is 139 and iBoot leaves it at 740.
+ */
+&dsi {
+	status = "okay";
+
+	panel@0 {
+		compatible = "apple,d331p-summit", "apple,summit";
+		reg = <0>;
+		max-brightness = <2047>;
+
+		port {
+			panel_in: endpoint {
+				remote-endpoint = <&dsi_out_panel>;
+			};
+		};
+	};
+};
+
+/*
+ * The BCM4377. The board type is /arm-io/wlan module-instance and picks the
+ * firmware the genie island uses.
+ */
+&port02 {
+	wifi0: wifi@0,0 {
+		compatible = "pci14e4,4488";
+		reg = <0x10000 0x0 0x0 0x0 0x0>;
+		brcm,board-type = "apple,geniek";
+		local-mac-address = [00 00 00 00 00 00];
+	};
+
+	bluetooth0: bluetooth@0,1 {
+		compatible = "pci14e4,5fa0";
+		reg = <0x10100 0x0 0x0 0x0 0x0>;
+		brcm,board-type = "apple,geniek";
+		local-bd-address = [00 00 00 00 00 00];
+	};
+};
+
+/* gP09, function-power_enable of /arm-io/bluetooth. The XR powers its UART
+ * Bluetooth through an SMC function instead, so this is not in t8020.dtsi. */
+&smc_gpio {
+	bt-power-hog {
+		gpio-hog;
+		gpios = <9 0>;
+		output-high;
+	};
+};

@@ -23,6 +23,9 @@ Project Cascadia: iPhone XR (A12/N841)
   ./cascadia a12 boot radios         boot Debian, then load Wi-Fi and Bluetooth
   ./cascadia a12 nfs on|off|status   manage the Debian NFS export
 
+A12_BOARD=d331p before any of these targets the iPhone XS Max instead.
+For it, periphery takes a 16.6.1 .ipsw for the radio firmware.
+
 Apple firmware, IM4M, SysCfg, generated payloads and logs stay local.
 EOF
 }
@@ -88,7 +91,9 @@ cmd_build() {
 cmd_pack() {
     need_im4m
     python3 boot/prepare-xr-linux-bootset.py --ticket "$IM4M"
-    if [ -n "${SYSCFG:-}" ]; then
+    if [ "${A12_BOARD:-n841}" != n841 ]; then
+        XR_IM4M="$IM4M" python3 boot/package-linux.py
+    elif [ -n "${SYSCFG:-}" ]; then
         XR_SYSCFG="$SYSCFG" XR_IM4M="$IM4M" python3 boot/package-linux.py
     elif [ -s boot/inputs/syscfg.bin ]; then
         XR_SYSCFG="$A12/boot/inputs/syscfg.bin" XR_IM4M="$IM4M" python3 boot/package-linux.py
