@@ -1,0 +1,15 @@
+# SPDX-License-Identifier: GPL-2.0-only
+config APPLE_PPN
+	tristate "Apple A5 PPN NAND controller (PIO)"
+	depends on ARCH_APPLE_S5L || COMPILE_TEST
+	help
+	  The FMI/FMC controller of the Apple A5 and its PPN NAND package,
+	  driven by PIO.  Only the package on the iPad mini 1 (P105) is
+	  supported.  Program and erase need the allow_write parameter.
+
+config APPLE_SFTL
+	tristate "Swiss FTL block devices on the Apple PPN NAND"
+	depends on APPLE_PPN && BLOCK
+	help
+	  Exposes the iOS Swiss FTL and its LwVM volumes as block devices.
+	  Read-only unless enable_write and write_volume are set.

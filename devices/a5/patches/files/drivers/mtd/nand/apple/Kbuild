@@ -1,0 +1,9 @@
+# SPDX-License-Identifier: GPL-2.0-only
+# Apple A5 PPN NAND controller and Swiss FTL.
+ifneq ($(KBUILD_EXTMOD),)
+CONFIG_APPLE_PPN := m
+CONFIG_APPLE_SFTL := m
+endif
+obj-$(CONFIG_APPLE_PPN) += apple_ppn.o
+obj-$(CONFIG_APPLE_SFTL) += apple_ftl.o
+apple_ftl-y := apple_ftl_main.o sftl_map.o sftl_mount.o sftl_format.o sftl_write.o sftl_lwvm.o
