@@ -25,6 +25,7 @@ Every fact below ends with its evidence in square brackets.
 | `[W0C …]` | raw dump `w0c` of 2026-10-27 (on the Mac, `~/cascadia-root BACKUP/srv/nand/w0c`, taken before any FTL write), one nand page = 16448 bytes as it came off the bus, status byte per page in the `.st` sidecar. Location: `<bus>-cau<c> block <b> page <p>`, in `bus{N}-cau{C}.b{S}.bin` (S = 0, 500, 1000), at file offset `((b−S)·256 + p)·16448` |
 | `[DEV date]` | a measurement on the actual iPad, recorded in the project notes on that date (`docs/research/p105-nand*.md`, `p105-data-resize-plan.md`) |
 | `[EARLIER]` | behaviour of the earlier driver, stated here as a fact about what a working read did; proven by that driver's device results, not confirmed independently from a binary or a dump. Treated as §9 treats unverified items |
+| `[EARLIER DRIVER]` | order, values and waits taken from the earlier driver for the path from probe to the end of the second page read only (§2.9), by the user's limited permission of 2026-11-09. To be confirmed on the device; §9 |
 | `[THIS]` | established independently while writing this document, with fresh scripts over `[W0C]` and `[iBEC]`; the numbers are reproducible and listed in §8 so they can serve as acceptance values |
 
 A statement that is known only from an earlier driver and could not be
@@ -406,6 +407,71 @@ has not been exercised.
   at a time. iBEC's own multi-page path uses `0x87` for all but the last page of a CE
   through the sequencer `[iBEC 0x9ff0b3f8–0x9ff0b48a]`; its exact semantics are not
   reproduced by the direct sequences above.
+
+### 2.9 Order of bring-up and reads as the earlier driver ran it
+
+Everything in this section is `[EARLIER DRIVER]` unless another tag is given: the order
+of register writes and package commands from probe to the end of the second page read
+on a CE, as a driver that read the whole FTL correctly on this iPad ran it, in SDR. It
+is listed because §1.3 and §2.5 did not suffice to make a second read work
+`[DEV 2026-11-09]`. It has no independent confirmation beyond the tags shown; §9 says
+what confirms it.
+
+Common to every step:
+
+- **Command phases.** `C+0x14`, then the address registers when there are any (`ADDR0`, `ADDR1`
+  only when more than 4 bytes, `ADDRNUM = bytes − 1`), then `RW_CTRL`. Wait for the phase
+  bits in `C+0x44` up to 100 ms and write exactly those bits back to clear them.
+- **Clearing events.** `C+0x40 = 0`, `F+0x10 = 0`, `C+0x44 = 0x31ffff`, and write-1-clear of
+  bits 0, 1, 2, 3 and 8 in `F+0x0c`. Same values as `[iBEC 0x9ff05914–0x9ff0592c]` except that
+  iBEC writes `0xf` to `F+0x0c`, and iBEC then enables `F+0x10 = 0x100` for its interrupt.
+- **Operation status.** `C+0x14 = 0x7d77`, `RW_CTRL = 3`, wait bits 0 and 1 of `C+0x44`, clear
+  them. Then: clear events; `IF_CTRL =` working value with bit `0x100000` clear; `C+0x4c = 0x4040`;
+  `C+0x24 = 0`; `C+0x40 = 0x20`; `RW_CTRL = 0x50`. Wait up to 2 s for **bit 8 of `F+0x0c`**
+  (with `F+0x10` left at 0, no interrupt line). Read `C+0x48`. Write `0x100` to `F+0x0c`,
+  `RW_CTRL = 0`, write the working `IF_CTRL` back.
+- **Software reset.** `CONTROL = 6`, `ON = 1`, `IF_CTRL =` the current value.
+- **Receive start.** `CONFIG = 5` (0 for Read ID), then `F+0x34`, then `CONTROL = 3`. Before
+  popping a sector, wait until bits 3–4 of `F+0x1c` are non-zero, up to 100 ms.
+
+In order:
+
+1. For each bus: software reset, with `IF_CTRL` 0 at this point. Then write 0 to `F+0x80014`
+   (a register in the ECC window that §1.2 does not list; iBEC writes the same register during
+   its init `[iBEC 0x9ff05822]`). No PMGR pulse: this device's DT describes no reset line
+   for the controller, so §1.3's pulse was not part of this driver's bring-up on the iPad.
+2. For each bus in turn, NAND reset: for each of the 16 chip-enable numbers, write `CE_CTRL`
+   (`1 << (n % 8)` for the 8 numbers belonging to this bus, 0 for the others), wait 10 µs,
+   send command `0xFF` alone, wait its phase bit, write `CE_CTRL = 0`. Then wait 50 ms and set
+   `IF_CTRL = 0xffff` (`[iBEC 0x9ff05bc2]` also uses `0xffff` after reset).
+3. Same bus, Read ID on each of the 16 numbers: select, clear events, `0x90` with one address
+   byte 0 (`RW_CTRL = 9`), `CONFIG = 0`, `F+0x34 = (8 << 8) | 1`, `CONTROL = 3`, wait for
+   bit 1 of `F+0x0c`, pop 8 bytes, deselect, software reset.
+4. Device parameters, first CE only, at `IF_CTRL = 0xffff`: select, clear events,
+   `0x92 <00> 0x97` (cmd-addr-cmd), operation status must be `0x40`, `0x7A`, one transfer
+   of the parameter page (`F+0x34 = (512 << 8) | 1`), `0x77`, deselect. No software reset.
+5. Power state, each CE, still at `0xffff`: select, `CONTROL = 6`, `0xEF` with the two
+   feature bytes `80 01` (`RW_CTRL = 9`), clear events, `CONFIG = 5`, `F+0x34 = (4 << 8) | 1`,
+   `CONTROL = 5`, wait `F+0x1c` bits 3–4, push the word `2`, wait for bit 1 of `F+0x0c` and
+   clear it, `0xE7` alone, operation status must be `0x40`, `0x77`, `CONTROL = 6`, deselect,
+   software reset.
+6. Each bus: write the working timing to `IF_CTRL`; this is the value every later software
+   reset puts back.
+7. Firmware version, first CE: select, clear events, `0xEE <00 90> 0xE7` wait
+   (cmd-addr-cmd), operation status, `0x7A`, then a transfer of 16 bytes
+   (`F+0x34 = (16 << 8) | 1`), `CONTROL = 6`, `0x77`, deselect. No software reset. Feature
+   data longer than 1024 bytes goes in chunks of up to 1024 bytes, one start per chunk.
+8. Bad-block table, each CE, each CAU: as step 7 with feature `0x84 | cau << 8`, 133 bytes.
+   These reads therefore always ran before the first page read: 1 firmware read and
+   `2 CE × 2 CAU = 4` table reads.
+9. First page read: as §2.5 and §2.5.1, in this order: software reset; select; clear
+   events; `0x0A <8 bytes> 0x37`; operation status; `0x7A`; for each of the 4 units: clear
+   events, `CONFIG = 5`, `F+0x34 = (1028 << 8) | 4`, `CONTROL = 3`, four sectors popped;
+   `0x77`, with no `CONTROL = 6` before it; `CE_CTRL = 0`; software reset.
+10. Second page read: exactly step 9 again. Nothing else reaches the package between one
+    read's `0x77` and the next read's `0x0A`.
+
+The driver's commands on a bus are serialised behind one lock.
 
 ## 3. Geometry and layering
 
@@ -1018,6 +1084,13 @@ tests is reset before proceeding. Ordered, one kind of risk at a time:
 Facts here are known only from earlier driver behaviour or are inferred, and could
 not be confirmed from a binary, a dump or a measurement while writing this spec.
 
+- §2.9, all `[EARLIER DRIVER]` steps. Confirmed when a read-only build following it reads
+  many consecutive pages on one CE with data equal to the `w0c` reference (allowing for what
+  iOS changed since), across both CEs and CAUs, and the reads survive repeated module loads.
+  Cross-checked against iBEC so far: command opcodes, event-clear values, poll set-up
+  (iBEC differs: `F+0x10 = 0x100` and an interrupt), `0xffff` after reset, a write to
+  `F+0x80014` at init. Not cross-checked: order of the bring-up steps, the 16-CE reset loop,
+  the 10 µs and 50 ms delays, bit 8 of `F+0x0c` as the poll's end condition.
 - The items tagged `[EARLIER]` in §1.3 and §2.5: the order of the fields of the 8-byte
   read address, the 4 × 1028 transfer shape, software reset around every operation,
   and which of these is what lets the next operation on a CE work (not established:
