@@ -329,7 +329,7 @@ def find_boot_args_call_site(data: bytes, text_base: int) -> Tuple[int, int, int
 
 
 def find_zero_runs(data: bytes) -> List[Tuple[int, int, int]]:
-    """Return [(start, end, end_alignment)] — zero runs sorted by length descending."""
+    """Return [(start, end, end_alignment)]: zero runs sorted by length descending."""
     runs: List[Tuple[int, int, int]] = []
     start = None
     for i in range(len(data) + 1):
@@ -405,7 +405,7 @@ def resolve_bootargs(
         (adrp_off, orig_adrp, new_adrp, "ibss.boot-args.adrp"),
         (add_off, orig_add, new_add, "ibss.boot-args.add"),
     ]
-    # byte-level string write — not a 4-byte word patch; handled specially by caller
+    # byte-level string write, not a 4-byte word patch; handled specially by caller
     patches.append(("STR", write_off, payload, f"ibss.boot-args.string@{hex(write_off)}"))
     return patches
 
@@ -503,7 +503,7 @@ def resolve_ibec_recovery_nonce(
             continue
 
         branch = struct.unpack_from("<I", data, branch_off)[0]
-        # TBNZ W8, #1 — Liter8 mask: 0x7F08001F == 0x37080008
+        # TBNZ W8, #1, Liter8 mask: 0x7F08001F == 0x37080008
         if (branch & 0x7F08001F) != 0x37080008:
             continue
         if struct.unpack_from("<I", data, branch_off + 4)[0] != MOV_W0_0:

@@ -16,6 +16,7 @@ XFCE desktop you drive with your fingers.
 |---|---|---|---|---|
 | iPad mini 1 (Wi-Fi) | iPad2,5 / A1432 / p105ap | Apple A5 (S5L8942X) | Linux 6.12: both cores, touch, Wi-Fi, Bluetooth, speakers, battery, the GPU (OpenGL ES 2.0 / GL 2.1), XFCE; iOS's files read-only | [devices/a5](devices/a5/README.md) · [quickstart](devices/a5/docs/QUICKSTART.md) |
 | iPhone XR *(experimental, contributed)* | iPhone11,8 / N841AP | Apple A12 (T8020) | as its author reports it: Linux 7.3, framebuffer, touch, USB networking/SSH, Wi-Fi, UART Bluetooth, Debian/XFCE over NFS -- not built or tested by the maintainer | [devices/a12](devices/a12/README.md) · [Debian/XFCE](devices/a12/DEBIAN_XFCE_NFS.md) |
+| iPhone XS Max *(separate repository)* | iPhone11,6 / D331pAP | Apple A12 (T8020) | Linux 7.3: all six cores, display, touch, USB networking, the internal storage as ext4, cpufreq, Wi-Fi, Bluetooth, the GPU (OpenCL, OpenGL ES 2/3 and Vulkan, in progress) | [badapple](https://forgejo.toe.quest/kiki/badapple) · [hardware notes](https://forgejo.toe.quest/kiki/badapple/src/branch/main/docs/README.md) |
 | iPhone 11 | iPhone12,1 / n104ap | Apple A13 (T8030) | Linux 7.2: all six cores, touch, Wi-Fi, Bluetooth, XFCE, the internal storage as Linux's disk, no cable after the boot | [devices/a13](devices/a13/README.md) · [quickstart](devices/a13/docs/QUICKSTART.md) |
 
 Experimental: the iPad 2 Wi-Fi (iPad2,1 / K93AP, S5L8940) boots Linux 6.12 to
@@ -141,7 +142,8 @@ pretty far.
 - **Project Sandcastle** — Z2 multitouch driver and protocol, the starting point
 
 The A13 track's own credits (m1n1, Hoolock, Asahi Linux, usbliter8) are in
-[devices/a13/README.md](devices/a13/README.md).
+[devices/a13/README.md](devices/a13/README.md), the A12 track's in
+[devices/a12/README.md](devices/a12/README.md#credits).
 
 ## License
 
