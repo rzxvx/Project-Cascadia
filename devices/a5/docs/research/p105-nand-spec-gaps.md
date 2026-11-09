@@ -18,7 +18,42 @@ source was consulted.
 | §4.3 "`nb = 8` for 1209+ entries, 4 otherwise" | The choice is not a function of the entry count: nb 4 is seen with up to 1022 entries, nb 8 with as few as 1014 `[DUMP]` | Linux uses 4 when entries + terminator fit a page, 8 otherwise, and reads either |
 | §8.1 golden BTOC "identical on all 1033" | 1026 of 1033 are identical. The other 7 (sb 158, 299, 349, 486, 610, 612, 745) differ only in the `user` field of 14 entries, where iOS's BTOC value differs from the page's own metadata. Every other field matches `[DUMP]` | Not reproducible from page metadata alone. Linux writes the page's `user`. Whether iOS reads this field back is unknown |
 | §4.3 "sum of counts" / closed SB holds capacity − nb data VBAs | Confirmed on all 1033: 0 exceptions, so iOS never leaves a hole before a BTOC | See decision D1 |
+| §2.1 page size field = 16384 | The field at 0x34 reads 0x4040 = 16448 on this package, so it counts the 64 metadata bytes `[DEV 2026-11-09, rung 1]` | The driver checks for 16448 |
+| §2.4 row address "three bytes" | On this package (PPN 1.5.5) the row is sent as **4 bytes**: iBEC sets the address width to 4 for PPN versions above 1.4.ff, `[iBEC 0x9ff084c0, 0x9ff08502]`, and uses it for read, program and erase. With 3 bytes every read ends in status `0x51` `[DEV 2026-11-09, rung 1]` | The driver sends 4 bytes (top byte 0) |
+| §1.3 bring-up has no power-state step (mentioned only in §2.7) | After a NAND reset iBEC sets feature `0x180` to 2 (async; 0xA for DDR) `[iBEC 0x9ff095e4, 0x9ff08c0a, 0x9ff09668]`. Without it every array read ends in `0x51` `[DEV rung 1]` | The driver sets it after every reset |
+| §9 transmit CONFIG unverified | `CONFIG = 5`, `CONTROL = 5` per burst, then wait for `F+0x0c` bit 1 (write-1-clear) after each burst `[iBEC 0x9ff0770e, 0x9ff07730]` | Done in `tx_burst`; first exercised by the power-state set |
 | §8.1 tree "13026 runs" compare | iOS's tree carries splits at adjacent continuing runs. Normalised, both sides are 12938 runs and identical | Golden compare is after normalising, as §4.5 allows. Linux writes the normal form |
+
+## Blocking rung 1 (2026-11-09): the second page read on a CE
+
+Status: **open, needs a fact from the spec side.** Everything below was seen on the
+device with the read-only build (no program or erase code); the only commands
+beyond reads were NAND reset and set-feature `0x180`.
+
+What works: bring-up, ID, parameters, firmware feature, power state, and the
+**first** page read after a bus reset on each CE. Its data and metadata are
+right (`20 ff ff 00 ...` on VFL page 0; 16448 bytes, status `0x40`).
+
+What fails: the next operation on that CE, on any CAU and any address. The status
+poll never matches, `C+0x48` reads `0x00`, and it times out; later operations
+answer `0x51`. Only a full reset (block reset, NAND reset, power state) brings the
+CE back, for one more read. With that retry per read the mount reached replay,
+which took minutes and then failed.
+
+Ruled out by experiment: which status form is used (`0x7d77` is the one iBEC uses);
+skipping `0x77` after data; `0x77` before or after `CONTROL = 6`; waiting for and
+clearing `F+0x0c` bit 1; 5 ms and 200 us delays; rewriting `CONTROL`, `ON` and
+`IF_CTRL` after the read; clearing `DATANUM`, `PIO`, `CONFIG` first; repeating the
+power state before each read. No more data follows the 16448 bytes (an extra
+16-byte burst returns zeros). If fewer than all bursts are read, the next status
+is `0x40` and the next read returns misplaced data: the poll dies only after the
+whole page has been read out.
+
+Question for the spec side: **what does a working page read do between the end of
+data-out and the next operation on the CE**, and is the PIO burst pattern
+(`1024 + 16 + 3072` per unit, each burst with its own `CONTROL = 3`) the one
+that was used? iBEC's only direct page read is the boot-page path, which uses
+`CONFIG = 0xF5`; its PPN pages go through the sequencer.
 
 ## Decisions the spec left open
 

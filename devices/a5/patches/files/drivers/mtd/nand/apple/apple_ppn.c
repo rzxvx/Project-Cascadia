@@ -49,6 +49,9 @@
 #define CONTROL_STOP		6
 #define PIO_CONFIG_DATA		5
 #define DMA_READY_BITS		0x18
+#define STATUS_DONE		BIT(1)
+#define FMI_ALL_EVENTS		0xf
+#define FMC_ALL_EVENTS		0x31ffff
 #define PIO_MAX_BURST		1024u
 
 /* FMC registers. */
@@ -104,8 +107,12 @@
 #define ST_FAIL			0x01
 
 #define FEAT_FIRMWARE		0x9080
+#define FEAT_POWER_STATE	0x0180
+#define POWER_STATE_ASYNC	2
+#define OP_SET_FEAT		0xef
 
 #define NBUS			2
+#define ROW_ADDR_BYTES		4		/* PPN 1.5 and later (iBEC 0x9ff08502) */
 #define BUS_CE			0		/* the one populated CE on each bus */
 #define RAW_UNIT_DATA1		1024u
 #define RAW_UNIT_META		16u
@@ -163,9 +170,19 @@ static int wait_phase(const struct ppn_bus *b, u32 bits)
 	return 0;
 }
 
+/* Clear every pending event, as iBEC does before an operation. */
+static void clear_events(const struct ppn_bus *b)
+{
+	wr(b, C_INT_MASK, 0);
+	wr(b, F_INT_EN, 0);
+	wr(b, C_STATUS, FMC_ALL_EVENTS);
+	wr(b, F_STATUS, FMI_ALL_EVENTS);
+}
+
 static void ce_select(const struct ppn_bus *b)
 {
 	wr(b, C_CE_CTRL, BIT(BUS_CE));
+	clear_events(b);
 }
 
 static void ce_deselect(const struct ppn_bus *b)
@@ -196,7 +213,6 @@ static int cmd_addr_cmd(const struct ppn_bus *b, u32 op1, u32 op2, u32 addr,
 	return wait_phase(b, RW_CMD1 | RW_CMD2 | RW_ADDR);
 }
 
-#ifndef SFTL_NO_WRITE
 static int cmd_addr(const struct ppn_bus *b, u32 op, u32 addr, unsigned int nbytes)
 {
 	wr(b, C_CMD, op);
@@ -204,7 +220,6 @@ static int cmd_addr(const struct ppn_bus *b, u32 op, u32 addr, unsigned int nbyt
 	wr(b, C_RW_CTRL, RW_CMD1 | RW_ADDR);
 	return wait_phase(b, RW_CMD1 | RW_ADDR);
 }
-#endif
 
 /*
  * Arm a status poll on the bus.  Separated from waiting for it so the program
@@ -212,7 +227,7 @@ static int cmd_addr(const struct ppn_bus *b, u32 op, u32 addr, unsigned int nbyt
  */
 static void poll_start(const struct ppn_bus *b)
 {
-	wr(b, C_STATUS, rd(b, C_STATUS));
+	clear_events(b);
 	wr(b, F_INT_EN, 0x100);
 	wr(b, C_IF_CTRL, rd(b, C_IF_CTRL) & ~IF_CTRL_POLL_CLEAR);
 	wr(b, C_STATUS_MASK, 0x4040);
@@ -281,13 +296,27 @@ static int rx_burst(const struct ppn_bus *b, u8 *buf, unsigned int n)
 	wr(b, F_PIO, ((n << 8) & 0x7fc00) | 1);
 	wr(b, F_CONTROL, CONTROL_RX);
 	ret = wait_fifo(b);
-	if (ret)
+	if (ret) {
+		pr_warn("apple_ppn: rx n %u: st %#x dma %#x pio %#x ctl %#x cfg %#x cst %#x\n", n,
+			rd(b, F_STATUS), rd(b, F_DMA_STATUS), rd(b, F_PIO), rd(b, F_CONTROL),
+			rd(b, F_CONFIG), rd(b, C_STATUS));
 		return ret;
+	}
 	ioread32_rep(b->fmi + F_DATA, buf, n / 4);
 	return 0;
 }
 
-#ifndef SFTL_NO_WRITE
+static int wait_tx_done(const struct ppn_bus *b)
+{
+	u32 v;
+	int ret;
+
+	ret = readl_poll_timeout(b->fmi + F_STATUS, v, v & STATUS_DONE, 1, WAIT_PHASE_US);
+	if (!ret)
+		wr(b, F_STATUS, STATUS_DONE);
+	return ret;
+}
+
 static int tx_burst(const struct ppn_bus *b, const u8 *buf, unsigned int n)
 {
 	int ret;
@@ -299,10 +328,8 @@ static int tx_burst(const struct ppn_bus *b, const u8 *buf, unsigned int n)
 	if (ret)
 		return ret;
 	iowrite32_rep(b->fmi + F_DATA, buf, n / 4);
-	return 0;
+	return wait_tx_done(b);
 }
-
-#endif
 
 /*
  * Move one whole page.  On this SoC's PIO path the 16 bytes of metadata of
@@ -424,6 +451,29 @@ static int get_feature(const struct ppn_bus *b, u32 feature, u8 *buf, unsigned i
 	return ret;
 }
 
+/* Set feature: the value goes out as one 4-byte burst. */
+static int set_feature(const struct ppn_bus *b, u32 feature, u32 value)
+{
+	__le32 v = cpu_to_le32(value);
+	u8 st;
+	int ret;
+
+	ce_select(b);
+	wr(b, F_CONTROL, CONTROL_STOP);
+	ret = cmd_addr(b, OP_SET_FEAT, feature, 2);
+	if (!ret)
+		ret = tx_burst(b, (const u8 *)&v, 4);
+	wr(b, F_CONTROL, CONTROL_STOP);
+	if (!ret)
+		ret = cmd_only(b, OP_FEAT_CONFIRM);
+	if (!ret)
+		ret = op_status(b, &st);
+	if (!ret && st != ST_READY)
+		ret = -EIO;
+	ce_deselect(b);
+	return ret;
+}
+
 static int read_params(const struct ppn_bus *b, u8 *buf)
 {
 	u8 st;
@@ -454,7 +504,6 @@ static int bus_init(struct apple_ppn *p, unsigned int n)
 	u8 id[8];
 	int tries, ret = -EIO;
 
-	bus_block_reset(b);
 	wr(b, F_CONTROL, CONTROL_STOP);
 	wr(b, C_ON, ON_SDR);
 	wr(b, C_IF_CTRL, IF_CTRL_TIMING);
@@ -471,12 +520,23 @@ static int bus_init(struct apple_ppn *p, unsigned int n)
 	for (tries = 0; tries < 20; tries++) {
 		ret = read_id(b, id);
 		if (!ret && !memcmp(id, "PPN", 3) && id[3] == 1 &&
-		    id[4] == 5 && id[5] == 5)
+		    id[4] == 5 && id[5] == 5) {
 			return 0;
+		}
 		msleep(10);
 	}
 	dev_err(p->dev, "bus %u: id %*ph (ret %d)\n", n, 8, id, ret);
 	return -ENODEV;
+}
+
+/* A reset leaves the package out of its working power state. */
+static int bus_activate(struct apple_ppn *p, unsigned int n)
+{
+	int ret = set_feature(&p->bus[n], FEAT_POWER_STATE, POWER_STATE_ASYNC);
+
+	if (ret)
+		dev_err(p->dev, "bus %u: power state: %d\n", n, ret);
+	return ret;
 }
 
 /* Package geometry and firmware check; refuse anything not tested. */
@@ -498,8 +558,8 @@ static int check_package(struct apple_ppn *p, unsigned int n)
 	    get_unaligned_le32(buf + 0x18) != SFTL_BLOCKS ||
 	    get_unaligned_le32(buf + 0x20) != SFTL_MLC_PAGES ||
 	    get_unaligned_le32(buf + 0x24) != SFTL_SLC_PAGES ||
-	    get_unaligned_le32(buf + 0x34) != SFTL_PAGE_SIZE) {
-		dev_err(p->dev, "bus %u: unexpected device parameters\n", n);
+	    get_unaligned_le32(buf + 0x34) != SFTL_PAGE_SIZE + SFTL_META_PAGE) {
+		dev_err(p->dev, "bus %u: unexpected device parameters: %*ph\n", n, 64, buf);
 		ret = -ENODEV;
 		goto out;
 	}
@@ -507,7 +567,7 @@ static int check_package(struct apple_ppn *p, unsigned int n)
 	if (ret)
 		goto out;
 	if (memcmp(fw, "040472P_HYNIX_B_", 16)) {
-		dev_err(p->dev, "bus %u: firmware %.16s not tested, refusing\n", n, fw);
+		dev_err(p->dev, "bus %u: firmware %*ph not tested, refusing\n", n, 16, fw);
 		ret = -ENODEV;
 	}
 out:
@@ -522,12 +582,16 @@ static int recover(struct apple_ppn *p)
 	int ret = 0;
 
 	dev_warn(p->dev, "general error: resetting controllers and package\n");
+	for (n = 0; n < NBUS; n++)
+		bus_block_reset(&p->bus[n]);
 	for (n = 0; n < NBUS; n++) {
 		int r = bus_init(p, n);
 
 		if (r)
 			ret = r;
 	}
+	for (n = 0; !ret && n < NBUS; n++)
+		ret = bus_activate(p, n);
 	return ret;
 }
 
@@ -540,7 +604,7 @@ static int read_page_once(struct apple_ppn *p, unsigned int bank, unsigned int b
 
 	ce_select(b);
 	ret = cmd_addr_cmd(b, OP_READ, OP_READ_CONFIRM,
-			   make_row(bank >> 1, block, page, slc), 3);
+			   make_row(bank >> 1, block, page, slc), ROW_ADDR_BYTES);
 	if (!ret)
 		ret = op_status(b, &st);
 	if (ret)
@@ -573,6 +637,8 @@ int apple_ppn_read_page(struct apple_ppn *p, unsigned int bank, unsigned int blo
 		ret = read_page_once(p, bank, block, page, slc, data, meta, status);
 		if (!ret && !(*status & ST_GENERAL_ERR))
 			break;
+		dev_warn(p->dev, "read bank %u block %u page %u slc %d: ret %d status %#x\n",
+			 bank, block, page, slc, ret, *status);
 		if (attempt == 0 && recover(p)) {
 			ret = -EIO;
 			break;
@@ -616,7 +682,7 @@ int apple_ppn_erase(struct apple_ppn *p, unsigned int bank, unsigned int block)
 	}
 	ce_select(b);
 	ret = cmd_addr_cmd(b, OP_ERASE, OP_ERASE_CONFIRM,
-			   make_row(bank >> 1, block, 0, false), 3);
+			   make_row(bank >> 1, block, 0, false), ROW_ADDR_BYTES);
 	if (!ret)
 		ret = cmd_only(b, OP_STATUS_WAIT);
 	if (!ret)
@@ -647,7 +713,7 @@ static int program_start(const struct ppn_bus *b, const struct sftl_prog *pg)
 	int ret;
 
 	ce_select(b);
-	ret = cmd_addr(b, OP_PROGRAM, make_row(pg->bank >> 1, pg->block, pg->page, false), 3);
+	ret = cmd_addr(b, OP_PROGRAM, make_row(pg->bank >> 1, pg->block, pg->page, false), ROW_ADDR_BYTES);
 	if (ret)
 		return ret;
 	ret = tx_page(b, pg->data, pg->meta);
@@ -802,6 +868,8 @@ static int apple_ppn_probe(struct platform_device *pdev)
 	p->bus[0].pmgr_reset = p->pmgr + PMGR_FMI0_RESET;
 	p->bus[1].pmgr_reset = p->pmgr + PMGR_FMI1_RESET;
 
+	for (n = 0; n < NBUS; n++)
+		bus_block_reset(&p->bus[n]);
 	for (n = 0; n < NBUS; n++) {
 		ret = bus_init(p, n);
 		if (ret)
@@ -810,6 +878,15 @@ static int apple_ppn_probe(struct platform_device *pdev)
 		if (ret)
 			return ret;
 	}
+	for (n = 0; n < NBUS; n++) {
+		ret = bus_activate(p, n);
+		if (ret)
+			return ret;
+	}
+
+	for (n = 0; n < NBUS; n++)
+		dev_info(dev, "bus %u: on %#x if_ctrl %#x\n", n,
+			 rd(&p->bus[n], C_ON), rd(&p->bus[n], C_IF_CTRL));
 
 	mutex_lock(&ppn_global_lock);
 	ppn_singleton = p;
