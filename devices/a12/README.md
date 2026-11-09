@@ -25,6 +25,9 @@ Prefix every command below with `A12_BOARD=d331p`. The differences:
 - The iBSS is patched with `--any-im4m`, so iBoot loads m1n1 with any ticket.
 - The touch and radio firmware are in the initramfs, there is nothing to
   load after boot, and there is no SysCfg step.
+- `inputs` also fetches the GPU firmware, 16.6.1's, which the agx driver was
+  written against, and `boot` sends it before `bootx`. The GPU comes up with
+  a render node; GL and Vulkan need badapple's Mesa in the root filesystem.
 
 ## Host
 

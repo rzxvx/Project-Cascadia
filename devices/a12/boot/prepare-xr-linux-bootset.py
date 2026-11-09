@@ -153,6 +153,14 @@ def main() -> None:
     shutil.rmtree(scratch)
 
     artifacts = [patched_ibss, pristine_adt, empty_tc, dt_img4, tc_img4, krn_img4, m1n1]
+
+    # The GPU firmware stays Apple's IM4P, with the ticket added. iBoot loads
+    # it on a "firmware" command; the ticket has to list it.
+    gfx = args.ibss.parent / "armfw_g11p.im4p"
+    (out / "gfx.img4").unlink(missing_ok=True)
+    if gfx.is_file():
+        run("img4", "-i", gfx, "-o", out / "gfx.img4", "-M", args.ticket)
+        artifacts.append(out / "gfx.img4")
     records = {p.name: {"bytes": p.stat().st_size, "sha256": sha256(p)} for p in artifacts}
     manifest = {
         "schema": 1,

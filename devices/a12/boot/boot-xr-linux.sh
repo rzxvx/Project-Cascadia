@@ -61,6 +61,11 @@ irecovery -f "$IN/DeviceTree.img4"
 irecovery -c devicetree
 irecovery -f "$IN/RestoreTrustCache.img4"
 irecovery -c firmware
+# Optional GPU firmware, from prepare-xr-linux-bootset.py
+if [[ -s "$IN/gfx.img4" ]]; then
+  irecovery -f "$IN/gfx.img4"
+  irecovery -c firmware
+fi
 irecovery -f "$LINUX_IMG4"
 irecovery -c bootx
 if [[ -f "$LOGDIR/dcsd.pid" ]]; then
