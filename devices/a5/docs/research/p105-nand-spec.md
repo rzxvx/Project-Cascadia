@@ -24,6 +24,7 @@ Every fact below ends with its evidence in square brackets.
 | `[KC …]` | iOS 12H321 kernelcache, Mach-O (`devices/a5/build/firmware/kernelcache.12H321.macho`, SHA-256 `db1ddc83…dd2c`): VA or file offset |
 | `[W0C …]` | raw dump `w0c` of 2026-10-27 (on the Mac, `~/cascadia-root BACKUP/srv/nand/w0c`, taken before any FTL write), one nand page = 16448 bytes as it came off the bus, status byte per page in the `.st` sidecar. Location: `<bus>-cau<c> block <b> page <p>`, in `bus{N}-cau{C}.b{S}.bin` (S = 0, 500, 1000), at file offset `((b−S)·256 + p)·16448` |
 | `[DEV date]` | a measurement on the actual iPad, recorded in the project notes on that date (`docs/research/p105-nand*.md`, `p105-data-resize-plan.md`) |
+| `[EARLIER]` | behaviour of the earlier driver, stated here as a fact about what a working read did; proven by that driver's device results, not confirmed independently from a binary or a dump. Treated as §9 treats unverified items |
 | `[THIS]` | established independently while writing this document, with fresh scripts over `[W0C]` and `[iBEC]`; the numbers are reproducible and listed in §8 so they can serve as acceptance values |
 
 A statement that is known only from an earlier driver and could not be
@@ -106,8 +107,11 @@ Required sequence for a bus, in this order:
    reset is the only known way out of a general-error state `[DEV 2026-09-27]`.
    Re-entering DDR through feature `0x180` alone is not enough (status reads
    return junk `0xbf`) `[DEV 2026-09-27]`.
-4. Read ID (§1.5) and device parameters (§2.1), then confirm the values of §2.1.
-5. Two independent command streams on one FMC corrupt each other and leave the
+4. Set feature `0x180` to 2 (async) on each CE, once all buses are reset, then
+   write `IF_CTRL` again `[iBEC 0x9ff095e4, 0x9ff08c0a]`, `[EARLIER]` for the order.
+   No other feature is needed before array reads `[EARLIER]`.
+5. Read ID (§1.5) and device parameters (§2.1), then confirm the values of §2.1.
+6. Two independent command streams on one FMC corrupt each other and leave the
    package answering `0x11`/`0x51`; one bus must be driven by one thread at a time
    `[DEV 2026-09-27]`.
 
@@ -253,7 +257,7 @@ success `[DEV 2026-10-27]`.
 
 ### 2.4 Addresses
 
-Row address, three bytes, LSB first:
+Row address, u32 LSB first (4 bytes on PPN ≥ 1.5.0; `[iBEC 0x9ff08502]`; used alone in a program and an erase, inside the full address of §2.5 in a read):
 
 ```
 page | block << 8 | cau << 19 | (slc ? 1 << 23 : 0)
@@ -272,10 +276,80 @@ page | block << 8 | cau << 19 | (slc ? 1 << 23 : 0)
 
 ### 2.5 Read
 
-`0x0A <row> 0x37`, status poll, `0x7A`, receive 16448 bytes (in bursts ≤ 1024, one
-`CONFIG = 5` / start per burst), `0x77` `[DEV 2026-09-27]` (iBEC queues the same opcodes on its sequencer), data-out
-phase order `[iBEC 0x9ff075cc–0x9ff0764c]`. The package has
-corrected the page. Status `0x40` = good, `0x49` = erased.
+Sequence of a whole-page read in SDR, one operation:
+
+1. Software reset of the bus (§2.5.2), select the CE, clear pending events.
+2. `0x0A <8-byte full address> 0x37` (cmd-addr-cmd). Full address = u16 byte
+   count (16448 for a whole page), u16 byte column (0 for a whole page), u32 row,
+   all LSB first. `0x0A` is the form that ends a multi-page queue, and a single
+   page is such a queue of one; `0x07` leaves the package expecting another page
+   and must not be used for a lone read. Width and opcode: `[iBEC 0x9ff084d6–0x9ff08508]`
+   (row 4 bytes and full address 8 bytes for PPN ≥ 1.5.0, 7 for older),
+   `[iBEC 0x9ff0a08a]` (the normal read path sends the full-address width to the
+   package), `[iBEC 0x9ff0790c]` (opcodes `0x0A`, `0x37`). Order of the
+   fields in the 8 bytes: `[EARLIER]`.
+3. Operation status (`0x7d77` + poll): `0x40` good, `0x49` erased; other values as §2.3
+   `[iBEC 0x9ff07834]`.
+4. `0x7A`, then the transfer of §2.5.1.
+5. `0x77` `[iBEC 0x9ff07650]`, deselect the CE, software reset (§2.5.2).
+
+The package has corrected the page. On a status that is not `0x40`, the data
+are still clocked out, since the package has committed to send them `[EARLIER]`.
+
+`0x0A <row only> 0x37` also exists: iBEC uses it for boot pages, with `CONFIG = 0xF5`
+and the FMI's ECC `[iBEC 0x9ff0790c–0x9ff07918]`. The dump tool read every page
+with a row-only address and straight 1024-byte bursts, repeatedly and correctly, but
+that was with the boot chain's DDR state left in place `[DEV 2026-09-27, 2026-10-27]`.
+There is no evidence that a row-only read is usable for whole PPN pages in SDR, and
+`[DEV 2026-11-09]` shows it is not sufficient there: one read succeeds, the next
+operation on the CE gets no status. Use the full address.
+
+#### 2.5.1 Moving the page
+
+A page moves as four units of 4112 bytes, each with its own start. For every unit:
+
+- clear pending events (§2.5.2);
+- `CONFIG = 5`;
+- `F+0x34 = (1028 << 8) | 4`: **four sectors of 1028 bytes** (bits 18:8 hold the
+  sector bytes, bits 7:0 the sector count);
+- `CONTROL = 3`, one start for the whole unit;
+- four times: wait for `F+0x1c` bits 3–4 to become non-zero, then pop 1028 bytes
+  (257 words) from `F+0x14`.
+
+No wait on `F+0x0c` bit 1 is done on receive. The 4112 bytes of a unit are a plain
+stream in the §1.6 order, and the sector boundaries do not line up with the
+metadata: the 16 metadata bytes at +1024 straddle the first and second sector, so
+extract them only after the unit has been assembled. `CONFIG = 5` means ECC bypass and a
+32-cycle data burst, with no metadata declared; everything goes through the data FIFO.
+
+Evidence: all of this list `[EARLIER]`, with the result proven by device reads
+through it: whole-FTL reads correct, file-for-file against the IPSW `[DEV 2026-10-26]`,
+PIO read speed 8 MiB/s `[DEV 2026-11-08]`. `CONFIG = 5` and start value 3 also
+`[iBEC 0x9ff075ee, 0x9ff07610]` on feature data-out. The burst layout with one
+start per ≤ 1024 bytes is what the feature path uses `[iBEC 0x9ff075e4–0x9ff07644]`;
+it is **not** the layout of a whole-page read.
+
+#### 2.5.2 Software reset and clearing events
+
+Software reset of a bus: `CONTROL = 6`, `ON = 1`, `IF_CTRL =` the working value.
+It involves no PMGR pulse and no NAND reset. It is done **before every operation**
+on the bus (before selecting the CE) and **again after every operation** (after
+deselecting). `[EARLIER]`, `[DEV 2026-10-27]` (a direct write to `IF_CTRL` "does
+not last": every operation's reset writes it back). iBEC's direct paths end the
+same way, deselect then a reset of the bus, there with the PMGR pulse included
+`[iBEC 0x9ff079e8, 0x9ff079f6, 0x9ff077b0, 0x9ff077be, 0x9ff050e8–0x9ff0511c]`.
+
+Clearing pending events: `C+0x40 = 0`, `F+0x10 = 0`, then write-1-clear of all bits
+in `C+0x44` and in `F+0x0c` `[EARLIER]`.
+
+Between reads nothing else is kept or needed. The full reset of §1.3 (PMGR pulse,
+NAND reset, power state) is for bring-up and recovery only.
+
+The interface is SDR, `ON = 1`, for all page transfers of a Linux driver: the driver's
+probe drops the package to async and everything after it, including the timing
+sweeps of §1.4 and all device results quoted here, ran in that state
+`[DEV 2026-10-26, 2026-10-27, 2026-11-08]`. DDR was only the boot chain's state and
+is not needed.
 
 ### 2.6 Program
 
@@ -935,6 +1009,10 @@ tests is reset before proceeding. Ordered, one kind of risk at a time:
 Facts here are known only from earlier driver behaviour or are inferred, and could
 not be confirmed from a binary, a dump or a measurement while writing this spec.
 
+- The items tagged `[EARLIER]` in §1.3 and §2.5: the order of the fields of the 8-byte
+  read address, the 4 × 1028 transfer shape, software reset around every operation,
+  and which of these is what lets the next operation on a CE work (not established:
+  they were never varied separately on the device).
 - Exact `FMI_CONFIG` for whole-page **PIO transmit**. Receive uses 5 (`[iBEC]`,
   dump); the earlier driver's transmit worked on the device (W1 42/42) but the precise
   value is established only by that driver. Implement starting from 5, confirm in
