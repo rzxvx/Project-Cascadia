@@ -6,9 +6,11 @@ the host is `172.16.42.2`. The initramfs mounts the host's Debian root over
 NFSv3 and `switch_root`s into systemd. This is the **A12/N841** path only.
 
 The documented phone test used an Android phone as the host, running Kali
-NetHunter with a custom kernel that provides NFS server support. A conventional
+NetHunter with a custom kernel that provides NFS server support. An arm64
 Linux PC works as well; the requirements are USB host networking, NFSv3/TCP,
-SSH, and the build/boot tools listed below.
+SSH, and the build/boot tools listed below. The initramfs copies the host's
+busybox and dropbear, so it must be built on arm64. On another host,
+`debootstrap` and the chroot steps also need qemu-user-static.
 
 ## Prepare the host (no phone boot yet)
 

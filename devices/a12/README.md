@@ -95,7 +95,8 @@ none of the first four steps needs a phone:
 
 The source-built, SysCfg-injected payload completed the full automated
 boot-and-radio sequence on 2026-11-04. The tested host was an Android phone
-running Kali NetHunter with a custom kernel that supports serving NFS; this is
-a test environment, not a requirement for the port. Apple firmware, device
+running Kali NetHunter with a custom kernel that supports serving NFS. Any
+arm64 Linux host works: the initramfs and BlueZ bundle copy the host's own
+busybox, dropbear and BlueZ binaries. Apple firmware, device
 SysCfg, IM4M, generated payloads and logs remain local and ignored by Git.
 Storage writes remain disabled.

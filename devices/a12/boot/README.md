@@ -28,5 +28,6 @@ Expected upload order after USBLiter8 hands off to the raw patched iBSS:
 2. `RestoreTrustCache.img4`, then `firmware`;
 3. `m1n1.img4`, then `bootx`.
 
-This first set boots the m1n1 proxy only. It does not yet include Linux,
-initramfs, or the N841 Linux DTB.
+This set boots the m1n1 proxy only. For Linux, `package-linux.py` packs m1n1,
+the N841 DTB, the kernel and the initramfs into `m1n1-linux.img4`, which
+`boot-xr-linux.sh` sends in place of `m1n1.img4`.

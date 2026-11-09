@@ -6,7 +6,7 @@
 > Working UART1 pinmux/RTS-CTS, SMC power, wake GPIO and firmware are in the
 > retained source series; obsolete diagnostic-only variants are excluded.
 
-Last updated: 2026-11-04
+Last updated: 2026-11-08 (GPU patch refreshed from badapple; driver notes)
 
 ## Current validated state
 
@@ -104,6 +104,8 @@ SHA256 11efec7cd488ddc2d8fae36a41a28763c506d42455839f30ffb59224d5eed8b4
       must not be enabled for this board.
 - [x] T8020 legacy SPI support is staged as a kernel patch.
 - [x] H11P display and A12 multitouch drivers are staged as kernel patches.
+- [x] The G11 GPU driver (`linux-0020-agx`, from badapple) is staged as a
+      kernel patch, not enabled. See "GPU" below.
 - [x] simpledrm works on the iBoot-provided framebuffer.
 
 Linux detects the Apple NVMe controller and its namespaces.  They are not a
@@ -137,16 +139,29 @@ has:
 ```text
 CONFIG_DRM_SIMPLEDRM=y
 # CONFIG_DRM_APPLE_H11P is not set
+# CONFIG_DRM_AGX is not set
 # CONFIG_TOUCHSCREEN_APPLE_MT_SPI is not set
 # CONFIG_BT_HCIBCM4377 is not set
 ```
 
-The N841 board DTS currently enables only the serial node.  The shared T8020
-DTS contains the display, DSI, I2C3, SPI1, PCIe and DART descriptions, but the
-board-specific display/touch/wireless child nodes still have to be added and
-validated against the XR ADT.  Its current comments describing port 2 as a
-combined BCM4377 Wi-Fi/Bluetooth device came from the XS Max reference and are
-wrong for N841; Wi-Fi is PCIe BCM4357-family and Bluetooth is on UART1.
+The N841 board DTS enables UART0, UART1 with the N88 Bluetooth child, I2C2
+with the Chestnut PMU, SPI1 with the HBPP touchscreen and the BCM4357 Wi-Fi
+on PCIe port 2. Display and GPU nodes come from the shared T8020 DTS and stay
+unused.
+
+### GPU
+
+The XR has the XS Max's G11P GPU. On the XS Max, badapple's `linux-0020-agx`
+and its Mesa patch run OpenCL, GLES 2/3 and Vulkan. None of it has been tried
+on the XR. It needs, beyond `CONFIG_DRM_AGX=y`:
+
+- `armfw_g11p.im4p` loaded by iBoot as `gfxf`, wrapped with a ticket that
+  lists it, and sent with `firmware` before `bootx`;
+- badapple's `m1n1-0012` GPU rail setup and `m1n1-0015`, which hands the
+  firmware's `segment-ranges` to Linux;
+- `cma=64M` in the boot arguments;
+- Mesa built from badapple's `mesa-0001-asahi-g11.patch` in the root
+  filesystem.
 
 ## N841 ADT audit (2026-11-02)
 

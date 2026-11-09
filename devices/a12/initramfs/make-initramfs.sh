@@ -3,6 +3,11 @@ set -euo pipefail
 A12="$(cd "$(dirname "$0")/.." && pwd)"
 OUT="$A12/build/payload"
 ROOT="$A12/build/initramfs-root"
+# busybox, dropbear and their libraries are copied from this host.
+[ "$(uname -m)" = aarch64 ] || {
+    echo "make-initramfs.sh needs an arm64 host: it copies the host's busybox and dropbear" >&2
+    exit 1
+}
 rm -rf "$ROOT"
 mkdir -p "$ROOT"/{bin,sbin,usr/bin,usr/sbin,proc,sys,dev,tmp,etc/dropbear,etc/bluetooth,etc/dbus-1/system.d,run,var/run,root/.ssh,usr/share/dbus-1/system.d,usr/share/dbus-1/system-services}
 cp /usr/bin/busybox "$ROOT/bin/busybox"
@@ -16,15 +21,15 @@ copy_deps() {
 copy_deps /usr/bin/busybox
 
 # Key-only SSH over USB Ethernet.  Keep the host identity stable between
-# initramfs rebuilds, while accepting every public key already authorized on
-# this development host.
+# initramfs rebuilds, while accepting every public key of the user building it.
 install -m 755 /usr/sbin/dropbear "$ROOT/usr/sbin/dropbear"
 copy_deps /usr/sbin/dropbear
 mkdir -p "$A12/build/ssh"
 HOSTKEY="$A12/build/ssh/dropbear_ed25519_host_key"
 [ -s "$HOSTKEY" ] || /usr/bin/dropbearkey -t ed25519 -f "$HOSTKEY" >/dev/null
 install -m 600 "$HOSTKEY" "$ROOT/etc/dropbear/dropbear_ed25519_host_key"
-find /root/.ssh -maxdepth 1 -name '*.pub' -type f -exec cat {} + > "$ROOT/root/.ssh/authorized_keys"
+find "$HOME/.ssh" -maxdepth 1 -name '*.pub' -type f -exec cat {} + > "$ROOT/root/.ssh/authorized_keys"
+[ -s "$ROOT/root/.ssh/authorized_keys" ] || { echo "no SSH public key in $HOME/.ssh" >&2; exit 1; }
 chmod 700 "$ROOT/root" "$ROOT/root/.ssh"
 chmod 600 "$ROOT/root/.ssh/authorized_keys"
 cat > "$ROOT/etc/passwd" <<'EOF'

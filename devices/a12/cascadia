@@ -32,6 +32,11 @@ cmd_doctor() {
     for t in bash git python3 curl ssh sha256sum dtc cpp fdtget fdtput img4 irecovery ipsw; do
         if have "$t"; then note "ok:      $t"; else note "MISSING: $t"; rc=1; fi
     done
+    if [ "$(uname -m)" = aarch64 ]; then
+        note "ok:      arm64 host (initramfs copies its busybox and dropbear)"
+    else
+        note "warning: not an arm64 host; build initramfs needs one"
+    fi
     if have usbliter8ctl || [ -x "$A12/../a13/usbliter8ctl" ] || \
        [ -x /picotool/spironolactone/Linux/aarch64/usbliter8ctl ]; then
         note "ok:      usbliter8ctl"

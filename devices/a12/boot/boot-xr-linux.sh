@@ -24,19 +24,23 @@ for f in iBSS.linux.serial.raw DeviceTree.img4 RestoreTrustCache.img4; do
   [[ -s "$IN/$f" ]] || { echo "Missing $IN/$f" >&2; exit 1; }
 done
 [[ -s "$LINUX_IMG4" ]] || { echo "Missing $LINUX_IMG4" >&2; exit 1; }
-[[ -e /dev/ttyACM0 ]] || { echo "Missing DCSD logger /dev/ttyACM0" >&2; exit 1; }
 lsusb | grep -q '05ac:1227' || { echo "XR is not in DFU" >&2; exit 1; }
 
 if [[ -f "$LOGDIR/dcsd.pid" ]]; then
   kill "$(cat "$LOGDIR/dcsd.pid")" 2>/dev/null || true
+  rm -f "$LOGDIR/dcsd.pid"
 fi
-LOG="$LOGDIR/xr-linux-$(date -u +%Y%m%d-%H%M%S).log"
-: > "$LOG"
-stty -F /dev/ttyACM0 115200 cs8 -cstopb -parenb -crtscts clocal raw -echo
-setsid -f sh -c 'echo $$ > "$1"; exec cat /dev/ttyACM0 >> "$2" 2>/dev/null' \
-  sh "$LOGDIR/dcsd.pid" "$LOG"
-echo "$LOG" > "$LOGDIR/current.logpath"
-echo "DCSD log: $LOG"
+if [[ -e /dev/ttyACM0 ]]; then
+  LOG="$LOGDIR/xr-linux-$(date -u +%Y%m%d-%H%M%S).log"
+  : > "$LOG"
+  stty -F /dev/ttyACM0 115200 cs8 -cstopb -parenb -crtscts clocal raw -echo
+  setsid -f sh -c 'echo $$ > "$1"; exec cat /dev/ttyACM0 >> "$2" 2>/dev/null' \
+    sh "$LOGDIR/dcsd.pid" "$LOG"
+  echo "$LOG" > "$LOGDIR/current.logpath"
+  echo "DCSD log: $LOG"
+else
+  echo "No DCSD logger at /dev/ttyACM0; booting without a serial log"
+fi
 
 python3 "$USBLITER8CTL" boot "$IN/iBSS.linux.serial.raw" \
   >"$LOGDIR/usbliter8-last.log" 2>&1
@@ -55,4 +59,8 @@ irecovery -f "$IN/RestoreTrustCache.img4"
 irecovery -c firmware
 irecovery -f "$LINUX_IMG4"
 irecovery -c bootx
-echo "Linux payload sent; logging continues as PID $(cat "$LOGDIR/dcsd.pid")"
+if [[ -f "$LOGDIR/dcsd.pid" ]]; then
+  echo "Linux payload sent; logging continues as PID $(cat "$LOGDIR/dcsd.pid")"
+else
+  echo "Linux payload sent"
+fi
