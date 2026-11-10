@@ -66,8 +66,10 @@ def main():
     # 2:0), analog stage (0x16-0x18), digital volume (0x19-0x1b)}
     for src, name in (("imic", "internal"), ("emic", "headset")):
         rows = seq.GAINS[src]
-        out.append("/* input volume 0..%d, %s mic: { 0x14 & 7, 0x16-0x18, 0x19-0x1b } */"
-                   % (len(rows) - 1, name))
+        how = {"imic": "i", "emic": "2i - 8, from 0"}[src]
+        out.append("/* %s mic: input volume i = 0..%d = -96..+%d dB, iOS's 0x16f = %s:"
+                   % (name, len(rows) - 1, len(rows) - 1 - 96, how))
+        out.append(" * { 0x14 & 7, 0x16-0x18, 0x19-0x1b } */")
         out.append("static const u8 cs42l63_gain_%s[%d][3] = {" % (name, len(rows)))
         for i in range(0, len(rows), 4):
             out.append("\t" + " ".join("{ 0x%02x, 0x%02x, 0x%02x }," % tuple(r) for r in rows[i:i + 4]))

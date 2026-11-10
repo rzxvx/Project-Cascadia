@@ -676,15 +676,21 @@ scenario('input_stop', 'input stream stopped', 'setInputActive', (0,))
 # ---- 7. the input volume (0x16f): iOS's gain mapping, per source -----------------
 # controlChanged(0x16f, v) while an input runs writes the mic path's boost (0x14
 # bits 2:0), analog stage (0x16-0x18, one value) and digital volume (0x19-0x1b,
-# one value, 0.5 dB steps, two's complement), differently for each source:
-# GAINS[src][v] = [boost, analog, digital], v = 0..160.  The emulation's own
-# default (0x16f = 0, the control's first value) is iOS's quietest: digital -48 dB.
+# one value, two's complement), differently for each source.  On iOS's dB scale
+# the boost is +20 dB, the analog stage 0.5 dB a step from -6 dB (bits 5:0) with
+# +10 dB more in bit 7, the digital volume 1 dB a step up to +12 dB.  The control's range depends on the source (getControlRange,
+# 0x80c7e94c): the internal mic 0..128 = -96..+32 dB in 1 dB steps, the
+# headset's 0..312 = -92..+64 dB in 0.5 dB steps; both default to +32 dB.
+# GAINS[src][i] = [boost, analog, digital] for i = 0..128 = -96..+32 dB, one
+# scale for both: v = GAIN_V[src][i] (the internal mic's i, the headset's 2i - 8).
+# The emulation's own default (0x16f = 0) is iOS's quietest: -96 dB.
+GAIN_V = {'imic': list(range(129)), 'emic': [max(0, 2 * i - 8) for i in range(129)]}
 GAINS = {}
 for _mic in ('imic', 'emic'):
     controls[0x170] = fourcc(_mic)
     running['in'] = 1
     _rows = []
-    for _v in range(161):
+    for _v in GAIN_V[_mic]:
         controls[0x16f] = _v
         _regs = {'boost': 0}
         for _s in clean(run('input %s, volume 0x16f = %d' % (_mic, _v), 'controlChanged', (0x16f, _v))['events']):
@@ -720,7 +726,8 @@ if '--sequences' in sys.argv:
         f.write(SEQ_HEADER)
         f.write('SEQUENCES = ' + pyrepr(SEQ) + '\n')
         f.write('\n# controlChanged(0x16f, v): [boost (0x14 bits 2:0), analog (0x16-0x18), '
-                'digital (0x19-0x1b)] for v = 0..160\n')
+                'digital (0x19-0x1b)] for v = GAIN_V[src][i], i = 0..128 = -96..+32 dB\n')
+        f.write('GAIN_V = {\n' + ''.join('    %r: %r,\n' % (k, v) for k, v in GAIN_V.items()) + '}\n')
         f.write('GAINS = {\n' + ''.join('    %r: %r,\n' % (k, v) for k, v in GAINS.items()) + '}\n')
         f.write(SEQ_FOOTER)
     print('wrote', path)

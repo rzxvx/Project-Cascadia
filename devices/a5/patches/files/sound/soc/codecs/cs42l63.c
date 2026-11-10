@@ -32,27 +32,37 @@
  * "Headphone Playback Switch" sends playback to the headphones (hp_start)
  * instead of the speaker, at once if a stream plays.  Capture runs iOS's
  * input_internal_mic or input_headset_mic ("Capture Source"), input_stop
- * after, and "Capture Volume" is iOS's input volume (0x16f, 0-160) through
- * iOS's own mapping for that source (cs42l63_gain_*: boost, analog stage,
- * digital volume); the internal mic, 0.5 dB a step with 96 = 0 dB.  iOS
- * records that mic -- one, on the ASP's left channel -- in mono; here it is
- * also mixed into the right one (0x58), so a stereo recording has it twice.
+ * after, and "Capture Volume" is iOS's input volume (control 0x16f) through
+ * iOS's own mapping for that source (cs42l63_gain_*: a boost, the analog
+ * stage, the digital volume), on one dB scale for both: 0-128 = -96 to +32
+ * dB in 1 dB steps, iOS's default the top.  The dB are iOS's own (its
+ * control ranges: the internal mic 1 dB a step from -96 dB, the headset's
+ * 0.5 dB from -92 dB, hence two tables); on the headset, speech measured
+ * them right within 1 dB.  iOS records a mic -- one, on the ASP's left
+ * channel -- in mono; here it is also mixed into the right one (0x58 or
+ * 0x5b), so a stereo recording has it twice.
  *
  * The jack: the Mikey block's register 0x77 bit 7 is set while a plug is in
  * (0x7b latches bit 6 on insertion, bit 5 on removal, and clears when read),
  * measured on the iPad.  Its interrupt line (SoC GPIO 15) stays masked as
- * iOS's init leaves it, so the jack is polled, twice a second: playback moves
- * to the headphones when a plug goes in and back to the speaker when it
- * comes out ("Headphone Jack" for userspace, the switch's control
- * notified).  The TS3A8235 (the jack's ground and mic contacts,
- * headset-switch in the DT) is set as the plug goes in: iOS's state 1,
- * 0x42 -- a CTIA headset, Apple's, and plain headphones sound right in it,
- * while state 2 (0x43, the OMTP wiring) leaves a CTIA headset nearly silent;
- * and as iBoot leaves it, the switch passes nothing until it is written
- * (both measured on the iPad).  0x00 again when the plug comes out.
- * Telling a headset from plain headphones (iOS's Mikey detection) and the
- * headset's microphone (its bias) are not done: that mic records nothing
- * yet, and the capture source is chosen by hand.
+ * iOS's init leaves it, so the jack is polled, twice a second.  When a plug
+ * goes in, this does what iOS's AppleCSCodecMikey does for a headset without
+ * Apple's remote (docs/research/k93-audio.md):
+ *   - it measures the plug's mic contact under both wirings of the TS3A8235
+ *     (headset-switch in the DT: the jack's ground and mic contacts), CTIA
+ *     (0x42) and OMTP (0x43): the bias on (0x74 = 0x06), the comparators'
+ *     reference at 0x17 and 0x36 (0x75), the answer in 0x78 -- open, mic,
+ *     reverse-bias or short;
+ *   - keeps the wiring iOS would (OMTP only if CTIA reads reversed or short
+ *     and OMTP does not);
+ *   - and if a mic is there, leaves its bias on as iOS's MicOpen state does
+ *     (0x75 = 0x3c, 0x74 = 0x1e), behind the switch's pop guard; without the
+ *     bias that mic records exact zeros (measured on the iPad).
+ * Then playback moves to the headphones and, with a mic, capture to it;
+ * both move back when the plug comes out (the bias off, the switch at 0x00:
+ * as iBoot leaves it, it passes nothing until it is written).  "Headphone
+ * Jack" and "Headset Mic Jack" tell userspace, the moved controls notified.
+ * Apple's remote (Mikey's own protocol) and a headset's buttons are not done.
  */
 
 #include <linux/clk.h>
@@ -66,6 +76,7 @@
 #include <sound/jack.h>
 #include <sound/pcm_params.h>
 #include <sound/soc.h>
+#include <sound/tlv.h>
 
 enum { CS_W, CS_U, CS_R, CS_SLEEP, CS_RESET, CS_SPK, CS_MCLK };
 
@@ -85,6 +96,7 @@ struct cs42l63_step {
 
 #define CS42L63_VOL_MAX		62
 #define CS42L63_GAIN_MAX	(ARRAY_SIZE(cs42l63_gain_internal) - 1)
+static_assert(ARRAY_SIZE(cs42l63_gain_internal) == ARRAY_SIZE(cs42l63_gain_headset));
 
 struct cs42l63 {
 	struct i2c_client *i2c;
@@ -98,19 +110,47 @@ struct cs42l63 {
 	bool hp;			/* playback to the headphones, not the speaker */
 	bool headset_mic;		/* capture from the headset's mic, not the built-in one */
 	unsigned int master, speaker, headphone;	/* 0..62, iOS's units */
-	unsigned int capture;		/* iOS's input volume, 0..CS42L63_GAIN_MAX */
+	unsigned int capture;		/* the input volume, 0..128 = -96..+32 dB */
 
 	struct i2c_client *hsw;		/* the TS3A8235, if the DT names it */
+	u8 hsw_state;			/* what it was last set to */
 	struct snd_soc_component *comp;
 	struct snd_soc_jack jack;
 	struct delayed_work jack_work;
 	bool jack_in;
+	bool mic;			/* the plug in has a microphone */
+	bool bias;			/* the Mikey's mic bias is on */
 };
 
-#define TS3A8235_STATE		0x02	/* iOS's setState writes only this */
-#define TS3A8235_HEADSET	0x42	/* iOS's state 1: CTIA headsets, headphones */
+/*
+ * The TS3A8235: iOS's setState writes only register 2.  Its states 1 and 2
+ * are the two wirings of a 4-pole plug; bit 6 is clear while iOS measures the
+ * mic contact and in its pop guard (its "slow" states), set otherwise.
+ */
+#define TS3A8235_STATE		0x02
+#define TS3A8235_CTIA		0x42	/* state 1: CTIA headsets (Apple's), headphones */
+#define TS3A8235_OMTP		0x43	/* state 2: the OMTP wiring */
+#define TS3A8235_GUARD		0x06	/* state 3, slow: while the mic bias comes on */
+#define TS3A8235_NORMAL		0x40	/* clear in the slow states */
 #define TS3A8235_NONE		0x00
+#define TS3A8235_RAMP_MS	50	/* the ADT's slow-ramp-delay */
+
+/* the Mikey block, as iOS's AppleCSCodecMikey drives it (0x70 + its register) */
+#define MIKEY_CTL		0x70	/* 0x01 in the modes used here */
+#define MIKEY_CTL2		0x71	/* bits 7:6 set in them */
+#define MIKEY_MODE		0x74	/* 0x03 bias off, 0x06 measuring, 0x1e a mic in use */
+#define MIKEY_REF		0x75	/* bits 5:0: the comparators' reference */
+#define MIKEY_SENSE		0x78	/* bit 0 the mic contact shorted, bit 1 above the reference */
+#define MIKEY_MODE_OFF		0x03
+#define MIKEY_MODE_MEASURE	0x06
+#define MIKEY_MODE_MIC		0x1e
+
+/* iOS's names for what the mic contact reads (0x8091bd14) */
+enum { LINE_OPEN, LINE_MIC, LINE_REVERSE, LINE_SHORT };
+static const char * const cs42l63_line[] = { "open", "mic", "reverse-bias", "short" };
+
 #define CS42L63_JACK_POLL_MS	500
+#define CS42L63_JACK_SETTLE_MS	200	/* a plug seen moving is read again after this */
 #define CS42L63_JACK_REG	0x77	/* Mikey register 7: bit 7, a plug is in */
 #define CS42L63_JACK_IN		0x80
 
@@ -218,7 +258,11 @@ static int cs42l63_out_stop(struct cs42l63 *c)
 	return c->hp ? RUN(c, hp_stop) : RUN(c, speaker_stop);
 }
 
-/* iOS's input volume for the source in use; the internal mic in both channels */
+/*
+ * iOS's input volume for the source in use, and the mic in both channels: iOS
+ * sends the internal mic's path A (0x54) or the headset's path B (0x57) to the
+ * ASP's left channel; the same path's entry for the right one is 0x58 or 0x5b.
+ */
 static int cs42l63_set_gain(struct cs42l63 *c)
 {
 	const u8 *g = (c->headset_mic ? cs42l63_gain_headset : cs42l63_gain_internal)[c->capture];
@@ -231,8 +275,8 @@ static int cs42l63_set_gain(struct cs42l63 *c)
 		ret = i2c_smbus_write_byte_data(c->i2c, 0x16 + i, g[1]);
 	for (i = 0; i < 3 && !ret; i++)
 		ret = i2c_smbus_write_byte_data(c->i2c, 0x19 + i, g[2]);
-	if (!ret && !c->headset_mic)
-		ret = i2c_smbus_write_byte_data(c->i2c, 0x58, 0x00);	/* path A -> ASP right, 0 dB */
+	if (!ret)
+		ret = i2c_smbus_write_byte_data(c->i2c, c->headset_mic ? 0x5b : 0x58, 0x00);
 	return ret;
 }
 
@@ -258,6 +302,157 @@ static int cs42l63_in_start(struct cs42l63 *c)
 	int ret = c->headset_mic ? RUN(c, input_headset_mic) : RUN(c, input_internal_mic);
 
 	return ret ?: cs42l63_set_gain(c);
+}
+
+/* capture from the headset's mic or the built-in one, moved at once while recording */
+static int cs42l63_set_source(struct cs42l63 *c, bool headset)
+{
+	int ret = 0;
+
+	if (c->headset_mic == headset)
+		return 0;
+	if (c->recording) {
+		ret = RUN(c, input_stop);
+		c->headset_mic = headset;
+		ret = ret ?: cs42l63_in_start(c);
+	} else {
+		c->headset_mic = headset;
+	}
+	return ret;
+}
+
+/* --- the Mikey block and the headset switch ----------------------------------- */
+
+static int cs42l63_upd(struct cs42l63 *c, u8 reg, u8 mask, u8 val)
+{
+	int v = i2c_smbus_read_byte_data(c->i2c, reg);
+
+	return v < 0 ? v : i2c_smbus_write_byte_data(c->i2c, reg, (v & ~mask) | val);
+}
+
+static int cs42l63_hsw_set(struct cs42l63 *c, u8 state)
+{
+	c->hsw_state = state;
+	return c->hsw ? i2c_smbus_write_byte_data(c->hsw, TS3A8235_STATE, state) : 0;
+}
+
+/*
+ * One of iOS's Mikey modes as the K93 runs them (AppleCSCodecMikey 0x8091c464,
+ * modes 0/3, 4 and 8): 0x70 = 0x01, 0x71 bits 7:6 set, 0x74 = the mode, then
+ * its settling time.  The bias coming on (0x74 bits 2:1 other than 01) goes
+ * behind the pop guard (0x8091c63c, headphone-pop-workaround = 2): the switch
+ * in its guard state for the slow-ramp delay while 0x74 changes -- unless it
+ * is in a slow state already, measuring.
+ */
+static int cs42l63_mikey_mode(struct cs42l63 *c, u8 mode)
+{
+	bool on = (mode & 6) != 2;
+	u8 state = c->hsw_state;
+	int ret;
+
+	ret = i2c_smbus_write_byte_data(c->i2c, MIKEY_CTL, 0x01);
+	ret = ret ?: cs42l63_upd(c, MIKEY_CTL2, 0xc0, 0xc0);
+	if (!ret && on && !c->bias && c->hsw && (state & TS3A8235_NORMAL)) {
+		ret = cs42l63_hsw_set(c, TS3A8235_GUARD);
+		ret = ret ?: i2c_smbus_write_byte_data(c->i2c, MIKEY_MODE, mode);
+		msleep(TS3A8235_RAMP_MS);
+		ret = cs42l63_hsw_set(c, state) ?: ret;
+	}
+	ret = ret ?: i2c_smbus_write_byte_data(c->i2c, MIKEY_MODE, mode);
+	if (!ret)
+		c->bias = on;
+	msleep(mode & 4 ? 35 : mode & 1 ? 10 : 15);
+	return ret;
+}
+
+/*
+ * What the mic contact reads in the switch's present wiring (iOS's
+ * 0x8091bc00 and 0x8091bd14): the bias on, reference 0x17 -- shorted, or
+ * reversed (above it) -- then reference 0x36: a mic above it, else open.
+ */
+static int cs42l63_mikey_sense(struct cs42l63 *c)
+{
+	int v, line, ret;
+
+	ret = cs42l63_upd(c, MIKEY_REF, 0x3f, 0x17);
+	ret = ret ?: cs42l63_mikey_mode(c, MIKEY_MODE_MEASURE);
+	if (ret)
+		return ret;
+	msleep(TS3A8235_RAMP_MS);
+	v = i2c_smbus_read_byte_data(c->i2c, MIKEY_SENSE);
+	if (v < 0) {
+		line = v;
+	} else if (v & 1) {
+		line = LINE_SHORT;
+	} else if (v & 2) {
+		line = LINE_REVERSE;
+	} else {
+		line = cs42l63_upd(c, MIKEY_REF, 0x3f, 0x36);
+		usleep_range(1000, 2000);
+		v = line ?: i2c_smbus_read_byte_data(c->i2c, MIKEY_SENSE);
+		if (v < 0)
+			line = v;
+		else
+			line = (v & 2) ? LINE_MIC : LINE_OPEN;
+	}
+	ret = cs42l63_mikey_mode(c, MIKEY_MODE_OFF);
+	msleep(TS3A8235_RAMP_MS);
+	return line < 0 ? line : ret ?: line;
+}
+
+/* a plug went in: its wiring and its mic, as iOS's detection finds them */
+static void cs42l63_plug_in(struct cs42l63 *c)
+{
+	static const u8 wiring[2] = { TS3A8235_CTIA, TS3A8235_OMTP };
+	int r[2] = { LINE_OPEN, LINE_OPEN }, i, ret;
+
+	if (!c->hsw) {
+		c->mic = false;
+		return;
+	}
+	ret = cs42l63_mikey_mode(c, MIKEY_MODE_OFF);
+	for (i = 0; i < 2 && !ret; i++) {
+		ret = cs42l63_hsw_set(c, wiring[i] & ~TS3A8235_NORMAL);
+		ret = ret ?: cs42l63_mikey_sense(c);
+		if (ret >= 0) {
+			r[i] = ret;
+			ret = 0;
+		}
+	}
+	if (ret)
+		dev_warn(c->dev, "could not measure the plug's mic contact: %d\n", ret);
+	/* iOS's choice: OMTP if CTIA reads reversed or short and OMTP does not */
+	i = r[0] >= LINE_REVERSE && r[1] <= LINE_MIC;
+	c->mic = !ret && r[i] == LINE_MIC;
+	if (cs42l63_hsw_set(c, wiring[i]))
+		dev_warn(c->dev, "headset switch not set\n");
+	if (c->mic) {
+		ret = cs42l63_upd(c, MIKEY_REF, 0x3f, 0x3c);		/* MicOpen */
+		ret = ret ?: cs42l63_mikey_mode(c, MIKEY_MODE_MIC);
+	} else {
+		ret = cs42l63_upd(c, MIKEY_REF, 0x3f, 0x36);		/* HeadphonesOnly */
+		ret = ret ?: cs42l63_mikey_mode(c, MIKEY_MODE_OFF);
+	}
+	if (ret)
+		dev_warn(c->dev, "could not set the mic bias: %d\n", ret);
+	dev_info(c->dev, "plug in: the mic contact reads %s (CTIA), %s (OMTP): %s wiring, %s\n",
+		 cs42l63_line[r[0]], cs42l63_line[r[1]], i ? "OMTP" : "CTIA",
+		 c->mic ? "a headset: its mic biased" : "headphones");
+}
+
+/* the plug came out: the bias off, the switch open */
+static void cs42l63_plug_out(struct cs42l63 *c)
+{
+	int ret;
+
+	ret = cs42l63_mikey_mode(c, MIKEY_MODE_OFF);
+	ret = ret ?: cs42l63_upd(c, MIKEY_REF, 0x3f, 0x36);
+	if (c->hsw)
+		ret = cs42l63_hsw_set(c, TS3A8235_NONE) ?: ret;
+	if (ret)
+		dev_warn(c->dev, "could not release the jack: %d\n", ret);
+	c->mic = false;
+	dev_info(c->dev, "plug out\n");
 }
 
 /* --- controls ------------------------------------------------------------- */
@@ -377,18 +572,16 @@ static int cs42l63_sw_put(struct snd_kcontrol *kc, struct snd_ctl_elem_value *uc
 		mutex_unlock(&c->lock);
 		return 0;
 	}
-	if (!kc->private_value) {
+	if (!kc->private_value)
 		ret = cs42l63_set_hp(c, v);
-	} else if (c->recording) {
-		ret = RUN(c, input_stop);
-		*f = v;
-		ret = ret ?: cs42l63_in_start(c);
-	} else {
-		*f = v;
-	}
+	else
+		ret = cs42l63_set_source(c, v);
 	mutex_unlock(&c->lock);
 	return ret ?: 1;
 }
+
+/* the capture volume: 0..128 = -96..+32 dB, for either mic */
+static const DECLARE_TLV_DB_SCALE(cs42l63_capture_tlv, -9600, 100, 0);
 
 static const struct snd_kcontrol_new cs42l63_controls[] = {
 	{
@@ -426,6 +619,8 @@ static const struct snd_kcontrol_new cs42l63_controls[] = {
 	{
 		.iface = SNDRV_CTL_ELEM_IFACE_MIXER,
 		.name = "Capture Volume",
+		.access = SNDRV_CTL_ELEM_ACCESS_READWRITE | SNDRV_CTL_ELEM_ACCESS_TLV_READ,
+		.tlv.p = cs42l63_capture_tlv,
 		.info = cs42l63_vol_info,
 		.get = cs42l63_vol_get,
 		.put = cs42l63_vol_put,
@@ -443,40 +638,60 @@ static const struct snd_kcontrol_new cs42l63_controls[] = {
 
 /* --- the jack ----------------------------------------------------------------- */
 
+static void cs42l63_notify(struct snd_soc_card *card, const char *name)
+{
+	struct snd_kcontrol *kc = snd_soc_card_get_kcontrol(card, name);
+
+	if (kc)
+		snd_ctl_notify(card->snd_card, SNDRV_CTL_EVENT_MASK_VALUE, &kc->id);
+}
+
+static bool cs42l63_plugged(struct cs42l63 *c, bool *in)
+{
+	int v = i2c_smbus_read_byte_data(c->i2c, CS42L63_JACK_REG);
+
+	*in = v >= 0 && (v & CS42L63_JACK_IN);
+	return v >= 0;
+}
+
 static void cs42l63_jack_work(struct work_struct *w)
 {
 	struct cs42l63 *c = container_of(to_delayed_work(w), struct cs42l63, jack_work);
 	struct snd_soc_card *card = c->comp->card;
-	struct snd_kcontrol *kc;
-	bool in, changed = false, moved = false;
-	int v;
+	bool in, again, hp_moved, src_moved;
+	int status;
 
-	v = i2c_smbus_read_byte_data(c->i2c, CS42L63_JACK_REG);
-	if (v >= 0) {
-		in = v & CS42L63_JACK_IN;
-		mutex_lock(&c->lock);
-		if (in != c->jack_in) {
-			c->jack_in = in;
-			changed = true;
-			/* the contacts first, then the sound onto them */
-			if (c->hsw && i2c_smbus_write_byte_data(c->hsw, TS3A8235_STATE,
-								in ? TS3A8235_HEADSET : TS3A8235_NONE))
-				dev_warn(c->dev, "headset switch not set\n");
-			moved = c->hp != in;
-			if (cs42l63_set_hp(c, in))
-				dev_warn(c->dev, "could not move playback to the %s\n",
-					 in ? "headphones" : "speaker");
-		}
-		mutex_unlock(&c->lock);
-		if (changed) {
-			dev_info(c->dev, "headphones %s\n", in ? "in: playback goes to them" :
-				 "out: playback back on the speaker");
-			snd_soc_jack_report(&c->jack, in ? SND_JACK_HEADPHONE : 0, SND_JACK_HEADPHONE);
-			kc = snd_soc_card_get_kcontrol(card, "Headphone Playback Switch");
-			if (kc && moved)
-				snd_ctl_notify(card->snd_card, SNDRV_CTL_EVENT_MASK_VALUE, &kc->id);
-		}
-	}
+	if (!cs42l63_plugged(c, &in) || in == c->jack_in)
+		goto out;
+	/* the mic contact is measured next: let a moving plug settle first */
+	msleep(CS42L63_JACK_SETTLE_MS);
+	if (!cs42l63_plugged(c, &again) || again != in)
+		goto out;
+
+	mutex_lock(&c->lock);
+	c->jack_in = in;
+	/* the contacts and the mic's bias first, then the sound onto them */
+	if (in)
+		cs42l63_plug_in(c);
+	else
+		cs42l63_plug_out(c);
+	hp_moved = c->hp != in;
+	if (cs42l63_set_hp(c, in))
+		dev_warn(c->dev, "could not move playback to the %s\n", in ? "headphones" : "speaker");
+	/* capture follows a headset's mic in and out, as iOS routes it */
+	src_moved = c->headset_mic != (in && c->mic);
+	if (cs42l63_set_source(c, in && c->mic))
+		dev_warn(c->dev, "could not move capture to the %s mic\n",
+			 in && c->mic ? "headset's" : "built-in");
+	status = !in ? 0 : c->mic ? SND_JACK_HEADSET : SND_JACK_HEADPHONE;
+	mutex_unlock(&c->lock);
+
+	snd_soc_jack_report(&c->jack, status, SND_JACK_HEADSET);
+	if (hp_moved)
+		cs42l63_notify(card, "Headphone Playback Switch");
+	if (src_moved)
+		cs42l63_notify(card, "Capture Source");
+out:
 	queue_delayed_work(system_power_efficient_wq, &c->jack_work,
 			   msecs_to_jiffies(CS42L63_JACK_POLL_MS));
 }
@@ -579,7 +794,10 @@ static int cs42l63_component_probe(struct snd_soc_component *comp)
 			 id[0], id[1], id[2], id[3] & 0xff);
 
 	c->comp = comp;
-	ret = snd_soc_card_jack_new(comp->card, "Headphone Jack", SND_JACK_HEADPHONE, &c->jack);
+	/* one jack, its two halves as "Headphone Jack" and "Headset Mic Jack" */
+	ret = snd_soc_card_jack_new_pins(comp->card, "Headset", SND_JACK_HEADSET, &c->jack, NULL, 0);
+	ret = ret ?: snd_jack_add_new_kctl(c->jack.jack, "Headphone", SND_JACK_HEADPHONE);
+	ret = ret ?: snd_jack_add_new_kctl(c->jack.jack, "Headset Mic", SND_JACK_MICROPHONE);
 	if (ret)
 		dev_warn(c->dev, "no jack device (%d); the jack is still followed\n", ret);
 	INIT_DELAYED_WORK(&c->jack_work, cs42l63_jack_work);
@@ -639,7 +857,8 @@ static int cs42l63_i2c_probe(struct i2c_client *i2c)
 	c->speaker = CS42L63_VOL_MAX;
 	c->headphone = 50;
 	c->master = 48;
-	/* the internal mic at +12 dB: iOS's own default, 0 (-48 dB), records silence */
+	/* either mic at +24 dB, 8 dB under iOS's default (a voice close to a
+	 * headset's mic comes near full scale there); 0, -96 dB, is silence */
 	c->capture = 120;
 
 	c->mclk = devm_clk_get(dev, "mclk");

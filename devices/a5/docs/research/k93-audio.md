@@ -1,12 +1,15 @@
 # K93 audio — the iPad 2's CS42L63 behind I2S0
 
 **State (2026-11-10):** Linux plays to the speaker and the headphones and
-records from the built-in microphone (`sound/soc/apple/s5l8940-audio.c`,
-`sound/soc/codecs/cs42l63.c`, iOS's sequences and input-gain tables compiled
-in through `tools/audio/k93-seq2c.py`); the jack is followed and playback
-moves by itself.  All confirmed on the iPad, by ear and by measurement --
-section 5 has what the hardware showed beyond the emulation.  The headset's
-microphone records nothing yet (section 5).
+records from the built-in microphone and from a headset's
+(`sound/soc/apple/s5l8940-audio.c`, `sound/soc/codecs/cs42l63.c`, iOS's
+sequences and input-gain tables compiled in through
+`tools/audio/k93-seq2c.py`).  When a plug goes in the driver does what iOS's
+Mikey code does -- measures the plug's mic contact, picks the switch's
+wiring, biases the mic -- and playback and capture move to the plug by
+themselves.  All confirmed on the iPad, by ear and by measurement: section 5
+has what the hardware showed beyond the emulation, section 6 the headset's
+microphone.
 
 **Earlier (2026-11-09, evening):** the playback path alone: the card probes,
 a tone plays at the right rate, the codec, I2S0, the switch and GPIO 39 in
@@ -272,7 +275,7 @@ only ever called with 1) and does not assert reset at power-down [C].
 W 19=1a=1b=a0; W 5e=20; sleep 20; U 14/10=10; U 15/e0=c0; U 06/1e=0e;
 W 5f=88; sleep 50; mixer 0x54=00 (others 3f); U 0d/80=80; U 08/50=10`.
 Headset (MIC2): `W 16=17=18=34; W 5e=00; U 15/e0=20; U 06/1e=16; 0x57=00`.
-Gain mapping (`0x80c7e540` with helper `0x80c7f930`) not decoded.
+Gain mapping (`0x80c7e540`, its divider `0x80c7f930`): section 6.
 
 ### Delays and pop handling
 
@@ -280,10 +283,12 @@ Gain mapping (`0x80c7e540` with helper `0x80c7f930`) not decoded.
   starting a stream on the speaker; power-down: poll 0x62 bit 7 every 10 ms,
   then 10 ms.
 - `headphone-pop-workaround = 2` is the Mikey's (`0x8091c170` reads it,
-  boot-arg `hp-pop-workaround` overrides): bit 1 means, on a headset state
-  change (`0x8091c63c`), set the TS3A8235 to state `0x103` (slow ramp), write
+  boot-arg `hp-pop-workaround` overrides): bit 1 means, when the mic bias
+  comes on (`0x8091c63c`), set the TS3A8235 to state `0x103` (slow ramp), write
   Mikey reg 0x74, sleep the switch's `slow-ramp-delay` (50 ms) and restore the
-  switch state. It concerns jack insertion, not the playback path.
+  switch state -- skipped while the switch is in a slow state already, as it
+  is while iOS measures the plug (section 6). It concerns jack insertion, not
+  the playback path.
 - iOS does no software ramping (no stepped volume writes); its anti-pop
   measure is the order: speaker amp enabled last / disabled first, outputs
   powered after their volumes are set and before they are muted. Whether
@@ -296,10 +301,9 @@ AppleTS3A8235HeadsetSwitch setState (`0x80928d24`, encoder `0x80928bfc`):
 with K93's empty `switch-config` it writes only **reg 2**: state 1 → `42`,
 2 → `43`, 3 → `46`; with the slow-ramp bit `0x100`: `02`, `03`, `06`
 (`0x203` = `46`). The detection (AppleCSCodecMikey, `0x8091bc00`) tries
-states 1 and 2 (| `0x100`) and settles on one; which state plain
-3-pole headphones end in is not settled statically [?] — try reg 2 = `46`
-(state 3) and `42`/`43` with headphones plugged if the HP output is silent or
-thin.
+states 1 and 2 (| `0x100`) and settles on one (section 6): state 2 only if
+state 1 reads reverse-bias or short and state 2 does not, so plain 3-pole
+headphones (short in both) stay in state 1 [C].
 
 ## 2. I2S0 for the codec
 
@@ -438,19 +442,17 @@ microphone: ASP in -> ASP out, mixer `0x55 = 0x00`, `0x59 = 0x40` (group
 **The internal mic recorded zeros at first -- iOS's quietest input volume.**
 The extracted `input_internal_mic` ran with the input volume control
 (0x16f) at the framework's first value, 0, which iOS maps to registers
-0x19-0x1b = `0xa0`: the digital volume, **0.5 dB steps, two's complement**
-(`0x00` = 0 dB; +20 raised the room noise 2.9x), -48 dB.  iOS's mapping, run
-for every volume 0..160 (`GAINS` in `k93-cs42l63-sequences.py`):
-
-| source | 0x14 & 7 (boost) | 0x16-0x18 | 0x19-0x1b | gain |
-|---|---|---|---|---|
-| internal (DMIC B) | 0, from v = 109 on 7 | 0 | `0xa0 + v`, from 109 on `v - 116` | (v - 96) / 2 dB throughout: the boost is 10 dB |
-| headset (MIC2) | 0 | `0x34`, `0x35` for odd v | `0xa0 + v / 2` | analog stage + 0.25 dB a step |
-
-The driver's "Capture Volume" is v (default 120: speech peaks -8 to -14
-dBFS at arm's length).  iOS records the internal mic in mono on the ASP's
-left channel (path A, mixer `0x54`); `0x58 = 0x00` (path A into the right
-channel, 0 dB) copies it -- measured sample for sample.
+0x19-0x1b = `0xa0`: the digital volume, two's complement, `0x00` = 0 dB --
+-96 dB on iOS's scale (section 6).  iOS's mapping for the internal mic, run
+for every volume (`GAINS` in `k93-cs42l63-sequences.py`): boost 0x14 bits
+2:0 = 0, from v = 109 on 7; 0x16-0x18 = 0; 0x19-0x1b = `0xa0 + v`, from 109
+on `v - 116` -- v - 96 dB on iOS's scale, the boost worth 20 steps.  (This
+note said 0.5 dB a step here at first, from a room-noise ratio: +20 steps
+raised it 2.9x.  Room noise turned out to be no measure on this codec --
+section 6.)  Speech at arm's length peaks at -8 to -14 dBFS at v = 120.
+iOS records the internal mic in mono on the ASP's left channel (path A,
+mixer `0x54`); `0x58 = 0x00` (path A into the right channel, 0 dB) copies it
+-- measured sample for sample.
 
 **The jack** (measured with a plug going in and out): Mikey register
 **0x77 bit 7 = a plug is in** (level); **0x7b** latches bit 6 on insertion and
@@ -468,15 +470,113 @@ power-up the switch passes nothing** (silence); written, `0x00`, `0x42` and
 the OMTP wiring, ground on the CTIA mic contact.  So state 1 (`0x42`) is
 CTIA, the driver's choice when a plug goes in.
 
-**The headset's microphone records exact zeros** in every switch state, at
-the top input volume, with the mixer's path A or B, and with 0x06 bits 2
-and 1 cleared as well: the analog input path (MIC2 -> PGA -> ADC) shows not
-even its noise.  iOS runs more than `input_headset_mic` before that mic
-works: its Mikey detection (`AppleCSCodecMikey`, `0x8091bc00`; the emulator
-leaves its timers stubbed) decides headset or headphones, sets the switch
-and, presumably, the mic bias; the wake path's `U 74/18=08; U 75/40=40; U
-71/21=21` and the 0x0a bits iOS clears at init are the candidates.  Next:
-that code, decompiled.
+**The headset's microphone recorded exact zeros** at first, in every switch
+state, at the top of the volume range used then, with the mixer's path A or
+B, and with 0x06 bits 2 and 1 cleared as well: the analog input path (MIC2
+-> PGA -> ADC) showed not even its noise.  The mic's bias was off: iOS's
+Mikey code turns it on when it finds a mic in the plug -- section 6.
+
+## 6. The headset's microphone (2026-11-10): the Mikey block
+
+**How it was read.** Ghidra 12.2, headless (in the `eclipse-temurin:25-jdk`
+container), on two slices of the kernelcache loaded as raw ARMv7 at their
+addresses: `0x808ff000`-`0x80930000` (AppleEmbeddedAudio,
+AppleCSEmbeddedAudio -- AppleCSCodecMikey's code -- and
+AppleTS3A8235HeadsetSwitch) and `0x80c7d000`-`0x80c81000`
+(AppleCS42L63Audio).  A pre-script finds each kext's Mach-O header in the
+slice, splits its segments, seeds Thumb functions at `push {..., lr}`
+prologues and at every Thumb pointer in the vtables, and names each 16-byte
+stub after the pointer it jumps through.  Virtual calls were resolved by
+hand from AppleCS42L63Mikey's vtable (`0x80c80628`).
+
+**The Mikey's registers** [C]: AppleCS42L63Mikey reads, writes and updates
+0x70 + n through the codec (`0x80c7f480`/`490`/`4a0`), AppleCSCodecMikey's
+accessors sit at its vtable +`0x468`..+`0x4a8`.
+
+| reg | iOS's use |
+|---|---|
+| 0x70 | written whole by every mode: `01`, `c1` in the button modes 6, 7, 9 |
+| 0x71 | bits 7:6 by mode (`11` in all but modes 1 and 2); bits 5 and 0 `21` at wake, `20` after |
+| 0x73 | `c0` at init (the other pop workaround, not K93's, toggles bit 5) |
+| 0x74 | **the mode**: bits 2:1 = `01` is the mic bias off, anything else on (`0x8091c63c`) |
+| 0x75 | bits 5:0 the comparators' reference: `17`, `36`, `34`, `3c` (`0x8091c43c`); bits 7:6 at init and wake |
+| 0x76 | `8f` at init |
+| 0x77 | bit 7: a plug is in (measured) |
+| 0x78 | the comparators: bit 0 the mic contact shorted, bit 1 above the reference |
+| 0x79, 0x7a | interrupt masks (power-down leaves `ff`, `fe`) |
+| 0x7b, 0x7c | interrupt status, read-clear: 0x7b bits 6/5 insertion/removal (measured), the rest Apple's remote's data and the button's events (`0x8091c758`) |
+
+**iOS's modes** (`0x8091c464`) as K93 runs them (its `0x4ac` returns 0,
+`headphone-pop-workaround` = 2) [C]:
+
+| mode | used for | 0x70 | 0x71 7:6 | 0x74 | then |
+|---|---|---|---|---|---|
+| 0, 3 | Detached, HeadphonesOnly; between measurements | `01` | `11` | `03` (bias off) | 10 ms |
+| 1 | -- | `01` | `10` | `03` | 10 ms |
+| 2 | power-down | `01` | `00` | `0d` | 35 ms |
+| 4 | measuring the plug | `01` | `11` | `06` | 35 ms |
+| 5 | SingleButton's check | `01` | `11` | `1c` | 35 ms |
+| 6, 7 | HeadphonesWaiting, SingleButton | `c1` (after 0x74) | `11` | `1f` | 35 ms |
+| 8 | **MicOpen, WaitingForMic** | `01` | `11` | **`1e`** | 35 ms |
+| 9 | Mikey (Apple's remote) | `c1` (after 0x74) | `11` | `5f` | 35 ms |
+| 10 | waiting for a plug | `01` | `11` | `9e` | 35 ms |
+
+**The detection** (`0x8091bc00`, `0x8091bd14`), when a plug goes in: mode 3;
+then for the switch's states 1 and 2 with the slow-ramp flag (`02`, `03`):
+reference `17`, mode 4, the slow-ramp delay (50 ms), 0x78: bit 0 *short*,
+bit 1 *reverse-bias*, else reference `36`, 1 ms, bit 1 *mic*, else *open*;
+mode 3, 50 ms.  The wiring kept: state 2 if state 1 read reverse-bias or
+short and state 2 open or mic, else state 1 (`0x401` if both look alike).
+The states are AppleMikeyReceiver's: Detached, HeadphonesOnly,
+HeadphonesWaiting, SingleButton, MicOpen, WaitingForMic, Mikey.  A plug with
+a mic and no Apple remote ends in MicOpen (reference `3c`, mode 8) or
+WaitingForMic (`36`, mode 8): the bias on either way (`0x8091b2e4`,
+`0x8091af98`).
+
+**The pop guard** (`0x8091c63c`): when the bias comes on from off with the
+switch in a normal state, the switch goes to state 3 slow (`06`) while 0x74
+is written, for the slow-ramp delay, then back.
+
+**On the iPad**, a CTIA headset (the user's) plugged in, recording MIC2
+while 0x74/0x75 were stepped through iOS's modes by hand: bias off (`03`),
+exact zeros; MicOpen (`3c`, `1e`), SingleButton (`36`, `1f`, 0x70 `c1`) and
+mode 4 (`17`, `06`), the voice -- 0x78 reads `d2` in MicOpen.  The driver
+runs the detection now; for that headset it logs "the mic contact reads mic
+(CTIA), reverse-bias (OMTP): CTIA wiring", as iOS's logic has it.
+
+**The input volume, again.**  The voice came ~50 dB too quiet at first: the
+table ran iOS's mapping for v = 0..160 for both mics, but iOS's input ranges
+(getControlRange `0x80c7e94c`; `0x807f207c` builds each as `start int
+value`, `start db value`, `integer steps`, `db per step`) differ by source
+[C]:
+
+| source | v | iOS's dB | iOS's default |
+|---|---|---|---|
+| internal (DMIC B) | 0..128 | -96 + v | 128 = +32 dB |
+| headset (MIC2) | 0..312 | -92 + v / 2 | 248 = +32 dB |
+| line in (not on K93) | 0..292 | -99 + v / 2 | 198 |
+
+The headset's mapping (`0x80c7e540`) [C]: u = v - 204; above 19, u = v - 224
+and the analog stage's bit 7 (+10 dB on that scale); the analog stage takes u
+clamped to -12..+24 (bits 5:0, 0.5 dB steps: `34` = -6 dB), the boost (+20
+dB) what is above 24, the digital volume half of the rest (`0x80c7f930`
+divides).  So below v = 192 only the digital volume moves, from 192 up only
+the analog stage; iOS's default is the analog stage at +12 dB with bit 7,
+the digital volume at 0 dB.  The driver's "Capture Volume" puts both mics on
+iOS's dB scale: i = 0..128 = -96..+32 dB, v = i for the internal mic and 2i
+- 8 for the headset (`GAIN_V` in `k93-cs42l63-emu.py`), default 120 = +24 dB.
+
+Measured with speech on the headset: at 120 the voice close to the mic peaks
+at -9 dBFS (words about -25 dBFS RMS, the room between them -65 dBFS); 108,
+twelve steps down (the analog stage `88` -> `04`), takes 12.8 dB off -- iOS's
+scale within a dB.  Room noise is no measure of the steps on this codec: on
+the internal mic, interleaved every 0.7 s (medians of 8), +20 digital steps
+raised it 6.6 dB, +40 steps 10.8 dB, the boost 13.7 dB -- no single step size
+fits.  Something shapes levels near -80 dBFS (open point 7).
+
+**Not done:** Apple's remote (Mikey's own protocol, mode 9) and a headset's
+button (0x7c, the button modes), WaitingForMic as a state of its own, the
+codec's interrupt (the driver polls 0x77).
 
 ## Open points and the experiments that settle them
 
@@ -496,3 +596,10 @@ that code, decompiled.
    playback state (expected from 8.4.1: `06`=`1e`, `07`=`67`, `08`=`7c`,
    `11`=`08`/`09`, `1d`=`19`, `1f`=`20`=`00`, `21`=`22`=volume, `3b`=`01`,
    `45`=`00`, `49`=`40` at full master volume).
+7. **The input steps' true size** — iOS's scale (1 dB a digital step, the
+   boost 20 dB) is kept; room-noise ratios do not fit any step size (section
+   6).  A steady tone from the speaker into the internal mic, recorded at
+   several digital volumes and with the boost, settles it.
+8. **A headset's button and Apple's remote** — the Mikey's interrupt status
+   (0x7b, 0x7c) while a button is pressed, in modes 7 and 9; the codec's
+   interrupt line (SoC GPIO 15) with 0x79/0x7a unmasked.

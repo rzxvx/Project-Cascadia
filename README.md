@@ -15,7 +15,7 @@ XFCE desktop you drive with your fingers.
 | Device | Model | Chip | What works | Start here |
 |---|---|---|---|---|
 | iPad mini 1 (Wi-Fi) | iPad2,5 / A1432 / p105ap | Apple A5 (S5L8942X) | Linux 6.12: both cores, touch, Wi-Fi, Bluetooth, speakers, battery, the GPU (OpenGL ES 2.0 / GL 2.1), XFCE; iOS's files read-only | [devices/a5](devices/a5/README.md) · [quickstart](devices/a5/docs/QUICKSTART.md) |
-| iPad 2 (Wi-Fi) *(experimental)* | iPad2,1 / A1395 / k93ap | Apple A5 (S5L8940X) | Linux 6.12: both cores, touch, Wi-Fi, Bluetooth, the speaker, headphones, the built-in microphone and the volume buttons, battery and charging, sensors (autorotate), the GPU, XFCE and YouTube; boots from its jailbroken iOS without a computer, the root's changes kept on the NAND next to iOS | [K93 bring-up](devices/a5/docs/k93-bringup.md) |
+| iPad 2 (Wi-Fi) *(experimental)* | iPad2,1 / A1395 / k93ap | Apple A5 (S5L8940X) | Linux 6.12: both cores, touch, Wi-Fi, Bluetooth, the speaker, headphones, the built-in and a headset's microphone, the volume buttons, battery and charging, sensors (autorotate), the GPU, XFCE and YouTube; boots from its jailbroken iOS without a computer, the root's changes kept on the NAND next to iOS | [K93 bring-up](devices/a5/docs/k93-bringup.md) |
 | iPhone XR *(experimental, contributed)* | iPhone11,8 / N841AP | Apple A12 (T8020) | as its author reports it: Linux 7.3, framebuffer, touch, USB networking/SSH, Wi-Fi, UART Bluetooth, Debian/XFCE over NFS -- not built or tested by the maintainer | [devices/a12](devices/a12/README.md) · [Debian/XFCE](devices/a12/DEBIAN_XFCE_NFS.md) |
 | iPhone 11 | iPhone12,1 / n104ap | Apple A13 (T8030) | Linux 7.2: all six cores, touch, Wi-Fi, Bluetooth, XFCE, the internal storage as Linux's disk, no cable after the boot | [devices/a13](devices/a13/README.md) · [quickstart](devices/a13/docs/QUICKSTART.md) |
 
@@ -72,8 +72,8 @@ IPSW (or Apple's CDN) on your machine.
 - **iPad mini 1 (A5)** — phases 1 and 2 done; phase 3 all but NAND as
   Linux's own storage. [devices/a5/README.md](devices/a5/README.md#roadmap)
 - **iPad 2 (A5)** — experimental, the A5 tree's second board: phases 1-3
-  done, NAND as Linux's own storage, headphones and the built-in microphone
-  included; next a headset's microphone, the cameras, USB host.
+  done, NAND as Linux's own storage, headphones, the built-in and a
+  headset's microphone included; next the cameras, USB host.
   [devices/a5/docs/k93-bringup.md](devices/a5/docs/k93-bringup.md)
 - **iPhone XR (A12)** — contributed (#31), experimental: tethered Linux with
   framebuffer/touch, USB, Wi-Fi, Bluetooth and Debian/XFCE over NFS as its
