@@ -46,23 +46,30 @@
  * (0x7b latches bit 6 on insertion, bit 5 on removal, and clears when read),
  * measured on the iPad.  Its interrupt line (SoC GPIO 15) stays masked as
  * iOS's init leaves it, so the jack is polled, twice a second.  When a plug
- * goes in, this does what iOS's AppleCSCodecMikey does for a headset without
- * Apple's remote (docs/research/k93-audio.md):
- *   - it measures the plug's mic contact under both wirings of the TS3A8235
- *     (headset-switch in the DT: the jack's ground and mic contacts), CTIA
- *     (0x42) and OMTP (0x43): the bias on (0x74 = 0x06), the comparators'
- *     reference at 0x17 and 0x36 (0x75), the answer in 0x78 -- open, mic,
- *     reverse-bias or short;
- *   - keeps the wiring iOS would (OMTP only if CTIA reads reversed or short
- *     and OMTP does not);
- *   - and if a mic is there, leaves its bias on as iOS's MicOpen state does
- *     (0x75 = 0x3c, 0x74 = 0x1e), behind the switch's pop guard; without the
- *     bias that mic records exact zeros (measured on the iPad).
+ * goes in, this decides what iOS's AppleCSCodecMikey decides for a headset
+ * without Apple's remote (docs/research/k93-audio.md):
+ *   - it measures the plug's mic contact in the CTIA wiring of the TS3A8235
+ *     (headset-switch in the DT: the jack's ground and mic contacts, 0x42),
+ *     and in the OMTP one (0x43) only if CTIA reads reverse-bias or short --
+ *     iOS measures both but decides only then: the mic bias on (0x74 =
+ *     0x06), the comparators' reference at 0x17 and 0x36 (0x75), the answer
+ *     in 0x78 -- open, mic, reverse-bias or short;
+ *   - keeps the wiring iOS would (OMTP only if CTIA reads reverse-bias or
+ *     short and OMTP does not), the bias off again.
  * Then playback moves to the headphones and, with a mic, capture to it;
  * both move back when the plug comes out (the bias off, the switch at 0x00:
  * as iBoot leaves it, it passes nothing until it is written).  "Headphone
  * Jack" and "Headset Mic Jack" tell userspace, the moved controls notified.
- * Apple's remote (Mikey's own protocol) and a headset's buttons are not done.
+ *
+ * The headset's mic is biased while it records, as iOS's MicOpen state does
+ * it (0x75 = 0x3c, 0x74 = 0x1e) -- without the bias it records exact zeros.
+ * iOS keeps it biased as long as the plug is in, to hear the headset's
+ * button; here it is off otherwise, because a plug pulled out with the bias
+ * on clicks in the earbuds.  The bias comes on behind iOS's pop guard (the
+ * switch in its guard state 0x06 meanwhile) and goes off bare, as in iOS:
+ * heard with earbuds in, both are silent that way, and click the other way
+ * round.  Apple's remote (Mikey's own protocol) and a headset's button are
+ * not done.
  */
 
 #include <linux/clk.h>
@@ -297,30 +304,6 @@ static int cs42l63_set_hp(struct cs42l63 *c, bool hp)
 	return ret;
 }
 
-static int cs42l63_in_start(struct cs42l63 *c)
-{
-	int ret = c->headset_mic ? RUN(c, input_headset_mic) : RUN(c, input_internal_mic);
-
-	return ret ?: cs42l63_set_gain(c);
-}
-
-/* capture from the headset's mic or the built-in one, moved at once while recording */
-static int cs42l63_set_source(struct cs42l63 *c, bool headset)
-{
-	int ret = 0;
-
-	if (c->headset_mic == headset)
-		return 0;
-	if (c->recording) {
-		ret = RUN(c, input_stop);
-		c->headset_mic = headset;
-		ret = ret ?: cs42l63_in_start(c);
-	} else {
-		c->headset_mic = headset;
-	}
-	return ret;
-}
-
 /* --- the Mikey block and the headset switch ----------------------------------- */
 
 static int cs42l63_upd(struct cs42l63 *c, u8 reg, u8 mask, u8 val)
@@ -339,10 +322,12 @@ static int cs42l63_hsw_set(struct cs42l63 *c, u8 state)
 /*
  * One of iOS's Mikey modes as the K93 runs them (AppleCSCodecMikey 0x8091c464,
  * modes 0/3, 4 and 8): 0x70 = 0x01, 0x71 bits 7:6 set, 0x74 = the mode, then
- * its settling time.  The bias coming on (0x74 bits 2:1 other than 01) goes
- * behind the pop guard (0x8091c63c, headphone-pop-workaround = 2): the switch
- * in its guard state for the slow-ramp delay while 0x74 changes -- unless it
- * is in a slow state already, measuring.
+ * its settling time.  The bias coming on (0x74 bits 2:1 other than 01) while a
+ * plug is connected goes behind iOS's pop guard (0x8091c63c,
+ * headphone-pop-workaround = 2): the switch in its guard state for the
+ * slow-ramp delay while 0x74 changes.  Heard on the iPad with earbuds in, as
+ * iOS has it: the bias coming on clicks bare and behind a 0x46 guard, not
+ * behind 0x06; going off it is silent bare, and clicks behind 0x06.
  */
 static int cs42l63_mikey_mode(struct cs42l63 *c, u8 mode)
 {
@@ -352,7 +337,7 @@ static int cs42l63_mikey_mode(struct cs42l63 *c, u8 mode)
 
 	ret = i2c_smbus_write_byte_data(c->i2c, MIKEY_CTL, 0x01);
 	ret = ret ?: cs42l63_upd(c, MIKEY_CTL2, 0xc0, 0xc0);
-	if (!ret && on && !c->bias && c->hsw && (state & TS3A8235_NORMAL)) {
+	if (!ret && on && !c->bias && c->hsw && state != TS3A8235_NONE) {
 		ret = cs42l63_hsw_set(c, TS3A8235_GUARD);
 		ret = ret ?: i2c_smbus_write_byte_data(c->i2c, MIKEY_MODE, mode);
 		msleep(TS3A8235_RAMP_MS);
@@ -365,94 +350,149 @@ static int cs42l63_mikey_mode(struct cs42l63 *c, u8 mode)
 	return ret;
 }
 
-/*
- * What the mic contact reads in the switch's present wiring (iOS's
- * 0x8091bc00 and 0x8091bd14): the bias on, reference 0x17 -- shorted, or
- * reversed (above it) -- then reference 0x36: a mic above it, else open.
- */
-static int cs42l63_mikey_sense(struct cs42l63 *c)
+/* the bias off: reference 0x36 and mode 0, as iOS leaves headphones */
+static int cs42l63_bias_off(struct cs42l63 *c)
 {
-	int v, line, ret;
+	int ret = cs42l63_mikey_mode(c, MIKEY_MODE_OFF);
 
-	ret = cs42l63_upd(c, MIKEY_REF, 0x3f, 0x17);
+	return cs42l63_upd(c, MIKEY_REF, 0x3f, 0x36) ?: ret;
+}
+
+/* the bias on for the headset's mic: iOS's MicOpen, reference 0x3c and mode 8 */
+static int cs42l63_bias_mic(struct cs42l63 *c)
+{
+	int ret = cs42l63_upd(c, MIKEY_REF, 0x3f, 0x3c);
+
+	return ret ?: cs42l63_mikey_mode(c, MIKEY_MODE_MIC);
+}
+
+/*
+ * What the mic contact reads in a wiring of the switch (iOS's 0x8091bc00 and
+ * 0x8091bd14): the bias on, reference 0x17 -- shorted, or reversed (above
+ * it) -- then reference 0x36: a mic above it, else open.  The bias is left
+ * on.  iOS measures in the switch's slow states, the bias coming on bare;
+ * here in the normal ones, behind the guard: the same reading, no click.
+ */
+static int cs42l63_measure(struct cs42l63 *c, u8 wiring)
+{
+	int v, ret;
+
+	ret = cs42l63_hsw_set(c, wiring);
+	ret = ret ?: cs42l63_upd(c, MIKEY_REF, 0x3f, 0x17);
 	ret = ret ?: cs42l63_mikey_mode(c, MIKEY_MODE_MEASURE);
 	if (ret)
 		return ret;
 	msleep(TS3A8235_RAMP_MS);
 	v = i2c_smbus_read_byte_data(c->i2c, MIKEY_SENSE);
-	if (v < 0) {
-		line = v;
-	} else if (v & 1) {
-		line = LINE_SHORT;
-	} else if (v & 2) {
-		line = LINE_REVERSE;
-	} else {
-		line = cs42l63_upd(c, MIKEY_REF, 0x3f, 0x36);
-		usleep_range(1000, 2000);
-		v = line ?: i2c_smbus_read_byte_data(c->i2c, MIKEY_SENSE);
-		if (v < 0)
-			line = v;
-		else
-			line = (v & 2) ? LINE_MIC : LINE_OPEN;
-	}
-	ret = cs42l63_mikey_mode(c, MIKEY_MODE_OFF);
-	msleep(TS3A8235_RAMP_MS);
-	return line < 0 ? line : ret ?: line;
+	if (v < 0)
+		return v;
+	if (v & 1)
+		return LINE_SHORT;
+	if (v & 2)
+		return LINE_REVERSE;
+	ret = cs42l63_upd(c, MIKEY_REF, 0x3f, 0x36);
+	usleep_range(1000, 2000);
+	v = ret ?: i2c_smbus_read_byte_data(c->i2c, MIKEY_SENSE);
+	if (v < 0)
+		return v;
+	return (v & 2) ? LINE_MIC : LINE_OPEN;
 }
 
-/* a plug went in: its wiring and its mic, as iOS's detection finds them */
+/*
+ * A plug went in: its wiring and its mic, decided as iOS's detection decides
+ * them.  iOS measures both wirings, but keeps CTIA unless CTIA reads
+ * reverse-bias or short and OMTP does not -- so OMTP is measured here only
+ * when CTIA reads one of those.  The bias goes off again after: here it is
+ * on only while the headset's mic records (cs42l63_in_start), not all the
+ * time as in iOS, which watches the headset's button with it -- a plug
+ * pulled out with the bias on clicks in the earbuds (heard on the iPad).
+ */
 static void cs42l63_plug_in(struct cs42l63 *c)
 {
-	static const u8 wiring[2] = { TS3A8235_CTIA, TS3A8235_OMTP };
-	int r[2] = { LINE_OPEN, LINE_OPEN }, i, ret;
+	int r[2] = { LINE_OPEN, LINE_OPEN }, ret;
+	bool omtp = false;
 
-	if (!c->hsw) {
-		c->mic = false;
+	c->mic = false;
+	if (!c->hsw)
 		return;
+	ret = cs42l63_measure(c, TS3A8235_CTIA);
+	if (ret >= 0) {
+		r[0] = ret;
+		ret = 0;
 	}
-	ret = cs42l63_mikey_mode(c, MIKEY_MODE_OFF);
-	for (i = 0; i < 2 && !ret; i++) {
-		ret = cs42l63_hsw_set(c, wiring[i] & ~TS3A8235_NORMAL);
-		ret = ret ?: cs42l63_mikey_sense(c);
+	if (!ret && r[0] >= LINE_REVERSE) {
+		ret = cs42l63_bias_off(c);
+		ret = ret ?: cs42l63_measure(c, TS3A8235_OMTP);
 		if (ret >= 0) {
-			r[i] = ret;
+			r[1] = ret;
 			ret = 0;
+			omtp = r[1] <= LINE_MIC;
 		}
 	}
+	c->mic = !ret && r[omtp] == LINE_MIC;
+	ret = cs42l63_bias_off(c) ?: ret;
+	ret = cs42l63_hsw_set(c, omtp ? TS3A8235_OMTP : TS3A8235_CTIA) ?: ret;
 	if (ret)
-		dev_warn(c->dev, "could not measure the plug's mic contact: %d\n", ret);
-	/* iOS's choice: OMTP if CTIA reads reversed or short and OMTP does not */
-	i = r[0] >= LINE_REVERSE && r[1] <= LINE_MIC;
-	c->mic = !ret && r[i] == LINE_MIC;
-	if (cs42l63_hsw_set(c, wiring[i]))
-		dev_warn(c->dev, "headset switch not set\n");
-	if (c->mic) {
-		ret = cs42l63_upd(c, MIKEY_REF, 0x3f, 0x3c);		/* MicOpen */
-		ret = ret ?: cs42l63_mikey_mode(c, MIKEY_MODE_MIC);
-	} else {
-		ret = cs42l63_upd(c, MIKEY_REF, 0x3f, 0x36);		/* HeadphonesOnly */
-		ret = ret ?: cs42l63_mikey_mode(c, MIKEY_MODE_OFF);
-	}
-	if (ret)
-		dev_warn(c->dev, "could not set the mic bias: %d\n", ret);
+		dev_warn(c->dev, "could not measure the plug: %d\n", ret);
 	dev_info(c->dev, "plug in: the mic contact reads %s (CTIA), %s (OMTP): %s wiring, %s\n",
-		 cs42l63_line[r[0]], cs42l63_line[r[1]], i ? "OMTP" : "CTIA",
-		 c->mic ? "a headset: its mic biased" : "headphones");
+		 cs42l63_line[r[0]], r[0] >= LINE_REVERSE ? cs42l63_line[r[1]] : "not measured",
+		 omtp ? "OMTP" : "CTIA", c->mic ? "a headset with a mic" : "headphones");
 }
 
-/* the plug came out: the bias off, the switch open */
+/* the plug came out: the switch open first, then the bias off */
 static void cs42l63_plug_out(struct cs42l63 *c)
 {
 	int ret;
 
-	ret = cs42l63_mikey_mode(c, MIKEY_MODE_OFF);
-	ret = ret ?: cs42l63_upd(c, MIKEY_REF, 0x3f, 0x36);
-	if (c->hsw)
-		ret = cs42l63_hsw_set(c, TS3A8235_NONE) ?: ret;
+	ret = c->hsw ? cs42l63_hsw_set(c, TS3A8235_NONE) : 0;
+	ret = cs42l63_bias_off(c) ?: ret;
 	if (ret)
 		dev_warn(c->dev, "could not release the jack: %d\n", ret);
 	c->mic = false;
 	dev_info(c->dev, "plug out\n");
+}
+
+/* --- capture ------------------------------------------------------------------ */
+
+/* the input path on: a headset's mic biased first, behind the guard */
+static int cs42l63_in_start(struct cs42l63 *c)
+{
+	int ret;
+
+	if (c->headset_mic) {
+		ret = c->mic ? cs42l63_bias_mic(c) : 0;
+		ret = ret ?: RUN(c, input_headset_mic);
+	} else {
+		ret = RUN(c, input_internal_mic);
+	}
+	return ret ?: cs42l63_set_gain(c);
+}
+
+/* the input path off, and a headset's mic bias with it */
+static int cs42l63_in_stop(struct cs42l63 *c)
+{
+	int ret = RUN(c, input_stop);
+
+	if (c->bias && c->jack_in)
+		ret = cs42l63_bias_off(c) ?: ret;
+	return ret;
+}
+
+/* capture from the headset's mic or the built-in one, moved at once while recording */
+static int cs42l63_set_source(struct cs42l63 *c, bool headset)
+{
+	int ret = 0;
+
+	if (c->headset_mic == headset)
+		return 0;
+	if (c->recording) {
+		ret = cs42l63_in_stop(c);
+		c->headset_mic = headset;
+		ret = ret ?: cs42l63_in_start(c);
+	} else {
+		c->headset_mic = headset;
+	}
+	return ret;
 }
 
 /* --- controls ------------------------------------------------------------- */
@@ -730,7 +770,7 @@ static int cs42l63_mute_stream(struct snd_soc_dai *dai, int mute, int stream)
 			ret = cs42l63_in_start(c);
 			c->recording = !ret;
 		} else if (mute && c->recording) {
-			ret = RUN(c, input_stop);
+			ret = cs42l63_in_stop(c);
 			c->recording = false;
 		}
 	} else if (!mute && !c->playing) {
@@ -815,7 +855,7 @@ static void cs42l63_component_remove(struct snd_soc_component *comp)
 		cs42l63_out_stop(c);
 	c->playing = false;
 	if (c->recording)
-		RUN(c, input_stop);
+		cs42l63_in_stop(c);
 	c->recording = false;
 	RUN(c, power_down);
 	gpiod_set_value_cansleep(c->reset, 1);

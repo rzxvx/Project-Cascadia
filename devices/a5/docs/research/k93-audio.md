@@ -540,9 +540,10 @@ is written, for the slow-ramp delay, then back.
 **On the iPad**, a CTIA headset (the user's) plugged in, recording MIC2
 while 0x74/0x75 were stepped through iOS's modes by hand: bias off (`03`),
 exact zeros; MicOpen (`3c`, `1e`), SingleButton (`36`, `1f`, 0x70 `c1`) and
-mode 4 (`17`, `06`), the voice -- 0x78 reads `d2` in MicOpen.  The driver
-runs the detection now; for that headset it logs "the mic contact reads mic
-(CTIA), reverse-bias (OMTP): CTIA wiring", as iOS's logic has it.
+mode 4 (`17`, `06`), the voice -- 0x78 reads `d2` in MicOpen.  Both wirings
+measured, that headset reads "mic" in CTIA and "reverse-bias" in OMTP, as
+iOS's logic has it; the driver measures OMTP only when CTIA reads
+reverse-bias or short, the only case where iOS's choice depends on it.
 
 **The input volume, again.**  The voice came ~50 dB too quiet at first: the
 table ran iOS's mapping for v = 0..160 for both mics, but iOS's input ranges
@@ -574,9 +575,31 @@ the internal mic, interleaved every 0.7 s (medians of 8), +20 digital steps
 raised it 6.6 dB, +40 steps 10.8 dB, the boost 13.7 dB -- no single step size
 fits.  Something shapes levels near -80 dBFS (open point 7).
 
+**Clicks, heard with earbuds in** (the user's, a CTIA headset going in and
+out, each step on its own):
+
+| step | heard |
+|---|---|
+| the switch alone, `00` -> `42` (or via `02`); 0x70/0x71's mode writes | (almost) nothing |
+| the bias coming on bare, or behind a `46` guard | a soft click |
+| the bias coming on behind iOS's `06` guard | nothing |
+| the bias going off bare, or behind a `46` guard | nothing |
+| the bias going off behind a `06` guard | a soft click |
+| a plug pulled out with the bias on | a click, every time |
+| iOS's whole detection (both wirings, the bias cycled in the slow states) | clicks |
+
+So iOS's own rule -- the guard (`06`) when the bias comes on, none when it
+goes off -- is the silent one, and the switch seems to move gently into its
+states with bit 6 set and abruptly into the others.  The driver measures in
+the normal states with that rule, and keeps the bias on only while the
+headset's mic records (iOS keeps it on as long as the plug is in, for the
+button): plugging in, recording's start and stop and pulling out are all
+silent.
+
 **Not done:** Apple's remote (Mikey's own protocol, mode 9) and a headset's
-button (0x7c, the button modes), WaitingForMic as a state of its own, the
-codec's interrupt (the driver polls 0x77).
+button (0x7c, the button modes; it needs the bias on all the time, which
+clicks on unplugging), WaitingForMic as a state of its own, the codec's
+interrupt (the driver polls 0x77).
 
 ## Open points and the experiments that settle them
 
