@@ -44,16 +44,33 @@ msg "P105: stage2 on $ROOTTYPE root"
 # choosing which one to boot.
 hostname -F /etc/hostname 2>/dev/null || hostname p105 2>/dev/null || true
 
+# The time zone, for everything started from here (the desktop's clock):
+# /etc/localtime is the build machine's zone (./cascadia's local layer).
+# musl reads it as it is; GLib takes it only as a link into a zoneinfo
+# database, which these roots do not have, and showed UTC.  As a path in TZ
+# both read it.
+[ -e /etc/localtime ] && export TZ=/etc/localtime
+
 # The login banner says which root this is.  One image boots both ways, and
 # stage 1 copies the image's /etc/motd -- the template, @ROOT@ in it -- over
 # an NFS root at every boot, so the line is filled in here, every boot.
 case "$ROOTTYPE" in
     nfs*) where="the root is NFS\n  from the host's machine." ;;
     ext4) where="the root is on the NAND." ;;
+    overlay) if [ "$(cat /run/ios/upper 2>/dev/null)" = lv ]; then
+                 where="the root is an image on iOS's System\n  partition; changes are kept on the Linux volume\n  (cascadia-volume)."
+             else
+                 where="the root is an image on iOS's System\n  partition; changes last until the iPad restarts."
+             fi ;;
     *)    where="the root sits in RAM." ;;
 esac
-if grep -q @ROOT@ /etc/motd 2>/dev/null; then
-    awk -v w="$where" '{ sub(/@ROOT@/, w) } 1' /etc/motd > /run/motd \
+# And which iPad: one image boots both.
+case "$(cascadia-board 2>/dev/null)" in
+    k93) model="iPad 2 Wi-Fi (K93AP / S5L8940X)" ;;
+    *)   model="iPad mini 1st gen (P105AP / S5L8942X)" ;;
+esac
+if grep -q -e @ROOT@ -e @MODEL@ /etc/motd 2>/dev/null; then
+    awk -v w="$where" -v m="$model" '{ sub(/@ROOT@/, w); sub(/@MODEL@/, m) } 1' /etc/motd > /run/motd \
         && cat /run/motd > /etc/motd
 fi
 
@@ -208,7 +225,23 @@ fi
 # holds it: /dev/input/event0 from then on.  It needs the digitizer's firmware,
 # which ./cascadia a5 firmware takes out of the IPSW, and a calibration: the
 # default one in initramfs/, or this iPad's own from ./cascadia a5 mtcal.
-if [ -x /sbin/z2-boot ] && [ -s /lib/firmware/mtcal.bin ] && [ -s /lib/firmware/P105.mtprops ]; then
+BOARD=$(cascadia-board 2>/dev/null || echo unknown)
+if [ "$BOARD" = k93 ]; then
+    # The iPad 2's digitizer: plain Z2 (Z2F13,2), iOS 8.4.1's own bootload
+    # for it (MTSPIBootloader_Z2): enable_download held through it and let
+    # go at EXECUTE, the panel's calibration to 0x1000c000, the Z2
+    # calibration sequence with the K94 personality's fll-mval, EXECUTE at
+    # 0x10001800, ATTN on GPIO 21 (tools/z2-boot.c says why).  The 32 kHz
+    # clock is PMU GPIO0 = 0x51 (dts: touch_clk).
+    if [ -x /sbin/z2-boot ] && [ -c /dev/hx-touch ] && [ -s /lib/firmware/mtcal.bin ] \
+       && [ -s /lib/firmware/K93.mtprops ]; then
+        setsid /sbin/z2-boot -Z -F 0x18da -E 0x10001800 -d -a 21 -C 0x1000c000 -b 9f0b0b02 \
+            -c /lib/firmware/mtcal.bin /lib/firmware/K93.mtprops >/tmp/z2boot.log 2>&1 </dev/null &
+        msg "K93: touch -- z2-boot started (/tmp/z2boot.log)"
+    else
+        msg "K93: touch -- not started (no /dev/hx-touch, K93.mtprops or mtcal.bin)"
+    fi
+elif [ -x /sbin/z2-boot ] && [ -s /lib/firmware/mtcal.bin ] && [ -s /lib/firmware/P105.mtprops ]; then
     setsid /sbin/z2-boot -c /lib/firmware/mtcal.bin >/tmp/z2boot.log 2>&1 </dev/null &
     msg "P105: touch -- z2-boot started (/tmp/z2boot.log)"
 else
@@ -258,10 +291,32 @@ fi
 if [ -e /etc/wifi/auto ] && [ -x /usr/bin/wifi ]; then
     setsid /usr/bin/wifi up >/tmp/wifi.log 2>&1 </dev/null &
     msg "P105: Wi-Fi -- joining the remembered networks (/tmp/wifi.log)"
-elif [ -x /usr/bin/wifi ]; then
+elif [ -x /usr/bin/wifi ] && [ "$BOARD" != k93 ]; then
     # not joining anything, but the chip has to come up all the same: it now
-    # and then needs a power cycle, which `wifi chip` gives it
+    # and then needs a power cycle, which `wifi chip` gives it.  The iPad
+    # mini's HSIC chip only: on the iPad 2 the MMC core and brcmfmac bring the
+    # SDIO chip up by themselves, and a power cycle 15 s in (a rebind of the
+    # SDIO host) would only cut short whatever they are doing.
     setsid /usr/bin/wifi chip >/tmp/wifi.log 2>&1 </dev/null &
+fi
+
+# ------------------------------------------------------------------ clock --
+# No clock chip that Linux reads: stage 1 set the build date, and the clock
+# stood there at every boot (the desktop's said the hour the image was
+# built).  Once a route out exists -- Wi-Fi joining above, or the cable with
+# the host sharing its internet -- one NTP query sets it; tried for ~10
+# minutes, then given up.  The time zone is the build machine's
+# (/etc/localtime, ./cascadia's local layer).
+if command -v ntpd >/dev/null 2>&1; then
+    setsid sh -c '
+        n=0
+        while [ $n -lt 60 ]; do
+            if ip route 2>/dev/null | grep -q "^default" && ntpd -n -q -p pool.ntp.org >/dev/null 2>&1; then
+                echo "P105: clock set by NTP: $(date)" > /dev/kmsg
+                exit 0
+            fi
+            n=$((n + 1)); sleep 10
+        done' </dev/null >/dev/null 2>&1 &
 fi
 
 # ------------------------------------------------------------- Bluetooth ---
@@ -288,17 +343,68 @@ p105_down() {
     B=/bin/busybox
     [ -x "$RESCUE/busybox" ] && B="$RESCUE/busybox"
     msg "P105: $1"
-    kill -TERM -1 2>/dev/null
-    "$B" sleep 2
-    kill -KILL -1 2>/dev/null
+    # The iPad 2's NAND server (k93lv, initramfs/init) goes last: the root's
+    # image and the Linux volume its changes are kept on stand on it, so it
+    # must outlive everything that may still write, and the sync below.
+    srv=$(cat /run/ios/pid 2>/dev/null)
+    keep=" $srv $(pidof k93lv k93iosnand 2>/dev/null) "
+    if [ -z "$srv" ]; then
+        kill -TERM -1 2>/dev/null
+        "$B" sleep 2
+        kill -KILL -1 2>/dev/null
+    else
+        for sig in TERM KILL; do
+            for p in /proc/[0-9]*; do
+                p=${p#/proc/}
+                case "$keep" in *" $p "*) continue ;; esac
+                [ "$p" = 1 ] || kill -$sig "$p" 2>/dev/null
+            done
+            [ $sig = TERM ] && "$B" sleep 2
+        done
+    fi
     "$B" sync
     # A local root closes its journal; nothing is left running to write to it.
     [ "$ROOTTYPE" = ext4 ] && "$B" mount -o remount,ro /
+    # So does the Linux volume under the overlay, while its server still runs;
+    # then the server, which finishes the request it is on and lets go.
+    if [ -n "$srv" ]; then
+        "$B" grep -q ' /run/root/rw ext4 ' /proc/mounts && "$B" mount -o remount,ro /run/root/rw
+        kill -TERM "$srv" 2>/dev/null
+        n=0
+        while kill -0 "$srv" 2>/dev/null && [ $n -lt 8 ]; do "$B" sleep 1; n=$((n + 1)); done
+        "$B" sync
+    fi
     "$B" "$2" -f
 }
 trap 'p105_down "powering off" poweroff' USR2
-trap 'p105_down "no restart on this iPad yet -- powering off instead" poweroff' TERM
+# The iPad 2 restarts through the watchdog's bite (apple_wdt_clkevt.c), back
+# into iOS by itself -- from where kDFU starts Linux again.  The mini keeps
+# powering off until that has been seen on one.
+if [ "$(cascadia-board 2>/dev/null)" = k93 ]; then
+    # The watchdog armed 20 s ahead before anything is stopped: if the way
+    # down hangs -- a process that will not die, a sync that does not
+    # return, a driver's shutdown -- the bite still takes the iPad back to
+    # iOS.  CUR_TIME at 0x3f103020, BITE_TIME +4, CTRL +0xc (4 = reset).
+    k93_bite() {
+        now=$(/bin/peek r 3f103020 1 2>/dev/null | awk '{print $2}')
+        [ -n "$now" ] || return 0
+        /bin/peek w 3f103024 "$(printf %x $(( (0x$now + 20 * 24000000) & 0xffffffff )))" >/dev/null 2>&1
+        /bin/peek w 3f10302c 4 >/dev/null 2>&1
+    }
+    trap 'k93_bite; p105_down "restarting (back to iOS)" reboot' TERM
+else
+    trap 'p105_down "no restart on this iPad yet -- powering off instead" poweroff' TERM
+fi
 trap 'p105_down "halt" halt' USR1
+
+# A root that wants its desktop at boot says so: /etc/cascadia/desktop-at-boot
+# (the iPad 2's root on the NAND carries it, tools/k93-root.sh).  `desktop`
+# once everything above is up, as if typed on the glass; it takes the screen
+# from fbkeyboard, and the glass shell is back when the session ends.
+if [ -e /etc/cascadia/desktop-at-boot ] && [ -x /usr/local/bin/desktop ]; then
+    msg "P105: starting the desktop (/etc/cascadia/desktop-at-boot)"
+    ( sleep 2; /usr/local/bin/desktop > /tmp/desktop-at-boot.log 2>&1 ) < /dev/null &
+fi
 
 msg "P105: stage2 done, shell on tty0"
 # PID 1 from here on, and a shell exec'd as PID 1 got two things wrong:

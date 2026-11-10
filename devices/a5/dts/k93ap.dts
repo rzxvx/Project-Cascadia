@@ -1,110 +1,725 @@
 // SPDX-License-Identifier: GPL-2.0 OR MIT
-// Experimental K93 RAM-console target. MMIO and IRQs from K93/12H321 ADT.
-// iBEC diagnostic photo confirms readable 1024/4096 scanout and MPIDR 0x80000900.
+/*
+ * Apple iPad 2 Wi-Fi -- iPad2,1 / K93AP / S5L8940X (Apple A5, the original
+ * 45 nm part).
+ *
+ * The iPad mini's tree (p105ap.dts) with the K93's own values.  Every
+ * address, interrupt and pin here was read out of the K93's Apple DeviceTree
+ * (DeviceTree.k93ap.img3, 12H321: tools/k93-extract-firmware.py writes it out
+ * as build/k93/firmware-12H321/adt.txt), not carried over from the mini.
+ * The two machines share far more than their marketing suggests: the same
+ * PMU (a Dialog D1946, "pmu,d1946"), AIC, GPIO block, PMGR, watchdog
+ * counter, PL310 and its CIF, USB OTG, SGX543MP2 and bq27540 gas gauge.
+ * What differs:
+ *
+ *   - CPU affinity 0x900, not 0xa00 (MPIDR read on this board)
+ *   - the framebuffer iBoot leaves: 1024x768, stride 4096 (landscape scanout)
+ *   - Wi-Fi: a BCM4329 on SDIO (arm-io/sdio, an SDHC that iOS only reaches
+ *     through the IOP), not a BCM4334 on HSIC; EHCI has no device behind it
+ *   - Bluetooth: the BCM4329's other half, on UART3 (the mini: UART1)
+ *   - touch: Zephyr2 ("Z2F13,2") on SPI1 like the mini's, but clocked by PMU
+ *     GPIO0 (the ADT's function-clock_enable) instead of the PWM's grape-clk,
+ *     and powered by PMU LDO index 0
+ *   - buttons on other pins, and a hall-effect (Smart Cover) switch on PMU
+ *     GPIO 14
+ *   - audio: a CS42L63 codec on I2S0, not CS35L19 amps behind MCA0
+ *   - sensors: LIS331DLH accelerometer, AK8975 compass, TSL2581 light sensor,
+ *     an "ap3gdl" gyro
+ *   - the NAND: raw MLC behind H2FMI with its BCH engine (the ADT's FMIx-BCH
+ *     clocks), not PPN -- the mini's mtd-apple-h2fmi does not apply and must
+ *     never be pointed at this flash
+ *
+ * ADT GPIO numbers are (port << 8) | pin, eight to a port, so 0x0703 is
+ * pin 59.  PMU GPIO n is configured through PMU register 0x61 + n.
+ *
+ * Boot protocol (32-bit ARM): r0 = 0, r1 = ~0, r2 = <dtb physical address>
+ */
+
 /dts-v1/;
 
 / {
-    model = "Apple iPad 2 Wi-Fi (K93AP)";
-    compatible = "apple,k93ap", "apple,s5l8940x", "apple,arm";
-    #address-cells = <1>;
-    #size-cells = <1>;
-    interrupt-parent = <&aic>;
+	compatible = "apple,k93ap", "apple,s5l8940x", "apple,arm";
+	model = "Apple iPad 2 (iPad2,1)";
+	#address-cells = <1>;
+	#size-cells = <1>;
+	interrupt-parent = <&aic>;
 
-    aliases { serial0 = &uart0; };
-    chosen {
-        bootargs = "earlycon=s3c6400,0x32500000 keep_bootcon console=tty0 maxcpus=1 root=/dev/ram0 rw panic=0 loglevel=8 g_cdc.host_addr=02:93:00:00:00:01 g_cdc.dev_addr=02:93:00:00:00:02";
-    };
+	aliases {
+		serial0 = &uart0;
+		serial3 = &uart3;
+	};
 
-    memory@80000000 {
-        device_type = "memory";
-        // Exclude iBoot/framebuffer space above the live vram allocation.
-        reg = <0x80000000 0x1f6fc000>;
-    };
-    reserved-memory {
-        #address-cells = <1>;
-        #size-cells = <1>;
-        ranges;
-        fb_region: framebuffer@9f6fc000 {
-            reg = <0x9f6fc000 0x900000>;
-            no-map;
-        };
-        cpu_reset_page: cpu-reset@80000000 {
-            reg = <0x80000000 0x1000>;
-            no-map;
-        };
-    };
-    framebuffer0: framebuffer@9f6fc000 {
-        compatible = "simple-framebuffer";
-        reg = <0x9f6fc000 0x400000>;
-        width = <1024>;
-        height = <768>;
-        stride = <4096>;
-        format = "a8r8g8b8";
-        memory-region = <&fb_region>;
-    };
-    cpus {
-        #address-cells = <1>;
-        #size-cells = <0>;
-        apple,cpu-reset-page = <&cpu_reset_page>;
-        cpu@900 {
-            device_type = "cpu";
-            compatible = "arm,cortex-a9";
-            reg = <0x900>;
-        };
-    };
-    // Omit L2 enablement for the first console experiment. No storage, power,
-    // GPIO, Wi-Fi or touchscreen nodes are probed in this first-stage DTS.
-    uart_clk: clock-24000000 {
-        compatible = "fixed-clock";
-        #clock-cells = <0>;
-        clock-frequency = <24000000>;
-    };
-    soc@30000000 {
-        compatible = "simple-bus";
-        #address-cells = <1>;
-        #size-cells = <1>;
-        ranges = <0 0x30000000 0x10000000>;
+	chosen {
+		/*
+		 * As the mini's (p105ap.dts says why each one is there), with the
+		 * gadget's MACs in a family of their own so a host that has seen
+		 * both iPads keeps an interface name per iPad.  The charger armed
+		 * from boot: iBEC leaves the USB input limit at ~100 mA here too,
+		 * and the iPad drained at -750 mA on the cable until it was raised
+		 * (+470 mA after, 2026-11-09).
+		 */
+		bootargs = "earlycon=s3c6400,0x32500000 keep_bootcon lpj=5000000 root=/dev/ram0 rw rootwait panic=10 loglevel=8 ignore_loglevel g_cdc.host_addr=02:93:00:00:00:01 g_cdc.dev_addr=02:93:00:00:00:02 apple_pmu_charger.armed=1";
+		/* the loader patches both (scripts/assemble.py) */
+		linux,initrd-start = <0x88000000>;
+		linux,initrd-end   = <0x88000000>;
+	};
 
-        // Verified on K93: free-running 24 MHz counter, single 16-byte bank.
-        // Platform clock code only reads it; RAM-loader reset stays armed.
-        timer@f103020 {
-            compatible = "apple,s5l8940x-wdt-timer";
-            reg = <0xf103020 0x10>;
-        };
+	/* 512 MiB from 0x80000000; the framebuffer iBoot leaves sits above
+	 * this, at the top of DRAM. */
+	memory@80000000 {
+		device_type = "memory";
+		reg = <0x80000000 0x1f6fc000>;
+	};
 
-        aic: interrupt-controller@f200000 {
-            compatible = "aic,1";
-            reg = <0xf200000 0x10000>;
-            interrupt-controller;
-            #interrupt-cells = <1>;
-            #address-cells = <0>;
-            apple,main-cpus = <2>;
-        };
-        uart0: serial@2500000 {
-            compatible = "apple,s5l-uart";
-            reg = <0x2500000 0x1000>;
-            interrupts = <21>;
-            clocks = <&uart_clk>, <&uart_clk>;
-            clock-names = "uart", "clk_uart_baud0";
-        };
-        otgphy: phy@6000000 {
-            compatible = "apple,s5l8940x-otgphy";
-            reg = <0x6000000 0x1000>, <0xf108000 0x1000>;
-            #phy-cells = <1>;
-            // Evidence from K93 ADT. Driver preserves iBoot's live tuning.
-            apple,uotgtune1-device = <0x349>;
-            apple,uotgtune2-device = <0xf13>;
-        };
-        usb@6100000 {
-            compatible = "apple,s5l8940x-dwc2", "snps,dwc2";
-            reg = <0x6100000 0x10000>;
-            interrupts = <11>;
-            phys = <&otgphy 0>;
-            phy-names = "usb2-phy";
-            dr_mode = "peripheral";
-            g-rx-fifo-size = <512>;
-            g-np-tx-fifo-size = <128>;
-            g-tx-fifo-size = <128 128 128 128 128 128 128 128>;
-        };
-    };
+	reserved-memory {
+		#address-cells = <1>;
+		#size-cells = <1>;
+		ranges;
+
+		fb_region: framebuffer@9f6fc000 {
+			reg = <0x9f6fc000 0x400000>;
+			no-map;
+		};
+
+		/* a core leaves reset at physical 0, an alias of this page;
+		 * platsmp.c keeps its trampoline here */
+		cpu_reset_page: cpu-reset@80000000 {
+			reg = <0x80000000 0x1000>;
+			no-map;
+		};
+	};
+
+	/* iBoot's scanout, as it leaves it: landscape 1024x768 (the K93's
+	 * panel is scanned out that way), read and verified on this board. */
+	framebuffer0: framebuffer@9f6fc000 {
+		compatible = "simple-framebuffer";
+		reg = <0x9f6fc000 0x300000>;
+		width = <1024>;
+		height = <768>;
+		stride = <4096>;
+		format = "a8r8g8b8";
+		memory-region = <&fb_region>;
+		status = "okay";
+	};
+
+	cpus {
+		#address-cells = <1>;
+		#size-cells = <0>;
+		apple,cpu-reset-page = <&cpu_reset_page>;
+
+		/* MPIDR 0x80000900 on this board: cluster id 9 (the mini's is
+		 * 0xa).  The ADT's function-enable_core masks are 1 and 2, as
+		 * on the mini. */
+		cpu0: cpu@900 {
+			device_type = "cpu";
+			compatible = "arm,cortex-a9";
+			reg = <0x900>;
+			enable-method = "apple,pmgr-core";
+		};
+
+		cpu1: cpu@901 {
+			device_type = "cpu";
+			compatible = "arm,cortex-a9";
+			reg = <0x901>;
+			enable-method = "apple,pmgr-core";
+		};
+	};
+
+	/*
+	 * The PL310 and Apple's CIF beside it, as on the mini (apple.c turns
+	 * the L2 on).  The K93's ADT gives tag and data latencies of 0x110
+	 * both (the mini's data is 0x120): <2 2 1> each.  auxiliary-features
+	 * 0x72100000 and power-features 2 are the mini's values.
+	 */
+	l2: cache-controller@3e000000 {
+		compatible = "arm,pl310-cache";
+		reg = <0x3e000000 0x1000>, <0x3fd00000 0x2000>;
+		cache-unified;
+		cache-level = <2>;
+		arm,tag-latency = <2 2 1>;
+		arm,data-latency = <2 2 1>;
+		arm,shared-override;
+		arm,full-line-zero-disable;
+		arm,dynamic-clock-gating = <1>;
+		arm,standby-mode = <0>;
+		status = "okay";
+	};
+
+	uart_clk: clock-24000000 {
+		compatible = "fixed-clock";
+		#clock-cells = <0>;
+		clock-frequency = <24000000>;
+	};
+
+	refclk24mhz: refclk24mhz {
+		compatible = "fixed-clock";
+		#clock-cells = <0>;
+		clock-frequency = <24000000>;
+	};
+
+	/* The BCM4329's REG_ON: the sdio node's function-device_reset is PMU
+	 * GPIO 3 (register 0x64, bit 1 the level -- where the mini's Wi-Fi
+	 * REG_ON is too), high to run.  The MMC core holds it low until it
+	 * powers the bus, then raises it and waits for the chip's boot ROM. */
+	wifi_pwrseq: wifi-pwrseq {
+		compatible = "mmc-pwrseq-simple";
+		reset-gpios = <&pmu 3 1>;
+		post-power-on-delay-ms = <100>;
+	};
+
+	/*
+	 * The ADT's /buttons: hold GPIO 1, menu (Home) GPIO 0, volup 0x0701 =
+	 * 57, voldown 0x0703 = 59, ringerab 0x0602 = 50, all active low.  The
+	 * same codes as the mini's (p105ap.dts), so p105-keys works unchanged.
+	 * The Smart Cover's hall-effect switch is PMU GPIO 14, an event of
+	 * the PMU's own interrupt controller -- not here yet.
+	 */
+	gpio-keys {
+		compatible = "gpio-keys";
+		autorepeat;
+
+		home {
+			label = "Home";
+			gpios = <&gpio 0 1>;
+			linux,code = <172>;
+			debounce-interval = <20>;
+		};
+		hold {
+			label = "Hold";
+			gpios = <&gpio 1 1>;
+			linux,code = <116>;
+			debounce-interval = <20>;
+		};
+		volume-up {
+			label = "Volume Up";
+			gpios = <&gpio 57 1>;
+			linux,code = <115>;
+			debounce-interval = <20>;
+		};
+		volume-down {
+			label = "Volume Down";
+			gpios = <&gpio 59 1>;
+			linux,code = <114>;
+			debounce-interval = <20>;
+		};
+		side-switch {
+			label = "Side Switch";
+			gpios = <&gpio 50 1>;
+			linux,input-type = <5>;
+			linux,code = <14>;
+			debounce-interval = <50>;
+		};
+	};
+
+	soc: soc@30000000 {
+		compatible = "simple-bus";
+		#address-cells = <1>;
+		#size-cells = <1>;
+		ranges = <0x0 0x30000000 0x10000000>;
+
+		aic: interrupt-controller@f200000 {
+			compatible = "aic,1";
+			reg = <0xf200000 0x10000>;
+			interrupt-controller;
+			#interrupt-cells = <1>;
+			#address-cells = <0>;
+			apple,main-cpus = <2>;
+		};
+
+		/* 28 ports of 8, IRQ 119, as the mini's */
+		gpio: gpio@fa00000 {
+			compatible = "apple,s5l8940x-gpio";
+			reg = <0xfa00000 0x100000>;
+			interrupts = <119>;
+			gpio-controller;
+			#gpio-cells = <2>;
+			interrupt-controller;
+			#interrupt-cells = <2>;
+			#address-cells = <0>;
+			pin-count = <224>;
+			interrupt-groups = <1>;
+			status = "okay";
+
+			/* UART3, the BCM4329's Bluetooth: the ADT's function-tx is
+			 * 0x0603 = 51 and function-rts 0x0605 = 53, so RX 52 and
+			 * CTS 54 by the mini's layout (TX, RX, RTS, CTS). */
+			uart3_pins: uart3-pins {
+				pins = "gpio51", "gpio52", "gpio53", "gpio54";
+				function = "periph";
+			};
+
+			/* I2S0's pin group 0, the mini's layout: MCK 76, BCLK
+			 * 77, LRCK 78, DOUT 79, DIN 80.  iBoot leaves 77-80 on
+			 * the peripheral (0x1a20); MCK, which only the codec
+			 * needs, is set here. */
+			i2s0_pins: i2s0-pins {
+				pins = "gpio76", "gpio77", "gpio78", "gpio79", "gpio80";
+				function = "periph";
+			};
+		};
+
+		/* UART5 carries the bq27540's HDQ bus, as on the mini
+		 * (arm-io/uart5/gas-gauge). */
+		battery: hdq@2a00000 {
+			compatible = "apple,s5l8940x-hdq-battery";
+			reg = <0x2a00000 0x1000>;
+			status = "okay";
+		};
+
+		/* The boot console; the 30-pin connector carries it (the
+		 * ADT's uart0/iap is the dock's accessory protocol). */
+		uart0: serial@2500000 {
+			compatible = "apple,s5l-uart", "samsung,s3c6400-uart";
+			reg = <0x2500000 0x1000>;
+			interrupts = <21>;
+			clocks = <&uart_clk>, <&uart_clk>;
+			clock-names = "uart", "clk_uart_baud0";
+			status = "disabled";
+		};
+
+		/*
+		 * UART3: the BCM4329's Bluetooth (ADT uart3/bluetooth,
+		 * "bluetooth,n88").  REG_ON (function-bt_reset) is PMU GPIO 2,
+		 * BT_WAKE (function-bt_wake) is SoC GPIO 7.  iOS runs it at 3
+		 * Mbaud; 24 MHz / 16 is 1.5 Mbaud here.  The patchram is
+		 * brcm/BCM4329C0.hcd, iOS's own (./cascadia k93 firmware).
+		 * PMGR's UART3 state (0x3f101104) is on and iBoot leaves the
+		 * port on the 24 MHz clock (UCON 0x405).
+		 */
+		uart3: serial@2800000 {
+			compatible = "apple,s5l8940x-uart", "apple,s5l-uart",
+				     "samsung,s3c6400-uart";
+			reg = <0x2800000 0x1000>;
+			interrupts = <24>;
+			clocks = <&uart_clk>, <&uart_clk>;
+			clock-names = "uart", "clk_uart_baud0";
+			pinctrl-names = "default";
+			pinctrl-0 = <&uart3_pins>;
+			status = "okay";
+
+			bluetooth {
+				compatible = "brcm,bcm4329-bt";
+				shutdown-gpios = <&pmu 2 0>;
+				device-wakeup-gpios = <&gpio 7 0>;
+				max-speed = <1500000>;
+				/* locally administered, in the family of the
+				 * gadget's and Wi-Fi's MACs (02:93:00:00:00:04),
+				 * bytes reversed; the ADT's is iBoot's to fill from
+				 * syscfg.  Put the iPad's own here to use that. */
+				local-bd-address = [04 00 00 00 93 02];
+			};
+		};
+
+		/*
+		 * SPI1 and the digitizer (ADT spi1/multi-touch,
+		 * "multi-touch,k94": the iPad 2's touch is the same on all
+		 * three models).  function-reset 0x1105 = pin 141,
+		 * function-enable_download 0x1104 = 140, function-enable_cs
+		 * 0x1307 = 159, ATTN GPIO 21.  Its firmware is Z2F13,2, an older
+		 * digitizer than the mini's C1F14,1: stage 2 runs z2-boot with
+		 * the iPad 3's Z2 bootload (-n -a 21 -C 0x1000c000 -f).
+		 */
+		spi1: spi@2100000 {
+			compatible = "apple,s5l8940x-spi";
+			reg = <0x2100000 0x1000>;
+			interrupts = <29>;
+			clocks = <&spi1_ps>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+			status = "okay";
+
+			touch@0 {
+				compatible = "apple,z2-multitouch";
+				reg = <0>;
+				spi-max-frequency = <5000000>;
+				/* one LDO, as on the iPad 3 (j1ap.dts) */
+				hv-supply = <&touch_ldo>;
+				core-supply = <&touch_ldo>;
+				pmuclk-supply = <&touch_clk>;
+				reset-gpios = <&gpio 141 0>;
+				cs-gpios = <&gpio 159 0>;
+				irq-gpios = <&gpio 21 1>;
+				/* active low: the iPad 3's, the same bootloader
+				 * (AppleMultitouchZ2SPI), never enters HBPP with it
+				 * high (docs/research/j1-a5x.md) */
+				download-gpios = <&gpio 140 1>;
+				/* the driver wants a clock; the digitizer's own comes
+				 * from the PMU (pmuclk-supply) */
+				clocks = <&refclk24mhz>;
+				/* the digitizer is portrait (x 14745 across the
+				 * short side, y 19660 along the long one) and the
+				 * framebuffer landscape: touches on squares in its
+				 * four corners (2026-11-09) gave screen x = the
+				 * digitizer's y and screen y = its x, both growing,
+				 * no inversion */
+				touchscreen-swapped-x-y;
+			};
+		};
+
+		/* The 24 MHz counter in the watchdog block: the clocksource,
+		 * sched_clock and delay timer (apple_wdt_clkevt.c).  Without
+		 * it calibrate_delay() hangs on this board (k93-bringup.md). */
+		wdt: timer@f103020 {
+			compatible = "apple,s5l8940x-wdt-timer";
+			reg = <0xf103020 0x10>;
+			interrupts = <4>;
+			clock-frequency = <24000000>;
+			status = "okay";
+		};
+
+		/* Not driven; platsmp.c maps it to start CPU1 (PMGR +0x1214,
+		 * +0x1220, the ADT's function-enable_core). */
+		pmgr: power-management@f100000 {
+			compatible = "apple,s5l8940x-pmgr", "syscon";
+			reg = <0xf100000 0x7000>;
+			status = "disabled";
+		};
+
+		/*
+		 * USB.  The OTG PHY and the dwc2 gadget as on the mini.  The
+		 * K93's ADT tunes the PHY with uotgtune1-device 0x349 and
+		 * uotgtune2-device 0xf13 (the mini: 0x549, 0x2ff3); on a USB
+		 * boot the driver keeps what iBoot set.  No hsic-supply: the
+		 * K93 has no HSIC device, so EHCI stays off.
+		 */
+		otgphy: phy@6000000 {
+			compatible = "apple,s5l8940x-otgphy";
+			reg = <0x6000000 0x1000>,	/* otgphyctrl */
+			      <0xf108000 0x1000>;	/* usb-complex */
+			#phy-cells = <1>;
+			status = "okay";
+		};
+
+		dwc2: usb@6100000 {
+			compatible = "apple,s5l8940x-dwc2", "snps,dwc2";
+			reg = <0x6100000 0x10000>;
+			interrupts = <11>;
+			phys = <&otgphy 0>;
+			phy-names = "usb2-phy";
+			dr_mode = "peripheral";
+			g-rx-fifo-size = <512>;
+			g-np-tx-fifo-size = <128>;
+			g-tx-fifo-size = <128 128 128 128 128 128 128 128>;
+			status = "okay";
+		};
+
+		ehci: usb@6400000 {
+			compatible = "apple,s5l8940x-ehci", "generic-ehci";
+			reg = <0x6400000 0x10000>;
+			interrupts = <12>;
+			phys = <&otgphy 1>;
+			phy-names = "usb";
+			status = "disabled";
+		};
+
+		/*
+		 * PMGR power states, out of the K93's pmgr device-clocks
+		 * table: PMGR + 0x1000 + 4 * the entry's register index.  The
+		 * K93's entries are 44 bytes, not the mini's 36, but the
+		 * registers these use are where the mini has them.
+		 */
+		spi1_ps: spi1-ps@f1010e8 {		/* SPI1, id 68, index 58 */
+			compatible = "apple,s5l8940x-pmgr-clk-gate";
+			#clock-cells = <0>;
+			reg = <0xf1010e8 0x4>;
+			clocks = <&refclk24mhz>;
+			clock-output-names = "spi1_ps";
+		};
+
+		gfx_sys_ps: gfx-sys-ps@f101024 {	/* GFX_SYS-CLK, index 9 */
+			compatible = "apple,s5l8940x-pmgr-clk-gate";
+			#clock-cells = <0>;
+			reg = <0xf101024 0x4>;
+			clocks = <&refclk24mhz>;
+			clock-output-names = "gfx_sys_ps";
+		};
+
+		gfx_ps: gfx-ps@f101028 {		/* GFX-CLK, index 10 */
+			compatible = "apple,s5l8940x-pmgr-clk-gate";
+			#clock-cells = <0>;
+			reg = <0xf101028 0x4>;
+			clocks = <&refclk24mhz>;
+			clock-output-names = "gfx_ps";
+		};
+
+		/* SDIO-WIFI, id 56 (the sdio node's clock-gates 0x38),
+		 * index 0x2e: 0x3f1010b8. */
+		sdio_ps: sdio-ps@f1010b8 {
+			compatible = "apple,s5l8940x-pmgr-clk-gate";
+			#clock-cells = <0>;
+			reg = <0xf1010b8 0x4>;
+			clocks = <&refclk24mhz>;
+			clock-output-names = "sdio_ps";
+		};
+
+		/* I2S0, the audio port: clock-gates 115, 0x3f1010a0
+		 * (docs/research/k93-audio.md section 3). */
+		i2s0_ps: i2s0-ps@f1010a0 {
+			compatible = "apple,s5l8940x-pmgr-clk-gate";
+			#clock-cells = <0>;
+			reg = <0xf1010a0 0x4>;
+			clocks = <&refclk24mhz>;
+			clock-output-names = "i2s0_ps";
+		};
+
+		/*
+		 * The SDIO host (ADT arm-io/sdio, "sdio,s5l8940x"): an SDHC at
+		 * arm-io + 0, IRQ 39, powered by SDIO-WIFI, driven as an SDHCI
+		 * 2.00 host with PIO (drivers/mmc/host/sdhci-apple-s5l.c, which
+		 * also covers the card's CIS without FUNCE and the controller's
+		 * data buffer).  iOS runs the BCM4329 at 4 bits and 51.3 MHz in
+		 * high-speed mode (sdio.card.clock-rate, speed-mode 17); here it
+		 * is 24 MHz (48 MHz / 2), default speed: the card's CCCR is
+		 * revision 1.10, which Linux does not ask for high speed.
+		 */
+		sdio: sdio@0 {
+			compatible = "apple,s5l8940x-sdio";
+			reg = <0x0 0x1000>;
+			interrupts = <39>;
+			clocks = <&sdio_ps>;
+			clock-names = "gate";
+			bus-width = <4>;
+			non-removable;
+			cap-sd-highspeed;
+			max-frequency = <25000000>;
+			keep-power-in-suspend;
+			mmc-pwrseq = <&wifi_pwrseq>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+			status = "okay";
+
+			/* brcmfmac: brcm/brcmfmac4329-sdio.bin and .txt, iOS's
+			 * own (./cascadia k93 firmware): Apple's 4.221.122
+			 * "minioctl" build, which patches/tree/0004 makes
+			 * brcmfmac take.  Scans 2.4 and 5 GHz (2026-11-09). */
+			wifi@1 {
+				compatible = "brcm,bcm4329-fmac";
+				reg = <1>;
+			};
+		};
+
+		/* The SGX543MP2, as on the mini (ADT /arm-io/sgx, IRQ 49,
+		 * brn_31195, the same GFX_SYS/GFX power states).  Its
+		 * microkernel is the mini's too: IMGSGX543's __const is the
+		 * same bytes in the K93's kernelcache and __data differs only
+		 * in three kext pointers past what the driver reads
+		 * (scripts/extract-sgx-firmware.py --board k93). */
+		sgx: gpu@5100000 {
+			compatible = "apple,s5l8940x-sgx";
+			reg = <0x5100000 0x18000>;
+			interrupts = <49>;
+			clocks = <&gfx_sys_ps>, <&gfx_ps>;
+			clock-names = "gfx_sys", "gfx";
+			apple,brn-31195;
+		};
+
+		/*
+		 * The speaker (docs/research/k93-audio.md, sound/soc/apple/
+		 * s5l8940-audio.c): I2S0 sends the samples as clock master,
+		 * CDMA channel 0x1f (request line 1, the ADT's i2s0
+		 * dma-channels) feeds it, NCO 0 makes its BCLK (342 MHz
+		 * reference), its MCK is the codec's 6 MHz MCLK -- offered as
+		 * this node's clock -- and the i2s-switch puts all of it on pin
+		 * group 0.  The windows: I2S0, AE2's ACS (lane 0 gates I2S0's
+		 * registers), the i2s-switch, the PMGR's NCOs, CDMA, the PMGR's
+		 * AUDIO-CLK.
+		 */
+		audio: audio-controller@4190000 {
+			compatible = "apple,s5l8940x-audio";
+			reg = <0x4190000 0x1000>, <0x41a0000 0x1000>,
+			      <0xfa01000 0x1000>, <0xf100110 0x70>,
+			      <0x7000000 0x2d000>, <0xf100058 0x4>;
+			reg-names = "i2s", "acs", "switch", "nco", "cdma", "audioclk";
+			clocks = <&i2s0_ps>;
+			clock-names = "i2s";
+			#clock-cells = <0>;
+			#sound-dai-cells = <0>;
+			pinctrl-names = "default";
+			pinctrl-0 = <&i2s0_pins>;
+			apple,dma-channel = <0x1f 1>;
+			apple,nco-reference-hz = <342000000>;
+			apple,codec = <&codec>;
+		};
+
+		i2c0: i2c@3200000 {
+			compatible = "apple,s5l8940x-i2c";
+			reg = <0x3200000 0x1000>;
+			clock-frequency = <100000>;
+			interrupts = <18>;
+			clocks = <&refclk24mhz>;
+			clock-names = "i2c";
+			#address-cells = <1>;
+			#size-cells = <0>;
+			status = "okay";
+
+			/* The same Dialog D1946 as the mini's: one register
+			 * map, one driver. */
+			pmu: pmu@3c {
+				compatible = "apple,pmu-d1946";
+				reg = <0x3c>;
+				system-power-controller;
+				gpio-controller;
+				#gpio-cells = <2>;
+				#address-cells = <1>;
+				#size-cells = <0>;
+
+				/*
+				 * The digitizer's rail: the ADT's function-power_ldo
+				 * is 0x0200, flags 0x02 and LDO index 0.  The D1946
+				 * kext's LDO table (12 bytes an entry, 12H321's
+				 * AppleD1946PMU __TEXT,__const at 0x80e9eec8; its
+				 * entries 12 and 19 are the ones p105ap.dts uses)
+				 * gives index 0 voltage register 0x2f and enable
+				 * register 0x20, bit 0x20.
+				 */
+				touch_ldo: touch_ldo@20 {
+					compatible = "apple,pmu-pwrsw";
+					reg = <0x20>;
+					mask = <0x20>;
+					enable = <0x20>;
+				};
+
+				/*
+				 * The digitizer's clock: function-clock_enable is
+				 * PMU GPIO 0 (register 0x61), which on this board,
+				 * unlike the mini's, is the 32 kHz clock itself.
+				 * The iPad 3, whose digitizer takes the same
+				 * bootloader, needs the pin in the PMU's 32 kHz
+				 * clock-out mode, 0x51 from iBoot's 0x11 (mode bits
+				 * 7:5 = 010; driven high, the firmware never answers
+				 * after EXECUTE -- docs/research/j1-a5x.md); bit 6 is
+				 * the same switch here, to be checked on this PMU.
+				 */
+				touch_clk: touch_clk@61 {
+					compatible = "apple,pmu-pwrsw";
+					reg = <0x61>;
+					mask = <0x40>;
+					enable = <0x40>;
+				};
+
+				/* The PMU's white-LED driver, as on the mini (the
+				 * ADT's wled-enables is 0x3f on both).  iOS sends
+				 * the level through the DWI block (function-
+				 * backlight_update = arm-io/dwi, AppleS5L8940XDWI::
+				 * sendWLED: DWI+0x14 = 0x20000000 | (L & 3) << 9 |
+				 * L >> 2, then DWI+0x10 = 0x71) -- the mini's ADT
+				 * says the same, and plain I2C to the same chip does
+				 * the job there. */
+				backlight: wled@d0 {
+					compatible = "apple,pmu-wled";
+					reg = <0xd0>;
+					apple,enable-reg = <0xd2>;
+					apple,wled-enables = <0x3f>;
+				};
+
+				/* The USB input limit, 0x3d.  The K93's charger
+				 * node allows 2100 mA (usb-input-limit-max 0x834);
+				 * the driver writes nothing until armed. */
+				charger@3d {
+					compatible = "apple,pmu-d1946-charger";
+					reg = <0x3d>;
+				};
+			};
+
+			/* The codec, a Cirrus CS42L63 (the ADT's audio-codec):
+			 * reset is PMU GPIO 13, active low; the speaker's
+			 * amplifier is enabled by SoC GPIO 39 (iOS's
+			 * function-spkr_mute: high plays); MCLK is I2S0's MCK.
+			 * sound/soc/codecs/cs42l63.c runs iOS's own sequences. */
+			codec: codec@4a {
+				compatible = "cirrus,cs42l63";
+				reg = <0x4a>;
+				reset-gpios = <&pmu 13 1>;
+				speaker-enable-gpios = <&gpio 39 0>;
+				clocks = <&audio>;
+				clock-names = "mclk";
+				#sound-dai-cells = <0>;
+			};
+		};
+
+		/* arm-io/i2c1: the AK8975 compass at 0x0e (and an AD7147A
+		 * capacitance sensor at 0x2c, not described here). */
+		i2c1: i2c@3300000 {
+			compatible = "apple,s5l8940x-i2c";
+			reg = <0x3300000 0x1000>;
+			clock-frequency = <100000>;
+			interrupts = <19>;
+			clocks = <&refclk24mhz>;
+			clock-names = "i2c";
+			#address-cells = <1>;
+			#size-cells = <0>;
+			status = "okay";
+
+			/* ADT compass,akm8975b (WIA reads 0x48).  Its
+			 * orientation rows are (0 1 0) (-1 0 0) (0 0 1): unlike
+			 * gravity, a field reads the same sign in iOS and IIO,
+			 * so they are the matrix in iOS's portrait axes; turned
+			 * to the landscape screen (see i2c2 below) they become
+			 * diag(-1, -1, 1). */
+			magnetometer@e {
+				compatible = "asahi-kasei,ak8975";
+				reg = <0x0e>;
+				mount-matrix = "-1", "0", "0",
+					       "0", "-1", "0",
+					       "0", "0", "1";
+			};
+		};
+
+		/*
+		 * arm-io/i2c2: the motion sensors and the light sensor.  The
+		 * accelerometer is an ST LIS331DLH at 0x19 (st_accel), with
+		 * interrupts on GPIO 36 and 38.  The ADT's orientation rows are
+		 * (0 1 0) (-1 0 0) (0 0 -1) and, as on the mini, take the chip
+		 * to iOS's axes where gravity reads -1 g; IIO wants the push
+		 * against gravity: (0 -1 0) (1 0 0) (0 0 1) in iOS's portrait
+		 * axes (Home at the bottom).
+		 *
+		 * IIO's frame is the screen's, and the K93's framebuffer is
+		 * landscape: upright with the Home button on the LEFT (the
+		 * owner's iPad, 2026-11-10).  From portrait that is a quarter
+		 * turn clockwise, so screen x = portrait y and screen y =
+		 * -portrait x, i.e. every matrix is (0 1 0) (-1 0 0) (0 0 1)
+		 * times its portrait one: the accelerometer's becomes the
+		 * identity, the gyro's and the compass's below follow.
+		 */
+		i2c2: i2c@3400000 {
+			compatible = "apple,s5l8940x-i2c";
+			reg = <0x3400000 0x1000>;
+			clock-frequency = <100000>;
+			interrupts = <20>;
+			clocks = <&refclk24mhz>;
+			clock-names = "i2c";
+			#address-cells = <1>;
+			#size-cells = <0>;
+			status = "okay";
+
+			accelerometer@19 {
+				compatible = "st,lis331dlh-accel";
+				reg = <0x19>;
+				mount-matrix = "1", "0", "0",
+					       "0", "1", "0",
+					       "0", "0", "1";
+			};
+
+			/* ADT als,tsl2581 (ID reads 0x93, which tsl2583.c
+			 * takes); its interrupt, GPIO 37, is not used. */
+			light-sensor@39 {
+				compatible = "amstaos,tsl2581";
+				reg = <0x39>;
+			};
+
+			/* ADT gyro,ap3gdl: WHO_AM_I reads 0xd3, an ST L3G4200D
+			 * (the mini's part, 0xd5, is another).  Orientation rows
+			 * (-1 0 0) (0 -1 0) (0 0 1), the matrix in portrait axes
+			 * as they stand, turned to the landscape screen; its two
+			 * interrupts (GPIO 33, 17) not used. */
+			gyro@68 {
+				compatible = "st,l3g4200d-gyro";
+				reg = <0x68>;
+				mount-matrix = "0", "-1", "0",
+					       "1", "0", "0",
+					       "0", "0", "1";
+			};
+		};
+	};
 };

@@ -44,7 +44,11 @@ inc.write_text(f"\t.equ\tDTB_PHYS, {va:#x}\n\t.equ\tDTB_SIZE, {tot:#x}\n")
 PY
 
 # Собираем linux-boot loader
+# LOADER_FLAGS: the board's -D overrides (./cascadia k93 build passes the iPad
+# 2's framebuffer geometry and a stack below the kernel); none for the mini.
+# shellcheck disable=SC2086
 arm-linux-gnueabihf-gcc -static -nostdlib -nostartfiles -O2 \
+    ${LOADER_FLAGS:-} \
     -I "$ROOT/pongo" \
     -fno-builtin -ffreestanding \
     -Wl,--build-id=none \

@@ -20,11 +20,17 @@
 #                       would have made is made below: the messagebus user
 #                       dbus-daemon --system drops to (Alpine's uid and gid),
 #                       and the empty state directories
+#   i2c-tools           i2cget/i2cset/i2cdump: the PMU and the sensors, read
+#                       and set by hand during a bring-up (the iPad 2's PMU
+#                       GPIOs, its backlight path) without a new image
 #   alsa-utils          the speakers: aplay, speaker-test, amixer, alsamixer,
 #                       and alsa-lib, which SDL and OpenAL play through.  The
 #                       card is in the kernel and /etc/asound.conf (dmix as
 #                       "default") in initramfs/, so sound works from the
 #                       first boot, RAM or NFS root, with nothing to install
+#   e2fsprogs           mke2fs: the iPad 2's Linux volume (tools/nand/k93lv.c)
+#                       gets its file system in stage 1, before the root it
+#                       holds the changes of is mounted
 #
 # dropbear comes from add-dropbear.sh.  Called by build-alpine-rootfs.sh, and by
 # ./cascadia a5 build for a tree made before this list grew.  An NFS root is
@@ -37,7 +43,7 @@ TREE="$ROOT/build/initramfs-root"
 
 bash "$ROOT/scripts/add-apk-packages.sh" \
     nfs-utils libtirpc-conf busybox-static iw wpa_supplicant fbkeyboard font-dejavu bluez dbus \
-    alsa-utils
+    alsa-utils i2c-tools e2fsprogs
 [ -s "$TREE/etc/netconfig" ] || {
     echo "missing /etc/netconfig: libtirpc-conf was not installed" >&2
     exit 1

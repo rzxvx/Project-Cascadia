@@ -1,0 +1,61 @@
+--- a/sound/soc/apple/Kconfig
++++ b/sound/soc/apple/Kconfig
+@@ -17,3 +17,14 @@
+ 	  The iPad mini 1 (A5, S5L8942X) speakers: the MCA audio port, its
+ 	  CDMA channel and the clocks and pin routing they need, as an ALSA
+ 	  card with the two CS35L19 amplifiers.
++
++config SND_SOC_APPLE_S5L8940_AUDIO
++	tristate "iPad 2 audio (Apple A5 I2S0, CDMA, CS42L63)"
++	depends on ARCH_APPLE_S5L || COMPILE_TEST
++	depends on COMMON_CLK && I2C
++	select SND_SOC_CS42L63
++	default ARCH_APPLE_S5L
++	help
++	  The iPad 2 (A5, S5L8940X) speaker: the I2S0 audio port as clock
++	  master, its CDMA channel, its MCLK for the codec and the pin
++	  routing, as an ALSA card with the CS42L63 codec.
+--- a/sound/soc/apple/Makefile
++++ b/sound/soc/apple/Makefile
+@@ -4,3 +4,6 @@
+ 
+ snd-soc-apple-s5l-audio-y	:= s5l-audio.o
+ obj-$(CONFIG_SND_SOC_APPLE_S5L_AUDIO)	+= snd-soc-apple-s5l-audio.o
++
++snd-soc-apple-s5l8940-audio-y	:= s5l8940-audio.o
++obj-$(CONFIG_SND_SOC_APPLE_S5L8940_AUDIO)	+= snd-soc-apple-s5l8940-audio.o
+--- a/sound/soc/codecs/Kconfig
++++ b/sound/soc/codecs/Kconfig
+@@ -770,6 +770,14 @@
+ 	  The boosted class-D speaker amplifier of the iPad mini 1, a
+ 	  sibling of the CS35L33, with Apple's power-on sequence.
+ 
++config SND_SOC_CS42L63
++	tristate "Cirrus Logic CS42L63 codec (iPad 2)"
++	depends on I2C
++	depends on GPIOLIB
++	help
++	  The iPad 2's codec, a CS42L73 sibling with no datasheet: driven
++	  with the register sequences of iOS's own driver.
++
+ config SND_SOC_CS35L33
+ 	tristate "Cirrus Logic CS35L33 CODEC"
+ 	depends on I2C
+--- a/sound/soc/codecs/Makefile
++++ b/sound/soc/codecs/Makefile
+@@ -64,6 +64,7 @@
+ snd-soc-cs-amp-lib-test-y := cs-amp-lib-test.o
+ snd-soc-cs35l32-y := cs35l32.o
+ snd-soc-cs35l19-y := cs35l19.o
++snd-soc-cs42l63-y := cs42l63.o
+ snd-soc-cs35l33-y := cs35l33.o
+ snd-soc-cs35l34-y := cs35l34.o
+ snd-soc-cs35l35-y := cs35l35.o
+@@ -472,6 +473,7 @@
+ obj-$(CONFIG_SND_SOC_CS_AMP_LIB_TEST)	+= snd-soc-cs-amp-lib-test.o
+ obj-$(CONFIG_SND_SOC_CS35L32)	+= snd-soc-cs35l32.o
+ obj-$(CONFIG_SND_SOC_CS35L19)	+= snd-soc-cs35l19.o
++obj-$(CONFIG_SND_SOC_CS42L63)	+= snd-soc-cs42l63.o
+ obj-$(CONFIG_SND_SOC_CS35L33)	+= snd-soc-cs35l33.o
+ obj-$(CONFIG_SND_SOC_CS35L34)	+= snd-soc-cs35l34.o
+ obj-$(CONFIG_SND_SOC_CS35L35)	+= snd-soc-cs35l35.o

@@ -34,7 +34,7 @@ IP_DEV="${IP_DEV:-10.55.0.2}"
 LINK_WAIT="${LINK_WAIT:-180}"
 
 # One source of truth for the MAC: the bootargs the device actually boots with.
-MAC=$(LC_ALL=C grep -o 'g_cdc.host_addr=[0-9A-Fa-f:]*' "$ROOT/dts/p105ap.dts" 2>/dev/null \
+MAC=$(LC_ALL=C grep -o 'g_cdc.host_addr=[0-9A-Fa-f:]*' "$ROOT/dts/${BOARD:-p105}ap.dts" 2>/dev/null \
       | head -1 | cut -d= -f2 | tr 'A-F' 'a-f' || true)
 MAC="${MAC:-02:10:5a:05:00:01}"
 

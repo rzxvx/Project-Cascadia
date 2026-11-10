@@ -11,6 +11,7 @@
 #   the GPU's pack            ./cascadia a5 dev gpu (from your IPSW)
 #   SuperTux 0.7.0            tools/desktop/supertux/build.sh
 #   screenpad                 tools/screenpad/build.sh
+#   YouTube (mpv, yt-dlp)     tools/desktop/youtube-setup.sh
 #
 # Each of those installs onto the running iPad over ssh; here they run
 # unchanged, with tools/desktop/rootssh/ssh first on PATH: it runs what they
@@ -26,7 +27,7 @@
 #             fresh, the package list beside it (OUT.packages)
 #   OUT=      where the tar goes (build/desktop-root.tar)
 #   ONLY="mesa gpu"   just those steps (xfce, patched, autorotate, mesa, gpu,
-#             supertux, screenpad)
+#             supertux, screenpad, youtube)
 #
 # The first time is long: XFCE is ~280 packages under ARM emulation, and Mesa
 # and SuperTux build for the better part of an hour each unless build/ has
@@ -45,7 +46,7 @@ fi
 C=cascadia-a5-root
 DEV=root@desktop-root
 ALPINE="${ALPINE:-3.24}"
-STEPS="${ONLY:-xfce patched autorotate mesa gpu supertux screenpad}"
+STEPS="${ONLY:-xfce patched autorotate mesa gpu supertux screenpad youtube}"
 
 say()  { printf '==> %s\n' "$*"; }
 fail() { printf 'error: %s\n' "$*" >&2; exit 1; }
@@ -116,17 +117,22 @@ step mesa       bash "$ROOT/cascadia" dev mesa --install "$DEV"
 step gpu        bash "$ROOT/cascadia" dev gpu --install "$DEV"
 step supertux   sh "$ROOT/tools/desktop/supertux/build.sh" install
 step screenpad  sh "$ROOT/tools/screenpad/build.sh" install
+step youtube    sh -c "ssh $DEV sh -s < '$ROOT/tools/desktop/youtube-setup.sh'"
 
 say "checking what the iPad will find"
 # apk's own view: every package there and a world it can resolve (a
 # --force-broken-world that skipped something shows up here, not on the iPad)
-inroot 'chroot /target apk info -e xorg-server xfce4 eudev touchegg svkbd supertux supertux-data py3-gobject3 >/dev/null' \
+# (SuperTux only when it was a step: the iPad 2's root, on iOS's System
+# partition, leaves it out for room -- ONLY= without supertux)
+has_step() { case " $STEPS " in *" $1 "*) return 0 ;; esac; return 1; }
+inroot "chroot /target apk info -e xorg-server xfce4 eudev touchegg svkbd py3-gobject3 \
+    $(has_step supertux && echo supertux supertux-data) >/dev/null" \
     || fail "a package is missing from the root (apk info above)"
 inroot 'chroot /target apk -s add --no-network >/dev/null' \
     || fail "apk cannot resolve the root's world -- something was installed broken (above)"
 for f in usr/local/bin/desktop usr/local/bin/autorotate usr/bin/xrandr usr/bin/xinput usr/local/bin/screenpad usr/local/bin/tux-gpudemo \
          usr/local/lib/sgx-mesa/lib/libGLESv2.so.2 etc/ld-musl-armhf.path \
-         $([ "${PUBLIC:-0}" = 1 ] || echo usr/local/lib/sgx2d); do
+         $([ "${PUBLIC:-0}" = 1 ] || echo usr/local/lib/sgx2d) $(has_step youtube && echo usr/local/bin/youtube); do
     inroot "chroot /target test -e /$f" || fail "no /$f in the root"
 done
 echo "    ok: XFCE, X, SuperTux, screenpad, autorotate, Mesa, the GPU's pack"

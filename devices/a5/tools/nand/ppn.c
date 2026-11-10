@@ -67,8 +67,35 @@ static void *map(int fd, uint32_t pa)
     return p;
 }
 
+/* Only the iPad mini 1's NAND is PPN.  The iPad 2 (K93) has raw NAND behind
+ * the same H2FMI windows, and these command sequences mean something else to
+ * a raw part -- so on any other board, refuse before touching a register.
+ * PPN_ANY_BOARD=1 overrides it, for someone who has checked their chips. */
+static void ppn_board_check(void)
+{
+    char buf[256];
+    int fd = open("/proc/device-tree/compatible", O_RDONLY);
+    ssize_t n = fd < 0 ? -1 : read(fd, buf, sizeof(buf) - 1);
+
+    if (fd >= 0)
+        close(fd);
+    if (getenv("PPN_ANY_BOARD"))
+        return;
+    if (n > 0) {
+        buf[n] = 0;
+        if (!strcmp(buf, "apple,p105ap"))   /* the first string is the board */
+            return;
+        fprintf(stderr, "this is %s, not the iPad mini 1 (apple,p105ap): its NAND is not PPN, "
+                "and these tools must not touch it (PPN_ANY_BOARD=1 overrides)\n", buf);
+    } else {
+        fprintf(stderr, "cannot read /proc/device-tree/compatible -- not running these blind\n");
+    }
+    exit(1);
+}
+
 int ppn_open(void)
 {
+    ppn_board_check();
     int fd = open("/dev/mem", O_RDWR | O_SYNC);
     if (fd < 0) {
         perror("/dev/mem");

@@ -29,6 +29,13 @@ typedef unsigned int u32;
 
 #define draw_u32(x, y, v, c) draw_u32_hex8(x, y, v, c, SCALE)
 
+/* build-bundle.sh LOADER_FLAGS picks the board (./cascadia k93 build) */
+#ifdef BOARD_K93
+#define BOARD_NAME	"K93"
+#else
+#define BOARD_NAME	"P105"
+#endif
+
 #define BUNDLE_BASE	0x80000000u
 #define OVL_MAGIC	0x314C564Fu	/* "OVL1" */
 
@@ -70,7 +77,7 @@ u32 main(void)
 
 	fb_text_fill(0, 0, FB_TEXT_W, FB_TEXT_H, BG);
 
-	line(0, "P105 linux-boot", ACC);
+	line(0, BOARD_NAME " linux-boot", ACC);
 	line(1, "ACE iBEC trampoline", FG);
 	line(2, "FB 0x9F6FC000", FG);
 
