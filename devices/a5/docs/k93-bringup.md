@@ -36,7 +36,7 @@ reaches (below):
 | `reboot` | works: the watchdog's bite, back in iOS by itself in 30-140 s |
 | USB gadget (ACM + ECM, `02:93:00:00:00:01/02`), ssh | works; `ssh root@fe80::93:ff:fe00:2%<host interface>` needs no address on the host at all |
 | simplefb 1024x768, console | works |
-| buttons (gpio-keys) | registered, not yet pressed in anger |
+| buttons (gpio-keys) | all work (2026-11-10), through `p105-keys` as on the mini: volume up/down step the speaker's volume -- the CS42L63's master, 16 steps of 4 dB -- or, with the side switch flipped, the backlight, and repeat when held; Hold puts the screen out and back; Home held 0.8 s turns the rotation lock on or off (the backlight dips once or twice) |
 | backlight | works over I2C (the PMU's WLED, 0xd0/0xd1/0xd2), 1796/2047 as iOS left it |
 | battery (bq27540 over HDQ) | works: charge, voltage, current, cycles |
 | charging | works with the charger armed from boot: iBEC leaves the limit at 100 mA, the iPad drained at -750 mA; armed, +340..470 mA |

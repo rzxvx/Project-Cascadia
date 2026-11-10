@@ -170,7 +170,9 @@
 	/*
 	 * The ADT's /buttons: hold GPIO 1, menu (Home) GPIO 0, volup 0x0701 =
 	 * 57, voldown 0x0703 = 59, ringerab 0x0602 = 50, all active low.  The
-	 * same codes as the mini's (p105ap.dts), so p105-keys works unchanged.
+	 * same codes as the mini's (p105ap.dts), and p105-keys does with them
+	 * what it does there: volume steps the iPad2 card's master, or, with
+	 * the side switch flipped, the backlight.
 	 * The Smart Cover's hall-effect switch is PMU GPIO 14, an event of
 	 * the PMU's own interrupt controller -- not here yet.
 	 */
