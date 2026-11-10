@@ -496,13 +496,15 @@ make_overlay() {
     make_overlay_common
 }
 
-# The iPad 2's Apple files: the digitizer's (Z2F13,2), the BCM4329's and the
-# GPU's microkernel, which ./cascadia k93 firmware takes from the IPSW and
-# from the iPad's own iOS (tools/k93-firmware.sh).
+# The iPad 2's Apple files: the digitizer's (Z2F13,2), the BCM4329's, the
+# GPU's microkernel and the camera ISP's firmware with its sensors' set-files,
+# which ./cascadia k93 firmware takes from the IPSW and from the iPad's own
+# iOS (tools/k93-firmware.sh).
 make_overlay_k93() {
     local f
     mkdir -p "$OVL/lib/firmware/brcm" "$OVL/lib/firmware/apple"
-    for f in K93.mtprops brcm/brcmfmac4329-sdio.bin brcm/brcmfmac4329-sdio.txt brcm/BCM4329C0.hcd apple/sgx543.fw; do
+    for f in K93.mtprops brcm/brcmfmac4329-sdio.bin brcm/brcmfmac4329-sdio.txt brcm/BCM4329C0.hcd apple/sgx543.fw \
+             apple/h4isp-firmware.bin apple/h4isp-setfile-9726.bin apple/h4isp-setfile-7739.bin; do
         if [ -s "$BOARD_FW/$f" ]; then
             cp "$BOARD_FW/$f" "$OVL/lib/firmware/$f"
             note "ok: $f ($BOARD_FW)"

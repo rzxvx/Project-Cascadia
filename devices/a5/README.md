@@ -833,7 +833,7 @@ Build products (`output/`) and stock firmware are not tracked; everything in
   ~~autorotate~~ ✓ → ~~iOS's files off the NAND~~ ✓ → ~~NAND as Linux's own
   storage~~ ✓ (the Linux volume) → ~~the headphones~~ ✓ (switching by
   themselves) → ~~the built-in microphone~~ ✓ → ~~a headset's microphone~~ ✓
-  (biased, capture moving to it) → the cameras, USB host.
+  (biased, capture moving to it) → ~~the cameras~~ ✓ (V4L2, both) → USB host.
 
 The iPhone 11 and the devices planned next: the
 [project README](../../README.md#roadmap).

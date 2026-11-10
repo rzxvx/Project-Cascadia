@@ -56,7 +56,8 @@ reaches (below):
 | desktop | works: XFCE on the GPU (Xorg modesetting with glamor on the SGX543MP2, OpenGL 2.1), from the root on the NAND, started by itself at boot; touch, the on-screen keyboard (panel button), autorotate and its lock |
 | YouTube | works: the desktop's YouTube launcher (yad search, mpv, yt-dlp): H.264 480p through the GPU with sound, ~1 frame in 700 dropped; ~30 s from Play to the picture after a boot, ~15 s after that (below) |
 | clock | set by NTP once there is a network (stage 2); the build machine's time zone |
-| camera, USB host | not yet |
+| cameras (the A5's H4 ISP: sensor 0x9726 rear, 0x7739 front) | work (2026-11-10): V4L2 devices `/dev/video0` (the rear: 1280x720, 1280x800, 640x360) and `/dev/video1` (the front: 640x480), YUYV at 30 fps, both pictures upright on the landscape desktop (the front one unmirrored, as V4L2 has it).  The ISP's own CPU runs iOS 8.4.1's firmware behind its IOMMU (`drivers/media/platform/apple/apple-h4isp.c`): booted when a camera starts streaming, powered down when it stops; one camera at a time.  In low light the firmware's exposure takes the rate down to 15 fps, as iOS lets it; `exposure_auto_priority` 0 holds the mode's rate.  `mpv av://v4l2:/dev/video1` shows it on the desktop; the firmware and the set-files come out of the IPSW with `./cascadia k93 firmware` ([research/k93-camera.md](research/k93-camera.md)) |
+| USB host | not yet: waits for a 30-pin USB adapter |
 
 ### Touch: the Z2F13's bootload, as iOS 8.4.1 does it
 

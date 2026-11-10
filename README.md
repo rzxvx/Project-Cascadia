@@ -73,7 +73,7 @@ IPSW (or Apple's CDN) on your machine.
   Linux's own storage. [devices/a5/README.md](devices/a5/README.md#roadmap)
 - **iPad 2 (A5)** — experimental, the A5 tree's second board: phases 1-3
   done, NAND as Linux's own storage, headphones, the built-in and a
-  headset's microphone included; next the cameras, USB host.
+  headset's microphone, both cameras included; next USB host.
   [devices/a5/docs/k93-bringup.md](devices/a5/docs/k93-bringup.md)
 - **iPhone XR (A12)** — contributed (#31), experimental: tethered Linux with
   framebuffer/touch, USB, Wi-Fi, Bluetooth and Debian/XFCE over NFS as its

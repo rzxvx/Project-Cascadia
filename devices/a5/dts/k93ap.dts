@@ -258,6 +258,20 @@
 				pins = "gpio76", "gpio77", "gpio78", "gpio79", "gpio80";
 				function = "periph";
 			};
+
+			/* The cameras' clock pins, 193 rear and 195 front (the
+			 * ADT's function-sensor_extclk and _extclk2): the
+			 * sensors' clocks while the ISP runs, plain outputs
+			 * driven low otherwise, as iBoot leaves them. */
+			camera_clk_pins: camera-clk-pins {
+				pins = "gpio193", "gpio195";
+				function = "periph";
+			};
+
+			camera_clk_idle: camera-clk-idle {
+				pins = "gpio193", "gpio195";
+				function = "gpio";
+			};
 		};
 
 		/* UART5 carries the bq27540's HDQ bus, as on the mini
@@ -464,6 +478,17 @@
 			clock-output-names = "i2s0_ps";
 		};
 
+		/* HPERF-ISP (ADT clock 45): the camera ISP's and its IOMMU's
+		 * power state, which iBoot leaves off (docs/research/
+		 * k93-camera.md). */
+		isp_ps: isp-ps@f101048 {
+			compatible = "apple,s5l8940x-pmgr-clk-gate";
+			#clock-cells = <0>;
+			reg = <0xf101048 0x4>;
+			clocks = <&refclk24mhz>;
+			clock-output-names = "isp_ps";
+		};
+
 		/*
 		 * The SDIO host (ADT arm-io/sdio, "sdio,s5l8940x"): an SDHC at
 		 * arm-io + 0, IRQ 39, powered by SDIO-WIFI, driven as an SDHCI
@@ -513,6 +538,34 @@
 			clocks = <&gfx_sys_ps>, <&gfx_ps>;
 			clock-names = "gfx_sys", "gfx";
 			apple,brn-31195;
+		};
+
+		/*
+		 * The cameras (docs/research/k93-camera.md, drivers/media/
+		 * platform/apple/apple-h4isp.c): the H4 ISP (ADT isp,s5l8940x,
+		 * IRQ 7), a CPU of its own that runs iOS's firmware behind
+		 * its IOMMU (dart-rt, the second window, IRQ 117), sensor
+		 * 0x9726 on channel 0 (rear) and 0x7739 on channel 1 (front).
+		 * "ps" is HPERF-ISP's register once more, for the ISP's reset,
+		 * a pulse on its bit 31 (the ADT's function-device_reset).
+		 * The sensors' enables (function-sensor_shutdown and _2): the
+		 * rear's active high, the front's active low.
+		 */
+		isp: isp@a000000 {
+			compatible = "apple,s5l8940x-isp";
+			reg = <0xa000000 0x100000>, <0xa400000 0x2000>,
+			      <0xf101048 0x4>;
+			reg-names = "isp", "dart", "ps";
+			interrupts = <7>, <117>;
+			interrupt-names = "isp", "dart";
+			clocks = <&isp_ps>;
+			vdd-supply = <&camera_ldo>;
+			pinctrl-names = "active", "idle";
+			pinctrl-0 = <&camera_clk_pins>;
+			pinctrl-1 = <&camera_clk_idle>;
+			rear-enable-gpios = <&gpio 192 0>;
+			front-enable-gpios = <&gpio 194 1>;
+			apple,sensor-type = <6>;
 		};
 
 		/*
@@ -582,6 +635,20 @@
 					reg = <0x20>;
 					mask = <0x20>;
 					enable = <0x20>;
+				};
+
+				/*
+				 * The cameras' supply: the ISP node's function-
+				 * power_enable is LDO 10, the same table's enable
+				 * register 0x21, bit 0x80 (voltage register 0x39,
+				 * 2.85 V as iBoot sets it).  On at boot; the ISP
+				 * driver turns it off when no camera streams.
+				 */
+				camera_ldo: camera_ldo@21 {
+					compatible = "apple,pmu-pwrsw";
+					reg = <0x21>;
+					mask = <0x80>;
+					enable = <0x80>;
 				};
 
 				/*

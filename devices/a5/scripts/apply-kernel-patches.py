@@ -65,6 +65,9 @@ NEW_FILES = [
     "sound/soc/apple/s5l8940-audio.c",
     "sound/soc/codecs/cs42l63.c",
     "sound/soc/codecs/cs42l63-seq.h",
+    "drivers/media/platform/apple/Kconfig",
+    "drivers/media/platform/apple/Makefile",
+    "drivers/media/platform/apple/apple-h4isp.c",
     "Documentation/devicetree/bindings/interrupt-controller/apple,aic1.yaml",
     "fs/hfsplus/decmpfs.c",
 ]

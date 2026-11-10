@@ -21,14 +21,17 @@
 #                                 brings wl up (the mini's lesson, README)
 #   brcm/BCM4329C0.hcd            the Bluetooth patchram, out of BlueTool
 #   apple/sgx543.fw               the GPU's microkernel, out of the IPSW's kernelcache
+#   apple/h4isp-firmware.bin      the camera ISP's firmware and its sensors'
+#   apple/h4isp-setfile-*.bin     set-files, out of the IPSW's root filesystem
+#                                 (scripts/extract-h4isp-firmware.py)
 #
 # and this iPad's touch calibration into build/k93/keep/lib/firmware/mtcal.bin.
 #
 # The boot chain comes from iPad2,1_8.4.1_12H321_Restore.ipsw (offered for
 # download, Apple's own URL) by tools/k93-extract-firmware.py and
-# tools/k93-build-bootchain.py, with the public 12H321 keys.  The rest comes
-# from the iPad's own iOS over ssh, read only: the 12H321 root filesystem's
-# key is not public, and iOS 6.1.3's files are the ones this iPad runs.
+# tools/k93-build-bootchain.py, with the public 12H321 keys, and so do the
+# GPU's and the cameras' files.  The rest comes from the iPad's own iOS over
+# ssh, read only: iOS 6.1.3's files are the ones this iPad runs.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -74,7 +77,7 @@ say "the boot chain (iBSS, iBEC) out of the IPSW"
 dkr=(docker run --rm)
 [ "$(uname -s)" = Linux ] && dkr+=(--user "$(id -u):$(id -g)")
 "${dkr[@]}" -v "$ROOT":/cascadia -v "$ipsw":/ipsw.ipsw:ro -w /cascadia "${IMAGE:-cascadia-build}" \
-    bash -c "python3 tools/k93-extract-firmware.py /ipsw.ipsw && python3 tools/k93-build-bootchain.py && mkdir -p build/k93/firmware/apple && python3 scripts/extract-sgx-firmware.py --board k93 /ipsw.ipsw build/k93/firmware/apple/sgx543.fw" \
+    bash -c "python3 tools/k93-extract-firmware.py /ipsw.ipsw && python3 tools/k93-build-bootchain.py && mkdir -p build/k93/firmware/apple && python3 scripts/extract-sgx-firmware.py --board k93 /ipsw.ipsw build/k93/firmware/apple/sgx543.fw && python3 scripts/extract-h4isp-firmware.py /ipsw.ipsw build/k93/firmware/apple" \
     | grep -v '^    0x' || fail "the boot chain did not build (above)"
 BC="$ROOT/build/k93/bootchain-v2"
 cp "$BC/iBSS.sigpatched" "$OUT/iBSS.patched"
