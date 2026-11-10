@@ -1,12 +1,17 @@
 # K93 audio — the iPad 2's CS42L63 behind I2S0
 
-**State (2026-11-09, evening):** the playback path below is now Linux's
-(`sound/soc/apple/s5l8940-audio.c`, `sound/soc/codecs/cs42l63.c`, the
-sequences compiled in through `tools/audio/k93-seq2c.py`).  On the iPad: the
-card probes, a tone plays at the right rate, and while it plays the codec,
-I2S0, the switch and GPIO 39 are in exactly the state this document
-predicts, and the sound comes out of the speaker (confirmed by ear).  NCO Fref
-342 MHz is confirmed.  Headphones, the TS3A8235 and the inputs are unused.
+**State (2026-11-10):** Linux plays to the speaker and the headphones and
+records from the built-in microphone (`sound/soc/apple/s5l8940-audio.c`,
+`sound/soc/codecs/cs42l63.c`, iOS's sequences and input-gain tables compiled
+in through `tools/audio/k93-seq2c.py`); the jack is followed and playback
+moves by itself.  All confirmed on the iPad, by ear and by measurement --
+section 5 has what the hardware showed beyond the emulation.  The headset's
+microphone records nothing yet (section 5).
+
+**Earlier (2026-11-09, evening):** the playback path alone: the card probes,
+a tone plays at the right rate, the codec, I2S0, the switch and GPIO 39 in
+exactly the state predicted below, the speaker heard.  NCO Fref 342 MHz is
+confirmed.
 
 **Originally (2026-11-09): research only, nothing run on the iPad.** Everything
 below comes from the iOS 8.4.1 (12H321) K93 kernelcache
@@ -404,7 +409,8 @@ tools/audio/k93-cs42l63-sequences.py` prints JSON): 33 entries — `probe`,
 `speaker_mute_while_playing`, `hp_*_unmute_while_playing`,
 `hp_*_mute_while_playing`, `speaker_unmute_while_playing`,
 `route_speaker_and_hp`, `power_down`, `input_*` — each a list of
-`{'op': 'write'|'update'|'read'|'sleep_ms'|'gpio'|'mclk', …}` in iOS's order.
+`{'op': 'write'|'update'|'read'|'sleep_ms'|'gpio'|'mclk', …}` in iOS's order;
+and `GAINS`, iOS's input-volume mapping for each source (section 5).
 
 ## Suggested Linux bring-up order (from the above)
 
@@ -419,6 +425,59 @@ tools/audio/k93-cs42l63-sequences.py` prints JSON): 33 entries — `probe`,
 5. Stop: `speaker_stop`, TXCOM=0, CDMA off, CLKCON back to `0x1b4`.
 6. Suspend: `power_down`; MCLK may then go (CLKCON=`0x34`, switch `+0x30`=0).
 
+## 5. On the iPad (2026-11-10): capture, the input gain, the jack
+
+**Capture works as iOS's data says**: CDMA channel 0x20, request line 0,
+I2S0's RX FIFO at +0x38, `DCR = 0x24` (16-bit, burst 4, device to memory:
+the mini's DCR bit 1 cleared), `RXCOM = 0x01feca06`.  The switch's
+capture-only route (`+0x00 = 0x04`) carries the frame clocks: the codec
+answers.  A codec-internal loopback proves the whole path without a
+microphone: ASP in -> ASP out, mixer `0x55 = 0x00`, `0x59 = 0x40` (group
+0x54 +1/+5), records what plays.
+
+**The internal mic recorded zeros at first -- iOS's quietest input volume.**
+The extracted `input_internal_mic` ran with the input volume control
+(0x16f) at the framework's first value, 0, which iOS maps to registers
+0x19-0x1b = `0xa0`: the digital volume, **0.5 dB steps, two's complement**
+(`0x00` = 0 dB; +20 raised the room noise 2.9x), -48 dB.  iOS's mapping, run
+for every volume 0..160 (`GAINS` in `k93-cs42l63-sequences.py`):
+
+| source | 0x14 & 7 (boost) | 0x16-0x18 | 0x19-0x1b | gain |
+|---|---|---|---|---|
+| internal (DMIC B) | 0, from v = 109 on 7 | 0 | `0xa0 + v`, from 109 on `v - 116` | (v - 96) / 2 dB throughout: the boost is 10 dB |
+| headset (MIC2) | 0 | `0x34`, `0x35` for odd v | `0xa0 + v / 2` | analog stage + 0.25 dB a step |
+
+The driver's "Capture Volume" is v (default 120: speech peaks -8 to -14
+dBFS at arm's length).  iOS records the internal mic in mono on the ASP's
+left channel (path A, mixer `0x54`); `0x58 = 0x00` (path A into the right
+channel, 0 dB) copies it -- measured sample for sample.
+
+**The jack** (measured with a plug going in and out): Mikey register
+**0x77 bit 7 = a plug is in** (level); **0x7b** latches bit 6 on insertion and
+bit 5 on removal and clears when read; 0x62/0x63 clear when read too.  The
+codec's interrupt line (SoC GPIO 15) did not move: the Mikey's interrupts are
+masked (`0x79 = e0`, `0x7a = ff` after iOS's init; iOS's power-down writes
+`7a = fe`) -- the driver polls 0x77, twice a second.
+
+**TS3A8235** (I2C0 0x3b): register 0 reads `ff`, register 2 is the state
+(bit 6 is not stored: 0x42 reads back 0x02), register 3 a status that
+follows it: state `02` -> `92`, `03` -> `61`, `06` -> `c3`, `00` -> `00`.
+With a CTIA headset (the user's) and the HP path on: **untouched since
+power-up the switch passes nothing** (silence); written, `0x00`, `0x42` and
+`0x46` sound right and **`0x43` (iOS's state 2) leaves it nearly silent** --
+the OMTP wiring, ground on the CTIA mic contact.  So state 1 (`0x42`) is
+CTIA, the driver's choice when a plug goes in.
+
+**The headset's microphone records exact zeros** in every switch state, at
+the top input volume, with the mixer's path A or B, and with 0x06 bits 2
+and 1 cleared as well: the analog input path (MIC2 -> PGA -> ADC) shows not
+even its noise.  iOS runs more than `input_headset_mic` before that mic
+works: its Mikey detection (`AppleCSCodecMikey`, `0x8091bc00`; the emulator
+leaves its timers stubbed) decides headset or headphones, sets the switch
+and, presumably, the mic bias; the wake path's `U 74/18=08; U 75/40=40; U
+71/21=21` and the 0x0a bits iOS clears at init are the candidates.  Next:
+that code, decompiled.
+
 ## Open points and the experiments that settle them
 
 1. **nclk / MCLK = 6 MHz** — strongly constrained (iOS refuses the format
@@ -427,7 +486,8 @@ tools/audio/k93-cs42l63-sequences.py` prints JSON): 33 entries — `probe`,
 2. **NCO Fref on K93** — read PMGR NCO_REF0 (`0x3f1000c0`) and PLL3; or run
    I2S0 with CLKCON = `0x181` and time the TX FIFO drain at a nominal 48 kHz.
 3. **Pads of pin group 0** — sample GPIO 70–100 input bits with I2S0 running.
-4. **TS3A8235 state for plain headphones** — try reg 2 = `46` / `42` / `43`.
+4. ~~**TS3A8235 state for plain headphones**~~ — settled (section 5): `42`
+   for a CTIA headset; `46` and `00` (written) also carry the sound.
 5. **Register names** marked [A]/[?] (0x06 bit 6, 0x09, 0x0a, 0x1c, 0x27,
    0x66, 0x7d, mixer group 0x4c) need the CS42L63 datasheet; the sequences do
    not depend on them.

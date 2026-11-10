@@ -41,7 +41,7 @@ including the parts that didn't work.
 | Device | Model | Chip | Board ID | Status | Where |
 |--------|-------|------|----------|--------|-------|
 | iPad mini 1 (Wi-Fi) | iPad2,5 / A1432 | Apple A5 (S5L8942X) | p105ap | desktop, touch, Wi-Fi, GPU | this README, repository root |
-| iPad 2 (Wi-Fi) *(experimental)* | iPad2,1 / A1395 | Apple A5 (S5L8940X) | k93ap | desktop, touch, Wi-Fi, Bluetooth, speaker, volume buttons, GPU, sensors, a root whose changes are kept on the NAND; boots from iOS without a computer | [docs/k93-bringup.md](docs/k93-bringup.md) |
+| iPad 2 (Wi-Fi) *(experimental)* | iPad2,1 / A1395 | Apple A5 (S5L8940X) | k93ap | desktop, touch, Wi-Fi, Bluetooth, speaker, headphones, built-in microphone, volume buttons, GPU, sensors, a root whose changes are kept on the NAND; boots from iOS without a computer | [docs/k93-bringup.md](docs/k93-bringup.md) |
 | iPhone 11 | iPhone12,1 | Apple A13 (T8030) | n104ap | shell, network over USB, touch, XFCE, Wi-Fi, Bluetooth, internal storage | [`a13/`](../a13/README.md) |
 
 The iPad 2 is the tree's second board, tested on one device (iOS 6.1.3,
@@ -831,8 +831,9 @@ Build products (`output/`) and stock firmware are not tracked; everything in
 - **Phase 3** — ~~touch~~ ✓ → ~~Wi-Fi (SDIO)~~ ✓ → ~~Bluetooth~~ ✓ → ~~the GPU
   and a desktop~~ ✓ → ~~the speaker~~ ✓ → ~~the volume buttons~~ ✓ →
   ~~autorotate~~ ✓ → ~~iOS's files off the NAND~~ ✓ → ~~NAND as Linux's own
-  storage~~ ✓ (the Linux volume) → headphones and microphones, the cameras,
-  USB host.
+  storage~~ ✓ (the Linux volume) → ~~the headphones~~ ✓ (switching by
+  themselves) → ~~the built-in microphone~~ ✓ → a headset's microphone, the
+  cameras, USB host.
 
 The iPhone 11 and the devices planned next: the
 [project README](../../README.md#roadmap).

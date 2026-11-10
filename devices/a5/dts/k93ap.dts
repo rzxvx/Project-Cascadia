@@ -539,6 +539,9 @@
 			pinctrl-names = "default";
 			pinctrl-0 = <&i2s0_pins>;
 			apple,dma-channel = <0x1f 1>;
+			/* the ADT's i2s0 dma-channels RX entry: channel 0x20,
+			 * request line 0, out of the RX FIFO at +0x38 */
+			apple,capture-dma-channel = <0x20 0>;
 			apple,nco-reference-hz = <342000000>;
 			apple,codec = <&codec>;
 		};
@@ -628,9 +631,18 @@
 			 * amplifier is enabled by SoC GPIO 39 (iOS's
 			 * function-spkr_mute: high plays); MCLK is I2S0's MCK.
 			 * sound/soc/codecs/cs42l63.c runs iOS's own sequences. */
+			/* ADT headset-switch,ts3a8235: the jack's ground and mic
+			 * contacts.  No driver of its own: the codec writes its
+			 * state (register 2) when a plug goes in or out. */
+			headset_switch: headset-switch@3b {
+				compatible = "ti,ts3a8235";
+				reg = <0x3b>;
+			};
+
 			codec: codec@4a {
 				compatible = "cirrus,cs42l63";
 				reg = <0x4a>;
+				headset-switch = <&headset_switch>;
 				reset-gpios = <&pmu 13 1>;
 				speaker-enable-gpios = <&gpio 39 0>;
 				clocks = <&audio>;

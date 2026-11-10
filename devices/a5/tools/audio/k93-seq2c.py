@@ -19,7 +19,8 @@ spec.loader.exec_module(seq)
 SEQ = seq.SEQUENCES
 
 WANTED = ["init_cold", "init_wake", "rate_48000", "rate_44100", "speaker_start",
-          "speaker_stop", "power_down"]
+          "speaker_stop", "hp_start", "hp_stop", "input_internal_mic",
+          "input_headset_mic", "input_stop", "power_down"]
 
 
 def step(s):
@@ -59,6 +60,17 @@ def main():
         out.append("/* %s: %s */" % (name, v.get("title", "")))
         out.append("static const struct cs42l63_step cs42l63_%s[] = {" % name)
         out.extend(step(s) for s in v["steps"])
+        out.append("};")
+        out.append("")
+    # iOS's input volume (control 0x16f) for each source: {boost (0x14 bits
+    # 2:0), analog stage (0x16-0x18), digital volume (0x19-0x1b)}
+    for src, name in (("imic", "internal"), ("emic", "headset")):
+        rows = seq.GAINS[src]
+        out.append("/* input volume 0..%d, %s mic: { 0x14 & 7, 0x16-0x18, 0x19-0x1b } */"
+                   % (len(rows) - 1, name))
+        out.append("static const u8 cs42l63_gain_%s[%d][3] = {" % (name, len(rows)))
+        for i in range(0, len(rows), 4):
+            out.append("\t" + " ".join("{ 0x%02x, 0x%02x, 0x%02x }," % tuple(r) for r in rows[i:i + 4]))
         out.append("};")
         out.append("")
     sys.stdout.write("\n".join(out))

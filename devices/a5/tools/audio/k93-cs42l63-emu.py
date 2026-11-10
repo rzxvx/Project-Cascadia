@@ -673,6 +673,33 @@ scenario('input_headset_mic', 'input stream, headset mic (0x170 = emic)', 'setIn
 running['in'] = 0
 scenario('input_stop', 'input stream stopped', 'setInputActive', (0,))
 
+# ---- 7. the input volume (0x16f): iOS's gain mapping, per source -----------------
+# controlChanged(0x16f, v) while an input runs writes the mic path's boost (0x14
+# bits 2:0), analog stage (0x16-0x18, one value) and digital volume (0x19-0x1b,
+# one value, 0.5 dB steps, two's complement), differently for each source:
+# GAINS[src][v] = [boost, analog, digital], v = 0..160.  The emulation's own
+# default (0x16f = 0, the control's first value) is iOS's quietest: digital -48 dB.
+GAINS = {}
+for _mic in ('imic', 'emic'):
+    controls[0x170] = fourcc(_mic)
+    running['in'] = 1
+    _rows = []
+    for _v in range(161):
+        controls[0x16f] = _v
+        _regs = {'boost': 0}
+        for _s in clean(run('input %s, volume 0x16f = %d' % (_mic, _v), 'controlChanged', (0x16f, _v))['events']):
+            if _s['op'] == 'write':
+                _regs[_s['reg']] = _s['val']
+            elif _s['op'] == 'update' and _s['reg'] == 0x14:
+                _regs['boost'] = _s['val'] & _s['mask'] & 0x07
+        assert _regs[0x16] == _regs[0x17] == _regs[0x18], (_mic, _v, _regs)
+        assert _regs[0x19] == _regs[0x1a] == _regs[0x1b], (_mic, _v, _regs)
+        _rows.append([_regs['boost'], _regs[0x16], _regs[0x19]])
+    GAINS[_mic] = _rows
+running['in'] = 0
+controls[0x170] = fourcc('imic')
+controls[0x16f] = 0
+
 
 def pyrepr(obj, ind=0):
     """a Python literal with hex register numbers"""
@@ -692,5 +719,8 @@ if '--sequences' in sys.argv:
     with open(path, 'w') as f:
         f.write(SEQ_HEADER)
         f.write('SEQUENCES = ' + pyrepr(SEQ) + '\n')
+        f.write('\n# controlChanged(0x16f, v): [boost (0x14 bits 2:0), analog (0x16-0x18), '
+                'digital (0x19-0x1b)] for v = 0..160\n')
+        f.write('GAINS = {\n' + ''.join('    %r: %r,\n' % (k, v) for k, v in GAINS.items()) + '}\n')
         f.write(SEQ_FOOTER)
     print('wrote', path)
