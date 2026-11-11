@@ -293,6 +293,71 @@ upright and the front one too, not mirrored -- a raised right hand on the
 left, as V4L2 has it.  `camera_sensor_rotation` reads 0; the milestone-3
 "upside down" was the iPad's position.
 
+## On the iPad (2026-11-11): the picture controls
+
+How: each command's layout from its sender in iOS (`H4ISPServices`, and the
+copies in the camera plugin), then its effect measured on frames while it
+alone changed (sent through debugfs `h4isp/cmd`, the newest frame kept every
+half second): the mean and spread of the luma, the colour's mean distance
+from grey, the mean |Laplacian| of the luma ("detail").  Where iOS never
+sends a command, the firmware itself was decompiled (Ghidra, the image at
+0, Thumb-2 from `0x1000` to `0x9fc40`).  The firmware has no GETs for the
+back end's values (`0xa00`, `0xa08`, `0xa0a`, `0xa0c`, `0xa0e` answer 1) and
+the scaler's have none at all, so the neutral values are the ones that
+leave the frames as they were -- on both cameras.
+
+| V4L2 control | Command (channel at +8, the value at +0xc) | What it does (measured) |
+|---|---|---|
+| `auto_exposure_bias`, -2 to +2 EV in thirds | CH_AE_BIAS_EXPOSURE_SET `0x204` (u16, then a u32 tag; 0x14 bytes) | the factor on the exposure's target, 8.8 fixed point: 0x100 the firmware's own (`0x203` reads it back), each doubling +1 EV (the mean luma x1.39, 2^(1/2.2)) |
+| `brightness` 0-255 | CH_SCALER_BRIGHTNESS_SET `0xb02` (u8) | adds value - 128 to the luma |
+| `contrast` 0-255 | CH_SCALER_CONTRAST_SET `0xb03` (u8) | (Y - 128) x value / 128 + 128: 0 is a flat grey |
+| `saturation` 0-255 | CH_SCALER_SATURATION_SET `0xb04` (u8) | the colour x value / 128: 0 is grey |
+| `hue`, -180 to 180 degrees | CH_SCALER_HUE_SET `0xb05` (u8) | turns Cb/Cr by (value - 128) x 180 / 128 degrees |
+| `sharpness` 0-255; 128, the default, the firmware's own | knob 2: KNOB_MANUAL_CONTROL_ENABLE `0xa13` (knob), then CH_SHARPNESS_SET `0xa09` (u8); KNOB_MANUAL_CONTROL_DISABLE `0xa14` (knob) back to the firmware | detail 2.5 at 0, 5.9 at 0x80, steep above (22 at 0xc0, 70 at 0xff, mostly noise); the firmware's own in daylight is about 0x76 |
+| `power_line_frequency` 50 Hz, 60 Hz, Auto | APPLE_CH_AE_FLICKER_FREQ_SET `0x8208` (u32: Hz, 0 to detect) | below |
+
+All four of the scaler's are 128 when untouched, and any value is accepted.
+
+**The knobs.**  The back end has seven light-adaptive "knobs"
+(`CISP_KNOB_*`, in iOS's dump of `laKnobStatus`): 0 noise reduction
+(`0xa0b`), 1 colour saturation (`0xa01`), 2 sharpness (`0xa09`), 3 colour
+suppression (`0xa0d`: level and two thresholds, a byte each), 4 bad-pixel
+correction, 5 DRC strength, 6 chroma noise reduction.  Each follows the
+light level until KNOB_MANUAL_CONTROL_ENABLE `0xa13` (channel, knob; above
+6 refused) hands it to the host, and `0xa14` gives it back; a SET without
+the ENABLE is answered and changes nothing (saturation `0xa01` swept 0-0xff:
+no change).  iOS sends its own saturation (`0xa01`, its property & 0x7ff >>
+3) and sharpness (`0xa09`, property x 8) through the knobs, and its tables
+per light level (`CameraSetup.plist`: `SharpnessLightLevel` /
+`SharpnessValue` and the like per sensor -- how they reach the firmware is
+not traced; CH_BE_LASETTING_SET `0xa15` is the likely command).  Linux
+leaves the firmware's own tables.  The driver's saturation is the
+scaler's (the same effect, linear, and the knob stays with the light); its
+sharpness is the knob, the firmware's own until set.
+
+The scaler's sharpness, CH_SCALER_SHARPNESS_SET `0xa07` (iOS: property x
+10; `ScalerSharpBright` 2 and `ScalerSharpDark` 1 in iOS's tables), is a
+filter level: 0 off (the default), 1 the softest (detail 2.8 against 5.2),
+about 6 neutral, 10 and above the sharpest (15.3).  Not a control.
+
+**Anti-flicker** (decompiled: iOS never sends `0x8208`).  The command posts
+message 0x3c to the channel's AE controller (made by `0x0000b41c`; its
+message table at `0xb2060`), whose handler (`0xba24`) keeps the word at
++0x218.  Every frame the controller (`0x0000bc44`) hands the AE
+(`0x00018f74`) that frequency, or, when it is 0, its flicker detector's
+(`0x0002765c`): 60 Hz at first, the other one when the rows show bands --
+measured only when the exposure is long enough to see them.  The AE keeps
+the exposure to whole periods of the light (its +0xe0: the 46.7 MHz pixel
+clock / 2f).  0 is the firmware's default and the control's (Auto); 50 or
+60 fixes it; there is no "off".  In daylight the frames showed no bands
+either way.
+
+**In the driver**: a control set at any time is kept, sent each time the
+camera starts (after OUTPUT_CONFIG_SET, before the buffers: saturation 0
+set before STREAMON gave a grey first frame) and at once while it streams;
+the values last until the next boot.  Checked on both cameras, live and at
+start.
+
 ## The plan
 
 1. ~~**The ISP's CPU boots**~~ ✓ (2026-11-10, `tools/camera/k93isp.c`): a
@@ -305,9 +370,14 @@ left, as V4L2 has it.  `camera_sensor_rotation` reads 0; the milestone-3
    rear 1280x720, YUYV, streaming continuously.
 4. ~~**A V4L2 driver** in the kernel, so applications can use the
    cameras~~ ✓ (2026-11-10): `apple-h4isp`, both cameras, mpv and ffmpeg.
-5. Open: the picture controls the firmware has (CH_SCALER_BRIGHTNESS/
-   CONTRAST/SATURATION/HUE_SET `0xb02`-`0xb05`, sharpness `0xa07`, the
-   exposure bias `0x204`) as V4L2 controls; other sizes through the
-   firmware's scaler (CH_SCALER_CROP_SET `0x80a`); a frame-rate choice
-   (S_PARM through `0x208`); the format's range (OUTPUT_CONFIG_SET's
-   range 1 gives Y below 16 and above 235, reported as full range).
+5. ~~**The picture controls**~~ ✓ (2026-11-11): exposure bias,
+   brightness, contrast, saturation, hue, sharpness and the mains
+   frequency, on both cameras.
+6. Open: other sizes through the firmware's scaler (CH_SCALER_CROP_SET
+   `0x80a`); a frame-rate choice (S_PARM through `0x208`); the format's
+   range (OUTPUT_CONFIG_SET's range 1 gives Y below 16 and above 235,
+   reported as full range); manual exposure, white balance and metering
+   (CH_AE_MANUAL_MODE_SET `0x22b` and CH_AE_INTEGRATION_GAIN_SET `0x238`,
+   CH_AWB_CCT_GET/MANUAL `0x304`/`0x305` -- the CCT read 4948 K indoors --
+   and APPLE_CH_AWB_MANUAL_WB_GAIN_SET `0x831a`, APPLE_CH_AE_METERING_MODE_SET
+   `0x8206`, modes 0-3); iOS's light-level tables for the knobs.

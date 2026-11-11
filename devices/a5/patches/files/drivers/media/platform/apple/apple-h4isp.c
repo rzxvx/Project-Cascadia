@@ -32,6 +32,11 @@
  * handshake, the set-files -- and stopping powers it all down again and frees
  * its memory.  One camera streams at a time.
  *
+ * The picture controls are the firmware's: the exposure's bias, the output
+ * scaler's brightness, contrast, saturation and hue, the back end's
+ * sharpness and the mains frequency the exposure keeps to.  Each camera
+ * keeps its values and sends them every time it starts.
+ *
  * Its firmware is Apple's, so it is not in the kernel: apple/h4isp-firmware.bin
  * (H4ISPServices' H4ISPFIRMWARE section) and, a sensor, its set-file
  * apple/h4isp-setfile-<the sensor's ID in hex>.bin (from the H4ISPSETFILE
@@ -139,16 +144,29 @@
 #define CMD_CH_BUFFER_RECYCLE_MODE_SET		0x010e
 #define CMD_CH_BUFFER_RECYCLE_START		0x010f
 #define CMD_CH_SET_FILE_LOAD			0x0111
+#define CMD_CH_AE_BIAS_EXPOSURE_SET		0x0204
 #define CMD_CH_AE_FRAME_RATE_MIN_GET		0x0209
 #define CMD_CH_AE_FRAME_RATE_MIN_SET		0x020a
 #define CMD_CH_CROP_SET				0x0801
+#define CMD_CH_SHARPNESS_SET			0x0a09
+#define CMD_CH_KNOB_MANUAL_CONTROL_ENABLE	0x0a13
+#define CMD_CH_KNOB_MANUAL_CONTROL_DISABLE	0x0a14
 #define CMD_CH_OUTPUT_CONFIG_SET		0x0b01
+#define CMD_CH_SCALER_BRIGHTNESS_SET		0x0b02
+#define CMD_CH_SCALER_CONTRAST_SET		0x0b03
+#define CMD_CH_SCALER_SATURATION_SET		0x0b04
+#define CMD_CH_SCALER_HUE_SET			0x0b05
+#define CMD_APPLE_CH_AE_FLICKER_FREQ_SET	0x8208
 #define CMD_WORDS		(0xa8 / 4)	/* the longest packet sent */
+
+/* the back end's light-adaptive "knobs" (CISP_KNOB_*), set by hand or by the light */
+#define KNOB_SHARPNESS		2
 
 #define NOTE_FRAME_TIMEOUT	0xe00
 #define NOTE_FOCUS_FAILED	0xe01
 
 #define H4ISP_CAMS		2
+#define H4ISP_PICS		7	/* picture controls, see h4isp_pic_apply() */
 #define H4ISP_MAX_BUFS		VB2_MAX_FRAME	/* vb2's least: buffer indexes */
 #define H4ISP_BUFS		8	/* what a REQBUFS gets at most */
 #define H4ISP_TAG(cam, idx)	(0x4000 | (cam) << 8 | (idx))
@@ -240,6 +258,9 @@ struct h4isp_cam {
 
 	int ae_priority;	/* V4L2_CID_EXPOSURE_AUTO_PRIORITY */
 	u32 ae_min;		/* the firmware's own floor for the frame rate, fps * 256 */
+	/* the picture controls and their values, sent whenever the camera starts */
+	struct v4l2_ctrl *pic[H4ISP_PICS];
+	s32 pic_val[H4ISP_PICS];
 };
 
 struct h4isp {
@@ -1200,6 +1221,100 @@ static int h4isp_ae_floor(struct h4isp_cam *cam)
 }
 
 /*
+ * V4L2_CID_AUTO_EXPOSURE_BIAS: -2 to +2 EV in thirds (in 0.001 EV), and what
+ * the firmware takes for them: the factor on its exposure target, 8.8 fixed
+ * point (256 is its own, measured on the iPad: each doubling is +1 EV).
+ */
+static const s64 h4isp_ev_menu[] = {
+	-2000, -1667, -1333, -1000, -667, -333, 0, 333, 667, 1000, 1333, 1667, 2000
+};
+static const u16 h4isp_ev_bias[] = {
+	64, 81, 102, 128, 161, 203, 256, 323, 406, 512, 645, 813, 1024
+};
+#define H4ISP_EV_DEFAULT	6
+
+/* V4L2_CID_SHARPNESS's default: the firmware's own, from the light */
+#define H4ISP_SHARPNESS_AUTO	128
+
+/*
+ * A picture control's value to the firmware (isp->lock held; the ISP up).
+ * Brightness, contrast, saturation and hue are the output scaler's: one byte,
+ * 128 the picture as it is -- brightness adds (value - 128) to the luma,
+ * contrast and saturation scale it and the colour by value / 128, hue turns
+ * the colour by (value - 128) * 180 / 128 degrees (all measured on the iPad;
+ * the hue control is in degrees).
+ * Sharpness is the back end's knob: left to the firmware, which sharpens less
+ * as the light falls (as iOS leaves it), or set by hand, 0-255.
+ *
+ * The mains frequency is what the exposure keeps to whole periods of the
+ * light's flicker: 50 or 60 Hz, or 0 for the firmware to find out -- its own
+ * choice: it starts at 60 Hz and changes over when it sees bands (its AE
+ * controller, 0x0000b41c and 0x0000bc44 in the firmware's image).
+ */
+static int h4isp_pic_apply(struct h4isp_cam *cam, u32 id, s32 val)
+{
+	struct h4isp *isp = cam->isp;
+	u32 p[CMD_WORDS] = { }, len = 0x10;
+	u16 op;
+	int ret;
+
+	p[2] = cam->ch;
+	p[3] = val;
+	switch (id) {
+	case V4L2_CID_AUTO_EXPOSURE_BIAS:
+		op = CMD_CH_AE_BIAS_EXPOSURE_SET;
+		p[3] = h4isp_ev_bias[val];
+		len = 0x14;		/* then a tag, 0 */
+		break;
+	case V4L2_CID_BRIGHTNESS:
+		op = CMD_CH_SCALER_BRIGHTNESS_SET;
+		break;
+	case V4L2_CID_CONTRAST:
+		op = CMD_CH_SCALER_CONTRAST_SET;
+		break;
+	case V4L2_CID_SATURATION:
+		op = CMD_CH_SCALER_SATURATION_SET;
+		break;
+	case V4L2_CID_HUE:
+		op = CMD_CH_SCALER_HUE_SET;
+		p[3] = clamp(128 + DIV_ROUND_CLOSEST(val * 128, 180), 0, 255);
+		break;
+	case V4L2_CID_SHARPNESS:
+		p[3] = KNOB_SHARPNESS;
+		if (val == H4ISP_SHARPNESS_AUTO)
+			return h4isp_cmd(isp, CMD_CH_KNOB_MANUAL_CONTROL_DISABLE, p, 0x10, 1000);
+		ret = h4isp_cmd(isp, CMD_CH_KNOB_MANUAL_CONTROL_ENABLE, p, 0x10, 1000);
+		if (ret)
+			return ret;
+		op = CMD_CH_SHARPNESS_SET;
+		p[3] = val;
+		break;
+	case V4L2_CID_POWER_LINE_FREQUENCY:
+		op = CMD_APPLE_CH_AE_FLICKER_FREQ_SET;
+		p[3] = val == V4L2_CID_POWER_LINE_FREQUENCY_50HZ ? 50 :
+		       val == V4L2_CID_POWER_LINE_FREQUENCY_60HZ ? 60 : 0;
+		break;
+	default:
+		return -EINVAL;
+	}
+	return h4isp_cmd(isp, op, p, len, 1000);
+}
+
+/* every picture control's value to the firmware, the camera starting */
+static int h4isp_pics(struct h4isp_cam *cam)
+{
+	unsigned int i;
+	int ret;
+
+	for (i = 0; i < H4ISP_PICS; i++) {
+		ret = h4isp_pic_apply(cam, cam->pic[i]->id, READ_ONCE(cam->pic_val[i]));
+		if (ret)
+			return ret;
+	}
+	return 0;
+}
+
+/*
  * iOS's StartCamera: the mode, a centred crop of it, the output (format 1:
  * one plane, YUYV), the firmware recycling buffers; buffers; then CH_START.
  */
@@ -1263,6 +1378,9 @@ static int h4isp_ch_config(struct h4isp_cam *cam)
 	p[6] = 1;		/* format 1: one plane, 2 bytes a pixel */
 	p[7] = cam->fmt.bytesperline;
 	ret = h4isp_cmd(isp, CMD_CH_OUTPUT_CONFIG_SET, p, 0x28, 1000);
+	if (ret)
+		return ret;
+	ret = h4isp_pics(cam);
 	if (ret)
 		return ret;
 	memset(p, 0, sizeof(p));
@@ -1666,18 +1784,28 @@ static int h4isp_s_ctrl(struct v4l2_ctrl *ctrl)
 {
 	struct h4isp_cam *cam = container_of(ctrl->handler, struct h4isp_cam, ctrls);
 	struct h4isp *isp = cam->isp;
+	unsigned int i;
 	int ret = 0;
 
-	switch (ctrl->id) {
-	case V4L2_CID_EXPOSURE_AUTO_PRIORITY:
+	/*
+	 * kept for the next start (the ISP boots for each stream) and, while
+	 * the camera streams, sent at once
+	 */
+	if (ctrl->id == V4L2_CID_EXPOSURE_AUTO_PRIORITY) {
 		WRITE_ONCE(cam->ae_priority, ctrl->val);
-		mutex_lock(&isp->lock);
-		if (isp->streaming == cam)
-			ret = h4isp_ae_floor(cam);
-		mutex_unlock(&isp->lock);
-		return ret;
+	} else {
+		for (i = 0; i < H4ISP_PICS && cam->pic[i] != ctrl; i++)
+			;
+		if (i == H4ISP_PICS)
+			return -EINVAL;
+		WRITE_ONCE(cam->pic_val[i], ctrl->val);
 	}
-	return -EINVAL;
+	mutex_lock(&isp->lock);
+	if (isp->streaming == cam)
+		ret = ctrl->id == V4L2_CID_EXPOSURE_AUTO_PRIORITY ? h4isp_ae_floor(cam) :
+		      h4isp_pic_apply(cam, ctrl->id, ctrl->val);
+	mutex_unlock(&isp->lock);
+	return ret;
 }
 
 static const struct v4l2_ctrl_ops h4isp_ctrl_ops = {
@@ -1689,6 +1817,7 @@ static int h4isp_cam_register(struct h4isp *isp, unsigned int ch)
 	struct h4isp_cam *cam = &isp->cams[ch];
 	struct video_device *vdev = &cam->vdev;
 	struct vb2_queue *q = &cam->queue;
+	unsigned int i;
 	int ret;
 
 	cam->isp = isp;
@@ -1700,7 +1829,7 @@ static int h4isp_cam_register(struct h4isp *isp, unsigned int ch)
 	INIT_LIST_HEAD(&cam->pending);
 
 	cam->ae_priority = 1;
-	v4l2_ctrl_handler_init(&cam->ctrls, 3);
+	v4l2_ctrl_handler_init(&cam->ctrls, 3 + H4ISP_PICS);
 	v4l2_ctrl_new_std_menu(&cam->ctrls, NULL, V4L2_CID_CAMERA_ORIENTATION,
 			       V4L2_CAMERA_ORIENTATION_EXTERNAL, 0, cam->desc->orientation);
 	/*
@@ -1710,10 +1839,32 @@ static int h4isp_cam_register(struct h4isp *isp, unsigned int ch)
 	v4l2_ctrl_new_std(&cam->ctrls, NULL, V4L2_CID_CAMERA_SENSOR_ROTATION, 0, 0, 1, 0);
 	v4l2_ctrl_new_std(&cam->ctrls, &h4isp_ctrl_ops, V4L2_CID_EXPOSURE_AUTO_PRIORITY,
 			  0, 1, 1, 1);
+	cam->pic[0] = v4l2_ctrl_new_int_menu(&cam->ctrls, &h4isp_ctrl_ops,
+					     V4L2_CID_AUTO_EXPOSURE_BIAS,
+					     ARRAY_SIZE(h4isp_ev_menu) - 1, H4ISP_EV_DEFAULT,
+					     h4isp_ev_menu);
+	cam->pic[1] = v4l2_ctrl_new_std(&cam->ctrls, &h4isp_ctrl_ops, V4L2_CID_BRIGHTNESS,
+					0, 255, 1, 128);
+	cam->pic[2] = v4l2_ctrl_new_std(&cam->ctrls, &h4isp_ctrl_ops, V4L2_CID_CONTRAST,
+					0, 255, 1, 128);
+	cam->pic[3] = v4l2_ctrl_new_std(&cam->ctrls, &h4isp_ctrl_ops, V4L2_CID_SATURATION,
+					0, 255, 1, 128);
+	cam->pic[4] = v4l2_ctrl_new_std(&cam->ctrls, &h4isp_ctrl_ops, V4L2_CID_HUE,
+					-180, 180, 1, 0);
+	cam->pic[5] = v4l2_ctrl_new_std(&cam->ctrls, &h4isp_ctrl_ops, V4L2_CID_SHARPNESS,
+					0, 255, 1, H4ISP_SHARPNESS_AUTO);
+	/* the firmware always keeps to one: no "disabled" */
+	cam->pic[6] = v4l2_ctrl_new_std_menu(&cam->ctrls, &h4isp_ctrl_ops,
+					     V4L2_CID_POWER_LINE_FREQUENCY,
+					     V4L2_CID_POWER_LINE_FREQUENCY_AUTO,
+					     BIT(V4L2_CID_POWER_LINE_FREQUENCY_DISABLED),
+					     V4L2_CID_POWER_LINE_FREQUENCY_AUTO);
 	if (cam->ctrls.error) {
 		ret = cam->ctrls.error;
 		goto err_ctrls;
 	}
+	for (i = 0; i < H4ISP_PICS; i++)
+		cam->pic_val[i] = cam->pic[i]->val;
 
 	q->type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
 	q->io_modes = VB2_MMAP | VB2_DMABUF | VB2_READ;
