@@ -13,6 +13,10 @@
 #   screenpad                 tools/screenpad/build.sh
 #   YouTube (mpv, yt-dlp)     tools/desktop/youtube-setup.sh
 #
+# and, as a step of its own (ONLY=, the iPad 2's root: tools/k93-root.sh):
+#
+#   Games (RetroArch, touch)  tools/desktop/games-setup.sh, retroarch/build.sh
+#
 # Each of those installs onto the running iPad over ssh; here they run
 # unchanged, with tools/desktop/rootssh/ssh first on PATH: it runs what they
 # send inside this root instead -- a chroot in an armhf container (docker's
@@ -27,7 +31,7 @@
 #             fresh, the package list beside it (OUT.packages)
 #   OUT=      where the tar goes (build/desktop-root.tar)
 #   ONLY="mesa gpu"   just those steps (xfce, patched, autorotate, mesa, gpu,
-#             supertux, screenpad, youtube)
+#             supertux, screenpad, youtube, games)
 #
 # The first time is long: XFCE is ~280 packages under ARM emulation, and Mesa
 # and SuperTux build for the better part of an hour each unless build/ has
@@ -118,6 +122,10 @@ step gpu        bash "$ROOT/cascadia" dev gpu --install "$DEV"
 step supertux   sh "$ROOT/tools/desktop/supertux/build.sh" install
 step screenpad  sh "$ROOT/tools/screenpad/build.sh" install
 step youtube    sh -c "ssh $DEV sh -s < '$ROOT/tools/desktop/youtube-setup.sh'"
+step games      sh -c "sh '$ROOT/tools/desktop/retroarch/build.sh' install &&
+                       tar -C '$ROOT/tools/games/overlays' -cf - . |
+                           ssh $DEV 'mkdir -p /usr/share/cascadia/overlays && tar -C /usr/share/cascadia/overlays -xf -' &&
+                       ssh $DEV sh -s < '$ROOT/tools/desktop/games-setup.sh'"
 
 say "checking what the iPad will find"
 # apk's own view: every package there and a world it can resolve (a
@@ -132,7 +140,8 @@ inroot 'chroot /target apk -s add --no-network >/dev/null' \
     || fail "apk cannot resolve the root's world -- something was installed broken (above)"
 for f in usr/local/bin/desktop usr/local/bin/autorotate usr/bin/xrandr usr/bin/xinput usr/local/bin/screenpad usr/local/bin/tux-gpudemo \
          usr/local/lib/sgx-mesa/lib/libGLESv2.so.2 etc/ld-musl-armhf.path \
-         $([ "${PUBLIC:-0}" = 1 ] || echo usr/local/lib/sgx2d) $(has_step youtube && echo usr/local/bin/youtube); do
+         $([ "${PUBLIC:-0}" = 1 ] || echo usr/local/lib/sgx2d) $(has_step youtube && echo usr/local/bin/youtube) \
+         $(has_step games && echo usr/local/bin/games usr/bin/retroarch usr/share/cascadia/overlays/gba.cfg); do
     inroot "chroot /target test -e /$f" || fail "no /$f in the root"
 done
 echo "    ok: XFCE, X, SuperTux, screenpad, autorotate, Mesa, the GPU's pack"

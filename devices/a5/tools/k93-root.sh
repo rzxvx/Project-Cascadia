@@ -5,7 +5,8 @@
 #
 #   tools/k93-root.sh tree      build/k93/root.tar: the desktop root (XFCE with
 #                               touch, Mesa on the GPU, the GPU's pack,
-#                               screenpad, YouTube), built on this machine by
+#                               screenpad, YouTube, Games -- RetroArch by
+#                               touch), built on this machine by
 #                               tools/desktop/make-root.sh, without SuperTux
 #   tools/k93-root.sh build     build/k93/root.sqfs from build/k93/root.tar
 #   tools/k93-root.sh install   build, then put it on the iPad's iOS as
@@ -37,7 +38,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TAR="$ROOT/build/k93/root.tar"
 IMG="$ROOT/build/k93/root.sqfs"
 RESERVE_KB=$((40 * 1024))
-STEPS="xfce patched autorotate mesa gpu screenpad youtube"
+STEPS="xfce patched autorotate mesa gpu screenpad youtube games"
 
 say()  { printf '==> %s\n' "$*"; }
 note() { printf '    %s\n' "$*"; }
