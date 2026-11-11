@@ -1,13 +1,14 @@
 # Runs ON THE iPad (or, unchanged, inside the root ./cascadia a5 desktop-root
 # builds on the host -- its `games` step):
 #   ssh root@10.55.0.2 sh -s < tools/desktop/games-setup.sh
-# after RetroArch (tools/desktop/retroarch/build.sh install) and the touch
-# controls (tools/games/overlays in /usr/share/cascadia/overlays; the
-# `games` step copies both).  Then, in XFCE: Games on the desktop or in the
+# after RetroArch (tools/desktop/retroarch/build.sh install), PPSSPP
+# (tools/desktop/ppsspp/build.sh install) and the touch controls
+# (tools/games/overlays in /usr/share/cascadia/overlays; the `games` step
+# does all three).  Then, in XFCE: Games on the desktop or in the
 # menu, or
 #   games [GAME]
 #
-# Game Boy, Game Boy Color and Game Boy Advance games, played by touch:
+# Game Boy, Game Boy Color, Game Boy Advance and PSP games, played by touch:
 #   RetroArch    the emulator's frontend -- our build: the touch screen is a
 #                multi-touch one there, every finger a pointer, so the
 #                on-screen controls can be held together (a stock build
@@ -20,7 +21,11 @@
 #   MaterialUI   RetroArch's touch menu: its icons and font only, out of
 #                retroarch-assets (184 MB, themes and wallpapers we do not
 #                use)
-# The games are the user's own, in ~/Games (gb, gbc, gba).  Running it again
+#   PPSSPP       the PSP: its own SDL frontend, menus and touch controls
+#                made for phones, multi-touch through SDL (our build for the
+#                A5: Alpine has none); started with the iPad's settings
+#                the first time, its own menu's after
+# The games are the user's own, in ~/Games (gb, gbc, gba, psp).  Running it again
 # changes nothing that is already right.
 set -e
 
@@ -45,7 +50,8 @@ if [ ! -f $A/glui/back.png ] || [ ! -f $A/pkg/fallback-font.ttf ]; then
 fi
 
 mkdir -p /usr/share/cascadia/retroarch /usr/local/bin /usr/share/applications \
-    /usr/share/icons/hicolor/scalable/apps /root/Desktop /root/Games/gb /root/Games/gbc /root/Games/gba
+    /usr/share/icons/hicolor/scalable/apps /root/Desktop /root/Games/gb /root/Games/gbc /root/Games/gba /root/Games/psp \
+    /usr/share/cascadia/ppsspp
 
 # What every game starts with (games passes it with --appendconfig, so a
 # setting changed in RetroArch's menu that is here lasts until the game ends).
@@ -104,10 +110,42 @@ custom_viewport_width = "640"
 custom_viewport_height = "576"
 END
 
+# PPSSPP's settings the first time (the launcher copies them in if there are
+# none yet; after that, PPSSPP's own menu keeps them): full screen, its touch
+# controls (off by default on a desktop), OpenGL, the PSP's own resolution,
+# no update checks, and for this GPU (measured with the PSPSDK's samples on
+# the iPad 2, 2026-11-11):
+#   HardwareTransform  off: the SGX's Mesa runs vertex shaders on the CPU
+#                      (Mesa's draw module, interpreted), and PPSSPP's own
+#                      transform -- ARM code, on the emulator's thread, the
+#                      other core -- costs less than its shaders there
+#                      (reflection 90 -> 100% speed, zbufferfog 27 -> 54%)
+#   VerticalSync       off: with it 55 of 60 frames, without 60
+#   AudioBufferSize    1024 (23 ms) for 256: slack for the sound's thread
+#                      when both cores are busy (ALSA underran while PPSSPP
+#                      first started, compiling its shaders)
+cat > /usr/share/cascadia/ppsspp/ppsspp.ini <<'END'
+[General]
+FirstRun = False
+CheckForNewVersion = False
+[Graphics]
+GraphicsBackend = 0 (OPENGL)
+FullScreen = True
+InternalResolution = 1
+HardwareTransform = False
+VerticalSync = False
+[Sound]
+AudioBufferSize = 1024
+[Control]
+ShowTouchControls = True
+END
+
 cat > /usr/local/bin/games <<'END'
 #!/bin/sh
-# games [GAME] -- the games in ~/Games (gb, gbc, gba), picked by touch and
-# played full screen with touch controls (tools/desktop/games-setup.sh).
+# games [GAME] -- the games in ~/Games (gb, gbc, gba, psp), picked by touch
+# and played full screen with touch controls (tools/desktop/games-setup.sh).
+# PSP games too big for the iPad stream from a computer: its address (as
+# tools/games/psp-share.py prints it) in ~/Games/psp-server.
 # GBA_CORE=gpsp: the lighter GBA emulator instead of mGBA.
 G="$HOME/Games"
 T=Games
@@ -116,17 +154,21 @@ say() {
     if [ -n "$DISPLAY" ]; then yad --error --title=$T --center --width=480 --text="$1" --button=OK:0 2>/dev/null
     else echo "games: $1" >&2; fi
 }
-# Game Boy (Color) or Game Boy Advance, by the name's ending
+# Game Boy (Color), Game Boy Advance or PSP, by the name's ending
 system() {
     case "$(echo "${1##*.}" | tr A-Z a-z)" in
         gba) echo gba ;;
         gb|gbc|sgb) echo gb ;;
+        iso|cso|chd|pbp) echo psp ;;
         *) return 1 ;;
     esac
 }
 play() {
-    sys=$(system "$1") || { say "Not a Game Boy or Game Boy Advance game: $(basename "$1")"; return 1; }
+    sys=$(system "$1") || { say "Not a Game Boy, Game Boy Advance or PSP game: $(basename "$1")"; return 1; }
     if [ "$sys" = gba ]; then core=${GBA_CORE:-mgba}; else core=gambatte; fi
+    if [ "$sys" = psp ] && ! command -v PPSSPPSDL >/dev/null; then
+        say "PSP games need PPSSPP, which this root does not have."; return 1
+    fi
     # RetroArch reads the touch screen itself, in the screen's own landscape
     # (Home on the left): the screen is held that way while the game runs
     locked=""
@@ -134,25 +176,47 @@ play() {
     was=$(rotate 2>/dev/null || echo normal)
     touch /run/rotation-lock
     [ "$was" = normal ] || rotate normal
-    retroarch -L "/usr/lib/libretro/${core}_libretro.so" \
-        --appendconfig="/usr/share/cascadia/retroarch/ipad.cfg|/usr/share/cascadia/retroarch/$sys.cfg" "$1"
+    if [ "$sys" = psp ]; then
+        ini="${XDG_CONFIG_HOME:-$HOME/.config}/ppsspp/PSP/SYSTEM/ppsspp.ini"
+        [ -f "$ini" ] || { mkdir -p "$(dirname "$ini")" && cp /usr/share/cascadia/ppsspp/ppsspp.ini "$ini"; }
+        # --pause-menu-exit: Exit in its pause menu ends the game here, in Games
+        PPSSPPSDL --fullscreen --pause-menu-exit "$1"
+    else
+        retroarch -L "/usr/lib/libretro/${core}_libretro.so" \
+            --appendconfig="/usr/share/cascadia/retroarch/ipad.cfg|/usr/share/cascadia/retroarch/$sys.cfg" "$1"
+    fi
     if [ -n "$locked" ]; then [ "$was" = normal ] || rotate "$was"
     else rm -f /run/rotation-lock; fi       # autorotate turns it as it is held
 }
 [ -n "${1:-}" ] && { play "$1"; exit; }
-mkdir -p "$G/gb" "$G/gbc" "$G/gba"
+mkdir -p "$G/gb" "$G/gbc" "$G/gba" "$G/psp"
 while :; do
-    list=$(find "$G" -type f \( -iname '*.gb' -o -iname '*.gbc' -o -iname '*.sgb' -o -iname '*.gba' \) | sort)
+    # the computer's PSP games, if one is named and answers within 5 s
+    remote=""
+    if [ -s "$G/psp-server" ]; then
+        url=$(head -n 1 "$G/psp-server"); url=${url%/}
+        # disc images only: PPSSPP runs a .pbp from its folder, which a URL has not
+        remote=$(wget -q -T 5 -O - "$url/" 2>/dev/null | grep -i -E '\.(iso|cso|chd)$' | sed "s|^/*|$url/|")
+    fi
+    list=$( { find "$G" -type f \( -iname '*.gb' -o -iname '*.gbc' -o -iname '*.sgb' -o -iname '*.gba' \
+                  -o -iname '*.iso' -o -iname '*.cso' -o -iname '*.chd' -o -iname '*.pbp' \)
+              [ -n "$remote" ] && echo "$remote"; } | sort)
     if [ -z "$list" ]; then
-        say "No games yet.  Copy your Game Boy (.gb, .gbc) and Game Boy Advance (.gba) games into $G, then open Games again."
+        say "No games yet.  Copy your Game Boy (.gb, .gbc), Game Boy Advance (.gba) and PSP (.iso, .cso) games into $G, then open Games again."
         exit 0
     fi
     # rows and buttons big enough for a finger
     game=$(echo "$list" | while IFS= read -r f; do
                case "$(echo "${f##*.}" | tr A-Z a-z)" in
-                   gba) echo "Game Boy Advance" ;; gbc) echo "Game Boy Color" ;; *) echo "Game Boy" ;;
+                   gba) echo "Game Boy Advance" ;; gbc) echo "Game Boy Color" ;;
+                   iso|cso|chd|pbp) case "$f" in http*) echo "PlayStation Portable (network)" ;;
+                                                  *) echo "PlayStation Portable" ;; esac ;;
+                   *) echo "Game Boy" ;;
                esac
-               n=$(basename "$f"); echo "${n%.*}"; echo "$f"
+               # a homebrew's EBOOT.PBP goes by its folder's name; a URL's %20s are spaces again
+               n=$(basename "$f"); [ "$(echo "$n" | tr a-z A-Z)" = EBOOT.PBP ] && n=$(basename "$(dirname "$f")").pbp
+               case "$f" in http*) n=$(printf '%b' "$(echo "$n" | sed 's/%\([0-9A-Fa-f][0-9A-Fa-f]\)/\\x\1/g')") ;; esac
+               echo "${n%.*}"; echo "$f"
            done | yad --list --title=$T --center --width=1000 --height=700 \
                       --css='treeview.view { font-size: 18pt; padding: 12px 8px; } button { font-size: 16pt; padding: 10px 28px; }' \
                       --column=System --column=Game --column=File:HD --print-column=3 --separator= \
@@ -177,7 +241,7 @@ cat > /usr/share/applications/games.desktop <<'END'
 [Desktop Entry]
 Type=Application
 Name=Games
-Comment=Game Boy and Game Boy Advance games, by touch
+Comment=Game Boy, Game Boy Advance and PSP games, by touch
 Exec=games
 Icon=cascadia-games
 Terminal=false
@@ -185,4 +249,4 @@ Categories=Game;
 END
 cp /usr/share/applications/games.desktop /root/Desktop/games.desktop
 chmod 755 /root/Desktop/games.desktop
-echo "games: ready -- your games go in /root/Games (gb, gbc, gba)"
+echo "games: ready -- your games go in /root/Games (gb, gbc, gba, psp)"

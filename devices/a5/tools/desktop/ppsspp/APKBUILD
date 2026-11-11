@@ -1,0 +1,82 @@
+# Cascadia's own (tools/desktop/ppsspp/build.sh): PPSSPP for the iPad 2's A5.
+# Alpine has no PPSSPP package.
+pkgname=ppsspp
+pkgver=1.20.4
+pkgrel=2
+pkgdesc="PlayStation Portable emulator (SDL), built for the Apple A5"
+url="https://www.ppsspp.org"
+arch="armhf armv7"
+license="GPL-2.0-or-later"
+# glu-dev: only its header -- the GLEW PPSSPP carries includes GL/glu.h
+# (PPSSPP defines GLEW_NO_GLU for its libretro build only)
+makedepends="cmake samurai linux-headers python3 ccache mesa-dev glu-dev sdl2-compat-dev sdl2_ttf-dev
+	fontconfig-dev freetype-dev zlib-dev libzip-dev libpng-dev zstd-dev snappy-dev"
+# the patches: desktop GL keeps SDL's GLX context (on ARM PPSSPP would
+# switch to an EGL OpenGL ES one and crash in its first frame); a game
+# streamed over HTTP no longer hangs PPSSPP where less than 768 MB is free
+# (its disk cache took a mutex twice); the touch controls take X11's
+# fingers (touch IDs in the hundreds, where they expect 0-9)
+source="https://github.com/hrydgard/ppsspp/releases/download/v$pkgver/ppsspp-$pkgver.tar.xz
+	sdl-desktop-gl-keeps-glx.patch
+	disk-cache-no-self-deadlock.patch
+	sdl-touch-finger-slots.patch"
+builddir="$srcdir/ppsspp-$pkgver"
+options="!check"
+
+build() {
+	# PPSSPP's own FFmpeg (3.0.2: its media code wants that API -- Alpine's
+	# FFmpeg 8 has no avcodec_decode_audio4), the PSP's codecs only.  The
+	# tarball has its source but not the prebuilt libraries, so it is built
+	# here as ffmpeg/linux_armhf.sh does it, natively, into the directory
+	# PPSSPP's CMake looks in.  GCC 14 made old C's slips errors: warnings
+	# again for this 2016 code.
+	(
+		cd ffmpeg
+		./configure --target-os=linux --prefix="$builddir"/ffmpeg/linux/armv7 \
+			--arch=arm --extra-libs=-lgcc \
+			--extra-cflags="-O3 -fasm -Wno-psabi -fno-short-enums -fno-strict-aliasing -mfloat-abi=hard -mfpu=neon -marm -march=armv7-a -mtune=cortex-a9 -Wno-error=implicit-function-declaration -Wno-error=incompatible-pointer-types -Wno-error=int-conversion" \
+			--disable-shared --enable-static --enable-zlib --disable-everything \
+			--disable-avdevice --disable-filters --disable-programs --disable-network --disable-avfilter \
+			--disable-postproc --disable-encoders --disable-protocols --disable-hwaccels --disable-doc \
+			--enable-decoder=h264 --enable-decoder=mpeg4 --enable-decoder=mpeg2video \
+			--enable-decoder=mjpeg --enable-decoder=mjpegb \
+			--enable-decoder=aac --enable-decoder=aac_latm --enable-decoder=atrac3 --enable-decoder=atrac3p \
+			--enable-decoder=mp3 --enable-decoder=pcm_s16le --enable-decoder=pcm_s8 \
+			--enable-encoder=huffyuv --enable-encoder=ffv1 --enable-encoder=mjpeg --enable-encoder=pcm_s16le \
+			--enable-demuxer=h264 --enable-demuxer=m4v --enable-demuxer=mpegvideo --enable-demuxer=mpegps \
+			--enable-demuxer=mp3 --enable-demuxer=avi --enable-demuxer=aac --enable-demuxer=pmp \
+			--enable-demuxer=oma --enable-demuxer=pcm_s16le --enable-demuxer=pcm_s8 --enable-demuxer=wav \
+			--enable-muxer=avi \
+			--enable-parser=h264 --enable-parser=mpeg4video --enable-parser=mpegaudio \
+			--enable-parser=mpegvideo --enable-parser=aac --enable-parser=aac_latm
+		make -j "${PPSSPP_JOBS:-4}"
+		make install
+	)
+
+	# the A5: ARMv7, Cortex-A9 with NEON (Alpine's armhf builds for ARMv6;
+	# PPSSPP's ARM JIT wants ARMv7 and VFPv3 at least)
+	local a5="-O2 -march=armv7-a -mtune=cortex-a9 -mfpu=neon -mfloat-abi=hard"
+	export CFLAGS="$CFLAGS $a5" CXXFLAGS="$CXXFLAGS $a5"
+	# desktop OpenGL through GLEW: PPSSPP asks for core 4.6 down to 3.0 and
+	# then takes what the driver has, the SGX's OpenGL 2.1; no Vulkan there
+	cmake -B build -G Ninja \
+		-DCMAKE_BUILD_TYPE=Release \
+		-DCMAKE_INSTALL_PREFIX=/usr \
+		-DARMV7=ON \
+		-DARM_NO_VULKAN=ON \
+		-DHEADLESS=OFF \
+		-DUNITTEST=OFF \
+		-DUSE_DISCORD=OFF \
+		-DUSE_MINIUPNPC=OFF \
+		-DUSE_CCACHE=OFF \
+		-DUSE_SYSTEM_LIBPNG=ON \
+		-DUSE_SYSTEM_ZSTD=ON \
+		-DUSE_SYSTEM_SNAPPY=ON \
+		-DUSE_SYSTEM_LIBZIP=ON \
+		-DUSE_SYSTEM_FREETYPE=ON
+	cmake --build build -j "${PPSSPP_JOBS:-4}"
+}
+
+package() {
+	DESTDIR="$pkgdir" cmake --install build
+}

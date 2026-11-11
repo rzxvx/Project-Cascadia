@@ -834,7 +834,8 @@ Build products (`output/`) and stock firmware are not tracked; everything in
   storage~~ ✓ (the Linux volume) → ~~the headphones~~ ✓ (switching by
   themselves) → ~~the built-in microphone~~ ✓ → ~~a headset's microphone~~ ✓
   (biased, capture moving to it) → ~~the cameras~~ ✓ (V4L2, both, with their
-  picture controls) → ~~games~~ ✓ (Game Boy, GBA, by touch) → USB host.
+  picture controls) → ~~games~~ ✓ (Game Boy, GBA, PSP, by touch) → vertex
+  shaders on the GPU (heavy 3D, such as the PSP's) → USB host.
 
 The iPhone 11 and the devices planned next: the
 [project README](../../README.md#roadmap).

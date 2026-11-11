@@ -15,7 +15,7 @@
 #
 # and, as a step of its own (ONLY=, the iPad 2's root: tools/k93-root.sh):
 #
-#   Games (RetroArch, touch)  tools/desktop/games-setup.sh, retroarch/build.sh
+#   Games (RetroArch, PPSSPP) tools/desktop/games-setup.sh, retroarch/ and ppsspp/build.sh
 #
 # Each of those installs onto the running iPad over ssh; here they run
 # unchanged, with tools/desktop/rootssh/ssh first on PATH: it runs what they
@@ -123,6 +123,7 @@ step supertux   sh "$ROOT/tools/desktop/supertux/build.sh" install
 step screenpad  sh "$ROOT/tools/screenpad/build.sh" install
 step youtube    sh -c "ssh $DEV sh -s < '$ROOT/tools/desktop/youtube-setup.sh'"
 step games      sh -c "sh '$ROOT/tools/desktop/retroarch/build.sh' install &&
+                       sh '$ROOT/tools/desktop/ppsspp/build.sh' install &&
                        tar -C '$ROOT/tools/games/overlays' -cf - . |
                            ssh $DEV 'mkdir -p /usr/share/cascadia/overlays && tar -C /usr/share/cascadia/overlays -xf -' &&
                        ssh $DEV sh -s < '$ROOT/tools/desktop/games-setup.sh'"
@@ -141,7 +142,7 @@ inroot 'chroot /target apk -s add --no-network >/dev/null' \
 for f in usr/local/bin/desktop usr/local/bin/autorotate usr/bin/xrandr usr/bin/xinput usr/local/bin/screenpad usr/local/bin/tux-gpudemo \
          usr/local/lib/sgx-mesa/lib/libGLESv2.so.2 etc/ld-musl-armhf.path \
          $([ "${PUBLIC:-0}" = 1 ] || echo usr/local/lib/sgx2d) $(has_step youtube && echo usr/local/bin/youtube) \
-         $(has_step games && echo usr/local/bin/games usr/bin/retroarch usr/share/cascadia/overlays/gba.cfg); do
+         $(has_step games && echo usr/local/bin/games usr/bin/retroarch usr/bin/PPSSPPSDL usr/share/cascadia/overlays/gba.cfg); do
     inroot "chroot /target test -e /$f" || fail "no /$f in the root"
 done
 echo "    ok: XFCE, X, SuperTux, screenpad, autorotate, Mesa, the GPU's pack"

@@ -55,7 +55,7 @@ reaches (below):
 | audio (CS42L63 on I2S0) | works: ALSA card `iPad2`, I2S0 + CDMA both ways at 44.1/48 kHz, the codec run with iOS's own sequences.  The speaker; **the headphones**, playback moving there by itself when a plug goes in and back when it comes out; **the built-in microphone** and **a headset's microphone**: when a plug goes in, the driver measures its mic contact as iOS does, sets the TS3A8235 to the plug's wiring (CTIA or OMTP) and moves capture to a mic it finds, biased while it records -- no clicks going in, recording or coming out ("Headphone Jack", "Headset Mic Jack").  Stereo, iOS's own input-gain tables, "Capture Volume" 0-128 = -96 to +32 dB.  All confirmed by ear and by recording (2026-11-10); a headset's button and Apple's remote not yet ([research/k93-audio.md](research/k93-audio.md) sections 5-6) |
 | desktop | works: XFCE on the GPU (Xorg modesetting with glamor on the SGX543MP2, OpenGL 2.1), from the root on the NAND, started by itself at boot; touch, the on-screen keyboard (panel button), autorotate and its lock |
 | YouTube | works: the desktop's YouTube launcher (yad search, mpv, yt-dlp): H.264 480p through the GPU with sound, ~1 frame in 700 dropped; ~30 s from Play to the picture after a boot, ~15 s after that (below) |
-| games | work (2026-11-11): Game Boy, Game Boy Color and Game Boy Advance by touch -- the desktop's Games launcher (the games in `~/Games`) starts RetroArch full screen with on-screen controls drawn for this screen, several held at once (our RetroArch build: stock RetroArch reads no touch screen); mGBA and Gambatte at full speed, RetroArch's video on the A5's second core.  Games are copied in with `scp` or a file manager's `sftp://` |
+| games | work (2026-11-11): Game Boy, Game Boy Color and Game Boy Advance by touch -- the desktop's Games launcher (the games in `~/Games`) starts RetroArch full screen with on-screen controls drawn for this screen, several held at once (our RetroArch build: stock RetroArch reads no touch screen); mGBA and Gambatte at full speed, RetroArch's video on the A5's second core.  PSP games in PPSSPP (our build, three of its bugs fixed) with its own touch controls: the PSPSDK's samples at full speed, a demanding game (God of War: Ghost of Sparta) at 2-3 frames/s -- the SGX's vertex shaders run on the CPU, next on the list.  Games are copied in with `scp` or a file manager's `sftp://`; PSP games, bigger than the Linux volume, also stream from a computer (`tools/games/psp-share.py`) |
 | clock | set by NTP once there is a network (stage 2); the build machine's time zone |
 | cameras (the A5's H4 ISP: sensor 0x9726 rear, 0x7739 front) | work (2026-11-10): V4L2 devices `/dev/video0` (the rear: 1280x720, 1280x800, 640x360) and `/dev/video1` (the front: 640x480), YUYV at 30 fps, both pictures upright on the landscape desktop (the front one unmirrored, as V4L2 has it).  The ISP's own CPU runs iOS 8.4.1's firmware behind its IOMMU (`drivers/media/platform/apple/apple-h4isp.c`): booted when a camera starts streaming, powered down when it stops; one camera at a time.  In low light the firmware's exposure takes the rate down to 15 fps, as iOS lets it; `exposure_auto_priority` 0 holds the mode's rate.  Picture controls (2026-11-11): exposure bias (-2 to +2 EV), brightness, contrast, saturation, hue, sharpness (by default the firmware's own, which follows the light) and the mains frequency (50/60 Hz or the firmware's own detection), kept across streams and changed live.  `mpv av://v4l2:/dev/video1` shows it on the desktop; the firmware and the set-files come out of the IPSW with `./cascadia k93 firmware` ([research/k93-camera.md](research/k93-camera.md)) |
 | USB host | not yet: waits for a 30-pin USB adapter |
@@ -329,13 +329,14 @@ The clock: no clock chip Linux reads, so stage 2 asks NTP once a route out
 exists (~40 s into a boot with Wi-Fi), and the image takes the build
 machine's time zone (`/etc/localtime`, exported as `TZ` for GLib).
 
-### Games: the Game Boy and the GBA by touch
+### Games: the Game Boy, the GBA and the PSP by touch
 
 `tools/desktop/games-setup.sh` (the root's `games` step): RetroArch with
 Gambatte (Game Boy, Game Boy Color) and mGBA (Game Boy Advance) from Alpine,
-our own touch controls, and a launcher -- a touch-sized list of the games in
-`~/Games` (yad) that starts one full screen and holds the screen in its
-landscape while it runs.  What it took, measured:
+our own touch controls, PPSSPP for the PSP (below), and a launcher -- a
+touch-sized list of the games in `~/Games` (yad) that starts one full screen
+and holds the screen in its landscape while it runs.  What it took,
+measured:
 
 - **The touch screen.**  Alpine's RetroArch (1.22.2) saw no touch screen at
   all: its udev input driver opens touch screens only when built with
@@ -368,6 +369,54 @@ landscape while it runs.  What it took, measured:
   over again after.
 - **Copying games in.**  OpenSSH's `scp` speaks SFTP since 9.0, which
   dropbear hands to `/usr/lib/ssh/sftp-server`: `openssh-sftp-server`.
+
+PSP games run in PPSSPP 1.20.4, which Alpine does not have:
+`tools/desktop/ppsspp/build.sh` builds it -- the SDL frontend, desktop
+OpenGL through GLEW, the ARM JIT, and the FFmpeg 3.0.2 it carries (its media
+code wants that API; the release has the source, not the libraries) -- for
+the A5, 107 minutes under emulation the first time, minutes after (ccache).
+The launcher takes `.iso`, `.cso`, `.chd` and `.pbp` from `~/Games` and
+starts PPSSPP full screen with its own touch controls.  What it took:
+
+- **Three bugs of PPSSPP's own**, patched (`tools/desktop/ppsspp/*.patch`):
+  - On ARM its CMake turns `USING_EGL` on for every build, and the SDL
+    frontend then traded SDL's GLX context (desktop OpenGL 2.1) for an EGL
+    OpenGL ES one, while the build calls desktop GL through GLEW:
+    `glGetShaderPrecisionFormat` (desktop GL only with
+    `ARB_ES2_compatibility`) was a null pointer, and the first frame
+    crashed.  A desktop-GL build keeps SDL's context now.
+  - A game streamed over HTTP hung PPSSPP for good wherever less than
+    768 MB is free: its disk cache's `InitCache()` holds a mutex while the
+    new cache, short of room, garbage-collects old files -- which takes
+    the same mutex again.  It is recursive now; the cache turns itself off
+    ("Not enough free space") and the game streams through RAM.
+  - The touch controls never pressed: SDL's finger IDs are X.Org's touch
+    IDs, which only grow (946, 947, ...), and the controls index masks and
+    arrays of ten by them -- a touch still woke them up.  Each finger gets
+    a slot of its own; several held together work.
+- **The GPU's vertex side.**  The SGX's Mesa runs vertex shaders on the CPU
+  (Gallium's draw module, interpreted), so PPSSPP's own transform -- ARM
+  code on its emulator's thread, the other core -- costs less than its
+  shaders there: the first settings (`/usr/share/cascadia/ppsspp`) turn
+  hardware transform off, and vertical sync (55 frames of 60 with it, 60
+  without).  The PSPSDK's samples then run at full speed (reflection
+  60/60, blend 59/60); a demanding game does not: God of War: Ghost of
+  Sparta draws 2-3 frames/s even in its menus.  Each of its frames costs
+  ~370 ms on PPSSPP's GL thread -- the interpreter ~56%, copying vertices
+  ~16%, the draw module's clipping ~13% (perf) -- while its emulation alone
+  would keep up: with seven frames of eight skipped the menu goes from 3.3%
+  to 29.8% speed with the emulator's thread a third busy.  Vertex shaders
+  on the GPU are next.
+- **Games from a computer.**  PSP games are bigger than the Linux volume:
+  `tools/games/psp-share.py DIR`, on a computer, serves its disc images the
+  way PPSSPP's own "Share games" does (a listing, byte ranges; the
+  computer's firewall has to let TCP 9123 in), and the launcher lists them
+  too when `~/Games/psp-server` holds its address.  Over the Wi-Fi a game
+  loads at ~1.1 MB/s.  A `.pbp` cannot be streamed -- PPSSPP runs one from
+  its folder -- so those are copied in.
+- **Leaving a game.**  The ≡ at the top opens PPSSPP's pause menu; its Exit
+  (`--pause-menu-exit`) ends the game back in Games.  The touch controls
+  fade after 8 s without a touch, and the first touch brings them back.
 
 ### Writing the NAND: the Linux volume
 
