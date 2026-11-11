@@ -1,4 +1,4 @@
-name: Build iOS kmem
+name: Build A12 iOS GPU capture tools
 
 on:
   workflow_dispatch:
@@ -9,6 +9,8 @@ on:
       - .github/workflows/build-ios-kmem.yml
       - devices/a12/tools/ios/kmem.c
       - devices/a12/tools/ios/kmem.entitlements
+      - devices/a12/tools/ios/g11cap.m
+      - devices/a12/tools/ios/g11cap.entitlements
 
 jobs:
   kmem:
@@ -34,9 +36,25 @@ jobs:
           ldid -Sdevices/a12/tools/ios/kmem.entitlements devices/a12/build/ios/kmem
           file devices/a12/build/ios/kmem
           ldid -e devices/a12/build/ios/kmem
-      - name: Upload kmem
+      - name: Build and sign arm64 iOS G11 offscreen capture
+        shell: bash
+        run: |
+          set -euo pipefail
+          sdk="$(xcrun --sdk iphoneos --show-sdk-path)"
+          xcrun --sdk iphoneos clang \
+            -arch arm64 -miphoneos-version-min=17.0 -isysroot "$sdk" \
+            -Os -Wall -Wextra -Werror -fobjc-arc \
+            -framework Foundation -framework Metal \
+            devices/a12/tools/ios/g11cap.m \
+            -o devices/a12/build/ios/g11cap
+          ldid -Sdevices/a12/tools/ios/g11cap.entitlements devices/a12/build/ios/g11cap
+          file devices/a12/build/ios/g11cap
+          ldid -e devices/a12/build/ios/g11cap
+      - name: Upload A12 iOS tools
         uses: actions/upload-artifact@v4
         with:
-          name: ios-kmem-arm64
-          path: devices/a12/build/ios/kmem
+          name: ios-a12-gpu-capture-arm64
+          path: |
+            devices/a12/build/ios/kmem
+            devices/a12/build/ios/g11cap
           if-no-files-found: error
