@@ -22,17 +22,6 @@ for patch in "$A12"/linux/patches/*.patch; do
   if git -C "$K" apply --check "$patch" 2>/dev/null; then
     git -C "$K" apply "$patch"
   elif ! git -C "$K" apply --reverse --check "$patch" 2>/dev/null; then
-    # The AGX source is occasionally edited/generated in the ignored build
-    # tree after its patch was applied, so a strict reverse check no longer
-    # matches byte-for-byte.  Accept that incremental state only when both
-    # integration markers and the complete source directory are present.
-    if [[ "$(basename "$patch")" == linux-0020-agx.patch &&
-          -f "$K/drivers/gpu/drm/agx/agx_drv.c" ]] &&
-       grep -q 'source "drivers/gpu/drm/agx/Kconfig"' \
-         "$K/drivers/gpu/drm/Kconfig" &&
-       grep -q 'obj-$(CONFIG_DRM_AGX).*agx/' "$K/drivers/gpu/drm/Makefile"; then
-      continue
-    fi
     echo "patch neither applies nor is already present: $patch" >&2
     exit 1
   fi

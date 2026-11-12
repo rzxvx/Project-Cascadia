@@ -71,12 +71,17 @@ def main():
         if sha(out/'SmartIO.raw') != p['smartio_raw_sha256']:
             raise ValueError('decoded SmartIO hash mismatch')
     if p.get('gfx_ipsw'):
+        # Use an already verified local input rather than fetching on every pack.
+        cached = out/'armfw_g11p.im4p'
+        if cached.is_file() and sha(cached) == p['gfx_im4p_sha256']:
+            print(p['label']+' boot and GPU inputs verified in '+str(out))
+            return
         gfxdir = out/'gfx'
         run('ipsw', 'extract', '--remote', '--pattern',
             r'^Firmware/agx/armfw_g11p\.im4p$', '-o', gfxdir, p['gfx_ipsw'])
         matches = list(gfxdir.rglob('armfw_g11p.im4p'))
         if len(matches) != 1 or sha(matches[0]) != p['gfx_im4p_sha256']:
-            raise ValueError('XS Max 16.6.1 GPU firmware hash mismatch')
+            raise ValueError(p['label']+' GPU firmware hash mismatch')
         import shutil
         shutil.copyfile(matches[0], out/'armfw_g11p.im4p')
     print(p['label']+' boot inputs verified in '+str(out))

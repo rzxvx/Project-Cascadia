@@ -61,7 +61,10 @@
     "models": [
       "A2270"
     ],
-    "smartio_raw_sha256": "f6e5c80434c3a02a7ab715102d60a0abf0b95ce9ca98645d012a39896314d13c"
+    "smartio_raw_sha256": "f6e5c80434c3a02a7ab715102d60a0abf0b95ce9ca98645d012a39896314d13c",
+    "gfx_ipsw": "https://updates.cdn-apple.com/2023FallFCS/fullrestores/042-95894/E5C89FEE-E10A-4B33-8D69-973EDF7DB0A7/iPad_10.2_2020_17.1.1_21B91_Restore.ipsw",
+    "gfx_build": "21B91",
+    "gfx_im4p_sha256": "b441e1bb3d2baae307e4c7b5b4bbcd4de503c8b9a87f2670164741b7013669ed"
   },
   "xsmax": {
     "aliases": [
@@ -92,6 +95,7 @@
       "A2101"
     ],
     "gfx_ipsw": "https://updates.cdn-apple.com/2023SummerFCS/fullrestores/042-43832/D00DE3E3-6FAA-4DAA-B17D-94CEF1B5CA1C/iPhone11,2,iPhone11,4,iPhone11,6_16.6.1_20G81_Restore.ipsw",
-    "gfx_im4p_sha256": "91e17c9165ac861d032ca911694fbea7840e09fb53bb9ef31fe6cee3bd1bfe7f"
+    "gfx_im4p_sha256": "91e17c9165ac861d032ca911694fbea7840e09fb53bb9ef31fe6cee3bd1bfe7f",
+    "gfx_build": "20G81"
   }
 }

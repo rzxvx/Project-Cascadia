@@ -13,6 +13,7 @@
 		serial1 = &serial1;
 		ausbphy0 = &ausbphy0;
 		sio = &sio;
+		gfxasc = &gfx_asc;
 		wifi0 = &wifi0;
 		bluetooth0 = &bluetooth0;
 	};
@@ -22,6 +23,8 @@
 		#size-cells = <2>;
 		ranges;
 		stdout-path = "serial0";
+		cascadia,g11-firmware-handoff;
+		cascadia,g11-start-driver;
 		framebuffer0: framebuffer@0 {
 			compatible = "apple,simple-framebuffer", "simple-framebuffer";
 			reg = <0 0 0 0>;
@@ -171,3 +174,16 @@
 		clock-output-names = "j171-touch-ref";
 	};
 };
+
+/* Firmware ABI is iPadOS 17.1.1/21B91, never the XS 16.6.1 layout. */
+&gfx_asc {
+    compatible = "cascadia,j171a-agx-21b91";
+    status = "disabled"; /* enabled by validated live m1n1 handoff */
+};
+
+/* Shared XS kernel drivers must not claim unported J171 display/sensors. */
+&disp0 { status = "disabled"; };
+&dsi { status = "disabled"; };
+&tempsensor_pmgr { status = "disabled"; };
+&tempsensor_acc { status = "disabled"; };
+&tempsensor_acce { status = "disabled"; };

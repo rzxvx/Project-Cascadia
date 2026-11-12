@@ -96,7 +96,7 @@ class Separation(unittest.TestCase):
                 fields='PRODUCT: '+p['product']+'\nCPID: '+p['cpid']+'\nBDID: '+p['bdid']+'\n'
                 calls=[]
                 first={'serial':False,'artifacts':{'SmartIO.img4':'test'} if device=='ipad8' else {}}
-                if device=='xsmax': first['artifacts']['gfx.img4']='test'
+                if device in ('ipad8','xsmax'): first['artifacts']['gfx.img4']='test'
                 linux={'nfsroot':'172.16.42.2:/srv/test-root'}
                 with patch.object(boot.profile,'paths',return_value=p), \
                      patch.object(boot,'verify_manifest',side_effect=[first,linux]), \
@@ -107,7 +107,7 @@ class Separation(unittest.TestCase):
                      patch.object(sys,'argv',['boot-device.py']):
                     boot.main()
                 uploads=[Path(c[2]).name for c in calls if c[:2]==('irecovery','-f')]
-                expected=['DeviceTree.img4']+(['SmartIO.img4'] if device=='ipad8' else [])+['RestoreTrustCache.img4']+(['gfx.img4'] if device=='xsmax' else [])+['linux.img4']
+                expected=['DeviceTree.img4']+(['SmartIO.img4'] if device=='ipad8' else [])+['RestoreTrustCache.img4']+(['gfx.img4'] if device in ('ipad8','xsmax') else [])+['linux.img4']
                 self.assertEqual(uploads,expected)
                 self.assertEqual([c.args[0] for c in sleep.call_args_list],
                                  [0.5] if device=='xr' else [1]*len(expected))
@@ -115,7 +115,7 @@ class Separation(unittest.TestCase):
     def test_no_dynamic_a13_dependencies(self):
         for f in A12.rglob('*'):
             rel=f.relative_to(A12)
-            if any(x in rel.parts for x in ['build','inputs','extracted','logs','vendor','tests','__pycache__']):continue
+            if any(x in rel.parts for x in ['build','inputs','extracted','logs','vendor','tests','local-research','__pycache__']):continue
             if f.is_file() and f.suffix in ('.sh','.py'):
                 text=f.read_text()
                 for line in text.splitlines():

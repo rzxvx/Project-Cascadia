@@ -26,7 +26,7 @@ Select: ./cascadia a12 --device xr|ipad8|xsmax COMMAND
   ./cascadia a12 doctor              check host tools and local inputs
   ./cascadia a12 inputs              fetch/patch first-stage inputs (IM4M=...)
   ./cascadia a12 periphery [OS.dmg]  fetch touch; optionally extract radio firmware
-  ./cascadia a12 build [TARGET]      all, m1n1, kernel, dtb, initramfs, rootfs
+  ./cascadia a12 build [TARGET]      all, m1n1, kernel, dtb, initramfs, rootfs, mesa
   ./cascadia a12 pack                package the SysCfg-calibrated image (IM4M=...)
   ./cascadia a12 boot                boot Linux with DCSD logging
   ./cascadia a12 boot radios         boot Debian, then load Wi-Fi and Bluetooth
@@ -95,6 +95,7 @@ cmd_build() {
         dtb)      bash dts/build-dtb.sh "$A12_BOARD" ;;
         initramfs) bash initramfs/make-initramfs.sh ;;
         rootfs)   bash rootfs/build-debian-rootfs.sh ;;
+        mesa)     bash mesa/build-mesa.sh ;;
         *) fail "unknown build target '$1'" ;;
     esac
 }

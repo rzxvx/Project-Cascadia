@@ -108,3 +108,5 @@ m1n1 builds are available with `M1N1_DOCKER=0`.
   pinmux and RTS/CTS
 - **Paradigm Shift**: usbliter8
 - **blacktop**: [ipsw](https://github.com/blacktop/ipsw)
+
+GPU build/firmware/Mesa instructions: [GPU.md](GPU.md). The iPad built-in GPU path has passed boot, pixel-readback and temporary GPU-desktop tests; see the documented limits.

@@ -21,7 +21,20 @@ on)
     # On reused roots the other board's firmware may be absent after switch_root.
     bash "$A12/rootfs/install-touch-firmware.sh" "$DST"
     mkdir -p /etc/exports.d
-    echo "$DST $LAN(rw,sync,no_subtree_check,no_root_squash,insecure)" > "$EXPORTS"
+    ENTRY="$DST $LAN(rw,sync,no_subtree_check,no_root_squash,insecure)"
+    REUSE_EXPORT=
+    for other in /etc/exports /etc/exports.d/*.exports; do
+        [ "$other" = "$EXPORTS" ] && continue
+        if [ -f "$other" ] && grep -Fxq "$ENTRY" "$other"; then
+            REUSE_EXPORT="$other"; break
+        fi
+    done
+    if [ -n "$REUSE_EXPORT" ]; then
+        echo "Reusing matching export in $REUSE_EXPORT"
+        rm -f "$EXPORTS"
+    else
+        echo "$ENTRY" > "$EXPORTS"
+    fi
     if [ -d /run/systemd/system ]; then
         systemctl enable --now rpcbind.socket nfs-server.service
     else

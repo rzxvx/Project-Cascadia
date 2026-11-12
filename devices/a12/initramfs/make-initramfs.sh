@@ -243,6 +243,7 @@ if [ -n "$udc" ]; then
                 sleep 1
             done
         ) &
+        USB_CONSOLE_PID=$!
 
         # The iPhone 11 port keeps Alpine outside rkrn and switches to a host
         # NFS export after USB ECM is ready.  Use the same proven NFSv3 flow
@@ -271,6 +272,9 @@ if [ -n "$udc" ]; then
                 cp /etc/dropbear/dropbear_ed25519_host_key /newroot/etc/dropbear/
                 chmod 700 /newroot/root /newroot/root/.ssh
                 chmod 600 /newroot/root/.ssh/authorized_keys
+                # Stop the initramfs console loop before its commands disappear.
+                kill "$USB_CONSOLE_PID" 2>/dev/null || true
+                wait "$USB_CONSOLE_PID" 2>/dev/null || true
                 killall dropbear 2>/dev/null || true
                 # Process discovery needs the original /proc: clean before moving it.
                 killall usbwatch 2>/dev/null || true

@@ -51,7 +51,7 @@ def main():
     if p.get('gfx_ipsw'):
         gfx = p['extracted']/'armfw_g11p.im4p'
         if sha(gfx) != p['gfx_im4p_sha256']:
-            raise ValueError('incorrect XS Max GPU firmware')
+            raise ValueError('incorrect selected GPU firmware')
         run('img4', '-i', gfx, '-o', out/'gfx.img4', '-M', ticket)
         files.append(out/'gfx.img4')
     write_manifest(out/'bootset.json', p, files, serial=args.serial, ibss_bootargs=bootargs)

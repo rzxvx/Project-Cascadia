@@ -113,6 +113,13 @@ ln -sfn /usr/lib/systemd/system/graphical.target \
 cleanup_mounts
 trap - EXIT
 
+# GPU Mesa installation is explicit: a host build may not match this Debian ABI.
+# Set A12_INSTALL_GPU_MESA=1 and prepare the shared stage with build mesa first.
+if [ "${A12_INSTALL_GPU_MESA:-0}" = 1 ]; then
+    [ "$PROFILE" != xr ] || { echo 'XR GPU is not validated' >&2; exit 2; }
+    python3 "$A12/mesa/runtime.py" install "${A12_MESA_STAGE:-$A12/build/mesa-stage}" --root "$ROOT"
+fi
+
 tar -C "$ROOT" -czf "$OUT" .
 sha256sum "$OUT"
 du -sh "$ROOT" "$OUT"

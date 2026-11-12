@@ -1518,6 +1518,25 @@ static int apple_z2_enable_clock(struct apple_z2 *z2)
 	return 0;
 }
 
+static int apple_z2_j171_enable_smc_key(struct apple_z2 *z2, u32 key, u32 value)
+{
+	int error;
+
+	error = apple_smc_write_u32(z2->smc, key, value | 1);
+	if (error != -ETIMEDOUT)
+		return error;
+
+	/* The J171 SMC sometimes misses its first early-boot reply.  The
+	 * enable write is idempotent; retry once after boot activity settles.
+	 * Do not repeat unrelated protocol or firmware-upload failures.
+	 */
+	dev_warn(&z2->spidev->dev,
+		 "J171 touch power SMC key %#x timed out; retrying once after 1s\n",
+		 key);
+	msleep(1000);
+	return apple_smc_write_u32(z2->smc, key, value | 1);
+}
+
 static int apple_z2_j172_power_on(struct apple_z2 *z2)
 {
 	int error;
@@ -1525,13 +1544,13 @@ static int apple_z2_j172_power_on(struct apple_z2 *z2)
 	if (z2->j171) {
 		gpiod_set_value_cansleep(z2->reset_gpio, 1);
 		if (z2->smc) {
-			error = apple_smc_write_u32(z2->smc, z2->smc_key,
-						    z2->smc_val | 1);
+			error = apple_z2_j171_enable_smc_key(z2, z2->smc_key,
+							    z2->smc_val);
 			if (error)
 				return error;
 			if (z2->smc_key2) {
-				error = apple_smc_write_u32(z2->smc, z2->smc_key2,
-							    z2->smc_val2 | 1);
+				error = apple_z2_j171_enable_smc_key(z2,
+					z2->smc_key2, z2->smc_val2);
 				if (error)
 					return error;
 			}

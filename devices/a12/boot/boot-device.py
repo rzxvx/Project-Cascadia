@@ -37,8 +37,8 @@ def main():
     configured_nfs=p['nfsroot'].read_text().strip() if p['nfsroot'].is_file() else ''
     if configured_nfs!=linux['nfsroot'] or (not configured_nfs and p['name']!='xsmax'):
         raise ValueError('selected NFS setting changed since packing; rebuild initramfs and repack')
-    if p['name']=='xsmax' and 'gfx.img4' not in first['artifacts']:
-        raise ValueError('XS Max boot manifest lacks required GPU firmware')
+    if p.get('gfx_ipsw') and 'gfx.img4' not in first['artifacts']:
+        raise ValueError('selected boot manifest lacks required GPU firmware')
     if a.radios:
         if p['name']=='xsmax':
             raise ValueError('XS Max radios are embedded; use boot, not boot radios')
@@ -124,12 +124,12 @@ def main():
     # Host address/DHCP and NFS export must be ready; do not reconfigure an
     # arbitrary host interface that might belong to another connected device.
     for attempt in range(60):
-        command='test -f /etc/debian_version && tr "\\000" "\\n" < /proc/device-tree/compatible | grep -qx apple,'+p['board']
+        command='test -r /etc/os-release && tr "\\000" "\\n" < /proc/device-tree/compatible | grep -qx apple,'+p['board']
         try:
             if subprocess.run(['ssh',*opts,host,command],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=6).returncode==0:break
         except subprocess.TimeoutExpired:pass
         time.sleep(1 if p['name']=='xr' else 2)
-    else:raise ValueError('selected Debian root not reachable; check host USB address and NFS')
+    else:raise ValueError('selected Linux root not reachable; check host USB address and NFS')
     env=dict(os.environ,A12_DEVICE=p['name'],A12_PROFILE=p['name'],XR_SSH_HOST=host,IPAD8_SSH_HOST=host,
              A12_RADIO_DIR=str(p['inputs']/'brcm'),IPAD8_RADIO_DIR=str(p['inputs']/'radios'))
     if p['name']=='xr':

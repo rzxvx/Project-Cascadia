@@ -50,6 +50,7 @@
 #define MSG_REPORT	0x68
 
 #define SIO_CALL_TIMEOUT_MS	100
+#define SIO_START_TIMEOUT_MS	500
 #define SIO_SHMEM_SIZE		0x1000
 #define SIO_NO_DESC_SLOTS	64
 
@@ -626,7 +627,13 @@ static void sio_recv_msg(void *cookie, u8 ep, u64 msg)
 	/* Process ACKs before any console output: sio_call has a 100 ms budget. */
 	switch (type) {
 	case MSG_STARTED:
-		dev_info(sio->dev, "SIO protocol v%u\n", data);
+		/* Startup may time out even after this message is received.  Keep
+		 * the tag and raw reply so a late or mismatched ACK is visible.
+		 */
+		dev_dbg(sio->dev,
+			 "SIO protocol v%u start reply tag=%u ep=%u allocated=%u raw=%016llx\n",
+			 data, tag, sioep,
+			 test_bit(tag, tags->allocated) ? 1 : 0, msg);
 		type = MSG_ACK; /* Pretend this is an ACK */
 		fallthrough;
 	case MSG_ACK:
@@ -707,15 +714,22 @@ static int sio_send_siomsg_atomic(struct sio_data *sio, u64 msg,
 static int sio_call(struct sio_data *sio, u64 msg)
 {
 	int tag, ret;
+	bool start = FIELD_GET(SIOMSG_TYPE, msg) == MSG_START;
 
 	tag = sio_send_siomsg(sio, msg);
 	if (tag < 0)
 		return tag;
+	if (start)
+		dev_dbg(sio->dev, "SIO start sent tag=%d msg=%016llx timeout=%u ms\n",
+			 tag, msg | FIELD_PREP(SIOMSG_TAG, tag),
+			 SIO_START_TIMEOUT_MS);
 
 	ret = wait_for_completion_timeout(&sio->tags.completions[tag],
-					  msecs_to_jiffies(SIO_CALL_TIMEOUT_MS));
+					  msecs_to_jiffies(start ?
+						SIO_START_TIMEOUT_MS :
+						SIO_CALL_TIMEOUT_MS));
 	if (!ret) {
-		dev_warn(sio->dev, "call %8llx timed out\n", msg);
+		dev_warn(sio->dev, "call %8llx timed out tag=%d\n", msg, tag);
 		sio_free_tag(sio, tag);
 		return -ETIME;
 	}
