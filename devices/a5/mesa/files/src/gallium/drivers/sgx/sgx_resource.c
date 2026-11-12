@@ -23,6 +23,7 @@
 #include "util/u_inlines.h"
 #include "util/u_math.h"
 #include "util/u_memory.h"
+#include "util/os_time.h"
 
 #include "sgx_context.h"
 #include "sgx_device.h"
@@ -973,6 +974,50 @@ linear_to_zs(struct sgx_screen *screen, struct sgx_resource *res, unsigned level
    FREE(st);
 }
 
+/* (M46) data's bytes that only the GPU copy has made the CPU's again (the
+ * buffer's dirty_lock held): a read of write-combined memory, slow, and
+ * only for a buffer written by sgx_buffer_subdata that the CPU then reads */
+static void
+buffer_fresh_locked(struct sgx_resource *res)
+{
+   if (res->stale_lo < res->stale_hi && res->bo && res->data) {
+      memcpy(res->data + res->stale_lo, (const uint8_t *)res->bo->map + res->stale_lo,
+             res->stale_hi - res->stale_lo);
+      sgx_stat_up[SGX_UP_BACK] += res->stale_hi - res->stale_lo;
+   }
+   res->stale_lo = res->stale_hi = 0;
+}
+
+void
+sgx_buffer_fresh(struct sgx_resource *res)
+{
+   if (res->base.target != PIPE_BUFFER || res->stale_lo >= res->stale_hi)
+      return;
+   simple_mtx_lock(&res->dirty_lock);
+   buffer_fresh_locked(res);
+   simple_mtx_unlock(&res->dirty_lock);
+}
+
+void
+sgx_buffer_fresh_range(struct sgx_resource *res, uint32_t lo, uint32_t hi)
+{
+   if (res->base.target != PIPE_BUFFER || res->stale_lo >= res->stale_hi)
+      return;
+   simple_mtx_lock(&res->dirty_lock);
+   if (lo <= res->stale_lo && hi >= res->stale_hi) {
+      buffer_fresh_locked(res);
+   } else {
+      /* (the rest stays behind: copied again later, the same bytes) */
+      lo = MAX2(lo, res->stale_lo);
+      hi = MIN2(hi, res->stale_hi);
+      if (lo < hi && res->bo && res->data) {
+         memcpy(res->data + lo, (const uint8_t *)res->bo->map + lo, hi - lo);
+         sgx_stat_up[SGX_UP_BACK] += hi - lo;
+      }
+   }
+   simple_mtx_unlock(&res->dirty_lock);
+}
+
 static void *
 sgx_transfer_map(struct pipe_context *pctx, struct pipe_resource *prsc, unsigned level,
                  unsigned usage, const struct pipe_box *box, struct pipe_transfer **out)
@@ -1019,6 +1064,9 @@ sgx_transfer_map(struct pipe_context *pctx, struct pipe_resource *prsc, unsigned
          if (!zs_to_linear(res, level, z))
             return NULL;
    }
+   /* (M46) what only the GPU copy has, the CPU's again first */
+   if (prsc->target == PIPE_BUFFER)
+      sgx_buffer_fresh(res);
    if (!(map = res->data ? res->data : sgx_bo_map(res->bo)))
       return NULL;
    /* (a map glthread makes in the application's thread: nothing of the
@@ -1167,7 +1215,8 @@ sgx_buffer_bo(struct sgx_context *ctx, struct sgx_resource *res, uint32_t read_l
       lo = 0;
       hi = res->base.width0;
    }
-   memcpy(bo->map + lo, res->data + lo, hi - lo);
+   sgx_copy((uint8_t *)bo->map + lo, res->data + lo, hi - lo);
+   sgx_stat_up[SGX_UP_ON] += hi - lo;
    res->dirty_lo = res->dirty_hi = 0;
    res->dirty_sync = false;
    simple_mtx_unlock(&res->dirty_lock);
@@ -1228,6 +1277,62 @@ sgx_generate_mipmap(struct pipe_context *pctx, struct pipe_resource *prsc,
    return true;
 }
 
+/* (M46) glBufferSubData into a vertex buffer whose GPU copy no render
+ * reads: straight into that copy, once -- where Mesa's default wrote the CPU
+ * copy and the next draw copied the bytes on into the GPU's (sgx_buffer_bo):
+ * PPSSPP uploads every vertex of every frame, and those two copies were 90%
+ * of its GL thread's memcpy.  The CPU copy is behind by those bytes then
+ * (stale_lo, stale_hi) until something maps it.  Index buffers too (the
+ * VDM reads PPSSPP's where they are; a draw whose indices the CPU reads
+ * makes the copy the CPU's again first); not constant buffers (the CPU
+ * reads those for every draw), a buffer mapped while drawn from, or one
+ * without a GPU copy yet.  SGX_DIRECT_SUBDATA=0: Mesa's default always. */
+static void
+sgx_buffer_subdata(struct pipe_context *pctx, struct pipe_resource *prsc, unsigned usage,
+                   unsigned offset, unsigned size, const void *data)
+{
+   struct sgx_context *ctx = sgx_context(pctx);
+   struct sgx_resource *res = sgx_resource(prsc);
+   static int on = -1;
+
+   if (on < 0)
+      on = !getenv("SGX_DIRECT_SUBDATA") || atoi(getenv("SGX_DIRECT_SUBDATA"));
+   if (on && size >= 64 && res->bo && res->data && offset + size <= prsc->width0 &&
+       !(prsc->bind & PIPE_BIND_CONSTANT_BUFFER)) {
+      simple_mtx_lock(&res->dirty_lock);
+      if (p_atomic_read(&res->live_maps) == 0 && !sgx_batch_reads(ctx, res->bo) &&
+          sgx_bo_idle(res->bo)) {
+         /* what the CPU copy has that the GPU's has not, first (the next
+          * draw's copy, now: never both behind at once) */
+         int64_t t0 = ctx->debug_fps ? os_time_get_nano() : 0;
+
+         if (res->dirty_lo < res->dirty_hi) {
+            sgx_copy((uint8_t *)res->bo->map + res->dirty_lo, res->data + res->dirty_lo,
+                     res->dirty_hi - res->dirty_lo);
+            sgx_stat_up[SGX_UP_ON] += res->dirty_hi - res->dirty_lo;
+            res->dirty_lo = res->dirty_hi = 0;
+            res->dirty_sync = false;
+         }
+         sgx_copy((uint8_t *)res->bo->map + offset, data, size);
+         sgx_stat_up[SGX_UP_DIRECT] += size;
+         if (t0)
+            sgx_stat_up_ns += os_time_get_nano() - t0;
+         if (res->stale_lo >= res->stale_hi) {
+            res->stale_lo = offset;
+            res->stale_hi = offset + size;
+         } else {
+            res->stale_lo = MIN2(res->stale_lo, offset);
+            res->stale_hi = MAX2(res->stale_hi, offset + size);
+         }
+         simple_mtx_unlock(&res->dirty_lock);
+         return;
+      }
+      simple_mtx_unlock(&res->dirty_lock);
+   }
+   sgx_stat_up[SGX_UP_CPU] += size;
+   u_default_buffer_subdata(pctx, prsc, usage, offset, size, data);
+}
+
 void
 sgx_resource_context_init(struct pipe_context *pctx)
 {
@@ -1236,7 +1341,7 @@ sgx_resource_context_init(struct pipe_context *pctx)
    pctx->buffer_unmap = sgx_transfer_unmap;
    pctx->texture_unmap = sgx_transfer_unmap;
    pctx->transfer_flush_region = sgx_transfer_flush_region;
-   pctx->buffer_subdata = u_default_buffer_subdata;
+   pctx->buffer_subdata = sgx_buffer_subdata;
    pctx->generate_mipmap = sgx_generate_mipmap;
    pctx->texture_subdata = u_default_texture_subdata;
 }

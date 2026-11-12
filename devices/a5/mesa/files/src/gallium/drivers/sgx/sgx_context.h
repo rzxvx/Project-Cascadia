@@ -57,6 +57,7 @@ struct sgx_batch_draw {
    struct sgx_vs *vs;                   /* its vertex shader on the GPU (M18), or NULL */
    unsigned vs_sa;                      /* its uniforms, from word vs_sa in sa */
    unsigned idx, nidx;                  /* its indices, from idx in the batch's */
+   uint32_t idx_va;                     /* (M46) or in a buffer's GPU copy, there */
    /* a vertex shader's (M26): where the fetch reads each attribute of
     * vertex 0, the stride, the vertices drawn (nidx of them when it has
     * indices, else 0, 1, 2, ...), the largest index */
@@ -161,9 +162,12 @@ struct sgx_vtx {
    unsigned nverts;
    unsigned count, max_index;
    bool indexed;
+   /* (M46) its indices where they are: their address in the index buffer's
+    * GPU copy (0: ctx->indices, copied into the render) */
+   uint32_t idx_va;
    /* the buffers the draw reads: its attributes', and (M43) its uniform
     * buffers', both stages' */
-   struct sgx_bo *bos[SGX_VS_MAX_ATTRIBS + 2 * SGX_FRAME_MAX_UBOS];
+   struct sgx_bo *bos[SGX_VS_MAX_ATTRIBS + 2 * SGX_FRAME_MAX_UBOS + 1];  /* (+1: M46's index buffer) */
    unsigned nbos;
    /* repacked (M42): where the stream was written -- the batch's chunk
     * vchunk (referenced), vdata for the CPU, vdata_va for the GPU -- when

@@ -35,6 +35,11 @@ struct sgx_resource {
     * is -- and the lock the dirty bytes are under (both threads') */
    int live_maps;
    simple_mtx_t dirty_lock;
+   /* (M46) and data behind the GPU copy by the bytes [stale_lo, stale_hi):
+    * written into it alone (sgx_buffer_subdata: a vertex buffer the CPU
+    * does not read), made the CPU's again before anything maps data (never
+    * both behind at once) */
+   uint32_t stale_lo, stale_hi;
    uint32_t stride[PIPE_MAX_TEXTURE_LEVELS];      /* bytes per row */
    uint32_t layer_size[PIPE_MAX_TEXTURE_LEVELS];  /* bytes per layer or slice */
    uint32_t offset[PIPE_MAX_TEXTURE_LEVELS];      /* of each level */
@@ -107,6 +112,13 @@ bool sgx_resource_linear(const struct sgx_resource *res, const struct pipe_sampl
 bool sgx_resource_texture(struct sgx_context *ctx, struct sgx_resource *res,
                           const struct pipe_sampler_view *view,
                           const struct pipe_sampler_state *ss, uint32_t words[4]);
+
+/* (M46) a buffer's CPU copy brought up to date with what was written into
+ * its GPU copy alone: before the CPU reads data (a draw's constants, its
+ * vertices repacked, the draw module's) */
+void sgx_buffer_fresh(struct sgx_resource *res);
+/* (M46) the same for the bytes [lo, hi) alone: a draw's indices */
+void sgx_buffer_fresh_range(struct sgx_resource *res, uint32_t lo, uint32_t hi);
 
 /* A buffer's copy for the GPU (M26), brought up to date with the CPU's
  * first: written in place when no render reads it -- gathered or running
