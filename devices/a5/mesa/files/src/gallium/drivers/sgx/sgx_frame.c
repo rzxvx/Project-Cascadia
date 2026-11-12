@@ -2453,6 +2453,10 @@ draw_state(struct sgx_frame *f, const struct sgx_frame_draw *d, const struct sgx
     * is not written */
    full[1] = (full[1] & ~(7u << 22 | 1u << 20 | 1u << 14)) | (uint32_t)(d->st.depth_func & 7) << 22 |
              (d->st.depth_write ? 0 : 1u << 20) | (d->st.count ? 1u << 14 : 0);
+   /* the pass type, bits 27:25 (M46): opaque 0, translucent 1 (the
+    * template's) */
+   if (d->st.opaque)
+      full[1] &= ~(7u << 25);
    full[18] = (full[18] & ~3u) | d->st.cull;
    full[2] = (full[2] & ~(0x3ffu << 16)) | d->st.offset;
    if (d->st.stencil_on) {

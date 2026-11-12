@@ -22,6 +22,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <unistd.h>
 
 #include "compiler/glsl_types.h"
 #include "compiler/nir/nir.h"
@@ -1759,6 +1760,28 @@ ubo_words(struct sgx_context *ctx, unsigned stage, uint16_t mask, const uint8_t 
    return true;
 }
 
+/* (M46) Whether a draw is opaque to the ISP: a compiled pixel program
+ * that reads nothing of what the tile holds -- not blended, every channel
+ * written, no logic op, no discard (M19's keeps the tile's colour), no
+ * framebuffer fetch.  The ISP then removes what is hidden and shades each
+ * pixel once, where a translucent draw is shaded wherever it covers.
+ * SGX_OPAQUE=0: every draw translucent, as before. */
+static bool
+opaque_draw(const struct sgx_context *ctx, const struct sgx_fs *fs)
+{
+   static int on = -1;
+   const struct sgx_shader *sh = ctx->fs;
+
+   if (on < 0)
+      on = debug_get_bool_option("SGX_OPAQUE", true);
+   if (!on || !fs || !sh || !sh->nir)
+      return false;
+   if (fs->blend.enable || fs->blend.colormask != 0xf || fs->blend.logicop ||
+       fs->blend.rt_srgb || fs->blend.rt_intensity)
+      return false;
+   return !sh->nir->info.fs.uses_discard && !sh->nir->info.fs.uses_fbfetch_output;
+}
+
 static void
 submit(struct sgx_context *ctx)
 {
@@ -1844,6 +1867,7 @@ submit(struct sgx_context *ctx)
     * triangles turned round: flat_first()) */
    if (fs && fs->prog.ncolours)
       st.flat = SGX_FLAT_LAST;
+   st.opaque = opaque_draw(ctx, fs);
    if (ctx->debug_draw && !vs) {
       mesa_logi("sgx: %u triangles; the first:", ctx->nverts / 3);
       for (unsigned i = 0; i < MIN2(ctx->nverts, 3); i++) {
@@ -1965,6 +1989,9 @@ submit(struct sgx_context *ctx)
       }
       if (fs->blend_sa >= 0)
          memcpy(sa + fs->blend_sa, ctx->blend_color.color, 4 * sizeof(float));
+      /* (M46) its constants */
+      for (unsigned k = 0; k < fs->nkconst; k++)
+         sa[fs->kconst_sa + 2 * k] = fs->kconst[k];
       simple_mtx_lock(&screen->frame_lock);
       if (sgx_frame_upload(screen->frame, &fs->prog) ||
           (vs && sgx_frame_upload_vs(screen->frame, vs))) {
@@ -2648,6 +2675,68 @@ gpu_vs_draw(struct sgx_context *ctx, const struct pipe_draw_info *info,
    return true;
 }
 
+/* SGX_DEBUG=each: on -- or, with SGX_EACH_FILE=path, while that file is
+ * there (looked for once a second): a game taken to the scene at its own
+ * speed first */
+static bool
+each_on(struct sgx_context *ctx)
+{
+   static const char *path;
+   static int checked = -1;
+   static int64_t at;
+   static bool on;
+   int64_t now;
+
+   if (!ctx->debug_each)
+      return false;
+   if (checked < 0) {
+      path = getenv("SGX_EACH_FILE");
+      checked = 1;
+   }
+   if (!path)
+      return true;
+   now = os_time_get_nano();
+   if (now - at > 1000000000ll) {
+      at = now;
+      on = access(path, F_OK) == 0;
+   }
+   return on;
+}
+
+/* SGX_DEBUG=each (M46): the draw just gathered, a render of its own -- what
+ * it was (its fragment shader as sgx_create_shader_state named it, its
+ * pixel program), and with sync the render's time on the GPU after it */
+static void
+each_draw(struct sgx_context *ctx, const struct pipe_draw_info *info,
+          const struct pipe_draw_start_count_bias *draws, unsigned num_draws, bool gpu_vs)
+{
+   const struct sgx_fs *fs = ctx->draw_fs;
+   const struct pipe_rt_blend_state *rt = ctx->blend ? &ctx->blend->rt[0] : NULL;
+   unsigned n = 0;
+
+   for (unsigned i = 0; i < num_draws; i++)
+      n += draws[i].count;
+   mesa_logi("sgx: each: into %ux%u %p: %u %s, %s; fragment shader %p%s: %u instructions, "
+             "mask %x, %u temps, %u inputs, %u textures (%u by the PDS), %u sa words%s%s%s; "
+             "blend %s, depth %s%s",
+             ctx->fb.width, ctx->fb.height,
+             ctx->fb.nr_cbufs ? (void *)ctx->fb.cbufs[0].texture : NULL,
+             n, info->index_size ? "indices" : "vertices",
+             gpu_vs ? "the GPU's vertex side" : "the draw module", (void *)ctx->fs,
+             ctx->fs && ctx->fs->nir && ctx->fs->nir->info.fs.uses_discard ? " (discards)" : "",
+             fs ? fs->prog.ncode : 0, rt ? rt->colormask : 0xf, fs ? fs->prog.ntemps : 0,
+             fs ? fs->prog.ninputs : 0,
+             fs ? fs->nsamplers : 0, fs ? fs->prog.nfetch : 0, fs ? fs->prog.nsa : 0,
+             fs && fs->prog.nubuf ? " (+ memory)" : "", fs && fs->prog.branches ? ", branches" : "",
+             fs && fs->prog.f16 ? ", F16" : "",
+             rt && rt->blend_enable ? (fs && fs->sop2 ? "on (SOP2)" : "on (F32)") :
+             opaque_draw(ctx, fs) ? "off (opaque)" : fs && fs->sop2 ? "off (SOP2)" : "off",
+             ctx->dsa && ctx->dsa->depth_enabled ?
+                (ctx->dsa->depth_writemask ? "tested, written" : "tested") : "off",
+             ctx->dsa && ctx->dsa->stencil[0].enabled ? ", stencil" : "");
+   sgx_batch_flush(ctx);
+}
+
 void
 sgx_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info,
              unsigned drawid_offset, const struct pipe_draw_indirect_info *indirect,
@@ -2702,8 +2791,11 @@ sgx_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info,
       for (i = 0; i < num_draws; i++)
          if (!gpu_vs_draw(ctx, info, &draws[i]))
             break;
-      if (i == num_draws)
+      if (i == num_draws) {
+         if (each_on(ctx))
+            each_draw(ctx, info, draws, num_draws, true);
          return;
+      }
       draws += i;
       num_draws -= i;
    }
@@ -2768,4 +2860,6 @@ sgx_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info,
       draw_set_indexes(draw, NULL, 0, 0);
 
    submit(ctx);
+   if (each_on(ctx))
+      each_draw(ctx, info, draws, num_draws, false);
 }

@@ -115,12 +115,11 @@ END
 # controls (off by default on a desktop), OpenGL, the PSP's own resolution,
 # no update checks, and for this GPU (measured with the PSPSDK's samples on
 # the iPad 2, 2026-11-11):
-#   HardwareTransform  off: the SGX's Mesa runs vertex shaders on the CPU
-#                      (Mesa's draw module, interpreted), and PPSSPP's own
-#                      transform -- ARM code, on the emulator's thread, the
-#                      other core -- costs less than its shaders there
-#                      (reflection 90 -> 100% speed, zbufferfog 27 -> 54%)
 #   VerticalSync       off: with it 55 of 60 frames, without 60
+# Hardware transform stays PPSSPP's default, on: with depth clamping hidden
+# (the driconf below) its vertex shaders run on the GPU, as fast as PPSSPP's
+# own transform on the CPU or faster (zbufferfog 91 -> 95% speed, spharm
+# 95 -> 100%) and with half the CPU (God of War).
 #   AudioBufferSize    1024 (23 ms) for 256: slack for the sound's thread
 #                      when both cores are busy (ALSA underran while PPSSPP
 #                      first started, compiling its shaders)
@@ -132,13 +131,35 @@ CheckForNewVersion = False
 GraphicsBackend = 0 (OPENGL)
 FullScreen = True
 InternalResolution = 1
-HardwareTransform = False
 VerticalSync = False
 [Sound]
 AudioBufferSize = 1024
 [Control]
 ShowTouchControls = True
 END
+
+# PPSSPP turns depth clamping on for its 3D draws when the driver has it,
+# and the SGX's Mesa clamps depth on the CPU (the draw module cuts triangles
+# where they cross the depth range, M43 of research/p105-mesa.md) -- so not
+# one of PPSSPP's draws had its vertex shader on the GPU.  Without the
+# extension PPSSPP draws as it does on phones (OpenGL ES 2.0 has none):
+# spharm 21 -> 57 frames/s, God of War's menu 3 -> 8.5% speed.  Mesa's
+# driconf hides it from PPSSPP alone, however it is started.
+if [ -d /usr/local/lib/sgx-mesa ]; then
+    mkdir -p /usr/local/lib/sgx-mesa/share/drirc.d
+    cat > /usr/local/lib/sgx-mesa/share/drirc.d/50-cascadia-ppsspp.conf <<'END'
+<?xml version="1.0" standalone="yes"?>
+<!-- tools/desktop/games-setup.sh: PPSSPP without depth clamping, whose
+     draws the SGX's Mesa would make on the CPU -->
+<driconf>
+  <device>
+    <application name="PPSSPP" executable="PPSSPPSDL">
+      <option name="mesa_extension_override" value="-GL_ARB_depth_clamp -GL_NV_depth_clamp -GL_AMD_depth_clamp_separate -GL_EXT_depth_clamp"/>
+    </application>
+  </device>
+</driconf>
+END
+fi
 
 cat > /usr/local/bin/games <<'END'
 #!/bin/sh

@@ -3747,6 +3747,115 @@ client starts whole to hand the request over. Around it:
 - Mesa's `texture_error_check` formats "glTexImage%dD" for every
   glTexImage, whether or not there is an error.
 
+## M46: where God of War's frame goes -- the pixels, not the vertices
+
+PPSSPP (K93, the iPad 2: `tools/desktop/games-setup.sh`) on God of War:
+Ghost of Sparta's main menu ran at 9% speed once its draws took the GPU's
+vertex side (depth clamping hidden from it by a driconf, M43's CPU clamp
+otherwise). A render of 73 draws and ~103k indices took 88 ms of GPU, which
+read as ~1 us a vertex. It is not the vertices.
+
+**The vertex side is fast.** `tools/sgx/gl/glverts.c` times renders of
+many small triangles (lists, indices 0, 1, 2, ..., strips made lists as
+PPSSPP's IndexGenerator does, a grid; 0 to 7 varyings; PPSSPP's 24-byte
+vertex): 60 000 indexed vertices take 3 ms of GPU (~20 M a second), a
+480 x 272 render ~1 ms whatever it draws. With `SGX_NOCOMPILE=1` (no
+fragment program: the draw module's colours) the same 73 draws take 5 ms.
+The 88 ms were the pixel programs.
+
+**`SGX_DEBUG=each`** (with `sync`): every draw a render of its own, logged
+with its fragment shader (`fragment shader 0x...`, its NIR printed when it
+is made), instructions, colour mask, textures (and how many the PDS
+fetches), blending (SOP2, F32 or opaque) and depth; `SGX_EACH_FILE=path`
+does it only while that file is there, so a game reaches the scene at its
+own speed first. On the host `each-stats.py` (the K93 session tools) sums
+the GPU time by shader. `glverts`' fill mode (`-m fill`: quads over the
+whole target, a layer each; `-t`, `-R`, `-b`, `-k`, `-z`, `-M`) and
+`tools/sgx/gl/glshader.c` (a VS and FS from files, layers of them; with
+`SGX_DEBUG_SHADER=1` the program's words) measure the pixel side.
+
+**Every draw was translucent.** ISP state word 1 bits 27:25 are the pass
+type: iOS's opaque draws have 0 (`01d00300`), its blended ones 1 (bit 25,
+sgx2d's `03d00300`, which the template frame took), its discarding ones 4
+(M19's punch-through). The driver set 1 for all: no hidden surface removal,
+every layer of every draw shaded. A draw is opaque now when its program
+reads nothing of the tile -- no blending, every channel written, no logic
+op, no discard (M19's keeps the tile's colour), no framebuffer fetch
+(`opaque_draw()`; `SGX_OPAQUE=0`: as before). Ten opaque layers of the
+480 x 272 target 11.0 -> 1.6 ms, what one takes; the regression tests the
+same.
+
+**Colour masks by SOP2.** PPSSPP keeps the target's alpha (the PSP's
+stencil) in most draws: `glColorMask(1, 1, 1, 0)`. SOP2 (M34) took no mask,
+so those draws blended in F32 through `nir_lower_blend`, ~40 instructions.
+A mask of R, G and B all or none, alpha or not, is blending now
+(`fold_colormask()`): a channel kept is blended as the tile's own (ZERO,
+ONE; reverse subtract keeps it too, dst x 1 - src x 0), a draw not blended
+ONE, ZERO -- one SOP2. Ten blended, masked layers 31.8 -> 11.6 ms (40.0 ->
+10.8 textured), unmasked blending's cost. `glblend`'s 8 new cases (masks
+without blending, with alpha, add, reverse subtract, subtract, alpha alone)
+all right either way (`SGX_SOP2_MASK=0`: as before).
+
+**Copies by the GPU.** PPSSPP copies parts of its framebuffers six times a
+frame (glCopyImageSubData, the menu's glow: 256 x 136 down to 58 x 34
+inside one 864 x 272 target); each was Mesa's `util_resource_copy_region`,
+the CPU's -- a flush and a wait for the GPU, so the CPU and GPU never ran
+at once. `resource_copy_region` and colour blits are u_blitter's quads now
+when the source is a render's target (the CPU would have waited for it)
+and the target a format the frame renders into; depth and stencil stay the
+CPU's (`SGX_GPU_COPY=0`: all the CPU's; `SGX_DEBUG=copies` says which). Its
+shaders are TGSI: `tgsi_to_nir` makes them the driver's NIR. A copy the
+same size takes u_blitter's texelFetch program (GLSL 1.30's: the screen's
+feature level is 130), 95 instructions here; a blit's lookup is the PDS's,
+2. `tools/sgx/gl/glcopy.c` (desktop GL, as PPSSPP
+has it): copies whole and in part, blits the same size, flipped and halved,
+glCopyTexSubImage2D, a copy sampled, two copies around a draw -- 9 of 9
+either way.
+
+**Shorter F32 programs.** God of War's commonest program, PPSSPP's
+`texture x colour`, doubled and saturated (GLSL41 in its build), was 29
+instructions where the same without the doubling is 3 (M38's F16 path):
+each channel its own V32NMAD, a LIMM before every use of a constant, the
+saturate a max and a min. Now:
+
+- a saturate that only feeds the colour stored into a target of bytes is
+  dropped (`drop_output_sat()`: the pack clamps; `SGX_KEEP_SAT=1` keeps it);
+- a fragment program's constants are read from sa: up to 16, after its
+  other words, one an even word (`plan_constants()`, the draw writes them
+  with the uniforms; `SGX_NO_KPOOL=1`: LIMMs as before).
+
+GLSL41 29 -> 11 instructions, its ten opaque layers 2.99 -> 1.62 ms; the
+fog programs (GLSL51, GLSL55: the same and a mix with a uniform colour)
+39 -> 28. The regression tests, glblend, glcopy and gldesk all right.
+
+**God of War** (`gow-bench.sh`, the main menu, PPSSPP's counter):
+
+| | main render, GPU | frame | speed |
+|---|---|---|---|
+| before (driconf only) | 91 ms | 6 fps | 9.0% |
+| opaque pass type | 87 ms | | |
+| + SOP2 colour masks | 60 ms | 6.5 fps | 10.8% |
+| + copies by the GPU | 59 ms | 6.8 fps (no CPU waits) | 11.9% |
+| + shorter F32 programs | 34 ms | 10.6 fps | 13.3% |
+
+**What is left**, in the order it costs:
+
+- The fog programs (a third of the main render): their texture's
+  coordinates are `.yz` of a varying the linker packed with the fog
+  factor, which the PDS cannot fetch (iOS's are `.xy`, M35), so the
+  lookup is an SMP in the program and the program F32. M38's F16 path
+  would take them with constants, uniforms (iOS's t06: F16 in sa), masks
+  on channels and saturates -- ~5 instructions for GLSL41 against 11.
+- A copy is a render of the whole 864 x 272 target (every tile reloaded
+  and stored) for a 58 x 34 rectangle: a render of the tiles it touches;
+  and its texelFetch program, 95 instructions, could be a PDS lookup (the
+  coordinates are pixel centres: a rectangle lookup, M39) -- together the
+  six copies take ~6 ms of a frame.
+- Discard is M19's translucent emulation, twice a layer's cost
+  (`glverts -k`): the punch-through pass type, still not found.
+- The CPU side: the frame's renders now take the GPU ~68 ms of the ~94 a
+  frame takes; ~25 ms between frames in PPSSPP's GL thread.
+
 ## Testing, without and with the device
 
 - **Host, every change:** the kernel driver builds with `W=1` against the

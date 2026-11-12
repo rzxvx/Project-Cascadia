@@ -17,6 +17,8 @@
 
 #include "compiler/nir/nir.h"
 #include "draw/draw_context.h"
+#include "nir/tgsi_to_nir.h"
+#include "util/u_blitter.h"
 #include "util/format/u_format.h"
 #include "util/log.h"
 #include "util/os_time.h"
@@ -627,15 +629,126 @@ cpu_blit(struct pipe_context *pctx, const struct pipe_blit_info *info)
    return ok;
 }
 
+/* ---- copies and blits, by the GPU (M46) ---------------------------------- */
+
+/* What u_blitter binds of its own, kept to be bound again after */
+static void
+blitter_save(struct sgx_context *ctx)
+{
+   struct blitter_context *b = ctx->blitter;
+   unsigned nviews = 0, nsamplers = 0;
+
+   for (unsigned i = 0; i < ARRAY_SIZE(ctx->fs_views) && i < PIPE_MAX_SAMPLERS; i++)
+      if (ctx->fs_views[i])
+         nviews = i + 1;
+   for (unsigned i = 0; i < PIPE_MAX_SAMPLERS; i++)
+      if (ctx->fs_samplers[i])
+         nsamplers = i + 1;
+   util_blitter_save_vertex_buffers(b, ctx->vb, util_last_bit(ctx->vb_mask));
+   util_blitter_save_vertex_elements(b, (void *)ctx->velems);
+   util_blitter_save_vertex_shader(b, ctx->vs);
+   util_blitter_save_fragment_shader(b, ctx->fs);
+   util_blitter_save_rasterizer(b, (void *)ctx->rast);
+   util_blitter_save_blend(b, (void *)ctx->blend);
+   util_blitter_save_depth_stencil_alpha(b, (void *)ctx->dsa);
+   util_blitter_save_stencil_ref(b, &ctx->stencil_ref);
+   util_blitter_save_viewport(b, &ctx->viewport);
+   util_blitter_save_scissor(b, &ctx->scissor);
+   util_blitter_save_framebuffer(b, &ctx->fb);
+   util_blitter_save_fragment_sampler_states(b, nsamplers, (void **)ctx->fs_samplers);
+   util_blitter_save_fragment_sampler_views(b, nviews, ctx->fs_views);
+   util_blitter_save_fragment_constant_buffer_slot(b, &ctx->cb[1]);
+   util_blitter_save_sample_mask(b, ~0u, 0);
+   util_blitter_save_render_condition(b, ctx->cond_query, ctx->cond_condition, ctx->cond_mode);
+}
+
+/* SGX_DEBUG=copies: each copy and blit, and whose it is */
+static bool
+debug_copies(void)
+{
+   static int on = -1;
+
+   if (on < 0)
+      on = getenv("SGX_DEBUG") && strstr(getenv("SGX_DEBUG"), "copies");
+   return on;
+}
+
+/* Whether a copy from src to dst is the GPU's: colour both, two
+ * dimensional, a target the frame can render into -- and a source the GPU
+ * wrote (a render's target, PPSSPP's framebuffers): the CPU would wait
+ * for the GPU to read it, and the GPU's copy is a render that waits for
+ * nothing.  SGX_GPU_COPY=0: every copy the CPU's, as before. */
+static bool
+gpu_copy(struct sgx_context *ctx, struct pipe_resource *dst, struct pipe_resource *src)
+{
+   struct sgx_screen *screen = sgx_screen(ctx->base.screen);
+   static int on = -1;
+
+   if (on < 0)
+      on = debug_get_bool_option("SGX_GPU_COPY", true);
+   if (!on || !ctx->blitter || !screen->frame || !dst || !src ||
+       dst->target == PIPE_BUFFER || src->target == PIPE_BUFFER ||
+       (dst->target != PIPE_TEXTURE_2D && dst->target != PIPE_TEXTURE_RECT) ||
+       (src->target != PIPE_TEXTURE_2D && src->target != PIPE_TEXTURE_RECT) ||
+       util_format_is_depth_or_stencil(dst->format) ||
+       util_format_is_depth_or_stencil(src->format) ||
+       dst->nr_samples > 1 || src->nr_samples > 1 ||
+       !ctx->base.screen->is_format_supported(ctx->base.screen, dst->format, PIPE_TEXTURE_2D,
+                                              0, 0, PIPE_BIND_RENDER_TARGET))
+      return false;
+   return sgx_resource(src)->gpu_written;
+}
+
+static void
+sgx_resource_copy_region(struct pipe_context *pctx, struct pipe_resource *dst,
+                         unsigned dst_level, unsigned dstx, unsigned dsty, unsigned dstz,
+                         struct pipe_resource *src, unsigned src_level,
+                         const struct pipe_box *src_box)
+{
+   struct sgx_context *ctx = sgx_context(pctx);
+   bool gpu = src_box->depth == 1 && gpu_copy(ctx, dst, src) &&
+              util_blitter_is_copy_supported(ctx->blitter, dst, src);
+
+   if (debug_copies())
+      mesa_logi("sgx: a copy of %dx%d from %s %ux%u level %u to %s %ux%u level %u: %s",
+                src_box->width, src_box->height, util_format_short_name(src->format),
+                src->width0, src->height0, src_level, util_format_short_name(dst->format),
+                dst->width0, dst->height0, dst_level, gpu ? "the GPU" : "the CPU");
+   if (gpu) {
+      blitter_save(ctx);
+      util_blitter_copy_texture(ctx->blitter, dst, dst_level, dstx, dsty, dstz, src, src_level,
+                                src_box);
+      return;
+   }
+   util_resource_copy_region(pctx, dst, dst_level, dstx, dsty, dstz, src, src_level, src_box);
+}
+
 static void
 sgx_blit(struct pipe_context *pctx, const struct pipe_blit_info *info)
 {
+   struct sgx_context *ctx = sgx_context(pctx);
    struct pipe_blit_info part = *info;
 
    if (info->render_condition_enable && !sgx_render_condition_ok(sgx_context(pctx)))
       return;
    if (util_try_blit_via_copy_region(pctx, info, false))
       return;
+   /* (M46) colour by the GPU, as a copy is (depth and stencil stay the
+    * CPU's: the depth buffer lives in the ZLS's layout).  A render
+    * condition was looked at above; u_blitter keeps it for its draw. */
+   if (!(info->mask & PIPE_MASK_ZS) && !info->alpha_blend &&
+       gpu_copy(ctx, info->dst.resource, info->src.resource) &&
+       info->src.box.depth == 1 && info->dst.box.depth == 1 &&
+       util_blitter_is_blit_supported(ctx->blitter, info)) {
+      if (debug_copies())
+         mesa_logi("sgx: a blit of %dx%d to %dx%d (%s to %s): the GPU", info->src.box.width,
+                   info->src.box.height, info->dst.box.width, info->dst.box.height,
+                   util_format_short_name(info->src.format),
+                   util_format_short_name(info->dst.format));
+      blitter_save(ctx);
+      util_blitter_blit(ctx->blitter, info, NULL);
+      return;
+   }
    /* colour, then depth and stencil (M43: glBlitFramebuffer's mask may
     * have both) */
    part.mask = info->mask & PIPE_MASK_RGBA;
@@ -741,9 +854,20 @@ sgx_create_shader_state(struct pipe_context *pctx, const struct pipe_shader_stat
 {
    struct sgx_context *ctx = sgx_context(pctx);
    struct sgx_shader *sh = CALLOC_STRUCT(sgx_shader);
+   struct pipe_shader_state from_tgsi;
 
    if (!sh)
       return NULL;
+   /* (M46) u_blitter's shaders come as TGSI: made NIR, as the state
+    * tracker's are */
+   if (s->type == PIPE_SHADER_IR_TGSI && s->tokens) {
+      from_tgsi = *s;
+      from_tgsi.type = PIPE_SHADER_IR_NIR;
+      from_tgsi.ir.nir = tgsi_to_nir(s->tokens, pctx->screen, false);
+      if (!from_tgsi.ir.nir)
+         return sh;
+      s = &from_tgsi;
+   }
    if (s->type != PIPE_SHADER_IR_NIR)
       return sh;
    sh->nir = s->ir.nir;
@@ -764,6 +888,13 @@ sgx_create_shader_state(struct pipe_context *pctx, const struct pipe_shader_stat
          sh->draw_fs = draw_create_fragment_shader(ctx->draw, s);
 
       sgx_fs_colour_analyse(sh->nir, &sh->colour);
+      /* SGX_DEBUG=each (M46): the shader as it comes, named as the draws
+       * name it */
+      if (ctx->debug_each) {
+         mesa_logi("sgx: each: fragment shader %p (%s):", (void *)sh,
+                   sh->nir->info.name ? sh->nir->info.name : "?");
+         nir_print_shader(sh->nir, stderr);
+      }
       /* SGX_NOCOMPILE=1: M13a's way only */
       if (!debug_get_bool_option("SGX_NOCOMPILE", false)) {
          sh->compiled = sgx_compile_fs(sh->nir, NULL, why, sizeof(why));
@@ -1046,6 +1177,9 @@ sgx_context_destroy(struct pipe_context *pctx)
 {
    struct sgx_context *ctx = sgx_context(pctx);
 
+   /* (its states and shaders are deleted through the context: first) */
+   if (ctx->blitter)
+      util_blitter_destroy(ctx->blitter);
    sgx_draw_fini(ctx);
    for (unsigned i = 0; i < ARRAY_SIZE(ctx->fs_views); i++)
       pipe_sampler_view_reference(&ctx->fs_views[i], NULL);
@@ -1087,7 +1221,7 @@ sgx_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
    p->clear_render_target = sgx_clear_render_target;
    p->clear_depth_stencil = sgx_clear_depth_stencil;
    p->clear_texture = util_clear_texture_sw;
-   p->resource_copy_region = util_resource_copy_region;
+   p->resource_copy_region = sgx_resource_copy_region;
    p->blit = sgx_blit;
    p->flush_resource = sgx_flush_resource;
    p->draw_vbo = sgx_draw_vbo;
@@ -1095,6 +1229,7 @@ sgx_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
    ctx->debug_fps = getenv("SGX_DEBUG") && strstr(getenv("SGX_DEBUG"), "fps");
    ctx->debug_flushes = getenv("SGX_DEBUG") && strstr(getenv("SGX_DEBUG"), "flushes");
    ctx->debug_sync = getenv("SGX_DEBUG") && strstr(getenv("SGX_DEBUG"), "sync");
+   ctx->debug_each = getenv("SGX_DEBUG") && strstr(getenv("SGX_DEBUG"), "each");
    p->texture_barrier = sgx_texture_barrier;
    p->memory_barrier = sgx_memory_barrier;
    p->get_device_reset_status = sgx_get_device_reset_status;
@@ -1154,5 +1289,9 @@ sgx_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
       return NULL;
    }
    p->const_uploader = p->stream_uploader;
+   /* (M46) copies and blits on the GPU -- without it, the CPU's */
+   ctx->blitter = util_blitter_create(p);
+   if (!ctx->blitter)
+      mesa_logw("sgx: no u_blitter: copies and blits by the CPU");
    return p;
 }
