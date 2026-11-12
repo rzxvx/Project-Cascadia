@@ -114,24 +114,36 @@ usse_fop(enum usse_nmad_op op, struct usse_reg dest, struct usse_reg src1,
  * pa2.xyzw, pa0.xyzw`): the same fields as V32NMAD's, a register pair each
  * operand, src1's swizzle xyzw (three bits a channel), src2's the table's
  * xyzw (4), the mask all four */
+/* (M46) V16NMAD in full: dest's channels in mask (bit i channel i), src1
+ * through sw1 -- three bits a channel, x y z w or the constants 0, 1, 2 and
+ * 0.5 (4..7, Vita3K's SwizzleChannel) -- with its negation and absolute
+ * value, src2 through sw2 (an index into Vita3K's table of swizzles: 4 is
+ * xyzw) with its absolute value */
 uint64_t
-usse_hop(enum usse_nmad_op op, struct usse_reg dest, struct usse_reg src1,
-         struct usse_reg src2)
+usse_hop_ex(enum usse_nmad_op op, struct usse_reg dest, unsigned mask, struct usse_reg src1,
+            unsigned sw1, struct usse_reg src2, unsigned sw2)
 {
    unsigned dext, dbank, ext1, bank1, ext2, bank2;
-   const unsigned sw1 = 0 | 1 << 3 | 2 << 6 | 3 << 9, sw2 = 4;
 
-   assert(!(dest.num & 1) && !(src1.num & 1) && !(src2.num & 1) && !src2.neg);
+   assert(!(dest.num & 1) && (src1.bank == USSE_SPECIAL || !(src1.num & 1)) &&
+          !(src2.num & 1) && !src2.neg);
    dest_bank(dest, &dext, &dbank);
    src_bank(src1, &ext1, &bank1);
    src_bank(src2, &ext2, &bank2);
    return bits(0x02, 63, 59) | SKIPINV |
           bits(sw1 >> 10 & 3, 54, 53) | bits(dext, 51, 51) | bits(sw1 >> 9 & 1, 50, 50) |
-          bits(ext1, 49, 49) | bits(ext2, 48, 48) | bits(sw2, 47, 44) | bits(0xf, 42, 39) |
+          bits(ext1, 49, 49) | bits(ext2, 48, 48) | bits(sw2, 47, 44) | bits(mask, 42, 39) |
           bits(modifier(src1), 38, 37) | bits(src2.abs, 36, 36) |
           bits(sw1 >> 7 & 3, 35, 34) | bits(dbank, 33, 32) | bits(bank1, 31, 30) |
           bits(bank2, 29, 28) | bits(pair(dest), 27, 22) | bits(sw1 & 0x7f, 21, 15) |
           bits(op, 14, 12) | bits(pair(src1), 11, 6) | bits(pair(src2), 5, 0);
+}
+
+uint64_t
+usse_hop(enum usse_nmad_op op, struct usse_reg dest, struct usse_reg src1,
+         struct usse_reg src2)
+{
+   return usse_hop_ex(op, dest, 0xf, src1, 0 | 1 << 3 | 2 << 6 | 3 << 9, src2, 4);
 }
 
 uint64_t

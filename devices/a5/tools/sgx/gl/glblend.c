@@ -255,7 +255,9 @@ int main(int argc, char **argv)
 				}
 			}
 		}
-		if (worst <= 2) {
+		/* (M46) the colour may be worked out in F16 (11 bits): a layer
+		 * blended twice can be 3 off */
+		if (worst <= (T->twice ? 3 : 2)) {
 			printf("%-14s ok (largest difference %d)\n", T->name, worst);
 		} else {
 			failed++;

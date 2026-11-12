@@ -123,6 +123,12 @@ uint64_t usse_unpack_f16(struct usse_reg dest, struct usse_reg src, unsigned cha
  * channel for channel */
 uint64_t usse_hop(enum usse_nmad_op op, struct usse_reg dest, struct usse_reg src1,
                   struct usse_reg src2);
+/* (M46) the same in full: dest's channels in mask, src1 through sw1 (three
+ * bits a channel: 0..3 x y z w, 4..7 the constants 0, 1, 2, 0.5) with its
+ * negation and absolute value, src2 through the table's swizzle sw2 (4:
+ * xyzw) */
+uint64_t usse_hop_ex(enum usse_nmad_op op, struct usse_reg dest, unsigned mask,
+                     struct usse_reg src1, unsigned sw1, struct usse_reg src2, unsigned sw2);
 /* dest = the four F16 of the pair src packed to 8 bits each, scaled from
  * [0, 1] */
 uint64_t usse_pack_unorm8_f16(struct usse_reg dest, struct usse_reg src);
