@@ -4005,14 +4005,40 @@ frames) 53 -> 40 ms over the last two. The GL thread still waits for the
 GPU ~60% of the time, and the CPU is busier (94% of one core, both of
 PPSSPP's threads): the frame is the GPU's, the CPU's part next to it.
 
+**What a render costs** (three things tried after the above; none made
+God of War faster, two are not kept). The frame's twelve effect renders
+into 864 x 272 targets draw a few tiles each and took ~0.45 ms apiece:
+
+- A render of the tiles its draws reach (each draw's clip rectangle,
+  clip_to()'s, aligned to 32; the target's address and the draws'
+  viewports shifted; not with depth or gl_FragCoord): right --
+  `tools/sgx/gl/glrect.c`, scissored and viewport-offset draws, partial
+  tiles at an edge, two rectangles apart, gl_FragCoord, a copy into the
+  middle, 8 of 8 either way -- but no faster: a copy of 64 x 32, its 2
+  tiles, ~0.44 ms as with all 243. Not kept.
+- `glrenders` (the K93 session tools: renders of one small quad back to
+  back, two targets taking turns) -- ~0.45-0.48 ms a render whatever the
+  target (32 x 32 to 256 x 256), the CPU busy a third of it. The kernel
+  runs one render at a time and learns one is done by polling every 200
+  us (apple-sgx's `poll_us`): at 100 us 0.38 ms, 50 us 0.35, 25 us 0.32
+  -- and God of War no faster at 50 us, slower at 25 (the timer's
+  interrupts take the CPU: 104%). The SGX's interrupt (`apple_sgx.irq=1`)
+  is the microkernel's SW_EVENT in the master's bank (MASTER_EVENT_STATUS
+  0xa0004000), where the handler did not look -- it took every one for
+  unhandled and switched the line off. Read and cleared there it comes
+  twice a render, and the render node looks at its render on each: 0.35
+  -0.45 ms a render, God of War unchanged; it stays off by default.
+- The 3-instruction draw (PPSSPP's plain colour, 540 triangles, depth
+  written, alpha kept), ~4.6 ms alone: taken as opaque (alpha's
+  correctness aside) 3.5 ms -- most of it is its triangles (long ones
+  across many tiles, likely the rain), not their shading. Not kept.
+
 **What is left**, in the order it costs:
 
-- Each of the effect chain's twelve renders into an 864 x 272 target
-  loads and stores the whole target (~0.45 ms) for the few tiles it draws
-  in: a render of the tiles it touches.
-- A 3-instruction draw (PPSSPP's plain colour, 540 triangles, depth
-  written, alpha kept) takes ~5 ms alone: what it draws, and why it costs
-  that much.
+- The renders' fixed cost, ~0.35-0.45 ms each, 18 a frame: one render at
+  a time (the scheduler's one job in flight; the render target data are
+  shared by renders of one size), so the GPU waits for the host between
+  renders.
 - The program that discards blends in F32 (66 instructions): the SOP2 into
   a temporary, then the packed word or the tile's chosen.
 - One of PPSSPP's programs writes gl_FragDepth (its depth rounded to 16
