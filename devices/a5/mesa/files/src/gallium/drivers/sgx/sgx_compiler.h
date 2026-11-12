@@ -101,6 +101,7 @@ struct sgx_fs {
    unsigned nuniforms, nsamplers, sampler_sa;
    unsigned sampler_unit[SGX_FS_MAX_SAMPLERS];
    int blend_sa;                                  /* -1: no blend colour */
+   bool blend_packed;         /* (M46) it as one word of RGBA bytes, SOP2's constant */
    int scale_sa;              /* -1, or each texture's 1 / width, 1 / height (rectangles) */
    int size_sa;               /* -1, or each texture's size words (M44) */
    struct sgx_blend_key blend;                    /* what it was compiled for */

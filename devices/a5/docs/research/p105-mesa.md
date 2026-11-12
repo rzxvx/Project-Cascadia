@@ -3926,6 +3926,60 @@ module reads it), mapped, and indices at 0, 12 and 26 bytes, written again
 and read back -- 17 of 17 on both vertex sides (`SGX_CPU_VS=1`); the
 regression tests, glcopy, gldesk, glfmt and glf16 unchanged.
 
+**Which renders.** With the CPU's part shorter the GL thread waited for
+the GPU ~70% of the time. `SGX_DEBUG=sync` says each render's target now
+(size, format, depth loaded and stored, u_blitter's or not, the file and
+line that flushed it), `SGX_DEBUG=each` the blend equation of a draw
+blended in F32. God of War's frame, each render waited for: the main
+render (77 draws into the 480 x 272 target, 21 ms), then an effect chain
+-- a draw into the main target (5.7 ms), two into an 864 x 272 one (6.4
+ms), copies and single draws taking turns between two 864 x 272 targets
+(twelve renders, ~11 ms), 14 draws into the main target (3.3 ms) -- and
+the screen (3.1 ms): 53 ms of GPU a frame. The effect draws were F32
+programs blending in F32, and every draw blended in F32 had the blend
+colour among its factors: PPSSPP blends the PSP's fixed colours with it.
+
+| PPSSPP's equation (`SGX_DEBUG=each`) | programs |
+|---|---|
+| `src x Sa + dst x (1 - Sa)`, alpha `Sa x Ca` (the stencil it keeps in alpha) | 34 and 51 instructions |
+| `src + dst x Cc`, alpha kept | 43 |
+| `src x Cc + dst`, alpha kept | 40, 66 |
+| `src x Cc`, alpha kept | 40 |
+
+**The blend colour's factors by SOP2s.** SOP2 takes its factors from its
+two operands alone (M25: the colour and the tile), so `sop2_blend()`
+left the blend colour's to `nir_lower_blend`, ~30 instructions. Now the
+blend colour is one sa word of RGBA bytes (the tile's order whatever the
+target: the driver packs it per draw), and `sop2_plan()` puts a SOP2
+around the blending for each side that has a constant factor: the packed
+colour times the constant first (src2 the packed blend colour, its colour
+or alpha the factor), or the tile times it into a temporary, the
+blending's factor ONE then. A constant alpha factor of the source's whose
+alpha the rest still reads (`SRC_ALPHA` for the colour) multiplies the
+result's alpha after instead, when the tile's alpha factor is ZERO -- the
+stencil's case. What that cannot do (a factor reading what was
+multiplied) stays F32 (`SGX_SOP2_CONST=0`: always). God of War's programs
+51 -> 16 instructions, 43 -> 25, 40 -> 22 and 25, GLSL41's stencil kind 34
+-> 6; the one that discards stays F32 (M19's discard keeps the tile's
+colour, which a SOP2 would blend again). `glblend` has seven cases more
+(PPSSPP's four, an inverse constant on the tile's side, reverse subtract,
+a quad blended twice; the blend colour's alpha is 0.6 now, so a constant
+alpha shows): 29 of 29, F32 right too.
+
+**Copies by the PDS.** u_blitter copies with a texelFetch program when
+the source and the target are the same size (GLSL 1.30 says it may):
+`texelFetch(tex, ivec2(v), 0)` at a varying of texel coordinates, 95
+instructions here, the 864 x 272 copies' main cost. At pixel centres the
+varying is x + 0.5, and a nearest lookup there is the same texel --
+u_blitter only fetches so with a nearest sampler, of a view of one level,
+the level 0 (the varying's w: `get_texcoords`). `txf_as_lookup()` makes
+such a fetch a rectangle lookup at the varying times the texture's scale,
+which `lower_fetch_coords()` gives the PDS (M39): 2 instructions, the
+copy exact (glcopy's 9 cases, differences 0). Only for gallium's own
+shaders (TGSI, `info.internal`); `SGX_COPY_TXF=1`: as before. A
+rectangle lookup's scale is the view's first level's now (a rectangle
+texture has only one). The frame's copies 6.4 -> 2.5 ms.
+
 **God of War** (`gow-bench.sh`, the main menu, PPSSPP's counter -- which
 climbs over the menu's first seconds: read at once 15-16%, a few seconds
 on near 19% with the F16 programs, near 21% with the shift; the rows above
@@ -3942,26 +3996,28 @@ those were read at once):
 | + lookups at `.yz` by the PDS | 22 ms | 12.6 fps | 21% settled |
 | + uploads written once, indices read where they are | 22 ms | 14.0 fps | 24% settled |
 | + copies that preload, odd first indices | 22 ms | 15.2-15.5 fps | 25% settled |
+| + the blend colour's factors by SOP2s | 16 ms | 17.6-18.0 fps | 30% settled |
+| + copies by the PDS | 16 ms | 18.8-19.0 fps | 31% settled |
 
-The GL thread waits for the GPU ~70% of the time now (`SGX_DEBUG=fps`),
-and `SGX_TRACE=1` has the GPU busy 85% of it: the frame is the GPU's again.
-It is 18 renders, ~17 of them made by framebuffer changes
-(`sgx_set_framebuffer_state` flushing): PPSSPP's render-to-texture passes
-and the copies, a median 1.1 ms each, a few of them over 5 ms.
+The frame's GPU work (each render waited for, the median of whole
+frames) 53 -> 40 ms over the last two. The GL thread still waits for the
+GPU ~60% of the time, and the CPU is busier (94% of one core, both of
+PPSSPP's threads): the frame is the GPU's, the CPU's part next to it.
 
 **What is left**, in the order it costs:
 
+- Each of the effect chain's twelve renders into an 864 x 272 target
+  loads and stores the whole target (~0.45 ms) for the few tiles it draws
+  in: a render of the tiles it touches.
+- A 3-instruction draw (PPSSPP's plain colour, 540 triangles, depth
+  written, alpha kept) takes ~5 ms alone: what it draws, and why it costs
+  that much.
+- The program that discards blends in F32 (66 instructions): the SOP2 into
+  a temporary, then the packed word or the tile's chosen.
 - One of PPSSPP's programs writes gl_FragDepth (its depth rounded to 16
   bits): not compiled, drawn in a colour worked out per vertex.
-- A copy is a render of the whole 864 x 272 target (every tile reloaded
-  and stored) for a 58 x 34 rectangle: a render of the tiles it touches;
-  and its texelFetch program, 95 instructions, could be a PDS lookup (the
-  coordinates are pixel centres: a rectangle lookup, M39) -- together the
-  six copies take ~6 ms of a frame.
 - Discard is M19's translucent emulation, twice a layer's cost
   (`glverts -k`): the punch-through pass type, still not found.
-- The renders between the main one: which they are and what each costs
-  (`SGX_DEBUG=sync` with `SGX_DEBUG_DRAW=1`, `render-stats.sh`).
 - Not the driver's: under Linux the L2 prefetches nothing (above), and the
   whole system pays for it -- PPSSPP's own memcpy is a fifth of its
   emulator thread. The PL310's prefetch bits (and the A9's own prefetcher)

@@ -875,6 +875,9 @@ sgx_create_shader_state(struct pipe_context *pctx, const struct pipe_shader_stat
       from_tgsi.ir.nir = tgsi_to_nir(s->tokens, pctx->screen, false);
       if (!from_tgsi.ir.nir)
          return sh;
+      /* (gallium's own: the compiler may take their texelFetch for a
+       * lookup, txf_as_lookup) */
+      from_tgsi.ir.nir->info.internal = true;
       s = &from_tgsi;
    }
    if (s->type != PIPE_SHADER_IR_NIR)
