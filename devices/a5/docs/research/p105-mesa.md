@@ -3849,7 +3849,28 @@ the programs: texture x colour, doubled 11 -> 4 instructions, its fog 28
 exact (glblend's layer blended twice: 3; its tolerance there is 3 now);
 `SGX_NO_F16=1` takes the F32 path for all.
 
-**God of War** (`gow-bench.sh`, the main menu, PPSSPP's counter):
+**Lookups at a varying's y and z.** God of War's fog programs (a third of
+its menu's render after the above) looked their texture up at `.yz` of a
+varying: PPSSPP's vertex shader writes `v_texcoord` as a vec3 with z 0 and
+`v_color1` as 0, the linker drops what is constant and packs `v_fogdepth`
+and `v_texcoord.xy` into one vec3 -- the fog in x (the sources, captured
+with `MESA_DEBUG=1 MESA_GLSL=source`, in glf16's `ppsspp-*` cases). The PDS
+fetches at a varying's x and y only (M35), so the lookup was an SMP in the
+program and the program F32: 32 instructions. Now the lookup has a varying
+of its own: `SGX_FIX_SHIFT(n)` (M39's machinery: the fragment shader lists
+the slot twice, the second with the fix), the vertex side -- the GPU's
+(`vertex_output()`; a store to a slot goes to each entry of it) or the
+draw module's (`fix_varyings()`) -- moves components n and n + 1 into x and
+y, and the PDS fetches there: the programs F16, 32 -> 14 and 16
+instructions. `SGX_NO_SHIFT=1`: as before. glf16 (17 cases, a desktop-GL
+build too, `glf16d`: GLSL 1.20 as PPSSPP has it) right on both vertex
+sides; the regression tests unchanged. (A test whose coordinates equal the
+colour's x and y does not show it: the linker reads them from the colour.)
+
+**God of War** (`gow-bench.sh`, the main menu, PPSSPP's counter -- which
+climbs over the menu's first seconds: read at once 15-16%, a few seconds
+on near 19% with the F16 programs, near 21% with the shift; the rows above
+those were read at once):
 
 | | main render, GPU | frame | speed |
 |---|---|---|---|
@@ -3858,16 +3879,13 @@ exact (glblend's layer blended twice: 3; its tolerance there is 3 now);
 | + SOP2 colour masks | 60 ms | 6.5 fps | 10.8% |
 | + copies by the GPU | 59 ms | 6.8 fps (no CPU waits) | 11.9% |
 | + shorter F32 programs | 34 ms | 10.6 fps | 13.3% |
-| + F16 for more programs | 27 ms | 11.5 fps | 16.1% |
+| + F16 for more programs | 27 ms | 11.5 fps | 16.1% (19% settled) |
+| + lookups at `.yz` by the PDS | 22 ms | 12.6 fps | 21% settled |
 
 **What is left**, in the order it costs:
 
-- The fog programs (a third of the main render): their texture's
-  coordinates are `.yz` of a varying the linker packed with the fog
-  factor, which the PDS cannot fetch (iOS's are `.xy`, M35), so the
-  lookup is an SMP in the program and the program stays F32 (the F16 path
-  takes only the PDS's lookups). The vertex side writing those
-  coordinates into a varying of their own would make them both.
+- One of PPSSPP's programs writes gl_FragDepth (its depth rounded to 16
+  bits): not compiled, drawn in a colour worked out per vertex.
 - A copy is a render of the whole 864 x 272 target (every tile reloaded
   and stored) for a 58 x 34 rectangle: a render of the tiles it touches;
   and its texelFetch program, 95 instructions, could be a PDS lookup (the

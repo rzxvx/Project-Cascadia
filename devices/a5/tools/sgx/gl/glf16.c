@@ -8,10 +8,25 @@
  *   sgx-gl glf16 [CASE]     (a name's start; all by default)
  *
  * With SGX_DEBUG_SHADER=1 the driver prints each program (F16 ones say so:
- * `SGX_DEBUG_DRAW=1` too).  Exit status 0 when every case passed. */
+ * `SGX_DEBUG_DRAW=1` too).  Exit status 0 when every case passed.
+ *
+ * Built with -DGLF16_DESKTOP (mesa/build.sh's glf16d): the same through
+ * desktop OpenGL 2.1 and GLSL 1.20, as PPSSPP runs here -- the linker lays
+ * the varyings out otherwise there (God of War's fog: the coordinates in y
+ * and z of the fog's varying). */
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
+#ifdef GLF16_DESKTOP
+#define GL_GLEXT_PROTOTYPES
+#include <GL/gl.h>
+#include <GL/glext.h>
+#define GLSL_HEAD "#version 120\n"
+#define API EGL_OPENGL_API
+#else
 #include <GLES2/gl2.h>
+#define GLSL_HEAD "precision highp float;\n"
+#define API EGL_OPENGL_ES_API
+#endif
 
 #include <math.h>
 #include <stdint.h>
@@ -28,6 +43,7 @@ static const float FOG[3] = { 0.2f, 0.5f, 0.8f }, STENCIL = 0.6f, K[4] = { 0.3f,
 /* the varyings at a pixel, as the vertex shader below makes them */
 struct px {
 	float c[4], uv[2], fog, t[4];
+	float t2[4];            /* the texel at uv / 2 + 1/4 (the PPSSPP cases') */
 };
 
 typedef void (*ref_fn)(const struct px *p, float out[4]);
@@ -124,15 +140,75 @@ static void r_halves(const struct px *p, float o[4])
 		o[i] = p->c[i] * 0.5f + p->t[i] * 0.5f;
 }
 
+/* PPSSPP's fog cases: their coordinates their own (uv / 2 + 1/4) -- equal to
+ * the colour's x and y, the linker reads them there */
+static void r_pfog(const struct px *p, float o[4])
+{
+	struct px q = *p;
+
+	memcpy(q.t, p->t2, sizeof(q.t));
+	r_fog(&q, o);
+}
+
+static void r_pstencil(const struct px *p, float o[4])
+{
+	struct px q = *p;
+
+	memcpy(q.t, p->t2, sizeof(q.t));
+	r_stencil(&q, o);
+}
+
+/* (M46) coordinates packed after a float, as PPSSPP's linked fog is */
+static void r_packed_fog(const struct px *p, float o[4])
+{
+	r_fog(p, o);
+}
+
+static void r_packed_zw(const struct px *p, float o[4])
+{
+	for (int i = 0; i < 4; i++)
+		o[i] = p->c[i] * p->t[i];
+	o[0] += p->uv[0] * 0.5f * 0.25f;
+	o[1] += p->uv[1] * 0.5f * 0.25f;
+}
+
 static void r_broadcast(const struct px *p, float o[4])
 {
 	for (int i = 0; i < 4; i++)
 		o[i] = p->c[i] * p->fog;
 }
 
+/* PPSSPP's own (God of War's, captured with MESA_GLSL=source): the
+ * vertex shader writes v_color1 = 0 and v_texcoord.z = 0, which the linker
+ * drops, packing v_fogdepth and v_texcoord.xy into one varying -- the fog
+ * in x, the coordinates in y and z */
+#define VS_PPSSPP \
+	"attribute vec4 p;\n" \
+	"varying vec4 v_color0;\n" \
+	"varying vec3 v_color1;\n" \
+	"varying vec3 v_texcoord;\n" \
+	"varying float v_fogdepth;\n" \
+	"void main() {\n" \
+	"  vec2 st = p.xy * 0.5 + 0.5;\n" \
+	"  gl_Position = p;\n" \
+	"  v_color0 = vec4(st.x, st.y, 1.0 - st.x, 0.25 + 0.5 * st.y);\n" \
+	"  v_color1 = vec3(0.0);\n" \
+	"  v_texcoord = vec3(st * 0.5 + 0.25, 0.0);\n" \
+	"  v_fogdepth = 1.5 * st.x - 0.25;\n" \
+	"}\n"
+#define FS_PPSSPP_HEAD \
+	"uniform sampler2D tex;\n" \
+	"uniform float u_stencilReplaceValue;\n" \
+	"varying vec4 v_color0;\n" \
+	"varying vec3 v_color1;\n" \
+	"uniform vec3 u_fogcolor;\n" \
+	"varying float v_fogdepth;\n" \
+	"varying vec3 v_texcoord;\n"
+
 static const struct test {
 	const char *name, *body;
 	ref_fn ref;
+	const char *vs, *fs;    /* (whole shaders instead of body) */
 } tests[] = {
 	{ "plain", "gl_FragColor = v_color0 * texture2D(tex, v_texcoord);", r_plain },
 	{ "doubled", "vec4 v = v_color0 * texture2D(tex, v_texcoord);\n"
@@ -161,19 +237,56 @@ static const struct test {
 	{ "uniform", "gl_FragColor = v_color0 * u_k;", r_uniform },
 	{ "halves", "gl_FragColor = v_color0 * 0.5 + texture2D(tex, v_texcoord) * 0.5;", r_halves },
 	{ "broadcast", "gl_FragColor = v_color0 * v_fogdepth;", r_broadcast },
+	/* the texture's coordinates in y and z of a varying, the fog in x */
+	{ "packed-fog", "vec4 v = v_color0 * texture2D(tex, v_fogtex.yz);\n"
+	                "v.rgb = clamp(v.rgb * 2.0, 0.0, 1.0);\n"
+	                "float f = clamp(v_fogtex.x, 0.0, 1.0);\n"
+	                "gl_FragColor = mix(vec4(u_fogcolor, v.a), v, f);", r_packed_fog },
+	/* in z and w */
+	{ "packed-zw", "gl_FragColor = v_color0 * texture2D(tex, v_both.zw) + "
+	               "vec4(v_both.xy, 0.0, 0.0) * 0.25;", r_packed_zw },
+	/* God of War's two fog programs, as PPSSPP wrote them */
+	{ "ppsspp-fog", NULL, r_pfog, VS_PPSSPP, FS_PPSSPP_HEAD
+	  "void main() {\n"
+	  "  vec4 s = vec4(v_color1, 0.0);\n"
+	  "  vec4 t = texture2D(tex, v_texcoord.xy);\n"
+	  "  vec4 p = v_color0;\n"
+	  "  vec4 v = p * t + s;\n"
+	  "  v.rgb = clamp(v.rgb * 2.0, 0.0, 1.0);\n"
+	  "  float fogCoef = clamp(v_fogdepth, 0.0, 1.0);\n"
+	  "  v = mix(vec4(u_fogcolor, v.a), v, fogCoef);\n"
+	  "  gl_FragColor = v;\n"
+	  "}\n" },
+	{ "ppsspp-stencil", NULL, r_pstencil, VS_PPSSPP, FS_PPSSPP_HEAD
+	  "void main() {\n"
+	  "  vec4 s = vec4(v_color1, 0.0);\n"
+	  "  vec4 t = texture2D(tex, v_texcoord.xy);\n"
+	  "  vec4 p = v_color0;\n"
+	  "  t.a = 1.0;\n"
+	  "  vec4 v = p * t + s;\n"
+	  "  v.rgb = clamp(v.rgb * 2.0, 0.0, 1.0);\n"
+	  "  float fogCoef = clamp(v_fogdepth, 0.0, 1.0);\n"
+	  "  v = mix(vec4(u_fogcolor, v.a), v, fogCoef);\n"
+	  "  gl_FragColor = vec4(v.rgb, u_stencilReplaceValue);\n"
+	  "}\n" },
 };
 
 static const char *vs_src =
+	GLSL_HEAD
 	"attribute vec4 p;\n"
 	"varying vec4 v_color0;\n"
 	"varying vec2 v_texcoord;\n"
 	"varying float v_fogdepth;\n"
+	"varying vec3 v_fogtex;\n"
+	"varying vec4 v_both;\n"
 	"void main() {\n"
 	"  vec2 st = p.xy * 0.5 + 0.5;\n"
 	"  gl_Position = p;\n"
 	"  v_color0 = vec4(st.x, st.y, 1.0 - st.x, 0.25 + 0.5 * st.y);\n"
 	"  v_texcoord = st;\n"
 	"  v_fogdepth = 1.5 * st.x - 0.25;\n"
+	"  v_fogtex = vec3(v_fogdepth, st);\n"
+	"  v_both = vec4(st * 0.5, st);\n"
 	"}\n";
 
 static uint8_t texels[TS * TS * 4];
@@ -192,18 +305,27 @@ static void varyings(int x, int y, struct px *p)
 	p->fog = 1.5f * s - 0.25f;
 	for (int i = 0; i < 4; i++)
 		p->t[i] = texels[4 * (ty * TS + tx) + i] / 255.0f;
+	tx = (int)((s * 0.5f + 0.25f) * TS);
+	ty = (int)((t * 0.5f + 0.25f) * TS);
+	for (int i = 0; i < 4; i++)
+		p->t2[i] = texels[4 * (ty * TS + tx) + i] / 255.0f;
 }
 
-static GLuint build(const char *body)
+static GLuint build(const struct test *T)
 {
-	static char fs[2048];
+	static char fs[2048], vs[2048];
 	const char *src[2] = { vs_src, fs };
 	GLenum type[2] = { GL_VERTEX_SHADER, GL_FRAGMENT_SHADER };
 	GLuint p = glCreateProgram();
 	GLint ok;
 
+	if (T->vs) {
+		snprintf(vs, sizeof(vs), GLSL_HEAD "%s", T->vs);
+		snprintf(fs, sizeof(fs), GLSL_HEAD "%s", T->fs);
+		src[0] = vs;
+	} else
 	snprintf(fs, sizeof(fs),
-	         "precision highp float;\n"
+	         GLSL_HEAD
 	         "uniform sampler2D tex;\n"
 	         "uniform vec3 u_fogcolor;\n"
 	         "uniform float u_stencil;\n"
@@ -211,7 +333,9 @@ static GLuint build(const char *body)
 	         "varying vec4 v_color0;\n"
 	         "varying vec2 v_texcoord;\n"
 	         "varying float v_fogdepth;\n"
-	         "void main() {\n%s\n}\n", body);
+	         "varying vec3 v_fogtex;\n"
+	         "varying vec4 v_both;\n"
+	         "void main() {\n%s\n}\n", T->body);
 	for (int i = 0; i < 2; i++) {
 		GLuint s = glCreateShader(type[i]);
 
@@ -222,7 +346,7 @@ static GLuint build(const char *body)
 			char log[1024];
 
 			glGetShaderInfoLog(s, sizeof(log), NULL, log);
-			fprintf(stderr, "glf16: %s\n%s\n", log, i ? fs : vs_src);
+			fprintf(stderr, "glf16: %s\n%s\n", log, src[i]);
 			exit(2);
 		}
 		glAttachShader(p, s);
@@ -236,6 +360,7 @@ static GLuint build(const char *body)
 	glUniform1i(glGetUniformLocation(p, "tex"), 0);
 	glUniform3fv(glGetUniformLocation(p, "u_fogcolor"), 1, FOG);
 	glUniform1f(glGetUniformLocation(p, "u_stencil"), STENCIL);
+	glUniform1f(glGetUniformLocation(p, "u_stencilReplaceValue"), STENCIL);
 	glUniform4fv(glGetUniformLocation(p, "u_k"), 1, K);
 	return p;
 }
@@ -245,7 +370,11 @@ int main(int argc, char **argv)
 	static const float quad[] = { -1, -1, 0, 1, 1, -1, 0, 1, 1, 1, 0, 1,
 	                              -1, -1, 0, 1, 1, 1, 0, 1, -1, 1, 0, 1 };
 	PFNEGLGETPLATFORMDISPLAYEXTPROC get_display;
+#ifdef GLF16_DESKTOP
+	EGLint ctx_attrs[] = { EGL_CONTEXT_MAJOR_VERSION, 2, EGL_CONTEXT_MINOR_VERSION, 1, EGL_NONE };
+#else
 	EGLint ctx_attrs[] = { EGL_CONTEXT_CLIENT_VERSION, 2, EGL_NONE };
+#endif
 	static uint8_t px[W * H * 4];
 	int run = 0, failed = 0;
 	EGLDisplay dpy;
@@ -254,11 +383,11 @@ int main(int argc, char **argv)
 
 	get_display = (PFNEGLGETPLATFORMDISPLAYEXTPROC)eglGetProcAddress("eglGetPlatformDisplayEXT");
 	dpy = get_display ? get_display(EGL_PLATFORM_SURFACELESS_MESA, EGL_DEFAULT_DISPLAY, NULL) : NULL;
-	if (!dpy || !eglInitialize(dpy, NULL, NULL) || !eglBindAPI(EGL_OPENGL_ES_API))
+	if (!dpy || !eglInitialize(dpy, NULL, NULL) || !eglBindAPI(API))
 		return fprintf(stderr, "glf16: no EGL\n"), 2;
 	ctx = eglCreateContext(dpy, EGL_NO_CONFIG_KHR, EGL_NO_CONTEXT, ctx_attrs);
 	if (ctx == EGL_NO_CONTEXT || !eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, ctx))
-		return fprintf(stderr, "glf16: no GLES 2 context\n"), 2;
+		return fprintf(stderr, "glf16: no context\n"), 2;
 
 	for (int i = 0; i < TS * TS; i++) {
 		texels[4 * i] = (i * 37) & 255;
@@ -292,7 +421,7 @@ int main(int argc, char **argv)
 		if (argc > 1 && strncmp(T->name, argv[1], strlen(argv[1])))
 			continue;
 		run++;
-		build(T->body);
+		build(T);
 		glClearColor(0, 0, 0, 0);
 		glClear(GL_COLOR_BUFFER_BIT);
 		glDrawArrays(GL_TRIANGLES, 0, 6);
