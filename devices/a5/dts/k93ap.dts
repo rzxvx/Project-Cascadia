@@ -130,6 +130,14 @@
 	 * the L2 on).  The K93's ADT gives tag and data latencies of 0x110
 	 * both (the mini's data is 0x120): <2 2 1> each.  auxiliary-features
 	 * 0x72100000 and power-features 2 are the mini's values.
+	 *
+	 * Data and instruction prefetch, as auxiliary-features has them
+	 * (bits 28, 29), six lines ahead (research/p105-mesa.md M46): without
+	 * them every line a stream reads waits for memory -- musl's memcpy,
+	 * which has no preloads, 233 MB/s for 3 MB; with them ~580-720
+	 * (offsets 1-5, 7, 15 and 22 tried live, through the prefetch control
+	 * register: 4 and 5 best).  No double linefill (PL310 erratum 752271
+	 * on this r3p0).
 	 */
 	l2: cache-controller@3e000000 {
 		compatible = "arm,pl310-cache";
@@ -142,6 +150,9 @@
 		arm,full-line-zero-disable;
 		arm,dynamic-clock-gating = <1>;
 		arm,standby-mode = <0>;
+		prefetch-data = <1>;
+		prefetch-instr = <1>;
+		arm,prefetch-offset = <5>;
 		status = "okay";
 	};
 

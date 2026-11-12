@@ -3896,9 +3896,10 @@ merged into the last (`SGX_INDEX_COPY=1`: copied as before).
 **Copies that preload.** What was left of the GL thread's memcpy was that
 one write into GPU memory: 1.75 MB a frame in 12.7-15.1 ms, 120-135 MB/s.
 musl's ARM memcpy has no preloads (its port took them out, for older
-cores), and the L2's prefetching is off under Linux here -- AUX 0x06470000,
+cores), and the L2's prefetching was off under Linux -- AUX 0x06470000,
 prefetch control 0, where iOS's device tree asks for 0x72100000 (data and
-instruction prefetch on). Each 32-byte line a copy reads waits for memory.
+instruction prefetch on; the K93's kernel has it now, below). Each 32-byte
+line a copy reads waited for memory.
 `wcbench` (the K93 session tools: 3 MB into an SGX buffer, the best of 8):
 
 | copy, 3 MB | MB/s |
@@ -4018,10 +4019,30 @@ PPSSPP's threads): the frame is the GPU's, the CPU's part next to it.
   bits): not compiled, drawn in a colour worked out per vertex.
 - Discard is M19's translucent emulation, twice a layer's cost
   (`glverts -k`): the punch-through pass type, still not found.
-- Not the driver's: under Linux the L2 prefetches nothing (above), and the
-  whole system pays for it -- PPSSPP's own memcpy is a fifth of its
-  emulator thread. The PL310's prefetch bits (and the A9's own prefetcher)
-  are the kernel's to set.
+- The Cortex-A9s' own prefetchers (ACTLR bits 1 and 2) stay off: the
+  kernel sets them only with the full line of zeros, which froze two
+  cores (`arm,full-line-zero-disable`).
+
+**The L2's prefetching** (the K93's kernel). Not the driver's, but found
+here: the PL310 prefetched nothing under Linux, where iOS's
+auxiliary-features (0x72100000) has data and instruction prefetch on.
+The prefetch control register (0x3e000f60) takes the enable bits while
+the L2 is on, so it was tried live first (`/dev/mem`), musl's memcpy of 3
+MB:
+
+| prefetch offset (lines ahead - 1) | off | 1 | 2 | 3 | 4 | 5 | 7 | 15 | 22 |
+|---|---|---|---|---|---|---|---|---|---|
+| MB/s | 233 | 510 | 626 | 696 | 715 | 720 | 663 | 540 | 510 |
+
+`dts/k93ap.dts` turns them on now (`prefetch-data`, `prefetch-instr`,
+`arm,prefetch-offset = <5>`; no double linefill, PL310 erratum 752271 on
+this r3p0): the kernel says `L2C-310 ID prefetch enabled, offset 6 lines`,
+AUX 0x36470000; memcpy ~570-590 MB/s, into write-combined memory ~710
+(sgx_copy's PLDs still ~760); `tools/smp-stress.sh` (three hashing
+workers, 60 runs each, and 2000 forks) all right. God of War does not
+move (18.0-19.1 fps either way: the GPU's frame), nor do `gzip -1` and
+`md5sum` of 16 MB (their work, not memory's). The mini's tree is as it
+was (not tried there).
 
 ## Testing, without and with the device
 

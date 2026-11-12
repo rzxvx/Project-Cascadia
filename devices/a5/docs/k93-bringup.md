@@ -32,7 +32,7 @@ reaches (below):
 | | |
 |---|---|
 | both CPUs, MPIDR 0x900/0x901, power-down idle as on the mini | works |
-| L2 1 MB + CIF, AIC, its 24 MHz timer (self-test PASS), watchdog clocksource | works |
+| L2 1 MB + CIF, AIC, its 24 MHz timer (self-test PASS), watchdog clocksource | works; the L2 prefetches data and instructions (2026-11-12, as iOS has it: memcpy 233 -> ~580 MB/s) |
 | `reboot` | works: the watchdog's bite, back in iOS by itself in 30-140 s |
 | USB gadget (ACM + ECM, `02:93:00:00:00:01/02`), ssh | works; `ssh root@fe80::93:ff:fe00:2%<host interface>` needs no address on the host at all |
 | simplefb 1024x768, console | works |
@@ -411,7 +411,8 @@ starts PPSSPP full screen with its own touch controls.  What it took:
   on the CPU, makes PPSSPP's programs shorter (most of them F16 now, their
   texture lookups the PDS's), writes PPSSPP's uploads straight into GPU
   memory -- with a copy that preloads: musl's memcpy has no preloads and
-  the L2 prefetches nothing under Linux here, 255 MB/s against 820 -- and
+  the L2 prefetched nothing under Linux, 255 MB/s against 820 (the
+  kernel's tree turns the L2's prefetch on now: memcpy ~580) -- and
   lets the GPU read PPSSPP's indices where they are, blends PPSSPP's
   fixed colours (GL's blend colour) by SOP2s instead of ~30 instructions
   more, and copies by the PDS's lookup: the menu at ~31% (~19 frames/s on

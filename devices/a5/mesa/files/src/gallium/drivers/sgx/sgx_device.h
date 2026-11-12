@@ -115,11 +115,12 @@ extern int64_t sgx_fence_waited;
 void sgx_trace_mark(const char *what);
 /* (M46) memcpy for big copies -- a buffer's bytes into its GPU copy, a
  * draw's vertices into the render's memory: musl's ARM memcpy has no
- * preloads (taken out for older cores) and the L2's prefetching is off
- * here (AUX 0x06470000, prefetch control 0), so each 32-byte line it reads
- * waits for memory: 255 MB/s for 3 MB.  64 bytes a round through NEON,
- * with PLDs four and five lines ahead: 820 MB/s into write-combined memory
- * (reading write-combined memory stays ~240 MB/s whatever does it). */
+ * preloads (taken out for older cores), and where the L2 does not
+ * prefetch either (the mini's tree; the K93's turns it on) each 32-byte
+ * line it reads waits for memory: 255 MB/s for 3 MB.  64 bytes a round
+ * through NEON, with PLDs four and five lines ahead: 820 MB/s into
+ * write-combined memory (~710 for memcpy with the L2 prefetching; reading
+ * write-combined memory stays ~240 MB/s whatever does it). */
 void sgx_copy(void *dst, const void *src, size_t n);
 enum { SGX_IOCTL_CREATE, SGX_IOCTL_MMAP, SGX_IOCTL_WAIT, SGX_IOCTL_SUBMIT, SGX_IOCTL_KINDS };
 extern unsigned sgx_ioctls[SGX_IOCTL_KINDS];

@@ -524,6 +524,12 @@ good.
 
 On the desktop it shows as XFCE and its terminal starting about twice as fast.
 
+The L2 still prefetched nothing: iOS's ADT has data and instruction
+prefetch on, the device tree here had not asked for it. On the iPad 2
+(2026-11-12) it does now — musl's `memcpy`, which has no preloads of its
+own, copies 3 MB at ~580 MB/s instead of 233
+([research/p105-mesa.md](docs/research/p105-mesa.md) M46).
+
 ### 7. The NAND problem — reading iOS's disk without iOS
 
 The iPad's 16 GB are two Hynix packages of PPN NAND ("physical page NAND"),
