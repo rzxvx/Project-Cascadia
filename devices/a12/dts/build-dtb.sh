@@ -7,6 +7,7 @@ OUT="$A12_PAYLOAD"
 BOARD="$A12_BOARD"
 case "$BOARD" in
   n841) NAME=t8020-n841; LABEL=XR ;;
+  d331p) NAME=t8020-d331p; LABEL='XS Max' ;;
   j171a) NAME=t8020-j171a; LABEL='iPad 8' ;;
   *) echo "usage: $0 [n841|j171a]" >&2; exit 2 ;;
 esac

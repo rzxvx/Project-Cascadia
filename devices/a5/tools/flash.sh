@@ -8,6 +8,7 @@
 #   ./cascadia a5 flash --no-link       leave this host's side of the network alone
 #   ./cascadia a5 flash --kdfu          reach pwned DFU without a Pi Pico
 #   ./cascadia a5 flash --skip-pwn      the device is already in pwned DFU
+#   FLASH_OUT=DIR ./cascadia a5 flash   boot DIR's staging-bundle.bin + staging-loader.bin
 #
 # The order and the pauses are not decoration.  Our patched iBSS is started
 # first; it accepts the unsigned iBEC; the iBEC's auto-go hook fires when the
@@ -80,7 +81,11 @@ fi
 # pyusb (and the libusb under it) is the one thing the USB side needs.
 python3 "$REPO/lib/appleusb.py" mode >/dev/null || fail "no pyusb or libusb (above): ./cascadia a5 setup"
 
-NEED=("$IBEC" "$ROOT/output/staging-bundle.bin" "$ROOT/output/staging-loader.bin")
+# FLASH_OUT=DIR boots another bundle + loader pair (a test kernel built
+# elsewhere); the pair must come from one build, as the loader knows where
+# that kernel's DTB sits.
+BOUT="${FLASH_OUT:-$ROOT/output}"
+NEED=("$IBEC" "$BOUT/staging-bundle.bin" "$BOUT/staging-loader.bin")
 # --skip-pwn means something already started an iBSS; the other two start
 # ours.  `if`, not `[ ... ] && ...`: under set -e a failing test takes the
 # script down, and here it fails in exactly the modes this is meant to support.
@@ -97,7 +102,7 @@ case "$PWN_MODE" in
     none)     echo "==> pwn:    skipped -- assuming the device is already in pwned DFU" ;;
 esac
 echo "==> iBEC:   $IBEC  ($IBEC_WHICH)"
-echo "==> bundle: $(basename "$ROOT/output/staging-bundle.bin")"
+echo "==> bundle: $BOUT/staging-bundle.bin"
 
 # --skip-pwn cannot know how the device reached pwned DFU, and the two routes
 # want different images: checkm8 from a Pico leaves the GID key usable and takes
@@ -222,8 +227,8 @@ if [ "$back" = 0 ]; then
     fi
 fi
 
-"${USB[@]}" send "$ROOT/output/staging-bundle.bin";        sleep 1
-"${USB[@]}" send "$ROOT/output/staging-loader.bin"
+"${USB[@]}" send "$BOUT/staging-bundle.bin";        sleep 1
+"${USB[@]}" send "$BOUT/staging-loader.bin"
 
 # This host's end of the link, now, while the device boots.  Until the gadget
 # interface here has 10.55.0.1 nothing reaches the device over the network --

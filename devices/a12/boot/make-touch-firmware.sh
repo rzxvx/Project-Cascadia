@@ -16,6 +16,7 @@ fi
 RAW="$OUT/${A12_TOUCH_TAG}_Multitouch.raw"
 img4 -i "$SRC" -o "$RAW"
 case "$A12_DEVICE" in
+    xsmax) python3 "$A12/boot/d331p-mtfw.py" "$RAW" "$OUT/d331p-mtfw.bin" ;;
     xr) python3 "$A12/vendor/a13-tools/mtfw.py" "$RAW" "$A12_TOUCH_PERSONALITY" \
             "$OUT/n841-mtfw.bin" "$OUT/n841-mtcal.bin" ;;
     ipad8)

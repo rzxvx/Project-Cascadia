@@ -2,6 +2,27 @@
 set -euo pipefail
 A12="$(cd "$(dirname "$0")/.." && pwd)"
 source "$A12/profile.sh"
+BOARD="$A12_BOARD"
+INITRAMFS=initramfs.cpio.gz
+SYS=
+if [ "$(uname -m)" != aarch64 ]; then
+    SYS="$A12/build/initramfs-arm64"
+    if [ ! -x "$SYS/usr/sbin/dropbear" ]; then
+        MIRROR="${DEBIAN_MIRROR:-http://deb.debian.org/debian}"
+        tmp="$(mktemp -d)"
+        trap 'rm -rf -- "$tmp"' EXIT
+        mkdir -p "$SYS"
+        curl -fsSL "$MIRROR/dists/trixie/main/binary-arm64/Packages.xz" | xz -d > "$tmp/Packages"
+        for pkg in busybox-static dropbear-bin libc6 libcrypt1 libtomcrypt1 libtommath1 libgmp10 zlib1g; do
+            f=$(awk -v p="$pkg" '$1 == "Package:" { x = ($2 == p) } x && $1 == "Filename:" { print $2; exit }' "$tmp/Packages")
+            [ -n "$f" ] || { echo "no $pkg in $MIRROR" >&2; exit 1; }
+            curl -fsSL "$MIRROR/$f" -o "$tmp/$pkg.deb"
+            data=$(cd "$tmp" && ar t "$pkg.deb" | grep '^data\.tar')
+            (cd "$tmp" && ar x "$pkg.deb" "$data" && tar -xf "$data" -C "$SYS" && rm "$data")
+        done
+    fi
+fi
+
 USBWATCH_MODE=${A12_USBWATCH_MODE:-a13}
 case "$USBWATCH_MODE" in debian|a13) ;; *) echo 'A12_USBWATCH_MODE must be debian or a13' >&2; exit 2;; esac
 OUT="$A12_PAYLOAD"
@@ -14,27 +35,52 @@ if [ "$USBWATCH_MODE" = a13 ]; then
     bash "$A12/initramfs/fetch-static-busybox.sh"
     install -m 755 "$A12/build/tools/busybox-static/extracted/usr/bin/busybox" "$ROOT/bin/busybox"
 else
-    cp /usr/bin/busybox "$ROOT/bin/busybox"
+    cp "$SYS/usr/bin/busybox" "$ROOT/bin/busybox"
 fi
 ln -s busybox "$ROOT/bin/sh"
 copy_deps() {
-    ldd "$1" | awk '{for(i=1;i<=NF;i++) if($i ~ /^\//) print $i}' | sort -u | while read -r lib; do
-        mkdir -p "$ROOT$(dirname "$lib")"
-        cp -L "$lib" "$ROOT$lib"
+    if [ -z "$SYS" ]; then
+        ldd "$1" | awk '{for(i=1;i<=NF;i++) if($i ~ /^\//) print $i}' | sort -u | while read -r lib; do
+            mkdir -p "$ROOT$(dirname "$lib")"
+            cp -L "$lib" "$ROOT$lib"
+        done
+        return
+    fi
+    # No ldd for arm64 here: follow the interpreter and NEEDED entries.
+    local lib path d src
+    for lib in $(readelf -lW "$SYS$1" | sed -n 's/.*interpreter: \(.*\)\]/\1/p') \
+               $(readelf -dW "$SYS$1" | sed -n 's/.*Shared library: \[\(.*\)\]/\1/p'); do
+        path=
+        case "$lib" in
+        /*) path="$lib" ;;
+        *) for d in /lib/aarch64-linux-gnu /usr/lib/aarch64-linux-gnu /lib /usr/lib; do
+               [ -e "$SYS$d/$lib" ] && { path="$d/$lib"; break; }
+           done ;;
+        esac
+        [ -n "$path" ] || { echo "no $lib for $1" >&2; exit 1; }
+        [ -e "$ROOT$path" ] && continue
+        # Debian's packages put /lib under /usr/lib
+        src="$SYS$path"
+        [ -e "$src" ] || src="$SYS/usr$path"
+        mkdir -p "$ROOT$(dirname "$path")"
+        cp -L "$src" "$ROOT$path"
+        copy_deps "${src#"$SYS"}"
     done
 }
 [ "$USBWATCH_MODE" = a13 ] || copy_deps /usr/bin/busybox
 
 # Key-only SSH over USB Ethernet.  Keep the host identity stable between
-# initramfs rebuilds, while accepting every public key already authorized on
-# this development host.
-install -m 755 /usr/sbin/dropbear "$ROOT/usr/sbin/dropbear"
+# initramfs rebuilds, while accepting every public key of the user building it.
+install -m 755 "$SYS/usr/sbin/dropbear" "$ROOT/usr/sbin/dropbear"
 copy_deps /usr/sbin/dropbear
 mkdir -p "$A12/build/ssh"
 HOSTKEY="$A12/build/ssh/dropbear_ed25519_host_key"
-[ -s "$HOSTKEY" ] || /usr/bin/dropbearkey -t ed25519 -f "$HOSTKEY" >/dev/null
-install -m 600 "$HOSTKEY" "$ROOT/etc/dropbear/dropbear_ed25519_host_key"
-find /root/.ssh -maxdepth 1 -name '*.pub' -type f -exec cat {} + > "$ROOT/root/.ssh/authorized_keys"
+# Without a host dropbearkey, dropbear -R makes a key on the phone at boot.
+[ -s "$HOSTKEY" ] || ! command -v dropbearkey >/dev/null ||
+    dropbearkey -t ed25519 -f "$HOSTKEY" >/dev/null
+[ ! -s "$HOSTKEY" ] || install -m 600 "$HOSTKEY" "$ROOT/etc/dropbear/dropbear_ed25519_host_key"
+find "$HOME/.ssh" -maxdepth 1 -name '*.pub' -type f -exec cat {} + > "$ROOT/root/.ssh/authorized_keys"
+[ -s "$ROOT/root/.ssh/authorized_keys" ] || { echo "no SSH public key in $HOME/.ssh" >&2; exit 1; }
 chmod 700 "$ROOT/root" "$ROOT/root/.ssh"
 chmod 600 "$ROOT/root/.ssh/authorized_keys"
 cat > "$ROOT/etc/passwd" <<'EOF'
@@ -47,6 +93,8 @@ messagebus:x:100:
 bluetooth:x:101:
 EOF
 echo /bin/sh > "$ROOT/etc/shells"
+echo "$A12_DEVICE-linux" > "$ROOT/etc/hostname"
+printf '%s Linux\n' "$A12_LABEL" > "$ROOT/etc/usb-product"
 [ ! -s "$A12_NFSROOT" ] || install -m 644 "$A12_NFSROOT" "$ROOT/etc/nfsroot"
 cat > "$ROOT/etc/udhcpd.conf" <<'EOF'
 start 172.16.42.2
@@ -103,6 +151,7 @@ case "$A12_DEVICE" in
     xr) for name in n841-mtfw.bin n841-mtcal.bin; do
             install -m 644 "$A12_TOUCH/$name" "$ROOT/lib/firmware/apple/$name"
         done ;;
+    xsmax) install -m 644 "$A12_TOUCH/d331p-mtfw.bin" "$ROOT/lib/firmware/apple/" ;;
     ipad8) install -m 600 "$A12_TOUCH/j171a-mtfw.bin" "$ROOT/lib/firmware/apple/"
         for key in MtCl FfCl MtDO FPCL MtPc PBCL HD2C; do
             cal="$A12_TOUCH/private/j171a-$key.bin"
@@ -110,6 +159,17 @@ case "$A12_DEVICE" in
         done ;;
 esac
 printf '%s\n' "$A12_DEVICE" > "$ROOT/etc/cascadia-device"
+
+# The XS Max's touch op list and BCM4377 firmware go in the initramfs, as in
+# badapple.
+if [ "$BOARD" = d331p ]; then
+    mkdir -p "$ROOT/lib/firmware/apple" "$ROOT/lib/firmware/brcm"
+    [ ! -s "$A12_TOUCH/d331p-mtfw.bin" ] ||
+        install -m 644 "$A12_TOUCH/d331p-mtfw.bin" "$ROOT/lib/firmware/apple/"
+    [ ! -d "$A12_INPUTS/brcm" ] ||
+        find "$A12_INPUTS/brcm" -maxdepth 1 -type f -exec \
+            install -m 644 {} "$ROOT/lib/firmware/brcm/" \;
+fi
 
 cat > "$ROOT/init" <<'INIT'
 #!/bin/sh
@@ -121,10 +181,10 @@ mount -t configfs configfs /sys/kernel/config
 mount -t tmpfs tmpfs /tmp
 mkdir -p /dev/pts
 mount -t devpts devpts /dev/pts
-hostname xr-linux
+hostname -F /etc/hostname
 echo
 echo '########################################'
-echo '## Project Cascadia XR reached /init  ##'
+echo '## Project Cascadia reached /init     ##'
 echo '########################################'
 uname -a
 echo '[xr] CPUs:'; grep -E 'processor|model name' /proc/cpuinfo
@@ -155,7 +215,7 @@ if [ -n "$udc" ]; then
     mkdir -p strings/0x409 configs/c.1/strings/0x409
     echo Cascadia-A12-Linux > strings/0x409/serialnumber
     echo 'Project Cascadia' > strings/0x409/manufacturer
-    echo 'Cascadia A12 Linux' > strings/0x409/product
+    cat /etc/usb-product > strings/0x409/product
     echo 'ACM + ECM' > configs/c.1/strings/0x409/configuration
     echo 250 > configs/c.1/MaxPower
     mkdir -p functions/acm.GS0 functions/ecm.usb0
@@ -258,12 +318,14 @@ mkdir -p "$OUT"
 # archive.  Besides making the payload non-reproducible, one such regenerated
 # stream reproducibly triggered an A12 m1n1 L2 SError during gzip CRC
 # verification.  This exact normalized form is phone-boot tested on N841.
+# Everything is owned by root, also when a user builds it: dropbear refuses
+# authorized_keys in a home directory root does not own.
 SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-1700000000}"
 case "$SOURCE_DATE_EPOCH" in
     ''|*[!0-9]*) echo "invalid SOURCE_DATE_EPOCH: $SOURCE_DATE_EPOCH" >&2; exit 1 ;;
 esac
 find "$ROOT" -exec touch -h -d "@$SOURCE_DATE_EPOCH" {} +
 (cd "$ROOT" && LC_ALL=C find . -print0 | LC_ALL=C sort -z | \
-    cpio --null --reproducible -o -H newc 2>/dev/null | gzip -9 -n) \
-    > "$OUT/initramfs.cpio.gz"
-echo "XR initramfs OK: $OUT/initramfs.cpio.gz"
+    cpio --null --reproducible -R 0:0 -o -H newc 2>/dev/null | gzip -9 -n) \
+    > "$OUT/$INITRAMFS"
+echo "$BOARD initramfs OK: $OUT/$INITRAMFS"

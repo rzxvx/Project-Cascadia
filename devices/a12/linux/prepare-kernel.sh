@@ -32,7 +32,10 @@ fetch_clean() {
   [[ "$(git -C "$dest" remote get-url origin)" == "$repo" ]] || {
     echo "unexpected remote for $dest" >&2; exit 1;
   }
-  git -C "$dest" fetch --depth=1 --no-tags origin "$commit"
+  # A rebuild already has the commit; fetching it again downloads it again.
+  git -C "$dest" cat-file -e "$commit^{commit}" 2>/dev/null ||
+    git -C "$dest" fetch --depth=1 --no-tags origin "$commit"
+  echo "$commit" > "$dest/.git/FETCH_HEAD"
   # build/ is ignored and owned by these scripts.  Recreate a clean baseline
   # after an earlier build left the downstream patch series and object files.
   git -C "$dest" checkout -q -f --detach FETCH_HEAD

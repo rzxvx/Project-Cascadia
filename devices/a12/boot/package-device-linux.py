@@ -31,7 +31,7 @@ def main():
     args=parser.parse_args(); p=profile.paths(args.device)
     verify_manifest(p['boot']/'bootset.json',p)
     kernel=A12/'build/payload/Image.gz'
-    m1n1=A12/'build/payload/m1n1-idevice.macho'
+    m1n1=p['payload']/'m1n1-idevice.macho'
     dtb=p['payload']/('t8020-'+p['board']+'.dtb')
     init=p['payload']/'initramfs.cpio.gz'
     expected='apple,'+p['board']
@@ -40,17 +40,20 @@ def main():
     files=dict(cpio_files(init))
     if files.get('etc/cascadia-device',b'').strip()!=p['name'].encode():
         raise ValueError('initramfs profile mismatch or absent profile stamp; rebuild selected initramfs')
-    other='j171a' if p['name']=='xr' else 'n841'
-    if any(n.startswith('lib/firmware/apple/'+other) for n in files):
+    other=[q['board'] for q in profile.PROFILES.values() if q['board'] != p['board']]
+    if any(n.startswith('lib/firmware/apple/'+board) for n in files for board in other):
         raise ValueError('initramfs contains the other device touch firmware')
     nfs=files.get('etc/nfsroot',b'').decode().strip()
-    if not p['nfsroot'].is_file() or nfs!=p['nfsroot'].read_text().strip():
+    configured_nfs=p['nfsroot'].read_text().strip() if p['nfsroot'].is_file() else ''
+    if nfs!=configured_nfs or (not nfs and p['name']!='xsmax'):
         raise ValueError('initramfs NFS path is stale; rebuild selected initramfs')
-    keys=profile.validate_syscfg(p['syscfg'],p['name'])
+    keys=profile.validate_syscfg(p['syscfg'],p['name']) if p['name'] != 'xsmax' else None
     out=p['boot']
     with tempfile.TemporaryDirectory(dir=out,prefix='.calibration-') as tmp:
         calibrated=Path(tmp)/'calibrated.dtb'
-        if p['name']=='ipad8':
+        if p['name']=='xsmax':
+            calibrated.write_bytes(dtb.read_bytes())
+        elif p['name']=='ipad8':
             run('python3',A12/'boot/calibrate-ipad8-radio.py','--syscfg',p['syscfg'],
                 '--dtb',dtb,'--output',calibrated)
         else:
@@ -66,9 +69,9 @@ def main():
             sku=keys['WSKU'][8:16].rstrip(b'\0').decode('ascii')
             if not sku or not sku.isalnum():raise ValueError('invalid XR antenna SKU')
             run('fdtput','-t','s',calibrated,wifi,'apple,antenna-sku',sku)
+        extra = 'cma=64M' if p['name']=='xsmax' else 'cpufreq.off=1 pcie_aspm=off brcmfmac.debug=0x108000'
         args=('chosen.bootargs=earlycon console=tty0 keep_bootcon ignore_loglevel '
-              'loglevel=8 rdinit=/init panic=-1 cpufreq.off=1 pcie_aspm=off '
-              'brcmfmac.debug=0x108000\n').encode()
+              f'loglevel=8 rdinit=/init panic=-1 {extra}\n').encode()
         raw=out/'linux.macho'
         raw.write_bytes(m1n1.read_bytes()+args+calibrated.read_bytes()+kernel.read_bytes()+init.read_bytes()+bytes(4))
         raw.chmod(0o600)

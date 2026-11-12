@@ -112,3 +112,10 @@ hardware functionality. Reusing those images to test this persistent root does
 not validate a rebuilt kernel, m1n1 or newly generated initramfs. For release/PR
 validation, record source commit, clean-build commands, input/manifest hashes,
 serial logs and hardware results for each selected board.
+
+## XS Max profile
+
+The merged `xsmax` / `A12_BOARD=d331p` profile has isolated inputs and output
+directories. See [README.md](README.md#merged-xs-max-support) for its distinct
+16.6.1 GPU/radio firmware and shell boot. XR/iPad firmware recipes above do
+not apply to its BCM4377 PCIe radios.

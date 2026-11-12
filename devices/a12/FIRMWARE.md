@@ -145,3 +145,10 @@ Both boards can instead use `./cascadia a12 boot radios` after preparation. It
 checks the selected files before boot, waits for the matching Debian board, and
 runs only that board's loaders. The iPad requires its verified vendor variable.
 No Wi-Fi/Bluetooth blobs are embedded in the boot payload.
+
+## XS Max profile
+
+The merged `xsmax` / `A12_BOARD=d331p` profile has isolated inputs and output
+directories. See [README.md](README.md#merged-xs-max-support) for its distinct
+16.6.1 GPU/radio firmware and shell boot. XR/iPad firmware recipes above do
+not apply to its BCM4377 PCIe radios.

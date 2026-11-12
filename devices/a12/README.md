@@ -67,3 +67,44 @@ architectures require additional toolchain/emulation setup.
 
 Apple binaries, tickets, factory identifiers/calibration, private keys, generated
 payloads, desktop roots and logs stay local and ignored by Git.
+
+## Merged XS Max support
+
+The contributed D331p (`iPhone11,6`) path from kieroid is selected with
+`./cascadia a12 --device xsmax COMMAND` or the compatible `A12_BOARD=d331p`.
+XR remains the default; conflicting selectors are rejected. Inputs, SysCfg,
+DTB, m1n1, initramfs, NFS settings and bootsets remain per device.
+
+The XS Max uses BadApple's m1n1 patch series, `--any-im4m` iBSS patching,
+D331p touch operations, embedded BCM4377 PCIe radios and pinned iOS 16.6.1
+GPU firmware. It does not require SysCfg to package its shell boot. Without
+an NFS configuration it boots its initramfs shell. `boot radios` is for
+XR/iPad external firmware loading; XS Max uses `boot` instead.
+
+For XS Max, `periphery /path/to/16.6.1.ipsw` extracts radio firmware.
+The shell/SSH/display/touch/radio/GPU-node result is reported by kieroid;
+this merged profile has not yet been hardware-tested here. The iPad GPU
+experiment in `/tmp` is not integrated by this merge.
+
+On non-arm64 hosts, initramfs dropbear and libraries are taken from Debian
+arm64 packages. BlueZ host-copy bundles still require arm64. Native Linux
+m1n1 builds are available with `M1N1_DOCKER=0`.
+
+## Credits
+
+
+- **dr1408**: the XR port: N841 DTS, the HBPP touch driver, the BCM4357 and
+  N88 radio patches, and the boot, NFS and firmware scripts
+- **kiki**: [badapple](https://forgejo.toe.quest/kiki/badapple), the iPhone XS
+  Max port: the T8020 DTS and PMGR, Linux patches 0001 to 0014, the GPU
+  driver 0020, and the T8020 m1n1 work (DWC2, chicken bits) the XR m1n1
+  series builds on
+- **Hoolock Linux**: [linux](https://github.com/HoolockLinux/linux),
+  [m1n1 `idevice`](https://github.com/HoolockLinux/m1n1) and `config_16k`
+- **Asahi Linux**: m1n1, and the Apple silicon drivers Hoolock builds on
+- **Corellium**: Project Sandcastle's `hcdpack`, which builds the Bluetooth
+  HCD
+- **Pauli1Go**: the iPhone 7 Bluetooth notes that pointed at the full UART
+  pinmux and RTS/CTS
+- **Paradigm Shift**: usbliter8
+- **blacktop**: [ipsw](https://github.com/blacktop/ipsw)

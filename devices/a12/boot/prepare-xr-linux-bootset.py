@@ -5,6 +5,6 @@ import sys
 from pathlib import Path
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 from profile import selected
-if selected() != 'xr':
-    sys.exit('XR preparation entry point refuses a non-XR profile')
+if selected() == 'ipad8':
+    sys.exit('XR preparation entry point refuses an iPad profile')
 os.execv(sys.executable,[sys.executable,str(Path(__file__).with_name('prepare-device-bootset.py')),*sys.argv[1:]])

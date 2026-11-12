@@ -16,8 +16,11 @@ BIN="$CACHE/extracted/usr/bin/busybox"
 file "$BIN" | grep -q 'ARM aarch64.*statically linked'
 ! readelf -l "$BIN" | grep -q INTERP
 ! readelf -d "$BIN" | grep -q NEEDED
-"$BIN" true
-for applet in sh sleep cat ls head ifconfig grep udhcpd touch cut; do
-    "$BIN" --list | grep -qx "$applet"
-done
+# An extracted arm64 binary cannot execute on a cross-build host.
+if [ "$(uname -m)" = aarch64 ]; then
+    "$BIN" true
+    for applet in sh sleep cat ls head ifconfig grep udhcpd touch cut; do
+        "$BIN" --list | grep -qx "$applet"
+    done
+fi
 echo "$BIN"

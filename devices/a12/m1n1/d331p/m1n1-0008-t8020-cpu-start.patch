@@ -1,0 +1,29 @@
+diff --git a/src/smp.c b/src/smp.c
+index 83eadff..d5957aa 100644
+--- a/src/smp.c
++++ b/src/smp.c
+@@ -290,6 +290,12 @@ void smp_start_secondaries(void)
+         case T8011:
+         case T8012:
+         case T8015:
++        /*
++         * A12 keeps A11's PMGR layout: the CPU and CPM power states sit at
++         * 0x80000 on both, and 0x28000, the T6020 start block, is not
++         * implemented here at all.
++         */
++        case T8020:
+             cpu_start_off = CPU_START_OFF_S8000;
+             break;
+         case T8103:
+diff --git a/src/soc.h b/src/soc.h
+index 31391f9..9c386ae 100644
+--- a/src/soc.h
++++ b/src/soc.h
+@@ -15,6 +15,7 @@
+ #define T8011    0x8011
+ #define T8012    0x8012
+ #define T8015    0x8015
++#define T8020    0x8020
+ 
+ #define T8103 0x8103
+ #define T8112 0x8112

@@ -50,6 +50,11 @@ def main():
     if not identities:
         raise ValueError('IPSW has no selected board identity')
     for identity in identities:
+        for key, expected in [('ApChipID', p['cpid']), ('ApBoardID', p['bdid'])]:
+            actual = identity.get(key)
+            value = int(actual, 0) if isinstance(actual, str) else actual
+            if value != int(expected, 16):
+                raise ValueError('BuildManifest hardware identity mismatch: '+key)
         for key, member in [('iBSS', p['ibss_member']), ('DeviceTree', p['adt_member'])]:
             if identity['Manifest'][key]['Info']['Path'] != member:
                 raise ValueError('BuildManifest component path mismatch: '+key)
@@ -65,6 +70,15 @@ def main():
         run('img4', '-i', src, '-o', out/'SmartIO.raw')
         if sha(out/'SmartIO.raw') != p['smartio_raw_sha256']:
             raise ValueError('decoded SmartIO hash mismatch')
+    if p.get('gfx_ipsw'):
+        gfxdir = out/'gfx'
+        run('ipsw', 'extract', '--remote', '--pattern',
+            r'^Firmware/agx/armfw_g11p\.im4p$', '-o', gfxdir, p['gfx_ipsw'])
+        matches = list(gfxdir.rglob('armfw_g11p.im4p'))
+        if len(matches) != 1 or sha(matches[0]) != p['gfx_im4p_sha256']:
+            raise ValueError('XS Max 16.6.1 GPU firmware hash mismatch')
+        import shutil
+        shutil.copyfile(matches[0], out/'armfw_g11p.im4p')
     print(p['label']+' boot inputs verified in '+str(out))
 
 

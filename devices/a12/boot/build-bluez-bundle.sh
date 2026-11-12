@@ -6,6 +6,7 @@ source "$A12/profile.sh"
 ROOT="$A12/build/devices/$A12_DEVICE/bluez-root"
 OUT="$A12_INPUTS/bluez-root.tar.gz"
 mkdir -p "$A12_INPUTS"
+[ "$(uname -m)" = aarch64 ] || { echo "BlueZ bundle requires an arm64 host" >&2; exit 1; }
 rm -rf "$ROOT"
 mkdir -p "$ROOT"/{usr/bin,usr/sbin,usr/share/dbus-1/system.d,usr/share/dbus-1/system-services,etc/bluetooth,sbin}
 

@@ -62,5 +62,36 @@
       "A2270"
     ],
     "smartio_raw_sha256": "f6e5c80434c3a02a7ab715102d60a0abf0b95ce9ca98645d012a39896314d13c"
+  },
+  "xsmax": {
+    "aliases": [
+      "xsmax",
+      "d331p",
+      "iphone-xs-max",
+      "iPhone11,6"
+    ],
+    "label": "iPhone XS Max (Global)",
+    "board": "d331p",
+    "apple_board": "d331pap",
+    "product": "iPhone11,6",
+    "cpid": "0x8020",
+    "bdid": "0x0e",
+    "build": "22H374",
+    "version": "18.7.10",
+    "ipsw": "https://updates.cdn-apple.com/2026WinterFCS/fullrestores/140-97977/CB8B320D-008B-4FC2-8256-56A1DB86C586/iPhone11,2,iPhone11,4,iPhone11,6_18.7.10_22H374_Restore.ipsw",
+    "ibss_member": "Firmware/dfu/iBSS.d331p.RELEASE.im4p",
+    "adt_member": "Firmware/all_flash/DeviceTree.d331pap.im4p",
+    "ibss_sha256": "53f5171fa86a0953065ec16b971bd0e861497cf042e071801d55d83ef275c22c",
+    "adt_sha256": "752a1eead27fba2ed275b8866d81a4eeb4db9777dd8b903d745267eb7df8aaac",
+    "touch_tag": "D331p",
+    "touch_personality": "op-list",
+    "wifi_board": "geniek",
+    "bluetooth": null,
+    "smartio_member": null,
+    "models": [
+      "A2101"
+    ],
+    "gfx_ipsw": "https://updates.cdn-apple.com/2023SummerFCS/fullrestores/042-43832/D00DE3E3-6FAA-4DAA-B17D-94CEF1B5CA1C/iPhone11,2,iPhone11,4,iPhone11,6_16.6.1_20G81_Restore.ipsw",
+    "gfx_im4p_sha256": "91e17c9165ac861d032ca911694fbea7840e09fb53bb9ef31fe6cee3bd1bfe7f"
   }
 }

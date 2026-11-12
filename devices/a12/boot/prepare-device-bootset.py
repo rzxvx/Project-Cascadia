@@ -28,8 +28,9 @@ def main():
     staged = out/'.iBSS.pristine.raw'
     shutil.copyfile(p['extracted']/'iBSS.raw', staged)
     bootargs = '-v wdt=-1'+(' serial=3' if args.serial else '')
+    options = ['--any-im4m'] if p['name'] == 'xsmax' else []
     run(sys.executable, A12/'boot/patch_iboot.py', staged, bootargs,
-        '--serial' if args.serial else '--no-serial')
+        '--serial' if args.serial else '--no-serial', *options)
     generated = Path(str(staged)+'.patched')
     if generated.read_bytes().count((bootargs+'\0').encode()) != 1:
         raise ValueError('Linux iBSS bootargs were not installed exactly once')
@@ -47,6 +48,12 @@ def main():
             raise ValueError('missing or incorrect J171 SmartIO firmware')
         wrap(firmware, out/'SmartIO.img4', 'siof', ticket)
         files.append(out/'SmartIO.img4')
+    if p.get('gfx_ipsw'):
+        gfx = p['extracted']/'armfw_g11p.im4p'
+        if sha(gfx) != p['gfx_im4p_sha256']:
+            raise ValueError('incorrect XS Max GPU firmware')
+        run('img4', '-i', gfx, '-o', out/'gfx.img4', '-M', ticket)
+        files.append(out/'gfx.img4')
     write_manifest(out/'bootset.json', p, files, serial=args.serial, ibss_bootargs=bootargs)
     print('Prepared '+p['label']+' (Apple ADT pristine; Linux iBSS arguments only)')
 

@@ -7,6 +7,7 @@ ROOT="${1:?usage: install-touch-firmware.sh ROOT}"
 test -f "$ROOT/etc/passwd"
 case "$A12_DEVICE" in
     xr) files=(n841-mtfw.bin n841-mtcal.bin); mode=644 ;;
+    xsmax) files=(d331p-mtfw.bin); mode=644 ;;
     ipad8) files=(j171a-mtfw.bin); mode=600 ;;
 esac
 # Preflight everything required before modifying the persistent root.

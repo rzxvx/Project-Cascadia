@@ -16,15 +16,17 @@ def canonical(value):
     for name, p in PROFILES.items():
         if value in p['aliases']:
             return name
-    raise ValueError('device must be xr or ipad8 (N841/J171a Wi-Fi)')
+    raise ValueError('device must be xr, ipad8 or xsmax (n841/j171a/d331p)')
 
 
 def selected(device=None):
-    a = device or os.environ.get('A12_DEVICE')
-    b = os.environ.get('A12_PROFILE')
-    if a and b and canonical(a) != canonical(b):
-        raise ValueError('A12_DEVICE and A12_PROFILE disagree; refusing mixed profiles')
-    return canonical(a or b or 'xr')
+    choices = [v for v in (device, os.environ.get('A12_DEVICE'),
+               os.environ.get('A12_PROFILE'), os.environ.get('A12_BOARD')) if v]
+    names = {canonical(v) for v in choices}
+    if len(names) > 1:
+        raise ValueError('A12 device/profile/board selectors disagree; refusing mixed profiles')
+    return names.pop() if names else 'xr'
+
 
 
 def paths(device=None):

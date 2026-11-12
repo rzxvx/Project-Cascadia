@@ -1,3 +1,20 @@
+# Merge status — XR, iPad 8 and XS Max
+
+The kieroid XS Max series has been integrated into the per-device profile
+interface. XR is still default; `xsmax` and `A12_BOARD=d331p` select XS Max.
+Conflicting selectors fail closed. Board-specific m1n1, DTB, firmware and
+initramfs outputs are isolated; the Linux kernel source is shared.
+
+This merge includes his refreshed AGX patch, not the later tested iPad GPU
+experiment under `/tmp`. That experiment is a separate integration step.
+No new hardware boot has validated the combined source yet.
+
+The earlier bring-up record is in [HISTORY.md](HISTORY.md). The retained
+XR/iPad port plan follows; its older testing statements are not evidence
+that this newly merged tree has been hardware tested.
+
+---
+
 # Linux on iPhone XR (N841AP/T8020) — port status and plan
 
 > **Historical engineering log:** current XR/iPad preparation and boot instructions are in [QUICKSTART.md](QUICKSTART.md). Older paths and commands below document experiments, not the current interface.

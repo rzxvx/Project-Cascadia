@@ -34,9 +34,14 @@ def main():
     linux=verify_manifest(p['boot']/'linux.json',p)
     if p['name']=='ipad8' and 'SmartIO.img4' not in first['artifacts']:
         raise ValueError('J171 boot manifest lacks required SmartIO')
-    if not p['nfsroot'].is_file() or p['nfsroot'].read_text().strip()!=linux['nfsroot']:
+    configured_nfs=p['nfsroot'].read_text().strip() if p['nfsroot'].is_file() else ''
+    if configured_nfs!=linux['nfsroot'] or (not configured_nfs and p['name']!='xsmax'):
         raise ValueError('selected NFS setting changed since packing; rebuild initramfs and repack')
+    if p['name']=='xsmax' and 'gfx.img4' not in first['artifacts']:
+        raise ValueError('XS Max boot manifest lacks required GPU firmware')
     if a.radios:
+        if p['name']=='xsmax':
+            raise ValueError('XS Max radios are embedded; use boot, not boot radios')
         if p['name']=='xr':
             folder=p['inputs']/'brcm'
             required=[folder/name for name in ['brcmfmac4357b1-pcie.apple,yodak.bin',
@@ -66,7 +71,7 @@ def main():
     out=p['boot'];logdir=out/'logs'/time.strftime('%Y%m%d-%H%M%S',time.gmtime())
     logdir.mkdir(parents=True,exist_ok=False)
     # Capture only this profile's serial build; leave other sessions alone.
-    if first['serial']:
+    if first['serial'] and Path(os.environ.get('DCSD_TTY', '/dev/ttyACM0')).exists():
         pidfile=out/'capture.pid'
         if pidfile.exists():
             pid=int(pidfile.read_text());cmd=Path('/proc')/str(pid)/'cmdline'
@@ -77,7 +82,11 @@ def main():
         pidfile.write_text(str(child.pid)+'\n')
     with (logdir/'transfers.log').open('w') as log:
         ctl=Path(os.environ.get('USBLITER8CTL',str(A12/'vendor/a13-tools/usbliter8ctl')))
-        run(sys.executable,ctl,'boot',out/'iBSS.linux.raw',stdout=log,stderr=log)
+        try:
+            run(sys.executable,ctl,'boot',out/'iBSS.linux.raw',stdout=log,stderr=log)
+        except subprocess.CalledProcessError:
+            # The handoff may interrupt USB status; Recovery identity is decisive.
+            pass
         if p['name']=='xr':
             # Match the original boot-xr-linux.sh stabilization and timing.
             for attempt in range(50):
@@ -100,7 +109,9 @@ def main():
             else:raise ValueError('selected device did not enter iBSS Recovery')
         files=[('DeviceTree.img4','devicetree')]
         if p['smartio_member']:files.append(('SmartIO.img4','firmware'))
-        files += [('RestoreTrustCache.img4','firmware'),('linux.img4','bootx')]
+        files.append(('RestoreTrustCache.img4','firmware'))
+        if p.get('gfx_ipsw'): files.append(('gfx.img4','firmware'))
+        files.append(('linux.img4','bootx'))
         for name,command in files:
             run('irecovery','-f',out/name,stdout=log,stderr=log,timeout=60)
             run('irecovery','-c',command,stdout=log,stderr=log,timeout=10)

@@ -18,10 +18,10 @@ have() { command -v "$1" >/dev/null 2>&1; }
 
 usage() {
     cat <<'EOF'
-Project Cascadia — Apple A12 (XR / iPad 8 Wi-Fi)
+Project Cascadia — Apple A12 (XR / iPad 8 Wi-Fi / XS Max)
 
-Select: ./cascadia a12 --device xr|ipad8 COMMAND
-        A12_DEVICE=xr|ipad8 ./cascadia a12 COMMAND
+Select: ./cascadia a12 --device xr|ipad8|xsmax COMMAND
+        A12_DEVICE=xr|ipad8|xsmax ./cascadia a12 COMMAND
 
   ./cascadia a12 doctor              check host tools and local inputs
   ./cascadia a12 inputs              fetch/patch first-stage inputs (IM4M=...)
@@ -70,7 +70,7 @@ cmd_inputs() {
 cmd_periphery() {
     bash boot/make-touch-firmware.sh "$A12_BOARD"
     if [ -n "${1:-}" ]; then
-        if [ "$A12_DEVICE" = xr ]; then
+        if [ "$A12_DEVICE" != ipad8 ]; then
             bash boot/make-radio-firmware.sh "$1"
         else
             fail 'iPad radio conversion: use prepare-ipad-radio.py --wifi-dir DIR --bluetool FILE (read-only OS extraction; see DEVICE_SEPARATION.md)'

@@ -1,0 +1,149 @@
+diff --git a/src/exception.c b/src/exception.c
+index ded20c4..31ddb15 100644
+--- a/src/exception.c
++++ b/src/exception.c
+@@ -355,8 +355,8 @@ void exc_sync(u64 *regs)
+             break;
+         case GUARD_OFF:
+         default:
+-            printf("Unhandled exception, rebooting...\n");
+-            flush_and_reboot();
++            printf("Unhandled exception, halting...\n");
++            flush_and_halt();
+     }
+ 
+     exc_count++;
+@@ -460,20 +460,82 @@ void exc_fiq(u64 *regs)
+     // print_regs(regs);
+ }
+ 
++/*
++ * How many SErrors to report in full before going quiet.
++ *
++ * Reporting every one is not free. print_regs goes to the framebuffer
++ * console, which on this panel is 1242x2688 and scrolls in software, so one
++ * dump costs a lot of CPU. m1n1's USB gadget is polled from uartproxy_run's
++ * loop rather than driven by interrupts, so anything that keeps the CPU out
++ * of that loop stops EP0 being serviced while the PHY keeps its pullup. A
++ * host then sees the attach and the high speed chirp but times out on every
++ * control transfer: "device descriptor read/64, error -110".
++ */
++#define SERR_REPORT_LIMIT 2
++
+ void exc_serr(u64 *regs)
+ {
+-    if (!(exc_guard & GUARD_SILENT))
+-        printf("Exception: SError\n");
++    static u32 serr_count = 0;
++    bool report = serr_count < SERR_REPORT_LIMIT && !(exc_guard & GUARD_SILENT);
++
++    serr_count++;
++
++    if (report)
++        printf("Exception: SError (#%u)\n", serr_count);
+ 
+     sysop("dsb sy");
+     sysop("isb");
+ 
+-    if (!(exc_guard & GUARD_SILENT))
++    if (report)
+         print_regs(regs, 0);
+ 
++    if (serr_count == SERR_REPORT_LIMIT)
++        printf("SError repeating, silencing further reports\n");
++
++    /*
++     * Bring-up on T8020: report an unhandled SError and keep going rather than
++     * halting.
++     *
++     * An SError is asynchronous and imprecise, so the PC in the dump is only
++     * wherever execution happened to be, in our case inside vsnprintf. What is
++     * reproducible is L2C_ERR_ADR, which reads 0x8ec78c000 on every boot,
++     * exactly the "Top of normal RAM" that memory.c prints. So it is an access
++     * at the top of DRAM boundary. It survived removing the phram log buffer
++     * that first appeared responsible, and it is latched well before it is
++     * taken.
++     *
++     * Halting stops the boot with no way to find out whether the error matters.
++     * Continuing is a deliberate shortcut: if the kernel boots afterwards it
++     * was benign at the boundary, and if things misbehave we know it was not.
++     */
+     if ((exc_guard & GUARD_TYPE_MASK) == GUARD_OFF) {
+-        printf("Unhandled exception, rebooting...\n");
+-        flush_and_reboot();
++        static bool serr_masked = false;
++
++        if (!serr_masked) {
++            serr_masked = true;
++            printf("Unhandled SError at top of RAM, clearing (T8020 bring-up)\n");
++        }
++
++        /*
++         * This register is write-1-to-clear: ENABLE_W1C, bit 56, is set in the
++         * status we read back. m1n1's usual clear is
++         * reg_mask(..., ACCESS_FAULT | PIO_FAULT, 0), a read-modify-write that
++         * puts zeroes in those bits, which under W1C clears nothing at all.
++         * That is why the fault kept re-asserting.
++         *
++         * Writing ones to just the fault bits clears them and leaves every
++         * other bit, including ENABLE_W1C itself, untouched. Our status reads
++         * 0x...82, so RECURSIVE_FAULT has to be in the set as well as
++         * ACCESS_FAULT.
++         *
++         * Masking DAIF here does not work, which is worth recording: ERET
++         * restores SPSR, so the mask is dropped the instant the handler
++         * returns, and SPSR in the dump reads 0x5 with no DAIF bits set.
++         */
++        msr(SYS_IMP_APL_L2C_ERR_STS, L2C_ERR_STS_ACCESS_FAULT | L2C_ERR_STS_PIO_FAULT |
++                                         L2C_ERR_STS_RECURSIVE_FAULT);
++        sysop("dsb sy");
++        sysop("isb");
+     }
+ 
+     exc_count++;
+diff --git a/src/utils.c b/src/utils.c
+index feeca69..801e6af 100644
+--- a/src/utils.c
++++ b/src/utils.c
+@@ -140,6 +140,14 @@ void flush_and_reboot(void)
+     reboot();
+ }
+ 
++void flush_and_halt(void)
++{
++    printf("\n*** Halted so this stays readable. Hold Side + Volume Down to reset. ***\n");
++    iodev_console_flush();
++    while (1)
++        sysop("wfe");
++}
++
+ void spin_init(spinlock_t *lock)
+ {
+     lock->lock = -1;
+diff --git a/src/utils.h b/src/utils.h
+index 429db16..2b74425 100644
+--- a/src/utils.h
++++ b/src/utils.h
+@@ -421,6 +421,13 @@ u64 ticks_to_usecs(u64 ticks);
+ 
+ void reboot(void) __attribute__((noreturn));
+ void flush_and_reboot(void) __attribute__((noreturn));
++/*
++ * Like flush_and_reboot, but stop instead of rebooting, so whatever was just
++ * printed stays on the framebuffer long enough to read. On a phone that
++ * framebuffer is the only console available without a serial cable on the
++ * Lightning pins, and a reboot takes the message with it.
++ */
++void flush_and_halt(void) __attribute__((noreturn));
+ 
+ u64 timeout_calculate(u32 usec);
+ bool timeout_expired(u64 timeout);
+@@ -447,7 +454,7 @@ void spin_unlock(spinlock_t *lock);
+ #define panic(fmt, ...)                                                                            \
+     do {                                                                                           \
+         debug_printf(fmt, ##__VA_ARGS__);                                                          \
+-        flush_and_reboot();                                                                        \
++        flush_and_halt();                                                                          \
+     } while (0)
+ 
+ static inline int poll32(u64 addr, u32 mask, u32 target, u32 timeout)

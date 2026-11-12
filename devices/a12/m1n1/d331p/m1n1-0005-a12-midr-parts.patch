@@ -1,0 +1,58 @@
+diff --git a/src/chickens.c b/src/chickens.c
+index 7fd4bc2..4d3e81f 100644
+--- a/src/chickens.c
++++ b/src/chickens.c
+@@ -15,6 +15,8 @@ void init_t8010_2_hurricane_zephyr(int rev);
+ void init_t8011_hurricane_zephyr(int rev);
+ void init_t8015_monsoon(int rev);
+ void init_t8015_mistral(int rev);
++void init_t8020_vortex(int rev);
++void init_t8020_tempest(int rev);
+ void init_t8015_monsoon(int rev);
+ void init_m1_icestorm(int rev);
+ void init_t8103_firestorm(int rev);
+@@ -66,6 +68,23 @@ const struct midr_part_features features_a11 = {
+     .fast_ipi = true,
+ };
+ 
++/*
++ * A12: A11's features minus disable_dc_mva. That bit turns DC by-VA ops into
++ * no-ops, which is fine on the M series where every DMA master is coherent.
++ * Here USB has no DART and does not snoop (see usb_dwc2.c), so Linux's cache
++ * maintenance for non-coherent DMA has to actually happen. With the bit set,
++ * the gadget read stale SETUP and descriptor buffers and failed to enumerate
++ * on roughly one boot in four.
++ */
++const struct midr_part_features features_a12 = {
++    .acc_cfg = true,
++    .apple_sysregs_unlocked = true,
++    .sleep_mode = SLEEP_CLUSTER,
++    .uncore_version = UNCORE_V1,
++    .nex_powergating = true,
++    .fast_ipi = true,
++};
++
+ const struct midr_part_features features_m1 = {
+     .disable_dc_mva = true,
+     .acc_cfg = true,
+@@ -137,6 +156,20 @@ const struct midr_part_info midr_parts[] = {
+      &features_a10},
+     {MIDR_PART_T8015_MONSOON, "A11 Monsoon", init_t8015_monsoon, &features_a11},
+     {MIDR_PART_T8015_MISTRAL, "A11 Mistral", init_t8015_mistral, &features_a11},
++    /*
++     * A12. midr.h already defined these part IDs but nothing referenced them,
++     * so the lookup fell through to features_unknown, where
++     * apple_sysregs_unlocked is false. That sends an A12 into the M4-only
++     * branch of kboot_prepare_dt, which reads CTRR_M4_LWR_EL2: an EL2 register
++     * that does not exist here, read from EL1. It faults with ESR 0x2000000,
++     * EC 0, an undefined system register access, right after the line
++     * "isp: Unsupported SoC".
++     *
++     * features_a12 is A11's set, which importantly has
++     * apple_sysregs_unlocked, minus disable_dc_mva (see its definition).
++     */
++    {MIDR_PART_T8020_VORTEX, "A12 Vortex", init_t8020_vortex, &features_a12},
++    {MIDR_PART_T8020_TEMPSET, "A12 Tempest", init_t8020_tempest, &features_a12},
+     {MIDR_PART_T8103_FIRESTORM, "M1 Firestorm", init_t8103_firestorm, &features_m1},
+     {MIDR_PART_T6000_FIRESTORM, "M1 Pro Firestorm", init_t6000_firestorm, &features_m1},
+     {MIDR_PART_T6001_FIRESTORM, "M1 Max Firestorm", init_t6001_firestorm, &features_m1},
