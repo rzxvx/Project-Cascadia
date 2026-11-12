@@ -256,6 +256,7 @@ struct sgx_frame_draw {
    const uint32_t *base;
    unsigned stride, count;
    const uint16_t *indices;
+   uint32_t idx_va;             /* (M46) the indices at this address instead */
 };
 #define SGX_FRAME_MAX_DRAWS 2048
 unsigned sgx_frame_max_draws(const struct sgx_frame *f);

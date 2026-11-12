@@ -614,7 +614,7 @@ arena_put(struct sgx_frame *f, const void *p, uint32_t n, uint32_t al)
 
    if (!dst)
       return 0;
-   memcpy(dst, p, n);
+   sgx_copy(dst, p, n);
    return va;
 }
 
@@ -2558,7 +2558,7 @@ sgx_frame_render(struct sgx_frame *f, const struct sgx_frame_target *t,
       if (!count || count % 3 || d->l.nvaryings > SGX_FRAME_MAX_VARYINGS ||
           (d->prog && d->l.nvaryings != d->prog->nvaryings) ||
           (d->vs && (!d->vs->code_va || d->vs->nvaryings != d->l.nvaryings)) ||
-          (!d->indices && count > sgx_frame_list_max(f))) {
+          (!d->indices && !d->idx_va && count > sgx_frame_list_max(f))) {
          ret = -EINVAL;
          goto out;
       }
@@ -2576,7 +2576,8 @@ sgx_frame_render(struct sgx_frame *f, const struct sgx_frame_target *t,
       }
       /* the triangles: the draw's indices, or the frame's 0, 1, 2, ... (from
        * the draw's vertex 0) */
-      idx_va = d->indices ? arena_put(f, d->indices, 2 * count, 16) : f->idx;
+      idx_va = d->idx_va ? d->idx_va :
+               d->indices ? arena_put(f, d->indices, 2 * count, 16) : f->idx;
       if (!idx_va)
          goto out;
       /* the state: the last draw's again when it is the same */

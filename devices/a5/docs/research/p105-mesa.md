@@ -3867,6 +3867,65 @@ build too, `glf16d`: GLSL 1.20 as PPSSPP has it) right on both vertex
 sides; the regression tests unchanged. (A test whose coordinates equal the
 colour's x and y does not show it: the linker reads them from the colour.)
 
+**PPSSPP's uploads, written once.** With the programs shorter the GL
+thread showed: half of it memcpy. PPSSPP's GL backend keeps a frame's
+vertices and indices in its own memory (`GLPushBuffer`: 2 MiB of
+vertices, 256 KiB of indices) and uploads what it used with
+glBufferSubData at the frame's end -- 1.75 MB a frame here. Mesa's default wrote those bytes into
+the buffer's CPU copy and the next draw copied them on into its GPU copy
+(`sgx_buffer_bo`). `sgx_buffer_subdata()` writes them straight into the
+GPU copy when no render reads it (gathered or running) and nothing has the
+buffer mapped; the CPU copy is behind by those bytes then (`stale_lo`,
+`stale_hi`) and is brought up to date (`sgx_buffer_fresh()`) before
+anything maps it or the CPU reads it for a draw -- the draw module, a
+repack, a constant attribute, an index scan (that one only its draw's
+indices: `sgx_buffer_fresh_range()`). Not constant buffers (the CPU reads
+those for every draw) nor uploads under 64 bytes (`SGX_DIRECT_SUBDATA=0`:
+Mesa's default always).
+
+**Indices where they are.** A draw of 16-bit indices from a buffer, a
+triangle list, every attribute fetched where it is: the VDM reads its
+indices in the buffer's GPU copy (`idx_va`) -- no scan for their range on
+the CPU (16 bits cannot pass 0xffff), no copy into the render. Any even
+address does: PPSSPP aligns its indices to 2 bytes, so its draws can
+start at an odd index (glbuffer's `indexed 26`; those were scanned and
+copied, and made the whole buffer's CPU copy current: 214 KB a frame). Such a draw is not
+merged into the last (`SGX_INDEX_COPY=1`: copied as before).
+`gpu_vs_draw`, 11% of the GL thread, is 1.4%.
+
+**Copies that preload.** What was left of the GL thread's memcpy was that
+one write into GPU memory: 1.75 MB a frame in 12.7-15.1 ms, 120-135 MB/s.
+musl's ARM memcpy has no preloads (its port took them out, for older
+cores), and the L2's prefetching is off under Linux here -- AUX 0x06470000,
+prefetch control 0, where iOS's device tree asks for 0x72100000 (data and
+instruction prefetch on). Each 32-byte line a copy reads waits for memory.
+`wcbench` (the K93 session tools: 3 MB into an SGX buffer, the best of 8):
+
+| copy, 3 MB | MB/s |
+|---|---|
+| memcpy, cached -> cached | 233 |
+| memcpy, cached -> write-combined | 256 |
+| NEON, 64 bytes a round, no PLD | 238 |
+| NEON + PLDs 128 and 160 bytes ahead -> write-combined | 824 |
+| the same, PLDs 256 to 2048 bytes ahead | 790-812 |
+| ldm/stm, 32 bytes a round + a PLD 384 ahead | 810 |
+| NEON + PLDs -> cached | 550 |
+| anything, write-combined -> cached (a read back) | 232-250 |
+| 256 KB already in the L2: memcpy / NEON + PLDs -> write-combined | 1374 / 2032 |
+
+Writing write-combined memory is not the cost; reading cold lines is.
+`sgx_copy()` -- NEON, 64 bytes a round, PLDs four and five lines ahead --
+takes the big copies: an upload into the GPU copy, the CPU copy's bytes on
+into it, a repacked draw's vertices, the arena's. PPSSPP's 1.75 MB: 4.3-5.9
+ms a frame. `SGX_DEBUG=fps` says a frame's uploads now (into the GPU copy,
+with its time; into the CPU copy; copied on; read back).
+`tools/sgx/gl/glbuffer.c` (desktop GL, uploading as PPSSPP does): a buffer
+written while draws read it, read back, written while a gathered draw
+still reads it, fetched by the GPU where it is, drawn as lines (the draw
+module reads it), mapped, and indices at 0, 12 and 26 bytes, written again
+and read back -- 17 of 17 on both vertex sides (`SGX_CPU_VS=1`); the
+regression tests, glcopy, gldesk, glfmt and glf16 unchanged.
+
 **God of War** (`gow-bench.sh`, the main menu, PPSSPP's counter -- which
 climbs over the menu's first seconds: read at once 15-16%, a few seconds
 on near 19% with the F16 programs, near 21% with the shift; the rows above
@@ -3881,6 +3940,14 @@ those were read at once):
 | + shorter F32 programs | 34 ms | 10.6 fps | 13.3% |
 | + F16 for more programs | 27 ms | 11.5 fps | 16.1% (19% settled) |
 | + lookups at `.yz` by the PDS | 22 ms | 12.6 fps | 21% settled |
+| + uploads written once, indices read where they are | 22 ms | 14.0 fps | 24% settled |
+| + copies that preload, odd first indices | 22 ms | 15.2-15.5 fps | 25% settled |
+
+The GL thread waits for the GPU ~70% of the time now (`SGX_DEBUG=fps`),
+and `SGX_TRACE=1` has the GPU busy 85% of it: the frame is the GPU's again.
+It is 18 renders, ~17 of them made by framebuffer changes
+(`sgx_set_framebuffer_state` flushing): PPSSPP's render-to-texture passes
+and the copies, a median 1.1 ms each, a few of them over 5 ms.
 
 **What is left**, in the order it costs:
 
@@ -3893,8 +3960,12 @@ those were read at once):
   six copies take ~6 ms of a frame.
 - Discard is M19's translucent emulation, twice a layer's cost
   (`glverts -k`): the punch-through pass type, still not found.
-- The CPU side: the frame's renders now take the GPU ~68 ms of the ~94 a
-  frame takes; ~25 ms between frames in PPSSPP's GL thread.
+- The renders between the main one: which they are and what each costs
+  (`SGX_DEBUG=sync` with `SGX_DEBUG_DRAW=1`, `render-stats.sh`).
+- Not the driver's: under Linux the L2 prefetches nothing (above), and the
+  whole system pays for it -- PPSSPP's own memcpy is a fifth of its
+  emulator thread. The PL310's prefetch bits (and the A9's own prefetcher)
+  are the kernel's to set.
 
 ## Testing, without and with the device
 

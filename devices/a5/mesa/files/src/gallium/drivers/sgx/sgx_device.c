@@ -23,6 +23,10 @@
 #include "util/u_math.h"
 #include "util/u_memory.h"
 
+#if defined(__arm__)
+#include <arm_neon.h>
+#endif
+
 uint64_t
 sgx_device_param(struct sgx_device *dev, uint32_t param)
 {
@@ -398,6 +402,8 @@ sgx_fence_reference(struct sgx_fence **ptr, struct sgx_fence *f)
 int64_t sgx_fence_waited;
 unsigned sgx_ioctls[SGX_IOCTL_KINDS];
 unsigned sgx_stat_same, sgx_stat_verts, sgx_stat_tex_changes, sgx_stat_merged;
+uint64_t sgx_stat_up[SGX_UP_KINDS];
+int64_t sgx_stat_up_ns;
 
 uint64_t
 sgx_fence_signal_time(struct sgx_fence *f)
@@ -487,6 +493,28 @@ sgx_submit(struct sgx_device *dev, const uint32_t *cmd, uint32_t pb_va,
    dev->nwait_syncs = 0;
    return ret;
 }
+
+#if defined(__arm__)
+__attribute__((target("fpu=neon"))) void
+sgx_copy(void *dst, const void *src, size_t n)
+{
+   uint8_t *d = dst;
+   const uint8_t *s = src;
+
+   for (; n >= 64; n -= 64, d += 64, s += 64) {
+      __builtin_prefetch(s + 128);
+      __builtin_prefetch(s + 160);
+      vst1q_u8_x4(d, vld1q_u8_x4(s));
+   }
+   memcpy(d, s, n);
+}
+#else
+void
+sgx_copy(void *dst, const void *src, size_t n)
+{
+   memcpy(dst, src, n);
+}
+#endif
 
 void
 sgx_trace_mark(const char *what)

@@ -823,17 +823,28 @@ fs_for_draw(struct sgx_context *ctx)
    return fs;
 }
 
+/* (M46: the CPU reads the bytes [lo, hi) of it, its CPU copy made those
+ * of the GPU's first) */
 static const void *
-map_buffer(struct pipe_resource *prsc, size_t *size)
+map_buffer_range(struct pipe_resource *prsc, size_t *size, uint32_t lo, uint32_t hi)
 {
    struct sgx_resource *res = sgx_resource(prsc);
    uint8_t *map;
 
-   if (!res || !(map = res->data ? res->data : res->bo ? sgx_bo_map(res->bo) : NULL))
+   if (!res)
+      return NULL;
+   sgx_buffer_fresh_range(res, lo, hi);
+   if (!(map = res->data ? res->data : res->bo ? sgx_bo_map(res->bo) : NULL))
       return NULL;
    /* (a buffer's CPU copy: no render writes it, M26) */
    *size = prsc->width0;
    return map;
+}
+
+static const void *
+map_buffer(struct pipe_resource *prsc, size_t *size)
+{
+   return map_buffer_range(prsc, size, 0, ~0u);
 }
 
 /* ---- gathering draws into renders (M14) -------------------------------- */
@@ -1128,7 +1139,7 @@ sgx_batch_flush_at(struct sgx_context *ctx, const char *file, int line)
          .prog = bd->compiled ? &bd->prog : NULL, .sa = b->sa + bd->sa, .st = bd->st,
          .vs = bd->vs, .vs_sa = b->sa + bd->vs_sa,
          .base = bd->base, .stride = bd->stride, .count = bd->count,
-         .indices = bd->nidx ? b->idx + bd->idx : NULL,
+         .indices = bd->nidx ? b->idx + bd->idx : NULL, .idx_va = bd->idx_va,
       };
       if (!bd->vs)
          d[i].verts = b->verts + bd->first;
@@ -1633,7 +1644,9 @@ merge_vs_draw(struct sgx_context *ctx, struct sgx_vs *vs, const struct sgx_fs *f
       }
    }
    /* and its triangles: a list on from the last draw's, or indices after
-    * its indices */
+    * its indices (not those in a buffer, M46) */
+   if (v->idx_va || p->idx_va)
+      return no_merge(MERGE_PRIMS);
    if (!v->indexed && !p->nidx) {
       if (at != p->count || p->count + v->count > sgx_frame_list_max(screen->frame))
          return no_merge(MERGE_PRIMS);
@@ -1673,7 +1686,7 @@ add_vs_draw(struct sgx_context *ctx, struct sgx_vs *vs, const struct sgx_fs *fs,
    struct sgx_screen *screen = sgx_screen(ctx->base.screen);
    struct sgx_batch *b = &ctx->batch;
    struct sgx_vtx *v = &ctx->vtx;
-   unsigned nvsa = vs->nuniforms + vs->nubuf, nidx = v->indexed ? v->count : 0;
+   unsigned nvsa = vs->nuniforms + vs->nubuf, nidx = v->indexed && !v->idx_va ? v->count : 0;
    unsigned nbytes = v->repacked ? v->nverts * v->stride : 0, ntex = fs ? fs->nsamplers : 0;
    uint32_t vdata_va = 0;
    struct sgx_batch_draw *bd;
@@ -1725,6 +1738,7 @@ add_vs_draw(struct sgx_context *ctx, struct sgx_vs *vs, const struct sgx_fs *fs,
    bd->vs_sa = b->nsa + nsa;
    bd->idx = b->nidx;
    bd->nidx = nidx;
+   bd->idx_va = v->idx_va;
    memcpy(bd->base, v->base, sizeof(bd->base));
    bd->stride = v->stride;
    bd->count = v->count;
@@ -2402,7 +2416,8 @@ gpu_vs_draw(struct sgx_context *ctx, const struct pipe_draw_info *info,
    unsigned nattrs = sh->vs_nattrs, stride = 0, ntri, lo = ~0u, hi = 0, vtx0;
    int bias = info->index_size ? draw->index_bias : 0;
    static int repack = -1;
-   bool direct;
+   bool direct, buffer_indices;
+   struct sgx_bo *ibo = NULL;
 
    /* SGX_REPACK=1: every draw's vertices made one stream by the CPU */
    if (repack < 0)
@@ -2449,12 +2464,32 @@ gpu_vs_draw(struct sgx_context *ctx, const struct pipe_draw_info *info,
       stride = e->src_stride;
    }
 
+   /* (M46) indices of 16 bits in a buffer, a list, every attribute fetched
+    * where it is: the VDM reads them in the buffer's GPU copy as they are
+    * -- no scan for their range (16 bits cannot pass 0xffff), no copy into
+    * the render; at any even address (glbuffer's "indexed 26": an odd
+    * first index, as PPSSPP's 2-byte aligned uploads have them).
+    * SGX_INDEX_COPY=1: copied as before. */
+   v->idx_va = 0;
+   {
+      static int copy = -1;
+
+      if (copy < 0)
+         copy = getenv("SGX_INDEX_COPY") && atoi(getenv("SGX_INDEX_COPY"));
+      buffer_indices = !copy && direct && info->index_size == 2 && !info->has_user_indices &&
+                       info->index.resource && info->mode == MESA_PRIM_TRIANGLES &&
+                       !flat_first(ctx) && draw->count >= 3;
+   }
    /* the vertices the draw reads */
-   if (info->index_size) {
+   if (buffer_indices) {
+      lo = 0;
+      hi = 0xffff;
+   } else if (info->index_size) {
       size_t size;
 
       indices = info->has_user_indices ? info->index.user :
-                map_buffer(info->index.resource, &size);
+                map_buffer_range(info->index.resource, &size, draw->start * info->index_size,
+                                 (draw->start + draw->count) * info->index_size);
       if (!indices)
          return false;
       indices = (const uint8_t *)indices + draw->start * info->index_size;
@@ -2494,7 +2529,12 @@ gpu_vs_draw(struct sgx_context *ctx, const struct pipe_draw_info *info,
    v->max_index = hi - vtx0;
    v->indexed = info->index_size || info->mode != MESA_PRIM_TRIANGLES ||
                 v->count > sgx_frame_list_max(screen->frame) || flat_first(ctx);
-   if (v->indexed) {
+   if (buffer_indices) {
+      if (!(ibo = sgx_buffer_bo(ctx, sgx_resource(info->index.resource), 2 * draw->start,
+                                2 * (draw->start + draw->count))))
+         return false;
+      v->idx_va = ibo->va + 2 * draw->start;
+   } else if (v->indexed) {
       if (v->count > ctx->maxindices) {
          uint16_t *p = realloc(ctx->indices, v->count * sizeof(uint16_t));
 
@@ -2554,6 +2594,15 @@ gpu_vs_draw(struct sgx_context *ctx, const struct pipe_draw_info *info,
          if (i == v->nbos)
             v->bos[v->nbos++] = bo;
       }
+      /* (M46) and the index buffer's, its indices read there */
+      if (ibo) {
+         unsigned i;
+
+         for (i = 0; i < v->nbos && v->bos[i] != ibo; i++)
+            ;
+         if (i == v->nbos)
+            v->bos[v->nbos++] = ibo;
+      }
    } else {
       unsigned n = hi - lo + 1, at = 0;
 
@@ -2568,6 +2617,10 @@ gpu_vs_draw(struct sgx_context *ctx, const struct pipe_draw_info *info,
       /* (M42: written once, into the batch's GPU memory) */
       if (n * v->stride > SGX_FRAME_MAX_BYTES || !(vdata = vtx_reserve(ctx, n * v->stride)))
          return false;
+      /* (M46) the CPU reads the buffers' copies here */
+      for (unsigned a = 0; a < nattrs; a++)
+         if (res[a])
+            sgx_buffer_fresh(res[a]);
       /* the attributes one array of the application's laid out as the
        * stream is -- SDL's x y, r g b a, u v at stride 32 (M34): the
        * vertices in one copy */
@@ -2587,7 +2640,7 @@ gpu_vs_draw(struct sgx_context *ctx, const struct pipe_draw_info *info,
                     util_format_get_blocksize(e->src_format) == 4 * sgx_attr_words(vs->attr[a]);
          }
          if (whole && first) {
-            memcpy(vdata, first + (lo + bias) * v->stride, n * v->stride);
+            sgx_copy(vdata, first + (lo + bias) * v->stride, n * v->stride);
             goto copied;
          }
       }
@@ -2655,6 +2708,8 @@ gpu_vs_draw(struct sgx_context *ctx, const struct pipe_draw_info *info,
       if (SGX_ATTR_KIND(vs->attr[a]) != SGX_ATTR_CONST || vs->attr_sa[a] == 0xff)
          continue;
       if (src[a]) {
+         if (res[a])
+            sgx_buffer_fresh(res[a]);  /* (M46) */
          util_format_unpack_rgba(ve->e[a].src_format, c, src[a], 1);
       } else {
          c[0] = c[1] = c[2] = 0;
