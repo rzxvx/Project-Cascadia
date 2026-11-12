@@ -17,9 +17,9 @@
  * ahead, and a read past a buffer should fault rather than land in the
  * next one.
  *
- * Renders go through a DRM scheduler with room for one job: the TA command
- * is copied into the render queue and TA sent, and the job is done when
- * both of these have happened, in this order:
+ * Renders go through a DRM scheduler with room for one job (or two,
+ * inflight): the TA command is copied into the render queue and TA sent,
+ * and the job is done when both of these have happened, in this order:
  *
  *   - the microkernel has written the command's completion value (it does
  *     when the TA is done, into the scratch buffer at SGX_SCRATCH_RENDER);
@@ -27,9 +27,10 @@
  *     the 3D register block's address when the TA starts and clears when
  *     the 3D pass ends (found for sgx2d's frame fence, p105-gpu.md M6).
  *
- * The SGX's interrupt has never been seen to fire, so both are polled, by
- * an hrtimer that runs only while a render is on the GPU.  A render that
- * does not finish in render_timeout_ms restarts the microkernel.
+ * Both are polled, by an hrtimer that runs only while a render is on the
+ * GPU -- and looked at on the SGX's interrupt too, when it is taken
+ * (apple_sgx.irq=1).  A render that does not finish in render_timeout_ms
+ * restarts the microkernel.
  *
  * Two things the microkernel does that the render node works around, both
  * found with Mesa's template-frame clears (docs/research/p105-mesa.md, M12):
@@ -93,6 +94,16 @@ static bool pb_restart = true;
 module_param(pb_restart, bool, 0644);
 MODULE_PARM_DESC(pb_restart, "start the microkernel again for a new parameter buffer");
 
+/* (M46) Renders the microkernel is given at once: with 2 the next one's TA
+ * runs while the last one's 3D pass does, and the GPU does not wait for
+ * the host between them.  Mesa takes another set of render target data
+ * for a render of the last one's size then (they hold the region headers
+ * the 3D pass reads). */
+#define SGX_MAX_INFLIGHT		2
+static unsigned int inflight = 1;
+module_param(inflight, uint, 0444);
+MODULE_PARM_DESC(inflight, "renders on the GPU at once, 1 (default) or 2");
+
 #define SGX_MAX_REKICKS			5
 
 /* The render details are read up to here (+0xa4 is written). */
@@ -123,7 +134,9 @@ struct apple_sgx_drm {
 	u32 render_seq;			/* the completion value of the last render */
 
 	spinlock_t job_lock;		/* active, against the poller */
-	struct apple_sgx_job *active;	/* the render on the GPU */
+	/* the renders on the GPU, the oldest first (inflight of them at most) */
+	struct apple_sgx_job *active[SGX_MAX_INFLIGHT];
+	unsigned int nactive;
 	struct hrtimer poll;
 	struct work_struct rekick;
 
@@ -634,44 +647,76 @@ static void sgx_job_release(struct apple_sgx_job *job)
 }
 
 /* Done is the TA's completion value, then the 3D pass's clear of the render
- * details' +0x24 (see the top of this file). */
+ * details' +0x24 (see the top of this file).  The value is the last TA's
+ * done: renders end in order, so the oldest's TA is done once it has
+ * reached its sequence number (M46: two on the GPU, the next one's may
+ * be done first). */
 static enum hrtimer_restart sgx_poll(struct hrtimer *timer)
 {
 	struct apple_sgx_drm *sdrm = container_of(timer, struct apple_sgx_drm, poll);
 	u32 *done = sdrm->sgx->buf[B_SCRATCH].cpu + SGX_SCRATCH_RENDER / 4;
-	struct dma_fence *fence = NULL;
+	struct dma_fence *fences[SGX_MAX_INFLIGHT];
+	unsigned int nfences = 0, i;
 	struct apple_sgx_job *job;
 	unsigned long flags;
+	bool more;
 
 	spin_lock_irqsave(&sdrm->job_lock, flags);
-	job = sdrm->active;
-	if (job) {
-		if (!job->ta_done && READ_ONCE(*done) == job->seq)
+	while (sdrm->nactive) {
+		job = sdrm->active[0];
+		if (!job->ta_done && (s32)(READ_ONCE(*done) - job->seq) >= 0)
 			job->ta_done = true;
 		if (job->ta_done && !READ_ONCE(job->details[0x24 / 4])) {
-			fence = job->hw_fence;
+			fences[nfences++] = job->hw_fence;
 			job->hw_fence = NULL;
-			sdrm->active = NULL;
-		} else if (!job->ta_done && rekick_ms && job->rekicks < SGX_MAX_REKICKS &&
-			   ktime_ms_delta(ktime_get(), job->kicked) >= rekick_ms &&
-			   apple_sgx_render_waiting(sdrm->sgx, job->ccb_at, job->details)) {
+			for (i = 1; i < sdrm->nactive; i++)
+				sdrm->active[i - 1] = sdrm->active[i];
+			sdrm->active[--sdrm->nactive] = NULL;
+			/* (the next one the oldest now: left unread from here) */
+			if (sdrm->nactive)
+				sdrm->active[0]->kicked = ktime_get();
+			continue;
+		}
+		if (!job->ta_done && rekick_ms && job->rekicks < SGX_MAX_REKICKS &&
+		    ktime_ms_delta(ktime_get(), job->kicked) >= rekick_ms &&
+		    apple_sgx_render_waiting(sdrm->sgx, job->ccb_at, job->details)) {
 			job->kicked = ktime_get();
 			job->rekicks++;
 			schedule_work(&sdrm->rekick);
 		}
+		break;
 	}
+	more = sdrm->nactive > 0;
 	spin_unlock_irqrestore(&sdrm->job_lock, flags);
 
-	if (fence) {
+	for (i = 0; i < nfences; i++) {
 		atomic_inc(&sdrm->done);
-		dma_fence_signal(fence);
-		dma_fence_put(fence);
-		return HRTIMER_NORESTART;
+		dma_fence_signal(fences[i]);
+		dma_fence_put(fences[i]);
 	}
-	if (!job)
+	if (!more)
 		return HRTIMER_NORESTART;
 	hrtimer_forward_now(timer, ns_to_ktime((u64)poll_us * NSEC_PER_USEC));
 	return HRTIMER_RESTART;
+}
+
+/* (M46) Until no render is on the GPU (a start of the microkernel empties
+ * its queues; with inflight 2 the last render may still run). */
+static void sgx_wait_idle(struct apple_sgx_drm *sdrm)
+{
+	struct dma_fence *f[SGX_MAX_INFLIGHT];
+	unsigned int n = 0, i;
+	unsigned long flags;
+
+	spin_lock_irqsave(&sdrm->job_lock, flags);
+	for (i = 0; i < sdrm->nactive; i++)
+		if (sdrm->active[i]->hw_fence)
+			f[n++] = dma_fence_get(sdrm->active[i]->hw_fence);
+	spin_unlock_irqrestore(&sdrm->job_lock, flags);
+	for (i = 0; i < n; i++) {
+		dma_fence_wait_timeout(f[i], false, msecs_to_jiffies(render_timeout_ms));
+		dma_fence_put(f[i]);
+	}
 }
 
 /* TA again for a render the microkernel left in its queue (the poller
@@ -687,7 +732,7 @@ static void sgx_rekick_work(struct work_struct *work)
 
 	mutex_lock(&sgx->lock);
 	spin_lock_irqsave(&sdrm->job_lock, flags);
-	job = sdrm->active;
+	job = sdrm->nactive ? sdrm->active[0] : NULL;
 	if (job && !job->ta_done) {
 		seq = job->seq;
 		waiting = apple_sgx_render_waiting(sgx, job->ccb_at, job->details);
@@ -698,6 +743,23 @@ static void sgx_rekick_work(struct work_struct *work)
 		apple_sgx_render_rekick(sgx);
 	}
 	mutex_unlock(&sgx->lock);
+}
+
+/* (M46) Whether a render on the GPU names the same render details as job
+ * -- the same render target data, whose region headers the job's TA would
+ * write while that one's 3D pass reads them (a Mesa that does not take
+ * another set for it) */
+static bool sgx_shares_details(struct apple_sgx_drm *sdrm, struct apple_sgx_job *job)
+{
+	unsigned long flags;
+	unsigned int i;
+	bool same = false;
+
+	spin_lock_irqsave(&sdrm->job_lock, flags);
+	for (i = 0; i < sdrm->nactive; i++)
+		same |= sdrm->active[i]->details == job->details;
+	spin_unlock_irqrestore(&sdrm->job_lock, flags);
+	return same;
 }
 
 static struct dma_fence *sgx_job_run(struct drm_sched_job *sched_job)
@@ -725,15 +787,18 @@ static struct dma_fence *sgx_job_run(struct drm_sched_job *sched_job)
 	    sdrm->pb_boots == READ_ONCE(sgx->boots)) {
 		drm_info(&sdrm->drm, "render with a new parameter buffer at 0x%08x: "
 			 "the microkernel starts again\n", job->pb_va);
+		sgx_wait_idle(sdrm);
 		apple_sgx_restart(sgx);
 	}
+	/* one render at a time after all, for one with the running one's
+	 * render target data */
+	if (sgx_shares_details(sdrm, job))
+		sgx_wait_idle(sdrm);
 
 	mutex_lock(&sgx->lock);
 	if (!apple_sgx_up(sgx)) {
 		ret = -ENODEV;
 	} else {
-		u32 *done = sgx->buf[B_SCRATCH].cpu + SGX_SCRATCH_RENDER / 4;
-
 		/* the kernel's parameter buffer as new, for a microkernel that
 		 * has not used it yet */
 		if (job->kernel_pb && sdrm->kpb_boots != READ_ONCE(sgx->boots)) {
@@ -743,22 +808,26 @@ static struct dma_fence *sgx_job_run(struct drm_sched_job *sched_job)
 		}
 		job->seq = ++sdrm->render_seq ? sdrm->render_seq : ++sdrm->render_seq;
 		job->ta_done = false;
-		WRITE_ONCE(*done, 0);
 		ret = apple_sgx_render_queue(sgx, job->cmd, job->cmd_len, job->pb_va,
 					     job->details,
 					     sgx->buf[B_SCRATCH].va + SGX_SCRATCH_RENDER,
 					     job->seq, job->cache_control, &job->ccb_at);
 	}
 	if (!ret) {
+		bool first;
+
 		sdrm->pb_serial = job->pb_serial;
 		sdrm->pb_boots = sgx->boots;
 		spin_lock_irqsave(&sdrm->job_lock, flags);
 		job->kicked = ktime_get();
 		job->hw_fence = dma_fence_get(fence);
-		sdrm->active = job;
+		first = !sdrm->nactive;
+		if (!WARN_ON(sdrm->nactive >= SGX_MAX_INFLIGHT))
+			sdrm->active[sdrm->nactive++] = job;
 		spin_unlock_irqrestore(&sdrm->job_lock, flags);
-		hrtimer_start(&sdrm->poll, ns_to_ktime((u64)poll_us * NSEC_PER_USEC),
-			      HRTIMER_MODE_REL_SOFT);
+		if (first)
+			hrtimer_start(&sdrm->poll, ns_to_ktime((u64)poll_us * NSEC_PER_USEC),
+				      HRTIMER_MODE_REL_SOFT);
 	}
 	mutex_unlock(&sgx->lock);
 
@@ -777,7 +846,8 @@ static enum drm_gpu_sched_stat sgx_job_timedout(struct drm_sched_job *sched_job)
 	struct apple_sgx_job *job = to_sgx_job(sched_job);
 	struct apple_sgx_drm *sdrm = job->sdrm;
 	struct dma_fence *parent = job->base.s_fence->parent;
-	struct dma_fence *hw = NULL;
+	struct dma_fence *hw[SGX_MAX_INFLIGHT];
+	unsigned int nhw = 0, i;
 	unsigned long flags;
 	int ret;
 
@@ -786,12 +856,15 @@ static enum drm_gpu_sched_stat sgx_job_timedout(struct drm_sched_job *sched_job)
 
 	drm_sched_stop(&sdrm->sched, sched_job);
 	hrtimer_cancel(&sdrm->poll);
+	/* (every render on the GPU: the start below drops them all) */
 	spin_lock_irqsave(&sdrm->job_lock, flags);
-	if (sdrm->active == job) {
-		hw = job->hw_fence;
-		job->hw_fence = NULL;
-		sdrm->active = NULL;
+	for (i = 0; i < sdrm->nactive; i++) {
+		if (sdrm->active[i]->hw_fence)
+			hw[nhw++] = sdrm->active[i]->hw_fence;
+		sdrm->active[i]->hw_fence = NULL;
+		sdrm->active[i] = NULL;
 	}
+	sdrm->nactive = 0;
 	spin_unlock_irqrestore(&sdrm->job_lock, flags);
 
 	drm_err(&sdrm->drm, "render %u not done after %u ms (TA %s)\n", job->seq,
@@ -803,10 +876,10 @@ static enum drm_gpu_sched_stat sgx_job_timedout(struct drm_sched_job *sched_job)
 	if (ret)
 		drm_err(&sdrm->drm, "microkernel did not come back: %d\n", ret);
 
-	if (hw) {
-		dma_fence_set_error(hw, -ETIMEDOUT);
-		dma_fence_signal(hw);
-		dma_fence_put(hw);
+	for (i = 0; i < nhw; i++) {
+		dma_fence_set_error(hw[i], -ETIMEDOUT);
+		dma_fence_signal(hw[i]);
+		dma_fence_put(hw[i]);
 	}
 	drm_sched_start(&sdrm->sched);
 	return DRM_GPU_SCHED_STAT_NOMINAL;
@@ -1093,7 +1166,7 @@ void apple_sgx_drm_irq(struct apple_sgx *sgx)
 {
 	struct apple_sgx_drm *sdrm = sgx->drm;
 
-	if (sdrm && READ_ONCE(sdrm->active))
+	if (sdrm && READ_ONCE(sdrm->nactive))
 		hrtimer_start(&sdrm->poll, 0, HRTIMER_MODE_REL_SOFT);
 }
 
@@ -1188,7 +1261,8 @@ int apple_sgx_drm_init(struct apple_sgx *sgx)
 		return ret;
 
 	ret = drm_sched_init(&sdrm->sched, &sgx_sched_ops, NULL, DRM_SCHED_PRIORITY_COUNT,
-			     1, 0, msecs_to_jiffies(render_timeout_ms), NULL, NULL,
+			     clamp(inflight, 1u, (unsigned int)SGX_MAX_INFLIGHT), 0,
+			     msecs_to_jiffies(render_timeout_ms), NULL, NULL,
 			     "apple-sgx-render", sgx->dev);
 	if (ret)
 		return ret;
