@@ -148,7 +148,7 @@ struct retired {
  * the slots run out.  4 MiB holds a 4096 x 4096 target's. */
 #define RT_SLOT_VA      0x89000000u
 #define RT_SLOT_SIZE    (4u << 20)
-#define MAX_RT_SETS     8
+#define MAX_RT_SETS     12
 /* the pack's 3D register block, copied for each size */
 #define BLOCK_SIZE      0x1000
 
@@ -496,6 +496,7 @@ struct sgx_frame {
    uint32_t term;               /* the tiles' bounds in the stream's terminate PDS data */
    struct rt_set rts[MAX_RT_SETS];
    uint64_t rt_clock;
+   struct rt_set *rt_last;      /* (M46) the last render's */
 
    /* M17: the frame built here (sgx_template.c), in buffers where the
     * kernel puts them, rendered with the kernel's parameter buffer -- or the
@@ -1342,6 +1343,7 @@ drop_rt_sets(struct sgx_frame *f)
       sgx_bo_destroy(f->rts[i].bo);
       f->rts[i].bo = NULL;
    }
+   f->rt_last = NULL;
 }
 
 void
@@ -1435,7 +1437,10 @@ sgx_frame_can_render(struct sgx_frame *f, const struct sgx_frame_target *t)
  * block with the size's words -- and kept.  A slot taken over: its buffers
  * stay with the renders that use them (the kernel's reference), but at a
  * fixed address (kernels before UAPI 3) the new ones go where they are --
- * once those renders are done. */
+ * once those renders are done.  (M46) Never the last render's: the kernel
+ * may run two renders at once (apple_sgx.inflight=2), the next one's TA
+ * while the last one's 3D pass reads its region headers -- a second set
+ * of the size then, the two taken in turn. */
 static struct rt_set *
 rt_set(struct sgx_frame *f, unsigned w, unsigned h)
 {
@@ -1447,16 +1452,27 @@ rt_set(struct sgx_frame *f, unsigned w, unsigned h)
    uint32_t va, size = 0;
    unsigned slot;
 
-   for (unsigned i = 0; i < MAX_RT_SETS; i++) {
-      struct rt_set *t = &f->rts[i];
+   {
+      struct rt_set *same = NULL;
 
-      if (t->bo && t->rt.w == w && t->rt.h == h) {
-         t->used = ++f->rt_clock;
-         return t;
+      for (unsigned i = 0; i < MAX_RT_SETS; i++) {
+         struct rt_set *t = &f->rts[i];
+
+         if (t == f->rt_last)
+            continue;
+         if (t->bo && t->rt.w == w && t->rt.h == h && (!same || t->used < same->used))
+            same = t;
+         if (!s || (s->bo && (!t->bo || t->used < s->used)))
+            s = t;
       }
-      if (!s || (s->bo && (!t->bo || t->used < s->used)))
-         s = t;
+      if (same) {
+         same->used = ++f->rt_clock;
+         f->rt_last = same;
+         return same;
+      }
    }
+   if (!s)
+      return NULL;
    slot = s - f->rts;
    if (s->fence && f->dev->uapi < 3)
       sgx_fence_wait(s->fence, OS_TIMEOUT_INFINITE);
@@ -1497,6 +1513,7 @@ rt_set(struct sgx_frame *f, unsigned w, unsigned h)
    memcpy(s->bo->map + (s->blk_va - va), blk, f->built ? SGX_TMPL_BLOCK_SIZE : BLOCK_SIZE);
    sgx_rt_block3d(&s->rt, s->va, (uint32_t *)(s->bo->map + (s->blk_va - va)));
    s->used = ++f->rt_clock;
+   f->rt_last = s;
    if (f->debug)
       mesa_logi("sgx: render target data for %ux%u at 0x%08x: details 0x%08x, 3D block "
                 "0x%08x, %u bytes", w, h, va, s->va[SGX_RT_DETAILS], s->blk_va, size);

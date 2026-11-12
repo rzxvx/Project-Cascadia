@@ -3999,6 +3999,7 @@ those were read at once):
 | + copies that preload, odd first indices | 22 ms | 15.2-15.5 fps | 25% settled |
 | + the blend colour's factors by SOP2s | 16 ms | 17.6-18.0 fps | 30% settled |
 | + copies by the PDS | 16 ms | 18.8-19.0 fps | 31% settled |
+| + two renders at once (the kernel) | 16 ms | 19.3-20.9 fps | 33-35% settled |
 
 The frame's GPU work (each render waited for, the median of whole
 frames) 53 -> 40 ms over the last two. The GL thread still waits for the
@@ -4033,12 +4034,26 @@ into 864 x 272 targets draw a few tiles each and took ~0.45 ms apiece:
   correctness aside) 3.5 ms -- most of it is its triangles (long ones
   across many tiles, likely the rain), not their shading. Not kept.
 
+**Two renders at once.** apple-sgx gave the microkernel one render at a
+time (the DRM scheduler's room for one job), so after each the GPU waited
+for the host to see it done and send the next. Now `apple_sgx.inflight=2`
+(the K93's bootargs; 1 stays the default) lets the next one's TA run while
+the last one's 3D pass does: the poller keeps the renders on the GPU in
+order, the oldest's TA done once the completion value reaches its
+sequence number (the value is the last TA's; it is no longer cleared for
+each render), and a start of the microkernel (a new parameter buffer, a
+timeout) waits for them, or fails them all. Two renders at once must not
+share render target data -- the next one's TA would write the region
+headers the last one's 3D pass reads -- so Mesa's `rt_set()` never hands
+out the set the last render had (a second of the size, the two in turn;
+12 slots), and the kernel runs one at a time after all for a render whose
+render details a running one has (an older Mesa). `glrenders` 0.45 ->
+0.29 ms a render; the regression tests, glrect and glcopy right; God of
+War through ~7 minutes with no render timed out, left unread or faulted.
+
 **What is left**, in the order it costs:
 
-- The renders' fixed cost, ~0.35-0.45 ms each, 18 a frame: one render at
-  a time (the scheduler's one job in flight; the render target data are
-  shared by renders of one size), so the GPU waits for the host between
-  renders.
+- The CPU: PPSSPP's two threads now take ~95-100% of one core.
 - The program that discards blends in F32 (66 instructions): the SOP2 into
   a temporary, then the packed word or the tile's chosen.
 - One of PPSSPP's programs writes gl_FragDepth (its depth rounded to 16

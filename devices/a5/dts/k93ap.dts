@@ -58,7 +58,7 @@
 		 * and the iPad drained at -750 mA on the cable until it was raised
 		 * (+470 mA after, 2026-11-09).
 		 */
-		bootargs = "earlycon=s3c6400,0x32500000 keep_bootcon lpj=5000000 root=/dev/ram0 rw rootwait panic=10 loglevel=8 ignore_loglevel g_cdc.host_addr=02:93:00:00:00:01 g_cdc.dev_addr=02:93:00:00:00:02 apple_pmu_charger.armed=1";
+		bootargs = "earlycon=s3c6400,0x32500000 keep_bootcon lpj=5000000 root=/dev/ram0 rw rootwait panic=10 loglevel=8 ignore_loglevel g_cdc.host_addr=02:93:00:00:00:01 g_cdc.dev_addr=02:93:00:00:00:02 apple_pmu_charger.armed=1 apple_sgx.inflight=2";
 		/* the loader patches both (scripts/assemble.py) */
 		linux,initrd-start = <0x88000000>;
 		linux,initrd-end   = <0x88000000>;
