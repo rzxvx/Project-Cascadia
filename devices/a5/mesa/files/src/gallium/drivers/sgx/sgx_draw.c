@@ -2894,6 +2894,11 @@ sgx_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info,
       num_draws -= i;
    }
 
+   /* (M46) the vertex shader the draw module runs, bound now */
+   if (ctx->draw_vs != ctx->vs) {
+      draw_bind_vertex_shader(draw, ctx->vs ? ctx->vs->draw : NULL);
+      ctx->draw_vs = ctx->vs;
+   }
    /* the draw module's way: its buffers mapped for it */
    for (i = 0; i < PIPE_MAX_ATTRIBS; i++) {
       const struct pipe_vertex_buffer *vb = &ctx->vb[i];

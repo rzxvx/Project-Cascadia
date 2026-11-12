@@ -404,6 +404,8 @@ unsigned sgx_ioctls[SGX_IOCTL_KINDS];
 unsigned sgx_stat_same, sgx_stat_verts, sgx_stat_tex_changes, sgx_stat_merged;
 uint64_t sgx_stat_up[SGX_UP_KINDS];
 int64_t sgx_stat_up_ns;
+int64_t sgx_submit_ns;
+uint64_t sgx_submit_handles;
 
 uint64_t
 sgx_fence_signal_time(struct sgx_fence *f)
@@ -484,7 +486,12 @@ sgx_submit(struct sgx_device *dev, const uint32_t *cmd, uint32_t pb_va,
    int ret = 0;
 
    sgx_ioctls[SGX_IOCTL_SUBMIT]++;
-   if (drmIoctl(dev->fd, DRM_IOCTL_APPLE_SGX_SUBMIT, &s)) {
+   int64_t t0 = os_time_get_nano();
+   int r = drmIoctl(dev->fd, DRM_IOCTL_APPLE_SGX_SUBMIT, &s);
+
+   sgx_submit_ns += os_time_get_nano() - t0;
+   sgx_submit_handles += count;
+   if (r) {
       mesa_loge("sgx: SUBMIT: %s", strerror(errno));
       ret = -errno;
    }

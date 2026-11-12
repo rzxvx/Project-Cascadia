@@ -142,11 +142,17 @@ sgx_flush(struct pipe_context *pctx, struct pipe_fence_handle **fence, unsigned 
                    100.0 * (cpu - ctx->stat_cpu0) / (now - ctx->stat_t0),
                    100.0 * sgx_fence_waited / (now - ctx->stat_t0));
          sgx_fence_waited = 0;
-         mesa_logi("sgx:  a frame's buffers made %.1f, mapped %.1f, waited for %.1f; submits %.1f",
+         mesa_logi("sgx:  a frame's buffers made %.1f, mapped %.1f, waited for %.1f; submits %.1f "
+                   "(%.2f ms in the kernel, %.0f buffers each)",
                    (double)sgx_ioctls[SGX_IOCTL_CREATE] / ctx->stat_frames,
                    (double)sgx_ioctls[SGX_IOCTL_MMAP] / ctx->stat_frames,
                    (double)sgx_ioctls[SGX_IOCTL_WAIT] / ctx->stat_frames,
-                   (double)sgx_ioctls[SGX_IOCTL_SUBMIT] / ctx->stat_frames);
+                   (double)sgx_ioctls[SGX_IOCTL_SUBMIT] / ctx->stat_frames,
+                   sgx_submit_ns / 1e6 / ctx->stat_frames,
+                   sgx_ioctls[SGX_IOCTL_SUBMIT] ?
+                      (double)sgx_submit_handles / sgx_ioctls[SGX_IOCTL_SUBMIT] : 0.0);
+         sgx_submit_ns = 0;
+         sgx_submit_handles = 0;
          memset(sgx_ioctls, 0, sizeof(sgx_ioctls));
          mesa_logi("sgx:  a frame's draws: %.1f merged into the last, %.1f rendered with the "
                    "last one's state", (double)sgx_stat_merged / ctx->stat_frames,
@@ -934,10 +940,11 @@ sgx_delete_shader_state(struct pipe_context *pctx, void *state)
    struct sgx_context *ctx = sgx_context(pctx);
    struct sgx_shader *sh = state;
 
-   if (ctx->vs == sh) {
+   if (ctx->vs == sh)
       ctx->vs = NULL;
-      if (ctx->draw)
-         draw_bind_vertex_shader(ctx->draw, NULL);
+   if (ctx->draw_vs == sh) {
+      draw_bind_vertex_shader(ctx->draw, NULL);
+      ctx->draw_vs = NULL;
    }
    if (sh->draw)
       draw_delete_vertex_shader(ctx->draw, sh->draw);
@@ -961,14 +968,13 @@ sgx_delete_shader_state(struct pipe_context *pctx, void *state)
    FREE(sh);
 }
 
+/* (M46: the draw module gets it only when a draw goes its way -- binding
+ * one there parses it again, tgsi_exec's arrays allocated anew, ~6 KB a
+ * bind, which musl maps and unmaps: once a draw in God of War) */
 static void
 sgx_bind_vs_state(struct pipe_context *pctx, void *state)
 {
-   struct sgx_context *ctx = sgx_context(pctx);
-
-   ctx->vs = state;
-   if (ctx->draw)
-      draw_bind_vertex_shader(ctx->draw, ctx->vs ? ctx->vs->draw : NULL);
+   sgx_context(pctx)->vs = state;
 }
 
 static void

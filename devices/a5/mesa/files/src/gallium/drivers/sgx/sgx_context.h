@@ -191,6 +191,9 @@ struct sgx_context {
    /* (M43) the uniform buffers, 1..15, of the vertex and fragment shader */
    struct pipe_constant_buffer ubo[2][SGX_FRAME_MAX_UBOS];
    struct sgx_shader *vs, *fs;
+   /* (M46) the vertex shader bound in the draw module: bound only when a
+    * draw goes that way (sgx_draw_vbo) */
+   struct sgx_shader *draw_vs;
    /* blending, depth (M14) */
    const struct pipe_blend_state *blend;
    const struct pipe_depth_stencil_alpha_state *dsa;
