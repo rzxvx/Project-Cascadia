@@ -133,6 +133,9 @@ extern unsigned sgx_stat_same, sgx_stat_verts, sgx_stat_tex_changes, sgx_stat_me
 enum { SGX_UP_DIRECT, SGX_UP_CPU, SGX_UP_ON, SGX_UP_BACK, SGX_UP_KINDS };
 extern uint64_t sgx_stat_up[SGX_UP_KINDS];
 extern int64_t sgx_stat_up_ns;
+/* SGX_DEBUG=fps (M46): the time in the submit ioctl, the buffers it lists */
+extern int64_t sgx_submit_ns;
+extern uint64_t sgx_submit_handles;
 
 /* One render.  handles[] lists every buffer it touches (the render
  * details' among them); done is signalled when its 3D pass is over. */

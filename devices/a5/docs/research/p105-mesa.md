@@ -4000,6 +4000,7 @@ those were read at once):
 | + the blend colour's factors by SOP2s | 16 ms | 17.6-18.0 fps | 30% settled |
 | + copies by the PDS | 16 ms | 18.8-19.0 fps | 31% settled |
 | + two renders at once (the kernel) | 16 ms | 19.3-20.9 fps | 33-35% settled |
+| + the draw module's vertex shader bound only when used | 16 ms | 21.2-21.8 fps | 35-36% settled |
 
 The frame's GPU work (each render waited for, the median of whole
 frames) 53 -> 40 ms over the last two. The GL thread still waits for the
@@ -4051,9 +4052,34 @@ render details a running one has (an older Mesa). `glrenders` 0.45 ->
 0.29 ms a render; the regression tests, glrect and glcopy right; God of
 War through ~7 minutes with no render timed out, left unread or faulted.
 
+**The CPU side again.** With two renders at once the GPU still sat idle
+~9 ms at each frame's start (`SGX_TRACE=1`): the main render can only go
+once the GL thread has made it, after PPSSPP's 1.75 MB upload and its 77
+draws. Two things there:
+
+- Almost every allocation of the GL thread (~2600 a second, ~5.9 KB each,
+  an LD_PRELOAD counting them by caller) was tgsi_exec's: the driver bound
+  each vertex shader in the draw module too, and binding one there parses
+  it again, its arrays allocated anew -- sizes musl's mallocng maps and
+  unmaps (the kernel's mmap work showed in the profile). The draw module
+  gets its shader now only when a draw goes its way
+  (`ctx->draw_vs`, sgx_draw_vbo): the GL thread ~11% less CPU, no
+  allocation of 2 KB or more left in it.
+- The upload copy is the bus's: 1.75 MB in 1.8 ms with the GPU idle
+  (wcbench), 6.4-7.7 ms in the game with the GPU's renders beside it (5.4-
+  5.8 with one render at a time). Two threads copying halves: slower (844
+  MB/s against 1038). PPSSPP could write its vertices into the buffer
+  itself -- its OpenGL backend has mapped push buffers, which 1.20.4 never
+  turns on.
+
+`SGX_DEBUG=fps` says the submits' time in the kernel now: 1.6-2.8 ms a
+frame, 18 of them, 14 buffers each.
+
 **What is left**, in the order it costs:
 
-- The CPU: PPSSPP's two threads now take ~95-100% of one core.
+- The upload: PPSSPP's mapped push buffers (its `GLBufferStrategy`, a
+  patch there) and a map that hands out the buffer's GPU copy.
+- The CPU: PPSSPP's two threads take ~95% of one core.
 - The program that discards blends in F32 (66 instructions): the SOP2 into
   a temporary, then the packed word or the tile's chosen.
 - One of PPSSPP's programs writes gl_FragDepth (its depth rounded to 16
