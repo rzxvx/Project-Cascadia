@@ -108,6 +108,7 @@ struct sgx_batch {
    bool zs_cleared;                     /* its depth cleared at the render's start */
    bool zs_read, zs_written;            /* a draw tests depth, writes it */
    bool counted;                        /* a draw's samples counted (M37) */
+   bool blit;                           /* (SGX_DEBUG=sync) u_blitter's draws in it */
    float *verts;
    unsigned nfloats, maxfloats;
    /* vertex shaders' vertices made one stream (M26), written there by

@@ -24,7 +24,8 @@
 #define H 1024
 #define GRID 29
 
-static const float CONST[4] = { 0.25f, 0.5f, 0.75f, 1.0f };
+/* (alpha not 1: a constant alpha factor shows) */
+static const float CONST[4] = { 0.25f, 0.5f, 0.75f, 0.6f };
 
 static const struct test {
 	const char *name;
@@ -73,6 +74,22 @@ static const struct test {
 	  GL_ONE, GL_ONE, { 0, 0, 0, 1 } },
 	{ "mask-alpha-reverse", 1, GL_FUNC_REVERSE_SUBTRACT, GL_FUNC_REVERSE_SUBTRACT, GL_ONE, GL_ONE,
 	  GL_ONE, GL_ONE, { 0, 0, 0, 1 } },
+	/* (M46) the blend colour's factors by SOP2s: PPSSPP's fixed colours
+	 * (its alpha kept) and its stencil value in alpha, and around them */
+	{ "const-dst", 1, GL_FUNC_ADD, GL_FUNC_ADD, GL_ONE, GL_CONSTANT_COLOR, GL_ZERO, GL_ONE,
+	  { 1, 1, 1, 0 } },
+	{ "const-src", 1, GL_FUNC_ADD, GL_FUNC_ADD, GL_CONSTANT_COLOR, GL_ONE, GL_ZERO, GL_ONE,
+	  { 1, 1, 1, 0 } },
+	{ "const-only", 1, GL_FUNC_ADD, GL_FUNC_ADD, GL_CONSTANT_COLOR, GL_ZERO, GL_ZERO, GL_ONE,
+	  { 1, 1, 1, 0 } },
+	{ "const-stencil", 1, GL_FUNC_ADD, GL_FUNC_ADD, GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA,
+	  GL_CONSTANT_ALPHA, GL_ZERO, { 1, 1, 1, 1 } },
+	{ "const-inv", 1, GL_FUNC_ADD, GL_FUNC_ADD, GL_SRC_ALPHA, GL_ONE_MINUS_CONSTANT_COLOR,
+	  GL_ONE, GL_ZERO, { 1, 1, 1, 1 } },
+	{ "const-reverse", 1, GL_FUNC_REVERSE_SUBTRACT, GL_FUNC_REVERSE_SUBTRACT, GL_CONSTANT_ALPHA,
+	  GL_ONE, GL_ONE, GL_ONE, { 1, 1, 1, 1 } },
+	{ "const-twice", 1, GL_FUNC_ADD, GL_FUNC_ADD, GL_CONSTANT_COLOR, GL_ONE, GL_ZERO, GL_ONE,
+	  { 1, 1, 1, 0 }, 1 },
 };
 
 static float factor(GLenum f, const float s[4], const float d[4], int i)

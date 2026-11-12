@@ -35,7 +35,9 @@
 #include "util/half_float.h"
 #include "util/log.h"
 #include "util/os_time.h"
+#include "util/u_blitter.h"
 #include "util/u_debug.h"
+#include "util/u_dump.h"
 #include "util/u_inlines.h"
 #include "util/u_math.h"
 #include "util/u_memory.h"
@@ -233,8 +235,13 @@ fix_scale(struct sgx_context *ctx, unsigned unit, float *scale)
 {
    struct pipe_sampler_view *view = unit < ARRAY_SIZE(ctx->fs_views) ? ctx->fs_views[unit] : NULL;
 
-   scale[0] = view && view->texture ? 1.0f / view->texture->width0 : 1;
-   scale[1] = view && view->texture ? 1.0f / view->texture->height0 : 1;
+   /* (the view's first level: M46's copies of one, a rectangle's only) */
+   if (view && view->texture) {
+      scale[0] = 1.0f / u_minify(view->texture->width0, view->u.tex.first_level);
+      scale[1] = 1.0f / u_minify(view->texture->height0, view->u.tex.first_level);
+   } else {
+      scale[0] = scale[1] = 1;
+   }
 }
 
 /* What the vertex side does to the varyings the PDS's lookups alone read
@@ -1082,6 +1089,7 @@ sgx_batch_flush_at(struct sgx_context *ctx, const char *file, int line)
          }
          b->zs_cleared = false;
       }
+      b->blit = false;
       bury(ctx);
       return;
    }
@@ -1189,9 +1197,12 @@ sgx_batch_flush_at(struct sgx_context *ctx, const char *file, int line)
 
       sgx_fence_wait(fence, OS_TIMEOUT_INFINITE);
       ctx->stat_gpu += os_time_get_nano() - t0;
+      /* (M46: what it drew into, and what made it) */
       if (!ctx->debug_fps)
-         mesa_logi("sgx: a render of %u draws: %.2f ms on the GPU", b->ndraws,
-                   (os_time_get_nano() - t0) / 1e6);
+         mesa_logi("sgx: a render of %u draws: %.2f ms on the GPU -- %ux%u %s%s%s%s, from %s:%d",
+                   b->ndraws, (os_time_get_nano() - t0) / 1e6, b->w, b->h,
+                   util_format_short_name(b->rt->format), zls.load ? ", depth loaded" : "",
+                   zls.store ? ", depth stored" : "", b->blit ? ", u_blitter's" : "", file, line);
    }
    if (!ret) {
       sgx_trace_mark("kicked");
@@ -1216,6 +1227,7 @@ sgx_batch_flush_at(struct sgx_context *ctx, const char *file, int line)
    pipe_resource_reference(&b->rt, NULL);
    pipe_resource_reference(&b->zs, NULL);
    b->zs_cleared = b->zs_read = b->zs_written = false;
+   b->blit = false;
    for (unsigned i = 0; i < b->ntex; i++) {
       pipe_resource_reference(&b->tex[i], NULL);
       if (!ret)
@@ -1986,7 +1998,8 @@ submit(struct sgx_context *ctx)
          }
          tex[i] = &t->base;
          if (fs->scale_sa >= 0) {
-            float scale[2] = { 1.0f / t->base.width0, 1.0f / t->base.height0 };
+            float scale[2] = { 1.0f / u_minify(t->base.width0, view->u.tex.first_level),
+                               1.0f / u_minify(t->base.height0, view->u.tex.first_level) };
 
             memcpy(sa + fs->scale_sa + 2 * i, scale, sizeof(scale));
          }
@@ -2006,8 +2019,17 @@ submit(struct sgx_context *ctx)
             memcpy(z + 4, f, sizeof(f));
          }
       }
-      if (fs->blend_sa >= 0)
+      if (fs->blend_sa >= 0 && fs->blend_packed) {
+         /* (M46) SOP2's: RGBA bytes, as the tile holds them */
+         uint32_t w = 0;
+
+         for (unsigned i = 0; i < 4; i++)
+            w |= (uint32_t)lroundf(CLAMP(ctx->blend_color.color[i], 0.0f, 1.0f) * 255.0f)
+                 << (8 * i);
+         sa[fs->blend_sa] = w;
+      } else if (fs->blend_sa >= 0) {
          memcpy(sa + fs->blend_sa, ctx->blend_color.color, 4 * sizeof(float));
+      }
       /* (M46) its constants */
       for (unsigned k = 0; k < 2 * fs->nkconst; k++)
          sa[fs->kconst_sa + k] = fs->kconst[k];
@@ -2773,12 +2795,22 @@ each_draw(struct sgx_context *ctx, const struct pipe_draw_info *info,
    const struct sgx_fs *fs = ctx->draw_fs;
    const struct pipe_rt_blend_state *rt = ctx->blend ? &ctx->blend->rt[0] : NULL;
    unsigned n = 0;
+   char eq[160] = "";
 
    for (unsigned i = 0; i < num_draws; i++)
       n += draws[i].count;
+   /* (the equation when the program blends in F32) */
+   if (rt && rt->blend_enable && !(fs && fs->sop2))
+      snprintf(eq, sizeof(eq), " [%s %s %s | a %s %s %s]",
+               util_str_blend_func(rt->rgb_func, true),
+               util_str_blend_factor(rt->rgb_src_factor, true),
+               util_str_blend_factor(rt->rgb_dst_factor, true),
+               util_str_blend_func(rt->alpha_func, true),
+               util_str_blend_factor(rt->alpha_src_factor, true),
+               util_str_blend_factor(rt->alpha_dst_factor, true));
    mesa_logi("sgx: each: into %ux%u %p: %u %s, %s; fragment shader %p%s: %u instructions, "
              "mask %x, %u temps, %u inputs, %u textures (%u by the PDS), %u sa words%s%s%s; "
-             "blend %s, depth %s%s",
+             "blend %s%s, depth %s%s",
              ctx->fb.width, ctx->fb.height,
              ctx->fb.nr_cbufs ? (void *)ctx->fb.cbufs[0].texture : NULL,
              n, info->index_size ? "indices" : "vertices",
@@ -2790,7 +2822,7 @@ each_draw(struct sgx_context *ctx, const struct pipe_draw_info *info,
              fs && fs->prog.nubuf ? " (+ memory)" : "", fs && fs->prog.branches ? ", branches" : "",
              fs && fs->prog.f16 ? ", F16" : "",
              rt && rt->blend_enable ? (fs && fs->sop2 ? "on (SOP2)" : "on (F32)") :
-             opaque_draw(ctx, fs) ? "off (opaque)" : fs && fs->sop2 ? "off (SOP2)" : "off",
+             opaque_draw(ctx, fs) ? "off (opaque)" : fs && fs->sop2 ? "off (SOP2)" : "off", eq,
              ctx->dsa && ctx->dsa->depth_enabled ?
                 (ctx->dsa->depth_writemask ? "tested, written" : "tested") : "off",
              ctx->dsa && ctx->dsa->stencil[0].enabled ? ", stencil" : "");
@@ -2813,6 +2845,8 @@ sgx_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info,
    if (!sgx_render_condition_ok(ctx))
       return;
    ctx->stat_draws += num_draws;
+   if (ctx->blitter && ctx->blitter->running)
+      ctx->batch.blit = true;
    if (ctx->stat_swap) {
       struct timespec ts;
 

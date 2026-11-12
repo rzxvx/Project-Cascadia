@@ -151,6 +151,11 @@ struct comp {
     * (o0): src1 the colour unless swapped (M25) */
    bool sop2, sop2_swap;
    struct usse_sop2 sop2_factors;
+   /* (M46) GL's constant factors with it: the colour times the packed
+    * blend colour (sa blend_sa) before the blending, the tile's colour, or
+    * the result's alpha after it -- a SOP2 each (sop2_plan) */
+   bool sop2_pre_src, sop2_pre_dst, sop2_post;
+   struct usse_sop2 sop2_src_f, sop2_dst_f, sop2_post_f;
    bool f16;                            /* the whole program F16's (M38: f16_colour) */
    int logicop;                         /* GL's logic op (pipe_logicop), -1 none (M37) */
    struct operand colour[4];
@@ -2415,6 +2420,9 @@ tile_read(struct comp *c, unsigned d)
    emit(c, usse_limm(treg(c, d + 3), 0x3f800000));
 }
 
+static void emit_sop2(struct comp *c, struct usse_reg packed, struct usse_reg t1,
+                      struct usse_reg t2);
+
 static void
 output(struct comp *c)
 {
@@ -2473,11 +2481,12 @@ output(struct comp *c)
       }
    }
    if (c->sop2) {
-      struct usse_reg packed = treg(c, take(c)), o0 = usse_reg(USSE_OUTPUT, 0);
+      struct usse_reg packed = treg(c, take(c));
+      struct usse_reg t1 = c->sop2_pre_dst ? treg(c, take(c)) : packed;
+      struct usse_reg t2 = c->sop2_post ? treg(c, take(c)) : packed;
 
       emit(c, usse_pack_unorm8_to(packed, treg(c, base)));
-      emit(c, usse_sop2(o0, c->sop2_swap ? o0 : packed, c->sop2_swap ? packed : o0,
-                        &c->sop2_factors) | USSE_END);
+      emit_sop2(c, packed, t1, t2);
       return;
    }
    switch (c->fs->blend.rt_kind) {
@@ -2595,9 +2604,9 @@ fold_colormask(const struct sgx_blend_key *k, struct sgx_blend_key *out)
 /* GL's blending as one SOP2 (M25): the colour and the tile's, 8 bits a
  * channel, as iOS blends -- not F32 arithmetic on the tile's colour
  * unpacked (nir_lower_blend), some 30 instructions more.  Not for the
- * blend colour's factors, a colour mask (but those fold_colormask() makes
- * blending, M46), or min/max with the other channels' funcs not the same
- * kind. */
+ * blend colour's factors (sop2_plan's SOP2s around it, M46), a colour mask
+ * (but those fold_colormask() makes blending, M46), or min/max with the
+ * other channels' funcs not the same kind. */
 static bool
 sop2_blend(const struct sgx_blend_key *k, struct usse_sop2 *f, bool *swap)
 {
@@ -2636,6 +2645,144 @@ sop2_blend(const struct sgx_blend_key *k, struct usse_sop2 *f, bool *swap)
                             rev ? &f->amod2 : &f->amod1) &&
           sop2_alpha_factor(alpha_dst, rev, rev ? &f->asel1 : &f->asel2,
                             rev ? &f->amod1 : &f->amod2);
+}
+
+static bool
+const_factor(unsigned f)
+{
+   return f == PIPE_BLENDFACTOR_CONST_COLOR || f == PIPE_BLENDFACTOR_CONST_ALPHA ||
+          f == PIPE_BLENDFACTOR_INV_CONST_COLOR || f == PIPE_BLENDFACTOR_INV_CONST_ALPHA;
+}
+
+/* a SOP2 that multiplies src1 by the constant factors fc (its colour) and
+ * fa (its alpha) -- 0: by one -- the packed blend colour being src2 */
+static void
+const_mul(struct usse_sop2 *f, unsigned fc, unsigned fa)
+{
+   memset(f, 0, sizeof(*f));
+   f->cop = f->aop = USSE_SOP2_ADD;
+   f->csel1 = !fc ? USSE_SOP2_ZERO :
+              fc == PIPE_BLENDFACTOR_CONST_COLOR || fc == PIPE_BLENDFACTOR_INV_CONST_COLOR ?
+              USSE_SOP2_SRC2 : USSE_SOP2_SRC2_ALPHA;
+   f->cmod1 = !fc || fc >= PIPE_BLENDFACTOR_ZERO;        /* one, or 1 - the constant */
+   f->asel1 = fa ? USSE_SOP2_A_SRC2 : USSE_SOP2_A_ZERO;
+   f->amod1 = !fa || fa >= PIPE_BLENDFACTOR_ZERO;
+   /* (src2's terms zero) */
+}
+
+/* the factors that read the source's alpha, colour; the tile's (an alpha
+ * factor's colour is its alpha) */
+static bool
+reads_src_alpha(unsigned f, bool alpha)
+{
+   return f == PIPE_BLENDFACTOR_SRC_ALPHA || f == PIPE_BLENDFACTOR_INV_SRC_ALPHA ||
+          (!alpha && f == PIPE_BLENDFACTOR_SRC_ALPHA_SATURATE) ||
+          (alpha && (f == PIPE_BLENDFACTOR_SRC_COLOR || f == PIPE_BLENDFACTOR_INV_SRC_COLOR));
+}
+
+static bool
+reads_dst_alpha(unsigned f, bool alpha)
+{
+   return f == PIPE_BLENDFACTOR_DST_ALPHA || f == PIPE_BLENDFACTOR_INV_DST_ALPHA ||
+          (!alpha && f == PIPE_BLENDFACTOR_SRC_ALPHA_SATURATE) ||
+          (alpha && (f == PIPE_BLENDFACTOR_DST_COLOR || f == PIPE_BLENDFACTOR_INV_DST_COLOR));
+}
+
+/* (M46) GL's blending as SOP2s, the blend colour's factors too: PPSSPP
+ * blends the PSP's fixed colours with them (ONE, CONSTANT_COLOR and the
+ * like; CONSTANT_ALPHA, ZERO for the stencil it keeps in alpha), which
+ * were F32 blending in the program, ~30 instructions.  The blend colour is
+ * one sa word of RGBA bytes (the tile's order whatever the target), and a
+ * constant factor of the source's is a SOP2 multiplying the packed colour
+ * first, of the tile's one multiplying the tile into a temporary; the
+ * blending's then has ONE there.  When the rest reads the source's alpha
+ * as it was, a constant alpha factor of the source's (the tile's alpha
+ * factor ZERO) multiplies the result's alpha after.  False: what that
+ * cannot do (a factor reading what was multiplied), and SGX_SOP2_CONST=0. */
+static bool
+sop2_plan(struct comp *c, const struct sgx_blend_key *k)
+{
+   struct sgx_blend_key m = *k;
+   bool mm_c = k->rgb_func == PIPE_BLEND_MIN || k->rgb_func == PIPE_BLEND_MAX;
+   bool mm_a = k->alpha_func == PIPE_BLEND_MIN || k->alpha_func == PIPE_BLEND_MAX;
+   unsigned cs = !mm_c && const_factor(k->rgb_src) ? k->rgb_src : 0;
+   unsigned cd = !mm_c && const_factor(k->rgb_dst) ? k->rgb_dst : 0;
+   unsigned as = !mm_a && const_factor(k->alpha_src) ? k->alpha_src : 0;
+   unsigned ad = !mm_a && const_factor(k->alpha_dst) ? k->alpha_dst : 0;
+   bool post = false;
+
+   c->sop2_pre_src = c->sop2_pre_dst = c->sop2_post = false;
+   if (!cs && !cd && !as && !ad)
+      return sop2_blend(k, &c->sop2_factors, &c->sop2_swap);
+   if (!k->enable || (getenv("SGX_SOP2_CONST") && !atoi(getenv("SGX_SOP2_CONST"))))
+      return false;
+   if (cs)
+      m.rgb_src = PIPE_BLENDFACTOR_ONE;
+   if (cd)
+      m.rgb_dst = PIPE_BLENDFACTOR_ONE;
+   if (as)
+      m.alpha_src = PIPE_BLENDFACTOR_ONE;
+   if (ad)
+      m.alpha_dst = PIPE_BLENDFACTOR_ONE;
+   /* the source's colour multiplied: nothing else may read it */
+   if (cs && (m.rgb_dst == PIPE_BLENDFACTOR_SRC_COLOR ||
+              m.rgb_dst == PIPE_BLENDFACTOR_INV_SRC_COLOR))
+      return false;
+   /* its alpha: nothing else may read that -- or, the tile's alpha factor
+    * ZERO, the result's alpha is multiplied after instead */
+   if (as && (reads_src_alpha(m.rgb_src, false) || reads_src_alpha(m.rgb_dst, false) ||
+              reads_src_alpha(m.alpha_dst, true))) {
+      if (k->alpha_dst != PIPE_BLENDFACTOR_ZERO)
+         return false;
+      post = true;
+   }
+   /* the tile's, the same */
+   if (cd && (m.rgb_src == PIPE_BLENDFACTOR_DST_COLOR ||
+              m.rgb_src == PIPE_BLENDFACTOR_INV_DST_COLOR))
+      return false;
+   if (ad && (reads_dst_alpha(m.rgb_src, false) || reads_dst_alpha(m.rgb_dst, false) ||
+              reads_dst_alpha(m.alpha_src, true)))
+      return false;
+   if (!sop2_blend(&m, &c->sop2_factors, &c->sop2_swap))
+      return false;
+   if (cs || (as && !post)) {
+      c->sop2_pre_src = true;
+      const_mul(&c->sop2_src_f, cs, post ? 0 : as);
+   }
+   if (cd || ad) {
+      c->sop2_pre_dst = true;
+      const_mul(&c->sop2_dst_f, cd, ad);
+   }
+   if (post) {
+      c->sop2_post = true;
+      const_mul(&c->sop2_post_f, 0, as);
+   }
+   return true;
+}
+
+/* (M46) the blending's SOP2s on the colour packed (and the constant's
+ * around them, sop2_plan), the last one the program's end; t1 and t2
+ * temporaries for the tile multiplied and the result before its alpha */
+static void
+emit_sop2(struct comp *c, struct usse_reg packed, struct usse_reg t1, struct usse_reg t2)
+{
+   struct usse_reg o0 = usse_reg(USSE_OUTPUT, 0), tile = o0;
+   struct usse_reg k = usse_reg(USSE_SA, c->blend_sa >= 0 ? c->blend_sa : 0);
+
+   if (c->sop2_pre_src)
+      emit(c, usse_sop2(packed, packed, k, &c->sop2_src_f));
+   if (c->sop2_pre_dst) {
+      emit(c, usse_sop2(t1, o0, k, &c->sop2_dst_f));
+      tile = t1;
+   }
+   if (c->sop2_post) {
+      emit(c, usse_sop2(t2, c->sop2_swap ? tile : packed, c->sop2_swap ? packed : tile,
+                        &c->sop2_factors));
+      emit(c, usse_sop2(o0, t2, k, &c->sop2_post_f) | USSE_END);
+   } else {
+      emit(c, usse_sop2(o0, c->sop2_swap ? tile : packed, c->sop2_swap ? packed : tile,
+                        &c->sop2_factors) | USSE_END);
+   }
 }
 
 static void
@@ -3817,10 +3964,11 @@ f16_colour(struct comp *c, nir_function_impl *impl)
    colour = col.reg;
    if (c->sop2) {
       struct usse_reg packed = f16_reg(&g, f16_temp(&g));
+      struct usse_reg t1 = c->sop2_pre_dst ? f16_reg(&g, f16_temp(&g)) : packed;
+      struct usse_reg t2 = c->sop2_post ? f16_reg(&g, f16_temp(&g)) : packed;
 
       emit(c, usse_pack_unorm8_f16(packed, colour));
-      emit(c, usse_sop2(o0, c->sop2_swap ? o0 : packed, c->sop2_swap ? packed : o0,
-                        &c->sop2_factors) | USSE_END);
+      emit_sop2(c, packed, t1, t2);
    } else {
       emit(c, usse_pack_unorm8_f16(o0, colour) | USSE_END);
    }
@@ -3937,6 +4085,86 @@ drop_output_sat(nir_function_impl *impl)
    }
 }
 
+/* s a varying's component made an integer -- f2i32 of it (or of its
+ * ftrunc, the same): which varying (its slot) and component */
+static bool
+int_of_varying(nir_scalar s, int *slot, unsigned *comp)
+{
+   nir_intrinsic_instr *in;
+
+   s = nir_scalar_chase_movs(s);
+   if (!nir_scalar_is_alu(s) || nir_scalar_alu_op(s) != nir_op_f2i32)
+      return false;
+   s = nir_scalar_chase_movs(nir_scalar_chase_alu_src(s, 0));
+   if (nir_scalar_is_alu(s) && nir_scalar_alu_op(s) == nir_op_ftrunc)
+      s = nir_scalar_chase_movs(nir_scalar_chase_alu_src(s, 0));
+   if (!nir_scalar_is_intrinsic(s) ||
+       (in = nir_def_as_intrinsic(s.def))->intrinsic != nir_intrinsic_load_input ||
+       (*slot = input_slot(in)) < 0)
+      return false;
+   *comp = nir_intrinsic_component(in) + s.comp;
+   return true;
+}
+
+/* (M46) u_blitter's copies are texelFetch at a varying made an integer:
+ * the source's texel coordinates, x + 0.5 at pixel centres -- and a
+ * nearest lookup at the varying itself is the same texel (u_blitter only
+ * fetches so with a nearest sampler, of a view of one level; the level,
+ * the varying's w, is 0 for a 2D texture: get_texcoords).  So a
+ * rectangle lookup at the varying times the texture's scale, which
+ * lower_fetch_coords() gives the PDS (M39): the copy's program 95
+ * instructions -> 2.  Internal shaders only (gallium's TGSI ones, marked
+ * so by sgx_create_shader_state); SGX_COPY_TXF=1: as they are. */
+static bool
+txf_as_lookup(nir_builder *b, nir_instr *instr, void *data)
+{
+   nir_scalar xy[2];
+   nir_tex_instr *tex;
+   int coord, lod, slot[3];
+   unsigned comp[3];
+   nir_def *at;
+
+   if (instr->type != nir_instr_type_tex)
+      return false;
+   tex = nir_instr_as_tex(instr);
+   coord = nir_tex_instr_src_index(tex, nir_tex_src_coord);
+   lod = nir_tex_instr_src_index(tex, nir_tex_src_lod);
+   if (tex->op != nir_texop_txf || tex->sampler_dim != GLSL_SAMPLER_DIM_2D || tex->is_array ||
+       tex->is_shadow || coord < 0 || tex->coord_components != 2 ||
+       nir_alu_type_get_base_type(tex->dest_type) != nir_type_float ||
+       tex->num_srcs != (lod >= 0 ? 2u : 1u))
+      return false;
+   for (unsigned i = 0; i < 2; i++)
+      if (!int_of_varying(nir_get_scalar(tex->src[coord].src.ssa, i), &slot[i], &comp[i]) ||
+          slot[i] != slot[0] || comp[i] != i)
+         return false;
+   /* (level 0: a constant, or the same varying's w as u_blitter has it) */
+   if (lod >= 0 && !(nir_src_is_const(tex->src[lod].src) && !nir_src_as_uint(tex->src[lod].src)) &&
+       !(int_of_varying(nir_get_scalar(tex->src[lod].src.ssa, 0), &slot[2], &comp[2]) &&
+         slot[2] == slot[0] && comp[2] == 3))
+      return false;
+   /* (the varying's x and y themselves) */
+   for (unsigned i = 0; i < 2; i++) {
+      nir_scalar s = nir_scalar_chase_movs(nir_get_scalar(tex->src[coord].src.ssa, i));
+
+      s = nir_scalar_chase_movs(nir_scalar_chase_alu_src(s, 0));
+      if (nir_scalar_is_alu(s) && nir_scalar_alu_op(s) == nir_op_ftrunc)
+         s = nir_scalar_chase_movs(nir_scalar_chase_alu_src(s, 0));
+      xy[i] = s;
+   }
+   b->cursor = nir_before_instr(instr);
+   at = nir_vec2(b, nir_channel(b, xy[0].def, xy[0].comp), nir_channel(b, xy[1].def, xy[1].comp));
+   at = nir_fmul(b, at, nir_load_texture_scale(b, 32, nir_imm_int(b, tex->texture_index)));
+   if (lod >= 0)
+      nir_tex_instr_remove_src(tex, lod);
+   coord = nir_tex_instr_src_index(tex, nir_tex_src_coord);
+   nir_src_rewrite(&tex->src[coord].src, at);
+   tex->op = nir_texop_tex;
+   tex->sampler_dim = GLSL_SAMPLER_DIM_RECT;
+   tex->sampler_index = tex->texture_index;
+   return true;
+}
+
 static bool
 translate(struct comp *c, nir_shader *s)
 {
@@ -3946,6 +4174,14 @@ translate(struct comp *c, nir_shader *s)
    bool progress;
 
    optimize(s);
+   if (c->fs && s->info.internal && !getenv("SGX_COPY_TXF")) {
+      bool done = false;
+
+      NIR_PASS(done, s, nir_shader_instructions_pass, txf_as_lookup, nir_metadata_control_flow,
+               NULL);
+      if (done)
+         optimize(s);
+   }
    NIR_PASS(_, s, nir_shader_intrinsics_pass, fold_uniform_offset, nir_metadata_control_flow,
             NULL);
    /* (M44) the integers the hardware's: divisions exact (nir_lower_idiv,
@@ -4138,11 +4374,15 @@ compile_fs(const nir_shader *fs, const struct sgx_blend_key *blend, char *why,
 
       /* (M46: the colour mask too, SGX_SOP2_MASK=0 not) */
       if ((blend->colormask == 0xf || (!getenv("SGX_SOP2_MASK") || atoi(getenv("SGX_SOP2_MASK")))) &&
-          fold_colormask(blend, &folded) &&
-          sop2_blend(&folded, &c.sop2_factors, &c.sop2_swap)) {
+          fold_colormask(blend, &folded) && sop2_plan(&c, &folded)) {
          c.sop2 = true;
          c.fs->sop2 = true;
          blending = false;
+         /* (the blend colour packed: placed with the textures' words) */
+         if (c.sop2_pre_src || c.sop2_pre_dst || c.sop2_post) {
+            c.blend_sa = 0;
+            c.fs->blend_packed = true;
+         }
       }
    }
    /* a logic op instead of the blending, and the colour mask with it: on
