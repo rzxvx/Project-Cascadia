@@ -129,6 +129,8 @@
 #define SGX_MASTER_SOFT_RESET		0x4080
 #define SGX_MASTER_EVENT_STATUS2	0x4118
 #define SGX_MASTER_EVENT_STATUS		0x412c
+#define SGX_MASTER_EVENT_HOST_CLEAR	0x4134	/* (as the cores' banks have it) */
+#define SGX_EVENT_SW_EVENT		0x4000	/* the microkernel's signal to the host */
 #define SGX_MASTER_REG_4144		0x4144
 #define SGX_MASTER_REG_414C		0x414c
 #define SGX_MASTER_REG_4808		0x4808
@@ -321,7 +323,10 @@ module_param(clock_mode, uint, 0444);
 MODULE_PARM_DESC(clock_mode, "SGX clock gating: 1 = always on (default), 2 = automatic");
 
 /* The interrupt is taken only when asked for, from the next microkernel
- * boot on: what raises it and how it clears is still being learnt. */
+ * boot on.  It is the microkernel's SW_EVENT, two a render (2026-11-12),
+ * and the render node looks at its render on each (apple_sgx_drm_irq):
+ * a render of nothing 0.47 -> 0.35-0.45 ms against the 200 us poll, which
+ * a game did not show, so it stays off by default. */
 static bool use_irq;
 module_param_named(irq, use_irq, bool, 0644);
 MODULE_PARM_DESC(irq, "take the SGX interrupt (AIC 49) from the next microkernel boot");
@@ -916,15 +921,30 @@ out:
  * EVENT_STATUS in the broadcast bank and clears through EVENT_HOST_CLEAR
  * with MASTER_INTERRUPT (bit 31) added, as the DDK's SGX_ISRHandler does.
  * Bank 0 reads hung the bus during bring-up (before the cores had clocks),
- * so this reads each core's own bank instead and clears it there.  If the
- * source is somewhere else, the line would never drop: after
+ * so this reads the master's bank, where the event shows, and each core's
+ * own.  If the source is somewhere else, the line would never drop: after
  * SGX_IRQ_STORM unhandled interrupts in a row it is switched off. */
 static irqreturn_t sgx_irq_handler(int irq, void *data)
 {
 	struct apple_sgx *sgx = data;
 	bool handled = false, cleared = true;
 	unsigned int n;
+	u32 ms;
 
+	/* The microkernel's SW_EVENT shows in the master's bank, not in the
+	 * cores' own (MASTER_EVENT_STATUS 0xa0004000 after renders, the line
+	 * up and every core bank empty, 2026-11-12): cleared through the
+	 * broadcast bank as iOS's handler does, else the master's own. */
+	ms = sgx_read(sgx, SGX_MASTER_EVENT_STATUS) & SGX_EVENT_SW_EVENT;
+	if (ms) {
+		sgx_write(sgx, SGX_BCAST + SGX_EVENT_HOST_CLEAR, ms | BIT(31));
+		if (sgx_read(sgx, SGX_MASTER_EVENT_STATUS) & ms)
+			sgx_write(sgx, SGX_MASTER_EVENT_HOST_CLEAR, ms | BIT(31));
+		sgx->irq_events_master |= ms;
+		handled = true;
+		if (sgx_read(sgx, SGX_MASTER_EVENT_STATUS) & ms)
+			cleared = false;
+	}
 	for (n = 0; n < sgx->ncores; n++) {
 		u32 base = SGX_CORE(n), st;
 
@@ -959,6 +979,9 @@ static irqreturn_t sgx_irq_handler(int irq, void *data)
 	if (sgx->bufs_ready)
 		sgx->irq_host_flags =
 			READ_ONCE(sgx->buf[B_HOST].cpu[HOST_INTERRUPT_FLAGS]);
+	/* a render may be done: the render node looks now, not at its next
+	 * poll */
+	apple_sgx_drm_irq(sgx);
 	return IRQ_HANDLED;
 }
 
@@ -2169,10 +2192,10 @@ static int sgx_regs_show(struct seq_file *s, void *unused)
 			seq_printf(s, "mapped            va 0x%08x pa %pad size 0x%zx\n",
 				   sgx->extra[i].va, &sgx->extra[i].dma, sgx->extra[i].size);
 	}
-	seq_printf(s, "interrupt %d: %s, %u handled, %u unhandled; events core0 0x%08x core1 0x%08x; host interrupt flags 0x%08x\n",
+	seq_printf(s, "interrupt %d: %s, %u handled, %u unhandled; events master 0x%08x core0 0x%08x core1 0x%08x; host interrupt flags 0x%08x\n",
 		   sgx->irq, sgx->irq_on ? "on" : "off", sgx->irq_count,
-		   sgx->irq_unhandled, sgx->irq_events[0], sgx->irq_events[1],
-		   sgx->irq_host_flags);
+		   sgx->irq_unhandled, sgx->irq_events_master, sgx->irq_events[0],
+		   sgx->irq_events[1], sgx->irq_host_flags);
 	seq_printf(s, "microkernel: %s (%d)\n",
 		   sgx->boot_result == 1 ? "up" :
 		   sgx->boot_result ? "failed" : "not started", sgx->boot_result);

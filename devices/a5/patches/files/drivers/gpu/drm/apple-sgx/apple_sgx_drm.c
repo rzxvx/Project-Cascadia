@@ -1086,6 +1086,17 @@ static const struct drm_driver sgx_drm_driver = {
 	.minor = 1,
 };
 
+/* The SGX interrupt, when it is on: the active render looked at now,
+ * where the poller would have seen it done up to poll_us later -- and the
+ * next render waits for that, one at a time. */
+void apple_sgx_drm_irq(struct apple_sgx *sgx)
+{
+	struct apple_sgx_drm *sdrm = sgx->drm;
+
+	if (sdrm && READ_ONCE(sdrm->active))
+		hrtimer_start(&sdrm->poll, 0, HRTIMER_MODE_REL_SOFT);
+}
+
 bool apple_sgx_drm_busy(struct apple_sgx *sgx)
 {
 	return sgx->drm && atomic_read(&sgx->drm->clients) > 0;
