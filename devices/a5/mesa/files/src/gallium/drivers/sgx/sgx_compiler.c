@@ -1308,7 +1308,7 @@ fixed_index(const struct comp *c, const nir_tex_instr *tex)
 }
 
 static int
-fetch_slot(const struct comp *c, nir_tex_instr *tex)
+fetch_slot(const struct comp *c, nir_tex_instr *tex, unsigned *shift)
 {
    int coord = nir_tex_instr_src_index(tex, nir_tex_src_coord), slot = -1;
 
@@ -1328,8 +1328,12 @@ fetch_slot(const struct comp *c, nir_tex_instr *tex)
           (in = nir_def_as_intrinsic(x.def))->intrinsic != nir_intrinsic_load_input)
          return -1;
       at = input_slot(in);
-      if (at < 0 || !colour_or_generic(at) ||
-          nir_intrinsic_component(in) + x.comp != i || (i && at != slot))
+      /* (M46) x and y, or two components further on (SGX_FIX_SHIFT) */
+      if (!i)
+         *shift = nir_intrinsic_component(in) + x.comp;
+      if (at < 0 || !colour_or_generic(at) || *shift > 2 ||
+          nir_intrinsic_component(in) + x.comp != *shift + i || (i && at != slot) ||
+          (*shift && (fixed_index(c, tex) >= 0 || getenv("SGX_NO_SHIFT"))))
          return -1;
       slot = at;
    }
@@ -1560,16 +1564,16 @@ plan_inputs(struct comp *c, nir_function_impl *impl)
       nir_foreach_block(block, impl) {
          nir_foreach_instr(instr, block) {
             int slot;
-
+            unsigned shift = 0;
             int fix;
 
             if (instr->type != nir_instr_type_tex || c->nfetch == SGX_FRAME_MAX_FETCH ||
-                (slot = fetch_slot(c, nir_instr_as_tex(instr))) < 0 || c->flat[slot] ||
+                (slot = fetch_slot(c, nir_instr_as_tex(instr), &shift)) < 0 || c->flat[slot] ||
                 ((c->fs->blend.tex_depth | c->fs->blend.tex_f16) >>
                  nir_instr_as_tex(instr)->texture_index & 1))
                continue;
             fix = fixed_index(c, nir_instr_as_tex(instr));
-            c->fetch_fix[c->nfetch] = fix < 0 ? 0 : c->fixed_fix[fix];
+            c->fetch_fix[c->nfetch] = fix < 0 ? SGX_FIX_SHIFT(shift) : c->fixed_fix[fix];
             c->fetch_slot[c->nfetch] = slot;
             c->fetch[c->nfetch++] = nir_instr_as_tex(instr);
          }
@@ -2046,30 +2050,31 @@ intrinsic(struct comp *c, nir_intrinsic_instr *in)
          /* the position, or a varying the fragment shader reads; the rest
           * (the point size, varyings nobody reads) go nowhere */
          loc += nir_src_as_uint(*nir_get_io_offset_src(in));
-         if (loc == VARYING_SLOT_POS)
-            k = 0;
-         for (unsigned j = 0; j < c->nvaryings && k < 0; j++)
-            if (c->varying_slot[j] == loc)
-               k = 1 + j;
-         for (unsigned i = 0; k >= 0 && i < in->src[0].ssa->num_components; i++) {
-            struct operand o;
+         /* (M46: a varying the fragment shader reads twice, once moved --
+          * SGX_FIX_SHIFT -- goes to each) */
+         for (int j = -1; j < (int)c->nvaryings; j++) {
+            k = j < 0 ? (loc == VARYING_SLOT_POS ? 0 : -1) :
+                        c->varying_slot[j] == loc ? 1 + j : -1;
+            for (unsigned i = 0; k >= 0 && i < in->src[0].ssa->num_components; i++) {
+               struct operand o;
 
-            if (!(mask & 1 << i) || comp + i >= 4)
-               continue;
-            o = resolve(nir_get_scalar(in->src[0].ssa, i));
-            c->have_vout[k][comp + i] = true;
-            /* (the position, and a varying the vertex side does more to:
-             * at the end, vertex_output()) */
-            if (k == 0 || (c->vary_fix && c->vary_fix[k - 1])) {
-               c->vout[k][comp + i] = o;
-            } else {
-               /* a varying straight into its output register: kept until
-                * the end, eight vec4s took more temporaries than there
-                * are (M30) */
-               struct scratch sc = { 0 };
+               if (!(mask & 1 << i) || comp + i >= 4)
+                  continue;
+               o = resolve(nir_get_scalar(in->src[0].ssa, i));
+               c->have_vout[k][comp + i] = true;
+               /* (the position, and a varying the vertex side does more to:
+                * at the end, vertex_output()) */
+               if (k == 0 || (c->vary_fix && c->vary_fix[k - 1])) {
+                  c->vout[k][comp + i] = o;
+               } else {
+                  /* a varying straight into its output register: kept until
+                   * the end, eight vec4s took more temporaries than there
+                   * are (M30) */
+                  struct scratch sc = { 0 };
 
-               move_into(c, usse_reg(USSE_OUTPUT, 4 * k + comp + i), o, &sc);
-               scratch_give_back(c, &sc);
+                  move_into(c, usse_reg(USSE_OUTPUT, 4 * k + comp + i), o, &sc);
+                  scratch_give_back(c, &sc);
+               }
             }
          }
          return;
@@ -2783,6 +2788,9 @@ vertex_output(struct comp *c)
       for (unsigned i = 0; i < 4; i++) {
          /* (M39) a lookup's varying: the divisor where the PDS divides */
          unsigned from = SGX_FIX_DIV(fix) && i == SGX_PROJ_DIV ? SGX_FIX_DIV(fix) : i;
+         /* (M46) a lookup's coordinates moved into x and y */
+         if (i < 2 && SGX_FIX_SHIFT_OF(fix))
+            from = SGX_FIX_SHIFT_OF(fix) + i;
          struct operand o = c->vout[k][from];
 
          if (k && c->have_vout[k][i] && !fix)
@@ -4323,7 +4331,10 @@ compile_fs(const nir_shader *fs, const struct sgx_blend_key *blend, char *why,
    for (unsigned k = 0; k < c.nfetch; k++) {
       unsigned v = 0;
 
-      while (v < c.fs->prog.nvaryings && c.fs->varying_slot[v] != c.fetch_slot[k])
+      /* (a shifted lookup's a varying of its own, M46) */
+      while (v < c.fs->prog.nvaryings &&
+             (c.fs->varying_slot[v] != c.fetch_slot[k] ||
+              SGX_FIX_SHIFT_OF(c.fs->vary_fix[v]) != SGX_FIX_SHIFT_OF(c.fetch_fix[k])))
          v++;
       if (v == SGX_FRAME_MAX_VARYINGS) {
          fail(&c, "more than %u varyings", SGX_FRAME_MAX_VARYINGS);

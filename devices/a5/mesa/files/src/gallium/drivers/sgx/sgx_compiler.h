@@ -71,6 +71,12 @@ struct sgx_blend_key {
 #define SGX_FIX_DIV_Z   0x02
 #define SGX_FIX_DIV_W   0x03
 #define SGX_FIX_DIV(f)  ((f) & 3)
+/* (M46) a lookup at a varying's y and z, or z and w -- where the linker
+ * packed the coordinates after a float (PPSSPP's fog factor), which the
+ * PDS cannot fetch: a varying of its own, components n and n + 1 of the
+ * other moved into its x and y by the vertex side */
+#define SGX_FIX_SHIFT(n)    ((n) << 2)
+#define SGX_FIX_SHIFT_OF(f) ((f) >> 2 & 3)
 #define SGX_PROJ_DIV    3       /* the component the PDS divides x and y by */
 
 /* A compiled fragment shader.  Its secondary attributes (prog.nsa words)

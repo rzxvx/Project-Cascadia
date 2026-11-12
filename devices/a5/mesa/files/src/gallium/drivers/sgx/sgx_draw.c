@@ -255,6 +255,11 @@ fix_varyings(struct sgx_context *ctx, const struct sgx_fs *fs, unsigned n, float
       }
       if (SGX_FIX_DIV(fix) && SGX_FIX_DIV(fix) != SGX_PROJ_DIV)
          v[SGX_PROJ_DIV] = v[SGX_FIX_DIV(fix)];
+      /* (M46) a lookup's coordinates moved into x and y */
+      if (SGX_FIX_SHIFT_OF(fix)) {
+         v[0] = v[SGX_FIX_SHIFT_OF(fix)];
+         v[1] = v[SGX_FIX_SHIFT_OF(fix) + 1];
+      }
    }
 }
 
