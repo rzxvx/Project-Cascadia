@@ -239,3 +239,12 @@ not a cable-free root. A RAM-resident or other independent root is separate work
 
 If anything fails, preserve the manifest and serial logs and stop at that stage;
 do not substitute the other board's DT, ticket, calibration or firmware.
+
+## iPad native display and brightness
+
+The `ipad8` kernel/DT/package workflow now selects native H11P takeover,
+`cma=64M` and a built-in, default-enabled brightness driver. The iPad Debian
+root builder installs its backlight permissions automatically. For existing
+roots (including Omarchy), use the small installer in [DISPLAY.md](DISPLAY.md).
+It does not rebuild the desktop or change XR/XS display defaults. G11 Mesa is
+still installed separately with its target-ABI checks; no GPU tests run at boot.

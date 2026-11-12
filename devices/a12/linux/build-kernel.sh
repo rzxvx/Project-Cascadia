@@ -40,6 +40,17 @@ grep -q 'apple_z2_j171.o' "$K/drivers/input/touchscreen/Makefile" || \
   printf 'obj-$(CONFIG_SPI_MASTER) += apple_z2_j171.o\n' >> \
     "$K/drivers/input/touchscreen/Makefile"
 
+# J171-only inherited SPMI/SMC backlight; default writes enabled after validation.
+# Only the J171 DT has its compatible; XS Summit and XR stay unchanged.
+cp "$A12/linux/extras/apple-j171-backlight.c" \
+   "$K/drivers/video/backlight/apple-j171-backlight.c"
+# Remove only the marked local prototype from an incremental research tree.
+sed -i '/^obj-y += j171-backlight-test.o # LOCAL J171 backlight experiment$/d' \
+    "$K/drivers/video/backlight/Makefile"
+grep -q 'apple-j171-backlight.o' "$K/drivers/video/backlight/Makefile" || \
+  printf 'obj-$(CONFIG_BACKLIGHT_CLASS_DEVICE) += apple-j171-backlight.o\n' >> \
+    "$K/drivers/video/backlight/Makefile"
+
 # Real T8020 PMGR touch reference; only J171 DT instantiates this provider.
 cp "$A12/linux/extras/clk-apple-t8020-touch.c" \
    "$K/drivers/clk/clk-apple-t8020-touch.c"
@@ -133,7 +144,8 @@ cd "$K"
   --disable CONFIG_FW_LOADER_USER_HELPER \
   --disable CONFIG_FW_LOADER_USER_HELPER_FALLBACK \
   --enable CONFIG_DRM_SIMPLEDRM --enable CONFIG_DEVTMPFS --enable CONFIG_DEVTMPFS_MOUNT \
-  --enable CONFIG_WIRELESS --enable CONFIG_DRM_APPLE_H11P \
+  --enable CONFIG_BACKLIGHT_CLASS_DEVICE --enable CONFIG_MFD_MACSMC \
+  --enable CONFIG_SPMI --enable CONFIG_WIRELESS --enable CONFIG_DRM_APPLE_H11P \
   --enable CONFIG_TOUCHSCREEN_APPLE_MT_SPI --enable CONFIG_BT_HCIBCM4377 \
   --enable CONFIG_SENSORS_APPLE_SOC_TEMP --enable CONFIG_DRM_AGX
 make ARCH=arm64 LLVM=1 olddefconfig

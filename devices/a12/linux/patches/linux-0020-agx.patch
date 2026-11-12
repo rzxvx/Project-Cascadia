@@ -1013,6 +1013,7 @@ new file mode 100644
 +#endif
 diff --git a/drivers/gpu/drm/agx/agx.h b/drivers/gpu/drm/agx/agx.h
 new file mode 100644
+index 0000000..535b679
 --- /dev/null
 +++ b/drivers/gpu/drm/agx/agx.h
 @@ -0,0 +1,126 @@
@@ -1110,7 +1111,7 @@ new file mode 100644
 +struct agx_device *agx21_asahi_register(struct platform_device *pdev,
 +	void *transport, struct agx21_memory *memory);
 +int agx21_asahi_run(void *transport, u32 ctx, u64 args, u64 stream);
-+u32 agx21_render_next_stamp(void *transport);
++int agx21_render_next_stamp(void *transport, u32 *stamp);
 +int agx21_asahi_render(void *transport, u32 ctx, u32 ta_cmd, u32 frag_cmd,
 + u32 scratch);
 +int agx21_render_init(struct agx_device *agx);
@@ -3977,9 +3978,10 @@ new file mode 100644
 +#endif
 diff --git a/drivers/gpu/drm/agx/agx_21b91_transport.c b/drivers/gpu/drm/agx/agx_21b91_transport.c
 new file mode 100644
+index 0000000..29cee5a
 --- /dev/null
 +++ b/drivers/gpu/drm/agx/agx_21b91_transport.c
-@@ -0,0 +1,1442 @@
+@@ -0,0 +1,1445 @@
 +// SPDX-License-Identifier: GPL-2.0-only OR MIT
 +/* J171/21B91 firmware backend. Shares the DRM uAPI with XS, but owns
 + * its InitData, command layouts, memory and RTKit lifecycle independently.
@@ -4037,9 +4039,6 @@ new file mode 100644
 +static bool agx21_fault_probe;
 +module_param_named(j171_fault_probe, agx21_fault_probe, bool, 0400);
 +MODULE_PARM_DESC(j171_fault_probe, "Optional powered MMIO fault sample; off unless explicitly requested");
-+static unsigned int agx21_render_jobs = 4096;
-+module_param_named(j171_render_jobs, agx21_render_jobs, uint, 0400);
-+MODULE_PARM_DESC(j171_render_jobs, "Validated J171 serial render budget (1..4096)");
 +/* Captured J171/21B91 G11 B0 capabilities, never applied to XS. */
 +static const unsigned int agx21_g11_revision = 3;
 +static const unsigned int agx21_gtp_slots = 2;
@@ -4831,16 +4830,20 @@ new file mode 100644
 +	}
 +}
 +
-+u32 agx21_render_next_stamp(void *transport)
++/* No lifetime render budget. Rings are reused only after full retirement.
++ * Separate validity from the value: zero is a valid stamp at u32 wrap.
++ * The firmware's event slot is bits14:8, so preserve natural +0x100 wrap
++ * rather than skipping a slot or changing the low stamp bits.
++ */
++int agx21_render_next_stamp(void *transport, u32 *stamp)
 +{
 + struct agx21_transport *t = transport;
-+ if (!t || agx21_render_jobs < 1 ||
-+     agx21_render_jobs > 4096 || READ_ONCE(t->render_failed) ||
-+     atomic_read(&t->crashed) ||
-+     READ_ONCE(t->render_completed) >= agx21_render_jobs)
-+  return 0;
-+ return agx21_render_jobs == 1 ? 0xcafe0003 :
-+        (READ_ONCE(t->render_completed) + 1) * 0x100;
++ if (!t || !stamp)
++  return -EINVAL;
++ if (READ_ONCE(t->render_failed) || atomic_read(&t->crashed))
++  return -EIO;
++ *stamp = (READ_ONCE(t->render_completed) + 1U) * 0x100U;
++ return 0;
 +}
 +
 +int agx21_asahi_render(void *transport, u32 ctx, u32 ta_cmd, u32 frag_cmd,
@@ -4858,7 +4861,10 @@ new file mode 100644
 +	mutex_lock(&t->asahi_lock);
 +	m = &t->owner->memory;
 +	p = &t->asahi_protocol;
-+	if (!agx21_render_next_stamp(t) || t->render_failed || atomic_read(&t->crashed) ||
++	ret = agx21_render_next_stamp(t, &stamp);
++	if (ret)
++		goto out;
++	if (t->render_failed || atomic_read(&t->crashed) ||
 +	    p->phase != AGX21_PROTOCOL_READY || p->jobs || t->init_status != 1 ||
 +	    !m->published || !m->render_resources_reserved ||
 +	    !m->render_policy_candidate_ready ||
@@ -4871,7 +4877,6 @@ new file mode 100644
 +		goto out;
 +	}
 +	job = t->render_completed + 1;
-+	stamp = agx21_render_next_stamp(t);
 +	if (get_unaligned_le32(m->arena + ta_cmd + 0x578) != stamp ||
 +	    get_unaligned_le32(m->arena + frag_cmd + 0x8d4) != stamp) {
 +		ret = -EINVAL;
@@ -4879,8 +4884,8 @@ new file mode 100644
 +	}
 +	t->render_attempted = true;
 +	if (agx21_render_diag)
-+		dev_info(t->dev, "GFX RENDER serial job=%u/%u stamp=%#x TA_head=%u 3D_head=%u\n",
-+		 job, agx21_render_jobs, stamp, (job * 2) % 256, job % 256);
++		dev_info(t->dev, "GFX RENDER serial job=%u stamp=%#x TA_head=%u 3D_head=%u\n",
++		 job, stamp, (job * 2) % 256, job % 256);
 +	scratch = m->arena + scratch_offset;
 +	init_offset = frag_cmd + 0x1000;
 +	init = m->arena + init_offset;
@@ -6290,9 +6295,10 @@ new file mode 100644
 +MODULE_LICENSE("Dual MIT/GPL");
 diff --git a/drivers/gpu/drm/agx/agx_fw.c b/drivers/gpu/drm/agx/agx_fw.c
 new file mode 100644
+index 0000000..d203582
 --- /dev/null
 +++ b/drivers/gpu/drm/agx/agx_fw.c
-@@ -0,0 +1,1406 @@
+@@ -0,0 +1,1407 @@
 +// SPDX-License-Identifier: GPL-2.0-only OR MIT
 +/*
 + * AGX G11P firmware: boot, init block, the compute queue and jobs.
@@ -7331,9 +7337,10 @@ new file mode 100644
 +	if (agx->wedged)
 +		return ERR_PTR(-EIO);
 +	if (agx->ipad_memory) {
-+		render_stamp = agx21_render_next_stamp(agx->ipad_transport);
-+		if (!render_stamp)
-+			return ERR_PTR(-EBUSY);
++		int ret = agx21_render_next_stamp(agx->ipad_transport, &render_stamp);
++
++		if (ret)
++			return ERR_PTR(ret);
 +	}
 +	fence = kzalloc(sizeof(*fence), GFP_KERNEL);
 +	if (!fence)
@@ -7356,7 +7363,7 @@ new file mode 100644
 +	put64(agx, sc + 0x20, 1);
 +	put64(agx, sc + 0x60, 1);
 +	if (agx->ipad_memory)
-+		dev_info(agx->dev,
++		dev_dbg(agx->dev,
 +			 "J171 RENDER INPUT flags=%#x empty_tiles=%u bg=%#llx/%#x eot=%#llx/%#x\n",
 +			 r->flags,
 +			 !!(r->flags & DRM_ASAHI_RENDER_PROCESS_EMPTY_TILES),

@@ -27,9 +27,13 @@ def check_identity(text,p,mode):
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--device')
+    parser.add_argument('--boot-dir', type=Path,
+                        help='alternate identity/hash-checked bootset; default profile is unchanged')
     parser.add_argument('--radios',action='store_true')
     parser.add_argument('--verify-only',action='store_true')
     a=parser.parse_args();p=profile.paths(a.device)
+    if a.boot_dir is not None:
+        p=dict(p, boot=a.boot_dir.resolve())
     first=verify_manifest(p['boot']/'bootset.json',p)
     linux=verify_manifest(p['boot']/'linux.json',p)
     if p['name']=='ipad8' and 'SmartIO.img4' not in first['artifacts']:

@@ -55,6 +55,7 @@ architectures require additional toolchain/emulation setup.
 ## Reference documents
 
 - [QUICKSTART.md](QUICKSTART.md) — current command sequence and prerequisites.
+- [DISPLAY.md](DISPLAY.md) — iPad native scanout, brightness and desktop setup.
 - [FIRMWARE.md](FIRMWARE.md) — IPSW sources, SysCfg, radio vendors and extraction.
 - [DEBIAN_XFCE_NFS.md](DEBIAN_XFCE_NFS.md) — root reuse, networking and recovery.
 - [DEVICE_SEPARATION.md](DEVICE_SEPARATION.md) — paths, guards and refactor limits.
@@ -83,8 +84,8 @@ XR/iPad external firmware loading; XS Max uses `boot` instead.
 
 For XS Max, `periphery /path/to/16.6.1.ipsw` extracts radio firmware.
 The shell/SSH/display/touch/radio/GPU-node result is reported by kieroid;
-this merged profile has not yet been hardware-tested here. The iPad GPU
-experiment in `/tmp` is not integrated by this merge.
+this merged profile has not yet been hardware-tested here. The later iPad GPU/native-display integration is documented in
+[GPU.md](GPU.md) and [DISPLAY.md](DISPLAY.md); it is not an XS validation result.
 
 On non-arm64 hosts, initramfs dropbear and libraries are taken from Debian
 arm64 packages. BlueZ host-copy bundles still require arm64. Native Linux
@@ -110,3 +111,10 @@ m1n1 builds are available with `M1N1_DOCKER=0`.
 - **blacktop**: [ipsw](https://github.com/blacktop/ipsw)
 
 GPU build/firmware/Mesa instructions: [GPU.md](GPU.md). The iPad built-in GPU path has passed boot, pixel-readback and temporary GPU-desktop tests; see the documented limits.
+
+The iPad profile selects guarded native H11P scanout and SPMI/SMC brightness
+with writes enabled by default and an inherited-brightness cap. A normal-profile
+boot verified automatic AGX desktop selection and the user confirmed its slider.
+The old 4096-job render stop has been removed and host-tested, but that fix still
+needs a fresh hardware endurance test. See [DISPLAY.md](DISPLAY.md) and
+[GPU.md](GPU.md) for evidence, rootfs setup and limits.

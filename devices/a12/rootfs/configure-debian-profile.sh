@@ -49,3 +49,9 @@ install -m 755 "$A12/initramfs/usbwatch" "$ROOT/usr/lib/cascadia/usbwatch"
 install -m 755 "$A12/rootfs/debian-overlay/usr/local/sbin/cascadia-prepare-usbwatch" "$ROOT/usr/local/sbin/cascadia-prepare-usbwatch"
 install -m 644 "$A12/rootfs/debian-overlay/etc/systemd/system/cascadia-usbwatch.service" "$ROOT/etc/systemd/system/cascadia-usbwatch.service"
 ln -sfn ../cascadia-usbwatch.service "$ROOT/etc/systemd/system/multi-user.target.wants/cascadia-usbwatch.service"
+
+# Native display/backlight permissions are automatic for the iPad profile only.
+# Xfce/Xorg is not silently converted to a Wayland desktop.
+if [ "$PROFILE" = ipad8 ]; then
+    python3 "$A12/rootfs/install-ipad-display.py" --device ipad8 --root "$ROOT"
+fi

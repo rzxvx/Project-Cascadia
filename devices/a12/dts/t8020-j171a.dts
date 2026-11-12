@@ -181,8 +181,30 @@
     status = "disabled"; /* enabled by validated live m1n1 handoff */
 };
 
-/* Shared XS kernel drivers must not claim unported J171 display/sensors. */
-&disp0 { status = "disabled"; };
+/* Preserve J171's measured inherited pixel path; never run XS panel setup.
+ * The MIPI gate is retained from live PMGR measurements, not an assertion
+ * about the panel connector. HILO is a virtual alias; keep its PPP parent.
+ */
+&disp0 {
+	compatible = "cascadia,j171a-display-takeover";
+	power-domains = <&ps_disp0_busif>, <&ps_disp0_fe>, <&ps_disp0_be>,
+		       <&ps_disp0_gp0>, <&ps_disp0_gp1>, <&ps_disp0_ppp>,
+		       <&ps_mipi_dsi>;
+	power-domain-names = "busif", "fe", "be", "gp0", "gp1", "ppp", "mipi";
+	status = "okay";
+};
+
+/* AppleLMBacklight matches pmu,d2652 at SPMI USID15. This is not Summit. */
+&{/soc/spmi@23d180700/pmic@f} {
+	backlight@1e00 {
+		compatible = "cascadia,j171a-pmic-backlight";
+		reg = <0x1e00 2>;
+		apple,smc = <&smc>;
+		status = "okay";
+	};
+};
+
+/* Shared XS panel/sensor drivers must not claim J171 hardware. */
 &dsi { status = "disabled"; };
 &tempsensor_pmgr { status = "disabled"; };
 &tempsensor_acc { status = "disabled"; };

@@ -27,7 +27,9 @@ The cleaned, built-in integration has booted on iPad 8 with the Omarchy NFS
 root. Updated Mesa passed clear/triangle pixel readback, original display
 DMA-BUF checks, a user-confirmed visible window, and a temporary GLES2 labwc
 desktop using the shared runtime. The desktop reported the Apple A12 renderer
-with completed GPU jobs and no firmware crash. Native display remains separate.
+with completed GPU jobs and no firmware crash. Native H11P scanout and an
+interactive G11 labwc desktop have since passed local hardware tests; see
+[DISPLAY.md](DISPLAY.md) for normal-profile integration and its validation status.
 This does not establish unlimited-session stability, X11/GLX or Vulkan support,
 or hardware revalidation of the merged XR/XS paths.
 
@@ -52,8 +54,8 @@ The GPU path has several independent layers:
    parameter-manager resources, TA work and then 3D work. A working compute
    command does not validate the TA/3D ABI.
 6. **Userspace and display:** patched G11 Mesa produces shader and rendering
-   state. The display still uses simpledrm on iPad; GPU rendering and native
-   display scanout are separate capabilities.
+   state. The iPad profile now uses guarded native H11P scanout; GPU rendering
+   and display control remain separate driver capabilities.
 
 G11's tile-store limitations are handled by BadApple's Mesa work: the G11 path
 writes render targets to memory through its background/fragment programs rather
@@ -68,7 +70,7 @@ alone cannot compensate for a missing G11 userspace patch.
 | Firmware | G11 RTKit transport and channel/job concepts | 21B91 layouts, channel records, InitData and microsequences |
 | Boot | Cascadia profile/build/USB infrastructure | J171 GFX reservation, live policy handoff and bounded RAM mapping |
 | Mesa | One pinned BadApple G11 patch/build recipe | Target ABI installation checks and iPad validation, not a separate shader ISA fork |
-| Display | Existing framebuffer/simpledrm infrastructure | Tested imported display buffers and a GPU-rendered Wayland session; no native iPad display driver claim |
+| Display | BadApple H11P scanout infrastructure | Guarded J171 takeover, verified DMA-BUF sharing and SPMI/SMC backlight; see DISPLAY.md |
 
 The production driver is in
 [`linux/patches/linux-0020-agx.patch`](linux/patches/linux-0020-agx.patch).
@@ -202,11 +204,13 @@ The separate experimental phase also exercised compute, VM/context isolation,
 remapping and repeated render/ring-wrap cases. Those historical results should
 not be described as a full rerun of every test after production cleanup.
 
-The current iPad backend is bounded and serial. It waits for TA retirement
+The current iPad backend is serial, with bounded waits for each job but no
+lifetime job cap. It waits for TA retirement
 before submitting 3D; it does not yet implement BadApple's newer firmware-side
 polling-barrier overlap. It also does not inherit BadApple's XS Vulkan/CTS results.
-Native display, audio, broader workload coverage and a validated Vulkan/Rusticl
-recipe remain separate work. The tested root lacked Xwayland, so the working
+Native display/backlight results are covered in [DISPLAY.md](DISPLAY.md);
+audio, broader workload coverage and a validated Vulkan/Rusticl recipe remain
+separate work. The tested root lacked Xwayland, so the working
 Wayland session does not establish X11 application support.
 
 ## Build and boot
@@ -234,9 +238,9 @@ The iPad-only m1n1 overlay validates and reserves the GFX segments, copies
 live performance/policy properties, and then enables its GPU/mailbox nodes.
 XR does not apply this overlay. XS retains its own m1n1 implementation.
 Both firmware backends refuse a firmware restart after a fault; reboot is
-required. iPad remains limited to the currently validated serial rendering
-budget (4096 jobs, at most 2048x2160 targets). This is not unrestricted desktop
-or Vulkan support. XS rendering limits and replacing/single-page VM binds
+required. iPad keeps serial rendering and at most2048x2160 targets, but no
+4096-job lifetime stop. Hardware endurance of that cap removal is pending; this
+is not a claim of unrestricted desktop stability or Vulkan support. XS rendering limits and replacing/single-page VM binds
 are retained from the contributor's driver.
 
 ## Shared Mesa
@@ -342,3 +346,17 @@ The upstream guide tracks a moving branch; new upstream capabilities require
 review and target validation before being claimed here. Existing source licenses
 and attribution remain applicable. This guide summarizes the shared design;
 it does not replace upstream documentation or redistribute private captures.
+
+## Sustained desktop submissions
+
+An inherited experiment-only4096-render lifetime budget froze the desktop after
+exactly4096 completions, even though the firmware had not crashed. That cap and
+its `j171_render_jobs` parameter have been removed from the J171 backend. Queue
+rings are reused only after stamp, cursor and EVC-link retirement checks. Stamp
+validity is separate from its u32 value, so zero at natural wrap is not treated
+as an error. Per-render input logging is debug-only.
+
+`tests/test-gpu-sustained-render.py` compiles the shipped queue/stamp C against
+owned host fixtures and checks20000 jobs, ring reuse, wrap and failure guards.
+These host tests pass; hardware endurance beyond4096 is pending the new boot.
+No XS scheduling/stamp policy was changed by this fix.

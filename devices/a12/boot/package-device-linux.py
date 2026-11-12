@@ -70,6 +70,7 @@ def main():
             if not sku or not sku.isalnum():raise ValueError('invalid XR antenna SKU')
             run('fdtput','-t','s',calibrated,wifi,'apple,antenna-sku',sku)
         extra = 'cma=64M' if p['name']=='xsmax' else 'cpufreq.off=1 pcie_aspm=off brcmfmac.debug=0x108000'
+        if p['name']=='ipad8': extra += ' cma=64M'
         args=('chosen.bootargs=earlycon console=tty0 keep_bootcon ignore_loglevel '
               f'loglevel=8 rdinit=/init panic=-1 {extra}\n').encode()
         raw=out/'linux.macho'

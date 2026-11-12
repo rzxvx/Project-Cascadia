@@ -1,0 +1,21 @@
+#!/bin/sh
+# J171 native display + shared G11 Mesa; other boards retain software fallback.
+set -eu
+export PATH=/usr/local/bin:/usr/bin:/usr/sbin
+if [ -r /proc/device-tree/compatible ] &&
+   tr '\000' '\n' < /proc/device-tree/compatible | grep -qx apple,j171a &&
+   [ -x /usr/local/bin/cascadia-gpu ] &&
+   [ -r /opt/cascadia/mesa/egl_vendor.json ]; then
+    display=$(readlink -f /dev/dri/by-path/platform-230000000.display-pipe-card || true)
+    render=$(readlink -f /dev/dri/by-path/platform-206400000.coprocessor-render || true)
+    if [ -n "$display" ] && [ -n "$render" ] && [ -c "$display" ] && [ -c "$render" ] &&
+       [ "$(basename "$(readlink -f "/sys/class/drm/$(basename "$display")/device/driver")")" = apple-h11p ]; then
+        export WLR_RENDERER=gles2 WLR_DRM_DEVICES="$display"
+        export WLR_RENDER_DRM_DEVICE="$render" WLR_DRM_NO_MODIFIERS=1
+        unset LIBGL_ALWAYS_SOFTWARE
+        exec /usr/local/bin/cascadia-gpu /usr/bin/labwc "$@"
+    fi
+fi
+# No private Mesa or native J171 nodes: retain a usable software session.
+export WLR_RENDERER=pixman LIBGL_ALWAYS_SOFTWARE=1
+exec /usr/bin/labwc "$@"
