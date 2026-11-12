@@ -68,6 +68,18 @@ main(void)
    P("mul_f16_pa0_pa2_pa0", usse_hop(USSE_NMAD_MUL, PA(0), PA(2), PA(0)));
    P("mul_f16_pa0_pa0_pa2", usse_hop(USSE_NMAD_MUL, PA(0), PA(0), PA(2)));
    P("mul_f16_pa0_pa0_sa6", usse_hop(USSE_NMAD_MUL, PA(0), PA(0), SA(6)));
+   /* (M46) masks, src1's swizzle with its constants, negation, src2's table */
+   P("mul_f16_r0xyz", usse_hop_ex(USSE_NMAD_MUL, T(0), 0x7, PA(0), 0 | 1 << 3 | 2 << 6 | 3 << 9,
+                                  PA(2), 4));
+   P("mul_f16_2221", usse_hop_ex(USSE_NMAD_MUL, T(2), 0xf, PA(0), 6 | 6 << 3 | 6 << 6 | 5 << 9,
+                                 T(0), 4));
+   P("max_f16_0000", usse_hop_ex(USSE_NMAD_MAX, T(2), 0xf, PA(0), 4 | 4 << 3 | 4 << 6 | 4 << 9,
+                                 T(2), 4));
+   P("add_f16_neg_sa4", usse_hop_ex(USSE_NMAD_ADD, T(4), 0xf,
+                                    (struct usse_reg){ .bank = USSE_SA, .num = 4, .neg = true },
+                                    0 | 1 << 3 | 2 << 6 | 3 << 9, T(2), 4));
+   P("mul_f16_xxxx_src2", usse_hop_ex(USSE_NMAD_MUL, T(6), 0x8, T(4), 3 | 2 << 3 | 1 << 6 | 0 << 9,
+                                      PA(2), 0));
    P("pack_f16_o0_pa0", usse_pack_unorm8_f16(O(0), PA(0)) | USSE_END);
    P("pack_f16_pa0_pa0", usse_pack_unorm8_f16(PA(0), PA(0)));
    P("xor_o0_pa0_o0", usse_vbw(USSE_VBW_XOR, O(0), PA(0), O(0), false) | USSE_END);

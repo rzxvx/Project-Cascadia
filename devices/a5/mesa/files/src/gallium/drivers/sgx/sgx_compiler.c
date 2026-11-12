@@ -43,6 +43,7 @@
 #include "compiler/nir/nir_format_convert.h"
 #include "compiler/nir/nir_lower_blend.h"
 #include "util/format/u_formats.h"
+#include "util/half_float.h"
 #include "util/hash_table.h"
 #include "util/ralloc.h"
 #include "util/u_dynarray.h"
@@ -141,9 +142,10 @@ struct comp {
    int size_sa;
    bool sizes;
    int blend_sa;                        /* the blend colour's words, -1 none */
-   /* (M46) the constants the F32 path reads, in sa after the rest: one
-    * word each at an even word (lane x), the driver's to write per draw */
-   uint32_t kconst[SGX_FS_MAX_KCONST];
+   /* (M46) the program's constants, in sa after the rest, two words each
+    * from an even word: an F32's (its bits, 0: lane x), or four F16 (the F16
+    * path's) -- the driver's to write per draw */
+   uint32_t kconst[2 * SGX_FS_MAX_KCONST];
    unsigned nkconst, kconst_sa;
    /* GL's blending by a SOP2 on the colour packed to bytes and the tile's
     * (o0): src1 the colour unless swapped (M25) */
@@ -314,7 +316,7 @@ static struct usse_reg
 constant_sa(struct comp *c, struct scratch *s, uint32_t u)
 {
    for (unsigned k = 0; k < c->nkconst; k++)
-      if (c->kconst[k] == u)
+      if (c->kconst[2 * k] == u && !c->kconst[2 * k + 1])
          return usse_reg(USSE_SA, c->kconst_sa + 2 * k);
    return constant_bits(c, s, u);
 }
@@ -3166,85 +3168,595 @@ store_outputs_early(nir_shader *s)
    }
 }
 
-/* ---- a colour of four F16 at once (M38) -----------------------------------
+/* ---- a colour of four F16 at once (M38, M46) ------------------------------
  *
  * iOS's SDL sprite (corpus s00, s03, s11): the colour iterated and the
  * texel fetched as F16 by the PDS, two registers each (four F16 a 64-bit
  * register), then `mul.f16 pa0.xyzw, pa2.xyzw, pa0.xyzw`, `pck.u8.f16`,
  * the SOP2 that blends -- four instructions where the general way takes
  * nine (texels unpacked to F32, a channel an instruction).  A pixel's cost
- * is its instructions (M34), and SuperTux's frame is SDL's sprites.
+ * is its instructions (M34).
  *
- * Taken when the colour is, channel for channel, one tree of fmul and
- * fadd over varyings (each channel its own: no swizzle) and the PDS's
- * lookups, nothing else in the program: no other input, constant,
- * uniform, discard, branch, blending in the program or logic op.  The
- * colour goes to 8 bits: F16's 11 bits of mantissa are what mediump's are,
- * and enough for highp's colour too. */
-#define F16_NODES 16
+ * (M46) Any tree of fmul, fadd, fsub, fmin, fmax, ffma, fsat and fneg over
+ * the varyings (any of their channels), the PDS's texels, constants and
+ * uniforms, a tree for each channel: the four channels worked out
+ * together -- one instruction for the channels that do the same operation
+ * (a write mask for the others), a channel that only passes a value on
+ * padded to the others' operation (times 1, plus 0).  The constants 0, 1,
+ * 2 and 0.5 are src1's swizzle's own (Vita3K's SwizzleChannel); others go
+ * into the program's sa pool as F16 pairs; a uniform's vec4 is packed to
+ * F16 once.  PPSSPP's texture times colour, doubled (God of War's
+ * commonest program), 11 instructions in F32 -> 4.
+ *
+ * Taken when nothing else is in the program: no discard, branch, TA
+ * colour, gl_FragCoord, lookup but the PDS's, blending in the program or
+ * logic op.  The colour goes to 8 bits: F16's 11 bits of mantissa are
+ * what mediump's are, and enough for highp's colour too. */
+#define F16_SEL_0   4           /* src1's swizzle's constants */
+#define F16_SEL_1   5
+#define F16_SEL_2   6
+#define F16_SEL_H   7
+#define F16_NO_SEL  0xff
+#define F16_MAX_MADE 96
+#define F16_MAX_CODE 48
 
-struct f16_node {
-   enum { F16_INPUT, F16_TEXEL, F16_MUL, F16_ADD } kind;
-   unsigned a, b;                       /* the operands' nodes; a leaf's index */
+/* four F16: lane i is lane sw[i] (0..3) of the pair reg, or src1's
+ * constant sw[i] (F16_SEL_*) */
+struct f16o {
+   struct usse_reg reg;
+   uint8_t sw[4];
+   bool neg;
 };
 
-struct f16_tree {
-   struct f16_node node[F16_NODES];
-   unsigned n;
+struct f16g {
+   struct comp *c;
+   unsigned ntemp;                      /* temporary pairs: treg(c, 2 k) */
+   struct {
+      nir_def *def;
+      uint8_t comp, pair, lane;
+   } made[F16_MAX_MADE];                /* the values worked out, where */
+   unsigned nmade;
+   struct {
+      unsigned word;                    /* a uniform vec4's first sa word */
+      uint8_t pair;
+   } packed[8];
+   unsigned npacked;
+   bool failed;
 };
 
-/* channel chan of the colour, s, as tree t's nodes (from 0: the same
- * shape for every channel), its root; -1 if it is not such a tree */
-static int
-f16_match(const struct comp *c, nir_scalar s, unsigned chan, struct f16_tree *t)
+/* src2's swizzles, Vita3K's table (usse-dis.py's VEC4_STD) but its last,
+ * xyz1 */
+static const uint8_t f16_sw2[15][4] = {
+   { 0, 0, 0, 0 }, { 1, 1, 1, 1 }, { 2, 2, 2, 2 }, { 3, 3, 3, 3 },
+   { 0, 1, 2, 3 }, { 1, 2, 3, 3 }, { 0, 1, 2, 2 }, { 0, 0, 1, 2 },
+   { 0, 1, 0, 1 }, { 0, 1, 3, 2 }, { 2, 0, 1, 3 }, { 2, 3, 2, 3 },
+   { 1, 2, 0, 2 }, { 0, 0, 1, 1 }, { 0, 2, 3, 3 },
+};
+static const uint8_t f16_xyzw[4] = { 0, 1, 2, 3 };
+
+static unsigned fs_sa_end(const struct comp *c);
+
+static unsigned
+f16_temp(struct f16g *g)
 {
-   s = nir_scalar_chase_movs(s);
-   if (nir_scalar_is_alu(s)) {
-      nir_op op = nir_scalar_alu_op(s);
-      int a, b;
+   if (2 * (g->ntemp + 1) > MAX_TEMPS)
+      g->failed = true;
+   return g->ntemp++;
+}
 
-      if ((op != nir_op_fmul && op != nir_op_fadd) || t->n == F16_NODES ||
-          (a = f16_match(c, nir_scalar_chase_alu_src(s, 0), chan, t)) < 0 ||
-          (b = f16_match(c, nir_scalar_chase_alu_src(s, 1), chan, t)) < 0)
-         return -1;
-      t->node[t->n] = (struct f16_node){ op == nir_op_fmul ? F16_MUL : F16_ADD, a, b };
-      return t->n++;
+static struct usse_reg
+f16_reg(struct f16g *g, unsigned pair)
+{
+   return treg(g->c, 2 * pair);
+}
+
+static uint8_t
+f16_const_sel(uint32_t bits)
+{
+   switch (bits) {
+   case 0x00000000: return F16_SEL_0;
+   case 0x3f800000: return F16_SEL_1;
+   case 0x40000000: return F16_SEL_2;
+   case 0x3f000000: return F16_SEL_H;
+   default:         return F16_NO_SEL;
+   }
+}
+
+/* an F16 pair in the program's sa pool (plan_constants()'s): its word */
+static int
+f16_pool(struct comp *c, const uint16_t h[4])
+{
+   uint32_t lo = h[0] | (uint32_t)h[1] << 16, hi = h[2] | (uint32_t)h[3] << 16;
+   unsigned k;
+
+   for (k = 0; k < c->nkconst; k++)
+      if (c->kconst[2 * k] == lo && c->kconst[2 * k + 1] == hi)
+         return c->kconst_sa + 2 * k;
+   if (k == SGX_FS_MAX_KCONST || c->kconst_sa + 2 * (k + 1) > 128)
+      return -1;
+   c->kconst[2 * k] = lo;
+   c->kconst[2 * k + 1] = hi;
+   c->nkconst++;
+   return c->kconst_sa + 2 * k;
+}
+
+/* a uniform's vec4 (from sa word w0) as F16, packed once */
+static int
+f16_uniform(struct f16g *g, unsigned w0)
+{
+   unsigned p;
+
+   for (unsigned k = 0; k < g->npacked; k++)
+      if (g->packed[k].word == w0)
+         return g->packed[k].pair;
+   if (g->npacked == ARRAY_SIZE(g->packed))
+      return -1;
+   p = f16_temp(g);
+   emit(g->c, usse_pack_f16(f16_reg(g, p), usse_reg(USSE_SA, w0), 0xf));
+   g->packed[g->npacked].word = w0;
+   g->packed[g->npacked++].pair = p;
+   return p;
+}
+
+enum f16_kind { F16K_NONE, F16K_REG, F16K_CONST, F16K_UNIFORM, F16K_ALU };
+
+struct f16leaf {
+   enum f16_kind kind;
+   nir_scalar s;
+   struct usse_reg reg;                 /* REG: the pair, lane its lane */
+   uint8_t lane;
+   uint32_t bits;                       /* CONST */
+   unsigned word;                       /* UNIFORM: its sa word */
+   nir_op op;                           /* ALU */
+};
+
+static struct f16leaf
+f16_leaf(struct f16g *g, nir_scalar s)
+{
+   struct comp *c = g->c;
+   struct f16leaf l = { .kind = F16K_NONE };
+
+   s = nir_scalar_chase_movs(s);
+   l.s = s;
+   for (unsigned k = 0; k < g->nmade; k++)
+      if (g->made[k].def == s.def && g->made[k].comp == s.comp) {
+         l.kind = F16K_REG;
+         l.reg = f16_reg(g, g->made[k].pair);
+         l.lane = g->made[k].lane;
+         return l;
+      }
+   if (nir_scalar_is_const(s)) {
+      l.kind = F16K_CONST;
+      l.bits = (uint32_t)nir_scalar_as_uint(s);
+      return l;
+   }
+   if (nir_scalar_is_alu(s)) {
+      l.kind = F16K_ALU;
+      l.op = nir_scalar_alu_op(s);
+      return l;
    }
    if (nir_def_instr(s.def)->type == nir_instr_type_tex) {
       for (unsigned k = 0; k < c->nfetch; k++)
-         if (&c->fetch[k]->instr == nir_def_instr(s.def) && s.comp == chan && t->n < F16_NODES) {
-            t->node[t->n] = (struct f16_node){ F16_TEXEL, k, 0 };
-            return t->n++;
+         if (&c->fetch[k]->instr == nir_def_instr(s.def) && s.comp < 4) {
+            l.kind = F16K_REG;
+            l.reg = usse_reg(USSE_PA, 2 * c->ninputs + 2 * k);
+            l.lane = s.comp;
          }
-      return -1;
+      return l;
    }
-   if (nir_scalar_is_intrinsic(s) &&
-       nir_def_as_intrinsic(s.def)->intrinsic == nir_intrinsic_load_input) {
+   if (nir_scalar_is_intrinsic(s)) {
       nir_intrinsic_instr *in = nir_def_as_intrinsic(s.def);
-      int slot = input_slot(in);
 
-      if (slot < 0 || c->input_of_slot[slot] < 0 || t->n == F16_NODES ||
-          nir_intrinsic_component(in) + s.comp != chan)
-         return -1;
-      t->node[t->n] = (struct f16_node){ F16_INPUT, (unsigned)c->input_of_slot[slot], 0 };
-      return t->n++;
+      if (in->intrinsic == nir_intrinsic_load_input) {
+         int slot = input_slot(in);
+         unsigned comp = nir_intrinsic_component(in) + s.comp;
+
+         if (slot >= 0 && c->input_of_slot[slot] >= 0 && comp < 4) {
+            l.kind = F16K_REG;
+            l.reg = usse_reg(USSE_PA, 2 * c->input_of_slot[slot]);
+            l.lane = comp;
+         }
+      } else if (in->intrinsic == nir_intrinsic_load_uniform && nir_src_is_const(in->src[0])) {
+         unsigned at = (nir_intrinsic_base(in) + nir_src_as_uint(in->src[0])) * 4 + s.comp;
+
+         if (at < c->sa_uniforms) {
+            l.kind = F16K_UNIFORM;
+            l.word = at;
+         }
+      }
+   }
+   return l;
+}
+
+/* the table's swizzle for o as src2 on the lanes in mask, or -1 */
+static int
+f16_sw2_of(const struct f16o *o, unsigned mask)
+{
+   if (o->neg)
+      return -1;
+   for (unsigned k = 0; k < ARRAY_SIZE(f16_sw2); k++) {
+      bool ok = true;
+
+      for (unsigned i = 0; i < 4 && ok; i++)
+         ok = !(mask & 1u << i) || o->sw[i] == f16_sw2[k][i];
+      if (ok)
+         return k;
    }
    return -1;
+}
+
+static bool f16_operand_x(struct f16g *g, const nir_scalar *s, const uint8_t *csel,
+                          unsigned mask, struct f16o *o, bool into);
+
+static bool
+f16_operand(struct f16g *g, const nir_scalar *s, const uint8_t *csel, unsigned mask,
+            struct f16o *o)
+{
+   return f16_operand_x(g, s, csel, mask, o, true);
+}
+
+/* pair's lanes in mask = o's lanes: o times 1 */
+static bool
+f16_move(struct f16g *g, const struct f16o *o, unsigned mask, unsigned pair)
+{
+   static const uint16_t ones[4] = { 0x3c00, 0x3c00, 0x3c00, 0x3c00 };
+   struct usse_reg src1 = o->reg;
+   int k = f16_sw2_of(o, mask), w;
+
+   if (k >= 0) {
+      /* 1 (src1's constants) times o */
+      const uint8_t one[4] = { F16_SEL_1, F16_SEL_1, F16_SEL_1, F16_SEL_1 };
+
+      emit(g->c, usse_hop_ex(USSE_NMAD_MUL, f16_reg(g, pair), mask, usse_reg(USSE_PA, 0),
+                             one[0] | one[1] << 3 | one[2] << 6 | one[3] << 9, o->reg, k));
+      return true;
+   }
+   /* o (src1, as it is) times a pair of ones from the pool */
+   if ((w = f16_pool(g->c, ones)) < 0)
+      return false;
+   src1.neg = o->neg;
+   emit(g->c, usse_hop_ex(USSE_NMAD_MUL, f16_reg(g, pair), mask, src1,
+                          o->sw[0] | o->sw[1] << 3 | o->sw[2] << 6 | o->sw[3] << 9,
+                          usse_reg(USSE_SA, w), 4));
+   return true;
+}
+
+/* pair's lanes in mask = a op b: b as src2 if the table has its swizzle,
+ * else a (the operations are commutative), else b moved first */
+static bool
+f16_emit(struct f16g *g, enum usse_nmad_op op, unsigned pair, unsigned mask, struct f16o a,
+         struct f16o b)
+{
+   int k = f16_sw2_of(&b, mask);
+
+   if (k < 0 && (k = f16_sw2_of(&a, mask)) >= 0) {
+      struct f16o t = a;
+
+      a = b;
+      b = t;
+   }
+   if (k < 0) {
+      unsigned p = f16_temp(g);
+
+      if (!f16_move(g, &b, mask, p))
+         return false;
+      b.reg = f16_reg(g, p);
+      memcpy(b.sw, f16_xyzw, 4);
+      b.neg = false;
+      k = 4;
+   }
+   a.reg.neg = a.neg;
+   emit(g->c, usse_hop_ex(op, f16_reg(g, pair), mask, a.reg,
+                          a.sw[0] | a.sw[1] << 3 | a.sw[2] << 6 | a.sw[3] << 9, b.reg, k));
+   return !g->failed;
+}
+
+static enum usse_nmad_op
+f16_nmad(nir_op op)
+{
+   switch (op) {
+   case nir_op_fmul: return USSE_NMAD_MUL;
+   case nir_op_fmin: return USSE_NMAD_MIN;
+   case nir_op_fmax: return USSE_NMAD_MAX;
+   default:          return USSE_NMAD_ADD;  /* fadd, fsub (b negated) */
+   }
+}
+
+static bool
+f16_alu_ok(nir_op op)
+{
+   return op == nir_op_fmul || op == nir_op_fadd || op == nir_op_fsub || op == nir_op_fmin ||
+          op == nir_op_fmax || op == nir_op_ffma || op == nir_op_fsat || op == nir_op_fneg;
+}
+
+/* what works a lane out, for grouping lanes: an operation, or -1 for a
+ * value as it is (a leaf, or a constant forced) */
+static int
+f16_key(const struct f16leaf *l, const uint8_t *csel, unsigned i)
+{
+   if ((csel && csel[i] != F16_NO_SEL) || l[i].kind != F16K_ALU || l[i].op == nir_op_fneg)
+      return -1;
+   return l[i].op;
+}
+
+static void
+f16_remember(struct f16g *g, nir_scalar s, unsigned pair, unsigned lane)
+{
+   if (g->nmade < F16_MAX_MADE) {
+      g->made[g->nmade].def = s.def;
+      g->made[g->nmade].comp = s.comp;
+      g->made[g->nmade].pair = pair;
+      g->made[g->nmade++].lane = lane;
+   }
+}
+
+/* pair's lanes in mask = s's (csel: lanes that are a constant of src1's
+ * swizzle instead) */
+static bool
+f16_into(struct f16g *g, const nir_scalar *s, const uint8_t *csel, unsigned mask, unsigned pair)
+{
+   struct f16leaf l[4];
+   unsigned todo = mask;
+
+   for (unsigned i = 0; i < 4; i++)
+      if ((mask & 1u << i) && !(csel && csel[i] != F16_NO_SEL)) {
+         l[i] = f16_leaf(g, s[i]);
+         if (l[i].kind == F16K_NONE || (l[i].kind == F16K_ALU && !f16_alu_ok(l[i].op)))
+            return false;
+      }
+
+   /* (padding) lanes whose value is what the other lanes' fmul or fadd
+    * takes as an operand: times 1, plus 0, the same instruction */
+   for (unsigned i = 0; i < 4 && todo; i++) {
+      int key = (todo & 1u << i) ? f16_key(l, csel, i) : -2;
+      unsigned xs = 0, rs = 0;
+
+      if (key != nir_op_fmul && key != nir_op_fadd)
+         continue;
+      for (unsigned j = 0; j < 4; j++) {
+         if (!(todo & 1u << j))
+            continue;
+         if (f16_key(l, csel, j) == key)
+            xs |= 1u << j;
+         else
+            rs |= 1u << j;
+      }
+      for (unsigned p = 0; p < 2 && rs; p++) {
+         nir_scalar a[4], b[4], *mine = p ? b : a;
+         uint8_t ca[4], cb[4], *other = p ? ca : cb;
+         struct f16leaf op0 = { .kind = F16K_NONE };
+         bool fits = true;
+         struct f16o oa, ob;
+
+         /* the X lanes' operand p: alike (the same operation, or the same
+          * pair), and each other lane the same kind of thing */
+         u_foreach_bit(j, xs) {
+            struct f16leaf t = f16_leaf(g, nir_scalar_chase_alu_src(l[j].s, p));
+
+            if (op0.kind == F16K_NONE)
+               op0 = t;
+            fits &= t.kind == op0.kind && (t.kind != F16K_ALU || t.op == op0.op) &&
+                    (t.kind != F16K_REG || (t.reg.bank == op0.reg.bank && t.reg.num == op0.reg.num));
+         }
+         u_foreach_bit(j, rs)
+            fits &= csel && csel[j] != F16_NO_SEL ? false :
+                    l[j].kind == op0.kind && (l[j].kind != F16K_ALU || l[j].op == op0.op) &&
+                    (l[j].kind != F16K_REG || (l[j].reg.bank == op0.reg.bank &&
+                                               l[j].reg.num == op0.reg.num));
+         if (!fits || op0.kind == F16K_NONE || op0.kind == F16K_CONST)
+            continue;
+         memset(ca, F16_NO_SEL, 4);
+         memset(cb, F16_NO_SEL, 4);
+         u_foreach_bit(j, xs) {
+            a[j] = nir_scalar_chase_alu_src(l[j].s, 0);
+            b[j] = nir_scalar_chase_alu_src(l[j].s, 1);
+         }
+         u_foreach_bit(j, rs) {
+            mine[j] = l[j].s;
+            other[j] = key == nir_op_fmul ? F16_SEL_1 : F16_SEL_0;
+         }
+         if (!f16_operand(g, a, ca, xs | rs, &oa) || !f16_operand(g, b, cb, xs | rs, &ob) ||
+             !f16_emit(g, f16_nmad(key), pair, xs | rs, oa, ob))
+            return false;
+         u_foreach_bit(j, xs | rs)
+            f16_remember(g, l[j].s, pair, j);
+         todo &= ~(xs | rs);
+         break;
+      }
+   }
+
+   while (todo) {
+      unsigned i = ffs(todo) - 1, group = 0;
+      int key = f16_key(l, csel, i);
+
+      for (unsigned j = 0; j < 4; j++)
+         if ((todo & 1u << j) && f16_key(l, csel, j) == key)
+            group |= 1u << j;
+      todo &= ~group;
+
+      if (key == nir_op_fmul || key == nir_op_fadd || key == nir_op_fsub ||
+          key == nir_op_fmin || key == nir_op_fmax || key == nir_op_ffma) {
+         nir_scalar a[4], b[4], d[4];
+         struct f16o oa, ob, od;
+         unsigned t = pair;
+
+         u_foreach_bit(j, group) {
+            a[j] = nir_scalar_chase_alu_src(l[j].s, 0);
+            b[j] = nir_scalar_chase_alu_src(l[j].s, 1);
+            if (key == nir_op_ffma)
+               d[j] = nir_scalar_chase_alu_src(l[j].s, 2);
+         }
+         if (key == nir_op_ffma)
+            t = f16_temp(g);
+         if (!f16_operand(g, a, NULL, group, &oa) || !f16_operand(g, b, NULL, group, &ob))
+            return false;
+         if (key == nir_op_fsub)
+            ob.neg = !ob.neg;
+         if (!f16_emit(g, f16_nmad(key == nir_op_ffma ? nir_op_fmul : key), t, group, oa, ob))
+            return false;
+         if (key == nir_op_ffma) {
+            struct f16o ot = { .reg = f16_reg(g, t) };
+
+            memcpy(ot.sw, f16_xyzw, 4);
+            if (!f16_operand(g, d, NULL, group, &od) ||
+                !f16_emit(g, USSE_NMAD_ADD, pair, group, ot, od))
+               return false;
+         }
+      } else if (key == nir_op_fsat) {
+         nir_scalar a[4];
+         struct f16o oa, zero = { .reg = usse_reg(USSE_PA, 0) }, one = zero, self;
+
+         u_foreach_bit(j, group)
+            a[j] = nir_scalar_chase_alu_src(l[j].s, 0);
+         memset(zero.sw, F16_SEL_0, 4);
+         memset(one.sw, F16_SEL_1, 4);
+         self.reg = f16_reg(g, pair);
+         memcpy(self.sw, f16_xyzw, 4);
+         self.neg = false;
+         if (!f16_operand(g, a, NULL, group, &oa) ||
+             !f16_emit(g, USSE_NMAD_MAX, pair, group, zero, oa) ||
+             !f16_emit(g, USSE_NMAD_MIN, pair, group, one, self))
+            return false;
+      } else {
+         /* values as they are (leaves, negated ones, constants): moved, the
+          * lanes one operand can hold together (else f16_operand would
+          * come back here with the same lanes) */
+         while (group) {
+            unsigned sub = 1u << (ffs(group) - 1);
+            struct f16o o;
+
+            u_foreach_bit(j, group & ~sub)
+               if (f16_operand_x(g, s, csel, sub | 1u << j, &o, false))
+                  sub |= 1u << j;
+            if (!f16_operand_x(g, s, csel, sub, &o, util_bitcount(sub) == 1) ||
+                !f16_move(g, &o, sub, pair))
+               return false;
+            group &= ~sub;
+         }
+         continue;
+      }
+      u_foreach_bit(j, group)
+         f16_remember(g, l[j].s, pair, j);
+   }
+   return !g->failed;
+}
+
+/* the lanes in mask of s as one operand: a pair as it is, through a
+ * swizzle (and src1's constants), negated -- or worked out into a pair of
+ * its own */
+static bool
+f16_operand_x(struct f16g *g, const nir_scalar *s, const uint8_t *csel, unsigned mask,
+              struct f16o *o, bool into)
+{
+   struct f16leaf l[4];
+   struct usse_reg reg = usse_reg(USSE_PA, 0);
+   uint16_t h[4] = { 0 };
+   bool have = false, single = true, pool = false, neg = true, any = false;
+   unsigned p;
+
+   memset(o, 0, sizeof(*o));
+   for (unsigned i = 0; i < 4; i++) {
+      if (!(mask & 1u << i))
+         continue;
+      if (csel && csel[i] != F16_NO_SEL) {
+         o->sw[i] = csel[i];
+         neg = false;
+         continue;
+      }
+      l[i] = f16_leaf(g, s[i]);
+      if (l[i].kind == F16K_NONE)
+         return false;
+      any = true;
+      neg &= l[i].kind == F16K_ALU && l[i].op == nir_op_fneg;
+   }
+   /* every lane negated: what they negate, negated */
+   if (any && neg) {
+      nir_scalar t[4];
+
+      for (unsigned i = 0; i < 4; i++)
+         if (mask & 1u << i)
+            t[i] = nir_scalar_chase_alu_src(l[i].s, 0);
+      if (!f16_operand_x(g, t, NULL, mask, o, into))
+         return false;
+      o->neg = !o->neg;
+      return true;
+   }
+   for (unsigned i = 0; i < 4 && single; i++) {
+      struct usse_reg r;
+      int pu;
+
+      if (!(mask & 1u << i) || (csel && csel[i] != F16_NO_SEL))
+         continue;
+      switch (l[i].kind) {
+      case F16K_REG:
+      case F16K_UNIFORM:
+         if (l[i].kind == F16K_UNIFORM) {
+            if ((pu = f16_uniform(g, l[i].word & ~3u)) < 0)
+               return false;
+            r = f16_reg(g, pu);
+            o->sw[i] = l[i].word & 3;
+         } else {
+            r = l[i].reg;
+            o->sw[i] = l[i].lane;
+         }
+         single &= !have || (reg.bank == r.bank && reg.num == r.num);
+         reg = r;
+         have = true;
+         break;
+      case F16K_CONST:
+         o->sw[i] = f16_const_sel(l[i].bits);
+         if (o->sw[i] == F16_NO_SEL) {
+            float f = uif(l[i].bits);
+
+            h[i] = _mesa_float_to_half(f);
+            pool = true;
+         }
+         break;
+      default:
+         single = false;
+         break;
+      }
+   }
+   if (single && pool && !have) {
+      /* constants alone: those not src1's in a pair of the pool */
+      int w = f16_pool(g->c, h);
+
+      if (w < 0)
+         return false;
+      reg = usse_reg(USSE_SA, w);
+      for (unsigned i = 0; i < 4; i++)
+         if ((mask & 1u << i) && o->sw[i] == F16_NO_SEL)
+            o->sw[i] = i;
+      have = true;
+      pool = false;
+   }
+   if (single && !pool) {
+      o->reg = reg;
+      return true;
+   }
+   if (!into)
+      return false;
+   p = f16_temp(g);
+   if (!f16_into(g, s, csel, mask, p))
+      return false;
+   o->reg = f16_reg(g, p);
+   memcpy(o->sw, f16_xyzw, 4);
+   o->neg = false;
+   return true;
 }
 
 static bool
 f16_colour(struct comp *c, nir_function_impl *impl)
 {
    nir_intrinsic_instr *out = NULL;
-   struct f16_tree t[4] = { 0 };
-   int root[4];
-   unsigned reg[F16_NODES], ntemp = 0;
    struct usse_reg o0 = usse_reg(USSE_OUTPUT, 0), colour;
+   struct f16g g = { .c = c };
+   nir_scalar s[4];
+   struct f16o col;
 
    if (getenv("SGX_NO_F16") || c->vs || c->kills || c->ncolours || c->logicop >= 0 ||
        c->fs->blend.rt_kind != SGX_RT_UNORM8 || c->fs->blend.rt_srgb ||
-       c->fs->blend.rt_intensity ||
-       c->nuniforms || exec_list_length(&impl->body) != 1)
+       c->fs->blend.rt_intensity || c->ubuf || exec_list_length(&impl->body) != 1)
       return false;
    nir_foreach_block(block, impl) {
       nir_foreach_instr(instr, block) {
@@ -3256,7 +3768,8 @@ f16_colour(struct comp *c, nir_function_impl *impl)
                    in->src[0].ssa->num_components != 4)
                   return false;
                out = in;
-            } else if (in->intrinsic != nir_intrinsic_load_input) {
+            } else if (in->intrinsic != nir_intrinsic_load_input &&
+                       in->intrinsic != nir_intrinsic_load_uniform) {
                return false;
             }
          } else if (instr->type == nir_instr_type_tex) {
@@ -3264,8 +3777,6 @@ f16_colour(struct comp *c, nir_function_impl *impl)
                return false;
          } else if (instr->type != nir_instr_type_alu &&
                     instr->type != nir_instr_type_load_const) {
-            /* (constants: the outputs' offsets; one in the colour is not a
-             * leaf f16_match() takes) */
             return false;
          }
       }
@@ -3275,53 +3786,29 @@ f16_colour(struct comp *c, nir_function_impl *impl)
    for (unsigned i = 0; i < c->ninputs; i++)
       if (c->fs->input_slot[i] == VARYING_SLOT_POS)
          return false;
-   for (unsigned ch = 0; ch < 4; ch++) {
-      if ((root[ch] = f16_match(c, nir_get_scalar(out->src[0].ssa, ch), ch, &t[ch])) < 0 ||
-          t[ch].n != t[0].n || root[ch] != root[0] ||
-          memcmp(t[ch].node, t[0].node, t[0].n * sizeof(t[0].node[0])))
-         return false;
-   }
-   /* every input and lookup the program reads is in the tree */
-   {
-      unsigned inputs = 0, fetches = 0;
 
-      for (unsigned k = 0; k < t[0].n; k++) {
-         if (t[0].node[k].kind == F16_INPUT)
-            inputs |= 1u << t[0].node[k].a;
-         else if (t[0].node[k].kind == F16_TEXEL)
-            fetches |= 1u << t[0].node[k].a;
-      }
-      if (inputs != (1u << c->ninputs) - 1 || fetches != (1u << c->nfetch) - 1)
-         return false;
-   }
    /* the code: inputs in pa(2i), texels after them, two registers each;
-    * each operation into a temporary pair of its own */
+    * the pool's pairs after the program's other sa words */
+   c->nkconst = 0;
+   c->kconst_sa = align(fs_sa_end(c), 2);
    util_dynarray_init(&c->code, NULL);
    emit(c, USSE_PHAS);
-   for (unsigned k = 0; k < t[0].n; k++) {
-      const struct f16_node *nd = &t[0].node[k];
+   for (unsigned i = 0; i < 4; i++)
+      s[i] = nir_get_scalar(out->src[0].ssa, i);
+   if (!f16_operand(&g, s, NULL, 0xf, &col))
+      goto fail;
+   if (col.neg || memcmp(col.sw, f16_xyzw, 4) || col.reg.bank == USSE_SA) {
+      unsigned p = f16_temp(&g);
 
-      switch (nd->kind) {
-      case F16_INPUT:
-         reg[k] = 2 * nd->a;
-         break;
-      case F16_TEXEL:
-         reg[k] = 2 * c->ninputs + 2 * nd->a;
-         break;
-      default:
-         reg[k] = 0x100 + 2 * ntemp++;
-         emit(c, usse_hop(nd->kind == F16_MUL ? USSE_NMAD_MUL : USSE_NMAD_ADD,
-                          treg(c, reg[k] - 0x100),
-                          reg[nd->a] >= 0x100 ? treg(c, reg[nd->a] - 0x100) :
-                                                usse_reg(USSE_PA, reg[nd->a]),
-                          reg[nd->b] >= 0x100 ? treg(c, reg[nd->b] - 0x100) :
-                                                usse_reg(USSE_PA, reg[nd->b])));
-         break;
-      }
+      if (!f16_move(&g, &col, 0xf, p))
+         goto fail;
+      col.reg = f16_reg(&g, p);
    }
-   colour = reg[root[0]] >= 0x100 ? treg(c, reg[root[0]] - 0x100) : usse_reg(USSE_PA, reg[root[0]]);
+   if (g.failed || util_dynarray_num_elements(&c->code, uint64_t) > F16_MAX_CODE)
+      goto fail;
+   colour = col.reg;
    if (c->sop2) {
-      struct usse_reg packed = treg(c, 2 * ntemp++);
+      struct usse_reg packed = f16_reg(&g, f16_temp(&g));
 
       emit(c, usse_pack_unorm8_f16(packed, colour));
       emit(c, usse_sop2(o0, c->sop2_swap ? o0 : packed, c->sop2_swap ? packed : o0,
@@ -3329,9 +3816,15 @@ f16_colour(struct comp *c, nir_function_impl *impl)
    } else {
       emit(c, usse_pack_unorm8_f16(o0, colour) | USSE_END);
    }
-   c->top = MAX2(c->top, 2 * ntemp);
+   if (g.failed)
+      goto fail;
+   c->top = MAX2(c->top, 2 * g.ntemp);
    c->f16 = true;
    return true;
+fail:
+   util_dynarray_fini(&c->code);
+   c->nkconst = 0;
+   return false;
 }
 
 /* where a fragment program's sa words end: the uniforms, the textures'
@@ -3382,10 +3875,13 @@ plan_constants(struct comp *c, nir_function_impl *impl)
          for (unsigned j = 0; j < n; j++) {
             unsigned k = 0;
 
-            while (k < c->nkconst && c->kconst[k] != want[j])
+            while (k < c->nkconst && (c->kconst[2 * k] != want[j] || c->kconst[2 * k + 1]))
                k++;
-            if (k == c->nkconst && k < SGX_FS_MAX_KCONST && end + 2 * (k + 1) <= 128)
-               c->kconst[c->nkconst++] = want[j];
+            if (k == c->nkconst && k < SGX_FS_MAX_KCONST && end + 2 * (k + 1) <= 128) {
+               c->kconst[2 * k] = want[j];
+               c->kconst[2 * k + 1] = 0;
+               c->nkconst++;
+            }
          }
       }
    }
@@ -3860,7 +4356,7 @@ compile_fs(const nir_shader *fs, const struct sgx_blend_key *blend, char *why,
       c.fs->prog.nsa = c.kconst_sa + 2 * c.nkconst;
       c.fs->kconst_sa = c.kconst_sa;
       c.fs->nkconst = c.nkconst;
-      memcpy(c.fs->kconst, c.kconst, c.nkconst * sizeof(uint32_t));
+      memcpy(c.fs->kconst, c.kconst, 2 * c.nkconst * sizeof(uint32_t));
    }
    c.fs->blend_sa = c.blend_sa;
    c.fs->scale_sa = c.scale_sa;

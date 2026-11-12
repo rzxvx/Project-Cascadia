@@ -3828,6 +3828,27 @@ GLSL41 29 -> 11 instructions, its ten opaque layers 2.99 -> 1.62 ms; the
 fog programs (GLSL51, GLSL55: the same and a mix with a uniform colour)
 39 -> 28. The regression tests, glblend, glcopy and gldesk all right.
 
+**F16 for more programs.** M38's F16 path took one shape: the same tree of
+fmul and fadd over varyings and texels in all four channels, nothing else.
+It takes any tree of fmul, fadd, fsub, fmin, fmax, ffma, fsat and fneg
+over the varyings (any channel of them), the PDS's texels, constants and
+uniforms now (`f16_colour()`): the four channels worked out together, an
+instruction for the channels that do the same operation, a write mask for
+the rest, a channel that only passes a value on padded (times 1, plus 0).
+V16NMAD in full (`usse_hop_ex()`; usse-test's cases from Vita3K's
+decoding): the write mask is a channel's bit; src1's swizzle is three bits
+a channel, 4..7 the constants 0, 1, 2 and 0.5 -- so `x 2` and a
+saturate's 0 and 1 take no register; src1 takes a negation; src2's
+swizzle is an index into Vita3K's table. Other constants are F16 pairs in
+the pool (two words an entry now), a uniform's vec4 is packed to F16 once
+(`usse_pack_f16` from sa). `tools/sgx/gl/glf16.c`: 13 programs of
+PPSSPP's shapes and around them, every pixel against C -- 13 of 13, with
+the programs: texture x colour, doubled 11 -> 4 instructions, its fog 28
+-> 14, with the stencil value 28 -> 16, min and max 16 -> 5, halves 12 ->
+4. The cost: a colour in F16 is up to an 8-bit step off where F32 was
+exact (glblend's layer blended twice: 3; its tolerance there is 3 now);
+`SGX_NO_F16=1` takes the F32 path for all.
+
 **God of War** (`gow-bench.sh`, the main menu, PPSSPP's counter):
 
 | | main render, GPU | frame | speed |
@@ -3837,15 +3858,16 @@ fog programs (GLSL51, GLSL55: the same and a mix with a uniform colour)
 | + SOP2 colour masks | 60 ms | 6.5 fps | 10.8% |
 | + copies by the GPU | 59 ms | 6.8 fps (no CPU waits) | 11.9% |
 | + shorter F32 programs | 34 ms | 10.6 fps | 13.3% |
+| + F16 for more programs | 27 ms | 11.5 fps | 16.1% |
 
 **What is left**, in the order it costs:
 
 - The fog programs (a third of the main render): their texture's
   coordinates are `.yz` of a varying the linker packed with the fog
   factor, which the PDS cannot fetch (iOS's are `.xy`, M35), so the
-  lookup is an SMP in the program and the program F32. M38's F16 path
-  would take them with constants, uniforms (iOS's t06: F16 in sa), masks
-  on channels and saturates -- ~5 instructions for GLSL41 against 11.
+  lookup is an SMP in the program and the program stays F32 (the F16 path
+  takes only the PDS's lookups). The vertex side writing those
+  coordinates into a varying of their own would make them both.
 - A copy is a render of the whole 864 x 272 target (every tile reloaded
   and stored) for a 58 x 34 rectangle: a render of the tiles it touches;
   and its texelFetch program, 95 instructions, could be a PDS lookup (the

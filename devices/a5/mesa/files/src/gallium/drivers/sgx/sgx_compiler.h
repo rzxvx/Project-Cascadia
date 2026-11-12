@@ -99,9 +99,9 @@ struct sgx_fs {
    int size_sa;               /* -1, or each texture's size words (M44) */
    struct sgx_blend_key blend;                    /* what it was compiled for */
    bool sop2;                 /* (M46) blended (or masked) by one SOP2, as iOS does */
-   /* (M46) its constants, sa words kconst_sa + 2k (the odd ones 0): the
-    * draw writes them with the uniforms */
-   uint32_t kconst[SGX_FS_MAX_KCONST];
+   /* (M46) its constants, nkconst pairs of sa words from kconst_sa (an F32
+    * and 0, or four F16): the draw writes them with the uniforms */
+   uint32_t kconst[2 * SGX_FS_MAX_KCONST];
    unsigned nkconst, kconst_sa;
    /* (M39) each varying's SGX_FIX_*, in varying_slot[]'s order */
    uint8_t vary_fix[SGX_FRAME_MAX_VARYINGS];

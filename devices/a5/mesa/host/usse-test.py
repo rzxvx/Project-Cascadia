@@ -60,6 +60,11 @@ CASES = {
     'mul_f16_pa0_pa2_pa0': ('V16NMAD', 'mul.f16 pa0.xyzw, pa2.xyzw, pa0.xyzw', 0x10a44786a0040040),
     'mul_f16_pa0_pa0_pa2': ('V16NMAD', 'mul.f16 pa0.xyzw, pa0.xyzw, pa2.xyzw', 0x10a44786a0040001),
     'mul_f16_pa0_pa0_sa6': ('V16NMAD', 'mul.f16 pa0.xyzw, pa0.xyzw, sa6.xyzw', 0x10a44786b0040003),
+    'mul_f16_r0xyz': ('V16NMAD', 'mul.f16 r0.xyz, pa0.xyzw, pa2.xyzw', None),
+    'mul_f16_2221': ('V16NMAD', 'mul.f16 r2.xyzw, pa0.2221, r0.xyzw', None),
+    'max_f16_0000': ('V16NMAD', 'max.f16 r2.xyzw, pa0.0000, r2.xyzw', None),
+    'add_f16_neg_sa4': ('V16NMAD', 'add.f16 r4.xyzw, -sa4.xyzw, r2.xyzw', None),
+    'mul_f16_xxxx_src2': ('V16NMAD', 'mul.f16 r6.w, r4.wzyx, pa2.xxxx', None),
     'pack_f16_o0_pa0': ('VPCK', 'pck.u8.f16 o0.xyzw, pa0.xyzw scale', 0x40850a3da01d8000),
     'pack_f16_pa0_pa0': ('VPCK', 'pck.u8.f16 pa0.xyzw, pa0.xyzw scale', 0x40810a3ea01d8000),
     # M37: the logic ops of iOS's es1 cases e03..e10

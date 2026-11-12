@@ -1990,8 +1990,8 @@ submit(struct sgx_context *ctx)
       if (fs->blend_sa >= 0)
          memcpy(sa + fs->blend_sa, ctx->blend_color.color, 4 * sizeof(float));
       /* (M46) its constants */
-      for (unsigned k = 0; k < fs->nkconst; k++)
-         sa[fs->kconst_sa + 2 * k] = fs->kconst[k];
+      for (unsigned k = 0; k < 2 * fs->nkconst; k++)
+         sa[fs->kconst_sa + k] = fs->kconst[k];
       simple_mtx_lock(&screen->frame_lock);
       if (sgx_frame_upload(screen->frame, &fs->prog) ||
           (vs && sgx_frame_upload_vs(screen->frame, vs))) {
