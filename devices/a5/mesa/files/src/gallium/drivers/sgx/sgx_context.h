@@ -176,6 +176,8 @@ struct sgx_vtx {
 
 struct sgx_context {
    struct pipe_context base;
+   /* (M46) copies and blits on the GPU: u_blitter's quads */
+   struct blitter_context *blitter;
    struct slab_child_pool transfer_pool;
    struct pipe_framebuffer_state fb;
    struct pipe_vertex_buffer vb[PIPE_MAX_ATTRIBS];
@@ -239,6 +241,9 @@ struct sgx_context {
    /* SGX_DEBUG=fps: frames (swaps), renders and draws counted, and said
     * every two seconds */
    bool debug_fps, debug_sync, debug_flushes;
+   /* SGX_DEBUG=each (M46): every draw a render of its own, said with its
+    * pixel program (with sync: each one's time on the GPU) */
+   bool debug_each;
    unsigned stat_frames, stat_renders, stat_draws;
    int64_t stat_t0, stat_cpu0, stat_gpu;
    int64_t stat_swap, stat_between;     /* the last frame's end; to the next draw */

@@ -141,6 +141,10 @@ struct comp {
    int size_sa;
    bool sizes;
    int blend_sa;                        /* the blend colour's words, -1 none */
+   /* (M46) the constants the F32 path reads, in sa after the rest: one
+    * word each at an even word (lane x), the driver's to write per draw */
+   uint32_t kconst[SGX_FS_MAX_KCONST];
+   unsigned nkconst, kconst_sa;
    /* GL's blending by a SOP2 on the colour packed to bytes and the tile's
     * (o0): src1 the colour unless swapped (M25) */
    bool sop2, sop2_swap;
@@ -304,6 +308,17 @@ constant(struct comp *c, struct scratch *s, float f)
    return constant_bits(c, s, f32_bits(f));
 }
 
+/* (M46) a constant from the program's pool in sa (plan_constants()), for an
+ * operand slot that reads sa; else made in a temporary as above */
+static struct usse_reg
+constant_sa(struct comp *c, struct scratch *s, uint32_t u)
+{
+   for (unsigned k = 0; k < c->nkconst; k++)
+      if (c->kconst[k] == u)
+         return usse_reg(USSE_SA, c->kconst_sa + 2 * k);
+   return constant_bits(c, s, u);
+}
+
 /* The value a source reads, through moves, vectors, negation and absolute
  * value (outermost first: an fabs keeps an outer negation, an fneg under an
  * fabs does nothing). */
@@ -365,7 +380,7 @@ get(struct comp *c, struct operand o, unsigned takes, struct scratch *s)
    struct usse_reg r, t;
 
    if (o.is_const)
-      return constant_bits(c, s, o.u);
+      return takes & TAKES_SA ? constant_sa(c, s, o.u) : constant_bits(c, s, o.u);
    r = c->loc[o.id];
    r.neg = o.neg;
    r.abs = o.abs;
@@ -981,9 +996,9 @@ alu(struct comp *c, nir_alu_instr *alu, struct scratch *s)
    case nir_op_fsat:
       a = get(c, alu_operand(alu, 0), TAKES_ALL, s);
       t = treg(c, scratch_take(c, s));
-      emit(c, usse_fop(USSE_NMAD_MAX, t, a, constant(c, s, 0.0f)));
+      emit(c, usse_fop(USSE_NMAD_MAX, t, a, constant_sa(c, s, f32_bits(0.0f))));
       d = define(c, &alu->def);
-      emit(c, usse_fop(USSE_NMAD_MIN, d, t, constant(c, s, 1.0f)));
+      emit(c, usse_fop(USSE_NMAD_MIN, d, t, constant_sa(c, s, f32_bits(1.0f))));
       return;
    case nir_op_slt:
    case nir_op_sge:
@@ -2529,11 +2544,53 @@ sop2_alpha_factor(unsigned f, bool swapped, uint8_t *sel, uint8_t *mod)
    }
 }
 
+/* (M46) A colour mask of all three of R, G and B or none of them, alpha or
+ * not, folded into the blending for SOP2: a channel kept is blended as the
+ * tile's own (ZERO, ONE -- reverse subtract keeps it too, dst x 1 - src x 0),
+ * and a draw not blended is ONE, ZERO.  One SOP2 then, where the mask had
+ * the tile's colour unpacked, selected and packed in F32 (nir_lower_blend):
+ * PPSSPP keeps the target's alpha -- the PSP's stencil -- in most of its
+ * draws.  False: a mask SOP2 cannot do (some of R, G, B; nothing at all is
+ * a program that leaves o0 as it is). */
+static bool
+fold_colormask(const struct sgx_blend_key *k, struct sgx_blend_key *out)
+{
+   const unsigned rgb = k->colormask & 7;
+   const bool alpha = k->colormask & 8;
+
+   *out = *k;
+   if (k->colormask == 0xf)
+      return true;
+   if ((rgb != 0 && rgb != 7) || !k->colormask)
+      return false;
+   if (!out->enable) {
+      out->enable = 1;
+      out->rgb_func = out->alpha_func = PIPE_BLEND_ADD;
+      out->rgb_src = out->alpha_src = PIPE_BLENDFACTOR_ONE;
+      out->rgb_dst = out->alpha_dst = PIPE_BLENDFACTOR_ZERO;
+   }
+   if (!rgb) {
+      if (out->rgb_func != PIPE_BLEND_REVERSE_SUBTRACT)
+         out->rgb_func = PIPE_BLEND_ADD;
+      out->rgb_src = PIPE_BLENDFACTOR_ZERO;
+      out->rgb_dst = PIPE_BLENDFACTOR_ONE;
+   }
+   if (!alpha) {
+      out->alpha_func = out->rgb_func == PIPE_BLEND_REVERSE_SUBTRACT ?
+                        PIPE_BLEND_REVERSE_SUBTRACT : PIPE_BLEND_ADD;
+      out->alpha_src = PIPE_BLENDFACTOR_ZERO;
+      out->alpha_dst = PIPE_BLENDFACTOR_ONE;
+   }
+   out->colormask = 0xf;
+   return true;
+}
+
 /* GL's blending as one SOP2 (M25): the colour and the tile's, 8 bits a
  * channel, as iOS blends -- not F32 arithmetic on the tile's colour
  * unpacked (nir_lower_blend), some 30 instructions more.  Not for the
- * blend colour's factors, a colour mask, or min/max with the other
- * channels' funcs not the same kind. */
+ * blend colour's factors, a colour mask (but those fold_colormask() makes
+ * blending, M46), or min/max with the other channels' funcs not the same
+ * kind. */
 static bool
 sop2_blend(const struct sgx_blend_key *k, struct usse_sop2 *f, bool *swap)
 {
@@ -3277,6 +3334,105 @@ f16_colour(struct comp *c, nir_function_impl *impl)
    return true;
 }
 
+/* where a fragment program's sa words end: the uniforms, the textures'
+ * state words, their scales and sizes, the blend colour */
+static unsigned
+fs_sa_end(const struct comp *c)
+{
+   return c->blend_sa >= 0 ? c->blend_sa + 4 :
+          c->sizes ? c->size_sa + SGX_FS_SIZE_WORDS * c->nsamplers :
+          c->scales ? c->scale_sa + 2 * c->nsamplers :
+          c->nsamplers ? c->sampler_sa + 4 * c->nsamplers : c->nuniforms;
+}
+
+/* (M46) the constants a fragment program's ALU operations read, into sa
+ * after its other words (SGX_FS_MAX_KCONST at most, while sa has room): a
+ * LIMM before each use took a third of PPSSPP's programs (God of War's
+ * `2.0`, a saturate's 0 and 1).  SGX_NO_KPOOL=1: none. */
+static void
+plan_constants(struct comp *c, nir_function_impl *impl)
+{
+   unsigned end = align(fs_sa_end(c), 2);
+
+   c->nkconst = 0;
+   if (getenv("SGX_NO_KPOOL"))
+      return;
+   nir_foreach_block(block, impl) {
+      nir_foreach_instr(instr, block) {
+         nir_alu_instr *alu;
+         uint32_t want[4];
+         unsigned n = 0;
+
+         if (instr->type != nir_instr_type_alu)
+            continue;
+         alu = nir_instr_as_alu(instr);
+         if (alu->op == nir_op_fsat) {
+            want[n++] = f32_bits(0.0f);
+            want[n++] = f32_bits(1.0f);
+         }
+         for (unsigned i = 0; i < nir_op_infos[alu->op].num_inputs && n < 4; i++) {
+            struct operand o;
+
+            if (alu->src[i].src.ssa->bit_size != 32)
+               continue;
+            o = alu_operand(alu, i);
+            if (o.is_const)
+               want[n++] = o.u;
+         }
+         for (unsigned j = 0; j < n; j++) {
+            unsigned k = 0;
+
+            while (k < c->nkconst && c->kconst[k] != want[j])
+               k++;
+            if (k == c->nkconst && k < SGX_FS_MAX_KCONST && end + 2 * (k + 1) <= 128)
+               c->kconst[c->nkconst++] = want[j];
+         }
+      }
+   }
+   c->kconst_sa = end;
+}
+
+/* (M46) a colour channel saturated just before it is stored into a target
+ * of bytes: the pack to them clamps (pck.u8.f32, pck.u8.f16) -- the max and
+ * min, and their constants, for nothing */
+static void
+drop_output_sat(nir_function_impl *impl)
+{
+   nir_foreach_block(block, impl) {
+      nir_foreach_instr(instr, block) {
+         nir_intrinsic_instr *st;
+         nir_alu_instr *vec;
+         unsigned loc;
+
+         if (instr->type != nir_instr_type_intrinsic)
+            continue;
+         st = nir_instr_as_intrinsic(instr);
+         if (st->intrinsic != nir_intrinsic_store_output)
+            continue;
+         loc = nir_intrinsic_io_semantics(st).location;
+         if ((loc != FRAG_RESULT_COLOR && loc != FRAG_RESULT_DATA0) ||
+             nir_def_instr(st->src[0].ssa)->type != nir_instr_type_alu)
+            continue;
+         vec = nir_instr_as_alu(nir_def_instr(st->src[0].ssa));
+         if (!nir_op_is_vec(vec->op) || !list_is_singular(&vec->def.uses))
+            continue;
+         for (unsigned i = 0; i < nir_op_infos[vec->op].num_inputs; i++) {
+            nir_def *d = vec->src[i].src.ssa;
+            nir_alu_instr *sat;
+
+            if (nir_def_instr(d)->type != nir_instr_type_alu)
+               continue;
+            sat = nir_instr_as_alu(nir_def_instr(d));
+            if (sat->op != nir_op_fsat || sat->def.num_components != 1 ||
+                !list_is_singular(&d->uses))
+               continue;
+            vec->src[i].swizzle[0] = sat->src[0].swizzle[0];
+            nir_src_rewrite(&vec->src[i].src, sat->src[0].src.ssa);
+         }
+      }
+   }
+}
+
 static bool
 translate(struct comp *c, nir_shader *s)
 {
@@ -3307,6 +3463,10 @@ translate(struct comp *c, nir_shader *s)
    NIR_PASS(_, s, nir_opt_algebraic_late);
    NIR_PASS(_, s, nir_lower_alu_to_scalar, NULL, NULL);
    NIR_PASS(_, s, nir_opt_copy_prop);
+   /* (M46) saturates the target's pack does anyway */
+   if (c->fs && c->fs->blend.rt_kind == SGX_RT_UNORM8 && !c->fs->blend.rt_srgb &&
+       !c->fs->blend.rt_intensity && !getenv("SGX_KEEP_SAT"))
+      drop_output_sat(nir_shader_get_entrypoint(s));
    NIR_PASS(_, s, nir_opt_cse);
    NIR_PASS(_, s, nir_opt_dce);
    if (c->vs)
@@ -3366,6 +3526,8 @@ translate(struct comp *c, nir_shader *s)
    /* M38: a colour of four F16 at once -- the whole program */
    if (c->fs && f16_colour(c, impl))
       return true;
+   if (c->fs)
+      plan_constants(c, impl);
 
    /* the numbering, the liveness, then the code, in the same order */
    index = 0;
@@ -3467,9 +3629,17 @@ compile_fs(const nir_shader *fs, const struct sgx_blend_key *blend, char *why,
     * kept, M19) */
    if (blending && !fs->info.fs.uses_discard && !blend->logicop &&
        blend->rt_kind == SGX_RT_UNORM8 && !blend->rt_srgb && !blend->rt_intensity &&
-       !getenv("SGX_NO_SOP2") && sop2_blend(blend, &c.sop2_factors, &c.sop2_swap)) {
-      c.sop2 = true;
-      blending = false;
+       !getenv("SGX_NO_SOP2")) {
+      struct sgx_blend_key folded;
+
+      /* (M46: the colour mask too, SGX_SOP2_MASK=0 not) */
+      if ((blend->colormask == 0xf || (!getenv("SGX_SOP2_MASK") || atoi(getenv("SGX_SOP2_MASK")))) &&
+          fold_colormask(blend, &folded) &&
+          sop2_blend(&folded, &c.sop2_factors, &c.sop2_swap)) {
+         c.sop2 = true;
+         c.fs->sop2 = true;
+         blending = false;
+      }
    }
    /* a logic op instead of the blending, and the colour mask with it: on
     * the bytes, in output() (nir_lower_blend's are integer operations,
@@ -3684,10 +3854,14 @@ compile_fs(const nir_shader *fs, const struct sgx_blend_key *blend, char *why,
       c.fs->prog.ubo_sa[k] = c.ubo_mask >> k & 1 ? c.ubo_sa[k] : 0;
    c.fs->nsamplers = c.nsamplers;
    c.fs->sampler_sa = c.sampler_sa;
-   c.fs->prog.nsa = c.blend_sa >= 0 ? c.blend_sa + 4 :
-                    c.sizes ? c.size_sa + SGX_FS_SIZE_WORDS * c.nsamplers :
-                    c.scales ? c.scale_sa + 2 * c.nsamplers :
-                    c.nsamplers ? c.sampler_sa + 4 * c.nsamplers : c.nuniforms;
+   c.fs->prog.nsa = fs_sa_end(&c);
+   /* (M46) the constant pool after them */
+   if (c.nkconst) {
+      c.fs->prog.nsa = c.kconst_sa + 2 * c.nkconst;
+      c.fs->kconst_sa = c.kconst_sa;
+      c.fs->nkconst = c.nkconst;
+      memcpy(c.fs->kconst, c.kconst, c.nkconst * sizeof(uint32_t));
+   }
    c.fs->blend_sa = c.blend_sa;
    c.fs->scale_sa = c.scale_sa;
    c.fs->size_sa = c.size_sa;

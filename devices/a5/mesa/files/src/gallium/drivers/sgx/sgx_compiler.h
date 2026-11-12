@@ -83,6 +83,8 @@ struct sgx_blend_key {
  * width, 0.5 / height -- then (blend_sa, if the blending reads it) the
  * blend colour. */
 #define SGX_FS_SIZE_WORDS 8
+#define SGX_FS_MAX_KCONST 16
+
 struct sgx_fs {
    struct sgx_pixel_program prog;
    unsigned input_slot[SGX_FRAME_MAX_VARYINGS];   /* gl_varying_slot, input i */
@@ -96,6 +98,11 @@ struct sgx_fs {
    int scale_sa;              /* -1, or each texture's 1 / width, 1 / height (rectangles) */
    int size_sa;               /* -1, or each texture's size words (M44) */
    struct sgx_blend_key blend;                    /* what it was compiled for */
+   bool sop2;                 /* (M46) blended (or masked) by one SOP2, as iOS does */
+   /* (M46) its constants, sa words kconst_sa + 2k (the odd ones 0): the
+    * draw writes them with the uniforms */
+   uint32_t kconst[SGX_FS_MAX_KCONST];
+   unsigned nkconst, kconst_sa;
    /* (M39) each varying's SGX_FIX_*, in varying_slot[]'s order */
    uint8_t vary_fix[SGX_FRAME_MAX_VARYINGS];
    uint8_t vary_unit[SGX_FRAME_MAX_VARYINGS];

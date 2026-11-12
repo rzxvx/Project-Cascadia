@@ -86,12 +86,12 @@ DESTDIR="$ID" ninja -C "$BD" install >/dev/null
 
 I=$ID$PREFIX
 mkdir -p "$I/bin"
-for t in glclear gltri glfs gltex glblend gldepth glspeed glclock glpersp glsize glseam glcull gldiscard glstencil glchurn glwrap glvtx glmip glvary glldr glflow glfetch glflat glupload; do
+for t in glclear gltri glfs gltex glblend gldepth glspeed glclock glpersp glsize glseam glcull gldiscard glstencil glchurn glwrap glvtx glmip glvary glldr glflow glfetch glflat glupload glverts glshader; do
     cc -O2 -Wall -I"$I/include" "$ROOT/tools/sgx/gl/$t.c" -L"$I/lib" -lEGL -lGLESv2 -lm \
         -Wl,-rpath-link,"$I/lib" -Wl,-rpath,"$PREFIX/lib" -o "$I/bin/$t"
 done
 # desktop OpenGL (libGL) through EGL
-for t in gldesk gloffset glproj glfmt; do
+for t in gldesk gloffset glproj glfmt glcopy; do
     cc -O2 -Wall -I"$I/include" "$ROOT/tools/sgx/gl/$t.c" -L"$I/lib" -lEGL -lGL -lm \
         -Wl,-rpath-link,"$I/lib" -Wl,-rpath,"$PREFIX/lib" -o "$I/bin/$t"
 done

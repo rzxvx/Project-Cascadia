@@ -57,6 +57,22 @@ static const struct test {
 	{ "colormask", 0, GL_FUNC_ADD, GL_FUNC_ADD, GL_ONE, GL_ZERO, GL_ONE, GL_ZERO, { 1, 0, 1, 0 } },
 	{ "twice", 1, GL_FUNC_ADD, GL_FUNC_ADD, GL_SRC_ALPHA, GL_ONE, GL_ONE, GL_ZERO,
 	  { 1, 1, 1, 1 }, 1 },
+	/* (M46) masks the blending's SOP2 takes: R, G, B all or none, alpha or
+	 * not -- PPSSPP's alpha kept (the PSP's stencil there) */
+	{ "mask-rgb", 0, GL_FUNC_ADD, GL_FUNC_ADD, GL_ONE, GL_ZERO, GL_ONE, GL_ZERO, { 1, 1, 1, 0 } },
+	{ "mask-alpha", 0, GL_FUNC_ADD, GL_FUNC_ADD, GL_ONE, GL_ZERO, GL_ONE, GL_ZERO, { 0, 0, 0, 1 } },
+	{ "mask-rgb-alpha", 1, GL_FUNC_ADD, GL_FUNC_ADD, GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA,
+	  GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, { 1, 1, 1, 0 } },
+	{ "mask-rgb-add", 1, GL_FUNC_ADD, GL_FUNC_ADD, GL_SRC_ALPHA, GL_ONE, GL_ONE, GL_ONE,
+	  { 1, 1, 1, 0 } },
+	{ "mask-rgb-reverse", 1, GL_FUNC_REVERSE_SUBTRACT, GL_FUNC_REVERSE_SUBTRACT, GL_ONE, GL_ONE,
+	  GL_ONE, GL_ONE, { 1, 1, 1, 0 } },
+	{ "mask-rgb-subtract", 1, GL_FUNC_SUBTRACT, GL_FUNC_SUBTRACT, GL_ONE, GL_ONE, GL_ONE, GL_ONE,
+	  { 1, 1, 1, 0 } },
+	{ "mask-alpha-blend", 1, GL_FUNC_ADD, GL_FUNC_ADD, GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA,
+	  GL_ONE, GL_ONE, { 0, 0, 0, 1 } },
+	{ "mask-alpha-reverse", 1, GL_FUNC_REVERSE_SUBTRACT, GL_FUNC_REVERSE_SUBTRACT, GL_ONE, GL_ONE,
+	  GL_ONE, GL_ONE, { 0, 0, 0, 1 } },
 };
 
 static float factor(GLenum f, const float s[4], const float d[4], int i)
