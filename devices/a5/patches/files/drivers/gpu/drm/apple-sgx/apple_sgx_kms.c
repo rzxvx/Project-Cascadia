@@ -525,6 +525,12 @@ int apple_sgx_kms_init(struct drm_device *drm, struct apple_sgx *sgx)
 	drm->mode_config.preferred_depth = 24;
 	drm->mode_config.funcs = &sgx_kms_mode_config_funcs;
 	drm->mode_config.helper_private = &sgx_kms_mode_config_helpers;
+	/* (M46) a flip without waiting for a vblank: what every flip here is
+	 * (there is none; the copy goes once the renders writing the buffer
+	 * are done) -- and what X's Present asks for a client that swaps
+	 * without vsync (PPSSPP): without the cap it copied the window into
+	 * the screen instead, a render of the X server's each frame */
+	drm->mode_config.async_page_flip = true;
 
 	ret = drmm_connector_init(drm, &kms->connector, &sgx_kms_connector_funcs,
 				  DRM_MODE_CONNECTOR_Unknown, NULL);
