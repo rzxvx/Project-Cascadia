@@ -13,7 +13,12 @@
  * Built with -DGLF16_DESKTOP (mesa/build.sh's glf16d): the same through
  * desktop OpenGL 2.1 and GLSL 1.20, as PPSSPP runs here -- the linker lays
  * the varyings out otherwise there (God of War's fog: the coordinates in y
- * and z of the fog's varying). */
+ * and z of the fog's varying).
+ *
+ * (M46) The clamp cases: PPSSPP's TClampST programs (God of War's GLSL17,
+ * 21, 23), a lookup at coordinates clamped to a rectangle of the texture
+ * and moved -- the program's own lookup (SMP), not the PDS's -- some
+ * pixels clamped. */
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
 #ifdef GLF16_DESKTOP
@@ -39,6 +44,10 @@
 #define TS 16
 
 static const float FOG[3] = { 0.2f, 0.5f, 0.8f }, STENCIL = 0.6f, K[4] = { 0.3f, 0.6f, 1.5f, 0.9f };
+/* PPSSPP's u_texclamp (the rectangle's size, half a texel), u_texclampoff
+ * and u_blendFixA: the coordinates kept off the texels' edges (nearest) */
+static const float TCLAMP[4] = { 0.75f, 0.625f, 1.0f / 32, 1.0f / 32 }, TCOFF[2] = { 0.1f, 0.2f },
+                   FIXA[3] = { 0.9f, 0.5f, 0.75f };
 
 /* the varyings at a pixel, as the vertex shader below makes them */
 struct px {
@@ -178,6 +187,63 @@ static void r_broadcast(const struct px *p, float o[4])
 		o[i] = p->c[i] * p->fog;
 }
 
+static uint8_t texels[TS * TS * 4];
+
+/* (M46) the texel at the coordinates (v_uv2: uv * 0.75 + 0.1, a varying
+ * of their own -- the linker merges one equal to the colour's x and y)
+ * clamped as PPSSPP's TClampST does */
+static void clamped_texel(const struct px *p, float t[4])
+{
+	float u0 = p->uv[0] * 0.75f + 0.1f, v0 = p->uv[1] * 0.75f + 0.1f;
+	float u = fminf(fmaxf(u0, TCLAMP[2]), TCLAMP[0] - TCLAMP[2]) + TCOFF[0];
+	float v = fminf(fmaxf(v0, TCLAMP[3]), TCLAMP[1] - TCLAMP[3]) + TCOFF[1];
+	int tx = (int)(u * TS), ty = (int)(v * TS);
+
+	for (int i = 0; i < 4; i++)
+		t[i] = texels[4 * (ty * TS + tx) + i] / 255.0f;
+}
+
+static void r_clamp(const struct px *p, float o[4])
+{
+	float t[4];
+
+	clamped_texel(p, t);
+	for (int i = 0; i < 4; i++)
+		o[i] = p->c[i] * t[i];
+}
+
+static void r_clamp_fixa(const struct px *p, float o[4])
+{
+	r_clamp(p, o);
+	for (int i = 0; i < 3; i++)
+		o[i] *= FIXA[i];
+}
+
+static void r_clamp_double(const struct px *p, float o[4])
+{
+	float t[4];
+
+	clamped_texel(p, t);
+	t[3] = 1;
+	for (int i = 0; i < 4; i++)
+		o[i] = p->c[i] * t[i];
+	for (int i = 0; i < 3; i++)
+		o[i] = sat(o[i] * 2);
+}
+
+static void r_clamp_fog(const struct px *p, float o[4])
+{
+	struct px q = *p;
+
+	clamped_texel(p, q.t);
+	r_fog(&q, o);
+}
+
+#define CLAMPED \
+	"vec2 fc = vec2(clamp(v_uv2.x, u_texclamp.z, u_texclamp.x - u_texclamp.z) + " \
+	"u_texclampoff.x, clamp(v_uv2.y, u_texclamp.w, u_texclamp.y - u_texclamp.w) + " \
+	"u_texclampoff.y);\n" 
+
 /* PPSSPP's own (God of War's, captured with MESA_GLSL=source): the
  * vertex shader writes v_color1 = 0 and v_texcoord.z = 0, which the linker
  * drops, packing v_fogdepth and v_texcoord.xy into one varying -- the fog
@@ -257,6 +323,18 @@ static const struct test {
 	  "  v = mix(vec4(u_fogcolor, v.a), v, fogCoef);\n"
 	  "  gl_FragColor = v;\n"
 	  "}\n" },
+	/* (M46) PPSSPP's TClampST: God of War's GLSL21, 23, 17, and with fog
+	 * (the coordinates' varying F32 between the colour's and the fog's) */
+	{ "clamp", CLAMPED "gl_FragColor = v_color0 * texture2D(tex, fc);", r_clamp },
+	{ "clamp-fixa", CLAMPED "vec4 v = v_color0 * texture2D(tex, fc);\n"
+	                "v.rgb = v.rgb * u_blendFixA; gl_FragColor = v;", r_clamp_fixa },
+	{ "clamp-double", CLAMPED "vec4 t = texture2D(tex, fc); t.a = 1.0;\n"
+	                  "vec4 v = v_color0 * t;\n"
+	                  "v.rgb = clamp(v.rgb * 2.0, 0.0, 1.0); gl_FragColor = v;", r_clamp_double },
+	{ "clamp-fog", CLAMPED "vec4 v = v_color0 * texture2D(tex, fc);\n"
+	               "v.rgb = clamp(v.rgb * 2.0, 0.0, 1.0);\n"
+	               "float f = clamp(v_fogdepth, 0.0, 1.0);\n"
+	               "gl_FragColor = mix(vec4(u_fogcolor, v.a), v, f);", r_clamp_fog },
 	{ "ppsspp-stencil", NULL, r_pstencil, VS_PPSSPP, FS_PPSSPP_HEAD
 	  "void main() {\n"
 	  "  vec4 s = vec4(v_color1, 0.0);\n"
@@ -279,6 +357,7 @@ static const char *vs_src =
 	"varying float v_fogdepth;\n"
 	"varying vec3 v_fogtex;\n"
 	"varying vec4 v_both;\n"
+	"varying vec2 v_uv2;\n"
 	"void main() {\n"
 	"  vec2 st = p.xy * 0.5 + 0.5;\n"
 	"  gl_Position = p;\n"
@@ -287,6 +366,7 @@ static const char *vs_src =
 	"  v_fogdepth = 1.5 * st.x - 0.25;\n"
 	"  v_fogtex = vec3(v_fogdepth, st);\n"
 	"  v_both = vec4(st * 0.5, st);\n"
+	"  v_uv2 = st * 0.75 + 0.1;\n"
 	"}\n";
 
 static uint8_t texels[TS * TS * 4];
@@ -330,11 +410,15 @@ static GLuint build(const struct test *T)
 	         "uniform vec3 u_fogcolor;\n"
 	         "uniform float u_stencil;\n"
 	         "uniform vec4 u_k;\n"
+	         "uniform vec4 u_texclamp;\n"
+	         "uniform vec2 u_texclampoff;\n"
+	         "uniform vec3 u_blendFixA;\n"
 	         "varying vec4 v_color0;\n"
 	         "varying vec2 v_texcoord;\n"
 	         "varying float v_fogdepth;\n"
 	         "varying vec3 v_fogtex;\n"
 	         "varying vec4 v_both;\n"
+	         "varying vec2 v_uv2;\n"
 	         "void main() {\n%s\n}\n", T->body);
 	for (int i = 0; i < 2; i++) {
 		GLuint s = glCreateShader(type[i]);
@@ -362,6 +446,9 @@ static GLuint build(const struct test *T)
 	glUniform1f(glGetUniformLocation(p, "u_stencil"), STENCIL);
 	glUniform1f(glGetUniformLocation(p, "u_stencilReplaceValue"), STENCIL);
 	glUniform4fv(glGetUniformLocation(p, "u_k"), 1, K);
+	glUniform4fv(glGetUniformLocation(p, "u_texclamp"), 1, TCLAMP);
+	glUniform2fv(glGetUniformLocation(p, "u_texclampoff"), 1, TCOFF);
+	glUniform3fv(glGetUniformLocation(p, "u_blendFixA"), 1, FIXA);
 	return p;
 }
 

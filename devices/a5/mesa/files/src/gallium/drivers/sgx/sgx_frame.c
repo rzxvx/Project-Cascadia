@@ -233,8 +233,9 @@ iterate_control(const struct sgx_pixel_program *p, unsigned i)
    unsigned v = p->iter_src[i];
    uint32_t w = i == p->ninputs - 1 ? ITERATE_F32_VEC4 : ITERATE_F32_VEC4_MORE;
 
-   /* (M38) as F16: format 2 (iOS's e20, s00: 2fc0x00f) */
-   if (p->f16)
+   /* (M38) as F16: format 2 (iOS's e20, s00: 2fc0x00f) -- unless the
+    * program works out a lookup's coordinates from it (M46: in_f32) */
+   if (p->f16 && !(p->in_f32 >> i & 1))
       w |= 2u << 28;
 
    if (v == SGX_ITERATE_POSITION)
@@ -254,6 +255,14 @@ iterates_colour(const struct sgx_pixel_program *p, unsigned i)
    return p->iter_src[i] != SGX_ITERATE_POSITION && p->iter_src[i] < p->ncolours;
 }
 
+/* whether input i is iterated as F16 (M38; M46: not the coordinates an
+ * F16 program works out a lookup from) */
+static bool
+iterates_f16(const struct sgx_pixel_program *p, unsigned i)
+{
+   return p->f16 && !(p->in_f32 >> i & 1);
+}
+
 /* the primary attributes the PDS fills: four an input, one a colour, one a
  * texel -- two each as F16 (M38) */
 static unsigned
@@ -262,7 +271,7 @@ pixel_pa(const struct sgx_pixel_program *p)
    unsigned n = p->f16 ? 2 * p->nfetch : p->nfetch;
 
    for (unsigned i = 0; i < p->ninputs; i++)
-      n += p->f16 ? 2 : iterates_colour(p, i) ? 1 : 4;
+      n += iterates_f16(p, i) ? 2 : iterates_colour(p, i) ? 1 : 4;
    return n;
 }
 
@@ -270,7 +279,7 @@ pixel_pa(const struct sgx_pixel_program *p)
 static unsigned
 iterate_size(const struct sgx_pixel_program *p, unsigned i)
 {
-   return p->f16 ? 0x12 : iterates_colour(p, i) ? 0x02 : 0x32;
+   return iterates_f16(p, i) ? 0x12 : iterates_colour(p, i) ? 0x02 : 0x32;
 }
 
 static uint32_t

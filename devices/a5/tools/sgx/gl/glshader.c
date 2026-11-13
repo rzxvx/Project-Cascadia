@@ -5,19 +5,21 @@
  * SGX_DEBUG=sync each render's time on the GPU.
  *
  *   sgx-gl glshader VS FS [-w W] [-h H] [-n LAYERS] [-f FRAMES] [-b] [-M]
- *                   [-T SIZE]
+ *                   [-T SIZE] [-U NAME=X[,Y,Z,W]]...
  *
  *   -n  layers a frame (10)      -f  frames, after one not counted (20)
  *   -b  blended (source alpha, one less source alpha)
  *   -M  the target's alpha kept (glColorMask(1, 1, 1, 0))
  *   -T  the texture on unit 0, SIZE x SIZE (64), bilinear
+ *   -U  a float or vector uniform set to these values (up to 8 of them)
  *
  * The vertex shader's attributes: `p` (vec4: x, y over the target, z 0.5,
  * w 1), `c` (vec4 colour, a gradient), `uv` (vec4: u, v from 0 to 1, z w
  * 0.5); its uniforms and the fragment shader's are set by type -- samplers
- * to unit 0, floats and vectors to 0.5, matrices to the identity -- so a
- * shader as an emulator made it can be dropped in with its varyings and
- * uniform names as they are. */
+ * to unit 0, floats and vectors to 0.5, matrices to the identity, unless
+ * -U names them -- so a shader as an emulator made it can be dropped in
+ * with its varyings and uniform names as they are (PPSSPP's u_texclamp at
+ * 0.5 clamps every lookup to one texel: -U u_texclamp=1,1,0.001,0.001). */
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
 #include <GLES2/gl2.h>
@@ -90,8 +92,10 @@ int main(int argc, char **argv)
 	GLint n;
 	uint8_t *img;
 	double t0 = 0, el;
+	struct { char name[64]; float v[4]; } set[8];
+	int nset = 0;
 
-	while ((opt = getopt(argc, argv, "w:h:n:f:bMT:")) != -1) {
+	while ((opt = getopt(argc, argv, "w:h:n:f:bMT:U:")) != -1) {
 		switch (opt) {
 		case 'w': w = atoi(optarg); break;
 		case 'h': h = atoi(optarg); break;
@@ -100,6 +104,19 @@ int main(int argc, char **argv)
 		case 'b': blend = 1; break;
 		case 'M': mask = 1; break;
 		case 'T': tsize = atoi(optarg); break;
+		case 'U': {
+			char *eq = strchr(optarg, '=');
+
+			if (!eq || eq - optarg >= 64 || nset == 8)
+				return fprintf(stderr, "glshader: -U NAME=X[,Y,Z,W]\n"), 2;
+			memcpy(set[nset].name, optarg, eq - optarg);
+			set[nset].name[eq - optarg] = 0;
+			memset(set[nset].v, 0, sizeof(set[nset].v));
+			sscanf(eq + 1, "%f,%f,%f,%f", &set[nset].v[0], &set[nset].v[1], &set[nset].v[2],
+			       &set[nset].v[3]);
+			nset++;
+			break;
+		}
 		default: return fprintf(stderr, "glshader: see its source for the options\n"), 2;
 		}
 	}
@@ -171,6 +188,13 @@ int main(int argc, char **argv)
 		case GL_INT: glUniform1i(loc, 1); break;
 		default: break;
 		}
+		for (int k = 0; k < nset; k++)
+			if (!strcmp(name, set[k].name)) {
+				if (type == GL_FLOAT) glUniform1fv(loc, 1, set[k].v);
+				if (type == GL_FLOAT_VEC2) glUniform2fv(loc, 1, set[k].v);
+				if (type == GL_FLOAT_VEC3) glUniform3fv(loc, 1, set[k].v);
+				if (type == GL_FLOAT_VEC4) glUniform4fv(loc, 1, set[k].v);
+			}
 	}
 	glEnableVertexAttribArray(0);
 	glEnableVertexAttribArray(1);

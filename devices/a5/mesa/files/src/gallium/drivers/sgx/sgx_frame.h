@@ -166,6 +166,10 @@ struct sgx_pixel_program {
    /* (M38) its inputs iterated and its lookups' texels fetched as F16, two
     * registers each (iOS's SDL sprite, corpus s00) */
    bool f16;
+   /* (M46) of an F16 program's inputs, those iterated as F32 all the same
+    * (bit i, four registers): the coordinates of lookups the program makes
+    * itself, worked out in F32 */
+   uint8_t in_f32;
 };
 
 /* Triangles into rt, over what it holds (each tile starts as the target's

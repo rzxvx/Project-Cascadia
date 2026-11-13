@@ -1997,6 +1997,9 @@ submit(struct sgx_context *ctx)
             return;
          }
          tex[i] = &t->base;
+         /* (M46) sampled as F16 by the program itself: 0..1 */
+         if (fs->smp_norm >> i & 1)
+            sa[fs->sampler_sa + 4 * i + 3] |= 0x80000000u;
          if (fs->scale_sa >= 0) {
             float scale[2] = { 1.0f / u_minify(t->base.width0, view->u.tex.first_level),
                                1.0f / u_minify(t->base.height0, view->u.tex.first_level) };
@@ -2030,9 +2033,29 @@ submit(struct sgx_context *ctx)
       } else if (fs->blend_sa >= 0) {
          memcpy(sa + fs->blend_sa, ctx->blend_color.color, 4 * sizeof(float));
       }
-      /* (M46) its constants */
+      /* (M46) its constants, and the pairs worked out from the uniforms
+       * (sgx_fs_derived: in order, each from words before it) */
       for (unsigned k = 0; k < 2 * fs->nkconst; k++)
          sa[fs->kconst_sa + k] = fs->kconst[k];
+      for (unsigned k = 0; k < fs->nderived; k++) {
+         const struct sgx_fs_derived *d = &fs->derived[k];
+         uint32_t *w = sa + fs->kconst_sa + 2 * d->pair;
+
+         if (d->kind == SGX_DERIVED_F16) {
+            w[0] = _mesa_float_to_half(uif(sa[d->a])) |
+                   (uint32_t)_mesa_float_to_half(uif(sa[d->a + 1])) << 16;
+            w[1] = _mesa_float_to_half(uif(sa[d->a + 2])) |
+                   (uint32_t)_mesa_float_to_half(uif(sa[d->a + 3])) << 16;
+         } else {
+            float a = d->neg_a ? -uif(sa[d->a]) : uif(sa[d->a]);
+            float bv = d->neg_b ? -uif(sa[d->b]) : uif(sa[d->b]);
+
+            w[0] = fui(d->kind == SGX_DERIVED_ADD ? a + bv :
+                       d->kind == SGX_DERIVED_MUL ? a * bv :
+                       d->kind == SGX_DERIVED_MIN ? fminf(a, bv) : fmaxf(a, bv));
+            w[1] = 0;
+         }
+      }
       simple_mtx_lock(&screen->frame_lock);
       if (sgx_frame_upload(screen->frame, &fs->prog) ||
           (vs && sgx_frame_upload_vs(screen->frame, vs))) {
@@ -2785,6 +2808,76 @@ each_on(struct sgx_context *ctx)
    return on;
 }
 
+/* SGX_DEBUG=each with SGX_EACH_VERTS=N (M46): a triangle list of N indices
+ * or vertices, its first attribute (PPSSPP's position) read back -- the
+ * triangles' extent, their areas summed (against the extent's: how many
+ * times they cover it) and the first few -- what a costly draw draws */
+static void
+each_verts(struct sgx_context *ctx, const struct pipe_draw_info *info,
+           const struct pipe_draw_start_count_bias *draw)
+{
+   static int want = -1;
+   const struct sgx_vertex_elements *ve = ctx->velems;
+   const struct pipe_vertex_element *e;
+   const struct pipe_vertex_buffer *vb;
+   const uint8_t *base, *idx = NULL;
+   float x0 = 1e30f, y0 = 1e30f, x1 = -1e30f, y1 = -1e30f, area = 0, small = 0;
+   unsigned ntri = 0;
+   size_t size;
+
+   if (want < 0)
+      want = getenv("SGX_EACH_VERTS") ? atoi(getenv("SGX_EACH_VERTS")) : 0;
+   if (!want || draw->count != (unsigned)want || info->mode != MESA_PRIM_TRIANGLES || !ve ||
+       !ve->count)
+      return;
+   e = &ve->e[0];
+   if (!(ctx->vb_mask & 1u << e->vertex_buffer_index))
+      return;
+   vb = &ctx->vb[e->vertex_buffer_index];
+   if (vb->is_user_buffer)
+      base = vb->buffer.user;
+   else if (!(base = map_buffer(vb->buffer.resource, &size)))
+      return;
+   base += vb->buffer_offset + e->src_offset;
+   if (info->index_size) {
+      if (info->has_user_indices)
+         idx = info->index.user;
+      else if (!(idx = map_buffer(info->index.resource, &size)))
+         return;
+      idx += draw->start * info->index_size;
+   }
+   for (unsigned t = 0; t + 2 < draw->count; t += 3, ntri++) {
+      float p[3][4];
+      float a;
+
+      for (unsigned k = 0; k < 3; k++) {
+         unsigned x = t + k;
+
+         if (idx)
+            x = info->index_size == 2 ? ((const uint16_t *)idx)[x] :
+                info->index_size == 1 ? idx[x] : ((const uint32_t *)idx)[x];
+         x += info->index_size ? draw->index_bias : draw->start;
+         util_format_unpack_rgba(e->src_format, p[k], base + x * e->src_stride, 1);
+         x0 = MIN2(x0, p[k][0]);
+         x1 = MAX2(x1, p[k][0]);
+         y0 = MIN2(y0, p[k][1]);
+         y1 = MAX2(y1, p[k][1]);
+      }
+      a = fabsf((p[1][0] - p[0][0]) * (p[2][1] - p[0][1]) -
+                (p[2][0] - p[0][0]) * (p[1][1] - p[0][1])) / 2;
+      area += a;
+      small += a < 1.0f;
+      if (ntri < 6)
+         mesa_logi("sgx: each: verts: triangle %u: (%.2f %.2f %.3f %.2f) (%.2f %.2f %.3f %.2f) "
+                   "(%.2f %.2f %.3f %.2f)", ntri, p[0][0], p[0][1], p[0][2], p[0][3], p[1][0],
+                   p[1][1], p[1][2], p[1][3], p[2][0], p[2][1], p[2][2], p[2][3]);
+   }
+   mesa_logi("sgx: each: verts: %u triangles (%s, stride %u), x %.2f..%.2f, y %.2f..%.2f, "
+             "their areas %.1f (%.2f times the extent's), %.0f under one unit",
+             ntri, util_format_short_name(e->src_format), e->src_stride, x0, x1, y0, y1, area,
+             (x1 - x0) * (y1 - y0) > 0 ? area / ((x1 - x0) * (y1 - y0)) : 0.0f, small);
+}
+
 /* SGX_DEBUG=each (M46): the draw just gathered, a render of its own -- what
  * it was (its fragment shader as sgx_create_shader_state named it, its
  * pixel program), and with sync the render's time on the GPU after it */
@@ -2797,8 +2890,10 @@ each_draw(struct sgx_context *ctx, const struct pipe_draw_info *info,
    unsigned n = 0;
    char eq[160] = "";
 
-   for (unsigned i = 0; i < num_draws; i++)
+   for (unsigned i = 0; i < num_draws; i++) {
       n += draws[i].count;
+      each_verts(ctx, info, &draws[i]);
+   }
    /* (the equation when the program blends in F32) */
    if (rt && rt->blend_enable && !(fs && fs->sop2))
       snprintf(eq, sizeof(eq), " [%s %s %s | a %s %s %s]",

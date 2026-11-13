@@ -147,6 +147,10 @@ struct comp {
     * path's) -- the driver's to write per draw */
    uint32_t kconst[2 * SGX_FS_MAX_KCONST];
    unsigned nkconst, kconst_sa;
+   /* (M46) the pool's pairs the draw works out (bit k: pair k is one) */
+   struct sgx_fs_derived derived[SGX_FS_MAX_DERIVED];
+   unsigned nderived;
+   uint32_t kconst_derived;
    /* GL's blending by a SOP2 on the colour packed to bytes and the tile's
     * (o0): src1 the colour unless swapped (M25) */
    bool sop2, sop2_swap;
@@ -157,6 +161,14 @@ struct comp {
    bool sop2_pre_src, sop2_pre_dst, sop2_post;
    struct usse_sop2 sop2_src_f, sop2_dst_f, sop2_post_f;
    bool f16;                            /* the whole program F16's (M38: f16_colour) */
+   /* (M46) an F16 program's lookups at coordinates it works out: their
+    * varyings iterated as F32 (input i: bit i), each input's first primary
+    * attribute then, the PDS's texels' first, and where the instructions
+    * that write the output start (the sampler's 2x2 blocks: skipinv) */
+   uint8_t in_f32;
+   uint8_t smp_norm;                    /* (M46) slots whose state says F16, 0..1 */
+   unsigned in_pa[SGX_FRAME_MAX_VARYINGS], fetch_pa;
+   unsigned f16_out_at;
    int logicop;                         /* GL's logic op (pipe_logicop), -1 none (M37) */
    struct operand colour[4];
    bool have_colour[4];
@@ -3373,9 +3385,18 @@ struct f16g {
    unsigned nmade;
    struct {
       unsigned word;                    /* a uniform vec4's first sa word */
-      uint8_t pair;
+      struct usse_reg reg;              /* its four F16 */
    } packed[8];
    unsigned npacked;
+   /* (M46) the F32 values of lookups' coordinates worked out, where; the
+    * odd half of a pair taken for them, or -1 */
+   struct {
+      nir_def *def;
+      uint8_t comp;
+      struct usse_reg reg;
+   } f32made[16];
+   unsigned nf32made;
+   int f32_spare;
    bool failed;
 };
 
@@ -3425,7 +3446,7 @@ f16_pool(struct comp *c, const uint16_t h[4])
    unsigned k;
 
    for (k = 0; k < c->nkconst; k++)
-      if (c->kconst[2 * k] == lo && c->kconst[2 * k + 1] == hi)
+      if (!(c->kconst_derived >> k & 1) && c->kconst[2 * k] == lo && c->kconst[2 * k + 1] == hi)
          return c->kconst_sa + 2 * k;
    if (k == SGX_FS_MAX_KCONST || c->kconst_sa + 2 * (k + 1) > 128)
       return -1;
@@ -3435,22 +3456,73 @@ f16_pool(struct comp *c, const uint16_t h[4])
    return c->kconst_sa + 2 * k;
 }
 
-/* a uniform's vec4 (from sa word w0) as F16, packed once */
+/* (M46) a pair of the constant pool that the draw works out from the sa
+ * words before it (sgx_fs_derived): its first word, or -1 when the pool is
+ * full.  SGX_NO_DERIVED=1: none, the program works them out. */
 static int
-f16_uniform(struct f16g *g, unsigned w0)
+f16_derived(struct comp *c, unsigned kind, unsigned a, bool neg_a, unsigned b, bool neg_b)
+{
+   unsigned k = c->nkconst;
+
+   if (getenv("SGX_NO_DERIVED"))
+      return -1;
+   for (unsigned i = 0; i < c->nderived; i++) {
+      const struct sgx_fs_derived *d = &c->derived[i];
+
+      if (d->kind == kind && d->a == a && d->b == b && d->neg_a == neg_a && d->neg_b == neg_b)
+         return c->kconst_sa + 2 * d->pair;
+   }
+   if (k == SGX_FS_MAX_KCONST || c->kconst_sa + 2 * (k + 1) > 128 ||
+       c->nderived == SGX_FS_MAX_DERIVED)
+      return -1;
+   c->kconst[2 * k] = c->kconst[2 * k + 1] = 0;
+   c->kconst_derived |= 1u << k;
+   c->nkconst++;
+   c->derived[c->nderived++] = (struct sgx_fs_derived){ kind, k, a, b, neg_a, neg_b };
+   return c->kconst_sa + 2 * k;
+}
+
+/* whether sa word w is a uniform's, or the first of a pair the draw works
+ * out -- what a derived pair may be made of */
+static bool
+f16_derivable(const struct comp *c, struct usse_reg r)
+{
+   if (r.bank != USSE_SA || r.abs)
+      return false;
+   if (r.num < c->sa_uniforms)
+      return true;
+   for (unsigned i = 0; i < c->nderived; i++)
+      if (r.num == c->kconst_sa + 2 * c->derived[i].pair &&
+          c->derived[i].kind != SGX_DERIVED_F16)
+         return true;
+   return false;
+}
+
+/* a uniform's vec4 (from sa word w0) as F16: a pair of the pool the draw
+ * packs (M46) -- else packed by the program, for every pixel, once */
+static bool
+f16_uniform(struct f16g *g, unsigned w0, struct usse_reg *r)
 {
    unsigned p;
+   int w;
 
    for (unsigned k = 0; k < g->npacked; k++)
-      if (g->packed[k].word == w0)
-         return g->packed[k].pair;
+      if (g->packed[k].word == w0) {
+         *r = g->packed[k].reg;
+         return true;
+      }
    if (g->npacked == ARRAY_SIZE(g->packed))
-      return -1;
-   p = f16_temp(g);
-   emit(g->c, usse_pack_f16(f16_reg(g, p), usse_reg(USSE_SA, w0), 0xf));
+      return false;
+   if ((w = f16_derived(g->c, SGX_DERIVED_F16, w0, false, 0, false)) >= 0) {
+      *r = usse_reg(USSE_SA, w);
+   } else {
+      p = f16_temp(g);
+      emit(g->c, usse_pack_f16(f16_reg(g, p), usse_reg(USSE_SA, w0), 0xf));
+      *r = f16_reg(g, p);
+   }
    g->packed[g->npacked].word = w0;
-   g->packed[g->npacked++].pair = p;
-   return p;
+   g->packed[g->npacked++].reg = *r;
+   return true;
 }
 
 enum f16_kind { F16K_NONE, F16K_REG, F16K_CONST, F16K_UNIFORM, F16K_ALU };
@@ -3494,7 +3566,7 @@ f16_leaf(struct f16g *g, nir_scalar s)
       for (unsigned k = 0; k < c->nfetch; k++)
          if (&c->fetch[k]->instr == nir_def_instr(s.def) && s.comp < 4) {
             l.kind = F16K_REG;
-            l.reg = usse_reg(USSE_PA, 2 * c->ninputs + 2 * k);
+            l.reg = usse_reg(USSE_PA, c->fetch_pa + 2 * k);
             l.lane = s.comp;
          }
       return l;
@@ -3506,9 +3578,11 @@ f16_leaf(struct f16g *g, nir_scalar s)
          int slot = input_slot(in);
          unsigned comp = nir_intrinsic_component(in) + s.comp;
 
-         if (slot >= 0 && c->input_of_slot[slot] >= 0 && comp < 4) {
+         /* (not a varying iterated F32 for a lookup's coordinates, M46) */
+         if (slot >= 0 && c->input_of_slot[slot] >= 0 && comp < 4 &&
+             !(c->in_f32 >> c->input_of_slot[slot] & 1)) {
             l.kind = F16K_REG;
-            l.reg = usse_reg(USSE_PA, 2 * c->input_of_slot[slot]);
+            l.reg = usse_reg(USSE_PA, c->in_pa[c->input_of_slot[slot]]);
             l.lane = comp;
          }
       } else if (in->intrinsic == nir_intrinsic_load_uniform && nir_src_is_const(in->src[0])) {
@@ -3735,15 +3809,58 @@ f16_into(struct f16g *g, const nir_scalar *s, const uint8_t *csel, unsigned mask
          struct f16o oa, ob, od;
          unsigned t = pair;
 
+         uint8_t cb[4];
+         bool promoted = false;
+
          u_foreach_bit(j, group) {
             a[j] = nir_scalar_chase_alu_src(l[j].s, 0);
             b[j] = nir_scalar_chase_alu_src(l[j].s, 1);
             if (key == nir_op_ffma)
                d[j] = nir_scalar_chase_alu_src(l[j].s, 2);
          }
+         /* (M46) lanes whose own value is what the others' operand pi is
+          * (the same operation): times 1 (plus 0) here, their value that
+          * operand's lane -- God of War's (p * t).rgb * fix with (p * t).a:
+          * p * t once for the four lanes, then times fix.xyz1 (src1's
+          * constant), where each operand taken lane by lane needed two
+          * moves.  SGX_F16_NO_PROMOTE=1: as before */
+         if ((key == nir_op_fmul || key == nir_op_fadd) && !getenv("SGX_F16_NO_PROMOTE")) {
+            for (unsigned pi = 0; pi < 2 && !promoted; pi++) {
+               nir_scalar pa_[4], pb_[4];
+               unsigned xs = 0, ys = 0;
+               struct f16o probe;
+
+               u_foreach_bit(j, group) {
+                  struct f16leaf in = f16_leaf(g, nir_scalar_chase_alu_src(l[j].s, pi));
+
+                  if (in.kind == F16K_ALU && in.op == key)
+                     xs |= 1u << j;
+                  else
+                     ys |= 1u << j;
+               }
+               if (!xs || !ys)
+                  continue;
+               memset(cb, F16_NO_SEL, 4);
+               u_foreach_bit(j, xs) {
+                  pa_[j] = nir_scalar_chase_alu_src(l[j].s, pi);
+                  pb_[j] = nir_scalar_chase_alu_src(l[j].s, 1 - pi);
+               }
+               u_foreach_bit(j, ys) {
+                  pa_[j] = pb_[j] = l[j].s;
+                  cb[j] = key == nir_op_fmul ? F16_SEL_1 : F16_SEL_0;
+               }
+               /* (only when the other operand is one as it is) */
+               if (!f16_operand_x(g, pb_, cb, group, &probe, false))
+                  continue;
+               memcpy(a, pa_, sizeof(a));
+               memcpy(b, pb_, sizeof(b));
+               promoted = true;
+            }
+         }
          if (key == nir_op_ffma)
             t = f16_temp(g);
-         if (!f16_operand(g, a, NULL, group, &oa) || !f16_operand(g, b, NULL, group, &ob))
+         if (!f16_operand(g, a, NULL, group, &oa) ||
+             !f16_operand(g, b, promoted ? cb : NULL, group, &ob))
             return false;
          if (key == nir_op_fsub)
             ob.neg = !ob.neg;
@@ -3838,7 +3955,6 @@ f16_operand_x(struct f16g *g, const nir_scalar *s, const uint8_t *csel, unsigned
    }
    for (unsigned i = 0; i < 4 && single; i++) {
       struct usse_reg r;
-      int pu;
 
       if (!(mask & 1u << i) || (csel && csel[i] != F16_NO_SEL))
          continue;
@@ -3846,9 +3962,8 @@ f16_operand_x(struct f16g *g, const nir_scalar *s, const uint8_t *csel, unsigned
       case F16K_REG:
       case F16K_UNIFORM:
          if (l[i].kind == F16K_UNIFORM) {
-            if ((pu = f16_uniform(g, l[i].word & ~3u)) < 0)
+            if (!f16_uniform(g, l[i].word & ~3u, &r))
                return false;
-            r = f16_reg(g, pu);
             o->sw[i] = l[i].word & 3;
          } else {
             r = l[i].reg;
@@ -3900,12 +4015,198 @@ f16_operand_x(struct f16g *g, const nir_scalar *s, const uint8_t *csel, unsigned
    return true;
 }
 
+/* (M46) A lookup an F16 program makes itself, at coordinates it works out
+ * (PPSSPP's TClampST programs clamp them to a texture's rectangle: 23
+ * instructions in F32, its texture times colour 11 of them): the
+ * coordinates in F32 into a pair, the texel four F16 into another as the
+ * PDS's are -- a plain 2D lookup of a texture of 8-bit channels. */
+static bool
+f16_lookup_ok(const struct comp *c, const nir_tex_instr *tex)
+{
+   int coord = nir_tex_instr_src_index(tex, nir_tex_src_coord);
+
+   for (unsigned i = 0; i < tex->num_srcs; i++)
+      if (tex->src[i].src_type != nir_tex_src_coord)
+         return false;
+   return tex->op == nir_texop_tex && tex->sampler_dim == GLSL_SAMPLER_DIM_2D &&
+          !tex->is_shadow && !tex->is_array && coord >= 0 &&
+          tex->src[coord].src.ssa->num_components == 2 && tex->texture_index < MAX_UNITS &&
+          c->slot_of_unit[tex->texture_index] >= 0 &&
+          !((c->fs->blend.tex_f16 | c->fs->blend.tex_depth) >> tex->texture_index & 1);
+}
+
+/* the varyings a coordinate of such a lookup reads, marked to be iterated
+ * as F32 (in_f32) -- false if it reads anything but varyings, uniforms and
+ * fadd, fmul, fmin, fmax and fneg of them */
+static bool
+f16_coord_inputs(struct comp *c, nir_scalar s, unsigned depth)
+{
+   s = nir_scalar_chase_movs(s);
+   if (depth > 8)
+      return false;
+   if (nir_scalar_is_alu(s)) {
+      nir_op op = nir_scalar_alu_op(s);
+
+      if (op != nir_op_fadd && op != nir_op_fmul && op != nir_op_fmin && op != nir_op_fmax &&
+          op != nir_op_fneg)
+         return false;
+      for (unsigned i = 0; i < nir_op_infos[op].num_inputs; i++)
+         if (!f16_coord_inputs(c, nir_scalar_chase_alu_src(s, i), depth + 1))
+            return false;
+      return true;
+   }
+   if (nir_scalar_is_intrinsic(s)) {
+      nir_intrinsic_instr *in = nir_def_as_intrinsic(s.def);
+
+      if (in->intrinsic == nir_intrinsic_load_input) {
+         int slot = input_slot(in);
+
+         if (slot < 0 || c->input_of_slot[slot] < 0)
+            return false;
+         c->in_f32 |= 1u << c->input_of_slot[slot];
+         return true;
+      }
+      return in->intrinsic == nir_intrinsic_load_uniform && nir_src_is_const(in->src[0]);
+   }
+   return false;
+}
+
+/* an F32 temporary: the halves of the pairs f16_temp() hands out */
+static struct usse_reg
+f16_f32_temp(struct f16g *g)
+{
+   unsigned p;
+
+   if (g->f32_spare >= 0) {
+      struct usse_reg r = treg(g->c, g->f32_spare);
+
+      g->f32_spare = -1;
+      return r;
+   }
+   p = f16_temp(g);
+   g->f32_spare = 2 * p + 1;
+   return treg(g->c, 2 * p);
+}
+
+/* s's F32 value, part of a lookup's coordinates, in *out: a varying
+ * f16_coord_inputs() marked (its four F32 in pa), a uniform (sa), or
+ * fadd, fmul, fmin, fmax of such values -- an fneg the operand's
+ * negation -- each operation worked out once, into a temporary of its own
+ * or, at the root, into *dest (the lookup's coordinate registers: no move
+ * after).  False on anything else. */
+static bool
+f16_coord(struct f16g *g, nir_scalar s, const struct usse_reg *dest, struct usse_reg *out)
+{
+   struct comp *c = g->c;
+   struct usse_reg r;
+
+   s = nir_scalar_chase_movs(s);
+   if (nir_scalar_is_alu(s)) {
+      nir_op op = nir_scalar_alu_op(s);
+      enum usse_nmad_op nop;
+      struct usse_reg a, b, t, d;
+
+      if (op == nir_op_fneg) {
+         if (dest || !f16_coord(g, nir_scalar_chase_alu_src(s, 0), NULL, out))
+            return false;
+         out->neg = !out->neg;
+         return true;
+      }
+      for (unsigned k = 0; k < g->nf32made; k++)
+         if (g->f32made[k].def == s.def && g->f32made[k].comp == s.comp) {
+            r = g->f32made[k].reg;
+            goto have;
+         }
+      switch (op) {
+      case nir_op_fadd: nop = USSE_NMAD_ADD; break;
+      case nir_op_fmul: nop = USSE_NMAD_MUL; break;
+      case nir_op_fmin: nop = USSE_NMAD_MIN; break;
+      case nir_op_fmax: nop = USSE_NMAD_MAX; break;
+      default: return false;
+      }
+      if (!f16_coord(g, nir_scalar_chase_alu_src(s, 0), NULL, &a) ||
+          !f16_coord(g, nir_scalar_chase_alu_src(s, 1), NULL, &b))
+         return false;
+      /* the second source takes no negation: swap (all four commute), and
+       * a product of two negations is the product (binary()'s) */
+      if (b.neg && !a.neg) {
+         t = a;
+         a = b;
+         b = t;
+      }
+      if (nop == USSE_NMAD_MUL && a.neg && b.neg)
+         a.neg = b.neg = false;
+      /* (the same for every pixel -- of uniforms, PPSSPP's size less half
+       * a texel: a pair the draw works out) */
+      if (f16_derivable(c, a) && f16_derivable(c, b)) {
+         static const uint8_t kinds[] = {
+            [USSE_NMAD_ADD] = SGX_DERIVED_ADD, [USSE_NMAD_MUL] = SGX_DERIVED_MUL,
+            [USSE_NMAD_MIN] = SGX_DERIVED_MIN, [USSE_NMAD_MAX] = SGX_DERIVED_MAX,
+         };
+         int w = f16_derived(c, kinds[nop], a.num, a.neg, b.num, b.neg);
+
+         if (w >= 0) {
+            r = usse_reg(USSE_SA, w);
+            if (g->nf32made < ARRAY_SIZE(g->f32made)) {
+               g->f32made[g->nf32made].def = s.def;
+               g->f32made[g->nf32made].comp = s.comp;
+               g->f32made[g->nf32made++].reg = r;
+            }
+            goto have;
+         }
+      }
+      if (b.neg)
+         return false;
+      d = dest ? *dest : f16_f32_temp(g);
+      emit(c, usse_fop(nop, d, a, b));
+      if (g->nf32made < ARRAY_SIZE(g->f32made)) {
+         g->f32made[g->nf32made].def = s.def;
+         g->f32made[g->nf32made].comp = s.comp;
+         g->f32made[g->nf32made++].reg = d;
+      }
+      *out = d;
+      return true;
+   }
+   if (!nir_scalar_is_intrinsic(s))
+      return false;
+   {
+      nir_intrinsic_instr *in = nir_def_as_intrinsic(s.def);
+
+      if (in->intrinsic == nir_intrinsic_load_input) {
+         int slot = input_slot(in);
+         unsigned comp = nir_intrinsic_component(in) + s.comp;
+
+         if (slot < 0 || c->input_of_slot[slot] < 0 || comp >= 4 ||
+             !(c->in_f32 >> c->input_of_slot[slot] & 1))
+            return false;
+         r = usse_reg(USSE_PA, c->in_pa[c->input_of_slot[slot]] + comp);
+      } else if (in->intrinsic == nir_intrinsic_load_uniform && nir_src_is_const(in->src[0])) {
+         unsigned at = (nir_intrinsic_base(in) + nir_src_as_uint(in->src[0])) * 4 + s.comp;
+
+         if (at >= c->sa_uniforms)
+            return false;
+         r = usse_reg(USSE_SA, at);
+      } else {
+         return false;
+      }
+   }
+have:
+   if (dest) {
+      emit(c, usse_fmov(*dest, r));
+      r = *dest;
+   }
+   *out = r;
+   return true;
+}
+
 static bool
 f16_colour(struct comp *c, nir_function_impl *impl)
 {
    nir_intrinsic_instr *out = NULL;
    struct usse_reg o0 = usse_reg(USSE_OUTPUT, 0), colour;
-   struct f16g g = { .c = c };
+   struct f16g g = { .c = c, .f32_spare = -1 };
+   nir_tex_instr *lookups[4];
+   unsigned nlookups = 0, pa = 0, high = 0;
    nir_scalar s[4];
    struct f16o col;
 
@@ -3928,8 +4229,14 @@ f16_colour(struct comp *c, nir_function_impl *impl)
                return false;
             }
          } else if (instr->type == nir_instr_type_tex) {
-            if (!is_fetch(c, instr))
+            /* (M46) or a lookup at coordinates the program works out
+             * (SGX_NO_F16_SMP=1: not in F16) */
+            if (!is_fetch(c, instr) &&
+                (getenv("SGX_NO_F16_SMP") || nlookups == ARRAY_SIZE(lookups) ||
+                 !f16_lookup_ok(c, nir_instr_as_tex(instr))))
                return false;
+            if (!is_fetch(c, instr))
+               lookups[nlookups++] = nir_instr_as_tex(instr);
          } else if (instr->type != nir_instr_type_alu &&
                     instr->type != nir_instr_type_load_const) {
             return false;
@@ -3941,13 +4248,88 @@ f16_colour(struct comp *c, nir_function_impl *impl)
    for (unsigned i = 0; i < c->ninputs; i++)
       if (c->fs->input_slot[i] == VARYING_SLOT_POS)
          return false;
+   /* (M46) the varyings the lookups' coordinates read iterated as F32 --
+    * those only: the colour's leaves refuse them (f16_leaf()) */
+   c->in_f32 = 0;
+   for (unsigned k = 0; k < nlookups; k++) {
+      int ci = nir_tex_instr_src_index(lookups[k], nir_tex_src_coord);
 
-   /* the code: inputs in pa(2i), texels after them, two registers each;
-    * the pool's pairs after the program's other sa words */
+      for (unsigned i = 0; i < 2; i++)
+         if (!f16_coord_inputs(c, nir_get_scalar(lookups[k]->src[ci].src.ssa, i), 0)) {
+            c->in_f32 = 0;
+            return false;
+         }
+   }
+
+   /* the code: the inputs in pa, two registers each (four an F32 one), the
+    * texels after them, two each; the pool's pairs after the program's
+    * other sa words */
+   for (unsigned i = 0; i < c->ninputs; i++) {
+      c->in_pa[i] = pa;
+      pa += c->in_f32 >> i & 1 ? 4 : 2;
+   }
+   c->fetch_pa = pa;
    c->nkconst = 0;
    c->kconst_sa = align(fs_sa_end(c), 2);
    util_dynarray_init(&c->code, NULL);
    emit(c, USSE_PHAS);
+   /* (M46) the program's own lookups first: each coordinate worked out
+    * into its register of a pair, then SMP's texel four F16 into another
+    * pair -- a value of the colour's tree as the PDS's texels are.  The
+    * texels' pairs first: what the coordinates took is the tree's again
+    * after the last SMP (it has the coordinates by then, as the F32 way's
+    * scratch registers) -- 18 temporaries a pixel were 10 */
+   for (unsigned k = 0; k < nlookups; k++)
+      f16_temp(&g);
+   for (unsigned k = 0; k < nlookups; k++) {
+      nir_tex_instr *tex = lookups[k];
+      int ci = nir_tex_instr_src_index(tex, nir_tex_src_coord);
+      unsigned cp = f16_temp(&g), tp = k;
+      struct usse_reg r;
+
+      for (unsigned i = 0; i < 2; i++) {
+         struct usse_reg d = treg(c, 2 * cp + i);
+
+         if (!f16_coord(&g, nir_get_scalar(tex->src[ci].src.ssa, i), &d, &r))
+            goto fail;
+      }
+      emit(c, usse_smp2d(USSE_SMP_F16, USSE_SMP_COORD_F32, f16_reg(&g, tp), treg(c, 2 * cp),
+                         usse_reg(USSE_SA, c->sampler_sa + 4 * c->slot_of_unit[tex->texture_index]),
+                         USSE_SMP_NONE, treg(c, 0)));
+      emit(c, USSE_WDF0);
+      /* (0..1: the texture's state word 3 bit 31, as the PDS's F16 lookups
+       * have it (smp_norm, the draw's) -- without it the sampler hands an
+       * 8-bit channel back as its integer value, as for F32 (texture()).
+       * SGX_F16_SMP_SCALE=1: times F16's 1/255 instead, which takes 255 to
+       * 1.0 exactly) */
+      if (!getenv("SGX_F16_SMP_SCALE")) {
+         c->smp_norm |= 1u << c->slot_of_unit[tex->texture_index];
+      } else {
+         uint16_t h = _mesa_float_to_half(1.0f / 255.0f);
+         const uint16_t k255[4] = { h, h, h, h };
+         int w = f16_pool(c, k255);
+
+         if (w < 0)
+            goto fail;
+         emit(c, usse_hop(USSE_NMAD_MUL, f16_reg(&g, tp), f16_reg(&g, tp), usse_reg(USSE_SA, w)));
+      }
+      for (unsigned i = 0; i < 4; i++) {
+         if (g.nmade == F16_MAX_MADE)
+            goto fail;
+         g.made[g.nmade].def = &tex->def;
+         g.made[g.nmade].comp = i;
+         g.made[g.nmade].pair = tp;
+         g.made[g.nmade++].lane = i;
+      }
+      c->smp = true;
+   }
+   if (nlookups) {
+      high = g.ntemp;
+      g.ntemp = nlookups;
+      g.f32_spare = -1;
+      g.nf32made = 0;
+      g.npacked = 0;
+   }
    for (unsigned i = 0; i < 4; i++)
       s[i] = nir_get_scalar(out->src[0].ssa, i);
    if (!f16_operand(&g, s, NULL, 0xf, &col))
@@ -3968,18 +4350,25 @@ f16_colour(struct comp *c, nir_function_impl *impl)
       struct usse_reg t2 = c->sop2_post ? f16_reg(&g, f16_temp(&g)) : packed;
 
       emit(c, usse_pack_unorm8_f16(packed, colour));
+      c->f16_out_at = util_dynarray_num_elements(&c->code, uint64_t);
       emit_sop2(c, packed, t1, t2);
    } else {
+      c->f16_out_at = util_dynarray_num_elements(&c->code, uint64_t);
       emit(c, usse_pack_unorm8_f16(o0, colour) | USSE_END);
    }
    if (g.failed)
       goto fail;
-   c->top = MAX2(c->top, 2 * g.ntemp);
+   c->top = MAX2(c->top, 2 * MAX2(g.ntemp, high));
    c->f16 = true;
    return true;
 fail:
    util_dynarray_fini(&c->code);
    c->nkconst = 0;
+   c->nderived = 0;
+   c->kconst_derived = 0;
+   c->in_f32 = 0;
+   c->smp_norm = 0;
+   c->smp = false;
    return false;
 }
 
@@ -4481,7 +4870,8 @@ compile_fs(const nir_shader *fs, const struct sgx_blend_key *blend, char *why,
    NIR_PASS(_, s, nir_shader_intrinsics_pass, lower_front_face, nir_metadata_control_flow, NULL);
    if (!translate(&c, s))
       goto out;
-   out_at = util_dynarray_num_elements(&c.code, uint64_t);
+   /* (an F16 program's output is written by now: M46, f16_out_at) */
+   out_at = c.f16 ? c.f16_out_at : util_dynarray_num_elements(&c.code, uint64_t);
    if (!c.f16)
       output(&c);
    if (c.failed)
@@ -4494,6 +4884,8 @@ compile_fs(const nir_shader *fs, const struct sgx_blend_key *blend, char *why,
       goto out;
    }
    c.fs->prog.f16 = c.f16;
+   c.fs->prog.in_f32 = c.f16 ? c.in_f32 : 0;
+   c.fs->smp_norm = c.f16 ? c.smp_norm : 0;
 
    c.fs->prog.ncode = util_dynarray_num_elements(&c.code, uint64_t);
    c.fs->prog.code = MALLOC(c.fs->prog.ncode * sizeof(uint64_t));
@@ -4608,6 +5000,8 @@ compile_fs(const nir_shader *fs, const struct sgx_blend_key *blend, char *why,
       c.fs->kconst_sa = c.kconst_sa;
       c.fs->nkconst = c.nkconst;
       memcpy(c.fs->kconst, c.kconst, 2 * c.nkconst * sizeof(uint32_t));
+      c.fs->nderived = c.nderived;
+      memcpy(c.fs->derived, c.derived, c.nderived * sizeof(c.derived[0]));
    }
    c.fs->blend_sa = c.blend_sa;
    c.fs->scale_sa = c.scale_sa;

@@ -91,6 +91,20 @@ struct sgx_blend_key {
 #define SGX_FS_SIZE_WORDS 8
 #define SGX_FS_MAX_KCONST 16
 
+/* (M46) A pair of the constant pool that the draw works out from the sa
+ * words before it (the uniforms, the pool's pairs before it): what the
+ * program would work out the same for every pixel -- an F32 sum, product,
+ * min or max of two words (each maybe negated), the second word 0; or the
+ * four words from a as four F16 (a uniform vec4 an F16 program reads) */
+enum sgx_derived_kind {
+   SGX_DERIVED_ADD, SGX_DERIVED_MUL, SGX_DERIVED_MIN, SGX_DERIVED_MAX, SGX_DERIVED_F16,
+};
+struct sgx_fs_derived {
+   uint8_t kind, pair, a, b;
+   bool neg_a, neg_b;
+};
+#define SGX_FS_MAX_DERIVED 8
+
 struct sgx_fs {
    struct sgx_pixel_program prog;
    unsigned input_slot[SGX_FRAME_MAX_VARYINGS];   /* gl_varying_slot, input i */
@@ -110,6 +124,12 @@ struct sgx_fs {
     * and 0, or four F16): the draw writes them with the uniforms */
    uint32_t kconst[2 * SGX_FS_MAX_KCONST];
    unsigned nkconst, kconst_sa;
+   /* (M46) the texture slots the program samples itself as F16: the draw
+    * sets their state word 3's bit 31 (0..1, as the PDS's F16 lookups) */
+   uint8_t smp_norm;
+   /* (M46) the pool's pairs the draw works out, in order */
+   struct sgx_fs_derived derived[SGX_FS_MAX_DERIVED];
+   unsigned nderived;
    /* (M39) each varying's SGX_FIX_*, in varying_slot[]'s order */
    uint8_t vary_fix[SGX_FRAME_MAX_VARYINGS];
    uint8_t vary_unit[SGX_FRAME_MAX_VARYINGS];
