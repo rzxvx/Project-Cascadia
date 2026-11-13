@@ -19,6 +19,7 @@
 #include "sgx_draw.h"
 
 #include <errno.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -703,11 +704,16 @@ sgx_draw_fini(struct sgx_context *ctx)
 
 /* ---- draw_vbo ----------------------------------------------------------- */
 
+static bool texclamp_does_nothing(struct sgx_context *ctx, const struct pipe_draw_info *info,
+                                  const struct pipe_draw_start_count_bias *draws,
+                                  unsigned num_draws);
+
 /* The fragment shader as this draw runs it: compiled with the bound blend
  * state folded in (a variant made at the first draw that needs it), or
  * NULL for M13a's way. */
 static struct sgx_fs *
-fs_for_draw(struct sgx_context *ctx)
+fs_for_draw(struct sgx_context *ctx, const struct pipe_draw_info *info,
+            const struct pipe_draw_start_count_bias *draws, unsigned num_draws)
 {
    struct sgx_shader *sh = ctx->fs;
    const struct pipe_rt_blend_state *rt = ctx->blend ? &ctx->blend->rt[0] : NULL;
@@ -800,9 +806,33 @@ fs_for_draw(struct sgx_context *ctx)
    if (ctx->rast && ctx->rast->front_ccw &&
        BITSET_TEST(sh->nir->info.system_values_read, SYSTEM_VALUE_FRONT_FACE))
       key.front_ccw = 1;
+   /* (M46) a TClampST lookup whose clamp does nothing in this draw: the
+    * PDS's, at the varying */
+   if (sh->has_texclamp) {
+      int64_t t0 = os_time_get_nano();
+      static const char *off_file = (const char *)-1;
+      static int64_t off_at;
+      static bool off;
+
+      /* SGX_TEXCLAMP_OFF_FILE=path: every clamp kept while that file is
+       * there (looked for once a second) -- the two compared in one run */
+      if (off_file == (const char *)-1)
+         off_file = getenv("SGX_TEXCLAMP_OFF_FILE");
+      if (off_file && t0 - off_at > 1000000000ll) {
+         off_at = t0;
+         off = access(off_file, F_OK) == 0;
+      }
+      if (!(off_file && off) && texclamp_does_nothing(ctx, info, draws, num_draws)) {
+         key.texclamp_free = 1u << sh->texclamp.unit;
+         ctx->stat_clamp_free++;
+      } else {
+         ctx->stat_clamp_kept++;
+      }
+      ctx->stat_clamp_ns += os_time_get_nano() - t0;
+   }
    if (!key.enable && key.colormask == 0xf && !key.tex_swap && !key.tex_x8 && !key.tex_srgb &&
        !key.front_ccw && !key.logicop && !key.tex_depth && !key.tex_swz && !key.tex_f16 &&
-       !key.rt_kind && !key.rt_srgb && !key.rt_intensity)
+       !key.rt_kind && !key.rt_srgb && !key.rt_intensity && !key.texclamp_free)
       return sh->compiled;
    /* (the key is bytes, no padding) */
    for (unsigned i = 0; i < sh->nvariants; i++)
@@ -852,6 +882,236 @@ static const void *
 map_buffer(struct pipe_resource *prsc, size_t *size)
 {
    return map_buffer_range(prsc, size, 0, ~0u);
+}
+
+/* (M46) the bytes [lo, hi) of a vertex or index buffer as the CPU reads
+ * them in place (sgx_buffer_read_in_place: PPSSPP's push buffers are the
+ * GPU copy itself, write-combined) -- the pointer is byte 0's */
+static const uint8_t *
+read_in_place(const struct pipe_vertex_buffer *vb, struct pipe_resource *res, uint64_t lo,
+              uint64_t hi)
+{
+   if (vb && vb->is_user_buffer)
+      return vb->buffer.user;
+   if (!res || hi > res->width0)
+      return NULL;
+   return sgx_buffer_read_in_place(sgx_resource(res), lo, hi);
+}
+
+/* (M46) the smallest and largest index of a draw (the restart index
+ * aside), read 256 at a time out of the buffer: 1, or 0 if it has none, -1
+ * if they cannot be read */
+static int
+index_bounds(const struct pipe_draw_info *info, const struct pipe_draw_start_count_bias *d,
+             uint32_t *mn, uint32_t *mx)
+{
+   unsigned isz = info->index_size;
+   const uint8_t *idx;
+
+   if (info->index_bounds_valid) {
+      *mn = info->min_index;
+      *mx = info->max_index;
+      return *mn <= *mx;
+   }
+   if (info->has_user_indices)
+      idx = info->index.user;
+   else if (!(idx = read_in_place(NULL, info->index.resource, (uint64_t)d->start * isz,
+                                  (uint64_t)(d->start + d->count) * isz)))
+      return -1;
+   if (!idx)
+      return -1;
+   idx += (size_t)d->start * isz;
+   *mn = ~0u;
+   *mx = 0;
+   for (unsigned k = 0; k < d->count; k += 256) {
+      unsigned n = MIN2(256, d->count - k);
+      uint32_t chunk[256];
+
+      /* (a copy first: write-combined memory read in bursts) */
+      memcpy(chunk, idx + (size_t)k * isz, n * isz);
+      for (unsigned j = 0; j < n; j++) {
+         uint32_t x = isz == 2 ? ((const uint16_t *)chunk)[j] :
+                      isz == 1 ? ((const uint8_t *)chunk)[j] : chunk[j];
+
+         if (info->primitive_restart && x == info->restart_index)
+            continue;
+         *mn = MIN2(*mn, x);
+         *mx = MAX2(*mx, x);
+      }
+   }
+   return *mn <= *mx;
+}
+
+/* (M46) the smallest and largest of the bound vertex shader's varyings
+ * tc->slot[c], tc->comp[c] (the coordinates with need[c]) over the draws'
+ * vertices: each a copy of an attribute's component (sgx_vs_varying_attr),
+ * read where it is -- for an indexed draw over the vertices from its
+ * smallest index to its largest.  What a pixel gets is a mix of its
+ * triangle's vertices' values, inside these.  false if that cannot be told */
+static bool
+varying_ranges(struct sgx_context *ctx, const struct pipe_draw_info *info,
+               const struct pipe_draw_start_count_bias *draws, unsigned num_draws,
+               const struct sgx_texclamp *tc, const bool need[2], float lo[2], float hi[2])
+{
+   const struct sgx_vertex_elements *ve = ctx->velems;
+   const struct pipe_vertex_element *e[2] = { NULL, NULL };
+   unsigned attr[2] = { 0, 0 }, acomp[2] = { 0, 0 }, read = 0;
+   bool f32[2] = { false, false };
+
+   if (!ctx->vs || !ctx->vs->nir || !ve)
+      return false;
+   for (unsigned c = 0; c < 2; c++) {
+      lo[c] = INFINITY;
+      hi[c] = -INFINITY;
+      if (!need[c])
+         continue;
+      if (!sgx_vs_varying_attr(ctx->vs->nir, tc->slot[c], tc->comp[c], &attr[c], &acomp[c]) ||
+          attr[c] >= ve->count || acomp[c] > 3)
+         return false;
+      e[c] = &ve->e[attr[c]];
+      if (e[c]->instance_divisor || !(ctx->vb_mask & 1u << e[c]->vertex_buffer_index))
+         return false;
+      f32[c] = (e[c]->src_format == PIPE_FORMAT_R32_FLOAT ||
+                e[c]->src_format == PIPE_FORMAT_R32G32_FLOAT ||
+                e[c]->src_format == PIPE_FORMAT_R32G32B32_FLOAT ||
+                e[c]->src_format == PIPE_FORMAT_R32G32B32A32_FLOAT) &&
+               acomp[c] < util_format_get_nr_components(e[c]->src_format);
+   }
+   for (unsigned i = 0; i < num_draws; i++) {
+      const struct pipe_draw_start_count_bias *d = &draws[i];
+      int64_t first, last;
+
+      if (!d->count)
+         continue;
+      if (info->index_size) {
+         uint32_t mn, mx;
+
+         int got = index_bounds(info, d, &mn, &mx);
+
+         if (got < 0)
+            return false;
+         if (!got)
+            continue;
+         first = (int64_t)mn + d->index_bias;
+         last = (int64_t)mx + d->index_bias;
+      } else {
+         first = d->start;
+         last = (int64_t)d->start + d->count - 1;
+      }
+      /* (a few thousand vertices at most: they are read through the CPU) */
+      if (first < 0 || last < first || last - first >= 16384 || (read += last - first + 1) > 32768)
+         return false;
+      for (unsigned c = 0; c < 2; c++) {
+         const struct pipe_vertex_buffer *vb;
+         unsigned fsize, both;
+         uint64_t at0, at1;
+         const uint8_t *p;
+
+         if (!e[c])
+            continue;
+         /* (both from one attribute: one pass) */
+         if (c == 1 && e[0] && e[0] == e[1])
+            continue;
+         both = c == 0 && e[1] == e[0];
+         vb = &ctx->vb[e[c]->vertex_buffer_index];
+         fsize = util_format_get_blocksize(e[c]->src_format);
+         at0 = vb->buffer_offset + e[c]->src_offset + (uint64_t)first * e[c]->src_stride;
+         at1 = vb->buffer_offset + e[c]->src_offset + (uint64_t)last * e[c]->src_stride + fsize;
+         if (!(p = read_in_place(vb, vb->is_user_buffer ? NULL : vb->buffer.resource, at0, at1)))
+            return false;
+         p += at0;
+         for (int64_t v = 0; v <= last - first; v++) {
+            const uint8_t *q = p + v * e[c]->src_stride;
+            float x[2];
+
+            if (f32[c] && (!both || f32[1])) {
+               memcpy(&x[0], q + acomp[c] * 4, 4);
+               if (both)
+                  memcpy(&x[1], q + acomp[1] * 4, 4);
+            } else {
+               float t[4];
+
+               util_format_unpack_rgba(e[c]->src_format, t, q, 1);
+               x[0] = t[acomp[c]];
+               x[1] = both ? t[acomp[1]] : 0.0f;
+            }
+            for (unsigned k = 0; k <= both; k++) {
+               unsigned to = both ? k : c;
+
+               if (!isfinite(x[k]))
+                  return false;
+               lo[to] = MIN2(lo[to], x[k]);
+               hi[to] = MAX2(hi[to], x[k]);
+            }
+         }
+      }
+   }
+   for (unsigned c = 0; c < 2; c++)
+      if (need[c] && !(lo[c] <= hi[c]))
+         return false;
+   return true;
+}
+
+static bool
+texclamp_says(bool free, const char *why, float a, float b)
+{
+   static int debug = -1;
+
+   /* SGX_DEBUG_TEXCLAMP=1: each draw's answer, and why */
+   if (debug < 0)
+      debug = debug_get_bool_option("SGX_DEBUG_TEXCLAMP", false);
+   if (debug)
+      mesa_logi("sgx: texclamp: %s (%s %g %g)", free ? "left out" : "kept", why, a, b);
+   return free;
+}
+
+static bool
+texclamp_does_nothing(struct sgx_context *ctx, const struct pipe_draw_info *info,
+                      const struct pipe_draw_start_count_bias *draws, unsigned num_draws)
+{
+   const struct sgx_texclamp *tc = &ctx->fs->texclamp;
+   const struct pipe_sampler_view *view = ctx->fs_views[tc->unit];
+   const struct pipe_sampler_state *ss = ctx->fs_samplers[tc->unit];
+   const float *u = ctx->fs_constants;
+   unsigned nw = ctx->fs_constants_size / 4, level;
+   bool lo_edge[2], hi_edge[2];
+   float lo[2], hi[2];
+
+   if (!view || !ss || !view->texture || view->target != PIPE_TEXTURE_2D ||
+       ss->unnormalized_coords || ss->max_anisotropy > 1 ||
+       ss->min_img_filter != ss->mag_img_filter ||
+       (ss->min_mip_filter != PIPE_TEX_MIPFILTER_NONE &&
+        view->u.tex.first_level != MIN2(view->u.tex.last_level, view->texture->last_level)))
+      return texclamp_says(false, "the sampler", 0, 0);
+   level = view->u.tex.first_level;
+   for (unsigned c = 0; c < 2; c++) {
+      unsigned n = c ? u_minify(view->texture->height0, level) :
+                       u_minify(view->texture->width0, level);
+      bool edge = (c ? ss->wrap_t : ss->wrap_s) == PIPE_TEX_WRAP_CLAMP_TO_EDGE;
+      /* (a ten-thousandth of a texel: PPSSPP's half a texel is 1 / n * 0.5
+       * in floats) */
+      double half = 0.5 / n, tol = 1e-4 / n;
+
+      lo[c] = sgx_uexpr_eval(&tc->lo[c], u, nw);
+      hi[c] = sgx_uexpr_eval(&tc->hi[c], u, nw);
+      if (sgx_uexpr_eval(&tc->off[c], u, nw) != 0.0f || !(lo[c] <= hi[c]) || !n)
+         return texclamp_says(false, "an offset, or lo > hi", sgx_uexpr_eval(&tc->off[c], u, nw),
+                              hi[c] - lo[c]);
+      lo_edge[c] = edge && lo[c] <= half + tol;
+      hi_edge[c] = edge && hi[c] >= 1.0 - half - tol;
+   }
+   {
+      bool need[2] = { !(lo_edge[0] && hi_edge[0]), !(lo_edge[1] && hi_edge[1]) };
+      float vlo[2], vhi[2];
+
+      if ((need[0] || need[1]) &&
+          !varying_ranges(ctx, info, draws, num_draws, tc, need, vlo, vhi))
+         return texclamp_says(false, "the varying not read", need[0], need[1]);
+      for (unsigned c = 0; c < 2; c++)
+         if (need[c] && ((!lo_edge[c] && vlo[c] < lo[c]) || (!hi_edge[c] && vhi[c] > hi[c])))
+            return texclamp_says(false, c ? "y outside" : "x outside", vlo[c], vhi[c]);
+   }
+   return texclamp_says(true, "x and y", lo_edge[0] * 2 + hi_edge[0], lo_edge[1] * 2 + hi_edge[1]);
 }
 
 /* ---- gathering draws into renders (M14) -------------------------------- */
@@ -2808,6 +3068,26 @@ each_on(struct sgx_context *ctx)
    return on;
 }
 
+/* (M46) whether the bound fragment shader's name (sgx_create_shader_state's:
+ * GLSL41...) is one of LIST's, NAME[,NAME...] */
+static bool
+fs_named(const struct sgx_context *ctx, const char *list)
+{
+   const char *n, *p = list;
+   size_t len;
+
+   if (!list || !ctx->fs || !ctx->fs->nir || !ctx->fs->nir->info.name)
+      return false;
+   n = ctx->fs->nir->info.name;
+   len = strlen(n);
+   while ((p = strstr(p, n))) {
+      if ((p == list || p[-1] == ',') && (p[len] == ',' || !p[len]))
+         return true;
+      p += len;
+   }
+   return false;
+}
+
 /* SGX_DEBUG=each with SGX_EACH_VERTS=N (M46): a triangle list of N indices
  * or vertices, its first attribute (PPSSPP's position) read back -- the
  * triangles' extent, their areas summed (against the extent's: how many
@@ -2825,10 +3105,17 @@ each_verts(struct sgx_context *ctx, const struct pipe_draw_info *info,
    unsigned ntri = 0;
    size_t size;
 
+   static const char *want_fs = (const char *)-1;
+
    if (want < 0)
       want = getenv("SGX_EACH_VERTS") ? atoi(getenv("SGX_EACH_VERTS")) : 0;
-   if (!want || draw->count != (unsigned)want || info->mode != MESA_PRIM_TRIANGLES || !ve ||
-       !ve->count)
+   if (want_fs == (const char *)-1)
+      want_fs = getenv("SGX_EACH_VERTS_FS");
+   /* (or SGX_EACH_VERTS_FS=NAME[,NAME...]: every draw with those fragment
+    * shaders, its attributes' extents and the shader's uniforms too) */
+   if (want_fs ? !fs_named(ctx, want_fs) : !want || draw->count != (unsigned)want)
+      return;
+   if (info->mode != MESA_PRIM_TRIANGLES || !ve || !ve->count)
       return;
    e = &ve->e[0];
    if (!(ctx->vb_mask & 1u << e->vertex_buffer_index))
@@ -2876,6 +3163,53 @@ each_verts(struct sgx_context *ctx, const struct pipe_draw_info *info,
              "their areas %.1f (%.2f times the extent's), %.0f under one unit",
              ntri, util_format_short_name(e->src_format), e->src_stride, x0, x1, y0, y1, area,
              (x1 - x0) * (y1 - y0) > 0 ? area / ((x1 - x0) * (y1 - y0)) : 0.0f, small);
+   /* every attribute's extent over the draw's vertices, and the fragment
+    * shader's uniforms (whether PPSSPP's TClampST clamp does anything) */
+   for (unsigned a = 0; a < ve->count && a < 8; a++) {
+      const struct pipe_vertex_element *ea = &ve->e[a];
+      const struct pipe_vertex_buffer *vba;
+      const uint8_t *ba;
+      float lo[4] = { 1e30f, 1e30f, 1e30f, 1e30f }, hi[4] = { -1e30f, -1e30f, -1e30f, -1e30f };
+
+      if (!(ctx->vb_mask & 1u << ea->vertex_buffer_index))
+         continue;
+      vba = &ctx->vb[ea->vertex_buffer_index];
+      if (vba->is_user_buffer)
+         ba = vba->buffer.user;
+      else if (!(ba = map_buffer(vba->buffer.resource, &size)))
+         continue;
+      ba += vba->buffer_offset + ea->src_offset;
+      for (unsigned t = 0; t < draw->count; t++) {
+         unsigned x = t;
+         float q[4];
+
+         if (idx)
+            x = info->index_size == 2 ? ((const uint16_t *)idx)[x] :
+                info->index_size == 1 ? idx[x] : ((const uint32_t *)idx)[x];
+         x += info->index_size ? draw->index_bias : draw->start;
+         util_format_unpack_rgba(ea->src_format, q, ba + x * ea->src_stride, 1);
+         for (unsigned k = 0; k < 4; k++) {
+            lo[k] = MIN2(lo[k], q[k]);
+            hi[k] = MAX2(hi[k], q[k]);
+         }
+      }
+      mesa_logi("sgx: each: verts: attribute %u (%s): %.5f..%.5f %.5f..%.5f %.5f..%.5f "
+                "%.5f..%.5f", a, util_format_short_name(ea->src_format), lo[0], hi[0], lo[1],
+                hi[1], lo[2], hi[2], lo[3], hi[3]);
+   }
+   if (ctx->fs_constants) {
+      char buf[800] = "";
+      unsigned n = MIN2(40, ctx->fs_constants_size / 4), at = 0;
+
+      for (unsigned i = 0; i < n && at < sizeof(buf) - 16; i++)
+         at += snprintf(buf + at, sizeof(buf) - at, " %.6f", ctx->fs_constants[i]);
+      mesa_logi("sgx: each: verts: uniforms%s", buf);
+      if (ctx->fs && ctx->fs->nir) {
+         nir_foreach_uniform_variable(var, ctx->fs->nir)
+            mesa_logi("sgx: each: verts: uniform %s at %u", var->name,
+                      var->data.driver_location);
+      }
+   }
 }
 
 /* SGX_DEBUG=each (M46): the draw just gathered, a render of its own -- what
@@ -2939,6 +3273,35 @@ sgx_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info,
    /* (M43) under a render condition that says no: nothing */
    if (!sgx_render_condition_ok(ctx))
       return;
+   /* (M46) SGX_SKIP_FS=NAME[,NAME...]: draws with those fragment shaders
+    * (sgx_create_shader_state's names, GLSL41...) left out -- what they cost
+    * in a render of many draws, which a render a draw cannot say (each one
+    * pays a render's own cost).  SGX_SKIP_FILE=path: the names in that file
+    * (read again once a second; none while it is not there) */
+   {
+      static const char *skip = (const char *)-1, *path;
+      static char names[256];
+      static int64_t at;
+
+      if (skip == (const char *)-1) {
+         skip = getenv("SGX_SKIP_FS");
+         path = getenv("SGX_SKIP_FILE");
+      }
+      if (path && os_time_get_nano() - at > 1000000000ll) {
+         FILE *f = fopen(path, "r");
+         size_t n = f ? fread(names, 1, sizeof(names) - 1, f) : 0;
+
+         at = os_time_get_nano();
+         if (f)
+            fclose(f);
+         while (n && (names[n - 1] == '\n' || names[n - 1] == ' '))
+            n--;
+         names[n] = 0;
+         skip = n ? names : NULL;
+      }
+      if (fs_named(ctx, skip))
+         return;
+   }
    ctx->stat_draws += num_draws;
    if (ctx->blitter && ctx->blitter->running)
       ctx->batch.blit = true;
@@ -2951,15 +3314,9 @@ sgx_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info,
       ctx->stat_between_cpu += ts.tv_sec * 1000000000ll + ts.tv_nsec - ctx->stat_swap_cpu;
       ctx->stat_swap = 0;
    }
-   ctx->draw_fs = fs_for_draw(ctx);
-   if (ctx->fs && !ctx->fs->compiled && !ctx->fs->colour.ok && !ctx->warned_fs) {
-      mesa_logw("sgx: a fragment shader whose colour is not a varying, a constant or a "
-                "uniform per channel: drawn grey (M13a)");
-      ctx->warned_fs = true;
-   }
-
    /* the fragment shader's constants (the vertex shader's: gpu_vs_draw's,
-    * or the draw module's below) */
+    * or the draw module's below) -- before its variant is chosen, which
+    * may read them (M46: texclamp_does_nothing) */
    {
       const struct pipe_constant_buffer *cb = &ctx->cb[1];
       const uint8_t *p = cb->user_buffer;
@@ -2974,6 +3331,13 @@ sgx_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info,
       ctx->fs_constants = (const float *)p;
       ctx->fs_constants_size = p ? cb->buffer_size : 0;
    }
+   ctx->draw_fs = fs_for_draw(ctx, info, draws, num_draws);
+   if (ctx->fs && !ctx->fs->compiled && !ctx->fs->colour.ok && !ctx->warned_fs) {
+      mesa_logw("sgx: a fragment shader whose colour is not a varying, a constant or a "
+                "uniform per channel: drawn grey (M13a)");
+      ctx->warned_fs = true;
+   }
+
 
    /* the vertex shader on the GPU, where it can be (M18) */
    if (gpu_vs_can_draw(ctx, info)) {

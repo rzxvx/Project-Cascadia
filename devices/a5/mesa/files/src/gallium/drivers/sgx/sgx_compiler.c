@@ -2898,6 +2898,393 @@ lower_every_offset(const nir_instr *instr, const void *data)
    return true;
 }
 
+/* ---- (M46) a lookup's clamp the draw finds does nothing ------------------ */
+
+/* s (sign 1 or -1) into e: constants, uniform words (a constant offset),
+ * fneg and fadd of them -- two words at most */
+static bool
+uexpr_add(nir_scalar s, int sign, struct sgx_uexpr *e, unsigned depth)
+{
+   s = nir_scalar_chase_movs(s);
+   if (depth > 4)
+      return false;
+   if (nir_scalar_is_const(s)) {
+      if (s.def->bit_size != 32)
+         return false;
+      e->k += sign * nir_scalar_as_float(s);
+      return true;
+   }
+   if (nir_scalar_is_alu(s)) {
+      nir_op op = nir_scalar_alu_op(s);
+
+      if (op == nir_op_fneg)
+         return uexpr_add(nir_scalar_chase_alu_src(s, 0), -sign, e, depth + 1);
+      if (op == nir_op_fadd)
+         return uexpr_add(nir_scalar_chase_alu_src(s, 0), sign, e, depth + 1) &&
+                uexpr_add(nir_scalar_chase_alu_src(s, 1), sign, e, depth + 1);
+      return false;
+   }
+   if (nir_scalar_is_intrinsic(s) && nir_scalar_intrinsic_op(s) == nir_intrinsic_load_uniform) {
+      nir_intrinsic_instr *in = nir_instr_as_intrinsic(nir_def_instr(s.def));
+      unsigned w;
+
+      if (!nir_src_is_const(in->src[0]) || in->def.bit_size != 32)
+         return false;
+      w = (nir_intrinsic_base(in) + nir_src_as_uint(in->src[0])) * 4 + s.comp;
+      for (unsigned i = 0; i < 2; i++) {
+         if (!e->s[i]) {
+            e->w[i] = w;
+            e->s[i] = sign;
+            return true;
+         }
+      }
+   }
+   return false;
+}
+
+float
+sgx_uexpr_eval(const struct sgx_uexpr *e, const float *u, unsigned nwords)
+{
+   float v = e->k;
+
+   /* (in the order the program adds them: word 0's first) */
+   for (unsigned i = 0; i < 2; i++)
+      if (e->s[i])
+         v += (e->w[i] < nwords && u ? u[e->w[i]] : 0.0f) * e->s[i];
+   return v;
+}
+
+/* a varying's component as it comes (load_deref of a shader input): its
+ * gl_varying_slot and component */
+static bool
+varying_scalar(nir_scalar s, uint8_t *slot, uint8_t *comp)
+{
+   nir_intrinsic_instr *in;
+   nir_deref_instr *d;
+
+   if (!nir_scalar_is_intrinsic(s) || nir_scalar_intrinsic_op(s) != nir_intrinsic_load_deref)
+      return false;
+   in = nir_instr_as_intrinsic(nir_def_instr(s.def));
+   d = nir_src_as_deref(in->src[0]);
+   if (!d || d->deref_type != nir_deref_type_var || !d->var ||
+       d->var->data.mode != nir_var_shader_in || !glsl_type_is_vector_or_scalar(d->var->type) ||
+       !glsl_type_is_float(glsl_without_array(d->var->type)) || s.def->bit_size != 32 ||
+       d->var->data.location >= VARYING_SLOT_MAX)
+      return false;
+   *slot = d->var->data.location;
+   *comp = d->var->data.location_frac + s.comp;
+   return true;
+}
+
+/* s as clamp(x, lo, hi) [+ off]: fmin(fmax(x, lo), hi) or fmax(fmin(x,
+ * hi), lo), x a varying's component, lo, hi and off uniforms' */
+static bool
+clamped_coord(nir_scalar s, nir_scalar *x, uint8_t *slot, uint8_t *comp, struct sgx_uexpr *lo,
+              struct sgx_uexpr *hi, struct sgx_uexpr *off)
+{
+   nir_op outer, inner;
+
+   memset(off, 0, sizeof(*off));
+   s = nir_scalar_chase_movs(s);
+   if (!nir_scalar_is_alu(s))
+      return false;
+   if (nir_scalar_alu_op(s) == nir_op_fadd) {
+      bool found = false;
+
+      for (unsigned i = 0; i < 2 && !found; i++) {
+         nir_scalar a = nir_scalar_chase_alu_src(s, i);
+
+         memset(off, 0, sizeof(*off));
+         if (nir_scalar_is_alu(a) &&
+             (nir_scalar_alu_op(a) == nir_op_fmin || nir_scalar_alu_op(a) == nir_op_fmax) &&
+             uexpr_add(nir_scalar_chase_alu_src(s, !i), 1, off, 0)) {
+            s = nir_scalar_chase_movs(a);
+            found = true;
+         }
+      }
+      if (!found)
+         return false;
+   }
+   outer = nir_scalar_alu_op(s);
+   if (outer != nir_op_fmin && outer != nir_op_fmax)
+      return false;
+   inner = outer == nir_op_fmin ? nir_op_fmax : nir_op_fmin;
+   for (unsigned i = 0; i < 2; i++) {
+      nir_scalar in = nir_scalar_chase_movs(nir_scalar_chase_alu_src(s, i));
+      nir_scalar bound = nir_scalar_chase_alu_src(s, !i);
+
+      if (!nir_scalar_is_alu(in) || nir_scalar_alu_op(in) != inner)
+         continue;
+      for (unsigned j = 0; j < 2; j++) {
+         nir_scalar v = nir_scalar_chase_movs(nir_scalar_chase_alu_src(in, j));
+         nir_scalar b2 = nir_scalar_chase_alu_src(in, !j);
+
+         memset(lo, 0, sizeof(*lo));
+         memset(hi, 0, sizeof(*hi));
+         if (!varying_scalar(v, slot, comp))
+            continue;
+         if (uexpr_add(outer == nir_op_fmin ? b2 : bound, 1, lo, 0) &&
+             uexpr_add(outer == nir_op_fmin ? bound : b2, 1, hi, 0)) {
+            *x = v;
+            return true;
+         }
+      }
+   }
+   return false;
+}
+
+/* tex as a TClampST lookup: a plain 2D one, both coordinates clamped */
+static bool
+texclamp_of(nir_tex_instr *tex, struct sgx_texclamp *tc, nir_scalar x[2])
+{
+   int ci = nir_tex_instr_src_index(tex, nir_tex_src_coord);
+
+   if (tex->op != nir_texop_tex || tex->sampler_dim != GLSL_SAMPLER_DIM_2D || tex->is_array ||
+       tex->is_shadow || ci < 0 || tex->num_srcs != 1 || tex->coord_components != 2 ||
+       tex->texture_index != tex->sampler_index || tex->texture_index >= 8)
+      return false;
+   memset(tc, 0, sizeof(*tc));
+   tc->unit = tex->texture_index;
+   for (unsigned c = 0; c < 2; c++)
+      if (!clamped_coord(nir_get_scalar(tex->src[ci].src.ssa, c), &x[c], &tc->slot[c],
+                         &tc->comp[c], &tc->lo[c], &tc->hi[c], &tc->off[c]))
+         return false;
+   return true;
+}
+
+/* the shader's TClampST lookup: one, its unit's only lookup */
+bool
+sgx_fs_texclamp(const nir_shader *fs, struct sgx_texclamp *tc)
+{
+   nir_function_impl *impl = nir_shader_get_entrypoint((nir_shader *)fs);
+   unsigned found = 0, on_unit[8] = { 0 };
+
+   if (!impl || getenv("SGX_NO_TEXCLAMP_FREE"))
+      return false;
+   nir_foreach_block(block, impl) {
+      nir_foreach_instr(instr, block) {
+         nir_tex_instr *tex;
+         struct sgx_texclamp t;
+         nir_scalar x[2];
+
+         if (instr->type != nir_instr_type_tex)
+            continue;
+         tex = nir_instr_as_tex(instr);
+         if (tex->texture_index < 8)
+            on_unit[tex->texture_index]++;
+         if (!found && texclamp_of(tex, &t, x)) {
+            *tc = t;
+            found = 1;
+         }
+      }
+   }
+   return found && on_unit[tc->unit] == 1;
+}
+
+/* (M46) the vertex shader's varying slot, component comp, as it writes it:
+ * one store, in a shader of one block, of an attribute's component copied
+ * (PPSSPP's through-mode texture coordinates).  Its value at each vertex
+ * is the attribute's then, bit for bit */
+bool
+sgx_vs_varying_attr(const nir_shader *vs, unsigned slot, unsigned comp, unsigned *attr,
+                    unsigned *acomp)
+{
+   nir_function_impl *impl = nir_shader_get_entrypoint((nir_shader *)vs);
+   unsigned stores = 0;
+   bool ok = false;
+
+   if (!impl || nir_start_block(impl) != nir_impl_last_block(impl))
+      return false;
+   nir_foreach_block(block, impl) {
+      nir_foreach_instr(instr, block) {
+         nir_intrinsic_instr *in;
+         nir_deref_instr *d;
+         nir_variable *var;
+         nir_scalar v;
+         unsigned frac;
+
+         if (instr->type != nir_instr_type_intrinsic)
+            continue;
+         in = nir_instr_as_intrinsic(instr);
+         if (in->intrinsic != nir_intrinsic_store_deref)
+            continue;
+         d = nir_src_as_deref(in->src[0]);
+         var = d ? nir_deref_instr_get_variable(d) : NULL;
+         if (!var || var->data.mode != nir_var_shader_out)
+            continue;
+         /* (an array or a block over the slot: not followed) */
+         if (d->deref_type != nir_deref_type_var || !glsl_type_is_vector_or_scalar(var->type)) {
+            if (var->data.location <= (int)slot &&
+                var->data.location + (int)glsl_count_attribute_slots(var->type, false) > (int)slot)
+               return false;
+            continue;
+         }
+         frac = var->data.location_frac;
+         if (var->data.location != (int)slot || comp < frac ||
+             comp >= frac + glsl_get_vector_elements(var->type) ||
+             !(nir_intrinsic_write_mask(in) >> (comp - frac) & 1))
+            continue;
+         stores++;
+         v = nir_scalar_chase_movs(nir_get_scalar(in->src[1].ssa, comp - frac));
+         ok = false;
+         if (nir_scalar_is_intrinsic(v) && nir_scalar_intrinsic_op(v) == nir_intrinsic_load_deref &&
+             v.def->bit_size == 32) {
+            nir_intrinsic_instr *ld = nir_instr_as_intrinsic(nir_def_instr(v.def));
+            nir_deref_instr *ldd = nir_src_as_deref(ld->src[0]);
+
+            if (ldd && ldd->deref_type == nir_deref_type_var && ldd->var &&
+                ldd->var->data.mode == nir_var_shader_in &&
+                glsl_type_is_vector_or_scalar(ldd->var->type) &&
+                glsl_type_is_float(ldd->var->type)) {
+               *attr = ldd->var->data.driver_location;
+               *acomp = ldd->var->data.location_frac + v.comp;
+               ok = true;
+            }
+         }
+      }
+   }
+   return stores == 1 && ok;
+}
+
+/* the variant's lookup at the varying itself (sgx_blend_key.texclamp_free) */
+static bool
+lower_texclamp_free(nir_shader *s, unsigned units)
+{
+   nir_function_impl *impl = nir_shader_get_entrypoint(s);
+   nir_builder b = nir_builder_create(impl);
+   bool progress = false;
+
+   nir_foreach_block(block, impl) {
+      nir_foreach_instr(instr, block) {
+         nir_tex_instr *tex;
+         struct sgx_texclamp t;
+         nir_scalar x[2];
+
+         if (instr->type != nir_instr_type_tex)
+            continue;
+         tex = nir_instr_as_tex(instr);
+         if (!(units >> tex->texture_index & 1) || !texclamp_of(tex, &t, x))
+            continue;
+         b.cursor = nir_before_instr(instr);
+         nir_src_rewrite(&tex->src[nir_tex_instr_src_index(tex, nir_tex_src_coord)].src,
+                         nir_vec2(&b, nir_mov_scalar(&b, x[0]), nir_mov_scalar(&b, x[1])));
+         progress = true;
+      }
+   }
+   return nir_progress(progress, impl, nir_metadata_control_flow);
+}
+
+/* (M46) whether k's blending leaves the target as it is where the source
+ * colour is 0, on the channels written: an add or a reverse subtract onto
+ * the destination times one (0 times any source factor is 0) -- PPSSPP's
+ * blend-colour additions (God of War's GLSL19: src * const + dst) */
+static bool
+blend_keeps_dst_for_zero(const struct sgx_blend_key *k)
+{
+   bool rgb = (k->rgb_func == PIPE_BLEND_ADD || k->rgb_func == PIPE_BLEND_REVERSE_SUBTRACT) &&
+              k->rgb_dst == PIPE_BLENDFACTOR_ONE;
+   bool a = (k->alpha_func == PIPE_BLEND_ADD || k->alpha_func == PIPE_BLEND_REVERSE_SUBTRACT) &&
+            k->alpha_dst == PIPE_BLENDFACTOR_ONE;
+
+   return k->enable && !k->logicop && (rgb || !(k->colormask & 7)) && (a || !(k->colormask & 8));
+}
+
+/* (M46) Discard as a source of 0, for a blend that leaves the target as it
+ * is then (blend_keeps_dst_for_zero): the colour stored is 0 where a
+ * discard would have taken the pixel -- the same pixels, depth written as
+ * the emulation writes it (M19: no punch-through pass yet).  The program
+ * has no discard left, so the SOP2 may blend it, and the tile is not read
+ * back for the pixels discarded (twice a layer's cost, glverts -k).  Only
+ * the plain shape: one block, the discards before the one colour store,
+ * nothing else stored (SGX_KEEP_DISCARD=1: none). */
+static bool
+discard_shape_ok(const nir_shader *s)
+{
+   nir_function_impl *impl = nir_shader_get_entrypoint((nir_shader *)s);
+   bool stored = false;
+
+   if (getenv("SGX_KEEP_DISCARD") || exec_list_length(&impl->body) != 1 ||
+       (s->info.outputs_written & ~(BITFIELD64_BIT(FRAG_RESULT_COLOR) |
+                                    BITFIELD64_BIT(FRAG_RESULT_DATA0))))
+      return false;
+   nir_foreach_block(block, impl) {
+      nir_foreach_instr(instr, block) {
+         nir_intrinsic_instr *in;
+
+         if (instr->type != nir_instr_type_intrinsic)
+            continue;
+         in = nir_instr_as_intrinsic(instr);
+         switch (in->intrinsic) {
+         case nir_intrinsic_terminate_if:
+         case nir_intrinsic_demote_if:
+         case nir_intrinsic_terminate:
+         case nir_intrinsic_demote:
+            if (stored)
+               return false;
+            break;
+         case nir_intrinsic_store_deref:
+         case nir_intrinsic_store_output:
+            if (stored)
+               return false;
+            stored = true;
+            break;
+         default:
+            break;
+         }
+      }
+   }
+   return stored;
+}
+
+/* the same after nir_lower_io: the discards' conditions or'ed, the store's
+ * colour 0 where that is true */
+static bool
+lower_discard_to_zero(nir_shader *s)
+{
+   nir_function_impl *impl = nir_shader_get_entrypoint(s);
+   nir_builder b = nir_builder_create(impl);
+   nir_intrinsic_instr *store = NULL;
+   nir_def *kill = NULL;
+
+   nir_foreach_block(block, impl) {
+      nir_foreach_instr_safe(instr, block) {
+         nir_intrinsic_instr *in;
+
+         if (instr->type != nir_instr_type_intrinsic)
+            continue;
+         in = nir_instr_as_intrinsic(instr);
+         if (in->intrinsic == nir_intrinsic_store_output) {
+            store = in;
+            continue;
+         }
+         if (in->intrinsic != nir_intrinsic_terminate_if &&
+             in->intrinsic != nir_intrinsic_demote_if &&
+             in->intrinsic != nir_intrinsic_terminate && in->intrinsic != nir_intrinsic_demote)
+            continue;
+         b.cursor = nir_before_instr(instr);
+         {
+            nir_def *cond = in->intrinsic == nir_intrinsic_terminate_if ||
+                            in->intrinsic == nir_intrinsic_demote_if ?
+                            in->src[0].ssa : nir_imm_true(&b);
+
+            kill = kill ? nir_ior(&b, kill, cond) : cond;
+         }
+         nir_instr_remove(instr);
+      }
+   }
+   if (!store || !kill)
+      return false;
+   b.cursor = nir_before_instr(&store->instr);
+   {
+      nir_def *v = store->src[0].ssa;
+
+      nir_src_rewrite(&store->src[0],
+                      nir_bcsel(&b, kill, nir_imm_zero(&b, v->num_components, v->bit_size), v));
+   }
+   s->info.fs.uses_discard = false;
+   return nir_progress(true, impl, nir_metadata_control_flow);
+}
+
 static void
 lower_blend(nir_shader *s, const struct sgx_blend_key *k)
 {
@@ -4734,6 +5121,7 @@ compile_fs(const nir_shader *fs, const struct sgx_blend_key *blend, char *why,
                              blend->rt_intensity);
    nir_shader *s;
    unsigned out_at;
+   bool discard_zero;
 
    c.why = why;
    c.kill = -1;
@@ -4755,8 +5143,11 @@ compile_fs(const nir_shader *fs, const struct sgx_blend_key *blend, char *why,
    else
       c.fs->blend.colormask = 0xf;
    /* (discard keeps the tile's colour as the colour: blended again, not
-    * kept, M19) */
-   if (blending && !fs->info.fs.uses_discard && !blend->logicop &&
+    * kept, M19 -- unless it can be a source of 0 for this blending, M46:
+    * lower_discard_to_zero) */
+   discard_zero = blending && fs->info.fs.uses_discard && blend_keeps_dst_for_zero(blend) &&
+                  discard_shape_ok(fs);
+   if (blending && (!fs->info.fs.uses_discard || discard_zero) && !blend->logicop &&
        blend->rt_kind == SGX_RT_UNORM8 && !blend->rt_srgb && !blend->rt_intensity &&
        !getenv("SGX_NO_SOP2")) {
       struct sgx_blend_key folded;
@@ -4783,6 +5174,12 @@ compile_fs(const nir_shader *fs, const struct sgx_blend_key *blend, char *why,
    }
 
    s = nir_shader_clone(NULL, fs);
+   /* (M46) a clamp the draw found does nothing: the lookup at the varying,
+    * the PDS's (the clamp's arithmetic dead after) */
+   if (blend && blend->texclamp_free && lower_texclamp_free(s, blend->texclamp_free)) {
+      NIR_PASS(_, s, nir_opt_copy_prop);
+      NIR_PASS(_, s, nir_opt_dce);
+   }
    /* the flat-shaded colours: the TA's (M37) -- GL's flat shading.  Not
     * other varyings: the linker makes one flat whose value is the same at
     * every vertex (piglit's glsl-sin: a uniform's sine), and the TA's
@@ -4800,6 +5197,10 @@ compile_fs(const nir_shader *fs, const struct sgx_blend_key *blend, char *why,
       NIR_PASS(_, s, nir_lower_fragcolor, 1);
    NIR_PASS(_, s, nir_lower_io, nir_var_shader_in | nir_var_shader_out | nir_var_uniform,
             type_size_vec4, 0);
+   if (discard_zero && !lower_discard_to_zero(s)) {
+      fail(&c, "a discard as a source of 0 did not take");
+      goto out;
+   }
    if (blending)
       lower_blend(s, blend);
    /* (M43) an sRGB target: the colour encoded as it goes out, the tile's

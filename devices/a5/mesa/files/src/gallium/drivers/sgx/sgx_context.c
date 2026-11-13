@@ -177,6 +177,13 @@ sgx_flush(struct pipe_context *pctx, struct pipe_fence_handle **fence, unsigned 
                    "(%.1f ms of it CPU)", ctx->stat_between / 1e6 / ctx->stat_frames,
                    ctx->stat_between_cpu / 1e6 / ctx->stat_frames);
          ctx->stat_between = ctx->stat_between_cpu = 0;
+         if (ctx->stat_clamp_free || ctx->stat_clamp_kept)
+            mesa_logi("sgx:  a frame's clamped lookups: %.1f draws without the clamp, %.1f with "
+                      "it (%.3f ms telling)", (double)ctx->stat_clamp_free / ctx->stat_frames,
+                      (double)ctx->stat_clamp_kept / ctx->stat_frames,
+                      ctx->stat_clamp_ns / 1e6 / ctx->stat_frames);
+         ctx->stat_clamp_free = ctx->stat_clamp_kept = 0;
+         ctx->stat_clamp_ns = 0;
          sgx_batch_why(ctx);
          ctx->stat_frames = ctx->stat_renders = ctx->stat_draws = 0;
          ctx->stat_t0 = now;
@@ -909,6 +916,7 @@ sgx_create_shader_state(struct pipe_context *pctx, const struct pipe_shader_stat
          sh->draw_fs = draw_create_fragment_shader(ctx->draw, s);
 
       sgx_fs_colour_analyse(sh->nir, &sh->colour);
+      sh->has_texclamp = sgx_fs_texclamp(sh->nir, &sh->texclamp);
       /* SGX_DEBUG=each (M46): the shader as it comes, named as the draws
        * name it */
       if (ctx->debug_each) {

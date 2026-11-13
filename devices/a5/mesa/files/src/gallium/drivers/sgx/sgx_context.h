@@ -37,6 +37,9 @@ struct sgx_shader {
    unsigned nvs;
    unsigned vs_nattrs;                  /* the attributes it reads (sgx_vs_attr_count) */
    bool vs_failed;                      /* it cannot be compiled: the draw module's */
+   /* (M46) a fragment shader's TClampST lookup (sgx_fs_texclamp), if it has one */
+   bool has_texclamp;
+   struct sgx_texclamp texclamp;
 };
 
 /* Draws gathered into one render until something needs it done
@@ -256,6 +259,10 @@ struct sgx_context {
    int64_t stat_t0, stat_cpu0, stat_gpu;
    int64_t stat_swap, stat_between;     /* the last frame's end; to the next draw */
    int64_t stat_swap_cpu, stat_between_cpu;
+   /* (M46) draws of a TClampST shader with its clamp left out, with it
+    * kept; the CPU time telling */
+   unsigned stat_clamp_free, stat_clamp_kept;
+   int64_t stat_clamp_ns;
 };
 
 static inline struct sgx_context *

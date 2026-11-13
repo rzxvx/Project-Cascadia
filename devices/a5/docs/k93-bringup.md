@@ -421,11 +421,13 @@ starts PPSSPP full screen with its own touch controls.  What it took:
   the vertices straight into the GPU's copy of the buffer, which the
   driver hands out for a map that discards the old content -- no 1.75 MB
   copy a frame on the GL thread), and the lookups PPSSPP's effect programs
-  make at clamped coordinates run in F16 too.  Games hides the cursor
-  while a game runs (`xhidecursor`) and the kernel offers async page flips,
-  so X flips the game's frames onto the screen instead of copying them
-  (and the cursor) each frame: the menu at ~46% (~28 frames/s on the
-  screen).  What is left is in M46.
+  make at clamped coordinates run in F16 too -- or, where the draw's
+  coordinates never leave the clamp's rectangle (or leave it only at the
+  texture's own edge), without the clamp, by the PDS.  Games hides the
+  cursor while a game runs (`xhidecursor`) and the kernel offers async
+  page flips, so X flips the game's frames onto the screen instead of
+  copying them (and the cursor) each frame: the menu at ~51% (~31
+  frames/s on the screen).  What is left is in M46.
 - **Games from a computer.**  PSP games are bigger than the Linux volume:
   `tools/games/psp-share.py DIR`, on a computer, serves its disc images the
   way PPSSPP's own "Share games" does (a listing, byte ranges; the

@@ -122,6 +122,11 @@ bool sgx_resource_texture(struct sgx_context *ctx, struct sgx_resource *res,
 void sgx_buffer_fresh(struct sgx_resource *res);
 /* (M46) the same for the bytes [lo, hi) alone: a draw's indices */
 void sgx_buffer_fresh_range(struct sgx_resource *res, uint32_t lo, uint32_t hi);
+/* (M46) where the CPU reads the buffer's bytes [lo, hi) as they are, in
+ * place (the pointer is the buffer's byte 0): the GPU copy where only it
+ * has them -- write-combined, slow, for a few bytes here and there --
+ * else the CPU copy; NULL if neither */
+const uint8_t *sgx_buffer_read_in_place(struct sgx_resource *res, uint32_t lo, uint32_t hi);
 
 /* A buffer's copy for the GPU (M26), brought up to date with the CPU's
  * first: written in place when no render reads it -- gathered or running

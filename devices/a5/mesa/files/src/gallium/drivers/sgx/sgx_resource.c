@@ -998,6 +998,27 @@ sgx_buffer_fresh(struct sgx_resource *res)
    simple_mtx_unlock(&res->dirty_lock);
 }
 
+const uint8_t *
+sgx_buffer_read_in_place(struct sgx_resource *res, uint32_t lo, uint32_t hi)
+{
+   const uint8_t *p;
+
+   if (res->base.target != PIPE_BUFFER || lo > hi || hi > res->base.width0)
+      return NULL;
+   simple_mtx_lock(&res->dirty_lock);
+   if (res->stale_lo < res->stale_hi && lo < res->stale_hi && hi > res->stale_lo &&
+       lo >= res->stale_lo && hi <= res->stale_hi && res->bo &&
+       (res->bo->map || sgx_bo_map(res->bo))) {
+      p = res->bo->map;
+      simple_mtx_unlock(&res->dirty_lock);
+      return p;
+   }
+   simple_mtx_unlock(&res->dirty_lock);
+   /* (only partly behind: those bytes made the CPU's) */
+   sgx_buffer_fresh_range(res, lo, hi);
+   return res->data ? res->data : res->bo ? sgx_bo_map(res->bo) : NULL;
+}
+
 void
 sgx_buffer_fresh_range(struct sgx_resource *res, uint32_t lo, uint32_t hi)
 {

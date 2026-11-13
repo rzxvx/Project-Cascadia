@@ -4218,13 +4218,128 @@ now). `session-tools/ab.sh` (the cursor shown and hidden by turns in one
 run, three times): 25.66/25.81/25.78 -> 26.85/27.86/27.81 frames/s; the
 game run as Games does: 28.2-28.3 frames/s, the counter 46-47%.
 
+**What a draw costs in its render.** `SGX_DEBUG=each` makes every draw a
+render of its own, and each one pays a render's fixed cost there.
+`SGX_SKIP_FS=NAME[,NAME...]` leaves out the draws of those fragment
+shaders instead (sgx_create_shader_state's names), in the frame as it is;
+`SGX_SKIP_FILE=path` takes the names from a file, read again once a second
+(`session-tools/ablate.sh`: each set for 9 s, with sync). A frame of ~35
+ms, its main render 15.7:
+
+| left out | the frame | the main render |
+|---|---|---|
+| GLSL41 (27 draws a frame, 5 instructions) | -5.5 ms | -5.1 |
+| GLSL15 (the clear) | -3.6 | -3.7 |
+| GLSL21 | -3.8 | |
+| GLSL23 | -3.7 | |
+| GLSL19 | -3.0 | |
+| GLSL55 | -2.9 | -2.6 |
+| GLSL52, 54, 45, 57 | -1.2 to -1.5 each | |
+| GLSL51, 47, 30 | ~0 | |
+
+The main render is its pixels', and PPSSPP's TClampST programs (GLSL19,
+21, 23) ~10 ms of the frame. `SGX_EACH_VERTS_FS=NAME[,NAME...]` (with
+each) prints those draws' attributes' extents and their fragment shader's
+uniforms.
+
+**Discard as a source of 0.** GLSL19 -- PPSSPP's alpha test (a lookup in
+its testtex table, discard where it fails) under src * constant + dst --
+discarded, so it blended in F32 (M19: a discard keeps the tile's colour
+as the colour, blended again): 66 instructions. Where the blending leaves
+the destination as it is for a source of 0 (an add or a reverse subtract
+onto the destination times one, on the channels written:
+`blend_keeps_dst_for_zero`), a discard is a colour of 0:
+`lower_discard_to_zero` ors the discards' conditions into one and
+stores 0 where it holds, and the program blends by SOP2 (one block, its
+discards before its one store: `discard_shape_ok`; `SGX_KEEP_DISCARD=1`
+as before). GLSL19 66 -> 51 instructions; gldiscard's four new cases (an
+add of one, of the blend colour, of src alpha, a reverse subtract) 10 of
+10 either way. God of War moves within its runs' spread.
+
+**The clamp left out.** GLSL21 and 23, F16 since the above, still took
+12-14 instructions where the same without the clamp is 4-6: the clamp's
+coordinates are worked out in F32 and the program makes its own lookup,
+which the PDS cannot. The dump says what God of War's draws clamp to: the
+offset (u_texclampoff) is 0 in the big ones, u_texclamp.zw is half a
+texel (PPSSPP: 0.5 / the texture's width and height), and their
+coordinates stay inside the rectangle -- GLSL23's 1536 indices (a 480 x
+272 layer) u 0..0.2778, v 0..0.5 of the 256 x 256 corner (0.2963 x
+0.9412) of an 864 x 272 render, GLSL21's 864 indices 0.0012..0.2940 --
+or the rectangle is the whole texture: GLSL19's u_texclamp.xy is 1.0667,
+1.8824, the PSP's 512 x 512 texture in the 480 x 272 render it is. The
+clamp then does nothing:
+
+- Inside [lo, hi] at every vertex, every pixel's coordinate is inside it
+  too (a mix of its triangle's vertices'): the clamp leaves it as it is.
+- Where lo is at most half a texel in from the texture's edge and the
+  sampler clamps to the edge, GL's clamp to the edge takes any coordinate
+  below half a texel to the edge texel itself -- clamp(u, lo, hi) and u
+  give the same texel; the same for hi at least 1 - half a texel. Nearest
+  and linear, any size (the sampler's edge is the texture's, not its
+  copy's padded to powers of two: gltexclamp's npot cases).
+- Not with mipmaps, anisotropy, or different minifying and magnifying
+  filters: there the clamped coordinates' derivatives count.
+
+So:
+
+- `sgx_fs_texclamp` (at the shader's creation) finds a 2D lookup whose
+  coordinates are both clamp(v, lo, hi) + off -- fmin(fmax()) either way
+  round, v a varying's component, lo, hi and off uniforms' (a constant
+  and up to two words, added or subtracted: `sgx_uexpr`), the unit's only
+  lookup.
+- `sgx_vs_varying_attr` finds the vertex shader's varying as a copy of
+  an attribute's component (one store, a shader of one block: PPSSPP's
+  through mode).
+- At each draw (`texclamp_does_nothing`, fs_for_draw): the offset 0 and
+  lo <= hi from the uniforms; then each axis the texture's edges do not
+  settle: the attribute over the draw's vertices (an indexed draw's from
+  its smallest index to its largest), read where it is
+  (`sgx_buffer_read_in_place`: PPSSPP's push buffers are the GPU copy,
+  write-combined -- 2 floats a vertex, the indices in bursts of 256).
+  The variant (`sgx_blend_key.texclamp_free`) has the lookup at the
+  varying (`lower_texclamp_free`): the PDS's.
+- The fragment shader's constants are set before its variant is chosen
+  (they were set after, the previous draw's then).
+
+`SGX_DEBUG_TEXCLAMP=1` says each draw's answer and why;
+`SGX_NO_TEXCLAMP_FREE=1` (read as a shader is made) keeps every clamp;
+`SGX_TEXCLAMP_OFF_FILE=path` keeps them while that file is there (both
+compared in one run: `session-tools/abclamp.sh`). `SGX_DEBUG=fps` counts
+a frame's draws with the clamp left out and kept, and the CPU time the
+telling takes. tools/sgx/gl/gltexclamp: 20 cases (inside, outside, the
+edges, one side, an offset, repeat, mipmaps, a vertex shader that scales;
+16 x 16 and 24 x 20 textures, uploaded and rendered by the GPU), each
+against the same program with the clamp kept (equal: 0 of 255 apart)
+and against C; the GL tests as before.
+
+God of War's menu: 5 of the 11 TClampST draws a frame go without the
+clamp (the others have an offset, or a coordinate half a texel past the
+rectangle at a vertex: the pixels' are not, but a vertex's is all the
+draw reads); a render a draw (each, sync):
+
+| draw | the clamp kept | left out |
+|---|---|---|
+| GLSL19, 810 indices | 51 instructions, 3.50 ms | 39, 2.79 |
+| GLSL23, 1536 indices | 14, 2.21 | 6, 1.23 |
+| GLSL21, 864 indices | 12, 1.99 | 4, 1.17 |
+| two more of 810 | 12 and 15, 1.18 and 1.10 | 4 and 7, 0.77 and 0.79 |
+
+The two by turns in one run (abclamp.sh, three times): 28.89/29.01/28.99
+-> 30.80/30.70/30.79 frames/s, the GL thread waiting for the GPU 62% ->
+56%; PPSSPP's counter 46.4-48.3% -> 50.9-52.2%. Telling takes 0.73-0.85
+ms of the GL thread a frame (~1 before it read in place: the vertices
+were copied back into the CPU copy, 117 KB a frame).
+
 **What is left**, in the order it costs:
 
 - The GPU's frame: the main render (~12 ms of 76 draws), the kernel's copy
   onto the scanout (2.1 ms: the display's own base address, not known),
   PPSSPP's 1024 x 768 render, the renders' fixed cost.
-- The program that discards blends in F32 (66 instructions): the SOP2 into
-  a temporary, then the packed word or the tile's chosen.
+- GLSL19, the alpha test, 39 instructions in F32 (its testtex lookup and
+  the discard; the F16 path takes neither).
+- The TClampST draws still clamped, 6 a frame (five with an offset, one
+  half a texel past at a vertex): ~3.8 ms a render a draw, much of it the
+  renders' own cost there.
 - One of PPSSPP's programs writes gl_FragDepth (its depth rounded to 16
   bits): not compiled, drawn in a colour worked out per vertex.
 - Discard is M19's translucent emulation, twice a layer's cost
