@@ -36,10 +36,10 @@ index 48d30bf61..2fd47771f 100644
  obj-$(CONFIG_DRM_BOCHS)			+= bochs.o
 diff --git a/drivers/gpu/drm/tiny/apple-h11p.c b/drivers/gpu/drm/tiny/apple-h11p.c
 new file mode 100644
-index 000000000..a65700ba2
+index 0000000..8417d4d
 --- /dev/null
 +++ b/drivers/gpu/drm/tiny/apple-h11p.c
-@@ -0,0 +1,495 @@
+@@ -0,0 +1,602 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * Apple H11P display pipe, as found on T8020
@@ -62,6 +62,7 @@ index 000000000..a65700ba2
 +#include <linux/module.h>
 +#include <linux/of.h>
 +#include <linux/of_address.h>
++#include <linux/overflow.h>
 +#include <linux/platform_device.h>
 +#include <linux/pm_domain.h>
 +
@@ -123,6 +124,9 @@ index 000000000..a65700ba2
 +	u32 live_surface;
 +	u32 live_stride;
 +	u32 live_format;
++	/* J171 opt-in: keep the measured iBoot format and output-link state. */
++	bool j171_takeover;
++	u32 boot_format;
 +};
 +
 +static struct apple_h11p *to_h11p(struct drm_device *drm)
@@ -168,7 +172,8 @@ index 000000000..a65700ba2
 +	 * TTBRs are invalid, which they could not be if the scanout used it.
 +	 */
 +	stride = state->fb->pitches[0];
-+	format = state->fb->format->format == DRM_FORMAT_XRGB2101010 ?
++	format = h11p->j171_takeover ? h11p->boot_format :
++		 state->fb->format->format == DRM_FORMAT_XRGB2101010 ?
 +		 GP_FORMAT_XRGB2101010 : GP_FORMAT_XRGB8888;
 +
 +	/*
@@ -194,6 +199,12 @@ index 000000000..a65700ba2
 +	h11p->live_surface = lower_32_bits(addr);
 +	h11p->live_stride = stride;
 +	h11p->live_format = format;
++
++	if (h11p->j171_takeover)
++		drm_info_once(&h11p->drm,
++			      "J171 first flip: DMA %pad pitch %u format %#x surface %#x\n",
++			      &addr, stride, format,
++			      readl(h11p->read + GP_SURFACE));
 +
 +	drm_dbg_kms(&h11p->drm, "flip to 0x%08x stride %u, reads back 0x%08x\n",
 +		    lower_32_bits(addr), stride, readl(h11p->read + GP_SURFACE));
@@ -239,6 +250,17 @@ index 000000000..a65700ba2
 +	apple_h11p_send_event(pipe);
 +}
 +
++static bool apple_h11p_j171_extent(struct apple_h11p *h11p,
++				   dma_addr_t addr, u64 size)
++{
++	u64 end;
++
++	return size && !check_add_overflow((u64)addr, size - 1, &end) &&
++	       upper_32_bits(addr) == h11p->surface_hi &&
++	       upper_32_bits(end) == h11p->surface_hi &&
++	       IS_ALIGNED(addr, GP_SURFACE_ALIGN);
++}
++
 +static int apple_h11p_pipe_check(struct drm_simple_display_pipe *pipe,
 +				 struct drm_plane_state *plane_state,
 +				 struct drm_crtc_state *crtc_state)
@@ -263,6 +285,17 @@ index 000000000..a65700ba2
 +		return -EINVAL;
 +	if (!IS_ALIGNED(fb->pitches[0], GP_SURFACE_ALIGN))
 +		return -EINVAL;
++
++	if (h11p->j171_takeover) {
++		u64 size;
++
++		if (fb->format->format != DRM_FORMAT_XRGB8888 ||
++		    fb->width != h11p->mode.hdisplay ||
++		    fb->height != h11p->mode.vdisplay ||
++		    check_mul_overflow((u64)fb->pitches[0], (u64)fb->height, &size) ||
++		    !apple_h11p_j171_extent(h11p, addr, size))
++			return -EINVAL;
++	}
 +
 +	return 0;
 +}
@@ -381,6 +414,25 @@ index 000000000..a65700ba2
 +		return -ENODEV;
 +
 +	ret = of_address_to_resource(fb, 0, &res);
++	if (!ret && h11p->j171_takeover) {
++		const char *format;
++		u32 width, height, stride;
++		u64 size;
++
++		if (of_property_read_u32(fb, "width", &width) ||
++		    of_property_read_u32(fb, "height", &height) ||
++		    of_property_read_u32(fb, "stride", &stride) ||
++		    of_property_read_string(fb, "format", &format) ||
++		    strcmp(format, "x8r8g8b8") || width != 1620 || height != 2160 ||
++		    stride < width * 4 || !IS_ALIGNED(stride, GP_SURFACE_ALIGN) ||
++		    check_mul_overflow((u64)stride, (u64)height, &size) ||
++		    resource_size(&res) < size || upper_32_bits(res.start) != 8 ||
++		    lower_32_bits(res.start) != readl(h11p->read + GP_SURFACE) ||
++		    readl(h11p->read + GP_STRIDE) != stride ||
++		    readl(h11p->read + GP_DST_SIZE) != (width << 16 | height) ||
++		    !(readl(h11p->read + GP_BASE + 4) & BIT(31)))
++			ret = -EINVAL;
++	}
 +	of_node_put(fb);
 +	if (ret)
 +		return ret;
@@ -410,10 +462,46 @@ index 000000000..a65700ba2
 +	.pd_flags = PD_FLAG_DEV_LINK_ON,
 +};
 +
++/* No panel/DSI/eDP/backlight setup: preserve J171's inherited pixel path. */
++static int apple_h11p_j171_preflight(struct apple_h11p *h11p,
++				     struct drm_gem_dma_object **bo)
++{
++	u64 size;
++
++	if (!of_machine_is_compatible("apple,j171a"))
++		return -ENODEV;
++	if (h11p->mode.hdisplay != 1620 || h11p->mode.vdisplay != 2160)
++		return -EINVAL;
++	h11p->boot_format = readl(h11p->read + GP_FORMAT);
++	if (h11p->boot_format != 0x055c8000)
++		return -EINVAL;
++	if (check_mul_overflow((u64)readl(h11p->read + GP_STRIDE),
++			       (u64)h11p->mode.vdisplay, &size))
++		return -EINVAL;
++	*bo = drm_gem_dma_create(&h11p->drm, size);
++	if (IS_ERR(*bo)) {
++		int ret = PTR_ERR(*bo);
++
++		*bo = NULL;
++		return ret;
++	}
++	if (!apple_h11p_j171_extent(h11p, (*bo)->dma_addr, (*bo)->base.size)) {
++		drm_gem_object_put(&(*bo)->base);
++		*bo = NULL;
++		return -ERANGE;
++	}
++	drm_info(&h11p->drm,
++		 "J171 takeover preflight: %ux%u format %#x DMA %pad size %zu; no link reset\n",
++		 h11p->mode.hdisplay, h11p->mode.vdisplay, h11p->boot_format,
++		 &(*bo)->dma_addr, (*bo)->base.size);
++	return 0;
++}
++
 +static int apple_h11p_probe(struct platform_device *pdev)
 +{
 +	struct apple_h11p *h11p;
 +	struct drm_device *drm;
++	struct drm_gem_dma_object *preflight_bo = NULL;
 +	int ret;
 +
 +	h11p = devm_drm_dev_alloc(&pdev->dev, &apple_h11p_driver,
@@ -422,6 +510,10 @@ index 000000000..a65700ba2
 +		return PTR_ERR(h11p);
 +
 +	drm = &h11p->drm;
++	h11p->j171_takeover = of_device_is_compatible(pdev->dev.of_node,
++						    "cascadia,j171a-display-takeover");
++	if (h11p->j171_takeover && !of_machine_is_compatible("apple,j171a"))
++		return -ENODEV;
 +	platform_set_drvdata(pdev, h11p);
 +
 +	h11p->read = devm_platform_ioremap_resource_byname(pdev, "read");
@@ -479,12 +571,14 @@ index 000000000..a65700ba2
 +				 &apple_h11p_connector_helper_funcs);
 +	ret = drm_connector_init(drm, &h11p->connector,
 +				 &apple_h11p_connector_funcs,
++				 h11p->j171_takeover ? DRM_MODE_CONNECTOR_eDP :
 +				 DRM_MODE_CONNECTOR_DSI);
 +	if (ret)
 +		return ret;
 +
 +	ret = drm_simple_display_pipe_init(drm, &h11p->pipe, &apple_h11p_pipe_funcs,
 +					   apple_h11p_formats,
++					   h11p->j171_takeover ? 1 :
 +					   ARRAY_SIZE(apple_h11p_formats), NULL,
 +					   &h11p->connector);
 +	if (ret)
@@ -492,21 +586,33 @@ index 000000000..a65700ba2
 +
 +	drm_mode_config_reset(drm);
 +
++	if (h11p->j171_takeover) {
++		ret = apple_h11p_j171_preflight(h11p, &preflight_bo);
++		if (ret)
++			return dev_err_probe(&pdev->dev, ret,
++					     "J171 preflight failed; keeping simpledrm\n");
++	}
++
 +	/*
 +	 * simpledrm is on the same framebuffer, so it has to go before this
 +	 * driver registers or the two of them fight over the screen.
 +	 */
 +	ret = aperture_remove_all_conflicting_devices(apple_h11p_driver.name);
-+	if (ret)
-+		return dev_err_probe(&pdev->dev, ret, "could not take the screen\n");
++	if (ret) {
++		dev_err_probe(&pdev->dev, ret, "could not take the screen\n");
++		goto out_preflight;
++	}
 +
 +	ret = drm_dev_register(drm, 0);
 +	if (ret)
-+		return ret;
++		goto out_preflight;
 +
 +	drm_client_setup(drm, NULL);
 +
-+	return 0;
++out_preflight:
++	if (preflight_bo)
++		drm_gem_object_put(&preflight_bo->base);
++	return ret;
 +}
 +
 +static void apple_h11p_remove(struct platform_device *pdev)
@@ -518,6 +624,7 @@ index 000000000..a65700ba2
 +}
 +
 +static const struct of_device_id apple_h11p_of_table[] = {
++	{ .compatible = "cascadia,j171a-display-takeover" },
 +	{ .compatible = "apple,t8020-display-pipe" },
 +	{}
 +};

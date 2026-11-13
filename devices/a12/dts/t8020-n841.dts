@@ -46,6 +46,17 @@
 &serial0 { status = "okay"; };
 
 /*
+ * The kernel is shared with the XS Max (d331p), which turns on the H11P
+ * display driver and the SoC temperature sensors. Neither is tried on the
+ * XR, which stays on simpledrm.
+ */
+&disp0 { status = "disabled"; };
+&dsi { status = "disabled"; };
+&tempsensor_pmgr { status = "disabled"; };
+&tempsensor_acc { status = "disabled"; };
+&tempsensor_acce { status = "disabled"; };
+
+/*
  * N841 UART1 is the four-pin group retained on AP GPIOs 30..33.  The Apple
  * ADT explicitly names TX30 and RTS32; RX31/CTS33 are the intervening pins
  * retained in peripheral function 1.  Select the complete group before the

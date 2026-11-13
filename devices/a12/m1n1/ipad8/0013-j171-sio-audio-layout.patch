@@ -1,0 +1,66 @@
+--- a/src/sio.c
++++ b/src/sio.c
+@@ -86,7 +86,7 @@
+     bool keyed;
+     int blobsize;
+     u32 nkeys;
+-    const char *keys[9];
++    const char *keys[10];
+ };
+ 
+ #define SPACER "\xff\xff\xff\xff"
+@@ -160,8 +160,22 @@
+         goto err;
+     }
+ 
++    /* 21B91 J171a uses AppleSmartIO2's six-slot, 36-byte shim ABI.
++     * Other boards retain the original layouts byte-for-byte. */
++    bool j171 = adt_is_compatible(adt, 0, "J171aAP");
+     for (int i = 0; i < (int)ARRAY_SIZE(copy_rules); i++) {
+-        struct copy_rule *rule = &copy_rules[i];
++        struct copy_rule local_rule = copy_rules[i];
++        struct copy_rule *rule = &local_rule;
++        if (j171 && rule->fw_param == PARAM_MAP_RANGE) {
++            const char *keys[] = {"MINI", "AOPA", "AOPG", "MISC", NULL};
++            memcpy8(rule->keys, keys, sizeof(keys));
++        } else if (j171 && rule->fw_param == PARAM_DMASHIM_DATA) {
++            const char *keys[] = {"SSPI", "SUAR", "SAUD", "SQSP", "ADMA", "AAUD", NULL};
++            memcpy8(rule->keys, keys, sizeof(keys));
++        } else if (j171 && rule->fw_param == PARAM_DEVICE_TYPE) {
++            const char *keys[] = {"dSPI", "dUAR", "dMCA", "dDPA", "dPDM", "dALE", "dAMC", "dAPD", "dQSP", NULL};
++            memcpy8(rule->keys, keys, sizeof(keys));
++        }
+         u32 len;
+ 
+         if (!rule->prop) {
+@@ -186,7 +200,15 @@
+         }
+ 
+         int nkeys = find_key_index(rule->keys, 0);
+-        u8 *sio_blob = add_fwdata(siodata, nkeys * rule->blobsize, rule->fw_param);
++        bool j171_shim = j171 && rule->fw_param == PARAM_DMASHIM_DATA;
++        u32 out_stride = rule->blobsize + (j171_shim ? 4 : 0);
++        /* Native defaults the extra shim-power-gate word to -1. Never
++         * silently invent gating metadata for a different bootloader ADT. */
++        if (j171_shim && adt_getprop(adt, node, "enable-shim-power-gating", NULL)) {
++            printf("%s: J171 shim power-gating metadata requires explicit support\n", __func__);
++            goto err;
++        }
++        u8 *sio_blob = add_fwdata(siodata, nkeys * out_stride, rule->fw_param);
+         if (!sio_blob)
+             goto err;
+ 
+@@ -207,7 +229,12 @@
+                 goto err;
+             }
+ 
+-            memcpy8(sio_blob + (key_idx * rule->blobsize), (void *)(p + 4), rule->blobsize);
++            memcpy8(sio_blob + (key_idx * out_stride), (void *)(p + 4), rule->blobsize);
++            if (j171_shim) {
++                u32 no_power_gate = 0xffffffff;
++                memcpy8(sio_blob + key_idx * out_stride + rule->blobsize,
++                        &no_power_gate, sizeof(no_power_gate));
++            }
+         }
+     }
+ 

@@ -1,101 +1,126 @@
-# Cascadia A12 — iPhone XR bring-up
+# Cascadia A12 — iPhone XR and iPad 8 Wi-Fi
 
-Initial target: iPhone XR (`iPhone11,8`, `N841AP`, T8020).  This track reuses
-the A13 boot architecture but not its N104 DeviceTree or Linux DTB.
+Experimental, contributed Linux support for two **distinct** T8020 boards:
 
-The detailed status, completed patches, verified payload and remaining work
-for display, touch, Wi-Fi and Bluetooth are tracked in
-[`LINUX_PLAN.md`](LINUX_PLAN.md).
+| Profile | Device | Board | Boot firmware baseline |
+|---|---|---|---|
+| `xr` | iPhone XR / iPhone11,8 | N841AP, BDID `0x0c` | iOS 18.7.10 / 22H374 |
+| `ipad8` | iPad 8 Wi-Fi / iPad11,6 / A2270 | J171aAP, BDID `0x24` | iPadOS 17.1.1 / 21B91 |
 
-Known hardware facts extracted from the existing XR Apple DeviceTree:
-
-- T8020, four Tempest E-cores (`reg` 0..3) and two Vortex P-cores (`0x100`,
-  `0x101`).
-- AIC v2 at `0x3b100000`, event block at `0x3b108000`.
-- PMGR compatible `pmgr1,t8020`.
-- Lightning uses `usb-complex,t8020|usb-complex,t8011`, the DWC2 path already
-  present in m1n1, not the iPhone 11's DWC3/AUSB path.
-- USB DART is `dart,t8020` at `0x39900000`.
-- Touch is HID-over-SPI at `spi1` (`0x35104000`).
-- PCIe is `apcie,t8020`, ports 2 and 3.
-
-First milestone:
-
-1. patched XR iBSS starts m1n1;
-2. m1n1 identifies Vortex/Tempest and keeps its USB console;
-3. m1n1 hands off to a one-core, 16K-page Linux kernel;
-4. Linux prints through the iBoot framebuffer and reaches an initramfs shell.
-
-Build the first-stage m1n1 payload:
+**Start with [QUICKSTART.md](QUICKSTART.md).** It is the single current walkthrough
+for device selection, firmware preparation, Debian/NFS, builds, packaging and boot.
 
 ```sh
-devices/a12/m1n1/build-m1n1.sh
+./cascadia a12 --device xr doctor
+./cascadia a12 --device ipad8 doctor
 ```
 
-The m1n1 builder pins its upstream commit, applies Cascadia's A13 series,
-then the XR patches in `devices/a12/m1n1/`. For Linux, fetch the pinned Hoolock source
-and verified 16K config before building:
+XR remains the default when no device is selected. Select explicitly when using
+both devices. An environment equivalent is `A12_DEVICE=xr` or `A12_DEVICE=ipad8`.
 
-```sh
-bash devices/a12/linux/prepare-kernel.sh
-bash devices/a12/linux/build-kernel.sh
-bash devices/a12/dts/build-dtb.sh
-```
+## What has actually been tested
 
-The Linux source baseline is pinned to the XR-tested commit; the numbered
-`devices/a12/linux/patches/` record the XR differences and the build script checks
-whether its incremental patches are already present. Do not treat a patch's
-presence as proof that the corresponding hardware is enabled or verified.
+Earlier laboratory payloads reached Debian/XFCE over USB NFS with framebuffer,
+touch, Wi-Fi and UART Bluetooth on both boards. J171 also demonstrated the
+login-screen keyboard/password flow. These are contributor reports, not a
+promise of support or maintainer hardware testing.
 
-Prepare the XR iBSS/DeviceTree/m1n1 boot set with DCSD serial enabled:
+The separated source workflow subsequently built a shared kernel/m1n1 and
+board-specific payloads, booted both XR and iPad, and passed automatic USB/SSH/NFS
+reconnect tests with the corrected A13-style handoff (now the default). The iPad
+reused the freshly built XR Debian root; this does not validate a separate fresh
+iPad-profile root build. Repeated iPad reconnects passed, but an earlier timeout
+means intermittent recovery is not ruled out. Latest tests confirmed radio
+interfaces/controllers, not complete association/pairing or stability coverage.
+See [rootfs/PROFILES.md](rootfs/PROFILES.md) for lifecycle and test evidence.
+This remains an experimental contributed port, not a fully validated release.
 
-```sh
-python3 devices/a12/boot/prepare-xr-linux-bootset.py --ticket /path/to/apticket.im4m
-```
+The tested host was an Android phone running Kali NetHunter with a custom kernel
+supporting an NFS server. This is a test environment, not a requirement for using
+the port. Native Linux ARM64 is the documented build/rootfs baseline; other host
+architectures require additional toolchain/emulation setup.
 
-See `devices/a12/boot/README.md` for the generated files and upload order. The Apple
-DeviceTree remains pristine; Linux DT changes belong in the later N841 DTB.
-See [`FIRMWARE.md`](FIRMWARE.md) for 22H374 partial extraction, touch/radio
-firmware inputs, private SysCfg handling, and the `--serial`/`--no-serial`
-first-stage options.
-For the host-exported Debian XFCE desktop, follow
-[`DEBIAN_XFCE_NFS.md`](DEBIAN_XFCE_NFS.md). This is a separate N841 NFS root,
-not the iPhone 11 or A5 desktop image.
+## Design
 
-## Rebuild and test
+- Small initramfs plus a separate host-exported Debian desktop; do not embed a
+  desktop or Wi-Fi/Bluetooth firmware into the kernel payload.
+- Separate per-device SysCfg, Apple inputs, DT/initramfs, manifests and boot logs.
+- One shared kernel/m1n1 source/build tree. A second desktop root is **not**
+  created by selecting another device.
+- Pristine Apple DeviceTree for iBoot, and a separate board-specific Linux DTB.
+- RAM-only boot transfers. No iOS restore/downgrade or internal-storage writes
+  are part of this procedure.
+- A12-owned, hash-recorded copies of its former A13 build dependencies.
 
-The clean A12 source path, Debian/XFCE NFS handoff, framebuffer, touch, Wi-Fi
-and Bluetooth were phone-tested on iPhone XR. Reproduce them in this order;
-none of the first four steps needs a phone:
+## Reference documents
 
-1. `bash devices/a12/m1n1/build-m1n1.sh` — rebuild the A12 m1n1 proxy from its pinned
-   source and patch series.
-2. `bash devices/a12/linux/prepare-kernel.sh` then
-   `JOBS=8 bash devices/a12/linux/build-kernel.sh` — fetch the pinned Linux source and
-   compile the cleaned N841 patch series. Preserve the produced `Image.gz`
-   and `kernel.config` hashes.
-3. `bash devices/a12/dts/build-dtb.sh` and
-   `bash devices/a12/initramfs/make-initramfs.sh` — build the N841 hardware description
-   and a **small recovery initramfs** first, without `devices/a12/build/nfsroot`.
-4. With this XR's private IM4M ticket, run
-   `python3 devices/a12/boot/prepare-xr-linux-bootset.py --ticket /path/to/apticket.im4m`
-   and `XR_IM4M=/path/to/apticket.im4m python3 devices/a12/boot/package-linux.py`.
-   The bootset rebuild preserves `boot/inputs/brcm/` radio files.
-5. Verify IMG4 payloads and hashes, then boot once with
-   `bash devices/a12/boot/boot-xr-linux.sh` and DCSD logging. Confirm m1n1, Linux,
-   `/init`, USB ECM, SSH, display and touch before adding a desktop root.
-   While USB SSH is up, run `bash devices/a12/host/read-syscfg.sh` to capture this
-   XR's private calibration. Then repackage with
-   `XR_IM4M=/path/to/apticket.im4m XR_SYSCFG=devices/a12/boot/inputs/syscfg.bin python3 devices/a12/boot/package-linux.py`
-   before testing Wi-Fi/Bluetooth.
-6. Only after the small boot succeeds, build the Debian/XFCE NFS root using
-   [`DEBIAN_XFCE_NFS.md`](DEBIAN_XFCE_NFS.md), enable the host export, rebuild
-   the initramfs and Linux IMG4, and test `switch_root`. Then run
-   `boot-and-load-xr.sh` to deliver the verified Wi-Fi/Bluetooth firmware.
+- [QUICKSTART.md](QUICKSTART.md) — current command sequence and prerequisites.
+- [DISPLAY.md](DISPLAY.md) — iPad native scanout, brightness and desktop setup.
+- [FIRMWARE.md](FIRMWARE.md) — IPSW sources, SysCfg, radio vendors and extraction.
+- [DEBIAN_XFCE_NFS.md](DEBIAN_XFCE_NFS.md) — root reuse, networking and recovery.
+- [DEVICE_SEPARATION.md](DEVICE_SEPARATION.md) — paths, guards and refactor limits.
+- [rootfs/PROFILES.md](rootfs/PROFILES.md) — accounts, greeter and RAM watchdog.
+- [boot/README.md](boot/README.md) — generated boot files and upload order.
+- [vendor/README.md](vendor/README.md) — frozen dependency provenance.
+- [LINUX_PLAN.md](LINUX_PLAN.md) and [boot/IPAD8_RADIO.md](boot/IPAD8_RADIO.md) —
+  chronological engineering evidence; older paths/commands there are historical,
+  not an alternative current installation guide.
 
-The source-built, SysCfg-injected payload completed the full automated
-boot-and-radio sequence on 2026-11-04. The tested host was an Android phone
-running Kali NetHunter with a custom kernel that supports serving NFS; this is
-a test environment, not a requirement for the port. Apple firmware, device
-SysCfg, IM4M, generated payloads and logs remain local and ignored by Git.
-Storage writes remain disabled.
+Apple binaries, tickets, factory identifiers/calibration, private keys, generated
+payloads, desktop roots and logs stay local and ignored by Git.
+
+## Merged XS Max support
+
+The contributed D331p (`iPhone11,6`) path from kieroid is selected with
+`./cascadia a12 --device xsmax COMMAND` or the compatible `A12_BOARD=d331p`.
+XR remains the default; conflicting selectors are rejected. Inputs, SysCfg,
+DTB, m1n1, initramfs, NFS settings and bootsets remain per device.
+
+The XS Max uses BadApple's m1n1 patch series, `--any-im4m` iBSS patching,
+D331p touch operations, embedded BCM4377 PCIe radios and pinned iOS 16.6.1
+GPU firmware. It does not require SysCfg to package its shell boot. Without
+an NFS configuration it boots its initramfs shell. `boot radios` is for
+XR/iPad external firmware loading; XS Max uses `boot` instead.
+
+For XS Max, `periphery /path/to/16.6.1.ipsw` extracts radio firmware.
+The shell/SSH/display/touch/radio/GPU-node result is reported by kieroid;
+this merged profile has not yet been hardware-tested here. The later iPad GPU/native-display integration is documented in
+[GPU.md](GPU.md) and [DISPLAY.md](DISPLAY.md); it is not an XS validation result.
+
+On non-arm64 hosts, initramfs dropbear and libraries are taken from Debian
+arm64 packages. BlueZ host-copy bundles still require arm64. Native Linux
+m1n1 builds are available with `M1N1_DOCKER=0`.
+
+## Credits
+
+
+- **dr1408**: the XR port: N841 DTS, the HBPP touch driver, the BCM4357 and
+  N88 radio patches, and the boot, NFS and firmware scripts
+- **kiki**: [badapple](https://forgejo.toe.quest/kiki/badapple), the iPhone XS
+  Max port: the T8020 DTS and PMGR, Linux patches 0001 to 0014, the GPU
+  driver 0020, and the T8020 m1n1 work (DWC2, chicken bits) the XR m1n1
+  series builds on
+- **Hoolock Linux**: [linux](https://github.com/HoolockLinux/linux),
+  [m1n1 `idevice`](https://github.com/HoolockLinux/m1n1) and `config_16k`
+- **Asahi Linux**: m1n1, and the Apple silicon drivers Hoolock builds on
+- **Corellium**: Project Sandcastle's `hcdpack`, which builds the Bluetooth
+  HCD
+- **Pauli1Go**: the iPhone 7 Bluetooth notes that pointed at the full UART
+  pinmux and RTS/CTS
+- **Paradigm Shift**: usbliter8
+- **blacktop**: [ipsw](https://github.com/blacktop/ipsw)
+
+GPU build/firmware/Mesa instructions: [GPU.md](GPU.md). The iPad built-in GPU path has passed boot, pixel-readback and temporary GPU-desktop tests; see the documented limits.
+
+The iPad profile selects guarded native H11P scanout and SPMI/SMC brightness
+with writes enabled by default and an inherited-brightness cap. A normal-profile
+boot verified automatic AGX desktop selection and the user confirmed its slider.
+The old 4096-job render stop has been removed and host-tested, but that fix still
+needs a fresh hardware endurance test. See [DISPLAY.md](DISPLAY.md) and
+[GPU.md](GPU.md) for evidence, rootfs setup and limits.
+
+## iPad 8 speakers
+
+See [AUDIO.md](AUDIO.md) for the speaker port, SIO handoff/power fixes, native
+channel mapping, live attenuation, optional Omarchy controls and reproduction
+status. Audio resources and policy are iPad-only; XR/XS audio is unchanged.

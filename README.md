@@ -16,6 +16,8 @@ XFCE desktop you drive with your fingers.
 |---|---|---|---|---|
 | iPad mini 1 (Wi-Fi) | iPad2,5 / A1432 / p105ap | Apple A5 (S5L8942X) | Linux 6.12: both cores, touch, Wi-Fi, Bluetooth, speakers, battery, the GPU (OpenGL ES 2.0 / GL 2.1), XFCE; iOS's files read-only | [devices/a5](devices/a5/README.md) · [quickstart](devices/a5/docs/QUICKSTART.md) |
 | iPhone XR *(experimental, contributed)* | iPhone11,8 / N841AP | Apple A12 (T8020) | as its author reports it: Linux 7.3, framebuffer, touch, USB networking/SSH, Wi-Fi, UART Bluetooth, Debian/XFCE over NFS -- not built or tested by the maintainer | [devices/a12](devices/a12/README.md) · [Debian/XFCE](devices/a12/DEBIAN_XFCE_NFS.md) |
+| iPad 8 (Wi-Fi) *(experimental, contributed)* | iPad11,6 / A2270 / J171aAP | Apple A12 (T8020) | Contributor-tested Linux 7.3: native display/brightness, touch, USB networking/SSH, Wi-Fi, UART Bluetooth and G11 GPU-accelerated Omarchy over NFS. Internal-speaker audio and volume controls contributor-tested; sustained-rendering fix awaits hardware retest | [devices/a12](devices/a12/README.md) (`--device ipad8`) · [display](devices/a12/DISPLAY.md) · [GPU](devices/a12/GPU.md) · [audio](devices/a12/AUDIO.md) |
+| iPhone XS Max | iPhone11,6 / D331pAP | Apple A12 (T8020) | Linux 7.3: all six cores, display, touch, USB networking, Wi-Fi, Bluetooth. On [badapple](https://forgejo.toe.quest/kiki/badapple) also the internal storage as ext4, cpufreq and the GPU (OpenCL, OpenGL ES 2/3 and Vulkan, in progress) | [devices/a12](devices/a12/README.md#xs-max) (`A12_BOARD=d331p`) · [badapple](https://forgejo.toe.quest/kiki/badapple) |
 | iPhone 11 | iPhone12,1 / n104ap | Apple A13 (T8030) | Linux 7.2: all six cores, touch, Wi-Fi, Bluetooth, XFCE, the internal storage as Linux's disk, no cable after the boot | [devices/a13](devices/a13/README.md) · [quickstart](devices/a13/docs/QUICKSTART.md) |
 
 Experimental: the iPad 2 Wi-Fi (iPad2,1 / K93AP, S5L8940) boots Linux 6.12 to
@@ -31,6 +33,7 @@ git clone https://github.com/rzxvx/Project-Cascadia.git
 cd Project-Cascadia
 ./cascadia a5 install         # iPad mini 1: everything, step by step
 ./cascadia a12 doctor         # iPhone XR (experimental, contributed): its host requirements
+./cascadia a12 --device ipad8 doctor  # iPad 8 Wi-Fi (experimental, contributed)
 ./cascadia a13 doctor         # iPhone 11: what this machine is missing
 ```
 
@@ -56,8 +59,8 @@ device.
 cascadia        the entry point: ./cascadia <device> <command>
 devices/a5/     the A5 tree (iPad mini 1, iPad 2): kernel patches, device
                 tree, initramfs, Mesa's GPU driver, tools, docs, research
-devices/a12/    the A12 tree (iPhone XR): m1n1/kernel patches, N841 DT,
-                Debian NFS root, touch and radio firmware recipes
+devices/a12/    the A12 tree (iPhone XR, XS Max, iPad 8 Wi-Fi): shared
+                kernel, board-specific boot/DT/firmware, NFS roots, G11 GPU
 devices/a13/    the A13 tree (iPhone 11): m1n1 and kernel patches, boot,
                 initramfs, Alpine root, tools, docs, research
 imgs/           pictures for the READMEs
@@ -77,6 +80,20 @@ IPSW (or Apple's CDN) on your machine.
   author reports; it builds on devices/a13's m1n1 patches, which still
   change.
   [devices/a12/LINUX_PLAN.md](devices/a12/LINUX_PLAN.md)
+- **iPhone XS Max (A12)** — contributed D331p profile from kieroid: shell/SSH,
+  display, touch, Wi-Fi, Bluetooth and GPU render-node bring-up reported by
+  its contributor. The merged Cascadia profile has not been independently
+  hardware-tested here; BadApple's storage, cpufreq and OpenCL/OpenGL/Vulkan
+  results are separate from this profile's reported boot result.
+  [XS Max support](devices/a12/README.md#merged-xs-max-support) ·
+  [BadApple](https://forgejo.toe.quest/kiki/badapple)
+- **iPad 8 Wi-Fi (A12)** — experimental contributed J171 profile: native
+  scanout and brightness, touch, USB/NFS, radios and GPU desktop tested by its
+  contributor. Internal speakers, live attenuation, volume buttons and Omarchy
+  controls are also contributor-tested. Microphone/headphone audio, iOS-style
+  speaker protection and full-range brightness calibration remain; the removed
+  render-job cap still needs an endurance retest.
+  [Display](devices/a12/DISPLAY.md) · [Audio](devices/a12/AUDIO.md)
 - **iPhone 11 (A13)** — phases 1 and 2 done; phase 3 up to the internal
   storage; next the native display and the GPU.
   [devices/a13/docs/ROADMAP.md](devices/a13/docs/ROADMAP.md)
@@ -97,7 +114,6 @@ In no particular order:
 - iPad Pro 10.5" 2017 - A10X
 - iPad mini 5 — A12 (requires additional hardware for booting)
 - iPad 5 — A9
-- iPad 8 - A12 (requires additional hardware)
 - iPad 9 - A13 (same T8030 as the iPhone 11; notes in `devices/a13/docs/ipad9/`)
 
 ![FastFetch written using screen keyboard](imgs/IMG_1196.jpg)
@@ -141,7 +157,8 @@ pretty far.
 - **Project Sandcastle** — Z2 multitouch driver and protocol, the starting point
 
 The A13 track's own credits (m1n1, Hoolock, Asahi Linux, usbliter8) are in
-[devices/a13/README.md](devices/a13/README.md).
+[devices/a13/README.md](devices/a13/README.md), the A12 track's in
+[devices/a12/README.md](devices/a12/README.md#credits).
 
 ## License
 

@@ -9,6 +9,16 @@ KCOMMIT=6831bc701a6ce059e71e5aaa9488c9195bea6927
 DREPO=https://github.com/HoolockLinux/docs.git
 DCOMMIT=23ebe1fbc375599221553a7e1815e5de182a6b42
 CONFIG_SHA=a5cbcb0d3fe655888106672e6fe03477b63d51bd36bbcfc4f5145627d906b208
+if [ "${1:-}" = --check ]; then
+  [ "$(git -C "$K" rev-parse HEAD)" = "$KCOMMIT" ] || {
+    echo 'kernel checkout is not the pinned baseline; use explicit build kernel-clean' >&2; exit 1;
+  }
+  [ "$(git -C "$DOCS" rev-parse HEAD)" = "$DCOMMIT" ] || {
+    echo 'config checkout is not the pinned baseline; use explicit build kernel-clean' >&2; exit 1;
+  }
+  printf '%s  %s\n' "$CONFIG_SHA" "$DOCS/config_16k" | sha256sum -c -
+  exit 0
+fi
 mkdir -p "$A12/build"
 fetch_clean() {
   local repo="$1" commit="$2" dest="$3"
@@ -22,7 +32,10 @@ fetch_clean() {
   [[ "$(git -C "$dest" remote get-url origin)" == "$repo" ]] || {
     echo "unexpected remote for $dest" >&2; exit 1;
   }
-  git -C "$dest" fetch --depth=1 --no-tags origin "$commit"
+  # A rebuild already has the commit; fetching it again downloads it again.
+  git -C "$dest" cat-file -e "$commit^{commit}" 2>/dev/null ||
+    git -C "$dest" fetch --depth=1 --no-tags origin "$commit"
+  echo "$commit" > "$dest/.git/FETCH_HEAD"
   # build/ is ignored and owned by these scripts.  Recreate a clean baseline
   # after an earlier build left the downstream patch series and object files.
   git -C "$dest" checkout -q -f --detach FETCH_HEAD

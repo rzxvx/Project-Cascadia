@@ -1,6 +1,12 @@
 #!/usr/bin/env python3
 """
-Port of Liter8's iBoot resolvers to Python for iPhone XR (n841) iOS 18.7.10 (22H374).
+A12 iBoot patcher for Project Cascadia.
+
+Supported profiles:
+
+* iPhone XR (n841), iOS 18.7.10 (22H374): anchor-based resolvers.
+* iPad11,6 (J171aAP), iPadOS 17.1.1 (21B91): SHA-256-pinned,
+  instruction-guarded iPad resolvers.
 
 Resolvers (all anchor-based, no hardcoded offsets):
 
@@ -34,12 +40,20 @@ Reference: Liter8-iPad8/Sources/Liter8Core/Resolvers/iBoot/*.swift
 """
 
 import os
+import hashlib
 import struct
 import sys
 from typing import List, Optional, Tuple
 
 NOP = 0xD503201F
 MOV_X0_0 = 0xD2800000  # MOV X0, #0 (movz x0, #0)
+
+# Exact raw iBSS from iPad11,6 (J171aAP), iPadOS 17.1.1 (21B91),
+# iBoot-10151.42.2.  Keep this pin: the iPad resolver below intentionally
+# refuses nearby builds instead of applying offsets optimistically.
+IPAD11_6_17_1_1_SHA256 = (
+    "feeaf79f8a11dffaafe5d4f334f6a6b868c29bc9117f716a4fbfa7e8d2f82fde"
+)
 
 
 # ---- ARM64 helpers ----------------------------------------------------------
@@ -89,6 +103,17 @@ def encode_adrp(reg: int, pc: int, target: int) -> int:
     immlo = imm21 & 3
     immhi = (imm21 >> 2) & 0x7FFFF
     return 0x90000000 | (immlo << 29) | (immhi << 5) | (reg & 0x1F)
+
+
+def encode_adr(reg: int, pc: int, target: int) -> int:
+    """ADR Xreg, target. The immediate is a signed 21-bit byte offset."""
+    imm21 = target - pc
+    if imm21 < -(1 << 20) or imm21 >= (1 << 20):
+        raise ValueError(f"ADR imm21 out of range: {imm21}")
+    imm21 &= 0x1FFFFF
+    immlo = imm21 & 3
+    immhi = (imm21 >> 2) & 0x7FFFF
+    return 0x10000000 | (immlo << 29) | (immhi << 5) | (reg & 0x1F)
 
 
 def encode_add_imm(dst: int, src: int, imm: int) -> int:
@@ -281,6 +306,42 @@ def resolve_validate(data: bytes, text_base: int) -> List[Tuple[int, int, int, s
     return patches
 
 
+def resolve_validate_ipad11_6_17_1_1(
+    data: bytes, text_base: int
+) -> List[Tuple[int, int, int, str]]:
+    """Verified Image4 gates for J171aAP 21B91 (iBoot-10151.42.2)."""
+    # Return value of the Image4 property/constraint validator.  This is the
+    # iOS 17 compiler's equivalent of the XR resolver's MOV X0,X20 epilogue.
+    result_off = 0x2ED00
+    result_orig = 0xAA1403E0  # MOV X0, X20
+
+    # sub_19C11CFA4 performs the manifest trust evaluation.  Zero enters the
+    # existing success continuation at file offset 0x2CB08; non-zero selects
+    # error -0x1e.  Preserve all parsing and digest extraction around it.
+    auth_off = 0x2CAB0
+    auth_orig = 0x340002C0  # CBZ W0, +0x58
+    auth_success = 0x2CB08
+
+    expected = ((result_off, result_orig), (auth_off, auth_orig))
+    for off, word in expected:
+        got = struct.unpack_from("<I", data, off)[0]
+        if got != word:
+            raise RuntimeError(
+                f"J171aAP 21B91 instruction mismatch @0x{off:x}: "
+                f"expected 0x{word:08x}, got 0x{got:08x}"
+            )
+
+    return [
+        (result_off, result_orig, MOV_X0_0, "ipad.ibss.validate.result"),
+        (
+            auth_off,
+            auth_orig,
+            encode_direct_branch(text_base + auth_off, text_base + auth_success),
+            "ipad.iboot.image4-manifest-auth.branch",
+        ),
+    ]
+
+
 # ---- IBSSBootArgsResolver ---------------------------------------------------
 
 def find_boot_args_call_site(data: bytes, text_base: int) -> Tuple[int, int, int]:
@@ -329,7 +390,7 @@ def find_boot_args_call_site(data: bytes, text_base: int) -> Tuple[int, int, int
 
 
 def find_zero_runs(data: bytes) -> List[Tuple[int, int, int]]:
-    """Return [(start, end, end_alignment)] — zero runs sorted by length descending."""
+    """Return [(start, end, end_alignment)]: zero runs sorted by length descending."""
     runs: List[Tuple[int, int, int]] = []
     start = None
     for i in range(len(data) + 1):
@@ -405,9 +466,55 @@ def resolve_bootargs(
         (adrp_off, orig_adrp, new_adrp, "ibss.boot-args.adrp"),
         (add_off, orig_add, new_add, "ibss.boot-args.add"),
     ]
-    # byte-level string write — not a 4-byte word patch; handled specially by caller
+    # byte-level string write, not a 4-byte word patch; handled specially by caller
     patches.append(("STR", write_off, payload, f"ibss.boot-args.string@{hex(write_off)}"))
     return patches
+
+
+def resolve_bootargs_ipad11_6_17_1_1(
+    data: bytes, text_base: int, args: str
+) -> List[Tuple[int, int, int, str]]:
+    """Redirect J171aAP's final 0x400-byte boot-args buffer to a literal."""
+    assert args and "\x00" not in args and "%" not in args
+    payload = args.encode("ascii") + b"\x00"
+
+    # sub_19C081F04 formats the final boot arguments into its normal writable
+    # 0x400-byte destination. Replace only its "%s" format pointer with our
+    # literal. Do not redirect X21 (the destination): its companion bounds and
+    # allocator metadata still describe the original buffer.
+    format_off = 0x32444
+    orig_format = 0x10626302  # ADR X2, "%s"
+    write_off = 0xAD090       # guarded zero padding, within ADR's +/-1 MiB
+    guards = {
+        0x32418: 0xF0000EB5,  # original writable destination page
+        0x3241C: 0x913C32B5,  # original writable destination offset
+        format_off: orig_format,
+        0x3244C: 0xD103A3A0,  # SUB X0, X29, #-var_E8
+        0x32450: 0x52808001,  # MOV W1, #0x400
+        0x32454: 0x94017989,  # BL formatter
+    }
+    for off, word in guards.items():
+        got = struct.unpack_from("<I", data, off)[0]
+        if got != word:
+            raise RuntimeError(
+                f"J171aAP boot-args mismatch @0x{off:x}: "
+                f"expected 0x{word:08x}, got 0x{got:08x}"
+            )
+
+    if write_off + len(payload) > 0xAD800:
+        raise RuntimeError("J171aAP boot-args literal exceeds verified padding")
+    if any(data[write_off : write_off + len(payload)]):
+        raise RuntimeError("J171aAP boot-args padding is not empty")
+    target = text_base + write_off
+    return [
+        (
+            format_off,
+            orig_format,
+            encode_adr(2, text_base + format_off, target),
+            "ipad.ibss.boot-args.format-adr",
+        ),
+        ("STR", write_off, payload, f"ipad.ibss.boot-args.string@{hex(write_off)}"),
+    ]
 
 
 # ---- IBECRestoreResolver (recovery-nonce.preserve) --------------------------
@@ -503,7 +610,7 @@ def resolve_ibec_recovery_nonce(
             continue
 
         branch = struct.unpack_from("<I", data, branch_off)[0]
-        # TBNZ W8, #1 — Liter8 mask: 0x7F08001F == 0x37080008
+        # TBNZ W8, #1, Liter8 mask: 0x7F08001F == 0x37080008
         if (branch & 0x7F08001F) != 0x37080008:
             continue
         if struct.unpack_from("<I", data, branch_off + 4)[0] != MOV_W0_0:
@@ -579,7 +686,7 @@ def serial_requested(argv: List[str]) -> bool:
         return False
     if "--serial" in argv:
         return True
-    for key in ("XRA1N_SERIAL", "LITER8_SERIAL"):
+    for key in ("CASCADIA_SERIAL", "XRA1N_SERIAL", "LITER8_SERIAL"):
         if os.environ.get(key) == "1":
             return True
     return False
@@ -594,19 +701,46 @@ def apply_serial(base: str, enabled: bool) -> str:
     return f"{base} {SERIAL_ARG}"
 
 
+# --any-im4m: image4_validate_property_callback returns 0, so a component
+# loads with any IM4M, whatever its digests and nonce say (badapple's
+# iboot-image4-patch.py). Found from the "EKEY" literal it builds with a
+# movz/movk pair, back to the pacibsp that opens the function.
+def resolve_property_callback(data: bytes) -> List[Tuple[int, int, int, str]]:
+    n = len(data) // 4
+    w = struct.unpack_from(f"<{n}I", data)
+    starts = set()
+    for i in range(n - 1):
+        if (w[i] & 0xFFFFFFE0, w[i + 1] & 0xFFFFFFE0) != (0x5288AB20, 0x72A8A960):
+            continue
+        for j in range(i, max(i - 0x400, -1), -1):
+            if w[j] == 0xD503237F:  # pacibsp
+                starts.add(j * 4)
+                break
+    if len(starts) != 1:
+        raise RuntimeError(f"expected one EKEY callback, found {sorted(map(hex, starts))}")
+    start = starts.pop()
+    return [
+        (start, w[start // 4], 0x52800000, "image4.property-callback.mov-w0-0"),
+        (start + 4, w[start // 4 + 1], 0xD65F03C0, "image4.property-callback.ret"),
+    ]
+
+
 def main():
     argv = list(sys.argv)
+    dry_run = "--dry-run" in argv
     serial = serial_requested(argv)
-    argv = [a for a in argv if a not in ("--serial", "--no-serial")]
+    any_im4m = "--any-im4m" in argv
+    argv = [a for a in argv if a not in ("--serial", "--no-serial", "--dry-run", "--any-im4m")]
 
     if len(argv) < 3:
         print(
-            f"usage: {argv[0]} <raw-iboot> <mode-or-literal> [--serial]\n"
+            f"usage: {argv[0]} <raw-iboot> <mode-or-literal> [--serial] [--dry-run]\n"
             f"       mode: one of {sorted(MODE_PRESETS)} (uses preset boot-args)\n"
             f"       or:   literal string to use as boot-args\n"
             f"       iBEC-mode additionally applies ibec.recovery-nonce.preserve\n"
-            f"       --serial / XRA1N_SERIAL=1 / LITER8_SERIAL=1 appends '{SERIAL_ARG}'\n"
-            "       --no-serial suppresses it even if the environment requests serial",
+            f"       --serial / CASCADIA_SERIAL=1 appends '{SERIAL_ARG}'\n"
+            "       --no-serial suppresses it even if the environment requests serial\n"
+            "       --dry-run resolves and verifies every site without writing output",
             file=sys.stderr,
         )
         sys.exit(1)
@@ -618,6 +752,10 @@ def main():
     with open(path, "rb") as f:
         data = bytearray(f.read())
 
+    digest = hashlib.sha256(data).hexdigest()
+    ipad_profile = digest == IPAD11_6_17_1_1_SHA256
+    profile = "ipad11,6-j171a-21B91" if ipad_profile else "xr-anchor-resolvers"
+
     # iBoot binaries have their base virtual address at an entry known to iBoot
     # itself. For patch-finding by relative pattern + file-offset we can use any
     # consistent base; conventionally 0x180000000 or 0x100000000. ARM64 patterns
@@ -625,11 +763,21 @@ def main():
     TEXT_BASE = 0
 
     print(f"[*] input: {path} ({len(data)} bytes)")
+    print(f"[*] sha256: {digest}")
+    print(f"[*] profile: {profile}")
     print(f"[*] mode: {mode or '(literal)'}  serial: {serial}")
     print(f"[*] boot-args: {boot_args!r}")
 
-    validate_patches = resolve_validate(bytes(data), TEXT_BASE)
-    bootargs_patches = resolve_bootargs(bytes(data), TEXT_BASE, boot_args)
+    if ipad_profile:
+        validate_patches = resolve_validate_ipad11_6_17_1_1(bytes(data), TEXT_BASE)
+        bootargs_patches = resolve_bootargs_ipad11_6_17_1_1(
+            bytes(data), TEXT_BASE, boot_args
+        )
+    else:
+        validate_patches = resolve_validate(bytes(data), TEXT_BASE)
+        bootargs_patches = resolve_bootargs(bytes(data), TEXT_BASE, boot_args)
+    if any_im4m:
+        validate_patches += resolve_property_callback(bytes(data))
     nonce_patches = []
     if mode == "ibec":
         nonce_patches = resolve_ibec_recovery_nonce(bytes(data), TEXT_BASE)
@@ -671,6 +819,10 @@ def main():
             apply_word(*p)
     for item in nonce_patches:
         apply_word(*item)
+
+    if dry_run:
+        print("\n[+] dry-run complete; no output written")
+        return
 
     out = path + ".patched"
     with open(out, "wb") as f:

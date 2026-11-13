@@ -1,0 +1,179 @@
+diff --git a/src/usb.c b/src/usb.c
+index fce0d5d..36ca0b8 100644
+--- a/src/usb.c
++++ b/src/usb.c
+@@ -6,6 +6,7 @@
+ #include "i2c.h"
+ #include "iodev.h"
+ #include "malloc.h"
++#include "memory.h"
+ #include "pmgr.h"
+ #include "soc.h"
+ #include "string.h"
+@@ -319,6 +320,90 @@ static int usb_init_i2c(const char *i2c_path)
+     return 0;
+ }
+ 
++/*
++ * Power cycle the USB domains before bringing the controller up.
++ *
++ * PongoOS does this on every SoC and m1n1 does not do it anywhere, because on
++ * a Mac m1n1 is the first thing to touch USB. Here it is not: iBoot and then
++ * PongoOS have both had the controller running, PongoOS still being mid
++ * session when bootm jumps to us, and nothing hands it back in a clean state.
++ *
++ * These two addresses are the T8020 power state registers, from PongoOS's
++ * t8020_usb_regs, as absolute addresses rather than offsets from gIOBase. The
++ * low nibble is the requested state and the next nibble is the actual one, so
++ * drive the request and wait for the two to agree, exactly as clock_gate does.
++ */
++#define T8020_USB_PS0 0x23b0802a8
++#define T8020_USB_PS1 0x23b0802b0
++/*
++ * The device controller has a domain of its own, and without it the dwc2 core
++ * does not answer and reading GSNPSID data aborts. Linux names all three when
++ * it comes up: "always-on domain usb", "usbctlreg", then "usb2dev", which is
++ * this one.
++ */
++#define T8020_USB_PS2 0x23b0802c0
++
++static void usb_t8020_ps_set(u64 addr, bool on)
++{
++    mask32(addr, 0xf, on ? 0xf : 0);
++
++    while (1) {
++        u32 value = read32(addr);
++        if ((value & 0xf) == ((value >> 4) & 0xf))
++            break;
++    }
++}
++
++static void usb_t8020_power_cycle(void)
++{
++    usb_t8020_ps_set(T8020_USB_PS2, false);
++    usb_t8020_ps_set(T8020_USB_PS1, false);
++    usb_t8020_ps_set(T8020_USB_PS0, false);
++    udelay(1000);
++    usb_t8020_ps_set(T8020_USB_PS0, true);
++    usb_t8020_ps_set(T8020_USB_PS1, true);
++    usb_t8020_ps_set(T8020_USB_PS2, true);
++}
++
++/*
++ * The device controller sits behind a DART, which the ADT says outright:
++ * /arm-io/usb-complex/usb-device has an iommu-parent property pointing at
++ * /arm-io/dart-usb/mapper-usbdev, stream 0. iBSS leaves that DART in bypass,
++ * so the 32 bit address the controller emits reaches the fabric unchanged,
++ * and with DRAM starting at 0x800000000 there is nothing at 0x11fd8000 to
++ * answer it. That is the AHBErr on every SETUP packet.
++ *
++ * PongoOS gets away with this because it programs the DART for its own gadget
++ * and only puts it back in bypass on the way out, which is why the gadget used
++ * to work and stopped working when PongoOS left the boot chain.
++ *
++ * Rather than teach the dwc2 driver about IOVAs, give stream 0 a flat map of
++ * DRAM at the low 32 bits of each page's own address, which is exactly what
++ * the driver writes into DOEPDMA and DIEPDMA.
++ *
++ * That only lines up because the complex remap widget is told to splice zero
++ * into the top bits rather than 8. The widget sits in front of the DART, not
++ * behind it: with the 8 in place the DART sees 0x8_11fd8000 and needs a
++ * second window up there, and a Linux DMA address can never reach that, since
++ * dwc2 is a 32 bit master. The two bits above the splice value are not part of
++ * it. They are the DMA enables, and clearing them stops the controller
++ * reaching memory at all, whatever the address.
++ */
++static void usb_t8020_dart_setup(void)
++{
++    if (pmgr_adt_power_enable("/arm-io/dart-usb") < 0)
++        printf("usb: could not power /arm-io/dart-usb, trying it anyway\n");
++
++    dart_dev_t *dart = dart_init_adt("/arm-io/dart-usb", 0, 0, false);
++    if (!dart) {
++        printf("usb: no dart-usb, leaving translation as iBoot left it\n");
++        return;
++    }
++
++    if (dart_map(dart, ram_base & 0xffffffff, (void *)ram_base, mem_size_actual) < 0)
++        printf("usb: dart-usb flat map at 0x%lx failed\n", ram_base & 0xffffffff);
++}
++
+ int usb_complex_init(struct usb_complex_config *config)
+ {
+     usb_type = USB_TYPE_DWC2;
+@@ -354,6 +439,27 @@ int usb_complex_init(struct usb_complex_config *config)
+             write32(config->USBComplexBase + USBX_USBDEV_REMAP_CTL_T8015,
+                     USBX_REMAP_TO_DRAM_BITS_T8011);
+             break;
++        case USBCOMPLEX_T8020:
++            /*
++             * Same as T8015. PongoOS's t8030 branch, which l41ka pins and
++             * whose gadget works on this phone, gives 0x8015 and 0x8020 a
++             * shared case: enable at offset 0, then the device remap at 0x48.
++             *
++             * Only the device remap matters here, so the EHCI and OHCI ones
++             * the T8015 case writes are left out.
++             *
++             * The power cycle has to come first. Coming from iBSS rather than
++             * from PongoOS the USB domains are still down, so the dwc2 core
++             * does not answer and reading GSNPSID below data aborts. Linux
++             * needs them up as well, it says so itself: "always-on domain usb
++             * is not on at boot".
++             */
++            usb_t8020_power_cycle();
++            write32(config->USBComplexBase + USBX_CTL_T8011, USBX_CTL_EN_T8011);
++            write32(config->USBComplexBase + USBX_USBDEV_REMAP_CTL_T8015,
++                    USBX_REMAP_DMA_EN_ONLY_T8020);
++            usb_t8020_dart_setup();
++            break;
+         default:
+             printf("usb: Unsupported complex type!\n");
+             return -1;
+@@ -454,8 +560,10 @@ int usb_complex_init_adt(void)
+         type = USBCOMPLEX_S5L8960X;
+     } else if (adt_is_compatible(adt, usbComplex_offset, "usb-complex,t8015")) {
+         type = USBCOMPLEX_T8015;
++    } else if (adt_is_compatible(adt, usbComplex_offset, "usb-complex,t8020")) {
++        type = USBCOMPLEX_T8020;
+     }
+-    // This must be last because of the fallback compatible to usb-complex,t8011 on t8015
++    // This must be last because of the fallback compatible to usb-complex,t8011 on t8015 and t8020
+     else if (adt_is_compatible(adt, usbComplex_offset, "usb-complex,t8011")) {
+         type = USBCOMPLEX_T8011;
+     } else {
+diff --git a/src/usb_complex.h b/src/usb_complex.h
+index 58f33ca..ebc57ba 100644
+--- a/src/usb_complex.h
++++ b/src/usb_complex.h
+@@ -51,6 +51,23 @@
+ #define USBX_EHCI1_REMAP_CTL_T8015  0x38
+ #define USBX_USBDEV_REMAP_CTL_T8015 0x48
+ 
++/*
++ * T8020 has no registers of its own: it takes the T8015 offsets above, and the
++ * ADT agrees. /arm-io/usb-complex usb_widget_with_mask is three (offset, value,
++ * mask) triplets at 0x28, 0x38 and 0x48, value 0x88, mask 0x030000ff, which is
++ * the T8011 bit layout at the T8015 offsets. 0x48 is the device controller.
++ *
++ * What the ADT does not explain is that the two bits the mask covers above the
++ * splice value are not part of it. They are the DMA enables. Clearing them on
++ * a live gadget, from the proxy, leaves the device enumerated and kills every
++ * transfer, so they have to be set whatever address the controller emits.
++ *
++ * The splice value itself is left at zero here, unlike T8011 and T8015, since
++ * on this SoC the DART behind the widget is what puts the address in DRAM.
++ */
++#define USBX_REMAP_DMA_EN_ONLY_T8020                                                               \
++    (USBX_REMAP_DMA_TO_DEVICE_EN_T8011 | USBX_REMAP_DMA_FROM_DEVICE_EN_T8011)
++
+ /* USB PHY registers */
+ 
+ #define USBX_OTG_CTL       0x00
+@@ -95,6 +112,7 @@ enum usb_complex_type {
+     USBCOMPLEX_S5L8960X,
+     USBCOMPLEX_T8011,
+     USBCOMPLEX_T8015,
++    USBCOMPLEX_T8020,
+ };
+ 
+ struct usb_complex_config {

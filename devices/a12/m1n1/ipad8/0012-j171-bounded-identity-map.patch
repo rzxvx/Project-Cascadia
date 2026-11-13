@@ -1,0 +1,27 @@
+diff --git a/src/memory.c b/src/memory.c
+--- a/src/memory.c
++++ b/src/memory.c
+@@ -475,7 +475,22 @@
+      * With SPRR enabled, this becomes RW.
+      * This range includes all real RAM, including carveouts
+      */
+-    mmu_add_mapping(ram_base, ram_base, mem_size_actual, MAIR_IDX_NORMAL, PERM_RWX);
++    /* T8020's MCC is unsupported here, so mcc_unmap_carveouts() cannot
++     * remove protected upper DRAM. mem_size_actual may be a rounded-up
++     * fallback (3 GiB), not an AP-accessible cacheable extent. Keep the
++     * identity mapping within iBoot's normal-RAM bound, like the aliases.
++     * Framebuffer scanout gets its own explicit mapping in fb_init().
++     * Experimental workaround: not a replacement for a T8020 MCC driver.
++     */
++    u64 identity_size = chip_id == 0x8020 ? ram_size : mem_size_actual;
++    if (chip_id == 0x8020) {
++        assert(identity_size && identity_size <= mem_size_actual);
++        printf("MMU: T8020 bounded identity RAM: 0x%lx..0x%lx (actual 0x%lx)\n",
++               ram_base, ram_base + identity_size, mem_size_actual);
++        printf("MMU: ADT %p size 0x%x; m1n1 %p..%p\n", adt,
++               cur_boot_args.devtree_size, _base, _end);
++    }
++    mmu_add_mapping(ram_base, ram_base, identity_size, MAIR_IDX_NORMAL, PERM_RWX);
+ 
+     /* Unmap carveout regions */
+     mcc_unmap_carveouts();

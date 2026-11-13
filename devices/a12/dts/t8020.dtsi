@@ -19,6 +19,7 @@
 #include <dt-bindings/interrupt-controller/apple-aic.h>
 #include <dt-bindings/interrupt-controller/irq.h>
 #include <dt-bindings/phy/phy.h>
+#include <dt-bindings/pinctrl/apple.h>
 #include <dt-bindings/thermal/thermal.h>
 
 / {
@@ -932,6 +933,58 @@
 			cs-gpios = <&pinctrl_ap 67 1>;
 			#address-cells = <1>;
 			#size-cells = <0>;
+			status = "disabled";
+		};
+
+		/* J171aAP multitouch bus (Apple ADT /arm-io/spi3). */
+		spi3: spi@23510c000 {
+			compatible = "apple,t8020-spi";
+			reg = <0x2 0x3510c000 0x0 0x4000>;
+			interrupt-parent = <&aic>;
+			interrupts = <AIC_IRQ 398 IRQ_TYPE_LEVEL_HIGH>;
+			clocks = <&clk_spi>;
+			power-domains = <&ps_spi3>;
+			cs-gpios = <&pinctrl_ap 51 1>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+			status = "disabled";
+		};
+
+		/*
+		 * T8020 ASCv2 mailbox.  The ADT lists each interrupt pair as
+		 * (not-empty, empty), while the Linux mailbox binding names them
+		 * (empty, not-empty).  Reorder both pairs just like ANS and SMC.
+		 */
+		sio_mbox: mailbox@236408000 {
+			compatible = "apple,t8020-asc-mailbox",
+				     "apple,t8015-asc-mailbox";
+			reg = <0x2 0x36408000 0x0 0x4000>;
+			interrupt-parent = <&aic>;
+			interrupts = <AIC_IRQ 429 IRQ_TYPE_LEVEL_HIGH>,
+				     <AIC_IRQ 430 IRQ_TYPE_LEVEL_HIGH>,
+				     <AIC_IRQ 431 IRQ_TYPE_LEVEL_HIGH>,
+				     <AIC_IRQ 432 IRQ_TYPE_LEVEL_HIGH>;
+			interrupt-names = "send-empty", "send-not-empty",
+					  "recv-empty", "recv-not-empty";
+			#mbox-cells = <0>;
+			power-domains = <&ps_sio_cpu>;
+			status = "disabled";
+		};
+
+		/*
+		 * SmartIO is an ASCv2/RTKit coprocessor, not the older T8010 raw-
+		 * firmware block. m1n1 reserves the firmware segments already loaded
+		 * by iBoot and supplies memory-region plus apple,sio-firmware-params.
+		 * SPI3 transmit DMA is endpoint 0x1a.
+		 */
+		sio: dma-controller@236400000 {
+			compatible = "apple,t8020-sio", "apple,sio";
+			/* Keep the mailbox subrange separate for Linux resource ownership. */
+			reg = <0x2 0x36400000 0x0 0x8000>;
+			mboxes = <&sio_mbox>;
+			power-domains = <&ps_sio_cpu>;
+			dma-channels = <64>;
+			#dma-cells = <1>;
 			status = "disabled";
 		};
 

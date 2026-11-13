@@ -1,0 +1,2 @@
+# J171 only. GROUP= alone does not change a sysfs attribute's ownership.
+ACTION=="add", SUBSYSTEM=="backlight", KERNEL=="j171-backlight", RUN+="/bin/chgrp video /sys%p/brightness", RUN+="/bin/chmod 0664 /sys%p/brightness"

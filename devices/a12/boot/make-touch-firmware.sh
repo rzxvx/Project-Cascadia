@@ -1,18 +1,42 @@
 #!/usr/bin/env bash
-# Fetch the N841 touch personality from Apple's 22H374 IPSW and convert it.
+# Device-specific firmware/calibration preparation; no shared SysCfg fallback.
 set -euo pipefail
 A12="$(cd "$(dirname "$0")/.." && pwd)"
-ROOT="$(cd "$A12/.." && pwd)"
-URL='https://updates.cdn-apple.com/2026WinterFCS/fullrestores/140-97953/5F3051CD-5405-4FEF-889E-C3B78E0F376F/iPhone11,8_18.7.10_22H374_Restore.ipsw'
-SRC="$A12/boot/extracted/22H374__iPhone11,8/Firmware/N841_Multitouch.im4p"
-OUT="$A12/build/touch"
-mkdir -p "$OUT"
-if [[ ! -s "$SRC" ]]; then
-  ipsw extract --remote --pattern '^Firmware/N841_Multitouch\.im4p$' \
-    -o "$A12/boot/extracted" "$URL"
+if [ -n "${1:-}" ]; then export A12_DEVICE="$1"; fi
+source "$A12/profile.sh"
+OUT="$A12_TOUCH"
+mkdir -p "$OUT" "$A12_EXTRACTED/touch"
+SRC=$(find "$A12_EXTRACTED/touch" -type f -name "${A12_TOUCH_TAG}_Multitouch.im4p" -print -quit)
+if [ -z "$SRC" ]; then
+    ipsw extract --remote --pattern "^Firmware/${A12_TOUCH_TAG}_Multitouch\\.im4p$" \
+        -o "$A12_EXTRACTED/touch" "$A12_IPSW"
+    SRC=$(find "$A12_EXTRACTED/touch" -type f -name "${A12_TOUCH_TAG}_Multitouch.im4p" -print -quit)
 fi
-[[ -s "$SRC" ]] || { echo "missing $SRC" >&2; exit 1; }
-img4 -i "$SRC" -o "$OUT/N841_Multitouch.raw"
-python3 "$ROOT/a13/tools/mtfw.py" "$OUT/N841_Multitouch.raw" C1FC2,1 \
-  "$OUT/n841-mtfw.bin" "$OUT/n841-mtcal.bin"
-echo "Touch firmware ready in $OUT; replace default calibration with this XR's MtCl when available."
+[ -n "$SRC" ] || { echo 'missing selected touch firmware' >&2; exit 1; }
+RAW="$OUT/${A12_TOUCH_TAG}_Multitouch.raw"
+img4 -i "$SRC" -o "$RAW"
+case "$A12_DEVICE" in
+    xsmax) python3 "$A12/boot/d331p-mtfw.py" "$RAW" "$OUT/d331p-mtfw.bin" ;;
+    xr) python3 "$A12/vendor/a13-tools/mtfw.py" "$RAW" "$A12_TOUCH_PERSONALITY" \
+            "$OUT/n841-mtfw.bin" "$OUT/n841-mtcal.bin" ;;
+    ipad8)
+        python3 "$A12/profile.py" --check-syscfg "$A12_SYSCFG"
+        make -C "$A12/tools/makez2fw"
+        "$A12/tools/makez2fw/makez2fw" "$A12_TOUCH_PERSONALITY" "$RAW" "$A12_SYSCFG" "$OUT/j171a-mtfw.bin"
+        python3 - "$A12" "$A12_SYSCFG" "$OUT" <<'PY'
+import sys
+from pathlib import Path
+sys.path.insert(0,sys.argv[1])
+from profile import validate_syscfg
+keys=validate_syscfg(Path(sys.argv[2]),'ipad8')
+p=Path(sys.argv[3])/'private';p.mkdir(exist_ok=True)
+for key in ('MtCl','FfCl','MtDO','FPCL','MtPc','PBCL','HD2C'):
+    dst=p/('j171a-'+key+'.bin')
+    if keys.get(key):
+        dst.write_bytes(keys[key]);dst.chmod(0o600)
+    else:dst.unlink(missing_ok=True)
+PY
+        ;;
+esac
+printf '%s\n' "$A12_DEVICE" > "$OUT/device"
+echo "$A12_LABEL touch firmware ready in $OUT"

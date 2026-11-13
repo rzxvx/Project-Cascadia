@@ -5,8 +5,11 @@ A12="$(cd "$(dirname "$0")/.." && pwd)"
 HOST="${XR_SSH_HOST:-root@172.16.42.1}"
 SSH_OPTS=(-F /dev/null -o BatchMode=yes -o Tunnel=no -o ConnectTimeout=8
           -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null)
-HCD="$A12/boot/inputs/brcm/BCM4349B1.apple,n841.hcd"
-BUNDLE="$A12/boot/inputs/bluez-root.tar.gz"
+source "$A12/profile.sh"
+[ "$A12_DEVICE" = xr ] || { echo 'XR loader refuses a non-XR profile' >&2; exit 2; }
+ssh "${SSH_OPTS[@]}" "$HOST" 'test "$(uname -s)" = Linux && tr "\000" "\n" < /proc/device-tree/compatible | grep -qx apple,n841' || exit 1
+HCD="${A12_RADIO_DIR:-$A12_INPUTS/brcm}/BCM4349B1.apple,n841.hcd"
+BUNDLE="$A12_INPUTS/bluez-root.tar.gz"
 [[ -s "$HCD" ]] || { echo "Missing $HCD" >&2; exit 1; }
 if ssh "${SSH_OPTS[@]}" "$HOST" 'test -f /etc/debian_version'; then
   echo "Debian root detected; using its native BlueZ tools"

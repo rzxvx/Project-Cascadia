@@ -1,0 +1,262 @@
+// SPDX-License-Identifier: GPL-2.0+ OR MIT
+/* Minimal first-boot description for iPad 8 Wi-Fi (J171aAP, T8020). */
+/dts-v1/;
+#include "t8020.dtsi"
+
+/ {
+	compatible = "apple,j171a", "apple,t8020", "apple,arm-platform";
+	model = "Apple iPad 8 (Wi-Fi)";
+	chassis-type = "tablet";
+
+	aliases {
+		serial0 = &serial0;
+		serial1 = &serial1;
+		ausbphy0 = &ausbphy0;
+		sio = &sio;
+		gfxasc = &gfx_asc;
+		wifi0 = &wifi0;
+		bluetooth0 = &bluetooth0;
+	};
+
+	chosen {
+		#address-cells = <2>;
+		#size-cells = <2>;
+		ranges;
+		stdout-path = "serial0";
+		cascadia,g11-firmware-handoff;
+		cascadia,g11-start-driver;
+		framebuffer0: framebuffer@0 {
+			compatible = "apple,simple-framebuffer", "simple-framebuffer";
+			reg = <0 0 0 0>;
+			power-domains = <&ps_disp0_be &ps_mipi_dsi
+					 &ps_disp0_hilo &ps_disp0_ppp>;
+			status = "disabled";
+		};
+	};
+
+	memory@800000000 {
+		device_type = "memory";
+		reg = <0x8 0 0 0>;
+	};
+
+	reserved-memory {
+		#address-cells = <2>;
+		#size-cells = <2>;
+		ranges;
+	};
+};
+
+&serial0 { status = "okay"; };
+
+/* 21B91 J171a ADT: /amfm and uart2/wlan both use pKW4(gP13, 0). */
+&pcie0 { status = "okay"; };
+&port02 {
+	pwren-gpios = <&smc_gpio 19 0>;
+	max-link-speed = <1>;
+	bus-range = <1 1>;
+	wifi0: wifi@0,0 {
+		compatible = "pci14e4,43dc";
+		reg = <0x10000 0 0 0 0>;
+		brcm,board-type = "apple,magnoliaa";
+		/* Replaced with private per-device data during packaging. */
+		local-mac-address = [00 00 00 00 00 00];
+	};
+};
+
+/*
+ * J171a uart1/bluetooth: N88 H4, SMC gP11, BT_WAKE AP GPIO 39.
+ * TX30/RTS32 are explicit in the ADT. RX31/CTS33 and peripheral function 1
+ * reuse the T8020 UART1 group proven on XR, pending J171 hardware testing.
+ * Do not inherit XR's broken-extended-scan quirk without HCI evidence.
+ */
+&serial1 {
+	status = "okay";
+	pinctrl-names = "default";
+	pinctrl-0 = <&j171_bluetooth_uart1_pins>;
+	uart-has-rtscts;
+	bluetooth0: bluetooth {
+		compatible = "brcm,bcm4329-bt";
+		/* MagnoliaA MUR build 1334 advertises, but rejects, opcode 204b. */
+		brcm,broken-read-transmit-power;
+		/* This controller's default address is not in btbcm's blacklist. */
+		brcm,use-bdaddr-property;
+		current-speed = <115200>;
+		max-speed = <3000000>;
+		apple,power-function = <&smc 0x67503131 0>;
+		device-wakeup-gpios = <&pinctrl_ap 39 0>;
+		local-bd-address = [00 00 00 00 00 00];
+	};
+};
+&i2c2 { status = "disabled"; };
+&i2c3 { status = "disabled"; };
+&spi1 { status = "disabled"; };
+
+/*
+ * Apple 21B91 ADT: /arm-io/spi3/multi-touch, hid-transport,spi.
+ * CS=AP GPIO 51, reset=27, interrupt=208 and personality K1F19,9.
+ * rLD5 and rLDn are the pKW4 analog/LDO power functions. The remaining
+ * panel-specific calibration properties are intentionally skipped until
+ * this iPad's live syscfg values are copied into the Linux DTB.
+ */
+&spi3 {
+	/* Separate driver: never replace the XR legacy PIO/PM behaviour. */
+	compatible = "apple,j171a-spi";
+	dmas = <&sio 0x1a>;
+	dma-names = "tx";
+	status = "okay";
+
+	touchscreen: touchscreen@0 {
+		compatible = "apple,j171a-z2-touchscreen";
+		reg = <0>;
+		/* K1F19,9 SPI Config: 41 ns period, CPOL=1, CPHA=1. */
+		spi-max-frequency = <24000000>;
+		spi-cpol;
+		spi-cpha;
+		/* K1F19,9: CS Preamble=0 ns, CS Postamble=10000 ns. */
+		spi-cs-hold-delay-ns = <10000>;
+		reset-gpios = <&pinctrl_ap 27 1>;
+		interrupts-extended = <&pinctrl_ap 208 IRQ_TYPE_EDGE_FALLING>;
+		interrupt-gpios = <&pinctrl_ap 208 0>;
+		display-sync-gpios = <&pinctrl_ap 57 0>;
+		display-sync1-gpios = <&pinctrl_ap 58 0>;
+		timestamp-sync-gpios = <&pinctrl_ap 210 0>;
+		pinctrl-names = "display-sync-active";
+		pinctrl-0 = <&j171_touch_sync_pins>;
+		clocks = <&j171_touch_clk>;
+		firmware-name = "apple/j171a-mtfw.bin";
+		/* Exact value from K1F19,9 Config/Device Tree Overrides. */
+		apple,hbpp-version = <0x104>;
+		apple,z2-bpw16-min-len = <17>;
+		apple,smc-function = <&smc 0x724c4435 0>;
+		apple,smc-function2 = <&smc 0x724c446e 0>;
+		touchscreen-size-x = <16200>;
+		touchscreen-size-y = <21600>;
+	};
+};
+
+&pinctrl_ap {
+	j171_bluetooth_uart1_pins: j171-bluetooth-uart1-pins {
+		pinmux = <APPLE_PINMUX(30, 1)>, <APPLE_PINMUX(31, 1)>,
+			 <APPLE_PINMUX(32, 1)>, <APPLE_PINMUX(33, 1)>;
+	};
+	j171_touch_sync_pins: j171-touch-sync-pins {
+		/* 21B91 GPIO function type 3: input enabled, peripheral 2. */
+		pinmux = <APPLE_PINMUX(57, 2)>, <APPLE_PINMUX(58, 2)>;
+	};
+};
+
+&sio_mbox { status = "okay"; };
+&sio {
+	iommus = <&sio_dart 0>;
+	status = "okay";
+};
+
+/* J171a ADT dart-sio, mapper phandle 78, stream 0. */
+&{/soc} {
+	sio_dart: iommu@235004000 {
+		compatible = "apple,t8020-dart", "apple,t8103-dart";
+		reg = <0x2 0x35004000 0 0x4000>;
+		interrupt-parent = <&aic>;
+		interrupts = <AIC_IRQ 427 IRQ_TYPE_LEVEL_HIGH>;
+		#iommu-cells = <1>;
+		power-domains = <&ps_sio_cpu>;
+	};
+};
+
+/* J171 ADT TCLK [8 us, 100 us, 24 MHz], 21B91 PMGR touch group. */
+&pmgr {
+	j171_touch_clk: clock-controller@78000 {
+		compatible = "apple,t8020-touch-clock";
+		reg = <0x78000 4>;
+		#clock-cells = <0>;
+		clocks = <&clkref>;
+		clock-frequency = <24000000>;
+		clock-output-names = "j171-touch-ref";
+	};
+};
+
+/* Firmware ABI is iPadOS 17.1.1/21B91, never the XS 16.6.1 layout. */
+&gfx_asc {
+    compatible = "cascadia,j171a-agx-21b91";
+    status = "disabled"; /* enabled by validated live m1n1 handoff */
+};
+
+/* Preserve J171's measured inherited pixel path; never run XS panel setup.
+ * The MIPI gate is retained from live PMGR measurements, not an assertion
+ * about the panel connector. HILO is a virtual alias; keep its PPP parent.
+ */
+&disp0 {
+	compatible = "cascadia,j171a-display-takeover";
+	power-domains = <&ps_disp0_busif>, <&ps_disp0_fe>, <&ps_disp0_be>,
+		       <&ps_disp0_gp0>, <&ps_disp0_gp1>, <&ps_disp0_ppp>,
+		       <&ps_mipi_dsi>;
+	power-domain-names = "busif", "fe", "be", "gp0", "gp1", "ppp", "mipi";
+	status = "okay";
+};
+
+/* AppleLMBacklight matches pmu,d2652 at SPMI USID15. This is not Summit. */
+&{/soc/spmi@23d180700/pmic@f} {
+	backlight@1e00 {
+		compatible = "cascadia,j171a-pmic-backlight";
+		reg = <0x1e00 2>;
+		apple,smc = <&smc>;
+		status = "okay";
+	};
+};
+
+/* Shared XS panel/sensor drivers must not claim J171 hardware. */
+&dsi { status = "disabled"; };
+&tempsensor_pmgr { status = "disabled"; };
+&tempsensor_acc { status = "disabled"; };
+&tempsensor_acce { status = "disabled"; };
+
+/* Internal speakers and discrete volume-down key; see AUDIO.md. */
+
+/ {
+ j171_nco_reference: clock-nco-ref {
+  compatible = "fixed-clock";
+  #clock-cells = <0>;
+  /* Live J171a ADT clock ID0x143, clock-frequencies[0x143-0x100]. */
+  clock-frequency = <900000000>;
+ };
+};
+&{/soc} {
+ j171_nco: clock-controller@23b044000 {
+  compatible = "cascadia,j171a-nco";
+  reg = <0x2 0x3b044000 0 0x14000>;
+  #clock-cells = <1>;
+  clocks = <&j171_nco_reference>;
+ };
+ j171_speakers: sound@238400800 {
+  compatible = "cascadia,j171a-speakers";
+  reg = <0x2 0x38400800 0 0x800>, <0x2 0x38308000 0 0x4000>;
+  clocks = <&j171_nco 1>;
+  enable-gpios = <&pinctrl_ap 6 0>;
+  power-domains = <&ps_mca1>;
+  dmas = <&sio 0x2c>;
+  dma-names = "tx";
+  #sound-dai-cells = <0>;
+ };
+};
+&sio {
+ power-domains = <&ps_sio_cpu>, <&ps_spi_p>, <&ps_uart_p>, <&ps_audio>;
+ power-domain-names = "sio-cpu", "spi-shim", "uart-shim", "audio-shim";
+ compatible = "cascadia,j171a-audio-dma", "apple,t8020-sio", "apple,sio";
+};
+
+/* J171a ADT /buttons: volume-up is SMC bVUP; volume-down is AP GPIO137.
+ * Keep SMC up handling, add only the missing discrete down key.
+ * Active-low press/release and Omarchy volume control validated on hardware.
+ */
+/ {
+ j171_volume_keys: j171-volume-keys {
+  compatible = "gpio-keys";
+  autorepeat;
+  volume-down {
+   label = "iPad 8 Volume Down";
+   linux,code = <114>; /* KEY_VOLUMEDOWN */
+   gpios = <&pinctrl_ap 137 1>; /* GPIO_ACTIVE_LOW */
+   debounce-interval = <20>;
+  };
+ };
+};

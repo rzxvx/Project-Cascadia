@@ -1,6 +1,6 @@
 [Desktop Entry]
 Type=Application
-Name=XR Network Secret Agent
+Name=Cascadia Network Secret Agent
 Exec=nm-applet --sm-disable
 OnlyShowIn=GNOME;XFCE;
 X-GNOME-Autostart-enabled=true

@@ -1,4 +1,24 @@
+# Merge status — XR, iPad 8 and XS Max
+
+The kieroid XS Max series has been integrated into the per-device profile
+interface. XR is still default; `xsmax` and `A12_BOARD=d331p` select XS Max.
+Conflicting selectors fail closed. Board-specific m1n1, DTB, firmware and
+initramfs outputs are isolated; the Linux kernel source is shared.
+
+This merge includes his refreshed AGX patch, not the later tested iPad GPU
+experiment under `/tmp`. That experiment is a separate integration step.
+No new hardware boot has validated the combined source yet.
+
+The earlier bring-up record is in [HISTORY.md](HISTORY.md). The retained
+XR/iPad port plan follows; its older testing statements are not evidence
+that this newly merged tree has been hardware tested.
+
+---
+
 # Linux on iPhone XR (N841AP/T8020) — port status and plan
+
+> **Historical engineering log:** current XR/iPad preparation and boot instructions are in [QUICKSTART.md](QUICKSTART.md). Older paths and commands below document experiments, not the current interface.
+
 
 > Fork port note (2026-11-04): the Bluetooth GPIO/UART register logging and
 > failed no-flow experiment described below are historical diagnosis only.
@@ -654,3 +674,812 @@ For every new payload:
 - test boot, `/dev/fb0`, USB reconnect, ping and SSH before testing the new
   driver;
 - collect DCSD serial only when needed and clean large logs afterward.
+
+### J171 TCLK and post-upload validation audit — 2026-11-05
+
+Status: static analysis complete for the clock operation and power ordering;
+not implemented or hardware-tested in this audit. The iPad is in normal iPadOS.
+Do not connect to Linux SSH or reboot it without a new test request.
+
+Evidence is from the exact 21B91 kernel in IDA and J171a firmware/ADT, with
+saved decompilations in `/tmp/ipad8-research-audit/`.
+
+**Confirmed missing clock control**
+
+- J171 ADT `function-clock_enable` targets PMGR `TCLK` with arguments
+  `[8, 100, 24000000]`. These are enable delay, disable delay and requested
+  frequency; 8 is NOT a divider.
+- `ApplePMGRFunctionEnableTouchClock` initializer `0xfffffff008e9401c`
+  stores the delays and computes divider `24000000 / requested_hz`, hence 1.
+  Its call handler is `0xfffffff008e93f64`.
+- T8020 register-group initializer `0xfffffff0090e5f28` maps touch group 1
+  to PMGR register bank 0, offset `0x78000`. With this board's ADT mapping,
+  that is PA `0x23b078000`, inside our existing PMGR syscon resource.
+- Native enable `0xfffffff008e7c020`: read old value; clear bit 31; write;
+  delay 8 us; preserve unrelated bits, replace bits 9:0 with divider 1 and
+  set bit 19; poll until bit 18 clears. Native requires divider 1..1023.
+- Native disable: clear bit 19; poll bit 18 clear; set bit 31; delay 100 us.
+- Delay helper `0xfffffff0082912b8` scales by 1000 (microseconds), whereas
+  sequence helper `0xfffffff008291298` scales by 1000000 (milliseconds).
+- Linux currently supplies the touchscreen `clocks = <&clkref>`, a fixed
+  24 MHz clock. `clk_prepare_enable()` on this provider does not perform
+  the native PMGR writes. This is a confirmed port gap, not proof that the
+  bootloader left the physical clock disabled on the last test.
+
+**Power/reset ordering**
+
+The exact firmware Config/Device Tree Overrides power sequence is:
+`power_ana -> power_ldo -> display_sync -> display_sync1 -> clock_enable`.
+Clock sequence record is `0f 01 03 00`; reset record is `01 01 01 00`.
+Native function-sequence execution (`0xfffffff008b30224`, step
+`0xfffffff008b2ed3c`) executes forward on enable and reverse on disable,
+with the recorded delays after each successful operation. The clock step
+has a 15 ms forward settle. The present J171 power-on code already places
+clock enable after SMC rails and sync GPIOs and before this settle/reset.
+
+Port as a real clock provider using PMGR syscon/regmap; select it only in
+J171 DT. Keep common/XR clock consumers unchanged. Use bounded busy polling,
+readback diagnostics and error propagation. Fix the J171 power-off early
+return so a newly acquired clock reference is released on probe failure or
+unbind; do not introduce unverified SMC rail shutdowns. Re-enabling/retries
+must not be skipped because a stale `clk_enabled` boolean survived failure.
+The dedicated touch reference is separate from SPI controller input `nclk`;
+implementing this clock does not validate the separate 200 MHz SPI assumption.
+
+**Post-upload IRQ validators / no blind extra wait**
+
+- Native boot entry `0xfffffff008b5ffa0` marks upload pending. Initial reset
+  IRQ enters `interruptAction` at `0xfffffff008b613f0`, checks HBPP readiness,
+  and calls `loadFirmware` (`0xfffffff008b32790`). Only after upload does it
+  mark booted and arm Normal Boot Ms (500 from this firmware configuration).
+  A later IRQ selects SPI profile 2 and activates the runtime protocol.
+  Thus native evidence does not establish TWO POST-UPLOAD IRQs on J171.
+- Our existing `device-booted` completion log is a host label, not a decoded
+  device message. Consuming one IRQ must not by itself certify Z2 readiness.
+- Arm a distinct firmware-release completion/IRQ epoch BEFORE the final CM4
+  reset-release RMW; discard earlier reset/HBPP notifications without losing
+  an IRQ arriving during the final transfer/ACK. Keep counters/timestamps and
+  GPIO level as diagnostics, not as substitutes for protocol validation.
+- Require the final image-valid and reset-release RMW ACKs to be `4ad1`.
+  Currently DATA ACKs are strictly checked (`4bc1`) but RMW ACKs are logged
+  without an equivalent strict rejection gate. Match the 21B91 RMW validator.
+- Enforce the configured 500 ms post-release timeout. Do not accept a timeout
+  or replace a missing edge with an unconditional state advance. Do not add
+  a second J171 post-upload wait solely to imitate J172.
+- After the notification, validate runtime DeviceInfo: command E2, complete
+  16-byte response, checksum, and usable advertised packet-size bounds before
+  runtime reads. Preserve the existing later runtime-frame/report checks.
+- Log full EE/E2/E1 TX/RX and actual SPI CFG/CLKDIV at the boundary. Repeated
+  `4f81` is NOT a validated DeviceInfo reply; its precise firmware/ROM meaning
+  remains unproven. Do not bypass validation or label touch operational.
+
+Latest hardware result remains: corrected HBPP14 zero-based DATA word count
+passes all DATA packets with first-attempt `4bc1`, final RMWs ACK `4ad1`, one
+post-release edge observed, then DeviceInfo returns repeated `4f81` and probe
+fails with -EPROTO. No further hardware result is implied by this audit.
+
+#### Implementation/build follow-up — 2026-11-05
+
+Implemented `linux/extras/clk-apple-t8020-touch.c`, adapted with original
+HoolockLinux/Corellium attribution. It uses the PMGR syscon at the native
+T8020 offset, divider limits 1..1023, prepare/unprepare callbacks (bounded
+50 ms busy polling), and logs the inherited and programmed register values.
+Only the J171 DT instantiates this provider; the touchscreen now references
+it instead of a fixed-clock stub. Clean-build staging is in build-kernel.sh.
+J171 error cleanup asserts reset and releases its clock reference, without
+changing the SMC power-rail policy.
+
+Post-release completion is armed before the final RMW, with an IRQ-count
+epoch and a separate FIRMWARE_IRQ state. Only validated DeviceInfo advances
+to DEVICE_INFO. RMWs now reject non-4ad1 ACKs. Startup EE/E2/E1 TX/RX and the
+first 12 matching SPI configuration/divider transactions are logged. No
+additional post-upload IRQ wait or forced-PIO boot argument was added.
+
+Incremental `make ARCH=arm64 LLVM=1 -j8 Image.gz` succeeded; only changed
+clock/touch/SPI objects and normal link/image generation were rebuilt.
+The .config was unchanged. An extracted-C host test passed enable/disable
+ordering, bit preservation, delay values, invalid-rate/read-error handling,
+and busy-timeout rollback. DT validation confirms the touchscreen phandle
+resolves to the new provider; the saved XR DTB hash is unchanged. The linked
+vmlinux contains the provider's probe/prepare/unprepare functions.
+
+Controlled test package: `/tmp/ipad8-j171-tclk/linux.img4`
+SHA256: `e9471e27c2052260f4809d995ccc47a67098d6d56e5c50e2cf21dc01f49265c0`.
+Uses the same m1n1/bootargs and corrected wordcount initramfs as the previous
+boot-tested package, replacing only kernel and J171 DTB. IMG4 extraction
+byte-matches the raw payload. Logs/config/hash manifest/tests are alongside
+it. The generated shared initramfs was NOT rewritten: use this explicit
+controlled test image, not an older normal bootset. No hardware boot,
+commit or push was performed for this follow-up.
+
+#### TCLK hardware boot result — 2026-11-05
+
+Booted the explicit TCLK test image with a fresh serial capture after deleting
+old iPad test serial logs. Current log `/tmp/ipad8-j171-tclk/dcsd.log`.
+TCLK inherited `0x800002ee` (disable bit set); prepare programmed `0x80001`
+(enable plus divider 1), busy clear. Firmware DATA/RMW upload passed.
+Post-release IRQ epoch 1 -> 2 arrived after 8365 us. DeviceInfo succeeded
+on attempt 1: `e2 28 11 e0 22 00 00 00 00 00 00 00 00 00 1d 02`.
+Checksum is valid; advertised maximum packet size is 0x22e0 (8928 bytes).
+This confirms the previous repeated-4f81 DeviceInfo failure is resolved on
+this test. Next runtime read fails `packet too large: 4520` against the old
+4000-byte RX buffer. Touch is NOT operational yet. Linux/normal Debian NFS
+handoff succeeds. Serial capture remains running; no further reset performed.
+
+Read-only USB SSH collection completed before the user's next reboot:
+`/tmp/ipad8-j171-tclk/ssh/{dmesg.txt,state.txt}`. DeviceInfo checksum was
+independently rechecked; maximum advertised packet is 8928 bytes. No touch
+rebind, SPI command, device register write or process restart was performed.
+Clock framework shows the touch clock reference count returned to zero after
+probe failure, consistent with the new cleanup path. The 4520-byte frame
+was rejected before a large runtime transfer; it was not read out of bounds.
+Next change should size/bound runtime buffers from the validated advertised
+maximum (with a hard cap and transfer-alignment overhead), not suppress the
+length check or treat the already-registered input name as working touch.
+
+### J171 receive-path reference audit — 2026-11-05
+
+Analysis only: no buffer or packet code was changed/rebuilt in this audit.
+Matched 21B91 AppleHIDTransportProtocolZ2 decompilation was checked against
+its ARM64 instructions. Evidence is `/tmp/ipad8-research-audit/rx-*`.
+
+1. `initializeTransactionBuffers` at `0xfffffff008b688e0` allocates a report
+   descriptor using the DeviceInfo u16 maximum at object+0x13e. It also
+   allocates a shared descriptor of max+2048 bytes, with the runtime transfer
+   window starting at offset 2048 and capacity max. The 2048 is host-side
+   buffer layout, NOT a wire header or an instruction to add 2048 clocks.
+   Our device advertised 0x22e0 = 8928. The inherited Hoolock buffer is 4000.
+2. `deviceGetResultLength` at `0xfffffff008b6c798` sends a checksummed
+   16-byte EB/tag command. It REQUIRES reply[0]==E1 and verifies the complete
+   16-byte reply checksum (`checkChecksum`, 0xfffffff008b66848) BEFORE
+   reading LE16(reply+1). Checksum is sum(first14) modulo 65536, stored LE16
+   at bytes14..15. Our receive path currently checks only E1 before length.
+3. `readOneFrameOfData` at `0xfffffff008b6c478` treats a zero announced length
+   as no pending data (no subsequent large SPI transfer). For nonzero L it
+   passes L+5 to the result read. `deviceReadResultData` at
+   `0xfffffff008b6caa0` checks this logical total against the advertised max,
+   then rounds using the protocol's configured Round To Bytes. The exact
+   K1F19,9 profile supplies 1. Our unconditional `(L+8)&~3` rounds to FOUR.
+   Therefore 8928 is the native maximum full logical result-transfer size,
+   including its five-byte frame header, not an 8928-byte payload allowance.
+4. Result transfer is full duplex with A5 dummy TX; native sets the first
+   16 dummy bytes, uses a shared transfer window, and checks marker EA/EB,
+   the zero-modulo-256 sum of the first five frame bytes, then the LE16
+   payload length at frame+2. For nonempty data, payload includes its final
+   two checksum bytes: sum(payload without checksum) modulo65536 must equal
+   the LE16 trailer; dispatch receives payload length minus2. Linux must
+   retain bounds checks on this inner length against bytes actually read.
+5. Native tag changes 1 <-> 2 after successful read processing. There is a
+   five-attempt frame-read retry/resynchronization path; a failed attempt
+   does not advance the tag. Do not change parity simply because a larger
+   buffer now permits the transfer. Our existing strict payload tag check
+   should be assessed using the first captured full result, not removed
+   speculatively. Multiple report/idle frame handling remains to be tested.
+
+Correction to the earlier runtime-size diagnosis: 4520 was the size our
+legacy formula COMPUTED, and the EB/E1 length reply was not logged or
+checksummed. We have not captured a valid 4520-byte payload/result yet.
+For example, L=4512 produces legacy4520 but native4517 for this profile.
+The fixed4000 cap is demonstrably incompatible with the advertised8928,
+but the exact first frame size must be established from a validated header.
+
+Next implementation scope: J171-only validated maximum/capacity after
+DeviceInfo; checksum the length response before consuming L; no large read
+for L=0; reject logical L+5 above the advertised max or allocation; use
+Round To Bytes=1 for J171, retaining other boards' behavior; bound inner
+payload and check its checksum/tag before dispatch. Update long control
+report bounds using the same actual capacity. Keep command TX16 separate
+from the resizable full-duplex result window; no arbitrary 16 KiB constant
+or disabled length check. Log the full length reply and raw/logical/wire
+lengths so the next test can distinguish framing from report parsing.
+Independent native-rule boundary tests passed checksum corruption, zero,
+exact max, oversized/u16 max and 1-vs-4 alignment cases; these are static
+boundary tests, not evidence that an incoming frame has been read.
+
+### J171 receive fixes implemented/rebuilt — 2026-11-05
+
+Implemented the reference-audited receive changes in apple_z2_j171.c:
+
+- Validate DeviceInfo first, then allocate a J171 runtime RX/duplex window
+  to its u16 advertised maximum. Track real allocation capacity separately
+  from protocol maximum; retain 16-byte command TX storage. Allocation
+  failure keeps the old pointer intact. Other boards retain their defaults.
+- Decode the length reply only after checking E1 and its complete 16-byte
+  checksum. Nonzero L transfers exactly L+5 bytes on J171 (alignment1), and
+  must fit both the advertised maximum and the actual allocation.
+- A validated zero-length reply performs no bulk SPI transfer and reports
+  no input. It is a valid idle transaction, with native tag advancement;
+  probe may proceed on this explicit J171 idle condition, without falsely
+  claiming a valid input frame. Other boards' first-frame gate is unchanged.
+- Preserve header/payload checksums, inner-length bounds, and strict tag
+  validation before dispatch. Errors do not advance parity. Use explicit
+  8-bit J171 transfers for odd byte lengths. Long control-read bounds now
+  reference the same advertised/allocation limits, not a fixed4000 limit.
+- Log the first eight length replies and validated pending/logical/wire
+  sizes; frame failures expose bounded headers, not unbounded log dumps.
+
+Incremental eight-job kernel build succeeded with the unchanged .config.
+Nineteen extracted-C tests passed under UBSan/bounds instrumentation, with
+mocked SPI, output guards/canaries, max/odd/idle/bad-header/checksum/counter/
+inner-length/transfer-error cases and non-J171 regression cases. Reproduce:
+`python3 devices/a12/linux/tests/test-j171-rx.py`. This is framing/control-flow
+validation, not a test of physical SPI or complete touch-report decoding.
+ASan could not initialize on the host's limited user VA layout; that separate
+host limitation is recorded in the test artifact directory, not hidden as a
+successful ASan run.
+
+New controlled package `/tmp/ipad8-j171-rx/linux.img4`:
+SHA256 `2fb7401655af862671639cc50448d9092793400bbf0cb30e4a89fb661943f783`.
+Only the kernel differs from the boot-tested TCLK package. m1n1, command
+line, TCLK DTB and corrected firmware initramfs are byte-identical; IMG4
+extraction matches the raw package. XR DTB hash and kernel config unchanged.
+Build/test logs, before-source, inputs and manifest are in that directory.
+No new boot, remote device changes, commit or push performed. Use this
+explicit image for the next test rather than the older normal bootset.
+
+#### Receive-fix hardware test — 2026-11-05
+
+Booted explicit RX image with serial capture `/tmp/ipad8-j171-rx/dcsd.log`.
+TCLK, HBPP upload, post-release IRQ, first-attempt DeviceInfo and runtime
+allocation8928 all passed. The new validated length replies expose:
+
+- First E1 header `e1 12 00 e2 00 00 e1 00 00 ee 00 00 00 00 a4 03`,
+  checksum valid, L18, exact wire23. Result starts
+  `ea 01 92 c0 43 20 41 00 72 00 43 00 50 04 00 00`; it fails frame
+  validation (header sum not zero; inner length exceeds bytes read).
+- A subsequent IRQ-side read gives validated E1 header
+  `e1 a3 11 e1 00 00 eb 01 00 e2 00 00 00 00 44 04`, L4515, wire4520.
+  Result starts `e1 12 80 eb 21 40 1b 61 20 1d c0 80 e1 00 00 00`,
+  failing the EA/EB result marker. No frame dispatched, probe returns -71.
+
+Thus the old fixed-size rejection is gone and 4520 is now a validated wire
+length on the later transaction, but the full-result stream is not valid.
+Do not describe touch as working. Next investigate command/result pipeline,
+native retry/resynchronization and full-duplex SPI reception; do not simply
+raise buffers again or suppress checksum/header validation. Linux reaches
+/init; capture remains running. No additional reboot performed.
+
+#### Native SPI receive boundary audit — 2026-11-05
+
+The above capture was subsequently stopped at the user's request; do not
+restart it or boot automatically. Kernel IDA session `f5a64760` on
+192.168.1.17:8746 was reachable for this audit. Evidence is saved under
+`/tmp/ipad8-research-audit/current-spi-*.json`.
+
+Completed comparison through the transport, controller configuration,
+PIO setup, DMA ordering and Z2 retry layer:
+
+- AppleSamsungSPI version-1 constants at 0xfffffff007455180 decode to
+  word-size shift15, CFG base0x4000, bit-order mask0x2000, FIFO depth16;
+  status setup is0x40000f. Configuration builder code at
+  0xfffffff009026340 uses the device profile, not transfer length. It
+  imposes minimum word-delay2 for version1 when the profile requests
+  the extra clock-polarity behavior. IDA merges this BTI entry into the
+  preceding function; check its addressed instructions rather than
+  trusting the merged pseudocode's apparent stack-check branch.
+- Native common preparation at 0xfffffff009027ea4 writes divider,
+  word-delay, status mask, base configuration and control for both
+  PIO and DMA. Native PIO at 0xfffffff00902737c writes one byte per
+  TX FIFO register entry, matching our 8-bit packing; there is no
+  evidence here for reversing bytes or changing runtime to16 bits.
+- Our full-duplex PIO selector enabled version1 setup only for <=16
+  words. At23/4520 words it dropped the minimum word delay (2->0,
+  absent a DT override) and0x40000f status setup. The CFG value alone
+  can remain0x10401e across this boundary, so logging CFG alone misses
+  this difference. This is a confirmed setup mismatch, not yet proof
+  of the observed corrupt-frame root cause.
+- Corrected the selector for J171 full-duplex PIO at every length.
+  Other compatibles, RX-only and TX-only selection remain unchanged.
+  This selects register setup; it does not allocate a hardware/DMA
+  descriptor or assume the entire transfer fits the FIFO. Existing
+  refill/drain logic still handles transfers larger than16 words.
+  Added bounded first12 setup logs including length, word-delay and
+  selection, including EB length requests and bulk result reads.
+- Native transport0xfffffff008b62490 chooses DMA at the configured
+  threshold (17 in this profile). Native DMA0xfffffff009026808 arms
+  RX before TX, programs both counts, starts the controller and waits
+  for both completion paths. Our full-duplex DMA is still missing;
+  do not equate TX-only firmware-upload DMA with runtime RX support.
+- Native readOneFrameOfData0xfffffff008b6c478 retries up to5 times.
+  On a retry it sleeps1ms, clears its synchronized flag, and makes
+  two checksummed length requests separated by the profile delay
+  before reading data; parity advances only on success/valid idle.
+  Our receive path currently lacks this resynchronization. Keep it
+  separate from this first transport-setup test rather than hiding
+  a corrupt frame by dispatching it or blindly advancing the tag.
+
+Host tests: `python3 devices/a12/linux/tests/test-j171-spi-setup.py`
+extracts the actual selection/delay functions and checks J171 lengths
+1..65535 (including16,17,23,4517,4520,8928), non-J171/XR-compatible
+selection, TX-only and RX-only behavior, CPOL and configured delays.
+Passed with UBSan/bounds, as did all19 existing extracted-C receive
+tests. These do not validate electrical timing or actual FIFO operation.
+Eight-job incremental compilation completed successfully with unchanged
+config; compiled SPI source matches the staged repository source. New
+controlled package: `/tmp/ipad8-j171-spi-setup/linux.img4`, SHA256
+`6667cc53f6b82901d134f5de3182e9a5dc7a18df6d20cf6f5c128cf5a9b9fe8c`.
+Packaging verified that only the kernel changed relative to the tested
+RX package: m1n1, arguments, DTB and corrected firmware initramfs remain
+byte-identical. Extracted IMG4 payload matches the packaged raw payload.
+No device boot, logger restart, commit or push performed. Do not claim
+hardware success before a new captured test. On that test, verify the
+16-byte and larger result transfers both log word-delay2 and
+version1-setup1, then require valid EA/EB headers and payload checksums.
+
+#### SPI setup correction hardware test — 2026-11-05
+
+User requested capture and boot. Verified iPad11,6 / CPID8020 / BDID24
+in USBLiter8-pwned DFU and both image hashes. Started capture first,
+confirmed `/dev/ttyACM0` opened, sent audited serial iBSS, then DeviceTree,
+SmartIO firmware, trust cache and the explicit SPI-setup Linux image.
+All upload commands completed successfully. Capture:
+`/tmp/ipad8-j171-spi-setup/dcsd.log` (left running as requested).
+
+Linux reached /init and userspace. DeviceInfo and allocation8928 passed.
+Both16-byte queries and larger reads now log word-delay2 and version1
+setup1. Crucially, the first23-byte result no longer logs an invalid
+frame and initialization advances into `apple_z2_j172_init_reads_locked`
+(21-byte and130-byte control reads observed). That path is gated by
+successful initial runtime validation, so this is hardware evidence
+that the first-frame corruption was corrected, not just a setup log.
+
+Touch probe still fails later: an EB result-length request at tag2 gets
+`e3 73 00 10 00 00 00 00 00 00 00 00 00 00 66 01`, rather than E1.
+The reply has a valid16-byte checksum but the wrong message type;
+driver rejects it with -EPROTO/-71. Do not relax the E1 check. Next
+trace the report-control command/result pipeline and pending IRQ
+interaction during initialization. This is a later failure than the
+previous malformed first23-byte frame; touch is not working yet.
+
+#### First-failure analysis of the E3 reply — 2026-11-05
+
+Correction to the preliminary interpretation above: the E3 seen by the
+IRQ reader is a secondary symptom, not evidence by itself that the EB
+transaction caused the initialization failure.
+
+`apple_z2_j172_init_reads_locked()` imposes `prop_len == 8` for report73.
+Captured E3 bytes decode as report73, status0, length16, with checksum
+0x0166 valid. Initialization reaches surface read21 (16+5), then DB
+read130 (125+5), then report73 info. It rejects the advertised16-byte
+report before issuing its data read. The function returns -EPROTO,
+releases io_lock while `booted` is still true; a pending IRQ can enter
+`apple_z2_read_packet()` before the outer failure cleanup clears booted.
+That IRQ clocks out the still-pending E3 control reply and logs the
+misleading result-length error. Its tag2 is consistent with the first
+runtime frame already having passed and advanced parity.
+
+Verified this causal sequence using the actual extracted report-info
+and init-read functions with a mock supplying D9 length16, DB length125,
+and73 length16. It returns -EPROTO after exactly two report-data reads,
+never attempts report73 data, and leaves the byte-identical captured
+E3 reply in RX. Replay passed UBSan/bounds:
+`python3 /tmp/ipad8-j171-spi-setup/replay-report-init.py`.
+This validates the software failure sequence; the init-stage E3 query
+itself was not logged at info level on hardware, so the replay is not
+an additional hardware trace.
+
+Native comparison in IDA session f5a64760:
+- deviceGetReportInfo0xfffffff008b69920 decodes status and LE16 length;
+- getReportGated0xfffffff008b69ca4 uses the advertised length, requires
+  <=512 and sufficient destination capacity, rather than a fixed8;
+- deviceGetReport0xfffffff008b6a5a4 chooses short for <=11, long for >11,
+  validates response type/checksum and copies the advertised data.
+Evidence: `/tmp/ipad8-research-audit/report-cause-*.json`.
+
+Next correction should be J171-specific advertised-length report73
+handling with native bounds and E6/E7/report/status/checksum validation,
+not globally changing8 to16 and not accepting E3 as a runtime frame.
+Also prevent runtime IRQ consumption during failed/control init cleanup.
+No driver modification, new build, reprobe or reboot in this analysis.
+
+#### Report73 correction implementation — 2026-11-05
+
+User authorized implementation, tests, incremental rebuild and packaging,
+then readiness notification (not an automatic boot).
+
+- J171 report73 uses its advertised nonzero length up to the native512
+  limit; other boards retain the8-byte requirement. This is not a global
+  replacement of8 with16. Actual report reads retain advertised packet
+  and allocated-window bounds, and now enforce512 for J171.
+- Added J171-only short/long response validation: exact transfer size,
+  E6 for <=11 payload bytes / E7 otherwise, matching report ID, status0,
+  and checksum. Long J171 reads explicitly request8-bit SPI words.
+- J171 leaves booted=false until all init reads and writes succeed.
+  During control initialization IRQs only record completion; they cannot
+  enter the runtime reader. Runtime IRQ waiters recheck booted under
+  io_lock before consuming data. Non-J171 startup behavior is unchanged.
+- Tests: `python3 devices/a12/linux/tests/test-j171-reports.py` extracts
+  actual report-info, init-read and response-validator C. Mocked lengths
+  8/16/512 succeed for J171; zero/513 reject, non-J171 still rejects16,
+  read errors propagate. Short/long boundary lengths1/8/11/12/16/125/512
+  validate, wrong type/report/status/size/checksum reject. Passed under
+  UBSan/bounds. Existing19 receive tests and SPI setup regression pass.
+  Mocked tests do not prove hardware touch or IRQ scheduling correctness.
+
+Eight-job incremental kernel build completed successfully, retaining the
+existing config and SPI setup correction. Staged and repository touch
+sources match. Controlled output: `/tmp/ipad8-j171-reports/linux.img4`,
+SHA256 `d862718794934def4315b587098c22e9313ea31ca3f9400b17fee6e0de976c54`.
+Verified only the kernel differs from the captured SPI-setup package;
+m1n1, arguments, DTB and corrected firmware initramfs are byte-identical.
+IMG4 extraction matches the raw package. Ready for a requested captured
+test; no reboot, commit or push performed. Touch success remains unverified.
+
+#### Report-fix hardware test — 2026-11-05
+
+At user request stopped old capture PID20992 and deleted the old
+SPI-setup/RX dcsd.log files. Fresh capture is
+`/tmp/ipad8-j171-reports/dcsd.log`, left running. Verified pwned DFU,
+image hashes, then completed the established RAM-only boot sequence.
+Upload logs are in the same directory. Linux reached /init.
+
+Hardware confirms report73 advertises16 and initialization now proceeds
+through the later report reads and9D/BF/AF setup, rather than failing
+at the8-byte check. No touch probe-failed line observed in this capture.
+Runtime reception is still not healthy: first EB gets a checksummed
+pending E3/AF status2 reply, then an EA frame appears during a length
+query, followed by an invalid4132-byte result read and zero replies.
+Do not equate successful initialization with working touch. Next inspect
+control-to-runtime synchronization (native retry/double-length-query
+path already traced), validation of write acknowledgments and the
+extra polling consumer. No further build or reboot performed.
+
+#### Bounded runtime resynchronization — 2026-11-05
+
+User requested implementation and rebuild. Split the existing receive
+operation into one-attempt framing plus a J171-only bounded wrapper:
+
+- At most5 attempts per call; wait1ms before each retry.
+- After an error, require two independently validated16-byte E1 length
+  replies before any data read, using the existing inter-packet delay.
+  If the first query fails, stop that attempt without issuing a bulk
+  read; if the second fails, likewise retry without advancing parity.
+- A successful frame or valid idle clears resync state and advances the
+  tag once. Failed headers/checksums/size/transfer errors never dispatch
+  input and never advance the tag. Exhaustion returns the last error
+  and leaves resync requested for the next call. Unlike native iOS's
+  kill-device path, this wrapper does not power-cycle/reset the device.
+- Mark the control-to-runtime handoff as requiring double-query resync,
+  even without a prior runtime error. Other compatibles retain their
+  existing single-attempt behavior. All size/checksum/counter gates stay.
+
+`test-j171-rx.py` retains19 one-attempt framing cases and adds8 wrapper
+cases: stale E3, corrupt frame then recovery, resync idle,5 I/O errors,
+5 wrong markers, bad second-query checksum, initial handoff and non-J171
+no-retry regression. All passed UBSan/bounds, as did report and SPI setup
+suites. An initial test-harness insertion error was corrected before
+these successful runs; it did not require a driver change.
+
+Eight-job incremental build completed successfully in the existing build
+tree, with unchanged config and staged source matching the repo. Package:
+`/tmp/ipad8-j171-resync/linux.img4`, SHA256
+`82344854a2210926f76a90931ec77706c1b07c1d2345b7fe7478c6bf1ca8e52d`.
+Verified only the kernel changed from the captured report-fix image;
+m1n1, command line, DTB and corrected firmware initramfs are unchanged.
+IMG4 extraction matches raw package. Tests/build logs are saved alongside
+the image. No new boot, device reset, commit or push performed. Hardware
+resynchronization and touch success remain unverified.
+
+#### Retry image hardware test — 2026-11-05
+
+User requested old log deletion, fresh capture and boot. Stopped logger
+PID23605, deleted `/tmp/ipad8-j171-reports/dcsd.log`, and started fresh
+capture `/tmp/ipad8-j171-resync/dcsd.log` before serial iBSS. Verified
+pwned iPad11,6 DFU and both hashes; completed all RAM-only uploads and
+bootx successfully. Linux reached /init and USB gadget configured.
+
+Retries execute: first runtime reply is pending E3/AF, next EA while
+querying length; subsequent E1 replies validate and tags later alternate.
+However, around17.98 seconds replies become all zero and the bounded
+five-attempt loop repeatedly exhausts with -71. This test does not
+establish working touch; retry alone did not resolve stable reception.
+Do not infer a specific hardware crash from zero replies alone. Capture
+left running; no additional reboot or patch performed in this boot turn.
+
+#### Static firmware/runtime audit — 2026-11-06
+
+No driver changes, build or boot in this audit. Firmware IDA uses raw
+Kona image at 0x100000. Its initialized RAM is compressed in the file:
+scatter loader0x130108 first copies0x290c bytes140d50->14e8d8, then
+decoder130158 expands0xdb88 bytes to140d50, then zeros BSS14e8d8.
+Treating raw file bytes as RAM constants caused incorrect Hex-Rays
+constant folding. Selected volatile annotations improved decompilation;
+no firmware instruction/data bytes were patched.
+
+Offline replay of the three scatter entries establishes startup bytes
+1412d2=2 and1412d3=2. Normal76 producer1183a2 checks bit1 of1412d2;
+scheduler118970 copies1412d3 to1412d2. ReportAC setter117d20 changes
+1412d3. Therefore a missing AC enable is not a proven startup blocker.
+BF shadow1412f0 starts9d310900, independently matching the captured E3/BF
+response. Reconstructed pointer14e8b0 points to144ee0, which is algorithm
+root144d38+424: BF apply118002..11800c updates those algorithm flags.
+The target itself is zero immediately after scatter loading; algorithm
+initializer124e7c subsequently installs319d. Our9d810900 write changes
+bits12/13/15; their consequences are not yet established.
+
+Firmware10f47c/10f59a and113f36 identify captured5a010200201000 as raw
+sensor/debug data, not a fatal dump. Its4509-byte report plus protocol
+overhead explains4520-byte wire frames. Normal12a678 emits76 with32-byte
+header and48-byte float contacts;11920c routes it with mask3, so Grape
+mask2 is correct. Native8b6cf10 walks multiple90 TLVs; our single-TLV
+dispatcher rejects valid bundled reports in offline actual-C replay.
+This is a confirmed parser gap, not proof of this capture's root cause.
+
+Native AC references8b58f84 etc belong to HSMDeviceTest.h/image-mode test
+code, not evidence of the selected production boot recipe. A5's PMGR
+mapping correction is useful methodology but its dead-SPI failure is
+earlier than our valid DATA ACKs/DeviceInfo/runtime responses. Preserve
+these distinctions rather than copy another board's register formulas.
+
+Evidence/scripts/IDA exports are retained under
+`/tmp/ipad8-research-audit/`; latest consolidated analysis is
+`scatter-and-report-findings.md`, initialization replay is
+`reconstruct-scatter.py`. Hardware authority remains
+`/tmp/ipad8-j171-resync/dcsd.log`: pending E3/AF and EA at runtime handoff,
+then valid E1 lengths, then zeros from17.9878s. No complete touch fix or
+controller crash has been established. Next causal questions remain BF
+effects, native IRQ/wake lifecycle, and normal76 delivery.
+
+BF consumer follow-up: the BF apply destination is the algorithm flags at
+root144d38+424, not AC report mode. The319d->819d low-halfword change is
+XOR b000 (bits12/13/15). A local candidate scan of1400 named firmware
+functions, checked against Thumb/decompilation, identified processing
+consumers at12310e/12312a (bit0),125ce8 (bit9),12a95a (bit1) and12d1ba
+(bit2); these bits are unchanged by our BF write.12a644 copies the full
+word into auxiliary report metadata. No traced processing branch tests
+the changed bits, so BF is not an established explanation for missing
+touch or zero SPI replies. Do not invent names for those high bits or
+claim this local scan rules out every indirect consumer. Full trace:
+`/tmp/ipad8-research-audit/bf-consumer-findings.md`. No driver edit/build.
+
+#### J171 port corrections and package — 2026-11-06
+
+Applied at user request, without changing XR matching/driver paths:
+
+- J171 sync pins57/58 now select peripheral2 via a named pinctrl state,
+  rather than GPIO output pulses. Native chain: function-sequence type3
+  -> GPIO function89da2f8 -> GPIO mode3 in89d7644, mask270/value240.
+  Linux pinctrl programs peripheral2/input enable; actual electrical sync
+  activity is not established by the state-selection success message.
+- Initial J171 DeviceInfo wake uses2000us, not125ms. Native config
+  8b6d564 sets Wake Delay Us=2000;82912b8 scales to microseconds.
+- J171 dispatcher walks all bounded90 TLVs, including empty records,
+  dispatching each Grape76. Other compatibles retain the single-TLV path.
+- J171 BF is read with E6 and written back unchanged, rather than replaced
+  with J172's9d810900. Read failure aborts initialization.
+- J171 short-write E1 replies validate marker, checksum, status and last
+  command/report. This deliberately fails mismatches instead of silently
+  accepting them. No new retries or speculative power resets added.
+- Initramfs builder regenerates an existing J171 firmware container before
+  copying it. Its old build/touch artifact was stale. Fresh converter output
+  matches the boot-tested corrected firmware hash99d9efea...ad864b.
+
+Focused diagnostics: successful sync-state selection, BF preservation,
+rejected write status, first4 runtime IRQs, first8 received frame TLV traces
+and first4 Grape headers. Existing persistent logs retained. Poller/IRQ
+lifecycle remains unchanged; no claim of a new IRQ recovery implementation.
+
+Five extracted-C host test suites pass UBSan/bounds: dispatch, report/write
+validation,19 receive cases plus8 retry cases, SPI setup, and BF initialization
+flow. Legacy behavior is tested where shared helpers changed. These are
+software tests, not hardware validation. Targeted diff checks and bash syntax
+pass; an existing unrelated SPI patch has a pre-existing whitespace warning.
+
+Eight-job incremental build compiled apple_z2_j171.o and relinked, using an
+unchanged .config. Staged source cmp passed. DTB compiles, and decompilation
+shows pins20039/2003a plus display-sync-active. New image:
+`/tmp/ipad8-j171-portfix/linux.img4`, SHA256
+`fb679279170e4cbcc6486a0d537764b43d51f3beeba93b22a08d9975504d78d4`.
+IMG4 extract matches raw payload. The boot-tested initramfs is retained
+byte-for-byte and its embedded J171 firmware matches fresh conversion;
+m1n1 and bootargs unchanged, only kernel/DTB differ from the retry image.
+Build, tests, conversion and package manifest/logs are alongside the image.
+
+User subsequently supplied pwned iPad11,6 DFU (8020/BDID24). Fresh capture
+`/tmp/ipad8-j171-portfix/dcsd.log` started before the verified serial iBSS.
+Old logger stopped without deleting its log. DeviceTree -> SmartIO -> trust
+cache -> new image -> bootx all sent successfully. m1n1 identified J171
+and began decompressing the kernel. Runtime outcome still under observation.
+
+Captured hardware outcome: Linux boots; sync pinctrl selection and native BF
+preservation succeed. Three normal Grape 0x76 reports (68 bytes) are logged
+around18.075s, alongside mask8/raw5A frames; this does not establish contacts.
+Subsequently E1 result-length replies become all zero and retries fail.
+User-reported brief cursor movement remains unconfirmed. A20-second direct
+/dev/input/event1 capture recorded zero bytes of input events, and touch IRQ
+count remained28->28. Live debugfs: GPIO208 input high; reset27 output high
+(active-low descriptor); CS51 high; pins57/58 owned byspi0.0 inperiph2.
+Clock framework reports touch-ref24MHz enabled and SPI200MHz enabled; these
+are software/framework states, not electrical measurements. SPI statistics
+show continuing synchronous transfers with zero controller errors/timeouts,
+while protocol replies fail. IRQ thread sleeps inirq_thread, poller inmsleep.
+Therefore neither desktop mapping nor controller timeout explains this stall;
+firmware responsiveness/wake/handshake and actual signal behavior remain to
+be determined. No reset, unbind, or new hardware register writes performed.
+Evidence saved in /tmp/ipad8-j171-portfix/{touch-events.txt,live-state.txt,
+live-irq-spi.txt,dcsd.log}. No claim of complete touch fix.
+
+Runtime lifecycle follow-up (kernel IDA reconnected e581137b): native
+interruptAction8b613f0 preserves deferred events; readOneFrame8b6c478
+requests provider power-state2 (assembly w1=2,w2=back-to-sleep delay), then
+five bounded reads and fatal recovery8b60d0c on exhaustion. Linux lacks
+that deferred-event/recovery state machine and instead polls forever.
+These are port gaps, not a demonstrated cause of the first zero response.
+Important correction: native runtime frame reading does not directly call
+EE wake either; verified wake calls are DeviceInfo/report control paths.
+Last loggedGrape18.076489 -> firstzero18.084747 (8.258ms), so no established
+100ms idle-sleep explanation. J171 already takes the A5 full-duplex branch
+because j172 flag includesj171; legacyspi_read is NOT its runtime path.
+Detailed evidence /tmp/ipad8-research-audit/runtime-lifecycle-findings.md.
+Firmware IDA8745 worker became unreachable; kernel8746 is available.
+No speculative code changes/rebuild made; first-failure cause still open.
+
+Kona firmware runtime follow-up (IDA64fad59b): actual Z2 parser11486a,
+E1 reply builder1146d8, tag/current-entry state1411f8/1411f4, CS-edge
+handler1136cc and publish gating114778 traced. Firmware normally returns
+E1 status even for empty pending data/checksum error; zero replies are not
+normal no-contact frames. CS-end113720 restores/arms status FIFO; publish
+requiresnotbusy and14115a==1. Reset handler10d000->ROM hook->AIRCR reset
+exists, but no hardware crash code proves that it ran. Full Grape status
+beyond logged16bytes and actual CS/ATN/SPI register transition remain
+missing. Deferred IRQ replay + IRQ-qualified service is the next controlled
+comparison, not a confirmed fullfix. Analysis-only volatile annotations
+prevent compressed-RAM constant-folding errors; firmware bytes unchanged.
+Detailed evidence:/tmp/ipad8-research-audit/firmware-runtime-stall-findings.md.
+No new source edit/build/boot performed for this analysis.
+
+### J171 IRQ-owned runtime service and first-failure diagnostics — 2026-11-06
+
+Implemented J171-only event service in apple_z2_j171.c. The former8ms SPI
+polling loop is removed. Threaded IRQ records event tokens and wakes a
+service kthread; pre-runtime edges at/after firmware-ready are latched and
+replayed after initialization. An already asserted ATN at handoff also
+requests one service. Tokens arriving during service remain queued;32-event
+budget yields without dropping the remainder. Existing five-attempt/tag
+resync stays unchanged. Runtime/PM lifecycle mutex precedes io_lock;
+threaded J171 IRQ never waits for io_lock or performs runtime SPI.
+
+After exhausted retries: snapshot first, release input contacts, disable IRQ,
+assert reset and stop clock/sync, then permit only ONE reset+firmware-reupload
+attempt. A subsequent failure parks service rather than rebooting forever.
+This is not a verified full rail power-cycle, nor proof that recovery fixes
+the initial failure. Suspend/remove quiesce service; resume starts a new
+bounded session. Non-J171 IRQ service and XR HID driver path are unchanged.
+
+Diagnostics deliberately distinguish observations from interpretation:
+- Eight-entry runtime transport history includes boottime us, query/data,
+  requested length, tag, SPI return code, TX16/RX32. Nonzero RX is not claimed
+  valid until protocol checks; history SPI return0 is not protocol success.
+- First all-zero length response dumps history and ATN/CS/reset raw levels,
+  IRQ/pending counts, protocol state and software clock-enable state BEFORE
+  driver recovery. GPIO208 is now described as interrupt-gpios in J171 DTB.
+- SPI master captures CTRL/CFG/PIN/STATUS/FIFO/TXCNT/RXCNT/CLKDIV/WORDDELAY
+  before finish_xfer clears active registers; prior nonzero-RX transfer is
+  cached for comparison, explicitly not labeled protocol-validated. Max two
+  zero episodes per master probe; consecutive zeros don't spend both slots.
+  No RXDATA register is read by diagnostics, so FIFO data is not consumed.
+  The TX opcode is saved BEFORE transfer because data TX/RX buffers alias.
+- Full32-byte Grape headers (first4 per initialization) now expose previously
+  omitted contact-count/status bytes. Failed transfers may leave stale RX;
+  the transport error field must be considered when reading history.
+- After5s without service, one QUIET message reports IRQ/ATN/state only.
+  Silence is NOT called failure; this timer sends NO SPI probe or reset.
+- SPI register time is before cleanup; history time is after spi_sync returns,
+  possibly after serial diagnostic output. Neither is an oscilloscope capture.
+
+Eight extracted-C host suites pass UBSan/bounds, including actual worker/IRQ
+code event injection, deferred handoff, budget preservation, quiesce, recovery
+ordering/limit and legacy IRQ; actual ring bounds/wrap/guards; SPI snapshot
+latching, aliased TX/RX opcode retention and non-J171 guard. These are mocked
+software checks, not physical touch or SMP stress validation. Baseline test
+coverage for report validation, TLVs, receive/resync and SPI setup retained.
+Build/test/evidence artifacts: /tmp/ipad8-j171-irq/. No flashing/boot or push
+performed as part of these edits. Incremental Image.gz build uses existing
+.config and eight jobs; package/hashes recorded below after final verification.
+
+Verified incremental build/package: `/tmp/ipad8-j171-irq/linux.img4`, SHA256
+`0533e6a8e23e9e4308a20b5400f409c87078c2cdae8dede8d78f0f7e68251df8`. Config/source cmp and packaged diagnostic
+strings verified; IMG4 extraction matches raw payload. Original boot-tested
+initramfs is byte-identical and embedded J171 firmware matches conversion.
+New DTB only adds the ATN GPIO descriptor relative to portfix. Ready for
+RAM-only captured test; not yet hardware-booted, no claim of touch fix.
+
+### Hardware milestone: J171 touch confirmed on IRQ-owned runtime image
+
+User requested old capture removal; stopped prior DCSD logger, deleted its
+/tmp/ipad8-j171-portfix/dcsd.log, started fresh capture at
+/tmp/ipad8-j171-irq/dcsd.log. Verified pwned iPad11,6 /8020/BDID24, exact
+serial iBSS hashc440bd7a...27bb4 and new image0533e6a8...51df8. RAM-only
+iBSS -> DeviceTree -> SmartIO -> trustcache -> Linux -> bootx succeeded.
+Linux USB SSH and Debian systemd are up.
+
+Initial stale E3/AF and EA length replies recovered through existing resync.
+Three initial zero-contact68-byteGrape reports appeared around18.335s.
+At60.309948s,116-byteGrape report has contact count1 atoffset22.
+User reported touch worked. Verified directly through/dev/input/event1:
+25-second capture311856bytes=12994input_event records,2604SYN_REPORTs;
+2591ABS_MT_POSITION_X changes(range2256..16195),2588Y changes(5375..19089),
+16tracking-ID changes including-1(contact release). IRQ totals462->3100
+(sum across CPUs). This is physical-input evidence, not cursor inference.
+Captured events saved at/tmp/ipad8-j171-irq/touch-events.bin and text
+summarytouch-verification.txt. No FIRST FAILURE/zero-before-cleanup/
+retry-exhaustion/bounded-recovery markers observed at verification time;
+QUIET5s was followed by real contact events, so was correctly not a failure.
+
+This establishes working touch on this tested image and session, not long-run
+stability, multitouch accuracy or a uniquely proven electrical root cause.
+The IRQ/deferred-service change succeeds without triggering recovery here.
+DCSD capture remains active; no new reset/flash/commit/push performed.
+
+Cleanup at user request: removed older/tmp tests, research exports and
+reference clones. Latest/tmp/ipad8-j171-irq retained; required serialiBSS,
+Apple DeviceTree,SmartIO,trustcache and structural ticket copied/hash-verified
+into itsboot/ subdirectory BEFORE deleting old locations. Future boot must
+use these bundled paths, not removed/tmp/ipad8-fw or rtkit-v2 directories.
+Spiro MCP Node scripts plusnode_modules retained at/tmp/mcp-client-spiro.
+Active system/agent IPC preserved. Cleanup reporttmp-cleanup.json; disk now
+~19GiB free. Serial capture was stopped earlier; success log remains.
+# J171a radio preparation — 2026-11-06
+
+**Newest result (Bluetooth quirk test, supersedes the status below):** patch
+0026 plus two J171-only DT opt-ins were built and boot-tested. Debian NFS
+works; external MagnoliaA Murata build 1334 now exposes a management index,
+powers on, uses the verified private BMac and discovers four nearby devices
+(LE and BR/EDR). No pairing/profile test. Unknown advertising types 0x23/24
+remain to investigate. An extra Wi-Fi scan after discovery hung and its
+specific `iw` process was stopped; concurrent radio behavior is not fully
+validated. Touch initializes without SIO timeout; prior no-trace boot was
+user-confirmed. Latest package/logs: `build/ipad8-radio/bt-quirks/`, image
+SHA256 `2995cfdeb193770361771ab423b0d7314a43b11c1a755009f95cda6034eb7b70`.
+Details in `boot/IPAD8_RADIO.md`. No commit/push.
+
+**Latest captured test:** removed SIO's synchronous SPI-DMA trace calls only,
+rebuilt incrementally (one job / one linker thread / 2 GiB process limit),
+and kept radio DTB, protocol/timeouts, initramfs and boot inputs unchanged.
+The user confirmed working touch; no previous SIO configuration timeout.
+Host NFS services were restored, and Debian systemd runs on the existing
+NFS root. Murata Wi-Fi successfully scanned 12 BSS entries; connection and
+traffic remain untested. Bluetooth patch build 1334 is accepted but opcode
+0x204b still aborts initialization: btmgmt sees zero indices and power-on
+fails Invalid Index. Bluetooth is NOT operational yet. Details and hashes:
+`boot/IPAD8_RADIO.md`, logs `build/ipad8-radio/no-sio-trace/`. Below is the
+earlier preparation state, superseded by this captured result.
+
+See `boot/IPAD8_RADIO.md` for the board-specific workflow and limits.
+The repaired 21B91 OS DMG matches ZIP CRC32 and Apple BuildManifest SHA-384.
+Selective read-only APFS-FUSE extraction (256 MiB address-space limit,
+approximately 5 MiB observed RSS) produced BCM4355C1 magnoliaa Wi-Fi files
+and both MagnoliaA Murata/USI Bluetooth HCD candidates. The image is now
+unmounted. Never feed this multi-chunk UDIF DMG to the standalone `lzfse`
+CLI: it buffers the whole input and is not a DMG extractor.
+
+J171a DTS now enables APCIE port 2 with SMC gP13 (confirmed in both native
+`/amfm` and `uart2/wlan`), BCM4355 endpoint, UART1 Bluetooth power gP11 and
+BT_WAKE AP39. UART1 RX31/CTS33/mux1 are inherited T8020 assumptions, not yet
+verified on iPad hardware. XR DTS, loaders and shared driver source were
+not changed by this radio preparation. Existing kernel config already has
+the necessary drivers; no kernel rebuild performed.
+
+The retained private SysCfg is A2270: WMac/BMac/WCAL are present but WSKU is
+absent. `calibrate-ipad8-radio.py` produces a separate private J171a DTB
+without inventing WSKU or exposing identifiers. `load-ipad8-radio.sh`
+checks target board identity, offers a firmware-free OTP probe, and requires
+an explicit verified vendor before choosing NVRAM/HCD. Device bus IDs are
+discovered instead of assuming XR's names. Firmware remains outside the
+initramfs. Four host DT/calibration/loader-guard tests pass. No J171a radio
+boot, vendor identification, HCD acceptance, connection or traffic test has
+been performed yet. Do not describe the radios as working until tested.
+
+## 2026-11-07: default A13-style watchdog handoff
+
+A12 initramfs now defaults to A13 handoff for both profiles. DHCP alone starts
+before NFS discovery; cleanup precedes moving /proc; one static BusyBox worker
+is started from /run/cascadia before switch_root. Debian replacement is skipped
+by a RAM marker. Fallback starts an initramfs worker only if handoff fails.
+XR and J171 source-built payloads passed automatic USB/SSH/NFS reconnect without
+manual cleanup. J171 passed repeats/fresh boot; an earlier timeout remains in
+the evidence. No kernel USB workaround was applied. XR kernel/m1n1 unchanged.
+The prior separate RAM-root test was diagnostic and is not the default.
+Six lifecycle host checks include default selection; separation tests retained.
+Rootfs profiles/Quickstart/NFS guide document the default and quiet worker checks.
+No commit or push performed.
