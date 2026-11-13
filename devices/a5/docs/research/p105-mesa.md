@@ -4003,6 +4003,7 @@ those were read at once):
 | + the draw module's vertex shader bound only when used | 16 ms | 21.2-21.8 fps | 35-36% settled |
 | + PPSSPP's push buffers mapped, the GPU copy itself | 16 ms | 23.3-23.7 fps | 38-39% |
 | + the clamped lookups in F16, uniforms' work per draw | 16 ms | 25.8-26.4 fps | 42-43% |
+| + the frames flipped onto the screen, the cursor hidden in games | 16 ms | 28.2-28.3 fps | 46-47% |
 
 The frame's GPU work (each render waited for, the median of whole
 frames) 53 -> 40 ms over the last two. The GL thread still waits for the
@@ -4189,11 +4190,39 @@ before. God of War 22.7-23.6 -> 25.8-26.4 fps, the counter ~39% -> 42-43%
 the desktop said 28-29, X not showing its frames); the GPU busy 94% ->
 89%.
 
+**The frame flipped onto the screen.** X copied the game's window into
+the screen each frame -- a glamor render of 1.6-2.0 ms and, around it, two
+of the software cursor's (what is under it, then it again), X 8.5% of a
+core. PPSSPP presents through DRI3/Present (`LIBGL_DEBUG=verbose`:
+"Using DRI3"), and modesetting flips a full-screen window's buffer only
+when (1) no software cursor shows (`sprites_visible`; the kernel's screen
+has no cursor plane, and PPSSPP keeps the arrow with its touch controls)
+and (2) for a swap without vsync -- PPSSPP's -- when the kernel offers
+async flips (Present flips such a swap only with
+`PresentCapabilityAsync`). Hidden by hand (XFixesHideCursor) the cursor's
+two renders went, X's copy stayed (26.1 -> 27 frames/s); with vsync on
+too X had no render left at all (the scheduler's trace). Now:
+
+- apple-sgx's KMS sets `mode_config.async_page_flip` (`DRM_CAP_ASYNC_PAGE_FLIP`):
+  every flip is a copy once the renders writing the buffer are done, with
+  no vblank to wait for, so an async one is the same. The mini's driver
+  too (untested there).
+- The Games launcher runs each game under `xhidecursor` (games-setup.sh: a
+  python3 client that hides the cursor through XFixes for as long as the
+  game runs, and passes a signal to end it on), the game as it is without
+  python3.
+
+Then X flips the game's frames: no render of X's in the trace, X 2.7-3.1%
+of a core; the kernel's copy onto the scanout stays (from the game's buffer
+now). `session-tools/ab.sh` (the cursor shown and hidden by turns in one
+run, three times): 25.66/25.81/25.78 -> 26.85/27.86/27.81 frames/s; the
+game run as Games does: 28.2-28.3 frames/s, the counter 46-47%.
+
 **What is left**, in the order it costs:
 
-- The GPU's frame: the main render (~12 ms of 76 draws), putting the frame
-  on the screen (~7.6 ms: X's copy could go with page flips), the renders'
-  fixed cost.
+- The GPU's frame: the main render (~12 ms of 76 draws), the kernel's copy
+  onto the scanout (2.1 ms: the display's own base address, not known),
+  PPSSPP's 1024 x 768 render, the renders' fixed cost.
 - The program that discards blends in F32 (66 instructions): the SOP2 into
   a temporary, then the packed word or the tile's chosen.
 - One of PPSSPP's programs writes gl_FragDepth (its depth rounded to 16

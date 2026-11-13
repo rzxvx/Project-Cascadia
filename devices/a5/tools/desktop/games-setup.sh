@@ -161,6 +161,51 @@ if [ -d /usr/local/lib/sgx-mesa ]; then
 END
 fi
 
+# The X cursor hidden while a game runs: X's modesetting flips a full-screen
+# window's buffers onto the screen only when no software cursor is shown (the
+# kernel's screen has no cursor plane) -- else each frame is a copy, and the
+# cursor's own two (what is under it, then it again): God of War 26.1 -> 27
+# frames/s from the cursor alone, X's CPU 8.5% -> 3.5% (research/p105-mesa.md,
+# M46).  XFixesHideCursor holds while the helper is connected.
+cat > /usr/local/bin/xhidecursor <<'END'
+#!/usr/bin/env python3
+# xhidecursor CMD [ARGS...] -- CMD run with the X cursor hidden (XFixes), shown
+# again when it ends (tools/desktop/games-setup.sh); CMD as it is without X
+import ctypes, ctypes.util, os, signal, subprocess, sys
+if len(sys.argv) < 2:
+    sys.exit('xhidecursor CMD [ARGS...]')
+dpy = root = xf = x11 = None
+try:
+    x11 = ctypes.CDLL(ctypes.util.find_library('X11'))
+    xf = ctypes.CDLL(ctypes.util.find_library('Xfixes'))
+    x11.XOpenDisplay.restype = ctypes.c_void_p
+    x11.XOpenDisplay.argtypes = [ctypes.c_char_p]
+    x11.XDefaultRootWindow.restype = ctypes.c_ulong
+    x11.XDefaultRootWindow.argtypes = [ctypes.c_void_p]
+    x11.XFlush.argtypes = [ctypes.c_void_p]
+    xf.XFixesHideCursor.argtypes = [ctypes.c_void_p, ctypes.c_ulong]
+    dpy = x11.XOpenDisplay(os.environ.get('DISPLAY', ':0').encode())
+    if dpy:
+        root = x11.XDefaultRootWindow(dpy)
+        xf.XFixesHideCursor(dpy, root)
+        x11.XFlush(dpy)
+except (OSError, TypeError, AttributeError):
+    dpy = None
+# (the cursor comes back when this client's connection closes, as it exits;
+# a signal to end goes on to CMD)
+child = subprocess.Popen(sys.argv[1:])
+def forward(sig, frame):
+    child.send_signal(sig)
+for s in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+    signal.signal(s, forward)
+while True:
+    try:
+        sys.exit(child.wait())
+    except InterruptedError:
+        pass
+END
+chmod 755 /usr/local/bin/xhidecursor
+
 cat > /usr/local/bin/games <<'END'
 #!/bin/sh
 # games [GAME] -- the games in ~/Games (gb, gbc, gba, psp), picked by touch
@@ -197,13 +242,16 @@ play() {
     was=$(rotate 2>/dev/null || echo normal)
     touch /run/rotation-lock
     [ "$was" = normal ] || rotate normal
+    # the cursor hidden while it runs (xhidecursor; as it is without python3)
+    hide=""
+    command -v python3 >/dev/null 2>&1 && hide=xhidecursor
     if [ "$sys" = psp ]; then
         ini="${XDG_CONFIG_HOME:-$HOME/.config}/ppsspp/PSP/SYSTEM/ppsspp.ini"
         [ -f "$ini" ] || { mkdir -p "$(dirname "$ini")" && cp /usr/share/cascadia/ppsspp/ppsspp.ini "$ini"; }
         # --pause-menu-exit: Exit in its pause menu ends the game here, in Games
-        PPSSPPSDL --fullscreen --pause-menu-exit "$1"
+        $hide PPSSPPSDL --fullscreen --pause-menu-exit "$1"
     else
-        retroarch -L "/usr/lib/libretro/${core}_libretro.so" \
+        $hide retroarch -L "/usr/lib/libretro/${core}_libretro.so" \
             --appendconfig="/usr/share/cascadia/retroarch/ipad.cfg|/usr/share/cascadia/retroarch/$sys.cfg" "$1"
     fi
     if [ -n "$locked" ]; then [ "$was" = normal ] || rotate "$was"
