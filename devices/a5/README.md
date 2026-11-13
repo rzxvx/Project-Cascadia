@@ -841,7 +841,7 @@ Build products (`output/`) and stock firmware are not tracked; everything in
   themselves) → ~~the built-in microphone~~ ✓ → ~~a headset's microphone~~ ✓
   (biased, capture moving to it) → ~~the cameras~~ ✓ (V4L2, both, with their
   picture controls) → ~~games~~ ✓ (Game Boy, GBA, PSP, by touch) → heavy 3D
-  faster on the GPU (the PSP's: God of War's menu 3% → ~35% of its speed so
+  faster on the GPU (the PSP's: God of War's menu 3% → ~39% of its speed so
   far) → USB host.
 
 The iPhone 11 and the devices planned next: the

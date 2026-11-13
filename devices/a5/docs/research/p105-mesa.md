@@ -4001,6 +4001,7 @@ those were read at once):
 | + copies by the PDS | 16 ms | 18.8-19.0 fps | 31% settled |
 | + two renders at once (the kernel) | 16 ms | 19.3-20.9 fps | 33-35% settled |
 | + the draw module's vertex shader bound only when used | 16 ms | 21.2-21.8 fps | 35-36% settled |
+| + PPSSPP's push buffers mapped, the GPU copy itself | 16 ms | 23.3-23.7 fps | 38-39% |
 
 The frame's GPU work (each render waited for, the median of whole
 frames) 53 -> 40 ms over the last two. The GL thread still waits for the
@@ -4075,11 +4076,58 @@ draws. Two things there:
 `SGX_DEBUG=fps` says the submits' time in the kernel now: 1.6-2.8 ms a
 frame, 18 of them, 14 buffers each.
 
+**PPSSPP's vertices where the GPU reads them.** The upload stayed the GL
+thread's: 1.75 MB a frame copied into the buffers' GPU copies at each
+frame's start, 6.4-9 ms while the GPU waited for the main render.
+PPSSPP's OpenGL backend can map its push buffers instead
+(`GLBufferStrategy`), but 1.20.4 never does: its bug flags leave every GPU
+on `SUBDATA`. A patch (`tools/desktop/ppsspp/gl-map-push-buffers.patch`)
+maps them on this driver (its renderer's "SGX" and "Mesa" in the version:
+the vendor string is "Project Cascadia", not Imagination's) --
+`INVALIDATE_UNMAP`: each buffer mapped whole with
+`GL_MAP_INVALIDATE_BUFFER_BIT` right after the draws of the frame that
+used it, the emulator thread decoding the next use's vertices and indices
+into the mapping -- through `glMapBufferRange` on OpenGL 2.1 (1.20.4's
+`glMapBuffer(GL_READ_WRITE)` there asked for the old content, readable).
+`PPSSPP_GL_MAP_BUFFERS=0` / `1`: uploads / maps whatever the driver.
+
+The driver's side is `buffer_map_direct()`: a write-only map that discards
+a vertex or index buffer's content (4 KiB or more of it) hands out the
+buffer's GPU copy itself -- a fresh one from the cache (M26) when a render
+reads the old, gathered or running, the old one left to those renders --
+and the CPU copy is behind by the mapped bytes (`stale_lo`, `stale_hi`, as
+after `sgx_buffer_subdata`). PPSSPP maps right after the draws that read
+the buffer, so each frame's map is a fresh copy: 2368 KB of maps a frame,
+all of them fresh, nothing copied -- the copies the cache turns over ~3 MB
+more GPU memory (Shmem 157 -> 160 MB, flat over minutes), PPSSPP ~5 MB
+less (it frees its own copies of mapped buffers). A glBufferData of all of
+a busy buffer goes the same way (Mesa's `buffer_subdata` of the whole,
+through `u_default_buffer_subdata`). Not constant buffers, glthread's maps
+nor persistent ones; u_upload_mgr never discards all. `SGX_DIRECT_MAP=0`:
+the CPU copy, as before -- PPSSPP's maps alone then gain nothing
+(21.0-21.8 fps: the 2369 KB are copied on at the first draw instead).
+glbuffer's `invalidate` cases (PPSSPP's push buffers mapped again while
+the draws that read them are gathered, running or done; at offsets, an odd
+first index; twice in one render; read back; drawn as lines, the draw
+module reading them; a buffer under 4 KiB; glBufferData of a busy one): 32
+of 32 either way, on both vertex sides (`SGX_CPU_VS=1`); the regression
+tests, glcopy, gldesk, glfmt, glblend, glf16, glrect unchanged.
+
+God of War 21.3-21.9 -> 23.3-23.7 fps, PPSSPP's counter ~36% -> 38-39%:
+the gap between a frame's end and the next one's first draw 9.1-10.2 ->
+1.8 ms, the GL thread's samples a frame ~30% fewer, and the emulator
+thread's no more for writing write-combined memory (~26 ms of it a frame,
+~30 before, perf's samples). The GPU is busy 94% of the time now
+(`SGX_TRACE=1`; 85% before): the frame is the GPU's -- ~40 ms of it, each
+render waited for (`SGX_DEBUG=sync`): the main render 16.3 ms (76 draws,
+103k vertices), a 14-draw render 3.3 ms, the screen's 4 draws 3.1 ms (1024
+x 768), eleven effect renders of 0.5-1.3 ms.
+
 **What is left**, in the order it costs:
 
-- The upload: PPSSPP's mapped push buffers (its `GLBufferStrategy`, a
-  patch there) and a map that hands out the buffer's GPU copy.
-- The CPU: PPSSPP's two threads take ~95% of one core.
+- The GPU's frame: the main render's draws (the 3-instruction draw of
+  long triangles, ~4.6 ms, above), the screen's render, the renders'
+  fixed cost.
 - The program that discards blends in F32 (66 instructions): the SOP2 into
   a temporary, then the packed word or the tile's chosen.
 - One of PPSSPP's programs writes gl_FragDepth (its depth rounded to 16
