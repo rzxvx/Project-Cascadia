@@ -16,7 +16,7 @@ XFCE desktop you drive with your fingers.
 |---|---|---|---|---|
 | iPad mini 1 (Wi-Fi) | iPad2,5 / A1432 / p105ap | Apple A5 (S5L8942X) | Linux 6.12: both cores, touch, Wi-Fi, Bluetooth, speakers, battery, the GPU (OpenGL ES 2.0 / GL 2.1), XFCE; iOS's files read-only | [devices/a5](devices/a5/README.md) · [quickstart](devices/a5/docs/QUICKSTART.md) |
 | iPhone XR *(experimental, contributed)* | iPhone11,8 / N841AP | Apple A12 (T8020) | as its author reports it: Linux 7.3, framebuffer, touch, USB networking/SSH, Wi-Fi, UART Bluetooth, Debian/XFCE over NFS -- not built or tested by the maintainer | [devices/a12](devices/a12/README.md) · [Debian/XFCE](devices/a12/DEBIAN_XFCE_NFS.md) |
-| iPad 8 (Wi-Fi) *(experimental, contributed)* | iPad11,6 / A2270 / J171aAP | Apple A12 (T8020) | Contributor-tested Linux 7.3: native display/brightness, touch, USB networking/SSH, Wi-Fi, UART Bluetooth and G11 GPU-accelerated Omarchy over NFS. Sustained-rendering fix awaits hardware retest; audio not yet supported | [devices/a12](devices/a12/README.md) (`--device ipad8`) · [display](devices/a12/DISPLAY.md) · [GPU](devices/a12/GPU.md) |
+| iPad 8 (Wi-Fi) *(experimental, contributed)* | iPad11,6 / A2270 / J171aAP | Apple A12 (T8020) | Contributor-tested Linux 7.3: native display/brightness, touch, USB networking/SSH, Wi-Fi, UART Bluetooth and G11 GPU-accelerated Omarchy over NFS. Internal-speaker audio and volume controls contributor-tested; sustained-rendering fix awaits hardware retest | [devices/a12](devices/a12/README.md) (`--device ipad8`) · [display](devices/a12/DISPLAY.md) · [GPU](devices/a12/GPU.md) · [audio](devices/a12/AUDIO.md) |
 | iPhone XS Max | iPhone11,6 / D331pAP | Apple A12 (T8020) | Linux 7.3: all six cores, display, touch, USB networking, Wi-Fi, Bluetooth. On [badapple](https://forgejo.toe.quest/kiki/badapple) also the internal storage as ext4, cpufreq and the GPU (OpenCL, OpenGL ES 2/3 and Vulkan, in progress) | [devices/a12](devices/a12/README.md#xs-max) (`A12_BOARD=d331p`) · [badapple](https://forgejo.toe.quest/kiki/badapple) |
 | iPhone 11 | iPhone12,1 / n104ap | Apple A13 (T8030) | Linux 7.2: all six cores, touch, Wi-Fi, Bluetooth, XFCE, the internal storage as Linux's disk, no cable after the boot | [devices/a13](devices/a13/README.md) · [quickstart](devices/a13/docs/QUICKSTART.md) |
 
@@ -82,9 +82,11 @@ IPSW (or Apple's CDN) on your machine.
   [devices/a12/LINUX_PLAN.md](devices/a12/LINUX_PLAN.md)
 - **iPad 8 Wi-Fi (A12)** — experimental contributed J171 profile: native
   scanout and brightness, touch, USB/NFS, radios and GPU desktop tested by its
-  contributor. Audio and full-range brightness calibration remain; the removed
+  contributor. Internal speakers, live attenuation, volume buttons and Omarchy
+  controls are also contributor-tested. Microphone/headphone audio, iOS-style
+  speaker protection and full-range brightness calibration remain; the removed
   render-job cap still needs an endurance retest.
-  [devices/a12/DISPLAY.md](devices/a12/DISPLAY.md)
+  [Display](devices/a12/DISPLAY.md) · [Audio](devices/a12/AUDIO.md)
 - **iPhone 11 (A13)** — phases 1 and 2 done; phase 3 up to the internal
   storage; next the native display and the GPU.
   [devices/a13/docs/ROADMAP.md](devices/a13/docs/ROADMAP.md)
