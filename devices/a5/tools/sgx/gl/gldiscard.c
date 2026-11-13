@@ -13,6 +13,13 @@
  *             depth (green on the right, red on the left).  Known wrong
  *             for now: the driver discards by keeping the tile's colour,
  *             and the depth is written all the same (M19); not counted.
+ *   add1      the half program added (ONE, ONE) over blue: magenta, then
+ *             blue where discarded -- (M46) a blend that leaves the target
+ *             as it is for a source of 0 takes the discard as that source
+ *   addconst  added times the blend colour (CONSTANT_COLOR, ONE: PPSSPP's
+ *             God of War GLSL19), half red: violet, then blue
+ *   addalpha  the alpha program added (ONE, ONE)
+ *   revsub    dark blue taken off blue (REVERSE_SUBTRACT, ONE, ONE)
  *
  *   sgx-gl gldiscard [--ppm DIR]
  */
@@ -54,7 +61,8 @@ static GLuint program(const char *fs)
 }
 
 /* the colour at a place across, as a letter: r g b, p (purple: red over
- * blue, half), k (black), ? */
+ * blue, half), m (magenta: red plus blue), v (violet: half red plus blue),
+ * d (dark blue), k (black), ? */
 static char at(int x)
 {
 	const uint8_t *q = px + ((H / 2) * W + x) * 4;
@@ -68,6 +76,12 @@ static char at(int x)
 		return 'b';
 	if (r > 100 && r < 160 && g < 50 && b > 100 && b < 160)
 		return 'p';
+	if (r > 200 && g < 50 && b > 200)
+		return 'm';
+	if (r > 100 && r < 160 && g < 50 && b > 200)
+		return 'v';
+	if (r < 50 && g < 50 && b > 100 && b < 160)
+		return 'd';
 	if (r < 50 && g < 50 && b < 50)
 		return 'k';
 	return '?';
@@ -122,6 +136,9 @@ int main(int argc, char **argv)
 		/* 5 green, no discard */
 		"precision mediump float;\n"
 		"void main() { gl_FragColor = vec4(0.0, 1.0, 0.0, 1.0); }\n",
+		/* 6 half, half blue */
+		"precision mediump float; varying float v;\n"
+		"void main() { if (v > 0.5) discard; gl_FragColor = vec4(0.0, 0.0, 0.5, 1.0); }\n",
 	};
 	static const uint8_t tex[4 * 4] = { 255, 0, 0, 255,  255, 0, 0, 255,
 	                                    255, 0, 0, 0,  255, 0, 0, 0 };
@@ -131,6 +148,7 @@ int main(int argc, char **argv)
 	} cases[] = {
 		{ "half", "rrbb" }, { "two", "brrb" }, { "uniform1", "bbbb" }, { "uniform0", "rrrr" },
 		{ "alpha", "rrbb" }, { "blend", "ppbb" }, { "depth", "rrgg", 1 },
+		{ "add1", "mmbb" }, { "addconst", "vvbb" }, { "addalpha", "mmbb" }, { "revsub", "ddbb" },
 	};
 	PFNEGLGETPLATFORMDISPLAYEXTPROC get_display;
 	EGLint ctx_attrs[] = { EGL_CONTEXT_CLIENT_VERSION, 2, EGL_NONE };
@@ -207,6 +225,18 @@ int main(int argc, char **argv)
 			glUseProgram(prog_for[5]);
 			quad(0);
 			glDisable(GL_DEPTH_TEST);
+			break;
+		case 7: case 8: case 9: case 10:
+			glEnable(GL_BLEND);
+			glBlendColor(0.5f, 0.0f, 0.0f, 1.0f);
+			glBlendEquation(k == 10 ? GL_FUNC_REVERSE_SUBTRACT : GL_FUNC_ADD);
+			glBlendFunc(k == 8 ? GL_CONSTANT_COLOR : GL_ONE, GL_ONE);
+			glUseProgram(prog_for[k == 9 ? 3 : k == 10 ? 6 : 0]);
+			if (k == 9)
+				glUniform1i(glGetUniformLocation(prog_for[3], "t"), 0);
+			quad(0);
+			glBlendEquation(GL_FUNC_ADD);
+			glDisable(GL_BLEND);
 			break;
 		}
 		glReadPixels(0, 0, W, H, GL_RGBA, GL_UNSIGNED_BYTE, px);

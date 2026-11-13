@@ -56,7 +56,35 @@ struct sgx_blend_key {
    uint8_t rt_kind;
    uint8_t rt_srgb;        /* (M43) the target's bytes sRGB: encoded, decoded to blend */
    uint8_t rt_intensity;   /* (M43) an intensity target: the colour R R R R in the tile */
+   /* (M46) the units whose lookup's clamp (sgx_texclamp) the draw found to
+    * do nothing: the lookup at the varying itself */
+   uint8_t texclamp_free;
 };
+
+/* (M46) A lookup at coordinates clamped to a rectangle of its texture and
+ * moved -- PPSSPP's TClampST: clamp(v, u_texclamp.zw, u_texclamp.xy -
+ * u_texclamp.zw) + u_texclampoff, v a varying's x and y -- which takes the
+ * lookup off the PDS.  Each of lo, hi and off is k + s[0] * word w[0] + s[1]
+ * * word w[1] of the uniforms (s 0: no word).  A draw whose offset is 0 and
+ * whose v never leaves [lo, hi] -- or leaves it only where the sampler's
+ * clamp to the edge gives the same texel -- has the variant without it
+ * (sgx_blend_key.texclamp_free). */
+struct sgx_uexpr {
+   float k;
+   uint16_t w[2];
+   int8_t s[2];
+};
+struct sgx_texclamp {
+   uint8_t unit;
+   uint8_t slot[2], comp[2];   /* each coordinate's varying: gl_varying_slot, component */
+   struct sgx_uexpr lo[2], hi[2], off[2];
+};
+bool sgx_fs_texclamp(const struct nir_shader *fs, struct sgx_texclamp *tc);
+float sgx_uexpr_eval(const struct sgx_uexpr *e, const float *u, unsigned nwords);
+/* (M46) a vertex shader's varying component as a copy of an attribute's:
+ * the attribute (driver_location: the vertex element) and its component */
+bool sgx_vs_varying_attr(const struct nir_shader *vs, unsigned slot, unsigned comp,
+                         unsigned *attr, unsigned *acomp);
 
 #define SGX_FS_MAX_SAMPLERS 8
 
