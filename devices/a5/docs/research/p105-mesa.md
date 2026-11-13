@@ -4002,6 +4002,7 @@ those were read at once):
 | + two renders at once (the kernel) | 16 ms | 19.3-20.9 fps | 33-35% settled |
 | + the draw module's vertex shader bound only when used | 16 ms | 21.2-21.8 fps | 35-36% settled |
 | + PPSSPP's push buffers mapped, the GPU copy itself | 16 ms | 23.3-23.7 fps | 38-39% |
+| + the clamped lookups in F16, uniforms' work per draw | 16 ms | 25.8-26.4 fps | 42-43% |
 
 The frame's GPU work (each render waited for, the median of whole
 frames) 53 -> 40 ms over the last two. The GL thread still waits for the
@@ -4123,10 +4124,75 @@ render waited for (`SGX_DEBUG=sync`): the main render 16.3 ms (76 draws,
 103k vertices), a 14-draw render 3.3 ms, the screen's 4 draws 3.1 ms (1024
 x 768), eleven effect renders of 0.5-1.3 ms.
 
+**Where the GPU's frame goes, again.** The render after each swap took
+the X server's work too: `SGX_DEBUG=sync` times a render from its kick,
+and PPSSPP's main render waited behind X's copy of the window into the
+screen (a glamor render, 1.6-2.0 ms and two small ones a frame) and the
+kernel's copy of the screen onto the scanout (DIRTYFB: the 2D engine's
+quad, not a job of the scheduler's -- debugfs `copy 0 0 0 0 1024 768`, 2.1
+ms). Its time was 8.5-25.6 ms, 16.5 the median; the "3-instruction draw of
+long triangles" (above) is God of War's clear, 270 sprites of 16 x 32
+covering the 480 x 272 target once at depth 1 (`SGX_EACH_VERTS=N` with
+`SGX_DEBUG=each`: a draw of N indices' positions read back -- their
+extent, their areas summed, the first triangles), ~1 ms; it took X's work
+for its own in `SGX_DEBUG=each`. The kernel's scheduler (tracefs:
+`gpu_scheduler:drm_run_job`, `drm_sched_process_job`, a job's own time
+from the later of its kick and the last one's end) splits the GPU: PPSSPP
+88%, X 5.4%, nothing queued 6.7%. A frame of ~42 ms then: putting it on the
+screen ~7.6 (PPSSPP's 1024 x 768 render 3.2, X's copy 2.3, the kernel's
+2.1), the main render ~12, PPSSPP's effect renders ~15-17 -- most of them
+its TClampST programs.
+
+**Lookups of their own in F16.** PPSSPP clamps the coordinates of a
+lookup into a texture it rendered to the texture's rectangle (TClampST:
+`clamp(v_texcoord.x, u_texclamp.z, u_texclamp.x - u_texclamp.z) +
+u_texclampoff.x`, the same for y). The PDS cannot make such a lookup, and
+f16_colour() took only the PDS's, so God of War's GLSL17, 21 and 23 were
+F32 whole: GLSL23 23 instructions (`session-tools/shaders/g23.fs`;
+`tools/sgx/gl/glshader -U NAME=X,Y,Z,W` sets a uniform -- at its 0.5
+PPSSPP's clamp is one texel), 1.75 ms a 480 x 272 layer, where the same
+without the clamp is 7 and 0.64. Now:
+
+- The F16 path takes a 2D lookup at coordinates that are fadd, fmul,
+  fmin, fmax and fneg of varyings and uniforms (`f16_coord()`): those
+  varyings are iterated as F32 (`in_f32`: four registers each, the
+  others two -- the PDS's iterates and the registers' places follow), the
+  coordinates worked out in F32 straight into the SMP's pair, then `SMP
+  .f16` into a pair that is a value of the colour's tree as the PDS's
+  texels are. A varying that both the coordinates and the colour read
+  stays F32 (the linker packs GLSL 1.20's fog float into the coordinates':
+  glf16d's clamp-fog). `SGX_NO_F16_SMP=1`: as before.
+- The sampler hands an 8-bit channel back as its integer value, F16 as
+  F32 (texture()'s note): the state's word 3 bit 31, which the PDS's F16
+  lookups set (iOS's s00), makes it 0..1 for SMP too -- the draw sets it
+  for the slots the program samples so (`smp_norm`; `SGX_F16_SMP_SCALE=1`:
+  times F16's 1/255 instead, an instruction more).
+- What is the same for every pixel is the draw's: an F32 sum, product,
+  min or max of uniforms (PPSSPP's size less half a texel), and a uniform
+  vec4 as four F16 (every F16 program packed each one it read, for every
+  pixel) -- pairs of the constant pool the draw works out from the
+  uniforms (`sgx_fs_derived`; `SGX_NO_DERIVED=1`: the program's again).
+- The tree takes a lane whose own value is what the other lanes' operand
+  is (the same operation) times 1 at that level: (p * t).rgb * fix with
+  (p * t).a is p * t once for the four lanes, then times fix.xyz1 (src1's
+  constant) -- two moves fewer (`SGX_F16_NO_PROMOTE=1`: as before).
+- The coordinates' temporaries are the tree's again after the SMP.
+
+GLSL23 23 -> 12 instructions, 12 -> 8 temporaries, 1.75 -> 1.06 ms a
+layer; the clamp test programs 11-14; g23nc 7 -> 4 (the uniform's pack and
+the moves). glf16's clamp cases (God of War's three shapes, and one with
+fog; some pixels clamped, the coordinates a varying of their own -- one
+equal to the colour's x and y the linker merges) 4 of 4 both ways, 21 of
+21 in all, desktop GL too; glfetch, gltex and the regression tests as
+before. God of War 22.7-23.6 -> 25.8-26.4 fps, the counter ~39% -> 42-43%
+(the menu on the screen throughout: one run whose window stayed behind
+the desktop said 28-29, X not showing its frames); the GPU busy 94% ->
+89%.
+
 **What is left**, in the order it costs:
 
-- The GPU's frame: the main render's draws (the 3-instruction draw of
-  long triangles, ~4.6 ms, above), the screen's render, the renders'
+- The GPU's frame: the main render (~12 ms of 76 draws), putting the frame
+  on the screen (~7.6 ms: X's copy could go with page flips), the renders'
   fixed cost.
 - The program that discards blends in F32 (66 instructions): the SOP2 into
   a temporary, then the packed word or the tile's chosen.
