@@ -1018,6 +1018,64 @@ sgx_buffer_fresh_range(struct sgx_resource *res, uint32_t lo, uint32_t hi)
    simple_mtx_unlock(&res->dirty_lock);
 }
 
+/* (M46) a map that is to write a buffer's new content, its old content
+ * discarded (GL_MAP_INVALIDATE_BUFFER_BIT; glBufferData's and a whole
+ * buffer's glBufferSubData too, through u_default_buffer_subdata): the
+ * buffer's GPU copy itself, mapped -- the application writes where the GPU
+ * reads.  A copy a render reads, gathered or running, is left to it and a
+ * fresh one taken from the cache: PPSSPP maps its push buffers at a frame's
+ * end, right after the draws that read them, and its emulator thread
+ * writes the next frame's vertices and indices there -- 1.75 MB a frame
+ * the GL thread copied before (glBufferSubData: sgx_buffer_subdata).  The
+ * CPU copy is behind by the box then (stale_lo, stale_hi); what it has
+ * besides was discarded with the rest.  A vertex or index buffer (not
+ * constants: the CPU reads those for every draw), mapped by one thread at a
+ * time (not glthread's maps nor persistent ones: a draw takes what those
+ * wrote from the CPU copy as it goes), 4 KiB or more of it.  The GPU copy's
+ * map, or NULL: the CPU copy then, as before.  SGX_DIRECT_MAP=0: never. */
+static uint8_t *
+buffer_map_direct(struct sgx_context *ctx, struct sgx_resource *res, unsigned usage,
+                  const struct pipe_box *box)
+{
+   struct sgx_screen *screen = sgx_screen(ctx->base.screen);
+   const unsigned want = PIPE_MAP_WRITE | PIPE_MAP_DISCARD_WHOLE_RESOURCE;
+   uint32_t lo = box->x, hi = box->x + box->width;
+   static int on = -1;
+   struct sgx_bo *bo;
+
+   if (on < 0)
+      on = !getenv("SGX_DIRECT_MAP") || atoi(getenv("SGX_DIRECT_MAP"));
+   if (!on || (usage & want) != want ||
+       (usage & (PIPE_MAP_READ | PIPE_MAP_THREAD_SAFE | PIPE_MAP_PERSISTENT)) || !res->data ||
+       (res->base.bind & PIPE_BIND_CONSTANT_BUFFER) || hi > res->base.width0 || hi - lo < 4096)
+      return NULL;
+   simple_mtx_lock(&res->dirty_lock);
+   if (p_atomic_read(&res->live_maps) > 0) {
+      simple_mtx_unlock(&res->dirty_lock);
+      return NULL;
+   }
+   bo = res->bo;
+   if (!bo || sgx_batch_reads(ctx, bo) || !sgx_bo_idle(bo)) {
+      /* (four bytes more, as sgx_buffer_bo's: a fetch reads whole words) */
+      if (!(bo = sgx_bo_cache_get(&screen->dev, res->base.width0 + 4))) {
+         simple_mtx_unlock(&res->dirty_lock);
+         return NULL;
+      }
+      /* (the gathered draws and the kernel hold the old one for their
+       * renders: back to the cache after them, M26) */
+      sgx_bo_destroy(res->bo);
+      res->bo = bo;
+      sgx_stat_up[SGX_UP_RENAMED] += hi - lo;
+   }
+   res->dirty_lo = res->dirty_hi = 0;
+   res->dirty_sync = false;
+   res->stale_lo = lo;
+   res->stale_hi = hi;
+   sgx_stat_up[SGX_UP_MAPPED] += hi - lo;
+   simple_mtx_unlock(&res->dirty_lock);
+   return bo->map;
+}
+
 static void *
 sgx_transfer_map(struct pipe_context *pctx, struct pipe_resource *prsc, unsigned level,
                  unsigned usage, const struct pipe_box *box, struct pipe_transfer **out)
@@ -1025,6 +1083,7 @@ sgx_transfer_map(struct pipe_context *pctx, struct pipe_resource *prsc, unsigned
    struct sgx_context *ctx = sgx_context(pctx);
    struct sgx_resource *res = sgx_resource(prsc);
    struct sgx_transfer *trans;
+   bool direct = false;
    uint8_t *map;
 
    /* draws gathered but not rendered that write or read it go first, and
@@ -1064,11 +1123,16 @@ sgx_transfer_map(struct pipe_context *pctx, struct pipe_resource *prsc, unsigned
          if (!zs_to_linear(res, level, z))
             return NULL;
    }
-   /* (M46) what only the GPU copy has, the CPU's again first */
-   if (prsc->target == PIPE_BUFFER)
-      sgx_buffer_fresh(res);
-   if (!(map = res->data ? res->data : sgx_bo_map(res->bo)))
-      return NULL;
+   /* (M46) the GPU copy itself, or what only the GPU copy has the CPU's
+    * again first */
+   if (prsc->target == PIPE_BUFFER && (map = buffer_map_direct(ctx, res, usage, box))) {
+      direct = true;
+   } else {
+      if (prsc->target == PIPE_BUFFER)
+         sgx_buffer_fresh(res);
+      if (!(map = res->data ? res->data : sgx_bo_map(res->bo)))
+         return NULL;
+   }
    /* (a map glthread makes in the application's thread: nothing of the
     * context's -- M34) */
    trans = usage & PIPE_MAP_THREAD_SAFE ? CALLOC_STRUCT(sgx_transfer) :
@@ -1077,6 +1141,7 @@ sgx_transfer_map(struct pipe_context *pctx, struct pipe_resource *prsc, unsigned
       return NULL;
    if (prsc->target == PIPE_BUFFER && (usage & (PIPE_MAP_THREAD_SAFE | PIPE_MAP_PERSISTENT)))
       p_atomic_inc(&res->live_maps);
+   trans->direct = direct;
    pipe_resource_reference(&trans->base.resource, prsc);
    trans->base.level = level;
    trans->base.usage = usage;
@@ -1124,7 +1189,7 @@ static void
 sgx_transfer_flush_region(struct pipe_context *pctx, struct pipe_transfer *ptrans,
                           const struct pipe_box *box)
 {
-   if (ptrans->resource->target == PIPE_BUFFER)
+   if (ptrans->resource->target == PIPE_BUFFER && !((struct sgx_transfer *)ptrans)->direct)
       buffer_written(sgx_resource(ptrans->resource), ptrans->box.x + box->x,
                      ptrans->box.x + box->x + box->width, ptrans->usage);
 }
@@ -1159,7 +1224,9 @@ sgx_transfer_unmap(struct pipe_context *pctx, struct pipe_transfer *ptrans)
          }
          res->tw_writes++;
       }
-      if (ptrans->resource->target == PIPE_BUFFER && !(ptrans->usage & PIPE_MAP_FLUSH_EXPLICIT))
+      /* (a map that was the GPU copy: written where the GPU reads, M46) */
+      if (ptrans->resource->target == PIPE_BUFFER && !(ptrans->usage & PIPE_MAP_FLUSH_EXPLICIT) &&
+          !((struct sgx_transfer *)ptrans)->direct)
          buffer_written(res, ptrans->box.x, ptrans->box.x + ptrans->box.width, ptrans->usage);
       if (util_format_is_depth_or_stencil(ptrans->resource->format) &&
           ptrans->resource->target != PIPE_BUFFER) {

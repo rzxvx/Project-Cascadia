@@ -159,12 +159,15 @@ sgx_flush(struct pipe_context *pctx, struct pipe_fence_handle **fence, unsigned 
                    (double)sgx_stat_same / ctx->stat_frames);
          sgx_stat_same = sgx_stat_verts = sgx_stat_tex_changes = sgx_stat_merged = 0;
          mesa_logi("sgx:  a frame's uploads: %.0f KB straight into the GPU copy (%.1f ms), "
-                   "%.0f KB into the CPU copy, %.0f KB copied on, %.0f KB read back",
+                   "%.0f KB into the CPU copy, %.0f KB copied on, %.0f KB read back; "
+                   "%.0f KB mapped as the GPU copy (%.0f KB a fresh one)",
                    sgx_stat_up[SGX_UP_DIRECT] / 1024.0 / ctx->stat_frames,
                    sgx_stat_up_ns / 1e6 / ctx->stat_frames,
                    sgx_stat_up[SGX_UP_CPU] / 1024.0 / ctx->stat_frames,
                    sgx_stat_up[SGX_UP_ON] / 1024.0 / ctx->stat_frames,
-                   sgx_stat_up[SGX_UP_BACK] / 1024.0 / ctx->stat_frames);
+                   sgx_stat_up[SGX_UP_BACK] / 1024.0 / ctx->stat_frames,
+                   sgx_stat_up[SGX_UP_MAPPED] / 1024.0 / ctx->stat_frames,
+                   sgx_stat_up[SGX_UP_RENAMED] / 1024.0 / ctx->stat_frames);
          memset(sgx_stat_up, 0, sizeof(sgx_stat_up));
          sgx_stat_up_ns = 0;
          if (ctx->debug_sync)

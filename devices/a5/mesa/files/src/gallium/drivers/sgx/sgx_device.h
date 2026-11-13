@@ -128,9 +128,11 @@ extern unsigned sgx_ioctls[SGX_IOCTL_KINDS];
 extern unsigned sgx_stat_same, sgx_stat_verts, sgx_stat_tex_changes, sgx_stat_merged;
 /* SGX_DEBUG=fps (M46): bytes of buffer uploads -- glBufferSubData's
  * straight into the GPU copy, into the CPU copy, the CPU copy's copied on
- * into the GPU's for a draw, read back from the GPU copy -- and the time
- * the first took */
-enum { SGX_UP_DIRECT, SGX_UP_CPU, SGX_UP_ON, SGX_UP_BACK, SGX_UP_KINDS };
+ * into the GPU's for a draw, read back from the GPU copy; maps that were
+ * the GPU copy itself, and of those the ones a fresh copy took (a render
+ * read the last) -- and the time the first took */
+enum { SGX_UP_DIRECT, SGX_UP_CPU, SGX_UP_ON, SGX_UP_BACK, SGX_UP_MAPPED, SGX_UP_RENAMED,
+       SGX_UP_KINDS };
 extern uint64_t sgx_stat_up[SGX_UP_KINDS];
 extern int64_t sgx_stat_up_ns;
 /* SGX_DEBUG=fps (M46): the time in the submit ioctl, the buffers it lists */

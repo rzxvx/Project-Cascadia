@@ -16,6 +16,14 @@
  *   map         glMapBufferRange of part of it, written, a draw
  *   indexed     glDrawElements from an index buffer, at 0, 12 and 26 bytes
  *               (an odd first index), the indices written again, read back
+ *   invalidate  PPSSPP's push buffers (the driver maps the GPU copy itself,
+ *               a fresh one while a render reads the last): a vertex and an
+ *               index buffer of 64 and 8 KiB mapped whole with
+ *               GL_MAP_INVALIDATE_BUFFER_BIT, written, drawn from, mapped
+ *               again while those draws are gathered, running or done; at
+ *               offsets (an odd first index); twice in one render; read
+ *               back; drawn as lines (the draw module reads them); a
+ *               buffer under 4 KiB; glBufferData of all of a busy one
  *
  *   sgx-gl glbuffer [CASE]      (a name's start; all by default) */
 #include <EGL/egl.h>
@@ -115,6 +123,235 @@ static void clear(int t)
 	glBindFramebuffer(GL_FRAMEBUFFER, fbo[t]);
 	glClearColor(0, 0, 0, 1);
 	glClear(GL_COLOR_BUFFER_BIT);
+}
+
+/* columns [x0, x1) of target t the colour */
+static void check_cols(const char *name, int t, int x0, int x1, uint8_t r, uint8_t g, uint8_t b)
+{
+	static uint8_t px[W * H * 4];
+	int bad = 0, at = -1;
+
+	glBindFramebuffer(GL_FRAMEBUFFER, fbo[t]);
+	glReadPixels(0, 0, W, H, GL_RGBA, GL_UNSIGNED_BYTE, px);
+	for (int i = 0; i < W * H; i++) {
+		if (i % W < x0 || i % W >= x1)
+			continue;
+		if (abs(px[4 * i] - r) > 1 || abs(px[4 * i + 1] - g) > 1 || abs(px[4 * i + 2] - b) > 1) {
+			if (at < 0)
+				at = i;
+			bad++;
+		}
+	}
+	cases++;
+	if (bad) {
+		failed++;
+		printf("%-10s WRONG: %d pixels, the first at %d,%d: %d %d %d, wanted %d %d %d\n", name,
+		       bad, at % W, at / W, px[4 * at], px[4 * at + 1], px[4 * at + 2], r, g, b);
+	} else {
+		printf("%-10s ok\n", name);
+	}
+}
+
+/* (M46) PPSSPP's push buffers: vertices x y + colour (12 bytes) and 16-bit
+ * indices, each buffer mapped whole with GL_MAP_INVALIDATE_BUFFER_BIT */
+struct vtx { float x, y; uint8_t c[4]; };
+#define PUSH_V 65536
+#define PUSH_I 8192
+static GLuint pvb, pib;
+static GLsizeiptr pvb_size = PUSH_V, pib_size = PUSH_I;
+
+/* a quad (x0..x1 across, the whole height; lines: all of it at y 0.03, the
+ * middle row) of vertices at voff and its six indices at ioff, both
+ * buffers' old content invalidated; false if a map failed */
+static int push_quad(GLintptr voff, GLintptr ioff, float x0, float x1, int lines, uint8_t r,
+		     uint8_t g, uint8_t b)
+{
+	static const uint16_t q[6] = { 0, 1, 2, 0, 2, 3 };
+	const GLbitfield inval = GL_MAP_WRITE_BIT | GL_MAP_INVALIDATE_BUFFER_BIT;
+	struct vtx *v;
+	uint8_t *ix;
+
+	glBindBuffer(GL_ARRAY_BUFFER, pvb);
+	v = glMapBufferRange(GL_ARRAY_BUFFER, 0, pvb_size, inval);
+	glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, pib);
+	ix = glMapBufferRange(GL_ELEMENT_ARRAY_BUFFER, 0, pib_size, inval);
+	if (v) {
+		v = (struct vtx *)((uint8_t *)v + voff);
+		for (int i = 0; i < 4; i++) {
+			v[i].x = i == 1 || i == 2 ? x1 : x0;
+			v[i].y = lines ? 0.03f : i >= 2 ? 1 : -1;
+			v[i].c[0] = r, v[i].c[1] = g, v[i].c[2] = b, v[i].c[3] = 255;
+		}
+	}
+	if (ix)
+		memcpy(ix + ioff, q, sizeof(q));
+	if (ix)
+		glUnmapBuffer(GL_ELEMENT_ARRAY_BUFFER);
+	glBindBuffer(GL_ARRAY_BUFFER, pvb);
+	if (v)
+		glUnmapBuffer(GL_ARRAY_BUFFER);
+	return v && ix;
+}
+
+static void push_draw(int t, GLintptr voff, GLintptr ioff, GLenum mode)
+{
+	glBindFramebuffer(GL_FRAMEBUFFER, fbo[t]);
+	glViewport(0, 0, W, H);
+	glBindBuffer(GL_ARRAY_BUFFER, pvb);
+	glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, pib);
+	glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, sizeof(struct vtx), (void *)voff);
+	glVertexAttribPointer(1, 4, GL_UNSIGNED_BYTE, GL_TRUE, sizeof(struct vtx), (void *)(voff + 8));
+	glEnableVertexAttribArray(0);
+	glEnableVertexAttribArray(1);
+	glDrawElements(mode, 6, GL_UNSIGNED_SHORT, (void *)ioff);
+}
+
+static void map_failed(const char *name)
+{
+	cases++;
+	failed++;
+	printf("%-10s WRONG: glMapBufferRange failed\n", name);
+}
+
+static void invalidate_cases(void)
+{
+	glGenBuffers(1, &pvb);
+	glGenBuffers(1, &pib);
+	glBindBuffer(GL_ARRAY_BUFFER, pvb);
+	glBufferData(GL_ARRAY_BUFFER, PUSH_V, NULL, GL_DYNAMIC_DRAW);
+	glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, pib);
+	glBufferData(GL_ELEMENT_ARRAY_BUFFER, PUSH_I, NULL, GL_DYNAMIC_DRAW);
+	glFinish();
+
+	/* the first map: no GPU copy yet */
+	clear(0);
+	if (!push_quad(0, 0, -1, 1, 0, 230, 20, 20))
+		map_failed("inv first");
+	push_draw(0, 0, 0, GL_TRIANGLES);
+	glFinish();
+	check("inv first", 0, 230, 20, 20, 0);
+
+	/* mapped again while the draw that read it is gathered (not rendered),
+	 * a draw into the other target: each its own */
+	clear(0);
+	clear(1);
+	push_quad(0, 0, -1, 1, 0, 20, 230, 20);
+	push_draw(0, 0, 0, GL_TRIANGLES);
+	if (!push_quad(0, 0, -1, 1, 0, 20, 20, 230))
+		map_failed("inv gath");
+	push_draw(1, 0, 0, GL_TRIANGLES);
+	glFinish();
+	check("inv gath 1", 0, 20, 230, 20, 0);
+	check("inv gath 2", 1, 20, 20, 230, 0);
+
+	/* the same with the first render sent off (running, or done) */
+	clear(0);
+	clear(1);
+	push_quad(0, 0, -1, 1, 0, 230, 230, 20);
+	push_draw(0, 0, 0, GL_TRIANGLES);
+	glFlush();
+	push_quad(0, 0, -1, 1, 0, 230, 20, 230);
+	push_draw(1, 0, 0, GL_TRIANGLES);
+	glFinish();
+	check("inv run 1", 0, 230, 230, 20, 0);
+	check("inv run 2", 1, 230, 20, 230, 0);
+
+	/* idle: written in place */
+	clear(0);
+	push_quad(0, 0, -1, 1, 0, 20, 230, 230);
+	push_draw(0, 0, 0, GL_TRIANGLES);
+	glFinish();
+	check("inv idle", 0, 20, 230, 230, 0);
+
+	/* at offsets: the vertices 4 KiB + 48 in, the indices at 1002 bytes
+	 * (an odd first index, as PPSSPP's 2-byte aligned ones come) */
+	clear(0);
+	push_quad(4096 + 48, 1002, -1, 1, 0, 120, 60, 200);
+	push_draw(0, 4096 + 48, 1002, GL_TRIANGLES);
+	glFinish();
+	check("inv offset", 0, 120, 60, 200, 0);
+
+	/* twice in one render (PPSSPP after a sync mid-frame): the left half
+	 * at 0, the buffers mapped again, the right half further on -- the
+	 * second map's copy has nothing at 0, which no draw reads after it */
+	clear(0);
+	push_quad(0, 0, -1, 0, 0, 200, 100, 0);
+	push_draw(0, 0, 0, GL_TRIANGLES);
+	push_quad(480, 64, 0, 1, 0, 0, 100, 200);
+	push_draw(0, 480, 64, GL_TRIANGLES);
+	glFinish();
+	check_cols("inv twice L", 0, 0, W / 2, 200, 100, 0);
+	check_cols("inv twice R", 0, W / 2, W, 0, 100, 200);
+
+	/* read back: what the map wrote (the CPU copy brought up to date) */
+	{
+		struct vtx back[4];
+		int bad = 0;
+
+		push_quad(256, 0, -1, 1, 0, 11, 22, 33);
+		glBindBuffer(GL_ARRAY_BUFFER, pvb);
+		glGetBufferSubData(GL_ARRAY_BUFFER, 256, sizeof(back), back);
+		for (int i = 0; i < 4; i++)
+			bad |= back[i].c[0] != 11 || back[i].c[1] != 22 || back[i].c[2] != 33 ||
+			       back[i].x != (i == 1 || i == 2 ? 1.0f : -1.0f);
+		cases++;
+		if (bad) {
+			failed++;
+			printf("%-10s WRONG: the bytes read back are not the ones mapped and written\n",
+			       "inv readbk");
+		} else {
+			printf("%-10s ok\n", "inv readbk");
+		}
+	}
+
+	/* lines: the draw module reads the vertices and indices on the CPU */
+	clear(0);
+	push_quad(0, 0, -1, 1, 1, 255, 128, 0);
+	push_draw(0, 0, 0, GL_LINES);
+	glFinish();
+	check("inv lines", 0, 255, 128, 0, 1);
+
+	/* glBufferData of all of a buffer a gathered draw reads: Mesa's
+	 * buffer_subdata of the whole, the driver's map of a fresh GPU copy */
+	{
+		static struct vtx v[PUSH_V / sizeof(struct vtx)];
+
+		clear(0);
+		clear(1);
+		push_quad(0, 0, -1, 1, 0, 90, 200, 90);
+		push_draw(0, 0, 0, GL_TRIANGLES);
+		for (int i = 0; i < 4; i++) {
+			v[i].x = i == 1 || i == 2 ? 1 : -1;
+			v[i].y = i >= 2 ? 1 : -1;
+			v[i].c[0] = 200, v[i].c[1] = 90, v[i].c[2] = 200, v[i].c[3] = 255;
+		}
+		glBindBuffer(GL_ARRAY_BUFFER, pvb);
+		glBufferData(GL_ARRAY_BUFFER, PUSH_V, v, GL_DYNAMIC_DRAW);
+		push_draw(1, 0, 0, GL_TRIANGLES);
+		glFinish();
+		check("inv data 1", 0, 90, 200, 90, 0);
+		check("inv data 2", 1, 200, 90, 200, 0);
+	}
+
+	/* a buffer under 4 KiB (the CPU copy, as before), mapped again while a
+	 * draw reads it */
+	pvb_size = 1024;
+	pib_size = 256;
+	glBindBuffer(GL_ARRAY_BUFFER, pvb);
+	glBufferData(GL_ARRAY_BUFFER, pvb_size, NULL, GL_DYNAMIC_DRAW);
+	glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, pib);
+	glBufferData(GL_ELEMENT_ARRAY_BUFFER, pib_size, NULL, GL_DYNAMIC_DRAW);
+	clear(0);
+	clear(1);
+	push_quad(0, 0, -1, 1, 0, 60, 60, 60);
+	push_draw(0, 0, 0, GL_TRIANGLES);
+	push_quad(0, 0, -1, 1, 0, 160, 160, 60);
+	push_draw(1, 0, 0, GL_TRIANGLES);
+	glFinish();
+	check("inv small 1", 0, 60, 60, 60, 0);
+	check("inv small 2", 1, 160, 160, 60, 0);
+	glBindBuffer(GL_ARRAY_BUFFER, vbo);
+	glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
 }
 
 int main(int argc, char **argv)
@@ -387,6 +624,8 @@ int main(int argc, char **argv)
 		glFinish();
 		check("map", 0, 90, 160, 230, 0);
 	}
+	if (wanted("invalidate"))
+		invalidate_cases();
 	printf("%d of %d cases right\n", cases - failed, cases);
 	eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
 	eglTerminate(dpy);

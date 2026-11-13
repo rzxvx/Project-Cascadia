@@ -95,6 +95,9 @@ bool sgx_resource_swizzle(const struct pipe_resource *p, uint8_t swz[4]);
 
 struct sgx_transfer {
    struct pipe_transfer base;
+   /* (M46) a buffer's map that is its GPU copy itself (buffer_map_direct()):
+    * nothing to copy on at the unmap */
+   bool direct;
 };
 
 /* Whether res is sampled as it is, linear (M16): a format the sampler has
