@@ -209,3 +209,54 @@
 &tempsensor_pmgr { status = "disabled"; };
 &tempsensor_acc { status = "disabled"; };
 &tempsensor_acce { status = "disabled"; };
+
+/* Internal speakers and discrete volume-down key; see AUDIO.md. */
+
+/ {
+ j171_nco_reference: clock-nco-ref {
+  compatible = "fixed-clock";
+  #clock-cells = <0>;
+  /* Live J171a ADT clock ID0x143, clock-frequencies[0x143-0x100]. */
+  clock-frequency = <900000000>;
+ };
+};
+&{/soc} {
+ j171_nco: clock-controller@23b044000 {
+  compatible = "cascadia,j171a-nco";
+  reg = <0x2 0x3b044000 0 0x14000>;
+  #clock-cells = <1>;
+  clocks = <&j171_nco_reference>;
+ };
+ j171_speakers: sound@238400800 {
+  compatible = "cascadia,j171a-speakers";
+  reg = <0x2 0x38400800 0 0x800>, <0x2 0x38308000 0 0x4000>;
+  clocks = <&j171_nco 1>;
+  enable-gpios = <&pinctrl_ap 6 0>;
+  power-domains = <&ps_mca1>;
+  dmas = <&sio 0x2c>;
+  dma-names = "tx";
+  #sound-dai-cells = <0>;
+ };
+};
+&sio {
+ power-domains = <&ps_sio_cpu>, <&ps_spi_p>, <&ps_uart_p>, <&ps_audio>;
+ power-domain-names = "sio-cpu", "spi-shim", "uart-shim", "audio-shim";
+ compatible = "cascadia,j171a-audio-dma", "apple,t8020-sio", "apple,sio";
+};
+
+/* J171a ADT /buttons: volume-up is SMC bVUP; volume-down is AP GPIO137.
+ * Keep SMC up handling, add only the missing discrete down key.
+ * Active-low press/release and Omarchy volume control validated on hardware.
+ */
+/ {
+ j171_volume_keys: j171-volume-keys {
+  compatible = "gpio-keys";
+  autorepeat;
+  volume-down {
+   label = "iPad 8 Volume Down";
+   linux,code = <114>; /* KEY_VOLUMEDOWN */
+   gpios = <&pinctrl_ap 137 1>; /* GPIO_ACTIVE_LOW */
+   debounce-interval = <20>;
+  };
+ };
+};

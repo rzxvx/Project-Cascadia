@@ -1,0 +1,9 @@
+{
+  "hidden": [
+    "ipad8-stereo-to-hardware",
+    "(?:ipad8-stereo|j171-speakers)\\.monitor"
+  ],
+  "replaced": [
+    { "node": "j171-speakers", "by": "ipad8-stereo" }
+  ]
+}

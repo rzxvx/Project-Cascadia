@@ -20,6 +20,10 @@ PACKAGES="ca-certificates dbus dbus-user-session udev dropbear openssh-sftp-serv
 # Native A12 RTC time is not yet reliable in this port. Keep signed APT/TLS
 # verification enabled and synchronize the clock once networking is online.
 PACKAGES="$PACKAGES systemd-timesyncd"
+if [ "$A12_DEVICE" = ipad8 ]; then
+    PACKAGES="$PACKAGES pipewire pipewire-pulse wireplumber alsa-utils"
+    [ "$DESKTOP" != xfce ] || PACKAGES="$PACKAGES xfce4-pulseaudio-plugin pavucontrol"
+fi
 
 command -v debootstrap >/dev/null || {
     echo "install debootstrap first" >&2
@@ -83,6 +87,7 @@ else
     rm -rf "$ROOT/etc/lightdm/lightdm.conf.d/50-cascadia-autologin.conf"
 fi
 bash "$A12/rootfs/install-touch-firmware.sh" "$ROOT"
+python3 "$A12/rootfs/install-ipad-audio.py" --root "$ROOT" --device "$A12_DEVICE" --desktop none
 mkdir -p "$ROOT/root/.ssh" "$ROOT/dev" "$ROOT/proc" "$ROOT/sys" "$ROOT/run"
 chmod 700 "$ROOT/root" "$ROOT/root/.ssh"
 

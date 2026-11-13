@@ -1,0 +1,160 @@
+--- a/drivers/clk/clk-apple-nco.c
++++ b/drivers/clk/clk-apple-nco.c
+@@ -8,7 +8,9 @@
+ 
+ #include <linux/bits.h>
+ #include <linux/bitfield.h>
++#include <linux/clk.h>
+ #include <linux/clk-provider.h>
++#include <linux/property.h>
+ #include <linux/io.h>
+ #include <linux/kernel.h>
+ #include <linux/math64.h>
+@@ -64,7 +66,14 @@
+ 	u16 inv[LFSR_TBLSIZE];
+ };
+ 
++struct applnco_hw {
++	u32 enable_mask;
++	u32 control_set;
++	u32 control_clear;
++};
++
+ struct applnco_channel {
++	const struct applnco_hw *soc;
+ 	void __iomem *base;
+ 	struct applnco_tables *tbl;
+ 	struct clk_hw hw;
+@@ -80,7 +89,8 @@
+ 	u32 val;
+ 
+ 	val = readl_relaxed(chan->base + REG_CTRL);
+-	writel_relaxed(val | CTRL_ENABLE, chan->base + REG_CTRL);
++	writel_relaxed(val | (chan->soc ? chan->soc->enable_mask : CTRL_ENABLE),
++		       chan->base + REG_CTRL);
+ }
+ 
+ static void applnco_disable_nolock(struct clk_hw *hw)
+@@ -89,14 +99,16 @@
+ 	u32 val;
+ 
+ 	val = readl_relaxed(chan->base + REG_CTRL);
+-	writel_relaxed(val & ~CTRL_ENABLE, chan->base + REG_CTRL);
++	writel_relaxed(val & ~(chan->soc ? chan->soc->enable_mask : CTRL_ENABLE),
++		       chan->base + REG_CTRL);
+ }
+ 
+ static int applnco_is_enabled(struct clk_hw *hw)
+ {
+ 	struct applnco_channel *chan = to_applnco_channel(hw);
+ 
+-	return (readl_relaxed(chan->base + REG_CTRL) & CTRL_ENABLE) != 0;
++	return (readl_relaxed(chan->base + REG_CTRL) &
++		(chan->soc ? chan->soc->enable_mask : CTRL_ENABLE)) != 0;
+ }
+ 
+ static void applnco_compute_tables(struct applnco_tables *tbl)
+@@ -158,6 +170,7 @@
+ 	unsigned long flags;
+ 	u32 div, inc1, inc2;
+ 	bool was_enabled;
++	u32 control;
+ 
+ 	div = 2 * parent_rate / rate;
+ 	inc1 = 2 * parent_rate - div * rate;
+@@ -171,13 +184,21 @@
+ 	spin_lock_irqsave(&chan->lock, flags);
+ 	was_enabled = applnco_is_enabled(hw);
+ 	applnco_disable_nolock(hw);
++	if (chan->soc) {
++		/* T8010: choose input zero and the fractional accumulator mode. */
++		control = readl_relaxed(chan->base + REG_CTRL);
++		control &= ~chan->soc->control_clear;
++		control |= chan->soc->control_set;
++		writel_relaxed(control, chan->base + REG_CTRL);
++	}
+ 
+ 	writel_relaxed(div,  chan->base + REG_DIV);
+ 	writel_relaxed(inc1, chan->base + REG_INC1);
+ 	writel_relaxed(inc2, chan->base + REG_INC2);
+ 
+ 	/* Presumably a neutral initial value for accumulator */
+-	writel_relaxed(1 << 31, chan->base + REG_ACCINIT);
++	writel_relaxed(chan->soc ? (inc1 ^ BIT(31)) - rate : BIT(31),
++		       chan->base + REG_ACCINIT);
+ 
+ 	if (was_enabled)
+ 		applnco_enable_nolock(hw);
+@@ -254,7 +275,7 @@
+ 	.is_enabled = applnco_is_enabled,
+ };
+ 
+-static int applnco_probe(struct platform_device *pdev)
++static int applnco_probe_common(struct platform_device *pdev)
+ {
+ 	struct device_node *np = pdev->dev.of_node;
+ 	struct clk_parent_data pdata = { .index = 0 };
+@@ -264,7 +285,19 @@
+ 	struct resource *res;
+ 	struct applnco_tables *tbl;
+ 	unsigned int nchannels;
++	const struct applnco_hw *soc = device_get_match_data(&pdev->dev);
+ 	int ret, i;
++
++	if (soc) {
++		struct clk *reference = devm_clk_get(&pdev->dev, NULL);
++
++		if (IS_ERR(reference))
++			return dev_err_probe(&pdev->dev, PTR_ERR(reference),
++					     "failed to get NCO reference\n");
++		if (!clk_get_rate(reference))
++			return dev_err_probe(&pdev->dev, -EINVAL,
++					     "NCO reference has no rate\n");
++	}
+ 
+ 	base = devm_platform_get_and_ioremap_resource(pdev, 0, &res);
+ 	if (IS_ERR(base))
+@@ -292,6 +325,7 @@
+ 		chan = devm_kzalloc(&pdev->dev, sizeof(*chan), GFP_KERNEL);
+ 		if (!chan)
+ 			return -ENOMEM;
++		chan->soc = soc;
+ 		chan->base = base + NCO_CHANNEL_STRIDE * i;
+ 		chan->tbl = tbl;
+ 		spin_lock_init(&chan->lock);
+@@ -319,12 +353,35 @@
+ 							onecell_data);
+ }
+ 
++/*
++ * AppleS5L8960XNCO: parent 0, no alternate prescaler, accumulator mode.
++ * J171a 21B91 verification: 0xfffffff008ec43fc writes 0x80001000
++ * for input 0, normal fractional mode. Enable is BIT(12), not BIT(31).
++ * Its fNCO wrapper 0xfffffff008ec4a74 requests the input-0 path first.
++ * This prototype requires the actual input-0 clock as DT parent; no rate
++ * is fabricated here. Alternate-input / prescaler selection is not ported.
++ */
++static const struct applnco_hw j171_nco_hw = {
++	.enable_mask = BIT(12),
++	.control_set = BIT(31),
++	.control_clear = BIT(24) | BIT(29),
++};
++
+ static const struct of_device_id applnco_ids[] = {
++	{ .compatible = "cascadia,j171a-nco", .data = &j171_nco_hw },
+ 	{ .compatible = "apple,t8103-nco" },
+ 	{ .compatible = "apple,nco" },
+ 	{ }
+ };
+ MODULE_DEVICE_TABLE(of, applnco_ids);
++
++static int applnco_probe(struct platform_device *pdev)
++{
++ if (of_device_is_compatible(pdev->dev.of_node, "cascadia,j171a-nco") &&
++     !of_machine_is_compatible("apple,j171a"))
++  return -ENODEV;
++ return applnco_probe_common(pdev);
++}
+ 
+ static struct platform_driver applnco_driver = {
+ 	.driver = {

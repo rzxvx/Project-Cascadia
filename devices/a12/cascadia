@@ -30,6 +30,7 @@ Select: ./cascadia a12 --device xr|ipad8|xsmax COMMAND
   ./cascadia a12 pack                package the SysCfg-calibrated image (IM4M=...)
   ./cascadia a12 boot                boot Linux with DCSD logging
   ./cascadia a12 boot radios         boot Debian, then load Wi-Fi and Bluetooth
+  ./cascadia a12 audio-root --root DIR [--attenuation 4|2|1]  install iPad audio policy
   ./cascadia a12 nfs on|off|status   manage the Debian NFS export
 
 Apple firmware, IM4M, SysCfg, generated payloads and logs stay local.
@@ -124,6 +125,7 @@ case "${1:-}" in
             radios|full) python3 boot/boot-device.py --radios ;;
             *) fail "unknown boot mode '$1' — use linux or radios" ;;
         esac ;;
+    audio-root) shift; python3 rootfs/install-ipad-audio.py --device "$A12_DEVICE" "$@" ;;
     nfs) shift; bash host/linux-nfs-export.sh "$@" ;;
     ''|-h|--help|help) usage ;;
     *) usage >&2; exit 2 ;;

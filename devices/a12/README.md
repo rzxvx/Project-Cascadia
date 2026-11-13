@@ -118,3 +118,9 @@ boot verified automatic AGX desktop selection and the user confirmed its slider.
 The old 4096-job render stop has been removed and host-tested, but that fix still
 needs a fresh hardware endurance test. See [DISPLAY.md](DISPLAY.md) and
 [GPU.md](GPU.md) for evidence, rootfs setup and limits.
+
+## iPad 8 speakers
+
+See [AUDIO.md](AUDIO.md) for the speaker port, SIO handoff/power fixes, native
+channel mapping, live attenuation, optional Omarchy controls and reproduction
+status. Audio resources and policy are iPad-only; XR/XS audio is unchanged.

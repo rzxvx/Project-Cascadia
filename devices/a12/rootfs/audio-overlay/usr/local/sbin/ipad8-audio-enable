@@ -1,0 +1,12 @@
+#!/bin/sh
+set -eu
+tr '\000' '\n' </proc/device-tree/compatible | grep -qx apple,j171a || exit 0
+p=/sys/module/apple_j171_speakers/parameters
+[ -w "$p/test_enabled" ] && [ -w "$p/attenuation" ] || exit 1
+value=4
+if [ -r /etc/cascadia/ipad8-audio.conf ]; then
+ value=$(sed -n 's/^attenuation=//p' /etc/cascadia/ipad8-audio.conf)
+fi
+case "$value" in 1|2|4) ;; *) echo 'Invalid iPad audio attenuation' >&2; exit 1;; esac
+printf '%s\n' "$value" > "$p/attenuation"
+printf '1\n' > "$p/test_enabled"

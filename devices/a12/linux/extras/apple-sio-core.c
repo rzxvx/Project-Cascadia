@@ -19,6 +19,7 @@
 #include <linux/of_dma.h>
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
+#include <linux/pm_domain.h>
 #include <linux/scatterlist.h>
 #include <linux/sizes.h>
 #include <linux/soc/apple/rtkit.h>
@@ -789,6 +790,25 @@ static int sio_device_config(struct dma_chan *chan,
 		cfg.limit = 128;
 	}
 
+	/* J171a speaker test only. Native 21B91 _configureDMA forwards the
+	 * full ADT xfer word. Generic bus-width encoding loses shim bits.
+	 * MCA1 TX 0x2c: {0x21,0,384,204}, initial/native depth 384 bytes.
+	 * SPI3's validated branch above is deliberately left unchanged. */
+	if ((of_machine_is_compatible("apple,j171a") &&
+	    (of_device_is_compatible(sio->dev->of_node, "cascadia,j171a-audio-dma") ||
+	     of_device_is_compatible(sio->dev->of_node, "cascadia,j171a-speaker-dma-test"))) &&
+	    siochan->no == 0x2c) {
+		if (config->direction != DMA_MEM_TO_DEV ||
+		    config->dst_addr_width != DMA_SLAVE_BUSWIDTH_2_BYTES)
+			return -EINVAL;
+		cfg.datashape = 0x21;
+		cfg.timeout = 0;
+		cfg.fifo = 384;
+		cfg.threshold = 204;
+		cfg.limit = 384;
+		cfg.reserved = 0;
+	}
+
 	/*
 	 * Dmaengine prescribes we ought to apply the new configuration only
 	 * to newly-queued descriptors.
@@ -826,6 +846,14 @@ static int sio_device_config(struct dma_chan *chan,
 		ret = 0;
 	else if (ret == 0)
 		ret = -EINVAL;
+
+	if ((of_machine_is_compatible("apple,j171a") &&
+	    (of_device_is_compatible(sio->dev->of_node, "cascadia,j171a-audio-dma") ||
+	     of_device_is_compatible(sio->dev->of_node, "cascadia,j171a-speaker-dma-test"))) &&
+	    siochan->no == 0x2c)
+		dev_dbg(sio->dev,
+			 "speaker DMA EP2c: xfer=%#x fifo=%u trigger=%u limit=%u status=%d\n",
+			 cfg.datashape, cfg.fifo, cfg.threshold, cfg.limit, ret);
 
 	if (ret == 0) {
 		siochan->configured = true;
@@ -976,6 +1004,46 @@ static int sio_map_t8020_firmware(struct device *dev)
 	return 0;
 }
 
+/* J171 firmware scans every mapped shim during IRQ handling. Hold all
+ * four direct power domains before RTKit starts; unwind with devres. */
+static void sio_j171_release_domain(void *data)
+{
+ struct device *pd = data;
+ pm_runtime_put_sync(pd);
+ dev_pm_domain_detach(pd, true);
+}
+
+static int sio_j171_hold_domains(struct device *dev)
+{
+ static const char * const names[] = {
+  "sio-cpu", "spi-shim", "uart-shim", "audio-shim"
+ };
+ unsigned int i;
+ int ret;
+ if (!of_device_is_compatible(dev->of_node, "cascadia,j171a-audio-dma") &&
+     !of_device_is_compatible(dev->of_node, "cascadia,j171a-speaker-dma-test"))
+  return 0;
+ if (!of_machine_is_compatible("apple,j171a"))
+  return -ENODEV;
+ for (i = 0; i < ARRAY_SIZE(names); i++) {
+  struct device *pd = dev_pm_domain_attach_by_name(dev, names[i]);
+  if (IS_ERR(pd))
+   return dev_err_probe(dev, PTR_ERR(pd), "attach %s domain\n", names[i]);
+  if (!pd)
+   return dev_err_probe(dev, -ENODEV, "missing %s domain\n", names[i]);
+  ret = pm_runtime_resume_and_get(pd);
+  if (ret < 0) {
+   dev_pm_domain_detach(pd, true);
+   return dev_err_probe(dev, ret, "power %s domain\n", names[i]);
+  }
+  ret = devm_add_action_or_reset(dev, sio_j171_release_domain, pd);
+  if (ret)
+   return ret;
+  dev_dbg(dev, "J171 holding %s domain before RTKit startup\n", names[i]);
+ }
+ return 0;
+}
+
 static int sio_probe(struct platform_device *pdev)
 {
 	struct device_node *np = pdev->dev.of_node;
@@ -1004,6 +1072,10 @@ static int sio_probe(struct platform_device *pdev)
 	sio->base = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(sio->base))
 		return PTR_ERR(sio->base);
+
+	err = sio_j171_hold_domains(&pdev->dev);
+	if (err)
+		return err;
 
 	pm_runtime_get_noresume(&pdev->dev);
 	pm_runtime_set_active(&pdev->dev);

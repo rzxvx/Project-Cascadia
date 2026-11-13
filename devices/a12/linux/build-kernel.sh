@@ -15,6 +15,13 @@ if [ -f "$K/drivers/spi/spi-apple.c" ] &&
     mv "$K/drivers/spi/spi-apple.c.baseline" "$K/drivers/spi/spi-apple.c"
 fi
 
+# Migrate the exact validated local J171 NCO prototype before its reviewed
+# patch is applied. Unknown edits still fail the normal patch checks below.
+if [ -f "$K/drivers/clk/clk-apple-nco.c" ] &&
+   [ "$(sha256sum "$K/drivers/clk/clk-apple-nco.c" | cut -d ' ' -f1)" = 3e7a2eb57fd3c99dcaf07652afd7066404470c04155102cf193f37e3e53e69cf ]; then
+    git -C "$K" show HEAD:drivers/clk/clk-apple-nco.c > "$K/drivers/clk/clk-apple-nco.c"
+fi
+
 # Apply the complete reviewed XR patch series in filename order. The old
 # worktree already had all patches applied; a fresh pinned checkout does not.
 # An already-applied patch is accepted, but any other mismatch stops the build.
@@ -117,6 +124,21 @@ EOF
 grep -q '^obj-$(CONFIG_APPLE_SIO)' "$K/drivers/dma/Makefile" || \
   printf 'obj-$(CONFIG_APPLE_SIO) += apple-sio.o\n' >> \
     "$K/drivers/dma/Makefile"
+# Shared kernel, but only J171's DT and machine-compatible gate can probe
+# the speaker driver. No XR/XS audio nodes or startup services are added.
+cp "$A12/linux/extras/apple-j171-speakers.c" "$K/sound/soc/apple/apple-j171-speakers.c"
+grep -q '^config SND_SOC_J171_SPEAKERS$' "$K/sound/soc/apple/Kconfig" || cat >> "$K/sound/soc/apple/Kconfig" <<'EOF'
+
+config SND_SOC_J171_SPEAKERS
+ bool "Apple iPad 8 internal speakers"
+ depends on ARCH_APPLE && SND_SOC
+ select SND_SOC_GENERIC_DMAENGINE_PCM
+ help
+   Fixed 48 kHz four-channel playback for J171a, using SmartIO DMA.
+   No microphone, headphone or iOS speaker-protection implementation.
+EOF
+grep -q 'apple-j171-speakers.o' "$K/sound/soc/apple/Makefile" || \
+ printf 'obj-$(CONFIG_SND_SOC_J171_SPEAKERS) += apple-j171-speakers.o\n' >> "$K/sound/soc/apple/Makefile"
 cp "$DOCS/config_16k" "$K/.config"
 cd "$K"
 # One kernel for both boards. H11P display, apple-mt-spi touch, hci_bcm4377,
@@ -128,7 +150,10 @@ cd "$K"
   --enable CONFIG_USB_CONFIGFS --enable CONFIG_USB_CONFIGFS_ACM \
   --enable CONFIG_USB_CONFIGFS_ECM --enable CONFIG_USB_DWC2 \
   --enable CONFIG_USB_DWC2_DUAL_ROLE --enable CONFIG_PHY_APPLE_AUSB \
-  --enable CONFIG_INPUT_TOUCHSCREEN \
+  --enable CONFIG_INPUT_TOUCHSCREEN --enable CONFIG_KEYBOARD_GPIO \
+  --enable CONFIG_SOUND --enable CONFIG_SND --enable CONFIG_SND_SOC \
+  --enable CONFIG_SND_DMAENGINE_PCM --enable CONFIG_SND_SOC_GENERIC_DMAENGINE_PCM \
+  --enable CONFIG_SND_SOC_J171_SPEAKERS --enable CONFIG_COMMON_CLK_APPLE_NCO \
   --enable CONFIG_DMADEVICES --enable CONFIG_APPLE_SIO \
   --disable CONFIG_APPLE_SIO_DMA \
   --enable CONFIG_CFG80211 --disable CONFIG_MAC80211 \
