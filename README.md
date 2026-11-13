@@ -80,6 +80,13 @@ IPSW (or Apple's CDN) on your machine.
   author reports; it builds on devices/a13's m1n1 patches, which still
   change.
   [devices/a12/LINUX_PLAN.md](devices/a12/LINUX_PLAN.md)
+- **iPhone XS Max (A12)** — contributed D331p profile from kieroid: shell/SSH,
+  display, touch, Wi-Fi, Bluetooth and GPU render-node bring-up reported by
+  its contributor. The merged Cascadia profile has not been independently
+  hardware-tested here; BadApple's storage, cpufreq and OpenCL/OpenGL/Vulkan
+  results are separate from this profile's reported boot result.
+  [XS Max support](devices/a12/README.md#merged-xs-max-support) ·
+  [BadApple](https://forgejo.toe.quest/kiki/badapple)
 - **iPad 8 Wi-Fi (A12)** — experimental contributed J171 profile: native
   scanout and brightness, touch, USB/NFS, radios and GPU desktop tested by its
   contributor. Internal speakers, live attenuation, volume buttons and Omarchy
