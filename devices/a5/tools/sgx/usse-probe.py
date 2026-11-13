@@ -16,7 +16,8 @@ words after its PHAS, the pixel's bytes printed.  End a probe with `out rN`
 Instructions: limm D V [PRED], imad D S0 S1 S2 [signed= neg1= neg2=],
 and/or/xor/shl/shr/asr/rol D S1 S2|#IMM [rot= inv=], vmov D S0 S1 S2 TEST
 [typ= kind= mask= swz=], vpck D S1 S2 sfmt= dfmt= mask= sel=(a,b,c,d),
-vtst P S1 S2 alu_sel= alu_op= sign= zero= comb= chan= prec=, out R,
+vtst P S1 S2 alu_sel= alu_op= sign= zero= comb= chan= prec=, vtstmsk D S1 S2
+[alu_sel= alu_op= sign= zero= mtype= prec= wb=], out R,
 word HEX.  Registers r, o, pa, sa, c (special), # (immediate).
 
 DEVICE (root@10.55.0.2) is the iPad; MESA (/root/sgx-mesa-cur) the build
@@ -124,6 +125,18 @@ def vtst(pdst, s1, s2, alu_sel, alu_op, sign, zero, comb=1, chan=0, prec=0):
                k=b1, f=b2, l=alu_sel, u=alu_op, j=n1, q=n2)
 
 
+def vtstmsk(d, s1, s2, alu_sel=0, alu_op=14, sign=1, zero=0, mtype=0, prec=1, wb=1, neg1=0,
+            v=0, o=0, y=0, m=0):
+    """(M46) a test's outcome as a mask into D (mtype: what the mask is) --
+    the F32 forms' registers 64-bit ones, as VTST's"""
+    de, db, dn = _reg(d, DEST)
+    e1, b1, n1 = _reg(s1, SRC12)
+    e2, b2, n2 = _reg(s2, SRC12)
+    return enc('VTSTMSK', s=1, o=o, y=y, d=de, t=neg1, r=e1, c=e2, e=prec, v=v, i=sign,
+               z=zero, m=m, a=mtype, b=db, n=b1, k=b2, f=dn, w=wb, l=alu_sel, g=alu_op, h=n1,
+               j=n2)
+
+
 def _kw(args, conv=lambda v: int(v, 0)):
     return {k: (eval(v) if k == 'sel' else conv(v)) for k, v in (a.split('=') for a in args)}
 
@@ -143,6 +156,8 @@ def parse(line):
         return vpck(a[0], a[1], a[2], **_kw(a[3:]))
     if op == 'vtst':
         return vtst(int(a[0]), a[1], a[2], **_kw(a[3:]))
+    if op == 'vtstmsk':
+        return vtstmsk(a[0], a[1], a[2], **_kw(a[3:]))
     if op == 'out':
         return vbw('or', 'o0', a[0], '#0', end=1)
     if op == 'word':

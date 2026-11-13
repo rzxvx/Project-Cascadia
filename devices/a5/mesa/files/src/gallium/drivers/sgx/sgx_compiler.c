@@ -195,6 +195,9 @@ struct comp {
    const uint8_t *attr;                 /* how each attribute comes (M26) */
    struct operand vout[1 + SGX_FRAME_MAX_VARYINGS][4];
    bool have_vout[1 + SGX_FRAME_MAX_VARYINGS][4];
+   /* (M46) a value made straight into a varying's output register (its
+    * number + 1; 0: a temporary): plan_vs_outputs() */
+   unsigned *vs_out;
    char *why;
    unsigned why_size;
    bool failed;
@@ -382,6 +385,28 @@ alu_operand(nir_alu_instr *alu, unsigned i)
    return resolve(nir_get_scalar(alu->src[i].src.ssa, alu->src[i].swizzle[0]));
 }
 
+/* (M46) a float constant V32NMAD's src1 swizzle makes -- 0, 1, 2, 0.5,
+ * either sign (the sign src1's negation): no LIMM for it.
+ * SGX_NO_KSWZ=1: as before */
+static bool
+k_code(uint32_t u, unsigned *code, bool *neg)
+{
+   static int off = -1;
+
+   if (off < 0)
+      off = getenv("SGX_NO_KSWZ") != NULL;
+   if (off)
+      return false;
+   *neg = u >> 31;
+   switch (u & 0x7fffffffu) {
+   case 0x00000000: *code = USSE_K_0; return true;
+   case 0x3f800000: *code = USSE_K_1; return true;
+   case 0x40000000: *code = USSE_K_2; return true;
+   case 0x3f000000: *code = USSE_K_HALF; return true;
+   default: return false;
+   }
+}
+
 /* operand slots: what each takes without a move first */
 enum {
    TAKES_NEG = 1 << 0,
@@ -390,6 +415,22 @@ enum {
    TAKES_SA = 1 << 3,
    TAKES_ALL = TAKES_NEG | TAKES_ABS | TAKES_LANE_Y | TAKES_SA,
 };
+
+/* d = r with its modifiers applied, times one: (+-1) * |r| -- the one
+ * src1's swizzle constant, carrying r's negation (src2 takes none) */
+static uint64_t
+times_one(struct comp *c, struct usse_reg d, struct usse_reg r, struct scratch *s)
+{
+   struct usse_reg one = r, x = r;
+   unsigned code;
+   bool neg;
+
+   if (!k_code(f32_bits(1.0f), &code, &neg))
+      return usse_fop(USSE_NMAD_MUL, d, r, constant(c, s, 1.0f));
+   one.abs = false;
+   x.neg = false;
+   return usse_fop_sw(USSE_NMAD_MUL, d, one, USSE_SW_CONST(code), x);
+}
 
 /* The register for an operand in a slot that takes what `takes` says: the
  * value where it is, or a temporary made for this instruction. */
@@ -408,7 +449,7 @@ get(struct comp *c, struct operand o, unsigned takes, struct scratch *s)
        (r.bank == USSE_SA && !(takes & TAKES_SA))) {
       t = treg(c, scratch_take(c, s));
       if (r.neg || r.abs)        /* the modifiers applied: times one */
-         emit(c, usse_fop(USSE_NMAD_MUL, t, r, constant(c, s, 1.0f)));
+         emit(c, times_one(c, t, r, s));
       else
          emit(c, usse_fmov(t, r));
       return t;
@@ -434,6 +475,11 @@ define(struct comp *c, nir_def *def)
          c->owned[id] = false;
          return c->loc[id];
       }
+   if (c->vs_out && c->vs_out[id]) {
+      c->loc[id] = usse_reg(USSE_OUTPUT, c->vs_out[id] - 1);
+      c->owned[id] = false;
+      return c->loc[id];
+   }
    r = take(c);
 
    c->loc[id] = treg(c, r);
@@ -469,6 +515,32 @@ binary(struct comp *c, enum usse_nmad_op op, nir_alu_instr *alu, struct scratch 
 {
    struct operand a = alu_operand(alu, 0), b = alu_operand(alu, 1), t;
    struct usse_reg ra, rb;
+   unsigned code;
+   bool kneg;
+
+   /* (M46) a constant 0, 1, 2 or 0.5 in src1's swizzle (all four commute),
+    * the other in src2 -- which takes no negation: a product's goes onto
+    * the constant */
+   if (a.is_const && !b.is_const) {
+      t = a;
+      a = b;
+      b = t;
+   }
+   if (b.is_const && !a.is_const && k_code(b.u, &code, &kneg) &&
+       (!a.neg || op == USSE_NMAD_MUL)) {
+      struct usse_reg k;
+
+      if (a.neg) {
+         a.neg = false;
+         kneg = !kneg;
+      }
+      ra = get(c, a, TAKES_ALL & ~TAKES_NEG, s);
+      k = ra;
+      k.neg = kneg;
+      k.abs = false;
+      emit(c, usse_fop_sw(op, define(c, &alu->def), k, USSE_SW_CONST(code), ra));
+      return;
+   }
 
    /* the second source takes no negation: swap (all four commute), and
     * a product of two negations is the product */
@@ -482,6 +554,37 @@ binary(struct comp *c, enum usse_nmad_op op, nir_alu_instr *alu, struct scratch 
    ra = get(c, a, TAKES_ALL, s);
    rb = get(c, b, TAKES_ALL & ~TAKES_NEG, s);
    emit(c, usse_fop(op, define(c, &alu->def), ra, rb));
+}
+
+/* (M46) ffma (a vertex shader's: sgx_screen.c fuses them there): FMAD,
+ * d = src0 * src1 + src2 -- src0 a temporary or a primary attribute
+ * without negation (a product's sign goes onto src1), src1 and src2
+ * anything with their modifiers, each its own lane */
+static void
+fma_(struct comp *c, nir_alu_instr *alu, struct scratch *s)
+{
+   struct operand a = alu_operand(alu, 0), b = alu_operand(alu, 1), x = alu_operand(alu, 2), t;
+   struct usse_reg r0, r1, r2;
+
+   /* src0: one in a register that is not sa */
+   if (a.is_const || c->loc[a.id].bank == USSE_SA) {
+      t = a;
+      a = b;
+      b = t;
+   }
+   if (a.neg) {
+      a.neg = false;
+      if (b.is_const) {
+         b.u ^= 0x80000000u;
+         memcpy(&b.c, &b.u, 4);
+      } else {
+         b.neg = !b.neg;
+      }
+   }
+   r0 = get(c, a, TAKES_ABS | TAKES_LANE_Y, s);
+   r1 = get(c, b, TAKES_ALL, s);
+   r2 = get(c, x, TAKES_ALL, s);
+   emit(c, usse_fmad(define(c, &alu->def), r0, r1, r2));
 }
 
 static void
@@ -992,6 +1095,7 @@ alu(struct comp *c, nir_alu_instr *alu, struct scratch *s)
    case nir_op_fmul: binary(c, USSE_NMAD_MUL, alu, s); return;
    case nir_op_fmin: binary(c, USSE_NMAD_MIN, alu, s); return;
    case nir_op_fmax: binary(c, USSE_NMAD_MAX, alu, s); return;
+   case nir_op_ffma: fma_(c, alu, s); return;
    case nir_op_frcp:
    case nir_op_frsq:
    case nir_op_flog2:
@@ -1012,13 +1116,31 @@ alu(struct comp *c, nir_alu_instr *alu, struct scratch *s)
       a = get(c, alu_operand(alu, 0), TAKES_LANE_Y | TAKES_SA, s);
       emit(c, usse_fop(USSE_NMAD_FRC, define(c, &alu->def), a, a));
       return;
-   case nir_op_fsat:
+   case nir_op_fsat: {
+      unsigned code0, code1;
+      bool n0, n1;
+
+      if (k_code(f32_bits(0.0f), &code0, &n0) && k_code(f32_bits(1.0f), &code1, &n1)) {
+         /* (M46) the bounds from src1's swizzle, the value in src2 */
+         struct usse_reg k;
+
+         a = get(c, alu_operand(alu, 0), TAKES_ALL & ~TAKES_NEG, s);
+         t = treg(c, scratch_take(c, s));
+         k = a;
+         k.neg = k.abs = false;
+         emit(c, usse_fop_sw(USSE_NMAD_MAX, t, k, USSE_SW_CONST(code0), a));
+         d = define(c, &alu->def);
+         k = t;
+         emit(c, usse_fop_sw(USSE_NMAD_MIN, d, k, USSE_SW_CONST(code1), t));
+         return;
+      }
       a = get(c, alu_operand(alu, 0), TAKES_ALL, s);
       t = treg(c, scratch_take(c, s));
       emit(c, usse_fop(USSE_NMAD_MAX, t, a, constant_sa(c, s, f32_bits(0.0f))));
       d = define(c, &alu->def);
       emit(c, usse_fop(USSE_NMAD_MIN, d, t, constant_sa(c, s, f32_bits(1.0f))));
       return;
+   }
    case nir_op_slt:
    case nir_op_sge:
    case nir_op_seq:
@@ -1050,7 +1172,7 @@ move_into(struct comp *c, struct usse_reg d, struct operand o, struct scratch *s
    r.neg = o.neg;
    r.abs = o.abs;
    if (r.neg || r.abs)          /* the modifiers applied: times one */
-      emit(c, usse_fop(USSE_NMAD_MUL, d, r, constant(c, s, 1.0f)));
+      emit(c, times_one(c, d, r, s));
    else
       emit(c, usse_fmov(d, r));
 }
@@ -2089,6 +2211,9 @@ intrinsic(struct comp *c, nir_intrinsic_instr *in)
                    * are (M30) */
                   struct scratch sc = { 0 };
 
+                  if (!o.is_const && !o.neg && !o.abs &&
+                      c->loc[o.id].bank == USSE_OUTPUT && c->loc[o.id].num == 4 * k + comp + i)
+                     continue;  /* (made there: plan_vs_outputs) */
                   move_into(c, usse_reg(USSE_OUTPUT, 4 * k + comp + i), o, &sc);
                   scratch_give_back(c, &sc);
                }
@@ -3312,6 +3437,84 @@ lower_blend(nir_shader *s, const struct sgx_blend_key *k)
    NIR_PASS(_, s, nir_lower_blend, &o);
 }
 
+/* (M46) a vertex shader's varyings made straight into their output
+ * registers: a component stored once, by a store of the program's one
+ * block, of a value an fadd, fmul, fmin, fmax, ffma or fsat makes (V32NMAD
+ * and FMAD, which write either lane of an output) and nothing else reads --
+ * not the position's, nor a varying the vertex side does more to (M39).
+ * define() puts it there; the store has nothing to move.
+ * SGX_VS_OUT_MOVES=1: as before */
+static void
+plan_vs_outputs(struct comp *c, nir_function_impl *impl)
+{
+   unsigned *stores;
+
+   if (getenv("SGX_VS_OUT_MOVES") || exec_list_length(&impl->body) != 1 ||
+       !(c->vs_out = calloc(c->nvalues, sizeof(*c->vs_out))) ||
+       !(stores = calloc(c->nvalues, sizeof(*stores))))
+      return;
+   for (int pass = 0; pass < 2; pass++) {
+      nir_foreach_block(block, impl) {
+         nir_foreach_instr(instr, block) {
+            nir_intrinsic_instr *in;
+            unsigned loc, mask, comp;
+
+            if (instr->type != nir_instr_type_intrinsic)
+               continue;
+            in = nir_instr_as_intrinsic(instr);
+            if (in->intrinsic != nir_intrinsic_store_output)
+               continue;
+            loc = nir_intrinsic_io_semantics(in).location + nir_src_as_uint(*nir_get_io_offset_src(in));
+            mask = nir_intrinsic_write_mask(in);
+            comp = nir_intrinsic_component(in);
+            for (unsigned i = 0; i < in->src[0].ssa->num_components; i++) {
+               nir_scalar sc = nir_scalar_chase_movs(nir_get_scalar(in->src[0].ssa, i));
+               struct operand o = resolve(nir_get_scalar(in->src[0].ssa, i));
+               int k = -1;
+               nir_op op;
+
+               if (!(mask & 1 << i) || comp + i >= 4 || o.is_const)
+                  continue;
+               /* (pass 0 counts the stores of each value) */
+               if (!pass) {
+                  stores[o.id]++;
+                  continue;
+               }
+               /* (the varying the fragment shader reads as it is; one it
+                * reads moved too -- SGX_FIX_SHIFT -- vertex_output() makes
+                * from there) */
+               for (unsigned j = 0; j < c->nvaryings; j++)
+                  if (c->varying_slot[j] == loc && !(c->vary_fix && c->vary_fix[j]))
+                     k = k < 0 ? (int)(1 + j) : -2;
+               if (k <= 0 || o.neg || o.abs ||
+                   stores[o.id] != 1 || !nir_scalar_is_alu(sc) ||
+                   sc.def->num_components != 1 || o.id != sc.def->index * 4 + sc.comp ||
+                   !list_is_singular(&sc.def->uses))
+                  continue;
+               op = nir_scalar_alu_op(sc);
+               if (op != nir_op_fadd && op != nir_op_fmul && op != nir_op_fmin &&
+                   op != nir_op_fmax && op != nir_op_ffma && op != nir_op_fsat)
+                  continue;
+               /* (its one use the store's, or a vec only the store reads) */
+               {
+                  nir_src *use = list_first_entry(&sc.def->uses, nir_src, use_link);
+                  nir_instr *u = nir_src_is_if(use) ? NULL : nir_src_parent_instr(use);
+
+                  if (u != instr && !(u && u->type == nir_instr_type_alu &&
+                                      (nir_op_is_vec(nir_instr_as_alu(u)->op) ||
+                                       nir_instr_as_alu(u)->op == nir_op_mov) &&
+                                      &nir_instr_as_alu(u)->def == in->src[0].ssa &&
+                                      list_is_singular(&in->src[0].ssa->uses)))
+                     continue;
+               }
+               c->vs_out[o.id] = 4 * k + comp + i + 1;
+            }
+         }
+      }
+   }
+   free(stores);
+}
+
 /* A vertex's outputs into o0.. -- the position, then the varyings, four
  * words each, as the TA state's vertex size says -- and out to the tiler.
  * What the shader does not write is 0, w 1; the varyings it does are there
@@ -3358,6 +3561,13 @@ vertex_output(struct comp *c)
 
             emit(c, usse_fop(USSE_NMAD_MUL, t, get(c, c->vout[0][3], TAKES_ALL, &s),
                              usse_reg(USSE_SA, c->vs->clip_sa + 2 * i + 1)));
+            /* (M46: x a + that, an FMAD) */
+            if (!getenv("SGX_VS_OUT_MOVES") && !o.neg) {
+               emit(c, usse_fmad(usse_reg(USSE_OUTPUT, i), get(c, o, TAKES_ABS | TAKES_LANE_Y, &s),
+                                 usse_reg(USSE_SA, c->vs->clip_sa + 2 * i), t));
+               scratch_give_back(c, &s);
+               continue;
+            }
             emit(c, usse_fop(USSE_NMAD_MUL, u, get(c, o, TAKES_ALL, &s),
                              usse_reg(USSE_SA, c->vs->clip_sa + 2 * i)));
             emit(c, usse_fop(USSE_NMAD_ADD, usse_reg(USSE_OUTPUT, i), u, t));
@@ -4979,6 +5189,14 @@ translate(struct comp *c, nir_shader *s)
    NIR_PASS(_, s, nir_opt_algebraic_late);
    NIR_PASS(_, s, nir_lower_alu_to_scalar, NULL, NULL);
    NIR_PASS(_, s, nir_opt_copy_prop);
+   /* (M46) a vertex shader's products and sums fused (the dot products'
+    * too, which the scalar lowering just made): FMAD (fma_), its options'
+    * fuse_ffma32 */
+   if (c->vs && s->options->fuse_ffma32) {
+      NIR_PASS(_, s, nir_opt_algebraic_late);
+      NIR_PASS(_, s, nir_opt_copy_prop);
+      NIR_PASS(_, s, nir_opt_dce);
+   }
    /* (M46) saturates the target's pack does anyway */
    if (c->fs && c->fs->blend.rt_kind == SGX_RT_UNORM8 && !c->fs->blend.rt_srgb &&
        !c->fs->blend.rt_intensity && !getenv("SGX_KEEP_SAT"))
@@ -5098,8 +5316,10 @@ translate(struct comp *c, nir_shader *s)
       c->kill = block(c, 2, 2);
       emit(c, usse_limm(treg(c, c->kill), 0));
    }
-   if (c->vs)
+   if (c->vs) {
+      plan_vs_outputs(c, impl);
       vs_prologue(c);
+   }
    index = 0;
    c->nloops = 0;
    walk(c, &impl->body, WALK_CODE, &index, NULL, 0);
@@ -5414,6 +5634,7 @@ out:
    free(c.owned);
    free(c.last_use);
    free(c.def_at);
+   free(c.vs_out);
    util_dynarray_fini(&c.loops);
    if (c.range)
       _mesa_hash_table_destroy(c.range, NULL);
@@ -5487,6 +5708,20 @@ compile_vs(const nir_shader *vs, const unsigned *varying_slot, unsigned nvarying
       fail(&c, "uniforms past word 128");
       goto out;
    }
+   /* SGX_VS_PAD=N (M46, a measurement): N moves more a vertex, into a
+    * temporary of their own -- what a vertex program's instruction costs */
+   {
+      static int pad = -1;
+
+      if (pad < 0)
+         pad = getenv("SGX_VS_PAD") ? atoi(getenv("SGX_VS_PAD")) : 0;
+      if (pad > 0) {
+         unsigned t = block(&c, 1, 1);
+
+         for (int i = 0; i < pad && !c.failed; i++)
+            emit(&c, usse_fmov(treg(&c, t), treg(&c, t)));
+      }
+   }
    out_at = util_dynarray_num_elements(&c.code, uint64_t);
    vertex_output(&c);
    if (c.failed)
@@ -5526,6 +5761,7 @@ out:
    free(c.owned);
    free(c.last_use);
    free(c.def_at);
+   free(c.vs_out);
    util_dynarray_fini(&c.loops);
    if (c.range)
       _mesa_hash_table_destroy(c.range, NULL);
