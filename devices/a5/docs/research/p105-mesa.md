@@ -4330,11 +4330,77 @@ The two by turns in one run (abclamp.sh, three times): 28.89/29.01/28.99
 ms of the GL thread a frame (~1 before it read in place: the vertices
 were copied back into the CPU copy, 117 KB a frame).
 
+**Where the frame goes, once more.** The driver's trace (SGX_TRACE) has
+the GPU busy 89%, the main render kicked 4.9-10.5 ms after the render
+before it ended, while the GL thread gathers its 76 draws -- but that gap
+holds the kernel's 2.1 ms copy of the last frame onto the scanout, which
+is not the process's and not in the trace: ~2.4 ms idle a frame, the GPU
+~98% busy. Kicking the main render in parts would add renders, not take
+any work away. A render at a time (sync): the main render ~16 ms, PPSSPP's
+1024 x 768 one 2.5-4.6, the alpha test's 2.9-4.1, the 14-draw one 1.2-1.9,
+13 more ~0.43 each. `SGX_CLIP_TINY=1` clips every draw to 8 x 8 pixels --
+every vertex shaded and clipped as before, next to no pixels: the main
+render 16 -> 2.9-5.2 ms; the 1024 x 768 render still 1.5-2.9 (its 3 MB
+stored). The main render's draws are blended nearly all (source alpha and
+one less, or added): the GPU's hidden surface removal does nothing for
+them, and the models are drawn three times (opaque, blended, added), each
+pass with a vertex program of its own, 161-268 instructions. The pixel
+programs have little left to give (texture times colour with the target's
+alpha kept and blended: 5 instructions with its SOP2; the fog one 14, two
+of them spare). `SGX_VS_PAD=N` puts N moves more into every vertex
+program: 100 more took God of War from 30.6 to 27.5 frames/s, 3.7 ms a
+frame -- the vertex programs share the USSEs with the pixels' whatever
+overlaps, every instruction counts.
+
+**Shorter vertex programs.** PPSSPP's lit vertex program (God of War's,
+three lights: `glshader` compiles it from the GLSL captured) was 262
+instructions: 178 V32NMAD, one lane each, 35 LIMM (0.0 eighteen times,
+1.0 eight, ~0 nine), 22 VMOV. Now:
+
+- The constants 0, 1, 2 and 0.5 (either sign) are V32NMAD's src1 swizzle,
+  as F16's are (`k_code`, `usse_fop_sw`): fsat's bounds, a product's or
+  sum's constant, the moves that apply a modifier -- no LIMM
+  (`SGX_NO_KSWZ=1`: as before).
+- Vertex shaders have NIR options of their own that fuse products and
+  sums (`fuse_ffma32`; `lower_ffma32` off), nir_opt_algebraic_late runs
+  again after the scalar lowering so the dot products fuse too, and an
+  ffma is an FMAD (`fma_`: src0 a temporary or attribute without
+  negation, the product's sign on src1): a dot product with w = 1 three
+  instructions, not six (`SGX_NO_VS_FMA=1`).
+- A varying nothing else reads is made straight into its output register
+  (`plan_vs_outputs`; a copy the vertex side moves for the PDS --
+  SGX_FIX_SHIFT -- reads it there), and the position's `x a + w b` is a
+  mul and an FMAD (`SGX_VS_OUT_MOVES=1`: as before).
+
+262 -> 250 -> 195 -> 186 instructions. `tools/sgx/gl/glvsmath` (new: a
+matrix times a vector both ways round, PPSSPP's three transforms, products
+and sums with negations and absolute values, uniforms times uniforms,
+clamps, the constants, a light; 64 quads each, every quad's result against
+C) 9 of 9 either way, its programs 26-48 instructions from 34-68; the GL
+tests as before (glseam's edges too); the menu as before in screenshots
+(the models' three passes meet). God of War 30.3-30.6 -> 31.8 frames/s
+(steady ~32), PPSSPP's counter ~50-52% -> ~54%.
+
+Not done yet:
+
+- PPSSPP's cull check (~47 instructions a vertex, every 3D program has it):
+  each comparison a VTST and two LIMMs (0, then ~0 under the predicate).
+  VTSTMSK would be one instruction; probed (`usse-probe.py`'s `vtstmsk`),
+  mask types 0..3 wrote ~0/0, ~0/~0, 1.0/1.0 and something else, whatever
+  the test came out to -- its test not found yet.
+- The vector forms iOS's vertex programs use: VDP (`dp3`/`dp4` of a
+  register and an internal one), VMAD (`mad3`/`mad4` on the internal
+  registers i0..i3: `m * p` four of them) and VMAD2's two F32 lanes. The
+  transforms and the lights would take ~40% fewer instructions again.
+
 **What is left**, in the order it costs:
 
-- The GPU's frame: the main render (~12 ms of 76 draws), the kernel's copy
-  onto the scanout (2.1 ms: the display's own base address, not known),
-  PPSSPP's 1024 x 768 render, the renders' fixed cost.
+- The GPU's frame: the main render (~12 ms of pixels, 76 draws, nearly all
+  blended; its vertex programs ~3-5 ms), the kernel's copy onto the
+  scanout (2.1 ms: the display's own base address, not known), PPSSPP's
+  1024 x 768 render, the renders' fixed cost.
+- The vertex programs: still one F32 lane an instruction -- VDP, VMAD and
+  VMAD2 above, the cull check's booleans.
 - GLSL19, the alpha test, 39 instructions in F32 (its testtex lookup and
   the discard; the F16 path takes neither).
 - The TClampST draws still clamped, 6 a frame (five with an offset, one

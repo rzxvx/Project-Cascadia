@@ -66,6 +66,15 @@ enum usse_test { USSE_TEST_EQ0, USSE_TEST_NE0, USSE_TEST_LT0, USSE_TEST_LE0 };
  * absolute, src2 absolute only).  dest, src1, src2 any lane. */
 uint64_t usse_fop(enum usse_nmad_op op, struct usse_reg dest, struct usse_reg src1,
                   struct usse_reg src2);
+/* (M46) src1 through a swizzle of its own: three bits a channel, x y z w
+ * or the constants below (Vita3K's SwizzleChannel) */
+#define USSE_K_0    4
+#define USSE_K_1    5
+#define USSE_K_2    6
+#define USSE_K_HALF 7
+#define USSE_SW_CONST(k) ((k) * 0x249)
+uint64_t usse_fop_sw(enum usse_nmad_op op, struct usse_reg dest, struct usse_reg src1,
+                     unsigned sw1, struct usse_reg src2);
 /* dest = src0 * src1 + src2, F32, one lane; src0 a temporary or primary
  * attribute, absolute only */
 uint64_t usse_fmad(struct usse_reg dest, struct usse_reg src0, struct usse_reg src1,

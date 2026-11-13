@@ -91,10 +91,20 @@ uint64_t
 usse_fop(enum usse_nmad_op op, struct usse_reg dest, struct usse_reg src1,
          struct usse_reg src2)
 {
-   unsigned dext, dbank, ext1, bank1, ext2, bank2;
    /* src1's swizzle: three bits a channel (x y z w 0 1 2 0.5), all four
     * the lane it is in; src2's from a table, xxxx or yyyy */
-   unsigned sw1 = lane(src1) * 0x249, sw2 = lane(src2);
+   return usse_fop_sw(op, dest, src1, lane(src1) * 0x249, src2);
+}
+
+/* (M46) V32NMAD with src1 through its swizzle sw1, three bits a channel --
+ * USSE_SW_CONST(k): every channel the constant k (USSE_K_0, _1, _2, _HALF;
+ * src1's register is not read then, its modifiers still apply) */
+uint64_t
+usse_fop_sw(enum usse_nmad_op op, struct usse_reg dest, struct usse_reg src1, unsigned sw1,
+            struct usse_reg src2)
+{
+   unsigned dext, dbank, ext1, bank1, ext2, bank2;
+   unsigned sw2 = lane(src2);
 
    dest_bank(dest, &dext, &dbank);
    src_bank(src1, &ext1, &bank1);

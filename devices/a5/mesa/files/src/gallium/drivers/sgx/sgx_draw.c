@@ -1560,6 +1560,19 @@ clip_to(struct sgx_context *ctx, bool vs, struct sgx_frame_state *st, float ab[4
       lo[1] = MAX2(lo[1], ctx->scissor.miny);
       hi[1] = MIN2(hi[1], ctx->scissor.maxy);
    }
+   /* SGX_CLIP_TINY=1 (M46, a measurement): every draw clipped to 8 x 8
+    * pixels -- its vertices all shaded and clipped as before, next to no
+    * pixels: what a render's vertex side and fixed cost are */
+   {
+      static int tiny = -1;
+
+      if (tiny < 0)
+         tiny = debug_get_bool_option("SGX_CLIP_TINY", false);
+      if (tiny) {
+         hi[0] = MIN2(hi[0], lo[0] + 8);
+         hi[1] = MIN2(hi[1], lo[1] + 8);
+      }
+   }
    if (!(lo[0] < hi[0] && lo[1] < hi[1]))
       return false;
    for (unsigned i = 0; i < 2; i++) {
@@ -3228,8 +3241,8 @@ each_draw(struct sgx_context *ctx, const struct pipe_draw_info *info,
       n += draws[i].count;
       each_verts(ctx, info, &draws[i]);
    }
-   /* (the equation when the program blends in F32) */
-   if (rt && rt->blend_enable && !(fs && fs->sop2))
+   /* (the equation, F32's or SOP2's) */
+   if (rt && rt->blend_enable)
       snprintf(eq, sizeof(eq), " [%s %s %s | a %s %s %s]",
                util_str_blend_func(rt->rgb_func, true),
                util_str_blend_factor(rt->rgb_src_factor, true),
@@ -3255,6 +3268,11 @@ each_draw(struct sgx_context *ctx, const struct pipe_draw_info *info,
              ctx->dsa && ctx->dsa->depth_enabled ?
                 (ctx->dsa->depth_writemask ? "tested, written" : "tested") : "off",
              ctx->dsa && ctx->dsa->stencil[0].enabled ? ", stencil" : "");
+   /* (the vertex program, a GPU one's size) */
+   if (gpu_vs && ctx->batch.ndraws && ctx->batch.draw[ctx->batch.ndraws - 1].vs)
+      mesa_logi("sgx: each: vertex program %u instructions, %u temps",
+                ctx->batch.draw[ctx->batch.ndraws - 1].vs->ncode,
+                ctx->batch.draw[ctx->batch.ndraws - 1].vs->ntemps);
    sgx_batch_flush(ctx);
 }
 
