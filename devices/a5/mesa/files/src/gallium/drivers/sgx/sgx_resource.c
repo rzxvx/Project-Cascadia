@@ -102,8 +102,14 @@ sgx_resource_create(struct pipe_screen *pscreen, const struct pipe_resource *tem
        !(templ->bind & (PIPE_BIND_SHARED | PIPE_BIND_SCANOUT | PIPE_BIND_DISPLAY_TARGET)) &&
        !util_format_is_depth_or_stencil(templ->format))
       res->bo = sgx_bo_cache_get(&screen->dev, size);
+   /* one the screen may show (M49), where the kernel has the flag: it makes
+    * the buffer contiguous when it is the screen's size, and KMS points the
+    * display at it instead of copying it (DRI3's back buffers, GBM's
+    * scanout buffers) */
    if (!res->bo)
-      res->bo = sgx_bo_create(&screen->dev, size, 0, 0);
+      res->bo = sgx_bo_create(&screen->dev, size,
+                              templ->bind & PIPE_BIND_SCANOUT ?
+                              screen->dev.bo_flags & APPLE_SGX_BO_SCANOUT : 0, 0);
    if (!res->bo) {
       FREE(res);
       return NULL;

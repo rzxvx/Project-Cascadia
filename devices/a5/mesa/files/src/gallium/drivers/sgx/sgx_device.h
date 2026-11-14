@@ -20,6 +20,7 @@ struct hash_table_u64;
 struct sgx_device {
    int fd;
    uint32_t uapi, core_id, core_rev, num_cores;
+   uint32_t bo_flags;   /* the APPLE_SGX_BO_* flags the kernel takes (0: before SCANOUT) */
    uint32_t va_start, va_end;
    uint32_t code_base, code_va_start, code_va_end;
    uint32_t fb_va, fb_width, fb_height, fb_stride;

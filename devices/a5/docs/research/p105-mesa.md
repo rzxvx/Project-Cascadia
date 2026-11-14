@@ -4606,10 +4606,82 @@ render around it, and PPSSPP's GL thread waited for the copy.
 
 **What is left**, in the order it costs:
 
-- The kernel's copy onto the scanout (2.1 ms of the GPU a frame).
+- The kernel's copy onto the scanout (2.1 ms of the GPU a frame): M49.
 - GLSL19's alpha test (a lookup at the texel's alpha in PPSSPP's test
   texture), the TClampST draws still clamped, the program that writes
   gl_FragDepth, discard (M46's list).
+- The main render's pixels (~12 ms, nearly all blended), the renders'
+  fixed cost; the vertex programs' rest (M47's list).
+
+## M49: the screen without the copy -- the display's layer moved
+
+Every frame shown was a copy (M16, M38): the KMS screen is the boot
+framebuffer, which the display controller iBoot set up scans out, and a
+flip copied the new buffer onto it by the 2D engine -- for God of War the
+whole 1024 x 768 plane a frame, 2.1 ms of the GPU (the 2D engine is the
+transfer queue, on the cores the renders run on).
+
+**The display controller.** The CLCD (ADT arm-io/clcd, "clcd,s5l8940x",
+0x3a100000): its layer 0 at +0x4040 holds +0 1 (on), +4 0x9f6fc000 -- the
+boot framebuffer's physical address --, +8 0x1000 (the pitch), +0x10 and
++0x18 0x04000300 (1024 x 768), +0x48 and +0x4c 0x00100000 (a scale of
+1.0): `clcdscan.py` (the K93 session tools) read them, nothing written.
+The base moved by hand 100 lines on and back every two seconds
+(`clcdtoggle.py`), the picture moved with it, cleanly. Nothing else changes
+when it is written (`clcdlatch.py`: no shadow of it), and nothing reads
+back where the display reads: the CLCD's first 4 KiB repeat one word, the
+position it scans (>> 9 the line, 0-767 over a frame, as 0x39200054 has
+it). No IOMMU in front of it: the address is physical.
+
+**Contiguous buffers.** The render node's buffers are shmem pages,
+scattered. `APPLE_SGX_BO_SCANOUT`, a GEM_CREATE flag: a buffer of the
+screen's size (up to twice it) is physically contiguous, from CMA
+(`dma_alloc_wc`; multi_v7_defconfig's 64 MiB) -- a drm_gem_dma object
+beside the shmem ones, mapped into the GPU the same way; an ordinary buffer,
+the flag left out of GEM_INFO's, when CMA has no room. Kernels that take
+it list it in `APPLE_SGX_PARAM_BO_FLAGS`; the UAPI version stays 3 (a bump
+to 4 made the installed Mesa refuse the kernel, and X fell back to
+softpipe). Dumb buffers ask for it; Mesa asks for it for PIPE_BIND_SCANOUT
+-- DRI3's back buffers, GBM's scanout buffers -- where the kernel lists it.
+
+**KMS.** The device tree names the controller (`apple,s5l8940x-clcd`: the
+layer's window, the position's window). A flip -- a new framebuffer -- to
+a contiguous buffer of the screen's size and the boot framebuffer's pitch,
+unturned, with no overlay, points the layer at it; the commit's event, and
+the release of the buffer before, wait until the display is into the next
+frame (the position gone round and a line on: whether the controller takes
+the base at a frame's start or at once, the buffer before is not read
+after). Anything else -- the buffer on the screen drawn into (damage
+without a flip: X's own screen), the overlay, a turned plane -- copies the
+whole plane onto the boot framebuffer, waits for the copy, points the
+layer back, and copies follow as before; a CRTC turned off points it back
+too (fbcon's). `apple_sgx.direct_scanout=0` (writable at run time): copies
+only. debugfs `apple-sgx/screen`: where the layer reads, and the updates
+shown either way.
+
+God of War: every frame of the game's pointed at (8248 and 8555 in two
+runs; the ~50 copies X's own screen took around them), none copied; the
+picture right on the iPad's screen. The menu 38.7-39.1 -> 40.0-40.2
+frames/s (`direct_scanout` 0 and 1, two runs each, taking turns), PPSSPP's
+counter ~63-66% -> ~64-68%: less than the copy's 2.1 ms -- the GPU's
+frame is not all of the frame's time any more (its GL thread waits for it
+~45% of the time).
+
+**GLSL19's alpha test**, next in M48's list: God of War's is EQUAL, ref
+32, mask 0x20 -- alpha's bit 5 -- which PPSSPP looks up in its test
+texture (GLSL 1.20 has no `&`). Neither the lookup nor the test is the
+cost: the program without the test is 12 instructions (1.7 ms for 10
+layers of 480 x 272, `glshader`), with it 43 in F32 (30.8 ms); the bit
+computed instead of looked up (`floor`, `mod`) is 46 (33.3 ms). The test
+takes the program off the F16 path (M46: no discard, no lookup but the
+PDS's there): F16 programs that discard, with a lookup chained on a texel,
+are what would make it cheap. A PPSSPP patch comparing the alpha where
+the mask is 0xff was tried and left out: God of War's mask is not.
+
+**What is left**, in the order it costs:
+
+- F16 programs that discard (GLSL19: ~2.8 ms a frame); the TClampST draws
+  still clamped, the program that writes gl_FragDepth.
 - The main render's pixels (~12 ms, nearly all blended), the renders'
   fixed cost; the vertex programs' rest (M47's list).
 

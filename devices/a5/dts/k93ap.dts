@@ -551,6 +551,18 @@
 			apple,brn-31195;
 		};
 
+		/* The display controller iBoot leaves scanning out the boot
+		 * framebuffer (ADT arm-io/clcd, "clcd,s5l8940x"; nothing here
+		 * programs it).  The SGX's KMS points its layer 0 at a
+		 * contiguous buffer to show it, instead of copying it onto the
+		 * boot framebuffer (M49): the first window holds the layer's
+		 * base (+0x44; moved by hand, the picture moved with it), the
+		 * second the position it scans (+0x54, >> 9 the line). */
+		display-controller@a104000 {
+			compatible = "apple,s5l8940x-clcd";
+			reg = <0xa104000 0x1000>, <0x9200000 0x1000>;
+		};
+
 		/*
 		 * The cameras (docs/research/k93-camera.md, drivers/media/
 		 * platform/apple/apple-h4isp.c): the H4 ISP (ADT isp,s5l8940x,
