@@ -237,6 +237,20 @@ SHA-256 of the 24 files: `devices/a5/output/dump/r6pre-20261114.sha256` (not in 
   tree 172, 1188950 mapped, 14391 replayed, map digest `b9d6876bf398e101`. `--rung4` on
   its overlay passes.
 
+### Rung 6, round 1 (in progress): Linux context committed and left, 2026-11-15
+
+`devices/a5/tools/nand-rung6` (commits 0f82b18, febbdde). Read-only check first: clean.
+The golden rebuild of iOS's context sb 1020 from its own tables is identical to the media
+(200 LBAs: metadata of every LBA, base, statistics, SB array, user sequences, read counts,
+tree 87503 normalised runs), so the long-tree layout above is what iOS writes, not only what
+it reads. 20000 random mapped LBAs read with matching metadata; LwVM with System, Data, Linux.
+
+Then `action=commit`: Linux context on **sb 1048**, weave 377602250, 200 LBAs (tree 172,
+87684 runs, i.e. iOS's tree with the 14391 replayed LBAs folded in); 4 erases and 50 page
+programs, all in sb 1048; a fresh mount loads it with the same map digest
+`b9d6876bf398e101` and nothing to replay. sb 1020 (iOS) stays listed as a context. Left on
+the media for iOS to boot on.
+
 ## Decisions the spec left open
 
 **D1. Closing a partly written superblock.** The spec says "write the BTOC in the
