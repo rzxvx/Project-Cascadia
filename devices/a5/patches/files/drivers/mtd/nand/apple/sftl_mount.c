@@ -374,7 +374,8 @@ static int context_try(struct sftl *fs, u32 sb)
 	if (ret)
 		goto out;
 	{
-		u32 t, limit = sftl_capacity(fs, sb) - 24;
+		u32 t, limit = sftl_capacity(fs, sb) - SFTL_CTX_TREE_VBA;
+		bool ended = false;
 
 		for (t = 0; t < limit; t++) {
 			const u8 *img;
@@ -402,14 +403,18 @@ static int context_try(struct sftl *fs, u32 sb)
 					break;
 				img = fs->io_data + slot * SFTL_LBA_SIZE;
 			}
+			/* Empty tree LBAs end the tree but still belong to the context. */
 			if (sftl_get32(img) == 0xffffffffu &&
 			    sftl_get32(img + 4) == 0xffffffffu)
-				break;
+				ended = true;
+			if (ended)
+				continue;
 			ret = tree_ingest(fs, img, &cursor, &runs);
 			if (ret)
 				goto out;
 			used++;
 		}
+		fs->ctx_lbas = SFTL_CTX_TREE_VBA + t;
 	}
 	if (used > SFTL_TREE_LBAS)
 		sftl_warn("context sb %u: tree of %u LBAs, longer than the usual %u",
@@ -753,7 +758,7 @@ int sftl_replay(struct sftl *fs)
 		goto out;
 	}
 
-	note_weave(fs, fs->ctx_weave + SFTL_CTX_LBAS - 1);
+	note_weave(fs, fs->ctx_weave + fs->ctx_lbas - 1);
 	for (sb = 0; sb < SFTL_NUM_SB; sb++) {
 		const struct sftl_sb_probe *pr = &fs->probe[sb];
 		u8 t = fs->rec[sb].type;

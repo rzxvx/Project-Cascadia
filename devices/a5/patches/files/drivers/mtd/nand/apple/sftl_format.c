@@ -52,20 +52,24 @@ u32 sftl_btoc_build(const struct sftl_btoc_entry *ent, u32 n, u8 *img, u32 *nb_o
 	return nb * SFTL_LBA_SIZE;
 }
 
-/* Write the tree: returns 0 on success, -ENOSPC if it needs >32 LBAs. */
-u32 sftl_tree_serialize(struct sftl *fs, u8 *lbas, u32 *runs_out, u32 *used_out)
+/*
+ * Serialise the map as tree LBAs into lbas (max_lbas of them, zeroed first):
+ * each LBA is its first covered LBA, 0xfffffff0, then up to 511 (start, span)
+ * runs, ended by 0xffffffff when not full.  -ENOSPC if max_lbas is too few.
+ */
+int sftl_tree_serialize(struct sftl *fs, u8 *lbas, u32 max_lbas, u32 *runs_out,
+			u32 *used_out)
 {
-	u32 lba = 0, lidx = 0, nruns = 0;
-	u32 total = 0;
+	u32 lba = 0, lidx = 0, total = 0;
 
-	memset(lbas, 0, SFTL_TREE_LBAS * SFTL_LBA_SIZE);
+	memset(lbas, 0, (size_t)max_lbas * SFTL_LBA_SIZE);
 	while (lba < fs->total_lbas) {
 		u8 *img;
 		u32 r = 0;
 
-		if (lidx >= SFTL_TREE_LBAS)
-			return (u32)-ENOSPC;
-		img = lbas + lidx * SFTL_LBA_SIZE;
+		if (lidx >= max_lbas)
+			return -ENOSPC;
+		img = lbas + (size_t)lidx * SFTL_LBA_SIZE;
 		sftl_put32(img, lba);
 		sftl_put32(img + 4, 0xfffffff0u);
 		while (r < 511 && lba < fs->total_lbas) {
@@ -90,23 +94,24 @@ u32 sftl_tree_serialize(struct sftl *fs, u8 *lbas, u32 *runs_out, u32 *used_out)
 		if (r < 511)
 			sftl_put32(img + 8 + 8 * r, 0xffffffffu);
 		lidx++;
-		nruns = r;
-	}
-	for (; lidx < SFTL_TREE_LBAS; lidx++) {
-		u8 *img = lbas + lidx * SFTL_LBA_SIZE;
-
-		if (!total) /* empty map: never happens */
-			break;
-		sftl_put32(img, 0xffffffffu);
-		sftl_put32(img + 4, 0xffffffffu);
-		*(u32 *)(img + 8) = 0;
-		(void)nruns;
 	}
 	if (runs_out)
 		*runs_out = total;
 	if (used_out)
-		*used_out = (total + 510) / 511;
+		*used_out = lidx;
 	return 0;
+}
+
+/*
+ * Tree LBAs a context carries for a tree of 'used' LBAs: at least the 32 of
+ * the fixed part, else used plus at least one empty LBA, rounded up to 16.
+ * This matches both iOS contexts seen: 26 used in 32, 172 used in 176.
+ */
+u32 sftl_ctx_tree_lbas(u32 used)
+{
+	u32 n = (used + 1 + 15) & ~15u;
+
+	return n < SFTL_TREE_LBAS ? SFTL_TREE_LBAS : n;
 }
 
 static void put_ctx_meta(u8 *m, u8 section, u64 weave, u32 off, u32 len)
@@ -130,18 +135,20 @@ static u32 section_len(u32 total, u32 per_lba, u32 idx)
 }
 
 /*
- * Build the 14 pages of a context copy at superblock sb with base weave
- * weave: 'pages' is 14 * 16 KiB, 'metas' 14 * 64 bytes.  Returns 0 or the
- * tree overflow -ENOSPC.
+ * Build a context copy at superblock sb with base weave 'weave': 'pages' holds
+ * SFTL_CTX_MAX_PAGES * 16 KiB, 'metas' SFTL_CTX_MAX_PAGES * 64 bytes.  On
+ * return *nlbas_out is the number of LBAs to program (a multiple of 4).
+ * -ENOSPC when the tree needs more than SFTL_TREE_MAX_LBAS.
  */
-int sftl_ctx_build(struct sftl *fs, u32 sb, u64 weave, u8 *pages, u8 *metas)
+int sftl_ctx_build(struct sftl *fs, u32 sb, u64 weave, u8 *pages, u8 *metas,
+		   u32 *nlbas_out)
 {
-	u32 i, lba = 0;
-	u32 ret;
+	u32 i, lba = 0, used = 0, ntree;
+	u8 *tree = pages + 6 * SFTL_PAGE_SIZE;
+	int ret;
 
-	memset(pages, 0, SFTL_CTX_PAGES * SFTL_PAGE_SIZE);
-	memset(metas, 0xff, SFTL_CTX_PAGES * SFTL_META_PAGE);
-
+	memset(pages, 0, SFTL_CTX_MAX_PAGES * SFTL_PAGE_SIZE);
+	memset(metas, 0xff, SFTL_CTX_MAX_PAGES * SFTL_META_PAGE);
 	/* Base. */
 	sftl_put32(pages, 1);
 	sftl_put32(pages + 4, sb);
@@ -188,11 +195,19 @@ int sftl_ctx_build(struct sftl *fs, u32 sb, u64 weave, u8 *pages, u8 *metas)
 		put_ctx_meta(metas + lba * SFTL_META_LBA, 6, weave + lba,
 			     i * 1024, section_len(SFTL_NUM_SB, 1024, i));
 
-	/* Tree. */
-	ret = sftl_tree_serialize(fs, pages + 6 * SFTL_PAGE_SIZE, NULL, NULL);
+	/* Tree, then empty tree LBAs up to the count the layout asks for. */
+	ret = sftl_tree_serialize(fs, tree, SFTL_TREE_MAX_LBAS, NULL, &used);
 	if (ret)
-		return -ENOSPC;
-	for (i = 0; i < SFTL_TREE_LBAS; i++, lba++)
+		return ret;
+	ntree = sftl_ctx_tree_lbas(used);
+	for (i = used; i < ntree; i++) {
+		u8 *img = tree + (size_t)i * SFTL_LBA_SIZE;
+
+		sftl_put32(img, 0xffffffffu);
+		sftl_put32(img + 4, 0xffffffffu);
+	}
+	for (i = 0; i < ntree; i++, lba++)
 		put_ctx_meta(metas + lba * SFTL_META_LBA, 4, weave + lba, 0, 0);
+	*nlbas_out = lba;
 	return 0;
 }

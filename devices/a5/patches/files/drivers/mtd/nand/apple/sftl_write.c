@@ -342,7 +342,7 @@ static int read_sibling(struct sftl *fs, u32 vba, u8 *buf, u8 *meta16)
 
 /* ---- keeping the tree inside its 32 LBAs -------------------------------- */
 
-#define TREE_RUN_LIMIT		(SFTL_TREE_LBAS * 511u - 64u)
+#define TREE_RUN_LIMIT		(SFTL_TREE_MAX_LBAS * 511u - 64u)
 #define COMPACT_WINDOW		1024u
 #define COMPACT_TOP_WINDOWS	8u
 #define COMPACT_MAX_PASSES	32u
@@ -355,9 +355,9 @@ static bool continues_run(u32 prev_vba, u32 vba)
 }
 
 /*
- * The context holds at most 32 tree LBAs of runs.  When the map fragments past
- * that, rewrite the most fragmented windows contiguously (as GC does: type and
- * user kept) so the commit can go through.
+ * A Linux context holds at most SFTL_TREE_MAX_LBAS tree LBAs of runs.  When
+ * the map fragments past that, rewrite the most fragmented windows
+ * contiguously (as GC does: type and user kept) so the commit can go through.
  */
 static int tree_compact(struct sftl *fs)
 {
@@ -425,13 +425,63 @@ out:
 }
 
 /*
+ * Build a context from the current state and program it to sb, which must be
+ * freshly erased and marked as a context in the SB array; verify every page.
+ * On success the base weave and length are in fs->ctx_weave and ctx_lbas,
+ * and the weave counter has moved past the context.
+ */
+int sftl_context_write(struct sftl *fs, u32 sb)
+{
+	struct sftl_writer *w = fs->wr;
+	struct sftl_prog *prog = w->ctx_prog;
+	u8 *metas = w->ctx_pages + SFTL_CTX_MAX_PAGES * SFTL_PAGE_SIZE;
+	u64 weave = fs->next_weave;
+	u32 i, nlbas = 0, np;
+	int ret;
+
+	if (fs->shape[sb].width != SFTL_BANKS)
+		return -EINVAL;
+	ret = sftl_ctx_build(fs, sb, weave, w->ctx_pages, metas, &nlbas);
+	if (ret)
+		return fail_wedge(fs, "context build", ret);
+	np = nlbas / SFTL_LBAS_PER_PAGE;
+	for (i = 0; i < np; i++) {
+		prog[i].bank = fs->shape[sb].bank[i % SFTL_BANKS];
+		prog[i].slc = false;
+		prog[i].block = (u16)sb;
+		prog[i].page = (u16)(i / SFTL_BANKS);
+		prog[i].data = w->ctx_pages + i * SFTL_PAGE_SIZE;
+		prog[i].meta = metas + i * SFTL_META_PAGE;
+	}
+	fs->next_weave = weave + nlbas;
+	ret = fs->ops->program(fs->hw, prog, np);
+	if (ret)
+		return fail_wedge(fs, "context program", ret);
+	fs->cache_valid = false;
+	for (i = 0; i < np; i++) {
+		u8 st;
+
+		ret = fs->ops->read_page(fs->hw, prog[i].bank, sb, prog[i].page,
+					 false, w->check_data, w->check_meta, &st);
+		if (ret || st != SFTL_ST_OK ||
+		    memcmp(w->check_data, prog[i].data, SFTL_PAGE_SIZE) ||
+		    memcmp(w->check_meta, prog[i].meta, SFTL_META_PAGE))
+			return fail_wedge(fs, "context verify", ret ? ret : -EIO);
+	}
+	fs->ctx_weave = weave;
+	fs->ctx_lbas = nlbas;
+	sftl_info("context written to sb %u: weave %llu, %u LBAs (%u pages)", sb,
+		  (unsigned long long)weave, nlbas, np);
+	return 0;
+}
+
+/*
  * Commit: close the frontier, write a new context to a fresh superblock and
  * verify every page.  Older contexts and victims are erased only after that.
  */
 static int commit(struct sftl *fs)
 {
 	struct sftl_writer *w = fs->wr;
-	struct sftl_prog prog[SFTL_CTX_PAGES];
 	u64 weave;
 	u32 i, new_sb, keep = fs->ctx_sb;
 	int ret, sb;
@@ -440,7 +490,7 @@ static int commit(struct sftl *fs)
 		return fail_wedge(fs, "commit while fenced", -EPERM);
 	ret = tree_compact(fs);
 	if (ret)
-		return fail_wedge(fs, "tree does not fit its 32 LBAs", ret);
+		return fail_wedge(fs, "tree does not fit a context", ret);
 	ret = batch_flush(fs);
 	if (ret)
 		return ret;
@@ -466,36 +516,10 @@ static int commit(struct sftl *fs)
 		}
 	}
 
-	weave = fs->next_weave;
-	fs->next_weave += SFTL_CTX_LBAS;
-	ret = sftl_ctx_build(fs, new_sb, weave, w->ctx_pages,
-			     w->ctx_pages + SFTL_CTX_PAGES * SFTL_PAGE_SIZE);
+	ret = sftl_context_write(fs, new_sb);
 	if (ret)
-		return fail_wedge(fs, "context build", ret);
-
-	for (i = 0; i < SFTL_CTX_PAGES; i++) {
-		prog[i].bank = (u8)(i % SFTL_BANKS);
-		prog[i].slc = false;
-		prog[i].block = (u16)new_sb;
-		prog[i].page = (u16)(i / SFTL_BANKS);
-		prog[i].data = w->ctx_pages + i * SFTL_PAGE_SIZE;
-		prog[i].meta = w->ctx_pages + SFTL_CTX_PAGES * SFTL_PAGE_SIZE +
-			       i * SFTL_META_PAGE;
-	}
-	ret = fs->ops->program(fs->hw, prog, SFTL_CTX_PAGES);
-	if (ret)
-		return fail_wedge(fs, "context program", ret);
-	fs->cache_valid = false;
-	for (i = 0; i < SFTL_CTX_PAGES; i++) {
-		u8 st;
-
-		ret = fs->ops->read_page(fs->hw, prog[i].bank, new_sb, prog[i].page,
-					 false, w->check_data, w->check_meta, &st);
-		if (ret || st != SFTL_ST_OK ||
-		    memcmp(w->check_data, prog[i].data, SFTL_PAGE_SIZE) ||
-		    memcmp(w->check_meta, prog[i].meta, SFTL_META_PAGE))
-			return fail_wedge(fs, "context verify", ret ? ret : -EIO);
-	}
+		return ret;
+	weave = fs->ctx_weave;
 
 	/* The new context stands: retire and erase what it replaced. */
 	for (i = 0; i < w->n_pending; i++) {
@@ -510,7 +534,6 @@ static int commit(struct sftl *fs)
 	if (keep != new_sb && fs->rec[keep].type == SFTL_SB_CONTEXT)
 		fs->ctx_list[fs->n_ctx++] = keep;
 	fs->ctx_sb = new_sb;
-	fs->ctx_weave = weave;
 	fs->replayed = false;
 	w->dirty = false;
 	sftl_info("committed context on sb %u, weave %llu", new_sb,
@@ -800,11 +823,12 @@ int sftl_writer_start(struct sftl *fs, unsigned int verify_every)
 	w->entries = sftl_alloc(2 * SFTL_PAGE_SIZE / 16 * sizeof(*w->entries));
 	w->check_data = sftl_alloc(SFTL_PAGE_SIZE);
 	w->btoc_img = sftl_alloc(2 * SFTL_PAGE_SIZE);
-	w->ctx_pages = sftl_alloc(SFTL_CTX_PAGES * (SFTL_PAGE_SIZE + SFTL_META_PAGE));
+	w->ctx_pages = sftl_alloc(SFTL_CTX_MAX_PAGES * (SFTL_PAGE_SIZE + SFTL_META_PAGE));
+	w->ctx_prog = sftl_alloc(SFTL_CTX_MAX_PAGES * sizeof(*w->ctx_prog));
 	w->gc_list = sftl_alloc(SFTL_MAX_VICTIMS * 4096 * sizeof(u32));
 	w->victim_map = sftl_alloc((SFTL_NUM_SB + 7) / 8);
 	if (!w->pool || !w->meta_pool || !w->pend_lba || !w->pend_vba ||
-	    !w->entries || !w->check_data || !w->btoc_img || !w->ctx_pages ||
+	    !w->entries || !w->check_data || !w->btoc_img || !w->ctx_pages || !w->ctx_prog ||
 	    !w->gc_list || !w->victim_map) {
 		ret = -ENOMEM;
 		goto fail;
@@ -874,6 +898,7 @@ void sftl_writer_stop(struct sftl *fs)
 	sftl_free(w->check_data);
 	sftl_free(w->btoc_img);
 	sftl_free(w->ctx_pages);
+	sftl_free(w->ctx_prog);
 	sftl_free(w->gc_list);
 	sftl_free(w->victim_map);
 	sftl_free(w);

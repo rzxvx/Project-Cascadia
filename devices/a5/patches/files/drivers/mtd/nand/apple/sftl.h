@@ -39,9 +39,16 @@ typedef uint64_t u64;
 #define SFTL_LBAS_PER_SB	4096u
 #define SFTL_NUM_SB		1055u
 #define SFTL_TOTAL_LBAS		3906266u	/* reported + 16 hidden */
-#define SFTL_CTX_LBAS		56u
+#define SFTL_CTX_LBAS		56u	/* the fixed part: sections 1, 2, 3, 5, 6, 4 */
 #define SFTL_CTX_PAGES		14u
-#define SFTL_TREE_LBAS		32u
+#define SFTL_TREE_LBAS		32u	/* tree LBAs inside the fixed part */
+#define SFTL_CTX_TREE_VBA	24u	/* VBA of the first tree LBA */
+/*
+ * The tree may run on past the fixed part, in VBAs that follow it (iOS does
+ * this when the map is fragmented); this is the most a Linux context writes.
+ */
+#define SFTL_TREE_MAX_LBAS	512u
+#define SFTL_CTX_MAX_PAGES	((SFTL_CTX_TREE_VBA + SFTL_TREE_MAX_LBAS) / SFTL_LBAS_PER_PAGE)
 
 /* In-memory and on-media "no mapping" VBA. */
 #define SFTL_UNMAPPED		0x7fffffu
@@ -181,7 +188,8 @@ struct sftl_writer {
 	u8 *check_data;
 	u8 check_meta[SFTL_META_PAGE];
 	u8 *btoc_img;
-	u8 *ctx_pages;
+	u8 *ctx_pages;			/* SFTL_CTX_MAX_PAGES of data, then meta */
+	struct sftl_prog *ctx_prog;
 
 	u32 *gc_list;
 	u8 *victim_map;
@@ -220,6 +228,7 @@ struct sftl {
 	/* Context */
 	u32 ctx_sb;
 	u64 ctx_weave;
+	u32 ctx_lbas;			/* LBAs of the loaded context, all sections */
 	u32 ctx_list[SFTL_MAX_CTX];	/* context superblocks seen on media */
 	unsigned int n_ctx;
 
@@ -376,8 +385,11 @@ int sftl_read_btoc(struct sftl *fs, u32 sb, u32 *nb, u8 *img);
 void sftl_summarize_useq(const u8 *btoc, u32 entries, struct sftl_useq *out);
 
 /* sftl_format.c: producing the on-media images (shared by mount tests and writer). */
-int sftl_ctx_build(struct sftl *fs, u32 sb, u64 weave, u8 *pages, u8 *metas);
-u32 sftl_tree_serialize(struct sftl *fs, u8 *lbas, u32 *runs_out, u32 *used_out);
+u32 sftl_ctx_tree_lbas(u32 used);
+int sftl_ctx_build(struct sftl *fs, u32 sb, u64 weave, u8 *pages, u8 *metas,
+		   u32 *nlbas_out);
+int sftl_tree_serialize(struct sftl *fs, u8 *lbas, u32 max_lbas, u32 *runs_out,
+			u32 *used_out);
 void sftl_btoc_append(struct sftl_btoc_entry *ent, u32 *n, u64 first_weave,
 		      u32 lba, u64 weave, u32 user);
 u32 sftl_btoc_build(const struct sftl_btoc_entry *ent, u32 n, u8 *img, u32 *nb_out,
@@ -405,6 +417,7 @@ int sftl_write(struct sftl *fs, u32 lba, u32 count, const u8 *src);
 int sftl_checkpoint(struct sftl *fs);
 int sftl_checkpoint_due(struct sftl *fs);
 int sftl_writer_fence(struct sftl *fs, u32 sb);
+int sftl_context_write(struct sftl *fs, u32 sb);
 int sftl_writer_seal(struct sftl *fs);
 #endif
 

@@ -5,8 +5,8 @@
  * 16448 bytes as read off the bus, one status byte per page.
  *
  * --write runs the writer on an in-memory overlay of the dump: nothing is ever
- * written to the dump itself.  --rung3 runs the device-ladder rung 3 test on
- * the same overlay, as the kernel test module runs it on the device.
+ * written to the dump itself.  --rung3 and --rung4 run the device-ladder tests
+ * on the same overlay, as the kernel test modules run them on the device.
  */
 #define _GNU_SOURCE
 #include <fcntl.h>
@@ -19,6 +19,7 @@
 #include "sftl.h"
 #include "sftl_port.h"
 #include "rung3.h"
+#include "rung4.h"
 
 #define RAW_PAGE 16448
 #define OVERLAY_PAGES (1u << 20)
@@ -304,15 +305,21 @@ static int compare_trees(const u8 *a, const u8 *b)
 static void golden_context(struct sftl *fs)
 {
 	u32 sb = fs->ctx_sb;
-	u8 *ours = malloc(SFTL_CTX_PAGES * (SFTL_PAGE_SIZE + SFTL_META_PAGE));
-	u8 *ours_meta = ours + SFTL_CTX_PAGES * SFTL_PAGE_SIZE;
+	u8 *ours = malloc(SFTL_CTX_MAX_PAGES * (SFTL_PAGE_SIZE + SFTL_META_PAGE));
+	u8 *ours_meta = ours + SFTL_CTX_MAX_PAGES * SFTL_PAGE_SIZE;
+	u32 nlbas = 0;
 	u8 data[SFTL_PAGE_SIZE], meta[SFTL_META_PAGE];
 	u32 i, used_runs = 0, used_lbas = 0;
 	static u8 dump_tree[8 * SFTL_PAGE_SIZE];
 	int bad_meta = 0, bad_base = 0, bad_sbarr = 0, bad_useq = 0, bad_reads = 0, bad_tree = 0;
 
-	assert(!sftl_ctx_build(fs, sb, fs->ctx_weave, ours, ours_meta));
-	sftl_tree_serialize(fs, ours + 6 * SFTL_PAGE_SIZE, &used_runs, &used_lbas);
+	assert(!sftl_ctx_build(fs, sb, fs->ctx_weave, ours, ours_meta, &nlbas));
+	CHECK(nlbas == SFTL_CTX_LBAS, "context of a 26-LBA tree is %u LBAs (want 56)", nlbas);
+	{
+		static u8 tree_tmp[SFTL_TREE_MAX_LBAS * SFTL_LBA_SIZE];
+
+		sftl_tree_serialize(fs, tree_tmp, SFTL_TREE_MAX_LBAS, &used_runs, &used_lbas);
+	}
 	for (i = 0; i < SFTL_CTX_PAGES; i++) {
 		u8 st;
 		u32 bank = fs->shape[sb].bank[i % 4];
@@ -781,10 +788,10 @@ static void writer_tests(struct device *d, const char *dir)
 		}
 		CHECK(!ret, "fragmenting writes (%d)", ret);
 		if (!ret) {
-			static u8 tree_img[32 * SFTL_LBA_SIZE];
+			static u8 tree_img[SFTL_TREE_MAX_LBAS * SFTL_LBA_SIZE];
 			u32 before_runs = 0;
 
-			sftl_tree_serialize(fs, tree_img, &before_runs, NULL);
+			sftl_tree_serialize(fs, tree_img, SFTL_TREE_MAX_LBAS, &before_runs, NULL);
 			printf("  fragmented tree: %u runs before commit\n", before_runs);
 			ret = sftl_checkpoint(fs);
 			CHECK(!ret, "commit with an over-long tree (%d)", ret);
@@ -855,7 +862,7 @@ int main(int argc, char **argv)
 	bool do_write = false;
 
 	if (argc < 2) {
-		fprintf(stderr, "usage: %s <dump-dir> [--write | --rung3]\n", argv[0]);
+		fprintf(stderr, "usage: %s <dump-dir> [--write | --rung3 | --rung4]\n", argv[0]);
 		return 2;
 	}
 	if (argc > 2 && !strcmp(argv[2], "--write"))
@@ -863,17 +870,23 @@ int main(int argc, char **argv)
 	d = malloc(sizeof(*d));
 	if (dev_open(d, argv[1]))
 		return 1;
-	if (argc > 2 && !strcmp(argv[2], "--rung3")) {
+	if (argc > 2 && (!strcmp(argv[2], "--rung3") || !strcmp(argv[2], "--rung4"))) {
 		struct sftl *vfl = calloc(1, sizeof(*vfl));
 		struct rung3_args a = { .ops = &dev_ops, .hw = d, .nlbas = 2000,
 					.search_from = 100000 };
+		struct rung4_args a4 = { .ops = &dev_ops, .hw = d };
 
 		assert(!sftl_init(vfl, &dev_ops, d) && !sftl_load_vfl(vfl));
 		for (i = 0; i < SFTL_BANKS; i++)
 			d->usage[i] = vfl->usage[i];
 		d->writes_enabled = true;
-		ret = rung3_run(&a);
-		CHECK(!ret, "rung 3 on the overlay (%d)", ret);
+		if (argv[2][6] == '3') {
+			ret = rung3_run(&a);
+			CHECK(!ret, "rung 3 on the overlay (%d)", ret);
+		} else {
+			ret = rung4_run(&a4);
+			CHECK(!ret, "rung 4 on the overlay (%d)", ret);
+		}
 		printf("  device: %lu reads, %lu programs, %lu erases, %lu pages skipped\n",
 		       d->reads, d->progs, d->erases, d->pages_gapped);
 		goto done;
