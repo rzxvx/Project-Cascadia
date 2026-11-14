@@ -1,0 +1,3 @@
+# SPDX-License-Identifier: GPL-2.0-only
+obj-m += ppn_dump.o
+ccflags-y += -I$(src)/../../patches/files/drivers/mtd/nand/apple
