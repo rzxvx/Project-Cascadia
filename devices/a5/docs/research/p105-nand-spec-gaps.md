@@ -379,8 +379,8 @@ own `/sbin/p105-stage2`; any failure falls through to NFS). Nothing is copied in
 - `p105-stage2` turns `reboot` into a power-off on this iPad. The FTL's reboot notifier
   also runs on power-off, but its messages are lost with the ssh link. Evidence that the
   shutdown checkpoint is written: each time iOS's next context lists as its previous context
-  an SB other than the one the Linux session had loaded (sb 304 after loading 825; sb 66
-  after loading 825), as when iOS booted on a Linux context in rungs 6–8, where it listed
+  an SB other than the one the Linux session had loaded (sb 304 after the session that loaded sb 972;
+  sb 66 after the one that loaded sb 825), as when iOS booted on a Linux context in rungs 6–8, where it listed
   exactly that Linux context. Not proven directly: that needs a boot into Linux right after
   the power-off with no iOS in between.
 
