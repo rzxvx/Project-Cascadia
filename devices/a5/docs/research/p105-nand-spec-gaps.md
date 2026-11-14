@@ -237,7 +237,7 @@ SHA-256 of the 24 files: `devices/a5/output/dump/r6pre-20261114.sha256` (not in 
   tree 172, 1188950 mapped, 14391 replayed, map digest `b9d6876bf398e101`. `--rung4` on
   its overlay passes.
 
-### Rung 6, round 1 (in progress): Linux context committed and left, 2026-11-15
+### Rung 6, round 1: Linux context committed and left, 2026-11-15 — iOS booted on it
 
 `devices/a5/tools/nand-rung6` (commits 0f82b18, febbdde). Read-only check first: clean.
 The golden rebuild of iOS's context sb 1020 from its own tables is identical to the media
@@ -250,6 +250,18 @@ Then `action=commit`: Linux context on **sb 1048**, weave 377602250, 200 LBAs (t
 programs, all in sb 1048; a fresh mount loads it with the same map digest
 `b9d6876bf398e101` and nothing to replay. sb 1020 (iOS) stays listed as a context. Left on
 the media for iOS to boot on.
+
+**After iOS** (user: iOS boots and works; read-only check on the rung-1 image): clean.
+
+- iOS loaded the Linux context and committed its own on **sb 248**, weave 377607947,
+  200 LBAs, tree 172 (87778 runs after 17668 replayed LBAs).
+- The golden rebuild of sb 248 is identical to the media (87675 normalised runs).
+- iOS's SB array lists sb 248 and sb 1048 (the Linux context) as contexts, but **sb 1048 is
+  erased** on the media: iOS erases the previous context after committing, and keeps it
+  listed with type 7. The same was seen for sb 456 before (listed, no context on it).
+- sb 1020 (the iOS context the Linux commit kept) was erased and reused by iOS as its
+  open frontier (type 4, 670 valid); sb 456 now holds closed data.
+- 20000 random mapped LBAs read with matching metadata; LwVM System, Data, Linux.
 
 ## Decisions the spec left open
 
