@@ -45,6 +45,11 @@ static char *write_volume = "";
 module_param(write_volume, charp, 0444);
 MODULE_PARM_DESC(write_volume, "Name of the only LwVM volume that may be written");
 
+static bool skip_checkpoint;
+module_param(skip_checkpoint, bool, 0644);
+MODULE_PARM_DESC(skip_checkpoint,
+		 "Test only: unmount without the final checkpoint, as a crash would");
+
 static unsigned int verify_every = SFTL_VERIFY_DEFAULT;
 module_param(verify_every, uint, 0444);
 MODULE_PARM_DESC(verify_every, "Read back every Nth programmed page (1 = all)");
@@ -345,6 +350,10 @@ static void final_checkpoint(struct ftl_instance *in)
 
 	if (!in->writing)
 		return;
+	if (skip_checkpoint) {
+		pr_warn("apple_ftl: final checkpoint skipped (skip_checkpoint)\n");
+		return;
+	}
 	mutex_lock(&in->lock);
 	ret = sftl_checkpoint(&in->fs);
 	mutex_unlock(&in->lock);
