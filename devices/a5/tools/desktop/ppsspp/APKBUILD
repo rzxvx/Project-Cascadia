@@ -2,7 +2,7 @@
 # Alpine has no PPSSPP package.
 pkgname=ppsspp
 pkgver=1.20.4
-pkgrel=3
+pkgrel=4
 pkgdesc="PlayStation Portable emulator (SDL), built for the Apple A5"
 url="https://www.ppsspp.org"
 arch="armhf armv7"
@@ -17,12 +17,15 @@ makedepends="cmake samurai linux-headers python3 ccache mesa-dev glu-dev sdl2-co
 # (its disk cache took a mutex twice); the touch controls take X11's
 # fingers (touch IDs in the hundreds, where they expect 0-9); on the SGX
 # driver the push buffers are mapped, the emulator thread writing vertices
-# where the GPU reads them (no 1.75 MB copy a frame in the render thread)
+# where the GPU reads them (no 1.75 MB copy a frame in the render thread);
+# and there a draw that samples a part of its own target it does not draw
+# into samples the target itself (God of War's bloom: six copies a frame)
 source="https://github.com/hrydgard/ppsspp/releases/download/v$pkgver/ppsspp-$pkgver.tar.xz
 	sdl-desktop-gl-keeps-glx.patch
 	disk-cache-no-self-deadlock.patch
 	sdl-touch-finger-slots.patch
-	gl-map-push-buffers.patch"
+	gl-map-push-buffers.patch
+	gl-self-texture-no-copy.patch"
 builddir="$srcdir/ppsspp-$pkgver"
 options="!check"
 

@@ -4555,6 +4555,64 @@ vectors and the masks off -> 33.5-33.7 with them, PPSSPP's counter ~54%
 - GLSL19's alpha test, the TClampST draws still clamped, the program that
   writes gl_FragDepth, discard (M46's list).
 
+## M48: a draw that samples its own target, without PPSSPP's copy
+
+M46's six copies a frame (God of War's glow: 256 x 136 down to 58 x 34
+inside one 864 x 272 target) are PPSSPP's, not the game's: before a draw
+that textures from the framebuffer it renders into, PPSSPP copies that
+framebuffer into a temporary one and samples the copy
+(`FramebufferManagerCommon::BindFramebufferAsColorTexture`, its "self"
+branch: glCopyImageSubData here, u_blitter's render). Each copy is a render
+of its own, ~0.45 ms of the GPU (M46: a render's fixed cost).
+
+On this GPU the copy is not needed when the draw reads none of the pixels
+it draws. The driver ends the render a draw would join when the draw
+samples that render's target (`sgx_draw.c`: the batch flushed first), so
+the draw reads, from memory, all that was drawn before it; and a tile-based
+GPU stores a tile's pixels only when the tile is done -- its writes are to
+other pixels than its reads, so no tile reads what another wrote. Every
+glow draw of God of War's is such a draw: it draws x 0..256 and reads x
+256 on (its texture at offset 256 in the target, the coordinates clamped
+to the texture's rectangle by PPSSPP's shader -- `SGX_EACH_VERTS_FS`
+showed both).
+
+`tools/desktop/ppsspp/gl-self-texture-no-copy.patch` (r4): on Mesa's SGX
+driver (the renderer's "SGX", "Mesa" in the version) a through-mode draw
+whose pixels and texels are apart binds the target itself.
+
+- The pixels drawn: those whose centres the decoded vertices' box covers
+  (a quarter pixel either way for the rasterizer), at the render target's
+  offset.
+- The texels read: the two around each texture coordinate of the box
+  (bilinear) -- kept in the texture's rectangle when PPSSPP's shader
+  clamps them there (`u_texclamp`: the texture's size, at its offset in
+  the target), that rectangle and a texel around it when the shader wraps
+  them, inside the target otherwise.
+- `DrawEngineGLES::Flush` hands the decoded vertices over while it applies
+  the texture, on both of its paths: the glow's sprites take the software
+  transform's, and PPSSPP's own texture coordinate bounds (`vertBounds`)
+  are not kept by every vertex decoder (ARM32's JIT skips float ones).
+  A first version had neither and copied all six; one that wanted the
+  rectangles two pixels apart, without the clamp, four.
+- `PPSSPP_SELF_TEXTURE_COPY=1`: a copy always; `=0`: the check whatever
+  the driver.
+
+God of War's frame: u_blitter's renders 604 -> 0 in 100 frames, 18 -> 12
+renders a frame (`SGX_DEBUG=sync`); the glow as before (screenshots). The
+menu 31.8-33.3 -> 38.7-39.2 frames/s (one build, `PPSSPP_SELF_TEXTURE_COPY=1`
+and not, two runs each, taking turns), PPSSPP's counter ~52-56% -> ~64-66%.
+More than the renders' fixed cost: each copy also split the target's
+render around it, and PPSSPP's GL thread waited for the copy.
+
+**What is left**, in the order it costs:
+
+- The kernel's copy onto the scanout (2.1 ms of the GPU a frame).
+- GLSL19's alpha test (a lookup at the texel's alpha in PPSSPP's test
+  texture), the TClampST draws still clamped, the program that writes
+  gl_FragDepth, discard (M46's list).
+- The main render's pixels (~12 ms, nearly all blended), the renders'
+  fixed cost; the vertex programs' rest (M47's list).
+
 ## Testing, without and with the device
 
 - **Host, every change:** the kernel driver builds with `W=1` against the
