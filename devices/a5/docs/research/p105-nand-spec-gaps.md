@@ -355,6 +355,15 @@ BTOC. Remount: replay 27293 LBAs (iOS's 18157 plus the open Linux frontier by me
 scan); `e2fsck -fn` clean; the 501 new files and the 2301 of rung 8a all match. The next
 unmount committed sb 248; a remount after it replays nothing.
 
+**After iOS** (read only): iOS committed sb 332 (golden identical, 88125 runs; 1238888
+mapped); the Linux context sb 248 is erased and listed type 7. 20000 random LBAs read;
+`e2fsck -fn` clean; the 2301 files of 8a and the 501 of 8b all match.
+
+**Rung 8 passed (2026-11-15):** ext4 writes on the Linux volume through `apple_ftl`,
+fsync and rename load, crash (no checkpoint) replay, checkpoint rotation (contexts on sb
+1005, 475, 30, 248), automatic reclaim, unmount checkpoint, and iOS booted after each
+part. The test files stay in `/rung8-test` on the Linux volume (about 165 MiB).
+
 ## Decisions the spec left open
 
 **D1. Closing a partly written superblock.** *Rung 7: iOS accepted a Linux SB closed

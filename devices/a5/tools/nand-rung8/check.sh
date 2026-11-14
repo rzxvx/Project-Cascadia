@@ -20,6 +20,10 @@ $E2 -fn /dev/ftl0p2 > "$OUT/fsck-check.txt" 2>&1; log "e2fsck -fn: exit $?"
 mount -t ext4 -o ro,noload /dev/ftl0p2 $M || exit 1
 (cd $M/rung8-test && sha256sum -c "$OUT/sums.txt" 2>&1 | grep -vc ": OK$") > /tmp/bad
 log "files not OK: $(cat /tmp/bad) of $(wc -l < "$OUT/sums.txt")"
+if [ -f "$OUT/crash-sums.txt" ]; then
+	(cd $M/rung8-test/crash && sha256sum -c "$OUT/crash-sums.txt" 2>&1 | grep -vc ": OK$") > /tmp/bad
+	log "crash files not OK: $(cat /tmp/bad) of $(wc -l < "$OUT/crash-sums.txt")"
+fi
 umount $M
 rmmod apple_ftl; rmmod apple_ppn
 log "check done"
