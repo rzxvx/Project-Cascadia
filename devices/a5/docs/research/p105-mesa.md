@@ -4698,6 +4698,68 @@ the mask is 0xff was tried and left out: God of War's mask is not.
 - The main render's pixels (~12 ms, nearly all blended), the renders'
   fixed cost; the vertex programs' rest (M47's list).
 
+## M50: F16 programs that discard -- GLSL19's alpha test
+
+M49 found GLSL19's alpha test taking the program off the F16 path. In the
+game its blend -- the source times the blend colour, plus the destination
+(ONE the destination's factor) -- makes the discard a colour of 0 (M46's
+`lower_discard_to_zero`): the program stores bcsel(kill, 0, colour), the
+kill a comparison of the table's alpha, the table looked up at the
+colour's alpha -- a lookup at coordinates a texel decides. `f16_colour()`
+took neither: 36 and 37 instructions in F32 (its two blends), the main
+lookup the PDS's.
+
+- **Chained lookups.** A lookup whose coordinates read more than varyings,
+  uniforms and constants is made after the others, its coordinates in F32
+  as before (`f16_coord`) -- but what F32 cannot make, a texel, a varying
+  iterated as F16, the colour's arithmetic of them, comes from the colour's
+  tree in F16, unpacked to F32 (a VPCK, one instruction), while an
+  operation F32 can do with a constant or uniform among its operands stays
+  F32. GLSL19: the colour's alpha times the texel's in F16, then times
+  0.996094 plus 0.001953 in F32. Only a texel's value and the colour's own
+  varyings come that way: a texture coordinate keeps F32's precision, or
+  the program is F32's. Constants are the pool's (F32 in a word of a pair),
+  and ffma is taken; a plain lookup may have constants among its
+  coordinates now. `SGX_NO_F16_CHAIN=1`: none.
+- **The kill.** The store's bcsel(kill, 0, colour) on every channel (a
+  channel of 1, `b2f(inot(kill))` by then, takes src1's constant 1): the
+  colour as before; the condition VTSTMSK's mask -- flt, fge, feq, fneu of
+  F32 values made as a chained lookup's coordinates are, a constant in the
+  pool's word in the other operand's lane (VTSTMSK compares lane by lane),
+  ior, iand and inot of such by VBW -- and the colour's two words ANDed
+  with the mask inverted (VBW's not2): two instructions. `SGX_NO_F16_KILL=1`:
+  none.
+- The chained lookups' coordinates' pairs go back to the tree after them
+  (what a chain made in them made again where the colour needs it), and the
+  mask comes out of the colour in place: GLSL19's 26 temporaries 16.
+
+`glshader -A` (new: blended ONE, ONE) on the iPad, 10 layers of 480 x 272:
+
+| GLSL19 | F16 now | F32 (`SGX_NO_F16_KILL=1`) |
+|---|---|---|
+| as PPSSPP makes it | 27 instructions, 20.1 ms | 48, 34.7 ms |
+| without the discard | 20.4 ms | 20.0 ms (F16 before) |
+| without the chained lookup | 14.7 ms | 28.3 ms |
+| without either | 9.5 ms | 9.5 ms |
+
+The discard costs nothing in F16 now; the lookup at a texel's value ~11 ms
+of the 20. `gldiscard` has two cases more -- PPSSPP's alpha test through
+its table, added, and added times the blend colour as GLSL19 is -- 12 of 12
+either way, and `addalpha` takes the F16 path too; the driver's GL tests
+pass. In the game GLSL19 is 19 and 20 instructions; the menu 36.3-37.4 ->
+37.8-38.2 frames/s (`SGX_NO_F16_KILL=1` and not, two runs each, taking
+turns).
+
+**What is left**, in the order it costs:
+
+- PPSSPP's emulator thread (91-93% of a core): the menu's frame is the
+  CPU's now, not the GPU's.
+- On the GPU: the main render's pixels (~12 ms, nearly all blended), the
+  renders' fixed cost; GLSL19's lookup at a texel's value (a bit test of
+  the alpha -- mask 0x20 -- in F16 instead); the TClampST draws still
+  clamped, the program that writes gl_FragDepth; the vertex programs' rest
+  (M47's list).
+
 ## Testing, without and with the device
 
 - **Host, every change:** the kernel driver builds with `W=1` against the
