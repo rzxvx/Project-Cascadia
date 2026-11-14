@@ -139,6 +139,35 @@ Test module `devices/a5/tools/nand-rung2` (commit c62a31e and the next), driver 
 
 **Rung 2 passed (2026-11-14):** iOS booted after it (user check).
 
+### Rung 3, 2026-11-14: FTL writes that are undone, passed
+
+`devices/a5/tools/nand-rung3` (commit 62673ec): the same `rung3.c` passes on the `w0c`
+overlay (`nandtest --rung3`) and on the device (`ppn_rung3.ko`, FTL core built in,
+`apple_ppn allow_write=1`, rung-1 image, `apple_ftl` not loaded). On the device, in 27 s:
+
+1. Mount: context sb 456, weave 377570546, 1187028 LBAs mapped, 13247 replayed, map
+   digest `70b046e8c90958b1`.
+2. Target sb 1048, four banks, listed erased, every page of its four blocks read
+   erased; the writer fenced to it (commit and reclaim refuse, no other SB opens).
+3. LBAs 123589..125588 rewritten with their own content: 1998 written, one sibling
+   carried at each end; PAD fill to capacity, BTOC nb 4, 133 entries; every page
+   verified after program (verify every 1). This is the first use of the batch
+   program path, with pages overlapped across the two buses.
+4. The BTOC read back through the mount path equals the one written and the one
+   rebuilt from the metadata of all 4092 data VBAs; all 2000 LBAs read back right.
+5. A fresh mount replays sb 1048 (15246 replayed) and its map equals the written one.
+6. sb 1048 erased, every page reads erased.
+7. A fresh mount: context, mapped count, replay count and digest equal step 1.
+
+Nothing else on the media changed except the erase counts of the four blocks of sb 1048
+(two erases each). No context was written.
+
+**Seen on the way:** the live context is now sb 456, which iOS wrote after rung 2, and
+its tree is **172 LBAs** long. iOS itself therefore writes trees longer than 32 LBAs when
+the map is that fragmented (it kept the shape of the earlier Linux context, sb 555,
+174 LBAs). The 32-LBA figure of spec §4.5 is the size of the iOS tree in `w0c`, not a
+format limit. Decision D3 (compact to stay within 32) is therefore a choice, not a need.
+
 ## Decisions the spec left open
 
 **D1. Closing a partly written superblock.** The spec says "write the BTOC in the
