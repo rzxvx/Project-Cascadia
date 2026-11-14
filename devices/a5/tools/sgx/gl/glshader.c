@@ -4,11 +4,12 @@
  * prints the program it made (tools/iosgpu/usse-dis.py reads the words), with
  * SGX_DEBUG=sync each render's time on the GPU.
  *
- *   sgx-gl glshader VS FS [-w W] [-h H] [-n LAYERS] [-f FRAMES] [-b] [-M]
+ *   sgx-gl glshader VS FS [-w W] [-h H] [-n LAYERS] [-f FRAMES] [-b|-A] [-M]
  *                   [-T SIZE] [-U NAME=X[,Y,Z,W]]...
  *
  *   -n  layers a frame (10)      -f  frames, after one not counted (20)
  *   -b  blended (source alpha, one less source alpha)
+ *   -A  blended additively (one, one: a discard there is a colour of 0)
  *   -M  the target's alpha kept (glColorMask(1, 1, 1, 0))
  *   -T  the texture on unit 0, SIZE x SIZE (64), bilinear
  *   -U  a float or vector uniform set to these values (up to 8 of them)
@@ -95,13 +96,14 @@ int main(int argc, char **argv)
 	struct { char name[64]; float v[4]; } set[8];
 	int nset = 0;
 
-	while ((opt = getopt(argc, argv, "w:h:n:f:bMT:U:")) != -1) {
+	while ((opt = getopt(argc, argv, "w:h:n:f:bAMT:U:")) != -1) {
 		switch (opt) {
 		case 'w': w = atoi(optarg); break;
 		case 'h': h = atoi(optarg); break;
 		case 'n': layers = atoi(optarg); break;
 		case 'f': frames = atoi(optarg); break;
 		case 'b': blend = 1; break;
+		case 'A': blend = 2; break;
 		case 'M': mask = 1; break;
 		case 'T': tsize = atoi(optarg); break;
 		case 'U': {
@@ -121,7 +123,7 @@ int main(int argc, char **argv)
 		}
 	}
 	if (argc - optind != 2 || tsize < 1 || tsize > 2048 || layers < 1)
-		return fprintf(stderr, "glshader VS FS [-w W] [-h H] [-n LAYERS] [-f FRAMES] [-b] [-M] "
+		return fprintf(stderr, "glshader VS FS [-w W] [-h H] [-n LAYERS] [-f FRAMES] [-b|-A] [-M] "
 		                       "[-T SIZE]\n"), 2;
 
 	get_display = (PFNEGLGETPLATFORMDISPLAYEXTPROC)eglGetProcAddress("eglGetPlatformDisplayEXT");
@@ -208,7 +210,10 @@ int main(int argc, char **argv)
 	glVertexAttribPointer(3, 4, GL_FLOAT, GL_FALSE, sizeof(quad[0]), quad[0][1]);
 	if (blend) {
 		glEnable(GL_BLEND);
-		glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+		if (blend == 2)
+			glBlendFunc(GL_ONE, GL_ONE);
+		else
+			glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 	}
 
 	for (int f = -1; f < frames; f++) {
@@ -225,7 +230,7 @@ int main(int argc, char **argv)
 	}
 	el = now() - t0;
 	printf("glshader %s: %d layers of %dx%d%s%s: %.2f ms a frame\n", argv[optind + 1], layers, w, h,
-	       blend ? ", blended" : "", mask ? ", alpha kept" : "", el * 1000 / frames);
+	       blend == 2 ? ", added" : blend ? ", blended" : "", mask ? ", alpha kept" : "", el * 1000 / frames);
 	eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
 	eglTerminate(dpy);
 	return 0;

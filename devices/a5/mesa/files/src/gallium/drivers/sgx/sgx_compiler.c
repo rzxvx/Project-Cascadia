@@ -5032,6 +5032,13 @@ struct f16g {
    unsigned nf32made;
    int f32_spare;
    bool failed;
+   /* (M50) a lookup's coordinates or a kill's comparison being worked out:
+    * what F32 cannot make (a texel, a varying iterated as F16, the colour's
+    * arithmetic of them) the colour's tree makes in F16, then unpacked --
+    * of a texel, and of no varying but the colour's own (colour_inputs: a
+    * texture coordinate keeps F32's precision, or the program is not F16) */
+   bool chain;
+   unsigned colour_inputs;
 };
 
 /* src2's swizzles, Vita3K's table (usse-dis.py's VEC4_STD) but its last,
@@ -5670,14 +5677,16 @@ f16_lookup_ok(const struct comp *c, const nir_tex_instr *tex)
 }
 
 /* the varyings a coordinate of such a lookup reads, marked to be iterated
- * as F32 (in_f32) -- false if it reads anything but varyings, uniforms and
- * fadd, fmul, fmin, fmax and fneg of them */
+ * as F32 (in_f32) -- false if it reads anything but varyings, uniforms,
+ * constants (M50: the pool's) and fadd, fmul, fmin, fmax and fneg of them */
 static bool
 f16_coord_inputs(struct comp *c, nir_scalar s, unsigned depth)
 {
    s = nir_scalar_chase_movs(s);
    if (depth > 8)
       return false;
+   if (nir_scalar_is_const(s))
+      return true;
    if (nir_scalar_is_alu(s)) {
       nir_op op = nir_scalar_alu_op(s);
 
@@ -5722,6 +5731,123 @@ f16_f32_temp(struct f16g *g)
    return treg(g->c, 2 * p);
 }
 
+/* (M50) an F32 constant in a pair of the pool, in the lane asked for (x the
+ * pair's first word, y its second): the other operand's of a VTSTMSK */
+static bool
+f16_f32_const(struct comp *c, uint32_t bits, unsigned lane, struct usse_reg *out)
+{
+   uint16_t h[4] = { 0 };
+   int w;
+
+   h[2 * lane] = bits & 0xffff;
+   h[2 * lane + 1] = bits >> 16;
+   if ((w = f16_pool(c, h)) < 0)
+      return false;
+   *out = usse_reg(USSE_SA, w + lane);
+   return true;
+}
+
+/* (M50) whether F32 can make s alone: constants, uniforms, varyings marked
+ * F32 and fadd, fmul, ffma, fmin, fmax, fneg of them */
+static bool
+f16_f32_able(struct comp *c, nir_scalar s, unsigned depth)
+{
+   s = nir_scalar_chase_movs(s);
+   if (depth > 8)
+      return false;
+   if (nir_scalar_is_const(s))
+      return true;
+   if (nir_scalar_is_alu(s)) {
+      nir_op op = nir_scalar_alu_op(s);
+
+      if (op != nir_op_fadd && op != nir_op_fmul && op != nir_op_ffma && op != nir_op_fmin &&
+          op != nir_op_fmax && op != nir_op_fneg)
+         return false;
+      for (unsigned i = 0; i < nir_op_infos[op].num_inputs; i++)
+         if (!f16_f32_able(c, nir_scalar_chase_alu_src(s, i), depth + 1))
+            return false;
+      return true;
+   }
+   if (nir_scalar_is_intrinsic(s)) {
+      nir_intrinsic_instr *in = nir_def_as_intrinsic(s.def);
+
+      if (in->intrinsic == nir_intrinsic_load_input) {
+         int slot = input_slot(in);
+
+         return slot >= 0 && c->input_of_slot[slot] >= 0 &&
+                (c->in_f32 >> c->input_of_slot[slot] & 1);
+      }
+      return in->intrinsic == nir_intrinsic_load_uniform && nir_src_is_const(in->src[0]);
+   }
+   return false;
+}
+
+/* (M50) the varyings (a mask of input indices) s reads, a lookup's
+ * coordinates not looked into (the lookup a value of its own) */
+static unsigned
+f16_tree_inputs(const struct comp *c, nir_scalar s, unsigned depth)
+{
+   unsigned m = 0;
+
+   s = nir_scalar_chase_movs(s);
+   if (depth > 12)
+      return ~0u;
+   if (nir_scalar_is_alu(s)) {
+      nir_op op = nir_scalar_alu_op(s);
+
+      for (unsigned i = 0; i < nir_op_infos[op].num_inputs; i++)
+         m |= f16_tree_inputs(c, nir_scalar_chase_alu_src(s, i), depth + 1);
+   } else if (nir_scalar_is_intrinsic(s)) {
+      nir_intrinsic_instr *in = nir_def_as_intrinsic(s.def);
+      int slot;
+
+      if (in->intrinsic == nir_intrinsic_load_input &&
+          (slot = input_slot(in)) >= 0 && c->input_of_slot[slot] >= 0)
+         m |= 1u << c->input_of_slot[slot];
+   }
+   return m;
+}
+
+/* (M50) whether s reads a texel (a lookup's, the PDS's or the program's):
+ * a value only such may come to F32 from F16 */
+static bool
+f16_has_texel(const struct comp *c, nir_scalar s, unsigned depth)
+{
+   s = nir_scalar_chase_movs(s);
+   if (depth > 8)
+      return false;
+   if (nir_def_instr(s.def)->type == nir_instr_type_tex)
+      return true;
+   if (nir_scalar_is_alu(s)) {
+      nir_op op = nir_scalar_alu_op(s);
+
+      for (unsigned i = 0; i < nir_op_infos[op].num_inputs; i++)
+         if (f16_has_texel(c, nir_scalar_chase_alu_src(s, i), depth + 1))
+            return true;
+   }
+   return false;
+}
+
+/* (M50) s made by the colour's tree in F16 (where it is already, or worked
+ * out into a pair's lane), unpacked to F32 into a pair of its own: *out
+ * the half that holds it */
+static bool
+f16_to_f32(struct f16g *g, nir_scalar s, struct usse_reg *out)
+{
+   nir_scalar v[4] = { s, s, s, s };
+   struct f16o o;
+   unsigned lane, p;
+
+   if (!f16_operand(g, v, NULL, 0x1, &o) || o.neg || o.sw[0] > 3 || o.reg.bank == USSE_SA ||
+       (o.reg.num & 1))
+      return false;
+   lane = o.sw[0];
+   p = f16_temp(g);
+   emit(g->c, usse_unpack_f16(f16_reg(g, p), o.reg, lane & 2));
+   *out = treg(g->c, 2 * p + (lane & 1));
+   return true;
+}
+
 /* s's F32 value, part of a lookup's coordinates, in *out: a varying
  * f16_coord_inputs() marked (its four F32 in pa), a uniform (sa), or
  * fadd, fmul, fmin, fmax of such values -- an fneg the operand's
@@ -5735,11 +5861,84 @@ f16_coord(struct f16g *g, nir_scalar s, const struct usse_reg *dest, struct usse
    struct usse_reg r;
 
    s = nir_scalar_chase_movs(s);
+   /* (M50) a constant: the pool's */
+   if (nir_scalar_is_const(s)) {
+      if (!f16_f32_const(c, (uint32_t)nir_scalar_as_uint(s), 0, &r))
+         return false;
+      goto have;
+   }
+   /* (M50) in a chain: what F32 cannot make, F16's -- an operation
+    * F32 can do with a constant or uniform among its operands stays F32
+    * (the coordinate's precision), the rest unpacked */
+   if (g->chain && !f16_f32_able(c, s, 0)) {
+      bool f32op = false;
+
+      if (nir_scalar_is_alu(s)) {
+         nir_op op = nir_scalar_alu_op(s);
+
+         if (op == nir_op_fadd || op == nir_op_fmul || op == nir_op_ffma ||
+             op == nir_op_fmin || op == nir_op_fmax || op == nir_op_fneg)
+            for (unsigned i = 0; i < nir_op_infos[op].num_inputs; i++)
+               f32op |= f16_f32_able(c, nir_scalar_chase_alu_src(s, i), 0);
+      }
+      if (!f32op) {
+         if (!f16_has_texel(c, s, 0) || (f16_tree_inputs(c, s, 0) & ~g->colour_inputs))
+            return false;
+         for (unsigned k = 0; k < g->nf32made; k++)
+            if (g->f32made[k].def == s.def && g->f32made[k].comp == s.comp) {
+               r = g->f32made[k].reg;
+               goto have;
+            }
+         if (!f16_to_f32(g, s, &r))
+            return false;
+         if (g->nf32made < ARRAY_SIZE(g->f32made)) {
+            g->f32made[g->nf32made].def = s.def;
+            g->f32made[g->nf32made].comp = s.comp;
+            g->f32made[g->nf32made++].reg = r;
+         }
+         goto have;
+      }
+   }
    if (nir_scalar_is_alu(s)) {
       nir_op op = nir_scalar_alu_op(s);
       enum usse_nmad_op nop;
       struct usse_reg a, b, t, d;
 
+      if (op == nir_op_ffma) {
+         struct usse_reg m;
+
+         for (unsigned k = 0; k < g->nf32made; k++)
+            if (g->f32made[k].def == s.def && g->f32made[k].comp == s.comp) {
+               r = g->f32made[k].reg;
+               goto have;
+            }
+         if (!f16_coord(g, nir_scalar_chase_alu_src(s, 0), NULL, &a) ||
+             !f16_coord(g, nir_scalar_chase_alu_src(s, 1), NULL, &b) ||
+             !f16_coord(g, nir_scalar_chase_alu_src(s, 2), NULL, &m) || a.neg || b.neg || m.neg)
+            return false;
+         /* (src0 a temporary or primary attribute, absolute only) */
+         if (a.bank != USSE_TEMP && a.bank != USSE_PA) {
+            t = a;
+            a = b;
+            b = t;
+         }
+         if (a.bank != USSE_TEMP && a.bank != USSE_PA) {
+            t = f16_f32_temp(g);
+            emit(c, usse_fop(USSE_NMAD_MUL, t, a, b));
+            d = dest ? *dest : f16_f32_temp(g);
+            emit(c, usse_fop(USSE_NMAD_ADD, d, t, m));
+         } else {
+            d = dest ? *dest : f16_f32_temp(g);
+            emit(c, usse_fmad(d, a, b, m));
+         }
+         if (g->nf32made < ARRAY_SIZE(g->f32made)) {
+            g->f32made[g->nf32made].def = s.def;
+            g->f32made[g->nf32made].comp = s.comp;
+            g->f32made[g->nf32made++].reg = d;
+         }
+         *out = d;
+         return true;
+      }
       if (op == nir_op_fneg) {
          if (dest || !f16_coord(g, nir_scalar_chase_alu_src(s, 0), NULL, out))
             return false;
@@ -5833,6 +6032,92 @@ have:
    return true;
 }
 
+/* (M50) a kill's condition -- lower_discard_to_zero's: flt, fge, feq, fneu
+ * of F32 values (f16_coord's, in a chain), ior, iand and inot of such -- as
+ * VTSTMSK's mask, ~0 where it holds: *out, a register of a pair of its own */
+static bool
+f16_cond(struct f16g *g, nir_scalar s, struct usse_reg *out, unsigned depth)
+{
+   static const enum usse_cmp swapped[] = { USSE_CMP_GT, USSE_CMP_GE, USSE_CMP_EQ, USSE_CMP_NE,
+                                            USSE_CMP_LE, USSE_CMP_LT };
+   struct comp *c = g->c;
+   struct usse_reg a, b;
+   nir_scalar sa, sb, t;
+   enum usse_cmp cmp;
+   bool ok, chain = g->chain;
+   unsigned p;
+   nir_op op;
+
+   s = nir_scalar_chase_movs(s);
+   if (depth > 4 || !nir_scalar_is_alu(s))
+      return false;
+   op = nir_scalar_alu_op(s);
+   if (op == nir_op_ior || op == nir_op_iand) {
+      if (!f16_cond(g, nir_scalar_chase_alu_src(s, 0), &a, depth + 1) ||
+          !f16_cond(g, nir_scalar_chase_alu_src(s, 1), &b, depth + 1))
+         return false;
+      p = f16_temp(g);
+      *out = f16_reg(g, p);
+      emit(c, usse_vbw(op == nir_op_ior ? USSE_VBW_OR : USSE_VBW_AND, *out, a, b, false));
+      return true;
+   }
+   if (op == nir_op_inot) {
+      if (!f16_cond(g, nir_scalar_chase_alu_src(s, 0), &a, depth + 1))
+         return false;
+      p = f16_temp(g);
+      *out = f16_reg(g, p);
+      emit(c, usse_vbw(USSE_VBW_XOR, *out, a, USSE_ALL_ONES, false));
+      return true;
+   }
+   switch (op) {
+   case nir_op_flt32: cmp = USSE_CMP_LT; break;
+   case nir_op_fge32: cmp = USSE_CMP_GE; break;
+   case nir_op_feq32: cmp = USSE_CMP_EQ; break;
+   case nir_op_fneu32: cmp = USSE_CMP_NE; break;
+   default: return false;
+   }
+   sa = nir_scalar_chase_movs(nir_scalar_chase_alu_src(s, 0));
+   sb = nir_scalar_chase_movs(nir_scalar_chase_alu_src(s, 1));
+   /* (a constant as src2, in src1's lane; 0 the hardware's c0) */
+   if (nir_scalar_is_const(sa)) {
+      if (nir_scalar_is_const(sb))
+         return false;
+      t = sa;
+      sa = sb;
+      sb = t;
+      cmp = swapped[cmp];
+   }
+   g->chain = true;
+   ok = f16_coord(g, sa, NULL, &a);
+   g->chain = chain;
+   if (!ok)
+      return false;
+   if (nir_scalar_is_const(sb)) {
+      uint32_t bits = (uint32_t)nir_scalar_as_uint(sb);
+
+      if (!(bits & 0x7fffffffu))
+         b = USSE_ZERO;
+      else if (!f16_f32_const(c, bits, a.num & 1, &b))
+         return false;
+   } else {
+      g->chain = true;
+      ok = f16_coord(g, sb, NULL, &b);
+      g->chain = chain;
+      if (!ok || b.neg)
+         return false;
+      if ((b.num & 1) != (a.num & 1)) {
+         struct usse_reg m = treg(c, 2 * f16_temp(g) + (a.num & 1));
+
+         emit(c, usse_fmov(m, b));
+         b = m;
+      }
+   }
+   p = f16_temp(g);
+   emit(c, usse_vtstmsk_f32(f16_reg(g, p), a, b, cmp));
+   *out = treg(c, 2 * p + (a.num & 1));
+   return true;
+}
+
 static bool
 f16_colour(struct comp *c, nir_function_impl *impl)
 {
@@ -5840,8 +6125,11 @@ f16_colour(struct comp *c, nir_function_impl *impl)
    struct usse_reg o0 = usse_reg(USSE_OUTPUT, 0), colour;
    struct f16g g = { .c = c, .f32_spare = -1 };
    nir_tex_instr *lookups[4];
-   unsigned nlookups = 0, pa = 0, high = 0;
-   nir_scalar s[4];
+   bool chained[4] = { false };
+   unsigned nlookups = 0, nplain = 0, pa = 0, high = 0;
+   nir_scalar s[4], kill = { 0 };
+   uint8_t kill_one[4];
+   bool has_kill = false;
    struct f16o col;
 
    if (getenv("SGX_NO_F16") || c->vs || c->kills || c->ncolours || c->logicop >= 0 ||
@@ -5883,17 +6171,79 @@ f16_colour(struct comp *c, nir_function_impl *impl)
       if (c->fs->input_slot[i] == VARYING_SLOT_POS)
          return false;
    /* (M46) the varyings the lookups' coordinates read iterated as F32 --
-    * those only: the colour's leaves refuse them (f16_leaf()) */
+    * those only: the colour's leaves refuse them (f16_leaf()).  (M50) A
+    * lookup at coordinates worked out from a texel (PPSSPP's alpha test's
+    * table, at the colour's alpha) is chained: made after the others, its
+    * coordinates in F32 from the colour's tree (SGX_NO_F16_CHAIN=1: not in
+    * F16) */
    c->in_f32 = 0;
    for (unsigned k = 0; k < nlookups; k++) {
       int ci = nir_tex_instr_src_index(lookups[k], nir_tex_src_coord);
+      unsigned before = c->in_f32;
 
-      for (unsigned i = 0; i < 2; i++)
+      for (unsigned i = 0; i < 2 && !chained[k]; i++)
          if (!f16_coord_inputs(c, nir_get_scalar(lookups[k]->src[ci].src.ssa, i), 0)) {
-            c->in_f32 = 0;
-            return false;
+            if (getenv("SGX_NO_F16_CHAIN")) {
+               c->in_f32 = 0;
+               return false;
+            }
+            c->in_f32 = before;
+            chained[k] = true;
          }
+      nplain += !chained[k];
    }
+   /* (M50) the colour stored 0 where a discard would take the pixel
+    * (lower_discard_to_zero's bcsel, each channel the same condition; a
+    * channel of 1, b2f(inot(the condition)) by then, the constant 1 of
+    * src1's swizzle): the colour, then VTSTMSK's mask of the condition
+    * taken out of it */
+   memset(kill_one, F16_NO_SEL, sizeof(kill_one));
+   for (unsigned i = 0; i < 4; i++) {
+      nir_scalar v = nir_scalar_chase_movs(nir_get_scalar(out->src[0].ssa, i));
+      nir_scalar k, z;
+
+      s[i] = v;
+      has_kill = false;
+      if (!nir_scalar_is_alu(v))
+         break;
+      if (nir_scalar_alu_op(v) == nir_op_b2f32) {
+         k = nir_scalar_chase_movs(nir_scalar_chase_alu_src(v, 0));
+         if (!nir_scalar_is_alu(k) || nir_scalar_alu_op(k) != nir_op_inot)
+            break;
+         k = nir_scalar_chase_movs(nir_scalar_chase_alu_src(k, 0));
+         kill_one[i] = F16_SEL_1;
+      } else if (nir_scalar_alu_op(v) == nir_op_bcsel ||
+                 nir_scalar_alu_op(v) == nir_op_b32csel) {
+         k = nir_scalar_chase_movs(nir_scalar_chase_alu_src(v, 0));
+         z = nir_scalar_chase_movs(nir_scalar_chase_alu_src(v, 1));
+         if (!nir_scalar_is_const(z) || nir_scalar_as_uint(z))
+            break;
+      } else {
+         break;
+      }
+      if (i && (k.def != kill.def || k.comp != kill.comp))
+         break;
+      kill = k;
+      has_kill = true;
+   }
+   if (!has_kill)
+      memset(kill_one, F16_NO_SEL, sizeof(kill_one));
+   else if (kill_one[0] == F16_SEL_1 && kill_one[1] == F16_SEL_1 && kill_one[2] == F16_SEL_1 &&
+            kill_one[3] == F16_SEL_1)
+      return false;
+   /* (the varyings the colour reads: those a chain may take in F16 -- none
+    * when the colour's tree is too deep to tell) */
+   for (unsigned i = 0; i < 4; i++) {
+      unsigned m = 0;
+
+      if (!has_kill)
+         m = f16_tree_inputs(c, nir_get_scalar(out->src[0].ssa, i), 0);
+      else if (kill_one[i] != F16_SEL_1)
+         m = f16_tree_inputs(c, nir_scalar_chase_alu_src(s[i], 2), 0);
+      g.colour_inputs |= m == ~0u ? 0 : m;
+   }
+   if (has_kill && getenv("SGX_NO_F16_KILL"))
+      return false;
 
    /* the code: the inputs in pa, two registers each (four an F32 one), the
     * texels after them, two each; the pool's pairs after the program's
@@ -5915,18 +6265,39 @@ f16_colour(struct comp *c, nir_function_impl *impl)
     * scratch registers) -- 18 temporaries a pixel were 10 */
    for (unsigned k = 0; k < nlookups; k++)
       f16_temp(&g);
+   /* the plain lookups (pass 0), their texels in the first pairs; then
+    * (M50) the chained ones, their texels in the pairs after those, once
+    * the plain ones' coordinates' pairs are the tree's again -- in the
+    * order the program has them (a chained one's coordinates may read one
+    * before it) */
+   for (unsigned pass = 0, n = 0, m = nplain; pass < 2; pass++)
    for (unsigned k = 0; k < nlookups; k++) {
       nir_tex_instr *tex = lookups[k];
       int ci = nir_tex_instr_src_index(tex, nir_tex_src_coord);
-      unsigned cp = f16_temp(&g), tp = k;
+      unsigned cp, tp;
       struct usse_reg r;
 
+      if (chained[k] != (pass == 1))
+         continue;
+      if (pass == 1 && m == nplain && nplain) {
+         high = MAX2(high, g.ntemp);
+         g.ntemp = nlookups;
+         g.f32_spare = -1;
+         g.nf32made = 0;
+         g.npacked = 0;
+      }
+      tp = pass ? m++ : n++;
+      cp = f16_temp(&g);
+      g.chain = pass == 1;
       for (unsigned i = 0; i < 2; i++) {
          struct usse_reg d = treg(c, 2 * cp + i);
 
-         if (!f16_coord(&g, nir_get_scalar(tex->src[ci].src.ssa, i), &d, &r))
+         if (!f16_coord(&g, nir_get_scalar(tex->src[ci].src.ssa, i), &d, &r)) {
+            g.chain = false;
             goto fail;
+         }
       }
+      g.chain = false;
       emit(c, usse_smp2d(USSE_SMP_F16, USSE_SMP_COORD_F32, f16_reg(&g, tp), treg(c, 2 * cp),
                          usse_reg(USSE_SA, c->sampler_sa + 4 * c->slot_of_unit[tex->texture_index]),
                          USSE_SMP_NONE, treg(c, 0)));
@@ -5957,23 +6328,46 @@ f16_colour(struct comp *c, nir_function_impl *impl)
       }
       c->smp = true;
    }
+   /* the coordinates' pairs the colour's tree's: what a chain made in them
+    * forgotten (made again where the colour needs it) */
    if (nlookups) {
-      high = g.ntemp;
+      high = MAX2(high, g.ntemp);
       g.ntemp = nlookups;
       g.f32_spare = -1;
       g.nf32made = 0;
       g.npacked = 0;
+      for (unsigned k = 0; k < g.nmade;) {
+         if (g.made[k].pair >= nlookups)
+            g.made[k] = g.made[--g.nmade];
+         else
+            k++;
+      }
    }
+   /* the colour: the kill's bcsel's third operand (or 1), or the store's
+    * value */
    for (unsigned i = 0; i < 4; i++)
-      s[i] = nir_get_scalar(out->src[0].ssa, i);
-   if (!f16_operand(&g, s, NULL, 0xf, &col))
+      s[i] = !has_kill ? nir_get_scalar(out->src[0].ssa, i) :
+             kill_one[i] == F16_SEL_1 ? s[i] : nir_scalar_chase_alu_src(s[i], 2);
+   if (!f16_operand(&g, s, has_kill ? kill_one : NULL, 0xf, &col))
       goto fail;
-   if (col.neg || memcmp(col.sw, f16_xyzw, 4) || col.reg.bank == USSE_SA) {
+   if (col.neg || memcmp(col.sw, f16_xyzw, 4) || col.reg.bank == USSE_SA ||
+       (has_kill && col.reg.bank != USSE_TEMP)) {
       unsigned p = f16_temp(&g);
 
       if (!f16_move(&g, &col, 0xf, p))
          goto fail;
       col.reg = f16_reg(&g, p);
+   }
+   /* (M50) 0 where the kill holds: the colour's two words and not its mask,
+    * in place (a temporary of its own by now, read by the pack alone) */
+   if (has_kill) {
+      struct usse_reg m, lo = col.reg, hi = col.reg;
+
+      if (!f16_cond(&g, kill, &m, 0))
+         goto fail;
+      hi.num++;
+      emit(c, usse_vbw(USSE_VBW_AND, lo, lo, m, true));
+      emit(c, usse_vbw(USSE_VBW_AND, hi, hi, m, true));
    }
    if (g.failed || util_dynarray_num_elements(&c->code, uint64_t) > F16_MAX_CODE)
       goto fail;

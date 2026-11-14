@@ -20,6 +20,11 @@
  *             God of War GLSL19), half red: violet, then blue
  *   addalpha  the alpha program added (ONE, ONE)
  *   revsub    dark blue taken off blue (REVERSE_SUBTRACT, ONE, ONE)
+ *   chain     (M50) PPSSPP's alpha test by its table: the texel's alpha
+ *             looked up in a 256 x 1 table (alpha 255 from entry 128 on),
+ *             discarded below 0.5 -- added (ONE, ONE): magenta, then blue
+ *   chainconst  the same added times the blend colour (God of War's
+ *             GLSL19's): violet, then blue
  *
  *   sgx-gl gldiscard [--ppm DIR]
  */
@@ -139,6 +144,11 @@ int main(int argc, char **argv)
 		/* 6 half, half blue */
 		"precision mediump float; varying float v;\n"
 		"void main() { if (v > 0.5) discard; gl_FragColor = vec4(0.0, 0.0, 0.5, 1.0); }\n",
+		/* 7 chain: PPSSPP's alpha test through its table (GLSL19) */
+		"precision mediump float; varying float v; uniform sampler2D t, table;\n"
+		"void main() { vec4 c = texture2D(t, vec2(v, 0.5));\n"
+		"  float a = texture2D(table, vec2(c.a * 0.996094 + 0.001953, 0.0)).a;\n"
+		"  if (a < 0.5) discard; gl_FragColor = vec4(c.rgb, 1.0); }\n",
 	};
 	static const uint8_t tex[4 * 4] = { 255, 0, 0, 255,  255, 0, 0, 255,
 	                                    255, 0, 0, 0,  255, 0, 0, 0 };
@@ -149,12 +159,14 @@ int main(int argc, char **argv)
 		{ "half", "rrbb" }, { "two", "brrb" }, { "uniform1", "bbbb" }, { "uniform0", "rrrr" },
 		{ "alpha", "rrbb" }, { "blend", "ppbb" }, { "depth", "rrgg", 1 },
 		{ "add1", "mmbb" }, { "addconst", "vvbb" }, { "addalpha", "mmbb" }, { "revsub", "ddbb" },
+		{ "chain", "mmbb" }, { "chainconst", "vvbb" },
 	};
+	static uint8_t table[256 * 4];
 	PFNEGLGETPLATFORMDISPLAYEXTPROC get_display;
 	EGLint ctx_attrs[] = { EGL_CONTEXT_CLIENT_VERSION, 2, EGL_NONE };
 	const char *dir = argc > 2 && !strcmp(argv[1], "--ppm") ? argv[2] : NULL;
 	int failed = 0, n = 0;
-	GLuint rt, zb, fbo, t;
+	GLuint rt, zb, fbo, t, tt;
 	EGLDisplay dpy;
 	EGLContext ctx;
 
@@ -186,6 +198,18 @@ int main(int argc, char **argv)
 	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
 	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
 	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+	/* (M50) the table: alpha 255 from entry 128 on, on unit 1 */
+	for (int i = 0; i < 256; i++)
+		table[4 * i + 3] = i >= 128 ? 255 : 0;
+	glGenTextures(1, &tt);
+	glActiveTexture(GL_TEXTURE1);
+	glBindTexture(GL_TEXTURE_2D, tt);
+	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 256, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, table);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+	glActiveTexture(GL_TEXTURE0);
 	glEnableVertexAttribArray(0);
 
 	for (unsigned k = 0; k < sizeof(cases) / sizeof(cases[0]); k++) {
@@ -236,6 +260,16 @@ int main(int argc, char **argv)
 				glUniform1i(glGetUniformLocation(prog_for[3], "t"), 0);
 			quad(0);
 			glBlendEquation(GL_FUNC_ADD);
+			glDisable(GL_BLEND);
+			break;
+		case 11: case 12:
+			glEnable(GL_BLEND);
+			glBlendColor(0.5f, 0.0f, 0.0f, 1.0f);
+			glBlendFunc(k == 12 ? GL_CONSTANT_COLOR : GL_ONE, GL_ONE);
+			glUseProgram(prog_for[7]);
+			glUniform1i(glGetUniformLocation(prog_for[7], "t"), 0);
+			glUniform1i(glGetUniformLocation(prog_for[7], "table"), 1);
+			quad(0);
 			glDisable(GL_BLEND);
 			break;
 		}
