@@ -341,7 +341,19 @@ armv7 packages, run from `/tmp`. Log in `/srv/nand-dumps/rung8` on the NFS root.
 - Remount: context sb 30, nothing to replay; `e2fsck -fn` clean; all 2301 files match
   their SHA-256.
 
-iOS boot after it: next.
+**After iOS** (`tools/nand-rung8/check.sh`, read only): iOS committed its context on sb 876
+(golden identical, 88219 runs; 1225604 mapped, +37896 since rung 7); the Linux contexts
+sb 30 and sb 475 are erased, listed type 7 and type 1. 20000 random LBAs read;
+`e2fsck -fn` of the Linux volume clean; all 2301 files of rung 8a match.
+
+### Rung 8b, 2026-11-15: unmount without checkpoint, replay
+
+`tools/nand-rung8/rung8b.sh`, with the new test parameter `apple_ftl.skip_checkpoint`
+(commit 372a906): 32 MiB and 500 small files in `/rung8-test/crash`, sync, ext4 unmounted,
+FTL unmounted **without** the final checkpoint, so the Linux frontier stays open with no
+BTOC. Remount: replay 27293 LBAs (iOS's 18157 plus the open Linux frontier by metadata
+scan); `e2fsck -fn` clean; the 501 new files and the 2301 of rung 8a all match. The next
+unmount committed sb 248; a remount after it replays nothing.
 
 ## Decisions the spec left open
 
