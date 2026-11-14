@@ -168,6 +168,43 @@ the map is that fragmented (it kept the shape of the earlier Linux context, sb 5
 174 LBAs). The 32-LBA figure of spec §4.5 is the size of the iOS tree in `w0c`, not a
 format limit. Decision D3 (compact to stay within 32) is therefore a choice, not a need.
 
+### Context layout with a long tree, read from iOS's context sb 456 (2026-11-14)
+
+Read only, with `devices/a5/tools/nand-rung4/ppn_ctxdump.ko` `[DEV]`:
+
+- The base section holds `1`, the context's own SB (`0x1c8`) and `0x41f` at the end, and
+  no other non-zero word: **no tree length is stored**.
+- Tree LBA `t` is at VBA `24 + t`, for `t` past 31 too: the section continues in the
+  pages after the fixed 14, metadata type `0x1f`, section 4, weave = base + VBA, the
+  other metadata fields 0 / 0 / `0xffffffff` as in the fixed part.
+- 172 tree LBAs (VBAs 24..195, the last with 154 runs), then 4 empty tree LBAs
+  (`ffffffff ffffffff`, VBAs 196..199, same metadata), then erased pages from VBA 200.
+  The context is 200 LBAs, 50 pages.
+- Tree LBAs in the context: 176 for 172 used here, 32 for 26 used in `w0c`. The writer
+  uses `max(32, roundup(used + 1, 16))`, which gives both.
+- The first weave of data written after it is base + 420 here, so the weave counter
+  must clear the whole context (200), not 56: the loader now counts the context to its
+  last section-4 LBA, empty ones included.
+
+### Rung 4, 2026-11-14: a context written and not used, passed
+
+`devices/a5/tools/nand-rung4` (commit 5b7a4d7), the same `rung4.c` as offline. On the
+device, 19 s:
+
+1. Mount: context sb 456, 200 LBAs (tree 172), digest `70b046e8c90958b1`.
+2. Target sb 1048 (listed erased, every page read erased), writer fenced to it.
+3. Erased, marked context, `sftl_context_write()` (the code commit uses): weave
+   377583994, **200 LBAs in 50 pages, the same shape as iOS's**; every page read back
+   equal to what was programmed.
+4. A fresh mount loaded it: context sb 1048, 200 LBAs, tree 172, 0 replayed, the same
+   map digest, and SB array, user sequences, read counts and statistics equal to what
+   was written.
+5. sb 1048 erased, every page reads erased.
+6. A fresh mount is back on sb 456 with the step-1 digest and replay count.
+
+The new context existed on the media for about 8 s (steps 3–5). No commit: no context
+was retired, nothing else erased.
+
 ## Decisions the spec left open
 
 **D1. Closing a partly written superblock.** The spec says "write the BTOC in the
@@ -185,7 +222,9 @@ uses operation status for the matching get-feature sequence. The driver uses
 operation status for get-feature, parameters and read. Unconfirmed on the device
 for parameters and read until rung 1.
 
-**D3. Tree overflow.** The spec fixes the tree at 32 LBAs (16352 runs) and does not
+**D3. Tree overflow.** *Revised at rung 4:* iOS writes trees past 32 LBAs (above),
+so the writer does too, up to 512 LBAs, and compacts only past that. The original
+decision follows. The spec fixes the tree at 32 LBAs (16352 runs) and does not
 say what a writer does when fragmentation exceeds it. iOS's tree used 13026 runs
 at the dump, so there are only about 3000 runs to spare. The writer compacts
 before a commit: when over the limit it moves the most fragmented 1024-LBA
