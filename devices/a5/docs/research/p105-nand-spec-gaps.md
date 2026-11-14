@@ -205,6 +205,25 @@ device, 19 s:
 The new context existed on the media for about 8 s (steps 3–5). No commit: no context
 was retired, nothing else erased.
 
+### Rung 5, 2026-11-14: Linux context committed, loaded, withdrawn, passed
+
+`devices/a5/tools/nand-rung5` (commit b52af49). Before it, read only: one context on
+the media, sb 1020, which iOS wrote in the boot after rung 4 (the SB array also lists
+sb 456 as a context; the scan finds no context on it). On the device, 16 s:
+
+1. Mount: context sb 1020, 200 LBAs (tree 172), 1188950 mapped, 14391 replayed, digest
+   `b9d6876bf398e101`.
+2. Target sb 1048, every page read erased; writer fenced to it with commit allowed.
+3. `sftl_checkpoint()` → commit: context on sb 1048, weave 377602250, 200 LBAs in 50
+   pages. Through a watcher refusing any other block: 4 erases, 50 page programs,
+   0 refused. No context was retired or erased (only one was on the media).
+4. A fresh mount loads sb 1048: same map digest, 0 replayed.
+5. Withdrawn: sb 1048 erased, every page reads erased.
+6. A fresh mount is back on sb 1020, same digest, 14391 replayed.
+
+Not exercised here: retiring and erasing an older context at commit (none on the media),
+and iOS booting on a Linux context (rung 6).
+
 ## Decisions the spec left open
 
 **D1. Closing a partly written superblock.** The spec says "write the BTOC in the
