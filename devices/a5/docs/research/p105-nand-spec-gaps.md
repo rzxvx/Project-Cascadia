@@ -137,7 +137,7 @@ Test module `devices/a5/tools/nand-rung2` (commit c62a31e and the next), driver 
   module that fails its init runs twice. The test module therefore always loads and
   reports its result in a parameter.
 
-Rung 2 is not passed until iOS has booted after it.
+**Rung 2 passed (2026-11-14):** iOS booted after it (user check).
 
 ## Decisions the spec left open
 
