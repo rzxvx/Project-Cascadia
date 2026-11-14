@@ -10,7 +10,8 @@
  *   page    one block: erase, program page 0, read it back, erase again;
  *   cycle   one block: erase, program every page, read all back, erase, and
  *           check that every page reads erased.
- * "page" and "cycle" take bank=, block= and slc=, need apple_ppn loaded with
+ * The module stays loaded whatever the outcome; read the "result" parameter,
+ * then rmmod it.  "page" and "cycle" take bank=, block= and slc=, need apple_ppn loaded with
  * allow_write=1, and refuse a block that is not one of the six or that does
  * not read fully erased first.
  *
@@ -45,6 +46,9 @@ static bool slc;
 module_param(slc, bool, 0444);
 static unsigned int seed;
 module_param(seed, uint, 0444);
+static int result = 1;
+module_param(result, int, 0444);
+MODULE_PARM_DESC(result, "Outcome of the action: 0 = passed, negative errno = failed");
 
 static const struct { u8 bank; u16 block; } reserved[] = {
 	{ 0, 1054 }, { 1, 1054 }, { 1, 1055 }, { 1, 1056 }, { 3, 1055 }, { 3, 1056 },
@@ -313,10 +317,20 @@ out:
 	kfree(rmeta);
 	kfree(wmeta);
 	apple_ppn_put(ppn);
-	/* Nothing stays loaded: the result is in the log and the return value. */
-	return ret ? ret : -ECANCELED;
+	/*
+	 * Always load, even after a failure: busybox insmod repeats a failed
+	 * load through a second system call, which would run the action twice.
+	 * The outcome is the "result" parameter; unload with rmmod.
+	 */
+	result = ret;
+	return 0;
+}
+
+static void __exit rung2_exit(void)
+{
 }
 
 module_init(rung2_init);
+module_exit(rung2_exit);
 MODULE_DESCRIPTION("P105 NAND ladder rung 2: reserved-block program/erase test");
 MODULE_LICENSE("GPL");

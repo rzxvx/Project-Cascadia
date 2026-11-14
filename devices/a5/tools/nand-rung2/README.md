@@ -16,12 +16,14 @@ exists):
 On the device, with `apple_ppn` loaded with `allow_write=1` and the FTL not
 loaded:
 
-    insmod ppn_rung2.ko action=survey
-    insmod ppn_rung2.ko action=page  bank=0 block=1054 slc=0
-    insmod ppn_rung2.ko action=cycle bank=0 block=1054 slc=1
+    insmod ppn_rung2.ko action=survey; rmmod ppn_rung2
+    insmod ppn_rung2.ko action=page  bank=0 block=1054 slc=0; rmmod ppn_rung2
+    insmod ppn_rung2.ko action=cycle bank=0 block=1054 slc=1; rmmod ppn_rung2
 
-The module never stays loaded: `insmod` returns `ECANCELED` on success and the
-error otherwise; the results are in the kernel log, lines starting `rung2:`.
+The module always loads, so that busybox `insmod`, which repeats a failed load
+through a second system call, cannot run an action twice. The outcome is
+`/sys/module/ppn_rung2/parameters/result` (0 passed, negative errno failed) and
+the kernel log, lines starting `rung2:`; then `rmmod ppn_rung2`.
 `survey` prints a checksum of each reserved block and of its neighbours, to be
 compared before and after the writes.
 

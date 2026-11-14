@@ -106,6 +106,39 @@ from those taken through the earlier driver before an iOS run (the System volume
 header shows a modification after them), and no sample compare against the iOS
 `/dev/rdisk0` view was made.
 
+### Rung 2, 2026-11-14: reserved blocks, program and erase work
+
+Test module `devices/a5/tools/nand-rung2` (commit c62a31e and the next), driver with
+`allow_write=1`, on the rung-1 image (NFS root, no FTL loaded).
+
+- **Page transmit.** It works with the shape of the receive (§2.5.1) mirrored: per
+  4112-byte unit, clear events, `CONFIG = 5`, `F+0x34 = (1028 << 8) | 4`, `CONTROL = 5`,
+  four times wait for `F+0x1c` bits 3–4 and push 257 words, then wait for `F+0x0c`
+  bit 1 and clear it. No `CONTROL = 6` between the last unit and `0x17`. It was
+  the first shape tried, and it read back right at the first program. This settles
+  the §9 item on the transmit `CONFIG` (5). The burst form (`apple_ppn.tx_shape=1`)
+  was not tried.
+- **Program and erase.** One page MLC on bank 0 and one page SLC on bank 1, then a
+  whole cycle on each of the six blocks (bank 0 block 1054, bank 1 blocks
+  1054–1056, bank 3 blocks 1055–1056) in MLC (256 pages) and in SLC (128 pages):
+  erase, program every page in ascending order with a distinct pattern in data and
+  metadata, read every page back (status `0x40`, data and all 64 metadata bytes
+  identical), erase, and every page reads `0x49` and all-FF in both modes. 12 of 12
+  cycles, no error status. Erase used the MLC row (bit 23 clear) also after an SLC
+  cycle.
+- **Neighbours.** CRC over status, data and metadata of every page of the blocks
+  next to each reserved block, read before and after: identical (bank 0 blocks
+  1053 and 1055, bank 1 blocks 1053 and 1057, bank 3 blocks 1054 and 1057).
+- **Timing**, one page per call, one bus, pattern generation included: 2.3–2.4 ms per
+  MLC page, 1.8 ms per SLC page.
+- Not exercised: programs overlapped across the two buses (the FTL's batch path);
+  that comes with rung 3.
+- Busybox `insmod` repeats a failed `finit_module` through `init_module`, so a test
+  module that fails its init runs twice. The test module therefore always loads and
+  reports its result in a parameter.
+
+Rung 2 is not passed until iOS has booted after it.
+
 ## Decisions the spec left open
 
 **D1. Closing a partly written superblock.** The spec says "write the BTOC in the
@@ -160,7 +193,7 @@ driver: the module build here does not touch the kernel tree.
 
 - **Bad-block handling** on a program error: the first version stops writing for
   the session (user decision). To be added before any publication.
-- All facts of spec §9 remain open: transmit `CONFIG`, the meaning of base words,
+- All facts of spec §9 except the transmit `CONFIG` (settled at rung 2) remain open: the meaning of base words,
   the SB type values for retired SBs, overlapping programs on one CE, read-clock
   sweeps, iOS's behaviour on an open Linux frontier, power loss during a batch,
   iOS's reaction to Linux DELETE tokens, the historic boot loop. None was settled
