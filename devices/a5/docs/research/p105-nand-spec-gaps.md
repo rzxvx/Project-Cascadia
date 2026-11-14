@@ -224,6 +224,19 @@ sb 456 as a context; the scan finds no context on it). On the device, 16 s:
 Not exercised here: retiring and erasing an older context at commit (none on the media),
 and iOS booting on a Linux context (rung 6).
 
+### Full dump before rung 6, 2026-11-14 (`r6pre-20261114`)
+
+Taken with `devices/a5/tools/nand-dump` (read only, `apple_ppn` without `allow_write`)
+after rung 5, on the rung-1 image, into `/Users/k/cascadia-root/srv/nand-dumps/r6pre-20261114`
+(the NFS root as the iPad sees it: `/srv/nand-dumps/...`), in the `w0c` layout; 37 min.
+SHA-256 of the 24 files: `devices/a5/output/dump/r6pre-20261114.sha256` (not in git).
+
+- 1089536 pages, no failed read; statuses `0x40` 954375, `0x49` 130931, `0x61` 2182
+  (SLC pages read with an MLC row), `0x45` 2048 (retired, as in `w0c`).
+- The offline harness mounts it with the device's own result: context sb 1020, 200 LBAs,
+  tree 172, 1188950 mapped, 14391 replayed, map digest `b9d6876bf398e101`. `--rung4` on
+  its overlay passes.
+
 ## Decisions the spec left open
 
 **D1. Closing a partly written superblock.** The spec says "write the BTOC in the
