@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """The files iBEC's `upgrade` boot loads from /boot, for the PC-less route.
 
-    make-pcless.py --ipsw IPSW --bundle staging-bundle.bin \\
+    make-pcless.py [--board p105|k93] --ipsw IPSW --bundle staging-bundle.bin \\
                    --devicetree DEVICETREE --out DIR
 
 writes DIR/kernelcache, DIR/ramdisk and DIR/devicetree, plaintext img3s (iBEC
@@ -138,6 +138,8 @@ def ipsw_img3(z: zipfile.ZipFile, want: bytes, names: list[str]) -> bytes:
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--board", choices=("p105", "k93"), default="p105",
+                    help="whose IPSW: the containers' tags come from its images")
     ap.add_argument("--ipsw", type=Path, required=True)
     ap.add_argument("--bundle", type=Path, required=True)
     ap.add_argument("--devicetree", type=Path, required=True)
@@ -147,8 +149,8 @@ def main(argv: list[str] | None = None) -> int:
     with zipfile.ZipFile(a.ipsw) as z:
         small_dmgs = [i.filename for i in z.infolist()
                       if i.filename.endswith(".dmg") and i.file_size < 100 << 20]
-        dt_names = [n for n in z.namelist() if n.endswith("DeviceTree.p105ap.img3")]
-        krnl_t = ipsw_img3(z, b"krnl", ["kernelcache.release.p105"])
+        dt_names = [n for n in z.namelist() if n.endswith(f"DeviceTree.{a.board}ap.img3")]
+        krnl_t = ipsw_img3(z, b"krnl", [f"kernelcache.release.{a.board}"])
         rdsk_t = ipsw_img3(z, b"rdsk", small_dmgs)
         dtre_t = ipsw_img3(z, b"dtre", dt_names)
 

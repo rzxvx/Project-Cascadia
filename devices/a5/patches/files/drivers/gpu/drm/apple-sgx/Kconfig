@@ -4,6 +4,7 @@ config DRM_APPLE_SGX
 	depends on DRM
 	depends on ARCH_APPLE_S5L || COMPILE_TEST
 	depends on COMMON_CLK && OF
+	select DRM_GEM_DMA_HELPER
 	select DRM_GEM_SHMEM_HELPER
 	select DRM_KMS_HELPER
 	select DRM_SCHED

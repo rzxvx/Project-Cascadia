@@ -122,7 +122,17 @@ panel_button() {
     [ -n "$placed" ] || args="$args -t int -s $new"
     # shellcheck disable=SC2086
     xfconf-query -c xfce4-panel -p /panels/panel-1/plugin-ids $args
-    xfce4-panel -r
+    # the restart that shows the button, quietly: `xfce4-panel -r` puts up
+    # "Failed to restart the panel" when the panel is restarting already
+    # (cascadia-xfce-firstrun's, at the same first login).  Once it answers:
+    i=0
+    until dbus-send --session --print-reply --dest=org.xfce.Panel /org/xfce/Panel \
+            org.freedesktop.DBus.Peer.Ping >/dev/null 2>&1; do
+        i=$((i + 1)); [ $i -gt 40 ] && break
+        sleep 0.5
+    done
+    dbus-send --session --type=method_call --dest=org.xfce.Panel /org/xfce/Panel \
+        org.xfce.Panel.Terminate boolean:true
 }
 panel_button &
 

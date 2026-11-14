@@ -94,10 +94,17 @@ struct hx_touch_data {
  * and [14..15] the major and minor width, [16..17] the angle.  States are
  * Apple's path stages: 3 make-touch and 4 touching mean a finger on the
  * glass, anything else is on its way off.  There are no frames without a
- * finger: the last one of a touch carries its lift. */
+ * finger: the last one of a touch carries its lift.
+ *
+ * The iPad 2's Z2F13 (family 0x13) sends 28 bytes a touch: frames of
+ * 24 + 28 n bytes, seen on the K93 2026-11-09, which the 30-byte stride
+ * rejected outright.  The record is taken to be the same one without its
+ * last field, so the stride comes from the frame and the offsets stay; the
+ * first frames with touches are dumped once so that can be checked. */
 static void hx_touch_process_report(struct hx_touch_data *hxt, u8 *data, unsigned len)
 {
-    unsigned ntouch, i, finger, state, down;
+    static unsigned dumped;
+    unsigned ntouch, i, finger, state, down, stride;
     u8 *touch;
     long long posx, posy;
     unsigned widthm, widthu;
@@ -111,13 +118,22 @@ static void hx_touch_process_report(struct hx_touch_data *hxt, u8 *data, unsigne
     }
 
     ntouch = data[16];
-    if(len < 24 + ntouch * 30) {
+    stride = ntouch ? (len - 24) / ntouch : 30;
+    stride = stride >= 30 ? 30 : 28;
+    if(len < 24 + ntouch * stride) {
         dev_warn_ratelimited(&hxt->spi->dev, "frame too short for %u touches (%u bytes)\n", ntouch, len);
         return;
     }
+    if(ntouch && dumped < 6) {
+        dumped++;
+        dev_info(&hxt->spi->dev, "frame, %u touch(es) of %u bytes: %*ph\n",
+                 ntouch, stride, min(len, 24u), data);
+        for(i = 0; i < ntouch && i < 2; i++)
+            dev_info(&hxt->spi->dev, "  touch %u: %*ph\n", i, stride, data + 24 + stride * i);
+    }
 
     for(i=0; i<ntouch; i++) {
-        touch = data + 24 + 30 * i;
+        touch = data + 24 + stride * i;
         finger = touch[0];
         state = touch[1];
         down = state == 3 || state == 4;

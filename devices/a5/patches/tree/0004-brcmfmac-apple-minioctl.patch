@@ -1,0 +1,230 @@
+--- a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/common.c
++++ b/drivers/net/wireless/broadcom/brcm80211/brcmfmac/common.c
+@@ -433,23 +433,23 @@
+ 		goto done;
+ 	}
+ 
+-	/* Setup default scan channel time */
++	/* Setup default scan channel and unassoc times.  Not every firmware
++	 * takes them: Apple's BCM4329 build for the iPad 2 (4.221.122,
++	 * "...-minioctl-...") answers both with an error, and nothing depends
++	 * on them -- escan asks for the firmware's own times (-1) anyway.
++	 */
+ 	err = brcmf_fil_cmd_int_set(ifp, BRCMF_C_SET_SCAN_CHANNEL_TIME,
+ 				    BRCMF_DEFAULT_SCAN_CHANNEL_TIME);
+-	if (err) {
+-		bphy_err(drvr, "BRCMF_C_SET_SCAN_CHANNEL_TIME error (%d)\n",
+-			 err);
+-		goto done;
+-	}
++	if (err)
++		brcmf_info("BRCMF_C_SET_SCAN_CHANNEL_TIME error (%d), firmware default kept\n",
++			   err);
+ 
+-	/* Setup default scan unassoc time */
+ 	err = brcmf_fil_cmd_int_set(ifp, BRCMF_C_SET_SCAN_UNASSOC_TIME,
+ 				    BRCMF_DEFAULT_SCAN_UNASSOC_TIME);
+-	if (err) {
+-		bphy_err(drvr, "BRCMF_C_SET_SCAN_UNASSOC_TIME error (%d)\n",
+-			 err);
+-		goto done;
+-	}
++	if (err)
++		brcmf_info("BRCMF_C_SET_SCAN_UNASSOC_TIME error (%d), firmware default kept\n",
++			   err);
++	err = 0;
+ 
+ 	/* Enable tx beamforming, errors can be ignored (not supported) */
+ 	(void)brcmf_fil_iovar_int_set(ifp, "txbf", 1);
+--- a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/cfg80211.c
++++ b/drivers/net/wireless/broadcom/brcm80211/brcmfmac/cfg80211.c
+@@ -3115,6 +3115,32 @@
+ 	return 0;
+ }
+ 
++/* Apple's BCM4329 firmware for the iPad 2 ("minioctl") has no sta_info: for
++ * the AP of a connected station, the signal and the rate come from the old
++ * ioctls instead, so the link is not reported blind.
++ */
++static s32 brcmf_get_station_legacy(struct brcmf_if *ifp,
++				    struct station_info *sinfo)
++{
++	struct brcmf_scb_val_le scb_val;
++	__le32 rate;
++	s32 err;
++
++	memset(&scb_val, 0, sizeof(scb_val));
++	err = brcmf_fil_cmd_data_get(ifp, BRCMF_C_GET_RSSI, &scb_val,
++				     sizeof(scb_val));
++	if (err)
++		return err;
++	sinfo->filled |= BIT_ULL(NL80211_STA_INFO_SIGNAL);
++	sinfo->signal = le32_to_cpu(scb_val.val);
++	if (!brcmf_fil_cmd_data_get(ifp, BRCMF_C_GET_RATE, &rate, sizeof(rate))) {
++		/* 500 kbit/s units; .legacy is in 100 kbit/s */
++		sinfo->filled |= BIT_ULL(NL80211_STA_INFO_TX_BITRATE);
++		sinfo->txrate.legacy = le32_to_cpu(rate) * 5;
++	}
++	return 0;
++}
++
+ static s32
+ brcmf_cfg80211_get_station(struct wiphy *wiphy, struct net_device *ndev,
+ 			   const u8 *mac, struct station_info *sinfo)
+@@ -3151,6 +3177,10 @@
+ 					       &sta_info_le,
+ 					       sizeof(sta_info_le));
+ 		if (err < 0) {
++			if (test_bit(BRCMF_VIF_STATUS_CONNECTED,
++				     &ifp->vif->sme_state) &&
++			    !brcmf_get_station_legacy(ifp, sinfo))
++				return 0;
+ 			bphy_err(drvr, "GET STA INFO failed, %d\n", err);
+ 			goto done;
+ 		}
+@@ -3407,8 +3437,13 @@
+ 	int i;
+ 
+ 	bss_list = (struct brcmf_scan_results *)cfg->escan_info.escan_buf;
++	/* 108, the format before 109, is the same in every field read here
++	 * (109 only named the reserved word after ctl_ch, for VHT, and added
++	 * SNR, which nothing reads); Apple's BCM4329 firmware still sends it.
++	 */
+ 	if (bss_list->count != 0 &&
+-	    bss_list->version != BRCMF_BSS_INFO_VERSION) {
++	    bss_list->version != BRCMF_BSS_INFO_VERSION &&
++	    bss_list->version != 108) {
+ 		bphy_err(drvr, "Version %d != WL_BSS_INFO_VERSION\n",
+ 			 bss_list->version);
+ 		return -EOPNOTSUPP;
+@@ -7066,6 +7101,11 @@
+ 			}
+ 		}
+ 	}
++	/* per_chan_info only refines the flags: a firmware without it --
++	 * Apple's BCM4329 build for the iPad 2 -- answers every query with an
++	 * error, which must not leak out of the loop as this function's.
++	 */
++	err = 0;
+ 
+ fail_pbuf:
+ 	kfree(pbuf);
+@@ -7758,8 +7798,10 @@
+ 
+ 	err = brcmf_fil_cmd_int_set(ifp, BRCMF_C_SET_FAKEFRAG, 1);
+ 	if (err) {
+-		bphy_err(drvr, "failed to set frameburst mode\n");
+-		goto default_conf_out;
++		/* frame bursting only speeds things up; Apple's BCM4329 build
++		 * for the iPad 2 ("minioctl") has no such command */
++		brcmf_info("frameburst mode not set (%d)\n", err);
++		err = 0;
+ 	}
+ 
+ 	cfg->dongle_up = true;
+--- a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/fwil.c
++++ b/drivers/net/wireless/broadcom/brcm80211/brcmfmac/fwil.c
+@@ -184,6 +184,40 @@
+ }
+ 
+ 
++/*
++ * Apple's BCM4329 firmware for the iPad 2 (4.221.122, a "minioctl" build)
++ * refuses some security settings as iovars and takes them only as the
++ * ioctls they started out as -- wpa_auth at least: every connect failed with
++ * "set wpa_auth failed (-52)".  When the iovar is refused, the ioctl is tried.
++ */
++#define BRCMF_C_GET_WPA_AUTH_LEGACY	164
++#define BRCMF_C_SET_WPA_AUTH_LEGACY	165
++
++static const struct {
++	const char *name;
++	u32 get, set;
++} brcmf_fil_legacy_cmds[] = {
++	{ "wsec", BRCMF_C_GET_WSEC, BRCMF_C_SET_WSEC },
++	{ "auth", BRCMF_C_GET_AUTH, BRCMF_C_SET_AUTH },
++	{ "wpa_auth", BRCMF_C_GET_WPA_AUTH_LEGACY, BRCMF_C_SET_WPA_AUTH_LEGACY },
++};
++
++static s32 brcmf_fil_legacy(struct brcmf_if *ifp, const char *name, void *data,
++			    u32 len, bool set, s32 err)
++{
++	unsigned int i;
++
++	if (err != -EBADE || len != sizeof(__le32) || ifp->bsscfgidx)
++		return err;
++	for (i = 0; i < ARRAY_SIZE(brcmf_fil_legacy_cmds); i++) {
++		if (strcmp(name, brcmf_fil_legacy_cmds[i].name))
++			continue;
++		return brcmf_fil_cmd_data(ifp, set ? brcmf_fil_legacy_cmds[i].set :
++					  brcmf_fil_legacy_cmds[i].get, data, len, set);
++	}
++	return err;
++}
++
+ s32
+ brcmf_fil_iovar_data_set(struct brcmf_if *ifp, const char *name, const void *data,
+ 			 u32 len)
+@@ -203,6 +237,7 @@
+ 	if (buflen) {
+ 		err = brcmf_fil_cmd_data(ifp, BRCMF_C_SET_VAR, drvr->proto_buf,
+ 					 buflen, true);
++		err = brcmf_fil_legacy(ifp, name, (void *)data, len, true, err);
+ 	} else {
+ 		err = -EPERM;
+ 		bphy_err(drvr, "Creating iovar failed\n");
+@@ -230,6 +265,8 @@
+ 					 buflen, false);
+ 		if (err == 0)
+ 			memcpy(data, drvr->proto_buf, len);
++		else
++			err = brcmf_fil_legacy(ifp, name, data, len, false, err);
+ 	} else {
+ 		err = -EPERM;
+ 		bphy_err(drvr, "Creating iovar failed\n");
+@@ -310,6 +347,7 @@
+ 	if (buflen) {
+ 		err = brcmf_fil_cmd_data(ifp, BRCMF_C_SET_VAR, drvr->proto_buf,
+ 					 buflen, true);
++		err = brcmf_fil_legacy(ifp, name, data, len, true, err);
+ 	} else {
+ 		err = -EPERM;
+ 		bphy_err(drvr, "Creating bsscfg failed\n");
+@@ -337,6 +375,8 @@
+ 					 buflen, false);
+ 		if (err == 0)
+ 			memcpy(data, drvr->proto_buf, len);
++		else
++			err = brcmf_fil_legacy(ifp, name, data, len, false, err);
+ 	} else {
+ 		err = -EPERM;
+ 		bphy_err(drvr, "Creating bsscfg failed\n");
+--- a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/fweh.c
++++ b/drivers/net/wireless/broadcom/brcm80211/brcmfmac/fweh.c
+@@ -272,9 +272,23 @@
+ 			  event->emsg.ifidx, event->emsg.bsscfgidx,
+ 			  event->emsg.addr);
+ 		if (event->emsg.bsscfgidx >= BRCMF_MAX_IFS) {
+-			bphy_err(drvr, "invalid bsscfg index: %u\n",
+-				 event->emsg.bsscfgidx);
+-			goto event_free;
++			/* Apple's BCM4329 firmware for the iPad 2 (4.221.122)
++			 * leaves bsscfgidx at 0xff on the events of a connect;
++			 * it has one interface, the one ifidx names.
++			 */
++			static unsigned int logged;
++			u8 idx = event->emsg.ifidx < BRCMF_MAX_IFS ?
++				 event->emsg.ifidx : 0;
++
++			if (logged < 8) {
++				logged++;
++				brcmf_info("event %s (%u) v%u: bsscfg %u, ifidx %u, ifname %.16s, %u bytes: taken as bsscfg %u\n",
++					   brcmf_fweh_event_name(code), event->code,
++					   be16_to_cpu(event->emsg.version),
++					   event->emsg.bsscfgidx, event->emsg.ifidx,
++					   event->emsg.ifname, event->datalen, idx);
++			}
++			event->emsg.bsscfgidx = idx;
+ 		}
+ 
+ 		/* convert event message */

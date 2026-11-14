@@ -219,7 +219,21 @@ done
 [ -n "$placed" ] || args="$args -t int -s $new"
 # shellcheck disable=SC2086
 xfconf-query -c xfce4-panel -p /panels/panel-1/plugin-ids $args
-xfce4-panel -r
+# A restart, to show the button.  Not `xfce4-panel -r`: it asks the panel
+# and waits for an answer, and puts up "Failed to restart the panel" when the
+# panel quits before giving one (NoReply) or is in the middle of a restart
+# already (UnknownMethod: autorotate restarts it at the same first login) --
+# at every boot of the iPad 2, whose home is in RAM, although the panel came
+# back with its buttons.  The same call, once the panel answers, without
+# waiting for its reply:
+i=0
+until dbus-send --session --print-reply --dest=org.xfce.Panel /org/xfce/Panel \
+        org.freedesktop.DBus.Peer.Ping >/dev/null 2>&1; do
+    i=$((i + 1)); [ $i -gt 40 ] && break
+    sleep 0.5
+done
+dbus-send --session --type=method_call --dest=org.xfce.Panel /org/xfce/Panel \
+    org.xfce.Panel.Terminate boolean:true
 END
 chmod 755 /usr/local/bin/kbd-toggle /usr/local/bin/desktop /usr/local/bin/cascadia-xfce-firstrun
 # The first version of this script called it cascadia-panel-kbd.

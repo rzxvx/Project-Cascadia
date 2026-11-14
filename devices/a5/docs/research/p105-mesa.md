@@ -3747,6 +3747,1019 @@ client starts whole to hand the request over. Around it:
 - Mesa's `texture_error_check` formats "glTexImage%dD" for every
   glTexImage, whether or not there is an error.
 
+## M46: where God of War's frame goes -- the pixels, not the vertices
+
+PPSSPP (K93, the iPad 2: `tools/desktop/games-setup.sh`) on God of War:
+Ghost of Sparta's main menu ran at 9% speed once its draws took the GPU's
+vertex side (depth clamping hidden from it by a driconf, M43's CPU clamp
+otherwise). A render of 73 draws and ~103k indices took 88 ms of GPU, which
+read as ~1 us a vertex. It is not the vertices.
+
+**The vertex side is fast.** `tools/sgx/gl/glverts.c` times renders of
+many small triangles (lists, indices 0, 1, 2, ..., strips made lists as
+PPSSPP's IndexGenerator does, a grid; 0 to 7 varyings; PPSSPP's 24-byte
+vertex): 60 000 indexed vertices take 3 ms of GPU (~20 M a second), a
+480 x 272 render ~1 ms whatever it draws. With `SGX_NOCOMPILE=1` (no
+fragment program: the draw module's colours) the same 73 draws take 5 ms.
+The 88 ms were the pixel programs.
+
+**`SGX_DEBUG=each`** (with `sync`): every draw a render of its own, logged
+with its fragment shader (`fragment shader 0x...`, its NIR printed when it
+is made), instructions, colour mask, textures (and how many the PDS
+fetches), blending (SOP2, F32 or opaque) and depth; `SGX_EACH_FILE=path`
+does it only while that file is there, so a game reaches the scene at its
+own speed first. On the host `each-stats.py` (the K93 session tools) sums
+the GPU time by shader. `glverts`' fill mode (`-m fill`: quads over the
+whole target, a layer each; `-t`, `-R`, `-b`, `-k`, `-z`, `-M`) and
+`tools/sgx/gl/glshader.c` (a VS and FS from files, layers of them; with
+`SGX_DEBUG_SHADER=1` the program's words) measure the pixel side.
+
+**Every draw was translucent.** ISP state word 1 bits 27:25 are the pass
+type: iOS's opaque draws have 0 (`01d00300`), its blended ones 1 (bit 25,
+sgx2d's `03d00300`, which the template frame took), its discarding ones 4
+(M19's punch-through). The driver set 1 for all: no hidden surface removal,
+every layer of every draw shaded. A draw is opaque now when its program
+reads nothing of the tile -- no blending, every channel written, no logic
+op, no discard (M19's keeps the tile's colour), no framebuffer fetch
+(`opaque_draw()`; `SGX_OPAQUE=0`: as before). Ten opaque layers of the
+480 x 272 target 11.0 -> 1.6 ms, what one takes; the regression tests the
+same.
+
+**Colour masks by SOP2.** PPSSPP keeps the target's alpha (the PSP's
+stencil) in most draws: `glColorMask(1, 1, 1, 0)`. SOP2 (M34) took no mask,
+so those draws blended in F32 through `nir_lower_blend`, ~40 instructions.
+A mask of R, G and B all or none, alpha or not, is blending now
+(`fold_colormask()`): a channel kept is blended as the tile's own (ZERO,
+ONE; reverse subtract keeps it too, dst x 1 - src x 0), a draw not blended
+ONE, ZERO -- one SOP2. Ten blended, masked layers 31.8 -> 11.6 ms (40.0 ->
+10.8 textured), unmasked blending's cost. `glblend`'s 8 new cases (masks
+without blending, with alpha, add, reverse subtract, subtract, alpha alone)
+all right either way (`SGX_SOP2_MASK=0`: as before).
+
+**Copies by the GPU.** PPSSPP copies parts of its framebuffers six times a
+frame (glCopyImageSubData, the menu's glow: 256 x 136 down to 58 x 34
+inside one 864 x 272 target); each was Mesa's `util_resource_copy_region`,
+the CPU's -- a flush and a wait for the GPU, so the CPU and GPU never ran
+at once. `resource_copy_region` and colour blits are u_blitter's quads now
+when the source is a render's target (the CPU would have waited for it)
+and the target a format the frame renders into; depth and stencil stay the
+CPU's (`SGX_GPU_COPY=0`: all the CPU's; `SGX_DEBUG=copies` says which). Its
+shaders are TGSI: `tgsi_to_nir` makes them the driver's NIR. A copy the
+same size takes u_blitter's texelFetch program (GLSL 1.30's: the screen's
+feature level is 130), 95 instructions here; a blit's lookup is the PDS's,
+2. `tools/sgx/gl/glcopy.c` (desktop GL, as PPSSPP
+has it): copies whole and in part, blits the same size, flipped and halved,
+glCopyTexSubImage2D, a copy sampled, two copies around a draw -- 9 of 9
+either way.
+
+**Shorter F32 programs.** God of War's commonest program, PPSSPP's
+`texture x colour`, doubled and saturated (GLSL41 in its build), was 29
+instructions where the same without the doubling is 3 (M38's F16 path):
+each channel its own V32NMAD, a LIMM before every use of a constant, the
+saturate a max and a min. Now:
+
+- a saturate that only feeds the colour stored into a target of bytes is
+  dropped (`drop_output_sat()`: the pack clamps; `SGX_KEEP_SAT=1` keeps it);
+- a fragment program's constants are read from sa: up to 16, after its
+  other words, one an even word (`plan_constants()`, the draw writes them
+  with the uniforms; `SGX_NO_KPOOL=1`: LIMMs as before).
+
+GLSL41 29 -> 11 instructions, its ten opaque layers 2.99 -> 1.62 ms; the
+fog programs (GLSL51, GLSL55: the same and a mix with a uniform colour)
+39 -> 28. The regression tests, glblend, glcopy and gldesk all right.
+
+**F16 for more programs.** M38's F16 path took one shape: the same tree of
+fmul and fadd over varyings and texels in all four channels, nothing else.
+It takes any tree of fmul, fadd, fsub, fmin, fmax, ffma, fsat and fneg
+over the varyings (any channel of them), the PDS's texels, constants and
+uniforms now (`f16_colour()`): the four channels worked out together, an
+instruction for the channels that do the same operation, a write mask for
+the rest, a channel that only passes a value on padded (times 1, plus 0).
+V16NMAD in full (`usse_hop_ex()`; usse-test's cases from Vita3K's
+decoding): the write mask is a channel's bit; src1's swizzle is three bits
+a channel, 4..7 the constants 0, 1, 2 and 0.5 -- so `x 2` and a
+saturate's 0 and 1 take no register; src1 takes a negation; src2's
+swizzle is an index into Vita3K's table. Other constants are F16 pairs in
+the pool (two words an entry now), a uniform's vec4 is packed to F16 once
+(`usse_pack_f16` from sa). `tools/sgx/gl/glf16.c`: 13 programs of
+PPSSPP's shapes and around them, every pixel against C -- 13 of 13, with
+the programs: texture x colour, doubled 11 -> 4 instructions, its fog 28
+-> 14, with the stencil value 28 -> 16, min and max 16 -> 5, halves 12 ->
+4. The cost: a colour in F16 is up to an 8-bit step off where F32 was
+exact (glblend's layer blended twice: 3; its tolerance there is 3 now);
+`SGX_NO_F16=1` takes the F32 path for all.
+
+**Lookups at a varying's y and z.** God of War's fog programs (a third of
+its menu's render after the above) looked their texture up at `.yz` of a
+varying: PPSSPP's vertex shader writes `v_texcoord` as a vec3 with z 0 and
+`v_color1` as 0, the linker drops what is constant and packs `v_fogdepth`
+and `v_texcoord.xy` into one vec3 -- the fog in x (the sources, captured
+with `MESA_DEBUG=1 MESA_GLSL=source`, in glf16's `ppsspp-*` cases). The PDS
+fetches at a varying's x and y only (M35), so the lookup was an SMP in the
+program and the program F32: 32 instructions. Now the lookup has a varying
+of its own: `SGX_FIX_SHIFT(n)` (M39's machinery: the fragment shader lists
+the slot twice, the second with the fix), the vertex side -- the GPU's
+(`vertex_output()`; a store to a slot goes to each entry of it) or the
+draw module's (`fix_varyings()`) -- moves components n and n + 1 into x and
+y, and the PDS fetches there: the programs F16, 32 -> 14 and 16
+instructions. `SGX_NO_SHIFT=1`: as before. glf16 (17 cases, a desktop-GL
+build too, `glf16d`: GLSL 1.20 as PPSSPP has it) right on both vertex
+sides; the regression tests unchanged. (A test whose coordinates equal the
+colour's x and y does not show it: the linker reads them from the colour.)
+
+**PPSSPP's uploads, written once.** With the programs shorter the GL
+thread showed: half of it memcpy. PPSSPP's GL backend keeps a frame's
+vertices and indices in its own memory (`GLPushBuffer`: 2 MiB of
+vertices, 256 KiB of indices) and uploads what it used with
+glBufferSubData at the frame's end -- 1.75 MB a frame here. Mesa's default wrote those bytes into
+the buffer's CPU copy and the next draw copied them on into its GPU copy
+(`sgx_buffer_bo`). `sgx_buffer_subdata()` writes them straight into the
+GPU copy when no render reads it (gathered or running) and nothing has the
+buffer mapped; the CPU copy is behind by those bytes then (`stale_lo`,
+`stale_hi`) and is brought up to date (`sgx_buffer_fresh()`) before
+anything maps it or the CPU reads it for a draw -- the draw module, a
+repack, a constant attribute, an index scan (that one only its draw's
+indices: `sgx_buffer_fresh_range()`). Not constant buffers (the CPU reads
+those for every draw) nor uploads under 64 bytes (`SGX_DIRECT_SUBDATA=0`:
+Mesa's default always).
+
+**Indices where they are.** A draw of 16-bit indices from a buffer, a
+triangle list, every attribute fetched where it is: the VDM reads its
+indices in the buffer's GPU copy (`idx_va`) -- no scan for their range on
+the CPU (16 bits cannot pass 0xffff), no copy into the render. Any even
+address does: PPSSPP aligns its indices to 2 bytes, so its draws can
+start at an odd index (glbuffer's `indexed 26`; those were scanned and
+copied, and made the whole buffer's CPU copy current: 214 KB a frame). Such a draw is not
+merged into the last (`SGX_INDEX_COPY=1`: copied as before).
+`gpu_vs_draw`, 11% of the GL thread, is 1.4%.
+
+**Copies that preload.** What was left of the GL thread's memcpy was that
+one write into GPU memory: 1.75 MB a frame in 12.7-15.1 ms, 120-135 MB/s.
+musl's ARM memcpy has no preloads (its port took them out, for older
+cores), and the L2's prefetching was off under Linux -- AUX 0x06470000,
+prefetch control 0, where iOS's device tree asks for 0x72100000 (data and
+instruction prefetch on; the K93's kernel has it now, below). Each 32-byte
+line a copy reads waited for memory.
+`wcbench` (the K93 session tools: 3 MB into an SGX buffer, the best of 8):
+
+| copy, 3 MB | MB/s |
+|---|---|
+| memcpy, cached -> cached | 233 |
+| memcpy, cached -> write-combined | 256 |
+| NEON, 64 bytes a round, no PLD | 238 |
+| NEON + PLDs 128 and 160 bytes ahead -> write-combined | 824 |
+| the same, PLDs 256 to 2048 bytes ahead | 790-812 |
+| ldm/stm, 32 bytes a round + a PLD 384 ahead | 810 |
+| NEON + PLDs -> cached | 550 |
+| anything, write-combined -> cached (a read back) | 232-250 |
+| 256 KB already in the L2: memcpy / NEON + PLDs -> write-combined | 1374 / 2032 |
+
+Writing write-combined memory is not the cost; reading cold lines is.
+`sgx_copy()` -- NEON, 64 bytes a round, PLDs four and five lines ahead --
+takes the big copies: an upload into the GPU copy, the CPU copy's bytes on
+into it, a repacked draw's vertices, the arena's. PPSSPP's 1.75 MB: 4.3-5.9
+ms a frame. `SGX_DEBUG=fps` says a frame's uploads now (into the GPU copy,
+with its time; into the CPU copy; copied on; read back).
+`tools/sgx/gl/glbuffer.c` (desktop GL, uploading as PPSSPP does): a buffer
+written while draws read it, read back, written while a gathered draw
+still reads it, fetched by the GPU where it is, drawn as lines (the draw
+module reads it), mapped, and indices at 0, 12 and 26 bytes, written again
+and read back -- 17 of 17 on both vertex sides (`SGX_CPU_VS=1`); the
+regression tests, glcopy, gldesk, glfmt and glf16 unchanged.
+
+**Which renders.** With the CPU's part shorter the GL thread waited for
+the GPU ~70% of the time. `SGX_DEBUG=sync` says each render's target now
+(size, format, depth loaded and stored, u_blitter's or not, the file and
+line that flushed it), `SGX_DEBUG=each` the blend equation of a draw
+blended in F32. God of War's frame, each render waited for: the main
+render (77 draws into the 480 x 272 target, 21 ms), then an effect chain
+-- a draw into the main target (5.7 ms), two into an 864 x 272 one (6.4
+ms), copies and single draws taking turns between two 864 x 272 targets
+(twelve renders, ~11 ms), 14 draws into the main target (3.3 ms) -- and
+the screen (3.1 ms): 53 ms of GPU a frame. The effect draws were F32
+programs blending in F32, and every draw blended in F32 had the blend
+colour among its factors: PPSSPP blends the PSP's fixed colours with it.
+
+| PPSSPP's equation (`SGX_DEBUG=each`) | programs |
+|---|---|
+| `src x Sa + dst x (1 - Sa)`, alpha `Sa x Ca` (the stencil it keeps in alpha) | 34 and 51 instructions |
+| `src + dst x Cc`, alpha kept | 43 |
+| `src x Cc + dst`, alpha kept | 40, 66 |
+| `src x Cc`, alpha kept | 40 |
+
+**The blend colour's factors by SOP2s.** SOP2 takes its factors from its
+two operands alone (M25: the colour and the tile), so `sop2_blend()`
+left the blend colour's to `nir_lower_blend`, ~30 instructions. Now the
+blend colour is one sa word of RGBA bytes (the tile's order whatever the
+target: the driver packs it per draw), and `sop2_plan()` puts a SOP2
+around the blending for each side that has a constant factor: the packed
+colour times the constant first (src2 the packed blend colour, its colour
+or alpha the factor), or the tile times it into a temporary, the
+blending's factor ONE then. A constant alpha factor of the source's whose
+alpha the rest still reads (`SRC_ALPHA` for the colour) multiplies the
+result's alpha after instead, when the tile's alpha factor is ZERO -- the
+stencil's case. What that cannot do (a factor reading what was
+multiplied) stays F32 (`SGX_SOP2_CONST=0`: always). God of War's programs
+51 -> 16 instructions, 43 -> 25, 40 -> 22 and 25, GLSL41's stencil kind 34
+-> 6; the one that discards stays F32 (M19's discard keeps the tile's
+colour, which a SOP2 would blend again). `glblend` has seven cases more
+(PPSSPP's four, an inverse constant on the tile's side, reverse subtract,
+a quad blended twice; the blend colour's alpha is 0.6 now, so a constant
+alpha shows): 29 of 29, F32 right too.
+
+**Copies by the PDS.** u_blitter copies with a texelFetch program when
+the source and the target are the same size (GLSL 1.30 says it may):
+`texelFetch(tex, ivec2(v), 0)` at a varying of texel coordinates, 95
+instructions here, the 864 x 272 copies' main cost. At pixel centres the
+varying is x + 0.5, and a nearest lookup there is the same texel --
+u_blitter only fetches so with a nearest sampler, of a view of one level,
+the level 0 (the varying's w: `get_texcoords`). `txf_as_lookup()` makes
+such a fetch a rectangle lookup at the varying times the texture's scale,
+which `lower_fetch_coords()` gives the PDS (M39): 2 instructions, the
+copy exact (glcopy's 9 cases, differences 0). Only for gallium's own
+shaders (TGSI, `info.internal`); `SGX_COPY_TXF=1`: as before. A
+rectangle lookup's scale is the view's first level's now (a rectangle
+texture has only one). The frame's copies 6.4 -> 2.5 ms.
+
+**God of War** (`gow-bench.sh`, the main menu, PPSSPP's counter -- which
+climbs over the menu's first seconds: read at once 15-16%, a few seconds
+on near 19% with the F16 programs, near 21% with the shift; the rows above
+those were read at once):
+
+| | main render, GPU | frame | speed |
+|---|---|---|---|
+| before (driconf only) | 91 ms | 6 fps | 9.0% |
+| opaque pass type | 87 ms | | |
+| + SOP2 colour masks | 60 ms | 6.5 fps | 10.8% |
+| + copies by the GPU | 59 ms | 6.8 fps (no CPU waits) | 11.9% |
+| + shorter F32 programs | 34 ms | 10.6 fps | 13.3% |
+| + F16 for more programs | 27 ms | 11.5 fps | 16.1% (19% settled) |
+| + lookups at `.yz` by the PDS | 22 ms | 12.6 fps | 21% settled |
+| + uploads written once, indices read where they are | 22 ms | 14.0 fps | 24% settled |
+| + copies that preload, odd first indices | 22 ms | 15.2-15.5 fps | 25% settled |
+| + the blend colour's factors by SOP2s | 16 ms | 17.6-18.0 fps | 30% settled |
+| + copies by the PDS | 16 ms | 18.8-19.0 fps | 31% settled |
+| + two renders at once (the kernel) | 16 ms | 19.3-20.9 fps | 33-35% settled |
+| + the draw module's vertex shader bound only when used | 16 ms | 21.2-21.8 fps | 35-36% settled |
+| + PPSSPP's push buffers mapped, the GPU copy itself | 16 ms | 23.3-23.7 fps | 38-39% |
+| + the clamped lookups in F16, uniforms' work per draw | 16 ms | 25.8-26.4 fps | 42-43% |
+| + the frames flipped onto the screen, the cursor hidden in games | 16 ms | 28.2-28.3 fps | 46-47% |
+
+The frame's GPU work (each render waited for, the median of whole
+frames) 53 -> 40 ms over the last two. The GL thread still waits for the
+GPU ~60% of the time, and the CPU is busier (94% of one core, both of
+PPSSPP's threads): the frame is the GPU's, the CPU's part next to it.
+
+**What a render costs** (three things tried after the above; none made
+God of War faster, two are not kept). The frame's twelve effect renders
+into 864 x 272 targets draw a few tiles each and took ~0.45 ms apiece:
+
+- A render of the tiles its draws reach (each draw's clip rectangle,
+  clip_to()'s, aligned to 32; the target's address and the draws'
+  viewports shifted; not with depth or gl_FragCoord): right --
+  `tools/sgx/gl/glrect.c`, scissored and viewport-offset draws, partial
+  tiles at an edge, two rectangles apart, gl_FragCoord, a copy into the
+  middle, 8 of 8 either way -- but no faster: a copy of 64 x 32, its 2
+  tiles, ~0.44 ms as with all 243. Not kept.
+- `glrenders` (the K93 session tools: renders of one small quad back to
+  back, two targets taking turns) -- ~0.45-0.48 ms a render whatever the
+  target (32 x 32 to 256 x 256), the CPU busy a third of it. The kernel
+  runs one render at a time and learns one is done by polling every 200
+  us (apple-sgx's `poll_us`): at 100 us 0.38 ms, 50 us 0.35, 25 us 0.32
+  -- and God of War no faster at 50 us, slower at 25 (the timer's
+  interrupts take the CPU: 104%). The SGX's interrupt (`apple_sgx.irq=1`)
+  is the microkernel's SW_EVENT in the master's bank (MASTER_EVENT_STATUS
+  0xa0004000), where the handler did not look -- it took every one for
+  unhandled and switched the line off. Read and cleared there it comes
+  twice a render, and the render node looks at its render on each: 0.35
+  -0.45 ms a render, God of War unchanged; it stays off by default.
+- The 3-instruction draw (PPSSPP's plain colour, 540 triangles, depth
+  written, alpha kept), ~4.6 ms alone: taken as opaque (alpha's
+  correctness aside) 3.5 ms -- most of it is its triangles (long ones
+  across many tiles, likely the rain), not their shading. Not kept.
+
+**Two renders at once.** apple-sgx gave the microkernel one render at a
+time (the DRM scheduler's room for one job), so after each the GPU waited
+for the host to see it done and send the next. Now `apple_sgx.inflight=2`
+(the K93's bootargs; 1 stays the default) lets the next one's TA run while
+the last one's 3D pass does: the poller keeps the renders on the GPU in
+order, the oldest's TA done once the completion value reaches its
+sequence number (the value is the last TA's; it is no longer cleared for
+each render), and a start of the microkernel (a new parameter buffer, a
+timeout) waits for them, or fails them all. Two renders at once must not
+share render target data -- the next one's TA would write the region
+headers the last one's 3D pass reads -- so Mesa's `rt_set()` never hands
+out the set the last render had (a second of the size, the two in turn;
+12 slots), and the kernel runs one at a time after all for a render whose
+render details a running one has (an older Mesa). `glrenders` 0.45 ->
+0.29 ms a render; the regression tests, glrect and glcopy right; God of
+War through ~7 minutes with no render timed out, left unread or faulted.
+
+**The CPU side again.** With two renders at once the GPU still sat idle
+~9 ms at each frame's start (`SGX_TRACE=1`): the main render can only go
+once the GL thread has made it, after PPSSPP's 1.75 MB upload and its 77
+draws. Two things there:
+
+- Almost every allocation of the GL thread (~2600 a second, ~5.9 KB each,
+  an LD_PRELOAD counting them by caller) was tgsi_exec's: the driver bound
+  each vertex shader in the draw module too, and binding one there parses
+  it again, its arrays allocated anew -- sizes musl's mallocng maps and
+  unmaps (the kernel's mmap work showed in the profile). The draw module
+  gets its shader now only when a draw goes its way
+  (`ctx->draw_vs`, sgx_draw_vbo): the GL thread ~11% less CPU, no
+  allocation of 2 KB or more left in it.
+- The upload copy is the bus's: 1.75 MB in 1.8 ms with the GPU idle
+  (wcbench), 6.4-7.7 ms in the game with the GPU's renders beside it (5.4-
+  5.8 with one render at a time). Two threads copying halves: slower (844
+  MB/s against 1038). PPSSPP could write its vertices into the buffer
+  itself -- its OpenGL backend has mapped push buffers, which 1.20.4 never
+  turns on.
+
+`SGX_DEBUG=fps` says the submits' time in the kernel now: 1.6-2.8 ms a
+frame, 18 of them, 14 buffers each.
+
+**PPSSPP's vertices where the GPU reads them.** The upload stayed the GL
+thread's: 1.75 MB a frame copied into the buffers' GPU copies at each
+frame's start, 6.4-9 ms while the GPU waited for the main render.
+PPSSPP's OpenGL backend can map its push buffers instead
+(`GLBufferStrategy`), but 1.20.4 never does: its bug flags leave every GPU
+on `SUBDATA`. A patch (`tools/desktop/ppsspp/gl-map-push-buffers.patch`)
+maps them on this driver (its renderer's "SGX" and "Mesa" in the version:
+the vendor string is "Project Cascadia", not Imagination's) --
+`INVALIDATE_UNMAP`: each buffer mapped whole with
+`GL_MAP_INVALIDATE_BUFFER_BIT` right after the draws of the frame that
+used it, the emulator thread decoding the next use's vertices and indices
+into the mapping -- through `glMapBufferRange` on OpenGL 2.1 (1.20.4's
+`glMapBuffer(GL_READ_WRITE)` there asked for the old content, readable).
+`PPSSPP_GL_MAP_BUFFERS=0` / `1`: uploads / maps whatever the driver.
+
+The driver's side is `buffer_map_direct()`: a write-only map that discards
+a vertex or index buffer's content (4 KiB or more of it) hands out the
+buffer's GPU copy itself -- a fresh one from the cache (M26) when a render
+reads the old, gathered or running, the old one left to those renders --
+and the CPU copy is behind by the mapped bytes (`stale_lo`, `stale_hi`, as
+after `sgx_buffer_subdata`). PPSSPP maps right after the draws that read
+the buffer, so each frame's map is a fresh copy: 2368 KB of maps a frame,
+all of them fresh, nothing copied -- the copies the cache turns over ~3 MB
+more GPU memory (Shmem 157 -> 160 MB, flat over minutes), PPSSPP ~5 MB
+less (it frees its own copies of mapped buffers). A glBufferData of all of
+a busy buffer goes the same way (Mesa's `buffer_subdata` of the whole,
+through `u_default_buffer_subdata`). Not constant buffers, glthread's maps
+nor persistent ones; u_upload_mgr never discards all. `SGX_DIRECT_MAP=0`:
+the CPU copy, as before -- PPSSPP's maps alone then gain nothing
+(21.0-21.8 fps: the 2369 KB are copied on at the first draw instead).
+glbuffer's `invalidate` cases (PPSSPP's push buffers mapped again while
+the draws that read them are gathered, running or done; at offsets, an odd
+first index; twice in one render; read back; drawn as lines, the draw
+module reading them; a buffer under 4 KiB; glBufferData of a busy one): 32
+of 32 either way, on both vertex sides (`SGX_CPU_VS=1`); the regression
+tests, glcopy, gldesk, glfmt, glblend, glf16, glrect unchanged.
+
+God of War 21.3-21.9 -> 23.3-23.7 fps, PPSSPP's counter ~36% -> 38-39%:
+the gap between a frame's end and the next one's first draw 9.1-10.2 ->
+1.8 ms, the GL thread's samples a frame ~30% fewer, and the emulator
+thread's no more for writing write-combined memory (~26 ms of it a frame,
+~30 before, perf's samples). The GPU is busy 94% of the time now
+(`SGX_TRACE=1`; 85% before): the frame is the GPU's -- ~40 ms of it, each
+render waited for (`SGX_DEBUG=sync`): the main render 16.3 ms (76 draws,
+103k vertices), a 14-draw render 3.3 ms, the screen's 4 draws 3.1 ms (1024
+x 768), eleven effect renders of 0.5-1.3 ms.
+
+**Where the GPU's frame goes, again.** The render after each swap took
+the X server's work too: `SGX_DEBUG=sync` times a render from its kick,
+and PPSSPP's main render waited behind X's copy of the window into the
+screen (a glamor render, 1.6-2.0 ms and two small ones a frame) and the
+kernel's copy of the screen onto the scanout (DIRTYFB: the 2D engine's
+quad, not a job of the scheduler's -- debugfs `copy 0 0 0 0 1024 768`, 2.1
+ms). Its time was 8.5-25.6 ms, 16.5 the median; the "3-instruction draw of
+long triangles" (above) is God of War's clear, 270 sprites of 16 x 32
+covering the 480 x 272 target once at depth 1 (`SGX_EACH_VERTS=N` with
+`SGX_DEBUG=each`: a draw of N indices' positions read back -- their
+extent, their areas summed, the first triangles), ~1 ms; it took X's work
+for its own in `SGX_DEBUG=each`. The kernel's scheduler (tracefs:
+`gpu_scheduler:drm_run_job`, `drm_sched_process_job`, a job's own time
+from the later of its kick and the last one's end) splits the GPU: PPSSPP
+88%, X 5.4%, nothing queued 6.7%. A frame of ~42 ms then: putting it on the
+screen ~7.6 (PPSSPP's 1024 x 768 render 3.2, X's copy 2.3, the kernel's
+2.1), the main render ~12, PPSSPP's effect renders ~15-17 -- most of them
+its TClampST programs.
+
+**Lookups of their own in F16.** PPSSPP clamps the coordinates of a
+lookup into a texture it rendered to the texture's rectangle (TClampST:
+`clamp(v_texcoord.x, u_texclamp.z, u_texclamp.x - u_texclamp.z) +
+u_texclampoff.x`, the same for y). The PDS cannot make such a lookup, and
+f16_colour() took only the PDS's, so God of War's GLSL17, 21 and 23 were
+F32 whole: GLSL23 23 instructions (`session-tools/shaders/g23.fs`;
+`tools/sgx/gl/glshader -U NAME=X,Y,Z,W` sets a uniform -- at its 0.5
+PPSSPP's clamp is one texel), 1.75 ms a 480 x 272 layer, where the same
+without the clamp is 7 and 0.64. Now:
+
+- The F16 path takes a 2D lookup at coordinates that are fadd, fmul,
+  fmin, fmax and fneg of varyings and uniforms (`f16_coord()`): those
+  varyings are iterated as F32 (`in_f32`: four registers each, the
+  others two -- the PDS's iterates and the registers' places follow), the
+  coordinates worked out in F32 straight into the SMP's pair, then `SMP
+  .f16` into a pair that is a value of the colour's tree as the PDS's
+  texels are. A varying that both the coordinates and the colour read
+  stays F32 (the linker packs GLSL 1.20's fog float into the coordinates':
+  glf16d's clamp-fog). `SGX_NO_F16_SMP=1`: as before.
+- The sampler hands an 8-bit channel back as its integer value, F16 as
+  F32 (texture()'s note): the state's word 3 bit 31, which the PDS's F16
+  lookups set (iOS's s00), makes it 0..1 for SMP too -- the draw sets it
+  for the slots the program samples so (`smp_norm`; `SGX_F16_SMP_SCALE=1`:
+  times F16's 1/255 instead, an instruction more).
+- What is the same for every pixel is the draw's: an F32 sum, product,
+  min or max of uniforms (PPSSPP's size less half a texel), and a uniform
+  vec4 as four F16 (every F16 program packed each one it read, for every
+  pixel) -- pairs of the constant pool the draw works out from the
+  uniforms (`sgx_fs_derived`; `SGX_NO_DERIVED=1`: the program's again).
+- The tree takes a lane whose own value is what the other lanes' operand
+  is (the same operation) times 1 at that level: (p * t).rgb * fix with
+  (p * t).a is p * t once for the four lanes, then times fix.xyz1 (src1's
+  constant) -- two moves fewer (`SGX_F16_NO_PROMOTE=1`: as before).
+- The coordinates' temporaries are the tree's again after the SMP.
+
+GLSL23 23 -> 12 instructions, 12 -> 8 temporaries, 1.75 -> 1.06 ms a
+layer; the clamp test programs 11-14; g23nc 7 -> 4 (the uniform's pack and
+the moves). glf16's clamp cases (God of War's three shapes, and one with
+fog; some pixels clamped, the coordinates a varying of their own -- one
+equal to the colour's x and y the linker merges) 4 of 4 both ways, 21 of
+21 in all, desktop GL too; glfetch, gltex and the regression tests as
+before. God of War 22.7-23.6 -> 25.8-26.4 fps, the counter ~39% -> 42-43%
+(the menu on the screen throughout: one run whose window stayed behind
+the desktop said 28-29, X not showing its frames); the GPU busy 94% ->
+89%.
+
+**The frame flipped onto the screen.** X copied the game's window into
+the screen each frame -- a glamor render of 1.6-2.0 ms and, around it, two
+of the software cursor's (what is under it, then it again), X 8.5% of a
+core. PPSSPP presents through DRI3/Present (`LIBGL_DEBUG=verbose`:
+"Using DRI3"), and modesetting flips a full-screen window's buffer only
+when (1) no software cursor shows (`sprites_visible`; the kernel's screen
+has no cursor plane, and PPSSPP keeps the arrow with its touch controls)
+and (2) for a swap without vsync -- PPSSPP's -- when the kernel offers
+async flips (Present flips such a swap only with
+`PresentCapabilityAsync`). Hidden by hand (XFixesHideCursor) the cursor's
+two renders went, X's copy stayed (26.1 -> 27 frames/s); with vsync on
+too X had no render left at all (the scheduler's trace). Now:
+
+- apple-sgx's KMS sets `mode_config.async_page_flip` (`DRM_CAP_ASYNC_PAGE_FLIP`):
+  every flip is a copy once the renders writing the buffer are done, with
+  no vblank to wait for, so an async one is the same. The mini's driver
+  too (untested there).
+- The Games launcher runs each game under `xhidecursor` (games-setup.sh: a
+  python3 client that hides the cursor through XFixes for as long as the
+  game runs, and passes a signal to end it on), the game as it is without
+  python3.
+
+Then X flips the game's frames: no render of X's in the trace, X 2.7-3.1%
+of a core; the kernel's copy onto the scanout stays (from the game's buffer
+now). `session-tools/ab.sh` (the cursor shown and hidden by turns in one
+run, three times): 25.66/25.81/25.78 -> 26.85/27.86/27.81 frames/s; the
+game run as Games does: 28.2-28.3 frames/s, the counter 46-47%.
+
+**What a draw costs in its render.** `SGX_DEBUG=each` makes every draw a
+render of its own, and each one pays a render's fixed cost there.
+`SGX_SKIP_FS=NAME[,NAME...]` leaves out the draws of those fragment
+shaders instead (sgx_create_shader_state's names), in the frame as it is;
+`SGX_SKIP_FILE=path` takes the names from a file, read again once a second
+(`session-tools/ablate.sh`: each set for 9 s, with sync). A frame of ~35
+ms, its main render 15.7:
+
+| left out | the frame | the main render |
+|---|---|---|
+| GLSL41 (27 draws a frame, 5 instructions) | -5.5 ms | -5.1 |
+| GLSL15 (the clear) | -3.6 | -3.7 |
+| GLSL21 | -3.8 | |
+| GLSL23 | -3.7 | |
+| GLSL19 | -3.0 | |
+| GLSL55 | -2.9 | -2.6 |
+| GLSL52, 54, 45, 57 | -1.2 to -1.5 each | |
+| GLSL51, 47, 30 | ~0 | |
+
+The main render is its pixels', and PPSSPP's TClampST programs (GLSL19,
+21, 23) ~10 ms of the frame. `SGX_EACH_VERTS_FS=NAME[,NAME...]` (with
+each) prints those draws' attributes' extents and their fragment shader's
+uniforms.
+
+**Discard as a source of 0.** GLSL19 -- PPSSPP's alpha test (a lookup in
+its testtex table, discard where it fails) under src * constant + dst --
+discarded, so it blended in F32 (M19: a discard keeps the tile's colour
+as the colour, blended again): 66 instructions. Where the blending leaves
+the destination as it is for a source of 0 (an add or a reverse subtract
+onto the destination times one, on the channels written:
+`blend_keeps_dst_for_zero`), a discard is a colour of 0:
+`lower_discard_to_zero` ors the discards' conditions into one and
+stores 0 where it holds, and the program blends by SOP2 (one block, its
+discards before its one store: `discard_shape_ok`; `SGX_KEEP_DISCARD=1`
+as before). GLSL19 66 -> 51 instructions; gldiscard's four new cases (an
+add of one, of the blend colour, of src alpha, a reverse subtract) 10 of
+10 either way. God of War moves within its runs' spread.
+
+**The clamp left out.** GLSL21 and 23, F16 since the above, still took
+12-14 instructions where the same without the clamp is 4-6: the clamp's
+coordinates are worked out in F32 and the program makes its own lookup,
+which the PDS cannot. The dump says what God of War's draws clamp to: the
+offset (u_texclampoff) is 0 in the big ones, u_texclamp.zw is half a
+texel (PPSSPP: 0.5 / the texture's width and height), and their
+coordinates stay inside the rectangle -- GLSL23's 1536 indices (a 480 x
+272 layer) u 0..0.2778, v 0..0.5 of the 256 x 256 corner (0.2963 x
+0.9412) of an 864 x 272 render, GLSL21's 864 indices 0.0012..0.2940 --
+or the rectangle is the whole texture: GLSL19's u_texclamp.xy is 1.0667,
+1.8824, the PSP's 512 x 512 texture in the 480 x 272 render it is. The
+clamp then does nothing:
+
+- Inside [lo, hi] at every vertex, every pixel's coordinate is inside it
+  too (a mix of its triangle's vertices'): the clamp leaves it as it is.
+- Where lo is at most half a texel in from the texture's edge and the
+  sampler clamps to the edge, GL's clamp to the edge takes any coordinate
+  below half a texel to the edge texel itself -- clamp(u, lo, hi) and u
+  give the same texel; the same for hi at least 1 - half a texel. Nearest
+  and linear, any size (the sampler's edge is the texture's, not its
+  copy's padded to powers of two: gltexclamp's npot cases).
+- Not with mipmaps, anisotropy, or different minifying and magnifying
+  filters: there the clamped coordinates' derivatives count.
+
+So:
+
+- `sgx_fs_texclamp` (at the shader's creation) finds a 2D lookup whose
+  coordinates are both clamp(v, lo, hi) + off -- fmin(fmax()) either way
+  round, v a varying's component, lo, hi and off uniforms' (a constant
+  and up to two words, added or subtracted: `sgx_uexpr`), the unit's only
+  lookup.
+- `sgx_vs_varying_attr` finds the vertex shader's varying as a copy of
+  an attribute's component (one store, a shader of one block: PPSSPP's
+  through mode).
+- At each draw (`texclamp_does_nothing`, fs_for_draw): the offset 0 and
+  lo <= hi from the uniforms; then each axis the texture's edges do not
+  settle: the attribute over the draw's vertices (an indexed draw's from
+  its smallest index to its largest), read where it is
+  (`sgx_buffer_read_in_place`: PPSSPP's push buffers are the GPU copy,
+  write-combined -- 2 floats a vertex, the indices in bursts of 256).
+  The variant (`sgx_blend_key.texclamp_free`) has the lookup at the
+  varying (`lower_texclamp_free`): the PDS's.
+- The fragment shader's constants are set before its variant is chosen
+  (they were set after, the previous draw's then).
+
+`SGX_DEBUG_TEXCLAMP=1` says each draw's answer and why;
+`SGX_NO_TEXCLAMP_FREE=1` (read as a shader is made) keeps every clamp;
+`SGX_TEXCLAMP_OFF_FILE=path` keeps them while that file is there (both
+compared in one run: `session-tools/abclamp.sh`). `SGX_DEBUG=fps` counts
+a frame's draws with the clamp left out and kept, and the CPU time the
+telling takes. tools/sgx/gl/gltexclamp: 20 cases (inside, outside, the
+edges, one side, an offset, repeat, mipmaps, a vertex shader that scales;
+16 x 16 and 24 x 20 textures, uploaded and rendered by the GPU), each
+against the same program with the clamp kept (equal: 0 of 255 apart)
+and against C; the GL tests as before.
+
+God of War's menu: 5 of the 11 TClampST draws a frame go without the
+clamp (the others have an offset, or a coordinate half a texel past the
+rectangle at a vertex: the pixels' are not, but a vertex's is all the
+draw reads); a render a draw (each, sync):
+
+| draw | the clamp kept | left out |
+|---|---|---|
+| GLSL19, 810 indices | 51 instructions, 3.50 ms | 39, 2.79 |
+| GLSL23, 1536 indices | 14, 2.21 | 6, 1.23 |
+| GLSL21, 864 indices | 12, 1.99 | 4, 1.17 |
+| two more of 810 | 12 and 15, 1.18 and 1.10 | 4 and 7, 0.77 and 0.79 |
+
+The two by turns in one run (abclamp.sh, three times): 28.89/29.01/28.99
+-> 30.80/30.70/30.79 frames/s, the GL thread waiting for the GPU 62% ->
+56%; PPSSPP's counter 46.4-48.3% -> 50.9-52.2%. Telling takes 0.73-0.85
+ms of the GL thread a frame (~1 before it read in place: the vertices
+were copied back into the CPU copy, 117 KB a frame).
+
+**Where the frame goes, once more.** The driver's trace (SGX_TRACE) has
+the GPU busy 89%, the main render kicked 4.9-10.5 ms after the render
+before it ended, while the GL thread gathers its 76 draws -- but that gap
+holds the kernel's 2.1 ms copy of the last frame onto the scanout, which
+is not the process's and not in the trace: ~2.4 ms idle a frame, the GPU
+~98% busy. Kicking the main render in parts would add renders, not take
+any work away. A render at a time (sync): the main render ~16 ms, PPSSPP's
+1024 x 768 one 2.5-4.6, the alpha test's 2.9-4.1, the 14-draw one 1.2-1.9,
+13 more ~0.43 each. `SGX_CLIP_TINY=1` clips every draw to 8 x 8 pixels --
+every vertex shaded and clipped as before, next to no pixels: the main
+render 16 -> 2.9-5.2 ms; the 1024 x 768 render still 1.5-2.9 (its 3 MB
+stored). The main render's draws are blended nearly all (source alpha and
+one less, or added): the GPU's hidden surface removal does nothing for
+them, and the models are drawn three times (opaque, blended, added), each
+pass with a vertex program of its own, 161-268 instructions. The pixel
+programs have little left to give (texture times colour with the target's
+alpha kept and blended: 5 instructions with its SOP2; the fog one 14, two
+of them spare). `SGX_VS_PAD=N` puts N moves more into every vertex
+program: 100 more took God of War from 30.6 to 27.5 frames/s, 3.7 ms a
+frame -- the vertex programs share the USSEs with the pixels' whatever
+overlaps, every instruction counts.
+
+**Shorter vertex programs.** PPSSPP's lit vertex program (God of War's,
+three lights: `glshader` compiles it from the GLSL captured) was 262
+instructions: 178 V32NMAD, one lane each, 35 LIMM (0.0 eighteen times,
+1.0 eight, ~0 nine), 22 VMOV. Now:
+
+- The constants 0, 1, 2 and 0.5 (either sign) are V32NMAD's src1 swizzle,
+  as F16's are (`k_code`, `usse_fop_sw`): fsat's bounds, a product's or
+  sum's constant, the moves that apply a modifier -- no LIMM
+  (`SGX_NO_KSWZ=1`: as before).
+- Vertex shaders have NIR options of their own that fuse products and
+  sums (`fuse_ffma32`; `lower_ffma32` off), nir_opt_algebraic_late runs
+  again after the scalar lowering so the dot products fuse too, and an
+  ffma is an FMAD (`fma_`: src0 a temporary or attribute without
+  negation, the product's sign on src1): a dot product with w = 1 three
+  instructions, not six (`SGX_NO_VS_FMA=1`).
+- A varying nothing else reads is made straight into its output register
+  (`plan_vs_outputs`; a copy the vertex side moves for the PDS --
+  SGX_FIX_SHIFT -- reads it there), and the position's `x a + w b` is a
+  mul and an FMAD (`SGX_VS_OUT_MOVES=1`: as before).
+
+262 -> 250 -> 195 -> 186 instructions. `tools/sgx/gl/glvsmath` (new: a
+matrix times a vector both ways round, PPSSPP's three transforms, products
+and sums with negations and absolute values, uniforms times uniforms,
+clamps, the constants, a light; 64 quads each, every quad's result against
+C) 9 of 9 either way, its programs 26-48 instructions from 34-68; the GL
+tests as before (glseam's edges too); the menu as before in screenshots
+(the models' three passes meet). God of War 30.3-30.6 -> 31.8 frames/s
+(steady ~32), PPSSPP's counter ~50-52% -> ~54%.
+
+Not done yet:
+
+- PPSSPP's cull check (~47 instructions a vertex, every 3D program has it):
+  each comparison a VTST and two LIMMs (0, then ~0 under the predicate).
+  VTSTMSK would be one instruction; probed (`usse-probe.py`'s `vtstmsk`),
+  mask types 0..3 wrote ~0/0, ~0/~0, 1.0/1.0 and something else, whatever
+  the test came out to -- its test not found yet (found in M47).
+- The vector forms iOS's vertex programs use: VDP (`dp3`/`dp4` of a
+  register and an internal one), VMAD (`mad3`/`mad4` on the internal
+  registers i0..i3: `m * p` four of them) and VMAD2's two F32 lanes. The
+  transforms and the lights would take ~40% fewer instructions again
+  (M47).
+
+**What is left**, in the order it costs:
+
+- The GPU's frame: the main render (~12 ms of pixels, 76 draws, nearly all
+  blended; its vertex programs ~3-5 ms), the kernel's copy onto the
+  scanout (2.1 ms: the display's own base address, not known), PPSSPP's
+  1024 x 768 render, the renders' fixed cost.
+- The vertex programs: still one F32 lane an instruction -- VDP, VMAD and
+  VMAD2 above, the cull check's booleans.
+- GLSL19, the alpha test, 39 instructions in F32 (its testtex lookup and
+  the discard; the F16 path takes neither).
+- The TClampST draws still clamped, 6 a frame (five with an offset, one
+  half a texel past at a vertex): ~3.8 ms a render a draw, much of it the
+  renders' own cost there.
+- One of PPSSPP's programs writes gl_FragDepth (its depth rounded to 16
+  bits): not compiled, drawn in a colour worked out per vertex.
+- Discard is M19's translucent emulation, twice a layer's cost
+  (`glverts -k`): the punch-through pass type, still not found.
+- The Cortex-A9s' own prefetchers (ACTLR bits 1 and 2) stay off: the
+  kernel sets them only with the full line of zeros, which froze two
+  cores (`arm,full-line-zero-disable`).
+
+**The L2's prefetching** (the K93's kernel). Not the driver's, but found
+here: the PL310 prefetched nothing under Linux, where iOS's
+auxiliary-features (0x72100000) has data and instruction prefetch on.
+The prefetch control register (0x3e000f60) takes the enable bits while
+the L2 is on, so it was tried live first (`/dev/mem`), musl's memcpy of 3
+MB:
+
+| prefetch offset (lines ahead - 1) | off | 1 | 2 | 3 | 4 | 5 | 7 | 15 | 22 |
+|---|---|---|---|---|---|---|---|---|---|
+| MB/s | 233 | 510 | 626 | 696 | 715 | 720 | 663 | 540 | 510 |
+
+`dts/k93ap.dts` turns them on now (`prefetch-data`, `prefetch-instr`,
+`arm,prefetch-offset = <5>`; no double linefill, PL310 erratum 752271 on
+this r3p0): the kernel says `L2C-310 ID prefetch enabled, offset 6 lines`,
+AUX 0x36470000; memcpy ~570-590 MB/s, into write-combined memory ~710
+(sgx_copy's PLDs still ~760); `tools/smp-stress.sh` (three hashing
+workers, 60 runs each, and 2000 forks) all right. God of War does not
+move (18.0-19.1 fps either way: the GPU's frame), nor do `gzip -1` and
+`md5sum` of 16 MB (their work, not memory's). The mini's tree is as it
+was (not tried there).
+
+## M47: vertex programs on vectors; comparisons as masks
+
+M46 left PPSSPP's vertex programs one F32 lane an instruction and its
+cull check three instructions a comparison. iOS's vertex programs use the
+internal registers (VDP, VMAD) and F32's two lanes; VTSTMSK's test was not
+found. Both found now, by `tools/sgx/usse-probe.py` (it assembles `fmov`,
+`vmad2`, the V32NMAD ops, `vmad`, `vdp`, `rcp`.., `limmf`, any field by
+`enc`, any flag bit by `+bN`; `ALL=1` prints the four quarters' pixels;
+`GLLDR_FS` with a highp varying gives every pixel a value of its own in
+pa0).
+
+**The internal registers.** Three: i0..i2, the float fields' top
+temporaries (60..62 of a six-bit field, 124..126 of a seven-bit one). The
+field the disassembler calls i3 writes nothing and reads i2. They are the
+pipe's, not the task's: a value held there across twenty instructions
+came back from a pixel 12 columns away in two quarters of four -- unless
+every instruction in between had its nosched flag, which keeps the pipe on
+the task: bit 43 of VMAD2, V32NMAD, V16NMAD, VMAD and VDP, VCOMP and VMOV,
+bit 54 of VPCK, VTST, VTSTMSK, VBW, I32MAD2 and LIMM (each against a run
+without it that was overwritten). In vertex programs the flag from the
+write to the instruction before the last read was not enough: glvsmath's
+`ppsspp` case (three lights' dot products of one normal, read from one
+register) came out wrong 8-10 runs of 12; with the flag on the instruction
+before the write too, or on the last reader too, 0 of 12 (and with every
+instruction's, or a load for every dot product). The compiler flags both:
+0 runs of 24 wrong.
+
+What each instruction does with them, checked with values (the words in
+`mesa/host/usse-test.py`'s list of the device's):
+
+- V32NMAD writes an internal register's four lanes at once: `add.f32
+  i0.xyzw, r2.xyzw, c0.xxxx` is a vector loaded (src1's swizzle, three bits
+  a channel, reads r2, r3, r4, r5). src2's swizzle (the table's) reads x
+  and y of a 64-bit register -- z and w read 0 -- and an internal
+  register's any lane.
+- VMOV's F32 move is two lanes; VMAD2 is two lanes of F32 in 64-bit
+  registers (`mad.f32 r0.xy, r2, r4, r6`); VCOMP and VMOV read an internal
+  register's any lane.
+- VDP: `dp4.f32 r0.x, r2.xyzw, i0.xyzw` (dp3 too), src1 four registers in
+  a row through its own swizzle (the constants among the channels), the
+  internal register through the table's -- `xyz1` gives w 1.
+- VMAD: `mad4.f32 i2.xyzw, i0.xyzw, r4.xyzw, i1.xyzw`, four lanes into an
+  internal register, x and y into a 64-bit one (the extended table's
+  `zwxy` for z and w).
+- No hazards: an instruction right after the one that wrote what it reads
+  (an internal register, a VDP's result) reads the new value.
+
+**What an instruction costs.** `SGX_VS_PAD_KIND` pads every vertex program
+with the kind asked for (`SGX_VS_PAD=N` of them); glverts, 60 000 indexed
+vertices a render: 100 more one-lane moves or V32NMADs 2.43 ms, two-lane
+VMAD2s 2.50, four-lane V32NMADs into i0 2.44 -- the lanes are free -- and
+VDPs, VMADs or moves under nosched that each read the last one's result
+2.8 (no other task's instruction between them).
+
+**VTSTMSK.** M46's probes had the test's bit 39 clear (either test passes)
+and zero test 0 (any): always true. With VTST's settings it compares each
+lane of the 64-bit registers: `tstmsk r0 = sub.f32(r2, r4) lt 0` writes r0
+from r2 - r4 and r1 from r3 - r5. Mask type 0 is 0xff or 0, type 1 ~0 or
+0, type 2 1.0 or 0.0 (iOS's `step()`), type 3 the difference. The six
+comparisons, as (sign test, zero test, both): lt (1, 2, both), le (1, 1,
+either), eq (0, 1, both), ne (0, 2, both), ge (2, 1, either), gt (2, 2,
+both) -- IEEE's: -0 equals 0, NaN compares false but for ne. The
+hardware's c0 is 0.0 in either lane.
+
+**The compiler** (`sgx_compiler.c`, "vector instructions (M47)"):
+
+- A vertex shader keeps NIR's dot products (fdot2..4, fdph) and its vec2
+  to vec4 fadd, fmul, fmin, fmax, ffma and fsat whole (the scalar
+  lowering's filter; `SGX_NO_VS_VEC=1`: as before).
+- A dot product is a VDP: one vector through src1's swizzle (a uniform's
+  four words in sa, an attribute's four in pa), the other in an internal
+  register -- loaded by one V32NMAD when its components are four registers
+  in a row, a lane at a time otherwise, and kept: a vector times a
+  matrix's three columns loads once, PPSSPP's three lights dot one normal.
+  Vectors made one component at a time that a dot product reads (a
+  transform's results, a normal made unit length) are made in registers in
+  a row (`plan_groups`; `SGX_NO_VGROUPS=1`). nosched over each span of an
+  internal register's life (`SGX_IREG_TIGHT=1`: without its two ends).
+- Vector arithmetic is two lanes an instruction (V32NMAD, VMAD2 with a
+  mask of x and y; `SGX_NO_VS_VEC2=1`: a lane at a time): the components
+  in registers in a row, each operand's half a pair or one value for both.
+- A float comparison is one VTSTMSK, in every stage (`SGX_NO_TSTMSK=1`:
+  VTST and two LIMMs), into a register pair of its own (both lanes are
+  written); with 0 it reads c0; a comparison soon after of the other lanes
+  of the same registers is the same instruction's other lane
+  (`SGX_NO_CMP_PAIRS=1`).
+- sqrt(a) == 0 is a == 0 (PPSSPP's normalizeOr001) and a square root
+  1 / rsq after the last algebraic pass, so a normalize's rsq is shared
+  (`SGX_KEEP_SQRT=1`); a uniform past sa63 that INT32 selects read is
+  moved into a temporary once, not once a select; two outputs in a
+  register pair are one move; the position's `x a + w b` is both lanes at
+  once (the draw's words now a_x, a_y, b_x, b_y, from an even word).
+- Test switches: `SGX_VS_NOSCHED_ALL=1`, `SGX_IREG_NOREUSE=1`.
+
+PPSSPP's vertex programs, God of War's as `glshader` compiles the GLSL
+captured (`glshader` now reads a fourth attribute from an array:
+PPSSPP's color0 was a constant there): its four model programs 107 -> 61
+instructions, the three lights' 170 -> 102, the UV-mapped one 169 -> 97,
+the unlit one 99 -> 57 -- about 40% fewer.
+
+`glvsmath` has four cases more -- dot products of every shape, PPSSPP's
+transforms and lights, comparisons, an internal register read again after
+other work -- 13 of 13, 12 runs; the driver's GL tests pass (gldesk's
+fixed-function lighting too); the menu renders as before (screenshots).
+God of War: Ghost of Sparta's menu 31.9 frames/s with the vertex path's
+vectors and the masks off -> 33.5-33.7 with them, PPSSPP's counter ~54%
+-> ~56-57%.
+
+**What is left**, in the order it costs:
+
+- The GPU's frame: the main render's pixels (~12 ms, nearly all blended),
+  the kernel's copy onto the scanout (2.1 ms), PPSSPP's 1024 x 768
+  render, the renders' fixed cost.
+- The vertex programs' rest: the cull check's masks or'ed and and'ed (VBW)
+  and its four selects, VMAD's four lanes for the projection and the
+  lights' sums (the internal registers' three bound them).
+- GLSL19's alpha test, the TClampST draws still clamped, the program that
+  writes gl_FragDepth, discard (M46's list).
+
+## M48: a draw that samples its own target, without PPSSPP's copy
+
+M46's six copies a frame (God of War's glow: 256 x 136 down to 58 x 34
+inside one 864 x 272 target) are PPSSPP's, not the game's: before a draw
+that textures from the framebuffer it renders into, PPSSPP copies that
+framebuffer into a temporary one and samples the copy
+(`FramebufferManagerCommon::BindFramebufferAsColorTexture`, its "self"
+branch: glCopyImageSubData here, u_blitter's render). Each copy is a render
+of its own, ~0.45 ms of the GPU (M46: a render's fixed cost).
+
+On this GPU the copy is not needed when the draw reads none of the pixels
+it draws. The driver ends the render a draw would join when the draw
+samples that render's target (`sgx_draw.c`: the batch flushed first), so
+the draw reads, from memory, all that was drawn before it; and a tile-based
+GPU stores a tile's pixels only when the tile is done -- its writes are to
+other pixels than its reads, so no tile reads what another wrote. Every
+glow draw of God of War's is such a draw: it draws x 0..256 and reads x
+256 on (its texture at offset 256 in the target, the coordinates clamped
+to the texture's rectangle by PPSSPP's shader -- `SGX_EACH_VERTS_FS`
+showed both).
+
+`tools/desktop/ppsspp/gl-self-texture-no-copy.patch` (r4): on Mesa's SGX
+driver (the renderer's "SGX", "Mesa" in the version) a through-mode draw
+whose pixels and texels are apart binds the target itself.
+
+- The pixels drawn: those whose centres the decoded vertices' box covers
+  (a quarter pixel either way for the rasterizer), at the render target's
+  offset.
+- The texels read: the two around each texture coordinate of the box
+  (bilinear) -- kept in the texture's rectangle when PPSSPP's shader
+  clamps them there (`u_texclamp`: the texture's size, at its offset in
+  the target), that rectangle and a texel around it when the shader wraps
+  them, inside the target otherwise.
+- `DrawEngineGLES::Flush` hands the decoded vertices over while it applies
+  the texture, on both of its paths: the glow's sprites take the software
+  transform's, and PPSSPP's own texture coordinate bounds (`vertBounds`)
+  are not kept by every vertex decoder (ARM32's JIT skips float ones).
+  A first version had neither and copied all six; one that wanted the
+  rectangles two pixels apart, without the clamp, four.
+- `PPSSPP_SELF_TEXTURE_COPY=1`: a copy always; `=0`: the check whatever
+  the driver.
+
+God of War's frame: u_blitter's renders 604 -> 0 in 100 frames, 18 -> 12
+renders a frame (`SGX_DEBUG=sync`); the glow as before (screenshots).
+
+**Corrected (2026-11-14, later):** the first measurement, 31.8-33.3 ->
+38.7-39.2 frames/s, was wrong. A draw that samples its own target listed
+the target's buffer twice in the render's submit -- as the target and among
+the textures (`kick()`, `sgx_frame.c`) -- and the kernel, which takes each
+buffer's reservation lock, refused the render: `SUBMIT: Operation already
+in progress` (EALREADY), the render dropped, six a frame. The glow's target
+kept what an earlier frame had left in it, and the still menu looked the
+same. `kick()` lists each buffer once now; `glcopy`'s `self-sample` case (a
+target's right half drawn from its left half, the target itself the
+texture) failed without that and passes with it, and `fpsrun.sh` counts
+failed renders (0). Measured again with the renders made: the menu
+35.6-36.1 -> 37.7-37.8 frames/s (`PPSSPP_SELF_TEXTURE_COPY=1` and not, two
+runs each, taking turns, the screen's flips direct: M49), PPSSPP's counter
+~56-60% -> ~61-65%.
+
+**What is left**, in the order it costs:
+
+- The kernel's copy onto the scanout (2.1 ms of the GPU a frame): M49.
+- GLSL19's alpha test (a lookup at the texel's alpha in PPSSPP's test
+  texture), the TClampST draws still clamped, the program that writes
+  gl_FragDepth, discard (M46's list).
+- The main render's pixels (~12 ms, nearly all blended), the renders'
+  fixed cost; the vertex programs' rest (M47's list).
+
+## M49: the screen without the copy -- the display's layer moved
+
+Every frame shown was a copy (M16, M38): the KMS screen is the boot
+framebuffer, which the display controller iBoot set up scans out, and a
+flip copied the new buffer onto it by the 2D engine -- for God of War the
+whole 1024 x 768 plane a frame, 2.1 ms of the GPU (the 2D engine is the
+transfer queue, on the cores the renders run on).
+
+**The display controller.** The CLCD (ADT arm-io/clcd, "clcd,s5l8940x",
+0x3a100000): its layer 0 at +0x4040 holds +0 1 (on), +4 0x9f6fc000 -- the
+boot framebuffer's physical address --, +8 0x1000 (the pitch), +0x10 and
++0x18 0x04000300 (1024 x 768), +0x48 and +0x4c 0x00100000 (a scale of
+1.0): `clcdscan.py` (the K93 session tools) read them, nothing written.
+The base moved by hand 100 lines on and back every two seconds
+(`clcdtoggle.py`), the picture moved with it, cleanly. Nothing else changes
+when it is written (`clcdlatch.py`: no shadow of it), and nothing reads
+back where the display reads: the CLCD's first 4 KiB repeat one word, the
+position it scans (>> 9 the line, 0-767 over a frame, as 0x39200054 has
+it). No IOMMU in front of it: the address is physical.
+
+**Contiguous buffers.** The render node's buffers are shmem pages,
+scattered. `APPLE_SGX_BO_SCANOUT`, a GEM_CREATE flag: a buffer of the
+screen's size (up to twice it) is physically contiguous, from CMA
+(`dma_alloc_wc`; multi_v7_defconfig's 64 MiB) -- a drm_gem_dma object
+beside the shmem ones, mapped into the GPU the same way; an ordinary buffer,
+the flag left out of GEM_INFO's, when CMA has no room. Kernels that take
+it list it in `APPLE_SGX_PARAM_BO_FLAGS`; the UAPI version stays 3 (a bump
+to 4 made the installed Mesa refuse the kernel, and X fell back to
+softpipe). Dumb buffers ask for it; Mesa asks for it for PIPE_BIND_SCANOUT
+-- DRI3's back buffers, GBM's scanout buffers -- where the kernel lists it.
+
+**KMS.** The device tree names the controller (`apple,s5l8940x-clcd`: the
+layer's window, the position's window). A flip -- a new framebuffer -- to
+a contiguous buffer of the screen's size and the boot framebuffer's pitch,
+unturned, with no overlay, points the layer at it; the commit's event, and
+the release of the buffer before, wait until the display is into the next
+frame (the position gone round and a line on: whether the controller takes
+the base at a frame's start or at once, the buffer before is not read
+after). Anything else -- the buffer on the screen drawn into (damage
+without a flip: X's own screen), the overlay, a turned plane -- copies the
+whole plane onto the boot framebuffer, waits for the copy, points the
+layer back, and copies follow as before; a CRTC turned off points it back
+too (fbcon's). `apple_sgx.direct_scanout=0` (writable at run time): copies
+only. debugfs `apple-sgx/screen`: where the layer reads, and the updates
+shown either way.
+
+God of War: every frame of the game's pointed at (8248 and 8555 in two
+runs; the ~50 copies X's own screen took around them), none copied; the
+picture right on the iPad's screen. The menu 37.1-37.3 -> 38.1-38.6
+frames/s (`direct_scanout` 0 and 1, two runs each, taking turns; measured
+again with M48's renders made -- the first runs, 38.7-39.1 -> 40.0-40.2,
+had them dropped in both): less than the copy's 2.1 ms -- the GPU's frame
+is not all of the frame's time any more. PPSSPP's emulator thread is busy
+91-93% of a core (`gowstat.sh`), its GL thread ~42%, which waits for the
+GPU half the time.
+
+**GLSL19's alpha test**, next in M48's list: God of War's is EQUAL, ref
+32, mask 0x20 -- alpha's bit 5 -- which PPSSPP looks up in its test
+texture (GLSL 1.20 has no `&`). Neither the lookup nor the test is the
+cost: the program without the test is 12 instructions (1.7 ms for 10
+layers of 480 x 272, `glshader`), with it 43 in F32 (30.8 ms); the bit
+computed instead of looked up (`floor`, `mod`) is 46 (33.3 ms). The test
+takes the program off the F16 path (M46: no discard, no lookup but the
+PDS's there): F16 programs that discard, with a lookup chained on a texel,
+are what would make it cheap. A PPSSPP patch comparing the alpha where
+the mask is 0xff was tried and left out: God of War's mask is not.
+
+**What is left**, in the order it costs:
+
+- F16 programs that discard (GLSL19: ~2.8 ms a frame); the TClampST draws
+  still clamped, the program that writes gl_FragDepth.
+- The main render's pixels (~12 ms, nearly all blended), the renders'
+  fixed cost; the vertex programs' rest (M47's list).
+
+## M50: F16 programs that discard -- GLSL19's alpha test
+
+M49 found GLSL19's alpha test taking the program off the F16 path. In the
+game its blend -- the source times the blend colour, plus the destination
+(ONE the destination's factor) -- makes the discard a colour of 0 (M46's
+`lower_discard_to_zero`): the program stores bcsel(kill, 0, colour), the
+kill a comparison of the table's alpha, the table looked up at the
+colour's alpha -- a lookup at coordinates a texel decides. `f16_colour()`
+took neither: 36 and 37 instructions in F32 (its two blends), the main
+lookup the PDS's.
+
+- **Chained lookups.** A lookup whose coordinates read more than varyings,
+  uniforms and constants is made after the others, its coordinates in F32
+  as before (`f16_coord`) -- but what F32 cannot make, a texel, a varying
+  iterated as F16, the colour's arithmetic of them, comes from the colour's
+  tree in F16, unpacked to F32 (a VPCK, one instruction), while an
+  operation F32 can do with a constant or uniform among its operands stays
+  F32. GLSL19: the colour's alpha times the texel's in F16, then times
+  0.996094 plus 0.001953 in F32. Only a texel's value and the colour's own
+  varyings come that way: a texture coordinate keeps F32's precision, or
+  the program is F32's. Constants are the pool's (F32 in a word of a pair),
+  and ffma is taken; a plain lookup may have constants among its
+  coordinates now. `SGX_NO_F16_CHAIN=1`: none.
+- **The kill.** The store's bcsel(kill, 0, colour) on every channel (a
+  channel of 1, `b2f(inot(kill))` by then, takes src1's constant 1): the
+  colour as before; the condition VTSTMSK's mask -- flt, fge, feq, fneu of
+  F32 values made as a chained lookup's coordinates are, a constant in the
+  pool's word in the other operand's lane (VTSTMSK compares lane by lane),
+  ior, iand and inot of such by VBW -- and the colour's two words ANDed
+  with the mask inverted (VBW's not2): two instructions. `SGX_NO_F16_KILL=1`:
+  none.
+- The chained lookups' coordinates' pairs go back to the tree after them
+  (what a chain made in them made again where the colour needs it), and the
+  mask comes out of the colour in place: GLSL19's 26 temporaries 16.
+
+`glshader -A` (new: blended ONE, ONE) on the iPad, 10 layers of 480 x 272:
+
+| GLSL19 | F16 now | F32 (`SGX_NO_F16_KILL=1`) |
+|---|---|---|
+| as PPSSPP makes it | 27 instructions, 20.1 ms | 48, 34.7 ms |
+| without the discard | 20.4 ms | 20.0 ms (F16 before) |
+| without the chained lookup | 14.7 ms | 28.3 ms |
+| without either | 9.5 ms | 9.5 ms |
+
+The discard costs nothing in F16 now; the lookup at a texel's value ~11 ms
+of the 20. `gldiscard` has two cases more -- PPSSPP's alpha test through
+its table, added, and added times the blend colour as GLSL19 is -- 12 of 12
+either way, and `addalpha` takes the F16 path too; the driver's GL tests
+pass. In the game GLSL19 is 19 and 20 instructions; the menu 36.3-37.4 ->
+37.8-38.2 frames/s (`SGX_NO_F16_KILL=1` and not, two runs each, taking
+turns).
+
+**What is left**, in the order it costs:
+
+- PPSSPP's emulator thread (91-93% of a core): the menu's frame is the
+  CPU's now, not the GPU's.
+- On the GPU: the main render's pixels (~12 ms, nearly all blended), the
+  renders' fixed cost; GLSL19's lookup at a texel's value (a bit test of
+  the alpha -- mask 0x20 -- in F16 instead); the TClampST draws still
+  clamped, the program that writes gl_FragDepth; the vertex programs' rest
+  (M47's list).
+
 ## Testing, without and with the device
 
 - **Host, every change:** the kernel driver builds with `W=1` against the

@@ -35,7 +35,10 @@ to iOS: a failure exit; neither: a hang before STAGE's end.
 
 Every site is checked against the expected original instruction (or the
 patched one, so running it twice is harmless); anything else stops.
-Offsets: iBEC iBoot-2261.30.37, P105, iOS 8.4.1 12H321, base 0x9ff00000.
+Offsets: iBEC iBoot-2261.30.37, iOS 8.4.1 12H321, base 0x9ff00000, for the
+P105 and the K93: one iBoot build, so the code sites are the same addresses
+on both; the strings, the boot-command table, the "Update" name and three
+call targets (getenv, saveenv, reboot) are each board's own (BOARDS).
 """
 from __future__ import annotations
 
@@ -47,20 +50,14 @@ BASE = 0x9FF00000
 NOP16 = b"\x00\xbf"
 NOP32 = NOP16 * 2
 
-STR_UPGRADE = 0x9FF347E7          # "upgrade\0"
-STR_BOOT_COMMAND = 0x9FF34828     # "boot-command\0"
 SITE_AUTOBOOT = 0x9FF00CB2        # bne 0x9ff00d24 (auto-boot != true)
 SITE_CMD_LDR = 0x9FF00D00         # ldr r0, [pc, #0x12c] -> "boot-command"
 LIT_CMD = 0x9FF00E30
-SITE_CMD_GETENV = 0x9FF00D02      # bl getenv (0x9ff17a18)
-GETENV = 0x9FF17A18
-NAME_UPDATE = 0x9FF439E4          # u"Update\0", compared over 14 bytes
-SITE_SAVEENV = 0x9FF01486         # bl saveenv (0x9ff1c358)
-SAVEENV = 0x9FF1C358
+SITE_CMD_GETENV = 0x9FF00D02      # bl getenv
+SITE_SAVEENV = 0x9FF01486         # bl saveenv
 SITE_RECORD = 0x9FF01504          # bl record_upgrade_failure (0x9ff01438)
 RECORD = 0x9FF01438
-SITE_REBOOT = 0x9FF01510          # bl reboot-ish (0x9ff1f224), end of upgrade's failure path
-REBOOT = 0x9FF1F224
+SITE_REBOOT = 0x9FF01510          # bl reboot-ish, end of upgrade's failure path
 POP_R3_R4_R7_PC = b"\x98\xbd"     # undoes the handler's push {r3, r4, r7, lr}
 UPGRADE_HANDLER = 0x9FF0147C
 # (first instruction reached only after that stage succeeded, 16-bit original)
@@ -70,7 +67,17 @@ STOPS = {
     "ramdisk": (0x9FF014BC, 0x4822),      # ldr r0, =/boot/kernelcache
     "kernelcache": (0x9FF014CA, 0x4925),  # ldr r1, =boot args, before the jump
 }
-BOOT_TABLE = 0x9FF44040           # {"upgrade", handler}, ...
+
+# Each board's own: the strings, the boot-command table ({"upgrade", handler},
+# ...), u"Update\0" (compared over 14 bytes) and the three call targets.
+BOARDS = {
+    "p105": dict(STR_UPGRADE=0x9FF347E7, STR_BOOT_COMMAND=0x9FF34828,
+                 NAME_UPDATE=0x9FF439E4, BOOT_TABLE=0x9FF44040,
+                 GETENV=0x9FF17A18, SAVEENV=0x9FF1C358, REBOOT=0x9FF1F224),
+    "k93": dict(STR_UPGRADE=0x9FF36A67, STR_BOOT_COMMAND=0x9FF36AA8,
+                NAME_UPDATE=0x9FF45814, BOOT_TABLE=0x9FF46040,
+                GETENV=0x9FF178DC, SAVEENV=0x9FF1C21C, REBOOT=0x9FF1F160),
+}
 
 
 def off(va: int) -> int:
@@ -129,9 +136,20 @@ def site(img: bytearray, name: str, va: int, orig: bytes, new: bytes) -> str:
     return f"{name:<11} {va:#x}: {orig.hex()} -> {new.hex()}"
 
 
+def board_of(img: bytes) -> str:
+    for name in BOARDS:
+        tag = f"iBEC for {name}".encode()
+        if img[0x200:0x200 + len(tag) + 1] in (tag + b",", tag + b"\0", tag + b" "):
+            if img[0x280:0x290].startswith(b"iBoot-2261.30.37"):
+                return name
+    raise SystemExit("not an iBEC this patcher knows (iBEC for p105/k93, iBoot-2261.30.37)")
+
+
 def patch(img: bytearray, stay: bool = False, stop: str | None = None) -> list[str]:
-    if img[0x200:0x20D] != b"iBEC for p105" or not img[0x280:0x290].startswith(b"iBoot-2261.30.37"):
-        raise SystemExit("not the iBEC this patcher knows (iBEC for p105, iBoot-2261.30.37)")
+    b = BOARDS[board_of(img)]
+    STR_UPGRADE, STR_BOOT_COMMAND = b["STR_UPGRADE"], b["STR_BOOT_COMMAND"]
+    NAME_UPDATE, BOOT_TABLE = b["NAME_UPDATE"], b["BOOT_TABLE"]
+    GETENV, SAVEENV, REBOOT = b["GETENV"], b["SAVEENV"], b["REBOOT"]
     if cstr(img, STR_UPGRADE) != b"upgrade" or cstr(img, STR_BOOT_COMMAND) != b"boot-command":
         raise SystemExit("string anchors moved")
     table = struct.unpack_from("<II", img, off(BOOT_TABLE))

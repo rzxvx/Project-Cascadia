@@ -45,6 +45,26 @@ REPO="$(cd "$ROOT/../.." && pwd)"     # the repository; this file is devices/a5/
 IMAGE="${IMAGE:-cascadia-build}"
 cd "$ROOT"
 
+# Which A5 board.  The repository's ./cascadia sets CASCADIA_BOARD from the
+# name the device was chosen by (./cascadia a5 ... is the iPad mini 1,
+# ./cascadia k93 ... the iPad 2); BOARD= overrides it.  One kernel source, one
+# Alpine base; what differs is the device tree, a config fragment, the
+# loader's framebuffer geometry, Apple's files and where they come from.
+BOARD="${BOARD:-${CASCADIA_BOARD:-p105}}"
+case "$BOARD" in
+    p105) BOARD_MODEL="iPad2,5"; BOARD_DESC="iPad mini 1 (iPad2,5)"
+          BOARD_FW="$ROOT/build/firmware"; BOARD_KEEP="$ROOT/build/keep"
+          BOARD_CONFIG_EXTRA=""; BOARD_LOADER_FLAGS="" ;;
+    k93)  BOARD_MODEL="iPad2,1"; BOARD_DESC="iPad 2 Wi-Fi (iPad2,1)"
+          BOARD_FW="$ROOT/build/k93/firmware"; BOARD_KEEP="$ROOT/build/k93/keep"
+          BOARD_CONFIG_EXTRA="config/k93ap.config"
+          # landscape 1024x768 scanout; the stack below the kernel at
+          # 0x80008000, not inside it (docs/k93-bringup.md)
+          BOARD_LOADER_FLAGS="-DBOARD_K93 -DFB_TEXT_W=1024 -DFB_TEXT_H=768 -DFB_TEXT_STRIDE=4096 -DBOOT_STACK_TOP=0x80007000" ;;
+    *) printf 'error: unknown BOARD=%s (p105 or k93)\n' "$BOARD" >&2; exit 1 ;;
+esac
+export BOARD BOARD_MODEL BOARD_FW
+
 say()  { printf '==> %s\n' "$*"; }
 note() { printf '    %s\n' "$*"; }
 fail() { printf 'error: %s\n' "$*" >&2; exit 1; }
@@ -164,6 +184,13 @@ download_ipsw() {
 }
 
 cmd_firmware() {
+    # The iPad 2: its own IPSW for the boot chain, its own iOS for the rest
+    # (tools/k93-firmware.sh says why).
+    if [ "$BOARD" = k93 ]; then
+        ensure_image
+        IMAGE="$IMAGE" bash "$ROOT/tools/k93-firmware.sh"
+        return
+    fi
     # The image builds iBoot32Patcher from source and the img3 decrypt/encrypt
     # steps are pure Python, so the whole boot chain is derived from the user's
     # own IPSW and nothing else.
@@ -465,6 +492,29 @@ cmd_rootfs() {
 make_overlay() {
     OVL="$ROOT/build/overlay"
     rm -rf "$OVL"; mkdir -p "$OVL"
+    if [ "$BOARD" = k93 ]; then make_overlay_k93; else make_overlay_p105; fi
+    make_overlay_common
+}
+
+# The iPad 2's Apple files: the digitizer's (Z2F13,2), the BCM4329's, the
+# GPU's microkernel and the camera ISP's firmware with its sensors' set-files,
+# which ./cascadia k93 firmware takes from the IPSW and from the iPad's own
+# iOS (tools/k93-firmware.sh).
+make_overlay_k93() {
+    local f
+    mkdir -p "$OVL/lib/firmware/brcm" "$OVL/lib/firmware/apple"
+    for f in K93.mtprops brcm/brcmfmac4329-sdio.bin brcm/brcmfmac4329-sdio.txt brcm/BCM4329C0.hcd apple/sgx543.fw \
+             apple/h4isp-firmware.bin apple/h4isp-setfile-9726.bin apple/h4isp-setfile-7739.bin; do
+        if [ -s "$BOARD_FW/$f" ]; then
+            cp "$BOARD_FW/$f" "$OVL/lib/firmware/$f"
+            note "ok: $f ($BOARD_FW)"
+        else
+            note "note: no $f yet -- ./cascadia k93 firmware"
+        fi
+    done
+}
+
+make_overlay_p105() {
     # The digitizer's firmware is Apple's, so it comes out of the user's IPSW
     # with the boot chain rather than out of the repository.  Before build/keep
     # is laid over the tree, so a copy there still wins.
@@ -501,18 +551,34 @@ make_overlay() {
     else
         note "note: no GPU microkernel -- ./cascadia a5 firmware extracts it from the IPSW"
     fi
+    # Not fatal: without it the image boots as before, just without touch.
+    if [ ! -s "$OVL/lib/firmware/P105.mtprops" ] && [ ! -s "$BOARD_KEEP/lib/firmware/P105.mtprops" ]; then
+        note "note: no touch firmware -- touch stays off; ./cascadia a5 firmware extracts it from the IPSW"
+    fi
+}
+
+# What every board's layer has: the build date, the ssh host key, the
+# board's build/keep, the keys that may log in.
+make_overlay_common() {
     # No RTC on this board: without a stamp it boots at the epoch and every TLS
     # handshake fails on notBefore.  In the local layer, so each assembly of
     # the bundle -- a prebuilt kernel's too -- carries the day it was made.
     mkdir -p "$OVL/etc"; date -u "+%Y-%m-%d %H:%M:%S" > "$OVL/etc/build-date"
     note "ok: build date $(cat "$OVL/etc/build-date") UTC"
+    # The time zone: this machine's, the iPad's owner's (stage 2 sets the
+    # clock by NTP once there is a network).  A zoneinfo file is the same on
+    # every architecture; musl reads /etc/localtime.
+    if [ -r /etc/localtime ]; then
+        cp -L /etc/localtime "$OVL/etc/localtime"
+        note "ok: time zone $(readlink /etc/localtime 2>/dev/null | sed 's|.*zoneinfo/||' || echo "(this machine's)")"
+    fi
     # dropbear's host key, made once and kept in build/keep so it outlives a
     # rootfs rebuild.  Without it dropbear -R made a new one at every boot of the
     # RAM root, and every boot met ssh with REMOTE HOST IDENTIFICATION HAS
     # CHANGED.  The fingerprint printed here is the one ssh shows the first time.
     if command -v ssh-keygen >/dev/null 2>&1; then
         HOSTKEY=etc/dropbear/dropbear_ed25519_host_key
-        hk=$(python3 "$ROOT/scripts/dropbear-hostkey.py" "$ROOT/build/keep/$HOSTKEY") \
+        hk=$(python3 "$ROOT/scripts/dropbear-hostkey.py" "$BOARD_KEEP/$HOSTKEY") \
             || fail "could not make the ssh host key"
         note "ok: ssh host key, ${hk%% *} ed25519 ${hk#* }"
     else
@@ -521,19 +587,18 @@ make_overlay() {
     # build/keep holds what the repository cannot reproduce -- the touch
     # daemon, the digitizer firmware, the ssh host key made just above -- and
     # only ./cascadia a5 rootfs used to copy it in, so a firmware added later
-    # never reached the image.  Every build now.
-    if [ -d "$ROOT/build/keep" ]; then
-        cp -a "$ROOT/build/keep/." "$OVL/"
-        note "ok: build/keep/ -> the local layer ($(cd "$ROOT/build/keep" && find . -type f | wc -l | tr -d ' ') files)"
+    # never reached the image.  Every build now.  One per board (the iPad 2's
+    # is build/k93/keep): a host key and a panel calibration are one iPad's.
+    if [ -d "$BOARD_KEEP" ]; then
+        cp -a "$BOARD_KEEP/." "$OVL/"
+        note "ok: ${BOARD_KEEP#$ROOT/}/ -> the local layer ($(cd "$BOARD_KEEP" && find . -type f | wc -l | tr -d ' ') files)"
     fi
-    # Not fatal: without it the image boots as before, just without touch.
-    if [ ! -s "$OVL/lib/firmware/P105.mtprops" ]; then
-        note "note: no touch firmware -- touch stays off; ./cascadia a5 firmware extracts it from the IPSW"
-    fi
-    if [ -f "$ROOT/build/keep/lib/firmware/mtcal.bin" ]; then
-        note "ok: touch calibration: this iPad's own (build/keep, ./cascadia a5 mtcal)"
-    else
+    if [ -f "$BOARD_KEEP/lib/firmware/mtcal.bin" ]; then
+        note "ok: touch calibration: this iPad's own (${BOARD_KEEP#$ROOT/}, mtcal)"
+    elif [ "$BOARD" = p105 ]; then
         note "ok: touch calibration: the default (initramfs/lib/firmware/mtcal.bin)"
+    else
+        note "note: no touch calibration for this iPad yet -- ./cascadia $BOARD mtcal"
     fi
     # The image always lets in the machine that builds it.  add-dropbear.sh
     # bakes a key once, at rootfs time, so a key made after that -- another
@@ -607,9 +672,13 @@ cmd_get() {
 }
 
 cmd_build() {
-    if have_prebuilt && { [ "${PREBUILT_KERNEL:-}" = 1 ] || [ ! -f "$ROOT/build/linux/Makefile" ]; }; then
+    # The prebuilt release is the iPad mini's: its zImage-dtb carries the
+    # mini's tree and its kernel lacks config/k93ap.config.  The iPad 2
+    # builds its kernel here.
+    if [ "$BOARD" = p105 ] && have_prebuilt && { [ "${PREBUILT_KERNEL:-}" = 1 ] || [ ! -f "$ROOT/build/linux/Makefile" ]; }; then
         build_prebuilt; return
     fi
+    say "board: $BOARD_DESC"
     [ -f "$ROOT/build/linux/Makefile" ] || fail "no kernel here -- ./cascadia a5 get (prebuilt), or ./cascadia a5 kernel (to build one)"
     [ -d "$ROOT/build/initramfs-root" ] || fail "no rootfs -- run: ./cascadia a5 rootfs"
     mkdir -p "$ROOT/build/out" "$ROOT/output"
@@ -630,20 +699,21 @@ cmd_build() {
     say "1/6 device tree"
     # rm first: dtc is not a make target here, so a stale .dtb would just be
     # reused and an edit to the .dts would silently never reach the device.
-    rm -f "$ROOT/dtb/p105ap.dtb"; mkdir -p "$ROOT/dtb"
+    DTB="dtb/${BOARD}ap.dtb"
+    rm -f "$ROOT/$DTB"; mkdir -p "$ROOT/dtb"
     # Capture rather than pipe: a pipeline hands back the last command's status,
     # so a docker failure here used to surface as the far less useful "dtc
     # produced no dtb" with the real error scrolled past.
-    if ! out=$(in_docker "dtc -I dts -O dtb -f dts/p105ap.dts -o dtb/p105ap.dtb" 2>&1); then
+    if ! out=$(in_docker "dtc -I dts -O dtb -f dts/${BOARD}ap.dts -o $DTB" 2>&1); then
         printf '%s\n' "$out" >&2
         fail "dtc failed -- see above"
     fi
     printf '%s\n' "$out" | grep -v '^$' | tail -5 || true
-    [ -s "$ROOT/dtb/p105ap.dtb" ] || fail "dtc ran but produced no dtb"
+    [ -s "$ROOT/$DTB" ] || fail "dtc ran but produced no dtb"
     for s in g_cdc.host_addr g_cdc.dev_addr; do
-        LC_ALL=C grep -aFq "$s" "$ROOT/dtb/p105ap.dtb" || fail "$s missing from the dtb bootargs"
+        LC_ALL=C grep -aFq "$s" "$ROOT/$DTB" || fail "$s missing from the dtb bootargs"
     done
-    LC_ALL=C grep -aFq initcall_debug "$ROOT/dtb/p105ap.dtb" && fail "dtb has initcall_debug; drop it from bootargs"
+    LC_ALL=C grep -aFq initcall_debug "$ROOT/$DTB" && fail "dtb has initcall_debug; drop it from bootargs"
     note "ok: fresh dtb, gadget MACs pinned"
 
     say "2/6 initramfs extras"
@@ -658,9 +728,10 @@ cmd_build() {
     ( cd "$ROOT/build/initramfs-root" && rm -f lib/firmware/P105.mtprops lib/firmware/brcm/brcmfmac4334.bin \
           lib/firmware/brcm/BCM4334B0.hcd lib/firmware/apple/sgx543.fw root/.ssh/authorized_keys \
           etc/dropbear/dropbear_ed25519_host_key etc/nfsroot etc/build-date )
-    if [ -d "$ROOT/build/keep" ]; then
-        ( cd "$ROOT/build/keep" && find . -type f ) | while read -r f; do rm -f "$ROOT/build/initramfs-root/$f"; done
-    fi
+    for k in "$ROOT/build/keep" "$ROOT/build/k93/keep"; do
+        [ -d "$k" ] || continue
+        ( cd "$k" && find . -type f ) | while read -r f; do rm -f "$ROOT/build/initramfs-root/$f"; done
+    done
     # initramfs/ is the source of truth for the boot scripts, but only
     # ./cascadia a5 rootfs used to copy it in -- an edit to initramfs/init followed
     # by ./cascadia a5 build shipped the old init.  Overlay it on every build.
@@ -693,6 +764,20 @@ cmd_build() {
     in_docker "arm-linux-gnueabihf-gcc -static -Os -D_FILE_OFFSET_BITS=64 -o build/initramfs-root/sbin/nandctl tools/nand/nandctl.c tools/nand/ppn.c && arm-linux-gnueabihf-gcc -static -O2 -D_FILE_OFFSET_BITS=64 -o build/initramfs-root/sbin/iosnand tools/nand/iosnand.c tools/nand/ppn.c"
     [ -s "$ROOT/build/initramfs-root/sbin/iosnand" ] || fail "iosnand did not build"
     note "ok: /sbin/nandctl, /sbin/iosnand (static ARM)"
+    # The iPad 2's raw NAND, read-only: k93nand drives the chips, k93iosnand
+    # serves iOS's partitions -- `ios mount`, and the NAND root initramfs/init
+    # boots from an image on System.  docs/research/k93-nand.md.  Each pair
+    # refuses the other iPad's flash.
+    in_docker "arm-linux-gnueabihf-gcc -static -Os -Wall -D_FILE_OFFSET_BITS=64 -o build/initramfs-root/sbin/k93nand tools/nand/k93nand.c && arm-linux-gnueabihf-gcc -static -O2 -Wall -pthread -D_FILE_OFFSET_BITS=64 -o build/initramfs-root/sbin/k93iosnand tools/nand/k93iosnand.c"
+    [ -s "$ROOT/build/initramfs-root/sbin/k93iosnand" ] || fail "k93iosnand did not build"
+    note "ok: /sbin/k93nand, /sbin/k93iosnand (static ARM)"
+    # And its write side: k93lv serves System as k93iosnand does, plus the
+    # Linux volume -- the blocks of iOS's reserved pool Linux may own, with
+    # every program and erase behind k93nandw's checks (docs/research/
+    # k93-nand-write.md).  k93nandw itself: the tests T0-T5 and `pool`.
+    in_docker "arm-linux-gnueabihf-gcc -static -O2 -Wall -Wno-unused-function -pthread -D_FILE_OFFSET_BITS=64 -o build/initramfs-root/sbin/k93lv tools/nand/k93lv.c && arm-linux-gnueabihf-gcc -static -O2 -Wall -Wno-unused-function -pthread -D_FILE_OFFSET_BITS=64 -o build/initramfs-root/sbin/k93nandw tools/nand/k93nandw.c"
+    [ -s "$ROOT/build/initramfs-root/sbin/k93lv" ] || fail "k93lv did not build"
+    note "ok: /sbin/k93lv, /sbin/k93nandw (static ARM)"
     # Wi-Fi's tools and the on-screen keyboard ride in the image (a RAM boot
     # has no network to apk add them with).  A tree made by an older
     # ./cascadia a5 rootfs lacks them; add them rather than make it start over.
@@ -705,14 +790,20 @@ cmd_build() {
         bash "$ROOT/scripts/add-base-packages.sh" >/dev/null \
             || fail "could not add the base packages (scripts/add-base-packages.sh)"
     fi
-    note "ok: iw, wpa_supplicant, fbkeyboard, bluez, dbus, alsa-utils, NFS RPC configuration"
+    # The newest of them alone: the whole list again would copy over the
+    # setuid mount.nfs of the tree, which is not writable.
+    if [ ! -x "$ROOT/build/initramfs-root/sbin/mke2fs" ]; then
+        bash "$ROOT/scripts/add-apk-packages.sh" e2fsprogs >/dev/null \
+            || fail "could not add e2fsprogs (scripts/add-apk-packages.sh)"
+    fi
+    note "ok: iw, wpa_supplicant, fbkeyboard, bluez, dbus, alsa-utils, e2fsprogs, NFS RPC configuration"
     make_overlay
 
     say "3/6 kernel"
     # set -o pipefail INSIDE the container shell: without it a failed build
     # returns the status of whatever the output was piped into, and the stale
     # artifacts from last time get shipped as if they were fresh.
-    in_docker "set -o pipefail; bash scripts/build-kernel.sh 2>&1 | tail -25"
+    in_docker "set -o pipefail; CONFIG_EXTRA='$BOARD_CONFIG_EXTRA' bash scripts/build-kernel.sh 2>&1 | tail -25"
 
     say "4/6 freshness"
     CPIO="$ROOT/build/linux/usr/initramfs_data.cpio"
@@ -758,11 +849,11 @@ so this is a file in build/initramfs-root owned by some third uid."
     done
 
     say "6/6 bundle"
-    cat "$ROOT/build/linux/arch/arm/boot/zImage" "$ROOT/dtb/p105ap.dtb" > "$ROOT/output/zImage-dtb"
-    want=$(( $(filesize "$ROOT/build/linux/arch/arm/boot/zImage") + $(filesize "$ROOT/dtb/p105ap.dtb") ))
+    cat "$ROOT/build/linux/arch/arm/boot/zImage" "$ROOT/$DTB" > "$ROOT/output/zImage-dtb"
+    want=$(( $(filesize "$ROOT/build/linux/arch/arm/boot/zImage") + $(filesize "$ROOT/$DTB") ))
     got=$(filesize "$ROOT/output/zImage-dtb")
     [ "$want" = "$got" ] || fail "zImage-dtb is $got bytes, expected $want"
-    in_docker "bash build-bundle.sh 2>&1 | tail -5"
+    in_docker "LOADER_FLAGS='$BOARD_LOADER_FLAGS' bash build-bundle.sh 2>&1 | tail -5"
     DOCKER_EXTRA=()
     assemble
 }
@@ -777,7 +868,10 @@ assemble() {
         "$ROOT/build/overlay" "$ROOT/output/staging-bundle.bin" | sed 's/^/    /' \
         || fail "could not assemble the bundle"
     cp "$ROOT/output/linux-boot.bin" "$ROOT/output/staging-loader.bin"
-    say "done"
+    # flash checks it: a bundle built for the other iPad carries the other
+    # device tree, and boots into a machine it does not describe
+    echo "$BOARD" > "$ROOT/output/board"
+    say "done ($BOARD_DESC)"
     ls -l "$ROOT/output/staging-bundle.bin" "$ROOT/output/staging-loader.bin"
 }
 
@@ -937,7 +1031,8 @@ case "${1:-}" in
     rootfs) cmd_rootfs ;;
     build)  cmd_build ;;
     firmware) cmd_firmware ;;
-    mtcal)  bash "$ROOT/tools/mtcal.sh" ;;
+    mtcal)  if [ "$BOARD" = k93 ]; then cmd_firmware      # it fetches the calibration with the rest
+            else bash "$ROOT/tools/mtcal.sh"; fi ;;
     flash)  shift; bash "$ROOT/tools/flash.sh" "$@" ;;
     link)   bash "$ROOT/tools/host-link.sh" ;;
     image)  ensure_image; say "$IMAGE is current" ;;

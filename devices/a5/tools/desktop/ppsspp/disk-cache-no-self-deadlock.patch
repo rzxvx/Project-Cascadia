@@ -1,0 +1,56 @@
+Cascadia: streaming a game over HTTP hung for good where less than 768 MB
+is free: the disk cache's InitCache() holds cachesMutex_ while the new
+cache garbage-collects old files, and that takes cachesMutex_ again.
+
+--- a/Core/FileLoaders/DiskCachingFileLoader.h
++++ b/Core/FileLoaders/DiskCachingFileLoader.h
+@@ -56,7 +56,10 @@
+ 	// We don't support concurrent disk cache access (we use memory cached indexes.)
+ 	// So we have to ensure there's only one of these per.
+ 	static std::map<Path, DiskCachingFileLoaderCache *> caches_;
+-	static std::mutex cachesMutex_;
++	// Recursive: InitCache() holds it while the new cache, short of space,
++	// garbage-collects old cache files, and that asks GetCachedPathsInUse(),
++	// which takes it again (a plain mutex deadlocks there).
++	static std::recursive_mutex cachesMutex_;
+ };
+ 
+ class DiskCachingFileLoaderCache {
+--- a/Core/FileLoaders/DiskCachingFileLoader.cpp
++++ b/Core/FileLoaders/DiskCachingFileLoader.cpp
+@@ -45,7 +45,7 @@
+ Path DiskCachingFileLoaderCache::cacheDir_;
+ 
+ std::map<Path, DiskCachingFileLoaderCache *> DiskCachingFileLoader::caches_;
+-std::mutex DiskCachingFileLoader::cachesMutex_;
++std::recursive_mutex DiskCachingFileLoader::cachesMutex_;
+ 
+ // Takes ownership of backend.
+ DiskCachingFileLoader::DiskCachingFileLoader(FileLoader *backend)
+@@ -118,7 +118,7 @@
+ }
+ 
+ std::vector<Path> DiskCachingFileLoader::GetCachedPathsInUse() {
+-	std::lock_guard<std::mutex> guard(cachesMutex_);
++	std::lock_guard<std::recursive_mutex> guard(cachesMutex_);
+ 
+ 	// This is on the file loader so that it can manage the caches_.
+ 	std::vector<Path> files;
+@@ -132,7 +132,7 @@
+ }
+ 
+ void DiskCachingFileLoader::InitCache() {
+-	std::lock_guard<std::mutex> guard(cachesMutex_);
++	std::lock_guard<std::recursive_mutex> guard(cachesMutex_);
+ 
+ 	Path path = ProxiedFileLoader::GetPath();
+ 	auto &entry = caches_[path];
+@@ -145,7 +145,7 @@
+ }
+ 
+ void DiskCachingFileLoader::ShutdownCache() {
+-	std::lock_guard<std::mutex> guard(cachesMutex_);
++	std::lock_guard<std::recursive_mutex> guard(cachesMutex_);
+ 
+ 	if (cache_->Release()) {
+ 		// If it ran out of counts, delete it.

@@ -20,15 +20,31 @@
  * draws into the same memory when it has something to show.
  * docs/research/p105-mesa.md, M16, M38.
  *
+ * Without the copy (M49), where the device tree names the display
+ * controller iBoot left running (apple,s5l8940x-clcd: its layer 0 base,
+ * and the line it is at): a flip to a physically contiguous buffer
+ * (APPLE_SGX_BO_SCANOUT) of the screen's size and pitch, unturned, with no
+ * overlay, points the layer at the buffer instead, and its event goes once
+ * the display has gone into the next frame, when it no longer reads the
+ * buffer before.  Anything else -- a buffer drawn into on the screen
+ * (damage without a flip), the overlay, a turned plane -- has the plane
+ * copied onto the boot framebuffer whole and the layer pointed back at it.
+ *
  * Over the plane, the overlay (the render node's OVERLAY ioctl): a buffer
  * whose listed rectangles are blended over the plane in each copy that
  * reaches them, the same 2D job -- an on-screen control over whatever runs,
  * with no compositor (tools/screenpad).
  */
 
+#include <linux/debugfs.h>
+#include <linux/delay.h>
 #include <linux/hrtimer.h>
+#include <linux/io.h>
 #include <linux/log2.h>
+#include <linux/moduleparam.h>
 #include <linux/of.h>
+#include <linux/of_address.h>
+#include <linux/seq_file.h>
 
 #include <drm/drm_atomic.h>
 #include <drm/drm_atomic_helper.h>
@@ -61,6 +77,20 @@
 #define SGX_KMS_ALIGN		64
 #define SGX_KMS_MAX_SIZE	4096
 
+/* the display controller (apple,s5l8940x-clcd): in its first window, layer
+ * 0's base address; in its second, the position it scans (>> 9: the line,
+ * 0 to the screen's height - 1 over a frame) */
+#define SGX_CLCD_L0_BASE	0x44
+#define SGX_CLCD_POS		0x54
+#define SGX_CLCD_LINE_SHIFT	9
+
+/* (M49) off: every update copied onto the boot framebuffer, as before;
+ * looked at in each update */
+static bool direct_scanout = true;
+module_param(direct_scanout, bool, 0644);
+MODULE_PARM_DESC(direct_scanout,
+		 "show a flip to a contiguous buffer by moving the display's base, not copying it");
+
 struct apple_sgx_kms {
 	struct apple_sgx *sgx;
 	struct drm_simple_display_pipe pipe;
@@ -68,6 +98,15 @@ struct apple_sgx_kms {
 	struct drm_display_mode mode;
 	struct hrtimer vblank_timer;
 	ktime_t vblank_period;
+
+	/* the layer's base and the line counter (NULL: always copies); the
+	 * boot framebuffer, and what the layer reads now; flipped: this
+	 * commit moved the base (its event waits for the next frame) */
+	void __iomem *clcd, *clcd_pos;
+	dma_addr_t boot_pa, shown;
+	bool flipped;
+	/* updates shown by pointing the layer, by copies (debugfs screen) */
+	unsigned long n_pointed, n_copied;
 
 	/* the overlay: its buffer, owner and rectangles (the plane's source
 	 * coordinates less its origin, out to 16 pixels); the lock keeps them
@@ -202,7 +241,52 @@ static void sgx_kms_show(struct apple_sgx_kms *kms, const struct drm_plane_state
 		drm_err_ratelimited(fb->dev, "the 2D engine's copy to the screen: %d\n", ret);
 }
 
-/* The plane's damage onto the screen, before the commit's event goes. */
+static void sgx_kms_point(struct apple_sgx_kms *kms, dma_addr_t pa)
+{
+	if (pa == kms->shown)
+		return;
+	writel(pa, kms->clcd + SGX_CLCD_L0_BASE);
+	kms->shown = pa;
+	kms->flipped = true;
+}
+
+/* Whether the plane can be shown by pointing the layer at its buffer, and
+ * where: a contiguous buffer, the screen's size from its origin and the
+ * boot framebuffer's pitch, unturned, no overlay.  Under ov_lock. */
+static bool sgx_kms_direct(struct apple_sgx_kms *kms, const struct drm_plane_state *state,
+			   dma_addr_t *pa)
+{
+	struct apple_sgx *sgx = kms->sgx;
+	struct drm_framebuffer *fb = state->fb;
+
+	if (!READ_ONCE(direct_scanout) || !kms->clcd || !apple_sgx_bo_contig(fb->obj[0], pa) ||
+	    (state->rotation & DRM_MODE_ROTATE_MASK) != DRM_MODE_ROTATE_0 ||
+	    state->src.x1 || state->src.y1 || drm_rect_width(&state->src) >> 16 != sgx->fb_w ||
+	    drm_rect_height(&state->src) >> 16 != sgx->fb_h ||
+	    fb->pitches[0] != sgx->fb_stride * 4 || (kms->ov_obj && kms->ov_n))
+		return false;
+	*pa += fb->offsets[0];
+	return true;
+}
+
+/* Back to copies: the whole plane onto the boot framebuffer, then the
+ * layer pointed at it once the copy is done.  Under ov_lock. */
+static void sgx_kms_to_boot(struct apple_sgx_kms *kms, const struct drm_plane_state *state)
+{
+	struct drm_rect all = drm_plane_state_src(state);
+
+	all.x1 >>= 16;
+	all.y1 >>= 16;
+	all.x2 >>= 16;
+	all.y2 >>= 16;
+	sgx_kms_show(kms, state, &all);
+	apple_sgx_blt_sync(kms->sgx);
+	sgx_kms_point(kms, kms->boot_pa);
+}
+
+/* The plane onto the screen before the commit's event goes: a flip to a
+ * buffer the display can read, by pointing it there; otherwise its damage,
+ * copied. */
 static void sgx_kms_update(struct drm_simple_display_pipe *pipe,
 			   struct drm_plane_state *old_state)
 {
@@ -210,14 +294,48 @@ static void sgx_kms_update(struct drm_simple_display_pipe *pipe,
 	struct drm_plane_state *state = pipe->plane.state;
 	struct drm_atomic_helper_damage_iter iter;
 	struct drm_rect clip;
+	dma_addr_t pa;
 
 	if (!state->fb || !state->visible || !pipe->crtc.state->active)
 		return;
 	mutex_lock(&kms->ov_lock);
-	drm_atomic_helper_damage_iter_init(&iter, old_state, state);
-	drm_atomic_for_each_plane_damage(&iter, &clip)
-		sgx_kms_show(kms, state, &clip);
+	if (state->fb != old_state->fb && sgx_kms_direct(kms, state, &pa)) {
+		sgx_kms_point(kms, pa);
+		kms->n_pointed++;
+	} else if (kms->clcd && kms->shown != kms->boot_pa) {
+		sgx_kms_to_boot(kms, state);
+		kms->n_copied++;
+	} else {
+		kms->n_copied++;
+		drm_atomic_helper_damage_iter_init(&iter, old_state, state);
+		drm_atomic_for_each_plane_damage(&iter, &clip)
+			sgx_kms_show(kms, state, &clip);
+	}
 	mutex_unlock(&kms->ov_lock);
+}
+
+/* After the layer's base moved: until the display is into the next frame
+ * (it takes the base there, or at once -- either way the buffer before is
+ * no longer read): the line counter gone round and a line further, or a
+ * frame's time, sleeping through most of it. */
+static void sgx_kms_wait_frame(struct apple_sgx_kms *kms)
+{
+	u32 h = kms->sgx->fb_h, prev, line, us;
+	u32 line_ns = div_u64(ktime_to_ns(kms->vblank_period), h);
+	ktime_t end = ktime_add(ktime_get(), ktime_add_us(kms->vblank_period, 200));
+	bool wrapped = false;
+
+	prev = readl(kms->clcd_pos) >> SGX_CLCD_LINE_SHIFT;
+	while (ktime_before(ktime_get(), end)) {
+		line = readl(kms->clcd_pos) >> SGX_CLCD_LINE_SHIFT;
+		wrapped |= line < prev;
+		if (wrapped && line >= 1)
+			return;
+		prev = line;
+		/* to the frame's end at most, in steps of 2 ms or less */
+		us = clamp((h - min(line, h)) * line_ns / 1000, 50u, 2000u);
+		usleep_range(us, us + 50);
+	}
 }
 
 static void sgx_kms_enable(struct drm_simple_display_pipe *pipe,
@@ -229,6 +347,11 @@ static void sgx_kms_enable(struct drm_simple_display_pipe *pipe,
 
 static void sgx_kms_disable(struct drm_simple_display_pipe *pipe)
 {
+	struct apple_sgx_kms *kms = container_of(pipe, struct apple_sgx_kms, pipe);
+
+	/* the boot framebuffer back (fbcon's; stale until it draws) */
+	if (kms->clcd)
+		sgx_kms_point(kms, kms->boot_pa);
 	drm_crtc_vblank_off(&pipe->crtc);
 }
 
@@ -289,6 +412,16 @@ static void sgx_kms_commit_tail(struct drm_atomic_state *state)
 	drm_atomic_helper_commit_planes(drm, state, 0);
 	drm_atomic_helper_commit_modeset_enables(drm, state);
 	for_each_new_crtc_in_state(state, crtc, crtc_state, i) {
+		struct apple_sgx_kms *kms = container_of(crtc, struct apple_sgx_kms, pipe.crtc);
+
+		/* the layer moved: the event, and the old buffer, once the
+		 * display no longer reads it */
+		if (kms->flipped) {
+			sgx_kms_wait_frame(kms);
+			kms->flipped = false;
+		}
+	}
+	for_each_new_crtc_in_state(state, crtc, crtc_state, i) {
 		unsigned long flags;
 
 		spin_lock_irqsave(&drm->event_lock, flags);
@@ -338,6 +471,11 @@ static void sgx_kms_fini(struct drm_device *drm, void *data)
 	sgx_kms_overlay_drop(kms);
 
 	hrtimer_cancel(&kms->vblank_timer);
+	if (kms->clcd) {
+		writel(kms->boot_pa, kms->clcd + SGX_CLCD_L0_BASE);
+		iounmap(kms->clcd);
+		iounmap(kms->clcd_pos);
+	}
 }
 
 /* ---- the overlay ---------------------------------------------------------- */
@@ -353,6 +491,11 @@ static void sgx_kms_overlay_redraw(struct apple_sgx_kms *kms, const struct drm_r
 
 	if (!state || !state->fb || !state->visible || !kms->pipe.crtc.state->active)
 		return;
+	/* (the layer on the plane's buffer: the boot framebuffer back, whole) */
+	if (kms->clcd && kms->shown != kms->boot_pa && kms->ov_obj && kms->ov_n) {
+		sgx_kms_to_boot(kms, state);
+		return;
+	}
 	for (i = 0; i < n; i++) {
 		r = rects[i];
 		drm_rect_translate(&r, state->src.x1 >> 16, state->src.y1 >> 16);
@@ -478,6 +621,46 @@ void apple_sgx_kms_overlay_close(struct apple_sgx *sgx, struct drm_file *file)
 		apple_sgx_kms_overlay(sgx, file, &args);
 }
 
+/* debugfs apple-sgx/screen: where the layer reads, and how updates went */
+static int sgx_kms_screen_show(struct seq_file *m, void *unused)
+{
+	struct apple_sgx_kms *kms = m->private;
+
+	if (!kms->clcd) {
+		seq_puts(m, "no display controller: updates copied\n");
+		return 0;
+	}
+	seq_printf(m, "layer 0 base %pad (boot framebuffer %pad)\n", &kms->shown, &kms->boot_pa);
+	seq_printf(m, "updates shown by pointing the layer %lu, by copies %lu\n",
+		   READ_ONCE(kms->n_pointed), READ_ONCE(kms->n_copied));
+	return 0;
+}
+DEFINE_SHOW_ATTRIBUTE(sgx_kms_screen);
+
+/* The display controller, if the device tree has it and its layer reads
+ * the boot framebuffer (what iBoot left; anything else is not touched). */
+static void sgx_kms_find_clcd(struct apple_sgx_kms *kms, const struct resource *fb)
+{
+	struct device_node *np = of_find_compatible_node(NULL, NULL, "apple,s5l8940x-clcd");
+
+	if (!np)
+		return;
+	kms->clcd = of_iomap(np, 0);
+	kms->clcd_pos = of_iomap(np, 1);
+	of_node_put(np);
+	if (kms->clcd && kms->clcd_pos && readl(kms->clcd + SGX_CLCD_L0_BASE) == fb->start &&
+	    kms->sgx->fb_stride * 4 * kms->sgx->fb_h <= resource_size(fb)) {
+		kms->boot_pa = fb->start;
+		kms->shown = fb->start;
+		return;
+	}
+	if (kms->clcd)
+		iounmap(kms->clcd);
+	if (kms->clcd_pos)
+		iounmap(kms->clcd_pos);
+	kms->clcd = kms->clcd_pos = NULL;
+}
+
 /* Before the device is registered.  -ENODEV: no framebuffer, no screen. */
 int apple_sgx_kms_init(struct drm_device *drm, struct apple_sgx *sgx)
 {
@@ -525,6 +708,12 @@ int apple_sgx_kms_init(struct drm_device *drm, struct apple_sgx *sgx)
 	drm->mode_config.preferred_depth = 24;
 	drm->mode_config.funcs = &sgx_kms_mode_config_funcs;
 	drm->mode_config.helper_private = &sgx_kms_mode_config_helpers;
+	/* (M46) a flip without waiting for a vblank: what every flip here is
+	 * (there is none; the copy goes once the renders writing the buffer
+	 * are done) -- and what X's Present asks for a client that swaps
+	 * without vsync (PPSSPP): without the cap it copied the window into
+	 * the screen instead, a render of the X server's each frame */
+	drm->mode_config.async_page_flip = true;
 
 	ret = drmm_connector_init(drm, &kms->connector, &sgx_kms_connector_funcs,
 				  DRM_MODE_CONNECTOR_Unknown, NULL);
@@ -557,8 +746,11 @@ int apple_sgx_kms_init(struct drm_device *drm, struct apple_sgx *sgx)
 	if (ret)
 		return ret;
 	drm_mode_config_reset(drm);
+	sgx_kms_find_clcd(kms, &fb);
+	if (sgx->debugfs)
+		debugfs_create_file("screen", 0400, sgx->debugfs, kms, &sgx_kms_screen_fops);
 	sgx->kms = kms;
-	drm_info(drm, "screen: %ux%u at %pa, through the 2D engine\n", sgx->fb_w, sgx->fb_h,
-		 &fb.start);
+	drm_info(drm, "screen: %ux%u at %pa, through the 2D engine%s\n", sgx->fb_w, sgx->fb_h,
+		 &fb.start, kms->clcd ? " or the display's layer base" : "");
 	return 0;
 }

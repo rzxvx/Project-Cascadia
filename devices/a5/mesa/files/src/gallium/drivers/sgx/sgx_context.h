@@ -37,6 +37,9 @@ struct sgx_shader {
    unsigned nvs;
    unsigned vs_nattrs;                  /* the attributes it reads (sgx_vs_attr_count) */
    bool vs_failed;                      /* it cannot be compiled: the draw module's */
+   /* (M46) a fragment shader's TClampST lookup (sgx_fs_texclamp), if it has one */
+   bool has_texclamp;
+   struct sgx_texclamp texclamp;
 };
 
 /* Draws gathered into one render until something needs it done
@@ -57,6 +60,7 @@ struct sgx_batch_draw {
    struct sgx_vs *vs;                   /* its vertex shader on the GPU (M18), or NULL */
    unsigned vs_sa;                      /* its uniforms, from word vs_sa in sa */
    unsigned idx, nidx;                  /* its indices, from idx in the batch's */
+   uint32_t idx_va;                     /* (M46) or in a buffer's GPU copy, there */
    /* a vertex shader's (M26): where the fetch reads each attribute of
     * vertex 0, the stride, the vertices drawn (nidx of them when it has
     * indices, else 0, 1, 2, ...), the largest index */
@@ -107,6 +111,7 @@ struct sgx_batch {
    bool zs_cleared;                     /* its depth cleared at the render's start */
    bool zs_read, zs_written;            /* a draw tests depth, writes it */
    bool counted;                        /* a draw's samples counted (M37) */
+   bool blit;                           /* (SGX_DEBUG=sync) u_blitter's draws in it */
    float *verts;
    unsigned nfloats, maxfloats;
    /* vertex shaders' vertices made one stream (M26), written there by
@@ -161,9 +166,12 @@ struct sgx_vtx {
    unsigned nverts;
    unsigned count, max_index;
    bool indexed;
+   /* (M46) its indices where they are: their address in the index buffer's
+    * GPU copy (0: ctx->indices, copied into the render) */
+   uint32_t idx_va;
    /* the buffers the draw reads: its attributes', and (M43) its uniform
     * buffers', both stages' */
-   struct sgx_bo *bos[SGX_VS_MAX_ATTRIBS + 2 * SGX_FRAME_MAX_UBOS];
+   struct sgx_bo *bos[SGX_VS_MAX_ATTRIBS + 2 * SGX_FRAME_MAX_UBOS + 1];  /* (+1: M46's index buffer) */
    unsigned nbos;
    /* repacked (M42): where the stream was written -- the batch's chunk
     * vchunk (referenced), vdata for the CPU, vdata_va for the GPU -- when
@@ -176,6 +184,8 @@ struct sgx_vtx {
 
 struct sgx_context {
    struct pipe_context base;
+   /* (M46) copies and blits on the GPU: u_blitter's quads */
+   struct blitter_context *blitter;
    struct slab_child_pool transfer_pool;
    struct pipe_framebuffer_state fb;
    struct pipe_vertex_buffer vb[PIPE_MAX_ATTRIBS];
@@ -184,6 +194,9 @@ struct sgx_context {
    /* (M43) the uniform buffers, 1..15, of the vertex and fragment shader */
    struct pipe_constant_buffer ubo[2][SGX_FRAME_MAX_UBOS];
    struct sgx_shader *vs, *fs;
+   /* (M46) the vertex shader bound in the draw module: bound only when a
+    * draw goes that way (sgx_draw_vbo) */
+   struct sgx_shader *draw_vs;
    /* blending, depth (M14) */
    const struct pipe_blend_state *blend;
    const struct pipe_depth_stencil_alpha_state *dsa;
@@ -239,10 +252,17 @@ struct sgx_context {
    /* SGX_DEBUG=fps: frames (swaps), renders and draws counted, and said
     * every two seconds */
    bool debug_fps, debug_sync, debug_flushes;
+   /* SGX_DEBUG=each (M46): every draw a render of its own, said with its
+    * pixel program (with sync: each one's time on the GPU) */
+   bool debug_each;
    unsigned stat_frames, stat_renders, stat_draws;
    int64_t stat_t0, stat_cpu0, stat_gpu;
    int64_t stat_swap, stat_between;     /* the last frame's end; to the next draw */
    int64_t stat_swap_cpu, stat_between_cpu;
+   /* (M46) draws of a TClampST shader with its clamp left out, with it
+    * kept; the CPU time telling */
+   unsigned stat_clamp_free, stat_clamp_kept;
+   int64_t stat_clamp_ns;
 };
 
 static inline struct sgx_context *

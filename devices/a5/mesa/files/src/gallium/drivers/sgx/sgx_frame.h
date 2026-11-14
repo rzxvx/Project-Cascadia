@@ -166,6 +166,10 @@ struct sgx_pixel_program {
    /* (M38) its inputs iterated and its lookups' texels fetched as F16, two
     * registers each (iOS's SDL sprite, corpus s00) */
    bool f16;
+   /* (M46) of an F16 program's inputs, those iterated as F32 all the same
+    * (bit i, four registers): the coordinates of lookups the program makes
+    * itself, worked out in F32 */
+   uint8_t in_f32;
 };
 
 /* Triangles into rt, over what it holds (each tile starts as the target's
@@ -206,6 +210,11 @@ struct sgx_frame_state {
    /* (M37) the samples that pass counted: an occlusion query's draw (ISP
     * state A bit 14, iOS's m29; bit 18 would count only whether any did) */
    bool count;
+   /* (M46) the ISP's opaque pass type (state word 1 bits 27:25 0, as
+    * iOS's opaque draws have it): hidden surface removal, only the pixels
+    * seen shaded -- for a pixel program that reads nothing of the tile's
+    * colour.  Else translucent (bit 25, sgx2d's), shaded in order. */
+   bool opaque;
 };
 #define SGX_FLAT_LAST  3
 /* the TA's culling (state word 18, bits 1:0): the triangles clockwise or
@@ -251,6 +260,7 @@ struct sgx_frame_draw {
    const uint32_t *base;
    unsigned stride, count;
    const uint16_t *indices;
+   uint32_t idx_va;             /* (M46) the indices at this address instead */
 };
 #define SGX_FRAME_MAX_DRAWS 2048
 unsigned sgx_frame_max_draws(const struct sgx_frame *f);
@@ -263,7 +273,7 @@ sgx_frame_state_equal(const struct sgx_frame_state *x, const struct sgx_frame_st
           x->viewport == y->viewport && x->cull == y->cull &&
           x->stencil_on == y->stencil_on && x->stencil == y->stencil &&
           x->stencil_ref == y->stencil_ref && x->flat == y->flat && x->offset == y->offset &&
-          x->count == y->count &&
+          x->count == y->count && x->opaque == y->opaque &&
           (!x->viewport || (x->scale[0] == y->scale[0] && x->scale[1] == y->scale[1] &&
                             x->scale[2] == y->scale[2] && x->translate[0] == y->translate[0] &&
                             x->translate[1] == y->translate[1] &&

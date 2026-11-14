@@ -56,7 +56,35 @@ struct sgx_blend_key {
    uint8_t rt_kind;
    uint8_t rt_srgb;        /* (M43) the target's bytes sRGB: encoded, decoded to blend */
    uint8_t rt_intensity;   /* (M43) an intensity target: the colour R R R R in the tile */
+   /* (M46) the units whose lookup's clamp (sgx_texclamp) the draw found to
+    * do nothing: the lookup at the varying itself */
+   uint8_t texclamp_free;
 };
+
+/* (M46) A lookup at coordinates clamped to a rectangle of its texture and
+ * moved -- PPSSPP's TClampST: clamp(v, u_texclamp.zw, u_texclamp.xy -
+ * u_texclamp.zw) + u_texclampoff, v a varying's x and y -- which takes the
+ * lookup off the PDS.  Each of lo, hi and off is k + s[0] * word w[0] + s[1]
+ * * word w[1] of the uniforms (s 0: no word).  A draw whose offset is 0 and
+ * whose v never leaves [lo, hi] -- or leaves it only where the sampler's
+ * clamp to the edge gives the same texel -- has the variant without it
+ * (sgx_blend_key.texclamp_free). */
+struct sgx_uexpr {
+   float k;
+   uint16_t w[2];
+   int8_t s[2];
+};
+struct sgx_texclamp {
+   uint8_t unit;
+   uint8_t slot[2], comp[2];   /* each coordinate's varying: gl_varying_slot, component */
+   struct sgx_uexpr lo[2], hi[2], off[2];
+};
+bool sgx_fs_texclamp(const struct nir_shader *fs, struct sgx_texclamp *tc);
+float sgx_uexpr_eval(const struct sgx_uexpr *e, const float *u, unsigned nwords);
+/* (M46) a vertex shader's varying component as a copy of an attribute's:
+ * the attribute (driver_location: the vertex element) and its component */
+bool sgx_vs_varying_attr(const struct nir_shader *vs, unsigned slot, unsigned comp,
+                         unsigned *attr, unsigned *acomp);
 
 #define SGX_FS_MAX_SAMPLERS 8
 
@@ -71,6 +99,12 @@ struct sgx_blend_key {
 #define SGX_FIX_DIV_Z   0x02
 #define SGX_FIX_DIV_W   0x03
 #define SGX_FIX_DIV(f)  ((f) & 3)
+/* (M46) a lookup at a varying's y and z, or z and w -- where the linker
+ * packed the coordinates after a float (PPSSPP's fog factor), which the
+ * PDS cannot fetch: a varying of its own, components n and n + 1 of the
+ * other moved into its x and y by the vertex side */
+#define SGX_FIX_SHIFT(n)    ((n) << 2)
+#define SGX_FIX_SHIFT_OF(f) ((f) >> 2 & 3)
 #define SGX_PROJ_DIV    3       /* the component the PDS divides x and y by */
 
 /* A compiled fragment shader.  Its secondary attributes (prog.nsa words)
@@ -83,6 +117,22 @@ struct sgx_blend_key {
  * width, 0.5 / height -- then (blend_sa, if the blending reads it) the
  * blend colour. */
 #define SGX_FS_SIZE_WORDS 8
+#define SGX_FS_MAX_KCONST 16
+
+/* (M46) A pair of the constant pool that the draw works out from the sa
+ * words before it (the uniforms, the pool's pairs before it): what the
+ * program would work out the same for every pixel -- an F32 sum, product,
+ * min or max of two words (each maybe negated), the second word 0; or the
+ * four words from a as four F16 (a uniform vec4 an F16 program reads) */
+enum sgx_derived_kind {
+   SGX_DERIVED_ADD, SGX_DERIVED_MUL, SGX_DERIVED_MIN, SGX_DERIVED_MAX, SGX_DERIVED_F16,
+};
+struct sgx_fs_derived {
+   uint8_t kind, pair, a, b;
+   bool neg_a, neg_b;
+};
+#define SGX_FS_MAX_DERIVED 8
+
 struct sgx_fs {
    struct sgx_pixel_program prog;
    unsigned input_slot[SGX_FRAME_MAX_VARYINGS];   /* gl_varying_slot, input i */
@@ -93,9 +143,21 @@ struct sgx_fs {
    unsigned nuniforms, nsamplers, sampler_sa;
    unsigned sampler_unit[SGX_FS_MAX_SAMPLERS];
    int blend_sa;                                  /* -1: no blend colour */
+   bool blend_packed;         /* (M46) it as one word of RGBA bytes, SOP2's constant */
    int scale_sa;              /* -1, or each texture's 1 / width, 1 / height (rectangles) */
    int size_sa;               /* -1, or each texture's size words (M44) */
    struct sgx_blend_key blend;                    /* what it was compiled for */
+   bool sop2;                 /* (M46) blended (or masked) by one SOP2, as iOS does */
+   /* (M46) its constants, nkconst pairs of sa words from kconst_sa (an F32
+    * and 0, or four F16): the draw writes them with the uniforms */
+   uint32_t kconst[2 * SGX_FS_MAX_KCONST];
+   unsigned nkconst, kconst_sa;
+   /* (M46) the texture slots the program samples itself as F16: the draw
+    * sets their state word 3's bit 31 (0..1, as the PDS's F16 lookups) */
+   uint8_t smp_norm;
+   /* (M46) the pool's pairs the draw works out, in order */
+   struct sgx_fs_derived derived[SGX_FS_MAX_DERIVED];
+   unsigned nderived;
    /* (M39) each varying's SGX_FIX_*, in varying_slot[]'s order */
    uint8_t vary_fix[SGX_FRAME_MAX_VARYINGS];
    uint8_t vary_unit[SGX_FRAME_MAX_VARYINGS];

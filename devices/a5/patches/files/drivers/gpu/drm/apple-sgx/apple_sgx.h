@@ -184,6 +184,7 @@ struct apple_sgx {
 	bool irq_on;
 	unsigned int irq_count, irq_unhandled, irq_run;
 	u32 irq_events[SGX_MAX_CORES];	/* every event bit seen, per core */
+	u32 irq_events_master;		/* and in the master's bank */
 	u32 irq_host_flags;		/* host control's interrupt flags, last */
 
 	/* the 2D engine (blits and fills through the transfer queue) */
@@ -232,9 +233,11 @@ int apple_sgx_blt_sync(struct apple_sgx *sgx);
 int apple_sgx_drm_init(struct apple_sgx *sgx);
 void apple_sgx_drm_fini(struct apple_sgx *sgx);
 bool apple_sgx_drm_busy(struct apple_sgx *sgx);
+void apple_sgx_drm_irq(struct apple_sgx *sgx);
 int apple_sgx_drm_reserve(struct apple_sgx *sgx, int slot, u32 va, u32 size);
 void apple_sgx_drm_unreserve(struct apple_sgx *sgx, int slot);
 u32 apple_sgx_bo_va(struct drm_gem_object *obj);
+bool apple_sgx_bo_contig(struct drm_gem_object *obj, dma_addr_t *pa);
 
 /* apple_sgx_kms.c */
 struct drm_apple_sgx_overlay;

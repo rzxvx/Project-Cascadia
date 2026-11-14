@@ -41,10 +41,11 @@ including the parts that didn't work.
 | Device | Model | Chip | Board ID | Status | Where |
 |--------|-------|------|----------|--------|-------|
 | iPad mini 1 (Wi-Fi) | iPad2,5 / A1432 | Apple A5 (S5L8942X) | p105ap | desktop, touch, Wi-Fi, GPU | this README, repository root |
+| iPad 2 (Wi-Fi) *(experimental)* | iPad2,1 / A1395 | Apple A5 (S5L8940X) | k93ap | desktop, touch, Wi-Fi, Bluetooth, speaker, headphones, built-in and headset microphones, volume buttons, GPU, sensors, a root whose changes are kept on the NAND; boots from iOS without a computer | [docs/k93-bringup.md](docs/k93-bringup.md) |
 | iPhone 11 | iPhone12,1 | Apple A13 (T8030) | n104ap | shell, network over USB, touch, XFCE, Wi-Fi, Bluetooth, internal storage | [`a13/`](../a13/README.md) |
 
-Experimental: the iPad 2 Wi-Fi (iPad2,1 / K93AP, S5L8940) now boots Linux
-6.12 to a RAM-only USB shell. This is not feature parity with the iPad mini;
+The iPad 2 is the tree's second board, tested on one device (iOS 6.1.3,
+jailbroken): it starts from that iOS, which stays installed and working --
 see [K93 bring-up and limitations](docs/k93-bringup.md).
 
 ## Current Status
@@ -269,6 +270,17 @@ FTL write path, and the clean cut (shrink `fsys`, give Linux its own flash
 partition) needs a restore, a write to the block that holds the bootloaders, and
 eats the FTL's 1.85 GB of overprovisioning. A flash drive is more space, more
 speed and no risk at all.
+
+**The iPad 2 has the third column.** Its NAND is raw flash under VSVFL, not
+PPN, and the VSVFL keeps a pool of spare blocks on every chip for the ones that
+wear out. iOS fills it from the bottom (replacements) and from the top (spares
+for its boot partitions) and on the iPad tested holds 16-29 of a bank's 96
+slots. Linux owns a band in the middle -- 224 blocks, a 333 MB block device --
+checked against iOS's own maps at every start, and keeps the root's changes
+there with iOS installed and working:
+[docs/k93-bringup.md](docs/k93-bringup.md),
+[docs/research/k93-nand-write.md](docs/research/k93-nand-write.md). Whether the
+mini's PPN flash has anything like it is not known.
 
 ## Seven problems worth reading about
 
@@ -511,6 +523,12 @@ good.
 | CPU0 busy reading over NFS | 96% | 34–47% |
 
 On the desktop it shows as XFCE and its terminal starting about twice as fast.
+
+The L2 still prefetched nothing: iOS's ADT has data and instruction
+prefetch on, the device tree here had not asked for it. On the iPad 2
+(2026-11-12) it does now — musl's `memcpy`, which has no preloads of its
+own, copies 3 MB at ~580 MB/s instead of 233
+([research/p105-mesa.md](docs/research/p105-mesa.md) M46).
 
 ### 7. The NAND problem — reading iOS's disk without iOS
 
@@ -763,15 +781,20 @@ patches/files/  new source files, copied verbatim into the kernel tree
                 (irqchip/, mach-apple/, phy/, gpu/drm/apple-sgx/, and the
                 render node's uapi header) — the core of the port
 patches/*.patch generated diffs of the glue edits, for reference
-config/         p105ap.config — the kernel config fragment
+config/         p105ap.config, k93ap.config — the kernel config fragments
 scripts/        patch application + build + bundle scripts
-dts/            p105ap.dts — hand-written, generated from the Apple ADT
+dts/            p105ap.dts, k93ap.dts — hand-written, generated from the Apple
+                ADT (k93ap-diag.dts: the iPad 2's first, RAM-only boot)
 rootfs/alpine/  the Alpine-side overlay: apk repositories, inittab, motd
 initramfs/      stage 1 (/init) and stage 2 (/sbin/p105-stage2) -- the boot
                 itself.  ./cascadia a5 rootfs lays both overlays onto the Alpine
                 minirootfs; nothing is edited inside build/
 tools/          p105-peek.c (MMIO tool), build/flash wrappers, LZSS helpers,
-                nand/ (nandctl, iosnand: the NAND, read-only),
+                nand/ (nandctl, iosnand: the mini's NAND, read-only;
+                k93nand, k93iosnand: the iPad 2's, read-only; k93nandw,
+                k93lv: the iPad 2's write side and its Linux volume),
+                k93-*.sh (the iPad 2's firmware, its boot from iOS, its
+                root image), audio/ (the speakers, both iPads),
                 sgx/ (the GPU: sgx2d, the SDL shim, pack builder, gl/: the
                 driver's tests), iosgpu/ (the iOS capture tool, the kext
                 emulator), piglit/ (the OpenGL test suite for the iPad),
@@ -782,6 +805,7 @@ mesa/           the GPU's Mesa driver (Gallium: OpenGL ES 1.1/2.0, OpenGL 2.1):
 docs/           QUICKSTART.md — clean machine to a shell on the device
                 CASCADIA-CHEATSHEET.md — the real reference for working on it
                 GPU.md — the GPU: building, playing SuperTux, how it works
+                k93-bringup.md — the iPad 2: what differs, what works
 docs/research/  one file per investigation; several are dead ends, on purpose
                 (p105-mesa.md: the plan for Mesa and OpenGL)
 pongo/          pongoOS module (ADT read, DT fixup)
@@ -804,6 +828,21 @@ Build products (`output/`) and stock firmware are not tracked; everything in
   ~~a desktop~~ ✓ (XFCE) → ~~the second core~~ ✓ → ~~Wi-Fi via HSIC/EHCI~~ ✓
   → ~~the L2 cache~~ ✓ → ~~iOS's files off the NAND~~ ✓ (read-only) → NAND
   as Linux's own storage.
+
+### iPad 2 — A5 (experimental)
+
+- **Phases 1 and 2 ✓** — the boot from a jailbroken iOS (kDFU from a computer,
+  or `linux` on the iPad itself), USB gadget and ssh, the AIC timer, both
+  cores, the L2.
+- **Phase 3** — ~~touch~~ ✓ → ~~Wi-Fi (SDIO)~~ ✓ → ~~Bluetooth~~ ✓ → ~~the GPU
+  and a desktop~~ ✓ → ~~the speaker~~ ✓ → ~~the volume buttons~~ ✓ →
+  ~~autorotate~~ ✓ → ~~iOS's files off the NAND~~ ✓ → ~~NAND as Linux's own
+  storage~~ ✓ (the Linux volume) → ~~the headphones~~ ✓ (switching by
+  themselves) → ~~the built-in microphone~~ ✓ → ~~a headset's microphone~~ ✓
+  (biased, capture moving to it) → ~~the cameras~~ ✓ (V4L2, both, with their
+  picture controls) → ~~games~~ ✓ (Game Boy, GBA, PSP, by touch) → heavy 3D
+  faster on the GPU (the PSP's: God of War's menu 3% → ~64% of its speed so
+  far) → USB host.
 
 The iPhone 11 and the devices planned next: the
 [project README](../../README.md#roadmap).

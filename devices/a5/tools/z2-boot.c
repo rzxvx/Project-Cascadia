@@ -86,7 +86,31 @@
  *
  * Kernel side: /dev/hx-touch from drivers/input/touchscreen/apple-z2.c.
  *
- *   z2-boot [-c cal] [-P proxcal] [-F fll-mval] [-G pmu-gpio0] [-R] [-o m,m..] [-B] [-n] [-A] [-W] [-X] [-p secs] [-t secs] [-S] [-D] [-M reg:mask:val].. [-N] [mtprops]
+ *   z2-boot [-s ms] [-w secs] [-q] [-Z] [-E exec-addr] [-d] [-a attn-gpio] [-C cal-addr] [-f] [-b bf-hex] [-c cal] [-P proxcal] [-F fll-mval] [-G pmu-gpio0] [-R] [-o m,m..] [-B] [-n] [-A] [-W] [-X] [-p secs] [-t secs] [-S] [-D] [-M reg:mask:val].. [-N] [mtprops]
+ *
+ *   The iPad 2 (K93) and iPad 3 (J1) digitizers are plain Z2 (iOS's
+ *   AppleMultitouchZ2SPI, firmware Z2F13), not the mini's N1: no
+ *   performCalibSeq (-n), calibration to 0x1000c000 (-C) ahead of the
+ *   firmware (-f, as iOS 9 orders it on the J1), scan started with bf =
+ *   9f 0b 0b 02 (-b 9f0b0b02), ATTN on another pin (-a 21 on the K93):
+ *     z2-boot -Z -F 0x18da -E 0x10001800 -d -a 21 -C 0x1000c000 -b 9f0b0b02 -c mtcal.bin K93.mtprops
+ *     -a  the ATTN GPIO (default 22, the mini's)
+ *     -C  where the calibration goes (default 0x10009000; Z2F13: 0x1000c000)
+ *     -f  download the calibration before the firmware, not after
+ *     -b  report bf's four bytes, in hex (default 9b0b0b02, the mini's)
+ *     -Z  the Z2 bootloader's own performCalibSeq instead of the N1's (the
+ *         iPad 2 and 3): fll-mval (-F; K94: 0x18da) to 0x10001c04, three
+ *         fixed register writes, then the calibration request
+ *     -s  after EXECUTE, this many ms with no transfer at all before anything
+ *         else (the firmware's start; talking over it garbles its SPI)
+ *     -w  right after EXECUTE, read the chip's boot messages as frames for
+ *         this many seconds before talking to it (a Z2F13 sends a dozen)
+ *     -q  nothing between EXECUTE and READY: none of the N1's post-boot
+ *         dialogue (wake, device info, GETs, bf/af) -- the kernel reads frames
+ *     -E  the address EXECUTE jumps to (default 0x10003400, the N1's
+ *         fw-execute-addr; a Z2F13 image loads at 0 and starts there)
+ *     -d  assert enable_download (HXT_IOC_SET_DL) before the reset and hold it
+ *         through the bootload -- without it the Z2F13 never enters HBPP
  *     -c  download this calibration blob (iOS "Calibration Data") to 0x10009000
  *     -P  download this prox calibration blob to 0x10009600
  *     -B  leave out the bf/af reports (the scan does not start)
@@ -160,6 +184,7 @@
 #define HXT_IOC_WAIT_IRQ        _IOW('h', 5, uint32_t)
 struct hxt_metrics { int left, right, top, bottom; };
 #define HXT_IOC_METRICS         _IOW('h', 6, struct hxt_metrics)
+#define HXT_IOC_SET_DL          _IOW('h', 7, uint32_t)
 
 #define CHUNK   16384
 
@@ -211,15 +236,19 @@ static int safe, seen_high;
 static volatile uint32_t *gpio;
 static char attn_level(void);
 
+/* The digitizer's ATTN pin: GPIO 22 on the iPad mini, 21 on the iPad 2
+ * (the ADT's multi-touch interrupts), -a to set it. */
+static unsigned attn_pin = 22;
+
 #define GPIO_DISABLE0   (0x800 / 4)     /* pins 0..31, write 1 to disable */
 #define GPIO_STATUS0    (0x880 / 4)     /* pins 0..31, write 1 to clear */
-#define ATTN_BIT        (1u << 22)
+#define ATTN_BIT        (1u << (attn_pin & 31))
 
 static void arm_attn(void)
 {
     if(safe) {
         gpio[GPIO_STATUS0] = ATTN_BIT;
-        seen_high = gpio[22] & 1;
+        seen_high = gpio[attn_pin] & 1;
         return;
     }
     ioctl(fd, HXT_IOC_SETUP_IRQ);
@@ -245,7 +274,7 @@ static char attn_level(void)
             return '?';
         }
     }
-    return gpio[22] & 1 ? '1' : '0';
+    return gpio[attn_pin] & 1 ? '1' : '0';
 }
 
 /* grape-clk on GPIO 63, measured from the pad for 100 ms. */
@@ -437,7 +466,7 @@ static int wait_attn(unsigned ms)
             gpio[GPIO_STATUS0] = ATTN_BIT;
             return 1;
         }
-        if(gpio[22] & 1)
+        if(gpio[attn_pin] & 1)
             seen_high = 1;
         else if(seen_high)
             return 1;
@@ -869,6 +898,10 @@ int main(int argc, char **argv)
     const char *mtprops = "/lib/firmware/P105.mtprops", *calpath = NULL, *proxpath = NULL;
     char *modes = NULL;
     int opt, noscan = 0, nocal = 0, opmode = 0, nodef = 0, pmugpio = -1, listrep = 0, hold = -1, noready = 0, poll = 0, wake = 0;
+    int calfirst = 0, dl = 0, z2seq = 0, quiet = 0, drain = 0, settle_ms = 0;
+    uint32_t exeaddr = 0x10003400;
+    uint32_t caladdr = 0x10009000;
+    uint8_t bf[4] = { 0x9b, 0x0b, 0x0b, 0x02 };
     uint8_t *fw, *cal = NULL, *prox = NULL, c[16], res[16];
     size_t fwlen, callen = 0, proxlen = 0;
     uint32_t ver, v, fll = 0x17c9;
@@ -876,8 +909,23 @@ int main(int argc, char **argv)
     struct hxt_metrics m = { 0, 0, 0, 0 };
     unsigned i;
 
-    while((opt = getopt(argc, argv, "c:F:G:P:Ro:BnAWXNSDM:p:t:")) != -1) {
+    while((opt = getopt(argc, argv, "s:w:qZE:da:b:C:fc:F:G:P:Ro:BnAWXNSDM:p:t:")) != -1) {
         switch(opt) {
+        case 's': settle_ms = atoi(optarg); break;
+        case 'w': drain = atoi(optarg); break;
+        case 'q': quiet = 1; break;
+        case 'Z': z2seq = 1; break;
+        case 'E': exeaddr = strtoul(optarg, NULL, 0); break;
+        case 'd': dl = 1; break;
+        case 'a': attn_pin = strtoul(optarg, NULL, 0); break;
+        case 'C': caladdr = strtoul(optarg, NULL, 0); break;
+        case 'f': calfirst = 1; break;
+        case 'b':
+            if(strlen(optarg) != 8 || sscanf(optarg, "%2hhx%2hhx%2hhx%2hhx", &bf[0], &bf[1], &bf[2], &bf[3]) != 4) {
+                fprintf(stderr, "-b wants report bf as 8 hex digits, e.g. 9f0b0b02\n");
+                return 2;
+            }
+            break;
         case 'c': calpath = optarg; break;
         case 'P': proxpath = optarg; break;
         case 'B': noscan = 1; break;
@@ -901,7 +949,7 @@ int main(int argc, char **argv)
         case 'R': listrep = 1; break;
         case 'o': modes = optarg; break;
         default:
-            fprintf(stderr, "usage: %s [-c cal] [-P proxcal] [-F fll-mval] [-G pmu-gpio0] [-R] [-o m,m..] [-B] [-n] [-A] [-W] [-X] [-p secs] [-t secs] [-S] [-D] [-M reg:mask:val].. [-N] [mtprops]\n", argv[0]);
+            fprintf(stderr, "usage: %s [-s ms] [-w secs] [-q] [-Z] [-E exec-addr] [-d] [-a attn-gpio] [-C cal-addr] [-f] [-b bf-hex] [-c cal] [-P proxcal] [-F fll-mval] [-G pmu-gpio0] [-R] [-o m,m..] [-B] [-n] [-A] [-W] [-X] [-p secs] [-t secs] [-S] [-D] [-M reg:mask:val].. [-N] [mtprops]\n", argv[0]);
             return 2;
         }
     }
@@ -945,7 +993,7 @@ int main(int argc, char **argv)
         gpio[GPIO_DISABLE0] = ATTN_BIT;
         gpio[GPIO_STATUS0] = ATTN_BIT;
         printf("== -S: ATTN's interrupt masked in the GPIO block, watching the pad (cfg %08x)\n",
-               (unsigned)gpio[22]);
+               (unsigned)gpio[attn_pin]);
     }
 
     stamp("opened");
@@ -966,6 +1014,17 @@ int main(int argc, char **argv)
         printf("  PMU 0x61 <- %02x, reads %02x\n", pmugpio, pmu_reg(0x61, pmugpio));
         usleep(5000);
         clk_report("after -G");
+    }
+
+    if(dl) {
+        /* enable_download, asserted before the reset and held through the
+         * bootload: without it a Z2F13 digitizer never enters HBPP and
+         * answers every transfer with zeros (the iPad 3's, and the iPad 2's
+         * first boot).  READY lets it go (apple-z2.c). */
+        if(ioctl(fd, HXT_IOC_SET_DL, 1) < 0)
+            perror("SET_DL");
+        else
+            printf("== enable_download asserted (-d)\n");
     }
 
     printf("== reset\n");
@@ -992,6 +1051,12 @@ int main(int argc, char **argv)
     if(!hbpp_check())
         printf("  not in HBPP -- carrying on to see what the chip does\n");
 
+    if(calfirst && cal) {
+        printf("== calibration first (-f), to 0x%08x\n", caladdr);
+        if(download("calibration", caladdr, cal, callen))
+            return 1;
+    }
+
     printf("== download\n");
     arm_attn();
     if(xfer(fw, NULL, fwlen))
@@ -1001,15 +1066,37 @@ int main(int argc, char **argv)
         return 1;
     printf("  ack %04x%s\n", st, st == 0x4bc1 ? " (firmware accepted)" : "   NOT 4bc1");
 
-    if(prox || cal) {
+    if(prox || (cal && !calfirst)) {
         printf("== calibration (MTSPIBootloader_Z2: prox first, then the panel's)\n");
         if(prox && download("prox calibration", 0x10009600, prox, proxlen))
             return 1;
-        if(cal && download("calibration", 0x10009000, cal, callen))
+        if(cal && !calfirst && download("calibration", caladdr, cal, callen))
             return 1;
     }
 
-    if(!nocal) {
+    if(!nocal && z2seq) {
+        /* MTSPIBootloader_Z2::performCalibSeq, 12H321 (0x806eeaa0 in the
+         * K93 kernelcache): unless the chip reads back version 0x5a020028,
+         * fll-mval to fll-mval-addr (default 0x10001c04, the K94
+         * personality's value 0x18da) and three fixed writes; then the
+         * calibration request, 65 ms, its ATN_ACK. */
+        printf("== performCalibSeq (MTSPIBootloader_Z2)\n");
+        reg_read(0x10008ffc, &ver);
+        if(ver != 0x5a020028) {
+            reg_write(0x10001c04, fll, 0x1fff);             /* fll-mval */
+            reg_write(0x10001c08, 0x840000, 0xff0000);
+            reg_write(0x1000300c, 5, 0x85);
+            reg_write(0x1000304c, 0x20, 0xffffffff);
+        }
+        c[0] = 0x1f; c[1] = 0x01;
+        arm_attn();
+        xfer(c, res, 2);
+        hex("calib request ->", res, 2);
+        usleep(65000);
+        printf("  ATTN during calibration: %s\n", wait_attn(100) ? "yes" : "no");
+        if(atn_ack(&st) == 0)
+            printf("  calibration ack %04x\n", st);
+    } else if(!nocal) {
         printf("== performCalibSeq (MTSPIBootloader_N1)\n");
         reg_read(0x10008ffc, &ver);
         reg_write(0x10003060, fll, 0xffffffff);             /* fll-mval */
@@ -1032,15 +1119,43 @@ int main(int argc, char **argv)
 
     printf("== execute\n");
     arm_attn();
-    execute(0x10003400);
+    execute(exeaddr);
+    if(dl) {
+        /* and enable_download released with it: held after EXECUTE, the
+         * Z2F13 runs its firmware for a moment and falls back into HBPP
+         * ("1f 01" forever) -- iOS's "disabling fw download mode" */
+        if(ioctl(fd, HXT_IOC_SET_DL, 0) < 0)
+            perror("SET_DL");
+    }
     usleep(40000);
     printf("  ATTN after execute: %s\n", wait_attn(200) ? "yes" : "no");
 
     stamp("executed");
+    if(settle_ms > 0) {
+        /* nothing on the bus while the firmware starts: a transfer in the
+         * first few hundred ms leaves a Z2F13's SPI output bit-shifted for
+         * good (K93, 2026-11-09) */
+        printf("== -s: %d ms of quiet after EXECUTE\n", settle_ms);
+        usleep(settle_ms * 1000);
+        stamp("settled");
+    }
+    if(drain > 0) {
+        /* A Z2F13 sends its boot messages right after EXECUTE -- a dozen
+         * ATTNs on the K93 -- and a command sent over them comes back as
+         * garbage.  Read them out first, as frames. */
+        printf("== -w: draining the boot messages for %d s\n", drain);
+        poll_frames(drain);
+    }
+    if(quiet) {
+        printf("== -q: no post-boot dialogue, straight to READY\n");
+        goto ready;
+    }
     printf("== post-boot (iOS, logs/ios-mtlog1.txt)\n");
-    memset(c, 0, 16); c[0] = 0xee;
-    z2_cmd(c, res);
-    usleep(2000);
+    if(!z2seq) {                        /* MT_SPI_Z2_WAKE_CMD is the N1's */
+        memset(c, 0, 16); c[0] = 0xee;
+        z2_cmd(c, res);
+        usleep(2000);
+    }
     memset(c, 0, 16); c[0] = 0xe2;
     z2_cmd(c, res);
     z2_cmd(c, res);
@@ -1056,8 +1171,9 @@ int main(int argc, char **argv)
         set_report(0xab, op, 1);
     }
     if(!noscan) {
-        static const uint8_t bf[4] = { 0x9b, 0x0b, 0x0b, 0x02 }, af[1] = { 0 };
-        printf("  bf = 9b 0b 0b 02, af = 00, twice (userspace, what starts the scan)\n");
+        static const uint8_t af[1] = { 0 };
+        printf("  bf = %02x %02x %02x %02x, af = 00, twice (userspace, what starts the scan)\n",
+               bf[0], bf[1], bf[2], bf[3]);
         set_report(0xbf, bf, 4);
         set_report(0xaf, af, 1);
         set_report(0xbf, bf, 4);
@@ -1100,11 +1216,23 @@ int main(int argc, char **argv)
      * height, then x0 y0 x1 y1, signed -- -114 -114 11741 15738 here, the
      * range the touches' coordinates come in. */
     if(d9[0] == 0xe7 && d9[1] == 0xd9 && d9[2] == 0) {
+        int w = d9[3] | d9[4] << 8, h = d9[7] | d9[8] << 8;
+
         m.left = (int16_t)(d9[11] | d9[12] << 8);
         m.top = (int16_t)(d9[13] | d9[14] << 8);
         m.right = (int16_t)(d9[15] | d9[16] << 8);
         m.bottom = (int16_t)(d9[17] | d9[18] << 8);
+        /* The Z2F13's d9 is 8 bytes, width and height only (the iPad 2's
+         * and 3's: 14745 x 19660, 0.01 mm); what follows them is not
+         * bounds.  Then the surface is 0..width, 0..height. */
+        if(w > 0 && h > 0 && !(m.right > m.left && m.bottom > m.top &&
+                               m.left > -w / 4 && m.right < w + w / 4 &&
+                               m.top > -h / 4 && m.bottom < h + h / 4)) {
+            m.left = 0; m.right = w;
+            m.top = 0; m.bottom = h;
+        }
     }
+ready:
     printf("  metrics x %d..%d y %d..%d\n", m.left, m.right, m.top, m.bottom);
     if(ioctl(fd, HXT_IOC_METRICS, &m) < 0)
         perror("METRICS");

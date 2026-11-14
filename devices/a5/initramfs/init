@@ -4,13 +4,17 @@
 #
 # Everything here has to happen before a root filesystem can be chosen: the
 # early mounts, the clock, the USB gadget, the network.  Then it picks a root
-# and execs /sbin/p105-stage2, which starts the services.  Two roots are
-# possible and both end in the same stage 2:
+# and execs /sbin/p105-stage2, which starts the services.  Three roots are
+# possible and all end in the same stage 2:
 #
 #   NFS  -- if /etc/nfsroot exists and the mount succeeds.  Survives reboots and
 #           is not limited to what fits in 512 MB of RAM.
-#   RAM  -- this initramfs.  Always available, so a failed NFS mount degrades
-#           instead of bricking the boot.
+#   NAND -- the iPad 2 (K93): a squashfs image on iOS's own System partition,
+#           read through k93lv (k93iosnand's reader), under an overlay whose
+#           changes are kept on the Linux volume, the NAND blocks Linux owns
+#           (RAM without one).  Bigger than RAM; survives reboots.
+#   RAM  -- this initramfs.  Always available, so a failed NFS or NAND root
+#           degrades instead of bricking the boot.
 
 mount -t proc  proc  /proc
 mount -t sysfs sysfs /sys
@@ -124,6 +128,110 @@ else
 fi
 msg "P105: ACM nodes: $(ls -d /dev/ttyGS* 2>/dev/null | tr '\n' ' ')"
 
+# --------------------------------------------------------- entering a root ---
+# What every root gets from this image before stage 2 runs in it, then the
+# switch.  $1 names the root for the log, $2 is its kind (nfs, nand).  Called
+# with /newroot mounted and holding a Cascadia root (/sbin/p105-stage2); it
+# does not return.
+enter_root() {
+    cp /etc/resolv.conf /newroot/etc/resolv.conf 2>/dev/null || true
+    cp /etc/build-date  /newroot/etc/build-date  2>/dev/null || true
+    cp /etc/localtime   /newroot/etc/localtime   2>/dev/null || true
+    # Stage 2 is part of the boot, not of the root filesystem, so the
+    # one from this build replaces whatever the NFS root holds.  The
+    # root is seeded once and never overwritten, which froze its stage 2
+    # at the seed: the hostname fix landed 34 minutes after the author's
+    # root was seeded, and that root came up as "(none)" for good.  The
+    # existence check above still decides whether this is a Cascadia
+    # root at all; a read-only export simply keeps its own copy.
+    cp /sbin/p105-stage2 /newroot/sbin/p105-stage2 2>/dev/null || true
+    # The digitizer's bring-up belongs to the boot the same way:
+    # z2-boot from this build, its firmware, and this iPad's own
+    # calibration, which build/keep carries into the image
+    # (tools/mtdump saves it from iOS; Linux cannot read syscfg).
+    # busybox.static is the ACM console's, run from RAM by stage 2.
+    # The Wi-Fi firmware too: brcmfmac asks for it whenever the chip
+    # enumerates, which may be after this switch_root.
+    # And the NAND tools with their `ios` front end, and the login
+    # banner, which otherwise stays whatever the seed said.  And the
+    # GPU's microkernel: apple-sgx asks for it when it is started,
+    # long after this switch_root, and so does the camera ISP's, with
+    # its sensors' set-files, whenever a camera starts streaming.  And
+    # `bluetooth`, with the patchram hci_bcm reloads whenever the chip
+    # is reset.  And the speakers' ALSA setup (dmix as "default");
+    # alsa-utils itself comes with the seed, or tools/audio/audio-setup.sh.
+    for f in /sbin/z2-boot /sbin/p105-keys /lib/firmware/P105.mtprops /lib/firmware/mtcal.bin /bin/busybox.static /usr/bin/wifi \
+             /usr/bin/bluetooth /usr/bin/cascadia-board /lib/firmware/brcm/BCM4334B0.hcd \
+             /lib/firmware/brcm/brcmfmac4334.bin /sbin/nandctl /sbin/iosnand /usr/bin/ios \
+             /lib/firmware/K93.mtprops /lib/firmware/brcm/brcmfmac4329-sdio.bin \
+             /lib/firmware/brcm/brcmfmac4329-sdio.txt /lib/firmware/brcm/BCM4329C0.hcd \
+             /lib/firmware/apple/sgx543.fw /etc/motd /etc/asound.conf \
+             /lib/firmware/apple/h4isp-firmware.bin /lib/firmware/apple/h4isp-setfile-9726.bin \
+             /lib/firmware/apple/h4isp-setfile-7739.bin \
+             /sbin/k93nand /sbin/k93iosnand /sbin/k93lv /sbin/k93nandw /usr/bin/cascadia-volume; do
+        [ -f "$f" ] || continue
+        # a root whose changes last (the Linux volume) gets only what changed
+        [ "$(stat -c '%s %Y' "$f")" = "$(stat -c '%s %Y' "/newroot$f" 2>/dev/null)" ] && continue
+        mkdir -p "/newroot${f%/*}" 2>/dev/null
+        cp -p "$f" "/newroot$f" 2>/dev/null || true
+    done
+    # One ssh host key for the device, whichever root it booted: the one
+    # this image carries (./cascadia a5 build makes it once and keeps it).
+    if [ -f /etc/dropbear/dropbear_ed25519_host_key ]; then
+        mkdir -p /newroot/etc/dropbear 2>/dev/null
+        cp -p /etc/dropbear/dropbear_ed25519_host_key /newroot/etc/dropbear/ \
+            2>/dev/null || true
+    fi
+    # And the keys that get in.  The NFS root is seeded once, from
+    # whatever the initramfs tree held that day, and never again --
+    # so a key added afterwards (another ssh-keygen, another laptop,
+    # ./cascadia a5 build adding this machine's) reaches the RAM root and
+    # not this one, and the NFS boot answers with a password prompt
+    # for a password that does not exist.  The image decides who may
+    # log in, on either root.  Ownership and modes are set here rather
+    # than preserved: dropbear refuses a key whose ~, ~/.ssh or
+    # authorized_keys is not root's or is writable by anyone else, and
+    # refuses it the same silent way.  Those three and nothing under
+    # them: a recursive chown walks all of ~ over NFS, one RPC a file,
+    # and a ~ grown to 74k files (deqp, builds) held the boot 48 s
+    # between this point and stage 2 (2026-10-16).
+    if [ -s /root/.ssh/authorized_keys ]; then
+        mkdir -p /newroot/root/.ssh 2>/dev/null
+        cp /root/.ssh/authorized_keys \
+            /newroot/root/.ssh/authorized_keys 2>/dev/null || true
+        chown 0:0 /newroot/root /newroot/root/.ssh \
+            /newroot/root/.ssh/authorized_keys 2>/dev/null || true
+        chmod 700 /newroot/root /newroot/root/.ssh 2>/dev/null || true
+        chmod 600 /newroot/root/.ssh/authorized_keys 2>/dev/null || true
+    fi
+    if [ "$2" = nand ]; then
+        # A root that is a read-only image has no Wi-Fi networks of its
+        # own: the image's (build/k93/keep/etc/wifi, the only place the
+        # passphrases live) come along at every boot.
+        if [ -d /etc/wifi ]; then
+            mkdir -p /newroot/etc/wifi 2>/dev/null
+            cp -a /etc/wifi/. /newroot/etc/wifi/ 2>/dev/null || true
+        fi
+        # And what the root stands on: /run (k93iosnand's bus locks, pid
+        # and log; stage 2 keeps a /run that is already a tmpfs, the
+        # image's mount and the overlay's RAM under it) and iOS's System
+        # on /mnt/ios, where `ios` expects it.
+        mkdir -p /newroot/run /newroot/mnt/ios 2>/dev/null
+        mount --move /mnt/ios /newroot/mnt/ios 2>/dev/null
+        mount --move /run /newroot/run 2>/dev/null
+    fi
+    mkdir -p /newroot/proc /newroot/sys /newroot/dev
+    # Move rather than remount: /dev in particular is devtmpfs with the
+    # devpts and shm instances already mounted underneath it, and
+    # rebuilding that on the far side is pointless work that can fail.
+    # The last word stage 1 can log: /dev/kmsg goes with /dev.
+    msg "P105: switching root to $1"
+    mount --move /dev  /newroot/dev  2>/dev/null
+    mount --move /proc /newroot/proc 2>/dev/null
+    mount --move /sys  /newroot/sys  2>/dev/null
+    exec switch_root /newroot /sbin/p105-stage2
+}
+
 # --------------------------------------------------------------- NFS root ---
 # /etc/nfsroot holds "host:/exported/path" and is written by
 # tools/mac-nfs-export.sh; absent, this whole block is skipped and we stay in
@@ -161,83 +269,158 @@ if [ -f /etc/nfsroot ] && [ -x /sbin/mount.nfs ]; then
     if [ $nfs_ok = 1 ]; then
         msg "P105: NFS root mounted (try $nfs_try)"
         if [ -x /newroot/sbin/p105-stage2 ]; then
-            cp /etc/resolv.conf /newroot/etc/resolv.conf 2>/dev/null || true
-            cp /etc/build-date  /newroot/etc/build-date  2>/dev/null || true
-            # Stage 2 is part of the boot, not of the root filesystem, so the
-            # one from this build replaces whatever the NFS root holds.  The
-            # root is seeded once and never overwritten, which froze its stage 2
-            # at the seed: the hostname fix landed 34 minutes after the author's
-            # root was seeded, and that root came up as "(none)" for good.  The
-            # existence check above still decides whether this is a Cascadia
-            # root at all; a read-only export simply keeps its own copy.
-            cp /sbin/p105-stage2 /newroot/sbin/p105-stage2 2>/dev/null || true
-            # The digitizer's bring-up belongs to the boot the same way:
-            # z2-boot from this build, its firmware, and this iPad's own
-            # calibration, which build/keep carries into the image
-            # (tools/mtdump saves it from iOS; Linux cannot read syscfg).
-            # busybox.static is the ACM console's, run from RAM by stage 2.
-            # The Wi-Fi firmware too: brcmfmac asks for it whenever the chip
-            # enumerates, which may be after this switch_root.
-            # And the NAND tools with their `ios` front end, and the login
-            # banner, which otherwise stays whatever the seed said.  And the
-            # GPU's microkernel: apple-sgx asks for it when it is started,
-            # long after this switch_root.  And `bluetooth`, with the
-            # patchram hci_bcm reloads whenever the chip is reset.  And the
-            # speakers' ALSA setup (dmix as "default"); alsa-utils itself
-            # comes with the seed, or tools/audio/audio-setup.sh.
-            for f in /sbin/z2-boot /sbin/p105-keys /lib/firmware/P105.mtprops /lib/firmware/mtcal.bin /bin/busybox.static /usr/bin/wifi \
-                     /usr/bin/bluetooth /lib/firmware/brcm/BCM4334B0.hcd \
-                     /lib/firmware/brcm/brcmfmac4334.bin /sbin/nandctl /sbin/iosnand /usr/bin/ios \
-                     /lib/firmware/apple/sgx543.fw /etc/motd /etc/asound.conf; do
-                [ -f "$f" ] || continue
-                mkdir -p "/newroot${f%/*}" 2>/dev/null
-                cp -p "$f" "/newroot$f" 2>/dev/null || true
-            done
-            # One ssh host key for the device, whichever root it booted: the one
-            # this image carries (./cascadia a5 build makes it once and keeps it).
-            if [ -f /etc/dropbear/dropbear_ed25519_host_key ]; then
-                mkdir -p /newroot/etc/dropbear 2>/dev/null
-                cp -p /etc/dropbear/dropbear_ed25519_host_key /newroot/etc/dropbear/ \
-                    2>/dev/null || true
-            fi
-            # And the keys that get in.  The NFS root is seeded once, from
-            # whatever the initramfs tree held that day, and never again --
-            # so a key added afterwards (another ssh-keygen, another laptop,
-            # ./cascadia a5 build adding this machine's) reaches the RAM root and
-            # not this one, and the NFS boot answers with a password prompt
-            # for a password that does not exist.  The image decides who may
-            # log in, on either root.  Ownership and modes are set here rather
-            # than preserved: dropbear refuses a key whose ~, ~/.ssh or
-            # authorized_keys is not root's or is writable by anyone else, and
-            # refuses it the same silent way.  Those three and nothing under
-            # them: a recursive chown walks all of ~ over NFS, one RPC a file,
-            # and a ~ grown to 74k files (deqp, builds) held the boot 48 s
-            # between this point and stage 2 (2026-10-16).
-            if [ -s /root/.ssh/authorized_keys ]; then
-                mkdir -p /newroot/root/.ssh 2>/dev/null
-                cp /root/.ssh/authorized_keys \
-                    /newroot/root/.ssh/authorized_keys 2>/dev/null || true
-                chown 0:0 /newroot/root /newroot/root/.ssh \
-                    /newroot/root/.ssh/authorized_keys 2>/dev/null || true
-                chmod 700 /newroot/root /newroot/root/.ssh 2>/dev/null || true
-                chmod 600 /newroot/root/.ssh/authorized_keys 2>/dev/null || true
-            fi
-            mkdir -p /newroot/proc /newroot/sys /newroot/dev
-            # Move rather than remount: /dev in particular is devtmpfs with the
-            # devpts and shm instances already mounted underneath it, and
-            # rebuilding that on the far side is pointless work that can fail.
-            # The last word stage 1 can log: /dev/kmsg goes with /dev.
-            msg "P105: switching root to $NFSROOT"
-            mount --move /dev  /newroot/dev  2>/dev/null
-            mount --move /proc /newroot/proc 2>/dev/null
-            mount --move /sys  /newroot/sys  2>/dev/null
-            exec switch_root /newroot /sbin/p105-stage2
+            enter_root "$NFSROOT" nfs
         fi
         msg "P105: $NFSROOT has no /sbin/p105-stage2 -- staying in RAM"
         umount /newroot 2>/dev/null
     else
         msg "P105: NFS mount failed after $nfs_try tries -- staying in RAM"
     fi
+fi
+
+# -------------------------------------------------------------- NAND root ---
+# The iPad 2 (K93): a squashfs image on iOS's own System partition,
+# /cascadia/root.sqfs, put there from iOS by tools/k93-root.sh install.
+# /sbin/k93lv reads iOS's FTL off the raw NAND and serves System as
+# /dev/nbd0 (k93iosnand's reader, docs/research/k93-nand.md), read-only, and
+# the Linux volume as /dev/nbd1: the blocks of iOS's VSVFL reserved pool that
+# Linux may own (docs/research/k93-nand-write.md; tools/nand/k93lv.c checks
+# them against iOS's own maps at every start).  The image is mounted
+# read-only under an overlay whose changes go to an ext4 on the Linux volume
+# -- they last -- or, without one (cascadia.lv=off, or anything failing), to
+# RAM until the next boot.  Anything missing or failing leaves the RAM root,
+# as with NFS; so does cascadia.root=ram on the kernel command line.
+#
+# Every page the root reads goes through the server, so it must outlive this
+# script: switch_root leaves it running (its binary goes with the initramfs,
+# its pages stay), it has a session of its own, and the OOM killer is told to
+# leave it alone.  On the way down stage 2 kills it last of all and runs the
+# rest from its RAM busybox, with the watchdog armed (p105_down, k93_bite).
+# Where the overlay's changes go: /run/root/rw.  The Linux volume (/dev/nbd1,
+# k93lv's) with an ext4 on it, made the first time; else RAM.
+#   reset:    /run/root/rw/reset (`cascadia-volume reset` puts it there)
+#             -- the volume gets a new, empty file system at this boot
+#   image-id: the image's size and time; a different image gets an upper
+#             of its own (the old one becomes old-upper, its /home and
+#             /root move across), so its changes never shadow a newer
+#             image's files, the package database above all
+upper_layer() {
+    if ! grep -q 'cascadia.lv=off' /proc/cmdline && [ -x /sbin/mke2fs ] &&
+       [ "$(cat /sys/block/nbd1/size 2>/dev/null)" -gt 0 ] 2>/dev/null; then
+        if ! blkid /dev/nbd1 2>/dev/null | grep -q 'TYPE="ext4"'; then
+            msg "K93: a new Linux volume: making its file system"
+            mke2fs -q -t ext4 -b 4096 -i 8192 -L cascadia /dev/nbd1 >/dev/kmsg 2>&1
+        elif [ -x /sbin/e2fsck ]; then
+            # after a stop that was not clean (a hang the watchdog ended, a
+            # battery run flat): the journal, and what preen mode may repair.
+            # A clean file system costs one superblock read.
+            e2fsck -p /dev/nbd1 >/dev/kmsg 2>&1
+            r=$?
+            [ $r -ge 4 ] && msg "K93: e2fsck left errors on the Linux volume (exit $r); mounting it all the same"
+        fi
+        if mount -t ext4 -o noatime /dev/nbd1 /run/root/rw 2>/dev/kmsg; then
+            if [ -e /run/root/rw/reset ]; then
+                msg "K93: the Linux volume was asked to start over: a new file system"
+                umount /run/root/rw
+                mke2fs -q -F -t ext4 -b 4096 -i 8192 -L cascadia /dev/nbd1 >/dev/kmsg 2>&1
+                mount -t ext4 -o noatime /dev/nbd1 /run/root/rw 2>/dev/kmsg || return 1
+            fi
+            id=$(stat -c '%s %Y' "$1" 2>/dev/null)
+            if [ -d /run/root/rw/upper ] && [ "$(cat /run/root/rw/image-id 2>/dev/null)" != "$id" ]; then
+                msg "K93: a new root image: its own changes from here (the old ones in old-upper)"
+                rm -rf /run/root/rw/old-upper /run/root/rw/work
+                mv /run/root/rw/upper /run/root/rw/old-upper
+                mkdir -p /run/root/rw/upper
+                for d in home root; do
+                    [ -d /run/root/rw/old-upper/$d ] && mv /run/root/rw/old-upper/$d /run/root/rw/upper/$d
+                done
+            fi
+            echo "$id" > /run/root/rw/image-id
+            echo lv > /run/ios/upper
+            msg "K93: changes to the root go to the Linux volume ($(df -h /run/root/rw | awk 'NR==2{print $4" free of "$2}'))"
+            return 0
+        fi
+        msg "K93: the Linux volume did not mount -- changes stay in RAM this time"
+    fi
+    echo ram > /run/ios/upper
+    mount -t tmpfs -o mode=755 rootrw /run/root/rw
+}
+
+nand_root() {
+    [ "$(cascadia-board 2>/dev/null)" = k93 ] || return 1
+    [ -x /sbin/k93nand ] && [ -x /sbin/k93iosnand ] && [ -e /dev/nbd0 ] || return 1
+    # the server: k93lv (System + the Linux volume), k93iosnand without it
+    srvbin=/sbin/k93lv
+    [ -x $srvbin ] || srvbin=/sbin/k93iosnand
+    if grep -q 'cascadia.root=ram' /proc/cmdline; then
+        msg "K93: cascadia.root=ram -- staying in RAM"
+        return 1
+    fi
+    msg "K93: looking for the root on the NAND (iOS's System partition)"
+    mkdir -p /run
+    mount -t tmpfs -o mode=755,size=16m,nosuid,nodev run /run || return 1
+    # /run/k93nand: where k93nand and k93iosnand keep their state and bus
+    # locks when it exists, in this root and the next
+    mkdir -p /run/k93nand /run/ios /mnt/ios
+    if ! k93nand -q id > /run/ios/id.log 2>&1; then
+        msg "K93: k93nand id failed: $(tail -n 1 /run/ios/id.log)"
+        umount /run
+        return 1
+    fi
+    # -j2: both NAND buses at once (12 MB/s instead of 7; the whole of System
+    # read both ways gave the same bytes, `k93iosnand -j2 bench System 1244`)
+    setsid $srvbin -j2 serve System < /dev/null > /run/ios/iosnand.log 2>&1 &
+    srv=$!
+    echo $srv > /run/ios/pid
+    echo -1000 > /proc/$srv/oom_score_adj 2>/dev/null
+    # The map takes ~5 s.  (sleep is fine here: the K93's tick is the AIC
+    # timer, not the USB's frames, and the iPad may have no cable at all.)
+    n=0
+    while ! [ "$(cat /sys/block/nbd0/size 2>/dev/null)" -gt 0 ] 2>/dev/null; do
+        if ! kill -0 $srv 2>/dev/null || [ $n -ge 60 ]; then
+            msg "K93: k93iosnand did not come up: $(tail -n 2 /run/ios/iosnand.log | tr '\n' ' ')"
+            kill $srv 2>/dev/null
+            umount /run
+            return 1
+        fi
+        sleep 1
+        n=$((n+1))
+    done
+    # the children that sit in NBD_DO_IT, too
+    for p in $(pidof ${srvbin##*/}); do echo -1000 > /proc/$p/oom_score_adj 2>/dev/null; done
+    msg "K93: $(grep -E 'mapped|nbd[01] |k93lv: (volume|no )' /run/ios/iosnand.log | tr '\n' ' ')"
+    img=/mnt/ios/cascadia/root.sqfs
+    if ! mount -t hfsplus -o ro /dev/nbd0 /mnt/ios 2>/dev/kmsg; then
+        msg "K93: iOS's System did not mount"
+    elif [ ! -f $img ]; then
+        msg "K93: no $img on iOS's System (tools/k93-root.sh install puts it there)"
+    else
+        mkdir -p /run/root/ro /run/root/rw
+        if mount -t squashfs -o ro,loop $img /run/root/ro 2>/dev/kmsg; then
+            if [ -x /run/root/ro/sbin/p105-stage2 ] && upper_layer $img &&
+               mkdir -p /run/root/rw/upper /run/root/rw/work &&
+               mount -t overlay -o lowerdir=/run/root/ro,upperdir=/run/root/rw/upper,workdir=/run/root/rw/work \
+                   root /newroot 2>/dev/kmsg; then
+                echo nand > /run/ios/root
+                return 0
+            fi
+            msg "K93: $img is not a Cascadia root, or the overlay failed"
+            umount /run/root/rw 2>/dev/null
+            umount /run/root/ro
+        else
+            msg "K93: $img did not mount"
+        fi
+    fi
+    umount /mnt/ios 2>/dev/null
+    kill $srv 2>/dev/null
+    n=0
+    while kill -0 $srv 2>/dev/null && [ $n -lt 10 ]; do sleep 1; n=$((n+1)); done
+    umount /run
+    return 1
+}
+mkdir -p /newroot
+if nand_root; then
+    enter_root "the NAND (/cascadia/root.sqfs on iOS's System)" nand
 fi
 
 msg "P105: root is the initramfs (RAM)"

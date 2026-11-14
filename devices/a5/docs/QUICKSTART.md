@@ -17,7 +17,9 @@ knowing before you start rather than after.
 **The device.** An iPad mini 1, Wi-Fi: **iPad2,5 / A1432 / p105ap**. The
 cellular models (iPad2,6 and iPad2,7) are the same SoC on a different board and
 are not supported — the boot chain is pinned to p105ap on iOS 8.4.1 (12H321),
-because the auto-go hook patches an address inside that exact iBEC.
+because the auto-go hook patches an address inside that exact iBEC.  The iPad 2
+Wi-Fi (iPad2,1 / K93AP) is a board of the same tree with a path of its own
+(`./cascadia k93 ...`, from a jailbroken iOS): [k93-bringup.md](k93-bringup.md).
 
 **A way into pwned DFU**, one of:
 

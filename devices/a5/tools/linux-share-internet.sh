@@ -31,7 +31,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # host-link.sh does -- its name on Linux depends on the USB port it sits on.
 find_down() {
     local mac
-    mac=$(LC_ALL=C grep -o 'g_cdc.host_addr=[0-9A-Fa-f:]*' "$ROOT/dts/p105ap.dts" 2>/dev/null \
+    mac=$(LC_ALL=C grep -o 'g_cdc.host_addr=[0-9A-Fa-f:]*' "$ROOT/dts/${BOARD:-p105}ap.dts" 2>/dev/null \
           | head -1 | cut -d= -f2 | tr 'A-F' 'a-f' || true)
     mac="${mac:-02:10:5a:05:00:01}"
     for n in /sys/class/net/*; do

@@ -1,0 +1,65 @@
+Cascadia: PPSSPP's OpenGL backend never maps its push buffers -- 1.20.4
+ends up with GLBufferStrategy::SUBDATA on every GPU (only NVIDIA's branch
+would map, and the bug flags turn mapping off there first) -- so the
+emulator thread decodes each frame's vertices into the push buffer's CPU
+memory and the render thread copies them all into the buffers with
+glBufferSubData at the frame's start: 1.75 MB a frame in God of War, 6-9 ms
+of the render thread on the iPad 2 while its GPU waits.  Mesa's SGX driver
+(renderer "PowerVR SGX543MP2", "Mesa" in the version) maps a buffer whose
+content is invalidated as its GPU copy itself, a fresh one while a render
+still reads the last, so there the push buffers are mapped
+(INVALIDATE_UNMAP) and the emulator thread writes vertices and indices
+where the GPU reads them: God of War's menu 21.5 -> 23.6 frames/s.  On
+desktop OpenGL 2.x the map goes through ARB_map_buffer_range with the
+strategy's bits: glMapBuffer's GL_READ_WRITE asked the driver to keep the
+old content, readable.  PPSSPP_GL_MAP_BUFFERS=1 / 0 forces it on / off.
+
+--- a/Common/GPU/OpenGL/GLRenderManager.cpp
++++ b/Common/GPU/OpenGL/GLRenderManager.cpp
+@@ -1,3 +1,6 @@
++#include <cstdlib>
++#include <cstring>
++
+ #include "ppsspp_config.h"
+ #include "GLRenderManager.h"
+ #include "Common/GPU/OpenGL/GLFeatures.h"
+@@ -96,6 +99,22 @@
+ 	} else {
+ 		bufferStrategy_ = GLBufferStrategy::SUBDATA;
+ 	}
++
++	// Cascadia: Mesa's SGX driver (the iPad 2's: renderer "PowerVR SGX543MP2", desktop
++	// OpenGL 2.1, its own vendor string) maps a buffer whose content is invalidated as the
++	// GPU's own copy of it -- a fresh one while a render still reads the last -- so with the
++	// push buffers mapped the emulator thread decodes vertices and indices straight into GPU
++	// memory, where the render thread copied them over at each frame's start
++	// (glBufferSubData: 1.75 MB a frame in God of War).
++	// PPSSPP_GL_MAP_BUFFERS=1 / 0: mapped / not, whatever the driver.
++	const char *glVersion = (const char *)glGetString(GL_VERSION);
++	bool sgxMesa = !gl_extensions.IsGLES && strstr(gl_extensions.model, "SGX") && glVersion &&
++		strstr(glVersion, "Mesa");
++	const char *mapEnv = getenv("PPSSPP_GL_MAP_BUFFERS");
++	if (mapEnv ? atoi(mapEnv) != 0 : sgxMesa) {
++		bufferStrategy_ = GLBufferStrategy::INVALIDATE_UNMAP;
++	}
++	INFO_LOG(Log::G3D, "GL push buffers: %s", bufferStrategy_ == GLBufferStrategy::SUBDATA ? "uploaded" : "mapped");
+ }
+ 
+ void GLRenderManager::ThreadEnd() {
+--- a/Common/GPU/OpenGL/GLMemory.cpp
++++ b/Common/GPU/OpenGL/GLMemory.cpp
+@@ -47,7 +47,13 @@
+ 			p = glMapBufferRange(target_, 0, size_, access);
+ 		} else if (!gl_extensions.IsGLES) {
+ #ifndef USING_GLES2
+-			p = glMapBuffer(target_, GL_READ_WRITE);
++			// Cascadia: OpenGL 2.x with ARB_map_buffer_range (every Mesa driver has it) maps
++			// with the strategy's bits; glMapBuffer's GL_READ_WRITE would ask the driver to
++			// keep the old content, readable, and mapping invalidated is the point.
++			if (glMapBufferRange)
++				p = glMapBufferRange(target_, 0, size_, access);
++			else
++				p = glMapBuffer(target_, GL_READ_WRITE);
+ #endif
+ 		}
+ 	}

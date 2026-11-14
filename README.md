@@ -15,12 +15,9 @@ XFCE desktop you drive with your fingers.
 | Device | Model | Chip | What works | Start here |
 |---|---|---|---|---|
 | iPad mini 1 (Wi-Fi) | iPad2,5 / A1432 / p105ap | Apple A5 (S5L8942X) | Linux 6.12: both cores, touch, Wi-Fi, Bluetooth, speakers, battery, the GPU (OpenGL ES 2.0 / GL 2.1), XFCE; iOS's files read-only | [devices/a5](devices/a5/README.md) · [quickstart](devices/a5/docs/QUICKSTART.md) |
+| iPad 2 (Wi-Fi) *(experimental)* | iPad2,1 / A1395 / k93ap | Apple A5 (S5L8940X) | Linux 6.12: both cores, touch, Wi-Fi, Bluetooth, the speaker, headphones, the built-in and a headset's microphone, the volume buttons, battery and charging, sensors (autorotate), the GPU, XFCE and YouTube; boots from its jailbroken iOS without a computer, the root's changes kept on the NAND next to iOS | [K93 bring-up](devices/a5/docs/k93-bringup.md) |
 | iPhone XR *(experimental, contributed)* | iPhone11,8 / N841AP | Apple A12 (T8020) | as its author reports it: Linux 7.3, framebuffer, touch, USB networking/SSH, Wi-Fi, UART Bluetooth, Debian/XFCE over NFS -- not built or tested by the maintainer | [devices/a12](devices/a12/README.md) · [Debian/XFCE](devices/a12/DEBIAN_XFCE_NFS.md) |
 | iPhone 11 | iPhone12,1 / n104ap | Apple A13 (T8030) | Linux 7.2: all six cores, touch, Wi-Fi, Bluetooth, XFCE, the internal storage as Linux's disk, no cable after the boot | [devices/a13](devices/a13/README.md) · [quickstart](devices/a13/docs/QUICKSTART.md) |
-
-Experimental: the iPad 2 Wi-Fi (iPad2,1 / K93AP, S5L8940) boots Linux 6.12 to
-a RAM-only USB shell from the A5 tree — see
-[K93 bring-up and limitations](devices/a5/docs/k93-bringup.md).
 
 ## Using it
 
@@ -30,11 +27,13 @@ One command for every device, from the repository's top:
 git clone https://github.com/rzxvx/Project-Cascadia.git
 cd Project-Cascadia
 ./cascadia a5 install         # iPad mini 1: everything, step by step
+./cascadia k93 firmware       # iPad 2 (experimental): then build and flash --kdfu, from
+                              # its jailbroken iOS -- devices/a5/docs/k93-bringup.md
 ./cascadia a12 doctor         # iPhone XR (experimental, contributed): its host requirements
 ./cascadia a13 doctor         # iPhone 11: what this machine is missing
 ```
 
-`./cascadia a5 …`, `./cascadia a12 …` and `./cascadia a13 …` are the device's own commands
+`./cascadia a5 …`, `./cascadia k93 …`, `./cascadia a12 …` and `./cascadia a13 …` are the device's own commands
 (`./cascadia a5` alone lists them). The device used last is remembered, so
 after the first one a plain `./cascadia build` means the same device again;
 `./cascadia device` shows or changes it. The quickstarts above walk through
@@ -72,6 +71,11 @@ IPSW (or Apple's CDN) on your machine.
 
 - **iPad mini 1 (A5)** — phases 1 and 2 done; phase 3 all but NAND as
   Linux's own storage. [devices/a5/README.md](devices/a5/README.md#roadmap)
+- **iPad 2 (A5)** — experimental, the A5 tree's second board: phases 1-3
+  done, NAND as Linux's own storage, headphones, the built-in and a
+  headset's microphone, both cameras, Game Boy, GBA and PSP games by
+  touch included; next heavy 3D faster (the PSP's), then USB host.
+  [devices/a5/docs/k93-bringup.md](devices/a5/docs/k93-bringup.md)
 - **iPhone XR (A12)** — contributed (#31), experimental: tethered Linux with
   framebuffer/touch, USB, Wi-Fi, Bluetooth and Debian/XFCE over NFS as its
   author reports; it builds on devices/a13's m1n1 patches, which still
@@ -89,7 +93,6 @@ In no particular order:
 - iPad Air 2 — A8X
 - iPad 4 - A6X
 - iPad mini 4 — A8
-- iPad 2 - A5
 - iPad 3 - A5X
 - iPad mini 2 - A7
 - iPad mini 3 - A7

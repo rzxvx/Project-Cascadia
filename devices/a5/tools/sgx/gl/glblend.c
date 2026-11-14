@@ -24,7 +24,8 @@
 #define H 1024
 #define GRID 29
 
-static const float CONST[4] = { 0.25f, 0.5f, 0.75f, 1.0f };
+/* (alpha not 1: a constant alpha factor shows) */
+static const float CONST[4] = { 0.25f, 0.5f, 0.75f, 0.6f };
 
 static const struct test {
 	const char *name;
@@ -57,6 +58,38 @@ static const struct test {
 	{ "colormask", 0, GL_FUNC_ADD, GL_FUNC_ADD, GL_ONE, GL_ZERO, GL_ONE, GL_ZERO, { 1, 0, 1, 0 } },
 	{ "twice", 1, GL_FUNC_ADD, GL_FUNC_ADD, GL_SRC_ALPHA, GL_ONE, GL_ONE, GL_ZERO,
 	  { 1, 1, 1, 1 }, 1 },
+	/* (M46) masks the blending's SOP2 takes: R, G, B all or none, alpha or
+	 * not -- PPSSPP's alpha kept (the PSP's stencil there) */
+	{ "mask-rgb", 0, GL_FUNC_ADD, GL_FUNC_ADD, GL_ONE, GL_ZERO, GL_ONE, GL_ZERO, { 1, 1, 1, 0 } },
+	{ "mask-alpha", 0, GL_FUNC_ADD, GL_FUNC_ADD, GL_ONE, GL_ZERO, GL_ONE, GL_ZERO, { 0, 0, 0, 1 } },
+	{ "mask-rgb-alpha", 1, GL_FUNC_ADD, GL_FUNC_ADD, GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA,
+	  GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, { 1, 1, 1, 0 } },
+	{ "mask-rgb-add", 1, GL_FUNC_ADD, GL_FUNC_ADD, GL_SRC_ALPHA, GL_ONE, GL_ONE, GL_ONE,
+	  { 1, 1, 1, 0 } },
+	{ "mask-rgb-reverse", 1, GL_FUNC_REVERSE_SUBTRACT, GL_FUNC_REVERSE_SUBTRACT, GL_ONE, GL_ONE,
+	  GL_ONE, GL_ONE, { 1, 1, 1, 0 } },
+	{ "mask-rgb-subtract", 1, GL_FUNC_SUBTRACT, GL_FUNC_SUBTRACT, GL_ONE, GL_ONE, GL_ONE, GL_ONE,
+	  { 1, 1, 1, 0 } },
+	{ "mask-alpha-blend", 1, GL_FUNC_ADD, GL_FUNC_ADD, GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA,
+	  GL_ONE, GL_ONE, { 0, 0, 0, 1 } },
+	{ "mask-alpha-reverse", 1, GL_FUNC_REVERSE_SUBTRACT, GL_FUNC_REVERSE_SUBTRACT, GL_ONE, GL_ONE,
+	  GL_ONE, GL_ONE, { 0, 0, 0, 1 } },
+	/* (M46) the blend colour's factors by SOP2s: PPSSPP's fixed colours
+	 * (its alpha kept) and its stencil value in alpha, and around them */
+	{ "const-dst", 1, GL_FUNC_ADD, GL_FUNC_ADD, GL_ONE, GL_CONSTANT_COLOR, GL_ZERO, GL_ONE,
+	  { 1, 1, 1, 0 } },
+	{ "const-src", 1, GL_FUNC_ADD, GL_FUNC_ADD, GL_CONSTANT_COLOR, GL_ONE, GL_ZERO, GL_ONE,
+	  { 1, 1, 1, 0 } },
+	{ "const-only", 1, GL_FUNC_ADD, GL_FUNC_ADD, GL_CONSTANT_COLOR, GL_ZERO, GL_ZERO, GL_ONE,
+	  { 1, 1, 1, 0 } },
+	{ "const-stencil", 1, GL_FUNC_ADD, GL_FUNC_ADD, GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA,
+	  GL_CONSTANT_ALPHA, GL_ZERO, { 1, 1, 1, 1 } },
+	{ "const-inv", 1, GL_FUNC_ADD, GL_FUNC_ADD, GL_SRC_ALPHA, GL_ONE_MINUS_CONSTANT_COLOR,
+	  GL_ONE, GL_ZERO, { 1, 1, 1, 1 } },
+	{ "const-reverse", 1, GL_FUNC_REVERSE_SUBTRACT, GL_FUNC_REVERSE_SUBTRACT, GL_CONSTANT_ALPHA,
+	  GL_ONE, GL_ONE, GL_ONE, { 1, 1, 1, 1 } },
+	{ "const-twice", 1, GL_FUNC_ADD, GL_FUNC_ADD, GL_CONSTANT_COLOR, GL_ONE, GL_ZERO, GL_ONE,
+	  { 1, 1, 1, 0 }, 1 },
 };
 
 static float factor(GLenum f, const float s[4], const float d[4], int i)
@@ -239,7 +272,9 @@ int main(int argc, char **argv)
 				}
 			}
 		}
-		if (worst <= 2) {
+		/* (M46) the colour may be worked out in F16 (11 bits): a layer
+		 * blended twice can be 3 off */
+		if (worst <= (T->twice ? 3 : 2)) {
 			printf("%-14s ok (largest difference %d)\n", T->name, worst);
 		} else {
 			failed++;

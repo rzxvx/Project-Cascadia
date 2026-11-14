@@ -35,6 +35,11 @@ struct sgx_resource {
     * is -- and the lock the dirty bytes are under (both threads') */
    int live_maps;
    simple_mtx_t dirty_lock;
+   /* (M46) and data behind the GPU copy by the bytes [stale_lo, stale_hi):
+    * written into it alone (sgx_buffer_subdata: a vertex buffer the CPU
+    * does not read), made the CPU's again before anything maps data (never
+    * both behind at once) */
+   uint32_t stale_lo, stale_hi;
    uint32_t stride[PIPE_MAX_TEXTURE_LEVELS];      /* bytes per row */
    uint32_t layer_size[PIPE_MAX_TEXTURE_LEVELS];  /* bytes per layer or slice */
    uint32_t offset[PIPE_MAX_TEXTURE_LEVELS];      /* of each level */
@@ -90,6 +95,9 @@ bool sgx_resource_swizzle(const struct pipe_resource *p, uint8_t swz[4]);
 
 struct sgx_transfer {
    struct pipe_transfer base;
+   /* (M46) a buffer's map that is its GPU copy itself (buffer_map_direct()):
+    * nothing to copy on at the unmap */
+   bool direct;
 };
 
 /* Whether res is sampled as it is, linear (M16): a format the sampler has
@@ -107,6 +115,18 @@ bool sgx_resource_linear(const struct sgx_resource *res, const struct pipe_sampl
 bool sgx_resource_texture(struct sgx_context *ctx, struct sgx_resource *res,
                           const struct pipe_sampler_view *view,
                           const struct pipe_sampler_state *ss, uint32_t words[4]);
+
+/* (M46) a buffer's CPU copy brought up to date with what was written into
+ * its GPU copy alone: before the CPU reads data (a draw's constants, its
+ * vertices repacked, the draw module's) */
+void sgx_buffer_fresh(struct sgx_resource *res);
+/* (M46) the same for the bytes [lo, hi) alone: a draw's indices */
+void sgx_buffer_fresh_range(struct sgx_resource *res, uint32_t lo, uint32_t hi);
+/* (M46) where the CPU reads the buffer's bytes [lo, hi) as they are, in
+ * place (the pointer is the buffer's byte 0): the GPU copy where only it
+ * has them -- write-combined, slow, for a few bytes here and there --
+ * else the CPU copy; NULL if neither */
+const uint8_t *sgx_buffer_read_in_place(struct sgx_resource *res, uint32_t lo, uint32_t hi);
 
 /* A buffer's copy for the GPU (M26), brought up to date with the CPU's
  * first: written in place when no render reads it -- gathered or running

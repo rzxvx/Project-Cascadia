@@ -201,8 +201,14 @@ them with its enables, writes the result `| 0x80000000` (MASTER_INTERRUPT) to
 at InterruptFlags: bit 0 = "Microkernel detected lockup", bit 1 = the
 microkernel asking to be powered down (active power management, then
 `deinitSGX`). So bank 0 **is** readable once the SGX is initialised -- every
-bank-0 hang happened before the cores had clocks. The driver still reads
-the core banks.
+bank-0 hang happened before the cores had clocks. The driver read the core
+banks; the event is not there. On the K93 with renders (2026-11-12, M46 of
+research/p105-mesa.md) the line came up and every core bank was empty,
+while `MASTER_EVENT_STATUS` (`0x412c`) held `0xa0004000`: SW_EVENT in the
+master's bank. The handler reads it there now and clears it through the
+broadcast bank as iOS does (the master's own `EVENT_HOST_CLEAR`, `0x4134`,
+if that leaves it): two interrupts a render, none idle, and on each the
+render node looks at its render instead of waiting for its next poll.
 
 In the driver: `apple-sgx/cmd` takes `hwperf N` and `power N` (1 off, 2
 idle, 3 resume); `regs` shows the CCB offsets, the kicker and the host

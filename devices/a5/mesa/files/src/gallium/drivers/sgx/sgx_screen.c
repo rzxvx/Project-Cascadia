@@ -423,6 +423,17 @@ sgx_screen_create(int fd, const struct pipe_screen_config *config, struct render
    screen->base.context_create = sgx_context_create;
    for (unsigned i = 0; i <= MESA_SHADER_COMPUTE; i++)
       screen->base.nir_options[i] = &sgx_nir_options;
+   /* (M46) vertex shaders: products and sums fused, FMAD's (sgx_compiler.c
+    * fma_) -- PPSSPP's transforms and lighting are dot products and sums
+    * of products; SGX_NO_VS_FMA=1: as the fragment shaders' */
+   if (!getenv("SGX_NO_VS_FMA")) {
+      static struct nir_shader_compiler_options vs_options;
+
+      vs_options = sgx_nir_options;
+      vs_options.lower_ffma32 = false;
+      vs_options.fuse_ffma32 = true;
+      screen->base.nir_options[MESA_SHADER_VERTEX] = &vs_options;
+   }
    sgx_resource_screen_init(screen);
    sgx_context_screen_init(screen);
 

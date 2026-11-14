@@ -20,6 +20,7 @@ struct hash_table_u64;
 struct sgx_device {
    int fd;
    uint32_t uapi, core_id, core_rev, num_cores;
+   uint32_t bo_flags;   /* the APPLE_SGX_BO_* flags the kernel takes (0: before SCANOUT) */
    uint32_t va_start, va_end;
    uint32_t code_base, code_va_start, code_va_end;
    uint32_t fb_va, fb_width, fb_height, fb_stride;
@@ -113,10 +114,31 @@ struct sgx_fence *sgx_fence_import(struct sgx_device *dev, int fd);
 extern int64_t sgx_fence_waited;
 /* SGX_TRACE=1: a line with the time since the last mark */
 void sgx_trace_mark(const char *what);
+/* (M46) memcpy for big copies -- a buffer's bytes into its GPU copy, a
+ * draw's vertices into the render's memory: musl's ARM memcpy has no
+ * preloads (taken out for older cores), and where the L2 does not
+ * prefetch either (the mini's tree; the K93's turns it on) each 32-byte
+ * line it reads waits for memory: 255 MB/s for 3 MB.  64 bytes a round
+ * through NEON, with PLDs four and five lines ahead: 820 MB/s into
+ * write-combined memory (~710 for memcpy with the L2 prefetching; reading
+ * write-combined memory stays ~240 MB/s whatever does it). */
+void sgx_copy(void *dst, const void *src, size_t n);
 enum { SGX_IOCTL_CREATE, SGX_IOCTL_MMAP, SGX_IOCTL_WAIT, SGX_IOCTL_SUBMIT, SGX_IOCTL_KINDS };
 extern unsigned sgx_ioctls[SGX_IOCTL_KINDS];
 /* SGX_DEBUG=fps: draws whose state was the last one's, vertices, textures */
 extern unsigned sgx_stat_same, sgx_stat_verts, sgx_stat_tex_changes, sgx_stat_merged;
+/* SGX_DEBUG=fps (M46): bytes of buffer uploads -- glBufferSubData's
+ * straight into the GPU copy, into the CPU copy, the CPU copy's copied on
+ * into the GPU's for a draw, read back from the GPU copy; maps that were
+ * the GPU copy itself, and of those the ones a fresh copy took (a render
+ * read the last) -- and the time the first took */
+enum { SGX_UP_DIRECT, SGX_UP_CPU, SGX_UP_ON, SGX_UP_BACK, SGX_UP_MAPPED, SGX_UP_RENAMED,
+       SGX_UP_KINDS };
+extern uint64_t sgx_stat_up[SGX_UP_KINDS];
+extern int64_t sgx_stat_up_ns;
+/* SGX_DEBUG=fps (M46): the time in the submit ioctl, the buffers it lists */
+extern int64_t sgx_submit_ns;
+extern uint64_t sgx_submit_handles;
 
 /* One render.  handles[] lists every buffer it touches (the render
  * details' among them); done is signalled when its 3D pass is over. */

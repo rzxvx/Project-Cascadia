@@ -33,6 +33,9 @@ if ! docker run --rm --init --platform linux/arm/v7 -v "$ROOT":/cascadia -w /cas
 fi
 sed 's/\x1b\[[0-9;]*m//g; s/\x1b\[K//g' "$LOG" | grep -E 'sgx/.*warning' | cut -c1-220 | head || true
 N=$PRE$(date +%s)
+# (the builds of its kind before it taken away first: the iPad's root holds
+# ~300 MB, a build ~25 MB)
+ssh "$DEVICE" "rm -rf /root/devbuilds/$PRE[0-9]*"
 COPYFILE_DISABLE=1 tar cf - -C "$ROOT/build/mesa/$ID/usr/local/lib" sgx-mesa |
     ssh "$DEVICE" "mkdir -p /root/devbuilds/$N && tar xf - -C /root/devbuilds/$N &&
                    ln -sfn /root/devbuilds/$N/sgx-mesa $LINK"

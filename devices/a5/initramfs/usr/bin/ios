@@ -10,14 +10,19 @@
 #                       this too)
 #   ios parts           iOS's partitions
 #
-# /sbin/iosnand does the work (tools/nand/iosnand.c): it reads the NAND,
-# follows iOS's FTL to disk0 and its LwVM partitions, and serves them as
-# /dev/nbd0, /dev/nbd1.  It never writes to the NAND.  The first run reads
-# every page once (~15 minutes) and keeps a map in /var/lib/iosnand; after
-# that a start takes a few seconds plus whatever iOS rewrote in between.
-# Data is encrypted file by file (iOS content protection): it can be served,
-# but it does not mount as HFS+.  Installed from the image into /usr/bin on
-# every boot (initramfs/init).
+# /sbin/iosnand does the work on the iPad mini (tools/nand/iosnand.c): it
+# reads the NAND, follows iOS's FTL to disk0 and its LwVM partitions, and
+# serves them as /dev/nbd0, /dev/nbd1.  It never writes to the NAND.  The
+# first run reads every page once (~15 minutes) and keeps a map in
+# /var/lib/iosnand; after that a start takes a few seconds plus whatever iOS
+# rewrote in between.  On the iPad 2 it is /sbin/k93iosnand
+# (tools/nand/k93iosnand.c, raw NAND under VSVFL and YAFTL), which rebuilds
+# its map from the FTL's tables of contents in ~5 s at every start; when the
+# root itself is an image on System (initramfs/init), System is mounted
+# from boot and stays, served by /sbin/k93lv, which also serves the Linux
+# volume (the root's changes) as /dev/nbd1.  Data is encrypted file by file
+# (iOS content protection): it can be served, but it does not mount as
+# HFS+.  Installed from the image into /usr/bin on every boot (initramfs/init).
 
 MNT=/mnt/ios
 RUN=/run/ios
@@ -26,26 +31,48 @@ LOG=$RUN/iosnand.log
 say() { printf '%s\n' "$*"; }
 die() { printf 'ios: %s\n' "$*" >&2; exit 1; }
 
+# One server per flash: the iPad mini 1's PPN (iosnand) and the iPad 2's raw
+# NAND (k93iosnand) sit behind the same controller and must never be mixed up
+# -- each tool refuses the other's board as well.
+board=$(cascadia-board 2>/dev/null || echo unknown)
+case "$board" in
+    p105) SRV=iosnand ;;
+    k93)  SRV="k93iosnand -j2" ;;      # both NAND buses at once
+    *)    die "no NAND reader for this iPad ($board)" ;;
+esac
+
 serving() { [ -s $RUN/pid ] && kill -0 "$(cat $RUN/pid)" 2>/dev/null; }
 mounted() { grep -q " $MNT hfsplus " /proc/mounts 2>/dev/null; }
+# the root is an image on System (initramfs/init): System stays
+rooted()  { [ "$(cat $RUN/root 2>/dev/null)" = nand ]; }
 
 need() {
-    [ -x /sbin/iosnand ] || die "no /sbin/iosnand in this image"
+    [ -x /sbin/${SRV%% *} ] || die "no /sbin/${SRV%% *} in this image"
     [ -e /dev/nbd0 ] || die "no /dev/nbd0: this kernel was built without CONFIG_BLK_DEV_NBD"
     grep -q hfsplus /proc/filesystems || die "this kernel has no HFS+ (CONFIG_HFSPLUS_FS)"
+    # the iPad 2's reader needs the chips' ce-bitmap, found by k93nand id
+    if [ "$board" = k93 ]; then
+        mkdir -p /run/k93nand
+        [ -s /run/k93nand/k93nand.state ] || k93nand -q id >/dev/null || die "k93nand id failed"
+    fi
 }
 
 status() {
-    if mounted; then
+    if mounted && rooted; then
+        say "iOS System is mounted read-only on $MNT ($(df -h $MNT | awk 'NR==2 { print $3 " used" }')):"
+        say "this root is the image on it (/cascadia/root.sqfs), so it stays."
+        say "  ls $MNT            look around"
+    elif mounted; then
         say "iOS System is mounted read-only on $MNT ($(df -h $MNT | awk 'NR==2 { print $3 " used" }'))."
         say "  ls $MNT            look around"
         say "  ios umount         let go of it"
     elif serving; then
-        say "iosnand is running (log: $LOG) but nothing is mounted."
+        say "$SRV is running (log: $LOG) but nothing is mounted."
         say "  ios umount         stop it"
     else
         say "iOS's partitions are not mounted."
-        [ -f /var/lib/iosnand/pages.v1 ] || say "(the first mount reads the whole NAND once: ~15 minutes)"
+        [ "$board" = p105 ] && [ ! -f /var/lib/iosnand/pages.v1 ] &&
+            say "(the first mount reads the whole NAND once: ~15 minutes)"
         say "  ios mount          System, read-only, on $MNT"
         say "  ios parts          what is there"
     fi
@@ -55,12 +82,16 @@ start() {
     need
     serving && die "already serving (ios umount first)"
     mkdir -p $RUN $MNT
-    say "reading the NAND map (a few seconds; ~15 minutes the very first time)..."
-    iosnand serve System "$@" > $LOG 2>&1 &
+    if [ "$board" = p105 ]; then
+        say "reading the NAND map (a few seconds; ~15 minutes the very first time)..."
+    else
+        say "reading the NAND map (~5 seconds)..."
+    fi
+    $SRV serve System "$@" > $LOG 2>&1 &
     echo $! > $RUN/pid
-    # iosnand attaches /dev/nbd0 once its map is ready
+    # the server attaches /dev/nbd0 once its map is ready
     while ! [ "$(cat /sys/block/nbd0/size 2>/dev/null)" -gt 0 ] 2>/dev/null; do
-        serving || { cat $LOG >&2; die "iosnand stopped"; }
+        serving || { cat $LOG >&2; die "$SRV stopped"; }
         sleep 1
     done
     grep -v "blocks read," $LOG
@@ -82,10 +113,12 @@ case "$1" in
     ""|status)  status ;;
     mount)      shift; start "$@" ;;
     umount|unmount)
+                rooted && die "this root is the image on iOS's System: it stays mounted until the iPad restarts"
                 mounted && { umount $MNT || die "$MNT is busy"; }
                 stop_serving
                 say "iOS unmounted." ;;
-    scan)       need; serving && die "iosnand is serving; ios umount first"; iosnand scan ;;
-    parts)      need; serving && die "iosnand is serving; ios umount first"; iosnand parts ;;
+    scan)       need; serving && die "$SRV is serving; ios umount first"
+                if [ "$board" = k93 ]; then k93iosnand map; else iosnand scan; fi ;;
+    parts)      need; serving && die "$SRV is serving; ios umount first"; $SRV parts ;;
     *)          sed -n '/^#   ios/,/^#$/p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
 esac

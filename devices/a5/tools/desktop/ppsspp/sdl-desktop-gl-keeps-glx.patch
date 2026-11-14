@@ -1,0 +1,20 @@
+Cascadia: a desktop-GL (GLEW) build of the SDL frontend keeps SDL's GLX
+context; only a GLES build switches to an EGL context of its own.
+
+--- a/SDL/SDLGLGraphicsContext.cpp
++++ b/SDL/SDLGLGraphicsContext.cpp
+@@ -392,7 +392,13 @@
+ 	// At this point, we have a window that we can show finally.
+ 	SDL_ShowWindow(window);
+ 
+-#ifdef USING_EGL
++	// Only a GLES build draws through an EGL context of its own.  On ARM,
++	// CMake turns USING_EGL on for every build, and a desktop-GL one (GLEW)
++	// would swap SDL's GL context for an EGL OpenGL ES one here and then call
++	// desktop GL through GLEW in it: with Mesa, glGetShaderPrecisionFormat
++	// (desktop GL only with ARB_ES2_compatibility) is a null pointer, and the
++	// first frame crashes.  A desktop-GL build keeps SDL's GLX context.
++#if defined(USING_EGL) && defined(USING_GLES2)
+ 	if (EGL_Open(window) != 0) {
+ 		fprintf(stderr, "EGL_Open() failed\n");
+ 	} else if (EGL_Init(window) != 0) {
