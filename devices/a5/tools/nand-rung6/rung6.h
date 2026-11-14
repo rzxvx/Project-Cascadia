@@ -13,6 +13,7 @@ struct rung6_args {
 	bool commit;			/* commit and leave; else check (read only) */
 	u32 samples;			/* check: random mapped LBAs to read */
 	u32 watch_sb[RUNG6_WATCH];	/* check: superblocks to report, 0 ends */
+	u64 weave_lo, weave_hi;		/* check: also report SBs whose first weave is in [lo, hi) */
 };
 
 int rung6_run(const struct rung6_args *a);

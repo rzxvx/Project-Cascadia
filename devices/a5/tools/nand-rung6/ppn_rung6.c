@@ -26,6 +26,9 @@ module_param(samples, uint, 0444);
 static unsigned int watch[RUNG6_WATCH];
 static int nwatch;
 module_param_array(watch, uint, &nwatch, 0444);
+static unsigned long long weave_lo, weave_hi;
+module_param(weave_lo, ullong, 0444);
+module_param(weave_hi, ullong, 0444);
 static int result = 1;
 module_param(result, int, 0444);
 MODULE_PARM_DESC(result, "0 = passed, negative errno = failed");
@@ -55,7 +58,8 @@ static const struct sftl_ops r6_ops = {
 static int __init r6_init(void)
 {
 	struct apple_ppn *ppn = apple_ppn_get();
-	struct rung6_args a = { .ops = &r6_ops, .samples = samples };
+	struct rung6_args a = { .ops = &r6_ops, .samples = samples,
+				.weave_lo = weave_lo, .weave_hi = weave_hi };
 	int i;
 
 	if (!ppn) {

@@ -383,6 +383,13 @@ static int do_check(struct r6_watch *w, const struct rung6_args *a)
 			  fs->rec[s].type, fs->rec[s].valid, fs->rec[s].erases);
 	}
 
+	for (i = 0; a->weave_hi && i < SFTL_NUM_SB; i++)
+		if (fs->probe[i].first_type != SFTL_MT_ERASED &&
+		    fs->probe[i].first_weave >= a->weave_lo && fs->probe[i].first_weave < a->weave_hi)
+			sftl_info("rung6: sb %u: first page type %02x weave %llu; SB array type %u valid %u BTOC flags %#x",
+				  i, fs->probe[i].first_type,
+				  (unsigned long long)fs->probe[i].first_weave, fs->rec[i].type,
+				  fs->rec[i].valid, fs->rec[i].btoc_flags);
 	ret = g < 0 ? g : 0;
 
 	for (i = 0; !ret && checked < a->samples && i < a->samples * 64; i++) {

@@ -286,7 +286,7 @@ committed after it, and its contexts rebuild identically from their tables. What
 with the older contexts: it erases the previous one after its own commit and keeps it
 listed as type 7 until the next commit, then lists it type 1 and reuses it.
 
-### Rung 7 (in progress), 2026-11-15: real reclaim + commit, left for iOS
+### Rung 7, 2026-11-15: real reclaim + commit, iOS booted on it — passed
 
 **Writer bug found offline first** (fixed in 2139ecf): reclaim marks its victims
 await-erase with nothing valid and queues them for erase after the commit, and
@@ -311,16 +311,29 @@ On the device (`devices/a5/tools/nand-rung7`, then the rung-6 check):
 
 Left on the media for the iOS boot.
 
+**After iOS** (user: iOS boots and works; read-only rung-6 check, clean):
+
+- iOS loaded sb 427 and committed its own context on **sb 401**, one of the four victims
+  Linux had erased; golden rebuild identical (87926 runs, tree 173 LBAs).
+- **sb 256, the Linux GC superblock** (first weave 377651096, 50 moved LBAs, PAD fill to
+  capacity, BTOC nb 4): iOS lists it closed (type 3), 50 valid, BTOC flags `0x8`. iOS took
+  a Linux data superblock with its PAD fill as an ordinary closed one (decision D1).
+- Victims sb 376 and 876 are iOS's open frontiers now (type 4); sb 427 (Linux context)
+  is erased and listed type 7, as in rung 6.
+- **sb 467**, iOS's earlier context, is erased and listed with **type 2**, a value not
+  seen in `w0c` (§4.4 lists 1, 3, 4, 5, 7, 8, 9). Meaning unknown; to note for §9.
+- 20000 random mapped LBAs read with matching metadata; LwVM System, Data, Linux.
+
 ## Decisions the spec left open
 
-**D1. Closing a partly written superblock.** The spec says "write the BTOC in the
+**D1. Closing a partly written superblock.** *Rung 7: iOS accepted a Linux SB closed
+this way (sb 256, 50 data VBAs and PAD to capacity) as an ordinary closed SB.* The spec says "write the BTOC in the
 last nb VBAs" and does not say what happens to the VBAs between the last data
 and the BTOC. iOS leaves no hole `[DUMP]`, and pages of a block go in ascending
 order. The code fills the rest of the data area with PAD slots at close, so a
 Linux SB has the same shape as an iOS one. PAD slots take a page program each:
 at most about 1.3 s for a whole SB, at checkpoint only. The alternative, leaving
-the pages erased with a shorter BTOC, is unproven against iOS. **Untested on the
-device. Needs ladder rung 3.**
+the pages erased with a shorter BTOC, is unproven against iOS. Tested on the device at rungs 3 and 7.
 
 **D2. "Status poll" after read/parameters.** §2.5 and §2.1 read "status poll"; §1.5
 defines both a bare poll and an operation status (`0x7d77` + poll). `[iBEC 0x9ff0758a]`
