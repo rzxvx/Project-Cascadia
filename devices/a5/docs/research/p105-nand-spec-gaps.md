@@ -364,6 +364,26 @@ fsync and rename load, crash (no checkpoint) replay, checkpoint rotation (contex
 1005, 475, 30, 248), automatic reclaim, unmount checkpoint, and iOS booted after each
 part. The test files stay in `/rung8-test` on the Linux volume (about 165 MiB).
 
+### Rung 9, 2026-11-15: root on the NAND Linux volume (in progress)
+
+Image `tools/nand-rung9/build.sh` (commit b31af08): rung-1 kernel, loader and DTB; overlay
+with stage 1's `/init` plus a NAND-root branch (driver modules from `/lib/nand`, FTL writable
+for `Linux` only, `ftl0p2` mounted ext4 `rw,noatime,commit=30`, `switch_root` to the root's
+own `/sbin/p105-stage2`; any failure falls through to NFS). Nothing is copied into the root.
+`verify_every=1`.
+
+- Boot: root `/dev/ftl0p2` 10.6 s after start; 64 MiB + sync in 13 s, 500 small files.
+- Round trips Linux (NAND root) → power-off → iOS → Linux (NAND root), three times: every
+  test file and the markers written before each power-off are intact; iOS's contexts (sb 972,
+  825, 972 again) rebuild identically; random reads clean.
+- `p105-stage2` turns `reboot` into a power-off on this iPad. The FTL's reboot notifier
+  also runs on power-off, but its messages are lost with the ssh link. Evidence that the
+  shutdown checkpoint is written: each time iOS's next context lists as its previous context
+  an SB other than the one the Linux session had loaded (sb 304 after loading 825; sb 66
+  after loading 825), as when iOS booted on a Linux context in rungs 6–8, where it listed
+  exactly that Linux context. Not proven directly: that needs a boot into Linux right after
+  the power-off with no iOS in between.
+
 ## Decisions the spec left open
 
 **D1. Closing a partly written superblock.** *Rung 7: iOS accepted a Linux SB closed
