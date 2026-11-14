@@ -192,6 +192,10 @@ struct sftl_writer {
 	u32 prog_counter;
 	bool wedged;
 	bool dirty;
+
+	/* Test fence: one superblock only, never a commit or a reclaim. */
+	bool fenced;
+	u32 fence_sb;
 };
 
 struct sftl {
@@ -400,6 +404,8 @@ void sftl_writer_stop(struct sftl *fs);
 int sftl_write(struct sftl *fs, u32 lba, u32 count, const u8 *src);
 int sftl_checkpoint(struct sftl *fs);
 int sftl_checkpoint_due(struct sftl *fs);
+int sftl_writer_fence(struct sftl *fs, u32 sb);
+int sftl_writer_seal(struct sftl *fs);
 #endif
 
 /* sftl_lwvm.c */

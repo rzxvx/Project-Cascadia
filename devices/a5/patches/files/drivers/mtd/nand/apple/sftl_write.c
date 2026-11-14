@@ -68,6 +68,8 @@ static int take_spare(struct sftl *fs, bool four_banks)
 			continue;
 		if (four_banks && fs->shape[sb].width != SFTL_BANKS)
 			continue;
+		if (fs->wr->fenced && sb != fs->wr->fence_sb)
+			continue;
 		if (best == SFTL_NUM_SB || r->erases < fs->rec[best].erases)
 			best = sb;
 	}
@@ -434,6 +436,8 @@ static int commit(struct sftl *fs)
 	u32 i, new_sb, keep = fs->ctx_sb;
 	int ret, sb;
 
+	if (w->fenced)
+		return fail_wedge(fs, "commit while fenced", -EPERM);
 	ret = tree_compact(fs);
 	if (ret)
 		return fail_wedge(fs, "tree does not fit its 32 LBAs", ret);
@@ -530,6 +534,38 @@ int sftl_checkpoint(struct sftl *fs)
 	return commit(fs);
 }
 
+/*
+ * Restrict the writer to one superblock, for the device ladder: the frontier
+ * may only open there, and commit and reclaim refuse.  The superblock must be
+ * an erased spare with four banks.
+ */
+int sftl_writer_fence(struct sftl *fs, u32 sb)
+{
+	struct sftl_writer *w = fs->wr;
+
+	if (!w)
+		return -EROFS;
+	if (sb >= SFTL_NUM_SB || fs->rec[sb].type != SFTL_SB_ERASED ||
+	    fs->shape[sb].width != SFTL_BANKS || w->fr.sb != SFTL_UNMAPPED)
+		return -EINVAL;
+	w->fenced = true;
+	w->fence_sb = sb;
+	return 0;
+}
+
+/* Flush what is pending and close the frontier with its BTOC; no commit. */
+int sftl_writer_seal(struct sftl *fs)
+{
+	int ret;
+
+	if (!fs->wr)
+		return -EROFS;
+	if (fs->wr->wedged)
+		return -EIO;
+	ret = batch_flush(fs);
+	return ret ? ret : frontier_close(fs);
+}
+
 /* Move the LBA list (in list order) to the frontier, keeping type and user. */
 static int gc_move(struct sftl *fs, const u32 *list, u32 n)
 {
@@ -578,6 +614,8 @@ static int reclaim(struct sftl *fs)
 	u32 nv = 0, i, sb, lba, count = 0, live = 0;
 	int ret;
 
+	if (w->fenced)
+		return fail_wedge(fs, "reclaim while fenced", -EPERM);
 	memset(w->victim_map, 0, (SFTL_NUM_SB + 7) / 8);
 
 	for (;;) {

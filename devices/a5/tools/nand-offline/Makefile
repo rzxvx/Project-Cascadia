@@ -1,11 +1,11 @@
 # Offline tests for the Swiss FTL core, against a raw dump of the NAND.
-# Usage: make && ./nandtest <dump-dir> [--write]
+# Usage: make && ./nandtest <dump-dir> [--write | --rung3]
 APPLE := ../../patches/files/drivers/mtd/nand/apple
 CC ?= cc
-CFLAGS := -O2 -g -Wall -Wextra -Wno-unused-parameter -I$(APPLE) -std=gnu11
-SRCS := nandtest.c $(APPLE)/sftl_map.c $(APPLE)/sftl_mount.c $(APPLE)/sftl_format.c $(APPLE)/sftl_write.c $(APPLE)/sftl_lwvm.c
+CFLAGS := -O2 -g -Wall -Wextra -Wno-unused-parameter -I$(APPLE) -I../nand-rung3 -std=gnu11
+SRCS := nandtest.c $(APPLE)/sftl_map.c $(APPLE)/sftl_mount.c $(APPLE)/sftl_format.c $(APPLE)/sftl_write.c $(APPLE)/sftl_lwvm.c ../nand-rung3/rung3.c
 
-nandtest: $(SRCS) $(wildcard $(APPLE)/*.h)
+nandtest: $(SRCS) $(wildcard $(APPLE)/*.h) ../nand-rung3/rung3.h
 	$(CC) $(CFLAGS) -o $@ $(SRCS)
 
 clean:

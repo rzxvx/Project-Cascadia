@@ -5,7 +5,8 @@
  * 16448 bytes as read off the bus, one status byte per page.
  *
  * --write runs the writer on an in-memory overlay of the dump: nothing is ever
- * written to the dump itself.
+ * written to the dump itself.  --rung3 runs the device-ladder rung 3 test on
+ * the same overlay, as the kernel test module runs it on the device.
  */
 #define _GNU_SOURCE
 #include <fcntl.h>
@@ -17,6 +18,7 @@
 
 #include "sftl.h"
 #include "sftl_port.h"
+#include "rung3.h"
 
 #define RAW_PAGE 16448
 #define OVERLAY_PAGES (1u << 20)
@@ -853,7 +855,7 @@ int main(int argc, char **argv)
 	bool do_write = false;
 
 	if (argc < 2) {
-		fprintf(stderr, "usage: %s <dump-dir> [--write]\n", argv[0]);
+		fprintf(stderr, "usage: %s <dump-dir> [--write | --rung3]\n", argv[0]);
 		return 2;
 	}
 	if (argc > 2 && !strcmp(argv[2], "--write"))
@@ -861,6 +863,21 @@ int main(int argc, char **argv)
 	d = malloc(sizeof(*d));
 	if (dev_open(d, argv[1]))
 		return 1;
+	if (argc > 2 && !strcmp(argv[2], "--rung3")) {
+		struct sftl *vfl = calloc(1, sizeof(*vfl));
+		struct rung3_args a = { .ops = &dev_ops, .hw = d, .nlbas = 2000,
+					.search_from = 100000 };
+
+		assert(!sftl_init(vfl, &dev_ops, d) && !sftl_load_vfl(vfl));
+		for (i = 0; i < SFTL_BANKS; i++)
+			d->usage[i] = vfl->usage[i];
+		d->writes_enabled = true;
+		ret = rung3_run(&a);
+		CHECK(!ret, "rung 3 on the overlay (%d)", ret);
+		printf("  device: %lu reads, %lu programs, %lu erases, %lu pages skipped\n",
+		       d->reads, d->progs, d->erases, d->pages_gapped);
+		goto done;
+	}
 	fs = calloc(1, sizeof(*fs));
 	assert(!sftl_init(fs, &dev_ops, d));
 
