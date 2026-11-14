@@ -76,6 +76,25 @@ struct loop_span {
    int start, end;
 };
 
+/* (M47) the components of a vector a dot product reads, made in registers
+ * in a row from an even one (VDP's src1 as it is, or one V32NMAD loading it
+ * into an internal register): the first, -1 until one is made; the
+ * components that are values (bit k: component k) */
+struct vgroup {
+   int base;
+   unsigned n, mask;
+};
+
+/* (M47) an internal register (i0..i2) as a vertex program's: the values
+ * its lanes hold (copies: the values stay where they are too), the
+ * instruction that wrote it and the last that read it */
+struct ireg {
+   bool valid;
+   unsigned n;
+   struct operand lane[4];
+   unsigned from, last;
+};
+
 struct comp {
    struct sgx_fs *fs;                   /* a fragment shader's, or */
    struct sgx_vs *vs;                   /* a vertex shader's */
@@ -83,6 +102,7 @@ struct comp {
    struct usse_reg *loc;                /* where each value is */
    bool *owned;                         /* loc is a temporary of its own (any lane) */
    unsigned nvalues;                    /* of loc, owned, last_use */
+   unsigned spare;                      /* (M47) an id of no value's, for a temporary */
    int *last_use;                       /* the last instruction that reads it */
    bool used[MAX_TEMPS];
    unsigned top;                        /* temporaries used: highest + 1 */
@@ -206,6 +226,22 @@ struct comp {
     * small enough for one instruction (a product, a shift) */
    nir_shader *nir;
    struct hash_table *range;
+   /* (M47) a vertex program's vector instructions (VDP) on the internal
+    * registers: what each holds, and the spans of code (pairs of indices,
+    * from and the last read) over which one held a value read later --
+    * nosched on each instruction of a span, the registers being the
+    * pipe's */
+   bool vec;
+   struct ireg ireg[USSE_NINTERNAL];
+   struct util_dynarray ispans;
+   /* (M47) the vectors made in a row (plan_groups()): each value's group *
+    * 4 + its component, -1 none */
+   struct vgroup *vgroups;
+   unsigned nvgroups;
+   int *group_of;
+   /* (M47) defs another instruction made already (a comparison of the
+    * other lane, compare_mask()): skipped, by def index */
+   bool *premade;
 };
 
 static void
@@ -226,6 +262,8 @@ emit(struct comp *c, uint64_t w)
 {
    util_dynarray_append(&c->code, w);
 }
+
+static unsigned here(struct comp *c);
 
 /* n free temporaries in a row, the first a multiple of align */
 static unsigned
@@ -457,6 +495,42 @@ get(struct comp *c, struct operand o, unsigned takes, struct scratch *s)
    return r;
 }
 
+/* (M47) a value of a vector made in a row (plan_groups()): its register in
+ * its group's -- taken at the group's first value, the components that
+ * are not values given back -- false when it is none's (or there is no
+ * room for the group) */
+static bool
+vgroup_member(struct comp *c, unsigned id, unsigned *r)
+{
+   struct vgroup *g;
+   unsigned k;
+
+   if (!c->group_of || c->group_of[id] < 0)
+      return false;
+   g = &c->vgroups[c->group_of[id] / 4];
+   k = c->group_of[id] % 4;
+   if (g->base == -1) {
+      g->base = block_try(c, g->n, 2);
+      if (g->base < 0) {
+         g->base = -2;
+         return false;
+      }
+      for (unsigned i = 0; i < g->n; i++)
+         if (!(g->mask & 1u << i))
+            give_back(c, g->base + i);
+   }
+   if (g->base < 0)
+      return false;
+   *r = g->base + k;
+   c->loc[id] = treg(c, *r);
+   c->owned[id] = true;
+   if (c->last_use[id] < 0) {
+      give_back(c, *r);
+      c->owned[id] = false;
+   }
+   return true;
+}
+
 /* the value an instruction makes, in a temporary of its own */
 static struct usse_reg
 define(struct comp *c, nir_def *def)
@@ -480,6 +554,8 @@ define(struct comp *c, nir_def *def)
       c->owned[id] = false;
       return c->loc[id];
    }
+   if (vgroup_member(c, id, &r))
+      return c->loc[id];
    r = take(c);
 
    c->loc[id] = treg(c, r);
@@ -499,7 +575,11 @@ define(struct comp *c, nir_def *def)
 static struct usse_reg
 define_word(struct comp *c, nir_def *def)
 {
-   unsigned id = def->index * 4, r = block(c, 1, 1);
+   unsigned id = def->index * 4, r;
+
+   if (vgroup_member(c, id, &r))
+      return c->loc[id];
+   r = block(c, 1, 1);
 
    c->loc[id] = treg(c, r);
    c->owned[id] = true;
@@ -510,10 +590,12 @@ define_word(struct comp *c, nir_def *def)
    return c->loc[id];
 }
 
+/* d = op(a, b) into def's register -- or, def NULL, into dest */
 static void
-binary(struct comp *c, enum usse_nmad_op op, nir_alu_instr *alu, struct scratch *s)
+binary_ops(struct comp *c, enum usse_nmad_op op, struct operand a, struct operand b,
+           nir_def *def, struct usse_reg dest, struct scratch *s)
 {
-   struct operand a = alu_operand(alu, 0), b = alu_operand(alu, 1), t;
+   struct operand t;
    struct usse_reg ra, rb;
    unsigned code;
    bool kneg;
@@ -538,7 +620,7 @@ binary(struct comp *c, enum usse_nmad_op op, nir_alu_instr *alu, struct scratch 
       k = ra;
       k.neg = kneg;
       k.abs = false;
-      emit(c, usse_fop_sw(op, define(c, &alu->def), k, USSE_SW_CONST(code), ra));
+      emit(c, usse_fop_sw(op, def ? define(c, def) : dest, k, USSE_SW_CONST(code), ra));
       return;
    }
 
@@ -553,7 +635,14 @@ binary(struct comp *c, enum usse_nmad_op op, nir_alu_instr *alu, struct scratch 
       a.neg = b.neg = false;
    ra = get(c, a, TAKES_ALL, s);
    rb = get(c, b, TAKES_ALL & ~TAKES_NEG, s);
-   emit(c, usse_fop(op, define(c, &alu->def), ra, rb));
+   emit(c, usse_fop(op, def ? define(c, def) : dest, ra, rb));
+}
+
+static void
+binary(struct comp *c, enum usse_nmad_op op, nir_alu_instr *alu, struct scratch *s)
+{
+   binary_ops(c, op, alu_operand(alu, 0), alu_operand(alu, 1), &alu->def, usse_reg(USSE_TEMP, 0),
+              s);
 }
 
 /* (M46) ffma (a vertex shader's: sgx_screen.c fuses them there): FMAD,
@@ -561,9 +650,10 @@ binary(struct comp *c, enum usse_nmad_op op, nir_alu_instr *alu, struct scratch 
  * without negation (a product's sign goes onto src1), src1 and src2
  * anything with their modifiers, each its own lane */
 static void
-fma_(struct comp *c, nir_alu_instr *alu, struct scratch *s)
+fma_ops(struct comp *c, struct operand a, struct operand b, struct operand x, nir_def *def,
+        struct usse_reg dest, struct scratch *s)
 {
-   struct operand a = alu_operand(alu, 0), b = alu_operand(alu, 1), x = alu_operand(alu, 2), t;
+   struct operand t;
    struct usse_reg r0, r1, r2;
 
    /* src0: one in a register that is not sa */
@@ -584,7 +674,604 @@ fma_(struct comp *c, nir_alu_instr *alu, struct scratch *s)
    r0 = get(c, a, TAKES_ABS | TAKES_LANE_Y, s);
    r1 = get(c, b, TAKES_ALL, s);
    r2 = get(c, x, TAKES_ALL, s);
-   emit(c, usse_fmad(define(c, &alu->def), r0, r1, r2));
+   emit(c, usse_fmad(def ? define(c, def) : dest, r0, r1, r2));
+}
+
+static void
+fma_(struct comp *c, nir_alu_instr *alu, struct scratch *s)
+{
+   fma_ops(c, alu_operand(alu, 0), alu_operand(alu, 1), alu_operand(alu, 2), &alu->def,
+           usse_reg(USSE_TEMP, 0), s);
+}
+
+/* ---- vector instructions (M47) ---------------------------------------------
+ *
+ * A vertex program's dot products (NIR's fdot2..4 and fdph, which the
+ * scalar lowering leaves whole in a vertex shader) as VDPs: dot(src1, i<k>),
+ * one instruction -- src1 four registers in a row (a uniform's, an
+ * attribute's) through a swizzle of its own, the other vector in one of the
+ * three internal registers.  That one is loaded there (V32NMAD's add of 0
+ * to four lanes at once) and kept: the next dot product of it -- a vector
+ * times a matrix is three or four -- reads it where it is.  The internal
+ * registers are the pipe's, not the task's: another task's program writes
+ * them between two of ours unless every instruction from the write to the
+ * last read has its nosched flag (usse_nosched(), set over each span when
+ * the code is made). */
+
+/* (M47) the dot products a vertex shader keeps whole (vec_filter()) */
+static bool
+is_dot(nir_op op)
+{
+   return op == nir_op_fdot2 || op == nir_op_fdot3 || op == nir_op_fdot4 || op == nir_op_fdph;
+}
+
+static bool
+same_operand(const struct operand *a, const struct operand *b)
+{
+   if (a->is_const || b->is_const)
+      return a->is_const && b->is_const && a->u == b->u;
+   return a->id == b->id && a->neg == b->neg && a->abs == b->abs;
+}
+
+/* a constant as a channel of src1's swizzle (0, 1, 2, 0.5) */
+static bool
+k_channel(const struct operand *o, unsigned *code)
+{
+   bool neg;
+
+   return o->is_const && k_code(o->u, code, &neg) && !neg;
+}
+
+/* the n operands as src1 of a VDP or a V32NMAD: their registers four in a
+ * row from an even one (the swizzle's x y z w), the constants 0, 1, 2 and
+ * 0.5 the swizzle's own, the same modifiers on all -- the first register
+ * (its modifiers) and the swizzle; false when they are not that */
+static bool
+src1_group(struct comp *c, const struct operand *o, unsigned n, struct usse_reg *base,
+           unsigned *sw)
+{
+   int lo = -1, bank = -1;
+   bool neg = false, abs = false, any = false;
+   unsigned code;
+
+   for (unsigned k = 0; k < n; k++) {
+      struct usse_reg r;
+
+      if (o[k].is_const)
+         continue;
+      r = c->loc[o[k].id];
+      if (r.bank != USSE_TEMP && r.bank != USSE_PA && r.bank != USSE_SA &&
+          r.bank != USSE_OUTPUT)
+         return false;
+      if (any && (r.bank != bank || o[k].neg != neg || o[k].abs != abs))
+         return false;
+      bank = r.bank;
+      neg = o[k].neg;
+      abs = o[k].abs;
+      any = true;
+      lo = lo < 0 ? r.num & ~1 : MIN2(lo, r.num & ~1);
+   }
+   *sw = 0;
+   for (unsigned k = 0; k < 4; k++) {
+      unsigned ch = USSE_K_0;
+
+      if (k < n && o[k].is_const) {
+         /* (a negated vector negates its constants too: 0 only) */
+         if (!k_channel(&o[k], &code) || (neg && o[k].u))
+            return false;
+         ch = code;
+      } else if (k < n) {
+         unsigned d = c->loc[o[k].id].num - lo;
+
+         if (d > 3)
+            return false;
+         ch = d;
+      }
+      *sw |= ch << 3 * k;
+   }
+   *base = any ? usse_reg(bank, lo) : usse_reg(USSE_TEMP, 0);
+   base->neg = neg;
+   base->abs = abs;
+   return true;
+}
+
+static void
+ireg_close(struct comp *c, unsigned k)
+{
+   struct ireg *r = &c->ireg[k];
+
+   if (r->valid && r->last > r->from) {
+      util_dynarray_append(&c->ispans, r->from);
+      util_dynarray_append(&c->ispans, r->last);
+   }
+   r->valid = false;
+}
+
+/* every internal register forgotten: before a wait (WDF), which lets the
+ * pipe run other tasks whatever the flags say */
+static void
+ireg_barrier(struct comp *c)
+{
+   for (unsigned k = 0; k < USSE_NINTERNAL; k++)
+      ireg_close(c, k);
+}
+
+/* the internal register that holds o[k] in lane k for each k of mask, -1
+ * none */
+static int
+ireg_find(struct comp *c, const struct operand *o, unsigned mask)
+{
+   for (unsigned k = 0; k < USSE_NINTERNAL; k++) {
+      unsigned l;
+
+      if (!c->ireg[k].valid)
+         continue;
+      for (l = 0; l < 4; l++)
+         if ((mask & 1u << l) &&
+             (l >= c->ireg[k].n || !same_operand(&c->ireg[k].lane[l], &o[l])))
+            break;
+      if (l == 4)
+         return k;
+   }
+   return -1;
+}
+
+/* o[0..n-1] into an internal register's lanes: the one free, or the one
+ * read longest ago -- by one V32NMAD when they are four registers in a row
+ * (or constants of the swizzle's), else a lane at a time */
+static unsigned
+ireg_load(struct comp *c, const struct operand *o, unsigned n, struct scratch *s)
+{
+   unsigned k = 0, sw;
+   struct usse_reg base;
+
+   for (unsigned i = 1; i < USSE_NINTERNAL; i++)
+      if (c->ireg[k].valid && (!c->ireg[i].valid || c->ireg[i].last < c->ireg[k].last))
+         k = i;
+   ireg_close(c, k);
+   c->ireg[k].from = here(c);
+   if (src1_group(c, o, n, &base, &sw)) {
+      emit(c, usse_fop_ex(USSE_NMAD_ADD, usse_ireg(k, 0), (1u << n) - 1, base, sw, USSE_ZERO,
+                          USSE_SW2_X));
+   } else {
+      for (unsigned l = 0; l < n; l++) {
+         struct usse_reg r;
+         unsigned code;
+
+         if (k_channel(&o[l], &code)) {
+            emit(c, usse_fop_ex(USSE_NMAD_ADD, usse_ireg(k, l), 1u << l, usse_reg(USSE_TEMP, 0),
+                                USSE_SW_CONST(code), USSE_ZERO, USSE_SW2_X));
+            continue;
+         }
+         r = get(c, o[l], TAKES_ALL, s);
+         emit(c, usse_fop_ex(USSE_NMAD_ADD, usse_ireg(k, l), 1u << l, r,
+                             (r.bank == USSE_SPECIAL ? 0 : r.num & 1) * 0x249, USSE_ZERO,
+                             USSE_SW2_X));
+      }
+   }
+   c->ireg[k].valid = true;
+   c->ireg[k].n = n;
+   memcpy(c->ireg[k].lane, o, n * sizeof(*o));
+   c->ireg[k].last = c->ireg[k].from;
+   return k;
+}
+
+/* the dot product of a[] and b[] (n components) as instructions of one
+ * lane: a product, products added to it (FMAD) -- where VDP cannot take
+ * them, or the program does not use the internal registers */
+static void
+dot_scalar(struct comp *c, const struct operand *a, const struct operand *b, unsigned n,
+           nir_def *def, struct scratch *s)
+{
+   int terms[4], nt = 0;
+   struct usse_reg acc = usse_reg(USSE_TEMP, 0);
+
+   for (unsigned k = 0; k < n; k++)
+      if (!(a[k].is_const && !(a[k].u & 0x7fffffffu)) && !(b[k].is_const && !(b[k].u & 0x7fffffffu)))
+         terms[nt++] = k;
+   if (!nt) {
+      emit(c, usse_limm(define(c, def), 0));
+      return;
+   }
+   for (int i = 0; i < nt; i++) {
+      unsigned k = terms[i];
+      bool last = i == nt - 1;
+      struct usse_reg d = last ? usse_reg(USSE_TEMP, 0) : treg(c, scratch_take(c, s));
+      struct operand x;
+
+      if (!i) {
+         binary_ops(c, USSE_NMAD_MUL, a[k], b[k], last ? def : NULL, d, s);
+      } else {
+         x = (struct operand){ 0 };
+         /* (the sum so far: a temporary of this instruction's -- an
+          * operand of its own, through loc's spare entry) */
+         x.id = c->spare;
+         c->loc[x.id] = acc;
+         fma_ops(c, a[k], b[k], x, last ? def : NULL, d, s);
+      }
+      acc = d;
+   }
+}
+
+static void
+dot_product(struct comp *c, nir_alu_instr *alu, struct scratch *s)
+{
+   struct operand a[4], b[4], one = { .is_const = true, .c = 1.0f, .u = 0x3f800000u };
+   struct operand zero = { .is_const = true };
+   unsigned n = nir_ssa_alu_instr_src_components(alu, 1), sw = 0, swg0 = USSE_SW2_XYZW, mask;
+   struct usse_reg base = usse_reg(USSE_TEMP, 0);
+   const struct operand *g;
+   bool dp4;
+   int k = -1;
+
+   for (unsigned i = 0; i < n; i++) {
+      a[i] = i < nir_ssa_alu_instr_src_components(alu, 0) ?
+             resolve(nir_get_scalar(alu->src[0].src.ssa, alu->src[0].swizzle[i])) : one;
+      b[i] = resolve(nir_get_scalar(alu->src[1].src.ssa, alu->src[1].swizzle[i]));
+   }
+   /* (fdph: a's w the 1 above, dot(a.xyz, b.xyz) + b.w) */
+   if (!c->vec) {
+      dot_scalar(c, a, b, n, &alu->def, s);
+      return;
+   }
+   if (n == 2) {
+      a[2] = b[2] = zero;
+      n = 3;
+   }
+   dp4 = n == 4;
+   /* gpi0: a vector an internal register holds already (a's with w 1 by
+    * the swizzle xyz1), the other src1; or the one not in sa loaded, the
+    * uniform the swizzle's (a vector times the columns of a matrix) */
+   mask = (1u << n) - 1;
+   g = NULL;
+   if ((k = ireg_find(c, a, mask)) >= 0 && src1_group(c, b, n, &base, &sw)) {
+      g = a;
+   } else if (dp4 && same_operand(&a[3], &one) && (k = ireg_find(c, a, 7)) >= 0 &&
+              src1_group(c, b, n, &base, &sw)) {
+      g = a;
+      swg0 = USSE_SWG_XYZ1;
+   } else if ((k = ireg_find(c, b, mask)) >= 0 && src1_group(c, a, n, &base, &sw)) {
+      g = b;
+   } else {
+      bool a_sa = true;
+
+      for (unsigned i = 0; i < n; i++)
+         a_sa &= a[i].is_const || c->loc[a[i].id].bank == USSE_SA;
+      if (!a_sa && src1_group(c, b, n, &base, &sw))
+         g = a;
+      else if (src1_group(c, a, n, &base, &sw))
+         g = b;
+      else if (src1_group(c, b, n, &base, &sw))
+         g = a;
+      if (!g) {
+         dot_scalar(c, a, b, n, &alu->def, s);
+         return;
+      }
+      /* (w 1 from the swizzle: three lanes loaded, which the next vector
+       * with that w finds too) */
+      if (dp4 && same_operand(&g[3], &one)) {
+         k = ireg_load(c, g, 3, s);
+         swg0 = USSE_SWG_XYZ1;
+      } else {
+         k = ireg_load(c, g, n, s);
+      }
+   }
+   c->ireg[k].last = here(c);
+   /* (SGX_IREG_NOREUSE=1, a test: each dot product its own load) */
+   if (getenv("SGX_IREG_NOREUSE")) {
+      c->ireg[k].last++;
+      ireg_close(c, k);
+   }
+   {
+      struct usse_reg d = define(c, &alu->def);
+
+      emit(c, usse_vdp(d, 1u << (d.bank == USSE_INTERNAL ? d.num & 3 : d.num & 1), dp4, base, sw,
+                       k, swg0));
+   }
+}
+
+static void fsat_ops(struct comp *c, struct operand o, nir_def *def, struct usse_reg dest,
+                     struct scratch *s);
+
+/* (M47) a vertex shader's vector arithmetic -- fadd, fmul, fmin, fmax, ffma
+ * and fsat of two to four components, which the scalar lowering leaves
+ * whole there (vec_filter()) -- two lanes an instruction (V32NMAD, VMAD2
+ * with a mask of x and y): the components made in registers in a row from
+ * an even one (or the output registers they are bound for), an instruction
+ * a pair, where each operand's half is a pair of registers in order or one
+ * value for both lanes (a uniform's, an attribute's, a vector made so, a
+ * scalar); else a lane at a time, as the scalar code.  SGX_NO_VS_VEC2=1: a
+ * lane at a time always */
+static bool
+is_vec_op(nir_op op)
+{
+   return op == nir_op_fadd || op == nir_op_fmul || op == nir_op_fmin || op == nir_op_fmax ||
+          op == nir_op_ffma || op == nir_op_fsat;
+}
+
+static struct usse_reg
+op_reg(struct comp *c, const struct operand *o)
+{
+   struct usse_reg r = c->loc[o->id];
+
+   r.neg = o->neg;
+   r.abs = o->abs;
+   return r;
+}
+
+/* whether two lanes' operand o[0], o[1] can be read as a pair by a source
+ * of a table's swizzle (V32NMAD's src2: VEC4_STD; VMAD2's three: each has
+ * xxxx yyyy zzzz wwww at 0..3, xyzw at 4): one value for both (a register's
+ * lane broadcast, a constant), or two registers in order from an even one.
+ * Negation: src0's and src2's take none -- neg_ok; sa: sa_ok */
+static bool
+pair_ok(struct comp *c, const struct operand *o, bool neg_ok, bool sa_ok)
+{
+   struct usse_reg a, b;
+
+   if (same_operand(&o[0], &o[1])) {
+      if (o[0].is_const)
+         return true;
+      a = op_reg(c, &o[0]);
+      return (neg_ok || !a.neg) && (sa_ok || a.bank != USSE_SA) &&
+             (a.bank == USSE_TEMP || a.bank == USSE_PA || a.bank == USSE_SA ||
+              a.bank == USSE_OUTPUT || a.bank == USSE_INTERNAL);
+   }
+   if (o[0].is_const || o[1].is_const || o[0].neg != o[1].neg || o[0].abs != o[1].abs)
+      return false;
+   a = op_reg(c, &o[0]);
+   b = op_reg(c, &o[1]);
+   return (neg_ok || !a.neg) && (sa_ok || a.bank != USSE_SA) && a.bank == b.bank &&
+          (a.bank == USSE_TEMP || a.bank == USSE_PA || a.bank == USSE_SA ||
+           a.bank == USSE_OUTPUT) && !(a.num & 1) && b.num == a.num + 1;
+}
+
+/* pair_ok()'s register and swizzle (a constant made in a temporary) */
+static struct usse_reg
+pair_get(struct comp *c, const struct operand *o, bool sa_ok, struct scratch *s, unsigned *sw)
+{
+   struct usse_reg r;
+
+   if (same_operand(&o[0], &o[1])) {
+      r = o[0].is_const ? (sa_ok ? constant_sa(c, s, o[0].u) : constant_bits(c, s, o[0].u)) :
+                          op_reg(c, &o[0]);
+      *sw = r.bank == USSE_INTERNAL ? r.num & 3 : r.num & 1;
+      return r;
+   }
+   *sw = 4;
+   return op_reg(c, &o[0]);
+}
+
+/* o's negation moved: the constants' signs, the values' modifiers */
+static void
+negate2(struct operand *o)
+{
+   for (unsigned l = 0; l < 2; l++) {
+      if (o[l].is_const) {
+         o[l].u ^= 0x80000000u;
+         memcpy(&o[l].c, &o[l].u, 4);
+      } else {
+         o[l].neg = !o[l].neg;
+      }
+   }
+}
+
+/* d.xy = op(x, y), two lanes: one operand through src1's swizzle (any four
+ * registers in a row, constants), the other src2 as a pair */
+static bool
+binary2(struct comp *c, enum usse_nmad_op op, struct usse_reg d, const struct operand *x,
+        const struct operand *y, struct scratch *s)
+{
+   for (int swap = 0; swap < 2; swap++) {
+      struct operand p[2] = { swap ? y[0] : x[0], swap ? y[1] : x[1] };
+      struct operand q[2] = { swap ? x[0] : y[0], swap ? x[1] : y[1] };
+      struct usse_reg r1, r2;
+      unsigned sw1, sw2;
+
+      /* (src2 takes no negation: a product's onto src1) */
+      if (!q[0].is_const && !q[1].is_const && q[0].neg && q[1].neg && op == USSE_NMAD_MUL) {
+         negate2(q);
+         negate2(p);
+      }
+      if (!src1_group(c, p, 2, &r1, &sw1) || !pair_ok(c, q, false, true))
+         continue;
+      r2 = pair_get(c, q, true, s, &sw2);
+      emit(c, usse_fop_ex(op, d, 3, r1, sw1, r2, sw2));
+      return true;
+   }
+   return false;
+}
+
+/* d.xy = a * b + x, two lanes (VMAD2): src0 a or b in a temporary or a
+ * primary attribute, without negation */
+static bool
+fma2(struct comp *c, struct usse_reg d, const struct operand *a, const struct operand *b,
+     const struct operand *x, struct scratch *s)
+{
+   for (int swap = 0; swap < 2; swap++) {
+      struct operand p[2] = { swap ? b[0] : a[0], swap ? b[1] : a[1] };
+      struct operand q[2] = { swap ? a[0] : b[0], swap ? a[1] : b[1] };
+      struct usse_reg r0, r1, r2;
+      unsigned sw0, sw1, sw2;
+      bool p_reg = !p[0].is_const && !p[1].is_const;
+
+      if (p_reg && p[0].neg && p[1].neg) {
+         negate2(p);
+         negate2(q);
+      }
+      if (!pair_ok(c, p, false, false) || !pair_ok(c, q, true, true) || !pair_ok(c, x, true, true))
+         continue;
+      if (p_reg) {
+         struct usse_reg r = op_reg(c, &p[0]);
+
+         if (r.bank != USSE_TEMP && r.bank != USSE_PA && r.bank != USSE_INTERNAL)
+            continue;
+      }
+      r0 = pair_get(c, p, false, s, &sw0);
+      r1 = pair_get(c, q, true, s, &sw1);
+      r2 = pair_get(c, x, true, s, &sw2);
+      emit(c, usse_fmad_ex(d, 3, r0, sw0, r1, sw1, r2, sw2));
+      return true;
+   }
+   return false;
+}
+
+/* d.xy = fsat(x), two lanes: max with 0 (c0) through src1's swizzle (any
+ * modifiers), then min with 1 (src1's constant) of that pair */
+static bool
+sat2(struct comp *c, struct usse_reg d, const struct operand *x, struct scratch *s)
+{
+   struct usse_reg r1, t;
+   unsigned sw1, code1;
+   bool n1;
+   int b;
+
+   if (!src1_group(c, x, 2, &r1, &sw1) || !k_code(f32_bits(1.0f), &code1, &n1) ||
+       (b = block_try(c, 2, 2)) < 0)
+      return false;
+   assert(s->n + 2 <= ARRAY_SIZE(s->reg));
+   s->reg[s->n++] = b;
+   s->reg[s->n++] = b + 1;
+   t = treg(c, b);
+   emit(c, usse_fop_ex(USSE_NMAD_MAX, t, 3, r1, sw1, USSE_ZERO, USSE_SW2_X));
+   emit(c, usse_fop_ex(USSE_NMAD_MIN, d, 3, t, USSE_SW_CONST(code1), t, USSE_SW2_XYZW));
+   return true;
+}
+
+/* the registers a vector's components are made in: the output registers
+ * the ones bound for one are (plan_vs_outputs()), the rest temporaries in a
+ * row from an even one; *base that block's first */
+static void
+vec_dest(struct comp *c, nir_def *def, unsigned n, struct usse_reg *d, int *base)
+{
+   unsigned id = def->index * 4;
+
+   /* (no room for them in a row: one each, as the scalar code's) */
+   *base = block_try(c, n, 2);
+   for (unsigned l = 0; l < n; l++) {
+      if (c->vs_out && c->vs_out[id + l]) {
+         d[l] = usse_reg(USSE_OUTPUT, c->vs_out[id + l] - 1);
+         c->owned[id + l] = false;
+      } else {
+         d[l] = treg(c, *base >= 0 ? *base + l : take(c));
+         c->owned[id + l] = true;
+      }
+      c->loc[id + l] = d[l];
+   }
+}
+
+static void
+vector_alu(struct comp *c, nir_alu_instr *alu, struct scratch *s)
+{
+   static int off = -1;
+   unsigned n = alu->def.num_components, id = alu->def.index * 4;
+   unsigned nin = nir_op_infos[alu->op].num_inputs;
+   int base;
+   enum usse_nmad_op op = alu->op == nir_op_fadd ? USSE_NMAD_ADD :
+                          alu->op == nir_op_fmul ? USSE_NMAD_MUL :
+                          alu->op == nir_op_fmin ? USSE_NMAD_MIN : USSE_NMAD_MAX;
+   struct operand o[3][4];
+   struct usse_reg d[4];
+
+   if (off < 0)
+      off = getenv("SGX_NO_VS_VEC2") != NULL;
+   for (unsigned i = 0; i < nin; i++)
+      for (unsigned l = 0; l < n; l++)
+         o[i][l] = resolve(nir_get_scalar(alu->src[i].src.ssa, alu->src[i].swizzle[l]));
+   vec_dest(c, &alu->def, n, d, &base);
+   for (unsigned l = 0; l < n; l += 2) {
+      bool done = false;
+
+      if (!off && l + 1 < n && d[l].bank == d[l + 1].bank && !(d[l].num & 1) &&
+          d[l + 1].num == d[l].num + 1) {
+         if (alu->op == nir_op_ffma)
+            done = fma2(c, d[l], &o[0][l], &o[1][l], &o[2][l], s);
+         else if (alu->op == nir_op_fsat)
+            done = sat2(c, d[l], &o[0][l], s);
+         else
+            done = binary2(c, op, d[l], &o[0][l], &o[1][l], s);
+      }
+      for (unsigned j = l; !done && j < MIN2(l + 2, n); j++) {
+         if (alu->op == nir_op_ffma)
+            fma_ops(c, o[0][j], o[1][j], o[2][j], NULL, d[j], s);
+         else if (alu->op == nir_op_fsat)
+            fsat_ops(c, o[0][j], NULL, d[j], s);
+         else
+            binary_ops(c, op, o[0][j], o[1][j], NULL, d[j], s);
+      }
+      scratch_give_back(c, s);
+   }
+   /* (the components nothing reads: their registers back; the block's
+    * for the ones bound for outputs too) */
+   for (unsigned l = 0; l < n; l++)
+      if (c->owned[id + l] && c->last_use[id + l] < 0) {
+         give_back(c, d[l].num - (c->vs ? c->pa_base : 0));
+         c->owned[id + l] = false;
+      } else if (!c->owned[id + l] && d[l].bank == USSE_OUTPUT && base >= 0) {
+         give_back(c, base + l);
+      }
+}
+
+/* nosched over each span an internal register held something alive
+ * (struct comp's ispans) */
+static void
+ireg_nosched(struct comp *c)
+{
+   static int tight = -1;
+   unsigned *span;
+
+   if (tight < 0)
+      tight = getenv("SGX_IREG_TIGHT") != NULL;
+   ireg_barrier(c);
+   /* SGX_VS_NOSCHED_ALL=1 (a test): every instruction's */
+   if (getenv("SGX_VS_NOSCHED_ALL")) {
+      for (unsigned i = 1; i < here(c); i++)
+         usse_nosched(util_dynarray_element(&c->code, uint64_t, i));
+      return;
+   }
+   /* the instruction before the write and the last reader too: with the
+    * flag from the write to the one before the last read, a vertex
+    * program's dot products still read another task's vector now and then
+    * (glvsmath's ppsspp: 8 runs of 12 wrong, PPSSPP's three lights each
+    * reading the normal) -- 0 of 12 with either (M47).  SGX_IREG_TIGHT=1:
+    * from the write to the one before the last read */
+   for (span = util_dynarray_begin(&c->ispans); span < (unsigned *)util_dynarray_end(&c->ispans);
+        span += 2)
+      for (unsigned i = span[0] - (!tight && span[0] > 1); i < span[1] + !tight; i++)
+         if (!usse_nosched(util_dynarray_element(&c->code, uint64_t, i)) &&
+             i >= span[0] && i < span[1])
+            fail(c, "an instruction with no nosched flag known among the internal "
+                    "registers' (%016llx)",
+                 (unsigned long long)*util_dynarray_element(&c->code, uint64_t, i));
+}
+
+/* fsat: max with 0, min with 1 -- into def's register, or (def NULL) dest */
+static void
+fsat_ops(struct comp *c, struct operand o, nir_def *def, struct usse_reg dest, struct scratch *s)
+{
+   unsigned code0, code1;
+   struct usse_reg a, t, d;
+   bool n0, n1;
+
+   if (k_code(f32_bits(0.0f), &code0, &n0) && k_code(f32_bits(1.0f), &code1, &n1)) {
+      /* (M46) the bounds from src1's swizzle, the value in src2 */
+      struct usse_reg k;
+
+      a = get(c, o, TAKES_ALL & ~TAKES_NEG, s);
+      t = treg(c, scratch_take(c, s));
+      k = a;
+      k.neg = k.abs = false;
+      emit(c, usse_fop_sw(USSE_NMAD_MAX, t, k, USSE_SW_CONST(code0), a));
+      d = def ? define(c, def) : dest;
+      k = t;
+      emit(c, usse_fop_sw(USSE_NMAD_MIN, d, k, USSE_SW_CONST(code1), t));
+      return;
+   }
+   a = get(c, o, TAKES_ALL, s);
+   t = treg(c, scratch_take(c, s));
+   emit(c, usse_fop(USSE_NMAD_MAX, t, a, constant_sa(c, s, f32_bits(0.0f))));
+   d = def ? define(c, def) : dest;
+   emit(c, usse_fop(USSE_NMAD_MIN, d, t, constant_sa(c, s, f32_bits(1.0f))));
 }
 
 static void
@@ -669,6 +1356,23 @@ word64(struct comp *c, struct operand o, bool test, struct scratch *s)
    r = word(c, o, s);
    if (r.num < 64 && !(test && r.bank == USSE_SA))
       return r;
+   /* (M47) a value read where it is (a uniform past sa63, PPSSPP's
+    * u_cullRangeMax.w in four selects): moved into a temporary of its own
+    * once, which the reads after read, in a program's straight line */
+   if (!o.is_const && !o.neg && !o.abs && c->depth == 0 && r.bank == c->loc[o.id].bank &&
+       r.num == c->loc[o.id].num && !c->owned[o.id] && c->last_use[o.id] >= 0) {
+      int k = block_try(c, 1, 1);
+
+      if (k >= 0 && k + (c->vs ? c->pa_base : 0) < 64) {
+         t = treg(c, k);
+         emit(c, usse_vbw_or(t, r, 0));
+         c->loc[o.id] = t;
+         c->owned[o.id] = true;
+         return t;
+      }
+      if (k >= 0)
+         give_back(c, k);
+   }
    t = treg(c, scratch_take(c, s));
    emit(c, usse_vbw_or(t, r, 0));
    return t;
@@ -844,12 +1548,160 @@ test_p0(struct comp *c, nir_alu_instr *alu, bool fl, bool is_signed, bool eq, st
    emit(c, w);
 }
 
+static enum usse_cmp
+float_cmp(nir_op op, bool *ok)
+{
+   *ok = true;
+   switch (op) {
+   case nir_op_flt32: return USSE_CMP_LT;
+   case nir_op_fge32: return USSE_CMP_GE;
+   case nir_op_feq32: return USSE_CMP_EQ;
+   case nir_op_fneu32: return USSE_CMP_NE;
+   default: *ok = false; return USSE_CMP_LT;
+   }
+}
+
+/* whether operand o is now in register r's other lane (r's pair, the
+ * other half, the same bank and modifiers) -- or, r c0, the constant 0 */
+static bool
+other_lane(struct comp *c, const struct operand *o, struct operand ref, struct usse_reg r,
+           int at)
+{
+   struct usse_reg q;
+
+   if (r.bank == USSE_SPECIAL)
+      return o->is_const && !(o->u & 0x7fffffffu);
+   if (o->is_const || o->neg != ref.neg || o->abs != ref.abs || r.bank == USSE_INTERNAL ||
+       c->def_at[o->id / 4] >= at)
+      return false;
+   q = c->loc[o->id];
+   return q.bank == r.bank && q.num == (r.num ^ 1u);
+}
+
+/* (M47) a float comparison soon after alu's (32 instructions on, in its
+ * block) of the same kind whose operands are the other lanes of ra's and
+ * rb's pairs, operands made already: VTSTMSK compares both lanes at once
+ * (PPSSPP's projPos.x < min.x, projPos.y < min.y) -- its def, or NULL */
+static nir_def *
+pair_compare(struct comp *c, nir_alu_instr *alu, struct operand a, struct operand b,
+             struct usse_reg ra, struct usse_reg rb, enum usse_cmp cmp)
+{
+   static const enum usse_cmp swapped[] = { USSE_CMP_GT, USSE_CMP_GE, USSE_CMP_EQ, USSE_CMP_NE,
+                                            USSE_CMP_LE, USSE_CMP_LT };
+   int at = c->def_at[alu->def.index];
+   nir_instr *i = &alu->instr;
+
+   if (!c->premade || ra.bank == USSE_SPECIAL || ra.num != c->loc[a.id].num ||
+       ra.bank != c->loc[a.id].bank ||
+       (rb.bank != USSE_SPECIAL && (b.is_const || rb.num != c->loc[b.id].num ||
+                                    rb.bank != c->loc[b.id].bank)))
+      return NULL;
+   for (unsigned n = 0; n < 32 && (i = nir_instr_next(i)); n++) {
+      nir_alu_instr *x;
+      struct operand a2, b2, t;
+      enum usse_cmp k;
+      bool ok;
+
+      if (i->type != nir_instr_type_alu)
+         continue;
+      x = nir_instr_as_alu(i);
+      k = float_cmp(x->op, &ok);
+      if (!ok || c->premade[x->def.index] || x->def.num_components != 1)
+         continue;
+      a2 = alu_operand(x, 0);
+      b2 = alu_operand(x, 1);
+      if (a2.is_const && !(a2.u & 0x7fffffffu) && !(b2.is_const && !(b2.u & 0x7fffffffu))) {
+         t = a2;
+         a2 = b2;
+         b2 = t;
+         k = swapped[k];
+      }
+      if (k == cmp && other_lane(c, &a2, a, ra, at) && other_lane(c, &b2, b, rb, at))
+         return &x->def;
+   }
+   return NULL;
+}
+
+/* (M47) a float comparison as a boolean in one instruction: VTSTMSK's mask
+ * (~0 or 0) for each lane of a pair -- both written, so the result's
+ * register a pair of its own, the other half given back; 0 the hardware's
+ * c0 (either lane).  SGX_NO_TSTMSK=1: VTST and two LIMMs as before */
+static bool
+compare_mask(struct comp *c, nir_alu_instr *alu, struct scratch *s)
+{
+   static int off = -1;
+   static const enum usse_cmp swapped[] = { USSE_CMP_GT, USSE_CMP_GE, USSE_CMP_EQ, USSE_CMP_NE,
+                                            USSE_CMP_LE, USSE_CMP_LT };
+   struct operand a = alu_operand(alu, 0), b = alu_operand(alu, 1), t;
+   enum usse_cmp cmp;
+   struct usse_reg ra, rb;
+   unsigned id = alu->def.index * 4, l;
+   int base;
+
+   if (off < 0)
+      off = getenv("SGX_NO_TSTMSK") != NULL;
+   switch (alu->op) {
+   case nir_op_flt32: cmp = USSE_CMP_LT; break;
+   case nir_op_fge32: cmp = USSE_CMP_GE; break;
+   case nir_op_feq32: cmp = USSE_CMP_EQ; break;
+   case nir_op_fneu32: cmp = USSE_CMP_NE; break;
+   default: return false;
+   }
+   if (off)
+      return false;
+   /* (0 as src2, the constant's register c0; src1 negated, src2 not) */
+   if (a.is_const && !(a.u & 0x7fffffffu) && !(b.is_const && !(b.u & 0x7fffffffu))) {
+      t = a;
+      a = b;
+      b = t;
+      cmp = swapped[cmp];
+   }
+   if (b.neg || b.abs || a.abs)
+      return false;
+   ra = get(c, a, TAKES_SA | TAKES_LANE_Y | TAKES_NEG, s);
+   if (b.is_const && !(b.u & 0x7fffffffu)) {
+      rb = USSE_ZERO;
+   } else {
+      rb = get(c, b, TAKES_SA | TAKES_LANE_Y, s);
+      same_lane(c, &ra, &rb, s);
+   }
+   l = ra.bank == USSE_SPECIAL ? 0 : ra.num & 1;
+   if ((base = block_try(c, 2, 2)) < 0)
+      return false;
+   emit(c, usse_vtstmsk_f32(treg(c, base), ra, rb, cmp));
+   c->loc[id] = treg(c, base + l);
+   c->owned[id] = c->last_use[id] >= 0;
+   if (!c->owned[id])
+      give_back(c, base + l);
+   /* the other lane: a comparison after this one, the same, of the other
+    * lanes of these registers -- made here, skipped there */
+   {
+      nir_def *other = pair_compare(c, alu, a, b, ra, rb, cmp);
+      unsigned oid;
+
+      if (!other) {
+         give_back(c, base + 1 - l);
+         return true;
+      }
+      oid = other->index * 4;
+      c->loc[oid] = treg(c, base + 1 - l);
+      c->owned[oid] = c->last_use[oid] >= 0;
+      if (!c->owned[oid])
+         give_back(c, base + 1 - l);
+      c->premade[other->index] = true;
+   }
+   return true;
+}
+
 /* a comparison as a boolean: p0, then 0 or ~0 under it */
 static void
 compare32(struct comp *c, nir_alu_instr *alu, struct scratch *s)
 {
    bool fl = false, is_signed = true, eq = false, inv = false;
    struct usse_reg d;
+
+   if (compare_mask(c, alu, s))
+      return;
 
    switch (alu->op) {
    case nir_op_ilt32: break;
@@ -1078,11 +1930,21 @@ int_alu(struct comp *c, nir_alu_instr *alu, struct scratch *s)
 static void
 alu(struct comp *c, nir_alu_instr *alu, struct scratch *s)
 {
-   struct usse_reg d, a, t;
+   struct usse_reg a, t;
 
    if (alu->op == nir_op_mov || alu->op == nir_op_fneg || alu->op == nir_op_fabs ||
        nir_op_is_vec(alu->op))
       return;           /* read through by resolve() */
+   if (c->premade && c->premade[alu->def.index])
+      return;           /* (made with another comparison) */
+   if (is_dot(alu->op)) {
+      dot_product(c, alu, s);
+      return;
+   }
+   if (alu->def.num_components > 1 && is_vec_op(alu->op) && alu->def.bit_size == 32) {
+      vector_alu(c, alu, s);
+      return;
+   }
    if (alu->def.bit_size != 32 || alu->def.num_components != 1) {
       fail(c, "%s: %u x %u bits", nir_op_infos[alu->op].name, alu->def.num_components,
            alu->def.bit_size);
@@ -1116,31 +1978,9 @@ alu(struct comp *c, nir_alu_instr *alu, struct scratch *s)
       a = get(c, alu_operand(alu, 0), TAKES_LANE_Y | TAKES_SA, s);
       emit(c, usse_fop(USSE_NMAD_FRC, define(c, &alu->def), a, a));
       return;
-   case nir_op_fsat: {
-      unsigned code0, code1;
-      bool n0, n1;
-
-      if (k_code(f32_bits(0.0f), &code0, &n0) && k_code(f32_bits(1.0f), &code1, &n1)) {
-         /* (M46) the bounds from src1's swizzle, the value in src2 */
-         struct usse_reg k;
-
-         a = get(c, alu_operand(alu, 0), TAKES_ALL & ~TAKES_NEG, s);
-         t = treg(c, scratch_take(c, s));
-         k = a;
-         k.neg = k.abs = false;
-         emit(c, usse_fop_sw(USSE_NMAD_MAX, t, k, USSE_SW_CONST(code0), a));
-         d = define(c, &alu->def);
-         k = t;
-         emit(c, usse_fop_sw(USSE_NMAD_MIN, d, k, USSE_SW_CONST(code1), t));
-         return;
-      }
-      a = get(c, alu_operand(alu, 0), TAKES_ALL, s);
-      t = treg(c, scratch_take(c, s));
-      emit(c, usse_fop(USSE_NMAD_MAX, t, a, constant_sa(c, s, f32_bits(0.0f))));
-      d = define(c, &alu->def);
-      emit(c, usse_fop(USSE_NMAD_MIN, d, t, constant_sa(c, s, f32_bits(1.0f))));
+   case nir_op_fsat:
+      fsat_ops(c, alu_operand(alu, 0), &alu->def, usse_reg(USSE_TEMP, 0), s);
       return;
-   }
    case nir_op_slt:
    case nir_op_sge:
    case nir_op_seq:
@@ -1940,6 +2780,8 @@ memory_uniform(struct comp *c, nir_intrinsic_instr *in, unsigned at, bool indexe
    unsigned id = in->def.index * 4, n = in->def.num_components, r = block(c, n, 1);
    struct scratch s = { 0 };
 
+   ireg_barrier(c);
+
    if (indexed) {
       struct operand off = resolve(nir_get_scalar(in->src[0].ssa, 0));
       struct usse_reg t = treg(c, scratch_take(c, &s)), ro = word(c, off, &s);
@@ -1974,6 +2816,8 @@ ubo_load(struct comp *c, nir_intrinsic_instr *in, unsigned k)
    unsigned id = in->def.index * 4, n = in->def.num_components, r = block(c, n, 1);
    unsigned sa = c->ubo_sa[k];
    struct scratch s = { 0 };
+
+   ireg_barrier(c);
 
    if (nir_src_is_const(in->src[1])) {
       unsigned at = nir_src_as_uint(in->src[1]) / 4;
@@ -2373,8 +3217,10 @@ for_each_read(struct comp *c, nir_instr *instr, void (*f)(struct comp *, struct 
       if (alu->op == nir_op_mov || alu->op == nir_op_fneg || alu->op == nir_op_fabs ||
           nir_op_is_vec(alu->op))
          return;
+      /* (M47: a vector instruction's every component) */
       for (unsigned i = 0; i < nir_op_infos[alu->op].num_inputs; i++)
-         f(c, alu_operand(alu, i), index);
+         for (unsigned k = 0; k < nir_ssa_alu_instr_src_components(alu, i); k++)
+            f(c, resolve(nir_get_scalar(alu->src[i].src.ssa, alu->src[i].swizzle[k])), index);
    } else if (instr->type == nir_instr_type_intrinsic) {
       nir_intrinsic_instr *in = nir_instr_as_intrinsic(instr);
 
@@ -2922,6 +3768,31 @@ emit_sop2(struct comp *c, struct usse_reg packed, struct usse_reg t1, struct uss
    }
 }
 
+/* (M47) the scalar lowering's filter for a vertex shader: its dot products
+ * left whole (VDP), SGX_NO_VS_VEC=1 not */
+static bool is_vec_op(nir_op op);
+
+static bool
+vec_filter(const nir_instr *instr, const void *data)
+{
+   const nir_alu_instr *alu;
+
+   if (instr->type != nir_instr_type_alu)
+      return true;
+   alu = nir_instr_as_alu(instr);
+   return !is_dot(alu->op) && !(is_vec_op(alu->op) && alu->def.bit_size == 32);
+}
+
+static nir_instr_filter_cb
+scalar_filter(const nir_shader *s)
+{
+   static int off = -1;
+
+   if (off < 0)
+      off = getenv("SGX_NO_VS_VEC") != NULL;
+   return s->info.stage == MESA_SHADER_VERTEX && !off ? vec_filter : NULL;
+}
+
 static void
 optimize(nir_shader *s)
 {
@@ -2938,7 +3809,7 @@ optimize(nir_shader *s)
    do {
       progress = false;
       NIR_PASS(progress, s, nir_lower_vars_to_ssa);
-      NIR_PASS(progress, s, nir_lower_alu_to_scalar, NULL, NULL);
+      NIR_PASS(progress, s, nir_lower_alu_to_scalar, scalar_filter(s), NULL);
       NIR_PASS(progress, s, nir_lower_phis_to_scalar, NULL, NULL);
       NIR_PASS(progress, s, nir_opt_copy_prop);
       NIR_PASS(progress, s, nir_opt_remove_phis);
@@ -3488,12 +4359,14 @@ plan_vs_outputs(struct comp *c, nir_function_impl *impl)
                      k = k < 0 ? (int)(1 + j) : -2;
                if (k <= 0 || o.neg || o.abs ||
                    stores[o.id] != 1 || !nir_scalar_is_alu(sc) ||
-                   sc.def->num_components != 1 || o.id != sc.def->index * 4 + sc.comp ||
-                   !list_is_singular(&sc.def->uses))
+                   o.id != sc.def->index * 4 + sc.comp || !list_is_singular(&sc.def->uses))
                   continue;
                op = nir_scalar_alu_op(sc);
+               /* (M47: a vector instruction's components, each its own) */
+               if (sc.def->num_components != 1 && !is_vec_op(op))
+                  continue;
                if (op != nir_op_fadd && op != nir_op_fmul && op != nir_op_fmin &&
-                   op != nir_op_fmax && op != nir_op_ffma && op != nir_op_fsat)
+                   op != nir_op_fmax && op != nir_op_ffma && op != nir_op_fsat && !is_dot(op))
                   continue;
                /* (its one use the store's, or a vec only the store reads) */
                {
@@ -3515,12 +4388,141 @@ plan_vs_outputs(struct comp *c, nir_function_impl *impl)
    free(stores);
 }
 
+/* (M47) the vectors a vertex program's dot products read that are values
+ * made one by one -- a vector times a matrix's results times the next
+ * matrix, a normal made unit length -- made in registers in a row
+ * (struct vgroup): a dot product of them loads them into an internal
+ * register with one instruction, not one a component.  Only values made by
+ * instructions that write any register (V32NMAD, FMAD, VDP; INT32 VMOV's
+ * selects), each in one group, none bound for an output */
+static bool
+groupable(nir_scalar sc)
+{
+   if (!nir_scalar_is_alu(sc) || sc.def->num_components != 1 || sc.def->bit_size != 32)
+      return false;
+   switch (nir_scalar_alu_op(sc)) {
+   case nir_op_fadd: case nir_op_fmul: case nir_op_ffma: case nir_op_fmin: case nir_op_fmax:
+   case nir_op_fsat: case nir_op_fdot2: case nir_op_fdot3: case nir_op_fdot4: case nir_op_fdph:
+   case nir_op_b32csel:
+      return true;
+   default:
+      return false;
+   }
+}
+
+static void
+plan_groups(struct comp *c, nir_function_impl *impl)
+{
+   if (!c->vec || getenv("SGX_NO_VGROUPS") ||
+       !(c->group_of = malloc(c->nvalues * sizeof(*c->group_of))))
+      return;
+   for (unsigned i = 0; i < c->nvalues; i++)
+      c->group_of[i] = -1;
+   nir_foreach_block(block, impl) {
+      nir_foreach_instr(instr, block) {
+         nir_alu_instr *alu;
+
+         if (instr->type != nir_instr_type_alu || !is_dot(nir_instr_as_alu(instr)->op))
+            continue;
+         alu = nir_instr_as_alu(instr);
+         for (unsigned i = 0; i < 2; i++) {
+            unsigned n = nir_ssa_alu_instr_src_components(alu, i), ids[4], mask = 0, nm = 0;
+            bool ok = true;
+
+            for (unsigned k = 0; k < n && ok; k++) {
+               nir_scalar sc = nir_scalar_chase_movs(nir_get_scalar(alu->src[i].src.ssa,
+                                                                   alu->src[i].swizzle[k]));
+               struct operand o = resolve(nir_get_scalar(alu->src[i].src.ssa,
+                                                         alu->src[i].swizzle[k]));
+
+               if (o.is_const)
+                  continue;
+               ok = groupable(sc) && !o.neg && !o.abs && o.id == sc.def->index * 4 + sc.comp &&
+                    c->group_of[o.id] < 0 && !(c->vs_out && c->vs_out[o.id]);
+               for (unsigned j = 0; j < k && ok; j++)
+                  ok = !(mask & 1u << j) || ids[j] != o.id;
+               ids[k] = o.id;
+               mask |= 1u << k;
+               nm++;
+            }
+            if (!ok || nm < 2 || !(c->vgroups = realloc(c->vgroups, (c->nvgroups + 1) *
+                                                                   sizeof(*c->vgroups))))
+               continue;
+            c->vgroups[c->nvgroups] = (struct vgroup){ .base = -1, .n = n, .mask = mask };
+            u_foreach_bit(k, mask)
+               c->group_of[ids[k]] = c->nvgroups * 4 + k;
+            c->nvgroups++;
+         }
+      }
+   }
+}
+
 /* A vertex's outputs into o0.. -- the position, then the varyings, four
  * words each, as the TA state's vertex size says -- and out to the tiler.
  * What the shader does not write is 0, w 1; the varyings it does are there
  * already. */
 #define USSE_EMIT_VERTEX_END 0xfb275000a0200000ull
 #define USSE_PHAS_BRANCHES   0xfa44270000000000ull
+
+/* the position's x and y as a x + b w, a and b the draw's (the TA's clip
+ * rectangle, sgx_draw.c: a_x, a_y, b_x, b_y from an even sa word) -- (M47)
+ * both at once: t = w (b_x, b_y), then (x, y) (a_x, a_y) + t (VMAD2) where x
+ * and y are a register pair; else a lane at a time (M46: x a + t, an FMAD;
+ * SGX_VS_OUT_MOVES=1 a product and a sum) */
+static void
+position_xy(struct comp *c, const struct operand *ov, struct scratch *s)
+{
+   static int moves = -1;
+   struct usse_reg t, w, a = usse_reg(USSE_SA, c->vs->clip_sa);
+   unsigned l;
+   int b;
+
+   if (moves < 0)
+      moves = getenv("SGX_VS_OUT_MOVES") != NULL;
+   w = get(c, ov[3], TAKES_ALL, s);
+   l = w.bank == USSE_INTERNAL ? w.num & 3 : w.bank == USSE_SPECIAL ? 0 : w.num & 1;
+   if ((b = block_try(c, 2, 2)) < 0) {
+      /* (no pair free: w b a lane at a time) */
+      unsigned t0 = scratch_take(c, s), t1 = scratch_take(c, s);
+
+      emit(c, usse_fop(USSE_NMAD_MUL, treg(c, t0), w, usse_reg(USSE_SA, c->vs->clip_sa + 2)));
+      emit(c, usse_fop(USSE_NMAD_MUL, treg(c, t1), w, usse_reg(USSE_SA, c->vs->clip_sa + 3)));
+      for (unsigned i = 0; i < 2; i++) {
+         struct usse_reg u = treg(c, scratch_take(c, s));
+
+         emit(c, usse_fop(USSE_NMAD_MUL, u, get(c, ov[i], TAKES_ALL, s),
+                          usse_reg(USSE_SA, c->vs->clip_sa + i)));
+         emit(c, usse_fop(USSE_NMAD_ADD, usse_reg(USSE_OUTPUT, i), u, treg(c, i ? t1 : t0)));
+      }
+      scratch_give_back(c, s);
+      return;
+   }
+   assert(s->n + 2 <= ARRAY_SIZE(s->reg));
+   s->reg[s->n++] = b;
+   s->reg[s->n++] = b + 1;
+   t = treg(c, b);
+   emit(c, usse_fop_ex(USSE_NMAD_MUL, t, 3, w, USSE_SW(l, l, l, l),
+                       usse_reg(USSE_SA, c->vs->clip_sa + 2), USSE_SW2_XYZW));
+   if (!moves && pair_ok(c, ov, false, false) && !ov[0].is_const && !same_operand(&ov[0], &ov[1]) &&
+       (op_reg(c, &ov[0]).bank == USSE_TEMP || op_reg(c, &ov[0]).bank == USSE_PA)) {
+      emit(c, usse_fmad_ex(usse_reg(USSE_OUTPUT, 0), 3, op_reg(c, &ov[0]), 4, a, 4, t, 4));
+      scratch_give_back(c, s);
+      return;
+   }
+   for (unsigned i = 0; i < 2; i++) {
+      struct usse_reg ai = usse_reg(USSE_SA, c->vs->clip_sa + i), ti = treg(c, b + i), u;
+
+      if (!moves && !ov[i].neg) {
+         emit(c, usse_fmad(usse_reg(USSE_OUTPUT, i), get(c, ov[i], TAKES_ABS | TAKES_LANE_Y, s),
+                           ai, ti));
+         continue;
+      }
+      u = treg(c, scratch_take(c, s));
+      emit(c, usse_fop(USSE_NMAD_MUL, u, get(c, ov[i], TAKES_ALL, s), ai));
+      emit(c, usse_fop(USSE_NMAD_ADD, usse_reg(USSE_OUTPUT, i), u, ti));
+   }
+   scratch_give_back(c, s);
+}
 
 static void
 vertex_output(struct comp *c)
@@ -3533,6 +4535,8 @@ vertex_output(struct comp *c)
    }
    for (unsigned k = 0, nscaled = 0; k <= c->nvaryings; k++) {
       unsigned fix = k && c->vary_fix ? c->vary_fix[k - 1] : 0;
+      struct operand ov[4];
+      bool skip[4];
 
       for (unsigned i = 0; i < 4; i++) {
          /* (M39) a lookup's varying: the divisor where the PDS divides */
@@ -3540,45 +4544,78 @@ vertex_output(struct comp *c)
          /* (M46) a lookup's coordinates moved into x and y */
          if (i < 2 && SGX_FIX_SHIFT_OF(fix))
             from = SGX_FIX_SHIFT_OF(fix) + i;
-         struct operand o = c->vout[k][from];
-
-         if (k && c->have_vout[k][i] && !fix)
-            continue;
+         ov[i] = c->vout[k][from];
+         skip[i] = k && c->have_vout[k][i] && !fix;
          if (!c->have_vout[k][from]) {
-            o.is_const = true;
-            o.c = from == 3 ? 1.0f : 0.0f;
-            o.u = f32_bits(o.c);
+            ov[i].is_const = true;
+            ov[i].c = from == 3 ? 1.0f : 0.0f;
+            ov[i].u = f32_bits(ov[i].c);
          }
+      }
+      if (k == 0)
+         position_xy(c, ov, &s);
+      for (unsigned i = k ? 0 : 2; i < 4; i++) {
+         struct operand *o = &ov[i];
+
+         if (skip[i])
+            continue;
          if (i < 2 && (fix & SGX_FIX_SCALE)) {
             /* x and y times a rectangle texture's 1 / width, 1 / height */
             emit(c, usse_fop(USSE_NMAD_MUL, usse_reg(USSE_OUTPUT, 4 * k + i),
-                             get(c, o, TAKES_ALL, &s),
+                             get(c, *o, TAKES_ALL, &s),
                              usse_reg(USSE_SA, c->vs->fix_sa + 2 * nscaled + i)));
-         } else if (k == 0 && i < 2) {
-            /* x and y as a x + b w, a and b the draw's (the TA's clip
-             * rectangle, sgx_draw.c) */
-            struct usse_reg t = treg(c, scratch_take(c, &s)), u = treg(c, scratch_take(c, &s));
-
-            emit(c, usse_fop(USSE_NMAD_MUL, t, get(c, c->vout[0][3], TAKES_ALL, &s),
-                             usse_reg(USSE_SA, c->vs->clip_sa + 2 * i + 1)));
-            /* (M46: x a + that, an FMAD) */
-            if (!getenv("SGX_VS_OUT_MOVES") && !o.neg) {
-               emit(c, usse_fmad(usse_reg(USSE_OUTPUT, i), get(c, o, TAKES_ABS | TAKES_LANE_Y, &s),
-                                 usse_reg(USSE_SA, c->vs->clip_sa + 2 * i), t));
-               scratch_give_back(c, &s);
-               continue;
-            }
-            emit(c, usse_fop(USSE_NMAD_MUL, u, get(c, o, TAKES_ALL, &s),
-                             usse_reg(USSE_SA, c->vs->clip_sa + 2 * i)));
-            emit(c, usse_fop(USSE_NMAD_ADD, usse_reg(USSE_OUTPUT, i), u, t));
+         } else if (!(i & 1) && i + 1 < 4 && !skip[i + 1] &&
+                    !(i + 1 < 2 && (fix & SGX_FIX_SCALE)) && pair_ok(c, o, false, true) &&
+                    !o[0].is_const && !o[0].abs && !same_operand(&o[0], &o[1])) {
+            /* (M47) two in a register pair: one move */
+            emit(c, usse_fmov2(usse_reg(USSE_OUTPUT, 4 * k + i), op_reg(c, o)));
+            i++;
          } else {
-            move_into(c, usse_reg(USSE_OUTPUT, 4 * k + i), o, &s);
+            move_into(c, usse_reg(USSE_OUTPUT, 4 * k + i), *o, &s);
          }
          scratch_give_back(c, &s);
       }
       nscaled += !!(fix & SGX_FIX_SCALE);
    }
    emit(c, USSE_EMIT_VERTEX_END);
+}
+
+/* (M47) sqrt(a) == 0 as a == 0 (the same for every a, NaN and -0 too):
+ * GLSL's length(v) == 0.0, PPSSPP's normalizeOr001 */
+static bool
+lower_sqrt_tests(nir_builder *b, nir_alu_instr *alu, void *data)
+{
+   if ((alu->op == nir_op_feq || alu->op == nir_op_fneu) && alu->def.num_components == 1) {
+      for (unsigned i = 0; i < 2; i++) {
+         nir_scalar z = nir_get_scalar(alu->src[1 - i].src.ssa, alu->src[1 - i].swizzle[0]);
+         nir_scalar q = nir_scalar_chase_movs(nir_get_scalar(alu->src[i].src.ssa,
+                                                             alu->src[i].swizzle[0]));
+
+         if (nir_scalar_is_const(z) && nir_scalar_as_float(z) == 0.0 && nir_scalar_is_alu(q) &&
+             nir_scalar_alu_op(q) == nir_op_fsqrt && q.def->num_components == 1) {
+            nir_scalar a = nir_scalar_chase_alu_src(q, 0);
+
+            b->cursor = nir_before_instr(&alu->instr);
+            nir_src_rewrite(&alu->src[i].src, nir_mov_scalar(b, a));
+            alu->src[i].swizzle[0] = 0;
+            return true;
+         }
+      }
+   }
+   return false;
+}
+
+/* (M47) the square roots left as 1 / rsq(a), the code alu() makes of them,
+ * where the rsq of a normalize() of the same vector is the one CSE keeps
+ * -- after the last algebraic pass (which makes rcp(rsq(a)) sqrt(a) again) */
+static bool
+lower_fsqrt(nir_builder *b, nir_alu_instr *alu, void *data)
+{
+   if (alu->op != nir_op_fsqrt || alu->def.bit_size != 32)
+      return false;
+   b->cursor = nir_before_instr(&alu->instr);
+   nir_def_replace(&alu->def, nir_frcp(b, nir_frsq(b, nir_ssa_for_alu_src(b, alu, 0))));
+   return true;
 }
 
 /* A uniform's constant offset into its base (until M44 nir_lower_int_to_float
@@ -5170,6 +6207,8 @@ translate(struct comp *c, nir_shader *s)
    }
    NIR_PASS(_, s, nir_shader_intrinsics_pass, fold_uniform_offset, nir_metadata_control_flow,
             NULL);
+   if (!getenv("SGX_KEEP_SQRT"))
+      NIR_PASS(_, s, nir_shader_alu_pass, lower_sqrt_tests, nir_metadata_control_flow, NULL);
    /* (M44) the integers the hardware's: divisions exact (nir_lower_idiv,
     * the high halves of its products from 16-bit ones: nir_lower_alu),
     * booleans 0 and ~0 */
@@ -5187,7 +6226,7 @@ translate(struct comp *c, nir_shader *s)
    NIR_PASS(_, s, nir_opt_constant_folding);
    NIR_PASS(_, s, nir_lower_bool_to_int32);
    NIR_PASS(_, s, nir_opt_algebraic_late);
-   NIR_PASS(_, s, nir_lower_alu_to_scalar, NULL, NULL);
+   NIR_PASS(_, s, nir_lower_alu_to_scalar, scalar_filter(s), NULL);
    NIR_PASS(_, s, nir_opt_copy_prop);
    /* (M46) a vertex shader's products and sums fused (the dot products'
     * too, which the scalar lowering just made): FMAD (fma_), its options'
@@ -5201,6 +6240,8 @@ translate(struct comp *c, nir_shader *s)
    if (c->fs && c->fs->blend.rt_kind == SGX_RT_UNORM8 && !c->fs->blend.rt_srgb &&
        !c->fs->blend.rt_intensity && !getenv("SGX_KEEP_SAT"))
       drop_output_sat(nir_shader_get_entrypoint(s));
+   if (!getenv("SGX_KEEP_SQRT"))
+      NIR_PASS(_, s, nir_shader_alu_pass, lower_fsqrt, nir_metadata_control_flow, NULL);
    NIR_PASS(_, s, nir_opt_cse);
    NIR_PASS(_, s, nir_opt_dce);
    if (c->vs)
@@ -5234,7 +6275,9 @@ translate(struct comp *c, nir_shader *s)
    if (exec_list_length(&impl->body) != 1)
       NIR_PASS(_, s, nir_convert_from_ssa, true, false);
    nir_index_ssa_defs(impl);
-   c->nvalues = n = impl->ssa_alloc * 4;
+   /* (one more: c->spare, M47) */
+   c->nvalues = n = impl->ssa_alloc * 4 + 1;
+   c->spare = n - 1;
    c->loc = calloc(n, sizeof(*c->loc));
    c->owned = calloc(n, sizeof(*c->owned));
    c->last_use = malloc(n * sizeof(*c->last_use));
@@ -5320,9 +6363,19 @@ translate(struct comp *c, nir_shader *s)
       plan_vs_outputs(c, impl);
       vs_prologue(c);
    }
+   /* (M47) the internal registers in a program of one block (the spans'
+    * code runs in order) */
+   c->vec = c->vs && scalar_filter(s) && exec_list_length(&impl->body) == 1;
+   util_dynarray_init(&c->ispans, NULL);
+   plan_groups(c, impl);
+   /* (comparisons of two lanes in one: a program of one block) */
+   if (exec_list_length(&impl->body) == 1 && !getenv("SGX_NO_CMP_PAIRS"))
+      c->premade = calloc(impl->ssa_alloc, sizeof(*c->premade));
    index = 0;
    c->nloops = 0;
    walk(c, &impl->body, WALK_CODE, &index, NULL, 0);
+   if (c->vec)
+      ireg_nosched(c);
    /* a program that branches: PHAS mode 1, as iOS's c04_loop_break has,
     * its pixels each on its own -- mode 0, the pixels together, when its
     * branches go alike for all of them (M33) */
@@ -5636,6 +6689,10 @@ out:
    free(c.def_at);
    free(c.vs_out);
    util_dynarray_fini(&c.loops);
+   util_dynarray_fini(&c.ispans);
+   free(c.vgroups);
+   free(c.group_of);
+   free(c.premade);
    if (c.range)
       _mesa_hash_table_destroy(c.range, NULL);
    ralloc_free(s);
@@ -5699,6 +6756,7 @@ compile_vs(const nir_shader *vs, const unsigned *varying_slot, unsigned nvarying
       goto out;
    /* the draw's four words for the position, after the uniforms, then two
     * for each varying it scales (M39) */
+   c.nuniforms = align(c.nuniforms, 2);
    c.vs->clip_sa = c.nuniforms;
    c.nuniforms += 4;
    c.vs->fix_sa = c.nuniforms;
@@ -5715,11 +6773,36 @@ compile_vs(const nir_shader *vs, const unsigned *varying_slot, unsigned nvarying
 
       if (pad < 0)
          pad = getenv("SGX_VS_PAD") ? atoi(getenv("SGX_VS_PAD")) : 0;
+      /* (M47) SGX_VS_PAD_KIND: the instruction -- mov (VMOV, one lane),
+       * movns (with nosched), mad (V32NMAD, one lane), mad2 (VMAD2, two),
+       * add4 (V32NMAD into i0, four), vdp (dp4 of i0), vmad (mad4 into
+       * i0) -- the last three with nosched */
       if (pad > 0) {
-         unsigned t = block(&c, 1, 1);
+         const char *k = getenv("SGX_VS_PAD_KIND") ? getenv("SGX_VS_PAD_KIND") : "mov";
+         unsigned t = block(&c, 4, 2);
+         struct usse_reg r = treg(&c, t);
 
-         for (int i = 0; i < pad && !c.failed; i++)
-            emit(&c, usse_fmov(treg(&c, t), treg(&c, t)));
+         for (int i = 0; i < pad && !c.failed; i++) {
+            uint64_t w;
+
+            if (!strcmp(k, "mad"))
+               w = usse_fop(USSE_NMAD_ADD, r, r, r);
+            else if (!strcmp(k, "mad2"))
+               w = usse_fmad_ex(r, 3, r, 4, r, 4, r, 4);
+            else if (!strcmp(k, "add4"))
+               w = usse_fop_ex(USSE_NMAD_ADD, usse_ireg(0, 0), 0xf, r, USSE_SW(0, 1, 2, 3),
+                               USSE_ZERO, USSE_SW2_X);
+            else if (!strcmp(k, "vdp"))
+               w = usse_vdp(r, 1, true, r, USSE_SW(0, 1, 2, 3), 0, USSE_SW2_XYZW);
+            else if (!strcmp(k, "vmad"))
+               w = usse_vmad(usse_ireg(0, 0), 0xf, 0, USSE_SW2_XYZW, r, USSE_SW2_XYZW, 0,
+                             USSE_SW2_XYZW, false);
+            else
+               w = usse_fmov(r, r);
+            if (strcmp(k, "mov") && strcmp(k, "mad") && strcmp(k, "mad2"))
+               usse_nosched(&w);
+            emit(&c, w);
+         }
       }
    }
    out_at = util_dynarray_num_elements(&c.code, uint64_t);
@@ -5763,6 +6846,10 @@ out:
    free(c.def_at);
    free(c.vs_out);
    util_dynarray_fini(&c.loops);
+   util_dynarray_fini(&c.ispans);
+   free(c.vgroups);
+   free(c.group_of);
+   free(c.premade);
    if (c.range)
       _mesa_hash_table_destroy(c.range, NULL);
    ralloc_free(s);

@@ -494,14 +494,21 @@ def limm_imm(word):
     return (((word >> 44) & 0x3f) << 26) | (((word >> 36) & 0x1f) << 21) | (word & 0x1fffff)
 
 
+# (M47) the nosched flag, probed on the device: no other task's instruction
+# runs on the pipe after this one (the internal registers are the pipe's)
+NOSCHED_BIT = {"VMAD2": 43, "V32NMAD": 43, "V16NMAD": 43, "VMAD": 43, "VDP": 43, "VCOMP": 43,
+               "VMOV": 43, "VPCK": 54, "VTST": 54, "VBW": 54, "I32MAD2": 54, "LIMM": 54}
+
+
 def operands(name, word, second=False):
     """NAME's operands as text, with two spaces in front; '' when not known.
     SECOND: the word is from a secondary program (pa is sa there)."""
     fn = OPERANDS.get(name)
     if not fn:
         return ""
+    ns = " nosched" if name in NOSCHED_BIT and word >> NOSCHED_BIT[name] & 1 else ""
     try:
-        return "  " + fn(name, word, second)
+        return "  " + fn(name, word, second) + ns
     except (IndexError, KeyError, TypeError) as e:     # a field this does not know
         return "  (%s)" % e
 

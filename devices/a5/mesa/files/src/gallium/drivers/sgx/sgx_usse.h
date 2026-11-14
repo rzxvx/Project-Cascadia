@@ -31,6 +31,11 @@ enum usse_bank {
                       * temp, 1 output, 2 pa, 3 sa), 32-bit words */
    USSE_IMM,         /* (M44) an integer instruction's immediate source, num
                       * 0..127 (I32MAD2's src1 and src2) */
+   USSE_INTERNAL,    /* (M47) an internal register's lane: num = 4 * register +
+                      * lane, registers i0..i2 (F32 vec4s; the float
+                      * instructions' fields name them as their bank's top
+                      * temporaries).  Shared by the tasks on a pipe: alive
+                      * only across instructions with usse_nosched() */
 };
 
 struct usse_reg {
@@ -43,6 +48,16 @@ static inline struct usse_reg
 usse_reg(enum usse_bank bank, unsigned num)
 {
    struct usse_reg r = { (uint8_t)bank, (uint8_t)num, false, false };
+   return r;
+}
+
+#define USSE_NINTERNAL 3     /* i3's field writes nothing and reads i2 (M47) */
+
+static inline struct usse_reg
+usse_ireg(unsigned k, unsigned lane)
+{
+   struct usse_reg r = { (uint8_t)USSE_INTERNAL, (uint8_t)(4 * k + lane), false, false };
+
    return r;
 }
 
@@ -75,14 +90,65 @@ uint64_t usse_fop(enum usse_nmad_op op, struct usse_reg dest, struct usse_reg sr
 #define USSE_SW_CONST(k) ((k) * 0x249)
 uint64_t usse_fop_sw(enum usse_nmad_op op, struct usse_reg dest, struct usse_reg src1,
                      unsigned sw1, struct usse_reg src2);
+/* (M47) V32NMAD in full: dest's lanes in mask (bit i lane i: an internal
+ * register takes all four, a 64-bit register x and y), src1 through sw1
+ * (three bits a channel, as usse_fop_sw's: the four channels read src1's
+ * register and the three after it, an internal register's lanes), src2
+ * through the swizzle table's sw2 (USSE_SW2_*: of a 64-bit register only x
+ * and y read anything, z and w read 0; an internal register's all four) */
+#define USSE_SW2_X    0       /* xxxx */
+#define USSE_SW2_XYZW 4
+#define USSE_SW2_ZWZW 11
+#define USSE_SW(x, y, z, w) ((x) | (y) << 3 | (z) << 6 | (w) << 9)
+uint64_t usse_fop_ex(enum usse_nmad_op op, struct usse_reg dest, unsigned mask,
+                     struct usse_reg src1, unsigned sw1, struct usse_reg src2, unsigned sw2);
 /* dest = src0 * src1 + src2, F32, one lane; src0 a temporary or primary
  * attribute, absolute only */
 uint64_t usse_fmad(struct usse_reg dest, struct usse_reg src0, struct usse_reg src1,
                    struct usse_reg src2);
+/* (M47) VMAD2 in full: dest = src0 * src1 + src2 on the lanes of mask (x and
+ * y of a 64-bit register, an internal register's any), each source through
+ * its own table's swizzle -- src0: xxxx yyyy zzzz wwww xyzw yzxw xyww zwxy,
+ * src1: xxxx yyyy zzzz wwww xyzw xyyz yyww wyzw, src2: xxxx yyyy zzzz wwww
+ * xyzw xzww xxyz xyzz (indices 0..7) */
+uint64_t usse_fmad_ex(struct usse_reg dest, unsigned mask, struct usse_reg src0, unsigned sw0,
+                      struct usse_reg src1, unsigned sw1, struct usse_reg src2, unsigned sw2);
+/* (M47) VDP: dest = dot(src1, i<gpi0>) of three (dp3) or four (dp4)
+ * channels, into the lanes of mask (an internal register's, or x or y of a
+ * 64-bit register) -- src1 through sw1 (usse_fop_sw's channels, the
+ * constants 0, 1, 2, 0.5 among them; its register and the three after),
+ * with its negation and absolute value; the internal register through the
+ * swizzle table's swg0 (dp4: USSE_SW2_*, 15 xyz1; dp3: 4 xyz) */
+#define USSE_SWG_XYZ1 15
+uint64_t usse_vdp(struct usse_reg dest, unsigned mask, bool dp4, struct usse_reg src1,
+                  unsigned sw1, unsigned gpi0, unsigned swg0);
+/* (M47) VMAD: dest = i<gpi0> * src1 + i<gpi1>, four channels (mad4), each
+ * operand through the swizzle table (USSE_SW2_*; +16: the extended one --
+ * 17 zwxy), dest's lanes in mask (an internal register's four, x and y of
+ * a 64-bit register); gpi1 negated with neg1 */
+#define USSE_SWX_ZWXY 17
+uint64_t usse_vmad(struct usse_reg dest, unsigned mask, unsigned gpi0, unsigned swg0,
+                   struct usse_reg src1, unsigned sw1, unsigned gpi1, unsigned swg1, bool neg1);
+/* (M47) VTSTMSK: dest = src1 CMP src2 ? ~0 : 0 (mask type 1), F32, for each
+ * lane of the 64-bit registers -- both of dest's lanes written; src1 may
+ * be negated.  The comparisons IEEE's: -0 == 0, NaN unordered (only NE
+ * true).  usse-probe.py found them (docs M47): the test is the
+ * subtraction's sign test and zero test, both (bit 39) or either */
+enum usse_cmp { USSE_CMP_LT, USSE_CMP_LE, USSE_CMP_EQ, USSE_CMP_NE, USSE_CMP_GE, USSE_CMP_GT };
+uint64_t usse_vtstmsk_f32(struct usse_reg dest, struct usse_reg src1, struct usse_reg src2,
+                          enum usse_cmp cmp);
+/* (M47) w with its nosched flag set: no other task runs on the pipe between
+ * this instruction and the next -- the internal registers, the pipe's,
+ * keep what this task put there (bit 43 of the vector instructions, 54 of
+ * VPCK, VTST, VBW, I32MAD2 and LIMM: each probed, docs M47).  False when
+ * the instruction's flag is not known */
+bool usse_nosched(uint64_t *w);
 /* dest = op(src), F32, one lane */
 uint64_t usse_fcomp(enum usse_comp_op op, struct usse_reg dest, struct usse_reg src);
 /* dest = src, F32, one lane (any lanes) */
 uint64_t usse_fmov(struct usse_reg dest, struct usse_reg src);
+/* (M47) dest's pair = src's pair, F32, both lanes (dest, src even) */
+uint64_t usse_fmov2(struct usse_reg dest, struct usse_reg src);
 /* dest = src0 TEST 0 ? src1 : src2, F32, one lane; all four in the same
  * lane (one swizzle serves them) -- false if they are not */
 bool usse_fmovc(uint64_t *out, enum usse_test test, struct usse_reg dest,

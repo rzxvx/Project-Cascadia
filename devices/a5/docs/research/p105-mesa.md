@@ -4387,11 +4387,12 @@ Not done yet:
   each comparison a VTST and two LIMMs (0, then ~0 under the predicate).
   VTSTMSK would be one instruction; probed (`usse-probe.py`'s `vtstmsk`),
   mask types 0..3 wrote ~0/0, ~0/~0, 1.0/1.0 and something else, whatever
-  the test came out to -- its test not found yet.
+  the test came out to -- its test not found yet (found in M47).
 - The vector forms iOS's vertex programs use: VDP (`dp3`/`dp4` of a
   register and an internal one), VMAD (`mad3`/`mad4` on the internal
   registers i0..i3: `m * p` four of them) and VMAD2's two F32 lanes. The
-  transforms and the lights would take ~40% fewer instructions again.
+  transforms and the lights would take ~40% fewer instructions again
+  (M47).
 
 **What is left**, in the order it costs:
 
@@ -4434,6 +4435,125 @@ workers, 60 runs each, and 2000 forks) all right. God of War does not
 move (18.0-19.1 fps either way: the GPU's frame), nor do `gzip -1` and
 `md5sum` of 16 MB (their work, not memory's). The mini's tree is as it
 was (not tried there).
+
+## M47: vertex programs on vectors; comparisons as masks
+
+M46 left PPSSPP's vertex programs one F32 lane an instruction and its
+cull check three instructions a comparison. iOS's vertex programs use the
+internal registers (VDP, VMAD) and F32's two lanes; VTSTMSK's test was not
+found. Both found now, by `tools/sgx/usse-probe.py` (it assembles `fmov`,
+`vmad2`, the V32NMAD ops, `vmad`, `vdp`, `rcp`.., `limmf`, any field by
+`enc`, any flag bit by `+bN`; `ALL=1` prints the four quarters' pixels;
+`GLLDR_FS` with a highp varying gives every pixel a value of its own in
+pa0).
+
+**The internal registers.** Three: i0..i2, the float fields' top
+temporaries (60..62 of a six-bit field, 124..126 of a seven-bit one). The
+field the disassembler calls i3 writes nothing and reads i2. They are the
+pipe's, not the task's: a value held there across twenty instructions
+came back from a pixel 12 columns away in two quarters of four -- unless
+every instruction in between had its nosched flag, which keeps the pipe on
+the task: bit 43 of VMAD2, V32NMAD, V16NMAD, VMAD and VDP, VCOMP and VMOV,
+bit 54 of VPCK, VTST, VTSTMSK, VBW, I32MAD2 and LIMM (each against a run
+without it that was overwritten). In vertex programs the flag from the
+write to the instruction before the last read was not enough: glvsmath's
+`ppsspp` case (three lights' dot products of one normal, read from one
+register) came out wrong 8-10 runs of 12; with the flag on the instruction
+before the write too, or on the last reader too, 0 of 12 (and with every
+instruction's, or a load for every dot product). The compiler flags both:
+0 runs of 24 wrong.
+
+What each instruction does with them, checked with values (the words in
+`mesa/host/usse-test.py`'s list of the device's):
+
+- V32NMAD writes an internal register's four lanes at once: `add.f32
+  i0.xyzw, r2.xyzw, c0.xxxx` is a vector loaded (src1's swizzle, three bits
+  a channel, reads r2, r3, r4, r5). src2's swizzle (the table's) reads x
+  and y of a 64-bit register -- z and w read 0 -- and an internal
+  register's any lane.
+- VMOV's F32 move is two lanes; VMAD2 is two lanes of F32 in 64-bit
+  registers (`mad.f32 r0.xy, r2, r4, r6`); VCOMP and VMOV read an internal
+  register's any lane.
+- VDP: `dp4.f32 r0.x, r2.xyzw, i0.xyzw` (dp3 too), src1 four registers in
+  a row through its own swizzle (the constants among the channels), the
+  internal register through the table's -- `xyz1` gives w 1.
+- VMAD: `mad4.f32 i2.xyzw, i0.xyzw, r4.xyzw, i1.xyzw`, four lanes into an
+  internal register, x and y into a 64-bit one (the extended table's
+  `zwxy` for z and w).
+- No hazards: an instruction right after the one that wrote what it reads
+  (an internal register, a VDP's result) reads the new value.
+
+**What an instruction costs.** `SGX_VS_PAD_KIND` pads every vertex program
+with the kind asked for (`SGX_VS_PAD=N` of them); glverts, 60 000 indexed
+vertices a render: 100 more one-lane moves or V32NMADs 2.43 ms, two-lane
+VMAD2s 2.50, four-lane V32NMADs into i0 2.44 -- the lanes are free -- and
+VDPs, VMADs or moves under nosched that each read the last one's result
+2.8 (no other task's instruction between them).
+
+**VTSTMSK.** M46's probes had the test's bit 39 clear (either test passes)
+and zero test 0 (any): always true. With VTST's settings it compares each
+lane of the 64-bit registers: `tstmsk r0 = sub.f32(r2, r4) lt 0` writes r0
+from r2 - r4 and r1 from r3 - r5. Mask type 0 is 0xff or 0, type 1 ~0 or
+0, type 2 1.0 or 0.0 (iOS's `step()`), type 3 the difference. The six
+comparisons, as (sign test, zero test, both): lt (1, 2, both), le (1, 1,
+either), eq (0, 1, both), ne (0, 2, both), ge (2, 1, either), gt (2, 2,
+both) -- IEEE's: -0 equals 0, NaN compares false but for ne. The
+hardware's c0 is 0.0 in either lane.
+
+**The compiler** (`sgx_compiler.c`, "vector instructions (M47)"):
+
+- A vertex shader keeps NIR's dot products (fdot2..4, fdph) and its vec2
+  to vec4 fadd, fmul, fmin, fmax, ffma and fsat whole (the scalar
+  lowering's filter; `SGX_NO_VS_VEC=1`: as before).
+- A dot product is a VDP: one vector through src1's swizzle (a uniform's
+  four words in sa, an attribute's four in pa), the other in an internal
+  register -- loaded by one V32NMAD when its components are four registers
+  in a row, a lane at a time otherwise, and kept: a vector times a
+  matrix's three columns loads once, PPSSPP's three lights dot one normal.
+  Vectors made one component at a time that a dot product reads (a
+  transform's results, a normal made unit length) are made in registers in
+  a row (`plan_groups`; `SGX_NO_VGROUPS=1`). nosched over each span of an
+  internal register's life (`SGX_IREG_TIGHT=1`: without its two ends).
+- Vector arithmetic is two lanes an instruction (V32NMAD, VMAD2 with a
+  mask of x and y; `SGX_NO_VS_VEC2=1`: a lane at a time): the components
+  in registers in a row, each operand's half a pair or one value for both.
+- A float comparison is one VTSTMSK, in every stage (`SGX_NO_TSTMSK=1`:
+  VTST and two LIMMs), into a register pair of its own (both lanes are
+  written); with 0 it reads c0; a comparison soon after of the other lanes
+  of the same registers is the same instruction's other lane
+  (`SGX_NO_CMP_PAIRS=1`).
+- sqrt(a) == 0 is a == 0 (PPSSPP's normalizeOr001) and a square root
+  1 / rsq after the last algebraic pass, so a normalize's rsq is shared
+  (`SGX_KEEP_SQRT=1`); a uniform past sa63 that INT32 selects read is
+  moved into a temporary once, not once a select; two outputs in a
+  register pair are one move; the position's `x a + w b` is both lanes at
+  once (the draw's words now a_x, a_y, b_x, b_y, from an even word).
+- Test switches: `SGX_VS_NOSCHED_ALL=1`, `SGX_IREG_NOREUSE=1`.
+
+PPSSPP's vertex programs, God of War's as `glshader` compiles the GLSL
+captured (`glshader` now reads a fourth attribute from an array:
+PPSSPP's color0 was a constant there): its four model programs 107 -> 61
+instructions, the three lights' 170 -> 102, the UV-mapped one 169 -> 97,
+the unlit one 99 -> 57 -- about 40% fewer.
+
+`glvsmath` has four cases more -- dot products of every shape, PPSSPP's
+transforms and lights, comparisons, an internal register read again after
+other work -- 13 of 13, 12 runs; the driver's GL tests pass (gldesk's
+fixed-function lighting too); the menu renders as before (screenshots).
+God of War: Ghost of Sparta's menu 31.9 frames/s with the vertex path's
+vectors and the masks off -> 33.5-33.7 with them, PPSSPP's counter ~54%
+-> ~56-57%.
+
+**What is left**, in the order it costs:
+
+- The GPU's frame: the main render's pixels (~12 ms, nearly all blended),
+  the kernel's copy onto the scanout (2.1 ms), PPSSPP's 1024 x 768
+  render, the renders' fixed cost.
+- The vertex programs' rest: the cull check's masks or'ed and and'ed (VBW)
+  and its four selects, VMAD's four lanes for the projection and the
+  lights' sums (the internal registers' three bound them).
+- GLSL19's alpha test, the TClampST draws still clamped, the program that
+  writes gl_FragDepth, discard (M46's list).
 
 ## Testing, without and with the device
 
