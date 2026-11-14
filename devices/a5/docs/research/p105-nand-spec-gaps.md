@@ -286,6 +286,31 @@ committed after it, and its contexts rebuild identically from their tables. What
 with the older contexts: it erases the previous one after its own commit and keeps it
 listed as type 7 until the next commit, then lists it type 1 and reuses it.
 
+### Rung 7 (in progress), 2026-11-15: real reclaim + commit, left for iOS
+
+**Writer bug found offline first** (fixed in 2139ecf): reclaim marks its victims
+await-erase with nothing valid and queues them for erase after the commit, and
+`take_spare()` counted such SBs as spares. On the `w0c` overlay the commit put its
+context on sb 280, one of the victims, and erased it straight after; the remount fell
+back to the older context and replay, so the map still looked right. Spares now skip the
+erase queue, a commit refuses to erase its own new context, and the rung-7 test requires
+the remount to load the new context with nothing to replay.
+
+On the device (`devices/a5/tools/nand-rung7`, then the rung-6 check):
+
+- Context before: iOS's sb 467. Victims (fewest valid): sb 376, 876 (12 valid each),
+  296, 401 (13 each); 50 live LBAs to move.
+- `sftl_gc()`: move, PAD fill and BTOC, commit to **sb 427** (weave 377655188, 200 LBAs,
+  tree 173), erase the victims. Watcher: 24 erases (4 victims, frontier, context) and
+  1074 page programs, all in blocks erased in the run; 0 refused.
+- Remount: context sb 427, nothing to replay; the 50 moved LBAs read the same hash, type
+  and user from outside the victims; the map digest over every other LBA unchanged
+  (`951f97539a681bf6`, 1187708 mapped); the four victims read erased in full.
+- Rung-6 check: golden of sb 427 identical (88026 runs), 20000 random LBAs read, LwVM fine;
+  sb 467 (iOS) stays as the second context.
+
+Left on the media for the iOS boot.
+
 ## Decisions the spec left open
 
 **D1. Closing a partly written superblock.** The spec says "write the BTOC in the
