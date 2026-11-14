@@ -13,6 +13,9 @@
  * Buffers are shmem objects, write-combined on the CPU side, pinned and
  * mapped page by page into the one page directory the hardware side keeps
  * (apple_sgx_hw.c), at an address the caller chose or one picked here.
+ * One the screen may show (APPLE_SGX_BO_SCANOUT) of the screen's size is
+ * physically contiguous instead, from CMA when it has the room (the display
+ * has no IOMMU): KMS then shows it by pointing the display at it.
  * Addresses the kernel picks get a guard page after them: the VDM reads
  * ahead, and a read past a buffer should fault rather than land in the
  * next one.
@@ -54,6 +57,7 @@
  */
 
 #include <linux/dma-fence.h>
+#include <linux/dma-mapping.h>
 #include <linux/dma-resv.h>
 #include <linux/hrtimer.h>
 #include <linux/iosys-map.h>
@@ -67,6 +71,7 @@
 #include <drm/drm_drv.h>
 #include <drm/drm_file.h>
 #include <drm/drm_gem.h>
+#include <drm/drm_gem_dma_helper.h>
 #include <drm/drm_gem_shmem_helper.h>
 #include <drm/drm_ioctl.h>
 #include <drm/drm_managed.h>
@@ -158,7 +163,13 @@ struct apple_sgx_drm {
 };
 
 struct apple_sgx_bo {
-	struct drm_gem_shmem_object base;
+	/* shmem pages, or (contig) one physically contiguous allocation; both
+	 * begin with the GEM object, base.base */
+	union {
+		struct drm_gem_shmem_object base;
+		struct drm_gem_dma_object dma;
+	};
+	bool contig;
 	struct drm_mm_node node;	/* its GPU address, and a guard page */
 	u32 flags;			/* APPLE_SGX_BO_* */
 	u32 mapped;			/* bytes the PTEs cover */
@@ -202,7 +213,7 @@ static struct apple_sgx_drm *to_sgx_drm(struct drm_device *drm)
 
 static struct apple_sgx_bo *to_sgx_bo(struct drm_gem_object *obj)
 {
-	return container_of(to_drm_gem_shmem_obj(obj), struct apple_sgx_bo, base);
+	return container_of(obj, struct apple_sgx_bo, base.base);
 }
 
 static struct apple_sgx_job *to_sgx_job(struct drm_sched_job *job)
@@ -223,7 +234,10 @@ static void sgx_gem_free(struct drm_gem_object *obj)
 		drm_mm_remove_node(&bo->node);
 		mutex_unlock(&sdrm->va_lock);
 	}
-	drm_gem_shmem_free(&bo->base);
+	if (bo->contig)
+		drm_gem_dma_free(&bo->dma);	/* (frees bo: dma is at its start) */
+	else
+		drm_gem_shmem_free(&bo->base);
 }
 
 static const struct drm_gem_object_funcs sgx_gem_funcs = {
@@ -237,6 +251,56 @@ static const struct drm_gem_object_funcs sgx_gem_funcs = {
 	.mmap = drm_gem_shmem_object_mmap,
 	.vm_ops = &drm_gem_shmem_vm_ops,
 };
+
+/* a contiguous one's: the DMA helpers' (no pin: its memory never moves) */
+static const struct drm_gem_object_funcs sgx_gem_dma_funcs = {
+	.free = sgx_gem_free,
+	.print_info = drm_gem_dma_object_print_info,
+	.get_sg_table = drm_gem_dma_object_get_sg_table,
+	.vmap = drm_gem_dma_object_vmap,
+	.mmap = drm_gem_dma_object_mmap,
+	.vm_ops = &drm_gem_dma_vm_ops,
+};
+
+static bool sgx_is_bo(struct drm_gem_object *obj)
+{
+	return obj->funcs == &sgx_gem_funcs || obj->funcs == &sgx_gem_dma_funcs;
+}
+
+/* One the screen may show, physically contiguous and write-combined (from
+ * CMA: dma_alloc_wc on a device without an IOMMU), or NULL when there is no
+ * such memory now.  Cleared, as shmem's pages are. */
+static struct apple_sgx_bo *sgx_bo_contig(struct drm_device *drm, size_t size)
+{
+	struct apple_sgx_bo *bo = kzalloc(sizeof(*bo), GFP_KERNEL);
+	struct drm_gem_object *obj;
+
+	if (!bo)
+		return NULL;
+	obj = &bo->dma.base;
+	obj->funcs = &sgx_gem_dma_funcs;
+	drm_gem_private_object_init(drm, obj, size);
+	bo->contig = true;
+	bo->dma.vaddr = dma_alloc_wc(drm->dev, size, &bo->dma.dma_addr,
+				     GFP_KERNEL | __GFP_NOWARN);
+	if (!bo->dma.vaddr) {
+		drm_gem_object_release(obj);
+		kfree(bo);
+		return NULL;
+	}
+	return bo;
+}
+
+/* Where the display can read a buffer object straight: true and its
+ * address, for a contiguous one (APPLE_SGX_BO_SCANOUT).  The A5's bus
+ * addresses are its physical ones (memory at 0x80000000, no dma-ranges). */
+bool apple_sgx_bo_contig(struct drm_gem_object *obj, dma_addr_t *pa)
+{
+	if (obj->funcs != &sgx_gem_dma_funcs)
+		return false;
+	*pa = to_sgx_bo(obj)->dma.dma_addr;
+	return true;
+}
 
 static struct drm_gem_object *sgx_gem_create_object(struct drm_device *drm, size_t size)
 {
@@ -255,14 +319,16 @@ static int sgx_bo_map(struct apple_sgx_drm *sdrm, struct apple_sgx_bo *bo, u32 v
 {
 	size_t size = bo->base.base.size;
 	struct scatterlist *sg;
-	struct sg_table *sgt;
+	struct sg_table *sgt = NULL;
 	unsigned int i;
 	u32 pte, at;
 	int ret;
 
-	sgt = drm_gem_shmem_get_pages_sgt(&bo->base);
-	if (IS_ERR(sgt))
-		return PTR_ERR(sgt);
+	if (!bo->contig) {
+		sgt = drm_gem_shmem_get_pages_sgt(&bo->base);
+		if (IS_ERR(sgt))
+			return PTR_ERR(sgt);
+	}
 
 	mutex_lock(&sdrm->va_lock);
 	if (bo->flags & APPLE_SGX_BO_FIXED_VA) {
@@ -296,11 +362,18 @@ static int sgx_bo_map(struct apple_sgx_drm *sdrm, struct apple_sgx_bo *bo, u32 v
 	pte = (bo->flags & APPLE_SGX_BO_GPU_READONLY ? SGX_PTE_READONLY : 0) |
 	      (bo->flags & APPLE_SGX_BO_NOT_CACHE_CONSISTENT ? 0 : SGX_PTE_CACHECONSISTENT);
 	at = bo->node.start;
-	for_each_sgtable_dma_sg(sgt, sg, i) {
-		ret = apple_sgx_mmu_map(sdrm->sgx, at, sg_dma_address(sg), sg_dma_len(sg), pte);
-		if (ret)
-			break;
-		at += sg_dma_len(sg);
+	if (bo->contig) {
+		ret = apple_sgx_mmu_map(sdrm->sgx, at, bo->dma.dma_addr, size, pte);
+		if (!ret)
+			at += size;
+	} else {
+		for_each_sgtable_dma_sg(sgt, sg, i) {
+			ret = apple_sgx_mmu_map(sdrm->sgx, at, sg_dma_address(sg), sg_dma_len(sg),
+						pte);
+			if (ret)
+				break;
+			at += sg_dma_len(sg);
+		}
 	}
 	bo->mapped = at - bo->node.start;
 	if (!ret && bo->mapped != size)
@@ -315,13 +388,18 @@ static int sgx_bo_map(struct apple_sgx_drm *sdrm, struct apple_sgx_bo *bo, u32 v
 }
 
 /* A buffer object, mapped, and a handle to it; *va in: where (with
- * APPLE_SGX_BO_FIXED_VA), out: where it went. */
+ * APPLE_SGX_BO_FIXED_VA), out: where it went.  APPLE_SGX_BO_SCANOUT: a
+ * contiguous one if it is the screen's size (up to twice it: no more of
+ * CMA's room for one buffer) and there is the memory; an ordinary one, the
+ * flag dropped, otherwise. */
 static int sgx_bo_new(struct drm_device *drm, struct drm_file *file, u64 size, u32 flags,
 		      u32 *va, u32 *handle)
 {
 	struct apple_sgx_drm *sdrm = to_sgx_drm(drm);
+	struct apple_sgx *sgx = sdrm->sgx;
+	u64 screen = (u64)sgx->fb_stride * 4 * sgx->fb_h;
 	struct drm_gem_shmem_object *shmem;
-	struct apple_sgx_bo *bo;
+	struct apple_sgx_bo *bo = NULL;
 	int ret;
 
 	if ((flags & ~APPLE_SGX_BO_FLAGS) || !size || size > SGX_MAX_BO_SIZE)
@@ -332,19 +410,24 @@ static int sgx_bo_new(struct drm_device *drm, struct drm_file *file, u64 size, u
 	     size > SGX_USER_VA_END - *va))
 		return -EINVAL;
 
-	shmem = drm_gem_shmem_create(drm, size);
-	if (IS_ERR(shmem))
-		return PTR_ERR(shmem);
-	bo = to_sgx_bo(&shmem->base);
+	if ((flags & APPLE_SGX_BO_SCANOUT) && sgx->fb_w && size >= screen && size <= 2 * screen)
+		bo = sgx_bo_contig(drm, size);
+	if (!bo) {
+		flags &= ~APPLE_SGX_BO_SCANOUT;
+		shmem = drm_gem_shmem_create(drm, size);
+		if (IS_ERR(shmem))
+			return PTR_ERR(shmem);
+		bo = to_sgx_bo(&shmem->base);
+	}
 	bo->flags = flags;
 	bo->serial = atomic64_inc_return(&sdrm->bo_serial);
 	ret = sgx_bo_map(sdrm, bo, *va);
 	if (!ret)
-		ret = drm_gem_handle_create(file, &shmem->base, handle);
+		ret = drm_gem_handle_create(file, &bo->base.base, handle);
 	if (!ret)
 		*va = bo->node.start;
 	/* the handle holds it now, or it goes */
-	drm_gem_object_put(&shmem->base);
+	drm_gem_object_put(&bo->base.base);
 	return ret;
 }
 
@@ -368,7 +451,7 @@ static int sgx_dumb_create(struct drm_file *file, struct drm_device *drm,
 		return -EINVAL;
 	args->pitch = ALIGN(DIV_ROUND_UP(args->width * args->bpp, 8), 64);
 	args->size = ALIGN((u64)args->pitch * args->height, PAGE_SIZE);
-	return sgx_bo_new(drm, file, args->size, 0, &va, &args->handle);
+	return sgx_bo_new(drm, file, args->size, APPLE_SGX_BO_SCANOUT, &va, &args->handle);
 }
 
 /* where the GPU sees a buffer object */
@@ -388,7 +471,7 @@ static int sgx_ioctl_gem_info(struct drm_device *drm, void *data, struct drm_fil
 	obj = drm_gem_object_lookup(file, args->handle);
 	if (!obj)
 		return -ENOENT;
-	if (obj->funcs != &sgx_gem_funcs) {
+	if (!sgx_is_bo(obj)) {
 		drm_gem_object_put(obj);
 		return -EINVAL;
 	}
@@ -514,6 +597,9 @@ static int sgx_ioctl_get_param(struct drm_device *drm, void *data, struct drm_fi
 		break;
 	case APPLE_SGX_PARAM_TA_HEAP_END:
 		args->value = SGX_TA_HEAP_END;
+		break;
+	case APPLE_SGX_PARAM_BO_FLAGS:
+		args->value = APPLE_SGX_BO_FLAGS;
 		break;
 	default:
 		return -EINVAL;

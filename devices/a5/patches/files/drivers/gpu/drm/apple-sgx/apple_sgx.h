@@ -237,6 +237,7 @@ void apple_sgx_drm_irq(struct apple_sgx *sgx);
 int apple_sgx_drm_reserve(struct apple_sgx *sgx, int slot, u32 va, u32 size);
 void apple_sgx_drm_unreserve(struct apple_sgx *sgx, int slot);
 u32 apple_sgx_bo_va(struct drm_gem_object *obj);
+bool apple_sgx_bo_contig(struct drm_gem_object *obj, dma_addr_t *pa);
 
 /* apple_sgx_kms.c */
 struct drm_apple_sgx_overlay;

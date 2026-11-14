@@ -110,6 +110,11 @@ enum drm_apple_sgx_param {
 	APPLE_SGX_PARAM_PB_VA = 19,
 	APPLE_SGX_PARAM_TA_HEAP_START = 20,
 	APPLE_SGX_PARAM_TA_HEAP_END = 21,
+
+	/* The APPLE_SGX_BO_* flags GEM_CREATE takes; kernels before
+	 * APPLE_SGX_BO_SCANOUT do not have this parameter (EINVAL), and every
+	 * flag before it.  Still UAPI 3: a flag more is no new interface. */
+	APPLE_SGX_PARAM_BO_FLAGS = 22,
 };
 
 struct drm_apple_sgx_get_param {
@@ -134,8 +139,14 @@ struct drm_apple_sgx_get_param {
 /* In the TA's heap (UAPI 3): render target data, whose state buffer the 3D
  * register block names by its offset from the TA's base. */
 #define APPLE_SGX_BO_TA_HEAP			(1 << 4)
+/* A buffer the screen may show (APPLE_SGX_PARAM_BO_FLAGS lists it): one of
+ * the screen's size is made physically contiguous when memory allows, and
+ * KMS then shows it by pointing the display at it instead of copying it
+ * onto the screen.  Not an error when it cannot be: the buffer is an
+ * ordinary one, and GEM_INFO's flags leave this out. */
+#define APPLE_SGX_BO_SCANOUT			(1 << 5)
 
-#define APPLE_SGX_BO_FLAGS			0x1f
+#define APPLE_SGX_BO_FLAGS			0x3f
 
 struct drm_apple_sgx_gem_create {
 	__u64 size;		/* in: bytes, rounded up to 4 KiB */

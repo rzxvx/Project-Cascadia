@@ -49,6 +49,7 @@ sgx_device_init(struct sgx_device *dev, int fd)
                 dev->uapi);
       return false;
    }
+   dev->bo_flags = sgx_device_param(dev, APPLE_SGX_PARAM_BO_FLAGS);
    dev->core_id = sgx_device_param(dev, APPLE_SGX_PARAM_CORE_ID);
    dev->core_rev = sgx_device_param(dev, APPLE_SGX_PARAM_CORE_REVISION);
    dev->num_cores = sgx_device_param(dev, APPLE_SGX_PARAM_NUM_CORES);
