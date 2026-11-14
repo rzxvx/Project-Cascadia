@@ -486,7 +486,7 @@ static int commit(struct sftl *fs)
 	u32 i, new_sb, keep = fs->ctx_sb;
 	int ret, sb;
 
-	if (w->fenced)
+	if (w->fenced && !w->fence_commit)
 		return fail_wedge(fs, "commit while fenced", -EPERM);
 	ret = tree_compact(fs);
 	if (ret)
@@ -559,10 +559,10 @@ int sftl_checkpoint(struct sftl *fs)
 
 /*
  * Restrict the writer to one superblock, for the device ladder: the frontier
- * may only open there, and commit and reclaim refuse.  The superblock must be
- * an erased spare with four banks.
+ * or a commit's context may only go there, reclaim refuses, and commit refuses
+ * unless allowed.  The superblock must be an erased spare with four banks.
  */
-int sftl_writer_fence(struct sftl *fs, u32 sb)
+int sftl_writer_fence(struct sftl *fs, u32 sb, bool allow_commit)
 {
 	struct sftl_writer *w = fs->wr;
 
@@ -572,6 +572,7 @@ int sftl_writer_fence(struct sftl *fs, u32 sb)
 	    fs->shape[sb].width != SFTL_BANKS || w->fr.sb != SFTL_UNMAPPED)
 		return -EINVAL;
 	w->fenced = true;
+	w->fence_commit = allow_commit;
 	w->fence_sb = sb;
 	return 0;
 }

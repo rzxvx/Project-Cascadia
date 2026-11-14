@@ -24,6 +24,13 @@ int ctxdump_run(const struct sftl_ops *ops, void *hw)
 		ret = sftl_mount(fs);
 	if (ret)
 		goto out;
+	for (o = 0; o < fs->n_ctx; o++)
+		sftl_info("ctxdump: context candidate sb %u, first weave %llu, rec type %u",
+			  fs->ctx_list[o], (unsigned long long)fs->probe[fs->ctx_list[o]].first_weave,
+			  fs->rec[fs->ctx_list[o]].type);
+	for (o = 0; o < SFTL_NUM_SB; o++)
+		if (fs->rec[o].type == SFTL_SB_CONTEXT)
+			sftl_info("ctxdump: SB array lists sb %u as a context", o);
 	sb = fs->ctx_sb;
 	base = fs->ctx_weave;
 	cap = sftl_capacity(fs, sb);

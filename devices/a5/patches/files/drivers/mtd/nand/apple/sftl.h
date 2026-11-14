@@ -201,8 +201,9 @@ struct sftl_writer {
 	bool wedged;
 	bool dirty;
 
-	/* Test fence: one superblock only, never a commit or a reclaim. */
+	/* Test fence: one superblock only, never a reclaim; commit if allowed. */
 	bool fenced;
+	bool fence_commit;
 	u32 fence_sb;
 };
 
@@ -416,7 +417,7 @@ void sftl_writer_stop(struct sftl *fs);
 int sftl_write(struct sftl *fs, u32 lba, u32 count, const u8 *src);
 int sftl_checkpoint(struct sftl *fs);
 int sftl_checkpoint_due(struct sftl *fs);
-int sftl_writer_fence(struct sftl *fs, u32 sb);
+int sftl_writer_fence(struct sftl *fs, u32 sb, bool allow_commit);
 int sftl_context_write(struct sftl *fs, u32 sb);
 int sftl_writer_seal(struct sftl *fs);
 #endif

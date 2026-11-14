@@ -198,7 +198,7 @@ int rung3_run(const struct rung3_args *a)
 		sftl_err("rung3: no erased four-bank spare (%d)", ret);
 		goto out;
 	}
-	ret = sftl_writer_fence(fs, sb);
+	ret = sftl_writer_fence(fs, sb, false);
 	if (ret)
 		goto out;
 	cap = sftl_capacity(fs, sb);

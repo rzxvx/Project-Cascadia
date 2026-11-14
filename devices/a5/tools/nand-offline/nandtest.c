@@ -5,7 +5,7 @@
  * 16448 bytes as read off the bus, one status byte per page.
  *
  * --write runs the writer on an in-memory overlay of the dump: nothing is ever
- * written to the dump itself.  --rung3 and --rung4 run the device-ladder tests
+ * written to the dump itself.  --rung3, --rung4 and --rung5 run the device-ladder tests
  * on the same overlay, as the kernel test modules run them on the device.
  */
 #define _GNU_SOURCE
@@ -20,6 +20,7 @@
 #include "sftl_port.h"
 #include "rung3.h"
 #include "rung4.h"
+#include "rung5.h"
 
 #define RAW_PAGE 16448
 #define OVERLAY_PAGES (1u << 20)
@@ -862,7 +863,7 @@ int main(int argc, char **argv)
 	bool do_write = false;
 
 	if (argc < 2) {
-		fprintf(stderr, "usage: %s <dump-dir> [--write | --rung3 | --rung4]\n", argv[0]);
+		fprintf(stderr, "usage: %s <dump-dir> [--write | --rung3 | --rung4 | --rung5]\n", argv[0]);
 		return 2;
 	}
 	if (argc > 2 && !strcmp(argv[2], "--write"))
@@ -870,11 +871,13 @@ int main(int argc, char **argv)
 	d = malloc(sizeof(*d));
 	if (dev_open(d, argv[1]))
 		return 1;
-	if (argc > 2 && (!strcmp(argv[2], "--rung3") || !strcmp(argv[2], "--rung4"))) {
+	if (argc > 2 && (!strcmp(argv[2], "--rung3") || !strcmp(argv[2], "--rung4") ||
+			 !strcmp(argv[2], "--rung5"))) {
 		struct sftl *vfl = calloc(1, sizeof(*vfl));
 		struct rung3_args a = { .ops = &dev_ops, .hw = d, .nlbas = 2000,
 					.search_from = 100000 };
 		struct rung4_args a4 = { .ops = &dev_ops, .hw = d };
+		struct rung5_args a5 = { .ops = &dev_ops, .hw = d };
 
 		assert(!sftl_init(vfl, &dev_ops, d) && !sftl_load_vfl(vfl));
 		for (i = 0; i < SFTL_BANKS; i++)
@@ -883,9 +886,12 @@ int main(int argc, char **argv)
 		if (argv[2][6] == '3') {
 			ret = rung3_run(&a);
 			CHECK(!ret, "rung 3 on the overlay (%d)", ret);
-		} else {
+		} else if (argv[2][6] == '4') {
 			ret = rung4_run(&a4);
 			CHECK(!ret, "rung 4 on the overlay (%d)", ret);
+		} else {
+			ret = rung5_run(&a5);
+			CHECK(!ret, "rung 5 on the overlay (%d)", ret);
 		}
 		printf("  device: %lu reads, %lu programs, %lu erases, %lu pages skipped\n",
 		       d->reads, d->progs, d->erases, d->pages_gapped);

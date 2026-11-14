@@ -185,7 +185,7 @@ int rung4_run(const struct rung4_args *a)
 		ret = -ENOSPC;
 		goto out;
 	}
-	ret = sftl_writer_fence(fs, sb);
+	ret = sftl_writer_fence(fs, sb, false);
 	if (ret)
 		goto out;
 	sftl_info("rung4: target sb %u (erases %u), every page reads erased", sb,
