@@ -419,6 +419,8 @@ int sftl_checkpoint(struct sftl *fs);
 int sftl_checkpoint_due(struct sftl *fs);
 int sftl_writer_fence(struct sftl *fs, u32 sb, bool allow_commit);
 int sftl_context_write(struct sftl *fs, u32 sb);
+int sftl_gc_plan(struct sftl *fs, u32 *victims, u32 *nv, u32 *lbas, u32 *count);
+int sftl_gc(struct sftl *fs);
 int sftl_writer_seal(struct sftl *fs);
 #endif
 

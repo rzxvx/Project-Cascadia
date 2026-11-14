@@ -22,6 +22,7 @@
 #include "rung4.h"
 #include "rung5.h"
 #include "rung6.h"
+#include "rung7.h"
 
 #define RAW_PAGE 16448
 #define OVERLAY_PAGES (1u << 20)
@@ -864,7 +865,7 @@ int main(int argc, char **argv)
 	bool do_write = false;
 
 	if (argc < 2) {
-		fprintf(stderr, "usage: %s <dump-dir> [--write | --rung3 | --rung4 | --rung5 | --rung6]\n", argv[0]);
+		fprintf(stderr, "usage: %s <dump-dir> [--write | --rung3 | --rung4 | --rung5 | --rung6 | --rung7]\n", argv[0]);
 		return 2;
 	}
 	if (argc > 2 && !strcmp(argv[2], "--write"))
@@ -872,6 +873,24 @@ int main(int argc, char **argv)
 	d = malloc(sizeof(*d));
 	if (dev_open(d, argv[1]))
 		return 1;
+	if (argc > 2 && !strcmp(argv[2], "--rung7")) {
+		/* Reclaim + commit on the overlay, then the rung-6 check of the result. */
+		struct sftl *vfl = calloc(1, sizeof(*vfl));
+		struct rung7_args a7 = { .ops = &dev_ops, .hw = d };
+		struct rung6_args a6 = { .ops = &dev_ops, .hw = d, .samples = 20000 };
+
+		assert(!sftl_init(vfl, &dev_ops, d) && !sftl_load_vfl(vfl));
+		for (i = 0; i < SFTL_BANKS; i++)
+			d->usage[i] = vfl->usage[i];
+		d->writes_enabled = true;
+		ret = rung7_run(&a7);
+		CHECK(!ret, "rung 7 on the overlay (%d)", ret);
+		ret = rung6_run(&a6);
+		CHECK(!ret, "rung 6 check after the reclaim (%d)", ret);
+		printf("  device: %lu reads, %lu programs, %lu erases, %lu pages skipped\n",
+		       d->reads, d->progs, d->erases, d->pages_gapped);
+		goto done;
+	}
 	if (argc > 2 && !strcmp(argv[2], "--rung6")) {
 		/* Read-only check of a dump, then commit + check on the overlay. */
 		struct sftl *vfl = calloc(1, sizeof(*vfl));

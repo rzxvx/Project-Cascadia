@@ -13,6 +13,18 @@ static int fail_wedge(struct sftl *fs, const char *why, int err)
 	return err ? err : -EIO;
 }
 
+/* Queued for erase after the next commit: never a spare before then. */
+static bool erase_pending(const struct sftl *fs, u32 sb)
+{
+	const struct sftl_writer *w = fs->wr;
+	unsigned int i;
+
+	for (i = 0; i < w->n_pending; i++)
+		if (w->pending_erase[i] == sb)
+			return true;
+	return false;
+}
+
 static u32 spare_count(struct sftl *fs, bool four_banks)
 {
 	u32 sb, n = 0;
@@ -23,7 +35,7 @@ static u32 spare_count(struct sftl *fs, bool four_banks)
 		if (r->type != SFTL_SB_ERASED &&
 		    !(r->type == SFTL_SB_AWAIT_ERASE && r->valid == 0))
 			continue;
-		if (!fs->shape[sb].width || sb == fs->wr->fr.sb)
+		if (!fs->shape[sb].width || sb == fs->wr->fr.sb || erase_pending(fs, sb))
 			continue;
 		if (four_banks && fs->shape[sb].width != SFTL_BANKS)
 			continue;
@@ -64,7 +76,7 @@ static int take_spare(struct sftl *fs, bool four_banks)
 		if (r->type != SFTL_SB_ERASED &&
 		    !(r->type == SFTL_SB_AWAIT_ERASE && r->valid == 0))
 			continue;
-		if (!fs->shape[sb].width || sb == fs->wr->fr.sb)
+		if (!fs->shape[sb].width || sb == fs->wr->fr.sb || erase_pending(fs, sb))
 			continue;
 		if (four_banks && fs->shape[sb].width != SFTL_BANKS)
 			continue;
@@ -334,6 +346,7 @@ static int ensure_room(struct sftl *fs)
 }
 
 static int gc_move(struct sftl *fs, const u32 *list, u32 n);
+static int reclaim(struct sftl *fs);
 
 static int read_sibling(struct sftl *fs, u32 vba, u8 *buf, u8 *meta16)
 {
@@ -523,6 +536,8 @@ static int commit(struct sftl *fs)
 
 	/* The new context stands: retire and erase what it replaced. */
 	for (i = 0; i < w->n_pending; i++) {
+		if (w->pending_erase[i] == new_sb)
+			return fail_wedge(fs, "new context queued for erase", -EIO);
 		ret = erase_sb(fs, w->pending_erase[i]);
 		if (ret)
 			return fail_wedge(fs, "erase after commit", ret);
@@ -590,6 +605,16 @@ int sftl_writer_seal(struct sftl *fs)
 	return ret ? ret : frontier_close(fs);
 }
 
+/* Run one reclaim now: move the victims' live LBAs, commit, erase them. */
+int sftl_gc(struct sftl *fs)
+{
+	if (!fs->wr)
+		return -EROFS;
+	if (fs->wr->wedged)
+		return -EIO;
+	return reclaim(fs);
+}
+
 /* Move the LBA list (in list order) to the frontier, keeping type and user. */
 static int gc_move(struct sftl *fs, const u32 *list, u32 n)
 {
@@ -630,18 +655,17 @@ static int victim_cmp(const struct sftl_sb_rec *a, const struct sftl_sb_rec *b)
 	return (int)a->valid - (int)b->valid;
 }
 
-/* Up to SFTL_MAX_VICTIMS closed, non-static SBs; then a checkpoint. */
-static int reclaim(struct sftl *fs)
+/*
+ * Choose up to SFTL_MAX_VICTIMS closed, non-static SBs, fewest valid first,
+ * at most 2048 live LBAs in all past the first, and list their live LBAs in
+ * LBA order into w->gc_list.  No media access.  Returns the victim count.
+ */
+static u32 pick_victims(struct sftl *fs, u32 *victims, u32 *count_out, u32 *live_out)
 {
 	struct sftl_writer *w = fs->wr;
-	u32 victims[SFTL_MAX_VICTIMS];
-	u32 nv = 0, i, sb, lba, count = 0, live = 0;
-	int ret;
+	u32 nv = 0, sb, lba, count = 0, live = 0;
 
-	if (w->fenced)
-		return fail_wedge(fs, "reclaim while fenced", -EPERM);
 	memset(w->victim_map, 0, (SFTL_NUM_SB + 7) / 8);
-
 	for (;;) {
 		u32 best = SFTL_NUM_SB;
 
@@ -666,10 +690,7 @@ static int reclaim(struct sftl *fs)
 		if (nv == SFTL_MAX_VICTIMS)
 			break;
 	}
-	if (!nv)
-		return -ENOSPC;
-
-	for (lba = 0; lba < fs->total_lbas && count < SFTL_MAX_VICTIMS * 4096; lba++) {
+	for (lba = 0; nv && lba < fs->total_lbas && count < SFTL_MAX_VICTIMS * 4096; lba++) {
 		u32 vba = sftl_map_get(&fs->map, lba);
 
 		if (vba == SFTL_UNMAPPED)
@@ -678,6 +699,38 @@ static int reclaim(struct sftl *fs)
 		if ((w->victim_map[sb / 8] >> (sb % 8)) & 1)
 			w->gc_list[count++] = lba;
 	}
+	*count_out = count;
+	*live_out = live;
+	return nv;
+}
+
+/* What a reclaim would do now: its victims and the live LBAs it would move. */
+int sftl_gc_plan(struct sftl *fs, u32 *victims, u32 *nv, u32 *lbas, u32 *count)
+{
+	u32 live;
+
+	if (!fs->wr)
+		return -EROFS;
+	*nv = pick_victims(fs, victims, count, &live);
+	if (*count != live)
+		return -EIO;
+	memcpy(lbas, fs->wr->gc_list, *count * sizeof(u32));
+	return *nv ? 0 : -ENOSPC;
+}
+
+/* Up to SFTL_MAX_VICTIMS closed, non-static SBs; then a checkpoint. */
+static int reclaim(struct sftl *fs)
+{
+	struct sftl_writer *w = fs->wr;
+	u32 victims[SFTL_MAX_VICTIMS];
+	u32 nv, i, sb, count = 0, live = 0;
+	int ret;
+
+	if (w->fenced)
+		return fail_wedge(fs, "reclaim while fenced", -EPERM);
+	nv = pick_victims(fs, victims, &count, &live);
+	if (!nv)
+		return -ENOSPC;
 	if (count != live)
 		return fail_wedge(fs, "reclaim list mismatch", -EIO);
 
