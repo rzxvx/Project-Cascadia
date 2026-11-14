@@ -1739,6 +1739,14 @@ kick(struct sgx_frame *f, const struct sgx_frame_target *t, float depth,
    n += nhandles;
    for (unsigned i = 0; i < f->arena.n; i++)
       hs[n++] = f->arena.bo[i]->handle;
+   /* each buffer once: the kernel takes each one's reservation lock and
+    * refuses a buffer listed twice (EALREADY: the whole render dropped) --
+    * a draw that samples the render's own target lists the target among
+    * its textures too (PPSSPP's bloom without its copies, M48) */
+   for (unsigned i = 0; i < n; i++)
+      for (unsigned j = i + 1; j < n; j++)
+         if (hs[j] == hs[i])
+            hs[j--] = hs[--n];
    if (f->debug)
       mesa_logi("sgx:   kick: PB 0x%08x, details 0x%08x (%s), 3D block 0x%08x, TA command "
                 "%u bytes, %u buffers", f->kick[0], cmd[0x54 / 4],
