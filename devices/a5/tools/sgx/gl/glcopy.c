@@ -4,7 +4,9 @@
  * glCopyTexSubImage2D, each checked against the source as read back --
  * every pixel; a copy exactly, a scaled linear blit to within 2.  Then the
  * copy sampled by a draw, and a copy, a draw into the source and a copy
- * again (their order).  Desktop OpenGL through EGL, as PPSSPP has it.
+ * again (their order); and (M48) a draw into a target's right half that
+ * samples its left half, the target itself bound as the texture (PPSSPP's
+ * bloom without its copies).  Desktop OpenGL through EGL, as PPSSPP has it.
  *
  *   sgx-gl glcopy [CASE]        (CASE: a name's start; all by default)
  */
@@ -45,6 +47,12 @@ static const char *fs_tex =
 	"uniform sampler2D t;\n"
 	"varying vec2 st;\n"
 	"void main() { gl_FragColor = texture2D(t, st); }\n";
+/* (M48) the left half of t over the whole quad */
+static const char *fs_left =
+	"#version 110\n"
+	"uniform sampler2D t;\n"
+	"varying vec2 st;\n"
+	"void main() { gl_FragColor = texture2D(t, vec2(st.x * 0.5, st.y)); }\n";
 
 static const float quad[] = { -1, -1, 0, 1, 1, -1, 0, 1, 1, 1, 0, 1,
                               -1, -1, 0, 1, 1, 1, 0, 1, -1, 1, 0, 1 };
@@ -279,6 +287,27 @@ int main(int argc, char **argv)
 		read(C, W, H, c);
 		if (compare("copy-order 1st", b, a, W, 0, 0, W, H, 0))
 			compare("copy-order 2nd", c, a2, W, 0, 0, W, H, 0);
+	}
+	if (wanted("self-sample")) {
+		/* (M48) S's right half drawn from its left half, S itself the
+		 * texture: the left half as it was, the right half a copy of it */
+		GLuint pleft = build(fs_left);
+
+		glBindFramebuffer(GL_FRAMEBUFFER, fbo_of[S]);
+		glViewport(0, 0, W, H);
+		glUseProgram(prog);
+		glUniform1f(glGetUniformLocation(prog, "k"), 0.4f);
+		glDrawArrays(GL_TRIANGLES, 0, 6);
+		read(S, W, H, want);
+		for (int y = 0; y < H; y++)
+			memcpy(want + 4 * (y * W + W / 2), want + 4 * (y * W), W / 2 * 4);
+		glViewport(W / 2, 0, W / 2, H);
+		glUseProgram(pleft);
+		glBindTexture(GL_TEXTURE_2D, S);
+		glUniform1i(glGetUniformLocation(pleft, "t"), 0);
+		glDrawArrays(GL_TRIANGLES, 0, 6);
+		read(S, W, H, b);
+		compare("self-sample", b, want, W, 0, 0, W, H, 0);
 	}
 	printf("%d of %d cases right\n", cases - failed, cases);
 	eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);

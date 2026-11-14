@@ -4598,11 +4598,22 @@ whose pixels and texels are apart binds the target itself.
   the driver.
 
 God of War's frame: u_blitter's renders 604 -> 0 in 100 frames, 18 -> 12
-renders a frame (`SGX_DEBUG=sync`); the glow as before (screenshots). The
-menu 31.8-33.3 -> 38.7-39.2 frames/s (one build, `PPSSPP_SELF_TEXTURE_COPY=1`
-and not, two runs each, taking turns), PPSSPP's counter ~52-56% -> ~64-66%.
-More than the renders' fixed cost: each copy also split the target's
-render around it, and PPSSPP's GL thread waited for the copy.
+renders a frame (`SGX_DEBUG=sync`); the glow as before (screenshots).
+
+**Corrected (2026-11-14, later):** the first measurement, 31.8-33.3 ->
+38.7-39.2 frames/s, was wrong. A draw that samples its own target listed
+the target's buffer twice in the render's submit -- as the target and among
+the textures (`kick()`, `sgx_frame.c`) -- and the kernel, which takes each
+buffer's reservation lock, refused the render: `SUBMIT: Operation already
+in progress` (EALREADY), the render dropped, six a frame. The glow's target
+kept what an earlier frame had left in it, and the still menu looked the
+same. `kick()` lists each buffer once now; `glcopy`'s `self-sample` case (a
+target's right half drawn from its left half, the target itself the
+texture) failed without that and passes with it, and `fpsrun.sh` counts
+failed renders (0). Measured again with the renders made: the menu
+35.6-36.1 -> 37.7-37.8 frames/s (`PPSSPP_SELF_TEXTURE_COPY=1` and not, two
+runs each, taking turns, the screen's flips direct: M49), PPSSPP's counter
+~56-60% -> ~61-65%.
 
 **What is left**, in the order it costs:
 
@@ -4661,11 +4672,13 @@ shown either way.
 
 God of War: every frame of the game's pointed at (8248 and 8555 in two
 runs; the ~50 copies X's own screen took around them), none copied; the
-picture right on the iPad's screen. The menu 38.7-39.1 -> 40.0-40.2
-frames/s (`direct_scanout` 0 and 1, two runs each, taking turns), PPSSPP's
-counter ~63-66% -> ~64-68%: less than the copy's 2.1 ms -- the GPU's
-frame is not all of the frame's time any more (its GL thread waits for it
-~45% of the time).
+picture right on the iPad's screen. The menu 37.1-37.3 -> 38.1-38.6
+frames/s (`direct_scanout` 0 and 1, two runs each, taking turns; measured
+again with M48's renders made -- the first runs, 38.7-39.1 -> 40.0-40.2,
+had them dropped in both): less than the copy's 2.1 ms -- the GPU's frame
+is not all of the frame's time any more. PPSSPP's emulator thread is busy
+91-93% of a core (`gowstat.sh`), its GL thread ~42%, which waits for the
+GPU half the time.
 
 **GLSL19's alpha test**, next in M48's list: God of War's is EQUAL, ref
 32, mask 0x20 -- alpha's bit 5 -- which PPSSPP looks up in its test
