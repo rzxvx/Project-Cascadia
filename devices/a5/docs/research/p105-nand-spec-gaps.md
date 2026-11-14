@@ -324,6 +324,25 @@ Left on the media for the iOS boot.
   seen in `w0c` (§4.4 lists 1, 3, 4, 5, 7, 8, 9). Meaning unknown; to note for §9.
 - 20000 random mapped LBAs read with matching metadata; LwVM System, Data, Linux.
 
+### Rung 8a, 2026-11-15: ext4 on the Linux volume through `apple_ftl`
+
+`devices/a5/tools/nand-rung8/rung8a.sh` on the rung-1 image (`apple_ftl auto_mount=0
+enable_write=1 write_volume=Linux verify_every=1`); `e2fsck` 1.47.4 from Alpine 3.24
+armv7 packages, run from `/tmp`. Log in `/srv/nand-dumps/rung8` on the NFS root.
+
+- Disks: `ftl0`, `ftl0p0` System and `ftl0p1` Data read-only, `ftl0p2` Linux writable. A
+  write of System's own block 1000 back to it is refused.
+- `e2fsck -fn` before: clean. ext4 mounted `rw,noatime,commit=30`, 14 % used, all writes in
+  `/rung8-test`: 128 MiB in 25 s with sync (5.1 MiB/s, every page verified); 2000 files of
+  1–16 KiB in 16 s; 300 write + fsync + rename + directory fsync, 49 ms each.
+- **Two reclaims ran by themselves** (spares under the floor of 6): 4 victims and 52 live
+  LBAs, then 4 and 55, each with its commit (sb 1005, sb 475); the unmount checkpoint
+  committed sb 30.
+- Remount: context sb 30, nothing to replay; `e2fsck -fn` clean; all 2301 files match
+  their SHA-256.
+
+iOS boot after it: next.
+
 ## Decisions the spec left open
 
 **D1. Closing a partly written superblock.** *Rung 7: iOS accepted a Linux SB closed
