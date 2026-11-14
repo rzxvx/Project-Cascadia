@@ -263,12 +263,28 @@ the media for iOS to boot on.
   open frontier (type 4, 670 valid); sb 456 now holds closed data.
 - 20000 random mapped LBAs read with matching metadata; LwVM System, Data, Linux.
 
-### Rung 6, round 2 (in progress), 2026-11-15
+### Rung 6, round 2, 2026-11-15 — iOS booted on it; rung 6 passed
 
 `action=commit` again: Linux context on sb 1048 (erased by iOS, listed type 7 in its array;
 the writer's reconcile took it as erased), weave 377625819, 200 LBAs, tree 172 (87847
 runs with iOS's 17668 replayed LBAs folded in); 4 erases, 50 programs, all in sb 1048; a
 fresh mount loads it with digest `82d5ca02ff7918d1`, nothing to replay. iOS's sb 248 kept.
+
+**After iOS** (user: iOS boots and works; read-only check): clean.
+
+- iOS loaded the Linux context and committed its own on **sb 467**, weave 377632440,
+  200 LBAs, tree 172 (87862 runs after 18455 replayed LBAs); golden rebuild identical
+  (87750 normalised runs).
+- Its SB array lists sb 467 and sb 1048 (the Linux context) as contexts; sb 1048 is erased
+  on the media, as in round 1.
+- sb 248, iOS's context of round 1 that the Linux commit kept, is listed type 1 (await
+  erase, valid 0) and already holds new data (first weave 377647424, after the context).
+- 20000 random mapped LBAs read with matching metadata; LwVM System, Data, Linux.
+
+**Rung 6 passed (2026-11-15):** iOS booted twice on a Linux context, took it as its own,
+committed after it, and its contexts rebuild identically from their tables. What iOS does
+with the older contexts: it erases the previous one after its own commit and keeps it
+listed as type 7 until the next commit, then lists it type 1 and reuses it.
 
 ## Decisions the spec left open
 
