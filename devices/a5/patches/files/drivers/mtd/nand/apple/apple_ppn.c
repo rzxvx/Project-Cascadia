@@ -387,31 +387,72 @@ static int rx_unit(const struct ppn_bus *b, u8 *data, u8 *meta)
 
 #ifndef SFTL_NO_WRITE
 /*
- * Transmit one whole page: on this SoC's PIO path the 16 bytes of metadata of
- * each 4 KiB unit sit 1024 bytes into the unit.
+ * Transmit one 4112-byte unit the way a unit is received: one start, four
+ * sectors of 1028 bytes, the 16 metadata bytes 1024 bytes into the stream.
+ * The end of the unit is the done bit, as on the set-feature transmit.
  */
+static int tx_unit(const struct ppn_bus *b, const u8 *data, const u8 *meta)
+{
+	void __iomem *fifo = b->fmi + F_DATA;
+	int ret;
+
+	clear_events(b);
+	wr(b, F_CONFIG, PIO_CONFIG_DATA);
+	wr(b, F_PIO, (UNIT_SECTOR_BYTES << 8) | UNIT_SECTORS);
+	wr(b, F_CONTROL, CONTROL_TX);
+
+	ret = wait_fifo(b);
+	if (ret)
+		return ret;
+	iowrite32_rep(fifo, data, 256);
+	iowrite32_rep(fifo, meta, 1);
+	ret = wait_fifo(b);
+	if (ret)
+		return ret;
+	iowrite32_rep(fifo, meta + 4, 3);
+	iowrite32_rep(fifo, data + 1024, 254);
+	ret = wait_fifo(b);
+	if (ret)
+		return ret;
+	iowrite32_rep(fifo, data + 2040, 257);
+	ret = wait_fifo(b);
+	if (ret)
+		return ret;
+	iowrite32_rep(fifo, data + 3068, 257);
+	return wait_tx_done(b);
+}
+
+static unsigned int tx_shape;
+module_param(tx_shape, uint, 0644);
+MODULE_PARM_DESC(tx_shape, "Page transmit: 0 = one start per 4112-byte unit, 1 = bursts of up to 1024 bytes");
+
+/* The burst form: one start per piece of at most 1024 bytes. */
+static int tx_unit_bursts(const struct ppn_bus *b, const u8 *data, const u8 *meta)
+{
+	unsigned int off;
+	int ret;
+
+	ret = tx_burst(b, data, RAW_UNIT_DATA1);
+	if (ret)
+		return ret;
+	ret = tx_burst(b, meta, RAW_UNIT_META);
+	for (off = 0; !ret && off < RAW_UNIT_DATA2; off += PIO_MAX_BURST)
+		ret = tx_burst(b, data + RAW_UNIT_DATA1 + off,
+			       min(RAW_UNIT_DATA2 - off, PIO_MAX_BURST));
+	return ret;
+}
+
 static int tx_page(const struct ppn_bus *b, const u8 *data, const u8 *meta)
 {
 	unsigned int u;
-	int ret;
+	int ret = 0;
 
-	for (u = 0; u < SFTL_LBAS_PER_PAGE; u++) {
-		unsigned int off;
+	for (u = 0; !ret && u < SFTL_LBAS_PER_PAGE; u++) {
+		const u8 *d = data + u * SFTL_LBA_SIZE, *m = meta + u * SFTL_META_LBA;
 
-		ret = tx_burst(b, data + u * SFTL_LBA_SIZE, RAW_UNIT_DATA1);
-		if (ret)
-			return ret;
-		ret = tx_burst(b, meta + u * SFTL_META_LBA, RAW_UNIT_META);
-		if (ret)
-			return ret;
-		for (off = 0; off < RAW_UNIT_DATA2; off += PIO_MAX_BURST) {
-			ret = tx_burst(b, data + u * SFTL_LBA_SIZE + RAW_UNIT_DATA1 + off,
-				       min(RAW_UNIT_DATA2 - off, PIO_MAX_BURST));
-			if (ret)
-				return ret;
-		}
+		ret = tx_shape ? tx_unit_bursts(b, d, m) : tx_unit(b, d, m);
 	}
-	return 0;
+	return ret;
 }
 #endif
 
@@ -775,12 +816,12 @@ static int program_start(const struct ppn_bus *b, const struct sftl_prog *pg)
 	bus_soft_reset(b);
 	ce_select(b);
 	clear_events(b);
-	ret = cmd_addr(b, OP_PROGRAM, make_row(pg->bank >> 1, pg->block, pg->page, false),
+	ret = cmd_addr(b, OP_PROGRAM, make_row(pg->bank >> 1, pg->block, pg->page, pg->slc),
 		       ROW_ADDR_BYTES);
 	if (ret)
 		return ret;
+	/* As on the set-feature transmit, the confirm follows with no stop. */
 	ret = tx_page(b, pg->data, pg->meta);
-	wr(b, F_CONTROL, CONTROL_STOP);
 	if (!ret)
 		ret = cmd_only(b, OP_PROG_CONFIRM);
 	if (!ret)

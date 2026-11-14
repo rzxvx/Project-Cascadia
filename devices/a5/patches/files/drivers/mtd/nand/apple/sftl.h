@@ -85,6 +85,7 @@ typedef uint64_t u64;
 
 struct sftl_prog {
 	u8 bank;
+	bool slc;		/* SLC row; the FTL always programs MLC */
 	u16 block;
 	u16 page;
 	const u8 *data;

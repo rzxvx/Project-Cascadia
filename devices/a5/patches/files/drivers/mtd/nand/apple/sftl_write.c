@@ -172,6 +172,7 @@ static unsigned int page_begin(struct sftl *fs)
 
 	sftl_locate(fs, vba, &bank, &page, &slot);
 	p->bank = (u8)bank;
+	p->slc = false;
 	p->block = (u16)w->fr.sb;
 	p->page = (u16)page;
 	p->data = w->pool + idx * SFTL_PAGE_SIZE;
@@ -281,6 +282,7 @@ static int frontier_close(struct sftl *fs)
 		sftl_locate(fs, sftl_vba(sb, fr->capacity - nb + i * SFTL_LBAS_PER_PAGE),
 			    &bank, &page, &slot);
 		prog[i].bank = (u8)bank;
+		prog[i].slc = false;
 		prog[i].block = (u16)sb;
 		prog[i].page = (u16)page;
 		prog[i].data = w->btoc_img + i * SFTL_PAGE_SIZE;
@@ -469,6 +471,7 @@ static int commit(struct sftl *fs)
 
 	for (i = 0; i < SFTL_CTX_PAGES; i++) {
 		prog[i].bank = (u8)(i % SFTL_BANKS);
+		prog[i].slc = false;
 		prog[i].block = (u16)new_sb;
 		prog[i].page = (u16)(i / SFTL_BANKS);
 		prog[i].data = w->ctx_pages + i * SFTL_PAGE_SIZE;
