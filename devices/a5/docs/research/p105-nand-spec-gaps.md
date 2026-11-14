@@ -96,6 +96,16 @@ and the first word of each LBA continues the LBA count. Spec 4.5 says 32 LBAs al
 holds for the iOS context in w0c only. The reader follows the metadata. **The writer still
 keeps a tree within 32 LBAs** (D3).
 
+### Rung 1 passed (user decision, 2026-11-14)
+
+Read-only build on the iPad (commits 710b586, 6a67fe8): mount and replay in 6 s with
+no read errors; 57022 of 57032 System files identical to the IPSW, the rest
+jailbreak and housekeeping files; Linux ext4 volume mounts read-only; a read of the
+whole 16 GB device in 565 s with no errors. Left open: the volume hashes differ
+from those taken through the earlier driver before an iOS run (the System volume
+header shows a modification after them), and no sample compare against the iOS
+`/dev/rdisk0` view was made.
+
 ## Decisions the spec left open
 
 **D1. Closing a partly written superblock.** The spec says "write the BTOC in the
