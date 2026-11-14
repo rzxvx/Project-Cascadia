@@ -263,6 +263,13 @@ the media for iOS to boot on.
   open frontier (type 4, 670 valid); sb 456 now holds closed data.
 - 20000 random mapped LBAs read with matching metadata; LwVM System, Data, Linux.
 
+### Rung 6, round 2 (in progress), 2026-11-15
+
+`action=commit` again: Linux context on sb 1048 (erased by iOS, listed type 7 in its array;
+the writer's reconcile took it as erased), weave 377625819, 200 LBAs, tree 172 (87847
+runs with iOS's 17668 replayed LBAs folded in); 4 erases, 50 programs, all in sb 1048; a
+fresh mount loads it with digest `82d5ca02ff7918d1`, nothing to replay. iOS's sb 248 kept.
+
 ## Decisions the spec left open
 
 **D1. Closing a partly written superblock.** The spec says "write the BTOC in the
