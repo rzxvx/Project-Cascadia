@@ -2155,7 +2155,11 @@ submit(struct sgx_context *ctx)
    if (vs) {
       const struct pipe_rasterizer_state *r = ctx->rast;
 
-      memcpy(ctx->vs_sa + vs->clip_sa, ab, sizeof(ab));
+      /* (M47: a_x, a_y, b_x, b_y -- pairs the program reads two at a
+       * time, from an even word) */
+      const float abp[4] = { ab[0], ab[2], ab[1], ab[3] };
+
+      memcpy(ctx->vs_sa + vs->clip_sa, abp, sizeof(abp));
       /* gallium's anticlockwise is the target's, row 0 at the top: the
        * TA's; the back faces are what the front ones are not */
       if (r->cull_face == PIPE_FACE_BACK)

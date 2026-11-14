@@ -24,7 +24,7 @@ DEVICE (root@10.55.0.2) is the iPad; MESA (/root/sgx-mesa-cur) the build
 whose probe runs; SGX_LDR_PROBE_BRANCHES=1 in ENV runs the probe as a
 program whose pixels each go their own way (PHAS mode 1).
 """
-import importlib.util, os, re, subprocess, sys
+import importlib.util, os, re, struct, subprocess, sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 spec = importlib.util.spec_from_file_location('ud', os.path.join(ROOT, 'tools', 'iosgpu', 'usse-dis.py'))
@@ -137,12 +137,141 @@ def vtstmsk(d, s1, s2, alu_sel=0, alu_op=14, sign=1, zero=0, mtype=0, prec=1, wb
                j=n2)
 
 
+def _vreg(r, table, bits=6):
+    """a float operand's register field (64-bit units: r2 is field 1), the
+    internal registers i0..i3 the temporaries' top four (fields 60..63 of
+    six bits, 124..127 of seven); the hardware's constants (c) and
+    immediates as they are"""
+    m = re.match(r'i([0-3])$', r)
+    if m:
+        return 0, 0, (1 << bits) - 4 + int(m.group(1))
+    e, b, n = _reg(r, table)
+    if r[0] in 'c#':
+        return e, b, n
+    if n & 1:
+        raise ValueError('%s: a float operand names a 64-bit register (even)' % r)
+    return e, b, n >> 1
+
+
+def _sw(s, table):
+    """a swizzle as its index in table (a tuple of names), or a number"""
+    return table.index(s) if s in table else int(s, 0)
+
+
+def _chan(s):
+    """four channels, Vita3K's SwizzleChannel each (x y z w 0 1 2 h)"""
+    return [ud.CHAN.index(ch) for ch in s]
+
+
+def fmov(d, s, mask=0xf, swz='xyzw', rpt=0, nosched=0, typ=5):
+    """(VMOV, a float move) d = s through swz (VEC4_STD), d's channels in
+    mask -- F32 (typ 5) or F16 (4) registers 64-bit ones"""
+    de, db, dn = _vreg(d, DEST)
+    e1, b1, n1 = _vreg(s, SRC12)
+    return enc('VMOV', s=1, d=de, c=e1, m=0, a=rpt, n=nosched, o=typ, w=_sw(swz, ud.VEC4_STD),
+               l=db, f=b1, h=mask, j=dn, u=n1)
+
+
+def vmad2(d, s0, s1, s2, f16=0, mask=0x3, sw0='xyzw', sw1='xyzw', sw2='xyzw', abs0=0, mod1=0,
+          mod2=0, nosched=0, pred=0):
+    """(VMAD2) d = s0 * s1 + s2, two F32 lanes (or four F16)"""
+    de, db, dn = _vreg(d, DEST)
+    e0, b0, n0 = _vreg(s0, SRC0)
+    e1, b1, n1 = _vreg(s1, SRC12)
+    e2, b2, n2 = _vreg(s2, SRC12)
+    if de or e0:
+        raise ValueError('vmad2: dest and src0 have no extended banks')
+    k0, k1 = _sw(sw0, ud.MAD2_S0), _sw(sw1, ud.MAD2_S1)
+    return enc('VMAD2', d=f16, p=pred, s=1, r=k0 >> 2, c=abs0, b=e1, a=e2, w=_sw(sw2, ud.MAD2_S2),
+               i=k1 >> 2, n=nosched, e=mask, m=mod1, o=mod2, k=b0, t=db, f=b1, g=b2, h=dn,
+               z=k1 & 3, j=k0 & 3, l=n0, q=n1, u=n2)
+
+
+def nmad(op, d, s1, s2, f16=0, mask=0x1, sw1='xyzw', sw2='xyzw', mod1=0, abs2=0, nosched=0):
+    """(V32NMAD / V16NMAD) d = op(s1, s2): src1 through four channels (x y z
+    w 0 1 2 h), src2 through VEC4_STD"""
+    de, db, dn = _vreg(d, DEST)
+    e1, b1, n1 = _vreg(s1, SRC12)
+    e2, b2, n2 = _vreg(s2, SRC12)
+    sw = sum(c << 3 * k for k, c in enumerate(_chan(sw1)))
+    return enc('V16NMAD' if f16 else 'V32NMAD', s=1, r=sw >> 10, d=de, c=sw >> 9 & 1, b=e1,
+               a=e2, w=_sw(sw2, ud.VEC4_STD), n=nosched, e=mask, m=mod1, o=abs2, i=sw >> 7 & 3,
+               t=db, k=b1, l=b2, f=dn, z=sw & 0x7f, g=ud.NMAD_OP.index(op), h=n1, j=n2)
+
+
+def _v34(s, v4):
+    """a VMAD/VDP swizzle: (index, extended table)"""
+    std, ext = (ud.VEC4_STD, ud.VEC4_EXT) if v4 else (ud.VEC3_STD, ud.VEC3_EXT)
+    if s in std:
+        return std.index(s), 0
+    if s in ext:
+        return ext.index(s), 1
+    return int(s, 0), 0
+
+
+def vmad(d, g0, s1, g1, v4=1, mask=0xf, swg0='xyzw', sw1='xyzw', swg1='xyzw', neg0=0, abs0=0,
+         neg1=0, abs1=0, negg1=0, absg1=0, rpt=0, inc=0, nosched=0, end=0):
+    """(VMAD) d = g0 * s1 + g1, g0 and g1 internal registers (i0..i3), mad4
+    (v4) or mad3"""
+    de, db, dn = _vreg(d, DEST)
+    e1, b1, n1 = _vreg(s1, SRC12)
+    q, z = _v34(swg0, v4)
+    a_, y = _v34(sw1, v4)
+    u, g = _v34(swg1, v4)
+    return enc('VMAD', s=1, g=g, o=v4, d=de, e=end, r=e1, a=inc, i=abs0, t=rpt, n=nosched, w=mask,
+               c=neg1, b=abs1, f=negg1, h=absg1, z=z, k=db, j=b1, l=int(g0[1:]), m=dn, q=q, u=u,
+               v=int(g1[1:]), x=neg0, y=y, A=a_, B=n1)
+
+
+def vdp(d, s1, g0, v4=1, mask=0x1, sw1='xyzw', swg0='xyzw', neg1=0, abs1=0, absg0=0, clip=None,
+        rpt=0, inc=0, nosched=0, end=0):
+    """(VDP) d = dot(s1, g0), g0 an internal register: dp4 (v4) or dp3; src1
+    through four channels of its own (x y z w 0 1 2 h)"""
+    de, db, dn = _vreg(d, DEST)
+    e1, b1, n1 = _vreg(s1, SRC12)
+    ch = _chan(sw1.ljust(4, 'x'))
+    z, zx = _v34(swg0, v4)
+    if zx:
+        raise ValueError('vdp: gpi0 takes the standard swizzles')
+    return enc('VDP', s=1, c=clip is not None, o=v4, d=de, e=end, r=e1, a=inc, g=absg0, t=rpt,
+               n=nosched, w=mask, b=neg1, f=abs1, l=clip or 0, k=db, h=b1, i=int(g0[1:]), j=dn,
+               z=z, m=ch[3], q=ch[2], y=ch[1], x=ch[0], u=n1)
+
+
+def vcomp(op, d, s, chan=0, mask=0x1, mod=0, rpt=0):
+    """(VCOMP) d = op(s.chan), F32: op rcp rsq log exp"""
+    de, db, dn = _vreg(d, DEST, 7)
+    e1, b1, n1 = _vreg(s, SRC12, 7)
+    return enc('VCOMP', s=1, d=0, e=de, r=e1, a=rpt, b=ud.COMP_OP.index(op), c=0, m=mod, f=chan,
+               t=db, k=b1, g=dn, h=n1, w=mask)
+
+
 def _kw(args, conv=lambda v: int(v, 0)):
-    return {k: (eval(v) if k == 'sel' else conv(v)) for k, v in (a.split('=') for a in args)}
+    def val(k, v):
+        if k == 'sel':
+            return eval(v)
+        if k.startswith('sw'):
+            return v
+        return conv(v)
+    return {k: val(k, v) for k, v in (a.split('=') for a in args)}
+
+
+def _f32(v):
+    return struct.unpack('<I', struct.pack('<f', float(v)))[0]
 
 
 def parse(line):
+    """an instruction; tokens +bN set bit N of its word (a flag found by
+    probing: +b43 is the vector ALU's nosched)"""
     t = line.split()
+    extra = 0
+    for tok in [x for x in t if re.match(r'\+b\d+$', x)]:
+        extra |= 1 << int(tok[2:])
+        t.remove(tok)
+    return _parse(t) | extra
+
+
+def _parse(t):
     op, a = t[0], t[1:]
     if op == 'limm':
         return limm(a[0], int(a[1], 0), int(a[2]) if len(a) > 2 else 0)
@@ -158,6 +287,22 @@ def parse(line):
         return vtst(int(a[0]), a[1], a[2], **_kw(a[3:]))
     if op == 'vtstmsk':
         return vtstmsk(a[0], a[1], a[2], **_kw(a[3:]))
+    if op == 'limmf':
+        return limm(a[0], _f32(a[1]), int(a[2]) if len(a) > 2 else 0)
+    if op == 'fmov':
+        return fmov(a[0], a[1], **_kw(a[2:]))
+    if op == 'vmad2':
+        return vmad2(a[0], a[1], a[2], a[3], **_kw(a[4:]))
+    if op in ud.NMAD_OP:
+        return nmad(op, a[0], a[1], a[2], **_kw(a[3:]))
+    if op == 'vmad':
+        return vmad(a[0], a[1], a[2], a[3], **_kw(a[4:]))
+    if op == 'vdp':
+        return vdp(a[0], a[1], a[2], **_kw(a[3:]))
+    if op in ud.COMP_OP:
+        return vcomp(op, a[0], a[1], **_kw(a[2:]))
+    if op == 'enc':
+        return enc(a[0], **_kw(a[1:]))
     if op == 'out':
         return vbw('or', 'o0', a[0], '#0', end=1)
     if op == 'word':
@@ -202,7 +347,11 @@ def main():
     probes = [[x.strip() for x in l.split(';') if x.strip()]
               for l in open(sys.argv[2]) if l.strip() and not l.startswith('#')]
     for lines, (v, txt) in zip(probes, batch(probes)):
-        print('%-12s %s' % ('%#010x' % v if v is not None else 'ERR', ' ; '.join(lines)))
+        f = struct.unpack('<f', struct.pack('<I', v))[0] if v is not None else 0
+        print('%-12s %-12s %s' % ('%#010x' % v if v is not None else 'ERR',
+                                  '%.6g' % f if v is not None else '', ' ; '.join(lines)))
+        if v is not None and os.environ.get('ALL'):
+            print('    ', re.search(r'pixels: .*', txt).group(0))
         if v is None:
             print('    ', txt[:300])
     return 0

@@ -40,6 +40,7 @@ src_bank(struct usse_reg r, unsigned *ext, unsigned *bank)
    case USSE_SPECIAL: *ext = 1; *bank = 1; break;
    case USSE_IDX1:    *ext = 1; *bank = 0; break;
    case USSE_IMM:     *ext = 1; *bank = 2; break;
+   case USSE_INTERNAL: *ext = 0; *bank = 0; break;     /* the temporaries' top */
    default:           assert(0); *ext = *bank = 0; break;
    }
 }
@@ -49,7 +50,7 @@ static void
 src0_bank(struct usse_reg r, unsigned *ext, unsigned *bank)
 {
    assert(r.bank == USSE_TEMP || r.bank == USSE_PA || r.bank == USSE_OUTPUT ||
-          r.bank == USSE_SA);
+          r.bank == USSE_SA || r.bank == USSE_INTERNAL);
    *ext = r.bank == USSE_OUTPUT || r.bank == USSE_SA;
    *bank = r.bank == USSE_PA || r.bank == USSE_SA;
 }
@@ -64,21 +65,35 @@ dest_bank(struct usse_reg r, unsigned *ext, unsigned *bank)
    case USSE_PA:     *ext = 0; *bank = 2; break;
    case USSE_SA:     *ext = 1; *bank = 0; break;
    case USSE_INDEX:  *ext = 1; *bank = 2; break;
+   case USSE_INTERNAL: *ext = 0; *bank = 0; break;
    default:          assert(0); *ext = *bank = 0; break;
    }
 }
 
-/* the 64-bit register a float operand names, and its lane */
+/* the 64-bit register a float operand names, and its lane -- (M47) an
+ * internal register's field is one of the six-bit fields' top four (60 +
+ * k), its lane any of four */
 static unsigned
 pair(struct usse_reg r)
 {
+   if (r.bank == USSE_INTERNAL)
+      return 60 + (r.num >> 2);
    return r.bank == USSE_SPECIAL ? r.num : r.num >> 1;
 }
 
 static unsigned
 lane(struct usse_reg r)
 {
+   if (r.bank == USSE_INTERNAL)
+      return r.num & 3;
    return r.bank == USSE_SPECIAL ? 0 : r.num & 1;
+}
+
+/* the same in a seven-bit field (VCOMP's): an internal register 124 + k */
+static unsigned
+pair7(struct usse_reg r)
+{
+   return r.bank == USSE_INTERNAL ? 124 + (r.num >> 2) : pair(r);
 }
 
 static unsigned
@@ -103,8 +118,14 @@ uint64_t
 usse_fop_sw(enum usse_nmad_op op, struct usse_reg dest, struct usse_reg src1, unsigned sw1,
             struct usse_reg src2)
 {
+   return usse_fop_ex(op, dest, 1u << lane(dest), src1, sw1, src2, lane(src2));
+}
+
+uint64_t
+usse_fop_ex(enum usse_nmad_op op, struct usse_reg dest, unsigned mask, struct usse_reg src1,
+            unsigned sw1, struct usse_reg src2, unsigned sw2)
+{
    unsigned dext, dbank, ext1, bank1, ext2, bank2;
-   unsigned sw2 = lane(src2);
 
    dest_bank(dest, &dext, &dbank);
    src_bank(src1, &ext1, &bank1);
@@ -113,7 +134,7 @@ usse_fop_sw(enum usse_nmad_op op, struct usse_reg dest, struct usse_reg src1, un
    return bits(0x01, 63, 59) | SKIPINV |
           bits(sw1 >> 10 & 3, 54, 53) | bits(dext, 51, 51) | bits(sw1 >> 9 & 1, 50, 50) |
           bits(ext1, 49, 49) | bits(ext2, 48, 48) | bits(sw2, 47, 44) |
-          bits(1u << lane(dest), 42, 39) |                /* the dest mask */
+          bits(mask, 42, 39) |                            /* the dest mask */
           bits(modifier(src1), 38, 37) | bits(src2.abs, 36, 36) |
           bits(sw1 >> 7 & 3, 35, 34) | bits(dbank, 33, 32) | bits(bank1, 31, 30) |
           bits(bank2, 29, 28) | bits(pair(dest), 27, 22) | bits(sw1 & 0x7f, 21, 15) |
@@ -160,11 +181,15 @@ uint64_t
 usse_fmad(struct usse_reg dest, struct usse_reg src0, struct usse_reg src1,
           struct usse_reg src2)
 {
-   unsigned ext1, bank1, ext2, bank2;
+   unsigned ext1, bank1, ext2, bank2, dext, dbank;
 
-   /* dest and src0 without an extended bank: temp, output, pa; temp, pa */
-   assert(dest.bank == USSE_TEMP || dest.bank == USSE_OUTPUT || dest.bank == USSE_PA);
-   assert((src0.bank == USSE_TEMP || src0.bank == USSE_PA) && !src0.neg);
+   /* dest and src0 without an extended bank: temp, output, pa; temp, pa
+    * (an internal register: the temporaries') */
+   assert(dest.bank == USSE_TEMP || dest.bank == USSE_OUTPUT || dest.bank == USSE_PA ||
+          dest.bank == USSE_INTERNAL);
+   assert((src0.bank == USSE_TEMP || src0.bank == USSE_PA || src0.bank == USSE_INTERNAL) &&
+          !src0.neg);
+   dest_bank(dest, &dext, &dbank);
    src_bank(src1, &ext1, &bank1);
    src_bank(src2, &ext2, &bank2);
    /* swizzles: xxxx or yyyy, from three tables that start the same way */
@@ -172,9 +197,32 @@ usse_fmad(struct usse_reg dest, struct usse_reg src0, struct usse_reg src1,
           bits(0, 53, 53) | bits(src0.abs, 50, 50) | bits(ext1, 49, 49) | bits(ext2, 48, 48) |
           bits(lane(src2), 47, 45) | bits(0, 44, 44) | bits(1u << lane(dest), 42, 39) |
           bits(modifier(src1), 38, 37) | bits(modifier(src2), 36, 35) |
-          bits(src0.bank == USSE_PA, 34, 34) | bits(dest.bank, 33, 32) |
+          bits(src0.bank == USSE_PA, 34, 34) | bits(dbank, 33, 32) |
           bits(bank1, 31, 30) | bits(bank2, 29, 28) | bits(pair(dest), 27, 22) |
           bits(lane(src1), 21, 20) | bits(lane(src0), 19, 18) | bits(pair(src0), 17, 12) |
+          bits(pair(src1), 11, 6) | bits(pair(src2), 5, 0);
+}
+
+uint64_t
+usse_fmad_ex(struct usse_reg dest, unsigned mask, struct usse_reg src0, unsigned sw0,
+             struct usse_reg src1, unsigned sw1, struct usse_reg src2, unsigned sw2)
+{
+   unsigned ext1, bank1, ext2, bank2, dext, dbank;
+
+   assert(dest.bank == USSE_TEMP || dest.bank == USSE_OUTPUT || dest.bank == USSE_PA ||
+          dest.bank == USSE_INTERNAL);
+   assert((src0.bank == USSE_TEMP || src0.bank == USSE_PA || src0.bank == USSE_INTERNAL) &&
+          !src0.neg);
+   dest_bank(dest, &dext, &dbank);
+   src_bank(src1, &ext1, &bank1);
+   src_bank(src2, &ext2, &bank2);
+   return bits(0x00, 63, 59) | bits(0, 58, 58) /* F32 */ | SKIPINV |
+          bits(sw0 >> 2, 53, 53) | bits(src0.abs, 50, 50) | bits(ext1, 49, 49) |
+          bits(ext2, 48, 48) | bits(sw2, 47, 45) | bits(sw1 >> 2, 44, 44) | bits(mask, 42, 39) |
+          bits(modifier(src1), 38, 37) | bits(modifier(src2), 36, 35) |
+          bits(src0.bank == USSE_PA, 34, 34) | bits(dbank, 33, 32) |
+          bits(bank1, 31, 30) | bits(bank2, 29, 28) | bits(pair(dest), 27, 22) |
+          bits(sw1 & 3, 21, 20) | bits(sw0 & 3, 19, 18) | bits(pair(src0), 17, 12) |
           bits(pair(src1), 11, 6) | bits(pair(src2), 5, 0);
 }
 
@@ -188,8 +236,8 @@ usse_fcomp(enum usse_comp_op op, struct usse_reg dest, struct usse_reg src)
    /* types 0 (F32) for dest (54:53) and source (40:39) */
    return bits(0x06, 63, 59) | SKIPINV | bits(dext, 51, 51) | bits(ext, 49, 49) |
           bits(op, 42, 41) | bits(modifier(src), 38, 37) | bits(lane(src), 36, 35) |
-          bits(dbank, 33, 32) | bits(bank, 31, 30) | bits(pair(dest), 27, 21) |
-          bits(pair(src), 13, 7) | bits(1u << lane(dest), 3, 0);
+          bits(dbank, 33, 32) | bits(bank, 31, 30) | bits(pair7(dest), 27, 21) |
+          bits(pair7(src), 13, 7) | bits(1u << lane(dest), 3, 0);
 }
 
 /* VMOV: kind 0 a move, 1 a conditional move; type 5 F32 */
@@ -219,6 +267,16 @@ usse_fmov(struct usse_reg dest, struct usse_reg src)
 {
    /* swizzle xxxx or yyyy: the source's lane, into the dest's */
    return vmov(0, 0, dest, usse_reg(USSE_TEMP, 0), src, usse_reg(USSE_TEMP, 0), lane(src));
+}
+
+uint64_t
+usse_fmov2(struct usse_reg dest, struct usse_reg src)
+{
+   assert(!(dest.num & 1) && !(src.num & 1) && dest.bank != USSE_INTERNAL &&
+          src.bank != USSE_INTERNAL);
+   /* vmov()'s word for x, its mask x and y, the swizzle xyzw */
+   return (vmov(0, 0, dest, usse_reg(USSE_TEMP, 0), src, usse_reg(USSE_TEMP, 0), 4) &
+           ~bits(0xf, 27, 24)) | bits(3, 27, 24);
 }
 
 bool
@@ -698,4 +756,106 @@ usse_sop2(struct usse_reg dest, struct usse_reg src1, struct usse_reg src2,
           bits(dbank, 33, 32) | bits(bank1, 31, 30) | bits(bank2, 29, 28) |
           bits(dest.num, 27, 21) | bits(f->cop, 19, 18) | bits(f->aop, 17, 16) |
           bits(src1.num, 13, 7) | bits(src2.num, 6, 0);
+}
+
+/* (M47) VDP, Vita3K's vdp: 00011 ppp s c(clip) 0 o(dp4) d(dest ext) e(end)
+ * r(src1 ext) aa(increment) g(gpi0 abs) tt(repeat) n(nosched) wwww(mask)
+ * b(src1 neg) f(src1 abs) lll(clip plane) kk(dest bank) hh(src1 bank)
+ * ii(gpi0) jjjjjj(dest) zzzz(gpi0 swizzle) mmm qqq yyy xxx(src1's channels
+ * w z y x) uuuuuu(src1) */
+uint64_t
+usse_vdp(struct usse_reg dest, unsigned mask, bool dp4, struct usse_reg src1, unsigned sw1,
+         unsigned gpi0, unsigned swg0)
+{
+   unsigned dext, dbank, ext1, bank1;
+
+   assert(gpi0 < USSE_NINTERNAL);
+   dest_bank(dest, &dext, &dbank);
+   src_bank(src1, &ext1, &bank1);
+   return bits(0x03, 63, 59) | SKIPINV | bits(dp4, 52, 52) | bits(dext, 51, 51) |
+          bits(ext1, 49, 49) | bits(mask, 42, 39) | bits(src1.neg, 38, 38) |
+          bits(src1.abs, 37, 37) | bits(dbank, 33, 32) | bits(bank1, 31, 30) |
+          bits(gpi0, 29, 28) | bits(pair(dest), 27, 22) | bits(swg0, 21, 18) |
+          bits(sw1 >> 9 & 7, 17, 15) | bits(sw1 >> 6 & 7, 14, 12) | bits(sw1 >> 3 & 7, 11, 9) |
+          bits(sw1 & 7, 8, 6) | bits(pair(src1), 5, 0);
+}
+
+/* (M47) VMAD, Vita3K's vmad: 00011 ppp s g(gpi1 swizzle ext) 1 o(mad4)
+ * d(dest ext) e(end) r(src1 ext) aa(increment) i(gpi0 abs) tt(repeat)
+ * n(nosched) wwww(mask) c(src1 neg) b(src1 abs) f(gpi1 neg) h(gpi1 abs)
+ * z(gpi0 swizzle ext) kk(dest bank) jj(src1 bank) ll(gpi0) mmmmmm(dest)
+ * qqqq(gpi0 swizzle) uuuu(gpi1 swizzle) vv(gpi1) x(gpi0 neg) y(src1
+ * swizzle ext) AAAA(src1 swizzle) BBBBBB(src1) */
+uint64_t
+usse_vmad(struct usse_reg dest, unsigned mask, unsigned gpi0, unsigned swg0,
+          struct usse_reg src1, unsigned sw1, unsigned gpi1, unsigned swg1, bool neg1)
+{
+   unsigned dext, dbank, ext1, bank1;
+
+   assert(gpi0 < USSE_NINTERNAL && gpi1 < USSE_NINTERNAL);
+   dest_bank(dest, &dext, &dbank);
+   src_bank(src1, &ext1, &bank1);
+   return bits(0x03, 63, 59) | SKIPINV | bits(swg1 >> 4, 54, 54) | bits(1, 53, 53) |
+          bits(1, 52, 52) | bits(dext, 51, 51) | bits(ext1, 49, 49) | bits(mask, 42, 39) |
+          bits(src1.neg, 38, 38) | bits(src1.abs, 37, 37) | bits(neg1, 36, 36) |
+          bits(swg0 >> 4, 34, 34) | bits(dbank, 33, 32) | bits(bank1, 31, 30) |
+          bits(gpi0, 29, 28) | bits(pair(dest), 27, 22) | bits(swg0 & 15, 21, 18) |
+          bits(swg1 & 15, 17, 14) | bits(gpi1, 13, 12) | bits(sw1 >> 4, 10, 10) |
+          bits(sw1 & 15, 9, 6) | bits(pair(src1), 5, 0);
+}
+
+uint64_t
+usse_vtstmsk_f32(struct usse_reg dest, struct usse_reg src1, struct usse_reg src2,
+                 enum usse_cmp cmp)
+{
+   /* the subtraction's sign test (1 below 0, 2 above), zero test (1 zero,
+    * 2 not), and whether both must pass (else either) */
+   static const uint8_t sign[] = { 1, 1, 0, 0, 2, 2 }, zero[] = { 2, 1, 1, 2, 1, 2 };
+   static const uint8_t both[] = { 1, 0, 1, 1, 0, 1 };
+   unsigned dext, dbank, ext1, bank1, ext2, bank2;
+
+   assert(!src1.abs && !src2.neg && !src2.abs);
+   dest_bank(dest, &dext, &dbank);
+   src_bank(src1, &ext1, &bank1);
+   src_bank(src2, &ext2, &bank2);
+   return bits(0x0f, 63, 59) | SKIPINV | bits(dext, 51, 51) | bits(src1.neg, 50, 50) |
+          bits(ext1, 49, 49) | bits(ext2, 48, 48) | bits(1, 47, 47) /* F32 */ |
+          bits(sign[cmp], 43, 42) | bits(zero[cmp], 41, 40) | bits(both[cmp], 39, 39) |
+          bits(1, 37, 36) /* mask type 1: ~0 or 0 */ | bits(dbank, 33, 32) |
+          bits(bank1, 31, 30) | bits(bank2, 29, 28) | bits(pair7(dest), 27, 21) |
+          bits(1, 20, 20) /* written back */ | bits(14, 17, 14) /* ALU 0's subtraction */ |
+          bits(pair7(src1), 13, 7) | bits(pair7(src2), 6, 0);
+}
+
+bool
+usse_nosched(uint64_t *w)
+{
+   switch (*w >> 59) {
+   case 0x00:     /* VMAD2 */
+   case 0x01:     /* V32NMAD */
+   case 0x02:     /* V16NMAD */
+   case 0x03:     /* VMAD, VDP */
+   case 0x06:     /* VCOMP */
+   case 0x07:     /* VMOV */
+      *w |= 1ull << 43;
+      return true;
+   case 0x08:     /* VPCK */
+   case 0x09:     /* VTST */
+   case 0x0a:     /* VBW: and, or */
+   case 0x0b:     /* xor */
+   case 0x0c:     /* shl, rol */
+   case 0x0d:     /* shr, asr */
+   case 0x0f:     /* VTSTMSK */
+   case 0x1a:     /* I32MAD2 */
+      *w |= 1ull << 54;
+      return true;
+   case 0x1f:
+      if ((*w >> 56) == 0xfc) {    /* LIMM */
+         *w |= 1ull << 54;
+         return true;
+      }
+      return false;
+   default:
+      return false;
+   }
 }

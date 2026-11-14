@@ -116,6 +116,76 @@ static void r_light(const struct in *p, float o[4])
 	o[3] = p->b[3];
 }
 
+/* (M47) dot products of every shape VDP takes: two, three and four
+ * components, a uniform's and an attribute's, negated, with constants */
+static float dot(const float *a, const float *b, int n)
+{
+	float d = 0;
+
+	for (int i = 0; i < n; i++)
+		d += a[i] * b[i];
+	return d;
+}
+
+static void r_dots(const struct in *p, float o[4])
+{
+	float a3[3] = { p->a[0], p->a[1], 1.0f }, b2[2] = { p->b[2], p->b[3] };
+
+	o[0] = dot(p->a, U, 2) + dot(b2, V, 2);
+	o[1] = -dot(p->a, p->b, 3);
+	o[2] = dot(a3, U, 3) * 0.5f;
+	o[3] = dot(p->a, p->b, 4) + dot(U, V, 4);
+}
+
+/* PPSSPP's vertex shader, as its transform and lights: the position times
+ * the world matrix, the normal too (unit length), the view matrix, the
+ * projection; three lights' dot products */
+static void r_ppsspp(const struct in *p, float o[4])
+{
+	float a[4] = { p->a[0], p->a[1], p->a[2], 1.0f }, n4[4] = { p->b[0], p->b[1], p->b[2], 0.0f };
+	float w[4], n[4], v[4], q[4], len, l0, l1, l2;
+
+	vec_mat(a, M, w);
+	vec_mat(n4, M, n);
+	len = sqrtf(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
+	for (int i = 0; i < 3; i++)
+		n[i] /= len;
+	w[3] = 1.0f;
+	vec_mat(w, M, v);
+	v[3] = 1.0f;
+	mat_vec(M, v, q);
+	l0 = fmaxf(dot(U, n, 3), 0.0f);
+	l1 = fmaxf(dot(V, n, 3), 0.0f);
+	l2 = fmaxf(dot(M + 4, n, 3), 0.0f);
+	o[0] = q[0] * 0.25f + l0;
+	o[1] = q[1] * 0.25f + l1;
+	o[2] = q[2] * 0.25f - l2;
+	o[3] = q[3] * 0.25f + v[2] * 0.1f;
+}
+
+/* a vector an internal register keeps, read again after other work */
+static void r_reuse(const struct in *p, float o[4])
+{
+	float x = dot(p->a, U, 4), y = dot(p->a, V, 4), t = p->b[0];
+
+	for (int i = 0; i < 6; i++)
+		t = t * 0.5f + p->b[(i + 1) & 3] * x;
+	o[0] = x;
+	o[1] = y;
+	o[2] = t * 0.25f;
+	o[3] = dot(p->a, M, 4) + dot(p->a, M + 8, 4);
+}
+
+/* (M47) comparisons (VTSTMSK, two lanes at once where the operands are
+ * pairs): <, >= 0, <=, >, a uniform's against an attribute's */
+static void r_compare(const struct in *p, float o[4])
+{
+	o[0] = (p->a[0] < p->b[0]) + 2.0f * (p->a[1] < p->b[1]);
+	o[1] = (p->a[0] >= 0.0f) + 2.0f * (p->a[1] >= 0.0f);
+	o[2] = (p->a[2] <= p->b[2]) + 2.0f * (p->a[2] > p->b[2]);
+	o[3] = (U[0] > p->a[3]) + 2.0f * (V[1] <= p->a[3]);
+}
+
 static const struct test {
 	const char *name, *expr;    /* the vertex shader's r */
 	ref_fn ref;
@@ -136,6 +206,20 @@ static const struct test {
 	{ "light", "vec3 n = normalize(a.xyz); float d = max(dot(n, u.xyz), 0.0); "
 	           "r = vec4(clamp(v.xyz * b.xyz + u.xyz * b.xyz * d, 0.0, 1.0), b.w);", r_light, 1.0f,
 	  0.0f },
+	{ "dots", "r = vec4(dot(a.xy, u.xy) + dot(b.zw, v.xy), -dot(a.xyz, b.xyz), "
+	          "dot(vec3(a.xy, 1.0), u.xyz) * 0.5, dot(a, b) + dot(u, v));", r_dots, 0.2f, 0.5f },
+	{ "ppsspp", "vec3 w = (vec4(a.xyz, 1.0) * m).xyz; vec3 n = normalize((vec4(b.xyz, 0.0) * m).xyz); "
+	            "vec4 vp = vec4((vec4(w, 1.0) * m).xyz, 1.0); vec4 q = m * vp; "
+	            "r = q * 0.25 + vec4(max(dot(u.xyz, n), 0.0), max(dot(v.xyz, n), 0.0), "
+	            "-max(dot(m[1].xyz, n), 0.0), vp.z * 0.1);", r_ppsspp, 0.2f, 0.5f },
+	{ "compare", "r = vec4(float(a.x < b.x) + 2.0 * float(a.y < b.y), "
+	             "float(a.x >= 0.0) + 2.0 * float(a.y >= 0.0), "
+	             "float(a.z <= b.z) + 2.0 * float(a.z > b.z), "
+	             "float(u.x > a.w) + 2.0 * float(v.y <= a.w));", r_compare, 0.2f, 0.2f },
+	{ "reuse", "float x = dot(a, u); float y = dot(a, v); float t = b.x; "
+	           "t = t * 0.5 + b.y * x; t = t * 0.5 + b.z * x; t = t * 0.5 + b.w * x; "
+	           "t = t * 0.5 + b.x * x; t = t * 0.5 + b.y * x; t = t * 0.5 + b.z * x; "
+	           "r = vec4(x, y, t * 0.25, dot(a, m[0]) + dot(a, m[2]));", r_reuse, 0.2f, 0.5f },
 };
 
 static GLuint build(const struct test *T)
@@ -276,6 +360,9 @@ int main(int argc, char **argv)
 
 				if (abs(r - g) > worst)
 					worst = abs(r - g), wk = k, wc = c, got = g, want = r;
+				/* GLVSMATH_ALL=1: every wrong one */
+				if (abs(r - g) > 2 && getenv("GLVSMATH_ALL"))
+					printf("  quad %d channel %d: %d, wanted %d\n", k, c, g, r);
 			}
 		}
 		if (worst > 2) {

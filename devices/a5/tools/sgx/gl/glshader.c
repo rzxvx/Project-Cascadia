@@ -15,7 +15,7 @@
  *
  * The vertex shader's attributes: `p` (vec4: x, y over the target, z 0.5,
  * w 1), `c` (vec4 colour, a gradient), `uv` (vec4: u, v from 0 to 1, z w
- * 0.5); its uniforms and the fragment shader's are set by type -- samplers
+ * 0.5), and a fourth (location 3) the colour too; its uniforms and the fragment shader's are set by type -- samplers
  * to unit 0, floats and vectors to 0.5, matrices to the identity, unless
  * -U names them -- so a shader as an emulator made it can be dropped in
  * with its varyings and uniform names as they are (PPSSPP's u_texclamp at
@@ -202,6 +202,10 @@ int main(int argc, char **argv)
 	glVertexAttribPointer(0, 4, GL_FLOAT, GL_FALSE, sizeof(quad[0]), quad[0][0]);
 	glVertexAttribPointer(1, 4, GL_FLOAT, GL_FALSE, sizeof(quad[0]), quad[0][1]);
 	glVertexAttribPointer(2, 4, GL_FLOAT, GL_FALSE, sizeof(quad[0]), quad[0][2]);
+	/* (a fourth attribute the linker placed there -- PPSSPP's color0 -- read
+	 * from an array too, the colour's, not a constant) */
+	glEnableVertexAttribArray(3);
+	glVertexAttribPointer(3, 4, GL_FLOAT, GL_FALSE, sizeof(quad[0]), quad[0][1]);
 	if (blend) {
 		glEnable(GL_BLEND);
 		glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
