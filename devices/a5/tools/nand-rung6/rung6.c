@@ -331,7 +331,7 @@ static u32 r6_rand(u32 *x)
 static int do_check(struct r6_watch *w, const struct rung6_args *a)
 {
 	struct sftl *fs;
-	struct sftl_lwvm lv;
+	struct sftl_lwvm *lv;
 	u64 d;
 	u32 m, i, x = 0x6b1d2c3e, checked = 0, bad = 0;
 	u8 *buf = sftl_alloc(SFTL_LBA_SIZE);
@@ -396,15 +396,19 @@ static int do_check(struct r6_watch *w, const struct rung6_args *a)
 	}
 	sftl_info("rung6: %u random mapped LBAs read, %u failed (metadata must name the LBA)",
 		  checked, bad);
+	lv = sftl_alloc(sizeof(*lv));
+	if (!ret && !lv)
+		ret = -ENOMEM;
 	if (!ret) {
-		int r = sftl_lwvm_load(fs, &lv);
+		int r = sftl_lwvm_load(fs, lv);
 
-		sftl_info("rung6: LwVM: %d, %u partitions", r, r ? 0 : lv.nparts);
-		for (i = 0; !r && i < lv.nparts; i++)
-			sftl_info("rung6:   %s: %u LBAs", lv.part[i].name, lv.part[i].nlbas);
+		sftl_info("rung6: LwVM: %d, %u partitions", r, r ? 0 : lv->nparts);
+		for (i = 0; !r && i < lv->nparts; i++)
+			sftl_info("rung6:   %s: %u LBAs", lv->part[i].name, lv->part[i].nlbas);
 		if (r)
 			ret = r;
 	}
+	sftl_free(lv);
 	if (!ret && (g || bad))
 		ret = -EIO;
 	sftl_info("rung6: check %s", ret ? "FOUND DIFFERENCES" : "clean");
