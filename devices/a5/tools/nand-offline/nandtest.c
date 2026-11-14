@@ -21,6 +21,7 @@
 #include "rung3.h"
 #include "rung4.h"
 #include "rung5.h"
+#include "rung6.h"
 
 #define RAW_PAGE 16448
 #define OVERLAY_PAGES (1u << 20)
@@ -863,7 +864,7 @@ int main(int argc, char **argv)
 	bool do_write = false;
 
 	if (argc < 2) {
-		fprintf(stderr, "usage: %s <dump-dir> [--write | --rung3 | --rung4 | --rung5]\n", argv[0]);
+		fprintf(stderr, "usage: %s <dump-dir> [--write | --rung3 | --rung4 | --rung5 | --rung6]\n", argv[0]);
 		return 2;
 	}
 	if (argc > 2 && !strcmp(argv[2], "--write"))
@@ -871,6 +872,26 @@ int main(int argc, char **argv)
 	d = malloc(sizeof(*d));
 	if (dev_open(d, argv[1]))
 		return 1;
+	if (argc > 2 && !strcmp(argv[2], "--rung6")) {
+		/* Read-only check of a dump, then commit + check on the overlay. */
+		struct sftl *vfl = calloc(1, sizeof(*vfl));
+		struct rung6_args a6 = { .ops = &dev_ops, .hw = d, .samples = 20000,
+					 .watch_sb = { 519, 1017 } };
+
+		ret = rung6_run(&a6);
+		CHECK(!ret, "rung 6 check of the dump (%d)", ret);
+		assert(!sftl_init(vfl, &dev_ops, d) && !sftl_load_vfl(vfl));
+		for (i = 0; i < SFTL_BANKS; i++)
+			d->usage[i] = vfl->usage[i];
+		d->writes_enabled = true;
+		a6.commit = true;
+		ret = rung6_run(&a6);
+		CHECK(!ret, "rung 6 commit on the overlay (%d)", ret);
+		a6.commit = false;
+		ret = rung6_run(&a6);
+		CHECK(!ret, "rung 6 check of the overlay after the commit (%d)", ret);
+		goto done;
+	}
 	if (argc > 2 && (!strcmp(argv[2], "--rung3") || !strcmp(argv[2], "--rung4") ||
 			 !strcmp(argv[2], "--rung5"))) {
 		struct sftl *vfl = calloc(1, sizeof(*vfl));
