@@ -364,7 +364,7 @@ fsync and rename load, crash (no checkpoint) replay, checkpoint rotation (contex
 1005, 475, 30, 248), automatic reclaim, unmount checkpoint, and iOS booted after each
 part. The test files stay in `/rung8-test` on the Linux volume (about 165 MiB).
 
-### Rung 9, 2026-11-15: root on the NAND Linux volume (in progress)
+### Rung 9, 2026-11-15: root on the NAND Linux volume — passed
 
 Image `tools/nand-rung9/build.sh` (commit b31af08): rung-1 kernel, loader and DTB; overlay
 with stage 1's `/init` plus a NAND-root branch (driver modules from `/lib/nand`, FTL writable
@@ -397,6 +397,16 @@ own `/sbin/p105-stage2`; any failure falls through to NFS). Nothing is copied in
   all iOS contexts seen (26 → 32; 172, 173, 174, 176 → 176). The earlier `used + 1` rule
   gave 192 here; iOS accepted those Linux contexts, but the golden rebuild of sb 300 now
   matches only with the corrected rule.
+- Why iOS always ran in between (user, 2026-11-15): with the cable in, a power-off from
+  Linux is followed by the iPad powering on again, and DFU is entered from the Apple logo,
+  by when iOS's FTL has started. Each round shows exactly one iOS commit, made at that early
+  boot, listing as its previous context the one it booted on. So sb 66 being that previous
+  context is the direct trace of the Linux power-off checkpoint.
+
+**Rung 9 passed (2026-11-15, user decision on this evidence):** root on the NAND Linux
+volume through the clean driver, four power-off round trips through iOS, every test file
+and every marker written before a power-off intact, the power-off checkpoint seen through
+iOS's next context, iOS's contexts golden-identical.
 
 ## Decisions the spec left open
 
