@@ -408,7 +408,7 @@ volume through the clean driver, four power-off round trips through iOS, every t
 and every marker written before a power-off intact, the power-off checkpoint seen through
 iOS's next context, iOS's contexts golden-identical.
 
-### Rung 10, 2026-11-15: sustained speed and long reads (iOS check next)
+### Rung 10, 2026-11-15: sustained speed and long reads — passed
 
 `tools/nand-rung9/rung10.sh` on the NAND root (rung-9 image, corrected modules,
 `verify_every=16`):
@@ -427,6 +427,17 @@ ends in a commit, and a commit closes the frontier with PAD, so a partly used su
 is filled with PAD each time. On this media, where spares sit at the floor, that is about
 one superblock of PAD per 48 MiB written. Not a correctness issue; a writer tuning to look
 at (more victims per reclaim, or fewer commits).
+
+**After a full iOS boot** (user let iOS start completely and used it): the NAND root boots
+again; iOS's context sb 208 is golden-identical (88673 runs; 1417128 mapped); 20000 random
+LBAs read; all rung-9 files and the last marker intact.
+
+**Ladder of spec §8.2 complete (2026-11-15):** rungs 1–10 passed with the clean-room
+driver.
+
+Still open before any publication: bad-block handling on a program error (the writer stops
+for the session), the reclaim PAD cost above, SB type 2 (seen once on an erased former
+context), and the §9 items not touched by the ladder.
 
 ## Decisions the spec left open
 
