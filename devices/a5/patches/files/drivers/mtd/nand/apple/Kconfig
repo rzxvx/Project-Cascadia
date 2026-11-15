@@ -13,3 +13,13 @@ config APPLE_SFTL
 	help
 	  Exposes the iOS Swiss FTL and its LwVM volumes as block devices.
 	  Read-only unless enable_write and write_volume are set.
+
+config APPLE_SFTL_WRITE
+	bool "Program, erase and the FTL writer"
+	depends on APPLE_SFTL
+	default y
+	help
+	  Builds the program and erase sequences and the FTL write path.
+	  Without it nothing in either driver can change the NAND.  With it,
+	  writing still needs apple_ppn.allow_write, apple_ftl.enable_write
+	  and apple_ftl.write_volume on the command line.
