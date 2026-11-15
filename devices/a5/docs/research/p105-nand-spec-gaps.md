@@ -439,6 +439,22 @@ Still open before any publication: bad-block handling on a program error (the wr
 for the session), the reclaim PAD cost above, SB type 2 (seen once on an erased former
 context), and the §9 items not touched by the ladder.
 
+### Daily boot on the clean driver: nand-rw kernel, cable test (2026-11-15)
+
+`tools/nand/build-nand-rw.sh` (from main 822c260, adapted in 87f7a4c): kernel
+`6.12.0-nand-rw`, `CONFIG_APPLE_PPN=y`, `CONFIG_APPLE_SFTL=y`, `CONFIG_APPLE_SFTL_WRITE=y`,
+h2fmi off; stage 1 hook `p105-nand-root` (§7.4 interface: `hold_probe`, bind
+`31200000.ppn`, `mount`, write gates). PC-less kernelcache SHA-1
+`3572487621b2942053d08e17824d4184bf2a8171` (old driver's: `fd95adeb…`, kept in
+main's `build/pcless-cablefree/out.old-driver`).
+
+Cable boot of the bundle (`FLASH_OUT=build/nand-rw-boot`): the hook found the AIC timer as
+the tick, released `hold_probe`, bound the controller, mounted the FTL (context sb 375,
+**0 replayed**: the power-off checkpoint of the session before, with no iOS run in
+between), root `ftl0p2` rw, `switch_root` to `/sbin/p105-nand-init` at 8.1 s; System,
+Data and `ftl0` read-only. 64 MiB + sync in 6.8 s (9.4 MiB/s, verify every 16); 300 small
+files; all new and older test files match after dropping caches; XFCE (`desktop`) up.
+
 ## Decisions the spec left open
 
 **D1. Closing a partly written superblock.** *Rung 7: iOS accepted a Linux SB closed
