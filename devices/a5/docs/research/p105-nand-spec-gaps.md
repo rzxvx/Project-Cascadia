@@ -455,6 +455,26 @@ between), root `ftl0p2` rw, `switch_root` to `/sbin/p105-nand-init` at 8.1 s; Sy
 Data and `ftl0` read-only. 64 MiB + sync in 6.8 s (9.4 MiB/s, verify every 16); 300 small
 files; all new and older test files match after dropping caches; XFCE (`desktop`) up.
 
+Installed from iOS with `app/install-dev.sh` (2026-11-15): the app's status shows
+`/kernelcache` = `3572487621b2942053d08e17824d4184bf2a8171` as wanted; ramdisk, devicetree,
+kloader and iBEC unchanged.
+
+- Boot from the app with the cable out: Linux and the desktop came up (user).
+- iOS after it: `fsck_hfs -l` (live, no write) of System and Data: both "appears to be OK".
+  64 System blocks of 4 KiB spread over the volume and its first 16 MiB hashed from iOS
+  through `/dev/rdisk0s1s1` (`tools/nand/ios-system-samples.sh`).
+- Second boot from the app: context sb 796, 18527 replayed (iOS's writes after its
+  commit); AIC timer tick; all earlier test files match; the **64 System blocks read through
+  `/dev/ftl0p0` equal iOS's**. 32 MiB + 200 files written in 4.3 s. `reboot` → iOS.
+- iOS after it: `fsck_hfs -l` of System and Data clean again. Of the 4096 blocks of System's
+  first 16 MiB, 2050 differ between the Linux read and iOS's read after its boot: the
+  volume header (block 0), the journal info block and journal (33, 34–2081) and two blocks
+  of the allocation bitmap (3, 4; the file is blocks 1–32). iOS keeps System mounted
+  read-write (the volume is marked not unmounted) and updates exactly these; every other
+  block is equal. This settles the rung-1 open item of a sample compare with the iOS view.
+- Not checked here: the second session's 201 test files and marker after this iOS run
+  (next Linux boot), `e2fsck` of the Linux volume (only possible unmounted), long use.
+
 ## Decisions the spec left open
 
 **D1. Closing a partly written superblock.** *Rung 7: iOS accepted a Linux SB closed
