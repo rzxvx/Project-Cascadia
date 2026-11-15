@@ -44,6 +44,7 @@ static int checks_passed;
 
 struct block_overlay {
 	u8 *pages[SFTL_MLC_PAGES];	/* 16448-byte images, NULL if erased */
+	u8 bad_status[SFTL_MLC_PAGES];	/* non-zero: a failed program, read with this status */
 	int last;			/* highest programmed page, -1 if none */
 	unsigned int programmed;
 	unsigned int gaps;
@@ -56,6 +57,13 @@ struct device {
 	unsigned long reads, progs, erases, pages_gapped;
 	bool writes_enabled;
 	const u16 *usage[SFTL_BANKS];	/* for the write gate */
+
+	/* Fault injection (--faults): -1 = off. */
+	long fail_prog_nth;		/* the Nth page program from now fails */
+	int fail_prog_type;		/* or the next page whose slot 0 has this type */
+	int fail_mode;			/* 1 nothing written, 2 written, 3 garbage + status 0x51 */
+	unsigned int fail_count;	/* how many failures to inject in a row */
+	long fail_erase_nth;		/* the Nth block erase from now fails */
 };
 
 static int seg_index(unsigned int block)
@@ -117,7 +125,7 @@ static int dev_read(void *hw, unsigned int bank, unsigned int block, unsigned in
 
 		if (p) {
 			raw_to_data_meta(p, data, meta);
-			*status = SFTL_ST_OK;
+			*status = ov->bad_status[page] ? ov->bad_status[page] : SFTL_ST_OK;
 		} else {
 			if (data)
 				memset(data, 0xff, SFTL_PAGE_SIZE);
@@ -165,10 +173,15 @@ static int dev_erase(void *hw, unsigned int bank, unsigned int block)
 		printf("  FAIL erase of a non-FTL block: bank %u block %u\n", bank, block);
 		abort();
 	}
+	if (d->fail_erase_nth >= 0 && d->fail_erase_nth-- == 0) {
+		printf("  [inject] erase of bank %u block %u fails\n", bank, block);
+		return -EIO;
+	}
 	ov = overlay_of(d, bank, block);
 	for (i = 0; i < SFTL_MLC_PAGES; i++) {
 		free(ov->pages[i]);
 		ov->pages[i] = NULL;
+		ov->bad_status[i] = 0;
 	}
 	ov->last = -1;
 	ov->programmed = 0;
@@ -204,6 +217,31 @@ static int dev_program(void *hw, const struct sftl_prog *p, unsigned int n)
 			ov->gaps += p[i].page - (ov->last + 1);
 			d->pages_gapped += p[i].page - (ov->last + 1);
 		}
+		{
+			bool fail = d->fail_count &&
+				    ((d->fail_prog_nth >= 0 && d->fail_prog_nth-- == 0) ||
+				     (d->fail_prog_type >= 0 && p[i].meta[0] == d->fail_prog_type));
+
+			if (fail) {
+				d->fail_count--;
+				if (d->fail_count && d->fail_prog_nth < 0 && d->fail_prog_type < 0)
+					d->fail_prog_nth = 0;	/* the next one fails too */
+				if (!d->fail_count)
+					d->fail_prog_type = -1;
+				printf("  [inject] program bank %u block %u page %u fails (mode %d)\n",
+				       p[i].bank, p[i].block, p[i].page, d->fail_mode);
+				if (d->fail_mode >= 2) {
+					ov->pages[p[i].page] = malloc(RAW_PAGE);
+					data_meta_to_raw(p[i].data, p[i].meta, ov->pages[p[i].page]);
+					if (d->fail_mode == 3) {
+						memset(ov->pages[p[i].page] + 100, 0x5a, 3000);
+						ov->bad_status[p[i].page] = 0x51;
+					}
+				}
+				ov->last = p[i].page;
+				return -EIO;
+			}
+		}
 		ov->pages[p[i].page] = malloc(RAW_PAGE);
 		data_meta_to_raw(p[i].data, p[i].meta, ov->pages[p[i].page]);
 		ov->last = p[i].page;
@@ -225,6 +263,9 @@ static int dev_open(struct device *d, const char *dir)
 	char path[1024];
 
 	memset(d, 0, sizeof(*d));
+	d->fail_prog_nth = -1;
+	d->fail_prog_type = -1;
+	d->fail_erase_nth = -1;
 	for (b = 0; b < 2; b++)
 		for (c = 0; c < 2; c++)
 			for (s = 0; s < 3; s++) {
@@ -636,6 +677,140 @@ static void pattern(u8 *b, u32 lba, u32 seed)
 		sftl_put32(b + i * 4, lba * 2654435761u + seed + i);
 }
 
+/* ---- program and erase failures (spec 4.9) -------------------------- */
+
+struct fault_case {
+	const char *name;
+	long prog_nth;
+	int prog_type;
+	int mode;
+	unsigned int count;
+	long erase_nth;
+	bool crash;		/* no commit after the failure: unmount and replay */
+};
+
+static struct sftl *fault_mount(struct device *d)
+{
+	struct sftl *fs = calloc(1, sizeof(*fs));
+
+	if (sftl_init(fs, &dev_ops, d) || sftl_mount(fs)) {
+		printf("  mount failed\n");
+		return NULL;
+	}
+	return fs;
+}
+
+static void fault_case_run(const char *dir, const struct fault_case *c, unsigned int nr)
+{
+	struct device *d = malloc(sizeof(*d));
+	struct sftl *fs;
+	u8 buf[SFTL_LBA_SIZE], want[SFTL_LBA_SIZE], *src;
+	u32 base = 300000 + nr * 20000, n = 3000, lba, done = 0, bad_lbas = 0, nbad = 0, sb;
+	u8 bad[(SFTL_NUM_SB + 7) / 8];
+	unsigned int failures, b;
+	int ret = 0, rbad = 0;
+
+	printf("-- %s\n", c->name);
+	if (dev_open(d, dir))
+		return;
+	fs = fault_mount(d);
+	if (!fs)
+		return;
+	for (b = 0; b < SFTL_BANKS; b++)
+		d->usage[b] = fs->usage[b];
+	d->writes_enabled = true;
+	assert(!sftl_writer_start(fs, 1));
+	fs->wr->hold_commit = c->crash;
+	d->fail_prog_nth = c->prog_nth;
+	d->fail_prog_type = c->prog_type;
+	d->fail_mode = c->mode;
+	d->fail_count = c->count;
+	d->fail_erase_nth = c->erase_nth;
+
+	src = malloc(37 * SFTL_LBA_SIZE);
+	while (!ret && done < n) {
+		u32 k = n - done < 37 ? n - done : 37, j;
+
+		for (j = 0; j < k; j++)
+			pattern(src + j * SFTL_LBA_SIZE, base + done + j, nr);
+		ret = sftl_write(fs, base + done, k, src);
+		done += k;
+	}
+	free(src);
+	CHECK(!ret, "%u LBAs written through the failure (%d)", n, ret);
+	if (!c->crash) {
+		ret = sftl_checkpoint(fs);
+		CHECK(!ret, "checkpoint after it (%d)", ret);
+	}
+	failures = fs->wr->failures;
+	memcpy(bad, fs->wr->bad_map, sizeof(bad));
+	for (sb = 0; sb < SFTL_NUM_SB; sb++)
+		if ((bad[sb / 8] >> (sb % 8)) & 1)
+			nbad++;
+	CHECK(failures >= 1 && nbad >= 1 && !fs->wr->wedged,
+	      "%u failure(s) handled, %u SB(s) given up, writer running", failures, nbad);
+	for (lba = base; lba < base + n; lba++) {
+		pattern(want, lba, nr);
+		if (sftl_read_lba(fs, lba, buf, NULL) || memcmp(buf, want, sizeof(buf)))
+			rbad++;
+	}
+	CHECK(!rbad, "all LBAs read back in the session (%d bad)", rbad);
+	sftl_writer_stop(fs);
+	sftl_exit(fs);
+	free(fs);
+
+	fs = fault_mount(d);
+	if (!fs)
+		return;
+	rbad = 0;
+	for (lba = base; lba < base + n; lba++) {
+		pattern(want, lba, nr);
+		if (sftl_read_lba(fs, lba, buf, NULL) || memcmp(buf, want, sizeof(buf)))
+			rbad++;
+	}
+	for (lba = 0; lba < fs->total_lbas; lba++) {
+		u32 v = sftl_map_get(&fs->map, lba);
+
+		if (v != SFTL_UNMAPPED && ((bad[sftl_sb_of(v) / 8] >> (sftl_sb_of(v) % 8)) & 1))
+			bad_lbas++;
+	}
+	CHECK(!rbad, "remount (context sb %u, %u replayed): all LBAs read back (%d bad)",
+	      fs->ctx_sb, fs->replay_applied, rbad);
+	if (c->crash) {
+		CHECK(fs->replay_applied > 0, "no commit happened: the data came back by replay");
+	} else {
+		CHECK(!bad_lbas && !fs->replay_applied,
+		      "committed: no LBA maps into a given-up SB (%u), nothing to replay", bad_lbas);
+		for (sb = 0; sb < SFTL_NUM_SB; sb++)
+			if (((bad[sb / 8] >> (sb % 8)) & 1) &&
+			    (fs->rec[sb].type != SFTL_SB_AWAIT_ERASE || fs->rec[sb].valid))
+				CHECK(0, "given-up sb %u: type %u valid %u in the context (want 1, 0)",
+				      sb, fs->rec[sb].type, fs->rec[sb].valid);
+	}
+	sftl_exit(fs);
+	free(fs);
+	free(d);
+}
+
+static void fault_tests(const char *dir)
+{
+	static const struct fault_case cases[] = {
+		{ "data program fails, nothing written", 40, -1, 1, 1, -1, false },
+		{ "data program fails, page written", 40, -1, 2, 1, -1, false },
+		{ "data program fails, garbage with status 0x51", 40, -1, 3, 1, -1, false },
+		{ "two failures in a row (the second while moving)", 40, -1, 3, 2, -1, false },
+		{ "BTOC program fails at close", -1, SFTL_MT_BTOC, 2, 1, -1, false },
+		{ "context program fails at commit", -1, SFTL_MT_CONTEXT, 3, 1, -1, false },
+		{ "erase of a spare fails", -1, -1, 1, 0, 0, false },
+		{ "failure, then a crash before the commit", 40, -1, 3, 1, -1, true },
+	};
+	unsigned int i;
+
+	printf("== program and erase failures (overlay)\n");
+	for (i = 0; i < sizeof(cases) / sizeof(cases[0]); i++)
+		fault_case_run(dir, &cases[i], i);
+}
+
 static void writer_tests(struct device *d, const char *dir)
 {
 	struct sftl *fs = calloc(1, sizeof(*fs));
@@ -873,6 +1048,10 @@ int main(int argc, char **argv)
 	d = malloc(sizeof(*d));
 	if (dev_open(d, argv[1]))
 		return 1;
+	if (argc > 2 && !strcmp(argv[2], "--faults")) {
+		fault_tests(argv[1]);
+		goto done;
+	}
 	if (argc > 2 && !strcmp(argv[2], "--rung7")) {
 		/* Reclaim + commit on the overlay, then the rung-6 check of the result. */
 		struct sftl *vfl = calloc(1, sizeof(*vfl));

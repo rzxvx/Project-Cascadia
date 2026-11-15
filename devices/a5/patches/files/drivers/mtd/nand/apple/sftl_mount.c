@@ -702,8 +702,14 @@ static int replay_sb_walk(struct sftl *fs, struct replay_state *rs, u32 sb,
 		if (st == SFTL_ST_ERASED)
 			return 0;
 		if (!status_ok(st)) {
-			sftl_err("replay walk sb %u offset %u: status %#x", sb, o, st);
-			return -EIO;
+			/*
+			 * Spec 4.9: a program that failed leaves a page that is
+			 * not taken; what it held was written again elsewhere
+			 * with a higher weave, or never acknowledged.
+			 */
+			sftl_warn("replay walk sb %u offset %u: status %#x, page skipped",
+				  sb, o, st);
+			continue;
 		}
 		if (fs->io_meta[0] == SFTL_MT_BTOC)
 			return 0;

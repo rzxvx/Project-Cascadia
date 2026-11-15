@@ -25,6 +25,24 @@ static bool erase_pending(const struct sftl *fs, u32 sb)
 	return false;
 }
 
+static bool sb_bad(const struct sftl *fs, u32 sb)
+{
+	return (fs->wr->bad_map[sb / 8] >> (sb % 8)) & 1;
+}
+
+/*
+ * Give up a superblock for this session after a program or erase failure:
+ * type 1 with nothing valid, as spec 4.9 asks.  The VFL is never touched;
+ * if the block is really bad, iOS meets the failure and retires it itself.
+ */
+static void mark_bad(struct sftl *fs, u32 sb)
+{
+	fs->wr->bad_map[sb / 8] |= 1 << (sb % 8);
+	fs->rec[sb].type = SFTL_SB_AWAIT_ERASE;
+	fs->rec[sb].btoc_flags = 0;
+	fs->wr->need_commit = true;
+}
+
 static u32 spare_count(struct sftl *fs, bool four_banks)
 {
 	u32 sb, n = 0;
@@ -35,7 +53,8 @@ static u32 spare_count(struct sftl *fs, bool four_banks)
 		if (r->type != SFTL_SB_ERASED &&
 		    !(r->type == SFTL_SB_AWAIT_ERASE && r->valid == 0))
 			continue;
-		if (!fs->shape[sb].width || sb == fs->wr->fr.sb || erase_pending(fs, sb))
+		if (!fs->shape[sb].width || sb == fs->wr->fr.sb || erase_pending(fs, sb) ||
+		    sb_bad(fs, sb))
 			continue;
 		if (four_banks && fs->shape[sb].width != SFTL_BANKS)
 			continue;
@@ -64,31 +83,45 @@ static int erase_sb(struct sftl *fs, u32 sb)
 	return 0;
 }
 
-/* Pick the least worn spare, erase it, return its number or negative. */
+/*
+ * Pick the least worn spare, erase it, return its number or negative.  A
+ * spare whose erase fails is given up and the next one tried.
+ */
 static int take_spare(struct sftl *fs, bool four_banks)
 {
-	u32 sb, best = SFTL_NUM_SB;
-	int ret;
+	unsigned int tries;
 
-	for (sb = 0; sb < SFTL_NUM_SB; sb++) {
-		const struct sftl_sb_rec *r = &fs->rec[sb];
+	for (tries = 0; tries < 4; tries++) {
+		u32 sb, best = SFTL_NUM_SB;
+		int ret;
 
-		if (r->type != SFTL_SB_ERASED &&
-		    !(r->type == SFTL_SB_AWAIT_ERASE && r->valid == 0))
-			continue;
-		if (!fs->shape[sb].width || sb == fs->wr->fr.sb || erase_pending(fs, sb))
-			continue;
-		if (four_banks && fs->shape[sb].width != SFTL_BANKS)
-			continue;
-		if (fs->wr->fenced && sb != fs->wr->fence_sb)
-			continue;
-		if (best == SFTL_NUM_SB || r->erases < fs->rec[best].erases)
-			best = sb;
+		for (sb = 0; sb < SFTL_NUM_SB; sb++) {
+			const struct sftl_sb_rec *r = &fs->rec[sb];
+
+			if (r->type != SFTL_SB_ERASED &&
+			    !(r->type == SFTL_SB_AWAIT_ERASE && r->valid == 0))
+				continue;
+			if (!fs->shape[sb].width || sb == fs->wr->fr.sb ||
+			    erase_pending(fs, sb) || sb_bad(fs, sb))
+				continue;
+			if (four_banks && fs->shape[sb].width != SFTL_BANKS)
+				continue;
+			if (fs->wr->fenced && sb != fs->wr->fence_sb)
+				continue;
+			if (best == SFTL_NUM_SB || r->erases < fs->rec[best].erases)
+				best = sb;
+		}
+		if (best == SFTL_NUM_SB)
+			return -ENOSPC;
+		ret = erase_sb(fs, best);
+		if (!ret)
+			return (int)best;
+		sftl_warn("erase of sb %u failed (%d): not used in this session", best, ret);
+		mark_bad(fs, best);
+		if (++fs->wr->failures > SFTL_FAIL_MAX)
+			break;
 	}
-	if (best == SFTL_NUM_SB)
-		return -ENOSPC;
-	ret = erase_sb(fs, best);
-	return ret ? ret : (int)best;
+	return -EIO;
 }
 
 static int open_frontier(struct sftl *fs)
@@ -135,6 +168,8 @@ static void remap(struct sftl *fs, u32 lba, u32 vba)
 	fs->rec[sftl_sb_of(vba)].valid++;
 }
 
+static int frontier_fail(struct sftl *fs, const char *what, int err);
+
 static int batch_flush(struct sftl *fs)
 {
 	struct sftl_writer *w = fs->wr;
@@ -144,9 +179,9 @@ static int batch_flush(struct sftl *fs)
 	if (!w->npages)
 		return 0;
 	ret = fs->ops->program(fs->hw, w->prog, w->npages);
-	if (ret)
-		return fail_wedge(fs, "program", ret);
 	fs->cache_valid = false;
+	if (ret)
+		return frontier_fail(fs, "program", ret);
 	for (i = 0; i < w->npages; i++) {
 		u8 st;
 		const struct sftl_prog *p = &w->prog[i];
@@ -156,11 +191,11 @@ static int batch_flush(struct sftl *fs)
 		ret = fs->ops->read_page(fs->hw, p->bank, p->block, p->page, false,
 					 w->check_data, w->check_meta, &st);
 		if (ret)
-			return fail_wedge(fs, "verify read", ret);
+			return frontier_fail(fs, "verify read", ret);
 		if ((st != SFTL_ST_OK && st != SFTL_ST_REFRESH) ||
 		    memcmp(w->check_data, p->data, SFTL_PAGE_SIZE) ||
 		    memcmp(w->check_meta, p->meta, SFTL_META_PAGE))
-			return fail_wedge(fs, "verify mismatch", -EIO);
+			return frontier_fail(fs, "verify", -EIO);
 	}
 	for (i = 0; i < w->pend_n; i++)
 		remap(fs, w->pend_lba[i], w->pend_vba[i]);
@@ -273,6 +308,7 @@ static int frontier_close(struct sftl *fs)
 	ret = batch_flush(fs);
 	if (ret)
 		return ret;
+	sb = fr->sb;		/* a failure in the PAD fill moves to another SB */
 	/* The BTOC follows the data directly: 4 VBAs when that is all that is left. */
 	nb = nb_for_entries(fr->nent);
 	if (nb == 4 && fr->next + 8 <= fr->capacity)
@@ -303,17 +339,20 @@ static int frontier_close(struct sftl *fs)
 		prog[i].meta = metas + i * SFTL_META_PAGE;
 	}
 	ret = fs->ops->program(fs->hw, prog, np);
-	if (ret)
-		return fail_wedge(fs, "BTOC program", ret);
 	fs->cache_valid = false;
-	for (i = 0; i < np; i++) {
+	for (i = 0; !ret && i < np; i++) {
 		u8 st;
 
 		ret = fs->ops->read_page(fs->hw, prog[i].bank, sb, prog[i].page, false,
 					 w->check_data, w->check_meta, &st);
-		if (ret || st != SFTL_ST_OK || memcmp(w->check_data, prog[i].data,
-		    SFTL_PAGE_SIZE) || memcmp(w->check_meta, prog[i].meta, SFTL_META_PAGE))
-			return fail_wedge(fs, "BTOC verify", ret ? ret : -EIO);
+		if (!ret && (st != SFTL_ST_OK || memcmp(w->check_data, prog[i].data,
+		    SFTL_PAGE_SIZE) || memcmp(w->check_meta, prog[i].meta, SFTL_META_PAGE)))
+			ret = -EIO;
+	}
+	if (ret) {
+		/* Its data are all mapped: move them out and close where they land. */
+		ret = frontier_fail(fs, "BTOC", ret);
+		return ret ? ret : frontier_close(fs);
 	}
 	sftl_summarize_useq(w->btoc_img, fr->nent, &fs->useq[sb]);
 	fs->rec[sb].type = SFTL_SB_CLOSED;
@@ -468,18 +507,21 @@ int sftl_context_write(struct sftl *fs, u32 sb)
 	}
 	fs->next_weave = weave + nlbas;
 	ret = fs->ops->program(fs->hw, prog, np);
-	if (ret)
-		return fail_wedge(fs, "context program", ret);
 	fs->cache_valid = false;
-	for (i = 0; i < np; i++) {
+	for (i = 0; !ret && i < np; i++) {
 		u8 st;
 
 		ret = fs->ops->read_page(fs->hw, prog[i].bank, sb, prog[i].page,
 					 false, w->check_data, w->check_meta, &st);
-		if (ret || st != SFTL_ST_OK ||
+		if (!ret && (st != SFTL_ST_OK ||
 		    memcmp(w->check_data, prog[i].data, SFTL_PAGE_SIZE) ||
-		    memcmp(w->check_meta, prog[i].meta, SFTL_META_PAGE))
-			return fail_wedge(fs, "context verify", ret ? ret : -EIO);
+		    memcmp(w->check_meta, prog[i].meta, SFTL_META_PAGE)))
+			ret = -EIO;
+	}
+	if (ret) {
+		/* The media failed, not the build: the caller may try another SB. */
+		sftl_warn("context on sb %u failed (%d)", sb, ret);
+		return -EAGAIN;
 	}
 	fs->ctx_weave = weave;
 	fs->ctx_lbas = nlbas;
@@ -529,7 +571,19 @@ static int commit(struct sftl *fs)
 		}
 	}
 
-	ret = sftl_context_write(fs, new_sb);
+	for (i = 0; ; i++) {
+		ret = sftl_context_write(fs, new_sb);
+		if (ret != -EAGAIN)
+			break;
+		mark_bad(fs, new_sb);
+		if (i == 2 || ++w->failures > SFTL_FAIL_MAX)
+			return fail_wedge(fs, "context program", -EIO);
+		sb = take_spare(fs, true);
+		if (sb < 0)
+			return fail_wedge(fs, "no spare for context", sb);
+		new_sb = (u32)sb;
+		fs->rec[new_sb].type = SFTL_SB_CONTEXT;
+	}
 	if (ret)
 		return ret;
 	weave = fs->ctx_weave;
@@ -539,8 +593,14 @@ static int commit(struct sftl *fs)
 		if (w->pending_erase[i] == new_sb)
 			return fail_wedge(fs, "new context queued for erase", -EIO);
 		ret = erase_sb(fs, w->pending_erase[i]);
-		if (ret)
-			return fail_wedge(fs, "erase after commit", ret);
+		if (ret) {
+			/* It holds nothing valid already: give it up and go on. */
+			sftl_warn("erase of sb %u after commit failed (%d)",
+				  w->pending_erase[i], ret);
+			mark_bad(fs, w->pending_erase[i]);
+			fs->rec[w->pending_erase[i]].valid = 0;
+			w->failures++;
+		}
 	}
 	w->n_pending = 0;
 
@@ -551,6 +611,7 @@ static int commit(struct sftl *fs)
 	fs->ctx_sb = new_sb;
 	fs->replayed = false;
 	w->dirty = false;
+	w->need_commit = false;
 	sftl_info("committed context on sb %u, weave %llu", new_sb,
 		  (unsigned long long)weave);
 	return 0;
@@ -558,7 +619,8 @@ static int commit(struct sftl *fs)
 
 int sftl_checkpoint_due(struct sftl *fs)
 {
-	return fs->wr && !fs->wr->wedged && (fs->wr->dirty || fs->replayed);
+	return fs->wr && !fs->wr->wedged &&
+	       (fs->wr->dirty || fs->replayed || fs->wr->need_commit);
 }
 
 int sftl_checkpoint(struct sftl *fs)
@@ -648,6 +710,92 @@ static int gc_move(struct sftl *fs, const u32 *list, u32 n)
 		}
 	}
 	return batch_flush(fs);
+}
+
+/*
+ * A program or verify failed on the frontier (spec 4.9): program nothing more
+ * into that SB, leave it unclosed, give it up, and put everything it held on
+ * a new frontier: the failed batch from memory, then every LBA the map still
+ * places in it, read back, keeping type and user.  A commit follows soon.
+ */
+static int frontier_fail(struct sftl *fs, const char *what, int err)
+{
+	struct sftl_writer *w = fs->wr;
+	struct sftl_frontier *fr = &w->fr;
+	unsigned int d = w->fail_depth, i, s, k = 0;
+	u32 sb = fr->sb, lba, n = 0;
+	u8 *rd, *rm;
+	u32 *rl, *list;
+	int ret;
+
+	if (sb == SFTL_UNMAPPED || d >= SFTL_FAIL_DEPTH || ++w->failures > SFTL_FAIL_MAX)
+		return fail_wedge(fs, what, err);
+	sftl_warn("%s failed on sb %u (%d): giving it up, moving its data", what, sb, err);
+	rd = w->rescue_data + (size_t)d * SFTL_RESCUE_LBAS * SFTL_LBA_SIZE;
+	rm = w->rescue_meta + d * SFTL_RESCUE_LBAS * SFTL_META_LBA;
+	rl = w->rescue_lba + d * SFTL_RESCUE_LBAS;
+	list = w->fail_list + d * SFTL_LBAS_PER_SB;
+	w->fail_depth++;
+
+	/* The failed batch: its data are still in memory. */
+	for (i = 0; i < w->npages; i++) {
+		for (s = 0; s < SFTL_LBAS_PER_PAGE; s++) {
+			const u8 *m = w->meta_pool + i * SFTL_META_PAGE + s * SFTL_META_LBA;
+
+			lba = sftl_get32(m + 8);
+			if (lba >= SFTL_TOKEN_MIN)
+				continue;
+			memcpy(rd + (size_t)k * SFTL_LBA_SIZE,
+			       w->pool + i * SFTL_PAGE_SIZE + s * SFTL_LBA_SIZE, SFTL_LBA_SIZE);
+			memcpy(rm + k * SFTL_META_LBA, m, SFTL_META_LBA);
+			rl[k++] = lba;
+		}
+	}
+	w->npages = 0;
+	w->pend_n = 0;
+	mark_bad(fs, sb);
+	fr->sb = SFTL_UNMAPPED;
+
+	/* What the map still places in the failed SB, other than the batch. */
+	for (lba = 0; lba < fs->total_lbas && n < SFTL_LBAS_PER_SB; lba++) {
+		u32 v = sftl_map_get(&fs->map, lba), j;
+
+		if (v == SFTL_UNMAPPED || sftl_sb_of(v) != sb)
+			continue;
+		for (j = 0; j < k && rl[j] != lba; j++)
+			;
+		if (j == k)
+			list[n++] = lba;
+	}
+
+	for (i = 0; i < k; i += SFTL_LBAS_PER_PAGE) {
+		unsigned int idx;
+
+		ret = ensure_room(fs);
+		if (ret)
+			goto out;
+		idx = page_begin(fs);
+		for (s = 0; s < SFTL_LBAS_PER_PAGE; s++) {
+			const u8 *m = rm + (i + s) * SFTL_META_LBA;
+
+			if (i + s < k)
+				slot_fill(fs, idx, s, rl[i + s], rd + (size_t)(i + s) * SFTL_LBA_SIZE,
+					  m[0], sftl_get32(m + 12), true);
+			else
+				slot_fill(fs, idx, s, SFTL_TOKEN_PAD, NULL, SFTL_MT_USER, 0, false);
+		}
+	}
+	ret = batch_flush(fs);
+	if (!ret)
+		ret = gc_move(fs, list, n);
+	if (!ret) {
+		fs->rec[sb].valid = 0;
+		sftl_info("sb %u given up: %u LBAs from the failed batch and %u more moved",
+			  sb, k, n);
+	}
+out:
+	w->fail_depth--;
+	return ret ? fail_wedge(fs, "moving data off a failed SB", ret) : 0;
 }
 
 static int victim_cmp(const struct sftl_sb_rec *a, const struct sftl_sb_rec *b)
@@ -822,7 +970,10 @@ int sftl_write(struct sftl *fs, u32 lba, u32 count, const u8 *src)
 		lba += n;
 		count -= n;
 	}
-	return batch_flush(fs);
+	ret = batch_flush(fs);
+	if (!ret && w->need_commit && !w->hold_commit)
+		ret = commit(fs);
+	return ret;
 }
 
 /* Set up the writer: reconcile the SB array with what is on the media. */
@@ -881,9 +1032,15 @@ int sftl_writer_start(struct sftl *fs, unsigned int verify_every)
 	w->ctx_prog = sftl_alloc(SFTL_CTX_MAX_PAGES * sizeof(*w->ctx_prog));
 	w->gc_list = sftl_alloc(SFTL_MAX_VICTIMS * 4096 * sizeof(u32));
 	w->victim_map = sftl_alloc((SFTL_NUM_SB + 7) / 8);
+	w->bad_map = sftl_alloc((SFTL_NUM_SB + 7) / 8);
+	w->rescue_data = sftl_alloc((size_t)SFTL_FAIL_DEPTH * SFTL_RESCUE_LBAS * SFTL_LBA_SIZE);
+	w->rescue_meta = sftl_alloc(SFTL_FAIL_DEPTH * SFTL_RESCUE_LBAS * SFTL_META_LBA);
+	w->rescue_lba = sftl_alloc(SFTL_FAIL_DEPTH * SFTL_RESCUE_LBAS * sizeof(u32));
+	w->fail_list = sftl_alloc(SFTL_FAIL_DEPTH * SFTL_LBAS_PER_SB * sizeof(u32));
 	if (!w->pool || !w->meta_pool || !w->pend_lba || !w->pend_vba ||
 	    !w->entries || !w->check_data || !w->btoc_img || !w->ctx_pages || !w->ctx_prog ||
-	    !w->gc_list || !w->victim_map) {
+	    !w->gc_list || !w->victim_map || !w->bad_map || !w->rescue_data ||
+	    !w->rescue_meta || !w->rescue_lba || !w->fail_list) {
 		ret = -ENOMEM;
 		goto fail;
 	}
@@ -955,6 +1112,11 @@ void sftl_writer_stop(struct sftl *fs)
 	sftl_free(w->ctx_prog);
 	sftl_free(w->gc_list);
 	sftl_free(w->victim_map);
+	sftl_free(w->bad_map);
+	sftl_free(w->rescue_data);
+	sftl_free(w->rescue_meta);
+	sftl_free(w->rescue_lba);
+	sftl_free(w->fail_list);
 	sftl_free(w);
 	fs->wr = NULL;
 }

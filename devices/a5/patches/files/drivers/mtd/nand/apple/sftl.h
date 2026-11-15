@@ -86,6 +86,9 @@ typedef uint64_t u64;
 #define SFTL_SPARE_RESERVE	3u
 #define SFTL_MAX_VICTIMS	4u
 #define SFTL_VERIFY_DEFAULT	16u
+#define SFTL_FAIL_DEPTH		3u	/* failures handled inside one another */
+#define SFTL_FAIL_MAX		8u	/* failures per session before the writer stops */
+#define SFTL_RESCUE_LBAS	(SFTL_BATCH_PAGES * SFTL_LBAS_PER_PAGE)
 #define SFTL_MAX_CTX		8u
 #define SFTL_REPLAY_LOG		64u
 #define SFTL_PAD_RUN_MAX	16u
@@ -205,6 +208,17 @@ struct sftl_writer {
 	bool fenced;
 	bool fence_commit;
 	u32 fence_sb;
+
+	/* Program and erase failures (spec 4.9). */
+	u8 *bad_map;			/* SBs given up in this session */
+	u8 *rescue_data;		/* per depth: one batch of LBAs */
+	u8 *rescue_meta;
+	u32 *rescue_lba;
+	u32 *fail_list;			/* per depth: LBAs to move out */
+	unsigned int fail_depth;
+	unsigned int failures;
+	bool need_commit;		/* a failure was handled: commit soon */
+	bool hold_commit;		/* test only: leave that commit to the caller */
 };
 
 struct sftl {
