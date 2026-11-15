@@ -408,6 +408,26 @@ volume through the clean driver, four power-off round trips through iOS, every t
 and every marker written before a power-off intact, the power-off checkpoint seen through
 iOS's next context, iOS's contexts golden-identical.
 
+### Rung 10, 2026-11-15: sustained speed and long reads (iOS check next)
+
+`tools/nand-rung9/rung10.sh` on the NAND root (rung-9 image, corrected modules,
+`verify_every=16`):
+
+| | measured | spec §7.5 target |
+|---|---|---|
+| sequential write, ext4, 512 MiB zeros, fsync | 8.0 MiB/s | 8–10 MiB/s |
+| sequential write, 256 MiB random, sync | 7.3 MiB/s | |
+| sequential read, 512 MiB file, cold cache | 9.6 MiB/s | 8 MiB/s |
+| 4 KiB write + fsync, 300 times | mean 13.4 ms, p95 16.1, max 30.7 | ≤ 40 ms |
+| whole `ftl0` read (16 GB), twice | 698 s and 695 s, 22 MB/s, no error | |
+
+The write figures include five automatic reclaims during the 768 MiB written (about one
+per 48 MiB: 4 victims of 56–60 live LBAs, then a commit, about 2 s each). Each reclaim
+ends in a commit, and a commit closes the frontier with PAD, so a partly used superblock
+is filled with PAD each time. On this media, where spares sit at the floor, that is about
+one superblock of PAD per 48 MiB written. Not a correctness issue; a writer tuning to look
+at (more victims per reclaim, or fewer commits).
+
 ## Decisions the spec left open
 
 **D1. Closing a partly written superblock.** *Rung 7: iOS accepted a Linux SB closed
