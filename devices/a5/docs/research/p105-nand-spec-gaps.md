@@ -479,7 +479,10 @@ kloader and iBEC unchanged.
   (iOS's session after its commit); golden of sb 796 identical. An open SB (sb 748, 40 LBAs,
   newest weaves) is listed with **type 2** in iOS's array: type 2 also marks an open data SB,
   not only an erased former context.
-- Not checked here: `e2fsck` of the Linux volume (only possible unmounted), long use.
+- Test files removed (`/rung8-test`, 351 MiB). Then, on the NFS rung-1 image with the
+  driver read-only (context sb 1042, 18263 replayed): `e2fsck -fn /dev/ftl0p2` of the
+  unmounted Linux volume is clean (18504 files, 376737 of 2097152 blocks).
+- Not checked here: long use.
 
 ## Decisions the spec left open
 
