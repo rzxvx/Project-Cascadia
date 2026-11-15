@@ -23,6 +23,7 @@ Every fact below ends with its evidence in square brackets.
 | `[iBEC 0x…]` | code or data at that address of the iOS 12H321 iBEC, decrypted image (`devices/a5/build/firmware/iBEC.dec`, 282624 bytes, SHA-256 `30c04005…78ec`, load base `0x9ff00000`, Thumb-2; disassembled with `objdump -D -b binary -m arm -M force-thumb --adjust-vma=0x9ff00000`) |
 | `[KC …]` | iOS 12H321 kernelcache, Mach-O (`devices/a5/build/firmware/kernelcache.12H321.macho`, SHA-256 `db1ddc83…dd2c`): VA or file offset |
 | `[W0C …]` | raw dump `w0c` of 2026-10-27 (on the Mac, `~/cascadia-root BACKUP/srv/nand/w0c`, taken before any FTL write), one nand page = 16448 bytes as it came off the bus, status byte per page in the `.st` sidecar. Location: `<bus>-cau<c> block <b> page <p>`, in `bus{N}-cau{C}.b{S}.bin` (S = 0, 500, 1000), at file offset `((b−S)·256 + p)·16448` |
+| `[THIS: r6pre …]` | raw dump `r6pre-20261114` of 2026-11-14, taken read-only with the clean-room driver after ladder rung 5 (`~/cascadia-root/srv/nand-dumps/r6pre-20261114`), same layout as `w0c`; parsed by this spec's author |
 | `[DEV date]` | a measurement on the actual iPad, recorded in the project notes on that date (`docs/research/p105-nand*.md`, `p105-data-resize-plan.md`) |
 | `[EARLIER]` | behaviour of the earlier driver, stated here as a fact about what a working read did; proven by that driver's device results, not confirmed independently from a binary or a dump. Treated as §9 treats unverified items |
 | `[EARLIER DRIVER]` | order, values and waits taken from the earlier driver for the path from probe to the end of the second page read only (§2.9), by the user's limited permission of 2026-11-09. To be confirmed on the device; §9 |
@@ -639,8 +640,8 @@ Weave and user rules:
 | 0 | `0x1f` | `[W0C sb519]` |
 | 1 | section (§4.4) | `[W0C sb519]` |
 | 2–7 | weave, +1 per LBA | `[W0C sb519]` |
-| 8–9 | u16 offset of this LBA's part within its section, in entries | `[W0C sb519]` |
-| 10–11 | u16 length of this LBA's part, entries | `[W0C sb519]` |
+| 8–9 | u16 offset of this LBA's part within its section, in entries; 0 in every tree LBA | `[W0C sb519]`, `[THIS: r6pre sb1020]` |
+| 10–11 | u16 length of this LBA's part, entries; 0 in every tree LBA | `[W0C sb519]`, `[THIS: r6pre sb1020]` |
 | 12–15 | `0xffffffff` | `[W0C sb519]` |
 
 ### 4.2 Superblock lifecycle
@@ -690,8 +691,10 @@ exactly that: iOS leaves no hole before a BTOC `[THIS: all 1033]`.
 
 ### 4.4 Context
 
-One context copy occupies 14 pages of an all-4-bank superblock: 56 LBAs,
-written at weaves +0..+55 from a base weave `W`, in this order `[W0C sb519]`:
+One context copy occupies an all-4-bank superblock from its first VBA: 24 LBAs of fixed
+sections, then the tree. With a 32-LBA tree that is 56 LBAs in 14 pages, written at weaves
++0..+55 from a base weave `W` `[W0C sb519]`. A longer tree makes the context longer (§4.5).
+The order is:
 
 | section | flag byte | layout | pages | evidence |
 |---|---|---|---|---|
@@ -700,7 +703,7 @@ written at weaves +0..+55 from a base weave `W`, in this order `[W0C sb519]`:
 | SB array | 3 | 8 bytes per SB, 512 per LBA | 1 (31 entries in the 3rd LBA, 4th LBA len 0) | `[W0C sb519 p0 b2]` |
 | user sequences | 5 | 16 bytes per SB, 256 per LBA | 2 | `[W0C sb519 p0 b3 – p1 b0]` |
 | read counts | 6 | u32 per SB, 1024 per LBA | 1 | `[W0C sb519 p1 b1]` |
-| tree | 4 | §4.5 | 8 (32 LBAs; can be longer, §4.5) | `[W0C sb519 p1 b2 – p3 b1]` |
+| tree | 4 | §4.5 | 8 for 32 LBAs; more for a longer tree | `[W0C sb519 p1 b2 – p3 b1]`, `[THIS: r6pre sb1020 p1 b2 – p12 b1]` |
 
 Each section starts on a page boundary. Sections shorter than a page are padded
 with LBAs of length 0 (`offset` keeps counting in LBA units: SB array offsets 0, 512, 1024,
@@ -752,11 +755,27 @@ written regardless. iOS's contexts have a tree of 32 LBAs `[W0C sb519, DEV 2026-
 (sb232, sb519)]`, and Linux commits with 25 LBAs + padding to 32 were accepted by iOS
 `[DEV 2026-10-27]`.
 
-32 LBAs is not a limit a reader can assume. Context sb 555, written by the earlier Linux
-driver, has a tree of 174 LBAs that continues in pages 14 onward: section 4, consecutive
-weaves, and the first word of each LBA continuing the count `[DEV 2026-11-09, nand-clean
-6a67fe8]`. A reader follows the page metadata until the section ends. A writer stays within
-32 LBAs (16352 runs), the only length known to be accepted by iOS (§9).
+32 LBAs is not a format limit: it is the size of iOS's tree in `w0c`. iOS itself writes
+longer trees when the map is fragmented:
+
+- Tree LBA `t` is at context VBA `24 + t` for every `t`, past the fixed 14 pages too. Each
+  has context metadata (`0x1f`, section 4, weave = base + VBA). The section continues with
+  the next weave until the context ends, and erased pages follow.
+- The base section stores **no tree length**. A reader follows the page metadata.
+- Tree LBAs in a context = `max(32, roundup(used, 16))`, where `used` is the number of tree
+  LBAs holding runs. The rest are empty tree LBAs, as above. There is no empty LBA when
+  `used` is a multiple of 16.
+- The context is `24 + tree LBAs` LBAs long, 4 per page.
+
+Evidence: iOS context sb 1020 in the dump `r6pre-20261114` has 200 LBAs in 50 pages:
+sections 1, 2, 3, 5, 6 as in §4.4 and 176 tree LBAs (VBAs 24..199), of which 172 hold runs
+and 196..199 are empty. All 200 weaves are `base + VBA`. The base section holds only `1`,
+`0x3fc` (its own SB) and `0x41f` at the end. The pages after the context are erased
+`[THIS: r6pre]`. Seen on the device: used 26 → 32 (`w0c`), 172, 173, 174 → 176 and 176 →
+176 `[DEV 2026-11-14/15, nand-clean]`. Eight iOS contexts rebuilt from their own tables
+with this rule are identical to the media: sb 1020, 248, 467, 401, 876, 332, 300 and 208
+`[DEV 2026-11-15, nand-clean]`. Linux contexts of this shape (200 LBAs) were accepted by
+iOS six times (§5).
 
 The tree spans the whole LBA space including the hidden range (§4.6).
 The loaded tree's runs may be split differently from a freshly built one;
@@ -787,7 +806,8 @@ Mount sequence (all steps read-only):
 2. Find context SBs: scan the first VBA of every superblock and collect those of
    type `0x1f` with weave `W` (the "base weave" of a context copy); take the newest. Other
    copies are ignored. On this media there can be up to 2 candidates
-   `[DEV 2026-11-07]`. Read 56 LBAs.
+   `[DEV 2026-11-07]`. Read the 24 fixed LBAs, then tree LBAs while the metadata says
+   section 4 with the next weave (§4.5).
 3. Load the tree (§4.5) as the map.
 4. Replay set = **{SBs whose first-VBA weave > W}** ∪ **{SBs of type 4 or 5 in the
    loaded SB array}** `[THIS: W0C: fresh 764, 164, 166; open 119, 145, 599]`.
@@ -820,7 +840,9 @@ device-proven property of a writer that iOS accepted.
   a page at a time, four LBAs per page.
 - Weaves are allocated strictly increasing for each VBA, starting above every
   weave on the media (i.e. above the newest context's base weave after replay
-  has advanced past everything seen) `[DEV 2026-10-27]`.
+  has advanced past everything seen) `[DEV 2026-10-27]`. The context counts in full: its
+  weaves run to base + its last LBA, empty tree LBAs included (e.g. base + 199 for a
+  200-LBA context, not base + 55) `[DEV 2026-11-14, nand-clean]`.
 - Partial pages are filled with PAD slots (§4.1); a partial page rewrite is
   read-modify-write of the 4-LBA page: read the live siblings, write them with their
   stored user sequence into the new page's slots `[DEV 2026-10-29]`.
@@ -836,10 +858,10 @@ device-proven property of a writer that iOS accepted.
    recoverable by BTOC; an open frontier is replayable only by metadata scan.
 2. Build the context: the current SB array (with corrected `valid`, `btoc_flags`,
    `type`), user-sequence summaries, reads, the kept stats page, and the tree, per §4.4
-   and §4.5 with the tree padded to 32 LBAs.
-3. Write to a clean, erased spare SB with all four banks: 14 pages, base weave above all
-   weaves on the media. Verify every page by reading it back
-   `[DEV 2026-10-27: 14 pages verify clean]`.
+   and §4.5, with as many tree LBAs as the rule of §4.5 gives.
+3. Write to a clean, erased spare SB with all four banks: `(24 + tree LBAs) / 4` pages,
+   base weave above all weaves on the media. Verify every page by reading it back
+   `[DEV 2026-10-27: 14 pages verify clean; 2026-11-14/15: 50 pages, nand-clean]`.
 4. Only after the new context verifies: older contexts retire (they may be erased); GC
    victims marked for erase are erased after the commit, never before. If a crash
    happens before step 3 finishes, the old context plus the replay still describes
@@ -859,7 +881,11 @@ device-proven property of a writer that iOS accepted.
   of the map works and iOS accepts the result `[DEV 2026-10-27, 2026-11-08]`.
 
 **Allocation of SBs**: use only SBs with type 9, or type 1 after erasing, with no
-bad bank restrictions beyond §3.3. Keep a reserve: at least enough spares for one data
+bad bank restrictions beyond §3.3. An SB waiting to be erased after the next commit
+(a reclaim victim, marked type 1 with nothing valid) is not a spare until that commit
+is done. Otherwise the commit's own context can land in a victim and be erased straight
+after it, and the next mount falls back to the older context `[THIS: offline, on a w0c
+overlay, nand-clean 2139ecf]`. Keep a reserve: at least enough spares for one data
 frontier plus one context plus the next context, and don't let the reserve run out
 during a reclaim (`[DEV 2026-11-07: reclaim floor 6 spares, up to 4 victims per
 reclaim]`).
@@ -898,6 +924,25 @@ Everything observed about iOS meeting Linux's writes. Each is a device measureme
   unproven cause `[DEV 2026-10-29]`. The format rules of §4 exist because of them.
 - An iOS fsck after a large Data shrink reports rc 8 until a clean restart; this
   is not a Linux fault `[DEV 2026-11-08]`.
+
+With the clean-room driver, ladder rungs 6–10 `[DEV 2026-11-15, nand-clean]`:
+
+- iOS booted on a Linux context six times (twice at rung 6, then after rungs 7, 8a, 8b and
+  after the rung-9 power-offs), took it and committed its own context. Every iOS context
+  rebuilt from its own tables was identical to the media.
+- iOS commits **once per boot, early**: already during the Apple logo, so before DFU can be
+  entered with a cable. Each round showed exactly one iOS commit.
+- iOS's new context lists the context it booted on as type 7 next to itself, but that SB is
+  already **erased** on the media: iOS erases it right after its commit. At its following
+  commit iOS lists it type 1 and reuses it.
+- Once an erased former context was listed with SB type **2**. This value is not among those
+  of §4.4, and its meaning is unknown (§9).
+- A Linux GC superblock closed with PAD to capacity (50 data VBAs, BTOC `nb` 4) is kept by
+  iOS as an ordinary closed SB: type 3, 50 valid, BTOC flags `0x8` `[rung 7]`.
+- A power-off from Linux writes the shutdown checkpoint: stage 2 turns `reboot` into a
+  power-off on this iPad, and the FTL's reboot notifier also runs then. Traced through
+  iOS's next context, which listed as its previous context the SB the Linux power-off had
+  written; that SB read erased earlier in the same Linux session `[rung 9]`.
 
 ## 6. LwVM
 
@@ -1039,6 +1084,20 @@ Volumes refused even when named: `System`, `Data` (any case), effaceable ones
 | synced 4 KiB (fsync) | ≤ 40 ms | 27 ms `[DEV 2026-11-09]` |
 | page program | | 1.23 ms total, 0.73 ms transfer `[DEV 2026-11-08]` |
 
+Measured with the clean-room driver on the NAND root, verifying every 16th page
+`[DEV 2026-11-15, rung 10, nand-clean]`:
+
+| | measured |
+|---|---|
+| sequential write, ext4, 512 MiB, fsync | 8.0 MiB/s (7.3 MiB/s for 256 MiB of random data) |
+| sequential read, 512 MiB file, cold cache | 9.6 MiB/s |
+| 4 KiB write + fsync, 300 times | mean 13.4 ms, p95 16.1 ms, max 30.7 ms |
+| whole `ftl0` (16 GB) read, twice | 22 MB/s, no error |
+| one page, one bus, PIO | 2.3–2.4 ms MLC, 1.8 ms SLC `[DEV 2026-11-14, rung 2]` |
+
+The write figures include automatic reclaims, about one per 48 MiB written with spares at
+the floor; each ends in a commit that closes the frontier with PAD.
+
 Method: writes gather whole bios (avoid one program per 4 KiB bvec), program up
 to 32 pages in one batch, one page per CE at a time with overlap between the
 two CEs `[DEV 2026-11-08]`.
@@ -1107,6 +1166,18 @@ tests is reset before proceeding. Ordered, one kind of risk at a time:
 9. **Root on NAND**: reboot cycles, Linux↔iOS, boot counts, hashes.
 10. **Sustained**: speed vs §7.5; long read passes; iOS after every stage.
 
+All ten rungs passed with the clean-room driver, 2026-11-14 and 2026-11-15
+(`nand-clean` up to 06bc182; evidence in that branch's gaps file).
+
+- **Rung 2, page transmit**: the receive shape of §2.5.1 mirrored. For each 4112-byte unit:
+  clear events, `CONFIG = 5`, `F+0x34 = (1028 << 8) | 4`, `CONTROL = 5`. Then four times:
+  wait for `F+0x1c` bits 3–4 and push 257 words. Then wait for bit 1 of `F+0x0c` and clear
+  it. There is no `CONTROL = 6` before `0x17`. It was the first shape tried. Results:
+  12 of 12 MLC and SLC cycles on the six reserved blocks, every page with data and all
+  metadata read back, and neighbouring blocks unchanged.
+- **Rung 1**: 57022 of 57032 System files identical to the IPSW. Not done: a sample
+  compare against the iOS `/dev/rdisk0` view.
+
 ## 9. Unverified
 
 Facts here are known only from earlier driver behaviour or are inferred, and could
@@ -1114,27 +1185,22 @@ not be confirmed from a binary, a dump or a measurement while writing this spec.
 
 - §2.9, all `[EARLIER DRIVER]` steps. A read-only build following it as a whole reads
   consecutive pages on both CEs and CAUs, mounts the FTL and reads the whole device with 0
-  errors `[DEV 2026-11-09, nand-clean 6a67fe8]`. Still to confirm: page data compared with
-  the `w0c` reference (allowing for what iOS changed since), and reads surviving repeated
-  module loads. Which step lets a second read work is not established, because the steps were
-  applied together; no single step can leave this list on this run's evidence.
+  errors `[DEV 2026-11-09, nand-clean 6a67fe8]`. Rungs 1–10 then ran on it, with many
+  module loads, System files equal to the IPSW and golden-identical iOS contexts
+  `[DEV 2026-11-14/15]`, so the order as a whole is confirmed. Which step lets a second
+  read work is not established, because the steps were applied together. Until a step is
+  varied alone on the device, a driver keeps them all.
   Cross-checked against iBEC so far: command opcodes, event-clear values, poll set-up
   (iBEC differs: `F+0x10 = 0x100` and an interrupt), `0xffff` after reset, a write to
   `F+0x80014` at init. Not cross-checked: order of the bring-up steps, the 10 µs and 50 ms
   delays, bit 8 of `F+0x0c` as the poll's end condition. The 16-CE reset loop is not needed:
   populated CEs alone work.
-- Whether iOS accepts a context whose tree is longer than 32 LBAs (§4.5). Context sb 555 has
-  174 LBAs, seen only by the 2026-11-09 read-only build, not checked against a dump here.
+- SB-array type **2**: seen once, on an erased former iOS context (sb 467 after rung 7)
+  `[DEV 2026-11-15, nand-clean]`. Its meaning is unknown, and a writer never sets it.
 - The items tagged `[EARLIER]` in §1.3 and §2.5: the order of the fields of the 8-byte
   read address, the 4 × 1028 transfer shape, software reset around every operation,
   and which of these is what lets the next operation on a CE work (not established:
   they were never varied separately on the device).
-- Exact `FMI_CONFIG` for whole-page **PIO transmit**. Receive uses 5 (`[iBEC]`, dump), and
-  iBEC's set-feature transmit writes `CONFIG = 5` and `CONTROL = 5` per burst, then waits
-  for bit 1 of `F+0x0c` and clears it `[iBEC 0x9ff076d2, 0x9ff0770e–0x9ff0773a]`, which the
-  power-state set exercises on the device `[DEV 2026-11-09]`. For a whole page the value is
-  established only by the earlier driver's transmit (W1 42/42). Implement starting from
-  5, confirm in ladder step 2 (reserved blocks), first program.
 - Polarity and encoding of the bad-block bitmap (feature `0x84 | cau<<8`); the driver
   does not need it (use the VFL tables).
 - The meaning of base-section words 0 and 1 (`1`, own SB number) beyond their observed
