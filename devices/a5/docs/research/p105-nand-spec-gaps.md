@@ -435,8 +435,8 @@ LBAs read; all rung-9 files and the last marker intact.
 **Ladder of spec §8.2 complete (2026-11-15):** rungs 1–10 passed with the clean-room
 driver.
 
-Still open before any publication: bad-block handling on a program error (the writer stops
-for the session), the reclaim PAD cost above, SB type 2 (seen once on an erased former
+Still open before any publication: bad-block handling on a program error (done
+2026-11-16, below), the reclaim PAD cost above, SB type 2 (seen once on an erased former
 context), and the §9 items not touched by the ladder.
 
 ### Daily boot on the clean driver: nand-rw kernel, cable test (2026-11-15)
@@ -483,6 +483,28 @@ kloader and iBEC unchanged.
   driver read-only (context sb 1042, 18263 replayed): `e2fsck -fn /dev/ftl0p2` of the
   unmounted Linux volume is clean (18504 files, 376737 of 2097152 blocks).
 - Not checked here: long use.
+
+### Program and erase failures (spec §4.9), 2026-11-16
+
+Writer: c2958e1; test injection in `apple_ppn` (`inject_program`, `inject_mode`,
+`inject_erase`, off by default): c0d5a20. Offline, `nandtest --faults`: 8 cases (program
+not done, done then failed, garbage with status 0x51, a second failure while moving, BTOC
+failure, context failure, erase failure, failure then a crash before commit), 47 checks on
+each of `w0c` and `r6pre`, all pass; full offline suite 55/55.
+
+Device, NFS rung-1 image, `tools/nand-faults/faults.sh`: ext4 on the Linux volume,
+`verify_every=1`, three sets of 64 MiB + 300 small files:
+
+- A, page not programmed (bank 2 block 426 page 50): sb 426 given up, 128 LBAs of the
+  failed batch and 772 more moved, commit on sb 562.
+- B, page programmed then reported failed (bank 2 block 852 page 57): sb 852 given up,
+  128 + 876 LBAs moved, commit on sb 835.
+- C, erase failure (bank 0 block 350): sb 350 not used for the session; writes went on.
+- Seven commits in all during the writes; unmount with checkpoint; fresh mount on context
+  sb 473, 0 replayed; `e2fsck -fn` clean (19411 files, 427237 of 2097152 blocks); all 903
+  files match after the remount.
+- Not checked yet: iOS booting on this context and erasing sb 426 and 852 (type 1, 0
+  valid) on its own.
 
 ## Decisions the spec left open
 
@@ -538,8 +560,8 @@ driver: the module build here does not touch the kernel tree.
 
 ## Open
 
-- **Bad-block handling** on a program error: the first version stops writing for
-  the session (user decision). To be added before any publication.
+- **Bad-block handling**: done (section above, 2026-11-16); iOS's view of the given-up
+  SBs is still to be checked.
 - All facts of spec §9 except the transmit `CONFIG` (settled at rung 2) remain open: the meaning of base words,
   the SB type values for retired SBs, overlapping programs on one CE, read-clock
   sweeps, iOS's behaviour on an open Linux frontier, power loss during a batch,
