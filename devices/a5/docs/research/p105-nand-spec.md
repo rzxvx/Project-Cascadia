@@ -369,9 +369,17 @@ One whole page, one PPN at a time:
 `0x8A <row>` (cmd+addr), transmit 16448 bytes in the layout of §1.6, `0x17`, then
 status: `0x79` + poll `[iBEC 0x9ff07d32 (0x8A), 0x9ff07d5a (0x17), 0x9ff07bb4
 (0x79 + poll)]`. Status: bit `0x10` general error, `0x01` failed, else the page
-is good. After a program failure iBEC reads the error lists of §2.2 for a
-multi-page queue `[iBEC 0x9ff0b744–0x9ff0b81a]`; a driver that programs one page
-per CE gets the result from the status alone.
+is good. A driver that programs one page per CE gets the result from the status alone.
+
+iBEC's multi-page program, on a failure, does the following for each CE whose status had
+bit `0x01`: select it, then get feature `0x3080` (pages that failed), `0x3280` (pages still
+pending) and `0x3180` (pages that should be retired), 512 bytes each `[iBEC 0x9ff0b720–0x9ff0b7f4]`.
+Each list is a u32 count followed by that many u32 row addresses. iBEC matches each row
+against the pages of its queue on that CE and flags them (failed and retire with 1,
+pending with 4). A row not in the queue is only logged `[iBEC 0x9ff07c0c–0x9ff07c96]`.
+iBEC then acknowledges with set feature `0x3380`, 4 bytes, value 1, and returns an error
+for the whole operation `[iBEC 0x9ff0b808–0x9ff0b81e]`. It neither retries nor marks a block:
+retiring is left to its caller. Not exercised on this device.
 
 - Pages of a block are programmed in **ascending page order**, each page once.
   Any write within a block goes to the next free page. `[DEV 2026-10-27]`,
@@ -523,6 +531,13 @@ banks, not with a hole at the missing bank.
 0x307000 + 13 (expected 289448), the dense rule reads 289448; sb775's BTOC parses with the dense
 rule; 120000 random LBAs of the full map verified, §8]`.
 
+iOS keeps using a superblock with a bad bank at width 3; it does not retire the whole SB.
+Between the two dumps, iOS erased and rewrote sb775. Its SB-array erase count went from 78
+to 79 and its BTOC from `nb` 4 (flags 9) to `nb` 8 (flags `0x10`). Its data is on banks 0,
+1 and 3, bank 2 has none, and the BTOC sits at the last VBA of a 3072-VBA capacity
+`[THIS: w0c, r6pre]`. sb 1054 has only bank 3, because banks 0 and 1 hold reserve blocks
+(`0xbff0`) at 1054 and bank 2 a special block, and it is in use at width 1 `[THIS]`.
+
 `0x7fffff` is the in-memory "no mapping" sentinel; it never appears as an LBA
 and must never appear in metadata `[DEV 2026-10-29]`.
 
@@ -570,7 +585,8 @@ Bank table page: u16[1064] = per-block usage, then `0xffff` to the end of the pa
 | value | meaning | evidence |
 |---|---|---|
 | `0x0000` | FTL block, part of superblock N | `[W0C]`, `[DEV 2026-10-26]` |
-| `0xbffe` | bad (factory / retired) | `[W0C bank 2: 775, 991, plus 1056, 1057, 0]` |
+| `0xbffe` | bad when the VFL was formatted ("initial" bad block): iOS's VFL format writes `0xbffe` for a block it is told is bad and `0xbff0` otherwise, and logs it as an initial bad block | `[KC 0x80e22260–0x80e2228e]`, `[W0C]`, `[THIS: r6pre]` (list below) |
+| `0xbffd` | grown bad: retired by iOS after a failure. iOS's VFL routine for this takes a (bank, block) pair, moves one block from the bank's usable count to its grown-bad count, writes `0xbffd` into that bank's table in the VFL context, and programs the VFL context. It sends no command to the package. The FPart layer calls it through the VFL's method table (slot `+0x18`) when a special block fails to program; iOS's VFL-context code also writes `0xbffd` when a VFL context block fails | `[KC 0x80e24c74–0x80e24cc6, 0x80e258e4–0x80e2597a, 0x80e22044/0x80e22064 (slot), 0x80e20bae–0x80e20bca, 0x80e2281c]`; iBEC counts it apart from `0xbffe` `[iBEC 0x9ff29e94–0x9ff29eae]`. None on this media `[THIS: w0c, r6pre]` |
 | `0xbff0` | available, free | `[W0C]` |
 | `0xbff1` | VFL context | `[W0C blocks 1062, 1063 per bank]` |
 | `0xb002` | block zero (FPart) | `[W0C]`, `[DEV 2026-10-26]` |
@@ -584,8 +600,21 @@ Rules:
   (§3.3). 1055 superblocks, numbers 0..1054, of which 0 has no blocks (its entries
   are `0xb002` or `0xbffe`) `[W0C]`.
 - A driver **never writes** the VFL context or any block whose usage is not `0`
-  `[DEV 2026-10-27]`. A failed program ends the session; there is no retire path
-  in the rewrite.
+  `[DEV 2026-10-27]`. What a driver does on a program or erase failure is in §4.9.
+- How iBEC reads a usage word: bit 15 clear means an FTL block. `0xbff0`, `0xbff1`, `0xbffd`
+  and `0xbffe` are each counted. Any other value whose bits 8–13 are all set is rejected as
+  an unknown marking. Remaining values are special blocks (`0xb002`, `0xb003`, `0xc1xx`)
+  `[iBEC 0x9ff29df8–0x9ff29f94]`.
+
+**Bad blocks on this media** `[THIS: w0c 2026-10-27 and r6pre 2026-11-14]`. Eight blocks:
+bank 0 blocks 1056 and 1057; bank 2 blocks 0, 775, 991, 1056 and 1057; bank 3 block 0;
+none on bank 1. In both dumps these eight blocks, and no others, read status `0x45` on all
+256 pages, and exactly these are `0xbffe` in the VFL tables: the package's `0x45` and the
+VFL's `0xbffe` agree one to one. The VFL context is byte-identical in the two dumps (same
+log positions, same pages), so no block was retired in those three weeks of iOS and Linux
+writes. Every older generation of the bank tables still in the log has the same bad lists,
+so the log does not show when 775 and 991 went bad. They are `0xbffe`, not `0xbffd`, so
+they were already bad when the VFL was formatted.
 
 Signature block: block with usage `0xc101`, bank 2 of this device. Data, u32 LE, at
 offset 128: `0x776d7278` (bytes `78 72 6d 77`, 'xrmw'), 0, 6, 1, 1, 0, 2, 2, 0x20000, 0, 1, 0, 16, 2
@@ -892,6 +921,39 @@ reclaim]`).
 
 **Static SBs** are never touched by the writer `[DEV 2026-10-27]`.
 
+### 4.9 Program and erase failures
+
+What is established (§2.3, §2.6, §2.7, §3.3, §3.5):
+
+- On this media iOS records a bad block in the **VFL tables only**. Bad when the VFL was
+  formatted is `0xbffe`; retired later is `0xbffd`. Its grown-bad routine sends the package
+  nothing `[KC]`. The SB array has no bad-block type: sb775 with its bad bank is type 3 like
+  any closed SB `[THIS]`.
+- A bad bank does not retire its superblock. The SB continues at reduced width (§3.3).
+- Whether `0x45` survives an erase is not known: no `0xbffe` block was ever erased, and the
+  `0x45` reads are unchanged after three weeks `[THIS]`. iBEC treats an erase result of
+  `0x45` as "must not be used" (§2.7).
+
+Required of a Linux writer:
+
+1. **Never write the VFL context**, and never erase or program a block whose usage is not
+   `0x0000` (§3.5). Marking `0xbffd` is iOS's job.
+2. On a failed program, data, BTOC or context alike: program nothing more into that
+   superblock in this session. Do not close it. Re-program every live LBA already written
+   there to the frontier of another SB, keeping its type and `user` (as GC does, §4.8).
+   Write a failed context afresh to another spare SB; until then the older context and
+   replay stay valid (§4.8 commit, step 4).
+3. On a failed erase (`0x45`), do not use the SB in this session.
+4. Commit soon after. In the new context, give the failed SB nothing valid, and leave it out
+   of the tree and the replay set. Until that commit, replay must take only pages that read
+   with status `0x40` or `0x42`, and must let the higher weave of a moved copy win (§4.7).
+5. The SB-array type to give the failed SB is **inferred**: type 1 (no valid data, awaiting
+   erase), the value already used for retired SBs (§9). With it, iOS will in time erase the
+   SB and reuse it. If the block is really bad, iOS meets the failure itself and retires it
+   by its own path. That this path covers FTL data blocks is inferred: the routine was
+   traced only from the FPart and VFL-context callers. Never set type 2: its meaning is
+   unknown (§9).
+
 ## 5. Coexistence with iOS (the hard requirement)
 
 Everything observed about iOS meeting Linux's writes. Each is a device measurement.
@@ -1195,6 +1257,14 @@ not be confirmed from a binary, a dump or a measurement while writing this spec.
   `F+0x80014` at init. Not cross-checked: order of the bring-up steps, the 10 µs and 50 ms
   delays, bit 8 of `F+0x0c` as the poll's end condition. The 16-CE reset loop is not needed:
   populated CEs alone work.
+- §4.9 points 4 and 5: type 1 for a failed SB, and iOS retiring an FTL data block by its own
+  path when it meets the failure. Not exercised. Confirmable only on a block that really
+  fails, so in practice by watching for `0xbffd` in later dumps.
+- Whether a `0x45` block reads `0x45` again after an erase. Not to be tested: such blocks are
+  never erased.
+- The polarity of the package's bad-block bitmap (feature `0x84 | cau << 8`) can now be
+  settled read-only: compare it with the eight blocks of §3.5 (bank 0 = bus 0 CAU 0: 1056,
+  1057; bank 2 = bus 0 CAU 1: 0, 775, 991, 1056, 1057; bank 3 = bus 1 CAU 1: 0; bank 1: none).
 - SB-array type **2**: seen once, on an erased former iOS context (sb 467 after rung 7)
   `[DEV 2026-11-15, nand-clean]`. Its meaning is unknown, and a writer never sets it.
 - The items tagged `[EARLIER]` in §1.3 and §2.5: the order of the fields of the 8-byte
@@ -1231,8 +1301,7 @@ not be confirmed from a binary, a dump or a measurement while writing this spec.
 3. Are further raw dumps (a fresh `w0c`-style dump after iOS has run on a Linux context,
    or a full dump of today's state) wanted to complete the golden tests beyond the one iOS
    context available here?
-4. The earlier driver's behaviour on program failure was to stop writing; is "no retire,
-   end of session on program error" acceptable as the rewrite's first policy, or is a
-   bad-block handling path required before use?
+4. Answered: the first version stopped writing on a program error. The user then agreed to
+   bad-block handling, and §4.9 gives its rules.
 5. Any requirement for the rewrite to emit DELETE tokens (trim / `fstrim`), or remain
    without (recommended, as tokens are untested from Linux)?
