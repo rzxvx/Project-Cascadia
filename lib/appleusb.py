@@ -25,6 +25,7 @@ the image-boot request ipwndfu's checkm8 payload answers; the code is ours.
 import os
 import re
 import sys
+import threading
 import time
 import zlib
 
@@ -276,10 +277,19 @@ class Device:
                 raise Fail("upload failed at byte %d" % off)
             sys.stderr.write("\r    %3d%%" % (100 * (off + len(chunk)) // max(n, 1)))
         sys.stderr.write("\n")
-        try:
-            self.ctrl(0xA1, UPLOAD, 0xFFFF, 0, 0, 5000)
-        except usb.core.USBError:
-            pass                    # the device is off running the image
+        # The boot request does not come back: the device leaves to run the
+        # image.  libusb on macOS can then sit in this transfer past its own
+        # timeout (2026-11-15: still waiting after minutes, the iBSS already
+        # up), so it runs in a thread and is given up on after 6 s.
+        def boot_request():
+            try:
+                self.ctrl(0xA1, UPLOAD, 0xFFFF, 0, 0, 5000)
+            except usb.core.USBError:
+                pass                # the device is off running the image
+        t = threading.Thread(target=boot_request, daemon=True)
+        t.start()
+        t.join(6)
+        return t.is_alive()         # True: the host's USB stack is stuck in it
 
     def command(self, cmd):
         if self.mode != 'Recovery':
@@ -333,8 +343,13 @@ def main(argv):
             say("==> %s %s (%d bytes, device in %s)" % (op, os.path.basename(args[0]), len(data), dev.mode))
             if op == 'send':
                 dev.send(data)
-            else:
-                dev.boot_pwned(data)
+            elif dev.boot_pwned(data):
+                # Releasing the device would wait on the stuck transfer too;
+                # the image is running, so leave without touching it again.
+                say("    (the boot request did not return; the image runs anyway)")
+                sys.stdout.flush()
+                sys.stderr.flush()
+                os._exit(0)
         elif op == 'cmd':
             if not args:
                 raise Fail("usage: appleusb.py cmd COMMAND")
