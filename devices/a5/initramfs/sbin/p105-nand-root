@@ -1,0 +1,72 @@
+#!/bin/sh
+# Sourced by stage 1 after USB networking, when the command line says
+# root=/dev/ftl0p2.  The NAND root is the LwVM volume "Linux".
+#
+# Read-write when the kernel came up with the write gates open
+# (apple_ftl.enable_write=1 apple_ftl.write_volume=Linux, apple_ppn.allow_write=1,
+# the nand-rw profile); read-only with the journal left alone otherwise (the
+# nand-ro profile).  Any check that fails returns to stage 1, which falls back
+# to NFS / RAM.
+p105_try_nand_root() {
+    nand_selected=0
+    for nand_arg in $(cat /proc/cmdline); do
+        case "$nand_arg" in root=/dev/ftl0p2) nand_selected=1 ;; esac
+    done
+    [ "$nand_selected" = 1 ] || return 0
+    # The PPN probe sleeps, so it needs a working tick.  The AIC timer gives one
+    # with nothing on the cable; the USB SOF fallback only with a host attached.
+    if ! grep -qx apple-aic1-timer /sys/devices/system/clockevents/clockevent0/current_device 2>/dev/null; then
+        nand_usb_ready=0
+        for nand_state in /sys/class/udc/*/state; do
+            [ -r "$nand_state" ] || continue
+            [ "$(cat "$nand_state")" = configured ] && nand_usb_ready=1
+        done
+        [ "$nand_usb_ready" = 1 ] || return 1
+    fi
+    nand_ftl=/sys/module/apple_ftl/parameters
+    nand_ppn=/sys/module/apple_ppn/parameters
+    [ -w "$nand_ftl/mount" ] || return 1
+    nand_rw=0
+    if [ "$(cat "$nand_ftl/enable_write")" = Y ]; then
+        [ "$(cat "$nand_ftl/write_volume" 2>/dev/null)" = Linux ] || return 1
+        [ "$(cat "$nand_ppn/allow_write" 2>/dev/null)" = Y ] || return 1
+        nand_rw=1
+    elif [ -e "$nand_ppn/allow_write" ]; then
+        [ "$(cat "$nand_ppn/allow_write")" = N ] || return 1
+    fi
+    echo "P105 NAND: trying $([ $nand_rw = 1 ] && echo read-write || echo read-only) root" > /dev/kmsg
+    if [ -w "$nand_ppn/hold_probe" ]; then
+        echo 0 > "$nand_ppn/hold_probe" || return 1
+    fi
+    if [ ! -L /sys/bus/platform/devices/31200000.ppn/driver ]; then
+        echo 31200000.ppn > /sys/bus/platform/drivers/apple-ppn/bind || return 1
+    fi
+    echo 1 > "$nand_ftl/mount" || return 1
+    [ -b /dev/ftl0p2 ] || return 1
+    mkdir -p /newroot
+    if [ $nand_rw = 1 ]; then
+        [ "$(cat /sys/class/block/ftl0p2/ro)" = 0 ] || return 1
+        # commit=30: a journal commit costs a dozen page programs here
+        # (a 4 KiB write rewrites a 16 KiB page), so fewer of them.
+        mount -t ext4 -o rw,noatime,commit=30 /dev/ftl0p2 /newroot || return 1
+    else
+        [ "$(cat /sys/class/block/ftl0p2/ro)" = 1 ] || return 1
+        mount -t ext4 -o ro,noload /dev/ftl0p2 /newroot || return 1
+    fi
+    if [ ! -x /newroot/sbin/p105-nand-init ]; then
+        umount /newroot
+        return 1
+    fi
+    nand_moved=''
+    for nand_tree in proc sys dev; do
+        if ! mount --move "/$nand_tree" "/newroot/$nand_tree"; then
+            for nand_back in $nand_moved; do
+                mount --move "/newroot/$nand_back" "/$nand_back"
+            done
+            umount /newroot
+            return 1
+        fi
+        nand_moved="$nand_tree $nand_moved"
+    done
+    exec switch_root /newroot /sbin/p105-nand-init
+}

@@ -1,0 +1,25 @@
+// SPDX-License-Identifier: GPL-2.0 OR MIT
+// Writable NAND root profile (tools/nand/build-nand-rw.sh); same nodes as nand-ro.
+/include/ "p105ap.dts"
+
+&nand {
+    status = "disabled";
+};
+
+/ {
+    nand_fmi_clk: nand-fmi-clock {
+        compatible = "fixed-clock";
+        #clock-cells = <0>;
+        clock-frequency = <300000000>;
+    };
+};
+
+&{/soc@30000000} {
+    ppn@1200000 {
+        compatible = "apple,s5l8940x-ppn";
+        reg = <0x1200000 0x100000>, <0x1300000 0x100000>, <0x7000000 0x2d000>;
+        reg-names = "fmi0", "fmi1", "cdma";
+        clocks = <&nand_fmi_clk>;
+        clock-names = "fmi";
+    };
+};

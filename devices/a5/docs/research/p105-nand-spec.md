@@ -23,7 +23,10 @@ Every fact below ends with its evidence in square brackets.
 | `[iBEC 0x…]` | code or data at that address of the iOS 12H321 iBEC, decrypted image (`devices/a5/build/firmware/iBEC.dec`, 282624 bytes, SHA-256 `30c04005…78ec`, load base `0x9ff00000`, Thumb-2; disassembled with `objdump -D -b binary -m arm -M force-thumb --adjust-vma=0x9ff00000`) |
 | `[KC …]` | iOS 12H321 kernelcache, Mach-O (`devices/a5/build/firmware/kernelcache.12H321.macho`, SHA-256 `db1ddc83…dd2c`): VA or file offset |
 | `[W0C …]` | raw dump `w0c` of 2026-10-27 (on the Mac, `~/cascadia-root BACKUP/srv/nand/w0c`, taken before any FTL write), one nand page = 16448 bytes as it came off the bus, status byte per page in the `.st` sidecar. Location: `<bus>-cau<c> block <b> page <p>`, in `bus{N}-cau{C}.b{S}.bin` (S = 0, 500, 1000), at file offset `((b−S)·256 + p)·16448` |
+| `[THIS: r6pre …]` | raw dump `r6pre-20261114` of 2026-11-14, taken read-only with the clean-room driver after ladder rung 5 (`~/cascadia-root/srv/nand-dumps/r6pre-20261114`), same layout as `w0c`; parsed by this spec's author |
 | `[DEV date]` | a measurement on the actual iPad, recorded in the project notes on that date (`docs/research/p105-nand*.md`, `p105-data-resize-plan.md`) |
+| `[EARLIER]` | behaviour of the earlier driver, stated here as a fact about what a working read did; proven by that driver's device results, not confirmed independently from a binary or a dump. Treated as §9 treats unverified items |
+| `[EARLIER DRIVER]` | order, values and waits taken from the earlier driver for the path from probe to the end of the second page read only (§2.9), by the user's limited permission of 2026-11-09. To be confirmed on the device; §9 |
 | `[THIS]` | established independently while writing this document, with fresh scripts over `[W0C]` and `[iBEC]`; the numbers are reproducible and listed in §8 so they can serve as acceptance values |
 
 A statement that is known only from an earlier driver and could not be
@@ -67,7 +70,9 @@ never select a CE outside the bitmap; the only way out is the block reset of
 ### 1.2 Registers used
 
 Offsets from the FMI base (`F+`) or from the FMC base (`C+` = FMI + 0x40000).
-Registers not listed are not needed for PIO.
+Registers not listed are not needed for PIO. iBEC's NAND code touches no FMC offset other than
+those listed here: `0x08, 0x0c, 0x10, 0x14, 0x18, 0x1c, 0x20, 0x24, 0x40, 0x44, 0x48, 0x4c, 0x70, 0x74, 0x78`
+plus `ON` `[THIS: census of the iBEC NAND code's FMC offsets]`.
 
 | register | behaviour | evidence |
 |---|---|---|
@@ -106,8 +111,11 @@ Required sequence for a bus, in this order:
    reset is the only known way out of a general-error state `[DEV 2026-09-27]`.
    Re-entering DDR through feature `0x180` alone is not enough (status reads
    return junk `0xbf`) `[DEV 2026-09-27]`.
-4. Read ID (§1.5) and device parameters (§2.1), then confirm the values of §2.1.
-5. Two independent command streams on one FMC corrupt each other and leave the
+4. Set feature `0x180` to 2 (async) on each CE, once all buses are reset, then
+   write `IF_CTRL` again `[iBEC 0x9ff095e4, 0x9ff08c0a]`, `[EARLIER]` for the order.
+   No other feature is needed before array reads `[EARLIER]`.
+5. Read ID (§1.5) and device parameters (§2.1), then confirm the values of §2.1.
+6. Two independent command streams on one FMC corrupt each other and leave the
    package answering `0x11`/`0x51`; one bus must be driven by one thread at a time
    `[DEV 2026-09-27]`.
 
@@ -160,7 +168,12 @@ All addresses little-endian. After each phase wait for the phase bits in
   `RW_CTRL = 0x50`, wait for status match (bit 5 of `C+0x44`) with a timeout,
   read `C+0x48`, then `RW_CTRL = 0` `[iBEC 0x9ff0807c–0x9ff080ee]`.
 - **Operation status**: `CMD = 0x7d77`, `RW_CTRL = 3`, wait 3, then the poll
-  above. Status `0x40` = ready, no error `[iBEC 0x9ff07834]`.
+  above, up to 2 s `[iBEC 0x9ff0829c]`. The poll runs from the FMC's own status match:
+  iBEC waits for its interrupt, the device-tested dump tool polls bit 5 of `C+0x44`
+  with `F+0x10 = 0x100` set and no interrupt line, so the line is not required
+  `[DEV 2026-09-27]`. Issued with no operation outstanding on an idle package it
+  returns `0x00` and leaves the package in general error until a full reset
+  `[DEV 2026-11-09]`. Status `0x40` = ready, no error `[iBEC 0x9ff07834]`.
 - **Read ID**: `CMD = 0x90`, addr byte `0`, `ADDRNUM = 0`, `RW_CTRL = 9`,
   `CONFIG = 0`, `PIO = 0x801`, `CONTROL = 3`, read 8 bytes; returns
   `50 50 4E 01 05 05` ("PPN" 1.5.5). In DDR each ID byte is repeated
@@ -208,7 +221,7 @@ below on this package (`[DEV 2026-09-27]`, field names validated at
 | +4 | page address bits | 8 |
 | +4 | bits-per-cell address bits | |
 | +4 | default bits/cell | 2 |
-| +4 | page size | 16384 |
+| 0x34 | page size, counting the 64 metadata bytes | 16448 (`0x4040`) `[DEV 2026-11-09, nand-clean]` |
 | 0xa0 | tRC tREA tREH tRHOH tRHZ tRLOH tRP, reserved, tWC tWH tWP (ns) | |
 | 0xe0 | queue sizes | |
 | 0xf0 | tRST tPURST tSCE (ms), tCERDY (µs) | |
@@ -228,11 +241,11 @@ bytes, `CONTROL = 6`, `0x77` `[iBEC 0x9ff07564–0x9ff07652]`.
 
 | feature | meaning | evidence |
 |---|---|---|
-| `0x9080` | PPN firmware version, 16 bytes | `[DEV 2026-09-27]` |
+| `0x9080` | PPN firmware version, 16 bytes | `[iBEC 0x9ff082dc–0x9ff082ec]`, `[DEV 2026-09-27, 2026-11-09]` |
 | `0x84 \| cau<<8` | bad-block bitmap of that CAU, `blocks_per_cau/8` bytes, get | `[iBEC 0x9ff07b04–0x9ff07b60]` |
 | `0x3080`, `0x3180`, `0x3280` | program error lists (failed, retire, pending), 512 bytes each, get | `[iBEC 0x9ff0b744–0x9ff0b7e8]` |
 | `0x3380` | clears / acknowledges the lists, set | `[iBEC 0x9ff0b814]` |
-| `0x0180` | power state (async/DDR) | `[iBEC 0x9ff08c0a]` |
+| `0x0180` | power state: 1 low power, 2 async (SDR), `0xa` DDR. A NAND reset leaves the package in low power. iBEC writes the transition from low power to async as `0x10002` to its helper, and leaves DDR in two steps, `0xa0001` then `0x10002`. While the state is low power iBEC holds `IF_CTRL` at `0xffff`, and it installs the working value when the target state is not 1 | `[iBEC 0x9ff08c0a, 0x9ff08be6, 0x9ff08c60, 0x9ff04d36, 0x9ff04d5e, 0x9ff05bc2, 0x9ff08c28–0x9ff08c34]`; values 2 and `0xa` also `[DEV 2026-09-27, 2026-11-09]` |
 | `0x0480`, `0x00a0`, `0x01a0` | optional signal configuration used by iBEC in DDR | `[iBEC 0x9ff08a4a, 0x9ff08a84, 0x9ff08abc]` |
 
 ### 2.3 Status bytes
@@ -253,7 +266,7 @@ success `[DEV 2026-10-27]`.
 
 ### 2.4 Addresses
 
-Row address, three bytes, LSB first:
+Row address, u32 LSB first (4 bytes on PPN ≥ 1.5.0; `[iBEC 0x9ff08502]`; used alone in a program and an erase, inside the full address of §2.5 in a read):
 
 ```
 page | block << 8 | cau << 19 | (slc ? 1 << 23 : 0)
@@ -272,10 +285,82 @@ page | block << 8 | cau << 19 | (slc ? 1 << 23 : 0)
 
 ### 2.5 Read
 
-`0x0A <row> 0x37`, status poll, `0x7A`, receive 16448 bytes (in bursts ≤ 1024, one
-`CONFIG = 5` / start per burst), `0x77` `[DEV 2026-09-27]` (iBEC queues the same opcodes on its sequencer), data-out
-phase order `[iBEC 0x9ff075cc–0x9ff0764c]`. The package has
-corrected the page. Status `0x40` = good, `0x49` = erased.
+Sequence of a whole-page read in SDR, one operation:
+
+1. Software reset of the bus (§2.5.2), select the CE, clear pending events.
+2. `0x0A <8-byte full address> 0x37` (cmd-addr-cmd). Full address = u16 byte
+   count (16448 for a whole page), u16 byte column (0 for a whole page), u32 row,
+   all LSB first. `0x0A` is the form that ends a multi-page queue, and a single
+   page is such a queue of one; `0x07` leaves the package expecting another page
+   and must not be used for a lone read. Width and opcode: `[iBEC 0x9ff084d6–0x9ff08508]`
+   (row 4 bytes and full address 8 bytes for PPN ≥ 1.5.0, 7 for older),
+   `[iBEC 0x9ff0a08a]` (the normal read path sends the full-address width to the
+   package), `[iBEC 0x9ff0790c]` (opcodes `0x0A`, `0x37`). Order of the
+   fields in the 8 bytes: `[EARLIER]`.
+3. Operation status (`0x7d77` + poll): `0x40` good, `0x49` erased; other values as §2.3
+   `[iBEC 0x9ff07834]`.
+4. `0x7A`, then the transfer of §2.5.1.
+5. `0x77` `[iBEC 0x9ff07650]`, deselect the CE, software reset (§2.5.2).
+
+The package has corrected the page. On a status that is not `0x40`, the data
+are still clocked out, since the package has committed to send them `[EARLIER]`.
+
+`0x0A <row only> 0x37` also exists: iBEC uses it for boot pages, with `CONFIG = 0xF5`
+and the FMI's ECC `[iBEC 0x9ff0790c–0x9ff07918]`. The dump tool read every page
+with a row-only address and straight 1024-byte bursts, repeatedly and correctly, but
+that was with the boot chain's DDR state left in place `[DEV 2026-09-27, 2026-10-27]`.
+There is no evidence that a row-only read is usable for whole PPN pages in SDR, and
+`[DEV 2026-11-09]` shows it is not sufficient there: one read succeeds, the next
+operation on the CE gets no status. Use the full address.
+
+#### 2.5.1 Moving the page
+
+A page moves as four units of 4112 bytes, each with its own start. For every unit:
+
+- clear pending events (§2.5.2);
+- `CONFIG = 5`;
+- `F+0x34 = (1028 << 8) | 4`: **four sectors of 1028 bytes** (bits 18:8 hold the
+  sector bytes, bits 7:0 the sector count);
+- `CONTROL = 3`, one start for the whole unit;
+- four times: wait for `F+0x1c` bits 3–4 to become non-zero, then pop 1028 bytes
+  (257 words) from `F+0x14`.
+
+No wait on `F+0x0c` bit 1 is done on receive. The 4112 bytes of a unit are a plain
+stream in the §1.6 order, and the sector boundaries do not line up with the
+metadata: the 16 metadata bytes at +1024 straddle the first and second sector, so
+extract them only after the unit has been assembled. `CONFIG = 5` means ECC bypass and a
+32-cycle data burst, with no metadata declared; everything goes through the data FIFO.
+
+Evidence: all of this list `[EARLIER]`, with the result proven by device reads
+through it: whole-FTL reads correct, file-for-file against the IPSW `[DEV 2026-10-26]`,
+PIO read speed 8 MiB/s `[DEV 2026-11-08]`. `CONFIG = 5` and start value 3 also
+`[iBEC 0x9ff075ee, 0x9ff07610]` on feature data-out. The burst layout with one
+start per ≤ 1024 bytes is what the feature path uses `[iBEC 0x9ff075e4–0x9ff07644]`;
+it is **not** the layout of a whole-page read.
+
+#### 2.5.2 Software reset and clearing events
+
+Software reset of a bus: `CONTROL = 6`, `ON = 1`, `IF_CTRL =` the working value.
+It involves no PMGR pulse and no NAND reset. It is done **before every operation**
+on the bus (before selecting the CE) and **again after every operation** (after
+deselecting). `[EARLIER]`, `[DEV 2026-10-27]` (a direct write to `IF_CTRL` "does
+not last": every operation's reset writes it back). iBEC's direct paths end the
+same way, deselect then a reset of the bus, there with the PMGR pulse included
+`[iBEC 0x9ff079e8, 0x9ff079f6, 0x9ff077b0, 0x9ff077be, 0x9ff050e8–0x9ff0511c]`.
+
+Clearing pending events, in this order: `C+0x40 = 0`, `F+0x10 = 0`, `C+0x44 = 0x31ffff`,
+`F+0x0c = 0xf` `[iBEC 0x9ff05914–0x9ff0592c]`. iBEC does this right after selecting a CE,
+before the command, and again at the start of every status poll
+`[iBEC 0x9ff07584, 0x9ff08084]`.
+
+Between reads nothing else is kept or needed. The full reset of §1.3 (PMGR pulse,
+NAND reset, power state) is for bring-up and recovery only.
+
+The interface is SDR, `ON = 1`, for all page transfers of a Linux driver: the driver's
+probe drops the package to async and everything after it, including the timing
+sweeps of §1.4 and all device results quoted here, ran in that state
+`[DEV 2026-10-26, 2026-10-27, 2026-11-08]`. DDR was only the boot chain's state and
+is not needed.
 
 ### 2.6 Program
 
@@ -323,6 +408,84 @@ has not been exercised.
   at a time. iBEC's own multi-page path uses `0x87` for all but the last page of a CE
   through the sequencer `[iBEC 0x9ff0b3f8–0x9ff0b48a]`; its exact semantics are not
   reproduced by the direct sequences above.
+
+### 2.9 Order of bring-up and reads as the earlier driver ran it
+
+Everything in this section is `[EARLIER DRIVER]` unless another tag is given: the order
+of register writes and package commands from probe to the end of the second page read
+on a CE, as a driver that read the whole FTL correctly on this iPad ran it, in SDR. It
+is listed because §1.3 and §2.5 did not suffice to make a second read work
+`[DEV 2026-11-09]`. A build applying it as a whole, with the three differences listed after
+step 10, does read consecutive pages `[DEV 2026-11-09, nand-clean 6a67fe8]`. Which step
+matters is not established; §9 says what remains to confirm.
+
+Common to every step:
+
+- **Command phases.** `C+0x14`, then the address registers when there are any (`ADDR0`, `ADDR1`
+  only when more than 4 bytes, `ADDRNUM = bytes − 1`), then `RW_CTRL`. Wait for the phase
+  bits in `C+0x44` up to 100 ms and write exactly those bits back to clear them.
+- **Clearing events.** `C+0x40 = 0`, `F+0x10 = 0`, `C+0x44 = 0x31ffff`, and write-1-clear of
+  bits 0, 1, 2, 3 and 8 in `F+0x0c`. Same values as `[iBEC 0x9ff05914–0x9ff0592c]` except that
+  iBEC writes `0xf` to `F+0x0c`, and iBEC then enables `F+0x10 = 0x100` for its interrupt.
+- **Operation status.** `C+0x14 = 0x7d77`, `RW_CTRL = 3`, wait bits 0 and 1 of `C+0x44`, clear
+  them. Then: clear events; `IF_CTRL =` working value with bit `0x100000` clear; `C+0x4c = 0x4040`;
+  `C+0x24 = 0`; `C+0x40 = 0x20`; `RW_CTRL = 0x50`. Wait up to 2 s for **bit 8 of `F+0x0c`**
+  (with `F+0x10` left at 0, no interrupt line). Read `C+0x48`. Write `0x100` to `F+0x0c`,
+  `RW_CTRL = 0`, write the working `IF_CTRL` back.
+- **Software reset.** `CONTROL = 6`, `ON = 1`, `IF_CTRL =` the current value.
+- **Receive start.** `CONFIG = 5` (0 for Read ID), then `F+0x34`, then `CONTROL = 3`. Before
+  popping a sector, wait until bits 3–4 of `F+0x1c` are non-zero, up to 100 ms.
+
+In order:
+
+1. For each bus: software reset, with `IF_CTRL` 0 at this point. Then write 0 to `F+0x80014`
+   (a register in the ECC window that §1.2 does not list; iBEC writes the same register during
+   its init `[iBEC 0x9ff05822]`). No PMGR pulse: this device's DT describes no reset line
+   for the controller, so §1.3's pulse was not part of this driver's bring-up on the iPad.
+2. For each bus in turn, NAND reset: for each of the 16 chip-enable numbers, write `CE_CTRL`
+   (`1 << (n % 8)` for the 8 numbers belonging to this bus, 0 for the others), wait 10 µs,
+   send command `0xFF` alone, wait its phase bit, write `CE_CTRL = 0`. Then wait 50 ms and set
+   `IF_CTRL = 0xffff` (`[iBEC 0x9ff05bc2]` also uses `0xffff` after reset).
+3. Same bus, Read ID on each of the 16 numbers: select, clear events, `0x90` with one address
+   byte 0 (`RW_CTRL = 9`), `CONFIG = 0`, `F+0x34 = (8 << 8) | 1`, `CONTROL = 3`, wait for
+   bit 1 of `F+0x0c`, pop 8 bytes, deselect, software reset.
+4. Device parameters, first CE only, at `IF_CTRL = 0xffff`: select, clear events,
+   `0x92 <00> 0x97` (cmd-addr-cmd), operation status must be `0x40`, `0x7A`, one transfer
+   of the parameter page (`F+0x34 = (512 << 8) | 1`), `0x77`, deselect. No software reset.
+5. Power state, each CE, still at `0xffff`: select, `CONTROL = 6`, `0xEF` with the two
+   feature bytes `80 01` (`RW_CTRL = 9`), clear events, `CONFIG = 5`, `F+0x34 = (4 << 8) | 1`,
+   `CONTROL = 5`, wait `F+0x1c` bits 3–4, push the word `2`, wait for bit 1 of `F+0x0c` and
+   clear it, `0xE7` alone, operation status must be `0x40`, `0x77`, `CONTROL = 6`, deselect,
+   software reset.
+6. Each bus: write the working timing to `IF_CTRL`; this is the value every later software
+   reset puts back.
+7. Firmware version, first CE: select, clear events, `0xEE <80 90> 0xE7` wait
+   (cmd-addr-cmd), operation status, `0x7A`, then a transfer of 16 bytes
+   (`F+0x34 = (16 << 8) | 1`), `CONTROL = 6`, `0x77`, deselect. No software reset. Feature
+   data longer than 1024 bytes goes in chunks of up to 1024 bytes, one start per chunk.
+8. Bad-block table, each CE, each CAU: as step 7 with feature `0x84 | cau << 8`, 133 bytes.
+   These reads therefore always ran before the first page read: 1 firmware read and
+   `2 CE × 2 CAU = 4` table reads.
+9. First page read: as §2.5 and §2.5.1, in this order: software reset; select; clear
+   events; `0x0A <8 bytes> 0x37`; operation status; `0x7A`; for each of the 4 units: clear
+   events, `CONFIG = 5`, `F+0x34 = (1028 << 8) | 4`, `CONTROL = 3`, four sectors popped;
+   `0x77`, with no `CONTROL = 6` before it; `CE_CTRL = 0`; software reset.
+10. Second page read: exactly step 9 again. Nothing else reaches the package between one
+    read's `0x77` and the next read's `0x0A`.
+
+The driver's commands on a bus are serialised behind one lock.
+
+Result of following this section on the iPad `[DEV 2026-11-09, nand-clean 6a67fe8]`:
+consecutive page reads succeed on both CEs and CAUs, the FTL mounts read-only, and a read of
+the whole 16 GB device had 0 errors. That build differs from the steps above in these ways:
+
+- NAND reset and Read ID went only to the populated CE of each bus, not to all 16 numbers.
+  This is the required behaviour: it works, and §1.1 forbids selecting any other CE.
+- The firmware feature was `0x9080`, bytes `80 90`, as §2.2 gives. It returns the firmware
+  string. (Step 7 first said `00 90` here in error.)
+- The 133 bytes of a bad-block table moved as 132 bytes and a 4-byte tail.
+
+As in steps 4, 7 and 8, no software reset followed get-feature or device parameters.
 
 ## 3. Geometry and layering
 
@@ -425,7 +588,7 @@ Rules:
   in the rewrite.
 
 Signature block: block with usage `0xc101`, bank 2 of this device. Data, u32 LE, at
-offset 128: `0x77726d78` ('xrmw'), 0, 6, 1, 1, 0, 2, 2, 0x20000, 0, 1, 0, 16, 2
+offset 128: `0x776d7278` (bytes `78 72 6d 77`, 'xrmw'), 0, 6, 1, 1, 0, 2, 2, 0x20000, 0, 1, 0, 16, 2
 `[W0C bus0-cau1 block 1061 page 0]`; at offset 32: `1, 0x600`. A driver compares
 this exact byte image with the signature it was built for, and refuses to write
 if different.
@@ -477,8 +640,8 @@ Weave and user rules:
 | 0 | `0x1f` | `[W0C sb519]` |
 | 1 | section (§4.4) | `[W0C sb519]` |
 | 2–7 | weave, +1 per LBA | `[W0C sb519]` |
-| 8–9 | u16 offset of this LBA's part within its section, in entries | `[W0C sb519]` |
-| 10–11 | u16 length of this LBA's part, entries | `[W0C sb519]` |
+| 8–9 | u16 offset of this LBA's part within its section, in entries; 0 in every tree LBA | `[W0C sb519]`, `[THIS: r6pre sb1020]` |
+| 10–11 | u16 length of this LBA's part, entries; 0 in every tree LBA | `[W0C sb519]`, `[THIS: r6pre sb1020]` |
 | 12–15 | `0xffffffff` | `[W0C sb519]` |
 
 ### 4.2 Superblock lifecycle
@@ -491,8 +654,8 @@ An SB whose first VBA reads erased is treated as unwritten by a scan
 
 The block table of contents is at the **end** of a closed superblock, at the last
 `nb` VBAs of its capacity (`width·1024`), with `nb = 4` or `8` (4 VBAs per
-16 KiB page; 8 when entries + terminator need more than one page)
-`[THIS: W0C, 487 + 156 + 390 SBs]`.
+16 KiB page) `[THIS: W0C, 487 + 156 + 390 SBs]`. A reader takes `nb` from the BTOC
+metadata and accepts either value.
 
 Entry: 16 bytes, four u32 LE:
 
@@ -503,27 +666,35 @@ Entry: 16 bytes, four u32 LE:
 | 8 | LBA (or token) | same |
 | 12 | count | same |
 
-Rules, all confirmed by rebuilding BTOCs from page metadata alone
-`[THIS: 39/39 SBs identical, §8]`:
+Rules, all confirmed by rebuilding the BTOCs of all 1033 closed SBs from page metadata
+alone `[THIS: 1026 identical, 7 differ only in `user`, §8.1]`:
 
 - Entries appear in **VBA order**. The position (`VBA` offset) of a run is the
   sum of the counts of the entries before it; the entry itself carries only the
   weave offset, which differs from the position when there are weave gaps.
 - A run is a sequence of consecutive VBAs with consecutive LBAs **and**
   consecutive weaves. A change of `user` does not end a run.
-- Each token (`PAD`, `DELETE`) is its own entry with count 1.
+- Each `DELETE` is its own entry with count 1 `[THIS: all 339]`.
+- A run of `PAD` slots with consecutive weaves is one entry, split every 16 VBAs. All 32
+  `PAD` entries on the media have count 16, and all are in one superblock, sb243, so the cap
+  of 16 rests on that one SB `[THIS]`.
 - A terminator entry with `count = 0` ends the list; the rest of the BTOC is zero.
 - `max_weave_add` = last data weave − first data weave + 1, or that plus `nb`; iOS
   writes both forms (21 and 18 of 39 sampled) `[THIS]`. A Linux close writes the
   `+ 0` form `[DEV 2026-10-27]`.
 
-BTOC size: `nb = 8` for 1209+ entries, `4` otherwise (995, 1013 entries use 4)
-`[W0C]`, `[DEV 2026-10-27]`. A closed SB holds `capacity − nb` data VBAs.
+BTOC size: iOS's choice of `nb` is not a function of the entry count. `nb = 4` occurs with
+1 to 1022 entries (643 SBs), `nb = 8` with 1014 to 1393 entries (390 SBs) `[THIS]`. One page
+holds 1024 slots, so a writer can use 4 when entries + terminator fit a page and must use 8
+otherwise. A closed SB holds `capacity − nb` data VBAs, and the counts of its entries sum to
+exactly that: iOS leaves no hole before a BTOC `[THIS: all 1033]`.
 
 ### 4.4 Context
 
-One context copy occupies 14 pages of an all-4-bank superblock: 56 LBAs,
-written at weaves +0..+55 from a base weave `W`, in this order `[W0C sb519]`:
+One context copy occupies an all-4-bank superblock from its first VBA: 24 LBAs of fixed
+sections, then the tree. With a 32-LBA tree that is 56 LBAs in 14 pages, written at weaves
++0..+55 from a base weave `W` `[W0C sb519]`. A longer tree makes the context longer (§4.5).
+The order is:
 
 | section | flag byte | layout | pages | evidence |
 |---|---|---|---|---|
@@ -532,7 +703,7 @@ written at weaves +0..+55 from a base weave `W`, in this order `[W0C sb519]`:
 | SB array | 3 | 8 bytes per SB, 512 per LBA | 1 (31 entries in the 3rd LBA, 4th LBA len 0) | `[W0C sb519 p0 b2]` |
 | user sequences | 5 | 16 bytes per SB, 256 per LBA | 2 | `[W0C sb519 p0 b3 – p1 b0]` |
 | read counts | 6 | u32 per SB, 1024 per LBA | 1 | `[W0C sb519 p1 b1]` |
-| tree | 4 | §4.5 | 8 (32 LBAs) | `[W0C sb519 p1 b2 – p3 b1]` |
+| tree | 4 | §4.5 | 8 for 32 LBAs; more for a longer tree | `[W0C sb519 p1 b2 – p3 b1]`, `[THIS: r6pre sb1020 p1 b2 – p12 b1]` |
 
 Each section starts on a page boundary. Sections shorter than a page are padded
 with LBAs of length 0 (`offset` keeps counting in LBA units: SB array offsets 0, 512, 1024,
@@ -580,14 +751,36 @@ then **511 runs** of `(u32 vba, u32 span)`, then `0xffffffff` if the LBA is shor
 from 0; a VBA of `0x7fffff` means unmapped. Each tree LBA is full except the last
 used one; iOS's 13026-run tree used 26 LBAs of 32 (25 full + one with 251 runs).
 Unused tree LBAs carry `0xffffffff 0xffffffff` in their first two words and are
-written regardless; the tree is **32 LBAs always** `[W0C sb519, DEV 2026-10-27
-(sb232, sb519), 2026-10-27: Linux commits with 25 LBAs + padding to 32 were
-accepted by iOS]`.
+written regardless. iOS's contexts have a tree of 32 LBAs `[W0C sb519, DEV 2026-10-27
+(sb232, sb519)]`, and Linux commits with 25 LBAs + padding to 32 were accepted by iOS
+`[DEV 2026-10-27]`.
+
+32 LBAs is not a format limit: it is the size of iOS's tree in `w0c`. iOS itself writes
+longer trees when the map is fragmented:
+
+- Tree LBA `t` is at context VBA `24 + t` for every `t`, past the fixed 14 pages too. Each
+  has context metadata (`0x1f`, section 4, weave = base + VBA). The section continues with
+  the next weave until the context ends, and erased pages follow.
+- The base section stores **no tree length**. A reader follows the page metadata.
+- Tree LBAs in a context = `max(32, roundup(used, 16))`, where `used` is the number of tree
+  LBAs holding runs. The rest are empty tree LBAs, as above. There is no empty LBA when
+  `used` is a multiple of 16.
+- The context is `24 + tree LBAs` LBAs long, 4 per page.
+
+Evidence: iOS context sb 1020 in the dump `r6pre-20261114` has 200 LBAs in 50 pages:
+sections 1, 2, 3, 5, 6 as in §4.4 and 176 tree LBAs (VBAs 24..199), of which 172 hold runs
+and 196..199 are empty. All 200 weaves are `base + VBA`. The base section holds only `1`,
+`0x3fc` (its own SB) and `0x41f` at the end. The pages after the context are erased
+`[THIS: r6pre]`. Seen on the device: used 26 → 32 (`w0c`), 172, 173, 174 → 176 and 176 →
+176 `[DEV 2026-11-14/15, nand-clean]`. Eight iOS contexts rebuilt from their own tables
+with this rule are identical to the media: sb 1020, 248, 467, 401, 876, 332, 300 and 208
+`[DEV 2026-11-15, nand-clean]`. Linux contexts of this shape (200 LBAs) were accepted by
+iOS six times (§5).
 
 The tree spans the whole LBA space including the hidden range (§4.6).
 The loaded tree's runs may be split differently from a freshly built one;
 two trees are compared by **normalising** adjacent runs that continue each other
-`[DEV 2026-10-27]`.
+`[DEV 2026-10-27]`. Normalised, iOS's 13026 runs are 12938 `[THIS]`.
 
 ### 4.6 LBA space, hidden LBAs and tokens
 
@@ -613,7 +806,8 @@ Mount sequence (all steps read-only):
 2. Find context SBs: scan the first VBA of every superblock and collect those of
    type `0x1f` with weave `W` (the "base weave" of a context copy); take the newest. Other
    copies are ignored. On this media there can be up to 2 candidates
-   `[DEV 2026-11-07]`. Read 56 LBAs.
+   `[DEV 2026-11-07]`. Read the 24 fixed LBAs, then tree LBAs while the metadata says
+   section 4 with the next weave (§4.5).
 3. Load the tree (§4.5) as the map.
 4. Replay set = **{SBs whose first-VBA weave > W}** ∪ **{SBs of type 4 or 5 in the
    loaded SB array}** `[THIS: W0C: fresh 764, 164, 166; open 119, 145, 599]`.
@@ -646,7 +840,9 @@ device-proven property of a writer that iOS accepted.
   a page at a time, four LBAs per page.
 - Weaves are allocated strictly increasing for each VBA, starting above every
   weave on the media (i.e. above the newest context's base weave after replay
-  has advanced past everything seen) `[DEV 2026-10-27]`.
+  has advanced past everything seen) `[DEV 2026-10-27]`. The context counts in full: its
+  weaves run to base + its last LBA, empty tree LBAs included (e.g. base + 199 for a
+  200-LBA context, not base + 55) `[DEV 2026-11-14, nand-clean]`.
 - Partial pages are filled with PAD slots (§4.1); a partial page rewrite is
   read-modify-write of the 4-LBA page: read the live siblings, write them with their
   stored user sequence into the new page's slots `[DEV 2026-10-29]`.
@@ -662,10 +858,10 @@ device-proven property of a writer that iOS accepted.
    recoverable by BTOC; an open frontier is replayable only by metadata scan.
 2. Build the context: the current SB array (with corrected `valid`, `btoc_flags`,
    `type`), user-sequence summaries, reads, the kept stats page, and the tree, per §4.4
-   and §4.5 with the tree padded to 32 LBAs.
-3. Write to a clean, erased spare SB with all four banks: 14 pages, base weave above all
-   weaves on the media. Verify every page by reading it back
-   `[DEV 2026-10-27: 14 pages verify clean]`.
+   and §4.5, with as many tree LBAs as the rule of §4.5 gives.
+3. Write to a clean, erased spare SB with all four banks: `(24 + tree LBAs) / 4` pages,
+   base weave above all weaves on the media. Verify every page by reading it back
+   `[DEV 2026-10-27: 14 pages verify clean; 2026-11-14/15: 50 pages, nand-clean]`.
 4. Only after the new context verifies: older contexts retire (they may be erased); GC
    victims marked for erase are erased after the commit, never before. If a crash
    happens before step 3 finishes, the old context plus the replay still describes
@@ -685,7 +881,11 @@ device-proven property of a writer that iOS accepted.
   of the map works and iOS accepts the result `[DEV 2026-10-27, 2026-11-08]`.
 
 **Allocation of SBs**: use only SBs with type 9, or type 1 after erasing, with no
-bad bank restrictions beyond §3.3. Keep a reserve: at least enough spares for one data
+bad bank restrictions beyond §3.3. An SB waiting to be erased after the next commit
+(a reclaim victim, marked type 1 with nothing valid) is not a spare until that commit
+is done. Otherwise the commit's own context can land in a victim and be erased straight
+after it, and the next mount falls back to the older context `[THIS: offline, on a w0c
+overlay, nand-clean 2139ecf]`. Keep a reserve: at least enough spares for one data
 frontier plus one context plus the next context, and don't let the reserve run out
 during a reclaim (`[DEV 2026-11-07: reclaim floor 6 spares, up to 4 victims per
 reclaim]`).
@@ -724,6 +924,25 @@ Everything observed about iOS meeting Linux's writes. Each is a device measureme
   unproven cause `[DEV 2026-10-29]`. The format rules of §4 exist because of them.
 - An iOS fsck after a large Data shrink reports rc 8 until a clean restart; this
   is not a Linux fault `[DEV 2026-11-08]`.
+
+With the clean-room driver, ladder rungs 6–10 `[DEV 2026-11-15, nand-clean]`:
+
+- iOS booted on a Linux context six times (twice at rung 6, then after rungs 7, 8a, 8b and
+  after the rung-9 power-offs), took it and committed its own context. Every iOS context
+  rebuilt from its own tables was identical to the media.
+- iOS commits **once per boot, early**: already during the Apple logo, so before DFU can be
+  entered with a cable. Each round showed exactly one iOS commit.
+- iOS's new context lists the context it booted on as type 7 next to itself, but that SB is
+  already **erased** on the media: iOS erases it right after its commit. At its following
+  commit iOS lists it type 1 and reuses it.
+- Once an erased former context was listed with SB type **2**. This value is not among those
+  of §4.4, and its meaning is unknown (§9).
+- A Linux GC superblock closed with PAD to capacity (50 data VBAs, BTOC `nb` 4) is kept by
+  iOS as an ordinary closed SB: type 3, 50 valid, BTOC flags `0x8` `[rung 7]`.
+- A power-off from Linux writes the shutdown checkpoint: stage 2 turns `reboot` into a
+  power-off on this iPad, and the FTL's reboot notifier also runs then. Traced through
+  iOS's next context, which listed as its previous context the SB the Linux power-off had
+  written; that SB read erased earlier in the same Linux session `[rung 9]`.
 
 ## 6. LwVM
 
@@ -865,6 +1084,20 @@ Volumes refused even when named: `System`, `Data` (any case), effaceable ones
 | synced 4 KiB (fsync) | ≤ 40 ms | 27 ms `[DEV 2026-11-09]` |
 | page program | | 1.23 ms total, 0.73 ms transfer `[DEV 2026-11-08]` |
 
+Measured with the clean-room driver on the NAND root, verifying every 16th page
+`[DEV 2026-11-15, rung 10, nand-clean]`:
+
+| | measured |
+|---|---|
+| sequential write, ext4, 512 MiB, fsync | 8.0 MiB/s (7.3 MiB/s for 256 MiB of random data) |
+| sequential read, 512 MiB file, cold cache | 9.6 MiB/s |
+| 4 KiB write + fsync, 300 times | mean 13.4 ms, p95 16.1 ms, max 30.7 ms |
+| whole `ftl0` (16 GB) read, twice | 22 MB/s, no error |
+| one page, one bus, PIO | 2.3–2.4 ms MLC, 1.8 ms SLC `[DEV 2026-11-14, rung 2]` |
+
+The write figures include automatic reclaims, about one per 48 MiB written with spares at
+the floor; each ends in a commit that closes the frontier with PAD.
+
 Method: writes gather whole bios (avoid one program per 4 KiB bvec), program up
 to 32 pages in one batch, one page per CE at a time with overlap between the
 two CEs `[DEV 2026-11-08]`.
@@ -883,12 +1116,12 @@ measured in the writing of this spec, `[THIS]`):
 | VFL context live on block 1063, 59 log pages per bank | yes |
 | Bank tables: usable block counts | banks 1053 / 1053 / 1051 / 1054 |
 | Context SB | 519, base weave `0x162d1045` = 372052037, 56 LBAs, sections 1,2,3,5,6,4 |
-| Tree | 13026 runs, covers exactly `0..3906265`, 26 used LBAs of 32, last used LBA 251 runs |
+| Tree | 13026 runs (12938 normalised), covers exactly `0..3906265`, 26 used LBAs of 32, last used LBA 251 runs |
 | `valid` in SB array | matches tree counts on all 1054 SBs |
 | Closed SBs | 1033, all with BTOC of `nb` 4 or 8; flags `8:487, 16:390, 9:156` |
-| BTOC rebuild from page metadata | byte-identical on the 39 SBs tested (random sample + sb2, sb4, sb5) including gaps |
+| BTOC rebuild from page metadata | all 1033: 1026 byte-identical; sb 158, 299, 349, 486, 610, 612, 745 differ only in the `user` field of 14 entries in all. sb 1054 has one bank (bank 3), capacity 1024 |
 | User sequence summaries | `min/max/average/count` from BTOC entries match on all 1033 |
-| Tokens in BTOCs | 339 DELETE, 32 PAD |
+| Tokens in BTOCs | 339 DELETE entries of count 1, 32 PAD entries of count 16 (all in sb243) |
 | Replay | fresh: sb764, sb164 (closed), sb166 (open, 1300 VBAs); open at context: sb119 (no newer writes), sb145 (2684 newer), sb599 (3960 newer); mapped 747503 → 743683 |
 | Whole-map check | 120 000 random mapped LBAs: metadata LBA equals the mapped LBA, 0 mismatches |
 | Hidden LBA 3906265 | mapped at VBA `0x9157b` in the tree, `0xa6513` after replay |
@@ -900,7 +1133,10 @@ stop at `len` for SB/user/read LBAs, at the end of runs for tree LBAs). Repeat f
 context obtained.
 
 **Golden BTOC**: rebuild the BTOC of closed SBs from their data VBAs' metadata;
-identical to the dump, as above, on all 1033 for a full acceptance.
+identical to the dump on 1026 of 1033 for a full acceptance. On the other 7, every field
+matches except `user`, where iOS's BTOC value differs from the page's own metadata; this
+cannot be reproduced from page metadata alone. A Linux writer uses the page's `user`.
+Whether iOS reads this field back is not known.
 
 **LwVM**: the iOS validator (under an emulator, offline, on the 12H321 kernelcache) accepts
 any header the driver would ever write; a header exceeding the capacity rule is refused
@@ -930,15 +1166,41 @@ tests is reset before proceeding. Ordered, one kind of risk at a time:
 9. **Root on NAND**: reboot cycles, Linux↔iOS, boot counts, hashes.
 10. **Sustained**: speed vs §7.5; long read passes; iOS after every stage.
 
+All ten rungs passed with the clean-room driver, 2026-11-14 and 2026-11-15
+(`nand-clean` up to 06bc182; evidence in that branch's gaps file).
+
+- **Rung 2, page transmit**: the receive shape of §2.5.1 mirrored. For each 4112-byte unit:
+  clear events, `CONFIG = 5`, `F+0x34 = (1028 << 8) | 4`, `CONTROL = 5`. Then four times:
+  wait for `F+0x1c` bits 3–4 and push 257 words. Then wait for bit 1 of `F+0x0c` and clear
+  it. There is no `CONTROL = 6` before `0x17`. It was the first shape tried. Results:
+  12 of 12 MLC and SLC cycles on the six reserved blocks, every page with data and all
+  metadata read back, and neighbouring blocks unchanged.
+- **Rung 1**: 57022 of 57032 System files identical to the IPSW. Not done: a sample
+  compare against the iOS `/dev/rdisk0` view.
+
 ## 9. Unverified
 
 Facts here are known only from earlier driver behaviour or are inferred, and could
 not be confirmed from a binary, a dump or a measurement while writing this spec.
 
-- Exact `FMI_CONFIG` for whole-page **PIO transmit**. Receive uses 5 (`[iBEC]`,
-  dump); the earlier driver's transmit worked on the device (W1 42/42) but the precise
-  value is established only by that driver. Implement starting from 5, confirm in
-  ladder step 2 (reserved blocks), first program.
+- §2.9, all `[EARLIER DRIVER]` steps. A read-only build following it as a whole reads
+  consecutive pages on both CEs and CAUs, mounts the FTL and reads the whole device with 0
+  errors `[DEV 2026-11-09, nand-clean 6a67fe8]`. Rungs 1–10 then ran on it, with many
+  module loads, System files equal to the IPSW and golden-identical iOS contexts
+  `[DEV 2026-11-14/15]`, so the order as a whole is confirmed. Which step lets a second
+  read work is not established, because the steps were applied together. Until a step is
+  varied alone on the device, a driver keeps them all.
+  Cross-checked against iBEC so far: command opcodes, event-clear values, poll set-up
+  (iBEC differs: `F+0x10 = 0x100` and an interrupt), `0xffff` after reset, a write to
+  `F+0x80014` at init. Not cross-checked: order of the bring-up steps, the 10 µs and 50 ms
+  delays, bit 8 of `F+0x0c` as the poll's end condition. The 16-CE reset loop is not needed:
+  populated CEs alone work.
+- SB-array type **2**: seen once, on an erased former iOS context (sb 467 after rung 7)
+  `[DEV 2026-11-15, nand-clean]`. Its meaning is unknown, and a writer never sets it.
+- The items tagged `[EARLIER]` in §1.3 and §2.5: the order of the fields of the 8-byte
+  read address, the 4 × 1028 transfer shape, software reset around every operation,
+  and which of these is what lets the next operation on a CE work (not established:
+  they were never varied separately on the device).
 - Polarity and encoding of the bad-block bitmap (feature `0x84 | cau<<8`); the driver
   does not need it (use the VFL tables).
 - The meaning of base-section words 0 and 1 (`1`, own SB number) beyond their observed
