@@ -472,8 +472,14 @@ kloader and iBEC unchanged.
   of the allocation bitmap (3, 4; the file is blocks 1–32). iOS keeps System mounted
   read-write (the volume is marked not unmounted) and updates exactly these; every other
   block is equal. This settles the rung-1 open item of a sample compare with the iOS view.
-- Not checked here: the second session's 201 test files and marker after this iOS run
-  (next Linux boot), `e2fsck` of the Linux volume (only possible unmounted), long use.
+- Third boot from the app: the second session's 201 files and marker, and all earlier
+  test files, match. iOS's context is again on sb 796 (a new one, weave 378509180, SB reused)
+  and lists **sb 53** as its previous context: the context the nand-rw kernel wrote at the
+  power-off of the second session (which had loaded the older sb 796). 41156 LBAs replayed
+  (iOS's session after its commit); golden of sb 796 identical. An open SB (sb 748, 40 LBAs,
+  newest weaves) is listed with **type 2** in iOS's array: type 2 also marks an open data SB,
+  not only an erased former context.
+- Not checked here: `e2fsck` of the Linux volume (only possible unmounted), long use.
 
 ## Decisions the spec left open
 
