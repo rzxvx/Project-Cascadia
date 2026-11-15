@@ -87,7 +87,7 @@ typedef uint64_t u64;
 #define SFTL_MAX_VICTIMS	4u
 #define SFTL_VERIFY_DEFAULT	16u
 #define SFTL_MAX_CTX		8u
-#define SFTL_REPLAY_LOG		16u
+#define SFTL_REPLAY_LOG		64u
 #define SFTL_PAD_RUN_MAX	16u
 
 struct sftl_prog {

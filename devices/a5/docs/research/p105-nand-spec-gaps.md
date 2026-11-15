@@ -181,7 +181,7 @@ Read only, with `devices/a5/tools/nand-rung4/ppn_ctxdump.ko` `[DEV]`:
   (`ffffffff ffffffff`, VBAs 196..199, same metadata), then erased pages from VBA 200.
   The context is 200 LBAs, 50 pages.
 - Tree LBAs in the context: 176 for 172 used here, 32 for 26 used in `w0c`. The writer
-  uses `max(32, roundup(used + 1, 16))`, which gives both.
+  uses `max(32, roundup(used, 16))` (first `used + 1`, corrected at rung 9).
 - The first weave of data written after it is base + 420 here, so the weave counter
   must clear the whole context (200), not 56: the loader now counts the context to its
   last section-4 LBA, empty ones included.
@@ -383,6 +383,20 @@ own `/sbin/p105-stage2`; any failure falls through to NFS). Nothing is copied in
   sb 66 after the one that loaded sb 825), as when iOS booted on a Linux context in rungs 6–8, where it listed
   exactly that Linux context. Not proven directly: that needs a boot into Linux right after
   the power-off with no iOS in between.
+- Fourth round (meant to be Linux → Linux, but iOS ran in between again): iOS's context
+  sb 300 lists **sb 66** as its previous context. In the Linux session before the power-off
+  sb 66 read erased (`ff`), and a Linux commit in that session would have kept sb 419 (the
+  context it loaded), not sb 66. So the context on sb 66 was written at the Linux power-off
+  and iOS booted on it; the only other reading is that iOS committed twice in one session,
+  which none of the sessions observed in rungs 6–9 did.
+- A replay of 61052 LBAs (iOS wrote about 230 MiB after its context sb 419 without
+  committing again) was complete: the replay log held only 16 entries, and the 17th SB
+  (sb 972, 4108 LBAs) was applied but not logged. The log is now 64 entries.
+- **Tree length rule corrected** (`sftl_ctx_tree_lbas`): iOS's sb 300 holds 176 used tree
+  LBAs in exactly 176, with no empty LBA. The rule is `max(32, roundup(used, 16))`, which fits
+  all iOS contexts seen (26 → 32; 172, 173, 174, 176 → 176). The earlier `used + 1` rule
+  gave 192 here; iOS accepted those Linux contexts, but the golden rebuild of sb 300 now
+  matches only with the corrected rule.
 
 ## Decisions the spec left open
 

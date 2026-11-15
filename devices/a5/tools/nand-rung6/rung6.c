@@ -362,6 +362,13 @@ static int do_check(struct r6_watch *w, const struct rung6_args *a)
 		sftl_free(buf);
 		return ret;
 	}
+	for (i = 0; i < fs->n_replay; i++) {
+		u32 rs = fs->replay_log[i].sb;
+
+		sftl_info("rung6: replayed sb %u: closed %d, applied %u; first weave %llu, SB array type %u",
+			  rs, fs->replay_log[i].closed, fs->replay_log[i].applied,
+			  (unsigned long long)fs->probe[rs].first_weave, fs->rec[rs].type);
+	}
 	d = r6_digest(fs, &m);
 	sftl_info("rung6: mount: context sb %u weave %llu, %u LBAs (tree %u, %u runs), %u mapped, %u replayed, digest %016llx",
 		  fs->ctx_sb, (unsigned long long)fs->ctx_weave, fs->ctx_lbas, fs->tree_used,

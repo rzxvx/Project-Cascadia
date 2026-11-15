@@ -104,12 +104,13 @@ int sftl_tree_serialize(struct sftl *fs, u8 *lbas, u32 max_lbas, u32 *runs_out,
 
 /*
  * Tree LBAs a context carries for a tree of 'used' LBAs: at least the 32 of
- * the fixed part, else used plus at least one empty LBA, rounded up to 16.
- * This matches both iOS contexts seen: 26 used in 32, 172 used in 176.
+ * the fixed part, else used rounded up to 16, with no empty LBA when used is
+ * already a multiple.  iOS contexts seen: 26 used in 32; 172, 173, 174 and
+ * 176 used, all in 176.
  */
 u32 sftl_ctx_tree_lbas(u32 used)
 {
-	u32 n = (used + 1 + 15) & ~15u;
+	u32 n = (used + 15) & ~15u;
 
 	return n < SFTL_TREE_LBAS ? SFTL_TREE_LBAS : n;
 }

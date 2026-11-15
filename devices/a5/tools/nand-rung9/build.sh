@@ -12,7 +12,7 @@ O=$C/output/rung9
 rm -rf "$O"; mkdir -p "$O/overlay/lib/nand"
 cp -a "$M/build/overlay/." "$O/overlay/"
 install -m 755 "$C/tools/nand-rung9/init" "$O/overlay/init"
-cp "$C/output/rung8/apple_ppn.ko" "$C/output/rung8/apple_ftl.ko" "$O/overlay/lib/nand/"
+cp "$C/output/mods/apple_ppn.ko" "$C/output/mods/apple_ftl.ko" "$O/overlay/lib/nand/"
 echo "${1:-16}" > "$O/overlay/etc/nandroot"
 cp "$C/output/rung1/zImage-dtb" "$C/output/rung1/linux-boot.bin" \
    "$C/output/rung1/staging-loader.bin" "$O/"
