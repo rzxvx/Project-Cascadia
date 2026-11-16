@@ -19,7 +19,10 @@ lx_up() { ssh -o ConnectTimeout=4 -o BatchMode=yes root@10.55.0.2 true </dev/nul
 install_ask_disk() {
     local v
     v=$(sed -n 's/^disk=//p' "$INSTALL_CONF" 2>/dev/null | tail -1)
-    if [ -n "${DISK:-}" ]; then v=$DISK; fi
+    if [ -z "$v" ] && [ -n "${DISK:-}" ]; then
+        v=$DISK
+        case "$v" in nand|nfs) mkdir -p "$ROOT/build"; echo "disk=$v" >> "$INSTALL_CONF" ;; esac
+    fi
     case "$v" in nand|nfs) echo "$v"; return 0 ;; esac
     [ -t 0 ] || fail "where Linux lives is asked once, at a terminal: run ./cascadia a5 install in one"
     cat >&2 <<'EOF'
