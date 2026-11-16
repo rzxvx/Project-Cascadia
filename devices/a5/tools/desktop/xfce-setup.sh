@@ -40,8 +40,13 @@
 # touchegg above).
 set -e
 
+# XFCE by its parts, not the xfce4 meta package: the meta pulls in tumbler (file
+# thumbnails), and tumbler alone drags in WebKit, GStreamer, FFmpeg, a speech
+# synthesizer, poppler and gnome-keyring (~200 MB) for previews in Thunar.
 apk add --no-progress xorg-server xf86-video-fbdev xf86-input-libinput eudev \
-    xinit xfce4 xfce4-terminal svkbd touchegg xrandr xinput
+    xinit exo garcon libxfce4ui libxfce4util libxfce4windowing thunar thunar-volman \
+    xfce4-appfinder xfce4-panel xfce4-power-manager xfce4-session xfce4-settings \
+    xfconf xfdesktop xfwm4 font-dejavu xfce4-terminal svkbd touchegg xrandr xinput
 
 mkdir -p /etc/X11/xorg.conf.d /usr/local/bin /usr/share/applications \
          /usr/share/icons/hicolor/scalable/apps /etc/xdg/autostart

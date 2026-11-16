@@ -40,12 +40,12 @@ OUT="${OUT:-$ROOT/build/desktop-root.tar}"
 VOL="${VOL:-cascadia-a5-desktop-root}"
 if [ "${PUBLIC:-0}" = 1 ]; then
     VOL=cascadia-a5-desktop-root-public FRESH=1
-    ONLY="${ONLY:-xfce patched autorotate mesa supertux screenpad}"
+    ONLY="${ONLY:-gl xfce patched autorotate mesa supertux screenpad}"
 fi
 C=cascadia-a5-root
 DEV=root@desktop-root
 ALPINE="${ALPINE:-3.24}"
-STEPS="${ONLY:-xfce patched autorotate mesa gpu supertux screenpad}"
+STEPS="${ONLY:-gl xfce patched autorotate mesa gpu supertux screenpad}"
 
 say()  { printf '==> %s\n' "$*"; }
 fail() { printf 'error: %s\n' "$*" >&2; exit 1; }
@@ -107,6 +107,8 @@ step() {
     printf '    %s: %d s\n' "$name" $((SECONDS - t0))
 }
 
+# before XFCE: stands in for Alpine's Mesa, so LLVM never comes (cascadia-gl/build.sh)
+step gl         sh "$ROOT/tools/desktop/cascadia-gl/build.sh" install
 step xfce       sh -c "ssh $DEV sh -s < '$ROOT/tools/desktop/xfce-setup.sh'"
 step patched    sh -c "sh '$ROOT/tools/desktop/pixman/build.sh' install &&
                        sh '$ROOT/tools/desktop/xorg-server/build.sh' install &&
@@ -120,8 +122,12 @@ step screenpad  sh "$ROOT/tools/screenpad/build.sh" install
 say "checking what the iPad will find"
 # apk's own view: every package there and a world it can resolve (a
 # --force-broken-world that skipped something shows up here, not on the iPad)
-inroot 'chroot /target apk info -e xorg-server xfce4 eudev touchegg svkbd supertux supertux-data py3-gobject3 >/dev/null' \
+inroot 'chroot /target apk info -e cascadia-gl xorg-server xfce4-session xfce4-panel eudev touchegg svkbd supertux supertux-data py3-gobject3 >/dev/null' \
     || fail "a package is missing from the root (apk info above)"
+# and what the root must not carry (Alpine's Mesa and LLVM, the thumbnailer's tree)
+for p in mesa llvm22-libs tumbler webkit2gtk-4.1 gstreamer; do
+    if inroot "chroot /target apk info -e $p >/dev/null"; then fail "the root has $p (it should not)"; fi
+done
 inroot 'chroot /target apk -s add --no-network >/dev/null' \
     || fail "apk cannot resolve the root's world -- something was installed broken (above)"
 for f in usr/local/bin/desktop usr/local/bin/autorotate usr/bin/xrandr usr/bin/xinput usr/local/bin/screenpad usr/local/bin/tux-gpudemo \
