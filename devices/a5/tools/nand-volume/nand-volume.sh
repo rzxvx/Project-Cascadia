@@ -64,7 +64,7 @@ ios_helper() {
     [ -x "$S/cascadia-hfs" ] || fail "no helper: run 'nand-volume build' first"
     ios "cat > /tmp/cascadia-hfs && chmod 755 /tmp/cascadia-hfs" < "$S/cascadia-hfs" || fail "helper upload"
 }
-hfs_field() { sed -n "s/^$1=//p" <<< "$HFS"; }
+hfs_field() { sed -n "s/^$1=//p" <<< "$HFS" | tail -1; }   # the last report wins
 hfs_info() { HFS=$(ios "/tmp/cascadia-hfs info" </dev/null) || fail "cascadia-hfs info: $HFS"; }
 ios_fsck() {   # partition -> 0 when clean; output to this computer, never to Data
     local r
@@ -200,7 +200,7 @@ cmd_create() {
     ios_fsck 2 || fail "fsck_hfs -n -l of Data is not clean ($S/fsck-s2.txt): restart iOS cleanly and try again"
     note "Data: $total -> $n blocks ($(( (total - n) / 256 )) MiB to Linux); $free free"
     ask "shrink Data's HFS now (iOS keeps running; takes about a minute)?" || fail "stopped: nothing changed"
-    local out; out=$(ios "/tmp/cascadia-hfs resize $n" </dev/null)
+    local out; out=$(ios "/tmp/cascadia-hfs resize $n; sync; sleep 2; sync; /tmp/cascadia-hfs info" </dev/null)
     echo "$out" | sed 's/^/    /'
     HFS="$out"
     [ "$(hfs_field total)" = "$n" ] || fail "the shrink did not take (above); the LwVM header is untouched"
@@ -250,7 +250,7 @@ cmd_remove() {
         undo_fsck_ok "$want" || fail "Data's fsck shows more than the size mismatch: $S/fsck-s2.txt"
     fi
     ask "grow Data now?" || fail stopped
-    local out; out=$(ios "/tmp/cascadia-hfs resize $want" </dev/null)
+    local out; out=$(ios "/tmp/cascadia-hfs resize $want; sync; sleep 2; sync; /tmp/cascadia-hfs info" </dev/null)
     echo "$out" | sed 's/^/    /'
     HFS="$out"
     [ "$(hfs_field total)" = "$want" ] || fail "the grow did not take (above); iOS keeps working with the smaller HFS"
