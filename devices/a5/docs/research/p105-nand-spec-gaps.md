@@ -521,7 +521,9 @@ unchanged); the previous one, `3572487…`, kept in main's `build/pcless-cablefr
 Cable boot of the bundle: `6.12.0-nand-rw-dirty #12`, root `ftl0p2` rw on iOS's context sb
 480 (3116 replayed), injection parameters at -1; the 903 files of the fault test match;
 64 MiB + 300 files written and synced in 7 s and read back right after dropping caches.
-Not installed for the PC-less boot yet.
+Installed from iOS with `app/install-dev.sh` (2026-11-16): the app's status shows
+`/kernelcache` = `0562ee719420b8923aeeacc4ee31a8d79837cf8c` as wanted; ramdisk, devicetree,
+kloader and iBEC unchanged. Not yet booted from the app.
 
 ## Decisions the spec left open
 
