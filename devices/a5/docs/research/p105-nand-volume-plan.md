@@ -126,3 +126,11 @@ Not run on the device yet. Device sequence for the user's iPad (each write step 
    check; fixed.) Read-only check after: context sb 25, 0 replayed; `e2fsck -fn` clean
    (19716 inodes, 403010 blocks); 19960 entries as in the backup; the four sampled files have
    the same SHA-256; owners kept.
+10. Boot from the app (PC-less, kernelcache `0562ee71…`): Linux up on the refilled volume
+    (user, 2026-11-16). **Full cycle on the user's iPad done: backup → remove → HFS grow →
+    shrink → create → fill → daily boot.**
+
+Still missing for other users: a Linux image with the PPN driver in the normal
+`./cascadia a5 build` (the Linux steps used the test image `output/rung1`); Unicorn for the
+validator (`PYTHON_UNICORN`); `install` calling `nand-volume`; the PC-less files installed for
+a fresh user; nand-clean merged into main.
