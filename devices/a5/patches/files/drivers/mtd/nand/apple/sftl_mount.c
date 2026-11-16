@@ -709,6 +709,7 @@ static int replay_sb_walk(struct sftl *fs, struct replay_state *rs, u32 sb,
 			 */
 			sftl_warn("replay walk sb %u offset %u: status %#x, page skipped",
 				  sb, o, st);
+			fs->torn[sb / 8] |= 1 << (sb % 8);
 			continue;
 		}
 		if (fs->io_meta[0] == SFTL_MT_BTOC)
@@ -754,6 +755,7 @@ int sftl_replay(struct sftl *fs)
 	int ret;
 
 	rs.min_weave = fs->ctx_weave;
+	memset(fs->torn, 0, sizeof(fs->torn));
 	ret = sftl_map_init(&rs.guard, fs->total_lbas);
 	if (ret)
 		return ret;

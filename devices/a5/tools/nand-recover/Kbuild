@@ -1,0 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0-only
+# Recovery module: FTL core built in, links to apple_ppn at load.
+obj-m += ppn_recover.o
+ccflags-y += -I$(src)/../../patches/files/drivers/mtd/nand/apple -I$(src)

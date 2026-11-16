@@ -24,6 +24,7 @@
 #include "rung6.h"
 #include "rung7.h"
 #include "lwvmw.h"
+#include "recover.h"
 
 #define RAW_PAGE 16448
 #define OVERLAY_PAGES (1u << 20)
@@ -65,6 +66,7 @@ struct device {
 	int fail_mode;			/* 1 nothing written, 2 written, 3 garbage + status 0x51 */
 	unsigned int fail_count;	/* how many failures to inject in a row */
 	long fail_erase_nth;		/* the Nth block erase from now fails */
+	bool fail_erase_all;		/* every erase fails (a dead controller) */
 };
 
 static int seg_index(unsigned int block)
@@ -174,7 +176,7 @@ static int dev_erase(void *hw, unsigned int bank, unsigned int block)
 		printf("  FAIL erase of a non-FTL block: bank %u block %u\n", bank, block);
 		abort();
 	}
-	if (d->fail_erase_nth >= 0 && d->fail_erase_nth-- == 0) {
+	if (d->fail_erase_all || (d->fail_erase_nth >= 0 && d->fail_erase_nth-- == 0)) {
 		printf("  [inject] erase of bank %u block %u fails\n", bank, block);
 		return -EIO;
 	}
@@ -267,6 +269,7 @@ static int dev_open(struct device *d, const char *dir)
 	d->fail_prog_nth = -1;
 	d->fail_prog_type = -1;
 	d->fail_erase_nth = -1;
+	d->fail_erase_all = false;
 	for (b = 0; b < 2; b++)
 		for (c = 0; c < 2; c++)
 			for (s = 0; s < 3; s++) {
@@ -793,6 +796,100 @@ static void fault_case_run(const char *dir, const struct fault_case *c, unsigned
 	free(d);
 }
 
+/*
+ * The 2026-11-16 incident: acknowledged writes in the open frontier, then a
+ * page program comes back torn and every erase fails, so the writer stops
+ * before any commit.  A fresh mount must replay the acknowledged data, give
+ * the torn SB up (moved, type 1, nothing valid), commit, and a second mount
+ * must find it all without replay.
+ */
+static void incident_test(const char *dir)
+{
+	struct device *d = malloc(sizeof(*d));
+	struct sftl *fs;
+	u8 buf[SFTL_LBA_SIZE], want[SFTL_LBA_SIZE], *src = malloc(37 * SFTL_LBA_SIZE);
+	u32 base = 500000, n = 600, lba, torn_sb, done = 0, inmap = 0;
+	unsigned int b;
+	int ret = 0, rbad = 0;
+
+	printf("-- torn page, every erase failing, no commit, then recovery\n");
+	if (dev_open(d, dir))
+		return;
+	fs = fault_mount(d);
+	if (!fs)
+		return;
+	for (b = 0; b < SFTL_BANKS; b++)
+		d->usage[b] = fs->usage[b];
+	d->writes_enabled = true;
+	assert(!sftl_writer_start(fs, 1));
+	fs->wr->hold_commit = true;
+	while (!ret && done < n) {
+		u32 k = n - done < 37 ? n - done : 37, j;
+
+		for (j = 0; j < k; j++)
+			pattern(src + j * SFTL_LBA_SIZE, base + done + j, 9);
+		ret = sftl_write(fs, base + done, k, src);
+		done += k;
+	}
+	CHECK(!ret, "%u LBAs acknowledged in the open frontier", n);
+	torn_sb = fs->wr->fr.sb;
+	d->fail_prog_nth = 0;
+	d->fail_mode = 3;
+	d->fail_count = 1;
+	d->fail_erase_all = true;
+	for (b = 0; b < 37; b++)
+		pattern(src + b * SFTL_LBA_SIZE, base + n + b, 9);
+	ret = sftl_write(fs, base + n, 37, src);
+	CHECK(ret && fs->wr->wedged, "the next write fails and the writer stops (%d)", ret);
+	CHECK(sftl_checkpoint(fs) == -EIO, "a stopped writer refuses the checkpoint");
+	sftl_writer_stop(fs);
+	sftl_exit(fs);
+	free(fs);
+	d->fail_erase_all = false;
+
+	fs = fault_mount(d);
+	if (!fs)
+		return;
+	for (b = 0; b < SFTL_BANKS; b++)
+		d->usage[b] = fs->usage[b];
+	CHECK(fs->replay_applied >= n && ((fs->torn[torn_sb / 8] >> (torn_sb % 8)) & 1),
+	      "recovery mount: %u replayed, sb %u seen torn", fs->replay_applied, torn_sb);
+	ret = sftl_writer_start(fs, 1);
+	CHECK(!ret && fs->rec[torn_sb].type == SFTL_SB_AWAIT_ERASE && !fs->rec[torn_sb].valid,
+	      "writer start gives sb %u up (%d): type %u valid %u", torn_sb, ret,
+	      fs->rec[torn_sb].type, fs->rec[torn_sb].valid);
+	ret = sftl_checkpoint(fs);
+	CHECK(!ret, "commit after the recovery (%d)", ret);
+	sftl_writer_stop(fs);
+	sftl_exit(fs);
+	free(fs);
+
+	fs = fault_mount(d);
+	if (!fs)
+		return;
+	for (lba = base; lba < base + n; lba++) {
+		pattern(want, lba, 9);
+		if (sftl_read_lba(fs, lba, buf, NULL) || memcmp(buf, want, sizeof(buf)))
+			rbad++;
+	}
+	for (lba = 0; lba < fs->total_lbas; lba++) {
+		u32 v = sftl_map_get(&fs->map, lba);
+
+		if (v != SFTL_UNMAPPED && sftl_sb_of(v) == torn_sb)
+			inmap++;
+	}
+	CHECK(!rbad && !fs->replay_applied && !inmap,
+	      "second mount: %u acknowledged LBAs read back (%d bad), %u replayed, %u LBAs in sb %u",
+	      n, rbad, fs->replay_applied, inmap, torn_sb);
+	CHECK(fs->rec[torn_sb].type == SFTL_SB_AWAIT_ERASE && !fs->rec[torn_sb].valid,
+	      "sb %u in the context: type %u valid %u (want 1, 0)", torn_sb,
+	      fs->rec[torn_sb].type, fs->rec[torn_sb].valid);
+	sftl_exit(fs);
+	free(fs);
+	free(src);
+	free(d);
+}
+
 static void fault_tests(const char *dir)
 {
 	static const struct fault_case cases[] = {
@@ -810,6 +907,7 @@ static void fault_tests(const char *dir)
 	printf("== program and erase failures (overlay)\n");
 	for (i = 0; i < sizeof(cases) / sizeof(cases[0]); i++)
 		fault_case_run(dir, &cases[i], i);
+	incident_test(dir);
 }
 
 static void writer_tests(struct device *d, const char *dir)
@@ -1051,6 +1149,93 @@ int main(int argc, char **argv)
 		return 1;
 	if (argc > 2 && !strcmp(argv[2], "--faults")) {
 		fault_tests(argv[1]);
+		goto done;
+	}
+	if (argc > 2 && !strcmp(argv[2], "--recover")) {
+		/* Recovery module code on the overlay: refusal, dry run, run with two spares. */
+		struct sftl *m = calloc(1, sizeof(*m));
+		struct recover_args ar = { .ops = &dev_ops, .hw = d };
+		u32 sb;
+
+		assert(!sftl_init(m, &dev_ops, d) && !sftl_mount(m));
+		for (i = 0; i < SFTL_BANKS; i++)
+			d->usage[i] = m->usage[i];
+		d->writes_enabled = true;
+		for (sb = SFTL_NUM_SB; sb-- > 0 && ar.nerase < 2;)
+			if (m->rec[sb].type == SFTL_SB_ERASED && m->shape[sb].width == SFTL_BANKS)
+				ar.erase[ar.nerase++] = sb;
+		ar.erase[ar.nerase++] = m->ctx_sb;
+		ret = recover_run(&ar);
+		CHECK(ret == -EINVAL, "recovery refuses to erase the context sb %u (%d)", m->ctx_sb, ret);
+		ar.nerase--;
+		ar.dry_run = true;
+		ret = recover_run(&ar);
+		CHECK(!ret, "recovery dry run (%d)", ret);
+		ar.dry_run = false;
+		ret = recover_run(&ar);
+		CHECK(!ret, "recovery with sb %u and %u erased again (%d)", ar.erase[0], ar.erase[1], ret);
+		ret = recover_run(&ar);
+		CHECK(!ret, "recovery run again (%d)", ret);
+		sftl_exit(m);
+		free(m);
+		{
+			/* An open Linux frontier left without a commit, its next page not
+			 * programmed (reads erased): not torn, so it is named by hand. */
+			struct sftl *w = calloc(1, sizeof(*w));
+			u8 *src = malloc(48 * SFTL_LBA_SIZE), buf[SFTL_LBA_SIZE], want[SFTL_LBA_SIZE];
+			u32 open_sb, lba, bad = 0, inmap = 0;
+			struct recover_args ag = { .ops = &dev_ops, .hw = d };
+
+			assert(!sftl_init(w, &dev_ops, d) && !sftl_mount(w));
+			for (i = 0; i < SFTL_BANKS; i++)
+				d->usage[i] = w->usage[i];
+			assert(!sftl_writer_start(w, 1));
+			w->wr->hold_commit = true;
+			for (i = 0; i < 48; i++)
+				pattern(src + i * SFTL_LBA_SIZE, 600000 + i, 7);
+			assert(!sftl_write(w, 600000, 48, src));
+			open_sb = w->wr->fr.sb;
+			d->fail_prog_nth = 0;
+			d->fail_mode = 1;
+			d->fail_count = 1;
+			d->fail_erase_all = true;
+			sftl_write(w, 600048, 1, src);
+			sftl_writer_stop(w);
+			sftl_exit(w);
+			free(w);
+			d->fail_erase_all = false;
+			ag.give_up[ag.ngive++] = open_sb;
+			ag.dry_run = true;
+			ret = recover_run(&ag);
+			CHECK(!ret, "dry run naming open sb %u (%d)", open_sb, ret);
+			ag.dry_run = false;
+			ret = recover_run(&ag);
+			CHECK(!ret, "recovery gives up the named sb %u (%d)", open_sb, ret);
+			w = calloc(1, sizeof(*w));
+			assert(!sftl_init(w, &dev_ops, d) && !sftl_mount(w));
+			for (lba = 600000; lba < 600048; lba++) {
+				pattern(want, lba, 7);
+				if (sftl_read_lba(w, lba, buf, NULL) || memcmp(buf, want, sizeof(buf)))
+					bad++;
+			}
+			for (lba = 0; lba < w->total_lbas; lba++) {
+				u32 v = sftl_map_get(&w->map, lba);
+
+				if (v != SFTL_UNMAPPED && sftl_sb_of(v) == open_sb)
+					inmap++;
+			}
+			CHECK(!bad && !inmap && w->rec[open_sb].type == SFTL_SB_AWAIT_ERASE &&
+			      !w->replay_applied,
+			      "after it: 48 LBAs read back (%u bad), %u in sb %u, type %u, %u replayed",
+			      bad, inmap, open_sb, w->rec[open_sb].type, w->replay_applied);
+			ag.ngive = 0;
+			ag.give_up[ag.ngive++] = w->ctx_sb;
+			ret = recover_run(&ag);
+			CHECK(ret == -EINVAL, "refuses to give up the context sb (%d)", ret);
+			sftl_exit(w);
+			free(w);
+			free(src);
+		}
 		goto done;
 	}
 	if (argc > 4 && !strcmp(argv[2], "--lwvm")) {
