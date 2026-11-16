@@ -119,3 +119,5 @@ Not run on the device yet. Device sequence for the user's iPad (each write step 
    both headers 1230568.
 7. NFS image `create`: context sb 840 (20172 replayed); dry run passed; LBA 4095, LBA 0 written
    and read back; committed on sb 3; fresh mount: System 133, Data 301, Linux 512 chunks.
+8. iOS on the new header: header read from iOS = plan (CRC `f45e7c76`); `/dev/disk0s1s3`
+   present; fsck exit 0 on System and Data; `df` Data 4.7 GiB. **Creation done.**
