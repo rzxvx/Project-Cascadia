@@ -144,10 +144,11 @@ nand_install_ios() {
     python3 "$ROOT/scripts/make-pcless.py" --ipsw "$ipsw" --bundle "$ROOT/output/staging-bundle.bin" \
         --devicetree "$ROOT/build/firmware/DeviceTree.dec" --out "$out" | sed 's/^/    /' \
         || fail "the boot files did not build (above)"
-    if [ ! -s "$ROOT/build/app/cascadia.deb" ]; then
+    local deck="${DECK:-$ROOT/build/app/cascadia.deb}"
+    if [ ! -s "$deck" ]; then
         sh "$ROOT/app/build.sh" || fail "the app did not build (above): it needs macOS with Xcode, ldid, and BearSSL in build/cache"
     fi
-    OUT="$out" bash "$ROOT/app/install-dev.sh" || fail "installing on iOS stopped (above)"
+    OUT="$out" DECK="$deck" RELEASE="${RELEASE:-}" bash "$ROOT/app/install-dev.sh" || fail "installing on iOS stopped (above)"
 }
 
 # ---------------------------------------------------------------- uninstall --

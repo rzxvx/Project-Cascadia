@@ -353,9 +353,9 @@ cmd_install() {
     # nothing says otherwise: the kernel and the desktop root are downloaded,
     # not built -- minutes instead of hours.  INSTALL_FROM=source builds them.
     local from=source m
-    # NAND: built here for now -- no release carries the NAND driver yet, and
-    # nand-volume's header writer is a module built against this kernel
-    if [ "${INSTALL_FROM:-}" != source ] && [ "$disk" != nand ] && m=$(a5_manifest) && [ ! -f "$ROOT/build/linux/Makefile" ]; then
+    # NAND from a release needs one that carries the NAND pair and the tools
+    if [ "${INSTALL_FROM:-}" != source ] && m=$(a5_manifest) && [ ! -f "$ROOT/build/linux/Makefile" ] &&
+       { [ "$disk" != nand ] || grep -q '"name": "cascadia.deb"' "$m"; }; then
         from=prebuilt
     fi
 
@@ -420,7 +420,13 @@ cmd_install() {
         [ -f "$tar" ] || fail "no desktop root to put on the NAND (step 6)"
 
         istep 7 "the tools for the Linux volume" "a minute"
-        if [ -x "$ROOT/build/nand-volume/cascadia-hfs" ] && [ -f "$ROOT/build/nand-volume/mods/ppn_lwvmw.ko" ] &&
+        if [ $from = prebuilt ]; then
+            mkdir -p "$ROOT/build/nand-volume/mods"
+            cp "$PREBUILT/cascadia-hfs" "$ROOT/build/nand-volume/cascadia-hfs"
+            chmod 755 "$ROOT/build/nand-volume/cascadia-hfs"
+            cp "$PREBUILT/ppn_lwvmw.ko" "$ROOT/build/nand-volume/mods/ppn_lwvmw.ko"
+            inone "they came with the prebuilt release"
+        elif [ -x "$ROOT/build/nand-volume/cascadia-hfs" ] && [ -f "$ROOT/build/nand-volume/mods/ppn_lwvmw.ko" ] &&
            [ "$ROOT/build/nand-volume/mods/ppn_lwvmw.ko" -nt "$ROOT/build/linux/vmlinux" ]; then
             iskip "build/nand-volume"
         else
@@ -442,7 +448,11 @@ cmd_install() {
 
         istep 9 "the Cascadia app and the boot files on iOS"
         lx_up && nand_back_to_ios
-        nand_install_ios
+        if [ $from = prebuilt ]; then
+            DECK="$PREBUILT/cascadia.deb" RELEASE=$(basename "$(cd "$PREBUILT" && pwd -P)") nand_install_ios
+        else
+            nand_install_ios
+        fi
 
         echo
         say "done: Linux lives on the iPad"
@@ -656,9 +666,14 @@ build_prebuilt() {
     mkdir -p "$ROOT/output"
     cp "$PREBUILT/linux-boot.bin" "$PREBUILT/zImage-dtb" "$ROOT/output/"
     if [ "$(install_disk)" = nand ]; then
-        say "the NAND install's device tree"
-        nand_dtb
-        in_docker "bash build-bundle.sh 2>&1 | tail -3"
+        say "the NAND install's kernel"
+        if [ -f "$PREBUILT/nand-zImage-dtb" ]; then
+            cp "$PREBUILT/nand-linux-boot.bin" "$ROOT/output/linux-boot.bin"
+            cp "$PREBUILT/nand-zImage-dtb" "$ROOT/output/zImage-dtb"
+        else
+            nand_dtb
+            in_docker "bash build-bundle.sh 2>&1 | tail -3"
+        fi
     fi
     say "this machine's layer"
     make_overlay
@@ -948,6 +963,23 @@ cmd_release() {
     # DISK=nfs: the release carries p105ap.dts's tree; a NAND install swaps its own in
     DISK=nfs PREBUILT_KERNEL=0 bash "$ROOT/cascadia" build >"$R/build.log" 2>&1 || { tail -20 "$R/build.log"; fail "the build failed (above)"; }
     cp "$ROOT/output/linux-boot.bin" "$ROOT/output/zImage-dtb" "$R/"
+    # the NAND install's pair: the same kernel with p105ap-nand-rw's tree, so
+    # neither a NAND install nor the app's update has to run dtc
+    in_docker "bash scripts/nand-dtb.sh >/dev/null && bash build-bundle.sh >/dev/null" || fail "the NAND pair failed"
+    cp "$ROOT/output/linux-boot.bin" "$R/nand-linux-boot.bin"
+    cp "$ROOT/output/zImage-dtb" "$R/nand-zImage-dtb"
+    # what goes on iOS and the Linux volume's tools (macOS with Xcode and ldid):
+    # the app, the HFS helper, and the LwVM header writer built against this kernel
+    IMAGE="$IMAGE" bash "$ROOT/tools/nand-volume/nand-volume.sh" build >>"$R/build.log" 2>&1 \
+        || { tail -20 "$R/build.log"; fail "the NAND volume tools failed (above)"; }
+    cp "$ROOT/build/nand-volume/cascadia-hfs" "$ROOT/build/nand-volume/mods/ppn_lwvmw.ko" "$R/"
+    rm -f "$ROOT/build/app/cascadia.deb"
+    sh "$ROOT/app/build.sh" >>"$R/build.log" 2>&1 || { tail -20 "$R/build.log"; fail "the app failed (above)"; }
+    cp "$ROOT/build/app/cascadia.deb" "$R/"
+    # output/ back to this machine's own disk
+    if [ "$(install_disk)" = nand ]; then cp "$R/nand-linux-boot.bin" "$ROOT/output/linux-boot.bin"; cp "$R/nand-zImage-dtb" "$ROOT/output/zImage-dtb"
+    else cp "$R/linux-boot.bin" "$R/zImage-dtb" "$ROOT/output/"; fi
+    assemble >/dev/null
     say "2/5 the base the kernel embeds: nothing of this machine's"
     "${CHECK[@]}" --cpio "$ROOT/build/linux/usr/initramfs_data.cpio" || fail "the base is not for release (above)"
 
@@ -974,6 +1006,12 @@ own computer and go into the image there.
 
 - linux-boot.bin, zImage-dtb -- the loader and the kernel (GPL-2.0: Linux
   v6.12 with this repository's patches at $rev)
+- nand-linux-boot.bin, nand-zImage-dtb -- the same kernel for a NAND install
+  (root on the LwVM volume "Linux", the PPN driver's write gates for it only)
+- cascadia.deb -- the iOS app that starts Linux from the NAND (armv7, iOS 8;
+  BearSSL 0.6 inside, MIT); cascadia-hfs -- the iOS helper that resizes Data's
+  HFS for the Linux volume; ppn_lwvmw.ko -- the one-shot LwVM header writer,
+  for this kernel (all from this repository at $rev)
 - desktop-root.tar.xz -- Alpine 3.24 armhf; packages.txt lists every package
   and version (their sources: Alpine's aports), plus this repository's
   patched xorg-server, xfwm4, pixman and SuperTux 0.7.0 (APKBUILDs and patches
