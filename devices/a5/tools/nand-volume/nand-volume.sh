@@ -86,7 +86,7 @@ undo_fsck_ok() {   # container blocks
     python3 "$T/hfs_undo_check.py" check "$S/fsck-s2.txt" "$S/data-block0.bin" "$S/data-bitmap.bin" "$1" | sed 's/^/    /'
     return "${PIPESTATUS[0]}"
 }
-ios_boottime() { ios "sysctl -n kern.boottime" </dev/null | sed -n 's/.*sec = \([0-9]*\).*/\1/p'; }
+ios_boottime() { ios "sysctl -n kern.boottime" </dev/null | sed -n 's/^{ sec = \([0-9]*\).*/\1/p'; }
 
 data_container_blocks() {   # header -> Data's partition size in 4096-byte blocks
     "$PY" - "$1" <<'PY'
