@@ -139,6 +139,7 @@ pretty far.
 - **NyanSatan** — checkm8_bootkit, iBoot research
 - **iH8sn0w** — iBoot32Patcher
 - **Project Sandcastle** — Z2 multitouch driver and protocol, the starting point
+- **Larry Ewing** — Tux (made with The GIMP), on the Cascadia app's icon
 - **crystal-lized** — PPN NAND and Swiss FTL findings (iPhone 5) and the first
   writable path; the iPad mini 1 NAND driver is built on them
 

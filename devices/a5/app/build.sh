@@ -52,8 +52,9 @@ ldid -S "$A/Cascadia"
 cp Info.plist "$A/Info.plist"
 cp www/index.html "$A/www/index.html"
 cp "$BSSL/LICENSE.txt" "$A/LICENSE-BearSSL.txt"
-# Tux from the iPad's own GPU, cut square around the penguin and the mat.
-sips -c 768 768 --cropOffset 125 0 tux-source.png --out "$B/icon-square.png" >/dev/null
+# Tux holding a tablet that runs Cascadia (nothing of Apple on it), cut square
+# around the head and the tablet.
+sips -c 800 800 --cropOffset 30 31 tux-source.png --out "$B/icon-square.png" >/dev/null
 sips -z 76 76 "$B/icon-square.png" --out "$A/icon.png" >/dev/null
 sips -z 152 152 "$B/icon-square.png" --out "$A/icon@2x.png" >/dev/null
 
