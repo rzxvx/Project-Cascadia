@@ -56,3 +56,28 @@ Not in the first version unless asked.
 ## Gaps (see p105-nand-spec-gaps.md, "Volume creation")
 
 V1–V6 there; the plan cannot be finished without answers to V1–V3.
+
+## Status (2026-11-16)
+
+Spec §6 rewritten by the spec session (main 02a3a11, merged here). Built on it:
+
+- `tools/nand-volume/lwvm.py`: plan create/remove, rules of §6.2 in Python, iOS's own
+  validator through `lwvm_validate.py` (the spec session's §6.6 harness; needs Unicorn and
+  the 12H321 kernelcache from `./cascadia a5 firmware`). `selftest` runs the §8.1 cases:
+  22/22, including the one-step create from `w0c` (CRC `f45e7c76`) and the grow of the
+  96 MiB header reproducing today's header byte for byte.
+- `tools/nand-volume/lwvmw.c` + `ppn_lwvmw.ko`: the header write of §6.4 step 3. Offline on
+  `w0c` (create 8 GiB) and `r6pre` (restore `w0c`): dry run, write, rerun (commit only),
+  write back, finishing a half-written header, refusing a stale one: 12/12.
+- `tools/nand-volume/ios/hfs-resize.c` → `cascadia-hfs` (armv7, ldid): `info`, `resize N`.
+- `./cascadia a5 nand-volume status|create|remove|backup|fill|build`.
+
+Not run on the device yet. Device sequence for the user's iPad (each write step asks):
+1. daily boot: `backup` (tar of the root to the computer; read-only on the NAND);
+2. iOS: `remove --saved build/lwvm-fixtures/two-w0c.bin` (plan only);
+3. Linux image: `remove` (header = `w0c`, commit);
+4. iOS: `remove` (HFS grow, never run before), clean restart, `remove` (check);
+5. iOS: `create 8G` (shrink), clean restart, `create` (check);
+6. Linux image: `create` (header write, commit);
+7. iOS: `create` (check);
+8. Linux image: `fill <backup tar>`; then the daily boot.
