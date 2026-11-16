@@ -1224,7 +1224,10 @@ Required order:
 3. Free blocks ≥ `old_total − N` plus a margin. The kernel needs room below `N` for every
    allocated block it moves. The margin is project policy, not an iOS rule: at least 1 GiB
    (262144 blocks) free after the shrink, and `N ≥ 524288` (2 GiB) `[DEV 2026-11-08]`.
-4. Live `fsck_hfs -n -l /dev/rdisk0s1s2`: exit 0 before the shrink.
+4. Live `fsck_hfs -n -l /dev/rdisk0s1s2`: exit 0 before the shrink. Its output must not go
+   to a file on Data itself (`/tmp`, `/var/…` on iOS): a live check of the volume it writes to
+   refuses with "output redirected to target volume" and exits 8 `[DEV 2026-11-16,
+   nand-clean]`. Send it to the SSH session (stdout) instead.
 5. The `fsctl`; on return, re-read the HFS header: total blocks = `N`, else stop with the
    two-volume header untouched.
 6. Clean restart of iOS; `fsck_hfs -n -l` exit 0; primary and alternate headers report `N`.
@@ -1285,9 +1288,11 @@ operation. Only then is the Linux volume formatted and filled.
 ### 6.5 Removing the third volume (undo)
 
 Order: the **header first** (it enlarges Data's container), then grow the HFS. A
-smaller HFS in a larger container is a state iOS has run in `[DEV 2026-10-29: R2, and
-again after the header rollback of that day: iOS boot and fsck exit 0]`. The other order
-fails, because the HFS cannot grow past the partition size iOS saw at boot.
+smaller HFS in a larger container is a state iOS boots and runs in `[DEV 2026-10-29 R2;
+DEV 2026-11-08: HFS 1230568 blocks in a 3303144-block container after a clean restart,
+live fsck exit 0 (logged); DEV 2026-11-16: HFS 1230568 in 3327720, iOS boots]`. The other
+order fails, because the HFS cannot grow past the partition size iOS saw at boot. Done on
+the user's iPad on 2026-11-16 `[DEV, nand-clean]`.
 
 1. Linux data that is to be kept is copied off first. It is lost: Data's HFS will
    own those chunks.
@@ -1299,13 +1304,27 @@ fails, because the HFS cannot grow past the partition size iOS saw at boot.
    physical chunks in today's header as in `w0c`, so restoring it is consistent
    `[THIS: compared]`. Otherwise use the inverse rule above. Validate (§6.6); write
    exactly as §6.4 step 3; commit; reload.
-3. Boot iOS: Data's partition is now the old size; HFS still `N` blocks; fsck exit 0.
+3. Boot iOS: Data's partition is now the old size; HFS still `N` blocks. System's live
+   fsck exits 0. **Data's live fsck may exit 8** here and this is expected when it shows
+   exactly: "Invalid volume free block count (It should be F' instead of F)", the volume
+   bitmap needing minor repair for orphaned blocks and under-allocation, and the volume
+   header needing minor repair, with `F' = F + (S − N)` for some earlier HFS size `S`
+   between `N` and the container's size, and no bitmap bit set at or past `N`
+   `[DEV 2026-11-16, nand-clean: F = 956924, F' = 3029500, S = 3303144, the HFS size
+   after the 96 MiB shrink of 2026-10-29]`. Anything else is a real fault: stop. Where
+   `S` comes from is not established. Most likely an alternate volume header left at the
+   container's end by an earlier shrink: the 2026-10-29 shrink rewrote the old alternate
+   at the 3327720 end to say 3303144 blocks, and nothing wrote that block again until the
+   grow. On 2026-11-08 the container's end held an alternate the shrink had just updated,
+   and fsck gave 0. Data is encrypted in the raw dumps, so this cannot be checked offline.
 4. Grow the HFS with the **same `fsctl`** and the container's size in bytes as the new
-   size (`Data_end − Data_start`; `3327720` blocks on this media). Then clean restart and
-   `fsck_hfs -n -l` exit 0; primary and alternate HFS headers report the new count.
+   size (`Data_end − Data_start`; `3327720` blocks on this media). Measured: return 0,
+   errno 0, under a second; primary and alternate HFS headers 3327720 blocks, free
+   3053024; live `fsck_hfs -n -l` of Data exit 0 straight after `[DEV 2026-11-16,
+   nand-clean]`. Then a clean restart and fsck exit 0 again.
 
-Step 4 has **never been run on this device** (§9). If it fails, iOS keeps working with
-the smaller HFS: nothing is lost, the space is only unused.
+If step 4 ever fails, iOS keeps working with the smaller HFS: nothing is lost, the space
+is only unused.
 
 The chunks returned to Data still hold Linux data until HFS reuses them, as free space.
 
@@ -1575,9 +1594,9 @@ not be confirmed from a binary, a dump or a measurement while writing this spec.
   measured on the device (only the unload-without-checkpoint crash test passed).
 - Whether DELETE (trim) tokens written by Linux would be accepted by iOS: untested;
   Linux does not emit them.
-- §6.5 step 4, growing Data's HFS back with the resize `fsctl`: never run on this device.
-  Apple's published HFS code supports growing a mounted volume; whether this iOS build
-  does so without trouble is unknown. If it fails, iOS keeps working with the smaller HFS.
+- §6.5 step 3, why Data's live fsck counts free blocks up to an earlier HFS size (exit 8)
+  before the grow: inferred to be a stale alternate volume header at the container's end;
+  not checked. The grow of step 4 has run once and cleared it `[DEV 2026-11-16]`.
 - §6.1, the meaning of attribute bit 48 ("encrypted", inferred from the key-loading path)
   and bit 49 (unknown). §6.3, that iOS's last request after its own header write is an
   unmap of LBAs 1–4094 (inferred from the range only).
