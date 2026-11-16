@@ -66,8 +66,25 @@ ios_helper() {
 }
 hfs_field() { sed -n "s/^$1=//p" <<< "$HFS"; }
 hfs_info() { HFS=$(ios "/tmp/cascadia-hfs info" </dev/null) || fail "cascadia-hfs info: $HFS"; }
-ios_fsck() {   # partition -> 0 when clean
-    ios "fsck_hfs -n -l /dev/rdisk0s1s$1" </dev/null > "$S/fsck-s$1.txt" 2>&1
+ios_fsck() {   # partition -> 0 when clean; output to this computer, never to Data
+    local r
+    ios "fsck_hfs -n -l /dev/rdisk0s1s$1" </dev/null > "$S/fsck-s$1.out" 2> "$S/fsck-s$1.err"
+    r=$?
+    cat "$S/fsck-s$1.err" "$S/fsck-s$1.out" > "$S/fsck-s$1.txt"
+    return $r
+}
+
+# Spec 6.5 step 3: before the grow, Data's fsck may exit 8 with exactly the findings of
+# a smaller HFS in a larger container.  Reads Data's HFS header and allocation bitmap.
+undo_fsck_ok() {   # container blocks
+    ios "dd if=/dev/rdisk0s1s2 bs=4096 count=1 2>/dev/null" </dev/null > "$S/data-block0.bin" || return 1
+    : > "$S/data-bitmap.bin"
+    local start count
+    while read -r start count; do
+        ios "dd if=/dev/rdisk0s1s2 bs=4096 skip=$start count=$count 2>/dev/null" </dev/null >> "$S/data-bitmap.bin" || return 1
+    done < <(python3 "$T/hfs_undo_check.py" extents "$S/data-block0.bin")
+    python3 "$T/hfs_undo_check.py" check "$S/fsck-s2.txt" "$S/data-block0.bin" "$S/data-bitmap.bin" "$1" | sed 's/^/    /'
+    return "${PIPESTATUS[0]}"
 }
 ios_boottime() { ios "sysctl -n kern.boottime" </dev/null | sed -n 's/.*sec = \([0-9]*\).*/\1/p'; }
 
@@ -226,8 +243,12 @@ cmd_remove() {
         say "Data is back to $want blocks; the Linux volume is gone"
         return
     fi
-    say "growing Data's HFS: $total -> $want blocks (never run on this iPad before)"
-    ios_fsck 2 || fail "fsck_hfs of Data not clean first: $S/fsck-s2.txt"
+    say "growing Data's HFS: $total -> $want blocks"
+    ios_fsck 1 || fail "fsck_hfs of System not clean: $S/fsck-s1.txt"
+    if ! ios_fsck 2; then
+        note "Data's fsck exits non-zero; checking it is only the size mismatch (spec 6.5 step 3)"
+        undo_fsck_ok "$want" || fail "Data's fsck shows more than the size mismatch: $S/fsck-s2.txt"
+    fi
     ask "grow Data now?" || fail stopped
     local out; out=$(ios "/tmp/cascadia-hfs resize $want" </dev/null)
     echo "$out" | sed 's/^/    /'

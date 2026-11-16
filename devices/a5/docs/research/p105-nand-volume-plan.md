@@ -105,3 +105,10 @@ Not run on the device yet. Device sequence for the user's iPad (each write step 
    Grow: `cascadia-hfs resize 3327720` → `fsctl` 0, errno 0, under a second; HFS header and
    alternate header 3327720, free 3053024; `fsck_hfs -n -l` Data exit 0 right after; `df`
    12.7 GiB. **First HFS grow on this device: works.**
+5. Clean restart: `nand-volume remove` → Data 3327720 blocks, fsck exit 0 (System and Data):
+   **removal done**. Spec §6.5 step 3 corrected (main 78abaeb): before the grow, Data's
+   exit 8 is accepted only with exactly the size-mismatch findings, `F' = F + (S − N)` with
+   `N ≤ S ≤ container`, no bitmap bit at or past `N`. `hfs_undo_check.py` implements it
+   (today's findings accepted; an extra finding, a container too small, a bit past `N`, or
+   output redirected to Data refused). fsck output is now captured as two streams on the
+   computer.
