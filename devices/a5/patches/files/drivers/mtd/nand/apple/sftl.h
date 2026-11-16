@@ -259,6 +259,8 @@ struct sftl {
 	unsigned int n_replay;
 	u32 replay_applied;
 	bool replayed;
+	/* SBs whose replay walk met a page that did not read back (torn, failed) */
+	u8 torn[(SFTL_NUM_SB + 7) / 8];
 	u64 next_weave;
 
 	/* I/O */
@@ -436,6 +438,7 @@ int sftl_context_write(struct sftl *fs, u32 sb);
 int sftl_gc_plan(struct sftl *fs, u32 *victims, u32 *nv, u32 *lbas, u32 *count);
 int sftl_gc(struct sftl *fs);
 int sftl_writer_seal(struct sftl *fs);
+int sftl_erase_spare(struct sftl *fs, u32 sb);
 #endif
 
 /* sftl_lwvm.c */

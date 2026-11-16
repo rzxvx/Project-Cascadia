@@ -976,6 +976,69 @@ int sftl_write(struct sftl *fs, u32 lba, u32 count, const u8 *src)
 	return ret;
 }
 
+/*
+ * Erase a spare again, for recovery after an erase that was cut off.  Anything
+ * that is not a spare (valid data, the context, the frontier, a queued
+ * reclaim victim) is refused.  A failed erase gives the SB up for the session.
+ */
+int sftl_erase_spare(struct sftl *fs, u32 sb)
+{
+	const struct sftl_sb_rec *r;
+	int ret;
+
+	if (!fs->wr || fs->wr->wedged)
+		return -EIO;
+	if (sb >= SFTL_NUM_SB || !fs->shape[sb].width)
+		return -EINVAL;
+	r = &fs->rec[sb];
+	if (sb == fs->ctx_sb || sb == fs->wr->fr.sb || r->valid || erase_pending(fs, sb) ||
+	    (r->type != SFTL_SB_ERASED && r->type != SFTL_SB_AWAIT_ERASE))
+		return -EINVAL;
+	ret = erase_sb(fs, sb);
+	if (ret)
+		mark_bad(fs, sb);
+	return ret;
+}
+
+/*
+ * Spec 4.9 at mount: an open SB whose replay walk met a page that did not read
+ * back (a program that failed or was cut off, by a crash or by anything else
+ * driving the controller) is given up like a failed frontier: every LBA the
+ * map places in it is moved, and it is listed waiting for erase with nothing
+ * valid, so neither Linux nor iOS programs into it again before an erase.
+ */
+static int give_up_torn(struct sftl *fs)
+{
+	struct sftl_writer *w = fs->wr;
+	u32 sb, lba, n;
+	int ret;
+
+	for (sb = 0; sb < SFTL_NUM_SB; sb++) {
+		if (!((fs->torn[sb / 8] >> (sb % 8)) & 1))
+			continue;
+		if (fs->rec[sb].type != SFTL_SB_OPEN) {
+			sftl_warn("sb %u: a page did not read back at replay, but the SB is closed; kept",
+				  sb);
+			continue;
+		}
+		n = 0;
+		for (lba = 0; lba < fs->total_lbas && n < SFTL_LBAS_PER_SB; lba++) {
+			u32 v = sftl_map_get(&fs->map, lba);
+
+			if (v != SFTL_UNMAPPED && sftl_sb_of(v) == sb)
+				w->fail_list[n++] = lba;
+		}
+		sftl_warn("sb %u: a page did not read back at replay: giving it up, moving %u LBAs",
+			  sb, n);
+		mark_bad(fs, sb);
+		ret = gc_move(fs, w->fail_list, n);
+		if (ret)
+			return ret;
+		fs->rec[sb].valid = 0;
+	}
+	return 0;
+}
+
 /* Set up the writer: reconcile the SB array with what is on the media. */
 int sftl_writer_start(struct sftl *fs, unsigned int verify_every)
 {
@@ -1089,6 +1152,9 @@ int sftl_writer_start(struct sftl *fs, unsigned int verify_every)
 		}
 	}
 	w->dirty = false;
+	ret = give_up_torn(fs);
+	if (ret)
+		goto fail;
 	return 0;
 fail:
 	sftl_writer_stop(fs);
