@@ -518,7 +518,10 @@ parameters are built in but off). Bundle `staging-bundle.bin` SHA-256 `207d107f�
 `zImage-dtb` `0ab4473d…`; previous bundle kept in `build/nand-rw-boot.v1`. PC-less
 kernelcache SHA-1 **`0562ee719420b8923aeeacc4ee31a8d79837cf8c`** (ramdisk and devicetree
 unchanged); the previous one, `3572487…`, kept in main's `build/pcless-cablefree/out.clean-v1`.
-Not booted or installed yet.
+Cable boot of the bundle: `6.12.0-nand-rw-dirty #12`, root `ftl0p2` rw on iOS's context sb
+480 (3116 replayed), injection parameters at -1; the 903 files of the fault test match;
+64 MiB + 300 files written and synced in 7 s and read back right after dropping caches.
+Not installed for the PC-less boot yet.
 
 ## Decisions the spec left open
 
