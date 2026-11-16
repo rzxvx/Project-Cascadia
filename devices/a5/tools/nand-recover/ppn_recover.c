@@ -3,7 +3,7 @@
  * Kernel module around recover.c.  The FTL core is built in, so apple_ftl
  * must not be loaded; apple_ppn needs allow_write=1 unless dry_run=1.
  *
- *   insmod ppn_recover.ko [erase=453,468,514,694] [dry_run=1]
+ *   insmod ppn_recover.ko [give_up=198] [erase=453,468,514,694] [dry_run=1]
  *
  * Always loads; the outcome is the "result" parameter and lines "sftl: recover:".
  */
@@ -22,6 +22,9 @@
 static unsigned int erase[RECOVER_MAX_ERASE];
 static int nerase;
 module_param_array(erase, uint, &nerase, 0444);
+static unsigned int give_up[RECOVER_MAX_ERASE];
+static int ngive;
+module_param_array(give_up, uint, &ngive, 0444);
 static bool dry_run;
 module_param(dry_run, bool, 0444);
 static int result = 1;
@@ -64,6 +67,9 @@ static int __init r_init(void)
 	for (i = 0; i < nerase; i++)
 		a.erase[i] = erase[i];
 	a.nerase = nerase;
+	for (i = 0; i < ngive; i++)
+		a.give_up[i] = give_up[i];
+	a.ngive = ngive;
 	if (!dry_run && !apple_ppn_write_allowed(ppn)) {
 		pr_err("recover: apple_ppn not loaded with allow_write=1\n");
 		result = -EPERM;

@@ -12,6 +12,8 @@ struct recover_args {
 	void *hw;
 	u32 erase[RECOVER_MAX_ERASE];	/* spares to erase again (an erase was cut off) */
 	u32 nerase;
+	u32 give_up[RECOVER_MAX_ERASE];	/* open SBs to give up even if no page failed to read */
+	u32 ngive;
 	bool dry_run;			/* report only */
 };
 

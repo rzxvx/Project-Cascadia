@@ -7,8 +7,11 @@
  *  1. mount: the last context, then replay of everything newer (iOS's writes
  *     and Linux's uncommitted ones); pages that do not read back are skipped
  *     and their SB noted as torn;
- *  2. start the writer: each torn open SB is given up (spec 4.9): its LBAs are
- *     moved, it is listed waiting for erase with nothing valid;
+ *  2. start the writer: each torn open SB, and each SB named in give_up, is
+ *     given up (spec 4.9): its LBAs are moved, it is listed waiting for erase
+ *     with nothing valid.  A program that was cut off early can leave a page
+ *     that still reads erased, so the replay walk does not see it: such an SB
+ *     is named by hand;
  *  3. erase again the spares whose erase was cut off, and check every page of
  *     them reads erased, so no half-erased block is ever listed as erased;
  *  4. commit, then a fresh mount: nothing to replay, no LBA in a torn SB.
@@ -115,9 +118,35 @@ int recover_run(const struct recover_args *a)
 		sftl_info("recover: sb %u to erase again: type %u, first page type %#x weave %llu",
 			  a->erase[i], r->type, pr->first_type, (unsigned long long)pr->first_weave);
 	}
+	for (i = 0; i < a->ngive; i++) {
+		u32 s = a->give_up[i], b, pg;
+
+		if (s >= SFTL_NUM_SB || !fs->shape[s].width || s == fs->ctx_sb ||
+		    fs->probe[s].first_type == SFTL_MT_ERASED ||
+		    fs->probe[s].first_weave <= fs->ctx_weave || sftl_sb_closed(fs, s, NULL)) {
+			sftl_err("recover: sb %u is not an open SB written after the context: refusing", s);
+			ret = -EINVAL;
+			goto out;
+		}
+		/* What its first pages read as, bank by bank. */
+		for (pg = 0; pg < 6; pg++) {
+			u8 st[SFTL_BANKS] = { 0 }, ty[SFTL_BANKS] = { 0 };
+
+			for (b = 0; b < fs->shape[s].width && b < SFTL_BANKS; b++) {
+				if (fs->ops->read_page(fs->hw, fs->shape[s].bank[b], s, pg, false,
+						       data, meta, &st[b]))
+					st[b] = 0xee;
+				ty[b] = meta[0];
+			}
+			sftl_info("recover: sb %u page %u: status %02x %02x %02x %02x, meta type %02x %02x %02x %02x",
+				  s, pg, st[0], st[1], st[2], st[3], ty[0], ty[1], ty[2], ty[3]);
+		}
+		fs->torn[s / 8] |= 1 << (s % 8);
+		sftl_info("recover: sb %u to give up (named)", s);
+	}
 	if (a->dry_run) {
-		sftl_info("recover: dry run: %u torn SB(s), %u spare(s) to erase; nothing written",
-			  ntorn, a->nerase);
+		sftl_info("recover: dry run: %u torn SB(s), %u named, %u spare(s) to erase; nothing written",
+			  ntorn, a->ngive, a->nerase);
 		goto out;
 	}
 

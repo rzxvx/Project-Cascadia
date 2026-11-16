@@ -1178,6 +1178,64 @@ int main(int argc, char **argv)
 		CHECK(!ret, "recovery run again (%d)", ret);
 		sftl_exit(m);
 		free(m);
+		{
+			/* An open Linux frontier left without a commit, its next page not
+			 * programmed (reads erased): not torn, so it is named by hand. */
+			struct sftl *w = calloc(1, sizeof(*w));
+			u8 *src = malloc(48 * SFTL_LBA_SIZE), buf[SFTL_LBA_SIZE], want[SFTL_LBA_SIZE];
+			u32 open_sb, lba, bad = 0, inmap = 0;
+			struct recover_args ag = { .ops = &dev_ops, .hw = d };
+
+			assert(!sftl_init(w, &dev_ops, d) && !sftl_mount(w));
+			for (i = 0; i < SFTL_BANKS; i++)
+				d->usage[i] = w->usage[i];
+			assert(!sftl_writer_start(w, 1));
+			w->wr->hold_commit = true;
+			for (i = 0; i < 48; i++)
+				pattern(src + i * SFTL_LBA_SIZE, 600000 + i, 7);
+			assert(!sftl_write(w, 600000, 48, src));
+			open_sb = w->wr->fr.sb;
+			d->fail_prog_nth = 0;
+			d->fail_mode = 1;
+			d->fail_count = 1;
+			d->fail_erase_all = true;
+			sftl_write(w, 600048, 1, src);
+			sftl_writer_stop(w);
+			sftl_exit(w);
+			free(w);
+			d->fail_erase_all = false;
+			ag.give_up[ag.ngive++] = open_sb;
+			ag.dry_run = true;
+			ret = recover_run(&ag);
+			CHECK(!ret, "dry run naming open sb %u (%d)", open_sb, ret);
+			ag.dry_run = false;
+			ret = recover_run(&ag);
+			CHECK(!ret, "recovery gives up the named sb %u (%d)", open_sb, ret);
+			w = calloc(1, sizeof(*w));
+			assert(!sftl_init(w, &dev_ops, d) && !sftl_mount(w));
+			for (lba = 600000; lba < 600048; lba++) {
+				pattern(want, lba, 7);
+				if (sftl_read_lba(w, lba, buf, NULL) || memcmp(buf, want, sizeof(buf)))
+					bad++;
+			}
+			for (lba = 0; lba < w->total_lbas; lba++) {
+				u32 v = sftl_map_get(&w->map, lba);
+
+				if (v != SFTL_UNMAPPED && sftl_sb_of(v) == open_sb)
+					inmap++;
+			}
+			CHECK(!bad && !inmap && w->rec[open_sb].type == SFTL_SB_AWAIT_ERASE &&
+			      !w->replay_applied,
+			      "after it: 48 LBAs read back (%u bad), %u in sb %u, type %u, %u replayed",
+			      bad, inmap, open_sb, w->rec[open_sb].type, w->replay_applied);
+			ag.ngive = 0;
+			ag.give_up[ag.ngive++] = w->ctx_sb;
+			ret = recover_run(&ag);
+			CHECK(ret == -EINVAL, "refuses to give up the context sb (%d)", ret);
+			sftl_exit(w);
+			free(w);
+			free(src);
+		}
 		goto done;
 	}
 	if (argc > 4 && !strcmp(argv[2], "--lwvm")) {
