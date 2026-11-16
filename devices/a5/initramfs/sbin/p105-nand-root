@@ -66,6 +66,10 @@ p105_try_nand_root() {
         p105_nand_giveup "no /sbin/p105-nand-init on the Linux volume"
         return 1
     fi
+    # the image's stage 2, NAND tools, firmware, keys (initramfs/init); the
+    # root's own copies may be older -- an old `ios` once ran raw iosnand
+    # under apple_ppn
+    p105_refresh_root nand
     nand_moved=''
     for nand_tree in proc sys dev; do
         if ! mount --move "/$nand_tree" "/newroot/$nand_tree"; then

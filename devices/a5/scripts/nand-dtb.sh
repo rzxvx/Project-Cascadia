@@ -21,6 +21,8 @@ import sys
 w = sys.argv[1].split()
 assert w.count('root=/dev/ram0') == 1 and w.count('rw') == 1, w
 assert not any(x.startswith(('apple_ppn.', 'apple_ftl.')) for x in w), w
+# no iomem=relaxed: /dev/mem may not reach the controller apple_ppn holds
+w = [x for x in w if x != 'iomem=relaxed']
 print(' '.join('root=/dev/ftl0p2' if x == 'root=/dev/ram0' else x for x in w),
       'apple_ppn.hold_probe=1 apple_ppn.allow_write=1 apple_ftl.auto_mount=0',
       'apple_ftl.enable_write=1 apple_ftl.write_volume=Linux')

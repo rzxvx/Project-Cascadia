@@ -126,6 +126,78 @@ else
 fi
 msg "P105: ACM nodes: $(ls -d /dev/ttyGS* 2>/dev/null | tr '\n' ' ')"
 
+# ------------------------------------------------- what a root gets from us ---
+# A Cascadia root on NFS or on the NAND is seeded once; the boot's own parts
+# come from this image every time (each piece below says why).  `nand` keeps
+# the root's own login banner (it says the root is on the NAND).
+# a file from this image onto the root, only when it differs
+p105_put() { cmp -s "$1" "$2" 2>/dev/null || cp -p "$1" "$2" 2>/dev/null || true; }
+p105_refresh_root() {
+    p105_motd=/etc/motd
+    [ "${1:-}" = nand ] && p105_motd=
+    p105_put /etc/resolv.conf /newroot/etc/resolv.conf
+    p105_put /etc/build-date  /newroot/etc/build-date
+    # Stage 2 is part of the boot, not of the root filesystem, so the
+    # one from this build replaces whatever the NFS root holds.  The
+    # root is seeded once and never overwritten, which froze its stage 2
+    # at the seed: the hostname fix landed 34 minutes after the author's
+    # root was seeded, and that root came up as "(none)" for good.  The
+    # existence check above still decides whether this is a Cascadia
+    # root at all; a read-only export simply keeps its own copy.
+    p105_put /sbin/p105-stage2 /newroot/sbin/p105-stage2
+    # The digitizer's bring-up belongs to the boot the same way:
+    # z2-boot from this build, its firmware, and this iPad's own
+    # calibration, which build/keep carries into the image
+    # (tools/mtdump saves it from iOS; Linux cannot read syscfg).
+    # busybox.static is the ACM console's, run from RAM by stage 2.
+    # The Wi-Fi firmware too: brcmfmac asks for it whenever the chip
+    # enumerates, which may be after this switch_root.
+    # And the NAND tools with their `ios` front end, and the login
+    # banner, which otherwise stays whatever the seed said.  And the
+    # GPU's microkernel: apple-sgx asks for it when it is started,
+    # long after this switch_root.  And `bluetooth`, with the
+    # patchram hci_bcm reloads whenever the chip is reset.  And the
+    # speakers' ALSA setup (dmix as "default"); alsa-utils itself
+    # comes with the seed, or tools/audio/audio-setup.sh.
+    for f in /sbin/z2-boot /sbin/p105-keys /lib/firmware/P105.mtprops /lib/firmware/mtcal.bin /bin/busybox.static /usr/bin/wifi \
+             /usr/bin/bluetooth /lib/firmware/brcm/BCM4334B0.hcd \
+             /lib/firmware/brcm/brcmfmac4334.bin /sbin/nandctl /sbin/iosnand /usr/bin/ios \
+             /lib/firmware/apple/sgx543.fw $p105_motd /etc/asound.conf; do
+        [ -f "$f" ] || continue
+        mkdir -p "/newroot${f%/*}" 2>/dev/null
+        # unchanged files are not rewritten: on a NAND root every write wears
+        p105_put "$f" "/newroot$f"
+    done
+    # One ssh host key for the device, whichever root it booted: the one
+    # this image carries (./cascadia a5 build makes it once and keeps it).
+    if [ -f /etc/dropbear/dropbear_ed25519_host_key ]; then
+        mkdir -p /newroot/etc/dropbear 2>/dev/null
+        p105_put /etc/dropbear/dropbear_ed25519_host_key /newroot/etc/dropbear/dropbear_ed25519_host_key
+    fi
+    # And the keys that get in.  The NFS root is seeded once, from
+    # whatever the initramfs tree held that day, and never again --
+    # so a key added afterwards (another ssh-keygen, another laptop,
+    # ./cascadia a5 build adding this machine's) reaches the RAM root and
+    # not this one, and the NFS boot answers with a password prompt
+    # for a password that does not exist.  The image decides who may
+    # log in, on either root.  Ownership and modes are set here rather
+    # than preserved: dropbear refuses a key whose ~, ~/.ssh or
+    # authorized_keys is not root's or is writable by anyone else, and
+    # refuses it the same silent way.  Those three and nothing under
+    # them: a recursive chown walks all of ~ over NFS, one RPC a file,
+    # and a ~ grown to 74k files (deqp, builds) held the boot 48 s
+    # between this point and stage 2 (2026-10-16).
+    if [ -s /root/.ssh/authorized_keys ]; then
+        mkdir -p /newroot/root/.ssh 2>/dev/null
+        cp /root/.ssh/authorized_keys \
+            /newroot/root/.ssh/authorized_keys 2>/dev/null || true
+        chown 0:0 /newroot/root /newroot/root/.ssh \
+            /newroot/root/.ssh/authorized_keys 2>/dev/null || true
+        chmod 700 /newroot/root /newroot/root/.ssh 2>/dev/null || true
+        chmod 600 /newroot/root/.ssh/authorized_keys 2>/dev/null || true
+    fi
+}
+
 # -------------------------------------------------------------- NAND root ---
 # Only when the command line says root=/dev/ftl0p2 (a NAND install: the
 # LwVM volume "Linux", ./cascadia a5 nand-volume).  Anything that fails
@@ -172,67 +244,7 @@ if [ -f /etc/nfsroot ] && [ -x /sbin/mount.nfs ]; then
     if [ $nfs_ok = 1 ]; then
         msg "P105: NFS root mounted (try $nfs_try)"
         if [ -x /newroot/sbin/p105-stage2 ]; then
-            cp /etc/resolv.conf /newroot/etc/resolv.conf 2>/dev/null || true
-            cp /etc/build-date  /newroot/etc/build-date  2>/dev/null || true
-            # Stage 2 is part of the boot, not of the root filesystem, so the
-            # one from this build replaces whatever the NFS root holds.  The
-            # root is seeded once and never overwritten, which froze its stage 2
-            # at the seed: the hostname fix landed 34 minutes after the author's
-            # root was seeded, and that root came up as "(none)" for good.  The
-            # existence check above still decides whether this is a Cascadia
-            # root at all; a read-only export simply keeps its own copy.
-            cp /sbin/p105-stage2 /newroot/sbin/p105-stage2 2>/dev/null || true
-            # The digitizer's bring-up belongs to the boot the same way:
-            # z2-boot from this build, its firmware, and this iPad's own
-            # calibration, which build/keep carries into the image
-            # (tools/mtdump saves it from iOS; Linux cannot read syscfg).
-            # busybox.static is the ACM console's, run from RAM by stage 2.
-            # The Wi-Fi firmware too: brcmfmac asks for it whenever the chip
-            # enumerates, which may be after this switch_root.
-            # And the NAND tools with their `ios` front end, and the login
-            # banner, which otherwise stays whatever the seed said.  And the
-            # GPU's microkernel: apple-sgx asks for it when it is started,
-            # long after this switch_root.  And `bluetooth`, with the
-            # patchram hci_bcm reloads whenever the chip is reset.  And the
-            # speakers' ALSA setup (dmix as "default"); alsa-utils itself
-            # comes with the seed, or tools/audio/audio-setup.sh.
-            for f in /sbin/z2-boot /sbin/p105-keys /lib/firmware/P105.mtprops /lib/firmware/mtcal.bin /bin/busybox.static /usr/bin/wifi \
-                     /usr/bin/bluetooth /lib/firmware/brcm/BCM4334B0.hcd \
-                     /lib/firmware/brcm/brcmfmac4334.bin /sbin/nandctl /sbin/iosnand /usr/bin/ios \
-                     /lib/firmware/apple/sgx543.fw /etc/motd /etc/asound.conf; do
-                [ -f "$f" ] || continue
-                mkdir -p "/newroot${f%/*}" 2>/dev/null
-                cp -p "$f" "/newroot$f" 2>/dev/null || true
-            done
-            # One ssh host key for the device, whichever root it booted: the one
-            # this image carries (./cascadia a5 build makes it once and keeps it).
-            if [ -f /etc/dropbear/dropbear_ed25519_host_key ]; then
-                mkdir -p /newroot/etc/dropbear 2>/dev/null
-                cp -p /etc/dropbear/dropbear_ed25519_host_key /newroot/etc/dropbear/ \
-                    2>/dev/null || true
-            fi
-            # And the keys that get in.  The NFS root is seeded once, from
-            # whatever the initramfs tree held that day, and never again --
-            # so a key added afterwards (another ssh-keygen, another laptop,
-            # ./cascadia a5 build adding this machine's) reaches the RAM root and
-            # not this one, and the NFS boot answers with a password prompt
-            # for a password that does not exist.  The image decides who may
-            # log in, on either root.  Ownership and modes are set here rather
-            # than preserved: dropbear refuses a key whose ~, ~/.ssh or
-            # authorized_keys is not root's or is writable by anyone else, and
-            # refuses it the same silent way.  Those three and nothing under
-            # them: a recursive chown walks all of ~ over NFS, one RPC a file,
-            # and a ~ grown to 74k files (deqp, builds) held the boot 48 s
-            # between this point and stage 2 (2026-10-16).
-            if [ -s /root/.ssh/authorized_keys ]; then
-                mkdir -p /newroot/root/.ssh 2>/dev/null
-                cp /root/.ssh/authorized_keys \
-                    /newroot/root/.ssh/authorized_keys 2>/dev/null || true
-                chown 0:0 /newroot/root /newroot/root/.ssh \
-                    /newroot/root/.ssh/authorized_keys 2>/dev/null || true
-                chmod 700 /newroot/root /newroot/root/.ssh 2>/dev/null || true
-                chmod 600 /newroot/root/.ssh/authorized_keys 2>/dev/null || true
-            fi
+            p105_refresh_root
             mkdir -p /newroot/proc /newroot/sys /newroot/dev
             # Move rather than remount: /dev in particular is devtmpfs with the
             # devpts and shm instances already mounted underneath it, and

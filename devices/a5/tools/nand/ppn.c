@@ -69,6 +69,13 @@ static void *map(int fd, uint32_t pa)
 
 int ppn_open(void)
 {
+    /* The kernel's PPN driver owns the controller (a NAND install): raw access
+     * under it tears what it is programming. */
+    if (access("/sys/bus/platform/drivers/apple-ppn/31200000.ppn", F_OK) == 0) {
+        fprintf(stderr, "the kernel's NAND driver (apple-ppn) holds the controller: "
+                "use /dev/ftl0p0.. (ios mount does)\n");
+        exit(1);
+    }
     int fd = open("/dev/mem", O_RDWR | O_SYNC);
     if (fd < 0) {
         perror("/dev/mem");
