@@ -81,3 +81,13 @@ Not run on the device yet. Device sequence for the user's iPad (each write step 
 6. Linux image: `create` (header write, commit);
 7. iOS: `create` (check);
 8. Linux image: `fill <backup tar>`; then the daily boot.
+
+## Device run on the user's iPad (2026-11-16)
+
+1. `backup`: `linux-root-20261116-142332.tar`, 1.3 GB, 19960 entries (= files on the root),
+   spot SHA-256 checks equal.
+2. iOS `status`: today's header (CRC `d32fc8ee`, iOS's validator 0); Data HFS 1230568 blocks,
+   953925 free. `remove --saved two-w0c.bin`: plan = `w0c` byte for byte.
+3. NFS image, `remove`: context sb 701 (22127 replayed); dry run passed; LBA 4095 then LBA 0
+   written and read back; committed on sb 531; fresh mount: both copies = `w0c`, System 133
+   and Data 813 chunks.
