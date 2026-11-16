@@ -54,7 +54,7 @@ ios_up() {
 ios_read_header() {
     ios "dd if=/dev/rdisk0 bs=4096 count=1 2>/dev/null" </dev/null > "$1" || fail "reading LBA 0"
     ios "dd if=/dev/rdisk0 bs=4096 skip=4095 count=1 2>/dev/null" </dev/null > "$1.backup" || fail "reading LBA 4095"
-    [ "$(wc -c < "$1")" = 4096 ] || fail "LBA 0: $(wc -c < "$1") bytes"
+    [ "$(wc -c < "$1" | tr -d " ")" = 4096 ] || fail "LBA 0: $(wc -c < "$1" | tr -d " ") bytes"
     cmp -s "$1" "$1.backup" || fail "the two LwVM header copies differ: a header write was interrupted.
     Boot the Linux image and run this again: it finishes or reports what is on the media."
     rm -f "$1.backup"
