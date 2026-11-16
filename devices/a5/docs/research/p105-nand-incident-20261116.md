@@ -70,4 +70,7 @@ RAM-root bundle of kernel #13, controller bound by hand, `ppn_recover.ko` (9c186
 - Built-in `apple_ftl` mount: context sb 698, 0 replayed. `e2fsck -fy /dev/ftl0p2`:
   journal recovered, "file system was modified", 19716 files, 403010 blocks, rc 0;
   `e2fsck -fn` rc 0. Unmount: committed context sb 831.
-- Next: iOS boot, `fsck_hfs -n -l` of System and Data.
+- iOS 12H321 booted on it (20:43:27); `fsck_hfs -n -l` (output captured on the computer):
+  System and Data "appear to be OK", rc 0. **Recovered.** Main merges nand-clean (region
+  claim, torn-SB give-up) and rebuilds with `STRICT_DEVMEM` + `IO_STRICT_DEVMEM`; the next
+  Linux boot is the daily NAND root on that kernel (not yet checked here).
