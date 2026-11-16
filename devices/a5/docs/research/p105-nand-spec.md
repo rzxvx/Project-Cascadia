@@ -27,7 +27,7 @@ Every fact below ends with its evidence in square brackets.
 | `[DEV date]` | a measurement on the actual iPad, recorded in the project notes on that date (`docs/research/p105-nand*.md`, `p105-data-resize-plan.md`) |
 | `[EARLIER]` | behaviour of the earlier driver, stated here as a fact about what a working read did; proven by that driver's device results, not confirmed independently from a binary or a dump. Treated as §9 treats unverified items |
 | `[EARLIER DRIVER]` | order, values and waits taken from the earlier driver for the path from probe to the end of the second page read only (§2.9), by the user's limited permission of 2026-11-09. To be confirmed on the device; §9 |
-| `[THIS]` | established independently while writing this document, with fresh scripts over `[W0C]` and `[iBEC]`; the numbers are reproducible and listed in §8 so they can serve as acceptance values |
+| `[THIS]` | established independently while writing this document, with fresh scripts over `[W0C]` and `[iBEC]`, and (`[THIS: run]`) by running kernelcache functions unchanged under an emulator (§6.6); the numbers are reproducible and listed in §8 so they can serve as acceptance values |
 
 A statement that is known only from an earlier driver and could not be
 confirmed from a binary, a dump or a measurement is **not** in the main text:
@@ -1008,76 +1008,349 @@ With the clean-room driver, ladder rungs 6–10 `[DEV 2026-11-15, nand-clean]`:
 
 ## 6. LwVM
 
+LwVM is iOS's volume manager on top of the FTL. It turns the FTL's LBA space into a
+virtual space holding up to eight partitions, and maps it in 16 MiB **chunks**
+(4096 LBAs). On iOS the whole LwVM disk is `/dev/disk0s1`, System is
+`/dev/disk0s1s1`, Data is `/dev/disk0s1s2` `[DEV 2026-10-29]`. In this section, a
+"block" is 4096 bytes, the LwVM block size on this media (§6.2).
+
+### 6.1 Header
+
 The header lives at LBA 0 (primary) and LBA 4095 (backup, last LBA of chunk 0);
-both copies identical `[THIS: W0C VBA 0x35141a, 0x35141b]`. 4096 bytes:
+both copies identical `[THIS: W0C VBA 0x35141a, 0x35141b = bus0-cau1 block 849 page 65
+units 2, 3]`. The backup offset is the chunk size minus one block
+`[KC 0x80aa1f66–0x80aa1f76]`. 4096 bytes:
 
 | offset | field | evidence |
 |---|---|---|
-| 0x00 | magic GUID bytes `6a9088cf 8afd630a e351e248 87e0b98b` | `[W0C LBA 0]`, `[KC string "LwVM: media header mismatch" 0xa5fc82]` |
+| 0x00 | magic GUID bytes `6a9088cf 8afd630a e351e248 87e0b98b` | `[W0C LBA 0]`, `[KC 0x80aa9f92]` |
 | 0x10 | media GUID | `[W0C]` |
 | 0x20 | u64 media size, `16000000000` | `[W0C]` |
 | 0x28 | u32 number of partitions | `[W0C]` |
-| 0x2c | u32 CRC-32 (zlib) of the whole 4096 bytes with this field zeroed | `[THIS]` |
+| 0x2c | u32 CRC-32 (zlib) of the whole 4096 bytes with this field zeroed | `[THIS]`, `[KC 0x80a9eee6–0x80a9ef26]` |
 | 0x30.. | zero | `[W0C]` |
-| 0x200 | partition entries, 128 bytes each (below) | `[W0C]` |
+| 0x200 | partition entries, 128 bytes each, eight slots (below) | `[W0C]`, `[KC 0x80a9f32a–0x80a9f3e0]` |
 | 0x800 | chunk map: 1024 u16 | `[W0C]` |
+
+The kernel also accepts a second magic, `b189a519 4f594b1d ad441e12 7aaf4539`
+`[KC 0x80aa9fb2]`, for which it skips the CRC check `[KC 0x80a9eec4–0x80a9eee4]`.
+It never occurs on this media. A writer always uses the first magic and a valid CRC.
 
 Partition entry (128 bytes):
 
 | offset | field |
 |---|---|
-| 0 | type GUID, stored as raw bytes (HFS+: `48465300-0000-11AA-AA11-00306543ECAC`) |
+| 0 | type GUID, stored as raw bytes in text order (HFS+: `48465300-0000-11AA-AA11-00306543ECAC` is bytes `48 46 53 00 00 00 11 aa …`) |
 | 16 | unique GUID |
 | 32 | u64 start byte offset, in LwVM's virtual space |
 | 40 | u64 end byte offset, exclusive |
-| 48 | u64 attributes (e.g. Data = `0x3000000000000`, effaceable) |
-| 56 | UTF-16 name (e.g. `System`, `Data`, `Linux`) |
+| 48 | u64 attributes (Data = `0x3000000000000`) |
+| 56 | UTF-16LE name, zero-padded to 72 bytes (e.g. `System`, `Data`, `Linux`) |
 
 `[W0C, I1 header of 2026-11-07 (3 volumes)]`.
 
-Chunk map entries, one per physical chunk of 16 MiB = 4096 LBAs:
+Attribute bit 48 (byte 54 of the entry, bit 0) marks a partition whose key LwVM keeps
+in effaceable storage. The kernel sets an "encrypted partitions present" flag from it
+when it loads the table `[KC 0x80aa1fee–0x80aa1ffc]`, and loads keys accordingly
+`[KC 0x80aa50ce–0x80aa5112]`. That this bit means "encrypted" is inferred from those
+paths. Bit 49 is unknown. A new partition never sets either bit.
+
+Chunk map entries, one per physical chunk of 16 MiB = 4096 LBAs (physical chunk `c`
+holds FTL LBAs `c·4096 … c·4096 + 4095`):
 
 | value | meaning |
 |---|---|
 | `0xF000` | header (chunk 0) |
-| `p<<12 \| i` | logical chunk `i` of partition `p` |
+| `p<<12 \| i` | logical chunk `i` of partition `p` (the bytes at virtual `start + i·16 MiB …`) |
 | `0xF111` | free chunk on the media |
 | `0xF3FF` | number past the media's end (never on media) |
 
 `[W0C]`: 1024 entries, 133 System, 813 Data, 1 header, six free (947–952,
-`0xF111`), the rest past the end.
+`0xF111`), 71 past the end (953–1023).
 
 **The map is permuted**: physical chunk numbers do not follow partition chunk indices
 (Data chunks 807–812 are at physical 138–143 in one layout). Never infer positions by
 counting `[DEV 2026-10-29]`.
 
-**Capacity rule.** iOS's validator reserves 8 full chunks from the virtual
-address space, so a partition end must be at most
-`0x4000 + 2·4096 + (chunks − 8)·16 MiB` = **15854493696** for this media (953 full
-chunks). Physical free chunks past that bound do not help. A third volume whose
-end exceeded the bound **hung iOS at the Apple logo**
-`[DEV 2026-10-29]`. iOS's real validator, run under Unicorn on this kernelcache:
-- header of 2026-11-07, three volumes (Data shrunk, Linux 15753830400..15854493696): CRC 0,
-  validator 0 `[THIS]`
-- the same with Linux's end +96 MiB: CRC 0, validator −1,
-  `"LwVM: partition %d ends too high"` for partition 2 `[THIS: strings at file offset 0xa5fd44;
-  entry points KC VA 0x80a9eb60 (property init), 0x80a9eebc (CRC), 0x80a9ef80 (validate)]`.
+### 6.2 What iOS accepts (the validator)
 
-Other validator strings at file offsets `0xa5fc82`–`0xa60166` list the accepted
-shape (partition count, order, alignment, chunk ownership) `[KC]`.
+The kernel derives media properties from the FTL's size and block size, then checks a
+header against them. Both were run unchanged under an emulator (§6.6); every rule below
+was read from the code and then confirmed by running it on a modified header, one rule
+at a time `[THIS: KC 0x80a9eb60 properties, 0x80a9ef80–0x80a9f5b6 validator, runs of
+2026-11-16]`.
 
-A new layout must be checked against this validator, offline, with the exact header
-before any write; the third volume was made with a native HFS shrink of Data first, the
-header only after `[DEV 2026-10-29, 2026-11-08]`. Header writes go backup first (LBA 4095),
-then primary (LBA 0), through the FTL, verify each `[DEV 2026-10-29]`. Header changes
-are never made by the running writer; this is a separate deliberate operation.
+Properties for this media (16000000000 bytes, 4096-byte blocks): block 4096, chunk
+16 MiB, **953 chunks** on media (`floor(media / chunk)`), usable virtual space
+**(953 − 8) chunks** = 15854469120 bytes. Eight chunks are held back from the virtual
+space.
+
+A header is accepted only if all of these hold (validator message in brackets):
+
+1. Magic as in §6.1, else `media header mismatch`. Media size field equals the
+   media's size (`media size mismatch`). Partition count at most 8 (`illegal partition
+   count`). `[KC 0x80a9ef98–0x80a9f016]`
+2. For each partition `p` below the count `[KC 0x80a9f07c–0x80a9f326]`:
+   - type GUID and unique GUID not all zero (`has type zero`, `has identity zero`);
+   - start ≥ `0x4000 + 2·block` = **24576** (`starts too low`);
+   - end ≤ `0x4000 + 2·block + usable` = **15854493696** (`ends too high`): the
+     capacity bound;
+   - start < end (`start/end not in order`);
+   - start and end multiples of the block, 4096 (`not block aligned`);
+   - no overlap with any lower-numbered partition (`overlaps partition`). Entries need
+     not be sorted by start, and gaps between partitions are allowed;
+   - for every `i` in `0 … ceil((end − start) / 16 MiB) − 1`, **exactly one** physical
+     chunk `1 … 952` holds `p<<12 | i` (`missing chunk`). A duplicate is reported as
+     missing.
+3. Entries from the count up to slot 7 have zero type, unique GUID, start and end
+   (`partition N orphaned`, or `has type zero` when the count is too high). Their names and
+   attributes are not checked. `[KC 0x80a9f32a–0x80a9f3e0]`
+4. Chunk 0 is `0xF000` (`chunk zero not marked reserved`). `[KC 0x80a9f3e2–0x80a9f3f2]`
+5. Each physical chunk `1 … 952` is `0xF111` or names a partition below the count
+   (`claims nonexistent partition`); `0xF000`, `0xF3FF` and other `0xFxxx` values there are
+   refused. `[KC 0x80a9f3f6–0x80a9f534]`
+6. Each chunk `953 … 1023` is `0xF3FF` (`not invalid`). `[KC 0x80a9f592–0x80a9f5b6]`
+
+Not checked, all confirmed accepted by the run: the media GUID (zero passes), bytes
+`0x30–0x1ff`, partition names and attributes, the type GUID's value (any non-zero),
+two partitions with the same unique GUID, the physical order of a partition's chunks
+(reversed passes).
+
+Tolerated but never to be written: rule 5 checks only that the low 10 bits `i` of an
+entry satisfy `i · 16 MiB ≤ end − start` (note `≤`). So an extra entry with index exactly
+`ceil(size)` passes when the size is a whole number of chunks, and bits 10–11 of the index
+are ignored (`0x2400` passes as an extra entry). A writer gives each partition exactly
+its `ceil(size / 16 MiB)` entries, nothing more.
+
+The CRC check is separate `[KC 0x80a9eebc–0x80a9ef2e]`: result 0 = valid, −1 = CRC
+mismatch, −2 = neither magic (an all-zero or all-`0xff` block gives −2) `[THIS: run]`.
+
+Accepted today `[THIS: run]`: the `w0c` two-volume header (CRC `12c6adda`), the
+96 MiB three-volume header of 2026-10-29 (CRC `dbb005b8`) and today's (CRC `d32fc8ee`).
+Refused: Linux's end +96 MiB past the bound (`partition 2 ends too high`), which **hung iOS
+at the Apple logo** when it was on the media `[DEV 2026-10-29]`.
+
+### 6.3 How iOS reads and writes the header
+
+At boot `[KC 0x80aa1dbc–0x80aa1eb2, 0x80aa1f50–0x80aa1f8a, 0x80aa4d64–0x80aa4e14]`:
+
+1. Properties from the media (§6.2), a 4096-byte buffer for the header.
+2. Read the **primary** (LBA 0) and run the CRC check. If it passes, use it. The backup
+   is not read at all.
+3. Only if the primary fails (read error, CRC mismatch or no magic): read the backup
+   (LBA 4095). If it passes, rewrite **both** copies from it, then use it.
+4. Run the validator on the copy in use. If it fails, LwVM does not attach: no System,
+   no Data, iOS stops at the Apple logo (the hang of §6.2). Nothing is repaired on this
+   path.
+
+The header is then held in memory. iOS rewrites it on the media in three cases only:
+the fall-back in step 3, its own repartitioning through a GPT written to the LwVM disk
+(below), and a media-key path `[KC calls at 0x80aa1f82, 0x80aa442e, 0x80aa0a72]`. Its own
+write `[KC 0x80aa0eb4–0x80aa0f8a]` fills in the CRC, writes the **primary, then the
+backup**, reads each back and compares (`media header readback miscompare` on a
+difference), then issues one more request to the FTL over LBAs 1 … 4094 (inferred from the
+range to be an unmap; not confirmed). A normal boot therefore never writes the header, and a
+header written by Linux stays as written `[DEV 2026-11-08; THIS: r6pre, taken after
+many iOS boots on 2026-11-14, holds both copies with CRC d32fc8ee]`.
+
+iOS also has its own repartitioning: by its log messages, a GPT written to block 2 of the
+LwVM disk is turned into a new LwVM header, run through the same validator and written as above; it can copy
+chunk contents while doing so `[KC strings at VA 0x80aa92b7–0x80aa964c, 0x80aa9f03; validator
+call 0x80aa43e8]`. It has never been used on this device, and nothing here relies on it.
+
+Consequences for a header written from Linux (backup first, then primary):
+- interrupted before the backup write: old layout;
+- after the backup, before the primary: iOS uses the old primary; the copies differ,
+  and the tool must notice and finish or undo;
+- primary torn: its CRC fails, so iOS takes the new backup and rewrites both: new layout;
+- both written: new layout.
+Each outcome is one of the two layouts, so **both must be safe for the filesystems on
+the media at the moment of writing**. That is why Data's HFS is shrunk before the header
+that shrinks its container, and grown only after the header that enlarges it.
+
+A raw write to LBA 0 under a running iOS (through `/dev/rdisk0`) is not used. LwVM would
+not see it until the next boot, and any of its own writes above would overwrite it from
+memory. No such write was ever tried.
+
+### 6.4 Creating the third volume
+
+Starting state: a stock two-volume header, System and Data, Data ending at the capacity
+bound (on this media: Data `2224152576 … 15854493696`, 813 chunks, six free chunks
+947–952) `[W0C]`. Done on the device once in two steps (96 MiB on 2026-10-29, grown to 8 GiB on
+2026-11-08) `[DEV]`; the procedure below is the one-step form of the same operations.
+
+**Sizes.** Choose the Linux size `L`, a multiple of 4096. Then
+`Data_end = bound − L`, the HFS target `N = (Data_end − Data_start) / 4096` blocks,
+Linux = `[Data_end, bound)`. Data's end is not chunk-aligned and need not be: the
+partition's last chunk is partly used `[DEV 2026-11-08: Data_end 7264559104 =
+2224152576 + 1230568·4096, 301 chunks]`. For 8 GiB on this media: `Data_end =
+7264559104`, `N = 1230568`.
+
+**Step 1. Shrink Data's HFS (on iOS, header unchanged).**
+
+Facts:
+- Data is HFSX (signature `HX`, version 5), case-sensitive, journaled, with 4096-byte
+  allocation blocks, mounted read-write at `/private/var` from `/dev/disk0s1s2`
+  `[DEV 2026-10-29, 2026-11-08]`. Its volume header is at byte 1024 of the partition,
+  big-endian: signature at +0, attributes at +4 (observed `0xc0002000`: bit 13 journaled,
+  bit 30 content protection), block size at +40, total blocks at +44, free blocks at +48
+  `[DEV 2026-11-08]` (layout as in Apple's published HFS Plus format).
+- The shrink is **one `fsctl(2)` on the mounted volume**: path `/private/var`, command
+  `HFSIOC_RESIZE_VOLUME` = `_IOW('h', 2, u_int64_t)` = **`0x80086802`**, argument a pointer
+  to a `u64` holding the new size in bytes (`N · 4096`), options 0. Run by a root process
+  on the running iOS (a command-line helper run as root over SSH; the jailbreak runs
+  ad-hoc-signed armv7 binaries). The volume stays mounted and in use. `[DEV 2026-10-29:
+  3327720 → 3303144 blocks; DEV 2026-11-08: 3303144 → 1230568 blocks, 64 s, return 0, errno 0]`.
+  The kernel's HFS control dispatch handles this command `[KC 0x8021332a–0x8021336a]`. The
+  command value is the one in Apple's published HFS sources.
+- After it, the primary and alternate HFS volume headers both report `N` blocks; files
+  that had blocks in the removed tail were moved below `N` with their contents unchanged;
+  no bitmap bit at or above `N` is set; the last block (the new alternate header) is
+  allocated `[DEV 2026-10-29, 2026-11-08]`. The LwVM container is still the old size, and
+  iOS runs normally with the smaller HFS inside it (boots, `fsck_hfs` exit 0)
+  `[DEV 2026-10-29 R2, 2026-11-08]`.
+- A **live `fsck_hfs -n -l /dev/rdisk0s1s2` right after a large shrink can exit 8**: files
+  that were open but unlinked (`temp<cnid>` in the private metadata folder) still have catalog
+  extents past the new end, and their blocks show as orphaned (10 files, 25 blocks).
+  A **clean restart** (power off with the slider, then on) clears it: exit 0, no extent past
+  `N` in any file. Judge the shrink only after a clean restart, never after a forced restart
+  `[DEV 2026-11-08]`.
+
+Required order:
+1. iOS is `iPad2,5` / `12H321`; Data is mounted as above; its HFS header has the expected
+   signature, journal bit and 4096-byte blocks; the LwVM header is two-volume with both
+   copies equal and valid.
+2. If total blocks already equal `N`, issue nothing (an earlier run got this far).
+3. Free blocks ≥ `old_total − N` plus a margin. The kernel needs room below `N` for every
+   allocated block it moves. The margin is project policy, not an iOS rule: at least 1 GiB
+   (262144 blocks) free after the shrink, and `N ≥ 524288` (2 GiB) `[DEV 2026-11-08]`.
+4. Live `fsck_hfs -n -l /dev/rdisk0s1s2`: exit 0 before the shrink.
+5. The `fsctl`; on return, re-read the HFS header: total blocks = `N`, else stop with the
+   two-volume header untouched.
+6. Clean restart of iOS; `fsck_hfs -n -l` exit 0; primary and alternate headers report `N`.
+
+**Step 2. Plan the header (offline).** From the device's current header (both copies
+read and equal), change only:
+- Data entry: **end only** → `Data_end`. Type, unique GUID, start, attributes and name stay
+  `[DEV: today's header differs from the w0c one in count, CRC, Data's end, entry 2 and
+  the map only]`;
+- entry 2 (Linux): type GUID raw bytes `0f c6 3d af 84 83 47 72 8e 79 3d 69 d8 47 7d e4`
+  (`0FC63DAF-8483-4772-8E79-3D69D8477DE4`, Linux filesystem data, written in text order like
+  the HFS one), unique GUID non-zero and different from every other partition's (today's
+  device: `4c696e75 784e414e 910a3e1b 52c76d0f`; a fresh tool uses 16 random bytes, or
+  keeps the old value when recreating), start `Data_end`, end the bound, attributes 0, name
+  `Linux`. iOS boots with this entry and leaves it alone `[DEV 2026-10-29 onwards]`;
+- count 3;
+- chunk map, rule below;
+- CRC last.
+
+Media GUID, media size, System's entry and every System and retained Data chunk entry are
+unchanged.
+
+**Chunk rule.** Let Data have had `n_old` chunks and keep `n_new = ceil((Data_end −
+Data_start) / 16 MiB)`; Linux needs `n_L = ceil(L / 16 MiB)`. Since Data ended at the bound,
+`n_L` is `n_old − n_new` or one more.
+1. Data's entries with index `≥ n_new` become free: these are the **released** chunks.
+2. Linux index `i = 0, 1, …` takes, in this order: the released chunks by **ascending
+   physical number**, then `0xF111` chunks by ascending physical number, until `n_L` are
+   assigned. Released chunks left over become `0xF111`.
+
+Any assignment meeting §6.2 is accepted by iOS. This rule is chosen because it leaves the
+media's stock free chunks free whenever possible, and because it is the rule the 8 GiB
+step of 2026-11-08 used: applied as a grow to the 96 MiB header (CRC `dbb005b8`) it
+reproduces today's header byte for byte (CRC `d32fc8ee`) `[THIS: run]`. The 96 MiB step
+had used the six free chunks (947–952) because Linux data already lay there. A one-step
+creation from `w0c` therefore places Linux elsewhere than today's header; values in §8.1.
+
+The chunks given to Linux still hold old Data content in the FTL. Linux overwrites it as it
+writes; nothing needs erasing first.
+
+Check the planned header with iOS's validator (§6.6): CRC 0 and validator 0, else stop.
+
+**Step 3. Write it (from Linux).** Done this way on 2026-10-29 and 2026-11-08 `[DEV]`:
+1. Load the FTL, read both header copies: they must be byte-equal to the header the plan
+   was made from (else stop: something changed since planning).
+2. Write LBA 4095 (backup), read it back, compare.
+3. Write LBA 0 (primary), read it back, compare. LBAs 1–3 and 4092–4094 unchanged.
+4. Commit (close the frontier, write a context: §4.8). iOS's handling of a Linux frontier
+   left open is unverified (§9), so iOS never boots between the write and the commit.
+5. Reload the FTL read-only: both copies equal the plan; the partition sizes come out as
+   planned (`Linux 2097152 blocks, 512 chunks` for 8 GiB).
+6. Boot iOS: it boots, `fsck_hfs -n -l` of System and Data exit 0, and reading block `N`
+   of `/dev/rdisk0s1s2` returns 0 bytes (the partition's end) `[DEV 2026-11-08]`.
+
+Header writes are never made by the running writer; this is a separate deliberate
+operation. Only then is the Linux volume formatted and filled.
+
+### 6.5 Removing the third volume (undo)
+
+Order: the **header first** (it enlarges Data's container), then grow the HFS. A
+smaller HFS in a larger container is a state iOS has run in `[DEV 2026-10-29: R2, and
+again after the header rollback of that day: iOS boot and fsck exit 0]`. The other order
+fails, because the HFS cannot grow past the partition size iOS saw at boot.
+
+1. Linux data that is to be kept is copied off first. It is lost: Data's HFS will
+   own those chunks.
+2. Header: Linux entry zeroed (all 128 bytes), count 2, Data's end back to the
+   bound, Data's indices `n_new … n_old − 1` given chunks again: Linux's chunks, then free
+   chunks, each set to `1<<12 | i`. Best: if the current header is the one the tool wrote,
+   write back the exact two-volume header saved before creation. For the user's iPad that
+   is the `w0c` header (CRC `12c6adda`): System and Data indices `0 … 300` sit on the same
+   physical chunks in today's header as in `w0c`, so restoring it is consistent
+   `[THIS: compared]`. Otherwise use the inverse rule above. Validate (§6.6); write
+   exactly as §6.4 step 3; commit; reload.
+3. Boot iOS: Data's partition is now the old size; HFS still `N` blocks; fsck exit 0.
+4. Grow the HFS with the **same `fsctl`** and the container's size in bytes as the new
+   size (`Data_end − Data_start`; `3327720` blocks on this media). Then clean restart and
+   `fsck_hfs -n -l` exit 0; primary and alternate HFS headers report the new count.
+
+Step 4 has **never been run on this device** (§9). If it fails, iOS keeps working with
+the smaller HFS: nothing is lost, the space is only unused.
+
+The chunks returned to Data still hold Linux data until HFS reuses them, as free space.
+
+### 6.6 Running iOS's validator offline
+
+The functions run unchanged from the 12H321 kernelcache (SHA-256 `db1ddc83…dd2c`, §0)
+under a CPU emulator for 32-bit ARM (Unicorn was used); no other part of iOS is needed
+`[THIS: runs of 2026-11-16]`.
+
+- Memory: map `0x80000000 … 0x80ffffff` and copy in every `LC_SEGMENT` with a file size
+  (its `vmaddr`, `fileoff`, `filesize`); this covers both the kernel and the prelinked
+  LwVM code. Separate zeroed regions for the properties (≥ 64 bytes), the header
+  (4096 bytes) and a stack (1 MiB, start the stack pointer near its top).
+- All three entry points are **Thumb** (enter at address | 1), standard ARM calling
+  convention (arguments in r0–r3, result in r0). Set the link register to an unmapped or
+  dedicated stop address and stop when execution reaches it.
+- Three imported functions are reached through stubs and must be replaced. Hook the stub
+  address, compute the result, set r0 and return to the link register:
+  - `0x80aa7b4c`: compare 16 bytes at r0 and r1, return 0 if equal, else non-zero;
+  - `0x80aa7aac`: zlib CRC-32 with seed r0 over r2 bytes at r1, return the CRC;
+  - `0x80aa7abc`: kernel log (printf format at r0, arguments r1–r3), return 0. Record the
+    text: it is the refusal reason.
+- Calls:
+  1. `0x80a9eb60(props, media_size_low, media_size_high, 4096)` → 0. Afterwards the
+     properties hold, as u32 words: media size (2 words), usable virtual size (2 words),
+     chunks on media, block size, log2 block, chunk size, log2 chunk; for this media
+     `16000000000, 15854469120, 953, 4096, 12, 16777216, 24`.
+  2. `0x80a9eebc(header)` → 0 valid, −1 CRC mismatch, −2 no magic.
+  3. `0x80a9ef80(props, header)` → 0 accepted, −1 refused with one log line.
+- Acceptance: both 0 for the header to be written. Test the harness itself on the
+  known cases of §8.1 before trusting it.
+
+The harness is new code written for this spec (about 60 lines of Python). It contains
+nothing from the earlier driver and may be copied or rewritten from this description.
+
+### 6.7 Linux side
+
+The Linux-side LwVM reader validates CRC and shape against §6.2 and exposes
+one block device per partition (`ftl0p0`, `ftl0p1`, `ftl0p2`) `[DEV 2026-10-29]`. The
+partition-relative byte `x` of partition `p` is at FTL LBA `c·4096 + (x mod 16 MiB)/4096`,
+where `c` is the physical chunk holding `p<<12 | floor(x / 16 MiB)`.
 
 Today's layout (2026-11-08): System 133 chunks, Data 301 chunks with an HFS of
 1230568 blocks, Linux 512 chunks (8 GiB), CRC `d32fc8ee`, Data ending at 7264559104,
-Linux ending at 15854493696 `[DEV 2026-11-08]`.
-
-The Linux-side LwVM reader validates CRC and shape against the rules above and exposes
-one block device per partition (`ftl0p0`, `ftl0p1`, `ftl0p2`) `[DEV 2026-10-29]`.
+Linux ending at 15854493696, free chunks 138–143 `[DEV 2026-11-08]`.
 
 ## 7. Required Linux-side behaviour
 
@@ -1200,9 +1473,22 @@ matches except `user`, where iOS's BTOC value differs from the page's own metada
 cannot be reproduced from page metadata alone. A Linux writer uses the page's `user`.
 Whether iOS reads this field back is not known.
 
-**LwVM**: the iOS validator (under an emulator, offline, on the 12H321 kernelcache) accepts
-any header the driver would ever write; a header exceeding the capacity rule is refused
-with the message of §6.
+**LwVM** (§6.6 harness; headers as 4096-byte files):
+
+| input | expected |
+|---|---|
+| properties for 16000000000 bytes, block 4096 | `16000000000, 15854469120, 953, 4096, 12, 16777216, 24` |
+| `w0c` header (bus0-cau1 block 849 page 65 unit 2 or 3) | CRC `12c6adda`, SHA-256 `8789f149…b45a`; CRC check 0, validator 0 |
+| today's header | CRC `d32fc8ee`, SHA-256 `ca0601c0…7426`; 0, 0 |
+| today's with Linux's end + 4096 (CRC refreshed) | validator −1, `partition 2 ends too high` |
+| today's with one byte changed, CRC not refreshed | CRC check −1 |
+| an all-zero block | CRC check −2 |
+| §6.4 rule as a grow, applied to the 96 MiB header (CRC `dbb005b8`, SHA-256 `5d22e373…01b3`) with `Data_end = 7264559104` | byte-identical to today's header |
+| §6.4 rule in one step from `w0c`, `Data_end = 7264559104`, Linux unique GUID as today's | CRC `f45e7c76`, SHA-256 `afd27ea1…2ec5`; 0, 0; Linux on the 512 released chunks, 947–952 still free |
+| §6.5 undo of today's header by restoring `w0c` | `w0c` itself; Data indices 0–300 and all of System on the same physical chunks in both |
+
+Each rule of §6.2 has a refusing case: change one field of today's header, refresh the
+CRC, expect the message named there.
 
 ### 8.2 Device ladder (writes are not done by this session)
 
@@ -1289,6 +1575,16 @@ not be confirmed from a binary, a dump or a measurement while writing this spec.
   measured on the device (only the unload-without-checkpoint crash test passed).
 - Whether DELETE (trim) tokens written by Linux would be accepted by iOS: untested;
   Linux does not emit them.
+- §6.5 step 4, growing Data's HFS back with the resize `fsctl`: never run on this device.
+  Apple's published HFS code supports growing a mounted volume; whether this iOS build
+  does so without trouble is unknown. If it fails, iOS keeps working with the smaller HFS.
+- §6.1, the meaning of attribute bit 48 ("encrypted", inferred from the key-loading path)
+  and bit 49 (unknown). §6.3, that iOS's last request after its own header write is an
+  unmap of LBAs 1–4094 (inferred from the range only).
+- §6.3, iOS's own GPT repartitioning: read from the kernel's messages and one call only;
+  never used here.
+- §6.4 step 1, the free-space margin: project policy. Apple's code needs room below the new
+  end for the blocks it moves; how much more the 12H321 kernel wants was not measured.
 - The reason for the boot loop after the historic W4 install (§5); the format
   corrections made afterwards stopped it but the cause is unproven `[DEV 2026-10-29]`.
 
