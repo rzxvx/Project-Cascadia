@@ -23,3 +23,12 @@ config APPLE_SFTL_WRITE
 	  Without it nothing in either driver can change the NAND.  With it,
 	  writing still needs apple_ppn.allow_write, apple_ftl.enable_write
 	  and apple_ftl.write_volume on the command line.
+
+config APPLE_PPN_FAULT_INJECT
+	bool "Test-only program and erase failure injection"
+	depends on APPLE_SFTL_WRITE
+	default n
+	help
+	  Adds apple_ppn parameters (inject_program, inject_mode,
+	  inject_erase) that make a program or an erase look failed, for
+	  testing the FTL's bad-block handling.  Say N.

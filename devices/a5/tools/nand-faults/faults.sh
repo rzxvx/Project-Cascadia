@@ -2,6 +2,8 @@
 # Program and erase failures on the device (spec 4.9), injected through
 # apple_ppn's test parameters, under ext4 writes on the Linux volume.  Run on
 # the NFS rung-1 image with apple_ppn.ko / apple_ftl.ko and e2fsck in /tmp.
+# apple_ppn.ko must be built with the injection: PPN_FAULT_INJECT=1 on the
+# external module build (CONFIG_APPLE_PPN_FAULT_INJECT=y in the tree).
 set -u
 M=/mnt/nandlinux
 T=$M/bbtest
@@ -22,6 +24,7 @@ write_set() {	# name
 }
 dmesg -c >/dev/null
 insmod /tmp/apple_ppn.ko allow_write=1 || fail apple_ppn
+[ -e $PP/inject_program ] || { rmmod apple_ppn; fail "apple_ppn.ko built without PPN_FAULT_INJECT=1"; }
 insmod /tmp/apple_ftl.ko auto_mount=0 enable_write=1 write_volume=Linux verify_every=1 || fail apple_ftl
 echo 1 > $FP/mount || fail "FTL mount"
 mount -t ext4 -o rw,noatime,commit=30 /dev/ftl0p2 $M || fail "ext4 mount"
