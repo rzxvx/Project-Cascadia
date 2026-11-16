@@ -28,7 +28,7 @@ DST="${DST:-$HOME/cascadia-root}"          # deliberately not under Desktop/Docu
                                            # nfsd cannot read them
 # A new root starts from the desktop root when there is one: built here
 # (./cascadia a5 desktop-root), else a release's (./cascadia a5 get).
-DESKTOP_TAR="$ROOT/build/desktop-root.tar"
+DESKTOP_TAR="${DESKTOP_TAR:-$ROOT/build/desktop-root.tar}"
 [ -f "$DESKTOP_TAR" ] || DESKTOP_TAR="$ROOT/build/prebuilt/current/desktop-root.tar.xz"
 LAN_NET="${LAN_NET:-10.55.0.0}"
 LAN_MASK="${LAN_MASK:-255.255.255.0}"
