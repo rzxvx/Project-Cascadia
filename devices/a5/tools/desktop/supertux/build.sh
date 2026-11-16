@@ -47,7 +47,10 @@ if [ "${1:-}" = install ]; then
     # them, and --force-broken-world below would then skip supertux itself
     # in silence and leave a world every later apk add trips over.
     DEPS=$(for P in "$OUT"/supertux-[0-9]*.apk; do tar -xzOf "$P" .PKGINFO 2>/dev/null; done |
-           sed -n 's/^depend = //p' | grep -v -e '^supertux' -e '^so:libc\.musl' | sort -u | tr '\n' ' ')
+           sed -n 's/^depend = //p' | grep -v -e '^supertux' -e '^so:libc\.musl' \
+               -e '^so:libGL\.so' -e '^so:libEGL\.so' -e '^so:libGLES' -e '^so:libgbm\.so' | sort -u | tr '\n' ' ')
+    # (the GL libraries are ours: cascadia-gl stands in for Alpine's Mesa, which
+    # device-apk.sh would otherwise fetch by name, LLVM and all)
     [ -n "$DEPS" ] || { echo "no depends in $OUT/supertux-*.apk's .PKGINFO" >&2; exit 1; }
     DEVICE="$DEVICE" sh "$ROOT/tools/device-apk.sh" $DEPS
     # (in /var/tmp, the NFS root: the data are 283 MB, /tmp is 128 MB of RAM)
