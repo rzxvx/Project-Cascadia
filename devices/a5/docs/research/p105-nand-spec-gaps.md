@@ -523,7 +523,9 @@ Cable boot of the bundle: `6.12.0-nand-rw-dirty #12`, root `ftl0p2` rw on iOS's 
 64 MiB + 300 files written and synced in 7 s and read back right after dropping caches.
 Installed from iOS with `app/install-dev.sh` (2026-11-16): the app's status shows
 `/kernelcache` = `0562ee719420b8923aeeacc4ee31a8d79837cf8c` as wanted; ramdisk, devicetree,
-kloader and iBEC unchanged. Not yet booted from the app.
+kloader and iBEC unchanged. Boot from the app: kernel #12, root `ftl0p2` rw on iOS's new
+context sb 904 (26849 replayed), injection off; the 903 fault-test files and the 301 files
+of the cable test match. Not checked here: long use.
 
 ## Decisions the spec left open
 
