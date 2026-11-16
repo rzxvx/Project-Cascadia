@@ -527,6 +527,29 @@ kloader and iBEC unchanged. Boot from the app: kernel #12, root `ftl0p2` rw on i
 context sb 904 (26849 replayed), injection off; the 903 fault-test files and the 301 files
 of the cable test match. Not checked here: long use.
 
+## Volume creation (plan in p105-nand-volume-plan.md), 2026-11-16
+
+- **V1. How Data is shrunk.** §6 says "a native HFS shrink of Data first" but not how.
+  Proposal: Apple's published HFS resize request for a mounted volume (the
+  `HFSIOC_RESIZE_VOLUME` fsctl of Apple's open-source HFS), from a small iOS helper on
+  `/private/var`. Needed: whether that is what was done, any minimum free space or
+  order of steps that mattered.
+- **V2. The LwVM validator.** §6/§8.1 rely on iOS's validator run under an emulator, with
+  entry points given (KC VA 0x80a9eb60, 0x80a9eebc, 0x80a9ef80); no such tool is in this
+  branch. Needed: may a harness be written here from those entry points on the 12H321
+  kernelcache from the IPSW (as iBEC disassembly is allowed), or is the spec session's
+  tool to be shared?
+- **V3. Chunk map for the new volume.** Which physical chunks the Linux volume gets and in
+  which order (Data's freed top chunks, the free `0xF111` chunks, or both), and what the
+  validator demands of order, alignment and ownership (§6 names the strings only). Today's
+  header on the device is the answer for one case; the rule is not written.
+- **V4. Linux entry fields.** Type GUID, attributes and name of the `Linux` entry; how the
+  media GUID and Data's entry are kept. Readable from today's header on the device.
+- **V5. Header write interface.** §6 gives the order (backup, primary, verify) but not the
+  interface; proposal: a separate test-style module or a one-shot `apple_ftl` request,
+  refusing unless the header on the media equals the one planned from.
+- **V6. Undo.** Removing the Linux volume and growing Data back is not in the spec.
+
 ## Decisions the spec left open
 
 **D1. Closing a partly written superblock.** *Rung 7: iOS accepted a Linux SB closed
