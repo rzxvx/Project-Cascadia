@@ -2,12 +2,17 @@
 # Apple A5 PPN NAND controller and Swiss FTL.
 #
 # In the tree, CONFIG_APPLE_SFTL_WRITE selects the write path; as an external
-# module build it is on unless SFTL_READONLY=1.
+# module build it is on unless SFTL_READONLY=1.  The test-only failure
+# injection is CONFIG_APPLE_PPN_FAULT_INJECT in the tree, PPN_FAULT_INJECT=1
+# for an external build; off by default in both.
 ifneq ($(KBUILD_EXTMOD),)
 CONFIG_APPLE_PPN := m
 CONFIG_APPLE_SFTL := m
 ifneq ($(SFTL_READONLY),1)
 CONFIG_APPLE_SFTL_WRITE := y
+endif
+ifeq ($(PPN_FAULT_INJECT),1)
+ccflags-y += -DCONFIG_APPLE_PPN_FAULT_INJECT
 endif
 endif
 obj-$(CONFIG_APPLE_PPN) += apple_ppn.o

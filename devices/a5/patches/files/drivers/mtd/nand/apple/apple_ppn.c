@@ -133,8 +133,12 @@ static bool allow_write;
 module_param(allow_write, bool, 0444);
 MODULE_PARM_DESC(allow_write, "Permit program and erase operations");
 
-#ifndef SFTL_NO_WRITE
-/* Test only: make the media look as if a program or an erase failed. */
+#if defined(CONFIG_APPLE_PPN_FAULT_INJECT) && !defined(SFTL_NO_WRITE)
+#define PPN_INJECT	1
+/*
+ * Test only (CONFIG_APPLE_PPN_FAULT_INJECT): make the media look as if a
+ * program or an erase failed.  Release kernels leave this out.
+ */
 static int inject_program = -1;
 module_param(inject_program, int, 0644);
 MODULE_PARM_DESC(inject_program, "Test only: the Nth page program from now fails (-1 off)");
@@ -144,6 +148,31 @@ MODULE_PARM_DESC(inject_mode, "Test only: 1 = the failing page is not programmed
 static int inject_erase = -1;
 module_param(inject_erase, int, 0644);
 MODULE_PARM_DESC(inject_erase, "Test only: the Nth block erase from now fails (-1 off)");
+
+static bool inject_erase_now(void)
+{
+	return inject_erase >= 0 && inject_erase-- == 0;
+}
+
+/* 0: no failure; 1: fail without programming; 2: program, then report a failure. */
+static int inject_program_now(void)
+{
+	if (inject_program < 0 || inject_program-- != 0)
+		return 0;
+	return inject_mode == 2 ? 2 : 1;
+}
+#else
+#define PPN_INJECT	0
+
+static inline bool inject_erase_now(void)
+{
+	return false;
+}
+
+static inline int inject_program_now(void)
+{
+	return 0;
+}
 #endif
 
 struct ppn_bus {
@@ -791,7 +820,7 @@ int apple_ppn_erase(struct apple_ppn *p, unsigned int bank, unsigned int block)
 
 	if (!allow_write)
 		return -EPERM;
-	if (inject_erase >= 0 && inject_erase-- == 0) {
+	if (inject_erase_now()) {
 		dev_warn(p->dev, "erase bank %u block %u: injected failure\n", bank, block);
 		return -EIO;
 	}
@@ -889,7 +918,7 @@ int apple_ppn_program(struct apple_ppn *p, const struct sftl_prog *pages, unsign
 				st = poll_finish(b);
 				ce_deselect(b);
 				bus_soft_reset(b);
-				if (inject_fail[i]) {
+				if (PPN_INJECT && inject_fail[i]) {
 					dev_warn(p->dev, "program bank %u block %u page %u: injected failure (programmed)\n",
 						 busy[i]->bank, busy[i]->block, busy[i]->page);
 					st |= ST_FAIL;
@@ -912,15 +941,18 @@ int apple_ppn_program(struct apple_ppn *p, const struct sftl_prog *pages, unsign
 					if (seen++ == next[i])
 						break;
 				}
-				if (inject_program >= 0 && inject_program-- == 0) {
-					if (inject_mode != 2) {
-						dev_warn(p->dev, "program bank %u block %u page %u: injected failure (not programmed)\n",
-							 pages[k].bank, pages[k].block, pages[k].page);
-						ret = -EIO;
-						break;
-					}
+				switch (inject_program_now()) {
+				case 1:
+					dev_warn(p->dev, "program bank %u block %u page %u: injected failure (not programmed)\n",
+						 pages[k].bank, pages[k].block, pages[k].page);
+					ret = -EIO;
+					break;
+				case 2:
 					inject_fail[i] = true;
+					break;
 				}
+				if (ret)
+					break;
 				ret = program_start(b, &pages[k]);
 				if (ret) {
 					dev_err(p->dev, "program start bus %u: %d\n", i, ret);
