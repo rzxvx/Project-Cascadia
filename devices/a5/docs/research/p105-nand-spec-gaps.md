@@ -503,8 +503,13 @@ Device, NFS rung-1 image, `tools/nand-faults/faults.sh`: ext4 on the Linux volum
 - Seven commits in all during the writes; unmount with checkpoint; fresh mount on context
   sb 473, 0 replayed; `e2fsck -fn` clean (19411 files, 427237 of 2097152 blocks); all 903
   files match after the remount.
-- Not checked yet: iOS booting on this context and erasing sb 426 and 852 (type 1, 0
-  valid) on its own.
+- iOS booted on it: `fsck_hfs -l` of System and Data clean. Then, NFS image, read-only:
+  iOS's context sb 480 (weave 378838598, tree 175 LBAs), golden identical, 3116 replayed,
+  2000 random LBAs read right; **sb 852 and sb 350 erased (type 9)**; **sb 426 erased and
+  reused by iOS** (closed, type 3, its own weave 378698430); the Linux context sb 473 erased
+  and still listed as type 7, as at rung 6. No grown-bad entry was expected (the failures
+  were injected, the blocks are good). Linux volume: `e2fsck -fn` clean, same counts, 903
+  of 903 files match.
 
 ## Decisions the spec left open
 
@@ -560,8 +565,8 @@ driver: the module build here does not touch the kernel tree.
 
 ## Open
 
-- **Bad-block handling**: done (section above, 2026-11-16); iOS's view of the given-up
-  SBs is still to be checked.
+- **Bad-block handling**: done and checked with iOS (section above, 2026-11-16). A real
+  bad block was not met; only injected failures were tested.
 - All facts of spec §9 except the transmit `CONFIG` (settled at rung 2) remain open: the meaning of base words,
   the SB type values for retired SBs, overlapping programs on one CE, read-clock
   sweeps, iOS's behaviour on an open Linux frontier, power loss during a batch,
