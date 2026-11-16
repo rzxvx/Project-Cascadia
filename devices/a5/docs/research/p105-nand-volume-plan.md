@@ -45,6 +45,14 @@ Not in the first version unless asked.
 - A real creation needs an iPad with two volumes: either the user's after an undo (the
   Linux root is lost then; back it up first), or another device.
 
+## User decisions (2026-11-16)
+
+- Gaps V1–V6 go to the spec session; no code before the spec covers V1–V3.
+- A separate command (working name `./cascadia a5 nand-volume`); `install` may call it later.
+- Real test on the user's iPad: back up the Linux root to the computer, give the space back
+  to Data (undo), create the volume again with the new command, restore the root.
+  So undo (V6) is in the first version.
+
 ## Gaps (see p105-nand-spec-gaps.md, "Volume creation")
 
 V1–V6 there; the plan cannot be finished without answers to V1–V3.
