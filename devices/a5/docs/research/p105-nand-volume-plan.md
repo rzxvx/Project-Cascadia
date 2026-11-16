@@ -91,3 +91,17 @@ Not run on the device yet. Device sequence for the user's iPad (each write step 
 3. NFS image, `remove`: context sb 701 (22127 replayed); dry run passed; LBA 4095 then LBA 0
    written and read back; committed on sb 531; fresh mount: both copies = `w0c`, System 133
    and Data 813 chunks.
+4. iOS booted on the `w0c` header (ssh came up only after a while). `fsck_hfs -n -l` System
+   exit 0. **Data exit 8 before the grow**, unlike §6.5 step 3: "Invalid volume free block
+   count (should be 3029500 instead of 956924)", bitmap "orphaned blocks" and
+   "under-allocation", "minor repair". HFS header: total 1230568, free 956902, allocation
+   file 417792 bytes (covers 3342336 blocks); the bitmap read raw has **no bit set past block
+   1230568**, and 956715 free below it. 3029500 = free + every block up to 3303144 (the HFS
+   size after the 96 MiB step of 2026-10-29): fsck judges the free count against a size that
+   is neither the HFS's nor the container's. Taken as an artefact of the smaller HFS in the
+   larger container (user decision to grow).
+   (A first exit 8 was a test error: fsck's output redirected to `/tmp` on Data itself, which a
+   live verify refuses.)
+   Grow: `cascadia-hfs resize 3327720` → `fsctl` 0, errno 0, under a second; HFS header and
+   alternate header 3327720, free 3053024; `fsck_hfs -n -l` Data exit 0 right after; `df`
+   12.7 GiB. **First HFS grow on this device: works.**
