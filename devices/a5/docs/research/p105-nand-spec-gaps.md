@@ -511,6 +511,15 @@ Device, NFS rung-1 image, `tools/nand-faults/faults.sh`: ext4 on the Linux volum
   were injected, the blocks are good). Linux volume: `e2fsck -fn` clean, same counts, 903
   of 903 files match.
 
+### Daily boot rebuilt with the failure handling, 2026-11-16
+
+`tools/nand/build-nand-rw.sh` on f9b4376 (the driver of c2958e1/c0d5a20; injection
+parameters are built in but off). Bundle `staging-bundle.bin` SHA-256 `207d107f…`,
+`zImage-dtb` `0ab4473d…`; previous bundle kept in `build/nand-rw-boot.v1`. PC-less
+kernelcache SHA-1 **`0562ee719420b8923aeeacc4ee31a8d79837cf8c`** (ramdisk and devicetree
+unchanged); the previous one, `3572487…`, kept in main's `build/pcless-cablefree/out.clean-v1`.
+Not booted or installed yet.
+
 ## Decisions the spec left open
 
 **D1. Closing a partly written superblock.** *Rung 7: iOS accepted a Linux SB closed
