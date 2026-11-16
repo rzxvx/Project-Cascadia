@@ -1028,6 +1028,16 @@ static int apple_ppn_probe(struct platform_device *pdev)
 		return -ENOMEM;
 	p->dev = dev;
 	mutex_init(&p->lock);
+	/*
+	 * Claim both register windows, so nothing else maps them while the
+	 * driver owns the controller: another driver's request fails, and with
+	 * CONFIG_IO_STRICT_DEVMEM neither can /dev/mem.
+	 */
+	if (!devm_request_mem_region(dev, FMI0_BASE, FMI_WINDOW, "apple-ppn bus 0") ||
+	    !devm_request_mem_region(dev, FMI1_BASE, FMI_WINDOW, "apple-ppn bus 1")) {
+		dev_err(dev, "PPN register windows are in use by something else\n");
+		return -EBUSY;
+	}
 	p->bus[0].fmi = devm_ioremap(dev, FMI0_BASE, FMI_WINDOW);
 	p->bus[1].fmi = devm_ioremap(dev, FMI1_BASE, FMI_WINDOW);
 	if (!p->bus[0].fmi || !p->bus[1].fmi)
