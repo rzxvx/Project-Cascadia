@@ -2,7 +2,8 @@
 # Install over USB, with iOS up and unlocked: the package, the boot files
 # (OUT=dir with kernelcache, ramdisk, devicetree from scripts/make-pcless.py),
 # and the manifest that names them.  RELEASE=tag records which release the boot
-# files came from; without it the update prompt stays off.  ./cascadia a5 install
+# files came from; without it the update prompt stays off.  CHANNEL=experimental
+# makes the app's kernel update follow prebuilt/experimental.  ./cascadia a5 install
 # runs it for disk=nand.
 set -uo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
@@ -34,6 +35,13 @@ $(sha "$OUT/devicetree") /devicetree
 $(sha "$ROOT/build/cache/kloader") $D/kloader
 $(sha "$ROOT/build/firmware/iBEC.upgrade.stay") $D/ibec
 MANIFEST_END
+# which release manifest the app's kernel update follows: stable (the default)
+# or experimental
+if [ -n "${CHANNEL:-}" ] && [ "$CHANNEL" != stable ]; then
+    ios "cat > $D/channel" <<< "$CHANNEL"
+else
+    ios "rm -f $D/channel" </dev/null
+fi
 if [ -n "${RELEASE:-}" ]; then
     ios "cat > $D/release" <<< "$RELEASE"
 else

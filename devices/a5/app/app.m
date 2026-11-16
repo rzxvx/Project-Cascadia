@@ -1,7 +1,7 @@
 /*
  * Cascadia: a web view and the bridge to cascadia-helper.  The interface is
- * www/index.html; it calls back here by loading cascadia:status, cascadia:boot
- * and cascadia:copy.
+ * www/index.html; it calls back here by loading cascadia:status, cascadia:boot,
+ * cascadia:update, cascadia:rollback, cascadia:latest and cascadia:copy.
  *
  * Built against stubs (the SDK has no armv7 slices), so no UIKit headers: the
  * messages this file sends are declared below.
@@ -115,15 +115,24 @@ static id C(const char *n) { return (id)objc_getClass(n); }
 	});
 }
 
-- (void)runBoot
+/* boot, update, rollback: the helper's "kk text" lines to the page as they
+   come, then end(rc) */
+- (void)runHelper:(const char *)cmd end:(const char *)end
 {
 	if (booting)
 		return;
 	booting = 1;
 	dispatch_async(dispatch_get_global_queue(0, 0), ^{
-		char line[256], *js, *q;
+		char line[256], *js, *q, *pc;
 		int rc = -1;
-		FILE *p = popen(HELPER " boot", "r");
+		FILE *p;
+
+		if (asprintf(&pc, HELPER " %s", cmd) < 0) {
+			booting = 0;
+			return;
+		}
+		p = popen(pc, "r");
+		free(pc);
 
 		if (p) {
 			while (fgets(line, sizeof(line), p)) {
@@ -141,7 +150,7 @@ static id C(const char *n) { return (id)objc_getClass(n); }
 			rc = pclose(p);
 		}
 		booting = 0;
-		if (asprintf(&js, "cascadiaBootEnd(%d)", rc) >= 0) {
+		if (asprintf(&js, "%s(%d)", end, rc) >= 0) {
 			[self js:js];
 			free(js);
 		}
@@ -190,7 +199,11 @@ static id C(const char *n) { return (id)objc_getClass(n); }
 	if (!strcmp(cmd, "status"))
 		[self runStatus];
 	else if (!strcmp(cmd, "boot"))
-		[self runBoot];
+		[self runHelper:"boot" end:"cascadiaBootEnd"];
+	else if (!strcmp(cmd, "update"))
+		[self runHelper:"update" end:"cascadiaRunEnd"];
+	else if (!strcmp(cmd, "rollback"))
+		[self runHelper:"rollback" end:"cascadiaRunEnd"];
 	else if (!strcmp(cmd, "latest"))
 		[self runLatest];
 	else if (!strcmp(cmd, "copy"))

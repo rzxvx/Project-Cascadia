@@ -44,6 +44,9 @@ h1 { margin: 0; font-size: 30px; font-weight: 500; }
 .warn .val { color: #ecc873; }
 .loghead { display: -webkit-flex; -webkit-justify-content: space-between; -webkit-align-items: center; margin-top: 22px; padding: 0 4px 6px; }
 .loghead h2 { margin: 0; font-size: 13px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: #9db4c0; }
+.upd { margin: 14px 4px 0; }
+.upd button { font: inherit; font-size: 15px; color: #e4eff3; background: none; border: 1px solid #36566a; border-radius: 6px; padding: 8px 14px; margin-right: 8px; -webkit-appearance: none; }
+.upd .main { color: #142530; background: #ecc873; border-color: #ecc873; }
 .copy { font: inherit; font-size: 14px; color: #e4eff3; background: none; border: 1px solid #36566a; border-radius: 5px; padding: 5px 11px; -webkit-appearance: none; }
 .log { height: 190px; overflow-y: auto; -webkit-overflow-scrolling: touch; background: #142530; border-radius: 6px; padding: 10px 12px; font-family: Menlo, monospace; font-size: 12px; line-height: 1.6; }
 .log div { white-space: pre-wrap; word-break: break-word; color: #9db4c0; }
@@ -82,6 +85,7 @@ h1 { margin: 0; font-size: 30px; font-weight: 500; }
     </div>
   </div>
   <ul class="checks" id="checks"></ul>
+  <div class="upd" id="upd" hidden><button class="main" id="update" type="button" hidden>Update kernel</button><button id="rollback" type="button" hidden>Roll back</button></div>
   <div class="loghead"><h2>Log</h2><button class="copy" id="copy" type="button">Copy</button></div>
   <div class="log" id="log"></div>
 </div>
@@ -94,6 +98,7 @@ h1 { margin: 0; font-size: 30px; font-weight: 500; }
   var RELEASES = 'https://api.github.com/repos/rzxvx/Project-Cascadia/releases?per_page=30';
   var lines = [], busy = false, held = false, start = 0, low = -1;
   var checked = false, installed = '', latest = '', newer = '', updateNote = '', last = null, lastLevel = -1;
+  var kept = [], keeping = false;   /* an update's lines, shown again under the next status */
 
   /* Published releases only, never commits: cascadia-fetch reads the feed.
      Offline or refused just means no prompt. */
@@ -124,6 +129,7 @@ h1 { margin: 0; font-size: 30px; font-weight: 500; }
     $('log').appendChild(d);
     $('log').scrollTop = $('log').scrollHeight;
     lines.push(tag + ' ' + text);
+    if (keeping) kept.push([kind, text]);
   }
   function ring(p) {
     $('ring').setAttribute('stroke-dashoffset', String(C * (1 - p)));
@@ -149,6 +155,22 @@ h1 { margin: 0; font-size: 30px; font-weight: 500; }
     line('no', 'iOS is still running, Linux did not start');
     call('status');
   };
+
+  /* update / rollback: the helper's lines as they come, then a fresh status */
+  window.cascadiaRunEnd = function (rc) {
+    keeping = false;
+    busy = false;
+    if (rc) line('no', 'stopped; nothing was changed unless a line above says so');
+    call('status');
+  };
+  function run(cmd, title) {
+    busy = true;
+    kept = [];
+    keeping = true;
+    $('update').disabled = $('rollback').disabled = $('boot').disabled = true;
+    line('go', title);
+    call(cmd);
+  }
 
   window.cascadiaStatus = function (s, level) {
     var h = '', i, bad = 0, first = '', block = null, pct, f;
@@ -205,6 +227,15 @@ h1 { margin: 0; font-size: 30px; font-weight: 500; }
     if (!checked) { checked = true; call('latest'); }
 
     $('checks').innerHTML = h;
+    for (i = 0; i < kept.length; i++) line(kept[i][0], kept[i][1]);
+    /* a newer release, or one at all when these files were built on a computer */
+    var offer = latest && (!installed || latest > installed) && s.root && s.manifest && !bad;
+    $('update').hidden = !offer;
+    $('update').textContent = installed ? 'Update kernel to ' + latest : 'Use the release kernel ' + latest;
+    $('rollback').hidden = !s.rollback;
+    $('rollback').textContent = s.prevRelease ? 'Roll back to ' + s.prevRelease : 'Roll back';
+    $('upd').hidden = $('update').hidden && $('rollback').hidden;
+    $('update').disabled = $('rollback').disabled = false;
     setBlocked(block);
     if (!block && low >= 0) {
       $('reason').textContent = 'Battery is low. You will be asked to confirm.';
@@ -264,6 +295,17 @@ h1 { margin: 0; font-size: 30px; font-weight: 500; }
     launch();
   }, false);
   $('ask-no').addEventListener('click', function () { $('ask').hidden = true; busy = false; ring(0); }, false);
+  $('update').addEventListener('click', function () {
+    if (busy) return;
+    if (!confirm('Download the kernel of ' + latest + ' (about 28 MB) and make it the one Linux starts with? ' +
+                 'This iPad\'s own files stay, and the current kernel is kept so you can roll back.')) return;
+    run('update', 'updating the kernel');
+  }, false);
+  $('rollback').addEventListener('click', function () {
+    if (busy) return;
+    if (!confirm('Go back to the kernel you had before?')) return;
+    run('rollback', 'rolling back');
+  }, false);
   $('copy').addEventListener('click', function () {
     var btn = this;
     call('copy');

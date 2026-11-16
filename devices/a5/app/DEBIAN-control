@@ -1,6 +1,6 @@
 Package: org.cascadia.boot
 Name: Cascadia
-Version: 0.5
+Version: 0.6
 Architecture: iphoneos-arm
 Description: Start Linux on the iPad mini 1 from iOS, no computer needed.
 Depends: uikittools

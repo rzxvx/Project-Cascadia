@@ -36,7 +36,8 @@ mkdir -p "$B/pkg/DEBIAN" "$B/pkg/usr/libexec" "$B/pkg/Applications/Cascadia.app/
 A="$B/pkg/Applications/Cascadia.app"
 
 clang $CFLAGS -c helper.c -o "$B/helper.o"
-$LD "$B/helper.o" stubs/libSystem.tbd -o "$B/pkg/usr/libexec/cascadia-helper"
+clang $CFLAGS -c pcless.c -o "$B/pcless.o"
+$LD "$B/helper.o" "$B/pcless.o" stubs/libSystem.tbd -o "$B/pkg/usr/libexec/cascadia-helper"
 ldid -S "$B/pkg/usr/libexec/cascadia-helper"
 chmod 4755 "$B/pkg/usr/libexec/cascadia-helper"
 

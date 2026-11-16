@@ -148,7 +148,7 @@ nand_install_ios() {
     if [ ! -s "$deck" ]; then
         sh "$ROOT/app/build.sh" || fail "the app did not build (above): it needs macOS with Xcode, ldid, and BearSSL in build/cache"
     fi
-    OUT="$out" DECK="$deck" RELEASE="${RELEASE:-}" bash "$ROOT/app/install-dev.sh" || fail "installing on iOS stopped (above)"
+    OUT="$out" DECK="$deck" RELEASE="${RELEASE:-}" CHANNEL="${CHANNEL:-stable}" bash "$ROOT/app/install-dev.sh" || fail "installing on iOS stopped (above)"
 }
 
 # ---------------------------------------------------------------- uninstall --
