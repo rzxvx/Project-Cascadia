@@ -227,7 +227,7 @@ and iOS booting on a Linux context (rung 6).
 ### Full dump before rung 6, 2026-11-14 (`r6pre-20261114`)
 
 Taken with `devices/a5/tools/nand-dump` (read only, `apple_ppn` without `allow_write`)
-after rung 5, on the rung-1 image, into `/Users/k/cascadia-root/srv/nand-dumps/r6pre-20261114`
+after rung 5, on the rung-1 image, into `srv/nand-dumps/r6pre-20261114` on the NFS root
 (the NFS root as the iPad sees it: `/srv/nand-dumps/...`), in the `w0c` layout; 37 min.
 SHA-256 of the 24 files: `devices/a5/output/dump/r6pre-20261114.sha256` (not in git).
 

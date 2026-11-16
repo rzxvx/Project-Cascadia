@@ -139,6 +139,8 @@ pretty far.
 - **NyanSatan** — checkm8_bootkit, iBoot research
 - **iH8sn0w** — iBoot32Patcher
 - **Project Sandcastle** — Z2 multitouch driver and protocol, the starting point
+- **crystal-lized** — PPN NAND and Swiss FTL findings (iPhone 5) and the first
+  writable path; the iPad mini 1 NAND driver is built on them
 
 The A13 track's own credits (m1n1, Hoolock, Asahi Linux, usbliter8) are in
 [devices/a13/README.md](devices/a13/README.md).
