@@ -30,6 +30,11 @@ done
 ssh "$DEVICE" 'cd '"$R"' && new= &&
     for f in *.apk; do
         n=$(echo "$f" | sed "s/-[0-9][^-]*-r[0-9]*\.apk$//")
+        # with cascadia-gl the GL libraries are ours: apk fetch -R, in a
+        # container without it, pulls Alpine'"'"'s Mesa and LLVM in by soname
+        case "$n" in mesa|mesa-*|llvm*-libs|spirv-tools|glslang-libs|shaderc)
+            apk info -e cascadia-gl >/dev/null 2>&1 && continue ;;
+        esac
         apk info -e "$n" >/dev/null 2>&1 || new="$new ./$f"
     done &&
     if [ -n "$new" ]; then apk add --allow-untrusted --no-network --force-broken-world $new; fi;
