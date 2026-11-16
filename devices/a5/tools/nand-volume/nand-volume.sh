@@ -283,10 +283,11 @@ cmd_fill() {
     ask "format the Linux volume (ext4) and unpack $(basename "$tar") onto it?" || { lx 'echo 0 > /sys/module/apple_ftl/parameters/mount; rmmod apple_ftl apple_ppn'; fail stopped; }
     lx 'LD_LIBRARY_PATH=/tmp/e2fs/usr/lib /tmp/e2fs/sbin/mke2fs -t ext4 -F -L CascadiaLinux /dev/ftl0p2' </dev/null | sed 's/^/    /' || fail mkfs
     lx 'mkdir -p /mnt/nandlinux && mount -t ext4 -o noatime /dev/ftl0p2 /mnt/nandlinux' </dev/null || fail mount
-    say "unpacking (about 1 MiB/s per 8 over the cable)"
+    say "unpacking the root (a few minutes over the cable)"
     lx 'tar -C /mnt/nandlinux -xpf -' < "$tar" || fail untar
-    lx 'sync; umount /mnt/nandlinux && echo 0 > /sys/module/apple_ftl/parameters/mount && LD_LIBRARY_PATH=/tmp/e2fs/usr/lib /tmp/e2fs/sbin/e2fsck -fn /dev/ftl0p2; r=$?; rmmod apple_ftl; rmmod apple_ppn; exit $r' </dev/null \
+    lx 'sync; umount /mnt/nandlinux && LD_LIBRARY_PATH=/tmp/e2fs/usr/lib /tmp/e2fs/sbin/e2fsck -fn /dev/ftl0p2; r=$?; echo 0 > /sys/module/apple_ftl/parameters/mount; rmmod apple_ftl; rmmod apple_ppn; exit $r' </dev/null \
         | tail -2 | sed 's/^/    /'
+    [ "${PIPESTATUS[0]}" = 0 ] || fail "e2fsck of the filled volume is not clean (above)"
     say "filled: the daily boot (the app or the cable image) can use it now"
 }
 

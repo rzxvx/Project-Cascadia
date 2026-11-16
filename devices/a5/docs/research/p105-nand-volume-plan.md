@@ -121,3 +121,8 @@ Not run on the device yet. Device sequence for the user's iPad (each write step 
    and read back; committed on sb 3; fresh mount: System 133, Data 301, Linux 512 chunks.
 8. iOS on the new header: header read from iOS = plan (CRC `f45e7c76`); `/dev/disk0s1s3`
    present; fsck exit 0 on System and Data; `df` Data 4.7 GiB. **Creation done.**
+9. NFS image `fill linux-root-20261116-142332.tar`: `mke2fs -t ext4 -L CascadiaLinux`, tar
+   unpacked through the FTL. (The tool's own e2fsck ran after the FTL was detached and did not
+   check; fixed.) Read-only check after: context sb 25, 0 replayed; `e2fsck -fn` clean
+   (19716 inodes, 403010 blocks); 19960 entries as in the backup; the four sampled files have
+   the same SHA-256; owners kept.
