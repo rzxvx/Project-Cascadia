@@ -112,3 +112,10 @@ Not run on the device yet. Device sequence for the user's iPad (each write step 
    (today's findings accepted; an extra finding, a container too small, a bit past `N`, or
    output redirected to Data refused). fsck output is now captured as two streams on the
    computer.
+6. iOS `create 8G` (`LINUX_UUID` = the old one): plan = spec §8.1 one-step create from `w0c`
+   (CRC `f45e7c76`, SHA-256 `afd27ea1…`); fsck exit 0, 3052939 free; `fsctl` shrink to
+   1230568: 0, under a second. The raw read right after showed no alternate header; after a
+   `sync` it was there with 1230568 (the tool now syncs first). Clean restart: fsck exit 0,
+   both headers 1230568.
+7. NFS image `create`: context sb 840 (20172 replayed); dry run passed; LBA 4095, LBA 0 written
+   and read back; committed on sb 3; fresh mount: System 133, Data 301, Linux 512 chunks.
