@@ -23,6 +23,7 @@
 #include "rung5.h"
 #include "rung6.h"
 #include "rung7.h"
+#include "lwvmw.h"
 
 #define RAW_PAGE 16448
 #define OVERLAY_PAGES (1u << 20)
@@ -1050,6 +1051,58 @@ int main(int argc, char **argv)
 		return 1;
 	if (argc > 2 && !strcmp(argv[2], "--faults")) {
 		fault_tests(argv[1]);
+		goto done;
+	}
+	if (argc > 4 && !strcmp(argv[2], "--lwvm")) {
+		/* LwVM header write on the overlay: --lwvm FROM TO (4096-byte files), twice. */
+		static u8 from[SFTL_LBA_SIZE], to[SFTL_LBA_SIZE];
+		struct sftl *vfl = calloc(1, sizeof(*vfl));
+		struct lwvmw_args aw = { .ops = &dev_ops, .hw = d, .from = from, .to = to };
+		FILE *f;
+
+		f = fopen(argv[3], "rb");
+		assert(f && fread(from, 1, sizeof(from), f) == sizeof(from));
+		fclose(f);
+		f = fopen(argv[4], "rb");
+		assert(f && fread(to, 1, sizeof(to), f) == sizeof(to));
+		fclose(f);
+		assert(!sftl_init(vfl, &dev_ops, d) && !sftl_load_vfl(vfl));
+		for (i = 0; i < SFTL_BANKS; i++)
+			d->usage[i] = vfl->usage[i];
+		d->writes_enabled = true;
+		aw.dry_run = true;
+		ret = lwvmw_run(&aw);
+		CHECK(!ret, "LwVM dry run (%d)", ret);
+		aw.dry_run = false;
+		ret = lwvmw_run(&aw);
+		CHECK(!ret, "LwVM header write (%d)", ret);
+		ret = lwvmw_run(&aw);
+		CHECK(!ret, "LwVM header write again: commit only (%d)", ret);
+		aw.from = to;
+		aw.to = from;
+		ret = lwvmw_run(&aw);
+		CHECK(!ret, "LwVM header written back (%d)", ret);
+		{
+			/* An earlier run that stopped after the backup. */
+			struct sftl *h = calloc(1, sizeof(*h));
+
+			aw.from = from;
+			aw.to = to;
+
+			assert(!sftl_init(h, &dev_ops, d) && !sftl_mount(h) && !sftl_writer_start(h, 1));
+			assert(!sftl_write(h, 4095, 1, to));
+			h->wr->dirty = true;
+			assert(!sftl_checkpoint(h));
+			sftl_writer_stop(h);
+			sftl_exit(h);
+			free(h);
+			ret = lwvmw_run(&aw);
+			CHECK(!ret, "LwVM write finishes a half-written header (%d)", ret);
+		}
+		aw.to = from;		/* the media holds "to" now */
+		ret = lwvmw_run(&aw);
+		CHECK(ret == -ESTALE, "LwVM write refused when the media holds another header (%d)", ret);
+		printf("  device: %lu reads, %lu programs, %lu erases\n", d->reads, d->progs, d->erases);
 		goto done;
 	}
 	if (argc > 2 && !strcmp(argv[2], "--rung7")) {
