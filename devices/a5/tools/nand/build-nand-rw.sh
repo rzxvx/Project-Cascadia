@@ -25,6 +25,7 @@ IMAGE="${IMAGE:-cascadia-build}"
 clone() { if [ "$(uname -s)" = Darwin ]; then cp -cRp "$1" "$2"; else cp -a "$1" "$2"; fi; }
 
 [ -f "$MAIN/build/linux/vmlinux" ] || { echo "no built kernel in $MAIN/build/linux" >&2; exit 1; }
+mkdir -p "$ROOT/build"
 [ -d "$TREE" ] || clone "$(cd "$MAIN/build/linux" && pwd -P)" "$TREE"
 rm -rf "$RAM"
 clone "$MAIN/build/initramfs-root" "$RAM"
@@ -66,7 +67,7 @@ printf 'CONFIG_INITRAMFS_SOURCE="/initramfs"\nCONFIG_INITRAMFS_ROOT_UID=-1\nCONF
 /kernel/scripts/kconfig/merge_config.sh -m -O /kernel /kernel/.config \
     /branch/config/p105ap-nand-rw.config /tmp/ram.config > /out/configure.log 2>&1
 make -C /kernel olddefconfig >> /out/configure.log 2>&1
-for s in MTD_NAND_APPLE_PPN MTD_NAND_APPLE_FTL MTD_NAND_APPLE_PPN_WRITE MTD_NAND_APPLE_FTL_WRITE EXT4_FS; do
+for s in APPLE_PPN APPLE_SFTL APPLE_SFTL_WRITE EXT4_FS; do
     grep -qx "CONFIG_$s=y" /kernel/.config || { echo "CONFIG_$s not y" >&2; exit 1; }
 done
 grep -qx '# CONFIG_MTD_APPLE_H2FMI is not set' /kernel/.config

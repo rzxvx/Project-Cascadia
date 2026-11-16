@@ -957,6 +957,7 @@ case "${1:-}" in
     get)    cmd_get ;;
     install) cmd_install ;;
     ssh)    shift; cmd_ssh "$@" ;;
+    nand-volume) shift; PYTHON_UNICORN="${PYTHON_UNICORN:-$(command -v python3.14 || command -v python3)}" bash "$ROOT/tools/nand-volume/nand-volume.sh" "$@" ;;
     mesa|gpu) fail "./cascadia a5 $1 is ./cascadia a5 dev $1 now (desktop-root puts both into the root for you)" ;;
     *)      sed -n '2,40p' "$ROOT/cascadia" | sed 's/^# \{0,1\}//'; exit 2 ;;
 esac

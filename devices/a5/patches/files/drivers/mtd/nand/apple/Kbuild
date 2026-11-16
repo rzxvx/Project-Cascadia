@@ -1,0 +1,20 @@
+# SPDX-License-Identifier: GPL-2.0-only
+# Apple A5 PPN NAND controller and Swiss FTL.
+#
+# In the tree, CONFIG_APPLE_SFTL_WRITE selects the write path; as an external
+# module build it is on unless SFTL_READONLY=1.
+ifneq ($(KBUILD_EXTMOD),)
+CONFIG_APPLE_PPN := m
+CONFIG_APPLE_SFTL := m
+ifneq ($(SFTL_READONLY),1)
+CONFIG_APPLE_SFTL_WRITE := y
+endif
+endif
+obj-$(CONFIG_APPLE_PPN) += apple_ppn.o
+obj-$(CONFIG_APPLE_SFTL) += apple_ftl.o
+apple_ftl-y := apple_ftl_main.o sftl_map.o sftl_mount.o sftl_format.o sftl_lwvm.o
+ifeq ($(CONFIG_APPLE_SFTL_WRITE),y)
+apple_ftl-y += sftl_write.o
+else
+ccflags-y += -DSFTL_NO_WRITE
+endif

@@ -1,0 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0-only
+# Ladder rung 2 test module; links against apple_ppn at load time.
+obj-m += ppn_rung2.o
+ccflags-y += -I$(src)/../../patches/files/drivers/mtd/nand/apple

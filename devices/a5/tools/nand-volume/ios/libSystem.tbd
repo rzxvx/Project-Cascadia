@@ -1,0 +1,8 @@
+--- !tapi-tbd
+tbd-version:     4
+targets:         [ armv7-ios ]
+install-name:    '/usr/lib/libSystem.B.dylib'
+exports:
+  - targets:         [ armv7-ios ]
+    symbols:         [ _open, _close, _pread, _fsctl, _printf, _puts, _strcmp, _strtoul, _time, ___error, _dyld_stub_binder, ___udivsi3, ___umodsi3 ]
+...
