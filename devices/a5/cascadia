@@ -5,6 +5,9 @@
 #
 #   ./cascadia a5 install     everything, from nothing to Linux on the iPad, step by
 #                             step (run it again to carry on after a stop)
+#   ./cascadia a5 uninstall   a NAND install off the iPad: Linux's volume back to iOS
+#   ./cascadia a5 nand-volume the Linux volume on the NAND, step by step (status,
+#                             create, remove, backup, fill; install runs these)
 #   ./cascadia a5 setup       put on this computer what the build needs (asks first)
 #   ./cascadia a5 ssh         a shell on the iPad
 #   ./cascadia a5 get         the prebuilt kernel and desktop root (CHANNEL=experimental)
@@ -304,6 +307,21 @@ iskip() { note "done already -- $*"; }
 inone() { note "not needed -- $*"; }
 isub() { bash "$ROOT/cascadia" "$@" || fail "step $ISTEP stopped (above).  Fix what it says and run ./cascadia a5 install again: it carries on from here."; }
 
+# Where Linux's root lives: nand (the LwVM volume "Linux", booted from the iPad
+# itself) or nfs (this computer, over the cable; RAM without an export).
+# DISK= overrides build/install.conf's disk=.
+install_disk() {
+    local v="${DISK:-}"
+    [ -n "$v" ] || v=$(sed -n 's/^disk=//p' "$INSTALL_CONF" 2>/dev/null | tail -1)
+    case "$v" in nand) echo nand ;; *) echo nfs ;; esac
+}
+# The NAND install boots the same kernel with the PPN node and root=/dev/ftl0p2:
+# swap the device tree in output/zImage-dtb (scripts/nand-dtb.sh).
+nand_dtb() {
+    [ "$(install_disk)" = nand ] || return 0
+    in_docker "bash scripts/nand-dtb.sh" | sed 's/^/    /' || fail "the NAND device tree did not build"
+}
+
 install_conf() {   # KEY QUESTION -> y|n, asked once
     local v
     v=$(sed -n "s/^$1=//p" "$INSTALL_CONF" 2>/dev/null | tail -1)
@@ -320,10 +338,13 @@ nfs_dst() { [ "$(uname -s)" = Darwin ] && echo "$HOME/cascadia-root" || echo /sr
 
 cmd_install() {
     . "$REPO/lib/host.sh"
-    local FW="$ROOT/build/firmware" desktop route
-    ITOTAL=8
+    local FW="$ROOT/build/firmware" desktop route disk
+    . "$ROOT/tools/nand-volume/install-steps.sh"
     echo "Linux on the iPad mini 1 (iPad2,5), from the start.  Each step says what it"
     echo "does; one that is done already is skipped, so this can be run again any time."
+    disk=$(install_ask_disk)
+    export DISK=$disk
+    if [ "$disk" = nand ]; then ITOTAL=9; else ITOTAL=8; fi
 
     istep 1 "this computer: what the build needs"
     isub setup
@@ -332,7 +353,9 @@ cmd_install() {
     # nothing says otherwise: the kernel and the desktop root are downloaded,
     # not built -- minutes instead of hours.  INSTALL_FROM=source builds them.
     local from=source m
-    if [ "${INSTALL_FROM:-}" != source ] && m=$(a5_manifest) && [ ! -f "$ROOT/build/linux/Makefile" ]; then
+    # NAND: built here for now -- no release carries the NAND driver yet, and
+    # nand-volume's header writer is a module built against this kernel
+    if [ "${INSTALL_FROM:-}" != source ] && [ "$disk" != nand ] && m=$(a5_manifest) && [ ! -f "$ROOT/build/linux/Makefile" ]; then
         from=prebuilt
     fi
 
@@ -355,23 +378,31 @@ cmd_install() {
     fi
 
     istep 4 "Apple's files, from the iPad's own iOS 8.4.1 IPSW" "1.4 GB download the first time"
-    if [ -f "$FW/iBEC.patched.autogo.plain.dfu" ] && [ -f "$FW/P105.mtprops" ] && [ -f "$FW/sgx543.fw" ]; then
+    if [ -f "$FW/iBEC.patched.autogo.plain.dfu" ] && [ -f "$FW/P105.mtprops" ] && [ -f "$FW/sgx543.fw" ] &&
+       { [ "$disk" != nand ] || { [ -f "$FW/iBEC.upgrade.stay" ] && [ -f "$FW/DeviceTree.dec" ] && [ -f "$FW/kernelcache.12H321.macho" ]; }; }; then
         iskip "build/firmware"
     else isub firmware; fi
 
-    echo
-    echo "    The desktop (XFCE on the GPU, SuperTux, an on-screen keyboard and game"
-    echo "    controls) lives on this computer, which the iPad uses as its disk over the"
-    echo "    cable (NFS, ~1.5 GB).  Without it the iPad runs a small system in its RAM."
-    desktop=$(install_conf desktop "the desktop?")
+    if [ "$disk" = nand ]; then
+        desktop=y     # the NAND's Linux volume gets the desktop root
+    else
+        echo
+        echo "    The desktop (XFCE on the GPU, SuperTux, an on-screen keyboard and game"
+        echo "    controls) lives on this computer, which the iPad uses as its disk over the"
+        echo "    cable (NFS, ~1.5 GB).  Without it the iPad runs a small system in its RAM."
+        desktop=$(install_conf desktop "the desktop?")
+    fi
 
     if [ $from = prebuilt ]; then istep 5 "the boot image: the kernel and this computer's layer" "seconds"
     else istep 5 "the kernel and the boot image" "~15 min the first time, a few on an M-series Mac"; fi
     # fresh: the bundle is newer than the tree it embeds and than the
     # sources a build lays over it (an edit to initramfs/init reaches the
     # tree only when the build runs)
+    # the bundle has to be this disk's: the NAND one boots root=/dev/ftl0p2
+    local bundle_disk=nfs
+    LC_ALL=C grep -aqF 'root=/dev/ftl0p2' "$ROOT/output/staging-bundle.bin" 2>/dev/null && bundle_disk=nand
     if [ $from = prebuilt ]; then isub build
-    elif [ -f "$ROOT/output/staging-bundle.bin" ] && [ -z "$(find "$ROOT/build/initramfs-root" \
+    elif [ -f "$ROOT/output/staging-bundle.bin" ] && [ "$bundle_disk" = "$disk" ] && [ -z "$(find "$ROOT/build/initramfs-root" \
             "$ROOT/initramfs" "$ROOT/rootfs/alpine" "$ROOT/dts" "$ROOT/patches" "$ROOT/config" \
             "$ROOT/build/keep" -newer "$ROOT/output/staging-bundle.bin" -type f -print -quit 2>/dev/null)" ]; then
         iskip "output/staging-bundle.bin is newer than everything in it"
@@ -382,6 +413,45 @@ cmd_install() {
     elif [ $from = prebuilt ]; then inone "it came with the prebuilt release"
     elif [ -f "$ROOT/build/desktop-root.tar" ]; then iskip "build/desktop-root.tar"
     else isub desktop-root; fi
+
+    if [ "$disk" = nand ]; then
+        local tar="$ROOT/build/desktop-root.tar" size
+        [ -f "$tar" ] || tar="$PREBUILT/desktop-root.tar.xz"
+        [ -f "$tar" ] || fail "no desktop root to put on the NAND (step 6)"
+
+        istep 7 "the tools for the Linux volume" "a minute"
+        if [ -x "$ROOT/build/nand-volume/cascadia-hfs" ] && [ -f "$ROOT/build/nand-volume/mods/ppn_lwvmw.ko" ] &&
+           [ "$ROOT/build/nand-volume/mods/ppn_lwvmw.ko" -nt "$ROOT/build/linux/vmlinux" ]; then
+            iskip "build/nand-volume"
+        else
+            isub nand-volume build
+        fi
+
+        istep 8 "the Linux volume on the iPad's NAND" "half an hour, a few reboots"
+        if nv_filled; then
+            iskip "the Linux volume is there and filled"
+        else
+            echo "    Boot the iPad into its jailbroken iOS, unlock it, and plug it into this computer."
+            echo "    Every step that writes to the iPad says what it does and asks first."
+            ask "ready?" || fail "run ./cascadia a5 install again when it is"
+            lx_up || size=$(install_nand_size)
+            size=${size:-$(sed -n 's/^nand_size=//p' "$INSTALL_CONF" | tail -1)}
+            [ -n "$size" ] || fail "boot iOS (the size of the volume is asked there) and run this again"
+            nand_install_volume "$size" "$tar"
+        fi
+
+        istep 9 "the Cascadia app and the boot files on iOS"
+        lx_up && nand_back_to_ios
+        nand_install_ios
+
+        echo
+        say "done: Linux lives on the iPad"
+        echo "    start it:     the Cascadia app on the home screen: hold the button"
+        echo "    back to iOS:  reboot Linux (the next start goes to iOS)"
+        echo "    over the cable instead: ./cascadia a5 flash --kdfu (same system, same volume)"
+        echo "    take it off:  ./cascadia a5 uninstall"
+        return 0
+    fi
 
     istep 7 "the iPad's disk on this computer (NFS)"
     if [ "$desktop" != y ]; then inone "no desktop"
@@ -585,6 +655,11 @@ build_prebuilt() {
     say "the kernel: prebuilt $v (./cascadia a5 kernel and rootfs build one here instead)"
     mkdir -p "$ROOT/output"
     cp "$PREBUILT/linux-boot.bin" "$PREBUILT/zImage-dtb" "$ROOT/output/"
+    if [ "$(install_disk)" = nand ]; then
+        say "the NAND install's device tree"
+        nand_dtb
+        in_docker "bash build-bundle.sh 2>&1 | tail -3"
+    fi
     say "this machine's layer"
     make_overlay
     assemble
@@ -598,6 +673,23 @@ a5_manifest() {
     elif [ "$ch" = stable ] && [ -f "$REPO/prebuilt/experimental/a5.json" ]; then echo "$REPO/prebuilt/experimental/a5.json"
     else return 1; fi
 }
+# ./cascadia a5 uninstall: the NAND install off the iPad -- the Linux volume's
+# space back to iOS's Data, the app and the boot files gone.
+cmd_uninstall() {
+    . "$REPO/lib/host.sh"
+    . "$ROOT/tools/nand-volume/install-steps.sh"
+    [ "$(install_disk)" = nand ] || [ -f "$NVS/state" ] || fail "no NAND install here (build/install.conf has no disk=nand)"
+    echo "This takes Linux off the iPad: everything on its Linux volume is lost, the"
+    echo "space goes back to iOS's Data, and the Cascadia app goes.  To keep a copy of"
+    echo "the Linux root first: start Linux from the app, then ./cascadia a5 nand-volume backup."
+    local a=""
+    [ -t 0 ] && read -r -p "    type yes to take Linux off the iPad: " a
+    [ "$a" = yes ] || fail "stopped: nothing changed"
+    echo "    Boot the iPad into iOS, unlock it, and plug it into this computer."
+    ask "ready?" || fail "run ./cascadia a5 uninstall again when it is"
+    nand_uninstall
+}
+
 cmd_get() {
     local m
     m=$(a5_manifest) || fail "no prebuilt release for the iPad mini 1 yet (prebuilt/${CHANNEL:-stable}/a5.json)"
@@ -701,11 +793,12 @@ cmd_build() {
         || [ ! -x "$ROOT/build/initramfs-root/usr/bin/fbkeyboard" ] \
         || [ ! -x "$ROOT/build/initramfs-root/usr/lib/bluetooth/bluetoothd" ] \
         || [ ! -s "$ROOT/build/initramfs-root/etc/netconfig" ] \
-        || [ ! -x "$ROOT/build/initramfs-root/usr/bin/aplay" ]; then
+        || [ ! -x "$ROOT/build/initramfs-root/usr/bin/aplay" ] \
+        || [ ! -x "$ROOT/build/initramfs-root/sbin/mke2fs" ]; then
         bash "$ROOT/scripts/add-base-packages.sh" >/dev/null \
             || fail "could not add the base packages (scripts/add-base-packages.sh)"
     fi
-    note "ok: iw, wpa_supplicant, fbkeyboard, bluez, dbus, alsa-utils, NFS RPC configuration"
+    note "ok: iw, wpa_supplicant, fbkeyboard, bluez, dbus, alsa-utils, e2fsprogs, NFS RPC configuration"
     make_overlay
 
     say "3/6 kernel"
@@ -762,6 +855,7 @@ so this is a file in build/initramfs-root owned by some third uid."
     want=$(( $(filesize "$ROOT/build/linux/arch/arm/boot/zImage") + $(filesize "$ROOT/dtb/p105ap.dtb") ))
     got=$(filesize "$ROOT/output/zImage-dtb")
     [ "$want" = "$got" ] || fail "zImage-dtb is $got bytes, expected $want"
+    nand_dtb
     in_docker "bash build-bundle.sh 2>&1 | tail -5"
     DOCKER_EXTRA=()
     assemble
@@ -851,7 +945,8 @@ cmd_release() {
     local CHECK=(python3 "$ROOT/scripts/release-check.py" --forbid "$ROOT/build/firmware" "$ROOT/build/keep" "$ROOT/build/overlay")
 
     say "1/5 the kernel, from source (commit $rev)"
-    PREBUILT_KERNEL=0 bash "$ROOT/cascadia" build >"$R/build.log" 2>&1 || { tail -20 "$R/build.log"; fail "the build failed (above)"; }
+    # DISK=nfs: the release carries p105ap.dts's tree; a NAND install swaps its own in
+    DISK=nfs PREBUILT_KERNEL=0 bash "$ROOT/cascadia" build >"$R/build.log" 2>&1 || { tail -20 "$R/build.log"; fail "the build failed (above)"; }
     cp "$ROOT/output/linux-boot.bin" "$ROOT/output/zImage-dtb" "$R/"
     say "2/5 the base the kernel embeds: nothing of this machine's"
     "${CHECK[@]}" --cpio "$ROOT/build/linux/usr/initramfs_data.cpio" || fail "the base is not for release (above)"
@@ -956,8 +1051,9 @@ case "${1:-}" in
     setup)  cmd_setup ;;
     get)    cmd_get ;;
     install) cmd_install ;;
+    uninstall) cmd_uninstall ;;
     ssh)    shift; cmd_ssh "$@" ;;
-    nand-volume) shift; PYTHON_UNICORN="${PYTHON_UNICORN:-$(command -v python3.14 || command -v python3)}" bash "$ROOT/tools/nand-volume/nand-volume.sh" "$@" ;;
+    nand-volume) shift; ensure_image; IMAGE="$IMAGE" bash "$ROOT/tools/nand-volume/nand-volume.sh" "$@" ;;
     mesa|gpu) fail "./cascadia a5 $1 is ./cascadia a5 dev $1 now (desktop-root puts both into the root for you)" ;;
     *)      sed -n '2,40p' "$ROOT/cascadia" | sed 's/^# \{0,1\}//'; exit 2 ;;
 esac

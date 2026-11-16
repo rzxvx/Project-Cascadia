@@ -145,6 +145,9 @@ echo "==> iBEC: auto-go hook"
 python3 "$ROOT/scripts/patch-ibec-autogo.py" "$OUT/iBEC.patched" "$OUT/iBEC.autogo"
 echo "==> iBEC: the PC-less image (boots from the NAND, docs/research/p105-pcless-boot.md)"
 python3 "$ROOT/scripts/patch-ibec-upgrade.py" "$OUT/iBEC.patched" "$OUT/iBEC.upgrade"
+# --stay: a boot that fails returns to iBEC's Recovery instead of rebooting --
+# what the app has started so far (./cascadia a5 install, disk=nand)
+python3 "$ROOT/scripts/patch-ibec-upgrade.py" --stay "$OUT/iBEC.patched" "$OUT/iBEC.upgrade.stay"
 echo "==> DeviceTree: plaintext, iBEC cannot open a KBAG after kloader"
 unzip -o -j "$IPSW" "Firmware/all_flash/all_flash.p105ap.production/DeviceTree.p105ap.img3" -d "$OUT" >/dev/null \
     || fail "DeviceTree not found in $IPSW"

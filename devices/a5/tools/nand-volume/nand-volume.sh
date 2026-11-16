@@ -6,12 +6,20 @@
 #   nand-volume remove [--saved FILE]  give the space back to iOS's Data
 #   nand-volume backup                 copy the Linux root to this computer (Linux)
 #   nand-volume fill [TAR]             mkfs.ext4 + a root from TAR (Linux)
-#   nand-volume build                  the helper, the modules, the e2fsprogs bundle
+#   nand-volume build                  the iOS helper and the header writer module
+#   nand-volume space                  GiB a new Linux volume can have (iOS)
+#   nand-volume ram-image              the NAND image booting its RAM root (for
+#                                      the Linux steps once the volume exists)
 #
 # create and remove are run again after each reboot they ask for; every run looks
 # at the iPad, works out the next step and says what it will do before doing it.
-# iOS steps go over USB (usbmuxd); Linux steps over ssh to 10.55.0.2 on the
-# NFS image that has the PPN driver (h2fmi off), with nothing of the NAND loaded.
+# iOS steps go over USB (usbmuxd); Linux steps over ssh to 10.55.0.2 on the NAND
+# install's image (./cascadia a5 build with disk=nand: the PPN driver built in,
+# the write gates open for "Linux" only).  While there is no Linux volume its
+# stage 1 boots the RAM (or NFS) root and leaves the NAND unmounted.
+#
+# iOS's own LwVM validator runs in Unicorn: on this computer's python3 when it
+# has unicorn, else in the build image (cascadia-build), which does.
 #
 # State lives in build/nand-volume/: stock.bin (the two-volume header read
 # before the first creation, kept for remove), from.bin / plan.bin (the header
@@ -20,7 +28,8 @@ set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 T="$ROOT/tools/nand-volume"
 S="$ROOT/build/nand-volume"
-MAIN_KERNEL="${MAIN_KERNEL:-$HOME/Desktop/cascadia-main/devices/a5/build/linux}"
+KERNEL="${KERNEL:-$ROOT/build/linux}"
+IMAGE="${IMAGE:-cascadia-build}"
 PY="${PYTHON_UNICORN:-python3}"
 LINUX_HOST="${LINUX_HOST:-root@10.55.0.2}"
 BOUND=15854493696
@@ -35,7 +44,10 @@ ask()  {
     local a; read -r -p "    $1 [y/N] " a || return 1
     case "$a" in y|Y|yes|да|Да|д) return 0 ;; *) return 1 ;; esac
 }
-lwvm() { "$PY" "$T/lwvm.py" "$@"; }
+lwvm() {
+    if "$PY" -c 'import unicorn' 2>/dev/null; then "$PY" "$T/lwvm.py" "$@"
+    else docker run --rm -i -v "$ROOT":"$ROOT" -w "$ROOT" "$IMAGE" python3 "$T/lwvm.py" "$@"; fi
+}
 st_get() { sed -n "s/^$1=//p" "$S/state" 2>/dev/null | tail -1; }
 st_set() { grep -v "^$1=" "$S/state" 2>/dev/null > "$S/state.new"; echo "$1=$2" >> "$S/state.new"; mv "$S/state.new" "$S/state"; }
 
@@ -89,13 +101,13 @@ undo_fsck_ok() {   # container blocks
 ios_boottime() { ios "sysctl -n kern.boottime" </dev/null | sed -n 's/^{ sec = \([0-9]*\).*/\1/p'; }
 
 data_container_blocks() {   # header -> Data's partition size in 4096-byte blocks
-    "$PY" - "$1" <<'PY'
+    python3 - "$1" <<'PY'
 import struct,sys
 b=open(sys.argv[1],'rb').read(); e=b[0x280:0x300]
 s,en=struct.unpack_from('<QQ',e,32); print((en-s)//4096)
 PY
 }
-nparts() { "$PY" -c "import struct,sys;print(struct.unpack_from('<I',open(sys.argv[1],'rb').read(),0x28)[0])" "$1"; }
+nparts() { python3 -c "import struct,sys;print(struct.unpack_from('<I',open(sys.argv[1],'rb').read(),0x28)[0])" "$1"; }
 
 hfs_checks() {   # target blocks -> stop unless Data's HFS looks as spec 6.4 says
     [ "$(hfs_field signature)" = HX ] || fail "Data is not HFSX: $(hfs_field signature)"
@@ -115,26 +127,35 @@ cmd_status() {
     note "Data container: $(data_container_blocks "$S/now.bin") blocks"
 }
 
+# ------------------------------------------------------------ Linux's NAND --
+# The built-in driver, bound, with the FTL unmounted: what the header writer and
+# fill start from.  Stops when the kernel is not the NAND install's or anything
+# of the NAND is in use.
+lx_nand_ready() {
+    lx 'p=/sys/module/apple_ppn/parameters f=/sys/module/apple_ftl/parameters
+        [ -d $p ] && [ -e $f/mount ] || { echo "this kernel has no NAND driver: ./cascadia a5 build with disk=nand, flash"; exit 1; }
+        [ "$(cat $p/allow_write)" = Y ] || { echo "apple_ppn.allow_write is off: not the NAND install image (disk=nand)"; exit 1; }
+        if grep -q "^/dev/ftl" /proc/mounts; then echo "a NAND volume is mounted:"; grep "^/dev/ftl" /proc/mounts; exit 1; fi
+        if [ "$(cat $p/hold_probe)" = Y ]; then echo 0 > $p/hold_probe || exit 1; fi
+        [ -L /sys/bus/platform/devices/31200000.ppn/driver ] || echo 31200000.ppn > /sys/bus/platform/drivers/apple-ppn/bind || exit 1
+        [ "$(cat $f/mount)" = 0 ] || echo 0 > $f/mount' </dev/null | sed 's/^/    /'
+    [ "${PIPESTATUS[0]}" = 0 ] || fail "Linux is not ready for the NAND step (above)"
+}
+
 # ------------------------------------------------------------- header write --
 linux_write_header() {   # from plan -> writes plan, or stops
     say "writing the LwVM header from Linux"
     [ -f "$S/from.bin" ] && [ -f "$S/plan.bin" ] || fail "no planned header: run this from iOS first"
     lwvm show "$S/plan.bin" | sed 's/^/    /'
-    lx "lsmod | grep -qE '^(apple_ftl|apple_ppn|ppn_)'" </dev/null && \
-        fail "NAND modules are loaded on the iPad: boot the plain Linux image (nothing of the NAND loaded)"
-    local m
-    for m in apple_ppn.ko ppn_lwvmw.ko; do
-        [ -f "$S/mods/$m" ] || fail "no $m: run 'nand-volume build' first"
-        lx "cat > /tmp/$m" < "$S/mods/$m" || fail "upload $m"
-    done
+    lx_nand_ready
+    [ -f "$S/mods/ppn_lwvmw.ko" ] || fail "no ppn_lwvmw.ko: run 'nand-volume build' first"
+    lx "cat > /tmp/ppn_lwvmw.ko" < "$S/mods/ppn_lwvmw.ko" || fail "upload ppn_lwvmw.ko"
     lx "cat > /tmp/lwvm-from.bin" < "$S/from.bin" && lx "cat > /tmp/lwvm-plan.bin" < "$S/plan.bin" || fail upload
-    lx 'dmesg -c >/dev/null; insmod /tmp/apple_ppn.ko allow_write=1 && insmod /tmp/ppn_lwvmw.ko from=/tmp/lwvm-from.bin to=/tmp/lwvm-plan.bin dry_run=1; r=$(cat /sys/module/ppn_lwvmw/parameters/result); rmmod ppn_lwvmw; dmesg | grep lwvmw | sed "s/^\[[ 0-9.]*\] //"; exit $r' </dev/null \
+    lx 'dmesg -c >/dev/null; insmod /tmp/ppn_lwvmw.ko from=/tmp/lwvm-from.bin to=/tmp/lwvm-plan.bin dry_run=1; r=$(cat /sys/module/ppn_lwvmw/parameters/result); rmmod ppn_lwvmw; dmesg | grep lwvmw | sed "s/^\[[ 0-9.]*\] //"; exit $r' </dev/null \
         | sed 's/^/    /'
-    [ "${PIPESTATUS[0]}" = 0 ] || { lx "rmmod apple_ppn" </dev/null; fail "the checks before writing failed (above): nothing was written"; }
-    if ! ask "write this header (backup, then primary) and commit?"; then
-        lx "rmmod apple_ppn" </dev/null; fail "stopped: nothing written"
-    fi
-    lx 'dmesg -c >/dev/null; insmod /tmp/ppn_lwvmw.ko from=/tmp/lwvm-from.bin to=/tmp/lwvm-plan.bin; r=$(cat /sys/module/ppn_lwvmw/parameters/result); rmmod ppn_lwvmw; rmmod apple_ppn; dmesg | grep lwvmw | sed "s/^\[[ 0-9.]*\] //"; exit $r' </dev/null \
+    [ "${PIPESTATUS[0]}" = 0 ] || fail "the checks before writing failed (above): nothing was written"
+    ask "write this header (backup, then primary) and commit?" || fail "stopped: nothing written"
+    lx 'dmesg -c >/dev/null; insmod /tmp/ppn_lwvmw.ko from=/tmp/lwvm-from.bin to=/tmp/lwvm-plan.bin; r=$(cat /sys/module/ppn_lwvmw/parameters/result); rmmod ppn_lwvmw; dmesg | grep lwvmw | sed "s/^\[[ 0-9.]*\] //"; exit $r' </dev/null \
         | tee "$S/write-$(date +%Y%m%d-%H%M%S).log" | sed 's/^/    /'
     [ "${PIPESTATUS[0]}" = 0 ] || fail "the header write failed (above).  Do NOT boot iOS; run this again from Linux."
     st_set header_written "$(shasum "$S/plan.bin" | cut -c1-40)"
@@ -178,7 +199,7 @@ cmd_create() {
         || { cat "$S/plan.txt"; fail "no valid plan for $size"; }
     sed 's/^/    /' "$S/plan.txt"
     local n; n=$(sed -n 's/^Data HFS target: \([0-9]*\) blocks.*/\1/p' "$S/plan.txt")
-    st_set flow create; st_set target "$n"
+    st_set flow create; st_set target "$n"; st_set filled ""
     hfs_checks
     local total; total=$(hfs_field total)
     if [ "$total" = "$n" ]; then
@@ -239,7 +260,7 @@ cmd_remove() {
     local total want; total=$(hfs_field total); want=$(data_container_blocks "$S/now.bin")
     if [ "$total" = "$want" ]; then
         ios_fsck 2 || fail "fsck_hfs of Data not clean: $S/fsck-s2.txt (restart iOS cleanly, run again)"
-        st_set flow done-remove
+        st_set flow done-remove; st_set filled ""
         say "Data is back to $want blocks; the Linux volume is gone"
         return
     fi
@@ -273,42 +294,83 @@ cmd_backup() {
 cmd_fill() {
     local tar="${1:-}"
     in_linux || fail "boot the Linux image first"
-    lx "lsmod | grep -qE '^(apple_ftl|apple_ppn|ppn_)'" </dev/null && fail "NAND modules are loaded: boot the plain Linux image"
-    [ -n "$tar" ] && [ -f "$tar" ] || fail "usage: nand-volume fill ROOT.tar"
-    local m
-    for m in apple_ppn.ko apple_ftl.ko; do lx "cat > /tmp/$m" < "$S/mods/$m" || fail upload; done
-    tar -C "$S/e2fs/root" -cf - . | lx "mkdir -p /tmp/e2fs && tar -C /tmp/e2fs -xf -" || fail "e2fsprogs upload"
-    lx 'insmod /tmp/apple_ppn.ko allow_write=1 && insmod /tmp/apple_ftl.ko auto_mount=0 enable_write=1 write_volume=Linux && echo 1 > /sys/module/apple_ftl/parameters/mount && ls -l /dev/ftl0p2' </dev/null \
-        | sed 's/^/    /' || fail "FTL mount"
-    ask "format the Linux volume (ext4) and unpack $(basename "$tar") onto it?" || { lx 'echo 0 > /sys/module/apple_ftl/parameters/mount; rmmod apple_ftl apple_ppn'; fail stopped; }
-    lx 'LD_LIBRARY_PATH=/tmp/e2fs/usr/lib /tmp/e2fs/sbin/mke2fs -t ext4 -F -L CascadiaLinux /dev/ftl0p2' </dev/null | sed 's/^/    /' || fail mkfs
+    [ -n "$tar" ] && [ -f "$tar" ] || fail "usage: nand-volume fill ROOT.tar[.xz]"
+    lx 'command -v mke2fs && command -v e2fsck' </dev/null >/dev/null || fail "no mke2fs/e2fsck in this image: ./cascadia a5 build (it adds e2fsprogs), flash"
+    lx_nand_ready
+    lx 'f=/sys/module/apple_ftl/parameters; [ "$(cat $f/enable_write)" = Y ] && [ "$(cat $f/write_volume)" = Linux ] || { echo "the FTL write gates are closed: not the NAND install image"; exit 1; }
+        echo 1 > $f/mount && ls -l /dev/ftl0p2' </dev/null | sed 's/^/    /'
+    [ "${PIPESTATUS[0]}" = 0 ] || fail "FTL mount (above)"
+    ask "format the Linux volume (ext4) and unpack $(basename "$tar") onto it?" || { lx 'echo 0 > /sys/module/apple_ftl/parameters/mount'; fail stopped; }
+    lx 'mke2fs -t ext4 -F -L CascadiaLinux /dev/ftl0p2' </dev/null | sed 's/^/    /' || fail mkfs
     lx 'mkdir -p /mnt/nandlinux && mount -t ext4 -o noatime /dev/ftl0p2 /mnt/nandlinux' </dev/null || fail mount
     say "unpacking the root (a few minutes over the cable)"
-    lx 'tar -C /mnt/nandlinux -xpf -' < "$tar" || fail untar
-    lx 'sync; umount /mnt/nandlinux && LD_LIBRARY_PATH=/tmp/e2fs/usr/lib /tmp/e2fs/sbin/e2fsck -fn /dev/ftl0p2; r=$?; echo 0 > /sys/module/apple_ftl/parameters/mount; rmmod apple_ftl; rmmod apple_ppn; exit $r' </dev/null \
+    case "$tar" in
+        *.xz) python3 -c 'import lzma,shutil,sys; shutil.copyfileobj(lzma.open(sys.argv[1]), sys.stdout.buffer, 1 << 20)' "$tar" \
+                  | lx 'tar -C /mnt/nandlinux -xpf -' || fail untar ;;
+        *)    lx 'tar -C /mnt/nandlinux -xpf -' < "$tar" || fail untar ;;
+    esac
+    # stage 1 switches to a NAND root only when it has this entry (rootfs/nand)
+    lx 'cat > /mnt/nandlinux/sbin/p105-nand-init && chmod 755 /mnt/nandlinux/sbin/p105-nand-init &&
+        rm -f /mnt/nandlinux/etc/nfsroot &&
+        sed -i "/the root is NFS/{N;s/the root is NFS\n  from the host.s machine\./the root is on the NAND./}" /mnt/nandlinux/etc/motd' \
+        < "$ROOT/rootfs/nand/sbin/p105-nand-init" || fail "p105-nand-init"
+    lx 'sync; umount /mnt/nandlinux && e2fsck -fn /dev/ftl0p2; r=$?; echo 0 > /sys/module/apple_ftl/parameters/mount; exit $r' </dev/null \
         | tail -2 | sed 's/^/    /'
     [ "${PIPESTATUS[0]}" = 0 ] || fail "e2fsck of the filled volume is not clean (above)"
+    st_set filled "$(shasum "$S/plan.bin" 2>/dev/null | cut -c1-40)"
     say "filled: the daily boot (the app or the cable image) can use it now"
+}
+
+# ------------------------------------------------------------------- space --
+cmd_space() {   # prints max_gib=N: Data's free space less the 1 GiB a shrink keeps
+    in_linux && fail "the iPad is in Linux: boot iOS"
+    ios_up >/dev/null
+    ios_helper; hfs_info
+    hfs_checks
+    echo "max_gib=$(( ($(hfs_field free) - HFS_MARGIN) / 262144 ))"
+}
+
+# --------------------------------------------------------------- ram-image --
+# The NAND install's bundle with root=/dev/ram0 in place of root=/dev/ftl0p2 (same
+# length, so nothing else moves): the write gates stay open and stage 1 leaves
+# the NAND alone.  For removing a volume that has a root on it, or filling again.
+cmd_ram_image() {
+    local O="$S/ram-boot"
+    mkdir -p "$O"
+    python3 - "$ROOT/output/staging-bundle.bin" "$O/staging-bundle.bin" <<'PY' || fail "output/staging-bundle.bin is not the NAND install's (./cascadia a5 build with disk=nand)"
+import sys
+d = open(sys.argv[1], 'rb').read()
+a, b = b' root=/dev/ftl0p2 rw ', b' root=/dev/ram0   rw '
+assert len(a) == len(b) and d.count(a) == 1 and d.count(b'root=/dev/ftl0p2') == 1
+open(sys.argv[2], 'wb').write(d.replace(a, b))
+PY
+    cp "$ROOT/output/staging-loader.bin" "$O/"
+    echo "$O"
 }
 
 # ------------------------------------------------------------------- build --
 cmd_build() {
     say "iOS helper"
     sh "$T/ios/build.sh" >/dev/null 2>&1 || fail "cascadia-hfs build (needs Xcode and ldid)"
-    say "modules for the main kernel ($MAIN_KERNEL)"
-    local kdir K="$S/kbuild"; kdir=$(cd "$MAIN_KERNEL" && pwd -P) || fail "no kernel tree at $MAIN_KERNEL"
+    say "the header writer module, for the kernel in $KERNEL"
+    local kdir K="$S/kbuild"; kdir=$(cd "$KERNEL" && pwd -P) || fail "no kernel tree at $KERNEL"
+    [ -f "$kdir/vmlinux" ] || fail "$KERNEL is not built: ./cascadia a5 kernel, ./cascadia a5 build"
+    grep -qx CONFIG_APPLE_PPN=y "$kdir/.config" || fail "$KERNEL has no built-in PPN driver: ./cascadia a5 build again"
     rm -rf "$K"; mkdir -p "$K/patches/files/drivers/mtd/nand" "$K/tools" "$S/mods"
     cp -R "$ROOT/patches/files/drivers/mtd/nand/apple" "$K/patches/files/drivers/mtd/nand/"
     cp -R "$T" "$K/tools/"
-    docker run --rm -v "$kdir":/kernel -v "$K":/b -w /b cascadia-build sh -c '
+    # Module.symvers from this vmlinux (the driver's exports), then the module
+    docker run --rm -v "$kdir":/kernel -v "$K":/b -w /b "$IMAGE" sh -c '
         set -e
-        for d in patches/files/drivers/mtd/nand/apple tools/nand-volume; do
-            make -s -C /kernel M=/b/$d ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- KBUILD_MODPOST_WARN=1 modules 2>&1 | grep -v "modpost:" || true
-        done' || fail "module build"
-    cp "$K/patches/files/drivers/mtd/nand/apple/apple_ppn.ko" "$K/patches/files/drivers/mtd/nand/apple/apple_ftl.ko" \
-       "$K/tools/nand-volume/ppn_lwvmw.ko" "$S/mods/" || fail "modules missing"
+        if [ ! -f /kernel/Module.symvers ] || [ /kernel/vmlinux -nt /kernel/Module.symvers ]; then
+            make -s -C /kernel -j8 ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- modules >/dev/null
+        fi
+        grep -q apple_ppn_read_page /kernel/Module.symvers
+        make -s -C /kernel M=/b/tools/nand-volume ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- modules 2>&1' \
+        || fail "module build"
+    rm -f "$S/mods/"*.ko
+    cp "$K/tools/nand-volume/ppn_lwvmw.ko" "$S/mods/" || fail "ppn_lwvmw.ko missing"
     ls -l "$S/cascadia-hfs" "$S/mods" | sed 's/^/    /'
-    [ -x "$S/e2fs/root/sbin/mke2fs" ] || note "no e2fsprogs bundle in $S/e2fs/root (Alpine armv7 e2fsprogs, unpacked)"
 }
 
 case "${1:-}" in
@@ -318,5 +380,7 @@ case "${1:-}" in
     backup) cmd_backup ;;
     fill)   shift; cmd_fill "$@" ;;
     build)  cmd_build ;;
+    space)  cmd_space ;;
+    ram-image) cmd_ram_image ;;
     *) sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
 esac

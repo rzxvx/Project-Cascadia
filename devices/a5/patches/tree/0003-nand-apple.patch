@@ -1,0 +1,27 @@
+NAND: build the PPN controller and Swiss FTL in drivers/mtd/nand/apple
+(copied whole by scripts/apply-kernel-patches.py, NEW_DIRS).
+
+diff --git a/drivers/mtd/nand/Kconfig b/drivers/mtd/nand/Kconfig
+index 5b0c2c9..3ea7c66 100644
+--- a/drivers/mtd/nand/Kconfig
++++ b/drivers/mtd/nand/Kconfig
+@@ -8,6 +8,7 @@ config MTD_NAND_CORE
+ source "drivers/mtd/nand/onenand/Kconfig"
+ source "drivers/mtd/nand/raw/Kconfig"
+ source "drivers/mtd/nand/spi/Kconfig"
++source "drivers/mtd/nand/apple/Kconfig"
+ 
+ menu "ECC engine support"
+ 
+diff --git a/drivers/mtd/nand/Makefile b/drivers/mtd/nand/Makefile
+index 19e1291..81b2ac3 100644
+--- a/drivers/mtd/nand/Makefile
++++ b/drivers/mtd/nand/Makefile
+@@ -7,6 +7,7 @@ obj-$(CONFIG_MTD_NAND_ECC_MEDIATEK) += ecc-mtk.o
+ obj-y	+= onenand/
+ obj-y	+= raw/
+ obj-y	+= spi/
++obj-y	+= apple/
+ 
+ nandcore-$(CONFIG_MTD_NAND_ECC) += ecc.o
+ nandcore-$(CONFIG_MTD_NAND_ECC_SW_HAMMING) += ecc-sw-hamming.o

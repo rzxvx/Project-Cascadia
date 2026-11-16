@@ -65,6 +65,15 @@ NEW_FILES = [
     "fs/hfsplus/decmpfs.c",
 ]
 
+# New directories: replaced whole (removed, then copied), so nothing from an
+# earlier copy survives.  drivers/mtd/nand/apple is the PPN controller and the
+# Swiss FTL (the NAND root, ./cascadia a5 nand-volume); built in, it does nothing
+# until stage 1 asks for root=/dev/ftl0p2 (apple_ppn.hold_probe=1 on every
+# command line).  Its Kconfig/Makefile glue is patches/tree/0003-nand-apple.patch.
+NEW_DIRS = [
+    "drivers/mtd/nand/apple",
+]
+
 # Glue edits: (file, anchor substring, text to insert after that line)
 #
 # Anchors are matched as substrings rather than whole lines so that whitespace
@@ -214,6 +223,36 @@ def copy_new_files(tree: str, revert: bool) -> int:
         d = os.path.join(tree, "arch/arm/mach-apple")
         if os.path.isdir(d) and not os.listdir(d):
             os.rmdir(d)
+    return changed
+
+
+def copy_new_dirs(tree: str, revert: bool) -> int:
+    changed = 0
+    for rel in NEW_DIRS:
+        dst = os.path.join(tree, rel)
+        if revert:
+            if os.path.isdir(dst):
+                shutil.rmtree(dst)
+                changed += 1
+                print(f"  removed {rel}/")
+            continue
+        src = os.path.join(FILES, rel)
+        if not os.path.isdir(src):
+            fail(f"missing source directory {src}")
+        if os.path.isdir(dst):
+            # build products (.o, .cmd, modules.order...) do not count
+            built = lambda f: f.startswith(".") or f.endswith(
+                (".o", ".a", ".ko", ".mod", ".mod.c", ".order", ".symvers"))
+            have = sorted(f for f in os.listdir(dst) if not built(f))
+            same = have == sorted(os.listdir(src)) and all(
+                read_bytes(os.path.join(dst, f)) == read_bytes(os.path.join(src, f))
+                for f in os.listdir(src))
+            if same:
+                continue
+            shutil.rmtree(dst)
+        shutil.copytree(src, dst)
+        changed += 1
+        print(f"  installed {rel}/")
     return changed
 
 
@@ -368,6 +407,7 @@ def main() -> int:
 
     changed = 0
     changed += copy_new_files(tree, args.revert)
+    changed += copy_new_dirs(tree, args.revert)
     if not args.files_only:
         changed += apply_glue(tree, args.revert)
         changed += apply_replacements(tree, args.revert)

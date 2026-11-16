@@ -34,6 +34,8 @@ import sys
 s = open(sys.argv[1]).read()
 mark = '# --------------------------------------------------------------- NFS root ---'
 assert s.count(mark) == 1, 'NFS block marker not found in main init'
+if 'p105-nand-root' in s:            # main's init carries the hook since the merge
+    open(sys.argv[2], 'w').write(s); sys.exit(0)
 hook = ('# NAND root when the command line asks for it (nand-rw / nand-ro profiles);\n'
         '# anything that fails returns here and the NFS / RAM roots follow.\n'
         'if [ -r /sbin/p105-nand-root ]; then\n'

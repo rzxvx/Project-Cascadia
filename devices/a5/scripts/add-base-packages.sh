@@ -25,6 +25,8 @@
 #                       card is in the kernel and /etc/asound.conf (dmix as
 #                       "default") in initramfs/, so sound works from the
 #                       first boot, RAM or NFS root, with nothing to install
+#   e2fsprogs           mke2fs and e2fsck: ./cascadia a5 nand-volume fill makes
+#                       the ext4 of the NAND's Linux volume from the RAM boot
 #
 # dropbear comes from add-dropbear.sh.  Called by build-alpine-rootfs.sh, and by
 # ./cascadia a5 build for a tree made before this list grew.  An NFS root is
@@ -37,7 +39,7 @@ TREE="$ROOT/build/initramfs-root"
 
 bash "$ROOT/scripts/add-apk-packages.sh" \
     nfs-utils libtirpc-conf busybox-static iw wpa_supplicant fbkeyboard font-dejavu bluez dbus \
-    alsa-utils
+    alsa-utils e2fsprogs
 [ -s "$TREE/etc/netconfig" ] || {
     echo "missing /etc/netconfig: libtirpc-conf was not installed" >&2
     exit 1

@@ -10,6 +10,8 @@
 #                       this too)
 #   ios parts           iOS's partitions
 #
+# On a NAND install (root on the LwVM volume "Linux") the kernel's FTL already
+# serves the volumes as /dev/ftl0p0.. and mount uses those.  Otherwise
 # /sbin/iosnand does the work (tools/nand/iosnand.c): it reads the NAND,
 # follows iOS's FTL to disk0 and its LwVM partitions, and serves them as
 # /dev/nbd0, /dev/nbd1.  It never writes to the NAND.  The first run reads
@@ -52,6 +54,15 @@ status() {
 }
 
 start() {
+    # The NAND install: the FTL in the kernel serves iOS's volumes itself
+    # (/dev/ftl0p0 System, ftl0p1 Data; read-only, only "Linux" is writable)
+    if [ -b /dev/ftl0p0 ]; then
+        mounted && die "already mounted (ios umount first)"
+        mkdir -p $MNT
+        mount -t hfsplus -o ro /dev/ftl0p0 $MNT || die "mount failed (dmesg | tail)"
+        say "iOS System on $MNT, read-only (from the NAND's FTL)."
+        return 0
+    fi
     need
     serving && die "already serving (ios umount first)"
     mkdir -p $RUN $MNT
@@ -86,6 +97,7 @@ case "$1" in
                 stop_serving
                 say "iOS unmounted." ;;
     scan)       need; serving && die "iosnand is serving; ios umount first"; iosnand scan ;;
-    parts)      need; serving && die "iosnand is serving; ios umount first"; iosnand parts ;;
+    parts)      [ -b /dev/ftl0p0 ] && { ls -l /dev/ftl0p*; exit 0; }
+                need; serving && die "iosnand is serving; ios umount first"; iosnand parts ;;
     *)          sed -n '/^#   ios/,/^#$/p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
 esac

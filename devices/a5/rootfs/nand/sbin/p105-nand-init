@@ -1,0 +1,22 @@
+#!/bin/sh
+# Stage 2 entry of the full root on the NAND (/dev/ftl0p2, LwVM "Linux").
+# Stage 1 looks for this name.  What differs from an NFS root is handled here,
+# then the system's own stage 2 starts the services as on every other root.
+export PATH=/usr/sbin:/usr/bin:/sbin:/bin HOME=/root
+root_type=$(awk '$2 == "/" { print $4; exit }' /proc/mounts)
+case "$root_type" in
+rw|rw,*)
+	mkdir -p /var/log /var/lib
+	n=$(cat /var/lib/p105-boots 2>/dev/null || echo 0)
+	echo $((n + 1)) > /var/lib/p105-boots
+	date >> /var/log/p105-boots.log
+	;;
+*)
+	# The nand-ro kernel: the root stays clean, /var is RAM.
+	mount -t tmpfs -o mode=755,size=16m var /var
+	mkdir -p /var/log /var/empty /var/lib /var/tmp
+	ln -sf ../run /var/run
+	;;
+esac
+echo "P105 NAND: full root, $root_type" > /dev/kmsg
+exec /sbin/p105-stage2

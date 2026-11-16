@@ -58,7 +58,9 @@ hours --, and what is yours is added on this computer: the firmware and the
 GPU's pack from your IPSW, your ssh key, the iPad's host key.
 `INSTALL_FROM=source ./cascadia a5 install` builds everything instead (the
 newer release, when there is one: `CHANNEL=experimental`).
-It asks three things: what to install on this computer, whether you want
+It asks first where Linux should live: on the iPad's own flash (NAND, see
+[below](#linux-on-the-ipad-itself-nand)) or on this computer (NFS). For NFS
+it asks three more things: what to install on this computer, whether you want
 the desktop (it then lives on this computer as the iPad's disk, over the
 cable), and how the iPad gets into pwned DFU (a Pi Pico, or its jailbroken
 iOS). At the end it boots the iPad; then
@@ -70,6 +72,33 @@ iOS). At the end it boots the iPad; then
 and `desktop` on the iPad for XFCE. Every later boot is `./cascadia a5
 flash` (`--kdfu` from iOS). The rest of this page is the same road one
 step at a time, and what to do on the iPad once it is there.
+
+### Linux on the iPad itself (NAND)
+
+Answer `NAND` (the question says how to answer) and the installer puts Linux
+on the iPad's flash, next to iOS: it shrinks iOS's Data partition (8 GiB by
+default, 4 GiB at least, your choice), makes a volume called "Linux" in that
+space, formats it ext4 and puts the desktop root on it. Then it installs the
+**Cascadia** app on iOS: hold its button and the iPad restarts into Linux,
+with no computer and no cable. Rebooting Linux brings iOS back.
+
+What it needs: the jailbroken iOS 8.4.1 with OpenSSH (as for `--kdfu`), a
+Mac with Xcode for the two small iOS programs (the app and the volume
+helper), the kernel built here (`./cascadia a5 kernel`, which install runs),
+and about half an hour with a few reboots. iOS and its data stay, but the
+partition table and iOS's flash translation layer are rewritten: back the
+iPad up first. Every step that writes to the iPad says what it does and asks
+first; stopped anywhere, `./cascadia a5 install` carries on.
+
+```bash
+./cascadia a5 uninstall        # the volume's space back to iOS, the app off
+./cascadia a5 nand-volume status   # the partition table and Data, from iOS
+./cascadia a5 nand-volume backup   # the Linux root to this computer (Linux up)
+```
+
+Speed: about 9 MB/s both ways (the controller is driven by the CPU, no DMA
+yet). The NAND driver is our own, written from a specification; the PPN and
+FTL findings it builds on are crystal-lized's.
 
 ## Step by step: the image
 

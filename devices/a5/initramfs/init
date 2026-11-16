@@ -126,6 +126,15 @@ else
 fi
 msg "P105: ACM nodes: $(ls -d /dev/ttyGS* 2>/dev/null | tr '\n' ' ')"
 
+# -------------------------------------------------------------- NAND root ---
+# Only when the command line says root=/dev/ftl0p2 (a NAND install: the
+# LwVM volume "Linux", ./cascadia a5 nand-volume).  Anything that fails
+# returns here and the NFS / RAM roots follow; the NAND is left unmounted.
+if [ -r /sbin/p105-nand-root ]; then
+    . /sbin/p105-nand-root
+    p105_try_nand_root || msg "P105: NAND root unavailable; trying the other roots"
+fi
+
 # --------------------------------------------------------------- NFS root ---
 # /etc/nfsroot holds "host:/exported/path" and is written by
 # tools/mac-nfs-export.sh; absent, this whole block is skipped and we stay in

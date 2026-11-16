@@ -42,19 +42,28 @@ p105_try_nand_root() {
         echo 31200000.ppn > /sys/bus/platform/drivers/apple-ppn/bind || return 1
     fi
     echo 1 > "$nand_ftl/mount" || return 1
-    [ -b /dev/ftl0p2 ] || return 1
+    # From here on a failure leaves the NAND unmounted, as it found it: the
+    # fallback roots do not use it, and ./cascadia a5 nand-volume needs it free.
+    p105_nand_giveup() {
+        echo "P105 NAND: $1; NAND left unmounted" > /dev/kmsg
+        umount /newroot 2>/dev/null
+        echo 0 > "$nand_ftl/mount"
+        return 1
+    }
+    # no Linux volume yet (before ./cascadia a5 nand-volume create)
+    [ -b /dev/ftl0p2 ] || { p105_nand_giveup "no Linux volume"; return 1; }
     mkdir -p /newroot
     if [ $nand_rw = 1 ]; then
-        [ "$(cat /sys/class/block/ftl0p2/ro)" = 0 ] || return 1
+        [ "$(cat /sys/class/block/ftl0p2/ro)" = 0 ] || { p105_nand_giveup "ftl0p2 is read-only"; return 1; }
         # commit=30: a journal commit costs a dozen page programs here
         # (a 4 KiB write rewrites a 16 KiB page), so fewer of them.
-        mount -t ext4 -o rw,noatime,commit=30 /dev/ftl0p2 /newroot || return 1
+        mount -t ext4 -o rw,noatime,commit=30 /dev/ftl0p2 /newroot || { p105_nand_giveup "no ext4 on the Linux volume"; return 1; }
     else
-        [ "$(cat /sys/class/block/ftl0p2/ro)" = 1 ] || return 1
-        mount -t ext4 -o ro,noload /dev/ftl0p2 /newroot || return 1
+        [ "$(cat /sys/class/block/ftl0p2/ro)" = 1 ] || { p105_nand_giveup "ftl0p2 is writable"; return 1; }
+        mount -t ext4 -o ro,noload /dev/ftl0p2 /newroot || { p105_nand_giveup "no ext4 on the Linux volume"; return 1; }
     fi
     if [ ! -x /newroot/sbin/p105-nand-init ]; then
-        umount /newroot
+        p105_nand_giveup "no /sbin/p105-nand-init on the Linux volume"
         return 1
     fi
     nand_moved=''
@@ -63,7 +72,7 @@ p105_try_nand_root() {
             for nand_back in $nand_moved; do
                 mount --move "/newroot/$nand_back" "/$nand_back"
             done
-            umount /newroot
+            p105_nand_giveup "moving $nand_tree failed"
             return 1
         fi
         nand_moved="$nand_tree $nand_moved"
