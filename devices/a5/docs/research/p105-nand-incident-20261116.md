@@ -50,3 +50,24 @@ uncommitted Linux frontier with a torn page: never observed (spec §9).
    (the ext4 journal was aborted), `e2fsck -fn` again, unmount (checkpoint).
 5. iOS: `fsck_hfs -n -l` of System and Data.
 6. The daily boot.
+
+## Recovery run (parent session drove the device, user's go per step)
+
+RAM-root bundle of kernel #13, controller bound by hand, `ppn_recover.ko` (9c18607):
+
+- Dry run 1 (without `give_up`): context sb 30, 18551 replayed = the incident's 18503 plus
+  48, exactly sb 198's pages 0–2 (3 rows × 4 banks × 4 LBAs). The walk read page 3 bank 0
+  as erased and ended there: the program that returned 0x54 had not changed that page, so
+  the SB was not flagged torn. sb 514 and 694 are type 9 in iOS's context with old data on
+  page 0 (weaves below the context): **iOS's type 9 does not mean physically erased**.
+- Dry run 2 (`give_up=198`): page 3 status `49 40 49 49` (bank 1 programmed, banks 0, 2, 3
+  erased), pages 4–5 erased: the failed two-bus batch (bus 0 failed, bus 1 done, banks 2–3
+  never reached). Bank 1's 4 LBAs were never acknowledged and are not replayed.
+- Real run: sb 198 given up, 37 LBAs moved (48 slots replayed; 11 were older copies of
+  LBAs written again within those pages), type 1, 0 valid; sb 453 taken and erased as the
+  new frontier; 468, 514, 694 erased and read back erased; context sb 698; fresh mount: 0
+  replayed, no LBA in a type-1 SB: PASS.
+- Built-in `apple_ftl` mount: context sb 698, 0 replayed. `e2fsck -fy /dev/ftl0p2`:
+  journal recovered, "file system was modified", 19716 files, 403010 blocks, rc 0;
+  `e2fsck -fn` rc 0. Unmount: committed context sb 831.
+- Next: iOS boot, `fsck_hfs -n -l` of System and Data.
