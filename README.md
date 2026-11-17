@@ -1,8 +1,9 @@
 # Project Cascadia — Native Linux on Apple Silicons
 
-Mainline Linux on Apple's own phones and tablets, booted from your computer
-over USB: a shell on the glass and over the cable, Wi-Fi, multi-touch, and an
-XFCE desktop you drive with your fingers.
+Mainline Linux on Apple's own phones and tablets: a shell on the glass and
+over the cable, Wi-Fi, multi-touch, and an XFCE desktop you drive with your
+fingers. On the iPad mini 1 it lives on the iPad's own flash next to iOS and
+starts from an app on the home screen, no computer needed.
 
 ![Discord](https://img.shields.io/discord/1564063823336579072?logo=discord)
 
@@ -14,7 +15,7 @@ XFCE desktop you drive with your fingers.
 
 | Device | Model | Chip | What works | Start here |
 |---|---|---|---|---|
-| iPad mini 1 (Wi-Fi) | iPad2,5 / A1432 / p105ap | Apple A5 (S5L8942X) | Linux 6.12: both cores, touch, Wi-Fi, Bluetooth, speakers, battery, the GPU (OpenGL ES 2.0 / GL 2.1), XFCE; iOS's files read-only | [devices/a5](devices/a5/README.md) · [quickstart](devices/a5/docs/QUICKSTART.md) |
+| iPad mini 1 (Wi-Fi) | iPad2,5 / A1432 / p105ap | Apple A5 (S5L8942X) | Linux 6.12: both cores, touch, Wi-Fi, Bluetooth, speakers, battery, the GPU (OpenGL ES 2.0 / GL 2.1), XFCE; on the iPad's own NAND next to iOS, started from the Cascadia app without a computer (or over the cable from an NFS root); iOS's files readable | [devices/a5](devices/a5/README.md) · [quickstart](devices/a5/docs/QUICKSTART.md) |
 | iPhone XR *(experimental, contributed)* | iPhone11,8 / N841AP | Apple A12 (T8020) | as its author reports it: Linux 7.3, framebuffer, touch, USB networking/SSH, Wi-Fi, UART Bluetooth, Debian/XFCE over NFS -- not built or tested by the maintainer | [devices/a12](devices/a12/README.md) · [Debian/XFCE](devices/a12/DEBIAN_XFCE_NFS.md) |
 | iPhone 11 | iPhone12,1 / n104ap | Apple A13 (T8030) | Linux 7.2: all six cores, touch, Wi-Fi, Bluetooth, XFCE, the internal storage as Linux's disk, no cable after the boot | [devices/a13](devices/a13/README.md) · [quickstart](devices/a13/docs/QUICKSTART.md) |
 
@@ -38,7 +39,14 @@ cd Project-Cascadia
 (`./cascadia a5` alone lists them). The device used last is remembered, so
 after the first one a plain `./cascadia build` means the same device again;
 `./cascadia device` shows or changes it. The quickstarts above walk through
-everything from a clean machine.
+everything from a clean machine, on macOS or Linux (Debian / Ubuntu, Arch,
+Fedora).
+
+The iPad mini 1's kernel, desktop root and iOS app come ready-made from
+[Releases](https://github.com/rzxvx/Project-Cascadia/releases), so `install`
+takes minutes rather than hours; only Apple's files are made on your
+computer, from your own IPSW. Once Linux is on the iPad, the app updates its
+kernel from the newest release itself, and can roll it back.
 
 ## What is this?
 
@@ -70,8 +78,10 @@ IPSW (or Apple's CDN) on your machine.
 
 ## Roadmap
 
-- **iPad mini 1 (A5)** — phases 1 and 2 done; phase 3 all but NAND as
-  Linux's own storage. [devices/a5/README.md](devices/a5/README.md#roadmap)
+- **iPad mini 1 (A5)** — phases 1 to 3 done: Linux on the iPad's own NAND
+  beside iOS, booted from an iOS app. Next: a write cache for the NAND, USB
+  host mode, the headphone jack.
+  [devices/a5/README.md](devices/a5/README.md#roadmap)
 - **iPhone XR (A12)** — contributed (#31), experimental: tethered Linux with
   framebuffer/touch, USB, Wi-Fi, Bluetooth and Debian/XFCE over NFS as its
   author reports; it builds on devices/a13's m1n1 patches, which still
@@ -140,6 +150,8 @@ pretty far.
 - **iH8sn0w** — iBoot32Patcher
 - **Project Sandcastle** — Z2 multitouch driver and protocol, the starting point
 - **Larry Ewing** — Tux (made with The GIMP), on the Cascadia app's icon
+- **winocm** — kloader, which the Cascadia app starts Linux with
+- **Thomas Pornin** — BearSSL, the app's TLS (MIT)
 - **crystal-lized** — PPN NAND and Swiss FTL findings (iPhone 5) and the first
   writable path; the iPad mini 1 NAND driver is built on them
 

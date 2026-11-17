@@ -2,7 +2,8 @@
 
 | File | What it is |
 |---|---|
-| `QUICKSTART.md` | From a clean machine to a shell on the iPad: what hardware is needed, the five build commands, the boot chain, flashing, and a table of what the failures look like. Walked end to end on macOS/arm64 and on a fresh Arch install. |
+| `QUICKSTART.md` | From a clean machine to Linux on the iPad (on its own NAND beside iOS, started from the Cascadia app, or over the cable from an NFS root): what hardware is needed, `./cascadia a5 install`, the boot chain, flashing, the desktop, and a table of what the failures look like. |
+| `GPU.md` | The GPU: its OpenGL, the demos, SuperTux, how the driver works. |
 | `CASCADIA-CHEATSHEET.md` | The working reference: boot chain, flash procedure, every address, every driver, and the full log of what was tried and what it did. Start here. |
 | `touch-next-steps.md` | Open plan for the multi-touch digitizer. |
 | `kernelcache-keys.txt` | Public fwkeydb IV/key for the iPad2,5 12H321 kernelcache. Needed to decrypt the stock kernelcache for RE. Public information, mirrored here for reproducibility. |

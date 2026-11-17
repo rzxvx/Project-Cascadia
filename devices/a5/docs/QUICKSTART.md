@@ -4,13 +4,21 @@ From a clean machine to a shell on the iPad, and on to its desktop.
 `./cascadia a5 install` has been walked end to end on macOS (Apple Silicon)
 and on Arch Linux (x86_64) -- from the prebuilt release and from source:
 the boot through kDFU, the NFS root, ssh, XFCE on the GPU, SuperTux.
+The NAND install's steps have each been run on one iPad from macOS (the
+volume, the app, the app's kernel update and roll back); a whole run of it
+from a clean machine, and any run of it from Linux, not yet.
 `setup` is checked on Debian, Ubuntu, Arch and Fedora. If something here
 does not match what you see, that is a bug.
 
-Nothing is written to the device's storage. The kernel is uploaded into RAM and
-run from there; iOS is untouched (Linux can read its files, and never writes
-them), and holding **power + home** brings the iPad back to it. That is worth
-knowing before you start rather than after.
+What is written to the iPad depends on one answer the installer asks for.
+With **NFS**, nothing: the kernel is uploaded into RAM and run from there, the
+root is on your computer, and iOS is untouched. With **NAND** (the
+recommended one), iOS's Data partition gives up some space to a volume of
+Linux's own, and the Cascadia app goes onto iOS: iOS and your data stay, but
+the iPad's partition table is rewritten, so back it up first. Either way
+Linux never writes to iOS's partitions, and holding **power + home** brings
+the iPad back to iOS. That is worth knowing before you start rather than
+after.
 
 ## What you need
 
@@ -52,14 +60,16 @@ cd Project-Cascadia
 It goes through every step below in order, says what each does and how
 long it takes, and skips what is done already: stopped anywhere (a reboot,
 a failed download, Docker not running yet), run it again and it carries on.
-The kernel and the desktop root come prebuilt (the release in
-`prebuilt/stable/`, ~460 MB) instead of being built -- minutes instead of
-hours --, and what is yours is added on this computer: the firmware and the
+The kernel, the desktop root and the iOS app come prebuilt (the release in
+`prebuilt/stable/`, ~400 MB, from
+[Releases](https://github.com/rzxvx/Project-Cascadia/releases)) instead of
+being built -- minutes instead of hours --, and what is yours is added on this computer: the firmware and the
 GPU's pack from your IPSW, your ssh key, the iPad's host key.
 `INSTALL_FROM=source ./cascadia a5 install` builds everything instead (the
 newer release, when there is one: `CHANNEL=experimental`).
 It asks first where Linux should live: on the iPad's own flash (NAND, see
-[below](#linux-on-the-ipad-itself-nand)) or on this computer (NFS). For NFS
+[below](#linux-on-the-ipad-itself-nand); recommended) or on this computer
+(NFS). For NFS
 it asks three more things: what to install on this computer, whether you want
 the desktop (it then lives on this computer as the iPad's disk, over the
 cable), and how the iPad gets into pwned DFU (a Pi Pico, or its jailbroken
@@ -69,8 +79,9 @@ iOS). At the end it boots the iPad; then
 ./cascadia a5 ssh            # a shell on the iPad
 ```
 
-and `desktop` on the iPad for XFCE. Every later boot is `./cascadia a5
-flash` (`--kdfu` from iOS). The rest of this page is the same road one
+and `desktop` on the iPad for XFCE. Every later boot: with NAND, the
+Cascadia app on the iPad; with NFS, `./cascadia a5 flash` (`--kdfu` from
+iOS). The rest of this page is the same road one
 step at a time, and what to do on the iPad once it is there.
 
 ### Linux on the iPad itself (NAND)
@@ -101,9 +112,16 @@ first; stopped anywhere, `./cascadia a5 install` carries on.
 ./cascadia a5 nand-volume backup   # the Linux root to this computer (Linux up)
 ```
 
-Speed: about 9 MB/s both ways (the controller is driven by the CPU, no DMA
-yet). The NAND driver is our own, written from a specification; the PPN and
-FTL findings it builds on are crystal-lized's.
+**Updates.** The app checks for a newer release when it opens. **Update
+kernel** downloads the new kernel (about 28 MB, checked by its SHA-256),
+puts this iPad's own layer back on it and makes it the one Linux starts
+with; the one before is kept, and **Roll back** returns to it. The desktop
+root on the volume is yours: an update leaves it as it is. The app follows the stable releases; installed with
+`CHANNEL=experimental`, it follows the newer ones.
+
+Speed: about 8 MB/s read and 8-10 MB/s write (the controller is driven by
+the CPU, no DMA yet). The NAND driver is our own, written from a
+specification; the PPN and FTL findings it builds on are crystal-lized's.
 
 ## Step by step: the image
 
@@ -254,10 +272,9 @@ drive nfsd and pf; on Linux, nfs-utils and iptables (nftables without it), from
 `tools/linux-*.sh`. The export is `~/cascadia-root` on the Mac and
 `/srv/cascadia-root` on Linux; `DST=` moves it.
 
-That is also where it stays: the NAND is iOS's as long as iOS is there, and
-kDFU needs iOS. With a Pi Pico, giving the NAND to Linux (and iOS up) is the
-planned alternative — not written yet; the README's *Where Linux keeps its
-files* says more.
+Or the root lives on the iPad's own NAND, beside iOS: that is the NAND
+install ([above](#linux-on-the-ipad-itself-nand)), and the README's *Where
+Linux keeps its files* says how it shares the flash with iOS.
 
 ## Wi-Fi
 
@@ -275,7 +292,7 @@ wifi forget "Home"
 
 `iw` and `wpa_supplicant` are in the image, so Wi-Fi works from a RAM boot,
 with no cable network at all. Networks are remembered in `/etc/wifi/networks/`, a WPA password only
-as its PSK -- on the NFS root for good, in a RAM boot until the next reboot. Once Wi-Fi is up, ssh works over it too, at the
+as its PSK -- on the NAND or NFS root for good, in a RAM boot until the next reboot. Once Wi-Fi is up, ssh works over it too, at the
 address `wifi` prints.
 
 - WPA2 and open networks work on 2.4 and 5 GHz, DHCP and all.
@@ -300,7 +317,7 @@ bluetooth forget "TH40"
 A keyboard or a mouse pairs without a code, connects, and types into the
 console (and into X). If a device insists on a code, `bluetooth pair NAME
 code` prints one to type on it. After `bluetooth off` or a reboot, a paired
-keyboard comes back when a key is pressed. Pairings are kept on the NFS root;
+keyboard comes back when a key is pressed. Pairings are kept on the NAND or NFS root;
 in a RAM boot they last until the next reboot. The address is
 `02:10:5A:05:00:04`; `local-bd-address` in the dts sets another.
 
@@ -311,7 +328,9 @@ ios mount     # iOS's System partition, read-only, on /mnt/ios
 ios umount
 ```
 
-`iosnand` reads the NAND itself and follows iOS's FTL to its partitions,
+With the root on the NAND, `ios mount` goes through the kernel's FTL driver
+and takes a second. Over NFS or from RAM, `iosnand` reads the NAND itself
+and follows iOS's FTL to its partitions,
 without writing a byte. The very first `ios mount` reads every page once —
 about 12 minutes — and keeps a map in `/var/lib/iosnand` (on the NFS root);
 after that it takes a second, or twenty after iOS has been running. Only
@@ -319,7 +338,7 @@ System mounts: iOS's Data partition (apps, photos) is encrypted file by file.
 
 ## A desktop
 
-XFCE runs off the NFS root with touch as the pointer, drawn by the GPU (X
+XFCE runs off the NAND or NFS root with touch as the pointer, drawn by the GPU (X
 runs modesetting with glamor on the GPU's Mesa, and GL programs get GLX; the
 two CPU cores draw instead with `DESKTOP_FB=1 desktop`). It comes as a whole
 root -- XFCE, the patched X/xfwm4/pixman, Mesa, SuperTux, screenpad,

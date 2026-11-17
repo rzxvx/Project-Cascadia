@@ -148,7 +148,7 @@ the device:
 ssh root@10.55.0.2 'dmesg | grep -E "AIC1-REARM|LATE-SMOKE|SOF-TIMER|AIC-TIMER|P105:"'
 ```
 
-## Where it stands (2026-10-15)
+## Where it stands (2026-11-17)
 
 Everything below this section is the lab log, oldest first; a status line in it
 is true as of its date. Now:
@@ -158,6 +158,15 @@ is true as of its date. Now:
 - Wi-Fi (BCM4334 over HSIC): `wifi` on the device — see "WI-FI" at the end
 - the NAND, read-only: `ios mount` puts iOS's System partition on /mnt/ios;
   `nandctl` for the chips themselves — see "THE NAND" at the end
+- the NAND as Linux's root, beside iOS: the kernel's PPN + FTL driver
+  (`patches/files/drivers/mtd/nand/apple`, built in; the NAND image's DTB,
+  `scripts/nand-dtb.sh`, opens the write gates for the volume "Linux" only),
+  root=/dev/ftl0p2; the volume made and removed by
+  `./cascadia a5 nand-volume` (tools/nand-volume), the whole install by
+  `./cascadia a5 install` with disk=nand
+- started from iOS: the Cascadia app (`app/`): kloader -> patched iBEC
+  (`upgrade`, stay) -> /kernelcache (the bundle as an img3) from System; the
+  app updates /kernelcache from a release and rolls it back (/kernelcache.prev)
 - XFCE: `tools/desktop/xfce-setup.sh`, then `desktop` -- on the GPU (Xorg,
   glamor) once the GPU's OpenGL is installed
 - the GPU: `./cascadia a5 dev gpu` (the pack: the template frame, sgx2d's demos), then
@@ -166,8 +175,8 @@ is true as of its date. Now:
   OpenGL 2.1 (GLX, EGL, GBM); see "THE GPU'S OPENGL" at the end
 - sound: the speakers, ALSA card `iPadMini` (DMA, 32/44.1/48 kHz, S16/S32),
   alsa-utils and dmix in the image -- see "SOUND" at the end
-- not there: the headphone jack and the microphones (CS42L81), USB host, NAND as Linux's own storage (planned for Pi Pico
-  users, at the cost of iOS — README, "Where Linux keeps its files")
+- not there: the headphone jack and the microphones (CS42L81), USB host, DMA
+  for the NAND, a write cache and TRIM for it
 
 On the device:
 ```

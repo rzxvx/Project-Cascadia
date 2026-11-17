@@ -2,16 +2,18 @@
 
 Mainline Linux 6.12 on an iPad mini 1 (iPad2,5 / S5L8942X), booting to an
 interactive shell — on the glass and over USB — and on to an XFCE desktop you
-drive with your fingers. This is the A5 tree of
+drive with your fingers. It lives on the iPad's own flash, next to iOS, and
+starts with one tap in the Cascadia app: no computer, no cable. This is the A5 tree of
 [Project Cascadia](../../README.md); every command here runs from the
 repository's top as `./cascadia a5 …`.
 
 **Start here: [docs/QUICKSTART.md](docs/QUICKSTART.md).**
 
-> **Status: Phases 1 & 2 complete, Phase 3 all but NAND.** Linux boots on both
-> cores, takes interrupts, keeps time, gives you a shell and a network over the
-> Lightning cable, takes multi-touch, brings up Wi-Fi, and runs XFCE with an
-> on-screen keyboard.
+> **Status: Phases 1 to 3 complete.** Linux boots on both cores, takes
+> interrupts, keeps time, gives you a shell and a network over the Lightning
+> cable, takes multi-touch, brings up Wi-Fi, runs XFCE on the GPU with an
+> on-screen keyboard, and keeps its root on the iPad's NAND beside iOS,
+> started from an iOS app.
 
 ![Boot](../../imgs/dualcoreboot.png)
 
@@ -148,11 +150,20 @@ see [K93 bring-up and limitations](docs/k93-bringup.md).
       yet: `reboot` powers off as well, and says so
 - [x] **iOS's own files, read-only, straight off the NAND** — `ios mount`
       puts iOS's System partition on `/mnt/ios`: the NAND's PPN protocol,
-      iOS's FTL, LwVM and HFS+ including HFS+ compression. iOS is left as it
-      is; nothing writes to the NAND. See *The NAND problem* below. iOS's Data
-      partition is encrypted file by file and does not mount yet
-- [ ] NAND as Linux's own storage — for Pi Pico users, at the cost of iOS;
-      see *Where Linux keeps its files* below
+      iOS's FTL, LwVM and HFS+ including HFS+ compression. Linux never writes
+      to iOS's partitions. See *The NAND problem* below. iOS's Data partition
+      is encrypted file by file and does not mount yet
+- [x] **The NAND as Linux's own disk, next to iOS** — a kernel driver for
+      the PPN chips and iOS's own flash translation layer
+      (`drivers/mtd/nand/apple`, written from a specification), writing only
+      to a volume of its own: the installer shrinks iOS's Data and adds an
+      LwVM volume "Linux" (8 GiB by default), ext4. iOS keeps working and
+      keeps its data. See *Where Linux keeps its files* below
+- [x] **Started from iOS, no computer** — the Cascadia app (`app/`) runs
+      kloader into a patched iBEC that loads Linux from iOS's System
+      partition; the app also updates that kernel from the newest release
+      (checked by SHA-256, with this iPad's own layer kept) and rolls it
+      back
 - [ ] USB host mode — a flash drive, or a keyboard, or both behind a hub. The
       controller is a full OTG core with internal DMA and hub support, and the
       ADT carries Apple's host-mode PHY tuning; the port costs the console and
@@ -189,33 +200,58 @@ see [K93 bring-up and limitations](docs/k93-bringup.md).
 
 ## Where Linux keeps its files
 
-One question decides this, and it is not a technical one: **are you willing to
-lose iOS?** Everything else follows from the answer, because the only way into
-pwned DFU without extra hardware starts from a jailbroken iOS.
+Two places, and `./cascadia a5 install` asks which (NAND is the one it
+recommends):
 
-| | **Keep iOS** | **Give up iOS** |
+| | **NAND** (the iPad itself) | **NFS** (your computer) |
 |---|---|---|
-| Needs | nothing but a cable | a microcontroller (Pi Pico) for checkm8 |
-| Into DFU by | `./cascadia a5 flash --kdfu`, out of iOS | checkm8, no iOS involved |
-| Linux's root | the host's disk over NFS, or RAM | the NAND itself |
-| Speed | 5.5 MB/s write, 7.0 read | 14.6 MB/s read today, more with a driver |
-| iOS afterwards | untouched, and readable from Linux (`ios mount`) | gone until you restore it |
-| Status | **works now** | **not written yet** |
+| Linux's root | an ext4 volume "Linux" on the iPad's flash, beside iOS's | the host's disk over the cable |
+| Started by | the Cascadia app on iOS: one tap, no computer | `./cascadia a5 flash --kdfu` (or a Pi Pico) |
+| Speed | ~8 MB/s read, 8–10 write (no DMA yet) | 8.9 MB/s read, 7.0 write |
+| iOS | stays, with its data; Data is smaller by the volume | untouched |
+| The kernel's updates | the app, from the newest release (and back) | the computer |
 
-Most people will want the first column, and it is the one that works today.
-The second is the better machine and the one the port is aiming at: an MTD
-driver for the PPN chips with UBI/UBIFS on the blocks iOS's FTL uses now, block
-0 (syscfg, NVRAM, the bootloaders) never touched.
+Without either, Linux runs from RAM and forgets everything at reboot.
+
+### How the NAND is shared with iOS
+
+The hard part was never Linux's bytes landing on iOS's: it is that iOS's
+flash translation layer is **global**. `ndrG` gives the FTL 2127 of the 2128
+blocks, it is log-structured — every 4 KB page carries a sequence number and
+an LBA, live data is whichever copy has the highest sequence, and LBAs are
+striped across all four dies — so any write allocates blocks, updates the
+shared context and levels wear for the whole disk, iOS's partitions included.
+A mistake there does not corrupt one partition, it corrupts the map for all of
+them, and kDFU with it.
+
+So Linux writes through iOS's own FTL, exactly as iOS would, with its rules
+kept: the kernel driver (`drivers/mtd/nand/apple`: the PPN chips and the FTL,
+our own, written from a specification) mounts the FTL, writes only to the LwVM
+volume named "Linux", and leaves the FTL's context in a state iOS boots from;
+iOS has been booted on a context Linux wrote, many times. Making the volume
+is the riskiest step and is done once, by the installer: iOS shrinks its own
+Data partition (`cascadia-hfs`, on iOS), then Linux writes a new LwVM
+partition table that iOS's own validator (run in Unicorn on the computer)
+accepts first, and every write asks first. Block 0 (syscfg, NVRAM, the
+bootloaders) is never touched. The findings the driver builds on (the PPN
+protocol, iOS's FTL, its first writable path) are crystal-lized's.
+
+Starting it without a computer: the Cascadia app runs kloader (as root) into
+a patched iBEC, which loads `/kernelcache` from iOS's System partition, a
+Linux boot bundle wrapped as one. Its first stage mounts the FTL and switches
+to the "Linux" volume.
 
 ### How fast each one actually is
 
-Measured on the device, 2026-09-29 (the NFS row again 2026-10-24):
+Measured on the device, 2026-09-29 (the NFS row again 2026-10-24, the NAND root
+2026-11-09):
 
 | Where | Write | Read |
 |---|---|---|
 | RAM (`tmpfs`) | 272.8 MB/s | 415.4 MB/s |
 | NFS root, over the Lightning cable | 7.0 MB/s | 8.9 MB/s |
-| The NAND, read-only, userspace PIO | — | 14.6 MB/s |
+| The NAND root (ext4 through the FTL driver) | 8–10 MB/s | ~8 MB/s |
+| The NAND, read-only, userspace PIO (no FTL) | — | 14.6 MB/s |
 | A USB flash drive in host mode | *unproven, see below* | |
 
 NFS is not what limits the second row: neither the rsize nor the readahead
@@ -233,11 +269,11 @@ going on, once overnight, again 35-40 s after a boot with INCR4. Reverted
 (2026-10-24): ECM and the default bursts, which ran for weeks. The bursts are
 still the way to a fast link, once what stops the transmit side is found.
 
-Which makes the third row worth reading twice: **the NAND is already faster
-than the filesystem this port roots on**, on userspace PIO through
-`/dev/mem`, before any of the DMA work a real driver would bring.
+The NAND's rows are the CPU moving every byte (no DMA yet): the raw read in
+the last row shows the chips have more to give than the driver takes today,
+and DMA is where the rest is.
 
-### A USB flash drive, which would suit the first column
+### A USB flash drive
 
 The controller can do it: `GHWCFG2` reads back a full HNP/SRP-capable OTG core
 with **internal DMA**, 14 host channels and hub support, and the ADT carries
@@ -249,26 +285,6 @@ What is not solved: in host mode the iPad has to supply VBUS itself, which is a
 PMU function nobody has looked for yet, and it does not charge while it is the
 host. The port also stops being the console and the network — survivable now
 that Wi-Fi works, but not free.
-
-### Why there is no third column
-
-Keeping iOS *and* writing to the NAND would mean writing through iOS's own FTL,
-and the danger is not where people expect. It is not that Linux's bytes might
-land on iOS's: it is that the FTL's metadata is **global**. `ndrG` gives the FTL
-2127 of the 2128 blocks, and it is log-structured — every 4 KB page carries a
-sequence number and an LBA, live data is whichever copy has the highest
-sequence, and LBAs are striped across all four dies. Writing anything means
-allocating blocks, updating the shared context and doing wear levelling, and a
-mistake there does not corrupt your partition, it corrupts the map for the whole
-volume — iOS included, and kDFU with it.
-
-Cutting the disk in two is possible at two levels, and the analysis is in
-[docs/research/p105-nand.md](docs/research/p105-nand.md). Neither is worth it:
-the easy cut (LwVM has 1.2 GB unmapped already) still needs a reverse-engineered
-FTL write path, and the clean cut (shrink `fsys`, give Linux its own flash
-partition) needs a restore, a write to the block that holds the bootloaders, and
-eats the FTL's 1.85 GB of overprovisioning. A flash drive is more space, more
-speed and no risk at all.
 
 ## Seven problems worth reading about
 
@@ -549,6 +565,12 @@ mounted on the Mac, where the dyld shared cache's own SHA-1 page hashes and
 `codesign` agree with it): 17 285 files of the System partition, 596 MB, read
 byte-identical on the device, 15 010 of them compressed.
 
+That was reading. Writing came later, and in the kernel: the driver in
+`drivers/mtd/nand/apple` speaks PPN and runs iOS's FTL, writes and all, so
+that Linux can keep its own root on the NAND beside iOS (*Where Linux keeps
+its files*, above). With it, `ios mount` goes through the FTL and takes a
+second from the first boot on.
+
 ## Negative results
 
 Kept deliberately. Knowing what doesn't work on this silicon is most of the value.
@@ -672,8 +694,8 @@ Two more gotchas worth recording:
 needs and carries on after a stop); **[docs/QUICKSTART.md](docs/QUICKSTART.md)
 is the walkthrough** — hardware,
 host setup, the IPSW, pwned DFU, the first shell, and what the failures
-look like. `install` takes the kernel and the desktop root from the
-prebuilt release (`prebuilt/stable/`, `./cascadia a5 get`); what follows is
+look like. `install` takes the kernel, the desktop root and the iOS app from
+the prebuilt release (`prebuilt/stable/`, `./cascadia a5 get`); what follows is
 building them from source.
 
 Needs git, docker (with a running daemon), python3 and rsync.  Everything else
@@ -687,6 +709,12 @@ cd Project-Cascadia
 ./cascadia a5 rootfs     # build the Alpine armhf rootfs for the initramfs
 ./cascadia a5 build      # dtb + kernel + output/staging-bundle.bin
 ```
+
+The iOS side (the Cascadia app, `app/build.sh`, and the volume helper
+`cascadia-hfs`) builds on a Mac with Xcode, `ldid` and `dpkg`; BearSSL, the
+app's TLS, is fetched on the first build. Elsewhere `install` takes both from
+the release. A release itself is `./cascadia a5 dev release` (then
+`dev promote` to make it the stable one).
 
 `./cascadia a5 rootfs` also bakes in the two things that cannot be installed
 afterwards: dropbear, authorised with this machine's own SSH public key, and
@@ -760,8 +788,12 @@ Paths are relative to `devices/a5/`.
 
 ```
 patches/files/  new source files, copied verbatim into the kernel tree
-                (irqchip/, mach-apple/, phy/, gpu/drm/apple-sgx/, and the
-                render node's uapi header) — the core of the port
+                (irqchip/, mach-apple/, phy/, gpu/drm/apple-sgx/,
+                mtd/nand/apple/ (the NAND and iOS's FTL), and the render
+                node's uapi header) — the core of the port
+app/            the Cascadia app for iOS 8: starts Linux, updates its kernel
+                (helper.c, pcless.c: the boot file rebuilt on the iPad,
+                fetch.c: HTTPS with BearSSL)
 patches/*.patch generated diffs of the glue edits, for reference
 config/         p105ap.config — the kernel config fragment
 scripts/        patch application + build + bundle scripts
@@ -771,7 +803,9 @@ initramfs/      stage 1 (/init) and stage 2 (/sbin/p105-stage2) -- the boot
                 itself.  ./cascadia a5 rootfs lays both overlays onto the Alpine
                 minirootfs; nothing is edited inside build/
 tools/          p105-peek.c (MMIO tool), build/flash wrappers, LZSS helpers,
-                nand/ (nandctl, iosnand: the NAND, read-only),
+                nand/ (nandctl, iosnand: the NAND, read-only, from userspace),
+                nand-volume/ (making and removing the Linux volume: LwVM,
+                iOS's validator, cascadia-hfs, the install's NAND steps),
                 sgx/ (the GPU: sgx2d, the SDL shim, pack builder, gl/: the
                 driver's tests), iosgpu/ (the iOS capture tool, the kext
                 emulator), piglit/ (the OpenGL test suite for the iPad),
@@ -802,8 +836,12 @@ Build products (`output/`) and stock firmware are not tracked; everything in
 - **Phase 3** — ~~a tick that does not depend on USB device mode~~ (the AIC
   timer) → ~~Touch~~ ✓ → ~~an on-screen keyboard for the console~~ ✓ →
   ~~a desktop~~ ✓ (XFCE) → ~~the second core~~ ✓ → ~~Wi-Fi via HSIC/EHCI~~ ✓
-  → ~~the L2 cache~~ ✓ → ~~iOS's files off the NAND~~ ✓ (read-only) → NAND
-  as Linux's own storage.
+  → ~~the L2 cache~~ ✓ → ~~iOS's files off the NAND~~ ✓ (read-only) →
+  ~~the GPU~~ ✓ (OpenGL ES 2.0 / GL 2.1) → ~~the NAND as Linux's own disk,
+  next to iOS~~ ✓ → ~~started from iOS, no computer~~ ✓ (the Cascadia app).
+- **Open** — a write cache for the NAND (small fsyncs are slow) and TRIM,
+  DMA for the NAND and the USB link, USB host mode, the headphone jack and
+  the microphones, GLSL 1.30 for the GPU.
 
 The iPhone 11 and the devices planned next: the
 [project README](../../README.md#roadmap).
