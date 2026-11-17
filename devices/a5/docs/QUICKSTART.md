@@ -36,7 +36,9 @@ because the auto-go hook patches an address inside that exact iBEC.
 - a **jailbroken iOS 7–9.3.6** on the iPad itself, for `./cascadia a5 flash
   --kdfu`. [EverPwnage](https://github.com/LukeZGD/EverPwnage) is untethered on
   A5, so this stays a one-command step. No extra hardware at all.
-  The NAND install needs iOS 8.4.1 exactly ([below](#linux-on-the-ipad-itself-nand)).
+  Checked here on iOS 8.4.1 with EverPwnage; kDFU from 9.3.5 worked for a
+  user (#29), while 9.3.6 jailbroken with Carbon stops after the iBEC upload
+  (#41). The NAND install needs iOS 8.4.1 exactly ([below](#linux-on-the-ipad-itself-nand)).
 
 **A Lightning cable.** A DCSD cable is optional: it carries the UART, and the
 flash script captures it when it is there. The early boot log also goes to the
