@@ -158,7 +158,11 @@ see [K93 bring-up and limitations](docs/k93-bringup.md).
       (`drivers/mtd/nand/apple`, written from a specification), writing only
       to a volume of its own: the installer shrinks iOS's Data and adds an
       LwVM volume "Linux" (8 GiB by default), ext4. iOS keeps working and
-      keeps its data. See *Where Linux keeps its files* below
+      keeps its data. Checked on iOS 8.4.1 only; other versions were not
+      tried and most likely do not work, but a jailbroken iOS 9 goes back to
+      8.4.1 with Legacy iOS Kit through kDFU, no microcontroller needed
+      ([docs/research/p105-nand-other-ios.md](docs/research/p105-nand-other-ios.md)).
+      See *Where Linux keeps its files* below
 - [x] **Started from iOS, no computer** — the Cascadia app (`app/`) runs
       kloader into a patched iBEC that loads Linux from iOS's System
       partition; the app also updates that kernel from the newest release
@@ -212,6 +216,12 @@ recommends):
 | The kernel's updates | the app, from the newest release (and back) | the computer |
 
 Without either, Linux runs from RAM and forgets everything at reboot.
+
+**The NAND route is checked on iOS 8.4.1 only.** Other iOS versions have not
+been tried, and most likely do not work anyway; the installer and the app
+refuse them. Fortunately an iPad on a jailbroken iOS 9 can go back to 8.4.1
+with [Legacy iOS Kit](https://github.com/LukeZGD/Legacy-iOS-Kit) through kDFU,
+no microcontroller needed. The NFS route works from any jailbroken iOS 7–9.
 
 ### How the NAND is shared with iOS
 
@@ -839,7 +849,9 @@ Build products (`output/`) and stock firmware are not tracked; everything in
   → ~~the L2 cache~~ ✓ → ~~iOS's files off the NAND~~ ✓ (read-only) →
   ~~the GPU~~ ✓ (OpenGL ES 2.0 / GL 2.1) → ~~the NAND as Linux's own disk,
   next to iOS~~ ✓ → ~~started from iOS, no computer~~ ✓ (the Cascadia app).
-- **Open** — a write cache for the NAND (small fsyncs are slow) and TRIM,
+- **Open** — the NAND install on iOS versions other than 8.4.1
+  ([docs/research/p105-nand-other-ios.md](docs/research/p105-nand-other-ios.md)),
+  a write cache for the NAND (small fsyncs are slow) and TRIM,
   DMA for the NAND and the USB link, USB host mode, the headphone jack and
   the microphones, GLSL 1.30 for the GPU.
 

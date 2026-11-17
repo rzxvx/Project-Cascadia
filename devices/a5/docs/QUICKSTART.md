@@ -36,6 +36,7 @@ because the auto-go hook patches an address inside that exact iBEC.
 - a **jailbroken iOS 7–9.3.6** on the iPad itself, for `./cascadia a5 flash
   --kdfu`. [EverPwnage](https://github.com/LukeZGD/EverPwnage) is untethered on
   A5, so this stays a one-command step. No extra hardware at all.
+  The NAND install needs iOS 8.4.1 exactly ([below](#linux-on-the-ipad-itself-nand)).
 
 **A Lightning cable.** A DCSD cable is optional: it carries the UART, and the
 flash script captures it when it is there. The early boot log also goes to the
@@ -92,6 +93,14 @@ default, 4 GiB at least, your choice), makes a volume called "Linux" in that
 space, formats it ext4 and puts the desktop root on it. Then it installs the
 **Cascadia** app on iOS: hold its button and the iPad restarts into Linux,
 with no computer and no cable. Rebooting Linux brings iOS back.
+
+> **iOS 8.4.1 only.** The NAND install and the Cascadia app are checked on
+> iOS 8.4.1 (12H321) only. Other iOS versions have not been tried, and most
+> likely do not work anyway, so both refuse them. Fortunately an iPad on a
+> jailbroken iOS 9 can go back to 8.4.1 with
+> [Legacy iOS Kit](https://github.com/LukeZGD/Legacy-iOS-Kit) through kDFU:
+> no microcontroller needed (the restore wipes the iPad). What other
+> versions would take: [research/p105-nand-other-ios.md](research/p105-nand-other-ios.md).
 
 What it needs: the jailbroken iOS 8.4.1 with OpenSSH (as for `--kdfu`), a
 Mac or a Linux computer (Debian / Ubuntu, Arch or Fedora), and about half an
