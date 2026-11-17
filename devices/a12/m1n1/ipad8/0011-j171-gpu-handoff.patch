@@ -1,0 +1,250 @@
+diff --git a/src/kboot.c b/src/kboot.c
+--- a/src/kboot.c
++++ b/src/kboot.c
+@@ -1896,6 +1896,8 @@
+ 
+     return 0;
+ }
++
++#include "kboot_j171_gpu.inc"
+ 
+ static const char dcpext_aliases[][8] = {
+     "dcpext",  "dcpext0", "dcpext1", "dcpext2", "dcpext3",
+@@ -3054,6 +3056,8 @@
+         return -1;
+     if (dt_setup_sio())
+         return -1;
++    if (dt_setup_j171_gfx())
++        return -1;
+     if (dt_reserve_asc_firmware("/arm-io/isp", "/arm-io/isp0", "isp", false, isp_iova_base()))
+         return -1;
+     if (dt_set_isp_fwdata())
+diff --git a/src/kboot_j171_gpu.inc b/src/kboot_j171_gpu.inc
+new file mode 100644
+--- /dev/null
++++ b/src/kboot_j171_gpu.inc
+@@ -0,0 +1,224 @@
++// SPDX-License-Identifier: MIT
++/* J171/21B91 GPU handoff. No ASC start, PMGR or voltage writes here.
++ * Segment reservation uses m1n1's existing ASC reserved-memory machinery.
++ */
++static int dt_setup_j171_gfx(void)
++{
++    int chosen = fdt_path_offset(dt, "/chosen");
++    if (chosen < 0 || !fdt_getprop(dt, chosen, "cascadia,g11-firmware-handoff", NULL))
++        return 0;
++    if (chip_id != T8020 || !adt_is_compatible(adt, 0, "J171aAP"))
++        bail("G11 J171: expected T8020/J171aAP\n");
++    const char *alias = fdt_get_alias(dt, "gfxasc");
++    if (!alias)
++        bail("G11 J171: missing gfxasc alias\n");
++    int gpu = fdt_path_offset(dt, alias);
++    int asc = adt_path_offset(adt, "/arm-io/gfx-asc");
++    int sgx = adt_path_offset(adt, "/arm-io/sgx");
++    if (gpu < 0 || asc < 0 || sgx < 0)
++        bail("G11 J171: missing GPU node\n");
++    u32 len = 0;
++    const struct adt_segment_ranges *seg = adt_getprop(adt, asc, "segment-ranges", &len);
++    if (!seg || !len || len % sizeof(*seg) || len / sizeof(*seg) > 256)
++        bail("G11 J171: GFX firmware segments absent or invalid\n");
++    u64 dram = 0x800000000, dram_size = mem_size_actual;
++    int achosen = adt_path_offset(adt, "/chosen");
++    if (achosen >= 0) {
++        ADT_GETPROP(adt, achosen, "dram-base", &dram);
++        ADT_GETPROP(adt, achosen, "dram-size", &dram_size);
++    }
++    if (!dram_size || dram + dram_size < dram)
++        bail("G11 J171: invalid DRAM extent\n");
++    unsigned int n = len / sizeof(*seg);
++    int resv = fdt_path_offset(dt, "/reserved-memory");
++    if (resv < 0)
++        bail("G11 J171: no reserved-memory node\n");
++    for (unsigned int i = 0; i < n; i++) {
++        u64 start = seg[i].phys, size = ALIGN_UP((u64)seg[i].size, SZ_16K);
++        if (!seg[i].size || (start & (SZ_16K - 1)) || start < dram ||
++            start + size < start || start + size > dram + dram_size ||
++            seg[i].iova + size < seg[i].iova)
++            bail("G11 J171: invalid firmware extent %u\n", i);
++        for (unsigned int j = 0; j < i; j++) {
++            u64 other_end = seg[j].phys + ALIGN_UP((u64)seg[j].size, SZ_16K);
++            if (start < other_end && seg[j].phys < start + size)
++                bail("G11 J171: overlapping GFX segments %u/%u\n", i, j);
++        }
++        for (int j = 0; j < fdt_num_mem_rsv(dt); j++) {
++            uint64_t other, count;
++            if (fdt_get_mem_rsv(dt, j, &other, &count))
++                bail("G11 J171: bad reservation map\n");
++            if (other + count < other || (start < other + count && other < start + size))
++                bail("G11 J171: GFX overlaps existing reservation\n");
++        }
++        int node;
++        fdt_for_each_subnode(node, dt, resv) {
++            int bytes = 0;
++            const fdt64_t *r = fdt_getprop(dt, node, "reg", &bytes);
++            if (!r)
++                continue;
++            if (bytes % 16)
++                bail("G11 J171: malformed reserved reg\n");
++            for (int j = 0; j < bytes / 16; j++) {
++                u64 other = fdt64_to_cpu(r[2*j]), count = fdt64_to_cpu(r[2*j+1]);
++                if (other + count < other || (start < other + count && other < start + size))
++                    bail("G11 J171: GFX overlaps reserved-memory\n");
++            }
++        }
++        printf("G11 segment %u: PA 0x%lx IOVA 0x%lx size 0x%lx flags 0x%x\n",
++               i, start, seg[i].iova, size, seg[i].unk);
++    }
++    /* Validate live tables before publishing any GPU properties. */
++    u32 count = 0, tables = 0, states = 0, core_len = 0, sram_len = 0;
++    if (ADT_GETPROP(adt, sgx, "gpu-num-perf-states", &states) != 4 ||
++        ADT_GETPROP(adt, sgx, "perf-state-count", &count) != 4 ||
++        ADT_GETPROP(adt, sgx, "perf-state-table-count", &tables) != 4 ||
++        count < 2 || count > 16 || states + 1 != count || !tables || tables > 8)
++        bail("G11 J171: invalid live performance counts\n");
++    const u32 *core = adt_getprop(adt, sgx, "perf-states", &core_len);
++    const u32 *sram = adt_getprop(adt, sgx, "perf-states-sram", &sram_len);
++    u32 expected = count * tables * 8;
++    if (!core || !sram || core_len != expected || sram_len != expected)
++        bail("G11 J171: missing live core/SRAM tables\n");
++    /* Boot-only, non-reentrant handoff. Keep the bounded conversion scratch
++     * off the early boot stack; only validated `expected` bytes are published.
++     */
++    static fdt32_t core_be[16*8*2], sram_be[16*8*2];
++    for (u32 t = 0; t < tables; t++) {
++        for (u32 i = 0; i < count; i++) {
++            u32 k = 2*(t*count+i), freq = core[k];
++            if (freq != sram[k] || freq != core[2*i] || !core[k+1] || !sram[k+1] ||
++                (i == 0 ? freq != 0 : freq <= core[k-2]) || freq % 1000000)
++                bail("G11 J171: invalid live performance row\n");
++            core_be[k] = cpu_to_fdt32(freq); core_be[k+1] = cpu_to_fdt32(core[k+1]);
++            sram_be[k] = cpu_to_fdt32(freq); sram_be[k+1] = cpu_to_fdt32(sram[k+1]);
++        }
++    }
++    /* Preserve native policy words (including IEEE-754 bit patterns), not
++     * host floating-point conversions. Absence remains absence so the Linux
++     * versioned policy builder can apply verified native defaults explicitly.
++     */
++    static const char *const policy_names[] = {
++        "gpu-device-max-power",
++        "gpu-max-power",
++        "gpu-perf-base-pstate",
++        "gpu-perf-filter-drop-threshold",
++        "gpu-perf-filter-time-constant",
++        "gpu-perf-filter-time-constant2",
++        "gpu-perf-integral-gain",
++        "gpu-perf-integral-gain2",
++        "gpu-perf-integral-min-clamp",
++        "gpu-perf-limiter-filter-time-constant",
++        "gpu-perf-proportional-gain",
++        "gpu-perf-proportional-gain2",
++        "gpu-power-sample-period",
++        "gpu-ppm-filter-time-constant-ms",
++        "gpu-ppm-ki",
++        "gpu-ppm-kp",
++        "gpu-pwr-integral-gain",
++        "gpu-pwr-integral-min-clamp",
++        "gpu-pwr-min-duty-cycle",
++        "gpu-pwr-proportional-gain",
++        "gpu-pwr-sample-period-aic-clks",
++        "gpu-avg-power-filter-tc-ms",
++        "gpu-avg-power-input-filter-tc",
++        "gpu-avg-power-ki",
++        "gpu-avg-power-ki-only",
++        "gpu-avg-power-kp",
++        "gpu-avg-power-min-duty-cycle",
++        "gpu-avg-power-target-filter-tc",
++        "gpu-fast-die0-sensor-mask",
++        "gpu-fender-idle-off-delay-ms",
++        "gpu-perf-boost-ce-step",
++        "gpu-perf-boost-min-util",
++        "gpu-perf-reset-iters",
++        "gpu-power-zone-filter-tc-0",
++        "gpu-power-zone-filter-tc-1",
++        "gpu-power-zone-filter-tc-2",
++        "gpu-power-zone-filter-tc-3",
++        "gpu-power-zone-filter-tc-4",
++        "gpu-power-zone-target-0",
++        "gpu-power-zone-target-1",
++        "gpu-power-zone-target-2",
++        "gpu-power-zone-target-3",
++        "gpu-power-zone-target-4",
++        "gpu-power-zone-target-offset-0",
++        "gpu-power-zone-target-offset-1",
++        "gpu-power-zone-target-offset-2",
++        "gpu-power-zone-target-offset-3",
++        "gpu-power-zone-target-offset-4",
++        "gpu-se-engagement-criteria",
++        "gpu-se-filter-time-constant-1",
++        "gpu-se-inactive-threshold",
++        "gpu-se-ki",
++        "gpu-se-ki-1",
++        "gpu-se-kp",
++        "gpu-se-kp-1",
++        "gpu-se-reset-criteria",
++        "gpu-pwr-filter-time-constant",
++        "gpu-perf-tgt-utilization",
++    };
++    fdt32_t policy_words[sizeof(policy_names) / sizeof(policy_names[0])];
++    bool policy_present[sizeof(policy_names) / sizeof(policy_names[0])];
++    for (unsigned int i = 0; i < sizeof(policy_names) / sizeof(policy_names[0]); i++) {
++        u32 bytes = 0, word = 0;
++        const void *raw = adt_getprop(adt, sgx, policy_names[i], &bytes);
++        policy_present[i] = raw != NULL;
++        if (!raw)
++            continue;
++        if (bytes != sizeof(word))
++            bail("G11 J171: invalid policy property %s\n", policy_names[i]);
++        memcpy(&word, raw, sizeof(word));
++        policy_words[i] = cpu_to_fdt32(word);
++    }
++    /* alias/node offsets may move after every FDT mutation; reacquire them. */
++    if (dt_reserve_asc_firmware("/arm-io/gfx-asc", NULL, "gfxasc", false, 0))
++        return -1;
++    for (unsigned int i = 0; i < n; i++)
++        if (fdt_add_mem_rsv(dt, seg[i].phys, ALIGN_UP((u64)seg[i].size, SZ_16K)))
++            bail("G11 J171: reservation map exhausted\n");
++#define GFX_PROP(name, value, bytes) do { \
++    gpu = fdt_path_offset(dt, "gfxasc"); \
++    if (gpu < 0 || fdt_setprop(dt, gpu, name, value, bytes)) \
++        bail("G11 J171: cannot publish %s\n", name); \
++} while (0)
++    GFX_PROP("apple,segment-ranges", seg, len);
++    GFX_PROP("apple,g11-core-perf-states", core_be, expected);
++    GFX_PROP("apple,g11-sram-perf-states", sram_be, expected);
++    fdt32_t v = cpu_to_fdt32(count);
++    GFX_PROP("apple,g11-state-count", &v, 4);
++    v = cpu_to_fdt32(tables);
++    GFX_PROP("apple,g11-table-count", &v, 4);
++    GFX_PROP("apple,g11-firmware-build", "21B91", 6);
++    for (unsigned int i = 0; i < sizeof(policy_names) / sizeof(policy_names[0]); i++) {
++        char property[96];
++        snprintf(property, sizeof(property), "apple,g11-policy-%s", policy_names[i]);
++        if (policy_present[i]) {
++            GFX_PROP(property, &policy_words[i], sizeof(policy_words[i]));
++        } else {
++            /* Remove stale calibration from a reused input FDT as well. */
++            gpu = fdt_path_offset(dt, "gfxasc");
++            int ret = gpu < 0 ? gpu : fdt_delprop(dt, gpu, property);
++            if (ret && ret != -FDT_ERR_NOTFOUND)
++                bail("G11 J171: cannot remove stale policy %s\n", property);
++        }
++    }
++
++    /* Only an explicit second-stage marker enables Linux's firmware driver.
++     * Without the start marker, both nodes remain disabled.
++     */
++    chosen = fdt_path_offset(dt, "/chosen");
++    bool start = fdt_getprop(dt, chosen, "cascadia,g11-start-driver", NULL) != NULL;
++    const char *status = start ? "okay" : "disabled";
++    GFX_PROP("status", status, strlen(status) + 1);
++    gpu = fdt_path_offset(dt, "gfxasc");
++    const fdt32_t *mbox = fdt_getprop(dt, gpu, "mboxes", NULL);
++    int mb = mbox ? fdt_node_offset_by_phandle(dt, fdt32_to_cpu(*mbox)) : -1;
++    if (mb < 0 || fdt_setprop_string(dt, mb, "status", status))
++        bail("G11 J171: cannot set mailbox status\n");
++#undef GFX_PROP
++    printf("G11 handoff: %u reserved segments, %u states/%u tables; driver %s\n",
++           n, count, tables, status);
++    return 0;
++}
++

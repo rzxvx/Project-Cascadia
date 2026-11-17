@@ -1,92 +1,98 @@
-# iPhone XR and XS Max (A12)
+# Cascadia A12 — iPhone XR and iPad 8 Wi-Fi
 
-Linux on the A12 (T8020), booted tethered from DFU.
+Experimental, contributed Linux support for two **distinct** T8020 boards:
 
-| Board | Phone | `A12_BOARD` | Tested |
+| Profile | Device | Board | Boot firmware baseline |
 |---|---|---|---|
-| N841AP | iPhone XR (`iPhone11,8`) | `n841`, the default | by its author: Debian with XFCE over NFS |
-| D331pAP | iPhone XS Max (`iPhone11,6`) | `d331p` | initramfs shell: SSH, display, touch, Wi-Fi and Bluetooth come up |
+| `xr` | iPhone XR / iPhone11,8 | N841AP, BDID `0x0c` | iOS 18.7.10 / 22H374 |
+| `ipad8` | iPad 8 Wi-Fi / iPad11,6 / A2270 | J171aAP, BDID `0x24` | iPadOS 17.1.1 / 21B91 |
 
-State, hardware and to do are in [LINUX_PLAN.md](LINUX_PLAN.md).
-
-The boot reuses the A13 track's method. The T8020 DTS and most kernel
-patches come from [badapple](https://forgejo.toe.quest/kiki/badapple), the
-iPhone XS Max port. One kernel serves both phones; the DTB, m1n1, initramfs
-and firmware are per board.
-
-## XS Max
-
-Prefix every command below with `A12_BOARD=d331p`. The differences:
-
-- `periphery` takes a 16.6.1 (20G81) `.ipsw` for the radio firmware, whose
-  root is not encrypted, instead of the OS image.
-- m1n1 is badapple's series (`m1n1/d331p/`). The XR's starts on the XS Max
-  but never reaches Linux.
-- The iBSS is patched with `--any-im4m`, so iBoot loads m1n1 with any ticket.
-- The touch and radio firmware are in the initramfs, there is nothing to
-  load after boot, and there is no SysCfg step.
-- `inputs` also fetches the GPU firmware, 16.6.1's, which the agx driver was
-  written against, and `boot` sends it before `bootx`. The GPU comes up with
-  a render node; GL and Vulkan need badapple's Mesa in the root filesystem.
-
-## Host
-
-An arm64 Linux host: the initramfs copies the host's busybox and dropbear.
-The tested host was a phone running Kali NetHunter with NFS server support.
-`./cascadia a12 doctor` lists the tools it needs.
-
-You also need this phone's IM4M ticket (`apticket.im4m`) and, for the radios,
-the 22H374 OS image (`094-31934-038.dmg.aea`), see
-[FIRMWARE.md](FIRMWARE.md).
-
-## Build
+**Start with [QUICKSTART.md](QUICKSTART.md).** It is the single current walkthrough
+for device selection, firmware preparation, Debian/NFS, builds, packaging and boot.
 
 ```sh
-./cascadia a12 periphery /path/to/094-31934-038.dmg.aea   # touch and radio firmware
-./cascadia a12 build                                      # m1n1, kernel, DTB, initramfs
-IM4M=/path/to/apticket.im4m ./cascadia a12 inputs         # iBSS and the boot set
-IM4M=/path/to/apticket.im4m ./cascadia a12 pack           # m1n1-linux.img4
+./cascadia a12 --device xr doctor
+./cascadia a12 --device ipad8 doctor
 ```
 
-Without the OS image, `periphery` only makes the touch firmware.
+XR remains the default when no device is selected. Select explicitly when using
+both devices. An environment equivalent is `A12_DEVICE=xr` or `A12_DEVICE=ipad8`.
 
-## Boot
+## What has actually been tested
 
-Put the phone in DFU, then run the line below. `usbliter8ctl` sends the
-patched iBSS, the rest goes over `irecovery`.
+Earlier laboratory payloads reached Debian/XFCE over USB NFS with framebuffer,
+touch, Wi-Fi and UART Bluetooth on both boards. J171 also demonstrated the
+login-screen keyboard/password flow. These are contributor reports, not a
+promise of support or maintainer hardware testing.
 
-```sh
-./cascadia a12 boot
-```
+The separated source workflow subsequently built a shared kernel/m1n1 and
+board-specific payloads, booted both XR and iPad, and passed automatic USB/SSH/NFS
+reconnect tests with the corrected A13-style handoff (now the default). The iPad
+reused the freshly built XR Debian root; this does not validate a separate fresh
+iPad-profile root build. Repeated iPad reconnects passed, but an earlier timeout
+means intermittent recovery is not ruled out. Latest tests confirmed radio
+interfaces/controllers, not complete association/pairing or stability coverage.
+See [rootfs/PROFILES.md](rootfs/PROFILES.md) for lifecycle and test evidence.
+This remains an experimental contributed port, not a fully validated release.
 
-It comes up on USB at `172.16.42.1`, `ssh root@172.16.42.1`. A DCSD cable
-on `/dev/ttyACM0` gets a serial log in `boot/logs/`, it is optional.
+The tested host was an Android phone running Kali NetHunter with a custom kernel
+supporting an NFS server. This is a test environment, not a requirement for using
+the port. Native Linux ARM64 is the documented build/rootfs baseline; other host
+architectures require additional toolchain/emulation setup.
 
-On the first boot, save this phone's SysCfg, then pack again. `pack` picks
-it up and puts the Wi-Fi MAC, calibration and Bluetooth address in the DTB:
+## Design
 
-```sh
-bash devices/a12/host/read-syscfg.sh
-IM4M=/path/to/apticket.im4m ./cascadia a12 pack
-```
+- Small initramfs plus a separate host-exported Debian desktop; do not embed a
+  desktop or Wi-Fi/Bluetooth firmware into the kernel payload.
+- Separate per-device SysCfg, Apple inputs, DT/initramfs, manifests and boot logs.
+- One shared kernel/m1n1 source/build tree. A second desktop root is **not**
+  created by selecting another device.
+- Pristine Apple DeviceTree for iBoot, and a separate board-specific Linux DTB.
+- RAM-only boot transfers. No iOS restore/downgrade or internal-storage writes
+  are part of this procedure.
+- A12-owned, hash-recorded copies of its former A13 build dependencies.
 
-## Desktop
+## Reference documents
 
-The desktop is a Debian root the host serves over NFS, see
-[DEBIAN_XFCE_NFS.md](DEBIAN_XFCE_NFS.md):
+- [QUICKSTART.md](QUICKSTART.md) — current command sequence and prerequisites.
+- [DISPLAY.md](DISPLAY.md) — iPad native scanout, brightness and desktop setup.
+- [FIRMWARE.md](FIRMWARE.md) — IPSW sources, SysCfg, radio vendors and extraction.
+- [DEBIAN_XFCE_NFS.md](DEBIAN_XFCE_NFS.md) — root reuse, networking and recovery.
+- [DEVICE_SEPARATION.md](DEVICE_SEPARATION.md) — paths, guards and refactor limits.
+- [rootfs/PROFILES.md](rootfs/PROFILES.md) — accounts, greeter and RAM watchdog.
+- [boot/README.md](boot/README.md) — generated boot files and upload order.
+- [vendor/README.md](vendor/README.md) — frozen dependency provenance.
+- [LINUX_PLAN.md](LINUX_PLAN.md) and [boot/IPAD8_RADIO.md](boot/IPAD8_RADIO.md) —
+  chronological engineering evidence; older paths/commands there are historical,
+  not an alternative current installation guide.
 
-```sh
-sudo ./cascadia a12 build rootfs
-sudo ./cascadia a12 nfs on
-./cascadia a12 build initramfs
-IM4M=/path/to/apticket.im4m ./cascadia a12 pack
-./cascadia a12 boot radios       # boot, then load Wi-Fi and Bluetooth
-```
+Apple binaries, tickets, factory identifiers/calibration, private keys, generated
+payloads, desktop roots and logs stay local and ignored by Git.
 
-Apple firmware, the ticket, SysCfg, payloads and logs stay local and are
-ignored by git. Nothing is written to the phone's storage.
+## Merged XS Max support
+
+The contributed D331p (`iPhone11,6`) path from kieroid is selected with
+`./cascadia a12 --device xsmax COMMAND` or the compatible `A12_BOARD=d331p`.
+XR remains the default; conflicting selectors are rejected. Inputs, SysCfg,
+DTB, m1n1, initramfs, NFS settings and bootsets remain per device.
+
+The XS Max uses BadApple's m1n1 patch series, `--any-im4m` iBSS patching,
+D331p touch operations, embedded BCM4377 PCIe radios and pinned iOS 16.6.1
+GPU firmware. It does not require SysCfg to package its shell boot. Without
+an NFS configuration it boots its initramfs shell. `boot radios` is for
+XR/iPad external firmware loading; XS Max uses `boot` instead.
+
+For XS Max, `periphery /path/to/16.6.1.ipsw` extracts radio firmware.
+The shell/SSH/display/touch/radio/GPU-node result is reported by kieroid;
+this merged profile has not yet been hardware-tested here. The later iPad GPU/native-display integration is documented in
+[GPU.md](GPU.md) and [DISPLAY.md](DISPLAY.md); it is not an XS validation result.
+
+On non-arm64 hosts, initramfs dropbear and libraries are taken from Debian
+arm64 packages. BlueZ host-copy bundles still require arm64. Native Linux
+m1n1 builds are available with `M1N1_DOCKER=0`.
 
 ## Credits
+
 
 - **dr1408**: the XR port: N841 DTS, the HBPP touch driver, the BCM4357 and
   N88 radio patches, and the boot, NFS and firmware scripts
@@ -103,3 +109,18 @@ ignored by git. Nothing is written to the phone's storage.
   pinmux and RTS/CTS
 - **Paradigm Shift**: usbliter8
 - **blacktop**: [ipsw](https://github.com/blacktop/ipsw)
+
+GPU build/firmware/Mesa instructions: [GPU.md](GPU.md). The iPad built-in GPU path has passed boot, pixel-readback and temporary GPU-desktop tests; see the documented limits.
+
+The iPad profile selects guarded native H11P scanout and SPMI/SMC brightness
+with writes enabled by default and an inherited-brightness cap. A normal-profile
+boot verified automatic AGX desktop selection and the user confirmed its slider.
+The old 4096-job render stop has been removed and host-tested, but that fix still
+needs a fresh hardware endurance test. See [DISPLAY.md](DISPLAY.md) and
+[GPU.md](GPU.md) for evidence, rootfs setup and limits.
+
+## iPad 8 speakers
+
+See [AUDIO.md](AUDIO.md) for the speaker port, SIO handoff/power fixes, native
+channel mapping, live attenuation, optional Omarchy controls and reproduction
+status. Audio resources and policy are iPad-only; XR/XS audio is unchanged.

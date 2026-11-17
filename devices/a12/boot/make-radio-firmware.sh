@@ -7,7 +7,9 @@ set -euo pipefail
 
 A12="$(cd "$(dirname "$0")/.." && pwd)"
 ROOT="$(cd "$A12/.." && pwd)"
-OUT="$A12/boot/inputs/brcm"
+source "$A12/profile.sh"
+[ "$A12_DEVICE" != ipad8 ] || { echo "XR OS extraction refuses an iPad profile" >&2; exit 2; }
+OUT="$A12_INPUTS/brcm"
 REV=03db9c6ae04141eb940f3b9f56d446f50d57fadf
 HCDPACK_SHA=ad2f5f370501ac59cd822468c064b56a7b332dcdbbf68a67e01c1ed02e75d4ef
 BLUETOOL_SHA=296cc1b898c38c0f8fa4de9f30342f6d78228c1a267360a4d4b7e5cdcd66ccd6
@@ -23,9 +25,9 @@ if [[ "${A12_BOARD:-n841}" == d331p ]]; then
   trap 'rm -rf -- "$tmp"' EXIT
   ipsw extract --files --pattern '.*(C-4377__s-B2/|bluetooth/BCM4377B2).*' -o "$tmp" "$1"
   python3 "$A12/boot/d331p-bcmfw.py" "$(ls -d "$tmp"/*/root | head -1)" "$tmp/out"
-  mkdir -p "$A12/boot/inputs/d331p/brcm"
-  cp "$tmp/out/lib/firmware/brcm/"* "$A12/boot/inputs/d331p/brcm/"
-  echo "XS Max Wi-Fi and Bluetooth firmware ready in $A12/boot/inputs/d331p/brcm"
+  mkdir -p "$A12_INPUTS/brcm"
+  cp "$tmp/out/lib/firmware/brcm/"* "$A12_INPUTS/brcm/"
+  echo "XS Max Wi-Fi and Bluetooth firmware ready in $A12_INPUTS/brcm"
   exit 0
 fi
 
@@ -60,7 +62,7 @@ printf '%s  %s\n' "$BLUETOOL_SHA" "$bluetool" | sha256sum -c -
 
 echo "Converting Broadcom Wi-Fi files for the yodak board..."
 mkdir -p "$tmp/converted"
-python3 "$ROOT/a13/tools/brcmfw.py" "$wifi" "$tmp/converted" yodak
+python3 "$A12/vendor/a13-tools/brcmfw.py" "$wifi" "$tmp/converted" yodak
 
 echo "Building pinned Project Sandcastle hcdpack..."
 curl -fsSL "https://raw.githubusercontent.com/corellium/projectsandcastle/$REV/hcdpack/hcdpack.c" \

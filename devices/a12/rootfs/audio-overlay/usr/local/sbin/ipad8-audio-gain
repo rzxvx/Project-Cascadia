@@ -1,0 +1,10 @@
+#!/bin/sh
+set -eu
+p=/sys/module/apple_j171_speakers/parameters/attenuation
+tr '\000' '\n' </proc/device-tree/compatible | grep -qx apple,j171a || exit 1
+[ -r "$p" ] || { echo 'This kernel lacks adjustable attenuation' >&2; exit 1; }
+case "${1:-status}" in
+ status) cat "$p";;
+ 1|2|4) [ "$(id -u)" = 0 ] || { echo 'Run with sudo' >&2; exit 1; }; printf '%s\n' "$1" > "$p"; printf 'PCM divisor: '; cat "$p";;
+ *) echo 'Usage: sudo ipad8-audio-gain {4|2|1|status}' >&2; exit 2;;
+esac

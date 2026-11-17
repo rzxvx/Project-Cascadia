@@ -1,0 +1,103 @@
+{
+  "repository": "https://github.com/rzxvx/Project-Cascadia",
+  "files": [
+    {
+      "source": "devices/a13/m1n1/0001-t8030-ctrr-guard-payload-cache-clean-usb-drd.patch",
+      "destination": "m1n1/base/0001-t8030-ctrr-guard-payload-cache-clean-usb-drd.patch",
+      "sha256": "5036e99b057aa72795fd32ba6146aecb8a2a73892e4729033d9f252d7697c740",
+      "source_tree_commit": "267b4f628dd5ea97c2385ea3cb0e5fe2c095d8a1",
+      "differs_from_committed_source": false
+    },
+    {
+      "source": "devices/a13/m1n1/0002-smp-start-secondary-cpus-on-t8030.patch",
+      "destination": "m1n1/base/0002-smp-start-secondary-cpus-on-t8030.patch",
+      "sha256": "febdf1db9c8e97756b68718a253661f9f74f4a44c6250fa134ecdcf24da3bd02",
+      "source_tree_commit": "267b4f628dd5ea97c2385ea3cb0e5fe2c095d8a1",
+      "differs_from_committed_source": false
+    },
+    {
+      "source": "devices/a13/m1n1/0003-chickens-add-a13-lightning-thunder.patch",
+      "destination": "m1n1/base/0003-chickens-add-a13-lightning-thunder.patch",
+      "sha256": "bf67ea5e3a89f33953ddc3d277da9c62ef3a49657c440c4cc5c51569974d34f9",
+      "source_tree_commit": "267b4f628dd5ea97c2385ea3cb0e5fe2c095d8a1",
+      "differs_from_committed_source": false
+    },
+    {
+      "source": "devices/a13/m1n1/0004-kboot-n104-touchscreen-calibration.patch",
+      "destination": "m1n1/base/0004-kboot-n104-touchscreen-calibration.patch",
+      "sha256": "807e863f5d1c8579c2cd5379af2f5d9bf12c92421d7d2ae07fda0cae31a5ce5f",
+      "source_tree_commit": "267b4f628dd5ea97c2385ea3cb0e5fe2c095d8a1",
+      "differs_from_committed_source": false
+    },
+    {
+      "source": "devices/a13/m1n1/0005-pcie-t8030-controller.patch",
+      "destination": "m1n1/base/0005-pcie-t8030-controller.patch",
+      "sha256": "bbf0b1bf81af622f3dce513d93e67ddf26f17c17b6dc478a28dff5851eeb4cea",
+      "source_tree_commit": "267b4f628dd5ea97c2385ea3cb0e5fe2c095d8a1",
+      "differs_from_committed_source": false
+    },
+    {
+      "source": "devices/a13/m1n1/0006-kboot-append-iboot-ramdisk.patch",
+      "destination": "m1n1/base/0006-kboot-append-iboot-ramdisk.patch",
+      "sha256": "d3f47aafacebb79fd49c13562569eb92701ce6e615a41f5bbe93f64d93f838fd",
+      "source_tree_commit": "267b4f628dd5ea97c2385ea3cb0e5fe2c095d8a1",
+      "differs_from_committed_source": false
+    },
+    {
+      "source": "devices/a13/m1n1/0007-proxyclient-agx-t8030.patch",
+      "destination": "m1n1/base/0007-proxyclient-agx-t8030.patch",
+      "sha256": "3549c2e1347ee0bda900ed067019649e14f4915931c93d1368aea0f8c7b41bd5",
+      "source_tree_commit": "267b4f628dd5ea97c2385ea3cb0e5fe2c095d8a1",
+      "differs_from_committed_source": false
+    },
+    {
+      "source": "devices/a13/m1n1/0008-uart-enable-receiver.patch",
+      "destination": "m1n1/base/0008-uart-enable-receiver.patch",
+      "sha256": "31ba45031c8fcf9456166faa0d7d01cf31a02b57833faae903d7bec917053825",
+      "source_tree_commit": "267b4f628dd5ea97c2385ea3cb0e5fe2c095d8a1",
+      "differs_from_committed_source": false
+    },
+    {
+      "source": "devices/a13/m1n1/0009-usb-a13-ausb-phy.patch",
+      "destination": "m1n1/base/0009-usb-a13-ausb-phy.patch",
+      "sha256": "f231cc08bcf2b5d4bfded96e1731b82a6d12cb9133cf3890ceca4a843c3b787c",
+      "source_tree_commit": "267b4f628dd5ea97c2385ea3cb0e5fe2c095d8a1",
+      "differs_from_committed_source": false
+    },
+    {
+      "source": "devices/a13/m1n1/0010-usb-dwc3-trb-length.patch",
+      "destination": "m1n1/base/0010-usb-dwc3-trb-length.patch",
+      "sha256": "b4cd8148bcbaa913da86a56f425ce62a3c656d2c07791bde9ce514486a712fb0",
+      "source_tree_commit": "267b4f628dd5ea97c2385ea3cb0e5fe2c095d8a1",
+      "differs_from_committed_source": false
+    },
+    {
+      "source": "devices/a13/tools/mtfw.py",
+      "destination": "vendor/a13-tools/mtfw.py",
+      "sha256": "bf8166883b3ca84d37e53b29fe48997abb0f6afe8ce06aadfe65d14b40f264f8",
+      "source_tree_commit": "267b4f628dd5ea97c2385ea3cb0e5fe2c095d8a1",
+      "differs_from_committed_source": true
+    },
+    {
+      "source": "devices/a13/tools/brcmfw.py",
+      "destination": "vendor/a13-tools/brcmfw.py",
+      "sha256": "2870fa80f65869236e506b5238a7f58af32d66716f92d2cca1a9747680224b1b",
+      "source_tree_commit": "267b4f628dd5ea97c2385ea3cb0e5fe2c095d8a1",
+      "differs_from_committed_source": false
+    },
+    {
+      "source": "devices/a13/tools/syscfg.py",
+      "destination": "vendor/a13-tools/syscfg.py",
+      "sha256": "8d97d0bd943e20d838e20f220b67883f5ad2af99d78b0ad3eafe2e0e4f0e28d2",
+      "source_tree_commit": "267b4f628dd5ea97c2385ea3cb0e5fe2c095d8a1",
+      "differs_from_committed_source": false
+    },
+    {
+      "source": "devices/a13/usbliter8ctl",
+      "destination": "vendor/a13-tools/usbliter8ctl",
+      "sha256": "30f0cccee9ac359ac0bee11e165f8bd3f23849c913f4b5a8c4fc0ee3be7377b3",
+      "source_tree_commit": "267b4f628dd5ea97c2385ea3cb0e5fe2c095d8a1",
+      "differs_from_committed_source": false
+    }
+  ]
+}

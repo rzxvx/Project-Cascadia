@@ -1,15 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 A12="$(cd "$(dirname "$0")/.." && pwd)"
-OUT="$A12/build/payload"
-ROOT="$A12/build/initramfs-root"
-# A12_BOARD: n841 (XR, the default) or d331p (XS Max)
-BOARD="${A12_BOARD:-n841}"
+source "$A12/profile.sh"
+BOARD="$A12_BOARD"
 INITRAMFS=initramfs.cpio.gz
-[ "$BOARD" = n841 ] || INITRAMFS="initramfs-$BOARD.cpio.gz"
-
-# busybox, dropbear and their libraries come from the host on arm64. On other
-# hosts they come from Debian's arm64 packages, unpacked into SYS.
 SYS=
 if [ "$(uname -m)" != aarch64 ]; then
     SYS="$A12/build/initramfs-arm64"
@@ -28,9 +22,21 @@ if [ "$(uname -m)" != aarch64 ]; then
         done
     fi
 fi
+
+USBWATCH_MODE=${A12_USBWATCH_MODE:-a13}
+case "$USBWATCH_MODE" in debian|a13) ;; *) echo 'A12_USBWATCH_MODE must be debian or a13' >&2; exit 2;; esac
+OUT="$A12_PAYLOAD"
+ROOT="$A12/build/devices/$A12_DEVICE/initramfs-root"
+# Prepare only this board's firmware; stale files for another board are ignored.
+bash "$A12/boot/make-touch-firmware.sh" "$A12_BOARD"
 rm -rf "$ROOT"
 mkdir -p "$ROOT"/{bin,sbin,usr/bin,usr/sbin,proc,sys,dev,tmp,etc/dropbear,etc/bluetooth,etc/dbus-1/system.d,run,var/run,root/.ssh,usr/share/dbus-1/system.d,usr/share/dbus-1/system-services}
-cp "$SYS/usr/bin/busybox" "$ROOT/bin/busybox"
+if [ "$USBWATCH_MODE" = a13 ]; then
+    bash "$A12/initramfs/fetch-static-busybox.sh"
+    install -m 755 "$A12/build/tools/busybox-static/extracted/usr/bin/busybox" "$ROOT/bin/busybox"
+else
+    cp "$SYS/usr/bin/busybox" "$ROOT/bin/busybox"
+fi
 ln -s busybox "$ROOT/bin/sh"
 copy_deps() {
     if [ -z "$SYS" ]; then
@@ -61,7 +67,7 @@ copy_deps() {
         copy_deps "${src#"$SYS"}"
     done
 }
-copy_deps /usr/bin/busybox
+[ "$USBWATCH_MODE" = a13 ] || copy_deps /usr/bin/busybox
 
 # Key-only SSH over USB Ethernet.  Keep the host identity stable between
 # initramfs rebuilds, while accepting every public key of the user building it.
@@ -87,11 +93,9 @@ messagebus:x:100:
 bluetooth:x:101:
 EOF
 echo /bin/sh > "$ROOT/etc/shells"
-case "$BOARD" in
-n841) echo xr-linux > "$ROOT/etc/hostname"; echo 'iPhone XR Linux' > "$ROOT/etc/usb-product" ;;
-d331p) echo xsmax-linux > "$ROOT/etc/hostname"; echo 'iPhone XS Max Linux' > "$ROOT/etc/usb-product" ;;
-esac
-[ ! -s "$A12/build/nfsroot" ] || install -m 644 "$A12/build/nfsroot" "$ROOT/etc/nfsroot"
+echo "$A12_DEVICE-linux" > "$ROOT/etc/hostname"
+printf '%s Linux\n' "$A12_LABEL" > "$ROOT/etc/usb-product"
+[ ! -s "$A12_NFSROOT" ] || install -m 644 "$A12_NFSROOT" "$ROOT/etc/nfsroot"
 cat > "$ROOT/etc/udhcpd.conf" <<'EOF'
 start 172.16.42.2
 end 172.16.42.2
@@ -135,35 +139,35 @@ while :; do
     }
 done
 WATCH
+if [ "$USBWATCH_MODE" = a13 ]; then
+    install -m 755 "$A12/initramfs/usbwatch-a13" "$ROOT/sbin/usbwatch"
+    touch "$ROOT/etc/cascadia-a13-usbwatch"
+fi
 chmod 755 "$ROOT/sbin/usbwatch"
 
-# Matching XR touch firmware, generated from N841_Multitouch.im4p.  The
-# kernel driver will keep retrying harmlessly if a diagnostic build omits it.
-if [ "$BOARD" = n841 ] && [ -s "$A12/build/touch/n841-mtfw.bin" ]; then
-    mkdir -p "$ROOT/lib/firmware/apple"
-    install -m 644 "$A12/build/touch/n841-mtfw.bin" \
-        "$ROOT/lib/firmware/apple/n841-mtfw.bin"
-    install -m 644 "$A12/build/touch/n841-mtcal.bin" \
-        "$ROOT/lib/firmware/apple/n841-mtcal.bin"
-fi
-
-# XR BCM4357 B1 (yodak) firmware extracted from the matching iOS root.  The
-# kernel's firmware fallback is disabled, so a missing board-specific name
-# fails immediately instead of stalling boot for a minute.
-if [ "$BOARD" = n841 ] && [ "${XR_EMBED_BRCM_FIRMWARE:-0}" = 1 ] && [ -d "$A12/boot/inputs/brcm" ]; then
-    mkdir -p "$ROOT/lib/firmware/brcm"
-    find "$A12/boot/inputs/brcm" -maxdepth 1 -type f -exec \
-        install -m 644 {} "$ROOT/lib/firmware/brcm/" \;
-fi
+# Embed only the selected board's touch payload, never either board's radios.
+mkdir -p "$ROOT/lib/firmware/apple"
+case "$A12_DEVICE" in
+    xr) for name in n841-mtfw.bin n841-mtcal.bin; do
+            install -m 644 "$A12_TOUCH/$name" "$ROOT/lib/firmware/apple/$name"
+        done ;;
+    xsmax) install -m 644 "$A12_TOUCH/d331p-mtfw.bin" "$ROOT/lib/firmware/apple/" ;;
+    ipad8) install -m 600 "$A12_TOUCH/j171a-mtfw.bin" "$ROOT/lib/firmware/apple/"
+        for key in MtCl FfCl MtDO FPCL MtPc PBCL HD2C; do
+            cal="$A12_TOUCH/private/j171a-$key.bin"
+            [ ! -s "$cal" ] || install -m 600 "$cal" "$ROOT/lib/firmware/apple/"
+        done ;;
+esac
+printf '%s\n' "$A12_DEVICE" > "$ROOT/etc/cascadia-device"
 
 # The XS Max's touch op list and BCM4377 firmware go in the initramfs, as in
 # badapple.
 if [ "$BOARD" = d331p ]; then
     mkdir -p "$ROOT/lib/firmware/apple" "$ROOT/lib/firmware/brcm"
-    [ ! -s "$A12/build/touch/d331p-mtfw.bin" ] ||
-        install -m 644 "$A12/build/touch/d331p-mtfw.bin" "$ROOT/lib/firmware/apple/"
-    [ ! -d "$A12/boot/inputs/d331p/brcm" ] ||
-        find "$A12/boot/inputs/d331p/brcm" -maxdepth 1 -type f -exec \
+    [ ! -s "$A12_TOUCH/d331p-mtfw.bin" ] ||
+        install -m 644 "$A12_TOUCH/d331p-mtfw.bin" "$ROOT/lib/firmware/apple/"
+    [ ! -d "$A12_INPUTS/brcm" ] ||
+        find "$A12_INPUTS/brcm" -maxdepth 1 -type f -exec \
             install -m 644 {} "$ROOT/lib/firmware/brcm/" \;
 fi
 
@@ -209,7 +213,7 @@ if [ -n "$udc" ]; then
     echo 0x02 > bDeviceSubClass
     echo 0x01 > bDeviceProtocol
     mkdir -p strings/0x409 configs/c.1/strings/0x409
-    echo XR-Linux > strings/0x409/serialnumber
+    echo Cascadia-A12-Linux > strings/0x409/serialnumber
     echo 'Project Cascadia' > strings/0x409/manufacturer
     cat /etc/usb-product > strings/0x409/product
     echo 'ACM + ECM' > configs/c.1/strings/0x409/configuration
@@ -224,7 +228,12 @@ if [ -n "$udc" ]; then
         cd /
         ifconfig usb0 172.16.42.1 netmask 255.255.255.0 up 2>/dev/null || true
         touch /tmp/udhcpd.leases
-        setsid /sbin/usbwatch </dev/null >/dev/null 2>&1 &
+        if [ -e /etc/cascadia-a13-usbwatch ]; then
+            # A13: DHCP alone during root discovery; watchdog only at handoff.
+            udhcpd /etc/udhcpd.conf
+        else
+            setsid /sbin/usbwatch </dev/null >/dev/null 2>&1 &
+        fi
         /usr/sbin/dropbear -R -E -s -p 22 2>/tmp/dropbear.log && \
             echo '[usb] SSH ready: ssh root@172.16.42.1'
         (
@@ -234,6 +243,7 @@ if [ -n "$udc" ]; then
                 sleep 1
             done
         ) &
+        USB_CONSOLE_PID=$!
 
         # The iPhone 11 port keeps Alpine outside rkrn and switches to a host
         # NFS export after USB ECM is ready.  Use the same proven NFSv3 flow
@@ -262,14 +272,26 @@ if [ -n "$udc" ]; then
                 cp /etc/dropbear/dropbear_ed25519_host_key /newroot/etc/dropbear/
                 chmod 700 /newroot/root /newroot/root/.ssh
                 chmod 600 /newroot/root/.ssh/authorized_keys
+                # Stop the initramfs console loop before its commands disappear.
+                kill "$USB_CONSOLE_PID" 2>/dev/null || true
+                wait "$USB_CONSOLE_PID" 2>/dev/null || true
                 killall dropbear 2>/dev/null || true
+                # Process discovery needs the original /proc: clean before moving it.
+                killall usbwatch 2>/dev/null || true
+                killall udhcpd 2>/dev/null || true
+                if [ -e /etc/cascadia-a13-usbwatch ]; then
+                    umount /tmp
+                fi
                 mkdir -p /newroot/dev /newroot/proc /newroot/sys /newroot/run
                 mount -t tmpfs -o mode=755 tmpfs /newroot/run
                 mkdir -p /newroot/run/cascadia
                 mount --move /dev /newroot/dev
                 mount --move /proc /newroot/proc
                 mount --move /sys /newroot/sys
-                killall usbwatch 2>/dev/null || true
+                if [ -e /etc/cascadia-a13-usbwatch ]; then
+                    touch /newroot/run/cascadia/a13-usbwatch
+                    echo '[usb] A13-style static RAM watchdog handoff; Debian replacement disabled'
+                fi
                 cp /bin/busybox /sbin/usbwatch /etc/udhcpd.conf /newroot/run/cascadia/
                 BB=/run/cascadia/busybox UDHCPD_CONF=/run/cascadia/udhcpd.conf \
                     setsid chroot /newroot /run/cascadia/busybox sh /run/cascadia/usbwatch </dev/null >/dev/null 2>&1 &
@@ -277,6 +299,10 @@ if [ -n "$udc" ]; then
             fi
             echo "[nfs] mount failed; staying in recovery initramfs"
             umount /newroot 2>/dev/null || true
+        fi
+        if [ -e /etc/cascadia-a13-usbwatch ]; then
+            # Only the recovery/fallback path reaches here, as on A13.
+            setsid /sbin/usbwatch </dev/null >/dev/null 2>&1 &
         fi
     else
         echo '[usb] gadget bind failed'

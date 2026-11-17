@@ -1,0 +1,13 @@
+diff --git a/drivers/video/backlight/apple_pmic_bl.c b/drivers/video/backlight/apple_pmic_bl.c
+index ba58a202ff41..03546a381f59 100644
+--- a/drivers/video/backlight/apple_pmic_bl.c
++++ b/drivers/video/backlight/apple_pmic_bl.c
+@@ -64,6 +64,8 @@ static int apple_pmic_bl_get_brightness(struct backlight_device *bl)
+ 		case PMIC_TYPE_ARIA:
+ 			return ((cmd[1] & 7) << 8) | (cmd[0] & 0xff);
+ 	}
++
++	return -EINVAL;
+ }
+ 
+ static const struct backlight_ops apple_pmic_bl_ops = {

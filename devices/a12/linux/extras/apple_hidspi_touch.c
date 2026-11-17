@@ -35,13 +35,17 @@
  * report_touches).
  */
 
+#include <linux/bitrev.h>
+#include <linux/completion.h>
 #include <linux/crc16.h>
 #include <linux/delay.h>
 #include <linux/firmware.h>
+#include <linux/gpio/consumer.h>
 #include <linux/i2c.h>
 #include <linux/input.h>
 #include <linux/input/mt.h>
 #include <linux/input/touchscreen.h>
+#include <linux/interrupt.h>
 #include <linux/kthread.h>
 #include <linux/mfd/macsmc.h>
 #include <linux/module.h>
@@ -55,6 +59,18 @@
 #define LOAD_INIT		0
 #define LOAD_BLOB		1
 #define LOAD_CAL		2
+#define LOAD_WAIT_IRQ		3
+#define LOAD_CONFIG		4
+#define LOAD_RAW_XFER		5
+#define LOAD_CAL_V2		6
+
+#define FW_CONFIG_WORDS		11
+#define FW_CONFIG_MIN_DMA	BIT(0)
+#define FW_CONFIG_Z2_DELAY	BIT(1)
+#define FW_CONFIG_CS_DELAY	BIT(2)
+#define FW_CONFIG_CPHA		BIT(3)
+#define FW_CONFIG_CPOL		BIT(4)
+#define RAW_XFER_RX_BIT_REVERSE	BIT(0)
 
 #define HBPP_CHUNK		0x3f0
 #define HBPP_DATA_OK		0x4bc1
@@ -95,8 +111,32 @@ struct finger {
 	__le16 multi;
 } __packed;
 
+/*
+ * The phone controller and J171a use the same high-level Z2/HIDSPI format,
+ * but not the same HBPP transaction contract.  Keep the proven XR path as
+ * the default and select the iPad behaviour only from its exact compatible.
+ */
+struct ahtouch_variant {
+	const char *name;
+	u16 hbpp_version;
+	bool ack_in_message;
+};
+
+static const struct ahtouch_variant ahtouch_xr = {
+	.name = "XR",
+	.hbpp_version = 0x105,
+};
+
+static const struct ahtouch_variant ahtouch_j171a = {
+	.name = "J171a",
+	.hbpp_version = 0x104,
+	.ack_in_message = true,
+};
+
 struct ahtouch {
 	struct spi_device *spi;
+	const struct ahtouch_variant *variant;
+	struct gpio_desc *reset_gpio;
 	struct input_dev *input;
 	struct touchscreen_properties props;	/* swap only; inversion below */
 	int min_x, max_x, min_y, max_y;		/* the panel's raw range, from the DT */
@@ -104,6 +144,11 @@ struct ahtouch {
 	DECLARE_BITMAP(down, 256);		/* finger ids reported down */
 	DECLARE_BITMAP(prev, 256);		/* finger ids in the previous frame */
 	struct task_struct *thread;
+	struct completion boot_irq;
+	bool irq_enabled;
+	u32 bpw16_min_len;
+	u32 z2_delay_us;
+	u32 cs_delay_us;
 	const char *fw_name;
 	const char *cal_name;
 	u8 *tx, *rx;		/* DMA-safe, BUF_LEN */
@@ -158,6 +203,109 @@ static int hbpp_ack(struct ahtouch *ts)
 	return ret ? ret : get_unaligned_be16(ts->rx);
 }
 
+static irqreturn_t ahtouch_irq(int irq, void *data)
+{
+	struct ahtouch *ts = data;
+
+	complete(&ts->boot_irq);
+	return IRQ_HANDLED;
+}
+
+/* HoolockLinux's HBPP 1.04 transport: payload and ACK are separate CS windows. */
+static int hbpp14_send_blob(struct ahtouch *ts, const u8 *data, size_t len,
+			    bool init)
+{
+	struct spi_transfer blob = {
+		.tx_buf = data,
+		.len = len,
+		.bits_per_word = (!init && len >= ts->bpw16_min_len) ? 16 : 8,
+	};
+	int status, ret;
+
+	if (!len)
+		return -EINVAL;
+	if (init) {
+		if (len != 4 || memcmp(data, "\x1a\xa1\x18\xe1", 4))
+			return -EINVAL;
+		memset(ts->rx, 0, len);
+		blob.rx_buf = ts->rx;
+	}
+	ret = spi_sync_transfer(ts->spi, &blob, 1);
+	if (ret)
+		return ret;
+	if (init && (ts->rx[0] != 0x1f || ts->rx[1] != 0x01)) {
+		dev_err(&ts->spi->dev, "HBPP14 readiness reply %*ph\n", 4, ts->rx);
+		return -EPROTO;
+	}
+	status = hbpp_ack(ts);
+	if (status < 0)
+		return status;
+	if (ts->z2_delay_us)
+		usleep_range(ts->z2_delay_us, ts->z2_delay_us + 50);
+	dev_dbg(&ts->spi->dev, "HBPP14 %s len %zu status %04x\n",
+		init ? "ready" : "blob", len, status);
+	return 0;
+}
+
+static int hbpp14_raw_xfer(struct ahtouch *ts, const u8 *data, size_t size)
+{
+	struct spi_transfer xfer = { .bits_per_word = 8 };
+	u32 tx_len, rx_len, flags, len;
+	unsigned int i;
+	int ret;
+
+	if (size < 12)
+		return -EINVAL;
+	tx_len = get_unaligned_le32(data);
+	rx_len = get_unaligned_le32(data + 4);
+	flags = get_unaligned_le32(data + 8);
+	if (tx_len > 64 || rx_len > 64 || flags & ~RAW_XFER_RX_BIT_REVERSE ||
+	    size != 12 + tx_len || (tx_len && rx_len && tx_len != rx_len) ||
+	    (!tx_len && !rx_len))
+		return -EINVAL;
+	len = max(tx_len, rx_len);
+	if (tx_len)
+		xfer.tx_buf = data + 12;
+	if (rx_len) {
+		memset(ts->rx, 0, rx_len);
+		xfer.rx_buf = ts->rx;
+	}
+	xfer.len = len;
+	ret = spi_sync_transfer(ts->spi, &xfer, 1);
+	if (ret)
+		return ret;
+	if (flags & RAW_XFER_RX_BIT_REVERSE)
+		for (i = 0; i < rx_len; i++)
+			ts->rx[i] = bitrev8(ts->rx[i]);
+	dev_dbg(&ts->spi->dev, "HBPP14 raw tx=%u rx=%u flags=%#x reply=%*ph\n",
+		tx_len, rx_len, flags, min(rx_len, 16U), ts->rx);
+	return 0;
+}
+
+static int hbpp14_apply_config(struct ahtouch *ts, const u8 *data, size_t size)
+{
+	struct spi_device *spi = ts->spi;
+	u32 valid, mode = spi->mode;
+
+	if (size < FW_CONFIG_WORDS * sizeof(__le32))
+		return -EINVAL;
+	valid = get_unaligned_le32(data);
+	if ((valid & FW_CONFIG_MIN_DMA) && get_unaligned_le32(data + 4))
+		ts->bpw16_min_len = get_unaligned_le32(data + 4);
+	if (valid & FW_CONFIG_Z2_DELAY)
+		ts->z2_delay_us = get_unaligned_le32(data + 8);
+	if (valid & FW_CONFIG_CS_DELAY)
+		ts->cs_delay_us = get_unaligned_le32(data + 12);
+	if (valid & FW_CONFIG_CPHA)
+		mode = get_unaligned_le32(data + 16) ? mode | SPI_CPHA : mode & ~SPI_CPHA;
+	if (valid & FW_CONFIG_CPOL)
+		mode = get_unaligned_le32(data + 20) ? mode | SPI_CPOL : mode & ~SPI_CPOL;
+	spi->mode = mode;
+	dev_info(&spi->dev, "HBPP14 config valid=%#x min-dma=%u delay=%u/%u mode=%#x\n",
+		 valid, ts->bpw16_min_len, ts->z2_delay_us, ts->cs_delay_us, mode);
+	return spi_setup(spi);
+}
+
 static bool hbpp_status_word(u16 w)
 {
 	return w == 0x18e1 || w == 0x1aa1 || w == 0x1f01 || w == 0x4879 ||
@@ -192,19 +340,103 @@ static int hbpp_send(struct ahtouch *ts, const u8 *pkt, size_t len)
 	if (len & 1 || len + off > BUF_LEN)
 		return -EINVAL;
 	for (tries = 0; tries < 5; tries++) {
+		size_t txlen;
+
 		ts->tx[0] = 0x18;
 		ts->tx[1] = 0xe1;
 		for (i = 0; i < len; i++)
 			ts->tx[off + i] = pkt[i ^ 1];
-		st = xfer(ts, len + off);
-		if (st)
-			return st;
-		msleep(20);
-		st = hbpp_ack(ts);
+		txlen = len + off;
+		if (ts->variant->ack_in_message) {
+			/*
+			 * HBPP 1.04 (J171a): the data and ATN_ACK stages belong to
+			 * one SPI message.  The SPI core keeps chip select asserted
+			 * between these two transfers.  XR's HBPP 1.05 path below is
+			 * deliberately unchanged: it requires a later, separate ACK.
+			 */
+			struct spi_transfer xfers[2] = {
+				{
+					.tx_buf = ts->tx,
+					.rx_buf = ts->rx,
+					.len = txlen,
+					/* Bytes are already arranged in HBPP wire order. */
+					.bits_per_word = 8,
+				},
+				{
+					.tx_buf = ts->tx + txlen,
+					.rx_buf = ts->rx + txlen,
+					.len = 2,
+					.bits_per_word = 8,
+				},
+			};
+
+			ts->tx[txlen] = 0x1a;
+			ts->tx[txlen + 1] = 0xa1;
+			st = spi_sync_transfer(ts->spi, xfers, ARRAY_SIZE(xfers));
+			if (st)
+				return st;
+			st = get_unaligned_be16(ts->rx + txlen);
+		} else {
+			st = xfer(ts, txlen);
+			if (st)
+				return st;
+			msleep(20);
+			st = hbpp_ack(ts);
+		}
 		if (cmd == 0x1f01 || st == want)	/* calibration request: no fixed answer */
 			return 0;
+		if (tries == 0)
+			dev_info(&ts->spi->dev,
+				 "HBPP %03x packet %04x first status %04x (rx %*ph)\n",
+				 ts->variant->hbpp_version, cmd, st,
+				 (int)min_t(size_t, txlen + 2, 24), ts->rx);
 	}
 	dev_err(&ts->spi->dev, "HBPP packet %04x: status %04x\n", cmd, st);
+	return -EIO;
+}
+
+/*
+ * HBPP 1.04, used by J171a, is the modern/apple_z2 form: a complete Z2FW
+ * record is one 16-bit SPI transfer followed immediately by ATN_ACK in the
+ * same message.  In particular it has neither the A5/XR 18e1 prefix nor the
+ * manual byte-pair swapping.  The T8020 SPI controller may internally split
+ * a long transfer at its 16-bit count-register limit, but keeps external CS
+ * asserted, so the controller still sees one record.
+ */
+static int hbpp14_send_record(struct ahtouch *ts, const u8 *record, size_t len)
+{
+	u8 ack_tx[2] = { 0x1a, 0xa1 };
+	u8 ack_rx[2] = {};
+	struct spi_transfer xfers[2] = {
+		{
+			.tx_buf = record,
+			.len = len,
+			.bits_per_word = 16,
+		},
+		{
+			.tx_buf = ack_tx,
+			.rx_buf = ack_rx,
+			.len = sizeof(ack_tx),
+			.bits_per_word = 8,
+		},
+	};
+	u16 cmd, status;
+	int ret;
+
+	if (!len || len & 1)
+		return -EINVAL;
+	cmd = get_unaligned_le16(record);
+	ret = spi_sync_transfer(ts->spi, xfers, ARRAY_SIZE(xfers));
+	if (ret)
+		return ret;
+	status = get_unaligned_be16(ack_rx);
+	dev_info(&ts->spi->dev,
+		 "HBPP14 record %04x len %zu status %04x\n", cmd, len, status);
+
+	/* Some 1.04 controllers pipeline status; reject only explicit bad data. */
+	if (status == HBPP_DATA_OK || status == HBPP_REG_OK ||
+	    status == 0x4879 || status == 0x4969 || cmd == 0x1f01)
+		return 0;
 	return -EIO;
 }
 
@@ -237,12 +469,40 @@ static int hbpp_calibration(struct ahtouch *ts, u32 addr)
 {
 	struct device *dev = &ts->spi->dev;
 	const struct firmware *fw = NULL;
+	const char *j171a_name = NULL;
 	const u8 *cal;
 	u8 *b;
 	int len, ret, i;
 	u32 sum = 0;
 
-	/* the panel's own (iBoot's MtCl, copied by m1n1), else the plist's default */
+	/*
+	 * J171a's Kona personality has seven independent, per-panel SysCfg
+	 * records.  They are extracted locally from this device and kept outside
+	 * the repository; select the matching private firmware by destination.
+	 */
+	if (ts->variant->hbpp_version == 0x104) {
+		switch (addr) {
+		case 0x100400: j171a_name = "apple/j171a-MtCl.bin"; break;
+		case 0x100a00: j171a_name = "apple/j171a-FfCl.bin"; break;
+		case 0x102e00: j171a_name = "apple/j171a-FPCL.bin"; break;
+		case 0x103700: j171a_name = "apple/j171a-MtDO.bin"; break;
+		case 0x103900: j171a_name = "apple/j171a-MtPc.bin"; break;
+		case 0x106840: j171a_name = "apple/j171a-PBCL.bin"; break;
+		case 0x108584: j171a_name = "apple/j171a-HD2C.bin"; break;
+		default:
+			dev_err(dev, "unknown J171a calibration address %#x\n", addr);
+			return -EINVAL;
+		}
+		if (firmware_request_nowarn(&fw, j171a_name, dev)) {
+			dev_err(dev, "missing private calibration %s\n", j171a_name);
+			return -ENOENT;
+		}
+		cal = fw->data;
+		len = fw->size;
+		goto build;
+	}
+
+	/* the phone panel's own MtCl copied by m1n1, else the plist's default */
 	len = device_property_count_u8(dev, "apple,z2-cal-blob");
 	if (len > 16) {		/* a real blob, not the ADT's "syscfg/MtCl" placeholder */
 		cal = NULL;
@@ -254,6 +514,7 @@ static int hbpp_calibration(struct ahtouch *ts, u32 addr)
 		cal = fw->data;
 		len = fw->size;
 	}
+build:
 	b = kzalloc(14 + len, GFP_KERNEL);
 	if (!b) {
 		release_firmware(fw);
@@ -270,8 +531,12 @@ static int hbpp_calibration(struct ahtouch *ts, u32 addr)
 	for (i = 0; i < len; i++)
 		sum += b[10 + i];
 	put_unaligned_le32(sum, b + 10 + len);
-	dev_info(dev, "calibration: %d bytes (%s)\n", len, cal ? ts->cal_name : "panel");
-	ret = hbpp_blob(ts, b, 14 + len);
+	dev_info(dev, "calibration: %d bytes (%s)\n", len,
+		 j171a_name ?: (cal ? ts->cal_name : "panel"));
+	if (ts->variant->hbpp_version == 0x104)
+		ret = hbpp14_send_record(ts, b, 14 + len);
+	else
+		ret = hbpp_blob(ts, b, 14 + len);
 	kfree(b);
 	release_firmware(fw);
 	return ret;
@@ -298,12 +563,43 @@ static int hbpp_load(struct ahtouch *ts)
 		const u8 *p = fw->data + off + 8;
 
 		off += 8;
-		if (cmd == LOAD_INIT || cmd == LOAD_BLOB) {
+		if (cmd == LOAD_INIT || cmd == LOAD_BLOB || cmd == LOAD_CONFIG ||
+		    cmd == LOAD_RAW_XFER || cmd == LOAD_WAIT_IRQ || cmd == LOAD_CAL_V2) {
 			if (arg > fw->size - off) {
 				ret = -EINVAL;
 				goto out;
 			}
-			if (cmd == LOAD_BLOB && arg >= 14 && get_unaligned_le16(p) == 0x3001)
+			if (cmd == LOAD_INIT && ts->variant->hbpp_version == 0x104)
+				ret = hbpp14_send_blob(ts, p, arg, true);
+			else if (cmd == LOAD_BLOB && ts->variant->hbpp_version == 0x104) {
+				size_t next = ALIGN(off + arg, 4);
+				if (next + 8 <= fw->size &&
+				    get_unaligned_le32(fw->data + next) == LOAD_WAIT_IRQ) {
+					reinit_completion(&ts->boot_irq);
+					enable_irq(ts->spi->irq);
+					ts->irq_enabled = true;
+				}
+				ret = hbpp14_send_blob(ts, p, arg, false);
+			} else if (cmd == LOAD_CONFIG && ts->variant->hbpp_version == 0x104)
+				ret = hbpp14_apply_config(ts, p, arg);
+			else if (cmd == LOAD_RAW_XFER && ts->variant->hbpp_version == 0x104)
+				ret = hbpp14_raw_xfer(ts, p, arg);
+			else if (cmd == LOAD_WAIT_IRQ && ts->variant->hbpp_version == 0x104) {
+				u32 timeout = arg == 4 ? get_unaligned_le32(p) : 0;
+				if (!timeout)
+					ret = -EINVAL;
+				else if (!wait_for_completion_timeout(&ts->boot_irq,
+						msecs_to_jiffies(timeout)) ||
+					 !wait_for_completion_timeout(&ts->boot_irq,
+						msecs_to_jiffies(timeout))) {
+					/* J171a GPIO 208 routing is not exposed by this DT yet. */
+					dev_warn(dev, "HBPP14 ready IRQs absent; probing runtime over SPI\n");
+					ret = 0;
+				} else
+					dev_info(dev, "HBPP14 firmware-ready IRQs received\n");
+			} else if (cmd == LOAD_CAL_V2)
+				ret = -EOPNOTSUPP;
+			else if (cmd == LOAD_BLOB && arg >= 14 && get_unaligned_le16(p) == 0x3001)
 				ret = hbpp_blob(ts, p, arg);
 			else if (cmd == LOAD_BLOB)
 				ret = hbpp_send(ts, p, arg);
@@ -320,6 +616,10 @@ static int hbpp_load(struct ahtouch *ts)
 		off = ALIGN(off, 4);
 	}
 out:
+	if (ts->irq_enabled) {
+		disable_irq(ts->spi->irq);
+		ts->irq_enabled = false;
+	}
 	release_firmware(fw);
 	if (ret)
 		dev_err(dev, "firmware %s: %d\n", ts->fw_name, ret);
@@ -556,10 +856,45 @@ static int boot(struct ahtouch *ts)
 	struct device *dev = &ts->spi->dev;
 	int i, ret;
 
+	/*
+	 * Keep reset asserted while the board-specific rails come up, then
+	 * release it into HBPP. XR often survives without this because iBoot
+	 * leaves its controller running; J171a requires the hardware sequence.
+	 */
+	if (ts->reset_gpio)
+		gpiod_set_value_cansleep(ts->reset_gpio, 1);
 	ret = power_on(ts);
 	if (ret) {
 		dev_err(dev, "power on: %d\n", ret);
 		return ret;
+	}
+	if (ts->variant->hbpp_version == 0x104) {
+		/* Match the tested J172 lifecycle: configure, release reset, boot IRQ. */
+		memset(ts->tx, 0, 4);
+		ret = xfer(ts, 4);
+		if (ret)
+			return ret;
+		reinit_completion(&ts->boot_irq);
+		enable_irq(ts->spi->irq);
+		ts->irq_enabled = true;
+	}
+	if (ts->reset_gpio) {
+		usleep_range(1000, 2000);
+		gpiod_set_value_cansleep(ts->reset_gpio, 0);
+		if (ts->variant->hbpp_version != 0x104)
+			msleep(20);
+	}
+	if (ts->variant->hbpp_version == 0x104) {
+		if (!wait_for_completion_timeout(&ts->boot_irq, msecs_to_jiffies(20))) {
+			/* J171a's routed GPIO does not expose J172's initial edge yet. */
+			dev_warn(dev, "HBPP14 boot IRQ absent; continuing with SPI readiness\n");
+		}
+		disable_irq(ts->spi->irq);
+		ts->irq_enabled = false;
+		ret = hbpp_load(ts);
+		if (ret)
+			return ret;
+		goto running;
 	}
 	/* a firmware still running from before: an all-zero packet sends it back */
 	for (i = 0; i < 3 && !hbpp_check(ts); i++) {
@@ -574,6 +909,7 @@ static int boot(struct ahtouch *ts)
 	ret = hbpp_load(ts);
 	if (ret)
 		return ret;
+running:
 	msleep(40);
 	memset(ts->last, 0, HS_XFER);
 	bitmap_zero(ts->down, 256);
@@ -686,6 +1022,14 @@ static int ahtouch_probe(struct spi_device *spi)
 	if (!ts)
 		return -ENOMEM;
 	ts->spi = spi;
+	init_completion(&ts->boot_irq);
+	ts->bpw16_min_len = UINT_MAX;
+	ts->variant = device_get_match_data(dev);
+	if (!ts->variant)
+		ts->variant = &ahtouch_xr;
+	dev_info(dev, "%s HBPP %03x transport%s\n", ts->variant->name,
+		 ts->variant->hbpp_version,
+		 ts->variant->ack_in_message ? ", in-message ACK" : "");
 	ts->tx = devm_kzalloc(dev, BUF_LEN, GFP_KERNEL);
 	ts->rx = devm_kzalloc(dev, BUF_LEN, GFP_KERNEL);
 	ts->last = devm_kzalloc(dev, BUF_LEN, GFP_KERNEL);
@@ -693,6 +1037,18 @@ static int ahtouch_probe(struct spi_device *spi)
 	if (!ts->tx || !ts->rx || !ts->last || !ts->pkt)
 		return -ENOMEM;
 	spi_set_drvdata(spi, ts);
+	ts->reset_gpio = devm_gpiod_get_optional(dev, "reset", GPIOD_OUT_HIGH);
+	if (IS_ERR(ts->reset_gpio))
+		return dev_err_probe(dev, PTR_ERR(ts->reset_gpio),
+				     "unable to get reset GPIO\n");
+	if (ts->variant->hbpp_version == 0x104) {
+		if (spi->irq <= 0)
+			return dev_err_probe(dev, -EINVAL, "J171a has no touch IRQ\n");
+		ret = devm_request_irq(dev, spi->irq, ahtouch_irq, IRQF_NO_AUTOEN,
+				       "apple-touch-boot", ts);
+		if (ret)
+			return dev_err_probe(dev, ret, "unable to request touch IRQ\n");
+	}
 
 	ret = get_power(ts);
 	if (ret)
@@ -747,7 +1103,8 @@ static void ahtouch_remove(struct spi_device *spi)
 }
 
 static const struct of_device_id ahtouch_of_match[] = {
-	{ .compatible = "apple,hbpp-multitouch" },
+	{ .compatible = "apple,j171a-multitouch", .data = &ahtouch_j171a },
+	{ .compatible = "apple,hbpp-multitouch", .data = &ahtouch_xr },
 	{}
 };
 MODULE_DEVICE_TABLE(of, ahtouch_of_match);
@@ -770,6 +1127,7 @@ static struct spi_driver ahtouch_driver = {
 };
 module_spi_driver(ahtouch_driver);
 
-MODULE_DESCRIPTION("Apple HBPP/HIDSPI touchscreen (iPhone XR/11)");
+MODULE_DESCRIPTION("Apple HBPP/HIDSPI touchscreen (A12/A13 iPhone and iPad)");
 MODULE_LICENSE("GPL");
 MODULE_FIRMWARE("apple/n841-mtfw.bin");
+MODULE_FIRMWARE("apple/j171a-mtfw.bin");

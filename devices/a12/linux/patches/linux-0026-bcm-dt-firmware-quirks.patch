@@ -1,0 +1,39 @@
+diff --git a/drivers/bluetooth/hci_bcm.c b/drivers/bluetooth/hci_bcm.c
+--- a/drivers/bluetooth/hci_bcm.c
++++ b/drivers/bluetooth/hci_bcm.c
+@@ -583,6 +583,26 @@
+ 	return 0;
+ }
+ 
++/* Opt-in firmware workarounds: properties are set only on affected boards. */
++static void bcm_apply_dt_quirks(struct bcm_data *bcm, struct hci_dev *hdev)
++{
++	if (!bcm->dev)
++		return;
++
++	/* Some Apple firmware advertises 0x204b but returns Unknown Command. */
++	if (device_property_read_bool(bcm->dev->dev,
++				      "brcm,broken-read-transmit-power"))
++		hci_set_quirk(hdev, HCI_QUIRK_BROKEN_READ_TRANSMIT_POWER);
++
++	/* Use the validated platform address even if the controller default
++	 * is not recognized by btbcm_check_bdaddr(). The HCI core still rejects
++	 * an absent/all-zero local-bd-address instead of programming it.
++	 */
++	if (device_property_read_bool(bcm->dev->dev,
++				      "brcm,use-bdaddr-property"))
++		hci_set_quirk(hdev, HCI_QUIRK_USE_BDADDR_PROPERTY);
++}
++
+ static int bcm_setup(struct hci_uart *hu)
+ {
+ 	struct bcm_data *bcm = hu->priv;
+@@ -654,6 +674,8 @@
+ 	 */
+ 	if (hci_test_quirk(hu->hdev, HCI_QUIRK_INVALID_BDADDR))
+ 		hci_set_quirk(hu->hdev, HCI_QUIRK_USE_BDADDR_PROPERTY);
++
++	bcm_apply_dt_quirks(bcm, hu->hdev);
+ 
+ 	if (!bcm_request_irq(bcm))
+ 		err = bcm_setup_sleep(hu);

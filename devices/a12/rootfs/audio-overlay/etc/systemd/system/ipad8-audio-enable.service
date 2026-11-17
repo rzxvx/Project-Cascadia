@@ -1,0 +1,10 @@
+[Unit]
+Description=Enable iPad 8 internal speakers
+ConditionPathExists=/sys/module/apple_j171_speakers/parameters/test_enabled
+Before=greetd.service display-manager.service
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/ipad8-audio-enable
+RemainAfterExit=yes
+[Install]
+WantedBy=multi-user.target

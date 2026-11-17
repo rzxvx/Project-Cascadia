@@ -1,0 +1,70 @@
+From: Project Cascadia <noreply@cascadia>
+Subject: [PATCH] uart: turn on the receiver iBoot leaves off
+
+Cascadia downstream patch, not for upstream m1n1.
+
+On the iPhone 11 (production iBoot) m1n1 reaches "Running proxy..." but the
+host's proxyclient gets no answer over the DCSD cable (s5l UART0): m1n1 never
+touches UCON, and the receiver may be off. Turn RX on (polled) when it is,
+and print UCON/UFCON so the log shows what iBoot left.
+---
+diff --git a/src/startup.c b/src/startup.c
+index 61afe16..8c3e593 100644
+--- a/src/startup.c
++++ b/src/startup.c
+@@ -200,6 +200,7 @@ void _start_c(void *boot_args, void *base)
+     dockchannel_uart_init();
+ 
+     uart_puts("Initializing");
++    uart_show_rx();
+     get_device_info();
+ 
+     printf("CPU init (MIDR: 0x%lx smp_id:0x%x)...\n", mrs(MIDR_EL1), smp_id());
+diff --git a/src/uart.c b/src/uart.c
+index 5649cb3..c9e4f72 100644
+--- a/src/uart.c
++++ b/src/uart.c
+@@ -13,6 +13,7 @@
+ #define UART_CLOCK 24000000
+ 
+ static u64 uart_base = 0;
++static u32 ucon_from_iboot;
+ 
+ int uart_init(void)
+ {
+@@ -36,9 +37,23 @@ int uart_init(void)
+         return -1;
+     }
+ 
++    /* A production iPhone's iBoot leaves the receiver off: turn it on (polled),
++       or the proxy never hears the host. */
++    ucon_from_iboot = read32(uart_base + UCON);
++    if (FIELD_GET(UCON_RXMODE, ucon_from_iboot) == UCON_MODE_OFF)
++        write32(uart_base + UCON, (ucon_from_iboot & ~UCON_RXMODE) |
++                                      FIELD_PREP(UCON_RXMODE, UCON_MODE_IRQ));
++
+     return 0;
+ }
+ 
++void uart_show_rx(void)
++{
++    if (uart_base)
++        printf("UART: @0x%lx UCON 0x%x -> 0x%x, UFCON 0x%x\n", uart_base, ucon_from_iboot,
++               read32(uart_base + UCON), read32(uart_base + UFCON));
++}
++
+ void uart_putbyte(u8 c)
+ {
+     if (!uart_base)
+diff --git a/src/uart.h b/src/uart.h
+index 0b03f2d..a756f54 100644
+--- a/src/uart.h
++++ b/src/uart.h
+@@ -6,6 +6,7 @@
+ #include "types.h"
+ 
+ int uart_init(void);
++void uart_show_rx(void);
+ 
+ void uart_putbyte(u8 c);
+ u8 uart_getbyte(void);

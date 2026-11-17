@@ -1,0 +1,155 @@
+From: Project Cascadia <noreply@cascadia>
+Subject: [PATCH] pcie: t8030 (A13) controller
+
+Cascadia downstream patch, not for upstream m1n1.
+
+The A13's apcie has the t8103 register layout (6 shared reg entries, 4 per
+port) and its tunables in the ADT iBoot hands over. What differs, after
+AppleT803xPCIe::_enableRootComplex and ::_initializePhy in iOS 16.4:
+- the PHY IP tunables are one apcie-phy-ip-tunables (no pll/auspma split);
+- two PHY IP fields come from the PMGR fuses (fuse 0x5c -> 0x400,
+  fuse 0x28 -> 0xa3c);
+- no rc+0x4 write; PHYIF run is followed by a 200 (us or ms) wait; after
+  the PHY, rc+0x34 bit 0 is cleared.
+Only pci-bridge2 (Wi-Fi/BT) and pci-bridge3 (baseband) are in the ADT, so a
+missing bridge still has to step the config base past its slot, and the
+gen2 ports have no pcie-rc-gen3/gen4-shadow-tunables.
+---
+diff --git a/src/pcie.c b/src/pcie.c
+index 9630de4..09ffd87 100644
+--- a/src/pcie.c
++++ b/src/pcie.c
+@@ -135,12 +135,20 @@ const struct fuse_bits pcie_fuse_bits_t8112[] = {
+ };
+ /* clang-format on */
+ 
++/* AppleT803xPCIe::_initializePhy: two PHY IP fields from the PMGR fuses */
++const struct fuse_bits pcie_fuse_bits_t8030[] = {
++    {0x005c, 0x0400, 2, 11, 4},
++    {0x0028, 0x0a3c, 12, 2, 5},
++    {},
++};
++
+ enum apcie_type {
+     APCIE_T81XX = 0,
+     APCIE_T602X = 1,
+     APCIE_T8122 = 2,
+     APCIE_T6031 = 3,
+     APCIE_T8132 = 4,
++    APCIE_T8030 = 5,
+ };
+ 
+ struct reg_info {
+@@ -172,6 +180,21 @@ static const struct reg_info regs_t8xxx_t600x = {
+     .fuse_idx = 5,
+ };
+ 
++/* the t8103 layout; the PHY IP tunables come as one apcie-phy-ip-tunables */
++static const struct reg_info regs_t8030 = {
++    .type = APCIE_T8030,
++    .compat = APCIE_T81XX,
++    .shared_reg_count = 6,
++    .config_idx = 0,
++    .rc_idx = 1,
++    .phy_common_idx = -1,
++    .phy_idx = 2,
++    .phy_ctrl_reset = APCIE_PHY_CTRL_RESET_T8103,
++    .phy_ip_idx = 3,
++    .axi_idx = 4,
++    .fuse_idx = 5,
++};
++
+ static const struct reg_info regs_t602x = {
+     .type = APCIE_T602X,
+     .compat = APCIE_T602X,
+@@ -276,7 +299,11 @@ static int pcie_init_controller(int controller, const char *path)
+         return -1;
+     }
+ 
+-    if (adt_is_compatible(adt, adt_offset, "apcie,t8103")) {
++    if (adt_is_compatible(adt, adt_offset, "apcie,t8030")) {
++        fuse_bits = pcie_fuse_bits_t8030;
++        state->pcie_regs = &regs_t8030;
++        printf("pcie: Initializing t8030 PCIe controller\n");
++    } else if (adt_is_compatible(adt, adt_offset, "apcie,t8103")) {
+         fuse_bits = pcie_fuse_bits_t8103;
+         state->pcie_regs = &regs_t8xxx_t600x;
+         printf("pcie: Initializing t8103 PCIe controller\n");
+@@ -433,8 +460,8 @@ static int pcie_init_controller(int controller, const char *path)
+         return -1;
+     }
+ 
+-    /* ??? */
+-    if (controller == APCIE)
++    /* ??? (not in AppleT803xPCIe's sequence) */
++    if (controller == APCIE && state->pcie_regs->type != APCIE_T8030)
+         write32(state->rc_base + 0x4, 0);
+ 
+     if (!adt_getprop(adt, adt_offset, "apcie-common-tunables", NULL)) {
+@@ -485,6 +512,10 @@ static int pcie_init_controller(int controller, const char *path)
+         if (state->pcie_regs->type == APCIE_T81XX) {
+             set32(state->rc_base + APCIE_PHYIF_CTRL, APCIE_PHYIF_CTRL_RUN);
+             udelay(1);
++        } else if (state->pcie_regs->type == APCIE_T8030) {
++            /* iOS waits 200 here (IODelay or IOSleep: take the longer) */
++            set32(state->rc_base + APCIE_PHYIF_CTRL, APCIE_PHYIF_CTRL_RUN);
++            mdelay(200);
+         } else if (state->pcie_regs->type == APCIE_T602X ||
+                    state->pcie_regs->compat == APCIE_T8122) {
+             set32(state->phy_base[phy] + 4, 0x01);
+@@ -500,6 +531,14 @@ static int pcie_init_controller(int controller, const char *path)
+                    fuse << fuse_bits[i].tgt_bit);
+         }
+ 
++        if (state->pcie_regs->type == APCIE_T8030) {
++            if (tunables_apply_local_addr(path, "apcie-phy-ip-tunables", state->phy_ip_base[phy])) {
++                printf("pcie: Error applying %s for %s\n", "apcie-phy-ip-tunables", path);
++                return -1;
++            }
++            continue;
++        }
++
+         char pll_prop[64];
+         char auspma_prop[64];
+ 
+@@ -555,6 +594,10 @@ static int pcie_init_controller(int controller, const char *path)
+         }
+     }
+ 
++    /* AppleT803xPCIe::_enableRootComplex, after the PHY */
++    if (state->pcie_regs->type == APCIE_T8030)
++        clear32(state->rc_base + 0x34, 0x1);
++
+     for (u32 port = 0; port < state->port_count; port++) {
+         char bridge[64];
+         int bridge_offset;
+@@ -575,8 +618,11 @@ static int pcie_init_controller(int controller, const char *path)
+                 break;
+         }
+ 
+-        if ((bridge_offset = adt_path_offset(adt, bridge)) < 0)
++        if ((bridge_offset = adt_path_offset(adt, bridge)) < 0) {
++            /* not in this ADT (T8030: only bridges 2 and 3), but owns its config slot */
++            config_base += (1 << 15);
+             continue;
++        }
+ 
+         printf("pcie: Initializing port %d\n", port);
+ 
+@@ -756,11 +802,14 @@ static int pcie_init_controller(int controller, const char *path)
+             printf("pcie: Error applying %s for %s\n", "pcie-rc-tunables", bridge);
+             return -1;
+         }
+-        if (tunables_apply_local_addr(bridge, "pcie-rc-gen3-shadow-tunables", config_base)) {
++        /* T8030 (gen2 ports) has no shadow tunables */
++        if (adt_getprop(adt, bridge_offset, "pcie-rc-gen3-shadow-tunables", NULL) &&
++            tunables_apply_local_addr(bridge, "pcie-rc-gen3-shadow-tunables", config_base)) {
+             printf("pcie: Error applying %s for %s\n", "pcie-rc-gen3-shadow-tunables", bridge);
+             return -1;
+         }
+-        if (tunables_apply_local_addr(bridge, "pcie-rc-gen4-shadow-tunables", config_base)) {
++        if (adt_getprop(adt, bridge_offset, "pcie-rc-gen4-shadow-tunables", NULL) &&
++            tunables_apply_local_addr(bridge, "pcie-rc-gen4-shadow-tunables", config_base)) {
+             printf("pcie: Error applying %s for %s\n", "pcie-rc-gen4-shadow-tunables", bridge);
+             return -1;
+         }

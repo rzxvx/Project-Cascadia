@@ -1,0 +1,101 @@
+{
+  "xr": {
+    "aliases": [
+      "xr",
+      "n841",
+      "iphone-xr",
+      "iPhone11,8"
+    ],
+    "label": "iPhone XR",
+    "board": "n841",
+    "apple_board": "n841ap",
+    "product": "iPhone11,8",
+    "cpid": "0x8020",
+    "bdid": "0x0c",
+    "build": "22H374",
+    "version": "18.7.10",
+    "ipsw": "https://updates.cdn-apple.com/2026WinterFCS/fullrestores/140-97953/5F3051CD-5405-4FEF-889E-C3B78E0F376F/iPhone11,8_18.7.10_22H374_Restore.ipsw",
+    "ibss_member": "Firmware/dfu/iBSS.n841.RELEASE.im4p",
+    "adt_member": "Firmware/all_flash/DeviceTree.n841ap.im4p",
+    "ibss_sha256": "8d748ce2190a5889ecd4933bd212f90d1308d44d8cee1880ed92b4bbeb057753",
+    "adt_sha256": "a62d565e5c7537a7aca96b5cce89f6f1111ca48a3b06c179cf0ee570bc6be269",
+    "touch_tag": "N841",
+    "touch_personality": "C1FC2,1",
+    "wifi_board": "yodak",
+    "bluetooth": "BCM4349B1.apple,n841.hcd",
+    "smartio_member": null,
+    "models": [
+      "A1984",
+      "A2105",
+      "A2106",
+      "A2107",
+      "A2108"
+    ]
+  },
+  "ipad8": {
+    "aliases": [
+      "ipad8",
+      "j171a",
+      "ipad8-wifi",
+      "iPad11,6"
+    ],
+    "label": "iPad 8 Wi-Fi",
+    "board": "j171a",
+    "apple_board": "j171aap",
+    "product": "iPad11,6",
+    "cpid": "0x8020",
+    "bdid": "0x24",
+    "build": "21B91",
+    "version": "17.1.1",
+    "ipsw": "https://updates.cdn-apple.com/2023FallFCS/fullrestores/042-95894/E5C89FEE-E10A-4B33-8D69-973EDF7DB0A7/iPad_10.2_2020_17.1.1_21B91_Restore.ipsw",
+    "ibss_member": "Firmware/dfu/iBSS.ipad11b.RELEASE.im4p",
+    "adt_member": "Firmware/all_flash/DeviceTree.j171aap.im4p",
+    "ibss_sha256": "feeaf79f8a11dffaafe5d4f334f6a6b868c29bc9117f716a4fbfa7e8d2f82fde",
+    "adt_sha256": "8a3375be8736e8aced4ce909602d7a87d8ba70b351da8e74ce965d89c626772e",
+    "touch_tag": "J171a",
+    "touch_personality": "K1F19,9",
+    "wifi_board": "magnoliaa",
+    "bluetooth": "BCM.apple,j171a.hcd",
+    "smartio_member": "Firmware/SmartIOFirmware_ASCv2.im4p",
+    "smartio_im4p_sha256": "1a5c30d40a2c905bf523d26a38352fbe97bf90cc225a7534e27eac87901bc7fe",
+    "models": [
+      "A2270"
+    ],
+    "smartio_raw_sha256": "f6e5c80434c3a02a7ab715102d60a0abf0b95ce9ca98645d012a39896314d13c",
+    "gfx_ipsw": "https://updates.cdn-apple.com/2023FallFCS/fullrestores/042-95894/E5C89FEE-E10A-4B33-8D69-973EDF7DB0A7/iPad_10.2_2020_17.1.1_21B91_Restore.ipsw",
+    "gfx_build": "21B91",
+    "gfx_im4p_sha256": "b441e1bb3d2baae307e4c7b5b4bbcd4de503c8b9a87f2670164741b7013669ed"
+  },
+  "xsmax": {
+    "aliases": [
+      "xsmax",
+      "d331p",
+      "iphone-xs-max",
+      "iPhone11,6"
+    ],
+    "label": "iPhone XS Max (Global)",
+    "board": "d331p",
+    "apple_board": "d331pap",
+    "product": "iPhone11,6",
+    "cpid": "0x8020",
+    "bdid": "0x0e",
+    "build": "22H374",
+    "version": "18.7.10",
+    "ipsw": "https://updates.cdn-apple.com/2026WinterFCS/fullrestores/140-97977/CB8B320D-008B-4FC2-8256-56A1DB86C586/iPhone11,2,iPhone11,4,iPhone11,6_18.7.10_22H374_Restore.ipsw",
+    "ibss_member": "Firmware/dfu/iBSS.d331p.RELEASE.im4p",
+    "adt_member": "Firmware/all_flash/DeviceTree.d331pap.im4p",
+    "ibss_sha256": "53f5171fa86a0953065ec16b971bd0e861497cf042e071801d55d83ef275c22c",
+    "adt_sha256": "752a1eead27fba2ed275b8866d81a4eeb4db9777dd8b903d745267eb7df8aaac",
+    "touch_tag": "D331p",
+    "touch_personality": "op-list",
+    "wifi_board": "geniek",
+    "bluetooth": null,
+    "smartio_member": null,
+    "models": [
+      "A2101"
+    ],
+    "gfx_ipsw": "https://updates.cdn-apple.com/2023SummerFCS/fullrestores/042-43832/D00DE3E3-6FAA-4DAA-B17D-94CEF1B5CA1C/iPhone11,2,iPhone11,4,iPhone11,6_16.6.1_20G81_Restore.ipsw",
+    "gfx_im4p_sha256": "91e17c9165ac861d032ca911694fbea7840e09fb53bb9ef31fe6cee3bd1bfe7f",
+    "gfx_build": "20G81"
+  }
+}

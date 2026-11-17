@@ -1,0 +1,331 @@
+From: Project Cascadia <noreply@cascadia>
+Subject: [PATCH] proxyclient/agx: t8030 (A13, G12)
+
+Cascadia downstream patch, not for upstream m1n1.
+
+The A13's GPU firmware (iOS 16.4, iBoot-8422.100.650) speaks the V13_3
+interface. Its chip values and MMIO windows are read back from what iOS
+gives the firmware (Cascadia a13/docs/research/gpu.md, G2): CHIP_INFO
+0x8030, build_iomappings 0x8030, t8103's 40-bit physical mask. ADT
+soc-generation H12 becomes G12, below G13 in the version matrix; G15,
+which hw/uat.py already tests for, is added at the top. The A13's ASC
+mailbox has the A11's control registers (0x8108/0x810c): with the M1's the
+proxy drained the GPU firmware's empty outbox and the firmware panicked
+(Mbox:underflow). RTKit boot on the A13's GPU also needs the AP's power state (SetAPPower
+0x20) after the endpoint map, as Linux's rtkit sends it; without it the
+firmware never reports boot done. The A13's sgx node has no
+gpu-avg-power-filter-tc-ms: default it to iOS's 1008 ms (HwDataA). The
+firmware checks InitData.ver_info against (0x6b88, 0xc128, 0x600, 0xb0)
+("Host and FW Interface is mismatched" otherwise). ADT properties typed for Macs that an
+iPhone carries
+differently are kept as bytes instead of failing the whole tree. The
+G12 firmware writes 0x40-byte Stats records, not the 0x60 the driver
+reads. WorkCommandCP had two fields named unk_pad (0x24 and, from
+V13_0B4, 0x10 bytes) and could not be built; the second is unk_pad2.
+The G12 firmware initialises its scheduler on DeviceControl message
+0x10, not 0x1a (which there only sets a flag): DC_Init is 0x10 on G12.
+It does so only if RegionC +0xb1dc is set (and clears it), so the
+A13 initdata sets it.
+---
+diff --git a/proxyclient/m1n1/adt.py b/proxyclient/m1n1/adt.py
+index 6e9e952..211d0ec 100644
+--- a/proxyclient/m1n1/adt.py
++++ b/proxyclient/m1n1/adt.py
+@@ -535,6 +535,7 @@ class ADTNode:
+             path = self._parent_path + _name
+ 
+             raw = {}
++            kept_raw = set()
+             for p in val.properties:
+                 raw[p.name] = p.value
+                 is_template = bool(p.size & 0x80000000)
+@@ -543,12 +544,17 @@ class ADTNode:
+                     self._types[p.name] = t, is_template
+                     self._properties[p.name] = v
+                 except Exception as e:
+-                    print(f"Exception parsing {path}.{p.name} value {p.value.hex()}:", file=sys.stderr)
+-                    raise
++                    # iPhone ADTs carry properties m1n1 has typed for Macs
++                    # (e.g. aop-audio/audio-haptic-leap.identifier): keep the
++                    # bytes rather than refuse the whole tree
++                    print(f"ADT: {path}.{p.name} kept as bytes ({e.__class__.__name__})", file=sys.stderr)
++                    self._types[p.name] = None, is_template
++                    self._properties[p.name] = p.value
++                    kept_raw.add(p.name)
+ 
+             # Second pass
+             for k, (t, is_template) in self._types.items():
+-                if t is None:
++                if t is None and k not in kept_raw:
+                     t, v = parse_prop(self, path, _name, k, self._properties[k], is_template)
+                     self._types[k] = t, is_template
+                     self._properties[k] = v
+diff --git a/proxyclient/m1n1/agx/channels.py b/proxyclient/m1n1/agx/channels.py
+index 3a9f30e..d166d32 100644
+--- a/proxyclient/m1n1/agx/channels.py
++++ b/proxyclient/m1n1/agx/channels.py
+@@ -3,6 +3,7 @@
+ from construct import *
+ from ..fw.agx.channels import *
+ from ..fw.agx.cmdqueue import *
++from ..constructutils import Ver
+ 
+ class GPUChannel:
+     STATE_FIELDS = ChannelStateFields
+@@ -171,7 +172,8 @@ class GPUKTraceChannel(GPURXChannel):
+         self.log(f"{msg}")
+ 
+ class GPUStatsChannel(GPURXChannel):
+-    MSG_CLASS = HexDump(Bytes(0x60))
++    # G12 (A13, V13_3) firmware writes 0x40-byte records
++    MSG_CLASS = HexDump(Bytes(0x40 if Ver.check("G < G13") else 0x60))
+ 
+     def handle_message(self, msg):
+         if self.agx.show_stats:
+diff --git a/proxyclient/m1n1/agx/initdata.py b/proxyclient/m1n1/agx/initdata.py
+index aa9b826..e5488d6 100644
+--- a/proxyclient/m1n1/agx/initdata.py
++++ b/proxyclient/m1n1/agx/initdata.py
+@@ -13,8 +13,26 @@ def build_iomappings(agx, chip_id):
+         agx.uat.iomap_at(0, virt, phys - off, size + off, AttrIndex=MemoryAttr.Device)
+         return IOMapping(phys, virt + off, size, range_size, rw)
+ 
++    # t8030 (A13): what iOS 16.4 gives its GPU firmware (HwDataB.io_mappings),
++    # in t8103's slots (Cascadia, a13/docs/research/gpu.md)
++    if chip_id == 0x8030:
++        return [
++            iomap(0x204d00000, 0x20000, 0x20000, 1), # Fender
++            iomap(0x20e100000, 0x4000, 0x4000, 0), # AICTimer
++            iomap(0x23b104000, 0x4000, 0x4000, 1), # AICSWInt
++            iomap(0x204000000, 0x20000, 0x20000, 1), # RGX
++            IOMapping(), # UVD
++            IOMapping(), # unused
++            IOMapping(), # DisplayUnderrunWA
++            iomap(0x23b2ec000, 0x1000, 0x1000, 0), # AnalogTempSensorControllerRegs
++            iomap(0x23bc34000, 0x1000, 0x1000, 1), # PMPDoorbell
++            iomap(0x204d80000, 0x5000, 0x5000, 1), # MetrologySensorRegs
++            iomap(0x204d71000, 0x1000, 0x1000, 1), # GMGIFAFRegs
++            iomap(0x200000000, 0xd6400, 0xd6400, 1), # MCache registers
++            iomap(0x23b102000, 0x1000, 0x1000, 0), # AICBankedRegisters
++        ] + [IOMapping() for i in range(11)]
+     # for t8103
+-    if chip_id == 0x8103:
++    elif chip_id == 0x8103:
+         return [
+             iomap(0x204d00000, 0x1c000, 0x1c000, 1), # Fender
+             iomap(0x20e100000, 0x4000, 0x4000, 0), # AICTimer
+@@ -125,6 +143,53 @@ def build_iomappings(agx, chip_id):
+         ]
+ 
+ CHIP_INFO = {
++    # t8030 (A13, G12): read back from what iOS 16.4 gives its GPU firmware
++    # (HwDataA/B, RegionC; Cascadia a13/tools/gpu/chipinfo.py)
++    0x8030: Container(
++        chip_id = 0x8030,
++        min_sram_volt = 753,
++        max_power = 9220,
++        max_freq_mhz = 1194,
++        unk_87c = 0,
++        unk_8cc = 10000,
++        unk_924 = [[0] * 8] * 8,
++        unk_e48 = [[0] * 8] * 8,
++        unk_e24 = 120,
++        gpu_fast_die0_sensor_mask64 = 0xc,
++        gpu_fast_die1_sensor_mask64 = 0,
++        gpu_fast_die0_sensor_mask64_alt = 0xc,
++        gpu_fast_die1_sensor_mask64_alt = 0,
++        gpu_fast_die0_sensor_present = 0x01,
++        shared1_tab = [
++            -1, 0x340b, 0x2025, 0x1824, 0x11fc, 0xd76, 0x8e9
++        ] + ([-1] * 9),
++        shared1_a4 = 0xffff,
++        shared2_tab = [0x400, 0x800, -2, -1, -1, -1, -1, -1, 0, 0],
++        shared2_unk_508 = 0xc00001,
++        unk_3cf4 = [302.0, 0, 0, 0, 0, 0, 0, 0],
++        unk_3d14 = [11.0, 0, 0, 0, 0, 0, 0, 0],
++        unk_3d34_0 = [0, 0, 0, 0, 0, 0, 0, 0],
++        unk_118ec = None,
++        hwdb_4e0 = 0,
++        hwdb_534 = 0,
++        num_cores = 4,
++        gpu_core = 9,
++        gpu_rev = 3,
++        hwdb_ab8 = 0,
++        hwdb_abc = 0,
++        hwdb_b30 = 0,
++        rel_max_powers = [0, 17, 26, 36, 51, 71, 100],
++        shared2_t1_coef = None,
++        shared3_tab = [0] * 16,
++        shared3_unk = 0,
++        sram_base = 0,
++        sram_size = 0,
++        rc_unk_54 = 0xffff,
++        unk_hws2_0 = 0,
++        unk_hws2_4 = [0] * 8,
++        unk_hws2_24 = 0,
++        tiling_control = 0xa041,  # t8103's until an iOS render capture (G5)
++    ),
+     0x8103: Container(
+         chip_id = 0x8103,
+         min_sram_volt = 850,
+@@ -475,7 +540,11 @@ def build_initdata(agx):
+ 
+     initdata = agx.kshared.new(InitData)
+ 
+-    if Ver.check("V >= V13_3 && G == G14X"):
++    if Ver.check("V >= V13_3 && G == G12"):
++        # what the A13's (iOS 16.4) GPU firmware compares against
++        # (armfw_g12p, fw VA 0xffffff80000275f8)
++        initdata.ver_info = (0x6b88, 0xc128, 0x600, 0xb0)
++    elif Ver.check("V >= V13_3 && G == G14X"):
+         initdata.ver_info = (0xb390, 0x70f8, 0x601, 0xb0)
+     elif Ver.check("V >= V13_3 && G != G14X"):
+         initdata.ver_info = (0x6ba0, 0x1f28, 0x601, 0xb0)
+@@ -636,7 +705,7 @@ def build_initdata(agx):
+     initdata.uat_page_bits = 14
+     initdata.uat_page_size = 0x4000
+ 
+-    if chip_info.chip_id in (0x8103, 0x8112):
++    if chip_info.chip_id in (0x8030, 0x8103, 0x8112):
+         phys_mask = 0xffffffc000
+     else:
+         phys_mask = 0x3ffffffc000
+@@ -655,6 +724,15 @@ def build_initdata(agx):
+     #initdata.regionC.idle_unk = 0x5b2e8
+     #initdata.regionC.idle_to_off_timeout_ms = 20000
+ 
++    if chosen.chip_id == 0x8030:
++        # RegionC +0xb1dc (inside unk_9100): "initialise the scheduler" --
++        # the G12 firmware's DC_Init handler (fw 0x2a61c) fills its per-pipe
++        # handler and event tables (fn 0x1fa80) only if it is set, then
++        # clears it; zero leaves every queue's handler NULL
++        blob = bytearray(initdata.regionC.unk_9100)
++        blob[0xb1dc - 0x9254:0xb1dc - 0x9254 + 4] = (1).to_bytes(4, "little")
++        initdata.regionC.unk_9100 = bytes(blob)
++
+     initdata.regionC.push()
+     initdata.push()
+ 
+diff --git a/proxyclient/m1n1/constructutils.py b/proxyclient/m1n1/constructutils.py
+index 7b507b1..689ae42 100644
+--- a/proxyclient/m1n1/constructutils.py
++++ b/proxyclient/m1n1/constructutils.py
+@@ -802,7 +802,7 @@ class Ver(Subconstruct):
+ 
+     MATRIX = {
+         "V": ["V12_1", "V12_3", "V12_4", "V13_0B4", "V13_0B5", "V13_0B6", "V13_2", "V13_3", "V13_5B4", "V13_5", "V14_7"],
+-        "G": ["G13", "G14", "G14X"],
++        "G": ["G12", "G13", "G14", "G14X", "G15"],
+     }
+ 
+     def __init__(self, version, subcon):
+diff --git a/proxyclient/m1n1/fw/agx/channels.py b/proxyclient/m1n1/fw/agx/channels.py
+index 872f5fe..f160da7 100644
+--- a/proxyclient/m1n1/fw/agx/channels.py
++++ b/proxyclient/m1n1/fw/agx/channels.py
+@@ -86,8 +86,11 @@ class DC_Write32B(ConstructClass):
+ 
+ class DC_Init(ConstructClass):
+     subcon =  Struct (
+-        Ver("V < V13_3", "msg_type" / Const(0x19, Int32ul)),
+-        Ver("V >= V13_3", "msg_type" / Const(0x1a, Int32ul)),
++        Ver("V < V13_3 && G >= G13", "msg_type" / Const(0x19, Int32ul)),
++        Ver("V >= V13_3 && G >= G13", "msg_type" / Const(0x1a, Int32ul)),
++        # G12 (armfw_g12p, iOS 16.4): 0x10 initialises the scheduler (fw
++        # 0xa6c0 -> 0x2a61c); its 0x1a only sets a flag
++        Ver("G < G13", "msg_type" / Const(0x10, Int32ul)),
+         "data" / HexDump(Default(Bytes(0x2c), bytes(0x2c))),
+         Ver("G == G14 && V >= V13_2", ZPadding(0x10)),
+     )
+diff --git a/proxyclient/m1n1/fw/agx/cmdqueue.py b/proxyclient/m1n1/fw/agx/cmdqueue.py
+index 6b427a5..68ced5e 100644
+--- a/proxyclient/m1n1/fw/agx/cmdqueue.py
++++ b/proxyclient/m1n1/fw/agx/cmdqueue.py
+@@ -185,7 +185,7 @@ class WorkCommandCP(ConstructClass):
+         Ver("V >= V13_0B4", "unk_ts" / TimeStamp),
+         Ver("V >= V13_0B4", "unk_2e1" / Default(HexDump(Bytes(0x1c)), bytes(0x1c))),
+         Ver("V >= V13_0B4", "unk_flag" / Flag),
+-        Ver("V >= V13_0B4", "unk_pad" / Default(HexDump(Bytes(0x10)), bytes(0x10))),
++        Ver("V >= V13_0B4", "unk_pad2" / Default(HexDump(Bytes(0x10)), bytes(0x10))),
+         "pad_2d9" / Default(HexDump(Bytes(0x7)), bytes(0x7)),
+     )
+ 
+diff --git a/proxyclient/m1n1/fw/agx/initdata.py b/proxyclient/m1n1/fw/agx/initdata.py
+index 0f834c2..4f85e10 100644
+--- a/proxyclient/m1n1/fw/agx/initdata.py
++++ b/proxyclient/m1n1/fw/agx/initdata.py
+@@ -923,7 +923,7 @@ class AGXHWDataA(ConstructClass):
+         self.unk_c58_4 = 0
+ 
+         # Note: integer rounding
+-        avg_power_filter_tc_periods = sgx.gpu_avg_power_filter_tc_ms // period_ms
++        avg_power_filter_tc_periods = sgx.getprop("gpu-avg-power-filter-tc-ms", 1008) // period_ms
+         gpu_avg_power_filter_tc_ms_round = avg_power_filter_tc_periods * period_ms
+ 
+         self.avg_power_filter_tc_periods_x4 = avg_power_filter_tc_periods * 4
+@@ -947,7 +947,7 @@ class AGXHWDataA(ConstructClass):
+         self.max_power_7 = chip_info.max_power
+         self.max_power_8 = chip_info.max_power
+         self.unk_d48 = 0
+-        self.avg_power_filter_tc_ms = sgx.gpu_avg_power_filter_tc_ms
++        self.avg_power_filter_tc_ms = sgx.getprop("gpu-avg-power-filter-tc-ms", 1008)
+         self.unk_d50 = 0
+         self.avg_power_filter_tc_clks = gpu_avg_power_filter_tc_ms_round * base_clock_khz
+         self.unk_d54_4 = bytes(0xc)
+@@ -1933,7 +1933,7 @@ class InitData_RegionC(ConstructClass):
+ 
+     def __init__(self, sgx, chip_info):
+         period_ms = sgx.gpu_power_sample_period
+-        avg_power_filter_tc_periods = sgx.gpu_avg_power_filter_tc_ms // period_ms
++        avg_power_filter_tc_periods = sgx.getprop("gpu-avg-power-filter-tc-ms", 1008) // period_ms
+ 
+         self.ktrace_enable = 0# 0xffffffff
+         self.unk_4 = bytes(0x20)
+diff --git a/proxyclient/m1n1/fw/asc/mgmt.py b/proxyclient/m1n1/fw/asc/mgmt.py
+index e545ad6..1c892d8 100644
+--- a/proxyclient/m1n1/fw/asc/mgmt.py
++++ b/proxyclient/m1n1/fw/asc/mgmt.py
+@@ -87,6 +87,10 @@ class ASCManagementEndpoint(ASCBaseEndpoint):
+                 if ep == 0: continue
+                 if ep < 0x10:
+                     self.asc.start_ep(ep)
++            # The A13's GPU firmware waits for the AP's power state before
++            # it reports its own boot done (Linux's rtkit does this for all)
++            if getattr(self.asc, "chip_id", 0) == 0x8030:
++                self.boot_done()
+ 
+         return True
+ 
+diff --git a/proxyclient/m1n1/hw/asc.py b/proxyclient/m1n1/hw/asc.py
+index 099ce0a..074b3a6 100644
+--- a/proxyclient/m1n1/hw/asc.py
++++ b/proxyclient/m1n1/hw/asc.py
+@@ -40,6 +40,19 @@ class T8015ASCRegs(RegMap):
+     OUTBOX0     = 0x8830, Register64
+     OUTBOX1     = 0x8838, R_OUTBOX1
+ 
++class T8030ASCRegs(RegMap):
++    # A13: the M1's ASC wrapper with the A11's mailbox control registers
++    # (Linux: "apple,t8030-asc-mailbox", "apple,t8015-asc-mailbox")
++    CPU_CONTROL = 0x0044, R_CPU_CONTROL
++    CPU_STATUS  = 0x0048, R_CPU_STATUS
++
++    INBOX_CTRL  = 0x8108, R_MBOX_CTRL
++    OUTBOX_CTRL = 0x810c, R_MBOX_CTRL
++    INBOX0      = 0x8800, Register64
++    INBOX1      = 0x8808, R_INBOX1
++    OUTBOX0     = 0x8830, Register64
++    OUTBOX1     = 0x8838, R_OUTBOX1
++
+ class ASCRegs(RegMap):
+     CPU_CONTROL = 0x0044, R_CPU_CONTROL
+     CPU_STATUS  = 0x0048, R_CPU_STATUS
+@@ -91,6 +104,8 @@ class ASC:
+                 self.start_val = 1
+             else:
+                 raise ValueError("Unsupported ASC address")
++        elif self.chip_id == 0x8030:
++            self.asc = T8030ASCRegs(u, asc_base)
+         else:
+             self.asc = ASCRegs(u, asc_base)
+         self.verbose = 0

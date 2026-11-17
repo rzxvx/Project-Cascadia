@@ -1,29 +1,61 @@
-# Boot set
+# Device-specific boot preparation and transfer
 
-`prepare-xr-linux-bootset.py` writes the first stage to `boot/inputs/`:
+Follow [../QUICKSTART.md](../QUICKSTART.md). Select `A12_DEVICE=xr` or `ipad8`.
+This describes the new source workflow, not an already validated replacement for
+the preserved laboratory payloads.
 
-| File | What |
-|---|---|
-| `iBSS.linux.serial.raw` | iBSS patched by `patch_iboot.py`, boot arguments `-v wdt=-1 serial=3` |
-| `DeviceTree.img4` | the N841 ADT, unchanged, as `rdtr` |
-| `RestoreTrustCache.img4` | an empty `rtsc` |
-| `m1n1.img4` | m1n1 alone, as `rkrn` |
+`inputs [--serial|--no-serial]` prepares pinned Apple components in
+`build/devices/<device>/boot/`:
+
+- `iBSS.linux.raw`: selected-board validation patches plus explicit Linux arguments.
+- `DeviceTree.raw` / `DeviceTree.img4`: pristine selected Apple ADT, wrapped `rdtr`.
+- `RestoreTrustCache.img4`: minimal empty `rtsc` staging payload.
+- `SmartIO.img4`: **J171 only**, matching ASCv2 payload wrapped `siof`.
+- `ticket.im4m` and `bootset.json`: local ticket and identity/hash metadata.
+
+`pack [--serial|--no-serial]` also creates `linux.macho`, `linux.img4`, and
+`linux.json`. The final payload combines shared m1n1/kernel with the selected
+Linux DTB, touch/calibration and initramfs/NFS setting. The iOS
+`launchd_unsecure_cache=1` preset is not used. Serial capture is requested only
+for a serial-enabled bootset.
+
+Before touching USB:
 
 ```sh
-python3 devices/a12/boot/prepare-xr-linux-bootset.py --ticket /path/to/apticket.im4m
+python3 devices/a12/boot/boot-device.py --verify-only
 ```
 
-`--no-serial` drops `serial=3`. The file name stays the same.
+`./cascadia a12 boot` then checks artifact manifests and exactly one matching,
+pwned Apple DFU device (PRODUCT, CPID and BDID). Transfer order:
 
-The ADT keeps iOS's `content-protect` and has no `boot-ios-diagnostics`.
-Linux gets its own `t8020-n841.dtb` inside the m1n1 payload.
+1. Selected raw iBSS through A12's frozen `usbliter8ctl`.
+2. Wait for matching iBSS Recovery identity.
+3. `DeviceTree.img4`, then `devicetree`.
+4. **iPad only:** `SmartIO.img4`, then `firmware`.
+5. `RestoreTrustCache.img4`, then `firmware`.
+6. `linux.img4`, then `bootx`.
 
-Upload order once usbliter8 has started the iBSS:
+A transfer returning successfully is not proof of a completed Linux boot.
+Inspect serial capture and SSH. Logs are written under the selected boot
+folder's `logs/<timestamp>/`; its capture PID is profile-specific.
 
-1. `DeviceTree.img4`, then `devicetree`;
-2. `RestoreTrustCache.img4`, then `firmware`;
-3. `m1n1.img4`, then `bootx`.
+`./cascadia a12 boot radios` additionally waits for the selected board's Debian
+SSH and runs only its external firmware loaders. The host NFS server/USB address
+must be ready. iPad vendor/file checks happen before boot; they do not guess a
+Murata/USI module. See [../FIRMWARE.md](../FIRMWARE.md).
 
-That boots the m1n1 proxy. For Linux, `package-linux.py` packs m1n1, the DTB,
-the kernel and the initramfs into `m1n1-linux.img4`, which `boot-xr-linux.sh`
-sends in place of `m1n1.img4`.
+The compatibility names `boot-xr-linux.sh` and `boot-and-load-xr.sh` accept XR/XS Max phone profiles.
+They no longer accept arbitrary legacy `XR_LINUX_IMG4` overrides; use the selected
+boot directory plus matching manifests. `prepare-xr-linux-bootset.py` likewise
+rejects an iPad profile. New callers should use the unified commands.
+
+Apple inputs, tickets, private calibration, payloads and logs are ignored by Git.
+
+## XS Max (D331p)
+
+Use `A12_BOARD=d331p` or `--device xsmax`. The same identity/hash-checked
+boot orchestrator uploads the ticketed **16.6.1** `gfx.img4` after the restore
+trust cache and before Linux/`bootx`. Its iBSS additionally uses `--any-im4m`.
+The selected m1n1 comes from `m1n1/d331p/`, not the XR/iPad series.
+Touch and PCIe radio firmware are embedded only for this board.
+Serial capture is skipped when no DCSD tty is present.

@@ -1,0 +1,20 @@
+[Unit]
+Description=Cascadia RAM-only USB reconnect watchdog
+After=systemd-tmpfiles-setup.service
+ConditionPathExists=!/run/cascadia/a13-usbwatch
+ConditionPathExists=/usr/lib/cascadia/busybox-static
+ConditionPathExists=/usr/lib/cascadia/usbwatch
+
+[Service]
+Type=simple
+WorkingDirectory=/
+ExecStartPre=/usr/local/sbin/cascadia-prepare-usbwatch
+Environment=BB=/run/cascadia/busybox-static STATE=/run/cascadia UDHCPD_CONF=/run/cascadia/udhcpd.conf
+ExecStart=/run/cascadia/busybox-static sh /run/cascadia/usbwatch
+Restart=on-failure
+RestartSec=2
+StandardOutput=null
+StandardError=null
+
+[Install]
+WantedBy=multi-user.target

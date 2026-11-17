@@ -8,7 +8,10 @@ A12="$(cd "$(dirname "$0")/.." && pwd)"
 HOST="${XR_SSH_HOST:-root@172.16.42.1}"
 SSH_OPTS=(-F /dev/null -o BatchMode=yes -o Tunnel=no -o ConnectTimeout=8
           -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null)
-FIRMWARE="$A12/boot/inputs/brcm"
+source "$A12/profile.sh"
+[ "$A12_DEVICE" = xr ] || { echo 'XR loader refuses a non-XR profile' >&2; exit 2; }
+ssh "${SSH_OPTS[@]}" "$HOST" 'test "$(uname -s)" = Linux && tr "\000" "\n" < /proc/device-tree/compatible | grep -qx apple,n841' || exit 1
+FIRMWARE="${A12_RADIO_DIR:-$A12_INPUTS/brcm}"
 [[ -d "$FIRMWARE" ]] || { echo "Missing $FIRMWARE" >&2; exit 1; }
 shopt -s nullglob
 files=("$FIRMWARE"/brcmfmac4357b1-pcie.apple,yodak*)

@@ -1,0 +1,38 @@
+From: Project Cascadia <noreply@cascadia>
+Subject: [PATCH] kboot: n104 touchscreen calibration
+
+The iPhone 11's touch controller (/arm-io/spi1/multi-touch) takes the same
+kind of calibration blob as the Touch Bars: iBoot fills the ADT's
+multi-touch-calibration from syscfg MtCl. Copy it to the FDT node behind
+the "touchscreen0" alias as apple,z2-cal-blob, and say how long it is, so
+the boot log shows whether this boot chain filled it at all.
+---
+diff --git a/src/kboot.c b/src/kboot.c
+--- a/src/kboot.c
++++ b/src/kboot.c
+@@ -868,6 +868,8 @@
+ static int dt_set_multitouch(void)
+ {
+     const char *path = fdt_get_alias(dt, "touchbar0");
++    if (path == NULL)
++        path = fdt_get_alias(dt, "touchscreen0");
+     if (path == NULL)
+         return 0;
+ 
+@@ -880,6 +882,8 @@
+         adt_touchbar = "/arm-io/spi0/multi-touch";
+     else if (fdt_node_check_compatible(dt, 0, "apple,j493") == 0)
+         adt_touchbar = "/arm-io/spi3/touch-bar";
++    else if (fdt_node_check_compatible(dt, 0, "apple,n104") == 0)
++        adt_touchbar = "/arm-io/spi1/multi-touch";
+     else
+         return 0;
+ 
+@@ -895,6 +899,7 @@
+     }
+ 
+     fdt_setprop(dt, node, "apple,z2-cal-blob", cal_blob, len);
++    printf("FDT: %s calibration: %u bytes\n", adt_touchbar, len);
+     return 0;
+ }
+ 

@@ -1,0 +1,26 @@
+From: Project Cascadia <noreply@cascadia>
+Subject: [PATCH] m1n1: identify all Apple SIO map-range slots
+
+AppleSmartIO2 uses a fixed four-slot map-range table.  The first three
+keys were unknown when m1n1's SIO handoff was implemented for Macs, but
+the iPad11,6 ADT includes the first slot and therefore rejects the old
+placeholder table.
+
+The AppleSmartIO2 135.0.0 binary from iPadOS 17.1.1 contains the exact
+key table MINI, APOA, GPOA, MISC.  Name those slots so T8020's MINI and
+MISC ranges are copied into the same 64-byte firmware parameter layout
+used by Apple's driver.  Missing slots remain zero-filled.
+
+diff --git a/src/sio.c b/src/sio.c
+index 5681666..bb4b83f 100644
+--- a/src/sio.c
++++ b/src/sio.c
+@@ -114,7 +114,7 @@ struct copy_rule copy_rules[] = {
+         .fw_param = PARAM_MAP_RANGE,
+         .blobsize = 16,
+         .keyed = true,
+-        .keys = {SPACER, SPACER, SPACER, "MISC", NULL},
++        .keys = {"MINI", "APOA", "GPOA", "MISC", NULL},
+     },
+     {
+         .prop = "dmashim",

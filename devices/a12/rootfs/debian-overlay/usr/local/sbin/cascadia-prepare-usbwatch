@@ -1,0 +1,24 @@
+#!/bin/sh
+set -eu
+# Runs once while NFS is online; only the supervised worker survives in RAM.
+install -d -m 755 /run/cascadia
+install -m 755 /usr/lib/cascadia/busybox-static /run/cascadia/busybox-static
+install -m 755 /usr/lib/cascadia/usbwatch /run/cascadia/usbwatch
+cat > /run/cascadia/udhcpd.conf <<'CONF'
+start 172.16.42.2
+end 172.16.42.2
+interface usb0
+max_leases 1
+lease_file /run/cascadia/udhcpd.leases
+option subnet 255.255.255.0
+option lease 86400
+CONF
+/run/cascadia/busybox-static true
+# The old initramfs watcher has a discarded root. Stop it before starting
+# the replacement; do not touch unrelated shells or SSH sessions.
+for p in /proc/[0-9]*/comm; do
+    read -r name < "$p" || continue
+    case "$name" in
+        usbwatch|udhcpd) pid=${p#/proc/}; pid=${pid%/comm}; kill -KILL "$pid" 2>/dev/null || true ;;
+    esac
+done
