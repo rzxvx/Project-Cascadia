@@ -100,8 +100,8 @@ h1 { margin: 0; font-size: 30px; font-weight: 500; }
   var checked = false, installed = '', latest = '', newer = '', updateNote = '', last = null, lastLevel = -1;
   var kept = [], keeping = false;   /* an update's lines, shown again under the next status */
 
-  /* Published releases only, never commits: cascadia-fetch reads the feed.
-     Offline or refused just means no prompt. */
+  /* The release this app's channel names (prebuilt/<channel>/a5.json): the
+     one Update installs.  Offline or refused just means no prompt. */
   window.cascadiaLatest = function (r) {
     if (!r || !r.ok) { updateNote = 'update check failed' + (r ? ': ' + r.error : ''); refresh(); return; }
     latest = r.latest;
@@ -224,7 +224,7 @@ h1 { margin: 0; font-size: 30px; font-weight: 500; }
     if (newer) line('wa', 'new images out: ' + newer + ', installed ' + installed);
     else if (updateNote) line('wa', updateNote);
     else if (latest) line('ok', installed ? 'images up to date, ' + installed : 'images not from a release, latest is ' + latest);
-    if (!checked) { checked = true; call('latest'); }
+    if (!checked) { checked = true; call('latest:' + (s.channel || 'stable')); }
 
     $('checks').innerHTML = h;
     for (i = 0; i < kept.length; i++) line(kept[i][0], kept[i][1]);

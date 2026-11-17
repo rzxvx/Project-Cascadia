@@ -1,7 +1,7 @@
 /*
  * Cascadia: a web view and the bridge to cascadia-helper.  The interface is
  * www/index.html; it calls back here by loading cascadia:status, cascadia:boot,
- * cascadia:update, cascadia:rollback, cascadia:latest and cascadia:copy.
+ * cascadia:update, cascadia:rollback, cascadia:latest[:CHANNEL] and cascadia:copy.
  *
  * Built against stubs (the SDK has no armv7 slices), so no UIKit headers: the
  * messages this file sends are declared below.
@@ -95,13 +95,24 @@ static id C(const char *n) { return (id)objc_getClass(n); }
 	});
 }
 
-- (void)runLatest
+/* the version the app's channel names (cascadia:latest:CHANNEL, the channel
+   from the helper's status): the one an update would install */
+- (void)runLatest:(const char *)channel
 {
+	char *cmd;
+	size_t i;
+
+	for (i = 0; channel[i]; i++)
+		if (channel[i] < 'a' || channel[i] > 'z' || i >= 16)
+			return;
+	if (asprintf(&cmd, FETCH " latest %s", channel[0] ? channel : "stable") < 0)
+		return;
 	dispatch_async(dispatch_get_global_queue(0, 0), ^{
 		char out[256], *js;
 		size_t n = 0;
-		FILE *p = popen(FETCH, "r");
+		FILE *p = popen(cmd, "r");
 
+		free(cmd);
 		if (p) {
 			n = fread(out, 1, sizeof(out) - 1, p);
 			pclose(p);
@@ -205,7 +216,9 @@ static id C(const char *n) { return (id)objc_getClass(n); }
 	else if (!strcmp(cmd, "rollback"))
 		[self runHelper:"rollback" end:"cascadiaRunEnd"];
 	else if (!strcmp(cmd, "latest"))
-		[self runLatest];
+		[self runLatest:""];
+	else if (!strncmp(cmd, "latest:", 7))
+		[self runLatest:cmd + 7];
 	else if (!strcmp(cmd, "copy"))
 		[[C("UIPasteboard") generalPasteboard] setString:
 			[web stringByEvaluatingJavaScriptFromString:S("logText()")]];

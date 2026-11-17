@@ -3,7 +3,11 @@
  * longer connect to GitHub, so this carries its own (BearSSL) and the root
  * certificates it trusts (trust_anchors.h).
  *
- *   cascadia-fetch            the newest published a5-* release, one line of JSON
+ *   cascadia-fetch [latest CHANNEL]
+ *                             the release CHANNEL (stable, the default, or
+ *                             experimental) names now, one line of JSON: the
+ *                             version in prebuilt/CHANNEL/a5.json, the same
+ *                             manifest an update installs from
  *   cascadia-fetch get URL    URL's body on stdout (redirects followed), exit 0
  *                             only for a whole 200 response
  *
@@ -24,11 +28,11 @@
 #include "bearssl.h"
 #include "trust_anchors.h"
 
-/* The feed, not the REST API: that allows 60 requests an hour per address. */
-#define FEED	"https://github.com/rzxvx/Project-Cascadia/releases.atom"
-#define TAG_KEY	"/releases/tag/"
+/* raw.githubusercontent, not the REST API: that allows 60 requests an hour
+   per address */
+#define MANIFEST "https://raw.githubusercontent.com/rzxvx/Project-Cascadia/main/prebuilt/%s/a5.json"
 #define PREFIX	"a5-"
-#define MAX_FEED (2u << 20)
+#define MAX_MANIFEST (64u << 10)
 #define MAX_FILE (64u << 20)
 #define MAX_HEAD 16384
 
@@ -252,35 +256,45 @@ static int tag_ok(const char *t, size_t n)
 	return 1;
 }
 
-static int latest(void)
+static int channel_ok(const char *c)
 {
-	char best[64] = "", *buf, *p, *end;
+	size_t i, n = strlen(c);
+
+	if (!n || n > 16)
+		return 0;
+	for (i = 0; i < n; i++)
+		if (c[i] < 'a' || c[i] > 'z')
+			return 0;
+
+	return 1;
+}
+
+/* "version": "a5-..." out of the manifest (json.dump's own layout) */
+static int latest(const char *channel)
+{
+	char url[160], *buf, *p, *end;
 	size_t n = 0;
 
 	alarm(25);
-	buf = malloc(MAX_FEED + 1);
+	if (!channel_ok(channel))
+		return fail("channel", 0);
+	snprintf(url, sizeof(url), MANIFEST, channel);
+	buf = malloc(MAX_MANIFEST + 1);
 	if (!buf)
 		return fail("memory", 0);
-	if (get(FEED, NULL, &buf, MAX_FEED, &n, 0))
+	if (get(url, NULL, &buf, MAX_MANIFEST, &n, 0))
 		return 1;
 	buf[n] = 0;
-	for (p = buf; (p = strstr(p, TAG_KEY)); p = end) {
-		p += strlen(TAG_KEY);
-		end = strchr(p, '"');
-		if (!end)
-			break;
-		if (tag_ok(p, (size_t)(end - p))) {
-			char t[64];
-
-			memcpy(t, p, (size_t)(end - p));
-			t[end - p] = 0;
-			if (strcmp(t, best) > 0)
-				strcpy(best, t);
-		}
+	p = strstr(buf, "\"version\"");
+	if (p) {
+		p += 9;
+		while (*p == ' ' || *p == ':')
+			p++;
 	}
-	if (!best[0])
+	if (!p || *p++ != '"' || !(end = strchr(p, '"')) || !tag_ok(p, (size_t)(end - p)))
 		return fail("no-release", 0);
-	printf("{\"ok\":1,\"latest\":\"%s\"}\n", best);
+	*end = 0;
+	printf("{\"ok\":1,\"latest\":\"%s\",\"channel\":\"%s\"}\n", p, channel);
 
 	return 0;
 }
@@ -290,7 +304,9 @@ int main(int argc, char **argv)
 	size_t n = 0;
 
 	if (argc == 1)
-		return latest();
+		return latest("stable");
+	if (argc == 3 && !strcmp(argv[1], "latest"))
+		return latest(argv[2]);
 	if (argc != 3 || strcmp(argv[1], "get"))
 		return 2;
 	alarm(600);
