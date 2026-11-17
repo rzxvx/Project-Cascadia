@@ -291,6 +291,51 @@
 			clock-output-names = "usb1_ehci_ps";
 		};
 
+		/* The audio power states: AUDIO (on as iBoot leaves it) and
+		 * its child I2S0 (off, 0x200). The gate driver registers each
+		 * clock under its node name, and a child finds its parent by
+		 * the parent's clock-output-names: here they must agree, or
+		 * I2S0 is an orphan and AUDIO goes off with the unused clocks. */
+		audio_ps: audio-ps@f1010b8 {
+			compatible = "apple,s5l8940x-pmgr-clk-gate";
+			#clock-cells = <0>;
+			reg = <0xf1010b8 0x4>;
+			clocks = <&uart_clk>;
+			clock-output-names = "audio-ps";
+		};
+
+		i2s0_ps: i2s0-ps@f1010bc {
+			compatible = "apple,s5l8940x-pmgr-clk-gate";
+			#clock-cells = <0>;
+			reg = <0xf1010bc 0x4>;
+			clocks = <&audio_ps>;
+			clock-output-names = "i2s0_ps";
+		};
+
+		/*
+		 * The speaker (sound/soc/apple/s5l-audio.c; docs/research/
+		 * j1-a5x.md): I2S0 sends the samples as clock master, 2 x 16
+		 * bits; CDMA channel 0x1f, request 1 (the ADT's i2s0
+		 * dma-channels) feeds its FIFO at +0x10; NCO 0 (PMGR + 0x130,
+		 * 342 MHz reference) is its bit clock; the i2s-switch puts it
+		 * and its MCK on pin group 0 (pads 115-118), to the codec.
+		 * This node is the codec's MCLK.
+		 */
+		audio: audio-controller@4190000 {
+			compatible = "apple,s5l8945x-audio";
+			reg = <0x4190000 0x1000>, <0x41e0000 0x1000>,
+			      <0x41a0000 0x1000>, <0xfa01000 0x1000>,
+			      <0xf100130 0x60>, <0x7000000 0x2d000>;
+			reg-names = "i2s", "mcs", "acs", "switch", "nco", "cdma";
+			clocks = <&i2s0_ps>;
+			clock-names = "i2s";
+			#clock-cells = <0>;
+			#sound-dai-cells = <0>;
+			apple,dma-channel = <0x1f 0x1>;
+			apple,nco-reference-hz = <342000000>;
+			apple,audio-codec = <&codec>;
+		};
+
 		/* UART5 as the battery gauge's HDQ bus: the ADT's uart5/gas-gauge,
 		 * a bq27540 as on the mini. Pin 196 is in peripheral mode as
 		 * iBoot leaves it. Read from userspace with UART5 powered: 97%,
@@ -381,6 +426,25 @@
 					apple,enable-reg = <0xd5>;
 					apple,wled-enables = <0x3f>;
 				};
+			};
+
+			/*
+			 * ADT /arm-io/i2c0/audio0, audio-control,cs42l63: the
+			 * codec (ID 42 a6 30, revision b0). Its MCLK (6 MHz) is
+			 * I2S0's, offered by the audio node. Line out 2 feeds the
+			 * speaker amplifier, whose enable is the ADT's
+			 * function-spkr_mute, GPIO 0x903 = 75: the ADT calls it a
+			 * mute, but measured, high = amplifier on (a tone plays
+			 * only with 75 high). The codec's reset (PMU GPIO 13) is
+			 * left as iBoot leaves it, deasserted.
+			 */
+			codec: audio-codec@4a {
+				compatible = "cirrus,cs42l63";
+				reg = <0x4a>;
+				clocks = <&audio>;
+				clock-names = "mclk";
+				speaker-amp-gpios = <&gpio 75 0>;
+				#sound-dai-cells = <0>;
 			};
 		};
 
