@@ -83,9 +83,14 @@ space, formats it ext4 and puts the desktop root on it. Then it installs the
 with no computer and no cable. Rebooting Linux brings iOS back.
 
 What it needs: the jailbroken iOS 8.4.1 with OpenSSH (as for `--kdfu`), a
-Mac with Xcode for the two small iOS programs (the app and the volume
-helper), the kernel built here (`./cascadia a5 kernel`, which install runs),
-and about half an hour with a few reboots. iOS and its data stay, but the
+Mac or a Linux computer (Debian / Ubuntu, Arch or Fedora), and about half an
+hour with a few reboots. From a release (the usual way) everything comes
+ready-made: the kernel, the desktop root, the app and the volume tools; only
+Apple's files come from your IPSW, the GPU's pack among them. Built from
+source (`INSTALL_FROM=source`), a Mac with Xcode, `ldid` and `dpkg` builds
+the two small iOS programs (the app and the volume helper) itself and
+fetches BearSSL for the app; Linux, or a Mac without them, takes those two
+from the release. iOS and its data stay, but the
 partition table and iOS's flash translation layer are rewritten: back the
 iPad up first. Every step that writes to the iPad says what it does and asks
 first; stopped anywhere, `./cascadia a5 install` carries on.
@@ -389,6 +394,9 @@ menu's Games, or from a terminal:
 ```sh
 screenpad supertux -- supertux2
 ```
+
+SuperTux runs steadier with SDL drawing it: in SuperTux's own options,
+choose SDL as the video system instead of OpenGL (it keeps the choice).
 
 The d-pad moves, **Jump** is Space, **Run** is Ctrl and **Menu** is Esc. A
 finger that lands anywhere else is an ordinary touch. `screenpad gamepad`

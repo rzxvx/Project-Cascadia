@@ -23,7 +23,7 @@ SRC="${SRC:-$ROOT/build/initramfs-root}"   # the tree ./cascadia a5 rootfs build
                                            # ./cascadia a5 build embeds
 # A new root starts from the desktop root when there is one: built here
 # (./cascadia a5 desktop-root), else a release's (./cascadia a5 get).
-DESKTOP_TAR="$ROOT/build/desktop-root.tar"
+DESKTOP_TAR="${DESKTOP_TAR:-$ROOT/build/desktop-root.tar}"
 [ -f "$DESKTOP_TAR" ] || DESKTOP_TAR="$ROOT/build/prebuilt/current/desktop-root.tar.xz"
 DST="${DST:-/srv/cascadia-root}"           # not under $HOME: a 0700 home, an
                                            # encrypted one or a systemd-homed one

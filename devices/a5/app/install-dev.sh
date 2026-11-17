@@ -18,7 +18,7 @@ fail() { echo "error: $*" >&2; exit 1; }
 ios_setup appdev
 ios_check_model
 D=/var/root/cascadia
-sha() { openssl sha1 "$1" | sed 's/.*= //'; }
+sha() { if command -v sha1sum >/dev/null 2>&1; then sha1sum "$1"; else shasum "$1"; fi | cut -c1-40; }
 
 ios "mkdir -p $D; which dpkg uicache; rm -f /kernelcache; cat > /kernelcache" < "$OUT/kernelcache" || fail "kernelcache upload"
 ios "rm -f /ramdisk; cat > /ramdisk" < "$OUT/ramdisk" || fail "ramdisk upload"

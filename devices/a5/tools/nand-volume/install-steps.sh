@@ -9,7 +9,9 @@
 NVS="$ROOT/build/nand-volume"
 NV() { IMAGE="$IMAGE" bash "$ROOT/tools/nand-volume/nand-volume.sh" "$@"; }
 nv_st() { sed -n "s/^$1=//p" "$NVS/state" 2>/dev/null | tail -1; }
-nv_plan_sha() { shasum "$NVS/plan.bin" 2>/dev/null | cut -c1-40; }
+# sha1sum where there is one (a minimal Fedora has no perl, so no shasum)
+nv_sha1() { if command -v sha1sum >/dev/null 2>&1; then sha1sum "$1"; else shasum "$1"; fi | cut -c1-40; }
+nv_plan_sha() { [ -f "$NVS/plan.bin" ] && nv_sha1 "$NVS/plan.bin"; }
 nv_header_done() { [ -n "$(nv_plan_sha)" ] && [ "$(nv_st header_written)" = "$(nv_plan_sha)" ]; }
 nv_filled() { [ "$(nv_st flow)" = done-create ] && [ -n "$(nv_st filled)" ] && [ "$(nv_st filled)" = "$(nv_plan_sha)" ]; }
 lx_up() { ssh -o ConnectTimeout=4 -o BatchMode=yes root@10.55.0.2 true </dev/null >/dev/null 2>&1; }
@@ -144,9 +146,17 @@ nand_install_ios() {
     python3 "$ROOT/scripts/make-pcless.py" --ipsw "$ipsw" --bundle "$ROOT/output/staging-bundle.bin" \
         --devicetree "$ROOT/build/firmware/DeviceTree.dec" --out "$out" | sed 's/^/    /' \
         || fail "the boot files did not build (above)"
+    # the app: given (DECK=, a release's), built here (a Mac with Xcode, ldid
+    # and dpkg), or the release's (Linux, or a Mac without them)
     local deck="${DECK:-$ROOT/build/app/cascadia.deb}"
     if [ ! -s "$deck" ]; then
-        sh "$ROOT/app/build.sh" || fail "the app did not build (above): it needs macOS with Xcode, ldid, and BearSSL in build/cache"
+        if NV ios-buildable; then
+            sh "$ROOT/app/build.sh" || fail "the app did not build (above)"
+        else
+            note "the Cascadia app from the release (building it needs a Mac with Xcode, ldid and dpkg)"
+            deck="$ROOT/build/nand-volume/cascadia.deb"
+            NV release-file cascadia.deb "$deck" || fail "no app (above)"
+        fi
     fi
     OUT="$out" DECK="$deck" RELEASE="${RELEASE:-}" CHANNEL="${CHANNEL:-stable}" bash "$ROOT/app/install-dev.sh" || fail "installing on iOS stopped (above)"
 }

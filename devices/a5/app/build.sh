@@ -9,8 +9,8 @@
 # files come from the computer once and are checked against
 # /var/root/cascadia/manifest.
 #
-# BearSSL is not in this repository.  Put it in build/cache first:
-#   curl -fsSLO https://bearssl.org/bearssl-0.6.tar.gz && tar xzf bearssl-0.6.tar.gz
+# BearSSL is not in this repository: the first build downloads it into
+# build/cache (bearssl.org, checked by sha256).
 set -e
 cd "$(dirname "$0")"
 B=../build/app
@@ -21,8 +21,16 @@ LD="clang -arch armv7 -miphoneos-version-min=8.0 -nostdlib"
 BSSL=../build/cache/bearssl-0.6
 BSSL_SHA=6705bba1714961b41a728dfc5debbe348d2966c117649392f8c8139efc83ff14
 BLIB=../build/bearssl-armv7/libbearssl.a
-[ "$(shasum -a 256 "$BSSL.tar.gz" 2>/dev/null | cut -d' ' -f1)" = "$BSSL_SHA" ] &&
-    [ -d "$BSSL/src" ] || { echo "no BearSSL 0.6 in build/cache, see the top of this file" >&2; exit 1; }
+bssl_ok() { [ "$(shasum -a 256 "$BSSL.tar.gz" 2>/dev/null | cut -d' ' -f1)" = "$BSSL_SHA" ]; }
+if ! bssl_ok; then
+    echo "==> BearSSL 0.6 (once, into build/cache)"
+    mkdir -p "$(dirname "$BSSL")"
+    curl -fsSL -o "$BSSL.tar.gz.part" https://bearssl.org/bearssl-0.6.tar.gz &&
+        mv "$BSSL.tar.gz.part" "$BSSL.tar.gz" || { echo "could not download BearSSL" >&2; exit 1; }
+    bssl_ok || { rm -f "$BSSL.tar.gz"; echo "BearSSL's download does not match its sha256" >&2; exit 1; }
+    rm -rf "$BSSL"
+fi
+[ -d "$BSSL/src" ] || tar xzf "$BSSL.tar.gz" -C "$(dirname "$BSSL")"
 if [ ! -f "$BLIB" ]; then
     mkdir -p "$(dirname "$BLIB")"
     find "$BSSL/src" -name '*.c' | while read -r f; do

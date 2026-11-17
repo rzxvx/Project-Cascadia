@@ -7,6 +7,9 @@
 #   nand-volume backup                 copy the Linux root to this computer (Linux)
 #   nand-volume fill [TAR]             mkfs.ext4 + a root from TAR (Linux)
 #   nand-volume build                  the iOS helper and the header writer module
+#   nand-volume release-file NAME OUT  one file of the release (prebuilt/<channel>/
+#                                      a5.json, else experimental's), checked by
+#                                      sha256: the iOS tools without Xcode
 #   nand-volume space                  GiB a new Linux volume can have (iOS)
 #   nand-volume ram-image              the NAND image booting its RAM root (for
 #                                      the Linux steps once the volume exists)
@@ -35,6 +38,32 @@ LINUX_HOST="${LINUX_HOST:-root@10.55.0.2}"
 BOUND=15854493696
 HFS_MARGIN=262144        # blocks free after a shrink (1 GiB), spec 6.4 step 1
 mkdir -p "$S"
+REPO="$(cd "$ROOT/../.." && pwd)"
+# docker as this user on Linux: a plain daemon writes root's files into the
+# bind mounts (Docker Desktop on macOS maps them)
+DUSER=()
+[ "$(uname -s)" = Linux ] && DUSER=(--user "$(id -u):$(id -g)")
+
+# sha1sum (coreutils) where there is one: shasum is perl's, and a minimal
+# Fedora has no perl
+sha1() { if command -v sha1sum >/dev/null 2>&1; then sha1sum "$1"; else shasum "$1"; fi | cut -c1-40; }
+
+# The iOS side (cascadia-hfs, the app) builds with Xcode's iPhoneOS SDK, ldid
+# and dpkg-deb: a Mac that has them.  Elsewhere -- Linux, or a Mac without
+# them -- it comes from the release, the same build.
+ios_buildable() {
+    [ "$(uname -s)" = Darwin ] && xcrun --sdk iphoneos --show-sdk-path >/dev/null 2>&1 &&
+        command -v ldid >/dev/null 2>&1 && command -v dpkg-deb >/dev/null 2>&1
+}
+release_file() {   # NAME OUT
+    local ch="${CHANNEL:-stable}" m
+    for m in "$REPO/prebuilt/$ch/a5.json" "$REPO/prebuilt/experimental/a5.json"; do
+        [ -f "$m" ] && grep -q "\"name\": \"$1\"" "$m" && break
+        m=
+    done
+    [ -n "$m" ] || fail "no release carries $1 yet (prebuilt/*/a5.json), and building it needs a Mac with Xcode, ldid and dpkg"
+    python3 "$REPO/lib/prebuilt.py" file "$m" "$1" "$2" || fail "could not download $1 (above)"
+}
 
 say()  { printf '==> %s\n' "$*"; }
 note() { printf '    %s\n' "$*"; }
@@ -46,7 +75,7 @@ ask()  {
 }
 lwvm() {
     if "$PY" -c 'import unicorn' 2>/dev/null; then "$PY" "$T/lwvm.py" "$@"
-    else docker run --rm -i -v "$ROOT":"$ROOT" -w "$ROOT" "$IMAGE" python3 "$T/lwvm.py" "$@"; fi
+    else docker run --rm -i ${DUSER[@]+"${DUSER[@]}"} -v "$ROOT":"$ROOT" -w "$ROOT" "$IMAGE" python3 "$T/lwvm.py" "$@"; fi
 }
 st_get() { sed -n "s/^$1=//p" "$S/state" 2>/dev/null | tail -1; }
 st_set() { grep -v "^$1=" "$S/state" 2>/dev/null > "$S/state.new"; echo "$1=$2" >> "$S/state.new"; mv "$S/state.new" "$S/state"; }
@@ -158,7 +187,7 @@ linux_write_header() {   # from plan -> writes plan, or stops
     lx 'dmesg -c >/dev/null; insmod /tmp/ppn_lwvmw.ko from=/tmp/lwvm-from.bin to=/tmp/lwvm-plan.bin; r=$(cat /sys/module/ppn_lwvmw/parameters/result); rmmod ppn_lwvmw; dmesg | grep lwvmw | sed "s/^\[[ 0-9.]*\] //"; exit $r' </dev/null \
         | tee "$S/write-$(date +%Y%m%d-%H%M%S).log" | sed 's/^/    /'
     [ "${PIPESTATUS[0]}" = 0 ] || fail "the header write failed (above).  Do NOT boot iOS; run this again from Linux."
-    st_set header_written "$(shasum "$S/plan.bin" | cut -c1-40)"
+    st_set header_written "$(sha1 "$S/plan.bin")"
     say "header written and committed"
 }
 
@@ -296,6 +325,11 @@ cmd_fill() {
     in_linux || fail "boot the Linux image first"
     [ -n "$tar" ] && [ -f "$tar" ] || fail "usage: nand-volume fill ROOT.tar[.xz]"
     lx 'command -v mke2fs && command -v e2fsck' </dev/null >/dev/null || fail "no mke2fs/e2fsck in this image: ./cascadia a5 build (it adds e2fsprogs), flash"
+    # built before anything is written: a stop here leaves the NAND as it was
+    say "the GPU's pack (from your IPSW)"
+    rm -f "$S/gpu-pack.tar"
+    bash "$ROOT/cascadia" dev gpu --tar "$S/gpu-pack.tar" | sed 's/^/    /'
+    [ "${PIPESTATUS[0]}" = 0 ] && [ -s "$S/gpu-pack.tar" ] || fail "the GPU pack did not build (above)"
     lx_nand_ready
     lx 'f=/sys/module/apple_ftl/parameters; [ "$(cat $f/enable_write)" = Y ] && [ "$(cat $f/write_volume)" = Linux ] || { echo "the FTL write gates are closed: not the NAND install image"; exit 1; }
         echo 1 > $f/mount && ls -l /dev/ftl0p2' </dev/null | sed 's/^/    /'
@@ -309,6 +343,9 @@ cmd_fill() {
                   | lx 'tar -C /mnt/nandlinux -xpf -' || fail untar ;;
         *)    lx 'tar -C /mnt/nandlinux -xpf -' < "$tar" || fail untar ;;
     esac
+    # the GPU's pack: a release's root has none, it is made from this
+    # computer's IPSW (as nfs on does for an NFS root)
+    lx 'tar -C /mnt/nandlinux -xf -' < "$S/gpu-pack.tar" || fail "GPU pack unpack"
     # stage 1 switches to a NAND root only when it has this entry (rootfs/nand)
     lx 'cat > /mnt/nandlinux/sbin/p105-nand-init && chmod 755 /mnt/nandlinux/sbin/p105-nand-init &&
         rm -f /mnt/nandlinux/etc/nfsroot &&
@@ -317,7 +354,7 @@ cmd_fill() {
     lx 'sync; umount /mnt/nandlinux && e2fsck -fn /dev/ftl0p2; r=$?; echo 0 > /sys/module/apple_ftl/parameters/mount; exit $r' </dev/null \
         | tail -2 | sed 's/^/    /'
     [ "${PIPESTATUS[0]}" = 0 ] || fail "e2fsck of the filled volume is not clean (above)"
-    st_set filled "$(shasum "$S/plan.bin" 2>/dev/null | cut -c1-40)"
+    st_set filled "$(sha1 "$S/plan.bin" 2>/dev/null)"
     say "filled: the daily boot (the app or the cable image) can use it now"
 }
 
@@ -351,7 +388,12 @@ PY
 # ------------------------------------------------------------------- build --
 cmd_build() {
     say "iOS helper"
-    sh "$T/ios/build.sh" >/dev/null 2>&1 || fail "cascadia-hfs build (needs Xcode and ldid)"
+    if ios_buildable; then
+        sh "$T/ios/build.sh" >/dev/null 2>&1 || fail "cascadia-hfs build (needs Xcode and ldid)"
+    else
+        note "no Xcode/ldid here: cascadia-hfs from the release"
+        release_file cascadia-hfs "$S/cascadia-hfs"; chmod 755 "$S/cascadia-hfs"
+    fi
     say "the header writer module, for the kernel in $KERNEL"
     local kdir K="$S/kbuild"; kdir=$(cd "$KERNEL" && pwd -P) || fail "no kernel tree at $KERNEL"
     [ -f "$kdir/vmlinux" ] || fail "$KERNEL is not built: ./cascadia a5 kernel, ./cascadia a5 build"
@@ -360,7 +402,7 @@ cmd_build() {
     cp -R "$ROOT/patches/files/drivers/mtd/nand/apple" "$K/patches/files/drivers/mtd/nand/"
     cp -R "$T" "$K/tools/"
     # Module.symvers from this vmlinux (the driver's exports), then the module
-    docker run --rm -v "$kdir":/kernel -v "$K":/b -w /b "$IMAGE" sh -c '
+    docker run --rm ${DUSER[@]+"${DUSER[@]}"} -v "$kdir":/kernel -v "$K":/b -w /b "$IMAGE" sh -c '
         set -e
         if [ ! -f /kernel/Module.symvers ] || [ /kernel/vmlinux -nt /kernel/Module.symvers ]; then
             make -s -C /kernel -j8 ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- modules >/dev/null
@@ -382,5 +424,7 @@ case "${1:-}" in
     build)  cmd_build ;;
     space)  cmd_space ;;
     ram-image) cmd_ram_image ;;
+    ios-buildable) ios_buildable ;;
+    release-file) [ $# = 3 ] || fail "usage: nand-volume release-file NAME OUT"; release_file "$2" "$3" ;;
     *) sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
 esac

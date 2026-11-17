@@ -8,6 +8,9 @@
                                         a manifest for the files in DIR, each at
                                         URLBASE/<name> (a GitHub release's)
     prebuilt.py current DEST            the version DEST/current points at
+    prebuilt.py file MANIFEST NAME OUT  one file MANIFEST names, to OUT (checked
+                                        by sha256): the iOS tools a computer
+                                        without Xcode cannot build
 
 A manifest is prebuilt/<channel>/<soc>.json in the repository: the version,
 the commit it was built from, and per file its URL, size and sha256.  The
@@ -71,20 +74,23 @@ def fetch(url, path, size):
     os.replace(part, path)
 
 
+def get_file(f, p):
+    if os.path.exists(p) and os.path.getsize(p) == f['size'] and sha256(p) == f['sha256']:
+        print('    ok: %s (have it)' % f['name'])
+        return
+    fetch(f['url'], p, f['size'])
+    if sha256(p) != f['sha256']:
+        os.remove(p)
+        fail('%s does not match its sha256 -- removed; run it again' % f['name'])
+    print('    ok: %s' % f['name'])
+
+
 def get(manifest, dest):
     m = json.load(open(manifest))
     vdir = os.path.join(dest, m['version'])
     os.makedirs(vdir, exist_ok=True)
     for f in m['files']:
-        p = os.path.join(vdir, f['name'])
-        if os.path.exists(p) and os.path.getsize(p) == f['size'] and sha256(p) == f['sha256']:
-            print('    ok: %s (have it)' % f['name'])
-            continue
-        fetch(f['url'], p, f['size'])
-        if sha256(p) != f['sha256']:
-            os.remove(p)
-            fail('%s does not match its sha256 -- removed; run it again' % f['name'])
-        print('    ok: %s' % f['name'])
+        get_file(f, os.path.join(vdir, f['name']))
     json.dump(m, open(os.path.join(vdir, 'manifest.json'), 'w'), indent=1)
     cur = os.path.join(dest, 'current')
     if os.path.islink(cur) or os.path.exists(cur):
@@ -114,6 +120,13 @@ def main(a):
         get(a[1], a[2])
     elif a[:1] == ['manifest'] and len(a) == 6:
         manifest(*a[1:])
+    elif a[:1] == ['file'] and len(a) == 4:
+        m = json.load(open(a[1]))
+        f = [f for f in m['files'] if f['name'] == a[2]]
+        if not f:
+            fail('%s names no %s (an older release?)' % (a[1], a[2]))
+        os.makedirs(os.path.dirname(os.path.abspath(a[3])), exist_ok=True)
+        get_file(f[0], a[3])
     elif a[:1] == ['current'] and len(a) == 2:
         cur = os.path.join(a[1], 'current')
         if not os.path.islink(cur):

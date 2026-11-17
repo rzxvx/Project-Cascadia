@@ -29,6 +29,7 @@ Installing, as /usr/local/lib/sgx2d:
               (HOST, default root@10.55.0.2)
    --root     into a root filesystem tree on this machine, such as the one
               ./cascadia a5 nfs exports (DIR, default that one)
+   --tar FILE the install as a tar (what nand-volume fill unpacks on the NAND)
 
 build/sgx2d holds data derived from Apple's kext and GL driver (from the
 IPSW): it stays out of git, like the rest of build/.
@@ -189,16 +190,22 @@ def main():
     to.add_argument('--root', nargs='?', const='', metavar='DIR',
                     help='install the build into a root filesystem tree (default: '
                          'this host\'s NFS root, %s)' % default_root())
+    to.add_argument('--tar', metavar='FILE',
+                    help='write the install as a tar of /%s' % PREFIX)
     a = ap.parse_args()
     pack = os.path.join(OUT, 'pack')
-    if a.install is None and a.root is None and not a.auto:
+    if a.install is None and a.root is None and a.tar is None and not a.auto:
         build_pack(pack)
         build_lib(pack)
         print('built: %s' % os.path.relpath(pack, ROOT))
         return
     if not os.path.exists(os.path.join(pack, 'sgxinfo')):
         fail('nothing built in %s -- ./cascadia a5 dev gpu builds it' % os.path.relpath(pack, ROOT))
-    if a.auto:
+    if a.tar:
+        with open(a.tar, 'wb') as f:
+            f.write(tarball(pack))
+        print('written: %s' % a.tar)
+    elif a.auto:
         auto(pack)
     elif a.install:
         install_ssh(pack, a.install)
