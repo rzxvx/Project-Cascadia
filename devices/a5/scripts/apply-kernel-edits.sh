@@ -80,7 +80,8 @@ for p in "${patches[@]}"; do
             old="$record"
         elif rgit rev-parse --git-dir >/dev/null 2>&1; then
             for rev in $(rgit log --format=%H -- "patches/tree/$name" 2>/dev/null); do
-                rgit show "$rev:patches/tree/$name" > "$tmp" 2>/dev/null || continue
+                # ./ : relative to this directory, not the repository root
+                rgit show "$rev:./patches/tree/$name" > "$tmp" 2>/dev/null || continue
                 if git -C "$TREE" apply --reverse --check "$tmp" 2>/dev/null; then
                     old="$tmp"
                     echo "  the tree carries $name as of ${rev:0:7}"

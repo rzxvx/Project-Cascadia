@@ -13,10 +13,14 @@
  * leaves bit 2 of the received byte set for a 1 and clear for a 0.
  * A transaction starts with a break (UCON bit 4: one frame low).
  *
+ * On the iPad 3 (J1) iBoot leaves UART5's power state off, with its registers
+ * already set; the node's optional clock is that PMGR switch.
+ *
  * Only reads (command bit 7 clear) are ever sent: register numbers are the
  * bq27541 family's standard commands, 16 bits as two 8-bit reads.
  * README ("Battery gauge") has the summary.
  */
+#include <linux/clk.h>
 #include <linux/delay.h>
 #include <linux/io.h>
 #include <linux/jiffies.h>
@@ -225,6 +229,7 @@ static int hdq_probe(struct platform_device *pdev)
 {
 	struct power_supply_config cfg = {};
 	struct hdq_battery *b;
+	struct clk *clk;
 	int soc;
 
 	b = devm_kzalloc(&pdev->dev, sizeof(*b), GFP_KERNEL);
@@ -235,6 +240,11 @@ static int hdq_probe(struct platform_device *pdev)
 	b->base = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(b->base))
 		return PTR_ERR(b->base);
+
+	/* UART5's power state, where iBoot does not leave it on */
+	clk = devm_clk_get_optional_enabled(&pdev->dev, NULL);
+	if (IS_ERR(clk))
+		return dev_err_probe(&pdev->dev, PTR_ERR(clk), "UART5 power\n");
 
 	writel(HDQ_ULCON, b->base + ULCON);
 	writel(HDQ_UFCON, b->base + UFCON);

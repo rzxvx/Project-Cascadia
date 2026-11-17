@@ -1003,6 +1003,17 @@ static bool __init aic1_tmr_try(struct apple_aic1 *aic, u32 win,
  * Register only on a timer seen to fire.  Failing leaves the system exactly as
  * it was -- the SOF tick carries on -- so this cannot cost a boot.
  *
+ * kernel_init() calls apple_aic1_timer_start() as soon as the AIC is re-armed
+ * and interrupts are on (init/main.c, in patches/tree/0001), before
+ * workqueue_init() makes the first kernel threads.  That is required, not
+ * tidy: kthread_bind() waits in wait_task_inactive(), and if the scheduler
+ * has preempted the new thread before it slept, the wait is a one-tick
+ * hrtimer sleep.  With no clockevent that sleep never ends.  Whether the
+ * thread is preempted depends on timing, so on the J1 the boot hung or not
+ * with how slow the early console was (a 2 ms delay per message was enough
+ * to pass; earlycon=j1fb's drawing too).  The early_initcall below is the
+ * fallback for a kernel without that call.
+ *
  * early_initcall: dwc2 decides whether to take Start-of-Frame interrupts
  * when it first initialises the core, at device_initcall, and it asks whether
  * this timer is live; and it must come before smp_init().  Until it runs there
@@ -1013,12 +1024,15 @@ static bool __init aic1_tmr_try(struct apple_aic1 *aic, u32 win,
  * hand.  The AIC is re-armed and interrupts are on before any initcall runs
  * (init/main.c), so the probe below still sees the timer fire.
  */
-static int __init aic1_timer_init(void)
+static bool aic1_tmr_tried __initdata;
+
+int __init apple_aic1_timer_start(void)
 {
 	struct apple_aic1 *aic = apple_aic1;
 
-	if (!aic)
+	if (!aic || aic1_tmr_tried)
 		return 0;
+	aic1_tmr_tried = true;
 
 	pr_err("AIC-TIMER: timebase at %#llx; trying the AIC's own timer (recipe from iBEC 12H321)\n",
 	       aic1_time(aic));
@@ -1052,6 +1066,11 @@ static int __init aic1_timer_init(void)
 	pr_err("AIC-TIMER: PASS -- clockevent registered at 24 MHz, %s. The tick no longer needs a USB host.\n",
 	       aic1_tmr_percpu ? "one per CPU" : "CPU0 only");
 	return 0;
+}
+
+static int __init aic1_timer_init(void)
+{
+	return apple_aic1_timer_start();
 }
 early_initcall(aic1_timer_init);
 
