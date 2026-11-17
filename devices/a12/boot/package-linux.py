@@ -3,13 +3,16 @@ import hashlib, json, os, pathlib, shutil, subprocess, sys, tempfile
 root = pathlib.Path(__file__).resolve().parents[2]
 a12 = root / 'a12'
 payload = a12 / 'build/payload'
-out = a12 / 'boot/inputs'
+# A12_BOARD: n841 (XR, the default) or d331p (XS Max)
+board = os.environ.get('A12_BOARD', 'n841')
+sub = '' if board == 'n841' else '/' + board
+out = a12 / f'boot/inputs{sub}'
 out.mkdir(parents=True, exist_ok=True)
 parts = [
-    payload / 'm1n1-idevice.macho',
-    payload / 't8020-n841.dtb',
+    payload / ('m1n1-idevice.macho' if board == 'n841' else f'm1n1-{board}.macho'),
+    payload / f't8020-{board}.dtb',
     payload / 'Image.gz',
-    payload / 'initramfs.cpio.gz',
+    payload / ('initramfs.cpio.gz' if board == 'n841' else f'initramfs-{board}.cpio.gz'),
 ]
 for p in parts:
     if not p.is_file(): raise SystemExit(f'missing {p}')
@@ -55,9 +58,12 @@ if syscfg_path:
                         *(f'{byte:02x}' for byte in keys['BMac'][:6][::-1])],
                        check=True)
         dtb = staged.read_bytes()
+if board == 'n841':
+    extra = 'cpufreq.off=1 pcie_aspm=off brcmfmac.debug=0x108000'
+else:
+    extra = 'cma=64M'
 bootargs = ('chosen.bootargs=earlycon console=tty0 keep_bootcon ignore_loglevel '
-            'loglevel=8 rdinit=/init panic=-1 cpufreq.off=1 pcie_aspm=off '
-            'brcmfmac.debug=0x108000\n').encode()
+            f'loglevel=8 rdinit=/init panic=-1 {extra}\n').encode()
 raw = out / 'm1n1-linux.macho'
 with raw.open('wb') as f:
     f.write(parts[0].read_bytes())
@@ -65,7 +71,7 @@ with raw.open('wb') as f:
     for p in parts[1:]: f.write(dtb if p == parts[1] else p.read_bytes())
     f.write(b'\0\0\0\0')
 wrapped = out / 'm1n1-linux.img4'
-ticket = pathlib.Path(os.environ.get('XR_IM4M', str(a12 / 'boot/extracted/apticket.im4m')))
+ticket = pathlib.Path(os.environ.get('XR_IM4M', str(a12 / f'boot/extracted{sub}/apticket.im4m')))
 if not ticket.is_file():
     raise SystemExit(f'missing XR IM4M: {ticket}; set XR_IM4M=/path/to/apticket.im4m')
 subprocess.run(['img4','-i',str(raw),'-o',str(wrapped),'-A','-T','rkrn','-M',str(ticket)],check=True)

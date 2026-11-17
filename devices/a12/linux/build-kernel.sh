@@ -27,6 +27,9 @@ grep -q 'apple_hidspi_touch.o' "$K/drivers/input/touchscreen/Makefile" || \
     "$K/drivers/input/touchscreen/Makefile"
 cp "$DOCS/config_16k" "$K/.config"
 cd "$K"
+# One kernel for both boards. H11P display, apple-mt-spi touch, hci_bcm4377,
+# the SoC temperature sensors and agx are the XS Max's; t8020-n841.dts keeps
+# their nodes off and the others bind nothing on the XR.
 ./scripts/config --disable CONFIG_BLK_DEV_NBD \
   --disable CONFIG_USB_G_MULTI \
   --enable CONFIG_ARM_APPLE_SOC_CPUFREQ --enable CONFIG_CPU_THERMAL \
@@ -46,7 +49,10 @@ cd "$K"
   --enable CONFIG_NFS_V3 --enable CONFIG_NFS_V4 --enable CONFIG_ROOT_NFS \
   --disable CONFIG_FW_LOADER_USER_HELPER \
   --disable CONFIG_FW_LOADER_USER_HELPER_FALLBACK \
-  --enable CONFIG_DRM_SIMPLEDRM --enable CONFIG_DEVTMPFS --enable CONFIG_DEVTMPFS_MOUNT
+  --enable CONFIG_DRM_SIMPLEDRM --enable CONFIG_DEVTMPFS --enable CONFIG_DEVTMPFS_MOUNT \
+  --enable CONFIG_WIRELESS --enable CONFIG_DRM_APPLE_H11P \
+  --enable CONFIG_TOUCHSCREEN_APPLE_MT_SPI --enable CONFIG_BT_HCIBCM4377 \
+  --enable CONFIG_SENSORS_APPLE_SOC_TEMP --enable CONFIG_DRM_AGX
 make ARCH=arm64 LLVM=1 olddefconfig
 make ARCH=arm64 LLVM=1 -j"${JOBS:-8}" Image.gz
 mkdir -p "$OUT"

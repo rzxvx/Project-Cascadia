@@ -1,0 +1,33 @@
+diff --git a/src/usb_dwc2.c b/src/usb_dwc2.c
+--- a/src/usb_dwc2.c
++++ b/src/usb_dwc2.c
+@@ -17,6 +17,7 @@
+ 
+ #include "adt.h"
+ #include "dart.h"
++#include "fb.h"
+ #include "malloc.h"
+ #include "memory.h"
+ #include "ringbuffer.h"
+@@ -35,7 +36,20 @@
+ // many printf commented due to strict timing requirements
+ // macos is less strict than linux
+ 
+-#define usb_error_printf(fmt, ...) uart_printf("usb-dwc2[ERR]: " fmt, ##__VA_ARGS__)
++/*
++ * Errors go to the framebuffer as well as the UART. This driver is polled from
++ * inside an iodev callback, so in_iodev is set and iodev_console_write() sends
++ * anything printed from here to the UART alone, which needs a serial cable on
++ * the Lightning pins. Every error this driver reported was invisible.
++ */
++#define usb_error_printf(fmt, ...)                                                                 \
++    do {                                                                                           \
++        char _ebuf[192];                                                                           \
++        int _elen = snprintf(_ebuf, sizeof(_ebuf), "usb-dwc2[ERR]: " fmt, ##__VA_ARGS__);          \
++        if (_elen > 0)                                                                             \
++            fb_console_write(_ebuf, _elen);                                                        \
++        uart_printf("usb-dwc2[ERR]: " fmt, ##__VA_ARGS__);                                         \
++    } while (0)
+ 
+ #define STRING_DESCRIPTOR_LANGUAGES    0
+ #define STRING_DESCRIPTOR_MANUFACTURER 1

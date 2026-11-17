@@ -4,6 +4,10 @@ set -euo pipefail
 A12="$(cd "$(dirname "$0")/.." && pwd)"
 ROOT="$A12/build/bluez-root"
 OUT="$A12/boot/inputs/bluez-root.tar.gz"
+[ "$(uname -m)" = aarch64 ] || {
+    echo "build-bluez-bundle.sh needs an arm64 host: it copies the host's BlueZ" >&2
+    exit 1
+}
 rm -rf "$ROOT"
 mkdir -p "$ROOT"/{usr/bin,usr/sbin,usr/share/dbus-1/system.d,usr/share/dbus-1/system-services,etc/bluetooth,sbin}
 

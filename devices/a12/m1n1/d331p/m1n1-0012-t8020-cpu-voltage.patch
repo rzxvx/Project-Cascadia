@@ -1,0 +1,60 @@
+diff --git a/src/cpufreq.c b/src/cpufreq.c
+index dc93efc..31f542a 100644
+--- a/src/cpufreq.c
++++ b/src/cpufreq.c
+@@ -594,10 +594,55 @@ const struct feat_t *cpufreq_get_features(void)
+     }
+ }
+ 
++/*
++ * T8020: iBoot leaves the rails under a control that does not follow the
++ * pstate, so every pstate above 2 runs on pstate 2's voltage and hangs the
++ * SoC sooner or later. Clearing the mask in 0xa0000 hands the rails to
++ * software, as AppleT8020PMGR does, and Linux then sets the CPU rails on
++ * every switch. Each rail keeps its current code.
++ */
++#define T8020_VOLTAGE_CTL      0xa0000
++#define T8020_VOLTAGE_CTL_HW   GENMASK(14, 8)
++#define T8020_VOLTAGE_RAIL(n)  (0xa000c + 4 * (n))
++#define T8020_VOLTAGE_RAILS    7
++#define T8020_VOLTAGE_BUSY     BIT(31)
++
++static int cpufreq_init_t8020(void)
++{
++    int pmgr_path[8];
++    u64 pmgr;
++
++    if (adt_path_offset_trace(adt, "/arm-io/pmgr", pmgr_path) < 0 ||
++        adt_get_reg(adt, pmgr_path, "reg", 0, &pmgr, NULL) < 0) {
++        printf("cpufreq: no /arm-io/pmgr\n");
++        return -1;
++    }
++
++    mask32(pmgr + T8020_VOLTAGE_CTL, T8020_VOLTAGE_CTL_HW, 0);
++
++    for (int i = 0; i < T8020_VOLTAGE_RAILS; i++) {
++        u64 rail = pmgr + T8020_VOLTAGE_RAIL(i);
++        u32 code = read32(rail) & 0xff;
++
++        if (!code)
++            continue;
++        write32(rail, code);
++        if (poll32(rail, T8020_VOLTAGE_BUSY, 0, CLUSTER_SWITCH_TIMEOUT) < 0) {
++            printf("cpufreq: rail %d stuck busy\n", i);
++            return -1;
++        }
++    }
++
++    return 0;
++}
++
+ int cpufreq_init(void)
+ {
+     printf("cpufreq: Initializing clusters\n");
+ 
++    if (chip_id == T8020)
++        return cpufreq_init_t8020();
++
+     const struct cluster_t *cluster = cpufreq_get_clusters();
+     const struct feat_t *features = cpufreq_get_features();
+ 

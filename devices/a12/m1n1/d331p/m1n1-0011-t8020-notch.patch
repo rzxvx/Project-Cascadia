@@ -1,0 +1,30 @@
+diff --git a/src/kboot.c b/src/kboot.c
+index 2840651..a857eb2 100644
+--- a/src/kboot.c
++++ b/src/kboot.c
+@@ -82,8 +82,15 @@ void get_notchless_fb(u64 *fb_base, u64 *fb_height)
+ 
+     u32 val;
+ 
++    /*
++     * D331p, the iPhone XS Max, has a notch and no partially-occluded-display
++     * property in its ADT, same as the T8015 phones below. Its safe area
++     * starts 44pt down, which is 132 pixels at 3x.
++     */
++    bool notched_t8020 = chip_id == T8020 && board_id == 0x1a;
++
+     if ((ADT_GETPROP(adt, node, "partially-occluded-display", &val) < 0 || !val) &&
+-        (chip_id != T8015 || (board_id != 0x6 && board_id != 0xe))) {
++        (chip_id != T8015 || (board_id != 0x6 && board_id != 0xe)) && !notched_t8020) {
+         printf("FDT: No notch detected\n");
+         return;
+     }
+@@ -92,6 +99,8 @@ void get_notchless_fb(u64 *fb_base, u64 *fb_height)
+     u64 new_height = cur_boot_args.video.width * hfrac / 16;
+     if (chip_id == T8015 && (board_id == 0x6 || board_id == 0xe))
+         new_height = 2346;
++    if (notched_t8020)
++        new_height = cur_boot_args.video.height - 132;
+ 
+     if (new_height == cur_boot_args.video.height) {
+         printf("FDT: Notch detected, but display aspect is already 16:%lu?\n", hfrac);

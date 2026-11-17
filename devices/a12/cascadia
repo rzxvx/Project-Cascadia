@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Project Cascadia — A12 / iPhone XR (N841AP), called by ./cascadia a12.
+# Project Cascadia: A12 / iPhone XR (N841AP), called by ./cascadia a12.
 set -euo pipefail
 
 A12="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -12,7 +12,7 @@ have() { command -v "$1" >/dev/null 2>&1; }
 
 usage() {
     cat <<'EOF'
-Project Cascadia — iPhone XR (A12/N841)
+Project Cascadia: iPhone XR (A12/N841)
 
   ./cascadia a12 doctor              check host tools and local inputs
   ./cascadia a12 inputs              fetch/patch first-stage inputs (IM4M=...)
@@ -23,6 +23,9 @@ Project Cascadia — iPhone XR (A12/N841)
   ./cascadia a12 boot radios         boot Debian, then load Wi-Fi and Bluetooth
   ./cascadia a12 nfs on|off|status   manage the Debian NFS export
 
+A12_BOARD=d331p before any of these targets the iPhone XS Max instead.
+For it, periphery takes a 16.6.1 .ipsw for the radio firmware.
+
 Apple firmware, IM4M, SysCfg, generated payloads and logs stay local.
 EOF
 }
@@ -32,18 +35,23 @@ cmd_doctor() {
     for t in bash git python3 curl ssh sha256sum dtc cpp fdtget fdtput img4 irecovery ipsw; do
         if have "$t"; then note "ok:      $t"; else note "MISSING: $t"; rc=1; fi
     done
+    if [ "$(uname -m)" = aarch64 ]; then
+        note "ok:      arm64 host (initramfs copies its busybox and dropbear)"
+    else
+        note "warning: not an arm64 host; build initramfs needs one"
+    fi
     if have usbliter8ctl || [ -x "$A12/../a13/usbliter8ctl" ] || \
        [ -x /picotool/spironolactone/Linux/aarch64/usbliter8ctl ]; then
         note "ok:      usbliter8ctl"
     else
         note "MISSING: usbliter8ctl (PATH, devices/a13, or USBLITER8CTL=...)"; rc=1
     fi
-    [ -s boot/extracted/iBSS.raw ] && note "ok:      XR iBSS" || note "missing: XR iBSS — run inputs"
-    [ -s boot/extracted/DeviceTree.raw ] && note "ok:      XR DeviceTree" || note "missing: XR DeviceTree — run inputs"
+    [ -s boot/extracted/iBSS.raw ] && note "ok:      XR iBSS" || note "missing: XR iBSS, run inputs"
+    [ -s boot/extracted/DeviceTree.raw ] && note "ok:      XR DeviceTree" || note "missing: XR DeviceTree, run inputs"
     [ -s boot/inputs/syscfg.bin ] && note "ok:      private SysCfg (ignored)" || note "optional: private SysCfg"
-    [ -s boot/inputs/brcm/BCM4349B1.apple,n841.hcd ] && note "ok:      radio firmware" || note "optional: radio firmware — run periphery OS.dmg"
-    [ -s build/payload/Image.gz ] && note "ok:      kernel" || note "missing: kernel — run build kernel"
-    [ -s boot/inputs/m1n1-linux.img4 ] && note "ok:      packed Linux IMG4" || note "missing: packed image — run pack"
+    [ -s boot/inputs/brcm/BCM4349B1.apple,n841.hcd ] && note "ok:      radio firmware" || note "optional: radio firmware, run periphery OS.dmg"
+    [ -s build/payload/Image.gz ] && note "ok:      kernel" || note "missing: kernel, run build kernel"
+    [ -s boot/inputs/m1n1-linux.img4 ] && note "ok:      packed Linux IMG4" || note "missing: packed image, run pack"
     [ "$rc" -eq 0 ] || fail "install the missing host tools and re-run doctor"
 }
 
@@ -83,7 +91,9 @@ cmd_build() {
 cmd_pack() {
     need_im4m
     python3 boot/prepare-xr-linux-bootset.py --ticket "$IM4M"
-    if [ -n "${SYSCFG:-}" ]; then
+    if [ "${A12_BOARD:-n841}" != n841 ]; then
+        XR_IM4M="$IM4M" python3 boot/package-linux.py
+    elif [ -n "${SYSCFG:-}" ]; then
         XR_SYSCFG="$SYSCFG" XR_IM4M="$IM4M" python3 boot/package-linux.py
     elif [ -s boot/inputs/syscfg.bin ]; then
         XR_SYSCFG="$A12/boot/inputs/syscfg.bin" XR_IM4M="$IM4M" python3 boot/package-linux.py
@@ -104,7 +114,7 @@ case "${1:-}" in
         case "${1:-}" in
             ''|linux) bash boot/boot-xr-linux.sh ;;
             radios|full) bash boot/boot-and-load-xr.sh ;;
-            *) fail "unknown boot mode '$1' — use linux or radios" ;;
+            *) fail "unknown boot mode '$1', use linux or radios" ;;
         esac ;;
     nfs) shift; bash host/linux-nfs-export.sh "$@" ;;
     ''|-h|--help|help) usage ;;

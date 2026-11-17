@@ -17,6 +17,7 @@ starts from an app on the home screen, no computer needed.
 |---|---|---|---|---|
 | iPad mini 1 (Wi-Fi) | iPad2,5 / A1432 / p105ap | Apple A5 (S5L8942X) | Linux 6.12: both cores, touch, Wi-Fi, Bluetooth, speakers, battery, the GPU (OpenGL ES 2.0 / GL 2.1), XFCE; on the iPad's own NAND next to iOS 8.4.1 (the only version checked), started from the Cascadia app without a computer (or over the cable from an NFS root); iOS's files readable | [devices/a5](devices/a5/README.md) · [quickstart](devices/a5/docs/QUICKSTART.md) |
 | iPhone XR *(experimental, contributed)* | iPhone11,8 / N841AP | Apple A12 (T8020) | as its author reports it: Linux 7.3, framebuffer, touch, USB networking/SSH, Wi-Fi, UART Bluetooth, Debian/XFCE over NFS -- not built or tested by the maintainer | [devices/a12](devices/a12/README.md) · [Debian/XFCE](devices/a12/DEBIAN_XFCE_NFS.md) |
+| iPhone XS Max | iPhone11,6 / D331pAP | Apple A12 (T8020) | Linux 7.3: all six cores, display, touch, USB networking, Wi-Fi, Bluetooth. On [badapple](https://forgejo.toe.quest/kiki/badapple) also the internal storage as ext4, cpufreq and the GPU (OpenCL, OpenGL ES 2/3 and Vulkan, in progress) | [devices/a12](devices/a12/README.md#xs-max) (`A12_BOARD=d331p`) · [badapple](https://forgejo.toe.quest/kiki/badapple) |
 | iPhone 11 | iPhone12,1 / n104ap | Apple A13 (T8030) | Linux 7.2: all six cores, touch, Wi-Fi, Bluetooth, XFCE, the internal storage as Linux's disk, no cable after the boot | [devices/a13](devices/a13/README.md) · [quickstart](devices/a13/docs/QUICKSTART.md) |
 
 Experimental: the iPad 2 Wi-Fi (iPad2,1 / K93AP, S5L8940) boots Linux 6.12 to
@@ -156,7 +157,8 @@ pretty far.
   writable path; the iPad mini 1 NAND driver is built on them
 
 The A13 track's own credits (m1n1, Hoolock, Asahi Linux, usbliter8) are in
-[devices/a13/README.md](devices/a13/README.md).
+[devices/a13/README.md](devices/a13/README.md), the A12 track's in
+[devices/a12/README.md](devices/a12/README.md#credits).
 
 ## License
 

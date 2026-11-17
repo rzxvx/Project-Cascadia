@@ -1,0 +1,45 @@
+diff --git a/src/fb.c b/src/fb.c
+index 2b85d9a..fc5c389 100644
+--- a/src/fb.c
++++ b/src/fb.c
+@@ -503,7 +503,13 @@ void fb_shutdown(bool restore_logo)
+         return;
+ 
+     console.active = false;
+-    fb_clear_console();
++    /*
++     * Deliberately not clearing the console. On a phone the framebuffer is the
++     * only console without a serial cable on the Lightning pins, and Linux
++     * prints nothing visible until simpledrm and fbcon are up. Leaving the
++     * text in place means a kernel that dies before that still leaves m1n1's
++     * log readable, instead of handing back a screen with just the logo.
++     */
+     if (restore_logo) {
+         fb_restore_logo();
+         free(orig_logo.ptr);
+diff --git a/src/main.c b/src/main.c
+index d4e828c..b13c427 100644
+--- a/src/main.c
++++ b/src/main.c
+@@ -172,11 +172,17 @@ void m1n1_main(void)
+     // On idevice we need to always clear, because otherwise it looks scuffed on white devices
+     fb_init(!is_mac);
+     fb_display_logo();
+-#ifdef FB_SILENT_MODE
+-    fb_set_active(!cur_boot_args.video.display);
+-#else
++    /*
++     * Always on, even though a RELEASE build defines FB_SILENT_MODE and would
++     * otherwise pass !cur_boot_args.video.display, which is false whenever the
++     * display is up. The framebuffer is the only console on a phone without a
++     * serial cable on the Lightning pins, so an inactive console means a fault
++     * inside run_actions, payload_run or kboot prints its message and register
++     * dump into nothing. Combined with panic halting rather than rebooting,
++     * that presents as a frozen logo with no text and no reset, which is
++     * exactly what it did.
++     */
+     fb_set_active(true);
+-#endif
+ #endif
+ 
+     cpufreq_fixup();

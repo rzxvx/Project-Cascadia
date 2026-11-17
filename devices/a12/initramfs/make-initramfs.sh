@@ -3,28 +3,78 @@ set -euo pipefail
 A12="$(cd "$(dirname "$0")/.." && pwd)"
 OUT="$A12/build/payload"
 ROOT="$A12/build/initramfs-root"
+# A12_BOARD: n841 (XR, the default) or d331p (XS Max)
+BOARD="${A12_BOARD:-n841}"
+INITRAMFS=initramfs.cpio.gz
+[ "$BOARD" = n841 ] || INITRAMFS="initramfs-$BOARD.cpio.gz"
+
+# busybox, dropbear and their libraries come from the host on arm64. On other
+# hosts they come from Debian's arm64 packages, unpacked into SYS.
+SYS=
+if [ "$(uname -m)" != aarch64 ]; then
+    SYS="$A12/build/initramfs-arm64"
+    if [ ! -x "$SYS/usr/sbin/dropbear" ]; then
+        MIRROR="${DEBIAN_MIRROR:-http://deb.debian.org/debian}"
+        tmp="$(mktemp -d)"
+        trap 'rm -rf -- "$tmp"' EXIT
+        mkdir -p "$SYS"
+        curl -fsSL "$MIRROR/dists/trixie/main/binary-arm64/Packages.xz" | xz -d > "$tmp/Packages"
+        for pkg in busybox-static dropbear-bin libc6 libcrypt1 libtomcrypt1 libtommath1 libgmp10 zlib1g; do
+            f=$(awk -v p="$pkg" '$1 == "Package:" { x = ($2 == p) } x && $1 == "Filename:" { print $2; exit }' "$tmp/Packages")
+            [ -n "$f" ] || { echo "no $pkg in $MIRROR" >&2; exit 1; }
+            curl -fsSL "$MIRROR/$f" -o "$tmp/$pkg.deb"
+            data=$(cd "$tmp" && ar t "$pkg.deb" | grep '^data\.tar')
+            (cd "$tmp" && ar x "$pkg.deb" "$data" && tar -xf "$data" -C "$SYS" && rm "$data")
+        done
+    fi
+fi
 rm -rf "$ROOT"
 mkdir -p "$ROOT"/{bin,sbin,usr/bin,usr/sbin,proc,sys,dev,tmp,etc/dropbear,etc/bluetooth,etc/dbus-1/system.d,run,var/run,root/.ssh,usr/share/dbus-1/system.d,usr/share/dbus-1/system-services}
-cp /usr/bin/busybox "$ROOT/bin/busybox"
+cp "$SYS/usr/bin/busybox" "$ROOT/bin/busybox"
 ln -s busybox "$ROOT/bin/sh"
 copy_deps() {
-    ldd "$1" | awk '{for(i=1;i<=NF;i++) if($i ~ /^\//) print $i}' | sort -u | while read -r lib; do
-        mkdir -p "$ROOT$(dirname "$lib")"
-        cp -L "$lib" "$ROOT$lib"
+    if [ -z "$SYS" ]; then
+        ldd "$1" | awk '{for(i=1;i<=NF;i++) if($i ~ /^\//) print $i}' | sort -u | while read -r lib; do
+            mkdir -p "$ROOT$(dirname "$lib")"
+            cp -L "$lib" "$ROOT$lib"
+        done
+        return
+    fi
+    # No ldd for arm64 here: follow the interpreter and NEEDED entries.
+    local lib path d src
+    for lib in $(readelf -lW "$SYS$1" | sed -n 's/.*interpreter: \(.*\)\]/\1/p') \
+               $(readelf -dW "$SYS$1" | sed -n 's/.*Shared library: \[\(.*\)\]/\1/p'); do
+        path=
+        case "$lib" in
+        /*) path="$lib" ;;
+        *) for d in /lib/aarch64-linux-gnu /usr/lib/aarch64-linux-gnu /lib /usr/lib; do
+               [ -e "$SYS$d/$lib" ] && { path="$d/$lib"; break; }
+           done ;;
+        esac
+        [ -n "$path" ] || { echo "no $lib for $1" >&2; exit 1; }
+        [ -e "$ROOT$path" ] && continue
+        # Debian's packages put /lib under /usr/lib
+        src="$SYS$path"
+        [ -e "$src" ] || src="$SYS/usr$path"
+        mkdir -p "$ROOT$(dirname "$path")"
+        cp -L "$src" "$ROOT$path"
+        copy_deps "${src#"$SYS"}"
     done
 }
 copy_deps /usr/bin/busybox
 
 # Key-only SSH over USB Ethernet.  Keep the host identity stable between
-# initramfs rebuilds, while accepting every public key already authorized on
-# this development host.
-install -m 755 /usr/sbin/dropbear "$ROOT/usr/sbin/dropbear"
+# initramfs rebuilds, while accepting every public key of the user building it.
+install -m 755 "$SYS/usr/sbin/dropbear" "$ROOT/usr/sbin/dropbear"
 copy_deps /usr/sbin/dropbear
 mkdir -p "$A12/build/ssh"
 HOSTKEY="$A12/build/ssh/dropbear_ed25519_host_key"
-[ -s "$HOSTKEY" ] || /usr/bin/dropbearkey -t ed25519 -f "$HOSTKEY" >/dev/null
-install -m 600 "$HOSTKEY" "$ROOT/etc/dropbear/dropbear_ed25519_host_key"
-find /root/.ssh -maxdepth 1 -name '*.pub' -type f -exec cat {} + > "$ROOT/root/.ssh/authorized_keys"
+# Without a host dropbearkey, dropbear -R makes a key on the phone at boot.
+[ -s "$HOSTKEY" ] || ! command -v dropbearkey >/dev/null ||
+    dropbearkey -t ed25519 -f "$HOSTKEY" >/dev/null
+[ ! -s "$HOSTKEY" ] || install -m 600 "$HOSTKEY" "$ROOT/etc/dropbear/dropbear_ed25519_host_key"
+find "$HOME/.ssh" -maxdepth 1 -name '*.pub' -type f -exec cat {} + > "$ROOT/root/.ssh/authorized_keys"
+[ -s "$ROOT/root/.ssh/authorized_keys" ] || { echo "no SSH public key in $HOME/.ssh" >&2; exit 1; }
 chmod 700 "$ROOT/root" "$ROOT/root/.ssh"
 chmod 600 "$ROOT/root/.ssh/authorized_keys"
 cat > "$ROOT/etc/passwd" <<'EOF'
@@ -37,6 +87,10 @@ messagebus:x:100:
 bluetooth:x:101:
 EOF
 echo /bin/sh > "$ROOT/etc/shells"
+case "$BOARD" in
+n841) echo xr-linux > "$ROOT/etc/hostname"; echo 'iPhone XR Linux' > "$ROOT/etc/usb-product" ;;
+d331p) echo xsmax-linux > "$ROOT/etc/hostname"; echo 'iPhone XS Max Linux' > "$ROOT/etc/usb-product" ;;
+esac
 [ ! -s "$A12/build/nfsroot" ] || install -m 644 "$A12/build/nfsroot" "$ROOT/etc/nfsroot"
 cat > "$ROOT/etc/udhcpd.conf" <<'EOF'
 start 172.16.42.2
@@ -85,7 +139,7 @@ chmod 755 "$ROOT/sbin/usbwatch"
 
 # Matching XR touch firmware, generated from N841_Multitouch.im4p.  The
 # kernel driver will keep retrying harmlessly if a diagnostic build omits it.
-if [ -s "$A12/build/touch/n841-mtfw.bin" ]; then
+if [ "$BOARD" = n841 ] && [ -s "$A12/build/touch/n841-mtfw.bin" ]; then
     mkdir -p "$ROOT/lib/firmware/apple"
     install -m 644 "$A12/build/touch/n841-mtfw.bin" \
         "$ROOT/lib/firmware/apple/n841-mtfw.bin"
@@ -96,10 +150,21 @@ fi
 # XR BCM4357 B1 (yodak) firmware extracted from the matching iOS root.  The
 # kernel's firmware fallback is disabled, so a missing board-specific name
 # fails immediately instead of stalling boot for a minute.
-if [ "${XR_EMBED_BRCM_FIRMWARE:-0}" = 1 ] && [ -d "$A12/boot/inputs/brcm" ]; then
+if [ "$BOARD" = n841 ] && [ "${XR_EMBED_BRCM_FIRMWARE:-0}" = 1 ] && [ -d "$A12/boot/inputs/brcm" ]; then
     mkdir -p "$ROOT/lib/firmware/brcm"
     find "$A12/boot/inputs/brcm" -maxdepth 1 -type f -exec \
         install -m 644 {} "$ROOT/lib/firmware/brcm/" \;
+fi
+
+# The XS Max's touch op list and BCM4377 firmware go in the initramfs, as in
+# badapple.
+if [ "$BOARD" = d331p ]; then
+    mkdir -p "$ROOT/lib/firmware/apple" "$ROOT/lib/firmware/brcm"
+    [ ! -s "$A12/build/touch/d331p-mtfw.bin" ] ||
+        install -m 644 "$A12/build/touch/d331p-mtfw.bin" "$ROOT/lib/firmware/apple/"
+    [ ! -d "$A12/boot/inputs/d331p/brcm" ] ||
+        find "$A12/boot/inputs/d331p/brcm" -maxdepth 1 -type f -exec \
+            install -m 644 {} "$ROOT/lib/firmware/brcm/" \;
 fi
 
 cat > "$ROOT/init" <<'INIT'
@@ -112,10 +177,10 @@ mount -t configfs configfs /sys/kernel/config
 mount -t tmpfs tmpfs /tmp
 mkdir -p /dev/pts
 mount -t devpts devpts /dev/pts
-hostname xr-linux
+hostname -F /etc/hostname
 echo
 echo '########################################'
-echo '## Project Cascadia XR reached /init  ##'
+echo '## Project Cascadia reached /init     ##'
 echo '########################################'
 uname -a
 echo '[xr] CPUs:'; grep -E 'processor|model name' /proc/cpuinfo
@@ -146,7 +211,7 @@ if [ -n "$udc" ]; then
     mkdir -p strings/0x409 configs/c.1/strings/0x409
     echo XR-Linux > strings/0x409/serialnumber
     echo 'Project Cascadia' > strings/0x409/manufacturer
-    echo 'iPhone XR Linux' > strings/0x409/product
+    cat /etc/usb-product > strings/0x409/product
     echo 'ACM + ECM' > configs/c.1/strings/0x409/configuration
     echo 250 > configs/c.1/MaxPower
     mkdir -p functions/acm.GS0 functions/ecm.usb0
@@ -231,12 +296,14 @@ mkdir -p "$OUT"
 # archive.  Besides making the payload non-reproducible, one such regenerated
 # stream reproducibly triggered an A12 m1n1 L2 SError during gzip CRC
 # verification.  This exact normalized form is phone-boot tested on N841.
+# Everything is owned by root, also when a user builds it: dropbear refuses
+# authorized_keys in a home directory root does not own.
 SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-1700000000}"
 case "$SOURCE_DATE_EPOCH" in
     ''|*[!0-9]*) echo "invalid SOURCE_DATE_EPOCH: $SOURCE_DATE_EPOCH" >&2; exit 1 ;;
 esac
 find "$ROOT" -exec touch -h -d "@$SOURCE_DATE_EPOCH" {} +
 (cd "$ROOT" && LC_ALL=C find . -print0 | LC_ALL=C sort -z | \
-    cpio --null --reproducible -o -H newc 2>/dev/null | gzip -9 -n) \
-    > "$OUT/initramfs.cpio.gz"
-echo "XR initramfs OK: $OUT/initramfs.cpio.gz"
+    cpio --null --reproducible -R 0:0 -o -H newc 2>/dev/null | gzip -9 -n) \
+    > "$OUT/$INITRAMFS"
+echo "$BOARD initramfs OK: $OUT/$INITRAMFS"

@@ -1,0 +1,50 @@
+--- a/src/kboot.c
++++ b/src/kboot.c
+@@ -2310,6 +2310,38 @@
+     return 0;
+ }
+ 
++/*
++ * Coprocessors whose firmware iBoot loads on request, like the GPU's. Their nodes stay disabled
++ * unless iBoot preloaded the firmware, which shows as segment-ranges in the
++ * ADT. The driver reads the firmware's buffers through those ranges.
++ */
++static int dt_setup_asc_rtk(void)
++{
++    static const char *const names[][2] = {{"gfxasc", "/arm-io/gfx-asc"}};
++
++    for (size_t i = 0; i < ARRAY_SIZE(names); i++) {
++        int adt_node = adt_path_offset(adt, names[i][1]);
++        u32 len;
++        const void *segs =
++            adt_node < 0 ? NULL : adt_getprop(adt, adt_node, "segment-ranges", &len);
++        int node = fdt_path_offset(dt, names[i][0]);
++        if (!segs || node < 0)
++            continue;
++
++        if (fdt_setprop(dt, node, "apple,segment-ranges", segs, len))
++            bail("FDT: couldn't set %s segment-ranges\n", names[i][0]);
++        node = fdt_path_offset(dt, names[i][0]);
++        fdt_setprop_string(dt, node, "status", "okay");
++
++        const fdt32_t *ph = fdt_getprop(dt, node, "mboxes", NULL);
++        int mbox = ph ? fdt_node_offset_by_phandle(dt, fdt32_to_cpu(*ph)) : -1;
++        if (mbox >= 0)
++            fdt_setprop_string(dt, mbox, "status", "okay");
++    }
++
++    return 0;
++}
++
+ static int dt_setup_sio(void)
+ {
+     static const char *sio_names[2] = {"sio", "sio1"};
+@@ -3029,6 +3061,8 @@
+         return -1;
+     if (dt_setup_sio())
+         return -1;
++    if (dt_setup_asc_rtk())
++        return -1;
+     if (dt_reserve_asc_firmware("/arm-io/isp", "/arm-io/isp0", "isp", false, isp_iova_base()))
+         return -1;
+     if (dt_set_isp_fwdata())

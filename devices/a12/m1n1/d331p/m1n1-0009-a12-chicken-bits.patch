@@ -1,0 +1,113 @@
+diff --git a/Makefile b/Makefile
+index 4c02f7b..24b3940 100644
+--- a/Makefile
++++ b/Makefile
+@@ -114,7 +114,8 @@ CHICKENS_OBJECTS := $(patsubst %,chickens/%, \
+ 	icestorm.o \
+ 	monsoon_mistral.o \
+ 	sawtooth.o \
+-	twister.o)
++	twister.o \
++	vortex_tempest.o)
+ 
+ DCP_OBJECTS := $(patsubst %,dcp/%, \
+ 	dpav_ep.o \
+diff --git a/src/chickens/vortex_tempest.c b/src/chickens/vortex_tempest.c
+new file mode 100644
+index 0000000..a50aec0
+--- /dev/null
++++ b/src/chickens/vortex_tempest.c
+@@ -0,0 +1,51 @@
++/* SPDX-License-Identifier: MIT */
++
++#include "cpu_regs.h"
++#include "utils.h"
++
++/*
++ * A12 tunables, from the APPLEVORTEX block of XNU's osfmk/arm64/start.s
++ * (xnu-6153). The quoted strings are XNU's own comments.
++ */
++
++void init_t8020_vortex(int rev)
++{
++    // Keep DC by-VA ops live for non-coherent DMA, whatever iBoot left here.
++    // See features_a12 in chickens.c.
++    reg_clr(SYS_IMP_APL_HID4, HID4_DISABLE_DC_MVA | HID4_DISABLE_DC_SW_L2_OPS);
++
++    // "data corruption due to incorrect branch predictor resolution", B0 and later
++    if (rev >= 0x10)
++        reg_set(SYS_IMP_APL_HID1, HID1_ENABLE_BR_KILL_LIMIT);
++
++    // "segfaults due to IEX clock-gating"
++    reg_set(SYS_IMP_APL_HID1, HID1_RCC_FORCE_ALL_IEX_L3_CLKS_ON);
++
++    // "AF2 ordering rules allow ARM device ordering violations"
++    reg_set(SYS_IMP_APL_HID4, HID4_FORCE_NS_ORD_LD_REQ_NO_OLDER_LD);
++
++    // "Poisoned cache line crossing younger load is not redirected by older load-barrier"
++    reg_set(SYS_IMP_APL_HID3, HID3_DIS_COLOR_OPT);
++
++    // "disable faster launches of uncacheable unaligned stores to workaround load/load
++    // ordering violation"
++    reg_set(SYS_IMP_APL_HID11, HID11_DIS_X64_NT_LAUNCH_OPT);
++}
++
++void init_t8020_tempest(int rev)
++{
++    UNUSED(rev);
++
++    // As for Vortex.
++    reg_clr(SYS_IMP_APL_EHID4, EHID4_DISABLE_DC_MVA | EHID4_DISABLE_DC_SW_L2_OPS);
++
++    // "AF2 ordering rules allow ARM device ordering violations"
++    reg_set(SYS_IMP_APL_EHID4, EHID4_FORCE_NS_ORD_LD_REQ_NO_OLDER_LD);
++
++    // "Poisoned younger load is not redirected by older load-acquire"
++    reg_set(SYS_IMP_APL_EHID3, EHID3_DIS_COLOR_OPT);
++
++    // "Disable the extension of prefetcher training pipe clock gating, revert to default
++    // gating"
++    reg_set(SYS_IMP_APL_EHID10, EHID10_RCC_DIS_PWR_SAVE_PRF_CLK_OFF);
++}
+diff --git a/src/cpu_regs.h b/src/cpu_regs.h
+index 85dd8ec..8f18641 100644
+--- a/src/cpu_regs.h
++++ b/src/cpu_regs.h
+@@ -90,6 +90,7 @@
+ #define HID1_TRAP_SMC                          BIT(54)
+ #define HID1_ENABLE_MDSB_STALL_PIPELINE_ECO    BIT(58)
+ #define HID1_ENABLE_BR_KILL_LIMIT              BIT(60)
++#define HID1_RCC_FORCE_ALL_IEX_L3_CLKS_ON      BIT(23)
+ #define HID1_CPMU_DEBUG_OVF                    BIT(61)
+ #define HID1_ZCL_RF_GNUM_DIST_MODE             BIT(62)
+ 
+@@ -151,6 +152,7 @@
+ #define EHID1_EN_LFSR                            BIT(63)
+ 
+ #define SYS_IMP_APL_HID3                                   sys_reg(3, 0, 15, 3, 0)
++#define HID3_DIS_COLOR_OPT                                 BIT(2)
+ #define HID3_DISABLE_DC_ZVA_CMD_ONLY                       BIT(25)
+ #define HID3_DISABLE_ARBITER_FIX_BIF_CRD                   BIT(44)
+ #define HID3_DIS_XMON_SNP_EVICT_TRIGGER_L2_STARAVTION_MODE BIT(50)
+@@ -216,6 +218,7 @@
+ 
+ #define SYS_IMP_APL_EHID4                                         sys_reg(3, 0, 15, 4, 1)
+ #define SYS_IMP_APL_EHID3                                         sys_reg(3, 0, 15, 3, 1)
++#define EHID3_DIS_COLOR_OPT                                       BIT(2)
+ #define EHID3_DISABLE_DC_ZVA_CMD_ONLY                             BIT(25)
+ #define EHID4_DISABLE_HW_PREF_LD                                  BIT(0)
+ #define EHID4_DISABLE_HW_PREF_ST                                  BIT(1)
+@@ -320,11 +323,13 @@
+ 
+ #define SYS_IMP_APL_HID10               sys_reg(3, 0, 15, 10, 0)
+ #define SYS_IMP_APL_EHID10              sys_reg(3, 0, 15, 10, 1)
++#define EHID10_RCC_DIS_PWR_SAVE_PRF_CLK_OFF BIT(19)
+ #define HID10_FORCE_WAIT_STATE_DRAIN_UC BIT(32)
+ #define HID10_DISABLE_ZVA_TEMPORAL_TSO  BIT(49)
+ 
+ #define SYS_IMP_APL_HID11             sys_reg(3, 0, 15, 11, 0)
+ #define SYS_IMP_APL_HID11_LEGACY      sys_reg(3, 0, 15, 13, 0) /* A7-A9 */
++#define HID11_DIS_X64_NT_LAUNCH_OPT   BIT(1)
+ #define HID11_DISABLE_FILL_C1_BUB_OPT BIT(7)
+ #define HID11_ENABLE_FIX_UC_55719865  BIT(15)
+ #define HID11_DISABLE_DMP             BIT(30)

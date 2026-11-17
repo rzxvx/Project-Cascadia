@@ -329,7 +329,7 @@ def find_boot_args_call_site(data: bytes, text_base: int) -> Tuple[int, int, int
 
 
 def find_zero_runs(data: bytes) -> List[Tuple[int, int, int]]:
-    """Return [(start, end, end_alignment)] — zero runs sorted by length descending."""
+    """Return [(start, end, end_alignment)]: zero runs sorted by length descending."""
     runs: List[Tuple[int, int, int]] = []
     start = None
     for i in range(len(data) + 1):
@@ -405,7 +405,7 @@ def resolve_bootargs(
         (adrp_off, orig_adrp, new_adrp, "ibss.boot-args.adrp"),
         (add_off, orig_add, new_add, "ibss.boot-args.add"),
     ]
-    # byte-level string write — not a 4-byte word patch; handled specially by caller
+    # byte-level string write, not a 4-byte word patch; handled specially by caller
     patches.append(("STR", write_off, payload, f"ibss.boot-args.string@{hex(write_off)}"))
     return patches
 
@@ -503,7 +503,7 @@ def resolve_ibec_recovery_nonce(
             continue
 
         branch = struct.unpack_from("<I", data, branch_off)[0]
-        # TBNZ W8, #1 — Liter8 mask: 0x7F08001F == 0x37080008
+        # TBNZ W8, #1, Liter8 mask: 0x7F08001F == 0x37080008
         if (branch & 0x7F08001F) != 0x37080008:
             continue
         if struct.unpack_from("<I", data, branch_off + 4)[0] != MOV_W0_0:
@@ -594,10 +594,35 @@ def apply_serial(base: str, enabled: bool) -> str:
     return f"{base} {SERIAL_ARG}"
 
 
+# --any-im4m: image4_validate_property_callback returns 0, so a component
+# loads with any IM4M, whatever its digests and nonce say (badapple's
+# iboot-image4-patch.py). Found from the "EKEY" literal it builds with a
+# movz/movk pair, back to the pacibsp that opens the function.
+def resolve_property_callback(data: bytes) -> List[Tuple[int, int, int, str]]:
+    n = len(data) // 4
+    w = struct.unpack_from(f"<{n}I", data)
+    starts = set()
+    for i in range(n - 1):
+        if (w[i] & 0xFFFFFFE0, w[i + 1] & 0xFFFFFFE0) != (0x5288AB20, 0x72A8A960):
+            continue
+        for j in range(i, max(i - 0x400, -1), -1):
+            if w[j] == 0xD503237F:  # pacibsp
+                starts.add(j * 4)
+                break
+    if len(starts) != 1:
+        raise RuntimeError(f"expected one EKEY callback, found {sorted(map(hex, starts))}")
+    start = starts.pop()
+    return [
+        (start, w[start // 4], 0x52800000, "image4.property-callback.mov-w0-0"),
+        (start + 4, w[start // 4 + 1], 0xD65F03C0, "image4.property-callback.ret"),
+    ]
+
+
 def main():
     argv = list(sys.argv)
     serial = serial_requested(argv)
-    argv = [a for a in argv if a not in ("--serial", "--no-serial")]
+    any_im4m = "--any-im4m" in argv
+    argv = [a for a in argv if a not in ("--serial", "--no-serial", "--any-im4m")]
 
     if len(argv) < 3:
         print(
@@ -629,6 +654,8 @@ def main():
     print(f"[*] boot-args: {boot_args!r}")
 
     validate_patches = resolve_validate(bytes(data), TEXT_BASE)
+    if any_im4m:
+        validate_patches += resolve_property_callback(bytes(data))
     bootargs_patches = resolve_bootargs(bytes(data), TEXT_BASE, boot_args)
     nonce_patches = []
     if mode == "ibec":

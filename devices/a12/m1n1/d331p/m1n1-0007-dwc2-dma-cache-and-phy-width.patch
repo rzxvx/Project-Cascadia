@@ -1,0 +1,97 @@
+diff --git a/src/usb_dwc2.c b/src/usb_dwc2.c
+index 9220d62..e8a67ad 100644
+--- a/src/usb_dwc2.c
++++ b/src/usb_dwc2.c
+@@ -890,9 +890,56 @@ static void usb_dwc2_ep0_handle_setup(dwc2_dev_t *dev)
+     }
+ }
+ 
++/*
++ * Cache maintenance for the DMA buffers.
++ *
++ * On the M series this driver needs none of this: USB goes through a DART and
++ * its DMA is coherent, so the dma_rmb() barriers around the descriptor writes
++ * are enough. On T8020 there is no DART in the path, only the remap widget in
++ * the USB complex, which is not an IOMMU and does not snoop. m1n1 runs with
++ * caches enabled, so the controller writes a SETUP packet into DRAM and the
++ * CPU then reads a stale line, never sees the host's GET_DESCRIPTOR and never
++ * answers. The host sees the attach and the high speed chirp, because those
++ * are the PHY, and then times out on every control transfer with
++ * "device descriptor read/64, error -110".
++ *
++ * PongoOS, whose gadget works on this SoC, invalidates before reading a
++ * received buffer and cleans before handing one to the controller.
++ */
++#define DMA_CACHE_LINE 64
++
++static void usb_dwc2_dma_invalidate(void *addr, size_t len)
++{
++    u64 start = (u64)addr & ~(u64)(DMA_CACHE_LINE - 1);
++    u64 end = (u64)addr + len;
++
++    for (u64 p = start; p < end; p += DMA_CACHE_LINE)
++        dc_ivac((void *)p);
++
++    sysop("dsb sy");
++}
++
++static void usb_dwc2_dma_clean(void *addr, size_t len)
++{
++    u64 start = (u64)addr & ~(u64)(DMA_CACHE_LINE - 1);
++    u64 end = (u64)addr + len;
++
++    for (u64 p = start; p < end; p += DMA_CACHE_LINE)
++        dc_cvac((void *)p);
++
++    sysop("dsb sy");
++}
++
+ void usb_dwc2_handle_events(dwc2_dev_t *dev)
+ {
+-    // usb_debug_printf("------checking int-----\n");
++    /*
++     * ponytail: invalidate the whole DMA page once per poll rather than
++     * tracking each buffer at its completion site. It is 16K, so 256 lines,
++     * and this runs at poll rate rather than per byte. Narrow it to the
++     * completed endpoint if that ever shows up in a profile.
++     */
++    usb_dwc2_dma_invalidate(dev->dma_page_p, max(DMA_BUFFER_SIZE * MAX_ENDPOINTS, SZ_16K));
++
+     usb_dwc2_handle_interrupts(dev);
+ }
+ 
+@@ -1249,6 +1296,8 @@ static void usb_dwc2_ep_hw_send(dwc2_dev_t *dev, u8 ep, u32 hw_xfer_size, u32 pa
+     }
+ 
+     dma_rmb();
++    /* The controller does not snoop here, so push the data out of the cache. */
++    usb_dwc2_dma_clean(dev->endpoints[ep].xfer_buffer, hw_xfer_size);
+     write32(dev->regs + DWC2_DIEPDMA(pep), (uintptr_t)dev->endpoints[ep].xfer_buffer);
+     write32(dev->regs + DWC2_DIEPTSIZ(pep), (packet_count << 19) | hw_xfer_size);
+     set32(dev->regs + DWC2_DIEPCTL(pep), DWC2_DXEPCTLi_EnableEP | DWC2_DXEPCTL_ClearNAK);
+@@ -1462,11 +1511,20 @@ dwc2_dev_t *usb_dwc2_init(u64 regs)
+         case 0b00: /* No HS */
+             return NULL;
+         case 0b01: /* UTMI+ */
+-            if (gusbcfg & DWC2_GUSBCFG_PHYIF16) {
+-                gusbcfg = DWC2_GUSBCFG_PHYIF16 | FIELD_PREP(GUSBCFG_USBTRDTIM_MASK, 5);
+-                break;
+-            }
+-            /* fallthrough */
++            /*
++             * Do not make the 16 bit decision from the GUSBCFG we happen to
++             * read here. usb_bringup has just reset the PHY, so PHYIF16 can
++             * read back clear even on a 16 bit PHY, and then this falls
++             * through to the ULPI case and writes an 8 bit turnaround. The
++             * PHY still chirps and holds its pullup, so a host sees the
++             * attach and then times out on every control transfer with
++             * "device descriptor read/64, error -110".
++             *
++             * PongoOS does not infer it either, it writes 0x1408 flat, and
++             * Linux reads 0x1408 back on this board. Both say 16 bit UTMI+.
++             */
++            gusbcfg = DWC2_GUSBCFG_PHYIF16 | FIELD_PREP(GUSBCFG_USBTRDTIM_MASK, 5);
++            break;
+         case 0b10: /* ULPI */
+             gusbcfg = FIELD_PREP(GUSBCFG_USBTRDTIM_MASK, 9);
+             break;
