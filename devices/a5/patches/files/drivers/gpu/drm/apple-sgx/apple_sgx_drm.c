@@ -103,11 +103,11 @@ MODULE_PARM_DESC(pb_restart, "start the microkernel again for a new parameter bu
  * runs while the last one's 3D pass does, and the GPU does not wait for
  * the host between them.  Mesa takes another set of render target data
  * for a render of the last one's size then (they hold the region headers
- * the 3D pass reads). */
+ * the 3D pass reads).  1: one at a time, as before M46. */
 #define SGX_MAX_INFLIGHT		2
-static unsigned int inflight = 1;
+static unsigned int inflight = 2;
 module_param(inflight, uint, 0444);
-MODULE_PARM_DESC(inflight, "renders on the GPU at once, 1 (default) or 2");
+MODULE_PARM_DESC(inflight, "renders on the GPU at once, 2 (default) or 1");
 
 #define SGX_MAX_REKICKS			5
 

@@ -4054,7 +4054,8 @@ into 864 x 272 targets draw a few tiles each and took ~0.45 ms apiece:
 **Two renders at once.** apple-sgx gave the microkernel one render at a
 time (the DRM scheduler's room for one job), so after each the GPU waited
 for the host to see it done and send the next. Now `apple_sgx.inflight=2`
-(the K93's bootargs; 1 stays the default) lets the next one's TA run while
+(the default since 2026-11-17, for both iPads; it was the K93's bootargs
+first; `apple_sgx.inflight=1` goes back) lets the next one's TA run while
 the last one's 3D pass does: the poller keeps the renders on the GPU in
 order, the oldest's TA done once the completion value reaches its
 sequence number (the value is the last TA's; it is no longer cleared for
