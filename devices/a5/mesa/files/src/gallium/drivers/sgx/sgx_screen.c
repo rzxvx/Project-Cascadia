@@ -345,9 +345,14 @@ sgx_init_screen_caps(struct pipe_screen *pscreen)
    caps->primitive_restart = true;
    caps->primitive_restart_fixed_index = true;
    caps->conditional_render = true;
-   /* (M43) ARB_depth_clamp: the draw module's, near and far clipping off
-    * and the triangles cut at the depth range's ends (render_triangle) */
-   caps->depth_clip_disable = true;
+   /* (M43) ARB_depth_clamp is not offered: the ISP clamps no depth, so a
+    * clamped draw was the draw module's -- its vertex shader on the CPU,
+    * its triangles cut at the depth range's ends (render_triangle).
+    * Programs that turn it on wherever it exists (PPSSPP: God of War 2%
+    * of its speed with it, 64% without) went many times slower than their
+    * own way without it, the one they take on OpenGL ES 2.0.
+    * SGX_DEPTH_CLAMP=1 offers it again. */
+   caps->depth_clip_disable = debug_get_bool_option("SGX_DEPTH_CLAMP", false);
    /* (M43) EXT_framebuffer_sRGB: a surface's format says whether the
     * program encodes (sgx_blend_key's rt_srgb) */
    caps->dest_surface_srgb_control = true;

@@ -3471,6 +3471,19 @@ and points). piglit's depth_clamp and depth-clamp-range pass; the clip,
 depth range and polygon offset groups, and dEQP's clipping,
 rasterization, polygon_offset, draw and vertex_arrays, as before.
 
+*Later (2026-11-17): no longer offered.* A clamped draw is the draw
+module's, its vertex shader on the CPU, and PPSSPP turns depth clamping
+on for every draw wherever a driver has it: God of War: Ghost of
+Sparta's menu ran at 3.3% of its speed with it and 9% without, before
+M46's work on the GPU's side, and at 2.3% against 64.6% after it (one
+build, the extension offered and not, the menu settled). Without it
+PPSSPP takes the way it takes on OpenGL ES 2.0, which has no depth
+clamping. `caps->depth_clip_disable` is set only with `SGX_DEPTH_CLAMP=1`
+now, which brings the draw module's clamping back as above (the piglit
+tests). Doing it on the GPU's vertex side needs what the ISP does not
+have: a clamp of the depth it interpolates, or a depth a pixel program
+writes (M19's punch-through question).
+
 That is the last of the plan's first rows. Left for later from them: the
 GPU's own instancing (iOS has EXT_draw_instanced and EXT_instanced_arrays
 on the A5), RGBA32F targets (no GXM colour format of 128 bits), and the
