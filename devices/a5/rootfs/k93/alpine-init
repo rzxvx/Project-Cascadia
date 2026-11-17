@@ -15,8 +15,18 @@ if [ -d /sys/class/net/usb0 ]; then
     busybox ip -4 address show dev usb0 | busybox grep -q '10.93.0.2/30' || busybox ip address add 10.93.0.2/30 dev usb0
     busybox ip link set usb0 up
 fi
-# No desktop, network listener, package scripts, touch firmware or storage
-# initialization is auto-started. First validate root/USB/memory on hardware.
+# Touch: k93-z2-boot loads the Z2 firmware the way iOS does, hands the chip to
+# apple-z2 (READY) and keeps /dev/hx-touch open; frames then reach
+# /dev/input/event0.  Present only when the initramfs was built with
+# --touch-firmware (docs/k93-bringup.md).
+if [ -x /sbin/k93-z2-boot ] && [ -s /lib/firmware/K93.mtprops ] && [ -s /lib/firmware/k93-mtcal.bin ]; then
+    setsid /sbin/k93-z2-boot -E -c /lib/firmware/k93-mtcal.bin /lib/firmware/K93.mtprops >/run/k93-z2.log 2>&1 </dev/null &
+    echo 'K93 touch: k93-z2-boot started (/run/k93-z2.log)' >/dev/tty0
+else
+    echo 'K93 touch: no firmware or calibration in this image, not started' >/dev/tty0
+fi
+# No desktop, network listener, package scripts or storage initialization is
+# auto-started. First validate root/USB/memory on hardware.
 while :; do
     if [ -c /dev/ttyGS0 ]; then
         stty -F /dev/ttyGS0 -echo -ixon -ixoff

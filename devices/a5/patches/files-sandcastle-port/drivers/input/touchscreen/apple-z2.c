@@ -76,6 +76,7 @@ struct hx_touch_data {
     int misc_dev_inuse;
     int ready;
     int virq;
+    bool attn_gated;    /* apple,attn-gated-reads (K93) */
     u8 tx_data[MAX_DATA_CHUNK];
     u8 rx_data[MAX_DATA_CHUNK];
     unsigned rx_size, rx_rdptr;
@@ -163,18 +164,29 @@ static u16 hx_touch_sum16(const u8 *p, unsigned n)
     return s;
 }
 
-/* One chip-select window, n bytes each way -- z2-boot's xfer(), whose
- * 1 ms either side of the transfer the chip has been happy with. */
+/* CS settle either side of a transfer: z2-boot's 1 ms, which the chip has
+ * been happy with, or with apple,attn-gated-reads 50-100 us.  iOS reads a
+ * frame's data ~0.3 ms after its length; z2-boot's poll with 50 us read
+ * 1567 of 1567 frames on K93. */
+static void hx_touch_cs_settle(struct hx_touch_data *hxt)
+{
+    if(hxt->attn_gated)
+        usleep_range(50, 100);
+    else
+        usleep_range(1000, 1200);
+}
+
+/* One chip-select window, n bytes each way. */
 static int hx_touch_xfer(struct hx_touch_data *hxt, const u8 *tx, u8 *rx, unsigned n)
 {
     struct spi_transfer xfer = { .tx_buf = tx, .rx_buf = rx, .len = n };
     int ret;
 
     gpiod_direction_output(hxt->gpiod_cs, 0);
-    usleep_range(1000, 1200);
+    hx_touch_cs_settle(hxt);
     ret = spi_sync_transfer(hxt->spi, &xfer, 1);
     gpiod_direction_output(hxt->gpiod_cs, 1);
-    usleep_range(1000, 1200);
+    hx_touch_cs_settle(hxt);
     return ret;
 }
 
@@ -199,8 +211,12 @@ static int hx_touch_read_report(struct hx_touch_data *hxt)
     /* A query answered with a length, then the data answered with the
      * status again (e1 38 00 eb 01 ..: the chip still on the query) is a
      * frame not ready yet -- ask for the length again and read again, as
-     * AppleMultitouchZ2SPI does after a failed read (its +0x823). */
+     * AppleMultitouchZ2SPI does after a failed read (its +0x823) -- with
+     * apple,attn-gated-reads only while ATTN is still asserted (see
+     * hx_touch_read_while_attn). */
     for(tries = 0; tries < 4; tries++) {
+        if(tries && hxt->attn_gated && gpiod_get_value(hxt->gpiod_irq) <= 0)
+            return -ENOENT;
         memset(q, 0, 16);
         q[0] = 0xeb;
         q[1] = seq;
@@ -257,10 +273,26 @@ static int hx_touch_read_report(struct hx_touch_data *hxt)
     return 0;
 }
 
+/* ATTN trigger, switched only with apple,attn-gated-reads.  The boot phase
+ * uses the falling edge: the bootloader holds ATTN low until the host
+ * answers, and the handler then only signals irq_done, so a level interrupt
+ * would fire without pause.  Once READY it is level-low, so a frame left
+ * unread (a failed read, or the stream out of step when the scan starts)
+ * fires the handler again instead of leaving the line low with no edge to
+ * come. */
+static void hx_touch_set_trigger(struct hx_touch_data *hxt, unsigned int type)
+{
+    if(!hxt->attn_gated)
+        return;
+    disable_irq(hxt->virq);
+    irq_set_irq_type(hxt->virq, type);
+    enable_irq(hxt->virq);
+}
+
 /* Read while ATTN stays asserted: the interrupt is on its falling edge, and
  * a frame left unread leaves the line low with no edge to come -- which is
  * also why a failed read does not end the loop while the line is down. */
-static void hx_touch_read_all_reports(struct hx_touch_data *hxt)
+static void hx_touch_read_until_attn_idle(struct hx_touch_data *hxt)
 {
     int i, ret;
 
@@ -271,6 +303,32 @@ static void hx_touch_read_all_reports(struct hx_touch_data *hxt)
         if(ret)
             usleep_range(1000, 2000);
     }
+}
+
+/* apple,attn-gated-reads: read while ATTN stays asserted, and only then.  On
+ * K93 a query sent while ATTN is idle puts the chip's output out of step
+ * with the host (queries answered with frame bytes), as iOS never does -- it
+ * reads only after "host interrupt occurred".  A failed read does not end
+ * the loop while the line is down; the chip is then left idle for 50 ms,
+ * which brought an out-of-step stream back where reads 1-2 ms apart did
+ * not. */
+static void hx_touch_read_while_attn(struct hx_touch_data *hxt)
+{
+    int i, ret;
+
+    for(i = 0; i < 16 && gpiod_get_value(hxt->gpiod_irq) > 0; i++) {
+        ret = hx_touch_read_report(hxt);
+        if(ret && ret != -ENOENT)
+            msleep(50);
+    }
+}
+
+static void hx_touch_read_all_reports(struct hx_touch_data *hxt)
+{
+    if(hxt->attn_gated)
+        hx_touch_read_while_attn(hxt);
+    else
+        hx_touch_read_until_attn_idle(hxt);
 }
 
 static irqreturn_t hx_touch_irq_handler(int irq, void *dev_id)
@@ -368,6 +426,8 @@ static int hx_touch_misc_dev_release(struct inode *inode, struct file *filp)
     struct hx_touch_data *hxt = miscdev_to_hxt(filp->private_data);
 
     disable_irq(hxt->virq);
+    if(hxt->attn_gated)
+        irq_set_irq_type(hxt->virq, IRQ_TYPE_EDGE_FALLING);
     gpiod_direction_output(hxt->gpiod_reset, 0);
     usleep_range(2000, 2500);
     gpiod_direction_output(hxt->gpiod_cs, 0);
@@ -489,6 +549,8 @@ static long hx_touch_misc_dev_ioctl(struct file *filp, unsigned int cmd, unsigne
         gpiod_direction_output(hxt->gpiod_dl, !!arg);
         return 0;
     case HXT_IOC_RESET:
+        if(hxt->ready)
+            hx_touch_set_trigger(hxt, IRQ_TYPE_EDGE_FALLING);
         mutex_lock(&hxt->mutex);
         hxt->ready = 0;
         gpiod_direction_output(hxt->gpiod_cs, 1);
@@ -512,6 +574,8 @@ static long hx_touch_misc_dev_ioctl(struct file *filp, unsigned int cmd, unsigne
         hxt->ready = 1;
         hx_touch_read_all_reports(hxt);
         mutex_unlock(&hxt->mutex);
+        /* outside the mutex: disable_irq waits for the handler, which takes it */
+        hx_touch_set_trigger(hxt, IRQ_TYPE_LEVEL_LOW);
         return 0;
     case HXT_IOC_SETUP_IRQ:
         if(hxt->ready)
@@ -680,6 +744,7 @@ static int hx_touch_spi_probe(struct spi_device *spi)
 
     if(of_property_read_u32_index(spi->dev.of_node, "generation", 0, &hxt->generation))
         hxt->generation = 2;
+    hxt->attn_gated = of_property_read_bool(spi->dev.of_node, "apple,attn-gated-reads");
 
     hxt->metrics.left = 0;
     hxt->metrics.right = 10000;

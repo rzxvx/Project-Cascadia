@@ -23,12 +23,16 @@ def main():
     parser.add_argument('--startup-strace',action='store_true',help='Include verified optional syscall-metadata tracer for browser startup failure')
     parser.add_argument('--startup-pc-sample',action='store_true',help='Include bounded Xorg-only ARM register sampler; no process memory reads')
     parser.add_argument('--run-limit-mib',type=int,choices=[96,192],default=96)
+    parser.add_argument('--touch-firmware',help='K93.mtprops (Z2F13,2), from scripts/k93-touch-firmware.sh; enables touch at boot')
+    parser.add_argument('--touch-calibration',default=str(ROOT/'rootfs/k93/k93-mtcal.bin'),
+                        help='1024-byte multi-touch calibration; default: one K93 unit\'s (rootfs/k93/k93-mtcal.bin)')
     args=parser.parse_args()
     assert not args.desktop_test or args.network_root,'Desktop diagnostic requires split root'
     assert not args.browser_test or args.desktop_test,'Browser diagnostic requires desktop assets'
     assert not args.startup_strace or args.browser_test,'Startup tracer requires browser diagnostic'
     assert not args.startup_pc_sample or args.startup_strace,'PC sampler requires startup diagnostics'
     assert args.network_root or args.run_limit_mib==96
+    assert not args.touch_firmware or args.desktop_test,'Touch at boot is staged with the desktop assets'
     output=(ROOT/args.output).resolve()
     assert output.is_relative_to(ROOT/'build/k93') and not output.exists()
     image=(ROOT/args.image).resolve()
@@ -58,6 +62,16 @@ def main():
         helper=ROOT/'build/k93/fb-read-v1/k93-fb-read'
         assert sha(helper)=='6bee646f88aa62a5dfdedae00afc48de33e9585afd464b7f38432bada398f2c1'
         shutil.copyfile(helper,output/'k93-fb-read');(output/'k93-fb-read').chmod(0o755)
+    if args.touch_firmware:
+        # stage 2 starts k93-z2-boot when all three are present (alpine-init)
+        tool=ROOT/'build/k93/z2-boot-v1/k93-z2-boot'
+        firmware=Path(args.touch_firmware).resolve();calibration=Path(args.touch_calibration).resolve()
+        assert tool.is_file(),'Build it first: tools/k93-build-z2-boot.sh'
+        assert firmware.stat().st_size>0 and calibration.stat().st_size==1024
+        (output/'k93-touch').mkdir()
+        for source,name in [(tool,'k93-z2-boot'),(firmware,'K93.mtprops'),(calibration,'k93-mtcal.bin')]:
+            shutil.copyfile(source,output/'k93-touch'/name)
+            (output/'k93-touch'/name).chmod(0o755 if name=='k93-z2-boot' else 0o644)
     if args.browser_test:
         for name in ['browser-test.sh','browser-test.html','browser-prefs.js']:
             shutil.copyfile(ROOT/'rootfs/k93'/name,output/('k93-'+name))
@@ -93,6 +107,7 @@ def main():
             'run_limit_mib':args.run_limit_mib if args.network_root else 8,'browser_test':args.browser_test,
             'startup_strace':args.startup_strace,
             'startup_pc_sample':args.startup_pc_sample,
+            'touch_at_boot':bool(args.touch_firmware),
             'root_image':{'path':image.relative_to(ROOT).as_posix(),'sha256':receipt['image_sha256'],'size':image.stat().st_size},
             'files':{p.relative_to(output).as_posix():sha(p) for p in output.rglob('*') if p.is_file() and not p.is_symlink()}}
     with (output.parent/(output.name+'-manifest.json')).open('x') as stream:
