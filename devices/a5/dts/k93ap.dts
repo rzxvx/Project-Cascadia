@@ -641,6 +641,9 @@
 				reg = <0x3c>;
 				system-power-controller;
 				gpio-controller;
+				/* GPIO 13, the codec's reset: an input after iOS
+				 * 8.4.1, an output (0x08 | level) for the codec. */
+				apple,gpio-output-config = <13 0x08>;
 				#gpio-cells = <2>;
 				#address-cells = <1>;
 				#size-cells = <0>;

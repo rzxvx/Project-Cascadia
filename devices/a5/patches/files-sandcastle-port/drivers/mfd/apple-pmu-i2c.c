@@ -135,8 +135,10 @@ static int apple_pmu_d1946_power_off(struct sys_off_data *data)
  * of each pin's configuration register, 0x61 + n.  The ADT names them by
  * that n -- the Wi-Fi chip's REG_ON is GPIO 3 (0x64), the Bluetooth chip's
  * GPIO 2 (0x63) -- and iBoot leaves both configured as outputs, low (0x09).
- * A pin configured as an input (0x60 and up) stays one: this only drives
- * what is already an output, it never turns a pin around.
+ * A pin configured as an input (0x60 and up) stays one, unless the device
+ * tree lists it in apple,gpio-output-config (pairs of pin and output
+ * configuration with the level bit clear): iOS 8.4.1 leaves the iPad 2
+ * codec's reset, GPIO 13, as an input (0xc8) and drives it as 0x0a.
  */
 #define D1946_GPIO_IS_INPUT(cfg)    ((cfg) >= 0x60)
 #define D1946_GPIO_LEVEL            0x02
@@ -180,15 +182,39 @@ static void apple_pmu_gpio_set(struct gpio_chip *gc, unsigned int n, int val)
                        val ? D1946_GPIO_LEVEL : 0);
 }
 
+/* The output configuration the device tree gives pin n, or 0 for none. */
+static unsigned int apple_pmu_gpio_output_cfg(struct gpio_chip *gc, unsigned int n)
+{
+    struct apple_pmu_gpio *g = gpiochip_get_data(gc);
+    struct device_node *np = g->pmu->dev->of_node;
+    int i, cnt = of_property_count_u32_elems(np, "apple,gpio-output-config");
+    u32 pin, cfg;
+
+    for (i = 0; i + 1 < cnt; i += 2) {
+        if (of_property_read_u32_index(np, "apple,gpio-output-config", i, &pin) ||
+            of_property_read_u32_index(np, "apple,gpio-output-config", i + 1, &cfg))
+            break;
+        if (pin == n && !D1946_GPIO_IS_INPUT(cfg))
+            return cfg & ~D1946_GPIO_LEVEL;
+    }
+    return 0;
+}
+
 static int apple_pmu_gpio_direction_output(struct gpio_chip *gc, unsigned int n, int val)
 {
-    unsigned int cfg;
+    struct apple_pmu_gpio *g = gpiochip_get_data(gc);
+    unsigned int cfg, out;
     int ret = apple_pmu_gpio_cfg(gc, n, &cfg);
 
     if (ret)
         return ret;
-    if (D1946_GPIO_IS_INPUT(cfg))
-        return -EPERM;
+    if (D1946_GPIO_IS_INPUT(cfg)) {
+        out = apple_pmu_gpio_output_cfg(gc, n);
+        if (!out)
+            return -EPERM;
+        return regmap_write(g->pmu->regmap, g->cfg_base + n,
+                            out | (val ? D1946_GPIO_LEVEL : 0));
+    }
     apple_pmu_gpio_set(gc, n, val);
     return 0;
 }
