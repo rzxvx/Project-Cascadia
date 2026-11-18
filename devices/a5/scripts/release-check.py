@@ -64,7 +64,11 @@ def check(label, members, bad_hashes, problems):
             problems.append('%s: %s (a name of the kind only one machine has)' % (label, name))
         if data:
             h = hashlib.sha256(data).hexdigest()
-            if h in bad_hashes:
+            # the overlay's etc/localtime is a copy of one of tzdata's zones:
+            # tzdata itself (every zone, public) is no machine's, though the
+            # time zone in a root's own etc/localtime would be
+            if h in bad_hashes and not (name.startswith('usr/share/zoneinfo/') and
+                                        bad_hashes[h].endswith(os.sep + 'localtime')):
                 problems.append('%s: %s is %s' % (label, name, bad_hashes[h]))
             # not inside programs: libraries carry public test keys (GnuTLS's
             # self-tests); a key of one's own would be a file -- and ours are
