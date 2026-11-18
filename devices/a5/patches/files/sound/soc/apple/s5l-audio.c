@@ -35,6 +35,16 @@
  * AE2 MCS lanes select an NCO (lane i = i at reset) and are left alone; the
  * i2s-switch needs reg 0 = 0x44 (pin 0's clocks and data from I2S0) and
  * reg 12 = 1 (pin 0's MCK), or the codec gets no MCLK.
+ *
+ * The iPad 2 (A5, S5L8940X; "apple,s5l8940x-audio") has the iPad 3's port:
+ * I2S0 at 0x34190000 as clock master, the same CS42L63 codec and its MCLK,
+ * nclk / 4 -- its iOS's AppleSamsungI2SController (8.4.1's, run in an
+ * emulator: docs/research/k93-audio.md) writes the same values -- with the
+ * A5's NCOs (the "nco" window at PMGR + 0x110).  And it records: I2S0's RX FIFO (+0x38), out of which a
+ * second CDMA channel ("apple,capture-dma-channel": 0x20, request line 0)
+ * reads, RXCOM started and stopped as TXCOM is; capture and playback share
+ * the port's clocks, so they share its rate.  Each direction has its own
+ * channel, command ring and period clock (struct s5l_dir).
  */
 
 #include <linux/clk.h>
@@ -75,6 +85,7 @@
 #define I2S_TXFIFO		0x10
 #define I2S_RXCON		0x30
 #define I2S_RXCOM		0x34
+#define I2S_RXFIFO		0x38
 #define I2S_STATUS		0x3c
 /* what iOS writes (AppleSamsungI2SController configure and start, 48 kHz) */
 #define I2S_TXCON_IOS		0x03000081	/* bit 7: MCLK/BCLK ratio 1 */
@@ -83,6 +94,7 @@
 #define I2S_CLKCON_MCK4		0x181		/* run, MCK = nclk / 4 */
 #define I2S_TXCOM_START		0x01feca06	/* DMA requests, TX on */
 #define I2S_TXCOM_IDLE		0x01feca04	/* TX on, no DMA requests */
+#define I2S_RXCOM_START		0x01feca06	/* iOS's start(RX): DMA requests, RX on */
 
 /* AE2 */
 #define AE2_LANE(i)		(0x10 + 4 * (i))	/* MCS: 1 = own NCO; ACS: 1 = gated */
@@ -110,6 +122,7 @@
 #define CDMA_CSR_RUNNING	BIT(16)
 #define CDMA_CSR_CLEAR		(BIT(18) | BIT(19) | BIT(20))
 #define CDMA_CSR_START		(0x02000000 | CDMA_CSR_CLEAR | BIT(3) | BIT(0))
+#define CDMA_DCR_TO_DEV		BIT(1)		/* memory to device; clear: device to memory */
 #define CDMA_CMD_DATA		0x02000103
 #define CDMA_DBR_MAX		0x7ffffff0
 #define CDMA_MAX_CMDS		64
@@ -124,7 +137,8 @@
 
 struct s5l_audio;
 
-/* what differs between the A5 (MCA0 + I2S1) and the A5X (I2S0 alone) */
+/* what differs between the A5's MCA0 + I2S1 (the mini) and I2S0 alone (the
+ * A5X's, the S5L8940X's) */
 struct s5l_variant {
 	bool mca;			/* data through MCA0, else through I2S0 */
 	const char *port_clk;		/* power state held while the PCM is open */
@@ -139,9 +153,27 @@ struct s5l_variant {
 	unsigned int dai_fmt;
 	int (*card_init)(struct snd_soc_pcm_runtime *rtd);
 	int (*port_prepare)(struct s5l_audio *a);
-	void (*port_start)(struct s5l_audio *a);
-	void (*port_stop)(struct s5l_audio *a);
+	/* a direction's half of the port on and off: TX, or RX (I2S0 only) */
+	void (*port_start)(struct s5l_audio *a, bool capture);
+	void (*port_stop)(struct s5l_audio *a, bool capture);
 	void (*port_close)(struct s5l_audio *a);	/* optional */
+};
+
+/* one direction: its CDMA channel and command ring, its period clock */
+struct s5l_dir {
+	struct s5l_audio *a;
+	bool capture;
+	unsigned int ch, req;
+	u32 fifo;			/* the port's TX or RX FIFO, physical */
+	struct snd_pcm_substream *substream;
+	__le32 *cmds;
+	dma_addr_t cmds_dma;
+	dma_addr_t buf_dma;
+	unsigned int buf_bytes, period_bytes, periods;
+	unsigned int last_period;
+	struct hrtimer timer;
+	ktime_t tick;
+	bool running;
 };
 
 struct s5l_audio {
@@ -151,22 +183,13 @@ struct s5l_audio {
 	struct clk *port_clk;
 	struct clk_hw mclk;
 	u32 nco_ref;
-	u32 fifo;			/* the port's TX FIFO, physical */
-	unsigned int ch, req;
 
-	struct snd_pcm_substream *substream;
-	__le32 *cmds;
-	dma_addr_t cmds_dma;
-	dma_addr_t buf_dma;
-	unsigned int buf_bytes, period_bytes, periods;
+	struct s5l_dir dir[2];		/* SNDRV_PCM_STREAM_PLAYBACK, _CAPTURE */
+	bool has_capture;		/* I2S0 with apple,capture-dma-channel */
 	unsigned int width;		/* bytes per sample */
 	unsigned int rate;
-	unsigned int port_rate;		/* A5X: the rate I2S0 runs at, 0 = stopped */
-	bool mclk_on;			/* A5X: the codec has MCLK */
-	unsigned int last_period;
-	struct hrtimer timer;
-	ktime_t tick;
-	bool running;
+	unsigned int port_rate;		/* I2S0: the rate it runs at, 0 = stopped */
+	bool mclk_on;			/* I2S0: the codec has MCLK */
 	spinlock_t lock;
 
 	struct platform_device *card_pdev;
@@ -331,16 +354,23 @@ static int s5x_port_prepare(struct s5l_audio *a)
 	return s5x_port_run(a, a->rate);
 }
 
-/* the FIFO takes words only while TXCOM is on; the DMA is already running */
-static void s5x_port_start(struct s5l_audio *a)
+/* the TX FIFO takes words only while TXCOM is on; the DMA is already
+ * running.  RX: the port fills its FIFO, the DMA drains it. */
+static void s5x_port_start(struct s5l_audio *a, bool capture)
 {
-	writel(I2S_TXCOM_START, a->i2s + I2S_TXCOM);
+	if (capture)
+		writel(I2S_RXCOM_START, a->i2s + I2S_RXCOM);
+	else
+		writel(I2S_TXCOM_START, a->i2s + I2S_TXCOM);
 }
 
 /* DMA requests off; the bus keeps running (s5x_i2s_configure) */
-static void s5x_port_stop(struct s5l_audio *a)
+static void s5x_port_stop(struct s5l_audio *a, bool capture)
 {
-	writel(I2S_TXCOM_IDLE, a->i2s + I2S_TXCOM);
+	if (capture)
+		writel(0, a->i2s + I2S_RXCOM);
+	else
+		writel(I2S_TXCOM_IDLE, a->i2s + I2S_TXCOM);
 }
 
 /* without MCLK, I2S0's power state goes off with the PCM's */
@@ -406,27 +436,27 @@ static int s5l_port_prepare(struct s5l_audio *a)
 	return 0;
 }
 
-/* the DMA fills the FIFO, then the port starts */
-static void s5l_port_start(struct s5l_audio *a)
+/* the DMA fills the FIFO, then the port starts (playback only here) */
+static void s5l_port_start(struct s5l_audio *a, bool capture)
 {
 	writel(readl(a->mca + MCA_TX_CFG) | 1, a->mca + MCA_TX_CFG);
 }
 
-static void s5l_port_stop(struct s5l_audio *a)
+static void s5l_port_stop(struct s5l_audio *a, bool capture)
 {
 	writel(readl(a->mca + MCA_TX_CFG) & ~1, a->mca + MCA_TX_CFG);
 }
 
 /* --- CDMA ----------------------------------------------------------------- */
 
-static void __iomem *s5l_ch(struct s5l_audio *a)
+static void __iomem *s5l_ch(struct s5l_dir *d)
 {
-	return a->cdma + CDMA_CH(a->ch);
+	return d->a->cdma + CDMA_CH(d->ch);
 }
 
-static void s5l_dma_stop(struct s5l_audio *a)
+static void s5l_dma_stop(struct s5l_dir *d)
 {
-	void __iomem *ch = s5l_ch(a);
+	void __iomem *ch = s5l_ch(d);
 
 	writel(CDMA_CSR_ABORT, ch + CDMA_CSR);
 	udelay(10);
@@ -434,84 +464,89 @@ static void s5l_dma_stop(struct s5l_audio *a)
 }
 
 /* start (or restart) the ring at command @first */
-static int s5l_dma_start(struct s5l_audio *a, unsigned int first)
+static int s5l_dma_start(struct s5l_dir *d, unsigned int first)
 {
-	void __iomem *ch = s5l_ch(a);
+	struct s5l_audio *a = d->a;
+	void __iomem *ch = s5l_ch(d);
 	u32 dcr;
 
-	/* width (2 or 4 bytes), burst 4, memory to device, the port's request */
-	dcr = (a->req << 16) | 0x20 | (a->width == 2 ? 0x04 : 0x08) | 0x02;
+	/* width (2 or 4 bytes), burst 4, the port's request line; towards
+	 * the FIFO for playback, out of it for capture */
+	dcr = (d->req << 16) | 0x20 | (a->width == 2 ? 0x04 : 0x08) |
+	      (d->capture ? 0 : CDMA_DCR_TO_DEV);
 
-	writel(BIT(a->ch % 32), a->cdma + CDMA_CLK_ON(a->ch));
+	writel(BIT(d->ch % 32), a->cdma + CDMA_CLK_ON(d->ch));
 	writel(CDMA_CSR_CLEAR, ch + CDMA_CSR);
 	writel(CDMA_CSR_ABORT, ch + CDMA_CSR);
 	udelay(10);
 	writel(dcr, ch + CDMA_DCR);
-	writel(a->fifo & 0xffffff, ch + CDMA_DAR);
+	writel(d->fifo & 0xffffff, ch + CDMA_DAR);
 	writel(CDMA_DBR_MAX, ch + CDMA_DBR);
-	writel(a->cmds_dma + 32 * first, ch + CDMA_CAR);
+	writel(d->cmds_dma + 32 * first, ch + CDMA_CAR);
 	if ((readl(ch + CDMA_DCR) & 0x003f00fe) != dcr) {
 		dev_err(a->dev, "CDMA channel %u is locked (DCR %08x)\n",
-			a->ch, readl(ch + CDMA_DCR));
+			d->ch, readl(ch + CDMA_DCR));
 		return -EBUSY;
 	}
 	writel(CDMA_CSR_START, ch + CDMA_CSR);
 	return 0;
 }
 
-static void s5l_build_ring(struct s5l_audio *a)
+static void s5l_build_ring(struct s5l_dir *d)
 {
 	unsigned int i;
 
-	for (i = 0; i < a->periods; i++) {
-		__le32 *c = a->cmds + 8 * i;
+	for (i = 0; i < d->periods; i++) {
+		__le32 *c = d->cmds + 8 * i;
 
-		c[0] = cpu_to_le32(a->cmds_dma + 32 * ((i + 1) % a->periods));
+		c[0] = cpu_to_le32(d->cmds_dma + 32 * ((i + 1) % d->periods));
 		c[1] = cpu_to_le32(CDMA_CMD_DATA);
-		c[2] = cpu_to_le32(a->buf_dma + i * a->period_bytes);
-		c[3] = cpu_to_le32(a->period_bytes);
+		c[2] = cpu_to_le32(d->buf_dma + i * d->period_bytes);
+		c[3] = cpu_to_le32(d->period_bytes);
 	}
 	wmb();
 }
 
-static unsigned int s5l_dma_pos(struct s5l_audio *a)
+/* MAR: the memory address being read (playback) or written (capture) */
+static unsigned int s5l_dma_pos(struct s5l_dir *d)
 {
-	u32 mar = readl(s5l_ch(a) + CDMA_MAR);
+	u32 mar = readl(s5l_ch(d) + CDMA_MAR);
 
-	if (mar < a->buf_dma || mar >= a->buf_dma + a->buf_bytes)
+	if (mar < d->buf_dma || mar >= d->buf_dma + d->buf_bytes)
 		return 0;
-	return mar - a->buf_dma;
+	return mar - d->buf_dma;
 }
 
 static enum hrtimer_restart s5l_tick(struct hrtimer *t)
 {
-	struct s5l_audio *a = container_of(t, struct s5l_audio, timer);
+	struct s5l_dir *d = container_of(t, struct s5l_dir, timer);
+	struct s5l_audio *a = d->a;
 	struct snd_pcm_substream *ss;
 	unsigned int period;
 	unsigned long flags;
 	u32 csr;
 
 	spin_lock_irqsave(&a->lock, flags);
-	if (!a->running) {
+	if (!d->running) {
 		spin_unlock_irqrestore(&a->lock, flags);
 		return HRTIMER_NORESTART;
 	}
-	ss = a->substream;
-	period = s5l_dma_pos(a) / a->period_bytes;
-	csr = readl(s5l_ch(a) + CDMA_CSR);
+	ss = d->substream;
+	period = s5l_dma_pos(d) / d->period_bytes;
+	csr = readl(s5l_ch(d) + CDMA_CSR);
 	if (!(csr & CDMA_CSR_RUNNING)) {
 		/* the byte count ran out (2 GB, ~90 minutes) or it hit an error */
-		dev_dbg(a->dev, "CDMA stopped (CSR %08x ERR %08x), restarting\n",
-			csr, readl(s5l_ch(a) + CDMA_ERR));
-		s5l_dma_start(a, (period + 1) % a->periods);
+		dev_dbg(a->dev, "CDMA %u stopped (CSR %08x ERR %08x), restarting\n",
+			d->ch, csr, readl(s5l_ch(d) + CDMA_ERR));
+		s5l_dma_start(d, (period + 1) % d->periods);
 	}
 	spin_unlock_irqrestore(&a->lock, flags);
 
-	if (period != a->last_period) {
-		a->last_period = period;
+	if (period != d->last_period) {
+		d->last_period = period;
 		snd_pcm_period_elapsed(ss);
 	}
-	hrtimer_forward_now(t, a->tick);
+	hrtimer_forward_now(t, d->tick);
 	return HRTIMER_RESTART;
 }
 
@@ -534,13 +569,24 @@ static const struct snd_pcm_hardware s5l_pcm_hw = {
 	.periods_max = CDMA_MAX_CMDS,
 };
 
+static struct s5l_dir *s5l_dir_of(struct snd_soc_component *component,
+				  struct snd_pcm_substream *substream)
+{
+	struct s5l_audio *a = snd_soc_component_get_drvdata(component);
+
+	return &a->dir[substream->stream];
+}
+
 static int s5l_pcm_open(struct snd_soc_component *component,
 			struct snd_pcm_substream *substream)
 {
 	struct s5l_audio *a = snd_soc_component_get_drvdata(component);
+	struct s5l_dir *d = s5l_dir_of(component, substream);
 	struct snd_pcm_runtime *rt = substream->runtime;
 	int ret;
 
+	if (d->capture && !a->has_capture)
+		return -ENODEV;
 	snd_soc_set_runtime_hwparams(substream, &s5l_pcm_hw);
 	/* a burst is 4 transfers of up to 4 bytes */
 	ret = snd_pcm_hw_constraint_step(rt, 0, SNDRV_PCM_HW_PARAM_PERIOD_BYTES, 16);
@@ -555,7 +601,7 @@ static int s5l_pcm_open(struct snd_soc_component *component,
 	ret = clk_prepare_enable(a->port_clk);
 	if (ret)
 		return ret;
-	a->substream = substream;
+	d->substream = substream;
 	return 0;
 }
 
@@ -563,12 +609,13 @@ static int s5l_pcm_close(struct snd_soc_component *component,
 			 struct snd_pcm_substream *substream)
 {
 	struct s5l_audio *a = snd_soc_component_get_drvdata(component);
+	struct s5l_dir *d = s5l_dir_of(component, substream);
 
-	hrtimer_cancel(&a->timer);
+	hrtimer_cancel(&d->timer);
 	if (a->v->port_close)
 		a->v->port_close(a);
 	clk_disable_unprepare(a->port_clk);
-	a->substream = NULL;
+	d->substream = NULL;
 	return 0;
 }
 
@@ -577,20 +624,20 @@ static int s5l_pcm_hw_params(struct snd_soc_component *component,
 			     struct snd_pcm_hw_params *params)
 {
 	struct s5l_audio *a = snd_soc_component_get_drvdata(component);
+	struct s5l_dir *d = s5l_dir_of(component, substream);
 
+	/* the port's: the same for both directions (symmetric_rate) */
 	a->width = params_width(params) / 8;
 	a->rate = params_rate(params);
-	a->period_bytes = params_period_bytes(params);
-	a->periods = params_periods(params);
+	d->period_bytes = params_period_bytes(params);
+	d->periods = params_periods(params);
 	return 0;
 }
 
 static int s5l_pcm_hw_free(struct snd_soc_component *component,
 			   struct snd_pcm_substream *substream)
 {
-	struct s5l_audio *a = snd_soc_component_get_drvdata(component);
-
-	hrtimer_cancel(&a->timer);
+	hrtimer_cancel(&s5l_dir_of(component, substream)->timer);
 	return 0;
 }
 
@@ -598,23 +645,24 @@ static int s5l_pcm_prepare(struct snd_soc_component *component,
 			   struct snd_pcm_substream *substream)
 {
 	struct s5l_audio *a = snd_soc_component_get_drvdata(component);
+	struct s5l_dir *d = s5l_dir_of(component, substream);
 	struct snd_pcm_runtime *rt = substream->runtime;
 	int ret;
 
-	hrtimer_cancel(&a->timer);
-	s5l_dma_stop(a);
-	a->buf_dma = rt->dma_addr;
-	a->buf_bytes = snd_pcm_lib_buffer_bytes(substream);
-	a->last_period = 0;
+	hrtimer_cancel(&d->timer);
+	s5l_dma_stop(d);
+	d->buf_dma = rt->dma_addr;
+	d->buf_bytes = snd_pcm_lib_buffer_bytes(substream);
+	d->last_period = 0;
 
 	ret = a->v->port_prepare(a);
 	if (ret)
 		return ret;
-	s5l_build_ring(a);
+	s5l_build_ring(d);
 
 	/* twice a period, at least once every 10 ms */
-	a->tick = ns_to_ktime(min_t(u64, div_u64((u64)NSEC_PER_SEC *
-				   bytes_to_frames(rt, a->period_bytes), 2 * a->rate),
+	d->tick = ns_to_ktime(min_t(u64, div_u64((u64)NSEC_PER_SEC *
+				   bytes_to_frames(rt, d->period_bytes), 2 * a->rate),
 				   10 * NSEC_PER_MSEC));
 	return 0;
 }
@@ -623,6 +671,7 @@ static int s5l_pcm_trigger(struct snd_soc_component *component,
 			   struct snd_pcm_substream *substream, int cmd)
 {
 	struct s5l_audio *a = snd_soc_component_get_drvdata(component);
+	struct s5l_dir *d = s5l_dir_of(component, substream);
 	unsigned long flags;
 	int ret = 0;
 
@@ -631,25 +680,25 @@ static int s5l_pcm_trigger(struct snd_soc_component *component,
 	case SNDRV_PCM_TRIGGER_RESUME:
 	case SNDRV_PCM_TRIGGER_PAUSE_RELEASE:
 		spin_lock_irqsave(&a->lock, flags);
-		ret = s5l_dma_start(a, a->last_period);
+		ret = s5l_dma_start(d, d->last_period);
 		if (!ret) {
-			a->v->port_start(a);
-			a->running = true;
+			a->v->port_start(a, d->capture);
+			d->running = true;
 		}
 		spin_unlock_irqrestore(&a->lock, flags);
 		if (!ret)
-			hrtimer_start(&a->timer, a->tick, HRTIMER_MODE_REL);
+			hrtimer_start(&d->timer, d->tick, HRTIMER_MODE_REL);
 		return ret;
 	case SNDRV_PCM_TRIGGER_STOP:
 	case SNDRV_PCM_TRIGGER_SUSPEND:
 	case SNDRV_PCM_TRIGGER_PAUSE_PUSH:
 		spin_lock_irqsave(&a->lock, flags);
-		a->running = false;
-		a->v->port_stop(a);
-		s5l_dma_stop(a);
+		d->running = false;
+		a->v->port_stop(a, d->capture);
+		s5l_dma_stop(d);
 		spin_unlock_irqrestore(&a->lock, flags);
 		/* may be called from the timer itself (an xrun): don't wait */
-		hrtimer_try_to_cancel(&a->timer);
+		hrtimer_try_to_cancel(&d->timer);
 		return 0;
 	}
 	return -EINVAL;
@@ -658,9 +707,8 @@ static int s5l_pcm_trigger(struct snd_soc_component *component,
 static snd_pcm_uframes_t s5l_pcm_pointer(struct snd_soc_component *component,
 					 struct snd_pcm_substream *substream)
 {
-	struct s5l_audio *a = snd_soc_component_get_drvdata(component);
-
-	return bytes_to_frames(substream->runtime, s5l_dma_pos(a));
+	return bytes_to_frames(substream->runtime,
+			       s5l_dma_pos(s5l_dir_of(component, substream)));
 }
 
 static int s5l_pcm_construct(struct snd_soc_component *component,
@@ -695,7 +743,8 @@ static struct snd_soc_dai_driver s5l_dai = {
 	},
 };
 
-/* the A5X's I2S0: 16-bit samples, one a FIFO word */
+/* I2S0 (the A5X's, the S5L8940X's): 16-bit samples, one a FIFO word.  A
+ * card records only where the device tree gives a capture channel. */
 static struct snd_soc_dai_driver s5x_dai = {
 	.name = "s5l-i2s0",
 	.playback = {
@@ -706,6 +755,15 @@ static struct snd_soc_dai_driver s5x_dai = {
 			 SNDRV_PCM_RATE_48000,
 		.formats = SNDRV_PCM_FMTBIT_S16_LE,
 	},
+	.capture = {
+		.stream_name = "I2S0 Capture",
+		.channels_min = 2,
+		.channels_max = 2,
+		.rates = SNDRV_PCM_RATE_32000 | SNDRV_PCM_RATE_44100 |
+			 SNDRV_PCM_RATE_48000,
+		.formats = SNDRV_PCM_FMTBIT_S16_LE,
+	},
+	.symmetric_rate = 1,		/* one port, one BCLK for both */
 };
 
 /* --- the card --------------------------------------------------------------- */
@@ -754,7 +812,7 @@ static int s5l_card_setup(struct s5l_audio *a, struct device *dev)
 	l->num_platforms = 1;
 	l->init = a->v->card_init;
 	l->dai_fmt = a->v->dai_fmt;
-	l->playback_only = 1;
+	l->playback_only = !a->has_capture;
 
 	a->card.dev = dev;
 	a->card.owner = THIS_MODULE;
@@ -830,13 +888,23 @@ static int s5l_audio_probe(struct platform_device *pdev)
 	MAP(cdma, "cdma");
 #undef MAP
 	res = platform_get_resource_byname(pdev, IORESOURCE_MEM, a->v->mca ? "mca" : "i2s");
-	a->fifo = res->start + (a->v->mca ? MCA_TX_FIFO : I2S_TXFIFO);
+	a->dir[SNDRV_PCM_STREAM_PLAYBACK].fifo = res->start + (a->v->mca ? MCA_TX_FIFO : I2S_TXFIFO);
+	a->dir[SNDRV_PCM_STREAM_CAPTURE].fifo = res->start + I2S_RXFIFO;
+	a->dir[SNDRV_PCM_STREAM_CAPTURE].capture = true;
 
 	if (of_property_read_u32(dev->of_node, "apple,nco-reference-hz", &a->nco_ref))
 		a->nco_ref = 342000000;
-	if (of_property_read_u32_index(dev->of_node, "apple,dma-channel", 0, &a->ch) ||
-	    of_property_read_u32_index(dev->of_node, "apple,dma-channel", 1, &a->req))
+	if (of_property_read_u32_index(dev->of_node, "apple,dma-channel", 0,
+				       &a->dir[SNDRV_PCM_STREAM_PLAYBACK].ch) ||
+	    of_property_read_u32_index(dev->of_node, "apple,dma-channel", 1,
+				       &a->dir[SNDRV_PCM_STREAM_PLAYBACK].req))
 		return dev_err_probe(dev, -EINVAL, "no apple,dma-channel\n");
+	/* I2S0's RX side, where the board records (the iPad 2) */
+	a->has_capture = !a->v->mca &&
+		!of_property_read_u32_index(dev->of_node, "apple,capture-dma-channel", 0,
+					    &a->dir[SNDRV_PCM_STREAM_CAPTURE].ch) &&
+		!of_property_read_u32_index(dev->of_node, "apple,capture-dma-channel", 1,
+					    &a->dir[SNDRV_PCM_STREAM_CAPTURE].req);
 
 	a->port_clk = devm_clk_get(dev, a->v->port_clk);
 	if (IS_ERR(a->port_clk))
@@ -846,12 +914,18 @@ static int s5l_audio_probe(struct platform_device *pdev)
 	ret = dma_set_mask_and_coherent(dev, DMA_BIT_MASK(32));
 	if (ret)
 		return ret;
-	a->cmds = dmam_alloc_coherent(dev, 32 * CDMA_MAX_CMDS, &a->cmds_dma, GFP_KERNEL);
-	if (!a->cmds)
-		return -ENOMEM;
+	for (int i = 0; i < 2; i++) {
+		struct s5l_dir *d = &a->dir[i];
 
-	hrtimer_init(&a->timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
-	a->timer.function = s5l_tick;
+		d->a = a;
+		if (d->capture && !a->has_capture)
+			continue;
+		d->cmds = dmam_alloc_coherent(dev, 32 * CDMA_MAX_CMDS, &d->cmds_dma, GFP_KERNEL);
+		if (!d->cmds)
+			return -ENOMEM;
+		hrtimer_init(&d->timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
+		d->timer.function = s5l_tick;
+	}
 
 	init.name = a->v->mclk_name;
 	init.ops = a->v->mclk_ops;
@@ -917,9 +991,29 @@ static const struct s5l_variant s5l8945x_variant = {
 	.port_close = s5x_port_close,
 };
 
+/* the iPad 2: the iPad 3's I2S0 and codec, and their capture side */
+static const struct s5l_variant s5l8940x_variant = {
+	.port_clk = "i2s",
+	.mclk_name = "s5l-codec-mclk",
+	.mclk_ops = &s5x_mclk_ops,
+	.formats = SNDRV_PCM_FMTBIT_S16_LE,
+	.dai_name = "s5l-i2s0",
+	.stream_name = "CS42L63",
+	.codecs_prop = "apple,audio-codec",
+	.codec_dai = "cs42l63-asp",
+	.card_name = "iPad2",
+	.card_long_name = "iPad 2 speaker, headphones and microphones",
+	.dai_fmt = SND_SOC_DAIFMT_I2S | SND_SOC_DAIFMT_NB_NF | SND_SOC_DAIFMT_CBC_CFC,
+	.port_prepare = s5x_port_prepare,
+	.port_start = s5x_port_start,
+	.port_stop = s5x_port_stop,
+	.port_close = s5x_port_close,
+};
+
 static const struct of_device_id s5l_audio_of_match[] = {
 	{ .compatible = "apple,s5l8942x-audio", .data = &s5l8942x_variant },
 	{ .compatible = "apple,s5l8945x-audio", .data = &s5l8945x_variant },
+	{ .compatible = "apple,s5l8940x-audio", .data = &s5l8940x_variant },
 	{ }
 };
 MODULE_DEVICE_TABLE(of, s5l_audio_of_match);
@@ -948,5 +1042,5 @@ static void __exit s5l_audio_exit(void)
 }
 module_exit(s5l_audio_exit);
 
-MODULE_DESCRIPTION("Apple A5/A5X speaker audio: MCA0 or I2S0, CDMA, and the card");
+MODULE_DESCRIPTION("Apple A5/A5X audio: MCA0 or I2S0, CDMA both ways, and the card");
 MODULE_LICENSE("GPL");

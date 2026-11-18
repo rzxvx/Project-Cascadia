@@ -261,6 +261,15 @@
 				function = "periph";
 			};
 
+			/* I2S0's pin group 0, the mini's layout: MCK 76, BCLK
+			 * 77, LRCK 78, DOUT 79, DIN 80.  iBoot leaves 77-80 on
+			 * the peripheral (0x1a20); MCK, which only the codec
+			 * needs, is set here. */
+			i2s0_pins: i2s0-pins {
+				pins = "gpio76", "gpio77", "gpio78", "gpio79", "gpio80";
+				function = "periph";
+			};
+
 		};
 
 		/* UART5 carries the bq27540's HDQ bus, as on the mini
@@ -457,6 +466,16 @@
 			clock-output-names = "sdio_ps";
 		};
 
+		/* I2S0, the audio port: clock-gates 115, 0x3f1010a0
+		 * (docs/research/k93-audio.md section 3). */
+		i2s0_ps: i2s0-ps@f1010a0 {
+			compatible = "apple,s5l8940x-pmgr-clk-gate";
+			#clock-cells = <0>;
+			reg = <0xf1010a0 0x4>;
+			clocks = <&refclk24mhz>;
+			clock-output-names = "i2s0_ps";
+		};
+
 		/*
 		 * The SDIO host (ADT arm-io/sdio, "sdio,s5l8940x"): an SDHC at
 		 * arm-io + 0, IRQ 39, powered by SDIO-WIFI, driven as an SDHCI
@@ -518,6 +537,38 @@
 		display-controller@a104000 {
 			compatible = "apple,s5l8940x-clcd";
 			reg = <0xa104000 0x1000>, <0x9200000 0x1000>;
+		};
+
+		/*
+		 * The speaker, the headphones and the microphones
+		 * (docs/research/k93-audio.md, sound/soc/apple/s5l-audio.c, the
+		 * iPad 3's I2S0 port): I2S0 sends and takes the samples as clock
+		 * master, CDMA channel 0x1f (request line 1, the ADT's i2s0
+		 * dma-channels) feeds it, NCO 0 makes its BCLK (342 MHz
+		 * reference), its MCK is the codec's 6 MHz MCLK -- offered as
+		 * this node's clock -- and the i2s-switch puts all of it on pin
+		 * group 0.  The windows: I2S0, AE2's MCS (not written here) and
+		 * ACS (lane 0 gates I2S0's registers), the i2s-switch, the
+		 * PMGR's NCOs, CDMA.
+		 */
+		audio: audio-controller@4190000 {
+			compatible = "apple,s5l8940x-audio";
+			reg = <0x4190000 0x1000>, <0x41e0000 0x1000>,
+			      <0x41a0000 0x1000>, <0xfa01000 0x1000>,
+			      <0xf100110 0x70>, <0x7000000 0x2d000>;
+			reg-names = "i2s", "mcs", "acs", "switch", "nco", "cdma";
+			clocks = <&i2s0_ps>;
+			clock-names = "i2s";
+			#clock-cells = <0>;
+			#sound-dai-cells = <0>;
+			pinctrl-names = "default";
+			pinctrl-0 = <&i2s0_pins>;
+			apple,dma-channel = <0x1f 1>;
+			/* the ADT's i2s0 dma-channels RX entry: channel 0x20,
+			 * request line 0, out of the RX FIFO at +0x38 */
+			apple,capture-dma-channel = <0x20 0>;
+			apple,nco-reference-hz = <342000000>;
+			apple,audio-codec = <&codec>;
 		};
 
 		i2c0: i2c@3200000 {
@@ -600,6 +651,32 @@
 				};
 			};
 
+			/* The codec, a Cirrus CS42L63 (the ADT's audio-codec), as
+			 * on the iPad 3: reset is PMU GPIO 13, active low; the
+			 * speaker's amplifier is enabled by SoC GPIO 39 (iOS's
+			 * function-spkr_mute: high plays); MCLK is I2S0's MCK.
+			 * The built-in mic is on its digital mic input B, the
+			 * jack behind the headset switch below.
+			 * sound/soc/codecs/cs42l63.c runs iOS's own sequences. */
+			/* ADT headset-switch,ts3a8235: the jack's ground and mic
+			 * contacts.  No driver of its own: the codec writes its
+			 * state (register 2) when a plug goes in or out. */
+			headset_switch: headset-switch@3b {
+				compatible = "ti,ts3a8235";
+				reg = <0x3b>;
+			};
+
+			codec: codec@4a {
+				compatible = "cirrus,cs42l63";
+				reg = <0x4a>;
+				headset-switch = <&headset_switch>;
+				reset-gpios = <&pmu 13 1>;
+				speaker-amp-gpios = <&gpio 39 0>;
+				apple,internal-mic;
+				clocks = <&audio>;
+				clock-names = "mclk";
+				#sound-dai-cells = <0>;
+			};
 		};
 
 		/* arm-io/i2c1: the AK8975 compass at 0x0e (and an AD7147A

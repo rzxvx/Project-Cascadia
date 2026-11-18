@@ -63,6 +63,7 @@ NEW_FILES = [
     "sound/soc/apple/s5l-audio.c",
     "sound/soc/codecs/cs35l19.c",
     "sound/soc/codecs/cs42l63.c",
+    "sound/soc/codecs/cs42l63-seq.h",
     "Documentation/devicetree/bindings/interrupt-controller/apple,aic1.yaml",
     "fs/hfsplus/decmpfs.c",
 ]
