@@ -20,6 +20,13 @@ Linux never writes to iOS's partitions, and holding **power + home** brings
 the iPad back to iOS. That is worth knowing before you start rather than
 after.
 
+> **Stuck in a program that will not let go of the screen?** Touch the
+> screen's corners in turn -- **bottom left, top right, top left, bottom
+> right** -- and then **once more**, each touch within a second of the last.
+> A window comes up over whatever is running and kills it for you, or
+> everything but the basic system. No computer, no cable, no reboot:
+> [A way out: task-killer](#a-way-out-task-killer).
+
 ## What you need
 
 **The device.** An iPad mini 1, Wi-Fi: **iPad2,5 / A1432 / p105ap**. The
@@ -414,14 +421,49 @@ again from the current image).
 - **Turning.** The screen turns with the iPad, the touch with it
   (`autorotate`); the panel's lock button, or Home held (0.8 s), keeps it
   as it is. `rotate [normal|left|inverted|right]` turns it by hand.
-- **A way out.** A program that holds the screen and will not let go: touch
-  the corners bottom left, top right, top left, bottom right, twice, each
-  within a second. A window offers to kill everything but the basic
-  processes (the console, ssh, Wi-Fi stay) or the ones you pick
-  (`task-killer`; `task-killer --list` shows what it would kill). Then
-  `desktop` again.
+- **A way out.** The screen's corners, twice: the next section.
 - **Speed.** ~6 s from the boot's end to the panel (8 s with nothing cached),
   92-106 MB of memory in use, SuperTux ~53 frames/s.
+
+## A way out: task-killer
+
+A game in fullscreen that hangs, a program with no close button, a desktop
+that stopped answering the glass -- **you do not need a computer or a
+reboot to get out of it.** Touch the screen's corners in this order, then
+the same four again, each touch within a second of the one before (a second
+or more starts the count again):
+
+```
+ ┌─────────────────┐
+ │ 3             2 │      1 bottom left
+ │                 │      2 top right
+ │                 │      3 top left
+ │                 │      4 bottom right
+ │ 1             4 │      ... and 1 2 3 4 once more
+ └────────( )──────┘            (Home below)
+```
+
+The corners are the glass's own, whichever way the screen is turned, and a
+fingertip a little in from the edge is enough. A window comes up over
+whatever is on the screen -- the desktop, a game, a program alone on the
+screen, hung or not -- and takes the touches while it is open:
+
+- **Continue** (after a 5-second countdown) kills every process but the
+  basic ones and leaves you at the text console with its on-screen keyboard.
+  What stays: the console, ssh, Wi-Fi, Bluetooth, the buttons, touch. Type
+  `desktop` there to get the desktop back. The tick **"Don't use the safety
+  countdown next time"** drops the countdown for good (untick it to have it
+  again).
+- **Manual kill** lists the other processes, the largest first: tick the ones
+  to kill (the list scrolls with a finger), then **Kill**; **Back** returns.
+  The desktop keeps running if you leave it out.
+- **Cancel** closes the window and changes nothing.
+
+From ssh, `task-killer --list` shows what Continue would kill. It is
+`/usr/local/bin/task-killer`, started at boot; its log is
+`/tmp/task-killer.log` (`TK_DEBUG=1` logs every touch it sees). While
+screenpad's controls are on the screen they hold the touches, and the
+corners are not seen: stop the game from its own menu, or from ssh.
 
 ## Touch controls for games
 
@@ -489,6 +531,7 @@ gpu`).
 
 | What you see | What it is |
 |---|---|
+| A program fills the screen and will not go away (a game hung, no close button, the desktop not answering) | Touch the corners bottom left, top right, top left, bottom right, twice, each within a second: [task-killer](#a-way-out-task-killer)'s window kills it, or everything but the basic system; then `desktop`. |
 | `ssh` says `Permission denied (publickey)` | The image does not carry the key ssh offered — `ssh -v` shows which one that was, and `dmesg` on the ACM console shows dropbear's side. `./cascadia a5 build` adds the building machine's key every time; from any other machine, `PUBKEY=that.pub ./cascadia a5 build`, or append the key to `/root/.ssh/authorized_keys` on the ACM console for this boot. |
 | `ssh` asks for a **passphrase** and then gives up | That is your own key on this host, not the device: ssh could not decrypt it, so it never offered it. `ssh-add ~/.ssh/id_ed25519` once, or keep a passphrase-less `~/.ssh/cascadia` (`./cascadia a5 setup` makes one). Nothing is wrong with the image — rebuilding will not help. |
 | `ssh` hangs, no error | This host has no address on the link. `./cascadia a5 link`. |
