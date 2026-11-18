@@ -128,8 +128,10 @@ step xfce       sh -c "ssh $DEV sh -s < '$ROOT/tools/desktop/xfce-setup.sh'"
 step patched    sh -c "sh '$ROOT/tools/desktop/pixman/build.sh' install &&
                        sh '$ROOT/tools/desktop/xorg-server/build.sh' install &&
                        sh '$ROOT/tools/desktop/xfwm4/build.sh' install"
-step labwc      sh -c "sh '$ROOT/tools/desktop/labwc/build.sh' install &&
-                       ssh $DEV sh -s < '$ROOT/tools/desktop/labwc/labwc-setup.sh'"
+# the setup first: it brings labwc's dependencies (Alpine's labwc with them),
+# which our labwc's offline install then finds in place
+step labwc      sh -c "ssh $DEV sh -s < '$ROOT/tools/desktop/labwc/labwc-setup.sh' &&
+                       sh '$ROOT/tools/desktop/labwc/build.sh' install"
 step taskkiller sh -c "START=0 sh '$ROOT/tools/task-killer/build.sh' install"
 step autorotate sh "$ROOT/tools/desktop/install.sh"
 step mesa       bash "$ROOT/cascadia" dev mesa --install "$DEV"

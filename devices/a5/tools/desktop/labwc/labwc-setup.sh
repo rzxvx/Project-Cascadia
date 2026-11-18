@@ -1,5 +1,6 @@
 # Runs ON THE iPad (or, unchanged, inside the root ./cascadia a5 desktop-root
-# builds), after tools/desktop/labwc/build.sh install:
+# builds), before tools/desktop/labwc/build.sh install (which puts our labwc
+# over Alpine's, offline: this brings its dependencies):
 #   ssh root@10.55.0.2 sh -s < tools/desktop/labwc/labwc-setup.sh
 # then tools/desktop/install.sh (desktop, rotate, autorotate), and on the
 # glass or over ssh:

@@ -396,8 +396,8 @@ there). Onto a root from before the Wayland desktop, over ssh (the
 iPad on the internet: `./cascadia a5 net on`):
 
 ```bash
-sh tools/desktop/labwc/build.sh install
 ssh root@10.55.0.2 sh -s < tools/desktop/labwc/labwc-setup.sh
+sh tools/desktop/labwc/build.sh install
 sh tools/desktop/install.sh
 sh tools/task-killer/build.sh install
 ```
