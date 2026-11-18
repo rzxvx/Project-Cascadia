@@ -1029,7 +1029,11 @@ cmd_release() {
     [ -z "$(git -C "$REPO" status --porcelain --untracked-files=no)" ] \
         || fail "commit first: a release names the commit it is built from, and that has to be all of it"
     rev=$(git -C "$REPO" rev-parse --short HEAD)
-    ver="a5-$(date -u +%Y.%m.%d)-$rev"
+    # the time too, after a dot: the app takes a release as newer when its
+    # name sorts after the installed one's, and two of one day came down to
+    # their commits' hashes (482f799 sorted before f6cb347: no update).  A
+    # '.' sorts after the '-' the names before carried.
+    ver="a5-$(date -u +%Y.%m.%d.%H%M)-$rev"
     R="$ROOT/build/release/$ver"
     rm -rf "$R"; mkdir -p "$R"
     local CHECK=(python3 "$ROOT/scripts/release-check.py" --forbid "$ROOT/build/firmware" "$ROOT/build/keep" "$ROOT/build/overlay")
