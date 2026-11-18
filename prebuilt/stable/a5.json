@@ -9,12 +9,6 @@
    "sha256": "bfe61090c52b8dea53256042a28f6cdeb49ee7e2d3b227c5aef483adb38ff46b"
   },
   {
-   "name": "build.log",
-   "url": "https://github.com/rzxvx/Project-Cascadia/releases/download/a5-2026.11.16-de6d988/build.log",
-   "size": 3926,
-   "sha256": "382f5e01016c808c677849f53ae13b92b2785e64c451d0c4b5de1398a591b430"
-  },
-  {
    "name": "cascadia-hfs",
    "url": "https://github.com/rzxvx/Project-Cascadia/releases/download/a5-2026.11.16-de6d988/cascadia-hfs",
    "size": 50880,
