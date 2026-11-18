@@ -1,0 +1,20 @@
+--- a/drivers/media/platform/Kconfig
++++ b/drivers/media/platform/Kconfig
+@@ -65,6 +65,7 @@ config VIDEO_MUX
+ source "drivers/media/platform/allegro-dvt/Kconfig"
+ source "drivers/media/platform/amlogic/Kconfig"
+ source "drivers/media/platform/amphion/Kconfig"
++source "drivers/media/platform/apple/Kconfig"
+ source "drivers/media/platform/aspeed/Kconfig"
+ source "drivers/media/platform/atmel/Kconfig"
+ source "drivers/media/platform/broadcom/Kconfig"
+--- a/drivers/media/platform/Makefile
++++ b/drivers/media/platform/Makefile
+@@ -8,6 +8,7 @@
+ obj-y += allegro-dvt/
+ obj-y += amlogic/
+ obj-y += amphion/
++obj-y += apple/
+ obj-y += aspeed/
+ obj-y += atmel/
+ obj-y += broadcom/
