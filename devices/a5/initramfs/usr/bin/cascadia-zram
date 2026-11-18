@@ -1,0 +1,112 @@
+#!/bin/sh
+# cascadia-zram -- the iPad 2's swap: zram (compressed RAM, all inside the
+# kernel) with the NAND Swap partition behind it for pages that sit unused.
+#
+#   cascadia-zram                  how much is swapped, in RAM and on the NAND
+#   cascadia-zram start [BACKING]  zram0 as swap (initramfs/init's swap_on), with
+#                                  BACKING (the Swap partition) for its writeback
+#   cascadia-zram writeback-loop   every minute: once zram holds more than
+#                                  $ZRAM_WB_FROM MB of RAM, the pages nobody
+#                                  touched since the last pass go to BACKING
+#                                  (stage 2 starts it when there is one) --
+#                                  not while a video plays (pass, below)
+#   cascadia-zram writeback        everything zram holds now, written back at once
+#                                  (whatever is touched meanwhile stays): a test
+#
+# Why not swap on the Swap partition itself: its writes go through the NAND
+# server (tools/nand/k93yaftl.c, a process), and under real memory pressure
+# that hung the iPad (2026-11-16) -- the cycle of any swap a process serves:
+# freeing memory waits on the server's writes, and the server needs memory to
+# answer.  zram frees memory without the server.  Its writeback is ordinary I/O from this script, at its own pace:
+# nothing that frees memory ever waits on it.  Pages written back come back
+# through the server when they are touched again.
+set -u
+Z=/sys/block/zram0
+DISK=${ZRAM_DISKSIZE:-1G}        # swap space (with BACKING: at most its size)
+# No mem_limit: at it, zram refuses every swap-out while the kernel still sees
+# free swap and never calls the OOM killer -- the iPad thrashed for minutes
+# (2026-11-16).  Memory full is the multi-gen LRU's min_ttl_ms's (initramfs/init):
+# an OOM kill.  ZRAM_MEM_LIMIT=SIZE sets one all the same.
+LIMIT=${ZRAM_MEM_LIMIT:-0}
+WB_FROM=${ZRAM_WB_FROM:-64}      # MB of zram RAM before anything goes to the NAND
+EVERY=${ZRAM_WB_EVERY:-60}       # seconds between passes
+
+say() { printf '%s\n' "$*"; }
+
+mb() { echo $(( $1 / 1048576 )); }
+
+status() {
+    [ -r $Z/mm_stat ] || { say "no zram0"; return 1; }
+    set -- $(cat $Z/mm_stat)
+    lim="limit $(mb $4) MB"; [ "$4" = 0 ] && lim="no limit"
+    say "zram0: $(mb $1) MB swapped, $(mb $3) MB of RAM for it ($lim, most $(mb $5) MB)," \
+        "$(( $8 )) pages incompressible, $(( $6 )) same-filled"
+    if [ -r $Z/bd_stat ] && [ "$(cat $Z/backing_dev 2>/dev/null)" != none ]; then
+        set -- $(cat $Z/bd_stat)
+        say "on $(cat $Z/backing_dev): $(( $1 * 4 / 1024 )) MB now; $(( $3 * 4 / 1024 )) MB written, $(( $2 * 4 / 1024 )) MB read back since boot"
+    fi
+    grep -E '^(MemTotal|MemAvailable|SwapTotal|SwapFree):' /proc/meminfo | tr -s ' ' | tr '\n' ' '
+    echo
+}
+
+start() {
+    backing=${1:-}
+    [ -d $Z ] || { say "zram: no /sys/block/zram0 (kernel without CONFIG_ZRAM)"; return 1; }
+    grep -q '^/dev/zram0 ' /proc/swaps && { say "zram: already swap"; return 0; }
+    echo lz4 > $Z/comp_algorithm 2>/dev/null || say "zram: lz4 refused, $(cat $Z/comp_algorithm)"
+    if [ -n "$backing" ] && [ -b "$backing" ]; then
+        if echo "$backing" > $Z/backing_dev 2>/dev/null; then
+            bmb=$(( $(cat /sys/block/${backing#/dev/}/size) / 2048 ))
+            DISK=${ZRAM_DISKSIZE:-${bmb}M}
+        else
+            say "zram: $backing refused as the backing device: RAM only"
+            backing=
+        fi
+    fi
+    echo "$LIMIT" > $Z/mem_limit
+    echo "$DISK" > $Z/disksize || { say "zram: disksize $DISK refused"; return 1; }
+    mkswap /dev/zram0 >/dev/null 2>&1 || { say "zram: mkswap failed"; return 1; }
+    swapon -p 100 /dev/zram0 || { say "zram: swapon failed"; return 1; }
+    say "swap: zram0 ($DISK, lz4$( [ "$LIMIT" != 0 ] && echo ", at most $LIMIT of RAM"))${backing:+, idle pages written back to $backing}"
+}
+
+# Held off while a video plays: the writeback goes through the NAND server,
+# whose CPU the decoder needs.  With a heavy page frozen behind the player,
+# 11 MB written back during a 20 s clip took the server to 35-135% of a core,
+# and mpv dropped 252 frames of 600 where it drops 15 (2026-11-17).  A hold
+# is a file $HOLDS/hold.PID (cascadia-play's, tools/desktop/web); one whose
+# process is gone counts for nothing.
+HOLDS=/run/cascadia-zram
+held() {
+    for h in $HOLDS/hold.*; do
+        [ -e "$h" ] || continue
+        kill -0 "${h##*.}" 2>/dev/null && return 0
+        rm -f "$h"
+    done
+    return 1
+}
+
+# one pass: what was marked idle last time and is still untouched goes out
+# (when zram holds enough RAM to be worth it), then everything is marked again
+pass() {
+    held && return 0
+    set -- $(cat $Z/mm_stat)
+    if [ "$(( $3 / 1048576 ))" -ge "$WB_FROM" ] && [ "${1:-0}" -gt 0 ]; then
+        echo idle > $Z/writeback 2>/dev/null
+    fi
+    echo all > $Z/idle 2>/dev/null
+}
+
+case "${1:-}" in
+    "") status ;;
+    start) start "${2:-}" ;;
+    writeback) [ "$(cat $Z/backing_dev 2>/dev/null)" != none ] || { say "zram: no backing device"; exit 1; }
+               echo all > $Z/idle
+               echo idle > $Z/writeback || say "zram: writeback refused"
+               status ;;
+    writeback-loop)
+        [ "$(cat $Z/backing_dev 2>/dev/null)" != none ] || exit 0
+        echo all > $Z/idle 2>/dev/null
+        while sleep "$EVERY"; do pass; done ;;
+    *) say "usage: cascadia-zram [start [BACKING] | writeback | writeback-loop]"; exit 2 ;;
+esac

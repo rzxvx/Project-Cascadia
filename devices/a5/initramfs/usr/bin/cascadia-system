@@ -1,0 +1,60 @@
+#!/bin/sh
+# cascadia-system -- iOS's System partition, read-write from Linux, when it is safe.
+#
+#   cascadia-system          how /mnt/ios is mounted, and what hfs-state says of it
+#   cascadia-system rw       read-write: only if the NAND server writes System, the
+#                            volume was left cleanly unmounted and its HFS+ journal
+#                            is empty (`linux -w` on iOS remounts System read-only
+#                            right before kloader, which makes it so)
+#   cascadia-system ro       back to read-only, through an unmount: that is when
+#                            Linux's hfsplus marks the volume clean again
+#
+# Read-only by default, read-write only for the time it is needed: Linux's
+# hfsplus writes without the journal (-o force), and a Linux that stopped while
+# System was read-write would leave iOS's root marked not cleanly unmounted.
+# Stage 2's shutdown unmounts it too.  Not with the image root, which keeps
+# /mnt/ios busy (its root.sqfs lives there).
+set -u
+M=/mnt/ios
+DEV=$(awk -v m=$M '$2 == m {print $1; exit}' /proc/mounts)
+say() { printf '%s\n' "$*"; }
+die() { printf 'cascadia-system: %s\n' "$*" >&2; exit 1; }
+
+mode() { awk -v m=$M '$2 == m {split($4, o, ","); print o[1]; exit}' /proc/mounts; }
+
+[ -n "$DEV" ] || die "$M is not mounted (no System this boot?)"
+case "${1:-}" in
+"")
+    say "$M: $DEV, mounted $(mode)$( [ "$(cat /sys/block/${DEV#/dev/}/ro 2>/dev/null)" = 0 ] || echo ", the NAND server serves it read-only")"
+    hfs-state "$DEV"
+    ;;
+rw)
+    [ "$(mode)" = rw ] && { say "$M is read-write already"; exit 0; }
+    [ "$(cat /sys/block/${DEV#/dev/}/ro 2>/dev/null)" = 0 ] ||
+        die "the NAND server serves System read-only this boot ($DEV)"
+    [ "$(cat /run/ios/root 2>/dev/null)" = nand ] &&
+        die "the root is the image on System, which keeps $M busy: read-write needs the Linux partition's root"
+    # the state is read with the volume unmounted: what iOS left, not a cache of it
+    umount $M || die "$M is busy (fuser -m $M)"
+    if hfs-state "$DEV"; then
+        mount -t hfsplus -o rw,force "$DEV" $M && { say "$M read-write: 'cascadia-system ro' when done"; exit 0; }
+        say "cascadia-system: the read-write mount failed"
+    else
+        say "cascadia-system: not safe to write (above): staying read-only."
+        say "  Boot Linux with 'linux -w' on iOS: it leaves System clean for this."
+    fi
+    mount -t hfsplus -o ro "$DEV" $M || die "and $M did not mount again"
+    exit 1
+    ;;
+ro)
+    [ "$(mode)" = ro ] && { say "$M is read-only already"; exit 0; }
+    sync
+    umount $M || die "$M is busy (fuser -m $M): still read-write"
+    mount -t hfsplus -o ro "$DEV" $M || die "$M did not mount again"
+    say "$M read-only; $(hfs-state "$DEV")"
+    ;;
+*)
+    say "usage: cascadia-system [rw | ro]"
+    exit 2
+    ;;
+esac

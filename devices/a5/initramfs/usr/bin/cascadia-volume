@@ -1,0 +1,36 @@
+#!/bin/sh
+# cascadia-volume -- the iPad 2's Linux volume: the blocks of iOS's NAND that
+# Linux owns (tools/nand/k93lv.c), where every change to the root is kept.
+#
+#   cascadia-volume           size, use, and what the server said at boot
+#   cascadia-volume reset     start over at the next boot: a new, empty file
+#                             system -- every change made to the root is gone
+#   cascadia-volume cancel    forget a reset asked for
+#
+# With cascadia.lv=off on the kernel command line the changes stay in RAM
+# for that boot.
+V=/run/root/rw
+case "$1" in
+"")
+    if [ "$(cat /run/ios/upper 2>/dev/null)" != lv ]; then
+        echo "The root's changes are in RAM this boot (no Linux volume mounted)."
+        grep -E 'k93lv' /run/ios/iosnand.log 2>/dev/null | grep -v '^  '
+        exit 1
+    fi
+    df -h "$V" | awk 'NR==2{print "Linux volume: "$2", "$3" used, "$4" free"}'
+    [ -e "$V/reset" ] && echo "A reset is asked for: the next boot starts with an empty volume."
+    grep -E '^k93lv: (volume|[0-9]+ blocks)' /run/ios/iosnand.log 2>/dev/null
+    [ -d "$V/old-upper" ] && echo "Changes made on top of an earlier root image: $V/old-upper"
+    ;;
+reset)
+    [ "$(cat /run/ios/upper 2>/dev/null)" = lv ] || { echo "No Linux volume is mounted." >&2; exit 1; }
+    : > "$V/reset" && sync && echo "At the next boot the Linux volume starts empty (cascadia-volume cancel to keep it)."
+    ;;
+cancel)
+    rm -f "$V/reset" && sync && echo "The Linux volume stays as it is."
+    ;;
+*)
+    sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'
+    exit 1
+    ;;
+esac

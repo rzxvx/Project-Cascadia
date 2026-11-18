@@ -872,6 +872,31 @@ cmd_build() {
     in_docker "arm-linux-gnueabihf-gcc -static -Os -D_FILE_OFFSET_BITS=64 -o build/initramfs-root/sbin/nandctl tools/nand/nandctl.c tools/nand/ppn.c && arm-linux-gnueabihf-gcc -static -O2 -D_FILE_OFFSET_BITS=64 -o build/initramfs-root/sbin/iosnand tools/nand/iosnand.c tools/nand/ppn.c"
     [ -s "$ROOT/build/initramfs-root/sbin/iosnand" ] || fail "iosnand did not build"
     note "ok: /sbin/nandctl, /sbin/iosnand (static ARM)"
+    # The iPad 2's raw NAND, read-only: k93nand drives the chips, k93iosnand
+    # serves iOS's partitions -- `ios mount`, and the NAND root initramfs/init
+    # boots from an image on System.  docs/research/k93-nand.md.  Each pair
+    # refuses the other iPad's flash.
+    in_docker "arm-linux-gnueabihf-gcc -static -Os -Wall -D_FILE_OFFSET_BITS=64 -o build/initramfs-root/sbin/k93nand tools/nand/k93nand.c && arm-linux-gnueabihf-gcc -static -O2 -Wall -pthread -D_FILE_OFFSET_BITS=64 -o build/initramfs-root/sbin/k93iosnand tools/nand/k93iosnand.c"
+    [ -s "$ROOT/build/initramfs-root/sbin/k93iosnand" ] || fail "k93iosnand did not build"
+    note "ok: /sbin/k93nand, /sbin/k93iosnand (static ARM)"
+    # And its write side: k93lv serves System as k93iosnand does, plus the
+    # Linux volume -- the blocks of iOS's reserved pool Linux may own, with
+    # every program and erase behind k93nandw's checks (docs/research/
+    # k93-nand-write.md).  k93nandw itself: the tests T0-T5 and `pool`.
+    in_docker "arm-linux-gnueabihf-gcc -static -O2 -Wall -Wno-unused-function -pthread -D_FILE_OFFSET_BITS=64 -o build/initramfs-root/sbin/k93lv tools/nand/k93lv.c && arm-linux-gnueabihf-gcc -static -O2 -Wall -Wno-unused-function -pthread -D_FILE_OFFSET_BITS=64 -o build/initramfs-root/sbin/k93nandw tools/nand/k93nandw.c && arm-linux-gnueabihf-gcc -static -O2 -Wall -Wno-unused-function -pthread -D_FILE_OFFSET_BITS=64 -o build/initramfs-root/sbin/k93yaftl tools/nand/k93yaftl.c"
+    [ -s "$ROOT/build/initramfs-root/sbin/k93lv" ] || fail "k93lv did not build"
+    [ -s "$ROOT/build/initramfs-root/sbin/k93yaftl" ] || fail "k93yaftl did not build"
+    note "ok: /sbin/k93lv, /sbin/k93nandw, /sbin/k93yaftl (static ARM)"
+    # The pressure relief valve for a memory gone with the root on the NAND
+    # server: an OOM kill instead of minutes of re-reading code (tools/k93-thrash.c)
+    in_docker "arm-linux-gnueabihf-gcc -static -O2 -Wall -o build/initramfs-root/sbin/k93-thrash tools/k93-thrash.c"
+    [ -s "$ROOT/build/initramfs-root/sbin/k93-thrash" ] || fail "k93-thrash did not build"
+    note "ok: /sbin/k93-thrash (static ARM)"
+    # Whether iOS's System may be written (cascadia-system): cleanly unmounted,
+    # its HFS+ journal empty (tools/hfs-state.c)
+    in_docker "arm-linux-gnueabihf-gcc -static -O2 -Wall -o build/initramfs-root/sbin/hfs-state tools/hfs-state.c"
+    [ -s "$ROOT/build/initramfs-root/sbin/hfs-state" ] || fail "hfs-state did not build"
+    note "ok: /sbin/hfs-state (static ARM)"
     # Wi-Fi's tools and the on-screen keyboard ride in the image (a RAM boot
     # has no network to apk add them with).  A tree made by an older
     # ./cascadia a5 rootfs lacks them; add them rather than make it start over.

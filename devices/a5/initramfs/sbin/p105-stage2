@@ -57,6 +57,11 @@ hostname -F /etc/hostname 2>/dev/null || hostname p105 2>/dev/null || true
 case "$ROOTTYPE" in
     nfs*) where="the root is NFS\n  from the host's machine." ;;
     ext4) where="the root is on the NAND." ;;
+    overlay) if [ "$(cat /run/ios/upper 2>/dev/null)" = lv ]; then
+                 where="the root is an image on iOS's System\n  partition; changes are kept on the Linux volume\n  (cascadia-volume)."
+             else
+                 where="the root is an image on iOS's System\n  partition; changes last until the iPad restarts."
+             fi ;;
     *)    where="the root sits in RAM." ;;
 esac
 # And which iPad: one image boots both.
@@ -236,6 +241,13 @@ if [ "$BOARD" = k93 ]; then
     else
         msg "K93: touch -- not started (no /dev/hx-touch, K93.mtprops or mtcal.bin)"
     fi
+    # The swap's second tier: zram's pages left untouched go to the NAND Swap
+    # partition (initramfs/init made zram0 the swap, cascadia-zram says why)
+    if [ -x /usr/bin/cascadia-zram ] && [ "$(cat /sys/block/zram0/backing_dev 2>/dev/null)" != none ] \
+       && [ -n "$(cat /sys/block/zram0/backing_dev 2>/dev/null)" ]; then
+        setsid /usr/bin/cascadia-zram writeback-loop >/tmp/zram-writeback.log 2>&1 </dev/null &
+        msg "K93: swap -- zram writeback to $(cat /sys/block/zram0/backing_dev) every minute (cascadia-zram)"
+    fi
 elif [ -x /sbin/z2-boot ] && [ -s /lib/firmware/mtcal.bin ] && [ -s /lib/firmware/P105.mtprops ]; then
     setsid /sbin/z2-boot -c /lib/firmware/mtcal.bin >/tmp/z2boot.log 2>&1 </dev/null &
     msg "P105: touch -- z2-boot started (/tmp/z2boot.log)"
@@ -338,12 +350,44 @@ p105_down() {
     B=/bin/busybox
     [ -x "$RESCUE/busybox" ] && B="$RESCUE/busybox"
     msg "P105: $1"
-    kill -TERM -1 2>/dev/null
-    "$B" sleep 2
-    kill -KILL -1 2>/dev/null
+    # The iPad 2's NAND server (k93lv, initramfs/init) goes last: the root's
+    # image and the Linux volume its changes are kept on stand on it, so it
+    # must outlive everything that may still write, and the sync below.
+    srv=$(cat /run/ios/pid 2>/dev/null)
+    keep=" $srv $(pidof k93yaftl k93lv k93iosnand 2>/dev/null) "
+    if [ -z "$srv" ]; then
+        kill -TERM -1 2>/dev/null
+        "$B" sleep 2
+        kill -KILL -1 2>/dev/null
+    else
+        for sig in TERM KILL; do
+            for p in /proc/[0-9]*; do
+                p=${p#/proc/}
+                case "$keep" in *" $p "*) continue ;; esac
+                [ "$p" = 1 ] || kill -$sig "$p" 2>/dev/null
+            done
+            [ $sig = TERM ] && "$B" sleep 2
+        done
+    fi
     "$B" sync
+    # Swap first (the Swap partition is the NAND server's too); everyone who
+    # had pages there is gone, so this is quick.
+    "$B" swapoff -a 2>/dev/null
     # A local root closes its journal; nothing is left running to write to it.
+    # (The iPad 2's Linux partition root is one: its server outlives this.)
     [ "$ROOTTYPE" = ext4 ] && "$B" mount -o remount,ro /
+    # iOS's System, if `cascadia-system rw` left it so: unmounted, which is when
+    # Linux's hfsplus marks it clean for iOS (a remount read-only would not)
+    "$B" grep -q ' /mnt/ios hfsplus rw' /proc/mounts && "$B" umount /mnt/ios
+    # So does the Linux volume under the overlay, while its server still runs;
+    # then the server, which finishes the request it is on and lets go.
+    if [ -n "$srv" ]; then
+        "$B" grep -q ' /run/root/rw ext4 ' /proc/mounts && "$B" mount -o remount,ro /run/root/rw
+        kill -TERM "$srv" 2>/dev/null
+        n=0
+        while kill -0 "$srv" 2>/dev/null && [ $n -lt 8 ]; do "$B" sleep 1; n=$((n + 1)); done
+        "$B" sync
+    fi
     "$B" "$2" -f
 }
 trap 'p105_down "powering off" poweroff' USR2
@@ -366,6 +410,15 @@ else
     trap 'p105_down "no restart on this iPad yet -- powering off instead" poweroff' TERM
 fi
 trap 'p105_down "halt" halt' USR1
+
+# A root that wants its desktop at boot says so: /etc/cascadia/desktop-at-boot
+# (the iPad 2's root on the NAND carries it, tools/k93-root.sh).  `desktop`
+# once everything above is up, as if typed on the glass; it takes the screen
+# from fbkeyboard, and the glass shell is back when the session ends.
+if [ -e /etc/cascadia/desktop-at-boot ] && [ -x /usr/local/bin/desktop ]; then
+    msg "P105: starting the desktop (/etc/cascadia/desktop-at-boot)"
+    ( sleep 2; /usr/local/bin/desktop > /tmp/desktop-at-boot.log 2>&1 ) < /dev/null &
+fi
 
 msg "P105: stage2 done, shell on tty0"
 # PID 1 from here on, and a shell exec'd as PID 1 got two things wrong:
