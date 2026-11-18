@@ -1,0 +1,227 @@
+Cascadia: a draw that textures from the framebuffer it renders into makes
+PPSSPP copy that framebuffer first (BindFramebufferAsColorTexture:
+BlitFramebuffer into a temporary FBO) -- God of War's bloom, six times a
+frame into its 864 x 272 target, each copy a render of its own on the iPad 2
+(~0.45 ms of the GPU each).  Mesa's SGX driver (a tile-based GPU: renderer
+"PowerVR SGX543MP2", "Mesa" in the version) ends the render a draw that
+samples its own target would join, so the draw reads all that was drawn
+before it, and the GPU stores a tile's pixels only when the tile is done: a
+draw that reads none of the pixels it draws needs no copy.  There, in
+through mode, the pixels drawn (those whose centres the decoded vertices'
+box covers) and the texels read (the two around each texture coordinate,
+kept in the texture's rectangle at its offset when PPSSPP's shader clamps
+them there) are compared; apart, the target is bound as the texture itself.
+DrawEngineGLES::Flush hands the decoded vertices over while it applies the
+texture, on either transform path (PPSSPP's own texture coordinate bounds
+are not kept by every vertex decoder: ARM32's JIT skips float ones).  Every
+bloom draw of God of War qualifies: each draws x 0..256 and reads its
+texture at offset 256, clamped.
+PPSSPP_SELF_TEXTURE_COPY=1 / 0: a copy always / none where the draw reads
+none of what it draws, whatever the driver.
+
+
+--- /dev/null
++++ b/GPU/Common/CascadiaDrawVerts.h
+@@ -0,0 +1,16 @@
++#pragma once
++
++#include "Common/CommonTypes.h"
++
++// Cascadia: a through-mode draw's decoded vertices while DrawEngine applies its texture (verts
++// nullptr otherwise): positions and texture coordinates are floats in pixels at posOff / uvOff
++// (uvOff -1: none, or not in pixels).  For BindFramebufferAsColorTexture's check of a draw that
++// samples its own target.
++struct CascadiaDrawVerts {
++	const u8 *verts;
++	int stride;
++	int posOff;
++	int uvOff;
++	int count;
++};
++extern CascadiaDrawVerts g_cascadiaDrawVerts;
+--- a/GPU/Common/FramebufferManagerCommon.cpp
++++ b/GPU/Common/FramebufferManagerCommon.cpp
+@@ -20,6 +20,7 @@
+ #include <cmath>
+ 
+ #include "Common/GPU/thin3d.h"
++#include "Common/GPU/OpenGL/GLFeatures.h"
+ #include "Common/Data/Collections/TinySet.h"
+ #include "Common/Data/Convert/ColorConv.h"
+ #include "Common/LogReporting.h"
+@@ -34,6 +35,7 @@
+ #include "Core/Debugger/MemBlockInfo.h"
+ #include "GPU/Common/DrawEngineCommon.h"
+ #include "GPU/Common/FramebufferManagerCommon.h"
++#include "GPU/Common/CascadiaDrawVerts.h"
+ #include "GPU/Common/PresentationCommon.h"
+ #include "GPU/Common/TextureCacheCommon.h"
+ #include "GPU/Common/ReinterpretFramebuffer.h"
+@@ -1251,6 +1253,84 @@ void FramebufferManagerCommon::DrawPixels(VirtualFramebuffer *vfb, int dstX, int
+ 	}
+ }
+ 
++CascadiaDrawVerts g_cascadiaDrawVerts;
++
++// Cascadia: Mesa's SGX driver (the iPad 2's tile-based GPU: renderer "PowerVR SGX543MP2",
++// "Mesa" in the version) ends the render a draw that samples its own target would join, so
++// the draw reads what was drawn before it, and the GPU stores each tile's pixels only when
++// that tile is done -- so a draw that reads none of the pixels it draws needs no copy of its
++// target: it samples the target itself.  God of War's bloom: six such copies of its
++// 864 x 272 target a frame, each a render of its own.  Through mode, in the target's pixels:
++// the pixels drawn are those whose centres the vertices' box covers (a quarter pixel either
++// way for the rasterizer); the texels read, the two around each texture coordinate in the
++// box (bilinear) -- kept in the texture's rectangle when PPSSPP's shader clamps them there
++// (with its offset in the target: God of War's bloom samples right beside where it draws),
++// the rectangle and a texel around it when the shader wraps, and inside the target
++// otherwise (the sampler's own wrap is not looked at).  PPSSPP_SELF_TEXTURE_COPY=1 / 0: a
++// copy always / none needed whatever the driver.
++static bool SelfTextureNeedsNoCopy(Draw::DrawContext *draw, const VirtualFramebuffer *fb, int flags) {
++	static int enabled = -1;
++	if (enabled < 0) {
++		const char *env = getenv("PPSSPP_SELF_TEXTURE_COPY");
++		std::string renderer = draw->GetInfoString(Draw::InfoField::DRIVER);
++		std::string version = draw->GetInfoString(Draw::InfoField::APIVERSION);
++		bool sgxMesa = renderer.find("SGX") != std::string::npos && version.find("Mesa") != std::string::npos;
++		enabled = env ? atoi(env) == 0 : sgxMesa;
++		INFO_LOG(Log::G3D, "Self-texturing copies: %s", enabled ? "only where the draw reads what it draws" : "always");
++	}
++	const CascadiaDrawVerts &dv = g_cascadiaDrawVerts;
++	if (!enabled || (flags & BINDFBCOLOR_MAY_COPY_WITH_UV) != BINDFBCOLOR_MAY_COPY_WITH_UV ||
++		!dv.verts || dv.count <= 0 || dv.uvOff < 0 || !gstate.isModeThrough())
++		return false;
++	float x0 = 1e9f, y0 = 1e9f, x1 = -1e9f, y1 = -1e9f;
++	float u0 = 1e9f, v0 = 1e9f, u1 = -1e9f, v1 = -1e9f;
++	for (int i = 0; i < dv.count; i++) {
++		const float *pos = (const float *)(dv.verts + i * dv.stride + dv.posOff);
++		const float *uv = (const float *)(dv.verts + i * dv.stride + dv.uvOff);
++		x0 = std::min(x0, pos[0]);
++		x1 = std::max(x1, pos[0]);
++		y0 = std::min(y0, pos[1]);
++		y1 = std::max(y1, pos[1]);
++		u0 = std::min(u0, uv[0]);
++		u1 = std::max(u1, uv[0]);
++		v0 = std::min(v0, uv[1]);
++		v1 = std::max(v1, uv[1]);
++	}
++	if (!(x1 - x0 < 8192.0f && y1 - y0 < 8192.0f && u1 - u0 < 8192.0f && v1 - v0 < 8192.0f))
++		return false;
++	// drawn: [dx0, dx1) x [dy0, dy1); read: [sx0, sx1) x [sy0, sy1)
++	int dx0 = (int)ceilf(x0 - 0.75f) + gstate_c.curRTOffsetX, dx1 = (int)ceilf(x1 - 0.25f) + gstate_c.curRTOffsetX;
++	int dy0 = (int)ceilf(y0 - 0.75f) + gstate_c.curRTOffsetY, dy1 = (int)ceilf(y1 - 0.25f) + gstate_c.curRTOffsetY;
++	int sx0 = (int)floorf(u0 - 0.5f), sx1 = (int)floorf(u1 - 0.5f) + 2;
++	int sy0 = (int)floorf(v0 - 0.5f), sy1 = (int)floorf(v1 - 0.5f) + 2;
++	if (gstate_c.needShaderTexClamp && !(gl_extensions.bugs & BUG_PVR_SHADER_PRECISION_TERRIBLE)) {
++		int w = gstate.getTextureWidth(0), h = gstate.getTextureHeight(0);
++		if (gstate.isTexCoordClampedS()) {
++			sx0 = std::max(sx0, 0);
++			sx1 = std::min(sx1, w);
++		} else {
++			sx0 = -1;
++			sx1 = w + 1;
++		}
++		if (gstate.isTexCoordClampedT()) {
++			sy0 = std::max(sy0, 0);
++			sy1 = std::min(sy1, h);
++		} else {
++			sy0 = -1;
++			sy1 = h + 1;
++		}
++	} else if (sx0 < 0 || sy0 < 0 || sx1 > fb->bufferWidth || sy1 > fb->bufferHeight) {
++		return false;
++	}
++	if (flags & BINDFBCOLOR_APPLY_TEX_OFFSET) {
++		sx0 += gstate_c.curTextureXOffset;
++		sx1 += gstate_c.curTextureXOffset;
++		sy0 += gstate_c.curTextureYOffset;
++		sy1 += gstate_c.curTextureYOffset;
++	}
++	return dx1 <= sx0 || sx1 <= dx0 || dy1 <= sy0 || sy1 <= dy0;
++}
++
+ bool FramebufferManagerCommon::BindFramebufferAsColorTexture(int stage, VirtualFramebuffer *framebuffer, int flags, int layer) {
+ 	if (!framebuffer->fbo || !useBufferedRendering_) {
+ 		draw_->BindTexture(stage, nullptr);
+@@ -1288,6 +1368,15 @@ bool FramebufferManagerCommon::BindFramebufferAsColorTexture(int stage, VirtualF
+ 			return true;
+ 		}
+ 
++		// Cascadia: no copy where the draw samples what it does not draw into (above).  The
++		// next draw is looked at again: it may draw where this one samples.
++		if (SelfTextureNeedsNoCopy(draw_, framebuffer, flags)) {
++			draw_->BindFramebufferAsTexture(framebuffer->fbo, stage, Draw::Aspect::COLOR_BIT, layer);
++			gstate_c.Dirty(DIRTY_TEXTURE_PARAMS);
++			gpuStats.numCopiesForSelfTex++;
++			return true;
++		}
++
+ 		Draw::Framebuffer *renderCopy = GetTempFBO(TempFBO::COPY, framebuffer->renderWidth, framebuffer->renderHeight);
+ 		if (renderCopy) {
+ 			VirtualFramebuffer copyInfo = *framebuffer;
+--- a/GPU/GLES/DrawEngineGLES.cpp
++++ b/GPU/GLES/DrawEngineGLES.cpp
+@@ -27,6 +27,7 @@
+ 
+ #include "GPU/Common/SplineCommon.h"
+ #include "GPU/Common/VertexDecoderCommon.h"
++#include "GPU/Common/CascadiaDrawVerts.h"
+ #include "GPU/Common/SoftwareTransformCommon.h"
+ #include "GPU/GLES/DrawEngineGLES.h"
+ #include "GPU/GLES/ShaderManagerGLES.h"
+@@ -219,6 +220,15 @@ void DrawEngineGLES::Invalidate(InvalidationCallbackFlags flags) {
+ 	}
+ }
+ 
++// Cascadia: the draw's decoded vertices while its texture is applied (FramebufferManagerCommon.h)
++static void CascadiaSetDrawVerts(const u8 *verts, const DecVtxFormat &fmt, u32 vertType, int count) {
++	if (!gstate.isModeThrough())
++		return;
++	u32 tc = vertType & GE_VTYPE_TC_MASK;
++	bool uvPixels = (tc == GE_VTYPE_TC_16BIT || tc == GE_VTYPE_TC_FLOAT) && fmt.uvfmt == DEC_FLOAT_2;
++	g_cascadiaDrawVerts = { verts, (int)fmt.stride, (int)fmt.posoff, uvPixels ? (int)fmt.uvoff : -1, count };
++}
++
+ void DrawEngineGLES::Flush() {
+ 	if (!numDrawVerts_) {
+ 		return;
+@@ -261,17 +271,20 @@ void DrawEngineGLES::Flush() {
+ 	uint32_t indexBufferOffset = 0;
+ 
+ 	if (vshader->UseHWTransform()) {
++		const u8 *decodedVerts;
+ 		if (applySkinInDecode_ && (lastVType_ & GE_VTYPE_WEIGHT_MASK)) {
+ 			// If software skinning, we're predecoding into "decoded". So make sure we're done, then push that content.
+ 			DecodeVerts(dec_, decoded_);
+ 			uint32_t size = numDecodedVerts_ * dec_->GetDecVtxFmt().stride;
+ 			u8 *dest = (u8 *)frameData.pushVertex->Allocate(size, 4, &vertexBuffer, &vertexBufferOffset);
+ 			memcpy(dest, decoded_, size);
++			decodedVerts = decoded_;
+ 		} else {
+ 			// Figure out how much pushbuffer space we need to allocate.
+ 			int vertsToDecode = ComputeNumVertsToDecode();
+ 			u8 *dest = (u8 *)frameData.pushVertex->Allocate(vertsToDecode * dec_->GetDecVtxFmt().stride, 4, &vertexBuffer, &vertexBufferOffset);
+ 			DecodeVerts(dec_, dest);
++			decodedVerts = dest;
+ 		}
+ 
+ 		int vertexCount;
+@@ -296,7 +309,9 @@ void DrawEngineGLES::Flush() {
+ 		}
+ 
+ 		if (textureNeedsApply) {
++			CascadiaSetDrawVerts(decodedVerts, dec_->GetDecVtxFmt(), dec_->VertexType(), numDecodedVerts_);
+ 			textureCache_->ApplyTexture();
++			g_cascadiaDrawVerts = {};
+ 		}
+ 
+ 		// Need to ApplyDrawState after ApplyTexture because depal can launch a render pass and that wrecks the state.
+@@ -399,7 +414,9 @@ void DrawEngineGLES::Flush() {
+ 		if (textureNeedsApply) {
+ 			gstate_c.pixelMapped = result.pixelMapped;
+ 			gstate_c.dstSquared = false;
++			CascadiaSetDrawVerts(decoded_, swDec->GetDecVtxFmt(), swDec->VertexType(), numDecodedVerts_);
+ 			textureCache_->ApplyTexture();
++			g_cascadiaDrawVerts = {};
+ 			if (gstate_c.dstSquared) {
+ 				gstate_c.Dirty(DIRTY_BLEND_STATE);
+ 			}

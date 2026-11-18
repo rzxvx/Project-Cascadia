@@ -1,0 +1,293 @@
+#!/usr/bin/env python3
+"""cascadia-play -- a video from a web page, in mpv, the way this iPad plays it.
+
+  cascadia-play [--referer URL] [--cookies FILE] [--user-agent UA]
+                [--freeze PID,...] [--page-out PID,...] [URL | --media URL]...
+
+Tries each address in turn until one plays: pages (URL: a page, an embedded
+player's page) and the video's own addresses (--media URL: its file, the
+HLS/DASH playlists its page fetched), in the order cascadia-web gives -- but
+a page yt-dlp has no extractor of its own for goes after the video's own
+addresses, as its generic extractor would find no better stream there, and
+more slowly (the warm yt-dlp, cascadia-ytdl, says which; without it the
+order stays).  Each goes through yt-dlp first, which knows ~1750 sites, reads
+HLS and DASH playlists, and picks the stream this iPad decodes in real time
+(ytdl-format in /etc/mpv/mpv.conf) -- the warm one when the browser has it
+running.  A video's own address is for yt-dlp's generic extractor alone,
+and a plain file (.mp4, .webm...) goes to mpv as it is: one stream, nothing
+for yt-dlp to choose, shown in ~2 s where a cold yt-dlp took 14.  (Only a
+--media address is taken by its name: a page's can end in .webm too, as
+Wikimedia Commons' do.)
+
+--referer     the page the video sat on: some sites serve their streams only
+              to a request that says where it comes from
+--cookies     the browser's cookies (WebKit's text file): a site that plays
+              only to a signed-in visitor plays here once you are signed in
+              there.  yt-dlp and mpv get a copy in the Netscape format they
+              read (WebKit's libsoup writes an eighth column, SameSite, and no
+              header, and yt-dlp refuses such a file outright); a copy, too,
+              because yt-dlp writes back into the file it is given
+--user-agent  the browser's, for an address mpv opens itself (yt-dlp's own
+              requests keep yt-dlp's): what the page's player was sent
+--freeze      processes stopped (SIGSTOP) from the start and let go (SIGCONT)
+              at the end: the browser's page processes, whose scripts would
+              take the cores from yt-dlp, mpv's start and the decoder (a page
+              cannot be used behind the player anyway).  Done here and not in
+              the browser, so that they are let go even if the browser dies in
+              the meantime.  Their memory goes out to swap at once, too
+--page-out    processes whose memory goes out to swap once mpv plays: the warm
+              yt-dlp and the browser, idle until the video ends.  On a heavy
+              page (PeerTube's: 220 MB in its page process) mpv otherwise
+              waited for memory as it played, and dropped 184 frames in 116 s.
+              To zram (lz4), from which they come back in a moment; their
+              anonymous memory only, not the libraries they run
+
+While it runs, it holds off zram's writeback to the NAND (cascadia-zram,
+/run/cascadia-zram/hold.PID): those writes go through the NAND server, whose
+CPU the decoder needs, and the frozen pages are just what it would write.
+
+On stdout, one line each, for cascadia-web:
+  STATUS opening URL
+  STATUS playing TITLE
+  STATUS failed WHY
+Run by hand, a failure also shows a dialog.  SIGTERM stops it and its mpv.
+"""
+import os, signal, subprocess, sys, tempfile, threading, urllib.parse
+
+FIRST_FRAME = 90    # s an attempt may take to start: yt-dlp on YouTube needs ~30 here
+YTDL = os.path.join(os.path.dirname(os.path.realpath(__file__)), "cascadia-ytdl")
+FILES = (".mp4", ".m4v", ".webm", ".mov", ".mkv", ".ogv", ".ogg", ".avi", ".flv", ".mp3", ".m4a", ".opus")
+current = None
+frozen = []
+user_agent = None
+to_freeze = []
+to_page_out = []
+media_urls = set()      # the video's own addresses (--media)
+
+
+def say(*a):
+    print("STATUS", *a, flush=True)
+
+
+def freeze(pids):
+    for pid in pids:
+        try:
+            os.kill(pid, signal.SIGSTOP)
+            frozen.append(pid)
+        except OSError:
+            pass
+
+
+def page_out(pids):
+    """the processes' anonymous memory out to swap now (process_madvise,
+    MADV_PAGEOUT), rather than piece by piece while mpv waits for room"""
+    import ctypes
+
+    class iovec(ctypes.Structure):
+        _fields_ = [("iov_base", ctypes.c_void_p), ("iov_len", ctypes.c_size_t)]
+    libc = ctypes.CDLL(None, use_errno=True)
+    for pid in pids:
+        fd = libc.syscall(434, pid, 0)                  # pidfd_open
+        if fd < 0:
+            continue
+        try:
+            with open("/proc/%d/maps" % pid) as f:
+                for line in f:
+                    m = line.split()
+                    # private, writable, no file (inode 0): heap, stacks, JIT
+                    if len(m) >= 5 and m[4] == "0" and m[1].startswith("rw") and m[1][3] == "p":
+                        a, b = (int(x, 16) for x in m[0].split("-"))
+                        v = iovec(a, b - a)
+                        libc.syscall(440, fd, ctypes.byref(v), 1, 21, 0)    # process_madvise, MADV_PAGEOUT
+        except OSError:
+            pass
+        finally:
+            os.close(fd)
+
+
+HOLD = "/run/cascadia-zram/hold.%d" % os.getpid()
+
+
+def hold(on):
+    try:
+        if on:
+            os.makedirs(os.path.dirname(HOLD), exist_ok=True)
+            open(HOLD, "w").close()
+        else:
+            os.unlink(HOLD)
+    except OSError:
+        pass
+
+
+def thaw():
+    hold(False)
+    while frozen:
+        try:
+            os.kill(frozen.pop(), signal.SIGCONT)
+        except OSError:
+            pass
+
+
+def stop(*_):
+    if current and current.poll() is None:
+        current.terminate()
+        try:
+            current.wait(5)
+        except subprocess.TimeoutExpired:
+            current.kill()
+    thaw()
+    sys.exit(143)
+
+
+def main():
+    global user_agent, to_freeze, to_page_out
+    signal.signal(signal.SIGTERM, stop)
+    signal.signal(signal.SIGHUP, stop)
+    signal.signal(signal.SIGINT, stop)
+    args, urls, referer, cookies = sys.argv[1:], [], None, None
+    while args:
+        k = args.pop(0)
+        if k == "--referer" and args:
+            referer = args.pop(0)
+        elif k == "--cookies" and args:
+            cookies = args.pop(0)
+        elif k == "--user-agent" and args:
+            user_agent = args.pop(0)
+        elif k == "--freeze" and args:
+            to_freeze = [int(p) for p in args.pop(0).split(",") if p.strip().isdigit()]
+        elif k == "--page-out" and args:
+            to_page_out = [int(p) for p in args.pop(0).split(",") if p.strip().isdigit()]
+        elif k == "--media" and args:
+            k = args.pop(0)
+            if k.startswith(("http://", "https://")) and k not in urls:
+                urls.append(k)
+                media_urls.add(k)
+        elif k.startswith(("http://", "https://")):
+            if k not in urls:
+                urls.append(k)
+        elif k.startswith("-"):
+            sys.exit(__doc__.split("\n\n")[1])
+        # anything else (blob:, data:, empty): not an address mpv can open
+    if not urls:
+        say("failed", "this video has no address of its own to give the player")
+        return 1
+    jar = None
+    if cookies and os.path.isfile(cookies):
+        fd, jar = tempfile.mkstemp(prefix="cascadia-cookies-", suffix=".txt")
+        with os.fdopen(fd, "w") as out, open(cookies, errors="replace") as f:
+            out.write("# Netscape HTTP Cookie File\n")
+            for line in f:
+                # HttpOnly cookies as plain ones: mpv skips '#' lines
+                line = line.rstrip("\n").removeprefix("#HttpOnly_")
+                fields = line.split("\t")
+                if not line.startswith("#") and len(fields) >= 7:
+                    out.write("\t".join(fields[:7]) + "\n")
+    urls = reorder(urls)
+    why = "no reason given"
+    hold(True)
+    freeze(to_freeze)
+    threading.Thread(target=page_out, args=(frozen[:],), daemon=True).start()
+    try:
+        for u in urls:
+            say("opening", u)
+            ok, w = play(u, referer or urls[0], jar)
+            if ok:
+                return 0
+            why = w or why
+    finally:
+        thaw()
+        if jar:
+            try:
+                os.unlink(jar)
+            except OSError:
+                pass
+    say("failed", why)
+    if os.environ.get("DISPLAY") and sys.stdout.isatty():
+        subprocess.call(["yad", "--error", "--title=Video", "--center", "--width=520", "--button=OK:0",
+                         "--text=This video could not be played:\n" + why])
+    return 1
+
+
+def media(url):
+    return url in media_urls
+
+
+def reorder(urls):
+    """pages yt-dlp knows first, then the media's own addresses, then the
+    pages only its generic extractor would read"""
+    pages = [u for u in urls if not media(u)]
+    if not pages or len(pages) == len(urls):
+        return urls
+    try:
+        r = subprocess.run([YTDL, "--cascadia-known"] + pages, stdin=subprocess.DEVNULL,
+                           capture_output=True, text=True, timeout=15)
+        flags = r.stdout.split()
+        if r.returncode != 0 or len(flags) != len(pages):
+            return urls
+    except (OSError, subprocess.SubprocessError):
+        return urls
+    known = {u for u, f in zip(pages, flags) if f == "1"}
+    return ([u for u in urls if u in known] + [u for u in urls if media(u)] +
+            [u for u in urls if not media(u) and u not in known])
+
+
+def play(url, referer, jar):
+    """mpv on URL: (True, None) once it has played, else (False, why)"""
+    global current
+    cmd = ["mpv", "--force-window=yes", "--term-playing-msg=CASCADIA-PLAYING ${media-title}",
+           "--referrer=" + referer]
+    path = urllib.parse.urlsplit(url).path.lower()
+    if media(url) and path.endswith(FILES):
+        cmd += ["--ytdl=no"]        # one file, one stream: nothing for yt-dlp to choose
+    else:
+        cmd += ["--script-opts-append=ytdl_hook-try_ytdl_first=yes",
+                "--script-opts-append=ytdl_hook-ytdl_path=" + YTDL,
+                "--ytdl-raw-options-append=referer=" + referer]
+        if media(url):
+            # a playlist's variants are for yt-dlp to choose from, but no
+            # extractor but the generic one is for a video's own address: the
+            # others' patterns are not tried (~5 s when yt-dlp is not warm)
+            cmd += ["--ytdl-raw-options-append=use-extractors=generic"]
+        if jar:
+            cmd += ["--ytdl-raw-options-append=cookies=" + jar]
+    if jar:
+        cmd += ["--cookies", "--cookies-file=" + jar]
+    if user_agent:
+        cmd += ["--user-agent=" + user_agent]
+    if os.environ.get("CASCADIA_PLAY_LOG"):     # mpv's own log, with times, for a slow start
+        cmd += ["--log-file=" + os.environ["CASCADIA_PLAY_LOG"]]
+    cmd += ["--", url]
+    current = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                               stderr=subprocess.STDOUT, text=True, errors="replace")
+    state = {"started": False, "late": False}
+
+    def too_late(p=current):
+        if not state["started"] and p.poll() is None:
+            state["late"] = True
+            p.terminate()
+    timer = threading.Timer(FIRST_FRAME, too_late)
+    timer.daemon = True
+    timer.start()
+    why = None
+    for line in current.stdout:
+        line = line.strip()
+        if line.startswith("CASCADIA-PLAYING"):
+            if not state["started"] and to_page_out:
+                threading.Thread(target=page_out, args=(to_page_out,), daemon=True).start()
+            state["started"] = True
+            timer.cancel()
+            say("playing", line[len("CASCADIA-PLAYING"):].strip())
+        elif not state["started"]:
+            if "ERROR:" in line:
+                why = line.split("ERROR:", 1)[1].strip()
+            elif why is None and ("Failed to" in line or "failed" in line.lower()):
+                why = line
+    current.wait()
+    timer.cancel()
+    if state["late"]:
+        why = "nothing played after %d s" % FIRST_FRAME
+    return state["started"], why
+
+
+if __name__ == "__main__":
+    sys.exit(main())

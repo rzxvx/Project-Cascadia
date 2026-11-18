@@ -1,0 +1,142 @@
+Cascadia: a game streamed over HTTP ran the iPad 2 out of memory (God of
+War: Ghost of Sparta, OOM-killed minutes into play).  PPSSPP keeps up to
+256 MB of a streamed disc in RAM (CachingFileLoader: 4096 blocks of 64 KB)
+and drops nothing before that, while the disk cache under it turns itself
+off where there is no room for it: with ~470 MB of RAM and no swap, every
+MB streamed stayed.  Now:
+- the blocks kept: a sixteenth of the RAM at most (~29 MB there; 256 MB as
+  before from 4 GB on), or PPSSPP_DISC_CACHE_MB's;
+- a read-ahead makes its room as a read does, the least recently used
+  blocks going (upstream: no read-ahead into a full cache -- with a small
+  one, full all the time, read-ahead would stop for good), and the blocks
+  it reads count as used just now (upstream: as never used, the first to
+  go, before they are read);
+- the blocks are counted as they go in (upstream added all of a read's,
+  those another thread had read meanwhile too: the count crept past the
+  blocks there were, and an emptied cache's eviction loop never ended).
+
+--- a/Core/FileLoaders/CachingFileLoader.cpp
++++ b/Core/FileLoaders/CachingFileLoader.cpp
+@@ -16,16 +16,39 @@
+ // https://github.com/hrydgard/ppsspp and http://www.ppsspp.org/.
+ 
+ #include <algorithm>
++#include <cstdlib>
+ #include <cstring>
+ #include <thread>
++#if !defined(_WIN32)
++#include <unistd.h>
++#endif
+ 
+ #include "Common/Thread/ThreadUtil.h"
+ #include "Common/TimeUtil.h"
+ #include "Core/FileLoaders/CachingFileLoader.h"
+ 
++// Cascadia: the blocks a streamed game's cache keeps.  Upstream's 256 MB ran God of War
++// (over HTTP: the disk cache turns itself off without the space) out of memory on the iPad 2
++// -- ~470 MB of RAM, no swap, the cache filling as the cutscenes stream -- so a sixteenth of
++// the RAM at most (~29 MB there; 256 MB as before from 4 GB on); PPSSPP_DISC_CACHE_MB: so
++// many MB.  Never under 32 blocks: a read's 16 and a read-ahead's 4 fit.
++static size_t CascadiaMaxBlocksCached(size_t blockSize) {
++	const size_t upstream = 4096, least = 32;
++	const char *env = getenv("PPSSPP_DISC_CACHE_MB");
++
++	if (env && atoi(env) > 0)
++		return std::max<size_t>((size_t)atoi(env) * 1048576 / blockSize, least);
++#if !defined(_WIN32)
++	const long pages = sysconf(_SC_PHYS_PAGES), pageSize = sysconf(_SC_PAGESIZE);
++	if (pages > 0 && pageSize > 0)
++		return std::min(upstream, std::max<size_t>((size_t)((unsigned long long)pages * pageSize / 16 / blockSize), least));
++#endif
++	return upstream;
++}
++
+ // Takes ownership of backend.
+ CachingFileLoader::CachingFileLoader(FileLoader *backend)
+-	: ProxiedFileLoader(backend) {
++	: ProxiedFileLoader(backend), maxBlocksCached_(CascadiaMaxBlocksCached(BLOCK_SIZE)) {
+ }
+ 
+ void CachingFileLoader::Prepare() {
+@@ -180,7 +203,9 @@ void CachingFileLoader::SaveIntoCache(s64 pos, size_t bytes, Flags flags, bool r
+ 		// While blocksMutex_ was unlocked, another thread may have read.
+ 		// If so, free the one we just read.
+ 		if (blocks_.find(cacheStartPos) == blocks_.end()) {
+-			blocks_[cacheStartPos] = BlockInfo{buf};
++			// (Cascadia: read ahead, as used just now -- not the first to go, before it is read)
++			blocks_[cacheStartPos] = BlockInfo{buf, readingAhead ? generation_ : 0};
++			++cacheSize_;
+ 		} else {
+ 			delete [] buf;
+ 		}
+@@ -198,24 +223,28 @@ void CachingFileLoader::SaveIntoCache(s64 pos, size_t bytes, Flags flags, bool r
+ 			}
+ 			u8 *buf = new u8[BLOCK_SIZE];
+ 			memcpy(buf, wholeRead + (i << BLOCK_SHIFT), BLOCK_SIZE);
+-			blocks_[cacheStartPos + i] = BlockInfo{buf};
++			blocks_[cacheStartPos + i] = BlockInfo{buf, readingAhead ? generation_ : 0};
++			++cacheSize_;
+ 		}
+ 		delete[] wholeRead;
+ 	}
+ 
+-	cacheSize_ += blocksToRead;
++	// (Cascadia: the blocks kept counted as they go in -- upstream added blocksToRead, the ones
++	// another thread had read meanwhile too, and the count crept up past the blocks there were:
++	// a cache that small was emptied, then MakeCacheSpaceFor's loop never ended)
+ 	++generation_;
+ }
+ 
+ bool CachingFileLoader::MakeCacheSpaceFor(size_t blocks, bool readingAhead) {
+-	size_t goal = MAX_BLOCKS_CACHED - blocks;
++	size_t goal = maxBlocksCached_ - blocks;
++	(void)readingAhead;
+ 
+-	if (readingAhead && cacheSize_ > goal) {
+-		return false;
+-	}
++	// Cascadia: a read-ahead makes its room as a read does, the least recently used blocks
++	// going -- a cache of a sixteenth of the RAM is full all the time, and read-ahead would
++	// stop for good (upstream: no read-ahead into a full cache)
+ 
+ 	std::lock_guard<std::recursive_mutex> guard(blocksMutex_);
+-	while (cacheSize_ > goal) {
++	while (cacheSize_ > goal && !blocks_.empty()) {
+ 		u64 minGeneration = generation_;
+ 
+ 		// We increment the iterator inside because we delete things inside.
+@@ -229,7 +258,7 @@ bool CachingFileLoader::MakeCacheSpaceFor(size_t blocks, bool readingAhead) {
+ 			// 0 means it was never used yet or was the first read (e.g. block descriptor.)
+ 			if (it->second.generation == oldestGeneration_ || it->second.generation == 0) {
+ 				s64 pos = it->first;
+-				delete it->second.ptr;
++				delete [] it->second.ptr;
+ 				blocks_.erase(it);
+ 				--cacheSize_;
+ 
+@@ -258,10 +287,6 @@ void CachingFileLoader::StartReadAhead(s64 pos) {
+ 		// Already going.
+ 		return;
+ 	}
+-	if (cacheSize_ + BLOCK_READAHEAD > MAX_BLOCKS_CACHED) {
+-		// Not enough space to readahead.
+-		return;
+-	}
+ 
+ 	aheadThreadRunning_ = true;
+ 	if (aheadThread_.joinable())
+--- a/Core/FileLoaders/CachingFileLoader.h
++++ b/Core/FileLoaders/CachingFileLoader.h
+@@ -53,9 +53,11 @@ private:
+ 		BLOCK_SIZE = 65536,
+ 		BLOCK_SHIFT = 16,
+ 		MAX_BLOCKS_PER_READ = 16,
+-		MAX_BLOCKS_CACHED = 4096, // 256 MB
+ 		BLOCK_READAHEAD = 4,
+ 	};
++	// Cascadia: the blocks kept -- 256 MB upstream, a sixteenth of the RAM at most here
++	// (CachingFileLoader.cpp)
++	const size_t maxBlocksCached_;
+ 
+ 	s64 filesize_ = 0;
+ 	int exists_ = -1;

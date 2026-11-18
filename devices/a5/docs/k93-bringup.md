@@ -51,12 +51,16 @@ own (below):
 | Wi-Fi (BCM4329 on SDIO) | works: brcmfmac loads iOS's own firmware at boot; `wifi connect SSID PASSWORD` joins (WPA2-PSK tested, 2-3.5 MB/s from Alpine's CDN), `wifi auto on` joins at every boot |
 | booting without a computer | works: `tools/k93-pcless.sh install`, then `linux` as root on iOS -- Linux from the NAND ~30 s after the iPad wakes: the screen goes dark, and a press of Home wakes it (below) |
 | Bluetooth (BCM4329C0 on UART3) | works: `bluetooth on` loads iOS's own patchram (BlueTool's `BCM43291A0 ... 2ND`, kept as `brcm/BCM4329C0.hcd`; `patches/tree/0006` tells btbcm the chip and its placeholder address 43:29:1A:0A:00:00, so the tree's 02:93:00:00:00:04 is used); classic only, no LE; pairing not yet tried |
-| GPU (SGX543MP2) | works: the microkernel boots, the 2D engine draws (sgx2d's `sprites`: 200 sprites at 206 fps), and the mini's Mesa driver gives OpenGL ES 2.0 / GL 2.1 in the desktop root on the NAND -- Xorg's glamor |
+| GPU (SGX543MP2) | works: the microkernel boots, the 2D engine draws (sgx2d's `sprites`: 200 sprites at 206 fps), and the mini's Mesa driver gives OpenGL ES 2.0 / GL 2.1 in the desktop root on the NAND -- Xorg's glamor, mpv's video |
 | NAND (raw, under VSVFL and YAFTL) | on raw NAND (iPad2,1 ships with PPN flash too, which the K93 NAND tools tell apart first and leave alone: below): iOS's System served off the flash and mounted on `/mnt/ios` (`tools/nand/k93iosnand.c`, below): the map in ~5 s, 12 MB/s on both buses, byte-exact against known files; read-only, and read-write on demand (`cascadia-system rw`, 2026-11-16) when iOS left its journal empty.  Data is encrypted by iOS, file by file, and never written.  **Written**: the Linux volume, 333 MB on the 224 blocks of iOS's reserve Linux may own; and, through iOS's own FTL (YAFTL), LwVM partitions of Linux's own -- Linux 8 GB and Swap 1 GB on this iPad, iOS's 20 GB Data shrunk for them -- which iOS's next boot adopts (2026-11-15/16, below) |
 | persistent storage | works: the root is ext4 on the 8 GB Linux partition (2026-11-16), written through iOS's FTL at ~1.9 MB/s, read at up to 12 MB/s; before it, the root's changes on the Linux volume (2.7 MB/s writes, ~5 MB/s reads).  Both survive restarts and iOS sessions (below) |
 | swap | works (2026-11-16): zram, 1 GB of compressed RAM, with the Swap partition behind it for pages left idle; 400 MB past the RAM in 22 s, cold pages out to the NAND and back, every page checked.  A full memory ends in an OOM kill, not a hang (below) |
 | a root bigger than RAM | works: the Linux partition (`cascadia-install-partition` copies the running root into it once); without one, an image on iOS's System partition (`tools/k93-root.sh install`), served off the NAND at boot and mounted under an overlay whose changes are kept on the Linux volume -- from the kernel to stage 2 in ~15 s; ~300 MB of RAM free with the desktop up (below) |
 | audio (CS42L63 on I2S0) | works: ALSA card `iPad2`, I2S0 + CDMA both ways at 44.1/48 kHz, the codec run with iOS's own sequences.  The speaker; **the headphones**, playback moving there by itself when a plug goes in and back when it comes out; **the built-in microphone** and **a headset's microphone**: when a plug goes in, the driver measures its mic contact as iOS does, sets the TS3A8235 to the plug's wiring (CTIA or OMTP) and moves capture to a mic it finds, biased while it records -- no clicks going in, recording or coming out ("Headphone Jack", "Headset Mic Jack").  Stereo, iOS's own input-gain tables, "Capture Volume" 0-128 = -96 to +32 dB.  All confirmed by ear and by recording (2026-11-10); a headset's button and Apple's remote not yet ([research/k93-audio.md](research/k93-audio.md) sections 5-6) |
+| desktop | works: XFCE on the GPU (Xorg modesetting with glamor on the SGX543MP2, OpenGL 2.1), from the root on the NAND, started by itself at boot; touch, the on-screen keyboard (panel button), autorotate and its lock |
+| YouTube | works: the desktop's YouTube launcher (yad search, mpv, yt-dlp): H.264 480p through the GPU with sound, ~1 frame in 700 dropped; ~30 s from Play to the picture after a boot, ~15 s after that (below) |
+| videos from any site | works (2026-11-17): the desktop's Web browser (WebKitGTK, for touch) hands a video tapped on any page to mpv, with the stream yt-dlp finds that the A5 decodes in real time; tested on PeerTube, archive.org, Wikimedia Commons and plain pages; the page stays behind the player (below) |
+| games | work (2026-11-11): Game Boy, Game Boy Color and Game Boy Advance by touch -- the desktop's Games launcher (the games in `~/Games`) starts RetroArch full screen with on-screen controls drawn for this screen, several held at once (our RetroArch build: stock RetroArch reads no touch screen); mGBA and Gambatte at full speed, RetroArch's video on the A5's second core.  PSP games in PPSSPP (our build, four of its bugs fixed, its push buffers mapped, copies it does not need here left out) with its own touch controls: the PSPSDK's samples at full speed, a demanding 3D game (God of War: Ghost of Sparta) in its menus at ~64% of its speed (~38 frames/s; 3% at first) -- PPSSPP's emulator thread's frame now, a core of the A5 busy (research/p105-mesa.md M46-M50) -- and in play at ~13-20 frames/s, for ~27 minutes before the RAM runs out (~10 before PPSSPP's cache of a streamed disc was capped; what grows after is PPSSPP's own memory and the GPU's: the driver keeps two GPU copies of each texture; zram, there since 2026-11-16, not yet tried with it).  Games are copied in with `scp` or a file manager's `sftp://`; PSP games, too big for the Linux volume but not for the Linux partition, also stream from a computer (`tools/games/psp-share.py`) |
 | clock | set by NTP once there is a network (stage 2); the build machine's time zone |
 | cameras (the A5's H4 ISP: sensor 0x9726 rear, 0x7739 front) | work (2026-11-10): V4L2 devices `/dev/video0` (the rear: 1280x720, 1280x800, 640x360) and `/dev/video1` (the front: 640x480), YUYV at 30 fps, both pictures upright on the landscape desktop (the front one unmirrored, as V4L2 has it).  The ISP's own CPU runs iOS 8.4.1's firmware behind its IOMMU (`drivers/media/platform/apple/apple-h4isp.c`): booted when a camera starts streaming, powered down when it stops; one camera at a time.  In low light the firmware's exposure takes the rate down to 15 fps, as iOS lets it; `exposure_auto_priority` 0 holds the mode's rate.  Picture controls (2026-11-11): exposure bias (-2 to +2 EV), brightness, contrast, saturation, hue, sharpness (by default the firmware's own, which follows the light) and the mains frequency (50/60 Hz or the firmware's own detection), kept across streams and changed live.  `mpv av://v4l2:/dev/video1` shows it on the desktop; the firmware and the set-files come out of the IPSW with `./cascadia k93 firmware` ([research/k93-camera.md](research/k93-camera.md)) |
 | USB host | not yet: waits for a 30-pin USB adapter |
@@ -336,7 +340,8 @@ are kept on the Linux volume (below):
 
     tools/k93-root.sh tree       the desktop root, built here (tools/desktop/
                                  make-root.sh: XFCE with touch, Mesa on the GPU,
-                                 the GPU's pack, screenpad), no SuperTux
+                                 the GPU's pack, screenpad, YouTube, games, the
+                                 web browser), no SuperTux
     tools/k93-root.sh install    squashfs (zstd 19), copied to iOS as
                                  /cascadia/root.sqfs, checked, synced twice
     tools/k93-root.sh remove     back to the RAM root
@@ -397,6 +402,270 @@ the codec's registers are iOS's playing state (06=1e 07=67 08=7c 11=09 1d=19
 switch routes pin group 0 (0x44, MCK 1), GPIO 39 is high (low again after).
 And it is heard: every tone played through the driver came out of the
 speaker.
+
+### The desktop and YouTube
+
+`tools/k93-root.sh tree` builds the mini's desktop root (XFCE with touch,
+the patched X server and xfwm4, Mesa on the GPU, the GPU's pack, screenpad)
+plus a `youtube` step, without SuperTux: 758 MB of files, a 262 MB image.
+Stage 2 starts the desktop by itself on it (`/etc/cascadia/desktop-at-boot`,
+which the image carries): X on the GPU -- "glamor X acceleration enabled on
+PowerVR SGX543MP2" -- XFCE in ~40 s from `linux` on iOS.  The home is in
+RAM, so every boot is a first login: the two first-login scripts that put
+the keyboard and rotation-lock buttons on the panel restarted it with
+`xfce4-panel -r`, which put up "Failed to restart the panel" at every boot;
+they now ask over D-Bus, once the panel answers, without waiting.
+
+YouTube (`tools/desktop/youtube-setup.sh`): a search box and a list (yad,
+touch-sized), then mpv, with yt-dlp finding the streams.  What it took on
+this CPU, measured:
+
+- **The picture.**  480p H.264 decodes at 2.5x real time (FFmpeg's NEON
+  code, chosen at run time even in Alpine's armhf build), but mpv's GPU
+  output managed 30 s of video in 150 s: its default float framebuffers
+  are copied by the SGX's Mesa on the CPU at every frame.  `fbo-format=rgba8`
+  (and the fast profile) in /etc/mpv/mpv.conf: real time, 1 frame in 700
+  dropped.  Software conversion is no way round it (80 ms a frame: FFmpeg's
+  NEON YUV-to-RGB wants widths in 16s and BGRA).
+- **The sound**: AAC stereo (the best m4a is often 5.1).
+- **The wait.**  yt-dlp has YouTube's JavaScript challenge solved by Node:
+  20 s on the A9s for each video, most of it parsing the 2.5 MB player.
+  yt-dlp can keep the parse but ships with that off (big files, never
+  rotated); the `cascadia_ejs_cache` plugin turns it on -- the cache is in
+  the RAM home -- so the first video of a boot takes ~30 s to start and the
+  next ones ~15.  The app clients that skip the challenge get no video
+  without a "PO token" now (android_vr: HTTP 403; ios: images only).
+
+The clock: no clock chip Linux reads, so stage 2 asks NTP once a route out
+exists (~40 s into a boot with Wi-Fi), and the image takes the build
+machine's time zone (`/etc/localtime`, exported as `TZ` for GLib).
+
+### Videos from any site: a browser that hands them to mpv (2026-11-17)
+
+**Web** in the menu and on the desktop (`tools/desktop/web-setup.sh`, after
+`youtube-setup.sh`; the files in `tools/desktop/web/`): a WebKitGTK browser
+made for the touch screen, in which a video started on any site plays in
+mpv as YouTube's do -- a stream the A9s decode in real time, drawn by the
+GPU -- with the page where it was behind the player.  Firefox and Chromium
+have no armhf build in Alpine; WebKitGTK does, and with the pieces below
+it fits next to the player in the iPad's RAM.
+
+- **The hand-over.**  `hook.js`, in every frame before the page's scripts:
+  the moment a video starts it is paused, and what the frame knows of it
+  goes to the browser -- the frame's address (an embedded player's page is
+  the video's page), the video's own address when it has one (not the
+  `blob:` of a Media Source player), the HLS/DASH playlists the frame
+  fetched.  Only a tap's: transient user activation, or a tap on something
+  player-like in the last 90 s (Wikimedia Commons loads its player 52 s
+  after the poster is tapped here), and the browser checks that a touch
+  came.  Autoplays and muted previews stay stopped.  A video WebKit cannot
+  play at all is handed over by the `play()` or the load error a tap causes.
+- **The player.**  `cascadia-play`: mpv on those addresses in turn, each
+  through yt-dlp (the stream choice below) with the browser's cookies -- a
+  site that plays only to a signed-in visitor plays once you have signed in
+  there -- and the page as referer.  A page yt-dlp has no extractor of its
+  own for goes after the video's own addresses; a plain file goes to mpv
+  directly.  While mpv starts and plays, the page processes are stopped
+  (SIGSTOP) and their memory pushed to zram (`process_madvise`,
+  MADV_PAGEOUT), the idle browser's and yt-dlp's once it plays, and zram's
+  writeback to the NAND is held off (`cascadia-zram`, below): a heavy page
+  frozen behind a 20 s clip had the NAND server writing it back at 35-135%
+  of a core, and mpv dropped 252 frames of 600; held, 21-38.
+- **yt-dlp kept warm** (`cascadia-ytdl`).  yt-dlp needed 13.7 s to say that
+  a plain MP4 file is one: ~2 s of imports, then each of its ~1750
+  extractors' URL patterns compiled until one matched -- the generic one
+  comes last, YouTube's nearly.  The browser keeps one with all of that
+  done (and the extractors' embed patterns, for pages it reads generically)
+  and forks it for each request, which mpv runs in yt-dlp's place: 2.6 s for
+  a page no extractor knows, 2.2 s for an HLS playlist.  53 MB, at a low
+  priority while it warms up (~11 s).
+- **The stream.**  `ytdl-format` in `/etc/mpv/mpv.conf` (youtube-setup.sh
+  has the decoding speeds it is made from): H.264 up to 480p and 30 fps,
+  then VP9/VP8/AV1 there, then 360p at any frame rate, AV1/HEVC at 360p30,
+  whatever is left up to 480p30, 240p, the smallest -- "480p" as the short
+  side, so a phone's portrait video gets its 480x854.  A frame rate a site
+  does not give counts as over 30 (Commons' 60 fps films; HLS says when it
+  is).  Measured with yt-dlp: PeerTube 480p H.264, archive.org 360p,
+  Commons' 60 fps film 240p VP9, HLS test streams 480p and 432p, YouTube's
+  formats 480p H.264 with AAC as before.  `hls-bitrate=1600000`: a playlist
+  mpv opens itself got the 1080p variant otherwise.  `vo=gpu` with EGL on X
+  named: mpv tried Vulkan twice and libplacebo first, 1.3 s of every start.
+  Over 30 frames a second, every other frame goes, evenly (an mpv profile):
+  the screen shows ~30, and mpv left to drop what it could not show dropped
+  unevenly and more -- 360p60 H.264 showed 292 frames of 1200; halved, 562
+  of 600.
+- **JavaScript with a JIT.**  Alpine's armhf WebKit is built for ARMv6,
+  which has no JIT: JavaScriptCore's C interpreter runs every page.  The
+  ARMv7 build of the very same version (2.48.7) runs on the same libraries
+  -- one musl, which takes `libc.musl-armv7.so.1` for itself, one C++ ABI --
+  and JavaScript in a page runs 2.3 times as fast (a benchmark of objects,
+  JSON, maps, regexps and DOM: 1.85 s against 4.3 s).  web-setup.sh fetches
+  it from the same mirror, checks it against Alpine's ARMv7 key (alpine-keys
+  carries every architecture's) and runs JavaScript through it before it
+  keeps its two libraries in `/usr/lib/cascadia-web`; the launcher uses
+  them only while the system's WebKit is still that version.
+- **Pages drawn on the CPU**: a scripted scroll at 18.6-18.9 frames a second
+  with no frame over 82 ms, against 17.3-18.2 and stalls up to 427 ms
+  through the GPU's compositing, which also took ~50 MB more RAM.  Memory
+  pressure settings make WebKit give back caches from 106 MB.
+- **A phone's user agent**, Chrome's on Android: sites send their lighter
+  pages.  Not Safari's or an iPhone's: WebKitGTK plays no HLS by its
+  address, and players that see Safari give it just that.  Ads are blocked
+  at the network: Peter Lowe's list (3565 servers) as a WebKit content
+  blocker, fetched by web-setup.sh.
+- **A WebKit crash, avoided**: WebKitGTK 2.48 with GStreamer 1.28 crashes the
+  page process as its pipeline makes the source for a video from a Blob's
+  address (`URL.createObjectURL` of a Blob, not of a MediaSource) -- in
+  GObject, under urisourcebin.  archive.org's mobile page does it to test
+  autoplay, and the page died with either WebKit build.  hook.js gives such
+  a video no source: as a format WebKit does not play.
+
+Measured on the iPad, on a phone's Wi-Fi hotspot where each HTTPS request
+took 1.4-2.4 s: a local page's video plays 11 s after the tap; archive.org's
+Big Buck Bunny 16 s; PeerTube's (framatube.org, 480p H.264 at 24 fps)
+27 s -- yt-dlp's calls to PeerTube's API and the HLS start, network-bound --
+with 40 frames dropped in 111 s, all in the first minute.  The PeerTube page
+itself loads its player in ~60 s and takes ~220 MB in its page process; the
+desktop ~150 MB, the browser ~80 MB, mpv 60-85 MB.  Vimeo now plays to
+yt-dlp only signed in ("The web client only works when logged-in", embeds
+HTTP 401): sign in to Vimeo in the browser first.  DRM video (Netflix and
+the like) does not play.
+
+### Games: the Game Boy, the GBA and the PSP by touch
+
+`tools/desktop/games-setup.sh` (the root's `games` step): RetroArch with
+Gambatte (Game Boy, Game Boy Color) and mGBA (Game Boy Advance) from Alpine,
+our own touch controls, PPSSPP for the PSP (below), and a launcher -- a
+touch-sized list of the games in `~/Games` (yad) that starts one full screen
+and holds the screen in its landscape while it runs.  What it took,
+measured:
+
+- **The touch screen.**  Alpine's RetroArch (1.22.2) saw no touch screen at
+  all: its udev input driver opens touch screens only when built with
+  `UDEV_TOUCH_SUPPORT`, which nothing defines; built with it, a touch
+  screen's pointer queries returned nothing (a `break` before the switch)
+  and there was one pointer, not one a finger, so an overlay's controls
+  could not be held together.  `tools/desktop/retroarch/build.sh` builds
+  Alpine's package with the define and `retroarch-udev-multitouch.patch`
+  (each finger down is a pointer of its own), for the A5 (ARMv7, NEON) and
+  without Qt (30 MB less) -- 35 minutes under emulation.  Checked with
+  touches written into the touch screen's event device (protocol B, as
+  the panel reports them) and Tonc's `key_demo`, which shows the keys a
+  game sees: D-pad + A, and L + R + START, held together.
+- **Speed.**  Unthrottled on the GPU (the gl driver, the SGX's Mesa):
+  Gambatte 68 frames/s, mGBA 64 -- too close to the GBA's 59.7.  With
+  RetroArch's video on a thread of its own (the A5's second core): mGBA
+  98, gpSP 247, Gambatte 440; playing, RetroArch takes 65% of one core.
+  xfwm4 composited every frame again: with `video_disable_composition`
+  RetroArch asks it not to (`_NET_WM_BYPASS_COMPOSITOR`) and the frames
+  its video thread drops went from 2.8% to 1.2%.
+- **The picture and the controls.**  The controls
+  (`tools/games/make-overlays.py`, drawn for 1024x768; one image a
+  control, so RetroArch lights it while it is held) sit in the margins
+  of the picture at an integer scale: x3 for the GBA (720x480), x4 for
+  the Game Boy (640x576).  RetroArch 1.22 adds a custom viewport's x and y
+  to the centred position, so 0, 0 is the middle.
+- **The screen held still.**  RetroArch reads the touch screen itself, in
+  the panel's own landscape, past X's rotation; the launcher locks the
+  rotation (`/run/rotation-lock`) while a game runs and autorotate takes
+  over again after.
+- **Copying games in.**  OpenSSH's `scp` speaks SFTP since 9.0, which
+  dropbear hands to `/usr/lib/ssh/sftp-server`: `openssh-sftp-server`.
+
+PSP games run in PPSSPP 1.20.4, which Alpine does not have:
+`tools/desktop/ppsspp/build.sh` builds it -- the SDL frontend, desktop
+OpenGL through GLEW, the ARM JIT, and the FFmpeg 3.0.2 it carries (its media
+code wants that API; the release has the source, not the libraries) -- for
+the A5, 107 minutes under emulation the first time, minutes after (ccache).
+The launcher takes `.iso`, `.cso`, `.chd` and `.pbp` from `~/Games` and
+starts PPSSPP full screen with its own touch controls.  What it took:
+
+- **Four bugs of PPSSPP's own**, patched (`tools/desktop/ppsspp/*.patch`):
+  - On ARM its CMake turns `USING_EGL` on for every build, and the SDL
+    frontend then traded SDL's GLX context (desktop OpenGL 2.1) for an EGL
+    OpenGL ES one, while the build calls desktop GL through GLEW:
+    `glGetShaderPrecisionFormat` (desktop GL only with
+    `ARB_ES2_compatibility`) was a null pointer, and the first frame
+    crashed.  A desktop-GL build keeps SDL's context now.
+  - A game streamed over HTTP hung PPSSPP for good wherever less than
+    768 MB is free: its disk cache's `InitCache()` holds a mutex while the
+    new cache, short of room, garbage-collects old files -- which takes
+    the same mutex again.  It is recursive now; the cache turns itself off
+    ("Not enough free space") and the game streams through RAM.
+  - The touch controls never pressed: SDL's finger IDs are X.Org's touch
+    IDs, which only grow (946, 947, ...), and the controls index masks and
+    arrays of ten by them -- a touch still woke them up.  Each finger gets
+    a slot of its own; several held together work.
+  - Streamed, a game ran the iPad out of memory minutes into play: PPSSPP
+    keeps up to 256 MB of a streamed disc in RAM and drops nothing before
+    that, and with the disk cache under it off (above), ~470 MB of RAM and
+    no swap, every MB streamed stayed -- the kernel's OOM killer ended God
+    of War ~10 minutes in, its memory having grown with each MB the Wi-Fi
+    brought.  The cache keeps a sixteenth of the RAM at most now (~29 MB;
+    `PPSSPP_DISC_CACHE_MB` sets it), a read-ahead making its room as a
+    read does (with a cache that small, full all the time, read-ahead
+    would stop for good), and its blocks are counted as they go in
+    (upstream's count crept past them: an emptied cache's eviction loop
+    would never end).  God of War plays ~27 minutes now before the OOM
+    killer ends it, not ~10: what still grows in long play is PPSSPP's
+    other memory and the GPU's (106 -> 156 MB and 118 -> 152 MB pinned
+    over those 27 minutes; not fixed yet) (`disc-cache-ram-cap.patch`).
+- **The GPU.**  PPSSPP turns depth clamping on for its 3D draws wherever
+  the driver has it, and the SGX's Mesa clamps depth on the CPU (its draw
+  module, interpreted: research/p105-mesa.md M43) -- so not one of
+  PPSSPP's draws had its vertex shader on the GPU, and God of War: Ghost
+  of Sparta drew 2-3 frames/s even in its menus (3.3% of its speed), each
+  frame ~370 ms of PPSSPP's GL thread.  The driver no longer offers depth
+  clamping (the SGX has none; M43), so PPSSPP takes its OpenGL ES 2.0
+  way, as on phones -- at first a driconf file hid it from PPSSPP alone,
+  and without either God of War's menu falls from ~64% to ~2% of its
+  speed today; PPSSPP's hardware transform stays on, vertical sync is
+  off (55 frames of 60 with it).  The PSPSDK's samples run at full speed
+  (reflection 60/60, spharm 21 -> 57-60 frames/s), God of War's menu at
+  9%: then its frame was the GPU's pixel programs, not its vertices
+  (M46).  The driver now lets opaque draws through the GPU's hidden
+  surface removal, blends PPSSPP's colour masks in one instruction,
+  copies PPSSPP's framebuffers on the GPU instead of waiting to copy them
+  on the CPU, makes PPSSPP's programs shorter (most of them F16 now, their
+  texture lookups the PDS's), writes PPSSPP's uploads straight into GPU
+  memory -- with a copy that preloads: musl's memcpy has no preloads and
+  the L2 prefetched nothing under Linux, 255 MB/s against 820 (the
+  kernel's tree turns the L2's prefetch on now: memcpy ~580) -- and
+  lets the GPU read PPSSPP's indices where they are, blends PPSSPP's
+  fixed colours (GL's blend colour) by SOP2s instead of ~30 instructions
+  more, and copies by the PDS's lookup; the kernel gives the GPU two
+  renders at once (apple_sgx.inflight, 2 by default), and PPSSPP maps its push
+  buffers here (`gl-map-push-buffers.patch`: its emulator thread decodes
+  the vertices straight into the GPU's copy of the buffer, which the
+  driver hands out for a map that discards the old content -- no 1.75 MB
+  copy a frame on the GL thread), and the lookups PPSSPP's effect programs
+  make at clamped coordinates run in F16 too -- or, where the draw's
+  coordinates never leave the clamp's rectangle (or leave it only at the
+  texture's own edge), without the clamp, by the PDS; the vertex
+  programs are ~60% shorter (fused multiply-adds, constants without
+  loads, varyings made where they go out; dot products one instruction on
+  the GPU's internal registers, arithmetic two lanes an instruction, each
+  comparison one instruction).  Games hides the cursor while
+  a game runs (`xhidecursor`) and the kernel offers async page flips, so
+  X flips the game's frames onto the screen instead of copying them (and
+  the cursor) each frame; and PPSSPP no longer copies a target before a
+  draw that samples it where the draw reads none of what it draws
+  (`gl-self-texture-no-copy.patch`, M48: God of War's glow, six renders a
+  frame), and the kernel shows a flipped frame by pointing the display at
+  it -- a contiguous buffer Mesa asked for -- instead of copying it onto
+  the boot framebuffer (M49), and PPSSPP's alpha-tested glow is an F16
+  program (M50): the menu at ~64% (~38 frames/s on the screen), play at
+  ~13-20 frames/s.  What is left is in M50.
+- **Games from a computer.**  PSP games are bigger than the Linux volume:
+  `tools/games/psp-share.py DIR`, on a computer, serves its disc images the
+  way PPSSPP's own "Share games" does (a listing, byte ranges; the
+  computer's firewall has to let TCP 9123 in), and the launcher lists them
+  too when `~/Games/psp-server` holds its address.  Over the Wi-Fi a game
+  loads at ~1.1 MB/s.  A `.pbp` cannot be streamed -- PPSSPP runs one from
+  its folder -- so those are copied in.
+- **Leaving a game.**  The ≡ at the top opens PPSSPP's pause menu; its Exit
+  (`--pause-menu-exit`) ends the game back in Games.  The touch controls
+  fade after 8 s without a touch, and the first touch brings them back.
 
 ### Writing the NAND: the Linux volume
 

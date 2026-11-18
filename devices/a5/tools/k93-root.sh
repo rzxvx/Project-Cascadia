@@ -39,7 +39,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TAR="$ROOT/build/k93/root.tar"
 IMG="$ROOT/build/k93/root.sqfs"
 RESERVE_KB=$((40 * 1024))
-STEPS="gl xfce patched autorotate mesa gpu screenpad"
+STEPS="gl xfce patched autorotate mesa gpu screenpad youtube games web"
 
 say()  { printf '==> %s\n' "$*"; }
 note() { printf '    %s\n' "$*"; }

@@ -1,0 +1,85 @@
+--- a/input/drivers/udev_input.c
++++ b/input/drivers/udev_input.c
+@@ -3081,31 +3081,60 @@
+ 
+       case RETRO_DEVICE_POINTER:
+       case RARCH_DEVICE_POINTER_SCREEN:
+-         screen = (device == RARCH_DEVICE_MOUSE_SCREEN);
+-         break;
+-         switch (id)
++         /* Every finger down is a pointer of its own: idx counts the
++          * active slots in slot order.  An overlay asks for idx 0, 1, ...
++          * while PRESSED, so it sees each finger and several of its
++          * controls can be held at once. */
++         screen = (device == RARCH_DEVICE_POINTER_SCREEN);
++         if (id == RARCH_DEVICE_ID_POINTER_BACK)
+          {
+-            case RETRO_DEVICE_ID_POINTER_X:
+-               if (screen)
+-                  ret = touch->pointer_scr_pos_x;
+-               else
+-                  ret = touch->pointer_vp_pos_x;
++            ret = (idx == 0) ? touch->pointer_btn_pb : 0;
++            break;
++         }
++         {
++            udev_slot_state_t *slot = NULL;
++            int32_t s;
++            int32_t n               = 0;
++
++            for (s = 0; s < touch->info_slots.range; s++)
++            {
++               if (touch->current[s].tracking_id
++                     == UDEV_INPUT_TOUCH_TRACKING_ID_NONE)
++                  continue;
++               if (n++ == (int32_t)idx)
++               {
++                  slot = &touch->current[s];
++                  break;
++               }
++            }
++            if (!slot)
+                break;
+-            case RETRO_DEVICE_ID_POINTER_Y:
+-               if (screen)
+-                  ret = touch->pointer_scr_pos_y;
++            if (id == RETRO_DEVICE_ID_POINTER_PRESSED)
++               ret = 1;
++            else if (   id == RETRO_DEVICE_ID_POINTER_X
++                     || id == RETRO_DEVICE_ID_POINTER_Y)
++            {
++               video_viewport_t vp;
++               int32_t ma_x  = 0;
++               int32_t ma_y  = 0;
++               int16_t rel_x = 0;
++               int16_t rel_y = 0;
++               int16_t scr_x = 0;
++               int16_t scr_y = 0;
++               int16_t vp_x  = 0;
++               int16_t vp_y  = 0;
++
++               if (!video_driver_get_viewport_info(&vp))
++                  break;
++               udev_translate_touch_pos(touch, &vp,
++                     slot->pos_x, slot->pos_y,
++                     &ma_x, &ma_y, &rel_x, &rel_y,
++                     &scr_x, &scr_y, &vp_x, &vp_y);
++               if (id == RETRO_DEVICE_ID_POINTER_X)
++                  ret = screen ? scr_x : vp_x;
+                else
+-                  ret = touch->pointer_vp_pos_y;
+-               break;
+-            case RETRO_DEVICE_ID_POINTER_PRESSED:
+-               ret = touch->pointer_btn_pp;
+-               break;
+-            case RARCH_DEVICE_ID_POINTER_BACK:
+-               /* TODO - Remove this function? */
+-               ret = touch->pointer_btn_pb;
+-               break;
+-            default:
+-               break;
++                  ret = screen ? scr_y : vp_y;
++            }
+          }
+          break;
+ 

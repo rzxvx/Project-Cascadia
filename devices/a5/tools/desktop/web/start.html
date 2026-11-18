@@ -1,0 +1,38 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Start</title>
+<style>
+  body { margin: 0; font: 18px/1.4 "DejaVu Sans", sans-serif; background: #f1f2f4; color: #1d1f23; }
+  main { max-width: 920px; margin: 0 auto; padding: 28px 20px 40px; }
+  form { display: flex; gap: 10px; margin: 6px 0 26px; }
+  input[type=search] { flex: 1; min-width: 0; font: inherit; font-size: 22px; padding: 13px 18px;
+                       border: 2px solid #c6cad1; border-radius: 14px; background: #fff; }
+  input[type=search]:focus { border-color: #1e6fd9; outline: none; }
+  button { font: inherit; font-size: 20px; padding: 0 22px; border: 0; border-radius: 14px;
+           background: #1e6fd9; color: #fff; }
+  .tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 14px; }
+  .tile { position: relative; display: block; min-height: 90px; padding: 16px 18px; border-radius: 16px;
+          background: #fff; color: inherit; text-decoration: none; box-shadow: 0 1px 3px rgba(0, 0, 0, .14); }
+  .tile:active { background: #e3ebf8; }
+  .tile b { display: block; font-size: 19px; margin-bottom: 6px; }
+  .tile span { color: #6b7079; font-size: 15px; overflow-wrap: anywhere; }
+  .x { position: absolute; top: 8px; right: 8px; width: 44px; height: 44px; line-height: 44px;
+       text-align: center; border-radius: 22px; background: #d23b2c; color: #fff;
+       text-decoration: none; font-size: 22px; }
+  footer { margin-top: 28px; color: #6b7079; font-size: 15px; }
+  footer a { color: #1e6fd9; }
+</style>
+</head>
+<body>
+<main>
+<form action="https://html.duckduckgo.com/html/" method="get">
+  <input type="search" name="q" placeholder="Search the web" autocomplete="off">
+  <button>Search</button>
+</form>
+<div class="tiles">{{TILES}}</div>
+<footer>{{FOOTER}}</footer>
+</main>
+</body>
+</html>

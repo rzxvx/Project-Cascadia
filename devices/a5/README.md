@@ -885,11 +885,13 @@ Build products (`output/`) and stock firmware are not tracked; everything in
 - **Phase 3** — ~~touch~~ ✓ → ~~Wi-Fi (SDIO)~~ ✓ → ~~Bluetooth~~ ✓ → ~~the GPU
   and a desktop~~ ✓ → ~~the speaker~~ ✓ → ~~the volume buttons~~ ✓ →
   ~~autorotate~~ ✓ → ~~iOS's files off the NAND~~ ✓ → ~~NAND as Linux's own
-  storage~~ ✓ (raw NAND: the Linux volume, then an 8 GB partition of its own
-  written through iOS's FTL, with zram swap behind it) → ~~the headphones~~ ✓
-  (switching by themselves) → ~~the built-in microphone~~ ✓ → ~~a headset's
-  microphone~~ ✓ (biased, capture moving to it) → ~~the cameras~~ ✓ (V4L2,
-  both, with their picture controls) → USB host.
+  storage~~ ✓ (the Linux volume, then an 8 GB partition of its own written
+  through iOS's FTL, with zram swap behind it) → ~~the headphones~~ ✓ (switching by
+  themselves) → ~~the built-in microphone~~ ✓ → ~~a headset's microphone~~ ✓
+  (biased, capture moving to it) → ~~the cameras~~ ✓ (V4L2, both, with their
+  picture controls) → ~~games~~ ✓ (Game Boy, GBA, PSP, by touch) → heavy 3D
+  faster on the GPU (the PSP's: God of War's menu 3% → ~64% of its speed so
+  far) → USB host.
 
 The iPhone 11 and the devices planned next: the
 [project README](../../README.md#roadmap).

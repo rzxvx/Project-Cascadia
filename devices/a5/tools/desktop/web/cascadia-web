@@ -1,0 +1,875 @@
+#!/usr/bin/env python3
+"""cascadia-web -- a web browser for the iPad 2's touch screen, whose videos
+play in mpv (tools/desktop/web-setup.sh installs it).
+
+  cascadia-web [URL | WORDS...]
+
+Pages render in WebKitGTK; videos do not.  hook.js, in every frame, stops a
+video the moment it starts and hands what it knows of it here, and the
+browser gives it to cascadia-play: mpv, as the YouTube tool plays, with the
+stream yt-dlp finds that this iPad decodes in real time.  When the player
+closes, the page is where it was.  Started by a tap only: a page cannot start
+the player by itself, and videos that play by themselves stay stopped.
+
+For the iPad's two A9 cores and 512 MB:
+  - a phone's user agent (menu: Desktop site): sites send their lighter
+    mobile pages.  Chrome's, on Android: WebKitGTK plays no HLS by its
+    address, and players that see Safari or an iPhone give it just that,
+    where for Chrome they feed Media Source -- which works here
+  - ads blocked at the network (menu: Block ads): a list of ad servers that
+    web-setup.sh fetches, compiled by WebKit once
+  - pages drawn on the CPU, not through the GPU: as fast, steadier and ~50 MB
+    lighter (setup_webkit has the numbers; CASCADIA_WEB_GPU=1 for the GPU)
+  - while mpv starts and plays, the browser's page processes are stopped and
+    their memory goes out to swap, the browser's own and the warm yt-dlp's
+    once it plays, and zram's writeback to the NAND waits (cascadia-play
+    --freeze and --page-out; it lets them go even if this browser dies)
+  - yt-dlp kept warm (cascadia-ytdl), from a few seconds after the start: a
+    video starts ~10 s sooner
+  - JavaScript ~2.3 times as fast with the ARMv7 build of WebKit, when
+    web-setup.sh could fetch the one that matches (the launcher picks it)
+Touch: big buttons; the on-screen keyboard comes up for a text field you tap
+(menu to turn that off) and with the keyboard button; tabs only when a page
+opens one; hold a link for "Play in the video player".
+
+Kept in ~/.config/cascadia-web (settings, the start page's tiles),
+~/.local/share/cascadia-web (cookies, site data) and ~/.cache/cascadia-web.
+"""
+import html, json, os, re, signal, subprocess, sys, time, urllib.parse
+
+import gi
+gi.require_version("Gtk", "3.0")
+gi.require_version("Gdk", "3.0")
+gi.require_version("WebKit2", "4.1")
+from gi.repository import Gdk, Gio, GLib, Gtk, Pango, WebKit2  # noqa: E402
+
+HERE = os.path.dirname(os.path.realpath(__file__))
+PLAY = os.path.join(HERE, "cascadia-play")
+YTDL = os.path.join(HERE, "cascadia-ytdl")
+HOOK = os.path.join(HERE, "hook.js")
+START_HTML = os.path.join(HERE, "start.html")
+BLOCKLIST = os.path.join(HERE, "blocklist.json")
+KBD = "/usr/local/bin/kbd-toggle"
+
+_home = os.path.expanduser("~")
+CONF = os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.join(_home, ".config"), "cascadia-web")
+DATA = os.path.join(os.environ.get("XDG_DATA_HOME") or os.path.join(_home, ".local", "share"), "cascadia-web")
+CACHE = os.path.join(os.environ.get("XDG_CACHE_HOME") or os.path.join(_home, ".cache"), "cascadia-web")
+SETTINGS = os.path.join(CONF, "settings.json")
+COOKIES = os.path.join(DATA, "cookies.txt")
+
+START = "cascadia:start"
+SEARCH = "https://html.duckduckgo.com/html/?q="
+UA_MOBILE = ("Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) "
+             "Chrome/130.0.0.0 Mobile Safari/537.36")
+UA_DESKTOP = ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) "
+              "Chrome/130.0.0.0 Safari/537.36")
+MANIFEST_URL = re.compile(r"\.(m3u8|mpd)(\?|#|$)|[?&](format|type)=(m3u8|mpd|hls|dash)\b", re.I)
+MANIFEST_MIMES = {"application/vnd.apple.mpegurl", "application/x-mpegurl", "audio/mpegurl",
+                  "audio/x-mpegurl", "application/dash+xml"}
+SCHEMES = {"http", "https", "file", "about", "data", "blob", "cascadia", "javascript"}
+TAPPED_WITHIN = 20      # s: a video that starts this long after a tap counts as tapped
+DEBUG = bool(os.environ.get("CASCADIA_WEB_DEBUG"))  # the pages' console and the player's lines on stderr
+
+DEFAULTS = {"desktop": False, "block_ads": True, "keyboard": True, "zoom": 1.0, "tiles": [
+    ["PeerTube videos", "https://sepiasearch.org/"],
+    ["Internet Archive: films", "https://archive.org/details/movies"],
+    ["Wikimedia Commons: videos", "https://commons.m.wikimedia.org/wiki/Category:Videos"],
+    ["Vimeo", "https://vimeo.com/watch"],
+    ["Dailymotion", "https://www.dailymotion.com/"],
+    ["YouTube", "https://m.youtube.com/"],
+    ["Wikipedia", "https://www.wikipedia.org/"],
+]}
+
+CSS = b"""
+headerbar { min-height: 50px; padding: 2px 4px; }
+headerbar button { min-height: 42px; min-width: 46px; padding: 0 4px; }
+headerbar button label { font-size: 16pt; }
+headerbar entry { min-height: 40px; font-size: 13pt; }
+notebook tab { min-height: 34px; padding: 2px 6px; }
+notebook tab label { font-size: 11pt; }
+notebook tab button { min-height: 30px; min-width: 30px; padding: 0; }
+menu menuitem { min-height: 46px; }
+menu menuitem label { font-size: 13pt; }
+.cascadia-toast { background-color: rgba(28, 28, 30, 0.94); border-radius: 14px; padding: 10px 14px; }
+.cascadia-toast > label { color: #ffffff; font-size: 13pt; }
+.cascadia-toast button { min-height: 44px; min-width: 88px; }
+"""
+
+
+def to_uri(text):
+    """what was typed: an address, or words for the search engine"""
+    t = text.strip()
+    if not t:
+        return None
+    if re.match(r"^[a-z][a-z0-9+.-]*:", t, re.I) and not re.match(r"^[\w.-]+:\d+(/|$)", t):
+        return t
+    if " " not in t and ("." in t.strip(".") or t.startswith("localhost") or re.match(r"^[\w.-]+:\d+", t)):
+        return ("http://" if t.startswith("localhost") else "https://") + t
+    return SEARCH + urllib.parse.quote_plus(t)
+
+
+def shown_uri(uri):
+    return "" if not uri or uri.startswith("cascadia:") or uri == "about:blank" else uri
+
+
+def proc_children(pid):
+    """(pid, name) of the processes whose parent is pid"""
+    out = []
+    for p in os.listdir("/proc"):
+        if not p.isdigit():
+            continue
+        try:
+            with open("/proc/%s/stat" % p) as f:
+                st = f.read()
+        except OSError:
+            continue
+        r = st.rfind(")")
+        if int(st[r + 2:].split()[1]) == pid:
+            out.append((int(p), st[st.find("(") + 1:r]))
+    return out
+
+
+def web_pids():
+    """WebKit's page processes: ours, or under bubblewrap when sandboxed"""
+    pids = []
+    for pid, name in proc_children(os.getpid()):
+        if name.startswith("WebKitWebProces"):
+            pids.append(pid)
+        elif name == "bwrap":
+            pids += [p for p, n in proc_children(pid) if n.startswith("WebKitWebProces")]
+    return pids
+
+
+def keyboard_up():
+    for p in os.listdir("/proc"):
+        if p.isdigit():
+            try:
+                with open("/proc/%s/cmdline" % p, "rb") as f:
+                    if os.path.basename(f.read().split(b"\0", 1)[0]) == b"svkbd-mobile-intl":
+                        return True
+            except OSError:
+                pass
+    return False
+
+
+class Toast(Gtk.Box):
+    """a message at the bottom of the window, with buttons"""
+
+    def __init__(self):
+        super().__init__(spacing=12, halign=Gtk.Align.CENTER, valign=Gtk.Align.END, margin_bottom=28,
+                         margin_start=16, margin_end=16, no_show_all=True)
+        self.get_style_context().add_class("cascadia-toast")
+        self.label = Gtk.Label(wrap=True, max_width_chars=56, xalign=0)
+        self.buttons = Gtk.Box(spacing=8)
+        self.pack_start(self.label, True, True, 0)
+        self.pack_end(self.buttons, False, False, 0)
+        self.timer = None
+
+    def say(self, text, buttons=(), timeout=0):
+        # no spinner: its animation kept X busy at a third of a core while
+        # mpv and yt-dlp started
+        if self.timer:
+            GLib.source_remove(self.timer)
+            self.timer = None
+        self.label.set_text(text)
+        for b in self.buttons.get_children():
+            self.buttons.remove(b)
+        for name, cb in buttons:
+            b = Gtk.Button(label=name)
+            b.connect("clicked", lambda _b, cb=cb: (self.clear(), cb()))
+            self.buttons.pack_start(b, False, False, 0)
+        for w in (self.label, self.buttons, *self.buttons.get_children()):
+            w.show()
+        self.show()
+        if timeout:
+            self.timer = GLib.timeout_add_seconds(timeout, self.clear)
+
+    def clear(self):
+        if self.timer:
+            GLib.source_remove(self.timer)
+            self.timer = None
+        self.hide()
+        return False
+
+
+class Tab:
+    """what the browser keeps of one page: its tab label, the media playlists
+    it fetched, what its last tapped video said"""
+
+    def __init__(self, view, on_close):
+        self.view = view
+        self.media = []
+        self.last_play = None
+        self.committed = None
+        self.label = Gtk.Label(label="New tab", ellipsize=Pango.EllipsizeMode.END, width_chars=6,
+                               max_width_chars=18)
+        close = Gtk.Button(relief=Gtk.ReliefStyle.NONE, focus_on_click=False)
+        if Gtk.IconTheme.get_default().has_icon("window-close-symbolic"):
+            close.set_image(Gtk.Image.new_from_icon_name("window-close-symbolic", Gtk.IconSize.BUTTON))
+        else:
+            close.set_label("✕")
+        close.connect("clicked", lambda _b: on_close(view))
+        self.box = Gtk.Box(spacing=4)
+        self.box.pack_start(self.label, True, True, 0)
+        self.box.pack_start(close, False, False, 0)
+        self.box.show_all()
+
+    def note(self, uri):
+        if uri and uri not in self.media:
+            self.media.append(uri)
+            del self.media[:-8]
+
+
+class Browser(Gtk.ApplicationWindow):
+    def __init__(self, app):
+        super().__init__(application=app, title="Web")
+        self.conf = dict(DEFAULTS)
+        try:
+            with open(SETTINGS) as f:
+                self.conf.update(json.load(f))
+        except (OSError, ValueError):
+            pass
+        self.tabs = {}
+        self.player = None
+        self.player_buf = b""
+        self.player_failed = None
+        self.player_view = None
+        self.last_input = 0.0
+        self.kbd_timer = None
+        self.ytdl = None
+        self.setup_webkit()
+        self.build()
+        self.set_default_size(1024, 700)
+        self.maximize()
+        self.show_all()
+        self.notebook.set_show_tabs(False)
+        # yt-dlp kept warm (cascadia-ytdl): started once the first page has
+        # had the CPU, at a low priority
+        GLib.timeout_add_seconds(8, self.start_ytdl)
+
+    def start_ytdl(self):
+        if os.access(YTDL, os.X_OK):
+            try:
+                self.ytdl = subprocess.Popen([YTDL, "--serve"], stdin=subprocess.DEVNULL,
+                                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            except OSError:
+                self.ytdl = None
+        return False
+
+    # -- WebKit ---------------------------------------------------------------
+
+    def setup_webkit(self):
+        for d in (CONF, DATA, CACHE):
+            os.makedirs(d, exist_ok=True)
+        self.data = WebKit2.WebsiteDataManager(base_data_directory=DATA, base_cache_directory=CACHE)
+        self.data.get_cookie_manager().set_persistent_storage(COOKIES, WebKit2.CookiePersistentStorage.TEXT)
+        # WebKit's processes give memory back sooner: by default they take
+        # all of the iPad's 468 MB as their budget and start releasing caches
+        # at a third of it, collecting harder at half -- with the desktop,
+        # yt-dlp and mpv beside them, that was swap.  Budget 320 MB: from
+        # 106 MB, and hard from 160, looked at every 10 s.  Caches sized for a
+        # document viewer (nothing kept for going back): a page is fetched
+        # again rather than held
+        mp = WebKit2.MemoryPressureSettings.new()
+        mp.set_memory_limit(320)
+        mp.set_conservative_threshold(0.33)
+        mp.set_strict_threshold(0.5)
+        mp.set_poll_interval(10)
+        WebKit2.WebsiteDataManager.set_memory_pressure_settings(mp)
+        ctx = WebKit2.WebContext(website_data_manager=self.data, memory_pressure_settings=mp)
+        ctx.set_cache_model(WebKit2.CacheModel.DOCUMENT_BROWSER)
+        ctx.register_uri_scheme("cascadia", self.on_scheme)
+        ctx.get_security_manager().register_uri_scheme_as_local("cascadia")
+        ctx.connect("download-started", self.on_download)
+        self.ctx = ctx
+
+        s = WebKit2.Settings()
+        s.set_enable_smooth_scrolling(False)
+        s.set_enable_page_cache(False)
+        s.set_enable_webgl(False)
+        s.set_enable_encrypted_media(False)
+        s.set_enable_media_stream(False)
+        s.set_enable_developer_extras(False)
+        s.set_javascript_can_open_windows_automatically(False)
+        s.set_media_playback_requires_user_gesture(False)
+        if DEBUG:
+            s.set_enable_write_console_messages_to_stdout(True)
+        # pages drawn on the CPU: as fast here (a scripted scroll at 18.6-18.9
+        # frames a second against 17.3-18.2 through the GPU), steadier (no
+        # frame over 82 ms, where the GPU's path stalled up to 427 ms) and
+        # ~50 MB of RAM lighter.  CASCADIA_WEB_GPU=1: through the GPU anyway
+        if os.environ.get("CASCADIA_WEB_GPU") != "1":
+            s.set_hardware_acceleration_policy(WebKit2.HardwareAccelerationPolicy.NEVER)
+        self.settings = s
+        self.apply_site_mode()
+
+        ucm = WebKit2.UserContentManager()
+        with open(HOOK) as f:
+            ucm.add_script(WebKit2.UserScript.new(f.read(), WebKit2.UserContentInjectedFrames.ALL_FRAMES,
+                                                  WebKit2.UserScriptInjectionTime.START, None, None))
+        ucm.connect("script-message-received::cascadia", self.on_message)
+        ucm.register_script_message_handler("cascadia")
+        self.ucm = ucm
+        # every video is stopped by hook.js anyway: letting them start is
+        # what lets a tap that reaches play() late still hand one over
+        self.policies = WebKit2.WebsitePolicies(autoplay=WebKit2.AutoplayPolicy.ALLOW)
+        self.filters = WebKit2.UserContentFilterStore.new(os.path.join(DATA, "filters"))
+        self.ad_filter = None
+        if self.conf["block_ads"]:
+            self.load_ad_filter()
+
+    def apply_site_mode(self):
+        self.settings.set_user_agent(UA_DESKTOP if self.conf["desktop"] else UA_MOBILE)
+
+    def load_ad_filter(self):
+        if self.ad_filter:
+            self.ucm.add_filter(self.ad_filter)
+            return
+        try:
+            st = os.stat(BLOCKLIST)
+        except OSError:
+            return      # no list: web-setup.sh could not fetch one
+        ident = "ads-%d-%d" % (st.st_size, int(st.st_mtime))
+
+        def saved(store, res):
+            try:
+                self.set_ad_filter(store.save_finish(res))
+                self.toast.clear()
+            except GLib.Error as e:
+                print("cascadia-web: the ad server list did not compile:", e.message, file=sys.stderr)
+            store.fetch_identifiers(None, lambda st_, r: [
+                st_.remove(i, None, None, None) for i in st_.fetch_identifiers_finish(r) if i != ident])
+
+        def loaded(store, res):
+            try:
+                self.set_ad_filter(store.load_finish(res))
+            except GLib.Error:
+                with open(BLOCKLIST, "rb") as f:
+                    rules = GLib.Bytes.new(f.read())
+                self.toast.say("Preparing the ad blocker (once)…", timeout=30)
+                store.save(ident, rules, None, saved)
+        self.filters.load(ident, None, loaded)
+
+    def set_ad_filter(self, f):
+        self.ad_filter = f
+        if self.conf["block_ads"]:
+            self.ucm.add_filter(f)
+
+    # -- the window -----------------------------------------------------------
+
+    def button(self, icon, text, tip, cb):
+        b = Gtk.Button(tooltip_text=tip, focus_on_click=False)
+        if Gtk.IconTheme.get_default().has_icon(icon):
+            b.set_image(Gtk.Image.new_from_icon_name(icon, Gtk.IconSize.LARGE_TOOLBAR))
+        else:
+            b.set_label(text)
+        b.connect("clicked", lambda _b: cb())
+        return b
+
+    def build(self):
+        # the window manager's close button only: a tablet has no use for the
+        # other two, and the address wants the room
+        hb = Gtk.HeaderBar(show_close_button=True, decoration_layout=":close")
+        self.set_titlebar(hb)
+        self.back = self.button("go-previous-symbolic", "←", "Back", lambda: self.view().go_back())
+        self.fwd = self.button("go-next-symbolic", "→", "Forward", lambda: self.view().go_forward())
+        self.reload = self.button("view-refresh-symbolic", "⟳", "Reload", self.reload_or_stop)
+        for b in (self.back, self.fwd, self.reload):
+            hb.pack_start(b)
+        self.entry = Gtk.Entry(hexpand=True, placeholder_text="Search or type an address",
+                               input_purpose=Gtk.InputPurpose.URL)
+        self.entry.connect("activate", self.on_entry)
+        self.entry.connect("focus-in-event", self.on_entry_focus)
+        self.entry.connect("focus-out-event", lambda *_: self.want_keyboard(False))
+        hb.set_custom_title(self.entry)
+
+        menu = Gtk.Menu()
+
+        def item(label, cb):
+            mi = Gtk.MenuItem(label=label)
+            mi.connect("activate", lambda _m: cb())
+            menu.append(mi)
+
+        def check(label, key, cb=None):
+            mi = Gtk.CheckMenuItem(label=label, active=bool(self.conf[key]))
+            mi.connect("toggled", lambda m: self.set_conf(key, m.get_active(), cb))
+            menu.append(mi)
+        item("New tab", lambda: self.new_tab(START))
+        item("Add this page to the start page", self.add_tile)
+        item("Play this page's video in the player", self.play_page)
+        menu.append(Gtk.SeparatorMenuItem())
+        item("Bigger text", lambda: self.zoom(+0.1))
+        item("Smaller text", lambda: self.zoom(-0.1))
+        menu.append(Gtk.SeparatorMenuItem())
+        check("Desktop site", "desktop", self.on_site_mode)
+        check("Block ads", "block_ads", self.on_block_ads)
+        check("Keyboard for text fields", "keyboard")
+        menu.append(Gtk.SeparatorMenuItem())
+        item("Forget cookies and site data", self.forget)
+        menu.show_all()
+        mb = Gtk.MenuButton(popup=menu, focus_on_click=False, tooltip_text="Menu")
+        icon = "open-menu-symbolic"
+        if Gtk.IconTheme.get_default().has_icon(icon):
+            mb.set_image(Gtk.Image.new_from_icon_name(icon, Gtk.IconSize.LARGE_TOOLBAR))
+        else:
+            mb.set_label("☰")
+        hb.pack_end(mb)
+        if os.access(KBD, os.X_OK):
+            hb.pack_end(self.button("input-keyboard-symbolic", "⌨", "Keyboard", self.toggle_keyboard))
+        hb.pack_end(self.button("media-playback-start-symbolic", "▶", "Play this page's video",
+                                self.play_page))
+
+        self.notebook = Gtk.Notebook(scrollable=True, show_border=False)
+        self.notebook.connect("switch-page", lambda nb, page, n: GLib.idle_add(self.refresh))
+        overlay = Gtk.Overlay()
+        overlay.add(self.notebook)
+        self.toast = Toast()
+        overlay.add_overlay(self.toast)
+        self.add(overlay)
+
+    def view(self):
+        n = self.notebook.get_current_page()
+        return self.notebook.get_nth_page(n) if n >= 0 else None
+
+    def refresh(self):
+        """the toolbar, for the tab now shown"""
+        v = self.view()
+        if not v:
+            return False
+        self.back.set_sensitive(v.can_go_back())
+        self.fwd.set_sensitive(v.can_go_forward())
+        if not self.entry.has_focus():
+            self.entry.set_text(shown_uri(v.get_uri()))
+        p = v.get_estimated_load_progress()
+        self.entry.set_progress_fraction(p if v.is_loading() and p < 1 else 0)
+        img = "process-stop-symbolic" if v.is_loading() else "view-refresh-symbolic"
+        if Gtk.IconTheme.get_default().has_icon(img):
+            self.reload.set_image(Gtk.Image.new_from_icon_name(img, Gtk.IconSize.LARGE_TOOLBAR))
+        else:
+            self.reload.set_label("✕" if v.is_loading() else "⟳")
+        self.set_title((v.get_title() or shown_uri(v.get_uri()) or "Start") + " — Web")
+        return False
+
+    def new_tab(self, uri=None, related=None):
+        args = dict(settings=self.settings, user_content_manager=self.ucm, website_policies=self.policies)
+        if related is not None:
+            v = WebKit2.WebView(related_view=related, **args)
+        else:
+            v = WebKit2.WebView(web_context=self.ctx, **args)
+        v.set_zoom_level(self.conf["zoom"])
+        tab = Tab(v, self.close_tab)
+        self.tabs[v] = tab
+        for sig, cb in (("notify::uri", self.on_change), ("notify::title", self.on_title),
+                        ("notify::estimated-load-progress", self.on_change),
+                        ("load-changed", self.on_load), ("decide-policy", self.on_policy),
+                        ("create", self.on_create), ("close", self.close_tab),
+                        ("context-menu", self.on_context_menu), ("web-process-terminated", self.on_crash),
+                        ("permission-request", lambda _v, r: (r.deny(), True)[1]),
+                        ("show-notification", lambda *_: True),
+                        ("button-press-event", self.on_input), ("touch-event", self.on_input),
+                        ("key-press-event", self.on_input), ("resource-load-started", self.on_resource)):
+            try:
+                v.connect(sig, cb)
+            except TypeError:
+                pass    # a WebKit without it
+        n = self.notebook.append_page(v, tab.box)
+        self.notebook.set_tab_reorderable(v, True)
+        v.show()
+        self.notebook.set_show_tabs(self.notebook.get_n_pages() > 1)
+        self.notebook.set_current_page(n)
+        if uri:
+            v.load_uri(uri)
+        return v
+
+    def close_tab(self, view):
+        n = self.notebook.page_num(view)
+        if n < 0:
+            return
+        self.notebook.remove_page(n)
+        self.tabs.pop(view, None)
+        if self.notebook.get_n_pages() == 0:
+            self.new_tab(START)
+        self.notebook.set_show_tabs(self.notebook.get_n_pages() > 1)
+
+    # -- the page's signals ---------------------------------------------------
+
+    def on_input(self, *_):
+        self.last_input = time.monotonic()
+        return False
+
+    def on_change(self, view, *_):
+        if view is self.view():
+            self.refresh()
+
+    def on_title(self, view, *_):
+        tab = self.tabs.get(view)
+        if tab:
+            tab.label.set_text(view.get_title() or shown_uri(view.get_uri()) or "Start")
+        self.on_change(view)
+
+    def on_load(self, view, ev):
+        tab = self.tabs.get(view)
+        if tab and ev == WebKit2.LoadEvent.STARTED:
+            tab.media.clear()
+            tab.last_play = None
+        elif tab and ev == WebKit2.LoadEvent.COMMITTED:
+            tab.committed = view.get_uri()
+        self.on_change(view)
+
+    def on_policy(self, view, decision, kind):
+        T = WebKit2.PolicyDecisionType
+        if kind in (T.NAVIGATION_ACTION, T.NEW_WINDOW_ACTION):
+            uri = decision.get_navigation_action().get_request().get_uri() or ""
+            if uri.split(":", 1)[0].lower() not in SCHEMES:
+                decision.ignore()       # intent:, market:, mailto:, an app's scheme
+                return True
+            return False
+        if kind == T.RESPONSE:
+            resp = decision.get_response()
+            mime = (resp.get_mime_type() or "").lower()
+            if decision.is_main_frame_main_resource() and (
+                    mime.startswith(("video/", "audio/")) or mime in MANIFEST_MIMES):
+                decision.ignore()
+                tab = self.tabs.get(view)
+                referer = tab.committed if tab and tab.committed else resp.get_uri()
+                self.last_input = time.monotonic()
+                self.play_urls([], referer, view, media=[resp.get_uri()])
+                if tab and not tab.committed:   # a new tab for nothing but the video
+                    GLib.idle_add(self.close_tab, view)
+                return True
+            if not decision.is_mime_type_supported():
+                decision.download()
+                return True
+        return False
+
+    def on_create(self, view, action):
+        return self.new_tab(related=view)
+
+    def on_resource(self, view, resource, request):
+        tab = self.tabs.get(view)
+        uri = request.get_uri() or ""
+        if not tab or not uri.startswith(("http://", "https://")):
+            return
+        if MANIFEST_URL.search(uri):
+            tab.note(uri)
+        else:
+            resource.connect("notify::response", self.on_response, tab)
+
+    def on_response(self, resource, _p, tab):
+        r = resource.get_response()
+        if r and (r.get_mime_type() or "").lower() in MANIFEST_MIMES:
+            tab.note(r.get_uri())
+
+    def on_context_menu(self, view, menu, _event, hit):
+        uri = hit.get_media_uri() if hit.context_is_media() else (
+            hit.get_link_uri() if hit.context_is_link() else None)
+        if uri and uri.startswith(("http://", "https://")):
+            act = Gio.SimpleAction.new("cascadia-play-link", None)
+            act.connect("activate", lambda *_: self.play_urls([uri], view.get_uri(), view))
+            menu.prepend(WebKit2.ContextMenuItem.new_separator())
+            menu.prepend(WebKit2.ContextMenuItem.new_from_gaction(act, "Play in the video player", None))
+        return False
+
+    def on_crash(self, view, reason):
+        print("cascadia-web: a page process ended: %s (%s)" % (reason.value_nick, view.get_uri()),
+              file=sys.stderr, flush=True)
+        why = ("ran out of memory" if reason == WebKit2.WebProcessTerminationReason.EXCEEDED_MEMORY_LIMIT
+               else "stopped working")
+        if view is self.view():
+            self.toast.say("This page %s." % why, buttons=[("Reload", view.reload)])
+
+    def on_download(self, ctx, download):
+        def done(d):
+            dest = d.get_destination() or ""
+            self.toast.say("Downloaded: " + GLib.filename_from_uri(dest)[0] if dest.startswith("file:")
+                           else "Downloaded", timeout=5)
+
+        def failed(d, err):
+            if not err.matches(WebKit2.download_error_quark(), WebKit2.DownloadError.CANCELLED_BY_USER):
+                self.toast.say("The download failed: " + err.message, timeout=6)
+        download.connect("finished", done)
+        download.connect("failed", failed)
+        self.toast.say("Downloading…", timeout=4)
+
+    def on_scheme(self, req):
+        parts = urllib.parse.urlsplit(req.get_uri())
+        q = urllib.parse.parse_qs(parts.query)
+        if parts.path == "remove" and q.get("u"):
+            self.conf["tiles"] = [t for t in self.conf["tiles"] if t[1] != q["u"][0]]
+            self.save()
+            page = '<meta http-equiv="refresh" content="0;url=cascadia:start?edit=1">'
+        else:
+            page = self.start_page("edit" in q)
+        data = page.encode()
+        req.finish(Gio.MemoryInputStream.new_from_bytes(GLib.Bytes.new(data)), len(data), "text/html")
+
+    def start_page(self, edit):
+        tiles = []
+        for title, url in self.conf["tiles"]:
+            x = ('<a class="x" href="cascadia:remove?u=%s">✕</a>'
+                 % html.escape(urllib.parse.quote(url, safe=""))) if edit else ""
+            host = urllib.parse.urlsplit(url).netloc or url
+            tiles.append('<a class="tile" href="%s"><b>%s</b><span>%s</span>%s</a>'
+                         % (html.escape(url), html.escape(title), html.escape(host), x))
+        footer = ('<a href="cascadia:start">Done</a>' if edit else
+                  "A video you start plays in the video player. Menu → Add this page to the start "
+                  'page puts a page here. <a href="cascadia:start?edit=1">Remove pages</a>')
+        with open(START_HTML) as f:
+            return f.read().replace("{{TILES}}", "\n".join(tiles)).replace("{{FOOTER}}", footer)
+
+    # -- videos ---------------------------------------------------------------
+
+    def on_message(self, _ucm, res):
+        try:
+            val = res.get_js_value() if hasattr(res, "get_js_value") else res
+            m = json.loads(val.to_string())
+        except Exception:
+            return
+        if m.get("kind") == "play":
+            self.on_play(m)
+        elif m.get("kind") == "kbd":
+            self.want_keyboard(bool(m.get("show")))
+
+    def on_play(self, m):
+        """hook.js stopped a video: the player gets it if a tap started it"""
+        if DEBUG:
+            print("%.1f hook: %s" % (time.monotonic(), json.dumps(m)), file=sys.stderr, flush=True)
+        view = self.view()
+        if not view or (not m.get("tapped") and time.monotonic() - self.last_input > TAPPED_WITHIN):
+            return
+        tab = self.tabs[view]
+        tab.last_play = m
+        top = view.get_uri() or ""
+        frame, src = m.get("frame") or "", m.get("src") or ""
+        sniffed = list(m.get("manifests") or []) + tab.media
+        # an embedded player's own page first; cascadia-play moves a page
+        # yt-dlp has no extractor for after the video's own addresses
+        pages = ([frame] if not m.get("top") else []) + [top]
+        self.play_urls(pages, top, view, media=[src] + sniffed)
+
+    def play_page(self):
+        view = self.view()
+        top = view.get_uri() if view else ""
+        if not top or not top.startswith(("http://", "https://")):
+            self.toast.say("There is no page here to play.", timeout=3)
+            return
+        tab = self.tabs[view]
+        m = tab.last_play or {}
+        self.last_input = time.monotonic()
+        self.play_urls([top, m.get("frame")], top, view,
+                       media=[m.get("src")] + list(m.get("manifests") or []) + tab.media)
+
+    def play_urls(self, urls, referer, view, media=()):
+        """the player on pages (urls) and the video's own addresses (media)"""
+        real = lambda u: bool(u) and u.startswith(("http://", "https://"))
+        urls = [u for i, u in enumerate(urls) if real(u) and u not in urls[:i]]
+        media = [u for i, u in enumerate(media) if real(u) and u not in media[:i] and u not in urls]
+        if not urls and not media:
+            self.toast.say("This video has no address the player can open.",
+                           buttons=[("Play here", lambda: self.bypass(view)), ("OK", lambda: None)])
+            return
+        if self.player and self.player.poll() is None:
+            return      # one is opening or playing already
+        cmd = [PLAY, "--referer", referer or (urls + media)[0], "--user-agent", self.settings.get_user_agent()]
+        if os.path.exists(COOKIES):
+            cmd += ["--cookies", COOKIES]
+        pids = web_pids()
+        if pids:
+            cmd += ["--freeze", ",".join(map(str, pids))]
+        idle = [os.getpid()] + ([self.ytdl.pid] if self.ytdl and self.ytdl.poll() is None else [])
+        cmd += ["--page-out", ",".join(map(str, idle))]
+        cmd += urls
+        for u in media:
+            cmd += ["--media", u]
+        self.player = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                       stderr=subprocess.DEVNULL, start_new_session=True)
+        self.player_buf, self.player_failed, self.player_view = b"", None, view
+        GLib.io_add_watch(self.player.stdout.fileno(), GLib.PRIORITY_DEFAULT,
+                          GLib.IOCondition.IN | GLib.IOCondition.HUP | GLib.IOCondition.ERR, self.on_player)
+        self.toast.say("Opening the video…", buttons=[("Cancel", self.stop_player)])
+
+    def on_player(self, fd, _cond):
+        try:
+            data = os.read(fd, 4096)
+        except OSError:
+            data = b""
+        if data:
+            self.player_buf += data
+            while b"\n" in self.player_buf:
+                line, self.player_buf = self.player_buf.split(b"\n", 1)
+                self.player_says(line.decode("utf-8", "replace"))
+            return True
+        p, self.player = self.player, None
+        if p:
+            p.stdout.close()
+            p.wait()
+        if self.player_failed is not None:
+            view = self.player_view
+            self.toast.say("The player could not open this video: %s" % (self.player_failed or "no reason given"),
+                           buttons=[("Play here", lambda: self.bypass(view)), ("OK", lambda: None)])
+        else:
+            self.toast.clear()
+        return False
+
+    def player_says(self, line):
+        if DEBUG:
+            print("%.1f player: %s" % (time.monotonic(), line), file=sys.stderr, flush=True)
+        if line.startswith("STATUS opening"):
+            host = urllib.parse.urlsplit(line[15:]).netloc
+            self.toast.say("Opening the video…" + ("  (%s)" % host if host else ""),
+                           buttons=[("Cancel", self.stop_player)])
+        elif line.startswith("STATUS playing"):
+            self.toast.clear()
+        elif line.startswith("STATUS failed"):
+            self.player_failed = line[14:].strip()
+
+    def stop_player(self):
+        if self.player and self.player.poll() is None:
+            try:
+                os.killpg(self.player.pid, signal.SIGTERM)
+            except OSError:
+                pass
+
+    def bypass(self, view):
+        """let the page play its video itself (slow, but something)"""
+        if view:
+            view.evaluate_javascript("window.postMessage({cascadia: 'bypass'}, '*')", -1, None, None, None,
+                                     None, None)
+
+    # -- the keyboard ---------------------------------------------------------
+
+    def want_keyboard(self, show):
+        if not self.conf["keyboard"] or not os.access(KBD, os.X_OK):
+            return
+        if self.kbd_timer:
+            GLib.source_remove(self.kbd_timer)
+        # a moment's grace: focus moving from one field to the next is a
+        # focusout and a focusin, and the keyboard should not blink
+        self.kbd_timer = GLib.timeout_add(300, self.set_keyboard, show)
+
+    def set_keyboard(self, show):
+        self.kbd_timer = None
+        if show != keyboard_up():
+            subprocess.Popen([KBD], start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return False
+
+    def toggle_keyboard(self):
+        subprocess.Popen([KBD], start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    # -- the toolbar and the menu ---------------------------------------------
+
+    def on_entry_focus(self, entry, _ev):
+        GLib.idle_add(lambda: entry.select_region(0, -1) and False)
+        self.want_keyboard(True)
+        return False
+
+    def on_entry(self, entry):
+        uri = to_uri(entry.get_text())
+        view = self.view()
+        if uri and view:
+            view.load_uri(uri)
+            view.grab_focus()
+
+    def reload_or_stop(self):
+        v = self.view()
+        if v:
+            (v.stop_loading if v.is_loading() else v.reload)()
+
+    def zoom(self, step):
+        self.conf["zoom"] = round(min(3.0, max(0.5, self.conf["zoom"] + step)), 2)
+        self.save()
+        for v in self.tabs:
+            v.set_zoom_level(self.conf["zoom"])
+        self.toast.say("Text size %d%%" % round(self.conf["zoom"] * 100), timeout=2)
+
+    def add_tile(self):
+        v = self.view()
+        uri = v.get_uri() if v else ""
+        if not uri or not uri.startswith(("http://", "https://")):
+            return
+        if uri not in [t[1] for t in self.conf["tiles"]]:
+            self.conf["tiles"] = self.conf["tiles"] + [[v.get_title() or uri, uri]]
+            self.save()
+        self.toast.say("On the start page now.", timeout=3)
+
+    def set_conf(self, key, value, cb):
+        self.conf[key] = value
+        self.save()
+        if cb:
+            cb()
+
+    def on_site_mode(self):
+        self.apply_site_mode()
+        if self.view():
+            self.view().reload()
+
+    def on_block_ads(self):
+        if self.conf["block_ads"]:
+            self.load_ad_filter()
+        else:
+            self.ucm.remove_all_filters()
+        if self.view():
+            self.view().reload()
+
+    def forget(self):
+        def done(dm, res):
+            try:
+                dm.clear_finish(res)
+                self.toast.say("Cookies and site data forgotten.", timeout=3)
+            except GLib.Error as e:
+                self.toast.say("Could not forget: " + e.message, timeout=5)
+        self.data.clear(WebKit2.WebsiteDataTypes.ALL, 0, None, done)
+
+    def save(self):
+        tmp = SETTINGS + ".new"
+        with open(tmp, "w") as f:
+            json.dump(self.conf, f, indent=1)
+        os.replace(tmp, SETTINGS)
+
+
+class App(Gtk.Application):
+    def __init__(self):
+        super().__init__(application_id="org.cascadia.Web", flags=Gio.ApplicationFlags.HANDLES_COMMAND_LINE)
+        self.win = None
+
+    def do_startup(self):
+        Gtk.Application.do_startup(self)
+        css = Gtk.CssProvider()
+        css.load_from_data(CSS)
+        Gtk.StyleContext.add_provider_for_screen(Gdk.Screen.get_default(), css,
+                                                 Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+
+    def do_command_line(self, cl):
+        args = [a for a in cl.get_arguments()[1:] if a.strip()]
+        if not self.win:
+            self.win = Browser(self)
+        if args:
+            uri = to_uri(" ".join(args)) if not any(a.startswith(("http:", "https:", "file:")) for a in args) \
+                else None
+            for u in ([uri] if uri else [to_uri(a) for a in args]):
+                self.win.new_tab(u)
+        elif self.win.notebook.get_n_pages() == 0:
+            self.win.new_tab(START)
+        self.win.present()
+        return 0
+
+    def do_shutdown(self):
+        if self.win:
+            self.win.stop_player()
+            if self.win.ytdl and self.win.ytdl.poll() is None:
+                self.win.ytdl.terminate()
+        Gtk.Application.do_shutdown(self)
+
+
+if __name__ == "__main__":
+    app = App()
+    try:
+        gi.require_version("GLibUnix", "2.0")
+        from gi.repository import GLibUnix
+        signal_add = GLibUnix.signal_add
+    except (ImportError, ValueError):
+        signal_add = GLib.unix_signal_add
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        signal_add(GLib.PRIORITY_DEFAULT, sig, lambda: (app.quit(), False)[1])
+    sys.exit(app.run(sys.argv))
