@@ -3,8 +3,8 @@
 #
 #   wifi                        where things stand, and what to type next
 #   wifi scan                   the networks in range
-#   wifi connect SSID [PASS]    join (open without PASS), get an address,
-#                               and remember the network
+#   wifi connect SSID [PASS]    join (open without PASS, or as remembered),
+#                               get an address, and remember the network
 #   wifi up                     join the remembered networks
 #   wifi down                   leave; stop wpa_supplicant and DHCP
 #   wifi forget SSID            drop a remembered network
@@ -224,6 +224,13 @@ case "$1" in
         [ -n "$2" ] || die "usage: wifi connect SSID [PASSWORD]"
         need_tools; need_if
         mkdir -p $NETS $RUN
+        # a remembered network, no password given: as remembered (its PSK),
+        # not written over as an open one
+        if [ -z "$3" ] && [ -f "$NETS/$(hexof "$2").conf" ]; then
+            say "Joining \"$2\" (remembered)..."
+            start "$NETS/$(hexof "$2").conf" && say "Connected: $(addr4)."
+            exit
+        fi
         f=$RUN/new.conf
         { printf '# ssid: %s\n' "$2"; network_block "$2" "$3"; } > $f || exit 1
         say "Joining \"$2\"..."
