@@ -10,7 +10,10 @@ Launch: an app (the apps' list, as the desktop's) and a preset; Launch runs
 `screenpad PRESET -- the app's command` and the window goes; "Add to apps"
 leaves an entry for the pair in the apps' list (~/.local/share/
 applications), as supertux-screenpad.desktop is for SuperTux.  The last
-pair chosen is kept (~/.config/screenpad/launch.json).
+pair chosen is kept (~/.config/screenpad/launch.json).  Below them the
+apps' list's entries that run screenpad, each with Remove: one of ours
+goes, one that came installed (SuperTux's) is hidden by an entry of the
+same name with Hidden=true.
 
 Edit presets: on the left the screen as the preset has it, landscape
 (1024 x 768) or portrait, with its controls drawn as screenpad draws them;
@@ -95,6 +98,8 @@ CSS = b"""
 .launch label.field { font-weight: bold; font-size: 15px; margin-top: 10px; }
 .launch combobox, .launch button { min-height: 52px; font-size: 16px; }
 .launch .go { min-height: 64px; font-size: 18px; font-weight: bold; }
+.launch list label { font-size: 15px; }
+.launch list button { min-height: 44px; }
 """
 LAUNCH_STATE = os.path.join(USER, "launch.json")
 
@@ -110,6 +115,50 @@ def apps():
         cmd = re.sub(r"%[a-zA-Z]", "", cmd).strip()
         if cmd:
             out.append((a.get_id(), a.get_display_name(), a.get_icon(), cmd))
+    out.sort(key=lambda t: t[1].lower())
+    return out
+
+
+APPS_DIR = os.path.join(os.path.expanduser("~"), ".local", "share", "applications")
+SYSTEM_APPS = ("/usr/local/share/applications", "/usr/share/applications")
+
+
+def desktop_keys(path):
+    keys = {}
+    try:
+        with open(path) as f:
+            section = None
+            for line in f:
+                line = line.strip()
+                if line.startswith("["):
+                    section = line
+                elif section == "[Desktop Entry]" and "=" in line:
+                    k, v = line.split("=", 1)
+                    keys.setdefault(k.strip(), v.strip())
+    except OSError:
+        pass
+    return keys
+
+
+def screenpad_entries():
+    """The apps' list's entries that run screenpad: (file name, name, path),
+    the user's own over the installed ones of the same name, hidden ones out."""
+    seen, out = set(), []
+    for d in (APPS_DIR,) + SYSTEM_APPS:
+        try:
+            files = sorted(os.listdir(d))
+        except OSError:
+            continue
+        for f in files:
+            if not f.endswith(".desktop") or f in seen:
+                continue
+            seen.add(f)
+            k = desktop_keys(os.path.join(d, f))
+            if k.get("Hidden", "").lower() == "true" or k.get("NoDisplay", "").lower() == "true":
+                continue
+            ex = k.get("Exec", "")
+            if re.search(r"(^|/)screenpad\s", ex) and " -- " in ex:
+                out.append((f, k.get("Name", f[:-8]), os.path.join(d, f)))
     out.sort(key=lambda t: t[1].lower())
     return out
 
@@ -485,7 +534,56 @@ class Editor(Gtk.Window):
         entry = Gtk.Button(label="Add to apps")
         entry.connect("clicked", lambda _b: self.add_entry())
         box.pack_start(entry, False, False, 0)
+
+        l = Gtk.Label(label="In the apps' list", xalign=0)
+        l.get_style_context().add_class("field")
+        box.pack_start(l, False, False, 14)
+        self.entries = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE)
+        self.entries.get_style_context().add_class("frame")
+        box.pack_start(self.entries, False, False, 0)
+        self.refresh_entries()
         return box
+
+    def refresh_entries(self):
+        for w in self.entries.get_children():
+            self.entries.remove(w)
+        found = screenpad_entries()
+        if not found:
+            row = Gtk.Label(label="None yet: Add to apps makes one", xalign=0, margin=12)
+            row.get_style_context().add_class("dim")
+            self.entries.add(row)
+        for fname, name, path in found:
+            row = Gtk.Box(spacing=8, margin=6)
+            row.pack_start(Gtk.Label(label=name, xalign=0, ellipsize=Pango.EllipsizeMode.END,
+                                     margin_start=6), True, True, 0)
+            b = Gtk.Button(label="Remove")
+            b.get_style_context().add_class("destructive-action")
+            b.connect("clicked", lambda _b, f=fname, n=name, p=path: self.remove_entry(f, n, p))
+            row.pack_end(b, False, False, 0)
+            self.entries.add(row)
+        self.entries.show_all()
+
+    def remove_entry(self, fname, name, path):
+        d = Gtk.MessageDialog(transient_for=self, modal=True, message_type=Gtk.MessageType.QUESTION,
+                              buttons=Gtk.ButtonsType.YES_NO,
+                              text="Remove \"%s\" from the apps' list?" % name)
+        ok = d.run() == Gtk.ResponseType.YES
+        d.destroy()
+        if not ok:
+            return
+        mine = os.path.join(APPS_DIR, fname)
+        installed = any(os.path.exists(os.path.join(s, fname)) for s in SYSTEM_APPS)
+        try:
+            if os.path.exists(mine):
+                os.unlink(mine)
+            if installed:
+                # one that came installed: hidden by the user's own of its name
+                os.makedirs(APPS_DIR, exist_ok=True)
+                with open(mine, "w") as f:
+                    f.write("[Desktop Entry]\nType=Application\nName=%s\nHidden=true\n" % name)
+        except OSError as e:
+            self.error("Could not remove it: %s" % e)
+        self.refresh_entries()
 
     def fill_launch_presets(self, select=None):
         cur = select or self.launch_presets.get_active_id()
@@ -552,6 +650,7 @@ class Editor(Gtk.Window):
         except OSError as e:
             self.error("Could not write %s: %s" % (path, e))
             return
+        self.refresh_entries()
         d = Gtk.MessageDialog(transient_for=self, modal=True, message_type=Gtk.MessageType.INFO,
                               buttons=Gtk.ButtonsType.OK,
                               text="\"%s (%s controls)\" is in the apps' list now." % (name, preset))
@@ -561,6 +660,7 @@ class Editor(Gtk.Window):
     def on_page(self, *_a):
         if self.stack.get_visible_child_name() == "launch":
             self.fill_launch_presets()
+            self.refresh_entries()
 
     # -- the top bar
     def toolbar(self):
