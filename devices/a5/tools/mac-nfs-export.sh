@@ -17,8 +17,9 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-KEEP="$ROOT/build/keep"                    # survives a rootfs rebuild; the assembly
-                                           # copies it back over the fresh tree
+KEEP="${BOARD_KEEP:-$ROOT/build/keep}"     # survives a rootfs rebuild; the assembly
+                                           # copies it back over the fresh tree (the
+                                           # board's: the iPad 2's is build/k93/keep)
 SRC="${SRC:-$ROOT/build/initramfs-root}"   # the tree ./cascadia a5 rootfs builds and
                                            # ./cascadia a5 build embeds -- pointing this
                                            # anywhere else writes /etc/nfsroot into a

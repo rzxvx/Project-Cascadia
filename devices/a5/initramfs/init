@@ -137,6 +137,7 @@ p105_refresh_root() {
     [ "${1:-}" = nand ] && p105_motd=
     p105_put /etc/resolv.conf /newroot/etc/resolv.conf
     p105_put /etc/build-date  /newroot/etc/build-date
+    p105_put /etc/localtime   /newroot/etc/localtime
     # Stage 2 is part of the boot, not of the root filesystem, so the
     # one from this build replaces whatever the NFS root holds.  The
     # root is seeded once and never overwritten, which froze its stage 2
@@ -155,14 +156,21 @@ p105_refresh_root() {
     # And the NAND tools with their `ios` front end, and the login
     # banner, which otherwise stays whatever the seed said.  And the
     # GPU's microkernel: apple-sgx asks for it when it is started,
-    # long after this switch_root.  And `bluetooth`, with the
-    # patchram hci_bcm reloads whenever the chip is reset.  And the
-    # speakers' ALSA setup (dmix as "default"); alsa-utils itself
-    # comes with the seed, or tools/audio/audio-setup.sh.
+    # long after this switch_root, and so does the camera ISP's, with
+    # its sensors' set-files, whenever a camera starts streaming.  And
+    # `bluetooth`, with the patchram hci_bcm reloads whenever the chip
+    # is reset.  And the speakers' ALSA setup (dmix as "default");
+    # alsa-utils itself comes with the seed, or tools/audio/audio-setup.sh.
+    # The iPad 2's own (cascadia-board tells the boards apart): its
+    # digitizer's, Wi-Fi's and Bluetooth's firmware.
     for f in /sbin/z2-boot /sbin/p105-keys /lib/firmware/P105.mtprops /lib/firmware/mtcal.bin /bin/busybox.static /usr/bin/wifi \
-             /usr/bin/bluetooth /lib/firmware/brcm/BCM4334B0.hcd \
+             /usr/bin/bluetooth /usr/bin/cascadia-board /lib/firmware/brcm/BCM4334B0.hcd \
              /lib/firmware/brcm/brcmfmac4334.bin /sbin/nandctl /sbin/iosnand /usr/bin/ios \
-             /lib/firmware/apple/sgx543.fw $p105_motd /etc/asound.conf; do
+             /lib/firmware/K93.mtprops /lib/firmware/brcm/brcmfmac4329-sdio.bin \
+             /lib/firmware/brcm/brcmfmac4329-sdio.txt /lib/firmware/brcm/BCM4329C0.hcd \
+             /lib/firmware/apple/sgx543.fw $p105_motd /etc/asound.conf \
+             /lib/firmware/apple/h4isp-firmware.bin /lib/firmware/apple/h4isp-setfile-9726.bin \
+             /lib/firmware/apple/h4isp-setfile-7739.bin; do
         [ -f "$f" ] || continue
         mkdir -p "/newroot${f%/*}" 2>/dev/null
         # unchanged files are not rewritten: on a NAND root every write wears

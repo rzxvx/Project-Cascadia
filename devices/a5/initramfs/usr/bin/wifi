@@ -27,6 +27,11 @@ CONF=$RUN/wpa_supplicant.conf
 
 say()  { printf '%s\n' "$*"; }
 die()  { printf 'wifi: %s\n' "$*" >&2; exit 1; }
+
+# The chip's power and bus below are the iPad mini's (BCM4334 on HSIC behind
+# EHCI).  The iPad 2's BCM4329 sits on SDIO, where brcmfmac and the MMC core
+# do the bring-up themselves; only the join part of this applies there.
+BOARD=$(cascadia-board 2>/dev/null || echo unknown)
 hexof() { printf '%s' "$1" | od -An -tx1 | tr -d ' \n'; }
 
 need_tools() {
@@ -41,7 +46,19 @@ need_tools() {
 # reset, the firmware enumerating.  The same regulator writes as at boot.
 EHCI=36400000.usb
 EHCI_DRV=/sys/bus/platform/drivers/ehci-platform
+# The iPad 2's chip is behind the SDIO host at 0x30000000: rebinding that
+# runs its power sequence (REG_ON, PMU GPIO 3) and the card's enumeration.
+SDIO_DEV=/sys/bus/platform/devices/30000000.sdio
 chip_cycle() {
+    if [ "$BOARD" = k93 ]; then
+        [ -e $SDIO_DEV ] || die "no SDIO host (30000000.sdio) in this device tree"
+        drv=$(readlink -f $SDIO_DEV/driver 2>/dev/null)
+        [ -n "$drv" ] || drv=/sys/bus/platform/drivers/sdhci-apple-s5l
+        [ -e $SDIO_DEV/driver ] && echo 30000000.sdio > "$drv/unbind"
+        sleep 1
+        echo 30000000.sdio > "$drv/bind"
+        return
+    fi
     [ -e $EHCI_DRV/$EHCI ] && echo $EHCI > $EHCI_DRV/unbind
     sleep 1
     echo $EHCI > $EHCI_DRV/bind

@@ -1,0 +1,30 @@
+--- a/drivers/mmc/host/Kconfig
++++ b/drivers/mmc/host/Kconfig
+@@ -150,6 +150,17 @@
+ 
+ 	  If unsure, say N.
+ 
++config MMC_SDHCI_APPLE_S5L
++	tristate "SDHCI support for the Apple S5L89xx SDIO controller"
++	depends on MMC_SDHCI_PLTFM && OF
++	depends on ARCH_APPLE_S5L || COMPILE_TEST
++	help
++	  The SDIO host of Apple's A4/A5 SoCs (S5L8930X/S5L8940X), an SDHC
++	  that iOS drives through its I/O coprocessor.  On the iPad 2 the
++	  BCM4329 Wi-Fi chip is behind it.
++
++	  If unsure, say N.
++
+ config MMC_SDHCI_OF_ARASAN
+ 	tristate "SDHCI OF support for the Arasan SDHCI controllers"
+ 	depends on MMC_SDHCI_PLTFM
+--- a/drivers/mmc/host/Makefile
++++ b/drivers/mmc/host/Makefile
+@@ -80,6 +80,7 @@
+ obj-$(CONFIG_MMC_SDHCI_ESDHC_MCF)       += sdhci-esdhc-mcf.o
+ obj-$(CONFIG_MMC_SDHCI_ESDHC_IMX)	+= sdhci-esdhc-imx.o
+ obj-$(CONFIG_MMC_SDHCI_DOVE)		+= sdhci-dove.o
++obj-$(CONFIG_MMC_SDHCI_APPLE_S5L)	+= sdhci-apple-s5l.o
+ obj-$(CONFIG_MMC_SDHCI_TEGRA)		+= sdhci-tegra.o
+ obj-$(CONFIG_MMC_SDHCI_OF_ARASAN)	+= sdhci-of-arasan.o
+ obj-$(CONFIG_MMC_SDHCI_OF_ASPEED)	+= sdhci-of-aspeed.o

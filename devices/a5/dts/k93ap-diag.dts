@@ -1,0 +1,110 @@
+// SPDX-License-Identifier: GPL-2.0 OR MIT
+// Experimental K93 RAM-console target. MMIO and IRQs from K93/12H321 ADT.
+// iBEC diagnostic photo confirms readable 1024/4096 scanout and MPIDR 0x80000900.
+/dts-v1/;
+
+/ {
+    model = "Apple iPad 2 Wi-Fi (K93AP)";
+    compatible = "apple,k93ap", "apple,s5l8940x", "apple,arm";
+    #address-cells = <1>;
+    #size-cells = <1>;
+    interrupt-parent = <&aic>;
+
+    aliases { serial0 = &uart0; };
+    chosen {
+        bootargs = "earlycon=s3c6400,0x32500000 keep_bootcon console=tty0 maxcpus=1 root=/dev/ram0 rw panic=0 loglevel=8 g_cdc.host_addr=02:93:00:00:00:01 g_cdc.dev_addr=02:93:00:00:00:02";
+    };
+
+    memory@80000000 {
+        device_type = "memory";
+        // Exclude iBoot/framebuffer space above the live vram allocation.
+        reg = <0x80000000 0x1f6fc000>;
+    };
+    reserved-memory {
+        #address-cells = <1>;
+        #size-cells = <1>;
+        ranges;
+        fb_region: framebuffer@9f6fc000 {
+            reg = <0x9f6fc000 0x900000>;
+            no-map;
+        };
+        cpu_reset_page: cpu-reset@80000000 {
+            reg = <0x80000000 0x1000>;
+            no-map;
+        };
+    };
+    framebuffer0: framebuffer@9f6fc000 {
+        compatible = "simple-framebuffer";
+        reg = <0x9f6fc000 0x400000>;
+        width = <1024>;
+        height = <768>;
+        stride = <4096>;
+        format = "a8r8g8b8";
+        memory-region = <&fb_region>;
+    };
+    cpus {
+        #address-cells = <1>;
+        #size-cells = <0>;
+        apple,cpu-reset-page = <&cpu_reset_page>;
+        cpu@900 {
+            device_type = "cpu";
+            compatible = "arm,cortex-a9";
+            reg = <0x900>;
+        };
+    };
+    // Omit L2 enablement for the first console experiment. No storage, power,
+    // GPIO, Wi-Fi or touchscreen nodes are probed in this first-stage DTS.
+    uart_clk: clock-24000000 {
+        compatible = "fixed-clock";
+        #clock-cells = <0>;
+        clock-frequency = <24000000>;
+    };
+    soc@30000000 {
+        compatible = "simple-bus";
+        #address-cells = <1>;
+        #size-cells = <1>;
+        ranges = <0 0x30000000 0x10000000>;
+
+        // Verified on K93: free-running 24 MHz counter, single 16-byte bank.
+        // Platform clock code only reads it; RAM-loader reset stays armed.
+        timer@f103020 {
+            compatible = "apple,s5l8940x-wdt-timer";
+            reg = <0xf103020 0x10>;
+        };
+
+        aic: interrupt-controller@f200000 {
+            compatible = "aic,1";
+            reg = <0xf200000 0x10000>;
+            interrupt-controller;
+            #interrupt-cells = <1>;
+            #address-cells = <0>;
+            apple,main-cpus = <2>;
+        };
+        uart0: serial@2500000 {
+            compatible = "apple,s5l-uart";
+            reg = <0x2500000 0x1000>;
+            interrupts = <21>;
+            clocks = <&uart_clk>, <&uart_clk>;
+            clock-names = "uart", "clk_uart_baud0";
+        };
+        otgphy: phy@6000000 {
+            compatible = "apple,s5l8940x-otgphy";
+            reg = <0x6000000 0x1000>, <0xf108000 0x1000>;
+            #phy-cells = <1>;
+            // Evidence from K93 ADT. Driver preserves iBoot's live tuning.
+            apple,uotgtune1-device = <0x349>;
+            apple,uotgtune2-device = <0xf13>;
+        };
+        usb@6100000 {
+            compatible = "apple,s5l8940x-dwc2", "snps,dwc2";
+            reg = <0x6100000 0x10000>;
+            interrupts = <11>;
+            phys = <&otgphy 0>;
+            phy-names = "usb2-phy";
+            dr_mode = "peripheral";
+            g-rx-fifo-size = <512>;
+            g-np-tx-fifo-size = <128>;
+            g-tx-fifo-size = <128 128 128 128 128 128 128 128>;
+        };
+    };
+};
