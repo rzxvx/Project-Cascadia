@@ -4,7 +4,11 @@
  *   k93nand regs                      PMGR gates + FMI/FMC/ECC registers of both
  *                                     buses (never reads a FIFO)
  *   k93nand init                      clock gates on, block reset, FMC to SDR,
- *                                     timing, interrupts cleared (h2fmi_init_minimal)
+ *                                     timing, interrupts cleared (h2fmi_init_minimal);
+ *                                     not on a bus iBEC left in DDR (PPN flash)
+ *   k93nand flash                     raw NAND or PPN (iPad2,1 ships with both),
+ *                                     told before anything is sent to the flash:
+ *                                     prints raw / ppn, exit 0 / 3 (flash_is_raw)
  *   k93nand id                        NAND RESET + READ ID on CE0-7 of each bus, the
  *                                     ce-bitmap, geometry from iBEC's chip tables;
  *                                     saves the ce-bitmap to /tmp/k93nand.state
@@ -408,10 +412,62 @@ static int lock_bus(int bus)
     return 1;       /* held until exit */
 }
 
+static int nand_read_id(int bus, int ce, uint8_t id[8]);
+
+/*
+ * The flash must be raw NAND before anything else is sent to it.  iPad2,1 ships
+ * with PPN as well -- a second iPad 2 read 50 50 4E 01 ("PPN", the iPad mini's
+ * kind; its iOS's ADT says flash-controller0/disk ppn-device) -- behind the same
+ * FMI windows, and these sequences mean something else to a PPN package: a
+ * RESET alone drops it out of the DDR interface iBEC set up, until the next
+ * boot.  So two looks first, neither of which changes anything on either kind:
+ * the controller's mode, which iBEC set for the chips (DDR, FMC_ON 5, is PPN's
+ * alone); then, in SDR, a READ ID of CE0, where a raw part answers with its
+ * maker's code (EC, 98, AD, 2C, 45 ...) and PPN with 0x50.  Once per bus, from
+ * claim(), before any other command goes out on it.  flash_ppn says why.
+ */
+static int flash_ppn;
+
+static int flash_is_raw(int bus)
+{
+#ifndef K93NAND_SIM
+    static unsigned checked;
+    uint32_t on;
+    uint8_t id[8];
+
+    if (checked & 1u << bus)
+        return 1;
+    on = RAW(bus, B_FMC, FMC_ON);
+    if (on & 4) {
+        fprintf(stderr, "k93nand: FMI%d runs DDR (FMC_ON 0x%x), which iBEC sets up for PPN flash alone: "
+                "this iPad 2's NAND is PPN, as the iPad mini's, and the raw-NAND tools do not apply to it.  "
+                "Nothing was sent to it.\n", bus, on);
+        flash_ppn = 1;
+        return 0;
+    }
+    if (nand_read_id(bus, 0, id)) {
+        fprintf(stderr, "k93nand: FMI%d CE0: READ ID failed -- not going on blind\n", bus);
+        return 0;
+    }
+    if (id[0] == 0x50 && id[1] == 0x50) {
+        fprintf(stderr, "k93nand: FMI%d CE0 reads %02x %02x %02x %02x (\"PPN\"): this iPad 2's NAND is PPN, "
+                "as the iPad mini's, and the raw-NAND tools do not apply to it.  Nothing but that READ ID "
+                "was sent to it.\n", bus, id[0], id[1], id[2], id[3]);
+        flash_ppn = 1;
+        return 0;
+    }
+    checked |= 1u << bus;
+#else
+    (void)bus;
+#endif
+    return 1;
+}
+
 /* A bus is usable when it is clocked; the timing to restore after a block reset
  * is what is in IF_CTRL now -- iBEC programmed it at boot (h2fmiInit 0x9ff0374a)
  * unless something reset the block since, in which case it is 0xffff, the slow
- * value iBEC itself starts with (h2fmi_init_minimal 0x9ff03980). */
+ * value iBEC itself starts with (h2fmi_init_minimal 0x9ff03980).  Then the
+ * flash must be raw NAND (flash_is_raw). */
 static int claim(int bus)
 {
     if (!gates_on(bus)) {
@@ -424,7 +480,7 @@ static int claim(int bus)
     timing[bus] = RAW(bus, B_FMC, FMC_IFCTRL) & 0xfffff;
     if (!timing[bus])
         timing[bus] = 0xffff;
-    return 1;
+    return flash_is_raw(bus);
 }
 
 /* iBoot clock_gate 0x9ff1f128: low nibble = 0xf, wait for the status nibble */
@@ -1206,6 +1262,13 @@ static int cmd_init(void)
         printf("FMI%d: gates 0x%08x 0x%08x, FMC_ON 0x%08x, IF_CTRL 0x%08x before\n", b, pmgr_rd(GATE_FMI(b)),
                pmgr_rd(GATE_BCH(b)), gates_on(b) ? RAW(b, B_FMC, FMC_ON) : 0, gates_on(b) ? RAW(b, B_FMC, FMC_IFCTRL) : 0);
         uint32_t keep = gates_on(b) ? RAW(b, B_FMC, FMC_IFCTRL) & 0xfffff : 0;
+        if (gates_on(b) && RAW(b, B_FMC, FMC_ON) & 4) {
+            fprintf(stderr, "k93nand: FMI%d runs DDR (FMC_ON 0x%x): PPN flash, not this tool's -- left as it is\n",
+                    b, RAW(b, B_FMC, FMC_ON));
+            flash_ppn = 1;
+            rc = 3;
+            continue;
+        }
         if (!lock_bus(b)) {
             rc = 1;
             continue;
@@ -1227,6 +1290,20 @@ static int cmd_init(void)
         wr(b, B_ECC, ECC_MASK, 0);
     }
     return rc;
+}
+
+/* `flash`: which kind of NAND this iPad 2 has, by flash_is_raw()'s two looks,
+ * before anything else is sent to it: 0 raw (this tool's), 3 PPN, 1 neither
+ * could be told (gates off, a bus busy). */
+static int cmd_flash(void)
+{
+    for (int b = 0; b < NBUS; b++)
+        if (!claim(b)) {
+            printf("%s\n", flash_ppn ? "ppn" : "unknown");
+            return flash_ppn ? 3 : 1;
+        }
+    printf("raw\n");
+    return 0;
 }
 
 static const char *vendor_name(uint8_t v)
@@ -1615,7 +1692,7 @@ static int cmd_selftest(void)
 static void usage(void)
 {
     fprintf(stderr,
-            "usage: k93nand [-q|-v|-W] regs | init | id | sig | selftest\n"
+            "usage: k93nand [-q|-v|-W] regs | init | flash | id | sig | selftest\n"
             "       k93nand [-q|-v|-W] read BUS CE PAGE [-s] [-k auto|none|meta|user:LPN] [-o FILE] [-O FILE]\n"
             "       k93nand [-q|-v|-W] raw BUS CE PAGE [FILE]\n"
             "       k93nand [-W] scan BUS CE FIRSTBLOCK NBLOCKS [-1|-s] [-v]\n"
@@ -1654,6 +1731,8 @@ int main(int argc, char **argv)
         return cmd_regs();
     if (!strcmp(c, "init"))
         return cmd_init();
+    if (!strcmp(c, "flash"))
+        return cmd_flash();
     if (!strcmp(c, "id"))
         return cmd_id();
     if (!strcmp(c, "read"))

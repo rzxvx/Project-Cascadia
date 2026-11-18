@@ -426,6 +426,21 @@ nand_root() {
     # /run/k93nand: where k93nand and k93iosnand keep their state and bus
     # locks when it exists, in this root and the next
     mkdir -p /run/k93nand /run/ios /mnt/ios
+    # Raw NAND or PPN: iPad2,1 ships with both, and the K93 NAND tools are for
+    # raw NAND alone.  k93nand tells them apart before anything is sent to the
+    # flash (the controller's mode, then one READ ID), and every K93 NAND tool
+    # checks again on its own (tools/nand/k93nand.c, flash_is_raw).
+    k93nand -q flash > /run/ios/flash.log 2>&1
+    case $? in
+        0)  ;;
+        3)  msg "K93: this iPad 2's NAND is PPN (as the iPad mini's), not the raw NAND the K93 NAND root reads -- staying off it"
+            msg "K93: $(tail -n 2 /run/ios/flash.log | head -n 1)"
+            umount /run
+            return 1 ;;
+        *)  msg "K93: the NAND's kind could not be told: $(tail -n 2 /run/ios/flash.log | head -n 1) -- staying off it"
+            umount /run
+            return 1 ;;
+    esac
     if ! k93nand -q id > /run/ios/id.log 2>&1; then
         msg "K93: k93nand id failed: $(tail -n 1 /run/ios/id.log)"
         umount /run
