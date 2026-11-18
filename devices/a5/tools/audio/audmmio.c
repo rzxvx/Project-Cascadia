@@ -23,6 +23,10 @@
  *                         wave of HZ (32-bit stereo frames, 48 kHz assumed)
  *                         for US microseconds, writing whenever
  *                         (STAT & MASK) shifted down is below N
+ *   h ADDR STAT MASK N HZ US
+ *                         the same for a 16-bit port (the iPad 2's I2S0):
+ *                         each 16-bit sample is written in both halves of
+ *                         the word, so it plays however the FIFO packs them
  * Bus errors are caught, as in /bin/peek.
  */
 #include <fcntl.h>
@@ -180,7 +184,9 @@ static void run(char *line)
         }
         break;
     }
+    case 'h':
     case 's': {
+        int half = cmd[0] == 'h';
         uint32_t stat, mask, lim, hz, us, sh = 0, frames = 0, phase = 0;
         uint64_t writes = 0;
         a = num(&sp);
@@ -195,6 +201,10 @@ static void run(char *line)
         while (now_us() - t0 < us) {
             if (((*reg(stat) & mask) >> sh) < lim) {
                 int32_t s = phase < 24000 ? 0x10000000 : -0x10000000;
+                if (half) {
+                    uint32_t v = (uint16_t)(phase < 24000 ? 0x2000 : -0x2000);
+                    s = (int32_t)(v << 16 | v);
+                }
                 *reg(a) = s;
                 *reg(a) = s;
                 writes += 2;

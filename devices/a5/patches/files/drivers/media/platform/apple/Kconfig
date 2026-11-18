@@ -1,0 +1,18 @@
+# SPDX-License-Identifier: GPL-2.0-only
+
+comment "Apple media platform drivers"
+
+config VIDEO_APPLE_H4ISP
+	tristate "Apple A5 H4 camera ISP (the iPad 2's cameras)"
+	depends on V4L_PLATFORM_DRIVERS
+	depends on VIDEO_DEV
+	depends on ARCH_APPLE_S5L || COMPILE_TEST
+	depends on HAS_DMA && OF && COMMON_CLK
+	select VIDEOBUF2_DMA_SG
+	select GENERIC_ALLOCATOR
+	help
+	  The camera ISP of the Apple A5 (S5L8940X): a CPU of its own that
+	  runs Apple's firmware behind an IOMMU, drives the iPad 2's rear
+	  and front cameras and writes YUYV frames.  Two V4L2 capture
+	  devices, one a camera.  Needs apple/h4isp-firmware.bin and the
+	  sensors' set-files from iOS.

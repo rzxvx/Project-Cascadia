@@ -21,7 +21,9 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REPO="$(cd "$ROOT/../.." && pwd)"
-IBSS="$ROOT/build/firmware/iBSS.patched"
+# BOARD_FW: the board's firmware directory (./cascadia sets it; the iPad 2's
+# is build/k93/firmware)
+IBSS="${BOARD_FW:-$ROOT/build/firmware}/iBSS.patched"
 KLOADER="$ROOT/build/cache/kloader"
 KLOADER_URL="https://raw.githubusercontent.com/LukeZGD/Legacy-iOS-Kit/23622f8fe72c09952089d5145a7b008cfcc90d9b/resources/kloader/kloader"
 KLOADER_SHA256=bec212b4d99a1e3b9fa4add663fa884a2435045d1e47051415f4e26e197f8132

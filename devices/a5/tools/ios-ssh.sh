@@ -5,7 +5,7 @@
 #   ios_setup NAME          a work directory /tmp/cascadia-NAME.*, the
 #                           connection settings, cleanup on exit
 #   ios COMMAND...          run COMMAND on the iPad (stdin/stdout pass through)
-#   ios_check_model         iPad2,5 or fail
+#   ios_check_model         $BOARD_MODEL (default iPad2,5) or fail
 #
 # Over USB it goes through usbmuxd with lib/usbmux.py as ssh's ProxyCommand:
 # no iproxy, no local port.  usbmuxd is part of macOS; on Linux it is the
@@ -90,6 +90,8 @@ ios_check_model() {
         || fail "no ssh to iOS -- is the iPad in iOS, unlocked, with OpenSSH installed (Cydia)?"
     IOS_MODEL=$(ios uname -m) \
         || fail "no ssh to iOS -- is the iPad in iOS, unlocked, with OpenSSH installed (Cydia)?"
-    [ "$IOS_MODEL" = "iPad2,5" ] || fail "this is a $IOS_MODEL; this port is for iPad2,5 (p105ap)"
+    # BOARD_MODEL: the board ./cascadia was asked for (iPad2,1 for k93)
+    [ "$IOS_MODEL" = "${BOARD_MODEL:-iPad2,5}" ] \
+        || fail "this is a $IOS_MODEL; this build is for ${BOARD_MODEL:-iPad2,5} (./cascadia k93 ... for an iPad 2 Wi-Fi, ./cascadia a5 ... for an iPad mini 1)"
     echo "    $IOS_MODEL"
 }

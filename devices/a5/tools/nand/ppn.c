@@ -163,9 +163,39 @@ int ppn_gates_on(int bus)
     return 1;
 }
 
+/*
+ * The flash behind a bus must be PPN before anything else is sent to it: the
+ * iPad 2 (iPad2,1) ships with raw NAND as well as PPN behind the same FMI
+ * windows, and a raw part takes these command sequences as something else
+ * (tools/nand/k93nand.c is its reader).  A READ ID changes nothing on either
+ * kind: PPN answers "PPN" (50 50 4E, each byte twice in DDR), a raw part its
+ * maker's code (EC, 98, AD, 2C, 45, 89 ...), never 0x50.  Once per bus, under
+ * the bus lock, on CE0, where every board here has a package.
+ */
+static int ppn_flash_is_ppn(int bus)
+{
+    static unsigned checked;
+    uint8_t id[8];
+
+    if (checked & 1u << bus)
+        return 1;
+    if (ppn_read_id(bus, 0, 0, id)) {
+        fprintf(stderr, "FMI%d: READ ID failed; not going on blind\n", bus);
+        return 0;
+    }
+    if (id[0] != 0x50 || id[1] != 0x50) {
+        fprintf(stderr, "FMI%d: READ ID %02x %02x %02x %02x %02x %02x: not PPN flash (raw NAND, as on some "
+                "iPad 2s: tools/nand/k93nand reads that); nothing else was sent to it\n",
+                bus, id[0], id[1], id[2], id[3], id[4], id[5]);
+        return 0;
+    }
+    checked |= 1u << bus;
+    return 1;
+}
+
 int ppn_claim(int bus)
 {
-    return ppn_gates_on(bus) && ppn_lock(bus);
+    return ppn_gates_on(bus) && ppn_lock(bus) && ppn_flash_is_ppn(bus);
 }
 
 /* h2fmi_device_reset without the PMGR reset pulse: stop the FMI, bring the
