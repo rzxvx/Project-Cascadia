@@ -55,6 +55,7 @@ NEW_FILES = [
     "drivers/gpu/drm/apple-sgx/apple_sgx_kms.c",
     "include/uapi/drm/apple_sgx_drm.h",
     "drivers/mtd/devices/mtd-apple-h2fmi.c",
+    "drivers/mmc/host/sdhci-apple-s5l.c",
     "drivers/phy/phy-apple-s5l-usb.c",
     "drivers/power/supply/apple-hdq-battery.c",
     "drivers/power/supply/apple-pmu-charger.c",
@@ -62,6 +63,10 @@ NEW_FILES = [
     "sound/soc/apple/s5l-audio.c",
     "sound/soc/codecs/cs35l19.c",
     "sound/soc/codecs/cs42l63.c",
+    "sound/soc/codecs/cs42l63-seq.h",
+    "drivers/media/platform/apple/Kconfig",
+    "drivers/media/platform/apple/Makefile",
+    "drivers/media/platform/apple/apple-h4isp.c",
     "Documentation/devicetree/bindings/interrupt-controller/apple,aic1.yaml",
     "fs/hfsplus/decmpfs.c",
 ]

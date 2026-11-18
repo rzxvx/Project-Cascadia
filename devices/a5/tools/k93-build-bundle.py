@@ -78,7 +78,7 @@ config = (kernel_dir / 'kernel-config').read_text()
 for forbidden in ['CONFIG_MTD=y', 'CONFIG_DRM_APPLE_SGX=y', 'CONFIG_BATTERY_APPLE_HDQ=y']:
     if forbidden in config.splitlines():
         raise SystemExit('Unsafe K93 config: ' + forbidden)
-dts = ROOT / 'dts/k93ap.dts'
+dts = ROOT / 'dts/k93ap-diag.dts'   # the minimal RAM-console tree; dts/k93ap.dts is the full one
 subprocess.run(['dtc', '-I', 'dts', '-O', 'dtb', '-o', str(OUT / 'k93ap.dtb'), str(dts)], check=True)
 dtb = (OUT / 'k93ap.dtb').read_bytes()
 if struct.unpack_from('>II', dtb)[0] != 0xd00dfeed or struct.unpack_from('>I', dtb, 4)[0] != len(dtb):

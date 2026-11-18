@@ -1,0 +1,143 @@
+#!/usr/bin/env python3
+"""k93-seq2c.py -- the CS42L63 sequences (k93-cs42l63-sequences.py, iOS's own
+AppleCS42L63Audio run in an emulator) as a C header for the kernel's codec
+driver, sound/soc/codecs/cs42l63.c:
+
+    python3 tools/audio/k93-seq2c.py > patches/files/sound/soc/codecs/cs42l63-seq.h
+
+The same steps k93-seq2sh.py turns into i2cset lines for bring-up by hand, so
+the driver and the hand-run scripts cannot drift apart.  One step per entry:
+a register write, a read-modify-write, a read (logged), a sleep, the codec's
+reset line, the speaker amplifier's enable line, or MCLK on/off.
+
+The driver powers the codec up and down from pieces of iOS's cold init and
+power-down (SLICES), so that a board takes only the pieces its hardware has:
+the J1 (iPad 3) has no reset line, inputs or headset block described, and
+iOS 9.3.5's driver on it writes exactly the power-up, outputs-idle and
+power-down pieces below (docs/research/j1-a5x.md), the K93's iOS 8.4.1 the
+same plus the rest.  The pieces are checked to make up iOS's recordings.
+"""
+import importlib.util, os, sys
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+spec = importlib.util.spec_from_file_location("seq", os.path.join(HERE, "k93-cs42l63-sequences.py"))
+seq = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(seq)
+SEQ = seq.SEQUENCES
+
+WANTED = ["speaker_start", "speaker_stop", "hp_start", "hp_stop", "input_internal_mic",
+          "input_headset_mic", "input_stop"]
+
+# Pieces of the cold init and the power-down: (name, sequence, first, end, what)
+SLICES = [
+    ("power_up_seq", "init_cold", 9, 27,
+     "out of power-down, every block configured (after the control key; J1 and K93 alike)"),
+    ("outputs_idle", "init_cold", 28, 47,
+     "every output off and muted, what iOS leaves between streams (J1 and K93 alike)"),
+    ("inputs_idle", "init_cold", 47, 77,
+     "the input path configured and off (the K93's cold init; boards that record)"),
+    ("power_down_outputs", "power_down", 0, 9,
+     "power-down's first part: the outputs muted and off (J1 and K93 alike)"),
+    ("mikey_off", "power_down", 9, 24,
+     "power-down's headset (Mikey) part (the K93's; boards with a headset jack)"),
+]
+
+
+def W(reg, val):
+    return {"op": "write", "reg": reg, "val": val}
+
+
+def U(reg, mask, val):
+    return {"op": "update", "reg": reg, "mask": mask, "val": val}
+
+
+def check_slices():
+    """iOS's recordings are exactly the pieces, with what the driver does in
+    C between them: the reset pulse, the control key, the amplifier off, and
+    power-down's end."""
+    def cut(name):
+        n, q, a, b, _ = next(x for x in SLICES if x[0] == name)
+        return SEQ[q]["steps"][a:b]
+    spk_off = {"op": "gpio", "name": "spkr_mute", "assert": 1, "level": 0}
+    cold = ([{"op": "mclk", "on": 1, "hz": 6000000},
+             {"op": "gpio", "name": "codec_reset", "assert": 1, "level": 0},
+             {"op": "sleep_ms", "ms": 10},
+             {"op": "gpio", "name": "codec_reset", "assert": 0, "level": 1},
+             {"op": "sleep_ms", "ms": 1},
+             W(0x7d, 0xa5), {"op": "sleep_ms", "ms": 10}, W(0x7d, 0x00),
+             {"op": "read", "reg": 0x05}] +
+            cut("power_up_seq") + [spk_off] + cut("outputs_idle") + cut("inputs_idle") +
+            [spk_off] + cut("outputs_idle"))
+    assert SEQ["init_cold"]["steps"] == cold, "init_cold is not the pieces"
+    down = (cut("power_down_outputs") + cut("mikey_off") +
+            [U(0x75, 0x80, 0x00), U(0x06, 0x01, 0x01), {"op": "read", "reg": 0x62},
+             U(0x06, 0x40, 0x40), {"op": "sleep_ms", "ms": 10}, W(0x7d, 0xa5)])
+    assert SEQ["power_down"]["steps"] == down, "power_down is not the pieces"
+    assert SEQ["speaker_stop"]["steps"] == [spk_off] + cut("outputs_idle"), \
+        "speaker_stop is not the amplifier off and outputs_idle"
+
+
+def step(s):
+    op = s["op"]
+    if op == "write":
+        return "\tCS42L63_W(0x%02x, 0x%02x)," % (s["reg"], s["val"])
+    if op == "update":
+        return "\tCS42L63_U(0x%02x, 0x%02x, 0x%02x)," % (s["reg"], s["mask"], s["val"] & s["mask"])
+    if op == "read":
+        return "\tCS42L63_R(0x%02x)," % s["reg"]
+    if op == "sleep_ms":
+        return "\tCS42L63_SLEEP(%d)," % s["ms"]
+    if op == "gpio":
+        if s["name"] == "codec_reset":
+            # level is the pin's: low = held in reset
+            return "\tCS42L63_RESET(%d)," % (0 if s["level"] else 1)
+        if s["name"] == "spkr_mute":
+            # level is the pin's: high = the amplifier plays
+            return "\tCS42L63_SPK(%d)," % (1 if s["level"] else 0)
+        raise SystemExit("unknown gpio %s" % s["name"])
+    if op == "mclk":
+        return "\tCS42L63_MCLK(%d)," % (1 if s["on"] else 0)
+    raise SystemExit("unknown op %s" % op)
+
+
+def main():
+    check_slices()
+    out = []
+    out.append("/* SPDX-License-Identifier: GPL-2.0-only */")
+    out.append("/*")
+    out.append(" * Generated by tools/audio/k93-seq2c.py from k93-cs42l63-sequences.py:")
+    out.append(" * what iOS's AppleCS42L63Audio does, run in an emulator")
+    out.append(" * (docs/research/k93-audio.md).  Do not edit; regenerate.")
+    out.append(" */")
+    out.append("")
+    for name, q, a, b, what in SLICES:
+        out.append("/* %s: %s; %s steps %d-%d */" % (name, what, q, a, b - 1))
+        out.append("static const struct cs42l63_step cs42l63_%s[] = {" % name)
+        out.extend(step(s) for s in SEQ[q]["steps"][a:b])
+        out.append("};")
+        out.append("")
+    for name in WANTED:
+        v = SEQ[name]
+        out.append("/* %s: %s */" % (name, v.get("title", "")))
+        out.append("static const struct cs42l63_step cs42l63_%s[] = {" % name)
+        out.extend(step(s) for s in v["steps"])
+        out.append("};")
+        out.append("")
+    # iOS's input volume (control 0x16f) for each source: {boost (0x14 bits
+    # 2:0), analog stage (0x16-0x18), digital volume (0x19-0x1b)}
+    for src, name in (("imic", "internal"), ("emic", "headset")):
+        rows = seq.GAINS[src]
+        how = {"imic": "i", "emic": "2i - 8, from 0"}[src]
+        out.append("/* %s mic: input volume i = 0..%d = -96..+%d dB, iOS's 0x16f = %s:"
+                   % (name, len(rows) - 1, len(rows) - 1 - 96, how))
+        out.append(" * { 0x14 & 7, 0x16-0x18, 0x19-0x1b } */")
+        out.append("static const u8 cs42l63_gain_%s[%d][3] = {" % (name, len(rows)))
+        for i in range(0, len(rows), 4):
+            out.append("\t" + " ".join("{ 0x%02x, 0x%02x, 0x%02x }," % tuple(r) for r in rows[i:i + 4]))
+        out.append("};")
+        out.append("")
+    sys.stdout.write("\n".join(out))
+
+
+if __name__ == "__main__":
+    main()

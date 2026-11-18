@@ -33,6 +33,7 @@ done
 
 fail() { echo "error: $*" >&2; exit 1; }
 [ -f "$TREE/Makefile" ] || fail "$TREE does not look like a kernel tree"
+TREE="$(cd "$TREE" && pwd)"     # git -C would resolve a relative record path inside it
 
 shopt -s nullglob
 patches=("$ROOT"/patches/tree/*.patch)
@@ -45,6 +46,38 @@ rgit() { git -c safe.directory='*' -C "$ROOT" "$@"; }
 
 tmp=$(mktemp)
 trap 'rm -f "$tmp"' EXIT
+
+# Patches are stacked: a later one may change lines next to an earlier one's,
+# and then the earlier one's reverse check fails although it is in -- the
+# loop below would take it for missing and stop.  So: when every patch is in
+# exactly as it is now (its record says so), touch nothing; otherwise take out
+# every recorded patch, newest first, and apply the whole set again in order.
+if [ "$REVERT" = 0 ]; then
+    unchanged=1
+    for p in "${patches[@]}"; do
+        cmp -s "$p" "$TREE/.cascadia-applied-$(basename "$p")" || { unchanged=0; break; }
+    done
+    for rec in "$TREE"/.cascadia-applied-*.patch; do
+        [ -e "$ROOT/patches/tree/${rec##*/.cascadia-applied-}" ] || unchanged=0
+    done
+    if [ "$unchanged" = 1 ]; then
+        echo "  all ${#patches[@]} patches already applied"
+        exit 0
+    fi
+    recs=("$TREE"/.cascadia-applied-*.patch)
+    for (( i = ${#recs[@]} - 1; i >= 0; i-- )); do
+        rec=${recs[$i]}
+        if git -C "$TREE" apply --reverse --check "$rec" 2>/dev/null; then
+            git -C "$TREE" apply --reverse "$rec"
+            echo "  took out ${rec##*/.cascadia-applied-} (to apply the set again)"
+            rm -f "$rec"
+        else
+            echo "error: ${rec##*/.cascadia-applied-} is recorded as applied but does not come out" >&2
+            git -C "$TREE" apply --reverse --check "$rec" >&2 || true
+            exit 1
+        fi
+    done
+fi
 
 for p in "${patches[@]}"; do
     name=$(basename "$p")

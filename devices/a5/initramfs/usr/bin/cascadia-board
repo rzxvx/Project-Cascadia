@@ -1,0 +1,13 @@
+#!/bin/sh
+# cascadia-board -- which iPad this is, from the device tree the kernel booted
+# with (its first compatible string): p105 (iPad mini 1), k93 (iPad 2 Wi-Fi),
+# j1 (iPad 3), or unknown.  One image boots more than one board; the boot
+# scripts and the helpers in /usr/bin ask this before touching hardware that
+# only one of them has.
+c=$(tr '\0' '\n' < /proc/device-tree/compatible 2>/dev/null | head -n 1)
+case "$c" in
+    apple,p105ap) echo p105 ;;
+    apple,k93ap)  echo k93 ;;
+    apple,j1ap)   echo j1 ;;
+    *)            echo unknown ;;
+esac

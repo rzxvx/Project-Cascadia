@@ -3,8 +3,10 @@
 
     python3 scripts/adt-pmgr-map.py [DeviceTree.raw] [a peek dump of the PMGR]
 
-The pmgr node carries a `device-clocks` property: 116 entries of 36 bytes, one
-per clock and per gateable device, and each one says where its registers are.
+The pmgr node carries a `device-clocks` property: 116 entries of 36 bytes on
+the iPad mini 1 (120 of 44 on the iPad 2, whose entries have two more words
+before the name), one per clock and per gateable device, and each one says
+where its registers are.
 
     +0x00  4     byte 3 is the clock id -- the number device nodes use in
                  their `clock-gates` property -- bytes 0..2 are flags
@@ -34,7 +36,21 @@ import struct
 import sys
 
 PMGR = 0x3f100000
-ENTRY = 36
+
+
+def entry_size(dc):
+    """36 bytes an entry on the iPad mini 1's ADT, 44 on the iPad 2's (two
+    more words before the name).  The name is always the last 16 bytes, so
+    the size whose names read as names is the one."""
+    def score(size):
+        if len(dc) % size:
+            return -1
+        n = 0
+        for k in range(len(dc) // size):
+            name = dc[k * size + size - 16:(k + 1) * size].split(b'\0')[0]
+            n += bool(name) and all(0x20 < c < 0x7f for c in name)
+        return n
+    return max((36, 44), key=score)
 
 
 def adt_nodes(data):
@@ -96,10 +112,11 @@ def main():
 
     print('%-14s %3s  %-10s %-10s  %s' % ('name', 'id', 'gate', 'clock',
                                           'live' if live else ''))
-    for k in range(len(dc) // ENTRY):
-        e = dc[k * ENTRY:(k + 1) * ENTRY]
+    size = entry_size(dc)
+    for k in range(len(dc) // size):
+        e = dc[k * size:(k + 1) * size]
         w = struct.unpack('<5I', e[:20])
-        name = e[20:36].split(b'\0')[0].decode('latin1', 'replace')
+        name = e[size - 16:size].split(b'\0')[0].decode('latin1', 'replace')
         cid = e[3]
         gate = PMGR + 0x1000 + w[3] * 4 if 0 < w[3] < 0x400 else None
         clock = PMGR + w[4] * 4 if 0 < w[4] < 0x400 else None

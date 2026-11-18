@@ -37,19 +37,25 @@
 #define pr_fmt(fmt) "apple-wdt: " fmt
 
 #include <linux/clocksource.h>
+#include <linux/delay.h>
 #include <linux/init.h>
 #include <linux/io.h>
 #include <linux/kernel.h>
 #include <linux/math64.h>
+#include <linux/notifier.h>
 #include <linux/of.h>
 #include <linux/of_address.h>
 #include <linux/printk.h>
+#include <linux/reboot.h>
 #include <linux/sched_clock.h>
 
 #include <asm/delay.h>
 #include <linux/processor.h>
 
 #define WDT_CUR_TIME		0x00
+#define WDT_BITE_TIME		0x04
+#define WDT_CTRL		0x0c
+#define WDT_CTRL_RESET_EN	BIT(2)
 #define APPLE_WDT_REF_HZ	24000000UL
 
 static inline u32 apple_pmccntr(void)
@@ -173,3 +179,65 @@ unsigned long __init apple_s5l_calibrate_cpu_hz(void)
 
 	return (unsigned long)hz;
 }
+
+/*
+ * Restart: the watchdog's bite, a millisecond from now.  The comparator and
+ * RESET_EN are the proven half of this block (the header above): armed this
+ * way the machine resets, and iBoot boots whatever it boots on its own --
+ * iOS, on an iPad started by kDFU -- with no button pressed.  On the K93 the
+ * same two writes from userspace (pongo/k93_user_watchdog.S) brought the
+ * iPad back to iOS by themselves.  CUR_TIME is left alone: it is the
+ * clocksource, and mdelay() below runs on it.
+ */
+static int apple_wdt_restart(struct sys_off_data *data)
+{
+	u32 now = readl_relaxed(wdt_base + WDT_CUR_TIME);
+
+	writel_relaxed(now + APPLE_WDT_REF_HZ / 1000, wdt_base + WDT_BITE_TIME);
+	writel(WDT_CTRL_RESET_EN, wdt_base + WDT_CTRL);
+	(void)readl(wdt_base + WDT_CTRL);
+	mdelay(500);
+	pr_emerg("the watchdog did not reset the machine\n");
+	return NOTIFY_DONE;
+}
+
+/*
+ * A safety net for the way there: a restart goes through every driver's
+ * shutdown first, and one that hangs (seen once on the iPad 2, 2026-11-09:
+ * no console, no ssh, still on the bus) leaves the machine dead until
+ * someone holds the buttons.  So the bite is armed 10 s ahead before any of
+ * that runs; the restart handler then brings it forward to 1 ms.
+ */
+static int apple_wdt_reboot_notify(struct notifier_block *nb, unsigned long action, void *data)
+{
+	if (action == SYS_RESTART) {
+		u32 now = readl_relaxed(wdt_base + WDT_CUR_TIME);
+
+		writel_relaxed(now + 10 * APPLE_WDT_REF_HZ, wdt_base + WDT_BITE_TIME);
+		writel(WDT_CTRL_RESET_EN, wdt_base + WDT_CTRL);
+		pr_info("restart: the watchdog will reset the machine in 10 s at the latest\n");
+	}
+	return NOTIFY_DONE;
+}
+
+static struct notifier_block apple_wdt_reboot_nb = {
+	.notifier_call = apple_wdt_reboot_notify,
+	.priority = INT_MAX,		/* before anything else gets to hang */
+};
+
+static int __init apple_wdt_restart_init(void)
+{
+	struct sys_off_handler *h;
+
+	if (!wdt_base)
+		return 0;
+	register_reboot_notifier(&apple_wdt_reboot_nb);
+	h = register_sys_off_handler(SYS_OFF_MODE_RESTART, SYS_OFF_PRIO_DEFAULT,
+				     apple_wdt_restart, NULL);
+	if (IS_ERR(h))
+		pr_err("no restart handler: %ld\n", PTR_ERR(h));
+	else
+		pr_info("restart through the watchdog's bite\n");
+	return 0;
+}
+device_initcall(apple_wdt_restart_init);

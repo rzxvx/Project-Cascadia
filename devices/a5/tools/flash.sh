@@ -29,7 +29,9 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REPO="$(cd "$ROOT/../.." && pwd)"
 USB=(python3 "$REPO/lib/appleusb.py")
-FW="$ROOT/build/firmware"
+# BOARD_FW: the board's firmware directory (./cascadia sets it; the iPad 2's
+# is build/k93/firmware)
+FW="${BOARD_FW:-$ROOT/build/firmware}"
 LOG="${LOG:-$ROOT/uart.txt}"
 UART_SECONDS="${UART_SECONDS:-}"   # the default depends on the route; see below
 
@@ -86,6 +88,10 @@ python3 "$REPO/lib/appleusb.py" mode >/dev/null || fail "no pyusb or libusb (abo
 # that kernel's DTB sits.
 BOUT="${FLASH_OUT:-$ROOT/output}"
 NEED=("$IBEC" "$BOUT/staging-bundle.bin" "$BOUT/staging-loader.bin")
+# The bundle carries one board's device tree; the build writes which.
+if [ -s "$BOUT/board" ] && [ "$(cat "$BOUT/board")" != "${BOARD:-p105}" ]; then
+    fail "$BOUT holds a bundle for $(cat "$BOUT/board"), not ${BOARD:-p105}: ./cascadia ${BOARD:-a5} build first"
+fi
 # --skip-pwn means something already started an iBSS; the other two start
 # ours.  `if`, not `[ ... ] && ...`: under set -e a failing test takes the
 # script down, and here it fails in exactly the modes this is meant to support.

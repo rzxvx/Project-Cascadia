@@ -3,13 +3,16 @@
  *
  *   side switch        what the volume buttons set: the speakers' volume, or,
  *                      switched the other way, the backlight
- *   volume up / down   one step louder / quieter: 16 steps of 4 dB from
- *                      -48 dB to +12 dB, and below the first, off -- both
- *                      amps ("Left/Right Speaker Volume" on the iPadMini
- *                      card, set through the ALSA control device's ioctls);
- *                      or the backlight brighter / dimmer in 32 steps (the
- *                      PMU's current DAC is exponential already, so equal
- *                      steps look equal).  Held: keeps going
+ *   volume up / down   one step louder / quieter, 16 steps of 4 dB, set
+ *                      through the ALSA control device's ioctls: on the
+ *                      iPad mini both amps ("Left/Right Speaker Volume" on
+ *                      the iPadMini card), -48 dB to +12 dB and below the
+ *                      first, off; on the iPad 2 the CS42L63's master
+ *                      ("Master Playback Volume" on the iPad2 card, iOS's
+ *                      0-62 in dB below full), -60 dB to 0 dB and below the
+ *                      first, -62 dB.  Or the backlight brighter / dimmer
+ *                      in 32 steps (the PMU's current DAC is exponential
+ *                      already, so equal steps look equal).  Held: keeps going
  *   hold               screen off / on; while it is off the touchscreen is
  *                      grabbed, so a finger on the dark glass types nothing.
  *                      The volume still works with the screen off
@@ -154,14 +157,27 @@ static void rotation_lock(int off, int max)
  */
 #define SWITCH_BACKLIGHT 1
 
-/* the speakers' volume: 0.5 dB a unit, 204 = 0 dB, 228 = +12 dB, 0 = -102 dB */
-#define VOL_0DB 204
-#define VOL_STEPS 16	/* 4 dB each, the top +12 dB: 1 = -48 dB */
+#define VOL_STEPS 16	/* both iPads: 16 steps of 4 dB, as iOS's buttons */
 
-static const char * const vol_ctls[] = { "Left Speaker Volume", "Right Speaker Volume" };
+/*
+ * Each iPad's speakers, as its card's controls take them: step 1 is base,
+ * each next step `unit` louder, and below step 1 the control's 0.
+ *   iPad mini 1: both amps, 0.5 dB a unit, 204 = 0 dB, 228 = +12 dB, 0 = -102 dB
+ *                (two CS35L19, sound/soc/codecs/cs35l19.c, on the iPadMini card)
+ *   iPad 2:      the CS42L63's master, iOS's units: 62 = 0 dB, 1 dB a unit,
+ *                0 = -62 dB (sound/soc/codecs/cs42l63.c on the iPad2 card)
+ */
+static const struct speakers {
+	const char *card;
+	const char *ctls[2];
+	long base, unit;
+} SPEAKERS[] = {
+	{ "iPadMini", { "Left Speaker Volume", "Right Speaker Volume" }, 204 - 96, 8 },
+	{ "iPad2", { "Master Playback Volume", NULL }, 62 - 60, 4 },
+};
 
-/* the iPadMini card's control device, or -1 */
-static int sound_ctl(void)
+/* the control device of a card in SPEAKERS, or -1 */
+static int sound_ctl(const struct speakers **sp)
 {
 	char path[32];
 
@@ -173,9 +189,12 @@ static int sound_ctl(void)
 		fd = open(path, O_RDWR);
 		if (fd < 0)
 			continue;
-		if (!ioctl(fd, SNDRV_CTL_IOCTL_CARD_INFO, &info) &&
-		    !strcmp((char *)info.id, "iPadMini"))
-			return fd;
+		if (!ioctl(fd, SNDRV_CTL_IOCTL_CARD_INFO, &info))
+			for (unsigned k = 0; k < sizeof(SPEAKERS) / sizeof(*SPEAKERS); k++)
+				if (!strcmp((char *)info.id, SPEAKERS[k].card)) {
+					*sp = &SPEAKERS[k];
+					return fd;
+				}
 		close(fd);
 	}
 	return -1;
@@ -205,34 +224,42 @@ static void vol_set(int fd, const char *name, long v)
 }
 
 /*
- * One step up or down on the 0..VOL_STEPS scale (0 = off, 1 = -48 dB, each
- * next 4 dB louder), from the left amp's level; a level between two steps
- * (set by amixer, say) goes to the nearer one in the button's direction.
+ * One step up or down on the 0..VOL_STEPS scale (0 = the control's bottom,
+ * 1 = its base, each next 4 dB louder), from the first control's level; a
+ * level between two steps (set by amixer, say) goes to the nearer one in the
+ * button's direction.
  */
 static void vol_step(int up)
 {
-	const long base = VOL_0DB - 96;
-	int fd = sound_ctl(), k;
+	const struct speakers *sp = NULL;
+	int fd = sound_ctl(&sp), k;
 	long v;
 
-	if (fd < 0)
+	if (fd < 0) {
+		fprintf(stderr, "volume %s: no speakers card (", up ? "up" : "down");
+		for (unsigned i = 0; i < sizeof(SPEAKERS) / sizeof(*SPEAKERS); i++)
+			fprintf(stderr, "%s%s", i ? ", " : "", SPEAKERS[i].card);
+		fprintf(stderr, ")\n");
 		return;
-	if (!vol_get(fd, vol_ctls[0], &v)) {
-		if (v < base)
+	}
+	if (!vol_get(fd, sp->ctls[0], &v)) {
+		if (v < sp->base)
 			k = up ? 1 : 0;
 		else {
-			k = (v - base) / 8 + 1;		/* the step at or below */
+			k = (v - sp->base) / sp->unit + 1;	/* the step at or below */
 			if (up)
 				k++;
-			else if ((v - base) % 8 == 0)
+			else if ((v - sp->base) % sp->unit == 0)
 				k--;
 		}
 		k = k < 0 ? 0 : k > VOL_STEPS ? VOL_STEPS : k;
-		v = k ? base + 8 * (k - 1) : 0;
-		for (unsigned i = 0; i < sizeof(vol_ctls) / sizeof(*vol_ctls); i++)
-			vol_set(fd, vol_ctls[i], v);
-		fprintf(stderr, "volume %s: step %d of %d (%ld)\n", up ? "up" : "down",
-			k, VOL_STEPS, v);
+		v = k ? sp->base + sp->unit * (k - 1) : 0;
+		for (unsigned i = 0; i < sizeof(sp->ctls) / sizeof(*sp->ctls) && sp->ctls[i]; i++)
+			vol_set(fd, sp->ctls[i], v);
+		fprintf(stderr, "volume %s: step %d of %d (%s %ld)\n", up ? "up" : "down",
+			k, VOL_STEPS, sp->card, v);
+	} else {
+		fprintf(stderr, "volume %s: %s has no \"%s\"\n", up ? "up" : "down", sp->card, sp->ctls[0]);
 	}
 	close(fd);
 }
