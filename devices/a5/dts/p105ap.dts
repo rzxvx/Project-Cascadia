@@ -572,16 +572,23 @@
 		};
 
 		/*
-		 * Display pipeline, recorded but unused.  simplefb above reuses
-		 * the output of these blocks rather than reprogramming them; a
-		 * real CLCD + MIPI-DSI driver for S5L8940X does not exist and is
-		 * not needed to get a desktop on screen.
+		 * Display pipeline.  simplefb above reuses the output of these
+		 * blocks rather than reprogramming them; a real CLCD + MIPI-DSI
+		 * driver for S5L8940X does not exist and is not needed to get a
+		 * desktop on screen.
+		 *
+		 * The CLCD (ADT arm-io/clcd, 0x3a100000-0x3a107000, IRQs 43 and
+		 * 42) iBoot leaves scanning out the boot framebuffer: the SGX's
+		 * KMS points its layer 0 at a contiguous buffer to show it
+		 * instead of copying it there (M49, as the iPad 2's tree has
+		 * it).  The first window holds layer 0 (+0x40 on, +0x44 its base,
+		 * +0x48 the pitch: read on this iPad 1, 0x9f6fc000 and 0xc00), the
+		 * second the position it scans (+0x54, >> 9 the line, 0-1023 over
+		 * a frame here).  Nothing else of the block is touched.
 		 */
-		clcd: display-controller@a100000 {
+		clcd: display-controller@a104000 {
 			compatible = "apple,s5l8940x-clcd";
-			reg = <0xa100000 0x7000>;
-			interrupts = <43 42>;
-			status = "disabled";
+			reg = <0xa104000 0x1000>, <0x9200000 0x1000>;
 		};
 
 		dsim: dsi@9500000 {
