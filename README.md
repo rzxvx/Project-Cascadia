@@ -16,7 +16,7 @@ starts from an app on the home screen, no computer needed.
 | Device | Model | Chip | What works | Start here |
 |---|---|---|---|---|
 | iPad mini 1 (Wi-Fi) | iPad2,5 / A1432 / p105ap | Apple A5 (S5L8942X) | Linux 6.12: both cores, touch, Wi-Fi, Bluetooth, speakers, battery, the GPU (OpenGL ES 2.0 / GL 2.1), XFCE; on the iPad's own NAND next to iOS 8.4.1 (the only version checked), started from the Cascadia app without a computer (or over the cable from an NFS root); iOS's files readable | [devices/a5](devices/a5/README.md) · [quickstart](devices/a5/docs/QUICKSTART.md) |
-| iPad 2 (Wi-Fi) *(experimental)* | iPad2,1 / A1395 / k93ap | Apple A5 (S5L8940X) | Linux 6.12: both cores, touch, Wi-Fi, Bluetooth, the speaker, headphones, the built-in and a headset's microphone, both cameras, the volume buttons, battery and charging, sensors (autorotate), the GPU, XFCE over NFS; boots from its jailbroken iOS without a computer | [K93 bring-up](devices/a5/docs/k93-bringup.md) |
+| iPad 2 (Wi-Fi) *(experimental)* | iPad2,1 / A1395 / k93ap | Apple A5 (S5L8940X) | Linux 6.12: both cores, touch, Wi-Fi, Bluetooth, the speaker, headphones, the built-in and a headset's microphone, both cameras, the volume buttons, battery and charging, sensors (autorotate), the GPU, XFCE; boots from its jailbroken iOS without a computer, the root on a NAND partition of its own next to iOS (raw NAND; iPad2,1 ships with PPN flash too, which these tools leave alone) | [K93 bring-up](devices/a5/docs/k93-bringup.md) |
 | iPhone XR *(experimental, contributed)* | iPhone11,8 / N841AP | Apple A12 (T8020) | as its author reports it: Linux 7.3, framebuffer, touch, USB networking/SSH, Wi-Fi, UART Bluetooth, Debian/XFCE over NFS -- not built or tested by the maintainer | [devices/a12](devices/a12/README.md) · [Debian/XFCE](devices/a12/DEBIAN_XFCE_NFS.md) |
 | iPad 8 (Wi-Fi) *(experimental, contributed)* | iPad11,6 / A2270 / J171aAP | Apple A12 (T8020) | Contributor-tested Linux 7.3: native display/brightness, touch, USB networking/SSH, Wi-Fi, UART Bluetooth and G11 GPU-accelerated Omarchy over NFS. Internal-speaker audio and volume controls contributor-tested; sustained-rendering fix awaits hardware retest | [devices/a12](devices/a12/README.md) (`--device ipad8`) · [display](devices/a12/DISPLAY.md) · [GPU](devices/a12/GPU.md) · [audio](devices/a12/AUDIO.md) |
 | iPhone XS Max | iPhone11,6 / D331pAP | Apple A12 (T8020) | Linux 7.3: all six cores, display, touch, USB networking, Wi-Fi, Bluetooth. On [badapple](https://forgejo.toe.quest/kiki/badapple) also the internal storage as ext4, cpufreq and the GPU (OpenCL, OpenGL ES 2/3 and Vulkan, in progress) | [devices/a12](devices/a12/README.md#xs-max) (`A12_BOARD=d331p`) · [badapple](https://forgejo.toe.quest/kiki/badapple) |
@@ -84,9 +84,9 @@ IPSW (or Apple's CDN) on your machine.
   beside iOS, booted from an iOS app. Next: a write cache for the NAND, USB
   host mode, the headphone jack.
   [devices/a5/README.md](devices/a5/README.md#roadmap)
-- **iPad 2 (A5)** — experimental, the A5 tree's second board: phases 1 and
-  2 done, phase 3 but for the NAND as Linux's storage -- headphones, the
-  built-in and a headset's microphone and both cameras included.
+- **iPad 2 (A5)** — experimental, the A5 tree's second board: phases 1-3
+  done, NAND as Linux's own storage (on raw NAND), headphones, the built-in
+  and a headset's microphone and both cameras included; next USB host.
   [devices/a5/docs/k93-bringup.md](devices/a5/docs/k93-bringup.md)
 - **iPhone XR (A12)** — contributed (#31), experimental: tethered Linux with
   framebuffer/touch, USB, Wi-Fi, Bluetooth and Debian/XFCE over NFS as its

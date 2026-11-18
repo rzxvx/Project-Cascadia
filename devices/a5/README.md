@@ -43,7 +43,7 @@ including the parts that didn't work.
 | Device | Model | Chip | Board ID | Status | Where |
 |--------|-------|------|----------|--------|-------|
 | iPad mini 1 (Wi-Fi) | iPad2,5 / A1432 | Apple A5 (S5L8942X) | p105ap | desktop, touch, Wi-Fi, GPU | this README, repository root |
-| iPad 2 (Wi-Fi) *(experimental)* | iPad2,1 / A1395 | Apple A5 (S5L8940X) | k93ap | desktop (NFS), touch, Wi-Fi, Bluetooth, speaker, headphones, built-in and headset microphones, both cameras, volume buttons, GPU, sensors; boots from iOS without a computer | [docs/k93-bringup.md](docs/k93-bringup.md) |
+| iPad 2 (Wi-Fi) *(experimental)* | iPad2,1 / A1395 | Apple A5 (S5L8940X) | k93ap | desktop, touch, Wi-Fi, Bluetooth, speaker, headphones, built-in and headset microphones, both cameras, volume buttons, GPU, sensors, the root on a NAND partition of its own (raw NAND); boots from iOS without a computer | [docs/k93-bringup.md](docs/k93-bringup.md) |
 | iPhone 11 | iPhone12,1 | Apple A13 (T8030) | n104ap | shell, network over USB, touch, XFCE, Wi-Fi, Bluetooth, internal storage | [`a13/`](../a13/README.md) |
 
 The iPad 2 is the tree's second board, tested on one device (iOS 6.1.3,
@@ -825,10 +825,18 @@ initramfs/      stage 1 (/init) and stage 2 (/sbin/p105-stage2) -- the boot
                 minirootfs; nothing is edited inside build/
 tools/          p105-peek.c (MMIO tool), build/flash wrappers, LZSS helpers,
                 nand/ (nandctl, iosnand: PPN flash, the mini's, read-only;
-                they refuse raw NAND), nand-volume/ (making and removing
-                the Linux volume: LwVM, iOS's validator, cascadia-hfs, the
-                install's NAND steps), k93-*.sh (the iPad 2's firmware, its
-                boot from iOS), audio/ (the speakers, the A5 iPads'),
+                k93nand, k93iosnand: the iPad 2's raw NAND, read-only;
+                k93nandw, k93lv: its write side and its Linux volume;
+                k93yaftl: writing through iOS's own FTL, the NAND server of
+                the iPad 2's Linux partition, with its GC and k93yaftl-sim,
+                its host test -- each refuses the other kind of flash),
+                nand-volume/ (making and removing the Linux volume: LwVM,
+                iOS's validator, cascadia-hfs, the install's NAND steps),
+                k93-*.sh (the iPad 2's firmware, its boot from iOS, its root
+                image, its LwVM partitions: k93-part.sh with k93-lwvm.py and
+                ios/hfs-resize), k93-thrash.c (the memory relief valve),
+                hfs-state.c (may Linux write iOS's System: clean, its journal
+                empty), audio/ (the speakers, the A5 iPads'),
                 sgx/ (the GPU: sgx2d, the SDL shim, pack builder, gl/: the
                 driver's tests), iosgpu/ (the iOS capture tool, the kext
                 emulator), piglit/ (the OpenGL test suite for the iPad),
@@ -876,10 +884,12 @@ Build products (`output/`) and stock firmware are not tracked; everything in
   cores, the L2.
 - **Phase 3** — ~~touch~~ ✓ → ~~Wi-Fi (SDIO)~~ ✓ → ~~Bluetooth~~ ✓ → ~~the GPU
   and a desktop~~ ✓ → ~~the speaker~~ ✓ → ~~the volume buttons~~ ✓ →
-  ~~autorotate~~ ✓ → ~~the headphones~~ ✓ (switching by themselves) → ~~the
-  built-in microphone~~ ✓ → ~~a headset's microphone~~ ✓ (biased, capture
-  moving to it) → ~~the cameras~~ ✓ (V4L2, both, with their picture
-  controls) → NAND as Linux's own storage → USB host.
+  ~~autorotate~~ ✓ → ~~iOS's files off the NAND~~ ✓ → ~~NAND as Linux's own
+  storage~~ ✓ (raw NAND: the Linux volume, then an 8 GB partition of its own
+  written through iOS's FTL, with zram swap behind it) → ~~the headphones~~ ✓
+  (switching by themselves) → ~~the built-in microphone~~ ✓ → ~~a headset's
+  microphone~~ ✓ (biased, capture moving to it) → ~~the cameras~~ ✓ (V4L2,
+  both, with their picture controls) → USB host.
 
 The iPhone 11 and the devices planned next: the
 [project README](../../README.md#roadmap).

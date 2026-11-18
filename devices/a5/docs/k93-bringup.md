@@ -18,17 +18,19 @@ tree, an extra config fragment, the loader's framebuffer geometry, Apple's
 files (`build/k93/firmware`) and the machine's own layer (`build/k93/keep`:
 the ssh host key, this panel's touch calibration).  On the device,
 `cascadia-board` says which iPad it booted on, and the helpers that only one
-of them can run ask it first.  The mini's NAND tools go by the flash itself:
-iPad2,1 ships with raw NAND and with PPN, and they tell the kind by its READ
-ID before anything else, refusing anything that is not PPN
-(tools/nand/ppn.c).
+of them can run ask it first.  The NAND tools go by the flash itself: iPad2,1
+ships with raw NAND and with PPN, and each reader tells the kind by its READ
+ID before anything else, refusing the other's (tools/nand/ppn.c,
+tools/nand/k93nand.c).
 
 ## Where it stands (2026-11-17, one iPad2,1 on iOS 6.1.3, p0sixspwn)
 
 Booted from the jailbroken iOS 6.1.3 to Linux 6.12 -- with `./cascadia k93
 flash --kdfu` from a computer (kloader takes 12H321's iBSS from there), or
-with `linux` on the iPad itself (below).  iOS stays installed and working;
-the root is in RAM, or on a computer over the cable (NFS):
+with `linux` on the iPad itself (below).  iOS stays: Linux reads its System
+partition, writes blocks of the NAND that iOS keeps free and never reaches,
+and -- through iOS's own FTL, iOS's next boot adopting it -- partitions of its
+own (below):
 
 | | |
 |---|---|
@@ -49,7 +51,11 @@ the root is in RAM, or on a computer over the cable (NFS):
 | Wi-Fi (BCM4329 on SDIO) | works: brcmfmac loads iOS's own firmware at boot; `wifi connect SSID PASSWORD` joins (WPA2-PSK tested, 2-3.5 MB/s from Alpine's CDN), `wifi auto on` joins at every boot |
 | booting without a computer | works: `tools/k93-pcless.sh install`, then `linux` as root on iOS -- Linux from the NAND ~30 s after the iPad wakes: the screen goes dark, and a press of Home wakes it (below) |
 | Bluetooth (BCM4329C0 on UART3) | works: `bluetooth on` loads iOS's own patchram (BlueTool's `BCM43291A0 ... 2ND`, kept as `brcm/BCM4329C0.hcd`; `patches/tree/0006` tells btbcm the chip and its placeholder address 43:29:1A:0A:00:00, so the tree's 02:93:00:00:00:04 is used); classic only, no LE; pairing not yet tried |
-| GPU (SGX543MP2) | works: the microkernel boots, the 2D engine draws (sgx2d's `sprites`: 200 sprites at 206 fps), and the mini's Mesa driver gives OpenGL ES 2.0 / GL 2.1 in a desktop root (NFS) -- Xorg's glamor |
+| GPU (SGX543MP2) | works: the microkernel boots, the 2D engine draws (sgx2d's `sprites`: 200 sprites at 206 fps), and the mini's Mesa driver gives OpenGL ES 2.0 / GL 2.1 in the desktop root on the NAND -- Xorg's glamor |
+| NAND (raw, under VSVFL and YAFTL) | on raw NAND (iPad2,1 ships with PPN flash too, which the K93 NAND tools tell apart first and leave alone: below): iOS's System served off the flash and mounted on `/mnt/ios` (`tools/nand/k93iosnand.c`, below): the map in ~5 s, 12 MB/s on both buses, byte-exact against known files; read-only, and read-write on demand (`cascadia-system rw`, 2026-11-16) when iOS left its journal empty.  Data is encrypted by iOS, file by file, and never written.  **Written**: the Linux volume, 333 MB on the 224 blocks of iOS's reserve Linux may own; and, through iOS's own FTL (YAFTL), LwVM partitions of Linux's own -- Linux 8 GB and Swap 1 GB on this iPad, iOS's 20 GB Data shrunk for them -- which iOS's next boot adopts (2026-11-15/16, below) |
+| persistent storage | works: the root is ext4 on the 8 GB Linux partition (2026-11-16), written through iOS's FTL at ~1.9 MB/s, read at up to 12 MB/s; before it, the root's changes on the Linux volume (2.7 MB/s writes, ~5 MB/s reads).  Both survive restarts and iOS sessions (below) |
+| swap | works (2026-11-16): zram, 1 GB of compressed RAM, with the Swap partition behind it for pages left idle; 400 MB past the RAM in 22 s, cold pages out to the NAND and back, every page checked.  A full memory ends in an OOM kill, not a hang (below) |
+| a root bigger than RAM | works: the Linux partition (`cascadia-install-partition` copies the running root into it once); without one, an image on iOS's System partition (`tools/k93-root.sh install`), served off the NAND at boot and mounted under an overlay whose changes are kept on the Linux volume -- from the kernel to stage 2 in ~15 s; ~300 MB of RAM free with the desktop up (below) |
 | audio (CS42L63 on I2S0) | works: ALSA card `iPad2`, I2S0 + CDMA both ways at 44.1/48 kHz, the codec run with iOS's own sequences.  The speaker; **the headphones**, playback moving there by itself when a plug goes in and back when it comes out; **the built-in microphone** and **a headset's microphone**: when a plug goes in, the driver measures its mic contact as iOS does, sets the TS3A8235 to the plug's wiring (CTIA or OMTP) and moves capture to a mic it finds, biased while it records -- no clicks going in, recording or coming out ("Headphone Jack", "Headset Mic Jack").  Stereo, iOS's own input-gain tables, "Capture Volume" 0-128 = -96 to +32 dB.  All confirmed by ear and by recording (2026-11-10); a headset's button and Apple's remote not yet ([research/k93-audio.md](research/k93-audio.md) sections 5-6) |
 | clock | set by NTP once there is a network (stage 2); the build machine's time zone |
 | cameras (the A5's H4 ISP: sensor 0x9726 rear, 0x7739 front) | work (2026-11-10): V4L2 devices `/dev/video0` (the rear: 1280x720, 1280x800, 640x360) and `/dev/video1` (the front: 640x480), YUYV at 30 fps, both pictures upright on the landscape desktop (the front one unmirrored, as V4L2 has it).  The ISP's own CPU runs iOS 8.4.1's firmware behind its IOMMU (`drivers/media/platform/apple/apple-h4isp.c`): booted when a camera starts streaming, powered down when it stops; one camera at a time.  In low light the firmware's exposure takes the rate down to 15 fps, as iOS lets it; `exposure_auto_priority` 0 holds the mode's rate.  Picture controls (2026-11-11): exposure bias (-2 to +2 EV), brightness, contrast, saturation, hue, sharpness (by default the firmware's own, which follows the light) and the mains frequency (50/60 Hz or the firmware's own detection), kept across streams and changed live.  `mpv av://v4l2:/dev/video1` shows it on the desktop; the firmware and the set-files come out of the IPSW with `./cascadia k93 firmware` ([research/k93-camera.md](research/k93-camera.md)) |
@@ -148,8 +154,8 @@ table, the "Update" name and three call targets moved
     /usr/bin/linux                        the command
 
 Run `install` again after a build to update the kernel there.  `linux -w`
-remounts System read-only before kloader (iOS then flushes its HFS+ journal,
-for a Linux that writes System); plain `linux` leaves it as
+remounts System read-only before kloader (iOS then flushes its HFS+ journal:
+what Linux needs before writing System, below); plain `linux` leaves it as
 iOS has it.  This iOS
 (6.1.3) has no `awk`, `wc`, `cut`, `head` or `sha1sum`: the installer
 checks what arrived with `ls` and `openssl sha1`.  Everything came up on the
@@ -209,11 +215,14 @@ an NFS root came up, with every Apple file from the 12H321 IPSW
 - **The flash is PPN**, the iPad mini's kind, not the raw NAND of the iPad 2
   this port was written on: read ID `50 50 4E 01`, and iOS's ADT says
   `flash-controller0/disk` `ppn-device`, 2 CEs of 4128 blocks of 256 x 8 KiB
-  pages.  So iPad2,1 ships with both.  The mini's PPN tools tell the kind
-  by one READ ID of CE0 before anything else is sent to the flash (PPN
-  answers "PPN", a raw part its maker's code, never 0x50) and refuse raw
-  NAND (tools/nand/ppn.c).  Linux on a PPN iPad 2's NAND would take the
-  mini's PPN code with this iPad's geometry: not done.
+  pages.  So iPad2,1 ships with both.  The K93 NAND tools are for raw NAND,
+  and each of them tells the kind before anything else is sent to the
+  flash -- the controller's mode first (iBEC sets DDR for PPN alone), then
+  one READ ID of CE0 (a raw part answers with its maker's code, never
+  0x50) -- and refuses PPN, saying so (`k93nand flash`: `raw` or `ppn`);
+  stage 1 then stays off the NAND and boots from RAM or NFS.  The mini's
+  PPN tools check the other way round.  Linux on a PPN iPad 2's NAND would
+  take the mini's PPN code with this iPad's geometry: not done.
 - **The codec's reset is an input** after iOS 8.4.1: PMU GPIO 13 (`0x6e`)
   reads `0xc8` at the handoff, where iOS drives it as `0x0a`.  The PMU's
   gpiochip turns an input into an output only for a pin the tree lists in
@@ -230,6 +239,130 @@ an NFS root came up, with every Apple file from the 12H321 IPSW
   anywhere.
 - The 12H321 touch firmware sends 30-byte touch records, the mini's;
   `apple-z2.c` takes the stride from the frame, as it does for 6.1.3's 28.
+
+### iOS's System partition, read from Linux
+
+The flash is raw NAND behind the H2FMI's BCH engines, under Apple's VSVFL
+and YAFTL -- not the mini's PPN, so none of the mini's tools apply.  Every
+layer is in [research/k93-nand.md](research/k93-nand.md);
+`tools/nand/k93nand.c` drives the chips (PIO page reads, the ECC results, the
+metadata's whitening, AES-128-CBC with the FTL's two keys), and
+`tools/nand/k93iosnand.c` builds the rest on it:
+
+1. **VSVFL**: the context of each virtual CE -- page 0 of blocks 1-199 names
+   the four context blocks, the current one has the smallest usn (it counts
+   down from 0xffffffff, which is where this iPad's still is), the newest of
+   its sets of eight copies is the one, checked by its two checksums.  It
+   gives the usable superblocks (1952 of 2048 per bank here) and the
+   reserved-block map: blocks 0-19 of every CE (the boot area and the
+   context blocks themselves) and 10-26 grown or factory bad blocks per CE
+   live in the pool at 3904+.  Without the map, reads in such a block fail
+   ECC: that is how it was found (System's dyld cache hit block 3418 of
+   vCE 2, replaced by 3936).
+2. **YAFTL, by restore**: the FTL's own context is not parsed.  As iBEC's
+   "full NAND R/O restore" does: each superblock is classified by its first
+   readable page, the user-data ones are walked newest first by the sequence
+   number every page of a superblock carries, and each one's table of
+   contents (its last page: one LPN per page, META key, IV = row) fills in the
+   LPNs not seen yet; the one superblock still being filled is read page by
+   page.  ~2 page reads per superblock: the map of all 1.74 M live LPNs in
+   ~5 s.
+3. **disk0 -> LwVM -> NBD**: a logical page is 8 KB, decrypted with the user
+   key, IV = LPN; LwVM's header at LPN 0 has System (1.2 GB, 39 chunks of
+   32 MB) and Data; each served partition is a read-only `/dev/nbdN`, and
+   System mounts with Linux's hfsplus.
+
+`ios mount` on the iPad (the mini's front end, which now picks the iPad 2's
+reader) does it all: System on `/mnt/ios`, read-only.  Checked byte for byte:
+`/usr/local/cascadia/kloader` hashes to the SHA-256 tools/k93-pcless.sh pins
+it by.  A check that looks like a failure and is not one: the dyld shared
+cache hashes differently in iOS (and differently at every iOS boot).  Of the
+two 246 MB copies, 2% of the words differ, all in one 27 MB stretch (the
+cache's data, 0x9518000-0xafbd558), and 99.5% of those by exactly the same
+0x02073000: iOS 6 slides the cache's pointers in its page cache at boot
+(ASLR) and its own reads of the file see the slid pages; the rest is the
+Objective-C runtime writing into the same pages.  Linux reads the file as it
+is on the flash, the same bytes at every boot.  Speed: ~7 MB/s of NAND pages one at a time by PIO, 12.2 MB/s with both buses
+at once (`-j2`: FMI1's pages go to a second thread; `k93iosnand -j2 bench
+System 1244` read all of System both ways, the same bytes), which `ios` and
+the NAND root use.  Two things made it that fast: the AES
+is table-driven (the byte-wise one in k93nand.c spent milliseconds a page),
+and the map is kept in 8 MB blocks, cut down to what is served (16 MB for all
+of disk0, 0.5 MB for System).  Nothing writes to the NAND: k93nand's register
+allowlist has no program or erase command.
+
+Data is out of reach: its pages are not under the FTL's user key but under
+per-file keys (iOS's content protection), wrapped by keys behind the
+device's UID key, so even served raw it would read as noise.
+
+### iOS's System, read-write from Linux (2026-11-16)
+
+Since the NAND server writes through iOS's FTL (below), it serves System
+read-write too -- Data never -- but System stays mounted read-only, and
+`cascadia-system rw` makes it read-write only when that is safe; `cascadia-
+system ro` ends it.  The catch is HFS+'s journal: Linux's hfsplus neither
+replays nor writes it (it mounts a journaled volume read-write only with
+`-o force`), so a transaction iOS left in the journal would be lost, or
+replayed by iOS over what Linux wrote.  iOS goes to sleep for kloader with
+System mounted read-write and its journal holding transactions
+(`hfs-state`: "NOT cleanly unmounted ... HOLDS TRANSACTIONS"), so `linux -w`
+remounts System read-only right before kloader: iOS flushes and closes the
+journal and marks the volume clean.  It is not the default -- only a Linux
+that writes System needs it, and should kloader not hand over, iOS would go
+on with System read-only -- and `cascadia-system rw` asks for `linux -w` when
+System was not left clean.  `tools/hfs-state.c` reads the volume header,
+the journal info block and the journal header past the page cache (hfsplus
+writes its header with bios of its own, and a cached read once showed the
+header from before Linux's mount) and says yes only for a cleanly unmounted
+volume with an empty journal; `cascadia-system rw` asks it with System
+unmounted, then mounts it `rw,force`.  Going back is an unmount, not a
+remount: hfsplus marks the volume clean again only then, and stage 2's
+shutdown unmounts a read-write System the same way.  Read-write only for the
+time it is needed: a Linux that stopped while System was read-write would
+leave iOS's root marked not cleanly unmounted.  Not with the image root,
+which keeps `/mnt/ios` busy.
+
+Checked: a 37 MB file and a small one written to System from Linux read back
+right after the page cache was dropped, then in iOS (`openssl md5`), and iOS's
+own `fsck_hfs -fn` (System remounted read-only for it) found the volume OK;
+iOS mounts it journaled as before.
+
+### The root on the NAND
+
+RAM is 512 MB, and a desktop with a video player does not fit in it next to
+itself.  So the big root is a squashfs image on iOS's System partition --
+which Linux reads (above) but never writes -- under an overlay whose changes
+are kept on the Linux volume (below):
+
+    tools/k93-root.sh tree       the desktop root, built here (tools/desktop/
+                                 make-root.sh: XFCE with touch, Mesa on the GPU,
+                                 the GPU's pack, screenpad), no SuperTux
+    tools/k93-root.sh install    squashfs (zstd 19), copied to iOS as
+                                 /cascadia/root.sqfs, checked, synced twice
+    tools/k93-root.sh remove     back to the RAM root
+
+At boot `initramfs/init` (`nand_root`) runs `k93nand id`, starts
+`k93lv serve System` -- k93iosnand's reader serving System, plus the Linux
+volume; `k93iosnand serve` when there is no k93lv -- in its own session, out
+of the OOM killer's reach (every page the root reads goes through it), mounts
+System read-only on `/mnt/ios`, the image on a loop device, the overlay's
+upper layer (the Linux volume, else a tmpfs) over it, and switches root;
+stage 2 is the image's own, refreshed from the initramfs like an NFS root's,
+with the Wi-Fi networks of the keep layer.  `/run` -- the server's bus
+locks (`/run/k93nand`), pid and log -- moves along, and `ios` knows the root
+stands on System and will not unmount it.  Without the image, if anything
+fails, or with `cascadia.root=ram` on the command line, the RAM root boots
+as before.  First boot this way (a 16 MB test image of the RAM root itself,
+2026-11-09): `linux` on iOS to stage 2 in 11 s, Wi-Fi joined, touch up, and
+430 MB of RAM free instead of ~150 -- the initramfs is let go.
+
+Since 2026-11-10 the overlay's changes are kept: `k93lv` (below) serves the
+Linux volume next to System, and the init puts an ext4 on it (once, mke2fs)
+and the overlay's upper layer in it.  `cascadia.lv=off` keeps them in RAM for
+one boot; `cascadia-volume` says how full it is, `cascadia-volume reset`
+empties it at the next boot.  A new root image gets an upper layer of its own
+(the old one is kept as `old-upper`, its /home and /root move across), so old
+changes never hide a newer image's files.
 
 ### Audio: the speaker, as iOS drives it
 
@@ -264,6 +397,116 @@ the codec's registers are iOS's playing state (06=1e 07=67 08=7c 11=09 1d=19
 switch routes pin group 0 (0x44, MCK 1), GPIO 39 is high (low again after).
 And it is heard: every tone played through the driver came out of the
 speaker.
+
+### Writing the NAND: the Linux volume
+
+At first, writing through iOS's FTL looked out (iOS mounts from its own
+context and would erase what Linux wrote -- the next section has the way
+round it); [research/k93-nand-write.md](research/k93-nand-write.md) has the
+first way: the program and erase sequences out of the I/O
+processor's firmware (the A5's NAND driver runs there, not in the kernel),
+and the VSVFL's reserve of spare blocks, which iOS takes from only when a
+block wears out -- a band in the middle of it, 56 blocks per CE, that iOS's
+allocator never reaches first.  Its tests T0-T5 passed on 2026-11-10
+(`tools/nand/k93nandw.c`; the results are at the top of that note): all 224
+blocks of the band free and erased on this iPad, programs and erases as the
+IOP does them, and blocks left written came through an iOS session that
+wrote 64 MB untouched, iOS's own maps byte-identical.
+
+`tools/nand/k93lv.c` turns the band into a block device: page 0 of each
+block a header, 254 pages of two 4 KB sectors with their numbers in the
+page's metadata, a summary page; a write is on the flash before it is
+acknowledged, garbage collection keeps a quarter of the space; at every
+start the pool check runs again and only blocks that pass may be armed.
+Its FTL is tested on the host against an in-memory flash with power cuts
+(`k93lv selftest`, the -DK93LV_SIM build: 6 x 1000 rounds, 852 cuts, no
+sector lost).  On the iPad: 333 MB, mounted in 0.5 s, 2.7 MB/s written
+(the AES with tables: 0.4 ms an 8 KB page), ~5 MB/s read.
+
+### Linux's own partitions, through iOS's FTL (2026-11-15/16)
+
+The Linux volume's 333 MB was all the reserve band could give, so the root
+moved to partitions of its own, made out of iOS's Data and written through
+iOS's own FTL the way iOS comes back from a crash
+([research/k93-nand-write.md](research/k93-nand-write.md) section 6): the NAND
+server first programs the "stale" marker after iOS's saved FTL context, then
+writes only whole superblocks the way iOS's restore reads them, and iOS's
+next boot -- a full restore, 50-70 s from the restart -- adopts every page.
+
+    tools/k93-part.sh status            the LwVM table, from iOS
+    tools/k93-part.sh create 8G 1G      Data's HFS+ shrunk (tools/ios/hfs-resize,
+                                        iOS's own resize), then a RAM-root Linux
+                                        writes the new table -- both copies --
+                                        and reboots to iOS, which checks it
+    cascadia-install-partition --yes    on the iPad, from the image root: ext4 on
+                                        the Linux partition, the running root
+                                        (image and changes) copied into it
+
+The table is planned and checked by `tools/k93-lwvm.py` against the 6.1.3
+kernel's own rules, and checked again on the iPad right before the write
+(`k93yaftl lwvm-apply`): one table that broke one of them (0xF3FF inside the
+media) cost this iPad a restore on 2026-11-15.  From then on the init boots
+the Linux partition when it holds a root (`cascadia.root=image` still boots
+the image); `tools/nand/k93yaftl.c` serves System read-only and the Linux and
+Swap partitions read-write, iOS's own partitions never.  The root reads at
+up to 12 MB/s and writes at ~1.9 MB/s (each page encrypted, programmed and
+read back by the CPU); the 624 s copy of the first root was the slowest part.
+
+### Swap: zram, with the Swap partition behind it (2026-11-16)
+
+Swap straight on the Swap partition hung the iPad at the first stress test
+(400 MB asked for, 290 MB free): the kernel kept answering pings, no process
+ran again.  Swap served by a process is a cycle -- freeing memory waits on
+the NAND server's writes, and the server needs memory to finish them --
+which the server's mlockall and PR_SET_IO_FLUSHER do not break.  So the swap
+is zram (`CONFIG_ZRAM`, lz4: compressed RAM, all inside the kernel), with the
+Swap partition as zram's backing device: `cascadia-zram writeback-loop`
+(started by stage 2) writes the pages left untouched for a minute out to it
+once zram holds 64 MB of RAM.  Nothing that frees memory waits on the server
+any more; the writeback is ordinary I/O.  `cascadia-zram` alone shows where
+the swapped pages are.
+
+What the stress tests (`swapstress`: pages filled with patterns, every page
+checked when it comes back) showed:
+
+- 400 MB past the RAM, compressible about 3 times: done in 22 s, zram holding
+  194 MB in 76 MB of RAM;
+- 300 MB left alone for 4 minutes while 400 MB more churned in random order:
+  the idle pages went out to the NAND (358 MB written) and came back through
+  the server (305 MB read), every page right;
+- a cap on zram's RAM (`mem_limit`) hung it again: at the cap zram refuses
+  every page while the kernel still sees free swap, so it evicted the
+  programs' code and read it back through the NAND server for minutes,
+  never calling the OOM killer.  Without the cap, more than RAM and zram can
+  hold ends in an OOM kill: 5 s for 1 GB that does not compress, 12 to 165 s
+  of thrashing for 1.4 GB that does;
+- the multi-gen LRU (`CONFIG_LRU_GEN`, on) has a guard against that thrashing,
+  `min_ttl_ms`, but at 1000 ms it killed a 300 MB fill, at 200 a 400 MB churn
+  that runs in 35 s without it, at 100 a 600 MB one -- so it stays 0, and
+  `tools/k93-thrash.c` is the relief valve instead: when MemAvailable stays
+  under 48 MB while over 800 file pages a second fault back in for 10 s (the
+  stuck case measured ~32 MB and ~2,100 a second), it asks the kernel's OOM
+  killer for one victim (`sysrq f`).  It runs locked in RAM, SCHED_FIFO,
+  from the initramfs.
+
+The init also sets swappiness 150 (a page re-read through the NAND server
+costs far more than one decompressed), page-cluster 0 and min_free_kbytes
+8192.  `cascadia.swap=nand` on the command line swaps on the Swap partition
+directly again (the hang included), `cascadia.swap=off` not at all,
+`cascadia.thrash=off` leaves the valve out.
+
+### Room within a session: the NAND server's GC (2026-11-16)
+
+iOS reclaims space only when it runs, so a Linux session used to have the
+free superblocks there were at its start (~1,700 here, ~27 GB of writes)
+before writes failed.  Below 48 free, `k93yaftl` now gives superblocks back
+itself: those holding only Linux's partitions' pages, fewest current pages
+first, copied into the open superblock and erased -- never one of iOS's
+([research/k93-nand-write.md](research/k93-nand-write.md) section 6).  Its
+host test, `tools/nand/k93yaftl-sim.c`, replays iOS's restore over a model
+flash at random power cuts; on the iPad, `echo 16 > /run/ios/gc` gave 14
+back (144 MB moved) with every file and package checksum right, and iOS
+booted on the result.
 
 ## The hardware, out of K93's own ADT
 
