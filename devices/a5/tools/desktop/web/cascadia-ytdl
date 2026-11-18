@@ -1,0 +1,177 @@
+#!/usr/bin/env python3
+"""cascadia-ytdl -- yt-dlp kept warm, for mpv (tools/desktop/web).
+
+  cascadia-ytdl ARGS...       what `yt-dlp ARGS...` does: run by the warm one
+                              when it is there, by yt-dlp itself otherwise
+  cascadia-ytdl --serve       the warm one (cascadia-web starts it, and it
+                              ends with the browser)
+  cascadia-ytdl --cascadia-known URL...
+                              for each URL, 1 if yt-dlp has an extractor of its
+                              own for it, 0 if only the generic one would try:
+                              the warm one answers in a moment; without it, the
+                              exit status is 2 and nothing is said
+
+yt-dlp is slow to start on the iPad 2: ~2 s to import, then, for every
+address, the URL pattern of each of its ~1750 extractors compiled until one
+matches -- ~5 s more for a site it has no extractor of its own for, whose
+turn (the generic one) comes last, and nearly as long for YouTube, near the
+end of the list.  Measured: 13.7 s for yt-dlp to say that a plain MP4 file is
+one.  The warm one imports yt-dlp and compiles every pattern once, then forks
+a copy of itself for each request, which has all of that done already: the
+same answer in a second or two.  mpv runs this in yt-dlp's place
+(ytdl_hook-ytdl_path, cascadia-play): the client hands the warm one its
+standard input, output and error (SCM_RIGHTS), so yt-dlp's JSON and messages
+reach mpv as they would from yt-dlp, and its exit status comes back the same.
+A request whose client goes away (mpv stopped) is killed with what it started.
+
+~38 MB of memory (26 MB its own), most of it swapped out while it waits.
+"""
+import json, os, signal, socket, sys, threading
+
+SOCK = os.path.join(os.environ.get("XDG_RUNTIME_DIR") or "/tmp", "cascadia-ytdl-%d.sock" % os.getuid())
+
+
+def client(argv):
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        s.connect(SOCK)
+    except OSError:
+        s.close()
+        if argv[:1] == ["--cascadia-known"]:
+            sys.exit(2)                 # a cold yt-dlp would take ~7 s to say
+        os.execvp("yt-dlp", ["yt-dlp"] + argv)
+    req = json.dumps({"argv": argv, "cwd": os.getcwd(), "env": dict(os.environ)}).encode()
+    socket.send_fds(s, [len(req).to_bytes(4, "big") + req], [0, 1, 2])
+    status = b""
+    while True:
+        b = s.recv(16)
+        if not b:
+            break
+        status += b
+    sys.exit(int(status) if status.strip().lstrip(b"-").isdigit() else 1)
+
+
+def run(conn):
+    """in the fork: one yt-dlp run on the client's stdin/stdout/stderr"""
+    code = 1
+    try:
+        os.setpgid(0, 0)
+        msg, fds, _flags, _addr = socket.recv_fds(conn, 1 << 16, 3)
+        n = int.from_bytes(msg[:4], "big")
+        body = msg[4:]
+        while len(body) < n:
+            more = conn.recv(n - len(body))
+            if not more:
+                raise EOFError("the request was cut short")
+            body += more
+        req = json.loads(body)
+        for i, fd in enumerate(fds):
+            os.dup2(fd, i)
+            os.close(fd)
+        sys.stdin = open(0, "r", closefd=False)
+        sys.stdout = open(1, "w", closefd=False)
+        sys.stderr = open(2, "w", closefd=False)
+        os.chdir(req["cwd"])
+        os.environ.clear()
+        os.environ.update(req["env"])
+
+        def watch():
+            # the client gone: this run and whatever it started go too
+            try:
+                conn.recv(1)
+            except OSError:
+                pass
+            os.killpg(0, signal.SIGKILL)
+        threading.Thread(target=watch, daemon=True).start()
+        try:
+            if req["argv"][:1] == ["--cascadia-known"]:
+                for u in req["argv"][1:]:
+                    print(1 if any(ie.ie_key() != "Generic" and ie.suitable(u) for ie in IES) else 0)
+            else:
+                yt_dlp.main(req["argv"])
+            code = 0
+        except SystemExit as e:
+            code = e.code if isinstance(e.code, int) else (0 if e.code is None else 1)
+        finally:
+            for f in (sys.stdout, sys.stderr):
+                try:
+                    f.flush()
+                except OSError:
+                    pass
+    except BaseException as e:
+        try:
+            print("cascadia-ytdl: %s" % e, file=sys.stderr, flush=True)
+        except OSError:
+            pass
+    try:
+        conn.sendall(str(code).encode())
+    finally:
+        os._exit(0)
+
+
+def serve():
+    global yt_dlp, IES
+    os.nice(15)                             # after the browser, never before it
+    import yt_dlp
+    from yt_dlp.extractor import gen_extractor_classes
+    IES = list(gen_extractor_classes())
+    for ie in IES:
+        try:
+            # every extractor's URL pattern, compiled now; and, for the generic
+            # extractor's look at a page for embedded players, the extractors
+            # themselves (yt-dlp loads them on first use) and their embed
+            # patterns: 3 s and 15 MB more, and a page no extractor knows is
+            # read in 2 s rather than 7
+            ie.suitable("https://example.invalid/")
+            rc = ie.real_class
+            if getattr(rc, "_EMBED_REGEX", None):
+                rc._extract_embed_urls("https://example.invalid/", "")
+        except Exception:
+            pass
+    try:
+        os.setpriority(os.PRIO_PROCESS, 0, 0)   # the runs at the usual priority (root may)
+    except OSError:
+        pass
+    try:
+        os.unlink(SOCK)
+    except FileNotFoundError:
+        pass
+    srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    old = os.umask(0o177)
+    srv.bind(SOCK)
+    os.umask(old)
+    mine = os.stat(SOCK).st_ino
+    srv.listen(8)
+    srv.settimeout(30)
+    parent = os.getppid()
+    signal.signal(signal.SIGCHLD, signal.SIG_IGN)       # no zombies
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+    try:
+        while True:
+            try:
+                conn, _ = srv.accept()
+            except socket.timeout:
+                if os.getppid() != parent:          # the browser is gone
+                    break
+                continue
+            if os.fork() == 0:
+                srv.close()
+                signal.signal(signal.SIGCHLD, signal.SIG_DFL)
+                signal.signal(signal.SIGTERM, signal.SIG_DFL)
+                run(conn)
+            conn.close()
+    finally:
+        # only if it is still this one's: a browser started again has its
+        # own warm one by now, at the same path
+        try:
+            if os.stat(SOCK).st_ino == mine:
+                os.unlink(SOCK)
+        except OSError:
+            pass
+
+
+if __name__ == "__main__":
+    if sys.argv[1:2] == ["--serve"]:
+        serve()
+    else:
+        client(sys.argv[1:])

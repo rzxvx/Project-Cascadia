@@ -1,5 +1,9 @@
 # K93 native browser checkpoint — 2026-10-19
 
+> **Superseded** (kept for the record): the iPad 2 has had working touch,
+> Wi-Fi, Bluetooth, audio, the GPU and an XFCE desktop since 2026-11-10 --
+> [k93-bringup.md](k93-bringup.md) says where it stands.
+
 Experimental, RAM-only iPad 2,1 (K93AP) bring-up; not a usable replacement OS yet.
 
 Native Linux 6.12, Alpine ARMv7 and Firefox ESR 140.12 rendered a public

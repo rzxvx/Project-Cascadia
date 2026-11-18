@@ -12,6 +12,15 @@
 #   SuperTux 0.7.0            tools/desktop/supertux/build.sh
 #   screenpad                 tools/screenpad/build.sh
 #
+# and, as steps of their own (ONLY=, as the iPad 2's root has them:
+# tools/k93-root.sh; they bring FFmpeg, and youtube and web WebKit and
+# GStreamer -- yad, youtube's dialogs, links WebKitGTK -- which the default
+# root leaves out):
+#
+#   YouTube (mpv, yt-dlp)     tools/desktop/youtube-setup.sh
+#   Games (RetroArch, PPSSPP) tools/desktop/games-setup.sh, retroarch/ and ppsspp/build.sh
+#   Web (videos play in mpv)  tools/desktop/web-setup.sh and web/ (after youtube's)
+#
 # Each of those installs onto the running iPad over ssh; here they run
 # unchanged, with tools/desktop/rootssh/ssh first on PATH: it runs what they
 # send inside this root instead -- a chroot in an armhf container (docker's
@@ -25,8 +34,8 @@
 #             user's own IPSW, by nfs on), its own docker volume, started
 #             fresh, the package list beside it (OUT.packages)
 #   OUT=      where the tar goes (build/desktop-root.tar)
-#   ONLY="mesa gpu"   just those steps (xfce, patched, autorotate, mesa, gpu,
-#             supertux, screenpad)
+#   ONLY="mesa gpu"   just those steps (gl, xfce, patched, autorotate, mesa, gpu,
+#             supertux, screenpad, youtube, games, web)
 #
 # The first time is long: XFCE is ~280 packages under ARM emulation, and Mesa
 # and SuperTux build for the better part of an hour each unless build/ has
@@ -118,21 +127,48 @@ step mesa       bash "$ROOT/cascadia" dev mesa --install "$DEV"
 step gpu        bash "$ROOT/cascadia" dev gpu --install "$DEV"
 step supertux   sh "$ROOT/tools/desktop/supertux/build.sh" install
 step screenpad  sh "$ROOT/tools/screenpad/build.sh" install
+step youtube    sh -c "ssh $DEV sh -s < '$ROOT/tools/desktop/youtube-setup.sh'"
+step games      sh -c "sh '$ROOT/tools/desktop/retroarch/build.sh' install &&
+                       sh '$ROOT/tools/desktop/ppsspp/build.sh' install &&
+                       tar -C '$ROOT/tools/games/overlays' -cf - . |
+                           ssh $DEV 'mkdir -p /usr/share/cascadia/overlays && tar -C /usr/share/cascadia/overlays -xf -' &&
+                       ssh $DEV sh -s < '$ROOT/tools/desktop/games-setup.sh'"
+# youtube-setup.sh again first: the player's settings (/etc/mpv/mpv.conf) are
+# its, and it changes nothing that is right already
+step web        sh -c "ssh $DEV sh -s < '$ROOT/tools/desktop/youtube-setup.sh' &&
+                       tar -C '$ROOT/tools/desktop/web' -cf - --exclude __pycache__ . |
+                           ssh $DEV 'mkdir -p /usr/share/cascadia/web && tar -C /usr/share/cascadia/web -xf -' &&
+                       ssh $DEV sh -s < '$ROOT/tools/desktop/web-setup.sh'"
 
 say "checking what the iPad will find"
 # apk's own view: every package there and a world it can resolve (a
 # --force-broken-world that skipped something shows up here, not on the iPad)
-inroot 'chroot /target apk info -e cascadia-gl xorg-server xfce4-session xfce4-panel eudev touchegg svkbd supertux supertux-data py3-gobject3 >/dev/null' \
+# (SuperTux only when it was a step: the iPad 2's root, on iOS's System
+# partition, leaves it out for room -- ONLY= without supertux)
+has_step() { case " $STEPS " in *" $1 "*) return 0 ;; esac; return 1; }
+inroot "chroot /target apk info -e cascadia-gl xorg-server xfce4-session xfce4-panel eudev touchegg svkbd py3-gobject3 \
+    $(has_step supertux && echo supertux supertux-data) >/dev/null" \
     || fail "a package is missing from the root (apk info above)"
-# and what the root must not carry (Alpine's Mesa and LLVM, the thumbnailer's tree)
+# and what the root must not carry (Alpine's Mesa and LLVM, the thumbnailer's
+# tree) -- but WebKit and GStreamer where the youtube or web step put them
+# there: yad, youtube's dialogs, links WebKitGTK (its --html), and the web
+# step's browser is WebKitGTK (tools/desktop/web-setup.sh)
+webkit=""
+if has_step youtube || has_step web ||
+   inroot 'test -e /target/usr/local/bin/youtube || test -e /target/usr/local/bin/cascadia-web'; then
+    webkit=1
+fi
 for p in mesa llvm22-libs tumbler webkit2gtk-4.1 gstreamer; do
+    case "$webkit:$p" in 1:webkit2gtk-4.1|1:gstreamer) continue ;; esac
     if inroot "chroot /target apk info -e $p >/dev/null"; then fail "the root has $p (it should not)"; fi
 done
 inroot 'chroot /target apk -s add --no-network >/dev/null' \
     || fail "apk cannot resolve the root's world -- something was installed broken (above)"
 for f in usr/local/bin/desktop usr/local/bin/autorotate usr/bin/xrandr usr/bin/xinput usr/local/bin/screenpad usr/local/bin/tux-gpudemo \
          usr/local/lib/sgx-mesa/lib/libGLESv2.so.2 etc/ld-musl-armhf.path \
-         $([ "${PUBLIC:-0}" = 1 ] || echo usr/local/lib/sgx2d); do
+         $([ "${PUBLIC:-0}" = 1 ] || echo usr/local/lib/sgx2d) $(has_step youtube && echo usr/local/bin/youtube) \
+         $(has_step games && echo usr/local/bin/games usr/bin/retroarch usr/bin/PPSSPPSDL usr/share/cascadia/overlays/gba.cfg) \
+         $(has_step web && echo usr/local/bin/cascadia-web usr/local/bin/cascadia-play usr/share/cascadia/web/hook.js); do
     inroot "chroot /target test -e /$f" || fail "no /$f in the root"
 done
 echo "    ok: XFCE, X, SuperTux, screenpad, autorotate, Mesa, the GPU's pack"

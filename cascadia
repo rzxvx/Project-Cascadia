@@ -3,14 +3,16 @@
 # Project Cascadia -- the one entry point, for every device.
 #
 #   ./cascadia a5 <command> ...     iPad mini 1 (iPad2,5 / p105ap, A5)
+#   ./cascadia k93 <command> ...    iPad 2 Wi-Fi (iPad2,1 / k93ap, A5) -- experimental
 #   ./cascadia a12 <command> ...    iPhone XR (iPhone11,8 / n841ap, A12)
 #   ./cascadia a13 <command> ...    iPhone 11 (iPhone12,1 / n104ap, A13)
 #   ./cascadia <command> ...        the device chosen last (./cascadia device)
-#   ./cascadia device [a5|a12|a13]  show or choose that device
-#   ./cascadia a5 | a12 | a13       that device's commands
+#   ./cascadia device [a5|k93|a12|a13]  show or choose that device
+#   ./cascadia a5 | k93 | a12 | a13 that device's commands
 #
 # Each device's tree lives in devices/<soc>/, with its own cascadia there
-# doing the work; this file only picks which one. Device model aliases are
+# doing the work; this file only picks which one (both A5 iPads are
+# devices/a5, told apart by CASCADIA_BOARD). Device model aliases are
 # accepted too.
 set -euo pipefail
 
@@ -23,6 +25,7 @@ fail() { printf 'error: %s\n' "$*" >&2; exit 1; }
 soc() {
     case "$1" in
         a5|A5|ipad-mini1|ipad-mini|p105|p105ap|iPad2,5) echo a5 ;;
+        k93|K93|k93ap|K93AP|ipad2|ipad-2|iPad2,1)        echo k93 ;;
         a12|A12|iphone-xr|iphonexr|n841|n841ap|iPhone11,8) echo a12 ;;
         a13|A13|iphone11|n104|n104ap|iPhone12,1)        echo a13 ;;
         *) return 1 ;;
@@ -32,6 +35,7 @@ soc() {
 name() {
     case "$1" in
         a5)  echo "iPad mini 1 (A5)" ;;
+        k93) echo "iPad 2 Wi-Fi (A5)" ;;
         a12) echo "iPhone XR (A12)" ;;
         a13) echo "iPhone 11 (A13)" ;;
     esac
@@ -44,26 +48,33 @@ choose() {
     {
         echo "Which device?"
         echo "  1) iPad mini 1, Wi-Fi (iPad2,5)   -- a5"
-        echo "  2) iPhone XR (iPhone11,8)          -- a12"
-        echo "  3) iPhone 11 (iPhone12,1)         -- a13"
-        printf 'Choose 1, 2 or 3: '
+        echo "  2) iPad 2, Wi-Fi (iPad2,1)        -- k93 (experimental)"
+        echo "  3) iPhone XR (iPhone11,8)          -- a12"
+        echo "  4) iPhone 11 (iPhone12,1)         -- a13"
+        printf 'Choose 1, 2, 3 or 4: '
     } >&2
     read -r ans || ans=
     case "$ans" in
         1|a5)  echo a5 ;;
-        2|a12) echo a12 ;;
-        3|a13) echo a13 ;;
-        *) fail "no device chosen -- run: ./cascadia device a5, a12 or a13" ;;
+        2|k93) echo k93 ;;
+        3|a12) echo a12 ;;
+        4|a13) echo a13 ;;
+        *) fail "no device chosen -- run: ./cascadia device a5, k93, a12 or a13" ;;
     esac
 }
 
 usage() {
-    sed -n '2,13p' "$REPO/cascadia" | sed 's/^# \{0,1\}//'
+    sed -n '2,16p' "$REPO/cascadia" | sed 's/^# \{0,1\}//'
     if d=$(saved); then echo; echo "Chosen now: $d, $(name "$d")."; fi
 }
 
+# the device -> its tree, and for the A5 tree the board in it
 run() {
     local d=$1; shift
+    case "$d" in
+        a5)  export CASCADIA_BOARD=p105; d=a5 ;;
+        k93) export CASCADIA_BOARD=k93;  d=a5 ;;
+    esac
     exec bash "$REPO/devices/$d/cascadia" "$@"
 }
 
@@ -72,12 +83,12 @@ case "${1:-}" in
         usage; exit 0 ;;
     device)
         if [ -n "${2:-}" ]; then
-            d=$(soc "$2") || fail "unknown device '$2' -- use a5, a12 or a13"
+            d=$(soc "$2") || fail "unknown device '$2' -- use a5, k93, a12 or a13"
         elif [ -t 0 ]; then
             if d=$(saved); then echo "now: $d, $(name "$d")"; exit 0; fi
             d=$(choose)
         else
-            d=$(saved) || fail "no device chosen yet -- ./cascadia device a5, a12 or a13"
+            d=$(saved) || fail "no device chosen yet -- ./cascadia device a5, k93, a12 or a13"
             echo "$d"; exit 0
         fi
         echo "$d" > "$SAVED"
@@ -89,7 +100,7 @@ case "${1:-}" in
             run "$d" "$@"
         fi
         if ! d=$(saved); then
-            [ -t 0 ] || fail "which device? ./cascadia a5|a12|a13 $1 ...  (or ./cascadia device a12)"
+            [ -t 0 ] || fail "which device? ./cascadia a5|k93|a12|a13 $1 ...  (or ./cascadia device a12)"
             d=$(choose)
             echo "$d" > "$SAVED"
         fi

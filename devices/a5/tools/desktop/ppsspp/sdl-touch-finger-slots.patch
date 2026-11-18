@@ -1,0 +1,95 @@
+Cascadia: on X11 the touch controls never pressed: SDL's finger IDs are
+X.Org's touch IDs (946, 947, ...), and the controls index masks and
+arrays of TOUCH_MAX_POINTERS (10) by them.  Each finger gets a small slot.
+
+--- a/SDL/SDLMain.cpp
++++ b/SDL/SDLMain.cpp
+@@ -34,6 +34,7 @@
+ #include "Common/System/System.h"
+ #include "Common/System/Request.h"
+ #include "Common/System/NativeApp.h"
++#include "Common/Input/InputState.h"
+ #include "Common/Audio/AudioBackend.h"
+ #include "ext/glslang/glslang/Public/ShaderLang.h"
+ #include "Common/Data/Format/PNGLoad.h"
+@@ -107,6 +108,35 @@
+ 
+ static bool g_textFocusChanged;
+ static bool g_textFocus;
++
++// SDL gives a finger the windowing system's touch ID -- on X.Org a counter
++// that only grows (946, 947, ...) -- while the touch controls index masks and
++// arrays of TOUCH_MAX_POINTERS by it: such a touch never pressed a button
++// and wrote past those arrays.  Each finger down gets a small slot instead,
++// from 1 (0 is the mouse's).  -1: more fingers than slots, ignored.
++static SDL_FingerID g_fingerIds[TOUCH_MAX_POINTERS];
++static bool g_fingerDown[TOUCH_MAX_POINTERS];
++
++static int FingerSlot(SDL_FingerID id, bool down, bool up) {
++	for (int i = 1; i < TOUCH_MAX_POINTERS; i++) {
++		if (g_fingerDown[i] && g_fingerIds[i] == id) {
++			if (up)
++				g_fingerDown[i] = false;
++			return i;
++		}
++	}
++	if (!down)
++		return -1;
++	for (int i = 1; i < TOUCH_MAX_POINTERS; i++) {
++		if (!g_fingerDown[i]) {
++			g_fingerDown[i] = true;
++			g_fingerIds[i] = id;
++			return i;
++		}
++	}
++	return -1;
++}
++
+ double g_audioStartTime = 0.0;
+ 
+ // Window state to be transferred to the main SDL thread.
+@@ -1105,10 +1135,13 @@
+ #if !PPSSPP_PLATFORM(MAC)
+ 	case SDL_FINGERMOTION:
+ 		{
++			const int slot = FingerSlot(event.tfinger.fingerId, false, false);
++			if (slot < 0)
++				break;
+ 			int w, h;
+ 			SDL_GetWindowSize(window, &w, &h);
+ 			TouchInput input{};
+-			input.id = event.tfinger.fingerId;
++			input.id = slot;
+ 			input.x = event.tfinger.x * w * g_DesktopDPI * g_display.dpi_scale_x;
+ 			input.y = event.tfinger.y * h * g_DesktopDPI * g_display.dpi_scale_x;
+ 			input.flags = TouchInputFlags::MOVE;
+@@ -1118,10 +1151,13 @@
+ 		}
+ 	case SDL_FINGERDOWN:
+ 		{
++			const int slot = FingerSlot(event.tfinger.fingerId, true, false);
++			if (slot < 0)
++				break;
+ 			int w, h;
+ 			SDL_GetWindowSize(window, &w, &h);
+ 			TouchInput input{};
+-			input.id = event.tfinger.fingerId;
++			input.id = slot;
+ 			input.x = event.tfinger.x * w * g_DesktopDPI * g_display.dpi_scale_x;
+ 			input.y = event.tfinger.y * h * g_DesktopDPI * g_display.dpi_scale_x;
+ 			input.flags = TouchInputFlags::DOWN;
+@@ -1137,10 +1173,13 @@
+ 		}
+ 	case SDL_FINGERUP:
+ 		{
++			const int slot = FingerSlot(event.tfinger.fingerId, false, true);
++			if (slot < 0)
++				break;
+ 			int w, h;
+ 			SDL_GetWindowSize(window, &w, &h);
+ 			TouchInput input{};
+-			input.id = event.tfinger.fingerId;
++			input.id = slot;
+ 			input.x = event.tfinger.x * w * g_DesktopDPI * g_display.dpi_scale_x;
+ 			input.y = event.tfinger.y * h * g_DesktopDPI * g_display.dpi_scale_x;
+ 			input.flags = TouchInputFlags::UP;

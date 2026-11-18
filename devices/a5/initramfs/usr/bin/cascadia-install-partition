@@ -1,0 +1,98 @@
+#!/bin/sh
+# cascadia-install-partition -- the iPad 2's root, moved into its own partition.
+#
+#   cascadia-install-partition          what it would do (nothing is written)
+#   cascadia-install-partition --yes    do it, then `reboot`: the next boot
+#                                       starts from the Linux partition
+#
+# tools/k93-part.sh (on the computer, with the iPad in iOS) makes the Linux and
+# Swap partitions out of iOS's Data; the NAND server (tools/nand/k93yaftl.c,
+# started by initramfs/init) serves them read-write through iOS's own FTL.
+# This makes an ext4 on the Linux partition and copies the running root into
+# it -- the image and every change kept on the Linux volume, as one tree --
+# and makes the Swap partition swap (raw: no file system under it).  From then
+# on initramfs/init boots the partition (part_root) and turns the swap on;
+# `cascadia.root=image` on the command line still boots the image.
+set -u
+
+say()  { printf '%s\n' "$*"; }
+die()  { printf 'cascadia-install-partition: %s\n' "$*" >&2; exit 1; }
+
+LINUX=$(cat /run/ios/linux-dev 2>/dev/null)
+SWAP=$(cat /run/ios/swap-dev 2>/dev/null)
+[ -n "$LINUX" ] || die "no Linux partition is served: tools/k93-part.sh makes it, and the NAND server must be k93yaftl (this boot's: $(cat /run/ios/pid 2>/dev/null | xargs -r -I{} readlink /proc/{}/exe))"
+[ "$(cat /run/ios/root 2>/dev/null)" = partition ] && die "the root already is the Linux partition"
+grep -q "^$LINUX " /proc/mounts && die "$LINUX is mounted"
+[ "$(cat /sys/block/${LINUX#/dev/}/ro 2>/dev/null)" = 0 ] || die "$LINUX is read-only (the server could not write iOS's FTL this boot: /run/ios/iosnand.log)"
+size_mb=$(( $(cat /sys/block/${LINUX#/dev/}/size) / 2048 ))
+
+say "Linux partition: $LINUX, $size_mb MB"
+if [ -n "$SWAP" ]; then
+    say "Swap partition:  $SWAP, $(( $(cat /sys/block/${SWAP#/dev/}/size) / 2048 )) MB"
+else
+    say "Swap partition:  none served"
+fi
+say "Plan: mke2fs on $LINUX, the root copied into it, mkswap on ${SWAP:-(none)}."
+say "Everything on the two partitions is replaced; iOS's own partitions are not touched."
+[ "${1:-}" = --yes ] || { say "(nothing done: add --yes)"; exit 0; }
+
+# The desktop image carries neither e2fsprogs nor GNU coreutils (2026-11-16):
+# both come from Alpine when the network is up, into the root's changes -- and
+# so into the copy, where they stay.  Without GNU cp, busybox's cp -a (no -x:
+# the loop below skips every mount point the root has at the top already).
+if ! command -v mke2fs >/dev/null || ! cp --version 2>/dev/null | grep -q GNU; then
+    command -v apk >/dev/null && apk add -q e2fsprogs coreutils >/dev/null 2>&1 ||
+        say "(apk add e2fsprogs coreutils failed: no network?)"
+fi
+command -v mke2fs >/dev/null || die "no mke2fs: apk add e2fsprogs (Wi-Fi: wifi up), then again"
+if cp --version 2>/dev/null | grep -q GNU; then
+    CP="cp -ax"
+else
+    CP="cp -a"
+    say "(busybox cp: hard links are copied as separate files, extended attributes are not kept)"
+fi
+for m in $(awk '{print $2}' /proc/mounts); do
+    case "$m" in /|/proc|/proc/*|/sys|/sys/*|/dev|/dev/*|/run|/run/*|/tmp|/tmp/*|/mnt|/mnt/*) ;;
+        *) [ "$CP" = "cp -ax" ] || die "$m is mounted inside the root and busybox cp cannot skip it: unmount it first" ;;
+    esac
+done
+t0=$(cut -d' ' -f1 /proc/uptime)
+say "== mke2fs"
+# lazy inode tables and journal: written as they are needed, not 8 GB of zeroes now
+mke2fs -q -F -t ext4 -L cascadia-root -E lazy_itable_init=1,lazy_journal_init=1,nodiscard "$LINUX" ||
+    die "mke2fs failed"
+mkdir -p /mnt/part
+mount -t ext4 -o noatime "$LINUX" /mnt/part || die "the new file system did not mount"
+say "== copying the root (the image under the overlay with its changes, as one tree)"
+# entry by entry, so the copy never walks into /mnt/part itself; -x keeps each
+# on the root's own file system (GNU cp: hard links, owners, modes, times and
+# xattrs kept; busybox cp -a as the fallback copies hard links twice).  On the
+# overlay root only directories report the overlay's st_dev, which is all -x
+# compares, so files from the image and from the changes are both copied.
+for e in /* /.[!.]*; do
+    [ -e "$e" ] || [ -L "$e" ] || continue
+    case "$e" in /proc|/sys|/dev|/run|/tmp|/mnt) continue ;; esac
+    if ! $CP "$e" /mnt/part/ 2>>/tmp/install-copy.err; then
+        tail -n 5 /tmp/install-copy.err
+        umount /mnt/part
+        die "the copy of $e failed"
+    fi
+done
+# what lives on other file systems at run time: only the mount points
+for d in proc sys dev run tmp mnt/ios; do
+    mkdir -p "/mnt/part/$d"
+done
+chmod 1777 /mnt/part/tmp
+[ -x /mnt/part/sbin/p105-stage2 ] || { umount /mnt/part; die "the copy has no /sbin/p105-stage2"; }
+# (the Swap partition is zram's backing store by default -- cascadia-zram --
+# and needs nothing then; the signature is for cascadia.swap=nand)
+if [ -n "$SWAP" ] && [ "$(cat /sys/block/zram0/backing_dev 2>/dev/null)" != "$SWAP" ]; then
+    say "== mkswap"
+    mkswap -L cascadia-swap "$SWAP" >/dev/null || say "mkswap failed: no swap (the root is fine)"
+fi
+sync
+df -h /mnt/part | awk 'NR==2 {print "== the Linux partition: " $3 " used, " $4 " free"}'
+umount /mnt/part
+sync
+t1=$(cut -d' ' -f1 /proc/uptime)
+say "Done in $(awk "BEGIN {printf \"%d\", $t1 - $t0}") s.  reboot: the next Linux starts from the Linux partition."
