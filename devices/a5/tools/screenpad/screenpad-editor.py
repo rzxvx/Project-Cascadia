@@ -1,9 +1,18 @@
 #!/usr/bin/env python3
-"""screenpad-editor -- screenpad's presets, made and changed on the iPad.
+"""screenpad-editor -- screenpad on the iPad: apps launched with on-screen
+controls, and the presets made and changed.
 
-    screenpad-editor [PRESET]
+    screenpad-editor [PRESET]       (with PRESET: straight to its editing)
 
-A window in XFCE: on the left the screen as the preset has it, landscape
+Two parts, a switch at the top between them.
+
+Launch: an app (the apps' list, as the desktop's) and a preset; Launch runs
+`screenpad PRESET -- the app's command` and the window goes; "Add to apps"
+leaves an entry for the pair in the apps' list (~/.local/share/
+applications), as supertux-screenpad.desktop is for SuperTux.  The last
+pair chosen is kept (~/.config/screenpad/launch.json).
+
+Edit presets: on the left the screen as the preset has it, landscape
 (1024 x 768) or portrait, with its controls drawn as screenpad draws them;
 on the right the selected control's shape, label, size, colour, opacity
 and what it does.  Drag a control to move it, its blue handle to resize
@@ -23,13 +32,15 @@ import signal
 import subprocess
 import sys
 
+import shlex
+
 import cairo
 import gi
 
 gi.require_version("Gdk", "3.0")
 gi.require_version("Gtk", "3.0")
 gi.require_version("PangoCairo", "1.0")
-from gi.repository import Gdk, GLib, Gtk, Pango, PangoCairo  # noqa: E402
+from gi.repository import Gdk, Gio, GLib, Gtk, Pango, PangoCairo  # noqa: E402
 
 HERE = os.path.dirname(os.path.realpath(sys.argv[0]))
 SHARE = os.environ.get("SCREENPAD_SHARE", os.path.join(HERE, "..", "share", "screenpad"))
@@ -79,7 +90,35 @@ CSS = b"""
 .dim { opacity: 0.7; }
 .swatch { min-width: 30px; min-height: 30px; padding: 0; border-radius: 15px; }
 .stop { font-size: 20px; font-weight: bold; min-height: 56px; min-width: 150px; }
+.switch button { min-height: 44px; min-width: 160px; font-size: 15px; }
+.launch { padding: 24px; }
+.launch label.field { font-weight: bold; font-size: 15px; margin-top: 10px; }
+.launch combobox, .launch button { min-height: 52px; font-size: 16px; }
+.launch .go { min-height: 64px; font-size: 18px; font-weight: bold; }
 """
+LAUNCH_STATE = os.path.join(USER, "launch.json")
+
+
+def apps():
+    """The apps' list as the desktop shows it: (id, name, icon, command)."""
+    out = []
+    for a in Gio.AppInfo.get_all():
+        if not a.should_show() or a.get_id() in ("screenpad-editor.desktop",):
+            continue
+        cmd = a.get_commandline() or ""
+        # the entry's field codes (%f %U ...) are for files given to it: none here
+        cmd = re.sub(r"%[a-zA-Z]", "", cmd).strip()
+        if cmd:
+            out.append((a.get_id(), a.get_display_name(), a.get_icon(), cmd))
+    out.sort(key=lambda t: t[1].lower())
+    return out
+
+
+def preset_screen(name):
+    try:
+        return normalise(read_preset(name)).get("screen", "landscape")
+    except (OSError, ValueError):
+        return ""
 
 
 def rgb(hexs):
@@ -344,8 +383,19 @@ class Editor(Gtk.Window):
         Gtk.StyleContext.add_provider_for_screen(Gdk.Screen.get_default(), css,
                                                  Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
 
+        # the two parts: Launch and Edit presets, a switch above them
+        top = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        self.add(top)
+        self.stack = Gtk.Stack()
+        self.stack.set_transition_type(Gtk.StackTransitionType.NONE)
+        switch = Gtk.StackSwitcher(stack=self.stack, halign=Gtk.Align.CENTER)
+        switch.get_style_context().add_class("switch")
+        top.pack_start(switch, False, False, 6)
+        top.pack_start(self.stack, True, True, 0)
+        self.stack.add_titled(self.launch_page(), "launch", "Launch")
         outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        self.add(outer)
+        self.stack.add_titled(outer, "edit", "Edit presets")
+        self.stack.connect("notify::visible-child-name", self.on_page)
         outer.pack_start(self.toolbar(), False, False, 0)
         # (a Paned and not a Box: it gives the panel exactly PANEL_W, where a
         # box gives it its natural width -- the colour swatches' row, twice
@@ -385,6 +435,132 @@ class Editor(Gtk.Window):
         self.render_panel()
         self.update_hint()
         self.maximize()
+        self.start_page = "edit" if name else "launch"
+
+    # -- Launch: an app with a preset's controls
+    def launch_page(self):
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8,
+                      halign=Gtk.Align.CENTER, valign=Gtk.Align.START)
+        box.get_style_context().add_class("launch")
+        box.set_size_request(560, -1)
+        try:
+            last = json.load(open(LAUNCH_STATE))
+        except (OSError, ValueError):
+            last = {}
+
+        l = Gtk.Label(label="App", xalign=0)
+        l.get_style_context().add_class("field")
+        box.pack_start(l, False, False, 0)
+        self.app_store = Gtk.ListStore(str, str, Gio.Icon, str)
+        self.app_combo = Gtk.ComboBox(model=self.app_store)
+        icon = Gtk.CellRendererPixbuf(stock_size=Gtk.IconSize.DND)
+        self.app_combo.pack_start(icon, False)
+        self.app_combo.add_attribute(icon, "gicon", 2)
+        text = Gtk.CellRendererText(ellipsize=Pango.EllipsizeMode.END)
+        self.app_combo.pack_start(text, True)
+        self.app_combo.add_attribute(text, "text", 1)
+        self.app_combo.set_id_column(0)
+        for a in apps():
+            self.app_store.append(list(a))
+        if not (last.get("app") and self.app_combo.set_active_id(last["app"])):
+            self.app_combo.set_active(0 if len(self.app_store) else -1)
+        box.pack_start(self.app_combo, False, False, 0)
+
+        l = Gtk.Label(label="Preset", xalign=0)
+        l.get_style_context().add_class("field")
+        box.pack_start(l, False, False, 0)
+        self.launch_presets = Gtk.ComboBoxText()
+        self.launch_presets.connect("changed", lambda _c: self.on_launch_preset())
+        box.pack_start(self.launch_presets, False, False, 0)
+        self.launch_note = Gtk.Label(xalign=0)
+        self.launch_note.get_style_context().add_class("dim")
+        box.pack_start(self.launch_note, False, False, 0)
+        self.fill_launch_presets(last.get("preset"))
+
+        go = Gtk.Button(label="▶  Launch")
+        go.get_style_context().add_class("suggested-action")
+        go.get_style_context().add_class("go")
+        go.connect("clicked", lambda _b: self.launch())
+        box.pack_start(go, False, False, 18)
+        entry = Gtk.Button(label="Add to apps")
+        entry.connect("clicked", lambda _b: self.add_entry())
+        box.pack_start(entry, False, False, 0)
+        return box
+
+    def fill_launch_presets(self, select=None):
+        cur = select or self.launch_presets.get_active_id()
+        self.launch_presets.remove_all()
+        for n in list_presets():
+            self.launch_presets.append(n, n)
+        if not (cur and self.launch_presets.set_active_id(cur)):
+            self.launch_presets.set_active(0)
+
+    def on_launch_preset(self):
+        n = self.launch_presets.get_active_id()
+        scr = preset_screen(n) if n else ""
+        self.launch_note.set_text("Controls for %s: turn the iPad that way" % scr if scr else "")
+
+    def launch_choice(self):
+        it = self.app_combo.get_active_iter()
+        preset = self.launch_presets.get_active_id()
+        if it is None or not preset:
+            self.error("Choose an app and a preset first.")
+            return None
+        app_id, name, _icon, cmd = self.app_store[it][:]
+        return app_id, name, cmd, preset
+
+    def launch(self):
+        ch = self.launch_choice()
+        if not ch:
+            return
+        app_id, _name, cmd, preset = ch
+        try:
+            os.makedirs(USER, exist_ok=True)
+            with open(LAUNCH_STATE, "w") as f:
+                json.dump({"app": app_id, "preset": preset}, f)
+        except OSError:
+            pass
+        try:
+            subprocess.Popen([SCREENPAD, preset, "--"] + shlex.split(cmd),
+                             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                             stderr=open("/tmp/screenpad.log", "w"), start_new_session=True)
+        except (OSError, ValueError) as e:
+            self.error("Could not run screenpad: %s" % e)
+            return
+        if self.confirm_leave():
+            Gtk.main_quit()
+
+    def add_entry(self):
+        ch = self.launch_choice()
+        if not ch:
+            return
+        app_id, name, cmd, preset = ch
+        app = Gio.DesktopAppInfo.new(app_id)
+        icon = app.get_string("Icon") if app else ""
+        d = os.path.join(os.path.expanduser("~"), ".local", "share", "applications")
+        path = os.path.join(d, "screenpad-%s-%s.desktop" % (slug(app_id[:-8] if app_id.endswith(".desktop")
+                                                                  else app_id), slug(preset)))
+        try:
+            os.makedirs(d, exist_ok=True)
+            with open(path, "w") as f:
+                f.write("[Desktop Entry]\nType=Application\n"
+                        "Name=%s (%s controls)\n" % (name, preset) +
+                        "Comment=%s with screenpad's \"%s\" on-screen controls\n" % (name, preset) +
+                        "Exec=%s %s -- %s\n" % (SCREENPAD, shlex.quote(preset), cmd) +
+                        ("Icon=%s\n" % icon if icon else "") +
+                        "Terminal=false\nCategories=Game;\n")
+        except OSError as e:
+            self.error("Could not write %s: %s" % (path, e))
+            return
+        d = Gtk.MessageDialog(transient_for=self, modal=True, message_type=Gtk.MessageType.INFO,
+                              buttons=Gtk.ButtonsType.OK,
+                              text="\"%s (%s controls)\" is in the apps' list now." % (name, preset))
+        d.run()
+        d.destroy()
+
+    def on_page(self, *_a):
+        if self.stack.get_visible_child_name() == "launch":
+            self.fill_launch_presets()
 
     # -- the top bar
     def toolbar(self):
@@ -1001,6 +1177,7 @@ def main():
     signal.signal(signal.SIGINT, signal.SIG_DFL)
     win = Editor(name)
     win.show_all()
+    win.stack.set_visible_child_name(win.start_page)
     Gtk.main()
 
 

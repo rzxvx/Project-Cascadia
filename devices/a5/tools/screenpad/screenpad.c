@@ -28,7 +28,10 @@
  * a fullscreen game that bypasses the compositor, over a program on KMS.
  * It shows while the screen is turned the preset's way (landscape or
  * portrait) and something is on KMS; otherwise it hides and keeps out of
- * the way.
+ * the way.  The turn: the plane's, where X turns the screen through it;
+ * otherwise /run/cascadia-rotation (rotate writes it), where labwc turns
+ * the picture itself and the plane stays as it is -- the controls are then
+ * drawn turned into the overlay.
  *
  * The touches: the touchscreen is grabbed (EVIOCGRAB) while the controls
  * show.  The fingers that are not the controller's go on to a touchscreen
@@ -562,8 +565,44 @@ static void list_presets(void)
 static int gpu = -1;
 static uint32_t ov_handle;
 static uint8_t *ov_map;
-static int scr_w, scr_h;		/* the plane now (0 0: nothing on KMS) */
-static uint32_t scr_rot = DRM_MODE_ROTATE_0;
+static int scr_w, scr_h;		/* the screen as seen, turned (0 0: nothing on KMS) */
+static uint32_t scr_rot = DRM_MODE_ROTATE_0;	/* its turn, the plane's or labwc's */
+static int pl_w, pl_h;			/* the plane, as the kernel has it */
+static int kturn;			/* the kernel turns the plane (X): no turning here */
+
+/* the turn labwc gave the picture (rotate leaves it in /run/cascadia-rotation) */
+static uint32_t rot_file(void)
+{
+	char t[32] = "";
+	FILE *f = fopen("/run/cascadia-rotation", "r");
+
+	if (f) {
+		if (!fgets(t, sizeof(t), f))
+			t[0] = 0;
+		fclose(f);
+	}
+	return !strncmp(t, "left", 4) ? DRM_MODE_ROTATE_90 : !strncmp(t, "inverted", 8) ?
+	       DRM_MODE_ROTATE_180 : !strncmp(t, "right", 5) ? DRM_MODE_ROTATE_270 : DRM_MODE_ROTATE_0;
+}
+
+/* a box of the screen as seen -> the plane's (labwc's turn; RandR's left =
+ * the picture's top at the panel's left) */
+static void box_to_plane(const struct drm_apple_sgx_overlay_rect *r, struct drm_apple_sgx_overlay_rect *o)
+{
+	int x0 = r->x, y0 = r->y, x1 = r->x + r->w, y1 = r->y + r->h;
+
+	*o = *r;
+	if (kturn)
+		return;
+	switch (scr_rot) {
+	case DRM_MODE_ROTATE_90:
+		o->x = y0; o->w = y1 - y0; o->y = pl_h - x1; o->h = x1 - x0; break;
+	case DRM_MODE_ROTATE_180:
+		o->x = pl_w - x1; o->y = pl_h - y1; break;
+	case DRM_MODE_ROTATE_270:
+		o->x = pl_w - y1; o->w = y1 - y0; o->y = x0; o->h = x1 - x0; break;
+	}
+}
 static int shown;
 
 static void ov_open(void)
@@ -602,10 +641,11 @@ static int ov_set(const struct drm_apple_sgx_overlay_rect *r, int n, int query)
 	} else if (n >= 0) {
 		o.handle = ov_handle;
 		o.pitch = OV_PITCH;
-		o.width = scr_w;
-		o.height = scr_h;
+		o.width = pl_w;
+		o.height = pl_h;
 		o.nrects = n;
-		memcpy(o.rects, r, n * sizeof(*r));
+		for (int i = 0; i < n; i++)
+			box_to_plane(&r[i], &o.rects[i]);
 	}
 	if (ioctl(gpu, DRM_IOCTL_APPLE_SGX_OVERLAY, &o)) {
 		if (errno == EBUSY)
@@ -613,9 +653,19 @@ static int ov_set(const struct drm_apple_sgx_overlay_rect *r, int n, int query)
 		fprintf(stderr, "screenpad: the overlay: %s\n", strerror(errno));
 		return -1;
 	}
-	scr_w = o.out_width;
-	scr_h = o.out_height;
+	pl_w = o.out_width;
+	pl_h = o.out_height;
 	scr_rot = o.out_rotation & 0xf;
+	kturn = scr_rot != DRM_MODE_ROTATE_0;
+	if (!kturn)
+		scr_rot = rot_file();
+	if (!kturn && (scr_rot == DRM_MODE_ROTATE_90 || scr_rot == DRM_MODE_ROTATE_270)) {
+		scr_w = pl_h;
+		scr_h = pl_w;
+	} else {
+		scr_w = pl_w;
+		scr_h = pl_h;
+	}
 	return 0;
 }
 
@@ -902,6 +952,34 @@ static int boxes(struct drm_apple_sgx_overlay_rect *out)
 
 static int dirty[MAX_CONTROLS], full_redraw = 1;
 
+/* box b of the canvas into the overlay's buffer, turned to the plane */
+static void to_plane(const struct box *b)
+{
+	struct drm_apple_sgx_overlay_rect r = { b->x0, b->y0, b->x1 - b->x0, b->y1 - b->y0 }, o;
+
+	if (kturn || scr_rot == DRM_MODE_ROTATE_0) {
+		for (int y = b->y0; y < b->y1; y++)
+			memcpy(ov_map + (size_t)y * OV_PITCH + b->x0 * 4, &cv[y * cw + b->x0],
+			       (b->x1 - b->x0) * 4);
+		return;
+	}
+	box_to_plane(&r, &o);
+	for (int py = o.y; py < o.y + o.h; py++) {
+		uint32_t *dst = (uint32_t *)(ov_map + (size_t)py * OV_PITCH);
+
+		for (int px = o.x; px < o.x + o.w; px++) {
+			int x, y;
+
+			switch (scr_rot) {
+			case DRM_MODE_ROTATE_90:  x = pl_h - 1 - py; y = px; break;
+			case DRM_MODE_ROTATE_180: x = pl_w - 1 - px; y = pl_h - 1 - py; break;
+			default:                  x = py; y = pl_w - 1 - px; break;	/* 270 */
+			}
+			dst[px] = cv[y * cw + x];
+		}
+	}
+}
+
 /* box b of the canvas drawn again -- every control that reaches it, in
  * order, kept within it -- and put into the overlay's buffer */
 static void redraw_box(const struct box *b)
@@ -917,9 +995,7 @@ static void redraw_box(const struct box *b)
 	for (int j = 0; j < P.n; j++)
 		if (box_of(&P.c[j], &o) && boxes_meet(&o, b))
 			draw_control(&P.c[j]);
-	for (int y = b->y0; y < b->y1; y++)
-		memcpy(ov_map + (size_t)y * OV_PITCH + b->x0 * 4, &cv[y * cw + b->x0],
-		       (b->x1 - b->x0) * 4);
+	to_plane(b);
 }
 
 /* what changed drawn again (everything after a new preset or screen), and
@@ -947,8 +1023,7 @@ static void redraw(void)
 		memset(cv, 0, (size_t)cw * ch * 4);
 		for (int i = 0; i < P.n; i++)
 			draw_control(&P.c[i]);
-		for (int y = 0; y < ch; y++)
-			memcpy(ov_map + (size_t)y * OV_PITCH, &cv[y * cw], cw * 4);
+		to_plane(&b);
 	} else {
 		for (int i = 0; i < P.n; i++)
 			if (dirty[i] && box_of(&P.c[i], &b))
