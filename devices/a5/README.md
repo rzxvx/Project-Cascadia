@@ -43,10 +43,11 @@ including the parts that didn't work.
 | Device | Model | Chip | Board ID | Status | Where |
 |--------|-------|------|----------|--------|-------|
 | iPad mini 1 (Wi-Fi) | iPad2,5 / A1432 | Apple A5 (S5L8942X) | p105ap | desktop, touch, Wi-Fi, GPU | this README, repository root |
+| iPad 2 (Wi-Fi) *(experimental)* | iPad2,1 / A1395 | Apple A5 (S5L8940X) | k93ap | desktop (NFS), touch, Wi-Fi, Bluetooth, speaker, headphones, built-in and headset microphones, both cameras, volume buttons, GPU, sensors; boots from iOS without a computer | [docs/k93-bringup.md](docs/k93-bringup.md) |
 | iPhone 11 | iPhone12,1 | Apple A13 (T8030) | n104ap | shell, network over USB, touch, XFCE, Wi-Fi, Bluetooth, internal storage | [`a13/`](../a13/README.md) |
 
-Experimental: the iPad 2 Wi-Fi (iPad2,1 / K93AP, S5L8940) now boots Linux
-6.12 to a RAM-only USB shell. This is not feature parity with the iPad mini;
+The iPad 2 is the tree's second board, tested on one device (iOS 6.1.3,
+jailbroken): it starts from that iOS, which stays installed and working --
 see [K93 bring-up and limitations](docs/k93-bringup.md).
 
 ## Current Status
@@ -541,6 +542,12 @@ good.
 
 On the desktop it shows as XFCE and its terminal starting about twice as fast.
 
+The L2 still prefetched nothing: iOS's ADT has data and instruction
+prefetch on, the device tree here had not asked for it. On the iPad 2
+(2026-11-12) it does now — musl's `memcpy`, which has no preloads of its
+own, copies 3 MB at ~580 MB/s instead of 233
+([research/p105-mesa.md](docs/research/p105-mesa.md) M46).
+
 ### 7. The NAND problem — reading iOS's disk without iOS
 
 The iPad's 16 GB are two Hynix packages of PPN NAND ("physical page NAND"),
@@ -808,17 +815,20 @@ app/            the Cascadia app for iOS 8: starts Linux, updates its kernel
                 (helper.c, pcless.c: the boot file rebuilt on the iPad,
                 fetch.c: HTTPS with BearSSL)
 patches/*.patch generated diffs of the glue edits, for reference
-config/         p105ap.config — the kernel config fragment
+config/         p105ap.config, k93ap.config — the kernel config fragments
 scripts/        patch application + build + bundle scripts
-dts/            p105ap.dts — hand-written, generated from the Apple ADT
+dts/            p105ap.dts, k93ap.dts — hand-written, generated from the Apple
+                ADT (k93ap-diag.dts: the iPad 2's first, RAM-only boot)
 rootfs/alpine/  the Alpine-side overlay: apk repositories, inittab, motd
 initramfs/      stage 1 (/init) and stage 2 (/sbin/p105-stage2) -- the boot
                 itself.  ./cascadia a5 rootfs lays both overlays onto the Alpine
                 minirootfs; nothing is edited inside build/
 tools/          p105-peek.c (MMIO tool), build/flash wrappers, LZSS helpers,
-                nand/ (nandctl, iosnand: the NAND, read-only, from userspace),
-                nand-volume/ (making and removing the Linux volume: LwVM,
-                iOS's validator, cascadia-hfs, the install's NAND steps),
+                nand/ (nandctl, iosnand: PPN flash, the mini's, read-only;
+                they refuse raw NAND), nand-volume/ (making and removing
+                the Linux volume: LwVM, iOS's validator, cascadia-hfs, the
+                install's NAND steps), k93-*.sh (the iPad 2's firmware, its
+                boot from iOS), audio/ (the speakers, the A5 iPads'),
                 sgx/ (the GPU: sgx2d, the SDL shim, pack builder, gl/: the
                 driver's tests), iosgpu/ (the iOS capture tool, the kext
                 emulator), piglit/ (the OpenGL test suite for the iPad),
@@ -829,6 +839,7 @@ mesa/           the GPU's Mesa driver (Gallium: OpenGL ES 1.1/2.0, OpenGL 2.1):
 docs/           QUICKSTART.md — clean machine to a shell on the device
                 CASCADIA-CHEATSHEET.md — the real reference for working on it
                 GPU.md — the GPU: building, playing SuperTux, how it works
+                k93-bringup.md — the iPad 2: what differs, what works
 docs/research/  one file per investigation; several are dead ends, on purpose
                 (p105-mesa.md: the plan for Mesa and OpenGL)
 pongo/          pongoOS module (ADT read, DT fixup)
@@ -857,6 +868,18 @@ Build products (`output/`) and stock firmware are not tracked; everything in
   a write cache for the NAND (small fsyncs are slow) and TRIM,
   DMA for the NAND and the USB link, USB host mode, the headphone jack and
   the microphones, GLSL 1.30 for the GPU.
+
+### iPad 2 — A5 (experimental)
+
+- **Phases 1 and 2 ✓** — the boot from a jailbroken iOS (kDFU from a computer,
+  or `linux` on the iPad itself), USB gadget and ssh, the AIC timer, both
+  cores, the L2.
+- **Phase 3** — ~~touch~~ ✓ → ~~Wi-Fi (SDIO)~~ ✓ → ~~Bluetooth~~ ✓ → ~~the GPU
+  and a desktop~~ ✓ → ~~the speaker~~ ✓ → ~~the volume buttons~~ ✓ →
+  ~~autorotate~~ ✓ → ~~the headphones~~ ✓ (switching by themselves) → ~~the
+  built-in microphone~~ ✓ → ~~a headset's microphone~~ ✓ (biased, capture
+  moving to it) → ~~the cameras~~ ✓ (V4L2, both, with their picture
+  controls) → NAND as Linux's own storage → USB host.
 
 The iPhone 11 and the devices planned next: the
 [project README](../../README.md#roadmap).
