@@ -22,7 +22,7 @@
 #   ./cascadia a5 link        give this host 10.55.0.1 on the device's link (flash does it)
 #   ./cascadia a5 net on|off  share this host's internet with it  (macOS or Linux)
 #   ./cascadia a5 nfs on|off  export a root filesystem to it      (macOS or Linux)
-#   ./cascadia a5 desktop-root  a root with XFCE, the GPU's Mesa and pack, SuperTux,
+#   ./cascadia a5 desktop-root  a root with labwc (and XFCE), the GPU's Mesa and pack, SuperTux,
 #                             screenpad, autorotate, built here; nfs on seeds
 #                             a new root from it
 #
@@ -415,7 +415,7 @@ cmd_install() {
         desktop=y     # the NAND's Linux volume gets the desktop root
     else
         echo
-        echo "    The desktop (XFCE on the GPU, SuperTux, an on-screen keyboard and game"
+        echo "    The desktop (labwc on the GPU, SuperTux, an on-screen keyboard and game"
         echo "    controls) lives on this computer, which the iPad uses as its disk over the"
         echo "    cable (NFS, ~1.5 GB).  Without it the iPad runs a small system in its RAM."
         desktop=$(install_conf desktop "the desktop?")
@@ -1072,7 +1072,7 @@ cmd_release() {
 # Cascadia $ver -- iPad mini 1 (iPad2,5)
 
 Prebuilt halves for \`./cascadia a5 get\` (then \`./cascadia a5 install\`): the
-kernel ${kv:-6.12} with its base system, and the desktop root (XFCE on the GPU,
+kernel ${kv:-6.12} with its base system, and the desktop root (labwc on the GPU, XFCE,
 SuperTux, screenpad, the on-screen keyboard).  Built from commit $rev.
 
 No Apple files and nothing of anyone's machine: the firmware from the IPSW,

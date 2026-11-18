@@ -167,8 +167,13 @@ is true as of its date. Now:
 - started from iOS: the Cascadia app (`app/`): kloader -> patched iBEC
   (`upgrade`, stay) -> /kernelcache (the bundle as an img3) from System; the
   app updates /kernelcache from a release and rolls it back (/kernelcache.prev)
-- XFCE: `tools/desktop/xfce-setup.sh`, then `desktop` -- on the GPU (Xorg,
-  glamor) once the GPU's OpenGL is installed
+- the desktop: labwc on Wayland (`tools/desktop/labwc/build.sh install`,
+  `labwc-setup.sh`, then `tools/desktop/install.sh`): `desktop`, started by
+  stage 2 at boot unless `desktop auto off`; log /tmp/labwc.log
+- XFCE: `tools/desktop/xfce-setup.sh`, then `desktop xfce` (desktop-xfce) -- on
+  the GPU (Xorg, glamor) once the GPU's OpenGL is installed
+- out of a program that holds the screen: corners BL, TR, TL, BR twice
+  (task-killer; `task-killer --list`, TK_DEBUG=1 logs the touches)
 - the GPU: `./cascadia a5 dev gpu` (the pack: the template frame, sgx2d's demos), then
   `./cascadia a5 dev mesa`; the GPU demo: `tux-gpudemo` (EXIT top right; docs/GPU.md)
 - the GPU's OpenGL: `./cascadia a5 dev mesa` -- the system's OpenGL ES 1.1/2.0 and desktop
@@ -1189,7 +1194,7 @@ frames and touches in dmesg; `z2-boot -p N -N` reads the frames itself, without 
   are tmpfs (they were plain directories on the server, carrying the last
   boot's sockets and pid files into the next).
 - XFCE runs with touch as the pointer (first brought up by teutekeune):
-  `ssh root@10.55.0.2 sh -s < tools/desktop/xfce-setup.sh`, then `desktop` on the
+  `ssh root@10.55.0.2 sh -s < tools/desktop/xfce-setup.sh`, then `desktop xfce` on the
   iPad. What the boot adds for it: stage 2 starts eudev when installed — Xorg finds
   input devices only through udev.
 
@@ -1470,7 +1475,8 @@ amps. It works with the screen off too.
 Home held 0.8 s: the rotation lock on/off (the backlight dips once for on,
 twice for off).
 
-Turning the screen (XFCE): `autorotate`, started by the session, turns it
+Turning the screen (labwc: wlr-randr, the turn left in /run/cascadia-rotation;
+XFCE: the KMS plane): `autorotate`, started by the session, turns it
 with the iPad; `rotation-lock [on|off|toggle]` (the file
 `/run/rotation-lock`), also the panel button next to the keyboard's, and
 Home held. Installed from the host: `sh tools/desktop/install.sh` (rotate,
@@ -1482,7 +1488,7 @@ accelerometer: `/sys/bus/iio/devices/iio:device0` (`lis3dsh`;
 (docs/research/p105-sensors.md).
 
 On-screen controls: `screenpad PRESET [-- COMMAND]` (`-l` lists the
-presets), `screenpad-editor [PRESET]` makes them (GTK, in XFCE); the
+presets), `screenpad-editor [PRESET]` launches apps with them and makes them (GTK); the
 presets are in `~/.config/screenpad` and `/usr/local/share/screenpad/presets`.
 Installed from the host: `sh tools/screenpad/build.sh install`. They are
 drawn by the kernel, blended into each copy onto the screen (the render

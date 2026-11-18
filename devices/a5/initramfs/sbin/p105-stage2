@@ -332,6 +332,18 @@ if [ -e /etc/bluetooth/auto ] && [ -x /usr/bin/bluetooth ]; then
     msg "P105: Bluetooth -- starting (/tmp/bluetooth.log)"
 fi
 
+# ------------------------------------------------------------ the desktop ---
+# The Wayland desktop (labwc, tools/desktop/labwc) on the glass at the end of
+# the boot, where the root has it and `desktop auto off` did not turn that
+# off; when its session ends, the console below is back with fbkeyboard.
+# Only a root with desktop-labwc: one with XFCE alone keeps its text console
+# at boot, as before.
+if [ -x /usr/local/bin/desktop-labwc ] && [ -x /usr/local/bin/desktop ] &&
+   [ ! -e /etc/cascadia/desktop-boot-off ]; then
+    setsid /usr/local/bin/desktop --boot >/tmp/desktop-boot.log 2>&1 </dev/null &
+    msg "P105: the desktop (labwc) starting -- 'desktop auto off' for the console only"
+fi
+
 # --------------------------------------------------------- glass fallback ---
 # Always reached, and independent of USB: if the gadget never comes up this is
 # still a real shell on the panel.

@@ -4,7 +4,10 @@
 # desktop-root.  `./cascadia a5 nfs on` then seeds a new root from it, so the
 # iPad's first NFS boot already has:
 #
-#   XFCE with touch           tools/desktop/xfce-setup.sh
+#   labwc, the Wayland desktop tools/desktop/labwc/{build.sh,labwc-setup.sh}
+#                             (what `desktop` and the boot start)
+#   task-killer               tools/task-killer/build.sh
+#   XFCE with touch           tools/desktop/xfce-setup.sh (`desktop xfce`)
 #   X, xfwm4, pixman patched  tools/desktop/{xorg-server,xfwm4,pixman}/build.sh
 #   autorotate                tools/desktop/install.sh
 #   Mesa on the GPU           ./cascadia a5 dev mesa (the system's OpenGL, tux-gpudemo)
@@ -25,8 +28,8 @@
 #             user's own IPSW, by nfs on), its own docker volume, started
 #             fresh, the package list beside it (OUT.packages)
 #   OUT=      where the tar goes (build/desktop-root.tar)
-#   ONLY="mesa gpu"   just those steps (xfce, patched, autorotate, mesa, gpu,
-#             supertux, screenpad)
+#   ONLY="mesa gpu"   just those steps (gl, xfce, patched, labwc, taskkiller,
+#             autorotate, mesa, gpu, supertux, screenpad)
 #
 # The first time is long: XFCE is ~280 packages under ARM emulation, and Mesa
 # and SuperTux build for the better part of an hour each unless build/ has
@@ -40,12 +43,12 @@ OUT="${OUT:-$ROOT/build/desktop-root.tar}"
 VOL="${VOL:-cascadia-a5-desktop-root}"
 if [ "${PUBLIC:-0}" = 1 ]; then
     VOL=cascadia-a5-desktop-root-public FRESH=1
-    ONLY="${ONLY:-gl xfce patched autorotate mesa supertux screenpad}"
+    ONLY="${ONLY:-gl xfce patched labwc taskkiller autorotate mesa supertux screenpad}"
 fi
 C=cascadia-a5-root
 DEV=root@desktop-root
 ALPINE="${ALPINE:-3.24}"
-STEPS="${ONLY:-gl xfce patched autorotate mesa gpu supertux screenpad}"
+STEPS="${ONLY:-gl xfce patched labwc taskkiller autorotate mesa gpu supertux screenpad}"
 
 say()  { printf '==> %s\n' "$*"; }
 fail() { printf 'error: %s\n' "$*" >&2; exit 1; }
@@ -113,6 +116,9 @@ step xfce       sh -c "ssh $DEV sh -s < '$ROOT/tools/desktop/xfce-setup.sh'"
 step patched    sh -c "sh '$ROOT/tools/desktop/pixman/build.sh' install &&
                        sh '$ROOT/tools/desktop/xorg-server/build.sh' install &&
                        sh '$ROOT/tools/desktop/xfwm4/build.sh' install"
+step labwc      sh -c "sh '$ROOT/tools/desktop/labwc/build.sh' install &&
+                       ssh $DEV sh -s < '$ROOT/tools/desktop/labwc/labwc-setup.sh'"
+step taskkiller sh -c "START=0 sh '$ROOT/tools/task-killer/build.sh' install"
 step autorotate sh "$ROOT/tools/desktop/install.sh"
 step mesa       bash "$ROOT/cascadia" dev mesa --install "$DEV"
 step gpu        bash "$ROOT/cascadia" dev gpu --install "$DEV"
@@ -122,7 +128,7 @@ step screenpad  sh "$ROOT/tools/screenpad/build.sh" install
 say "checking what the iPad will find"
 # apk's own view: every package there and a world it can resolve (a
 # --force-broken-world that skipped something shows up here, not on the iPad)
-inroot 'chroot /target apk info -e cascadia-gl xorg-server xfce4-session xfce4-panel eudev touchegg svkbd supertux supertux-data py3-gobject3 >/dev/null' \
+inroot 'chroot /target apk info -e cascadia-gl labwc waybar wvkbd fuzzel foot seatd xorg-server xfce4-session xfce4-panel eudev touchegg svkbd supertux supertux-data py3-gobject3 >/dev/null' \
     || fail "a package is missing from the root (apk info above)"
 # and what the root must not carry (Alpine's Mesa and LLVM, the thumbnailer's tree)
 for p in mesa llvm22-libs tumbler webkit2gtk-4.1 gstreamer; do
@@ -130,12 +136,13 @@ for p in mesa llvm22-libs tumbler webkit2gtk-4.1 gstreamer; do
 done
 inroot 'chroot /target apk -s add --no-network >/dev/null' \
     || fail "apk cannot resolve the root's world -- something was installed broken (above)"
-for f in usr/local/bin/desktop usr/local/bin/autorotate usr/bin/xrandr usr/bin/xinput usr/local/bin/screenpad usr/local/bin/tux-gpudemo \
+for f in usr/local/bin/desktop usr/local/bin/desktop-labwc usr/local/bin/desktop-xfce \
+         usr/local/bin/task-killer usr/share/backgrounds/cascadia/stars.png usr/local/bin/autorotate usr/bin/xrandr usr/bin/xinput usr/local/bin/screenpad usr/local/bin/tux-gpudemo \
          usr/local/lib/sgx-mesa/lib/libGLESv2.so.2 etc/ld-musl-armhf.path \
          $([ "${PUBLIC:-0}" = 1 ] || echo usr/local/lib/sgx2d); do
     inroot "chroot /target test -e /$f" || fail "no /$f in the root"
 done
-echo "    ok: XFCE, X, SuperTux, screenpad, autorotate, Mesa, the GPU's pack"
+echo "    ok: labwc, task-killer, XFCE, X, SuperTux, screenpad, autorotate, Mesa, the GPU's pack"
 
 if [ "${PUBLIC:-0}" = 1 ]; then
     inroot 'test ! -e /target/usr/local/lib/sgx2d' || fail "PUBLIC=1 and the root has a GPU pack"

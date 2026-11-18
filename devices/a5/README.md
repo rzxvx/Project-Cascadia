@@ -1,8 +1,8 @@
 # Cascadia on Apple A5 — iPad mini 1
 
 Mainline Linux 6.12 on an iPad mini 1 (iPad2,5 / S5L8942X), booting to an
-interactive shell — on the glass and over USB — and on to an XFCE desktop you
-drive with your fingers. It lives on the iPad's own flash, next to iOS, and
+interactive shell — on the glass and over USB — and on to a Wayland desktop
+(labwc, on the GPU) you drive with your fingers. It lives on the iPad's own flash, next to iOS, and
 starts with one tap in the Cascadia app: no computer, no cable. This is the A5 tree of
 [Project Cascadia](../../README.md); every command here runs from the
 repository's top as `./cascadia a5 …`.
@@ -11,8 +11,9 @@ repository's top as `./cascadia a5 …`.
 
 > **Status: Phases 1 to 3 complete.** Linux boots on both cores, takes
 > interrupts, keeps time, gives you a shell and a network over the Lightning
-> cable, takes multi-touch, brings up Wi-Fi, runs XFCE on the GPU with an
-> on-screen keyboard, and keeps its root on the iPad's NAND beside iOS,
+> cable, takes multi-touch, brings up Wi-Fi, runs a Wayland desktop (labwc)
+> on the GPU with an on-screen keyboard — XFCE a command away — and keeps
+> its root on the iPad's NAND beside iOS,
 > started from an iOS app.
 
 ![Boot](../../imgs/dualcoreboot.png)
@@ -88,10 +89,11 @@ see [K93 bring-up and limitations](docs/k93-bringup.md).
       the upper terminal screen acts as an invisible 3×3 directional touch grid:
       top/bottom for Up/Down arrow history, left/right for Left/Right cursor movement,
       center for Enter, and corners for Home/End/PageUp/PageDown)
-- [x] **A desktop** — XFCE on the framebuffer, touch as the pointer (a
-      two-finger tap is a right click), `svkbd` as the keyboard behind a panel
-      button. One script sets it up: `tools/desktop/xfce-setup.sh`, then
-      `desktop`. Software rendered; see QUICKSTART
+- [x] **A desktop** — first XFCE on the framebuffer, touch as the pointer
+      (`tools/desktop/xfce-setup.sh`, now `desktop xfce`); since 2026-11-18 the
+      Wayland desktop: labwc on the GPU, started at boot, waybar with Wi-Fi
+      and Bluetooth menus, wvkbd, fuzzel, task-killer as the way out
+      (`tools/desktop/labwc/`, `desktop`); see QUICKSTART
 - [x] **Linux hosts** — build, flash, `./cascadia a5 net` and `./cascadia a5 nfs` on
       Linux as well as macOS (walked on Arch; Ubuntu used by a second tester)
 - [x] **Both cores** — CPU1 comes up at boot, idles the way XNU does, and

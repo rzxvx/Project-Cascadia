@@ -2,7 +2,9 @@
 # root ./cascadia a5 desktop-root builds on the host):
 #   ssh root@10.55.0.2 sh -s < tools/desktop/xfce-setup.sh
 # then, on the glass or over ssh:
-#   desktop
+#   desktop xfce            (or desktop-xfce; plain `desktop` is the
+#                            Wayland desktop where labwc is set up:
+#                            tools/desktop/labwc/labwc-setup.sh)
 #
 # XFCE with touch, as walked on the iPad on 2026-09-25 -- all software
 # rendered on the CPU: the GPU's driver has no OpenGL yet, so X cannot use
@@ -75,19 +77,26 @@ done
 
 cat > /usr/local/bin/kbd-toggle <<'END'
 #!/bin/sh
-# Show or hide the on-screen keyboard in X: svkbd, docked at the bottom.
-# -H 20: one key row is 1/20 of the screen height (~51 px, ~8 mm on this
-# 163 ppi panel) -- the default took over a third of the screen.
-# pkill -f, not -x: the kernel keeps 15 characters of a process name, and
-# "svkbd-mobile-intl" is 17, so -x never matches it.
+# kbd-toggle -- the on-screen keyboard shown or hidden: wvkbd under the
+# Wayland desktop (its signal for a turn), svkbd under X.
+if pidof labwc >/dev/null && ! pidof Xorg >/dev/null; then
+    pkill -RTMIN -x wvkbd-mobintl && exit 0
+    exec wvkbd-mobintl -H 300 -L 220 >/tmp/wvkbd.log 2>&1
+fi
+# X: svkbd, docked at the bottom.  -H 20: one key row is 1/20 of the screen
+# height (~51 px, ~8 mm on this 163 ppi panel) -- the default took over a
+# third of the screen.  pkill -f, not -x: the kernel keeps 15 characters of
+# a process name, and "svkbd-mobile-intl" is 17, so -x never matches it.
 pkill -f '^svkbd-mobile-intl( |$)' && exit 0
 exec svkbd-mobile-intl -d -H 20 -fn "DejaVu Sans:size=13"
 END
 
-cat > /usr/local/bin/desktop <<'END'
+cat > /usr/local/bin/desktop-xfce <<'END'
 #!/bin/sh
-# Start XFCE on the glass, in the background, from the glass shell or ssh.
+# Start XFCE on the glass, in the background, from the glass shell or ssh
+# (`desktop xfce`).
 if pidof Xorg >/dev/null; then echo "X is already running"; exit 1; fi
+if pidof labwc >/dev/null; then echo "the Wayland desktop (labwc) is running: log out of it first"; exit 1; fi
 # fbkeyboard draws straight onto the framebuffer and would paint over X.
 pkill -x fbkeyboard 2>/dev/null
 # The session's PATH is whatever started it; ssh's lacks /usr/local/bin,
@@ -165,11 +174,11 @@ fi
 # The GPU (docs/research/p105-mesa.md, M36): when the driver's Mesa is the
 # system's OpenGL (mesa/install.py), X runs modesetting with glamor from
 # /etc/X11/sgx.conf.d instead of fbdev -- XFCE drawn by the GPU, GLX for its
-# programs.  DESKTOP_FB=1: fbdev as before.
+# programs.  DESKTOP_FB=1 desktop-xfce: fbdev as before.
 xargs=
 if [ -f /etc/X11/sgx.conf.d/20-sgx.conf ] && [ "${DESKTOP_FB:-0}" != 1 ]; then
     xargs="-- -configdir /etc/X11/sgx.conf.d"
-    echo "X on the GPU (modesetting, glamor); DESKTOP_FB=1 desktop for fbdev"
+    echo "X on the GPU (modesetting, glamor); DESKTOP_FB=1 desktop-xfce for fbdev"
 fi
 # When the session ends the text console is back on the glass -- with no
 # keyboard, since fbkeyboard was stopped above.  Start it again, the way
@@ -226,7 +235,7 @@ done
 xfconf-query -c xfce4-panel -p /panels/panel-1/plugin-ids $args
 xfce4-panel -r
 END
-chmod 755 /usr/local/bin/kbd-toggle /usr/local/bin/desktop /usr/local/bin/cascadia-xfce-firstrun
+chmod 755 /usr/local/bin/kbd-toggle /usr/local/bin/desktop-xfce /usr/local/bin/cascadia-xfce-firstrun
 # The first version of this script called it cascadia-panel-kbd.
 rm -f /usr/local/bin/cascadia-panel-kbd /etc/xdg/autostart/cascadia-panel-kbd.desktop
 

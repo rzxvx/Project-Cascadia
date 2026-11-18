@@ -3,7 +3,7 @@
 From a clean machine to a shell on the iPad, and on to its desktop.
 `./cascadia a5 install` has been walked end to end on macOS (Apple Silicon)
 and on Arch Linux (x86_64) -- from the prebuilt release and from source:
-the boot through kDFU, the NFS root, ssh, XFCE on the GPU, SuperTux.
+the boot through kDFU, the NFS root, ssh, the desktop on the GPU, SuperTux.
 The NAND install's steps have each been run on one iPad from macOS (the
 volume, the app, the app's kernel update and roll back); a whole run of it
 from a clean machine, and any run of it from Linux, not yet.
@@ -84,7 +84,7 @@ iOS). At the end it boots the iPad; then
 ./cascadia a5 ssh            # a shell on the iPad
 ```
 
-and `desktop` on the iPad for XFCE. Every later boot: with NAND, the
+and the iPad comes up to its desktop (labwc, on Wayland) by itself. Every later boot: with NAND, the
 Cascadia app on the iPad; with NFS, `./cascadia a5 flash` (`--kdfu` from
 iOS). The rest of this page is the same road one
 step at a time, and what to do on the iPad once it is there.
@@ -360,53 +360,80 @@ System mounts: iOS's Data partition (apps, photos) is encrypted file by file.
 
 ## A desktop
 
-XFCE runs off the NAND or NFS root with touch as the pointer, drawn by the GPU (X
-runs modesetting with glamor on the GPU's Mesa, and GL programs get GLX; the
-two CPU cores draw instead with `DESKTOP_FB=1 desktop`). It comes as a whole
-root -- XFCE, the patched X/xfwm4/pixman, Mesa, SuperTux, screenpad,
-autorotate --, the one `get` downloads; a new NFS export starts from it, and
-gets the GPU's pack from your IPSW:
+The desktop is Wayland: **labwc**, a stacking compositor drawing with the GPU
+straight onto KMS, with a panel (waybar: the apps, the open windows, the
+keyboard, the rotation lock, Wi-Fi, Bluetooth, battery, clock), an
+on-screen keyboard (wvkbd), the apps' list (fuzzel) and a field of stars
+behind. It starts by itself at the end of every boot; when its session ends
+the text console is back, with fbkeyboard. X programs still run in it
+(Xwayland, started when the first one connects). XFCE is still there, a
+command away.
+
+```sh
+desktop                # the desktop (labwc), from the glass shell or ssh
+desktop auto off       # the text console only at boot (desktop auto on: back)
+desktop xfce           # XFCE instead, on Xorg with glamor
+```
+
+It comes as a whole root -- labwc and its pieces, XFCE, the patched
+X/xfwm4/pixman, Mesa, SuperTux, screenpad, task-killer, autorotate --, the
+one `get` downloads; a new NFS export starts from it, and gets the GPU's
+pack from your IPSW:
 
 ```bash
 ./cascadia a5 nfs on           # a NEW root, from the desktop root
 ./cascadia a5 build && ./cascadia a5 flash --kdfu      # (or flash, with the Pico)
 ```
 
-Then on the iPad, from the glass or over ssh:
+An existing `~/cascadia-root` is never overwritten: it is the iPad's live
+disk (`FORCE_SYNC=1 ./cascadia a5 nfs on` reseeds it, deleting what is
+there). Onto a root from before the Wayland desktop, over ssh (the
+iPad on the internet: `./cascadia a5 net on`):
 
-```sh
-desktop
+```bash
+sh tools/desktop/labwc/build.sh install
+ssh root@10.55.0.2 sh -s < tools/desktop/labwc/labwc-setup.sh
+sh tools/desktop/install.sh
+sh tools/task-killer/build.sh install
 ```
-
-`desktop` says "X on the GPU" when it takes it. An existing `~/cascadia-root`
-is never overwritten: it is the iPad's live disk (`FORCE_SYNC=1 ./cascadia a5
-nfs on` reseeds it, deleting what is there).
 
 To build the desktop root yourself instead, `./cascadia a5 desktop-root`
 (into `build/desktop-root.tar`, which `nfs on` then prefers). It is long the
 first time -- XFCE is ~280 packages under ARM emulation, and Mesa and
 SuperTux build for the better part of an hour each on a Mac, hours on an
 older PC -- and later runs reuse what is built (`FRESH=1` starts the root
-again from the current image). Each piece can still go
-onto a running iPad on its own, as before: `ssh root@10.55.0.2 sh -s <
-tools/desktop/xfce-setup.sh`, `./cascadia a5 dev gpu`, `./cascadia a5 dev mesa`.
+again from the current image).
 
-- **Touch.** Tap = click. A quick swipe scrolls (a finger that rests before it
-  moves selects instead — that is GTK's rule, not a fault). A two-finger tap =
-  right click.
-- **Keyboard.** The button next to the clock shows and hides an on-screen
-  keyboard (svkbd). Ctrl is the `^` key.
+- **Touch.** The programs get touches as touches: GTK scrolls with a swipe and
+  opens a menu on a long press. The title bars and the background take a tap
+  as a click; a tap on the background opens the desktop's menu (Apps, Wi-Fi,
+  Bluetooth, Terminal, Files, Log out).
+- **Keyboard.** The panel's keyboard button shows and hides wvkbd; it comes up
+  by itself for a Wi-Fi password.
+- **Wi-Fi and Bluetooth.** Their panel icons open menus: the networks in range
+  (a password asked only the first time), Bluetooth on and off, the paired
+  devices, new ones looked for and paired.
 - **Turning.** The screen turns with the iPad, the touch with it
-  (`autorotate`, started with the session). The button next to the
-  keyboard's locks the turn, and so does Home held (0.8 s). The desktop
-  root's X server is the patched one, so a turned screen is as fast as an
-  upright one.
-- **Timing.** About 40 s to a drawn desktop on the first login, then ~25 s to
-  the session and ~40 s until the desktop has settled. The background is a
-  solid colour on purpose: XFCE's default wallpaper is an SVG, and rasterising
-  it on one core kept the screen black for over a minute.
+  (`autorotate`); the panel's lock button, or Home held (0.8 s), keeps it
+  as it is. `rotate [normal|left|inverted|right]` turns it by hand.
+- **A way out.** A program that holds the screen and will not let go: touch
+  the corners bottom left, top right, top left, bottom right, twice, each
+  within a second. A window offers to kill everything but the basic
+  processes (the console, ssh, Wi-Fi stay) or the ones you pick
+  (`task-killer`; `task-killer --list` shows what it would kill). Then
+  `desktop` again.
+- **Speed.** ~6 s from the boot's end to the panel (8 s with nothing cached),
+  92-106 MB of memory in use against XFCE's 173, SuperTux ~53 frames/s
+  against 43 under XFCE.
 
-`desktop` checks that the system D-Bus actually answers before starting the
+XFCE (`desktop xfce`): touch as the pointer, a two-finger tap a right click
+(touchegg), svkbd behind the panel's keyboard button; about 40 s to a drawn
+desktop on the first login. The two CPU cores draw it instead of the GPU
+with `DESKTOP_FB=1 desktop-xfce`. Its background is a solid colour on
+purpose: XFCE's default wallpaper is an SVG, and rasterising it on one core
+kept the screen black for over a minute.
+
+`desktop-xfce` checks that the system D-Bus actually answers before starting the
 session. If a stopped daemon left a socket and pid file behind, it removes
 only the pid file of a process that no longer exists and starts a new bus.
 An unresponsive live process, malformed pid file or socket without a known

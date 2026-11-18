@@ -1,8 +1,10 @@
 # Runs ON THE iPad (or, unchanged, inside the root ./cascadia a5 desktop-root
 # builds), after tools/desktop/labwc/build.sh install:
 #   ssh root@10.55.0.2 sh -s < tools/desktop/labwc/labwc-setup.sh
-# then, on the glass or over ssh:
-#   desktop-labwc
+# then tools/desktop/install.sh (desktop, rotate, autorotate), and on the
+# glass or over ssh:
+#   desktop                  (desktop-labwc; stage 2 starts it at boot too,
+#                             unless `desktop auto off`)
 #
 # The Wayland desktop: labwc, a stacking compositor on wlroots, drawing
 # with the GPU (GLES2 through our Mesa) straight onto KMS -- no X server
@@ -34,6 +36,14 @@ set -e
 
 apk add --no-progress labwc seatd xwayland waybar wvkbd fuzzel foot swaybg \
     wlr-randr grim font-dejavu font-awesome dbus adwaita-icon-theme py3-cairo
+
+# A root from before the Wayland desktop: its `desktop` started XFCE.  That
+# one is desktop-xfce now (xfce-setup.sh writes it so), and `desktop` picks
+# (tools/desktop/desktop.sh, install.sh).
+if [ -f /usr/local/bin/desktop ] && grep -q startxfce4 /usr/local/bin/desktop &&
+   [ ! -e /usr/local/bin/desktop-xfce ]; then
+    mv /usr/local/bin/desktop /usr/local/bin/desktop-xfce
+fi
 
 mkdir -p /etc/xdg/labwc /etc/xdg/waybar-cascadia /etc/xdg/fuzzel /usr/local/bin \
          /usr/local/share/applications /usr/share/backgrounds/cascadia
@@ -427,6 +437,15 @@ cat > /usr/local/bin/desktop-labwc <<'END'
 # the glass shell or ssh.  Log: /tmp/labwc.log.
 if pidof labwc >/dev/null; then echo "labwc is already running"; exit 1; fi
 if pidof Xorg >/dev/null; then echo "X is running (XFCE): log out of it first"; exit 1; fi
+# the console's on-screen keyboard: its arguments, as stage 2 started it,
+# for when the session ends (a root's first boot into the desktop may come
+# before stage 2 wrote them)
+[ -s /run/fbkeyboard.args ] || {
+    for n in /sys/class/input/event*; do
+        [ "$(cat "$n/device/name" 2>/dev/null)" = "S5L8940X Capacitive TouchScreen" ] &&
+            echo "-d /dev/input/${n##*/} -f /usr/share/fonts/dejavu/DejaVuSans.ttf" > /run/fbkeyboard.args && break
+    done
+}
 # fbkeyboard draws straight onto the framebuffer and would paint over it
 pkill -x fbkeyboard 2>/dev/null
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
@@ -465,4 +484,4 @@ echo "labwc is starting -- a few seconds (log: /tmp/labwc.log)"
 END
 chmod 755 /usr/local/bin/desktop-labwc
 
-echo "labwc desktop set up: desktop-labwc starts it"
+echo "labwc desktop set up: desktop (tools/desktop/install.sh) or desktop-labwc starts it"
