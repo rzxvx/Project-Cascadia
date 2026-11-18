@@ -29,10 +29,15 @@ for d in /sys/bus/iio/devices/iio:device*; do
     [ -r "$d/in_accel_x_raw" ] && { dev=$d; break; }
 done
 [ -n "$dev" ] || { echo "autorotate: no accelerometer (no IIO device with in_accel_x_raw)" >&2; exit 1; }
-# the X server, to end with it (its lock file holds its pid)
-xpid=
-read -r xpid 2>/dev/null < "/tmp/.X$(echo "${DISPLAY#*:}" | cut -d. -f1)-lock"
-[ -n "$xpid" ] || { echo "autorotate: no X server on $DISPLAY" >&2; exit 1; }
+# the session, to end with it: labwc's (the Wayland desktop, from its
+# autostart) or the X server's (its lock file holds its pid)
+xpid= wayland=
+if [ -n "${LABWC_PID:-}" ]; then
+    xpid=$LABWC_PID wayland=1
+else
+    read -r xpid 2>/dev/null < "/tmp/.X$(echo "${DISPLAY#*:}" | cut -d. -f1)-lock"
+fi
+[ -n "$xpid" ] || { echo "autorotate: no X server on $DISPLAY, no labwc" >&2; exit 1; }
 pidf="/run/autorotate-$xpid.pid"
 if read -r p 2>/dev/null < "$pidf" && [ "$p" != $$ ] && kill -0 "$p" 2>/dev/null; then
     echo "autorotate: running already ($p)" >&2
@@ -124,7 +129,8 @@ panel_button() {
     xfconf-query -c xfce4-panel -p /panels/panel-1/plugin-ids $args
     xfce4-panel -r
 }
-panel_button &
+# (XFCE's panel; waybar's button shows the lock by itself)
+[ -n "$wayland" ] || panel_button &
 
 locked="" seen="" last=""
 while kill -0 "$xpid" 2>/dev/null; do
