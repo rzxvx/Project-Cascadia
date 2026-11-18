@@ -1092,10 +1092,12 @@ own computer and go into the image there.
   labwc 0.20.3 and SuperTux 0.7.0 (APKBUILDs and patches in
   devices/a5/tools/desktop/ at $rev) and its Mesa driver (devices/a5/mesa/)
 EOT
+    # the log goes before the manifest is made: the manifest names every file
+    # here, and `get` fetches every file it names (the log is not uploaded)
+    rm -f "$R/build.log"
     python3 "$REPO/lib/prebuilt.py" manifest "$R" "$ver" \
         "https://github.com/$GH_REPO/releases/download/$ver" "$rev" "$REPO/prebuilt/$ch/a5.json" \
         || fail "could not write the manifest"
-    rm -f "$R/build.log"
     ls -lh "$R"
     echo
     echo "    To publish it:"
