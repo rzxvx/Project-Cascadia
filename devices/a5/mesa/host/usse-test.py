@@ -60,6 +60,11 @@ CASES = {
     'mul_f16_pa0_pa2_pa0': ('V16NMAD', 'mul.f16 pa0.xyzw, pa2.xyzw, pa0.xyzw', 0x10a44786a0040040),
     'mul_f16_pa0_pa0_pa2': ('V16NMAD', 'mul.f16 pa0.xyzw, pa0.xyzw, pa2.xyzw', 0x10a44786a0040001),
     'mul_f16_pa0_pa0_sa6': ('V16NMAD', 'mul.f16 pa0.xyzw, pa0.xyzw, sa6.xyzw', 0x10a44786b0040003),
+    'mul_f16_r0xyz': ('V16NMAD', 'mul.f16 r0.xyz, pa0.xyzw, pa2.xyzw', None),
+    'mul_f16_2221': ('V16NMAD', 'mul.f16 r2.xyzw, pa0.2221, r0.xyzw', None),
+    'max_f16_0000': ('V16NMAD', 'max.f16 r2.xyzw, pa0.0000, r2.xyzw', None),
+    'add_f16_neg_sa4': ('V16NMAD', 'add.f16 r4.xyzw, -sa4.xyzw, r2.xyzw', None),
+    'mul_f16_xxxx_src2': ('V16NMAD', 'mul.f16 r6.w, r4.wzyx, pa2.xxxx', None),
     'pack_f16_o0_pa0': ('VPCK', 'pck.u8.f16 o0.xyzw, pa0.xyzw scale', 0x40850a3da01d8000),
     'pack_f16_pa0_pa0': ('VPCK', 'pck.u8.f16 pa0.xyzw, pa0.xyzw scale', 0x40810a3ea01d8000),
     # M37: the logic ops of iOS's es1 cases e03..e10
@@ -94,6 +99,25 @@ CASES = {
     'cvt_f32_s16lo': ('VPCK', 'pck.s16.f32 r0.x, r2.xxzw', None),
     'cvt_f32_s16hi': ('VPCK', 'pck.s16.f32 r0.y, r2.xxzw', None),
     'limm_p0': ('LIMM', 'r0 <- #0xffffffff', None),
+    # M47: the vector instructions, the internal registers, nosched
+    'vdp_r0_r2_i0': ('VDP', 'dp4.f32 r0.x, r2.xyzw, i0.xyzw', None),
+    'vdp_xyz1': ('VDP', 'dp4.f32 r0.x, r2.xyzw, i0.xyz1', None),
+    'vdp_i1_y': ('VDP', 'dp4.f32 i1.y, r2.xyzw, i0.xyzw', None),
+    'vmad_i2': ('VMAD', 'mad4.f32 i2.xyzw, i0.xyzw, r4.xyzw, i1.xyzw', None),
+    'vmad_r0_ext': ('VMAD', 'mad4.f32 r0.xyzw, i0.xxxx, r4.zwxy, i1.zwxy', None),
+    'add_i0_r2_c0': ('V32NMAD', 'add.f32 i0.xyzw, r2.xyzw, c0.xxxx', None),
+    'mul_r0_r2_i0z': ('V32NMAD', 'mul.f32 r0.x, r2.xxxx, i0.zzzz', None),
+    'rcp_r0_i0w': ('VCOMP', 'rcp.f32.f32 r0.x, i0.w', None),
+    'mov_r0_i0z': ('VMOV', 'mov.f32 r0.x, i0.zzzz', None),
+    'mad_i1w_i0y': ('VMAD2', 'mad.f32 i1.w, i0.yyyy, sa4.yyyy, i0.zzzz', None),
+    'vmad2_r0_r2_r4_r6': ('VMAD2', 'mad.f32 r0.xy, r2.xyzw, r4.xyzw, r6.xyzw', None),
+    'vmad2_bcast_sa': ('VMAD2', 'mad.f32 pa20.xy, pa4.yyyy, sa4.xyzw, pa16.xyzw', None),
+    'vmad2_i0zw': ('VMAD2', 'mad.f32 r8.xy, i0.zwxy, r4.xyzw, r6.xyzw', None),
+    'add2_zwzw': ('V32NMAD', 'add.f32 r0.xy, r2.zwzw, r4.zwzw', None),
+    'tstmsk_lt': ('VTSTMSK', 'tstmsk r0 = sub.f32(r2, r4) lt 0 ? 1 : 0 (mask type 1)', None),
+    'tstmsk_ge_c0': ('VTSTMSK', 'tstmsk pa20 = sub.f32(sa70, c0) ge 0 ? 1 : 0 (mask type 1)', None),
+    'add_nosched': ('V32NMAD', 'add.f32 r6.x, r6.xxxx, r6.xxxx nosched', None),
+    'or_nosched': ('VBW', 'or r6, r6, #0x0 nosched', None),
 }
 
 # (M44) words the device ran through glldr --probe and gave the right answer
@@ -108,6 +132,13 @@ DEVICE = {
     'cvt_s16hi_f32': 0x4081098420198101, 'cvt_u16lo_f32': 0x4081078420198100,
     'cvt_f32_s16lo': 0x40810d0420188100, 'cvt_f32_s16hi': 0x40810d0820188100,
     'limm_p0': 0xfca3f3f0001fffff,
+    # (M47, usse-probe.py)
+    'vdp_r0_r2_i0': 0x189000800011a201, 'vdp_xyz1': 0x18900080003da201,
+    'vdp_i1_y': 0x189001000f51a201, 'vmad_i2': 0x18b007800f911102,
+    'vmad_r0_ext': 0x18f0078000005442, 'add_i0_r2_c0': 0x08a507841f041040,
+    'mul_r0_r2_i0z': 0x088020800000007c, 'rcp_r0_i0w': 0x3080001800003e01,
+    'mov_r0_i0z': 0x3880051001000f00, 'vmad2_r0_r2_r4_r6': 0x00a0918000001083,
+    'add2_zwzw': 0x08a4b184000d1042, 'tstmsk_lt': 0x7880869000138082,
 }
 
 

@@ -345,9 +345,14 @@ sgx_init_screen_caps(struct pipe_screen *pscreen)
    caps->primitive_restart = true;
    caps->primitive_restart_fixed_index = true;
    caps->conditional_render = true;
-   /* (M43) ARB_depth_clamp: the draw module's, near and far clipping off
-    * and the triangles cut at the depth range's ends (render_triangle) */
-   caps->depth_clip_disable = true;
+   /* (M43) ARB_depth_clamp is not offered: the ISP clamps no depth, so a
+    * clamped draw was the draw module's -- its vertex shader on the CPU,
+    * its triangles cut at the depth range's ends (render_triangle).
+    * Programs that turn it on wherever it exists (PPSSPP: God of War 2%
+    * of its speed with it, 64% without) went many times slower than their
+    * own way without it, the one they take on OpenGL ES 2.0.
+    * SGX_DEPTH_CLAMP=1 offers it again. */
+   caps->depth_clip_disable = debug_get_bool_option("SGX_DEPTH_CLAMP", false);
    /* (M43) EXT_framebuffer_sRGB: a surface's format says whether the
     * program encodes (sgx_blend_key's rt_srgb) */
    caps->dest_surface_srgb_control = true;
@@ -423,6 +428,17 @@ sgx_screen_create(int fd, const struct pipe_screen_config *config, struct render
    screen->base.context_create = sgx_context_create;
    for (unsigned i = 0; i <= MESA_SHADER_COMPUTE; i++)
       screen->base.nir_options[i] = &sgx_nir_options;
+   /* (M46) vertex shaders: products and sums fused, FMAD's (sgx_compiler.c
+    * fma_) -- PPSSPP's transforms and lighting are dot products and sums
+    * of products; SGX_NO_VS_FMA=1: as the fragment shaders' */
+   if (!getenv("SGX_NO_VS_FMA")) {
+      static struct nir_shader_compiler_options vs_options;
+
+      vs_options = sgx_nir_options;
+      vs_options.lower_ffma32 = false;
+      vs_options.fuse_ffma32 = true;
+      screen->base.nir_options[MESA_SHADER_VERTEX] = &vs_options;
+   }
    sgx_resource_screen_init(screen);
    sgx_context_screen_init(screen);
 

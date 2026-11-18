@@ -86,15 +86,17 @@ DESTDIR="$ID" ninja -C "$BD" install >/dev/null
 
 I=$ID$PREFIX
 mkdir -p "$I/bin"
-for t in glclear gltri glfs gltex glblend gldepth glspeed glclock glpersp glsize glseam glcull gldiscard glstencil glchurn glwrap glvtx glmip glvary glldr glflow glfetch glflat glupload; do
+for t in glclear gltri glfs gltex glblend gldepth glspeed glclock glpersp glsize glseam glcull gldiscard glstencil glchurn glwrap glvtx glmip glvary glldr glflow glfetch glflat glupload glverts glshader glf16 glrect gltexclamp glvsmath; do
     cc -O2 -Wall -I"$I/include" "$ROOT/tools/sgx/gl/$t.c" -L"$I/lib" -lEGL -lGLESv2 -lm \
         -Wl,-rpath-link,"$I/lib" -Wl,-rpath,"$PREFIX/lib" -o "$I/bin/$t"
 done
 # desktop OpenGL (libGL) through EGL
-for t in gldesk gloffset glproj glfmt; do
+for t in gldesk gloffset glproj glfmt glcopy glbuffer; do
     cc -O2 -Wall -I"$I/include" "$ROOT/tools/sgx/gl/$t.c" -L"$I/lib" -lEGL -lGL -lm \
         -Wl,-rpath-link,"$I/lib" -Wl,-rpath,"$PREFIX/lib" -o "$I/bin/$t"
 done
+cc -O2 -Wall -DGLF16_DESKTOP -I"$I/include" "$ROOT/tools/sgx/gl/glf16.c" -L"$I/lib" -lEGL -lGL -lm \
+    -Wl,-rpath-link,"$I/lib" -Wl,-rpath,"$PREFIX/lib" -o "$I/bin/glf16d"
 # on the screen: GBM and KMS besides
 cc -O2 -Wall -I"$I/include" $(pkg-config --cflags libdrm) "$ROOT/tools/sgx/gl/glkms.c" \
     -L"$I/lib" -lEGL -lGLESv2 -lgbm $(pkg-config --libs libdrm) -lm \

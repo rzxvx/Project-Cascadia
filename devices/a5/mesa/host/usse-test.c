@@ -68,6 +68,18 @@ main(void)
    P("mul_f16_pa0_pa2_pa0", usse_hop(USSE_NMAD_MUL, PA(0), PA(2), PA(0)));
    P("mul_f16_pa0_pa0_pa2", usse_hop(USSE_NMAD_MUL, PA(0), PA(0), PA(2)));
    P("mul_f16_pa0_pa0_sa6", usse_hop(USSE_NMAD_MUL, PA(0), PA(0), SA(6)));
+   /* (M46) masks, src1's swizzle with its constants, negation, src2's table */
+   P("mul_f16_r0xyz", usse_hop_ex(USSE_NMAD_MUL, T(0), 0x7, PA(0), 0 | 1 << 3 | 2 << 6 | 3 << 9,
+                                  PA(2), 4));
+   P("mul_f16_2221", usse_hop_ex(USSE_NMAD_MUL, T(2), 0xf, PA(0), 6 | 6 << 3 | 6 << 6 | 5 << 9,
+                                 T(0), 4));
+   P("max_f16_0000", usse_hop_ex(USSE_NMAD_MAX, T(2), 0xf, PA(0), 4 | 4 << 3 | 4 << 6 | 4 << 9,
+                                 T(2), 4));
+   P("add_f16_neg_sa4", usse_hop_ex(USSE_NMAD_ADD, T(4), 0xf,
+                                    (struct usse_reg){ .bank = USSE_SA, .num = 4, .neg = true },
+                                    0 | 1 << 3 | 2 << 6 | 3 << 9, T(2), 4));
+   P("mul_f16_xxxx_src2", usse_hop_ex(USSE_NMAD_MUL, T(6), 0x8, T(4), 3 | 2 << 3 | 1 << 6 | 0 << 9,
+                                      PA(2), 0));
    P("pack_f16_o0_pa0", usse_pack_unorm8_f16(O(0), PA(0)) | USSE_END);
    P("pack_f16_pa0_pa0", usse_pack_unorm8_f16(PA(0), PA(0)));
    P("xor_o0_pa0_o0", usse_vbw(USSE_VBW_XOR, O(0), PA(0), O(0), false) | USSE_END);
@@ -105,5 +117,37 @@ main(void)
    P("cvt_f32_s16lo", usse_cvt_f32_16(T(0), T(2), 0, true));
    P("cvt_f32_s16hi", usse_cvt_f32_16(T(0), T(2), 1, true));
    P("limm_p0", usse_limm_pred(T(0), 0xffffffff, 1));
+   /* M47: the vector instructions and the internal registers, as
+    * usse-probe.py ran them */
+   {
+      const unsigned xyzw = USSE_SW(0, 1, 2, 3);
+
+      P("vdp_r0_r2_i0", usse_vdp(T(0), 1, true, T(2), xyzw, 0, USSE_SW2_XYZW));
+      P("vdp_xyz1", usse_vdp(T(0), 1, true, T(2), xyzw, 0, USSE_SWG_XYZ1));
+      P("vdp_i1_y", usse_vdp(usse_ireg(1, 1), 2, true, T(2), xyzw, 0, USSE_SW2_XYZW));
+      P("vmad_i2", usse_vmad(usse_ireg(2, 0), 0xf, 0, USSE_SW2_XYZW, T(4), USSE_SW2_XYZW, 1,
+                             USSE_SW2_XYZW, false));
+      P("vmad_r0_ext", usse_vmad(T(0), 0xf, 0, USSE_SW2_X, T(4), USSE_SWX_ZWXY, 1, USSE_SWX_ZWXY,
+                                 false));
+      P("add_i0_r2_c0", usse_fop_ex(USSE_NMAD_ADD, usse_ireg(0, 0), 0xf, T(2), xyzw, USSE_ZERO,
+                                    USSE_SW2_X));
+      P("mul_r0_r2_i0z", usse_fop(USSE_NMAD_MUL, T(0), T(2), usse_ireg(0, 2)));
+      P("rcp_r0_i0w", usse_fcomp(USSE_COMP_RCP, T(0), usse_ireg(0, 3)));
+      P("mov_r0_i0z", usse_fmov(T(0), usse_ireg(0, 2)));
+      P("mad_i1w_i0y", usse_fmad(usse_ireg(1, 3), usse_ireg(0, 1), SA(5), usse_ireg(0, 2)));
+      P("vmad2_r0_r2_r4_r6", usse_fmad_ex(T(0), 3, T(2), 4, T(4), 4, T(6), 4));
+      P("vmad2_bcast_sa", usse_fmad_ex(PA(20), 3, PA(5), 1, SA(4), 4, PA(16), 4));
+      P("vmad2_i0zw", usse_fmad_ex(T(8), 3, usse_ireg(0, 0), 7, T(4), 4, T(6), 4));
+      P("add2_zwzw", usse_fop_ex(USSE_NMAD_ADD, T(0), 3, T(2), USSE_SW(2, 3, 2, 3), T(4),
+                                 USSE_SW2_ZWZW));
+      P("tstmsk_lt", usse_vtstmsk_f32(T(0), T(2), T(4), USSE_CMP_LT));
+      P("tstmsk_ge_c0", usse_vtstmsk_f32(PA(20), SA(70), USSE_ZERO, USSE_CMP_GE));
+      w = usse_fop(USSE_NMAD_ADD, T(6), T(6), T(6));
+      usse_nosched(&w);
+      P("add_nosched", w);
+      w = usse_vbw_or(T(6), T(6), 0);
+      usse_nosched(&w);
+      P("or_nosched", w);
+   }
    return 0;
 }

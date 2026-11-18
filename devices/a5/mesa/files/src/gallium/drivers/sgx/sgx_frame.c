@@ -148,7 +148,7 @@ struct retired {
  * the slots run out.  4 MiB holds a 4096 x 4096 target's. */
 #define RT_SLOT_VA      0x89000000u
 #define RT_SLOT_SIZE    (4u << 20)
-#define MAX_RT_SETS     8
+#define MAX_RT_SETS     12
 /* the pack's 3D register block, copied for each size */
 #define BLOCK_SIZE      0x1000
 
@@ -233,8 +233,9 @@ iterate_control(const struct sgx_pixel_program *p, unsigned i)
    unsigned v = p->iter_src[i];
    uint32_t w = i == p->ninputs - 1 ? ITERATE_F32_VEC4 : ITERATE_F32_VEC4_MORE;
 
-   /* (M38) as F16: format 2 (iOS's e20, s00: 2fc0x00f) */
-   if (p->f16)
+   /* (M38) as F16: format 2 (iOS's e20, s00: 2fc0x00f) -- unless the
+    * program works out a lookup's coordinates from it (M46: in_f32) */
+   if (p->f16 && !(p->in_f32 >> i & 1))
       w |= 2u << 28;
 
    if (v == SGX_ITERATE_POSITION)
@@ -254,6 +255,14 @@ iterates_colour(const struct sgx_pixel_program *p, unsigned i)
    return p->iter_src[i] != SGX_ITERATE_POSITION && p->iter_src[i] < p->ncolours;
 }
 
+/* whether input i is iterated as F16 (M38; M46: not the coordinates an
+ * F16 program works out a lookup from) */
+static bool
+iterates_f16(const struct sgx_pixel_program *p, unsigned i)
+{
+   return p->f16 && !(p->in_f32 >> i & 1);
+}
+
 /* the primary attributes the PDS fills: four an input, one a colour, one a
  * texel -- two each as F16 (M38) */
 static unsigned
@@ -262,7 +271,7 @@ pixel_pa(const struct sgx_pixel_program *p)
    unsigned n = p->f16 ? 2 * p->nfetch : p->nfetch;
 
    for (unsigned i = 0; i < p->ninputs; i++)
-      n += p->f16 ? 2 : iterates_colour(p, i) ? 1 : 4;
+      n += iterates_f16(p, i) ? 2 : iterates_colour(p, i) ? 1 : 4;
    return n;
 }
 
@@ -270,7 +279,7 @@ pixel_pa(const struct sgx_pixel_program *p)
 static unsigned
 iterate_size(const struct sgx_pixel_program *p, unsigned i)
 {
-   return p->f16 ? 0x12 : iterates_colour(p, i) ? 0x02 : 0x32;
+   return iterates_f16(p, i) ? 0x12 : iterates_colour(p, i) ? 0x02 : 0x32;
 }
 
 static uint32_t
@@ -496,6 +505,7 @@ struct sgx_frame {
    uint32_t term;               /* the tiles' bounds in the stream's terminate PDS data */
    struct rt_set rts[MAX_RT_SETS];
    uint64_t rt_clock;
+   struct rt_set *rt_last;      /* (M46) the last render's */
 
    /* M17: the frame built here (sgx_template.c), in buffers where the
     * kernel puts them, rendered with the kernel's parameter buffer -- or the
@@ -614,7 +624,7 @@ arena_put(struct sgx_frame *f, const void *p, uint32_t n, uint32_t al)
 
    if (!dst)
       return 0;
-   memcpy(dst, p, n);
+   sgx_copy(dst, p, n);
    return va;
 }
 
@@ -1342,6 +1352,7 @@ drop_rt_sets(struct sgx_frame *f)
       sgx_bo_destroy(f->rts[i].bo);
       f->rts[i].bo = NULL;
    }
+   f->rt_last = NULL;
 }
 
 void
@@ -1435,7 +1446,10 @@ sgx_frame_can_render(struct sgx_frame *f, const struct sgx_frame_target *t)
  * block with the size's words -- and kept.  A slot taken over: its buffers
  * stay with the renders that use them (the kernel's reference), but at a
  * fixed address (kernels before UAPI 3) the new ones go where they are --
- * once those renders are done. */
+ * once those renders are done.  (M46) Never the last render's: the kernel
+ * may run two renders at once (apple_sgx.inflight=2), the next one's TA
+ * while the last one's 3D pass reads its region headers -- a second set
+ * of the size then, the two taken in turn. */
 static struct rt_set *
 rt_set(struct sgx_frame *f, unsigned w, unsigned h)
 {
@@ -1447,16 +1461,27 @@ rt_set(struct sgx_frame *f, unsigned w, unsigned h)
    uint32_t va, size = 0;
    unsigned slot;
 
-   for (unsigned i = 0; i < MAX_RT_SETS; i++) {
-      struct rt_set *t = &f->rts[i];
+   {
+      struct rt_set *same = NULL;
 
-      if (t->bo && t->rt.w == w && t->rt.h == h) {
-         t->used = ++f->rt_clock;
-         return t;
+      for (unsigned i = 0; i < MAX_RT_SETS; i++) {
+         struct rt_set *t = &f->rts[i];
+
+         if (t == f->rt_last)
+            continue;
+         if (t->bo && t->rt.w == w && t->rt.h == h && (!same || t->used < same->used))
+            same = t;
+         if (!s || (s->bo && (!t->bo || t->used < s->used)))
+            s = t;
       }
-      if (!s || (s->bo && (!t->bo || t->used < s->used)))
-         s = t;
+      if (same) {
+         same->used = ++f->rt_clock;
+         f->rt_last = same;
+         return same;
+      }
    }
+   if (!s)
+      return NULL;
    slot = s - f->rts;
    if (s->fence && f->dev->uapi < 3)
       sgx_fence_wait(s->fence, OS_TIMEOUT_INFINITE);
@@ -1497,6 +1522,7 @@ rt_set(struct sgx_frame *f, unsigned w, unsigned h)
    memcpy(s->bo->map + (s->blk_va - va), blk, f->built ? SGX_TMPL_BLOCK_SIZE : BLOCK_SIZE);
    sgx_rt_block3d(&s->rt, s->va, (uint32_t *)(s->bo->map + (s->blk_va - va)));
    s->used = ++f->rt_clock;
+   f->rt_last = s;
    if (f->debug)
       mesa_logi("sgx: render target data for %ux%u at 0x%08x: details 0x%08x, 3D block "
                 "0x%08x, %u bytes", w, h, va, s->va[SGX_RT_DETAILS], s->blk_va, size);
@@ -1713,6 +1739,14 @@ kick(struct sgx_frame *f, const struct sgx_frame_target *t, float depth,
    n += nhandles;
    for (unsigned i = 0; i < f->arena.n; i++)
       hs[n++] = f->arena.bo[i]->handle;
+   /* each buffer once: the kernel takes each one's reservation lock and
+    * refuses a buffer listed twice (EALREADY: the whole render dropped) --
+    * a draw that samples the render's own target lists the target among
+    * its textures too (PPSSPP's bloom without its copies, M48) */
+   for (unsigned i = 0; i < n; i++)
+      for (unsigned j = i + 1; j < n; j++)
+         if (hs[j] == hs[i])
+            hs[j--] = hs[--n];
    if (f->debug)
       mesa_logi("sgx:   kick: PB 0x%08x, details 0x%08x (%s), 3D block 0x%08x, TA command "
                 "%u bytes, %u buffers", f->kick[0], cmd[0x54 / 4],
@@ -2453,6 +2487,10 @@ draw_state(struct sgx_frame *f, const struct sgx_frame_draw *d, const struct sgx
     * is not written */
    full[1] = (full[1] & ~(7u << 22 | 1u << 20 | 1u << 14)) | (uint32_t)(d->st.depth_func & 7) << 22 |
              (d->st.depth_write ? 0 : 1u << 20) | (d->st.count ? 1u << 14 : 0);
+   /* the pass type, bits 27:25 (M46): opaque 0, translucent 1 (the
+    * template's) */
+   if (d->st.opaque)
+      full[1] &= ~(7u << 25);
    full[18] = (full[18] & ~3u) | d->st.cull;
    full[2] = (full[2] & ~(0x3ffu << 16)) | d->st.offset;
    if (d->st.stencil_on) {
@@ -2554,7 +2592,7 @@ sgx_frame_render(struct sgx_frame *f, const struct sgx_frame_target *t,
       if (!count || count % 3 || d->l.nvaryings > SGX_FRAME_MAX_VARYINGS ||
           (d->prog && d->l.nvaryings != d->prog->nvaryings) ||
           (d->vs && (!d->vs->code_va || d->vs->nvaryings != d->l.nvaryings)) ||
-          (!d->indices && count > sgx_frame_list_max(f))) {
+          (!d->indices && !d->idx_va && count > sgx_frame_list_max(f))) {
          ret = -EINVAL;
          goto out;
       }
@@ -2572,7 +2610,8 @@ sgx_frame_render(struct sgx_frame *f, const struct sgx_frame_target *t,
       }
       /* the triangles: the draw's indices, or the frame's 0, 1, 2, ... (from
        * the draw's vertex 0) */
-      idx_va = d->indices ? arena_put(f, d->indices, 2 * count, 16) : f->idx;
+      idx_va = d->idx_va ? d->idx_va :
+               d->indices ? arena_put(f, d->indices, 2 * count, 16) : f->idx;
       if (!idx_va)
          goto out;
       /* the state: the last draw's again when it is the same */
