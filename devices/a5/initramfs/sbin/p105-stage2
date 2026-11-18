@@ -16,7 +16,7 @@ msg() { echo "$*" > /dev/kmsg; }
 # The kernel starts PID 1 with HOME=/ and TERM=linux and nothing else -- no
 # PATH at all, so ash falls back to its built-in one, which has no
 # /usr/local/bin: `desktop` ran over ssh (a login shell, /etc/profile) and was
-# "not found" on the glass.  And HOME=/ would have put an XFCE started from the
+# "not found" on the glass.  And HOME=/ would have put a desktop started from the
 # glass in /.config.  Everything this starts inherits these.
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 export HOME=/root USER=root LOGNAME=root SHELL=/bin/sh
@@ -175,7 +175,7 @@ fi
 
 # ------------------------------------------------------------------- udev ---
 # Nothing in this boot needs udev, but a desktop does: Xorg and Wayland find
-# input devices through libinput, and libinput through udev.  Without it XFCE
+# input devices through libinput, and libinput through udev.  Without it a desktop
 # came up and ignored the glass; with udevd started by hand touch worked as a
 # pointer (teutekeune, 2026-09-25).  So when eudev is on the root (apk add
 # eudev) it is started here, before touch, so the touchscreen is announced to
@@ -336,8 +336,8 @@ fi
 # The Wayland desktop (labwc, tools/desktop/labwc) on the glass at the end of
 # the boot, where the root has it and `desktop auto off` did not turn that
 # off; when its session ends, the console below is back with fbkeyboard.
-# Only a root with desktop-labwc: one with XFCE alone keeps its text console
-# at boot, as before.
+# Only a root with desktop-labwc: the iPad 2's, with XFCE, keeps its text
+# console at boot, as before.
 if [ -x /usr/local/bin/desktop-labwc ] && [ -x /usr/local/bin/desktop ] &&
    [ ! -e /etc/cascadia/desktop-boot-off ]; then
     setsid /usr/local/bin/desktop --boot >/tmp/desktop-boot.log 2>&1 </dev/null &

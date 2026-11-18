@@ -3,9 +3,7 @@
 # glass shell or ssh.  On the iPad as /usr/local/bin/desktop
 # (tools/desktop/install.sh).
 #
-#   desktop               the Wayland desktop (labwc), or XFCE where labwc is
-#                         not set up
-#   desktop labwc | xfce  that one (desktop-labwc, desktop-xfce)
+#   desktop               the Wayland desktop (labwc: desktop-labwc)
 #   desktop auto on|off   start the desktop at boot, or the text console only
 #   desktop auto          whether it starts at boot
 #   desktop --boot        what stage 2 runs at the end of a boot: the desktop,
@@ -35,8 +33,10 @@ case "${1:-}" in
         [ -e "$OFF" ] && exit 0
         set -- ;;
     -h|--help|help)
-        sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
 esac
+# (`desktop xfce`, desktop-xfce: the iPad 2's root, whose desktop is still
+# XFCE -- tools/desktop/xfce-setup.sh)
 
 which=${1:-$(default)}
 case "$which" in
@@ -51,5 +51,5 @@ case "$which" in
     "")
         echo "no desktop is set up (tools/desktop/labwc/labwc-setup.sh)" >&2; exit 1 ;;
     *)
-        sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2 ;;
+        sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2 ;;
 esac

@@ -170,8 +170,6 @@ is true as of its date. Now:
 - the desktop: labwc on Wayland (`tools/desktop/labwc/build.sh install`,
   `labwc-setup.sh`, then `tools/desktop/install.sh`): `desktop`, started by
   stage 2 at boot unless `desktop auto off`; log /tmp/labwc.log
-- XFCE: `tools/desktop/xfce-setup.sh`, then `desktop xfce` (desktop-xfce) -- on
-  the GPU (Xorg, glamor) once the GPU's OpenGL is installed
 - out of a program that holds the screen: corners BL, TR, TL, BR twice
   (task-killer; `task-killer --list`, TK_DEBUG=1 logs the touches)
 - the GPU: `./cascadia a5 dev gpu` (the pack: the template frame, sgx2d's demos), then
@@ -1193,18 +1191,8 @@ frames and touches in dmesg; `z2-boot -p N -N` reads the frames itself, without 
   root. It now runs with HOME, history and cwd in RAM, and `/run` and `/tmp`
   are tmpfs (they were plain directories on the server, carrying the last
   boot's sockets and pid files into the next).
-- XFCE runs with touch as the pointer (first brought up by teutekeune):
-  `ssh root@10.55.0.2 sh -s < tools/desktop/xfce-setup.sh`, then `desktop xfce` on the
-  iPad. What the boot adds for it: stage 2 starts eudev when installed — Xorg finds
-  input devices only through udev.
-
 | what | why |
 |---|---|
-| XFCE ignores the glass | no udev running: Xorg's input hotplug is udev only |
-| evdev's `EmulateThirdButton` never fires | for a device with multitouch axes X emulates the pointer from touches itself; evdev's button logic is not in the path. Right click is touchegg's two-finger tap, over libinput |
-| a black screen for over a minute at login | xfdesktop rasterising XFCE 4.20's SVG wallpaper on one core. `desktop` writes a solid-colour `xfce4-desktop.xml` before a first session; the monitor is `monitordefault` (fbdev: no RandR outputs, X names its made-up one "default") |
-| `Failed to execute command "kbd-toggle"` | the session's PATH is whatever started X; ssh's has no `/usr/local/bin`. Launchers use absolute paths |
-| `pkill -x svkbd-mobile-intl` matches nothing | the kernel keeps 15 characters of a process name; the name is 17. `pkill -f` |
 | hundreds of zombies, and `exit` on the glass panics the kernel | stage 2 used to `exec` the glass shell as PID 1: it never reaped orphans, and PID 1 exiting is a panic. Now PID 1 respawns the shell and waits on it, and ash's wait (waitpid(-1)) reaps the orphans |
 
 # ═══════════════════════════════════════════════════════════════
@@ -1317,14 +1305,13 @@ frames and touches in dmesg; `z2-boot -p N -N` reads the frames itself, without 
 - Packages for the iPad without its network: `tools/device-apk.sh PKG...`
   (armhf from docker, installed offline). On it now: binutils, gdb, waffle,
   py3-mako, xwd, xdotool, sdl3-dbg, musl-dbg.
-- X screenshots: `python3 tools/desktop/xshot.py out.png [:0]`.
+- Screenshots of the desktop: `XDG_RUNTIME_DIR=/tmp/xdg-0 WAYLAND_DISPLAY=wayland-0
+  grim out.png`; the physical screen: `cat /dev/fb0` (768 x 1024 BGRA).
 - M37 (p105-mesa.md): `glupload` (texture uploads between draws, each
   format), `gloffset` (polygon offset; `--probe`, `--clamp`), gldesk's depth,
   shadow, flat, occlusion and logic op cases. The X server's renders:
   `SGX_DEBUG=fps,flushes desktop` (it never swaps: a report per flush);
-  texture copies: `SGX_DEBUG=copies`. A window drag in XFCE: drive it with
-  xdotool (`mousemove X Y mousedown 1`, steps, `mouseup 1`) and read the X
-  server's CPU in `/proc/$(pidof Xorg)/stat` or `perf record -p`.
+  texture copies: `SGX_DEBUG=copies`.
 - M38 (p105-mesa.md): F16 colour programs (`SGX_NO_F16=1`: none). SuperTux
   on KMS with Tux running: `python3 tools/sgx/ukbd.py 20 & TIME=34
   SGX_DEBUG=fps supertux-mesa.sh .../world1/welcome_antarctica.stl` (a
@@ -1332,22 +1319,12 @@ frames and touches in dmesg; `z2-boot -p N -N` reads the frames itself, without 
   `SGX_TRACE_WAITS=1` (the caller of each wait of 1 ms or more).
 - M39: `glproj` (projective and rectangle lookups the PDS makes, the
   vertex side scaling the coordinates; `SGX_NO_PROJ_FETCH=1` in the
-  program). A program the X server or xfwm4 compiles: restart it with the
-  variables, e.g. `SGX_DEBUG_NIR=1 xfwm4 --replace` with the session's
-  environment (`/proc/$(pgrep -x xfwm4)/environ`).
-- M40: xfwm4 patched so that fullscreen games bypass the compositor
-  (`tools/desktop/xfwm4/xfwm4-bypass-client-window.patch`):
-  `sh tools/desktop/xfwm4/build.sh install` builds Alpine's package with it
-  in docker (armhf, ~3 min) and installs it (4.20.0-r102), then `xfwm4
-  --replace` in the session. Back to Alpine's: `apk add xfwm4=4.20.0-r1`
-  (with a network). A new Alpine xfwm4 release replaces it on `apk upgrade`.
-- M41: the screen turned by the plane (the kernel's copy turned):
-  `rotate left|right|inverted|normal` (no argument: the turn now) turns X
-  and the touch screen; it needs the patched X server
-  (`sh tools/desktop/xorg-server/build.sh install`, 21.1.25-r103, ~10 min
-  in docker), otherwise X turns a shadow buffer (24 fps). `sgx-gl kmsrot`
-  (X stopped) checks the four turns pixel by pixel. The physical screen:
-  `cat /dev/fb0` (768 x 1024 BGRA) -- xwd shows the unturned one.
+  program). A program the compositor compiles: restart it with the
+  variables and the session's environment (`/proc/$(pidof labwc)/environ`).
+- M41: the KMS plane can be turned (the kernel's copy turned): `sgx-gl
+  kmsrot` (the desktop stopped) checks the four turns pixel by pixel. The
+  desktop turns its picture itself (`rotate left|right|inverted|normal`,
+  wlr-randr); the physical screen: `cat /dev/fb0` (768 x 1024 BGRA).
 - M42: who copies how much: `tools/sgx/memcpy-who.c` (build line in it;
   `LD_PRELOAD=/root/memcpy-who.so MEMCPY_WHO_TOP=20 PROGRAM`, the report
   at exit, library + offset for addr2line in the cascadia-mesa image, an
@@ -1362,8 +1339,7 @@ frames and touches in dmesg; `z2-boot -p N -N` reads the frames itself, without 
   draws do not merge: `SGX_DEBUG=fps`'s "renders from ... (no room for:
   ...)" and "draws not merged, for their: ...". Who raised a GL error:
   `gdb -ex 'break _mesa_error'` (`sdl2-dbg` is on the iPad for SDL's
-  names). A fullscreen game flipped (vsync): `xshot.py --screen` (xwd
-  shows the desktop under it).
+  names).
 - M43 (towards OpenGL 3, p105-mesa.md's plan): ARB_framebuffer_object,
   EXT_texture_swizzle, ARB_texture_float, EXT_texture_snorm,
   EXT_texture_shared_exponent, ARB_texture_rg. `sgx-gl glfmt` (formats
@@ -1384,26 +1360,6 @@ frames and touches in dmesg; `z2-boot -p N -N` reads the frames itself, without 
   the build (MESA_GL_VERSION_OVERRIDE=3.0: Mesa keeps GLSL at 1.20 under GL
   2.1). dEQP-GLES2 whole: `cd /root/deqp; SGX_MESA=DIR SGX_WRAP=/root/sgx-dev
   python3 deqp-run.py /root/deqp OUT $(cat groups.txt)`.
-- M45 (what the X server costs): `sh tools/desktop/xopen-time.sh` on the
-  iPad in the session (a terminal opened 6 times: ms each, the mean, Xorg's
-  CPU a window; M44's 1130 ms and 2.5 s, M45's 670 ms and 2.1 s). Another
-  build or library in the X server only: `~/.xserverrc` with `exec env
-  SGX_MESA=/root/sgx-mesa-rel LD_LIBRARY_PATH=/root/pixman-test
-  /root/sgx-dev /usr/libexec/Xorg "$@"`, `kill $(pidof xfce4-session)`,
-  `desktop`, a minute to settle; delete the file afterwards. What glamor
-  leaves to pixman: `tools/sgx/composite-who.c` preloaded the same way,
-  `touch /tmp/composite-who-dump` around what you do (stderr: the X log's
-  2>). Who clears: memcpy-who's second table. pixman with the scanline fix:
-  `sh tools/desktop/pixman/build.sh install` (0.46.4-r100, ~2 min); back:
-  `apk add pixman=0.46.4-r0` (with a network). Never call a function from a
-  gdb breakpoint in the X server: it aborted. The glass frozen but X alive
-  (dmesg: "the 2D engine's copy to the screen: -5", a kernel before M45's):
-  stop X, `echo 1 > /sys/kernel/debug/apple-sgx/boot`, `desktop`; since
-  M45 a late copy brings the engine back by itself, and a copy may take
-  `/sys/module/apple_sgx/parameters/blt_timeout_ms` (3000). From ssh,
-  xfconf-query needs the session's bus: `eval export $(tr '\0' '\n' <
-  /proc/$(pidof xfce4-session)/environ | grep ^DBUS_SESSION_BUS_ADDRESS=)`
-  -- without it, it talks to an xfconfd of its own.
 - Charging (`apple-pmu-charger.c`, issue #23): the PMU's USB input limit,
   register `0x3d` (i2c-0, address 0x3c; code = (8 mA - 600) / 100, iBEC's
   corrections; `0x02` = about 100 mA, also what the PMU drops to when VBUS
@@ -1429,16 +1385,12 @@ frames and touches in dmesg; `z2-boot -p N -N` reads the frames itself, without 
 | `dmesg \| grep -c "not done after"` counts old hangs | the ring buffer rolls and the message comes ~2 s late: `hangs.sh` with a timestamp, `sleep 3` first |
 | a scratch script named `dis.py` breaks Python (`import dis`) | don't name helpers after stdlib modules; run tools with `python3 -I` |
 | SuperTux `--renderer opengl` exits ("Missing GL version") | it asks an OpenGL 3.3 core context and the driver has 2.1 (M42: the driver's to fix); `sdl` or `opengl20` meanwhile |
-| a screenshot shows the desktop while a fullscreen game runs | the game is page flipped and xwd reads X's front buffer: `python3 tools/desktop/xshot.py --screen out.png` |
 | `apk add` of a big package over ssh: "No space left on device" | the iPad's /tmp is 128 MB of RAM: copy it to /var/tmp (the NFS root) |
 | `perf probe -x libgallium ...` (uprobes) and the renders fail | the driver is Thumb code and the probes break it: remove them (`echo > /sys/kernel/tracing/uprobe_events`); count with `perf record -e raw_syscalls:sys_enter --filter 'id == 54'` (ioctls) instead |
 | `ssh cascadia 'pkill -f NAME ...'` and the ssh session dies | `-f` matches the ssh's own shell, whose command line has NAME: `pkill -x` |
 | SuperTux drawn in a corner, or its menu off to the right | its config (`~/.local/share/supertux2/config`) keeps the last `--geometry` as `fullscreen_width`/`_height` (a test's 384 x 512): set both to 0 (the desktop's size) with SuperTux closed -- it writes the config when it exits. `SGX_DEBUG=fps` prints the target's size and the viewport |
 | SuperTux 355 draws a frame on KMS, 31 under X | SDL batches only when no renderer is named: `SDL_RENDER_BATCHING=1` with `SDL_RENDER_DRIVER` (supertux-mesa.sh has it) |
-| SuperTux under X slower than on KMS while its CPU idles | the X server's and xfwm4's renders share the GPU: compare with X itself on the build (`SGX_MESA=/root/sgx-mesa-rel /root/sgx-dev desktop`), not SuperTux alone |
-| a program's fps under X is not what the screen shows | composited, the screen shows xfwm4's frames: count the X server's page flips and DIRTYFBs (`perf record -e raw_syscalls:sys_enter -e raw_syscalls:sys_exit --filter 'id == 54' -p $(pidof Xorg)`, `python3 tools/sgx/ioret.py`: `c01864b0`, `c01864b1`); a window's bypass hint and depth: `tools/sgx/xwinfo.py` |
 | `Option "Atomic" "on"` in X's config does nothing | the kernel refuses atomic to any process named X* (`broken atomic modeset userspace detected` in dmesg): the patched modesetting turns the plane with legacy calls |
-| `xfconf-query` over ssh changes nothing (compositing "off" and still on) | it needs the session's D-Bus: `export $(tr '\0' '\n' < /proc/$(pgrep -x xfwm4)/environ \| grep -E '^(DBUS_SESSION_BUS_ADDRESS\|DISPLAY)=' \| xargs)` first |
 | SuperTux stuck at 66.7 fps | its own limit: 64 logical frames a second, 15 ms a step |
 
 # ═══════════════════════════════════════════════════════════════
@@ -1475,8 +1427,8 @@ amps. It works with the screen off too.
 Home held 0.8 s: the rotation lock on/off (the backlight dips once for on,
 twice for off).
 
-Turning the screen (labwc: wlr-randr, the turn left in /run/cascadia-rotation;
-XFCE: the KMS plane): `autorotate`, started by the session, turns it
+Turning the screen (wlr-randr, the turn left in /run/cascadia-rotation for
+task-killer and screenpad): `autorotate`, started by the session, turns it
 with the iPad; `rotation-lock [on|off|toggle]` (the file
 `/run/rotation-lock`), also the panel button next to the keyboard's, and
 Home held. Installed from the host: `sh tools/desktop/install.sh` (rotate,

@@ -22,7 +22,7 @@
 #   ./cascadia a5 link        give this host 10.55.0.1 on the device's link (flash does it)
 #   ./cascadia a5 net on|off  share this host's internet with it  (macOS or Linux)
 #   ./cascadia a5 nfs on|off  export a root filesystem to it      (macOS or Linux)
-#   ./cascadia a5 desktop-root  a root with labwc (and XFCE), the GPU's Mesa and pack, SuperTux,
+#   ./cascadia a5 desktop-root  a root with labwc, the GPU's Mesa and pack, SuperTux,
 #                             screenpad, autorotate, built here; nfs on seeds
 #                             a new root from it
 #
@@ -1072,7 +1072,7 @@ cmd_release() {
 # Cascadia $ver -- iPad mini 1 (iPad2,5)
 
 Prebuilt halves for \`./cascadia a5 get\` (then \`./cascadia a5 install\`): the
-kernel ${kv:-6.12} with its base system, and the desktop root (labwc on the GPU, XFCE,
+kernel ${kv:-6.12} with its base system, and the desktop root (labwc on the GPU,
 SuperTux, screenpad, the on-screen keyboard).  Built from commit $rev.
 
 No Apple files and nothing of anyone's machine: the firmware from the IPSW,
@@ -1089,8 +1089,8 @@ own computer and go into the image there.
   for this kernel (all from this repository at $rev)
 - desktop-root.tar.xz -- Alpine 3.24 armhf; packages.txt lists every package
   and version (their sources: Alpine's aports), plus this repository's
-  patched xorg-server, xfwm4, pixman and SuperTux 0.7.0 (APKBUILDs and patches
-  in devices/a5/tools/desktop/ at $rev) and its Mesa driver (devices/a5/mesa/)
+  labwc 0.20.3 and SuperTux 0.7.0 (APKBUILDs and patches in
+  devices/a5/tools/desktop/ at $rev) and its Mesa driver (devices/a5/mesa/)
 EOT
     python3 "$REPO/lib/prebuilt.py" manifest "$R" "$ver" \
         "https://github.com/$GH_REPO/releases/download/$ver" "$rev" "$REPO/prebuilt/$ch/a5.json" \

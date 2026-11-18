@@ -21,7 +21,7 @@
  *                      backlight dips once for on, twice for off
  *
  * It takes the buttons (gpio-keys) for itself with EVIOCGRAB, so nothing else
- * acts on them -- an XFCE session would otherwise offer to shut down on Hold.
+ * acts on them -- a desktop session would otherwise offer to shut down on Hold.
  * Started by stage 2; the backlight is /sys/class/backlight/apple-pmu-wled.
  *
  * Built static by ./cascadia a5 build (like z2-boot): one C file, no libraries.

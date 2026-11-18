@@ -4,8 +4,8 @@ The iPad mini 1's PowerVR SGX543MP2 draws under Linux. Programs reach it
 through **Mesa**: a Gallium driver of this repository's ([mesa/](../mesa/)),
 the system's OpenGL -- OpenGL ES 1.1 and 2.0, desktop OpenGL 2.1 with GLSL
 1.20 (its compiler takes GLSL 1.30's integers since M44), through EGL, GLX
-and GBM. XFCE draws with it (glamor), weston and its clients, SuperTux
-through SDL's GL renderer. **`tux-gpudemo`** shows it off: Tux going round
+and GBM. The desktop draws with it (labwc's GLES2 renderer), its Wayland
+programs too, SuperTux through SDL's GL renderer. **`tux-gpudemo`** shows it off: Tux going round
 on the screen, his light baked, the logo over his head glowing.
 
 Under Mesa sits `sgx2d`, the small 2D library the GPU was first brought up

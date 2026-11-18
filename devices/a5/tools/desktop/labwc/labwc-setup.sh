@@ -26,6 +26,7 @@
 #   fuzzel           the apps' list, from the panel's button, with their
 #                    icons; the Wi-Fi and Bluetooth menus are fuzzel's too
 #   foot             the terminal
+#   pcmanfm          the files
 #   swaybg           the background: a field of stars, drawn here once
 #                    (py3-cairo) square at the screen's longer side, so
 #                    either turn of the screen is covered
@@ -34,16 +35,14 @@
 #   grim             screenshots
 set -e
 
-apk add --no-progress labwc seatd xwayland waybar wvkbd fuzzel foot swaybg \
-    wlr-randr grim font-dejavu font-awesome dbus adwaita-icon-theme py3-cairo
+# The image's own packages, baked in without apk (scripts/add-base-packages.sh):
+# named in apk's world, so that no `apk del` takes them for unneeded -- one
+# took dropbear, Wi-Fi and Bluetooth with what it removed (2026-11-18)
+apk add --no-progress dropbear dropbear-scp nfs-utils libtirpc-conf busybox-static iw wpa_supplicant fbkeyboard font-dejavu bluez dbus i2c-tools alsa-utils e2fsprogs eudev
 
-# A root from before the Wayland desktop: its `desktop` started XFCE.  That
-# one is desktop-xfce now (xfce-setup.sh writes it so), and `desktop` picks
-# (tools/desktop/desktop.sh, install.sh).
-if [ -f /usr/local/bin/desktop ] && grep -q startxfce4 /usr/local/bin/desktop &&
-   [ ! -e /usr/local/bin/desktop-xfce ]; then
-    mv /usr/local/bin/desktop /usr/local/bin/desktop-xfce
-fi
+apk add --no-progress labwc seatd xwayland waybar wvkbd fuzzel foot swaybg \
+    wlr-randr grim font-dejavu font-awesome dbus adwaita-icon-theme py3-cairo \
+    pcmanfm hicolor-icon-theme
 
 mkdir -p /etc/xdg/labwc /etc/xdg/waybar-cascadia /etc/xdg/fuzzel /usr/local/bin \
          /usr/local/share/applications /usr/share/backgrounds/cascadia
@@ -105,7 +104,7 @@ cat > /etc/xdg/labwc/menu.xml <<'END'
     <item label="Wi-Fi"><action name="Execute" command="wifi-menu"/></item>
     <item label="Bluetooth"><action name="Execute" command="bt-menu"/></item>
     <item label="Terminal"><action name="Execute" command="foot"/></item>
-    <item label="Files"><action name="Execute" command="thunar"/></item>
+    <item label="Files"><action name="Execute" command="pcmanfm"/></item>
     <item label="Keyboard"><action name="Execute" command="kbd-toggle"/></item>
     <separator/>
     <item label="Reconfigure"><action name="Reconfigure"/></item>
@@ -221,8 +220,8 @@ END
 
 # The apps' list: large rows a finger can pick, the apps' icons, the
 # panel's grey.  Sizes in pixels (dpi-aware off: at the panel's 164 dpi the
-# font's points came out twice the size).  filter-desktop: XFCE's own
-# entries (OnlyShowIn=XFCE) stay out of it.
+# font's points came out twice the size).  filter-desktop: other desktops'
+# own entries (OnlyShowIn) stay out of it.
 cat > /etc/xdg/fuzzel/fuzzel.ini <<'END'
 [main]
 dpi-aware=no
@@ -258,13 +257,19 @@ selection-radius=10
 END
 
 # Entries that are another one's helper or the panel's own buttons, kept
-# out of the list under labwc (NotShowIn: XFCE still shows them)
-for d in foot-server footclient thunar-bulk-rename thunar-settings thunar-volman-settings \
-         xfce4-appfinder xfce4-terminal kbd-toggle rotation-lock; do
+# out of the list under labwc (NotShowIn)
+for d in foot-server footclient pcmanfm-desktop-pref kbd-toggle rotation-lock; do
     f=/usr/share/applications/$d.desktop
     [ -f "$f" ] || continue
     sed '/^NotShowIn=/d; /^\[Desktop Entry\]/a NotShowIn=labwc;' "$f" > /usr/local/share/applications/$d.desktop
 done
+# pcmanfm as "Files", with Adwaita's folder for its icon, by its path:
+# Adwaita 50 has no system-file-manager, the icon its entry names, and
+# fuzzel did not find "folder" by name
+[ -f /usr/share/applications/pcmanfm.desktop ] &&
+    sed 's|^Name=.*|Name=Files|; s|^Icon=.*|Icon=/usr/share/icons/Adwaita/scalable/places/folder.svg|; /^Name\[/d' \
+        /usr/share/applications/pcmanfm.desktop \
+        > /usr/local/share/applications/pcmanfm.desktop
 
 # --- the background: stars ---------------------------------------------------
 # Drawn once, here, from a fixed seed (the same picture every time): many
@@ -305,15 +310,10 @@ fi
 # The on-screen keyboard shown or hidden: wvkbd's own signal for it
 cat > /usr/local/bin/kbd-toggle <<'END'
 #!/bin/sh
-# kbd-toggle -- the on-screen keyboard shown or hidden: wvkbd under the
-# Wayland desktop (its signal for a turn), svkbd under X.
-if pidof labwc >/dev/null && ! pidof Xorg >/dev/null; then
-    pkill -RTMIN -x wvkbd-mobintl && exit 0
-    exec wvkbd-mobintl -H 300 -L 220 >/tmp/wvkbd.log 2>&1
-fi
-# X: svkbd, docked at the bottom (-H 20: a key row 1/20 of the screen)
-pkill -f '^svkbd-mobile-intl( |$)' && exit 0
-exec svkbd-mobile-intl -d -H 20 -fn "DejaVu Sans:size=13"
+# kbd-toggle -- the on-screen keyboard shown or hidden: wvkbd (its signal
+# for a turn), started if it is not running.
+pkill -RTMIN -x wvkbd-mobintl && exit 0
+exec wvkbd-mobintl -H 300 -L 220 >/tmp/wvkbd.log 2>&1
 END
 chmod 755 /usr/local/bin/kbd-toggle
 
@@ -436,7 +436,6 @@ cat > /usr/local/bin/desktop-labwc <<'END'
 # Start the Wayland desktop (labwc) on the glass, in the background, from
 # the glass shell or ssh.  Log: /tmp/labwc.log.
 if pidof labwc >/dev/null; then echo "labwc is already running"; exit 1; fi
-if pidof Xorg >/dev/null; then echo "X is running (XFCE): log out of it first"; exit 1; fi
 # the console's on-screen keyboard: its arguments, as stage 2 started it,
 # for when the session ends (a root's first boot into the desktop may come
 # before stage 2 wrote them)

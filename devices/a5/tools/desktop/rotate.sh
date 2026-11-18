@@ -1,9 +1,10 @@
 #!/bin/sh
-# rotate [normal|left|inverted|right] -- the X screen turned, and the touch
-# screen with it (docs/research/p105-mesa.md, M41).  On the iPad as
-# /usr/local/bin/rotate; with no argument it says how the screen is turned.
+# rotate [normal|left|inverted|right] -- the screen turned, and the touch
+# screen with it.  On the iPad as /usr/local/bin/rotate; with no argument it
+# says how the screen is turned.  The desktop's (labwc) below first; then an
+# X server's (the iPad 2's XFCE, docs/research/p105-mesa.md, M41).
 #
-# The turn is the KMS plane's (apple-sgx turns its copy onto the screen and
+# Under X the turn is the KMS plane's (apple-sgx turns its copy onto the screen and
 # the patched modesetting, tools/desktop/xorg-server, hands RandR's
 # rotation to it): no shadow buffer, every frame shown.  The touch screen
 # reports the panel's own coordinates, so libinput's Coordinate

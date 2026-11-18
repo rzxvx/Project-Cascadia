@@ -1,8 +1,9 @@
 #!/bin/sh
 # autorotate -- the screen turned the way the iPad is held.  Started with
-# each XFCE session (/etc/xdg/autostart/cascadia-autorotate.desktop), one
-# for each X server, and gone with it; on the iPad as /usr/local/bin/
-# autorotate (tools/desktop/install.sh).
+# each session -- the desktop's (labwc's autostart: LABWC_PID), or an X
+# server's (the iPad 2's XFCE: /etc/xdg/autostart/cascadia-autorotate.desktop)
+# -- and gone with it; on the iPad as /usr/local/bin/autorotate
+# (tools/desktop/install.sh).
 #
 # The accelerometer is an IIO device (an ST LIS3DSH, dts/p105ap.dts), read
 # through sysfs three times a second; rotate (rotate.sh) turns the screen

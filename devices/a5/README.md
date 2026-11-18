@@ -12,7 +12,7 @@ repository's top as `./cascadia a5 …`.
 > **Status: Phases 1 to 3 complete.** Linux boots on both cores, takes
 > interrupts, keeps time, gives you a shell and a network over the Lightning
 > cable, takes multi-touch, brings up Wi-Fi, runs a Wayland desktop (labwc)
-> on the GPU with an on-screen keyboard — XFCE a command away — and keeps
+> on the GPU with an on-screen keyboard, and keeps
 > its root on the iPad's NAND beside iOS,
 > started from an iOS app.
 
@@ -89,11 +89,10 @@ see [K93 bring-up and limitations](docs/k93-bringup.md).
       the upper terminal screen acts as an invisible 3×3 directional touch grid:
       top/bottom for Up/Down arrow history, left/right for Left/Right cursor movement,
       center for Enter, and corners for Home/End/PageUp/PageDown)
-- [x] **A desktop** — first XFCE on the framebuffer, touch as the pointer
-      (`tools/desktop/xfce-setup.sh`, now `desktop xfce`); since 2026-11-18 the
-      Wayland desktop: labwc on the GPU, started at boot, waybar with Wi-Fi
-      and Bluetooth menus, wvkbd, fuzzel, task-killer as the way out
-      (`tools/desktop/labwc/`, `desktop`); see QUICKSTART
+- [x] **A desktop** — Wayland: labwc on the GPU, started at boot, waybar
+      with Wi-Fi and Bluetooth menus, wvkbd as the keyboard, fuzzel as the
+      apps' list, task-killer as the way out of a program that holds the
+      screen (`tools/desktop/labwc/`, `desktop`); see QUICKSTART
 - [x] **Linux hosts** — build, flash, `./cascadia a5 net` and `./cascadia a5 nfs` on
       Linux as well as macOS (walked on Arch; Ubuntu used by a second tester)
 - [x] **Both cores** — CPU1 comes up at boot, idles the way XNU does, and
@@ -123,7 +122,7 @@ see [K93 bring-up and limitations](docs/k93-bringup.md).
       PMU's LED current DAC; see `docs/research/p105-backlight.md`
 - [x] **The accelerometer, the screen turned with it** — an ST LIS3DSH on
       the third I2C bus, read through IIO (`st_accel`, the part added to
-      it). In XFCE the screen and the touch turn with the iPad
+      it). On the desktop the screen and the touch turn with the iPad
       (`autorotate`); the rotation lock is a panel button, or Home held. See
       `docs/research/p105-sensors.md`. The gyro, the light sensor and the
       compass are found, not driven yet
@@ -196,8 +195,8 @@ see [K93 bring-up and limitations](docs/k93-bringup.md).
       [mesa/](mesa/) with its own shader compiler (NIR to the GPU's USSE code:
       branches, loops, texture lookups, derivatives) on the kernel's DRM
       render node; `./cascadia a5 dev mesa` builds it and makes it the system's.
-      **XFCE runs on Xorg with glamor on the GPU**, GLX programs beside it;
-      weston and its Wayland clients too; SuperTux through SDL's GL renderer.
+      **The desktop (labwc) composes on the GPU**, its Wayland programs
+      beside it; SuperTux through SDL's GL renderer.
       **`tux-gpudemo`**, the GPU demo: Tux going round, his light baked, at
       about 58 fps fullscreen ([docs/GPU.md](docs/GPU.md#the-demo); the model:
       teutekeune).
@@ -542,7 +541,7 @@ good.
 | two-core stress test | 82 s | 64 s |
 | CPU0 busy reading over NFS | 96% | 34–47% |
 
-On the desktop it shows as XFCE and its terminal starting about twice as fast.
+On the desktop it shows as programs starting about twice as fast.
 
 The L2 still prefetched nothing: iOS's ADT has data and instruction
 prefetch on, the device tree here had not asked for it. On the iPad 2
@@ -834,7 +833,7 @@ tools/          p105-peek.c (MMIO tool), build/flash wrappers, LZSS helpers,
                 sgx/ (the GPU: sgx2d, the SDL shim, pack builder, gl/: the
                 driver's tests), iosgpu/ (the iOS capture tool, the kext
                 emulator), piglit/ (the OpenGL test suite for the iPad),
-                desktop/ (XFCE's setup, X screenshots)
+                desktop/ (the desktop's setup: labwc, rotation)
 mesa/           the GPU's Mesa driver (Gallium: OpenGL ES 1.1/2.0, OpenGL 2.1):
                 its files, the patch that registers it, the device build
                 (./cascadia a5 dev mesa; mesa/devbuild.sh for a build beside it)
@@ -861,7 +860,7 @@ Build products (`output/`) and stock firmware are not tracked; everything in
   tick, correct wall clock, `apk`, and an NFS root on the host's disk.
 - **Phase 3** — ~~a tick that does not depend on USB device mode~~ (the AIC
   timer) → ~~Touch~~ ✓ → ~~an on-screen keyboard for the console~~ ✓ →
-  ~~a desktop~~ ✓ (XFCE) → ~~the second core~~ ✓ → ~~Wi-Fi via HSIC/EHCI~~ ✓
+  ~~a desktop~~ ✓ (labwc) → ~~the second core~~ ✓ → ~~Wi-Fi via HSIC/EHCI~~ ✓
   → ~~the L2 cache~~ ✓ → ~~iOS's files off the NAND~~ ✓ (read-only) →
   ~~the GPU~~ ✓ (OpenGL ES 2.0 / GL 2.1) → ~~the NAND as Linux's own disk,
   next to iOS~~ ✓ → ~~started from iOS, no computer~~ ✓ (the Cascadia app).
@@ -888,7 +887,7 @@ The iPhone 11 and the devices planned next: the
 
 ![FastFetch written using screen keyboard](../../imgs/IMG_1196.jpg)
 
-![XFCE on the iPad, read straight out of /dev/fb0](../../imgs/xfce-fb0.png)
+![The desktop on the iPad: labwc, the apps' list open](../../imgs/labwc-desktop.png)
 
 ## Credits, support, license
 

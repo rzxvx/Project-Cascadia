@@ -39,7 +39,7 @@ BUILT = os.path.join(ROOT, 'build', 'mesa',
 LD_PATH = 'etc/ld-musl-armhf.path'
 LD_PATH_TEXT = '/lib\n/%s/lib\n/usr/local/lib\n/usr/lib\n' % PREFIX
 # X on the GPU (M36): modesetting with glamor, a configuration directory of
-# its own (`desktop` uses it; tools/desktop/xfce-setup.sh) -- and the driver
+# its own (an X server's: the iPad 2's XFCE, tools/desktop/xfce-setup.sh) -- and the driver
 # where the X server's GLX looks for it (AIGLX: /usr/lib/dri)
 X_CONF = 'etc/X11/sgx.conf.d/20-sgx.conf'
 X_CONF_TEXT = '''Section "Device"

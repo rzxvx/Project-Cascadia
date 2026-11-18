@@ -52,7 +52,7 @@ puts `/usr/local/lib/sgx-mesa/lib` ahead of `/usr/lib`, so every program --
 SDL's, GLEW's, Xorg's glamor, weston -- loads this Mesa and no wrapper is
 needed; Alpine's Mesa stays installed, and deleting the file brings it back.
 It also puts X's configuration for the GPU in `/etc/X11/sgx.conf.d`
-(modesetting with glamor: `desktop` takes it) and links the driver where the
+(modesetting with glamor, for an X server) and links the driver where the
 X server's GLX looks for it.
 
 **Trying a change** without touching the system's: `mesa/devbuild.sh` (or

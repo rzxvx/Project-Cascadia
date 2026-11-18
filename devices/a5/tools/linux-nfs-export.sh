@@ -88,7 +88,7 @@ on)
         sudo mkdir -p "$DST/dev" "$DST/proc" "$DST/sys"
     else
         echo "==> copying $SRC -> $DST"
-        [ -f "$DESKTOP_TAR" ] || echo "    (no desktop yet: ./cascadia a5 desktop-root builds a root with XFCE, the GPU, SuperTux)"
+        [ -f "$DESKTOP_TAR" ] || echo "    (no desktop yet: ./cascadia a5 desktop-root builds a root with the desktop (labwc), the GPU, SuperTux)"
         sudo mkdir -p "$DST"
         # Device nodes and the kernel's filesystems are left out: stage 1 moves
         # devtmpfs, proc and sys onto the new root itself.

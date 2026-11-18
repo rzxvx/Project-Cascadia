@@ -29,6 +29,9 @@ if [ "${1:-}" = install ]; then
     ssh "$DEVICE" 'apk info -e py3-gobject3 py3-cairo >/dev/null ||
                        apk add --no-progress py3-gobject3 py3-cairo'
     ssh "$DEVICE" 'cat > /usr/share/applications/screenpad-editor.desktop' < "$D/screenpad-editor.desktop"
+    ssh "$DEVICE" 'mkdir -p /usr/share/icons/hicolor/scalable/apps &&
+                   cat > /usr/share/icons/hicolor/scalable/apps/cascadia-screenpad.svg &&
+                   { gtk-update-icon-cache -f -q /usr/share/icons/hicolor 2>/dev/null || true; }' < "$D/cascadia-screenpad.svg"
     for P in "$D"/presets/*.json; do
         ssh "$DEVICE" "cat > /usr/local/share/screenpad/presets/$(basename "$P")" < "$P"
     done

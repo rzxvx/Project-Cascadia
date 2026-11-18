@@ -7,8 +7,6 @@
 #   labwc, the Wayland desktop tools/desktop/labwc/{build.sh,labwc-setup.sh}
 #                             (what `desktop` and the boot start)
 #   task-killer               tools/task-killer/build.sh
-#   XFCE with touch           tools/desktop/xfce-setup.sh (`desktop xfce`)
-#   X, xfwm4, pixman patched  tools/desktop/{xorg-server,xfwm4,pixman}/build.sh
 #   autorotate                tools/desktop/install.sh
 #   Mesa on the GPU           ./cascadia a5 dev mesa (the system's OpenGL, tux-gpudemo)
 #   the GPU's pack            ./cascadia a5 dev gpu (from your IPSW)
@@ -28,8 +26,12 @@
 #             user's own IPSW, by nfs on), its own docker volume, started
 #             fresh, the package list beside it (OUT.packages)
 #   OUT=      where the tar goes (build/desktop-root.tar)
-#   ONLY="mesa gpu"   just those steps (gl, xfce, patched, labwc, taskkiller,
-#             autorotate, mesa, gpu, supertux, screenpad)
+#   ONLY="mesa gpu"   just those steps (gl, labwc, taskkiller, autorotate,
+#             mesa, gpu, supertux, screenpad)
+#
+# BOARD=k93 (./cascadia k93 desktop-root): the iPad 2's root, whose desktop
+# is still XFCE on X (tools/desktop/xfce-setup.sh and the patched
+# xorg-server, xfwm4 and pixman) in place of labwc.
 #
 # The first time is long: XFCE is ~280 packages under ARM emulation, and Mesa
 # and SuperTux build for the better part of an hour each unless build/ has
@@ -43,12 +45,14 @@ OUT="${OUT:-$ROOT/build/desktop-root.tar}"
 VOL="${VOL:-cascadia-a5-desktop-root}"
 if [ "${PUBLIC:-0}" = 1 ]; then
     VOL=cascadia-a5-desktop-root-public FRESH=1
-    ONLY="${ONLY:-gl xfce patched labwc taskkiller autorotate mesa supertux screenpad}"
+    if [ "${BOARD:-p105}" = k93 ]; then ONLY="${ONLY:-gl xfce patched autorotate mesa supertux screenpad}"
+    else ONLY="${ONLY:-gl labwc taskkiller autorotate mesa supertux screenpad}"; fi
 fi
 C=cascadia-a5-root
 DEV=root@desktop-root
 ALPINE="${ALPINE:-3.24}"
-STEPS="${ONLY:-gl xfce patched labwc taskkiller autorotate mesa gpu supertux screenpad}"
+if [ "${BOARD:-p105}" = k93 ]; then STEPS="${ONLY:-gl xfce patched autorotate mesa gpu supertux screenpad}"
+else STEPS="${ONLY:-gl labwc taskkiller autorotate mesa gpu supertux screenpad}"; fi
 
 say()  { printf '==> %s\n' "$*"; }
 fail() { printf 'error: %s\n' "$*" >&2; exit 1; }
@@ -94,6 +98,14 @@ inroot 'cd /target && mkdir -p dev proc sys tmp var/tmp &&
     if [ -e etc/resolv.conf ] && [ ! -e etc/resolv.conf.cascadia ]; then cp -a etc/resolv.conf etc/resolv.conf.cascadia; fi &&
     cp /etc/resolv.conf etc/resolv.conf'
 
+# The image's own packages (scripts/add-base-packages.sh, add-dropbear.sh) are
+# baked in without apk: named in apk's world here, so that no later `apk del`
+# takes them for unneeded -- one took dropbear, Wi-Fi and Bluetooth along with
+# the packages it removed (2026-11-18), and ssh was gone.
+say "the image's packages, in apk's world"
+inroot 'chroot /target apk add -q --no-progress dropbear dropbear-scp nfs-utils libtirpc-conf busybox-static iw wpa_supplicant fbkeyboard font-dejavu bluez dbus i2c-tools alsa-utils e2fsprogs eudev' \
+    || fail "could not name the image's packages in apk's world (above)"
+
 export PATH="$ROOT/tools/desktop/rootssh:$PATH" CASCADIA_ROOT_CONTAINER="$C"
 export DEVICE="$DEV"
 
@@ -128,7 +140,14 @@ step screenpad  sh "$ROOT/tools/screenpad/build.sh" install
 say "checking what the iPad will find"
 # apk's own view: every package there and a world it can resolve (a
 # --force-broken-world that skipped something shows up here, not on the iPad)
-inroot 'chroot /target apk info -e cascadia-gl labwc waybar wvkbd fuzzel foot seatd xorg-server xfce4-session xfce4-panel eudev touchegg svkbd supertux supertux-data py3-gobject3 >/dev/null' \
+if [ "${BOARD:-p105}" = k93 ]; then
+    must_have="cascadia-gl xorg-server xfce4-session xfce4-panel eudev touchegg svkbd supertux supertux-data py3-gobject3"
+    must_files="usr/local/bin/desktop-xfce usr/bin/xrandr usr/bin/xinput"
+else
+    must_have="cascadia-gl labwc waybar wvkbd fuzzel foot seatd xwayland pcmanfm eudev supertux supertux-data py3-gobject3"
+    must_files="usr/local/bin/desktop-labwc usr/local/bin/task-killer usr/share/backgrounds/cascadia/stars.png"
+fi
+inroot "chroot /target apk info -e $must_have >/dev/null" \
     || fail "a package is missing from the root (apk info above)"
 # and what the root must not carry (Alpine's Mesa and LLVM, the thumbnailer's tree)
 for p in mesa llvm22-libs tumbler webkit2gtk-4.1 gstreamer; do
@@ -136,13 +155,12 @@ for p in mesa llvm22-libs tumbler webkit2gtk-4.1 gstreamer; do
 done
 inroot 'chroot /target apk -s add --no-network >/dev/null' \
     || fail "apk cannot resolve the root's world -- something was installed broken (above)"
-for f in usr/local/bin/desktop usr/local/bin/desktop-labwc usr/local/bin/desktop-xfce \
-         usr/local/bin/task-killer usr/share/backgrounds/cascadia/stars.png usr/local/bin/autorotate usr/bin/xrandr usr/bin/xinput usr/local/bin/screenpad usr/local/bin/tux-gpudemo \
+for f in usr/local/bin/desktop $must_files usr/local/bin/autorotate usr/local/bin/screenpad usr/local/bin/tux-gpudemo \
          usr/local/lib/sgx-mesa/lib/libGLESv2.so.2 etc/ld-musl-armhf.path \
          $([ "${PUBLIC:-0}" = 1 ] || echo usr/local/lib/sgx2d); do
     inroot "chroot /target test -e /$f" || fail "no /$f in the root"
 done
-echo "    ok: labwc, task-killer, XFCE, X, SuperTux, screenpad, autorotate, Mesa, the GPU's pack"
+echo "    ok: the desktop, SuperTux, screenpad, autorotate, Mesa, the GPU's pack"
 
 if [ "${PUBLIC:-0}" = 1 ]; then
     inroot 'test ! -e /target/usr/local/lib/sgx2d' || fail "PUBLIC=1 and the root has a GPU pack"

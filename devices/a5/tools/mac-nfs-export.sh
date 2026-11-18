@@ -81,7 +81,7 @@ on)
         sudo mkdir -p "$DST/dev" "$DST/proc" "$DST/sys"
     else
         echo "==> copying $SRC -> $DST"
-        [ -f "$DESKTOP_TAR" ] || echo "    (no desktop yet: ./cascadia a5 desktop-root builds a root with XFCE, the GPU, SuperTux)"
+        [ -f "$DESKTOP_TAR" ] || echo "    (no desktop yet: ./cascadia a5 desktop-root builds a root with the desktop (labwc), the GPU, SuperTux)"
         sudo mkdir -p "$DST"
         # Device nodes are excluded on purpose: stage 1 mount --moves devtmpfs onto
         # the new root, so an empty /dev is all that is wanted, and macOS has no

@@ -366,17 +366,15 @@ keyboard, the rotation lock, Wi-Fi, Bluetooth, battery, clock), an
 on-screen keyboard (wvkbd), the apps' list (fuzzel) and a field of stars
 behind. It starts by itself at the end of every boot; when its session ends
 the text console is back, with fbkeyboard. X programs still run in it
-(Xwayland, started when the first one connects). XFCE is still there, a
-command away.
+(Xwayland, started when the first one connects).
 
 ```sh
 desktop                # the desktop (labwc), from the glass shell or ssh
 desktop auto off       # the text console only at boot (desktop auto on: back)
-desktop xfce           # XFCE instead, on Xorg with glamor
 ```
 
-It comes as a whole root -- labwc and its pieces, XFCE, the patched
-X/xfwm4/pixman, Mesa, SuperTux, screenpad, task-killer, autorotate --, the
+It comes as a whole root -- labwc and its pieces, Mesa, SuperTux,
+screenpad, task-killer, autorotate --, the
 one `get` downloads; a new NFS export starts from it, and gets the GPU's
 pack from your IPSW:
 
@@ -399,7 +397,7 @@ sh tools/task-killer/build.sh install
 
 To build the desktop root yourself instead, `./cascadia a5 desktop-root`
 (into `build/desktop-root.tar`, which `nfs on` then prefers). It is long the
-first time -- XFCE is ~280 packages under ARM emulation, and Mesa and
+first time -- a few hundred packages under ARM emulation, and Mesa and
 SuperTux build for the better part of an hour each on a Mac, hours on an
 older PC -- and later runs reuse what is built (`FRESH=1` starts the root
 again from the current image).
@@ -423,33 +421,7 @@ again from the current image).
   (`task-killer`; `task-killer --list` shows what it would kill). Then
   `desktop` again.
 - **Speed.** ~6 s from the boot's end to the panel (8 s with nothing cached),
-  92-106 MB of memory in use against XFCE's 173, SuperTux ~53 frames/s
-  against 43 under XFCE.
-
-XFCE (`desktop xfce`): touch as the pointer, a two-finger tap a right click
-(touchegg), svkbd behind the panel's keyboard button; about 40 s to a drawn
-desktop on the first login. The two CPU cores draw it instead of the GPU
-with `DESKTOP_FB=1 desktop-xfce`. Its background is a solid colour on
-purpose: XFCE's default wallpaper is an SVG, and rasterising it on one core
-kept the screen black for over a minute.
-
-`desktop-xfce` checks that the system D-Bus actually answers before starting the
-session. If a stopped daemon left a socket and pid file behind, it removes
-only the pid file of a process that no longer exists and starts a new bus.
-An unresponsive live process, malformed pid file or socket without a known
-owner stops startup for inspection; the script does not kill an existing bus.
-
-The script's header says what each package is for. Three things older recipes
-had that do not work here:
-
-- `setup-xorg-base` is not installed (it lives in `alpine-conf`, which also
-  pulls in openrc);
-- `xf86-video-vesa` does not exist for armv7, and one missing name fails the
-  whole `apk add`;
-- a touchscreen section forcing `evdev` removes multitouch, and with it the
-  two-finger right click. evdev's long-press right click does not help either:
-  for a device with multitouch axes X emulates the pointer itself, and evdev's
-  emulation never runs.
+  92-106 MB of memory in use, SuperTux ~53 frames/s.
 
 ## Touch controls for games
 
@@ -508,7 +480,7 @@ tux-gpudemo
 ```
 
 and the **EXIT** button in the top right corner ends it. The same Mesa is
-every program's OpenGL there (XFCE, SuperTux). [GPU.md](GPU.md) has the
+every program's OpenGL there (the desktop, SuperTux). [GPU.md](GPU.md) has the
 details, how it works, and how to rebuild Mesa or the GPU's pack onto a
 running iPad while working on the driver (`./cascadia a5 dev mesa`, `dev
 gpu`).

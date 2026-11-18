@@ -3,6 +3,6 @@ Type=Application
 Name=screenpad
 Comment=Launch apps with on-screen controls; make the controls: buttons, d-pads and sticks
 Exec=/usr/local/bin/screenpad-editor
-Icon=input-gaming
+Icon=cascadia-screenpad
 Terminal=false
 Categories=Settings;Game;
