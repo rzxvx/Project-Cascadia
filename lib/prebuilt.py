@@ -40,17 +40,48 @@ def sha256(path):
     return h.hexdigest()
 
 
+def tls_context():
+    """the default checks, with the system's CA bundle added: Python from
+    python.org on macOS has no CA certificates of its own until its "Install
+    Certificates" is run, and GitHub then fails as CERTIFICATE_VERIFY_FAILED
+    (macOS's /etc/ssl/cert.pem is there all along); certifi's too if it is
+    installed"""
+    import ssl
+    ctx = ssl.create_default_context()
+    found = []
+    try:
+        import certifi
+        found.append(certifi.where())
+    except ImportError:
+        pass
+    found += ['/etc/ssl/cert.pem',                      # macOS, Alpine
+              '/etc/ssl/certs/ca-certificates.crt',     # Debian, Ubuntu, Arch
+              '/etc/pki/tls/certs/ca-bundle.crt']       # Fedora
+    for f in found:
+        if os.path.isfile(f):
+            try:
+                ctx.load_verify_locations(cafile=f)
+            except (OSError, ssl.SSLError):
+                pass
+    return ctx
+
+
+TLS = None
+
+
 def fetch(url, path, size):
     """into path.part, resumed from where an earlier try stopped"""
     part = path + '.part'
     have = os.path.getsize(part) if os.path.exists(part) else 0
     if have > size:
         os.remove(part); have = 0
+    global TLS
+    TLS = TLS or tls_context()
     tries = 0
     while have < size:
         req = urllib.request.Request(url, headers={'Range': 'bytes=%d-' % have} if have else {})
         try:
-            with urllib.request.urlopen(req, timeout=60) as r, open(part, 'ab' if have else 'wb') as f:
+            with urllib.request.urlopen(req, timeout=60, context=TLS) as r, open(part, 'ab' if have else 'wb') as f:
                 if have and r.status != 206:           # no ranges: start again
                     f.truncate(0); have = 0
                 t0, last = time.time(), 0
@@ -65,6 +96,11 @@ def fetch(url, path, size):
                         sys.stderr.write('\r    %s  %5.1f%%  %6.1f MB  %5.1f MB/s ' % (
                             os.path.basename(path), 100.0 * have / size, have / 1048576, rate))
         except (OSError, urllib.error.URLError) as e:
+            if 'CERTIFICATE_VERIFY_FAILED' in str(e):  # (no try of it again helps)
+                sys.stderr.write('\n')
+                fail('%s: %s\n    This Python trusts no certificate authority.  On macOS, with Python '
+                     'from python.org: open /Applications/Python 3.*/Install Certificates.command, '
+                     'or: pip3 install certifi.  Then run it again.' % (url, e))
             tries += 1
             if tries > 5:
                 sys.stderr.write('\n')
