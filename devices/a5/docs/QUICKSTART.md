@@ -101,7 +101,9 @@ step at a time, and what to do on the iPad once it is there.
 
 Answer `NAND` (the question says how to answer) and the installer puts Linux
 on the iPad's flash, next to iOS: it shrinks iOS's Data partition (8 GiB by
-default, 4 GiB at least, your choice), makes a volume called "Linux" in that
+default, 4 GiB at least, your choice -- asked on every run until the volume
+is being made, the last answer the default; `NAND_SIZE=5 ./cascadia a5
+install` answers it), makes a volume called "Linux" in that
 space, formats it ext4 and puts the desktop root on it. Then it installs the
 **Cascadia** app on iOS: hold its button and the iPad restarts into Linux,
 with no computer and no cable. Rebooting Linux brings iOS back.

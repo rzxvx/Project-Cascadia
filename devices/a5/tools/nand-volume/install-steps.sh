@@ -58,18 +58,38 @@ EOF
     echo "$v"
 }
 
-# The volume's size in GiB, asked once, with iOS up: 8 suggested, 4 at least,
-# Data's free space less 1 GiB at most.
+# The volume's size in GiB, with iOS up: 8 suggested, 4 at least, Data's free
+# space less 1 GiB at most.  Asked again on every run until the volume's
+# making has begun (the answer before is the default then); from then on it
+# is that one's.  NAND_SIZE=5 answers without asking.
+nand_size_keep() {
+    mkdir -p "$ROOT/build"
+    grep -v '^nand_size=' "$INSTALL_CONF" > "$INSTALL_CONF.new" 2>/dev/null
+    echo "nand_size=$1" >> "$INSTALL_CONF.new"; mv "$INSTALL_CONF.new" "$INSTALL_CONF"
+}
 install_nand_size() {
-    local v max out
-    v=$(sed -n 's/^nand_size=//p' "$INSTALL_CONF" 2>/dev/null | tail -1)
-    [ -n "$v" ] && { echo "$v"; return 0; }
+    local v max out had
+    had=$(sed -n 's/^nand_size=//p' "$INSTALL_CONF" 2>/dev/null | tail -1)
+    case "$(nv_st flow)" in
+        create|done-create)
+            if [ -n "$had" ]; then
+                [ -z "${NAND_SIZE:-}" ] || [ "$NAND_SIZE" = "$had" ] ||
+                    note "NAND_SIZE=$NAND_SIZE: the volume's making has begun at $had GiB, which it keeps" >&2
+                echo "$had"; return 0
+            fi ;;
+    esac
     out=$(NV space) || { printf '%s\n' "$out" >&2; fail "could not read iOS's free space (above)"; }
     max=$(printf '%s\n' "$out" | sed -n 's/^max_gib=//p' | tail -1)
     [ -n "$max" ] || fail "could not read iOS's free space: $out"
     [ "$max" -ge 4 ] || fail "iOS's Data has room for ${max} GiB; Linux needs 4 at least.  Free space in iOS (Settings > General > Usage) and run this again"
+    if [ -n "${NAND_SIZE:-}" ]; then
+        case "$NAND_SIZE" in *[!0-9]*|'') fail "NAND_SIZE=$NAND_SIZE: a whole number of GiB, 4 to $max" ;; esac
+        [ "$NAND_SIZE" -ge 4 ] && [ "$NAND_SIZE" -le "$max" ] || fail "NAND_SIZE=$NAND_SIZE: 4 to $max GiB here"
+        nand_size_keep "$NAND_SIZE"; echo "$NAND_SIZE"; return 0
+    fi
     local def=8; [ "$max" -lt 8 ] && def=$max
-    [ -t 0 ] || { v=$def; echo "nand_size=$v" >> "$INSTALL_CONF"; echo "$v"; return 0; }
+    [ -n "$had" ] && [ "$had" -ge 4 ] 2>/dev/null && [ "$had" -le "$max" ] && def=$had
+    [ -t 0 ] || { nand_size_keep "$def"; echo "$def"; return 0; }
     echo "    The Linux volume: 4 to $max GiB (iOS keeps the rest, and 1 GiB of it free)." >&2
     while :; do
         read -r -p "    size in GiB [$def]: " v || fail "no answer"
@@ -77,7 +97,7 @@ install_nand_size() {
         case "$v" in *[!0-9]*|'') ;; *) [ "$v" -ge 4 ] && [ "$v" -le "$max" ] && break ;; esac
         echo "    a whole number from 4 to $max" >&2
     done
-    echo "nand_size=$v" >> "$INSTALL_CONF"
+    nand_size_keep "$v"
     echo "$v"
 }
 

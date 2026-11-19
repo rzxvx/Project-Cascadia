@@ -160,27 +160,32 @@ def expect_stock_pair(h):
 
 
 def plan_create(h, size, new_uuid=None):
-    """Spec 6.4 step 2: Data's end lowered, Linux at [Data_end, bound).
+    """Spec 6.4 step 2: Data's end lowered, Linux at [Data_end, top).
 
-    From two volumes (Data ends at the bound), or as a grow of an existing Linux
-    volume (Linux keeps its chunks for its old indices)."""
+    top is where Data ended as iOS left it: at the bound on the iPad this was
+    written on, 17 blocks below it on another (restored differently) -- the
+    space past it stays as iOS had it.  From two volumes, or as a grow of an
+    existing Linux volume (its end is the top; it keeps its chunks for its old
+    indices)."""
     check_shape(h)
     expect_stock_pair(h)
     data = h.parts[DATA]
     if len(h.parts) == 2:
-        if data.end != BOUND:
-            raise LwvmError('Data ends at %d, not at the bound' % data.end)
+        top = data.end
         old_linux = {}
-    elif len(h.parts) == 3 and h.parts[LINUX].name == 'Linux' and h.parts[LINUX].end == BOUND \
+    elif len(h.parts) == 3 and h.parts[LINUX].name == 'Linux' \
             and h.parts[LINUX].start == data.end:
+        top = h.parts[LINUX].end
         old_linux = h.chunks_of(LINUX)
         if new_uuid is None:
             new_uuid = h.parts[LINUX].uuid
     else:
         raise LwvmError('unexpected partitions: %s' % ', '.join(p.name for p in h.parts))
+    if top > BOUND or top % BLOCK:
+        raise LwvmError('the volumes end at %d: past the bound (%d), or not on a block' % (top, BOUND))
     if size % BLOCK or size <= 0:
         raise LwvmError('size must be a positive multiple of %d' % BLOCK)
-    data_end = BOUND - size
+    data_end = top - size
     if data_end >= data.end:
         raise LwvmError('Linux would not grow (Data ends at %d now)' % data.end)
     n_blocks = (data_end - data.start) // BLOCK
@@ -207,7 +212,7 @@ def plan_create(h, size, new_uuid=None):
     lin = Part(bytes(128))
     lin.type = LINUX_TYPE
     lin.uuid = new_uuid or uuid.uuid4().bytes
-    lin.start, lin.end, lin.attr, lin.name = data_end, BOUND, 0, 'Linux'
+    lin.start, lin.end, lin.attr, lin.name = data_end, top, 0, 'Linux'
     if len(out.parts) == 3:
         out.parts[LINUX] = lin
     else:
@@ -230,8 +235,8 @@ def plan_remove(h, saved=None):
         s = Header(saved)
         check_shape(s)
         expect_stock_pair(s)
-        if len(s.parts) != 2 or s.parts[DATA].end != BOUND:
-            raise LwvmError('the saved header is not a two-volume header ending at the bound')
+        if len(s.parts) != 2 or s.parts[DATA].end != h.parts[LINUX].end:
+            raise LwvmError('the saved header is not a two-volume header ending where Linux does')
         same_but_end = lambda a, b: a.pack()[:40] + a.pack()[48:] == b.pack()[:40] + b.pack()[48:]
         if s.parts[SYSTEM].pack() != h.parts[SYSTEM].pack() or \
                 not same_but_end(s.parts[DATA], h.parts[DATA]):
@@ -245,8 +250,9 @@ def plan_remove(h, saved=None):
         if s.media_guid != h.media_guid:
             raise LwvmError('the saved header has another media GUID')
         return s, bytes(saved)
+    top = h.parts[LINUX].end                    # where Data ended before Linux
     n_now = data.chunks()
-    n_old = ceil_chunks(BOUND - data.start)
+    n_old = ceil_chunks(top - data.start)
     pool = sorted(h.chunks_of(LINUX).values()) + h.free_chunks()
     m = list(h.map)
     for c in h.chunks_of(LINUX).values():
@@ -258,7 +264,7 @@ def plan_remove(h, saved=None):
     out = Header(h.raw)
     out.map = m
     out.parts = out.parts[:2]
-    out.parts[DATA].end = BOUND
+    out.parts[DATA].end = top
     raw = out.pack()
     out = Header(raw)
     check_shape(out)
@@ -330,6 +336,28 @@ def selftest(d):
         _, r, _ = plan_create(Header(two), size)
         case('create %d bytes from w0c: iOS accepts' % size,
              ios_check(r, fixcrc=False)[:2] == (0, 0))
+    # an iPad whose Data ends 17 blocks below the bound (restored by another
+    # iOS): Linux up to Data's end, and back
+    sh = Header(two)
+    sh.parts[DATA].end = BOUND - 17 * BLOCK
+    short = sh.pack()
+    case('Data 17 blocks below the bound: iOS accepts it as it is',
+         ios_check(short, fixcrc=False)[:2] == (0, 0))
+    _, sc, _ = plan_create(Header(short), 8 << 30)
+    hs = Header(sc)
+    case('  ... create 8 GiB: Linux ends where Data did, iOS accepts',
+         hs.parts[LINUX].end == BOUND - 17 * BLOCK and hs.parts[DATA].end == hs.parts[LINUX].start
+         and ios_check(sc, fixcrc=False)[:2] == (0, 0))
+    _, sb = plan_remove(hs)
+    hb = Header(sb)
+    case('  ... remove by the inverse rule: Data ends there again, iOS accepts',
+         hb.parts[DATA].end == BOUND - 17 * BLOCK and sb[ENTRIES:MAP] == short[ENTRIES:MAP]
+         and ios_check(sb)[:2] == (0, 0))
+    _, sr = plan_remove(hs, short)
+    case('  ... remove by restoring the saved header gives it back', sr == short)
+    _, sg, _ = plan_create(hs, 10 << 30)
+    case('  ... grow to 10 GiB keeps the end, iOS accepts',
+         Header(sg).parts[LINUX].end == BOUND - 17 * BLOCK and ios_check(sg)[:2] == (0, 0))
     for bad in (0, BLOCK - 1, BOUND - LOW - BLOCK * (MIN_HFS_BLOCKS - 1)):
         try:
             plan_create(Header(two), bad)
