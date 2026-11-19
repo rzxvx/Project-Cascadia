@@ -281,10 +281,10 @@ if [ -x /sbin/p105-keys ]; then
 fi
 
 # ----------------------------------------------------------- task-killer ---
-# The screen's corners -- bottom left, top right, top left, bottom right,
-# twice, each within a second -- open a window that kills everything but the
-# basic processes (or the ones picked): a way out of a program that will not
-# let go of the screen, from the glass alone (tools/task-killer).
+# Home pressed three times (p105-keys counts them and signals it) opens a
+# window that kills everything but the basic processes (or the ones
+# picked): a way out of a program that will not let go of the screen, from
+# the iPad alone (tools/task-killer).
 if [ -x /usr/local/bin/task-killer ]; then
     setsid /usr/local/bin/task-killer >/tmp/task-killer.log 2>&1 </dev/null &
 fi

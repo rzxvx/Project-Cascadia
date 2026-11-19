@@ -170,7 +170,8 @@ is true as of its date. Now:
 - the desktop: labwc on Wayland (`tools/desktop/labwc/build.sh install`,
   `labwc-setup.sh`, then `tools/desktop/install.sh`): `desktop`, started by
   stage 2 at boot unless `desktop auto off`; log /tmp/labwc.log
-- out of a program that holds the screen: corners BL, TR, TL, BR twice
+- out of a program that holds the screen: Home x3, each within 0.8 s (p105-keys
+  -> SIGUSR1 to task-killer; screenpad steps aside on SIGUSR1, back on SIGUSR2)
   (task-killer; `task-killer --list`, TK_DEBUG=1 logs the touches)
 - the GPU: `./cascadia a5 dev gpu` (the pack: the template frame, sgx2d's demos), then
   `./cascadia a5 dev mesa`; the GPU demo: `tux-gpudemo` (EXIT top right; docs/GPU.md)

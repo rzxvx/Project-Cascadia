@@ -19,6 +19,10 @@
  *   home, held 0.8 s   the rotation lock on / off (/run/rotation-lock, the
  *                      file tools/desktop/autorotate.sh obeys): the
  *                      backlight dips once for on, twice for off
+ *   home, 3 presses    task-killer's window (a way out of a program that
+ *                      holds the screen): each press within 0.8 s of the one
+ *                      before; task-killer gets SIGUSR1, or is started with
+ *                      its window open if it is not running
  *
  * It takes the buttons (gpio-keys) for itself with EVIOCGRAB, so nothing else
  * acts on them -- a desktop session would otherwise offer to shut down on Hold.
@@ -34,7 +38,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <signal.h>
 #include <sys/ioctl.h>
+#include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -114,6 +120,52 @@ static int is_touch(int fd)
 
 #define LOCK "/run/rotation-lock"
 #define HOME_HOLD_MS 800
+#define HOME_TAPS 3		/* presses of Home that open task-killer's window */
+#define HOME_TAP_GAP_MS 800	/* each within this of the one before */
+#define TASK_KILLER "/usr/local/bin/task-killer"
+
+/* task-killer's window: SIGUSR1 to the running one, or one started with it
+ * open */
+static void task_killer(void)
+{
+	DIR *d = opendir("/proc");
+	struct dirent *e;
+	int sent = 0;
+
+	while (d && (e = readdir(d))) {
+		char path[300], comm[32] = "";
+		int fd, n;
+
+		if (e->d_name[0] < '0' || e->d_name[0] > '9')
+			continue;
+		snprintf(path, sizeof(path), "/proc/%s/comm", e->d_name);
+		fd = open(path, O_RDONLY | O_CLOEXEC);
+		if (fd < 0)
+			continue;
+		n = read(fd, comm, sizeof(comm) - 1);
+		close(fd);
+		if (n > 0 && comm[n - 1] == '\n')
+			comm[n - 1] = 0;
+		if (!strcmp(comm, "task-killer") && !kill(atoi(e->d_name), SIGUSR1))
+			sent = 1;
+	}
+	if (d)
+		closedir(d);
+	if (!sent && !access(TASK_KILLER, X_OK)) {
+		pid_t c = fork();
+
+		if (c == 0) {
+			if (fork() == 0) {
+				setsid();
+				execl(TASK_KILLER, "task-killer", "--show", (char *)NULL);
+			}
+			_exit(0);
+		}
+		if (c > 0)
+			waitpid(c, NULL, 0);
+	}
+	fprintf(stderr, "home x%d: task-killer %s\n", HOME_TAPS, sent ? "signalled" : "started");
+}
 
 static long now_ms(void)
 {
@@ -271,6 +323,8 @@ int main(void)
 	unsigned long sw[BITS(SW_CNT)] = { 0 };
 	int keys, touch = -1, max, level, off = 0, backlight_mode;
 	long home = 0;		/* when Home went down, while it is held and has not acted */
+	long last_tap = 0;	/* when Home last went down */
+	int taps = 0;		/* presses of it in a row, each within HOME_TAP_GAP_MS */
 
 	for (int tries = 0; (keys = find(is_buttons, path, sizeof(path))) < 0; tries++) {
 		if (tries == 30) {
@@ -279,7 +333,9 @@ int main(void)
 		}
 		sleep(1);
 	}
-	ioctl(keys, EVIOCGRAB, 1);
+	if (ioctl(keys, EVIOCGRAB, 1))
+		/* another p105-keys has them: this one would see nothing */
+		fprintf(stderr, "p105-keys: the buttons are taken (another p105-keys?): %m\n");
 	ioctl(keys, EVIOCGSW(sizeof(sw)), sw);
 	backlight_mode = has_bit(sw, SW_MUTE_DEVICE) == SWITCH_BACKLIGHT;
 	fprintf(stderr, "side switch %d: the buttons set the %s\n",
@@ -336,7 +392,21 @@ int main(void)
 			fprintf(stderr, "side switch %d: the buttons set the %s\n", ev.value,
 				backlight_mode ? "backlight" : "volume");
 		} else if (ev.type == EV_KEY && ev.code == KEY_HOMEPAGE && ev.value != 2) {
-			home = ev.value ? now_ms() : 0;
+			long t = now_ms();
+
+			home = 0;
+			if (!ev.value)
+				continue;
+			taps = taps && t - last_tap < HOME_TAP_GAP_MS ? taps + 1 : 1;
+			last_tap = t;
+			if (taps == HOME_TAPS) {
+				/* (and this press is not a hold: no rotation lock) */
+				taps = 0;
+				if (!off)
+					task_killer();
+				continue;
+			}
+			home = t;
 		}
 	}
 	perror("p105-keys: read");

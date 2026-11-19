@@ -40,6 +40,10 @@
  * needs no turn for it.  Keys go out of a uinput keyboard; the gamepad is
  * a uinput Xbox 360 pad (its IDs and layout), so SDL maps it as one.
  *
+ * SIGUSR1 sets the controls aside -- hidden, the touchscreen and the overlay
+ * let go -- and SIGUSR2 brings them back: task-killer does both around its
+ * window, which needs the glass and the overlay for itself.
+ *
  * -- COMMAND: run it (a game) with the controls; when it ends, so does
  * screenpad.  Ctrl-C or kill end it too, and the screen and the
  * touchscreen are as before.  Root (the overlay, uinput, the grab).
@@ -1484,6 +1488,14 @@ static void show(int on)
 	redraw();
 }
 
+static volatile sig_atomic_t paused, pause_changed;
+
+static void on_pause(int sig)
+{
+	paused = sig == SIGUSR1;
+	pause_changed = 1;
+}
+
 static void screen_check(void)
 {
 	int w = scr_w, h = scr_h;
@@ -1496,7 +1508,7 @@ static void screen_check(void)
 			scr_rot == DRM_MODE_ROTATE_90 ? "left" : scr_rot == DRM_MODE_ROTATE_180 ?
 			"upside down" : scr_rot == DRM_MODE_ROTATE_270 ? "right" : "not");
 	}
-	show(scr_w > 0 && (scr_w > scr_h) == P.landscape);
+	show(scr_w > 0 && (scr_w > scr_h) == P.landscape && !paused);
 }
 
 /* ---- the whole --------------------------------------------------------------- */
@@ -1559,6 +1571,12 @@ int main(int argc, char **argv)
 	sigaction(SIGINT, &sa, NULL);
 	sigaction(SIGTERM, &sa, NULL);
 	sigaction(SIGHUP, &sa, NULL);
+	{
+		struct sigaction sp = { .sa_handler = on_pause };
+
+		sigaction(SIGUSR1, &sp, NULL);
+		sigaction(SIGUSR2, &sp, NULL);
+	}
 	signal(SIGPIPE, SIG_IGN);
 	fprintf(stderr, "screenpad: preset \"%s\", %d controls, %s\n", P.name, P.n,
 		P.landscape ? "landscape" : "portrait");
@@ -1597,7 +1615,8 @@ int main(int argc, char **argv)
 			last_draw = t;
 			redraw();
 		}
-		if (t >= next_check) {
+		if (t >= next_check || pause_changed) {
+			pause_changed = 0;
 			next_check = t + 0.25;
 			screen_check();
 		}

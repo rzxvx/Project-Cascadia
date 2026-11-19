@@ -9,8 +9,8 @@
 #   desktop --boot        what stage 2 runs at the end of a boot: the desktop,
 #                         unless `desktop auto off` said otherwise
 #
-# The way back out of a desktop that will not let go: the screen's corners,
-# bottom left, top right, top left, bottom right, twice (task-killer).
+# The way back out of a desktop that will not let go: Home pressed three
+# times (task-killer).
 OFF=/etc/cascadia/desktop-boot-off
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 

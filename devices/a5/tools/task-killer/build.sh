@@ -22,7 +22,7 @@ if [ "${1:-}" = install ]; then
     ssh "$DEVICE" 'mkdir -p /usr/local/bin &&
                    cat > /usr/local/bin/task-killer.new && chmod 755 /usr/local/bin/task-killer.new &&
                    mv /usr/local/bin/task-killer.new /usr/local/bin/task-killer' < "$OUT/task-killer"
-    [ "${START:-1}" = 0 ] || ssh "$DEVICE" '{ pkill -x task-killer; sleep 0.5;
+    [ "${START:-1}" = 0 ] || ssh "$DEVICE" '{ p=$(pidof task-killer); [ -n "$p" ] && kill $p; sleep 0.5;
                      setsid /usr/local/bin/task-killer >/tmp/task-killer.log 2>&1 </dev/null & }'
     echo "installed on $DEVICE and started: /usr/local/bin/task-killer (log /tmp/task-killer.log)"
 fi

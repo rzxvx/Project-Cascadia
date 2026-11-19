@@ -3,13 +3,12 @@
  * from the glass alone.
  *
  *   task-killer            the daemon (stage 2 starts it at boot)
- *   task-killer --show     open the window now (no corners), for tests
+ *   task-killer --show     open the window now
  *   task-killer --list     what Continue would kill, and stop
  *
- * Touch the screen's corners in turn -- bottom left, top right, top left,
- * bottom right -- and once more, each touch within a second of the one
- * before (a second or more starts the count again).  The corners are the
- * glass's own, whichever way the screen is turned.  A window then asks:
+ * Press Home three times, each press within 0.8 s of the one before:
+ * p105-keys, which has the buttons, sends SIGUSR1 (or starts task-killer
+ * --show), and a window asks:
  *
  *   Continue      every process but the basic ones killed: the text console
  *                 (the glass shell and fbkeyboard), ssh, udev, touch, the
@@ -24,9 +23,11 @@
  * OVERLAY ioctl, as tools/screenpad does), which the kernel blends in as it
  * shows the screen again -- over labwc, X, or a program alone on KMS, hung
  * or not.  With nothing on KMS (the text console) it is drawn straight onto
- * /dev/fb0 and the screen put back after.  The touchscreen is read without a
- * grab while the window is closed, and grabbed while it is open, so that
- * what is under the window gets none of its touches.
+ * /dev/fb0 and the screen put back after.  The touchscreen is opened and
+ * grabbed only while the window is open, so that what is under the window
+ * gets none of its touches.  screenpad, which holds the touchscreen and the
+ * overlay while its controls show, is asked to set them aside meanwhile
+ * (SIGUSR1) and to bring them back after (SIGUSR2), unless it was killed.
  *
  * The turn: the kernel's plane rotation where X turned the screen through it,
  * otherwise /run/cascadia-rotation (rotate writes it: labwc turns the picture
@@ -85,9 +86,6 @@
 #define NSLOTS		10
 #define MAXPROC		512
 #define COUNTDOWN	5.0
-#define COMBO_GAP	1.0		/* seconds: this long or more between touches resets */
-#define CORNER_U	0.30		/* a corner: this much of the glass's width */
-#define CORNER_V	0.25		/* and of its height (a fingertip lands well inside) */
 
 static void logf_(const char *fmt, ...)
 {
@@ -944,17 +942,6 @@ static void to_canvas(float u, float v, float *x, float *y)
 	*y = Y * lh;
 }
 
-/* which corner of the glass, 1..4 (the picture's order), or 0 -- generous:
- * fingers aimed at a corner landed 10-18% in from the edges */
-static int corner(float u, float v)
-{
-	if (u < CORNER_U && v > 1 - CORNER_V) return 1;		/* bottom left */
-	if (u > 1 - CORNER_U && v < CORNER_V) return 2;		/* top right */
-	if (u < CORNER_U && v < CORNER_V) return 3;		/* top left */
-	if (u > 1 - CORNER_U && v > 1 - CORNER_V) return 4;	/* bottom right */
-	return 0;
-}
-
 /* ---- the window ---------------------------------------------------------- */
 
 enum { V_CLOSED, V_CONFIRM, V_MANUAL };
@@ -1202,10 +1189,75 @@ static void canvas_fit(void)
 	clip_all();
 }
 
+/* one finger works the window: where it went down, whether it scrolled */
+static struct { int slot; float x0, y0, x, y; double sc0; int scrolling; } T = { .slot = -1 };
+
+/* a signal to every process of this name; how many got it */
+static int signal_comm(const char *name, int sig)
+{
+	DIR *d = opendir("/proc");
+	struct dirent *e;
+	int n = 0;
+
+	while (d && (e = readdir(d))) {
+		struct pinfo pi;
+		pid_t pid;
+
+		if (!isdigit((unsigned char)e->d_name[0]))
+			continue;
+		pid = atoi(e->d_name);
+		if (!pinfo(pid, &pi) && !strcmp(pi.comm, name) && !kill(pid, sig))
+			n++;
+	}
+	if (d)
+		closedir(d);
+	return n;
+}
+
+static int screenpad_aside;	/* screenpad was asked to let go for the window */
+
+/* the touchscreen, opened and grabbed (screenpad may take a moment to let
+ * go of it) */
+static int touch_take(void)
+{
+	for (int i = 0; i < 20; i++) {
+		if (ts < 0)
+			ts_open();
+		if (ts >= 0) {
+			grab(1);
+			if (grabbed)
+				return 0;
+		}
+		usleep(50000);
+	}
+	return ts >= 0 ? 0 : -1;	/* not grabbed: shared, still usable */
+}
+
+static void touch_drop(void)
+{
+	grab(0);
+	if (ts >= 0)
+		close(ts);
+	ts = -1;
+	T.slot = -1;
+}
+
 static void open_window(void)
 {
 	if (view != V_CLOSED)
 		return;
+	if (signal_comm("screenpad", SIGUSR1)) {
+		screenpad_aside = 1;
+		usleep(200000);
+		logf_("screenpad set aside");
+	}
+	if (touch_take()) {
+		logf_("no touchscreen: no window");
+		if (screenpad_aside)
+			signal_comm("screenpad", SIGUSR2);
+		screenpad_aside = 0;
+		return;
+	}
 	screen_pick();
 	if (out == OUT_NONE) {
 		logf_("nowhere to draw the window");
@@ -1216,7 +1268,6 @@ static void open_window(void)
 	deadline = now() + COUNTDOWN;
 	view = V_CONFIRM;
 	pressed = B_NONE;
-	grab(1);
 	/* the fingers down now are not the window's */
 	for (int s = 0; s < NSLOTS; s++)
 		F[s].down = F[s].id >= 0;
@@ -1230,7 +1281,10 @@ static void close_window(void)
 		return;
 	view = V_CLOSED;
 	screen_release();
-	grab(0);
+	touch_drop();
+	if (screenpad_aside)
+		signal_comm("screenpad", SIGUSR2);	/* (if it is still there) */
+	screenpad_aside = 0;
 	logf_("window closed");
 }
 
@@ -1262,8 +1316,6 @@ static int hit(float x, float y)
 	return B_NONE;
 }
 
-/* one finger works the window: where it went down, whether it scrolled */
-static struct { int slot; float x0, y0, x, y; double sc0; int scrolling; } T = { .slot = -1 };
 
 static void tap(int b, float x, float y)
 {
@@ -1284,6 +1336,7 @@ static void tap(int b, float x, float y)
 	case B_CONTINUE:
 		if (remaining())
 			break;
+		screenpad_aside = 0;		/* it goes with the rest */
 		close_window();
 		kill_all();
 		break;
@@ -1317,31 +1370,6 @@ static void tap(int b, float x, float y)
 	}
 }
 
-/* combo: corners 1 2 3 4 1 2 3 4, each within COMBO_GAP of the last */
-static int combo;
-static double combo_t;
-
-static void combo_touch(float u, float v)
-{
-	int c = corner(u, v);
-	double t = now();
-
-	if (t - combo_t >= COMBO_GAP)
-		combo = 0;
-	combo_t = t;
-	if (c && c == combo % 4 + 1)
-		combo++;
-	else
-		combo = c == 1 ? 1 : 0;
-	if (debug)
-		logf_("  -> combo %d", combo);
-	if (combo == 8) {
-		combo = 0;
-		logf_("the corners: opening");
-		open_window();
-	}
-}
-
 static void touch_frame(void)
 {
 	for (int s = 0; s < NSLOTS; s++) {
@@ -1351,11 +1379,8 @@ static void touch_frame(void)
 		norm(f, &u, &v);
 		if (f->id >= 0 && (!f->down || f->id != f->last_id)) {	/* a new finger */
 			if (debug)
-				logf_("touch slot %d id %d at %.3f %.3f: corner %d, combo %d", s, f->id, u, v,
-				      corner(u, v), combo);
-			if (view == V_CLOSED) {
-				combo_touch(u, v);
-			} else if (T.slot < 0) {
+				logf_("touch slot %d id %d at %.3f %.3f", s, f->id, u, v);
+			if (view != V_CLOSED && T.slot < 0) {
 				to_canvas(u, v, &x, &y);
 				T.slot = s;
 				T.x0 = T.x = x;
@@ -1520,9 +1545,8 @@ int main(int argc, char **argv)
 	}
 	if (argc > 1 && !show_now) {
 		fprintf(stderr, "usage: task-killer [--show | --list]\n"
-			"  the corners bottom left, top right, top left, bottom right, twice,\n"
-			"  each within a second: the window that kills what will not let go.\n"
-			"  SIGUSR1 opens it too.\n");
+			"  Home pressed three times (p105-keys sends SIGUSR1): the window that\n"
+			"  kills what will not let go of the screen.\n");
 		return 2;
 	}
 	sigaction(SIGINT, &sa, NULL);
@@ -1535,12 +1559,7 @@ int main(int argc, char **argv)
 	have_b = font_load(&font_b, FONT_BOLD);
 	if (!have_r)
 		die("no font at %s (apk add font-dejavu)", FONT);
-	while (ts_open()) {		/* the touchscreen comes once z2-boot has it up */
-		if (quit)
-			return 0;
-		sleep(2);
-	}
-	logf_("waiting for the corners");
+	logf_("waiting: Home pressed three times opens the window");
 	if (show_now)
 		open_window();
 	while (!quit) {
@@ -1549,13 +1568,10 @@ int main(int argc, char **argv)
 
 		if (poll(&p, 1, timeout) < 0 && errno != EINTR)
 			break;
-		if (p.revents & (POLLERR | POLLHUP | POLLNVAL)) {
-			logf_("the touchscreen went away; looking again");
-			close(ts);
-			ts = -1;
+		if (ts >= 0 && p.revents & (POLLERR | POLLHUP | POLLNVAL)) {
+			logf_("the touchscreen went away");
 			grabbed = 0;
-			while (!quit && ts_open())
-				sleep(2);
+			close_window();
 			continue;
 		}
 		if (p.revents & POLLIN)
