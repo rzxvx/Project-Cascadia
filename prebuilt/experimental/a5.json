@@ -1,66 +1,66 @@
 {
- "version": "a5-2026.11.18.2037-482f799",
- "commit": "482f799",
+ "version": "a5-2026.11.19.1005-619afd6",
+ "commit": "619afd6",
  "files": [
   {
    "name": "NOTES.md",
-   "url": "https://github.com/rzxvx/Project-Cascadia/releases/download/a5-2026.11.18.2037-482f799/NOTES.md",
-   "size": 1341,
-   "sha256": "a0b7affbe664d945617f5bc39e81c440083b1c50e9934d5d9984fc500c6a75ab"
+   "url": "https://github.com/rzxvx/Project-Cascadia/releases/download/a5-2026.11.19.1005-619afd6/NOTES.md",
+   "size": 1346,
+   "sha256": "084d006e1ae19fea6eb3cd2fabb1d19171c42629fe7ef1aec149dbec2c3173d4"
   },
   {
    "name": "cascadia-hfs",
-   "url": "https://github.com/rzxvx/Project-Cascadia/releases/download/a5-2026.11.18.2037-482f799/cascadia-hfs",
+   "url": "https://github.com/rzxvx/Project-Cascadia/releases/download/a5-2026.11.19.1005-619afd6/cascadia-hfs",
    "size": 50880,
    "sha256": "1168652d424b93b0f21ff9608cebc118a481a77d79f1edaa3ccdd0fc1d2a3728"
   },
   {
    "name": "cascadia.deb",
-   "url": "https://github.com/rzxvx/Project-Cascadia/releases/download/a5-2026.11.18.2037-482f799/cascadia.deb",
-   "size": 135924,
-   "sha256": "28b01f812b8e6c9353b17b68356836467d909f1b5dc69968a623d8e3669b38b7"
+   "url": "https://github.com/rzxvx/Project-Cascadia/releases/download/a5-2026.11.19.1005-619afd6/cascadia.deb",
+   "size": 135922,
+   "sha256": "603b33034ac043b54f56ef70e0d4e0db9d443040091645d2c4e374a76c59eb27"
   },
   {
    "name": "desktop-root.tar.xz",
-   "url": "https://github.com/rzxvx/Project-Cascadia/releases/download/a5-2026.11.18.2037-482f799/desktop-root.tar.xz",
-   "size": 334714980,
-   "sha256": "70fac7405e703214084a785cee65a0f0167e33b3cd6ccb9f5bf89409bfdf10e6"
+   "url": "https://github.com/rzxvx/Project-Cascadia/releases/download/a5-2026.11.19.1005-619afd6/desktop-root.tar.xz",
+   "size": 334737164,
+   "sha256": "4b3934b2d2ebc7249615331b0a42c2cd7447f52e660c096d1ca394552e6df128"
   },
   {
    "name": "linux-boot.bin",
-   "url": "https://github.com/rzxvx/Project-Cascadia/releases/download/a5-2026.11.18.2037-482f799/linux-boot.bin",
+   "url": "https://github.com/rzxvx/Project-Cascadia/releases/download/a5-2026.11.19.1005-619afd6/linux-boot.bin",
    "size": 2080,
    "sha256": "9d7f6f829261171ab7a842ac28bf47dabcf9f30407a3d0aaef7607ccf349bc06"
   },
   {
    "name": "nand-linux-boot.bin",
-   "url": "https://github.com/rzxvx/Project-Cascadia/releases/download/a5-2026.11.18.2037-482f799/nand-linux-boot.bin",
+   "url": "https://github.com/rzxvx/Project-Cascadia/releases/download/a5-2026.11.19.1005-619afd6/nand-linux-boot.bin",
    "size": 2080,
    "sha256": "9d7f6f829261171ab7a842ac28bf47dabcf9f30407a3d0aaef7607ccf349bc06"
   },
   {
    "name": "nand-zImage-dtb",
-   "url": "https://github.com/rzxvx/Project-Cascadia/releases/download/a5-2026.11.18.2037-482f799/nand-zImage-dtb",
+   "url": "https://github.com/rzxvx/Project-Cascadia/releases/download/a5-2026.11.19.1005-619afd6/nand-zImage-dtb",
    "size": 28626195,
-   "sha256": "aead56cb704d34f597c8d6df0ca705feb5d762d67e1c046a3d0e94fce2473c57"
+   "sha256": "b885784cf80e7ef69fbed1a437576de5125198efa6f52dd9a6457fb1343d33bb"
   },
   {
    "name": "packages.txt",
-   "url": "https://github.com/rzxvx/Project-Cascadia/releases/download/a5-2026.11.18.2037-482f799/packages.txt",
+   "url": "https://github.com/rzxvx/Project-Cascadia/releases/download/a5-2026.11.19.1005-619afd6/packages.txt",
    "size": 5738,
-   "sha256": "889ca6649d3cb86c3aec8c8621190b9694a814b869eae1a09d92671535a798b7"
+   "sha256": "2948afd53b334122274893f253eb3d41632dfafe3cbfeb9c4d919c7db35eeb66"
   },
   {
    "name": "ppn_lwvmw.ko",
-   "url": "https://github.com/rzxvx/Project-Cascadia/releases/download/a5-2026.11.18.2037-482f799/ppn_lwvmw.ko",
+   "url": "https://github.com/rzxvx/Project-Cascadia/releases/download/a5-2026.11.19.1005-619afd6/ppn_lwvmw.ko",
    "size": 47352,
    "sha256": "a4cb3c9bea1842d69d5815e81dd317148bf9a3517c7bd37f0fc2fd75eecd58ab"
   },
   {
    "name": "zImage-dtb",
-   "url": "https://github.com/rzxvx/Project-Cascadia/releases/download/a5-2026.11.18.2037-482f799/zImage-dtb",
+   "url": "https://github.com/rzxvx/Project-Cascadia/releases/download/a5-2026.11.19.1005-619afd6/zImage-dtb",
    "size": 28625835,
-   "sha256": "d661003be963fe037bb99b9db6574b0b6efbb27fb8ed1bb3dcf1659b16feb582"
+   "sha256": "353e0b9c17a51c93d81158ede2c952326fca1dcf77b76618258935b69f0a02cc"
   }
  ]
 }
