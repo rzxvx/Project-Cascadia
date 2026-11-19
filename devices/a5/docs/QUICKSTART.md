@@ -78,7 +78,9 @@ The kernel, the desktop root and the iOS app come prebuilt (the release in
 being built -- minutes instead of hours --, and what is yours is added on this computer: the firmware and the
 GPU's pack from your IPSW, your ssh key, the iPad's host key.
 `INSTALL_FROM=source ./cascadia a5 install` builds everything instead (the
-newer release, when there is one: `CHANNEL=experimental`).
+newer release, when there is one: `CHANNEL=experimental`). With a kernel tree
+already here (`build/linux`, from building before) it asks which -- download
+(Enter) or build; `INSTALL_FROM=prebuilt` downloads without asking.
 It asks first where Linux should live: on the iPad's own flash (NAND, see
 [below](#linux-on-the-ipad-itself-nand); recommended) or on this computer
 (NFS). For NFS

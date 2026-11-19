@@ -379,12 +379,33 @@ cmd_install() {
 
     # Prebuilt when there is a release (prebuilt/<channel>/a5.json) and
     # nothing says otherwise: the kernel and the desktop root are downloaded,
-    # not built -- minutes instead of hours.  INSTALL_FROM=source builds them.
+    # not built -- minutes instead of hours.  INSTALL_FROM=source builds them,
+    # INSTALL_FROM=prebuilt downloads them.  A kernel tree here (build/linux:
+    # someone who builds) is asked about, the download the default -- Enter,
+    # or no terminal to ask on.
     local from=source m
     # NAND from a release needs one that carries the NAND pair and the tools
-    if [ "${INSTALL_FROM:-}" != source ] && m=$(a5_manifest) && [ ! -f "$ROOT/build/linux/Makefile" ] &&
+    if [ "${INSTALL_FROM:-}" != source ] && m=$(a5_manifest) &&
        { [ "$disk" != nand ] || grep -q '"name": "cascadia.deb"' "$m"; }; then
         from=prebuilt
+        if [ -f "$ROOT/build/linux/Makefile" ] && [ "${INSTALL_FROM:-}" != prebuilt ] && [ -t 0 ]; then
+            local a
+            echo
+            echo "    A kernel tree is here (build/linux).  The kernel and the desktop root can"
+            echo "    be downloaded, ready-made (minutes), or built from it and this repository"
+            echo "    (the desktop root up to two hours the first time)."
+            read -r -p "    download them, or build them? [D/b] " a || a=d
+            case "${a:-d}" in b|B|build|с|С|собрать) from=source ;; esac
+        fi
+    fi
+    # the choice holds for the steps below too: build takes the downloaded
+    # kernel even with a tree here, and the NFS and NAND roots come from the
+    # downloaded desktop root, not a build/desktop-root.tar left from before
+    if [ $from = prebuilt ]; then
+        export PREBUILT_KERNEL=1 DESKTOP_TAR="$PREBUILT/desktop-root.tar.xz"
+        note "the kernel and the desktop root: downloaded (INSTALL_FROM=source builds them)"
+    else
+        note "the kernel and the desktop root: built here (INSTALL_FROM=prebuilt downloads them)"
     fi
 
     if [ $from = prebuilt ]; then
@@ -444,6 +465,7 @@ cmd_install() {
 
     if [ "$disk" = nand ]; then
         local tar="$ROOT/build/desktop-root.tar" size
+        [ $from = prebuilt ] && tar="$PREBUILT/desktop-root.tar.xz"
         [ -f "$tar" ] || tar="$PREBUILT/desktop-root.tar.xz"
         [ -f "$tar" ] || fail "no desktop root to put on the NAND (step 6)"
 
