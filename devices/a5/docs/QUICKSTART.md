@@ -72,7 +72,7 @@ It goes through every step below in order, says what each does and how
 long it takes, and skips what is done already: stopped anywhere (a reboot,
 a failed download, Docker not running yet), run it again and it carries on.
 The kernel, the desktop root and the iOS app come prebuilt (the release in
-`prebuilt/stable/`, ~400 MB, from
+`prebuilt/stable/`, ~390 MB, from
 [Releases](https://github.com/rzxvx/Project-Cascadia/releases)) instead of
 being built -- minutes instead of hours --, and what is yours is added on this computer: the firmware and the
 GPU's pack from your IPSW, your ssh key, the iPad's host key.
@@ -153,7 +153,7 @@ IPSW, your ssh key, the iPad's host key, the NFS root's address --, which
 
 ```bash
 ./cascadia a5 setup         # this computer: what the rest needs
-./cascadia a5 get           # the prebuilt kernel and desktop root (~460 MB)
+./cascadia a5 get           # the prebuilt kernel and desktop root (~390 MB)
 ./cascadia a5 firmware      # Apple's files, from the IPSW (next section)
 ./cascadia a5 build         # the bundle: the kernel + your layer, in seconds
 ```
@@ -424,7 +424,9 @@ again from the current image).
   as it is. `rotate [normal|left|inverted|right]` turns it by hand.
 - **A way out.** Home pressed three times: the next section.
 - **Speed.** ~6 s from the boot's end to the panel (8 s with nothing cached),
-  92-106 MB of memory in use, SuperTux ~53 frames/s.
+  76-106 MB of memory in use, SuperTux ~53 frames/s. The display shows the
+  desktop's frames straight from the GPU's buffers, no copy, in step with
+  its refresh: labwc takes ~4% of the CPU with an animation running.
 
 ## A way out: task-killer
 
@@ -460,7 +462,7 @@ controls step aside while the window is open and come back after Cancel.
 fullscreen game included): buttons, d-pads and sticks, semi-transparent,
 from a preset you make on the iPad. It is in the desktop root (its GPU
 driver blends the controls into each frame). On the iPad, held landscape: **SuperTux (on-screen controls)** in the
-menu's Games, or from a terminal:
+apps' list, or from a terminal:
 
 ```sh
 screenpad supertux -- supertux2
@@ -474,30 +476,36 @@ finger that lands anywhere else is an ordinary touch. `screenpad gamepad`
 is an Xbox-style pad (a stick, a d-pad, ABXY, shoulders, Back and Start),
 which games see as a real one. `screenpad -l` lists the presets.
 
-**Your own presets:** **screenpad editor** in the menu (`screenpad-editor`).
-Add buttons, d-pads and sticks, drag them into place (the blue handle
-resizes), and choose each one's shape, label, colour, opacity and what it
-does: a key or a gamepad button. **▶ Try it** runs the preset over the
-screen with a Stop button above it; **Save** keeps it as `screenpad NAME`.
-A landscape preset shows only while the iPad is held landscape.
+**screenpad** in the apps' list (`screenpad-editor`) has two parts, a switch
+at the top between them.
 
-**Playing with your preset.** The editor makes and saves presets; it does
-not start games. A game gets a preset in one of two ways:
+**Launch** -- an app with a preset's controls: choose the app (the apps'
+list, as the desktop shows it) and the preset, then **▶ Launch**; the window
+goes and the app starts with the controls, which go with it. **Add to apps**
+leaves the pair in the apps' list as an entry of its own ("SuperTux 2
+(gamepad controls)"), and the list below, **In the apps' list**, has every
+such entry with **Remove** (the SuperTux one that came installed is hidden,
+not deleted). The last pair chosen is kept for next time.
 
-- **From the menu, SuperTux**: the menu entry runs the preset named
-  `supertux`. Save yours under the name **SuperTux**: your copy
-  (`~/.config/screenpad/supertux.json`) comes before the one that came with
-  screenpad, and the menu entry uses it from then on. Delete that file to
-  have the original back.
-- **Any preset, any game, from a terminal**: the preset's name (what Save
-  said: the name in lower case, spaces as `-`), then `--` and the game's
-  command, as in its menu entry:
+**Edit presets** -- your own controls: add buttons, d-pads and sticks, drag
+them into place (the blue handle resizes), and choose each one's shape,
+label, colour, opacity and what it does: a key or a gamepad button.
+**▶ Try it** runs the preset over the screen with a Stop button above it;
+**Save** keeps it as `screenpad NAME`. A landscape preset shows only while
+the iPad is held landscape. Saved under the name **SuperTux**, your copy
+(`~/.config/screenpad/supertux.json`) comes before the one that came with
+screenpad, and the SuperTux entry uses it; delete that file to have the
+original back.
 
-  ```sh
-  screenpad my-preset -- supertux2
-  ```
+From a terminal, any preset with any game: the preset's name, `--`, then
+the game's command:
 
-  The controls are there while the game runs and go with it.
+```sh
+screenpad my-preset -- supertux2
+```
+
+While task-killer's window is open (Home three times) the controls step
+aside, and come back after Cancel.
 
 ## The GPU demo
 
