@@ -343,7 +343,8 @@ duty-cycle values.
 - The panel is 264 pixels an inch: the node's `apple,pixel-pitch-um = <96>`
   makes KMS report 196 x 147 mm.
 
-**OpenGL.** Mesa's `apple_sgx` driver runs unchanged. It takes the core
+**OpenGL.** Mesa's `apple_sgx` driver runs as it is, but for its renderer
+name, which now follows the core count (`SGX543MP4`). It takes the core
 count and the screen size from the render node, and it builds its own
 render targets for any size. From the GPU pack it uses the template frame,
 not the pack's 768 x 1024 render-target set. The pack was built with

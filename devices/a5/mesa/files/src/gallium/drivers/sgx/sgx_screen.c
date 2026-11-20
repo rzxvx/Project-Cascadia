@@ -98,7 +98,9 @@ sgx_screen_destroy(struct pipe_screen *pscreen)
 static const char *
 sgx_get_name(struct pipe_screen *pscreen)
 {
-   return "PowerVR SGX543MP2";
+   /* the A5's MP2, the A5X's MP4: the cores the render node reports */
+   return sgx_screen(pscreen)->dev.num_cores == 4 ? "PowerVR SGX543MP4"
+                                                  : "PowerVR SGX543MP2";
 }
 
 static const char *
