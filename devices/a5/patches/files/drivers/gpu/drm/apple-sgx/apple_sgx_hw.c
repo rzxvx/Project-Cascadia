@@ -45,7 +45,9 @@
  * The microkernel is Apple's and Imagination's.  It is not in this tree: the
  * build takes it out of the user's own IPSW (scripts/extract-sgx-firmware.py)
  * into /lib/firmware/apple/sgx543.fw, and the offsets below are for that
- * exact 12H321 build, which the script checks by hash.
+ * exact 12H321 build, which the script checks by hash.  The iPad 3's 13G36
+ * kext has the same microkernel with its three tables in the other order;
+ * the script puts them back, so the file reads the same from either.
  */
 
 #include <linux/bits.h>
@@ -173,7 +175,7 @@
 /* ---- the firmware file (scripts/extract-sgx-firmware.py) --------------- */
 
 #define SGX_FW_NAME			"apple/sgx543.fw"
-#define SGX_FW_DATA_SIZE		0x16094		/* kext __DATA,__data */
+#define SGX_FW_DATA_USED		0x15fe8		/* kext __DATA,__data, to the tables' end */
 #define SGX_FW_CONST_SIZE		0x730		/* kext __TEXT,__const */
 
 struct sgx_fw_header {
@@ -182,7 +184,7 @@ struct sgx_fw_header {
 	__le32 data_off, data_size;
 	__le32 const_off, const_size;
 	__le32 data_va, const_va;
-	char build[16];			/* "12H321" */
+	char build[16];			/* "12H321" or "13G36" */
 };
 
 /* In __data: the microkernel, its boot program, and tables. */
@@ -819,12 +821,13 @@ static int sgx_boot_ukernel(struct apple_sgx *sgx)
 	h = (const void *)fw->data;
 	if (fw->size < sizeof(*h) || memcmp(h->magic, "SGX543FW", 8) ||
 	    le32_to_cpu(h->version) != 1 ||
-	    le32_to_cpu(h->data_size) != SGX_FW_DATA_SIZE ||
+	    le32_to_cpu(h->data_size) < SGX_FW_DATA_USED ||
 	    le32_to_cpu(h->const_size) != SGX_FW_CONST_SIZE ||
-	    le32_to_cpu(h->data_off) + SGX_FW_DATA_SIZE > fw->size ||
+	    le32_to_cpu(h->data_off) + SGX_FW_DATA_USED > fw->size ||
 	    le32_to_cpu(h->const_off) + SGX_FW_CONST_SIZE > fw->size ||
-	    strncmp(h->build, "12H321", sizeof(h->build))) {
-		dev_err(sgx->dev, "%s is not the 12H321 microkernel\n", SGX_FW_NAME);
+	    (strncmp(h->build, "12H321", sizeof(h->build)) &&
+	     strncmp(h->build, "13G36", sizeof(h->build)))) {
+		dev_err(sgx->dev, "%s is not the 12H321 or 13G36 microkernel\n", SGX_FW_NAME);
 		ret = -EINVAL;
 		goto out;
 	}
