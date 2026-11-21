@@ -978,11 +978,11 @@ static const struct s5l_variant s5l8945x_variant = {
 	.mclk_ops = &s5x_mclk_ops,
 	.formats = SNDRV_PCM_FMTBIT_S16_LE,
 	.dai_name = "s5l-i2s0",
-	.stream_name = "Speaker",
+	.stream_name = "CS42L63",
 	.codecs_prop = "apple,audio-codec",
 	.codec_dai = "cs42l63-asp",
 	.card_name = "iPad3",
-	.card_long_name = "iPad 3 speaker",
+	.card_long_name = "iPad 3 speaker, headphones and microphones",
 	/* the codec is the bit and frame clocks' consumer */
 	.dai_fmt = SND_SOC_DAIFMT_I2S | SND_SOC_DAIFMT_NB_NF | SND_SOC_DAIFMT_CBC_CFC,
 	.port_prepare = s5x_port_prepare,
