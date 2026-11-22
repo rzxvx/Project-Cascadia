@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # build-tools.sh - fetch and build the host side of the boot chain at the
-# pinned commits (sources.env): gaster (checkm8) and hBootPatcher.
-# Output: devices/a10/build/bin/{gaster,hBootPatcher}
+# pinned commits (sources.env): gaster (checkm8), hBootPatcher, and makez2fw
+# (the touch firmware converter).
+# Output: devices/a10/build/bin/{gaster,hBootPatcher,makez2fw}
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -36,4 +37,8 @@ fetch "$A10_HBOOTPATCHER_REPO" "$A10_HBOOTPATCHER_COMMIT" hBootPatcher
 "$MAKE" -s -C "$A10/build/src/hBootPatcher"
 cp "$A10/build/src/hBootPatcher/hBootPatcher" "$BIN/"
 
-echo "tools OK: $BIN/gaster $BIN/hBootPatcher"
+fetch "$A10_MAKEZ2FW_REPO" "$A10_MAKEZ2FW_COMMIT" makez2fw
+"$MAKE" -s -C "$A10/build/src/makez2fw/makez2fw" CFLAGS="-O2 -w" MXML_CFLAGS="-O2 -w"
+cp "$A10/build/src/makez2fw/makez2fw/makez2fw" "$BIN/"
+
+echo "tools OK: $BIN/gaster $BIN/hBootPatcher $BIN/makez2fw"

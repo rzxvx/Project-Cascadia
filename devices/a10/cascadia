@@ -11,7 +11,9 @@
 #   ./cascadia a10 build initramfs the USB-gadget initramfs (shell, ssh, network)
 #   ./cascadia a10 inputs          iPad in DFU: pwn it, fetch iBSS + DeviceTree
 #                                  from Apple, decrypt and patch them (once per board)
-#   ./cascadia a10 firmware        Apple's firmware for the drivers (SmartIO), from the CDN
+#   ./cascadia a10 syscfg          with Linux up: this iPad's SysCfg (calibration), read-only
+#   ./cascadia a10 firmware        Apple's firmware for the drivers (SmartIO; touch with the
+#                                  SysCfg), from the CDN
 #   ./cascadia a10 pack            wrap m1n1 and m1n1 + Linux into bootable IMG4s
 #   ./cascadia a10 boot            DFU → checkm8 → patched iBSS → m1n1 → Linux
 #                                  (USB: ssh root@172.16.43.1, serial /dev/cu.usbmodem*)
@@ -173,6 +175,27 @@ cmd_inputs() {
     note "the iPad stays in pwned DFU: ./cascadia a10 boot proxy"
 }
 
+# ---------- syscfg -----------------------------------------------------------
+
+# this iPad's SysCfg (calibrations, MAC addresses, serials) from the running
+# Linux, read-only: NVMe namespace 3, 128 KiB. It stays in build/private.
+cmd_syscfg() {
+    local out="$B/private/syscfg.bin" host=root@172.16.43.1
+    mkdir -p "$B/private"; chmod 700 "$B/private"
+    say "SysCfg from $host (/dev/nvme0n3, read-only)"
+    ssh -o ConnectTimeout=8 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+        -o LogLevel=ERROR "$host" \
+        'test "$(cat /sys/block/nvme0n3/ro)" = 1 &&
+         test "$(blockdev --getsize64 /dev/nvme0n3)" = 131072 &&
+         dd if=/dev/nvme0n3 bs=131072 count=1 2>/dev/null' > "$out.tmp" \
+        || { rm -f "$out.tmp"; fail "could not read SysCfg -- is Linux up on the iPad?"; }
+    [ "$(wc -c < "$out.tmp" | tr -d ' ')" = 131072 ] && [ "$(head -c 4 "$out.tmp")" = gfCS ] \
+        || { rm -f "$out.tmp"; fail "that is not a SysCfg (size / magic)"; }
+    mv "$out.tmp" "$out"; chmod 600 "$out"
+    say "wrote ${out#$A10/} -- private: never commit or share it"
+    note "next: ./cascadia a10 firmware && ./cascadia a10 pack"
+}
+
 # ---------- pack -------------------------------------------------------------
 
 cmd_pack() {
@@ -265,6 +288,7 @@ case "$cmd" in
     build)  cmd_build "$@" ;;
     inputs) cmd_inputs ;;
     firmware) bash tools/firmware.sh ;;
+    syscfg) cmd_syscfg ;;
     pack)   cmd_pack ;;
     boot)   cmd_boot "$@" ;;
     ''|-h|--help|help) awk 'NR>1 && /^#/ {sub(/^# ?/, ""); print; next} NR>1 {exit}' "$A10/cascadia" ;;

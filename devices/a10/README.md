@@ -9,9 +9,9 @@ Linux on the 7th-generation iPad: **iPad7,11** (Wi-Fi, J171AP) and
 > hands over to Linux 7.2; the kernel runs on both cores with 3 GB, the
 > screen (simpledrm + fbcon), the USB gadget (serial + network + SSH at
 > 172.16.43.1), the internal NVMe (32 GB, all namespaces read-only), the
-> battery and charging status, SmartIO. Not yet: touch (needs the Z2
-> firmware built with this iPad's SysCfg), Wi-Fi / Bluetooth firmware, the
-> USB power source (`power_supply usb`: I2C NACK on J171). Photos:
+> battery and charging status, SmartIO, multi-touch (the Z2 firmware built
+> with this iPad's SysCfg calibration). Not yet: Wi-Fi / Bluetooth
+> firmware, the USB power source (`power_supply usb`: I2C NACK on J171). Photos:
 > [gallery/](../../gallery/README.md#ipad-7-a10).
 
 ## How it boots
@@ -45,8 +45,11 @@ Pinned in [sources.env](sources.env):
   drivers expect from the loader; `0010` adds the J171's HMB size.
 - **Kernel patches**: `kernel/patches/0001` fixes a NULL dereference in the
   H9P PCIe driver's probe error path.
-- **Firmware**: `./cascadia a10 firmware` cuts the SmartIO firmware out of
-  iPadOS 18.7.9's kernelcache (checked by SHA-256).
+- **Firmware**: `./cascadia a10 firmware` takes Apple's files from iPadOS
+  18.7.9 (checked by SHA-256): the SmartIO firmware out of the kernelcache,
+  and the touch controller's firmware (`J171_Multitouch.im4p`, the same
+  image as the J172's), which Paul Praschl's makez2fw combines with this
+  iPad's calibration from its SysCfg.
 
 ## Using it
 
@@ -56,20 +59,26 @@ Pinned in [sources.env](sources.env):
 # iPad in DFU, connected:
 ./cascadia a10 inputs           # once per board: iBSS + DeviceTree, decrypted and patched
 ./cascadia a10 firmware         # SmartIO firmware from Apple's CDN
+# once, with Linux up: this iPad's SysCfg (read-only), then touch firmware
+./cascadia a10 syscfg && ./cascadia a10 firmware
 ./cascadia a10 pack
 ./cascadia a10 boot             # Linux: ssh root@172.16.43.1, serial /dev/cu.usbmodemiPad7_linux1
 ./cascadia a10 boot proxy       # or m1n1's proxy, for m1n1's proxyclient
 ```
 
-`inputs` downloads only the few files it needs from Apple's CDN (a partial
-IPSW read). Nothing is written to the iPad's storage.
+`inputs` and `firmware` download only the few files they need from Apple's
+CDN (partial IPSW reads). Nothing is written to the iPad's storage.
+`build/private/syscfg.bin` and the touch firmware made from it carry this
+iPad's serials and calibration: they stay in `build/`, out of git.
 
 ## Plan
 
 1. ~~m1n1 proxy on the iPad 7~~ ✓
 2. ~~Linux over USB~~ ✓ (shell over USB serial, network, SSH; the kernel
    log also on the DCSD UART, 115200)
-3. The A13 track's Alpine root + XFCE: touch, Wi-Fi, Bluetooth, battery.
+3. An Alpine root with a Wayland desktop, labwc, as on the iPad mini 1
+   (not XFCE on X11): touch, the on-screen keyboard, Wi-Fi, Bluetooth,
+   battery. Rendered by pixman on the CPU until the GPU works.
 4. What the kernel source does not have yet: speakers, auto-rotation
    (accelerometer), J171 (Wi-Fi model) checks where only J172 was tested.
 5. The GPU (PowerVR-derived, Apple firmware on an RTKit coprocessor).
