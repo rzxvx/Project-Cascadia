@@ -13,7 +13,8 @@ Linux on the 7th-generation iPad: **iPad7,11** (Wi-Fi, J171AP) and
 > battery and charging status, SmartIO, multi-touch (the Z2 firmware built
 > with this iPad's SysCfg calibration), the on-screen keyboard (fbkeyboard,
 > typing into the shell on the screen), Alpine 3.24 run from RAM with apk
-> reaching the internet through the Mac. Not yet: Wi-Fi / Bluetooth
+> reaching the internet through the Mac, a 10 GB Linux partition next to
+> iPadOS (APFS shrunk by iPadOS itself, `./cascadia a10 storage`). Not yet: Wi-Fi / Bluetooth
 > firmware, the USB power source (`power_supply usb`: I2C NACK on J171). Photos:
 > [gallery/](../../gallery/README.md#ipad-7-a10).
 
@@ -73,6 +74,25 @@ Pinned in [sources.env](sources.env):
 ./cascadia a10 boot proxy       # or m1n1's proxy, for m1n1's proxyclient
 ./cascadia a10 net on           # then: the Mac's internet for apk on the iPad (sudo, pf NAT)
 ```
+
+### Storage of its own
+
+The internal NVMe is iPadOS's: one APFS container fills it. To give Linux a
+partition, iPadOS shrinks its own container (Apple's APFS, live, with its
+keys) and `cascadia-storage` adds a GPT entry after it. **Required from you:
+the iPad booted into a jailbroken iPadOS (palera1n, Dopamine, ...) with
+OpenSSH, and a backup.** Cascadia does not jailbreak it.
+
+```bash
+./cascadia a10 storage inspect   # read-only: GPT, APFS, the smallest size APFS can shrink to
+./cascadia a10 storage linux     # Linux size in GB (Enter = 10, at most 14 recommended)
+```
+
+`storage linux` shows the plan, asks for your backup and a typed `RESIZE`,
+then shrinks APFS (`APFSContainerResize`, the call OrchardLinux's
+resize-apfs found), writes the GPT (backup copy first, then the primary)
+and reads everything back. The Linux partition is left unformatted.
+Reboot iPadOS afterwards.
 
 `inputs` and `firmware` download only the few files they need from Apple's
 CDN (partial IPSW reads). Nothing is written to the iPad's storage.
