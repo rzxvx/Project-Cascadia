@@ -7,9 +7,7 @@ starts from an app on the home screen, no computer needed.
 
 ![Discord](https://img.shields.io/discord/1564063823336579072?logo=discord)
 
-![iPhone 11](imgs/i11xfcechromium.png)
-![iPhone XR running Debian XFCE from a Kali NetHunter NFS host](imgs/iphone-xr-debian-nethunter.png)
-![Boot](imgs/dualcoreboot.png)
+Photos and screenshots of every device: [gallery/](gallery/README.md).
 
 ## Devices
 
@@ -70,7 +68,7 @@ devices/a12/    the A12 tree (iPhone XR, XS Max, iPad 8 Wi-Fi): shared
                 kernel, board-specific boot/DT/firmware, NFS roots, G11 GPU
 devices/a13/    the A13 tree (iPhone 11): m1n1 and kernel patches, boot,
                 initramfs, Alpine root, tools, docs, research
-imgs/           pictures for the READMEs
+gallery/        photos and screenshots, by device
 ```
 
 Each device's directory is self-contained, with its own README, quickstart,
@@ -127,10 +125,6 @@ In no particular order:
 - iPad mini 5 — A12 (requires additional hardware for booting)
 - iPad 5 — A9
 - iPad 9 - A13 (same T8030 as the iPhone 11; notes in `devices/a13/docs/ipad9/`)
-
-![FastFetch written using screen keyboard](imgs/IMG_1196.jpg)
-
-![The iPad mini's desktop: labwc, the apps' list open](imgs/labwc-desktop.png)
 
 ## Support the Research
 

@@ -16,7 +16,7 @@ repository's top as `./cascadia a5 …`.
 > its root on the iPad's NAND beside iOS,
 > started from an iOS app.
 
-![Boot](../../imgs/dualcoreboot.png)
+Photos: [gallery/](../../gallery/README.md#ipad-mini-1-a5).
 
 ## What is this?
 
@@ -885,9 +885,6 @@ Build products (`output/`) and stock firmware are not tracked; everything in
 The iPhone 11 and the devices planned next: the
 [project README](../../README.md#roadmap).
 
-![FastFetch written using screen keyboard](../../imgs/IMG_1196.jpg)
-
-![The desktop on the iPad: labwc, the apps' list open](../../imgs/labwc-desktop.png)
 
 ## Credits, support, license
 
