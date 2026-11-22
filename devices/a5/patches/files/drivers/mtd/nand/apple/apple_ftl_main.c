@@ -374,6 +374,18 @@ static int ftl_do_mount(void)
 		pr_err("apple_ftl: controller is not bound\n");
 		return -ENODEV;
 	}
+	{
+		struct apple_ppn_geo geo;
+
+		apple_ppn_geometry(ppn, &geo);
+		if (geo.blocks != SFTL_BLOCKS || geo.mlc_pages != SFTL_MLC_PAGES ||
+		    geo.slc_pages != SFTL_SLC_PAGES) {
+			pr_err("apple_ftl: package is %u blocks x %u pages, this FTL is built for %u x %u: not mounting\n",
+			       geo.blocks, geo.mlc_pages, SFTL_BLOCKS, SFTL_MLC_PAGES);
+			apple_ppn_put(ppn);
+			return -ENODEV;
+		}
+	}
 	in = kzalloc(sizeof(*in), GFP_KERNEL);
 	if (!in) {
 		apple_ppn_put(ppn);

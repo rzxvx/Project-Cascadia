@@ -24,8 +24,8 @@
 #define RAW_PAGE	16448u
 #define DATA_PAGE	16384u
 #define META_PAGE	64u
-#define PAGES		256u
-#define BLOCKS		1064u
+/* the package's geometry, read from apple_ppn at load */
+static unsigned int PAGES = 256, BLOCKS = 1064;
 #define ST_FAILED_READ	0xee	/* status byte written when the read itself failed */
 
 static struct apple_ppn *ppn;
@@ -169,6 +169,15 @@ static int __init dump_init(void)
 	ppn = apple_ppn_get();
 	if (!ppn)
 		return -ENODEV;
+	{
+		struct apple_ppn_geo geo;
+
+		apple_ppn_geometry(ppn, &geo);
+		PAGES = geo.mlc_pages;
+		BLOCKS = geo.blocks;
+		pr_info("ppndump: package %s, %u blocks x %u pages per CAU\n",
+			geo.firmware, BLOCKS, PAGES);
+	}
 	raw = kmalloc(RAW_PAGE, GFP_KERNEL);
 	data = kmalloc(DATA_PAGE, GFP_KERNEL);
 	meta = kmalloc(META_PAGE, GFP_KERNEL);

@@ -106,7 +106,6 @@
 #define FEAT_BAD_BLOCK		0x84
 #define FEAT_POWER_STATE	0x0180
 #define POWER_STATE_ASYNC	2
-#define BAD_BLOCK_BYTES		133u
 
 #define NBUS			2
 #define NCAU			2
@@ -185,7 +184,15 @@ struct apple_ppn {
 	struct ppn_bus bus[NBUS];
 	struct mutex lock;
 	bool gone;
+	struct apple_ppn_geo geo;	/* from the device parameters at bring-up */
 };
+
+/*
+ * Packages other than the reference one (040472P_HYNIX_B_, 1064 x 256) are
+ * probed read-only: the row layout follows their device parameters, but
+ * nothing may program or erase them, and the FTL refuses to mount them.
+ */
+#define BBT_MAX_BYTES		512u
 
 static struct apple_ppn *ppn_singleton;
 static DEFINE_MUTEX(ppn_global_lock);
@@ -498,9 +505,19 @@ static int tx_page(const struct ppn_bus *b, const u8 *data, const u8 *meta)
 }
 #endif
 
-static u32 make_row(unsigned int cau, unsigned int block, unsigned int page, bool slc)
+/*
+ * The row as iBEC builds it: page, then block, then CAU, then the SLC bit,
+ * each field as wide as the device parameters say.  On the reference package
+ * (8 + 11 + 4 bits) this is page | block << 8 | cau << 19 | slc << 23.
+ */
+static u32 make_row(const struct apple_ppn *p, unsigned int cau, unsigned int block,
+		    unsigned int page, bool slc)
 {
-	return page | block << 8 | cau << 19 | (slc ? BIT(23) : 0);
+	const struct apple_ppn_geo *g = &p->geo;
+	unsigned int cau_shift = g->page_bits + g->block_bits;
+
+	return page | block << g->page_bits | cau << cau_shift |
+	       (slc ? BIT(cau_shift + g->cau_bits) : 0);
 }
 
 static int nand_reset(const struct ppn_bus *b)
@@ -636,15 +653,36 @@ static int read_params(const struct ppn_bus *b, u8 *buf)
 
 static int check_params(struct apple_ppn *p, const u8 *buf)
 {
+	struct apple_ppn_geo *g = &p->geo;
+
 	if (memcmp(buf, "PPN Device Info", 15) ||
 	    get_unaligned_le32(buf + 0x10) != NCAU ||
-	    get_unaligned_le32(buf + 0x18) != SFTL_BLOCKS ||
-	    get_unaligned_le32(buf + 0x20) != SFTL_MLC_PAGES ||
-	    get_unaligned_le32(buf + 0x24) != SFTL_SLC_PAGES ||
 	    get_unaligned_le32(buf + 0x34) != SFTL_PAGE_SIZE + SFTL_META_PAGE) {
 		dev_err(p->dev, "unexpected device parameters: %*ph\n", 64, buf);
 		return -ENODEV;
 	}
+	g->blocks = get_unaligned_le32(buf + 0x18);
+	g->mlc_pages = get_unaligned_le32(buf + 0x20);
+	g->slc_pages = get_unaligned_le32(buf + 0x24);
+	g->cau_bits = get_unaligned_le32(buf + 0x14);
+	g->block_bits = get_unaligned_le32(buf + 0x1c);
+	g->page_bits = get_unaligned_le32(buf + 0x28);
+	/* sane field widths: the row, SLC bit included, fits in 32 bits */
+	if (!g->blocks || !g->mlc_pages || !g->slc_pages ||
+	    g->blocks > BIT(g->block_bits) || g->mlc_pages > BIT(g->page_bits) ||
+	    NCAU > BIT(g->cau_bits) ||
+	    g->page_bits + g->block_bits + g->cau_bits >= 32 ||
+	    DIV_ROUND_UP(g->blocks, 8) > BBT_MAX_BYTES) {
+		dev_err(p->dev, "device parameters out of range: %*ph\n", 64, buf);
+		return -ENODEV;
+	}
+	g->reference = g->blocks == SFTL_BLOCKS && g->mlc_pages == SFTL_MLC_PAGES &&
+		       g->slc_pages == SFTL_SLC_PAGES && g->page_bits == 8 &&
+		       g->block_bits == 11 && g->cau_bits == 4;
+	if (!g->reference)
+		dev_warn(p->dev, "package geometry %u blocks x %u pages (SLC %u), row bits page %u block %u cau %u: not the reference package, read-only\n",
+			 g->blocks, g->mlc_pages, g->slc_pages, g->page_bits,
+			 g->block_bits, g->cau_bits);
 	return 0;
 }
 
@@ -656,7 +694,8 @@ static int check_params(struct apple_ppn *p, const u8 *buf)
 static int ppn_bringup(struct apple_ppn *p)
 {
 	u8 *buf;
-	u8 fw[16], bbt[BAD_BLOCK_BYTES], id[8];
+	u8 fw[16], id[8];
+	unsigned int bbt_bytes;
 	unsigned int n, c;
 	int ret;
 
@@ -714,16 +753,23 @@ static int ppn_bringup(struct apple_ppn *p)
 	ret = get_feature(&p->bus[0], FEAT_FIRMWARE, fw, sizeof(fw));
 	if (ret)
 		goto out;
-	if (memcmp(fw, "040472P_HYNIX_B_", 16)) {
-		dev_err(p->dev, "firmware %*ph not tested, refusing\n", 16, fw);
+	memcpy(p->geo.firmware, fw, 16);
+	p->geo.firmware[16] = 0;
+	if (memcmp(fw, "040472P_HYNIX_B_", 16))
+		p->geo.reference = false;
+	if (!p->geo.reference && allow_write) {
+		dev_err(p->dev, "package %16pE is not the tested one: refusing allow_write\n", fw);
 		ret = -ENODEV;
 		goto out;
 	}
+	if (!p->geo.reference)
+		dev_warn(p->dev, "package firmware %16pE: untested, read-only\n", fw);
 
 	/* The bad-block tables are not used, but are always read here. */
+	bbt_bytes = DIV_ROUND_UP(p->geo.blocks, 8);
 	for (n = 0; n < NBUS; n++) {
 		for (c = 0; c < NCAU; c++) {
-			ret = get_feature(&p->bus[n], FEAT_BAD_BLOCK | c << 8, bbt, sizeof(bbt));
+			ret = get_feature(&p->bus[n], FEAT_BAD_BLOCK | c << 8, buf, bbt_bytes);
 			if (ret) {
 				dev_err(p->dev, "bus %u cau %u: bad-block table: %d\n", n, c, ret);
 				goto out;
@@ -745,7 +791,7 @@ static int read_page_once(struct apple_ppn *p, unsigned int bank, unsigned int b
 	bus_soft_reset(b);
 	ce_select(b);
 	clear_events(b);
-	ret = cmd_read_full(b, make_row(bank >> 1, block, page, slc));
+	ret = cmd_read_full(b, make_row(p, bank >> 1, block, page, slc));
 	if (!ret)
 		ret = op_status(b, &st);
 	if (ret)
@@ -818,7 +864,7 @@ int apple_ppn_erase(struct apple_ppn *p, unsigned int bank, unsigned int block)
 	u8 st;
 	int ret;
 
-	if (!allow_write)
+	if (!allow_write || !p->geo.reference)
 		return -EPERM;
 	if (inject_erase_now()) {
 		dev_warn(p->dev, "erase bank %u block %u: injected failure\n", bank, block);
@@ -833,7 +879,7 @@ int apple_ppn_erase(struct apple_ppn *p, unsigned int bank, unsigned int block)
 	ce_select(b);
 	clear_events(b);
 	ret = cmd_addr_cmd(b, OP_ERASE, OP_ERASE_CONFIRM,
-			   make_row(bank >> 1, block, 0, false), ROW_ADDR_BYTES);
+			   make_row(p, bank >> 1, block, 0, false), ROW_ADDR_BYTES);
 	if (!ret)
 		ret = cmd_only(b, OP_STATUS_WAIT);
 	if (!ret)
@@ -862,7 +908,7 @@ static int program_start(const struct ppn_bus *b, const struct sftl_prog *pg)
 	bus_soft_reset(b);
 	ce_select(b);
 	clear_events(b);
-	ret = cmd_addr(b, OP_PROGRAM, make_row(pg->bank >> 1, pg->block, pg->page, pg->slc),
+	ret = cmd_addr(b, OP_PROGRAM, make_row(p, pg->bank >> 1, pg->block, pg->page, pg->slc),
 		       ROW_ADDR_BYTES);
 	if (ret)
 		return ret;
@@ -890,7 +936,7 @@ int apple_ppn_program(struct apple_ppn *p, const struct sftl_prog *pages, unsign
 	ktime_t started[NBUS] = { 0, 0 };
 	int ret = 0;
 
-	if (!allow_write)
+	if (!allow_write || !p->geo.reference)
 		return -EPERM;
 	for (i = 0; i < n; i++)
 		count[pages[i].bank & 1]++;
@@ -988,9 +1034,15 @@ EXPORT_SYMBOL_GPL(apple_ppn_program);
 
 bool apple_ppn_write_allowed(struct apple_ppn *p)
 {
-	return allow_write;
+	return allow_write && p->geo.reference;
 }
 EXPORT_SYMBOL_GPL(apple_ppn_write_allowed);
+
+void apple_ppn_geometry(struct apple_ppn *p, struct apple_ppn_geo *geo)
+{
+	*geo = p->geo;
+}
+EXPORT_SYMBOL_GPL(apple_ppn_geometry);
 
 struct apple_ppn *apple_ppn_get(void)
 {
