@@ -313,10 +313,12 @@
 		};
 
 		/*
-		 * The speaker (sound/soc/apple/s5l-audio.c; docs/research/
+		 * The audio port (sound/soc/apple/s5l-audio.c; docs/research/
 		 * j1-a5x.md): I2S0 sends the samples as clock master, 2 x 16
 		 * bits; CDMA channel 0x1f, request 1 (the ADT's i2s0
-		 * dma-channels) feeds its FIFO at +0x10; NCO 0 (PMGR + 0x130,
+		 * dma-channels, TX) feeds its FIFO at +0x10, and channel 0x20,
+		 * request 0 (RX) drains the RX FIFO at +0x38, the same
+		 * entries as the iPad 2's; NCO 0 (PMGR + 0x130,
 		 * 342 MHz reference) is its bit clock; the i2s-switch puts it
 		 * and its MCK on pin group 0 (pads 115-118), to the codec.
 		 * This node is the codec's MCLK.
@@ -332,6 +334,7 @@
 			#clock-cells = <0>;
 			#sound-dai-cells = <0>;
 			apple,dma-channel = <0x1f 0x1>;
+			apple,capture-dma-channel = <0x20 0x0>;
 			apple,nco-reference-hz = <342000000>;
 			apple,audio-codec = <&codec>;
 		};
@@ -371,6 +374,10 @@
 				reg = <0x3c>;
 				/* its output GPIOs, 0x64 + n: Bluetooth's reset is 2 */
 				gpio-controller;
+				/* GPIO 13 (0x71), the codec's reset: iOS 9.3.5's
+				 * iBoot leaves it an input (0xc8), iOS drives it as
+				 * 0x0a, an output (0x08 | level). */
+				apple,gpio-output-config = <13 0x08>;
 				#gpio-cells = <2>;
 				#address-cells = <1>;
 				#size-cells = <0>;
@@ -435,8 +442,11 @@
 			 * speaker amplifier, whose enable is the ADT's
 			 * function-spkr_mute, GPIO 0x903 = 75: the ADT calls it a
 			 * mute, but measured, high = amplifier on (a tone plays
-			 * only with 75 high). The codec's reset (PMU GPIO 13) is
-			 * left as iBoot leaves it, deasserted.
+			 * only with 75 high). Its reset is the ADT's
+			 * function-reset, PMU GPIO 13, active low, pulsed at the
+			 * cold power-up as iOS does. The built-in mic is on
+			 * digital mic input B (the ADT's dmicb-intmic), as on
+			 * the iPad 2.
 			 */
 			codec: audio-codec@4a {
 				compatible = "cirrus,cs42l63";
@@ -444,7 +454,18 @@
 				clocks = <&audio>;
 				clock-names = "mclk";
 				speaker-amp-gpios = <&gpio 75 0>;
+				reset-gpios = <&pmu 13 1>;
+				headset-switch = <&headset_switch>;
+				apple,internal-mic;
 				#sound-dai-cells = <0>;
+			};
+
+			/* ADT /arm-io/i2c0/headset_switch, headset-switch,ts3a8235:
+			 * the switch between the jack's contacts and the codec, as
+			 * on the iPad 2. No driver of its own: the codec sets it. */
+			headset_switch: headset-switch@3b {
+				compatible = "ti,ts3a8235";
+				reg = <0x3b>;
 			};
 		};
 

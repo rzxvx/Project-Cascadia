@@ -3,10 +3,10 @@
 The iPad 3 Wi-Fi (iPad3,1, board J1AP, S5L8945X) runs Linux 6.12 from RAM
 with this repository's drivers: the gadget console and network over the
 30-pin cable, SSH, the framebuffer iBoot left, multi-touch, Wi-Fi,
-Bluetooth and the speaker. iOS 9.3.5 stays on the NAND and is what starts
-it. `dts/j1ap.dts` is the tree it boots with. This is what differs from
-the mini and what was measured on one iPad; issue #22 asked about this
-machine.
+Bluetooth, the speaker and the built-in microphone. iOS 9.3.5 stays on the
+NAND and is what starts it. `dts/j1ap.dts` is the tree it boots with.
+This is what differs from the mini and what was measured on one iPad;
+issue #22 asked about this machine.
 
 ## What carries over unchanged
 
@@ -244,11 +244,13 @@ and a 12 s passive LE scan heard 251 reports from 12 advertisers.
 
 ## Audio
 
-The speaker plays: I2S0 sends 16-bit stereo to a Cirrus CS42L63 codec on
-I2C0 (`0x4a`), and the codec's line out 2 drives the speaker through an
-external amplifier. `s5l-audio.c` has an S5L8945X variant for the SoC side;
-`cs42l63.c` is new. Headphones, microphones and headset detection are not
-done.
+The speaker plays and the built-in microphone records: I2S0 carries 16-bit
+stereo to and from a Cirrus CS42L63 codec on I2C0 (`0x4a`), and the codec's
+line out 2 drives the speaker through an external amplifier. `s5l-audio.c`
+has an S5L8945X variant for the SoC side. `cs42l63.c` is the iPad 2's
+driver too (#40): iOS 9.3.5's writes on the J1 are the same as iOS 8.4.1's
+on the K93 wherever both boards use them, capture included, so the tree
+alone says what the J1 has.
 
 The SoC side is not the mini's. The mini sends audio through the MCA; here
 it goes through the older I2S0 block at `0x34190000`, fed by CDMA channel
@@ -272,14 +274,19 @@ the codec has MCLK. If the port stops instead (TXCOM 0), the bit and frame
 clocks stop under the codec, and you hear a tick at the end of each stream.
 A stream that starts within the codec's power-down delay finds the port
 running and leaves it as it is. Only a change of rate configures it again.
+With the headset switch in the tree the codec stays powered, so it always
+has MCLK and the port's clocks run as long as Linux does.
 
 The CS42L63 is Apple's part and has no public datasheet. Its ID registers
 read `42 a6 3x` (revision `b0` on this iPad). Its volume coding and rate
 codes are the CS42L73's; its register map is not. The driver writes the
-register sequences that iOS 9.3.5's codec driver writes: power-up,
-power-down, and speaker on/off. They were recorded by running that driver
-in an emulator, then played back by hand on the device. The meaning of most
-registers is not known.
+register sequences that iOS's codec driver writes, recorded by running it
+in an emulator: iOS 8.4.1's on the iPad 2, which are the same writes as
+iOS 9.3.5's here wherever both boards use them (power-up, power-down, the
+speaker, the headphones and the mics), but for two registers in the
+headset block's power-down: 9.3.5 updates `0x79` (mask `0xe0`) and `0x7a`
+(mask `0xfb`) where 8.4.1 writes them whole. The J1's were first played
+back by hand on the device. The meaning of most registers is not known.
 
 - Power-up and power-down set bit 7 of `0x62` when they finish (it clears
   when read). Power-up does not finish without MCLK.
@@ -291,8 +298,32 @@ registers is not known.
   active-low mute, but the tone is heard only with 75 high. The driver
   turns it on after the path is up and off before the path goes down.
 
-Tested: 1 kHz sines at 44.1 and 48 kHz, at volumes −32 to −8 dB, through
-ALSA. There were no underruns, and the end of a stream does not tick.
+Tested with the J1's first driver (before #40): 1 kHz sines at 44.1 and
+48 kHz, at volumes −32 to −8 dB, through ALSA. There were no underruns,
+and the end of a stream does not tick. With #40's driver and no headset
+switch in the tree: a 1 kHz sine at 48 kHz and −32 dB, heard, again ten
+minutes later after the codec had powered down, with no underruns.
+
+The rest of the codec is described as on the iPad 2:
+
+- `reset-gpios`: the ADT's `function-reset`, PMU GPIO 13, active low. iOS
+  9.3.5's iBoot leaves it an input (`0xc8` in `0x71`, the D1974's
+  `0x64 + 13`); iOS drives it as `0x0a`. `apple,gpio-output-config =
+  <13 0x08>` on the PMU lets Linux make it an output, and after the cold
+  power-up `0x71` reads `0x0a`, as under iOS.
+- `headset-switch`: the TS3A8235 at `0x3b` on I2C0, between the jack's
+  contacts and the codec. With it the codec stays powered, as iOS keeps it,
+  to watch the jack, and "Master Playback Volume" becomes the volume.
+- `apple,internal-mic`: the built-in mic is on digital mic input B (the
+  ADT's `dmicb-intmic`; it also has `mic2-extmic`).
+- `apple,capture-dma-channel = <0x20 0>`: the ADT's `i2s0` RX entry,
+  channel `0x20`, request 0, out of the RX FIFO at I2S0 + `0x38`, the same
+  as the iPad 2's.
+
+Tested: a 10 s recording from the built-in mic at 48 kHz, with no
+overruns: the room at −26 to −45 dBFS peak, claps at up to 0 dBFS. With the
+headset switch, a 1 kHz tone at "Speaker Playback Volume" 62 and "Master
+Playback Volume" 37 (about −26 dB) plays on the speaker.
 
 ## NAND
 
@@ -307,4 +338,6 @@ page reads return status `0x40` and repeat byte for byte.
 - The GPU and a display driver: the panel is eDP (`edp@9500000`) fed by
   CLCD through a highland-park scaler at `0x0b020000`, not MIPI-DSI.
 - A charger driver (the input limit above is set by hand), NAND writes.
-- Headphones, the microphones and headset detection.
+- Headphones, headset detection with a plug in and a headset's mic: in the
+  tree and the driver, not tried (no headphones here). With nothing plugged
+  in, the codec's Mikey `0x77` reads bit 7 clear.
