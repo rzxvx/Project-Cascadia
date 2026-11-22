@@ -4,7 +4,7 @@ Linux on the 7th-generation iPad: **iPad7,11** (Wi-Fi, J171AP) and
 **iPad7,12** (Cellular, J172AP), Apple A10 Fusion (T8010). Not the iPad 8
 (J171aAP, A12): that one is in [devices/a12](../a12/README.md).
 
-> **Status: bring-up, Alpine Linux in RAM.** On an iPad7,11 (J171), 2026-11-22:
+> **Status: bring-up, Alpine Linux on its own partition.** On an iPad7,11 (J171), 2026-11-22:
 > m1n1 (with Paul Praschl's T8010 NVMe patches) brings the NVMe link up and
 > hands over to Linux 7.2; the kernel runs on both cores with 3 GB and
 > cpufreq (Zephyr 300 MHz to Hurricane 2.24 GHz, stable under load), the
@@ -14,7 +14,9 @@ Linux on the 7th-generation iPad: **iPad7,11** (Wi-Fi, J171AP) and
 > with this iPad's SysCfg calibration), the on-screen keyboard (fbkeyboard,
 > typing into the shell on the screen), Alpine 3.24 run from RAM with apk
 > reaching the internet through the Mac, a 10 GB Linux partition next to
-> iPadOS (APFS shrunk by iPadOS itself, `./cascadia a10 storage`). Not yet: Wi-Fi / Bluetooth
+> iPadOS (APFS shrunk by iPadOS itself, `./cascadia a10 storage`) with the
+> Alpine root on it (ext4, behind a write gate in the kernel's NVMe driver:
+> only that partition is writable). Not yet: Wi-Fi / Bluetooth
 > firmware, the USB power source (`power_supply usb`: I2C NACK on J171). Photos:
 > [gallery/](../../gallery/README.md#ipad-7-a10).
 
@@ -50,7 +52,7 @@ Pinned in [sources.env](sources.env):
 - **m1n1** `0011`: the A13 track's patch that appends the iBoot ramdisk
   (the Alpine root) to the initramfs.
 - **Kernel patches**: `kernel/patches/0001` fixes a NULL dereference in the
-  H9P PCIe driver's probe error path.
+  H9P PCIe driver's probe error path; `0002` is the NVMe write gate.
 - **Firmware**: `./cascadia a10 firmware` takes Apple's files from iPadOS
   18.7.9 (checked by SHA-256): the SmartIO firmware out of the kernelcache,
   and the touch controller's firmware (`J171_Multitouch.im4p`, the same
@@ -94,6 +96,23 @@ resize-apfs found), writes the GPT (backup copy first, then the primary)
 and reads everything back. The Linux partition is left unformatted.
 Reboot iPadOS afterwards.
 
+Then, with Linux up (Alpine in RAM):
+
+```bash
+./cascadia a10 nvme setup        # read-only: find the "Linux" GPT entry, note its range
+./cascadia a10 pack              # the DT now opens the kernel's NVMe write gate for it
+./cascadia a10 boot              # (DFU) -- then:
+./cascadia a10 nvme format       # ext4 "cascadia-root" + the Alpine root on it (asks FORMAT)
+./cascadia a10 boot              # (DFU) -- Linux now starts from the NVMe
+```
+
+The write gate (`kernel/patches/0002`) lets the NVMe take writes only in the
+ranges the DT lists (`apple,write-ranges` on the PCIe host bridge; none: no
+writes at all) and never the admin commands that could change the device.
+`/init` keeps iPadOS's APFS partition and the firmware / SysCfg / NVRAM
+namespaces read-only besides, and boots from `cascadia-root` when it is
+there, else Alpine in RAM.
+
 `inputs` and `firmware` download only the few files they need from Apple's
 CDN (partial IPSW reads). Nothing is written to the iPad's storage.
 `build/private/syscfg.bin` and the touch firmware made from it carry this
@@ -104,7 +123,8 @@ iPad's serials and calibration: they stay in `build/`, out of git.
 1. ~~m1n1 proxy on the iPad 7~~ ✓
 2. ~~Linux over USB~~ ✓ (shell over USB serial, network, SSH; the kernel
    log also on the DCSD UART, 115200)
-3. ~~Alpine in RAM, internet over USB~~ ✓; next a Wayland desktop, labwc, as on the iPad mini 1
+3. ~~Alpine in RAM, internet over USB~~ ✓, ~~Alpine on its own NVMe partition~~ ✓;
+   next a Wayland desktop, labwc, as on the iPad mini 1
    (not XFCE on X11): touch, the on-screen keyboard, Wi-Fi, Bluetooth,
    battery. Rendered by pixman on the CPU until the GPU works.
 4. What the kernel source does not have yet: speakers, auto-rotation

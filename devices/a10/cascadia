@@ -29,6 +29,11 @@
 #                                  recommended; asks for a backup and RESIZE).
 #                                  Required from you: the iPad in a jailbroken
 #                                  iPadOS (palera1n, Dopamine) with OpenSSH
+#   ./cascadia a10 nvme setup      with Linux up: note the Linux partition, so
+#                                  pack opens the kernel's write gate for it
+#   ./cascadia a10 nvme format     after setup + pack + boot: ext4 + the Alpine
+#                                  root on it (asks FORMAT); boots from it then
+#   ./cascadia a10 nvme status     the gate and the NVMe as the iPad sees them
 #
 # The boot chain is open source end to end: gaster (checkm8), hBootPatcher,
 # m1n1 -- no checkra1n, no PongoOS. Pinned sources: sources.env.
@@ -209,6 +214,14 @@ cmd_syscfg() {
     note "next: ./cascadia a10 firmware && ./cascadia a10 pack"
 }
 
+# build/private/nvme-linux -> n_nsid n_first n_count n_part n_guid (checked
+# first: bash 3.2 on macOS cannot source a process substitution)
+nvme_note() {
+    grep -Eqx 'nsid=[0-9]+ first=[0-9]+ count=[0-9]+ part=nvme0n1p[0-9]+ guid=[0-9A-F-]+' "$1" \
+        || fail "$1 is not what nvme setup writes"
+    eval "$(tr ' ' '\n' < "$1" | sed 's/^/n_/')"
+}
+
 # ---------- pack -------------------------------------------------------------
 
 cmd_pack() {
@@ -262,7 +275,16 @@ cmd_pack() {
     for i in "$B"/inputs/*/IM4M; do
         board=$(basename "$(dirname "$i")")
         [ -f "$P/t8010-$board.dtb" ] || { note "no t8010-$board.dtb -- skipped"; continue; }
-        cat "$m" boot/bootargs.txt "$P/t8010-$board.dtb" "$tmp/initramfs.cpio.gz" \
+        cp "$P/t8010-$board.dtb" "$tmp/dtb"
+        # the Linux partition (./cascadia a10 nvme setup): the kernel's NVMe
+        # write gate opens for that range only; without it, no writes at all
+        if [ -f "$B/private/nvme-linux" ]; then
+            ( nvme_note "$B/private/nvme-linux"
+              fdtput -t u "$tmp/dtb" /soc/pcie@610000000 apple,write-ranges \
+                  "$n_nsid" 0 "$n_first" 0 "$n_count"
+              note "NVMe write gate: namespace $n_nsid, LBA $n_first +$n_count ($n_part) writable" )
+        fi
+        cat "$m" boot/bootargs.txt "$tmp/dtb" "$tmp/initramfs.cpio.gz" \
             "$P/Image.gz" > "$tmp/linux.macho"
         printf '\000\000\000\000' >> "$tmp/linux.macho"
         ipsw img4 create --input "$tmp/linux.macho" --type rkrn --compress lzss \
@@ -329,6 +351,7 @@ case "$cmd" in
     syscfg) cmd_syscfg ;;
     net)    exec bash host/mac-share-internet.sh "$@" ;;
     storage) exec bash storage/host.sh "$@" ;;
+    nvme)   exec bash tools/nvme.sh "$@" ;;
     pack)   cmd_pack ;;
     boot)   cmd_boot "$@" ;;
     ''|-h|--help|help) awk 'NR>1 && /^#/ {sub(/^# ?/, ""); print; next} NR>1 {exit}' "$A10/cascadia" ;;

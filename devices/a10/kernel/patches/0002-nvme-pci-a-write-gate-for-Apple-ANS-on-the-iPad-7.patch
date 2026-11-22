@@ -1,0 +1,181 @@
+From: Project Cascadia <cascadia@invalid>
+Subject: [PATCH] nvme-pci: a write gate for Apple ANS on the iPad 7
+
+Cascadia downstream patch. The iPad 7 NVMe is iPadOS disk; Linux may
+write only the LBA ranges the DT lists in apple,write-ranges on the PCIe
+host bridge (none: no writes at all), and never send the admin commands
+that could change the device. After devices/a13 kernel patch 0007.
+---
+diff --git a/drivers/nvme/host/pci.c b/drivers/nvme/host/pci.c
+index 3a3d90b727..6d01c91704 100644
+--- a/drivers/nvme/host/pci.c
++++ b/drivers/nvme/host/pci.c
+@@ -20,6 +20,7 @@
+ #include <linux/mutex.h>
+ #include <linux/nodemask.h>
+ #include <linux/once.h>
++#include <linux/of.h>
+ #include <linux/pci.h>
+ #include <linux/suspend.h>
+ #include <linux/t10-pi.h>
+@@ -1263,6 +1264,126 @@ static blk_status_t nvme_map_metadata(struct request *req)
+ 	return nvme_pci_setup_meta_mptr(req);
+ }
+ 
++
++/*
++ * Cascadia: a write gate for Apple's ANS NVMe on the iPad 7 (T8010). The
++ * NVMe is iPadOS's disk: one APFS container in namespace 1 next to a Linux
++ * partition, and small namespaces with firmware, SysCfg, NVRAM and the
++ * effaceable storage. Linux may write only where the DT allows it --
++ * "apple,write-ranges" on the PCIe host bridge: <nsid lba-hi lba-lo
++ * count-hi count-lo> per range, in the namespace's LBAs; without it,
++ * nowhere. Writes, write-zeroes and the kernel's own discards must lie in a
++ * range; every other write-like I/O command, and the admin commands that
++ * could change the device (format, firmware, namespaces, sanitize, security
++ * send, vendor commands), are refused before they reach the controller.
++ * After the devices/a13 gate (drivers/nvme/host/apple.c there).
++ */
++#define ANS_GATE_MAX_RANGES 4
++
++static struct {
++	struct nvme_dev *owner;
++	int nr;
++	struct {
++		u32 nsid;
++		u64 start, count;
++	} r[ANS_GATE_MAX_RANGES];
++} ans_gate;
++
++static bool ans_gate_range_open(u32 nsid, u64 slba, u64 nlb)
++{
++	int i;
++
++	for (i = 0; i < ans_gate.nr; i++) {
++		if (nsid != ans_gate.r[i].nsid || slba < ans_gate.r[i].start)
++			continue;
++		if (slba - ans_gate.r[i].start + nlb <= ans_gate.r[i].count)
++			return true;
++	}
++	return false;
++}
++
++static bool ans_gate_allows(struct request *req, bool admin,
++			    const struct nvme_command *c)
++{
++	u8 op = c->common.opcode;
++	u32 i, nr;
++
++	if (admin) {
++		switch (op) {
++		case nvme_admin_ns_mgmt:
++		case nvme_admin_activate_fw:
++		case nvme_admin_download_fw:
++		case nvme_admin_ns_attach:
++		case nvme_admin_format_nvm:
++		case nvme_admin_security_send:
++		case nvme_admin_sanitize_nvm:
++			return false;
++		default:
++			return op < 0xc0;	/* vendor commands: never */
++		}
++	}
++
++	switch (op) {
++	case nvme_cmd_flush:
++	case nvme_cmd_read:
++		return true;
++	case nvme_cmd_write:
++	case nvme_cmd_write_zeroes:
++		return ans_gate_range_open(le32_to_cpu(c->rw.nsid),
++					   le64_to_cpu(c->rw.slba),
++					   (u64)le16_to_cpu(c->rw.length) + 1);
++	case nvme_cmd_dsm:
++		/* the kernel's own discards only: their ranges are in reach */
++		if (!(req->rq_flags & RQF_SPECIAL_PAYLOAD))
++			return false;
++		nr = le32_to_cpu(c->dsm.nr) + 1;
++		if (req->special_vec.bv_len < nr * sizeof(struct nvme_dsm_range))
++			return false;
++		for (i = 0; i < nr; i++) {
++			const struct nvme_dsm_range *r =
++				(const struct nvme_dsm_range *)bvec_virt(&req->special_vec) + i;
++
++			if (!ans_gate_range_open(le32_to_cpu(c->dsm.nsid),
++						 le64_to_cpu(r->slba), le32_to_cpu(r->nlb)))
++				return false;
++		}
++		return true;
++	default:		/* write uncorrectable, copy, zone commands, ... */
++		return false;
++	}
++}
++
++static void ans_gate_setup(struct nvme_dev *dev, struct pci_dev *pdev)
++{
++	struct pci_host_bridge *bridge = pci_find_host_bridge(pdev->bus);
++	struct device_node *np = bridge && bridge->dev.parent ? bridge->dev.parent->of_node : NULL;
++	u32 cells[5 * ANS_GATE_MAX_RANGES];
++	int i, n = 0, len;
++
++	ans_gate.owner = dev;
++	ans_gate.nr = 0;
++	len = np ? of_property_count_u32_elems(np, "apple,write-ranges") : -EINVAL;
++	if (len > 0) {
++		if (len % 5 || len / 5 > ANS_GATE_MAX_RANGES ||
++		    of_property_read_u32_array(np, "apple,write-ranges", cells, len))
++			dev_err(&pdev->dev, "write gate: bad apple,write-ranges, no writes at all\n");
++		else
++			n = len / 5;
++	}
++	for (i = 0; i < n; i++) {
++		ans_gate.r[i].nsid = cells[5 * i];
++		ans_gate.r[i].start = (u64)cells[5 * i + 1] << 32 | cells[5 * i + 2];
++		ans_gate.r[i].count = (u64)cells[5 * i + 3] << 32 | cells[5 * i + 4];
++		if (!ans_gate.r[i].count)
++			continue;
++		dev_info(&pdev->dev, "write gate: namespace %u, LBA %llu +%llu writable\n",
++			 ans_gate.r[i].nsid, ans_gate.r[i].start, ans_gate.r[i].count);
++		ans_gate.nr = i + 1;
++	}
++	if (!ans_gate.nr)
++		dev_info(&pdev->dev, "write gate: no writes anywhere\n");
++}
++
+ static blk_status_t nvme_prep_rq(struct request *req)
+ {
+ 	struct nvme_iod *iod = blk_mq_rq_to_pdu(req);
+@@ -1280,6 +1401,21 @@ static blk_status_t nvme_prep_rq(struct request *req)
+ 	if (ret)
+ 		return ret;
+ 
++	if (ans_gate.owner && to_nvme_dev(nvme_req(req)->ctrl) == ans_gate.owner) {
++		bool admin = req->q == ans_gate.owner->ctrl.admin_q;
++
++		if (!ans_gate_allows(req, admin, &iod->cmd)) {
++			dev_err_ratelimited(ans_gate.owner->ctrl.device,
++				"write gate: refused %s opcode 0x%02x nsid %u lba %llu +%u\n",
++				admin ? "admin" : "I/O", iod->cmd.common.opcode,
++				le32_to_cpu(iod->cmd.common.nsid),
++				le64_to_cpu(iod->cmd.rw.slba),
++				le16_to_cpu(iod->cmd.rw.length) + 1);
++			ret = BLK_STS_IOERR;
++			goto out_free_cmd;
++		}
++	}
++
+ 	if (blk_rq_nr_phys_segments(req)) {
+ 		ret = nvme_map_data(req);
+ 		if (ret)
+@@ -3599,8 +3735,10 @@ static struct nvme_dev *nvme_pci_alloc_dev(struct pci_dev *pdev,
+ 		quirks &= ~qentry->disabled_quirks;
+ 	}
+ 	if (pdev->vendor == PCI_VENDOR_ID_APPLE &&
+-	    pdev->device == PCI_DEVICE_ID_APPLE_ANS_NVME)
++	    pdev->device == PCI_DEVICE_ID_APPLE_ANS_NVME) {
+ 		dev->dma_ops = &nvme_pci_apple_ans_ops;
++		ans_gate_setup(dev, pdev);
++	}
+ 	if (dev->dma_ops) {
+ 		ret = dev->dma_ops->init(dev, node);
+ 		if (ret)

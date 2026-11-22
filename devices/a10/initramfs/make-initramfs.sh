@@ -220,19 +220,29 @@ ram_root() {
     umount /newroot 2>/dev/null
 }
 
-# The NVMe: every namespace read-only for a start -- but namespace 1 when
-# it is the Linux disk (the DT opens the write gate of the NVMe driver for
-# it; the gate refuses writes outside the DT ranges anyway).
+# The NVMe: the disk of iPadOS. Every namespace and partition read-only -- but
+# the Linux partition when the DT opens the write gate of the kernel for it
+# (./cascadia a10 nvme setup; apple,write-ranges on the PCIe host bridge).
+# The gate refuses writes outside its ranges anyway; the whole of
+# namespace 1 stays writable at the block layer only because a read-only
+# disk makes its partitions read-only too.
+# the NVMe comes up through PCIe, a moment after /init starts
+for i in 1 2 3 4 5 6 7 8 9 10; do [ -b /dev/nvme0n1 ] && break; sleep 1; done
 linux_disk=0
-ls /proc/device-tree/soc/nvme@*/apple,write-ranges >/dev/null 2>&1 && linux_disk=1
+ls /proc/device-tree/soc/pcie@*/apple,write-ranges >/dev/null 2>&1 && linux_disk=1
 for d in /dev/nvme0n*; do
-    case "$d" in
-        /dev/nvme0n1|/dev/nvme0n1p*) [ $linux_disk = 1 ] && continue ;;
-    esac
-    [ -b "$d" ] && blockdev --setro "$d"
+    [ -b "$d" ] || continue
+    if [ $linux_disk = 1 ]; then
+        case "$d" in
+            /dev/nvme0n1) continue ;;
+            /dev/nvme0n1p*)
+                grep -qx PARTNAME=Linux "/sys/class/block/${d#/dev/}/uevent" 2>/dev/null && continue ;;
+        esac
+    fi
+    blockdev --setro "$d"
 done
 
-# The Linux disk on the internal NVMe (./cascadia a13 periphery makes it): the
+# The Linux disk on the internal NVMe (./cascadia a10 nvme format makes it): the
 # root of choice when it is there -- before NFS, before RAM.
 nvme_root() {
     [ $linux_disk = 1 ] || return 0
