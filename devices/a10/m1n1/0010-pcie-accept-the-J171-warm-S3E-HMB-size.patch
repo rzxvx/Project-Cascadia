@@ -1,0 +1,34 @@
+From: Project Cascadia <cascadia@invalid>
+Subject: [PATCH] pcie: accept the J171 warm S3E HMB size
+
+The iPad 7 Wi-Fi (J171, iPad7,11) comes out of the cold S3E restart with
+the same signature as the J172 but HMB=0x00b00000 (J172: 0x00c00000,
+D111: 0x00e00000), so m1n1 refused the kernel handoff. Measured on an
+iPad7,11 over the DCSD UART:
+
+  pcie: post-restart S3E state CAP=0x20f00103ff VS=0x00010001 ...
+        HMB=0x00b00000/0x00001000 ... core=0x00000003 log=0x000000ff
+        marker=0x00badadd
+---
+diff --git a/src/pcie.c b/src/pcie.c
+index 6c5a355..c977ce9 100644
+--- a/src/pcie.c
++++ b/src/pcie.c
+@@ -353,6 +353,7 @@ struct t8010_port_function {
+ #define T8010_S3E_WARM_VS             0x00010001
+ #define T8010_S3E_WARM_HMB_SIZE_D111  0x00e00000
+ #define T8010_S3E_WARM_HMB_SIZE_J172  0x00c00000
++#define T8010_S3E_WARM_HMB_SIZE_J171  0x00b00000
+ #define T8010_S3E_WARM_HMB_ALIGN      0x00001000
+ #define T8010_S3E_WARM_CORE_MASK 0x00000003
+ #define T8010_S3E_WARM_LOG_SIZE  0x000000ff
+@@ -544,7 +545,8 @@ static enum t8010_s3e_boot_state t8010_classify_s3e_state(const struct t8010_s3e
+     if (state->cap == T8010_S3E_WARM_CAP && state->vs == T8010_S3E_WARM_VS && state->cc == 0 &&
+         state->csts == 0 && state->init_regular == 0 && state->init_debug == 0 &&
+         (state->hmb_size == T8010_S3E_WARM_HMB_SIZE_D111 ||
+-         state->hmb_size == T8010_S3E_WARM_HMB_SIZE_J172) &&
++         state->hmb_size == T8010_S3E_WARM_HMB_SIZE_J172 ||
++         state->hmb_size == T8010_S3E_WARM_HMB_SIZE_J171) &&
+         state->hmb_align == T8010_S3E_WARM_HMB_ALIGN && state->hmb_addr_lo == 0 &&
+         state->hmb_addr_hi == 0 && state->hmb_control == 0 &&
+         state->core_mask == T8010_S3E_WARM_CORE_MASK &&

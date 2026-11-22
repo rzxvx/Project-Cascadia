@@ -1,0 +1,64 @@
+From 3c5366646fab5053fe4de0b4496b07c9367ede68 Mon Sep 17 00:00:00 2001
+From: Paul Praschl <praschlpaul@g-p.at>
+Date: Tue, 14 Jul 2026 12:42:54 +0200
+Subject: [PATCH 1/9] kboot: Populate the T8010 NVMe HMB region
+
+Read the runtime SART region from the T8010 nvme-mmu0 ADT node and
+copy it into the reserved-memory node consumed by Linux. This keeps
+the firmware-selected address and size out of the static device tree.
+
+Signed-off-by: Paul Praschl <praschlpaul@g-p.at>
+---
+ src/kboot.c | 29 +++++++++++++++++++++++++++++
+ 1 file changed, 29 insertions(+)
+
+diff --git a/src/kboot.c b/src/kboot.c
+index 2840651..ffa66a4 100644
+--- a/src/kboot.c
++++ b/src/kboot.c
+@@ -456,6 +456,33 @@ static int dt_set_memory(void)
+     return 0;
+ }
+ 
++static int dt_set_nvme_hmb(void)
++{
++    u64 region[2];
++    int adt_node;
++    int fdt_node;
++    fdt64_t reg[2];
++
++    fdt_node = fdt_path_offset(dt, "nvme-hmb");
++    if (fdt_node < 0)
++        return 0;
++
++    adt_node = adt_path_offset(adt, "/arm-io/nvme-mmu0");
++    if (adt_node < 0)
++        bail("ADT: /arm-io/nvme-mmu0 not found\n");
++
++    if (ADT_GETPROP_ARRAY(adt, adt_node, "sart-region", region) < 0 || !region[0] || !region[1])
++        bail("ADT: invalid /arm-io/nvme-mmu0.sart-region\n");
++
++    fdt64_st(&reg[0], region[0]);
++    fdt64_st(&reg[1], region[1]);
++    if (fdt_setprop(dt, fdt_node, "reg", reg, sizeof(reg)))
++        bail("FDT: failed to set NVMe HMB region\n");
++
++    printf("FDT: NVMe HMB at 0x%lx size 0x%lx\n", region[0], region[1]);
++    return 0;
++}
++
+ static int dt_set_serial_number(void)
+ {
+ 
+@@ -2976,6 +3003,8 @@ int kboot_prepare_dt(void *fdt)
+         return -1;
+     if (dt_set_pcie_tunables())
+         return -1;
++    if (dt_set_nvme_hmb())
++        return -1;
+     if (dt_set_display())
+         return -1;
+     if (dt_set_gpu(dt))
+-- 
+2.54.0 (Apple Git-157)
+

@@ -1,0 +1,130 @@
+From 00094a8d98ed9abd021e1113acfe6ce1798aa5fe Mon Sep 17 00:00:00 2001
+From: Paul Praschl <praschlpaul@g-p.at>
+Date: Mon, 3 Aug 2026 12:45:47 +0200
+Subject: [PATCH 5/9] kboot: publish D111 ambient-light calibration
+
+Expose the LSCI SysCfg record as an NVMEM cell and connect it to the Apple
+CT821 consumer so Linux can use the device-specific ambient-light
+calibration.
+
+Adding SysCfg layout nodes can move the flattened device-tree structure.
+A previously observed FDT_ERR_BADOFFSET came from reusing consumer offsets
+across those libfdt mutations, so resolve both Wi-Fi and CT821 consumers
+again immediately before setting their properties.
+
+Signed-off-by: Paul Praschl <praschlpaul@g-p.at>
+---
+ src/kboot.c | 78 ++++++++++++++++++++++++++++++++++++-----------------
+ 1 file changed, 54 insertions(+), 24 deletions(-)
+
+diff --git a/src/kboot.c b/src/kboot.c
+index fa55d93..6a24b7d 100644
+--- a/src/kboot.c
++++ b/src/kboot.c
+@@ -1703,7 +1703,7 @@ static int dt_get_wifi_node(void)
+ static int dt_set_syscfg_rmem(void)
+ {
+     int ret;
+-    uint32_t mac_phandle, cal_phandle;
++    uint32_t mac_phandle, cal_phandle, als_cal_phandle;
+ 
+     if (!syscfg_start || !syscfg_size)
+         return 0;
+@@ -1713,7 +1713,8 @@ static int dt_set_syscfg_rmem(void)
+     }
+ 
+     int wifi = dt_get_wifi_node();
+-    if (wifi < 0)
++    int als = fdt_node_offset_by_compatible(dt, -1, "apple,ct821");
++    if (wifi < 0 && als < 0)
+         return 0;
+ 
+     size_t alloc_size = ALIGN_UP(syscfg_size, SZ_16K);
+@@ -1741,33 +1742,62 @@ static int dt_set_syscfg_rmem(void)
+     if (ret)
+         bail("FDT: couldn't set syscfg layout compatible: %d\n", ret);
+ 
+-    ret = dt_set_syscfg_cell(layout, "mac-address", "WMac", 6, &mac_phandle);
+-    if (ret)
+-        return ret;
++    if (wifi >= 0) {
++        ret = dt_set_syscfg_cell(layout, "mac-address", "WMac", 6, &mac_phandle);
++        if (ret)
++            return ret;
+ 
+-    ret = dt_set_syscfg_cell(layout, "calibration", "WCAL", 0, &cal_phandle);
+-    if (ret)
+-        return ret;
++        ret = dt_set_syscfg_cell(layout, "calibration", "WCAL", 0, &cal_phandle);
++        if (ret)
++            return ret;
++    }
+ 
+-    fdt32_t cells[2];
+-    fdt32_st(&cells[0], mac_phandle);
+-    fdt32_st(&cells[1], cal_phandle);
+-    ret = fdt_setprop(dt, wifi, "nvmem-cells", cells, sizeof(cells));
+-    if (ret)
+-        bail("FDT: couldn't set wifi0.nvmem-cells: %d\n", ret);
++    if (als >= 0) {
++        ret = dt_set_syscfg_cell(layout, "ambient-light-calibration", "LSCI", 0,
++                                 &als_cal_phandle);
++        if (ret)
++            return ret;
++    }
+ 
+-    static const char cell_names[] = "mac-address\0calibration";
+-    ret = fdt_setprop(dt, wifi, "nvmem-cell-names", cell_names, sizeof(cell_names));
+-    if (ret)
+-        bail("FDT: couldn't set wifi0.nvmem-cell-names: %d\n", ret);
++    if (wifi >= 0) {
++        wifi = dt_get_wifi_node();
++        if (wifi < 0)
++            bail("FDT: couldn't relocate wifi node after adding SysCfg cells: %d\n", wifi);
++
++        fdt32_t cells[2];
++        fdt32_st(&cells[0], mac_phandle);
++        fdt32_st(&cells[1], cal_phandle);
++        ret = fdt_setprop(dt, wifi, "nvmem-cells", cells, sizeof(cells));
++        if (ret)
++            bail("FDT: couldn't set wifi0.nvmem-cells: %d\n", ret);
++
++        static const char cell_names[] = "mac-address\0calibration";
++        ret = fdt_setprop(dt, wifi, "nvmem-cell-names", cell_names, sizeof(cell_names));
++        if (ret)
++            bail("FDT: couldn't set wifi0.nvmem-cell-names: %d\n", ret);
++
++        ret = fdt_delprop(dt, wifi, "local-mac-address");
++        if (ret && ret != -FDT_ERR_NOTFOUND)
++            bail("FDT: couldn't delete wifi0.local-mac-address: %d\n", ret);
+ 
+-    ret = fdt_delprop(dt, wifi, "local-mac-address");
+-    if (ret && ret != -FDT_ERR_NOTFOUND)
+-        bail("FDT: couldn't delete wifi0.local-mac-address: %d\n", ret);
++        ret = fdt_delprop(dt, wifi, "brcm,cal-blob");
++        if (ret && ret != -FDT_ERR_NOTFOUND)
++            bail("FDT: couldn't delete wifi0.brcm,cal-blob: %d\n", ret);
++    }
++
++    if (als >= 0) {
++        als = fdt_node_offset_by_compatible(dt, -1, "apple,ct821");
++        if (als < 0)
++            bail("FDT: couldn't relocate CT821 after adding SysCfg cells: %d\n", als);
++
++        ret = fdt_setprop_u32(dt, als, "nvmem-cells", als_cal_phandle);
++        if (ret)
++            bail("FDT: couldn't set CT821 nvmem-cells: %d\n", ret);
+ 
+-    ret = fdt_delprop(dt, wifi, "brcm,cal-blob");
+-    if (ret && ret != -FDT_ERR_NOTFOUND)
+-        bail("FDT: couldn't delete wifi0.brcm,cal-blob: %d\n", ret);
++        ret = fdt_setprop_string(dt, als, "nvmem-cell-names", "calibration");
++        if (ret)
++            bail("FDT: couldn't set CT821 nvmem-cell-names: %d\n", ret);
++    }
+ 
+     printf("FDT: added SysCfg nvmem-rmem at %p, 0x%lx bytes\n", blob, alloc_size);
+ 
+-- 
+2.54.0 (Apple Git-157)
+

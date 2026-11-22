@@ -1,0 +1,918 @@
+From d1c3cc3ae59efa66048c0e6c4dec31e5ff04dfbf Mon Sep 17 00:00:00 2001
+From: Paul Praschl <praschlpaul@g-p.at>
+Date: Wed, 5 Aug 2026 16:17:18 +0200
+Subject: [PATCH 7/9] pcie: add guarded T8010 D111 NVMe bring-up
+
+---
+ src/kboot.c |   5 +-
+ src/pcie.c  | 827 +++++++++++++++++++++++++++++++++++++++++++++++++++-
+ 2 files changed, 822 insertions(+), 10 deletions(-)
+
+diff --git a/src/kboot.c b/src/kboot.c
+index 11dad4c..67c2a98 100644
+--- a/src/kboot.c
++++ b/src/kboot.c
+@@ -3335,7 +3335,10 @@ int kboot_boot(void *kernel)
+     clk_init();
+ 
+     usb_init();
+-    pcie_init();
++    if (pcie_init() < 0) {
++        printf("PCIe: Required controller initialization failed, refusing kernel handoff\n");
++        return -1;
++    }
+     dapf_init_all();
+ 
+     if (chip_id == T8015 || chip_id == T8012) {
+diff --git a/src/pcie.c b/src/pcie.c
+index 9630de4..72ff99b 100644
+--- a/src/pcie.c
++++ b/src/pcie.c
+@@ -141,6 +141,7 @@ enum apcie_type {
+     APCIE_T8122 = 2,
+     APCIE_T6031 = 3,
+     APCIE_T8132 = 4,
++    APCIE_T8010 = 5,
+ };
+ 
+ struct reg_info {
+@@ -228,6 +229,11 @@ static const struct reg_info regs_t6031 = {
+     .axi_idx = 4,
+ };
+ 
++static const struct reg_info regs_t8010 = {
++    .type = APCIE_T8010,
++    .compat = APCIE_T8010,
++};
++
+ static bool pcie_initialized = false;
+ 
+ enum PCIE_CONTROLLERS {
+@@ -253,11 +259,780 @@ struct state {
+     u64 port_phy_base[8];
+     u64 port_intr2axi_base[8];
+     const struct reg_info *pcie_regs;
++    u64 gpio_base;
++    u32 perst_gpio;
++    bool powered;
+     bool initialized;
+ };
+ 
+ static struct state controllers[NUM_CONTROLLERS];
+ 
++enum pcie_controller_result {
++    PCIE_CONTROLLER_REQUIRED_FAILED = -2,
++    PCIE_CONTROLLER_FAILED = -1,
++    PCIE_CONTROLLER_OK = 0,
++    PCIE_CONTROLLER_NOT_FOUND = 1,
++};
++
++struct t8010_gpio_function {
++    u32 phandle;
++    char fourcc[4];
++    u32 gpio;
++    u32 flags;
++} PACKED;
++
++struct t8010_simple_function {
++    u32 phandle;
++    char fourcc[4];
++} PACKED;
++
++struct t8010_port_function {
++    u32 phandle;
++    char fourcc[4];
++    u32 bridge_phandle;
++} PACKED;
++
++#define T8010_GPIO_DATA     BIT(0)
++#define T8010_GPIO_IRQ_MASK GENMASK(3, 1)
++#define T8010_GPIO_OUTPUT   BIT(1)
++#define T8010_GPIO_PERIPH   BIT(5)
++#define T8010_GPIO_CFG_DONE BIT(9)
++
++/* ADT FourCC values are stored as little-endian u32s ("GPIO" is raw "OIPG"). */
++#define T8010_GPIO_FUNCTION_FOURCC_RAW "OIPG"
++#define T8010_FORCE_ACTIVE_FOURCC_RAW  "tcaF"
++#define T8010_PORT_CONTROL_FOURCC_RAW  "CtrP"
++
++#define T8010_DART_BASE               0x601008000
++#define T8010_DART_DIAG_VALUE         0x00000100
++#define T8010_DART_FETCH_VALUE        0x000e0303
++#define T8010_DART_EXPECTED_OPTIONS   7
++#define T8010_DART_EXPECTED_PAGE_SIZE 0x1000
++#define T8010_DART_EXPECTED_VM_SIZE   0x3c000000
++#define T8010_DART_EXPECTED_VM_OFFSET 0x0800000080000000ULL
++
++#define T8010_NVMMU_BASE              0x601004000
++#define T8010_NVMMU_SART_BASE         0x8bee00000
++#define T8010_NVMMU_SART_SIZE         0x01200000
++#define T8010_NVMMU_SART_VIRTUAL_BASE 0xbc000000
++#define T8010_NVMMU_VIRTUAL_BASE      0x40000000
++#define T8010_NVMMU_TAGS              64
++#define T8010_NVMMU_SGL_ENTRIES       256
++
++#define T8010_NVME_CONFIG_OFFSET 0x100000
++#define T8010_NVME_BAR0_BUS      0xc0000000
++#define T8010_NVME_BAR0_CPU      0x7c0000000
++#define T8010_NVME_CAP           0x0000
++#define T8010_NVME_VS            0x0008
++#define T8010_NVME_CC            0x0014
++#define T8010_NVME_CSTS          0x001c
++#define T8010_NVME_INIT_REGULAR  0x1800
++#define T8010_NVME_INIT_DEBUG    0x1804
++#define T8010_NVME_HMB_SIZE_REQ  0x1808
++#define T8010_NVME_HMB_ALIGN_REQ 0x180c
++#define T8010_NVME_HMB_ADDR_LO   0x1810
++#define T8010_NVME_HMB_ADDR_HI   0x1814
++#define T8010_NVME_HMB_CONTROL   0x1818
++#define T8010_NVME_CORE_MASK     0x1824
++#define T8010_NVME_LOG_SIZE      0x1828
++#define T8010_NVME_FW_MARKER     0x1b18
++
++#define T8010_SOC_CHIP_ID_REG 0x20e0b8000
++
++/* Raw T8010 GPIO modes materialized by the SecureROM GPIO helper. */
++#define T8010_ROM_GPIO                 10
++#define T8010_ROM_GPIO_INPUT_MASK      0x0007026e
++#define T8010_ROM_GPIO_INPUT           0x00070200
++#define T8010_ROM_GPIO_OUTPUT_MASK     0x0007026f
++#define T8010_ROM_GPIO_OUTPUT_LOW      0x00070202
++#define T8010_ROM_GPIO_OUTPUT_HIGH     0x00070203
++#define T8010_ROM_GPIO_PERIPHERAL_MASK 0x0007026e
++#define T8010_ROM_GPIO_PERIPHERAL      0x00070220
++
++#define T8010_S3E_WARM_CAP       0x00000020f00103ffULL
++#define T8010_S3E_WARM_VS        0x00010001
++#define T8010_S3E_WARM_HMB_SIZE  0x00e00000
++#define T8010_S3E_WARM_HMB_ALIGN 0x00001000
++#define T8010_S3E_WARM_CORE_MASK 0x00000003
++#define T8010_S3E_WARM_LOG_SIZE  0x000000ff
++#define T8010_S3E_WARM_MARKER    0x00badadd
++#define T8010_S3E_COLD_MARKER    0xbfbfbfbf
++
++/* D111 Restore and normal iBoot hand off distinct boot/debug strap configurations. */
++#define T8010_S3E_RESTORE_BOOT_FROM_HOST 0x00078a03
++#define T8010_S3E_RESTORE_DEBUG_GPIO     0x0007888e
++#define T8010_S3E_NORMAL_BOOT_FROM_HOST  0x00078a02
++#define T8010_S3E_NORMAL_DEBUG_GPIO      0x0007888c
++
++#define T8010_PCI_BUS_NUMBERS       0x00010100
++#define T8010_PCI_MEMORY_BASE_LIMIT 0xc000c000
++
++#define T8010_PCI_COMMAND_MEMORY BIT(1)
++#define T8010_PCI_COMMAND_MASTER BIT(2)
++#define T8010_PCI_CAP_PM         0x01
++#define T8010_PCI_CAP_PCIE       0x10
++
++#define T8010_ROM_READY_TIMEOUT_US 1000000
++#define T8010_ROM_LINK_TIMEOUT_US  10000000
++#define T8010_S3E_READY_ATTEMPTS   500
++
++#define T8010_D111_BOARD_ID 0xe
++#define T8010_D111_TARGET   "D111"
++
++struct t8010_s3e_state {
++    u64 cap;
++    u32 vs;
++    u32 cc;
++    u32 csts;
++    u32 init_regular;
++    u32 init_debug;
++    u32 hmb_size;
++    u32 hmb_align;
++    u32 hmb_addr_lo;
++    u32 hmb_addr_hi;
++    u32 hmb_control;
++    u32 core_mask;
++    u32 log_size;
++    u32 marker;
++};
++
++enum t8010_s3e_boot_state {
++    T8010_S3E_UNKNOWN,
++    T8010_S3E_COLD,
++    T8010_S3E_WARM,
++};
++
++static bool t8010_is_d111(void)
++{
++    u32 target_len = 0;
++    const char *target = adt_getprop(adt, 0, "target-type", &target_len);
++
++    if (chip_id != T8010 || board_id != T8010_D111_BOARD_ID || !target)
++        return false;
++
++    return target_len >= sizeof(T8010_D111_TARGET) - 1 &&
++           !memcmp(target, T8010_D111_TARGET, sizeof(T8010_D111_TARGET) - 1) &&
++           (target_len == sizeof(T8010_D111_TARGET) - 1 ||
++            target[sizeof(T8010_D111_TARGET) - 1] == '\0');
++}
++
++static void t8010_gpio_config(u64 base, u32 gpio, bool output, bool value)
++{
++    u64 reg = base + 4 * gpio;
++    u32 val = read32(reg);
++
++    val &= ~(T8010_GPIO_CFG_DONE | T8010_GPIO_IRQ_MASK | T8010_GPIO_DATA);
++    if (output) {
++        val &= ~T8010_GPIO_PERIPH;
++        val |= T8010_GPIO_OUTPUT;
++        if (value)
++            val |= T8010_GPIO_DATA;
++    } else {
++        val |= T8010_GPIO_PERIPH;
++    }
++
++    write32(reg, val);
++    write32(reg, val | T8010_GPIO_CFG_DONE);
++}
++
++static void t8010_gpio_rom_mode(u64 base, u32 gpio, u32 mask, u32 config)
++{
++    u64 reg = base + 4 * gpio;
++    u32 old = read32(reg);
++    u32 old_cfg_done = old & T8010_GPIO_CFG_DONE;
++    u32 val = (old & ~mask) | (config & mask);
++
++    /* Match the ROM helper: preserve an existing CFG_DONE, otherwise latch it last. */
++    write32(reg, (val & ~T8010_GPIO_CFG_DONE) | old_cfg_done);
++    if ((val & T8010_GPIO_CFG_DONE) && !old_cfg_done)
++        write32(reg, val);
++}
++
++static int t8010_get_gpio_function(int node, const char *property,
++                                   struct t8010_gpio_function *function)
++{
++    if (adt_getprop_copy(adt, node, property, function, sizeof(*function)) < 0 ||
++        memcmp(function->fourcc, T8010_GPIO_FUNCTION_FOURCC_RAW, 4)) {
++        printf("pcie: Invalid T8010 GPIO function %s\n", property);
++        return -1;
++    }
++
++    return 0;
++}
++
++static int t8010_get_simple_function(int node, const char *property, const char *fourcc,
++                                     struct t8010_simple_function *function)
++{
++    if (adt_getprop_copy(adt, node, property, function, sizeof(*function)) < 0 ||
++        memcmp(function->fourcc, fourcc, 4)) {
++        printf("pcie: Invalid T8010 function %s\n", property);
++        return -1;
++    }
++
++    return 0;
++}
++
++static int t8010_get_port_function(int node, const char *property,
++                                   struct t8010_port_function *function)
++{
++    if (adt_getprop_copy(adt, node, property, function, sizeof(*function)) < 0 ||
++        memcmp(function->fourcc, T8010_PORT_CONTROL_FOURCC_RAW, 4)) {
++        printf("pcie: Invalid T8010 port function %s\n", property);
++        return -1;
++    }
++
++    return 0;
++}
++
++static int t8010_poll_range(u64 reg, u32 mask, u32 min, u32 max, u32 timeout_us)
++{
++    while (timeout_us--) {
++        u32 value = read32(reg) & mask;
++
++        if (value >= min && value <= max)
++            return 0;
++        udelay(1);
++    }
++
++    return -1;
++}
++
++static u32 t8010_find_cap(u64 config_base, u8 cap_id)
++{
++    u32 ptr = read32(config_base + 0x34) & 0xff;
++
++    for (int i = 0; ptr && i < 48; i++) {
++        if (ptr < 0x40 || ptr > 0xfc || (ptr & 3))
++            return 0;
++
++        u32 cap = read32(config_base + ptr);
++        if ((cap & 0xff) == cap_id)
++            return ptr;
++        ptr = (cap >> 8) & 0xff;
++    }
++
++    return 0;
++}
++
++static void t8010_read_s3e_state(u64 bar0, struct t8010_s3e_state *state)
++{
++    state->cap = read32(bar0 + T8010_NVME_CAP);
++    state->cap |= (u64)read32(bar0 + T8010_NVME_CAP + 4) << 32;
++    state->vs = read32(bar0 + T8010_NVME_VS);
++    state->cc = read32(bar0 + T8010_NVME_CC);
++    state->csts = read32(bar0 + T8010_NVME_CSTS);
++    state->init_regular = read32(bar0 + T8010_NVME_INIT_REGULAR);
++    state->init_debug = read32(bar0 + T8010_NVME_INIT_DEBUG);
++    state->hmb_size = read32(bar0 + T8010_NVME_HMB_SIZE_REQ);
++    state->hmb_align = read32(bar0 + T8010_NVME_HMB_ALIGN_REQ);
++    state->hmb_addr_lo = read32(bar0 + T8010_NVME_HMB_ADDR_LO);
++    state->hmb_addr_hi = read32(bar0 + T8010_NVME_HMB_ADDR_HI);
++    state->hmb_control = read32(bar0 + T8010_NVME_HMB_CONTROL);
++    state->core_mask = read32(bar0 + T8010_NVME_CORE_MASK);
++    state->log_size = read32(bar0 + T8010_NVME_LOG_SIZE);
++    state->marker = read32(bar0 + T8010_NVME_FW_MARKER);
++}
++
++static bool t8010_s3e_states_equal(const struct t8010_s3e_state *a, const struct t8010_s3e_state *b)
++{
++    return a->cap == b->cap && a->vs == b->vs && a->cc == b->cc && a->csts == b->csts &&
++           a->init_regular == b->init_regular && a->init_debug == b->init_debug &&
++           a->hmb_size == b->hmb_size && a->hmb_align == b->hmb_align &&
++           a->hmb_addr_lo == b->hmb_addr_lo && a->hmb_addr_hi == b->hmb_addr_hi &&
++           a->hmb_control == b->hmb_control && a->core_mask == b->core_mask &&
++           a->log_size == b->log_size && a->marker == b->marker;
++}
++
++static enum t8010_s3e_boot_state t8010_classify_s3e_state(const struct t8010_s3e_state *state)
++{
++    if (state->cap == T8010_S3E_WARM_CAP && state->vs == T8010_S3E_WARM_VS && state->cc == 0 &&
++        state->csts == 0 && state->init_regular == 0 && state->init_debug == 0 &&
++        state->hmb_size == T8010_S3E_WARM_HMB_SIZE &&
++        state->hmb_align == T8010_S3E_WARM_HMB_ALIGN && state->hmb_addr_lo == 0 &&
++        state->hmb_addr_hi == 0 && state->hmb_control == 0 &&
++        state->core_mask == T8010_S3E_WARM_CORE_MASK &&
++        state->log_size == T8010_S3E_WARM_LOG_SIZE && state->marker == T8010_S3E_WARM_MARKER)
++        return T8010_S3E_WARM;
++
++    if (state->cap == 0 && state->vs == 0 && state->cc == 0 && state->csts == 0 &&
++        state->init_regular == 0 && state->init_debug == 0 && state->hmb_size == 0 &&
++        state->hmb_align == 0 && state->hmb_addr_lo == 0 && state->hmb_addr_hi == 0 &&
++        state->hmb_control == 0 && state->core_mask == 0 && state->log_size == 0 &&
++        state->marker == T8010_S3E_COLD_MARKER)
++        return T8010_S3E_COLD;
++
++    return T8010_S3E_UNKNOWN;
++}
++
++static enum t8010_s3e_boot_state t8010_get_stable_s3e_state(u64 bar0, struct t8010_s3e_state *state)
++{
++    struct t8010_s3e_state second;
++
++    t8010_read_s3e_state(bar0, state);
++    udelay(10000);
++    t8010_read_s3e_state(bar0, &second);
++    if (!t8010_s3e_states_equal(state, &second))
++        return T8010_S3E_UNKNOWN;
++
++    return t8010_classify_s3e_state(state);
++}
++
++static void t8010_print_s3e_state(const char *prefix, const struct t8010_s3e_state *state)
++{
++    printf("pcie: %s CAP=0x%lx VS=0x%08x CC=0x%08x CSTS=0x%08x "
++           "init=0x%08x/0x%08x HMB=0x%08x/0x%08x addr=0x%08x%08x ctl=0x%08x "
++           "core=0x%08x log=0x%08x marker=0x%08x\n",
++           prefix, state->cap, state->vs, state->cc, state->csts, state->init_regular,
++           state->init_debug, state->hmb_size, state->hmb_align, state->hmb_addr_hi,
++           state->hmb_addr_lo, state->hmb_control, state->core_mask, state->log_size,
++           state->marker);
++}
++
++static int t8010_prepare_cold_s3e_straps(struct state *state,
++                                         const struct t8010_gpio_function *boot_from_host,
++                                         const struct t8010_gpio_function *debug_gpio)
++{
++    u64 boot_reg = state->gpio_base + 4 * boot_from_host->gpio;
++    u64 debug_reg = state->gpio_base + 4 * debug_gpio->gpio;
++    u32 boot_state = read32(boot_reg);
++    u32 debug_state = read32(debug_reg);
++
++    /*
++     * SecureROM's USB source path concretely drives packed GPIO 0x1906
++     * (GPIO206), while its internal-storage path does not.  The direct
++     * Restore handoff additionally leaves boot_from_host high.  The known-good
++     * normal-iBoot/Pongo handoff has boot_from_host low and GPIO206's output
++     * driver disabled.  This helper is called only after PERST# has been
++     * asserted by the cold-only link restart.  Prepare the boot source before
++     * releasing the debug output so the endpoint samples the normal profile
++     * when that same restart releases PERST#.
++     *
++     * Require the exact captured Restore state.  A different board, firmware
++     * profile, or partially initialized endpoint must fail without a write.
++     */
++    if (boot_state != T8010_S3E_RESTORE_BOOT_FROM_HOST ||
++        debug_state != T8010_S3E_RESTORE_DEBUG_GPIO) {
++        printf("pcie: Refusing unexpected cold S3E GPIO state boot=0x%08x debug=0x%08x\n",
++               boot_state, debug_state);
++        return -1;
++    }
++
++    t8010_gpio_rom_mode(state->gpio_base, boot_from_host->gpio, T8010_ROM_GPIO_OUTPUT_MASK,
++                        T8010_ROM_GPIO_OUTPUT_LOW);
++    sysop("dmb sy");
++    t8010_gpio_rom_mode(state->gpio_base, debug_gpio->gpio, T8010_GPIO_OUTPUT, 0);
++    sysop("dmb sy");
++
++    boot_state = read32(boot_reg);
++    debug_state = read32(debug_reg);
++    if (boot_state != T8010_S3E_NORMAL_BOOT_FROM_HOST ||
++        debug_state != T8010_S3E_NORMAL_DEBUG_GPIO) {
++        printf("pcie: Cold S3E GPIO release did not reach normal state "
++               "boot=0x%08x debug=0x%08x\n",
++               boot_state, debug_state);
++        return -1;
++    }
++
++    printf("pcie: Cold S3E straps prepared while PERST# is asserted\n");
++    return 0;
++}
++
++static int t8010_get_rom_phy_profile(u32 *profile)
++{
++    u32 revision = (read32(T8010_SOC_CHIP_ID_REG) >> 8) & 0xff;
++
++    switch (revision) {
++        case 2:
++        case 3:
++            *profile = 1;
++            return 0;
++        case 4:
++        case 5:
++            *profile = 0;
++            return 0;
++        default:
++            printf("pcie: Refusing unknown T8010 silicon revision 0x%x\n", revision);
++            return -1;
++    }
++}
++
++static void t8010_program_rom_phy_lanes(u64 phy_ip, u32 lane_mask)
++{
++    for (u32 lane = 0; lane_mask; lane++, lane_mask >>= 1) {
++        u64 offset = lane * 0x800;
++
++        if (!(lane_mask & 1))
++            continue;
++
++        set32(phy_ip + 0x20308 + offset, BIT(15));
++        set32(phy_ip + 0x20340 + offset, BIT(6));
++        set32(phy_ip + 0x100fc + offset, BIT(0));
++        mask32(phy_ip + 0x207a0 + offset, 0xff, 0x9f);
++        mask32(phy_ip + 0x207a8 + offset, 0xff, 0x01);
++        write32(phy_ip + 0x2009c + offset, 0xaf);
++        write32(phy_ip + 0x200dc + offset, 0xaf);
++    }
++}
++
++static int t8010_prepare_nvme_endpoint(u64 config_base)
++{
++    u64 endpoint = config_base + T8010_NVME_CONFIG_OFFSET;
++    u32 endpoint_id;
++    u32 pm_cap;
++
++    /* Route ECAM bus 1 and BAR0 through the root port before touching S3E. */
++    write32(config_base + 0x18, T8010_PCI_BUS_NUMBERS);
++    write32(config_base + 0x20, T8010_PCI_MEMORY_BASE_LIMIT);
++    set32(config_base + 0x04, T8010_PCI_COMMAND_MEMORY);
++    udelay(10000);
++
++    endpoint_id = read32(endpoint);
++    if (endpoint_id != 0x2002106b) {
++        printf("pcie: Refusing unexpected T8010 NVMe endpoint 0x%08x\n", endpoint_id);
++        return -1;
++    }
++
++    pm_cap = t8010_find_cap(endpoint, T8010_PCI_CAP_PM);
++    if (!pm_cap) {
++        printf("pcie: T8010 NVMe endpoint has no PM capability\n");
++        return -1;
++    }
++
++    mask32(endpoint + pm_cap + 4, GENMASK(1, 0), 0);
++    write32(endpoint + 0x10, T8010_NVME_BAR0_BUS | BIT(2));
++    write32(endpoint + 0x14, 0);
++    set32(endpoint + 0x04, T8010_PCI_COMMAND_MEMORY | T8010_PCI_COMMAND_MASTER);
++    return 0;
++}
++
++static int t8010_rom_link(struct state *state, const char *path, u64 config_base, u64 phy_status,
++                          u64 phy_ip, u32 clkreq_gpio,
++                          const struct t8010_gpio_function *boot_from_host,
++                          const struct t8010_gpio_function *debug_gpio)
++{
++    bool cold_s3e_restart = boot_from_host && debug_gpio;
++    u32 profile;
++    u32 pcie_cap;
++    u32 lane_mask;
++
++    if (t8010_get_rom_phy_profile(&profile))
++        return -1;
++
++    if (!!boot_from_host != !!debug_gpio) {
++        printf("pcie: Refusing incomplete T8010 cold-S3E strap request\n");
++        return -1;
++    }
++
++    printf("pcie: Using SecureROM T8010 sequence for %s (profile %u)\n",
++           cold_s3e_restart ? "cold S3E restart" : "first link", profile);
++
++    t8010_gpio_config(state->gpio_base, state->perst_gpio, true, false);
++    udelay(250);
++    if (cold_s3e_restart && t8010_prepare_cold_s3e_straps(state, boot_from_host, debug_gpio))
++        return -1;
++
++    clear32(state->port_base[0] + 0x80, BIT(0));
++    clear32(state->rc_base + 0x134, BIT(0));
++    clear32(state->rc_base + 0x124, BIT(0));
++    clear32(state->rc_base + 0x100, BIT(0));
++    if (poll32(state->rc_base + 0x104, BIT(0), 0, 250000)) {
++        printf("pcie: T8010 first-link port teardown timed out\n");
++        return -1;
++    }
++
++    int power_ret = pmgr_adt_power_disable(path);
++    state->powered = false;
++    if (power_ret) {
++        printf("pcie: Failed to power down T8010 PCIe before first link\n");
++        if (!pmgr_adt_power_enable(path))
++            state->powered = true;
++        return -1;
++    }
++
++    if (pmgr_adt_power_enable(path)) {
++        printf("pcie: Failed to restore T8010 PCIe power for first link\n");
++        return -1;
++    }
++    state->powered = true;
++
++    /* Shared SecureROM/iBoot cold preamble; the lane program below is ROM-specific. */
++    clear32(state->rc_base + 0x110, BIT(0));
++    clear32(state->rc_base + 0x24, BIT(0));
++    t8010_gpio_rom_mode(state->gpio_base, T8010_ROM_GPIO, T8010_ROM_GPIO_PERIPHERAL_MASK,
++                        T8010_ROM_GPIO_PERIPHERAL);
++    set32(state->rc_base + 0x14, BIT(0));
++    udelay(100);
++    set32(state->rc_base + 0x24, BIT(0));
++    write32(state->rc_base + 0x4, 0x10 | profile);
++    if (poll32(state->rc_base + 0x28, BIT(0), BIT(0), T8010_ROM_READY_TIMEOUT_US)) {
++        printf("pcie: T8010 SecureROM common-ready timeout\n");
++        return -1;
++    }
++    set32(state->rc_base + 0x34, BIT(0));
++    if (poll32(state->rc_base + 0x28, BIT(4), BIT(4), T8010_ROM_READY_TIMEOUT_US)) {
++        printf("pcie: T8010 SecureROM common-init timeout\n");
++        return -1;
++    }
++    t8010_gpio_rom_mode(state->gpio_base, state->perst_gpio, T8010_ROM_GPIO_OUTPUT_MASK,
++                        T8010_ROM_GPIO_OUTPUT_LOW);
++    t8010_gpio_rom_mode(state->gpio_base, clkreq_gpio, T8010_ROM_GPIO_INPUT_MASK,
++                        T8010_ROM_GPIO_INPUT);
++    if (poll32(state->gpio_base + 4 * clkreq_gpio, T8010_GPIO_DATA, 0, T8010_ROM_LINK_TIMEOUT_US)) {
++        printf("pcie: T8010 SecureROM CLKREQ# timeout\n");
++        return -1;
++    }
++    t8010_gpio_rom_mode(state->gpio_base, clkreq_gpio, T8010_ROM_GPIO_PERIPHERAL_MASK,
++                        T8010_ROM_GPIO_PERIPHERAL);
++
++    clear32(state->rc_base + 0x134, BIT(0));
++    set32(state->rc_base + 0x124, BIT(0));
++    if (poll32(state->rc_base + 0x28, BIT(4), BIT(4), T8010_ROM_READY_TIMEOUT_US)) {
++        printf("pcie: T8010 SecureROM port-init timeout\n");
++        return -1;
++    }
++    set32(state->rc_base + 0x100, BIT(0));
++    set32(state->rc_base + 0x134, BIT(0));
++    if (poll32(state->rc_base + 0x104, BIT(0), BIT(0), T8010_ROM_READY_TIMEOUT_US)) {
++        printf("pcie: T8010 SecureROM port-ready timeout\n");
++        return -1;
++    }
++
++    set32(state->port_base[0] + 0x130, BIT(1));
++    set32(state->port_base[0] + 0x134, BIT(0));
++    write32(state->port_base[0] + 0x90, 0x28);
++    set32(state->port_base[0] + 0x140, BIT(31));
++    udelay(100);
++    t8010_gpio_rom_mode(state->gpio_base, state->perst_gpio, T8010_ROM_GPIO_OUTPUT_MASK,
++                        T8010_ROM_GPIO_OUTPUT_HIGH);
++
++    pcie_cap = t8010_find_cap(config_base, T8010_PCI_CAP_PCIE);
++    if (!pcie_cap) {
++        printf("pcie: T8010 first-link root port has no PCIe capability\n");
++        return -1;
++    }
++    mask32(config_base + pcie_cap + 0x30, GENMASK(3, 0), 1);
++    if ((read32(T8010_SOC_CHIP_ID_REG) & 0xfe00) == 0x400) {
++        mask32(config_base + DWC_DBI_LINK_WIDTH_SPEED_CONTROL, DWC_DBI_LINK_WIDTH,
++               FIELD_PREP(DWC_DBI_LINK_WIDTH, 1));
++        mask32(config_base + DWC_DBI_PORT_LINK_CONTROL, DWC_DBI_PORT_LINK_MODE,
++               FIELD_PREP(DWC_DBI_PORT_LINK_MODE, DWC_DBI_PORT_LINK_MODE_1_LANE));
++    }
++    mask32(config_base + 0x164, 0x00f8ff00, 0);
++    set32(state->rc_base + 0x4020, 3);
++
++    lane_mask = profile ? 3 : 1;
++    if (poll32(phy_status + 0xc, lane_mask, lane_mask, T8010_ROM_READY_TIMEOUT_US)) {
++        printf("pcie: T8010 SecureROM PHY-lane mask 0x%x timeout\n", lane_mask);
++        return -1;
++    }
++    t8010_program_rom_phy_lanes(phy_ip, lane_mask);
++
++    set32(state->port_base[0] + 0x80, BIT(0));
++    if (poll32(state->port_base[0] + 0x208, BIT(0), BIT(0), T8010_ROM_LINK_TIMEOUT_US) ||
++        t8010_poll_range(state->port_base[0] + 0x208, 0x3f00, 0x1100, 0x1400,
++                         T8010_ROM_LINK_TIMEOUT_US)) {
++        printf("pcie: T8010 SecureROM link training timed out (status 0x%08x)\n",
++               read32(state->port_base[0] + 0x208));
++        return -1;
++    }
++
++    /* Keep the interrupt routing expected by the downstream H9P Linux driver. */
++    write32(state->port_base[0] + 0x104, 0xff002f0f);
++    write32(state->port_base[0] + 0x124, 0x31);
++    write32(state->port_base[0] + 0x128, 0);
++
++    return 0;
++}
++
++static void t8010_port_cleanup(struct state *state)
++{
++    if (state->powered && state->port_base[0])
++        clear32(state->port_base[0] + 0x80, BIT(0));
++    if (state->gpio_base)
++        t8010_gpio_config(state->gpio_base, state->perst_gpio, true, false);
++}
++
++static int pcie_init_t8010(struct state *state, const char *path, int adt_offset, int *adt_path)
++{
++    const u64 expected_addr[] = {
++        0x610000000, 0x601000000, 0x601004000, 0x602000000, 0x602004000, 0x603000000,
++        0x603004000, 0x604000000, 0x604004000, 0x600000000, 0x600008000, 0x60a000000,
++    };
++    const u64 expected_size[] = {
++        0x1000000, 0x4000, 0x4000, 0x4000, 0x4000, 0x4000,
++        0x4000,    0x4000, 0x4000, 0x8000, 0x4000, 0x40000,
++    };
++    struct t8010_gpio_function boot_from_host, debug_gpio, perst, clkreq;
++    struct t8010_simple_function dart_force_active, nvmmu_force_active;
++    struct t8010_port_function port_control;
++    int dart_path[8], gpio_path[8], nvmmu_path[8];
++    int dart_node, gpio_node, nvmmu_node, bridge, endpoint;
++    u64 config_base, dart_base, nvmmu_base, phy_status, phy_ip, size;
++    u64 dart_vm_offset, nvmmu_sart_region[2], s3e_scratch_region[2];
++    u32 bridge_phandle, dart_diag, dart_manual, dart_options, dart_page_size, dart_phandle;
++    u32 dart_fetch, dart_vm_size;
++    u32 gpio_phandle, max_speed, nvmmu_phandle, nvmmu_sart_virtual_base;
++    u32 nvmmu_sgl_entries, nvmmu_tags, nvmmu_virtual_base, pcie_phandle, port_count;
++
++    if (ADT_GETPROP(adt, adt_offset, "#ports", &port_count) < 0 || port_count != 4) {
++        printf("pcie: Unexpected T8010 port count\n");
++        return -1;
++    }
++
++    for (size_t i = 0; i < ARRAY_SIZE(expected_addr); i++) {
++        u64 addr;
++
++        if (adt_get_reg(adt, adt_path, "reg", i, &addr, &size) || addr != expected_addr[i] ||
++            size != expected_size[i]) {
++            printf("pcie: Refusing unknown T8010 register layout at index %lu\n", i);
++            return -1;
++        }
++    }
++
++    bridge = adt_subnode_offset(adt, adt_offset, "pci-bridge0");
++    endpoint = bridge < 0 ? -1 : adt_subnode_offset(adt, bridge, "s3e");
++    gpio_node = adt_path_offset_trace(adt, "/arm-io/gpio", gpio_path);
++    dart_node = adt_path_offset_trace(adt, "/arm-io/dart-apcie0", dart_path);
++    nvmmu_node = adt_path_offset_trace(adt, "/arm-io/nvme-mmu0", nvmmu_path);
++    if (bridge < 0 || endpoint < 0 || gpio_node < 0 || dart_node < 0 || nvmmu_node < 0 ||
++        ADT_GETPROP(adt, adt_offset, "AAPL,phandle", &pcie_phandle) < 0 ||
++        ADT_GETPROP(adt, bridge, "AAPL,phandle", &bridge_phandle) < 0 ||
++        ADT_GETPROP(adt, gpio_node, "AAPL,phandle", &gpio_phandle) < 0 ||
++        ADT_GETPROP(adt, dart_node, "AAPL,phandle", &dart_phandle) < 0 ||
++        ADT_GETPROP(adt, nvmmu_node, "AAPL,phandle", &nvmmu_phandle) < 0 ||
++        adt_get_reg(adt, gpio_path, "reg", 0, &state->gpio_base, &size) ||
++        state->gpio_base != 0x20f100000 || size != 0x100000 ||
++        adt_get_reg(adt, dart_path, "reg", 0, &dart_base, &size) || dart_base != T8010_DART_BASE ||
++        size != 0x4000 || adt_get_reg(adt, nvmmu_path, "reg", 0, &nvmmu_base, &size) ||
++        nvmmu_base != T8010_NVMMU_BASE || size != 0x4000 ||
++        t8010_get_gpio_function(adt_offset, "function-debug_gpio", &debug_gpio) ||
++        t8010_get_gpio_function(bridge, "function-perst", &perst) ||
++        t8010_get_gpio_function(bridge, "function-clkreq", &clkreq) ||
++        t8010_get_gpio_function(endpoint, "function-boot_from_host", &boot_from_host) ||
++        t8010_get_simple_function(bridge, "function-dart_force_active",
++                                  T8010_FORCE_ACTIVE_FOURCC_RAW, &dart_force_active) ||
++        t8010_get_simple_function(bridge, "function-nvme_mmu_force_active",
++                                  T8010_FORCE_ACTIVE_FOURCC_RAW, &nvmmu_force_active) ||
++        t8010_get_port_function(endpoint, "function-pcie_port_control", &port_control) ||
++        debug_gpio.phandle != gpio_phandle || perst.phandle != gpio_phandle ||
++        clkreq.phandle != gpio_phandle || boot_from_host.phandle != gpio_phandle ||
++        debug_gpio.gpio != 206 || perst.gpio != 12 || clkreq.gpio != 16 ||
++        boot_from_host.gpio != 165 || debug_gpio.flags != 257 || perst.flags != 0 ||
++        clkreq.flags != 2 || boot_from_host.flags != 257 ||
++        dart_force_active.phandle != dart_phandle || nvmmu_force_active.phandle != nvmmu_phandle ||
++        port_control.phandle != pcie_phandle || port_control.bridge_phandle != bridge_phandle ||
++        ADT_GETPROP(adt, bridge, "maximum-link-speed", &max_speed) < 0 || max_speed != 3 ||
++        !adt_getprop(adt, bridge, "nvme-mode", NULL)) {
++        printf("pcie: Refusing unexpected D111 PCIe GPIO or bridge description\n");
++        return -1;
++    }
++
++    if (!adt_is_compatible(adt, dart_node, "dart,t8010") ||
++        !adt_is_compatible(adt, nvmmu_node, "nvme-mmu,t8010") ||
++        ADT_GETPROP(adt, dart_node, "manual-availability", &dart_manual) < 0 ||
++        ADT_GETPROP(adt, dart_node, "dart-options", &dart_options) < 0 ||
++        ADT_GETPROP(adt, dart_node, "page-size", &dart_page_size) < 0 ||
++        ADT_GETPROP(adt, dart_node, "fetch-config", &dart_fetch) < 0 ||
++        ADT_GETPROP(adt, dart_node, "diag-config", &dart_diag) < 0 ||
++        ADT_GETPROP(adt, dart_node, "vm-size", &dart_vm_size) < 0 ||
++        ADT_GETPROP(adt, dart_node, "vm-offset", &dart_vm_offset) < 0 || dart_manual != 1 ||
++        dart_options != T8010_DART_EXPECTED_OPTIONS ||
++        dart_page_size != T8010_DART_EXPECTED_PAGE_SIZE || dart_fetch != T8010_DART_FETCH_VALUE ||
++        dart_diag != T8010_DART_DIAG_VALUE || dart_vm_size != T8010_DART_EXPECTED_VM_SIZE ||
++        dart_vm_offset != T8010_DART_EXPECTED_VM_OFFSET ||
++        adt_getprop_copy(adt, nvmmu_node, "sart-region", nvmmu_sart_region,
++                         sizeof(nvmmu_sart_region)) < 0 ||
++        adt_getprop_copy(adt, endpoint, "nvme-scratch-virt-region", s3e_scratch_region,
++                         sizeof(s3e_scratch_region)) < 0 ||
++        ADT_GETPROP(adt, nvmmu_node, "sart-virtual-base", &nvmmu_sart_virtual_base) < 0 ||
++        ADT_GETPROP(adt, nvmmu_node, "virtual-base", &nvmmu_virtual_base) < 0 ||
++        ADT_GETPROP(adt, nvmmu_node, "tags", &nvmmu_tags) < 0 ||
++        ADT_GETPROP(adt, nvmmu_node, "sgl-entries", &nvmmu_sgl_entries) < 0 ||
++        nvmmu_sart_region[0] != T8010_NVMMU_SART_BASE ||
++        nvmmu_sart_region[1] != T8010_NVMMU_SART_SIZE ||
++        s3e_scratch_region[0] != T8010_NVMMU_SART_VIRTUAL_BASE ||
++        s3e_scratch_region[1] != T8010_NVMMU_SART_SIZE ||
++        nvmmu_sart_virtual_base != T8010_NVMMU_SART_VIRTUAL_BASE ||
++        nvmmu_virtual_base != T8010_NVMMU_VIRTUAL_BASE || nvmmu_tags != T8010_NVMMU_TAGS ||
++        nvmmu_sgl_entries != T8010_NVMMU_SGL_ENTRIES) {
++        printf("pcie: Refusing unexpected D111 DART, NVMMU, or S3E scratch description\n");
++        return -1;
++    }
++
++    config_base = expected_addr[0];
++    state->port_base[0] = expected_addr[1];
++    state->port_ltssm_base[0] = expected_addr[2];
++    state->rc_base = expected_addr[9];
++    phy_status = expected_addr[10];
++    phy_ip = expected_addr[11];
++    state->perst_gpio = perst.gpio;
++    state->port_count = 1;
++
++    if (pmgr_adt_power_enable(path)) {
++        printf("pcie: Failed to enable T8010 PCIe power\n");
++        return -1;
++    }
++    state->powered = true;
++
++    printf("pcie: Initializing D111 NVMe port with T8010 register layout\n");
++    if (t8010_rom_link(state, path, config_base, phy_status, phy_ip, clkreq.gpio, NULL, NULL))
++        goto fail;
++
++    printf("pcie: T8010 NVMe first link reached operational state 0x%08x\n",
++           read32(state->port_base[0] + 0x208));
++
++    if (t8010_prepare_nvme_endpoint(config_base))
++        goto fail;
++
++    struct t8010_s3e_state s3e_state;
++    enum t8010_s3e_boot_state s3e_boot_state =
++        t8010_get_stable_s3e_state(T8010_NVME_BAR0_CPU, &s3e_state);
++
++    t8010_print_s3e_state("initial S3E state", &s3e_state);
++    if (s3e_boot_state == T8010_S3E_COLD) {
++        printf("pcie: Exact uninitialized S3E signature detected\n");
++
++        /*
++         * Cold S3E samples both strap GPIOs while PERST# is asserted. Apply
++         * the guarded normal-iBoot states before releasing PERST# in the same
++         * reconstructed SecureROM link sequence.
++         */
++        if (t8010_rom_link(state, path, config_base, phy_status, phy_ip, clkreq.gpio,
++                           &boot_from_host, &debug_gpio))
++            goto fail;
++
++        printf("pcie: T8010 cold-S3E restart link reached operational state 0x%08x\n",
++               read32(state->port_base[0] + 0x208));
++        if (t8010_prepare_nvme_endpoint(config_base))
++            goto fail;
++
++        for (u32 attempt = 0; attempt < T8010_S3E_READY_ATTEMPTS; attempt++) {
++            s3e_boot_state = t8010_get_stable_s3e_state(T8010_NVME_BAR0_CPU, &s3e_state);
++            if (s3e_boot_state == T8010_S3E_WARM)
++                break;
++            udelay(10000);
++        }
++        t8010_print_s3e_state("post-restart S3E state", &s3e_state);
++        if (s3e_boot_state != T8010_S3E_WARM) {
++            printf("pcie: Cold-S3E reset-time straps did not produce the exact warm signature\n");
++            goto fail;
++        }
++    } else if (s3e_boot_state == T8010_S3E_WARM) {
++        printf("pcie: S3E already initialized; cold bootstrap skipped\n");
++    } else {
++        printf("pcie: Refusing unknown or changing S3E state\n");
++        goto fail;
++    }
++
++    state->initialized = true;
++    printf("pcie: T8010 NVMe link trained (status 0x%08x)\n", read32(state->port_base[0] + 0x208));
++    return 0;
++
++fail:
++    t8010_port_cleanup(state);
++    return -1;
++}
++
+ static int pcie_init_controller(int controller, const char *path)
+ {
+     struct state *state = &controllers[controller];
+@@ -267,13 +1042,27 @@ static int pcie_init_controller(int controller, const char *path)
+     u32 link_width = 1;
+     const struct fuse_bits *fuse_bits;
+ 
+-    state->initialized = false;
+-    state->num_phys = 1;
+-
+     adt_offset = adt_path_offset_trace(adt, path, adt_path);
+     if (adt_offset < 0) {
+         printf("pcie: Error getting node %s\n", path);
+-        return -1;
++        return PCIE_CONTROLLER_NOT_FOUND;
++    }
++
++    state->initialized = false;
++    state->powered = false;
++    state->num_phys = 1;
++
++    if (adt_is_compatible(adt, adt_offset, "apcie,t8010")) {
++        int ret;
++
++        if (!t8010_is_d111()) {
++            printf("pcie: T8010 controller is not a supported D111 device\n");
++            return PCIE_CONTROLLER_FAILED;
++        }
++
++        state->pcie_regs = &regs_t8010;
++        ret = pcie_init_t8010(state, path, adt_offset, adt_path);
++        return ret ? PCIE_CONTROLLER_REQUIRED_FAILED : PCIE_CONTROLLER_OK;
+     }
+ 
+     if (adt_is_compatible(adt, adt_offset, "apcie,t8103")) {
+@@ -842,19 +1631,33 @@ static int pcie_init_controller(int controller, const char *path)
+ int pcie_init(void)
+ {
+     bool success = false;
++    int ret;
+ 
+     if (pcie_initialized)
+         return 0;
+ 
+-    success |= pcie_init_controller(APCIE, "/arm-io/apcie") == 0;
+-    success |= pcie_init_controller(APCIE, "/arm-io/apcie0") == 0;
+-    success |= pcie_init_controller(APCIE_GE0, "/arm-io/apcie-ge0") == 0;
+-    success |= pcie_init_controller(APCIE_GE1, "/arm-io/apcie-ge1") == 0;
++    ret = pcie_init_controller(APCIE, "/arm-io/apcie");
++    if (ret == PCIE_CONTROLLER_NOT_FOUND)
++        ret = pcie_init_controller(APCIE, "/arm-io/apcie0");
++    if (ret == PCIE_CONTROLLER_REQUIRED_FAILED)
++        return -1;
++    success |= ret == PCIE_CONTROLLER_OK;
++
++    ret = pcie_init_controller(APCIE_GE0, "/arm-io/apcie-ge0");
++    if (ret == PCIE_CONTROLLER_REQUIRED_FAILED)
++        return -1;
++    success |= ret == PCIE_CONTROLLER_OK;
++
++    ret = pcie_init_controller(APCIE_GE1, "/arm-io/apcie-ge1");
++    if (ret == PCIE_CONTROLLER_REQUIRED_FAILED)
++        return -1;
++    success |= ret == PCIE_CONTROLLER_OK;
+ 
+     if (success)
+         pcie_initialized = true;
+ 
+-    return success ? 0 : -1;
++    /* PCIe is optional on platforms without a matching controller. */
++    return 0;
+ }
+ 
+ int pcie_shutdown(void)
+@@ -868,6 +1671,12 @@ int pcie_shutdown(void)
+         if (!state->initialized)
+             continue;
+ 
++        if (state->pcie_regs->type == APCIE_T8010) {
++            t8010_port_cleanup(state);
++            state->initialized = false;
++            continue;
++        }
++
+         for (u32 port = 0; port < state->port_count; port++) {
+             if (state->pcie_regs->type == APCIE_T602X)
+                 clear32(state->port_base[port] + APCIE_T602X_PORT_RESET, APCIE_PORT_RESET_DIS);
+-- 
+2.54.0 (Apple Git-157)
+

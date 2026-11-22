@@ -1,0 +1,272 @@
+#!/usr/bin/env bash
+#
+# Project Cascadia — A10 / iPad 7 (iPad7,11 J171 Wi-Fi, iPad7,12 J172
+# Cellular), through ./cascadia a10 at the repository's top.
+#
+#   ./cascadia a10 doctor          check that this machine has what the build needs
+#   ./cascadia a10 build           tools + m1n1 + kernel (all)
+#   ./cascadia a10 build tools     gaster (checkm8) + hBootPatcher, host side
+#   ./cascadia a10 build m1n1      just m1n1
+#   ./cascadia a10 build kernel    just the kernel + DTBs
+#   ./cascadia a10 build initramfs the USB-gadget initramfs (shell, ssh, network)
+#   ./cascadia a10 inputs          iPad in DFU: pwn it, fetch iBSS + DeviceTree
+#                                  from Apple, decrypt and patch them (once per board)
+#   ./cascadia a10 firmware        Apple's firmware for the drivers (SmartIO), from the CDN
+#   ./cascadia a10 pack            wrap m1n1 and m1n1 + Linux into bootable IMG4s
+#   ./cascadia a10 boot            DFU → checkm8 → patched iBSS → m1n1 → Linux
+#                                  (USB: ssh root@172.16.43.1, serial /dev/cu.usbmodem*)
+#   ./cascadia a10 boot proxy      the same, into m1n1's proxy instead of Linux
+#                                  (driven from the Mac: m1n1 proxyclient)
+#
+# The boot chain is open source end to end: gaster (checkm8), hBootPatcher,
+# m1n1 -- no checkra1n, no PongoOS. Pinned sources: sources.env.
+set -euo pipefail
+
+A10="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$A10"
+. "$A10/sources.env"
+
+say()  { printf '==> %s\n' "$*"; }
+note() { printf '    %s\n' "$*"; }
+fail() { printf 'error: %s\n' "$*" >&2; exit 1; }
+have() { command -v "$1" >/dev/null 2>&1; }
+
+B="$A10/build"
+GASTER="$B/bin/gaster"
+HBP="$B/bin/hBootPatcher"
+REPAIR="$A10/../a13/boot/repair_lzss_img4.py"   # ipsw 3.1.714's bad LZSS record
+OVERLAY="$A10/../a13/boot/overlay_cpio.py"      # a second cpio on top of the initramfs
+
+sha_check() {   # sha file
+    if have sha256sum; then echo "$1  $2" | sha256sum -c - >/dev/null
+    else echo "$1  $2" | shasum -a 256 -c - >/dev/null; fi
+}
+
+# ---------- device -----------------------------------------------------------
+
+# irecovery -q -> CPID MODEL PRODUCT MODE in globals; only the iPad 7
+query() {
+    local q
+    q=$(irecovery -q 2>/dev/null) || return 1
+    CPID=$(printf '%s\n' "$q" | awk '$1=="CPID:"{print $2}')
+    MODEL=$(printf '%s\n' "$q" | awk '$1=="MODEL:"{print $2}')
+    PRODUCT=$(printf '%s\n' "$q" | awk '$1=="PRODUCT:"{print $2}')
+    MODE=$(printf '%s\n' "$q" | awk '$1=="MODE:"{print $2}')
+    PWND=$(printf '%s\n' "$q" | grep -o 'PWND:[^]]*' || true)
+}
+
+need_ipad7() {
+    query || fail "no device -- put the iPad 7 in DFU and connect it"
+    [ "$CPID" = 0x8010 ] || fail "CPID $CPID is not the A10 (0x8010)"
+    case "$MODEL" in
+        j171ap) BOARD=j171 ;;
+        j172ap) BOARD=j172 ;;
+        *) fail "$MODEL / $PRODUCT is an A10, but not an iPad 7 (j171ap / j172ap)" ;;
+    esac
+    IN="$B/inputs/$BOARD"
+}
+
+wait_mode() {   # mode seconds
+    local i=0
+    while [ "$i" -lt "$2" ]; do
+        if query && [ "$MODE" = "$1" ]; then return 0; fi
+        sleep 1; i=$((i + 1))
+    done
+    return 1
+}
+
+pwn() {
+    [ -x "$GASTER" ] || fail "no gaster -- run: ./cascadia a10 build tools"
+    query || true
+    if [ -n "${PWND:-}" ]; then note "already pwned ($PWND)"; return; fi
+    say "checkm8 (gaster)"
+    "$GASTER" pwn
+    # gaster leaves the AES engine usable after one throwaway decryption
+    "$GASTER" decrypt_kbag "$(printf '0%.0s' $(seq 96))" >/dev/null 2>&1 || true
+}
+
+# ---------- doctor -----------------------------------------------------------
+
+cmd_doctor() {
+    rc=0
+    say "host: $(uname -srm)"
+    for t in git python3 curl irecovery ipsw docker; do
+        if have "$t"; then note "ok:      $t"; else note "MISSING: $t"; rc=1; fi
+    done
+    if [ "$(uname -s)" = Darwin ]; then
+        if have rustup && rustup target list --installed 2>/dev/null | grep -qx aarch64-unknown-none-softfloat; then
+            note "ok:      Rust target aarch64-unknown-none-softfloat"
+        else note "MISSING: rustup target add aarch64-unknown-none-softfloat (m1n1)"; rc=1; fi
+        if have brew && [ -x "$(brew --prefix llvm 2>/dev/null)/bin/clang" ]; then note "ok:      Homebrew llvm"
+        else note "MISSING: brew install llvm lld (m1n1)"; rc=1; fi
+    fi
+    have ipsw && note "ipsw $(ipsw version 2>/dev/null | head -1)"
+    [ -f "$REPAIR" ] && note "ok:      LZSS repair (devices/a13/boot)" || { note "MISSING: $REPAIR"; rc=1; }
+    for f in "$GASTER" "$HBP" "$B/payload/m1n1-idevice.macho" "$B/payload/Image.gz"; do
+        if [ -e "$f" ]; then note "built:   ${f#$A10/}"; else note "not yet: ${f#$A10/}"; fi
+    done
+    return $rc
+}
+
+# ---------- build ------------------------------------------------------------
+
+cmd_build() {
+    case "${1:-all}" in
+        tools)  bash tools/build-tools.sh ;;
+        m1n1)   bash m1n1/build-m1n1.sh ;;
+        kernel) bash kernel/build-kernel.sh ;;
+        initramfs) bash initramfs/make-initramfs.sh ;;
+        all)    bash tools/build-tools.sh; bash m1n1/build-m1n1.sh; bash kernel/build-kernel.sh
+                bash initramfs/make-initramfs.sh ;;
+        *) fail "build what? tools, m1n1, kernel, initramfs (or nothing for all)" ;;
+    esac
+}
+
+# ---------- inputs -----------------------------------------------------------
+
+cmd_inputs() {
+    [ -x "$HBP" ] || fail "no hBootPatcher -- run: ./cascadia a10 build tools"
+    need_ipad7
+    [ "$MODE" = DFU ] || fail "the iPad is in $MODE mode; inputs needs DFU (gaster decrypts with its AES engine)"
+    mkdir -p "$IN"
+    pwn
+
+    say "IM4M"
+    curl -fsSL "$A10_IM4M_URL" -o "$IN/IM4M"
+    sha_check "$A10_IM4M_SHA256" "$IN/IM4M" || fail "IM4M checksum mismatch"
+
+    say "iBSS + DeviceTree from iPadOS $A10_BOOT_IOS ($PRODUCT, $MODEL)"
+    local w; w=$(mktemp -d)
+    ( cd "$w"
+      ipsw download ipsw --version "$A10_BOOT_IOS" -d "$PRODUCT" -y \
+          --pattern '^BuildManifest.plist$' >/dev/null )
+    local manifest ibss dtre
+    manifest=$(find "$w" -name BuildManifest.plist -type f | head -1)
+    [ -n "$manifest" ] || fail "no BuildManifest.plist from ipsw"
+    ibss=$(awk "/$MODEL/{x=1}x&&/iBSS[.]/{print;exit}" "$manifest" | sed -E 's/.*<string>(.*)<\/string>.*/\1/')
+    dtre=$(awk "/$MODEL/{x=1}x&&/DeviceTree[.]/{print;exit}" "$manifest" | sed -E 's/.*<string>(.*)<\/string>.*/\1/')
+    [ -n "$ibss" ] && [ -n "$dtre" ] || fail "no iBSS / DeviceTree for $MODEL in the manifest"
+    note "$ibss"; note "$dtre"
+    ( cd "$w"
+      ipsw download ipsw --version "$A10_BOOT_IOS" -d "$PRODUCT" -y --pattern "^${ibss}\$" >/dev/null
+      ipsw download ipsw --version "$A10_BOOT_IOS" -d "$PRODUCT" -y --pattern "^${dtre}\$" >/dev/null )
+    local ibss_f dtre_f
+    ibss_f=$(find "$w" -name "$(basename "$ibss")" -type f | head -1)
+    dtre_f=$(find "$w" -name "$(basename "$dtre")" -type f | head -1)
+
+    say "decrypt + patch iBSS"
+    "$GASTER" decrypt "$ibss_f" "$IN/iBSS.raw"
+    "$HBP" -airs "$IN/iBSS.raw" "$IN/iBSS.patched.raw"
+    ipsw img4 im4p extract -o "$IN/DeviceTree.raw" "$dtre_f" >/dev/null
+
+    ipsw img4 create --input "$IN/iBSS.patched.raw" --type ibss --im4m "$IN/IM4M" \
+        --output "$IN/iBSS.img4" >/dev/null
+    ipsw img4 create --input "$IN/DeviceTree.raw" --type rdtr --im4m "$IN/IM4M" \
+        --output "$IN/DeviceTree.rdtr.img4" >/dev/null
+    # an empty trust cache (version 1, a UUID, no entries)
+    printf '\001\000\000\000\103\141\163\143\141\144\151\141\101\061\060\000\000\000\000\001\000\000\000\000' \
+        > "$IN/empty.trustcache"
+    ipsw img4 create --input "$IN/empty.trustcache" --type rtsc --im4m "$IN/IM4M" \
+        --output "$IN/empty.rtsc.img4" >/dev/null
+    rm -rf "$w"
+    say "inputs OK: ${IN#$A10/}"
+    note "the iPad stays in pwned DFU: ./cascadia a10 boot proxy"
+}
+
+# ---------- pack -------------------------------------------------------------
+
+cmd_pack() {
+    local P="$B/payload" out="$B/out" tmp i board
+    local m="$P/m1n1-idevice.macho"
+    [ -f "$m" ] || fail "no m1n1 -- run: ./cascadia a10 build m1n1"
+    for i in "$B"/inputs/*/IM4M; do [ -f "$i" ] && break; done
+    [ -f "${i:-}" ] || fail "no IM4M -- run: ./cascadia a10 inputs"
+    mkdir -p "$out"; tmp=$(mktemp -d)
+    # m1n1 alone: with nothing appended it stays in its proxy (USB)
+    { cat "$m"; printf '\000\000\000\000'; } > "$tmp/m1n1-proxy.macho"
+    ipsw img4 create --input "$tmp/m1n1-proxy.macho" --type rkrn --compress lzss \
+        --im4m "$i" --output "$tmp/proxy.img4" >/dev/null
+    python3 "$REPAIR" "$tmp/proxy.img4" "$out/m1n1-proxy.rkrn.img4" >/dev/null
+    say "wrote ${out#$A10/}/m1n1-proxy.rkrn.img4"
+
+    # Linux: m1n1 + bootargs + DTB + initramfs + kernel, which m1n1 finds by
+    # their magic (as devices/a13/boot/package.sh). One image per board that
+    # has inputs.
+    if [ ! -f "$P/Image.gz" ] || [ ! -f "$P/initramfs.cpio.gz" ]; then
+        note "no kernel / initramfs yet -- proxy only (./cascadia a10 build kernel, build initramfs)"
+        rm -rf "$tmp"; return
+    fi
+    # the user's SSH keys and the persistent dropbear host key, in a second cpio
+    SSH_KEYS=${SSH_KEYS:-$(ls ~/.ssh/*.pub 2>/dev/null || true)}
+    if [ -n "$SSH_KEYS" ]; then cat $SSH_KEYS > "$tmp/authorized_keys"; else : > "$tmp/authorized_keys"; fi
+    set -- "root/.ssh/authorized_keys=$tmp/authorized_keys:600"
+    [ -f "$B/ssh/dropbear_ed25519_host_key" ] && \
+        set -- "$@" "etc/dropbear/dropbear_ed25519_host_key=$B/ssh/dropbear_ed25519_host_key:600"
+    # Apple's firmware from ./cascadia a10 firmware, where the drivers look for it
+    if [ -d "$B/firmware" ]; then
+        for f in $(cd "$B/firmware" && find . -type f | sed 's|^\./||'); do
+            set -- "$@" "lib/firmware/$f=$B/firmware/$f:644"
+        done
+    else
+        note "no build/firmware -- no SmartIO, no touch (run: ./cascadia a10 firmware)"
+    fi
+    python3 "$OVERLAY" "$tmp/overlay.cpio" "$@"
+    { gzip -dc "$P/initramfs.cpio.gz"; cat "$tmp/overlay.cpio"; } | gzip -9 > "$tmp/initramfs.cpio.gz"
+    note "ssh keys: $(grep -c . "$tmp/authorized_keys")"
+    cp "$tmp/initramfs.cpio.gz" "$out/initramfs.cpio.gz"   # also for m1n1's linux.py
+    for i in "$B"/inputs/*/IM4M; do
+        board=$(basename "$(dirname "$i")")
+        [ -f "$P/t8010-$board.dtb" ] || { note "no t8010-$board.dtb -- skipped"; continue; }
+        cat "$m" boot/bootargs.txt "$P/t8010-$board.dtb" "$tmp/initramfs.cpio.gz" \
+            "$P/Image.gz" > "$tmp/linux.macho"
+        printf '\000\000\000\000' >> "$tmp/linux.macho"
+        ipsw img4 create --input "$tmp/linux.macho" --type rkrn --compress lzss \
+            --im4m "$i" --output "$tmp/linux.img4" >/dev/null
+        python3 "$REPAIR" "$tmp/linux.img4" "$out/m1n1-linux-$board.rkrn.img4" >/dev/null
+        say "wrote ${out#$A10/}/m1n1-linux-$board.rkrn.img4 ($(($(wc -c < "$out/m1n1-linux-$board.rkrn.img4") / 1024)) KiB)"
+    done
+    rm -rf "$tmp"
+}
+
+# ---------- boot -------------------------------------------------------------
+
+cmd_boot() {
+    need_ipad7
+    local img="$B/out/m1n1-linux-$BOARD.rkrn.img4"
+    [ "${1:-}" = proxy ] && img="$B/out/m1n1-proxy.rkrn.img4"
+    [ -f "$img" ] || fail "no ${img#$A10/} -- run: ./cascadia a10 pack"
+    [ -f "$IN/iBSS.img4" ] || fail "no inputs for $BOARD -- run: ./cascadia a10 inputs"
+    if [ "$MODE" = DFU ]; then
+        pwn
+        "$GASTER" reset
+        sleep 1
+        say "patched iBSS"
+        irecovery -f "$IN/iBSS.img4" >/dev/null
+        note "a cable replug may be needed on some setups"
+        wait_mode Recovery 20 || fail "no Recovery within 20 s after iBSS"
+    fi
+    [ "$MODE" = Recovery ] || fail "the iPad is in $MODE mode -- DFU, please"
+    say "DeviceTree, trust cache, m1n1"
+    irecovery -f "$IN/DeviceTree.rdtr.img4" >/dev/null; irecovery -c devicetree
+    irecovery -f "$IN/empty.rtsc.img4" >/dev/null;      irecovery -c firmware
+    irecovery -f "$img" >/dev/null;                     irecovery -c bootx
+    if [ "${1:-}" = proxy ]; then
+        say "bootx submitted: m1n1 proxy. On the Mac: ls /dev/cu.usbmodem*"
+    else
+        say "bootx submitted: Linux. ~30 s later: ssh root@172.16.43.1 (or screen /dev/cu.usbmodem*)"
+    fi
+}
+
+# ---------- main -------------------------------------------------------------
+
+cmd="${1:-}"; [ $# -gt 0 ] && shift
+case "$cmd" in
+    doctor) cmd_doctor ;;
+    build)  cmd_build "$@" ;;
+    inputs) cmd_inputs ;;
+    firmware) bash tools/firmware.sh ;;
+    pack)   cmd_pack ;;
+    boot)   cmd_boot "$@" ;;
+    ''|-h|--help|help) awk 'NR>1 && /^#/ {sub(/^# ?/, ""); print; next} NR>1 {exit}' "$A10/cascadia" ;;
+    *) fail "unknown command '$cmd' -- ./cascadia a10 help" ;;
+esac

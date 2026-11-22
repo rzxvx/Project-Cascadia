@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# build-tools.sh - fetch and build the host side of the boot chain at the
+# pinned commits (sources.env): gaster (checkm8) and hBootPatcher.
+# Output: devices/a10/build/bin/{gaster,hBootPatcher}
+set -euo pipefail
+
+HERE="$(cd "$(dirname "$0")" && pwd)"
+A10="$(cd "$HERE/.." && pwd)"
+. "$A10/sources.env"
+BIN="$A10/build/bin"
+mkdir -p "$BIN" "$A10/build/src"
+MAKE=$(command -v gmake || command -v make)
+
+fetch() {   # repo commit dir
+    local dir="$A10/build/src/$3"
+    if [ ! -d "$dir/.git" ]; then
+        git init -q "$dir"
+        git -C "$dir" remote add origin "$1"
+    fi
+    git -C "$dir" fetch -q --depth=1 origin "$2"
+    git -C "$dir" checkout -q -f FETCH_HEAD
+    # the Hoolock repos name their submodules by SSH URL; fetch them over HTTPS
+    git -C "$dir" -c url."https://github.com/".insteadOf=git@github.com: \
+        submodule update -q --init --recursive
+}
+
+fetch "$A10_GASTER_REPO" "$A10_GASTER_COMMIT" gaster
+if [ "$(uname -s)" = Darwin ]; then
+    "$MAKE" -s -C "$A10/build/src/gaster" macos
+else
+    "$MAKE" -s -C "$A10/build/src/gaster" libusb_dyn
+fi
+cp "$A10/build/src/gaster/gaster" "$BIN/"
+
+fetch "$A10_HBOOTPATCHER_REPO" "$A10_HBOOTPATCHER_COMMIT" hBootPatcher
+"$MAKE" -s -C "$A10/build/src/hBootPatcher"
+cp "$A10/build/src/hBootPatcher/hBootPatcher" "$BIN/"
+
+echo "tools OK: $BIN/gaster $BIN/hBootPatcher"

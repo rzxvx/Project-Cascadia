@@ -1,0 +1,78 @@
+# On top of HoolockLinux's config_16k: what the J171/J172 hardware needs, as
+# Pauli1Go's tree enables it in arch/arm64/configs/defconfig, plus the drivers
+# it relies on being default-y there. build-kernel.sh warns about any line
+# here that does not survive olddefconfig.
+
+# A10 core
+CONFIG_ARM64_ERRATUM_APPLE_FUSION=y
+CONFIG_APPLE_DART=y
+CONFIG_APPLE_USBCOMPLEX=y
+CONFIG_PHY_APPLE_AUSB=y
+
+# storage: H9P PCIe + ANS NVMe
+CONFIG_PCIE_APPLE_H9P=y
+CONFIG_BLK_DEV_NVME=y
+
+# touch: SmartIO + SIO DMA + SPI + Z2
+CONFIG_APPLE_SIO=y
+CONFIG_INPUT_TOUCHSCREEN=y
+CONFIG_DMADEVICES=y
+CONFIG_APPLE_SIO_DMA=y
+CONFIG_COMMON_CLK_APPLE_T8010_TOUCH=y
+CONFIG_SPI_APPLE=y
+CONFIG_TOUCHSCREEN_APPLE_Z2=y
+
+# PMIC, battery, charging
+CONFIG_MUX_CORE=y
+CONFIG_MFD_SN2400=y
+CONFIG_MUX_SN2400=y
+CONFIG_CHARGER_APPLE_SN2400=y
+CONFIG_GPIO_APPLE_D2365=y
+CONFIG_APPLE_D2365_CHARGER=y
+CONFIG_APPLE_BELLATRIX_POWER=y
+CONFIG_W1=y
+CONFIG_W1_MASTER_UART=y
+CONFIG_BATTERY_BQ27XXX=y
+CONFIG_BATTERY_BQ27XXX_HDQ=y
+
+# SysCfg (Wi-Fi calibration, MAC)
+CONFIG_NVMEM_RMEM=y
+CONFIG_NVMEM_LAYOUT_APPLE_SYSCFG=y
+
+# Wi-Fi + Bluetooth (BCM4355C1)
+CONFIG_REGULATOR=y
+CONFIG_REGULATOR_FIXED_VOLTAGE=y
+CONFIG_APPLE_T8010_WLAN=y
+CONFIG_WLAN=y
+CONFIG_WLAN_VENDOR_BROADCOM=y
+CONFIG_CFG80211=m
+CONFIG_MAC80211=m
+CONFIG_PCI_PWRCTRL_APPLE_WIFI=y
+CONFIG_BRCMFMAC=m
+CONFIG_BRCMFMAC_PCIE=y
+CONFIG_BT=m
+CONFIG_BT_HCIUART=m
+CONFIG_BT_HCIUART_BCM=y
+
+# USB gadget console + network, as on the A13
+CONFIG_USB_GADGET=y
+CONFIG_USB_CONFIGFS=y
+CONFIG_USB_CONFIGFS_ACM=y
+CONFIG_USB_CONFIGFS_ECM=y
+
+# display: the framebuffer iBoot left
+CONFIG_DRM_SIMPLEDRM=y
+CONFIG_FRAMEBUFFER_CONSOLE=y
+
+# fbcon takes the screen at once: with the deferred takeover there is no
+# boot logo (the Tuxes)
+# CONFIG_FRAMEBUFFER_CONSOLE_DEFERRED_TAKEOVER is not set
+CONFIG_LOGO=y
+CONFIG_LOGO_LINUX_CLUT224=y
+
+# the initramfs makes its own gadget through configfs; a built-in g_multi
+# takes the UDC first (and fails with -22 on dwc2)
+# CONFIG_USB_G_MULTI is not set
+
+# missing firmware fails at once instead of waiting 60 s for a sysfs helper
+# CONFIG_FW_LOADER_USER_HELPER is not set

@@ -1,0 +1,170 @@
+From 743fd6aaff58f2899570a21ea009eb412f513363 Mon Sep 17 00:00:00 2001
+From: Paul Praschl <praschlpaul@g-p.at>
+Date: Mon, 17 Aug 2026 17:46:48 +0200
+Subject: [PATCH 8/9] pcie: generalize T8010 NVMe bring-up for J172 and other
+ targets
+
+Generalize the guarded T8010 PCIe/NVMe initialization sequence to support
+both D111 (iPhone 7) and J172 (iPad 7):
+
+- Update controller support check to accept any valid T8010 target.
+- Add J172-specific warm HMB size (12 MiB / 0x00c00000) alongside D111 (14 MiB).
+- Support J172 cold S3E restore/normal debug GPIO strap states
+  (0x0007000e -> 0x0007000c) during PERST# assertion.
+- Accept boot_from_host GPIO 87 (J172) in addition to GPIO 165 (D111).
+- Clean up unused board macros and log messages.
+
+Signed-off-by: Paul Praschl <praschlpaul@g-p.at>
+---
+ src/pcie.c | 58 +++++++++++++++++++++++++++---------------------------
+ 1 file changed, 29 insertions(+), 29 deletions(-)
+
+diff --git a/src/pcie.c b/src/pcie.c
+index 72ff99b..6c5a355 100644
+--- a/src/pcie.c
++++ b/src/pcie.c
+@@ -349,20 +349,23 @@ struct t8010_port_function {
+ #define T8010_ROM_GPIO_PERIPHERAL_MASK 0x0007026e
+ #define T8010_ROM_GPIO_PERIPHERAL      0x00070220
+ 
+-#define T8010_S3E_WARM_CAP       0x00000020f00103ffULL
+-#define T8010_S3E_WARM_VS        0x00010001
+-#define T8010_S3E_WARM_HMB_SIZE  0x00e00000
+-#define T8010_S3E_WARM_HMB_ALIGN 0x00001000
++#define T8010_S3E_WARM_CAP            0x00000020f00103ffULL
++#define T8010_S3E_WARM_VS             0x00010001
++#define T8010_S3E_WARM_HMB_SIZE_D111  0x00e00000
++#define T8010_S3E_WARM_HMB_SIZE_J172  0x00c00000
++#define T8010_S3E_WARM_HMB_ALIGN      0x00001000
+ #define T8010_S3E_WARM_CORE_MASK 0x00000003
+ #define T8010_S3E_WARM_LOG_SIZE  0x000000ff
+ #define T8010_S3E_WARM_MARKER    0x00badadd
+ #define T8010_S3E_COLD_MARKER    0xbfbfbfbf
+ 
+-/* D111 Restore and normal iBoot hand off distinct boot/debug strap configurations. */
+-#define T8010_S3E_RESTORE_BOOT_FROM_HOST 0x00078a03
+-#define T8010_S3E_RESTORE_DEBUG_GPIO     0x0007888e
+-#define T8010_S3E_NORMAL_BOOT_FROM_HOST  0x00078a02
+-#define T8010_S3E_NORMAL_DEBUG_GPIO      0x0007888c
++/* D111 and J172 Restore and normal iBoot hand off distinct boot/debug strap configurations. */
++#define T8010_S3E_RESTORE_BOOT_FROM_HOST   0x00078a03
++#define T8010_S3E_RESTORE_DEBUG_GPIO_D111 0x0007888e
++#define T8010_S3E_RESTORE_DEBUG_GPIO_J172 0x0007000e
++#define T8010_S3E_NORMAL_BOOT_FROM_HOST    0x00078a02
++#define T8010_S3E_NORMAL_DEBUG_GPIO_D111  0x0007888c
++#define T8010_S3E_NORMAL_DEBUG_GPIO_J172  0x0007000c
+ 
+ #define T8010_PCI_BUS_NUMBERS       0x00010100
+ #define T8010_PCI_MEMORY_BASE_LIMIT 0xc000c000
+@@ -376,9 +379,6 @@ struct t8010_port_function {
+ #define T8010_ROM_LINK_TIMEOUT_US  10000000
+ #define T8010_S3E_READY_ATTEMPTS   500
+ 
+-#define T8010_D111_BOARD_ID 0xe
+-#define T8010_D111_TARGET   "D111"
+-
+ struct t8010_s3e_state {
+     u64 cap;
+     u32 vs;
+@@ -402,18 +402,14 @@ enum t8010_s3e_boot_state {
+     T8010_S3E_WARM,
+ };
+ 
+-static bool t8010_is_d111(void)
++static bool t8010_is_supported(void)
+ {
+-    u32 target_len = 0;
+-    const char *target = adt_getprop(adt, 0, "target-type", &target_len);
++    const char *target = adt_getprop(adt, 0, "target-type", NULL);
+ 
+-    if (chip_id != T8010 || board_id != T8010_D111_BOARD_ID || !target)
++    if (chip_id != T8010 || !target)
+         return false;
+ 
+-    return target_len >= sizeof(T8010_D111_TARGET) - 1 &&
+-           !memcmp(target, T8010_D111_TARGET, sizeof(T8010_D111_TARGET) - 1) &&
+-           (target_len == sizeof(T8010_D111_TARGET) - 1 ||
+-            target[sizeof(T8010_D111_TARGET) - 1] == '\0');
++    return true;
+ }
+ 
+ static void t8010_gpio_config(u64 base, u32 gpio, bool output, bool value)
+@@ -547,7 +543,8 @@ static enum t8010_s3e_boot_state t8010_classify_s3e_state(const struct t8010_s3e
+ {
+     if (state->cap == T8010_S3E_WARM_CAP && state->vs == T8010_S3E_WARM_VS && state->cc == 0 &&
+         state->csts == 0 && state->init_regular == 0 && state->init_debug == 0 &&
+-        state->hmb_size == T8010_S3E_WARM_HMB_SIZE &&
++        (state->hmb_size == T8010_S3E_WARM_HMB_SIZE_D111 ||
++         state->hmb_size == T8010_S3E_WARM_HMB_SIZE_J172) &&
+         state->hmb_align == T8010_S3E_WARM_HMB_ALIGN && state->hmb_addr_lo == 0 &&
+         state->hmb_addr_hi == 0 && state->hmb_control == 0 &&
+         state->core_mask == T8010_S3E_WARM_CORE_MASK &&
+@@ -611,7 +608,8 @@ static int t8010_prepare_cold_s3e_straps(struct state *state,
+      * profile, or partially initialized endpoint must fail without a write.
+      */
+     if (boot_state != T8010_S3E_RESTORE_BOOT_FROM_HOST ||
+-        debug_state != T8010_S3E_RESTORE_DEBUG_GPIO) {
++        (debug_state != T8010_S3E_RESTORE_DEBUG_GPIO_D111 &&
++         debug_state != T8010_S3E_RESTORE_DEBUG_GPIO_J172)) {
+         printf("pcie: Refusing unexpected cold S3E GPIO state boot=0x%08x debug=0x%08x\n",
+                boot_state, debug_state);
+         return -1;
+@@ -626,7 +624,8 @@ static int t8010_prepare_cold_s3e_straps(struct state *state,
+     boot_state = read32(boot_reg);
+     debug_state = read32(debug_reg);
+     if (boot_state != T8010_S3E_NORMAL_BOOT_FROM_HOST ||
+-        debug_state != T8010_S3E_NORMAL_DEBUG_GPIO) {
++        (debug_state != T8010_S3E_NORMAL_DEBUG_GPIO_D111 &&
++         debug_state != T8010_S3E_NORMAL_DEBUG_GPIO_J172)) {
+         printf("pcie: Cold S3E GPIO release did not reach normal state "
+                "boot=0x%08x debug=0x%08x\n",
+                boot_state, debug_state);
+@@ -917,13 +916,14 @@ static int pcie_init_t8010(struct state *state, const char *path, int adt_offset
+         debug_gpio.phandle != gpio_phandle || perst.phandle != gpio_phandle ||
+         clkreq.phandle != gpio_phandle || boot_from_host.phandle != gpio_phandle ||
+         debug_gpio.gpio != 206 || perst.gpio != 12 || clkreq.gpio != 16 ||
+-        boot_from_host.gpio != 165 || debug_gpio.flags != 257 || perst.flags != 0 ||
++        (boot_from_host.gpio != 165 && boot_from_host.gpio != 87) ||
++        debug_gpio.flags != 257 || perst.flags != 0 ||
+         clkreq.flags != 2 || boot_from_host.flags != 257 ||
+         dart_force_active.phandle != dart_phandle || nvmmu_force_active.phandle != nvmmu_phandle ||
+         port_control.phandle != pcie_phandle || port_control.bridge_phandle != bridge_phandle ||
+         ADT_GETPROP(adt, bridge, "maximum-link-speed", &max_speed) < 0 || max_speed != 3 ||
+         !adt_getprop(adt, bridge, "nvme-mode", NULL)) {
+-        printf("pcie: Refusing unexpected D111 PCIe GPIO or bridge description\n");
++        printf("pcie: Refusing unexpected T8010 PCIe GPIO or bridge description\n");
+         return -1;
+     }
+ 
+@@ -955,7 +955,7 @@ static int pcie_init_t8010(struct state *state, const char *path, int adt_offset
+         nvmmu_sart_virtual_base != T8010_NVMMU_SART_VIRTUAL_BASE ||
+         nvmmu_virtual_base != T8010_NVMMU_VIRTUAL_BASE || nvmmu_tags != T8010_NVMMU_TAGS ||
+         nvmmu_sgl_entries != T8010_NVMMU_SGL_ENTRIES) {
+-        printf("pcie: Refusing unexpected D111 DART, NVMMU, or S3E scratch description\n");
++        printf("pcie: Refusing unexpected T8010 DART, NVMMU, or S3E scratch description\n");
+         return -1;
+     }
+ 
+@@ -974,7 +974,7 @@ static int pcie_init_t8010(struct state *state, const char *path, int adt_offset
+     }
+     state->powered = true;
+ 
+-    printf("pcie: Initializing D111 NVMe port with T8010 register layout\n");
++    printf("pcie: Initializing T8010 NVMe port with T8010 register layout\n");
+     if (t8010_rom_link(state, path, config_base, phy_status, phy_ip, clkreq.gpio, NULL, NULL))
+         goto fail;
+ 
+@@ -1055,8 +1055,8 @@ static int pcie_init_controller(int controller, const char *path)
+     if (adt_is_compatible(adt, adt_offset, "apcie,t8010")) {
+         int ret;
+ 
+-        if (!t8010_is_d111()) {
+-            printf("pcie: T8010 controller is not a supported D111 device\n");
++        if (!t8010_is_supported()) {
++            printf("pcie: T8010 controller is not a supported device\n");
+             return PCIE_CONTROLLER_FAILED;
+         }
+ 
+-- 
+2.54.0 (Apple Git-157)
+

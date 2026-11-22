@@ -16,6 +16,7 @@ Photos and screenshots of every device: [gallery/](gallery/README.md).
 | iPad mini 1 (Wi-Fi) | iPad2,5 / A1432 / p105ap | Apple A5 (S5L8942X) | Linux 6.12: both cores, touch, Wi-Fi, Bluetooth, speakers, battery, the GPU (OpenGL ES 2.0 / GL 2.1), a Wayland desktop (labwc); on the iPad's own NAND next to iOS 8.4.1 (the only version checked), started from the Cascadia app without a computer (or over the cable from an NFS root); iOS's files readable | [devices/a5](devices/a5/README.md) · [quickstart](devices/a5/docs/QUICKSTART.md) |
 | iPad 2 (Wi-Fi) *(experimental)* | iPad2,1 / A1395 / k93ap | Apple A5 (S5L8940X) | Linux 6.12: both cores, touch, Wi-Fi, Bluetooth, the speaker, headphones, the built-in and a headset's microphone, both cameras, the volume buttons, battery and charging, sensors (autorotate), the GPU, XFCE over NFS; boots from its jailbroken iOS without a computer | [K93 bring-up](devices/a5/docs/k93-bringup.md) |
 | iPhone XR *(experimental, contributed)* | iPhone11,8 / N841AP | Apple A12 (T8020) | as its author reports it: Linux 7.3, framebuffer, touch, USB networking/SSH, Wi-Fi, UART Bluetooth, Debian/XFCE over NFS -- not built or tested by the maintainer | [devices/a12](devices/a12/README.md) · [Debian/XFCE](devices/a12/DEBIAN_XFCE_NFS.md) |
+| iPad 7 (Wi-Fi) *(bring-up)* | iPad7,11 / J171AP | Apple A10 (T8010) | an open boot chain (checkm8 by gaster, patched iBSS, m1n1, no checkra1n); Linux 7.2 over USB (shell, network, SSH), the internal NVMe (read-only), battery; touch, Wi-Fi and the rest in progress | [devices/a10](devices/a10/README.md) |
 | iPad 8 (Wi-Fi) *(experimental, contributed)* | iPad11,6 / A2270 / J171aAP | Apple A12 (T8020) | Contributor-tested Linux 7.3: native display/brightness, touch, USB networking/SSH, Wi-Fi, UART Bluetooth and G11 GPU-accelerated Omarchy over NFS. Internal-speaker audio and volume controls contributor-tested; sustained-rendering fix awaits hardware retest | [devices/a12](devices/a12/README.md) (`--device ipad8`) · [display](devices/a12/DISPLAY.md) · [GPU](devices/a12/GPU.md) · [audio](devices/a12/AUDIO.md) |
 | iPhone XS Max | iPhone11,6 / D331pAP | Apple A12 (T8020) | Linux 7.3: all six cores, display, touch, USB networking, Wi-Fi, Bluetooth. On [badapple](https://forgejo.toe.quest/kiki/badapple) also the internal storage as ext4, cpufreq and the GPU (OpenCL, OpenGL ES 2/3 and Vulkan, in progress) | [devices/a12](devices/a12/README.md#xs-max) (`A12_BOARD=d331p`) · [badapple](https://forgejo.toe.quest/kiki/badapple) |
 | iPhone 11 | iPhone12,1 / n104ap | Apple A13 (T8030) | Linux 7.2: all six cores, touch, Wi-Fi, Bluetooth, XFCE, the internal storage as Linux's disk, no cable after the boot | [devices/a13](devices/a13/README.md) · [quickstart](devices/a13/docs/QUICKSTART.md) |
@@ -86,6 +87,10 @@ IPSW (or Apple's CDN) on your machine.
   2 done, phase 3 but for the NAND as Linux's storage -- headphones, the
   built-in and a headset's microphone and both cameras included.
   [devices/a5/docs/k93-bringup.md](devices/a5/docs/k93-bringup.md)
+- **iPad 7 (A10)** — bring-up started 2026-11-22: Linux over USB with the
+  NVMe up on an iPad7,11; next touch and Wi-Fi firmware, then the A13
+  track's Alpine + XFCE.
+  [devices/a10/README.md](devices/a10/README.md#plan)
 - **iPhone XR (A12)** — contributed (#31), experimental: tethered Linux with
   framebuffer/touch, USB, Wi-Fi, Bluetooth and Debian/XFCE over NFS as its
   author reports; it builds on devices/a13's m1n1 patches, which still
@@ -113,7 +118,6 @@ IPSW (or Apple's CDN) on your machine.
 
 In no particular order:
 - iPad 6 - A10 (2Gb ram)
-- iPad 7 - A10 (3Gb ram)
 - iPad Air 2 — A8X
 - iPad 4 - A6X
 - iPad mini 4 — A8

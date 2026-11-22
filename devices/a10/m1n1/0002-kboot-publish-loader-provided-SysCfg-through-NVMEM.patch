@@ -1,0 +1,217 @@
+From ae8c4d960bd9a0cf3703617c246f5e500a46f10d Mon Sep 17 00:00:00 2001
+From: Paul Praschl <praschlpaul@g-p.at>
+Date: Sun, 26 Jul 2026 17:27:56 +0200
+Subject: [PATCH 2/9] kboot: publish loader-provided SysCfg through NVMEM
+
+Copy a loader-provided private SysCfg blob into bounded reserved memory
+and describe it as an apple,syscfg NVMEM layout. Publish WMac and WCAL
+as named MAC-address and calibration cells on the BCM4355 endpoint,
+replacing any inline properties.
+
+Only the reserved address, layout and cell references enter the
+generated device tree. The per-device MAC address, calibration contents
+and source SysCfg blob remain runtime-private and are never committed.
+
+Signed-off-by: Paul Praschl <praschlpaul@g-p.at>
+---
+ src/kboot.c | 150 ++++++++++++++++++++++++++++++++++++++++++++++++++++
+ src/kboot.h |   1 +
+ 2 files changed, 151 insertions(+)
+
+diff --git a/src/kboot.c b/src/kboot.c
+index ffa66a4..b0662ad 100644
+--- a/src/kboot.c
++++ b/src/kboot.c
+@@ -46,6 +46,8 @@ static void *dt = NULL;
+ static int dt_bufsize = 0;
+ static void *initrd_start = NULL;
+ static size_t initrd_size = 0;
++static void *syscfg_start = NULL;
++static size_t syscfg_size = 0;
+ static char *chosen_params[MAX_CHOSEN_PARAMS][2];
+ static char *uboot_config[MAX_UBOOT_CONFIGS][2];
+ 
+@@ -1569,6 +1571,146 @@ static int dt_get_or_add_reserved_mem(const char *node_name, const char *compat,
+     return node;
+ }
+ 
++static int dt_ensure_phandle(int node, uint32_t *phandle)
++{
++    int ret;
++
++    *phandle = fdt_get_phandle(dt, node);
++    if (*phandle)
++        return 0;
++
++    ret = fdt_generate_phandle(dt, phandle);
++    if (ret)
++        bail("FDT: failed to generate phandle: %d\n", ret);
++
++    ret = fdt_setprop_u32(dt, node, "phandle", *phandle);
++    if (ret != 0)
++        bail("FDT: couldn't set phandle property: %d\n", ret);
++
++    return 0;
++}
++
++static int dt_get_or_add_subnode(int parent, const char *name)
++{
++    int node = fdt_subnode_offset(dt, parent, name);
++
++    if (node >= 0)
++        return node;
++
++    node = fdt_add_subnode(dt, parent, name);
++    if (node < 0)
++        bail("FDT: failed to add subnode '%s': %d\n", name, node);
++
++    return node;
++}
++
++static int dt_set_syscfg_cell(int layout, const char *name, const char *key, u32 size,
++                              uint32_t *phandle)
++{
++    int ret;
++    int node = dt_get_or_add_subnode(layout, name);
++    if (node < 0)
++        return node;
++
++    ret = fdt_setprop_string(dt, node, "apple,syscfg-key", key);
++    if (ret)
++        bail("FDT: couldn't set '%s.apple,syscfg-key': %d\n", name, ret);
++
++    if (size) {
++        ret = fdt_setprop_u32(dt, node, "apple,syscfg-size", size);
++        if (ret)
++            bail("FDT: couldn't set '%s.apple,syscfg-size': %d\n", name, ret);
++    }
++
++    return dt_ensure_phandle(node, phandle);
++}
++
++static int dt_get_wifi_node(void)
++{
++    const char *wifi_path = fdt_get_alias(dt, "wifi0");
++    if (wifi_path) {
++        int node = fdt_path_offset(dt, wifi_path);
++        if (node >= 0)
++            return node;
++    }
++
++    return fdt_node_offset_by_compatible(dt, -1, "pci14e4,43dc");
++}
++
++static int dt_set_syscfg_rmem(void)
++{
++    int ret;
++    uint32_t mac_phandle, cal_phandle;
++
++    if (!syscfg_start || !syscfg_size)
++        return 0;
++    if (syscfg_size > SZ_1M) {
++        printf("FDT: SysCfg payload is too large: 0x%lx bytes\n", syscfg_size);
++        return -1;
++    }
++
++    int wifi = dt_get_wifi_node();
++    if (wifi < 0)
++        return 0;
++
++    size_t alloc_size = ALIGN_UP(syscfg_size, SZ_16K);
++    void *blob = (void *)top_of_memory_alloc(alloc_size);
++    memcpy(blob, syscfg_start, syscfg_size);
++    memset((u8 *)blob + syscfg_size, 0, alloc_size - syscfg_size);
++
++    char node_name[64];
++    snprintf(node_name, sizeof(node_name), "syscfg@%lx", (u64)blob);
++
++    int node = dt_get_or_add_reserved_mem(node_name, "nvmem-rmem", true, (u64)blob, alloc_size);
++    if (node < 0)
++        return node;
++
++    static const char compat[] = "apple,syscfg-rmem\0nvmem-rmem";
++    ret = fdt_setprop(dt, node, "compatible", compat, sizeof(compat));
++    if (ret)
++        bail("FDT: couldn't set '%s.compatible': %d\n", node_name, ret);
++
++    int layout = dt_get_or_add_subnode(node, "nvmem-layout");
++    if (layout < 0)
++        return layout;
++
++    ret = fdt_setprop_string(dt, layout, "compatible", "apple,syscfg");
++    if (ret)
++        bail("FDT: couldn't set syscfg layout compatible: %d\n", ret);
++
++    ret = dt_set_syscfg_cell(layout, "mac-address", "WMac", 6, &mac_phandle);
++    if (ret)
++        return ret;
++
++    ret = dt_set_syscfg_cell(layout, "calibration", "WCAL", 0, &cal_phandle);
++    if (ret)
++        return ret;
++
++    fdt32_t cells[2];
++    fdt32_st(&cells[0], mac_phandle);
++    fdt32_st(&cells[1], cal_phandle);
++    ret = fdt_setprop(dt, wifi, "nvmem-cells", cells, sizeof(cells));
++    if (ret)
++        bail("FDT: couldn't set wifi0.nvmem-cells: %d\n", ret);
++
++    static const char cell_names[] = "mac-address\0calibration";
++    ret = fdt_setprop(dt, wifi, "nvmem-cell-names", cell_names, sizeof(cell_names));
++    if (ret)
++        bail("FDT: couldn't set wifi0.nvmem-cell-names: %d\n", ret);
++
++    ret = fdt_delprop(dt, wifi, "local-mac-address");
++    if (ret && ret != -FDT_ERR_NOTFOUND)
++        bail("FDT: couldn't delete wifi0.local-mac-address: %d\n", ret);
++
++    ret = fdt_delprop(dt, wifi, "brcm,cal-blob");
++    if (ret && ret != -FDT_ERR_NOTFOUND)
++        bail("FDT: couldn't delete wifi0.brcm,cal-blob: %d\n", ret);
++
++    printf("FDT: added SysCfg nvmem-rmem at %p, 0x%lx bytes\n", blob, alloc_size);
++
++    return 0;
++}
++
+ static int dt_device_add_mem_region(const char *alias, uint32_t phandle, const char *name)
+ {
+     int ret;
+@@ -2793,6 +2935,12 @@ void kboot_set_initrd(void *start, size_t size)
+     initrd_size = size;
+ }
+ 
++void kboot_set_syscfg(void *start, size_t size)
++{
++    syscfg_start = start;
++    syscfg_size = size;
++}
++
+ int kboot_set_chosen(const char *name, const char *value)
+ {
+     int i = 0;
+@@ -3005,6 +3153,8 @@ int kboot_prepare_dt(void *fdt)
+         return -1;
+     if (dt_set_nvme_hmb())
+         return -1;
++    if (dt_set_syscfg_rmem())
++        return -1;
+     if (dt_set_display())
+         return -1;
+     if (dt_set_gpu(dt))
+diff --git a/src/kboot.h b/src/kboot.h
+index 3983367..1e7cfc3 100644
+--- a/src/kboot.h
++++ b/src/kboot.h
+@@ -21,6 +21,7 @@ struct kernel_header {
+ };
+ 
+ void kboot_set_initrd(void *start, size_t size);
++void kboot_set_syscfg(void *start, size_t size);
+ int kboot_set_chosen(const char *name, const char *value);
+ int kboot_set_uboot(const char *name, const char *value);
+ int kboot_prepare_dt(void *fdt);
+-- 
+2.54.0 (Apple Git-157)
+

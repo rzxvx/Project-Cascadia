@@ -1,0 +1,89 @@
+From eb1bba47b05d416b72d0863a3c9c2dfa6935839b Mon Sep 17 00:00:00 2001
+From: Paul Praschl <praschlpaul@g-p.at>
+Date: Wed, 19 Aug 2026 14:49:36 +0200
+Subject: [PATCH 9/9] kboot: publish CT819 ambient-light calibration
+
+The iPad 7 carries a CT819 instead of the CT821 the iPhone 7 family uses.
+Both read their factory calibration from the same SysCfg LSCI record, so look
+the sensor up by any of the known Apple ALS compatibles and keep using the
+matched one when the consumer node has to be resolved again after the SysCfg
+layout nodes have moved the flattened tree.
+
+Signed-off-by: Paul Praschl <praschlpaul@g-p.at>
+---
+ src/kboot.c | 34 +++++++++++++++++++++++++++++-----
+ 1 file changed, 29 insertions(+), 5 deletions(-)
+
+diff --git a/src/kboot.c b/src/kboot.c
+index 67c2a98..cbd8499 100644
+--- a/src/kboot.c
++++ b/src/kboot.c
+@@ -1713,10 +1713,33 @@ static int dt_get_wifi_node(void)
+     return fdt_node_offset_by_compatible(dt, -1, "pci14e4,43dc");
+ }
+ 
++/*
++ * Apple ambient-light sensors take their factory calibration from the SysCfg
++ * LSCI record. Only one of them is fitted per machine.
++ */
++static const char *const als_compatibles[] = {
++    "apple,ct819",
++    "apple,ct821",
++};
++
++static int dt_get_als_node(const char **compatible)
++{
++    for (size_t i = 0; i < ARRAY_SIZE(als_compatibles); i++) {
++        int node = fdt_node_offset_by_compatible(dt, -1, als_compatibles[i]);
++        if (node >= 0) {
++            *compatible = als_compatibles[i];
++            return node;
++        }
++    }
++
++    return -1;
++}
++
+ static int dt_set_syscfg_rmem(void)
+ {
+     int ret;
+     uint32_t mac_phandle, cal_phandle, als_cal_phandle;
++    const char *als_compatible = NULL;
+ 
+     if (!syscfg_start || !syscfg_size)
+         return 0;
+@@ -1726,7 +1749,7 @@ static int dt_set_syscfg_rmem(void)
+     }
+ 
+     int wifi = dt_get_wifi_node();
+-    int als = fdt_node_offset_by_compatible(dt, -1, "apple,ct821");
++    int als = dt_get_als_node(&als_compatible);
+     if (wifi < 0 && als < 0)
+         return 0;
+ 
+@@ -1799,17 +1822,18 @@ static int dt_set_syscfg_rmem(void)
+     }
+ 
+     if (als >= 0) {
+-        als = fdt_node_offset_by_compatible(dt, -1, "apple,ct821");
++        als = fdt_node_offset_by_compatible(dt, -1, als_compatible);
+         if (als < 0)
+-            bail("FDT: couldn't relocate CT821 after adding SysCfg cells: %d\n", als);
++            bail("FDT: couldn't relocate '%s' after adding SysCfg cells: %d\n", als_compatible,
++                 als);
+ 
+         ret = fdt_setprop_u32(dt, als, "nvmem-cells", als_cal_phandle);
+         if (ret)
+-            bail("FDT: couldn't set CT821 nvmem-cells: %d\n", ret);
++            bail("FDT: couldn't set '%s' nvmem-cells: %d\n", als_compatible, ret);
+ 
+         ret = fdt_setprop_string(dt, als, "nvmem-cell-names", "calibration");
+         if (ret)
+-            bail("FDT: couldn't set CT821 nvmem-cell-names: %d\n", ret);
++            bail("FDT: couldn't set '%s' nvmem-cell-names: %d\n", als_compatible, ret);
+     }
+ 
+     printf("FDT: added SysCfg nvmem-rmem at %p, 0x%lx bytes\n", blob, alloc_size);
+-- 
+2.54.0 (Apple Git-157)
+

@@ -1,0 +1,160 @@
+From 7fa2b711760d2b28dc05bc2435ebd3182dd4ff1c Mon Sep 17 00:00:00 2001
+From: Paul Praschl <praschlpaul@g-p.at>
+Date: Sat, 1 Aug 2026 18:33:53 +0200
+Subject: [PATCH 4/9] kboot: populate D111 touchscreen calibration data
+
+The D111 touchscreen firmware requires four per-device calibration
+payloads, while kboot previously handled only the single calibration
+property used by J293 and J493. Treating missing D111 data like the older
+optional Touch Bar calibration either leaves an unusable touchscreen
+enabled or aborts Linux boot when the driver rejects the incomplete node.
+
+Select the D111 touchscreen alias and ADT path, map the multitouch,
+orb-gap, orb-force and dynamic shape-acceleration payloads to their Linux
+properties, and validate their presence and bounded sizes before
+publishing them. Require the known 0x400-byte D111 multitouch payload and
+reject loader placeholders beginning with syscfg/ so unresolved references
+cannot reach the kernel as calibration bytes.
+
+If the D111 ADT node or any required payload is missing or invalid, mark
+only the touchscreen node disabled and continue building the device tree.
+Existing J293 and J493 behavior remains unchanged, and libfdt errors still
+propagate through the normal kboot setup path. This keeps board-specific
+calibration transfer in kboot and requires no generic device-tree or
+firmware-loader exception.
+
+Checked with git diff --check and reviewed against the final D111 Apple
+Z2 property names and size requirements. The complete m1n1 build and
+combined hardware test are deferred until the full kernel and m1n1 series
+are finalized.
+
+Signed-off-by: Paul Praschl <praschlpaul@g-p.at>
+---
+ src/kboot.c | 99 +++++++++++++++++++++++++++++++++++++++++++----------
+ 1 file changed, 81 insertions(+), 18 deletions(-)
+
+diff --git a/src/kboot.c b/src/kboot.c
+index b0662ad..fa55d93 100644
+--- a/src/kboot.c
++++ b/src/kboot.c
+@@ -894,9 +894,57 @@ static int dt_set_bluetooth(void)
+     return 0;
+ }
+ 
++static int dt_disable_multitouch(int node)
++{
++    int ret = fdt_setprop_string(dt, node, "status", "disabled");
++
++    if (ret < 0) {
++        printf("FDT: failed to disable D111 multitouch: %s\n", fdt_strerror(ret));
++        return ret;
++    }
++
++    printf("FDT: disabled D111 multitouch; continuing without touch\n");
++    return 0;
++}
++
+ static int dt_set_multitouch(void)
+ {
+-    const char *path = fdt_get_alias(dt, "touchbar0");
++    struct calibration_mapping {
++        const char *adt;
++        const char *fdt;
++        u32 max_size;
++        u32 exact_size;
++    };
++    static const struct calibration_mapping default_calibrations[] = {
++        {"multi-touch-calibration", "apple,z2-cal-blob", 0, 0},
++    };
++    static const struct calibration_mapping d111_calibrations[] = {
++        {"multi-touch-calibration", "apple,z2-cal-blob", 0x708, 0x400},
++        {"orb-gap-cal", "apple,z2-orb-gap-cal-blob", 0x3e0, 0},
++        {"orb-force-cal", "apple,z2-orb-force-cal-blob", 0x5c4, 0},
++        {"shape-dynamic-accel-cal", "apple,z2-shape-accel-cal-blob", 0xd0, 0},
++    };
++    const struct calibration_mapping *calibrations = default_calibrations;
++    size_t calibration_count = ARRAY_SIZE(default_calibrations);
++    bool d111 = fdt_node_check_compatible(dt, 0, "apple,d111") == 0;
++    const char *adt_multitouch;
++    const char *path;
++
++    if (d111) {
++        path = fdt_get_alias(dt, "touchscreen0");
++        adt_multitouch = "/arm-io/spi2/multi-touch";
++        calibrations = d111_calibrations;
++        calibration_count = ARRAY_SIZE(d111_calibrations);
++    } else if (fdt_node_check_compatible(dt, 0, "apple,j293") == 0) {
++        path = fdt_get_alias(dt, "touchbar0");
++        adt_multitouch = "/arm-io/spi0/multi-touch";
++    } else if (fdt_node_check_compatible(dt, 0, "apple,j493") == 0) {
++        path = fdt_get_alias(dt, "touchbar0");
++        adt_multitouch = "/arm-io/spi3/touch-bar";
++    } else {
++        return 0;
++    }
++
+     if (path == NULL)
+         return 0;
+ 
+@@ -904,26 +952,41 @@ static int dt_set_multitouch(void)
+     if (node < 0)
+         bail("FDT: alias points at nonexistent node\n");
+ 
+-    const char *adt_touchbar;
+-    if (fdt_node_check_compatible(dt, 0, "apple,j293") == 0)
+-        adt_touchbar = "/arm-io/spi0/multi-touch";
+-    else if (fdt_node_check_compatible(dt, 0, "apple,j493") == 0)
+-        adt_touchbar = "/arm-io/spi3/touch-bar";
+-    else
+-        return 0;
++    int anode = adt_path_offset(adt, adt_multitouch);
++    if (anode < 0) {
++        if (d111) {
++            printf("ADT: multitouch node %s not found\n", adt_multitouch);
++            return dt_disable_multitouch(node);
++        }
++        bail("ADT: multitouch node %s not found\n", adt_multitouch);
++    }
+ 
+-    int anode = adt_path_offset(adt, adt_touchbar);
+-    if (anode < 0)
+-        bail("ADT: touchbar node %s not found\n", adt_touchbar);
++    for (size_t i = 0; i < calibration_count; i++) {
++        u32 len;
++        const u8 *cal_blob = adt_getprop(adt, anode, calibrations[i].adt, &len);
+ 
+-    u32 len;
+-    const u8 *cal_blob = adt_getprop(adt, anode, "multi-touch-calibration", &len);
+-    if (!cal_blob || !len) {
+-        printf("ADT: Failed to get multi-touch-calibration from %s\n", adt_touchbar);
+-        return 0;
+-    }
++        if (!cal_blob || !len) {
++            if (d111) {
++                printf("ADT: required D111 calibration %s missing from %s\n", calibrations[i].adt,
++                       adt_multitouch);
++                return dt_disable_multitouch(node);
++            }
++            printf("ADT: failed to get %s from %s\n", calibrations[i].adt, adt_multitouch);
++            continue;
++        }
++        if (d111 &&
++            ((calibrations[i].exact_size && len != calibrations[i].exact_size) ||
++             len > calibrations[i].max_size || (len >= 7 && !memcmp(cal_blob, "syscfg/", 7)))) {
++            printf("ADT: invalid D111 calibration %s size %u\n", calibrations[i].adt, len);
++            return dt_disable_multitouch(node);
++        }
+ 
+-    fdt_setprop(dt, node, "apple,z2-cal-blob", cal_blob, len);
++        int ret = fdt_setprop(dt, node, calibrations[i].fdt, cal_blob, len);
++        if (ret < 0)
++            bail("FDT: failed to set %s: %s\n", calibrations[i].fdt, fdt_strerror(ret));
++
++        printf("ADT: copied %u bytes of %s from %s\n", len, calibrations[i].adt, adt_multitouch);
++    }
+     return 0;
+ }
+ 
+-- 
+2.54.0 (Apple Git-157)
+

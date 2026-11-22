@@ -1,0 +1,110 @@
+From 4f00713381f97751982bb0ee445c9f26ef7a4e88 Mon Sep 17 00:00:00 2001
+From: Paul Praschl <praschlpaul@g-p.at>
+Date: Tue, 4 Aug 2026 18:08:53 +0200
+Subject: [PATCH 6/9] kboot: Add D11 multitouch calibration
+
+Read the four D11 multitouch calibration records from the iPhone 7 Plus
+ADT node and publish them through the existing touchscreen properties.
+
+Use D11-specific size bounds while preserving D111's exact multitouch
+calibration size. Disable only the touchscreen when required iPhone 7
+Plus calibration data is missing or invalid.
+
+Signed-off-by: Paul Praschl <praschlpaul@g-p.at>
+---
+ src/kboot.c | 35 ++++++++++++++++++++++++-----------
+ 1 file changed, 24 insertions(+), 11 deletions(-)
+
+diff --git a/src/kboot.c b/src/kboot.c
+index 6a24b7d..11dad4c 100644
+--- a/src/kboot.c
++++ b/src/kboot.c
+@@ -899,11 +899,11 @@ static int dt_disable_multitouch(int node)
+     int ret = fdt_setprop_string(dt, node, "status", "disabled");
+ 
+     if (ret < 0) {
+-        printf("FDT: failed to disable D111 multitouch: %s\n", fdt_strerror(ret));
++        printf("FDT: failed to disable iPhone 7 Plus multitouch: %s\n", fdt_strerror(ret));
+         return ret;
+     }
+ 
+-    printf("FDT: disabled D111 multitouch; continuing without touch\n");
++    printf("FDT: disabled iPhone 7 Plus multitouch; continuing without touch\n");
+     return 0;
+ }
+ 
+@@ -918,6 +918,12 @@ static int dt_set_multitouch(void)
+     static const struct calibration_mapping default_calibrations[] = {
+         {"multi-touch-calibration", "apple,z2-cal-blob", 0, 0},
+     };
++    static const struct calibration_mapping d11_calibrations[] = {
++        {"multi-touch-calibration", "apple,z2-cal-blob", 0x708, 0},
++        {"orb-gap-cal", "apple,z2-orb-gap-cal-blob", 0x3e0, 0},
++        {"orb-force-cal", "apple,z2-orb-force-cal-blob", 0x5c4, 0},
++        {"shape-dynamic-accel-cal", "apple,z2-shape-accel-cal-blob", 0xd0, 0},
++    };
+     static const struct calibration_mapping d111_calibrations[] = {
+         {"multi-touch-calibration", "apple,z2-cal-blob", 0x708, 0x400},
+         {"orb-gap-cal", "apple,z2-orb-gap-cal-blob", 0x3e0, 0},
+@@ -926,15 +932,22 @@ static int dt_set_multitouch(void)
+     };
+     const struct calibration_mapping *calibrations = default_calibrations;
+     size_t calibration_count = ARRAY_SIZE(default_calibrations);
++    bool d11 = fdt_node_check_compatible(dt, 0, "apple,d11") == 0;
+     bool d111 = fdt_node_check_compatible(dt, 0, "apple,d111") == 0;
++    bool iphone7_plus = d11 || d111;
+     const char *adt_multitouch;
+     const char *path;
+ 
+-    if (d111) {
++    if (iphone7_plus) {
+         path = fdt_get_alias(dt, "touchscreen0");
+         adt_multitouch = "/arm-io/spi2/multi-touch";
+-        calibrations = d111_calibrations;
+-        calibration_count = ARRAY_SIZE(d111_calibrations);
++        if (d11) {
++            calibrations = d11_calibrations;
++            calibration_count = ARRAY_SIZE(d11_calibrations);
++        } else {
++            calibrations = d111_calibrations;
++            calibration_count = ARRAY_SIZE(d111_calibrations);
++        }
+     } else if (fdt_node_check_compatible(dt, 0, "apple,j293") == 0) {
+         path = fdt_get_alias(dt, "touchbar0");
+         adt_multitouch = "/arm-io/spi0/multi-touch";
+@@ -954,7 +967,7 @@ static int dt_set_multitouch(void)
+ 
+     int anode = adt_path_offset(adt, adt_multitouch);
+     if (anode < 0) {
+-        if (d111) {
++        if (iphone7_plus) {
+             printf("ADT: multitouch node %s not found\n", adt_multitouch);
+             return dt_disable_multitouch(node);
+         }
+@@ -966,18 +979,18 @@ static int dt_set_multitouch(void)
+         const u8 *cal_blob = adt_getprop(adt, anode, calibrations[i].adt, &len);
+ 
+         if (!cal_blob || !len) {
+-            if (d111) {
+-                printf("ADT: required D111 calibration %s missing from %s\n", calibrations[i].adt,
+-                       adt_multitouch);
++            if (iphone7_plus) {
++                printf("ADT: required iPhone 7 Plus calibration %s missing from %s\n",
++                       calibrations[i].adt, adt_multitouch);
+                 return dt_disable_multitouch(node);
+             }
+             printf("ADT: failed to get %s from %s\n", calibrations[i].adt, adt_multitouch);
+             continue;
+         }
+-        if (d111 &&
++        if (iphone7_plus &&
+             ((calibrations[i].exact_size && len != calibrations[i].exact_size) ||
+              len > calibrations[i].max_size || (len >= 7 && !memcmp(cal_blob, "syscfg/", 7)))) {
+-            printf("ADT: invalid D111 calibration %s size %u\n", calibrations[i].adt, len);
++            printf("ADT: invalid iPhone 7 Plus calibration %s size %u\n", calibrations[i].adt, len);
+             return dt_disable_multitouch(node);
+         }
+ 
+-- 
+2.54.0 (Apple Git-157)
+

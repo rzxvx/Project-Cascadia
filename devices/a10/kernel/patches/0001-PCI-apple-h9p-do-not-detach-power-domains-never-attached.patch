@@ -1,0 +1,39 @@
+From: Project Cascadia <cascadia@invalid>
+Subject: [PATCH] PCI: apple-h9p: do not detach power domains that were never attached
+
+With zero or one power domain, apple_h9p_pcie_attach_genpd() returns
+before allocating pd_dev/pd_link but leaves pd_count at 1. When probe
+fails later (e.g. no nvme-hmb from the loader), the devm cleanup calls
+apple_h9p_pcie_detach_genpd(), which dereferences the NULL pd_link:
+a NULL pointer oops in deferred_probe_work_func on the iPad 7 (J171).
+
+Reset pd_count in that case and let detach return when nothing was
+allocated.
+---
+diff --git a/drivers/pci/controller/pcie-apple-h9p.c b/drivers/pci/controller/pcie-apple-h9p.c
+index 0da07dfeb1..f1da2e3327 100644
+--- a/drivers/pci/controller/pcie-apple-h9p.c
++++ b/drivers/pci/controller/pcie-apple-h9p.c
+@@ -625,6 +625,10 @@ static void apple_h9p_pcie_detach_genpd(struct apple_h9p_pcie *pcie)
+ {
+ 	int i;
+ 
++	/* zero or one domain: the driver core attached it, nothing of ours */
++	if (!pcie->pd_dev || !pcie->pd_link)
++		return;
++
+ 	for (i = pcie->pd_count - 1; i >= 0; i--) {
+ 		if (pcie->pd_link[i])
+ 			device_link_del(pcie->pd_link[i]);
+@@ -641,8 +645,10 @@ static int apple_h9p_pcie_attach_genpd(struct apple_h9p_pcie *pcie)
+ 	pcie->pd_count = of_count_phandle_with_args(dev->of_node,
+ 						    "power-domains",
+ 						    "#power-domain-cells");
+-	if (pcie->pd_count <= 1)
++	if (pcie->pd_count <= 1) {
++		pcie->pd_count = 0;
+ 		return 0;
++	}
+ 
+ 	pcie->pd_dev = devm_kcalloc(dev, pcie->pd_count,
+ 				    sizeof(*pcie->pd_dev), GFP_KERNEL);
