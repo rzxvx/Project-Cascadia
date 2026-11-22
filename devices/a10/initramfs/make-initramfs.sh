@@ -139,8 +139,10 @@ if [ -x /usr/bin/fbkeyboard ]; then
     ts=
     for i in 1 2 3 4 5 6; do
         for n in /sys/class/input/event*; do
-            [ "$(cat "$n/device/name" 2>/dev/null)" = "Apple iPhone touchscreen" ] \
-                && ts=/dev/input/${n##*/} && break
+            # apple_z2 names it after the board: "iPad7,12 Touchscreen"
+            case "$(cat "$n/device/name" 2>/dev/null)" in
+                iPad7,1[12]" Touchscreen") ts=/dev/input/${n##*/}; break ;;
+            esac
         done
         [ -n "$ts" ] && break
         sleep 1

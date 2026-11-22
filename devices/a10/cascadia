@@ -9,6 +9,8 @@
 #   ./cascadia a10 build m1n1      just m1n1
 #   ./cascadia a10 build kernel    just the kernel + DTBs
 #   ./cascadia a10 build initramfs the USB-gadget initramfs (shell, ssh, network)
+#   ./cascadia a10 build fbkeyboard the on-screen keyboard (Alpine's fbkeyboard)
+#   ./cascadia a10 build rootfs    the Alpine root, run from RAM (pack sends it as a ramdisk)
 #   ./cascadia a10 inputs          iPad in DFU: pwn it, fetch iBSS + DeviceTree
 #                                  from Apple, decrypt and patch them (once per board)
 #   ./cascadia a10 syscfg          with Linux up: this iPad's SysCfg (calibration), read-only
@@ -19,6 +21,8 @@
 #                                  (USB: ssh root@172.16.43.1, serial /dev/cu.usbmodem*)
 #   ./cascadia a10 boot proxy      the same, into m1n1's proxy instead of Linux
 #                                  (driven from the Mac: m1n1 proxyclient)
+#   ./cascadia a10 net on|off|status  share this Mac's internet with the iPad
+#                                  over USB (NAT through pf; asks for sudo)
 #
 # The boot chain is open source end to end: gaster (checkm8), hBootPatcher,
 # m1n1 -- no checkra1n, no PongoOS. Pinned sources: sources.env.
@@ -118,9 +122,12 @@ cmd_build() {
         m1n1)   bash m1n1/build-m1n1.sh ;;
         kernel) bash kernel/build-kernel.sh ;;
         initramfs) bash initramfs/make-initramfs.sh ;;
+        fbkeyboard) bash tools/fbkeyboard.sh ;;
+        rootfs) bash rootfs/build-alpine-rootfs.sh ;;
         all)    bash tools/build-tools.sh; bash m1n1/build-m1n1.sh; bash kernel/build-kernel.sh
-                bash initramfs/make-initramfs.sh ;;
-        *) fail "build what? tools, m1n1, kernel, initramfs (or nothing for all)" ;;
+                bash initramfs/make-initramfs.sh; bash tools/fbkeyboard.sh
+                bash rootfs/build-alpine-rootfs.sh ;;
+        *) fail "build what? tools, m1n1, kernel, initramfs, fbkeyboard, rootfs (or nothing for all)" ;;
     esac
 }
 
@@ -199,7 +206,7 @@ cmd_syscfg() {
 # ---------- pack -------------------------------------------------------------
 
 cmd_pack() {
-    local P="$B/payload" out="$B/out" tmp i board
+    local P="$B/payload" out="$B/out" tmp i board f mode
     local m="$P/m1n1-idevice.macho"
     [ -f "$m" ] || fail "no m1n1 -- run: ./cascadia a10 build m1n1"
     for i in "$B"/inputs/*/IM4M; do [ -f "$i" ] && break; done
@@ -225,6 +232,15 @@ cmd_pack() {
     set -- "root/.ssh/authorized_keys=$tmp/authorized_keys:600"
     [ -f "$B/ssh/dropbear_ed25519_host_key" ] && \
         set -- "$@" "etc/dropbear/dropbear_ed25519_host_key=$B/ssh/dropbear_ed25519_host_key:600"
+    # the on-screen keyboard (./cascadia a10 build fbkeyboard); /init starts it
+    if [ -d "$B/fbkeyboard" ]; then
+        for f in $(cd "$B/fbkeyboard" && find . -type f | sed 's|^\./||'); do
+            case "$f" in usr/bin/*|lib/ld-*) mode=755 ;; *) mode=644 ;; esac
+            set -- "$@" "$f=$B/fbkeyboard/$f:$mode"
+        done
+    else
+        note "no build/fbkeyboard -- no on-screen keyboard (./cascadia a10 build fbkeyboard)"
+    fi
     # Apple's firmware from ./cascadia a10 firmware, where the drivers look for it
     if [ -d "$B/firmware" ]; then
         for f in $(cd "$B/firmware" && find . -type f | sed 's|^\./||'); do
@@ -248,6 +264,19 @@ cmd_pack() {
         python3 "$REPAIR" "$tmp/linux.img4" "$out/m1n1-linux-$board.rkrn.img4" >/dev/null
         say "wrote ${out#$A10/}/m1n1-linux-$board.rkrn.img4 ($(($(wc -c < "$out/m1n1-linux-$board.rkrn.img4") / 1024)) KiB)"
     done
+    # Alpine in RAM: the root travels as an iBoot ramdisk (rdsk) -- iBoot
+    # refuses a large rkrn -- which m1n1 (patch 0011) appends to the
+    # initramfs; /init unpacks it into a tmpfs
+    rm -f "$out/alpine.rdsk.img4"
+    if [ -f "$B/alpine-a10.tar.gz" ]; then
+        python3 "$OVERLAY" "$tmp/alpine.cpio" "alpine.tar.gz=$B/alpine-a10.tar.gz:644"
+        gzip -1 < "$tmp/alpine.cpio" > "$tmp/alpine.cpio.gz"
+        ipsw img4 create --input "$tmp/alpine.cpio.gz" --type rdsk --im4m "$i" \
+            --output "$out/alpine.rdsk.img4" >/dev/null
+        say "wrote ${out#$A10/}/alpine.rdsk.img4 ($(($(wc -c < "$out/alpine.rdsk.img4") / 1024)) KiB, Alpine in RAM)"
+    else
+        note "no build/alpine-a10.tar.gz -- the iPad stays in the initramfs (./cascadia a10 build rootfs)"
+    fi
     rm -rf "$tmp"
 }
 
@@ -272,6 +301,9 @@ cmd_boot() {
     say "DeviceTree, trust cache, m1n1"
     irecovery -f "$IN/DeviceTree.rdtr.img4" >/dev/null; irecovery -c devicetree
     irecovery -f "$IN/empty.rtsc.img4" >/dev/null;      irecovery -c firmware
+    if [ "${1:-}" != proxy ] && [ -f "$B/out/alpine.rdsk.img4" ]; then
+        irecovery -f "$B/out/alpine.rdsk.img4" >/dev/null; irecovery -c ramdisk
+    fi
     irecovery -f "$img" >/dev/null;                     irecovery -c bootx
     if [ "${1:-}" = proxy ]; then
         say "bootx submitted: m1n1 proxy. On the Mac: ls /dev/cu.usbmodem*"
@@ -289,6 +321,7 @@ case "$cmd" in
     inputs) cmd_inputs ;;
     firmware) bash tools/firmware.sh ;;
     syscfg) cmd_syscfg ;;
+    net)    exec bash host/mac-share-internet.sh "$@" ;;
     pack)   cmd_pack ;;
     boot)   cmd_boot "$@" ;;
     ''|-h|--help|help) awk 'NR>1 && /^#/ {sub(/^# ?/, ""); print; next} NR>1 {exit}' "$A10/cascadia" ;;

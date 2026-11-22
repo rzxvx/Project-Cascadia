@@ -1,0 +1,4 @@
+
+Cascadia -- Alpine Linux on the iPad 7 (J171/J172, A10).
+The internal NVMe is iOS's storage: every namespace is read-only. Keep it so.
+

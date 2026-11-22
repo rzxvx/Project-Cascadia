@@ -4,14 +4,16 @@ Linux on the 7th-generation iPad: **iPad7,11** (Wi-Fi, J171AP) and
 **iPad7,12** (Cellular, J172AP), Apple A10 Fusion (T8010). Not the iPad 8
 (J171aAP, A12): that one is in [devices/a12](../a12/README.md).
 
-> **Status: bring-up, Linux over USB.** On an iPad7,11 (J171), 2026-11-22:
+> **Status: bring-up, Alpine Linux in RAM.** On an iPad7,11 (J171), 2026-11-22:
 > m1n1 (with Paul Praschl's T8010 NVMe patches) brings the NVMe link up and
 > hands over to Linux 7.2; the kernel runs on both cores with 3 GB and
 > cpufreq (Zephyr 300 MHz to Hurricane 2.24 GHz, stable under load), the
 > screen (simpledrm + fbcon), the USB gadget (serial + network + SSH at
 > 172.16.43.1), the internal NVMe (32 GB, all namespaces read-only), the
 > battery and charging status, SmartIO, multi-touch (the Z2 firmware built
-> with this iPad's SysCfg calibration). Not yet: Wi-Fi / Bluetooth
+> with this iPad's SysCfg calibration), the on-screen keyboard (fbkeyboard,
+> typing into the shell on the screen), Alpine 3.24 run from RAM with apk
+> reaching the internet through the Mac. Not yet: Wi-Fi / Bluetooth
 > firmware, the USB power source (`power_supply usb`: I2C NACK on J171). Photos:
 > [gallery/](../../gallery/README.md#ipad-7-a10).
 
@@ -44,6 +46,8 @@ Pinned in [sources.env](sources.env):
   [Pauli1Go/m1n1](https://github.com/Pauli1Go/m1n1) (NVMe HMB, the NVMe
   link bring-up, SysCfg, touch and ALS calibration), which the kernel's
   drivers expect from the loader; `0010` adds the J171's HMB size.
+- **m1n1** `0011`: the A13 track's patch that appends the iBoot ramdisk
+  (the Alpine root) to the initramfs.
 - **Kernel patches**: `kernel/patches/0001` fixes a NULL dereference in the
   H9P PCIe driver's probe error path.
 - **Firmware**: `./cascadia a10 firmware` takes Apple's files from iPadOS
@@ -62,9 +66,12 @@ Pinned in [sources.env](sources.env):
 ./cascadia a10 firmware         # SmartIO firmware from Apple's CDN
 # once, with Linux up: this iPad's SysCfg (read-only), then touch firmware
 ./cascadia a10 syscfg && ./cascadia a10 firmware
+./cascadia a10 build fbkeyboard # the on-screen keyboard, into the next pack
+./cascadia a10 build rootfs     # Alpine, run from RAM (sent as an iBoot ramdisk)
 ./cascadia a10 pack
 ./cascadia a10 boot             # Linux: ssh root@172.16.43.1, serial /dev/cu.usbmodemiPad7_linux1
 ./cascadia a10 boot proxy       # or m1n1's proxy, for m1n1's proxyclient
+./cascadia a10 net on           # then: the Mac's internet for apk on the iPad (sudo, pf NAT)
 ```
 
 `inputs` and `firmware` download only the few files they need from Apple's
@@ -77,7 +84,7 @@ iPad's serials and calibration: they stay in `build/`, out of git.
 1. ~~m1n1 proxy on the iPad 7~~ ✓
 2. ~~Linux over USB~~ ✓ (shell over USB serial, network, SSH; the kernel
    log also on the DCSD UART, 115200)
-3. An Alpine root with a Wayland desktop, labwc, as on the iPad mini 1
+3. ~~Alpine in RAM, internet over USB~~ ✓; next a Wayland desktop, labwc, as on the iPad mini 1
    (not XFCE on X11): touch, the on-screen keyboard, Wi-Fi, Bluetooth,
    battery. Rendered by pixman on the CPU until the GPU works.
 4. What the kernel source does not have yet: speakers, auto-rotation
