@@ -1187,8 +1187,13 @@ int main(int argc, char **argv)
 			struct recover_args ag = { .ops = &dev_ops, .hw = d };
 
 			assert(!sftl_init(w, &dev_ops, d) && !sftl_mount(w));
-			for (i = 0; i < SFTL_BANKS; i++)
-				d->usage[i] = w->usage[i];
+			/* the device keeps its own copy: w is freed before recover_run erases */
+			for (i = 0; i < SFTL_BANKS; i++) {
+				static u16 own[SFTL_BANKS][4096];
+
+				memcpy(own[i], w->usage[i], SFTL_BLOCKS * sizeof(u16));
+				d->usage[i] = own[i];
+			}
 			assert(!sftl_writer_start(w, 1));
 			w->wr->hold_commit = true;
 			for (i = 0; i < 48; i++)
