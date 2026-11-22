@@ -103,10 +103,11 @@ int sftl_tree_serialize(struct sftl *fs, u8 *lbas, u32 max_lbas, u32 *runs_out,
 }
 
 /*
- * Tree LBAs a context carries for a tree of 'used' LBAs: at least the 32 of
- * the fixed part, else used rounded up to 16, with no empty LBA when used is
- * already a multiple.  iOS contexts seen: 26 used in 32; 172, 173, 174 and
- * 176 used, all in 176.
+ * Tree LBAs a context carries for a tree of 'used' LBAs: at least
+ * SFTL_TREE_LBAS (32 on the reference package, 16 on 030800P), else used
+ * rounded up to 16, with no empty LBA when used is already a multiple.  iOS
+ * contexts seen: 26 used in 32; 172, 173, 174 and 176 used, all in 176; on
+ * 030800P, 8 used in 16.
  */
 u32 sftl_ctx_tree_lbas(u32 used)
 {
@@ -145,7 +146,11 @@ int sftl_ctx_build(struct sftl *fs, u32 sb, u64 weave, u8 *pages, u8 *metas,
 		   u32 *nlbas_out)
 {
 	u32 i, lba = 0, used = 0, ntree;
-	u8 *tree = pages + 6 * SFTL_PAGE_SIZE;
+	u8 *tree = pages + (size_t)SFTL_CTX_TREE_VBA * SFTL_LBA_SIZE;
+	const u32 *sec = sftl_geo.sec_lbas;
+	u8 *sbarr = pages + (size_t)(sec[0] + sec[1]) * SFTL_LBA_SIZE;
+	u8 *useq = sbarr + (size_t)sec[2] * SFTL_LBA_SIZE;
+	u8 *reads = useq + (size_t)sec[3] * SFTL_LBA_SIZE;
 	int ret;
 
 	memset(pages, 0, SFTL_CTX_MAX_PAGES * SFTL_PAGE_SIZE);
@@ -164,7 +169,7 @@ int sftl_ctx_build(struct sftl *fs, u32 sb, u64 weave, u8 *pages, u8 *metas,
 
 	/* SB array. */
 	for (i = 0; i < SFTL_NUM_SB; i++) {
-		u8 *e = pages + 2 * SFTL_PAGE_SIZE + 8 * i;
+		u8 *e = sbarr + 8 * i;
 
 		e[0] = fs->rec[i].type;
 		e[1] = fs->rec[i].btoc_flags;
@@ -172,27 +177,27 @@ int sftl_ctx_build(struct sftl *fs, u32 sb, u64 weave, u8 *pages, u8 *metas,
 		sftl_put16(e + 4, fs->rec[i].reserved);
 		sftl_put16(e + 6, fs->rec[i].erases);
 	}
-	for (i = 0; i < 4; i++, lba++)
+	for (i = 0; i < sec[2]; i++, lba++)
 		put_ctx_meta(metas + lba * SFTL_META_LBA, 3, weave + lba,
 			     i * 512, section_len(SFTL_NUM_SB, 512, i));
 
 	/* User sequences. */
 	for (i = 0; i < SFTL_NUM_SB; i++) {
-		u8 *e = pages + 3 * SFTL_PAGE_SIZE + 16 * i;
+		u8 *e = useq + 16 * i;
 
 		sftl_put32(e, fs->useq[i].min);
 		sftl_put32(e + 4, fs->useq[i].max);
 		sftl_put32(e + 8, fs->useq[i].avg);
 		sftl_put32(e + 12, fs->useq[i].count);
 	}
-	for (i = 0; i < 8; i++, lba++)
+	for (i = 0; i < sec[3]; i++, lba++)
 		put_ctx_meta(metas + lba * SFTL_META_LBA, 5, weave + lba,
 			     i * 256, section_len(SFTL_NUM_SB, 256, i));
 
 	/* Read counts. */
 	for (i = 0; i < SFTL_NUM_SB; i++)
-		sftl_put32(pages + 5 * SFTL_PAGE_SIZE + 4 * i, fs->reads[i]);
-	for (i = 0; i < 4; i++, lba++)
+		sftl_put32(reads + 4 * i, fs->reads[i]);
+	for (i = 0; i < sec[4]; i++, lba++)
 		put_ctx_meta(metas + lba * SFTL_META_LBA, 6, weave + lba,
 			     i * 1024, section_len(SFTL_NUM_SB, 1024, i));
 

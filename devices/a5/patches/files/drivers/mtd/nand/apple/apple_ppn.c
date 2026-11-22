@@ -188,9 +188,10 @@ struct apple_ppn {
 };
 
 /*
- * Packages other than the reference one (040472P_HYNIX_B_, 1064 x 256) are
- * probed read-only: the row layout follows their device parameters, but
- * nothing may program or erase them, and the FTL refuses to mount them.
+ * The row layout follows the package's device parameters.  Program and erase
+ * are for supported packages only: the reference one (040472P_HYNIX_B_,
+ * 1064 x 256) and 030800P (2088 x 128); any other probes read-only, and the
+ * FTL mounts only a package it has a profile for.
  */
 #define BBT_MAX_BYTES		512u
 
@@ -680,7 +681,7 @@ static int check_params(struct apple_ppn *p, const u8 *buf)
 		       g->slc_pages == SFTL_SLC_PAGES && g->page_bits == 8 &&
 		       g->block_bits == 11 && g->cau_bits == 4;
 	if (!g->reference)
-		dev_warn(p->dev, "package geometry %u blocks x %u pages (SLC %u), row bits page %u block %u cau %u: not the reference package, read-only\n",
+		dev_info(p->dev, "package geometry %u blocks x %u pages (SLC %u), row bits page %u block %u cau %u: not the reference package\n",
 			 g->blocks, g->mlc_pages, g->slc_pages, g->page_bits,
 			 g->block_bits, g->cau_bits);
 	return 0;
@@ -757,13 +758,24 @@ static int ppn_bringup(struct apple_ppn *p)
 	p->geo.firmware[16] = 0;
 	if (memcmp(fw, "040472P_HYNIX_B_", 16))
 		p->geo.reference = false;
-	if (!p->geo.reference && allow_write) {
-		dev_err(p->dev, "package %16pE is not the tested one: refusing allow_write\n", fw);
+	/*
+	 * Writable: the reference package, or a package whose FTL layout has
+	 * been read off its own media and checked offline (030800P, 2088 x 128:
+	 * spec dump 2026-11-21, nand-offline read/write/fault/LwVM tests).
+	 */
+	p->geo.supported = p->geo.reference ||
+		(!memcmp(fw, "030800P\0\0\0\0\0\0\0\0\0", 16) && p->geo.blocks == 2088 &&
+		 p->geo.mlc_pages == 128 && p->geo.slc_pages == 64 && p->geo.page_bits == 7 &&
+		 p->geo.block_bits == 12 && p->geo.cau_bits == 1);
+	if (!p->geo.supported && allow_write) {
+		dev_err(p->dev, "package %16pE is not a supported one: refusing allow_write\n", fw);
 		ret = -ENODEV;
 		goto out;
 	}
-	if (!p->geo.reference)
-		dev_warn(p->dev, "package firmware %16pE: untested, read-only\n", fw);
+	if (!p->geo.supported)
+		dev_warn(p->dev, "package firmware %16pE: unsupported, read-only\n", fw);
+	else if (!p->geo.reference)
+		dev_info(p->dev, "package firmware %16pE: supported (not the reference package)\n", fw);
 
 	/* The bad-block tables are not used, but are always read here. */
 	bbt_bytes = DIV_ROUND_UP(p->geo.blocks, 8);
@@ -864,7 +876,7 @@ int apple_ppn_erase(struct apple_ppn *p, unsigned int bank, unsigned int block)
 	u8 st;
 	int ret;
 
-	if (!allow_write || !p->geo.reference)
+	if (!allow_write || !p->geo.supported)
 		return -EPERM;
 	if (inject_erase_now()) {
 		dev_warn(p->dev, "erase bank %u block %u: injected failure\n", bank, block);
@@ -936,7 +948,7 @@ int apple_ppn_program(struct apple_ppn *p, const struct sftl_prog *pages, unsign
 	ktime_t started[NBUS] = { 0, 0 };
 	int ret = 0;
 
-	if (!allow_write || !p->geo.reference)
+	if (!allow_write || !p->geo.supported)
 		return -EPERM;
 	for (i = 0; i < n; i++)
 		count[pages[i].bank & 1]++;
@@ -1034,7 +1046,7 @@ EXPORT_SYMBOL_GPL(apple_ppn_program);
 
 bool apple_ppn_write_allowed(struct apple_ppn *p)
 {
-	return allow_write && p->geo.reference;
+	return allow_write && p->geo.supported;
 }
 EXPORT_SYMBOL_GPL(apple_ppn_write_allowed);
 

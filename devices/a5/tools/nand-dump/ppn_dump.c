@@ -25,7 +25,9 @@
 #define DATA_PAGE	16384u
 #define META_PAGE	64u
 /* the package's geometry, read from apple_ppn at load */
-static unsigned int PAGES = 256, BLOCKS = 1064;
+static unsigned int PAGES = 256, SLC_PAGES = 128, BLOCKS = 1064;
+static unsigned int r_pages = 256;	/* pages per block of the region: MLC, or SLC rows */
+static bool r_slc;
 #define ST_FAILED_READ	0xee	/* status byte written when the read itself failed */
 
 static struct apple_ppn *ppn;
@@ -38,13 +40,13 @@ static unsigned long failed;
 
 static int load_page(unsigned long idx)
 {
-	unsigned int block = r_first + idx / PAGES, page = idx % PAGES, u;
+	unsigned int block = r_first + idx / r_pages, page = idx % r_pages, u;
 	u8 st = 0;
 	int ret;
 
 	if ((long)idx == cached)
 		return 0;
-	ret = apple_ppn_read_page(ppn, r_cau * 2 + r_bus, block, page, false, data, meta, &st);
+	ret = apple_ppn_read_page(ppn, r_cau * 2 + r_bus, block, page, r_slc, data, meta, &st);
 	if (ret) {
 		memset(data, 0, DATA_PAGE);
 		memset(meta, 0, META_PAGE);
@@ -76,7 +78,7 @@ static ssize_t dump_read(struct file *f, char __user *buf, size_t len, loff_t *p
 		ret = -EINVAL;
 		goto out;
 	}
-	total = (unsigned long)r_count * PAGES * RAW_PAGE;
+	total = (unsigned long)r_count * r_pages * RAW_PAGE;
 	while (done < len && *pos < total) {
 		size_t n;
 
@@ -102,19 +104,21 @@ out:
 static ssize_t dump_write(struct file *f, const char __user *buf, size_t len, loff_t *pos)
 {
 	char tmp[64];
-	unsigned int b, c, first, n;
+	unsigned int b, c, first, n, slc = 0;
 
 	if (len >= sizeof(tmp))
 		return -EINVAL;
 	if (copy_from_user(tmp, buf, len))
 		return -EFAULT;
 	tmp[len] = 0;
-	if (sscanf(tmp, "%u %u %u %u", &b, &c, &first, &n) != 4 || b > 1 || c > 1 ||
+	if (sscanf(tmp, "%u %u %u %u %u", &b, &c, &first, &n, &slc) < 4 || slc > 1 || b > 1 || c > 1 ||
 	    !n || first >= BLOCKS || n > BLOCKS - first)
 		return -EINVAL;
 	mutex_lock(&dump_lock);
 	vfree(statuses);
-	statuses = vzalloc(n * PAGES);
+	statuses = vzalloc(n * (slc ? SLC_PAGES : PAGES));
+	r_pages = slc ? SLC_PAGES : PAGES;
+	r_slc = slc;
 	r_bus = b;
 	r_cau = c;
 	r_first = first;
@@ -122,7 +126,7 @@ static ssize_t dump_write(struct file *f, const char __user *buf, size_t len, lo
 	cached = -1;
 	failed = 0;
 	mutex_unlock(&dump_lock);
-	pr_info("ppndump: region bus %u cau %u blocks %u..%u\n", b, c, first, first + n - 1);
+	pr_info("ppndump: region bus %u cau %u blocks %u..%u%s\n", b, c, first, first + n - 1, slc ? " (SLC rows)" : "");
 	return statuses ? len : -ENOMEM;
 }
 
@@ -134,8 +138,8 @@ static ssize_t st_read(struct file *f, char __user *buf, size_t len, loff_t *pos
 	if (!statuses) {
 		ret = -EINVAL;
 	} else {
-		ret = simple_read_from_buffer(buf, len, pos, statuses, r_count * PAGES);
-		if (*pos >= r_count * PAGES && failed)
+		ret = simple_read_from_buffer(buf, len, pos, statuses, r_count * r_pages);
+		if (*pos >= r_count * r_pages && failed)
 			pr_warn("ppndump: %lu pages of this region failed to read\n", failed);
 	}
 	mutex_unlock(&dump_lock);
@@ -174,6 +178,7 @@ static int __init dump_init(void)
 
 		apple_ppn_geometry(ppn, &geo);
 		PAGES = geo.mlc_pages;
+		SLC_PAGES = geo.slc_pages;
 		BLOCKS = geo.blocks;
 		pr_info("ppndump: package %s, %u blocks x %u pages per CAU\n",
 			geo.firmware, BLOCKS, PAGES);

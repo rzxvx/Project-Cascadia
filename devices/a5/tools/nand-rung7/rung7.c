@@ -19,14 +19,14 @@
 #include "sftl_port.h"
 #include "rung7.h"
 
-#define R7_MAX_LBAS	(SFTL_MAX_VICTIMS * 4096u)
+#define R7_MAX_LBAS	(SFTL_MAX_VICTIMS * 4096u)	/* the largest SB, reference package */
 
 struct r7_watch {
 	const struct sftl_ops *ops;
 	void *hw;
 	bool armed;
-	u8 erase_ok[(SFTL_NUM_SB + 7) / 8];
-	u8 erased[SFTL_BANKS][(SFTL_BLOCKS + 7) / 8];
+	u8 erase_ok[(SFTL_MAX_SB + 7) / 8];
+	u8 erased[SFTL_BANKS][(SFTL_MAX_BLOCKS + 7) / 8];
 	u32 erases, programs, refused;
 };
 

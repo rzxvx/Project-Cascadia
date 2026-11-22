@@ -6,18 +6,87 @@
 #include "sftl.h"
 #include "sftl_port.h"
 
-#define VFL_BLOCK_A		1062
-#define VFL_BLOCK_B		1063
+#define VFL_BLOCK_A		(sftl_geo.vfl_a)
+#define VFL_BLOCK_B		(sftl_geo.vfl_b)
 #define VFL_HDR_SECTION		0xffff
 #define VFL_MAX_LOG		256
 #define CTX_SECTIONS		6
 
-static const struct {
-	u8 flag;
-	u8 lbas;
-} ctx_layout[CTX_SECTIONS] = {
-	{ 1, 4 }, { 2, 4 }, { 3, 4 }, { 5, 8 }, { 6, 4 }, { 4, 32 },
-};
+/* Section flags in context order; the tree (4) is last. */
+static const u8 ctx_flag[CTX_SECTIONS] = { 1, 2, 3, 5, 6, 4 };
+
+struct sftl_geo sftl_geo;
+
+/* A section of n bytes takes whole LBAs, padded to whole pages. */
+static u32 sec_lbas(u32 bytes)
+{
+	u32 l = (bytes + SFTL_LBA_SIZE - 1) / SFTL_LBA_SIZE;
+
+	return (l + SFTL_LBAS_PER_PAGE - 1) / SFTL_LBAS_PER_PAGE * SFTL_LBAS_PER_PAGE;
+}
+
+/*
+ * The profile of a known package, else -ENODEV.  The 030800P layout was read
+ * off a dump of iOS 8.4.1's own media on that package (2026-11-21): VFL
+ * header 2079 SBs and 3906250 LBAs, context blocks 2086/2087, iOS's context
+ * of 48 LBAs (sections 4, 4, 8, 12, 4, then a 16-LBA tree), signature word
+ * 12 = 18; 4000 random LBAs of its tree land on pages naming them.
+ */
+int sftl_geo_select(u32 blocks, u32 mlc_pages, u32 slc_pages)
+{
+	struct sftl_geo *g = &sftl_geo;
+
+	memset(g, 0, sizeof(*g));
+	if (blocks == 1064 && mlc_pages == 256 && slc_pages == 128) {
+		g->name = "040472P_HYNIX_B_ 1064x256";
+		g->num_sb = 1055;
+		g->vfl_a = 1062;
+		g->vfl_b = 1063;
+		g->tree_min = 32;
+		g->sig_word12 = 16;
+	} else if (blocks == 2088 && mlc_pages == 128 && slc_pages == 64) {
+		g->name = "030800P 2088x128";
+		g->num_sb = 2079;
+		g->vfl_a = 2086;
+		g->vfl_b = 2087;
+		g->tree_min = 16;
+		g->sig_word12 = 18;
+	} else {
+		return -ENODEV;
+	}
+	g->blocks = blocks;
+	g->mlc_pages = mlc_pages;
+	g->slc_pages = slc_pages;
+	g->lbas_per_sb = SFTL_BANKS * mlc_pages * SFTL_LBAS_PER_PAGE;
+	g->total_lbas = 3906266u;
+	g->sec_lbas[0] = SFTL_LBAS_PER_PAGE;			/* base */
+	g->sec_lbas[1] = SFTL_LBAS_PER_PAGE;			/* stats */
+	g->sec_lbas[2] = sec_lbas(g->num_sb * 8);		/* SB array */
+	g->sec_lbas[3] = sec_lbas(g->num_sb * 16);		/* user sequences */
+	g->sec_lbas[4] = sec_lbas(g->num_sb * 4);		/* read counts */
+	g->ctx_tree_vba = g->sec_lbas[0] + g->sec_lbas[1] + g->sec_lbas[2] +
+			  g->sec_lbas[3] + g->sec_lbas[4];
+	if (g->num_sb > SFTL_MAX_SB || g->blocks > SFTL_MAX_BLOCKS ||
+	    g->mlc_pages > SFTL_MAX_PAGES || g->ctx_tree_vba > SFTL_MAX_CTX_TREE_VBA)
+		return -EINVAL;
+	return 0;
+}
+
+/* LBAs of section idx (0..5, ctx_flag order) in a context with the smallest tree. */
+static u32 ctx_sec_lbas(unsigned int idx)
+{
+	return idx < 5 ? sftl_geo.sec_lbas[idx] : SFTL_TREE_LBAS;
+}
+
+/* Context LBA where section idx starts. */
+static u32 ctx_sec_start(unsigned int idx)
+{
+	u32 o = 0, i;
+
+	for (i = 0; i < idx; i++)
+		o += ctx_sec_lbas(i);
+	return o;
+}
 
 int sftl_init(struct sftl *fs, const struct sftl_ops *ops, void *hw)
 {
@@ -322,11 +391,11 @@ static int context_try(struct sftl *fs, u32 sb)
 		const u8 *meta = pagebuf + SFTL_CTX_PAGES * SFTL_PAGE_SIZE +
 				 (i / 4) * SFTL_META_PAGE + (i % 4) * SFTL_META_LBA;
 
-		if (sec_idx == ctx_layout[sec].lbas) {
+		if (sec_idx == ctx_sec_lbas(sec)) {
 			sec++;
 			sec_idx = 0;
 		}
-		if (meta[0] != SFTL_MT_CONTEXT || meta[1] != ctx_layout[sec].flag ||
+		if (meta[0] != SFTL_MT_CONTEXT || meta[1] != ctx_flag[sec] ||
 		    sftl_get48(meta + 2) != base + i) {
 			ret = -EIO;
 			goto out;
@@ -334,12 +403,12 @@ static int context_try(struct sftl *fs, u32 sb)
 		sec_idx++;
 	}
 
-	/* Stats section is LBAs 4..7 = page 1. */
-	memcpy(fs->stats, pagebuf + 1 * SFTL_PAGE_SIZE, SFTL_PAGE_SIZE);
+	/* Stats: one page, after the base. */
+	memcpy(fs->stats, pagebuf + ctx_sec_start(1) * SFTL_LBA_SIZE, SFTL_PAGE_SIZE);
 
-	/* SB array, page 2. */
+	/* SB array: 512 entries per LBA, contiguous. */
 	{
-		const u8 *p = pagebuf + 2 * SFTL_PAGE_SIZE;
+		const u8 *p = pagebuf + ctx_sec_start(2) * SFTL_LBA_SIZE;
 
 		for (i = 0; i < SFTL_NUM_SB; i++) {
 			const u8 *e = p + 8 * i;
@@ -350,22 +419,22 @@ static int context_try(struct sftl *fs, u32 sb)
 			fs->rec[i].reserved = sftl_get16(e + 4);
 			fs->rec[i].erases = sftl_get16(e + 6);
 		}
-		/* User sequences, pages 3-4. */
-		p = pagebuf + 3 * SFTL_PAGE_SIZE;
+		/* User sequences: 256 per LBA. */
+		p = pagebuf + ctx_sec_start(3) * SFTL_LBA_SIZE;
 		for (i = 0; i < SFTL_NUM_SB; i++) {
 			fs->useq[i].min = sftl_get32(p + 16 * i);
 			fs->useq[i].max = sftl_get32(p + 16 * i + 4);
 			fs->useq[i].avg = sftl_get32(p + 16 * i + 8);
 			fs->useq[i].count = sftl_get32(p + 16 * i + 12);
 		}
-		/* Read counts, page 5. */
-		p = pagebuf + 5 * SFTL_PAGE_SIZE;
+		/* Read counts: 1024 per LBA. */
+		p = pagebuf + ctx_sec_start(4) * SFTL_LBA_SIZE;
 		for (i = 0; i < SFTL_NUM_SB; i++)
 			fs->reads[i] = sftl_get32(p + 4 * i);
 	}
 
 	/*
-	 * Tree: from page 6, 32 LBAs in the contexts iOS writes, and for as long
+	 * Tree: after the fixed sections, SFTL_TREE_LBAS in the smallest contexts iOS writes, and for as long
 	 * as the metadata continues the section in contexts with a longer one.
 	 */
 	sftl_map_free(&fs->map);
@@ -381,9 +450,9 @@ static int context_try(struct sftl *fs, u32 sb)
 			const u8 *img;
 
 			if (t < SFTL_TREE_LBAS) {
-				img = pagebuf + 6 * SFTL_PAGE_SIZE + t * SFTL_LBA_SIZE;
+				img = pagebuf + (SFTL_CTX_TREE_VBA + t) * SFTL_LBA_SIZE;
 			} else {
-				u32 o = 24 + t, bank, page, slot;
+				u32 o = SFTL_CTX_TREE_VBA + t, bank, page, slot;
 				u8 st;
 				const u8 *m;
 

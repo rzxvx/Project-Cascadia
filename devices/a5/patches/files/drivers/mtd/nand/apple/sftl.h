@@ -28,27 +28,63 @@ typedef uint64_t u64;
 #endif
 
 #define SFTL_BANKS		4
-#define SFTL_BLOCKS		1064
-#define SFTL_MLC_PAGES		256
-#define SFTL_SLC_PAGES		128
 #define SFTL_LBA_SIZE		4096u
 #define SFTL_LBAS_PER_PAGE	4u
 #define SFTL_PAGE_SIZE		16384u
 #define SFTL_META_LBA		16u
 #define SFTL_META_PAGE		(SFTL_META_LBA * SFTL_LBAS_PER_PAGE)
-#define SFTL_LBAS_PER_SB	4096u
-#define SFTL_NUM_SB		1055u
-#define SFTL_TOTAL_LBAS		3906266u	/* reported + 16 hidden */
-#define SFTL_CTX_LBAS		56u	/* the fixed part: sections 1, 2, 3, 5, 6, 4 */
-#define SFTL_CTX_PAGES		14u
-#define SFTL_TREE_LBAS		32u	/* tree LBAs inside the fixed part */
-#define SFTL_CTX_TREE_VBA	24u	/* VBA of the first tree LBA */
+
+/*
+ * The package's geometry and the FTL layout iOS uses on it.  Two packages are
+ * known (both 16 GB, PPN 1.5.5 on the iPad mini 1):
+ *
+ *   040472P_HYNIX_B_   1064 blocks x 256 pages, 1055 SBs of 4096 LBAs (the reference)
+ *   030800P            2088 blocks x 128 pages, 2079 SBs of 2048 LBAs
+ *
+ * Everything below follows from blocks, pages and the superblock count; the
+ * tree minimum and one word of the signature block are as found on media.
+ * sftl_geo_select() sets the profile before sftl_init().
+ */
+struct sftl_geo {
+	const char *name;
+	u32 blocks;		/* per bank */
+	u32 mlc_pages, slc_pages;
+	u32 lbas_per_sb;	/* banks x MLC pages x LBAs per page */
+	u32 num_sb;		/* superblocks 0 .. num_sb-1 (VFL header) */
+	u32 total_lbas;		/* reported + 16 hidden */
+	u32 vfl_a, vfl_b;	/* VFL context blocks of every bank */
+	u32 tree_min;		/* tree LBAs of the smallest context iOS writes */
+	u32 sig_word12;		/* signature block, u32 at 128 + 4 * 12 */
+	/* context layout, in LBAs: base, stats, SB array, user seqs, read counts */
+	u32 sec_lbas[5];
+	u32 ctx_tree_vba;	/* first tree LBA = the fixed part's length */
+};
+
+extern struct sftl_geo sftl_geo;
+int sftl_geo_select(u32 blocks, u32 mlc_pages, u32 slc_pages);
+
+/* Upper bounds over the known packages, for arrays sized at build time. */
+#define SFTL_MAX_BLOCKS		2088u
+#define SFTL_MAX_PAGES		256u
+#define SFTL_MAX_SB		2079u
+#define SFTL_MAX_CTX_TREE_VBA	32u
+
+#define SFTL_BLOCKS		(sftl_geo.blocks)
+#define SFTL_MLC_PAGES		(sftl_geo.mlc_pages)
+#define SFTL_SLC_PAGES		(sftl_geo.slc_pages)
+#define SFTL_LBAS_PER_SB	(sftl_geo.lbas_per_sb)
+#define SFTL_NUM_SB		(sftl_geo.num_sb)
+#define SFTL_TOTAL_LBAS		(sftl_geo.total_lbas)
+#define SFTL_TREE_LBAS		(sftl_geo.tree_min)
+#define SFTL_CTX_TREE_VBA	(sftl_geo.ctx_tree_vba)
+#define SFTL_CTX_LBAS		(SFTL_CTX_TREE_VBA + SFTL_TREE_LBAS)	/* fixed part + smallest tree */
+#define SFTL_CTX_PAGES		(SFTL_CTX_LBAS / SFTL_LBAS_PER_PAGE)
 /*
  * The tree may run on past the fixed part, in VBAs that follow it (iOS does
  * this when the map is fragmented); this is the most a Linux context writes.
  */
 #define SFTL_TREE_MAX_LBAS	512u
-#define SFTL_CTX_MAX_PAGES	((SFTL_CTX_TREE_VBA + SFTL_TREE_MAX_LBAS) / SFTL_LBAS_PER_PAGE)
+#define SFTL_CTX_MAX_PAGES	((SFTL_MAX_CTX_TREE_VBA + SFTL_TREE_MAX_LBAS) / SFTL_LBAS_PER_PAGE)
 
 /* In-memory and on-media "no mapping" VBA. */
 #define SFTL_UNMAPPED		0x7fffffu
@@ -230,11 +266,11 @@ struct sftl {
 	u32 reported_lbas;
 	u32 vfl_block;
 	u32 vfl_log_pages;
-	struct sftl_sb_shape shape[SFTL_NUM_SB];
+	struct sftl_sb_shape shape[SFTL_MAX_SB];
 	u32 sig_bank, sig_block;
 
 	/* Superblock facts */
-	struct sftl_sb_probe probe[SFTL_NUM_SB];
+	struct sftl_sb_probe probe[SFTL_MAX_SB];
 	struct sftl_sb_rec *rec;
 	struct sftl_useq *useq;
 	u32 *reads;
@@ -260,7 +296,7 @@ struct sftl {
 	u32 replay_applied;
 	bool replayed;
 	/* SBs whose replay walk met a page that did not read back (torn, failed) */
-	u8 torn[(SFTL_NUM_SB + 7) / 8];
+	u8 torn[(SFTL_MAX_SB + 7) / 8];
 	u64 next_weave;
 
 	/* I/O */
@@ -368,7 +404,7 @@ static inline bool sftl_locate(const struct sftl *fs, u32 vba, u32 *bank,
 	if (sb >= SFTL_NUM_SB)
 		return false;
 	sh = &fs->shape[sb];
-	if (!sh->width || o >= (u32)sh->width * 1024)
+	if (!sh->width || o >= (u32)sh->width * (SFTL_LBAS_PER_SB / SFTL_BANKS))
 		return false;
 	row = o / SFTL_LBAS_PER_PAGE;
 	*slot = o % SFTL_LBAS_PER_PAGE;

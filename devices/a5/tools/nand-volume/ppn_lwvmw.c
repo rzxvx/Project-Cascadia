@@ -84,7 +84,18 @@ static int __init w_init(void)
 		result = -ENODEV;
 		return 0;
 	}
-	result = load(from, &f);
+	{
+		struct apple_ppn_geo geo;
+
+		apple_ppn_geometry(ppn, &geo);
+		result = sftl_geo_select(geo.blocks, geo.mlc_pages, geo.slc_pages);
+		if (result)
+			pr_err("lwvmw: no FTL profile for %u x %u\n", geo.blocks, geo.mlc_pages);
+		else
+			pr_info("lwvmw: package profile %s\n", sftl_geo.name);
+	}
+	if (!result)
+		result = load(from, &f);
 	if (!result)
 		result = load(to, &t);
 	if (result) {

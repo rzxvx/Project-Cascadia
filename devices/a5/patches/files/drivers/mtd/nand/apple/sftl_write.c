@@ -830,7 +830,7 @@ static u32 pick_victims(struct sftl *fs, u32 *victims, u32 *count_out, u32 *live
 		}
 		if (best == SFTL_NUM_SB)
 			break;
-		if (nv && live + fs->rec[best].valid > 2048)
+		if (nv && live + fs->rec[best].valid > SFTL_LBAS_PER_SB / 2)
 			break;
 		live += fs->rec[best].valid;
 		w->victim_map[best / 8] |= 1 << (best % 8);
@@ -838,7 +838,7 @@ static u32 pick_victims(struct sftl *fs, u32 *victims, u32 *count_out, u32 *live
 		if (nv == SFTL_MAX_VICTIMS)
 			break;
 	}
-	for (lba = 0; nv && lba < fs->total_lbas && count < SFTL_MAX_VICTIMS * 4096; lba++) {
+	for (lba = 0; nv && lba < fs->total_lbas && count < SFTL_MAX_VICTIMS * SFTL_LBAS_PER_SB; lba++) {
 		u32 vba = sftl_map_get(&fs->map, lba);
 
 		if (vba == SFTL_UNMAPPED)
@@ -1056,7 +1056,7 @@ int sftl_writer_start(struct sftl *fs, unsigned int verify_every)
 		return -ENOMEM;
 	{
 		static const u32 expected[] = {
-			0x776d7278, 0, 6, 1, 1, 0, 2, 2, 0x20000, 0, 1, 0, 16, 2,
+			0x776d7278, 0, 6, 1, 1, 0, 2, 2, 0x20000, 0, 1, 0, 0 /* sig_word12 */, 2,
 		};
 		u8 st;
 		unsigned int i;
@@ -1069,7 +1069,8 @@ int sftl_writer_start(struct sftl *fs, unsigned int verify_every)
 			     sftl_get32(sig + 36) != 0x600))
 			ret = -EPERM;
 		for (i = 0; !ret && i < 14; i++)
-			if (sftl_get32(sig + 128 + 4 * i) != expected[i])
+			if (sftl_get32(sig + 128 + 4 * i) !=
+			    (i == 12 ? sftl_geo.sig_word12 : expected[i]))
 				ret = -EPERM;
 	}
 	sftl_free(sig);
@@ -1093,7 +1094,7 @@ int sftl_writer_start(struct sftl *fs, unsigned int verify_every)
 	w->btoc_img = sftl_alloc(2 * SFTL_PAGE_SIZE);
 	w->ctx_pages = sftl_alloc(SFTL_CTX_MAX_PAGES * (SFTL_PAGE_SIZE + SFTL_META_PAGE));
 	w->ctx_prog = sftl_alloc(SFTL_CTX_MAX_PAGES * sizeof(*w->ctx_prog));
-	w->gc_list = sftl_alloc(SFTL_MAX_VICTIMS * 4096 * sizeof(u32));
+	w->gc_list = sftl_alloc(SFTL_MAX_VICTIMS * SFTL_LBAS_PER_SB * sizeof(u32));
 	w->victim_map = sftl_alloc((SFTL_NUM_SB + 7) / 8);
 	w->bad_map = sftl_alloc((SFTL_NUM_SB + 7) / 8);
 	w->rescue_data = sftl_alloc((size_t)SFTL_FAIL_DEPTH * SFTL_RESCUE_LBAS * SFTL_LBA_SIZE);

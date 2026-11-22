@@ -340,7 +340,7 @@ static void instance_free(struct ftl_instance *in)
 	kfree(in->tmp_lba);
 	if (in->ppn)
 		apple_ppn_put(in->ppn);
-	kfree(in);
+	kvfree(in);
 }
 
 /* Checkpoint when needed.  On return the writer is stopped from committing again. */
@@ -378,15 +378,16 @@ static int ftl_do_mount(void)
 		struct apple_ppn_geo geo;
 
 		apple_ppn_geometry(ppn, &geo);
-		if (geo.blocks != SFTL_BLOCKS || geo.mlc_pages != SFTL_MLC_PAGES ||
-		    geo.slc_pages != SFTL_SLC_PAGES) {
-			pr_err("apple_ftl: package is %u blocks x %u pages, this FTL is built for %u x %u: not mounting\n",
-			       geo.blocks, geo.mlc_pages, SFTL_BLOCKS, SFTL_MLC_PAGES);
+		if (sftl_geo_select(geo.blocks, geo.mlc_pages, geo.slc_pages)) {
+			pr_err("apple_ftl: no FTL profile for a package of %u blocks x %u pages: not mounting\n",
+			       geo.blocks, geo.mlc_pages);
 			apple_ppn_put(ppn);
 			return -ENODEV;
 		}
+		pr_info("apple_ftl: package profile %s, %u superblocks of %u LBAs\n",
+			sftl_geo.name, SFTL_NUM_SB, SFTL_LBAS_PER_SB);
 	}
-	in = kzalloc(sizeof(*in), GFP_KERNEL);
+	in = kvzalloc(sizeof(*in), GFP_KERNEL);
 	if (!in) {
 		apple_ppn_put(ppn);
 		return -ENOMEM;

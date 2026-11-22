@@ -15,7 +15,8 @@ struct apple_ppn_geo {
 	unsigned int slc_pages;
 	unsigned int page_bits, block_bits, cau_bits;	/* row address fields */
 	char firmware[17];		/* feature 0x9080, NUL-terminated */
-	bool reference;			/* the tested 040472P_HYNIX_B_ 1064 x 256 package */
+	bool reference;			/* the 040472P_HYNIX_B_ 1064 x 256 package */
+	bool supported;			/* may be written: the reference, or 030800P 2088 x 128 */
 };
 
 /* Grab the single bound controller, or NULL if none is bound. */
