@@ -913,7 +913,8 @@ out:
 EXPORT_SYMBOL_GPL(apple_ppn_erase);
 
 /* Issue a program on the bus up to its confirm, then arm the status poll. */
-static int program_start(const struct ppn_bus *b, const struct sftl_prog *pg)
+static int program_start(const struct apple_ppn *p, const struct ppn_bus *b,
+			 const struct sftl_prog *pg)
 {
 	int ret;
 
@@ -1011,7 +1012,7 @@ int apple_ppn_program(struct apple_ppn *p, const struct sftl_prog *pages, unsign
 				}
 				if (ret)
 					break;
-				ret = program_start(b, &pages[k]);
+				ret = program_start(p, b, &pages[k]);
 				if (ret) {
 					dev_err(p->dev, "program start bus %u: %d\n", i, ret);
 					break;
