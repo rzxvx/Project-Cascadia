@@ -16,7 +16,8 @@ Linux on the 7th-generation iPad: **iPad7,11** (Wi-Fi, J171AP) and
 > reaching the internet through the Mac, a 10 GB Linux partition next to
 > iPadOS (APFS shrunk by iPadOS itself, `./cascadia a10 storage`) with the
 > Alpine root on it (ext4, behind a write gate in the kernel's NVMe driver:
-> only that partition is writable). Not yet: Wi-Fi / Bluetooth
+> only that partition is writable), and a Wayland desktop -- labwc, drawn by
+> the CPU (pixman), at twice the size, with wvkbd as the keyboard. Not yet: Wi-Fi / Bluetooth
 > firmware, the USB power source (`power_supply usb`: I2C NACK on J171). Photos:
 > [gallery/](../../gallery/README.md#ipad-7-a10).
 
@@ -70,12 +71,51 @@ Pinned in [sources.env](sources.env):
 # once, with Linux up: this iPad's SysCfg (read-only), then touch firmware
 ./cascadia a10 syscfg && ./cascadia a10 firmware
 ./cascadia a10 build fbkeyboard # the on-screen keyboard, into the next pack
-./cascadia a10 build rootfs     # Alpine, run from RAM (sent as an iBoot ramdisk)
+./cascadia a10 build rootfs     # Alpine: for RAM (a ramdisk) and, with the desktop, for the NVMe
 ./cascadia a10 pack
 ./cascadia a10 boot             # Linux: ssh root@172.16.43.1, serial /dev/cu.usbmodemiPad7_linux1
 ./cascadia a10 boot proxy       # or m1n1's proxy, for m1n1's proxyclient
 ./cascadia a10 net on           # then: the Mac's internet for apk on the iPad (sudo, pf NAT)
 ```
+
+### Off, and when a root does not come up
+
+The iPad only goes off by a hard reset (DFU, the buttons): type `sync`
+before, after installing or changing things -- ext4 once brought files
+rewritten just before a reset back empty. (a10-init writes dirty pages out
+within 5 s; `rootfs sync` ends with a sync.)
+
+Two boot arguments for a root on the NVMe that does not come up, added by
+`EXTRA_BOOTARGS="..." ./cascadia a10 pack`:
+
+- `cascadia.root=ram` -- Alpine in RAM even with `cascadia-root` there; mount
+  `/dev/nvme0n1p2` and mend it.
+- `cascadia.debug` -- a10-init traces every step into the kernel log (the
+  screen, the DCSD UART).
+
+### The desktop
+
+labwc, the Wayland compositor the iPad mini 1 uses, drawn by the CPU
+(`WLR_RENDERER=pixman`) on the framebuffer iBoot left (simpledrm), at scale
+2: a tap on the background opens its menu (apps, terminal, keyboard), wvkbd
+is the on-screen keyboard. It starts at boot on the NVMe root; on the screen
+or over ssh:
+
+```bash
+desktop               # start it (desktop stop: back to the text console)
+desktop auto on|off   # at boot, or not
+```
+
+Home pressed three times opens task-killer (`tools/task-killer`, the
+iPad mini 1's, ported): Continue kills everything but the basics and brings
+the text console back with fbkeyboard; Manual kill picks; Cancel. With no
+overlay plane on this screen, it switches to a free VT first, so seatd sets
+the desktop aside while its window is up.
+
+The packages are in `rootfs/packages-desktop`, the configuration in
+`rootfs/overlay` (`/etc/xdg/labwc`, `/usr/local/bin/desktop`). A root
+already on the iPad gets them with `./cascadia a10 rootfs sync`. Alpine in
+RAM stays without them: it has to fit in an iBoot ramdisk.
 
 ### Storage of its own
 
@@ -123,8 +163,9 @@ iPad's serials and calibration: they stay in `build/`, out of git.
 1. ~~m1n1 proxy on the iPad 7~~ ✓
 2. ~~Linux over USB~~ ✓ (shell over USB serial, network, SSH; the kernel
    log also on the DCSD UART, 115200)
-3. ~~Alpine in RAM, internet over USB~~ ✓, ~~Alpine on its own NVMe partition~~ ✓;
-   next a Wayland desktop, labwc, as on the iPad mini 1
+3. ~~Alpine in RAM, internet over USB~~ ✓, ~~Alpine on its own NVMe partition~~ ✓,
+   ~~labwc (Wayland) drawn by the CPU, as on the iPad mini 1~~ ✓; next Wi-Fi and
+   Bluetooth
    (not XFCE on X11): touch, the on-screen keyboard, Wi-Fi, Bluetooth,
    battery. Rendered by pixman on the CPU until the GPU works.
 4. What the kernel source does not have yet: speakers, auto-rotation

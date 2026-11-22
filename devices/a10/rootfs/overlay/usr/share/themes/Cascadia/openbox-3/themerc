@@ -1,0 +1,13 @@
+padding.height: 8
+window.button.width: 34
+window.button.spacing: 4
+window.active.title.bg.color: #1d323f
+window.inactive.title.bg.color: #3a4a55
+window.active.label.text.color: #ffffff
+window.inactive.label.text.color: #c8d0d6
+window.active.button.unpressed.image.color: #ffffff
+window.inactive.button.unpressed.image.color: #c8d0d6
+window.active.border.color: #1d323f
+window.inactive.border.color: #3a4a55
+border.width: 1
+menu.items.padding.y: 10

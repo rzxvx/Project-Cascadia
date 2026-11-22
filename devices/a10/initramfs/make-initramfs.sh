@@ -246,6 +246,11 @@ done
 # root of choice when it is there -- before NFS, before RAM.
 nvme_root() {
     [ $linux_disk = 1 ] || return 0
+    # cascadia.root=ram on the command line: Alpine in RAM even so -- the way
+    # in to mend a root on the NVMe that does not come up
+    case " $(cat /proc/cmdline) " in
+        *" cascadia.root=ram "*) echo "[nvme] cascadia.root=ram: not the NVMe root"; return 0 ;;
+    esac
     # findfs: this busybox has no blkid
     dev=$(findfs LABEL=cascadia-root 2>/dev/null)
     case "$dev" in

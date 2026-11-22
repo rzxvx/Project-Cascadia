@@ -34,6 +34,8 @@
 #   ./cascadia a10 nvme format     after setup + pack + boot: ext4 + the Alpine
 #                                  root on it (asks FORMAT); boots from it then
 #   ./cascadia a10 nvme status     the gate and the NVMe as the iPad sees them
+#   ./cascadia a10 rootfs sync     the running root up to this tree: rootfs/packages
+#                                  (apk) and rootfs/overlay (the desktop, a10-init)
 #
 # The boot chain is open source end to end: gaster (checkm8), hBootPatcher,
 # m1n1 -- no checkra1n, no PongoOS. Pinned sources: sources.env.
@@ -284,7 +286,10 @@ cmd_pack() {
                   "$n_nsid" 0 "$n_first" 0 "$n_count"
               note "NVMe write gate: namespace $n_nsid, LBA $n_first +$n_count ($n_part) writable" )
         fi
-        cat "$m" boot/bootargs.txt "$tmp/dtb" "$tmp/initramfs.cpio.gz" \
+        # EXTRA_BOOTARGS: more for this pack (cascadia.root=ram, cascadia.debug)
+        sed "s|\$| ${EXTRA_BOOTARGS:-}|; s| *\$||" boot/bootargs.txt > "$tmp/bootargs"
+        [ -z "${EXTRA_BOOTARGS:-}" ] || note "boot arguments + $EXTRA_BOOTARGS"
+        cat "$m" "$tmp/bootargs" "$tmp/dtb" "$tmp/initramfs.cpio.gz" \
             "$P/Image.gz" > "$tmp/linux.macho"
         printf '\000\000\000\000' >> "$tmp/linux.macho"
         ipsw img4 create --input "$tmp/linux.macho" --type rkrn --compress lzss \
@@ -352,6 +357,9 @@ case "$cmd" in
     net)    exec bash host/mac-share-internet.sh "$@" ;;
     storage) exec bash storage/host.sh "$@" ;;
     nvme)   exec bash tools/nvme.sh "$@" ;;
+    rootfs)
+        [ "${1:-}" = sync ] || fail "rootfs what? sync (to build one: ./cascadia a10 build rootfs)"
+        exec bash tools/rootfs-sync.sh ;;
     pack)   cmd_pack ;;
     boot)   cmd_boot "$@" ;;
     ''|-h|--help|help) awk 'NR>1 && /^#/ {sub(/^# ?/, ""); print; next} NR>1 {exit}' "$A10/cascadia" ;;

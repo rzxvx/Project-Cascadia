@@ -1,0 +1,25 @@
+<?xml version="1.0"?>
+<!-- labwc on the iPad 7: drawn by the CPU (pixman), so no shadows and no
+     rounded corners (each a pass over every window). The touchscreen sends
+     touches, not a pretend mouse; on the title bars and the background labwc
+     takes them as clicks. -->
+<labwc_config>
+  <core>
+    <decoration>server</decoration>
+    <gap>0</gap>
+  </core>
+  <placement>
+    <policy>center</policy>
+  </placement>
+  <theme>
+    <name>Cascadia</name>
+    <cornerRadius>0</cornerRadius>
+    <dropShadows>no</dropShadows>
+    <font place="ActiveWindow"><name>DejaVu Sans</name><size>12</size><weight>bold</weight></font>
+    <font place="InactiveWindow"><name>DejaVu Sans</name><size>12</size></font>
+    <font place="MenuItem"><name>DejaVu Sans</name><size>14</size></font>
+    <font place="OnScreenDisplay"><name>DejaVu Sans</name><size>13</size></font>
+  </theme>
+  <!-- apple_z2 names the touchscreen after the shared iPad 7 DT -->
+  <touch deviceName="iPad7,12 Touchscreen" mapToOutput="Unknown-1" mouseEmulation="no"/>
+</labwc_config>

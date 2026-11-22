@@ -1,11 +1,23 @@
 #!/bin/sh
 # a10-init - sysinit for the Alpine root on the iPad 7 (run by BusyBox init).
 # /dev, /proc and /sys were moved here by the initramfs; usb0 is already up.
+# cascadia.debug on the command line: every step traced into the kernel log
+# (the screen, the DCSD UART)
+case " $(cat /proc/cmdline) " in
+    *" cascadia.debug "*) exec 2>/dev/kmsg; set -x ;;
+esac
 mountpoint -q /dev/pts || { mkdir -p /dev/pts; mount -t devpts devpts /dev/pts; }
 mountpoint -q /run || mount -t tmpfs -o mode=755 tmpfs /run
 mountpoint -q /tmp || mount -t tmpfs -o mode=1777 tmpfs /tmp
+# POSIX shared memory: Wayland (wlroots' keymaps, the clients' buffers)
+mkdir -p /dev/shm
+mountpoint -q /dev/shm || mount -t tmpfs -o mode=1777,nosuid,nodev tmpfs /dev/shm
 mkdir -p /run/lock /var/log
 hostname -F /etc/hostname
+# every way off here is a hard reset (DFU, the buttons): write dirty pages
+# out within 5 s, not 30 -- files rewritten in place came back empty once
+echo 500 > /proc/sys/vm/dirty_expire_centisecs
+echo 100 > /proc/sys/vm/dirty_writeback_centisecs
 # udev: device nodes and the input devices a Wayland compositor (libinput)
 # finds through it -- the touchscreen, the buttons
 if [ -x /sbin/udevd ]; then
@@ -19,3 +31,8 @@ route add default gw 172.16.43.2 2>/dev/null
 # ssh: keys, or root without a password (-B), as in the initramfs
 dropbear -R -B
 echo "ipad7: Alpine $(cat /etc/alpine-release) up, ssh root@172.16.43.1" > /dev/kmsg
+# Home pressed three times: the way out of what holds the screen
+[ -x /usr/local/bin/task-killer ] &&
+    setsid /usr/local/bin/task-killer >/tmp/task-killer.log 2>&1 </dev/null &
+# the desktop on the screen, unless `desktop auto off`
+[ -x /usr/local/bin/desktop ] && /usr/local/bin/desktop --boot >/dev/null 2>&1

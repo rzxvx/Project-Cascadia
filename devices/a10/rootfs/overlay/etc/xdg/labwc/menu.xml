@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- a tap on the background -->
+<openbox_menu>
+  <menu id="root-menu" label="">
+    <item label="Apps"><action name="Execute" command="fuzzel"/></item>
+    <item label="Terminal"><action name="Execute" command="foot"/></item>
+    <item label="Keyboard"><action name="Execute" command="kbd-toggle"/></item>
+    <separator/>
+    <item label="Reconfigure"><action name="Reconfigure"/></item>
+    <item label="Log out"><action name="Exit"/></item>
+  </menu>
+</openbox_menu>

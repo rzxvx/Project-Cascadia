@@ -1,0 +1,5 @@
+#!/bin/sh
+# kbd-toggle -- the on-screen keyboard shown or hidden: wvkbd (its signal
+# for a turn), started if it is not running.
+pid=$(pidof wvkbd-mobintl) && { kill -s RTMIN $pid 2>/dev/null || kill -34 $pid; exit 0; }
+exec wvkbd-mobintl -H 280 -L 200 >/tmp/wvkbd.log 2>&1

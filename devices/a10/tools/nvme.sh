@@ -79,7 +79,8 @@ PY
 format)
     [ -f "$NOTE" ] || fail "no build/private/nvme-linux -- run: ./cascadia a10 nvme setup"
     nvme_note "$NOTE"
-    [ -f "$A10/build/alpine-a10.tar.gz" ] || fail "no Alpine root -- run: ./cascadia a10 build rootfs"
+    ROOT_TGZ="$A10/build/alpine-a10-desktop.tar.gz"
+    [ -f "$ROOT_TGZ" ] || fail "no Alpine root -- run: ./cascadia a10 build rootfs"
     gate=$(ipad 'dmesg | grep "write gate"' </dev/null || true)
     printf '%s\n' "$gate" | sed 's/^/    /'
     printf '%s\n' "$gate" | grep -q "namespace 1, LBA $n_first +$n_count writable" \
@@ -96,7 +97,7 @@ format)
     say "mkfs.ext4 -L cascadia-root $dev"
     ipad "mkfs.ext4 -q -F -L cascadia-root $dev && mkdir -p /mnt/nvme && mount -t ext4 $dev /mnt/nvme" </dev/null
     say "unpacking the Alpine root onto it"
-    ipad "tar xzf - -C /mnt/nvme && sync && df -h /mnt/nvme | tail -1 && umount /mnt/nvme" < "$A10/build/alpine-a10.tar.gz"
+    ipad "tar xzf - -C /mnt/nvme && sync && df -h /mnt/nvme | tail -1 && umount /mnt/nvme" < "$ROOT_TGZ"
     say "done: the next boot starts from $dev (the initramfs finds LABEL=cascadia-root)"
     ;;
 status)
