@@ -15,6 +15,12 @@ missing SmartIO firmware.
 
 ![The first Linux boot on the iPad 7: the kernel log on the screen](ipad7-first-linux-boot.webp)
 
+The same day, Linux in userspace: m1n1 brings the NVMe link up, the kernel
+finds the internal NVMe, the initramfs binds the USB gadget (serial,
+network, SSH) and leaves a shell on the screen.
+
+![Linux on the iPad 7 in userspace: NVMe found, the USB gadget up, a shell on the screen](ipad7-linux-userspace.webp)
+
 ## iPhone 11 (A13)
 
 ![iPhone 11: XFCE with Chromium](i11xfcechromium.png)
