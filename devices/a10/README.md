@@ -6,7 +6,8 @@ Linux on the 7th-generation iPad: **iPad7,11** (Wi-Fi, J171AP) and
 
 > **Status: bring-up, Linux over USB.** On an iPad7,11 (J171), 2026-11-22:
 > m1n1 (with Paul Praschl's T8010 NVMe patches) brings the NVMe link up and
-> hands over to Linux 7.2; the kernel runs on both cores with 3 GB, the
+> hands over to Linux 7.2; the kernel runs on both cores with 3 GB and
+> cpufreq (Zephyr 300 MHz to Hurricane 2.24 GHz, stable under load), the
 > screen (simpledrm + fbcon), the USB gadget (serial + network + SSH at
 > 172.16.43.1), the internal NVMe (32 GB, all namespaces read-only), the
 > battery and charging status, SmartIO, multi-touch (the Z2 firmware built
