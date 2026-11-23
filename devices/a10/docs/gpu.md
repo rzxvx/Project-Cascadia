@@ -925,6 +925,26 @@ background and the red triangle at (784, 1048), the wallpaper around it.
 (`/dev/fb0` is simpledrm's fbdev shadow, stride 6480: it does not show
 what the GPU wrote.)
 
+**Bigger targets (in progress, runs screen-full1, screen-1k*).** `RT_SIZE=WxH`
+sizes everything from the target as upstream `pvr_hwrt.c` does for 32x32
+tiles: PPP_SCREEN, TE_SCREEN, TE_MTILE1 / 2 (4 x 4 macrotiles of mx x my
+tiles, mx / my rounded up to 4), 0xc20 = mx * my, ISP_MTILE_SIZE (0xf18) =
+mx << 16 | my, ISP_RGN (0xf28) = mx * my * 5 / 4 words, the PPP terminate
+and region clips, the viewport, and the image state's size (height - 1 in
+word 0 bits 27-31 + word 1 bits 0-8, width - 1 in word 1 bits 9-22: both
+63 in the capture's words); region headers and TPC moved to region PMB at
+GPU VA 0x300000. 64x64 is unchanged (0 differing pixels). The TA does the
+whole screen: the macrotile array's entries step by one macrotile's 5-byte
+region headers (1600 bytes for 16 x 20 tiles), the geometry lands in PM
+pages, and the drawn tiles show the triangle exactly where it belongs (375
+red pixels on row 1000 of 1620 x 2160). **But the 3D stops after about 512
+tiles** -- 1620x2160: macrotile 0 and part of macrotile 1; 1024x1024: 8
+macrotiles of 8 x 8 and part of the 9th -- and Finalize3D waits for
+`PM_3D_MEM_FREE` forever, without an MMU fault. Not the cause: the
+free-list descriptor's +0x28 (-> RGX 0x220) = pages / 32, 1024 PM pages
+instead of 128 (a little further, still stuck), Apple's own end-of-tile
+code (same stop). To find.
+
 **The 1-page free list is no longer needed**: with the 0x470 program the
 clear alone also runs on the 128-page free list with the WaitIRQ (runs
 own-clear / own-clear128: 4096 yellow pixels either way) -- the missing

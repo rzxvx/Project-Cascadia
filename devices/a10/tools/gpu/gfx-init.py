@@ -390,6 +390,25 @@ G3 = {
 PM_PAGES = int(os.environ.get("PM_PAGES", "128" if "--tri" in sys.argv or "--own" in sys.argv else "1"), 0)
 
 
+RGN_VA, TPC_VA = 0x300000, 0x340000     # region headers / TPC: region PMB, 0x40000 each
+
+
+def geom():
+    """The render target's size (RT_SIZE=WxH, default 64x64) and what the tiling
+    registers take from it, as upstream pvr_hwrt.c computes it for 32x32 tiles:
+    tiles, macrotiles (4 x 4 of them, each mx x my tiles, mx / my rounded up to
+    a multiple of 4)."""
+    w, h = (int(v) for v in os.environ.get("RT_SIZE", "64x64").split("x"))
+    tx, ty = -(-w // 32), -(-h // 32)
+    mx = -(-(-(-tx // 4)) // 4) * 4
+    my = -(-(-(-ty // 4)) // 4) * 4
+    return {"w": w, "h": h, "tx": tx, "ty": ty, "mx": mx, "my": my}
+
+
+def f32(v):
+    return struct.unpack("<I", struct.pack("<f", v))[0]
+
+
 def pm_setup(w32, va, pa):
     """The TA's parameter manager for a 64x64 target (32x32 tiles: 2x2 tiles,
     macrotiles 4x4 as upstream pvr_hwrt.c computes them): free list, MLIST,
@@ -401,7 +420,12 @@ def pm_setup(w32, va, pa):
     # free list: PM_PAGES physical pages, top = n - 1 (descriptor CMDT+0x20 =
     # T74: +0x1c base -> RGX 0x210, +0x28 -> 0x220, +0x40 top -> 0x224,
     # +0x48 / +0x4c -> 0x390 / 0x394; fw 0x17a10)
-    pfns = [(pa["G3"] + G3["pages"] + 0x1000 * i) >> 12 for i in range(PM_PAGES)]
+    if PM_PAGES > 128:          # more than G3 holds: a buffer of its own (physical pages only, no GPU VA)
+        pa["PMPAGES"] = u.heap.memalign(0x10000, PM_PAGES * 0x1000)
+        iface.writemem(pa["PMPAGES"], bytes(PM_PAGES * 0x1000))
+    else:
+        pa["PMPAGES"] = pa["G3"] + G3["pages"]
+    pfns = [(pa["PMPAGES"] + 0x1000 * i) >> 12 for i in range(PM_PAGES)]
     iface.writemem(pa["G3"] + G3["fl"], struct.pack(f"<{PM_PAGES}I", *pfns))
     w32("T74", 0x1c, g("fl"))
     w32("T74", 0x20, 0)
@@ -415,12 +439,24 @@ def pm_setup(w32, va, pa):
         w32("TAO", o, 0)
     # 32-bit block: 0xc78, 0xc88 PPP_CTRL, 0xc98 PPP_SCREEN, 0xc18 TE_SCREEN,
     # 0xc08 / 0xc10 TE_MTILE1 / 2, 0xc20 macrotile stride, 0xc28 TE_PSG
-    for i, x in enumerate((0x88, 0x2, 0x003f003f, 0x1001, 0x10100c, 0x10100c, 16, 0x20000)):
+    gm = geom()
+    mx, my = gm["mx"], gm["my"]
+    for i, x in enumerate((0x88, 0x2,
+                           ((gm["h"] - 1) << 16) | (gm["w"] - 1),           # PPP_SCREEN
+                           ((gm["ty"] - 1) << 12) | (gm["tx"] - 1),         # TE_SCREEN
+                           (mx << 18) | (2 * mx << 9) | 3 * mx,             # TE_MTILE1
+                           (my << 18) | (2 * my << 9) | 3 * my,             # TE_MTILE2
+                           mx * my, 0x20000)):
         w32("TAA", 4 * i, x)
+    # region headers and the tail pointer cache: region PMB at GPU VA 0x300000
+    n = 0xe0000 // 0x1000
+    iface.writemem(pa["PMB"], bytes(0x80000))
+    ents = b"".join(struct.pack("<Q", (pa["PMB"] + 0x1000 * k) | 1) for k in range(n))
+    iface.writemem(pa["PTR"] + 8 * ((RGN_VA >> 12) & 0x1ff), ents)
     # 64-bit block (StartTA +0x8)
     b = {0x00: 0x1e3ce508,           # 0xc90 PDS_CTRL
-         0x08: g("rgn"),             # 0xc38 region headers
-         0x10: g("tpc"),             # 0xc40 tail pointer cache
+         0x08: RGN_VA,               # 0xc38 region headers
+         0x10: TPC_VA,               # 0xc40 tail pointer cache
          0x18: 0,                    # 0xc00 TE_AA (1 sample)
          0x20: 0x88,                 # 0xc80 PPP_MULTISAMPLECTL
          0x28: g("ctx") + 0x100,     # 0x428
@@ -445,7 +481,7 @@ def pm_setup(w32, va, pa):
             clear_setup(w32, va, pa)
     # PPP terminate state: header pres_terminate, TERMINATE0 clip right /
     # bottom tile 1, TERMINATE1 0
-    for i, x in enumerate((0x02000000, 0x00040001, 0)):
+    for i, x in enumerate((0x02000000, ((gm["tx"] - 1) << 18) | (gm["ty"] - 1), 0)):
         w32("G3", G3["ppp"] + 4 * i, x)
     pv = g("ppp")
     for i, x in enumerate(((3 << 8) | (pv >> 32), pv & 0xfffffffc, 0xc0000000)):
@@ -617,7 +653,13 @@ def own_setup(w32, va, pa):
     if "--screen" in sys.argv:
         rt_va, pitch = map_screen(w32, pa)
     # image state: BGRA8 linear 64x64; word 2 = address >> 1, word 3 bits 15.. = row pitch / 64 - 1
-    img = [0xfb050502, 0x00007e01, rt_va >> 1, 0x80000000 | ((pitch // 64 - 1) << 15), 0, 0xc0000000, 0]
+    gm = geom()
+    if "--screen" not in sys.argv:
+        pitch = 4 * gm["w"] + (-4 * gm["w"] % 64)
+    # word 0 bits 27..31 + word 1 bits 0..8: height - 1; word 1 bits 9..22: width - 1
+    h1, w1 = gm["h"] - 1, gm["w"] - 1
+    img = [0x03050502 | ((h1 & 0x1f) << 27), ((h1 >> 5) & 0x1ff) | (w1 << 9), rt_va >> 1,
+           0x80000000 | ((pitch // 64 - 1) << 15), 0, 0xc0000000, 0]
     iface.writemem(pa["G3"] + t + 0x920, struct.pack("<7I", *img))
     iface.writemem(g + 0x1500, struct.pack("<3I", 0xf0000800, 0xf4000012, 0xd3000000))
     iface.writemem(g + 0x1540, struct.pack("<QQ", dva, 0x90000007) + douttu(usc["eot"]))
@@ -635,11 +677,12 @@ def own_setup(w32, va, pa):
         # ISPCTL (upass 0xf, back face present), front ISPA (depth compare ALWAYS, depth
         # write off, point / line width 0xf), front ISPB (stencil ALWAYS), back ISPA, back ISPB
         ("isp", [0x0000001f, 0x03c40000, 0x003e0f00, 0x0e000000, 0x00100f00, 0x00000000]),
-        ("vp", [0x00000c00, 0x80000001, 0x00000001,             # region clip: tiles 0..1 x 0..1
-                0x42000000, 0x42000000, 0x42000000, 0xc2000000, 0x00000000, 0x3f800000]),   # viewport 32 32 / 32 -32 / 0 1
+        ("vp", [0x00000c00, 0x80000000 | (gm["tx"] - 1), gm["ty"] - 1,   # region clip: all tiles
+                f32(gm["w"] / 2), f32(gm["w"] / 2), f32(gm["h"] / 2), f32(-gm["h"] / 2),   # viewport x / y
+                0x00000000, 0x3f800000]),                                                  # z: 0 + 1 z
         ("ctrl", [0x00210000, 0x1e3ce508, 0x000004a0]),         # WCLAMP 1e-20, PPP_CTRL: clip mode 1, flatshade, wclamp
         ("dbsc", [0x00000020, 0x00000000]),                     # ISP DBSC: scissor / depth bias index 0
-        ("term", [0x02000000, 0x00040001, 0x00000000]),         # terminate: clip to tile 1 / 1
+        ("term", [0x02000000, ((gm["tx"] - 1) << 18) | (gm["ty"] - 1), 0]),   # terminate: clip to the last tile
     ]
     at = {}
     off = 0x100
@@ -819,7 +862,8 @@ def build_3d(w32, va, pa):
     # Start3D's register blocks (docs/gpu.md "3D layouts"); values for a
     # 64x64 target, to be checked one by one
     a = [0] * 18
-    a[0] = 0x00040004       # 0xf18
+    gm = geom()
+    a[0] = (gm["mx"] << 16) | gm["my"]    # 0xf18 ISP_MTILE_SIZE
     a[1] = 0x3f800000       # 0xf80: 1.0f (the iPadOS record's +0x5c4)
     a[2] = 0x300            # 0xf88 (record +0x5c8)
     a[3] = 0xf              # (record +0x5cc; not loaded by Start3D)
@@ -834,7 +878,7 @@ def build_3d(w32, va, pa):
         w32("S3A", 4 * i, x)
     b = [0] * 29
     b[0] = 0x88             # 0xfa8
-    b[10] = 0x14            # 0xf28
+    b[10] = gm["mx"] * gm["my"] * 5 // 4  # 0xf28 ISP_RGN: one macrotile's region headers in words (5 bytes a tile)
     for i in range(22, 28):
         b[i] = 0x1d3        # 0x11080 x 6
     if "--clear" in sys.argv:
@@ -1263,10 +1307,10 @@ def main():
                     hist[x] = hist.get(x, 0) + 1
                 out("render target: " + ", ".join(f"{x:#010x} x{c}" for x, c in sorted(hist.items(), key=lambda t: -t[1])[:8])
                     + f"; px(0,0) {rt[0]:#010x} px(63,0) {rt[63]:#010x} px(0,63) {rt[63 * 64]:#010x} px(63,63) {rt[4095]:#010x}")
-                used = [i for i in range(PM_PAGES) if any(iface.readmem(pa["G3"] + G3["pages"] + 0x1000 * i, 0x1000))]
+                used = [i for i in range(min(PM_PAGES, 128)) if any(iface.readmem(pa["PMPAGES"] + 0x1000 * i, 0x1000))]
                 out(f"PM pages written: {used}")
                 for i in used[:6]:
-                    words = struct.unpack("<1024I", iface.readmem(pa["G3"] + G3["pages"] + 0x1000 * i, 0x1000))
+                    words = struct.unpack("<1024I", iface.readmem(pa["PMPAGES"] + 0x1000 * i, 0x1000))
                     nz = [(j * 4, x) for j, x in enumerate(words) if x]
                     out(f"  page {i}: {len(nz)} words: " + " ".join(f"+{a:#x}={x:#x}" for a, x in nz[:24]))
             for k in ("UT3", "UT2", "TAO", "PMH", "T74", "F3C", "FL3", "CMD3"):
