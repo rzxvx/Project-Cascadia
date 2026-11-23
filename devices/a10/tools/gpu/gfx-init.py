@@ -314,6 +314,8 @@ def build_ta(w32, va, pa):
     # and the PM writes nothing (G6 run 6)
     w32(u, 0x68, 0x20 << 6)         # WaitIRQ: TA_FINISHED
     f = 0x6c
+    if "--tri" in sys.argv and "TA_REALWAIT" not in os.environ:
+        os.environ["TA_REALWAIT"] = "0x20"     # with the 0x470 program the TA raises TA_FINISHED
     if os.environ.get("TA_REALWAIT"):
         # a WaitIRQ that is executed (StartTA is 0x6c): never ends on an
         # empty stream without the PPP terminate / TE_PSG completeonterminate
@@ -382,7 +384,7 @@ G3 = {
 # 3D's IPF then reads PM contexts that hold no catalog (fault, ctx 4 / 5).
 # With one page the start-up cannot allocate and writes the macrotile array
 # instead -- a workaround until the PM start-up is understood.
-PM_PAGES = int(os.environ.get("PM_PAGES", "1"), 0)
+PM_PAGES = int(os.environ.get("PM_PAGES", "128" if "--tri" in sys.argv else "1"), 0)
 
 
 def pm_setup(w32, va, pa):
@@ -420,7 +422,8 @@ def pm_setup(w32, va, pa):
          0x20: 0x88,                 # 0xc80 PPP_MULTISAMPLECTL
          0x28: g("ctx") + 0x100,     # 0x428
          0x30: g("ctx") + 0x200,     # 0xcc0
-         0x68: int(os.environ.get("TA_470", "0x1880" if "--clear" in sys.argv else "0x100"), 0),   # 0x470: a PDS program (offset in the code heap)
+         0x68: int(os.environ.get("TA_470", "0x600" if "--tri" in sys.argv else
+                                  "0x1880" if "--clear" in sys.argv else "0x100"), 0),   # 0x470: a PDS program (offset in the code heap)
          0x70: 0,                    # 0x418 VDM call stack pointer
          0x78: GVA + 0x3c00}         # 0x408 VDM stream
     for o, x in b.items():
@@ -1069,7 +1072,10 @@ def main():
                     words = struct.unpack(f"<{n // 4}I", iface.readmem(pa["G3"] + o, n))
                     nz = [(i * 4, x) for i, x in enumerate(words) if x]
                     out(f"G3 {k} (+{o:#x}): {len(nz)} words: " + " ".join(f"+{a:#x}={x:#x}" for a, x in nz[:32]))
-                rt = struct.unpack("<4096I", iface.readmem(pa["G3"] + G3["rt"], 0x4000))
+                rtb = iface.readmem(pa["G3"] + G3["rt"], 0x4000)
+                if os.environ.get("RT_OUT"):
+                    open(os.environ["RT_OUT"], "wb").write(rtb)
+                rt = struct.unpack("<4096I", rtb)
                 hist = {}
                 for x in rt:
                     hist[x] = hist.get(x, 0) + 1

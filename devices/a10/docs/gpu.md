@@ -1,6 +1,6 @@
 # GPU (Apple A10 / T8010, "G9P") -- plan and what is known
 
-Status 2026-11-23: **G0-G5 done, G6 clear done; the GPU work runs under Linux**
+Status 2026-11-24: **G0-G6 done (with Apple's shaders); the GPU work runs under Linux**
 (`GPU_BACKEND=linux`, see "GPU work under Linux"): core ID 0x011b0602 /
 revision 0x000d0a00, the GFX firmware boots and takes init data with the
 real RGX, stable. **The first job ran on the GPU** (G4 run 29-31): the
@@ -9,9 +9,9 @@ stream through our page tables, both completion stamps were written; from
 a cold GPU powered up by the firmware itself, with no MMU fault (runs 43, 45).
 G5: our offline-compiled `store_const` writes a buffer through a DMA-bound
 binding (runs 97-100). G6: a TA + 3D pass clears a 64x64 target through the
-background object; the colour follows the host's constant ("G6 clear
-DONE", still with Apple's PDS / USC programs). Next: own programs, then the
-triangle.
+background object, and the iPadOS triangle renders byte for byte as on
+iPadOS ("G6 step 4"), still with Apple's PDS / USC programs. Next: our own
+programs and shaders.
 Under m1n1 the core's registers hang the bus (not explained). This page is what the iPad 7's own ADT, kernelcache and firmware
 say, what the reference projects say, and the plan in checkable steps, in the
 style of the iPad mini 1's SGX work and the A13's AGX work
@@ -173,8 +173,10 @@ Check: the value lands in memory; moving the buffer moves the write.
 **G6 -- a clear, then the first triangle (30 %).** TA + 3D with no draws
 (background object writes a colour into the render target), then a VDM stream
 with vertex and fragment shaders. Check: the pixels in memory, then on the
-screen. **The clear works (2026-11-23, "G6 clear DONE")**, still with
-Apple's background / end-of-tile programs from the iPadOS capture.
+screen. **DONE in memory (2026-11-23 / 24): the clear ("G6 clear DONE")
+and the iPadOS triangle ("G6 step 4"), byte for byte as iPadOS draws it** --
+still with Apple's PDS / USC programs and state words from the captures;
+our own programs and the screen are next.
 
 **G7 -- kernel driver (35 %).** In our kernel, in C: `apple-rtkit` with a
 T8010 A7-IOP mailbox backend, GEM shmem, `drm_gpuvm`, `drm_sched`. Decision
@@ -686,8 +688,8 @@ value** (+0x8b4 / +0x8b8 the stamp pair); the command is at least 0x918
 bytes.
 
 **G6 clear DONE (2026-11-23, `build/gpu/g6-3d-run*.log`): a TA + 3D pass
-clears a 64x64 target through the background object** (the triangle is
-G6's second half). Command line (base arguments
+clears a 64x64 target through the background object** (the triangle,
+G6's second half, followed on 2026-11-24: "G6 step 4"). Command line (base arguments
 as for G4 / G5, `g4base3`):
 
     gfx-init.py 3 <base> --cold --channels --job --kick-ta --pm --clear --kick-3d --va0 \
@@ -815,7 +817,44 @@ offsets, writes the two PDS data blocks, the colour and the image state
   render target. With the heap at G3+0 and P+0x10 = P+0x18 = 0x400000:
   **the clear (run 30)**.
 
-### G6 step 4 (in progress): the triangle (`build/gpu/g6-tri-run*.log`)
+### G6 step 4: the triangle (`build/gpu/g6-tri-run*.log`)
+
+**G6 DONE (2026-11-24, runs 9-12): the iPadOS triangle, replayed from our
+own VDM stream, renders on the A10 -- byte for byte the target iPadOS
+drew** (`build/gpu/g6-tri-run10.rt` vs the capture's 0x1_00000000: 0
+differing pixels; 1024 red pixels in the bottom-left quarter, 3072 of the
+background colour). Control (run 11): CLEAR=0,0,1,1 and the corners moved
+to (0,-1) (1,-1) (1,1) -> a blue background and the triangle in the
+bottom-right quarter. Command:
+
+    gfx-init.py 3 <base> --cold --channels --job --kick-ta --pm --tri --clear --kick-3d --va0 \
+        P+0x10=0x400000 P+0x18=0x400000         # TRI_XY=x0,y0,x1,y1,x2,y2 / CLEAR=r,g,b,a
+
+The two things that were missing (runs 1-9):
+
+1. **RGX+0x470 must hold a real PDS program**: the capture's record has
+   0x600 there -- data `{0x540, 0x10}` + `f4000002 d3000000`: it launches
+   a USC task (heap 0x540). With a PDS HALT instead (all earlier runs) the
+   vertex shader runs but no primitive reaches the tiling engine and the
+   PM writes no macrotile array; with Apple's program (run 7) the TE writes
+   tile control streams (`2c070000 00000009 c0000000`), MLIST grows to 11
+   entries and the PM writes the macrotile array with the full 128-page
+   free list. What the USC task does is to find. (This is also why the
+   empty-scene clear needed the 1-page free list: to recheck with a 0x470
+   program.)
+2. **With that program the TA raises `TA_FINISHED`**, so a WaitIRQ on it
+   before FinalizeTA is now right (`TA_REALWAIT`, the default with
+   `--tri`): without it FinalizeTA saved the PM registers before the tiling
+   engine had registered its page catalog, slot +0x30 (-> RGX 0xe028 / the
+   3D's 0xe070) stayed 0, and the 3D's IPF faulted in PM context 4 on the
+   tiles with geometry (run 7: only the right half was drawn). With the
+   wait the slot gets the TE catalog (+0x30), +0x70 and +0x90 (run 9).
+
+Open: after the job the firmware no longer answers a ping (runs 9-12; the
+stamps and pixels are all there) -- to find. Next: our own programs
+instead of Apple's ("legalization").
+
+The way there:
 
 **A complete `tri` capture** (`gpucap rtri2 tri`, `build/gpu/ioscap/rtri2`):
 gpucap now also saves every readable region within 256 MiB of the tagged
