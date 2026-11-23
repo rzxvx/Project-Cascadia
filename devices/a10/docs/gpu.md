@@ -914,6 +914,17 @@ captures** (run with `build/gpu/ioscap` moved away: still 0 differing
 pixels; control CLEAR=0.5,0,0.5,1 with the corners (-1,-1) (1,-1) (0,1): a
 purple background and the upright triangle, 2048 pixels).
 
+**On the screen (2026-11-24, run screen1).** `--screen` maps the display's
+framebuffer (simpledrm's, from the device tree's `/chosen/framebuffer`:
+PA 0x8_bc2dc000, 1620x2160 x8r8g8b8, stride 6528 = 102 x 64 bytes) at GPU
+VA 0x1000000 (seven page tables) and points the end-of-tile image state at
+it (word 2 = address >> 1, word 3 bits 15.. = 6528 / 64 - 1): **the GPU
+draws the 64x64 picture straight into the display**, seen on the iPad (on
+the wallpaper's Tux), and read back from the framebuffer's PA: the
+background and the red triangle at (784, 1048), the wallpaper around it.
+(`/dev/fb0` is simpledrm's fbdev shadow, stride 6480: it does not show
+what the GPU wrote.)
+
 **The 1-page free list is no longer needed**: with the 0x470 program the
 clear alone also runs on the 128-page free list with the WaitIRQ (runs
 own-clear / own-clear128: 4096 yellow pixels either way) -- the missing

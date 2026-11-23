@@ -138,6 +138,7 @@ REGIONS = {          # name: (offset in the heap, size)
     "PTR0": (0x213000, 0x1000), # page table for GPU VA 0..0x1fffff
     "VA0": (0x214000, 0x1000),  # the page at GPU VA 0
     "G3": (0x240000, 0x100000), # GPU VA 0x400000..0x4fffff: render target, programs, PM buffers
+    "PTFB": (0x380000, 0x8000), # --screen: page tables for the framebuffer at GPU VA 0x1000000
     "ZP": (0xf0000, 0x1000),
     "HP": (0xf4000, 0x4000),    # --store-ios: the PDS / USC heap at GPU VA 0x300000    # --pad: the page behind the unused part of GPU VA 0x200000..0x3fffff
     "TS": (0xec000, 0x4000),    # RAM for I/O type 5, TempSensorRegister (P+0x6e0), which the
@@ -534,6 +535,31 @@ def own_shaders():
     return {"tri_vs": vs[0], "tri_fs": fs[0], "bg_fs": fs[1], "empty": cs[0]}
 
 
+SCREEN_VA = 0x1000000      # --screen: GPU VA of the framebuffer
+
+
+def map_screen(w32, pa):
+    """--screen: the display's framebuffer (simpledrm, from the device tree's
+    /chosen/framebuffer: SCREEN=PA:size:stride, default the iPad 7's
+    0x8bc2dc000, 1620x2160 x8r8g8b8, stride 6528) mapped at GPU VA SCREEN_VA
+    (PD entries 8.., page tables PTFB). Returns the GPU VA where the 64x64
+    picture goes (SCREEN_XY=x,y, default the middle) and the row pitch."""
+    fpa, size, stride = (int(x, 0) for x in os.environ.get("SCREEN", "0x8bc2dc000:0xd72800:6528").split(":"))
+    npages = (size + 0xfff) >> 12
+    nptr = (npages + 511) // 512
+    assert nptr <= 8
+    for k in range(nptr):
+        ptr = pa["PTFB"] + 0x1000 * k
+        pde = 8 * (((SCREEN_VA >> 21) & 0x1ff) + k)
+        w32("PDR", pde, (ptr & 0xffffffff) | 1)
+        w32("PDR", pde + 4, ptr >> 32)
+        n = min(512, npages - 512 * k)
+        ents = b"".join(struct.pack("<Q", (fpa + 0x1000 * (512 * k + i)) | 1) for i in range(n))
+        iface.writemem(ptr, ents)
+    x, y = (int(v, 0) for v in os.environ.get("SCREEN_XY", "784,1048").split(","))
+    return SCREEN_VA + y * stride + 4 * x, stride
+
+
 def own_setup(w32, va, pa):
     """--own (with --pm, and --tri / --clear for what to draw): the clear and
     the triangle with our own programs (docs/gpu.md "G6 legalization"): USC
@@ -587,7 +613,11 @@ def own_setup(w32, va, pa):
     iface.writemem(g + 0x14c0, struct.pack("<QQ", cva, int(os.environ.get("OWN_BGCTL", "0x90004004"), 0)))
     # end of tile: code 0x1500 (DOUTD of the image state, DOUTU END, HALT), data 0x1540
     dva = tva + 0x920
-    img = [0xfb050502, 0x00007e01, (G3VA + G3["rt"]) >> 1, 0x80018000, 0, 0xc0000000, 0]
+    rt_va, pitch = G3VA + G3["rt"], 256
+    if "--screen" in sys.argv:
+        rt_va, pitch = map_screen(w32, pa)
+    # image state: BGRA8 linear 64x64; word 2 = address >> 1, word 3 bits 15.. = row pitch / 64 - 1
+    img = [0xfb050502, 0x00007e01, rt_va >> 1, 0x80000000 | ((pitch // 64 - 1) << 15), 0, 0xc0000000, 0]
     iface.writemem(pa["G3"] + t + 0x920, struct.pack("<7I", *img))
     iface.writemem(g + 0x1500, struct.pack("<3I", 0xf0000800, 0xf4000012, 0xd3000000))
     iface.writemem(g + 0x1540, struct.pack("<QQ", dva, 0x90000007) + douttu(usc["eot"]))
