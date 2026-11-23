@@ -588,6 +588,21 @@ the VDM stream base, which the PM free list etc.: to read off an iPadOS
 render capture (`gpucap OUTDIR clear | tri`: a clear-only pass and a
 one-triangle pass into a linear 64x64 BGRA8 target, three snapshots).
 
+**The firmware's TA and 3D commands** (the pre-processing callbacks in the
+per-data-master table at fw 0xb0460: TA 0x1315a, 3D 0x13eb0, CL 0x14f38;
+"Unexpected command type" names them AGFTA- / AGF3D- /
+AGFCLDataMasterPreProcessingCallback):
+
+| command | type | microsequence | other pointers it reads |
+|---|---|---|---|
+| TA | 0 (only) | +0x464 / +0x468 (pointer, size) | +0x14 -> 0x90 bytes (context state, as compute's), +0x20 -> 0x74 bytes, +0x24 -> a large object (+0x3300 used: PM state?); an optional second argument of type 5 (fw 0x19f0e / 0x18d20: MMU / PM work, likely free-list growth) |
+| 3D | 1 | +0x14 / +0x18 | +0x1c -> 0x90 bytes, +0x24 -> 0xcc bytes |
+| 3D | 2 | +0x498 / +0x49c | (a second 3D form) |
+| any | 7, 9 | +0x18 of the command header | (shared with CL) |
+
+The queue's data master picks the field: TA queues read +0x464, 3D +0x14
+(or +0x498), CL +0x1e8.
+
 ### G6: render captures from iPadOS (2026-11-23, `build/gpu/ioscap/rclear`, `rtri`)
 
 `gpucap OUTDIR clear` / `tri` on iPadOS 18.7.9: a render pass into a linear
@@ -607,6 +622,31 @@ address differs per run, the order and sizes do not):
 | 0x244000 (appears at submit) | 0x90 / 0xa8 | parameter buffer (PM writes it) |
 | 0x2c000 (at submit) | 0x400 / 0x400 | a page list (`0089ce38 0089ce39 ...`): the PM free list |
 | 0x10000 (at submit) | 0x400 / 0x3fc | `00002000 00600000 60000000 ...`: PM / region-header state |
+
+**The render record.** The 0x4000 region that starts `0000000f 000000ac`
+(`rclear`: 0x60612c000) is written at commit and is one render pass (the
+gpucap "scheduled" snapshot is taken after the GPU ran: the target is
+already drawn there, so it equals "done"):
+
+- +0xe4.. four GPU pointers `0x1_00148020 / 24 / 28 / 2c` (into the PDS
+  programs' region), +0x104.. two PDS task pairs `{24001002 00030005
+  <data> 0 00004820 <code>}` / `{21001002 00030021 ...}`: the VDM context
+  store / resume tasks (StartTA's RGX 0x438-0x460 slots);
+- +0x34c and +0x5ec: two **background-object descriptors** `{PDS data,
+  PDS code, ..., 0x3c030 / 0x3c000, ..., 0x2500, 0x402}` (code / data
+  0x2180 / 0x2200 and 0x2340 / 0x23c0 in the code heap);
+- +0x5c4: `3f800000 00000300 0000000f` -- Rogue's `ISP_BGOBJDEPTH` = 1.0f,
+  `ISP_BGOBJVALS` = 0x300 (mask + bg tag enable), `ISP_AA` = 0xf, filled
+  at commit; `ffffffff` triples at +0x2b8 / +0x5e4;
+- +0x7ac: 0x40 0x40 1 8 8 (the 64x64 target; 8 x 8 = its tiles at 8 px?
+  to check).
+
+Its TA part (+0) and 3D part (further on) feed StartTA / Start3D, but the
+PM side -- parameter buffer, free list, region headers, macrotile array --
+is built by the kext and only its results show up in user memory (the
+three regions that appear at submit). The Linux side has to allocate and
+initialise those itself; upstream's `pvr_hwrt.c` / `pvr_free_list.c`
+compute the same structures for Rogue.
 
 Next: map these onto StartTA's / Start3D's arguments (which register gets
 the stream base, the free list, the region headers, the target), decode the
