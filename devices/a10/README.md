@@ -9,7 +9,8 @@ Linux on the 7th-generation iPad: **iPad7,11** (Wi-Fi, J171AP) and
 > hands over to Linux 7.2; the kernel runs on both cores with 3 GB and
 > cpufreq (Zephyr 300 MHz to Hurricane 2.24 GHz, stable under load), the
 > screen (simpledrm + fbcon), the USB gadget (serial + network + SSH at
-> 172.16.43.1), the internal NVMe (32 GB, all namespaces read-only), the
+> 172.16.43.1), the internal NVMe (32 GB, read-only but Linux's own
+> partition), the
 > battery and charging status, SmartIO, multi-touch (the Z2 firmware built
 > with this iPad's SysCfg calibration), the on-screen keyboard (fbkeyboard,
 > typing into the shell on the screen), Alpine 3.24 run from RAM with apk
@@ -23,6 +24,11 @@ Linux on the 7th-generation iPad: **iPad7,11** (Wi-Fi, J171AP) and
 > rotation sensors (behind the AOP), the GPU, the USB power source
 > (`power_supply usb`: I2C NACK on J171). Photos:
 > [gallery/](../../gallery/README.md#ipad-7-a10).
+
+**Start here: [docs/QUICKSTART.md](docs/QUICKSTART.md)** -- from a clean Mac to
+Linux on the iPad, its own partition and its desktop. How it was brought up,
+part by part, with what each part took: [docs/bring-up.md](docs/bring-up.md).
+The GPU: [docs/gpu.md](docs/gpu.md).
 
 ## How it boots
 
