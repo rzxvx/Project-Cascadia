@@ -132,6 +132,17 @@ def regs(tag):
 def gfx_power_on():
     gfx = next(d for d in pm.devices if adt.pmgr_dev_get_id(d) == 124)
     ps = adt.pmgr_dev_get_addr(gfx)
+    if "--cold" in sys.argv and (p.read32(ps) >> 4) & 0xf:
+        # a cold GPU: the Rogue core keeps sticky state (MMU fault status,
+        # context-store status) across firmware reloads while GFX stays on
+        p.write32(FENDER + 0x2048, p.read32(FENDER + 0x2048) & ~1)
+        time.sleep(0.01)
+        p.write32(ps, p.read32(ps) & ~0xf)
+        t = time.time()
+        while (p.read32(ps) >> 4) & 0xf:
+            if time.time() - t > 0.5:
+                sys.exit(f"[gfx-boot] GFX did not power off: {p.read32(ps):#010x}")
+        out(f"--cold: GFX off ({p.read32(ps):#010x})")
     p.pmgr_adt_power_enable("/arm-io/sgx")
     p.pmgr_adt_power_enable("/arm-io/gfx-kf")
     time.sleep(0.01)

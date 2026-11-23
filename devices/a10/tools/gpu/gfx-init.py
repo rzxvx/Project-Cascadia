@@ -13,6 +13,9 @@ and reloads the firmware). KEY=VAL sets a 32-bit word: `P+0xd34=1`,
 another region's firmware VA, `@T`, or physical address, `%R`; region R is
 128 KiB of RAM to stand in for RGX: `P+0x8c0=%R`). --power: Fender state 1
 before the init message, as the kext has it before the firmware boots.
+--channels / --kick-cp / --job: G4 (docs/gpu.md "G4 progress"). --crash: at
+the end, ask for a soft crash dump and print the firmware's scheduler state
+(FW_STATE) before and after it.
 
 What the 22H355 firmware does with it (fw 0x19370, docs/gpu.md "G3"):
 - the message: (0x20 << 56) | (0x81 << 48) | PA of the init page;
@@ -85,6 +88,16 @@ REGIONS = {          # name: (offset in the heap, size)
     "CDR": (0xd8000, 0x1000),   # --job: StartCompute +4 (two words -> RGX+0x4c0 / +0x4c8)
     "UT": (0xd9000, 0x1000),    # --job: unit table (0x18-byte entries)
     "FL": (0xda000, 0x1000),    # --job: flags / threshold words    # RAM stand-in for RGX (P+0x8c0=%R): see what the firmware writes
+    # firmware -> host rings: control {+0 host read index, +0x20 firmware
+    # write index}, entries 0x3c bytes; X+0xdc / +0xe0 (fw 0x95b0, 0x1bb7a:
+    # job events) and X+0xf4 / +0xf8 (fw 0x92d0: power events) 256 entries,
+    # X+0xec / +0xf0 (fw 0x15d02: trace, gated by fw 0x32044) 512 entries
+    "EC0": (0xdb000, 0x100),
+    "EC1": (0xdb100, 0x100),
+    "EC2": (0xdb200, 0x100),
+    "EV0": (0xdc000, 0x4000),
+    "EV1": (0xe0000, 0x4000),
+    "EV2": (0xe4000, 0x8000),
 }
 RGX_PA = gb.adt["/arm-io/sgx"].get_reg(0)[0]
 
@@ -118,6 +131,11 @@ def build_job(w32, va, pa):
     w32("CA", 0x08, GVA + 0x1000)
     w32("CA", 0x0c, GVA + 0x1010)
     w32("CA", 0x10, GVA)
+    # [6..0x11]: six 64-bit addresses through RGX+0x11040 (+0x11ff8 = 0..5);
+    # left 0 they make the GPU write to VA 0 (MMU fault at the PD level, G4
+    # run 20) -- give each its own 0x100 bytes in GV
+    for i in range(6):
+        w32("CA", 0x18 + 8 * i, GVA + 0x3000 + 0x100 * i)
     # context state (StartCompute +0x2c): word 0 = 0 (fresh start), [0xe..0x10]
     # -> RGX+0x4a8 / +0x4ac / +0x4b0
     w32("CTX", 0x38, GVA + 0x1000)
@@ -129,15 +147,25 @@ def build_job(w32, va, pa):
     w32(u, 0x08, va["CA"])
     w32(u, 0x0c, va["UT"])
     w32(u, 0x2c, va["CTX"])
-    w32(u, 0x3c, va["FL"])         # must be 0
-    w32(u, 0x48, va["FL"] + 0x10)  # cancel threshold (0)
+    # StartCompute programs the CDM only while the 64-bit +0x40 is strictly
+    # below the one at *(+0x48); otherwise it sets *(+0x3c) = 1 (cancelled)
+    # and starts nothing (fw 0xb49c case 0xb; G4 run 19)
+    w32(u, 0x3c, va["FL"])         # must be 0; the firmware sets 1 on a cancel
+    w32(u, 0x48, va["FL"] + 0x10)  # the threshold
+    w32("FL", 0x10, 0xffffffff)
+    w32("FL", 0x14, 0xffffffff)
     w32(u, 0x4c, 4 << 6)           # WaitIRQ, event bit 2
     w32(u, 0x50, 0xc)              # FinalizeCompute, 0x34 bytes on completion
     w32(u, 0x54, va["UT"])
     w32(u, 0x70, va["STAMP"])      # +0x20: stamp address
     w32(u, 0x74, 1)                # +0x24: stamp value
     w32(u, 0x78, 0x34)             # +0x28: skip on the context-store path
-    w32(u, 0x7c, va["FL"] + 0x20)  # +0x2c: flag (0)
+    # +0x2c: "already finished" flag: nonzero takes FinalizeCompute's fast path
+    # (no CDM stop / context store, which faults in the PDS without a
+    # context-store program, G4 runs 20-28); our terminate-only stream runs
+    # no kernel that could set it, so the host does (run 29)
+    w32(u, 0x7c, va["FL"] + 0x20)
+    w32("FL", 0x20, 1)
     w32(u, 0x80, va["FL"] + 0x30)  # +0x30
     w32(u, 0x84, 2)                # End
     # the command
@@ -147,10 +175,44 @@ def build_job(w32, va, pa):
     w32("CMD", 0x1ec, 0x88)
     w32("CMD", 0x298, va["STAMP"] + 0x100)
     w32("CMD", 0x29c, va["STAMP"] + 0x200)
+    # the command's completion record, used by the CL post-processing callback
+    # (fw 0x15750 -> 0x95b0): *(+0x26c) = +0x274 once the command is done;
+    # left 0 the firmware writes to address 0 and crashes (G4 run 29)
+    w32("CMD", 0x26c, va["STAMP"] + 0x10)
+    w32("CMD", 0x274, 0xc0de)
+
+
+RINGS = []      # (name, control PA, entries PA, entry count): set in main()
+EVENTS = {}     # (ring, event type) -> count
+
+
+def drain_rings():
+    """Consume the firmware -> host rings (host read index := firmware write
+    index): a full ring makes the firmware wait ("Waiting for space"), G4
+    run 23. Counts the event types (each entry's first word)."""
+    for name, ctl, ents, n in RINGS:
+        rd, wr = p.read32(ctl), p.read32(ctl + 0x20)
+        while rd != wr:
+            t = p.read32(ents + 0x3c * rd)
+            EVENTS[(name, t)] = EVENTS.get((name, t), 0) + 1
+            rd = (rd + 1) % n
+        p.write32(ctl, wr)
 
 
 class InitEndpoint(gb.AGXEndpoint):
+    """Endpoints 0x20 / 0x21. 0x2042 << 48 on 0x20 = the firmware has put
+    something in its rings: drain them (logged once, then counted)."""
     SHORT = "agxinit"
+    seen = {}
+
+    def handle_msg(self, msg):
+        n = InitEndpoint.seen.get(msg, 0)
+        InitEndpoint.seen[msg] = n + 1
+        if n == 0:
+            out(f"ep {self.epnum:#x} message {msg:#018x}")
+        if msg >> 48 == 0x2042:
+            drain_rings()
+        return True
 
 
 def main():
@@ -203,6 +265,13 @@ def main():
     w32("I", 0xa4, va["D"])
     # X -> P; P: RGX
     w32("X", 0x0, va["P"])
+    # firmware -> host rings (REGIONS EC* / EV*); without X+0xf4 / +0xf8 a cold
+    # power-up faults on address 0x20 (fw 0x92d0, G4 run 15)
+    for (cx, ex), c, e, n in (((0xdc, 0xe0), "EC0", "EV0", 256), ((0xf4, 0xf8), "EC1", "EV1", 256),
+                              ((0xec, 0xf0), "EC2", "EV2", 512)):
+        w32("X", cx, va[c])
+        w32("X", ex, va[e])
+        RINGS.append((c, pa[c], pa[e], n))
     w32("P", 0x8c0, RGX_PA)
     w32("P", 0x8c4, RGX_PA >> 32)
     w32("P", 0x8cc, 0x20000)
@@ -262,13 +331,14 @@ def main():
         w32("K", 0x88, va["ST"])
         w32("QS", 0x50, 256)
         w32("CR", 0x00, va["CMD"])
-        for s2 in sets:                      # allow KEY=VAL on these regions too
-            k2, v2 = s2.split("=")
-            r2, o2 = k2.split("+")
-            if r2 in ("K", "QS", "CR", "SE", "ST", "CMD", "US", "CTX", "CA", "STAMP", "P2", "P3"):
-                w32(r2, int(o2, 0), va[v2[1:]] if v2.startswith("@") else pa[v2[1:]] if v2.startswith("%") else int(v2, 0))
         if "--job" in sys.argv:
             build_job(w32, va, pa)
+        for s2 in sets:                      # KEY=VAL on these regions again, over the job's defaults
+            k2, v2 = s2.split("=")
+            r2, o2 = k2.split("+")
+            if r2 in ("K", "QS", "CR", "SE", "ST", "CMD", "US", "CTX", "CA", "STAMP", "P2", "P3",
+                      "CDR", "UT", "FL", "GV", "PDR", "PTR"):
+                w32(r2, int(o2, 0), va[v2[1:]] if v2.startswith("@") else pa[v2[1:]] if v2.startswith("%") else int(v2, 0))
         out("kick: compute channel 2, write index 1, doorbell (0x21 << 56) | (3 << 48) | 2")
         kf.send((0x21 << 56) | (3 << 48) | 2)
     try:
@@ -277,24 +347,64 @@ def main():
     except Exception as e:
         out(f"stopped on {e!r}")
     gb.regs("end")
+    drain_rings()
+    out("messages: " + " ".join(f"{m:#x} x{c}" for m, c in InitEndpoint.seen.items()))
+    out("ring events: " + " ".join(f"{r}:{t:#x} x{c}" for (r, t), c in sorted(EVENTS.items())))
     if "--job" in sys.argv:
-        out(f"STAMP+0 = {p.read32(pa['STAMP']):#x} (1 = the job completed)")
+        out(f"STAMP+0 = {p.read32(pa['STAMP']):#x} (FinalizeCompute: 1), "
+            f"+0x10 = {p.read32(pa['STAMP'] + 0x10):#x} (the command's completion record: 0xc0de)")
         rgx = gb.adt["/arm-io/sgx"].get_reg(0)[0]
         if p.read32(gb.FENDER + 0x1000) & 0x1f:
-            for off in (0x4a0, 0x480, 0x478, 0xe140, 0xe148):
+            for off in (0x4a0, 0x480, 0x478, 0xe140, 0xe148, 0xe150, 0xe154, 0xe238):
                 out(f"RGX +{off:#x} = {p.read32(rgx + off):#010x}")
     # what the firmware wrote back into our structures (nonzero words)
-    for k in ("X", "A", "C", "D", "R"):
+    for k in ("X", "A", "C", "D", "R", "SE", "P2", "P3", "P4", "EC0", "EC1", "EC2", "EV0", "EV1"):
         data = iface.readmem(pa[k], 0x200)
         words = struct.unpack("<128I", data)
         nz = [(i * 4, w) for i, w in enumerate(words) if w]
         out(f"{k}: " + " ".join(f"+{o:#x}={w:#x}" for o, w in nz[:24]))
+    if "--rdump" in sys.argv:    # with P+0x8c0=%R: every RGX word the firmware wrote
+        words = struct.unpack("<32768I", iface.readmem(pa["R"], 0x20000))
+        out("R (RGX stand-in): " + " ".join(f"+{i * 4:#x}={w:#x}" for i, w in enumerate(words) if w))
     b = iface.readmem(gb_buf[0] + 0xd74d0, 0xa8)
     w = struct.unpack("<42I", b)
     out("fw copy of the init page (0xd74d0): " + " ".join(f"+{i * 4:#x}={x:#x}" for i, x in enumerate(w) if x))
     for name, a in (("main flag 0xd7b28", 0xd7b28), ("X 0xd74c8", 0xd74c8), ("RGX va 0x323cc", 0x323cc)):
         out(f"{name}: {p.read32(gb_buf[0] + a):#x}")
+    fw_state("before the crash request")
+    if "--crash" in sys.argv:
+        # the coprocessor's D-cache hides its own writes from DRAM; a soft
+        # crash (ep 1, 0x40) makes the firmware write its crash log, and with
+        # it (to check) its dirty lines -- then read the scheduler's state
+        out("asking for a crash dump (ep 1, 0x40)")
+        kf.send((1 << 56) | 0x40)
+        try:
+            kf.work_for(4.0)
+            out("no crash report within 4 s")
+        except Exception as e:
+            out(f"stopped on {e!r}")
+        fw_state("after the crash")
     out("end")
+
+
+# The firmware's scheduler state (22H355 data addresses; docs/gpu.md "G4
+# progress"): wake bits, the dispatcher's gates, the per-data-master slots,
+# the queue masks, the queue table.
+FW_STATE = (
+    ("d75d0 agx_interrupt wake", 0xd75d0, 1), ("d75f4 hw events", 0xd75f4, 1),
+    ("d743c", 0xd743c, 1), ("a4c90 halt", 0xa4c90, 1), ("a4c5c/a4c60", 0xa4c5c, 2),
+    ("a4d34 pending dm", 0xa4d34, 1), ("a4d50", 0xa4d50, 1), ("a4d64", 0xa4d64, 1),
+    ("a4e8c slots", 0xa4e88, 2), ("323cc rgx va", 0x323cc, 1), ("d74c8 X", 0xd74c8, 1),
+    ("slots a4c98", 0xa4c98, 0x54), ("masks b0320", 0xb0320, 0x68),
+    ("queues a4e58", 0xa4e58, 0x30), ("queue 0 a4e90", 0xa4e90, 10),
+)
+
+
+def fw_state(tag):
+    for name, a, n in FW_STATE:
+        w = struct.unpack(f"<{n}I", iface.readmem(gb_buf[0] + a, 4 * n))
+        nz = " ".join(f"+{i * 4:#x}={x:#x}" for i, x in enumerate(w) if x) or "all 0"
+        out(f"[{tag}] {name} @{a:#x}: {nz}")
 
 
 gb_buf = [0]

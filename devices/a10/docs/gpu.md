@@ -1,10 +1,13 @@
 # GPU (Apple A10 / T8010, "G9P") -- plan and what is known
 
-Status 2026-11-23: **G0-G3 done; the GPU work runs under Linux** (`GPU_BACKEND=linux`,
-see "GPU work under Linux"): core ID 0x011b0602 / revision 0x000d0a00, the GFX
-firmware boots and takes init data with the real RGX, stable. Under m1n1 the
-core's registers hang the bus (not explained). Next: G4. Nothing runs on
-the GPU yet. This page is what the iPad 7's own ADT, kernelcache and firmware
+Status 2026-11-23: **G0-G3 done, G4 mostly; the GPU work runs under Linux**
+(`GPU_BACKEND=linux`, see "GPU work under Linux"): core ID 0x011b0602 /
+revision 0x000d0a00, the GFX firmware boots and takes init data with the
+real RGX, stable. **The first job ran on the GPU** (G4 run 29-31): the
+firmware dispatched a terminate-only compute job, the CDM read its control
+stream through our page tables, both completion stamps were written. Open
+in G4: an MMU fault from the PDS after the job (no context-store program).
+Under m1n1 the core's registers hang the bus (not explained). This page is what the iPad 7's own ADT, kernelcache and firmware
 say, what the reference projects say, and the plan in checkable steps, in the
 style of the iPad mini 1's SGX work and the A13's AGX work
 (`devices/a13/docs/research/gpu.md`).
@@ -150,10 +153,12 @@ rootless) give us a live reference (kernel read of the init data) the way
 Dopamine's kmem did on the A13? palera1n does not hand out kernel r/w like
 libjailbreak; to check.
 
-**G4 -- the core under the firmware, an empty compute job (45 %).** Rogue
-page tables for one GPU context, the firmware's queue for compute, a
-terminate-only CDM stream. Check: the completion stamp moves, no MMU fault
-(RGX_CR_MMU fault registers), no firmware crash.
+**G4 -- the core under the firmware, an empty compute job. MOSTLY DONE
+2026-11-23** ("G4 progress", runs 15-31): Rogue page tables for one GPU
+context, the firmware's queue for compute, a terminate-only CDM stream.
+Check: the completion stamp moves (done, both stamps), no firmware crash
+(done), no MMU fault (open: RGX+0xe150 shows a PDS write to VA 0 after the
+job -- the CDM context-store program and buffer are still missing).
 
 **G5 -- a compute store (40 %).** The `store_const` kernel compiled offline
 for `applegpu_g9p`, its PDS program (Rogue PDS encodings), the buffer bound.
@@ -436,12 +441,81 @@ interrupt-side dispatcher, entered from agx_interrupt (fw 0x2339c ->
 0x3b02) -- so the next step is what makes that path pick a compute job up
 (its conditions on fw 0xd75f4 / 0xd75d0 and the data master's state).
 
-The base arguments that bring the firmware up for G4
-(`build/gpu/g4-run14.log`): `P+0xac0=%S P+0xac4=8 X+0x4=@E X+0x8=@F
-X+0x311=@H B+0x49e8=@L B+0x49ec=@M P+0x9c0=0x01d00000 P+0x9c4=2
-P+0x9cc=0x4000 P+0x9dc=1 X+0x150=@N P+0xd34=1 P+0xd3c=1 T+0x7ec=@Y
-Y+0x0=%Z Y+0x4=8 T+0x7e8=@GEN X+0x198=@XG B+0x4a24=1 X+0x144=@P2
-X+0x148=@P3 X+0x14c=@P4`, with `--channels --kick-cp --job`.
+**Runs 15-31: the job runs on the GPU and completes.** One blocker after the
+other, each found by reading the firmware and checked on the iPad:
+
+- **Seeing the firmware's own state.** The coprocessor's D-cache hides its
+  writes from DRAM; a soft-crash request (EP 1, 0x40) makes it clean its
+  cache first, so `gfx-init.py --crash` prints the scheduler's globals
+  (FW_STATE: wake bits 0xd75d0 / 0xd75f4, per-data-master slots at 0xa4c98
+  + 0x70 * n, queue masks at 0xb0320.., the queue table at 0xa4e90) before
+  and after it. Page 0x32000 (RGX VA at 0x323cc = 0xe0000000, Fender VA at
+  0x324cc, the I/O VA table 0x3214c + 0x20 * type) lives in FenderScratchRam
+  (our region S), not in the image's copy.
+- **Firmware -> host rings** (run 15, a cold GPU): X+0xdc / +0xe0 (job
+  events, fw 0x95b0 / 0x1bb7a), X+0xf4 / +0xf8 (power events, fw 0x92d0) --
+  256 entries of 0x3c bytes each -- and X+0xec / +0xf0 (trace, 512, gated by
+  fw 0x32044); control {+0 host read index, +0x20 firmware write index}.
+  Without X+0xf4 a cold power-up faults on address 0x20. The firmware
+  signals new entries with **0x2042 << 48 on EP 0x20**; the host must move
+  its read index or the firmware blocks on a full ring ("Waiting for space",
+  run 23). gfx-init.py now sets the rings up and drains them.
+- **The compute slot's unit mask** (run 16): the interrupt-side dispatcher
+  (fw 0x2920) runs the interpreter (fw 0xb49c) for each data-master slot
+  (slot 2 = compute); the scheduling entry is picked by fw 0x128f4 / 0x11cd0
+  only if `(slot available ^ busy units) & queue+0x44 & entry+0x28` is
+  nonzero. Slot 2's units come from **P+0x1ac4** (fw 0x32b7c, via fw 0xaf00),
+  and entry+0x28 is copied from the slot by the CL pre-processing callback.
+  P+0x1abc / +0x1ac0 / +0x1ac4 = 1 -> the job is picked (run 17).
+- **StartCompute's cancel threshold** (runs 17-19, the RAM stand-in for RGX
+  showing that no CDM register was written): the op programs the CDM only
+  when the 64-bit op+0x40 is **strictly below** the one at *(op+0x48);
+  otherwise it sets *(op+0x3c) = 1 and starts nothing. Threshold ~0 ->
+  **the CDM runs** (run 20): RGX+0x480 = 0x200000 (our stream), RGX+0x4a0 =
+  1 (done).
+- **A cold GPU** (runs 22-25): GFX power-cycled through PMGR (`--cold`) the
+  Rogue core loses its sticky state; the firmware's own cold power-up needs
+  the power struct's H+0x4c40 (else it reads I/O type 5, TempSensorRegister,
+  which the kext leaves unmapped on G9P) and then loops on DVFS events;
+  **with `--power` (Fender state 1 before boot, as the kext does) it is
+  stable.**
+- **The MMU fault** (runs 20-28): RGX+0xe150 (ROGUE_CR_MMU_FAULT_STATUS) =
+  0x000ff251: fault, write, level 1 (page directory), context 0, address 0,
+  requester 9 = **PDS** (Imagination DDK `rgxdebug.c`, MMU requester tags).
+  Not the stream: with a WaitIRQ that never ends (no FinalizeCompute) the
+  job leaves no fault (run 28). It comes from FinalizeCompute's CDM stop /
+  context store (RGX+0x11f00, 0x688, 0x1720, 0xe230 / 0xe238), which waits
+  forever on RGX+0xe238 bit 0.
+- **FinalizeCompute's fast path**: a nonzero word at *(op+0x2c) skips the
+  stop / context store (meant for a job that finished by itself; on iOS
+  presumably set by the kernel's end, our terminate-only stream has none,
+  so the host sets it). **STAMP+0 = 1** (run 29).
+- **The command's completion record** (run 29 crashed after the stamp): the
+  CL post-processing callback (fw 0x15750, "AGFCLDataMasterPostProcessing
+  Callback") copies CMD+0x26c.. and writes *(CMD+0x26c) = CMD+0x274 through
+  fw 0x95b0; with CMD+0x26c = STAMP+0x10, 0x274 = 0xc0de: **STAMP+0x10 =
+  0xc0de, no crash, ping answered** (runs 30-31).
+
+Rogue register names from upstream `pvr_rogue_cr_defs.h`: 0x4a0
+CDM_CONTEXT_STORE_STATUS (bit 0 complete; the firmware's WaitIRQ uses it as
+"CDM done"), 0x4a8 / 0x4b0 CDM_CONTEXT_PDS0 / 1 (the context-store PDS
+program), 0x4b8 / 0x4c0 CDM_TERMINATE_PDS / 1; the PDS HALT 0xd3000000 is
+Mesa's encoding. 0x478 / 0x480 / 0x498 / 0x11040 are not in the public
+headers (0x480 = the control stream base, as upstream's fw interface
+`cdm_ctrl_stream_base`).
+
+Still open in G4: the PDS write to VA 0 after the job (the fault then sends
+the firmware into recovery: event 0x16, fw 0x3b74, 0xa4c90 = 1). Presumably
+the idle path's CDM context store with no context-store program / state
+buffer -- what iOS puts in CTX[0xe..0x10] and where the state goes is the
+next thing to read (the kext's CL command builder).
+
+The arguments of run 31 (`build/gpu/g4-run31.log`): `P+0xac0=%S P+0xac4=8
+X+0x4=@E X+0x8=@F X+0x311=@H B+0x49e8=@L B+0x49ec=@M P+0x9c0=0x01d00000
+P+0x9c4=2 P+0x9cc=0x4000 P+0x9dc=1 X+0x150=@N P+0xd34=1 P+0xd3c=1
+T+0x7ec=@Y Y+0x0=%Z Y+0x4=8 T+0x7e8=@GEN X+0x198=@XG B+0x4a24=1
+X+0x144=@P2 X+0x148=@P3 X+0x14c=@P4 P+0x1abc=1 P+0x1ac0=1 P+0x1ac4=1`,
+with `--cold --power --channels --kick-cp --job`.
 
 ## G3 results (2026-11-23): init data, the firmware idle and stable
 
