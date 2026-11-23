@@ -433,10 +433,13 @@ def pm_setup(w32, va, pa):
     # on the command line): PDS HALT words throughout, so any PDS program
     # the TA starts ends at once
     iface.writemem(pa["G3"] + G3["code"], struct.pack("<I", 0xd3000000) * (0x10000 // 4))
-    if "--tri" in sys.argv:
-        tri_setup(w32, va, pa)
-    if "--clear" in sys.argv:
-        clear_setup(w32, va, pa)
+    if "--own" in sys.argv:
+        own_setup(w32, va, pa)
+    else:
+        if "--tri" in sys.argv:
+            tri_setup(w32, va, pa)
+        if "--clear" in sys.argv:
+            clear_setup(w32, va, pa)
     # PPP terminate state: header pres_terminate, TERMINATE0 clip right /
     # bottom tile 1, TERMINATE1 0
     for i, x in enumerate((0x02000000, 0x00040001, 0)):
@@ -481,6 +484,148 @@ def clear_setup(w32, va, pa):
     iface.writemem(pa["G3"] + G3["rt"], struct.pack("<I", int(os.environ.get("RT_FILL", "0x5a5a5a5a"), 0)) * 0x1000)
 
 
+# the background / end-of-tile PDS programs Start3D names (heap offsets);
+# --clear uses the iPadOS capture's, --own its own
+BGEOT = {"eot_code": 0x2500, "eot_data": 0x3c040, "bg_texu": 0x2180, "bg_shader": 0x2200, "bg_uniform": 0x3c030}
+
+OWN_SRC = """#include <metal_stdlib>
+using namespace metal;
+vertex float4 tri_vs(uint vid [[vertex_id]]) {
+    float2 p[3] = { float2(-1, -1), float2(0, -1), float2(-1, 1) };   // the compiler puts these 6
+    return float4(p[vid], 0, 1);                                       // words in the common store
+}
+fragment float4 tri_fs() { return float4(1, 0, 0, 1); }
+fragment float4 bg_fs(constant float4 &c [[buffer(0)]]) { return c; }
+kernel void empty() {}
+"""
+
+
+def own_shaders():
+    """Our USC code, built by Xcode's offline compiler for applegpu_g9p from
+    OWN_SRC (build/gpu/isa/own.*; compiler output, not in git). Returns
+    {name: bytes}."""
+    import subprocess
+    import g9pbin
+    d = os.path.join(HERE, "../../build/gpu/isa")
+    os.makedirs(d, exist_ok=True)
+    src = os.path.join(d, "own.metal")
+    if not os.path.exists(src) or open(src).read() != OWN_SRC:
+        open(src, "w").write(OWN_SRC)
+    lib, tt = os.path.join(d, "own.metallib"), os.path.join(d, "own.g9p.metallib")
+    if not os.path.exists(tt) or os.path.getmtime(tt) < os.path.getmtime(src):
+        subprocess.run(["xcrun", "-sdk", "iphoneos", "metal", "-std=metal3.0", "-mios-version-min=16.4",
+                        "-c", src, "-o", lib[:-9] + ".air"], check=True)
+        subprocess.run(["xcrun", "-sdk", "iphoneos", "metallib", lib[:-9] + ".air", "-o", lib], check=True)
+        js = os.path.join(d, "own.mtlp-json")
+        fmt = '{ "pixel_format": "BGRA8Unorm" }'
+        open(js, "w").write(
+            '{ "libraries": { "paths": [ { "label": "lib", "path": "%s" } ] },\n'
+            '  "pipelines": { "render_pipelines": [\n'
+            '    { "vertex_function": "alias:lib#tri_vs", "fragment_function": "alias:lib#tri_fs", "color_attachments": [ %s ] },\n'
+            '    { "vertex_function": "alias:lib#tri_vs", "fragment_function": "alias:lib#bg_fs", "color_attachments": [ %s ] } ],\n'
+            '  "compute_pipelines": [ { "compute_function": "alias:lib#empty" } ] } }\n' % (lib, fmt, fmt))
+        subprocess.run(["xcrun", "metal-tt", "-arch", "applegpu_g9p", "-platform_version", "ios", "16.4", "16.4",
+                        lib, js, "-o", tt], check=True)
+    vs = g9pbin.kernels(tt, "__vertex")
+    fs = g9pbin.kernels(tt, "__fragment")
+    cs = g9pbin.kernels(tt, "__compute")
+    return {"tri_vs": vs[0], "tri_fs": fs[0], "bg_fs": fs[1], "empty": cs[0]}
+
+
+def own_setup(w32, va, pa):
+    """--own (with --pm, and --tri / --clear for what to draw): the clear and
+    the triangle with our own programs (docs/gpu.md "G6 legalization"): USC
+    code from OWN_SRC through the offline compiler, PDS programs and data,
+    PPP state and the VDM stream written here from the decoded formats. The
+    one piece still from the iPadOS capture: the end-of-tile USC code
+    (6 instructions, CLEAR_HEAP 0x2440) -- to replace. RGX+0x470's USC task
+    is one instruction of ours, `5e0100a0` (found by experiment: a plain
+    `0080` end never lets the TA finish)."""
+    g = pa["G3"] + G3["code"]
+    sh = own_shaders()
+    usc = {"tri_vs": 0x400, "tri_fs": 0x600, "bg_fs": 0x700, "empty": 0x800, "eot": 0x900, "a470": 0xa00, "end470": 0xb00}
+    for k, o in usc.items():
+        if k == "eot":
+            code = open(CLEAR_HEAP, "rb").read()[0x2440:0x2480]
+        elif k == "a470":               # experiment: the capture's 0x470 USC task (heap 0x540)
+            code = open(os.path.join(TRI_CAP, "cda0dc000-10000.bin"), "rb").read()[0x540:0x5c0]
+        elif k == "end470":             # ours: one instruction, the 0x5e end of the vertex shaders in its
+            code = bytes.fromhex(os.environ.get("OWN_END470", "5e0100a0"))   # short form, no outputs
+        else:
+            code = sh[k]
+        iface.writemem(g + o, code + bytes(-len(code) % 4))
+    halt = 0xc0                                  # the heap is PDS HALT words already
+
+    def douttu(off):                             # a DOUTU word: USC offset, temps
+        return struct.pack("<II", off, 0x10)
+    t = 0x6c000                                  # G3 scratch: constants, colour, image state, PPP blocks, stream
+    tva = G3VA + t
+    # 0x470: a PDS program that starts a USC task (data + code at +0x20)
+    iface.writemem(g + 0x1000, douttu(usc[os.environ.get("OWN_470", "end470")]) + bytes(0x18)
+                   + struct.pack("<II", 0xf4000002, 0xd3000000))
+    # vertex: PDS code 0x1100 (DOUTW, DOUTU, HALT) with data 0x1180; shared
+    # data DMA 0x1200 (DOUTD END) with data 0x1280: the corners -> common store
+    iface.writemem(g + 0x1100, struct.pack("<3I", 0xf0000a01, 0xfc000002, 0xd3000000))
+    iface.writemem(g + 0x1180, douttu(usc["tri_vs"]) + struct.pack("<II", 0x80000000, 0))
+    iface.writemem(g + 0x1200, struct.pack("<2I", 0xf4000800, 0xd3000000))
+    iface.writemem(g + 0x1280, struct.pack("<QQ", tva + 0x800, 0x90000006))
+    consts = struct.pack("<6f", *[float(x) for x in os.environ.get("TRI_XY", "-1,-1,0,-1,-1,1").split(",")])
+    iface.writemem(pa["G3"] + t + 0x800, consts)
+    # fragment: data + code at 0x1300
+    iface.writemem(g + 0x1300, douttu(usc["tri_fs"]) + bytes(0x18) + struct.pack("<I", 0xf4000002))
+    # background: shader 0x1400 (DOUTU -> bg_fs), texunicode 0x1480 (DOUTD END of
+    # the colour into common store 2..5, where bg_fs reads it), uniform data 0x14c0
+    iface.writemem(g + 0x1400, douttu(usc["bg_fs"]) + bytes(0x18) + struct.pack("<I", 0xf4000002))
+    iface.writemem(g + 0x1480, struct.pack("<2I", 0xf4000800, 0xd3000000))
+    cva = tva + 0x900
+    iface.writemem(pa["G3"] + t + 0x900, struct.pack("<4f", *CLEAR_COLOUR))
+    iface.writemem(g + 0x14c0, struct.pack("<QQ", cva, int(os.environ.get("OWN_BGCTL", "0x90004004"), 0)))
+    # end of tile: code 0x1500 (DOUTD of the image state, DOUTU END, HALT), data 0x1540
+    dva = tva + 0x920
+    img = [0xfb050502, 0x00007e01, (G3VA + G3["rt"]) >> 1, 0x80018000, 0, 0xc0000000, 0]
+    iface.writemem(pa["G3"] + t + 0x920, struct.pack("<7I", *img))
+    iface.writemem(g + 0x1500, struct.pack("<3I", 0xf0000800, 0xf4000012, 0xd3000000))
+    iface.writemem(g + 0x1540, struct.pack("<QQ", dva, 0x90000007) + douttu(usc["eot"]))
+    BGEOT.update(eot_code=0x1500, eot_data=0x1540, bg_texu=0x1480, bg_shader=0x1400, bg_uniform=0x14c0)
+    iface.writemem(pa["G3"] + G3["rt"], struct.pack("<I", int(os.environ.get("RT_FILL", "0x5a5a5a5a"), 0)) * 0x1000)
+    w32("TAB", 0x68, 0x1000)                     # 0x470
+    w32("TAB", 0x6c, 0)
+    if "--tri" not in sys.argv:
+        return
+    # PPP state blocks (Mesa csbgen ppp.xml; each starts with STATE_HEADER)
+    blocks = [
+        ("var", [0x001c0000, 0, 0, 0]),                         # varying words 0-2 present: no varyings
+        ("frag", [0x000000c0, 0x1300, halt, 0x00800000, 0, halt]),   # pds ptr0 (shader, texunicode, sizes) + ptr1 (varying)
+        ("os", [0x00020000, 0x04010000]),                       # OUTPUT_SEL: vtxsize 4, rhw present
+        # ISPCTL (upass 0xf, back face present), front ISPA (depth compare ALWAYS, depth
+        # write off, point / line width 0xf), front ISPB (stencil ALWAYS), back ISPA, back ISPB
+        ("isp", [0x0000001f, 0x03c40000, 0x003e0f00, 0x0e000000, 0x00100f00, 0x00000000]),
+        ("vp", [0x00000c00, 0x80000001, 0x00000001,             # region clip: tiles 0..1 x 0..1
+                0x42000000, 0x42000000, 0x42000000, 0xc2000000, 0x00000000, 0x3f800000]),   # viewport 32 32 / 32 -32 / 0 1
+        ("ctrl", [0x00210000, 0x1e3ce508, 0x000004a0]),         # WCLAMP 1e-20, PPP_CTRL: clip mode 1, flatshade, wclamp
+        ("dbsc", [0x00000020, 0x00000000]),                     # ISP DBSC: scissor / depth bias index 0
+        ("term", [0x02000000, 0x00040001, 0x00000000]),         # terminate: clip to tile 1 / 1
+    ]
+    at = {}
+    off = 0x100
+    for name, words in blocks:
+        at[name] = (tva + off, len(words))
+        iface.writemem(pa["G3"] + t + off, struct.pack(f"<{len(words)}I", *words))
+        off += 0x40
+
+    def ppp(name):
+        a, n = at[name]
+        return [(n << 8) | (a >> 32), a & 0xfffffffc]
+    stream = ([0x44002f80, 0x1100, 0x00000004, 0x00001081] + ppp("var")
+              + [0x20020001, 0x1280, 0x1200, 0x48002f80, 0x1180]
+              + ppp("frag") + ppp("os") + ppp("isp") + ppp("vp") + ppp("ctrl") + ppp("dbsc")
+              + [0x6e440600, 0x00000003, 0x00000000, 0x00000000, 0x000000aa]
+              + ppp("term") + [0xc0000000])
+    iface.writemem(pa["G3"] + t, struct.pack(f"<{len(stream)}I", *stream))
+    w32("TAB", 0x78, tva)
+    w32("TAB", 0x7c, 0)
+
+
 TRI_CAP = os.path.join(HERE, "../../build/gpu/ioscap/rtri2/done")
 
 
@@ -515,6 +660,8 @@ def tri_setup(w32, va, pa):
         ("var", [0x001c0000, 0, 0, 0]),
         ("frag", [0x000000c0, 0x000001c0, 0x000000c0, 0x00800000, 0x00000000, 0x00000140]),
         ("os", [0x00020000, 0x04010000]),
+        # ISPCTL (upass 0xf, back face present), front ISPA (depth compare ALWAYS, depth
+        # write off, point / line width 0xf), front ISPB (stencil ALWAYS), back ISPA, back ISPB
         ("isp", [0x0000001f, 0x03c40000, 0x003e0f00, 0x0e000000, 0x00100f00, 0x00000000]),
         ("vp", [0x00000c00, 0x80000001, 0x00000001, 0x42000000, 0x42000000, 0x42000000,
                 0xc2000000, 0x00000000, 0x3f800000]),
@@ -643,7 +790,7 @@ def build_3d(w32, va, pa):
     a[3] = 0xf              # (record +0x5cc; not loaded by Start3D)
     a[4] = 0x1f             # 0x6d0
     if "--clear" in sys.argv:
-        a[5], a[6], a[7] = 0x2500, 0x3c040, 0x402   # 0x618 / 0x620 / 0x628: end-of-tile PDS code, data, info
+        a[5], a[6], a[7] = BGEOT["eot_code"], BGEOT["eot_data"], 0x402   # 0x618 / 0x620 / 0x628: end-of-tile PDS code, data, info
     a[8] = 0x0023000f       # 0xf38 ISP_CTL
     a[9] = 0x408            # 0x3e00
     a[10] = 4               # 0xfd8
@@ -656,8 +803,8 @@ def build_3d(w32, va, pa):
     for i in range(22, 28):
         b[i] = 0x1d3        # 0x11080 x 6
     if "--clear" in sys.argv:
-        b[11] = (0x2180 << 32) | 0x2200     # 0x6a0 PDS_BGRND0: texunicode 0x2180 / shader 0x2200
-        b[13] = 0x3c030                     # 0x6b0 PDS_BGRND2: uniform data
+        b[11] = (BGEOT["bg_texu"] << 32) | BGEOT["bg_shader"]   # 0x6a0 PDS_BGRND0: texunicode / shader
+        b[13] = BGEOT["bg_uniform"]                             # 0x6b0 PDS_BGRND2: uniform data
         b[14] = 0x0080000000800000          # 0x6b8 PDS_BGRND3: sizes
     for i, x in enumerate(b):
         w32("S3B", 8 * i, x)

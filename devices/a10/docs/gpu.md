@@ -854,6 +854,50 @@ Open: after the job the firmware no longer answers a ping (runs 9-12; the
 stamps and pixels are all there) -- to find. Next: our own programs
 instead of Apple's ("legalization").
 
+### G6 legalization, step 1 (2026-11-24, `build/gpu/g6-own-*.log`): our own programs
+
+`--own` (with `--pm --tri --clear`) draws the same picture from our own
+pieces; **the target is again byte for byte the one iPadOS drew** (0
+differing pixels), and CLEAR / TRI_XY move it (green background, an
+upside-down triangle: 2048 pixels). What is ours now:
+
+- **USC code**: built by Xcode's offline compiler (`metal-tt -arch
+  applegpu_g9p`) from our Metal source in `gfx-init.py` (OWN_SRC): `tri_vs`
+  and `tri_fs` come out byte for byte as the code in the iPadOS heap (the
+  capture ran the same source); the background shader is our `bg_fs`
+  (`return c;` for a `constant float4 &c`): four moves from the common
+  store (registers 2..5) and the pixel emit `1c21 0008`, the shape of
+  Apple's clear shader. Compiler output stays in `build/gpu/isa/`.
+- **PDS programs and data**, written from the decoded DOUT fields (bits 3-7
+  the 64-bit constant with the DMA address / DOUTU word, bits 11-14 the one
+  with the DOUTD control word): vertex `DOUTW, DOUTU (cc), HALT` + `{DOUTU
+  -> tri_vs, 0x80000000}`, shared data `DOUTD END` + `{corners, 0x90000006}`
+  (the compiler keeps `tri_vs`'s constant array in common store 0..5),
+  fragment `{DOUTU -> tri_fs}` + `DOUTU END`, background `{DOUTU -> bg_fs}`
+  + `DOUTU END` and texunicode `DOUTD END` + `{colour, 0x90004004}` (4 words
+  to common store 2), end of tile `DOUTD, DOUTU END, HALT` + `{image state,
+  0x90000007, DOUTU}`.
+- **RGX+0x470's USC task is one instruction: `5e0100a0`**. Our compiler's
+  empty kernel (`0001 4001 0000 ... 0080`) never lets the TA raise
+  `TA_FINISHED`; the 0x5e instruction the compiler ends vertex shaders with
+  (`5e11 00c1 03`, `5e15 04c1 03`) does, in this short form without
+  outputs; with the empty kernel's first instruction before it, it does
+  not (runs own-470).
+- **PPP state and the VDM stream**: every word from Mesa's `ppp.xml` /
+  `vdm.xml` fields: varying words 0-2 (none), PDS pointers, OUTPUT_SEL
+  (vertex size 4, rhw), ISPCTL (upass 0xf, back face present), ISPA
+  (depth compare ALWAYS, depth write off, point / line width 0xf), ISPB
+  (stencil ALWAYS), region clip (tiles 0..1) + viewport (32, 32 / 32, -32 /
+  0, 1), WCLAMP + PPP_CTRL (clip mode, flat shading vertex, wclamp), ISP
+  DBSC, the terminate block; VDM_STATE (vertex PDS code / sizes, data),
+  PDS_STATE (shared data), INDEX_LIST (3 auto indices, TRI_LIST). The
+  capture's stream-out block is not needed.
+
+Still Apple's: **the end-of-tile USC code** (6 instructions, from the clear
+capture's heap 0x2440: `8801 0001 9901 0041 2801 3900 1c05 0051 0008 0001
+2e01 0000 ... 0080`) -- the next piece; and the register values of
+StartTA / Start3D that came from our runs but are not yet named.
+
 The way there:
 
 **A complete `tri` capture** (`gpucap rtri2 tri`, `build/gpu/ioscap/rtri2`):
