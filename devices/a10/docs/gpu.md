@@ -317,6 +317,132 @@ P+0x8c0, and it runs 5 s with no crash, main task done (A+0x4 / +0x10 /
 +0x14 = 1), ping answered. G1, G2 and G3's "firmware idle and stable" now
 all hold on the platform the driver will live on.
 
+## G4 progress (2026-11-23, under Linux): a compute kick reaches the CL data master
+
+`gfx-init.py --channels --kick-cp` (logs `build/gpu/g4-run*.log`), crash-driven
+as in G3. The firmware now takes a kick on the compute channel, powers the
+GPU itself, sets up the MMU context, initializes its scheduler and hands our
+command to the CL data master's pre-processing callback, which stops on our
+zeroed command: **"AGFCLDataMasterPreProcessingCallback :: Unexpected command
+type 0"** (run 10).
+
+How work reaches the firmware (22H355):
+
+- **Doorbell** (EP 0x21, fw 0x1db94): message type in bits 53:48. Type 3 =
+  kick, low 2 bits = data master (0 TA, 1 3D, 2 CP): sets that bit in the
+  pending-work mask and wakes the main loop; type 4 sets bit 31; type 5
+  checks B+0x49f0 / +0x49f4; type 6 is a power event for agx_power.
+- **Main loop** (fw 0x1dcc6): dispatch table at fw 0x300b8, 11 entries of
+  {mask_lo, mask_hi, fn, arg1, arg2}; bits 0 / 1 / 2 (and 17) -> fn
+  0x2167c(dm) (the scheduler); bits 24-30 -> 0x1e468 / 0x1e9a5 / 0x1f1cf.
+- **Channels** in X: channel ch = 16 bytes at X+0xc + 0x10 * ch: {&firmware
+  read index, &copy, &host write index, ring base}; ch = 3 * group + dm for
+  ch 0..11 (four groups of TA / 3D / CP), ch 12 = device control (0x24-byte
+  entries, its type 3 writes RGX+0xe140 / +0xe148 from T+0x7ec). Work rings:
+  256 entries of 0x14 bytes {+0, +4, **+8 queue object**, **+0xc data master
+  (must match: 2 for CP)**, **+0x10 u16 the queue's command write index**,
+  +0x12 u8 priority (0..63), +0x13 u8 "invalidate the object's cache lines"}.
+- **Queue object** (0x8c+ bytes): +0 state (+0x30 = command write index,
+  copied from the ring entry; +0x50 ring size), +4 command ring (fw VAs of
+  commands), +0xc scheduling entries (0x2c bytes each: +8 command & ~0x1f,
+  +0xc ...), +0x44 unit mask, +0x88 status. The scheduler enqueues it by
+  priority (fw 0xf008) and calls the data master's handler from the table at
+  fw 0xb0460 (fw 0x1071e).
+- **Power**: on work the agx_power task runs the firmware's power-up path
+  (fw 0x6ce4) -- it needs the Fender I/O region; with P+0xd34 / +0xd3c
+  nonzero the firmware requests the perf state itself (Fender +0x1000), as
+  it must before it touches RGX. Then fw 0x1c72e ("GPU is not powered on
+  after power kick!" if the power struct's +0x38 is 0).
+- **I/O regions**: a table at **P+0x640 + 0x20 * type** (41 types listed at
+  fw 0x2feec), entry {+0 PA lo, +4 PA hi, +8 firmware VA (written back), +0xc
+  size, +0x10 / +0x14 / +0x18 copied, **+0x1c nonzero = mapping attribute
+  0x21b, else 0x209**}; mapped by fw 0x1bc94 into fw 0x3214c + 0x20 * type
+  (VAs at 0xe0000000..). Type 0x14 = RGX (P+0x8c0, the "RGX" fields used
+  since G3), **type 0x1c = Fender (P+0x9c0: 0x201d00000, 0x4000, +0x1c = 1)**,
+  type 0x24 = FenderScratchRam (P+0xac0: the G3 "scratch RAM" is this region,
+  0x201e10000 on the hardware; a RAM page so far).
+- **MMU**: T+0x7ec -> u64 page-catalog PA per context (context 0 at +0;
+  T+0x7f0 / +0x7f4 masks of further contexts), written to RGX+0xe140
+  (context) / +0xe148 (PC >> 12) by fw 0x19d18; T+0x7e8 -> u32 MMU
+  generation per context, X+0x198 -> the firmware's copy; a difference makes
+  it invalidate through RGX+0xe138 (fw 0x19f0e).
+- **Mapping ring**: B+0x49e8 -> control {+0 firmware index, +0x10 host
+  index}, B+0x49ec -> 256 entries in the memory-descriptor format (flag bit
+  0: map, else unmap): the host can map more firmware memory at run time
+  (fw 0x19bc4).
+- **Scheduler init**: **B+0x4a24 nonzero** makes fw 0x1c72e fill the
+  per-data-master handler table (fw 0xeec2) and clear the flag; without it
+  the first command jumps to address 0.
+- X+0x150 -> a status struct (+0 == 2 checked).
+
+**Runs 11-12: the firmware takes a compute command and starts it.** With
+X+0x144 / +0x148 / +0x14c pointing at pages (X+0x144's +0xc is a state, 0 or
+5, read by the interrupt task) a type-3 command whose microsequence starts
+with StartCompute runs **with no crash, ping answered**: channel 2's read
+index reaches the write index (1), the queue's scheduling entry 0 becomes
+{1, 0x00c00000, command | 0x12, ..., microsequence position at +0x18 /
++0x1c}, and **Fender is in state 1 -- the firmware powered the GPU itself**.
+
+The compute command (CL callback fw 0x14f38; type 3, also 7 / 9 on CL):
++0x0 type, **+0x14 -> a 0x90-byte context state**, **+0x1e8 microsequence,
++0x1ec its size**, +0x298 / +0x29c and on: pointers the firmware writes.
+
+Microsequence interpreter (fw 0xb49c, `switch (op & 0x3f)`, "Unknown SKU
+command type" otherwise):
+
+- **op 0 WaitIRQ**: waits for event bits `op >> 6` (set by agx_interrupt);
+  for the compute data master it also waits for RGX+0x4a0 bit 0 (CDM done);
+  4 bytes.
+- **op 0xb StartCompute** (0x4c bytes on 22H355): +4 -> two words to RGX
+  +0x4c0 / +0x4c8; **+8 -> the CDM arguments: [0..1] RGX+0x498, [2..3]
+  +0x4b8, [4..5] RGX+0x480 (the CDM control stream base)**, [6..0x11] six
+  64-bit slots through RGX+0x11040 / +0x11044 indexed by +0x11ff8 = 0..5;
+  +0xc -> a unit table (0x18-byte entries: +0 = 0, +0xc = 1, +0x10 = the
+  op's +0x10); +0x14 byte -> RGX+0xf07a; **+0x2c -> context state: [0xe..0x10]
+  -> RGX+0x4a8 / +0x4ac / +0x4b0; if its word 0 is 0, RGX+0x478 = 1 (CDM
+  start)**, else a context resume (fw 0x17550); +0x3c -> a flag that must be
+  0 (else the op only sets it to 1); the 64-bit +0x40 / +0x44 must not
+  exceed the one at *(+0x48) (a cancel threshold).
+- **op 0xc FinalizeCompute**: stops the CDM (RGX+0x11f00, +0x688, +0x1720,
+  +0xe230 = (+0xc) << 2 | 0x803 ...), stores context through fw 0xecfc only
+  when RGX+0x4a0 bit 1 says so, +0x20 / +0x24 -> the completion stamp
+  (address, value; kept at fw 0xa4cf8 / 0xa4cfc), +0x28 = the bytes to skip
+  to the next op.
+- **op 2 End**: completes the command (fw 0x11898 with the stamp above).
+
+Rogue MMU format (upstream drm/imagination `pvr_rogue_mmu_defs.h`, 4 KiB
+pages): PC entry u32 = (PD PA >> 12) << 4 | 1, index VA[39:30]; PD entry u64
+= PT PA | 1 (page size 0), index VA[29:21]; PT entry u64 = page PA | 1 (+2
+read-only, +4 coherent, +8 SLC bypass), index VA[20:12].
+
+**Runs 13-14: the terminate-only job is queued but not dispatched.**
+`gfx-init.py --job` builds it: context 0's page tables (GPU VA 0x200000..
+0x204000 onto the heap), a CDM stream that is one terminate word
+(0x80000000), a PDS HALT (0xd3000000) at +0x1000, the CDM arguments and
+context state pointing there, and the microsequence StartCompute (0x4c) ->
+WaitIRQ (event bit 2) -> FinalizeCompute (0x34; stamp STAMP+0 = 1) -> End.
+The firmware takes the kick, powers the GPU (Fender 1; RGX+0x18 reads
+0x011b0602 from the AP meanwhile) and puts the command in its queue's
+scheduling entry -- but the entry's microsequence position stays at the
+start (the unit table is untouched, RGX+0x480 / +0x4a0 stay 0, no stamp),
+and a crash dump requested on the running firmware shows every task idle
+(agx_background at 0x1ddb8, agx_interrupt at 0x22e48, agx_power at
+0x23c8c). Enabling the engines (P+0x1ab0 = 7: bits 0 / 1 / 2 = TA / 3D / CP,
+read through fw 0x32b68 by fw 0xaf00) and their unit masks (P+0x1abc /
++0x1ac0 / +0x1ac4 = 1, fw 0x32b74 / 0x32b78 / 0x32b7c) did not change it.
+
+The interpreter (fw 0xb49c) is only called from fw 0x2920 -- the
+interrupt-side dispatcher, entered from agx_interrupt (fw 0x2339c ->
+0x3b02) -- so the next step is what makes that path pick a compute job up
+(its conditions on fw 0xd75f4 / 0xd75d0 and the data master's state).
+
+The base arguments that bring the firmware up for G4
+(`build/gpu/g4-run14.log`): `P+0xac0=%S P+0xac4=8 X+0x4=@E X+0x8=@F
+X+0x311=@H B+0x49e8=@L B+0x49ec=@M P+0x9c0=0x01d00000 P+0x9c4=2
+P+0x9cc=0x4000 P+0x9dc=1 X+0x150=@N P+0xd34=1 P+0xd3c=1 T+0x7ec=@Y
+Y+0x0=%Z Y+0x4=8 T+0x7e8=@GEN X+0x198=@XG B+0x4a24=1 X+0x144=@P2
+X+0x148=@P3 X+0x14c=@P4`, with `--channels --kick-cp --job`.
+
 ## G3 results (2026-11-23): init data, the firmware idle and stable
 
 `tools/gpu/gfx-init.py` (boots the firmware through gfx-boot.py, builds the
