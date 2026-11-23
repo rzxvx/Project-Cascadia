@@ -98,6 +98,8 @@ REGIONS = {          # name: (offset in the heap, size)
     "EV0": (0xdc000, 0x4000),
     "EV1": (0xe0000, 0x4000),
     "EV2": (0xe4000, 0x8000),
+    "TS": (0xec000, 0x4000),    # RAM for I/O type 5, TempSensorRegister (P+0x6e0), which the
+                                # firmware's power model reads on a cold power-up (fw 0x6914)
 }
 RGX_PA = gb.adt["/arm-io/sgx"].get_reg(0)[0]
 
@@ -140,7 +142,7 @@ def build_job(w32, va, pa):
     # -> RGX+0x4a8 / +0x4ac / +0x4b0
     w32("CTX", 0x38, GVA + 0x1000)
     w32("CTX", 0x3c, GVA + 0x1010)
-    # the microsequence (0x88 bytes)
+    # the microsequence (0x88 bytes; 0x84 with --no-wait)
     u = "US"
     w32(u, 0x00, 0xb)              # StartCompute, 0x4c bytes
     w32(u, 0x04, va["CDR"])
@@ -154,25 +156,31 @@ def build_job(w32, va, pa):
     w32(u, 0x48, va["FL"] + 0x10)  # the threshold
     w32("FL", 0x10, 0xffffffff)
     w32("FL", 0x14, 0xffffffff)
-    w32(u, 0x4c, 4 << 6)           # WaitIRQ, event bit 2
-    w32(u, 0x50, 0xc)              # FinalizeCompute, 0x34 bytes on completion
-    w32(u, 0x54, va["UT"])
-    w32(u, 0x70, va["STAMP"])      # +0x20: stamp address
-    w32(u, 0x74, 1)                # +0x24: stamp value
-    w32(u, 0x78, 0x34)             # +0x28: skip on the context-store path
+    # --no-wait: no WaitIRQ (to run against the RAM stand-in for RGX, where
+    # no interrupt ever comes); FinalizeCompute's fast path does not wait
+    f = 0x4c
+    if "--no-wait" not in sys.argv:
+        w32(u, 0x4c, 4 << 6)       # WaitIRQ, event bit 2
+        f = 0x50
+    w32(u, f + 0x00, 0xc)          # FinalizeCompute, 0x34 bytes on completion
+    w32(u, f + 0x04, va["UT"])
+    w32(u, f + 0x20, va["STAMP"])  # stamp address
+    w32(u, f + 0x24, 1)            # stamp value
+    w32(u, f + 0x28, 0x34)         # skip on the context-store path
     # +0x2c: "already finished" flag: nonzero takes FinalizeCompute's fast path
     # (no CDM stop / context store, which faults in the PDS without a
     # context-store program, G4 runs 20-28); our terminate-only stream runs
     # no kernel that could set it, so the host does (run 29)
-    w32(u, 0x7c, va["FL"] + 0x20)
+    w32(u, f + 0x2c, va["FL"] + 0x20)
     w32("FL", 0x20, 1)
-    w32(u, 0x80, va["FL"] + 0x30)  # +0x30
-    w32(u, 0x84, 2)                # End
+    w32(u, f + 0x30, va["FL"] + 0x30)
+    w32(u, f + 0x34, 2)            # End
+    us_size = f + 0x38
     # the command
     w32("CMD", 0x000, 3)
     w32("CMD", 0x014, va["CTX"])
     w32("CMD", 0x1e8, va["US"])
-    w32("CMD", 0x1ec, 0x88)
+    w32("CMD", 0x1ec, us_size)
     w32("CMD", 0x298, va["STAMP"] + 0x100)
     w32("CMD", 0x29c, va["STAMP"] + 0x200)
     # the command's completion record, used by the CL post-processing callback
@@ -180,6 +188,39 @@ def build_job(w32, va, pa):
     # left 0 the firmware writes to address 0 and crashes (G4 run 29)
     w32("CMD", 0x26c, va["STAMP"] + 0x10)
     w32("CMD", 0x274, 0xc0de)
+
+
+def rgx_on():
+    """Fender's perf state settled and nonzero. Not a safe gate for reading
+    RGX once the firmware manages power itself (a cold GPU): it powers the
+    idle core off within milliseconds, and an RGX read that loses that race
+    is an SError panic on the AP (L2C_ERR_ADR = the RGX address; G4 runs
+    43-44). So RGX is read at the end only with --rgx."""
+    v = p.read32(gb.FENDER + 0x1000)
+    return v & 0xf != 0 and not v & 0x10
+
+
+def watch(kf, secs, pa):
+    """--watch: instead of a plain wait, poll what shows the job's progress
+    and print each change with its time since the kick: the stamps,
+    Fender's perf state, the rings' write indices. No RGX reads (rgx_on()).
+    An MMU fault shows as power event 0x16 (the firmware's recovery, which
+    reads RGX+0xe150 itself) and B+0x4a00 = 1."""
+    probes = {
+        "STAMP+0": pa["STAMP"], "STAMP+0x10": pa["STAMP"] + 0x10,
+        "Fender+0x1000": gb.FENDER + 0x1000,
+        "EC0 wr": pa["EC0"] + 0x20, "EC1 wr": pa["EC1"] + 0x20,
+        "B+0x4a00 recovery": pa["B"] + 0x4a00,
+    }
+    last = {}
+    t0 = time.time()
+    while time.time() - t0 < secs:
+        kf.work_for(0.002)
+        for name, a in probes.items():
+            v = p.read32(a)
+            if last.get(name) != v:
+                out(f"watch +{(time.time() - t0) * 1000:8.1f} ms  {name} = {v:#x}")
+                last[name] = v
 
 
 RINGS = []      # (name, control PA, entries PA, entry count): set in main()
@@ -288,6 +329,15 @@ def main():
         for ch in range(13):
             w32("X", 0x10 + 0x10 * ch, va["G"] + 0x100 + 4 * ch)
             w32("X", 0x18 + 0x10 * ch, va["W"] + 0x1400 * ch)
+    if "--job" in sys.argv:
+        # X+0x4 -> E: two words the firmware copies at init (fw 0xd6c90) and
+        # programs into RGX+0xe240 at every GPU power-up (fw 0x5660): the GPU
+        # VA of the cache flush's scratch / fence write. Left 0, the flush
+        # before an idle power-off (fw 0x61a0 -> 0x17cb0) writes to GPU VA 0:
+        # the PDS MMU fault of G4 runs 20-37. Must be set before the init
+        # message; the page is mapped by the job's page tables (GV+0x3800).
+        w32("E", 0x0, GVA + 0x3800)
+        w32("E", 0x4, 0)
     for s in sets:
         k, v = s.split("=")
         region, off = k.split("+")
@@ -342,7 +392,10 @@ def main():
         out("kick: compute channel 2, write index 1, doorbell (0x21 << 56) | (3 << 48) | 2")
         kf.send((0x21 << 56) | (3 << 48) | 2)
     try:
-        kf.work_for(secs)
+        if "--watch" in sys.argv:
+            watch(kf, secs, pa)
+        else:
+            kf.work_for(secs)
         out(f"no crash in {secs} s; ping: {'pong' if gb.ping(kf) else 'NO REPLY'}")
     except Exception as e:
         out(f"stopped on {e!r}")
@@ -354,7 +407,7 @@ def main():
         out(f"STAMP+0 = {p.read32(pa['STAMP']):#x} (FinalizeCompute: 1), "
             f"+0x10 = {p.read32(pa['STAMP'] + 0x10):#x} (the command's completion record: 0xc0de)")
         rgx = gb.adt["/arm-io/sgx"].get_reg(0)[0]
-        if p.read32(gb.FENDER + 0x1000) & 0x1f:
+        if "--rgx" in sys.argv and rgx_on():
             for off in (0x4a0, 0x480, 0x478, 0xe140, 0xe148, 0xe150, 0xe154, 0xe238):
                 out(f"RGX +{off:#x} = {p.read32(rgx + off):#010x}")
     # what the firmware wrote back into our structures (nonzero words)
@@ -391,7 +444,7 @@ def main():
 # progress"): wake bits, the dispatcher's gates, the per-data-master slots,
 # the queue masks, the queue table.
 FW_STATE = (
-    ("d75d0 agx_interrupt wake", 0xd75d0, 1), ("d75f4 hw events", 0xd75f4, 1),
+    ("d6c90 flush fence VA", 0xd6c90, 2), ("d75d0 agx_interrupt wake", 0xd75d0, 1), ("d75f4 hw events", 0xd75f4, 1),
     ("d743c", 0xd743c, 1), ("a4c90 halt", 0xa4c90, 1), ("a4c5c/a4c60", 0xa4c5c, 2),
     ("a4d34 pending dm", 0xa4d34, 1), ("a4d50", 0xa4d50, 1), ("a4d64", 0xa4d64, 1),
     ("a4e8c slots", 0xa4e88, 2), ("323cc rgx va", 0x323cc, 1), ("d74c8 X", 0xd74c8, 1),

@@ -1,12 +1,13 @@
 # GPU (Apple A10 / T8010, "G9P") -- plan and what is known
 
-Status 2026-11-23: **G0-G3 done, G4 mostly; the GPU work runs under Linux**
+Status 2026-11-23: **G0-G4 done; the GPU work runs under Linux**
 (`GPU_BACKEND=linux`, see "GPU work under Linux"): core ID 0x011b0602 /
 revision 0x000d0a00, the GFX firmware boots and takes init data with the
 real RGX, stable. **The first job ran on the GPU** (G4 run 29-31): the
 firmware dispatched a terminate-only compute job, the CDM read its control
-stream through our page tables, both completion stamps were written. Open
-in G4: an MMU fault from the PDS after the job (no context-store program).
+stream through our page tables, both completion stamps were written; from
+a cold GPU powered up by the firmware itself, with no MMU fault (runs 43, 45).
+Next: G5 (a compute kernel that stores).
 Under m1n1 the core's registers hang the bus (not explained). This page is what the iPad 7's own ADT, kernelcache and firmware
 say, what the reference projects say, and the plan in checkable steps, in the
 style of the iPad mini 1's SGX work and the A13's AGX work
@@ -153,12 +154,12 @@ rootless) give us a live reference (kernel read of the init data) the way
 Dopamine's kmem did on the A13? palera1n does not hand out kernel r/w like
 libjailbreak; to check.
 
-**G4 -- the core under the firmware, an empty compute job. MOSTLY DONE
+**G4 -- the core under the firmware, an empty compute job. DONE
 2026-11-23** ("G4 progress", runs 15-31): Rogue page tables for one GPU
 context, the firmware's queue for compute, a terminate-only CDM stream.
 Check: the completion stamp moves (done, both stamps), no firmware crash
-(done), no MMU fault (open: RGX+0xe150 shows a PDS write to VA 0 after the
-job -- the CDM context-store program and buffer are still missing).
+(done), no MMU fault (done, runs 43 and 45, once the firmware's own cold
+power-up runs).
 
 **G5 -- a compute store (40 %).** The `store_const` kernel compiled offline
 for `applegpu_g9p`, its PDS program (Rogue PDS encodings), the buffer bound.
@@ -504,18 +505,61 @@ Mesa's encoding. 0x478 / 0x480 / 0x498 / 0x11040 are not in the public
 headers (0x480 = the control stream base, as upstream's fw interface
 `cdm_ctrl_stream_base`).
 
-Still open in G4: the PDS write to VA 0 after the job (the fault then sends
-the firmware into recovery: event 0x16, fw 0x3b74, 0xa4c90 = 1). Presumably
-the idle path's CDM context store with no context-store program / state
-buffer -- what iOS puts in CTX[0xe..0x10] and where the state goes is the
-next thing to read (the kext's CL command builder).
+**Runs 32-43: the fault is not the job's; the firmware's own power-up was
+being skipped.**
 
-The arguments of run 31 (`build/gpu/g4-run31.log`): `P+0xac0=%S P+0xac4=8
+- With StartCompute cancelled (threshold 0: the CDM never runs, RGX+0x480
+  stays 0) the PDS fault still comes (run 37); without a kick it does not
+  (run 27). Neither PDS program is fetched first (both pointed at unmapped
+  VAs, the fault stays at VA 0: run 33). With the RAM stand-in for RGX and
+  no WaitIRQ (`--no-wait`, run 35) the firmware's last writes after the job
+  are RGX+0x11f00 = 1 and +0x688 = 7: **fw 0x17cb0, the cache flush before
+  an idle power-off** (fw 0x61a0, from the main loop when P2+8, P3+0x24 and
+  P4+0xc show nothing busy): 0x11f00 = 1, 0x688 = 7, SLC 0x1720 = 0x1f, MMU
+  0xe230 = 0xc03.
+- That flush writes a fence to **RGX+0xe240**, which the firmware programs
+  at every GPU power-up (fw 0x5660) from fw 0xd6c90 -- the two words at
+  **X+0x4 (region E)**, copied at init (G3 run 5). Left 0: the write to VA
+  0. gfx-init.py `--job` now sets E = GPU VA 0x203800 (mapped by the job).
+- But with `--power` RGX+0xe240 stayed 0: **the firmware's power-up never
+  ran** -- no power event 0x11, none of fw 0x5660's RGX setup (0xe200..
+  0xe20c SLC, 0x690, 0x730, 0xe240). The kext's "Fender state 1 before
+  boot" makes the firmware treat the GPU as already up, and our core ran
+  uninitialized. So: `--cold` without `--power`.
+- The cold power-up then needs: I/O type 5 (**TempSensorRegister**,
+  P+0x6e0: PA, +0xc size) -- a RAM page (region TS) does, H+0x4c40 is not
+  needed; and **H+0x4 = the DVFS sample period** (the power task re-arms
+  its timer at now + H+0x4, fw ~0x24886 -> fw 0xab50 -> 0x6730, power event
+  0x19); 0 made it fire back to back (8000+ events in 4 s, the firmware too
+  busy to answer a ping, runs 24 / 41). H+0x4 = 240000 (10 ms at 24 MHz).
+- **Run 43: the job completes with no MMU fault**: STAMP+0 = 1, +0x10 =
+  0xc0de, RGX+0xe150 = 0, RGX+0xe240 = 0x203800, fw 0x5660's SLC pattern at
+  RGX+0xe208. Then the iPad hung: `--watch` kept reading RGX after the
+  firmware had powered the idle GPU off: an RGX read on a powered-off core
+  is an **SError panic on the AP** (UART: `L2C_ERR_ADR: 0x184002010004a0`,
+  comm mmiod). Run 44 gated the reads on Fender's state and still lost the
+  race: with a cold GPU the firmware powers the idle core off and on every
+  few tens of ms (Fender +0x1000 0x11 / 0x0). So the AP no longer reads
+  RGX while the firmware manages power (`--rgx` to force it at the end);
+  an MMU fault is seen through the firmware itself: its recovery (power
+  event 0x16, B+0x4a00 = 1) reads RGX+0xe150.
+- **Run 45 (cold GPU, no RGX reads from the AP): the job completes with no
+  MMU fault and no recovery** -- STAMP+0 = 1 and +0x10 = 0xc0de 7 ms after
+  the kick, no power event 0x16, B+0x4a00 stays 0, no firmware crash, ping
+  answered, the iPad alive. Job event ring: one event 0x1 (event 0x4 came
+  only with the fault). Power events in 4 s: 0x11 (up) x405, 0x12 (down)
+  x405, 0x19 (DVFS) x810 -- the idle GPU is powered up and down every
+  H+0x4 (10 ms): the DVFS sample tick wakes it. To find: the setting that
+  lets an idle GPU stay off between samples (iOS surely does not wake it
+  100 times a second).
+
+The arguments of runs 43-45 (`build/gpu/g4-run45.log`): `P+0xac0=%S P+0xac4=8
 X+0x4=@E X+0x8=@F X+0x311=@H B+0x49e8=@L B+0x49ec=@M P+0x9c0=0x01d00000
 P+0x9c4=2 P+0x9cc=0x4000 P+0x9dc=1 X+0x150=@N P+0xd34=1 P+0xd3c=1
 T+0x7ec=@Y Y+0x0=%Z Y+0x4=8 T+0x7e8=@GEN X+0x198=@XG B+0x4a24=1
-X+0x144=@P2 X+0x148=@P3 X+0x14c=@P4 P+0x1abc=1 P+0x1ac0=1 P+0x1ac4=1`,
-with `--cold --power --channels --kick-cp --job`.
+X+0x144=@P2 X+0x148=@P3 X+0x14c=@P4 P+0x1abc=1 P+0x1ac0=1 P+0x1ac4=1
+P+0x6e0=%TS P+0x6e4=8 P+0x6ec=0x4000 H+0x4=240000`, with `--cold
+--channels --kick-cp --job`.
 
 ## G3 results (2026-11-23): init data, the firmware idle and stable
 
