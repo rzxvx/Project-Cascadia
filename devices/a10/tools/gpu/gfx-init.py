@@ -46,7 +46,7 @@ p, u, iface, out = gb.p, gb.u, gb.iface, gb.out
 sys.path.insert(0, HERE)
 
 HEAP_VA = int(os.environ.get("HEAP_VA", "0x80400000"), 0)   # window 2: a mapping below 32 MiB (window 1) hangs the firmware on access (G3 bisect)
-HEAP_SIZE = 0x200000           # 2 MiB: the second MiB holds the TA job (--kick-ta)
+HEAP_SIZE = 0x400000           # 4 MiB: the second MiB holds the TA job (--kick-ta), the third the 3D job (--kick-3d)
 REGIONS = {          # name: (offset in the heap, size)
     "X": (0x00000, 0x1000),
     "P": (0x10000, 0x4000),
@@ -118,6 +118,26 @@ REGIONS = {          # name: (offset in the heap, size)
     "TAC": (0x115000, 0x1000),  # FinalizeTA +0x8 counter object
     "CTX2": (0x116000, 0x1000), # StartTA +0x40: context state (word 0 = 0: fresh)
     "PMB": (0x120000, 0xe0000), # --ta-probe: real pages at GPU VA 0x300000.., one 0x7000 slice per StartTA slot
+    # --kick-3d: the 3D queue, command and render state (G6)
+    "K3": (0x200000, 0x1000),   # 3D queue object
+    "QS3": (0x201000, 0x1000),  # its state
+    "CR3": (0x202000, 0x1000),  # its command ring
+    "SE3": (0x203000, 0x4000),  # its scheduling entries
+    "ST3": (0x207000, 0x1000),  # its status
+    "CMD3": (0x208000, 0x1000), # the 3D command (type 1; microsequence at +0x14, >= 0x918 bytes)
+    "US3": (0x209000, 0x1000),  # its microsequence
+    "CTX3": (0x20a000, 0x1000), # CMD3+0x1c: 0x90-byte context state
+    "S3A": (0x20b000, 0x1000),  # Start3D +0x4: 18 x u32 (RGX 0xf18 ...)
+    "S3B": (0x20c000, 0x1000),  # Start3D +0x8: 29 x u64 (RGX 0xfa8 ...)
+    "UT3": (0x20d000, 0x1000),  # unit table (0x28-byte entries)
+    "FL3": (0x20e000, 0x1000),  # flags / threshold words
+    "F3C": (0x20f000, 0x1000),  # Finalize3D +0x18 counter block
+    "FLD": (0x210000, 0x1000),  # CMD3+0x20 (and CMDT+0x20): the 0x74-byte free-list descriptor
+    "PMH": (0x211000, 0x1000),  # PM slot +0xc0: the slot header
+    "PTR2": (0x212000, 0x1000), # page table for GPU VA 0x400000..0x5fffff
+    "PTR0": (0x213000, 0x1000), # page table for GPU VA 0..0x1fffff
+    "VA0": (0x214000, 0x1000),  # the page at GPU VA 0
+    "G3": (0x240000, 0x100000), # GPU VA 0x400000..0x4fffff: render target, programs, PM buffers
     "ZP": (0xf0000, 0x1000),
     "HP": (0xf4000, 0x4000),    # --store-ios: the PDS / USC heap at GPU VA 0x300000    # --pad: the page behind the unused part of GPU VA 0x200000..0x3fffff
     "TS": (0xec000, 0x4000),    # RAM for I/O type 5, TempSensorRegister (P+0x6e0), which the
@@ -294,6 +314,11 @@ def build_ta(w32, va, pa):
     # and the PM writes nothing (G6 run 6)
     w32(u, 0x68, 0x20 << 6)         # WaitIRQ: TA_FINISHED
     f = 0x6c
+    if os.environ.get("TA_REALWAIT"):
+        # a WaitIRQ that is executed (StartTA is 0x6c): never ends on an
+        # empty stream without the PPP terminate / TE_PSG completeonterminate
+        w32(u, 0x6c, int(os.environ["TA_REALWAIT"], 0) << 6)
+        f = 0x70
     w32(u, f + 0x00, 6)             # FinalizeTA
     w32(u, f + 0x04, va["TAO"])
     w32(u, f + 0x08, va["TAC"])
@@ -311,6 +336,8 @@ def build_ta(w32, va, pa):
     w32("CMDT", 0x55c, 0x7a)
     if "--ta-probe" in sys.argv:
         ta_probe_setup(w32, va, pa)
+    if "--pm" in sys.argv:
+        pm_setup(w32, va, pa)
 
 
 TA_SLOTS = ([("TAB", o) for o in (0x00, 0x08, 0x10, 0x18, 0x20, 0x28, 0x30, 0x38, 0x40, 0x48, 0x50,
@@ -333,6 +360,122 @@ def ta_probe_setup(w32, va, pa):
         w32(r, o + 4, 0)
 
 
+# --pm: the render target and the parameter manager's buffers in region G3
+# (GPU VA G3VA..), docs/gpu.md "G6 step 2"
+G3 = {
+    "code": 0x00000,    # PDS / USC code heap (64 KiB): PDS base = USC base = G3VA (the
+                        # base is used 2 MiB-aligned: 0x410000 acted as 0x400000, run 28)
+    "rt": 0x50000,      # 64x64 BGRA8 render target (0x4000)
+    "rgn": 0x54000,     # region headers (TA 0xc38)
+    "tpc": 0x55000,     # tail pointer cache (TA 0xc40)
+    "mta": 0x56000,     # macrotile array (slot +0xa8 -> 0x240 / ISP 0xf20)
+    "mlist": 0x57000,   # PM MMU list (slot +0xa0 -> 0x2d8 / 0x2e0), 0x2000
+    "vheap": 0x59000,   # VHEAP table (slot +0xb0 -> 0x248), 0x2000
+    "fl": 0x5b000,      # the free list: u32 physical page numbers
+    "ctx": 0x5c000,     # the 0x428 / 0xcc0 buffers (+0x100 / +0x200); the TA reads
+                        # far beyond them (data at ctx+0x2000 broke it, run 24): 0x8000
+    "ppp": 0x64000,     # PPP state: the terminate block
+    "pages": 0x80000,   # PM pages (4 KiB each) handed out by the free list
+}
+# PM_PAGES: 1 works (G6 3D runs 16-34); with 128 the PM's start-up takes 45
+# pages (VCE page tables + 40 data pages), writes no macrotile array, and the
+# 3D's IPF then reads PM contexts that hold no catalog (fault, ctx 4 / 5).
+# With one page the start-up cannot allocate and writes the macrotile array
+# instead -- a workaround until the PM start-up is understood.
+PM_PAGES = int(os.environ.get("PM_PAGES", "1"), 0)
+
+
+def pm_setup(w32, va, pa):
+    """The TA's parameter manager for a 64x64 target (32x32 tiles: 2x2 tiles,
+    macrotiles 4x4 as upstream pvr_hwrt.c computes them): free list, MLIST,
+    VHEAP table, macrotile array, region headers, TPC; TE / PPP registers
+    in StartTA's 32-bit block; a VDM stream of the PPP terminate state
+    (Mesa csbgen ppp.xml: clip to tile 1 / 1) and STREAM_TERMINATE."""
+    g = lambda k: G3VA + G3[k]
+    map_g3(w32, pa)
+    # free list: PM_PAGES physical pages, top = n - 1 (descriptor CMDT+0x20 =
+    # T74: +0x1c base -> RGX 0x210, +0x28 -> 0x220, +0x40 top -> 0x224,
+    # +0x48 / +0x4c -> 0x390 / 0x394; fw 0x17a10)
+    pfns = [(pa["G3"] + G3["pages"] + 0x1000 * i) >> 12 for i in range(PM_PAGES)]
+    iface.writemem(pa["G3"] + G3["fl"], struct.pack(f"<{PM_PAGES}I", *pfns))
+    w32("T74", 0x1c, g("fl"))
+    w32("T74", 0x20, 0)
+    w32("T74", 0x28, 0)
+    w32("T74", 0x40, PM_PAGES - 1)
+    # slot: MLIST, macrotile array, VHEAP table
+    w32("TAO", 0xa0, g("mlist"))
+    w32("TAO", 0xa8, g("mta"))
+    w32("TAO", 0xb0, g("vheap"))
+    for o in (0xa4, 0xac, 0xb4):
+        w32("TAO", o, 0)
+    # 32-bit block: 0xc78, 0xc88 PPP_CTRL, 0xc98 PPP_SCREEN, 0xc18 TE_SCREEN,
+    # 0xc08 / 0xc10 TE_MTILE1 / 2, 0xc20 macrotile stride, 0xc28 TE_PSG
+    for i, x in enumerate((0x88, 0x2, 0x003f003f, 0x1001, 0x10100c, 0x10100c, 16, 0x20000)):
+        w32("TAA", 4 * i, x)
+    # 64-bit block (StartTA +0x8)
+    b = {0x00: 0x1e3ce508,           # 0xc90 PDS_CTRL
+         0x08: g("rgn"),             # 0xc38 region headers
+         0x10: g("tpc"),             # 0xc40 tail pointer cache
+         0x18: 0,                    # 0xc00 TE_AA (1 sample)
+         0x20: 0x88,                 # 0xc80 PPP_MULTISAMPLECTL
+         0x28: g("ctx") + 0x100,     # 0x428
+         0x30: g("ctx") + 0x200,     # 0xcc0
+         0x68: int(os.environ.get("TA_470", "0x1880" if "--clear" in sys.argv else "0x100"), 0),   # 0x470: a PDS program (offset in the code heap)
+         0x70: 0,                    # 0x418 VDM call stack pointer
+         0x78: GVA + 0x3c00}         # 0x408 VDM stream
+    for o, x in b.items():
+        w32("TAB", o, x)
+        w32("TAB", o + 4, x >> 32)
+    # the code heap (PDS base = USC base = its VA: P+0x10 / P+0x18, given
+    # on the command line): PDS HALT words throughout, so any PDS program
+    # the TA starts ends at once
+    iface.writemem(pa["G3"] + G3["code"], struct.pack("<I", 0xd3000000) * (0x10000 // 4))
+    if "--clear" in sys.argv:
+        clear_setup(w32, va, pa)
+    # PPP terminate state: header pres_terminate, TERMINATE0 clip right /
+    # bottom tile 1, TERMINATE1 0
+    for i, x in enumerate((0x02000000, 0x00040001, 0)):
+        w32("G3", G3["ppp"] + 4 * i, x)
+    pv = g("ppp")
+    for i, x in enumerate(((3 << 8) | (pv >> 32), pv & 0xfffffffc, 0xc0000000)):
+        w32("GV", 0x3c00 + 4 * i, x)
+
+
+CLEAR_HEAP = os.path.join(HERE, "../../build/gpu/ioscap/rclear/done/6060f4000-10000.bin")
+CLEAR_COLOUR = [float(x) for x in os.environ.get("CLEAR", "0.25,0.5,0.75,1.0").split(",")]
+
+
+def clear_setup(w32, va, pa):
+    """--clear: the background object and the end-of-tile program of the
+    iPadOS clear capture (build/gpu/ioscap/rclear, docs/gpu.md "G6 step 3"):
+    its 64 KiB PDS / USC heap copied to ours at the same offsets (PDS base =
+    USC base = G3VA), so the record's offsets hold: background
+    PDS 0x2200 (DOUTU -> USC 0x20c0) / 0x2180 (DOUTD of the uniform data),
+    end-of-tile PDS 0x2500 (DOUTD of the image state, DOUTU -> USC 0x2440).
+    The PDS data the capture did not hold is ours: heap+0x3c030 {colour VA,
+    0x90000004}, heap+0x3c040 {image state VA, 0x90000007, DOUTU 0x2440 /
+    temps}; the colour (4 floats) and the 7-word image state (BGRA8 linear
+    64x64, 256-byte rows, address >> 1 in word 2) at G3+0x68000 / +0x68010."""
+    # only the window with these four programs and their two USC shaders;
+    # the rest stays PDS HALT (with the whole heap the TA's zero-offset PDS
+    # tasks ran Apple's code at offset 0: a USC fetch fault, G6 3D run 18)
+    lo, hi = (int(x, 0) for x in os.environ.get("CLEAR_WIN", "0x2000,0x2580").split(","))
+    heap = open(CLEAR_HEAP, "rb").read()
+    iface.writemem(pa["G3"] + G3["code"] + lo, heap[lo:hi])
+    co = int(os.environ.get("CLEAR_DATA", "0x68000"), 0)
+    cva = G3VA + co
+    dva = G3VA + co + 0x10
+    iface.writemem(pa["G3"] + co, struct.pack("<4f", *CLEAR_COLOUR))
+    img = [0xfb050502, 0x00007e01, (G3VA + G3["rt"]) >> 1, 0x00018000 | (int(os.environ.get("IMG3_HI", "0x80000000"), 0)),
+           0, 0xc0000000, 0]
+    iface.writemem(pa["G3"] + co + 0x10, struct.pack("<7I", *img))
+    d = pa["G3"] + G3["code"] + 0x3c030
+    iface.writemem(d, struct.pack("<QQ", cva, 0x90000004))
+    iface.writemem(d + 0x10, struct.pack("<QQII", dva, 0x90000007, 0x2440, 0x10))
+    # the render target: a marker pattern, so written pixels show
+    iface.writemem(pa["G3"] + G3["rt"], struct.pack("<I", int(os.environ.get("RT_FILL", "0x5a5a5a5a"), 0)) * 0x1000)
+
+
 def ta_probe_report(pa):
     for i, (r, o) in enumerate(TA_SLOTS):
         d = iface.readmem(pa["PMB"] + TA_PROBE_STRIDE * i, TA_PROBE_STRIDE)
@@ -341,6 +484,154 @@ def ta_probe_report(pa):
             w = struct.unpack_from("<8I", d, nz[0] & ~0x1f)
             out(f"probe {r}+{o:#x} (VA {TA_PROBE_VA + TA_PROBE_STRIDE * i:#x}): {len(nz) * 4:#x} bytes written, "
                 f"first +{nz[0]:#x}, last +{nz[-1]:#x}: " + " ".join(f"{x:08x}" for x in w))
+
+
+G3VA = 0x400000      # GPU VA of region G3 (--kick-3d)
+
+
+def map_pages(w32, pa, ptr, va0, region, npages, off=0):
+    """GPU VA va0.. (inside one 2 MiB page table `ptr`) onto `region`+off.."""
+    ents = b"".join(struct.pack("<Q", (pa[region] + off + 0x1000 * k) | 1) for k in range(npages))
+    iface.writemem(pa[ptr] + 8 * ((va0 >> 12) & 0x1ff), ents)
+
+
+def map_g3(w32, pa):
+    """Page tables: PD entry 2 (VA 0x400000..0x5fffff) -> PTR2 -> G3; with
+    --va0, PD entry 0 -> PTR0, VA 0 -> page VA0 (a page at GPU VA 0)."""
+    for pde_i, ptr in ((2, "PTR2"),) + (((0, "PTR0"),) if "--va0" in sys.argv else ()):
+        w32("PDR", 8 * pde_i, (pa[ptr] & 0xffffffff) | 1)
+        w32("PDR", 8 * pde_i + 4, pa[ptr] >> 32)
+    map_pages(w32, pa, "PTR2", G3VA, "G3", 0x100)
+    if "--va0" in sys.argv:
+        map_pages(w32, pa, "PTR0", 0, "VA0", 1)
+
+
+def build_3d(w32, va, pa):
+    """G6 step 2: a 3D job on the 3D channel (1) with its own queue (K3): a
+    type-1 command (CMD3: +0x14 / +0x18 microsequence, +0x1c context state,
+    +0x20 free-list descriptor, +0x24 PM slot, +0x89c / +0x8a4 completion
+    record) and Start3D (op 7, 0x78) -> WaitIRQ (PIXELBE_END_RENDER, bit 3)
+    -> Finalize3D (op 8, 0x50) -> End. Stamp: STAMP+0x40 = 1; the
+    command's completion record STAMP+0x50 = 0x3d. GPU VA 0x400000.. is
+    region G3 (1 MiB). docs/gpu.md "G6 step 2"."""
+    map_g3(w32, pa)
+    # the queue on channel 1 = group 0, 3D: ring W+0x1400, host write index G+0x14
+    ring = pa["W"] + 0x1400 * 1
+    iface.writemem(ring, struct.pack("<IIIIHBB", 0, 0, va["K3"], 1, 1, 0, 0))
+    # the host write index (G+0x14) is set by the caller right before the
+    # doorbell: the firmware scans the channels whenever it wakes (the TA's
+    # completion does it), and saw a half-written command (CMD3+0x14 = 0,
+    # a null microsequence, G6 3D run 2)
+    w32("K3", 0x00, va["QS3"])
+    w32("K3", 0x04, va["CR3"])
+    w32("K3", 0x0c, va["SE3"])
+    w32("K3", 0x44, 1)
+    w32("K3", 0x88, va["ST3"])
+    w32("QS3", 0x50, 256)
+    w32("CR3", 0x00, va["CMD3"])
+    # PM slot: the TA's (TAO) when the TA runs first, so the 3D reads what
+    # the TA left; its +0xc0 is the slot header (the post-processing callback
+    # fw 0x1468c writes it)
+    slot = "TAO"
+    w32(slot, 0xc0, va["PMH"])
+    if os.environ.get("CAT3D"):
+        # experiment: a hand-made PM page catalog in the slot at the offset
+        # CAT3D names (Start3D loads it into an RGX 0xe0xx register, fw
+        # 0x17606): PC (G3+0x20000) entry 0 -> PD (+0x21000) entry 0 -> PT
+        # (+0x22000) entry 0 -> the page G3+0x23000 (filled with CAT3D_FILL)
+        base = pa["G3"] + 0x20000
+        iface.writemem(base, bytes(0x4000))
+        w32("G3", 0x20000, ((base + 0x1000) >> 12 << 4) | 1)
+        for lvl in (1, 2):
+            nxt = base + 0x1000 * (lvl + 1)
+            w32("G3", 0x20000 + 0x1000 * lvl, (nxt & 0xffffffff) | 1)
+            w32("G3", 0x20004 + 0x1000 * lvl, nxt >> 32)
+        fill = int(os.environ.get("CAT3D_FILL", "0"), 0)
+        iface.writemem(base + 0x3000, struct.pack("<I", fill) * 0x400)
+        o = int(os.environ["CAT3D"], 0)
+        w32(slot, o, (base & 0xffffffff) | 1)
+        w32(slot, o + 4, base >> 32)
+    # the free-list descriptor: the TA command's (CMDT+0x20, T74). The TA's
+    # dispatch registers it as free list 0 (fw table 0xd6ca0); Start3D's
+    # +0x34 picks the id (fw 0x1866c: a never registered id is a null
+    # pointer, G6 3D run 1). Post-processing reads +0x48 and compares
+    # *(+0x50) with +0x0 (equal: the registration ends, fw 0x1468c)
+    fld = "T74"
+    w32(fld, 0x50, va[fld] + 0x80)
+    # the command
+    c = "CMD3"
+    w32(c, 0x000, 1)
+    w32(c, 0x01c, va["CTX3"])
+    w32(c, 0x020, va[fld])
+    w32(c, 0x024, va[slot])
+    w32(c, 0x89c, va["STAMP"] + 0x50)
+    w32(c, 0x8a4, 0x3d)
+    # Start3D's register blocks (docs/gpu.md "3D layouts"); values for a
+    # 64x64 target, to be checked one by one
+    a = [0] * 18
+    a[0] = 0x00040004       # 0xf18
+    a[1] = 0x3f800000       # 0xf80: 1.0f (the iPadOS record's +0x5c4)
+    a[2] = 0x300            # 0xf88 (record +0x5c8)
+    a[3] = 0xf              # (record +0x5cc; not loaded by Start3D)
+    a[4] = 0x1f             # 0x6d0
+    if "--clear" in sys.argv:
+        a[5], a[6], a[7] = 0x2500, 0x3c040, 0x402   # 0x618 / 0x620 / 0x628: end-of-tile PDS code, data, info
+    a[8] = 0x0023000f       # 0xf38 ISP_CTL
+    a[9] = 0x408            # 0x3e00
+    a[10] = 4               # 0xfd8
+    a[11] = 0xf9            # 0x4070
+    for i, x in enumerate(a):
+        w32("S3A", 4 * i, x)
+    b = [0] * 29
+    b[0] = 0x88             # 0xfa8
+    b[10] = 0x14            # 0xf28
+    for i in range(22, 28):
+        b[i] = 0x1d3        # 0x11080 x 6
+    if "--clear" in sys.argv:
+        b[11] = (0x2180 << 32) | 0x2200     # 0x6a0 PDS_BGRND0: texunicode 0x2180 / shader 0x2200
+        b[13] = 0x3c030                     # 0x6b0 PDS_BGRND2: uniform data
+        b[14] = 0x0080000000800000          # 0x6b8 PDS_BGRND3: sizes
+    for i, x in enumerate(b):
+        w32("S3B", 8 * i, x)
+        w32("S3B", 8 * i + 4, x >> 32)
+    u = "US3"
+    w32(u, 0x00, 7)                 # Start3D, 0x78 bytes
+    w32(u, 0x04, va["S3A"])
+    w32(u, 0x08, va["S3B"])
+    w32(u, 0x0c, va[slot])          # PM slot (+0xa0 / +0xa8 / +0xb8 / +0xbc ...; fw 0x17606)
+    w32(u, 0x10, va["UT3"])         # unit table (0x28-byte entries)
+    w32(u, 0x14, va["FL3"] + 0x40)  # -> 0 (non-zero: the partial-render path)
+    w32(u, 0x18, va["FL3"] + 0x44)  # -> 0
+    w32(u, 0x1c, va["FL3"])         # cancel flag (0)
+    w32(u, 0x20, 1)                 # -> unit table +0x24
+    w32(u, 0x24, va[c])             # the command (+0x24 -> +0xc8 counter on the partial path)
+    w32(u, 0x28, 0)                 # context id byte -> RGX+0xf079
+    w32(u, 0x34, 0)                 # free-list id (fw 0x1866c), as StartTA +0x2c
+    w32(u, 0x48, va["FL3"] + 0x48)  # -> 0 (non-zero: resume, fw 0xe816)
+    w32(u, 0x74, va["FL3"] + 0x10)  # threshold for +0x6c / +0x70
+    w32("FL3", 0x10, 0xffffffff)
+    w32("FL3", 0x14, 0xffffffff)
+    w = int(os.environ.get("WAIT3D", "0x8"), 0)
+    f = 0x78
+    if w:
+        w32(u, 0x78, w << 6)        # WaitIRQ: PIXELBE_END_RENDER
+        f = 0x7c
+    w32(u, f + 0x00, 8)             # Finalize3D, 0x50 bytes
+    w32(u, f + 0x0c, va["STAMP"] + 0x40)
+    w32(u, f + 0x10, 1)
+    w32(u, f + 0x14, va[slot])
+    w32(u, f + 0x18, va["F3C"])     # counter block ([0] count, [4] / [5])
+    w32(u, f + 0x1c, 1)
+    w32(u, f + 0x20, va["UT3"])
+    w32(u, f + 0x24, va["FL3"] + 0x20)   # "already finished" (non-zero: wait for PM_3D_MEM_FREE only)
+    w32("FL3", 0x20, 1)
+    w32(u, f + 0x30, va[c])         # the command (+0x864)
+    w32(u, f + 0x38, va["FL3"] + 0x50)
+    w32(u, f + 0x48, 0x50)          # skip on the context-store path
+    w32(u, f + 0x4c, va["FL3"] + 0x60)
+    w32(u, f + 0x50, 2)             # End
+    w32(c, 0x014, va[u])
+    w32(c, 0x018, f + 0x54)
 
 
 HEAPVA = int(os.environ.get("HEAPVA_IOS", "0x300000"), 0)   # --store-ios: PDS base = USC base (P+0x10 = P+0x18 = this)
@@ -664,6 +955,30 @@ def main():
                 w32(r2, int(o2, 0), va[v2[1:]] if v2.startswith("@") else pa[v2[1:]] if v2.startswith("%") else int(v2, 0))
         out("kick: TA channel 0, write index 1, doorbell (0x21 << 56) | (3 << 48) | 0")
         kf.send((0x21 << 56) | (3 << 48) | 0)
+    if "--kick-3d" in sys.argv:
+        try:
+            if "--kick-ta" in sys.argv:
+                # the TA first: wait for its completion record (STAMP+0x30)
+                t0 = time.time()
+                while time.time() - t0 < float(os.environ.get("TA_WAIT", "2")) and p.read32(pa["STAMP"] + 0x30) == 0:
+                    kf.work_for(0.01)
+                out(f"TA: STAMP+0x30 = {p.read32(pa['STAMP'] + 0x30):#x} after {time.time() - t0:.2f} s")
+            else:
+                kf.work_for(2.0)
+        except Exception as e:
+            out(f"crashed before the 3D kick: {e!r}")
+        if "--job" in sys.argv and "--kick-cp" not in sys.argv and "--kick-ta" not in sys.argv:
+            build_job(w32, va, pa)          # the GPU page tables, the flush fence
+        build_3d(w32, va, pa)
+        for s2 in sets:
+            k2, v2 = s2.split("=")
+            r2, o2 = k2.split("+")
+            if r2 in ("K3", "QS3", "CR3", "SE3", "ST3", "CMD3", "US3", "CTX3", "S3A", "S3B", "UT3", "FL3",
+                      "F3C", "FLD", "T74", "PMH", "TAO", "G3", "PTR2", "PTR0", "VA0", "STAMP"):
+                w32(r2, int(o2, 0), va[v2[1:]] if v2.startswith("@") else pa[v2[1:]] if v2.startswith("%") else int(v2, 0))
+        w32("G", 0x10 * 1 + 4, 1)
+        out("kick: 3D channel 1, write index 1, doorbell (0x21 << 56) | (3 << 48) | 1")
+        kf.send((0x21 << 56) | (3 << 48) | 1)
     try:
         if "--watch" in sys.argv:
             watch(kf, secs, pa)
@@ -677,6 +992,34 @@ def main():
     out("messages: " + " ".join(f"{m:#x} x{c}" for m, c in InitEndpoint.seen.items()))
     out("ring events: " + " ".join(f"{r}:{t:#x} x{c}" for (r, t), c in sorted(EVENTS.items())))
     if "--job" in sys.argv:
+        if "--kick-3d" in sys.argv:
+            out(f"STAMP+0x40 = {p.read32(pa['STAMP'] + 0x40):#x} (Finalize3D: 1), "
+                f"+0x50 = {p.read32(pa['STAMP'] + 0x50):#x} (the 3D command's completion record: 0x3d)")
+        if "--pm" in sys.argv:
+            if True:
+                for k, o in G3.items():
+                    if k in ("code", "pages"):
+                        continue
+                    n = 0x1000
+                    words = struct.unpack(f"<{n // 4}I", iface.readmem(pa["G3"] + o, n))
+                    nz = [(i * 4, x) for i, x in enumerate(words) if x]
+                    out(f"G3 {k} (+{o:#x}): {len(nz)} words: " + " ".join(f"+{a:#x}={x:#x}" for a, x in nz[:32]))
+                rt = struct.unpack("<4096I", iface.readmem(pa["G3"] + G3["rt"], 0x4000))
+                hist = {}
+                for x in rt:
+                    hist[x] = hist.get(x, 0) + 1
+                out("render target: " + ", ".join(f"{x:#010x} x{c}" for x, c in sorted(hist.items(), key=lambda t: -t[1])[:8])
+                    + f"; px(0,0) {rt[0]:#010x} px(63,0) {rt[63]:#010x} px(0,63) {rt[63 * 64]:#010x} px(63,63) {rt[4095]:#010x}")
+                used = [i for i in range(PM_PAGES) if any(iface.readmem(pa["G3"] + G3["pages"] + 0x1000 * i, 0x1000))]
+                out(f"PM pages written: {used}")
+                for i in used[:6]:
+                    words = struct.unpack("<1024I", iface.readmem(pa["G3"] + G3["pages"] + 0x1000 * i, 0x1000))
+                    nz = [(j * 4, x) for j, x in enumerate(words) if x]
+                    out(f"  page {i}: {len(nz)} words: " + " ".join(f"+{a:#x}={x:#x}" for a, x in nz[:24]))
+            for k in ("UT3", "UT2", "TAO", "PMH", "T74", "F3C", "FL3", "CMD3"):
+                words = struct.unpack("<1024I", iface.readmem(pa[k], 0x1000))
+                nz = [(i * 4, x) for i, x in enumerate(words) if x]
+                out(f"{k}: " + " ".join(f"+{o:#x}={x:#x}" for o, x in nz[:40]))
         if "--kick-ta" in sys.argv:
             out(f"STAMP+0x20 = {p.read32(pa['STAMP'] + 0x20):#x} (FinalizeTA: 1), "
                 f"+0x30 = {p.read32(pa['STAMP'] + 0x30):#x} (the TA command's completion record: 0x7a)")
@@ -721,7 +1064,8 @@ def main():
         p.write32(gb.FENDER + 0x2048, p.read32(gb.FENDER + 0x2048) & ~1)
         time.sleep(0.02)
         if rgx_on():
-            for off in (0x4a0, 0x480, 0x478, 0xe150, 0xe154, 0xe238, 0xe240):
+            extra = [int(x, 0) for x in os.environ.get("RGX_READ", "").replace(",", " ").split()]
+            for off in [0x4a0, 0x480, 0x478, 0xe150, 0xe154, 0xe238, 0xe240] + extra:
                 out(f"RGX +{off:#x} = {p.read32(RGX_PA + off):#010x}")
         else:
             out(f"--rgx: firmware stopped with the GPU off (Fender +0x1000 = "

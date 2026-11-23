@@ -1,6 +1,6 @@
 # GPU (Apple A10 / T8010, "G9P") -- plan and what is known
 
-Status 2026-11-23: **G0-G5 done; the GPU work runs under Linux**
+Status 2026-11-23: **G0-G5 done, G6 clear done; the GPU work runs under Linux**
 (`GPU_BACKEND=linux`, see "GPU work under Linux"): core ID 0x011b0602 /
 revision 0x000d0a00, the GFX firmware boots and takes init data with the
 real RGX, stable. **The first job ran on the GPU** (G4 run 29-31): the
@@ -8,7 +8,10 @@ firmware dispatched a terminate-only compute job, the CDM read its control
 stream through our page tables, both completion stamps were written; from
 a cold GPU powered up by the firmware itself, with no MMU fault (runs 43, 45).
 G5: our offline-compiled `store_const` writes a buffer through a DMA-bound
-binding (runs 97-100). Next: G6.
+binding (runs 97-100). G6: a TA + 3D pass clears a 64x64 target through the
+background object; the colour follows the host's constant ("G6 clear
+DONE", still with Apple's PDS / USC programs). Next: own programs, then the
+triangle.
 Under m1n1 the core's registers hang the bus (not explained). This page is what the iPad 7's own ADT, kernelcache and firmware
 say, what the reference projects say, and the plan in checkable steps, in the
 style of the iPad mini 1's SGX work and the A13's AGX work
@@ -170,7 +173,8 @@ Check: the value lands in memory; moving the buffer moves the write.
 **G6 -- a clear, then the first triangle (30 %).** TA + 3D with no draws
 (background object writes a colour into the render target), then a VDM stream
 with vertex and fragment shaders. Check: the pixels in memory, then on the
-screen.
+screen. **The clear works (2026-11-23, "G6 clear DONE")**, still with
+Apple's background / end-of-tile programs from the iPadOS capture.
 
 **G7 -- kernel driver (35 %).** In our kernel, in C: `apple-rtkit` with a
 T8010 A7-IOP mailbox backend, GEM shmem, `drm_gpuvm`, `drm_sched`. Decision
@@ -681,9 +685,140 @@ context for RGX+0xe230; its completion waits for event bit 8
 value** (+0x8b4 / +0x8b8 the stamp pair); the command is at least 0x918
 bytes.
 
-Next: the 3D side -- a type-1 command whose Start3D clears the target
-through the background object (the render record's descriptors), reading
-the PM state the TA left (the RGX+0x240 table, RGX+0xc38).
+**G6 clear DONE (2026-11-23, `build/gpu/g6-3d-run*.log`): a TA + 3D pass
+clears a 64x64 target through the background object** (the triangle is
+G6's second half). Command line (base arguments
+as for G4 / G5, `g4base3`):
+
+    gfx-init.py 3 <base> --cold --channels --job --kick-ta --pm --clear --kick-3d --va0 \
+        P+0x10=0x400000 P+0x18=0x400000          # CLEAR=r,g,b,a picks the colour
+
+Result: STAMP+0x20 = 1 / +0x30 = 0x7a (TA), **STAMP+0x40 = 1 (Finalize3D),
++0x50 = 0x3d (the 3D command's completion record), all 4096 pixels
+0xff4080bf** = (0.25, 0.5, 0.75, 1) as BGRA8, the colour of the iPadOS
+capture. Controls: CLEAR=1,0,0,1 -> 0xffff0000 x4096, CLEAR=0,1,0,0.5 ->
+0x8000ff00 x4096 (runs 30-32); without the background / end-of-tile
+programs the target stays at its fill pattern (run 27).
+
+### G6 step 2: the 3D job (runs 1-17)
+
+- **The op sizes** (interpreter fw 0xb49c, the size it advances by):
+  Start3D (op 7) **0x78** (words up to +0x74 used), Finalize3D (op 8)
+  **0x50**. Start3D: +0x4 / +0x8 the register blocks, +0xc the PM slot,
+  +0x10 unit table (0x28-byte entries; it writes +0x1c = 1, +0x24 = its
+  +0x20), +0x14 / +0x18 pointers to words that must be 0 (else the
+  partial-render path), +0x1c cancel flag, +0x24 the command, +0x28 byte ->
+  RGX+0xf079, +0x34 free-list id (fw 0x1866c), +0x48 pointer to 0 (else
+  resume, fw 0xe816), +0x6c..+0x74 threshold (cancel when the 64-bit
+  {+0x6c, +0x70} >= *(+0x74)); kick RGX+0xf00 = 1. It loads the PM slot
+  into the 3D side with fw 0x17606(slot, 1): +0xa8 -> 0xf20, +0xa0 -> 0x2e0,
+  +0x0 / +0x8 -> 0x278 / 0x2c8, the PM catalog words +0x10.. +0x98 -> RGX
+  0xe050 / 0xe070 / 0xe090 / 0xe0e0 / 0xe100 / 0xe120 (the TA side, called
+  with 0: 0xe008 / 0xe028 / 0xe048 / 0xe098 / 0xe0b8 / 0xe0d8).
+  Finalize3D: +0xc / +0x10 stamp address / value, +0x14 PM slot, +0x18 a
+  counter block, +0x20 unit table, +0x24 pointer to the "already finished"
+  flag, +0x30 the command, +0x38 a pointer it writes on the store path,
+  +0x48 bytes to skip on that path (0x50). With the flag set it waits for
+  event bit 8 (`PM_3D_MEM_FREE`) and then writes the stamp.
+- **The 3D command** (type 1, CMD3, fw 0x13eb0 / 0x1468c): +0x14 / +0x18
+  microsequence, +0x1c context state (0x90), +0x20 the free-list descriptor
+  (the TA command's: retirement compares *(+0x50) with +0x0), +0x24 the PM
+  slot (0xcc bytes; +0xc0 -> a header the retirement writes), completion
+  record +0x89c / +0x8a4. Queue on channel 1: ring W+0x1400, host write
+  index G+0x14, doorbell (0x21 << 56) | (3 << 48) | 1.
+- run 1: a 3D job alone crashes the firmware in fw 0x17a18 (from 0x1866c):
+  **free-list table fw 0xd6ca0 has no entry -- the TA's dispatch registers
+  the TA command's +0x20 descriptor as id 0**, so the 3D runs after a TA.
+- run 2: a crash on a null microsequence -- the firmware scans all channels
+  whenever it wakes (the TA's completion woke it) and read the 3D command
+  half-written: **the host write index is set last, right before the
+  doorbell**.
+- run 3: Start3D runs (unit table, RGX+0xf20 = the slot's +0xa8); IPF MMU
+  fault in context 4 at VA 0: the PM had nothing (zero free list).
+
+**The TA with a parameter manager (`--pm`, runs 4-15).** Region G3 (1 MiB
+at GPU VA 0x400000): code heap at +0 (PDS base = USC base = 0x400000),
+render target +0x50000, region headers +0x54000 (-> 0xc38), TPC +0x55000
+(-> 0xc40), macrotile array +0x56000 (slot +0xa8 -> 0x240), MLIST +0x57000
+(slot +0xa0 -> 0x2d8), VHEAP table +0x59000 (slot +0xb0 -> 0x248), free list
++0x5b000 (u32 physical page numbers; descriptor +0x1c base -> RGX 0x210,
++0x28 -> 0x220, +0x40 top = n - 1 -> 0x224, +0x48 / +0x4c -> 0x390 / 0x394,
+fw 0x17a10), PM pages +0x80000. StartTA's 32-bit block: 0xc78 = 0x88, 0xc88
+= 2, 0xc98 = 0x3f003f (PPP_SCREEN), 0xc18 = 0x1001 (TE_SCREEN, 32x32 tiles),
+0xc08 / 0xc10 = 0x10100c (TE_MTILE1 / 2, macrotiles as upstream
+`pvr_hwrt.c`), 0xc20 = 16, 0xc28 = 0x20000; 64-bit: 0xc90 = 0x1e3ce508, 0xc80
+= 0x88, 0x428 / 0xcc0 = buffers, 0x470 = a PDS HALT. VDM stream: PPP_STATE
+(3 words) -> the PPP terminate block `02000000 00040001 00000000` (Mesa
+`ppp.xml`: clip to tile 1 / 1), then STREAM_TERMINATE. These values work;
+which of them matter is to check.
+
+- run 4: PDS base 0 -> an MCU read fault at VA 0 (a PDS task of the TA);
+  with a code heap of PDS HALTs: **the TA completes, the VDM reads the whole
+  stream (RGX+0x410 = base + 0xc), PM takes 45 pages (0x224 0x7f -> 0x52),
+  MLIST gets 5 entries, region headers are written for every tile -- the
+  same words as in the iPadOS capture (`00000020 00002000 00600000
+  60000000 0` ...) -- and FinalizeTA saves the PM state into the slot**
+  (+0x10 = 0xe008 = a VCE page catalog, physical | 1; FinalizeTA: wait for
+  RGX+0x430 bit 0, save 0x270 / 0x2c0 / 0xe0xx, 0xc50 = 0x40000000, stop /
+  flush). Start3D loads it (RGX+0xe050 = the catalog).
+- **No WaitIRQ for the TA**: with the WaitIRQ (TA_FINISHED, now really
+  executed at +0x6c) the job never ends (runs 6-8, RGX JONES_IDLE 0x8328 =
+  0x3f7f: everything idle). FinalizeTA itself waits for the VDM and closes
+  the scene; the TA's stamps come only that way.
+- runs 9-14: the 3D faults in the IPF (requester 29) in PM context 4 at VA
+  0; a hand-made catalog in slot +0x30 (-> 0xe070) moves it to context 5
+  at VA 0x2080000: the 3D reads PM contexts the TA never created. **The
+  difference is the macrotile array: with 128 free-list pages the PM
+  start-up writes none; with 1 page (runs 15-16) it cannot allocate and
+  writes it** -- `{n << 24 | offset, 0x4040 + n / 4}` x 16, the offsets of
+  the iPadOS capture's array. Then the 3D runs without a fault (event
+  `ZLS_FINISHED`, RGX+0x1090 = 3) but never ends: no end-of-tile program,
+  no `PIXELBE_END_RENDER`. `PM_PAGES=1` is the default for now; why the
+  normal start-up skips the array is to find.
+- Without a page at GPU VA 0 the end-of-tile writes to VA 0 (write fault,
+  requester 9) after the pixels are out (run 33): `--va0` maps one.
+
+### G6 step 3: the background object and the end-of-tile program (runs 18-34)
+
+**The iPadOS clear, decoded from the capture.** The process's 64 KiB heap
+at CPU 0x6060f4000 is the PDS / USC heap (the record's 0x470 = 0x100 holds
+a PDS program there); the record's descriptors point into it:
+
+| what | registers (Start3D blocks) | value | content |
+|---|---|---|---|
+| background PDS | 0x6a0 `PDS_BGRND0` (64-bit B[11]) | 0x2180 << 32 \| 0x2200 | 0x2200: data `{0x20c0, 0x10}` + `f4000002` (DOUTU END -> USC 0x20c0, the colour-copy shader); 0x2180: `f4000800 d3000000` (DOUTD END: the uniforms) |
+| uniform data | 0x6b0 `PDS_BGRND2` (B[13]) | 0x3c030 | `{u64 -> colour, u64 0x90000004}` (4 words into the common store) |
+| sizes | 0x6b8 `PDS_BGRND3` (B[14]) | 0x0080000000800000 | |
+| end-of-tile code / data / info | 0x618 / 0x620 / 0x628 (A[5..7]) | 0x2500 / 0x3c040 / 0x402 | `f0000800 f4000012 d3000000`: DOUTD of the image state, DOUTU END -> USC 0x2440 |
+| end-of-tile data | | | `{u64 -> image state, u64 0x90000007, DOUTU {0x2440, 0x10}}` |
+| image state | | 7 words | `fb050502 00007e01 <VA >> 1> 80018000 0 c0000000 0` (BGRA8, linear, 256-byte rows) |
+
+The PDS data at heap+0x3c030 sits in the capture's region 0x60615c000
+(its +0x30 / +0x40 hold exactly these words); the colour and the image
+state are the 0x60614c000 region's +0x48 / +0x58 (written at commit). The
+DOUT operand fields that fit every program seen (iPadOS and our G5 DMA
+task): bits 3-7 = the 64-bit constant with the address (DOUTD) or the
+DOUTU word, bits 11-14 = the 64-bit constant with the DOUTD control word.
+
+`--clear` copies the heap window 0x2000-0x2580 of the capture (these four
+programs and the two USC shaders; Apple's code, read from
+`build/gpu/ioscap/rclear` at run time, not in git) to our heap at the same
+offsets, writes the two PDS data blocks, the colour and the image state
+(target address >> 1) itself, and sets the registers above. What it took:
+
+- runs 18-26: a USC fault in the TA once `--clear` placed data at
+  G3+0xe000: **the TA reads far beyond the 0x428 / 0xcc0 buffers**; with
+  that data elsewhere it is clean (now 0x8000 bytes are kept for them);
+- runs 28-29: an EOT / background code address of 0x200000 faults at VA
+  0x600000 -- **both programs run, and the PDS base is used 2 MiB-aligned**:
+  0x410000 acted as 0x400000, so the programs had been fetched from the
+  render target. With the heap at G3+0 and P+0x10 = P+0x18 = 0x400000:
+  **the clear (run 30)**.
+
+Open: our own background / end-of-tile programs and shaders instead of
+Apple's (metal-tt fragment shader, PDS from the formats above); the PM
+start-up with a real free list (macrotile array); which StartTA / Start3D
+register values are needed; a target that is not 64x64.
 
 ### G6: render captures from iPadOS (2026-11-23, `build/gpu/ioscap/rclear`, `rtri`)
 
