@@ -648,6 +648,39 @@ B+0x78 -> RGX+0x408). What it took:
   +0x55c (value)** (CL's: +0x26c / +0x274): STAMP+0x30 = 0x7a, no crash, no
   fault, ping answered.
 
+**Does the TA really run? (runs 6-11).** StartTA is 0x6c bytes: its +0x68
+word is unused (a WaitIRQ placed there is skipped: run 8, an impossible
+event mask, still completes), so in runs 4-5 FinalizeTA came straight
+after StartTA and completed through its fast path. A real WaitIRQ after
+StartTA (+0x6c) never ends -- not on `TA_FINISHED` (bit 5), nor on bits
+0-5 / 8, nor on 6 / 7 (runs 9-11) -- **yet the VDM did read the stream**:
+afterwards RGX+0x408 = 0x203c00 (the base), **+0x410 = 0x203c04** (the
+current pointer, one word on), +0xc30 = 0xc0000000 (the last word read),
++0x430 = 0x11, +0xd20 = 1; no fault. So an empty stream ends without a
+`TA_FINISHED` here; bit 6 (`TA_TERMINATE`) is taken by the dispatcher (fw
+0x2920). To find with a stream that has geometry. Also read off the
+registers: StartTA's B slots land as decoded (0x418, 0x428, 0x438-0x460,
+0x470, 0xc38, 0xc40, 0xc80, 0xc90, 0xcc0 hold the probe slices).
+
+**3D layouts (static).** Start3D (op 7): +0x4 -> 32-bit block ([0] 0xf18
+`ISP_BGOBJDEPTH`, [1] 0xf80 `ISP_BGOBJVALS`, [2] 0xf88 `ISP_AA`, [4] 0x6d0,
+[5..7] 0x618 / 0x620 / 0x628, [8] 0xf38 `ISP_CTL`, [9] 0x3e00, [10] 0xfd8,
+[11] 0x4070, [12..17] 0x11d0..0x11f8); +0x8 -> 64-bit block ([0] 0xfa8,
+[2] 0xfb0, [4] 0xfb8, [10] 0xf48, [12] 0xf50, [14] 0xf58, [16] 0xf60, [18]
+0xf68, [20] 0xf28, [22..28] 0x6a0..0x6b8, [30] 0xf30, [0x20..0x2b] six
+slots via 0x11020, [0x2c..0x37] six via 0x11080, [0x38] 0xfd0); +0x14 /
++0x18 pointers to words that must be 0, +0x1c cancel flag, +0x24 an object
+(+0x24 -> +0xc8 counter), +0x28 byte -> 0xf078, +0x34 context, +0x48 ->
+resume flag, +0x6c..+0x74 the threshold; kick **RGX+0xf00 = 1**.
+Finalize3D (op 8, 0x50): +0xc / +0x10 stamp, +0x14 an object (+0xb8 /
++0xbc / +0xc8), +0x18 a counter, +0x20 the unit table (0x28-byte entries),
++0x24 the "already finished" flag, +0x30 an object (+0x864), +0x34 the
+context for RGX+0xe230; its completion waits for event bit 8
+(`PM_3D_MEM_FREE`). The 3D command's completion record (fw 0x1468c,
+"AGF3DDataMasterPostProcessingCallback", type 1): **+0x89c address / +0x8a4
+value** (+0x8b4 / +0x8b8 the stamp pair); the command is at least 0x918
+bytes.
+
 Next: the 3D side -- a type-1 command whose Start3D clears the target
 through the background object (the render record's descriptors), reading
 the PM state the TA left (the RGX+0x240 table, RGX+0xc38).

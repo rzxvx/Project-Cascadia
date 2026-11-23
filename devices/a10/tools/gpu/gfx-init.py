@@ -290,6 +290,8 @@ def build_ta(w32, va, pa):
     w32(u, 0x64, va["FL2"] + 0x10)  # threshold for +0x5c / +0x60
     w32("FL2", 0x10, 0xffffffff)
     w32("FL2", 0x14, 0xffffffff)
+    # StartTA is 0x68 bytes: a WaitIRQ at +0x6c (as if 4 + 0x68) never ends
+    # and the PM writes nothing (G6 run 6)
     w32(u, 0x68, 0x20 << 6)         # WaitIRQ: TA_FINISHED
     f = 0x6c
     w32(u, f + 0x00, 6)             # FinalizeTA
