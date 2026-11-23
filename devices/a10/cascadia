@@ -291,6 +291,18 @@ cmd_pack() {
         [ -z "${EXTRA_BOOTARGS:-}" ] || note "boot arguments + $EXTRA_BOOTARGS"
         cat "$m" "$tmp/bootargs" "$tmp/dtb" "$tmp/initramfs.cpio.gz" \
             "$P/Image.gz" > "$tmp/linux.macho"
+        # this iPad's SysCfg (./cascadia a10 syscfg), for m1n1 (patches
+        # 0002/0003): the Wi-Fi MAC and calibration, the Bluetooth address
+        if [ -f "$B/private/syscfg.bin" ]; then
+            python3 -I - "$B/private/syscfg.bin" >> "$tmp/linux.macho" <<'E'
+import struct, sys
+blob = open(sys.argv[1], "rb").read()
+if len(blob) != 131072 or blob[:4] != b"gfCS":
+    raise SystemExit("error: build/private/syscfg.bin is not a SysCfg")
+sys.stdout.buffer.write(b"m1n1_syscfg" + struct.pack("<I", len(blob)) + blob)
+E
+            note "SysCfg appended for m1n1 (Wi-Fi MAC + calibration, Bluetooth address)"
+        fi
         printf '\000\000\000\000' >> "$tmp/linux.macho"
         ipsw img4 create --input "$tmp/linux.macho" --type rkrn --compress lzss \
             --im4m "$i" --output "$tmp/linux.img4" >/dev/null

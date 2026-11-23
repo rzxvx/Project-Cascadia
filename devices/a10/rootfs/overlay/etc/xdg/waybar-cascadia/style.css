@@ -1,0 +1,17 @@
+* {
+    font-family: "DejaVu Sans", "Font Awesome 6 Free";
+    font-size: 15px;
+    min-height: 0;
+    border: none;
+    border-radius: 0;
+}
+window#waybar { background: rgba(46, 50, 56, 0.72); color: #ffffff;
+                border-bottom: 1px solid rgba(255, 255, 255, 0.08); }
+button { padding: 0 12px; color: #ffffff; background: transparent; }
+#custom-apps, #custom-kbd { padding: 0 14px; font-size: 18px; }
+#taskbar button { padding: 0 10px; color: #c8ced4; }
+#taskbar button.active { background: rgba(255, 255, 255, 0.16); color: #ffffff; }
+#network, #bluetooth { padding: 0 12px; font-size: 17px; }
+#network.disconnected, #network.disabled, #network.linked,
+#bluetooth.off, #bluetooth.disabled, #bluetooth.no-controller { color: #7c838b; }
+#battery, #clock { padding: 0 10px; }

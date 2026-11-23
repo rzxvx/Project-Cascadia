@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # build-tools.sh - fetch and build the host side of the boot chain at the
-# pinned commits (sources.env): gaster (checkm8), hBootPatcher, and makez2fw
-# (the touch firmware converter).
-# Output: devices/a10/build/bin/{gaster,hBootPatcher,makez2fw}
+# pinned commits (sources.env): gaster (checkm8), hBootPatcher, makez2fw (the
+# touch firmware converter) and hcdpack (the Bluetooth firmware extractor).
+# Output: devices/a10/build/bin/{gaster,hBootPatcher,makez2fw,hcdpack}
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -41,4 +41,10 @@ fetch "$A10_MAKEZ2FW_REPO" "$A10_MAKEZ2FW_COMMIT" makez2fw
 "$MAKE" -s -C "$A10/build/src/makez2fw/makez2fw" CFLAGS="-O2 -w" MXML_CFLAGS="-O2 -w"
 cp "$A10/build/src/makez2fw/makez2fw/makez2fw" "$BIN/"
 
-echo "tools OK: $BIN/gaster $BIN/hBootPatcher $BIN/makez2fw"
+mkdir -p "$A10/build/src/hcdpack"
+curl -fsSL "$A10_HCDPACK_URL" -o "$A10/build/src/hcdpack/hcdpack.c"
+echo "$A10_HCDPACK_SHA256  $A10/build/src/hcdpack/hcdpack.c" | shasum -a 256 -c - >/dev/null \
+    || { echo "error: hcdpack.c checksum" >&2; exit 1; }
+cc -O2 -w -D_DARWIN_C_SOURCE -o "$BIN/hcdpack" "$A10/build/src/hcdpack/hcdpack.c"
+
+echo "tools OK: $BIN/gaster $BIN/hBootPatcher $BIN/makez2fw $BIN/hcdpack"

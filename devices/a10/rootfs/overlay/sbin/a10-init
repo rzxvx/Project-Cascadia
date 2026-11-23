@@ -25,6 +25,10 @@ if [ -x /sbin/udevd ]; then
     udevadm trigger --action=add
     udevadm settle --timeout=10
 fi
+# Bluetooth (BlueZ, on the desktop root), unless `bluetooth auto off`
+if [ -x /usr/lib/bluetooth/bluetoothd ] && [ ! -e /etc/bluetooth/auto-off ]; then
+    /usr/bin/bluetooth on >/var/log/bluetooth-boot.log 2>&1 &
+fi
 # the Mac (172.16.43.2) routes to the internet when ./cascadia a10 net on
 route add default gw 172.16.43.2 2>/dev/null
 # the DHCP server on usb0 is the initramfs's usbwatch (one, kept alive);

@@ -1,0 +1,56 @@
+#!/bin/sh
+# wifi-menu -- Wi-Fi from the panel (waybar's Wi-Fi icon, or the desktop's
+# menu): the networks in range, strongest first, the one joined ticked.  A
+# network asks for its password only the first time: `wifi` remembers it.
+pkill -x fuzzel && exit 0
+export PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
+NETS=/etc/wifi/networks
+TAB=$(printf '\t')
+hexof() { printf '%s' "$1" | od -An -tx1 | tr -d ' \n'; }
+# a line while something takes its time, gone when it is done
+busy() { fuzzel --dmenu --prompt-only "$1" </dev/null >/dev/null 2>&1 & BUSY=$!; }
+unbusy() { kill "$BUSY" 2>/dev/null; wait "$BUSY" 2>/dev/null; }
+say() { printf 'OK\n' | fuzzel --dmenu --lines 1 --prompt "$1  " >/dev/null 2>&1; }
+cur=$(iw dev wlan0 link 2>/dev/null | sed -n 's/^[[:space:]]*SSID: //p')
+busy "Looking for networks…"
+# wifi scan: "-48 dBm  2437 MHz  WPA2  name", strongest first; one line a name
+list=$(wifi scan 2>/dev/null | awk -v OFS='\t' '
+    { sig = $1; sec = $5; ssid = $0
+      sub(/^ *-?[0-9]+ dBm +[0-9]+ MHz +[^ ]+ +/, "", ssid)
+      if (ssid == "(hidden)" || ssid == "" || seen[ssid]++) next
+      print sig, sec, ssid }')
+unbusy
+[ -n "$list" ] || { say "No networks in range"; exit 0; }
+menu=$(printf '%s\n' "$list" | while IFS="$TAB" read -r sig sec ssid; do
+    # the bars all four wide (a low one where the signal is not)
+    if   [ "$sig" -ge -55 ]; then b="▂▄▆█"
+    elif [ "$sig" -ge -67 ]; then b="▂▄▆▁"
+    elif [ "$sig" -ge -78 ]; then b="▂▄▁▁"
+    else b="▂▁▁▁"; fi
+    lock=""; [ "$sec" != open ] && lock="  · $sec"
+    [ "$ssid" = "$cur" ] && lock="$lock  · connected"
+    printf '%s   %s%s\n' "$b" "$ssid" "$lock"
+done)
+[ -n "$cur" ] && menu=$(printf '%s\nDisconnect from %s' "$menu" "$cur")
+i=$(printf '%s\n' "$menu" | fuzzel --dmenu --index --minimal-lines --lines 10 --width 30 --prompt "Wi-Fi  ") || exit 0
+[ "$i" -ge 0 ] 2>/dev/null || exit 0
+n=$(printf '%s\n' "$list" | wc -l)
+if [ "$i" -ge "$n" ]; then
+    busy "Disconnecting…"; wifi down >/tmp/wifi-menu.log 2>&1; unbusy; exit 0
+fi
+line=$(printf '%s\n' "$list" | sed -n "$((i + 1))p")
+sec=$(printf '%s' "$line" | cut -f2)
+ssid=$(printf '%s' "$line" | cut -f3-)
+[ "$ssid" = "$cur" ] && exit 0
+pass=
+if [ "$sec" != open ] && [ ! -f "$NETS/$(hexof "$ssid").conf" ]; then
+    pkill -USR2 -x wvkbd-mobintl            # the keyboard up for it
+    pass=$(fuzzel --dmenu --password --prompt-only "Password for $ssid:  " </dev/null)
+    pkill -USR1 -x wvkbd-mobintl
+    [ -n "$pass" ] || exit 0
+fi
+busy "Joining $ssid…"
+if [ -n "$pass" ]; then wifi connect "$ssid" "$pass"; else wifi connect "$ssid"; fi >/tmp/wifi-menu.log 2>&1
+r=$?
+unbusy
+[ $r = 0 ] || say "Could not join $ssid"

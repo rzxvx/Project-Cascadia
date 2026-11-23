@@ -29,7 +29,7 @@ mkdir -p "$OUT" "$A10/build/ssh"
 docker run --rm --platform linux/arm64 \
   -v "$OUT":/out \
   -v "$A10/build/ssh":/keys \
-  -v "$A10/../a13/initramfs/wifi":/src/wifi:ro \
+  -v "$A10/initramfs/wifi":/src/wifi:ro \
   -e HOST_IDS="$(id -u):$(id -g)" \
   arm64v8/debian:bookworm bash -euxc '
     apt-get update

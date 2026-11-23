@@ -1,0 +1,46 @@
+#!/bin/sh
+# bt-menu -- Bluetooth from the panel (waybar's Bluetooth icon, or the
+# desktop's menu): on and off, the paired devices (a tap connects or
+# disconnects), new ones looked for and paired.
+pkill -x fuzzel && exit 0
+export PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
+TAB=$(printf '\t')
+busy() { fuzzel --dmenu --prompt-only "$1" </dev/null >/dev/null 2>&1 & BUSY=$!; }
+unbusy() { kill "$BUSY" 2>/dev/null; wait "$BUSY" 2>/dev/null; }
+say() { printf 'OK\n' | fuzzel --dmenu --lines 1 --prompt "$1  " >/dev/null 2>&1; }
+pick() { fuzzel --dmenu --index --minimal-lines --lines 10 --width 30 --prompt "Bluetooth  "; }
+ctl() { timeout 6 bluetoothctl "$@" 2>/dev/null; }
+connected() { ctl info "$1" | grep -q "Connected: yes"; }
+if ! pidof bluetoothd >/dev/null; then
+    printf 'Turn Bluetooth on\n' | pick >/dev/null || exit 0
+    busy "Starting Bluetooth…"; bluetooth on >/tmp/bt-menu.log 2>&1; unbusy
+    exec "$0"
+fi
+paired=$(ctl devices Paired | awk -v OFS='\t' '$1 == "Device" { a = $2; $1 = $2 = ""; sub(/^ +/, ""); print a, $0 }')
+menu=$(printf '%s\n' "$paired" | while IFS="$TAB" read -r a name; do
+    [ -n "$a" ] || continue
+    if connected "$a"; then printf '● %s  · connected\n' "$name"; else printf '○ %s\n' "$name"; fi
+done)
+np=0; [ -n "$menu" ] && np=$(printf '%s\n' "$menu" | wc -l)
+i=$({ [ -n "$menu" ] && printf '%s\n' "$menu"; printf 'Look for new devices\nTurn Bluetooth off\n'; } | pick) || exit 0
+[ "$i" -ge 0 ] 2>/dev/null || exit 0
+if [ "$i" -lt "$np" ]; then
+    a=$(printf '%s\n' "$paired" | sed -n "$((i + 1))p" | cut -f1)
+    if connected "$a"; then
+        busy "Disconnecting…"; bluetooth disconnect "$a" >/tmp/bt-menu.log 2>&1; unbusy
+    else
+        busy "Connecting…"; bluetooth connect "$a" >/tmp/bt-menu.log 2>&1; r=$?; unbusy
+        [ $r = 0 ] || say "Could not connect"
+    fi
+elif [ "$i" -eq "$np" ]; then
+    busy "Looking for devices (yours in its pairing mode)…"
+    found=$(bluetooth scan 8 2>/dev/null | awk '$1 ~ /^([0-9A-F][0-9A-F]:){5}[0-9A-F][0-9A-F]$/')
+    unbusy
+    [ -n "$found" ] || { say "Nothing found"; exit 0; }
+    j=$(printf '%s\n' "$found" | awk '{ a = $1; $1 = ""; sub(/^ +/, ""); print $0 "  · " a }' | pick) || exit 0
+    a=$(printf '%s\n' "$found" | sed -n "$((j + 1))p" | cut -d' ' -f1)
+    busy "Pairing…"; bluetooth pair "$a" >/tmp/bt-menu.log 2>&1; r=$?; unbusy
+    [ $r = 0 ] || say "Pairing failed"
+else
+    busy "Turning Bluetooth off…"; bluetooth off >/tmp/bt-menu.log 2>&1; unbusy
+fi

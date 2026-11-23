@@ -17,8 +17,11 @@ Linux on the 7th-generation iPad: **iPad7,11** (Wi-Fi, J171AP) and
 > iPadOS (APFS shrunk by iPadOS itself, `./cascadia a10 storage`) with the
 > Alpine root on it (ext4, behind a write gate in the kernel's NVMe driver:
 > only that partition is writable), and a Wayland desktop -- labwc, drawn by
-> the CPU (pixman), at twice the size, with wvkbd as the keyboard. Not yet: Wi-Fi / Bluetooth
-> firmware, the USB power source (`power_supply usb`: I2C NACK on J171). Photos:
+> the CPU (pixman), at twice the size, with wvkbd as the keyboard; Wi-Fi
+> (BCM4355C1, 2.4 and 5 GHz, the MAC and calibration from SysCfg) and
+> Bluetooth (BlueZ). Not yet: sound (no driver for the speakers), the
+> rotation sensors (behind the AOP), the GPU, the USB power source
+> (`power_supply usb`: I2C NACK on J171). Photos:
 > [gallery/](../../gallery/README.md#ipad-7-a10).
 
 ## How it boots
@@ -55,10 +58,16 @@ Pinned in [sources.env](sources.env):
 - **Kernel patches**: `kernel/patches/0001` fixes a NULL dereference in the
   H9P PCIe driver's probe error path; `0002` is the NVMe write gate.
 - **Firmware**: `./cascadia a10 firmware` takes Apple's files from iPadOS
-  18.7.9 (checked by SHA-256): the SmartIO firmware out of the kernelcache,
-  and the touch controller's firmware (`J171_Multitouch.im4p`, the same
-  image as the J172's), which Paul Praschl's makez2fw combines with this
-  iPad's calibration from its SysCfg.
+  18.7.9 (checked by SHA-256): the SmartIO firmware out of the kernelcache;
+  the touch controller's firmware (`J171_Multitouch.im4p`, the same image
+  as the J172's), which Paul Praschl's makez2fw combines with this iPad's
+  calibration from its SysCfg; the Wi-Fi firmware and NVRAM (BCM4355C1,
+  "rudderb") and the Bluetooth Patchram image (cut out of `BlueTool` by
+  Corellium's hcdpack) out of the root filesystem image -- 5.9 GB,
+  downloaded once and decrypted with its AEA key (`sources.env`) -- and
+  cfg80211's regulatory.db. `pack` appends this iPad's SysCfg to m1n1's
+  payload: m1n1 hands the Wi-Fi MAC and calibration and the Bluetooth
+  address to the kernel.
 
 ## Using it
 
@@ -77,6 +86,27 @@ Pinned in [sources.env](sources.env):
 ./cascadia a10 boot proxy       # or m1n1's proxy, for m1n1's proxyclient
 ./cascadia a10 net on           # then: the Mac's internet for apk on the iPad (sudo, pf NAT)
 ```
+
+### Wi-Fi and Bluetooth
+
+On the iPad (the screen, or ssh):
+
+```bash
+wifi scan
+wifi connect "SSID" [PASSWORD]   # joins, gets an address, remembers the network
+wifi auto on                     # join the remembered networks at boot
+bluetooth                        # where Bluetooth stands; on | off, scan,
+                                 # pair | connect | disconnect | forget, auto on|off
+bluetoothctl                     # BlueZ itself
+```
+
+Both are on the panel too (`wifi-menu`, `bt-menu`). Bluetooth starts at boot
+unless `bluetooth auto off`.
+
+With Wi-Fi up, ssh and `rootfs sync` work without the cable
+(`HOST=root@<its address> ./cascadia a10 rootfs sync`); the USB network
+stays as the fallback route. Bluetooth runs on Broadcom's Patchram defaults:
+the module's RF calibration in SysCfg (BTRx, BTTx, BCAL) is not used yet.
 
 ### Off, and when a root does not come up
 
@@ -97,8 +127,10 @@ Two boot arguments for a root on the NVMe that does not come up, added by
 
 labwc, the Wayland compositor the iPad mini 1 uses, drawn by the CPU
 (`WLR_RENDERER=pixman`) on the framebuffer iBoot left (simpledrm), at scale
-2: a tap on the background opens its menu (apps, terminal, keyboard), wvkbd
-is the on-screen keyboard. It starts at boot on the NVMe root; on the screen
+2, as on the iPad mini 1: a panel on top (waybar) with the apps (fuzzel),
+the open windows, the on-screen keyboard (wvkbd), Wi-Fi and Bluetooth (their
+menus: `wifi-menu`, `bt-menu`), the battery and the clock; a tap on the
+background opens labwc's menu; Tux on the wallpaper. It starts at boot on the NVMe root; on the screen
 or over ssh:
 
 ```bash
@@ -164,8 +196,8 @@ iPad's serials and calibration: they stay in `build/`, out of git.
 2. ~~Linux over USB~~ ✓ (shell over USB serial, network, SSH; the kernel
    log also on the DCSD UART, 115200)
 3. ~~Alpine in RAM, internet over USB~~ ✓, ~~Alpine on its own NVMe partition~~ ✓,
-   ~~labwc (Wayland) drawn by the CPU, as on the iPad mini 1~~ ✓; next Wi-Fi and
-   Bluetooth
+   ~~labwc (Wayland) drawn by the CPU, as on the iPad mini 1~~ ✓, ~~Wi-Fi and
+   Bluetooth~~ ✓
    (not XFCE on X11): touch, the on-screen keyboard, Wi-Fi, Bluetooth,
    battery. Rendered by pixman on the CPU until the GPU works.
 4. What the kernel source does not have yet: speakers, auto-rotation

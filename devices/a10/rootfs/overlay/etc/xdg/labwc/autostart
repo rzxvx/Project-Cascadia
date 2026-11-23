@@ -1,5 +1,6 @@
 # 264 ppi: twice the size (an integer scale -- a fractional one would make
 # pixman scale every window on the CPU)
 wlr-randr --output Unknown-1 --scale 2 >/tmp/wlr-randr.log 2>&1
-swaybg -c '#0b0e13' >/dev/null 2>&1 &
+swaybg -i /usr/share/backgrounds/cascadia/tux.jpg -m fill -c '#282828' >/dev/null 2>&1 &
+waybar -c /etc/xdg/waybar-cascadia/config.jsonc -s /etc/xdg/waybar-cascadia/style.css >/tmp/waybar.log 2>&1 &
 wvkbd-mobintl --hidden -H 280 -L 200 >/tmp/wvkbd.log 2>&1 &

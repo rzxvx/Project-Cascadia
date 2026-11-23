@@ -1,0 +1,60 @@
+// The panel on the iPad 7 (after devices/a5's): the apps, the open windows,
+// the keyboard, Wi-Fi, Bluetooth, the battery, the clock. No rotation button
+// until the iPad 7's sensors (behind the AOP) work.
+{
+    "layer": "top",
+    "position": "top",
+    "height": 40,
+    "spacing": 0,
+    "modules-left": ["custom/apps", "wlr/taskbar"],
+    "modules-right": ["custom/kbd", "network", "bluetooth", "battery", "clock"],
+    "custom/apps": {
+        "format": "",
+        "tooltip": false,
+        "on-click": "pkill -x fuzzel || fuzzel"
+    },
+    "wlr/taskbar": {
+        "format": "{title}",
+        "max-length": 18,
+        "tooltip": false,
+        "on-click": "activate",
+        "on-click-middle": "close"
+    },
+    "custom/kbd": {
+        "format": "",
+        "tooltip": false,
+        "on-click": "kbd-toggle"
+    },
+    "network": {
+        "interface": "wlan0",
+        "format-wifi": "\uf1eb {essid}",
+        "format-ethernet": "\uf1eb",
+        "format-linked": "\uf1eb \u2026",
+        "format-disconnected": "\uf1eb",
+        "format-disabled": "\uf1eb",
+        "max-length": 14,
+        "tooltip": false,
+        "on-click": "wifi-menu"
+    },
+    "bluetooth": {
+        "format": "\uf293",
+        "format-off": "\uf293",
+        "format-disabled": "\uf293",
+        "format-no-controller": "\uf293",
+        "format-connected": "\uf293 {num_connections}",
+        "tooltip": false,
+        "on-click": "bt-menu"
+    },
+    "battery": {
+        "bat": "battery",
+        "interval": 30,
+        "format": "{icon} {capacity}%",
+        "format-charging": " {capacity}%",
+        "format-icons": ["", "", "", "", ""],
+        "tooltip": false
+    },
+    "clock": {
+        "format": "{:%H:%M}",
+        "tooltip": false
+    }
+}
