@@ -43,6 +43,7 @@ spec = importlib.util.spec_from_file_location("gfxboot", os.path.join(HERE, "gfx
 gb = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(gb)
 p, u, iface, out = gb.p, gb.u, gb.iface, gb.out
+sys.path.insert(0, HERE)
 
 HEAP_VA = int(os.environ.get("HEAP_VA", "0x80400000"), 0)   # window 2: a mapping below 32 MiB (window 1) hangs the firmware on access (G3 bisect)
 HEAP_SIZE = 0x100000
@@ -98,6 +99,8 @@ REGIONS = {          # name: (offset in the heap, size)
     "EV0": (0xdc000, 0x4000),
     "EV1": (0xe0000, 0x4000),
     "EV2": (0xe4000, 0x8000),
+    "ZP": (0xf0000, 0x1000),
+    "HP": (0xf4000, 0x4000),    # --store-ios: the PDS / USC heap at GPU VA 0x300000    # --pad: the page behind the unused part of GPU VA 0x200000..0x3fffff
     "TS": (0xec000, 0x4000),    # RAM for I/O type 5, TempSensorRegister (P+0x6e0), which the
                                 # firmware's power model reads on a cold power-up (fw 0x6914)
 }
@@ -123,10 +126,47 @@ def build_job(w32, va, pa):
         page = pa["GV"] + 0x1000 * i
         w32("PTR", pte, (page & 0xffffffff) | 1)
         w32("PTR", pte + 4, page >> 32)
+    if "--pad" in sys.argv:
+        # the rest of the 2 MiB (GPU VA 0x204000..0x3fffff) onto one zero page,
+        # ZP: absorbs reads past GV, so they show up as data, not MMU faults
+        ents = b"".join(struct.pack("<Q", pa["ZP"] | 1) for _ in range(4, 512))
+        iface.writemem(pa["PTR"] + 8 * 4, ents)
     # GV: +0 CDM stream (terminate), +0x1000 PDS HALT program / +0x1010 data,
     # +0x2000 context storage
-    w32("GV", 0x0, 0x80000000)
     w32("GV", 0x1000, 0xd3000000)
+    if "--kernel" in sys.argv:
+        # G5 step A: one COMPUTE_KERNEL block (Mesa csbgen rogue/cdm.xml:
+        # K0 K1 K2 K3 K4 K5 K8, no indirect / global offsets; --rec8 adds a
+        # zero eighth word) whose PDS program is a HALT at GV+0x1100, data
+        # at GV+0x1180; then the terminate. K0: usc_target ANY (bit 1), no
+        # PDS data / temps, no USC sizes. K3-K5: workgroups - 1; K8: 1x1x1.
+        rec = [0x2, GVA + 0x1180, GVA + int(os.environ.get("KREC_K2", "0x1100"), 0), 0, 0, 0, 0]
+        if "--rec8" in sys.argv:
+            rec.append(0)
+        for i, w in enumerate(rec + [0x80000000]):
+            w32("GV", 4 * i, w)
+        w32("GV", 0x1100, 0xd3000000)
+        if "--usc" in sys.argv:
+            # G5 step B: the PDS program launches a USC task (Mesa
+            # pvr_rogue_pds_defs.h): DOUTU, END=1, src0 = const64 0 ->
+            # 0xf4000002, then HALT. Its data (K0 pds_data_size 1 = 16 bytes):
+            # the DOUTU word, EXE_OFF = the USC code's address (bits 31:2),
+            # TEMPS bits 40:35 (units of 4), here 0. The USC code: our
+            # `empty` kernel (USC_KERNEL=n picks another) from
+            # build/gpu/isa/g5.g9p.metallib at GV+0x1400.
+            import g9pbin
+            code = g9pbin.kernels(os.path.join(HERE, "../../build/gpu/isa/g5.g9p.metallib"))
+            usc = code[int(os.environ.get("USC_KERNEL", "0"))]
+            usc += bytes(-len(usc) % 4)
+            for i in range(0, len(usc), 4):
+                w32("GV", 0x1400 + i, struct.unpack_from("<I", usc, i)[0])
+            w32("GV", 0x0, 0x2 | (1 << 2))
+            w32("GV", 0x1100, 0xf4000002)
+            w32("GV", 0x1104, 0xd3000000)
+            w32("GV", 0x1180, GVA + 0x1400)
+            w32("GV", 0x1184, 0)
+    else:
+        w32("GV", 0x0, 0x80000000)
     # CDM arguments (StartCompute +8): [0..1] RGX+0x498 storage, [2..3]
     # RGX+0x4b8 PDS code / data, [4..5] RGX+0x480 stream base
     w32("CA", 0x00, GVA + 0x2000)
@@ -188,6 +228,101 @@ def build_job(w32, va, pa):
     # left 0 the firmware writes to address 0 and crashes (G4 run 29)
     w32("CMD", 0x26c, va["STAMP"] + 0x10)
     w32("CMD", 0x274, 0xc0de)
+    if "--store" in sys.argv:
+        build_store(w32, va, pa)
+    if "--store-ios" in sys.argv:
+        build_store_ios(w32, va, pa)
+
+
+HEAPVA = int(os.environ.get("HEAPVA_IOS", "0x300000"), 0)   # --store-ios: PDS base = USC base (P+0x10 = P+0x18 = this)
+
+
+def build_store_ios(w32, va, pa):
+    """G5, the iPadOS layout byte for byte (docs/gpu.md "G5 ground truth"): a
+    heap at GPU VA 0x300000 (region HP, mapped over --pad's zero page) with
+    the 0x140 word at +0, store_const's USC code at +0x40, the DMA PDS
+    program at +0x180, the kernel's PDS program at +0x200 and its data at
+    +0x280 (EXE_OFF 0x40, TEMPS 2); the DMA data and the argument entry
+    (iOS: in other regions) at +0x1000 / +0x1100; the output buffer stays
+    GV+0x2800. The stream at GPU VA 0x200000: DMA record, kernel record,
+    terminate. Caller sets P+0x10 = P+0x18 = 0x300000."""
+    import g9pbin
+    for i in range(4):
+        pte = 8 * (((HEAPVA >> 12) & 0x1ff) + i)
+        page = pa["HP"] + 0x1000 * i
+        w32("PTR", pte, (page & 0xffffffff) | 1)
+        w32("PTR", pte + 4, page >> 32)
+    usc = g9pbin.kernels(os.path.join(HERE, "../../build/gpu/isa/g5.g9p.metallib"))[1]
+    usc += bytes(-len(usc) % 4)
+    w32("HP", 0x0, 0x140)
+    for i in range(0, len(usc), 4):
+        w32("HP", 0x40 + i, struct.unpack_from("<I", usc, i)[0])
+    for i, w in enumerate((0xf0001000, 0xf4001808, 0xd3000000)):
+        w32("HP", 0x180 + 4 * i, w)
+    for i, w in enumerate((0xc2c00003, 0xf0000a01, 0xd3000000, 0xf0000e01, 0xfc000002, 0xd3000000)):
+        w32("HP", 0x200 + 4 * i, w)
+    for i, w in enumerate((0x40, 0x10, 0x90000000, 0x80000000)):
+        w32("HP", 0x280 + 4 * i, w)
+    out = GVA + 0x2800
+    for i in range(0, 0x40, 4):
+        w32("GV", 0x2800 + i, 0xabadbeef)
+    for i, w in enumerate((HEAPVA + 0x1100, 0, HEAPVA + 0x1110, 0, 0x10000002, 0, 0x90004003, 0)):
+        w32("HP", 0x1000 + 4 * i, w)
+    for i, w in enumerate((out, 0, 0, 0, 0x00010001)):
+        w32("HP", 0x1100 + 4 * i, w)
+    w32("HP", 0x2000, 0xd3000000)      # terminate / context-store PDS
+    dma = [0x4, 0x1000 | 0x2, 0x180, 0, 0, 0, 0x40000001, 0]
+    ker = [0x2103, 0x280, 0x200, 0, 0, 0, 0x40000001, 0]
+    for i, w in enumerate(dma + ker + [0x80000000]):
+        w32("GV", 4 * i, w)
+    w32("CA", 0x08, 0x2000)
+    w32("CA", 0x0c, 0x2010)
+    w32("CTX", 0x38, 0x2000)
+    w32("CTX", 0x3c, 0x2010)
+
+
+def build_store(w32, va, pa):
+    """G5: our store_const kernel writes a buffer, set up the way iPadOS 18.7.9
+    does it (tools/gpu/ios/gpucap, docs/gpu.md "G5 ground truth"):
+    PDS base = USC base = GPU VA 0x200000 (P+0x10 / P+0x18, set by the
+    caller), every PDS / USC address below an offset from it.
+      +0x0000  CDM stream: DMA record, kernel record (8 words each), terminate
+      +0x1000  HALT (terminate / context-store PDS, CA / CTX point here)
+      +0x1100  DMA PDS program, +0x1180 its data (32 bytes)
+      +0x1200  kernel PDS program, +0x1280 its data (16 bytes)
+      +0x1400  store_const's USC code
+      +0x1600  the argument entry {u64 buffer VA, u64 0, u32 0x00010001}
+      +0x2800  the output buffer (0xabadbeef, the kernel writes 0xcafe0000)
+    """
+    import g9pbin
+    usc = g9pbin.kernels(os.path.join(HERE, "../../build/gpu/isa/g5.g9p.metallib"))[1]
+    usc += bytes(-len(usc) % 4)
+    for i in range(0, len(usc), 4):
+        w32("GV", 0x1400 + i, struct.unpack_from("<I", usc, i)[0])
+    out = GVA + 0x2800
+    for i in range(0, 0x40, 4):
+        w32("GV", 0x2800 + i, 0xabadbeef)
+    # stream: K0 K1 K2 K3 K4 K5 K8 pad; pds_data_size = 16-byte units - 1
+    dma = [0x4, 0x1180 | 0x2, 0x1100, 0, 0, 0, 0x40000001, 0]      # usc_common_shared
+    ker = [0x2103, 0x1280, 0x1200, 0, 0, 0, 0x40000001, 0]         # fence, ANY, temps 1, unified 2
+    for i, w in enumerate(dma + ker + [0x80000000]):
+        w32("GV", 4 * i, w)
+    for i, w in enumerate((0xf0001000, 0xf4001808, 0xd3000000)):
+        w32("GV", 0x1100 + 4 * i, w)
+    for i, w in enumerate((GVA + 0x1600, 0, GVA + 0x1610, 0, 0x10000002, 0, 0x90004003, 0)):
+        w32("GV", 0x1180 + 4 * i, w)
+    for i, w in enumerate((0xc2c00003, 0xf0000a01, 0xd3000000, 0xf0000e01, 0xfc000002, 0xd3000000)):
+        w32("GV", 0x1200 + 4 * i, w)
+    for i, w in enumerate((0x1400, 0x10, 0x90000000, 0x80000000)):    # EXE_OFF, TEMPS 2
+        w32("GV", 0x1280 + 4 * i, w)
+    for i, w in enumerate((out, 0, 0, 0, 0x00010001)):
+        w32("GV", 0x1600 + 4 * i, w)
+    w32("GV", 0x1000, 0xd3000000)
+    # terminate / context-store PDS: now offsets from the PDS base too
+    w32("CA", 0x08, 0x1000)
+    w32("CA", 0x0c, 0x1010)
+    w32("CTX", 0x38, 0x1000)
+    w32("CTX", 0x3c, 0x1010)
 
 
 def rgx_on():
@@ -306,6 +441,19 @@ def main():
     w32("I", 0xa4, va["D"])
     # X -> P; P: RGX
     w32("X", 0x0, va["P"])
+    # P+0x0..0xc: {u64 base, u64 size} -> the four BIF tiling ranges the
+    # firmware programs at power-up (fw 0x5660: RGX+0x12e0 / 0x12f0 / 0x1300 /
+    # 0x1310, upstream ROGUE_CR_BIF_TILING_CFG*, enabled). Left 0 the range
+    # ends at -1: the whole GPU VA space is tiled and every access is
+    # swizzled (a stream at 0x200800 read at 0x208000; a phantom PDS read at
+    # 0x201100; no USC task: G5 runs 27-96). Keep it far above our VAs.
+    w32("P", 0x0, 0x00000000)
+    w32("P", 0x4, 0x6)              # base 0x6_0000_0000
+    w32("P", 0x8, 0xffc00000)       # size
+    w32("P", 0xc, 0)
+    if "--store" in sys.argv:
+        w32("P", 0x10, GVA)         # PDS base (RGX+0x610)
+        w32("P", 0x18, GVA)         # USC base (RGX+0x4008 / 0x4010 / 0x4028)
     # firmware -> host rings (REGIONS EC* / EV*); without X+0xf4 / +0xf8 a cold
     # power-up faults on address 0x20 (fw 0x92d0, G4 run 15)
     for (cx, ex), c, e, n in (((0xdc, 0xe0), "EC0", "EV0", 256), ((0xf4, 0xf8), "EC1", "EV1", 256),
@@ -387,7 +535,7 @@ def main():
             k2, v2 = s2.split("=")
             r2, o2 = k2.split("+")
             if r2 in ("K", "QS", "CR", "SE", "ST", "CMD", "US", "CTX", "CA", "STAMP", "P2", "P3",
-                      "CDR", "UT", "FL", "GV", "PDR", "PTR"):
+                      "CDR", "UT", "FL", "GV", "PDR", "PTR", "HP"):
                 w32(r2, int(o2, 0), va[v2[1:]] if v2.startswith("@") else pa[v2[1:]] if v2.startswith("%") else int(v2, 0))
         out("kick: compute channel 2, write index 1, doorbell (0x21 << 56) | (3 << 48) | 2")
         kf.send((0x21 << 56) | (3 << 48) | 2)
@@ -406,10 +554,10 @@ def main():
     if "--job" in sys.argv:
         out(f"STAMP+0 = {p.read32(pa['STAMP']):#x} (FinalizeCompute: 1), "
             f"+0x10 = {p.read32(pa['STAMP'] + 0x10):#x} (the command's completion record: 0xc0de)")
-        rgx = gb.adt["/arm-io/sgx"].get_reg(0)[0]
-        if "--rgx" in sys.argv and rgx_on():
-            for off in (0x4a0, 0x480, 0x478, 0xe140, 0xe148, 0xe150, 0xe154, 0xe238):
-                out(f"RGX +{off:#x} = {p.read32(rgx + off):#010x}")
+        if "--store" in sys.argv or "--store-ios" in sys.argv:
+            outw = struct.unpack("<8I", iface.readmem(pa["GV"] + 0x2800, 0x20))
+            out("output buffer GV+0x2800: " + " ".join(f"{x:08x}" for x in outw)
+                + "  (store_const: 0xcafe0000 + thread id; 0xabadbeef = untouched)")
     # what the firmware wrote back into our structures (nonzero words)
     for k in ("X", "A", "C", "D", "R", "SE", "P2", "P3", "P4", "EC0", "EC1", "EC2", "EV0", "EV1"):
         data = iface.readmem(pa[k], 0x200)
@@ -437,6 +585,17 @@ def main():
         except Exception as e:
             out(f"stopped on {e!r}")
         fw_state("after the crash")
+    if "--rgx" in sys.argv:
+        # stop the coprocessor first, so nothing changes the GPU's power any
+        # more, then read RGX only if the core was left on (rgx_on())
+        p.write32(gb.FENDER + 0x2048, p.read32(gb.FENDER + 0x2048) & ~1)
+        time.sleep(0.02)
+        if rgx_on():
+            for off in (0x4a0, 0x480, 0x478, 0xe150, 0xe154, 0xe238, 0xe240):
+                out(f"RGX +{off:#x} = {p.read32(RGX_PA + off):#010x}")
+        else:
+            out(f"--rgx: firmware stopped with the GPU off (Fender +0x1000 = "
+                f"{p.read32(gb.FENDER + 0x1000):#x}); RGX not read")
     out("end")
 
 

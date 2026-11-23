@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- gpucap on the jailbroken iPad: Metal from a command-line tool needs the
+     GPU's user clients by name (without them MTLCreateSystemDefaultDevice()
+     returns nil), outside the sandbox and container. -->
+<plist version="1.0"><dict>
+    <key>platform-application</key><true/>
+    <key>com.apple.private.security.no-container</key><true/>
+    <key>com.apple.private.security.no-sandbox</key><true/>
+    <key>com.apple.security.iokit-user-client-class</key>
+    <array>
+        <string>AGXDeviceUserClient</string>
+        <string>IOGPUDeviceUserClient</string>
+        <string>IOSurfaceRootUserClient</string>
+    </array>
+</dict></plist>

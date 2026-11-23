@@ -1,13 +1,14 @@
 # GPU (Apple A10 / T8010, "G9P") -- plan and what is known
 
-Status 2026-11-23: **G0-G4 done; the GPU work runs under Linux**
+Status 2026-11-23: **G0-G5 done; the GPU work runs under Linux**
 (`GPU_BACKEND=linux`, see "GPU work under Linux"): core ID 0x011b0602 /
 revision 0x000d0a00, the GFX firmware boots and takes init data with the
 real RGX, stable. **The first job ran on the GPU** (G4 run 29-31): the
 firmware dispatched a terminate-only compute job, the CDM read its control
 stream through our page tables, both completion stamps were written; from
 a cold GPU powered up by the firmware itself, with no MMU fault (runs 43, 45).
-Next: G5 (a compute kernel that stores).
+G5: our offline-compiled `store_const` writes a buffer through a DMA-bound
+binding (runs 97-100). Next: G6.
 Under m1n1 the core's registers hang the bus (not explained). This page is what the iPad 7's own ADT, kernelcache and firmware
 say, what the reference projects say, and the plan in checkable steps, in the
 style of the iPad mini 1's SGX work and the A13's AGX work
@@ -161,7 +162,8 @@ Check: the completion stamp moves (done, both stamps), no firmware crash
 (done), no MMU fault (done, runs 43 and 45, once the firmware's own cold
 power-up runs).
 
-**G5 -- a compute store (40 %).** The `store_const` kernel compiled offline
+**G5 -- a compute store. DONE 2026-11-23** ("G5 DONE": runs 97-100; the
+tiling ranges P+0x0..0xc were the blocker). The `store_const` kernel compiled offline
 for `applegpu_g9p`, its PDS program (Rogue PDS encodings), the buffer bound.
 Check: the value lands in memory; moving the buffer moves the write.
 
@@ -560,6 +562,157 @@ T+0x7ec=@Y Y+0x0=%Z Y+0x4=8 T+0x7e8=@GEN X+0x198=@XG B+0x4a24=1
 X+0x144=@P2 X+0x148=@P3 X+0x14c=@P4 P+0x1abc=1 P+0x1ac0=1 P+0x1ac4=1
 P+0x6e0=%TS P+0x6e4=8 P+0x6ec=0x4000 H+0x4=240000`, with `--cold
 --channels --kick-cp --job`.
+
+## G5 progress (2026-11-23): a kernel record, the PDS and USC bases
+
+`gfx-init.py --job --kernel [--rec8] [--pad] [--usc] --rgx` (logs
+`build/gpu/g5-run*.log`; runs whose extra arguments a zsh loop never passed
+were moved to `build/gpu/bad/` and are not used here). With `--rgx` the
+script stops the coprocessor first and reads RGX only if the core was left
+on, so the fault status can be read without racing the firmware's power
+management.
+
+What the hardware showed:
+
+- **CDM kernel record = 8 words on A10** (Mesa's `csbgen/rogue/cdm.xml`
+  K0 K1 K2 K3 K4 K5 K8 plus one more word): with 7 words the stream does
+  not finish (RGX+0x4a0 stays 0, run 1); with 8 it does (run 4).
+- **RGX+0x610 is the PDS execution base, programmed at power-up from
+  P+0x10** (fw 0x5660, 1 MiB aligned); K1 (data) and K2 (code) are offsets
+  from it: K1 at an unmapped VA with base 0 faults there (MCU requester 8,
+  read, run 9); base 0x100000 with K1 / K2 lowered by 0x100000 behaves like
+  base 0 (run 20).
+- **P+0x18 is the USC base** (RGX+0x4008 / 0x4010 / 0x4028, 64-byte
+  aligned, fw 0x5660): a PDS program `DOUTU (END=1) ; HALT` (Mesa
+  encodings, 0xf4000002 / 0xd3000000) starts a USC task that reads at
+  **USC base + 0** (requester 16, USCS; run 21 with P+0x18 = 0x35000000).
+  With the base mapped the job completes with no fault (runs 22-25).
+- Processing a kernel record also reads **PDS base + 0x211080** (MCU,
+  run 15 with P+0x10 = 0x34000000) -- not K1 / K2 (runs 9 and 20); what
+  sits there is to find. `--pad` maps GPU VA 0x204000..0x3fffff onto one
+  zero page, which absorbs it.
+- Not yet working: **the USC does not appear to run our code.** The DOUTU
+  word's EXE_OFF (our PDS constant) does not move the USC's read (runs 8,
+  10: always base + 0; run 23: EXE_OFF unmapped, no fault), and
+  `store_const` placed at the USC base writes nothing anywhere in our
+  memory and faults nowhere (run 26). Either the constants do not reach
+  DOUTU's src0, or base + 0 holds something other than code (a header the
+  USC reads first). To find: what iOS puts at the USC base and in the PDS
+  data segment -- the kext's compute path, or our own capture on the
+  jailbroken iPad.
+
+### G5 DONE (2026-11-23, runs 97-100): store_const writes the buffer
+
+**The cause of everything odd in G5 was BIF tiling over the whole GPU VA
+space.** At every power-up the firmware (fw 0x5660) builds four tiling
+ranges from P+0x0..0xc ({u64 base, u64 size}) into RGX+0x12e0 / 0x12f0 /
+0x1300 / 0x1310 (upstream `ROGUE_CR_BIF_TILING_CFG1/3/5/7`, written with
+the 0x90000000 enable bits); with base and size 0 the range end is -1, so
+every GPU access was swizzled. That is the stream at 0x200800 being read at
+0x208000, the stream at 0x210000 read at 0x201100, the "phantom" PDS read
+at 0x201100, the PDS-base + 0x211080 read, and the kernel's DOUTU never
+starting a USC task. `gfx-init.py` now puts the range at GPU VA
+0x6_0000_0000 + 0xffc00000, far above our VAs (where iOS's kext puts it:
+to check in our kernelcache).
+
+With that, `gfx-init.py --job --kernel --rec8 --store` (P+0x10 = P+0x18 =
+GPU VA 0x200000; the DMA record binds the buffer, the kernel record runs
+`store_const`, laid out as iPadOS does it, "G5 ground truth" below):
+
+- run 97 / 99: **the output buffer reads 0xcafe0000** (`out[0] = 0xcafe0000
+  + tid`, one thread), the rest stays 0xabadbeef; both stamps, no fault;
+- run 98 (control): the argument entry moved to GV+0x2810 -> **0xcafe0000
+  appears at +0x10**, +0x0 keeps the sentinel: the store goes through the
+  DMA-loaded binding;
+- run 100: the same without `--pad` -- no stray reads any more.
+
+Runs 27-96 below were taken with the whole VA space tiled: their
+addresses are swizzled, and their conclusions (the 0x201100 reader, the
+PDS-code boundary at 0x211000, "EXE_OFF ignored", the 7- vs 8-word record)
+are superseded until re-checked without tiling.
+
+### G5 runs 27-93 (Linux, after the iPadOS capture): the reader at 0x201100
+
+`--store` / `--store-ios` (the iPadOS layout at GPU VA 0x200000 / 0x300000)
+complete the job but leave the output buffer untouched (0xabadbeef), and
+point controls (buffer, EXE_OFF, USC base unmapped) show **no USC task at
+all** (runs 27-33, 58-63). Bisecting against the configuration that did
+fault at the USC base (runs 21 / 41) found why:
+
+- **A PDS task we never set up reads GPU VA 0x201100** (requester PDS 10 /
+  22, or CDM 4 when the stream sits at 0x210000), after the kernel
+  record's own PDS program: with page 0x201000 unmapped the fault is
+  0x201100 whatever K0 (0x2 / 0x6 / 0x2103), K1, K2, the PDS base (0x100000
+  / 0x200000), the stream base (0x200000 / 0x210000), the StartCompute
+  addresses (RGX+0x498, the six 0x11040 slots), the terminate / context-
+  store PDS code and data, or P+0x50 / 0x58 / 0x60 / 0x350 / 0x358 /
+  0x1a98 (runs 82-93). The value 0x201100 is in none of our memory.
+- **Every earlier "USC start" came from a DOUTU we happened to have at
+  0x201100** (`--usc` writes one there): with the kernel record's K2 on a
+  HALT and the DOUTU left at 0x201100 the USC still starts (run 79); with
+  the DOUTU only at K2 (0x1200 / 0x1300 / 0x1100 elsewhere) it never does
+  (runs 73-77), also on fresh physical memory (run 78). That task's PDS
+  data is not ours, so its EXE_OFF is 0 -- hence "the USC reads its base +
+  0, EXE_OFF ignored" (G5 progress above). The "PDS code above VA 0x211000
+  starts nothing" finding (runs 48-57 and the PTE sweep) is the same
+  effect and does not stand on its own.
+- So **the kernel record's own DOUTU has not been seen to start a USC task
+  yet** -- the open G5 question, together with: who issues the PDS task at
+  0x201100 (a fixed hardware / firmware program address, or state that
+  survives `--cold`; to check from a fresh boot and from the RGX registers
+  the firmware's cold power-up writes, captured on the RAM stand-in).
+
+## G5 ground truth from iPadOS (2026-11-23): how Apple's stack dispatches
+
+`tools/gpu/ios/gpucap` (built by `tools/gpu/ios/build.sh`, ad-hoc signed by
+ldid with `tools/gpu/ios/entitlements.plist`: the AGX / IOGPU / IOSurface
+user clients, without which `MTLCreateSystemDefaultDevice()` is nil) runs
+our `store_const` through Metal on the iPad's own iPadOS 18.7.9 (22H355,
+palera1n rootless, as `mobile` over `iproxy 2222:22`) into two buffers, then
+saves the process's IOAccelerator memory (VM tag 100) after encoding, in the
+command buffer's scheduled handler and after completion. Captures in
+`build/gpu/ioscap/` (Apple data: not in git). Notes on A10's Metal: no
+non-uniform `dispatchThreads` (APINotSupported); `dispatchThreadgroups`
+works. Results: A[0] = B[0] = 0xcafe0000 (1 thread), 0xcafe0000..3 (4).
+
+What the capture shows (all GPU VAs in the 0x1_0000_0000 range):
+
+- **One 64 KiB heap at GPU VA 0x1_0000_0000 holds the USC code and the PDS
+  programs and data; it is both the PDS and the USC base**: our
+  `store_const` USC code at +0x40, byte for byte metal-tt's output; the
+  kernel's PDS program at +0x200, its data at +0x280; a DMA PDS program at
+  +0x180. Every K1 / K2 and the DOUTU's EXE_OFF are offsets into it.
+- **The CDM stream**: 8-word records (K0 K1 K2 K3 K4 K5 + two words), seven
+  per command buffer, then the terminate 0x80000000:
+
+  | record | K0 | K1 | K2 | K3-K5 | w6 | w7 |
+  |---|---|---|---|---|---|---|
+  | 0: DMA | 0x4 | 0x30042 | 0x180 | 0 | 0x40000001 | 0 |
+  | 1: kernel | 0x2103 | 0x280 | 0x200 | 0 | 0x40000001 (1 thread) / 0x1 (4) | 0 / 0x300000 (4) |
+  | 2-6 | Metal's own (K0 0x4 / 0x2 / 0xc0000003 / 0x3, heap +0x14xxx) | | | | | |
+
+  K0 bit 0 fence, bit 1 usc_target ANY, bits 8-11 PDS temps, bits 12-17
+  USC unified size; **pds_data_size (bits 2-7) = 16-byte units - 1** (the
+  DMA's 32 bytes -> 1, the kernel's 16 -> 0). K1 bit 1 =
+  usc_common_shared. Words 6 / 7 are not Mesa's K8: the workgroup size - 1
+  sits in w7 from bit 20 (4 threads -> 0x300000), w6 bit 30 set for a
+  single thread.
+- **The kernel's PDS program** (+0x200): `c2c00003 f0000a01 d3000000
+  f0000e01 fc000002 d3000000`, data (+0x280): `00000040 00000010 90000000
+  80000000` -- the DOUTU word (EXE_OFF 0x40 = the USC code, TEMPS 2) and
+  two DOUTW words.
+- **The buffer binding**: record 0 is a DMA-only PDS task (`f0001000
+  f4001808 d3000000`) whose 32-byte data is `{u64 -> argument entry,
+  u64 -> entry + 0x10, 0x10000002, 0x90004003}`; the argument entry is
+  `{u64 buffer GPU VA, u64 CPU pointer, u32 0x00010001}`. The two
+  dispatches differ only in record 0's K1 (0x30042 / 0x3c042): one
+  argument table per dispatch. The DMA puts the buffer VA into the USC
+  common store, where `store_const` reads it.
+
+So G5's open points were: PDS / USC addresses are offsets from one heap
+base (ours: P+0x10 = P+0x18), the kernel record needs Apple's K0 sizes and
+w6 / w7, and the buffer reaches the shader through the DMA record.
+`gfx-init.py --store` builds exactly this at GPU VA 0x200000 (to run).
 
 ## G3 results (2026-11-23): init data, the firmware idle and stable
 
