@@ -20,6 +20,7 @@
 #import <Metal/Metal.h>
 #include <mach/mach.h>
 #include <stdio.h>
+#include <string.h>
 #include <sys/stat.h>
 
 static NSString *const kSource =
@@ -64,11 +65,99 @@ static void snapshot(const char *dir)
 	printf("%s: %u regions\n", dir, total);
 }
 
+/* G6: a render pass into a linear 64x64 BGRA8 texture that lives in a shared
+ * buffer (so the CPU reads the pixels): "clear" = no draws, the load action
+ * clears to (0.25, 0.5, 0.75, 1) -> BGRA bytes 0xbf 0x80 0x40 0xff; "tri" =
+ * the same plus one constant-colour (1, 0, 0, 1) triangle over the left half. */
+static NSString *const kRenderSource =
+    @"#include <metal_stdlib>\n"
+     "using namespace metal;\n"
+     "vertex float4 tri_vs(uint vid [[vertex_id]]) {\n"
+     "    float2 p[3] = { float2(-1, -1), float2(0, -1), float2(-1, 1) };\n"
+     "    return float4(p[vid], 0, 1);\n"
+     "}\n"
+     "fragment float4 tri_fs() { return float4(1, 0, 0, 1); }\n";
+
+static int render(id<MTLDevice> dev, const char *out, int tri)
+{
+	char dir[1024];
+	NSError *err = nil;
+	const NSUInteger w = 64, h = 64, stride = 256;
+	id<MTLBuffer> fb = [dev newBufferWithLength:stride * h options:MTLResourceStorageModeShared];
+	for (unsigned i = 0; i < stride * h / 4; i++)
+		((uint32_t *)fb.contents)[i] = 0xabadbeef;
+	MTLTextureDescriptor *td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
+		width:w height:h mipmapped:NO];
+	td.storageMode = MTLStorageModeShared;
+	td.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
+	id<MTLTexture> rt = [fb newTextureWithDescriptor:td offset:0 bytesPerRow:stride];
+	if (!rt) {
+		fprintf(stderr, "no linear render target\n");
+		return 1;
+	}
+	id<MTLRenderPipelineState> rps = nil;
+	if (tri) {
+		id<MTLLibrary> lib = [dev newLibraryWithSource:kRenderSource options:nil error:&err];
+		if (!lib) {
+			fprintf(stderr, "compile: %s\n", err.description.UTF8String);
+			return 1;
+		}
+		MTLRenderPipelineDescriptor *pd = [MTLRenderPipelineDescriptor new];
+		pd.vertexFunction = [lib newFunctionWithName:@"tri_vs"];
+		pd.fragmentFunction = [lib newFunctionWithName:@"tri_fs"];
+		pd.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
+		rps = [dev newRenderPipelineStateWithDescriptor:pd error:&err];
+		if (!rps) {
+			fprintf(stderr, "pipeline: %s\n", err.description.UTF8String);
+			return 1;
+		}
+	}
+	id<MTLCommandQueue> q = [dev newCommandQueue];
+	id<MTLCommandBuffer> cb = [q commandBuffer];
+	MTLRenderPassDescriptor *rp = [MTLRenderPassDescriptor renderPassDescriptor];
+	rp.colorAttachments[0].texture = rt;
+	rp.colorAttachments[0].loadAction = MTLLoadActionClear;
+	rp.colorAttachments[0].storeAction = MTLStoreActionStore;
+	rp.colorAttachments[0].clearColor = MTLClearColorMake(0.25, 0.5, 0.75, 1.0);
+	id<MTLRenderCommandEncoder> e = [cb renderCommandEncoderWithDescriptor:rp];
+	if (tri) {
+		[e setRenderPipelineState:rps];
+		[e drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+	}
+	[e endEncoding];
+	snprintf(dir, sizeof(dir), "%s/enc", out);
+	snapshot(dir);
+	__block int scheduled = 0;
+	[cb addScheduledHandler:^(id<MTLCommandBuffer> c) {
+		(void)c;
+		char d[1024];
+		snprintf(d, sizeof(d), "%s/sched", out);
+		snapshot(d);
+		scheduled = 1;
+	}];
+	[cb commit];
+	[cb waitUntilCompleted];
+	snprintf(dir, sizeof(dir), "%s/done", out);
+	snapshot(dir);
+	const uint32_t *px = fb.contents;
+	snprintf(dir, sizeof(dir), "%s/info.txt", out);
+	FILE *f = fopen(dir, "w");
+	fprintf(f, "render %s, %lux%lu BGRA8 linear, stride %lu, fb cpu %p, status %ld, scheduled %d\n",
+		tri ? "tri" : "clear", (unsigned long)w, (unsigned long)h, (unsigned long)stride,
+		fb.contents, (long)cb.status, scheduled);
+	fprintf(f, "px(0,0) %08x px(63,0) %08x px(0,63) %08x px(63,63) %08x\n",
+		px[0], px[63], px[63 * stride / 4], px[63 * stride / 4 + 63]);
+	fclose(f);
+	printf("px(0,0) %08x px(63,0) %08x px(0,63) %08x px(63,63) %08x\n",
+	       px[0], px[63], px[63 * stride / 4], px[63 * stride / 4 + 63]);
+	return 0;
+}
+
 int main(int argc, char **argv)
 {
 	@autoreleasepool {
 		if (argc < 2) {
-			fprintf(stderr, "usage: gpucap OUTDIR [NTHREADS]\n");
+			fprintf(stderr, "usage: gpucap OUTDIR [NTHREADS | clear | tri]\n");
 			return 2;
 		}
 		const char *out = argv[1];
@@ -81,6 +170,8 @@ int main(int argc, char **argv)
 			fprintf(stderr, "no Metal device (entitlements?)\n");
 			return 1;
 		}
+		if (argc > 2 && (!strcmp(argv[2], "clear") || !strcmp(argv[2], "tri")))
+			return render(dev, out, !strcmp(argv[2], "tri"));
 		NSError *err = nil;
 		id<MTLLibrary> lib = [dev newLibraryWithSource:kSource options:nil error:&err];
 		if (!lib) {

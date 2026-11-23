@@ -563,6 +563,56 @@ X+0x144=@P2 X+0x148=@P3 X+0x14c=@P4 P+0x1abc=1 P+0x1ac0=1 P+0x1ac4=1
 P+0x6e0=%TS P+0x6e4=8 P+0x6ec=0x4000 H+0x4=240000`, with `--cold
 --channels --kick-cp --job`.
 
+## G6 progress (2026-11-23): the render side of the firmware
+
+The microsequence interpreter (fw 0xb49c) has, besides compute's 0xb / 0xc,
+render ops that program the TA (VDM / PM) and 3D (ISP / PBE) registers:
+
+| op | role (from the registers it writes) |
+|---|---|
+| 5 | **StartTA**: RGX 0x408-0x474 (VDM stream / TA; 0x438-0x460 are upstream's `VDM_CONTEXT_STORE/RESUME_TASK*`), 0xc00-0xd20 (PM / parameter buffer), 0xf038-0xf074, six 64-bit slots through 0x11030 (+0x11ff8 index), 0xf078 (context mapping) |
+| 6 | FinalizeTA (0x11f00, 0x688, 0x1720, 0xe230: the stop / flush pattern of FinalizeCompute) |
+| 7, 9 | **Start3D** (two variants): RGX 0xf00-0xfd8 (upstream `ISP_RENDER` 0xf08, `ISP_CTL` 0xf38), 0x6a0-0x6d0, 0x618-0x628, 0x3e00, 0x4070, 0x8388 |
+| 8, 10 | Finalize3D |
+
+StartTA's arguments (op word +4 -> struct A, +8 -> struct B, as StartCompute's
+CA): A[0..7] -> RGX 0xc78 / 0xc88 / 0xc98 / 0xc18 / 0xc08 / 0xc10 / 0xc20 /
+0xc28; B, 64-bit pairs: [0] 0xc90, [2] 0xc38, [4] 0xc40, [6] 0xc00, [8]
+0xc80, [0xa] 0x428, [0xc] 0xcc0, [0xe] 0x438, [0x10] 0x440, [0x12] 0x448,
+[0x14] 0x450, [0x16] 0x458, [0x18] 0x460, [0x1a] 0x470, [0x1c] 0x418,
+[0x1e] 0x408, [0x20] 0xf058, [0x22] 0xf060, [0x24] 0xf068, [0x26] 0xf070,
+[0x28] 0xf038, [0x2a] 0xf040, [0x2c..0x37] the 0x11030 slots; the op's
++0x20 byte -> RGX+0xf078, +0x2c -> fw 0x1866c (context switch), +0x1c a
+cancel flag and +0x5c.. a threshold as in StartCompute. Which register is
+the VDM stream base, which the PM free list etc.: to read off an iPadOS
+render capture (`gpucap OUTDIR clear | tri`: a clear-only pass and a
+one-triangle pass into a linear 64x64 BGRA8 target, three snapshots).
+
+### G6: render captures from iPadOS (2026-11-23, `build/gpu/ioscap/rclear`, `rtri`)
+
+`gpucap OUTDIR clear` / `tri` on iPadOS 18.7.9: a render pass into a linear
+64x64 BGRA8 target backed by a shared buffer. Results: `clear` -> every
+pixel 0xff4080bf (= (0.25, 0.5, 0.75, 1) as BGRA8), `tri` -> red only where
+the triangle is (px(0,63) = 0xffff0000). Regions (CPU address-size; the
+address differs per run, the order and sizes do not):
+
+| region | clear / tri nonzero bytes | first reading |
+|---|---|---|
+| 0x4000 at +0xd0000 | 0x4000 | the render target (the clear colour) |
+| 8 KiB, `80000001 000400dc ...` | 0x19c / 0x20c | **the VDM control stream**: four repeats of {`80000001 ...` (block type 4), `20000001` (PDS state), `48002f80`, `50002fa0`, `60000000`, index-list-like `00000301 0013c0xx`}, ending `c0000000` (type 6 = Rogue STREAM_TERMINATE) -- the clear is drawn: four batches, no draw of ours |
+| 8 KiB, `00000001 00148020 ...` | 0x1e4 / 0x1fc | PDS programs and data: Rogue load / store / WDF sequences (`d5000280 d1800002 d1840000 b3800004 c8000001 d5800003 d1000000 db000000 d6000201 d1800000 d0800004 f000282b d3000000`), data blocks `{0x14e3b0 0x100001 ...}` |
+| 8 KiB, `0000001f 00240000 103e0f00 ...` | 0xd8 / 0x110 | four identical 13-word state blocks, each ending with a pointer (0x300a0 / 0x30130 / 0x301c0 / 0x30250): per-batch PPP / ISP state |
+| 8 KiB, `fb050502 00007e01 ...` | 0x54 / 0x54 | descriptors + **the clear colour as constants** (+0x48: 0.25 0.5 0.75 1.0) and 1.0 / 0.0 pairs |
+| 8 KiB, `00064000 00000001 ...` | 0x44 / 0x44 | DMA data (`{ptr, ptr, ptr, 0x10000008, 0x10010002, 0x90014006, ptr, 0x90000004, ptr, 0x90000007}`), the shape of compute's binding DMA |
+| 0x244000 (appears at submit) | 0x90 / 0xa8 | parameter buffer (PM writes it) |
+| 0x2c000 (at submit) | 0x400 / 0x400 | a page list (`0089ce38 0089ce39 ...`): the PM free list |
+| 0x10000 (at submit) | 0x400 / 0x3fc | `00002000 00600000 60000000 ...`: PM / region-header state |
+
+Next: map these onto StartTA's / Start3D's arguments (which register gets
+the stream base, the free list, the region headers, the target), decode the
+VDM / PPP words against Mesa's `csbgen/rogue/{vdm,ppp,ipf}.xml`, then build
+the clear-only TA + 3D job under Linux.
+
 ## G5 progress (2026-11-23): a kernel record, the PDS and USC bases
 
 `gfx-init.py --job --kernel [--rec8] [--pad] [--usc] --rgx` (logs
