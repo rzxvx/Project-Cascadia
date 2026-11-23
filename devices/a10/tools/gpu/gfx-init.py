@@ -314,7 +314,7 @@ def build_ta(w32, va, pa):
     # and the PM writes nothing (G6 run 6)
     w32(u, 0x68, 0x20 << 6)         # WaitIRQ: TA_FINISHED
     f = 0x6c
-    if "--tri" in sys.argv and "TA_REALWAIT" not in os.environ:
+    if ("--tri" in sys.argv or "--own" in sys.argv) and "TA_REALWAIT" not in os.environ:
         os.environ["TA_REALWAIT"] = "0x20"     # with the 0x470 program the TA raises TA_FINISHED
     if os.environ.get("TA_REALWAIT"):
         # a WaitIRQ that is executed (StartTA is 0x6c): never ends on an
@@ -379,12 +379,14 @@ G3 = {
     "ppp": 0x64000,     # PPP state: the terminate block
     "pages": 0x80000,   # PM pages (4 KiB each) handed out by the free list
 }
-# PM_PAGES: 1 works (G6 3D runs 16-34); with 128 the PM's start-up takes 45
+# PM_PAGES: with a real RGX+0x470 program (--tri, --own) the normal 128 pages
+# work. Without one (--clear alone: a PDS HALT there) only 1 works (G6 3D runs
+# 16-34); with 128 the PM's start-up takes 45
 # pages (VCE page tables + 40 data pages), writes no macrotile array, and the
 # 3D's IPF then reads PM contexts that hold no catalog (fault, ctx 4 / 5).
 # With one page the start-up cannot allocate and writes the macrotile array
 # instead -- a workaround until the PM start-up is understood.
-PM_PAGES = int(os.environ.get("PM_PAGES", "128" if "--tri" in sys.argv else "1"), 0)
+PM_PAGES = int(os.environ.get("PM_PAGES", "128" if "--tri" in sys.argv or "--own" in sys.argv else "1"), 0)
 
 
 def pm_setup(w32, va, pa):
@@ -536,20 +538,23 @@ def own_setup(w32, va, pa):
     """--own (with --pm, and --tri / --clear for what to draw): the clear and
     the triangle with our own programs (docs/gpu.md "G6 legalization"): USC
     code from OWN_SRC through the offline compiler, PDS programs and data,
-    PPP state and the VDM stream written here from the decoded formats. The
-    one piece still from the iPadOS capture: the end-of-tile USC code
-    (6 instructions, CLEAR_HEAP 0x2440) -- to replace. RGX+0x470's USC task
-    is one instruction of ours, `5e0100a0` (found by experiment: a plain
-    `0080` end never lets the TA finish)."""
+    PPP state and the VDM stream written here from the decoded formats.
+    Nothing is read from the iPadOS captures. RGX+0x470's USC task is one
+    instruction, `5e0100a0` (by experiment: a plain `8000` end never lets
+    the TA finish); the end-of-tile code is three instructions (below)."""
     g = pa["G3"] + G3["code"]
     sh = own_shaders()
-    usc = {"tri_vs": 0x400, "tri_fs": 0x600, "bg_fs": 0x700, "empty": 0x800, "eot": 0x900, "a470": 0xa00, "end470": 0xb00}
+    usc = {"tri_vs": 0x400, "tri_fs": 0x600, "bg_fs": 0x700, "empty": 0x800, "eot": 0x900, "end470": 0xb00}
     for k, o in usc.items():
         if k == "eot":
-            code = open(CLEAR_HEAP, "rb").read()[0x2440:0x2480]
-        elif k == "a470":               # experiment: the capture's 0x470 USC task (heap 0x540)
-            code = open(os.path.join(TRI_CAP, "cda0dc000-10000.bin"), "rb").read()[0x540:0x5c0]
-        elif k == "end470":             # ours: one instruction, the 0x5e end of the vertex shaders in its
+            # end of tile, 16-bit words: o0 = 0 (the compiler's move-immediate form:
+            # `0198 0100 0101 0120 0154 0038`), then the pixel emit (opcode 0x1c;
+            # W0 bits 12-14 = data registers: 0 here, 1 / 2 / 4 in fragment shaders)
+            # with W1 bit 14 set: the PBE store with the image state in the common
+            # store (without it: an MMU fault), then the end `8000`
+            words = os.environ.get("OWN_EOT", "0198 0100 0101 0120 0154 0038 011c 4100 0800 8000")
+            code = b"".join(struct.pack("<H", int(w, 16)) for w in words.split())
+        elif k == "end470":             # one instruction, the 0x5e end of the vertex shaders in its
             code = bytes.fromhex(os.environ.get("OWN_END470", "5e0100a0"))   # short form, no outputs
         else:
             code = sh[k]

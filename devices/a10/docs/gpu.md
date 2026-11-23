@@ -1,6 +1,6 @@
 # GPU (Apple A10 / T8010, "G9P") -- plan and what is known
 
-Status 2026-11-24: **G0-G6 done (with Apple's shaders); the GPU work runs under Linux**
+Status 2026-11-24: **G0-G6 done (our own shaders and programs); the GPU work runs under Linux**
 (`GPU_BACKEND=linux`, see "GPU work under Linux"): core ID 0x011b0602 /
 revision 0x000d0a00, the GFX firmware boots and takes init data with the
 real RGX, stable. **The first job ran on the GPU** (G4 run 29-31): the
@@ -10,8 +10,9 @@ a cold GPU powered up by the firmware itself, with no MMU fault (runs 43, 45).
 G5: our offline-compiled `store_const` writes a buffer through a DMA-bound
 binding (runs 97-100). G6: a TA + 3D pass clears a 64x64 target through the
 background object, and the iPadOS triangle renders byte for byte as on
-iPadOS ("G6 step 4"), still with Apple's PDS / USC programs. Next: our own
-programs and shaders.
+iPadOS ("G6 step 4") -- since "G6 legalization" from our own shaders,
+programs and state, with nothing taken from the captures. Next: the
+screen, then G7 (the kernel driver).
 Under m1n1 the core's registers hang the bus (not explained). This page is what the iPad 7's own ADT, kernelcache and firmware
 say, what the reference projects say, and the plan in checkable steps, in the
 style of the iPad mini 1's SGX work and the A13's AGX work
@@ -174,9 +175,9 @@ Check: the value lands in memory; moving the buffer moves the write.
 (background object writes a colour into the render target), then a VDM stream
 with vertex and fragment shaders. Check: the pixels in memory, then on the
 screen. **DONE in memory (2026-11-23 / 24): the clear ("G6 clear DONE")
-and the iPadOS triangle ("G6 step 4"), byte for byte as iPadOS draws it** --
-still with Apple's PDS / USC programs and state words from the captures;
-our own programs and the screen are next.
+and the triangle ("G6 step 4"), byte for byte as iPadOS draws it, from our
+own shaders, PDS programs and state ("G6 legalization").** The screen is
+next.
 
 **G7 -- kernel driver (35 %).** In our kernel, in C: `apple-rtkit` with a
 T8010 A7-IOP mailbox backend, GEM shmem, `drm_gpuvm`, `drm_sched`. Decision
@@ -854,7 +855,7 @@ Open: after the job the firmware no longer answers a ping (runs 9-12; the
 stamps and pixels are all there) -- to find. Next: our own programs
 instead of Apple's ("legalization").
 
-### G6 legalization, step 1 (2026-11-24, `build/gpu/g6-own-*.log`): our own programs
+### G6 legalization (2026-11-24, `build/gpu/g6-own-*.log`, `g6-eot-*.log`): our own programs
 
 `--own` (with `--pm --tri --clear`) draws the same picture from our own
 pieces; **the target is again byte for byte the one iPadOS drew** (0
@@ -893,10 +894,36 @@ upside-down triangle: 2048 pixels). What is ours now:
   PDS_STATE (shared data), INDEX_LIST (3 auto indices, TRI_LIST). The
   capture's stream-out block is not needed.
 
-Still Apple's: **the end-of-tile USC code** (6 instructions, from the clear
-capture's heap 0x2440: `8801 0001 9901 0041 2801 3900 1c05 0051 0008 0001
-2e01 0000 ... 0080`) -- the next piece; and the register values of
-StartTA / Start3D that came from our runs but are not yet named.
+**The end-of-tile USC code is ours too (runs eot-*)**: three instructions,
+in 16-bit little-endian words (an instruction runs to the first word with
+bit 8 clear):
+
+| words | instruction |
+|---|---|
+| `0198 0100 0101 0120 0154 0038` | o0 = 0: the move-immediate form the compiler emits for constants (`0198 01rr W2 W3`, W2 / W3 = the value, `0154 0038` after it) |
+| `011c 4100 0800` | the pixel emit, opcode 0x1c: in our compiler's fragment shaders `111c 0800` / `211c 0800` / `411c 0800` for 1 / 2 / 4 data registers (W0 bits 12-14); here 0 registers and the extra word `4100` -- its bit 14 makes it the PBE store with the image state the PDS put in the common store (`1100` instead: an MMU fault) |
+| `8000` | end |
+
+How it was found: the capture's end-of-tile code split by the length rule
+into o0 = (a value) with a 16-bit pack, an emit `051c 5100 0800`, a jump to
+the end, the end word; dropping the jump changes nothing, dropping the
+first instruction leaves register garbage in the target, and o0 = 0 from
+the compiler's form works; of the emit's bits, W0 bit 10 and W1 bit 12 are
+not needed, W1 bit 14 is. With it, **`--own` reads nothing from the
+captures** (run with `build/gpu/ioscap` moved away: still 0 differing
+pixels; control CLEAR=0.5,0,0.5,1 with the corners (-1,-1) (1,-1) (0,1): a
+purple background and the upright triangle, 2048 pixels).
+
+**The 1-page free list is no longer needed**: with the 0x470 program the
+clear alone also runs on the 128-page free list with the WaitIRQ (runs
+own-clear / own-clear128: 4096 yellow pixels either way) -- the missing
+macrotile array of runs 9-14 was the missing 0x470 task. `--own` now
+defaults to 128 pages and the wait.
+
+Still to name rather than reuse: the StartTA / Start3D register values our
+runs settled on (0xc78 = 0x88, 0xc90, 0x3e00, 0xfd8, 0x4070, 0x11080 = 0x1d3,
+0x6d0 = 0x1f, ...), the image state words, the PDS DOUTW of the vertex
+program.
 
 The way there:
 
