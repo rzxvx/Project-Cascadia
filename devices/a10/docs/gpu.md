@@ -815,6 +815,46 @@ offsets, writes the two PDS data blocks, the colour and the image state
   render target. With the heap at G3+0 and P+0x10 = P+0x18 = 0x400000:
   **the clear (run 30)**.
 
+### G6 step 4 (in progress): the triangle (`build/gpu/g6-tri-run*.log`)
+
+**A complete `tri` capture** (`gpucap rtri2 tri`, `build/gpu/ioscap/rtri2`):
+gpucap now also saves every readable region within 256 MiB of the tagged
+ones (`GPUCAP_ALL=1`: every region up to 4 MiB anywhere). The regions the
+first captures seemed to lack were there all along, at other GPU addresses
+than assumed; the layout, read off pointers and the 0x4000 guard gaps:
+
+| GPU VA | CPU (rtri2) | content |
+|---|---|---|
+| 0x0 | 0xcda0dc000 (64 KiB) | PDS / USC heap = PDS base = USC base |
+| 0x30000 / 0x3c000 | 0xcda158000 / 0xcda160000 | PDS data (vertex: 0x302c0 / 0x302d0; background / end-of-tile: 0x3c030 / 0x3c040) |
+| 0x1_00000000 | 0xcda0d0000 | the render target (the image state's address) |
+| 0x1_00008000 | 0xcda0ec000 (64 KiB) | PPP state blocks, the vertex shader's constants (+0x620) |
+| 0x1_00040000 | 0xcda138000 | the VDM stream |
+| 0x1_00070000 | 0xcda168000 | {64, 64}: a scissor table (to check) |
+| 0x1_000f4000 ... 0x1_00148000 | 0xcda1e8000 ... 0xcda220000, 0xc000 apart | PPP state (0x1_0013c000 = 0xcda218000), viewport block (0x1_0014e3e8) |
+
+The triangle is the stream's fifth batch: VDM_STATE (vertex PDS code
+0x440, output size 4), PPP {varying header}, PDS_STATE (shared-data DMA
+0x3c0, data 0x302c0: the six corner floats from 0x1_00008620 into the
+common store), VDM_STATE (vertex PDS data 0x302d0: DOUTU -> USC 0x2c0),
+PPP {fragment PDS: shader 0x1c0 (DOUTU -> USC 0x40), texunicode 0xc0,
+sizes, varying 0x140}, PPP {output select}, PPP {ISP control / A / B},
+PPP {region clip + viewport 32 32 32 -32 0 1}, PPP {WCLAMP 1e-20, PPP_CTRL
+0x4a0}, PPP {ISP DBSC}, PPP {stream-out}, INDEX_LIST (3 indices,
+TRI_LIST), PPP terminate, STREAM_TERMINATE. Every PPP block starts with
+Mesa's `STATE_HEADER`; the words decode with `ppp.xml`.
+
+`--tri` (with `--pm --clear`) rebuilds the low window at our PDS base,
+copies the blocks into G3+0x6c000 and runs this batch from its own stream.
+Results so far: the VDM reads the whole stream (RGX+0x410 = base + 0x84),
+**the vertex PDS program and the vertex shader run** (pointing their code
+at an unmapped offset faults PDS / USCS: runs 4-5), no fault -- but the PM
+gets no geometry (only its start-up pages), so nothing reaches the tiling
+engine, and the 3D then faults in the IPF as for an empty scene. Suspects:
+StartTA's register values (Apple's are filled by the kernel, not in any
+capture; 0xc90 = 0 makes the vertex USC fault, run v3), the PPP / TE side
+after the vertex shader. To find.
+
 Open: our own background / end-of-tile programs and shaders instead of
 Apple's (metal-tt fragment shader, PDS from the formats above); the PM
 start-up with a real free list (macrotile array); which StartTA / Start3D

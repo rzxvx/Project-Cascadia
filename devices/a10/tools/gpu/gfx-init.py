@@ -430,6 +430,8 @@ def pm_setup(w32, va, pa):
     # on the command line): PDS HALT words throughout, so any PDS program
     # the TA starts ends at once
     iface.writemem(pa["G3"] + G3["code"], struct.pack("<I", 0xd3000000) * (0x10000 // 4))
+    if "--tri" in sys.argv:
+        tri_setup(w32, va, pa)
     if "--clear" in sys.argv:
         clear_setup(w32, va, pa)
     # PPP terminate state: header pres_terminate, TERMINATE0 clip right /
@@ -474,6 +476,69 @@ def clear_setup(w32, va, pa):
     iface.writemem(d + 0x10, struct.pack("<QQII", dva, 0x90000007, 0x2440, 0x10))
     # the render target: a marker pattern, so written pixels show
     iface.writemem(pa["G3"] + G3["rt"], struct.pack("<I", int(os.environ.get("RT_FILL", "0x5a5a5a5a"), 0)) * 0x1000)
+
+
+TRI_CAP = os.path.join(HERE, "../../build/gpu/ioscap/rtri2/done")
+
+
+def tri_setup(w32, va, pa):
+    """--tri (with --pm --clear): the one-triangle draw of the iPadOS `tri`
+    capture (build/gpu/ioscap/rtri2, docs/gpu.md "G6 step 4") replayed
+    from our own VDM stream. The capture's low GPU window (PDS base 0) is
+    rebuilt at our PDS base: its PDS / USC heap (CPU 0xcda0dc000) at +0, its
+    PDS data regions 0x30000 (0xcda158000) and 0x3c000 (0xcda160000); the
+    PPP state blocks the draw names (in 0x1_00008000 = 0xcda0ec000,
+    0x1_0013c000, 0x1_000f4000, 0x1_00148000) are copied into G3+0x6c000
+    and the stream points there; the vertex shader's six constants (the
+    triangle's corners) at G3+0x6c800, the vertex PDS data's DMA address
+    patched to them."""
+    def cap(name):
+        return open(os.path.join(TRI_CAP, name), "rb").read()
+    code = pa["G3"] + G3["code"]
+    heap = cap("cda0dc000-10000.bin")
+    lo = int(os.environ.get("TRI_HEAP_LO", "0x40"), 0)
+    iface.writemem(code + lo, heap[lo:])
+    iface.writemem(code + 0x30000, cap("cda158000-8000.bin"))
+    iface.writemem(code + 0x3c000, cap("cda160000-8000.bin"))
+    t = 0x6c000
+    tva = G3VA + t
+    consts = struct.pack("<6f", *[float(x) for x in os.environ.get(
+        "TRI_XY", "-1,-1,0,-1,-1,1").split(",")])
+    iface.writemem(pa["G3"] + t + 0x800, consts)
+    iface.writemem(code + 0x302c0, struct.pack("<Q", tva + 0x800))
+    if os.environ.get("TRI_VS_USC"):        # experiment: the vertex shader's USC offset (DOUTU at 0x302d0)
+        iface.writemem(code + 0x302d0, struct.pack("<I", int(os.environ["TRI_VS_USC"], 0)))
+    blocks = [
+        ("var", [0x001c0000, 0, 0, 0]),
+        ("frag", [0x000000c0, 0x000001c0, 0x000000c0, 0x00800000, 0x00000000, 0x00000140]),
+        ("os", [0x00020000, 0x04010000]),
+        ("isp", [0x0000001f, 0x03c40000, 0x003e0f00, 0x0e000000, 0x00100f00, 0x00000000]),
+        ("vp", [0x00000c00, 0x80000001, 0x00000001, 0x42000000, 0x42000000, 0x42000000,
+                0xc2000000, 0x00000000, 0x3f800000]),
+        ("ctrl", [0x00210000, 0x1e3ce508, 0x000004a0]),
+        ("dbsc", [0x00000020, 0x00000000]),
+        ("so", [0x00c00000, 0x00000001, 0x00004022, 0x00030040]),
+        ("term", [0x02000000, 0x00040001, 0x00000000]),
+    ]
+    at = {}
+    off = 0x100
+    for name, words in blocks:
+        at[name] = (tva + off, len(words))
+        iface.writemem(pa["G3"] + t + off, struct.pack(f"<{len(words)}I", *words))
+        off += 0x40
+
+    def ppp(name):
+        a, n = at[name]
+        return [(n << 8) | (a >> 32), a & 0xfffffffc]
+    vs_code = int(os.environ.get("TRI_VS_CODE", "0x440"), 0)
+    stream = ([0x44002f80, vs_code, 0x00000004, 0x00001081] + ppp("var")
+              + [0x20020001, 0x000302c0, 0x000003c0, 0x48002f80, 0x000302d0]
+              + ppp("frag") + ppp("os") + ppp("isp") + ppp("vp") + ppp("ctrl") + ppp("dbsc") + ppp("so")
+              + [0x6e440600, 0x00000003, 0x00000000, 0x00000000, 0x000000aa]
+              + ppp("term") + [0xc0000000])
+    iface.writemem(pa["G3"] + t, struct.pack(f"<{len(stream)}I", *stream))
+    w32("TAB", 0x78, tva)
+    w32("TAB", 0x7c, 0)
 
 
 def ta_probe_report(pa):

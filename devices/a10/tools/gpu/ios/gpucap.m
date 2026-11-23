@@ -20,6 +20,7 @@
 #import <Metal/Metal.h>
 #include <mach/mach.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 
@@ -31,35 +32,62 @@ static NSString *const kSource =
      "}\n"
      "kernel void empty() {}\n";
 
+/* All of this process's GPU memory: the IOAccelerator-tagged regions (VM
+ * tag 100) and, for the render captures (G6), every other region within
+ * 256 MiB of them whatever its tag -- the first render captures lacked the
+ * PPP / PDS state the VDM stream points at (GPU 0x1_00008020 ...), which is
+ * not in tag-100 memory. Unreadable regions go into the index only. */
 static void snapshot(const char *dir)
 {
 	char path[1024];
 	mkdir(dir, 0755);
 	snprintf(path, sizeof(path), "%s/index.txt", dir);
 	FILE *idx = fopen(path, "w");
-	vm_address_t addr = 0;
+	vm_address_t lo = ~(vm_address_t)0, hi = 0;
 	unsigned total = 0;
 
-	for (;;) {
-		vm_size_t size = 0;
-		natural_t depth = 1;
-		struct vm_region_submap_info_64 info;
-		mach_msg_type_number_t count = VM_REGION_SUBMAP_INFO_COUNT_64;
+	for (int pass = 0; pass < 2; pass++) {
+		vm_address_t addr = 0;
+		for (;;) {
+			vm_size_t size = 0;
+			natural_t depth = 1;
+			struct vm_region_submap_info_64 info;
+			mach_msg_type_number_t count = VM_REGION_SUBMAP_INFO_COUNT_64;
 
-		if (vm_region_recurse_64(mach_task_self(), &addr, &size, &depth,
-					 (vm_region_recurse_info_t)&info, &count) != KERN_SUCCESS)
-			break;
-		if (info.user_tag == 100 && (info.protection & VM_PROT_READ) && size <= (64u << 20)) {
-			snprintf(path, sizeof(path), "%s/%lx-%lx.bin", dir, (unsigned long)addr, (unsigned long)size);
-			FILE *f = fopen(path, "wb");
-			if (f) {
-				fwrite((void *)addr, 1, size, f);
-				fclose(f);
+			if (vm_region_recurse_64(mach_task_self(), &addr, &size, &depth,
+						 (vm_region_recurse_info_t)&info, &count) != KERN_SUCCESS)
+				break;
+			int tagged = info.user_tag == 100;
+			if (pass == 0) {
+				if (tagged) {
+					if (addr < lo)
+						lo = addr;
+					if (addr + size > hi)
+						hi = addr + size;
+				}
+				addr += size;
+				continue;
 			}
-			fprintf(idx, "%lx %lx prot=%d tag=%u\n", (unsigned long)addr, (unsigned long)size, info.protection, info.user_tag);
-			total++;
+			int near = addr + size > lo - (256u << 20) && addr < hi + (256u << 20);
+			/* GPUCAP_ALL=1: every region up to 4 MiB, wherever it is */
+			if (getenv("GPUCAP_ALL") && !tagged && size <= (4u << 20))
+				near = 1;
+			if ((tagged || near) && size <= (64u << 20)) {
+				int readable = (info.protection & VM_PROT_READ) && !info.is_submap;
+				if (readable) {
+					snprintf(path, sizeof(path), "%s/%lx-%lx.bin", dir, (unsigned long)addr, (unsigned long)size);
+					FILE *f = fopen(path, "wb");
+					if (f) {
+						fwrite((void *)addr, 1, size, f);
+						fclose(f);
+					}
+					total++;
+				}
+				fprintf(idx, "%lx %lx prot=%d tag=%u%s\n", (unsigned long)addr, (unsigned long)size,
+					info.protection, info.user_tag, readable ? "" : " (not saved)");
+			}
+			addr += size;
 		}
-		addr += size;
 	}
 	fclose(idx);
 	printf("%s: %u regions\n", dir, total);
