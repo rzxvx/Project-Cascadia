@@ -46,7 +46,7 @@ p, u, iface, out = gb.p, gb.u, gb.iface, gb.out
 sys.path.insert(0, HERE)
 
 HEAP_VA = int(os.environ.get("HEAP_VA", "0x80400000"), 0)   # window 2: a mapping below 32 MiB (window 1) hangs the firmware on access (G3 bisect)
-HEAP_SIZE = 0x100000
+HEAP_SIZE = 0x200000           # 2 MiB: the second MiB holds the TA job (--kick-ta)
 REGIONS = {          # name: (offset in the heap, size)
     "X": (0x00000, 0x1000),
     "P": (0x10000, 0x4000),
@@ -99,6 +99,25 @@ REGIONS = {          # name: (offset in the heap, size)
     "EV0": (0xdc000, 0x4000),
     "EV1": (0xe0000, 0x4000),
     "EV2": (0xe4000, 0x8000),
+    # --kick-ta: the TA queue and command (G6)
+    "KT": (0x100000, 0x1000),   # TA queue object
+    "QST": (0x101000, 0x1000),  # its state
+    "CRT": (0x102000, 0x1000),  # its command ring
+    "SET": (0x103000, 0x4000),  # its scheduling entries
+    "STT": (0x107000, 0x1000),  # its status
+    "CMDT": (0x108000, 0x1000), # the TA command (type 0; microsequence at +0x464)
+    "UST": (0x109000, 0x1000),  # its microsequence
+    "CTXT": (0x10a000, 0x1000), # CMDT+0x14: 0x90-byte context state
+    "T74": (0x10b000, 0x1000),  # CMDT+0x20: 0x74 bytes
+    "TBIG": (0x10c000, 0x4000), # CMDT+0x24: a large object (+0x3300 used)
+    "TAA": (0x110000, 0x1000),  # StartTA +0x4: 8 x u32 (RGX 0xc78 ...)
+    "TAB": (0x111000, 0x1000),  # StartTA +0x8: the 64-bit register block
+    "TAO": (0x112000, 0x1000),  # StartTA +0x10 / FinalizeTA +0x4 object
+    "UT2": (0x113000, 0x1000),  # unit table
+    "FL2": (0x114000, 0x1000),  # flags / threshold
+    "TAC": (0x115000, 0x1000),  # FinalizeTA +0x8 counter object
+    "CTX2": (0x116000, 0x1000), # StartTA +0x40: context state (word 0 = 0: fresh)
+    "PMB": (0x120000, 0xe0000), # --ta-probe: real pages at GPU VA 0x300000.., one 0x7000 slice per StartTA slot
     "ZP": (0xf0000, 0x1000),
     "HP": (0xf4000, 0x4000),    # --store-ios: the PDS / USC heap at GPU VA 0x300000    # --pad: the page behind the unused part of GPU VA 0x200000..0x3fffff
     "TS": (0xec000, 0x4000),    # RAM for I/O type 5, TempSensorRegister (P+0x6e0), which the
@@ -232,6 +251,94 @@ def build_job(w32, va, pa):
         build_store(w32, va, pa)
     if "--store-ios" in sys.argv:
         build_store_ios(w32, va, pa)
+
+
+def build_ta(w32, va, pa):
+    """G6 step 1: a TA job with an empty VDM stream (one STREAM_TERMINATE,
+    0xc0000000, at GPU VA 0x203c00), on the TA channel (0) with its own
+    queue (KT). Microsequence: StartTA (op 5, 0x68) -> WaitIRQ (event bit 5,
+    TA_FINISHED) -> FinalizeTA (op 6, 0x40, "already finished" fast path)
+    -> End. Stamp: STAMP+0x20 = 1. docs/gpu.md "G6 progress"."""
+    ring = pa["W"]                                   # channel 0 = group 0, TA
+    iface.writemem(ring, struct.pack("<IIIIHBB", 0, 0, va["KT"], 0, 1, 0, 0))
+    w32("G", 0x10 * 0 + 4, 1)
+    w32("KT", 0x00, va["QST"])
+    w32("KT", 0x04, va["CRT"])
+    w32("KT", 0x0c, va["SET"])
+    w32("KT", 0x44, 1)
+    w32("KT", 0x88, va["STT"])
+    w32("QST", 0x50, 256)
+    w32("CRT", 0x00, va["CMDT"])
+    # the command: type 0, its pointers, the microsequence at +0x464
+    w32("CMDT", 0x000, 0)
+    w32("CMDT", 0x014, va["CTXT"])
+    w32("CMDT", 0x020, va["T74"])
+    w32("CMDT", 0x024, va["TBIG"])
+    # the VDM stream: terminate only; its base in StartTA's block B[0x1e] (RGX+0x408)
+    w32("GV", 0x3c00, 0xc0000000)
+    w32("TAB", 0x78, GVA + 0x3c00)
+    u = "UST"
+    w32(u, 0x00, 5)                 # StartTA
+    w32(u, 0x04, va["TAA"])
+    w32(u, 0x08, va["TAB"])
+    w32(u, 0x0c, va["FL2"] + 0x30)  # -> a word copied to the unit table (a null here faults, run 1)
+    w32(u, 0x10, va["TAO"])
+    w32(u, 0x14, va["UT2"])
+    w32(u, 0x18, 1)
+    w32(u, 0x1c, va["FL2"])         # cancel flag (0)
+    w32(u, 0x40, va["CTX2"])        # context state: 0 = fresh start
+    w32(u, 0x64, va["FL2"] + 0x10)  # threshold for +0x5c / +0x60
+    w32("FL2", 0x10, 0xffffffff)
+    w32("FL2", 0x14, 0xffffffff)
+    w32(u, 0x68, 0x20 << 6)         # WaitIRQ: TA_FINISHED
+    f = 0x6c
+    w32(u, f + 0x00, 6)             # FinalizeTA
+    w32(u, f + 0x04, va["TAO"])
+    w32(u, f + 0x08, va["TAC"])
+    w32(u, f + 0x0c, va["UT2"])
+    w32(u, f + 0x14, va["FL2"] + 0x20)   # "already finished"
+    w32("FL2", 0x20, 1)
+    w32(u, f + 0x30, va["STAMP"] + 0x20)
+    w32(u, f + 0x34, 1)
+    w32(u, f + 0x40, 2)             # End
+    w32("CMDT", 0x464, va["UST"])
+    w32("CMDT", 0x468, f + 0x44)
+    # the command's completion record for the TA post-processing callback
+    # (fw 0x13758 -> 0x95b0): *(+0x554) = +0x55c (left 0: a crash, G6 run 4)
+    w32("CMDT", 0x554, va["STAMP"] + 0x30)
+    w32("CMDT", 0x55c, 0x7a)
+    if "--ta-probe" in sys.argv:
+        ta_probe_setup(w32, va, pa)
+
+
+TA_SLOTS = ([("TAB", o) for o in (0x00, 0x08, 0x10, 0x18, 0x20, 0x28, 0x30, 0x38, 0x40, 0x48, 0x50,
+                                  0x58, 0x60, 0x68, 0x70, 0x80, 0x88, 0x90, 0x98, 0xa0, 0xa8, 0xb0,
+                                  0xb8, 0xc0, 0xc8, 0xd0, 0xd8)]
+            + [("TAO", o) for o in (0xa0, 0xa8, 0xb0)])
+TA_PROBE_VA, TA_PROBE_STRIDE = 0x300000, 0x7000
+
+
+def ta_probe_setup(w32, va, pa):
+    """--ta-probe: GPU VA 0x300000..0x3dffff onto region PMB (real pages); every
+    64-bit StartTA slot (block B and the TAO object's +0xa0 / +0xa8 / +0xb0)
+    gets its own 0x7000-byte slice, so the TA writes land instead of
+    faulting, and the end of the run shows which slice got written."""
+    n = 0xe0000 // 0x1000
+    ents = b"".join(struct.pack("<Q", (pa["PMB"] + 0x1000 * k) | 1) for k in range(n))
+    iface.writemem(pa["PTR"] + 8 * ((TA_PROBE_VA >> 12) & 0x1ff), ents)
+    for i, (r, o) in enumerate(TA_SLOTS):
+        w32(r, o, TA_PROBE_VA + TA_PROBE_STRIDE * i)
+        w32(r, o + 4, 0)
+
+
+def ta_probe_report(pa):
+    for i, (r, o) in enumerate(TA_SLOTS):
+        d = iface.readmem(pa["PMB"] + TA_PROBE_STRIDE * i, TA_PROBE_STRIDE)
+        nz = [j for j in range(0, len(d), 4) if d[j:j + 4] != b"\0\0\0\0"]
+        if nz:
+            w = struct.unpack_from("<8I", d, nz[0] & ~0x1f)
+            out(f"probe {r}+{o:#x} (VA {TA_PROBE_VA + TA_PROBE_STRIDE * i:#x}): {len(nz) * 4:#x} bytes written, "
+                f"first +{nz[0]:#x}, last +{nz[-1]:#x}: " + " ".join(f"{x:08x}" for x in w))
 
 
 HEAPVA = int(os.environ.get("HEAPVA_IOS", "0x300000"), 0)   # --store-ios: PDS base = USC base (P+0x10 = P+0x18 = this)
@@ -539,6 +646,22 @@ def main():
                 w32(r2, int(o2, 0), va[v2[1:]] if v2.startswith("@") else pa[v2[1:]] if v2.startswith("%") else int(v2, 0))
         out("kick: compute channel 2, write index 1, doorbell (0x21 << 56) | (3 << 48) | 2")
         kf.send((0x21 << 56) | (3 << 48) | 2)
+    if "--kick-ta" in sys.argv:
+        try:
+            kf.work_for(2.0)
+        except Exception as e:
+            out(f"crashed before the kick: {e!r}")
+        if "--job" in sys.argv and "--kick-cp" not in sys.argv:
+            build_job(w32, va, pa)          # the GPU page tables, the flush fence
+        build_ta(w32, va, pa)
+        for s2 in sets:
+            k2, v2 = s2.split("=")
+            r2, o2 = k2.split("+")
+            if r2 in ("KT", "QST", "CRT", "SET", "STT", "CMDT", "UST", "CTXT", "T74", "TBIG", "TAA",
+                      "TAB", "TAO", "UT2", "FL2", "TAC", "CTX2", "GV", "PTR", "STAMP"):
+                w32(r2, int(o2, 0), va[v2[1:]] if v2.startswith("@") else pa[v2[1:]] if v2.startswith("%") else int(v2, 0))
+        out("kick: TA channel 0, write index 1, doorbell (0x21 << 56) | (3 << 48) | 0")
+        kf.send((0x21 << 56) | (3 << 48) | 0)
     try:
         if "--watch" in sys.argv:
             watch(kf, secs, pa)
@@ -552,6 +675,11 @@ def main():
     out("messages: " + " ".join(f"{m:#x} x{c}" for m, c in InitEndpoint.seen.items()))
     out("ring events: " + " ".join(f"{r}:{t:#x} x{c}" for (r, t), c in sorted(EVENTS.items())))
     if "--job" in sys.argv:
+        if "--kick-ta" in sys.argv:
+            out(f"STAMP+0x20 = {p.read32(pa['STAMP'] + 0x20):#x} (FinalizeTA: 1), "
+                f"+0x30 = {p.read32(pa['STAMP'] + 0x30):#x} (the TA command's completion record: 0x7a)")
+            if "--ta-probe" in sys.argv:
+                ta_probe_report(pa)
         out(f"STAMP+0 = {p.read32(pa['STAMP']):#x} (FinalizeCompute: 1), "
             f"+0x10 = {p.read32(pa['STAMP'] + 0x10):#x} (the command's completion record: 0xc0de)")
         if "--store" in sys.argv or "--store-ios" in sys.argv:

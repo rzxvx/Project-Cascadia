@@ -603,6 +603,55 @@ AGFCLDataMasterPreProcessingCallback):
 The queue's data master picks the field: TA queues read +0x464, 3D +0x14
 (or +0x498), CL +0x1e8.
 
+**Events and the TA ops' layouts.** The interrupt task ORs the RGX event
+status (masked, bit 9 `MMU_PAGE_FAULT` dropped; fw 0x22d86) into fw
+0xd75f4, so WaitIRQ's bits are Rogue's `ROGUE_CR_EVENT_STATUS`: compute's
+bit 2 is `COMPUTE_FINISHED`; a TA waits for bit 5 `TA_FINISHED` (0x20), a
+3D for bit 3 `PIXELBE_END_RENDER` (0x8); bit 7 `PM_OUT_OF_MEMORY` and bit 6
+`TA_TERMINATE` go to the dispatcher (fw 0x2920).
+
+- StartTA (op 5, 0x68 bytes): +0x4 -> 8 x u32 (RGX 0xc78 ...), +0x8 -> the
+  64-bit block (0xc90 ... 0x408, the 0x11030 slots), +0xc -> a word copied
+  to the unit table, +0x10 -> an object (+0xa0 / +0xa8 / +0xb0 -> RGX
+  0x2d8 / 0x240 / 0x248 masked to 16 bytes, +0xb8 non-zero = resume via fw
+  0xe99c, +0xbc, +0xc4), +0x14 / +0x18 unit table and its value, +0x1c a
+  cancel flag (as StartCompute), +0x20 byte -> RGX+0xf078, +0x2c -> fw
+  0x1866c, +0x40 -> context state (word 0 = 0: fresh start: RGX 0x3d4 = 1,
+  0x3d0 = 0x100, then 0x290, 0x198, 0x258, 0xcb8 each set to 1 and polled
+  clear, 0xc68 = 1), +0x48 non-zero sets RGX+0x80 bit 30; the kick is
+  **RGX+0x400 = 1** (0x478 for compute).
+- FinalizeTA (op 6, 0x40 bytes): +0x4 -> that object (+0xb8 / +0xbc), +0x8
+  -> a counter (+0x10), +0xc unit table, +0x14 -> "already finished" flag
+  (non-zero: no stop / flush, as FinalizeCompute's +0x2c), +0x18 the
+  context for RGX+0xe230, +0x30 / +0x34 the stamp address / value.
+
+**G6 step 1: an empty TA pass runs (2026-11-23, `build/gpu/g6-run*.log`).**
+`gfx-init.py --job --kick-ta` builds a TA queue on channel 0 (queue object
+KT), a type-0 command (CMDT: +0x14 / +0x20 / +0x24 objects, microsequence at
++0x464) and StartTA -> WaitIRQ(`TA_FINISHED`) -> FinalizeTA -> End, with a
+VDM stream that is one STREAM_TERMINATE (0xc0000000, its base in StartTA's
+B+0x78 -> RGX+0x408). What it took:
+
+- run 1: StartTA's +0xc is a **pointer** (the word it points to goes into the
+  unit table); the PM start-up sequence (RGX 0x290 / 0x198 / 0x258 / 0xcb8 /
+  0xc68) already completed;
+- runs 2-3: the TA kicks and writes: an MMU fault, write, requester 7
+  (Tiling) at VA 0, then with every slot at a distinct unmapped VA: a write
+  by requester 6 (**PM**) at **TAO+0xa8 (-> RGX+0x240) + 0x40**;
+- run 4 (`--ta-probe`: GPU VA 0x300000.. on real pages, one 0x7000 slice per
+  slot): **STAMP+0x20 = 1, no fault** -- the TA finished. Written slices:
+  B+0x8 (-> RGX+0xc38): `00000060 00006000 ...` (0x20 bytes) and TAO+0xa8
+  (-> RGX+0x240): a table of `{n << 24, 0x3070}` pairs (0x7c bytes); then a
+  crash in the TA post-processing callback (fw 0x13758,
+  "AGFTADataMasterPostProcessingCallback");
+- run 5: **the TA command's completion record is CMDT+0x554 (address) /
+  +0x55c (value)** (CL's: +0x26c / +0x274): STAMP+0x30 = 0x7a, no crash, no
+  fault, ping answered.
+
+Next: the 3D side -- a type-1 command whose Start3D clears the target
+through the background object (the render record's descriptors), reading
+the PM state the TA left (the RGX+0x240 table, RGX+0xc38).
+
 ### G6: render captures from iPadOS (2026-11-23, `build/gpu/ioscap/rclear`, `rtri`)
 
 `gpucap OUTDIR clear` / `tri` on iPadOS 18.7.9: a render pass into a linear
