@@ -925,25 +925,37 @@ background and the red triangle at (784, 1048), the wallpaper around it.
 (`/dev/fb0` is simpledrm's fbdev shadow, stride 6480: it does not show
 what the GPU wrote.)
 
-**Bigger targets (in progress, runs screen-full1, screen-1k*).** `RT_SIZE=WxH`
-sizes everything from the target as upstream `pvr_hwrt.c` does for 32x32
-tiles: PPP_SCREEN, TE_SCREEN, TE_MTILE1 / 2 (4 x 4 macrotiles of mx x my
-tiles, mx / my rounded up to 4), 0xc20 = mx * my, ISP_MTILE_SIZE (0xf18) =
-mx << 16 | my, ISP_RGN (0xf28) = mx * my * 5 / 4 words, the PPP terminate
-and region clips, the viewport, and the image state's size (height - 1 in
-word 0 bits 27-31 + word 1 bits 0-8, width - 1 in word 1 bits 9-22: both
-63 in the capture's words); region headers and TPC moved to region PMB at
-GPU VA 0x300000. 64x64 is unchanged (0 differing pixels). The TA does the
-whole screen: the macrotile array's entries step by one macrotile's 5-byte
-region headers (1600 bytes for 16 x 20 tiles), the geometry lands in PM
-pages, and the drawn tiles show the triangle exactly where it belongs (375
-red pixels on row 1000 of 1620 x 2160). **But the 3D stops after about 512
-tiles** -- 1620x2160: macrotile 0 and part of macrotile 1; 1024x1024: 8
-macrotiles of 8 x 8 and part of the 9th -- and Finalize3D waits for
-`PM_3D_MEM_FREE` forever, without an MMU fault. Not the cause: the
-free-list descriptor's +0x28 (-> RGX 0x220) = pages / 32, 1024 PM pages
-instead of 128 (a little further, still stuck), Apple's own end-of-tile
-code (same stop). To find.
+**Bigger targets: the whole screen (2026-11-24, runs screen-*, off-*, dvfs-*,
+full-dvfs).** `RT_SIZE=WxH` sizes everything from the target as upstream
+`pvr_hwrt.c` does for 32x32 tiles: PPP_SCREEN, TE_SCREEN, TE_MTILE1 / 2 (4 x
+4 macrotiles of mx x my tiles, mx / my rounded up to 4), 0xc20 = mx * my,
+ISP_MTILE_SIZE (0xf18) = mx << 16 | my (other values change which tiles
+the ISP visits: 16 -> only a 16 x 16-tile corner), ISP_RGN (0xf28) = mx * my
+* 5 / 4 words, the PPP terminate and region clips, the viewport, and the
+image state's size: **width - 1 in word 0 bits 27-31 + word 1 bits 0-8,
+height - 1 in word 1 bits 9-22** (swapped, a 768 x 640 target came out 640
+wide). Region headers and TPC live in region PMB at GPU VA 0x300000;
+`--offscreen` renders into a RAM buffer of ours instead of the display.
+
+What stopped big renders: **the firmware's DVFS sample tick powers the GPU
+off in the middle of a 3D render.** Symptoms: the 3D drew a random 550-630
+tiles and then waited forever (Finalize3D on `PM_3D_MEM_FREE`), every unit
+idle (JONES_IDLE 0x3f7f), no fault, the power ring full of 0x11 / 0x12
+(up / down) pairs; smaller renders (up to 480 tiles) usually finished in
+time. With the sample period H+0x4 = 240000000 (10 s instead of 10 ms)
+there is one power-up and no power-down, and **1024x1024 off screen (1024 of
+1024 tiles) and the full 1620x2160 screen render completely** (the
+background everywhere, the triangle in the left half). The main loop
+powers the GPU off (fw 0x1dcc6 -> 0x61a0) when P2+8, P3+0x24, P4+0xc are 0,
+fw 0x5062 sees no pending ring entry or queue, and 0xd7580 has no pending
+stamp -- so during a running 3D job the firmware's books show it idle; what
+should mark it busy (likely the per-unit state the scheduler keeps, which
+our own unit tables bypass) is to find. Until then render runs use H+0x4
+= 240000000. Ruled out on the way: the free-list descriptor's +0x28,
+1024 PM pages, Apple's own end-of-tile code, the per-pipe 0xfc0 buffers,
+the Start3D values 0x6d0 / 0x3e00 / 0x4070 / 0xfd8 / 0x11080, the
+end-of-tile PDS info, ISP_CTL's pipe count (one run with pipe_enable 2
+finished by chance).
 
 **The 1-page free list is no longer needed**: with the 0x470 program the
 clear alone also runs on the 128-page free list with the WaitIRQ (runs

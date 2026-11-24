@@ -572,6 +572,7 @@ def own_shaders():
 
 
 SCREEN_VA = 0x1000000      # --screen: GPU VA of the framebuffer
+OFFSCREEN = []             # --offscreen: [PA, stride] of the target
 
 
 def map_screen(w32, pa):
@@ -581,6 +582,14 @@ def map_screen(w32, pa):
     (PD entries 8.., page tables PTFB). Returns the GPU VA where the 64x64
     picture goes (SCREEN_XY=x,y, default the middle) and the row pitch."""
     fpa, size, stride = (int(x, 0) for x in os.environ.get("SCREEN", "0x8bc2dc000:0xd72800:6528").split(":"))
+    if "--offscreen" in sys.argv:        # the same, into RAM of ours instead of the display
+        gm = geom()
+        stride = 4 * gm["w"] + (-4 * gm["w"] % 64)
+        size = stride * gm["h"]
+        fpa = u.heap.memalign(0x10000, size)
+        iface.writemem(fpa, struct.pack("<I", 0x5a5a5a5a) * (size // 4))
+        OFFSCREEN[:] = [fpa, stride]
+        os.environ.setdefault("SCREEN_XY", "0,0")
     npages = (size + 0xfff) >> 12
     nptr = (npages + 511) // 512
     assert nptr <= 8
@@ -656,9 +665,12 @@ def own_setup(w32, va, pa):
     gm = geom()
     if "--screen" not in sys.argv:
         pitch = 4 * gm["w"] + (-4 * gm["w"] % 64)
-    # word 0 bits 27..31 + word 1 bits 0..8: height - 1; word 1 bits 9..22: width - 1
-    h1, w1 = gm["h"] - 1, gm["w"] - 1
-    img = [0x03050502 | ((h1 & 0x1f) << 27), ((h1 >> 5) & 0x1ff) | (w1 << 9), rt_va >> 1,
+    # word 0 bits 27..31 + word 1 bits 0..8: width - 1; word 1 bits 9..22: height - 1
+    # (IMG_SWAP=1: the other way round)
+    a1, b1 = gm["w"] - 1, gm["h"] - 1
+    if os.environ.get("IMG_SWAP"):
+        a1, b1 = b1, a1
+    img = [0x03050502 | ((a1 & 0x1f) << 27), ((a1 >> 5) & 0x1ff) | (b1 << 9), rt_va >> 1,
            0x80000000 | ((pitch // 64 - 1) << 15), 0, 0xc0000000, 0]
     iface.writemem(pa["G3"] + t + 0x920, struct.pack("<7I", *img))
     iface.writemem(g + 0x1500, struct.pack("<3I", 0xf0000800, 0xf4000012, 0xd3000000))
@@ -796,7 +808,14 @@ def map_g3(w32, pa):
         w32("PDR", 8 * pde_i + 4, pa[ptr] >> 32)
     map_pages(w32, pa, "PTR2", G3VA, "G3", 0x100)
     if "--va0" in sys.argv:
-        map_pages(w32, pa, "PTR0", 0, "VA0", 1)
+        npg = int(os.environ.get("VA0_PAGES", "1"), 0)
+        if npg > 1:            # a buffer of its own (the region VA0 is one page)
+            if "VA0BUF" not in pa:
+                pa["VA0BUF"] = u.heap.memalign(0x10000, npg * 0x1000)
+                iface.writemem(pa["VA0BUF"], struct.pack("<I", 0xa5a5a5a5) * (npg * 0x400))
+            map_pages(w32, pa, "PTR0", 0, "VA0BUF", npg)
+        else:
+            map_pages(w32, pa, "PTR0", 0, "VA0", 1)
 
 
 def build_3d(w32, va, pa):
@@ -1298,6 +1317,21 @@ def main():
                     words = struct.unpack(f"<{n // 4}I", iface.readmem(pa["G3"] + o, n))
                     nz = [(i * 4, x) for i, x in enumerate(words) if x]
                     out(f"G3 {k} (+{o:#x}): {len(nz)} words: " + " ".join(f"+{a:#x}={x:#x}" for a, x in nz[:32]))
+                if "VA0BUF" in pa:
+                    npg = int(os.environ.get("VA0_PAGES", "1"), 0)
+                    vb = iface.readmem(pa["VA0BUF"], npg * 0x1000)
+                    ch = [i for i in range(0, len(vb), 4) if vb[i:i + 4] != b"\xa5\xa5\xa5\xa5"]
+                    out(f"VA0 buffer: {len(ch)} words changed" + (f", first {ch[0]:#x} last {ch[-1]:#x}: "
+                        + vb[ch[0]:ch[0] + 32].hex(" ", 4) if ch else ""))
+                if OFFSCREEN:
+                    gm = geom()
+                    tm = []
+                    for ty in range(gm["ty"]):
+                        row = struct.unpack(f"<{gm['w']}I", iface.readmem(OFFSCREEN[0] + (32 * ty + 16) * OFFSCREEN[1], 4 * gm["w"]))
+                        tm.append("".join("." if row[min(32 * tx + 16, gm["w"] - 1)] == 0x5a5a5a5a else "#" for tx in range(gm["tx"])))
+                    out(f"offscreen tiles drawn: {sum(r.count('#') for r in tm)} of {gm['tx'] * gm['ty']}")
+                    for r in tm:
+                        out("  " + r)
                 rtb = iface.readmem(pa["G3"] + G3["rt"], 0x4000)
                 if os.environ.get("RT_OUT"):
                     open(os.environ["RT_OUT"], "wb").write(rtb)
