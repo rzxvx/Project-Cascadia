@@ -1227,9 +1227,10 @@ def main():
     if "--power" in sys.argv:
         # what the kext does before the firmware ever runs: Fender state 1
         F = gb.FENDER
-        p.write32(F + 0x1000, 0x11)
+        st = int(os.environ.get("POWER_STATE", "1"), 0)     # Fender perf state 1..6 (6: the fastest)
+        p.write32(F + 0x1000, 0x10 | st)
         t = time.time()
-        while time.time() - t < 0.2 and (p.read32(F + 0x1000) & 0x1f) != 1:
+        while time.time() - t < 0.2 and (p.read32(F + 0x1000) & 0x1f) != st:
             pass
         time.sleep(0.01)
         out(f"--power: Fender +0x1000 = {p.read32(F + 0x1000):#x}, +0x14 = {p.read32(F + 0x14):#x}")
@@ -1303,6 +1304,7 @@ def main():
             if r2 in ("K3", "QS3", "CR3", "SE3", "ST3", "CMD3", "US3", "CTX3", "S3A", "S3B", "UT3", "FL3",
                       "F3C", "FLD", "T74", "PMH", "TAO", "G3", "PTR2", "PTR0", "VA0", "STAMP"):
                 w32(r2, int(o2, 0), va[v2[1:]] if v2.startswith("@") else pa[v2[1:]] if v2.startswith("%") else int(v2, 0))
+        drain_rings()                       # room in the event / power / trace rings for the 3D's events
         w32("G", 0x10 * 1 + 4, 1)
         out("kick: 3D channel 1, write index 1, doorbell (0x21 << 56) | (3 << 48) | 1")
         kf.send((0x21 << 56) | (3 << 48) | 1)
@@ -1320,13 +1322,17 @@ def main():
     if os.environ.get("TRACE_DUMP"):         # the firmware's trace ring (X+0xec / +0xf0, A+0 = flags)
         wr = p.read32(pa["EC2"] + 0x20)
         ents = iface.readmem(pa["EV2"], 512 * 0x3c)
-        for i in range(min(wr, 512)):
+        for i in range(512):
             w = struct.unpack_from("<15I", ents, 0x3c * i)
+            if w[0] == 0:
+                continue
             out(f"trace {i:3}: " + " ".join(f"{x:08x}" for x in w[:9]))
         wr1 = p.read32(pa["EC1"] + 0x20)
         ents = iface.readmem(pa["EV1"], 256 * 0x3c)
-        for i in range(min(wr1, 256)):
+        for i in range(256):
             w = struct.unpack_from("<15I", ents, 0x3c * i)
+            if w[0] == 0:
+                continue
             out(f"power {i:3}: " + " ".join(f"{x:08x}" for x in w[:6]))
     out("ring events: " + " ".join(f"{r}:{t:#x} x{c}" for (r, t), c in sorted(EVENTS.items())))
     if "--job" in sys.argv:

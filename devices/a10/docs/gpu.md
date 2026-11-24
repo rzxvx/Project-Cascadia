@@ -1,6 +1,7 @@
 # GPU (Apple A10 / T8010, "G9P") -- plan and what is known
 
-Status 2026-11-24: **G0-G6 done (our own shaders and programs); the GPU work runs under Linux**
+Status 2026-11-24: **G0-G6 done (our own shaders and programs, the whole
+screen; the host owns the GPU's power state, P+0xd34 = 0xd3c = 0); the GPU work runs under Linux**
 (`GPU_BACKEND=linux`, see "GPU work under Linux"): core ID 0x011b0602 /
 revision 0x000d0a00, the GFX firmware boots and takes init data with the
 real RGX, stable. **The first job ran on the GPU** (G4 run 29-31): the
@@ -984,6 +985,21 @@ background everywhere, the triangle in the left half -- seen on the iPad). Why (
   table (MHz). Setting H+0x8 / 0x10 / 0x14 / 0x2c / 0x30 / 0x54 that way
   did not stop the power cycling (run hk-1k); the 0x160-byte table and the
   controller block are still missing.
+- **The fix (runs nodvfs-*, 2026-11-24): let the host own the power state
+  and keep the firmware's power / DVFS path off.** With **P+0xd34 = P+0xd3c
+  = 0** the firmware only records a software "powered" flag and never runs
+  its Fender perf-state requests nor its DVFS / power-gating step; the host
+  powers the core itself before the init message (`--power`, Fender
+  +0x1000 = 0x10 | state, `POWER_STATE=6` the fastest; G1.5: states 1..6
+  are the perf states). Then: **no power event at all during a run, the
+  firmware answers a ping after the job (it did not before), 1024x1024 off
+  screen (1024 of 1024 tiles) and the whole 1620x2160 screen render at the
+  normal H+0x4, 64x64 is still byte for byte iPadOS's.** (Run 43's lesson
+  "--power skips the firmware's power-up" was with P+0xd34 / 0xd3c = 1.)
+  The arguments for render runs: `--cold --power` + `POWER_STATE=6` +
+  `P+0xd34=0 P+0xd3c=0`; the H+0x4 work-around is no longer needed. The
+  firmware's own DVFS (H, the kext's power-struct init below) is for later,
+  if we want it at all.
 - **The firmware's trace** (`TRACE_DUMP=1`, flags in A+0: 1 = job events;
   the trace ring is X+0xec / +0xf0): a 1024x1024 run shows StartTA (code 0),
   FinalizeTA (1), the TA's completion (0xa, 0x7a), then 850 ms later
