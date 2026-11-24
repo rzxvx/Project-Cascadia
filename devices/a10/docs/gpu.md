@@ -181,10 +181,17 @@ own shaders, PDS programs and state ("G6 legalization").** The screen is
 next.
 
 **G7 -- kernel driver (35 %).** In our kernel, in C: `apple-rtkit` with a
-T8010 A7-IOP mailbox backend, GEM shmem, `drm_gpuvm`, `drm_sched`. Decision
-for later: our own small UAPI or upstream powervr's (Mesa's pvr winsys
-unchanged, the kernel translating to Apple's firmware commands). Check: a
-user program allocates, submits, waits.
+T8010 A7-IOP mailbox backend, GEM shmem, `drm_gpuvm`, `drm_sched`. **Decided
+2026-11-24 (the user): upstream powervr's UAPI** (`drivers/gpu/drm/imagination`)
+with a backend for Apple's firmware -- Mesa's pvr winsys unchanged, the
+kernel translating powervr's geometry / fragment / compute jobs, free lists
+and HWRT datasets into the TA / 3D / CL commands of G4-G6. No GPU-side
+cost: the translation is per job on the CPU (register values copied into
+the firmware's blocks); the GPU runs the same work either way. First
+step, needed whatever the UAPI: the kernel boots the firmware itself
+(RTKit on the A7-IOP mailbox, init data, rings, GPU page tables, the host
+owning the power state) and runs G5's / G6's jobs without the Python
+harness. Check: a user program allocates, submits, waits.
 
 **G8 -- Mesa and the desktop (30 %).** Our G9P shader backend (decoded from
 `applegpu_g9p` output), Rogue state packing from upstream Mesa. Gallium (GL ES
