@@ -2,9 +2,11 @@
 #
 # The iPad 2's Apple files -- what ./cascadia k93 firmware runs.
 #
-#   bash tools/k93-firmware.sh             the boot chain, and the iPad's own
-#                                          files if its iOS answers over USB
-#   K93_FROM_IOS=0 bash tools/k93-firmware.sh   the boot chain only
+#   bash tools/k93-firmware.sh             everything below; touch, Wi-Fi and
+#                                          Bluetooth from the iPad's own iOS
+#                                          if it answers over USB
+#   K93_FROM_IOS=0 bash tools/k93-firmware.sh   everything out of the IPSW,
+#                                          but not the calibration
 #
 # Into build/k93/firmware/:
 #
@@ -30,8 +32,12 @@
 # The boot chain comes from iPad2,1_8.4.1_12H321_Restore.ipsw (offered for
 # download, Apple's own URL) by tools/k93-extract-firmware.py and
 # tools/k93-build-bootchain.py, with the public 12H321 keys, and so do the
-# GPU's and the cameras' files.  The rest comes from the iPad's own iOS over
-# ssh, read only: iOS 6.1.3's files are the ones this iPad runs.
+# GPU's and the cameras' files.  Touch, Wi-Fi and Bluetooth come from the
+# iPad's own iOS over ssh, read only, when it answers: the files that iPad
+# runs (iOS 6.1.3 on the one this port was written on).  With K93_FROM_IOS=0,
+# or when ssh does not get in, they come out of the IPSW's root filesystem
+# (scripts/rootfs-extract.py): 12H321's, the files an iPad on iOS 8.4.1 has.
+# The panel's calibration differs per unit, and only its iOS has it.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -41,6 +47,12 @@ KEEP="$ROOT/build/k93/keep/lib/firmware"
 IPSW_NAME="iPad2,1_8.4.1_12H321_Restore.ipsw"
 IPSW_URL="https://secure-appldnld.apple.com/ios8.4.1/031-31231-20150812-751BEF2C-3C8F-11E5-94D1-BB1A3A53DB92/$IPSW_NAME"
 IPSW_SHA1=529fc75ec834111e255a74241eeb14fb7cc5c46b
+# Its root filesystem and that DMG's public key (Keys:Donner 12H321
+# (iPad2,1), as the extractor's keys): where touch, Wi-Fi and Bluetooth
+# files come from when the iPad's iOS does not give them.
+ROOTFS_DMG=058-24482-024.dmg
+ROOTFS_KEY=d33bfc10cc397ae008d2e56685acb172b74f0eccbe652ecd52e234ab12705980b6483b60
+ROOTFS_OUT=build/k93/firmware-12H321/rootfs
 # The module in this iPad: BlueTool's table puts the "2ND" patchram with the
 # BCM4329C0, whose Wi-Fi files are wifi/4329c0/second.* -- the only ones
 # iOS 6.1.3 installs on the K93.  BT_MODULE= picks another image.
@@ -73,11 +85,13 @@ say "IPSW: $ipsw"
 # ---------------------------------------------------------- boot chain ----
 # Both scripts in the build image: iBoot32Patcher, pycryptodome and capstone
 # are there.  The IPSW is mounted read-only at the name the extractor wants.
+# The root filesystem's touch, Wi-Fi and Bluetooth files are taken in the
+# same run (one pass over its DMG), for when iOS does not give its own.
 say "the boot chain (iBSS, iBEC) out of the IPSW"
 dkr=(docker run --rm)
 [ "$(uname -s)" = Linux ] && dkr+=(--user "$(id -u):$(id -g)")
 "${dkr[@]}" -v "$ROOT":/cascadia -v "$ipsw":/ipsw.ipsw:ro -w /cascadia "${IMAGE:-cascadia-build}" \
-    bash -c "python3 tools/k93-extract-firmware.py /ipsw.ipsw && python3 tools/k93-build-bootchain.py && mkdir -p build/k93/firmware/apple && python3 scripts/extract-sgx-firmware.py --board k93 /ipsw.ipsw build/k93/firmware/apple/sgx543.fw && python3 scripts/extract-h4isp-firmware.py /ipsw.ipsw build/k93/firmware/apple" \
+    bash -c "python3 tools/k93-extract-firmware.py /ipsw.ipsw && python3 tools/k93-build-bootchain.py && mkdir -p build/k93/firmware/apple && python3 scripts/extract-sgx-firmware.py --board k93 /ipsw.ipsw build/k93/firmware/apple/sgx543.fw && python3 scripts/extract-h4isp-firmware.py /ipsw.ipsw build/k93/firmware/apple && mkdir -p $ROOTFS_OUT && python3 scripts/rootfs-extract.py /ipsw.ipsw $ROOTFS_DMG $ROOTFS_KEY /usr/share/firmware/multitouch/K93.mtprops $ROOTFS_OUT/K93.mtprops /usr/share/firmware/wifi/4329c0/second.bin $ROOTFS_OUT/second.bin /usr/share/firmware/wifi/4329c0/second.txt $ROOTFS_OUT/second.txt /usr/sbin/BlueTool $ROOTFS_OUT/BlueTool" \
     | grep -v '^    0x' || fail "the boot chain did not build (above)"
 BC="$ROOT/build/k93/bootchain-v2"
 cp "$BC/iBSS.sigpatched" "$OUT/iBSS.patched"
@@ -85,40 +99,54 @@ cp "$BC/iBEC.autogo.plain.dfu" "$OUT/iBEC.patched.autogo.plain.dfu"
 [ "$(od -An -tx1 -N4 "$OUT/iBSS.patched" | tr -d ' \n')" = 0e0000ea ] || fail "iBSS.patched is not a raw iBSS"
 note "ok: iBSS.patched, iBEC.patched.autogo.plain.dfu"
 
-# ----------------------------------------------------- the iPad's iOS ----
+# ------------------------------------ touch, Wi-Fi and Bluetooth files ----
+# install DIR: K93.mtprops, second.bin, second.txt and BlueTool in DIR, from
+# the iPad's iOS or the IPSW, into the files the image takes.
+install_files() {
+    cp "$1/K93.mtprops" "$OUT/K93.mtprops"
+    cp "$1/second.bin" "$OUT/brcm/brcmfmac4329-sdio.bin"
+    # The MAC: locally administered by default, in the family of the gadget's
+    # pair (dts/k93ap.dts), as the mini's build does; WIFI_MAC=own puts in this
+    # iPad's own (lockdown's WiFiAddress, ideviceinfo), WIFI_MAC=xx:.. any other.
+    local mac="${WIFI_MAC:-02:93:00:00:00:03}"
+    if [ "$mac" = own ]; then
+        mac=$(ideviceinfo -k WiFiAddress 2>/dev/null || true)
+        [ -n "$mac" ] || fail "WIFI_MAC=own, but ideviceinfo could not read the iPad's Wi-Fi address"
+    fi
+    { grep -v '^macaddr=' "$1/second.txt"; echo "macaddr=$mac"; } > "$OUT/brcm/brcmfmac4329-sdio.txt"
+    note "ok: touch firmware, Wi-Fi firmware and NVRAM (macaddr=$mac)"
+    python3 "$ROOT/scripts/extract-bt-firmware.py" "$1/BlueTool" "$BT_MODULE" "$OUT/brcm/BCM4329C0.hcd" \
+        || fail "no Bluetooth patchram for $BT_MODULE in BlueTool"
+}
+
+from_ipsw() {
+    say "touch, Wi-Fi and Bluetooth files out of the IPSW's root filesystem (12H321)"
+    install_files "$ROOT/$ROOTFS_OUT"
+    note "the touch calibration is per panel and only the iPad's iOS has it: not fetched."
+    note "Boot the iPad into its jailbroken iOS, on the cable, and run this again for it."
+}
+
 if [ "${K93_FROM_IOS:-1}" = 0 ]; then
-    note "K93_FROM_IOS=0: not asking the iPad for touch, Wi-Fi and Bluetooth files"
+    note "K93_FROM_IOS=0: not asking the iPad"
+    from_ipsw
     exit 0
 fi
 . "$ROOT/tools/ios-ssh.sh"
 ios_setup k93fw
 if ! ios_connect; then
-    note "no ssh to the iPad's iOS: the touch, Wi-Fi and Bluetooth files are not fetched."
-    note "Boot it into its jailbroken iOS, on the cable, and run this again."
+    note "no ssh to the iPad's iOS"
+    from_ipsw
     exit 0
 fi
 model=$(ios uname -m)
 [ "$model" = iPad2,1 ] || fail "this is a $model, not an iPad2,1"
 say "touch, Wi-Fi and Bluetooth files from the iPad's iOS ($(ios sw_vers -productVersion 2>/dev/null || echo iOS))"
 get() { ios "cat '$1'" > "$2" && [ -s "$2" ] || fail "could not read $1 on the iPad"; }
-get /usr/share/firmware/multitouch/K93.mtprops "$OUT/K93.mtprops"
-get /usr/share/firmware/wifi/4329c0/second.bin "$OUT/brcm/brcmfmac4329-sdio.bin"
+get /usr/share/firmware/multitouch/K93.mtprops "$WORK/K93.mtprops"
+get /usr/share/firmware/wifi/4329c0/second.bin "$WORK/second.bin"
 get /usr/share/firmware/wifi/4329c0/second.txt "$WORK/second.txt"
 get /usr/sbin/BlueTool "$WORK/BlueTool"
-
-# The MAC: locally administered by default, in the family of the gadget's
-# pair (dts/k93ap.dts), as the mini's build does; WIFI_MAC=own puts in this
-# iPad's own (lockdown's WiFiAddress, ideviceinfo), WIFI_MAC=xx:.. any other.
-mac="${WIFI_MAC:-02:93:00:00:00:03}"
-if [ "$mac" = own ]; then
-    mac=$(ideviceinfo -k WiFiAddress 2>/dev/null || true)
-    [ -n "$mac" ] || fail "WIFI_MAC=own, but ideviceinfo could not read the iPad's Wi-Fi address"
-fi
-{ grep -v '^macaddr=' "$WORK/second.txt"; echo "macaddr=$mac"; } > "$OUT/brcm/brcmfmac4329-sdio.txt"
-note "ok: Wi-Fi firmware and NVRAM (macaddr=$mac)"
-
-python3 "$ROOT/scripts/extract-bt-firmware.py" "$WORK/BlueTool" "$BT_MODULE" "$OUT/brcm/BCM4329C0.hcd" \
-    || fail "no Bluetooth patchram for $BT_MODULE in BlueTool"
+install_files "$WORK"
 
 # The panel's calibration: iBoot copies syscfg's MtCl into the device tree,
 # and iOS is the only place to read it (tools/mtdump/mtcal.c, prebuilt).
