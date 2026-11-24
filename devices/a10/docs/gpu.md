@@ -945,13 +945,31 @@ idle (JONES_IDLE 0x3f7f), no fault, the power ring full of 0x11 / 0x12
 time. With the sample period H+0x4 = 240000000 (10 s instead of 10 ms)
 there is one power-up and no power-down, and **1024x1024 off screen (1024 of
 1024 tiles) and the full 1620x2160 screen render completely** (the
-background everywhere, the triangle in the left half -- seen on the iPad). The main loop
-powers the GPU off (fw 0x1dcc6 -> 0x61a0) when P2+8, P3+0x24, P4+0xc are 0,
-fw 0x5062 sees no pending ring entry or queue, and 0xd7580 has no pending
-stamp -- so during a running 3D job the firmware's books show it idle; what
-should mark it busy (likely the per-unit state the scheduler keeps, which
-our own unit tables bypass) is to find. Until then render runs use H+0x4
-= 240000000. Ruled out on the way: the free-list descriptor's +0x28,
+background everywhere, the triangle in the left half -- seen on the iPad). Why (runs busy-*, 2026-11-24):
+
+- **The unit tables are the firmware's per-data-master blocks.** P2 (X+0x144),
+  P3 (X+0x148), P4 (X+0x14c) hold "this data master runs a job" flags:
+  P2+8 (TA), P3+0x24 (3D, 1..3), P4+0xc (CL); fw 0x3b74 matches them with
+  the CONTEXT_MAPPING bytes 0xf078 / 0xf079 / 0xf07a, the main loop's idle
+  check (fw 0x1dcc6 -> 0x61a0) powers off only while all three are 0. The
+  Start / Finalize ops set them through their unit-table argument: StartTA's
+  +4 = 1 in 0x14-byte entries is P2+8 with the table at P2+4, Start3D's
+  +0x1c = 1 / 3 in 0x28-byte entries is P3+0x24 with the table at P3+8. Our
+  own tables (UT2 / UT3) bypassed that; `gfx-init.py` now passes P2+4 /
+  P3+8 (`UNIT_TABLES=own` for the old way), and P3+0x24 = 1 during the 3D.
+- **That is not enough**: the power ring still shows the same 64 up / 64
+  down pairs and big renders still stop. The power-down comes from the
+  power task's DVFS / power-gating decision (fw 0xab50, the sub-state
+  machine fw 0x7c4c -> 0x1c0ce, event 0x12), which works on the power
+  struct H (X+0x311): a mode at +0xc, perf level / utilisation at +0x50 /
+  +0x54, busy-time counters at +0x4bf4.. -- all 0 in ours except the period
+  H+0x4. **The ADT's `sgx` node has the inputs the kext puts there**:
+  `gpu-power-sample-period = 16`, `gpu-perf-tgt-utilization = 95`,
+  `gpu-num-perf-states = 6`, `gpu-pwr-filter-time-constant = 313`,
+  `gpu-perf-filter-time-constant(2) = 5 / 50`, `gpu-perf-integral-gain2`,
+  `gpu-perf-proportional-gain2`, `gpu-device-max-power = 3348`, ... Which
+  goes to which H offset: to read from the kext's power init (AGXG9P).
+  Until then render runs use H+0x4 = 240000000 (no sample during a job). Ruled out on the way: the free-list descriptor's +0x28,
 1024 PM pages, Apple's own end-of-tile code, the per-pipe 0xfc0 buffers,
 the Start3D values 0x6d0 / 0x3e00 / 0x4070 / 0xfd8 / 0x11080, the
 end-of-tile PDS info, ISP_CTL's pipe count (one run with pipe_enable 2

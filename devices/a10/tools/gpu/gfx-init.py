@@ -274,6 +274,20 @@ def build_job(w32, va, pa):
         build_store_ios(w32, va, pa)
 
 
+def unit_table(va, dm):
+    """The per-unit state the Start / Finalize ops keep is the firmware's own
+    per-data-master block, not a table of ours: P2 (X+0x144) + 4 for the TA
+    (0x14-byte entries: StartTA's +4 = 1 is P2+8), P3 (X+0x148) + 8 for the 3D
+    (0x28-byte entries: Start3D's +0x1c = 1 / 3 is P3+0x24). The main loop's
+    idle check (fw 0x1dcc6) powers the GPU off only while P2+8, P3+0x24 and
+    P4+0xc are 0: with tables of our own a running 3D job looked idle and the
+    10 ms DVFS tick cut big renders (docs/gpu.md "the whole screen").
+    UNIT_TABLES=own: the old tables UT2 / UT3."""
+    if os.environ.get("UNIT_TABLES") == "own":
+        return va["UT2" if dm == "TA" else "UT3"]
+    return va["P2"] + 4 if dm == "TA" else va["P3"] + 8
+
+
 def build_ta(w32, va, pa):
     """G6 step 1: a TA job with an empty VDM stream (one STREAM_TERMINATE,
     0xc0000000, at GPU VA 0x203c00), on the TA channel (0) with its own
@@ -304,7 +318,7 @@ def build_ta(w32, va, pa):
     w32(u, 0x08, va["TAB"])
     w32(u, 0x0c, va["FL2"] + 0x30)  # -> a word copied to the unit table (a null here faults, run 1)
     w32(u, 0x10, va["TAO"])
-    w32(u, 0x14, va["UT2"])
+    w32(u, 0x14, unit_table(va, "TA"))
     w32(u, 0x18, 1)
     w32(u, 0x1c, va["FL2"])         # cancel flag (0)
     w32(u, 0x40, va["CTX2"])        # context state: 0 = fresh start
@@ -325,7 +339,7 @@ def build_ta(w32, va, pa):
     w32(u, f + 0x00, 6)             # FinalizeTA
     w32(u, f + 0x04, va["TAO"])
     w32(u, f + 0x08, va["TAC"])
-    w32(u, f + 0x0c, va["UT2"])
+    w32(u, f + 0x0c, unit_table(va, "TA"))
     w32(u, f + 0x14, va["FL2"] + 0x20)   # "already finished"
     w32("FL2", 0x20, 1)
     w32(u, f + 0x30, va["STAMP"] + 0x20)
@@ -912,7 +926,7 @@ def build_3d(w32, va, pa):
     w32(u, 0x04, va["S3A"])
     w32(u, 0x08, va["S3B"])
     w32(u, 0x0c, va[slot])          # PM slot (+0xa0 / +0xa8 / +0xb8 / +0xbc ...; fw 0x17606)
-    w32(u, 0x10, va["UT3"])         # unit table (0x28-byte entries)
+    w32(u, 0x10, unit_table(va, "3D"))   # unit table (0x28-byte entries)
     w32(u, 0x14, va["FL3"] + 0x40)  # -> 0 (non-zero: the partial-render path)
     w32(u, 0x18, va["FL3"] + 0x44)  # -> 0
     w32(u, 0x1c, va["FL3"])         # cancel flag (0)
@@ -935,7 +949,7 @@ def build_3d(w32, va, pa):
     w32(u, f + 0x14, va[slot])
     w32(u, f + 0x18, va["F3C"])     # counter block ([0] count, [4] / [5])
     w32(u, f + 0x1c, 1)
-    w32(u, f + 0x20, va["UT3"])
+    w32(u, f + 0x20, unit_table(va, "3D"))
     w32(u, f + 0x24, va["FL3"] + 0x20)   # "already finished" (non-zero: wait for PM_3D_MEM_FREE only)
     w32("FL3", 0x20, 1)
     w32(u, f + 0x30, va[c])         # the command (+0x864)
