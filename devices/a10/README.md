@@ -27,7 +27,8 @@ Linux on the 7th-generation iPad: **iPad7,11** (Wi-Fi, J171AP) and
 
 **Start here: [docs/QUICKSTART.md](docs/QUICKSTART.md)** -- from a clean Mac to
 Linux on the iPad, its own partition and its desktop. How it was brought up,
-part by part, with what each part took: [docs/bring-up.md](docs/bring-up.md).
+part by part, with what each part took: [docs/bring-up.md](docs/bring-up.md);
+each unit in detail: [docs/research/](docs/research/README.md).
 The GPU: [docs/gpu.md](docs/gpu.md).
 
 ## How it boots

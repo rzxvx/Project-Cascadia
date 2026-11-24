@@ -4,7 +4,8 @@ How Linux came up on the iPad 7, part by part, with what each part took and
 the traps on the way. One iPad7,11 (J171, Wi-Fi, board ID 0x1c), iPadOS
 18.7.9 on it, a Mac, 2026-11-22..23. The GPU has a page of its own:
 [gpu.md](gpu.md). To use it rather than read about it:
-[QUICKSTART.md](QUICKSTART.md).
+[QUICKSTART.md](QUICKSTART.md). Each unit in detail, with its logs:
+[research/](research/README.md).
 
 ## Where it stands (2026-11-23)
 
