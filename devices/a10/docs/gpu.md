@@ -945,7 +945,7 @@ idle (JONES_IDLE 0x3f7f), no fault, the power ring full of 0x11 / 0x12
 time. With the sample period H+0x4 = 240000000 (10 s instead of 10 ms)
 there is one power-up and no power-down, and **1024x1024 off screen (1024 of
 1024 tiles) and the full 1620x2160 screen render completely** (the
-background everywhere, the triangle in the left half). The main loop
+background everywhere, the triangle in the left half -- seen on the iPad). The main loop
 powers the GPU off (fw 0x1dcc6 -> 0x61a0) when P2+8, P3+0x24, P4+0xc are 0,
 fw 0x5062 sees no pending ring entry or queue, and 0xd7580 has no pending
 stamp -- so during a running 3D job the firmware's books show it idle; what
