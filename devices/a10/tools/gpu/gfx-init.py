@@ -1317,6 +1317,17 @@ def main():
     gb.regs("end")
     drain_rings()
     out("messages: " + " ".join(f"{m:#x} x{c}" for m, c in InitEndpoint.seen.items()))
+    if os.environ.get("TRACE_DUMP"):         # the firmware's trace ring (X+0xec / +0xf0, A+0 = flags)
+        wr = p.read32(pa["EC2"] + 0x20)
+        ents = iface.readmem(pa["EV2"], 512 * 0x3c)
+        for i in range(min(wr, 512)):
+            w = struct.unpack_from("<15I", ents, 0x3c * i)
+            out(f"trace {i:3}: " + " ".join(f"{x:08x}" for x in w[:9]))
+        wr1 = p.read32(pa["EC1"] + 0x20)
+        ents = iface.readmem(pa["EV1"], 256 * 0x3c)
+        for i in range(min(wr1, 256)):
+            w = struct.unpack_from("<15I", ents, 0x3c * i)
+            out(f"power {i:3}: " + " ".join(f"{x:08x}" for x in w[:6]))
     out("ring events: " + " ".join(f"{r}:{t:#x} x{c}" for (r, t), c in sorted(EVENTS.items())))
     if "--job" in sys.argv:
         if "--kick-3d" in sys.argv:

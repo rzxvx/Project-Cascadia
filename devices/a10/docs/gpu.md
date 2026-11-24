@@ -969,7 +969,29 @@ background everywhere, the triangle in the left half -- seen on the iPad). Why (
   `gpu-perf-filter-time-constant(2) = 5 / 50`, `gpu-perf-integral-gain2`,
   `gpu-perf-proportional-gain2`, `gpu-device-max-power = 3348`, ... Which
   goes to which H offset: to read from the kext's power init (AGXG9P).
-  Until then render runs use H+0x4 = 240000000 (no sample during a job). Ruled out on the way: the free-list descriptor's +0x28,
+  Until then render runs use H+0x4 = 240000000 (no sample during a job).
+- **How the kext fills H** (AGXG9P, kernelcache 22H355): the init-data
+  builder at 0xfffffff005f96424 puts the firmware VAs of its buffers into
+  X (obj+0x258 / +0x260 / +0x268 -> X+0x144 / 0x148 / 0x14c, **obj+0x270 ->
+  X+0x311**, the buffer table at 0xfffffff005f7a890 pairs obj+0x230 (CPU) with
+  it); fw 0xfffffff005f7c2c8 fills that buffer: zero 0x4d10 bytes, copy
+  0x160 bytes (obj+0x878) to H+0x64, H+0x4 = H+0x8 = the sample period (a
+  device method; the ADT's `gpu-power-sample-period` is 16 ms and the kext
+  keeps it x 24000), H+0x4bf4 = a timestamp, H+0xc = 0 / H+0x10 = 4 (the
+  power sub-state fw 0x7c4c switches on), H+0x14 = 1.0f, H+0x2c = H+0x30 =
+  1, H+0x54 = 100, the perf controller at H+0x8e8..0xb34 from the device's
+  ADT-derived fields (0xf958.., `gpu-perf-*`), and P+0xe58.. the perf-state
+  table (MHz). Setting H+0x8 / 0x10 / 0x14 / 0x2c / 0x30 / 0x54 that way
+  did not stop the power cycling (run hk-1k); the 0x160-byte table and the
+  controller block are still missing.
+- **The firmware's trace** (`TRACE_DUMP=1`, flags in A+0: 1 = job events;
+  the trace ring is X+0xec / +0xf0): a 1024x1024 run shows StartTA (code 0),
+  FinalizeTA (1), the TA's completion (0xa, 0x7a), then 850 ms later
+  Start3D (4), code 0x13, and **Finalize3D (5) only 0.3 ms after Start3D**:
+  the WaitIRQ on `PIXELBE_END_RENDER` returns long before 1024 tiles can be
+  drawn, and Finalize3D then waits for `PM_3D_MEM_FREE`. Why the event comes
+  that early, and where the power-downs fall relative to it (the power
+  ring overflowed before the 3D in that run) -- next. Ruled out on the way: the free-list descriptor's +0x28,
 1024 PM pages, Apple's own end-of-tile code, the per-pipe 0xfc0 buffers,
 the Start3D values 0x6d0 / 0x3e00 / 0x4070 / 0xfd8 / 0x11080, the
 end-of-tile PDS info, ISP_CTL's pipe count (one run with pipe_enable 2
