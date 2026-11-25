@@ -452,12 +452,60 @@ jobs one by one and 16 in one SUBMIT_JOBS, each waited on through a
 syncobj (DRM_IOCTL_SYNCOBJ_WAIT): **116 of 116 wrote 0xcafe0000, ~0.23 ms
 per job including the ioctls -- PASS**. The self-tests still PASS.
 
-Open / next: the powervr UAPI on this backend (contexts and VMs through
-`pvr_vm` -- with 16 KiB CPU pages upstream's MMU code uses 16 KiB GPU pages,
-which iOS's kext also does on G9P, to check on the iPad --, translating
-geometry / fragment / compute jobs into the TA / 3D / CL commands, free
-lists, HWRT datasets, `drm_sched`); several firmware queues per data
-master; a firmware ping (the kernel's RTKit has no ping call); what the sgx node's
+### G7 step 5 (2026-11-25): rendering through the UAPI
+
+`pvr_apple_uapi.c` takes free lists, HWRT datasets, render contexts and
+geometry / fragment jobs (one handle space per file; datasets keep their
+free list, jobs their VM):
+
+- **Free list**: `initial_num_pages` PM pages (4 KiB, a GEM object of the
+  kernel's; no growth yet: a PM out-of-memory stops the TA), their page
+  numbers written into userspace's free-list BO at `free_list_gpu_addr`,
+  the firmware descriptor (fw 0x17a10) over it.
+- **HWRT dataset**: the kernel computes the tiling registers from the size
+  as upstream `pvr_hwrt.c` does (32x32 tiles, 4 x 4 macrotiles: PPP_SCREEN,
+  TE_SCREEN, TE_MTILE1 / 2, the macrotile stride, ISP_MTILE_SIZE, ISP_RGN);
+  one PM slot (MLIST, macrotile array, VHEAP table) per render-target data
+  set; the global free list if given, else the local one. One sample, one
+  layer for now. A data set's geometry job waits for its previous fragment
+  job, a fragment job for its geometry job (in the ioctl, for now).
+- **Geometry -> StartTA**: `vdm_ctrl_stream_base` -> 0x408, `ppp_ctrl` ->
+  0xc88, `te_psg` -> 0xc28, region headers -> 0xc38, TPC -> 0xc40, the
+  dataset's screen / tiling registers; 0xc90 PDS_CTRL stays 0x1e3ce508
+  (not in the UAPI without BRN 56279); 0x428 / 0xcc0 and the six 0x11030
+  slots on the kernel's object; **RGX+0x470 = PDS heap +0x40, inside
+  upstream's VDM sync static area**: userspace puts the program there (data
+  {DOUTU -> a one-instruction USC task}, code at +0x60).
+- **Fragment -> Start3D**: `isp_bgobjdepth` -> 0xf80, `isp_bgobjvals` ->
+  0xf88, `isp_aa`, `isp_ctl` -> 0xf38, `event_pixel_pds_data` / `_info` ->
+  0x620 / 0x628, **the end-of-tile PDS code at PDS heap +0x80, upstream's
+  EOT static area** (0x618), `pds_bgnd[0..2]` -> 0x6a0 / 0x6b0 / 0x6b8; the
+  depth / stencil load-store, scissor, depth bias, occlusion queries and
+  PBE words are not used yet (the end-of-tile program loads its own state).
+- **What the TA stores in a 0x11030 slot**: a VDM stream fragment (`0x300,
+  <PPP terminate VA>, 0xc0000000`) -- with the slot 0 that went to GPU VA 0.
+  Something at the 3D's end still writes to VA 0 (PDS requester; none of
+  the zero Start3D / StartTA slots, nor RGX 0x11d0..0x11f8, is it -- to
+  find): **every VM maps a page of the kernel's object at VA 0**, and
+  userspace may not map that range.
+- **Image state (G8 note)**: word 2 holds address bits 32:1 only; **bits 33..
+  go in word 3's low bits** -- a target in the general heap (0x80_0000_0000)
+  wrote to its address truncated to 33 bits (an MMU fault at 0x4501c0)
+  until word 3 got `addr >> 33`.
+
+**`pvr-uapi-test` renders G6's clear + triangle through the UAPI** from a
+VM of its own (code BO at the PDS / USC heap bases, data in the general
+heap): CREATE_FREE_LIST (128 pages), CREATE_HWRT_DATASET (64x64),
+CREATE_CONTEXT (render), then 20 x SUBMIT_JOBS {geometry, fragment} with a
+syncobj: **20 of 20 right (3072 background, 1024 triangle pixels), ~0.5-0.6
+ms per render -- PASS**, with the compute part and the self-tests.
+
+Open / next (G7 step 6 and after): MMU faults and firmware crashes (the
+firmware's recovery leaves the core unusable until a restart: the driver
+should restart it and fail the jobs), runtime PM (the GFX domain stays on
+while the firmware runs), free-list growth, transfer jobs, MSAA / layers /
+depth, several firmware queues per data master and hardware MMU contexts
+> 0, `drm_sched` instead of the in-ioctl waits; a firmware ping (the kernel's RTKit has no ping call); what the sgx node's
 IRQs 185-188 / 193 are for (nothing needs them so far).
 
 ## G2: the recipe (from the 22H355 kernelcache, 2026-11-23)

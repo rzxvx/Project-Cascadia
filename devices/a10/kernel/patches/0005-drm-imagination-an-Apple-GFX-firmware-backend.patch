@@ -4,11 +4,11 @@ Subject: [PATCH] drm/imagination: an Apple GFX firmware backend (T8010)
 The hooks for pvr_apple.c / pvr_apple_test.c (new files, from
 Cascadia's kernel/overlay): the compatible, probe / remove and runtime
 PM handed to the backend, the MMU flush (the contexts' MMU
-generations), the VM root table for the backend's context slots, no
+generations), the VM root table the backend mirrors, no
 firmware memory-context object for user VMs (the fence page instead),
 the firmware started on the first open, the job / context / free-list /
-HWRT ioctls: contexts and job submission handed to the backend, free
-lists and HWRT datasets refused until it has them, no Imagination debugfs,
+HWRT ioctls handed to the backend (contexts, free lists, HWRT datasets,
+job submission), no Imagination debugfs, the page at GPU VA 0,
 the Kconfig option.
 ---
 --- a/drivers/gpu/drm/imagination/Kconfig
@@ -107,51 +107,73 @@ the Kconfig option.
  	if (!drm_dev_enter(drm_dev, &idx))
  		return -EIO;
  
-@@ -719,6 +725,9 @@
+@@ -720,6 +726,9 @@
+ 	if (args->_padding_4)
+ 		return -EINVAL;
+ 
++	if (to_pvr_device(drm_dev)->apple)
++		return pvr_apple_ioctl_destroy_context(pvr_file, args->handle);
++
+ 	return pvr_context_destroy(pvr_file, args->handle);
+ }
+ 
+@@ -746,6 +755,11 @@
+ 	int idx;
+ 	int err;
+ 
++	/* Apple backend: free lists of its own (pvr_apple_uapi.c) */
++	if (to_pvr_device(drm_dev)->apple)
++		return pvr_apple_ioctl_create_free_list(to_pvr_device(drm_dev), file->driver_priv,
++							raw_args);
++
+ 	if (!drm_dev_enter(drm_dev, &idx))
+ 		return -EIO;
+ 
+@@ -798,6 +812,9 @@
+ 	struct pvr_file *pvr_file = to_pvr_file(file);
+ 	struct pvr_free_list *free_list;
+ 
++	if (to_pvr_device(drm_dev)->apple)
++		return pvr_apple_ioctl_destroy_free_list(file->driver_priv, args->handle);
++
+ 	if (args->_padding_4)
+ 		return -EINVAL;
+ 
+@@ -832,6 +849,11 @@
+ 	int idx;
+ 	int err;
+ 
++	/* Apple backend: HWRT datasets of its own (pvr_apple_uapi.c) */
++	if (to_pvr_device(drm_dev)->apple)
++		return pvr_apple_ioctl_create_hwrt_dataset(to_pvr_device(drm_dev), file->driver_priv,
++							   raw_args);
++
+ 	if (!drm_dev_enter(drm_dev, &idx))
+ 		return -EIO;
+ 
+@@ -883,6 +905,9 @@
+ 	struct drm_pvr_ioctl_destroy_hwrt_dataset_args *args = raw_args;
+ 	struct pvr_file *pvr_file = to_pvr_file(file);
+ 	struct pvr_hwrt_dataset *hwrt;
++
++	if (to_pvr_device(drm_dev)->apple)
++		return pvr_apple_ioctl_destroy_hwrt_dataset(file->driver_priv, args->handle);
  
  	if (args->_padding_4)
  		return -EINVAL;
-+
-+	if (to_pvr_device(drm_dev)->apple)
-+		return pvr_apple_ioctl_destroy_context(pvr_file, args->handle);
- 
- 	return pvr_context_destroy(pvr_file, args->handle);
- }
-@@ -746,6 +755,10 @@
+@@ -1025,6 +1050,11 @@
  	int idx;
  	int err;
  
-+	/* Apple backend: not yet (G7 step 5) */
-+	if (to_pvr_device(drm_dev)->apple)
-+		return -EOPNOTSUPP;
-+
- 	if (!drm_dev_enter(drm_dev, &idx))
- 		return -EIO;
- 
-@@ -832,6 +845,10 @@
- 	int idx;
- 	int err;
- 
-+	/* Apple backend: not yet (G7 step 5) */
-+	if (to_pvr_device(drm_dev)->apple)
-+		return -EOPNOTSUPP;
-+
- 	if (!drm_dev_enter(drm_dev, &idx))
- 		return -EIO;
- 
-@@ -1024,6 +1041,11 @@
- 	u64 offset_plus_size;
- 	int idx;
- 	int err;
-+
 +	/* Apple backend: the fence page at the general heap's end is the kernel's */
 +	if (to_pvr_device(drm_dev)->apple &&
 +	    pvr_apple_va_reserved(args->device_addr, args->size))
 +		return -EINVAL;
- 
++
  	if (!drm_dev_enter(drm_dev, &idx))
  		return -EIO;
-@@ -1113,6 +1135,11 @@
+ 
+@@ -1113,6 +1143,11 @@
  	struct pvr_vm_context *vm_ctx;
  	int err;
  
@@ -163,7 +185,7 @@ the Kconfig option.
  	/* Initial validation of args. */
  	if (args->_padding_4)
  		return -EINVAL;
-@@ -1151,6 +1178,10 @@
+@@ -1151,6 +1186,10 @@
  	int idx;
  	int err;
  
@@ -174,7 +196,7 @@ the Kconfig option.
  	trace_pvr_job_submit_ioctl(pvr_dev, args->jobs.count);
  
  	if (!drm_dev_enter(drm_dev, &idx))
-@@ -1314,6 +1345,14 @@
+@@ -1314,7 +1353,15 @@
  {
  	struct pvr_device *pvr_dev = to_pvr_device(drm_dev);
  	struct pvr_file *pvr_file;
@@ -182,14 +204,15 @@ the Kconfig option.
 +	/* Apple backend: the firmware comes up with the first open */
 +	if (pvr_dev->apple) {
 +		int err = pvr_apple_start(pvr_dev->apple);
-+
+ 
 +		if (err)
 +			return err;
 +	}
- 
++
  	pvr_file = kzalloc_obj(*pvr_file);
  	if (!pvr_file)
-@@ -1337,6 +1376,7 @@
+ 		return -ENOMEM;
+@@ -1337,6 +1384,7 @@
  	xa_init_flags(&pvr_file->free_list_handles, XA_FLAGS_ALLOC1);
  	xa_init_flags(&pvr_file->hwrt_handles, XA_FLAGS_ALLOC1);
  	xa_init_flags(&pvr_file->vm_ctx_handles, XA_FLAGS_ALLOC1);
@@ -197,7 +220,7 @@ the Kconfig option.
  
  	/*
  	 * Store reference to powervr-specific file private data in DRM file
-@@ -1363,6 +1403,10 @@
+@@ -1363,6 +1411,10 @@
  {
  	struct pvr_file *pvr_file = to_pvr_file(file);
  
@@ -208,7 +231,7 @@ the Kconfig option.
  	/* Kill remaining contexts. */
  	pvr_destroy_contexts_for_file(pvr_file);
  
-@@ -1415,6 +1459,10 @@
+@@ -1415,6 +1467,10 @@
  
  	platform_set_drvdata(plat_dev, drm_dev);
  
@@ -219,7 +242,7 @@ the Kconfig option.
  	err = pvr_power_domains_init(pvr_dev);
  	if (err)
  		return err;
-@@ -1468,6 +1516,11 @@
+@@ -1468,6 +1524,11 @@
  	struct drm_device *drm_dev = platform_get_drvdata(plat_dev);
  	struct pvr_device *pvr_dev = to_pvr_device(drm_dev);
  
@@ -231,7 +254,7 @@ the Kconfig option.
  	WARN_ON(!xa_empty(&pvr_dev->job_ids));
  	WARN_ON(!xa_empty(&pvr_dev->free_list_ids));
  
-@@ -1492,7 +1545,13 @@
+@@ -1492,7 +1553,13 @@
  };
  
  static const struct of_device_id dt_match[] = {
@@ -338,10 +361,13 @@ the Kconfig option.
  #include "pvr_device.h"
  #include "pvr_drv.h"
  #include "pvr_gem.h"
-@@ -91,6 +93,16 @@
- }
- 
- /**
+@@ -88,6 +90,16 @@
+ dma_addr_t pvr_vm_get_page_table_root_addr(struct pvr_vm_context *vm_ctx)
+ {
+ 	return pvr_mmu_get_root_table_dma_addr(vm_ctx->mmu_ctx);
++}
++
++/**
 + * pvr_vm_get_page_table_root_ptr() - Get the CPU mapping of the root of the
 + * page table structure behind a VM context.
 + * @vm_ctx: Target VM context.
@@ -349,12 +375,9 @@ the Kconfig option.
 +void *pvr_vm_get_page_table_root_ptr(struct pvr_vm_context *vm_ctx)
 +{
 +	return pvr_mmu_get_root_table_ptr(vm_ctx->mmu_ctx);
-+}
-+
-+/**
-  * pvr_vm_get_dma_resv() - Expose the dma_resv owned by the VM context.
-  * @vm_ctx: Target VM context.
-  *
+ }
+ 
+ /**
 @@ -576,7 +588,8 @@
  	if (err)
  		goto err_free;
@@ -365,10 +388,11 @@ the Kconfig option.
  		err = pvr_fw_object_create(pvr_dev, sizeof(struct rogue_fwif_fwmemcontext),
  					   PVR_BO_FW_FLAGS_DEVICE_UNCACHED,
  					   fw_mem_context_init, vm_ctx, &vm_ctx->fw_mem_ctx_obj);
-@@ -594,6 +607,15 @@
+@@ -593,6 +606,15 @@
+ 
  	mutex_init(&vm_ctx->lock);
  	kref_init(&vm_ctx->ref_count);
- 
++
 +	/* Apple backend: every VM maps the page the firmware's flush writes to */
 +	if (is_userspace_context && pvr_dev->apple) {
 +		err = pvr_apple_vm_map_fence(pvr_dev->apple, vm_ctx);
@@ -377,31 +401,46 @@ the Kconfig option.
 +			return ERR_PTR(err);
 +		}
 +	}
-+
+ 
  	return vm_ctx;
  
- err_page_table_destroy:
-@@ -621,6 +643,9 @@
+@@ -620,6 +642,9 @@
+ 
  	if (vm_ctx->fw_mem_ctx_obj)
  		pvr_fw_object_destroy(vm_ctx->fw_mem_ctx_obj);
- 
++
 +	if (vm_ctx->pvr_dev->apple)
 +		pvr_apple_vm_release(vm_ctx->pvr_dev->apple, vm_ctx);
-+
+ 
  	pvr_vm_unmap_all(vm_ctx);
  
- 	pvr_mmu_context_destroy(vm_ctx->mmu_ctx);
-@@ -1057,6 +1082,10 @@
+@@ -1056,6 +1081,10 @@
+ 
  		if (i == DRM_PVR_HEAP_RGNHDR && !PVR_HAS_QUIRK(pvr_dev, 63142))
  			heap.size = 0;
- 
++
 +		/* Apple backend: the general heap's last page is the fence page */
 +		if (i == DRM_PVR_HEAP_GENERAL && pvr_dev->apple)
 +			heap.size -= PVR_APPLE_RESERVED_SIZE;
-+
+ 
  		err = PVR_UOBJ_SET(dest, query.heaps.stride, heap);
  		if (err < 0)
- 			return err;
+@@ -1110,6 +1139,15 @@
+ 	if (check_add_overflow(start, size - 1, &end))
+ 		return NULL;
+ 
++	/* Apple backend: its page at GPU VA 0 (pvr_apple.h), mapped by the kernel only */
++	if (pvr_dev->apple && end < PVR_APPLE_VA0_SIZE) {
++		static const struct drm_pvr_heap apple_va0 = {
++			.size = PVR_APPLE_VA0_SIZE, .page_size_log2 = PVR_DEVICE_PAGE_SHIFT,
++		};
++
++		return &apple_va0;
++	}
++
+ 	/*
+ 	 * There are no guarantees about the order of address ranges in
+ 	 * &pvr_heaps, so iterate over the entire array for a heap whose
 --- a/drivers/gpu/drm/imagination/pvr_vm.h
 +++ b/drivers/gpu/drm/imagination/pvr_vm.h
 @@ -45,6 +45,7 @@

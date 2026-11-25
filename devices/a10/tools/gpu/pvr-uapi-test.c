@@ -60,8 +60,8 @@ static int vm_map(int fd, uint32_t vm, uint32_t bo, uint64_t va, uint64_t size)
 	return ioctl(fd, DRM_IOCTL_PVR_VM_MAP, &m);
 }
 
-/* store_const's USC code from the self-test's firmware file (G9PT: name[24], off, size) */
-static int load_store_const(uint8_t *dst, uint32_t *size)
+/* a USC program from the self-test's firmware file (G9PT: name[24], off, size) */
+static int load_usc(const char *name, uint8_t *dst, uint32_t *size)
 {
 	static uint8_t buf[4096];
 	FILE *f = fopen("/lib/firmware/apple/g9p-selftest.bin", "rb");
@@ -80,7 +80,7 @@ static int load_store_const(uint8_t *dst, uint32_t *size)
 
 		memcpy(&off, buf + 8 + 32 * i + 24, 4);
 		memcpy(&sz, buf + 8 + 32 * i + 28, 4);
-		if (!strncmp((char *)buf + 8 + 32 * i, "store_const", 24) && off + sz <= len) {
+		if (!strncmp((char *)buf + 8 + 32 * i, name, 24) && off + sz <= len) {
 			memcpy(dst, buf + off, sz);
 			*size = sz;
 			return 0;
@@ -125,7 +125,7 @@ static void compute(int fd, uint32_t vm, const struct drm_pvr_heap *heaps)
 	    vm_map(fd, vm, data_h, data_va, 0x10000);
 	CHECK(!r, "compute: code at %#llx / %#llx, data at %#llx", (unsigned long long)pds,
 	      (unsigned long long)usc, (unsigned long long)data_va);
-	r = load_store_const((uint8_t *)code + CODE_USC, &usc_size);
+	r = load_usc("store_const", (uint8_t *)code + CODE_USC, &usc_size);
 	CHECK(!r, "compute: store_const, %u bytes", usc_size);
 	if (r)
 		return;
@@ -233,6 +233,230 @@ static void compute(int fd, uint32_t vm, const struct drm_pvr_heap *heaps)
 		CHECK(ok == n, "compute store x%u (%u in flight): %u wrote cafe0000; %.0f us per job", n, inflight,
 		      ok, ((t1.tv_sec - t0.tv_sec) * 1e9 + (t1.tv_nsec - t0.tv_nsec)) / 1e3 / n);
 	}
+}
+
+/*
+ * G6's clear + triangle through the UAPI, in a VM of its own: a free list,
+ * an HWRT dataset (64x64), a render context, a geometry and a fragment job
+ * each time, the pixels checked. The programs and state are those of
+ * docs/gpu.md "G6 legalization", at the places the kernel's translation
+ * expects: RGX+0x470's PDS program in the VDM sync area (PDS heap +0x40,
+ * code +0x60), the end-of-tile PDS code in the EOT area (PDS heap +0x80).
+ */
+static uint32_t f32b(float f)
+{
+	uint32_t u;
+
+	memcpy(&u, &f, 4);
+	return u;
+}
+
+static void render(int fd, const struct drm_pvr_heap *heaps, int n)
+{
+	struct drm_pvr_ioctl_create_vm_context_args vm = { 0 };
+	struct drm_pvr_ioctl_create_free_list_args fla = { 0 };
+	struct drm_pvr_ioctl_create_hwrt_dataset_args hw = { 0 };
+	struct drm_pvr_ioctl_create_context_args ctx = { 0 };
+	uint64_t pds = heaps[DRM_PVR_HEAP_PDS_CODE_DATA].base, usc = heaps[DRM_PVR_HEAP_USC_CODE].base;
+	uint64_t gen = heaps[DRM_PVR_HEAP_GENERAL].base;
+	uint64_t g3va = gen + 0x400000, pmbva = gen + 0x300000, flva = gen + 0x600000;
+	uint32_t code_h, g3_h, pmb_h, fl_h, *code, *g3, *pmb, *fl, sz, i, k, ok = 0, last_bg = 0, last_tri = 0;
+	uint64_t tva = g3va + 0x6c000;
+	struct timespec t0, t1;
+	int r;
+
+	r = ioctl(fd, DRM_IOCTL_PVR_CREATE_VM_CONTEXT, &vm);
+	code = new_bo(fd, 0x10000, &code_h);
+	g3 = new_bo(fd, 0x100000, &g3_h);
+	pmb = new_bo(fd, 0x100000, &pmb_h);
+	fl = new_bo(fd, 0x4000, &fl_h);
+	CHECK(!r && code && g3 && pmb && fl, "render: VM and BOs");
+	if (r || !code || !g3 || !pmb || !fl)
+		return;
+	r = vm_map(fd, vm.handle, code_h, pds, 0x10000) || vm_map(fd, vm.handle, code_h, usc, 0x10000) ||
+	    vm_map(fd, vm.handle, g3_h, g3va, 0x100000) || vm_map(fd, vm.handle, pmb_h, pmbva, 0x100000) ||
+	    vm_map(fd, vm.handle, fl_h, flva, 0x4000);
+	CHECK(!r, "render: mapped (code at the PDS / USC bases, data in the general heap)");
+
+	/* USC code; the rest of the code BO PDS HALT (the PPP blocks point at 0xc0) */
+	for (i = 0; i < 0x10000 / 4; i++)
+		code[i] = 0xd3000000;
+	r = load_usc("tri_vs", (uint8_t *)code + 0x400, &sz) || load_usc("tri_fs", (uint8_t *)code + 0x600, &sz) ||
+	    load_usc("bg_fs", (uint8_t *)code + 0x700, &sz);
+	CHECK(!r, "render: tri_vs, tri_fs, bg_fs");
+	{
+		static const uint16_t eot[] = { 0x0198, 0x0100, 0x0101, 0x0120, 0x0154, 0x0038,
+						0x011c, 0x4100, 0x0800, 0x8000 };
+		static const uint8_t end470[] = { 0x5e, 0x01, 0x00, 0xa0 };
+
+		memcpy((uint8_t *)code + 0x900, eot, sizeof(eot));
+		memcpy((uint8_t *)code + 0xb00, end470, sizeof(end470));
+	}
+	/* VDM sync area: RGX+0x470's program (data {DOUTU -> end470}, code at +0x20) */
+	code[0x40 / 4] = 0xb00; code[0x44 / 4] = 0x10;
+	for (i = 0x48; i < 0x60; i += 4)
+		code[i / 4] = 0;
+	code[0x60 / 4] = 0xf4000002; code[0x64 / 4] = 0xd3000000;
+	/* EOT area: DOUTD of the image state, DOUTU END, HALT; its data at 0x1540 */
+	code[0x80 / 4] = 0xf0000800; code[0x84 / 4] = 0xf4000012; code[0x88 / 4] = 0xd3000000;
+	/* vertex 0x1100 / 0x1180, shared 0x1200 / 0x1280, fragment 0x1300, background 0x1400 / 0x1480 / 0x14c0 */
+	{
+		uint32_t v[] = { 0xf0000a01, 0xfc000002, 0xd3000000 };
+		uint64_t q;
+
+		memcpy(code + 0x1100 / 4, v, sizeof(v));
+		code[0x1180 / 4] = 0x400; code[0x1184 / 4] = 0x10; code[0x1188 / 4] = 0x80000000; code[0x118c / 4] = 0;
+		code[0x1200 / 4] = 0xf4000800; code[0x1204 / 4] = 0xd3000000;
+		q = tva + 0x800; memcpy(code + 0x1280 / 4, &q, 8); q = 0x90000006; memcpy(code + 0x1288 / 4, &q, 8);
+		code[0x1300 / 4] = 0x600; code[0x1304 / 4] = 0x10;
+		for (i = 0x1308; i < 0x1320; i += 4)
+			code[i / 4] = 0;
+		code[0x1320 / 4] = 0xf4000002;
+		code[0x1400 / 4] = 0x700; code[0x1404 / 4] = 0x10;
+		for (i = 0x1408; i < 0x1420; i += 4)
+			code[i / 4] = 0;
+		code[0x1420 / 4] = 0xf4000002;
+		code[0x1480 / 4] = 0xf4000800; code[0x1484 / 4] = 0xd3000000;
+		q = tva + 0x900; memcpy(code + 0x14c0 / 4, &q, 8); q = 0x90004004; memcpy(code + 0x14c8 / 4, &q, 8);
+		q = tva + 0x920; memcpy(code + 0x1540 / 4, &q, 8); q = 0x90000007; memcpy(code + 0x1548 / 4, &q, 8);
+		code[0x1550 / 4] = 0x900; code[0x1554 / 4] = 0x10;
+	}
+	/* constants, colour, image state (BGRA8 linear 64x64 at g3va + 0x50000) */
+	{
+		float corners[6] = { -1, -1, 0, -1, -1, 1 }, colour[4] = { 0.25f, 0.5f, 0.75f, 1 };
+		/* word 2: address bits 32:1; word 3 bits 0..: address bits 33.. (to check) */
+		uint32_t img[7] = { 0x03050502 | (31u << 27), 1 | (63 << 9), (uint32_t)((g3va + 0x50000) >> 1),
+				    0x80000000 | (3 << 15) | (uint32_t)((g3va + 0x50000) >> 33), 0, 0xc0000000, 0 };
+
+		memcpy(g3 + (0x6c000 + 0x800) / 4, corners, sizeof(corners));
+		memcpy(g3 + (0x6c000 + 0x900) / 4, colour, sizeof(colour));
+		memcpy(g3 + (0x6c000 + 0x920) / 4, img, sizeof(img));
+	}
+	/* PPP state blocks and the VDM stream (docs "G6 legalization") */
+	{
+		const uint32_t blk[8][9] = {
+			{ 0x001c0000, 0, 0, 0 },
+			{ 0x000000c0, 0x1300, 0xc0, 0x00800000, 0, 0xc0 },
+			{ 0x00020000, 0x04010000 },
+			{ 0x0000001f, 0x03c40000, 0x003e0f00, 0x0e000000, 0x00100f00, 0 },
+			{ 0x00000c00, 0x80000001, 1, f32b(32), f32b(32), f32b(32), f32b(-32), 0, 0x3f800000 },
+			{ 0x00210000, 0x1e3ce508, 0x000004a0 },
+			{ 0x00000020, 0 },
+			{ 0x02000000, (1 << 18) | 1, 0 },
+		};
+		const int len[8] = { 4, 6, 2, 6, 9, 3, 2, 3 };
+		uint32_t st[64], m = 0;
+
+		for (k = 0; k < 8; k++)
+			memcpy(g3 + (0x6c000 + 0x100 + 0x40 * k) / 4, blk[k], 4 * len[k]);
+#define PPP(b) do { uint64_t at = tva + 0x100 + 0x40 * (b); st[m++] = (len[b] << 8) | (uint32_t)(at >> 32); \
+		    st[m++] = (uint32_t)at & 0xfffffffc; } while (0)
+		st[m++] = 0x44002f80; st[m++] = 0x1100; st[m++] = 4; st[m++] = 0x1081;
+		PPP(0);
+		st[m++] = 0x20020001; st[m++] = 0x1280; st[m++] = 0x1200; st[m++] = 0x48002f80; st[m++] = 0x1180;
+		for (k = 1; k <= 6; k++)
+			PPP(k);
+		st[m++] = 0x6e440600; st[m++] = 3; st[m++] = 0; st[m++] = 0; st[m++] = 0xaa;
+		PPP(7);
+		st[m++] = 0xc0000000;
+#undef PPP
+		memcpy(g3 + 0x6c000 / 4, st, 4 * m);
+	}
+
+	fla.free_list_gpu_addr = flva;
+	fla.initial_num_pages = fla.max_num_pages = 128;
+	fla.vm_context_handle = vm.handle;
+	r = ioctl(fd, DRM_IOCTL_PVR_CREATE_FREE_LIST, &fla);
+	CHECK(!r, "CREATE_FREE_LIST: 128 pages, handle %u%s%s", fla.handle, r ? " -- " : "", r ? strerror(errno) : "");
+	hw.geom_data_args.tpc_dev_addr = pmbva + 0x40000;
+	hw.geom_data_args.tpc_size = 0x40000;
+	hw.geom_data_args.vheap_table_dev_addr = g3va + 0x59000;
+	for (i = 0; i < 2; i++) {
+		hw.rt_data_args[i].pm_mlist_dev_addr = g3va + 0x57000;
+		hw.rt_data_args[i].macrotile_array_dev_addr = g3va + 0x56000;
+		hw.rt_data_args[i].region_header_dev_addr = pmbva;
+	}
+	hw.free_list_handles[0] = fla.handle;
+	hw.width = hw.height = 64;
+	hw.samples = hw.layers = 1;
+	r = r ?: ioctl(fd, DRM_IOCTL_PVR_CREATE_HWRT_DATASET, &hw);
+	CHECK(!r, "CREATE_HWRT_DATASET: 64x64, handle %u%s%s", hw.handle, r ? " -- " : "", r ? strerror(errno) : "");
+	ctx.type = DRM_PVR_CTX_TYPE_RENDER;
+	ctx.vm_context_handle = vm.handle;
+	r = r ?: ioctl(fd, DRM_IOCTL_PVR_CREATE_CONTEXT, &ctx);
+	CHECK(!r, "CREATE_CONTEXT (render): handle %u%s%s", ctx.handle, r ? " -- " : "", r ? strerror(errno) : "");
+	if (r)
+		return;
+
+	clock_gettime(CLOCK_MONOTONIC, &t0);
+	for (k = 0; k < (uint32_t)n; k++) {
+		uint64_t geom[5] = { 40, tva, 0, 2 | (0x20000ULL << 32), 0 };
+		uint8_t frag[376] = { 0 };
+		uint32_t *f32p = (uint32_t *)(frag + 336);
+		uint64_t *bg = (uint64_t *)(frag + 256);
+		struct drm_pvr_job jobs[2] = { 0 };
+		struct drm_pvr_sync_op op;
+		struct drm_pvr_ioctl_submit_jobs_args sub = { 0 };
+		struct drm_syncobj_create sc = { 0 };
+		struct drm_syncobj_wait sw = { 0 };
+		struct drm_syncobj_destroy sd;
+		uint32_t nbg = 0, ntri = 0;
+
+		for (i = 0; i < 64 * 64; i++)
+			g3[0x50000 / 4 + i] = 0x5a5a5a5a;
+		*(uint32_t *)frag = 376;
+		bg[0] = (0x1480ULL << 32) | 0x1400;	/* pds_bgnd[0..2] */
+		bg[1] = 0x14c0;
+		bg[2] = 0x0080000000800000ULL;
+		f32p[1] = 0x3f800000;			/* isp_bgobjdepth */
+		f32p[2] = 0x300;			/* isp_bgobjvals */
+		f32p[3] = 0xf;				/* isp_aa */
+		f32p[4] = 0x0023000f;			/* isp_ctl */
+		f32p[5] = 0x402;			/* event_pixel_pds_info */
+		f32p[7] = 0x1540;			/* event_pixel_pds_data */
+		ioctl(fd, DRM_IOCTL_SYNCOBJ_CREATE, &sc);
+		op = (struct drm_pvr_sync_op){ .handle = sc.handle, .flags = DRM_PVR_SYNC_OP_FLAG_SIGNAL };
+		for (i = 0; i < 2; i++) {
+			jobs[i].type = i ? DRM_PVR_JOB_TYPE_FRAGMENT : DRM_PVR_JOB_TYPE_GEOMETRY;
+			jobs[i].context_handle = ctx.handle;
+			jobs[i].cmd_stream = i ? (uintptr_t)frag : (uintptr_t)geom;
+			jobs[i].cmd_stream_len = i ? 376 : 40;
+			jobs[i].hwrt.set_handle = hw.handle;
+			jobs[i].hwrt.data_index = k & 1;
+		}
+		jobs[1].sync_ops = (struct drm_pvr_obj_array){ .stride = sizeof(op), .count = 1, .array = (uintptr_t)&op };
+		sub.jobs = (struct drm_pvr_obj_array){ .stride = sizeof(jobs[0]), .count = 2, .array = (uintptr_t)jobs };
+		r = ioctl(fd, DRM_IOCTL_PVR_SUBMIT_JOBS, &sub);
+		if (r) {
+			printf("  FAIL  SUBMIT_JOBS (geometry + fragment): %s\n", strerror(errno));
+			fails++;
+			break;
+		}
+		clock_gettime(CLOCK_MONOTONIC, &t1);
+		sw.handles = (uintptr_t)&sc.handle;
+		sw.count_handles = 1;
+		sw.timeout_nsec = t1.tv_sec * 1000000000LL + t1.tv_nsec + 3000000000LL;
+		sw.flags = DRM_SYNCOBJ_WAIT_FLAGS_WAIT_FOR_SUBMIT;
+		r = ioctl(fd, DRM_IOCTL_SYNCOBJ_WAIT, &sw);
+		sd.handle = sc.handle;
+		sd.pad = 0;
+		ioctl(fd, DRM_IOCTL_SYNCOBJ_DESTROY, &sd);
+		for (i = 0; i < 64 * 64; i++) {
+			nbg += g3[0x50000 / 4 + i] == 0xff4080bf;
+			ntri += g3[0x50000 / 4 + i] == 0xffff0000;
+		}
+		last_bg = nbg;
+		last_tri = ntri;
+		if (r) {
+			printf("  FAIL  SYNCOBJ_WAIT (render %u): %s\n", k, strerror(errno));
+			fails++;
+			break;
+		}
+		ok += nbg == 3072 && ntri == 1024;
+	}
+	clock_gettime(CLOCK_MONOTONIC, &t1);
+	CHECK(ok == (uint32_t)n, "render x%d (clear + triangle, 64x64): %u right; last %u background, %u triangle; %.0f us per render",
+	      n, ok, last_bg, last_tri, ((t1.tv_sec - t0.tv_sec) * 1e9 + (t1.tv_nsec - t0.tv_nsec)) / 1e3 / n);
 }
 
 static int open_powervr(const char *path)
@@ -344,6 +568,7 @@ int main(int argc, char **argv)
 	      (unsigned long long)map.device_addr, r ? strerror(errno) : "mapped!");
 
 	compute(fd, vm.handle, heaps);
+	render(fd, heaps, 20);
 
 	printf("%s: %d failure(s)\n", fails ? "FAIL" : "PASS", fails);
 	return fails != 0;

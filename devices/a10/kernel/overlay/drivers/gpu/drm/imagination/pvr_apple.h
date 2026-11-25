@@ -82,21 +82,45 @@ struct pvr_gem_object;
  * in the context running then. The last 16 KiB of the UAPI's general heap
  * (not reported to userspace: step 3).
  */
-#define PVR_APPLE_RESERVED_SIZE	SZ_64K
+#define PVR_APPLE_RESERVED_SIZE	SZ_128K
 #define PVR_APPLE_FENCE_VA	(0x8000000000ULL + SZ_128G - PVR_APPLE_RESERVED_SIZE)
-/* the rest of that object: StartCompute's six scratch slots, a default CDM context state */
+/*
+ * The rest of that object: StartCompute's six scratch slots (0x11040),
+ * StartTA's six (0x11030: the TA stores a VDM stream in one), a default CDM
+ * context state, the TA's two buffers (0x428 / 0xcc0, read far beyond:
+ * 0x8000 bytes), and the page mapped at GPU VA 0 (the last 16 KiB).
+ */
 #define PVR_APPLE_CDM_SLOTS_VA	(PVR_APPLE_FENCE_VA + 0x4000)
+#define PVR_APPLE_TA_SLOTS_VA	(PVR_APPLE_FENCE_VA + 0x4800)
 #define PVR_APPLE_CDM_STATE_VA	(PVR_APPLE_FENCE_VA + 0x8000)
+#define PVR_APPLE_TA_BUF_VA	(PVR_APPLE_FENCE_VA + 0xc000)
+
+/*
+ * The programs the kernel's register values point at, written by userspace
+ * into upstream's static data areas of the PDS heap: the VDM sync area
+ * (offset 0, 128 bytes) holds RGX+0x470's PDS program (data at +0x40, code
+ * at +0x60: it starts the one-instruction USC task the TA needs), the EOT
+ * area (offset 128) the end-of-tile PDS code (RGX+0x618).
+ */
+#define PVR_APPLE_VDM_SYNC_PDS	0x40
+#define PVR_APPLE_EOT_PDS	0x80
 
 /* the UAPI's execution bases (pvr_rogue_heap_config.h): PDS / USC code heaps */
 #define PVR_APPLE_PDS_BASE	0xDA00000000ULL
 #define PVR_APPLE_USC_BASE	0xE000000000ULL
 
-/* a range userspace may not map (the fence page) */
+/*
+ * GPU VA 0: something in the 3D's end (requester PDS, a write; fault status
+ * 0x251) writes there whatever Start3D's / StartTA's zero slots point at --
+ * to find. Every VM maps the reserved object's last page there.
+ */
+#define PVR_APPLE_VA0_SIZE	SZ_16K
+
+/* ranges userspace may not map: the reserved object, the page at VA 0 */
 static inline bool pvr_apple_va_reserved(u64 addr, u64 size)
 {
-	return addr < PVR_APPLE_FENCE_VA + PVR_APPLE_RESERVED_SIZE &&
-	       addr + size > PVR_APPLE_FENCE_VA;
+	return (addr < PVR_APPLE_FENCE_VA + PVR_APPLE_RESERVED_SIZE &&
+		addr + size > PVR_APPLE_FENCE_VA) || addr < PVR_APPLE_VA0_SIZE;
 }
 
 #define PVR_APPLE_POOL_UNITS	((PVR_APPLE_HEAP_SIZE - PVR_APPLE_POOL_OFF) / PVR_APPLE_POOL_UNIT)
@@ -272,6 +296,13 @@ struct pvr_apple_hwrt {
 	u32 fl_va, slot_va, tbig_va, pmh_va;
 };
 
+/* a free list's firmware descriptor */
+struct pvr_apple_fl {
+	struct pvr_apple *a;
+	struct pvr_apple_obj obj;
+	u32 va;
+};
+
 /* boot parameters */
 struct pvr_apple_boot_cfg {
 	u64 pds_base;		/* P+0x10 -> RGX+0x610: PDS execution base (2 MiB aligned) */
@@ -329,6 +360,14 @@ struct drm_pvr_ioctl_submit_jobs_args;
 int pvr_apple_ioctl_create_context(struct pvr_device *pvr_dev, struct pvr_file *pvr_file,
 				   struct drm_pvr_ioctl_create_context_args *args);
 int pvr_apple_ioctl_destroy_context(struct pvr_file *pvr_file, u32 handle);
+int pvr_apple_ioctl_destroy_free_list(struct pvr_file *pvr_file, u32 handle);
+int pvr_apple_ioctl_destroy_hwrt_dataset(struct pvr_file *pvr_file, u32 handle);
+struct drm_pvr_ioctl_create_free_list_args;
+struct drm_pvr_ioctl_create_hwrt_dataset_args;
+int pvr_apple_ioctl_create_free_list(struct pvr_device *pvr_dev, struct pvr_file *pvr_file,
+				     struct drm_pvr_ioctl_create_free_list_args *args);
+int pvr_apple_ioctl_create_hwrt_dataset(struct pvr_device *pvr_dev, struct pvr_file *pvr_file,
+					struct drm_pvr_ioctl_create_hwrt_dataset_args *args);
 int pvr_apple_ioctl_submit_jobs(struct pvr_device *pvr_dev, struct drm_file *file,
 				struct drm_pvr_ioctl_submit_jobs_args *args);
 void pvr_apple_file_close(struct pvr_file *pvr_file);
@@ -340,6 +379,10 @@ void pvr_apple_fail_all(struct pvr_apple *a, int err);
 struct pvr_apple_hwrt *pvr_apple_hwrt_create(struct pvr_apple *a, u64 fl_base, u32 fl_pages,
 					     u64 mlist, u64 mta, u64 vheap);
 void pvr_apple_hwrt_destroy(struct pvr_apple_hwrt *rt);
+struct pvr_apple_fl *pvr_apple_fl_create(struct pvr_apple *a, u64 base, u32 pages);
+void pvr_apple_fl_destroy(struct pvr_apple_fl *fl);
+struct pvr_apple_hwrt *pvr_apple_hwrt_create_fl(struct pvr_apple *a, u32 fl_va, u64 mlist, u64 mta,
+						u64 vheap);
 
 void pvr_apple_vm_activate(struct pvr_apple *a, struct pvr_vm_context *vm);
 

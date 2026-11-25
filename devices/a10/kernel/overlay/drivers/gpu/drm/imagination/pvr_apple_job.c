@@ -399,6 +399,44 @@ struct pvr_apple_hwrt *pvr_apple_hwrt_create(struct pvr_apple *a, u64 fl_base, u
 	return rt;
 }
 
+/* the same, with the free-list descriptor of a free list of its own (fl_va) */
+struct pvr_apple_hwrt *pvr_apple_hwrt_create_fl(struct pvr_apple *a, u32 fl_va, u64 mlist, u64 mta,
+						u64 vheap)
+{
+	struct pvr_apple_hwrt *rt = pvr_apple_hwrt_create(a, 0, 1, mlist, mta, vheap);
+
+	if (!IS_ERR(rt))
+		rt->fl_va = fl_va;
+	return rt;
+}
+
+/* a free list: its descriptor (fw 0x17a10) over the u32 page numbers at base */
+struct pvr_apple_fl *pvr_apple_fl_create(struct pvr_apple *a, u64 base, u32 pages)
+{
+	struct pvr_apple_fl *fl = kzalloc(sizeof(*fl), GFP_KERNEL);
+
+	if (!fl)
+		return ERR_PTR(-ENOMEM);
+	if (pvr_apple_obj_alloc(a, 0x1000, &fl->obj)) {
+		kfree(fl);
+		return ERR_PTR(-ENOMEM);
+	}
+	fl->a = a;
+	fl->va = fl->obj.va;
+	put64(fl->obj.cpu, 0x1c, base);			/* -> RGX 0x210 */
+	put32(fl->obj.cpu, 0x40, pages - 1);		/* top -> 0x224 */
+	put32(fl->obj.cpu, 0x50, fl->va + 0x80);	/* the registration word */
+	return fl;
+}
+
+void pvr_apple_fl_destroy(struct pvr_apple_fl *fl)
+{
+	if (IS_ERR_OR_NULL(fl))
+		return;
+	pvr_apple_obj_free(fl->a, &fl->obj);
+	kfree(fl);
+}
+
 void pvr_apple_hwrt_destroy(struct pvr_apple_hwrt *rt)
 {
 	if (IS_ERR_OR_NULL(rt))

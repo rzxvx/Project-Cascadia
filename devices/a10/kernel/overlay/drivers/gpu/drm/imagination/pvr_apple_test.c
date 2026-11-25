@@ -48,6 +48,11 @@
  */
 static bool test_pvr_vm = true;
 module_param(test_pvr_vm, bool, 0644);
+static bool r3_slots;
+module_param(r3_slots, bool, 0644);
+/* r3_probe=1: every zero 64-bit Start3D slot gets GV + 0x1000 + 0x80 i; the render reports which were written */
+static bool r3_probe;
+module_param(r3_probe, bool, 0644);
 
 #define GVA	0x200000ULL	/* GPU VA of region GV */
 #define G3VA	0x400000ULL	/* GPU VA of region G3 */
@@ -106,7 +111,7 @@ static const u32 arena_off[TR_ARENA_END] = {
 
 /* GPU VAs and sizes of the regions the GEM objects stand for (vm mode) */
 static const struct { u64 va; u32 size; } vm_region[TR_ARENA_END] = {
-	[TR_VA0] = { 0x0, 0x4000 },
+	/* (VA 0: the driver's page in every VM now) */
 	[TR_GV] = { 0x200000, 0x4000 },
 	[TR_PMB] = { 0x300000, 0xe0000 },
 	[TR_G3] = { 0x400000, 0x100000 },
@@ -458,6 +463,10 @@ static int build_scene(struct pvr_apple *a)
 		wbytes(a, R(G3), G3_T, s, 4 * n);
 	}
 	w64(a, R(TAB), 0x78, tva);			/* 0x408 VDM stream */
+	if (r3_probe)		/* the zero StartTA slots too: GV + 0x3000 + 0x80 i */
+		for (i = 0; i < 28; i++)
+			if (!a->test->ta_args.b[i])
+				a->test->ta_args.b[i] = GVA + 0x3000 + 0x80 * i;
 	return 0;
 }
 
@@ -594,6 +603,21 @@ static void r3_args(struct pvr_apple *a)
 	r->b[14] = 0x0080000000800000ULL;		/* 0x6b8 PDS_BGRND3: sizes */
 	for (i = 22; i < 28; i++)
 		r->b[i] = 0x1d3;			/* 0x11080 x 6 */
+	/*
+	 * r3_slots=1: the six 64-bit slots through RGX+0x11020 (b[16..21]) on
+	 * the kernel's scratch instead of 0 -- what the end of tile wrote to
+	 * GPU VA 0 for (to check); va0=0 drops the page at VA 0.
+	 */
+	if (r3_slots)
+		for (i = 16; i < 22; i++)
+			r->b[i] = PVR_APPLE_CDM_SLOTS_VA + 0x800 + 0x100 * (i - 16);
+	if (r3_probe)
+		for (i = 0; i < 29; i++)
+			if (!r->b[i])
+				r->b[i] = GVA + 0x1000 + 0x80 * i;
+	if (r3_probe)		/* A[12..17] -> RGX 0x11d0..0x11f8, A[3] */
+		for (i = 12; i < 18; i++)
+			r->a[i] = GVA + 0x2000 + 0x80 * (i - 12);
 }
 
 /* vm mode: one GEM object per region, CPU-mapped (write-combined) and mapped at its GPU VA */
@@ -891,8 +915,7 @@ static int test_vm2(struct pvr_apple *a, u32 n, char *res, size_t len)
 	err = pvr_vm_map(vm2, t->bo[TR_G3], 0, GEN_HEAP + G3VA, vm_region[TR_G3].size) ?:
 	      pvr_vm_map(vm2, t->bo[TR_G3], 0, PDS_HEAP, vm_region[TR_G3].size) ?:
 	      pvr_vm_map(vm2, t->bo[TR_G3], 0, USC_HEAP, vm_region[TR_G3].size) ?:
-	      pvr_vm_map(vm2, t->bo[TR_GV], 0, GEN_HEAP + GVA, vm_region[TR_GV].size) ?:
-	      pvr_apple_vm_map_fence(a, vm2);
+	      pvr_vm_map(vm2, t->bo[TR_GV], 0, GEN_HEAP + GVA, vm_region[TR_GV].size);
 	for (i = 0; i < 2 && !err; i++) {
 		bo[i] = pvr_gem_object_create(a->pvr_dev, 0x4000, 0);
 		if (IS_ERR(bo[i])) {
@@ -959,8 +982,18 @@ static int test_render(struct pvr_apple *a, u32 n, char *res, size_t len)
 
 		for (i = 0; i < 4 * RT_W * RT_H; i += 4)
 			w32(a, R(G3), G3_RT + i, 0x5a5a5a5a);
+		if (r3_probe && t->bo[TR_VA0])
+			for (i = 0; i < 0x4000; i += 4)
+				w32(a, R(VA0), i, 0xa5a5a5a5);
 		job = pvr_apple_job_ta(t->ta, &t->ta_args, t->rt);
 		e = IS_ERR(job) ? PTR_ERR(job) : wait(pvr_apple_submit(job), 2000);
+		if (r3_probe) {
+			u32 fs = 0, fa = 0;
+
+			pvr_apple_rgx_read(a, 0xe150, &fs);
+			pvr_apple_rgx_read(a, 0xe154, &fa);
+			dev_info(a->dev, "r3_probe: after the TA: fault status %#x %#x\n", fs, fa);
+		}
 		if (!e) {
 			job = pvr_apple_job_3d(t->r3, &t->r3_args, t->rt);
 			e = IS_ERR(job) ? PTR_ERR(job) : wait(pvr_apple_submit(job), 3000);
@@ -977,6 +1010,36 @@ static int test_render(struct pvr_apple *a, u32 n, char *res, size_t len)
 				mark++;
 			else if (!other++)
 				first_other = px;
+		}
+		if (r3_probe) {
+			u32 q, w, any = 0;
+
+			for (q = 0; q < 29; q++)
+				for (w = 0; w < 0x80; w += 4)
+					if (r32(a, R(GV), 0x1000 + 0x80 * q + w)) {
+						dev_info(a->dev, "r3_probe: Start3D b[%u] +%#x = %#x\n", q, w,
+							 r32(a, R(GV), 0x1000 + 0x80 * q + w));
+						any++;
+					}
+			for (q = 0; q < 6; q++)
+				for (w = 0; w < 0x80; w += 4)
+					if (r32(a, R(GV), 0x2000 + 0x80 * q + w)) {
+						dev_info(a->dev, "r3_probe: Start3D a[%u] +%#x = %#x\n", 12 + q, w,
+							 r32(a, R(GV), 0x2000 + 0x80 * q + w));
+						any++;
+					}
+			for (q = 0; q < 28; q++)
+				for (w = 0; w < 0x80; w += 4)
+					if (r32(a, R(GV), 0x3000 + 0x80 * q + w)) {
+						dev_info(a->dev, "r3_probe: StartTA b[%u] +%#x = %#x\n", q, w,
+							 r32(a, R(GV), 0x3000 + 0x80 * q + w));
+						any++;
+					}
+			if (t->bo[TR_VA0])
+				for (w = 0; w < 0x4000; w += 4)
+					if (r32(a, R(VA0), w) != 0xa5a5a5a5 && any++ < 64)
+						dev_info(a->dev, "r3_probe: VA0 +%#x = %#x\n", w, r32(a, R(VA0), w));
+			dev_info(a->dev, "r3_probe: %u words written\n", any);
 		}
 		if (!e && bg == 3072 && tri == 1024)
 			ok++;
@@ -1043,6 +1106,19 @@ static ssize_t selftest_write(struct file *f, const char __user *ubuf, size_t le
 		test_free(a);
 		pvr_apple_stop_locked(a);
 		scnprintf(a->result, sizeof(a->result), "stopped\n");
+		mutex_unlock(&a->lock);
+		return len;
+	}
+	if (!strcmp(cmd, "status")) {
+		size_t k = 0;
+		int q;
+
+		for (q = 0; q < 3; q++)
+			if (a->q[q])
+				k += pvr_apple_queue_debug(a->q[q], res + k, sizeof(res) - k),
+				k += scnprintf(res + k, sizeof(res) - k, "\n");
+		rgx_dump(a, res, sizeof(res));
+		scnprintf(a->result, sizeof(a->result), "%s%s", res, a->crashed ? "firmware crashed\n" : "");
 		mutex_unlock(&a->lock);
 		return len;
 	}

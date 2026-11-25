@@ -599,7 +599,9 @@ void pvr_apple_vm_activate(struct pvr_apple *a, struct pvr_vm_context *vm)
 
 int pvr_apple_vm_map_fence(struct pvr_apple *a, struct pvr_vm_context *vm)
 {
-	return pvr_vm_map(vm, a->fence_bo, 0, PVR_APPLE_FENCE_VA, PVR_APPLE_RESERVED_SIZE);
+	return pvr_vm_map(vm, a->fence_bo, 0, PVR_APPLE_FENCE_VA, PVR_APPLE_RESERVED_SIZE) ?:
+	       pvr_vm_map(vm, a->fence_bo, PVR_APPLE_RESERVED_SIZE - PVR_APPLE_VA0_SIZE, 0,
+			  PVR_APPLE_VA0_SIZE);
 }
 
 /* vm goes away: it must not stay behind context 0 */
