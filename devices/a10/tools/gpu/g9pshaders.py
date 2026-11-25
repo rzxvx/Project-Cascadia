@@ -87,3 +87,39 @@ def g5_shaders():
                         lib, js, "-o", tt], check=True)
     cs = g9pbin.kernels(tt)
     return {"empty": cs[0], "store_const": cs[1]}
+
+
+def build(tag, src, kernels):
+    """Compute kernels `kernels` (names) of Metal source `src` through the
+    offline compiler for applegpu_g9p (build/gpu/isa/<tag>.*). Returns
+    {name: bytes}."""
+    os.makedirs(ISA, exist_ok=True)
+    path = os.path.join(ISA, tag + ".metal")
+    if not os.path.exists(path) or open(path).read() != src:
+        open(path, "w").write(src)
+    air, lib = os.path.join(ISA, tag + ".air"), os.path.join(ISA, tag + ".metallib")
+    tt, js = os.path.join(ISA, tag + ".g9p.metallib"), os.path.join(ISA, tag + ".mtlp-json")
+    if not os.path.exists(tt) or os.path.getmtime(tt) < os.path.getmtime(path):
+        subprocess.run(["xcrun", "-sdk", "iphoneos", "metal", "-std=metal3.0", "-mios-version-min=16.4",
+                        "-c", path, "-o", air], check=True)
+        subprocess.run(["xcrun", "-sdk", "iphoneos", "metallib", air, "-o", lib], check=True)
+        pipes = ", ".join('{ "compute_function": "alias:lib#%s" }' % k for k in kernels)
+        open(js, "w").write('{ "libraries": { "paths": [ { "label": "lib", "path": "%s" } ] },\n'
+                            ' "pipelines": { "compute_pipelines": [ %s ] } }\n' % (lib, pipes))
+        subprocess.run(["xcrun", "metal-tt", "-arch", "applegpu_g9p", "-platform_version", "ios", "16.4", "16.4",
+                        lib, js, "-o", tt], check=True)
+    return dict(zip(kernels, g9pbin.kernels(tt)))
+
+
+def pack(code, out):
+    """{name: bytes} -> a G9PT file: "G9PT", u32 count, count x {char
+    name[24], u32 offset, u32 size}, the code (4-byte aligned)."""
+    import struct
+    hdr = struct.pack("<4sI", b"G9PT", len(code))
+    off = len(hdr) + 32 * len(code)
+    ents, blob = b"", b""
+    for name, c in code.items():
+        ents += struct.pack("<24sII", name.encode(), off + len(blob), len(c))
+        blob += c + bytes(-len(c) % 4)
+    os.makedirs(os.path.dirname(out), exist_ok=True)
+    open(out, "wb").write(hdr + ents + blob)

@@ -204,7 +204,9 @@ results checked. Left for later: the items under "G7 step 6" / "Open".
 **G8 -- Mesa and the desktop (30 %).** Our G9P shader backend (decoded from
 `applegpu_g9p` output), Rogue state packing from upstream Mesa. Gallium (GL ES
 directly, as with the SGX) or Vulkan + Zink -- decided after G6. Yardstick:
-labwc and SuperTux on the GPU instead of pixman / llvmpipe.
+labwc and SuperTux on the GPU instead of pixman / llvmpipe. **First step
+done 2026-11-26: SuperTux on the GPU through a 2D compute compositor**
+(g9p2d, "2D on the GPU"), as on the A5 before its GL driver.
 
 ## G7 progress (2026-11-25): the kernel boots the firmware and runs the G5 / G6 jobs
 
@@ -527,6 +529,113 @@ domain itself now), free-list growth, transfer jobs, MSAA / layers /
 depth, several firmware queues per data master and hardware MMU contexts
 > 0, `drm_sched` instead of the in-ioctl waits; a firmware ping (the kernel's RTKit has no ping call); what the sgx node's
 IRQs 185-188 / 193 are for (nothing needs them so far).
+
+## 2D on the GPU (2026-11-25/26): g9p2d and SuperTux
+
+The first use of the G7 driver: SDL2's 2D renderer drawn by the GPU, as on
+the A5 (sgx2d + an SDL shim). **SuperTux 0.6.3 runs on it at 26-40 frames
+per second on the full 1620x2160 display** (`supertux-gpu`, the game's
+window 1080x810 turned and scaled 2x; 600-2200 quads a frame, its lightmap
+drawn into a render target), checked from a screenshot of the display's
+memory.
+
+**A compute compositor, not the 3D pipeline.** Compute jobs already ran
+through the UAPI; texturing, varyings and blending in the TA / 3D path were
+not known yet. g9p2d cuts the target into 64x32 tiles, sorts each frame's
+quads into the tiles they touch on the CPU, and runs one workgroup per tile:
+each thread reads its pixels once, applies the tile's quads in call order
+(inverse-affine parallelograms, nearest texel, colour modulation, SDL's
+NONE / BLEND / ADD / MOD) and writes them back. No ordering problem between
+overlapping quads, every pixel read and written once per frame.
+
+### The display in every VM (kernel)
+
+`pvr_apple_find_screen()` takes simpledrm's framebuffer from the device
+tree (`/chosen/framebuffer`: PA 0x8_bc2dc000, 1620x2160, stride 6528,
+x8r8g8b8; outside RAM, so no struct pages) and builds a one-entry DMA-only
+scatterlist; `pvr_apple_vm_map_fence()` now also maps it with `pvr_mmu_map()`
+(device-cache bypass) at **`PVR_APPLE_SCREEN_VA` = general heap + 128 GiB -
+32 MiB** in every VM, and the VM's release unmaps it. The general heap is
+reported 32 MiB short (`PVR_APPLE_HEAP_TAIL`), the whole tail is refused to
+VM_MAP. A new helper `pvr_vm_get_mmu_context()` gives the backend the VM's
+MMU context. Userspace finds the display right after the reported heap.
+
+### The A10 compute ABI, as far as g9p2d needs it (`tools/gpu/g9p-probe`)
+
+`g9p-probe.c` runs one compute job with every word settable (CDM record
+words, PDS data and code words, the common-store table, buffer contents);
+`g9p-probe-shaders.py` builds probe kernels. Findings:
+
+- **Buffer arguments** are read from the USC common store: `buffer(i)`'s
+  64-bit address at dwords 2i / 2i+1 (two-buffer kernels checked; a
+  four-buffer kernel wrote nowhere we could see -- to check). g9p2d uses two:
+  its tile records and the arena.
+- **Registers**: the kernel's `__GPU_METADATA` (a flatbuffer) holds the
+  temporary register count in the word after 0x01010000 (8 for
+  `store_const`, 48 for g9p2d's kernel). It goes into the DOUTU word
+  (TEMPS, 4-register units) and K0 bits 12-17. **48 temps x 256 threads do
+  not fit**: the job never ends; 128 threads per workgroup do.
+- **Workgroup size**: record word 7 bits 20+ = threads - 1 (up to 512
+  checked with 8 temps), word 6 = 1.
+- **G9P's DOUT encoding differs from Mesa's Rogue one**: bits 3-7 = the
+  64-bit source (const64 index: data dwords 2i, 2i+1), bits 10-15 = the data
+  dword holding the control word, bits 8-9 = 2 for the hardware's own
+  source (`f0000a01`, `f0000e01` in Apple's kernel program), dst in bits
+  0-2 as Mesa's (0 DOUTD, 1 DOUTW, 2 DOUTU, 5 DOUTC). `f0001000` /
+  `f4001808` (Apple's DMA program) fit: addresses dwords 0 / 2, controls
+  dwords 4 / 6.
+- **Apple's kernel PDS program** `c2c00003 f0000a01 d3000000 f0000e01
+  fc000002 d3000000`: BRA if not IF1 to 3; shared phase: DOUTW (control
+  dword 2, 0x90000000: common store) of a hardware value, which is
+  `threadgroup_position_in_grid`; instance phase: DOUTW (dword 3,
+  0x80000000: unified store) of the local ID, DOUTU. **With `f0000811` in
+  the shared phase (source const64 #2) the threadgroup position is the
+  record's own PDS data dwords 4-5** -- how g9p2d gives each workgroup its
+  tile: one DMA record per job, then one kernel record per tile, each with
+  32 bytes of PDS data {DOUTU, 0x90000000, 0x80000000, tile index}.
+- **Per-record DMA does not work for many records**: the next record's DMA
+  task overwrites the common store while earlier workgroups still read it
+  (tiles skipped or done twice, sometimes a hang). The hardware workgroup
+  IDs of a multi-workgroup record (K3 > 0) did not come out as expected
+  either (to check); the per-record tile index needs neither.
+- **The end of a job: a fence record** (Apple's capture of `store_const`:
+  records with K0 0xc0000003, PDS program `c2c00002 d3000000 f0000005
+  d3000000`, DOUTC = a fence back to the CDM, K1 = 16 zero bytes | 0x4).
+  Without it the job is signalled done while workgroups still run -- they
+  are cut off (a tile with 384 of 2048 pixels, the rest never written).
+- **K0 bit 0 stays set** on the tile records: without it the same frames
+  take 6 times as long.
+- **A fence does not make one pass's writes visible to the next** (a render
+  target read half as zeros); the end of a job does. g9p2d submits one job
+  per pass (target), all of a frame's jobs in one SUBMIT.
+
+### g9p2d (`tools/g9p2d/`)
+
+| file | what |
+|---|---|
+| `g9p2d.h`, `g9p2d.c` | the library: `g9p2d_open`, textures (RGBA8, any size, first fit in 32 MiB BOs), `begin` / `target` / `color` / `blend` / `quad` / `quad_uv` / `quad4` / `fill` / `fill4` / `end` / `finish` |
+| `g9p2d-shaders.py` | the Metal kernel `comp` -> `build/gpu/g9p2d.bin` (G9PT: the code and its temps count) |
+| `g9p2d-test.c` | every pixel of an offscreen frame against a CPU reference; a target drawn and sampled in one frame; 400 sprites on the display; the display's memory checked through `/dev/mem`; `shot` dumps it |
+| `g9psdl.c` | the LD_PRELOAD shim (after the A5's): SDL's drawing calls into g9p2d, landscape windows turned and scaled onto the display, render targets, the touch gamepad (axis ranges from EVIOCGABS) |
+| `supertux.sh` | `supertux-gpu`: the shim around `supertux2 --renderer sdl --geometry 1080x810`; the console unbound and labwc / swaybg / waybar stopped (SIGSTOP) while it runs |
+| `build.sh` | docker (Alpine aarch64) build; `install` / `test` on the iPad (`/usr/local/lib/g9p2d`) |
+
+Memory: the arena is 1 GiB of GPU VA right below the display; two frame
+slots of 8 MiB each (ops, tile lists, tile records; the CDM streams and
+PDS data through a second mapping of the same BO in the PDS heap), then the
+texture BOs. The kernel addresses all of it with 32-bit offsets from one
+pointer. The code BO sits at the PDS and USC heap bases.
+
+Results (2026-11-26): `g9p2d-test check`: 0 of 60000 pixels off by more
+than 2 (max 1), the two-pass frame right, 10 of 10 runs; `screen`: 70
+frames per second with 400 blended 64x64 sprites over a full-screen
+textured quad, one full-screen textured quad alone 10.3 ms; 100116 of
+100116 sampled display pixels as the texture says.
+
+Open: one SuperTux run ended in SIGBUS after ~2450 frames (the next ran
+minutes without it; cause to check); vsync / tearing (the display is drawn
+directly); linear filtering; skipping the destination read under an opaque
+first quad; the 3D path (TA / 3D with textures) for real GL.
 
 ## G2: the recipe (from the 22H355 kernelcache, 2026-11-23)
 
