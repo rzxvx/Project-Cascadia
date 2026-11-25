@@ -419,6 +419,39 @@ firmware now.
   of the fence page refused: **PASS**; the self-tests (store, storeq,
   remap, vm2, render) still PASS on the shared firmware.
 
+### G7 step 4 (2026-11-25): compute jobs through the UAPI
+
+`pvr_apple_uapi.c`: CREATE_CONTEXT / DESTROY_CONTEXT (compute) and
+SUBMIT_JOBS (compute) on the backend. A context keeps its VM (a reference)
+and its static state (upstream's stream format,
+`pvr_static_compute_context_state_stream`); a job's command stream
+(`pvr_cmd_compute_stream`) is decoded by upstream's `pvr_stream_process`
+and translated into StartCompute's blocks:
+
+| UAPI value | StartCompute | register |
+|---|---|---|
+| cmd `cdm_ctrl_stream_base` | CA[4..5] | 0x480 (stream) |
+| cmd `cdm_context_state_base_addr` (else the kernel's) | CA[0..1] | 0x498 |
+| ctx `cdmreg_cdm_terminate_pds` | CA[2..3] | 0x4b8 |
+| ctx `cdmreg_cdm_terminate_pds1` | CDR[0] | 0x4c0 |
+| ctx `cdmreg_cdm_context_pds0` / `_pds1` | CTX[0xe..0xf] / [0x10] | 0x4a8 / 0x4b0 |
+| (the kernel's scratch) | CA[6..17] | six slots via 0x11040 |
+
+Not used yet (no register found for them on G9P, to check):
+`tpu_border_colour_table`, `cdm_resume_pds1`, the resume PDS programs.
+The kernel's reserved object at the general heap's end grew to 64 KiB:
+the fence page, the six scratch slots (+0x4000), a default CDM context
+state (+0x8000); every VM maps it, userspace may not. Sync ops: waits are
+done synchronously in the ioctl (10 s cap), signals attach the job's fence
+to the syncobj (binary or timeline). A job holds a reference to its VM.
+
+**`tools/gpu/pvr-uapi-test`** now runs G5's store through the UAPI from a
+user VM (code BO mapped at the PDS and USC heap bases, data in the general
+heap, store_const from `apple/g9p-selftest.bin`): CREATE_CONTEXT, then 100
+jobs one by one and 16 in one SUBMIT_JOBS, each waited on through a
+syncobj (DRM_IOCTL_SYNCOBJ_WAIT): **116 of 116 wrote 0xcafe0000, ~0.23 ms
+per job including the ioctls -- PASS**. The self-tests still PASS.
+
 Open / next: the powervr UAPI on this backend (contexts and VMs through
 `pvr_vm` -- with 16 KiB CPU pages upstream's MMU code uses 16 KiB GPU pages,
 which iOS's kext also does on G9P, to check on the iPad --, translating

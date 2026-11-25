@@ -31,6 +31,7 @@
 #include "pvr_context.h"
 #include "pvr_device.h"
 #include "pvr_gem.h"
+#include "pvr_stream.h"
 #include "pvr_vm.h"
 
 #define PVR_APPLE_REGION_OFF(n, o, s) [PVR_APPLE_R_##n] = (o),
@@ -598,7 +599,7 @@ void pvr_apple_vm_activate(struct pvr_apple *a, struct pvr_vm_context *vm)
 
 int pvr_apple_vm_map_fence(struct pvr_apple *a, struct pvr_vm_context *vm)
 {
-	return pvr_vm_map(vm, a->fence_bo, 0, PVR_APPLE_FENCE_VA, SZ_16K);
+	return pvr_vm_map(vm, a->fence_bo, 0, PVR_APPLE_FENCE_VA, PVR_APPLE_RESERVED_SIZE);
 }
 
 /* vm goes away: it must not stay behind context 0 */
@@ -828,7 +829,7 @@ int pvr_apple_probe(struct pvr_device *pvr_dev)
 		release_firmware(a->fw);
 		return err;
 	}
-	a->fence_bo = pvr_gem_object_create(pvr_dev, SZ_16K, 0);
+	a->fence_bo = pvr_gem_object_create(pvr_dev, PVR_APPLE_RESERVED_SIZE, 0);
 	err = PTR_ERR_OR_ZERO(a->fence_bo);
 	if (!err)
 		err = pvr_apple_vm_map_fence(a, pvr_dev->kernel_vm_ctx);
@@ -842,6 +843,7 @@ int pvr_apple_probe(struct pvr_device *pvr_dev)
 		release_firmware(a->fw);
 		return err;
 	}
+	pvr_stream_create_musthave_masks(pvr_dev);	/* the UAPI's command streams */
 	pvr_context_device_init(pvr_dev);
 	xa_init_flags(&pvr_dev->free_list_ids, XA_FLAGS_ALLOC1);
 	xa_init_flags(&pvr_dev->job_ids, XA_FLAGS_ALLOC1);

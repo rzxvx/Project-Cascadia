@@ -7,7 +7,8 @@ PM handed to the backend, the MMU flush (the contexts' MMU
 generations), the VM root table for the backend's context slots, no
 firmware memory-context object for user VMs (the fence page instead),
 the firmware started on the first open, the job / context / free-list /
-HWRT ioctls refused until the backend has them, no Imagination debugfs,
+HWRT ioctls: contexts and job submission handed to the backend, free
+lists and HWRT datasets refused until it has them, no Imagination debugfs,
 the Kconfig option.
 ---
 --- a/drivers/gpu/drm/imagination/Kconfig
@@ -33,13 +34,14 @@ the Kconfig option.
  	depends on DRM_POWERVR && KUNIT
 --- a/drivers/gpu/drm/imagination/Makefile
 +++ b/drivers/gpu/drm/imagination/Makefile
-@@ -29,6 +29,11 @@
+@@ -29,6 +29,12 @@
  	pvr_vm.o \
  	pvr_vm_mips.o
  
 +powervr-$(CONFIG_DRM_POWERVR_APPLE) += \
 +	pvr_apple.o \
 +	pvr_apple_job.o \
++	pvr_apple_uapi.o \
 +	pvr_apple_test.o
 +
  powervr-$(CONFIG_DEBUG_FS) += \
@@ -60,19 +62,29 @@ the Kconfig option.
  		struct dentry *dir;
 --- a/drivers/gpu/drm/imagination/pvr_device.h
 +++ b/drivers/gpu/drm/imagination/pvr_device.h
-@@ -113,6 +113,12 @@
- 
+@@ -114,6 +114,12 @@
  	/** @device_data: Pointer to platform-specific data. */
  	const struct pvr_device_data *device_data;
-+
+ 
 +	/**
 +	 * @apple: Apple's GFX firmware backend (T8010), NULL on Imagination
 +	 * firmware. See pvr_apple.h.
 +	 */
 +	struct pvr_apple *apple;
- 
++
  	/** @regs_resource: Resource representing device control registers. */
  	struct resource *regs_resource;
+ 
+@@ -387,6 +393,9 @@
+ 	 * This array is used to allocate handles returned to userspace.
+ 	 */
+ 	struct xarray vm_ctx_handles;
++
++	/** @apple_ctx_handles: Apple backend: this file's contexts (pvr_apple_uapi.c). */
++	struct xarray apple_ctx_handles;
+ 
+ 	/** @contexts: PVR context list. */
+ 	struct list_head contexts;
 --- a/drivers/gpu/drm/imagination/pvr_drv.c
 +++ b/drivers/gpu/drm/imagination/pvr_drv.c
 @@ -4,6 +4,7 @@
@@ -83,52 +95,63 @@ the Kconfig option.
  #include "pvr_drv.h"
  #include "pvr_free_list.h"
  #include "pvr_gem.h"
-@@ -686,6 +687,10 @@
- 	struct pvr_file *pvr_file = file->driver_priv;
+@@ -687,6 +688,11 @@
  	int idx;
  	int ret;
-+
-+	/* Apple backend: not yet (G7 steps 4-5) */
-+	if (to_pvr_device(drm_dev)->apple)
-+		return -EOPNOTSUPP;
  
- 	if (!drm_dev_enter(drm_dev, &idx))
- 		return -EIO;
-@@ -746,6 +751,10 @@
- 	int idx;
- 	int err;
- 
-+	/* Apple backend: not yet (G7 steps 4-5) */
++	/* Apple backend: its own contexts (pvr_apple_uapi.c) */
 +	if (to_pvr_device(drm_dev)->apple)
-+		return -EOPNOTSUPP;
++		return pvr_apple_ioctl_create_context(to_pvr_device(drm_dev), file->driver_priv,
++						      raw_args);
 +
  	if (!drm_dev_enter(drm_dev, &idx))
  		return -EIO;
  
-@@ -832,6 +841,10 @@
+@@ -719,6 +725,9 @@
+ 
+ 	if (args->_padding_4)
+ 		return -EINVAL;
++
++	if (to_pvr_device(drm_dev)->apple)
++		return pvr_apple_ioctl_destroy_context(pvr_file, args->handle);
+ 
+ 	return pvr_context_destroy(pvr_file, args->handle);
+ }
+@@ -746,6 +755,10 @@
  	int idx;
  	int err;
  
-+	/* Apple backend: not yet (G7 steps 4-5) */
++	/* Apple backend: not yet (G7 step 5) */
 +	if (to_pvr_device(drm_dev)->apple)
 +		return -EOPNOTSUPP;
 +
  	if (!drm_dev_enter(drm_dev, &idx))
  		return -EIO;
  
-@@ -1025,6 +1038,11 @@
+@@ -832,6 +845,10 @@
  	int idx;
  	int err;
  
++	/* Apple backend: not yet (G7 step 5) */
++	if (to_pvr_device(drm_dev)->apple)
++		return -EOPNOTSUPP;
++
+ 	if (!drm_dev_enter(drm_dev, &idx))
+ 		return -EIO;
+ 
+@@ -1024,6 +1041,11 @@
+ 	u64 offset_plus_size;
+ 	int idx;
+ 	int err;
++
 +	/* Apple backend: the fence page at the general heap's end is the kernel's */
 +	if (to_pvr_device(drm_dev)->apple &&
 +	    pvr_apple_va_reserved(args->device_addr, args->size))
 +		return -EINVAL;
-+
+ 
  	if (!drm_dev_enter(drm_dev, &idx))
  		return -EIO;
- 
-@@ -1113,6 +1131,11 @@
+@@ -1113,6 +1135,11 @@
  	struct pvr_vm_context *vm_ctx;
  	int err;
  
@@ -140,18 +163,18 @@ the Kconfig option.
  	/* Initial validation of args. */
  	if (args->_padding_4)
  		return -EINVAL;
-@@ -1150,6 +1173,10 @@
- 	struct pvr_file *pvr_file = to_pvr_file(file);
+@@ -1151,6 +1178,10 @@
  	int idx;
  	int err;
-+
-+	/* Apple backend: not yet (G7 steps 4-5) */
-+	if (to_pvr_device(drm_dev)->apple)
-+		return -EOPNOTSUPP;
  
++	/* Apple backend: jobs on Apple's firmware (pvr_apple_uapi.c) */
++	if (pvr_dev->apple)
++		return pvr_apple_ioctl_submit_jobs(pvr_dev, file, args);
++
  	trace_pvr_job_submit_ioctl(pvr_dev, args->jobs.count);
  
-@@ -1314,6 +1341,14 @@
+ 	if (!drm_dev_enter(drm_dev, &idx))
+@@ -1314,6 +1345,14 @@
  {
  	struct pvr_device *pvr_dev = to_pvr_device(drm_dev);
  	struct pvr_file *pvr_file;
@@ -166,18 +189,37 @@ the Kconfig option.
  
  	pvr_file = kzalloc_obj(*pvr_file);
  	if (!pvr_file)
-@@ -1414,6 +1449,10 @@
- 	drm_dev = &pvr_dev->base;
+@@ -1337,6 +1376,7 @@
+ 	xa_init_flags(&pvr_file->free_list_handles, XA_FLAGS_ALLOC1);
+ 	xa_init_flags(&pvr_file->hwrt_handles, XA_FLAGS_ALLOC1);
+ 	xa_init_flags(&pvr_file->vm_ctx_handles, XA_FLAGS_ALLOC1);
++	xa_init_flags(&pvr_file->apple_ctx_handles, XA_FLAGS_ALLOC1);
+ 
+ 	/*
+ 	 * Store reference to powervr-specific file private data in DRM file
+@@ -1363,6 +1403,10 @@
+ {
+ 	struct pvr_file *pvr_file = to_pvr_file(file);
+ 
++	/* Apple backend: its contexts first (their jobs keep their VMs) */
++	if (to_pvr_device(drm_dev)->apple)
++		pvr_apple_file_close(pvr_file);
++
+ 	/* Kill remaining contexts. */
+ 	pvr_destroy_contexts_for_file(pvr_file);
+ 
+@@ -1415,6 +1459,10 @@
  
  	platform_set_drvdata(plat_dev, drm_dev);
-+
+ 
 +	/* Apple's firmware: a backend of its own (pvr_apple.c) */
 +	if (pvr_apple_match(&plat_dev->dev))
 +		return pvr_apple_probe(pvr_dev);
- 
++
  	err = pvr_power_domains_init(pvr_dev);
  	if (err)
-@@ -1468,6 +1507,11 @@
+ 		return err;
+@@ -1468,6 +1516,11 @@
  	struct drm_device *drm_dev = platform_get_drvdata(plat_dev);
  	struct pvr_device *pvr_dev = to_pvr_device(drm_dev);
  
@@ -189,7 +231,7 @@ the Kconfig option.
  	WARN_ON(!xa_empty(&pvr_dev->job_ids));
  	WARN_ON(!xa_empty(&pvr_dev->free_list_ids));
  
-@@ -1492,7 +1536,13 @@
+@@ -1492,7 +1545,13 @@
  };
  
  static const struct of_device_id dt_match[] = {

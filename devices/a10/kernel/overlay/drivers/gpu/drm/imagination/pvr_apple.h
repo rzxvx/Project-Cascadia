@@ -82,8 +82,11 @@ struct pvr_gem_object;
  * in the context running then. The last 16 KiB of the UAPI's general heap
  * (not reported to userspace: step 3).
  */
-#define PVR_APPLE_FENCE_VA	(0x8000000000ULL + SZ_128G - SZ_16K)
-#define PVR_APPLE_RESERVED_SIZE	SZ_16K
+#define PVR_APPLE_RESERVED_SIZE	SZ_64K
+#define PVR_APPLE_FENCE_VA	(0x8000000000ULL + SZ_128G - PVR_APPLE_RESERVED_SIZE)
+/* the rest of that object: StartCompute's six scratch slots, a default CDM context state */
+#define PVR_APPLE_CDM_SLOTS_VA	(PVR_APPLE_FENCE_VA + 0x4000)
+#define PVR_APPLE_CDM_STATE_VA	(PVR_APPLE_FENCE_VA + 0x8000)
 
 /* the UAPI's execution bases (pvr_rogue_heap_config.h): PDS / USC code heaps */
 #define PVR_APPLE_PDS_BASE	0xDA00000000ULL
@@ -236,6 +239,7 @@ struct pvr_apple_job {
 	u32 rec_addr_off, rec_val_off;		/* the command's completion record */
 	u32 seqno;
 	struct pvr_vm_context *vm;		/* translates the job's addresses (MMU context 0) */
+	bool vm_ref;				/* vm is a reference of the job's */
 	struct dma_fence *fence;
 	struct list_head node;
 };
@@ -316,6 +320,18 @@ struct pvr_apple_job *pvr_apple_job_ta(struct pvr_apple_queue *q, const struct p
 struct pvr_apple_job *pvr_apple_job_3d(struct pvr_apple_queue *q, const struct pvr_apple_3d_args *args,
 				       struct pvr_apple_hwrt *rt);
 void pvr_apple_job_free(struct pvr_apple_job *job);
+void pvr_apple_job_set_vm(struct pvr_apple_job *job, struct pvr_vm_context *vm);
+
+struct pvr_file;
+struct drm_file;
+struct drm_pvr_ioctl_create_context_args;
+struct drm_pvr_ioctl_submit_jobs_args;
+int pvr_apple_ioctl_create_context(struct pvr_device *pvr_dev, struct pvr_file *pvr_file,
+				   struct drm_pvr_ioctl_create_context_args *args);
+int pvr_apple_ioctl_destroy_context(struct pvr_file *pvr_file, u32 handle);
+int pvr_apple_ioctl_submit_jobs(struct pvr_device *pvr_dev, struct drm_file *file,
+				struct drm_pvr_ioctl_submit_jobs_args *args);
+void pvr_apple_file_close(struct pvr_file *pvr_file);
 struct dma_fence *pvr_apple_submit(struct pvr_apple_job *job);
 void pvr_apple_process_completions(struct pvr_apple *a);
 u32 pvr_apple_queue_word(struct pvr_apple_queue *q, u32 off);

@@ -23,6 +23,7 @@
 
 #include "pvr_apple.h"
 #include "pvr_device.h"
+#include "pvr_vm.h"
 
 /* queue block (pool): object, state, command ring, status + done word, scheduling entries */
 #define QB_OBJ		0x0000
@@ -141,10 +142,21 @@ static struct pvr_apple_job *job_alloc(struct pvr_apple_queue *q, u32 size)
 	return job;
 }
 
+/* the job runs in vm (a reference is taken) */
+void pvr_apple_job_set_vm(struct pvr_apple_job *job, struct pvr_vm_context *vm)
+{
+	if (job->vm_ref)
+		pvr_vm_context_put(job->vm);
+	job->vm = pvr_vm_context_get(vm);
+	job->vm_ref = true;
+}
+
 void pvr_apple_job_free(struct pvr_apple_job *job)
 {
 	if (!job)
 		return;
+	if (job->vm_ref)
+		pvr_vm_context_put(job->vm);
 	pvr_apple_obj_free(job->q->a, &job->blk);
 	if (job->fence)
 		dma_fence_put(job->fence);
