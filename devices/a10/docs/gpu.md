@@ -202,8 +202,9 @@ compute and render jobs through the powervr UAPI and waits on syncobjs,
 results checked. Left for later: the items under "G7 step 6" / "Open".
 
 **G8 -- Mesa and the desktop (30 %).** Our G9P shader backend (decoded from
-`applegpu_g9p` output), Rogue state packing from upstream Mesa. Gallium (GL ES
-directly, as with the SGX) or Vulkan + Zink -- decided after G6. Yardstick:
+`applegpu_g9p` output), Rogue state packing from upstream Mesa, in a Gallium
+driver of its own (decided 2026-11-26, "G8" below: less CPU per frame and
+fewer required features than Vulkan + Zink). Yardstick:
 labwc and SuperTux on the GPU instead of pixman / llvmpipe. **First step
 done 2026-11-26: SuperTux on the GPU through a 2D compute compositor**
 (g9p2d, "2D on the GPU"), as on the A5 before its GL driver.
@@ -529,6 +530,68 @@ domain itself now), free-list growth, transfer jobs, MSAA / layers /
 depth, several firmware queues per data master and hardware MMU contexts
 > 0, `drm_sched` instead of the in-ioctl waits; a firmware ping (the kernel's RTKit has no ping call); what the sgx node's
 IRQs 185-188 / 193 are for (nothing needs them so far).
+
+## G8 (2026-11-26): the plan, and the shader ISA
+
+**The driver: a Gallium driver of its own** (GLES2/3, GL 2.1-3.x), not
+Vulkan + Zink: the A10's CPU (two logical cores) pays for every layer
+between the application and the GPU, and a Gallium driver needs far fewer
+features than a Vulkan driver that Zink could run on. Mesa's API-neutral
+`src/imagination` parts (csbgen and its XML, the PDS generator, the Rogue
+hardware definitions) carry over; Vulkan stays possible later on the same
+compiler. Steps:
+
+1. **The ISA** (G8.1): the encoding of applegpu_g9p, measured with Apple's
+   offline compiler as the oracle, every finding checked by running our own
+   encoding on the GPU (compute jobs through the UAPI, `g9p-probe`).
+2. **The compiler** (G8.2): NIR to G9P: instruction selection, register
+   allocation, the program frame, checked kernel by kernel against the CPU.
+3. **The 3D state** (G8.3): textures and samplers, varyings, blending,
+   depth / stencil, on top of G6's render path.
+4. **The Gallium driver** (G8.4), then labwc, SuperTux's GL renderer.
+5. Separately: a display driver with page flips (vblank), for tearing-free
+   output.
+
+No disassembler for applegpu_g9p ships with Xcode's Metal toolchain:
+`applegpu-nt -S` (also with the G9-G12 plugin `libapplegpuG9G12-nt.dylib`
+loaded by `-load`) answers "Plugin interface not implemented:
+AIRNTEmitAssembly"; `-mllvm -print-after-all` shows only the AIR front end's
+passes; `AGC_ENABLE_STATUS_FILE=1` (the plugin also holds a string "driver
+disassembler") makes the translator crash.
+
+### G8.1: the encoding so far (`tools/gpu/isa/`)
+
+`g9pisa.py`: `corpus()` builds one library per kernel (metal-tt does not
+keep a library's function order -- an earlier one-library corpus mapped
+kernels wrongly) in parallel, cached in `build/gpu/isa/c/`; `split()`,
+`unique_bits()` (the encoding bits each operand bit sets, among variants of
+the same length).
+
+- **Instructions are runs of 16-bit little-endian words up to the first
+  word with bit 8 clear**; the opcode is the first word's low byte. The code
+  ends with the word 0x8000 at the start of a 64-byte block, after 0xc000
+  padding words.
+- **Move immediate (opcode 0x98)**, `0198 03dd W2 W3 [W4] 0154 0038`
+  (`imm-map.py`, one kernel `o[0] = 1 << i` per bit):
+
+  | value bits | encoding |
+  |---|---|
+  | 0-5 | W2 bits 1-6 |
+  | 6-8 | W3 bits 1-3 |
+  | 9 | W0 bit 13 |
+  | 10 | W3 bit 4 |
+  | 11-13 | W3 bits 12-14 |
+  | 14, 15 | W3 bits 6, 7 |
+  | 16-23 | W4 bits 0-7 |
+  | 24 | W3 bit 15 |
+  | 25-31 | W4 bits 9-15 |
+
+  W3 bit 0 set = the 32-bit form: W4 is there only then. **Checked on the
+  GPU** (`mov-check.py`): the compiler's code for `o[0] = 1` and `o[0] =
+  0x10000`, the value field rewritten by our encoder, run through
+  `g9p-probe` (`tail=1`: a fence record at the end of the job): 0xbeef,
+  0x1234, 0x8001, 0x200, 0xdeadbeef, 0x12345678, 0x80000001, 0x01010101 --
+  each written as given.
 
 ## 2D on the GPU (2026-11-25/26): g9p2d and SuperTux
 
