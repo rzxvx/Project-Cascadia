@@ -24,7 +24,7 @@ say, what the reference projects say, and the plan in checkable steps, in the
 style of the iPad mini 1's SGX work and the A13's AGX work
 (`devices/a13/docs/research/gpu.md`).
 
-**Decision (the user's, 2026-11-22):** Cascadia writes its own A10 GPU driver.
+**Approach:** Cascadia's A10 GPU driver is its own.
 Every value our code uses is derived from our own firmware build (22H355) and
 kernelcache or measured on our iPad.
 
@@ -186,8 +186,8 @@ own shaders, PDS programs and state ("G6 legalization").** The screen is
 next.
 
 **G7 -- kernel driver (35 %).** In our kernel, in C: `apple-rtkit` with a
-T8010 A7-IOP mailbox backend, GEM shmem, `drm_gpuvm`, `drm_sched`. **Decided
-2026-11-24 (the user): upstream powervr's UAPI** (`drivers/gpu/drm/imagination`)
+T8010 A7-IOP mailbox backend, GEM shmem, `drm_gpuvm`, `drm_sched`. **The UAPI is upstream
+powervr's** (`drivers/gpu/drm/imagination`)
 with a backend for Apple's firmware -- Mesa's pvr winsys unchanged, the
 kernel translating powervr's geometry / fragment / compute jobs, free lists
 and HWRT datasets into the TA / 3D / CL commands of G4-G6. No GPU-side
@@ -208,7 +208,7 @@ labwc and SuperTux on the GPU instead of pixman / llvmpipe.
 
 ## G7 progress (2026-11-25): the kernel boots the firmware and runs the G5 / G6 jobs
 
-**Layout (the user's choice, 2026-11-25): a backend inside upstream
+**Layout: a backend inside upstream
 `drivers/gpu/drm/imagination`**, so the powervr UAPI, GEM, `drm_gpuvm` +
 `pvr_mmu` (the same Rogue MMU format) and `drm_sched` stay upstream's and
 Mesa's pvr winsys needs no change. The Apple parts are new files; upstream
