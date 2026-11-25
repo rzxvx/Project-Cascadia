@@ -3,7 +3,9 @@ Subject: [PATCH] drm/imagination: an Apple GFX firmware backend (T8010)
 
 The hooks for pvr_apple.c / pvr_apple_test.c (new files, from
 Cascadia's kernel/overlay): the compatible, probe / remove and runtime
-PM handed to the backend, the Kconfig option.
+PM handed to the backend, the MMU flush (the contexts' MMU
+generations), the VM root table for the backend's context slots, no
+firmware memory-context object for user VMs, the Kconfig option.
 ---
 --- a/drivers/gpu/drm/imagination/Kconfig
 +++ b/drivers/gpu/drm/imagination/Kconfig
@@ -102,6 +104,56 @@ PM handed to the backend, the Kconfig option.
  		.compatible = "thead,th1520-gpu",
  		.data = &pvr_device_data_pwrseq,
  	},
+--- a/drivers/gpu/drm/imagination/pvr_mmu.c
++++ b/drivers/gpu/drm/imagination/pvr_mmu.c
+@@ -5,6 +5,7 @@
+ 
+ #include "pvr_ccb.h"
+ #include "pvr_device.h"
++#include "pvr_apple.h"
+ #include "pvr_fw.h"
+ #include "pvr_gem.h"
+ #include "pvr_power.h"
+@@ -129,6 +130,12 @@
+ 	int err = 0;
+ 	u32 slot;
+ 	int idx;
++
++	/* Apple's firmware: the backend moves the contexts' MMU generations */
++	if (pvr_dev->apple) {
++		atomic_xchg(&pvr_dev->mmu_flush_cache_flags, 0);
++		return pvr_apple_mmu_flush(pvr_dev->apple);
++	}
+ 
+ 	if (!drm_dev_enter(from_pvr_device(pvr_dev), &idx))
+ 		return -EIO;
+@@ -1864,6 +1871,16 @@
+ }
+ 
+ /**
++ * pvr_mmu_get_root_table_ptr() - Get the CPU mapping of the root of the page
++ * table structure behind a VM context (the Apple backend mirrors it).
++ * @ctx: Target MMU context.
++ */
++void *pvr_mmu_get_root_table_ptr(struct pvr_mmu_context *ctx)
++{
++	return ctx->page_table_l2.backing_page.host_ptr;
++}
++
++/**
+  * pvr_page_table_l1_alloc() - Allocate a l1 page_table object.
+  * @ctx: MMU context of owning VM context.
+  *
+--- a/drivers/gpu/drm/imagination/pvr_mmu.h
++++ b/drivers/gpu/drm/imagination/pvr_mmu.h
+@@ -95,6 +95,7 @@
+ void pvr_mmu_context_destroy(struct pvr_mmu_context *ctx);
+ 
+ dma_addr_t pvr_mmu_get_root_table_dma_addr(struct pvr_mmu_context *ctx);
++void *pvr_mmu_get_root_table_ptr(struct pvr_mmu_context *ctx);
+ 
+ void pvr_mmu_op_context_destroy(struct pvr_mmu_op_context *op_ctx);
+ struct pvr_mmu_op_context *
 --- a/drivers/gpu/drm/imagination/pvr_power.c
 +++ b/drivers/gpu/drm/imagination/pvr_power.c
 @@ -374,6 +374,9 @@
@@ -134,3 +186,42 @@ PM handed to the backend, the Kconfig option.
  
  	return pvr_power_is_idle(pvr_dev) ? 0 : -EBUSY;
  }
+--- a/drivers/gpu/drm/imagination/pvr_vm.c
++++ b/drivers/gpu/drm/imagination/pvr_vm.c
+@@ -91,6 +91,16 @@
+ }
+ 
+ /**
++ * pvr_vm_get_page_table_root_ptr() - Get the CPU mapping of the root of the
++ * page table structure behind a VM context.
++ * @vm_ctx: Target VM context.
++ */
++void *pvr_vm_get_page_table_root_ptr(struct pvr_vm_context *vm_ctx)
++{
++	return pvr_mmu_get_root_table_ptr(vm_ctx->mmu_ctx);
++}
++
++/**
+  * pvr_vm_get_dma_resv() - Expose the dma_resv owned by the VM context.
+  * @vm_ctx: Target VM context.
+  *
+@@ -576,7 +586,8 @@
+ 	if (err)
+ 		goto err_free;
+ 
+-	if (is_userspace_context) {
++	/* Apple's firmware has no memory-context object: pvr_apple.c maps contexts */
++	if (is_userspace_context && !pvr_dev->apple) {
+ 		err = pvr_fw_object_create(pvr_dev, sizeof(struct rogue_fwif_fwmemcontext),
+ 					   PVR_BO_FW_FLAGS_DEVICE_UNCACHED,
+ 					   fw_mem_context_init, vm_ctx, &vm_ctx->fw_mem_ctx_obj);
+--- a/drivers/gpu/drm/imagination/pvr_vm.h
++++ b/drivers/gpu/drm/imagination/pvr_vm.h
+@@ -45,6 +45,7 @@
+ void pvr_vm_unmap_all(struct pvr_vm_context *vm_ctx);
+ 
+ dma_addr_t pvr_vm_get_page_table_root_addr(struct pvr_vm_context *vm_ctx);
++void *pvr_vm_get_page_table_root_ptr(struct pvr_vm_context *vm_ctx);
+ struct dma_resv *pvr_vm_get_dma_resv(struct pvr_vm_context *vm_ctx);
+ 
+ int pvr_static_data_areas_get(const struct pvr_device *pvr_dev,

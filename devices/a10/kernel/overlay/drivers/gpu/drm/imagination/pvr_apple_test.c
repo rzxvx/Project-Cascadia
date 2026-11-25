@@ -36,12 +36,34 @@
 #include <linux/unaligned.h>
 
 #include "pvr_apple.h"
+#include "pvr_device.h"
+#include "pvr_gem.h"
+#include "pvr_vm.h"
+
+/*
+ * test_pvr_vm=1 (default): the test's GPU memory is GEM objects mapped into
+ * the kernel's VM context by upstream's pvr_vm / pvr_mmu (16 KiB GPU
+ * pages); 0: one DMA arena with page tables built here (4 KiB pages), as
+ * the first self-tests had it.
+ */
+static bool test_pvr_vm = true;
+module_param(test_pvr_vm, bool, 0644);
 
 #define GVA	0x200000ULL	/* GPU VA of region GV */
 #define G3VA	0x400000ULL	/* GPU VA of region G3 */
 #define RGN_VA	0x300000ULL	/* region headers (PMB) */
 #define TPC_VA	0x340000ULL	/* tail pointer cache (PMB) */
 #define ARENA	0x200000u
+
+/*
+ * The powervr UAPI's heaps (pvr_rogue_heap_config.h): the PDS and USC
+ * execution bases are global, so the firmware gets those of the UAPI
+ * (P+0x10 / P+0x18), and the self-tests' code region (G3) is mapped there
+ * too; user VMs take VAs only inside the heaps (data: the general heap).
+ */
+#define GEN_HEAP	0x8000000000ULL
+#define PDS_HEAP	0xDA00000000ULL
+#define USC_HEAP	0xE000000000ULL
 
 /* data masters */
 #define DM_TA	0
@@ -57,6 +79,10 @@ struct pvr_apple_test {
 	 * served, and its stuck command held up compute for every queue.
 	 */
 	struct pvr_apple_queue *cp, *ta, *r3;
+	bool vm;				/* GEM objects in the kernel VM context */
+	bool code_heaps;			/* G3 also mapped at PDS_HEAP / USC_HEAP */
+	struct pvr_gem_object *bo[9];		/* per arena region, in vm mode */
+	void *map[9];
 	struct pvr_apple_hwrt *rt;
 	struct pvr_apple_ta_args ta_args;
 	struct pvr_apple_3d_args r3_args;
@@ -77,8 +103,28 @@ static const u32 arena_off[TR_ARENA_END] = {
 	[TR_G3] = 0x100000,	/* 0x100000: GPU VA 0x400000.. */
 };
 
+/* GPU VAs and sizes of the regions the GEM objects stand for (vm mode) */
+static const struct { u64 va; u32 size; } vm_region[TR_ARENA_END] = {
+	[TR_VA0] = { 0x0, 0x4000 },
+	[TR_GV] = { 0x200000, 0x4000 },
+	[TR_PMB] = { 0x300000, 0xe0000 },
+	[TR_G3] = { 0x400000, 0x100000 },
+};
+
 #define R(n) TR_##n
 #define PA(n) (a->test->dma + arena_off[TR_##n])
+
+/* the bus address behind region r + off (arena or GEM object) */
+static u64 region_dma(struct pvr_apple *a, u32 r, u32 off)
+{
+	struct pvr_apple_test *t = a->test;
+	dma_addr_t d = 0;
+
+	if (!t->vm)
+		return t->dma + arena_off[r] + off;
+	WARN_ON(pvr_gem_get_dma_addr(t->bo[r], off, &d));
+	return d;
+}
 
 static void *rptr(struct pvr_apple *a, u32 r, u32 off)
 {
@@ -89,7 +135,7 @@ static void *rptr(struct pvr_apple *a, u32 r, u32 off)
 	case TR_TAB: return (void *)t->ta_args.b + off;
 	case TR_S3A: return (void *)t->r3_args.a + off;
 	case TR_S3B: return (void *)t->r3_args.b + off;
-	default: return t->cpu + arena_off[r] + off;
+	default: return t->vm ? t->map[r] + off : t->cpu + arena_off[r] + off;
 	}
 }
 
@@ -247,11 +293,12 @@ static int build_scene(struct pvr_apple *a)
 	u32 pv, i;
 	int err;
 
-	map_g3(a);
+	if (!a->test->vm)
+		map_g3(a);
 
 	/* free list: 128 physical pages (the render target's descriptor points here) */
 	for (i = 0; i < PM_PAGES; i++)
-		w32(a, R(G3), G3_FL + 4 * i, (PA(G3) + G3_PAGES + 0x1000 * i) >> 12);
+		w32(a, R(G3), G3_FL + 4 * i, region_dma(a, R(G3), G3_PAGES + 0x1000 * i) >> 12);
 	/* StartTA's 32-bit block: 0xc78, PPP_CTRL, PPP_SCREEN, TE_SCREEN, TE_MTILE1 / 2, 0xc20, TE_PSG */
 	w32(a, R(TAA), 0x00, 0x88);
 	w32(a, R(TAA), 0x04, 0x2);
@@ -263,7 +310,8 @@ static int build_scene(struct pvr_apple *a)
 	w32(a, R(TAA), 0x1c, 0x20000);
 	/* region headers and the tail pointer cache: PMB at GPU VA 0x300000 */
 	for (i = 0; i < 0xe0; i++)
-		w64(a, R(PTR), 8 * (((RGN_VA >> 12) & 0x1ff) + i), (PA(PMB) + 0x1000 * i) | 1);
+		if (!a->test->vm)
+			w64(a, R(PTR), 8 * (((RGN_VA >> 12) & 0x1ff) + i), (PA(PMB) + 0x1000 * i) | 1);
 	/* StartTA's 64-bit block */
 	w64(a, R(TAB), 0x00, 0x1e3ce508);		/* 0xc90 PDS_CTRL */
 	w64(a, R(TAB), 0x08, RGN_VA);			/* 0xc38 region headers */
@@ -456,14 +504,30 @@ static int store_static(struct pvr_apple *a)
 }
 
 /* job slot i: sentinel output, argument entry, DMA data, stream; its CDM arguments */
+static void store_job_args_out(struct pvr_apple *a, u32 i, u64 out_va, u64 gva, u64 g3va,
+			       struct pvr_apple_cp_args *args);
+
 static void store_job_args(struct pvr_apple *a, u32 i, struct pvr_apple_cp_args *args)
+{
+	store_job_args_out(a, i, G3VA + ST_OUT + 0x40 * i, GVA, G3VA, args);
+}
+
+static void ca64(struct pvr_apple_cp_args *args, u32 i, u64 v)
+{
+	args->ca[i] = lower_32_bits(v);
+	args->ca[i + 1] = upper_32_bits(v);
+}
+
+/* the same, writing to out_va, with GV / G3 mapped at gva / g3va */
+static void store_job_args_out(struct pvr_apple *a, u32 i, u64 out_va, u64 gva, u64 g3va,
+			       struct pvr_apple_cp_args *args)
 {
 	const u32 rec[] = {
 		0x4, (ST_DMA_DATA + 0x40 * i) | 0x2, ST_DMA_PDS, 0, 0, 0, 0x40000001, 0,	/* DMA */
 		0x2103, ST_KER_DATA, ST_KER_PDS, 0, 0, 0, 0x40000001, 0,			/* kernel: 1 thread */
 		0x80000000,
 	};
-	u64 out = G3VA + ST_OUT + 0x40 * i, arg = G3VA + ST_ARGS + 0x20 * i;
+	u64 out = out_va, arg = g3va + ST_ARGS + 0x20 * i;
 	u32 k;
 
 	for (k = 0; k < 0x40; k += 4)
@@ -479,12 +543,12 @@ static void store_job_args(struct pvr_apple *a, u32 i, struct pvr_apple_cp_args 
 		w32(a, R(G3), ST_STREAM + 0x100 * i + 4 * k, rec[k]);
 
 	memset(args, 0, sizeof(*args));
-	args->ca[0] = GVA + 0x2000;			/* RGX+0x498 */
+	ca64(args, 0, gva + 0x2000);			/* RGX+0x498 */
 	args->ca[2] = ST_HALT;				/* RGX+0x4b8: terminate PDS code / data */
 	args->ca[3] = ST_HALT + 0x10;
-	args->ca[4] = G3VA + ST_STREAM + 0x100 * i;	/* RGX+0x480: the stream */
+	ca64(args, 4, g3va + ST_STREAM + 0x100 * i);	/* RGX+0x480: the stream */
 	for (k = 0; k < 6; k++)
-		args->ca[6 + 2 * k] = GVA + 0x3000 + 0x100 * k;
+		ca64(args, 6 + 2 * k, gva + 0x3000 + 0x100 * k);
 	args->ctx[0xe] = ST_HALT;			/* RGX+0x4a8 / +0x4ac */
 	args->ctx[0xf] = ST_HALT + 0x10;
 	args->fast = false;	/* the full FinalizeCompute: its flush writes the USC's stores out */
@@ -531,6 +595,59 @@ static void r3_args(struct pvr_apple *a)
 		r->b[i] = 0x1d3;			/* 0x11080 x 6 */
 }
 
+/* vm mode: one GEM object per region, CPU-mapped (write-combined) and mapped at its GPU VA */
+static void vm_regions_destroy(struct pvr_apple *a)
+{
+	struct pvr_apple_test *t = a->test;
+	struct pvr_vm_context *vm = a->pvr_dev->kernel_vm_ctx;
+	int r;
+
+	if (t->code_heaps) {
+		pvr_vm_unmap(vm, PDS_HEAP, vm_region[TR_G3].size);
+		pvr_vm_unmap(vm, USC_HEAP, vm_region[TR_G3].size);
+		t->code_heaps = false;
+	}
+	for (r = 0; r < TR_ARENA_END; r++) {
+		if (!t->bo[r])
+			continue;
+		if (t->map[r])
+			pvr_gem_object_vunmap(t->bo[r]);
+		pvr_vm_unmap_obj(vm, t->bo[r], vm_region[r].va, vm_region[r].size);
+		pvr_gem_object_put(t->bo[r]);
+		t->bo[r] = NULL;
+		t->map[r] = NULL;
+	}
+}
+
+static int vm_regions_create(struct pvr_apple *a)
+{
+	struct pvr_apple_test *t = a->test;
+	struct pvr_vm_context *vm = a->pvr_dev->kernel_vm_ctx;
+	int r, err;
+
+	for (r = 0; r < TR_ARENA_END; r++) {
+		struct pvr_gem_object *bo;
+		void *p;
+
+		if (!vm_region[r].size)
+			continue;
+		bo = pvr_gem_object_create(a->pvr_dev, vm_region[r].size, 0);
+		if (IS_ERR(bo))
+			return PTR_ERR(bo);
+		err = pvr_vm_map(vm, bo, 0, vm_region[r].va, vm_region[r].size);
+		if (err) {
+			pvr_gem_object_put(bo);
+			return err;
+		}
+		t->bo[r] = bo;
+		p = pvr_gem_object_vmap(bo);
+		if (IS_ERR(p))
+			return PTR_ERR(p);
+		t->map[r] = p;
+	}
+	return 0;
+}
+
 static void test_free(struct pvr_apple *a)
 {
 	struct pvr_apple_test *t = a->test;
@@ -541,6 +658,7 @@ static void test_free(struct pvr_apple *a)
 	pvr_apple_hwrt_destroy(t->rt);
 	if (t->cpu)
 		dma_free_coherent(a->dev, ARENA, t->cpu, t->dma);
+	vm_regions_destroy(a);
 	kfree(t);
 	a->test = NULL;
 }
@@ -553,7 +671,7 @@ void pvr_apple_test_fini(struct pvr_apple *a)
 /* the arena, its page tables and programs; the firmware; the queues and the render target */
 static int test_start(struct pvr_apple *a)
 {
-	struct pvr_apple_boot_cfg cfg = { .code_base = G3VA, .perf_state = 6 };
+	struct pvr_apple_boot_cfg cfg = { .pds_base = G3VA, .usc_base = G3VA, .perf_state = 6 };
 	struct pvr_apple_test *t;
 	int i, err;
 
@@ -565,6 +683,22 @@ static int test_start(struct pvr_apple *a)
 	if (!t)
 		return -ENOMEM;
 	a->test = t;
+	t->vm = test_pvr_vm;
+	if (t->vm) {
+		err = vm_regions_create(a);
+		if (err)
+			goto err;
+		/* the code region at the UAPI's PDS / USC heap bases too */
+		err = pvr_vm_map(a->pvr_dev->kernel_vm_ctx, t->bo[TR_G3], 0, PDS_HEAP, vm_region[TR_G3].size) ?:
+		      pvr_vm_map(a->pvr_dev->kernel_vm_ctx, t->bo[TR_G3], 0, USC_HEAP, vm_region[TR_G3].size);
+		if (err)
+			goto err;
+		t->code_heaps = true;
+		cfg.pds_base = PDS_HEAP;
+		cfg.usc_base = USC_HEAP;
+		cfg.ctx0_pc = pvr_vm_get_page_table_root_addr(a->pvr_dev->kernel_vm_ctx);
+		goto built;
+	}
 	t->cpu = dma_alloc_coherent(a->dev, ARENA, &t->dma, GFP_KERNEL);
 	if (!t->cpu) {
 		err = -ENOMEM;
@@ -573,17 +707,19 @@ static int test_start(struct pvr_apple *a)
 
 	/* context 0: GPU VA 0x200000.. onto GV, 0x300000.. onto PMB (in PTR), 0x400000.. G3, 0 the VA0 page */
 	w32(a, R(Z), 0, ((PA(PDR) >> 12) << 4) | 1);
+	cfg.ctx0_pc = PA(Z);
 	w64(a, R(PDR), 8 * 1, PA(PTR) | 1);
 	for (i = 0; i < 4; i++)
 		w64(a, R(PTR), 8 * i, (PA(GV) + 0x1000 * i) | 1);
 	for (i = 0; i < 0xe0; i++)
-		w64(a, R(PTR), 8 * (((RGN_VA >> 12) & 0x1ff) + i), (PA(PMB) + 0x1000 * i) | 1);
+		if (!a->test->vm)
+			w64(a, R(PTR), 8 * (((RGN_VA >> 12) & 0x1ff) + i), (PA(PMB) + 0x1000 * i) | 1);
+built:
 	err = build_scene(a) ?: store_static(a);
 	if (err)
 		goto err;
 	r3_args(a);
 
-	cfg.ctx0_pc = PA(Z);
 	cfg.fence_va = GVA + 0x3800;	/* the flush before a power-off writes there */
 	err = pvr_apple_fw_boot(a, &cfg) ?: pvr_apple_fw_init(a, &cfg);
 	if (err)
@@ -680,6 +816,208 @@ static int test_storeq(struct pvr_apple *a, u32 n, char *res, size_t len)
 		  n, ok == n ? "PASS" : "FAIL", ok, n, err, ktime_us_delta(ktime_get(), t0),
 		  a->crashed ? "; firmware crashed" : "");
 	return ok == n ? 0 : (err ?: -EIO);
+}
+
+/*
+ * MMU invalidation: one GPU VA, mapped in turn onto two objects; a store
+ * job each time must land in the object mapped now. A stale translation
+ * would write into the other one.
+ */
+#define REMAP_VA	0x800000ULL
+
+static int test_remap(struct pvr_apple *a, u32 n, char *res, size_t len)
+{
+	struct pvr_vm_context *vm = a->pvr_dev->kernel_vm_ctx;
+	struct pvr_gem_object *bo[2] = { NULL, NULL };
+	u32 *map[2] = { NULL, NULL }, k, ok = 0, got = 0, other = 0;
+	int err = 0, e, i;
+
+	if (!a->test->vm) {
+		scnprintf(res, len, "remap: needs test_pvr_vm=1\n");
+		return -EINVAL;
+	}
+	for (i = 0; i < 2; i++) {
+		bo[i] = pvr_gem_object_create(a->pvr_dev, 0x4000, 0);
+		if (IS_ERR(bo[i])) {
+			err = PTR_ERR(bo[i]);
+			bo[i] = NULL;
+			goto out;
+		}
+		map[i] = pvr_gem_object_vmap(bo[i]);
+		if (IS_ERR(map[i])) {
+			err = PTR_ERR(map[i]);
+			map[i] = NULL;
+			goto out;
+		}
+	}
+	for (k = 0; k < n; k++) {
+		struct pvr_apple_cp_args args;
+		struct pvr_apple_job *job;
+		u32 cur = k & 1;
+
+		map[0][0] = map[1][0] = 0xabadbeef;
+		err = pvr_vm_map(vm, bo[cur], 0, REMAP_VA, 0x4000);
+		if (err)
+			break;
+		store_job_args_out(a, 0, REMAP_VA, GVA, G3VA, &args);
+		job = pvr_apple_job_cp(a->test->cp, &args);
+		e = IS_ERR(job) ? PTR_ERR(job) : wait(pvr_apple_submit(job), 2000);
+		got = READ_ONCE(map[cur][0]);
+		other = READ_ONCE(map[!cur][0]);
+		pvr_vm_unmap(vm, REMAP_VA, 0x4000);
+		if (!e && got == 0xcafe0000 && other == 0xabadbeef) {
+			ok++;
+		} else {
+			err = e ?: -EIO;
+			break;
+		}
+	}
+out:
+	scnprintf(res, len, "remap x%u: %s -- %u of %u stores went to the object mapped at the time (%d); last: mapped %08x, other %08x%s\n",
+		  n, ok == n ? "PASS" : "FAIL", ok, n, err, got, other, a->crashed ? "; firmware crashed" : "");
+	for (i = 0; i < 2; i++) {
+		if (map[i])
+			pvr_gem_object_vunmap(bo[i]);
+		if (bo[i])
+			pvr_gem_object_put(bo[i]);
+	}
+	return err;
+}
+
+/*
+ * A second VM on its own MMU context: the same objects at the same VAs,
+ * but a different object at REMAP_VA than the kernel's VM. Store jobs on
+ * context 0 and on the second context, in turn, must each write into their
+ * own VM's object there.
+ */
+static int test_vm2(struct pvr_apple *a, u32 n, char *res, size_t len)
+{
+	struct pvr_vm_context *kvm = a->pvr_dev->kernel_vm_ctx, *vm2;
+	struct pvr_apple_test *t = a->test;
+	struct pvr_gem_object *bo[2] = { NULL, NULL };
+	u32 *map[2] = { NULL, NULL }, k, ok = 0, got[2] = { 0, 0 };
+	int err = 0, e, i, ctx = -1;
+	bool mapped[2] = { false, false };
+
+	if (!t->vm) {
+		scnprintf(res, len, "vm2: needs test_pvr_vm=1\n");
+		return -EINVAL;
+	}
+	vm2 = pvr_vm_create_context(a->pvr_dev, true);
+	if (IS_ERR(vm2)) {
+		scnprintf(res, len, "vm2: no VM context (%ld)\n", PTR_ERR(vm2));
+		return PTR_ERR(vm2);
+	}
+	/* in the second VM: G3 in the general heap and at the code bases, GV in the general heap */
+	err = pvr_vm_map(vm2, t->bo[TR_G3], 0, GEN_HEAP + G3VA, vm_region[TR_G3].size) ?:
+	      pvr_vm_map(vm2, t->bo[TR_G3], 0, PDS_HEAP, vm_region[TR_G3].size) ?:
+	      pvr_vm_map(vm2, t->bo[TR_G3], 0, USC_HEAP, vm_region[TR_G3].size) ?:
+	      pvr_vm_map(vm2, t->bo[TR_GV], 0, GEN_HEAP + GVA, vm_region[TR_GV].size);
+	for (i = 0; i < 2 && !err; i++) {
+		bo[i] = pvr_gem_object_create(a->pvr_dev, 0x4000, 0);
+		if (IS_ERR(bo[i])) {
+			err = PTR_ERR(bo[i]);
+			bo[i] = NULL;
+			break;
+		}
+		map[i] = pvr_gem_object_vmap(bo[i]);
+		if (IS_ERR(map[i])) {
+			err = PTR_ERR(map[i]);
+			map[i] = NULL;
+			break;
+		}
+		err = pvr_vm_map(i ? vm2 : kvm, bo[i], 0, i ? GEN_HEAP + REMAP_VA : REMAP_VA, 0x4000);
+		mapped[i] = !err;
+	}
+	if (!err) {
+		ctx = pvr_apple_vm_attach(a, vm2);
+		if (ctx < 0)
+			err = ctx;
+	}
+	for (k = 0; k < n && !err; k++) {
+		struct pvr_apple_cp_args args;
+		struct pvr_apple_job *job;
+		u32 which = k & 1;
+
+		map[0][0] = map[1][0] = 0xabadbeef;
+		if (which)
+			store_job_args_out(a, 1, GEN_HEAP + REMAP_VA, GEN_HEAP + GVA, GEN_HEAP + G3VA, &args);
+		else
+			store_job_args_out(a, 0, REMAP_VA, GVA, G3VA, &args);
+		args.mmu_ctx = which ? ctx : 0;
+		job = pvr_apple_job_cp(t->cp, &args);
+		e = IS_ERR(job) ? PTR_ERR(job) : wait(pvr_apple_submit(job), 2000);
+		got[0] = READ_ONCE(map[0][0]);
+		got[1] = READ_ONCE(map[1][0]);
+		if (!e && got[which] == 0xcafe0000 && got[!which] == 0xabadbeef)
+			ok++;
+		else
+			err = e ?: -EIO;
+	}
+	{
+		u32 pci = ((GEN_HEAP + G3VA) >> 30) & 0x3ff, mask = 0;
+		u64 y = 0;
+
+		u64 cb0 = 0, cb1 = 0;
+
+		pvr_apple_mmu_cbase(a, 0, &cb0);
+		pvr_apple_mmu_cbase(a, 1, &cb1);
+		scnprintf(res, len, "cbase0 %#llx cbase1 %#llx; ", cb0, cb1);
+		res += strlen(res);
+		len -= strlen(res);
+		if (a->heap && ctx > 0) {
+			y = get_unaligned_le64(pvr_apple_ptr(a, PVR_APPLE_R_Y, 8 * ctx));
+			mask = pvr_apple_r32(a, PVR_APPLE_R_T, 0x7f0);
+		}
+		scnprintf(res, len, "vm2 x%u: %s -- %u of %u stores landed in their own VM (context %d) (%d); last: kernel VM %08x, second VM %08x; Y[ctx] %#llx (slots %#llx) mask %#x, PC[%#x] slot %#x root %#x%s\n",
+			  n, ok == n ? "PASS" : "FAIL", ok, n, ctx, err, got[0], got[1], y, (u64)a->slots_dma, mask, pci,
+			  ctx > 0 ? get_unaligned_le32(a->slots + SZ_4K * ctx + 4 * pci) : 0,
+			  get_unaligned_le32(pvr_vm_get_page_table_root_ptr(vm2) + 4 * pci),
+			  a->crashed ? "; firmware crashed" : "");
+	}
+	if (ctx > 0)
+		pvr_apple_vm_detach(a, ctx);
+	for (i = 0; i < 2; i++) {
+		if (mapped[i])
+			pvr_vm_unmap(i ? vm2 : kvm, i ? GEN_HEAP + REMAP_VA : REMAP_VA, 0x4000);
+		if (map[i])
+			pvr_gem_object_vunmap(bo[i]);
+		if (bo[i])
+			pvr_gem_object_put(bo[i]);
+	}
+	pvr_vm_unmap_all(vm2);
+	pvr_vm_context_put(vm2);
+	return err;
+}
+
+/* the kernel's own VM through a slot context: stores on that context */
+static int test_ctx1(struct pvr_apple *a, u32 n, char *res, size_t len)
+{
+	int ctx = pvr_apple_vm_attach(a, a->pvr_dev->kernel_vm_ctx);
+	u32 k, ok = 0, out0 = 0;
+	int err = 0, e;
+
+	if (ctx < 0)
+		return ctx;
+	for (k = 0; k < n; k++) {
+		struct pvr_apple_cp_args args;
+		struct pvr_apple_job *job;
+
+		store_job_args(a, k % ST_SLOTS, &args);
+		args.mmu_ctx = ctx;
+		job = pvr_apple_job_cp(a->test->cp, &args);
+		e = IS_ERR(job) ? PTR_ERR(job) : wait(pvr_apple_submit(job), 2000);
+		if (!e && store_ok(a, k % ST_SLOTS, &out0)) {
+			ok++;
+		} else {
+			err = e ?: -EIO;
+			break;
+		}
+	}
+	pvr_apple_vm_detach(a, ctx);
+	scnprintf(res, len, "ctx1 x%u: %s -- %u of %u stores through the kernel VM on context %d (%d, out %08x)\n",
+		  n, ok == n ? "PASS" : "FAIL", ok, n, ctx, err, out0);
+	return err;
 }
 
 /* N renders: TA, then 3D, each time into a freshly marked target */
@@ -782,7 +1120,7 @@ static ssize_t selftest_write(struct file *f, const char __user *ubuf, size_t le
 		mutex_unlock(&a->lock);
 		return len;
 	}
-	if (strcmp(cmd, "store") && strcmp(cmd, "storeq") && strcmp(cmd, "render") && strcmp(cmd, "start")) {
+	if (strcmp(cmd, "store") && strcmp(cmd, "storeq") && strcmp(cmd, "render") && strcmp(cmd, "remap") && strcmp(cmd, "vm2") && strcmp(cmd, "ctx1") && strcmp(cmd, "start")) {
 		mutex_unlock(&a->lock);
 		return -EINVAL;
 	}
@@ -795,6 +1133,12 @@ static ssize_t selftest_write(struct file *f, const char __user *ubuf, size_t le
 		err = test_storeq(a, n, res, sizeof(res));
 	else if (!strcmp(cmd, "render"))
 		err = test_render(a, n, res, sizeof(res));
+	else if (!strcmp(cmd, "remap"))
+		err = test_remap(a, n, res, sizeof(res));
+	else if (!strcmp(cmd, "vm2"))
+		err = test_vm2(a, n, res, sizeof(res));
+	else if (!strcmp(cmd, "ctx1"))
+		err = test_ctx1(a, n, res, sizeof(res));
 	else
 		scnprintf(res, sizeof(res), "started\n");
 	pvr_apple_drain_rings(a);

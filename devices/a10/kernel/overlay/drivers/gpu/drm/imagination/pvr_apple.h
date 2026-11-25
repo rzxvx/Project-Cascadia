@@ -28,6 +28,7 @@ struct apple_rtkit;
 struct pvr_device;
 struct pvr_apple_test;
 struct dma_fence;
+struct pvr_vm_context;
 
 #define PVR_APPLE_FW_SIZE	0xa4000		/* the 22H355 image, load base 0 */
 #define PVR_APPLE_RUNTIME	0xd8000		/* its RTSZ: image + zeroed BSS / heap */
@@ -73,6 +74,7 @@ struct dma_fence;
 #define PVR_APPLE_HEAP_SIZE	0x400000u
 #define PVR_APPLE_POOL_OFF	0x100000u
 #define PVR_APPLE_POOL_UNIT	0x1000u
+#define PVR_APPLE_MMU_CTXS	32	/* MMU contexts: 0 the kernel's, 1..31 slots for user VMs */
 #define PVR_APPLE_POOL_UNITS	((PVR_APPLE_HEAP_SIZE - PVR_APPLE_POOL_OFF) / PVR_APPLE_POOL_UNIT)
 
 #define PVR_APPLE_REGIONS(R)					\
@@ -165,6 +167,16 @@ struct pvr_apple {
 	struct delayed_work done_work;		/* completions, as a fallback to EP 0x20 */
 	spinlock_t fence_lock;			/* every job fence's lock (outlives the queues) */
 
+	/*
+	 * MMU context slots 1..31: the firmware loads every context's page
+	 * catalog only at init (fw 0x19d18, contexts named by the masks at
+	 * T+0x7f0..), so each slot gets a catalog page of ours at init, and a
+	 * VM attached to a slot has its root table mirrored there.
+	 */
+	void *slots;
+	dma_addr_t slots_dma;
+	struct pvr_vm_context *slot_vm[PVR_APPLE_MMU_CTXS];
+
 	struct dentry *debugfs;
 	struct pvr_apple_test *test;
 	char result[1024];
@@ -209,16 +221,19 @@ struct pvr_apple_cp_args {
 	u32 ca[18];		/* StartCompute +8: 0x498, 0x4b8, 0x480 (stream), six 0x11040 slots */
 	u32 ctx[36];		/* +0x2c context state: [0xe..0x10] -> 0x4a8 / 0x4ac / 0x4b0 */
 	bool fast;		/* FinalizeCompute's "already finished" path (no CDM stop / flush) */
+	u8 mmu_ctx;		/* MMU context (StartCompute +0x14 -> RGX+0xf07a) */
 };
 
 struct pvr_apple_ta_args {
 	u32 a[8];		/* StartTA +4: 0xc78 0xc88 0xc98 0xc18 0xc08 0xc10 0xc20 0xc28 */
 	u64 b[28];		/* StartTA +8: 0xc90 0xc38 0xc40 0xc00 0xc80 0x428 0xcc0 ... 0x408 ... */
+	u8 mmu_ctx;		/* MMU context (StartTA +0x20 -> RGX+0xf078) */
 };
 
 struct pvr_apple_3d_args {
 	u32 a[18];		/* Start3D +4: 0xf18 0xf80 0xf88 . 0x6d0 0x618 0x620 0x628 0xf38 ... */
 	u64 b[29];		/* Start3D +8: 0xfa8 ... 0xf28 0x6a0 . 0x6b0 0x6b8 ... 0x11080 x 6 */
+	u8 mmu_ctx;		/* MMU context (Start3D +0x28 -> RGX+0xf079) */
 };
 
 /* a render target's firmware objects: free-list descriptor, PM slot, the TA's large object */
@@ -230,7 +245,8 @@ struct pvr_apple_hwrt {
 
 /* boot parameters */
 struct pvr_apple_boot_cfg {
-	u64 code_base;		/* P+0x10 / P+0x18: PDS and USC execution base */
+	u64 pds_base;		/* P+0x10 -> RGX+0x610: PDS execution base (2 MiB aligned) */
+	u64 usc_base;		/* P+0x18 -> RGX+0x4008..: USC code base */
 	u64 ctx0_pc;		/* context 0's page catalog (PA) */
 	u64 fence_va;		/* GPU VA (context 0) the flush before a power-off writes to */
 	u32 perf_state;		/* Fender perf state the host holds (1..6) */
@@ -282,6 +298,11 @@ void pvr_apple_fail_all(struct pvr_apple *a, int err);
 struct pvr_apple_hwrt *pvr_apple_hwrt_create(struct pvr_apple *a, u64 fl_base, u32 fl_pages,
 					     u64 mlist, u64 mta, u64 vheap);
 void pvr_apple_hwrt_destroy(struct pvr_apple_hwrt *rt);
+
+int pvr_apple_mmu_flush(struct pvr_apple *a);
+int pvr_apple_mmu_cbase(struct pvr_apple *a, int ctx, u64 *pc);
+int pvr_apple_vm_attach(struct pvr_apple *a, struct pvr_vm_context *vm);
+void pvr_apple_vm_detach(struct pvr_apple *a, int ctx);
 
 void pvr_apple_debugfs_init(struct pvr_apple *a);
 void pvr_apple_test_fini(struct pvr_apple *a);

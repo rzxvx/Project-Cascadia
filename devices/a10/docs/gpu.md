@@ -343,6 +343,38 @@ What the firmware would not take (each checked on the iPad):
   (state +0x50 = 256): an index of 0x100 left the firmware at read 0xff for
   good (job 256 ran, its completion never came).
 
+### G7 step 2 (2026-11-25, in progress): upstream's VM / MMU code
+
+- **The kernel's VM context is upstream's `pvr_vm` / `pvr_mmu`** (backend
+  sets `virtual_address_space_bits = 40`; 16 KiB CPU pages give **16 KiB GPU
+  pages**). The self-tests' memory is now shmem GEM objects mapped through
+  it (`test_pvr_vm=1`, default); the PM free list is built from their
+  scattered pages. store, storeq, render: PASS.
+- **The PDS / USC execution bases are the UAPI's heaps**: P+0x10 =
+  0xDA_0000_0000, P+0x18 = 0xE0_0000_0000 (the test's code region mapped
+  there). PASS.
+- **MMU invalidation** (fw 0x19f0e, read with Ghidra): at each dispatch the
+  firmware XORs the context's generation (T+0x7e8) with its copy (X+0x198);
+  the changed bits pick the depth from the table at fw 0x2fee0: < 0x1000 ->
+  RGX+0xe138 = 0x1 (PT), < 0x400000 -> 0x2 (PD), else 0x4 (PC), | context
+  << 3. `pvr_mmu_flush_exec` (patch 0005 hook) adds 0x400000: `remap` (one VA
+  mapped in turn onto two objects, 100 times) PASS; + 1 left a stale
+  directory entry (MMU fault).
+- **Further MMU contexts: not working yet.** fw 0x19d18 loads context 0
+  and every context named by the masks T+0x7f0..0x80c (bit + 32 k, page
+  catalog from Y[id]) into RGX+0xe140 / +0xe148 -- at init and after a
+  recovery power cycle (fw 0x249b2) only. The backend registers slots 1..31
+  with catalog pages of its own (mirroring a VM's root on every flush;
+  readback of RGX+0xe148 for context 1 = the slot page) and puts the
+  context in StartCompute +0x14 (-> RGX+0xf07a). A job on context 1 faults
+  (CDM, context 1; fault status level 0 / 3) -- even with the kernel's own
+  VM mirrored there, with full invalidation (0x7) from the host. Suspects:
+  the GPU's SLC holding the slot pages' old contents, or something else
+  per context. After such a fault the firmware's recovery leaves the core
+  unusable (PDS / USC bases 0) until `stop`. Next: find it (SLC flush /
+  another way to register contexts), else one hardware context with the
+  host switching catalogs between jobs.
+
 Open / next: the powervr UAPI on this backend (contexts and VMs through
 `pvr_vm` -- with 16 KiB CPU pages upstream's MMU code uses 16 KiB GPU pages,
 which iOS's kext also does on G9P, to check on the iPad --, translating

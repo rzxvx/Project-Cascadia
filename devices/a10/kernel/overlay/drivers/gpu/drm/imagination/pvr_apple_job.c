@@ -22,6 +22,7 @@
 #include <linux/workqueue.h>
 
 #include "pvr_apple.h"
+#include "pvr_device.h"
 
 /* queue block (pool): object, state, command ring, status + done word, scheduling entries */
 #define QB_OBJ		0x0000
@@ -186,6 +187,7 @@ struct pvr_apple_job *pvr_apple_job_cp(struct pvr_apple_queue *q, const struct p
 	put32(b, us + 0x04, va + CP_CDR);
 	put32(b, us + 0x08, va + CP_CA);
 	put32(b, us + 0x0c, pvr_apple_va(PVR_APPLE_R_UT));
+	put32(b, us + 0x14, args->mmu_ctx);		/* byte -> RGX+0xf07a */
 	put32(b, us + 0x2c, va + CP_CTX);
 	put32(b, us + 0x3c, va + CP_FL);		/* cancelled flag */
 	put32(b, us + 0x48, va + CP_FL + 0x10);		/* threshold: never cancel */
@@ -251,6 +253,7 @@ struct pvr_apple_job *pvr_apple_job_ta(struct pvr_apple_queue *q, const struct p
 	put32(b, TA_US + 0x14, ut);
 	put32(b, TA_US + 0x18, 1);
 	put32(b, TA_US + 0x1c, va + TA_FL);
+	put32(b, TA_US + 0x20, args->mmu_ctx);		/* byte -> RGX+0xf078 */
 	put32(b, TA_US + 0x40, va + TA_CTX2);
 	put32(b, TA_US + 0x64, va + TA_FL + 0x10);
 	put64(b, TA_FL + 0x10, ~0ULL);
@@ -313,6 +316,7 @@ struct pvr_apple_job *pvr_apple_job_3d(struct pvr_apple_queue *q, const struct p
 	put32(b, R3_US + 0x1c, va + R3_FL);
 	put32(b, R3_US + 0x20, 1);
 	put32(b, R3_US + 0x24, va);			/* the command */
+	put32(b, R3_US + 0x28, args->mmu_ctx);		/* byte -> RGX+0xf079 */
 	put32(b, R3_US + 0x48, va + R3_FL + 0x48);	/* -> 0: no resume */
 	put32(b, R3_US + 0x74, va + R3_FL + 0x10);
 	put64(b, R3_FL + 0x10, ~0ULL);
@@ -448,6 +452,10 @@ struct dma_fence *pvr_apple_submit(struct pvr_apple_job *job)
 		pvr_apple_job_free(job);
 		return ERR_PTR(-ENOMEM);
 	}
+
+	/* page-table changes the MMU code left for the next flush (maps) */
+	if (atomic_xchg(&a->pvr_dev->mmu_flush_cache_flags, 0))
+		pvr_apple_mmu_flush(a);
 
 	spin_lock_irqsave(&a->job_lock, flags);
 	job->seqno = ++q->seqno;
