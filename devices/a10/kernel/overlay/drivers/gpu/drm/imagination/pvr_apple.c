@@ -28,6 +28,7 @@
 
 #include "pvr_apple.h"
 #include "pvr_device.h"
+#include "pvr_gem.h"
 #include "pvr_vm.h"
 
 #define PVR_APPLE_REGION_OFF(n, o, s) [PVR_APPLE_R_##n] = (o),
@@ -42,6 +43,7 @@ const u32 pvr_apple_region_off[PVR_APPLE_R_COUNT] = {
  */
 static bool mbox_poll;
 module_param(mbox_poll, bool, 0644);
+
 MODULE_PARM_DESC(mbox_poll, "Apple GPU: poll the coprocessor mailbox (no receive IRQ)");
 
 /*
@@ -446,10 +448,15 @@ int pvr_apple_fw_init(struct pvr_apple *a, const struct pvr_apple_boot_cfg *cfg)
 	w32(a, R(P), 0xd34, cfg->fw_power);		/* 0: the host owns the power state */
 	w32(a, R(P), 0xd3c, cfg->fw_power);
 	w32(a, R(T), 0x7ec, VA(Y));			/* MMU roots: context 0 = the kernel's VM */
-	pvr_apple_w64(a, R(Y), 0x0, cfg->ctx0_pc);
-	for (ch = 1; ch < PVR_APPLE_MMU_CTXS; ch++)	/* 1..31: the slots' catalog pages */
-		pvr_apple_w64(a, R(Y), 8 * ch, a->slots_dma + SZ_4K * ch);
-	w32(a, R(T), 0x7f0, GENMASK(PVR_APPLE_MMU_CTXS - 1, 1));
+	/* context 0: our catalog page with the active VM's root (or a fixed catalog) */
+	a->default_vm = cfg->ctx0_vm;
+	a->active_vm = cfg->ctx0_vm;
+	if (cfg->ctx0_vm) {
+		memcpy(a->active_pc, pvr_vm_get_page_table_root_ptr(cfg->ctx0_vm), SZ_4K);
+		pvr_apple_w64(a, R(Y), 0x0, a->active_pc_dma);
+	} else {
+		pvr_apple_w64(a, R(Y), 0x0, cfg->ctx0_pc);
+	}
 	w32(a, R(T), 0x7e8, VA(GEN));
 	w32(a, R(X), 0x198, VA(XG));
 	w32(a, R(B), 0x4a24, 1);			/* scheduler init */
@@ -526,15 +533,6 @@ int pvr_apple_rgx_read(struct pvr_apple *a, u32 off, u32 *val)
  * context.
  */
 #define PVR_APPLE_MMU_GEN_PC	0x400000u
-/*
- * mmu_inval_ctx=1: after mirroring a slot's root table the host also
- * invalidates that context's MMU caches itself (RGX+0xe138 = PC level |
- * context << 3, as fw 0x19f0e does), under the RGX access gate.
- */
-static bool mmu_inval_ctx = true;
-module_param(mmu_inval_ctx, bool, 0644);
-static uint mmu_inval_bits = 0x7;	/* 0x4 PC, 0x2 PD, 0x1 PT */
-module_param(mmu_inval_bits, uint, 0644);
 
 static int pvr_apple_rgx_gate(struct pvr_apple *a)
 {
@@ -545,82 +543,71 @@ static int pvr_apple_rgx_gate(struct pvr_apple *a)
 	return 0;
 }
 
+/*
+ * One hardware MMU context, 0, for every VM. Contexts 1..31 can be
+ * registered (fw 0x19d18 loads each context named by the masks at
+ * T+0x7f0.. with its catalog from Y[id], at init and after a recovery power
+ * cycle; RGX+0xe148 read back right), but every job on one faulted (CDM,
+ * context 1) -- even with the kernel's own VM mirrored there, with full
+ * invalidations from the host -- while context 0 on the very same kind of
+ * page works. So context 0's catalog is a page of ours, holding the root
+ * table of the VM whose jobs run now (the active VM); the host switches it
+ * only while no job is in the firmware (pvr_apple_job.c).
+ *
+ * Called with ring_lock held: the active VM's root into the catalog page,
+ * context 0's generation moved (a full invalidation at the next dispatch).
+ */
+static void mmu_sync_locked(struct pvr_apple *a)
+{
+	if (a->active_vm)
+		memcpy(a->active_pc, pvr_vm_get_page_table_root_ptr(a->active_vm), SZ_4K);
+	if (a->heap) {
+		w32(a, R(GEN), 0, pvr_apple_r32(a, R(GEN), 0) + PVR_APPLE_MMU_GEN_PC);
+		dma_wmb();
+	}
+}
+
 int pvr_apple_mmu_flush(struct pvr_apple *a)
 {
 	unsigned long flags;
-	u32 slots = 0, v;
-	int ctx;
 
 	spin_lock_irqsave(&a->ring_lock, flags);
-	for (ctx = 1; ctx < PVR_APPLE_MMU_CTXS; ctx++)
-		if (a->slot_vm[ctx]) {
-			memcpy(a->slots + SZ_4K * ctx,
-			       pvr_vm_get_page_table_root_ptr(a->slot_vm[ctx]), SZ_4K);
-			slots |= BIT(ctx);
-		}
-	if (a->heap) {
-		for (ctx = 0; ctx < PVR_APPLE_MMU_CTXS; ctx++)
-			w32(a, R(GEN), 4 * ctx, pvr_apple_r32(a, R(GEN), 4 * ctx) + PVR_APPLE_MMU_GEN_PC);
-		dma_wmb();
-	}
+	mmu_sync_locked(a);
 	spin_unlock_irqrestore(&a->ring_lock, flags);
-
-	for (ctx = 1; mmu_inval_ctx && ctx < PVR_APPLE_MMU_CTXS; ctx++) {
-		if (!(slots & BIT(ctx)) || pvr_apple_rgx_gate(a))
-			continue;
-		writel(mmu_inval_bits | ctx << 3, a->rgx + 0xe138);
-		if (readl_poll_timeout_atomic(a->rgx + 0xe138, v, !(v & 0x7), 1, 1000))
-			dev_warn(a->dev, "MMU invalidation of context %d did not finish\n", ctx);
-	}
 	return 0;
 }
 
-/* give a VM a firmware MMU context; returns its number (1..31) */
-int pvr_apple_vm_attach(struct pvr_apple *a, struct pvr_vm_context *vm)
+/* make vm the one context 0 translates for; the caller knows no job is in the firmware */
+void pvr_apple_vm_activate(struct pvr_apple *a, struct pvr_vm_context *vm)
 {
 	unsigned long flags;
-	int ctx, ret = -ENOSPC;
 
 	spin_lock_irqsave(&a->ring_lock, flags);
-	for (ctx = 1; ctx < PVR_APPLE_MMU_CTXS; ctx++) {
-		if (!a->slot_vm[ctx]) {
-			a->slot_vm[ctx] = vm;
-			ret = ctx;
-			break;
-		}
+	if (a->active_vm != vm) {
+		a->active_vm = vm;
+		mmu_sync_locked(a);
 	}
 	spin_unlock_irqrestore(&a->ring_lock, flags);
-	if (ret > 0)
-		pvr_apple_mmu_flush(a);		/* mirror its root table */
-	return ret;
 }
 
-void pvr_apple_vm_detach(struct pvr_apple *a, int ctx)
+int pvr_apple_vm_map_fence(struct pvr_apple *a, struct pvr_vm_context *vm)
+{
+	return pvr_vm_map(vm, a->fence_bo, 0, PVR_APPLE_FENCE_VA, SZ_16K);
+}
+
+/* vm goes away: it must not stay behind context 0 */
+void pvr_apple_vm_release(struct pvr_apple *a, struct pvr_vm_context *vm)
 {
 	unsigned long flags;
 
-	if (ctx <= 0 || ctx >= PVR_APPLE_MMU_CTXS)
-		return;
 	spin_lock_irqsave(&a->ring_lock, flags);
-	a->slot_vm[ctx] = NULL;
-	memset(a->slots + SZ_4K * ctx, 0, SZ_4K);	/* nothing mapped */
+	if (a->active_vm == vm) {
+		a->active_vm = NULL;
+		memset(a->active_pc, 0, SZ_4K);
+		if (a->heap)
+			w32(a, R(GEN), 0, pvr_apple_r32(a, R(GEN), 0) + PVR_APPLE_MMU_GEN_PC);
+	}
 	spin_unlock_irqrestore(&a->ring_lock, flags);
-	pvr_apple_mmu_flush(a);
-}
-
-/* debug: the page-catalog base RGX holds for an MMU context (RGX+0xe140 select, +0xe148 read) */
-int pvr_apple_mmu_cbase(struct pvr_apple *a, int ctx, u64 *pc)
-{
-	u32 sel, v;
-
-	if (pvr_apple_rgx_gate(a))
-		return -EBUSY;
-	sel = readl(a->rgx + 0xe140);
-	writel(ctx, a->rgx + 0xe140);
-	v = readl(a->rgx + 0xe148);
-	writel(sel, a->rgx + 0xe140);
-	*pc = (u64)(v & 0x0fffffff) << 12;
-	return 0;
 }
 
 int pvr_apple_kick(struct pvr_apple *a, u32 dm)
@@ -724,8 +711,8 @@ int pvr_apple_probe(struct pvr_device *pvr_dev)
 	 * The kernel's own VM context maps what the firmware and the
 	 * self-tests need; with 16 KiB CPU pages it uses 16 KiB GPU pages.
 	 */
-	a->slots = dmam_alloc_coherent(dev, SZ_4K * PVR_APPLE_MMU_CTXS, &a->slots_dma, GFP_KERNEL);
-	if (!a->slots) {
+	a->active_pc = dmam_alloc_coherent(dev, SZ_4K, &a->active_pc_dma, GFP_KERNEL);
+	if (!a->active_pc) {
 		release_firmware(a->fw);
 		return -ENOMEM;
 	}
@@ -735,6 +722,20 @@ int pvr_apple_probe(struct pvr_device *pvr_dev)
 	pvr_dev->kernel_vm_ctx = pvr_vm_create_context(pvr_dev, false);
 	if (IS_ERR(pvr_dev->kernel_vm_ctx)) {
 		err = PTR_ERR(pvr_dev->kernel_vm_ctx);
+		pvr_dev->kernel_vm_ctx = NULL;
+		pvr_dev->apple = NULL;
+		release_firmware(a->fw);
+		return err;
+	}
+	a->fence_bo = pvr_gem_object_create(pvr_dev, SZ_16K, 0);
+	err = PTR_ERR_OR_ZERO(a->fence_bo);
+	if (!err)
+		err = pvr_apple_vm_map_fence(a, pvr_dev->kernel_vm_ctx);
+	if (err) {
+		if (!IS_ERR(a->fence_bo))
+			pvr_gem_object_put(a->fence_bo);
+		a->fence_bo = NULL;
+		pvr_vm_context_put(pvr_dev->kernel_vm_ctx);
 		pvr_dev->kernel_vm_ctx = NULL;
 		pvr_dev->apple = NULL;
 		release_firmware(a->fw);
@@ -757,9 +758,13 @@ void pvr_apple_remove(struct pvr_device *pvr_dev)
 	pvr_apple_test_fini(a);
 	pvr_apple_fw_stop(a);
 	mutex_unlock(&a->lock);
-	if (pvr_dev->kernel_vm_ctx)
+	if (pvr_dev->kernel_vm_ctx) {
+		pvr_vm_unmap_all(pvr_dev->kernel_vm_ctx);
 		pvr_vm_context_put(pvr_dev->kernel_vm_ctx);
+	}
 	pvr_dev->kernel_vm_ctx = NULL;
+	if (a->fence_bo)
+		pvr_gem_object_put(a->fence_bo);
 	release_firmware(a->shaders);
 	release_firmware(a->fw);
 	pvr_dev->apple = NULL;

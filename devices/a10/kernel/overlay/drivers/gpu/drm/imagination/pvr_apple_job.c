@@ -132,6 +132,7 @@ static struct pvr_apple_job *job_alloc(struct pvr_apple_queue *q, u32 size)
 	if (!job)
 		return NULL;
 	job->q = q;
+	job->vm = q->a->default_vm;
 	INIT_LIST_HEAD(&job->node);
 	if (pvr_apple_obj_alloc(q->a, size, &job->blk)) {
 		kfree(job);
@@ -433,6 +434,30 @@ static bool push_locked(struct pvr_apple_job *job)
 }
 
 /*
+ * The queue's next job goes to the firmware if the queue is free and its VM
+ * is the active one -- or nothing is in the firmware at all, and its VM
+ * becomes the active one (one MMU context for all, pvr_apple.c). Called
+ * with job_lock held; true when the firmware needs a kick.
+ */
+static bool try_push_locked(struct pvr_apple_queue *q)
+{
+	struct pvr_apple *a = q->a;
+	struct pvr_apple_job *job;
+	struct pvr_apple_queue *o;
+
+	job = list_first_entry_or_null(&q->pending, struct pvr_apple_job, node);
+	if (!job || q->inflight)
+		return false;
+	if (job->vm && job->vm != a->active_vm) {
+		list_for_each_entry(o, &a->queues, node)
+			if (o->inflight)
+				return false;
+		pvr_apple_vm_activate(a, job->vm);
+	}
+	return push_locked(job);
+}
+
+/*
  * Queue the job (its completion record -> its own word = its sequence
  * number) and hand it to the firmware when the queue is free. Returns the
  * job's fence (a reference for the caller); the job belongs to the queue
@@ -464,8 +489,7 @@ struct dma_fence *pvr_apple_submit(struct pvr_apple_job *job)
 	put32(job->blk.cpu, job->rec_addr_off, job->blk.va + JOB_DONE);
 	put32(job->blk.cpu, job->rec_val_off, job->seqno);
 	list_add_tail(&job->node, &q->pending);
-	if (!q->inflight)
-		kick = push_locked(job);
+	kick = try_push_locked(q);
 	spin_unlock_irqrestore(&a->job_lock, flags);
 
 	if (kick) {
@@ -511,7 +535,7 @@ int pvr_apple_queue_debug(struct pvr_apple_queue *q, char *buf, size_t len)
 
 void pvr_apple_process_completions(struct pvr_apple *a)
 {
-	struct pvr_apple_job *job, *tmp, *next;
+	struct pvr_apple_job *job, *tmp;
 	struct pvr_apple_queue *q;
 	unsigned long flags;
 	bool busy = false;
@@ -524,11 +548,13 @@ void pvr_apple_process_completions(struct pvr_apple *a)
 		if (job && get_unaligned_le32(job->blk.cpu + JOB_DONE) == job->seqno) {
 			list_move_tail(&job->node, &done);
 			q->inflight = NULL;
-			next = list_first_entry_or_null(&q->pending, struct pvr_apple_job, node);
-			if (next && push_locked(next))
-				kicks |= BIT(q->dm);
 		}
-		if (q->inflight)
+	}
+	/* then every queue's next job (a VM switch may wait for all to drain) */
+	list_for_each_entry(q, &a->queues, node) {
+		if (try_push_locked(q))
+			kicks |= BIT(q->dm);
+		if (q->inflight || !list_empty(&q->pending))
 			busy = true;
 	}
 	spin_unlock_irqrestore(&a->job_lock, flags);

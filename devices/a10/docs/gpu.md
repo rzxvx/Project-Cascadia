@@ -343,7 +343,7 @@ What the firmware would not take (each checked on the iPad):
   (state +0x50 = 256): an index of 0x100 left the firmware at read 0xff for
   good (job 256 ran, its completion never came).
 
-### G7 step 2 (2026-11-25, in progress): upstream's VM / MMU code
+### G7 step 2 (2026-11-25): upstream's VM / MMU code, several VMs
 
 - **The kernel's VM context is upstream's `pvr_vm` / `pvr_mmu`** (backend
   sets `virtual_address_space_bits = 40`; 16 KiB CPU pages give **16 KiB GPU
@@ -360,20 +360,33 @@ What the firmware would not take (each checked on the iPad):
   << 3. `pvr_mmu_flush_exec` (patch 0005 hook) adds 0x400000: `remap` (one VA
   mapped in turn onto two objects, 100 times) PASS; + 1 left a stale
   directory entry (MMU fault).
-- **Further MMU contexts: not working yet.** fw 0x19d18 loads context 0
-  and every context named by the masks T+0x7f0..0x80c (bit + 32 k, page
-  catalog from Y[id]) into RGX+0xe140 / +0xe148 -- at init and after a
-  recovery power cycle (fw 0x249b2) only. The backend registers slots 1..31
-  with catalog pages of its own (mirroring a VM's root on every flush;
-  readback of RGX+0xe148 for context 1 = the slot page) and puts the
-  context in StartCompute +0x14 (-> RGX+0xf07a). A job on context 1 faults
-  (CDM, context 1; fault status level 0 / 3) -- even with the kernel's own
-  VM mirrored there, with full invalidation (0x7) from the host. Suspects:
-  the GPU's SLC holding the slot pages' old contents, or something else
-  per context. After such a fault the firmware's recovery leaves the core
-  unusable (PDS / USC bases 0) until `stop`. Next: find it (SLC flush /
-  another way to register contexts), else one hardware context with the
-  host switching catalogs between jobs.
+- **Further hardware MMU contexts do not work (yet); one context serves
+  every VM.** fw 0x19d18 loads context 0 and every context named by the
+  masks T+0x7f0..0x80c (bit + 32 k, catalog from Y[id]) into RGX+0xe140 /
+  +0xe148 -- at init and after a recovery power cycle (fw 0x249b2) only.
+  Slots 1..31 with catalog pages of ours, the context in StartCompute
+  +0x14 (-> RGX+0xf07a, CONTEXT_MAPPING0's CDM byte): RGX+0xe148 for
+  context 1 read back right, yet every job on context 1 faulted (CDM,
+  context 1), even with the kernel's own VM mirrored there and full
+  invalidations (RGX+0xe138 = 0x7 | ctx << 3) from the host; context 0 on
+  such a page of ours (`ctx0_slot`, a mirror of the kernel VM's root) works.
+  What a context > 0 needs is to find. **The design now**: context 0's
+  catalog is a page of the host's holding the root table of the *active*
+  VM; each job names its VM; the host switches the active VM (root copied,
+  generation moved: a full invalidation at the next dispatch) only while no
+  job is in the firmware. Jobs of one VM still run on TA / 3D / CP at once.
+- **The fence page in every VM.** FinalizeCompute's full path (and the
+  flush before a power-off) writes to the GPU VA in X+0x4 (RGX+0xe240) in the
+  context running then; with that page only in the kernel's VM a second
+  VM's job ran (its store landed) but never completed. The backend maps
+  one page at the end of the general heap (0x9F_FFFF_C000) into every VM
+  (`pvr_apple_vm_map_fence`); the heap size reported to userspace must
+  leave it out (step 3).
+- `vm2`: a user VM (`pvr_vm_create_context(..., true)`, heap-checked) with
+  the test's objects in the general heap and at the code bases, its own
+  object at one VA, the kernel's VM another one there; store jobs of the
+  two VMs in turn, 100 times: **PASS**, each store in its own VM's object.
+  With store, storeq 64, remap, render 10: all PASS.
 
 Open / next: the powervr UAPI on this backend (contexts and VMs through
 `pvr_vm` -- with 16 KiB CPU pages upstream's MMU code uses 16 KiB GPU pages,

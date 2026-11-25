@@ -16,6 +16,7 @@
 #include <linux/bitmap.h>
 #include <linux/errno.h>
 #include <linux/list.h>
+#include <linux/sizes.h>
 #include <linux/mutex.h>
 #include <linux/spinlock.h>
 #include <linux/types.h>
@@ -29,6 +30,7 @@ struct pvr_device;
 struct pvr_apple_test;
 struct dma_fence;
 struct pvr_vm_context;
+struct pvr_gem_object;
 
 #define PVR_APPLE_FW_SIZE	0xa4000		/* the 22H355 image, load base 0 */
 #define PVR_APPLE_RUNTIME	0xd8000		/* its RTSZ: image + zeroed BSS / heap */
@@ -74,7 +76,14 @@ struct pvr_vm_context;
 #define PVR_APPLE_HEAP_SIZE	0x400000u
 #define PVR_APPLE_POOL_OFF	0x100000u
 #define PVR_APPLE_POOL_UNIT	0x1000u
-#define PVR_APPLE_MMU_CTXS	32	/* MMU contexts: 0 the kernel's, 1..31 slots for user VMs */
+/*
+ * The fence page every VM maps at the same VA: the flush in FinalizeCompute's
+ * full path and before a power-off writes to the GPU VA in X+0x4 (RGX+0xe240)
+ * in the context running then. The last 16 KiB of the UAPI's general heap
+ * (not reported to userspace: step 3).
+ */
+#define PVR_APPLE_FENCE_VA	(0x8000000000ULL + SZ_128G - SZ_16K)
+
 #define PVR_APPLE_POOL_UNITS	((PVR_APPLE_HEAP_SIZE - PVR_APPLE_POOL_OFF) / PVR_APPLE_POOL_UNIT)
 
 #define PVR_APPLE_REGIONS(R)					\
@@ -167,15 +176,12 @@ struct pvr_apple {
 	struct delayed_work done_work;		/* completions, as a fallback to EP 0x20 */
 	spinlock_t fence_lock;			/* every job fence's lock (outlives the queues) */
 
-	/*
-	 * MMU context slots 1..31: the firmware loads every context's page
-	 * catalog only at init (fw 0x19d18, contexts named by the masks at
-	 * T+0x7f0..), so each slot gets a catalog page of ours at init, and a
-	 * VM attached to a slot has its root table mirrored there.
-	 */
-	void *slots;
-	dma_addr_t slots_dma;
-	struct pvr_vm_context *slot_vm[PVR_APPLE_MMU_CTXS];
+	/* MMU context 0's catalog page: the active VM's root table (pvr_apple.c) */
+	void *active_pc;
+	dma_addr_t active_pc_dma;
+	struct pvr_vm_context *active_vm;	/* ring_lock; changed only with no job in the firmware */
+	struct pvr_vm_context *default_vm;	/* jobs' VM unless the caller sets one */
+	struct pvr_gem_object *fence_bo;	/* mapped at PVR_APPLE_FENCE_VA in every VM */
 
 	struct dentry *debugfs;
 	struct pvr_apple_test *test;
@@ -211,6 +217,7 @@ struct pvr_apple_job {
 	struct pvr_apple_obj blk;		/* command, microsequence, their objects */
 	u32 rec_addr_off, rec_val_off;		/* the command's completion record */
 	u32 seqno;
+	struct pvr_vm_context *vm;		/* translates the job's addresses (MMU context 0) */
 	struct dma_fence *fence;
 	struct list_head node;
 };
@@ -247,7 +254,8 @@ struct pvr_apple_hwrt {
 struct pvr_apple_boot_cfg {
 	u64 pds_base;		/* P+0x10 -> RGX+0x610: PDS execution base (2 MiB aligned) */
 	u64 usc_base;		/* P+0x18 -> RGX+0x4008..: USC code base */
-	u64 ctx0_pc;		/* context 0's page catalog (PA) */
+	struct pvr_vm_context *ctx0_vm;	/* the kernel's VM, mirrored into context 0's catalog page */
+	u64 ctx0_pc;		/* else: context 0's page catalog (PA) */
 	u64 fence_va;		/* GPU VA (context 0) the flush before a power-off writes to */
 	u32 perf_state;		/* Fender perf state the host holds (1..6) */
 	bool fw_power;		/* the firmware powers the GPU (P+0xd34 = 0xd3c = 1), as in G4 / G5 */
@@ -300,9 +308,9 @@ struct pvr_apple_hwrt *pvr_apple_hwrt_create(struct pvr_apple *a, u64 fl_base, u
 void pvr_apple_hwrt_destroy(struct pvr_apple_hwrt *rt);
 
 int pvr_apple_mmu_flush(struct pvr_apple *a);
-int pvr_apple_mmu_cbase(struct pvr_apple *a, int ctx, u64 *pc);
-int pvr_apple_vm_attach(struct pvr_apple *a, struct pvr_vm_context *vm);
-void pvr_apple_vm_detach(struct pvr_apple *a, int ctx);
+void pvr_apple_vm_activate(struct pvr_apple *a, struct pvr_vm_context *vm);
+void pvr_apple_vm_release(struct pvr_apple *a, struct pvr_vm_context *vm);
+int pvr_apple_vm_map_fence(struct pvr_apple *a, struct pvr_vm_context *vm);
 
 void pvr_apple_debugfs_init(struct pvr_apple *a);
 void pvr_apple_test_fini(struct pvr_apple *a);
