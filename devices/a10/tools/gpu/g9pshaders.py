@@ -100,7 +100,7 @@ def build(tag, src, kernels):
     air, lib = os.path.join(ISA, tag + ".air"), os.path.join(ISA, tag + ".metallib")
     tt, js = os.path.join(ISA, tag + ".g9p.metallib"), os.path.join(ISA, tag + ".mtlp-json")
     if not os.path.exists(tt) or os.path.getmtime(tt) < os.path.getmtime(path):
-        subprocess.run(["xcrun", "-sdk", "iphoneos", "metal", "-std=metal3.0", "-mios-version-min=16.4",
+        subprocess.run(["xcrun", "-sdk", "iphoneos", "metal", "-std=metal3.0", "-mios-version-min=16.4", "-w",
                         "-c", path, "-o", air], check=True)
         subprocess.run(["xcrun", "-sdk", "iphoneos", "metallib", air, "-o", lib], check=True)
         pipes = ", ".join('{ "compute_function": "alias:lib#%s" }' % k for k in kernels)

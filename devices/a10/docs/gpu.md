@@ -593,6 +593,64 @@ the same length).
   0x1234, 0x8001, 0x200, 0xdeadbeef, 0x12345678, 0x80000001, 0x01010101 --
   each written as given.
 
+### G8.1: memory, ALU, the program frame -- our own assembler on the GPU
+
+`g9pasm.py` assembles whole compute programs: the compiler's frame around
+a body built by our encoders. `isa-check.py`, `isa-check2.py`,
+`isa-check3.py` build programs for `g9p-probe` (in[0..3] loaded to
+registers, one instruction under test, the result stored), `isa-run.sh`
+runs them on the iPad and compares: **47 of 47 programs right**
+(2026-11-26). The integer tests load one-hot inputs (1, 0x10, 0x100,
+0x1000), so a result names the registers that were read.
+
+**The frame** (`program()`), as the compiler lays out a compute kernel:
+
+| words | |
+|---|---|
+| `1181 8189 4100 acb7` | prologue (`8191` with two buffers) |
+| `01c8 03nn 0101 0120 46d1` | nn = 2 x registers used |
+| `0900 01oo 0000` | jump to the epilogue, oo bytes from this instruction (taken by threads that do not run the body: to check) |
+| body | |
+| `21c8 03nn 01mm 46d2` | epilogue, mm = 0x80 + 4 x registers |
+| `0100 01pp 0000` | jump to the end word, pp bytes ahead |
+| `c000`..., `8000` | padding, the end word at the start of a 64-byte block |
+
+Longer jumps (offsets past 0xff) are still to decode.
+
+**Device loads and stores** (opcode 0x12), `W0 W1 W2 [W3]`:
+
+- W0 bits 11-13: size -- 1 u8, 2 u16, 4 u32, 5 / 6 / 7 = 2 / 3 / 4 x u32;
+- W1: bit 7 = store, bits 1-6 = the data register (first of the vector),
+  bits 10.. = the buffer's **slot**: the compiler packs the buffers a kernel
+  uses into consecutive common-store slots in argument order (a kernel
+  using only `[[buffer(4)]]` reads slot 0, the same code as one using
+  `[[buffer(0)]]`) -- so the four-buffer probe of "2D on the GPU" wrote to
+  slots its table did not have;
+- W2 bits 0-7 = the element index, bit 15 set; past 0xff W2 bit 8 and W3
+  = index >> 8;
+- after loads the compiler waits with `004d` (`044d` with another load
+  still in flight: a counter, to check).
+
+**Two-source ALU** (opcode 0x99, also 0x9d), `W0 W1 W2 W3`: W1 bits 1-6 =
+destination; W2 bits 10-14 = source A, bits 2-6 = source B (r0-r31
+checked in all three fields); W3 low byte = the operation: iadd 0xa1,
+isub 0xa5 (B - A), imul 0xa2, and 0xc8, or 0xce, xor 0xc6, fadd 0x44, fmul
+0x48, fmul saturated 0x4a; W3 bit 14 negates source A (fsub, -a * b).
+**W0 bits 12 and 13 must be set** -- with either clear the result is
+garbage (the operand is not read from the register file: an operand cache,
+as other GPUs have; to check), bit 14 changes nothing seen. W2 bit 15 /
+bit 7 and opcode 0x9d instead of 0x99 change nothing in these tests either
+(the compiler sets them in patterns not yet understood).
+
+**FMA** (opcode 0x9a), `399a 03dd W2 W3 004c`: d = A * B + C, C in W3 bits
+2-6 (W3 bit 7 set), W0 bit 11 set as well.
+
+Compiler-only so far (not yet on the GPU): fp16 add / mul (opcode 0x89,
+ops 0x04 / 0x08), integer min / max (5 words, ops 0xb2 / 0xb3 / 0xba),
+float abs (an extra word, bit 14), conversions (`1199 ... 0460` f32 -> u32,
+`0468` u32 -> f32), floor, reciprocal and square root (several
+instructions), shifts (two instructions).
+
 ## 2D on the GPU (2026-11-25/26): g9p2d and SuperTux
 
 The first use of the G7 driver: SDL2's 2D renderer drawn by the GPU, as on
