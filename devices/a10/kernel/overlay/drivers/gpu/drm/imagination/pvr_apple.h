@@ -83,6 +83,18 @@ struct pvr_gem_object;
  * (not reported to userspace: step 3).
  */
 #define PVR_APPLE_FENCE_VA	(0x8000000000ULL + SZ_128G - SZ_16K)
+#define PVR_APPLE_RESERVED_SIZE	SZ_16K
+
+/* the UAPI's execution bases (pvr_rogue_heap_config.h): PDS / USC code heaps */
+#define PVR_APPLE_PDS_BASE	0xDA00000000ULL
+#define PVR_APPLE_USC_BASE	0xE000000000ULL
+
+/* a range userspace may not map (the fence page) */
+static inline bool pvr_apple_va_reserved(u64 addr, u64 size)
+{
+	return addr < PVR_APPLE_FENCE_VA + PVR_APPLE_RESERVED_SIZE &&
+	       addr + size > PVR_APPLE_FENCE_VA;
+}
 
 #define PVR_APPLE_POOL_UNITS	((PVR_APPLE_HEAP_SIZE - PVR_APPLE_POOL_OFF) / PVR_APPLE_POOL_UNIT)
 
@@ -183,6 +195,11 @@ struct pvr_apple {
 	struct pvr_vm_context *default_vm;	/* jobs' VM unless the caller sets one */
 	struct pvr_gem_object *fence_bo;	/* mapped at PVR_APPLE_FENCE_VA in every VM */
 
+	/* the running firmware (pvr_apple_start): its boot number, the queues */
+	bool running;
+	u32 boot;
+	struct pvr_apple_queue *q[3];		/* TA, 3D, CP: one per data master (G7 step 1) */
+
 	struct dentry *debugfs;
 	struct pvr_apple_test *test;
 	char result[1024];
@@ -193,6 +210,7 @@ struct pvr_apple_obj {
 	void *cpu;
 	u32 va;
 	u32 size;
+	u32 boot;		/* the firmware boot it belongs to: freed with a restart */
 };
 
 /*
@@ -307,15 +325,19 @@ struct pvr_apple_hwrt *pvr_apple_hwrt_create(struct pvr_apple *a, u64 fl_base, u
 					     u64 mlist, u64 mta, u64 vheap);
 void pvr_apple_hwrt_destroy(struct pvr_apple_hwrt *rt);
 
-int pvr_apple_mmu_flush(struct pvr_apple *a);
 void pvr_apple_vm_activate(struct pvr_apple *a, struct pvr_vm_context *vm);
-void pvr_apple_vm_release(struct pvr_apple *a, struct pvr_vm_context *vm);
-int pvr_apple_vm_map_fence(struct pvr_apple *a, struct pvr_vm_context *vm);
+
+int pvr_apple_start_locked(struct pvr_apple *a);
+void pvr_apple_stop_locked(struct pvr_apple *a);
 
 void pvr_apple_debugfs_init(struct pvr_apple *a);
 void pvr_apple_test_fini(struct pvr_apple *a);
 
 #if IS_ENABLED(CONFIG_DRM_POWERVR_APPLE)
+int pvr_apple_mmu_flush(struct pvr_apple *a);
+void pvr_apple_vm_release(struct pvr_apple *a, struct pvr_vm_context *vm);
+int pvr_apple_vm_map_fence(struct pvr_apple *a, struct pvr_vm_context *vm);
+int pvr_apple_start(struct pvr_apple *a);
 bool pvr_apple_match(struct device *dev);
 int pvr_apple_probe(struct pvr_device *pvr_dev);
 void pvr_apple_remove(struct pvr_device *pvr_dev);
@@ -323,6 +345,10 @@ void pvr_apple_remove(struct pvr_device *pvr_dev);
 static inline bool pvr_apple_match(struct device *dev) { return false; }
 static inline int pvr_apple_probe(struct pvr_device *pvr_dev) { return -ENODEV; }
 static inline void pvr_apple_remove(struct pvr_device *pvr_dev) { }
+static inline int pvr_apple_start(struct pvr_apple *a) { return -ENODEV; }
+static inline int pvr_apple_mmu_flush(struct pvr_apple *a) { return 0; }
+static inline int pvr_apple_vm_map_fence(struct pvr_apple *a, struct pvr_vm_context *vm) { return 0; }
+static inline void pvr_apple_vm_release(struct pvr_apple *a, struct pvr_vm_context *vm) { }
 #endif
 
 #endif /* PVR_APPLE_H */

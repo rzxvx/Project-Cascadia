@@ -388,6 +388,37 @@ What the firmware would not take (each checked on the iPad):
   two VMs in turn, 100 times: **PASS**, each store in its own VM's object.
   With store, storeq 64, remap, render 10: all PASS.
 
+### G7 step 3 (2026-11-25): the device on the powervr UAPI
+
+The driver registers its DRM device (`/dev/dri/renderD128`, name
+`powervr`); the firmware comes up with the first open (`pvr_apple_start`:
+the UAPI's PDS / USC bases, the kernel's VM behind context 0, one queue per
+data master; restarted after a crash). The self-tests run on that same
+firmware now.
+
+- **GPU id 13.10.6.2**, read when the firmware starts, under the host-held
+  power: CORE_REVISION 0x000d0a00 (the older layout: major 13, minor 10)
+  and CORE_ID 0x011b0602's config (N 6, C 2), as upstream's fallback
+  decodes them. No other RGX offset is read (0x24, upstream's PBVNC high
+  half, untried).
+- Features the queries need: 40-bit VA and physical bus, 32x32 tiles
+  (measured in G6); `num_clusters` 6, `isp_max_tiles_in_flight` 4,
+  `max_partitions` 4, `common_store_size_in_dwords` 16384 are to check
+  (they only feed RUNTIME_INFO's common-store numbers, which our shader
+  core will not use as Rogue's).
+- Heaps: upstream's table; the general heap reported 16 KiB short (the
+  fence page at its end), and VM_MAP / VM_UNMAP refuse that range.
+- Patch 0005 adds: the first-open start, every user VM mapping the fence
+  page and leaving context 0 on release, no Imagination debugfs, and
+  CREATE_CONTEXT / CREATE_FREE_LIST / CREATE_HWRT_DATASET / SUBMIT_JOBS
+  answering -EOPNOTSUPP until the backend has them (steps 4 / 5).
+- `tools/gpu/pvr-uapi-test.c` (`sh tools/gpu/pvr-uapi-test.sh run`): from
+  userspace, ioctls only -- GPU_INFO (13.10.6.2, 2 phantoms), RUNTIME_INFO,
+  HEAP_INFO (6 heaps, 16 KiB pages), CREATE_VM_CONTEXT, CREATE_BO, mmap
+  with CPU write / read back, VM_MAP / VM_UNMAP in the general heap, VM_MAP
+  of the fence page refused: **PASS**; the self-tests (store, storeq,
+  remap, vm2, render) still PASS on the shared firmware.
+
 Open / next: the powervr UAPI on this backend (contexts and VMs through
 `pvr_vm` -- with 16 KiB CPU pages upstream's MMU code uses 16 KiB GPU pages,
 which iOS's kext also does on G9P, to check on the iPad --, translating

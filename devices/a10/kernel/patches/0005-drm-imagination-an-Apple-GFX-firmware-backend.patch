@@ -5,7 +5,10 @@ The hooks for pvr_apple.c / pvr_apple_test.c (new files, from
 Cascadia's kernel/overlay): the compatible, probe / remove and runtime
 PM handed to the backend, the MMU flush (the contexts' MMU
 generations), the VM root table for the backend's context slots, no
-firmware memory-context object for user VMs, the Kconfig option.
+firmware memory-context object for user VMs (the fence page instead),
+the firmware started on the first open, the job / context / free-list /
+HWRT ioctls refused until the backend has them, no Imagination debugfs,
+the Kconfig option.
 ---
 --- a/drivers/gpu/drm/imagination/Kconfig
 +++ b/drivers/gpu/drm/imagination/Kconfig
@@ -42,6 +45,19 @@ firmware memory-context object for user VMs, the Kconfig option.
  powervr-$(CONFIG_DEBUG_FS) += \
  	pvr_debugfs.o
  
+--- a/drivers/gpu/drm/imagination/pvr_debugfs.c
++++ b/drivers/gpu/drm/imagination/pvr_debugfs.c
+@@ -27,6 +27,10 @@
+ 	struct pvr_device *pvr_dev = to_pvr_device(drm_dev);
+ 	struct dentry *root = minor->debugfs_root;
+ 
++	/* Apple backend: no Imagination firmware to trace (its own: pvr-apple/) */
++	if (pvr_dev->apple)
++		return;
++
+ 	for (size_t i = 0; i < ARRAY_SIZE(pvr_debugfs_entries); ++i) {
+ 		const struct pvr_debugfs_entry *entry = &pvr_debugfs_entries[i];
+ 		struct dentry *dir;
 --- a/drivers/gpu/drm/imagination/pvr_device.h
 +++ b/drivers/gpu/drm/imagination/pvr_device.h
 @@ -113,6 +113,12 @@
@@ -67,7 +83,90 @@ firmware memory-context object for user VMs, the Kconfig option.
  #include "pvr_drv.h"
  #include "pvr_free_list.h"
  #include "pvr_gem.h"
-@@ -1414,6 +1415,10 @@
+@@ -686,6 +687,10 @@
+ 	struct pvr_file *pvr_file = file->driver_priv;
+ 	int idx;
+ 	int ret;
++
++	/* Apple backend: not yet (G7 steps 4-5) */
++	if (to_pvr_device(drm_dev)->apple)
++		return -EOPNOTSUPP;
+ 
+ 	if (!drm_dev_enter(drm_dev, &idx))
+ 		return -EIO;
+@@ -746,6 +751,10 @@
+ 	int idx;
+ 	int err;
+ 
++	/* Apple backend: not yet (G7 steps 4-5) */
++	if (to_pvr_device(drm_dev)->apple)
++		return -EOPNOTSUPP;
++
+ 	if (!drm_dev_enter(drm_dev, &idx))
+ 		return -EIO;
+ 
+@@ -832,6 +841,10 @@
+ 	int idx;
+ 	int err;
+ 
++	/* Apple backend: not yet (G7 steps 4-5) */
++	if (to_pvr_device(drm_dev)->apple)
++		return -EOPNOTSUPP;
++
+ 	if (!drm_dev_enter(drm_dev, &idx))
+ 		return -EIO;
+ 
+@@ -1025,6 +1038,11 @@
+ 	int idx;
+ 	int err;
+ 
++	/* Apple backend: the fence page at the general heap's end is the kernel's */
++	if (to_pvr_device(drm_dev)->apple &&
++	    pvr_apple_va_reserved(args->device_addr, args->size))
++		return -EINVAL;
++
+ 	if (!drm_dev_enter(drm_dev, &idx))
+ 		return -EIO;
+ 
+@@ -1113,6 +1131,11 @@
+ 	struct pvr_vm_context *vm_ctx;
+ 	int err;
+ 
++	/* Apple backend: the fence page at the general heap's end is the kernel's */
++	if (to_pvr_device(drm_dev)->apple &&
++	    pvr_apple_va_reserved(args->device_addr, args->size))
++		return -EINVAL;
++
+ 	/* Initial validation of args. */
+ 	if (args->_padding_4)
+ 		return -EINVAL;
+@@ -1150,6 +1173,10 @@
+ 	struct pvr_file *pvr_file = to_pvr_file(file);
+ 	int idx;
+ 	int err;
++
++	/* Apple backend: not yet (G7 steps 4-5) */
++	if (to_pvr_device(drm_dev)->apple)
++		return -EOPNOTSUPP;
+ 
+ 	trace_pvr_job_submit_ioctl(pvr_dev, args->jobs.count);
+ 
+@@ -1314,6 +1341,14 @@
+ {
+ 	struct pvr_device *pvr_dev = to_pvr_device(drm_dev);
+ 	struct pvr_file *pvr_file;
++
++	/* Apple backend: the firmware comes up with the first open */
++	if (pvr_dev->apple) {
++		int err = pvr_apple_start(pvr_dev->apple);
++
++		if (err)
++			return err;
++	}
+ 
+ 	pvr_file = kzalloc_obj(*pvr_file);
+ 	if (!pvr_file)
+@@ -1414,6 +1449,10 @@
  	drm_dev = &pvr_dev->base;
  
  	platform_set_drvdata(plat_dev, drm_dev);
@@ -78,19 +177,19 @@ firmware memory-context object for user VMs, the Kconfig option.
  
  	err = pvr_power_domains_init(pvr_dev);
  	if (err)
-@@ -1467,6 +1472,11 @@
- {
+@@ -1468,6 +1507,11 @@
  	struct drm_device *drm_dev = platform_get_drvdata(plat_dev);
  	struct pvr_device *pvr_dev = to_pvr_device(drm_dev);
-+
+ 
 +	if (pvr_dev->apple) {
 +		pvr_apple_remove(pvr_dev);
 +		return;
 +	}
- 
++
  	WARN_ON(!xa_empty(&pvr_dev->job_ids));
  	WARN_ON(!xa_empty(&pvr_dev->free_list_ids));
-@@ -1492,7 +1502,13 @@
+ 
+@@ -1492,7 +1536,13 @@
  };
  
  static const struct of_device_id dt_match[] = {
@@ -188,7 +287,16 @@ firmware memory-context object for user VMs, the Kconfig option.
  }
 --- a/drivers/gpu/drm/imagination/pvr_vm.c
 +++ b/drivers/gpu/drm/imagination/pvr_vm.c
-@@ -91,6 +91,16 @@
+@@ -3,6 +3,8 @@
+ 
+ #include "pvr_vm.h"
+ 
++#include "pvr_apple.h"
++
+ #include "pvr_device.h"
+ #include "pvr_drv.h"
+ #include "pvr_gem.h"
+@@ -91,6 +93,16 @@
  }
  
  /**
@@ -205,7 +313,7 @@ firmware memory-context object for user VMs, the Kconfig option.
   * pvr_vm_get_dma_resv() - Expose the dma_resv owned by the VM context.
   * @vm_ctx: Target VM context.
   *
-@@ -576,7 +586,8 @@
+@@ -576,7 +588,8 @@
  	if (err)
  		goto err_free;
  
@@ -215,6 +323,43 @@ firmware memory-context object for user VMs, the Kconfig option.
  		err = pvr_fw_object_create(pvr_dev, sizeof(struct rogue_fwif_fwmemcontext),
  					   PVR_BO_FW_FLAGS_DEVICE_UNCACHED,
  					   fw_mem_context_init, vm_ctx, &vm_ctx->fw_mem_ctx_obj);
+@@ -594,6 +607,15 @@
+ 	mutex_init(&vm_ctx->lock);
+ 	kref_init(&vm_ctx->ref_count);
+ 
++	/* Apple backend: every VM maps the page the firmware's flush writes to */
++	if (is_userspace_context && pvr_dev->apple) {
++		err = pvr_apple_vm_map_fence(pvr_dev->apple, vm_ctx);
++		if (err) {
++			pvr_vm_context_put(vm_ctx);
++			return ERR_PTR(err);
++		}
++	}
++
+ 	return vm_ctx;
+ 
+ err_page_table_destroy:
+@@ -621,6 +643,9 @@
+ 	if (vm_ctx->fw_mem_ctx_obj)
+ 		pvr_fw_object_destroy(vm_ctx->fw_mem_ctx_obj);
+ 
++	if (vm_ctx->pvr_dev->apple)
++		pvr_apple_vm_release(vm_ctx->pvr_dev->apple, vm_ctx);
++
+ 	pvr_vm_unmap_all(vm_ctx);
+ 
+ 	pvr_mmu_context_destroy(vm_ctx->mmu_ctx);
+@@ -1057,6 +1082,10 @@
+ 		if (i == DRM_PVR_HEAP_RGNHDR && !PVR_HAS_QUIRK(pvr_dev, 63142))
+ 			heap.size = 0;
+ 
++		/* Apple backend: the general heap's last page is the fence page */
++		if (i == DRM_PVR_HEAP_GENERAL && pvr_dev->apple)
++			heap.size -= PVR_APPLE_RESERVED_SIZE;
++
+ 		err = PVR_UOBJ_SET(dest, query.heaps.stride, heap);
+ 		if (err < 0)
+ 			return err;
 --- a/drivers/gpu/drm/imagination/pvr_vm.h
 +++ b/drivers/gpu/drm/imagination/pvr_vm.h
 @@ -45,6 +45,7 @@

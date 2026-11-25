@@ -12,6 +12,7 @@
  */
 
 #include <linux/debugfs.h>
+#include <drm/drm_drv.h>
 #include <linux/dma-fence.h>
 #include <linux/delay.h>
 #include <linux/dma-mapping.h>
@@ -27,6 +28,7 @@
 #include <clocksource/arm_arch_timer.h>
 
 #include "pvr_apple.h"
+#include "pvr_context.h"
 #include "pvr_device.h"
 #include "pvr_gem.h"
 #include "pvr_vm.h"
@@ -179,6 +181,7 @@ int pvr_apple_obj_alloc(struct pvr_apple *a, u32 size, struct pvr_apple_obj *o)
 	if (i + n > PVR_APPLE_POOL_UNITS)
 		return -ENOMEM;
 	o->size = n * PVR_APPLE_POOL_UNIT;
+	o->boot = a->boot;
 	o->cpu = a->heap + PVR_APPLE_POOL_OFF + i * PVR_APPLE_POOL_UNIT;
 	o->va = PVR_APPLE_HEAP_VA + PVR_APPLE_POOL_OFF + i * PVR_APPLE_POOL_UNIT;
 	memset(o->cpu, 0, o->size);
@@ -189,8 +192,10 @@ void pvr_apple_obj_free(struct pvr_apple *a, struct pvr_apple_obj *o)
 {
 	unsigned long flags;
 
-	if (!o->size)
+	if (!o->size || o->boot != a->boot) {	/* gone with its firmware boot */
+		o->size = 0;
 		return;
+	}
 	spin_lock_irqsave(&a->pool_lock, flags);
 	bitmap_clear(a->pool_map, (o->va - PVR_APPLE_HEAP_VA - PVR_APPLE_POOL_OFF) / PVR_APPLE_POOL_UNIT,
 		     o->size / PVR_APPLE_POOL_UNIT);
@@ -287,6 +292,7 @@ int pvr_apple_fw_boot(struct pvr_apple *a, const struct pvr_apple_boot_cfg *cfg)
 	}
 	memcpy(a->rt, a->fw->data, PVR_APPLE_FW_SIZE);
 	dma_wmb();
+	a->boot++;
 	bitmap_zero(a->pool_map, PVR_APPLE_POOL_UNITS);
 	memset(a->ring_wr, 0, sizeof(a->ring_wr));
 
@@ -618,6 +624,86 @@ int pvr_apple_kick(struct pvr_apple *a, u32 dm)
 
 /* -- probe ------------------------------------------------------------ */
 
+/* -- the running firmware ---------------------------------------------------- */
+
+/* the GPU's id, as upstream's pvr_gpuid_decode_reg() reads it (host-held power) */
+static void pvr_apple_read_gpu_id(struct pvr_apple *a)
+{
+	struct pvr_gpu_id *id = &a->pvr_dev->gpu_id;
+	u32 core_id = 0, rev = 0;
+
+	/*
+	 * Only the two registers G1 read (0x18 CORE_ID, 0x20 CORE_REVISION);
+	 * its revision 0x000d0a00 is the older layout (major 13, minor 10), so
+	 * upstream's fallback: B.V from CORE_REVISION, N.C from CORE_ID's config.
+	 */
+	if (pvr_apple_rgx_read(a, 0x18, &core_id) || pvr_apple_rgx_read(a, 0x20, &rev))
+		return;
+	id->b = (rev >> 16) & 0xff;
+	id->v = (rev >> 8) & 0xff;
+	id->n = (core_id >> 8) & 0xff;
+	id->c = core_id & 0xff;
+	dev_info(a->dev, "GPU %u.%u.%u.%u (CORE_ID %#x, CORE_REVISION %#x)\n",
+		 id->b, id->v, id->n, id->c, core_id, rev);
+}
+
+void pvr_apple_stop_locked(struct pvr_apple *a)
+{
+	pvr_apple_fw_stop(a);
+	memset(a->q, 0, sizeof(a->q));
+	a->running = false;
+}
+
+/*
+ * The firmware for the driver: the UAPI's PDS / USC bases, the kernel's VM
+ * behind MMU context 0, the fence page, one queue per data master. Started
+ * on the first open of the DRM device (or a self-test); restarted after a
+ * crash. Caller holds a->lock.
+ */
+int pvr_apple_start_locked(struct pvr_apple *a)
+{
+	const struct pvr_apple_boot_cfg cfg = {
+		.pds_base = PVR_APPLE_PDS_BASE,
+		.usc_base = PVR_APPLE_USC_BASE,
+		.ctx0_vm = a->pvr_dev->kernel_vm_ctx,
+		.fence_va = PVR_APPLE_FENCE_VA,
+		.perf_state = 6,
+	};
+	int dm, err;
+
+	if (a->running && !a->crashed)
+		return 0;
+	pvr_apple_stop_locked(a);
+	err = pvr_apple_fw_boot(a, &cfg) ?: pvr_apple_fw_init(a, &cfg);
+	if (err)
+		goto err;
+	for (dm = 0; dm < 3; dm++) {
+		a->q[dm] = pvr_apple_queue_create(a, 0, dm);
+		if (IS_ERR(a->q[dm])) {
+			err = PTR_ERR(a->q[dm]);
+			a->q[dm] = NULL;
+			goto err;
+		}
+	}
+	pvr_apple_read_gpu_id(a);
+	a->running = true;
+	return 0;
+
+err:
+	pvr_apple_stop_locked(a);
+	return err;
+}
+
+int pvr_apple_start(struct pvr_apple *a)
+{
+	int err;
+
+	mutex_lock(&a->lock);
+	err = pvr_apple_start_locked(a);
+	mutex_unlock(&a->lock);
+	return err;
+}
+
 static void pvr_apple_done_work(struct work_struct *work)
 {
 	pvr_apple_process_completions(container_of(work, struct pvr_apple, done_work.work));
@@ -718,6 +804,21 @@ int pvr_apple_probe(struct pvr_device *pvr_dev)
 	}
 	pvr_dev->features.has_virtual_address_space_bits = true;
 	pvr_dev->features.virtual_address_space_bits = 40;
+	pvr_dev->features.has_phys_bus_width = true;
+	pvr_dev->features.phys_bus_width = 40;
+	/* 32x32 tiles (G6: TE_SCREEN / ISP_MTILE in tiles of 32); the rest to check */
+	pvr_dev->features.has_tile_size_x = true;
+	pvr_dev->features.tile_size_x = 32;
+	pvr_dev->features.has_tile_size_y = true;
+	pvr_dev->features.tile_size_y = 32;
+	pvr_dev->features.has_num_clusters = true;
+	pvr_dev->features.num_clusters = 6;		/* N of the id: 6 (to check) */
+	pvr_dev->features.has_isp_max_tiles_in_flight = true;
+	pvr_dev->features.isp_max_tiles_in_flight = 4;	/* to check */
+	pvr_dev->features.has_max_partitions = true;
+	pvr_dev->features.max_partitions = 4;		/* to check */
+	pvr_dev->features.has_common_store_size_in_dwords = true;
+	pvr_dev->features.common_store_size_in_dwords = 16384;	/* to check */
 	pvr_dev->apple = a;
 	pvr_dev->kernel_vm_ctx = pvr_vm_create_context(pvr_dev, false);
 	if (IS_ERR(pvr_dev->kernel_vm_ctx)) {
@@ -741,7 +842,14 @@ int pvr_apple_probe(struct pvr_device *pvr_dev)
 		release_firmware(a->fw);
 		return err;
 	}
+	pvr_context_device_init(pvr_dev);
+	xa_init_flags(&pvr_dev->free_list_ids, XA_FLAGS_ALLOC1);
+	xa_init_flags(&pvr_dev->job_ids, XA_FLAGS_ALLOC1);
 	pvr_apple_debugfs_init(a);
+	/* the powervr UAPI (a render node); the firmware comes up with the first open */
+	err = drm_dev_register(from_pvr_device(pvr_dev), 0);
+	if (err)
+		dev_err(dev, "DRM device not registered: %d\n", err);
 	dev_info(dev, "Apple G9P GPU, firmware %s; self-tests in debugfs pvr-apple/selftest\n",
 		 fw_name);
 	return 0;
@@ -753,11 +861,13 @@ void pvr_apple_remove(struct pvr_device *pvr_dev)
 
 	if (!a)
 		return;
+	drm_dev_unplug(from_pvr_device(pvr_dev));
 	debugfs_remove_recursive(a->debugfs);
 	mutex_lock(&a->lock);
 	pvr_apple_test_fini(a);
-	pvr_apple_fw_stop(a);
+	pvr_apple_stop_locked(a);
 	mutex_unlock(&a->lock);
+	pvr_context_device_fini(pvr_dev);
 	if (pvr_dev->kernel_vm_ctx) {
 		pvr_vm_unmap_all(pvr_dev->kernel_vm_ctx);
 		pvr_vm_context_put(pvr_dev->kernel_vm_ctx);

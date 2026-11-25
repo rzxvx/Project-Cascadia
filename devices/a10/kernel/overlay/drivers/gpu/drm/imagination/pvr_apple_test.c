@@ -62,8 +62,8 @@ module_param(test_pvr_vm, bool, 0644);
  * too; user VMs take VAs only inside the heaps (data: the general heap).
  */
 #define GEN_HEAP	0x8000000000ULL
-#define PDS_HEAP	0xDA00000000ULL
-#define USC_HEAP	0xE000000000ULL
+#define PDS_HEAP	PVR_APPLE_PDS_BASE
+#define USC_HEAP	PVR_APPLE_USC_BASE
 
 /* data masters */
 #define DM_TA	0
@@ -81,6 +81,7 @@ struct pvr_apple_test {
 	struct pvr_apple_queue *cp, *ta, *r3;
 	bool vm;				/* GEM objects in the kernel VM context */
 	bool code_heaps;			/* G3 also mapped at PDS_HEAP / USC_HEAP */
+	u32 boot;				/* the firmware boot the objects belong to */
 	struct pvr_gem_object *bo[9];		/* per arena region, in vm mode */
 	void *map[9];
 	struct pvr_apple_hwrt *rt;
@@ -654,8 +655,7 @@ static void test_free(struct pvr_apple *a)
 
 	if (!t)
 		return;
-	pvr_apple_fw_stop(a);			/* also destroys the queues */
-	pvr_apple_hwrt_destroy(t->rt);
+	pvr_apple_hwrt_destroy(t->rt);		/* (a no-op after a firmware restart) */
 	if (t->cpu)
 		dma_free_coherent(a->dev, ARENA, t->cpu, t->dma);
 	vm_regions_destroy(a);
@@ -671,69 +671,47 @@ void pvr_apple_test_fini(struct pvr_apple *a)
 /* the arena, its page tables and programs; the firmware; the queues and the render target */
 static int test_start(struct pvr_apple *a)
 {
-	struct pvr_apple_boot_cfg cfg = { .pds_base = G3VA, .usc_base = G3VA, .perf_state = 6 };
+	struct pvr_vm_context *kvm = a->pvr_dev->kernel_vm_ctx;
 	struct pvr_apple_test *t;
-	int i, err;
+	int err;
 
-	if (a->test && a->crashed)
-		test_free(a);		/* a crashed firmware: start again */
+	/* the driver's firmware (restarted after a crash: then our objects go too) */
+	if (a->test && (a->crashed || !a->running || a->test->boot != a->boot))
+		test_free(a);
+	err = pvr_apple_start_locked(a);
+	if (err)
+		return err;
 	if (a->test)
 		return 0;
+	if (!test_pvr_vm)
+		return -EOPNOTSUPP;	/* the arena mode needs a firmware of its own: gone */
 	t = kzalloc(sizeof(*t), GFP_KERNEL);
 	if (!t)
 		return -ENOMEM;
 	a->test = t;
-	t->vm = test_pvr_vm;
-	if (t->vm) {
-		err = vm_regions_create(a);
-		if (err)
-			goto err;
-		/* the code region at the UAPI's PDS / USC heap bases too */
-		err = pvr_vm_map(a->pvr_dev->kernel_vm_ctx, t->bo[TR_G3], 0, PDS_HEAP, vm_region[TR_G3].size) ?:
-		      pvr_vm_map(a->pvr_dev->kernel_vm_ctx, t->bo[TR_G3], 0, USC_HEAP, vm_region[TR_G3].size);
-		if (err)
-			goto err;
-		t->code_heaps = true;
-		cfg.pds_base = PDS_HEAP;
-		cfg.usc_base = USC_HEAP;
-		cfg.ctx0_vm = a->pvr_dev->kernel_vm_ctx;
-		goto built;
-	}
-	t->cpu = dma_alloc_coherent(a->dev, ARENA, &t->dma, GFP_KERNEL);
-	if (!t->cpu) {
-		err = -ENOMEM;
+	t->vm = true;
+	t->boot = a->boot;
+	t->cp = a->q[DM_CP];
+	t->ta = a->q[DM_TA];
+	t->r3 = a->q[DM_3D];
+	err = vm_regions_create(a);
+	if (err)
 		goto err;
-	}
-
-	/* context 0: GPU VA 0x200000.. onto GV, 0x300000.. onto PMB (in PTR), 0x400000.. G3, 0 the VA0 page */
-	w32(a, R(Z), 0, ((PA(PDR) >> 12) << 4) | 1);
-	cfg.ctx0_pc = PA(Z);
-	w64(a, R(PDR), 8 * 1, PA(PTR) | 1);
-	for (i = 0; i < 4; i++)
-		w64(a, R(PTR), 8 * i, (PA(GV) + 0x1000 * i) | 1);
-	for (i = 0; i < 0xe0; i++)
-		if (!a->test->vm)
-			w64(a, R(PTR), 8 * (((RGN_VA >> 12) & 0x1ff) + i), (PA(PMB) + 0x1000 * i) | 1);
-built:
+	/* the code region at the UAPI's PDS / USC heap bases too */
+	err = pvr_vm_map(kvm, t->bo[TR_G3], 0, PDS_HEAP, vm_region[TR_G3].size) ?:
+	      pvr_vm_map(kvm, t->bo[TR_G3], 0, USC_HEAP, vm_region[TR_G3].size);
+	if (err)
+		goto err;
+	t->code_heaps = true;
 	err = build_scene(a) ?: store_static(a);
 	if (err)
 		goto err;
 	r3_args(a);
-
-	/* the flush before a power-off (and FinalizeCompute's) writes there */
-	cfg.fence_va = t->vm ? PVR_APPLE_FENCE_VA : GVA + 0x3800;
-	err = pvr_apple_fw_boot(a, &cfg) ?: pvr_apple_fw_init(a, &cfg);
-	if (err)
-		goto err;
-	t->cp = pvr_apple_queue_create(a, 0, DM_CP);
-	t->ta = pvr_apple_queue_create(a, 0, DM_TA);
-	t->r3 = pvr_apple_queue_create(a, 0, DM_3D);
 	t->rt = pvr_apple_hwrt_create(a, G3VA + G3_FL, PM_PAGES, G3VA + G3_MLIST,
 				      G3VA + G3_MTA, G3VA + G3_VHEAP);
-	if (IS_ERR(t->cp) || IS_ERR(t->ta) || IS_ERR(t->r3) || IS_ERR(t->rt)) {
-		if (IS_ERR(t->rt))
-			t->rt = NULL;
-		err = -ENOMEM;
+	if (IS_ERR(t->rt)) {
+		err = PTR_ERR(t->rt);
+		t->rt = NULL;
 		goto err;
 	}
 	return 0;
@@ -1063,7 +1041,7 @@ static ssize_t selftest_write(struct file *f, const char __user *ubuf, size_t le
 	mutex_lock(&a->lock);
 	if (!strcmp(cmd, "stop")) {
 		test_free(a);
-		pvr_apple_fw_stop(a);
+		pvr_apple_stop_locked(a);
 		scnprintf(a->result, sizeof(a->result), "stopped\n");
 		mutex_unlock(&a->lock);
 		return len;
