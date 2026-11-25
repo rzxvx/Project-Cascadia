@@ -20,7 +20,7 @@ for a in range(4):
     for b in range(4):
         tests["xor_r%d_r%d" % (a, b)] = (g9pasm.alu2("xor", 4, a, b), IN[a] ^ IN[b])
 tests["iadd_r1_r2"] = (g9pasm.alu2("iadd", 4, 1, 2), IN[1] + IN[2])
-tests["isub_r3_r1"] = (g9pasm.alu2("isub", 4, 3, 1), (IN[1] - IN[3]) & 0xffffffff)   # b - a
+tests["isub_r3_r1"] = (g9pasm.alu2("isub", 4, 3, 1), (IN[3] - IN[1]) & 0xffffffff)
 tests["imul_r1_r2"] = (g9pasm.alu2("imul", 4, 1, 2), IN[1] * IN[2])
 tests["and_r1_r1"] = (g9pasm.alu2("and", 4, 1, 1), IN[1])
 tests["or_r0_r3"] = (g9pasm.alu2("or", 4, 0, 3), IN[0] | IN[3])

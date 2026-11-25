@@ -599,19 +599,20 @@ the same length).
 a body built by our encoders. `isa-check.py`, `isa-check2.py`,
 `isa-check3.py` build programs for `g9p-probe` (in[0..3] loaded to
 registers, one instruction under test, the result stored), `isa-run.sh`
-runs them on the iPad and compares: **47 of 47 programs right**
-(2026-11-26). The integer tests load one-hot inputs (1, 0x10, 0x100,
+runs them on the iPad and compares: **69 of 69 programs right**
+(2026-11-26; `isa-check4`-`7` added control flow, workgroup IDs, unary
+operations and banks). The integer tests load one-hot inputs (1, 0x10, 0x100,
 0x1000), so a result names the registers that were read.
 
 **The frame** (`program()`), as the compiler lays out a compute kernel:
 
 | words | |
 |---|---|
-| `1181 8189 4100 acb7` | prologue (`8191` with two buffers) |
-| `01c8 03nn 0101 0120 46d1` | nn = 2 x registers used |
-| `0900 01oo 0000` | jump to the epilogue, oo bytes from this instruction (taken by threads that do not run the body: to check) |
+| `1181 81hh 4100 acb7` | compare r0 (the local ID) with the threads per group, common-store half hh / 2 (`8189` / `8191`: half 4 / 8) |
+| `01c8 03ss 0101 0120 46d1` | start the execution-mask stack in register ss / 2, the one after the program's, with that compare: lanes past the group size off |
+| `0900 01oo 0000` | jump to the epilogue, oo bytes ahead, when no lane is active |
 | body | |
-| `21c8 03nn 01mm 46d2` | epilogue, mm = 0x80 + 4 x registers |
+| `21c8 03ss 01mm 46d2` | pop the stack (mm = 0x80 + 4 x its register) |
 | `0100 01pp 0000` | jump to the end word, pp bytes ahead |
 | `c000`..., `8000` | padding, the end word at the start of a 64-byte block |
 
@@ -632,24 +633,59 @@ Longer jumps (offsets past 0xff) are still to decode.
   still in flight: a counter, to check).
 
 **Two-source ALU** (opcode 0x99, also 0x9d), `W0 W1 W2 W3`: W1 bits 1-6 =
-destination; W2 bits 10-14 = source A, bits 2-6 = source B (r0-r31
-checked in all three fields); W3 low byte = the operation: iadd 0xa1,
-isub 0xa5 (B - A), imul 0xa2, and 0xc8, or 0xce, xor 0xc6, fadd 0x44, fmul
-0x48, fmul saturated 0x4a; W3 bit 14 negates source A (fsub, -a * b).
-**W0 bits 12 and 13 must be set** -- with either clear the result is
-garbage (the operand is not read from the register file: an operand cache,
-as other GPUs have; to check), bit 14 changes nothing seen. W2 bit 15 /
-bit 7 and opcode 0x9d instead of 0x99 change nothing in these tests either
-(the compiler sets them in patterns not yet understood).
+destination; W2 bits 2-6 = the first source, bits 10-14 = the second
+(r0-r31 checked in all three fields); W3 low byte = the operation: iadd
+0xa1, isub 0xa5 (first - second), imul 0xa2, and 0xc8, or 0xce, xor 0xc6,
+fadd 0x44, fmul 0x48, fmul saturated 0x4a; W3 bit 14 negates the second
+source (fsub, -a * b).
 
-**FMA** (opcode 0x9a), `399a 03dd W2 W3 004c`: d = A * B + C, C in W3 bits
-2-6 (W3 bit 7 set), W0 bit 11 set as well.
+**Register banks** (`isa-check7`): a register number names two registers.
+W1 bit 9 selects the destination's bank, W0 bit 13 the first source's, bit
+12 the second's (set: bank 1, where compute programs keep their values; r4
+= 5 in bank 1 and r4 = 0xa0 in bank 0 read back as 5 and 0xa0). With a
+bank bit clear by mistake an operand reads bank 0's unwritten register:
+garbage. W2 bits 7 / 15 and opcode 0x9d instead of 0x99 change nothing in
+these tests (the compiler sets the bits on some last reads: to check).
+
+**FMA** (opcode 0x9a), `399a 03dd W2 W3 004c`: d = first * second + third,
+the third in W3 bits 2-6 (W3 bit 7 set), W0 bit 11 its bank bit.
+
+**Control flow on 32 lanes** (`isa-check4`, r0 = the lane, every lane
+storing to out[lane]):
+
+- **addresses**: `1189 03dd (1|idx<<2)<<8|0x81|4*u 4100|(u>>5)<<1 01a1
+  0600|shift<<13` = r[d]:r[d+1] = the 64-bit common-store dwords u, u + 1 (a
+  buffer's base) + (r[idx] << shift); `ss10 (1|pair<<2)<<8|st<<7|reg<<1
+  8800` loads / stores at that pair (size in W0 bits 11-13 as above);
+- **compares**: two registers `3181 W2 a0cc` (float: `60cc`), a register
+  and an immediate below 1024 `1181 ... a1cc 0070`; conditions ult 0xb6,
+  ugt 0xb7, eq 0xbd, slt 0xbe, sgt 0xbf, flt 0x59, fgt 0x5d, feq 0x55;
+- **the mask stack** in a register (0xc8): push on the last compare
+  (`46d1`, `66d1` inverted), else (`46d4`), pop n levels (`06d2 | n << 14`);
+  if / else with lanes 0-9 taking one side: right;
+- **select**: `399e dd W2 W3 60cc` sets d where the compare holds, `21f8 dd
+  ...` the other lanes; right;
+- **loops**: `86d0` opens two levels, `86d7` (`a6d7` on true) takes the
+  lanes whose compare failed out, a jump `0101 W1 W2` (back while any lane
+  is active; `0900` forward when none is) with a 32-bit byte offset whose
+  bits 8 / 24 sit in bits 0 of the two words; a loop each lane leaves after
+  `lane` iterations: right.
+
+**Workgroup IDs** (`isa-check5`): `2314 01dd 8100|w 0200|w>>8` loads
+threadgroup-memory word w; word 0 is the workgroup ID, written there by the
+kernel's PDS program (Apple's `f0000a01` in its shared phase): 4 groups of
+32 lanes (K3 = 3, record word 6 = 1) each wrote `wg * 1000 + lane` right.
+
+**Unary operations, conversions, shifts** (`isa-check6`): `219c dd 01ss op`
+-- floor 0x40, rcp 0x80, rsqrt 0x81, log2 0x84, exp2 0x85; `1199 dd
+0101|op|ss<<10 0120 046x` -- f2u 0x10, f2i 0x12 (truncating), u2f 0x14,
+i2f 0x16 (0x0468 when converting to float); shifts by a register `199e dd
+.. 04f0` (left) / `04f4` (logical right) and by an immediate (`119a` /
+`519e`, the count in a 0x98-style field): every value right.
 
 Compiler-only so far (not yet on the GPU): fp16 add / mul (opcode 0x89,
 ops 0x04 / 0x08), integer min / max (5 words, ops 0xb2 / 0xb3 / 0xba),
-float abs (an extra word, bit 14), conversions (`1199 ... 0460` f32 -> u32,
-`0468` u32 -> f32), floor, reciprocal and square root (several
-instructions), shifts (two instructions).
+float abs (an extra word, bit 14), sin / cos.
 
 ## 2D on the GPU (2026-11-25/26): g9p2d and SuperTux
 

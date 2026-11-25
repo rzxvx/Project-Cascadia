@@ -18,12 +18,14 @@ def _jump(op_w0, offset):
     return [op_w0, 0x0100 | offset, 0x0000]
 
 
-def program(body, nregs, nbufs=2):
+def program(body, nregs, nbufs=2, count_half=None):
     """the frame of the compiler's compute kernels: prologue, register count,
     the jump to the epilogue for inactive threads (to check), body,
     epilogue, the jump to the end word"""
-    pro = [[0x1181, {1: 0x8189, 2: 0x8191}[nbufs], 0x4100, 0xacb7],
-           [0x01c8, 0x0300 | 2 * nregs, 0x0101, 0x0120, 0x46d1]]
+    # the lane test (r0, the local ID, against the threads per group in the
+    # common store's half count_half), the mask stack's start in r[nregs]
+    ch = count_half if count_half is not None else {1: 4, 2: 8}[nbufs]
+    pro = [[0x1181, 0x8181 | 2 * ch, 0x4100, 0xacb7], push_init(nregs)]
     epi = [0x21c8, 0x0300 | 2 * nregs, 0x0180 | 4 * nregs, 0x46d2]
     nbody = sum(len(i) for i in body)
     words = [w for i in pro for w in i]
@@ -63,30 +65,149 @@ def wait():
 
 
 # ALU operations: the last word's low byte, of opcode 0x99 (two sources) or
-# 0x9a (three); bit 14 of the last word negates source A (float)
+# 0x9a (three); bit 14 of the last word negates the second source (float)
 OPS2 = {"iadd": 0xa1, "isub": 0xa5, "imul": 0xa2, "and": 0xc8, "or": 0xce, "xor": 0xc6,
         "fadd": 0x44, "fmul": 0x48, "fmul_sat": 0x4a}
 OPS3 = {"ffma": 0x4c}
-NEG_A = 0x4000
+NEG_B = 0x4000
+# compare conditions (cmp_reg / cmp_imm / sel)
+COND = {"ult": 0xb6, "ugt": 0xb7, "eq": 0xbd, "slt": 0xbe, "sgt": 0xbf,
+        "flt": 0x59, "fgt": 0x5d, "feq": 0x55}
 
 
 def _srcs(a, b):
-    """W2: source A in bits 10-14 (bit 15: a flag, set like the compiler),
-    source B in bits 2-6 (bit 7: a flag); bit 8 = another word follows"""
+    """the source word: first source in bits 2-6, second in bits 10-14 (bits
+    7 / 15: last-use flags, left clear), bit 8 = another word follows"""
     assert 0 <= a < 32 and 0 <= b < 32
-    return ((0x40 | a << 1) << 9) | 0x100 | 0x80 | b << 2
+    return 0x0100 | a << 2 | b << 10
 
 
-def alu2(op, d, a, b, neg_a=False):
-    """d = a OP b (isub: b - a). W0 bits 12-13 set: both sources from the
-    register file (clear: garbage -- an operand cache, to check)"""
-    return [0x3199, 0x0300 | d << 1, _srcs(a, b), OPS2[op] | (NEG_A if neg_a else 0)]
+# W0 bits 12 / 13: the second / first source from register bank 1 (the
+# compute bank; W1 bit 9 the destination's); our programs use bank 1 only
+BANKS = 0x3000
 
 
-def alu3(op, d, a, b, c, neg_a=False):
-    """d = a * b + c (ffma); source C in W3 bits 2-6"""
-    return [0x399a, 0x0300 | d << 1, _srcs(a, b), 0x0180 | c << 2, OPS3[op] | (NEG_A if neg_a else 0)]
+def dst(d):
+    return 0x0300 | d << 1
 
+
+def alu2(op, d, a, b, neg_b=False):
+    """d = a OP b (isub: a - b)"""
+    return [BANKS | 0x0199, dst(d), _srcs(a, b), OPS2[op] | (NEG_B if neg_b else 0)]
+
+
+def alu3(op, d, a, b, c, neg_b=False):
+    """d = a * b + c (ffma); c in the third word's bits 2-6"""
+    return [BANKS | 0x0800 | 0x019a, dst(d), _srcs(a, b), 0x0100 | c << 2, OPS3[op] | (NEG_B if neg_b else 0)]
+
+
+def cmp_reg(cond, a, b):
+    """compare a with b for a following push / break / select"""
+    return [BANKS | 0x0181, _srcs(a, b), (0x6000 if cond.startswith("f") else 0xa000) | COND[cond]]
+
+
+def cmp_imm(cond, r, imm):
+    """compare r with an immediate (< 1024)"""
+    assert 0 <= imm < 1024 and r < 32
+    return [0x1181 | ((imm >> 9) & 1) << 13, 0x0101 | (imm & 0x3f) << 1 | r << 10,
+            0x0120 | ((imm >> 6) & 7) << 1, 0xa100 | COND[cond], 0x0070]
+
+
+def sel(cond, d, a, b, c):
+    """d = c in the lanes where (a COND b); movf() sets the others"""
+    return [BANKS | 0x099e, dst(d), _srcs(a, b), 0x0180 | c << 2, 0x6000 | COND[cond]]
+
+
+def movf(d, other):
+    return [0x21f8, dst(d), 0x0180 | other << 2, 0x0154, 0x0038]
+
+
+# --- the execution-mask stack, in register st (the one after the program's) -
+
+def st_src(st):
+    return 0x0100 | st << 2
+
+
+def push_init(st):
+    return [0x01c8, dst(st), 0x0101, 0x0120, 0x46d1]
+
+
+def push_if(st, invert=False):
+    """disable the lanes whose compare failed (invert: passed)"""
+    return [0x21c8, dst(st), st_src(st), 0x46d1 | (0x2000 if invert else 0)]
+
+
+def else_(st):
+    return [0x21c8, dst(st), st_src(st), 0x46d4]
+
+
+def pop(st, levels=1, last_read=True):
+    return [0x21c8, dst(st), (0x0080 if last_read else 0) | st_src(st), 0x0600 | 0xd2 | levels << 14]
+
+
+def loop_begin(st):
+    return [0x21c8, dst(st), st_src(st), 0x86d0]
+
+
+def loop_break(st, when_true):
+    return [0x21c8, dst(st), st_src(st), 0x86d7 | (0x2000 if when_true else 0)]
+
+
+JMP_ANY, JMP_NONE = 0x0101, 0x0900
+
+
+def jump(op, offset):
+    """a jump `offset` bytes from its own start: two words of 16 offset bits,
+    offset bit 8 (and 24) moved to bit 0 to keep bit 8 for the continuation"""
+    o = offset & 0xffffffff
+    return [op, (o & 0xfefe) | 0x0100 | (o >> 8 & 1), (o >> 16 & 0xfefe) | (o >> 24 & 1)]
+
+
+# --- addresses: buffer base + register --------------------------------------
+
+def addr(d, base_dword, idx, shift):
+    """r[d]:r[d+1] = (the 64-bit common-store dwords base_dword, +1) + (r[idx] << shift)"""
+    return [0x1189, dst(d), (1 | idx << 2) << 8 | 0x81 | 4 * (base_dword & 31),
+            0x4100 | (base_dword >> 5) << 1, 0x01a1, 0x0600 | shift << 13]
+
+
+def mem_at(store, size, reg, pair):
+    """load / store `size` (SIZE) at the address r[pair]:r[pair+1]"""
+    return [size << 11 | 0x0310, (1 | pair << 2) << 8 | (0x80 if store else 0) | reg << 1, 0x8800]
+
+
+def tg_load(d, word, bank1=False):
+    """r[d] = threadgroup-memory word `word` (words 0-2: the workgroup ID,
+    written by the kernel's PDS program); follow with wait()"""
+    return [0x2314, (0x0300 if bank1 else 0x0100) | d << 1, 0x8100 | (word & 0xff), 0x0200 | word >> 8]
+
+
+# float unary operations (219c dd 0x01ss op) and conversions
+FUNARY = {"floor": 0x40, "rcp": 0x80, "rsqrt": 0x81, "log2": 0x84, "exp2": 0x85}
+CONV = {"f2u": 0x10, "f2i": 0x12, "u2f": 0x14, "i2f": 0x16}
+
+
+def funary(op, d, a):
+    return [0x219c, dst(d), 0x0100 | a << 2, FUNARY[op]]
+
+
+def convert(op, d, a):
+    c = CONV[op]
+    return [0x1199, dst(d), 0x0101 | c | a << 10, 0x0120, 0x0468 if c & 4 else 0x0460]
+
+
+def shift(d, a, b, right):
+    """d = a << b / a >> b (logical), b a register"""
+    return [0x199e, dst(d), 0x0101 | a << 10, 0x0120, 0x0100 | b << 2, 0x04f4 if right else 0x04f0]
+
+
+def shift_imm(d, a, n, right):
+    """d = a << n / a >> n (logical), n < 32"""
+    return [0x519e if right else 0x119a, (0 if right else 0x8000) | dst(d), 0x0101 | a << 10, 0x0120,
+            0x0101 | (n & 31) << 1, 0x0120, 0x14f4 if right else 0x14f0]
+
+
+SIZE = {"u8": 1, "u16": 2, "u32": 4, "2x32": 5, "3x32": 6, "4x32": 7}
 
 # the move immediate (opcode 0x98): value bit -> (word, bit)
 _IMM = {0: (2, 1), 1: (2, 2), 2: (2, 3), 3: (2, 4), 4: (2, 5), 5: (2, 6), 6: (3, 1), 7: (3, 2),

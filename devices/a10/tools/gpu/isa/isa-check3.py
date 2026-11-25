@@ -17,11 +17,11 @@ fb = lambda f: struct.unpack("<I", struct.pack("<f", f))[0]
 
 
 def alu2(op, a, b, d=4):
-    return g9pasm.alu2({0x44: "fadd", 0x48: "fmul", 0x4a: "fmul_sat"}[op & 0xff], d, a, b, neg_a=bool(op & 0x4000))
+    return g9pasm.alu2({0x44: "fadd", 0x48: "fmul", 0x4a: "fmul_sat"}[op & 0xff], d, b, a, neg_b=bool(op & 0x4000))
 
 
 def alu3(op, a, b, c, d=4):
-    return g9pasm.alu3("ffma", d, a, b, c, neg_a=bool(op & 0x4000))
+    return g9pasm.alu3("ffma", d, b, a, c, neg_b=bool(op & 0x4000))
 
 
 tests = {
