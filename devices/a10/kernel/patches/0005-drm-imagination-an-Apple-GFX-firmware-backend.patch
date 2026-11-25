@@ -28,12 +28,13 @@ PM handed to the backend, the Kconfig option.
  	depends on DRM_POWERVR && KUNIT
 --- a/drivers/gpu/drm/imagination/Makefile
 +++ b/drivers/gpu/drm/imagination/Makefile
-@@ -29,6 +29,10 @@
+@@ -29,6 +29,11 @@
  	pvr_vm.o \
  	pvr_vm_mips.o
  
 +powervr-$(CONFIG_DRM_POWERVR_APPLE) += \
 +	pvr_apple.o \
++	pvr_apple_job.o \
 +	pvr_apple_test.o
 +
  powervr-$(CONFIG_DEBUG_FS) += \

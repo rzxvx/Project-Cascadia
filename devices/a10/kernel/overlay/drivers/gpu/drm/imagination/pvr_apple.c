@@ -12,6 +12,7 @@
  */
 
 #include <linux/debugfs.h>
+#include <linux/dma-fence.h>
 #include <linux/delay.h>
 #include <linux/dma-mapping.h>
 #include <linux/firmware.h>
@@ -138,6 +139,7 @@ static void pvr_apple_rtkit_recv(void *cookie, u8 ep, u64 msg)
 	if (ep == PVR_APPLE_EP_INIT && ((msg >> 48) & 0xff) == PVR_APPLE_MSG_RINGS) {
 		a->ring_msgs++;
 		pvr_apple_drain_rings(a);
+		pvr_apple_process_completions(a);
 		return;
 	}
 	dev_info_ratelimited(a->dev, "ep %#x: message %#llx\n", ep, msg);
@@ -155,6 +157,41 @@ static const struct apple_rtkit_ops pvr_apple_rtkit_ops = {
 	.crashed = pvr_apple_rtkit_crashed,
 	.recv_message = pvr_apple_rtkit_recv,
 };
+
+/* -- the pool ----------------------------------------------------------- */
+
+int pvr_apple_obj_alloc(struct pvr_apple *a, u32 size, struct pvr_apple_obj *o)
+{
+	u32 n = DIV_ROUND_UP(size, PVR_APPLE_POOL_UNIT);
+	unsigned long flags, i;
+
+	spin_lock_irqsave(&a->pool_lock, flags);
+	i = a->heap ? bitmap_find_next_zero_area(a->pool_map, PVR_APPLE_POOL_UNITS, 0, n, 0)
+		    : PVR_APPLE_POOL_UNITS;
+	if (i + n <= PVR_APPLE_POOL_UNITS)
+		bitmap_set(a->pool_map, i, n);
+	spin_unlock_irqrestore(&a->pool_lock, flags);
+	if (i + n > PVR_APPLE_POOL_UNITS)
+		return -ENOMEM;
+	o->size = n * PVR_APPLE_POOL_UNIT;
+	o->cpu = a->heap + PVR_APPLE_POOL_OFF + i * PVR_APPLE_POOL_UNIT;
+	o->va = PVR_APPLE_HEAP_VA + PVR_APPLE_POOL_OFF + i * PVR_APPLE_POOL_UNIT;
+	memset(o->cpu, 0, o->size);
+	return 0;
+}
+
+void pvr_apple_obj_free(struct pvr_apple *a, struct pvr_apple_obj *o)
+{
+	unsigned long flags;
+
+	if (!o->size)
+		return;
+	spin_lock_irqsave(&a->pool_lock, flags);
+	bitmap_clear(a->pool_map, (o->va - PVR_APPLE_HEAP_VA - PVR_APPLE_POOL_OFF) / PVR_APPLE_POOL_UNIT,
+		     o->size / PVR_APPLE_POOL_UNIT);
+	spin_unlock_irqrestore(&a->pool_lock, flags);
+	o->size = 0;
+}
 
 /* -- boot ------------------------------------------------------------- */
 
@@ -188,6 +225,12 @@ static void pvr_apple_free_mem(struct pvr_apple *a)
  */
 void pvr_apple_fw_stop(struct pvr_apple *a)
 {
+	struct pvr_apple_queue *q, *tmp;
+
+	cancel_delayed_work_sync(&a->done_work);
+	pvr_apple_fail_all(a, -ENODEV);
+	list_for_each_entry_safe(q, tmp, &a->queues, node)
+		pvr_apple_queue_destroy(q);
 	if (a->rtk) {
 		cancel_delayed_work_sync(&a->poll_work);
 		writel(readl(a->fender + FENDER_RUN) & ~1, a->fender + FENDER_RUN);
@@ -239,6 +282,8 @@ int pvr_apple_fw_boot(struct pvr_apple *a, const struct pvr_apple_boot_cfg *cfg)
 	}
 	memcpy(a->rt, a->fw->data, PVR_APPLE_FW_SIZE);
 	dma_wmb();
+	bitmap_zero(a->pool_map, PVR_APPLE_POOL_UNITS);
+	memset(a->ring_wr, 0, sizeof(a->ring_wr));
 
 	if (readl(a->fender + FENDER_RUN) & 1) {
 		dev_warn(dev, "firmware was running: clearing the run bit\n");
@@ -382,8 +427,7 @@ int pvr_apple_fw_init(struct pvr_apple *a, const struct pvr_apple_boot_cfg *cfg)
 	 * X+0x4 -> E: the GPU VA the cache flush before a power-off writes its
 	 * fence to (RGX+0xe240, fw 0x5660); mapped by the job's page tables.
 	 */
-	w32(a, R(E), 0x0, 0x200000 + 0x3800);
-	w32(a, R(E), 0x4, 0);
+	pvr_apple_w64(a, R(E), 0x0, cfg->fence_va);
 
 	/* the "base" arguments (docs: G4 runs 43-45) */
 	pvr_apple_w64(a, R(P), 0xac0, PA(S));		/* FenderScratchRam: a RAM page */
@@ -399,7 +443,7 @@ int pvr_apple_fw_init(struct pvr_apple *a, const struct pvr_apple_boot_cfg *cfg)
 	w32(a, R(P), 0xd34, cfg->fw_power);		/* 0: the host owns the power state */
 	w32(a, R(P), 0xd3c, cfg->fw_power);
 	w32(a, R(T), 0x7ec, VA(Y));			/* MMU roots: context 0 = Z */
-	pvr_apple_w64(a, R(Y), 0x0, PA(Z));
+	pvr_apple_w64(a, R(Y), 0x0, cfg->ctx0_pc);
 	w32(a, R(T), 0x7e8, VA(GEN));
 	w32(a, R(X), 0x198, VA(XG));
 	w32(a, R(B), 0x4a24, 1);			/* scheduler init */
@@ -473,6 +517,11 @@ int pvr_apple_kick(struct pvr_apple *a, u32 dm)
 
 /* -- probe ------------------------------------------------------------ */
 
+static void pvr_apple_done_work(struct work_struct *work)
+{
+	pvr_apple_process_completions(container_of(work, struct pvr_apple, done_work.work));
+}
+
 static void pvr_apple_iounmap(void *p)
 {
 	iounmap((void __iomem __force *)p);
@@ -499,6 +548,11 @@ int pvr_apple_probe(struct pvr_device *pvr_dev)
 	a->dev = dev;
 	mutex_init(&a->lock);
 	spin_lock_init(&a->ring_lock);
+	spin_lock_init(&a->pool_lock);
+	spin_lock_init(&a->job_lock);
+	INIT_LIST_HEAD(&a->queues);
+	INIT_DELAYED_WORK(&a->done_work, pvr_apple_done_work);
+	spin_lock_init(&a->fence_lock);
 	INIT_DELAYED_WORK(&a->poll_work, pvr_apple_poll_work);
 
 	/* RGX: handed to the firmware (P+0x8c0); the AP reads it only through pvr_apple_rgx_read() */
@@ -565,6 +619,7 @@ void pvr_apple_remove(struct pvr_device *pvr_dev)
 		return;
 	debugfs_remove_recursive(a->debugfs);
 	mutex_lock(&a->lock);
+	pvr_apple_test_fini(a);
 	pvr_apple_fw_stop(a);
 	mutex_unlock(&a->lock);
 	release_firmware(a->shaders);

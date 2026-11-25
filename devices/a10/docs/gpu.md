@@ -240,10 +240,13 @@ still reports it -- the firmware never powers the core down then.
 
     modprobe powervr                     # autoloads at boot too; probe only maps, nothing is powered
     mount -t debugfs none /sys/kernel/debug
-    echo store  > /sys/kernel/debug/pvr-apple/selftest    # G5
-    echo render > /sys/kernel/debug/pvr-apple/selftest    # G6: clear + triangle, 64x64
+    echo store  > /sys/kernel/debug/pvr-apple/selftest    # G5 ("store N": N jobs; "storeq N": N queued at once)
+    echo render > /sys/kernel/debug/pvr-apple/selftest    # G6: clear + triangle, 64x64 ("render N")
     cat /sys/kernel/debug/pvr-apple/selftest
     echo stop   > /sys/kernel/debug/pvr-apple/selftest    # firmware and GFX domain off
+
+(This first version booted the firmware cold for every test; since "G7
+step 1" it stays up.)
 
 **Results (2026-11-25, interrupt-driven mailbox, `store render store
 render` in a row):** every run PASS --
@@ -290,12 +293,62 @@ What it took, beyond porting:
 - Fender is outside the GFX domain: +0x10 written once kept its value
   across GFX power cycles.
 
+### G7 step 1 (2026-11-25): one firmware boot, many jobs, fences
+
+The firmware now stays up: booted on the first self-test, stopped by
+`stop` or module removal. `pvr_apple_job.c` adds:
+
+- **a pool** for firmware objects: the heap's first MiB keeps the static
+  structures (X, P, T, B, ..., the rings), the other 3 MiB are handed out
+  in 4 KiB units (the firmware's VA window 2 is only 8 MiB, so firmware
+  objects must stay compact; GPU memory is not mapped for the firmware at
+  all and lives elsewhere);
+- **queues** (`pvr_apple_queue_create(a, group, dm)`: queue object, state,
+  command ring, scheduling entries, status in one 32 KiB block) and **jobs**
+  built from raw register blocks (`pvr_apple_job_cp / _ta / _3d` with the
+  Start ops' A / B blocks, `pvr_apple_hwrt` for the free-list descriptor,
+  the PM slot and the TA's large object) -- the shape the UAPI translation
+  will fill;
+- **submission**: command into the queue's command ring, a work-ring entry
+  {queue, data master, write index}, the channel's host write index, the
+  kick; **completion**: each command's completion record writes the job's
+  sequence number into a word of its own; on every EP 0x20 type 0x42 (and
+  a 10 ms fallback) finished jobs signal their `dma_fence`.
+
+The self-tests run on that (`echo "store 600"`, `"storeq 64"`, `"render
+50"`, `stop`): **600 store jobs in a row (the rings wrapped twice), 64 store
+jobs queued at once, 50 renders, all on one firmware boot, all PASS**;
+about 0.2-0.3 ms per store job, 0.8 ms per 64x64 render (TA + 3D, each
+waited for), 16 ms for 64 queued stores. Stop / start and module reloads
+work; the GFX domain goes off.
+
+What the firmware would not take (each checked on the iPad):
+
+- **Two commands of one queue in the firmware at once** crash it: "DAG: Non
+  Sequential Stamp Updates seen entryIdx 0x0 roots.dag 0x1 stampIdx 0x0
+  stampValue N+1 channel <queue object> channelRingCommandIndex N" -- it
+  takes the queue's second work-ring entry before it has checked the
+  first. Neither a completion word per job nor shared CMD+0x298 / +0x29c
+  words changed it. So a queue holds **one command in the firmware**; the
+  host keeps the rest and pushes the next on completion (`q->inflight`).
+  Whether one ring entry may cover several commands, or the host should
+  write the queue state, is to find.
+- **Only one queue per data master is served**: a second compute queue --
+  in group 1 (channel 5) or a second queue object on channel 2 -- never
+  ran its command, and that stuck command held up compute for every
+  queue. What registers a queue with the firmware (an id in the queue
+  object? the queue table at fw 0xa4e90) is to find; until then one
+  firmware queue per data master, the host multiplexing contexts on it.
+- **The work-ring entry's write index wraps with the command ring**
+  (state +0x50 = 256): an index of 0x100 left the firmware at read 0xff for
+  good (job 256 ran, its completion never came).
+
 Open / next: the powervr UAPI on this backend (contexts and VMs through
 `pvr_vm` -- with 16 KiB CPU pages upstream's MMU code uses 16 KiB GPU pages,
 which iOS's kext also does on G9P, to check on the iPad --, translating
 geometry / fragment / compute jobs into the TA / 3D / CL commands, free
-lists, HWRT datasets, `drm_sched`); one firmware boot for many jobs; a
-firmware ping (the kernel's RTKit has no ping call); what the sgx node's
+lists, HWRT datasets, `drm_sched`); several firmware queues per data
+master; a firmware ping (the kernel's RTKit has no ping call); what the sgx node's
 IRQs 185-188 / 193 are for (nothing needs them so far).
 
 ## G2: the recipe (from the 22H355 kernelcache, 2026-11-23)

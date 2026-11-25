@@ -13,7 +13,9 @@
 #ifndef PVR_APPLE_H
 #define PVR_APPLE_H
 
+#include <linux/bitmap.h>
 #include <linux/errno.h>
+#include <linux/list.h>
 #include <linux/mutex.h>
 #include <linux/spinlock.h>
 #include <linux/types.h>
@@ -24,6 +26,8 @@ struct dentry;
 struct firmware;
 struct apple_rtkit;
 struct pvr_device;
+struct pvr_apple_test;
+struct dma_fence;
 
 #define PVR_APPLE_FW_SIZE	0xa4000		/* the 22H355 image, load base 0 */
 #define PVR_APPLE_RUNTIME	0xd8000		/* its RTSZ: image + zeroed BSS / heap */
@@ -58,14 +62,18 @@ struct pvr_device;
 #define IOP_TIME_HI		0xc038
 
 /*
- * One heap of firmware structures and GPU memory, mapped by memory
- * descriptor 0 at firmware VA 0x80400000 (window 2: a host mapping below
- * 32 MiB hangs the firmware on its first access). The regions and their
- * offsets are the harness's (gfx-init.py REGIONS), kept as they are so the
- * two can be compared word for word.
+ * One heap of firmware structures, mapped by memory descriptor 0 at
+ * firmware VA 0x80400000 (window 2, 0x80000000 + 8 MiB; a host mapping
+ * below 32 MiB hangs the firmware on its first access). The first MiB holds
+ * the static structures at the offsets the harness used (gfx-init.py
+ * REGIONS); the rest is a pool for queues, commands and render objects.
+ * GPU memory lives elsewhere: the firmware never maps it.
  */
 #define PVR_APPLE_HEAP_VA	0x80400000u
 #define PVR_APPLE_HEAP_SIZE	0x400000u
+#define PVR_APPLE_POOL_OFF	0x100000u
+#define PVR_APPLE_POOL_UNIT	0x1000u
+#define PVR_APPLE_POOL_UNITS	((PVR_APPLE_HEAP_SIZE - PVR_APPLE_POOL_OFF) / PVR_APPLE_POOL_UNIT)
 
 #define PVR_APPLE_REGIONS(R)					\
 	R(X, 0x00000, 0x1000)	/* the root: X+0 = P */		\
@@ -81,74 +89,24 @@ struct pvr_device;
 	R(G, 0x46000, 0x1000)	/* channel ring indices */	\
 	R(H, 0x48000, 0x8000)	/* X+0x311: power struct */	\
 	R(W, 0xa0000, 0x12000)	/* 13 work rings */		\
-	R(K, 0xb2000, 0x1000)	/* compute queue object */	\
-	R(L, 0xb3000, 0x1000)					\
+	R(L, 0xb3000, 0x1000)	/* the mapping ring */		\
 	R(M, 0xb4000, 0x1000)					\
 	R(N, 0xb5000, 0x4000)					\
-	R(Y, 0xb9000, 0x1000)	/* MMU roots */			\
+	R(Y, 0xb9000, 0x1000)	/* MMU roots: PC PA per context */ \
 	R(GEN, 0xba000, 0x1000)					\
 	R(XG, 0xbb000, 0x1000)					\
-	R(Z, 0xbc000, 0x4000)	/* context 0's page catalog */	\
-	R(QS, 0xc0000, 0x1000)					\
-	R(CR, 0xc1000, 0x1000)					\
-	R(SE, 0xc2000, 0x4000)					\
-	R(ST, 0xc6000, 0x1000)					\
-	R(CMD, 0xc7000, 0x1000)					\
-	R(US, 0xc8000, 0x1000)					\
-	R(CTX, 0xc9000, 0x1000)					\
-	R(CA, 0xca000, 0x1000)					\
-	R(STAMP, 0xcb000, 0x1000)				\
-	R(P2, 0xcc000, 0x1000)					\
+	R(P2, 0xcc000, 0x1000)	/* per-data-master blocks */	\
 	R(P3, 0xcd000, 0x1000)					\
 	R(P4, 0xce000, 0x1000)					\
 	R(P5, 0xcf000, 0x1000)					\
-	R(PDR, 0xd0000, 0x1000)					\
-	R(PTR, 0xd1000, 0x1000)					\
-	R(GV, 0xd4000, 0x4000)	/* GPU VA 0x200000.. */		\
-	R(CDR, 0xd8000, 0x1000)					\
-	R(UT, 0xd9000, 0x1000)					\
-	R(FL, 0xda000, 0x1000)					\
+	R(UT, 0xd9000, 0x1000)	/* compute unit table */	\
 	R(EC0, 0xdb000, 0x100)	/* fw -> host ring controls */	\
 	R(EC1, 0xdb100, 0x100)					\
 	R(EC2, 0xdb200, 0x100)					\
 	R(EV0, 0xdc000, 0x4000)	/* job events */		\
 	R(EV1, 0xe0000, 0x4000)	/* power events */		\
 	R(EV2, 0xe4000, 0x8000)	/* trace */			\
-	R(TS, 0xec000, 0x4000)	/* TempSensorRegister stand-in */ \
-	R(KT, 0x100000, 0x1000)	/* TA queue */			\
-	R(QST, 0x101000, 0x1000)				\
-	R(CRT, 0x102000, 0x1000)				\
-	R(SET, 0x103000, 0x4000)				\
-	R(STT, 0x107000, 0x1000)				\
-	R(CMDT, 0x108000, 0x1000)				\
-	R(UST, 0x109000, 0x1000)				\
-	R(CTXT, 0x10a000, 0x1000)				\
-	R(T74, 0x10b000, 0x1000)	/* free-list descriptor */	\
-	R(TBIG, 0x10c000, 0x4000)				\
-	R(TAA, 0x110000, 0x1000)				\
-	R(TAB, 0x111000, 0x1000)				\
-	R(TAO, 0x112000, 0x1000)	/* the PM slot */	\
-	R(FL2, 0x114000, 0x1000)				\
-	R(TAC, 0x115000, 0x1000)				\
-	R(CTX2, 0x116000, 0x1000)				\
-	R(PMB, 0x120000, 0xe0000)	/* GPU VA 0x300000.. */	\
-	R(K3, 0x200000, 0x1000)	/* 3D queue */			\
-	R(QS3, 0x201000, 0x1000)				\
-	R(CR3, 0x202000, 0x1000)				\
-	R(SE3, 0x203000, 0x4000)				\
-	R(ST3, 0x207000, 0x1000)				\
-	R(CMD3, 0x208000, 0x1000)				\
-	R(US3, 0x209000, 0x1000)				\
-	R(CTX3, 0x20a000, 0x1000)				\
-	R(S3A, 0x20b000, 0x1000)				\
-	R(S3B, 0x20c000, 0x1000)				\
-	R(FL3, 0x20e000, 0x1000)				\
-	R(F3C, 0x20f000, 0x1000)				\
-	R(PMH, 0x211000, 0x1000)				\
-	R(PTR2, 0x212000, 0x1000)	/* GPU VA 0x400000.. */	\
-	R(PTR0, 0x213000, 0x1000)	/* GPU VA 0.. */	\
-	R(VA0, 0x214000, 0x1000)				\
-	R(G3, 0x240000, 0x100000)	/* GPU VA 0x400000.. */
+	R(TS, 0xec000, 0x4000)	/* TempSensorRegister stand-in */
 
 #define PVR_APPLE_REGION_ENUM(n, o, s) PVR_APPLE_R_##n,
 enum pvr_apple_region { PVR_APPLE_REGIONS(PVR_APPLE_REGION_ENUM) PVR_APPLE_R_COUNT };
@@ -196,13 +154,85 @@ struct pvr_apple {
 	u32 ev_count[PVR_APPLE_NR_RINGS][8];
 	u32 ev_other[PVR_APPLE_NR_RINGS];
 
+	/* the pool (heap + PVR_APPLE_POOL_OFF), in 4 KiB units */
+	spinlock_t pool_lock;
+	DECLARE_BITMAP(pool_map, PVR_APPLE_POOL_UNITS);
+
+	/* queues and jobs: job_lock covers the work rings, the queues' lists */
+	spinlock_t job_lock;
+	u32 ring_wr[13];			/* host write index per channel */
+	struct list_head queues;
+	struct delayed_work done_work;		/* completions, as a fallback to EP 0x20 */
+	spinlock_t fence_lock;			/* every job fence's lock (outlives the queues) */
+
 	struct dentry *debugfs;
+	struct pvr_apple_test *test;
 	char result[1024];
 };
 
-/* boot parameters that differ between jobs (one firmware boot each) */
+/* a piece of the pool: CPU pointer and firmware VA */
+struct pvr_apple_obj {
+	void *cpu;
+	u32 va;
+	u32 size;
+};
+
+/*
+ * A firmware queue on one channel (ch = 3 * group + data master): the queue
+ * object, its state, command ring, scheduling entries, status, and the word
+ * the commands' completion records write their sequence number to.
+ */
+struct pvr_apple_queue {
+	struct pvr_apple *a;
+	struct list_head node;
+	u32 ch, dm;
+	struct pvr_apple_obj obj;
+	u32 cmd_idx;				/* commands submitted (the ring's write index) */
+	u32 seqno;
+	struct list_head pending;		/* submitted, in order; the first may be in flight */
+	struct pvr_apple_job *inflight;		/* the one command the firmware holds */
+	u64 fence_ctx;				/* one fence timeline per queue */
+};
+
+struct pvr_apple_job {
+	struct pvr_apple_queue *q;
+	struct pvr_apple_obj blk;		/* command, microsequence, their objects */
+	u32 rec_addr_off, rec_val_off;		/* the command's completion record */
+	u32 seqno;
+	struct dma_fence *fence;
+	struct list_head node;
+};
+
+/* raw register blocks of the Start ops (docs/gpu.md G4 / G6), filled by the caller */
+struct pvr_apple_cp_args {
+	u32 cdr[2];		/* StartCompute +4: RGX+0x4c0 / +0x4c8 */
+	u32 ca[18];		/* StartCompute +8: 0x498, 0x4b8, 0x480 (stream), six 0x11040 slots */
+	u32 ctx[36];		/* +0x2c context state: [0xe..0x10] -> 0x4a8 / 0x4ac / 0x4b0 */
+	bool fast;		/* FinalizeCompute's "already finished" path (no CDM stop / flush) */
+};
+
+struct pvr_apple_ta_args {
+	u32 a[8];		/* StartTA +4: 0xc78 0xc88 0xc98 0xc18 0xc08 0xc10 0xc20 0xc28 */
+	u64 b[28];		/* StartTA +8: 0xc90 0xc38 0xc40 0xc00 0xc80 0x428 0xcc0 ... 0x408 ... */
+};
+
+struct pvr_apple_3d_args {
+	u32 a[18];		/* Start3D +4: 0xf18 0xf80 0xf88 . 0x6d0 0x618 0x620 0x628 0xf38 ... */
+	u64 b[29];		/* Start3D +8: 0xfa8 ... 0xf28 0x6a0 . 0x6b0 0x6b8 ... 0x11080 x 6 */
+};
+
+/* a render target's firmware objects: free-list descriptor, PM slot, the TA's large object */
+struct pvr_apple_hwrt {
+	struct pvr_apple *a;
+	struct pvr_apple_obj obj;
+	u32 fl_va, slot_va, tbig_va, pmh_va;
+};
+
+/* boot parameters */
 struct pvr_apple_boot_cfg {
 	u64 code_base;		/* P+0x10 / P+0x18: PDS and USC execution base */
+	u64 ctx0_pc;		/* context 0's page catalog (PA) */
+	u64 fence_va;		/* GPU VA (context 0) the flush before a power-off writes to */
 	u32 perf_state;		/* Fender perf state the host holds (1..6) */
 	bool fw_power;		/* the firmware powers the GPU (P+0xd34 = 0xd3c = 1), as in G4 / G5 */
 };
@@ -233,7 +263,28 @@ int pvr_apple_kick(struct pvr_apple *a, u32 dm);
 void pvr_apple_drain_rings(struct pvr_apple *a);
 int pvr_apple_rgx_read(struct pvr_apple *a, u32 off, u32 *val);
 
+int pvr_apple_obj_alloc(struct pvr_apple *a, u32 size, struct pvr_apple_obj *o);
+void pvr_apple_obj_free(struct pvr_apple *a, struct pvr_apple_obj *o);
+
+struct pvr_apple_queue *pvr_apple_queue_create(struct pvr_apple *a, u32 group, u32 dm);
+void pvr_apple_queue_destroy(struct pvr_apple_queue *q);
+struct pvr_apple_job *pvr_apple_job_cp(struct pvr_apple_queue *q, const struct pvr_apple_cp_args *args);
+struct pvr_apple_job *pvr_apple_job_ta(struct pvr_apple_queue *q, const struct pvr_apple_ta_args *args,
+				       struct pvr_apple_hwrt *rt);
+struct pvr_apple_job *pvr_apple_job_3d(struct pvr_apple_queue *q, const struct pvr_apple_3d_args *args,
+				       struct pvr_apple_hwrt *rt);
+void pvr_apple_job_free(struct pvr_apple_job *job);
+struct dma_fence *pvr_apple_submit(struct pvr_apple_job *job);
+void pvr_apple_process_completions(struct pvr_apple *a);
+u32 pvr_apple_queue_word(struct pvr_apple_queue *q, u32 off);
+int pvr_apple_queue_debug(struct pvr_apple_queue *q, char *buf, size_t len);
+void pvr_apple_fail_all(struct pvr_apple *a, int err);
+struct pvr_apple_hwrt *pvr_apple_hwrt_create(struct pvr_apple *a, u64 fl_base, u32 fl_pages,
+					     u64 mlist, u64 mta, u64 vheap);
+void pvr_apple_hwrt_destroy(struct pvr_apple_hwrt *rt);
+
 void pvr_apple_debugfs_init(struct pvr_apple *a);
+void pvr_apple_test_fini(struct pvr_apple *a);
 
 #if IS_ENABLED(CONFIG_DRM_POWERVR_APPLE)
 bool pvr_apple_match(struct device *dev);
