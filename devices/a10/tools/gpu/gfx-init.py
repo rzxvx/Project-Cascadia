@@ -541,48 +541,7 @@ def clear_setup(w32, va, pa):
 # --clear uses the iPadOS capture's, --own its own
 BGEOT = {"eot_code": 0x2500, "eot_data": 0x3c040, "bg_texu": 0x2180, "bg_shader": 0x2200, "bg_uniform": 0x3c030}
 
-OWN_SRC = """#include <metal_stdlib>
-using namespace metal;
-vertex float4 tri_vs(uint vid [[vertex_id]]) {
-    float2 p[3] = { float2(-1, -1), float2(0, -1), float2(-1, 1) };   // the compiler puts these 6
-    return float4(p[vid], 0, 1);                                       // words in the common store
-}
-fragment float4 tri_fs() { return float4(1, 0, 0, 1); }
-fragment float4 bg_fs(constant float4 &c [[buffer(0)]]) { return c; }
-kernel void empty() {}
-"""
-
-
-def own_shaders():
-    """Our USC code, built by Xcode's offline compiler for applegpu_g9p from
-    OWN_SRC (build/gpu/isa/own.*; compiler output, not in git). Returns
-    {name: bytes}."""
-    import subprocess
-    import g9pbin
-    d = os.path.join(HERE, "../../build/gpu/isa")
-    os.makedirs(d, exist_ok=True)
-    src = os.path.join(d, "own.metal")
-    if not os.path.exists(src) or open(src).read() != OWN_SRC:
-        open(src, "w").write(OWN_SRC)
-    lib, tt = os.path.join(d, "own.metallib"), os.path.join(d, "own.g9p.metallib")
-    if not os.path.exists(tt) or os.path.getmtime(tt) < os.path.getmtime(src):
-        subprocess.run(["xcrun", "-sdk", "iphoneos", "metal", "-std=metal3.0", "-mios-version-min=16.4",
-                        "-c", src, "-o", lib[:-9] + ".air"], check=True)
-        subprocess.run(["xcrun", "-sdk", "iphoneos", "metallib", lib[:-9] + ".air", "-o", lib], check=True)
-        js = os.path.join(d, "own.mtlp-json")
-        fmt = '{ "pixel_format": "BGRA8Unorm" }'
-        open(js, "w").write(
-            '{ "libraries": { "paths": [ { "label": "lib", "path": "%s" } ] },\n'
-            '  "pipelines": { "render_pipelines": [\n'
-            '    { "vertex_function": "alias:lib#tri_vs", "fragment_function": "alias:lib#tri_fs", "color_attachments": [ %s ] },\n'
-            '    { "vertex_function": "alias:lib#tri_vs", "fragment_function": "alias:lib#bg_fs", "color_attachments": [ %s ] } ],\n'
-            '  "compute_pipelines": [ { "compute_function": "alias:lib#empty" } ] } }\n' % (lib, fmt, fmt))
-        subprocess.run(["xcrun", "metal-tt", "-arch", "applegpu_g9p", "-platform_version", "ios", "16.4", "16.4",
-                        lib, js, "-o", tt], check=True)
-    vs = g9pbin.kernels(tt, "__vertex")
-    fs = g9pbin.kernels(tt, "__fragment")
-    cs = g9pbin.kernels(tt, "__compute")
-    return {"tri_vs": vs[0], "tri_fs": fs[0], "bg_fs": fs[1], "empty": cs[0]}
+from g9pshaders import OWN_SRC, own_shaders  # noqa: E402  (our Metal source, compiled by Xcode's offline compiler)
 
 
 SCREEN_VA = 0x1000000      # --screen: GPU VA of the framebuffer

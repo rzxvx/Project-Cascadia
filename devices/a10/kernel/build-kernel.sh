@@ -3,14 +3,18 @@
 #
 # Source: Pauli1Go/HoolockLinux at the commit pinned in sources.env. Config:
 # HoolockLinux's config_16k (checked by sha256) + a10.fragment, olddefconfig.
-# Our changes to the tree: kernel/patches/*.patch (git apply, in order).
+# Our changes to the tree: kernel/patches/*.patch (git apply, in order), then
+# the new files of kernel/overlay/ copied over the tree (the GPU's Apple
+# backend, drivers/gpu/drm/imagination/pvr_apple*).
 #
 # Built like the A13 kernel: an Ubuntu 24.04 container of the host's own
 # architecture, clang cross-compiling (LLVM=1 ARCH=arm64), the source in a
 # Docker volume (the kernel tree needs a case-sensitive file system).
 #
 # Output: devices/a10/build/payload/{Image.gz,t8010-j171.dtb,t8010-j172.dtb},
-#         devices/a10/build/kernel.config
+#         devices/a10/build/payload/modules.tar.gz (lib/modules/<release>: the
+#         GPU driver and what it needs; ./cascadia a10 modules puts it on the
+#         iPad's root), devices/a10/build/kernel.config
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -55,6 +59,7 @@ docker run --rm \
       echo "apply $(basename "$p")"
       git apply "$p"
     done
+    [ ! -d /kernel/overlay ] || cp -R /kernel/overlay/. .
     cp /a10build/config_16k .config
     ./scripts/kconfig/merge_config.sh -m .config /kernel/a10.fragment >/dev/null
     make -s LLVM=1 ARCH=arm64 olddefconfig
@@ -65,10 +70,14 @@ docker run --rm \
       grep -qxF "$line" .config || { echo "fragment: not set: $line"; missing=1; }
     done < /kernel/a10.fragment
     [ "$missing" = 0 ] || echo "(see above: some fragment options did not survive olddefconfig)"
-    make -s -j"$JOBS" LLVM=1 ARCH=arm64 Image.gz \
+    make -s -j"$JOBS" LLVM=1 ARCH=arm64 Image.gz modules \
       apple/t8010-j171.dtb apple/t8010-j172.dtb
     cp arch/arm64/boot/Image.gz /out/
     cp arch/arm64/boot/dts/apple/t8010-j171.dtb arch/arm64/boot/dts/apple/t8010-j172.dtb /out/
+    rm -rf /tmp/mods
+    make -s LLVM=1 ARCH=arm64 INSTALL_MOD_PATH=/tmp/mods INSTALL_MOD_STRIP=1 modules_install
+    rm -f /tmp/mods/lib/modules/*/build
+    tar -C /tmp/mods -czf /out/modules.tar.gz lib
     cp .config /a10build/kernel.config
     chown "$HOST_IDS" /out/* /a10build/kernel.config
   '

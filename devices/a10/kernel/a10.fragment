@@ -84,3 +84,11 @@ CONFIG_LOGO_LINUX_CLUT224=y
 
 # missing firmware fails at once instead of waiting 60 s for a sysfs helper
 # CONFIG_FW_LOADER_USER_HELPER is not set
+
+# GPU (Cascadia G7): the powervr driver with the Apple GFX firmware backend,
+# as a module, so the driver can be reloaded over ssh while it is developed
+CONFIG_MODULE_UNLOAD=y
+# plain .ko files: busybox modprobe, no zstd in the build container
+# CONFIG_MODULE_COMPRESS is not set
+CONFIG_DRM_POWERVR=m
+CONFIG_DRM_POWERVR_APPLE=y

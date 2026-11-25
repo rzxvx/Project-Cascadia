@@ -1,0 +1,135 @@
+From: Project Cascadia <cascadia@invalid>
+Subject: [PATCH] drm/imagination: an Apple GFX firmware backend (T8010)
+
+The hooks for pvr_apple.c / pvr_apple_test.c (new files, from
+Cascadia's kernel/overlay): the compatible, probe / remove and runtime
+PM handed to the backend, the Kconfig option.
+---
+--- a/drivers/gpu/drm/imagination/Kconfig
++++ b/drivers/gpu/drm/imagination/Kconfig
+@@ -19,6 +19,18 @@
+ 
+ 	  If "M" is selected, the module will be called powervr.
+ 
++config DRM_POWERVR_APPLE
++	bool "Apple A10 (T8010) GPU with Apple's GFX firmware"
++	depends on DRM_POWERVR
++	depends on ARCH_APPLE || COMPILE_TEST
++	depends on APPLE_RTKIT
++	help
++	  The A10's GPU is a PowerVR Rogue core run by Apple's own GFX
++	  firmware (RTKit on the gfx-kf coprocessor) instead of Imagination's.
++	  This backend boots that firmware and talks to it. For now it offers
++	  self-tests in debugfs (pvr-apple/selftest); the powervr UAPI comes
++	  next.
++
+ config DRM_POWERVR_KUNIT_TEST
+ 	tristate "KUnit tests for the drm powervr driver" if !KUNIT_ALL_TESTS
+ 	depends on DRM_POWERVR && KUNIT
+--- a/drivers/gpu/drm/imagination/Makefile
++++ b/drivers/gpu/drm/imagination/Makefile
+@@ -29,6 +29,10 @@
+ 	pvr_vm.o \
+ 	pvr_vm_mips.o
+ 
++powervr-$(CONFIG_DRM_POWERVR_APPLE) += \
++	pvr_apple.o \
++	pvr_apple_test.o
++
+ powervr-$(CONFIG_DEBUG_FS) += \
+ 	pvr_debugfs.o
+ 
+--- a/drivers/gpu/drm/imagination/pvr_device.h
++++ b/drivers/gpu/drm/imagination/pvr_device.h
+@@ -113,6 +113,12 @@
+ 
+ 	/** @device_data: Pointer to platform-specific data. */
+ 	const struct pvr_device_data *device_data;
++
++	/**
++	 * @apple: Apple's GFX firmware backend (T8010), NULL on Imagination
++	 * firmware. See pvr_apple.h.
++	 */
++	struct pvr_apple *apple;
+ 
+ 	/** @regs_resource: Resource representing device control registers. */
+ 	struct resource *regs_resource;
+--- a/drivers/gpu/drm/imagination/pvr_drv.c
++++ b/drivers/gpu/drm/imagination/pvr_drv.c
+@@ -4,6 +4,7 @@
+ #include "pvr_context.h"
+ #include "pvr_debugfs.h"
+ #include "pvr_device.h"
++#include "pvr_apple.h"
+ #include "pvr_drv.h"
+ #include "pvr_free_list.h"
+ #include "pvr_gem.h"
+@@ -1414,6 +1415,10 @@
+ 	drm_dev = &pvr_dev->base;
+ 
+ 	platform_set_drvdata(plat_dev, drm_dev);
++
++	/* Apple's firmware: a backend of its own (pvr_apple.c) */
++	if (pvr_apple_match(&plat_dev->dev))
++		return pvr_apple_probe(pvr_dev);
+ 
+ 	err = pvr_power_domains_init(pvr_dev);
+ 	if (err)
+@@ -1467,6 +1472,11 @@
+ {
+ 	struct drm_device *drm_dev = platform_get_drvdata(plat_dev);
+ 	struct pvr_device *pvr_dev = to_pvr_device(drm_dev);
++
++	if (pvr_dev->apple) {
++		pvr_apple_remove(pvr_dev);
++		return;
++	}
+ 
+ 	WARN_ON(!xa_empty(&pvr_dev->job_ids));
+ 	WARN_ON(!xa_empty(&pvr_dev->free_list_ids));
+@@ -1492,7 +1502,13 @@
+ };
+ 
+ static const struct of_device_id dt_match[] = {
++#if IS_ENABLED(CONFIG_DRM_POWERVR_APPLE)
+ 	{
++		/* no power sequence ops: pvr_apple.c powers the GPU itself */
++		.compatible = "apple,t8010-gpu",
++	},
++#endif
++	{
+ 		.compatible = "thead,th1520-gpu",
+ 		.data = &pvr_device_data_pwrseq,
+ 	},
+--- a/drivers/gpu/drm/imagination/pvr_power.c
++++ b/drivers/gpu/drm/imagination/pvr_power.c
+@@ -374,6 +374,9 @@
+ 	struct pvr_device *pvr_dev = to_pvr_device(drm_dev);
+ 	int err = 0;
+ 	int idx;
++
++	if (pvr_dev->apple)
++		return 0;
+ 
+ 	if (!drm_dev_enter(drm_dev, &idx))
+ 		return -EIO;
+@@ -401,6 +404,9 @@
+ 	int idx;
+ 	int err;
+ 
++	if (pvr_dev->apple)
++		return 0;
++
+ 	if (!drm_dev_enter(drm_dev, &idx))
+ 		return -EIO;
+ 
+@@ -433,6 +439,9 @@
+ 	struct platform_device *plat_dev = to_platform_device(dev);
+ 	struct drm_device *drm_dev = platform_get_drvdata(plat_dev);
+ 	struct pvr_device *pvr_dev = to_pvr_device(drm_dev);
++
++	if (pvr_dev->apple)
++		return 0;
+ 
+ 	return pvr_power_is_idle(pvr_dev) ? 0 : -EBUSY;
+ }

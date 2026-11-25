@@ -1,7 +1,9 @@
 # GPU (Apple A10 / T8010, "G9P") -- plan and what is known
 
-Status 2026-11-24: **G0-G6 done (our own shaders and programs, the whole
-screen; the host owns the GPU's power state, P+0xd34 = 0xd3c = 0); the GPU work runs under Linux**
+Status 2026-11-25: **G0-G6 done (our own shaders and programs, the whole
+screen; the host owns the GPU's power state, P+0xd34 = 0xd3c = 0); G7's first
+milestone done: our kernel boots the GFX firmware and runs G5's store and
+G6's clear + triangle itself, no Python harness ("G7 progress"); the GPU work runs under Linux**
 (`GPU_BACKEND=linux`, see "GPU work under Linux"): core ID 0x011b0602 /
 revision 0x000d0a00, the GFX firmware boots and takes init data with the
 real RGX, stable. **The first job ran on the GPU** (G4 run 29-31): the
@@ -191,12 +193,110 @@ the firmware's blocks); the GPU runs the same work either way. First
 step, needed whatever the UAPI: the kernel boots the firmware itself
 (RTKit on the A7-IOP mailbox, init data, rings, GPU page tables, the host
 owning the power state) and runs G5's / G6's jobs without the Python
-harness. Check: a user program allocates, submits, waits.
+harness. Check: a user program allocates, submits, waits. **First
+milestone DONE 2026-11-25** ("G7 progress"): the powervr driver's Apple
+backend boots the firmware and passes the G5 store and the G6 clear +
+triangle from debugfs, readback checked. Next: the powervr UAPI on top.
 
 **G8 -- Mesa and the desktop (30 %).** Our G9P shader backend (decoded from
 `applegpu_g9p` output), Rogue state packing from upstream Mesa. Gallium (GL ES
 directly, as with the SGX) or Vulkan + Zink -- decided after G6. Yardstick:
 labwc and SuperTux on the GPU instead of pixman / llvmpipe.
+
+## G7 progress (2026-11-25): the kernel boots the firmware and runs the G5 / G6 jobs
+
+**Layout (the user's choice, 2026-11-25): a backend inside upstream
+`drivers/gpu/drm/imagination`**, so the powervr UAPI, GEM, `drm_gpuvm` +
+`pvr_mmu` (the same Rogue MMU format) and `drm_sched` stay upstream's and
+Mesa's pvr winsys needs no change. The Apple parts are new files; upstream
+files get small hooks only. In the tree:
+
+| where | what |
+|---|---|
+| `kernel/patches/0003-soc-apple-mailbox-...` | `apple,t8010-a7iop-mailbox`: a variant of the kernel's Apple mailbox driver for the A7-style IOP v2 (single 64-bit messages, endpoint in bits 63:56, payload 55:0; inbox +0x4008 status / +0x4010 send, outbox +0x4020 / +0x4038; at start: +0x4000 / +0xc00 = 0x1111, +0x4004 / +0xc04 = 0x1 then 0x1000, outbox status bit 0 = receive interrupt; polled send). The kernel's `apple-rtkit` runs over it unchanged (protocol 12). |
+| `kernel/patches/0004-arm64-dts-...` | `gfx_mbox` (gfx-kf 0x201d20000, IRQs 190 / 189 / **192 = recv-not-empty** / 191, `ps_gfx`) and `gpu` (`apple,t8010-gpu`: reg `rgx`, `fender`, `iop`; `mboxes`; `firmware-name`), enabled in `t8010-ipad7.dtsi` |
+| `kernel/patches/0005-drm-imagination-...` | the hooks: `CONFIG_DRM_POWERVR_APPLE`, the compatible, probe / remove and runtime PM handed to the backend, `pvr_device.apple` |
+| `kernel/overlay/drivers/gpu/drm/imagination/pvr_apple.[ch]` | the firmware layer: GFX power (`ps_gfx` through runtime PM), the image into a fresh 0xd8000 runtime region, RTKit (timebase, both remap windows, Fender run bit, `apple_rtkit_wake`, EP 0x20 / 0x21), the init data, the host-held perf state, the firmware -> host rings (drained on EP 0x20 type 0x42), kicks on EP 0x21 |
+| `kernel/overlay/.../pvr_apple_test.c` | the self-tests (debugfs `pvr-apple/selftest`), the G5 / G6 jobs in C |
+| `tools/gpu/g9p-selftest.py`, `g9pshaders.py` | our Metal source (`tri_vs`, `tri_fs`, `bg_fs`, `store_const`) through the offline compiler into `build/firmware/apple/g9p-selftest.bin` (compiler output, not in git); `gfx-init.py` takes `OWN_SRC` from `g9pshaders.py` now |
+| `./cascadia a10 modules [gpu]` (`tools/modules-sync.sh`) | the kernel's modules + the GFX firmware and the shader file onto the iPad's root; `gpu`: rebuild `powervr.ko` from the overlay in the kernel volume and reload it, no DFU boot |
+
+`build-kernel.sh` now copies `kernel/overlay/` over the tree after the
+patches and builds the modules (`build/payload/modules.tar.gz`); the
+fragment makes powervr a module (`CONFIG_DRM_POWERVR=m`,
+`CONFIG_DRM_POWERVR_APPLE=y`, `CONFIG_MODULE_UNLOAD=y`, no module
+compression: busybox modprobe). Runs used `EXTRA_BOOTARGS="mem=2944M
+cma=64M"` (the default 16 MiB CMA is untested with the 4 MiB heap).
+
+The backend is the harness, word for word: the same heap (4 MiB at firmware
+VA 0x80400000, regions and offsets as `gfx-init.py`'s), the same init data
+(the harness defaults + the "base" arguments of G4 runs 43-45 + `--power
+POWER_STATE=6 P+0xd34=0 P+0xd3c=0`), the same jobs (`--job --store`; `--job
+--kick-ta --pm --own --tri --clear --kick-3d --va0`), one cold firmware boot
+per test (the GFX domain is switched off in between; genpd shows `gfx` off).
+**The AP touches RGX only through `pvr_apple_rgx_read()`**, which refuses
+unless the host holds the power state (P+0xd34 = 0xd3c = 0) and Fender
+still reports it -- the firmware never powers the core down then.
+
+    modprobe powervr                     # autoloads at boot too; probe only maps, nothing is powered
+    mount -t debugfs none /sys/kernel/debug
+    echo store  > /sys/kernel/debug/pvr-apple/selftest    # G5
+    echo render > /sys/kernel/debug/pvr-apple/selftest    # G6: clear + triangle, 64x64
+    cat /sys/kernel/debug/pvr-apple/selftest
+    echo stop   > /sys/kernel/debug/pvr-apple/selftest    # firmware and GFX domain off
+
+**Results (2026-11-25, interrupt-driven mailbox, `store render store
+render` in a row):** every run PASS --
+
+    store: PASS -- STAMP+0 0x1 (1), +0x10 0xc0de (0xc0de); output cafe0000 abadbeef abadbeef abadbeef
+    render: PASS -- TA STAMP+0x20 0x1 +0x30 0x7a, 3D +0x40 0x1 +0x50 0x3d; pixels: 3072 background
+            ff4080bf, 1024 triangle ffff0000, 0 untouched, 0 other; px(0,0) ff4080bf px(0,63) ffff0000
+
+with RGX afterwards (read under the gate): MMU fault status 0xe150 = 0, CDM
+0x4a0 = 1, PDS / USC base 0x610 / 0x4008 = the code base, the tiling range at
+0x12e0, JONES_IDLE 0x8328 = 0x3f7f. The firmware takes the init data in
+~0.2 s (A+0x4 / +0x10 / +0x14 = 1); the job events ring shows one 0x1 per
+completed command and no 0x4 (fault).
+
+What it took, beyond porting:
+
+- **The mailbox's receive interrupt is the third of gfx-kf's four, 192**
+  (as SmartIO's IOP: its third, 213). With 191 RTKit timed out (-ETIME); a
+  polled run (`mbox_poll=1`, kept as a module parameter) proved the rest.
+- **FinalizeCompute's full path is needed when the host holds the power
+  state.** With the "already finished" fast path (the harness's, G4 run
+  29) and P+0xd34 = 0 the store job completed (both stamps, CDM done, no
+  fault) but the buffer stayed 0xabadbeef; with the firmware owning power
+  (`store-fw`, G5's way) the same job wrote 0xcafe0000. Probes
+  (`store_probe=1..4`, unmapped offsets): the kernel's and the DMA task's
+  PDS code and the USC code all fault when unmapped -- the USC task runs --
+  but an unmapped *buffer* raised no fault. **USC stores sit in a GPU cache
+  and reach the MMU only when it is flushed**: the firmware's flush before
+  each idle power-off (fw 0x17cb0) wrote them out when it owned power; with
+  the host holding it nothing did. FinalizeCompute's full path (CDM stop,
+  RGX 0x11f00 / 0x688 / 0x1720 / 0xe230) flushes: then the store lands and
+  the unmapped buffer faults (0xe154 = 0x50000, VA 0x5000000). Render was
+  never affected (the PBE writes the pixels, not a USC store). Now the
+  default (`cp_fast=0`).
+- Ruled out on the way: the perf state (1, 3, 6), P+0xd34 / +0xd3c mixed
+  (either one 1 without the host's power state: no job runs; with it: no
+  store), Fender's reset armed before the host's state request (+0x2058 = 1,
+  also +0x10 = 7), building the job before the init message. The RAM
+  stand-in for RGX (`rgx_standin=1`, debugfs `rgx-standin`, as the harness's
+  `P+0x8c0=%R`) shows the same RGX writes either way but one:
+  **RGX+0x6330 = 1** only when the firmware powers the core (not in the
+  public headers; reads back 0; writing it from the host changed nothing).
+  What it does: to check.
+- Fender is outside the GFX domain: +0x10 written once kept its value
+  across GFX power cycles.
+
+Open / next: the powervr UAPI on this backend (contexts and VMs through
+`pvr_vm` -- with 16 KiB CPU pages upstream's MMU code uses 16 KiB GPU pages,
+which iOS's kext also does on G9P, to check on the iPad --, translating
+geometry / fragment / compute jobs into the TA / 3D / CL commands, free
+lists, HWRT datasets, `drm_sched`); one firmware boot for many jobs; a
+firmware ping (the kernel's RTKit has no ping call); what the sgx node's
+IRQs 185-188 / 193 are for (nothing needs them so far).
 
 ## G2: the recipe (from the 22H355 kernelcache, 2026-11-23)
 
@@ -1637,6 +1737,8 @@ entries ending in the marker 0xdadadada): type 0x14 = sgx + 0x0, 0x20000 (RGX);
 | `tools/gpu/gfx-fw.sh` | extracts the GFX firmware from the 22H355 kernelcache into `build/firmware/apple/gfx-t8010-22H355.bin` (SHA-256 pinned; never in git) |
 | `tools/gpu/gpu-survey.py` | G1 run 3: read-only dump of PMGR perf-regs and Fender (0x0..0x4000) before and after Fender's state request, line by line |
 | `tools/gpu/gpu-id.py` | G1: PMGR GFX on, Fender words, Fender state 1, Rogue identity registers (`M1N1DEVICE=/dev/cu.usbmodem…1 build/proxyvenv/bin/python tools/gpu/gpu-id.py [--no-core] [--keep]`, from `devices/a10`) |
+| `kernel/overlay/.../pvr_apple*.c`, debugfs `pvr-apple/{selftest,fender,rgx-standin}` | G7: the kernel driver's Apple backend and its self-tests ("G7 progress") |
+| `tools/gpu/g9p-selftest.py` | G7: our USC code for the kernel's self-tests -> `build/firmware/apple/g9p-selftest.bin` |
 | `devices/a13/tools/gpu/isa/metal-isa.sh` | offline Metal compiler; for G9P run its steps with `-arch applegpu_g9p` |
 
 **Do not** (until shown safe): read RGX registers from a cold m1n1 -- even with

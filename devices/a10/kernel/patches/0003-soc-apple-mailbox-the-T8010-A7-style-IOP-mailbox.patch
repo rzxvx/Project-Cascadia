@@ -1,0 +1,201 @@
+From: Project Cascadia <cascadia@invalid>
+Subject: [PATCH] soc: apple: mailbox: the T8010 A7-style IOP mailbox
+
+The GFX coprocessor of the A10 (gfx-kf) is an A7-style IOP (v2): single
+64-bit messages with the endpoint in bits 63:56, both FIFOs set up through
+init / start registers, the receive interrupt enabled in the outbox
+status. A variant of the Apple mailbox driver, so apple-rtkit runs over it
+unchanged. Offsets and the init sequence from AppleA7IOP-AKFWrap-v2 in the
+22H355 kernelcache (Cascadia devices/a10/docs/gpu.md, G2 / G3).
+---
+--- a/drivers/soc/apple/mailbox.c
++++ b/drivers/soc/apple/mailbox.c
+@@ -14,6 +14,11 @@
+  * the first FIFO (A2I) is always used to transfer messages from the application
+  * processor (us) to the I/O processor and the second one (I2A) for the
+  * other direction.
++ *
++ * The older A7-style IOP (here: the T8010's GFX coprocessor, gfx-kf) has a
++ * mailbox with single 64-bit messages: the endpoint sits in bits 63:56 and
++ * the RTKit payload in bits 55:0. Its FIFOs are set up through two queue
++ * registers each, and the receive interrupt is enabled in the outbox status.
+  */
+ 
+ #include <linux/bitfield.h>
+@@ -72,6 +77,21 @@
+ #define APPLE_M3_MBOX_IRQ_I2A_EMPTY BIT(2)
+ #define APPLE_M3_MBOX_IRQ_I2A_NOT_EMPTY BIT(3)
+ 
++/* A7-style IOP v2 (T8010 gfx-kf), offsets in the IOP's register block */
++#define APPLE_A7IOP_MBOX_A2I_INIT 0x4000
++#define APPLE_A7IOP_MBOX_A2I_START 0x4004
++#define APPLE_A7IOP_MBOX_A2I_CONTROL 0x4008
++#define APPLE_A7IOP_MBOX_A2I_SEND 0x4010
++#define APPLE_A7IOP_MBOX_I2A_CONTROL 0x4020
++#define APPLE_A7IOP_MBOX_I2A_RECV 0x4038
++#define APPLE_A7IOP_MBOX_I2A_INIT 0x0c00
++#define APPLE_A7IOP_MBOX_I2A_START 0x0c04
++#define APPLE_A7IOP_MBOX_CONTROL_FULL BIT(16)
++#define APPLE_A7IOP_MBOX_CONTROL_EMPTY BIT(17)
++#define APPLE_A7IOP_MBOX_CONTROL_IRQ_ENABLE BIT(0)
++#define APPLE_A7IOP_MBOX_MSG_EP GENMASK_ULL(63, 56)
++#define APPLE_A7IOP_MBOX_MSG_PAYLOAD GENMASK_ULL(55, 0)
++
+ #define APPLE_MBOX_MSG1_OUTCNT GENMASK(56, 52)
+ #define APPLE_MBOX_MSG1_INCNT GENMASK(51, 48)
+ #define APPLE_MBOX_MSG1_OUTPTR GENMASK(47, 44)
+@@ -97,8 +117,34 @@
+ 	unsigned int irq_ack;
+ 	unsigned int irq_bit_recv_not_empty;
+ 	unsigned int irq_bit_send_empty;
++
++	/* A7-style IOP: one 64-bit word per message, polled send */
++	bool a7iop;
+ };
++
++static int apple_mbox_a7iop_send(struct apple_mbox *mbox,
++				 const struct apple_mbox_msg msg)
++{
++	unsigned long flags;
++	u32 ctrl;
++	int ret;
++
++	if (msg.msg0 & ~APPLE_A7IOP_MBOX_MSG_PAYLOAD || msg.msg1 > 0xff)
++		return -EINVAL;
+ 
++	spin_lock_irqsave(&mbox->tx_lock, flags);
++	ret = readl_poll_timeout_atomic(mbox->regs + mbox->hw->a2i_control,
++					ctrl, !(ctrl & mbox->hw->control_full),
++					10, APPLE_MBOX_TX_TIMEOUT * 1000);
++	if (!ret)
++		writeq_relaxed(msg.msg0 |
++			       FIELD_PREP(APPLE_A7IOP_MBOX_MSG_EP, msg.msg1),
++			       mbox->regs + mbox->hw->a2i_send0);
++	spin_unlock_irqrestore(&mbox->tx_lock, flags);
++
++	return ret;
++}
++
+ int apple_mbox_send(struct apple_mbox *mbox, const struct apple_mbox_msg msg,
+ 		    bool atomic)
+ {
+@@ -107,6 +153,9 @@
+ 	u32 mbox_ctrl;
+ 	long t;
+ 
++	if (mbox->hw->a7iop)
++		return apple_mbox_a7iop_send(mbox, msg);
++
+ 	spin_lock_irqsave(&mbox->tx_lock, flags);
+ 	mbox_ctrl = readl_relaxed(mbox->regs + mbox->hw->a2i_control);
+ 
+@@ -190,6 +239,17 @@
+ 	u32 mbox_ctrl = readl_relaxed(mbox->regs + mbox->hw->i2a_control);
+ 
+ 	while (!(mbox_ctrl & mbox->hw->control_empty)) {
++		if (mbox->hw->a7iop) {
++			u64 v = readq_relaxed(mbox->regs + mbox->hw->i2a_recv0);
++
++			msg.msg0 = FIELD_GET(APPLE_A7IOP_MBOX_MSG_PAYLOAD, v);
++			msg.msg1 = FIELD_GET(APPLE_A7IOP_MBOX_MSG_EP, v);
++			mbox->rx(mbox, msg, mbox->cookie);
++			ret++;
++			mbox_ctrl = readl_relaxed(mbox->regs +
++						  mbox->hw->i2a_control);
++			continue;
++		}
+ 		msg.msg0 = readq_relaxed(mbox->regs + mbox->hw->i2a_recv0);
+ 		msg.msg1 = FIELD_GET(
+ 			APPLE_MBOX_MSG1_MSG,
+@@ -265,6 +325,24 @@
+ 			       mbox->regs + mbox->hw->irq_enable);
+ 	}
+ 
++	if (mbox->hw->a7iop) {
++		/*
++		 * Both FIFOs: init, then start (0x1, then 0x1000), as the
++		 * AppleA7IOP-AKFWrap-v2 kext does; without the start the
++		 * coprocessor answers its polled boot handshake and then sees
++		 * no further message. Then the receive interrupt.
++		 */
++		writel(0x1111, mbox->regs + APPLE_A7IOP_MBOX_A2I_INIT);
++		writel(0x1111, mbox->regs + APPLE_A7IOP_MBOX_I2A_INIT);
++		writel(0x1, mbox->regs + APPLE_A7IOP_MBOX_A2I_START);
++		writel(0x1, mbox->regs + APPLE_A7IOP_MBOX_I2A_START);
++		writel(0x1000, mbox->regs + APPLE_A7IOP_MBOX_A2I_START);
++		writel(0x1000, mbox->regs + APPLE_A7IOP_MBOX_I2A_START);
++		writel(readl(mbox->regs + mbox->hw->i2a_control) |
++			       APPLE_A7IOP_MBOX_CONTROL_IRQ_ENABLE,
++		       mbox->regs + mbox->hw->i2a_control);
++	}
++
+ 	enable_irq(mbox->irq_recv_not_empty);
+ 	mbox->active = true;
+ 	return 0;
+@@ -356,8 +434,10 @@
+ 	if (mbox->irq_recv_not_empty < 0)
+ 		return -ENODEV;
+ 
+-	mbox->irq_send_empty = platform_get_irq_byname(pdev, "send-empty");
+-	if (mbox->irq_send_empty < 0)
++	/* the A7-style IOP's send path polls: no send-empty interrupt */
++	mbox->irq_send_empty = mbox->hw->a7iop ? -ENXIO :
++		platform_get_irq_byname(pdev, "send-empty");
++	if (mbox->irq_send_empty < 0 && !mbox->hw->a7iop)
+ 		return -ENODEV;
+ 
+ 	spin_lock_init(&mbox->rx_lock);
+@@ -374,15 +454,19 @@
+ 	if (ret)
+ 		return ret;
+ 
+-	irqname = devm_kasprintf(dev, GFP_KERNEL, "%s-send", dev_name(dev));
+-	if (!irqname)
+-		return -ENOMEM;
++	if (!mbox->hw->a7iop) {
++		irqname = devm_kasprintf(dev, GFP_KERNEL, "%s-send",
++					 dev_name(dev));
++		if (!irqname)
++			return -ENOMEM;
+ 
+-	ret = devm_request_irq(dev, mbox->irq_send_empty,
+-			       apple_mbox_send_empty_irq,
+-			       IRQF_NO_AUTOEN | IRQF_NO_SUSPEND, irqname, mbox);
+-	if (ret)
+-		return ret;
++		ret = devm_request_irq(dev, mbox->irq_send_empty,
++				       apple_mbox_send_empty_irq,
++				       IRQF_NO_AUTOEN | IRQF_NO_SUSPEND,
++				       irqname, mbox);
++		if (ret)
++			return ret;
++	}
+ 
+ 	ret = devm_pm_runtime_enable(dev);
+ 	if (ret)
+@@ -441,10 +525,25 @@
+ 	.irq_bit_send_empty = APPLE_M3_MBOX_IRQ_A2I_EMPTY,
+ };
+ 
++static const struct apple_mbox_hw apple_mbox_a7iop_hw = {
++	.control_full = APPLE_A7IOP_MBOX_CONTROL_FULL,
++	.control_empty = APPLE_A7IOP_MBOX_CONTROL_EMPTY,
++
++	.a2i_control = APPLE_A7IOP_MBOX_A2I_CONTROL,
++	.a2i_send0 = APPLE_A7IOP_MBOX_A2I_SEND,
++
++	.i2a_control = APPLE_A7IOP_MBOX_I2A_CONTROL,
++	.i2a_recv0 = APPLE_A7IOP_MBOX_I2A_RECV,
++
++	.has_irq_controls = false,
++	.a7iop = true,
++};
++
+ static const struct of_device_id apple_mbox_of_match[] = {
+ 	{ .compatible = "apple,asc-mailbox-v4", .data = &apple_mbox_asc_hw },
+ 	{ .compatible = "apple,t8015-asc-mailbox", .data = &apple_mbox_t8015_hw },
+ 	{ .compatible = "apple,m3-mailbox-v2", .data = &apple_mbox_m3_hw },
++	{ .compatible = "apple,t8010-a7iop-mailbox", .data = &apple_mbox_a7iop_hw },
+ 	{}
+ };
+ MODULE_DEVICE_TABLE(of, apple_mbox_of_match);

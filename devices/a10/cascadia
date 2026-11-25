@@ -36,6 +36,8 @@
 #   ./cascadia a10 nvme status     the gate and the NVMe as the iPad sees them
 #   ./cascadia a10 rootfs sync     the running root up to this tree: rootfs/packages
 #                                  (apk) and rootfs/overlay (the desktop, a10-init)
+#   ./cascadia a10 modules [gpu]   the kernel's modules + the GPU's firmware files onto
+#                                  the running root; gpu: rebuild and reload powervr.ko
 #
 # The boot chain is open source end to end: gaster (checkm8), hBootPatcher,
 # m1n1 -- no checkra1n, no PongoOS. Pinned sources: sources.env.
@@ -372,6 +374,7 @@ case "$cmd" in
     rootfs)
         [ "${1:-}" = sync ] || fail "rootfs what? sync (to build one: ./cascadia a10 build rootfs)"
         exec bash tools/rootfs-sync.sh ;;
+    modules) exec bash tools/modules-sync.sh "$@" ;;
     pack)   cmd_pack ;;
     boot)   cmd_boot "$@" ;;
     ''|-h|--help|help) awk 'NR>1 && /^#/ {sub(/^# ?/, ""); print; next} NR>1 {exit}' "$A10/cascadia" ;;

@@ -1,0 +1,70 @@
+From: Project Cascadia <cascadia@invalid>
+Subject: [PATCH] arm64: dts: apple: t8010: the GPU and its coprocessor mailbox
+
+The Rogue core (rgx), Fender and the gfx-kf IOP from the iPad 7's ADT
+(sgx, gfx-kf), enabled on the iPad 7.
+---
+--- a/arch/arm64/boot/dts/apple/t8010.dtsi
++++ b/arch/arm64/boot/dts/apple/t8010.dtsi
+@@ -260,6 +260,47 @@
+ 			status = "disabled";
+ 		};
+ 
++		/*
++		 * The GPU: a PowerVR Rogue core ("rgx") driven by Apple's GFX firmware
++		 * on the gfx-kf coprocessor (an A7-style IOP); Fender is the GPU-side
++		 * power and configuration block both share. The coprocessor's
++		 * mailbox sits in its register block, which the GPU driver also uses
++		 * (remap window, timebase); the firmware image comes from the host.
++		 */
++		gfx_mbox: mailbox@201d20000 {
++			compatible = "apple,t8010-a7iop-mailbox";
++			reg = <0x2 0x01d20000 0x0 0x10000>;
++			interrupt-parent = <&aic>;
++			interrupts = <AIC_IRQ 190 IRQ_TYPE_LEVEL_HIGH>,
++				     <AIC_IRQ 189 IRQ_TYPE_LEVEL_HIGH>,
++				     <AIC_IRQ 192 IRQ_TYPE_LEVEL_HIGH>,
++				     <AIC_IRQ 191 IRQ_TYPE_LEVEL_HIGH>;
++			/* the outbox's not-empty is the third, as for SmartIO's IOP */
++			interrupt-names = "send-empty", "send-not-empty",
++					  "recv-not-empty", "recv-empty";
++			power-domains = <&ps_gfx>;
++			#mbox-cells = <0>;
++			status = "disabled";
++		};
++
++		gpu: gpu@201000000 {
++			compatible = "apple,t8010-gpu";
++			reg = <0x2 0x01000000 0x0 0x100000>,
++			      <0x2 0x01d00000 0x0 0x20000>,
++			      <0x2 0x01d20000 0x0 0x10000>;
++			reg-names = "rgx", "fender", "iop";
++			interrupt-parent = <&aic>;
++			interrupts = <AIC_IRQ 185 IRQ_TYPE_LEVEL_HIGH>,
++				     <AIC_IRQ 186 IRQ_TYPE_LEVEL_HIGH>,
++				     <AIC_IRQ 187 IRQ_TYPE_LEVEL_HIGH>,
++				     <AIC_IRQ 188 IRQ_TYPE_LEVEL_HIGH>,
++				     <AIC_IRQ 193 IRQ_TYPE_LEVEL_HIGH>;
++			power-domains = <&ps_gfx>;
++			mboxes = <&gfx_mbox>;
++			firmware-name = "apple/gfx-t8010-22H355.bin";
++			status = "disabled";
++		};
++
+ 		sio: dma-controller@20ae00000 {
+ 			compatible = "apple,t8010-sio";
+ 			reg = <0x2 0x0ae00000 0x0 0x10000>,
+--- a/arch/arm64/boot/dts/apple/t8010-ipad7.dtsi
++++ b/arch/arm64/boot/dts/apple/t8010-ipad7.dtsi
+@@ -237,3 +237,11 @@
+ &sio {
+ 	status = "okay";
+ };
++
++&gfx_mbox {
++	status = "okay";
++};
++
++&gpu {
++	status = "okay";
++};
