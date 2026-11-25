@@ -21,6 +21,7 @@
 #include <linux/iopoll.h>
 #include <linux/module.h>
 #include <linux/of.h>
+#include <linux/of_address.h>
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
 #include <linux/soc/apple/rtkit.h>
@@ -31,6 +32,7 @@
 #include "pvr_context.h"
 #include "pvr_device.h"
 #include "pvr_gem.h"
+#include "pvr_mmu.h"
 #include "pvr_stream.h"
 #include "pvr_vm.h"
 
@@ -599,11 +601,67 @@ void pvr_apple_vm_activate(struct pvr_apple *a, struct pvr_vm_context *vm)
 	spin_unlock_irqrestore(&a->ring_lock, flags);
 }
 
+/* the display at PVR_APPLE_SCREEN_VA: straight into the page tables (no GEM object) */
+static int pvr_apple_vm_map_screen(struct pvr_apple *a, struct pvr_vm_context *vm)
+{
+	struct pvr_mmu_op_context *op;
+	int err;
+
+	if (!a->fb_size)
+		return 0;
+	op = pvr_mmu_op_context_create(pvr_vm_get_mmu_context(vm), &a->fb_sgt, 0, a->fb_size);
+	if (IS_ERR(op))
+		return PTR_ERR(op);
+	err = pvr_mmu_map(op, a->fb_size, DRM_PVR_BO_BYPASS_DEVICE_CACHE, PVR_APPLE_SCREEN_VA);
+	pvr_mmu_op_context_destroy(op);
+	return err;
+}
+
+static void pvr_apple_vm_unmap_screen(struct pvr_apple *a, struct pvr_vm_context *vm)
+{
+	struct pvr_mmu_op_context *op;
+
+	if (!a->fb_size)
+		return;
+	op = pvr_mmu_op_context_create(pvr_vm_get_mmu_context(vm), NULL, 0, 0);
+	if (IS_ERR(op))
+		return;
+	pvr_mmu_unmap(op, PVR_APPLE_SCREEN_VA, a->fb_size);
+	pvr_mmu_op_context_destroy(op);
+}
+
+/* what every VM maps: the reserved object, its page at VA 0, the display */
 int pvr_apple_vm_map_fence(struct pvr_apple *a, struct pvr_vm_context *vm)
 {
 	return pvr_vm_map(vm, a->fence_bo, 0, PVR_APPLE_FENCE_VA, PVR_APPLE_RESERVED_SIZE) ?:
 	       pvr_vm_map(vm, a->fence_bo, PVR_APPLE_RESERVED_SIZE - PVR_APPLE_VA0_SIZE, 0,
-			  PVR_APPLE_VA0_SIZE);
+			  PVR_APPLE_VA0_SIZE) ?:
+	       pvr_apple_vm_map_screen(a, vm);
+}
+
+/* the display iBoot left: simpledrm's framebuffer (/chosen/framebuffer) */
+static void pvr_apple_find_screen(struct pvr_apple *a)
+{
+	struct device_node *np = of_find_compatible_node(NULL, NULL, "simple-framebuffer");
+	struct resource r;
+
+	if (!np)
+		return;
+	if (!of_address_to_resource(np, 0, &r) &&
+	    !of_property_read_u32(np, "width", &a->fb_width) &&
+	    !of_property_read_u32(np, "height", &a->fb_height) &&
+	    !of_property_read_u32(np, "stride", &a->fb_stride) &&
+	    IS_ALIGNED(r.start, SZ_16K) &&
+	    resource_size(&r) <= PVR_APPLE_HEAP_TAIL - PVR_APPLE_RESERVED_SIZE &&
+	    !sg_alloc_table(&a->fb_sgt, 1, GFP_KERNEL)) {
+		a->fb_pa = r.start;
+		a->fb_size = ALIGN(resource_size(&r), SZ_16K);
+		sg_dma_address(a->fb_sgt.sgl) = a->fb_pa;
+		sg_dma_len(a->fb_sgt.sgl) = a->fb_size;
+		dev_info(a->dev, "display %ux%u, stride %u, at GPU VA %#llx in every VM\n",
+			 a->fb_width, a->fb_height, a->fb_stride, PVR_APPLE_SCREEN_VA);
+	}
+	of_node_put(np);
 }
 
 /* vm goes away: it must not stay behind context 0 */
@@ -611,6 +669,7 @@ void pvr_apple_vm_release(struct pvr_apple *a, struct pvr_vm_context *vm)
 {
 	unsigned long flags;
 
+	pvr_apple_vm_unmap_screen(a, vm);
 	spin_lock_irqsave(&a->ring_lock, flags);
 	if (a->active_vm == vm) {
 		a->active_vm = NULL;
@@ -897,6 +956,7 @@ int pvr_apple_probe(struct pvr_device *pvr_dev)
 		release_firmware(a->fw);
 		return err;
 	}
+	pvr_apple_find_screen(a);
 	a->fence_bo = pvr_gem_object_create(pvr_dev, PVR_APPLE_RESERVED_SIZE, 0);
 	err = PTR_ERR_OR_ZERO(a->fence_bo);
 	if (!err)
@@ -948,6 +1008,8 @@ void pvr_apple_remove(struct pvr_device *pvr_dev)
 	pvr_dev->kernel_vm_ctx = NULL;
 	if (a->fence_bo)
 		pvr_gem_object_put(a->fence_bo);
+	if (a->fb_size)
+		sg_free_table(&a->fb_sgt);
 	release_firmware(a->shaders);
 	release_firmware(a->fw);
 	pvr_dev->apple = NULL;

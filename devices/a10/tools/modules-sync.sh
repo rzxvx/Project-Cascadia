@@ -6,9 +6,10 @@
 #   ./cascadia a10 modules        build/payload/modules.tar.gz (build-kernel.sh)
 #                                 -> /lib/modules/<release>; the GFX firmware and
 #                                 the self-test's shaders -> /lib/firmware/apple
-#   ./cascadia a10 modules gpu    rebuild just powervr.ko from kernel/overlay in
-#                                 the kernel volume (the tree of the last full
-#                                 build, patches already in), push it, reload it
+#   ./cascadia a10 modules gpu    rebuild just powervr.ko in the kernel volume
+#                                 (the tree of the last full build): the
+#                                 patches' drm/imagination parts re-applied, the
+#                                 overlay on top; push it, reload it
 #
 # The running kernel must be the one built with these modules (same release,
 # same config): after build-kernel.sh, pack and boot it first.
@@ -49,6 +50,13 @@ gpu)
         apt-get install -y -qq --no-install-recommends clang lld llvm make flex bison bc libssl-dev \
           libelf-dev python3 kmod git ca-certificates >/dev/null 2>&1
         cd /src/linux
+        git config --global --add safe.directory "*"
+        # the driver as the patches have it now (their imagination/ parts), then the overlay
+        git checkout -q -- drivers/gpu/drm/imagination
+        for p in /kernel/patches/*.patch; do
+            grep -q "^+++ b/drivers/gpu/drm/imagination/" "$p" &&
+                git apply --include="drivers/gpu/drm/imagination/*" "$p"
+        done
         cp -R /kernel/overlay/. .
         # the release string of the running kernel (vermagic must match it)
         make -s LLVM=1 ARCH=arm64 KERNELRELEASE="$REL" prepare

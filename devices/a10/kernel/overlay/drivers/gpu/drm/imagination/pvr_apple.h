@@ -16,6 +16,7 @@
 #include <linux/bitmap.h>
 #include <linux/errno.h>
 #include <linux/list.h>
+#include <linux/scatterlist.h>
 #include <linux/sizes.h>
 #include <linux/mutex.h>
 #include <linux/spinlock.h>
@@ -85,6 +86,14 @@ struct pvr_gem_object;
 #define PVR_APPLE_RESERVED_SIZE	SZ_128K
 #define PVR_APPLE_FENCE_VA	(0x8000000000ULL + SZ_128G - PVR_APPLE_RESERVED_SIZE)
 /*
+ * Below that, the display: the framebuffer iBoot left (simpledrm's,
+ * /chosen/framebuffer) mapped into every VM at PVR_APPLE_SCREEN_VA, so a
+ * client draws straight onto the screen (up to 32 MiB - 128 KiB of it). The
+ * general heap is reported PVR_APPLE_HEAP_TAIL short.
+ */
+#define PVR_APPLE_HEAP_TAIL	SZ_32M
+#define PVR_APPLE_SCREEN_VA	(0x8000000000ULL + SZ_128G - PVR_APPLE_HEAP_TAIL)
+/*
  * The rest of that object: StartCompute's six scratch slots (0x11040),
  * StartTA's six (0x11030: the TA stores a VDM stream in one), a default CDM
  * context state, the TA's two buffers (0x428 / 0xcc0, read far beyond:
@@ -116,11 +125,11 @@ struct pvr_gem_object;
  */
 #define PVR_APPLE_VA0_SIZE	SZ_16K
 
-/* ranges userspace may not map: the reserved object, the page at VA 0 */
+/* ranges userspace may not map: the display and the reserved object, the page at VA 0 */
 static inline bool pvr_apple_va_reserved(u64 addr, u64 size)
 {
-	return (addr < PVR_APPLE_FENCE_VA + PVR_APPLE_RESERVED_SIZE &&
-		addr + size > PVR_APPLE_FENCE_VA) || addr < PVR_APPLE_VA0_SIZE;
+	return (addr < PVR_APPLE_SCREEN_VA + PVR_APPLE_HEAP_TAIL &&
+		addr + size > PVR_APPLE_SCREEN_VA) || addr < PVR_APPLE_VA0_SIZE;
 }
 
 #define PVR_APPLE_POOL_UNITS	((PVR_APPLE_HEAP_SIZE - PVR_APPLE_POOL_OFF) / PVR_APPLE_POOL_UNIT)
@@ -224,6 +233,10 @@ struct pvr_apple {
 	struct pvr_vm_context *active_vm;	/* ring_lock; changed only with no job in the firmware */
 	struct pvr_vm_context *default_vm;	/* jobs' VM unless the caller sets one */
 	struct pvr_gem_object *fence_bo;	/* mapped at PVR_APPLE_FENCE_VA in every VM */
+	/* the display (no struct pages behind it: a DMA-only scatterlist) */
+	struct sg_table fb_sgt;
+	u64 fb_pa, fb_size;
+	u32 fb_width, fb_height, fb_stride;
 
 	/* the running firmware (pvr_apple_start): its boot number, the queues */
 	bool running;
