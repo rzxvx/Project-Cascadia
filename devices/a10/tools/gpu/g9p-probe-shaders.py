@@ -54,11 +54,21 @@ kernel void tgw3(device const uint4 *tiles [[buffer(0)]], device uchar *arena [[
     uint4 r = tiles[tile];
     ((device uint *)(arena + r.x))[lid] = (tile << 16) | lid;
 }
+kernel void fma(device float *out [[buffer(0)]], uint tg [[threadgroup_position_in_grid]],
+                uint tl [[thread_index_in_threadgroup]]) {
+    float a = float(tl) * 1e-3f, b = 1.0001f, c = 0.9999f, d = float(tg) * 1e-4f;
+    float e = a + 1, f = d + 2, g = a * 0.5f, h = d * 0.25f;
+    for (uint i = 0; i < 1024; i++) {     // 8 independent FMA chains, 8192 FMAs a thread
+        a = fma(a, b, c); d = fma(d, c, b); e = fma(e, b, c); f = fma(f, c, b);
+        g = fma(g, b, c); h = fma(h, c, b); b = fma(b, 0.99999f, 1e-6f); c = fma(c, 1.00001f, -1e-6f);
+    }
+    out[tg * 128 + tl] = a + d + e + f + g + h;
+}
 kernel void load(device uint *a [[buffer(0)]], uint tid [[thread_position_in_grid]]) {
     a[256 + tid] = a[tid] * 3u + 1u;
 }
 """
-code = g9pshaders.build("probe1", SRC, ["store_const", "ids", "two", "four", "load", "tg1", "tg3", "tpg", "tgw", "tgw2", "tgw3"])
+code = g9pshaders.build("probe1", SRC, ["store_const", "ids", "two", "four", "load", "tg1", "tg3", "tpg", "tgw", "tgw2", "tgw3", "fma"])
 out = os.path.join(HERE, "../../build/gpu/g9p-probe.bin")
 g9pshaders.pack(code, out)
 for k, c in code.items():

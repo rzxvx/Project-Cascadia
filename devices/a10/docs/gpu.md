@@ -635,15 +635,20 @@ is ~1800 quads, ~27000 (quad, tile) entries.
   tiles it covers wholly are left out). SuperTux's title level has nothing
   of the kind: its 1280x720 background has transparent texels (the sky
   gradient, ~1500 one-row fills, shows through).
-- **The workgroups run one at a time**: `g9p2d-test stress 20 20 S` takes
-  0.42 ms for 1 tile, 0.45 for 2, 0.58-0.67 for 8, 1.2 for 32, 3.7 for 128,
-  13.5 for 512 and 53-54 ms for 2048 tiles -- ~25 us more per tile from the
-  second on, whether each tile has its own kernel record or all share one
-  (K3). Six clusters (CORE_ID N = 6, to check) would run six at once. The
-  init data's compute unit mask (P+0x1ac4 = 1, 3 or 0x3f) changes nothing.
-  Why only one runs -- cluster power with the firmware's power path off
-  (P+0xd34 = 0), a CDM / USC setting, the fence bit -- is open, and is the
-  largest gain left in this path.
+- **The GPU is busy, not idle: ~1.7 G (pixel, quad) evaluations a second
+  is the kernel's rate.** `g9p2d-test stress 20 20 S` takes ~25 us more per
+  64x32 tile (21 quads) once there are a handful of tiles, with workgroups of
+  32, 64 or 128 threads alike (with 32 threads, 2 and 8 tiles take the same
+  time: they run side by side), with the quads read through the constant
+  address space or not. Peak arithmetic for comparison
+  (`g9p-probe fma`: 8 independent FMA chains, 8192 FMAs a thread, 128-thread
+  groups, a fence record at the end): +1009 us from 96 to 192 groups =
+  ~100 G FMA/s, ~200 GFLOPS fp32 -- all six clusters at work (one could not
+  do a third of it). So the compositor spends ~60 instruction slots per
+  pixel per quad (unpacking, the inside test, the blend, the loop), where the
+  3D pipeline's rasterizer, texture unit and on-chip blending would do most
+  of that in fixed function. The init data's compute unit mask (P+0x1ac4 =
+  1, 3 or 0x3f) changes nothing.
 
 ### g9p2d (`tools/g9p2d/`)
 
@@ -672,7 +677,9 @@ textured quad, one full-screen textured quad alone 10.3 ms; 100116 of
 when the GPU's DRM device goes away; the script starts the desktop again if
 it was running.
 
-Open: why the workgroups run one at a time (above); thin stripes seen in
+Open: fewer instructions per (pixel, quad) -- half precision, smaller
+tiles (34% coverage), drawing the game at its own size and scaling once --
+or the 3D path; thin stripes seen in
 SuperTux, mostly at scene changes -- tearing (the display is drawn while it
 is scanned out: no vblank with simpledrm) or something else, to check; one
 SuperTux run ended in SIGBUS after ~2450 frames (later runs of 11000+

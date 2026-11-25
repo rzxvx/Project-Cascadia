@@ -18,6 +18,7 @@
  *     dump=N          print buffer words that changed (default all, up to N per buffer)
  *     multi=N         one DMA record, then N kernel records whose threadgroup
  *                     position is their index (from their own PDS data)
+ *     tail=1          end the stream (not with multi=) with a DOUTC fence record
  *     cs=N            dwords the DMA loads (default 32, up to 64)
  *     n=N             N DMA + kernel record pairs; pair i's table is the base
  *                     table with dwords 0 / 1 (buffer 0) moved by 0x800 i
@@ -116,7 +117,7 @@ int main(int argc, char **argv)
 	struct drm_pvr_heap heaps[DRM_PVR_HEAP_COUNT];
 	struct drm_pvr_ioctl_create_context_args ctx = { 0 };
 	uint32_t x = 0, y = 0, z = 0, w6 = 0x40000001, w7 = 0, k0 = 0x2103, temps = 0x10;
-	uint32_t kd2 = 0x90000000, kd3 = 0x80000000, dump = 64, n = 1, cs = 32, multi = 0, code_h, data_h, *code, *data, *tab, i, b;
+	uint32_t kd2 = 0x90000000, kd3 = 0x80000000, dump = 64, n = 1, cs = 32, multi = 0, tail = 0, code_h, data_h, *code, *data, *tab, i, b;
 	uint64_t pds, usc, data_va, state[1 + 7] = { 0 }, cmd[5];
 	const char *file = "/run/g9p-probe.bin";
 	struct timespec t0, t1;
@@ -194,6 +195,7 @@ int main(int argc, char **argv)
 		else if (!strncmp(a, "dump=", 5)) dump = U(v);
 		else if (!strncmp(a, "n=", 2)) n = U(v);
 		else if (!strncmp(a, "multi=", 6)) multi = U(v);
+		else if (!strncmp(a, "tail=", 5)) tail = U(v);
 		else if (!strncmp(a, "cs=", 3)) cs = U(v);
 		else if (!strncmp(a, "file=", 5) || !strncmp(a, "kp=", 3)) ;
 		else if (!strncmp(a, "tab=", 4)) {
@@ -247,6 +249,16 @@ int main(int argc, char **argv)
 		memcpy(data + 16 * i, rec, sizeof(rec));
 	}
 	data[16 * n] = 0x80000000;
+	if (tail) {
+		/* end the stream with a fence record (DOUTC, as iPadOS's jobs end) */
+		static const uint32_t fpds[] = { 0xc2c00002, 0xd3000000, 0xf0000005, 0xd3000000 };
+		const uint32_t frec[] = { 0xc0000003, 0x23c0 | 0x4, 0x2380, 0, 0, 0, 0x40000000, 0 };
+
+		memcpy(code + 0x2380 / 4, fpds, sizeof(fpds));
+		memset(code + 0x23c0 / 4, 0, 16);
+		memcpy(data + 16 * n, frec, sizeof(frec));
+		data[16 * n + 8] = 0x80000000;
+	}
 	if (multi) {
 		/* one DMA record, then `multi` kernel records; kernel i's PDS data
 		 * {DOUTU, 0x90000000, 0x80000000, i} at code + 0x8000 + 0x20 i, its
