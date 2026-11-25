@@ -65,8 +65,11 @@ gpu)
         chown "$HOST_IDS" /out/powervr.ko'
     firmware
     echo "==> reload powervr"
-    ipad "rmmod powervr 2>/dev/null; cat > /lib/modules/$rel/kernel/drivers/gpu/drm/imagination/powervr.ko && sync &&
-          modprobe powervr && dmesg | grep -i -E 'powervr|pvr|gfx|rtkit' | tail -8" < "$A10/build/payload/powervr.ko"
+    # labwc (wlroots) exits when the GPU's DRM device goes away: started again after
+    ipad "desk=\$(pidof labwc); rmmod powervr 2>/dev/null
+          cat > /lib/modules/$rel/kernel/drivers/gpu/drm/imagination/powervr.ko && sync &&
+          modprobe powervr && dmesg | grep -i -E 'powervr|pvr|gfx|rtkit' | tail -8
+          if [ -n \"\$desk\" ]; then sleep 2; /usr/local/bin/desktop; fi" < "$A10/build/payload/powervr.ko"
     ;;
 *) echo "error: modules [gpu]" >&2; exit 1 ;;
 esac

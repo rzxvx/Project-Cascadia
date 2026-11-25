@@ -30,7 +30,7 @@ struct op {
     float4 uv;          // texel (uv.x + s * uv.z, uv.y + t * uv.w)
     float4 color;       // multiplies the texel
     uint tex, tstride, tw, th;      // arena offset (0: no texture), texels per row, size
-    uint mode, pad0, pad1, pad2;    // 0 NONE, 1 BLEND, 2 ADD, 3 MOD
+    uint mode, bb0, bb1, pad;       // 0 NONE, 1 BLEND, 2 ADD, 3 MOD; bounding box: int16 x | y << 16
 };
 struct env { uint ops, list, target, stride, width, height, rgba, pad; };
 
@@ -41,6 +41,8 @@ static float3 unpack(uint v, uint rgba)
 }
 
 #define WG 128      // threads; 48 temps each: 256 do not fit (the job never ends)
+#define PX 4        // pixels per thread per part (2: 40 temps, no faster)
+#define ROWS (WG * PX / 64)
 kernel void comp(device const uint4 *tiles [[buffer(0)]], device uchar *arena [[buffer(1)]],
                  uint tile [[threadgroup_position_in_grid]], uint lid [[thread_index_in_threadgroup]])
 {
@@ -49,16 +51,20 @@ kernel void comp(device const uint4 *tiles [[buffer(0)]], device uchar *arena [[
     device uint *fb = (device uint *)(arena + e.target);
     device const uint *l = (device const uint *)(arena + e.list) + r.y;
     uint x0 = r.x & 0xffff, y0 = r.x >> 16;
-    for (uint part = 0; part < 4; part++) {     // a quarter of the tile, 4 pixels per thread
-    float3 c[4];
-    for (uint k = 0; k < 4; k++) {
-        uint i = lid + WG * k + 4 * WG * part, px = x0 + (i & 63), py = y0 + (i >> 6);
+    for (uint part = 0; part < 2048 / (WG * PX); part++) {   // ROWS rows of the tile, PX pixels per thread
+    float3 c[PX];
+    for (uint k = 0; k < PX; k++) {
+        uint i = lid + WG * k + PX * WG * part, px = x0 + (i & 63), py = y0 + (i >> 6);
         c[k] = px < e.width && py < e.height ? unpack(fb[py * e.stride + px], e.rgba) : float3(0);
     }
     for (uint n = 0; n < r.z; n++) {
         device const op &o = *(device const op *)(arena + e.ops + 128 * l[n]);
-        for (uint k = 0; k < 4; k++) {
-            uint i = lid + WG * k + 4 * WG * part;
+        int by0 = int(short(o.bb0 >> 16)), by1 = int(short(o.bb1 >> 16));
+        int py0 = int(y0 + ROWS * part);
+        if (by1 <= py0 || by0 >= py0 + ROWS)       // the quad misses this quarter: the whole group skips it
+            continue;
+        for (uint k = 0; k < PX; k++) {
+            uint i = lid + WG * k + PX * WG * part;
             float fx = float(x0 + (i & 63)) + 0.5f, fy = float(y0 + (i >> 6)) + 0.5f;
             float s = o.s.x * fx + o.s.y * fy + o.s.z, t = o.t.x * fx + o.t.y * fy + o.t.z;
             if (!(s >= 0 && s < 1 && t >= 0 && t < 1))
@@ -80,8 +86,8 @@ kernel void comp(device const uint4 *tiles [[buffer(0)]], device uchar *arena [[
                 c[k] = src.rgb * c[k];
         }
     }
-    for (uint k = 0; k < 4; k++) {
-        uint i = lid + WG * k + 4 * WG * part, px = x0 + (i & 63), py = y0 + (i >> 6);
+    for (uint k = 0; k < PX; k++) {
+        uint i = lid + WG * k + PX * WG * part, px = x0 + (i & 63), py = y0 + (i >> 6);
         if (px < e.width && py < e.height) {
             uint3 q = uint3(saturate(c[k]) * 255 + 0.5f);
             fb[py * e.stride + px] = e.rgba ? 0xff000000u | (q.b << 16) | (q.g << 8) | q.r
@@ -119,8 +125,8 @@ def temps(tag, index):
     return found[index]
 
 
-code = g9pshaders.build("g9p2d", SRC, ["comp"])
+code = g9pshaders.build("g9p2d", SRC + "kernel void empty() {}\n", ["comp", "empty"])
 t = temps("g9p2d", 0)
 out = os.path.join(HERE, "../../build/gpu/g9p2d.bin")
-g9pshaders.pack({"comp": code["comp"], "comp.temps": struct.pack("<I", t)}, out)
+g9pshaders.pack({"comp": code["comp"], "comp.temps": struct.pack("<I", t), "empty": code["empty"]}, out)
 print(f"comp: {len(code['comp']):#x} bytes, {t} temps -> {os.path.relpath(out)}")

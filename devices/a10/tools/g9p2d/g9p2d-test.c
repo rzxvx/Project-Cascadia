@@ -9,6 +9,9 @@
  *   g9p2d-test check      only the offscreen comparison
  *   g9p2d-test screen N   only N frames on the display
  *   g9p2d-test shot       the display's memory to stdout (no GPU)
+ *   g9p2d-test stress N L [S]  N frames into an SxS target (1024), each a clear and
+ *                         L translucent full-target fills (slow tiles): every
+ *                         pixel the same value, a tile left out shows
  */
 #include <math.h>
 #include <stdint.h>
@@ -344,6 +347,73 @@ static int screen(int frames)
 }
 
 /* the display's memory, raw (x8r8g8b8, stride as the device tree has it), to stdout */
+static int stress(int frames, int layers, int S)
+{
+	int target = g9p2d_texture(NULL, S, S), f, l, i, bad_frames = 0, bad_tiles = 0;
+	uint32_t *px = g9p2d_texture_pixels(target);
+	double us_sum = 0;
+
+	if (target < 0) {
+		printf("FAIL  stress: target %d\n", target);
+		return 1;
+	}
+	for (f = 0; f < frames; f++) {
+		float c[3] = { (f % 7) / 6.f, (f % 5) / 4.f, (f % 3) / 2.f }, a = 0.05f;
+		uint32_t want = 0xff000000u;
+		static int tb[256][64];
+		int nb = 0, k;
+		double us;
+
+		g9p2d_target(target);
+		g9p2d_blend(G9P2D_NONE);
+		g9p2d_color(c[0], c[1], c[2], 1);
+		g9p2d_fill(0, 0, S, S);
+		g9p2d_blend(G9P2D_BLEND);
+		for (l = 0; l < layers; l++) {
+			float lc[3] = { (l % 2) ? 1.f : 0.f, (l % 3) ? 0.5f : 1.f, (l % 4) ? 0.f : 1.f };
+
+			g9p2d_color(lc[0], lc[1], lc[2], a);
+			g9p2d_fill(0, 0, S, S);
+			for (k = 0; k < 3; k++)		/* the kernel's float maths */
+				c[k] = lc[k] * a + c[k] * (1 - a);
+		}
+		g9p2d_target(0);
+		if (g9p2d_end() || g9p2d_finish()) {
+			printf("FAIL  stress frame %d: submit / wait\n", f);
+			return 1;
+		}
+		g9p2d_frame_stats(NULL, NULL, NULL, NULL, &us);
+		us_sum += us;
+		for (k = 0; k < 3; k++) {
+			float v = c[k] < 0 ? 0 : c[k] > 1 ? 1 : c[k];
+
+			want |= (uint32_t)(v * 255 + 0.5f) << (8 * k);
+		}
+		memset(tb, 0, sizeof(tb));
+		for (i = 0; i < S * S; i++) {
+			int d = 0;
+
+			for (k = 0; k < 24; k += 8) {
+				int dk = abs((int)((px[i] >> k) & 255) - (int)((want >> k) & 255));
+
+				d = dk > d ? dk : d;
+			}
+			if (d > 2 && !tb[(i / S) / 32][(i % S) / 64]++)
+				nb++;
+		}
+		if (nb) {
+			bad_frames++;
+			bad_tiles += nb;
+			if (bad_frames <= 3)
+				printf("  frame %d: %d tiles wrong (want %08x, pixel 0 %08x)\n", f, nb, want, px[0]);
+		}
+	}
+	printf("%s  stress: %d frames x %d layers, %dx%d (%d tiles): %d frames with wrong tiles (%d tiles); %.0f us a frame\n",
+	       bad_frames ? "FAIL" : "ok  ", frames, layers, S, S, ((S + 63) / 64) * ((S + 31) / 32), bad_frames, bad_tiles, us_sum / frames);
+	g9p2d_texture_free(target);
+	return bad_frames != 0;
+}
+
 static int shot(void)
 {
 	int fd = open("/dev/mem", O_RDONLY | O_SYNC);
@@ -370,6 +440,9 @@ int main(int argc, char **argv)
 	printf("g9p2d: display %dx%d\n", g9p2d_width(), g9p2d_height());
 	if (argc < 2 || !strcmp(argv[1], "check"))
 		fails += check();
+	if (argc > 1 && !strcmp(argv[1], "stress"))
+		fails += stress(argc > 2 ? atoi(argv[2]) : 100, argc > 3 ? atoi(argv[3]) : 60,
+				argc > 4 ? atoi(argv[4]) : 1024);
 	if (argc < 2 || !strcmp(argv[1], "screen"))
 		fails += screen(argc > 2 ? atoi(argv[2]) : 300);
 	g9p2d_close();

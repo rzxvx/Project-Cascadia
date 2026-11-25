@@ -2,14 +2,13 @@
 /*
  * g9p2d -- see g9p2d.h. The GPU side, as docs/gpu.md "2D on the GPU" has it:
  *
- * - one compute job per frame; its CDM stream: a DMA record (a PDS program
- *   loading the two pointers, tile records and arena, into the USC common
- *   store), then one kernel record per tile (one workgroup of 128 threads
- *   running "comp" over one 64 x 32 tile; the tile's index reaches the
- *   kernel as its threadgroup position, written by the kernel's PDS program
- *   from the record's own PDS data), then the terminate word;
- * - the code BO sits at the PDS and the USC heap bases: PDS programs, the
- *   kernel's PDS data, the USC code;
+ * - one compute job per pass (target): a DMA record (a PDS program loading
+ *   the two pointers, the pass's tile records and the arena, into the USC
+ *   common store), one kernel record with a workgroup per tile (128 threads
+ *   running "comp" over one 64 x 32 tile; the tile is the workgroup ID),
+ *   the end-of-job records, the terminate word;
+ * - the code BO sits at the PDS and the USC heap bases: PDS programs and
+ *   data, the USC code;
  * - the arena: 1 GiB of GPU VA right below the display, which the kernel
  *   driver maps at the end of the general heap in every VM; frame data and
  *   textures live in BOs mapped into it, so the kernel addresses all of it
@@ -50,30 +49,36 @@
 #define CODE_SIZE	0x10000
 #define CODE_HALT	0x2000
 #define CODE_DMA_PDS	0x2100
-#define CODE_KER_PDS	0x2200
+#define CODE_GRID_PDS	0x2240		/* the kernel's PDS program (Apple's) */
+#define CODE_GRID_DATA	0x2280
 #define CODE_FENCE_PDS	0x2380		/* the end-of-job fence: DOUTC */
 #define CODE_FENCE_DATA	0x23c0
+#define CODE_EMPTY_PDS	0x2300		/* one-thread internal kernel: DOUTU, no IDs */
+#define CODE_EMPTY_DATA	0x2340
+#define CODE_EMPTY	0x3f00		/* "empty": its USC code */
 #define CODE_USC	0x4000
 
 /* a frame slot's BO */
 #define F_ENV		0x000000	/* struct env per pass */
-#define F_STREAM	0x001000	/* CDM stream: 8 words per tile */
-#define F_DMA		0x090000	/* PDS data: the DMA's, then 32 bytes per tile */
-#define F_TAB		0x0d0000	/* {u64 -> tile records, u64 arena} */
-#define F_TILE		0x0f0000	/* tile records, uint4 */
+#define F_STREAM	0x001000	/* CDM streams: 7 records of 8 words per pass */
+#define F_TILE		0x010000	/* tile records, uint4 */
 #define F_CDMSTATE	0x110000	/* the CDM context state buffer */
+#define F_JOB		0x114000	/* per job: DMA data (32 bytes, PDS heap), its table (16) */
 #define F_OPS		0x120000	/* struct op, 128 bytes */
 #define F_LIST		0x320000	/* u32 op indices */
-#define MAX_PASS	(0x1000 / 32)
-/* tiles per frame: the stream also holds the DMA record, a fence per pass, the tail */
-#define MAX_REC		((F_DMA - F_STREAM) / 32 - 3 * MAX_PASS)
+#define MAX_PASS	(0x1000 / 32)	/* F_ENV: 32 bytes a pass; F_STREAM 224, F_JOB 48 */
+#define MAX_REC		((F_CDMSTATE - F_TILE) / 16)	/* tiles per frame */
 #define MAX_OPS		((F_LIST - F_OPS) / 128)
 #define MAX_LIST	((FRAME_SIZE - F_LIST) / 4)
 
 struct op {
 	float s[4], t[4], uv[4], color[4];
 	uint32_t tex, tstride, tw, th;
-	uint32_t mode, pad[11];		/* pad[0..1]: the bounding box (CPU only) */
+	uint32_t mode;
+	uint32_t bb0, bb1;		/* bounding box, int16 x | y << 16 (the kernel skips outside it) */
+	uint32_t opaque;		/* CPU only: an opaque axis-aligned rectangle ... */
+	uint32_t in0, in1;		/* ... covering at least these whole pixels (int16 x | y << 16) */
+	uint32_t pad[6];
 };
 
 _Static_assert(sizeof(struct op) == 128, "struct op: the kernel reads 128-byte ops");
@@ -84,6 +89,7 @@ struct env {
 
 struct tex {
 	uint32_t aoff, size, w, h;	/* aoff 0: free slot */
+	int opaque;			/* every texel's alpha 255 */
 	uint32_t *cpu;
 	int chunk, dead;		/* dead: freed, waiting for the GPU */
 };
@@ -108,6 +114,10 @@ static struct {
 	int width, height, stride;	/* the display, stride in pixels */
 	uint32_t temps;
 	int nstream;			/* CDM records written (8 words each) */
+	/* G9P2D_PROF: microseconds blocked on the GPU, building frames, in all */
+	double prof_wait, prof_build, prof_t0, prof_cover, prof_full, prof_thin;
+	int prof_on;
+	int prof_frames;
 	uint32_t code_h, *code;
 	struct {
 		uint32_t handle, syncobj;
@@ -131,6 +141,7 @@ static struct {
 	float color[4];
 	int mode;
 	uint32_t *count;		/* per tile, while binning */
+	int *cull;			/* per tile: the last opaque quad covering it */
 	size_t ncount;
 	int stat_quads, stat_tiles, stat_entries, stat_dropped;
 	double gpu_us;
@@ -232,24 +243,28 @@ static int load_code(const char *file)
 		if (!strncmp(name, "comp", 24) && CODE_USC + sz <= CODE_SIZE) {
 			memcpy((uint8_t *)G.code + CODE_USC, buf + off, sz);
 			got |= 1;
+		} else if (!strncmp(name, "empty", 24) && CODE_EMPTY + sz <= CODE_USC) {
+			memcpy((uint8_t *)G.code + CODE_EMPTY, buf + off, sz);
+			got |= 4;
 		} else if (!strncmp(name, "comp.temps", 24) && sz == 4) {
 			memcpy(&G.temps, buf + off, 4);
 			got |= 2;
 		}
 	}
-	return got == 3 ? 0 : -EINVAL;
+	return got == 7 ? 0 : -EINVAL;
 }
 
 int g9p2d_open(void)
 {
 	static const uint32_t dma_pds[] = { 0xf0001000, 0xf4001808, 0xd3000000 };
 	/*
-	 * Apple's kernel PDS program (G5), but the shared phase's DOUTW takes
-	 * data dwords 4-5 (the tile index) instead of the hardware's workgroup
-	 * ID: 0xf0000811 = DOUTW, control word dword 2, source const64 #2
+	 * Apple's own (G5): the shared phase (IF1, once per workgroup) DOUTWs
+	 * the hardware's workgroup ID (temps q0: 0xf0000a01, control dword 2
+	 * 0x90000000) where threadgroup_position_in_grid is read, the instance
+	 * phase the local ID into r0 (dword 3 0x80000000), then DOUTU
 	 */
-	static const uint32_t ker_pds[] = { 0xc2c00003, 0xf0000811, 0xd3000000,
-					    0xf0000e01, 0xfc000002, 0xd3000000 };
+	static const uint32_t grid_pds[] = { 0xc2c00003, 0xf0000a01, 0xd3000000,
+					     0xf0000e01, 0xfc000002, 0xd3000000 };
 	struct drm_pvr_ioctl_create_vm_context_args vm = { 0 };
 	struct drm_pvr_ioctl_dev_query_args q = { 0 };
 	struct drm_pvr_dev_query_heap_info hi = { 0 };
@@ -290,7 +305,7 @@ int g9p2d_open(void)
 		G.code[i] = 0xd3000000;		/* PDS HALT */
 	memset(G.code + CODE_HALT / 4 + 1, 0, 0x1c);
 	memcpy(G.code + CODE_DMA_PDS / 4, dma_pds, sizeof(dma_pds));
-	memcpy(G.code + CODE_KER_PDS / 4, ker_pds, sizeof(ker_pds));
+	memcpy(G.code + CODE_GRID_PDS / 4, grid_pds, sizeof(grid_pds));
 	if ((err = load_code(file ? file : "/usr/local/lib/g9p2d/g9p2d.bin")))
 		return err;
 	{
@@ -299,10 +314,21 @@ int g9p2d_open(void)
 		 * the CDM) */
 		static const uint32_t fence_pds[] = { 0xc2c00002, 0xd3000000, 0xf0000005, 0xd3000000 };
 
+		static const uint32_t empty_pds[] = { 0xc2c00002, 0xd3000000, 0xfc000002, 0xd3000000 };
+
 		memcpy(G.code + CODE_FENCE_PDS / 4, fence_pds, sizeof(fence_pds));
 		memset(G.code + CODE_FENCE_DATA / 4, 0, 16);
+		memcpy(G.code + CODE_EMPTY_PDS / 4, empty_pds, sizeof(empty_pds));
+		memset(G.code + CODE_EMPTY_DATA / 4, 0, 16);
+		G.code[CODE_EMPTY_DATA / 4] = CODE_EMPTY;	/* DOUTU: EXE_OFF */
+		G.code[CODE_EMPTY_DATA / 4 + 1] = 2 << 3;	/* TEMPS 8 */
 	}
 	G.temps = (G.temps + 3) & ~3u;
+	G.code[CODE_GRID_DATA / 4 + 0] = CODE_USC;		/* DOUTU: EXE_OFF */
+	G.code[CODE_GRID_DATA / 4 + 1] = (G.temps / 4) << 3;	/* TEMPS, 4-register units */
+	G.code[CODE_GRID_DATA / 4 + 2] = 0x90000000;
+	G.code[CODE_GRID_DATA / 4 + 3] = 0x80000000;
+
 	if ((err = vm_map(G.code_h, G.pds, CODE_SIZE)) || (err = vm_map(G.code_h, G.usc, CODE_SIZE)))
 		return err;
 
@@ -435,6 +461,17 @@ static void chunk_release(struct chunk *c, uint32_t off, uint32_t size)
 	c->nfree++;
 }
 
+static int all_opaque(const void *rgba, size_t n)
+{
+	const uint32_t *p = rgba;
+	size_t i;
+
+	for (i = 0; i < n; i++)
+		if (p[i] >> 24 != 0xff)
+			return 0;
+	return 1;
+}
+
 int g9p2d_texture(const void *rgba, int w, int h)
 {
 	uint32_t size, off = 0;
@@ -473,6 +510,7 @@ int g9p2d_texture(const void *rgba, int w, int h)
 		memcpy(t->cpu, rgba, (size_t)w * h * 4);
 	else
 		memset(t->cpu, 0, (size_t)w * h * 4);
+	t->opaque = rgba && all_opaque(rgba, (size_t)w * h);
 	return id;
 }
 
@@ -481,6 +519,7 @@ int g9p2d_texture_update(int id, const void *rgba)
 	if (id <= 0 || id >= G.ntex || !G.tex[id].aoff || G.tex[id].dead)
 		return -EINVAL;
 	memcpy(G.tex[id].cpu, rgba, (size_t)G.tex[id].w * G.tex[id].h * 4);
+	G.tex[id].opaque = all_opaque(rgba, (size_t)G.tex[id].w * G.tex[id].h);
 	return 0;
 }
 
@@ -529,6 +568,12 @@ static int slot_wait(int s)
 	w.timeout_nsec = now.tv_sec * 1000000000ll + now.tv_nsec + 2000000000ll;
 	w.flags = DRM_SYNCOBJ_WAIT_FLAGS_WAIT_FOR_SUBMIT;
 	r = ioctl(G.fd, DRM_IOCTL_SYNCOBJ_WAIT, &w) ? -errno : 0;
+	{
+		struct timespec t1;
+
+		clock_gettime(CLOCK_MONOTONIC, &t1);
+		G.prof_wait += ts_us(&t1) - ts_us(&now);
+	}
 	clock_gettime(CLOCK_MONOTONIC, &now);
 	G.gpu_us = ts_us(&now) - ts_us(&G.slot[s].submitted);
 	G.slot[s].busy = 0;
@@ -630,11 +675,18 @@ void g9p2d_quad4(int tex, const float xy[8], const float uv[8])
 			y0 = fminf(y0, xy[2 * k + 1]);
 			y1 = fmaxf(y1, xy[2 * k + 1]);
 		}
-		/* kept in the pad words, the GPU ignores them */
-		o->pad[0] = (uint32_t)(int16_t)floorf(fmaxf(fminf(x0, 32767), -32768)) |
-			    (uint32_t)(int16_t)floorf(fmaxf(fminf(y0, 32767), -32768)) << 16;
-		o->pad[1] = (uint32_t)(int16_t)ceilf(fmaxf(fminf(x1, 32767), -32768)) |
-			    (uint32_t)(int16_t)ceilf(fmaxf(fminf(y1, 32767), -32768)) << 16;
+#define I16(v) ((uint32_t)(uint16_t)(int16_t)fmaxf(fminf(v, 32767), -32768))
+		o->bb0 = I16(floorf(x0)) | I16(floorf(y0)) << 16;
+		o->bb1 = I16(ceilf(x1)) | I16(ceilf(y1)) << 16;
+		/* opaque and axis-aligned (turned by 90 degrees too): whatever is under it in
+		 * a tile it covers is dropped */
+		if (((e1y == 0 && e2x == 0) || (e1x == 0 && e2y == 0)) && (G.mode == G9P2D_NONE || (G.mode == G9P2D_BLEND && G.color[3] >= 1 &&
+		    (!o->tex || G.tex[tex].opaque)))) {
+			o->opaque = 1;
+			o->in0 = I16(ceilf(x0)) | I16(ceilf(y0)) << 16;
+			o->in1 = I16(floorf(x1)) | I16(floorf(y1)) << 16;
+		}
+#undef I16
 	}
 	G.nops++;
 	G.pass[G.npass - 1].nops++;
@@ -676,6 +728,31 @@ static void fence_rec(uint32_t *rec)
 	rec[7] = 0;
 }
 
+/* a one-thread "empty" kernel record, K0 2 (any cluster) or 3 (also fenced) */
+static void empty_rec(uint32_t *rec, uint32_t k0, uint32_t k1_flags)
+{
+	rec[0] = k0;
+	rec[1] = CODE_EMPTY_DATA | k1_flags;
+	rec[2] = CODE_EMPTY_PDS;
+	rec[3] = rec[4] = rec[5] = 0;
+	rec[6] = 0x40000000;
+	rec[7] = 0;
+}
+
+/* the end of a job; returns the records written (G9P2D_TAIL=1: one fence only) */
+static int tail_recs(uint32_t *rec)
+{
+	if (getenv("G9P2D_TAIL") && atoi(getenv("G9P2D_TAIL")) == 1) {
+		fence_rec(rec);
+		return 1;
+	}
+	empty_rec(rec, 0x2, 0x2);
+	fence_rec(rec + 8);
+	empty_rec(rec + 16, 0x3, 0x4);
+	fence_rec(rec + 24);
+	return 4;
+}
+
 /* the quads of one pass into tile lists and CDM records; returns records added */
 static int build_pass(int s, int pi, int *nrec, uint32_t *nlist)
 {
@@ -709,8 +786,41 @@ static int build_pass(int s, int pi, int *nrec, uint32_t *nlist)
 	if ((size_t)tw * th > G.ncount) {
 		G.ncount = (size_t)tw * th;
 		G.count = realloc(G.count, G.ncount * sizeof(*G.count));
+		G.cull = realloc(G.cull, G.ncount * sizeof(*G.cull));
 	}
 	memset(G.count, 0, (size_t)tw * th * sizeof(*G.count));
+	/* the last opaque quad covering each tile: nothing before it is drawn there */
+	for (i = 0; i < tw * th; i++)
+		G.cull[i] = 0;
+	for (i = p->first_op; i < p->first_op + p->nops; i++) {
+		struct op *o = &G.ops[i];
+		int ix0, iy0, ix1, iy1;
+
+		if (!o->opaque)
+			continue;
+		ix0 = (int16_t)(o->in0 & 0xffff);
+		iy0 = (int16_t)(o->in0 >> 16);
+		ix1 = (int16_t)(o->in1 & 0xffff);
+		iy1 = (int16_t)(o->in1 >> 16);
+		/* tiles whose pixels inside the target it all covers */
+		for (ty = iy0 > 0 ? iy0 / TILE_H : 0; ty < th; ty++) {
+			int ya = ty * TILE_H, yb = (ty + 1) * TILE_H < h ? (ty + 1) * TILE_H : h;
+
+			if (ya < iy0)
+				continue;
+			if (yb > iy1)
+				break;
+			for (tx = ix0 > 0 ? ix0 / TILE_W : 0; tx < tw; tx++) {
+				int xa = tx * TILE_W, xb = (tx + 1) * TILE_W < w ? (tx + 1) * TILE_W : w;
+
+				if (xa < ix0)
+					continue;
+				if (xb > ix1)
+					break;
+				G.cull[ty * tw + tx] = i;
+			}
+		}
+	}
 
 	/* count, then offsets, then fill (in call order) */
 	for (int pass2 = 0; pass2 < 2; pass2++) {
@@ -729,8 +839,8 @@ static int build_pass(int s, int pi, int *nrec, uint32_t *nlist)
 		}
 		for (i = p->first_op; i < p->first_op + p->nops; i++) {
 			struct op *o = &G.ops[i];
-			int x0 = (int16_t)(o->pad[0] & 0xffff), y0 = (int16_t)(o->pad[0] >> 16);
-			int x1 = (int16_t)(o->pad[1] & 0xffff), y1 = (int16_t)(o->pad[1] >> 16);
+			int x0 = (int16_t)(o->bb0 & 0xffff), y0 = (int16_t)(o->bb0 >> 16);
+			int x1 = (int16_t)(o->bb1 & 0xffff), y1 = (int16_t)(o->bb1 >> 16);
 
 			x0 = x0 < 0 ? 0 : x0;
 			y0 = y0 < 0 ? 0 : y0;
@@ -742,9 +852,23 @@ static int build_pass(int s, int pi, int *nrec, uint32_t *nlist)
 				for (tx = x0 / TILE_W; tx <= (x1 - 1) / TILE_W; tx++) {
 					uint32_t *c = &G.count[ty * tw + tx];
 
-					if (pass2)
+					if (i < G.cull[ty * tw + tx])
+						continue;
+
+					if (pass2) {
 						list[(*c)++] = i;
-					else
+						if (G.prof_on) {
+							int cx0 = x0 > tx * TILE_W ? x0 : tx * TILE_W;
+							int cx1 = x1 < (tx + 1) * TILE_W ? x1 : (tx + 1) * TILE_W;
+							int cy0 = y0 > ty * TILE_H ? y0 : ty * TILE_H;
+							int cy1 = y1 < (ty + 1) * TILE_H ? y1 : (ty + 1) * TILE_H;
+							int a = (cx1 - cx0) * (cy1 - cy0);
+
+							G.prof_cover += a;
+							G.prof_full += a == TILE_W * TILE_H;
+							G.prof_thin += (x1 - x0) <= 4 || (y1 - y0) <= 4;
+						}
+					} else
 						(*c)++;
 				}
 		}
@@ -754,7 +878,7 @@ static int build_pass(int s, int pi, int *nrec, uint32_t *nlist)
 		for (tx = 0; tx < tw; tx++) {
 			uint32_t end = G.count[ty * tw + tx];
 			uint32_t start = ty * tw + tx ? G.count[ty * tw + tx - 1] : base;
-			uint32_t *tile, *kd, *rec;
+			uint32_t *tile;
 			int r = *nrec;
 
 			if (end == start)
@@ -766,22 +890,6 @@ static int build_pass(int s, int pi, int *nrec, uint32_t *nlist)
 			tile[1] = start;
 			tile[2] = end - start;
 			tile[3] = aoff + F_ENV + 32 * pi;
-			/* the kernel's PDS data: DOUTU, the DOUTW controls, the tile index */
-			kd = (uint32_t *)(f + F_DMA + 32 * (r + 1));
-			kd[0] = CODE_USC;			/* DOUTU: EXE_OFF */
-			kd[1] = (G.temps / 4) << 3;		/* TEMPS, 4-register units */
-			kd[2] = 0x90000000;			/* shared phase: common store */
-			kd[3] = 0x80000000;			/* instance phase: unified store */
-			kd[4] = r;
-			kd[5] = kd[6] = kd[7] = 0;
-			rec = (uint32_t *)(f + F_STREAM) + 8 * G.nstream++;
-			/* fence, PDS data 32 bytes, 1 PDS temp, temps */
-			rec[0] = 0x107 | (G.temps / 4) << 12;
-			rec[1] = (uint32_t)(G.slot[s].pds_va - G.pds + F_DMA + 32 * (r + 1));
-			rec[2] = CODE_KER_PDS;
-			rec[3] = rec[4] = rec[5] = 0;			/* one workgroup */
-			rec[6] = 1;
-			rec[7] = (WG_THREADS - 1) << 20;		/* its size */
 			(*nrec)++;
 			added++;
 		}
@@ -790,19 +898,19 @@ static int build_pass(int s, int pi, int *nrec, uint32_t *nlist)
 }
 
 /* the DMA record that starts every job: {tile records, arena} -> common store 0..3 */
-static void dma_rec(int s, uint32_t *rec)
+static void dma_rec(int s, uint32_t *rec, int job, int first_tile)
 {
 	uint8_t *f = G.slot[s].cpu;
-	uint64_t *tab = (uint64_t *)(f + F_TAB), *dma = (uint64_t *)(f + F_DMA);
+	uint64_t *dma = (uint64_t *)(f + F_JOB + 48 * job), *tab = dma + 4;
 
-	tab[0] = G.arena + G.slot[s].aoff + F_TILE;
+	tab[0] = G.arena + G.slot[s].aoff + F_TILE + 16 * first_tile;	/* the job's tile records */
 	tab[1] = G.arena;
-	dma[0] = G.arena + G.slot[s].aoff + F_TAB;
+	dma[0] = G.arena + G.slot[s].aoff + F_JOB + 48 * job + 32;
 	dma[1] = dma[0] + 8;
 	dma[2] = 0x10000000 | 2;			/* 2 dwords -> common store 0 */
 	dma[3] = 0x90000000 | (2 << 13) | 2;		/* 2 dwords -> 2, last */
 	rec[0] = 0x4;					/* PDS data 32 bytes */
-	rec[1] = (uint32_t)(G.slot[s].pds_va - G.pds + F_DMA) | 0x2;	/* usc_common_shared */
+	rec[1] = (uint32_t)(G.slot[s].pds_va - G.pds + F_JOB + 48 * job) | 0x2;	/* usc_common_shared */
 	rec[2] = CODE_DMA_PDS;
 	rec[3] = rec[4] = rec[5] = 0;
 	rec[6] = 0x40000001;
@@ -825,13 +933,18 @@ int g9p2d_end(void)
 	struct drm_pvr_sync_op op;
 	struct drm_pvr_ioctl_submit_jobs_args sub = { 0 };
 
+	struct timespec pb0, pb1;
+
 	if (!G.on)
 		return -ENODEV;
+	clock_gettime(CLOCK_MONOTONIC, &pb0);
+	G.prof_on = getenv("G9P2D_PROF") != NULL;
 	G.nstream = 0;
+	G.prof_cover = G.prof_full = G.prof_thin = 0;
 	for (pi = 0; pi < G.npass; pi++) {
-		int first = G.nstream;
+		int first = G.nstream, first_tile = nrec;
 
-		G.nstream++;				/* the DMA record */
+		G.nstream++;				/* the DMA record first */
 		if ((r = build_pass(s, pi, &nrec, &nlist)) <= 0) {
 			if (r < 0)
 				G.dropped += G.pass[pi].nops;
@@ -839,8 +952,20 @@ int g9p2d_end(void)
 			continue;
 		}
 		st = (uint32_t *)(f + F_STREAM);
-		dma_rec(s, st + 8 * first);
-		fence_rec(st + 8 * G.nstream++);	/* the job ends after its tiles */
+		{
+			/* one record: a workgroup per tile, the tile = its workgroup ID */
+			uint32_t *rec = st + 8 * G.nstream++;
+
+			rec[0] = 0x103 | (G.temps / 4) << 12;	/* fence, any cluster, 1 PDS temp, temps */
+			rec[1] = CODE_GRID_DATA;
+			rec[2] = CODE_GRID_PDS;
+			rec[3] = r - 1;				/* workgroups - 1 */
+			rec[4] = rec[5] = 0;
+			rec[6] = 1;				/* (threads % 32) << 27 | 1 */
+			rec[7] = (WG_THREADS - 1) << 20;
+		}
+		dma_rec(s, st + 8 * first, njobs, first_tile);
+		G.nstream += tail_recs(st + 8 * G.nstream);	/* the job ends after its tiles */
 		st[8 * G.nstream++] = 0x80000000;	/* terminate */
 		cmd[njobs][0] = 36;			/* u32 length, u32 0 */
 		cmd[njobs][1] = 0;			/* tpu_border_colour_table */
@@ -868,6 +993,23 @@ int g9p2d_end(void)
 	sub.jobs = (struct drm_pvr_obj_array){ .stride = sizeof(jobs[0]), .count = njobs, .array = (uintptr_t)jobs };
 	clock_gettime(CLOCK_MONOTONIC, &G.slot[s].submitted);
 	r = ioctl(G.fd, DRM_IOCTL_PVR_SUBMIT_JOBS, &sub) ? -errno : 0;
+	clock_gettime(CLOCK_MONOTONIC, &pb1);
+	G.prof_build += ts_us(&pb1) - ts_us(&pb0);
+	if (getenv("G9P2D_PROF") && ++G.prof_frames == 100) {
+		double all = ts_us(&pb1) - G.prof_t0;
+
+		if (G.prof_t0)
+			fprintf(stderr, "g9p2d: per frame %.1f ms: waiting for the GPU %.1f ms, binning + submit %.1f ms, "
+				"the rest (the application) %.1f ms\n", all / 100e3, G.prof_wait / 100e3,
+				G.prof_build / 100e3, (all - G.prof_wait - G.prof_build) / 100e3);
+		if (G.prof_t0 && G.prof_on)
+			fprintf(stderr, "g9p2d: last frame %d entries: covered %.0f%% of their tiles' pixels; "
+				"%.0f entries cover a whole tile, %.0f are lines (<= 4 px)\n", nlist,
+				100.0 * G.prof_cover / (nlist * (double)TILE_W * TILE_H), G.prof_full, G.prof_thin);
+		G.prof_t0 = ts_us(&pb1);
+		G.prof_wait = G.prof_build = 0;
+		G.prof_frames = 0;
+	}
 	G.slot[s].busy = !r;
 	G.cur = (s + 1) % SLOTS;
 	g9p2d_begin();

@@ -9,9 +9,9 @@ if [ ! -e /dev/dri/renderD128 ]; then
 	exit 1
 fi
 echo 0 > /sys/class/vtconsole/vtcon1/bind 2>/dev/null
-# a Wayland desktop on the same display would draw over the game: frozen
+# a Wayland desktop (or fbkeyboard) on the same display would draw over the game: frozen
 # while it runs (its windows come back on their next redraw)
-DESK=$(pidof labwc swaybg waybar 2>/dev/null)
+DESK=$(pidof labwc swaybg waybar fbkeyboard 2>/dev/null)
 [ -n "$DESK" ] && kill -STOP $DESK
 # --geometry is also SuperTux's fullscreen size and it keeps it in its
 # config: put back what was there afterwards

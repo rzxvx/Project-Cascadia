@@ -533,7 +533,7 @@ IRQs 185-188 / 193 are for (nothing needs them so far).
 ## 2D on the GPU (2026-11-25/26): g9p2d and SuperTux
 
 The first use of the G7 driver: SDL2's 2D renderer drawn by the GPU, as on
-the A5 (sgx2d + an SDL shim). **SuperTux 0.6.3 runs on it at 26-40 frames
+the A5 (sgx2d + an SDL shim). **SuperTux 0.6.3 runs on it at 24-40 frames
 per second on the full 1620x2160 display** (`supertux-gpu`, the game's
 window 1080x810 turned and scaled 2x; 600-2200 quads a frame, its lightmap
 drawn into a render target), checked from a screenshot of the display's
@@ -576,7 +576,8 @@ words, PDS data and code words, the common-store table, buffer contents);
   (TEMPS, 4-register units) and K0 bits 12-17. **48 temps x 256 threads do
   not fit**: the job never ends; 128 threads per workgroup do.
 - **Workgroup size**: record word 7 bits 20+ = threads - 1 (up to 512
-  checked with 8 temps), word 6 = 1.
+  checked with 8 temps), word 6 = 1 (checked for 128-thread groups; with
+  4-thread groups and word 6 = 1 every group saw the same ID -- to check).
 - **G9P's DOUT encoding differs from Mesa's Rogue one**: bits 3-7 = the
   64-bit source (const64 index: data dwords 2i, 2i+1), bits 10-15 = the data
   dword holding the control word, bits 8-9 = 2 for the hardware's own
@@ -588,26 +589,61 @@ words, PDS data and code words, the common-store table, buffer contents);
   fc000002 d3000000`: BRA if not IF1 to 3; shared phase: DOUTW (control
   dword 2, 0x90000000: common store) of a hardware value, which is
   `threadgroup_position_in_grid`; instance phase: DOUTW (dword 3,
-  0x80000000: unified store) of the local ID, DOUTU. **With `f0000811` in
-  the shared phase (source const64 #2) the threadgroup position is the
-  record's own PDS data dwords 4-5** -- how g9p2d gives each workgroup its
-  tile: one DMA record per job, then one kernel record per tile, each with
-  32 bytes of PDS data {DOUTU, 0x90000000, 0x80000000, tile index}.
+  0x80000000: unified store) of the local ID, DOUTU. The shared phase's
+  source is the hardware's workgroup ID: **one kernel record with K3 =
+  groups - 1** gives every group its own `threadgroup_position_in_grid`
+  (64 groups x 128 threads, every word right). With `f0000811` there
+  instead (source const64 #2) the position is the record's own PDS data
+  dwords 4-5 (one record per group; g9p2d's first version, as fast).
 - **Per-record DMA does not work for many records**: the next record's DMA
   task overwrites the common store while earlier workgroups still read it
-  (tiles skipped or done twice, sometimes a hang). The hardware workgroup
-  IDs of a multi-workgroup record (K3 > 0) did not come out as expected
-  either (to check); the per-record tile index needs neither.
-- **The end of a job: a fence record** (Apple's capture of `store_const`:
-  records with K0 0xc0000003, PDS program `c2c00002 d3000000 f0000005
-  d3000000`, DOUTC = a fence back to the CDM, K1 = 16 zero bytes | 0x4).
-  Without it the job is signalled done while workgroups still run -- they
-  are cut off (a tile with 384 of 2048 pixels, the rest never written).
-- **K0 bit 0 stays set** on the tile records: without it the same frames
-  take 6 times as long.
+  (tiles skipped or done twice, sometimes a hang). One DMA record per job.
+- **The end of a job: fence records** (Apple's capture of `store_const`
+  ends with K0 4 / 2 / 0xc0000003 / 3 / 0xc0000003; the 0xc0000003 ones
+  run the PDS program `c2c00002 d3000000 f0000005 d3000000`, DOUTC = a
+  fence back to the CDM, K1 = 16 zero bytes | 0x4). Without one the job is
+  signalled done while workgroups still run -- they are cut off (a tile with
+  384 of 2048 pixels, the rest never written). g9p2d ends every job like the
+  capture minus its first record: a one-thread empty kernel (K0 2, K1 | 2),
+  a fence record, a fenced one-thread empty kernel (K0 3, K1 | 4), a fence
+  record. `g9p2d-test stress` (every frame a clear and 20-200 translucent
+  fills over a 1024x1024 target, every tile checked, 100 frames of up to
+  105 ms) loses no tile with that tail nor with the single fence record
+  (`G9P2D_TAIL=1`).
+- **K0 0x103** on the kernel record: without bit 0 (fence) the same frames
+  take 6 times as long, without bit 1 or with neither the jobs hang.
 - **A fence does not make one pass's writes visible to the next** (a render
   target read half as zeros); the end of a job does. g9p2d submits one job
   per pass (target), all of a frame's jobs in one SUBMIT.
+
+### Where a frame's time goes (2026-11-26, `G9P2D_PROF=1`)
+
+SuperTux's title level, 1080x810 turned and scaled 2x: **41 ms a frame**,
+of which the CPU waits 25 ms for the GPU, bins and submits for 2-4 ms and
+runs the game for 12 ms -- the GPU is the limit, ~29 ms a frame. A frame
+is ~1800 quads, ~27000 (quad, tile) entries.
+
+- **Every entry costs its whole 64x32 tile**: only 34% of the pixels the
+  kernel evaluates lie inside the quads' bounding boxes. Skipping, for a
+  whole group, the eight-row quarters a quad's box misses is in the kernel
+  now (no measurable gain in SuperTux); a per-pixel box test costs more
+  than it saves (48.6 instead of 41.7 ms a frame), 2 instead of 4 pixels
+  a thread (40 temps) changes nothing.
+- **Opaque quads drop what is under them** on the CPU (an axis-aligned
+  quad, turned by 90 degrees or not, of mode NONE, or BLEND with alpha 1
+  and a texture whose texels are all opaque: the entries before it in the
+  tiles it covers wholly are left out). SuperTux's title level has nothing
+  of the kind: its 1280x720 background has transparent texels (the sky
+  gradient, ~1500 one-row fills, shows through).
+- **The workgroups run one at a time**: `g9p2d-test stress 20 20 S` takes
+  0.42 ms for 1 tile, 0.45 for 2, 0.58-0.67 for 8, 1.2 for 32, 3.7 for 128,
+  13.5 for 512 and 53-54 ms for 2048 tiles -- ~25 us more per tile from the
+  second on, whether each tile has its own kernel record or all share one
+  (K3). Six clusters (CORE_ID N = 6, to check) would run six at once. The
+  init data's compute unit mask (P+0x1ac4 = 1, 3 or 0x3f) changes nothing.
+  Why only one runs -- cluster power with the firmware's power path off
+  (P+0xd34 = 0), a CDM / USC setting, the fence bit -- is open, and is the
+  largest gain left in this path.
 
 ### g9p2d (`tools/g9p2d/`)
 
@@ -615,9 +651,9 @@ words, PDS data and code words, the common-store table, buffer contents);
 |---|---|
 | `g9p2d.h`, `g9p2d.c` | the library: `g9p2d_open`, textures (RGBA8, any size, first fit in 32 MiB BOs), `begin` / `target` / `color` / `blend` / `quad` / `quad_uv` / `quad4` / `fill` / `fill4` / `end` / `finish` |
 | `g9p2d-shaders.py` | the Metal kernel `comp` -> `build/gpu/g9p2d.bin` (G9PT: the code and its temps count) |
-| `g9p2d-test.c` | every pixel of an offscreen frame against a CPU reference; a target drawn and sampled in one frame; 400 sprites on the display; the display's memory checked through `/dev/mem`; `shot` dumps it |
+| `g9p2d-test.c` | every pixel of an offscreen frame against a CPU reference; a target drawn and sampled in one frame; 400 sprites on the display; the display's memory checked through `/dev/mem`; `stress N L [S]`: lost tiles and time per frame; `shot` dumps the display |
 | `g9psdl.c` | the LD_PRELOAD shim (after the A5's): SDL's drawing calls into g9p2d, landscape windows turned and scaled onto the display, render targets, the touch gamepad (axis ranges from EVIOCGABS) |
-| `supertux.sh` | `supertux-gpu`: the shim around `supertux2 --renderer sdl --geometry 1080x810`; the console unbound and labwc / swaybg / waybar stopped (SIGSTOP) while it runs |
+| `supertux.sh` | `supertux-gpu`: the shim around `supertux2 --renderer sdl --geometry 1080x810`; the console unbound and labwc / swaybg / waybar / fbkeyboard stopped (SIGSTOP) while it runs |
 | `build.sh` | docker (Alpine aarch64) build; `install` / `test` on the iPad (`/usr/local/lib/g9p2d`) |
 
 Memory: the arena is 1 GiB of GPU VA right below the display; two frame
@@ -632,10 +668,16 @@ frames per second with 400 blended 64x64 sprites over a full-screen
 textured quad, one full-screen textured quad alone 10.3 ms; 100116 of
 100116 sampled display pixels as the texture says.
 
-Open: one SuperTux run ended in SIGBUS after ~2450 frames (the next ran
-minutes without it; cause to check); vsync / tearing (the display is drawn
-directly); linear filtering; skipping the destination read under an opaque
-first quad; the 3D path (TA / 3D with textures) for real GL.
+`./cascadia a10 modules gpu` unloads powervr, and labwc (wlroots) exits
+when the GPU's DRM device goes away; the script starts the desktop again if
+it was running.
+
+Open: why the workgroups run one at a time (above); thin stripes seen in
+SuperTux, mostly at scene changes -- tearing (the display is drawn while it
+is scanned out: no vblank with simpledrm) or something else, to check; one
+SuperTux run ended in SIGBUS after ~2450 frames (later runs of 11000+
+frames did not; cause to check); linear filtering; the 3D path (TA / 3D
+with textures) for real GL.
 
 ## G2: the recipe (from the 22H355 kernelcache, 2026-11-23)
 
