@@ -388,6 +388,13 @@ static void render(int fd, const struct drm_pvr_heap *heaps, int n)
 	if (r)
 		return;
 
+	for (int round = 0; round < 2; round++) {
+	if (round) {
+		/* past the driver's idle time: the firmware goes off; the same objects again */
+		sleep(7);
+		n = 5;
+		ok = 0;
+	}
 	clock_gettime(CLOCK_MONOTONIC, &t0);
 	for (k = 0; k < (uint32_t)n; k++) {
 		uint64_t geom[5] = { 40, tva, 0, 2 | (0x20000ULL << 32), 0 };
@@ -455,8 +462,10 @@ static void render(int fd, const struct drm_pvr_heap *heaps, int n)
 		ok += nbg == 3072 && ntri == 1024;
 	}
 	clock_gettime(CLOCK_MONOTONIC, &t1);
-	CHECK(ok == (uint32_t)n, "render x%d (clear + triangle, 64x64): %u right; last %u background, %u triangle; %.0f us per render",
-	      n, ok, last_bg, last_tri, ((t1.tv_sec - t0.tv_sec) * 1e9 + (t1.tv_nsec - t0.tv_nsec)) / 1e3 / n);
+	CHECK(ok == (uint32_t)n, "render x%d (clear + triangle, 64x64)%s: %u right; last %u background, %u triangle; %.0f us per render",
+	      n, round ? " after an idle power-off, same objects" : "", ok, last_bg, last_tri,
+	      ((t1.tv_sec - t0.tv_sec) * 1e9 + (t1.tv_nsec - t0.tv_nsec)) / 1e3 / n);
+	}
 }
 
 static int open_powervr(const char *path)

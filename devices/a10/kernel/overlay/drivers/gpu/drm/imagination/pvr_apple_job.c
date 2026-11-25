@@ -37,6 +37,8 @@
 #define WORK_RING	256	/* work-ring entries per channel (0x14 bytes each) */
 #define JOB_DONE	0x1ff0	/* the job's own completion word, at the end of its block */
 
+static int hwrt_fill(struct pvr_apple_hwrt *rt);
+
 static void put32(void *base, u32 off, u32 v)
 {
 	put_unaligned_le32(v, base + off);
@@ -244,7 +246,7 @@ struct pvr_apple_job *pvr_apple_job_cp(struct pvr_apple_queue *q, const struct p
 struct pvr_apple_job *pvr_apple_job_ta(struct pvr_apple_queue *q, const struct pvr_apple_ta_args *args,
 				       struct pvr_apple_hwrt *rt)
 {
-	struct pvr_apple_job *job = job_alloc(q, 0x2000);
+	struct pvr_apple_job *job = hwrt_fill(rt) ? NULL : job_alloc(q, 0x2000);
 	u32 va, ut = pvr_apple_va(PVR_APPLE_R_P2) + 4;	/* the firmware's TA block */
 	void *b;
 	int i;
@@ -305,7 +307,7 @@ struct pvr_apple_job *pvr_apple_job_ta(struct pvr_apple_queue *q, const struct p
 struct pvr_apple_job *pvr_apple_job_3d(struct pvr_apple_queue *q, const struct pvr_apple_3d_args *args,
 				       struct pvr_apple_hwrt *rt)
 {
-	struct pvr_apple_job *job = job_alloc(q, 0x2000);
+	struct pvr_apple_job *job = hwrt_fill(rt) ? NULL : job_alloc(q, 0x2000);
 	u32 va, ut = pvr_apple_va(PVR_APPLE_R_P3) + 8;	/* the firmware's 3D block */
 	void *b;
 	int i;
@@ -369,63 +371,108 @@ struct pvr_apple_job *pvr_apple_job_3d(struct pvr_apple_queue *q, const struct p
 #define RT_TBIG	0x1000
 #define RT_SIZE	0x5000
 
-struct pvr_apple_hwrt *pvr_apple_hwrt_create(struct pvr_apple *a, u64 fl_base, u32 fl_pages,
-					     u64 mlist, u64 mta, u64 vheap)
+/*
+ * The firmware objects of a free list / render target live in the pool of
+ * one firmware boot; after a restart (recovery, idle power-off) they are
+ * written again from the parameters kept here, at the next job.
+ */
+static int fl_fill(struct pvr_apple_fl *fl)
 {
-	struct pvr_apple_hwrt *rt = kzalloc(sizeof(*rt), GFP_KERNEL);
-	void *b;
+	if (fl->obj.size && fl->obj.boot == fl->a->boot)
+		return 0;
+	if (pvr_apple_obj_alloc(fl->a, 0x1000, &fl->obj))
+		return -ENOMEM;
+	fl->va = fl->obj.va;
+	put64(fl->obj.cpu, 0x1c, fl->base);		/* -> RGX 0x210 */
+	put32(fl->obj.cpu, 0x40, fl->pages - 1);	/* top -> 0x224 */
+	put32(fl->obj.cpu, 0x50, fl->va + 0x80);	/* the registration word */
+	return 0;
+}
 
-	if (!rt)
-		return ERR_PTR(-ENOMEM);
-	if (pvr_apple_obj_alloc(a, RT_SIZE, &rt->obj)) {
-		kfree(rt);
-		return ERR_PTR(-ENOMEM);
+static int hwrt_fill(struct pvr_apple_hwrt *rt)
+{
+	void *b;
+	int err;
+
+	if (rt->ext_fl) {
+		err = fl_fill(rt->ext_fl);
+		if (err)
+			return err;
 	}
-	rt->a = a;
+	if (rt->obj.size && rt->obj.boot == rt->a->boot)
+		goto out;
+	if (pvr_apple_obj_alloc(rt->a, RT_SIZE, &rt->obj))
+		return -ENOMEM;
 	b = rt->obj.cpu;
-	rt->fl_va = rt->obj.va + RT_FL;
 	rt->slot_va = rt->obj.va + RT_SLOT;
 	rt->pmh_va = rt->obj.va + RT_PMH;
 	rt->tbig_va = rt->obj.va + RT_TBIG;
-	/* free list (fw 0x17a10): +0x1c base -> RGX 0x210, +0x40 top -> 0x224; +0x50 the registration word */
-	put64(b, RT_FL + 0x1c, fl_base);
-	put32(b, RT_FL + 0x40, fl_pages - 1);
-	put32(b, RT_FL + 0x50, rt->fl_va + 0x80);
+	/* its own free list (fw 0x17a10): +0x1c base -> RGX 0x210, +0x40 top -> 0x224 */
+	put64(b, RT_FL + 0x1c, rt->fl_base);
+	put32(b, RT_FL + 0x40, rt->fl_pages - 1);
+	put32(b, RT_FL + 0x50, rt->obj.va + RT_FL + 0x80);
 	/* PM slot: MLIST, macrotile array, VHEAP table; +0xc0 its header */
-	put64(b, RT_SLOT + 0xa0, mlist);
-	put64(b, RT_SLOT + 0xa8, mta);
-	put64(b, RT_SLOT + 0xb0, vheap);
+	put64(b, RT_SLOT + 0xa0, rt->mlist);
+	put64(b, RT_SLOT + 0xa8, rt->mta);
+	put64(b, RT_SLOT + 0xb0, rt->vheap);
 	put32(b, RT_SLOT + 0xc0, rt->pmh_va);
-	return rt;
+out:
+	rt->fl_va = rt->ext_fl ? rt->ext_fl->va : rt->obj.va + RT_FL;
+	return 0;
 }
 
-/* the same, with the free-list descriptor of a free list of its own (fl_va) */
-struct pvr_apple_hwrt *pvr_apple_hwrt_create_fl(struct pvr_apple *a, u32 fl_va, u64 mlist, u64 mta,
-						u64 vheap)
+static struct pvr_apple_hwrt *hwrt_new(struct pvr_apple *a, struct pvr_apple_fl *ext_fl, u64 fl_base,
+				       u32 fl_pages, u64 mlist, u64 mta, u64 vheap)
 {
-	struct pvr_apple_hwrt *rt = pvr_apple_hwrt_create(a, 0, 1, mlist, mta, vheap);
+	struct pvr_apple_hwrt *rt = kzalloc(sizeof(*rt), GFP_KERNEL);
+	int err;
 
-	if (!IS_ERR(rt))
-		rt->fl_va = fl_va;
+	if (!rt)
+		return ERR_PTR(-ENOMEM);
+	rt->a = a;
+	rt->ext_fl = ext_fl;
+	rt->fl_base = fl_base;
+	rt->fl_pages = fl_pages ?: 1;
+	rt->mlist = mlist;
+	rt->mta = mta;
+	rt->vheap = vheap;
+	err = hwrt_fill(rt);
+	if (err) {
+		kfree(rt);
+		return ERR_PTR(err);
+	}
 	return rt;
 }
 
-/* a free list: its descriptor (fw 0x17a10) over the u32 page numbers at base */
+struct pvr_apple_hwrt *pvr_apple_hwrt_create(struct pvr_apple *a, u64 fl_base, u32 fl_pages,
+					     u64 mlist, u64 mta, u64 vheap)
+{
+	return hwrt_new(a, NULL, fl_base, fl_pages, mlist, mta, vheap);
+}
+
+/* the same, with the descriptor of a free list of its own (shared by datasets) */
+struct pvr_apple_hwrt *pvr_apple_hwrt_create_fl(struct pvr_apple *a, struct pvr_apple_fl *fl,
+						u64 mlist, u64 mta, u64 vheap)
+{
+	return hwrt_new(a, fl, 0, 1, mlist, mta, vheap);
+}
+
+/* a free list: its descriptor over the u32 page numbers at base */
 struct pvr_apple_fl *pvr_apple_fl_create(struct pvr_apple *a, u64 base, u32 pages)
 {
 	struct pvr_apple_fl *fl = kzalloc(sizeof(*fl), GFP_KERNEL);
+	int err;
 
 	if (!fl)
 		return ERR_PTR(-ENOMEM);
-	if (pvr_apple_obj_alloc(a, 0x1000, &fl->obj)) {
-		kfree(fl);
-		return ERR_PTR(-ENOMEM);
-	}
 	fl->a = a;
-	fl->va = fl->obj.va;
-	put64(fl->obj.cpu, 0x1c, base);			/* -> RGX 0x210 */
-	put32(fl->obj.cpu, 0x40, pages - 1);		/* top -> 0x224 */
-	put32(fl->obj.cpu, 0x50, fl->va + 0x80);	/* the registration word */
+	fl->base = base;
+	fl->pages = pages;
+	err = fl_fill(fl);
+	if (err) {
+		kfree(fl);
+		return ERR_PTR(err);
+	}
 	return fl;
 }
 
@@ -464,6 +511,7 @@ static bool push_locked(struct pvr_apple_job *job)
 	void *w;
 
 	q->inflight = job;
+	job->pushed = jiffies;
 	put32(q->obj.cpu, QB_CR + 4 * (q->cmd_idx % QB_RING), job->blk.va);
 	q->cmd_idx++;
 	w = pvr_apple_ptr(a, PVR_APPLE_R_W, 0x1400 * q->ch + 0x14 * wr);
@@ -588,7 +636,7 @@ void pvr_apple_process_completions(struct pvr_apple *a)
 	struct pvr_apple_job *job, *tmp;
 	struct pvr_apple_queue *q;
 	unsigned long flags;
-	bool busy = false;
+	bool busy = false, hung = false;
 	u32 kicks = 0;
 	LIST_HEAD(done);
 
@@ -606,8 +654,13 @@ void pvr_apple_process_completions(struct pvr_apple *a)
 			kicks |= BIT(q->dm);
 		if (q->inflight || !list_empty(&q->pending))
 			busy = true;
+		/* a hang: 5 s in the firmware without completing */
+		if (q->inflight && time_after(jiffies, q->inflight->pushed + 5 * HZ))
+			hung = true;
 	}
 	spin_unlock_irqrestore(&a->job_lock, flags);
+	if (hung)
+		schedule_work(&a->recover_work);
 
 	for (u32 dm = 0; dm < 3; dm++)
 		if (kicks & BIT(dm))
@@ -621,6 +674,8 @@ void pvr_apple_process_completions(struct pvr_apple *a)
 	}
 	if (busy)
 		schedule_delayed_work(&a->done_work, msecs_to_jiffies(10));
+	else
+		pvr_apple_schedule_idle(a);
 }
 
 /* the firmware is going away: every pending job ends with err */

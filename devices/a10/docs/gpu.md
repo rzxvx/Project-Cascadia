@@ -1,9 +1,12 @@
 # GPU (Apple A10 / T8010, "G9P") -- plan and what is known
 
 Status 2026-11-25: **G0-G6 done (our own shaders and programs, the whole
-screen; the host owns the GPU's power state, P+0xd34 = 0xd3c = 0); G7's first
-milestone done: our kernel boots the GFX firmware and runs G5's store and
-G6's clear + triangle itself, no Python harness ("G7 progress"); the GPU work runs under Linux**
+screen; the host owns the GPU's power state, P+0xd34 = 0xd3c = 0); G7 done
+in its core: the powervr driver's Apple backend runs the GPU through the
+powervr UAPI -- a user program creates VMs, BOs, contexts, free lists and
+HWRT datasets and submits compute and render jobs with syncobjs (G5's
+store, G6's clear + triangle), with fault recovery and idle power-off
+("G7 progress" .. "G7 step 6"); the GPU work runs under Linux**
 (`GPU_BACKEND=linux`, see "GPU work under Linux"): core ID 0x011b0602 /
 revision 0x000d0a00, the GFX firmware boots and takes init data with the
 real RGX, stable. **The first job ran on the GPU** (G4 run 29-31): the
@@ -193,10 +196,10 @@ the firmware's blocks); the GPU runs the same work either way. First
 step, needed whatever the UAPI: the kernel boots the firmware itself
 (RTKit on the A7-IOP mailbox, init data, rings, GPU page tables, the host
 owning the power state) and runs G5's / G6's jobs without the Python
-harness. Check: a user program allocates, submits, waits. **First
-milestone DONE 2026-11-25** ("G7 progress"): the powervr driver's Apple
-backend boots the firmware and passes the G5 store and the G6 clear +
-triangle from debugfs, readback checked. Next: the powervr UAPI on top.
+harness. Check: a user program allocates, submits, waits. **DONE
+2026-11-25** (steps 1-6 below): `tools/gpu/pvr-uapi-test` allocates, submits
+compute and render jobs through the powervr UAPI and waits on syncobjs,
+results checked. Left for later: the items under "G7 step 6" / "Open".
 
 **G8 -- Mesa and the desktop (30 %).** Our G9P shader backend (decoded from
 `applegpu_g9p` output), Rogue state packing from upstream Mesa. Gallium (GL ES
@@ -500,10 +503,27 @@ CREATE_CONTEXT (render), then 20 x SUBMIT_JOBS {geometry, fragment} with a
 syncobj: **20 of 20 right (3072 background, 1024 triangle pixels), ~0.5-0.6
 ms per render -- PASS**, with the compute part and the self-tests.
 
-Open / next (G7 step 6 and after): MMU faults and firmware crashes (the
-firmware's recovery leaves the core unusable until a restart: the driver
-should restart it and fail the jobs), runtime PM (the GFX domain stays on
-while the firmware runs), free-list growth, transfer jobs, MSAA / layers /
+### G7 step 6 (2026-11-25): faults, hangs, idle power-off
+
+- **Recovery**: a job event 0x4 in the firmware's job ring (an MMU fault:
+  its own recovery leaves the core unusable, PDS / USC bases 0) or a job 5 s
+  in the firmware: the pending jobs end with -EIO, the firmware and the GFX
+  domain go off, the next job starts them again (`recover_work`). The
+  self-test `fault` (a store into an unmapped buffer): the job ends with
+  -EIO, one recovery, a store right after it PASS -- twice in a row.
+- **Idle power-off** (`idle_ms`, default 5000): with no job for that long
+  the firmware and the GFX domain go off (genpd `gfx` off); the next job
+  boots the firmware again (~0.25 s).
+- **The render targets' firmware objects survive a restart**: free-list
+  descriptors and PM slots belong to one firmware boot's pool; they keep
+  their parameters and are written again at the next job after a restart.
+  `pvr-uapi-test`: 7 s idle (firmware off), then 5 more renders with the
+  same free list and dataset: PASS.
+- Submissions from the UAPI hold the driver's lock from the (re)start to
+  the kick, so the idle power-off cannot slip in between.
+
+Open / next: runtime PM through the PM core (the driver switches the GFX
+domain itself now), free-list growth, transfer jobs, MSAA / layers /
 depth, several firmware queues per data master and hardware MMU contexts
 > 0, `drm_sched` instead of the in-ioctl waits; a firmware ping (the kernel's RTKit has no ping call); what the sgx node's
 IRQs 185-188 / 193 are for (nothing needs them so far).

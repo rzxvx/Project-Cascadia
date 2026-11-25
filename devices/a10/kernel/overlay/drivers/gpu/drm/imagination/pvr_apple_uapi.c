@@ -355,7 +355,7 @@ int pvr_apple_ioctl_create_hwrt_dataset(struct pvr_device *pvr_dev, struct pvr_f
 		const struct drm_pvr_create_hwrt_rt_data_args *rd = &args->rt_data_args[i];
 
 		h->rgn[i] = rd->region_header_dev_addr;
-		h->rt[i] = pvr_apple_hwrt_create_fl(a, f->fl->va, rd->pm_mlist_dev_addr,
+		h->rt[i] = pvr_apple_hwrt_create_fl(a, f->fl, rd->pm_mlist_dev_addr,
 						    rd->macrotile_array_dev_addr,
 						    args->geom_data_args.vheap_table_dev_addr);
 		if (IS_ERR(h->rt[i])) {
@@ -468,11 +468,13 @@ static int submit_compute(struct pvr_apple *a, struct pvr_device *pvr_dev, struc
 	err = sync_ops(file, j, NULL);		/* waits */
 	if (err)
 		return err;
-	job = pvr_apple_job_cp(a->q[DM_CP], &args);
-	if (IS_ERR(job))
-		return PTR_ERR(job);
-	pvr_apple_job_set_vm(job, c->vm);
-	f = pvr_apple_submit(job);
+	mutex_lock(&a->lock);		/* the idle power-off waits for this */
+	err = pvr_apple_start_locked(a);
+	job = err ? ERR_PTR(err) : pvr_apple_job_cp(a->q[DM_CP], &args);
+	if (!IS_ERR(job))
+		pvr_apple_job_set_vm(job, c->vm);
+	f = IS_ERR(job) ? ERR_CAST(job) : pvr_apple_submit(job);
+	mutex_unlock(&a->lock);
 	if (IS_ERR(f))
 		return PTR_ERR(f);
 	err = sync_ops(file, j, f);		/* signals */
@@ -561,11 +563,13 @@ static int submit_geom(struct pvr_apple *a, struct pvr_device *pvr_dev, struct d
 	err = wait_put(&h->frag[i]) ?: sync_ops(file, j, NULL);
 	if (err)
 		return err;
-	job = pvr_apple_job_ta(a->q[0], &args, h->rt[i]);
-	if (IS_ERR(job))
-		return PTR_ERR(job);
-	pvr_apple_job_set_vm(job, c->vm);
-	f = pvr_apple_submit(job);
+	mutex_lock(&a->lock);
+	err = pvr_apple_start_locked(a);
+	job = err ? ERR_PTR(err) : pvr_apple_job_ta(a->q[0], &args, h->rt[i]);
+	if (!IS_ERR(job))
+		pvr_apple_job_set_vm(job, c->vm);
+	f = IS_ERR(job) ? ERR_CAST(job) : pvr_apple_submit(job);
+	mutex_unlock(&a->lock);
 	if (IS_ERR(f))
 		return PTR_ERR(f);
 	dma_fence_put(h->geom[i]);
@@ -640,11 +644,13 @@ static int submit_frag(struct pvr_apple *a, struct pvr_device *pvr_dev, struct d
 	err = wait_put(&h->geom[i]) ?: sync_ops(file, j, NULL);
 	if (err)
 		return err;
-	job = pvr_apple_job_3d(a->q[1], &args, h->rt[i]);
-	if (IS_ERR(job))
-		return PTR_ERR(job);
-	pvr_apple_job_set_vm(job, c->vm);
-	f = pvr_apple_submit(job);
+	mutex_lock(&a->lock);
+	err = pvr_apple_start_locked(a);
+	job = err ? ERR_PTR(err) : pvr_apple_job_3d(a->q[1], &args, h->rt[i]);
+	if (!IS_ERR(job))
+		pvr_apple_job_set_vm(job, c->vm);
+	f = IS_ERR(job) ? ERR_CAST(job) : pvr_apple_submit(job);
+	mutex_unlock(&a->lock);
 	if (IS_ERR(f))
 		return PTR_ERR(f);
 	dma_fence_put(h->frag[i]);
@@ -665,10 +671,6 @@ int pvr_apple_ioctl_submit_jobs(struct pvr_device *pvr_dev, struct drm_file *fil
 
 	if (args->jobs.count && args->jobs.stride < sizeof(struct drm_pvr_job))
 		return -EINVAL;
-	err = pvr_apple_start(a);		/* (again, after a firmware crash) */
-	if (err)
-		return err;
-
 	for (i = 0; i < args->jobs.count; i++, p += args->jobs.stride) {
 		struct pvr_apple_uctx *c, snap = { 0 };
 		struct drm_pvr_job j;

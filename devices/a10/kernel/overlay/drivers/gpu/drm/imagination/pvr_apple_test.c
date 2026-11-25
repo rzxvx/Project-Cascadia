@@ -969,6 +969,33 @@ static int test_vm2(struct pvr_apple *a, u32 n, char *res, size_t len)
 	return err;
 }
 
+/*
+ * A fault on purpose: a store into an unmapped buffer (the full
+ * FinalizeCompute flushes it into an MMU fault). The driver must fail the
+ * job (-EIO) and restart the firmware; then a store again.
+ */
+static int test_fault(struct pvr_apple *a, char *res, size_t len)
+{
+	struct pvr_apple_cp_args args;
+	struct pvr_apple_job *job;
+	u32 before = a->recoveries, out0 = 0;
+	int e1, e2;
+
+	store_job_args_out(a, 0, 0x5000000, GVA, G3VA, &args);
+	job = pvr_apple_job_cp(a->test->cp, &args);
+	mutex_unlock(&a->lock);		/* the recovery takes the lock */
+	e1 = IS_ERR(job) ? PTR_ERR(job) : wait(pvr_apple_submit(job), 8000);
+	flush_work(&a->recover_work);
+	mutex_lock(&a->lock);
+	e2 = test_start(a) ?: wait(submit_store(a, 1, a->test->cp), 2000);
+	if (!e2 && !store_ok(a, 1, &out0))
+		e2 = -EIO;
+	scnprintf(res, len, "fault: %s -- the faulting job ended with %d (-EIO wanted), recoveries %u -> %u, a store after it %d (out %08x)\n",
+		  e1 == -EIO && a->recoveries == before + 1 && !e2 ? "PASS" : "FAIL", e1, before,
+		  a->recoveries, e2, out0);
+	return e2;
+}
+
 /* N renders: TA, then 3D, each time into a freshly marked target */
 static int test_render(struct pvr_apple *a, u32 n, char *res, size_t len)
 {
@@ -1122,7 +1149,7 @@ static ssize_t selftest_write(struct file *f, const char __user *ubuf, size_t le
 		mutex_unlock(&a->lock);
 		return len;
 	}
-	if (strcmp(cmd, "store") && strcmp(cmd, "storeq") && strcmp(cmd, "render") && strcmp(cmd, "remap") && strcmp(cmd, "vm2") && strcmp(cmd, "start")) {
+	if (strcmp(cmd, "store") && strcmp(cmd, "storeq") && strcmp(cmd, "render") && strcmp(cmd, "remap") && strcmp(cmd, "vm2") && strcmp(cmd, "fault") && strcmp(cmd, "start")) {
 		mutex_unlock(&a->lock);
 		return -EINVAL;
 	}
@@ -1139,6 +1166,8 @@ static ssize_t selftest_write(struct file *f, const char __user *ubuf, size_t le
 		err = test_remap(a, n, res, sizeof(res));
 	else if (!strcmp(cmd, "vm2"))
 		err = test_vm2(a, n, res, sizeof(res));
+	else if (!strcmp(cmd, "fault"))
+		err = test_fault(a, res, sizeof(res));
 
 	else
 		scnprintf(res, sizeof(res), "started\n");

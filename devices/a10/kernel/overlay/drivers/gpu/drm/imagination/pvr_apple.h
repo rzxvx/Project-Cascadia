@@ -213,6 +213,9 @@ struct pvr_apple {
 	u32 ring_wr[13];			/* host write index per channel */
 	struct list_head queues;
 	struct delayed_work done_work;		/* completions, as a fallback to EP 0x20 */
+	struct work_struct recover_work;	/* a fault or a hang: fail the jobs, firmware off */
+	struct delayed_work idle_work;		/* idle: firmware and GFX domain off */
+	u32 recoveries;
 	spinlock_t fence_lock;			/* every job fence's lock (outlives the queues) */
 
 	/* MMU context 0's catalog page: the active VM's root table (pvr_apple.c) */
@@ -263,6 +266,7 @@ struct pvr_apple_job {
 	u32 rec_addr_off, rec_val_off;		/* the command's completion record */
 	u32 seqno;
 	struct pvr_vm_context *vm;		/* translates the job's addresses (MMU context 0) */
+	unsigned long pushed;			/* jiffies when the firmware got it */
 	bool vm_ref;				/* vm is a reference of the job's */
 	struct dma_fence *fence;
 	struct list_head node;
@@ -290,10 +294,17 @@ struct pvr_apple_3d_args {
 };
 
 /* a render target's firmware objects: free-list descriptor, PM slot, the TA's large object */
+struct pvr_apple_fl;
+
 struct pvr_apple_hwrt {
 	struct pvr_apple *a;
 	struct pvr_apple_obj obj;
 	u32 fl_va, slot_va, tbig_va, pmh_va;
+	/* what the objects are written from again after a firmware restart */
+	struct pvr_apple_fl *ext_fl;		/* a free list of its own, or: */
+	u64 fl_base;
+	u32 fl_pages;
+	u64 mlist, mta, vheap;
 };
 
 /* a free list's firmware descriptor */
@@ -301,6 +312,8 @@ struct pvr_apple_fl {
 	struct pvr_apple *a;
 	struct pvr_apple_obj obj;
 	u32 va;
+	u64 base;
+	u32 pages;
 };
 
 /* boot parameters */
@@ -376,13 +389,14 @@ void pvr_apple_process_completions(struct pvr_apple *a);
 u32 pvr_apple_queue_word(struct pvr_apple_queue *q, u32 off);
 int pvr_apple_queue_debug(struct pvr_apple_queue *q, char *buf, size_t len);
 void pvr_apple_fail_all(struct pvr_apple *a, int err);
+void pvr_apple_schedule_idle(struct pvr_apple *a);
 struct pvr_apple_hwrt *pvr_apple_hwrt_create(struct pvr_apple *a, u64 fl_base, u32 fl_pages,
 					     u64 mlist, u64 mta, u64 vheap);
 void pvr_apple_hwrt_destroy(struct pvr_apple_hwrt *rt);
 struct pvr_apple_fl *pvr_apple_fl_create(struct pvr_apple *a, u64 base, u32 pages);
 void pvr_apple_fl_destroy(struct pvr_apple_fl *fl);
-struct pvr_apple_hwrt *pvr_apple_hwrt_create_fl(struct pvr_apple *a, u32 fl_va, u64 mlist, u64 mta,
-						u64 vheap);
+struct pvr_apple_hwrt *pvr_apple_hwrt_create_fl(struct pvr_apple *a, struct pvr_apple_fl *fl,
+						u64 mlist, u64 mta, u64 vheap);
 
 void pvr_apple_vm_activate(struct pvr_apple *a, struct pvr_vm_context *vm);
 

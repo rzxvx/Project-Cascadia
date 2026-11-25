@@ -119,6 +119,8 @@ void pvr_apple_drain_rings(struct pvr_apple *a)
 
 			if (t < ARRAY_SIZE(a->ev_count[i]))
 				a->ev_count[i][t]++;
+			if (i == 0 && t == 4)		/* a job event 0x4: a fault */
+				schedule_work(&a->recover_work);
 			else
 				a->ev_other[i]++;
 			rd = (rd + 1) % n;
@@ -707,6 +709,68 @@ int pvr_apple_start(struct pvr_apple *a)
 	return err;
 }
 
+/*
+ * idle_ms: with no job for that long the firmware and the GFX domain go off
+ * (the next job brings them up again, ~0.3 s); 0: never.
+ */
+static unsigned int idle_ms = 5000;
+module_param(idle_ms, uint, 0644);
+
+void pvr_apple_schedule_idle(struct pvr_apple *a)
+{
+	if (idle_ms && a->running)
+		mod_delayed_work(system_dfl_wq, &a->idle_work, msecs_to_jiffies(idle_ms));
+}
+
+static bool pvr_apple_busy(struct pvr_apple *a)
+{
+	struct pvr_apple_queue *q;
+	unsigned long flags;
+	bool busy = false;
+
+	spin_lock_irqsave(&a->job_lock, flags);
+	list_for_each_entry(q, &a->queues, node)
+		busy |= q->inflight || !list_empty(&q->pending);
+	spin_unlock_irqrestore(&a->job_lock, flags);
+	return busy;
+}
+
+static void pvr_apple_idle_work(struct work_struct *work)
+{
+	struct pvr_apple *a = container_of(work, struct pvr_apple, idle_work.work);
+
+	mutex_lock(&a->lock);
+	if (a->running && !pvr_apple_busy(a)) {
+		dev_info(a->dev, "idle: GFX firmware and domain off\n");
+		pvr_apple_stop_locked(a);
+	}
+	mutex_unlock(&a->lock);
+}
+
+/*
+ * A fault (job event 0x4: the firmware's recovery then leaves the core
+ * unusable, PDS / USC bases 0) or a job 5 s in the firmware: the pending
+ * jobs end with -EIO, the firmware goes off, the next job starts it again
+ * and the render targets' objects are written again (pvr_apple_job.c).
+ */
+static void pvr_apple_recover_work(struct work_struct *work)
+{
+	struct pvr_apple *a = container_of(work, struct pvr_apple, recover_work);
+	u32 fs = 0, fa = 0;
+
+	mutex_lock(&a->lock);
+	if (a->running) {
+		pvr_apple_rgx_read(a, 0xe150, &fs);
+		pvr_apple_rgx_read(a, 0xe154, &fa);
+		a->recoveries++;
+		dev_warn(a->dev, "GPU fault or hang (MMU fault status %#x %#x): failing the jobs, restarting the firmware\n",
+			 fs, fa);
+		pvr_apple_fail_all(a, -EIO);
+		pvr_apple_stop_locked(a);
+	}
+	mutex_unlock(&a->lock);
+}
+
 static void pvr_apple_done_work(struct work_struct *work)
 {
 	pvr_apple_process_completions(container_of(work, struct pvr_apple, done_work.work));
@@ -742,6 +806,8 @@ int pvr_apple_probe(struct pvr_device *pvr_dev)
 	spin_lock_init(&a->job_lock);
 	INIT_LIST_HEAD(&a->queues);
 	INIT_DELAYED_WORK(&a->done_work, pvr_apple_done_work);
+	INIT_WORK(&a->recover_work, pvr_apple_recover_work);
+	INIT_DELAYED_WORK(&a->idle_work, pvr_apple_idle_work);
 	spin_lock_init(&a->fence_lock);
 	INIT_DELAYED_WORK(&a->poll_work, pvr_apple_poll_work);
 
@@ -867,6 +933,9 @@ void pvr_apple_remove(struct pvr_device *pvr_dev)
 		return;
 	drm_dev_unplug(from_pvr_device(pvr_dev));
 	debugfs_remove_recursive(a->debugfs);
+	cancel_work_sync(&a->recover_work);
+	idle_ms = 0;
+	cancel_delayed_work_sync(&a->idle_work);
 	mutex_lock(&a->lock);
 	pvr_apple_test_fini(a);
 	pvr_apple_stop_locked(a);
