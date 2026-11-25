@@ -225,3 +225,70 @@ def mov_imm(d, value):
         if value >> vb & 1:
             w[i] |= 1 << b
     return w + [0x0154, 0x0038]
+
+
+# --- vertex and fragment programs ------------------------------------------
+
+def vs_output(reg, slot):
+    """vertex output `slot` (0-3 the clip-space position, then the
+    varyings' components) = r[reg]"""
+    return [0x151e, 0x0100 | 2 * reg, slot]
+
+
+def vertex_program(body, last_reg, last_slot):
+    """a vertex shader: body, then the last output write in the end word's
+    place at the start of a 64-byte block (after a jump and padding)"""
+    words = [w for i in body for w in i]
+    jpos = 2 * len(words)
+    end = (jpos + 6 + 63) // 64 * 64
+    words += _jump(0x0100, end - jpos)
+    words += [PAD] * ((end - 2 * len(words)) // 2)
+    words += [0x155e, 0xc100 | 2 * last_reg, last_slot]
+    words += [0] * (-len(words) % 32)
+    return struct.pack("<%dH" % len(words), *words)
+
+
+def fragment_program(body):
+    """a fragment shader: body, padding, the end word at a 64-byte block"""
+    words = [w for i in body for w in i]
+    words += [PAD] * ((-2 * (len(words) + 1)) % 64 // 2) + [END]
+    return struct.pack("<%dH" % len(words), *words)
+
+
+def fs_dst(d):
+    """a fragment-bank destination (W1 bit 9 clear)"""
+    return 0x0100 | d << 1
+
+
+def fs_mov_imm(d, value):
+    w = mov_imm(d, value)
+    w[1] = fs_dst(d)
+    return w
+
+
+def iterate(first_half, comp, n, f16=True, persp=True):
+    """the fragment's iterated varying: n components (1-4) from component
+    index comp on, into registers from half first_half (f16) or from
+    register first_half / 2 (f32)"""
+    w0 = (0x000a if f16 else 0x0008) | (n % 4) << 11 | (0x0200 if persp else 0) | 0x0100
+    return [w0, (1 + comp) << 9 | 0x0100 | first_half, 0x0080]
+
+
+def emit_colour(first_half=0):
+    """the colour output: four f16 halves from first_half on"""
+    return [0x211c, 0x0800 | first_half]
+
+
+def iterate_f32_coord(first_reg, comp, n=2):
+    """f32 varying components for texture coordinates into r[first_reg]..
+    (the compiler's form with W2 0x8000)"""
+    return [0x0108 | (n % 4) << 11 | 0x0200, (1 + comp) << 9 | 0x0100 | 2 * first_reg, 0x8000]
+
+
+def sample(first_half, coord_reg):
+    """sample the 2D texture whose state the PDS put at common-store dword 0
+    (sampler at dword 8) at the f32 coordinates r[coord_reg], r[coord_reg+1]
+    into four f16 halves from first_half (the compiler's form; first_half /
+    coord_reg 0 only, other fields to decode); follow with wait()"""
+    assert first_half == 0 and coord_reg == 0
+    return [0xf518, 0x0100, 0x8108, 0x0700, 0x0200]

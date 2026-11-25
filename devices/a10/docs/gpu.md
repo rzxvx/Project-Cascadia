@@ -687,6 +687,54 @@ Compiler-only so far (not yet on the GPU): fp16 add / mul (opcode 0x89,
 ops 0x04 / 0x08), integer min / max (5 words, ops 0xb2 / 0xb3 / 0xba),
 float abs (an extra word, bit 14), sin / cos.
 
+### G8.1: the fragment side -- varyings and textures from our encodings
+
+`tools/gpu/g9p-render.c` draws one triangle into a 64x64 BGRA8 target
+through the powervr UAPI (G7's render path, the clear and end of tile as
+before) with the shaders and the per-draw state words supplied in a pack;
+`isa/render-check.py` builds the tests with `g9pasm` and compares every
+pixel with the CPU (barycentric interpolation at pixel centres, edges and
+texel borders left out); `render-check.sh` runs them. **All four right,
+3783 of 3783 pixels each** (2026-11-26): a constant colour, eight vertex
+outputs, the vertex colours interpolated, an 8x8 texture sampled.
+
+- **Vertex shader**: r0 = the vertex index (the vertex kick's DOUTW);
+  ours builds the address of vertex r0 from the buffer address the PDS put
+  in common-store dwords 0-1 and loads it like compute code. Outputs:
+  `151e 01rr ss` writes r[rr / 2] to output slot ss (0-3 the clip-space
+  position, then the varyings' components); the last one, `155e c1rr ss`,
+  stands in the end word's place at the start of a 64-byte block.
+- **Its register budget**: VDM_STATE5 `0x1081` gives a vertex task 8
+  registers (unified size field 4) for 32 instances; **a vertex shader
+  using 12 registers crashed the firmware** (the TA never finished; with 8
+  it runs). A larger shader needs a larger field and fewer instances per
+  task -- registers x instances within 256 (to check beyond 8 x 32).
+- **The varying PDS program** (PPP VARYINGBASE = its data, the code right
+  after): data `{03000000, 0}` (the 1/w iterate), then per
+  perspective-correct varying of n components from component c on
+  `{03 << 24 | ((n - 1) << 2 | 1) << 16 | L << 8 | L, 0x00400000 | (c / 2)
+  << 23 | last << 31}` with L = 2 + 2c, padded to 16 bytes; code one DOUTI
+  (`f0000004 | q << 3`) per data pair, END on the last, HALT. PPP: VARYING0
+  f32_linear = the components, OUTPUT_SEL vertex size and VDM_STATE4 = 4 +
+  the components, SIZEINFO1 PDS varying size (16-byte units) and USC
+  varying size (2 for a vec4, 1 for a vec2).
+- **Fragment iterate**: `0s0a (1 + c) << 9 | 0x100 | hh 0080` writes n
+  components (W0 bits 11-12 = n mod 4, bit 9 perspective) as f16 halves
+  from half hh; `0s08` the f32 form (W2 0x8000 for texture coordinates).
+  `211c 08hh` emits the colour from four f16 halves from hh (BGRA8 target:
+  stored as B, G, R, A). Fragment code uses bank 0 (W1 bit 9 clear) for
+  its values.
+- **Textures**: the texture state (8 dwords) and sampler (2) DMA'd into the
+  fragment's common store by the TEXUNICODEBASE program (`DOUTD` q0 with
+  control 0x10000008 -> dwords 0-7, `DOUTD END` q1 with 0x90010002 -> 8-9,
+  HALT; its data at PPP UNIFORMDATABASE, header bit 9), SIZEINFO1 uniform
+  size 2, SIZEINFO2 USC shared size 1. State: `0x0344050a | (w - 1) << 27`
+  (RGBA8, R first), `(w - 1) >> 5 | (h - 1) << 9`, address >> 1 in dwords
+  2-3; sampler `000e0000 00c00780` (nearest, clamp). Texels in Morton order
+  with the y bit first. `f518 0100 8108 0700 0200` samples (state at
+  dword 0, sampler at 8, coordinates r0-r1, into halves 0-3: its fields
+  still to decode), `004d` waits.
+
 ## 2D on the GPU (2026-11-25/26): g9p2d and SuperTux
 
 The first use of the G7 driver: SDL2's 2D renderer drawn by the GPU, as on
