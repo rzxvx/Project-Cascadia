@@ -11,7 +11,8 @@
  * FILE.bin (G9PT) holds, per test NAME: NAME.vs / NAME.fs (USC code),
  * NAME.cfg (u32: vertex output dwords, VARYING0, SIZEINFO1, SIZEINFO2,
  * varying PDS data bytes, texture w, texture h, sampler 0, sampler 1,
- * texture state word 0), NAME.vb (the vertex buffer, its address goes to
+ * texture state word 0[, vertices (3), ISPA front (0x003e0f00), ISPCTL
+ * (0x03c40000), ISPA back (0x00100f00)]), NAME.vb (the vertex buffer, its address goes to
  * common-store dwords 0-1 of the vertex shader), NAME.vpds (the varying PDS
  * program: data, then code), NAME.tex (texels, as the GPU reads them).
  * Prints the 64x64 pixels' hash and writes them to out.raw.
@@ -163,6 +164,17 @@ int main(int argc, char **argv)
 	if (sz < 40)
 		DIE("cfg too short");
 	tex = cfg[5] != 0;
+	{
+		static uint32_t c2[14];
+
+		memset(c2, 0, sizeof(c2));
+		memcpy(c2, cfg, sz < sizeof(c2) ? sz : sizeof(c2));
+		if (!c2[10]) c2[10] = 3;
+		if (!c2[11]) c2[11] = 0x003e0f00;
+		if (!c2[12]) c2[12] = 0x03c40000;
+		if (!c2[13]) c2[13] = 0x00100f00;
+		cfg = c2;
+	}
 
 	fd = open("/dev/dri/renderD128", O_RDWR | O_CLOEXEC);
 	if (fd < 0)
@@ -314,7 +326,7 @@ int main(int argc, char **argv)
 		else
 			B(ptrs, 0x1300, 0xc0, cfg[2], cfg[3], cfg[4] ? C_VPDS : 0xc0);
 		B(0x00020000, cfg[0] << 24 | 0x00010000);			/* OUTPUT_SEL: vertex size, rhw */
-		B(0x0000001f, 0x03c40000, 0x003e0f00, 0x0e000000, 0x00100f00, 0);
+		B(0x0000001f, cfg[12], cfg[11], 0x0e000000, cfg[13], 0);	/* ISPCTL, front A / B, back A / B */
 		B(0x00000c00, 0x80000001, 1, f32b(32), f32b(32), f32b(32), f32b(-32), 0, 0x3f800000);
 		B(0x00210000, 0x1e3ce508, 0x000004a0);
 		B(0x00000020, 0);
@@ -329,7 +341,7 @@ int main(int argc, char **argv)
 		st[m++] = 0x20020001; st[m++] = 0x1280; st[m++] = 0x1200; st[m++] = 0x48002f80; st[m++] = 0x1180;
 		for (k = 1; k + 1 < nb; k++)
 			PPP(k);
-		st[m++] = 0x6e440600; st[m++] = 3; st[m++] = 0; st[m++] = 0; st[m++] = 0xaa;
+		st[m++] = 0x6e440600; st[m++] = cfg[10]; st[m++] = 0; st[m++] = 0; st[m++] = 0xaa;
 		PPP(nb - 1);
 		st[m++] = 0xc0000000;
 #undef PPP

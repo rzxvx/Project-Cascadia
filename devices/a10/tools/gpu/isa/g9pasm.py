@@ -292,3 +292,17 @@ def sample(first_half, coord_reg):
     coord_reg 0 only, other fields to decode); follow with wait()"""
     assert first_half == 0 and coord_reg == 0
     return [0xf518, 0x0100, 0x8108, 0x0700, 0x0200]
+
+
+def load_tile(first_half):
+    """the tile's current colour (four f16 halves from first_half): the colour
+    emit's form with W1 bit 13 -- what blending reads"""
+    return [0x211c, 0x2800 | first_half]
+
+
+OPS16 = {"hadd": 0x04, "hmul": 0x08}
+
+
+def alu2h(op, d, a, b):
+    """fragment-bank f16 two-source ALU (opcode 0x89): half d = half a OP half b"""
+    return [0x0189, 0x0100 | d, 0x0100 | 0x80 | a << 1 | (0x40 | b) << 9, 0x0100 | OPS16[op], 0x8000]

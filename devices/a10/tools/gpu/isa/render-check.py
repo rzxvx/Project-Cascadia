@@ -29,7 +29,9 @@ def f16(f):
     return struct.unpack("<H", struct.pack("<e", f))[0]
 
 
-def vertex_buffer(uv=None):
+def vertex_buffer(uv=None, tris=None):
+    if tris:
+        return b"".join(struct.pack("<8f", x, y, z, 1, *c) for t in tris for (x, y, z), c in t)
     if uv:
         return b"".join(struct.pack("<8f", x, y, 0, 1, u, v, 0, 0) for ((x, y), c), (u, v) in zip(VERTS, uv))
     return b"".join(struct.pack("<8f", x, y, 0, 1, *c) for (x, y), c in VERTS)
@@ -52,8 +54,9 @@ def vs(noutputs):
     return A.vertex_program(body, 4 + noutputs - 5, noutputs - 1)
 
 
-def cfg(outputs, varying0, sizeinfo1, sizeinfo2, vpds_data=0, tex=(0, 0, 0, 0, 0)):
-    return struct.pack("<10I", outputs, varying0, sizeinfo1, sizeinfo2, vpds_data, *tex)
+def cfg(outputs, varying0, sizeinfo1, sizeinfo2, vpds_data=0, tex=(0, 0, 0, 0, 0), nverts=3, ispa=0, ispctl=0,
+        ispa_back=0):
+    return struct.pack("<14I", outputs, varying0, sizeinfo1, sizeinfo2, vpds_data, *tex, nverts, ispa, ispctl, ispa_back)
 
 
 def vary_pds(varyings):
@@ -125,26 +128,119 @@ tests["tex"] = dict(
     vpds=data_t + code_t, tex=tex_bytes(), model="tex", uv=UV)
 
 
+# 4. depth: two triangles, the second drawn after the first; LESS keeps the nearer
+RED, GREEN = (1, 0, 0, 1), (0, 1, 0, 1)
+T1 = [((-1, -1, 0.5), RED), ((1, -1, 0.5), RED), ((-1, 1, 0.5), RED)]
+
+
+def t2(z):
+    return [((-0.5, -1, z), GREEN), ((1, -1, z), GREEN), ((1, 0.5, z), GREEN)]
+
+
+ISPA_ZLESS = 0x00120f00 | 1 << 17          # depth test LESS, depth write on
+ISPA_ALWAYS = 0x00120f00 | 7 << 17         # depth test ALWAYS, depth write on
+for name, z, ispa, cmpm in (("z_less_far", 0.7, ISPA_ZLESS, "less"), ("z_less_near", 0.3, ISPA_ZLESS, "less"),
+                            ("z_always_far", 0.7, ISPA_ALWAYS, "always")):
+    tests[name] = dict(vs=vs(8), fs=tests["vcol"]["fs"], vpds=data + code, model="tris", tris=[T1, t2(z)],
+                       cmp=cmpm, cfg=cfg(8, 4, 0x00800420, 0, len(data), nverts=6, ispa=ispa))
+
+
+# 5. blending (in the fragment shader): red, then green at alpha 0.5 over it. The
+# ISP pass type TRANSLUCENT: an opaque object hides what it covers before any
+# shader runs (only the top object's shader runs, the clear's neither)
+ISPA_TRANSLUCENT = 0x00120f00 | 7 << 17 | 1 << 24
+GREEN_HALF = (0, 1, 0, 0.5)
+T2B = [((-0.5, -1, 0.5), GREEN_HALF), ((1, -1, 0.5), GREEN_HALF), ((1, 0.5, 0.5), GREEN_HALF)]
+H = "#include <metal_stdlib>\nusing namespace metal;\n"
+BSRC = H + """struct V { float4 p [[position]]; half4 c; };
+vertex V vs(uint vid [[vertex_id]], constant float4 *pos [[buffer(0)]]) { V o; o.p = pos[vid]; o.c = half4(1); return o; }
+fragment half4 fs(V in [[stage_in]]) { return in.c; }"""
+
+
+def battach(sr, dr, sa, da):
+    return (', "blending_enabled": true, "source_rgb_blend_factor": "%s", "destination_rgb_blend_factor": "%s", '
+            '"source_alpha_blend_factor": "%s", "destination_alpha_blend_factor": "%s"' % (sr, dr, sa, da))
+
+
+BLENDS = {"add": battach("One", "One", "One", "One"),
+          "alpha": battach("SourceAlpha", "OneMinusSourceAlpha", "One", "OneMinusSourceAlpha"),
+          "mul": battach("DestinationColor", "Zero", "DestinationAlpha", "Zero")}
+for bname, att in BLENDS.items():
+    fsc = g9pshaders.build_render("rbl_" + bname, BSRC, [("vs", "fs")], attach=att)[1][0]
+    tests["blend_" + bname + "_apple"] = dict(vs=vs(8), fs=fsc, vpds=data + code, model="tris", tris=[T1, T2B],
+                                             cmp="always", blend=bname,
+                                             cfg=cfg(8, 4, 0x00800420, 0, len(data), nverts=6, ispa=ISPA_TRANSLUCENT))
+# ours: src -> halves 0-3, the tile -> halves 4-7, add, emit
+tests["blend_add_ours"] = dict(
+    vs=vs(8), fs=A.fragment_program([A.iterate(0, 0, 4), A.load_tile(4), A.wait()]
+                                    + [A.alu2h("hadd", i, i, 4 + i) for i in range(4)] + [A.emit_colour(0)]),
+    vpds=data + code, model="tris", tris=[T1, T2B], cmp="always", blend="add",
+    cfg=cfg(8, 4, 0x00800420, 0, len(data), nverts=6, ispa=ISPA_TRANSLUCENT))
+tests["blend_mul_ours"] = dict(
+    vs=vs(8), fs=A.fragment_program([A.iterate(0, 0, 4), A.load_tile(4), A.wait()]
+                                    + [A.alu2h("hmul", i, i, 4 + i) for i in range(4)] + [A.emit_colour(0)]),
+    vpds=data + code, model="tris", tris=[T1, T2B], cmp="always", blend="mul",
+    cfg=cfg(8, 4, 0x00800420, 0, len(data), nverts=6, ispa=ISPA_TRANSLUCENT))
+
+
 def build():
     out, meta = {}, {}
     for name, t in tests.items():
         out[name + ".vs"] = t["vs"]
         out[name + ".fs"] = t["fs"]
         out[name + ".cfg"] = t["cfg"]
-        out[name + ".vb"] = vertex_buffer(t.get("uv"))
+        out[name + ".vb"] = vertex_buffer(t.get("uv"), t.get("tris"))
         if "vpds" in t:
             out[name + ".vpds"] = t["vpds"]
         if "tex" in t:
             out[name + ".tex"] = t["tex"]
-        meta[name] = {k: v for k, v in t.items() if k in ("model", "colour", "uv")}
+        meta[name] = {k: v for k, v in t.items() if k in ("model", "colour", "uv", "tris", "cmp", "blend")}
     g9pshaders.pack(out, OUT + ".bin")
     json.dump(meta, open(OUT + ".json", "w"))
     print(" ".join(tests))
 
 
+def bary(tri, px, py):
+    sx = [32 + 32 * v[0][0] for v in tri]
+    sy = [32 - 32 * v[0][1] for v in tri]
+    d = (sy[1] - sy[2]) * (sx[0] - sx[2]) + (sx[2] - sx[1]) * (sy[0] - sy[2])
+    b0 = ((sy[1] - sy[2]) * (px - sx[2]) + (sx[2] - sx[1]) * (py - sy[2])) / d
+    b1 = ((sy[2] - sy[0]) * (px - sx[2]) + (sx[0] - sx[2]) * (py - sy[2])) / d
+    return b0, b1, 1 - b0 - b1
+
+
+def blend(mode, s, d):
+    c = lambda v: min(max(v, 0.0), 1.0)
+    if mode == "add":
+        return tuple(c(s[k] + d[k]) for k in range(4))
+    if mode == "alpha":
+        return tuple(c(s[k] * s[3] + d[k] * (1 - s[3])) for k in range(3)) + (c(s[3] + d[3] * (1 - s[3])),)
+    if mode == "mul":
+        return tuple(c(s[k] * d[k]) for k in range(4))
+    return s
+
+
+def model_tris(t, px, py):
+    """triangles in order with a depth test: (colour or None on an edge)"""
+    colour, depth = CLEAR, 1.0
+    for tri in t["tris"]:
+        b = bary(tri, px, py)
+        if min(b) < -0.02:
+            continue
+        if min(b) < 0.02:
+            return None
+        z = sum(b[i] * tri[i][0][2] for i in range(3))
+        if t["cmp"] == "always" or (t["cmp"] == "less" and z < depth):
+            src = tuple(sum(b[i] * tri[i][1][k] for i in range(3)) for k in range(4))
+            colour, depth = blend(t.get("blend"), src, colour), z
+    return colour
+
+
 def model(name, x, y):
     """the expected (r, g, b, a) at pixel centre (x, y), or None on an edge"""
     t = json.load(open(OUT + ".json"))[name]
+    if t["model"] == "tris":
+        return model_tris(t, x + 0.5, y + 0.5)
     sx = [32 + 32 * vx for (vx, vy), c in VERTS]
     sy = [32 - 32 * vy for (vx, vy), c in VERTS]
     px, py = x + 0.5, y + 0.5

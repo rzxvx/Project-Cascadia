@@ -125,7 +125,7 @@ def pack(code, out):
     open(out, "wb").write(hdr + ents + blob)
 
 
-def build_render(tag, src, pipelines, fmt="BGRA8Unorm"):
+def build_render(tag, src, pipelines, fmt="BGRA8Unorm", attach=""):
     """render pipelines [(vertex fn, fragment fn), ...] of Metal source `src`
     through the offline compiler for applegpu_g9p (build/gpu/isa/<tag>.*).
     Returns ([vertex code, ...], [fragment code, ...]) in __vertex /
@@ -136,12 +136,16 @@ def build_render(tag, src, pipelines, fmt="BGRA8Unorm"):
         open(path, "w").write(src)
     air, lib = os.path.join(ISA, tag + ".air"), os.path.join(ISA, tag + ".metallib")
     tt, js = os.path.join(ISA, tag + ".g9p.metallib"), os.path.join(ISA, tag + ".mtlp-json")
-    if not os.path.exists(tt) or os.path.getmtime(tt) < os.path.getmtime(path):
+    stamp = os.path.join(ISA, tag + ".attach")
+    if (not os.path.exists(tt) or os.path.getmtime(tt) < os.path.getmtime(path) or not os.path.exists(stamp)
+            or open(stamp).read() != fmt + attach):
+        open(stamp, "w").write(fmt + attach)
         subprocess.run(["xcrun", "-sdk", "iphoneos", "metal", "-std=metal3.0", "-mios-version-min=16.4", "-w",
                         "-c", path, "-o", air], check=True)
         subprocess.run(["xcrun", "-sdk", "iphoneos", "metallib", air, "-o", lib], check=True)
         pipes = ", ".join('{ "vertex_function": "alias:lib#%s", "fragment_function": "alias:lib#%s", '
-                          '"color_attachments": [ { "pixel_format": "%s" } ] }' % (v, f, fmt) for v, f in pipelines)
+                          '"color_attachments": [ { "pixel_format": "%s"%s } ] }' % (v, f, fmt, attach)
+                          for v, f in pipelines)
         open(js, "w").write('{ "libraries": { "paths": [ { "label": "lib", "path": "%s" } ] },\n'
                             ' "pipelines": { "render_pipelines": [ %s ] } }\n' % (lib, pipes))
         subprocess.run(["xcrun", "metal-tt", "-arch", "applegpu_g9p", "-platform_version", "ios", "16.4", "16.4",

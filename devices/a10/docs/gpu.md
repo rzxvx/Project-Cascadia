@@ -735,6 +735,32 @@ outputs, the vertex colours interpolated, an 8x8 texture sampled.
   dword 0, sampler at 8, coordinates r0-r1, into halves 0-3: its fields
   still to decode), `004d` waits.
 
+### G8.1: depth and blending
+
+`render-check.sh` now draws several triangles per draw (the INDEX_LIST
+count) with the ISP words per test: **13 of 13 tests right** (2026-11-26).
+
+- **Depth test**: plain Rogue ISP state (Mesa `ppp.xml`): ISPA (front;
+  ISPCTL `bpres` set, the back faces' own word after the front ISPB)
+  `0x00120f00 | cmp << 17` -- compare mode bits 17-19 (1 LESS, 7 ALWAYS),
+  bit 21 = depth write off (clear: on), bit 20 set as the captures have it.
+  The depth starts at the fragment job's background depth (1.0). Two
+  overlapping triangles, the second further (z 0.7 vs 0.5) or nearer
+  (0.3): LESS keeps the nearer one either way, ALWAYS draws in order.
+- **Blending is the fragment shader's work.** The offline compiler, given
+  blend states in the pipeline description (`blending_enabled`,
+  `source_rgb_blend_factor`... -- the format is in the toolchain's
+  `metal-pipelines-script(5)`), emits **`211c 28hh`**: the colour emit's
+  form with W1 bit 13 reads the tile's current colour into four f16 halves
+  from hh; f16 arithmetic (opcode 0x89: `0189 01dd W2 01op 8000`, add 0x04,
+  mul 0x08, first source half in W2 bits 1-6, second in bits 9-14) blends,
+  `211c 0800` writes. ISPA's pass type must be **TRANSLUCENT** (bits 24-26
+  = 1): with OPAQUE the hardware removes hidden surfaces first and runs only
+  the top object's shader per pixel (not even the clear's), so the tile
+  read sees nothing drawn before. Checked: the compiler's add, alpha and
+  multiply shaders and our own add and multiply over a red triangle and the
+  clear, every pixel right.
+
 ## 2D on the GPU (2026-11-25/26): g9p2d and SuperTux
 
 The first use of the G7 driver: SDL2's 2D renderer drawn by the GPU, as on
