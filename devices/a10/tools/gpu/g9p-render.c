@@ -12,7 +12,8 @@
  * NAME.cfg (u32: vertex output dwords, VARYING0, SIZEINFO1, SIZEINFO2,
  * varying PDS data bytes, texture w, texture h, sampler 0, sampler 1,
  * texture state word 0[, vertices (3), ISPA front (0x003e0f00), ISPCTL
- * (0x03c40000), ISPA back (0x00100f00)]), NAME.vb (the vertex buffer, its address goes to
+ * (0x03c40000), ISPA back (0x00100f00), VDM_STATE5 (0x1081), the vertex and
+ * fragment DOUTU temps words (0x10: 8 registers)]), NAME.vb (the vertex buffer, its address goes to
  * common-store dwords 0-1 of the vertex shader), NAME.vpds (the varying PDS
  * program: data, then code), NAME.tex (texels, as the GPU reads them).
  * Prints the 64x64 pixels' hash and writes them to out.raw.
@@ -165,7 +166,7 @@ int main(int argc, char **argv)
 		DIE("cfg too short");
 	tex = cfg[5] != 0;
 	{
-		static uint32_t c2[14];
+		static uint32_t c2[17];
 
 		memset(c2, 0, sizeof(c2));
 		memcpy(c2, cfg, sz < sizeof(c2) ? sz : sizeof(c2));
@@ -173,6 +174,9 @@ int main(int argc, char **argv)
 		if (!c2[11]) c2[11] = 0x003e0f00;
 		if (!c2[12]) c2[12] = 0x03c40000;
 		if (!c2[13]) c2[13] = 0x00100f00;
+		if (!c2[14]) c2[14] = 0x1081;
+		if (!c2[15]) c2[15] = 0x10;
+		if (!c2[16]) c2[16] = 0x10;
 		cfg = c2;
 	}
 
@@ -242,12 +246,12 @@ int main(int argc, char **argv)
 
 		/* vertex kick: DOUTW the vertex index -> r0, DOUTU (8 temps: VDM_STATE5 0x1081's 8 registers) */
 		memcpy(code + 0x1100 / 4, v, sizeof(v));
-		code[0x1180 / 4] = C_VS; code[0x1184 / 4] = 0x10; code[0x1188 / 4] = 0x80000000; code[0x118c / 4] = 0;
+		code[0x1180 / 4] = C_VS; code[0x1184 / 4] = cfg[15]; code[0x1188 / 4] = 0x80000000; code[0x118c / 4] = 0;
 		/* the vertex shader's common store: dwords 0-1 = the vertex buffer's address */
 		code[0x1200 / 4] = 0xf4000800; code[0x1204 / 4] = 0xd3000000;
 		qv = tva + 0x700; memcpy(code + 0x1280 / 4, &qv, 8); qv = 0x90000002; memcpy(code + 0x1288 / 4, &qv, 8);
 		/* fragment kick */
-		code[0x1300 / 4] = C_FS; code[0x1304 / 4] = 0x10;
+		code[0x1300 / 4] = C_FS; code[0x1304 / 4] = cfg[16];
 		for (i = 0x1308; i < 0x1320; i += 4)
 			code[i / 4] = 0;
 		code[0x1320 / 4] = 0xf4000002;
@@ -336,7 +340,7 @@ int main(int argc, char **argv)
 			memcpy(g3 + (0x6c000 + 0x100 + 0x40 * k) / 4, blk[k], 4 * len[k]);
 #define PPP(b) do { uint64_t at = tva + 0x100 + 0x40 * (b); st[m++] = (len[b] << 8) | (uint32_t)(at >> 32); \
 		    st[m++] = (uint32_t)at & 0xfffffffc; } while (0)
-		st[m++] = 0x44002f80; st[m++] = 0x1100; st[m++] = cfg[0]; st[m++] = 0x1081;
+		st[m++] = 0x44002f80; st[m++] = 0x1100; st[m++] = cfg[0]; st[m++] = cfg[14];
 		PPP(0);
 		st[m++] = 0x20020001; st[m++] = 0x1280; st[m++] = 0x1200; st[m++] = 0x48002f80; st[m++] = 0x1180;
 		for (k = 1; k + 1 < nb; k++)

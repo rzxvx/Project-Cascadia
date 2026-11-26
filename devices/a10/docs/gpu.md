@@ -722,7 +722,10 @@ outputs, the vertex colours interpolated, an 8x8 texture sampled.
   registers (unified size field 4) for 32 instances; **a vertex shader
   using 12 registers crashed the firmware** (the TA never finished; with 8
   it runs). A larger shader needs a larger field and fewer instances per
-  task -- registers x instances within 256 (to check beyond 8 x 32).
+  task, registers x instances within 256: 16 registers (unified size 8,
+  DOUTU temps `0x20`) with STATE5 bits 25-29 (the instances) = 16 or 8 run
+  right (`vs16_*` in render-check); 32 x 8 is what the compiler asks for
+  past 16 (to check).
 - **The varying PDS program** (PPP VARYINGBASE = its data, the code right
   after): data `{03000000, 0}` (the 1/w iterate), then per
   perspective-correct varying of n components from component c on
@@ -746,8 +749,13 @@ outputs, the vertex colours interpolated, an 8x8 texture sampled.
   (RGBA8, R first), `(w - 1) >> 5 | (h - 1) << 9`, address >> 1 in dwords
   2-3; sampler `000e0000 00c00780` (nearest, clamp). Texels in Morton order
   with the y bit first. `f518 0100 8108 0700 0200` samples (state at
-  dword 0, sampler at 8, coordinates r0-r1, into halves 0-3: its fields
-  still to decode), `004d` waits.
+  dword 0, sampler at 8, coordinates r0-r1, into halves 0-3), `004d` waits.
+  The fields, from the offline compiler's two-texture shader and checked
+  by the compiled tests: W1 = `0x0100 | state dword << 8 | the result's
+  first half`, W2 = `0x8100 | the coordinates' first half << 8 | sampler
+  dword`; `f51a` returns four f32 registers instead of f16 halves. With
+  several textures the states come first (8 dwords each), the samplers
+  after them (2 each).
 
 ### G8.1: depth and blending
 
@@ -842,9 +850,48 @@ continue path itself is checked at the ISA level only (`isa-check8`).
 `isa-check2`'s case with registers r28-r31 now times out on the GPU with
 the same program bytes as when it passed (to check).
 
-Next: vertex and fragment shaders (the outputs, varyings, textures and
-blending of G8.1), then the Gallium driver; on the compute side,
-multi-dimensional workgroups, vectors in loads / stores, fp16, spilling.
+**Vertex and fragment shaders** (the same day). `g9p-cc` compiles a
+vertex and a fragment shader together (`FILE.vert FILE.frag`): the vertex
+shader's compile lays out the varyings, the fragment shader's reads that
+layout. `render-check.py` builds its `cc_*` tests from GLSL ES 3.00 that
+way and derives the draw's state from the compiler's numbers (vertex
+output dwords, the varying PDS program from the varyings' sizes and
+interpolation, SIZEINFO1, VDM_STATE5 and both DOUTU temps words from the
+register counts).
+
+- **Vertex**: registers in bank 1 like compute; attributes are loaded as
+  vectors (`4x32`) from one interleaved buffer at common-store dwords 0-1,
+  attribute a at vertex x stride + 16a (the stride, in vec4s, is the
+  buffer's: `g9p-cc -a`); outputs scalarized, `151e` each, the last output
+  store of the last block left for the frame's `155e` at the end (its
+  value kept live to the end); gl_PointSize dropped.
+- **Fragment**: registers in bank 0 as Apple's fragment code has them (the
+  iterates and the colour emit work there; the same encoders with the bank
+  bits clear). Varyings iterated as f32 vectors; the colour converted to
+  four f16 halves by the f32 multiply by 1.0 with an f16 result (opcode
+  0x89, op word bit 9 -- from the offline compiler's `half(a * b)`) and
+  emitted with `211c 08hh`. Textures: `f51a` into four f32 registers.
+- **Blending** in the shader: `nir_lower_blend` with the blend state
+  (`g9p-cc -b add|alpha|mul`) reads the destination through `load_output`,
+  which becomes the tile read (`211c 28hh`) and four f16 -> f32
+  conversions: an f32 multiply whose op word bit 10 marks the first source
+  as an f16 half (the offline compiler's `float(h) * float(h2)` sets bits
+  10 and 11).
+- Register values are vectors now (loads, iterates, samples, `vecN`
+  copies) in consecutive registers, at even registers; constants only
+  used as I/O offsets or buffer indices take none.
+
+**render-check: 30 of 30 right**, the 14 compiled ones among them: the
+vertex colour, a constant colour, arithmetic and swizzles with clamp,
+varyings of 2 and 3 components (packed into one slot by the GLSL linker),
+a vertex transform, a select, a loop of a pixel-dependent count (the mask
+stack in bank 0), division / sqrt / fract / pow, a fragment shader of 14
+registers, a texture sampled directly and at computed coordinates, and
+additive, alpha and multiplicative blending over a red triangle.
+
+Next: the Gallium driver (uniforms and the real vertex formats, the draw
+state from these numbers); on the compiler side flat varyings, discard,
+several render targets, depth output, fp16 arithmetic, spilling.
 
 ## 2D on the GPU (2026-11-25/26): g9p2d and SuperTux
 
