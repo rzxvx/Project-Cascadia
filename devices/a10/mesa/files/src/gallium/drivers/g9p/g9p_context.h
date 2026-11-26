@@ -17,12 +17,13 @@ struct g9p_resource;
 
 struct g9p_variant {
    struct g9p_variant *next;
-   uint8_t key[512];
+   uint8_t key[1024];
    unsigned key_size;
    bool failed;
    uint32_t code;              /* USC address */
    unsigned nregs;
    unsigned noutputs;          /* vertex: output dwords */
+   bool psiz;                  /* vertex: the point size the last of them */
    struct g9p_varyings vary;   /* vertex: the layout; fragment: + interpolation */
 };
 
@@ -57,6 +58,10 @@ struct g9p_frame {
    unsigned nreads;
    bool reads_overflow;
    bool loading;               /* the load draw is being recorded */
+   /* the scissor table (ISP_SCISSOR_BASE): {xmin << 16 | xmax, ymin << 16 |
+    * ymax} per rectangle, maxima exclusive; a draw picks one (DBSC) */
+   uint32_t sc_at;
+   unsigned nsc;
 };
 
 struct g9p_context {
@@ -73,6 +78,7 @@ struct g9p_context {
    struct pipe_rasterizer_state *rast;
    struct pipe_depth_stencil_alpha_state *dsa;
    struct pipe_viewport_state viewport;
+   struct pipe_scissor_state scissor;
    struct pipe_stencil_ref stencil_ref;
    /* constant buffer 0 (the uniforms) per stage: vertex, fragment */
    struct pipe_constant_buffer cb[2];

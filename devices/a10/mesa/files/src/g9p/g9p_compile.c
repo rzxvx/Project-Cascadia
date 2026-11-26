@@ -415,6 +415,7 @@ struct val {
 struct ctx {
    nir_shader *nir;
    mesa_shader_stage stage;
+   bool psiz;                  /* vertex: a point size store */
    struct emit e;
    bool analyse;
    struct val *v;
@@ -870,6 +871,7 @@ static bool
 interpolated_slot(unsigned location)
 {
    return (location >= VARYING_SLOT_COL0 && location <= VARYING_SLOT_TEX7) || location == VARYING_SLOT_BFC0 ||
+          location == VARYING_SLOT_PNTC ||
           location == VARYING_SLOT_BFC1 || (location >= VARYING_SLOT_VAR0 && location < 64);
 }
 
@@ -893,14 +895,14 @@ emit_store_output(struct ctx *c, nir_intrinsic_instr *in)
    if (c->stage == MESA_SHADER_VERTEX) {
       unsigned slot;
 
-      if (io.location == VARYING_SLOT_PSIZ)
-         return;                              /* points: to do */
       if (nir_src_num_components(in->src[0]) != 1) {
          c->e.error = "a vector output store (scalarize first)";
          return;
       }
       if (io.location == VARYING_SLOT_POS) {
          slot = comp;
+      } else if (io.location == VARYING_SLOT_PSIZ) {
+         slot = 4 + c->vary->total;           /* after the varyings */
       } else if (interpolated_slot(io.location)) {
          int i = varying_of(c->vary, io.location);
          slot = 4 + c->vary->offset[i] + comp;
@@ -1184,7 +1186,7 @@ const_read(nir_def *def)
             return true;
          break;
       case nir_intrinsic_store_output:
-         if (i == 0 && nir_intrinsic_io_semantics(in).location != VARYING_SLOT_PSIZ)
+         if (i == 0)
             return true;
          break;
       case nir_intrinsic_load_ssbo:
@@ -1380,15 +1382,15 @@ color_to_data0(nir_builder *b, nir_intrinsic_instr *in, void *data)
    return true;
 }
 
-/* vertex outputs nothing reads yet: point size (points: to do), the edge
- * flag, clip vertex / distances (user clip planes: to do), layer, viewport */
+/* vertex outputs nothing reads yet: the edge flag, clip vertex / distances
+ * (user clip planes: to do), layer, viewport */
 static bool
 drop_output(nir_builder *b, nir_intrinsic_instr *in, void *data)
 {
    if (in->intrinsic != nir_intrinsic_store_output)
       return false;
    const unsigned loc = nir_intrinsic_io_semantics(in).location;
-   if (loc != VARYING_SLOT_PSIZ && loc != VARYING_SLOT_EDGE && loc != VARYING_SLOT_CLIP_VERTEX &&
+   if (loc != VARYING_SLOT_EDGE && loc != VARYING_SLOT_CLIP_VERTEX &&
        !(loc >= VARYING_SLOT_CLIP_DIST0 && loc <= VARYING_SLOT_CULL_DIST1) && loc != VARYING_SLOT_LAYER &&
        loc != VARYING_SLOT_VIEWPORT)
       return false;
@@ -1429,6 +1431,88 @@ remat_consts(nir_shader *nir)
       any |= nir_progress(progress, impl, nir_metadata_control_flow);
    }
    return any;
+}
+
+/* discard in a blending shader: a flag, and the tile's colour stored where
+ * it is set -- the pixel left as it was. The hardware's discard in the
+ * translucent pass (blending) dropped the whole triangle (g9p-glcheck
+ * discardblend). Pixels "discarded" this way run on; a fragment shader
+ * has no other side effects here. */
+static bool
+discard_to_tile(nir_shader *nir)
+{
+   nir_function_impl *impl = nir_shader_get_entrypoint(nir);
+   bool any = false;
+
+   nir_foreach_block(block, impl) {
+      nir_foreach_instr(instr, block) {
+         if (instr->type != nir_instr_type_intrinsic)
+            continue;
+         const nir_intrinsic_op op = nir_instr_as_intrinsic(instr)->intrinsic;
+         any |= op == nir_intrinsic_terminate_if || op == nir_intrinsic_demote_if ||
+                op == nir_intrinsic_terminate || op == nir_intrinsic_demote;
+      }
+   }
+   if (!any)
+      return nir_no_progress(impl);
+   nir_builder b = nir_builder_at(nir_before_impl(impl));
+   nir_variable *flag = nir_local_variable_create(impl, glsl_bool_type(), "g9p_discarded");
+   nir_store_var(&b, flag, nir_imm_false(&b), 1);
+   nir_foreach_block_safe(block, impl) {
+      nir_foreach_instr_safe(instr, block) {
+         if (instr->type != nir_instr_type_intrinsic)
+            continue;
+         nir_intrinsic_instr *in = nir_instr_as_intrinsic(instr);
+         b.cursor = nir_before_instr(instr);
+         switch (in->intrinsic) {
+         case nir_intrinsic_terminate_if:
+         case nir_intrinsic_demote_if:
+            nir_store_var(&b, flag, nir_ior(&b, nir_load_var(&b, flag), in->src[0].ssa), 1);
+            nir_instr_remove(instr);
+            break;
+         case nir_intrinsic_terminate:
+         case nir_intrinsic_demote:
+            nir_store_var(&b, flag, nir_imm_true(&b), 1);
+            nir_instr_remove(instr);
+            break;
+         case nir_intrinsic_store_output: {
+            nir_io_semantics io = nir_intrinsic_io_semantics(in);
+            if (io.location != FRAG_RESULT_DATA0 || nir_src_num_components(in->src[0]) != 4)
+               break;
+            io.fb_fetch_output = 1;
+            nir_def *tile = nir_load_output(&b, 4, 32, nir_imm_int(&b, 0), .base = nir_intrinsic_base(in),
+                                            .component = 0, .dest_type = nir_type_float32, .io_semantics = io);
+            nir_src_rewrite(&in->src[0], nir_bcsel(&b, nir_load_var(&b, flag), tile, in->src[0].ssa));
+            break;
+         }
+         default:
+            break;
+         }
+      }
+   }
+   return nir_progress(true, impl, nir_metadata_none);
+}
+
+/* gl_PointCoord's y turned over (1 - y) after its load */
+static bool
+flip_pntc(nir_builder *b, nir_intrinsic_instr *in, void *data)
+{
+   if (in->intrinsic != nir_intrinsic_load_interpolated_input ||
+       nir_intrinsic_io_semantics(in).location != VARYING_SLOT_PNTC)
+      return false;
+   const unsigned comp = nir_intrinsic_component(in);
+   if (comp + in->def.num_components <= 1)
+      return false;                             /* x only */
+   b->cursor = nir_after_instr(&in->instr);
+   nir_def *c[4];
+   for (unsigned k = 0; k < in->def.num_components; k++) {
+      c[k] = nir_channel(b, &in->def, k);
+      if (comp + k == 1)
+         c[k] = nir_fsub_imm(b, 1.0, c[k]);
+   }
+   nir_def *v = nir_vec(b, c, in->def.num_components);
+   nir_def_rewrite_uses_after(&in->def, v);
+   return true;
 }
 
 /* the position's z = (z + w) / 2 at an io-lowered vec4 store */
@@ -1515,6 +1599,7 @@ prescan(struct ctx *c, nir_function_impl *impl)
             nir_intrinsic_instr *in = nir_instr_as_intrinsic(instr);
             if (in->intrinsic == nir_intrinsic_store_output) {
                unsigned loc = nir_intrinsic_io_semantics(in).location;
+               c->psiz |= loc == VARYING_SLOT_PSIZ;
                if (interpolated_slot(loc)) {
                   unsigned n = nir_intrinsic_component(in) + nir_src_num_components(in->src[0]);
                   if (n > comps[loc])
@@ -1537,14 +1622,14 @@ prescan(struct ctx *c, nir_function_impl *impl)
          vy->offset[vy->n] = vy->total;
          vy->persp[vy->n] = true;
          vy->flat[vy->n] = false;
+         vy->sprite[vy->n] = false;
          vy->total += comps[i];
          vy->n++;
       }
       /* the last output store of the last block: the frame's end writes it */
       nir_block *last = nir_impl_last_block(impl);
       nir_foreach_instr_reverse(instr, last) {
-         if (is_output_store(instr) &&
-             nir_intrinsic_io_semantics(nir_instr_as_intrinsic(instr)).location != VARYING_SLOT_PSIZ) {
+         if (is_output_store(instr)) {
             c->last_output = instr;
             break;
          }
@@ -1568,6 +1653,19 @@ prescan(struct ctx *c, nir_function_impl *impl)
             if (in->intrinsic != nir_intrinsic_load_interpolated_input)
                continue;
             int i = varying_of(vy, nir_intrinsic_io_semantics(in).location);
+            if (i < 0 && nir_intrinsic_io_semantics(in).location == VARYING_SLOT_PNTC) {
+               /* gl_PointCoord: a varying of its own after the vertex's,
+                * which the varying program makes the sprite's coordinate */
+               if (vy->n == G9P_MAX_VARYINGS)
+                  return "too many varyings";
+               i = vy->n++;
+               vy->slot[i] = VARYING_SLOT_PNTC;
+               vy->comps[i] = 2;
+               vy->offset[i] = align(vy->total, 2);    /* the iterate's destination: pairs */
+               vy->total = vy->offset[i] + 2;
+               vy->flat[i] = false;
+               vy->sprite[i] = true;
+            }
             nir_intrinsic_instr *bary = nir_def_as_intrinsic(in->src[0].ssa);
             if (i >= 0)
                vy->persp[i] = nir_intrinsic_interp_mode(bary) != INTERP_MODE_NOPERSPECTIVE;
@@ -1622,6 +1720,8 @@ g9p_compile(nir_shader *nir, bool print, const struct g9p_options *opts, struct 
       }
       if (c.stage == MESA_SHADER_VERTEX)
          NIR_PASS(_, nir, nir_shader_intrinsics_pass, drop_output, nir_metadata_control_flow, NULL);
+      if (c.stage == MESA_SHADER_FRAGMENT && opts && opts->pntc_flip)
+         NIR_PASS(_, nir, nir_shader_intrinsics_pass, flip_pntc, nir_metadata_control_flow, NULL);
       if (c.stage == MESA_SHADER_VERTEX && opts && opts->clip_halfz) {
          bool partial = false;
 
@@ -1642,6 +1742,7 @@ g9p_compile(nir_shader *nir, bool print, const struct g9p_options *opts, struct 
          bo.rt[0].rgb = (nir_lower_blend_channel){ b->rgb_func, b->rgb_src, b->rgb_dst };
          bo.rt[0].alpha = (nir_lower_blend_channel){ b->alpha_func, b->alpha_src, b->alpha_dst };
          NIR_PASS(_, nir, nir_lower_blend, &bo);
+         NIR_PASS(_, nir, discard_to_tile);
       }
    }
    NIR_PASS(_, nir, nir_lower_vars_to_ssa);
@@ -1722,7 +1823,8 @@ g9p_compile(nir_shader *nir, bool print, const struct g9p_options *opts, struct 
    } else if (c.stage == MESA_SHADER_VERTEX) {
       frame_vertex(&prog, &c.e, c.cf, c.st, c.last_reg, c.last_slot);
       out->nregs = c.nregs + c.cf;
-      out->noutputs = 4 + c.vary->total;
+      out->psiz = c.psiz;
+      out->noutputs = 4 + c.vary->total + out->psiz;
       out->nattribs = c.nattribs;
    } else {
       frame_fragment(&prog, &c.e, c.cf, c.st);

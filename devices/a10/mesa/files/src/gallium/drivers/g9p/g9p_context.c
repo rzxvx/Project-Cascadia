@@ -31,6 +31,7 @@
 
 #include "g9p_resource.h"
 #include "indices/u_indices.h"
+#include "util/u_prim.h"
 #include "g9p_screen.h"
 
 #define FRAME_BO_SIZE (16u << 20)
@@ -123,6 +124,8 @@ frame_reset(struct g9p_context *ctx)
    f->reads_overflow = false;
    f->ndraws = 0;
    f->nstream = 0;
+   f->nsc = 0;
+   f->sc_at = 0;
    f->pos = 4 * STREAM_WORDS;
    ctx->dev->code_frame = G9P_CODE_FRAME;
 }
@@ -194,6 +197,8 @@ g9p_flush_frame(struct g9p_context *ctx)
    uint64_t *bg = (uint64_t *)(frag + 256);
 
    *(uint32_t *)frag = sizeof(frag);
+   if (f->nsc)
+      *(uint64_t *)(frag + 8) = frame_va(ctx, f->sc_at);     /* isp_scissor_base */
    bg[0] = (uint64_t)G9P_PDS_DOUTD << 32 | bg_pds;
    bg[1] = texu;
    bg[2] = 0x0080000000800000ULL;
@@ -338,6 +343,7 @@ variant(struct g9p_context *ctx, struct g9p_cso_shader *sh, const void *key, uns
    v->code = g9p_code_shader(ctx->dev, out.code, out.size);
    v->nregs = out.nregs;
    v->noutputs = out.noutputs;
+   v->psiz = out.psiz;
    if (getenv("G9P_DEBUG")) {
       /* G9P_DEBUG=1: each variant's numbers, its code in /tmp/g9p-<stage>-<code>.bin */
       char path[64];
@@ -443,7 +449,12 @@ g9p_set_viewport_states(struct pipe_context *p, unsigned start, unsigned n, cons
       g9p_context(p)->viewport = vp[0];
 }
 
-static void g9p_set_scissor_states(struct pipe_context *p, unsigned s, unsigned n, const struct pipe_scissor_state *x) {}
+static void
+g9p_set_scissor_states(struct pipe_context *p, unsigned s, unsigned n, const struct pipe_scissor_state *x)
+{
+   if (!s && n)
+      g9p_context(p)->scissor = x[0];
+}
 static void g9p_set_blend_color(struct pipe_context *p, const struct pipe_blend_color *c) {}
 static void g9p_set_stencil_ref(struct pipe_context *p, const struct pipe_stencil_ref r) { g9p_context(p)->stencil_ref = r; }
 static void g9p_set_sample_mask(struct pipe_context *p, unsigned m) {}
@@ -663,13 +674,13 @@ ispb_word(const struct pipe_stencil_state *s)
 /* the ISP words of both faces: depth compare / write, stencil; returns
  * whether the faces differ (ISPCTL two_sided) */
 static bool
-isp_state(struct g9p_context *ctx, unsigned passtype, uint32_t ispa[2], uint32_t ispb[2])
+isp_state(struct g9p_context *ctx, unsigned passtype, uint32_t obj, uint32_t ispa[2], uint32_t ispb[2])
 {
    const struct pipe_depth_stencil_alpha_state *dsa = ctx->dsa;
    const struct pipe_surface *zs = &ctx->fb.zsbuf;
    const bool has_z = zs->texture && util_format_has_depth(util_format_description(zs->format));
    const bool has_s = zs->texture && util_format_has_stencil(util_format_description(zs->format));
-   uint32_t a = 0x00100f00 | passtype << 24;                         /* dfbztestenable, line width */
+   uint32_t a = 0x00100000 | passtype << 24 | obj;                   /* dfbztestenable, the object */
 
    if (has_z && dsa && dsa->depth_enabled)
       a |= dsa->depth_func << 17 | (dsa->depth_writemask ? 0 : 1u << 21);
@@ -688,6 +699,10 @@ static unsigned
 topology(enum mesa_prim mode)
 {
    switch (mode) {
+   case MESA_PRIM_POINTS: return 0;
+   case MESA_PRIM_LINES: return 1;
+   case MESA_PRIM_LINE_STRIP: return 3;
+   case MESA_PRIM_LINE_LOOP: return 5;
    case MESA_PRIM_TRIANGLES: return 6;
    case MESA_PRIM_TRIANGLE_STRIP: return 9;
    case MESA_PRIM_TRIANGLE_FAN: return 11;
@@ -740,9 +755,12 @@ draw_converted(struct g9p_context *ctx, const struct pipe_draw_info *info, unsig
    const bool flat = ctx->fs->flat_inputs;
    const bool quads = info->mode == MESA_PRIM_QUADS || info->mode == MESA_PRIM_QUAD_STRIP ||
                       info->mode == MESA_PRIM_POLYGON;
+   const bool list = info->mode == MESA_PRIM_TRIANGLES || info->mode == MESA_PRIM_LINES;
+   const unsigned hw = BITFIELD_BIT(MESA_PRIM_TRIANGLES) | BITFIELD_BIT(MESA_PRIM_LINES) |
+                       BITFIELD_BIT(MESA_PRIM_POINTS);
 
-   if (ctx->converted || (!quads && (topology(info->mode) == ~0u || !flat ||
-                                     (info->mode == MESA_PRIM_TRIANGLES && in_pv == PV_FIRST))))
+   if (ctx->converted || (!quads && (topology(info->mode) == ~0u || !flat || info->mode == MESA_PRIM_POINTS ||
+                                     (list && in_pv == PV_FIRST))))
       return false;
    const unsigned out_pv = flat ? PV_FIRST : in_pv;
    for (unsigned d = 0; d < num_draws; d++) {
@@ -755,7 +773,7 @@ draw_converted(struct g9p_context *ctx, const struct pipe_draw_info *info, unsig
 
       if (info->index_size) {
          u_translate_func tr;
-         if (u_index_translator(1u << MESA_PRIM_TRIANGLES, info->mode, info->index_size, dr->count, in_pv, out_pv,
+         if (u_index_translator(hw, info->mode, info->index_size, dr->count, in_pv, out_pv,
                                 info->primitive_restart ? PR_ENABLE : PR_DISABLE, &prim, &isz, &nr,
                                 &tr) == U_TRANSLATE_ERROR || !nr || !(buf = malloc(nr * isz)))
             continue;
@@ -764,7 +782,7 @@ draw_converted(struct g9p_context *ctx, const struct pipe_draw_info *info, unsig
          nd.index_bias = dr->index_bias;
       } else {
          u_generate_func gen;
-         if (u_index_generator(1u << MESA_PRIM_TRIANGLES, info->mode, dr->start, dr->count, in_pv, out_pv, &prim,
+         if (u_index_generator(hw, info->mode, dr->start, dr->count, in_pv, out_pv, &prim,
                                &isz, &nr, &gen) == U_TRANSLATE_ERROR || !nr || !(buf = malloc(nr * isz)))
             continue;
          gen(dr->start, nr, buf);
@@ -783,6 +801,37 @@ draw_converted(struct g9p_context *ctx, const struct pipe_draw_info *info, unsig
    return true;
 }
 
+#define G9P_MAX_SCISSORS 512
+
+/* the draw's scissor rectangle in the frame's table (ISPCTL scenable, DBSC
+ * scindex): its index, -1 with the scissor test off, -2 for an empty
+ * rectangle (nothing to draw). A full table sends the render first. */
+static int
+scissor_index(struct g9p_context *ctx)
+{
+   struct g9p_frame *f = &ctx->frame;
+   const struct pipe_scissor_state *sc = &ctx->scissor;
+
+   if (!ctx->rast || !ctx->rast->scissor)
+      return -1;
+   const struct g9p_resource *rt = g9p_resource(f->target);
+   const unsigned w = u_minify(rt->base.width0, f->level), h = u_minify(rt->base.height0, f->level);
+   const unsigned x0 = MIN2(sc->minx, w), x1 = MIN2(sc->maxx, w);
+   const unsigned y0 = MIN2(sc->miny, h), y1 = MIN2(sc->maxy, h);
+   const uint32_t e[2] = { x0 << 16 | x1, y0 << 16 | y1 };
+
+   if (x0 >= x1 || y0 >= y1)
+      return -2;
+   if (f->nsc && !memcmp(frame_ptr(ctx, f->sc_at + 8 * (f->nsc - 1)), e, sizeof(e)))
+      return f->nsc - 1;
+   if (f->nsc == G9P_MAX_SCISSORS)
+      g9p_flush_frame(ctx);
+   if (!f->sc_at && !(f->sc_at = frame_alloc(ctx, 8 * G9P_MAX_SCISSORS, 16)))
+      return -2;
+   memcpy(frame_ptr(ctx, f->sc_at + 8 * f->nsc), e, sizeof(e));
+   return f->nsc++;
+}
+
 static void
 g9p_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info, unsigned drawid_offset,
              const struct pipe_draw_indirect_info *indirect, const struct pipe_draw_start_count_bias *draws,
@@ -796,19 +845,34 @@ g9p_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info, unsig
       return;
    if (draw_converted(ctx, info, drawid_offset, draws, num_draws))
       return;
+   const int scindex = scissor_index(ctx);
+   if (scindex == -2)
+      return;
    /* a frame starting without a clear on a target with content: that
     * content first */
    if (!ctx->frame.ndraws && !ctx->frame.cleared && !ctx->frame.loading &&
        g9p_resource(ctx->frame.target)->seq)
       frame_load(ctx);
    if (topo == ~0u) {
-      mesa_logw_once("g9p: points and lines are not drawn yet");
+      mesa_logw_once("g9p: a primitive type not drawn yet (adjacency, patches)");
       return;
+   }
+   /* the ISP object: triangles; lines (type 1) and point sprites (type 4,
+    * UV 0..1) with their width / size in 4.4 fixed point less one (a
+    * triangle's field 0xf: 1.0) */
+   const enum mesa_prim reduced = u_reduced_prim(info->mode);
+   uint32_t obj = 0xf00;
+   if (reduced == MESA_PRIM_LINES) {
+      const float lw = ctx->rast ? ctx->rast->line_width : 1;
+      obj = 1u << 28 | CLAMP((int)lroundf(lw * 16) - 1, 0, 255) << 8;
+   } else if (reduced == MESA_PRIM_POINTS) {
+      const float ps = ctx->rast ? ctx->rast->point_size : 1;
+      obj = 4u << 28 | CLAMP((int)lroundf(ps * 16) - 1, 0, 255) << 8;
    }
    /* culling (PPP_CTRL cullmode: 1 clockwise, 2 counter-clockwise, as the
     * hardware sees the triangle) */
    uint32_t cull = 0;
-   if (ctx->rast && ctx->rast->cull_face) {
+   if (ctx->rast && ctx->rast->cull_face && reduced == MESA_PRIM_TRIANGLES) {
       if (ctx->rast->cull_face == PIPE_FACE_FRONT_AND_BACK)
          return;
       /* the rasterizer's counter-clockwise is the hardware's (g9p-glcheck
@@ -868,12 +932,15 @@ g9p_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info, unsig
       unsigned colormask;
       bool blending;
       unsigned ubo_dword, ubo_dwords, sampler_dword;
+      bool pntc_flip;
    } fkey;
    memset(&fkey, 0, sizeof(fkey));
    fkey.vary = vs->vary;
    fkey.ubo_dword = fubo;
    fkey.ubo_dwords = fu_n;
    fkey.sampler_dword = fsamp;
+   fkey.pntc_flip = ctx->rast && ctx->rast->sprite_coord_mode == PIPE_SPRITE_COORD_LOWER_LEFT &&
+                    (ctx->fs->nir->info.inputs_read & VARYING_BIT_PNTC);
    const struct pipe_rt_blend_state *rb = ctx->blend ? &ctx->blend->rt[0] : NULL;
    fkey.colormask = rb ? rb->colormask : 0xf;
    if (rb && (rb->blend_enable || fkey.colormask != 0xf)) {
@@ -888,7 +955,8 @@ g9p_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info, unsig
          ctx->fb.cbufs[0].format };
    }
    struct g9p_options fo = { .blend = fkey.blending ? &fkey.blend : NULL, .colormask = fkey.colormask,
-                             .ubo_dword = fubo, .ubo_dwords = fu_n, .sampler_dword = fsamp };
+                             .ubo_dword = fubo, .ubo_dwords = fu_n, .sampler_dword = fsamp,
+                             .pntc_flip = fkey.pntc_flip };
    struct g9p_variant *fs = variant(ctx, ctx->fs, &fkey, sizeof(fkey), &fo, &vs->vary);
    if (!fs)
       return;
@@ -995,8 +1063,14 @@ g9p_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info, unsig
          unsigned nd = 2;
          for (unsigned i = 0; i < vy->n; i++) {
             const unsigned c = vy->offset[i], n = vy->comps[i], L = 2 + 2 * c;
-            const bool pp = vy->persp[i] || vy->flat[i];
-            data[nd++] = (vy->flat[i] ? 0u : 3u) << 24 | ((n - 1) << 2 | pp) << 16 | L << 8 | L;
+            /* the perspective bits for flat varyings (without them their
+             * components came one place on) and the sprite coordinate
+             * (bit 23: wrong values without them); the sprite's offset in
+             * the vertex 0 (it has none there) */
+            const bool pp = vy->persp[i] || vy->flat[i] || vy->sprite[i];
+            const unsigned Ls = vy->sprite[i] ? 0 : L;
+            data[nd++] = (vy->flat[i] ? 0u : 3u) << 24 | (vy->sprite[i] ? 1u << 23 : 0) |
+                         ((n - 1) << 2 | pp) << 16 | Ls << 8 | Ls;
             data[nd++] = (pp ? 0x00400000 : 0) | (c / 2) << 23 | (i == vy->n - 1 ? 0x80000000 : 0);
          }
          while (nd % 4)
@@ -1016,7 +1090,9 @@ g9p_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info, unsig
       /* the VDM stream: vertex state, varyings, the common store's
        * program, the vertex kick, then the PPP state and the indices */
       STREAM(ctx, 0x44002f80, G9P_PDS_VS_KICK, vs->noutputs, state5(vs->nregs, vcs));
-      PPP(ctx, 0x001c0000, vy->total, 0, 0);
+      /* VARYING0: the components the vertex carries (gl_PointCoord's,
+       * made by the varying program, not among them) */
+      PPP(ctx, 0x001c0000, vs->vary.total, 0, 0);
       /* PDS_STATE0's common-store size: 20 dwords read crashed the
        * firmware with 3, ran with 4 (its unit not Rogue's 64 bytes: to
        * check); a unit of 16 bytes and one more */
@@ -1029,7 +1105,10 @@ g9p_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info, unsig
              vpds ? vpds : 0xc0, fq);
       else
          PPP(ctx, 0x000000c0, fkick, 0xc0, sz1, 0, vpds ? vpds : 0xc0);
-      PPP(ctx, 0x00020000, vs->noutputs << 24 | 0x00010000);
+      /* OUTPUT_SEL: the vertex size, rhw; bit 18 the point size (the
+       * vertex's last dword) for point sprites */
+      PPP(ctx, 0x00020000,
+          vs->noutputs << 24 | 0x00010000 | (reduced == MESA_PRIM_POINTS && vs->psiz ? 1u << 18 : 0));
       /* ISP (Rogue's ISPCTL / ISPA / ISPB): the depth test and stencil of
        * each face; blending's passes translucent (the hidden-surface
        * removal would run only the top object's shader) */
@@ -1039,8 +1118,9 @@ g9p_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info, unsig
        * the triangle as drawn and left uninitialised tile memory where
        * the shader dropped pixels; 2 drew the same as 4) */
       const unsigned passtype = fkey.blending ? 1 : ctx->fs->nir->info.fs.uses_discard ? 4 : 0;
-      const bool two_sided = isp_state(ctx, passtype, ispa, ispb);
-      PPP(ctx, 0x0000001f, 0x03c40000 | (two_sided ? 1u << 19 : 0), ispa[0], ispb[0], ispa[1], ispb[1]);
+      const bool two_sided = isp_state(ctx, passtype, obj, ispa, ispb);
+      PPP(ctx, 0x0000001f, 0x03c40000 | (two_sided ? 1u << 19 : 0) | (scindex >= 0 ? 1u << 16 : 0), ispa[0],
+          ispb[0], ispa[1], ispb[1]);
       const struct pipe_viewport_state *vp = &ctx->viewport;
       /* the hardware clips depth to 0..w: GL's -w..w was halved in the
        * vertex shader (clip_halfz), its viewport z follows */
@@ -1049,7 +1129,7 @@ g9p_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info, unsig
       PPP(ctx, 0x00000c00, 0x80000000 | (tx - 1), ty - 1, f32b(vp->translate[0]), f32b(vp->scale[0]),
           f32b(vp->translate[1]), f32b(vp->scale[1]), f32b(zt), f32b(zs));
       PPP(ctx, 0x00210000, 0x1e3ce508, 0x000004a0 | cull);
-      PPP(ctx, 0x00000020, 0);
+      PPP(ctx, 0x00000020, scindex >= 0 ? scindex : 0);        /* ISP DBSC: the scissor's index */
       if (info->index_size) {
          const uint64_t ia = index_va + (uint64_t)dr->start * info->index_size;
          const uint32_t isz = info->index_size == 1 ? 0 : info->index_size == 2 ? 1 : 2;

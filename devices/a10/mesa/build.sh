@@ -60,7 +60,7 @@ if [ "${1:-}" = driver ]; then
         -lwayland-egl -lm
     # the X11 client (desktop GL through GLX, Xwayland)
     cc -O2 -Wall -I"$I/include" /a10/tools/gpu/gl/x11/g9p-glx.c -o "$I/bin/g9p-glx" -L"$I/lib" \
-        -Wl,-rpath-link,"$I/lib" -Wl,-rpath,/usr/local/g9p/lib -lGL -lX11
+        -Wl,-rpath-link,"$I/lib" -Wl,-rpath,/usr/local/g9p/lib -lGL -lX11 -lm
     install -m 755 /a10/mesa/g9p-run "$I/bin/g9p-run"
     # the stripped tree for the iPad
     rm -rf /tmp/g9p && cp -a "$I" /tmp/g9p && strip /tmp/g9p/lib/*.so.* /tmp/g9p/bin/g9p-gl* 2>/dev/null

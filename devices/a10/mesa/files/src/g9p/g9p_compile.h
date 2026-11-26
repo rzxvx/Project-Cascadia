@@ -25,6 +25,7 @@ struct g9p_varyings {
    unsigned offset[G9P_MAX_VARYINGS];   /* the first component's index */
    bool persp[G9P_MAX_VARYINGS];
    bool flat[G9P_MAX_VARYINGS];         /* one vertex's value (the driver picks which) */
+   bool sprite[G9P_MAX_VARYINGS];       /* the point sprite's coordinate (gl_PointCoord, no vertex output) */
    unsigned total;                      /* components */
 };
 
@@ -61,6 +62,9 @@ struct g9p_options {
    /* vertex: GL's clip-space depth (-w..w) made the hardware's (0..w):
     * z = (z + w) / 2 */
    bool clip_halfz;
+   /* fragment: gl_PointCoord with its origin at the bottom (the hardware's
+    * sprite coordinate starts at the top): y = 1 - y */
+   bool pntc_flip;
 };
 
 struct g9p_shader {
@@ -69,7 +73,8 @@ struct g9p_shader {
    unsigned size;           /* bytes */
    unsigned nregs;          /* registers r0..nregs-1 (bank 1; fragment: bank 0), the mask stack in r[nregs] when used */
    unsigned local_size[3];
-   unsigned noutputs;       /* vertex: output dwords (4 + the varyings' components) */
+   unsigned noutputs;       /* vertex: output dwords (4 + the varyings' components [+ 1: the point size]) */
+   bool psiz;               /* vertex: the point size written, the last output dword */
    unsigned nattribs;       /* vertex: vec4 attributes per vertex (the interleaved buffer's stride / 16) */
 };
 

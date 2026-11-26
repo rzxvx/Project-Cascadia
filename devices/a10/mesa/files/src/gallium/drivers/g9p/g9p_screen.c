@@ -195,8 +195,9 @@ g9p_init_screen_caps(struct pipe_screen *pscreen)
    caps->video_memory = 0;
    caps->min_line_width = caps->min_line_width_aa = 1;
    caps->min_point_size = caps->min_point_size_aa = 1;
-   caps->max_line_width = caps->max_line_width_aa = 1;
-   caps->max_point_size = caps->max_point_size_aa = 1;
+   /* ISPA's point / line field: 4.4 fixed point less one, up to 255 */
+   caps->max_line_width = caps->max_line_width_aa = 16;
+   caps->max_point_size = caps->max_point_size_aa = 64;
    caps->point_size_granularity = caps->line_width_granularity = 0.1f;
    caps->max_texture_lod_bias = 15.0f;
    caps->max_constant_buffer_size = 65536;

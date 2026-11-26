@@ -1202,6 +1202,59 @@ at variable indices, more than 31 registers (spilling), instancing, GL
 3.x (SuperTux's 3.3 core renderer, SuperTuxKart's modern one), frame
 pacing.
 
+**G9.8 (2026-11-27): scissors, points and lines, gl_PointCoord, discard
+with blending.** Each a general GL feature with a test of its own first
+(`g9p-glcheck scissor | discardblend`, `g9p-glx` point / line modes
+compared with softpipe); no program-specific paths.
+
+- **Scissors**: the ISP reads a scissor table, `{xmin << 16 | xmax, ymin
+  << 16 | ymax}` per rectangle (maxima exclusive; the iPadOS capture's
+  `{64, 64}` for its 64x64 target is this form), when ISPCTL bit 16
+  (`scenable`) is set; DBSC's low 16 bits pick the entry. The table's base
+  is **Start3D's 64-bit slot 1, register 0xfb0** -- found by trying the
+  slots with a test that checks every pixel: with the base elsewhere every
+  scissored pixel was dropped (the rectangle read as empty), with 0xfb0 all
+  right. The kernel takes it from the fragment command's
+  `isp_scissor_base`; the driver keeps a table per render (a full table
+  sends the render first), an empty rectangle draws nothing. `g9p-glcheck
+  scissor` (two full-target triangles in their own rectangles, one past the
+  target's edge, and a scissored clear between them): every pixel right
+  from 64x64 to 1620x2160; in an X11 window the same as softpipe.
+- **Points and lines**: VDM topologies POINT_LIST 0, LINE_LIST 1,
+  LINE_STRIP 3, LINE_LOOP 5; ISPA object type (bits 28-31) 1 for lines, 4
+  (sprite, UV from the top left) for points, the width / size in bits 8-15
+  as 4.4 fixed point less one (a triangle's 0xf: 1.0); no face culling for
+  them. A vertex shader's point size is its **last output dword**, after
+  the varyings, with OUTPUT_SEL bit 18; without it ISPA's size applies
+  (`glPointSize`). Flat-shaded line strips and loops become line lists with
+  the provoking vertex first, as triangles do. Against softpipe: thin and
+  wide lines, strips, loops, points of size 1, 7 and a shader's 5 -- the
+  same pixels drawn but for line ends and points whose centre falls near a
+  pixel edge (one pixel apart: rounding).
+- **gl_PointCoord**: a varying of the fragment shader's own (none in the
+  vertex) whose DOUTI word has **bit 23 (point sprite)**, offset 0 in the
+  vertex and the perspective bits (without them the values were wrong),
+  placed at an even component (the iterate's destination counts pairs: at
+  an odd one it overlapped the varying before it). VARYING0 counts only the
+  components the vertex carries. The hardware's coordinate starts at the
+  top; a bottom origin (`sprite_coord_mode` lower left) is turned over in
+  the shader. Window and framebuffer object both within 4/255 of softpipe.
+- **Discard with blending**: in the translucent pass (blending) the
+  hardware's discard dropped the whole triangle, kept pixels included
+  (`g9p-glcheck discardblend`: a discarding triangle blended over an
+  opaque one, a third blended triangle in the same tiles). Blending is the
+  fragment shader's work anyway, so there the compiler turns discard into a
+  flag and stores the tile's own colour where it is set: every pixel right,
+  64x64 to 1000x700. Opaque discarding shaders keep the hardware discard
+  (punch-through).
+- The vertex-shader variants' keys outgrew 512 bytes with the larger
+  varying table; now 1024.
+
+Not yet: depth / stencil kept between renders (a render sent mid-frame
+loses them), depth bias (its table base presumably the next slot, 0xfb8:
+to check), LOD bias, cube maps and arrays, more than 31 registers
+(spilling), instancing, GL 3.x, frame pacing.
+
 ## 2D on the GPU (2026-11-25/26): g9p2d and SuperTux
 
 The first use of the G7 driver: SDL2's 2D renderer drawn by the GPU, as on

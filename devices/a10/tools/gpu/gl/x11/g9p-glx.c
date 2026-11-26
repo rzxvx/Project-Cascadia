@@ -8,10 +8,15 @@
  *   g9p-glx MODE [seconds]
  *   MODE: clear (red), tri (glBegin, a colour per vertex), flat (GL_FLAT),
  *   lit (one light, a material), list (the triangle in a display list),
- *   and their combinations (litflat, litflatlist, ...); "persp" in the
+ *   and their combinations (litflat, litflatlist, ...); "scissor" in the
+ *   name: a scissor rectangle (40, 20) 100 x 60; "persp" in the
  *   name: a perspective projection, the picture tilted (w 2..4),
  *   flatstrip / flatfan (GL_FLAT, a colour per vertex), with a "1" suffix
  *   the first vertex's colour (glProvokingVertex)
+ *   lines, linestrip, lineloop, widelines (4 pixels), points (size 1),
+ *   bigpoints (glPointSize 7), psize (a GLSL program's gl_PointSize 5),
+ *   pcoord (gl_PointSize 9, gl_PointCoord as the colour); a name ending
+ *   in "fbo" draws into a framebuffer object instead of the window
  *   G9P_GLX_DUMP=FILE: the first frame's RGBA rows (bottom first) there
  */
 #define GL_GLEXT_PROTOTYPES
@@ -21,6 +26,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
 #include <time.h>
 
 #define DIE(...) do { fprintf(stderr, __VA_ARGS__); fprintf(stderr, "\n"); exit(1); } while (0)
@@ -48,6 +54,31 @@ many(GLenum prim)
 }
 
 static int quad;
+
+/* lines in every direction, a colour each; points on a grid */
+static void
+lines(GLenum prim)
+{
+   glBegin(prim);
+   for (int i = 0; i < 12; i++) {
+      const float a = i * 3.14159265f / 12;
+      glColor3fv(cols[i % 6]);
+      glVertex2f(-0.05f * cosf(a) + (i % 4 - 1.5f) * 0.45f, -0.05f * sinf(a) + (i / 4 - 1) * 0.6f);
+      glVertex2f(0.2f * cosf(a) + (i % 4 - 1.5f) * 0.45f, 0.2f * sinf(a) + (i / 4 - 1) * 0.6f);
+   }
+   glEnd();
+}
+
+static void
+points(void)
+{
+   glBegin(GL_POINTS);
+   for (int i = 0; i < 64; i++) {
+      glColor3fv(cols[i % 6]);
+      glVertex2f(-0.85f + (i % 8) * 0.24f + (i / 8) * 0.013f, -0.85f + (i / 8) * 0.24f);
+   }
+   glEnd();
+}
 
 static void
 tri(void)
@@ -108,6 +139,15 @@ main(int argc, char **argv)
    glXMakeCurrent(dpy, win, ctx);
    printf("GL_RENDERER: %s\nGL_VERSION: %s\n", glGetString(GL_RENDERER), glGetString(GL_VERSION));
    glViewport(0, 0, w, h);
+   if (strlen(mode) > 3 && !strcmp(mode + strlen(mode) - 3, "fbo")) {
+      GLuint fbo, rb;
+      glGenFramebuffersEXT(1, &fbo);
+      glBindFramebufferEXT(GL_FRAMEBUFFER_EXT, fbo);
+      glGenRenderbuffersEXT(1, &rb);
+      glBindRenderbufferEXT(GL_RENDERBUFFER_EXT, rb);
+      glRenderbufferStorageEXT(GL_RENDERBUFFER_EXT, GL_RGBA8, w, h);
+      glFramebufferRenderbufferEXT(GL_FRAMEBUFFER_EXT, GL_COLOR_ATTACHMENT0_EXT, GL_RENDERBUFFER_EXT, rb);
+   }
    if (strstr(mode, "persp")) {
       /* w from 2 to 4 across the picture: x tilted away */
       glMatrixMode(GL_PROJECTION);
@@ -117,6 +157,36 @@ main(int argc, char **argv)
       glRotatef(50, 0, 1, 0);
    }
    quad = strstr(mode, "quad") != NULL;
+   if (!strcmp(mode, "widelines"))
+      glLineWidth(4);
+   if (!strcmp(mode, "bigpoints"))
+      glPointSize(7);
+   if (!strcmp(mode, "psize") || !strncmp(mode, "pcoord", 6)) {
+      const int pc = !strncmp(mode, "pcoord", 6);
+      const char *vs = pc ? "#version 120\nvarying vec4 c;\nvoid main() { c = gl_Color; gl_PointSize = 9.0;\n"
+                            "gl_Position = gl_ModelViewProjectionMatrix * gl_Vertex; }\n"
+                          : "varying vec4 c;\nvoid main() { c = gl_Color; gl_PointSize = 5.0;\n"
+                            "gl_Position = gl_ModelViewProjectionMatrix * gl_Vertex; }\n";
+      const char *fs = pc ? "#version 120\nvarying vec4 c;\nvoid main() { gl_FragColor = vec4(gl_PointCoord, c.b, 1.0); }\n"
+                          : "varying vec4 c;\nvoid main() { gl_FragColor = c; }\n";
+      GLuint p = glCreateProgram(), v = glCreateShader(GL_VERTEX_SHADER), f = glCreateShader(GL_FRAGMENT_SHADER);
+      glShaderSource(v, 1, &vs, NULL);
+      glShaderSource(f, 1, &fs, NULL);
+      glCompileShader(v);
+      glCompileShader(f);
+      glAttachShader(p, v);
+      glAttachShader(p, f);
+      glLinkProgram(p);
+      glUseProgram(p);
+      glEnable(GL_VERTEX_PROGRAM_POINT_SIZE);
+      if (pc)
+         glEnable(GL_POINT_SPRITE);         /* gl_PointCoord defined (compatibility profile) */
+   }
+   if (strstr(mode, "scissor")) {
+      /* a rectangle off the window's middle: clears and draws inside it */
+      glEnable(GL_SCISSOR_TEST);
+      glScissor(40, 20, 100, 60);
+   }
    if (strstr(mode, "flat"))
       glShadeModel(GL_FLAT);
    if (mode[strlen(mode) - 1] == '1')
@@ -141,7 +211,16 @@ main(int argc, char **argv)
       else
          glClearColor(0.1f, 0.1f, 0.3f, 1);
       glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-      if (!strncmp(mode, "flatid", 6)) {
+      if (!strcmp(mode, "lines") || !strcmp(mode, "widelines")) {
+         lines(GL_LINES);
+      } else if (!strcmp(mode, "linestrip")) {
+         lines(GL_LINE_STRIP);
+      } else if (!strcmp(mode, "lineloop")) {
+         lines(GL_LINE_LOOP);
+      } else if (!strcmp(mode, "points") || !strcmp(mode, "bigpoints") || !strcmp(mode, "psize") ||
+                 !strncmp(mode, "pcoord", 6)) {
+         points();
+      } else if (!strncmp(mode, "flatid", 6)) {
          /* a strip of 6: vertex i's colour R = (i + 1) / 8, G = 1 - R */
          glBegin(GL_TRIANGLE_STRIP);
          for (int i = 0; i < 6; i++) {

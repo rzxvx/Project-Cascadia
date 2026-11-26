@@ -586,10 +586,14 @@ static int submit_geom(struct pvr_apple *a, struct pvr_device *pvr_dev, struct d
  *      area's PDS code, 0x620 <- event_pixel_pds_data, 0x628 <-
  *      event_pixel_pds_info, 0xf38 <- isp_ctl, 0x3e00 = 0x408, 0xfd8 = 4,
  *      0x4070 = 0xf9 (those three to name)
- *   B: 0xfa8 = 0x88, 0xf28 ISP_RGN (the dataset's), 0x6a0 / 0x6b0 / 0x6b8 <-
- *      pds_bgnd[0..2], 0x11080 x 6 = 0x1d3
- * Not used yet: the depth / stencil load-store, scissor, depth bias,
- * occlusion queries, PBE words (the end-of-tile program loads its state).
+ *   B: 0xfa8 = 0x88, 0xfb0 (B[1]) <- isp_scissor_base (the scissor table
+ *      the ISP reads with ISPCTL scenable: found by trying the B slots, the
+ *      others left every scissored pixel out), 0xf28 ISP_RGN (the
+ *      dataset's), 0x6a0 / 0x6b0 / 0x6b8 <- pds_bgnd[0..2], 0x11080 x 6 =
+ *      0x1d3
+ * Not used yet: the depth / stencil load-store, depth bias (its table base
+ * presumably 0xfb8, B[2]: to check), occlusion queries, PBE words (the
+ * end-of-tile program loads its state).
  */
 static int submit_frag(struct pvr_apple *a, struct pvr_device *pvr_dev, struct drm_file *file,
 		       struct pvr_apple_uctx *c, const struct drm_pvr_job *j)
@@ -629,6 +633,7 @@ static int submit_frag(struct pvr_apple *a, struct pvr_device *pvr_dev, struct d
 		args.a[10] = 4;
 		args.a[11] = 0xf9;
 		args.b[0] = 0x88;
+		args.b[1] = cmd->regs.isp_scissor_base;
 		args.b[10] = h->isp_rgn;
 		args.b[11] = cmd->regs.pds_bgnd[0];
 		args.b[13] = cmd->regs.pds_bgnd[1];

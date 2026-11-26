@@ -31,6 +31,12 @@
  *                                    (green over 0.5), depth test on, in front
  *                                    of a green one: the discarded pixels
  *                                    neither coloured nor in the depth
+ *   g9p-glcheck discardblend [W H]   the same discarding triangle blended (alpha
+ *                                    0.5) over an opaque one, a third blended
+ *                                    triangle sharing the tiles after it
+ *   g9p-glcheck scissor [W H]        two full-target triangles, each in its own
+ *                                    scissor rectangle (one partly off the
+ *                                    target), and a scissored clear between them
  *   g9p-glcheck stencil [W H]        a triangle writes 1 into the stencil, a
  *                                    quad then draws where it is 1 (and 0)
  */
@@ -150,6 +156,18 @@ check(int x, int y, const unsigned char *got, const double *want)
    if (off && bad++ < 5)
       printf("  (%d, %d): got %d %d %d %d want %.0f %.0f %.0f %.0f\n", x, y, got[0], got[1], got[2], got[3],
              want[0] * 255, want[1] * 255, want[2] * 255, want[3] * 255);
+}
+
+/* G9P_CHECK_DUMP=FILE: the pixels (RGBA, the bottom row first) for a look */
+static void
+dump(const unsigned char *px, int w, int h)
+{
+   FILE *f = getenv("G9P_CHECK_DUMP") ? fopen(getenv("G9P_CHECK_DUMP"), "wb") : NULL;
+
+   if (f) {
+      fwrite(px, 4, (size_t)w * h, f);
+      fclose(f);
+   }
 }
 
 /* the barycentric coordinates of pixel centre (x, y) in a triangle of
@@ -282,6 +300,78 @@ zs_main(const char *mode, const char *arg, int w, int h)
             memcpy(want, c, sizeof(want));
             check(x, y, px + 4 * (y * w + x), want);
          }
+   } else if (!strcmp(mode, "discardblend")) {
+      /* green everywhere; red to yellow, alpha 0.5, discarding green >
+       * 0.5, blended over it; then blue, alpha 0.5, over the right */
+      static const float g[3][7] = { { -1, -1, 0.5f, 0, 1, 0, 1 }, { 3, -1, 0.5f, 0, 1, 0, 1 }, { -1, 3, 0.5f, 0, 1, 0, 1 } };
+      static const float t[3][7] = {
+         { -0.9f, -0.9f, 0.2f, 1, 0, 0, 0.5f }, { 0.6f, -0.9f, 0.2f, 1, 0, 0, 0.5f }, { -0.9f, 0.8f, 0.2f, 1, 1, 0, 0.5f } };
+      static const float u[3][7] = {
+         { 0.1f, -0.95f, 0.1f, 0, 0, 1, 0.5f }, { 0.95f, -0.95f, 0.1f, 0, 0, 1, 0.5f }, { 0.95f, 0.95f, 0.1f, 0, 0, 1, 0.5f } };
+      static const char *disc_fs = "precision mediump float;\nvarying vec4 v;\n"
+                                   "void main() { if (v.g > 0.5) discard; gl_FragColor = v; }\n";
+      glClear(GL_COLOR_BUFFER_BIT);
+      draw7(&g[0][0], 3);
+      glEnable(GL_BLEND);
+      glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+      program(flat_vs, disc_fs);
+      draw7(&t[0][0], 3);
+      program(flat_vs, flat_fs);
+      draw7(&u[0][0], 3);
+      glDisable(GL_BLEND);
+      glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, px);
+      dump(px, w, h);
+      for (int y = 0; y < h; y++)
+         for (int x = 0; x < w; x++) {
+            double b0[3], b1[3], want[4] = { 0, 1, 0, 1 };
+            int i0 = inside(&t[0][0], 7, w, h, x, y, b0), i1 = inside(&u[0][0], 7, w, h, x, y, b1);
+            if (!i0 || !i1 || (i0 > 0 && fabs(b0[2] - 0.5) < 0.04))
+               continue;
+            if (i0 > 0 && b0[2] <= 0.5) {
+               const double c[4] = { 1, b0[2], 0, 0.5 };
+               for (int k = 0; k < 4; k++)
+                  want[k] = c[k] * 0.5 + want[k] * 0.5;
+            }
+            if (i1 > 0) {
+               const double c[4] = { 0, 0, 1, 0.5 };
+               for (int k = 0; k < 4; k++)
+                  want[k] = c[k] * 0.5 + want[k] * 0.5;
+            }
+            check(x, y, px + 4 * (y * w + x), want);
+         }
+   } else if (!strcmp(mode, "scissor")) {
+      /* green in A, a blue clear in C, red in B (over A's corner and past
+       * the target's right edge); GL window coordinates */
+      static const float g[3][7] = { { -1, -1, 0, 0, 1, 0, 1 }, { 3, -1, 0, 0, 1, 0, 1 }, { -1, 3, 0, 0, 1, 0, 1 } };
+      static const float r[3][7] = { { -1, -1, 0, 1, 0, 0, 1 }, { 3, -1, 0, 1, 0, 0, 1 }, { -1, 3, 0, 1, 0, 0, 1 } };
+      const int ax = w / 8, ay = h / 4, aw = w / 2, ah = h / 2;
+      const int bx = w / 2, by = h / 2, bw = w, bh = h / 3;
+      const int cx = w / 16, cy = h / 16, cw = w / 8, ch = h / 8;
+      static const double green[4] = { 0, 1, 0, 1 }, red[4] = { 1, 0, 0, 1 }, blue[4] = { 0, 0, 1, 1 };
+
+      glClear(GL_COLOR_BUFFER_BIT);
+      glEnable(GL_SCISSOR_TEST);
+      glScissor(ax, ay, aw, ah);
+      draw7(&g[0][0], 3);
+      glScissor(cx, cy, cw, ch);
+      glClearColor(0, 0, 1, 1);
+      glClear(GL_COLOR_BUFFER_BIT);
+      glScissor(bx, by, bw, bh);
+      draw7(&r[0][0], 3);
+      glDisable(GL_SCISSOR_TEST);
+      glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, px);
+      dump(px, w, h);
+      for (int y = 0; y < h; y++)
+         for (int x = 0; x < w; x++) {
+            const double *want = clear;
+            if (x >= ax && x < ax + aw && y >= ay && y < ay + ah)
+               want = green;
+            if (x >= cx && x < cx + cw && y >= cy && y < cy + ch)
+               want = blue;
+            if (x >= bx && x < bx + bw && y >= by && y < by + bh)
+               want = red;
+            check(x, y, px + 4 * (y * w + x), want);
+         }
    } else if (!strcmp(mode, "discard")) {
       /* red to yellow (green 0 -> 1 towards the top vertex) at z 0.2,
        * discarding green > 0.5; then green at z 0.6 behind it */
@@ -299,14 +389,7 @@ zs_main(const char *mode, const char *arg, int w, int h)
       program(flat_vs, flat_fs);
       draw7(&t[3][0], 3);
       glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, px);
-      if (getenv("G9P_CHECK_DUMP")) {
-         /* the pixels (RGBA, the bottom row first) for a look */
-         FILE *f = fopen(getenv("G9P_CHECK_DUMP"), "wb");
-         if (f) {
-            fwrite(px, 4, (size_t)w * h, f);
-            fclose(f);
-         }
-      }
+      dump(px, w, h);
       for (int y = 0; y < h; y++)
          for (int x = 0; x < w; x++) {
             static const double green[4] = { 0, 1, 0, 1 };
@@ -559,8 +642,9 @@ main(int argc, char **argv)
              fmin((0.2 + d) * 0.8, 1) * 255, fmin((0.2 + d) * 0.1, 1) * 255, 0.0, 255.0, d);
       return 0;
    }
-   if (!strcmp(mode, "depth") || !strcmp(mode, "cull") || !strcmp(mode, "stencil") || !strcmp(mode, "discard")) {
-      const int a1 = strcmp(mode, "stencil") && strcmp(mode, "discard") ? 3 : 2;
+   if (!strcmp(mode, "depth") || !strcmp(mode, "cull") || !strcmp(mode, "stencil") || !strncmp(mode, "discard", 7) ||
+       !strcmp(mode, "scissor")) {
+      const int a1 = strcmp(mode, "stencil") && strncmp(mode, "discard", 7) && strcmp(mode, "scissor") ? 3 : 2;
       context();
       return zs_main(mode, a1 == 3 && argc > 2 ? argv[2] : "", argc > a1 + 1 ? atoi(argv[a1]) : 64,
                      argc > a1 + 1 ? atoi(argv[a1 + 1]) : 64);
