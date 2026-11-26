@@ -1,0 +1,68 @@
+diff --git a/meson.options b/meson.options
+index 220d46e..f37fe49 100644
+--- a/meson.options
++++ b/meson.options
+@@ -552,7 +552,7 @@ option(
+   value : [],
+   choices : ['drm-shim', 'etnaviv', 'freedreno', 'glsl', 'intel', 'intel-ui',
+              'nir', 'nouveau', 'lima', 'panfrost', 'asahi', 'imagination',
+-             'zink', 'all', 'dlclose-skip'],
++             'zink', 'all', 'dlclose-skip', 'g9p'],
+   description : 'List of tools to build. (Note: `intel-ui` selects `intel`)',
+ )
+ 
+diff --git a/src/compiler/glsl/standalone.cpp b/src/compiler/glsl/standalone.cpp
+index c9b31cc..07fea37 100644
+--- a/src/compiler/glsl/standalone.cpp
++++ b/src/compiler/glsl/standalone.cpp
+@@ -59,6 +59,7 @@ initialize_context(struct gl_context *ctx, gl_api api)
+ 
+    ctx->screen->nir_options[MESA_SHADER_VERTEX] = &nir_vs_options;
+    ctx->screen->nir_options[MESA_SHADER_FRAGMENT] = &nir_fs_options;
++   ctx->screen->nir_options[MESA_SHADER_COMPUTE] = &nir_fs_options;
+ 
+ 
+    /* The standalone compiler needs to claim support for almost
+@@ -363,6 +364,15 @@ standalone_compile_shader(const struct standalone_options *_options,
+       initialize_context(ctx, options->glsl_version > 130 ? API_OPENGL_CORE : API_OPENGL_COMPAT);
+    }
+ 
++   /* compute shaders with buffer blocks (devices/a10 g9p-cc): limits the
++    * per-version setup leaves at 0 */
++   ctx->Const.MaxVertexStreams = 4;
++   ctx->Const.MaxShaderStorageBufferBindings = 16;
++   ctx->Const.MaxCombinedShaderStorageBlocks = 16;
++   ctx->Const.MaxShaderStorageBlockSize = 1 << 27;
++   for (unsigned i = MESA_SHADER_VERTEX; i <= MESA_SHADER_COMPUTE; i++)
++      ctx->Const.Program[i].MaxShaderStorageBlocks = 16;
++
+    if (options->lower_precision) {
+       for (unsigned i = MESA_SHADER_VERTEX; i <= MESA_SHADER_COMPUTE; i++) {
+          ((struct pipe_shader_caps*)&ctx->screen->shader_caps[i])->fp16 = true;
+diff --git a/src/compiler/meson.build b/src/compiler/meson.build
+index d234586..8cb3ba6 100644
+--- a/src/compiler/meson.build
++++ b/src/compiler/meson.build
+@@ -68,7 +68,7 @@ subdir('spirv')
+ if with_clc
+   subdir('clc')
+ endif
+-if with_gallium
++if with_gallium or with_tools.contains('g9p')
+   subdir('glsl')
+ endif
+ subdir('isaspec')
+diff --git a/src/meson.build b/src/meson.build
+index a4f8084..c18388f 100644
+--- a/src/meson.build
++++ b/src/meson.build
+@@ -89,6 +89,9 @@ endif
+ if with_imagination_vk or with_tools.contains('imagination')
+   subdir('imagination')
+ endif
++if with_tools.contains('g9p')
++  subdir('g9p')
++endif
+ if with_any_intel
+   subdir('intel')
+ endif

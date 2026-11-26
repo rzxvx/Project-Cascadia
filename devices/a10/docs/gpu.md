@@ -761,6 +761,42 @@ count) with the ISP words per test: **13 of 13 tests right** (2026-11-26).
   multiply shaders and our own add and multiply over a red triangle and the
   clear, every pixel right.
 
+### G8.2: the compiler (2026-11-26): GLSL compute shaders on the GPU
+
+`devices/a10/mesa/` builds Mesa 26.1.8 (the A5 driver's pin; `fetch.sh`
+clones it from the A5's tree when present) in the `cascadia-a10-mesa`
+image (Alpine 3.24 aarch64: native on an Apple Silicon Mac, a few minutes
+from scratch, seconds incremental) with `-Dtools=g9p`. `files/src/g9p/`
+is ours: `g9p_compile.c` (NIR -> G9P, the encoders twins of `g9pasm.py`'s)
+and `g9p-cc` (GLSL -> Mesa's standalone GLSL front end -> NIR ->
+`gl_nir_lower_buffers` -> the backend -> a G9PT pack). `mesa.patch`: the
+`g9p` tool option, the GLSL compiler built without a Gallium driver, the
+standalone front end's compute shader options and buffer-block limits
+(left at 0 for these versions); OpenGL and GLES2 stay enabled in the
+configuration, or `HAVE_OPENGL` / `HAVE_OPENGL_ES_2` make every GLSL
+version "unsupported".
+
+The backend so far: compute shaders, one dimension, one block (no control
+flow yet): lowering (vars to SSA, compute system values with the local ID
+from the index, buffer blocks to `load_ssbo` / `store_ssbo` with
+32-bit-index-offset addresses, scalarized), NIR's optimizations, then a
+linear scan over SSA defs (registers freed after their last use, address
+pairs as scratch). ABI: r0 = the local index, threadgroup word 0 = the
+workgroup ID, common-store dwords 2b / 2b + 1 = the buffer at binding b,
+dword 30 = the threads per group (the prologue's lane test).
+
+`tools/gpu/isa/cc-check.py` compiles each test kernel, runs it on 2 x 32
+lanes through `g9p-probe` and compares every word with Python: **11 of 11
+right** -- integer multiply-add, logic, shifts by a register, subtraction,
+float multiply-add, fma, subtraction, conversions, reciprocal, exp2 /
+log2, floor (`ineg` / `fneg` / `fabs` through a scratch register: 0 - a,
+a ^ sign, a & ~sign).
+
+Next: control flow (NIR ifs and loops onto the mask stack), jumps past
+0xff bytes, more ALU (compares, selects, min / max, fp16), then vertex and
+fragment shaders (the outputs, varyings, textures and blending of G8.1) and
+the Gallium driver.
+
 ## 2D on the GPU (2026-11-25/26): g9p2d and SuperTux
 
 The first use of the G7 driver: SDL2's 2D renderer drawn by the GPU, as on
