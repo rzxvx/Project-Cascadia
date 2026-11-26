@@ -1019,8 +1019,43 @@ triangle and tested EQUAL 1 / EQUAL 0 by two quads.
   itself is neither loaded nor stored yet (the ISP's ZLS), so a render
   that is cut in two (a CPU read in the middle of a frame) loses them.
 
+**G9.4 (2026-11-26): on the screen, in a window on the desktop.** The
+desktop (labwc on simpledrm, `WLR_RENDERER=pixman`) offers `wl_shm` and no
+`linux-dmabuf`, so Mesa's usual Wayland path (buffers the compositor
+imports) has nothing to hand over. Mesa's software window-system path does:
+a hardware driver can sit under it as d3d12 does. `mesa.patch` lets
+`sw_helper.h` create g9p for `GALLIUM_DRIVER=g9p` (with
+`LIBGL_ALWAYS_SOFTWARE=1`); `g9p_create_sw_screen` opens the powervr render
+node itself, display-target resources get the winsys's display target
+too, and `flush_frontbuffer` sends the render, copies its rows there and
+has the winsys show it (EGL's Wayland software path: a `wl_shm` buffer,
+labwc composites it). `build.sh driver` now has the Wayland platform and
+softpipe (which brings the software path); `mesa/install.sh` puts the
+build at `/usr/local/g9p` on the iPad, `g9p-run PROGRAM` runs a program
+with it.
+
+- **`g9p-glwl`** (`tools/gpu/gl/wl`, an xdg-shell window, GLES 2): the
+  triangle in a window on the desktop, the right way up, ~340 frames per
+  second at 640x480, ~670 at 320x240 (nothing throttles this path yet).
+- **mesa-demos' `es2gears_wayland`**, unmodified (depth, culling,
+  lighting, libdecor's decorations): **right, ~500 frames per second**
+  in its 300x300 window, softpipe ~154. Its first run showed every face at
+  the ambient colour: the driver turned the cull face round for
+  window-system buffers (whose viewport flips y), which the state tracker
+  already does (`front_ccw`) -- the back faces were drawn instead of the
+  front ones. With that gone: the gears as softpipe draws them
+  (193, 24, 0 on the red gear's face; read from the display's memory).
+- **`g9p-glref`**: scenes of real programs into a framebuffer object,
+  written out to compare with softpipe pixel by pixel -- es2gears's frame
+  (its own gear and matrix code, mesa-demos, MIT): 30 of 90 000 pixels
+  differ (edges), also after three frames.
+- `G9P_DEBUG=1` writes each shader variant's code to
+  `/tmp/g9p-{vs,fs}-<address>.bin`; 2 logs the attributes' addresses per
+  draw, 3 the vertex uniforms; `G9P_NIR=1` prints the NIR.
+
 Not yet: linear filtering, wrap modes, mipmaps, depth / stencil load and
-store between renders, points and lines, scissors, a frame that does not start with a
+store between renders, frame pacing (frame callbacks) and fewer copies on
+the display path, desktop OpenGL (`libGL`: no GLX in this build), points and lines, scissors, a frame that does not start with a
 clear (its background should load the target), uniforms at variable
 indices, vertex formats other than 32-bit floats, instancing, KMS /
 Wayland (display), fences that do not wait, other targets than BGRA8.

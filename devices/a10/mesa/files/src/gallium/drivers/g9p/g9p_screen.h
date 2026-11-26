@@ -10,9 +10,12 @@
 struct renderonly;
 struct pipe_screen_config;
 
+struct sw_winsys;
+
 struct g9p_screen {
    struct pipe_screen base;
    struct g9p_device dev;
+   struct sw_winsys *sw;       /* a software winsys shows the display targets (g9p_public.h) */
    struct slab_parent_pool transfer_pool;
 };
 

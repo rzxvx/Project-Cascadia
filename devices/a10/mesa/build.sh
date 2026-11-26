@@ -21,15 +21,23 @@ if [ "${1:-}" = driver ]; then
     # the Gallium driver (g9p) with EGL / GBM / OpenGL ES, for the iPad:
     # prefix /usr/local/g9p, installed into build/mesa/install-drv
     BD=$B/build-drv
+    # softpipe: Mesa's software path (EGL's wl_shm on Wayland), which takes
+    # g9p too (GALLIUM_DRIVER=g9p LIBGL_ALWAYS_SOFTWARE=1)
+    OPTS="--buildtype=debugoptimized -Dprefix=/usr/local/g9p -Dlibdir=lib
+        -Dgallium-drivers=g9p,softpipe -Dvulkan-drivers= -Dplatforms=wayland -Dglx=disabled
+        -Degl=enabled -Dgbm=enabled -Dopengl=true -Dgles1=disabled -Dgles2=enabled -Dglvnd=disabled
+        -Dllvm=disabled -Dvalgrind=disabled -Dlibunwind=disabled -Dzstd=disabled
+        -Dshader-cache=disabled -Dtools= -Dbuild-tests=false -Dgallium-va=disabled
+        -Dgallium-rusticl=false -Dvideo-codecs= -Dteflon=false -Dlmsensors=disabled
+        -Dmicrosoft-clc=disabled -Dspirv-tools=disabled -Dxmlconfig=disabled"
     if [ ! -f "$BD/build.ninja" ]; then
-        meson setup "$BD" "$S" --buildtype=debugoptimized -Dprefix=/usr/local/g9p -Dlibdir=lib \
-            -Dgallium-drivers=g9p -Dvulkan-drivers= -Dplatforms= -Dglx=disabled -Degl=enabled \
-            -Dgbm=enabled -Dopengl=true -Dgles1=disabled -Dgles2=enabled -Dglvnd=disabled \
-            -Dllvm=disabled -Dvalgrind=disabled -Dlibunwind=disabled -Dzstd=disabled \
-            -Dshader-cache=disabled -Dtools= -Dbuild-tests=false -Dgallium-va=disabled \
-            -Dgallium-rusticl=false -Dvideo-codecs= -Dteflon=false -Dlmsensors=disabled \
-            -Dmicrosoft-clc=disabled -Dspirv-tools=disabled -Dxmlconfig=disabled
+        # shellcheck disable=SC2086
+        meson setup "$BD" "$S" $OPTS
+    elif [ "$(cat "$BD/.cascadia-options" 2>/dev/null)" != "$OPTS" ]; then
+        # shellcheck disable=SC2086
+        meson setup --reconfigure "$BD" "$S" $OPTS
     fi
+    printf '%s\n' "$OPTS" > "$BD/.cascadia-options"
     ninja -C "$BD"
     rm -rf "$B/install-drv"
     DESTDIR="$B/install-drv" ninja -C "$BD" install >/dev/null
@@ -37,9 +45,23 @@ if [ "${1:-}" = driver ]; then
     mkdir -p "$I/bin"
     for t in /a10/tools/gpu/gl/*.c; do
         n=$(basename "$t" .c)
-        cc -O2 -Wall -I"$I/include" "$t" -o "$I/bin/$n" -L"$I/lib" -Wl,-rpath-link,"$I/lib" \
+        cc -O2 -Wall -Wno-unused-function -I"$I/include" "$t" -o "$I/bin/$n" -L"$I/lib" -Wl,-rpath-link,"$I/lib" \
             -Wl,-rpath,/usr/local/g9p/lib -lEGL -lGLESv2 -lm
     done
+    # the Wayland client (xdg-shell from wayland-protocols)
+    W=$B/wl
+    mkdir -p "$W"
+    X=/usr/share/wayland-protocols/stable/xdg-shell/xdg-shell.xml
+    wayland-scanner client-header "$X" "$W/xdg-shell-client-protocol.h"
+    wayland-scanner private-code "$X" "$W/xdg-shell.c"
+    cc -O2 -Wall -I"$I/include" -I"$W" /a10/tools/gpu/gl/wl/g9p-glwl.c "$W/xdg-shell.c" -o "$I/bin/g9p-glwl" \
+        -L"$I/lib" -Wl,-rpath-link,"$I/lib" -Wl,-rpath,/usr/local/g9p/lib -lEGL -lGLESv2 -lwayland-client \
+        -lwayland-egl -lm
+    install -m 755 /a10/mesa/g9p-run "$I/bin/g9p-run"
+    # the stripped tree for the iPad
+    rm -rf /tmp/g9p && cp -a "$I" /tmp/g9p && strip /tmp/g9p/lib/*.so.* /tmp/g9p/bin/g9p-gl* 2>/dev/null
+    tar -C /tmp -czf "$B/g9p-mesa.tar.gz" g9p
+    echo "==> build/mesa/g9p-mesa.tar.gz (mesa/install.sh puts it on the iPad)"
     echo "==> build/mesa/install-drv/usr/local/g9p"
     exit 0
 fi

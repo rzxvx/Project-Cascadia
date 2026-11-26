@@ -15,6 +15,8 @@
 #include "util/u_memory.h"
 #include "util/u_transfer.h"
 
+#include "frontend/sw_winsys.h"
+
 #include "g9p_context.h"
 #include "g9p_screen.h"
 
@@ -45,6 +47,10 @@ g9p_resource_create(struct pipe_screen *pscreen, const struct pipe_resource *tem
       FREE(res);
       return NULL;
    }
+   struct sw_winsys *ws = g9p_screen(pscreen)->sw;
+   if (ws && (templ->bind & (PIPE_BIND_DISPLAY_TARGET | PIPE_BIND_SCANOUT | PIPE_BIND_SHARED)))
+      res->dt = ws->displaytarget_create(ws, templ->bind, templ->format, templ->width0, templ->height0, 64, NULL,
+                                         &res->dt_stride);
    return &res->base;
 }
 
@@ -53,6 +59,8 @@ g9p_resource_destroy(struct pipe_screen *pscreen, struct pipe_resource *prsc)
 {
    struct g9p_resource *res = g9p_resource(prsc);
 
+   if (res->dt)
+      g9p_screen(pscreen)->sw->displaytarget_destroy(g9p_screen(pscreen)->sw, res->dt);
    g9p_bo_destroy(&g9p_screen(pscreen)->dev, res->tw);
    g9p_bo_destroy(&g9p_screen(pscreen)->dev, res->bo);
    FREE(res);
@@ -151,9 +159,33 @@ g9p_resource_twiddled(struct g9p_device *dev, struct g9p_resource *res)
    return res->tw;
 }
 
+/* show a display target: the render's pixels into the winsys's buffer */
+static void
+g9p_flush_frontbuffer(struct pipe_screen *pscreen, struct pipe_context *pctx, struct pipe_resource *prsc,
+                      unsigned level, unsigned layer, void *context_private, unsigned nboxes,
+                      struct pipe_box *sub_box)
+{
+   struct sw_winsys *ws = g9p_screen(pscreen)->sw;
+   struct g9p_resource *res = g9p_resource(prsc);
+   uint8_t *map;
+
+   if (!ws || !res->dt)
+      return;
+   if (pctx)
+      g9p_flush_frame(g9p_context(pctx));
+   if (!(map = ws->displaytarget_map(ws, res->dt, PIPE_MAP_WRITE)))
+      return;
+   const unsigned row = util_format_get_stride(prsc->format, prsc->width0);
+   for (unsigned y = 0; y < prsc->height0; y++)
+      memcpy(map + y * res->dt_stride, res->bo->map + res->offset[0] + y * res->stride[0], row);
+   ws->displaytarget_unmap(ws, res->dt);
+   ws->displaytarget_display(ws, res->dt, context_private, nboxes, sub_box);
+}
+
 void
 g9p_resource_screen_init(struct pipe_screen *pscreen)
 {
+   pscreen->flush_frontbuffer = g9p_flush_frontbuffer;
    pscreen->resource_create = g9p_resource_create;
    pscreen->resource_destroy = g9p_resource_destroy;
 }

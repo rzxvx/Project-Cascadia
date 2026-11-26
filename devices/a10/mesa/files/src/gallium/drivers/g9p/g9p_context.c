@@ -599,12 +599,12 @@ g9p_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info, unsig
    if (ctx->rast && ctx->rast->cull_face) {
       if (ctx->rast->cull_face == PIPE_FACE_FRONT_AND_BACK)
          return;
-      /* the GL counter-clockwise face (in window coordinates, y up) is the
-       * hardware's counter-clockwise one when the viewport does not flip y
-       * (g9p-glcheck cull, framebuffer objects) */
+      /* the rasterizer's counter-clockwise is the hardware's (g9p-glcheck
+       * cull); the state tracker already turns front_ccw round for
+       * window-system buffers, whose viewport flips y (es2gears showed its
+       * back faces while the driver turned it again) */
       const bool ccw_culled = (ctx->rast->cull_face == PIPE_FACE_FRONT) == ctx->rast->front_ccw;
-      const bool flip = ctx->viewport.scale[1] < 0;
-      cull = ccw_culled != flip ? 2 : 1;
+      cull = ccw_culled ? 2 : 1;
    }
    if (info->instance_count > 1)
       mesa_logw_once("g9p: instances past the first are not drawn yet");
@@ -713,11 +713,22 @@ g9p_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info, unsig
       uint64_t *addr = frame_ptr(ctx, cs);
       if (vu_n)
          memcpy((uint32_t *)addr + vubo, vu, 4 * vu_n);
+      if (getenv("G9P_DEBUG") && atoi(getenv("G9P_DEBUG")) >= 3 && ctx->frame.ndraws < 3) {
+         const float *uf = vu;
+         for (unsigned k = 0; k < vu_n; k += 4)
+            mesa_logi("g9p: draw %u vs uniform %u: %g %g %g %g", ctx->frame.ndraws, k / 4, uf[k], uf[k + 1],
+                      uf[k + 2], uf[k + 3]);
+      }
       for (unsigned i = 0; i < ve->count; i++) {
          const struct pipe_vertex_buffer *vb = &ctx->vb[ve->e[i].vertex_buffer_index];
          uint64_t base = vb->buffer.resource ? g9p_resource(vb->buffer.resource)->bo->va : 0;
 
          addr[i] = base + vb->buffer_offset + ve->e[i].src_offset + (int64_t)first * ve->e[i].src_stride;
+         if (getenv("G9P_DEBUG") && atoi(getenv("G9P_DEBUG")) >= 2)
+            mesa_logi("g9p: draw %u attr %u: vb %u (offset %u) +%u stride %u %s first %d count %u -> %#llx",
+                      ctx->frame.ndraws, i, ve->e[i].vertex_buffer_index, vb->buffer_offset, ve->e[i].src_offset,
+                      ve->e[i].src_stride, util_format_short_name(ve->e[i].src_format), first, dr->count,
+                      (unsigned long long)addr[i]);
       }
       /* PDS: the vertex kick's data, the common store's DOUTD, the pixel
        * kick, the varyings' iterates */

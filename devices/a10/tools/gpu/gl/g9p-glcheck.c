@@ -343,6 +343,53 @@ main(int argc, char **argv)
 {
    const char *mode = argc > 1 ? argv[1] : "uniform";
 
+   if (!strncmp(mode, "light", 5)) {
+      /* es2gears's lighting: positions and normals interleaved (stride
+       * 24), a normal matrix, a light direction, a material colour;
+       * light-n: the normal (0, 0, 1) through a matrix nm that is the
+       * identity, light-rot: a rotation about x by 30 degrees */
+      const int rot = !strcmp(mode, "light-rot");
+      const int w = 64, h = 64;
+      static const float v[3][6] = { { -0.9f, -0.9f, 0, 0, 0, 1 }, { 0.9f, -0.9f, 0, 0, 0, 1 }, { 0, 0.9f, 0, 0, 0, 1 } };
+      const float c30 = 0.8660254f, s30 = 0.5f;
+      const float nm[16] = { 1, 0, 0, 0, 0, rot ? c30 : 1, rot ? s30 : 0, 0, 0, rot ? -s30 : 0, rot ? c30 : 1, 0, 0, 0, 0, 1 };
+      static const float lp[4] = { 5, 5, 10, 0 }, mc[4] = { 0.8f, 0.1f, 0, 1 };
+      unsigned char *px = malloc(4 * w * h);
+      GLuint buf, p;
+
+      context();
+      target(w, h);
+      glClearColor(0, 0, 0, 1);
+      glClear(GL_COLOR_BUFFER_BIT);
+      p = program("uniform mat4 mvp;\nuniform mat4 nm;\nuniform vec4 lp;\nuniform vec4 mc;\n"
+                  "attribute vec3 pos;\nattribute vec3 attr;\nvarying vec4 v;\nvoid main() {\n"
+                  "  vec3 N = normalize(vec3(nm * vec4(attr, 1.0)));\n  vec3 L = normalize(lp.xyz);\n"
+                  "  float d = max(dot(N, L), 0.0);\n  v = vec4((0.2 + d) * mc.xyz, mc.w);\n"
+                  "  gl_Position = mvp * vec4(pos, 1.0);\n}\n",
+                  "precision mediump float;\nvarying vec4 v;\nvoid main() { gl_FragColor = v; }\n");
+      static const float id[16] = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 };
+      glUniformMatrix4fv(glGetUniformLocation(p, "mvp"), 1, GL_FALSE, id);
+      glUniformMatrix4fv(glGetUniformLocation(p, "nm"), 1, GL_FALSE, nm);
+      glUniform4fv(glGetUniformLocation(p, "lp"), 1, lp);
+      glUniform4fv(glGetUniformLocation(p, "mc"), 1, mc);
+      glGenBuffers(1, &buf);
+      glBindBuffer(GL_ARRAY_BUFFER, buf);
+      glBufferData(GL_ARRAY_BUFFER, sizeof(v), v, GL_STATIC_DRAW);
+      glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 24, (void *)0);
+      glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 24, (void *)12);
+      glEnableVertexAttribArray(0);
+      glEnableVertexAttribArray(1);
+      glDrawArrays(GL_TRIANGLES, 0, 3);
+      glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, px);
+      /* N = nm * (0, 0, 1) (column-major), L = normalize(5, 5, 10) */
+      double n[3] = { nm[8], nm[9], nm[10] }, l = sqrt(150.0), d;
+      d = fmax((n[0] * 5 + n[1] * 5 + n[2] * 10) / l / sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]), 0);
+      const unsigned char *g = px + 4 * (32 * w + 32);
+      printf("%s: %s centre %d %d %d %d want %.0f %.0f %.0f %.0f (dot %.3f)\n",
+             abs(g[0] - (int)lround(fmin((0.2 + d) * 0.8, 1) * 255)) <= 3 ? "ok" : "FAIL", mode, g[0], g[1], g[2], g[3],
+             fmin((0.2 + d) * 0.8, 1) * 255, fmin((0.2 + d) * 0.1, 1) * 255, 0.0, 255.0, d);
+      return 0;
+   }
    if (!strcmp(mode, "depth") || !strcmp(mode, "cull") || !strcmp(mode, "stencil")) {
       const int a1 = strcmp(mode, "stencil") ? 3 : 2;
       context();
@@ -356,6 +403,8 @@ main(int argc, char **argv)
    int vs4 = !strncmp(mode, "uniform-vs4", 11);
    /* uniform-vs4hi: that vec4 after 4 others the shader also reads a little of */
    int hi = !strcmp(mode, "uniform-vs4hi");
+   /* uniform-vs4far: that vec4 after 8 others (common-store dwords past 32) */
+   int far = !strcmp(mode, "uniform-vs4far");
    int tw = tex && argc > 3 ? atoi(argv[2]) : 8, th = tex && argc > 3 ? atoi(argv[3]) : 8;
    int a = tex ? 4 : 2;
    int w = argc > a + 1 ? atoi(argv[a]) : 64, h = argc > a + 1 ? atoi(argv[a + 1]) : 64;
@@ -374,7 +423,11 @@ main(int argc, char **argv)
       static const float tint1[4] = { 0.5f, 0.8f, 1.0f, 1.0f }, add1[4] = { 0.1f, 0, 0.05f, 0 };
       static const float one[4] = { 1, 1, 1, 1 }, zero[4] = { 0 };
       const float *tint = ufs ? tint1 : one, *add = ufs ? add1 : zero;
-      GLuint p = program(hi ? "uniform vec4 pad[4];\nuniform vec4 s;\nattribute vec4 pos;\nattribute vec4 attr;\n"
+      GLuint p = program(far ? "uniform vec4 pad[8];\nuniform vec4 s;\nattribute vec4 pos;\nattribute vec4 attr;\n"
+                              "varying vec4 v;\nvoid main() { v = attr + pad[0] + pad[1] + pad[2] + pad[3] + pad[4]"
+                              " + pad[5] + pad[6] + pad[7];\n"
+                              "gl_Position = vec4(pos.xy * s.x + s.yz, pos.zw); }\n"
+                         : hi ? "uniform vec4 pad[4];\nuniform vec4 s;\nattribute vec4 pos;\nattribute vec4 attr;\n"
                               "varying vec4 v;\nvoid main() { v = attr + pad[0] * 0.0;\n"
                               "gl_Position = vec4(pos.xy * s.x + s.yz, pos.zw); }\n"
                          : vs4 ? "uniform vec4 s;\nattribute vec4 pos;\nattribute vec4 attr;\nvarying vec4 v;\n"

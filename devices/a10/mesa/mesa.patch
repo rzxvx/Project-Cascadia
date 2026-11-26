@@ -139,6 +139,35 @@ index fe0e122..35d8b4f 100644
  extern const struct drm_driver_descriptor zink_driver_descriptor;
  extern const struct drm_driver_descriptor kmsro_driver_descriptor;
  
+diff --git a/src/gallium/auxiliary/target-helpers/sw_helper.h b/src/gallium/auxiliary/target-helpers/sw_helper.h
+index 030f615..682312d 100644
+--- a/src/gallium/auxiliary/target-helpers/sw_helper.h
++++ b/src/gallium/auxiliary/target-helpers/sw_helper.h
+@@ -24,6 +24,10 @@
+ #include "softpipe/sp_public.h"
+ #endif
+ 
++#ifdef GALLIUM_G9P
++#include "g9p/g9p_public.h"
++#endif
++
+ #ifdef GALLIUM_LLVMPIPE
+ #include "llvmpipe/lp_public.h"
+ #endif
+@@ -56,6 +60,13 @@ sw_screen_create_named(struct sw_winsys *winsys, const struct pipe_screen_config
+       screen = softpipe_create_screen(winsys);
+ #endif
+ 
++#if defined(GALLIUM_G9P)
++   /* the A10's GPU drawing, the software path's window system showing
++    * (Cascadia: labwc's wl_shm, GALLIUM_DRIVER=g9p LIBGL_ALWAYS_SOFTWARE=1) */
++   if (screen == NULL && strcmp(driver, "g9p") == 0)
++      screen = g9p_create_sw_screen(winsys);
++#endif
++
+ #if defined(GALLIUM_ZINK)
+    if (screen == NULL && strcmp(driver, "zink") == 0)
+       screen = zink_create_screen(winsys, config);
 diff --git a/src/gallium/meson.build b/src/gallium/meson.build
 index 67011f5..f319899 100644
 --- a/src/gallium/meson.build

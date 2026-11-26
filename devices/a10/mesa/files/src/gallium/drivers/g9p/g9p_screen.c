@@ -6,7 +6,12 @@
  */
 #include "g9p_screen.h"
 
+#include <fcntl.h>
+#include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <xf86drm.h>
 
 #include "compiler/nir/nir.h"
 #include "pipe/p_defines.h"
@@ -17,6 +22,7 @@
 #include "util/u_screen.h"
 
 #include "g9p_context.h"
+#include "g9p_public.h"
 #include "g9p_resource.h"
 
 static const struct nir_shader_compiler_options g9p_nir_options = {
@@ -193,6 +199,32 @@ g9p_init_screen_caps(struct pipe_screen *pscreen)
    caps->max_constant_buffer_size = 65536;
    caps->constant_buffer_offset_alignment = 16;
    caps->glsl_feature_level = caps->glsl_feature_level_compatibility = 120;
+}
+
+struct pipe_screen *
+g9p_create_sw_screen(struct sw_winsys *ws)
+{
+   /* the first render node of the powervr driver */
+   for (unsigned i = 128; i < 136; i++) {
+      char path[32];
+      int fd;
+
+      snprintf(path, sizeof(path), "/dev/dri/renderD%u", i);
+      if ((fd = open(path, O_RDWR | O_CLOEXEC)) < 0)
+         continue;
+      drmVersionPtr v = drmGetVersion(fd);
+      const bool ours = v && !strcmp(v->name, "powervr");
+      drmFreeVersion(v);
+      if (ours) {
+         struct pipe_screen *s = g9p_screen_create(fd, NULL, NULL);
+         if (s) {
+            g9p_screen(s)->sw = ws;
+            return s;
+         }
+      }
+      close(fd);
+   }
+   return NULL;
 }
 
 struct pipe_screen *

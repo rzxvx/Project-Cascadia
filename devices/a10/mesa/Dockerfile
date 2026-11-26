@@ -8,5 +8,6 @@ RUN apk add --no-cache \
         build-base meson samurai pkgconf git \
         python3 py3-mako py3-yaml py3-packaging \
         bison flex \
-        libdrm-dev zlib-dev linux-headers expat-dev zstd-dev
+        libdrm-dev zlib-dev linux-headers expat-dev zstd-dev \
+        wayland-dev wayland-protocols
 WORKDIR /a10

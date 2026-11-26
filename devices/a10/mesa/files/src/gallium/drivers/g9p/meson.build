@@ -7,6 +7,7 @@ files_g9p = files(
   'g9p_context.h',
   'g9p_device.c',
   'g9p_device.h',
+  'g9p_public.h',
   'g9p_resource.c',
   'g9p_resource.h',
   'g9p_screen.c',

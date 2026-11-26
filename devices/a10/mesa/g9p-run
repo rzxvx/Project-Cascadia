@@ -1,0 +1,11 @@
+#!/bin/sh
+# g9p-run PROGRAM [ARGS]: a program with Cascadia's Mesa and its A10 GPU driver
+# (g9p) -- on the Wayland desktop through Mesa's software window-system path
+# (labwc's wl_shm: the GPU draws, each frame is copied into a shared-memory
+# buffer); without a desktop, EGL surfaceless / GBM work as they are.
+G=/usr/local/g9p
+export LD_LIBRARY_PATH="$G/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+export GALLIUM_DRIVER=g9p LIBGL_ALWAYS_SOFTWARE=1
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/tmp/xdg-0}"
+[ -z "$WAYLAND_DISPLAY" ] && [ -S "$XDG_RUNTIME_DIR/wayland-0" ] && export WAYLAND_DISPLAY=wayland-0
+exec "$@"
