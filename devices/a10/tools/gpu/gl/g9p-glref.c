@@ -7,6 +7,12 @@
  *
  *   g9p-glref gears W H ANGLE OUT.raw [FRAMES]   es2gears's frame (RGBA8, rows bottom up);
  *                                              FRAMES: drawn that often first (angle + 5 each)
+ *   g9p-glref plane W H MIN MAG WRAP OUT.raw     a textured floor going into the distance:
+ *       MIN nearest | linear | nn | ln | nl | ll (the mipmap filters: min / mip),
+ *       MAG nearest | linear, WRAP repeat | mirror | clamp; the texture a 64x64
+ *       pattern with glGenerateMipmap's levels
+ *   g9p-glref levels W H MIN [TW TH] OUT.raw     the same, each level one colour (the
+ *                                                texture TW x TH, default 64 x 64)
  *
  * The gears scene is mesa-demos' es2gears (src/egl/opengles2/es2gears.c)
  * and its matrix helpers (src/util/matrix.c), MIT:
@@ -488,9 +494,140 @@ static const char fragment_shader[] =
 "}";
 
 
+static GLenum
+min_filter(const char *m)
+{
+   if (!strcmp(m, "linear")) return GL_LINEAR;
+   if (!strcmp(m, "nn")) return GL_NEAREST_MIPMAP_NEAREST;
+   if (!strcmp(m, "ln")) return GL_LINEAR_MIPMAP_NEAREST;
+   if (!strcmp(m, "nl")) return GL_NEAREST_MIPMAP_LINEAR;
+   if (!strcmp(m, "ll")) return GL_LINEAR_MIPMAP_LINEAR;
+   return GL_NEAREST;
+}
+
+static void
+egl_fbo(int w, int h)
+{
+   PFNEGLGETPLATFORMDISPLAYEXTPROC gpd =
+      (PFNEGLGETPLATFORMDISPLAYEXTPROC)eglGetProcAddress("eglGetPlatformDisplayEXT");
+   static const EGLint cattr[] = { EGL_CONTEXT_CLIENT_VERSION, 2, EGL_NONE };
+   EGLDisplay dpy;
+   EGLint maj, min;
+   if (!gpd || !(dpy = gpd(EGL_PLATFORM_SURFACELESS_MESA, EGL_DEFAULT_DISPLAY, NULL)) || !eglInitialize(dpy, &maj, &min))
+      DIE("no surfaceless EGL display");
+   eglBindAPI(EGL_OPENGL_ES_API);
+   EGLContext ctx = eglCreateContext(dpy, EGL_NO_CONFIG_KHR, EGL_NO_CONTEXT, cattr);
+   if (!ctx || !eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, ctx))
+      DIE("context");
+   GLuint fbo, rb;
+   glGenFramebuffers(1, &fbo);
+   glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+   glGenRenderbuffers(1, &rb);
+   glBindRenderbuffer(GL_RENDERBUFFER, rb);
+   glRenderbufferStorage(GL_RENDERBUFFER, GL_RGBA8_OES, w, h);
+   glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, rb);
+   glViewport(0, 0, w, h);
+}
+
+static void
+write_out(const char *path, int w, int h)
+{
+   unsigned char *px = malloc(4 * w * h);
+   glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, px);
+   FILE *o = fopen(path, "wb");
+   if (!o || fwrite(px, 4, w * h, o) != (size_t)(w * h))
+      DIE("%s", path);
+   fclose(o);
+   printf("%s: %dx%d written (GL error %#x)\n", path, w, h, glGetError());
+}
+
+/* a floor: z from -1.5 (near) to -40, x -4..4 at y -1, uv 0..8 x 0..40,
+ * under a 60-degree perspective */
+static int
+plane(int argc, char **argv)
+{
+   const int w = atoi(argv[2]), h = atoi(argv[3]);
+   const int levels = !strcmp(argv[1], "levels");
+   const char *minf = argv[4], *magf = levels ? "nearest" : argv[5], *wrap = levels ? "repeat" : argv[6];
+   const char *out = argv[argc - 1];
+   egl_fbo(w, h);
+   glClearColor(0.25f, 0.5f, 0.75f, 1);
+   glClear(GL_COLOR_BUFFER_BIT);
+   GLuint t;
+   glGenTextures(1, &t);
+   glBindTexture(GL_TEXTURE_2D, t);
+   if (levels) {
+      const int tw = argc > 7 ? atoi(argv[5]) : 64, th = argc > 7 ? atoi(argv[6]) : 64;
+      static const unsigned char c[7][4] = { { 255, 0, 0, 255 }, { 0, 255, 0, 255 }, { 0, 0, 255, 255 },
+                                             { 255, 255, 0, 255 }, { 255, 0, 255, 255 }, { 0, 255, 255, 255 },
+                                             { 255, 255, 255, 255 } };
+      unsigned char *b = malloc(4 * tw * th);
+      for (int l = 0; (tw >> l) || (th >> l); l++) {
+         const int lw = tw >> l ? tw >> l : 1, lh = th >> l ? th >> l : 1;
+         for (int i = 0; i < lw * lh; i++)
+            memcpy(b + 4 * i, c[l % 7], 4);
+         glTexImage2D(GL_TEXTURE_2D, l, GL_RGBA, lw, lh, 0, GL_RGBA, GL_UNSIGNED_BYTE, b);
+      }
+   } else {
+      unsigned char *b = malloc(4 * 64 * 64);
+      for (int y = 0; y < 64; y++)
+         for (int x = 0; x < 64; x++) {
+            unsigned char *p = b + 4 * (y * 64 + x);
+            p[0] = ((x / 8 + y / 8) & 1) ? 230 : 30;
+            p[1] = x * 4;
+            p[2] = y * 4;
+            p[3] = 255;
+         }
+      glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 64, 64, 0, GL_RGBA, GL_UNSIGNED_BYTE, b);
+      glGenerateMipmap(GL_TEXTURE_2D);
+   }
+   const GLenum wm = !strcmp(wrap, "mirror") ? GL_MIRRORED_REPEAT : !strcmp(wrap, "clamp") ? GL_CLAMP_TO_EDGE : GL_REPEAT;
+   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, min_filter(minf));
+   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, !strcmp(magf, "linear") ? GL_LINEAR : GL_NEAREST);
+   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, wm);
+   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, wm);
+   const char *vs = "uniform mat4 mvp;\nattribute vec4 pos;\nattribute vec2 uv;\nvarying vec2 v;\n"
+                    "void main() { v = uv; gl_Position = mvp * pos; }\n";
+   const char *fs = "precision mediump float;\nuniform sampler2D t;\nvarying vec2 v;\n"
+                    "void main() { gl_FragColor = texture2D(t, v); }\n";
+   GLuint sv = glCreateShader(GL_VERTEX_SHADER), sf = glCreateShader(GL_FRAGMENT_SHADER), pr = glCreateProgram();
+   glShaderSource(sv, 1, &vs, NULL);
+   glCompileShader(sv);
+   glShaderSource(sf, 1, &fs, NULL);
+   glCompileShader(sf);
+   glAttachShader(pr, sv);
+   glAttachShader(pr, sf);
+   glBindAttribLocation(pr, 0, "pos");
+   glBindAttribLocation(pr, 1, "uv");
+   glLinkProgram(pr);
+   glUseProgram(pr);
+   float m[4][4];
+   mat4_frustum_gl(m, -1.0, 1.0, -(float)h / w, (float)h / w, 1.0, 50.0);
+   glUniformMatrix4fv(glGetUniformLocation(pr, "mvp"), 1, GL_FALSE, &m[0][0]);
+   glUniform1i(glGetUniformLocation(pr, "t"), 0);
+   static const float q[6][6] = {
+      { -4, -1, -1.5f, 1, -1.5f, 0 }, { 4, -1, -1.5f, 1, 2.5f, 0 }, { 4, -1, -40, 1, 2.5f, 40 },
+      { -4, -1, -1.5f, 1, -1.5f, 0 }, { 4, -1, -40, 1, 2.5f, 40 }, { -4, -1, -40, 1, -1.5f, 40 } };
+   GLuint b;
+   glGenBuffers(1, &b);
+   glBindBuffer(GL_ARRAY_BUFFER, b);
+   glBufferData(GL_ARRAY_BUFFER, sizeof(q), q, GL_STATIC_DRAW);
+   glVertexAttribPointer(0, 4, GL_FLOAT, GL_FALSE, 24, (void *)0);
+   glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 24, (void *)16);
+   glEnableVertexAttribArray(0);
+   glEnableVertexAttribArray(1);
+   glDrawArrays(GL_TRIANGLES, 0, 6);
+   write_out(out, w, h);
+   return 0;
+}
+
 int
 main(int argc, char **argv)
 {
+   if (argc >= 6 && !strcmp(argv[1], "levels"))
+      return plane(argc, argv);
+   if (argc >= 8 && !strcmp(argv[1], "plane"))
+      return plane(argc, argv);
    if (argc < 6 || strcmp(argv[1], "gears"))
       DIE("usage: g9p-glref gears W H ANGLE OUT.raw");
    int w = atoi(argv[2]), h = atoi(argv[3]);

@@ -16,7 +16,7 @@ struct g9p_resource {
    unsigned stride[G9P_MAX_LEVELS];
    unsigned offset[G9P_MAX_LEVELS];
    /* the sampler reads textures twiddled (Morton order, the y bit first):
-    * a copy of level 0, made again when seq (the CPU's writes, renders
+    * a copy of the levels, made again when seq (the CPU's writes, renders
     * into it) has moved past tw_seq */
    struct g9p_bo *tw;
    unsigned seq, tw_seq;
@@ -33,8 +33,8 @@ g9p_resource(struct pipe_resource *p)
 
 void g9p_resource_screen_init(struct pipe_screen *pscreen);
 
-/* the twiddled copy of a texture's level 0, up to date; NULL if none */
-struct g9p_bo *g9p_resource_twiddled(struct g9p_device *dev, struct g9p_resource *res);
+/* the twiddled copy of a texture's levels, up to date; NULL if none */
+struct g9p_bo *g9p_resource_twiddled(struct g9p_device *dev, struct g9p_resource *res, unsigned *nlevels);
 void g9p_resource_context_init(struct pipe_context *pctx);
 
 #endif

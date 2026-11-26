@@ -74,7 +74,7 @@ g9p_transfer_map(struct pipe_context *pctx, struct pipe_resource *prsc, unsigned
    struct g9p_resource *res = g9p_resource(prsc);
    struct pipe_transfer *t;
 
-   if (!(usage & PIPE_MAP_UNSYNCHRONIZED))
+   if (!(usage & PIPE_MAP_UNSYNCHRONIZED) && g9p_frame_uses(ctx, prsc))
       g9p_flush_frame(ctx);
    if (!(t = slab_zalloc(&ctx->transfer_pool)))
       return NULL;
@@ -125,16 +125,23 @@ twiddle(unsigned x, unsigned y, unsigned lw, unsigned lh)
 }
 
 struct g9p_bo *
-g9p_resource_twiddled(struct g9p_device *dev, struct g9p_resource *res)
+g9p_resource_twiddled(struct g9p_device *dev, struct g9p_resource *res, unsigned *nlevels)
 {
    const struct pipe_resource *p = &res->base;
-   const unsigned w = p->width0, h = p->height0;
-   const unsigned lw = util_logbase2_ceil(w), lh = util_logbase2_ceil(h);
+   const unsigned lw = util_logbase2_ceil(p->width0), lh = util_logbase2_ceil(p->height0);
+   const unsigned levels = MIN2(p->last_level + 1, G9P_MAX_LEVELS);
+   uint64_t size = 0;
 
    if (util_format_get_blocksize(p->format) != 4)
       return NULL;
+   /* the levels one after the other, each a twiddled power-of-two
+    * rectangle: level 0's sides rounded up, halved (a level's own sides
+    * rounded up put a 100x60 chain's last level in the wrong place) */
+   for (unsigned l = 0; l < levels; l++)
+      size += (uint64_t)4 << (MAX2((int)lw - (int)l, 0) + MAX2((int)lh - (int)l, 0));
+   *nlevels = levels;
    if (!res->tw) {
-      if (!(res->tw = g9p_bo_create(dev, (uint64_t)4 << (lw + lh))))
+      if (!(res->tw = g9p_bo_create(dev, size)))
          return NULL;
       res->tw_seq = res->seq - 1;
    }
@@ -144,16 +151,25 @@ g9p_resource_twiddled(struct g9p_device *dev, struct g9p_resource *res)
    const bool bgr = p->format == PIPE_FORMAT_B8G8R8A8_UNORM || p->format == PIPE_FORMAT_B8G8R8X8_UNORM;
    const bool x = p->format == PIPE_FORMAT_B8G8R8X8_UNORM || p->format == PIPE_FORMAT_R8G8B8X8_UNORM;
    uint32_t *dst = (uint32_t *)res->tw->map;
-   for (unsigned yy = 0; yy < h; yy++) {
-      const uint32_t *src = (const uint32_t *)(res->bo->map + res->offset[0] + yy * res->stride[0]);
-      for (unsigned xx = 0; xx < w; xx++) {
-         uint32_t v = src[xx];
-         if (bgr)
-            v = (v & 0xff00ff00) | (v & 0xff) << 16 | (v >> 16 & 0xff);
-         if (x)
-            v |= 0xff000000;
-         dst[twiddle(xx, yy, lw, lh)] = v;
+   for (unsigned l = 0; l < levels; l++) {
+      const unsigned w = u_minify(p->width0, l), h = u_minify(p->height0, l);
+      const unsigned llw = MAX2((int)lw - (int)l, 0), llh = MAX2((int)lh - (int)l, 0);
+
+      /* the padding filled from the edges: the sampler reads past a
+       * non-power-of-two level's last texel (black stripes at a 100x60
+       * chain's small levels while it was left empty) */
+      for (unsigned yy = 0; yy < 1u << llh; yy++) {
+         const uint32_t *src = (const uint32_t *)(res->bo->map + res->offset[l] + MIN2(yy, h - 1) * res->stride[l]);
+         for (unsigned xx = 0; xx < 1u << llw; xx++) {
+            uint32_t v = src[MIN2(xx, w - 1)];
+            if (bgr)
+               v = (v & 0xff00ff00) | (v & 0xff) << 16 | (v >> 16 & 0xff);
+            if (x)
+               v |= 0xff000000;
+            dst[twiddle(xx, yy, llw, llh)] = v;
+         }
       }
+      dst += 1u << (llw + llh);
    }
    res->tw_seq = res->seq;
    return res->tw;
@@ -190,9 +206,45 @@ g9p_resource_screen_init(struct pipe_screen *pscreen)
    pscreen->resource_destroy = g9p_resource_destroy;
 }
 
+/* the levels below base_level by the CPU: each texel the mean of its 2x2
+ * (rows and columns past an odd side clamped); 4-byte formats of 8-bit
+ * channels */
+static bool
+g9p_generate_mipmap(struct pipe_context *pctx, struct pipe_resource *prsc, enum pipe_format format,
+                    unsigned base_level, unsigned last_level, unsigned first_layer, unsigned last_layer)
+{
+   struct g9p_resource *res = g9p_resource(prsc);
+   const struct util_format_description *d = util_format_description(prsc->format);
+
+   if (prsc->target != PIPE_TEXTURE_2D || util_format_get_blocksize(prsc->format) != 4 ||
+       d->layout != UTIL_FORMAT_LAYOUT_PLAIN || d->channel[0].size != 8 || last_level > prsc->last_level)
+      return false;
+   if (g9p_frame_uses(g9p_context(pctx), prsc))
+      g9p_flush_frame(g9p_context(pctx));
+   for (unsigned l = base_level + 1; l <= last_level; l++) {
+      const unsigned sw = u_minify(prsc->width0, l - 1), sh = u_minify(prsc->height0, l - 1);
+      const unsigned w = u_minify(prsc->width0, l), h = u_minify(prsc->height0, l);
+      const uint8_t *src = res->bo->map + res->offset[l - 1];
+      uint8_t *dst = res->bo->map + res->offset[l];
+
+      for (unsigned y = 0; y < h; y++) {
+         const uint8_t *r0 = src + MIN2(2 * y, sh - 1) * res->stride[l - 1];
+         const uint8_t *r1 = src + MIN2(2 * y + 1, sh - 1) * res->stride[l - 1];
+         for (unsigned x = 0; x < w; x++) {
+            const unsigned x0 = 4 * MIN2(2 * x, sw - 1), x1 = 4 * MIN2(2 * x + 1, sw - 1);
+            for (unsigned c = 0; c < 4; c++)
+               dst[y * res->stride[l] + 4 * x + c] = (r0[x0 + c] + r0[x1 + c] + r1[x0 + c] + r1[x1 + c] + 2) / 4;
+         }
+      }
+   }
+   res->seq++;
+   return true;
+}
+
 void
 g9p_resource_context_init(struct pipe_context *pctx)
 {
+   pctx->generate_mipmap = g9p_generate_mipmap;
    pctx->buffer_map = g9p_transfer_map;
    pctx->texture_map = g9p_transfer_map;
    pctx->buffer_unmap = g9p_transfer_unmap;

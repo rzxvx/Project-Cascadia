@@ -115,6 +115,10 @@ frame_reset(struct g9p_context *ctx)
 {
    struct g9p_frame *f = &ctx->frame;
 
+   for (unsigned i = 0; i < f->nreads; i++)
+      pipe_resource_reference(&f->reads[i], NULL);
+   f->nreads = 0;
+   f->reads_overflow = false;
    f->ndraws = 0;
    f->nstream = 0;
    f->pos = 4 * STREAM_WORDS;
@@ -206,6 +210,38 @@ g9p_flush_frame(struct g9p_context *ctx)
    f->zclear = 1.0f;
    f->sclear = 0;
    frame_reset(ctx);
+}
+
+static void
+frame_reads(struct g9p_context *ctx, struct pipe_resource *prsc)
+{
+   struct g9p_frame *f = &ctx->frame;
+
+   if (!prsc)
+      return;
+   for (unsigned i = 0; i < f->nreads; i++)
+      if (f->reads[i] == prsc)
+         return;
+   if (f->nreads == ARRAY_SIZE(f->reads)) {
+      f->reads_overflow = true;
+      return;
+   }
+   pipe_resource_reference(&f->reads[f->nreads++], prsc);
+}
+
+bool
+g9p_frame_uses(struct g9p_context *ctx, struct pipe_resource *prsc)
+{
+   struct g9p_frame *f = &ctx->frame;
+
+   if (!f->ndraws && !f->cleared)
+      return false;
+   if (prsc == f->target || f->reads_overflow)
+      return true;
+   for (unsigned i = 0; i < f->nreads; i++)
+      if (f->reads[i] == prsc)
+         return true;
+   return false;
 }
 
 /* the frame's target follows the framebuffer's first colour buffer */
@@ -501,6 +537,39 @@ g9p_clear(struct pipe_context *pctx, unsigned buffers, uint32_t color_clear_mask
    memcpy(ctx->frame.clear, color->f, sizeof(ctx->frame.clear));
 }
 
+static unsigned
+wrap_mode(unsigned w)
+{
+   switch (w) {
+   case PIPE_TEX_WRAP_REPEAT: return 1;
+   case PIPE_TEX_WRAP_MIRROR_REPEAT: return 2;
+   case PIPE_TEX_WRAP_CLAMP_TO_BORDER: return 3;
+   default: return 0;                                      /* clamp to edge */
+   }
+}
+
+/* the sampler's two words: LOD clamps (1/64, up to 14), filters, address
+ * modes (0 clamp, 1 repeat, 2 mirror, 3 border); the high word's other
+ * bits as Apple's (0x00c00780) */
+static void
+sampler_words(const struct pipe_sampler_state *ss, uint32_t *w)
+{
+   if (!ss) {
+      w[0] = 0x000e0000;
+      w[1] = 0x00c00780;
+      return;
+   }
+   const unsigned minlod = CLAMP((int)(ss->min_lod * 64), 0, 896);
+   const unsigned maxlod = CLAMP((int)(ss->max_lod * 64), (int)minlod, 896);
+   w[0] = minlod | maxlod << 10 | (ss->mag_img_filter == PIPE_TEX_FILTER_LINEAR) << 23 |
+          (ss->min_img_filter == PIPE_TEX_FILTER_LINEAR) << 25 |
+          (ss->min_mip_filter == PIPE_TEX_MIPFILTER_NEAREST) << 27 |
+          (ss->min_mip_filter == PIPE_TEX_MIPFILTER_LINEAR) << 28 | wrap_mode(ss->wrap_s) << 29;
+   w[1] = 0x00c00780 | wrap_mode(ss->wrap_t) | wrap_mode(ss->wrap_r) << 3;
+   if (ss->lod_bias != 0.0f)
+      mesa_logw_once("g9p: a LOD bias (to do)");
+}
+
 static uint32_t
 stencil_op(unsigned op)
 {
@@ -698,8 +767,11 @@ g9p_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info, unsig
          index_va = frame_va(ctx, at);
       } else {
          index_va = g9p_resource(info->index.resource)->bo->va;
+         frame_reads(ctx, info->index.resource);
       }
    }
+   for (unsigned i = 0; i < ve->count; i++)
+      frame_reads(ctx, ctx->vb[ve->e[i].vertex_buffer_index].buffer.resource);
 
    for (unsigned d = 0; d < num_draws; d++) {
       const struct pipe_draw_start_count_bias *dr = &draws[d];
@@ -752,25 +824,24 @@ g9p_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info, unsig
          memset(fw, 0, 4 * fcs);
          for (unsigned t = 0; t < ntex; t++) {
             struct pipe_sampler_view *sv = ctx->views[t];
-            struct g9p_bo *tw = sv && sv->texture ? g9p_resource_twiddled(dev, g9p_resource(sv->texture)) : NULL;
+            unsigned nlev = 1;
+            struct g9p_bo *tw = sv && sv->texture ? g9p_resource_twiddled(dev, g9p_resource(sv->texture), &nlev)
+                                                 : NULL;
             if (!tw) {
                mesa_logw_once("g9p: a texture other than 4-byte texels, or none bound (to do)");
                continue;
             }
             const unsigned tw_ = sv->texture->width0, th = sv->texture->height0;
+            /* level 0's size, the base level (bits 57-60), the last level
+             * and 0x10 for a mip chain in the address word's low bits */
+            const unsigned last = MIN2(sv->u.tex.last_level, nlev - 1), base = MIN2(sv->u.tex.first_level, last);
             fw[8 * t] = 0x0344050a | (tw_ - 1) << 27;
-            fw[8 * t + 1] = (tw_ - 1) >> 5 | (th - 1) << 9;
-            fw[8 * t + 2] = (uint32_t)(tw->va >> 1);
+            fw[8 * t + 1] = (tw_ - 1) >> 5 | (th - 1) << 9 | base << 25;
+            fw[8 * t + 2] = (uint32_t)(tw->va >> 1) | (nlev > 1 ? 0x10 | last : 0);
             fw[8 * t + 3] = (uint32_t)(tw->va >> 33);
          }
-         for (unsigned s = 0; s < nsamp; s++) {
-            /* nearest, clamped: the only sampler words known so far */
-            const struct pipe_sampler_state *ss = ctx->samplers[s];
-            if (ss && (ss->min_img_filter != PIPE_TEX_FILTER_NEAREST || ss->mag_img_filter != PIPE_TEX_FILTER_NEAREST))
-               mesa_logw_once("g9p: linear filtering sampled nearest (to do)");
-            fw[fsamp + 2 * s] = 0x000e0000;
-            fw[fsamp + 2 * s + 1] = 0x00c00780;
-         }
+         for (unsigned s = 0; s < nsamp; s++)
+            sampler_words(ctx->samplers[s], fw + fsamp + 2 * s);
          if (fu_n)
             memcpy(fw + fubo, fu, 4 * fu_n);
          fq = g9p_code_frame(dev, 16, 16);
@@ -819,7 +890,9 @@ g9p_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info, unsig
       STREAM(ctx, 0x20000001 | MAX2(DIV_ROUND_UP(vcs, 4) + 1, 2) << 16, csload, G9P_PDS_DOUTD, 0x48002f80, vkick);
       const uint32_t sz1 = 0x00800000 | (vpds_data / 16) << 10 | DIV_ROUND_UP(vy->total, 2) << 4;
       if (fq)
-         PPP(ctx, 0x000002c0, fkick, G9P_PDS_DOUTD, sz1, (DIV_ROUND_UP(fcs, 4) + 1) << 23,
+         /* (SIZEINFO2 bit 14, pds_tri_merge_disable, with textures: a helper
+          * pixel from the next triangle has its gradients) */
+         PPP(ctx, 0x000002c0, fkick, G9P_PDS_DOUTD, sz1, (DIV_ROUND_UP(fcs, 4) + 1) << 23 | (ntex ? 1u << 14 : 0),
              vpds ? vpds : 0xc0, fq);
       else
          PPP(ctx, 0x000000c0, fkick, 0xc0, sz1, 0, vpds ? vpds : 0xc0);

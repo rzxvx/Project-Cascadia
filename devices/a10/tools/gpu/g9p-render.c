@@ -13,7 +13,8 @@
  * varying PDS data bytes, texture w, texture h, sampler 0, sampler 1,
  * texture state word 0[, vertices (3), ISPA front (0x003e0f00), ISPCTL
  * (0x03c40000), ISPA back (0x00100f00), VDM_STATE5 (0x1081), the vertex and
- * fragment DOUTU temps words (0x10: 8 registers)]), NAME.vb (the vertex buffer, its address goes to
+ * fragment DOUTU temps words (0x10: 8 registers), texture state word 1's
+ * other bits, words 4-7, word 3's and word 2's other bits]), NAME.vb (the vertex buffer, its address goes to
  * common-store dwords 0-1 of the vertex shader), NAME.vpds (the varying PDS
  * program: data, then code), NAME.tex (texels, as the GPU reads them).
  * Prints the 64x64 pixels' hash and writes them to out.raw.
@@ -166,7 +167,7 @@ int main(int argc, char **argv)
 		DIE("cfg too short");
 	tex = cfg[5] != 0;
 	{
-		static uint32_t c2[17];
+		static uint32_t c2[24];
 
 		memset(c2, 0, sizeof(c2));
 		memcpy(c2, cfg, sz < sizeof(c2) ? sz : sizeof(c2));
@@ -293,9 +294,13 @@ int main(int argc, char **argv)
 		memcpy(g3 + 0x40000 / 4, p, sz);
 		memset(ts, 0, 0x40);
 		ts[0] = cfg[9] | (cfg[5] - 1) << 27;
-		ts[1] = (cfg[5] - 1) >> 5 | (cfg[6] - 1) << 9;
-		ts[2] = (uint32_t)(ta >> 1);
-		ts[3] = (uint32_t)(ta >> 33);
+		ts[1] = (cfg[5] - 1) >> 5 | (cfg[6] - 1) << 9 | cfg[17];
+		ts[4] = cfg[18];
+		ts[5] = cfg[19];
+		ts[6] = cfg[20];
+		ts[7] = cfg[21];
+		ts[2] = (uint32_t)(ta >> 1) | cfg[23];
+		ts[3] = (uint32_t)(ta >> 33) | cfg[22];
 		ts[8] = cfg[7];
 		ts[9] = cfg[8];
 		/* PDS: DOUTD state -> common store 0-7, DOUTD END sampler -> 8-9, HALT */

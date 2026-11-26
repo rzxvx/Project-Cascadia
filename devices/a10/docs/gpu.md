@@ -1053,7 +1053,49 @@ with it.
   `/tmp/g9p-{vs,fs}-<address>.bin`; 2 logs the attributes' addresses per
   draw, 3 the vertex uniforms; `G9P_NIR=1` prints the NIR.
 
-Not yet: linear filtering, wrap modes, mipmaps, depth / stencil load and
+**G9.5 (2026-11-26): texture filtering, wrap modes, mipmaps.**
+
+- **The sampler words, by bit sweeps in `render-check`** (`SAMPLER_SWEEP=1`:
+  each bit of `000e0000 00c00780` flipped over an 8x8 texture magnified
+  four times with uv -0.5..1.5): bit 23 = linear magnification; bits 29-31
+  = the u address mode (0 clamp to edge -- the words so far --, 1 repeat,
+  2 mirrored repeat), bits 32-34 the v mode the same. The other fields as
+  the driver now sets them, each checked through GL against softpipe:
+  bits 0-9 / 10-19 the minimum / maximum LOD in 1/64 (the words so far:
+  0 / 896 = 14), bit 25 linear minification, bits 27 / 28 nearest /
+  linear mip filtering, bits 35-37 the w mode, 3 = clamp to border.
+- **Mip chains**: the texture state's address word (`address >> 1`, the
+  chain's base 64-byte aligned) carries the last level in bits 0-3 and
+  0x10 for a chain; the base level is bits 57-60 (word 1 bits 25-28); the
+  width and height stay level 0's. Single bit flips of the state and the
+  sampler never showed another level -- both fields are needed at once.
+  The levels lie one after the other, each twiddled, **level 0's sides
+  rounded up to powers of two and halved** (each level's own sides rounded
+  up put a 100x60 chain's last level in the wrong place); the sampler
+  reads past a non-power-of-two level's last texel, so the copy fills the
+  padding from the edges (black stripes at a 100x60 chain's small levels
+  until it did). `glGenerateMipmap` is the CPU's 2x2 box filter.
+- **For derivatives**: the fragment iterate is now the two-word form
+  (`0s08 W1`, no `8000` word), and textured draws set SIZEINFO2 bit 14
+  (`pds_tri_merge_disable`) -- the forms the offline compiler's
+  mipmapped shaders have; the textures of `g9p-glcheck` stay right with
+  them.
+- **Checked against softpipe** (`g9p-glref plane` / `levels`, a textured
+  floor into the distance, `glref-compare.py`): clamp 0 pixels differ,
+  trilinear 0.1%, magnification linear and nearest, mirrored repeat and
+  nearest-mipmap-nearest about 1-3% -- the level boundaries: **the
+  hardware's LOD is an approximation**, its level boundaries step along
+  the floor where softpipe's are straight, and nearest-mipmap-linear
+  blends the levels in other proportions (18% of the pixels further than
+  8 off). Within what GL leaves to the implementation; the images look the
+  same. Non-power-of-two chains (100x60, 48x24, 16x64) match to the same
+  boundaries. A LOD bias is not set yet (no field found).
+- **CPU maps send the render only when it uses the resource** (its target,
+  or a vertex / index buffer of its draws -- textures and constants are
+  copied at the draw): a texture upload after `glClear` used to send the
+  clear alone and leave the rest of the frame on a background of 0.
+
+Not yet: LOD bias, cube maps and arrays, depth / stencil load and
 store between renders, frame pacing (frame callbacks) and fewer copies on
 the display path, desktop OpenGL (`libGL`: no GLX in this build), points and lines, scissors, a frame that does not start with a
 clear (its background should load the target), uniforms at variable

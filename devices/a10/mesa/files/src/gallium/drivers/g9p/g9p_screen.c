@@ -169,6 +169,7 @@ g9p_init_screen_caps(struct pipe_screen *pscreen)
 
    u_init_pipe_screen_caps(pscreen, 1);
    caps->npot_textures = true;
+   caps->generate_mipmap = true;      /* by the CPU: g9p_resource.c */
    caps->blend_equation_separate = true;
    caps->uma = true;
    caps->max_render_targets = 1;

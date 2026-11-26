@@ -183,11 +183,14 @@ static void wait(struct emit *e) { EMIT(e, 0x004d); }
 /* vertex output `slot` (0-3 the position, then the varyings) = r[reg] (bank 1) */
 static void vs_output(struct emit *e, unsigned reg, unsigned slot) { EMIT(e, 0x151e, 0x0100 | reg << 1, slot); }
 
-/* n f32 varying components from component index comp on into r[d].. */
+/* n f32 varying components from component index comp on into r[d].. (the
+ * two-word form Apple's code has before a wait: the three-word one with
+ * W2 0x8000 leaves the quad's helper pixels without values, and LODs from
+ * derivatives go wrong at edges) */
 static void
 iterate_f32(struct emit *e, unsigned d, unsigned comp, unsigned n, bool persp)
 {
-   EMIT(e, 0x0108 | (n % 4) << 11 | (persp ? 0x0200 : 0), (1 + comp) << 9 | 0x0100 | 2 * d, 0x8000);
+   EMIT(e, 0x0108 | (n % 4) << 11 | (persp ? 0x0200 : 0), (1 + comp) << 9 | 2 * d);
 }
 
 /* sample a 2D texture: its state at common-store dword `state`, the
@@ -476,7 +479,9 @@ D(struct ctx *c, nir_def *d, bool early)
       return 0;
    }
    if (c->analyse) {
-      c->v[d->index].size = d->num_components;
+      /* (a vec3 gets a fourth register: to check whether 3 x 32 loads and
+       * f32 iterates of three write it) */
+      c->v[d->index].size = d->num_components == 3 ? 4 : d->num_components;
       touch(c, d->index, 2 * c->ip + !early);
       return 0;
    }

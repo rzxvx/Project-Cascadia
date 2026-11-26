@@ -57,9 +57,9 @@ def vs(noutputs, base=0):
 
 
 def cfg(outputs, varying0, sizeinfo1, sizeinfo2, vpds_data=0, tex=(0, 0, 0, 0, 0), nverts=3, ispa=0, ispctl=0,
-        ispa_back=0, state5=0, vs_temps=0, fs_temps=0):
-    return struct.pack("<17I", outputs, varying0, sizeinfo1, sizeinfo2, vpds_data, *tex, nverts, ispa, ispctl, ispa_back,
-                       state5, vs_temps, fs_temps)
+        ispa_back=0, state5=0, vs_temps=0, fs_temps=0, ts=(0, 0, 0, 0, 0), ts3=0, ts2=0):
+    return struct.pack("<24I", outputs, varying0, sizeinfo1, sizeinfo2, vpds_data, *tex, nverts, ispa, ispctl, ispa_back,
+                       state5, vs_temps, fs_temps, *ts, ts3, ts2)
 
 
 def vary_pds(varyings):
@@ -313,6 +313,65 @@ def regs_state(nregs):
         if nregs <= regs:
             return st5, regs // 4 << 3
     raise ValueError("vertex shader of %d registers" % nregs)
+
+
+# SAMPLER_SWEEP=1: the texture test with each bit of the two sampler words
+# (000e0000 00c00780) flipped in turn, uv from -0.5 to 1.5 (so wrapping
+# shows) over the 8x8 texture (4 pixels a texel: filtering shows); and with
+# each bit of texture state words 0, 1 and 4-7 (samp_* / tsw*_*)
+if os.environ.get("SAMPLER_SWEEP"):
+    UVW = [(-0.5, 1.5), (1.5, 1.5), (-0.5, -0.5)]
+    S0, S1, T0 = 0x000e0000, 0x00c00780, 0x0344050a
+
+    def sweep_test(s0, s1, t0=T0):
+        return dict(vs=vs(6), fs=tests["tex"]["fs"],
+                    cfg=cfg(6, 2, 0x01000410, 0x00800000, len(data_t), (TW, TH, s0, s1, t0)),
+                    vpds=data_t + code_t, tex=tex_bytes(), model="tex", uv=UVW)
+    tests["samp_base"] = sweep_test(S0, S1)
+    for b in range(32):
+        tests["samp0_%02d" % b] = sweep_test(S0 ^ 1 << b, S1)
+        tests["samp1_%02d" % b] = sweep_test(S0, S1 ^ 1 << b)
+
+    # mipmaps: a 16x16 texture, levels 16 / 8 / 4 / 2 / 1 each one colour
+    # (red, green, blue, yellow, magenta), one after the other twiddled;
+    # uv 0..16 repeated: 4 texels a pixel (level 2 when mipmapped). The
+    # texture state's word 1 (bits 23-31), words 4-7 and the sampler words
+    # with each bit flipped in turn (mip_*)
+    LV = [(255, 0, 0, 255), (0, 255, 0, 255), (0, 0, 255, 255), (255, 255, 0, 255), (255, 0, 255, 255)]
+    MIPS = b"".join(bytes(LV[l]) * ((16 >> l) * (16 >> l)) for l in range(5))
+    UVM = [(0.0, 16.0), (16.0, 16.0), (0.0, 0.0)]
+    R0, R1 = S0 | 1 << 29, S1 | 1                            # repeat in u and v
+
+    def mip_test(s0=R0, s1=R1, ts=(0, 0, 0, 0, 0)):
+        return dict(vs=vs(6), fs=tests["tex"]["fs"],
+                    cfg=cfg(6, 2, 0x01000410, 0x00800000, len(data_t), (16, 16, s0, s1, T0), ts=ts),
+                    vpds=data_t + code_t, tex=MIPS, model="tex", uv=UVM)
+    tests["mip_base"] = mip_test()
+    # the texels numbered (R = index & 255, G = index >> 8 & 255, B = 0x80):
+    # a pixel's colour names the dword the sampler read; 4096 of them
+    NUM = b"".join(bytes((i & 255, i >> 8 & 255, 0x80, 255)) for i in range(4096))
+
+    def num_test(s1=R1, ts3=0, ts2=0, ts=(0, 0, 0, 0, 0)):
+        return dict(vs=vs(6), fs=tests["tex"]["fs"],
+                    cfg=cfg(6, 2, 0x01000410, 0x00800000, len(data_t), (16, 16, R0, s1, T0), ts=ts, ts3=ts3, ts2=ts2),
+                    vpds=data_t + code_t, tex=NUM, model="tex", uv=UVM)
+    tests["num_base"] = num_test()
+    tests["num_s1_06"] = num_test(s1=R1 | 1 << 6)
+    for b in range(1, 32):
+        tests["num_w3_%02d" % b] = num_test(ts3=1 << b)
+        tests["num_w3s_%02d" % b] = num_test(s1=R1 | 1 << 6, ts3=1 << b)
+    tests["num_w2_00"] = num_test(ts2=1)
+    tests["num_w2s_00"] = num_test(s1=R1 | 1 << 6, ts2=1)
+    for b in range(23, 32):
+        tests["mip_t1_%02d" % b] = mip_test(ts=(1 << b, 0, 0, 0, 0))
+    for w in range(4):
+        for b in range(32):
+            ts = [0, 0, 0, 0, 0]
+            ts[1 + w] = 1 << b
+            tests["mip_t%d_%02d" % (4 + w, b)] = mip_test(ts=tuple(ts))
+    for b in range(32):
+        tests["mip_s0_%02d" % b] = mip_test(s0=R0 ^ 1 << b)
+        tests["mip_s1_%02d" % b] = mip_test(s1=R1 ^ 1 << b)
 
 
 def compile_glsl():

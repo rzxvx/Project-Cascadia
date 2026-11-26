@@ -49,6 +49,12 @@ struct g9p_frame {
    uint32_t pos;               /* next free byte of bo */
    uint32_t *stream;           /* the VDM stream (start of bo) */
    unsigned nstream;
+   /* the buffers the GPU reads during the render (vertices, indices):
+    * a CPU map of one sends the render first; textures and constants are
+    * copied at the draw */
+   struct pipe_resource *reads[64];
+   unsigned nreads;
+   bool reads_overflow;
 };
 
 struct g9p_context {
@@ -86,5 +92,9 @@ void g9p_context_screen_init(struct pipe_screen *pscreen);
 
 /* send the gathered render and wait for it */
 void g9p_flush_frame(struct g9p_context *ctx);
+
+/* whether the gathered render uses the resource (its target, or a buffer
+ * its draws read) */
+bool g9p_frame_uses(struct g9p_context *ctx, struct pipe_resource *prsc);
 
 #endif
