@@ -30,6 +30,7 @@
 #include "util/bitscan.h"
 
 #include "g9p_resource.h"
+#include "indices/u_indices.h"
 #include "g9p_screen.h"
 
 #define FRAME_BO_SIZE (16u << 20)
@@ -274,6 +275,15 @@ g9p_create_shader_state(struct pipe_context *pctx, const struct pipe_shader_stat
       return NULL;
    assert(s->type == PIPE_SHADER_IR_NIR);
    sh->nir = s->ir.nir;
+   if (sh->nir->info.stage == MESA_SHADER_FRAGMENT) {
+      nir_foreach_shader_in_variable(var, sh->nir)
+         sh->flat_inputs |= var->data.interpolation == INTERP_MODE_FLAT;
+      nir_foreach_function_impl(impl, sh->nir)
+         nir_foreach_block(block, impl)
+            nir_foreach_instr(instr, block)
+               sh->flat_inputs |= instr->type == nir_instr_type_intrinsic &&
+                                  nir_instr_as_intrinsic(instr)->intrinsic == nir_intrinsic_load_input;
+   }
    return sh;
 }
 
@@ -653,13 +663,13 @@ ispb_word(const struct pipe_stencil_state *s)
 /* the ISP words of both faces: depth compare / write, stencil; returns
  * whether the faces differ (ISPCTL two_sided) */
 static bool
-isp_state(struct g9p_context *ctx, bool translucent, uint32_t ispa[2], uint32_t ispb[2])
+isp_state(struct g9p_context *ctx, unsigned passtype, uint32_t ispa[2], uint32_t ispb[2])
 {
    const struct pipe_depth_stencil_alpha_state *dsa = ctx->dsa;
    const struct pipe_surface *zs = &ctx->fb.zsbuf;
    const bool has_z = zs->texture && util_format_has_depth(util_format_description(zs->format));
    const bool has_s = zs->texture && util_format_has_stencil(util_format_description(zs->format));
-   uint32_t a = 0x00100f00 | (translucent ? 1u << 24 : 0);          /* dfbztestenable, line width */
+   uint32_t a = 0x00100f00 | passtype << 24;                         /* dfbztestenable, line width */
 
    if (has_z && dsa && dsa->depth_enabled)
       a |= dsa->depth_func << 17 | (dsa->depth_writemask ? 0 : 1u << 21);
@@ -711,6 +721,68 @@ state5(unsigned nregs, unsigned cs_dwords)
 
 static void frame_load(struct g9p_context *ctx);
 
+static void g9p_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info, unsigned drawid_offset,
+                         const struct pipe_draw_indirect_info *indirect,
+                         const struct pipe_draw_start_count_bias *draws, unsigned num_draws);
+
+/* a draw made a triangle list, if it needs to be: quads and polygons, and
+ * with flat varyings every draw but a list whose provoking vertex is the
+ * first. The varying program's flat shade model 0 takes the triangle's
+ * first vertex; a strip's odd triangles reach the hardware with their
+ * last two vertices swapped (vertex i + 1 its third), so GL's last
+ * provoking vertex has no shade model of its own -- the list's triangles
+ * start with it instead (u_indices) */
+static bool
+draw_converted(struct g9p_context *ctx, const struct pipe_draw_info *info, unsigned drawid_offset,
+               const struct pipe_draw_start_count_bias *draws, unsigned num_draws)
+{
+   const unsigned in_pv = ctx->rast && ctx->rast->flatshade_first ? PV_FIRST : PV_LAST;
+   const bool flat = ctx->fs->flat_inputs;
+   const bool quads = info->mode == MESA_PRIM_QUADS || info->mode == MESA_PRIM_QUAD_STRIP ||
+                      info->mode == MESA_PRIM_POLYGON;
+
+   if (ctx->converted || (!quads && (topology(info->mode) == ~0u || !flat ||
+                                     (info->mode == MESA_PRIM_TRIANGLES && in_pv == PV_FIRST))))
+      return false;
+   const unsigned out_pv = flat ? PV_FIRST : in_pv;
+   for (unsigned d = 0; d < num_draws; d++) {
+      const struct pipe_draw_start_count_bias *dr = &draws[d];
+      struct pipe_draw_info ni = *info;
+      struct pipe_draw_start_count_bias nd = { 0 };
+      enum mesa_prim prim;
+      unsigned isz, nr;
+      void *buf;
+
+      if (info->index_size) {
+         u_translate_func tr;
+         if (u_index_translator(1u << MESA_PRIM_TRIANGLES, info->mode, info->index_size, dr->count, in_pv, out_pv,
+                                info->primitive_restart ? PR_ENABLE : PR_DISABLE, &prim, &isz, &nr,
+                                &tr) == U_TRANSLATE_ERROR || !nr || !(buf = malloc(nr * isz)))
+            continue;
+         const void *src = info->has_user_indices ? info->index.user : g9p_resource(info->index.resource)->bo->map;
+         tr(src, dr->start, dr->count, nr, info->restart_index, buf);
+         nd.index_bias = dr->index_bias;
+      } else {
+         u_generate_func gen;
+         if (u_index_generator(1u << MESA_PRIM_TRIANGLES, info->mode, dr->start, dr->count, in_pv, out_pv, &prim,
+                               &isz, &nr, &gen) == U_TRANSLATE_ERROR || !nr || !(buf = malloc(nr * isz)))
+            continue;
+         gen(dr->start, nr, buf);
+      }
+      ni.mode = prim;
+      ni.index_size = isz;
+      ni.has_user_indices = true;
+      ni.index.user = buf;
+      ni.primitive_restart = false;
+      nd.count = nr;
+      ctx->converted = true;
+      g9p_draw_vbo(&ctx->base, &ni, drawid_offset + d, NULL, &nd, 1);
+      ctx->converted = false;
+      free(buf);
+   }
+   return true;
+}
+
 static void
 g9p_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info, unsigned drawid_offset,
              const struct pipe_draw_indirect_info *indirect, const struct pipe_draw_start_count_bias *draws,
@@ -721,6 +793,8 @@ g9p_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info, unsig
    const unsigned topo = topology(info->mode);
 
    if (indirect || !ctx->vs || !ctx->fs || !ctx->velems || !frame_target(ctx))
+      return;
+   if (draw_converted(ctx, info, drawid_offset, draws, num_draws))
       return;
    /* a frame starting without a clear on a target with content: that
     * content first */
@@ -911,13 +985,19 @@ g9p_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info, unsig
       k[9] = 0xd3000000;
       uint32_t vpds = 0, vpds_data = 0;
       if (vy->n) {
-         /* {03000000, 0} (1 / w), then per varying its iterate; DOUTI each */
+         /* {03000000, 0} (1 / w), then per varying its iterate; DOUTI each.
+          * Bits 24-25 the shade model: 3 Gouraud, 0 flat from the
+          * triangle's first vertex (draw_converted puts the provoking vertex
+          * there). A flat varying keeps the perspective bits (16 here, 22
+          * in the second word): without them its components came one
+          * place on (R from G, G from B, B from A). */
          uint32_t data[4 + 2 * G9P_MAX_VARYINGS] = { 0x03000000, 0 };
          unsigned nd = 2;
          for (unsigned i = 0; i < vy->n; i++) {
             const unsigned c = vy->offset[i], n = vy->comps[i], L = 2 + 2 * c;
-            data[nd++] = 0x03u << 24 | ((n - 1) << 2 | vy->persp[i]) << 16 | L << 8 | L;
-            data[nd++] = (vy->persp[i] ? 0x00400000 : 0) | (c / 2) << 23 | (i == vy->n - 1 ? 0x80000000 : 0);
+            const bool pp = vy->persp[i] || vy->flat[i];
+            data[nd++] = (vy->flat[i] ? 0u : 3u) << 24 | ((n - 1) << 2 | pp) << 16 | L << 8 | L;
+            data[nd++] = (pp ? 0x00400000 : 0) | (c / 2) << 23 | (i == vy->n - 1 ? 0x80000000 : 0);
          }
          while (nd % 4)
             data[nd++] = 0;
@@ -954,7 +1034,12 @@ g9p_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info, unsig
        * each face; blending's passes translucent (the hidden-surface
        * removal would run only the top object's shader) */
       uint32_t ispa[2], ispb[2];
-      const bool two_sided = isp_state(ctx, fkey.blending, ispa, ispb);
+      /* the pass type: 1 translucent (blending), 4 punch-through for a
+       * shader that discards (opaque, the hidden-surface removal took
+       * the triangle as drawn and left uninitialised tile memory where
+       * the shader dropped pixels; 2 drew the same as 4) */
+      const unsigned passtype = fkey.blending ? 1 : ctx->fs->nir->info.fs.uses_discard ? 4 : 0;
+      const bool two_sided = isp_state(ctx, passtype, ispa, ispb);
       PPP(ctx, 0x0000001f, 0x03c40000 | (two_sided ? 1u << 19 : 0), ispa[0], ispb[0], ispa[1], ispb[1]);
       const struct pipe_viewport_state *vp = &ctx->viewport;
       /* the hardware clips depth to 0..w: GL's -w..w was halved in the
@@ -1172,6 +1257,7 @@ g9p_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
 
    if (!ctx)
       return NULL;
+   u_index_init();
    p = &ctx->base;
    ctx->dev = &screen->dev;
    if (!(ctx->frame.bo = g9p_bo_create(ctx->dev, FRAME_BO_SIZE))) {
@@ -1192,6 +1278,8 @@ g9p_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
    p->draw_vbo = g9p_draw_vbo;
    p->blit = g9p_blit;
    p->resource_copy_region = util_resource_copy_region;
+   p->resource_release = u_default_resource_release;
+   p->sampler_view_release = u_default_sampler_view_release;
    p->texture_barrier = g9p_texture_barrier;
    p->memory_barrier = g9p_memory_barrier;
 

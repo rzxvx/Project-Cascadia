@@ -20,10 +20,11 @@ struct nir_shader;
  * persp */
 struct g9p_varyings {
    unsigned n;
-   unsigned slot[G9P_MAX_VARYINGS];     /* VARYING_SLOT_VAR0 + i */
+   unsigned slot[G9P_MAX_VARYINGS];     /* the VARYING_SLOT_* location */
    unsigned comps[G9P_MAX_VARYINGS];
    unsigned offset[G9P_MAX_VARYINGS];   /* the first component's index */
    bool persp[G9P_MAX_VARYINGS];
+   bool flat[G9P_MAX_VARYINGS];         /* one vertex's value (the driver picks which) */
    unsigned total;                      /* components */
 };
 

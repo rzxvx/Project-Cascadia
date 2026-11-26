@@ -29,6 +29,7 @@ struct g9p_variant {
 struct g9p_cso_shader {
    struct nir_shader *nir;
    struct g9p_variant *variants;
+   bool flat_inputs;           /* a fragment shader reading flat varyings */
 };
 
 struct g9p_velems {
@@ -87,6 +88,8 @@ struct g9p_context {
    struct g9p_velems load_velems;
    struct pipe_resource *load_vb;
    struct pipe_sampler_state load_sampler;
+
+   bool converted;             /* drawing a draw made a triangle list (draw_converted) */
 };
 
 static inline struct g9p_context *

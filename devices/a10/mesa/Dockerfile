@@ -9,5 +9,7 @@ RUN apk add --no-cache \
         python3 py3-mako py3-yaml py3-packaging \
         bison flex \
         libdrm-dev zlib-dev linux-headers expat-dev zstd-dev \
-        wayland-dev wayland-protocols
+        wayland-dev wayland-protocols \
+        libx11-dev libxext-dev libxfixes-dev libxcb-dev libxshmfence-dev libxxf86vm-dev \
+        libxrandr-dev libxdamage-dev xorgproto
 WORKDIR /a10

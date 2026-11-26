@@ -1135,6 +1135,73 @@ clear (its background should load the target), uniforms at variable
 indices, vertex formats other than 32-bit floats, instancing, KMS /
 Wayland (display), fences that do not wait, other targets than BGRA8.
 
+**G9.7 (2026-11-26): desktop OpenGL (libGL, GLX), flat shading, discard;
+SuperTuxKart.** Mesa is now built with GLX (`-Dglx=dri`, platforms
+`x11,wayland`) and installs its own `libGL.so.1` next to EGL and GLES; on
+the desktop X11 programs run on Xwayland through the same software
+window-system path (each frame copied into the X server's shared memory).
+X11 comes first in the platform list on purpose: with Wayland first,
+`eglGetDisplay(<an X11 Display>)` was taken for a Wayland display and
+SuperTuxKart crashed in `wl_proxy_create_wrapper`.
+
+- **Fixed-function varyings**: the vertex outputs of desktop GL's fixed
+  pipeline -- colours (COL0/1, BFC0/1), fog, texture coordinates 0-7 --
+  are varyings like the generic ones; point size, edge flag, clip vertex /
+  distances, layer and viewport outputs are dropped for now.
+  `texture2DProj` (fixed-function texturing) goes through
+  `nir_lower_tex` (`lower_txp`). New test `tools/gpu/gl/x11/g9p-glx.c`
+  (GLX window, glBegin/glEnd, lighting, display lists, quad strips, a
+  perspective projection; `G9P_GLX_DUMP` writes the first frame) compared
+  with softpipe.
+- **Flat shading**: in the varying program's DOUTI word, **bits 24-25 are
+  the shade model**: 3 Gouraud, 0 / 1 / 2 one vertex's value (measured with
+  a strip whose vertex colours encode the vertex index: 0 = the triangle's
+  first vertex). A flat varying keeps the perspective bits (16 in the first
+  word, 22 in the second) -- without them its components came one place on
+  (R from G, G from B, B from A) -- and the fragment iterate reads it in
+  the perspective form too: a linear iterate returned the value over w
+  (glxgears' flat-shaded faces near black at w around 39, exact at w 1).
+  PPP_CTRL's flatshade vertex field changed nothing measurable.
+- **The provoking vertex**: a strip's odd triangles reach the hardware
+  with their last two vertices swapped (triangle 1, 2, 3 as 1, 3, 2), so no
+  single shade model gives GL's last vertex for every triangle. The driver
+  draws flat-shaded draws (and quads, quad strips and polygons, which the
+  hardware does not take) as triangle lists with the provoking vertex first
+  (Gallium's `u_indices` translator / generator) and always uses shade
+  model 0. `g9p-glx flat`, `flatstrip`, `flatfan` (and with `1`: the first
+  vertex convention, with `persp`: under a perspective projection) match
+  softpipe but for 0-12 edge pixels.
+- **Discard**: the offline compiler ends a discard with `6004` (r0) or
+  `6104 hh` (the register at half hh) after a compare into that register.
+  On the GPU the instruction **keeps the pixels whose register is not 0
+  and drops the others** -- the compiler gives it the negated condition
+  (`inot` of NIR's 0 / ~0 boolean), and 0 for an unconditional discard.
+  A discarding shader drawn opaque left uninitialised tile memory where it
+  dropped pixels (the hidden-surface removal had taken the triangle as
+  drawn); with **ISPA pass type 4 (punch-through)** -- 2 behaved the same --
+  the depth follows the shader. `g9p-glcheck discard` (a triangle dropping
+  its upper half in front of another, depth test on): every pixel right
+  from 64x64 to 1000x700. Discard together with blending (the translucent
+  pass) is still to check.
+- **Constants**: NIR's optimisation gathers constants at the top of the
+  program, where each held a register to the end; the compiler now copies
+  a constant into each block that uses it before leaving SSA. SuperTuxKart's
+  material shader (one uniform-selected chain of a dozen branches) went
+  from 40 registers (31 available) to fitting. The allocation error now
+  says how many registers a program would need.
+- **Results**: glxgears right on Xwayland at ~430 frames per second
+  (softpipe ~150); SuperTux 0.6.3's OpenGL 2.0 renderer (its 3.3 core one
+  needs a newer GL) draws its menu right; **SuperTuxKart 1.5 runs** -- it
+  chooses its GLES 2.0 renderer on this driver -- menus and a race on
+  Lighthouse drawn (track, karts, water, sky, vegetation through discard,
+  HUD), `--profile-laps=1` at 117-118 frames per second on average.
+
+Not yet: points and lines, scissors, LOD bias, cube maps and arrays, depth
+/ stencil load and store between renders, discard with blending, uniforms
+at variable indices, more than 31 registers (spilling), instancing, GL
+3.x (SuperTux's 3.3 core renderer, SuperTuxKart's modern one), frame
+pacing.
+
 ## 2D on the GPU (2026-11-25/26): g9p2d and SuperTux
 
 The first use of the G7 driver: SDL2's 2D renderer drawn by the GPU, as on

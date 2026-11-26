@@ -21,10 +21,11 @@ if [ "${1:-}" = driver ]; then
     # the Gallium driver (g9p) with EGL / GBM / OpenGL ES, for the iPad:
     # prefix /usr/local/g9p, installed into build/mesa/install-drv
     BD=$B/build-drv
-    # softpipe: Mesa's software path (EGL's wl_shm on Wayland), which takes
-    # g9p too (GALLIUM_DRIVER=g9p LIBGL_ALWAYS_SOFTWARE=1)
+    # softpipe: Mesa's software path (EGL's wl_shm on Wayland, GLX's
+    # XPutImage on X11), which takes g9p too (GALLIUM_DRIVER=g9p
+    # LIBGL_ALWAYS_SOFTWARE=1); GLX for libGL (programs linked with it)
     OPTS="--buildtype=debugoptimized -Dprefix=/usr/local/g9p -Dlibdir=lib
-        -Dgallium-drivers=g9p,softpipe -Dvulkan-drivers= -Dplatforms=wayland -Dglx=disabled
+        -Dgallium-drivers=g9p,softpipe -Dvulkan-drivers= -Dplatforms=x11,wayland -Dglx=dri
         -Degl=enabled -Dgbm=enabled -Dopengl=true -Dgles1=disabled -Dgles2=enabled -Dglvnd=disabled
         -Dllvm=disabled -Dvalgrind=disabled -Dlibunwind=disabled -Dzstd=disabled
         -Dshader-cache=disabled -Dtools= -Dbuild-tests=false -Dgallium-va=disabled
@@ -57,6 +58,9 @@ if [ "${1:-}" = driver ]; then
     cc -O2 -Wall -I"$I/include" -I"$W" /a10/tools/gpu/gl/wl/g9p-glwl.c "$W/xdg-shell.c" -o "$I/bin/g9p-glwl" \
         -L"$I/lib" -Wl,-rpath-link,"$I/lib" -Wl,-rpath,/usr/local/g9p/lib -lEGL -lGLESv2 -lwayland-client \
         -lwayland-egl -lm
+    # the X11 client (desktop GL through GLX, Xwayland)
+    cc -O2 -Wall -I"$I/include" /a10/tools/gpu/gl/x11/g9p-glx.c -o "$I/bin/g9p-glx" -L"$I/lib" \
+        -Wl,-rpath-link,"$I/lib" -Wl,-rpath,/usr/local/g9p/lib -lGL -lX11
     install -m 755 /a10/mesa/g9p-run "$I/bin/g9p-run"
     # the stripped tree for the iPad
     rm -rf /tmp/g9p && cp -a "$I" /tmp/g9p && strip /tmp/g9p/lib/*.so.* /tmp/g9p/bin/g9p-gl* 2>/dev/null

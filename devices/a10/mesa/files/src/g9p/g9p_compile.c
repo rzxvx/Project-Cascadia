@@ -534,7 +534,9 @@ allocate(struct ctx *c)
 {
    unsigned *order = malloc(c->nv * sizeof(unsigned)), n = 0;
    unsigned *active = malloc(c->nv * sizeof(unsigned)), na = 0;
-   bool used[G9P_MAX_REGS] = { true };      /* r0: the local / vertex index */
+   /* allocated without the limit, which is checked at the end: the
+    * error says how many the program would need */
+   bool used[256] = { true };               /* r0: the local / vertex index */
 
    for (unsigned i = 0; i < c->nv; i++)
       if (c->v[i].start >= 0 && !c->v[i].fixed)
@@ -558,7 +560,7 @@ allocate(struct ctx *c)
       /* vectors and pairs at even registers */
       const unsigned step = v->size > 1 ? 2 : 1;
       int r;
-      for (r = step; r + v->size <= G9P_MAX_REGS; r += step) {
+      for (r = step; r + v->size <= 256; r += step) {
          unsigned q;
 
          for (q = 0; q < v->size && !used[r + q]; q++)
@@ -566,7 +568,7 @@ allocate(struct ctx *c)
          if (q == v->size)
             break;
       }
-      if (r + v->size > G9P_MAX_REGS) {
+      if (r + v->size > 256) {
          c->e.error = "out of registers (spilling: to do)";
          break;
       }
@@ -576,6 +578,12 @@ allocate(struct ctx *c)
       if (r + v->size > c->nregs)
          c->nregs = r + v->size;
       active[na++] = order[k];
+   }
+   if (!c->e.error && c->nregs > G9P_MAX_REGS) {
+      static __thread char msg[96];
+      snprintf(msg, sizeof(msg), "out of registers: %u needed, r0-r%u (spilling: to do)", c->nregs,
+               G9P_MAX_REGS - 1);
+      c->e.error = msg;
    }
    free(order);
    free(active);
@@ -856,12 +864,21 @@ emit_alu(struct ctx *c, nir_alu_instr *alu)
    }
 }
 
-/* the varying of a VARYING_SLOT_VARn location, -1 none */
+/* a vertex output the fragment shader iterates: the generic varyings and
+ * the fixed-function ones (colours, fog, texture coordinates) */
+static bool
+interpolated_slot(unsigned location)
+{
+   return (location >= VARYING_SLOT_COL0 && location <= VARYING_SLOT_TEX7) || location == VARYING_SLOT_BFC0 ||
+          location == VARYING_SLOT_BFC1 || (location >= VARYING_SLOT_VAR0 && location < 64);
+}
+
+/* the varying of a location, -1 none */
 static int
 varying_of(const struct g9p_varyings *vy, unsigned location)
 {
    for (unsigned i = 0; i < vy->n; i++)
-      if (vy->slot[i] == location - VARYING_SLOT_VAR0)
+      if (vy->slot[i] == location)
          return i;
    return -1;
 }
@@ -884,7 +901,7 @@ emit_store_output(struct ctx *c, nir_intrinsic_instr *in)
       }
       if (io.location == VARYING_SLOT_POS) {
          slot = comp;
-      } else if (io.location >= VARYING_SLOT_VAR0) {
+      } else if (interpolated_slot(io.location)) {
          int i = varying_of(c->vary, io.location);
          slot = 4 + c->vary->offset[i] + comp;
       } else {
@@ -979,7 +996,21 @@ emit_intrinsic(struct ctx *c, nir_intrinsic_instr *in)
    }
    case nir_intrinsic_load_input: {
       if (c->stage != MESA_SHADER_VERTEX) {
-         c->e.error = "flat varyings (to do)";
+         /* a flat varying: its iterate's coefficients one vertex's value
+          * (the varying program's shade model), in the perspective form
+          * the varying program writes for it (a linear iterate gave the
+          * value over w: glxgears' faces dark) */
+         const nir_io_semantics io = nir_intrinsic_io_semantics(in);
+         int i = interpolated_slot(io.location) ? varying_of(c->vary, io.location) : -1;
+
+         if (i < 0 || !nir_src_is_const(in->src[0]) || nir_src_as_uint(in->src[0])) {
+            c->e.error = "a flat fragment input other than a varying the vertex shader writes (to do)";
+            return;
+         }
+         unsigned d = D(c, &in->def, false);
+
+         iterate_f32(e, d, c->vary->offset[i] + nir_intrinsic_component(in), in->def.num_components, true);
+         wait(e);
          return;
       }
       if (c->attribs) {
@@ -1026,12 +1057,30 @@ emit_intrinsic(struct ctx *c, nir_intrinsic_instr *in)
       wait(e);
       return;
    }
+   case nir_intrinsic_terminate_if:
+   case nir_intrinsic_demote_if:
+   case nir_intrinsic_terminate:
+   case nir_intrinsic_demote: {
+      /* discard: `6104 hh` (`6004` for r0, the offline compiler's form
+       * after a compare into a register) keeps the pixels whose register
+       * (half hh) is not 0 and drops the others -- so the register is
+       * NOT the condition (0 / ~0); unconditional: a register of 0. The
+       * driver draws such shaders punch-through (pass type 4). */
+      unsigned r = scratch(c, 1);
+
+      if (in->intrinsic == nir_intrinsic_terminate_if || in->intrinsic == nir_intrinsic_demote_if)
+         alu_const(c, 0xc6, r, R(c, in->src[0]), ~0u, false);
+      else
+         mov_imm(e, r, 0);
+      EMIT(e, 0x6104, 2 * r);
+      return;
+   }
    case nir_intrinsic_load_barycentric_pixel:
    case nir_intrinsic_load_barycentric_centroid:
       return;                                /* the iterate's mode (prescan) */
    case nir_intrinsic_load_interpolated_input: {
       const nir_io_semantics io = nir_intrinsic_io_semantics(in);
-      int i = io.location >= VARYING_SLOT_VAR0 ? varying_of(c->vary, io.location) : -1;
+      int i = interpolated_slot(io.location) ? varying_of(c->vary, io.location) : -1;
 
       if (i < 0 || !nir_src_is_const(in->src[1]) || nir_src_as_uint(in->src[1])) {
          c->e.error = "a fragment input other than a generic varying the vertex shader writes (to do)";
@@ -1316,6 +1365,72 @@ emit_cf_list(struct ctx *c, struct exec_list *list)
 
 /* ---- the pipeline --------------------------------------------------------------- */
 
+/* gl_FragColor as colour output 0 (one render target; nir_lower_blend
+ * takes FRAG_RESULT_DATA0 only) */
+static bool
+color_to_data0(nir_builder *b, nir_intrinsic_instr *in, void *data)
+{
+   if (in->intrinsic != nir_intrinsic_store_output && in->intrinsic != nir_intrinsic_load_output)
+      return false;
+   nir_io_semantics io = nir_intrinsic_io_semantics(in);
+   if (io.location != FRAG_RESULT_COLOR)
+      return false;
+   io.location = FRAG_RESULT_DATA0;
+   nir_intrinsic_set_io_semantics(in, io);
+   return true;
+}
+
+/* vertex outputs nothing reads yet: point size (points: to do), the edge
+ * flag, clip vertex / distances (user clip planes: to do), layer, viewport */
+static bool
+drop_output(nir_builder *b, nir_intrinsic_instr *in, void *data)
+{
+   if (in->intrinsic != nir_intrinsic_store_output)
+      return false;
+   const unsigned loc = nir_intrinsic_io_semantics(in).location;
+   if (loc != VARYING_SLOT_PSIZ && loc != VARYING_SLOT_EDGE && loc != VARYING_SLOT_CLIP_VERTEX &&
+       !(loc >= VARYING_SLOT_CLIP_DIST0 && loc <= VARYING_SLOT_CULL_DIST1) && loc != VARYING_SLOT_LAYER &&
+       loc != VARYING_SLOT_VIEWPORT)
+      return false;
+   nir_instr_remove(&in->instr);
+   return true;
+}
+
+/* a constant used in other blocks than its own: a copy of it before each
+ * such use. Optimisation gathers constants at the top, where each would
+ * hold a register to the end -- STK's material shader, a chain of a dozen
+ * branches, needed 40 registers for 13 constants live throughout. */
+static bool
+remat_consts(nir_shader *nir)
+{
+   bool any = false;
+
+   nir_foreach_function_impl(impl, nir) {
+      bool progress = false;
+
+      nir_foreach_block(block, impl) {
+         nir_foreach_instr_safe(instr, block) {
+            if (instr->type != nir_instr_type_load_const)
+               continue;
+            nir_load_const_instr *lc = nir_instr_as_load_const(instr);
+            nir_foreach_use_safe(src, &lc->def) {
+               nir_instr *u = nir_src_parent_instr(src);
+               if (u->block == block || u->type == nir_instr_type_phi)
+                  continue;
+               nir_load_const_instr *copy =
+                  nir_load_const_instr_create(nir, lc->def.num_components, lc->def.bit_size);
+               memcpy(copy->value, lc->value, sizeof(lc->value[0]) * lc->def.num_components);
+               nir_instr_insert_before(u, &copy->instr);
+               nir_src_rewrite(src, &copy->def);
+               progress = true;
+            }
+         }
+      }
+      any |= nir_progress(progress, impl, nir_metadata_control_flow);
+   }
+   return any;
+}
+
 /* the position's z = (z + w) / 2 at an io-lowered vec4 store */
 static bool
 halfz_store(nir_builder *b, nir_intrinsic_instr *in, void *data)
@@ -1400,10 +1515,10 @@ prescan(struct ctx *c, nir_function_impl *impl)
             nir_intrinsic_instr *in = nir_instr_as_intrinsic(instr);
             if (in->intrinsic == nir_intrinsic_store_output) {
                unsigned loc = nir_intrinsic_io_semantics(in).location;
-               if (loc >= VARYING_SLOT_VAR0 && loc - VARYING_SLOT_VAR0 < 64) {
+               if (interpolated_slot(loc)) {
                   unsigned n = nir_intrinsic_component(in) + nir_src_num_components(in->src[0]);
-                  if (n > comps[loc - VARYING_SLOT_VAR0])
-                     comps[loc - VARYING_SLOT_VAR0] = n;
+                  if (n > comps[loc])
+                     comps[loc] = n;
                }
             } else if (in->intrinsic == nir_intrinsic_load_input && !c->attribs) {
                unsigned a = nir_intrinsic_io_semantics(in).location - VERT_ATTRIB_GENERIC0;
@@ -1421,6 +1536,7 @@ prescan(struct ctx *c, nir_function_impl *impl)
          vy->comps[vy->n] = comps[i];
          vy->offset[vy->n] = vy->total;
          vy->persp[vy->n] = true;
+         vy->flat[vy->n] = false;
          vy->total += comps[i];
          vy->n++;
       }
@@ -1441,6 +1557,14 @@ prescan(struct ctx *c, nir_function_impl *impl)
             if (instr->type != nir_instr_type_intrinsic)
                continue;
             nir_intrinsic_instr *in = nir_instr_as_intrinsic(instr);
+            if (in->intrinsic == nir_intrinsic_load_input) {
+               int i = varying_of(vy, nir_intrinsic_io_semantics(in).location);
+               if (i >= 0) {
+                  vy->flat[i] = true;
+                  vy->persp[i] = false;
+               }
+               continue;
+            }
             if (in->intrinsic != nir_intrinsic_load_interpolated_input)
                continue;
             int i = varying_of(vy, nir_intrinsic_io_semantics(in).location);
@@ -1496,6 +1620,8 @@ g9p_compile(nir_shader *nir, bool print, const struct g9p_options *opts, struct 
       NIR_PASS(_, nir, nir_lower_io, nir_var_shader_in | nir_var_shader_out, type_size_vec4,
                nir_lower_io_use_interpolated_input_intrinsics);
       }
+      if (c.stage == MESA_SHADER_VERTEX)
+         NIR_PASS(_, nir, nir_shader_intrinsics_pass, drop_output, nir_metadata_control_flow, NULL);
       if (c.stage == MESA_SHADER_VERTEX && opts && opts->clip_halfz) {
          bool partial = false;
 
@@ -1510,6 +1636,7 @@ g9p_compile(nir_shader *nir, bool print, const struct g9p_options *opts, struct 
          const struct g9p_blend *b = opts->blend;
          nir_lower_blend_options bo = { 0 };
 
+         NIR_PASS(_, nir, nir_shader_intrinsics_pass, color_to_data0, nir_metadata_control_flow, NULL);
          bo.rt[0].format = b->format;
          bo.rt[0].colormask = opts->colormask ? opts->colormask : 0xf;
          bo.rt[0].rgb = (nir_lower_blend_channel){ b->rgb_func, b->rgb_src, b->rgb_dst };
@@ -1518,6 +1645,11 @@ g9p_compile(nir_shader *nir, bool print, const struct g9p_options *opts, struct 
       }
    }
    NIR_PASS(_, nir, nir_lower_vars_to_ssa);
+   if (c.stage == MESA_SHADER_FRAGMENT) {
+      /* texture2DProj (fixed-function texturing): the coordinate divided */
+      const nir_lower_tex_options to = { .lower_txp = ~0u };
+      NIR_PASS(_, nir, nir_lower_tex, &to);
+   }
    NIR_PASS(_, nir, nir_lower_system_values);
    if (c.stage == MESA_SHADER_COMPUTE) {
       /* the local ID from the index (r0): one dimension, x = the index */
@@ -1534,6 +1666,7 @@ g9p_compile(nir_shader *nir, bool print, const struct g9p_options *opts, struct 
    NIR_PASS(_, nir, nir_lower_load_const_to_scalar);
    NIR_PASS(_, nir, nir_opt_copy_prop);
    NIR_PASS(_, nir, nir_opt_dce);
+   NIR_PASS(_, nir, remat_consts);
    NIR_PASS(_, nir, nir_convert_from_ssa, true, false);
    NIR_PASS(_, nir, nir_opt_dce);
 

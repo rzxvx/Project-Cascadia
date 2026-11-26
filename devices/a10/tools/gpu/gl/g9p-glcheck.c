@@ -27,6 +27,10 @@
  *                                    render sent), another triangle with no
  *                                    clear before it: both on the clear's colour
  *                                    (N renders of a triangle each in a row)
+ *   g9p-glcheck discard [W H]        a triangle discarding its upper part
+ *                                    (green over 0.5), depth test on, in front
+ *                                    of a green one: the discarded pixels
+ *                                    neither coloured nor in the depth
  *   g9p-glcheck stencil [W H]        a triangle writes 1 into the stencil, a
  *                                    quad then draws where it is 1 (and 0)
  */
@@ -278,6 +282,45 @@ zs_main(const char *mode, const char *arg, int w, int h)
             memcpy(want, c, sizeof(want));
             check(x, y, px + 4 * (y * w + x), want);
          }
+   } else if (!strcmp(mode, "discard")) {
+      /* red to yellow (green 0 -> 1 towards the top vertex) at z 0.2,
+       * discarding green > 0.5; then green at z 0.6 behind it */
+      static const float t[6][7] = {
+         { -0.9f, -0.9f, 0.2f, 1, 0, 0, 1 }, { 0.6f, -0.9f, 0.2f, 1, 0, 0, 1 }, { -0.9f, 0.8f, 0.2f, 1, 1, 0, 1 },
+         { -0.7f, -0.8f, 0.6f, 0, 1, 0, 1 }, { 0.9f, -0.8f, 0.6f, 0, 1, 0, 1 }, { 0.1f, 0.9f, 0.6f, 0, 1, 0, 1 } };
+      static const char *disc_fs = "precision mediump float;\nvarying vec4 v;\n"
+                                   "void main() { if (v.g > 0.5) discard; gl_FragColor = v; }\n";
+      glClearDepthf(1);
+      glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+      glEnable(GL_DEPTH_TEST);
+      glDepthFunc(GL_LESS);
+      program(flat_vs, disc_fs);
+      draw7(&t[0][0], 3);
+      program(flat_vs, flat_fs);
+      draw7(&t[3][0], 3);
+      glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, px);
+      if (getenv("G9P_CHECK_DUMP")) {
+         /* the pixels (RGBA, the bottom row first) for a look */
+         FILE *f = fopen(getenv("G9P_CHECK_DUMP"), "wb");
+         if (f) {
+            fwrite(px, 4, (size_t)w * h, f);
+            fclose(f);
+         }
+      }
+      for (int y = 0; y < h; y++)
+         for (int x = 0; x < w; x++) {
+            static const double green[4] = { 0, 1, 0, 1 };
+            double b0[3], b1[3], want[4];
+            int i0 = inside(&t[0][0], 7, w, h, x, y, b0), i1 = inside(&t[3][0], 7, w, h, x, y, b1);
+            if (!i0 || !i1 || (i0 > 0 && fabs(b0[2] - 0.5) < 0.04))
+               continue;
+            if (i0 > 0 && b0[2] <= 0.5) {
+               want[0] = 1, want[1] = b0[2], want[2] = 0, want[3] = 1;
+            } else {
+               memcpy(want, i1 > 0 ? green : clear, sizeof(want));
+            }
+            check(x, y, px + 4 * (y * w + x), want);
+         }
    } else if (!strcmp(mode, "cull")) {
       /* left: counter-clockwise (red), right: clockwise (green), in GL's
        * window coordinates */
@@ -516,8 +559,8 @@ main(int argc, char **argv)
              fmin((0.2 + d) * 0.8, 1) * 255, fmin((0.2 + d) * 0.1, 1) * 255, 0.0, 255.0, d);
       return 0;
    }
-   if (!strcmp(mode, "depth") || !strcmp(mode, "cull") || !strcmp(mode, "stencil")) {
-      const int a1 = strcmp(mode, "stencil") ? 3 : 2;
+   if (!strcmp(mode, "depth") || !strcmp(mode, "cull") || !strcmp(mode, "stencil") || !strcmp(mode, "discard")) {
+      const int a1 = strcmp(mode, "stencil") && strcmp(mode, "discard") ? 3 : 2;
       context();
       return zs_main(mode, a1 == 3 && argc > 2 ? argv[2] : "", argc > a1 + 1 ? atoi(argv[a1]) : 64,
                      argc > a1 + 1 ? atoi(argv[a1 + 1]) : 64);
