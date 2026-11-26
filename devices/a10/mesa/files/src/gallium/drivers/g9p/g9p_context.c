@@ -15,6 +15,7 @@
 #include <string.h>
 
 #include "compiler/nir/nir.h"
+#include "compiler/nir/nir_builder.h"
 #include "compiler/nir/nir_serialize.h"
 #include "pipe/p_screen.h"
 #include "util/format/u_format.h"
@@ -202,6 +203,8 @@ g9p_flush_frame(struct g9p_context *ctx)
    f32p[5] = 0x402;
    f32p[7] = eot;
 
+   if (getenv("G9P_DEBUG") && atoi(getenv("G9P_DEBUG")) >= 4)
+      mesa_logi("g9p: render %ux%u: %u draws, %s", w, h, f->ndraws, f->cleared ? "cleared" : "not cleared");
    struct g9p_hwrt *hw = g9p_hwrt_get(dev, w, h);
    if (hw)
       g9p_render(dev, hw, geom, sizeof(geom), frag, sizeof(frag));
@@ -537,6 +540,65 @@ g9p_clear(struct pipe_context *pctx, unsigned buffers, uint32_t color_clear_mask
    memcpy(ctx->frame.clear, color->f, sizeof(ctx->frame.clear));
 }
 
+/* the source channel of a view's swizzle (0-3), one 4, zero 5 */
+static unsigned
+tex_swizzle(const struct util_format_description *d, unsigned sw)
+{
+   if (sw == PIPE_SWIZZLE_0)
+      return 5;
+   if (sw == PIPE_SWIZZLE_1)
+      return 4;
+   /* the format's channel for that component */
+   const unsigned c = d->swizzle[sw];
+   return c == PIPE_SWIZZLE_0 ? 5 : c == PIPE_SWIZZLE_1 ? 4 : c;
+}
+
+/* a texture state (8 dwords): word 0 = type 2 (2D) | twiddled (bit 3) |
+ * format (RGBA8 5, from bit 8) | swizzle R, G, B, A (3 bits each from bit
+ * 15: a memory channel, 4 one, 5 zero) | width - 1 (from bit 27, on into
+ * word 1) ; word 1 height - 1 from bit 9, base level from bit 25; words
+ * 2-3 the address >> 1 (a chain: the last level | 0x10 in its low bits),
+ * a linear image's pitch / 64 - 1 from word 3 bit 15. Single-level
+ * textures are read where they are, linear; chains from the twiddled copy */
+static void
+texture_state(struct g9p_context *ctx, struct pipe_sampler_view *sv, uint32_t *w)
+{
+   struct g9p_resource *res = sv && sv->texture ? g9p_resource(sv->texture) : NULL;
+   const struct util_format_description *d = res ? util_format_description(res->base.format) : NULL;
+
+   if (!res || util_format_get_blocksize(res->base.format) != 4 || d->channel[0].size != 8) {
+      mesa_logw_once("g9p: a texture other than 4-byte texels, or none bound (to do)");
+      return;
+   }
+   const unsigned tw = res->base.width0, th = res->base.height0;
+   const uint32_t swz = tex_swizzle(d, sv->swizzle_r) << 15 | tex_swizzle(d, sv->swizzle_g) << 18 |
+                        tex_swizzle(d, sv->swizzle_b) << 21 | tex_swizzle(d, sv->swizzle_a) << 24;
+
+   if (!res->base.last_level) {
+      const uint64_t va = res->bo->va + res->offset[0];
+
+      frame_reads(ctx, &res->base);
+      w[0] = 0x2 | 5 << 8 | swz | (tw - 1) << 27;
+      w[1] = (tw - 1) >> 5 | (th - 1) << 9;
+      w[2] = (uint32_t)(va >> 1);
+      w[3] = (uint32_t)(va >> 33) | (res->stride[0] / 64 - 1) << 15;
+      return;
+   }
+   unsigned nlev = 1;
+   struct g9p_bo *tb = g9p_resource_twiddled(ctx->dev, res, &nlev);
+   if (!tb)
+      return;
+   /* the twiddled copy is RGBA in memory: the view's swizzle alone */
+   const struct util_format_description *rgba = util_format_description(PIPE_FORMAT_R8G8B8A8_UNORM);
+   const uint32_t tswz = tex_swizzle(rgba, sv->swizzle_r) << 15 | tex_swizzle(rgba, sv->swizzle_g) << 18 |
+                         tex_swizzle(rgba, sv->swizzle_b) << 21 | tex_swizzle(rgba, sv->swizzle_a) << 24;
+   const unsigned last = MIN2(sv->u.tex.last_level, nlev - 1), base = MIN2(sv->u.tex.first_level, last);
+   w[0] = 0x2 | 1 << 3 | 5 << 8 | tswz | (tw - 1) << 27;
+   w[1] = (tw - 1) >> 5 | (th - 1) << 9 | base << 25;
+   w[2] = (uint32_t)(tb->va >> 1) | (nlev > 1 ? 0x10 | last : 0);
+   w[3] = (uint32_t)(tb->va >> 33);
+}
+
 static unsigned
 wrap_mode(unsigned w)
 {
@@ -647,6 +709,8 @@ state5(unsigned nregs, unsigned cs_dwords)
    return 0x4081 | 8 << 25 | cs;
 }
 
+static void frame_load(struct g9p_context *ctx);
+
 static void
 g9p_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info, unsigned drawid_offset,
              const struct pipe_draw_indirect_info *indirect, const struct pipe_draw_start_count_bias *draws,
@@ -658,6 +722,11 @@ g9p_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info, unsig
 
    if (indirect || !ctx->vs || !ctx->fs || !ctx->velems || !frame_target(ctx))
       return;
+   /* a frame starting without a clear on a target with content: that
+    * content first */
+   if (!ctx->frame.ndraws && !ctx->frame.cleared && !ctx->frame.loading &&
+       g9p_resource(ctx->frame.target)->seq)
+      frame_load(ctx);
    if (topo == ~0u) {
       mesa_logw_once("g9p: points and lines are not drawn yet");
       return;
@@ -822,24 +891,8 @@ g9p_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info, unsig
          uint32_t fimg = frame_alloc(ctx, 4 * fcs, 16);
          uint32_t *fw = frame_ptr(ctx, fimg);
          memset(fw, 0, 4 * fcs);
-         for (unsigned t = 0; t < ntex; t++) {
-            struct pipe_sampler_view *sv = ctx->views[t];
-            unsigned nlev = 1;
-            struct g9p_bo *tw = sv && sv->texture ? g9p_resource_twiddled(dev, g9p_resource(sv->texture), &nlev)
-                                                 : NULL;
-            if (!tw) {
-               mesa_logw_once("g9p: a texture other than 4-byte texels, or none bound (to do)");
-               continue;
-            }
-            const unsigned tw_ = sv->texture->width0, th = sv->texture->height0;
-            /* level 0's size, the base level (bits 57-60), the last level
-             * and 0x10 for a mip chain in the address word's low bits */
-            const unsigned last = MIN2(sv->u.tex.last_level, nlev - 1), base = MIN2(sv->u.tex.first_level, last);
-            fw[8 * t] = 0x0344050a | (tw_ - 1) << 27;
-            fw[8 * t + 1] = (tw_ - 1) >> 5 | (th - 1) << 9 | base << 25;
-            fw[8 * t + 2] = (uint32_t)(tw->va >> 1) | (nlev > 1 ? 0x10 | last : 0);
-            fw[8 * t + 3] = (uint32_t)(tw->va >> 33);
-         }
+         for (unsigned t = 0; t < ntex; t++)
+            texture_state(ctx, ctx->views[t], fw + 8 * t);
          for (unsigned s = 0; s < nsamp; s++)
             sampler_words(ctx->samplers[s], fw + fsamp + 2 * s);
          if (fu_n)
@@ -924,6 +977,134 @@ g9p_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info, unsig
    }
 }
 
+/* ---- the load ------------------------------------------------------------------ */
+
+static void
+load_shaders(struct g9p_context *ctx)
+{
+   const struct nir_shader_compiler_options *o = ctx->base.screen->nir_options[MESA_SHADER_VERTEX];
+   nir_builder b = nir_builder_init_simple_shader(MESA_SHADER_VERTEX, o, "g9p load vs");
+   nir_def *zero = nir_imm_int(&b, 0);
+
+   /* position (x, y) from attribute 0; uv = position / 2 + 1 / 2 */
+   nir_def *pos = nir_load_input(&b, 2, 32, zero, .base = 0, .dest_type = nir_type_float32,
+                                 .io_semantics.location = VERT_ATTRIB_GENERIC0, .io_semantics.num_slots = 1);
+   nir_store_output(&b, nir_vec4(&b, nir_channel(&b, pos, 0), nir_channel(&b, pos, 1), nir_imm_float(&b, 0),
+                                 nir_imm_float(&b, 1)),
+                    zero, .base = 0, .write_mask = 0xf, .src_type = nir_type_float32,
+                    .io_semantics.location = VARYING_SLOT_POS, .io_semantics.num_slots = 1);
+   nir_store_output(&b, nir_fadd_imm(&b, nir_fmul_imm(&b, pos, 0.5), 0.5), zero, .base = 1, .write_mask = 0x3,
+                    .src_type = nir_type_float32, .io_semantics.location = VARYING_SLOT_VAR0,
+                    .io_semantics.num_slots = 1);
+   b.shader->info.io_lowered = true;
+   ctx->load_vs = CALLOC_STRUCT(g9p_cso_shader);
+   ctx->load_vs->nir = b.shader;
+
+   o = ctx->base.screen->nir_options[MESA_SHADER_FRAGMENT];
+   b = nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, o, "g9p load fs");
+   zero = nir_imm_int(&b, 0);
+   nir_def *bary = nir_load_barycentric_pixel(&b, 32, .interp_mode = INTERP_MODE_SMOOTH);
+   nir_def *uv = nir_load_interpolated_input(&b, 2, 32, bary, zero, .base = 0, .dest_type = nir_type_float32,
+                                             .io_semantics.location = VARYING_SLOT_VAR0,
+                                             .io_semantics.num_slots = 1);
+   nir_tex_instr *tex = nir_tex_instr_create(b.shader, 1);
+   tex->op = nir_texop_tex;
+   tex->sampler_dim = GLSL_SAMPLER_DIM_2D;
+   tex->dest_type = nir_type_float32;
+   tex->coord_components = 2;
+   tex->src[0] = nir_tex_src_for_ssa(nir_tex_src_coord, uv);
+   nir_def_init(&tex->instr, &tex->def, 4, 32);
+   nir_builder_instr_insert(&b, &tex->instr);
+   nir_store_output(&b, &tex->def, zero, .base = 0, .write_mask = 0xf, .src_type = nir_type_float32,
+                    .io_semantics.location = FRAG_RESULT_DATA0, .io_semantics.num_slots = 1);
+   b.shader->info.io_lowered = true;
+   b.shader->info.num_textures = 1;
+   BITSET_SET(b.shader->info.textures_used, 0);
+   BITSET_SET(b.shader->info.samplers_used, 0);
+   ctx->load_fs = CALLOC_STRUCT(g9p_cso_shader);
+   ctx->load_fs->nir = b.shader;
+
+   /* one triangle over the whole target */
+   static const float tri[6] = { -1, -1, 3, -1, -1, 3 };
+   struct pipe_resource t = { .target = PIPE_BUFFER, .format = PIPE_FORMAT_R8_UNORM, .width0 = sizeof(tri),
+                              .height0 = 1, .depth0 = 1, .array_size = 1, .bind = PIPE_BIND_VERTEX_BUFFER };
+   ctx->load_vb = ctx->base.screen->resource_create(ctx->base.screen, &t);
+   if (ctx->load_vb)
+      memcpy(g9p_resource(ctx->load_vb)->bo->map, tri, sizeof(tri));
+   ctx->load_velems.count = 1;
+   ctx->load_velems.e[0] = (struct pipe_vertex_element){ .src_format = PIPE_FORMAT_R32G32_FLOAT, .src_stride = 8 };
+   ctx->load_sampler = (struct pipe_sampler_state){ .min_img_filter = PIPE_TEX_FILTER_NEAREST,
+                                                    .mag_img_filter = PIPE_TEX_FILTER_NEAREST,
+                                                    .min_mip_filter = PIPE_TEX_MIPFILTER_NONE,
+                                                    .wrap_s = PIPE_TEX_WRAP_CLAMP_TO_EDGE,
+                                                    .wrap_t = PIPE_TEX_WRAP_CLAMP_TO_EDGE };
+}
+
+/* the target's content as the frame's first draw (depth and stencil are
+ * not loaded yet) */
+static void
+frame_load(struct g9p_context *ctx)
+{
+   struct pipe_resource *rt = ctx->frame.target;
+
+   if (ctx->frame.level || rt->last_level) {
+      mesa_logw_once("g9p: a frame without a clear on a target of several levels: not loaded (to do)");
+      return;
+   }
+   if (!ctx->load_vs)
+      load_shaders(ctx);
+   if (!ctx->load_vb)
+      return;
+
+   /* the context's state aside, the load's in */
+   struct g9p_cso_shader *vs = ctx->vs, *fs = ctx->fs;
+   struct g9p_velems *ve = ctx->velems;
+   struct pipe_vertex_buffer vb0 = ctx->vb[0];
+   unsigned nvb = ctx->nvb;
+   struct pipe_blend_state *blend = ctx->blend;
+   struct pipe_rasterizer_state *rast = ctx->rast;
+   struct pipe_depth_stencil_alpha_state *dsa = ctx->dsa;
+   struct pipe_viewport_state vp = ctx->viewport;
+   struct pipe_sampler_view *view0 = ctx->views[0];
+   struct pipe_sampler_state *samp0 = ctx->samplers[0];
+   struct pipe_sampler_view tmpl = { .format = rt->format, .target = PIPE_TEXTURE_2D,
+                                     .swizzle_r = PIPE_SWIZZLE_X, .swizzle_g = PIPE_SWIZZLE_Y,
+                                     .swizzle_b = PIPE_SWIZZLE_Z, .swizzle_a = PIPE_SWIZZLE_W };
+   struct pipe_sampler_view *view = ctx->base.create_sampler_view(&ctx->base, rt, &tmpl);
+
+   ctx->vs = ctx->load_vs;
+   ctx->fs = ctx->load_fs;
+   ctx->velems = &ctx->load_velems;
+   ctx->vb[0] = (struct pipe_vertex_buffer){ .buffer.resource = ctx->load_vb };
+   ctx->nvb = 1;
+   ctx->blend = NULL;
+   ctx->rast = NULL;
+   ctx->dsa = NULL;
+   ctx->viewport = (struct pipe_viewport_state){ .scale = { rt->width0 / 2.0f, rt->height0 / 2.0f, 0.5f },
+                                                 .translate = { rt->width0 / 2.0f, rt->height0 / 2.0f, 0.5f } };
+   ctx->views[0] = view;
+   ctx->samplers[0] = &ctx->load_sampler;
+
+   const struct pipe_draw_info info = { .mode = MESA_PRIM_TRIANGLES, .instance_count = 1 };
+   const struct pipe_draw_start_count_bias draw = { .start = 0, .count = 3 };
+   ctx->frame.loading = true;
+   g9p_draw_vbo(&ctx->base, &info, 0, NULL, &draw, 1);
+   ctx->frame.loading = false;
+
+   ctx->vs = vs;
+   ctx->fs = fs;
+   ctx->velems = ve;
+   ctx->vb[0] = vb0;
+   ctx->nvb = nvb;
+   ctx->blend = blend;
+   ctx->rast = rast;
+   ctx->dsa = dsa;
+   ctx->viewport = vp;
+   ctx->views[0] = view0;
+   ctx->samplers[0] = samp0;
+   pipe_sampler_view_reference(&view, NULL);
+}
+
 /* ---- flush, blit, the context ---------------------------------------------------- */
 
 static void
@@ -964,6 +1145,11 @@ g9p_context_destroy(struct pipe_context *pctx)
 
    g9p_flush_frame(ctx);
    pipe_resource_reference(&ctx->frame.target, NULL);
+   pipe_resource_reference(&ctx->load_vb, NULL);
+   if (ctx->load_vs)
+      g9p_delete_shader_state(pctx, ctx->load_vs);
+   if (ctx->load_fs)
+      g9p_delete_shader_state(pctx, ctx->load_fs);
    util_unreference_framebuffer_state(&ctx->fb);
    util_set_vertex_buffers_count(ctx->vb, &ctx->nvb, NULL, 0);
    for (unsigned i = 0; i < 2; i++)

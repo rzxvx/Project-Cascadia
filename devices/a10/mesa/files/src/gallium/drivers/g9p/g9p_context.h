@@ -55,6 +55,7 @@ struct g9p_frame {
    struct pipe_resource *reads[64];
    unsigned nreads;
    bool reads_overflow;
+   bool loading;               /* the load draw is being recorded */
 };
 
 struct g9p_context {
@@ -79,6 +80,13 @@ struct g9p_context {
    struct pipe_sampler_state *samplers[G9P_MAX_TEXTURES];
 
    struct g9p_frame frame;
+
+   /* the load: a frame that does not start with a clear first draws the
+    * target's content (a triangle over it, sampling it texel for pixel) */
+   struct g9p_cso_shader *load_vs, *load_fs;
+   struct g9p_velems load_velems;
+   struct pipe_resource *load_vb;
+   struct pipe_sampler_state load_sampler;
 };
 
 static inline struct g9p_context *

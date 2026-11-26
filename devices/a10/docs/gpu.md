@@ -1095,6 +1095,39 @@ with it.
   copied at the draw): a texture upload after `glClear` used to send the
   clear alone and leave the rest of the frame on a background of 0.
 
+**G9.6 (2026-11-26): vertex formats, linear textures, the load.**
+
+- **Vertex formats**: Gallium's u_vbuf turns the formats the shader does
+  not load itself (unsigned / signed bytes and shorts, normalized or not,
+  half floats) into floats on the CPU; with `vertex_input_alignment` 4
+  bytes it also copies attributes at unaligned offsets and strides.
+  `g9p-glcheck vfmt ubyte | short | byte | odd` (u8 colours, s16 / s8
+  normalized positions, u8 colours at offset 9 of a 13-byte stride):
+  every pixel right. (Loading them in the shader itself: a speed-up for
+  later.)
+- **Linear textures**: the texture state word 0 is type 2 (2D) | bit 3
+  twiddled | the format from bit 8 (RGBA8 = 5) | the swizzle -- R, G, B, A
+  three bits each from bit 15, a memory channel 0-3, 4 one, 5 zero -- |
+  width - 1 from bit 27; a linear image has bit 3 clear and **pitch / 64
+  - 1 in word 3 from bit 15**, the field the end-of-tile image state has.
+  Single-level textures are now read where they are, linear (BGRA by the
+  swizzle 2, 1, 0, 3, X formats' alpha 4): no CPU copy for them; mip
+  chains keep the twiddled copy. Every `g9p-glcheck tex` / `texmod` size
+  (8x8 .. 256x256, 5x3, 33x17, 100x60) right through it; the render
+  that samples a texture is sent before a CPU map of it.
+- **The load**: a frame that does not start with a clear, on a target
+  with content (a render or a CPU write before), first draws that content:
+  one triangle over the target, its own vertex and fragment shaders (NIR
+  built in the driver, through the same compiler and draw path), sampling
+  the target linear, nearest, texel for pixel -- each tile reads only its
+  own pixels before its end of tile writes them. `g9p-glcheck load`: a
+  clear, then up to four triangles each its own render (`glReadPixels`
+  between them sends it): **every pixel right, 64x64 to 1620x2160**.
+  Depth and stencil are not loaded (the ISP's ZLS: still to do).
+- On the desktop `g9p-glwl` runs at ~470 frames per second at 320x240 and
+  es2gears at ~370-500, one render a frame (`G9P_DEBUG=4` logs each
+  render).
+
 Not yet: LOD bias, cube maps and arrays, depth / stencil load and
 store between renders, frame pacing (frame callbacks) and fewer copies on
 the display path, desktop OpenGL (`libGL`: no GLX in this build), points and lines, scissors, a frame that does not start with a

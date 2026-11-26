@@ -17,6 +17,16 @@
  *   g9p-glcheck cull FACE [W H]      a counter-clockwise and a clockwise
  *                                    triangle, culling back / front / none
  *                                    (frontcw: front faces clockwise, back culled)
+ *   g9p-glcheck vfmt FMT [W H]       the triangle with attributes in other
+ *                                    formats: ubyte (colours u8 normalized),
+ *                                    short (positions s16 normalized, colours
+ *                                    u16), byte (s8 positions, u8 colours),
+ *                                    half (OES_vertex_half_float), odd (u8
+ *                                    colours at an odd offset, stride 13)
+ *   g9p-glcheck load [W H [N]]       a clear, a triangle, glReadPixels (the
+ *                                    render sent), another triangle with no
+ *                                    clear before it: both on the clear's colour
+ *                                    (N renders of a triangle each in a row)
  *   g9p-glcheck stencil [W H]        a triangle writes 1 into the stencil, a
  *                                    quad then draws where it is 1 (and 0)
  */
@@ -27,6 +37,7 @@
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdint.h>
 #include <string.h>
 
 #define DIE(...) do { fprintf(stderr, __VA_ARGS__); fprintf(stderr, "\n"); exit(1); } while (0)
@@ -343,6 +354,121 @@ main(int argc, char **argv)
 {
    const char *mode = argc > 1 ? argv[1] : "uniform";
 
+   if (!strcmp(mode, "load")) {
+      const int w = argc > 3 ? atoi(argv[2]) : 64, h = argc > 3 ? atoi(argv[3]) : 64, n = argc > 4 ? atoi(argv[4]) : 2;
+      static const float cols[4][4] = { { 0, 1, 0, 1 }, { 0, 0, 1, 1 }, { 1, 1, 0, 1 }, { 1, 0, 1, 1 } };
+      float tris[4][3][7];
+      unsigned char *px = malloc(4 * w * h);
+      context();
+      target(w, h);
+      program(flat_vs, flat_fs);
+      glClearColor(1, 0, 0, 1);
+      glClear(GL_COLOR_BUFFER_BIT);
+      for (int i = 0; i < n && i < 4; i++) {
+         /* four triangles side by side, each its own render */
+         const float x0 = -0.95f + 0.48f * i;
+         const float v[3][2] = { { x0, -0.8f }, { x0 + 0.4f, -0.8f }, { x0 + 0.2f, 0.8f } };
+         for (int k = 0; k < 3; k++) {
+            tris[i][k][0] = v[k][0], tris[i][k][1] = v[k][1], tris[i][k][2] = 0;
+            memcpy(&tris[i][k][3], cols[i], 16);
+         }
+         draw7(&tris[i][0][0], 3);
+         glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, px);
+      }
+      for (int y = 0; y < h; y++)
+         for (int x = 0; x < w; x++) {
+            double b[3], want[4] = { 1, 0, 0, 1 };
+            int edge = 0;
+            for (int i = 0; i < n && i < 4; i++) {
+               int in = inside(&tris[i][0][0], 7, w, h, x, y, b);
+               if (!in)
+                  edge = 1;
+               else if (in > 0)
+                  for (int k = 0; k < 4; k++)
+                     want[k] = cols[i][k];
+            }
+            if (!edge)
+               check(x, y, px + 4 * (y * w + x), want);
+         }
+      printf("%s: load %dx%d, %d renders, %d of %d pixels right\n", bad ? "FAIL" : "ok", w, h, n, total - bad, total);
+      return bad != 0;
+   }
+   if (!strcmp(mode, "vfmt")) {
+      const char *f = argc > 2 ? argv[2] : "ubyte";
+      const int w = argc > 4 ? atoi(argv[3]) : 64, h = argc > 4 ? atoi(argv[4]) : 64;
+      /* positions (-0.8, -0.8), (0.8, -0.6), (-0.2, 0.8); colours red,
+       * green, blue at alpha 1 */
+      static const float pos[3][2] = { { -0.8f, -0.8f }, { 0.8f, -0.6f }, { -0.2f, 0.8f } };
+      static const float col[3][4] = { { 1, 0, 0, 1 }, { 0, 1, 0, 1 }, { 0, 0, 1, 1 } };
+      unsigned char buf[256] = { 0 };
+      int stride, coff;
+      GLenum ptype = GL_FLOAT, ctype = GL_FLOAT;
+      GLboolean pnorm = GL_FALSE;
+      context();
+      target(w, h);
+      glClearColor(0.25f, 0.5f, 0.75f, 1);
+      glClear(GL_COLOR_BUFFER_BIT);
+      program(flat_vs, flat_fs);
+      for (int v = 0; v < 3; v++) {
+         if (!strcmp(f, "ubyte") || !strcmp(f, "odd")) {
+            stride = !strcmp(f, "odd") ? 13 : 12;
+            coff = !strcmp(f, "odd") ? 9 : 8;
+            memcpy(buf + v * stride, pos[v], 8);
+            for (int k = 0; k < 4; k++)
+               buf[v * stride + coff + k] = (unsigned char)lround(col[v][k] * 255);
+            ctype = GL_UNSIGNED_BYTE;
+         } else if (!strcmp(f, "short")) {
+            stride = 12, coff = 4;
+            for (int k = 0; k < 2; k++) {
+               short sv = (short)lround(pos[v][k] * 32767);
+               memcpy(buf + v * stride + 2 * k, &sv, 2);
+            }
+            for (int k = 0; k < 4; k++) {
+               unsigned short uv = (unsigned short)lround(col[v][k] * 65535);
+               memcpy(buf + v * stride + coff + 2 * k, &uv, 2);
+            }
+            ptype = GL_SHORT, pnorm = GL_TRUE, ctype = GL_UNSIGNED_SHORT;
+         } else if (!strcmp(f, "byte")) {
+            stride = 8, coff = 4;
+            for (int k = 0; k < 2; k++)
+               buf[v * stride + k] = (unsigned char)(signed char)lround(pos[v][k] * 127);
+            for (int k = 0; k < 4; k++)
+               buf[v * stride + coff + k] = (unsigned char)lround(col[v][k] * 255);
+            ptype = GL_BYTE, pnorm = GL_TRUE, ctype = GL_UNSIGNED_BYTE;
+         } else {
+            DIE("format %s?", f);
+         }
+      }
+      GLuint b;
+      glGenBuffers(1, &b);
+      glBindBuffer(GL_ARRAY_BUFFER, b);
+      glBufferData(GL_ARRAY_BUFFER, 3 * stride, buf, GL_STATIC_DRAW);
+      glVertexAttribPointer(0, 2, ptype, pnorm, stride, (void *)0);
+      glVertexAttribPointer(1, 4, ctype, GL_TRUE, stride, (void *)(intptr_t)coff);
+      glEnableVertexAttribArray(0);
+      glEnableVertexAttribArray(1);
+      glDrawArrays(GL_TRIANGLES, 0, 3);
+      unsigned char *px = malloc(4 * w * h);
+      glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, px);
+      float t[3][7];
+      for (int v = 0; v < 3; v++) {
+         t[v][0] = pos[v][0], t[v][1] = pos[v][1], t[v][2] = 0;
+         memcpy(&t[v][3], col[v], 16);
+      }
+      for (int y = 0; y < h; y++)
+         for (int x = 0; x < w; x++) {
+            double bc[3], want[4];
+            int i = inside(&t[0][0], 7, w, h, x, y, bc);
+            if (!i)
+               continue;
+            for (int k = 0; k < 4; k++)
+               want[k] = i < 0 ? (double[]){ 0.25, 0.5, 0.75, 1 }[k]
+                               : bc[0] * col[0][k] + bc[1] * col[1][k] + bc[2] * col[2][k];
+            check(x, y, px + 4 * (y * w + x), want);
+         }
+      printf("%s: vfmt %s %dx%d, %d of %d pixels right\n", bad ? "FAIL" : "ok", f, w, h, total - bad, total);
+      return bad != 0;
+   }
    if (!strncmp(mode, "light", 5)) {
       /* es2gears's lighting: positions and normals interleaved (stride
        * 24), a normal matrix, a light direction, a material colour;

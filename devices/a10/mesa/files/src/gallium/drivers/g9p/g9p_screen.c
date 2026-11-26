@@ -188,6 +188,8 @@ g9p_init_screen_caps(struct pipe_screen *pscreen)
    caps->clip_planes = 0;
    caps->point_size_fixed = false;
    caps->user_vertex_buffers = false;
+   /* (attributes loaded as dwords: u_vbuf copies the others) */
+   caps->vertex_input_alignment = PIPE_VERTEX_INPUT_ALIGNMENT_4BYTE;
    caps->vendor_id = 0x106b;   /* Apple */
    caps->device_id = 0x8010;   /* T8010 */
    caps->video_memory = 0;
