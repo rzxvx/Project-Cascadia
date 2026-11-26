@@ -601,7 +601,8 @@ a body built by our encoders. `isa-check.py`, `isa-check2.py`,
 registers, one instruction under test, the result stored), `isa-run.sh`
 runs them on the iPad and compares: **69 of 69 programs right**
 (2026-11-26; `isa-check4`-`7` added control flow, workgroup IDs, unary
-operations and banks). The integer tests load one-hot inputs (1, 0x10, 0x100,
+operations and banks; `isa-check8` six more: breaks, continues, long
+jumps). The integer tests load one-hot inputs (1, 0x10, 0x100,
 0x1000), so a result names the registers that were read.
 
 **The frame** (`program()`), as the compiler lays out a compute kernel:
@@ -616,7 +617,10 @@ operations and banks). The integer tests load one-hot inputs (1, 0x10, 0x100,
 | `0100 01pp 0000` | jump to the end word, pp bytes ahead |
 | `c000`..., `8000` | padding, the end word at the start of a 64-byte block |
 
-Longer jumps (offsets past 0xff) are still to decode.
+Jumps take a 32-bit byte offset over W1 and W2, offset bits 8 / 24 kept in
+bits 0 of the words (bit 8 is the continuation bit): `0900 0354 0000` jumps
+0x254 bytes ahead (`isa-check8`: jump-none over 0x180 bytes of body, with
+some lanes active and with none: right).
 
 **Device loads and stores** (opcode 0x12), `W0 W1 W2 [W3]`:
 
@@ -670,6 +674,16 @@ storing to out[lane]):
   is active; `0900` forward when none is) with a 32-bit byte offset whose
   bits 8 / 24 sit in bits 0 of the two words; a loop each lane leaves after
   `lane` iterations: right.
+- **break and continue inside ifs** (`isa-check8`, the form Apple's
+  compiler emits for a break nested in ifs): `0188 03ss 0101|n<<1 0120 86d6`
+  sets the active lanes' level to the immediate n (0x98-style field) --
+  break = the enclosing ifs inside the loop + 2, continue = + 1; the pops
+  of the ifs bring broken lanes down to 2 (the loop's final `86d2` frees
+  them) and continued lanes to 1. Lanes at level 1 stay off through the back
+  jump: the loop's end needs an always-true compare and `86d7` to bring them
+  back (without it a loop whose lanes all continued once ends there; with
+  it, right). Breaks one and two ifs deep, a continue every other iteration:
+  right.
 
 **Workgroup IDs** (`isa-check5`): `2314 01dd 8100|w 0200|w>>8` loads
 threadgroup-memory word w; word 0 is the workgroup ID, written there by the
@@ -776,8 +790,8 @@ standalone front end's compute shader options and buffer-block limits
 configuration, or `HAVE_OPENGL` / `HAVE_OPENGL_ES_2` make every GLSL
 version "unsupported".
 
-The backend so far: compute shaders, one dimension, one block (no control
-flow yet): lowering (vars to SSA, compute system values with the local ID
+The first backend (commit 3efd6ba): compute shaders, one dimension, one
+block: lowering (vars to SSA, compute system values with the local ID
 from the index, buffer blocks to `load_ssbo` / `store_ssbo` with
 32-bit-index-offset addresses, scalarized), NIR's optimizations, then a
 linear scan over SSA defs (registers freed after their last use, address
@@ -792,10 +806,45 @@ float multiply-add, fma, subtraction, conversions, reciprocal, exp2 /
 log2, floor (`ineg` / `fneg` / `fabs` through a scratch register: 0 - a,
 a ^ sign, a & ~sign).
 
-Next: control flow (NIR ifs and loops onto the mask stack), jumps past
-0xff bytes, more ALU (compares, selects, min / max, fp16), then vertex and
-fragment shaders (the outputs, varyings, textures and blending of G8.1) and
-the Gallium driver.
+**Control flow** (the same day). NIR's ifs and loops go onto the mask
+stack as `isa-check4` / `8` measured them: an if = compare, push (inverted
+for the failing side), a jump-none past the then-side, else, a jump-none
+past the else-side, pop; a loop = `86d0`, the body, the continue fixup when
+the loop has a continue, a jump back while any lane is active, pop 2; break
+/ continue = the level-setting `86d6` with the ifs counted since the loop.
+Compares used once by an if or a select are emitted there (`3181`, the
+register-and-immediate form against 0 for a 0 / ~0 value); other compares
+become 0 / ~0 through select (`399e` + `21f8`); min / max (integer,
+unsigned, float) through select too, extract_u8 / u16 through the
+immediate shift. Before the backend: `nir_opt_if`, peephole select
+(branches of up to 8 instructions without loads become selects),
+booleans as 0 / ~0 (`nir_lower_bool_to_int32`), then out of SSA (phi webs
+into NIR registers, copies at the branch ends).
+
+**Registers** are given over live intervals in program order: the program
+is translated twice by the same code -- first only to number the
+instructions and record each value's first and last position (a value live
+into a loop stays live to its end, the back edge), then a linear scan gives
+registers, then the second translation emits. Program order and not the
+control-flow graph, because lanes split: a value written in one branch's
+lanes keeps its register through the other branch. Scratch registers (an
+address pair, a constant) are values of one instruction. Jumps take the
+long form anywhere (the frame's jump to the epilogue included).
+
+`cc-check.py`: **26 of 26 kernels right** -- the 11 straight-line ones and
+if / else, nested ifs, a loop of lane-dependent length, a break out of a
+64-iteration loop at a lane-dependent point, nested loops, the Collatz
+sequence (a while loop with an if inside, each lane its own trip count),
+unsigned / signed / float min and max, clamp, compares as values and as
+select conditions, extract, and a 40-iteration loop inside an if (a jump
+past 0x100 bytes). NIR rewrote every test's `continue` into if / else; the
+continue path itself is checked at the ISA level only (`isa-check8`).
+`isa-check2`'s case with registers r28-r31 now times out on the GPU with
+the same program bytes as when it passed (to check).
+
+Next: vertex and fragment shaders (the outputs, varyings, textures and
+blending of G8.1), then the Gallium driver; on the compute side,
+multi-dimensional workgroups, vectors in loads / stores, fp16, spilling.
 
 ## 2D on the GPU (2026-11-25/26): g9p2d and SuperTux
 

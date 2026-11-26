@@ -12,10 +12,9 @@ END, PAD = 0x8000, 0xc000
 
 
 def _jump(op_w0, offset):
-    """`0900 01oo 0000` (to the epilogue) / `0100 01pp 0000` (to the end word):
-    the target is `offset` bytes from the instruction's own start"""
-    assert 0 <= offset < 0x100, "longer jumps: to decode"
-    return [op_w0, 0x0100 | offset, 0x0000]
+    """`0900 W1 W2` (to the epilogue) / `0100 W1 W2` (to the end word): the
+    target is `offset` bytes from the instruction's own start (jump())"""
+    return jump(op_w0, offset)
 
 
 def program(body, nregs, nbufs=2, count_half=None):
@@ -151,6 +150,13 @@ def loop_begin(st):
 
 def loop_break(st, when_true):
     return [0x21c8, dst(st), st_src(st), 0x86d7 | (0x2000 if when_true else 0)]
+
+
+def brk(st, n):
+    """set the active lanes' stack level to n (an immediate, 0x98-style):
+    break (n = enclosing ifs + 2) / continue (+ 1) inside a loop"""
+    assert 0 < n < 64
+    return [0x0188, dst(st), 0x0101 | n << 1, 0x0120, 0x86d6]
 
 
 JMP_ANY, JMP_NONE = 0x0101, 0x0900
