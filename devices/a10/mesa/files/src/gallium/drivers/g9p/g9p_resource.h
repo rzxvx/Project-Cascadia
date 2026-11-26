@@ -20,6 +20,9 @@ struct g9p_resource {
     * into it) has moved past tw_seq */
    struct g9p_bo *tw;
    unsigned seq, tw_seq;
+   /* depth / stencil: a render stored its values here (the next render
+    * that does not clear them loads them) */
+   bool zs_valid;
    /* with a software winsys: its display target, the render copied there */
    struct sw_displaytarget *dt;
    unsigned dt_stride;

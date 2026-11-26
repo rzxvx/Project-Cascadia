@@ -37,6 +37,8 @@
  *   g9p-glcheck scissor [W H]        two full-target triangles, each in its own
  *                                    scissor rectangle (one partly off the
  *                                    target), and a scissored clear between them
+ *   (G9P_CHECK_SPLIT=1: depth and stencil with a render sent between draws;
+ *   G9P_CHECK_Z16=1: depth tests on a 16-bit depth buffer)
  *   g9p-glcheck stencil [W H]        a triangle writes 1 into the stencil, a
  *                                    quad then draws where it is 1 (and 0)
  */
@@ -158,6 +160,18 @@ check(int x, int y, const unsigned char *got, const double *want)
              want[0] * 255, want[1] * 255, want[2] * 255, want[3] * 255);
 }
 
+/* G9P_CHECK_SPLIT=1: a one-pixel glReadPixels between the draws of depth /
+ * stencil -- the driver sends the render so far, the next draws are a new
+ * render that has to load the depth and stencil */
+static void
+split(void)
+{
+   unsigned char p[4];
+
+   if (getenv("G9P_CHECK_SPLIT"))
+      glReadPixels(0, 0, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, p);
+}
+
 /* G9P_CHECK_DUMP=FILE: the pixels (RGBA, the bottom row first) for a look */
 static void
 dump(const unsigned char *px, int w, int h)
@@ -253,9 +267,12 @@ zs_main(const char *mode, const char *arg, int w, int h)
    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, rb);
    glGenRenderbuffers(1, &zs);
    glBindRenderbuffer(GL_RENDERBUFFER, zs);
-   glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH24_STENCIL8_OES, w, h);
+   /* G9P_CHECK_Z16=1: a 16-bit depth buffer, no stencil (depth tests) */
+   const int z16 = getenv("G9P_CHECK_Z16") != NULL;
+   glRenderbufferStorage(GL_RENDERBUFFER, z16 ? GL_DEPTH_COMPONENT16 : GL_DEPTH24_STENCIL8_OES, w, h);
    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, zs);
-   glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_STENCIL_ATTACHMENT, GL_RENDERBUFFER, zs);
+   if (!z16)
+      glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_STENCIL_ATTACHMENT, GL_RENDERBUFFER, zs);
    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
       DIE("framebuffer with depth / stencil incomplete");
    glViewport(0, 0, w, h);
@@ -275,7 +292,9 @@ zs_main(const char *mode, const char *arg, int w, int h)
       glEnable(GL_DEPTH_TEST);
       glDepthFunc(depth_func(arg));
       glDepthMask(strcmp(arg, "nowrite") != 0);
-      draw7(&t[0][0], 6);
+      draw7(&t[0][0], 3);
+      split();
+      draw7(&t[3][0], 3);
       glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, px);
       for (int y = 0; y < h; y++)
          for (int x = 0; x < w; x++) {
@@ -453,9 +472,11 @@ zs_main(const char *mode, const char *arg, int w, int h)
       glStencilFunc(GL_ALWAYS, 1, 0xff);
       glStencilOp(GL_KEEP, GL_KEEP, GL_REPLACE);
       draw7(&tri[0][0], 3);
+      split();
       glStencilOp(GL_KEEP, GL_KEEP, GL_KEEP);
       glStencilFunc(GL_EQUAL, 1, 0xff);
       draw7(&qg[0][0], 6);
+      split();
       glStencilFunc(GL_EQUAL, 0, 0xff);
       draw7(&qb[0][0], 6);
       glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, px);

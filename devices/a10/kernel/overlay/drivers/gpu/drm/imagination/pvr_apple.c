@@ -945,6 +945,8 @@ int pvr_apple_probe(struct pvr_device *pvr_dev)
 	pvr_dev->features.isp_max_tiles_in_flight = 4;	/* to check */
 	pvr_dev->features.has_max_partitions = true;
 	pvr_dev->features.max_partitions = 4;		/* to check */
+	/* ZLS_PIXELS (0xfd0): the fragment command carries isp_zls_pixels */
+	pvr_dev->features.has_zls_subtile = true;
 	pvr_dev->features.has_common_store_size_in_dwords = true;
 	pvr_dev->features.common_store_size_in_dwords = 16384;	/* to check */
 	pvr_dev->apple = a;

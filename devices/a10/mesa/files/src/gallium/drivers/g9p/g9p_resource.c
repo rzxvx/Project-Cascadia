@@ -34,8 +34,16 @@ g9p_resource_create(struct pipe_screen *pscreen, const struct pipe_resource *tem
    if (templ->target == PIPE_BUFFER) {
       size = templ->width0;
    } else {
+      /* depth / stencil: whole 32 x 32 tiles, the ISP's load and store
+       * moves tiles */
+      const bool zs = util_format_is_depth_or_stencil(templ->format);
       for (unsigned l = 0; l <= templ->last_level && l < G9P_MAX_LEVELS; l++) {
          unsigned w = u_minify(templ->width0, l), h = u_minify(templ->height0, l);
+
+         if (zs) {
+            w = align(w, 32);
+            h = align(h, 32);
+         }
 
          res->stride[l] = align(util_format_get_stride(templ->format, w), 64);
          res->offset[l] = align64(size, 64);

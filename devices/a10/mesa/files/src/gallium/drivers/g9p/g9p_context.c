@@ -126,11 +126,77 @@ frame_reset(struct g9p_context *ctx)
    f->nstream = 0;
    f->nsc = 0;
    f->sc_at = 0;
+   f->zcleared = f->scleared = f->zs_discard = false;
    f->pos = 4 * STREAM_WORDS;
    ctx->dev->code_frame = G9P_CODE_FRAME;
 }
 
 /* ---- the render --------------------------------------------------------------- */
+
+/* the ZLS format (ISP_ZLSCTL's load / store format) of a depth / stencil
+ * format in one buffer; ~0: none (separate stencil: to do) */
+static unsigned
+zls_format(enum pipe_format format)
+{
+   switch (format) {
+   case PIPE_FORMAT_Z32_FLOAT: return 0;            /* F32Z */
+   case PIPE_FORMAT_Z24X8_UNORM:
+   case PIPE_FORMAT_Z24_UNORM_S8_UINT: return 1;    /* 24BITINT, packed with the stencil */
+   case PIPE_FORMAT_Z16_UNORM: return 2;            /* 16BITINT */
+   default: return ~0u;
+   }
+}
+
+/* the render's depth / stencil load and store (the fragment command's
+ * isp_zlsctl, bases, isp_zls_pixels): loaded where the frame did not clear
+ * them and the buffer holds stored values, stored unless invalidated --
+ * a render sent mid-frame (a read-back, another target) keeps them.
+ * Linear, the buffer's own rows. Returns whether they are stored. */
+static bool
+zls_state(struct g9p_context *ctx, const struct g9p_frame *f, unsigned tx, unsigned ty, uint8_t *frag,
+          unsigned *format)
+{
+   *format = 0;
+   if (!f->zs)
+      return false;
+   const struct g9p_resource *zr = g9p_resource(f->zs);
+   const unsigned fmt = zls_format(f->zs->format);
+   if (fmt == ~0u) {
+      mesa_logw_once("g9p: %s depth / stencil is not kept between renders (to do)",
+                     util_format_short_name(f->zs->format));
+      return false;
+   }
+   const struct util_format_description *d = util_format_description(f->zs->format);
+   const bool has_z = util_format_has_depth(d), has_s = util_format_has_stencil(d);
+   const bool zload = has_z && !f->zcleared && zr->zs_valid, sload = has_s && !f->scleared && zr->zs_valid;
+   const bool store = !f->zs_discard;
+   uint64_t ctl = (uint64_t)(tx - 1) << 3 | (uint64_t)(ty - 1) << 27 | fmt << 23 | fmt << 25;
+
+   if (zload)
+      ctl |= 1u << 15;                         /* zloaden */
+   if (sload)
+      ctl |= 1u << 14;                         /* sloaden */
+   if (store && has_z)
+      ctl |= 1u << 19;                         /* zstoreen */
+   if (store && has_s)
+      ctl |= 1u << 18;                         /* sstoreen */
+   if (zload || sload)
+      ctl |= 1u << 1;                          /* forcezload */
+   if (store)
+      ctl |= 1u << 2;                          /* forcezstore */
+   *format = fmt;
+   const uint64_t va = zr->bo->va + zr->offset[f->zs_level];
+   *(uint64_t *)(frag + 32) = ctl;
+   *(uint64_t *)(frag + 40) = va;
+   *(uint64_t *)(frag + 48) = has_s ? va : 0;
+   *(uint32_t *)(frag + 368) =                  /* ZLS_PIXELS: the row in pixels - 1, the height - 1 */
+      (zr->stride[f->zs_level] / util_format_get_blocksize(f->zs->format) - 1) |
+      (u_minify(f->zs->height0, f->zs_level) - 1) << 15;
+   if (getenv("G9P_DEBUG") && atoi(getenv("G9P_DEBUG")) >= 4)
+      mesa_logi("g9p: depth / stencil %s%s%s", zload || sload ? "loaded" : "not loaded", store ? ", stored" : "",
+                f->zcleared ? ", cleared" : "");
+   return store;
+}
 
 void
 g9p_flush_frame(struct g9p_context *ctx)
@@ -192,17 +258,24 @@ g9p_flush_frame(struct g9p_context *ctx)
       return;
    }
    uint64_t geom[5] = { 40, frame_va(ctx, 0), 0, 2 | (0x20000ULL << 32), 0 };
-   uint8_t frag[376] = { 0 };
+   uint8_t frag[380] = { 0 };
    uint32_t *f32p = (uint32_t *)(frag + 336);
    uint64_t *bg = (uint64_t *)(frag + 256);
 
    *(uint32_t *)frag = sizeof(frag);
    if (f->nsc)
       *(uint64_t *)(frag + 8) = frame_va(ctx, f->sc_at);     /* isp_scissor_base */
+   unsigned zfmt;
+   const bool zs_stored = zls_state(ctx, f, tx, ty, frag, &zfmt);
    bg[0] = (uint64_t)G9P_PDS_DOUTD << 32 | bg_pds;
    bg[1] = texu;
    bg[2] = 0x0080000000800000ULL;
-   f32p[1] = f32b(f->zclear);                   /* ISP background depth */
+   /* the background's depth in the ISP's depth format, which ZLSCTL's
+    * format sets: unorm for 24 / 16 bits (with the float's bits a 24-bit
+    * store held 1.0 as 0x800000, while drawn depths were right) */
+   f32p[1] = zfmt == 1   ? (uint32_t)lround(CLAMP(f->zclear, 0, 1) * 0xffffff)
+             : zfmt == 2 ? (uint32_t)lround(CLAMP(f->zclear, 0, 1) * 0xffff)
+                         : f32b(f->zclear);
    f32p[2] = 0x300 | f->sclear;                 /* background stencil, mask, tag enable */
    f32p[3] = 0xf;
    f32p[4] = 0x0023000f;
@@ -214,6 +287,8 @@ g9p_flush_frame(struct g9p_context *ctx)
    struct g9p_hwrt *hw = g9p_hwrt_get(dev, w, h);
    if (hw)
       g9p_render(dev, hw, geom, sizeof(geom), frag, sizeof(frag));
+   if (f->zs)
+      g9p_resource(f->zs)->zs_valid = zs_stored;
    rt->seq++;                                   /* (a texture's twiddled copy is old now) */
    f->cleared = false;
    f->zclear = 1.0f;
@@ -265,6 +340,15 @@ frame_target(struct g9p_context *ctx)
       g9p_flush_frame(ctx);
       pipe_resource_reference(&ctx->frame.target, s->texture);
       ctx->frame.level = s->level;
+   }
+   /* the depth / stencil buffer: another one sends the render first */
+   struct pipe_resource *zt = ctx->fb.zsbuf.texture;
+   const unsigned zl = zt ? ctx->fb.zsbuf.level : 0;
+   if (ctx->frame.zs != zt || ctx->frame.zs_level != zl) {
+      if (ctx->frame.ndraws)
+         g9p_flush_frame(ctx);
+      pipe_resource_reference(&ctx->frame.zs, zt);
+      ctx->frame.zs_level = zl;
    }
    return true;
 }
@@ -540,25 +624,40 @@ g9p_clear(struct pipe_context *pctx, unsigned buffers, uint32_t color_clear_mask
 {
    struct g9p_context *ctx = g9p_context(pctx);
 
+   struct g9p_frame *f = &ctx->frame;
+
    if (!frame_target(ctx))
       return;
    if (scissor)
       mesa_logw_once("g9p: a scissored clear cleared everything (to do)");
-   /* depth and stencil: the background's values (after draws: to do) */
-   if (buffers & (PIPE_CLEAR_DEPTH | PIPE_CLEAR_STENCIL)) {
-      if (ctx->frame.ndraws && !(buffers & PIPE_CLEAR_COLOR0))
-         mesa_logw_once("g9p: a depth / stencil clear after draws (to do)");
-      if (buffers & PIPE_CLEAR_DEPTH)
-         ctx->frame.zclear = depth;
-      if (buffers & PIPE_CLEAR_STENCIL)
-         ctx->frame.sclear = stencil;
+   /* clears are the render's background: after draws that something
+    * keeps (the colour, or a depth / stencil the clear leaves), the
+    * render so far is sent first (its depth / stencil stored) */
+   const bool zs = f->zs && zls_format(f->zs->format) != ~0u;
+   const bool keeps_zs = zs && ((util_format_has_depth(util_format_description(f->zs->format)) &&
+                                 !(buffers & PIPE_CLEAR_DEPTH)) ||
+                                (util_format_has_stencil(util_format_description(f->zs->format)) &&
+                                 !(buffers & PIPE_CLEAR_STENCIL)));
+   if (f->ndraws && (!(buffers & PIPE_CLEAR_COLOR0) || keeps_zs))
+      g9p_flush_frame(ctx);
+   if (buffers & PIPE_CLEAR_COLOR0) {
+      /* the whole target: what was drawn so far goes (depth / stencil
+       * clears made before it stay) */
+      const bool zc = f->zcleared, sc = f->scleared;
+      frame_reset(ctx);
+      f->zcleared = zc;
+      f->scleared = sc;
+      f->cleared = true;
+      memcpy(f->clear, color->f, sizeof(f->clear));
    }
-   if (!(buffers & PIPE_CLEAR_COLOR0))
-      return;
-   /* the whole target: what was drawn so far goes */
-   frame_reset(ctx);
-   ctx->frame.cleared = true;
-   memcpy(ctx->frame.clear, color->f, sizeof(ctx->frame.clear));
+   if (buffers & PIPE_CLEAR_DEPTH) {
+      f->zclear = depth;
+      f->zcleared = true;
+   }
+   if (buffers & PIPE_CLEAR_STENCIL) {
+      f->sclear = stencil;
+      f->scleared = true;
+   }
 }
 
 /* the source channel of a view's swizzle (0-3), one 4, zero 5 */
@@ -1272,6 +1371,19 @@ frame_load(struct g9p_context *ctx)
 
 /* ---- flush, blit, the context ---------------------------------------------------- */
 
+/* contents no longer needed: a depth / stencil buffer's are not stored at
+ * the end of the render (st invalidates the window's at a swap) */
+static void
+g9p_invalidate_resource(struct pipe_context *pctx, struct pipe_resource *prsc)
+{
+   struct g9p_context *ctx = g9p_context(pctx);
+
+   if (prsc == ctx->frame.zs)
+      ctx->frame.zs_discard = true;
+   if (util_format_is_depth_or_stencil(prsc->format))
+      g9p_resource(prsc)->zs_valid = false;
+}
+
 static void
 g9p_flush(struct pipe_context *pctx, struct pipe_fence_handle **fence, unsigned flags)
 {
@@ -1310,6 +1422,7 @@ g9p_context_destroy(struct pipe_context *pctx)
 
    g9p_flush_frame(ctx);
    pipe_resource_reference(&ctx->frame.target, NULL);
+   pipe_resource_reference(&ctx->frame.zs, NULL);
    pipe_resource_reference(&ctx->load_vb, NULL);
    if (ctx->load_vs)
       g9p_delete_shader_state(pctx, ctx->load_vs);
@@ -1353,6 +1466,7 @@ g9p_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
    p->priv = priv;
    p->destroy = g9p_context_destroy;
    p->flush = g9p_flush;
+   p->invalidate_resource = g9p_invalidate_resource;
    p->flush_resource = g9p_flush_resource;
    p->clear = g9p_clear;
    p->draw_vbo = g9p_draw_vbo;

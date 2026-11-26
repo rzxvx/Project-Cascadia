@@ -1250,10 +1250,46 @@ compared with softpipe); no program-specific paths.
 - The vertex-shader variants' keys outgrew 512 bytes with the larger
   varying table; now 1024.
 
-Not yet: depth / stencil kept between renders (a render sent mid-frame
-loses them), depth bias (its table base presumably the next slot, 0xfb8:
+Not yet: depth bias (its table base presumably the next slot, 0xfb8:
 to check), LOD bias, cube maps and arrays, more than 31 registers
 (spilling), instancing, GL 3.x, frame pacing.
+
+**G9.9 (2026-11-27): depth and stencil kept between renders.** A render
+sent mid-frame (a read-back, another target, a full scissor table) used to
+start the next one with the background's depth and stencil. The ISP's
+load / store (ZLS) is now in use:
+
+- **Registers** (Start3D's 64-bit block): **0xf48 ZLSCTL** (Rogue's
+  `ISP_ZLSCTL` fields: extents in tiles less one at bits 3-12 / 27-36,
+  load / store enables 15 / 14 / 19 / 18, force load / store 1 / 2, load /
+  store format 23-24 / 25-26), **0xf50 / 0xf58 the depth's load / store
+  base** (with 0xf58 zero nothing reached the buffer, with 0xf50 zero the
+  store still did), 0xf60 / 0xf68 the stencil's (the packed format's
+  stencil comes along with the depth), **0xfd0 ZLS_PIXELS** (row in pixels
+  less one, height less one). Without 0xfd0 a linear store had a row of
+  one pixel (pixel x, y at x + y); found as the scissor base was, by trying
+  the free slots (0xf30 instead broke the render). A twiddled store wrote
+  nothing (not pursued: the layout is the hardware's own business here).
+  The kernel takes them from the fragment command's `isp_zlsctl`,
+  `isp_zload_store_base`, `isp_stencil_load_store_base` and
+  `isp_zls_pixels`; for the last the device now has `zls_subtile` (the
+  command 380 bytes).
+- **The format sets the ISP's own depth format**: with 24BITINT the
+  background's depth has to be unorm24 (16BITINT: unorm16) -- given as a
+  float's bits, a store held 1.0 as 0x800000 while drawn depths were right
+  (and without a store nobody noticed: the huge "depth" lost every test).
+  Formats: Z32_FLOAT F32Z, Z24X8 / Z24S8 24BITINT, Z16 16BITINT; separate
+  stencil (S8, Z32F_S8X24) not yet.
+- **The driver**: a render loads the depth / stencil it did not clear when
+  the buffer holds stored values, and stores them unless invalidated
+  (`invalidate_resource`); a depth / stencil clear after draws, and a
+  colour clear after draws that leaves depth / stencil, send the render so
+  far first; another depth / stencil buffer sends it too. Depth / stencil
+  resources are whole 32 x 32 tiles. `g9p-glcheck depth` (all functions,
+  nowrite) and `stencil` with `G9P_CHECK_SPLIT=1` (a one-pixel read-back
+  between the draws: the second render loads) and with `G9P_CHECK_Z16=1`:
+  every pixel right, 64x64 to 1620x2160. SuperTuxKart's race keeps its 117
+  frames per second with the store in every render.
 
 ## 2D on the GPU (2026-11-25/26): g9p2d and SuperTux
 
