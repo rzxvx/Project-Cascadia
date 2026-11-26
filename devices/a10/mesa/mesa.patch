@@ -1,7 +1,28 @@
+diff --git a/meson.build b/meson.build
+index c18edad..d47f83e 100644
+--- a/meson.build
++++ b/meson.build
+@@ -228,6 +228,7 @@ with_gallium_i915 = gallium_drivers.contains('i915')
+ with_gallium_svga = gallium_drivers.contains('svga')
+ with_gallium_virgl = gallium_drivers.contains('virgl')
+ with_gallium_lima = gallium_drivers.contains('lima')
++with_gallium_g9p = gallium_drivers.contains('g9p')
+ with_gallium_zink = gallium_drivers.contains('zink')
+ with_gallium_d3d12 = gallium_drivers.contains('d3d12')
+ with_gallium_asahi = gallium_drivers.contains('asahi')
 diff --git a/meson.options b/meson.options
-index 220d46e..f37fe49 100644
+index 220d46e..2307680 100644
 --- a/meson.options
 +++ b/meson.options
+@@ -88,7 +88,7 @@ option(
+     'all', 'auto',
+     'asahi', 'crocus', 'd3d12', 'ethosu', 'etnaviv', 'freedreno', 'i915', 'iris',
+     'lima', 'llvmpipe', 'nouveau', 'panfrost', 'r300', 'r600', 'radeonsi',
+-    'rocket', 'softpipe', 'svga', 'tegra', 'v3d', 'vc4', 'virgl', 'zink',
++    'rocket', 'g9p', 'softpipe', 'svga', 'tegra', 'v3d', 'vc4', 'virgl', 'zink',
+   ],
+   description : 'List of gallium drivers to build. If this is set to auto ' +
+                 'all drivers applicable to the target OS/architecture ' +
 @@ -552,7 +552,7 @@ option(
    value : [],
    choices : ['drm-shim', 'etnaviv', 'freedreno', 'glsl', 'intel', 'intel-ui',
@@ -52,15 +73,134 @@ index d234586..8cb3ba6 100644
    subdir('glsl')
  endif
  subdir('isaspec')
+diff --git a/src/gallium/auxiliary/pipe-loader/pipe_loader_drm.c b/src/gallium/auxiliary/pipe-loader/pipe_loader_drm.c
+index dc631b4..f175a32 100644
+--- a/src/gallium/auxiliary/pipe-loader/pipe_loader_drm.c
++++ b/src/gallium/auxiliary/pipe-loader/pipe_loader_drm.c
+@@ -88,6 +88,7 @@ static const struct drm_driver_descriptor *driver_descriptors[] = {
+    &ethosu_driver_descriptor,
+    &tegra_driver_descriptor,
+    &lima_driver_descriptor,
++   &powervr_driver_descriptor,
+    &zink_driver_descriptor,
+    &kmsro_driver_descriptor,
+ };
+@@ -150,11 +151,8 @@ pipe_loader_drm_probe_fd_nodup(struct pipe_loader_device **dev, int fd, bool zin
+       ddev->base.driver_name = strdup("radeonsi");
+    }
+ 
+-   /* powervr has no Gallium driver and relies on Zink */
+-   if (strcmp(ddev->base.driver_name, "powervr") == 0) {
+-      FREE(ddev->base.driver_name);
+-      ddev->base.driver_name = strdup("zink");
+-   }
++   /* (powervr went to Zink here: Cascadia's build has the A10's own
++    * Gallium driver for it, g9p) */
+ 
+    if (strcmp(ddev->base.driver_name, "virtio_gpu") == 0) {
+       struct virgl_renderer_capset_drm caps;
+diff --git a/src/gallium/auxiliary/target-helpers/drm_helper.h b/src/gallium/auxiliary/target-helpers/drm_helper.h
+index 65481b3..f78f047 100644
+--- a/src/gallium/auxiliary/target-helpers/drm_helper.h
++++ b/src/gallium/auxiliary/target-helpers/drm_helper.h
+@@ -414,6 +414,23 @@ DRM_DRIVER_DESCRIPTOR(lima, lima_driconf, ARRAY_SIZE(lima_driconf))
+ DRM_DRIVER_DESCRIPTOR_STUB(lima)
+ #endif
+ 
++#ifdef GALLIUM_G9P
++#include "g9p/drm/g9p_drm_public.h"
++
++static struct pipe_screen *
++pipe_powervr_create_screen(int fd, const struct pipe_screen_config *config)
++{
++   struct pipe_screen *screen;
++
++   screen = g9p_drm_screen_create(fd, config);
++   return screen ? debug_screen_wrap(screen) : NULL;
++}
++DRM_DRIVER_DESCRIPTOR(powervr, NULL, 0)
++
++#else
++DRM_DRIVER_DESCRIPTOR_STUB(powervr)
++#endif
++
+ #ifdef GALLIUM_ZINK
+ #include "zink/zink_public.h"
+ 
+diff --git a/src/gallium/auxiliary/target-helpers/drm_helper_public.h b/src/gallium/auxiliary/target-helpers/drm_helper_public.h
+index fe0e122..35d8b4f 100644
+--- a/src/gallium/auxiliary/target-helpers/drm_helper_public.h
++++ b/src/gallium/auxiliary/target-helpers/drm_helper_public.h
+@@ -26,6 +26,7 @@ extern const struct drm_driver_descriptor rocket_driver_descriptor;
+ extern const struct drm_driver_descriptor ethosu_driver_descriptor;
+ extern const struct drm_driver_descriptor tegra_driver_descriptor;
+ extern const struct drm_driver_descriptor lima_driver_descriptor;
++extern const struct drm_driver_descriptor powervr_driver_descriptor;
+ extern const struct drm_driver_descriptor zink_driver_descriptor;
+ extern const struct drm_driver_descriptor kmsro_driver_descriptor;
+ 
+diff --git a/src/gallium/meson.build b/src/gallium/meson.build
+index 67011f5..f319899 100644
+--- a/src/gallium/meson.build
++++ b/src/gallium/meson.build
+@@ -184,6 +184,12 @@ if with_gallium_lima
+ else
+   driver_lima = declare_dependency()
+ endif
++if with_gallium_g9p
++  subdir('winsys/g9p/drm')
++  subdir('drivers/g9p')
++else
++  driver_g9p = declare_dependency()
++endif
+ if with_gallium_rocket
+   subdir('winsys/rocket/drm')
+   subdir('drivers/rocket')
+diff --git a/src/gallium/targets/dri/meson.build b/src/gallium/targets/dri/meson.build
+index c526ffe..bb83781 100644
+--- a/src/gallium/targets/dri/meson.build
++++ b/src/gallium/targets/dri/meson.build
+@@ -61,7 +61,7 @@ libgallium_dri = shared_library(
+     driver_kmsro, driver_v3d, driver_vc4, driver_freedreno, driver_etnaviv,
+     driver_tegra, driver_i915, driver_svga, driver_virgl,
+     driver_panfrost, driver_iris, driver_lima, driver_zink, driver_d3d12,
+-    driver_asahi, driver_crocus, driver_rocket, driver_ethosu
++    driver_asahi, driver_crocus, driver_rocket, driver_ethosu, driver_g9p
+   ],
+   install : true,
+   name_suffix : libname_suffix,
+diff --git a/src/gallium/targets/dril/dril_target.c b/src/gallium/targets/dril/dril_target.c
+index b5ba518..b159766 100644
+--- a/src/gallium/targets/dril/dril_target.c
++++ b/src/gallium/targets/dril/dril_target.c
+@@ -685,5 +685,6 @@ DEFINE_LOADER_DRM_ENTRYPOINT(sun4i_drm)
+ DEFINE_LOADER_DRM_ENTRYPOINT(udl)
+ DEFINE_LOADER_DRM_ENTRYPOINT(zynqmp_dpsub)
+ DEFINE_LOADER_DRM_ENTRYPOINT(lima)
++DEFINE_LOADER_DRM_ENTRYPOINT(powervr)
+ DEFINE_LOADER_DRM_ENTRYPOINT(d3d12)
+ DEFINE_LOADER_DRM_ENTRYPOINT(zink)
+diff --git a/src/gallium/targets/dril/meson.build b/src/gallium/targets/dril/meson.build
+index 55f10dc..5f984ef 100644
+--- a/src/gallium/targets/dril/meson.build
++++ b/src/gallium/targets/dril/meson.build
+@@ -122,6 +122,7 @@ foreach d : [[with_gallium_kmsro, [
+                (with_gallium_radeonsi and with_amdgpu_virtio),
+                ['virtio_gpu']],
+              [with_gallium_lima, ['lima']],
++             [with_gallium_g9p, ['powervr']],
+              [with_gallium_d3d12, ['d3d12']],
+              [with_gallium_zink, ['zink']],
+              [with_gallium_asahi, ['asahi']]]
 diff --git a/src/meson.build b/src/meson.build
-index a4f8084..c18388f 100644
+index a4f8084..536ea87 100644
 --- a/src/meson.build
 +++ b/src/meson.build
 @@ -89,6 +89,9 @@ endif
  if with_imagination_vk or with_tools.contains('imagination')
    subdir('imagination')
  endif
-+if with_tools.contains('g9p')
++if with_tools.contains('g9p') or with_gallium_g9p
 +  subdir('g9p')
 +endif
  if with_any_intel

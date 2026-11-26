@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: MIT
 # The A10's (applegpu_g9p) shader compiler, Cascadia's own
-# (devices/a10/docs/gpu.md "G8.2"), and its command-line front end.
+# (devices/a10/docs/gpu.md "G8.2"), for the Gallium driver (g9p) and its
+# command-line front end (-Dtools=g9p).
 
 libg9p_compiler = static_library(
   'g9p_compiler',
@@ -10,6 +11,7 @@ libg9p_compiler = static_library(
   gnu_symbol_visibility : 'hidden',
 )
 
+if with_tools.contains('g9p')
 g9p_cc = executable(
   'g9p-cc',
   files('g9p_cc.c'),
@@ -18,3 +20,4 @@ g9p_cc = executable(
   dependencies : [idep_nir, idep_mesautil, idep_getopt],
   build_by_default : true,
 )
+endif

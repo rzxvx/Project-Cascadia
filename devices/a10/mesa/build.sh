@@ -3,7 +3,8 @@
 # iPad 7, inside the cascadia-a10-mesa image (Dockerfile) with
 # devices/a10 at /a10. Puts files/ into the tree, applies mesa.patch, builds
 # into build/mesa/build; the tools land in build/mesa/out.
-#   docker run --rm -v "$PWD/devices/a10:/a10" cascadia-a10-mesa sh /a10/mesa/build.sh
+#   docker run --rm -v "$PWD/devices/a10:/a10" cascadia-a10-mesa sh /a10/mesa/build.sh [driver]
+# (driver: the Gallium driver with EGL / GBM / OpenGL ES instead of g9p-cc)
 set -eu
 B=/a10/build/mesa
 S=$B/src
@@ -16,6 +17,32 @@ if ! g diff --quiet || [ -n "$(g ls-files --others --exclude-standard | grep -v 
 fi
 g apply /a10/mesa/mesa.patch
 cp -R /a10/mesa/files/. "$S/"
+if [ "${1:-}" = driver ]; then
+    # the Gallium driver (g9p) with EGL / GBM / OpenGL ES, for the iPad:
+    # prefix /usr/local/g9p, installed into build/mesa/install-drv
+    BD=$B/build-drv
+    if [ ! -f "$BD/build.ninja" ]; then
+        meson setup "$BD" "$S" --buildtype=debugoptimized -Dprefix=/usr/local/g9p -Dlibdir=lib \
+            -Dgallium-drivers=g9p -Dvulkan-drivers= -Dplatforms= -Dglx=disabled -Degl=enabled \
+            -Dgbm=enabled -Dopengl=true -Dgles1=disabled -Dgles2=enabled -Dglvnd=disabled \
+            -Dllvm=disabled -Dvalgrind=disabled -Dlibunwind=disabled -Dzstd=disabled \
+            -Dshader-cache=disabled -Dtools= -Dbuild-tests=false -Dgallium-va=disabled \
+            -Dgallium-rusticl=false -Dvideo-codecs= -Dteflon=false -Dlmsensors=disabled \
+            -Dmicrosoft-clc=disabled -Dspirv-tools=disabled -Dxmlconfig=disabled
+    fi
+    ninja -C "$BD"
+    rm -rf "$B/install-drv"
+    DESTDIR="$B/install-drv" ninja -C "$BD" install >/dev/null
+    I=$B/install-drv/usr/local/g9p
+    mkdir -p "$I/bin"
+    for t in /a10/tools/gpu/gl/*.c; do
+        n=$(basename "$t" .c)
+        cc -O2 -Wall -I"$I/include" "$t" -o "$I/bin/$n" -L"$I/lib" -Wl,-rpath-link,"$I/lib" \
+            -Wl,-rpath,/usr/local/g9p/lib -lEGL -lGLESv2 -lm
+    done
+    echo "==> build/mesa/install-drv/usr/local/g9p"
+    exit 0
+fi
 if [ ! -f "$B/build/build.ninja" ]; then
     meson setup "$B/build" "$S" --buildtype=debugoptimized -Dprefix=/usr/local \
         -Dgallium-drivers= -Dvulkan-drivers= -Dplatforms= -Dglx=disabled -Degl=disabled \

@@ -893,6 +893,67 @@ Next: the Gallium driver (uniforms and the real vertex formats, the draw
 state from these numbers); on the compiler side flat varyings, discard,
 several render targets, depth output, fp16 arithmetic, spilling.
 
+## G9 (2026-11-26): the Gallium driver
+
+`devices/a10/mesa` builds, besides `g9p-cc`, Mesa with **a Gallium driver
+of Cascadia's own, `g9p`** (`files/src/gallium/drivers/g9p`, its winsys in
+`files/src/gallium/winsys/g9p/drm`; `build.sh driver` -> prefix
+`/usr/local/g9p`, built into `build/mesa/install-drv`, EGL / GBM / OpenGL
+ES 2 / OpenGL, the surfaceless EGL platform only so far). `mesa.patch`
+registers it for the kernel driver `powervr` (pipe loader, dri / dril
+targets), where Mesa sends `powervr` to Zink otherwise; the shader compiler
+of G8.2 is linked in.
+
+**G9.1 (2026-11-26): OpenGL ES 2.0 draws on the GPU.**
+`tools/gpu/gl/g9p-gltri.c` (EGL surfaceless, a framebuffer object W x H, a
+clear, a triangle with a colour per vertex, glReadPixels, every pixel
+against the CPU's interpolation): **right at every size tried** -- 1x1,
+33x97, 64x64, 300x200, 1024x768 and the whole screen's 1620x2160 (3 480 732
+of 3 480 732 pixels, 7.2 ms a frame with the read-back); drawn as arrays,
+with a 16-bit index buffer, with 8-bit indices from client memory, as a
+strip and as a fan. ~0.6 ms a frame at 64x64.
+
+How it is built (the frame of `g9p-render`, generalised):
+
+- **`g9p_device.c`**: the UAPI -- every resource one buffer object mapped
+  into one VM (64 KiB granules, a bump allocator in the general heap); **one
+  8 MiB code buffer at both the PDS and the USC heap's base**: the static
+  programs at fixed places (the 0x470 task's in the VDM sync area at +0x40,
+  the end-of-tile PDS code at +0x80, their USC programs, the vertex kick
+  and a DOUTD program), shader code kept from +0x10000, and from +4 MiB
+  each render's PDS data and background program (reset after it). One
+  free list (1024 pages), one render-target dataset per target size (8
+  kept; region headers, TPC, macrotile array, MLIST, VHEAP table in one
+  1 MiB buffer each), one render context; a render = geometry + fragment
+  job with a syncobj, **waited for**.
+- **`g9p_context.c`**: a render gathers the draws into one target (the
+  framebuffer's first colour buffer, BGRA8): the clear sets the
+  background program (an f16 colour emitted, `g9p_clear_program`), every
+  draw puts into the VDM stream its vertex state (the kick, output size,
+  VDM_STATE5 from the vertex shader's registers), the common-store DOUTD
+  of the attributes' addresses, and PPP blocks -- varyings, the pixel kick
+  and varying PDS, OUTPUT_SEL, ISP (both faces, depth ALWAYS without
+  writes, TRANSLUCENT when blending), viewport and region clip from the
+  target's tiles, PPP_CTRL, DBSC -- then the index list (`0x6e44...` with
+  the topology; with an index buffer `0x7e40...`, the address, 8 / 16 /
+  32-bit indices); the end: the terminate block, the background and the
+  end-of-tile image state of the target (stride in 64-byte units). Sent
+  at a flush, a target change, before any CPU map.
+- **Shaders**: the state tracker's NIR (inputs and outputs already
+  intrinsics: `nir_io_has_intrinsics`) compiled per variant at the draw:
+  the vertex shader per vertex-element layout (attribute i at common-store
+  dwords 2i / 2i + 1 = the buffer's address + offset + first vertex x
+  stride, loaded at r0 x stride: `g9p_vertex_attrib`), the fragment shader
+  per the vertex shader's varying layout and the blend state
+  (`nir_lower_blend`, the colour mask); the varying PDS program from their
+  layout and interpolation.
+
+Not yet: uniforms, textures (the sampler's state DMA), depth and stencil,
+culling, points and lines, scissors, a frame that does not start with a
+clear (its background should load the target), vertex formats other than
+32-bit floats, instancing, KMS / Wayland (display), fences that do not
+wait, other targets than BGRA8.
+
 ## 2D on the GPU (2026-11-25/26): g9p2d and SuperTux
 
 The first use of the G7 driver: SDL2's 2D renderer drawn by the GPU, as on

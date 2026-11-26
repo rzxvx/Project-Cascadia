@@ -35,11 +35,22 @@ struct g9p_blend {
    unsigned format;
 };
 
+/* a vertex attribute as the Gallium driver lays it out: its address in
+ * common-store dwords 2i, 2i + 1 (i = the load's base), `comps` f32
+ * components `stride` bytes apart per vertex */
+struct g9p_vertex_attrib {
+   unsigned stride;
+   unsigned comps;
+};
+
 struct g9p_options {
    const unsigned *ssbo_binding;        /* block index -> binding (its common-store slot), NULL: identity */
    struct g9p_varyings *varyings;       /* vertex and fragment shaders */
    unsigned nattribs;                   /* vertex: the buffer's stride in vec4s, 0: the attributes read */
    const struct g9p_blend *blend;       /* fragment: NULL = none */
+   unsigned colormask;                  /* fragment, with blend: RGBA bits */
+   const struct g9p_vertex_attrib *attribs;   /* vertex: by load base; NULL: g9p-cc's one buffer */
+   unsigned num_attribs;
 };
 
 struct g9p_shader {
@@ -55,6 +66,10 @@ struct g9p_shader {
 /* compile a compute, vertex or fragment shader; NULL or an error message */
 const char *g9p_compile(struct nir_shader *nir, bool print, const struct g9p_options *opts,
                         struct g9p_shader *out);
+
+/* the background object's fragment program: every pixel the colour (RGBA,
+ * as f16 halves); returns its size in bytes (<= 128) */
+unsigned g9p_clear_program(uint16_t *code, const float rgba[4]);
 
 /* a G9PT pack (as tools/gpu/g9pshaders.pack) of n entries: names[i] = data[i] */
 int g9p_write_entries(const char *path, unsigned n, const char *const *names, const void *const *data,

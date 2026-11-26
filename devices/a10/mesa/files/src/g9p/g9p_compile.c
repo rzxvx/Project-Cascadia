@@ -37,6 +37,7 @@
 #include "compiler/nir/nir_builder.h"
 #include "compiler/glsl_types.h"
 #include "compiler/nir/nir_lower_blend.h"
+#include "util/half_float.h"
 
 #define G9P_CS_THREADS 30
 #define G9P_MAX_REGS   31          /* r0-r30, the mask stack after them */
@@ -417,6 +418,8 @@ struct ctx {
    const unsigned *ssbo_binding;
    struct g9p_varyings *vary;
    unsigned nattribs;
+   const struct g9p_vertex_attrib *attribs;
+   unsigned num_attribs;
    nir_instr *last_output;          /* vertex: the store left for the frame's last output */
    nir_def *last_def;               /* its value, live to the end */
    unsigned last_reg, last_slot;
@@ -964,6 +967,27 @@ emit_intrinsic(struct ctx *c, nir_intrinsic_instr *in)
          c->e.error = "flat varyings (to do)";
          return;
       }
+      if (c->attribs) {
+         /* the driver's: r0 * stride from the attribute's address */
+         const unsigned i = nir_intrinsic_base(in);
+         const unsigned n = in->def.num_components, comp = nir_intrinsic_component(in);
+         if (i >= c->num_attribs || comp || !nir_src_is_const(in->src[0]) || nir_src_as_uint(in->src[0])) {
+            c->e.error = "an attribute load past the vertex elements or from a component (to do)";
+            return;
+         }
+         const unsigned have = MIN2(n, c->attribs[i].comps);
+         unsigned t = scratch(c, 1), pair = scratch(c, 2);
+         unsigned d = D(c, &in->def, false);
+
+         mov_imm(e, t, c->attribs[i].stride);
+         alu2(e, 0xa2, t, 0, t);
+         addr(e, pair, 2 * i, t, 0);
+         mem_at(e, false, have == 1 ? 4 : 3 + have, d, pair);
+         wait(e);
+         for (unsigned k = have; k < n; k++)
+            mov_imm(e, d + k, k == 3 ? 0x3f800000 : 0);         /* (x, 0, 0, 1) */
+         return;
+      }
       /* attribute a: vec4 (vertex * nattribs + a) of the buffer at common-store dwords 0-1 */
       const unsigned a = nir_intrinsic_io_semantics(in).location - VERT_ATTRIB_GENERIC0;
       const unsigned n = in->def.num_components;
@@ -1321,7 +1345,7 @@ prescan(struct ctx *c, nir_function_impl *impl)
                   if (n > comps[loc - VARYING_SLOT_VAR0])
                      comps[loc - VARYING_SLOT_VAR0] = n;
                }
-            } else if (in->intrinsic == nir_intrinsic_load_input) {
+            } else if (in->intrinsic == nir_intrinsic_load_input && !c->attribs) {
                unsigned a = nir_intrinsic_io_semantics(in).location - VERT_ATTRIB_GENERIC0;
                if (a + 1 > c->nattribs)
                   c->nattribs = a + 1;
@@ -1376,6 +1400,8 @@ g9p_compile(nir_shader *nir, bool print, const struct g9p_options *opts, struct 
    struct g9p_varyings dummy_vary = { 0 };
 
    c.ssbo_binding = opts && opts->ssbo_binding ? opts->ssbo_binding : identity_binding;
+   c.attribs = opts ? opts->attribs : NULL;
+   c.num_attribs = opts ? opts->num_attribs : 0;
    c.vary = opts && opts->varyings ? opts->varyings : &dummy_vary;
    memset(out, 0, sizeof(*out));
    out->stage = c.stage;
@@ -1393,7 +1419,9 @@ g9p_compile(nir_shader *nir, bool print, const struct g9p_options *opts, struct 
    NIR_PASS(_, nir, nir_lower_continue_constructs);
    if (c.stage != MESA_SHADER_COMPUTE) {
       /* inputs and outputs: load_input / load_interpolated_input /
-       * store_output by location */
+       * store_output by location (already so from the Gallium state
+       * tracker) */
+      if (!nir->info.io_lowered) {
       NIR_PASS(_, nir, nir_lower_global_vars_to_local);
       NIR_PASS(_, nir, nir_split_var_copies);
       NIR_PASS(_, nir, nir_lower_var_copies);
@@ -1402,6 +1430,7 @@ g9p_compile(nir_shader *nir, bool print, const struct g9p_options *opts, struct 
       nir_assign_io_var_locations(nir, nir_var_shader_out);
       NIR_PASS(_, nir, nir_lower_io, nir_var_shader_in | nir_var_shader_out, type_size_vec4,
                nir_lower_io_use_interpolated_input_intrinsics);
+      }
       if (c.stage == MESA_SHADER_VERTEX)
          NIR_PASS(_, nir, nir_lower_io_to_scalar, nir_var_shader_out, NULL, NULL);
       if (c.stage == MESA_SHADER_FRAGMENT && opts && opts->blend) {
@@ -1410,7 +1439,7 @@ g9p_compile(nir_shader *nir, bool print, const struct g9p_options *opts, struct 
          nir_lower_blend_options bo = { 0 };
 
          bo.rt[0].format = b->format;
-         bo.rt[0].colormask = 0xf;
+         bo.rt[0].colormask = opts->colormask ? opts->colormask : 0xf;
          bo.rt[0].rgb = (nir_lower_blend_channel){ b->rgb_func, b->rgb_src, b->rgb_dst };
          bo.rt[0].alpha = (nir_lower_blend_channel){ b->alpha_func, b->alpha_src, b->alpha_dst };
          NIR_PASS(_, nir, nir_lower_blend, &bo);
@@ -1498,6 +1527,25 @@ g9p_compile(nir_shader *nir, bool print, const struct g9p_options *opts, struct 
    out->code = prog.w;
    out->size = 2 * prog.n;
    return NULL;
+}
+
+unsigned
+g9p_clear_program(uint16_t *code, const float rgba[4])
+{
+   struct emit e = { .bank = false };
+   uint16_t h[4];
+
+   for (unsigned k = 0; k < 4; k++)
+      h[k] = _mesa_float_to_half(rgba[k]);
+   mov_imm(&e, 0, h[1] << 16 | h[0]);
+   mov_imm(&e, 1, h[3] << 16 | h[2]);
+   emit_colour(&e, 0);
+   while ((2 * (e.n + 1)) % 64)
+      EMIT(&e, 0xc000);
+   EMIT(&e, 0x8000);
+   memcpy(code, e.w, 2 * e.n);
+   free(e.w);
+   return 2 * e.n;
 }
 
 int
