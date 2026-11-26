@@ -68,6 +68,8 @@ static const struct nir_shader_compiler_options g9p_nir_options = {
    /* inputs and outputs as intrinsics by location (g9p_compile reads
     * io semantics) */
    .io_options = nir_io_has_intrinsics,
+   /* uniforms: constant buffer 0, its words in the common store */
+   .lower_uniforms_to_ubo = true,
 };
 
 static void
@@ -101,7 +103,7 @@ g9p_is_format_supported(struct pipe_screen *pscreen, enum pipe_format format,
 
    if (MAX2(1, sample_count) != MAX2(1, storage_sample_count) || sample_count > 1)
       return false;
-   if (target != PIPE_BUFFER && target != PIPE_TEXTURE_2D && target != PIPE_TEXTURE_RECT)
+   if (target != PIPE_BUFFER && target != PIPE_TEXTURE_2D)
       return false;
    if (!desc || desc->layout != UTIL_FORMAT_LAYOUT_PLAIN)
       return false;
@@ -134,7 +136,9 @@ g9p_init_shader_caps(struct pipe_screen *pscreen)
       caps->max_control_flow_depth = 32;
       caps->max_inputs = 16;
       caps->max_outputs = s == MESA_SHADER_VERTEX ? 16 : 1;
-      caps->max_const_buffer0_size = 256 * 4 * sizeof(float);
+      /* in the common store: 128 vec4s for vertex shaders, 64 for
+       * fragment shaders (GLES 2's minimums: 128 / 16) */
+      caps->max_const_buffer0_size = (s == MESA_SHADER_VERTEX ? 128 : 64) * 4 * sizeof(float);
       caps->max_const_buffers = 1;
       caps->max_temps = 64;
       caps->integers = true;

@@ -26,6 +26,7 @@
 #include "util/u_surface.h"
 #include "util/u_upload_mgr.h"
 #include "util/blend.h"
+#include "util/bitscan.h"
 
 #include "g9p_resource.h"
 #include "g9p_screen.h"
@@ -200,6 +201,7 @@ g9p_flush_frame(struct g9p_context *ctx)
    struct g9p_hwrt *hw = g9p_hwrt_get(dev, w, h);
    if (hw)
       g9p_render(dev, hw, geom, sizeof(geom), frag, sizeof(frag));
+   rt->seq++;                                   /* (a texture's twiddled copy is old now) */
    f->cleared = false;
    frame_reset(ctx);
 }
@@ -285,6 +287,20 @@ variant(struct g9p_context *ctx, struct g9p_cso_shader *sh, const void *key, uns
    v->code = g9p_code_shader(ctx->dev, out.code, out.size);
    v->nregs = out.nregs;
    v->noutputs = out.noutputs;
+   if (getenv("G9P_DEBUG")) {
+      /* G9P_DEBUG=1: each variant's numbers, its code in /tmp/g9p-<stage>-<code>.bin */
+      char path[64];
+      FILE *f;
+
+      snprintf(path, sizeof(path), "/tmp/g9p-%s-%x.bin", sh->nir->info.stage == MESA_SHADER_VERTEX ? "vs" : "fs",
+               v->code);
+      if ((f = fopen(path, "wb"))) {
+         fwrite(out.code, 1, out.size, f);
+         fclose(f);
+      }
+      mesa_logi("g9p: %s variant at %#x: %u bytes, %u registers, %u outputs", path, v->code, out.size,
+                out.nregs, out.noutputs);
+   }
    free(out.code);
    if (!v->code) {
       v->failed = true;
@@ -322,8 +338,16 @@ CSO_COPY(sampler_state, struct pipe_sampler_state)
 static void g9p_bind_blend_state(struct pipe_context *p, void *s) { g9p_context(p)->blend = s; }
 static void g9p_bind_rasterizer_state(struct pipe_context *p, void *s) { g9p_context(p)->rast = s; }
 static void g9p_bind_depth_stencil_alpha_state(struct pipe_context *p, void *s) { g9p_context(p)->dsa = s; }
-static void g9p_bind_sampler_states(struct pipe_context *p, mesa_shader_stage sh, unsigned start, unsigned n,
-                                    void **s) {}
+static void
+g9p_bind_sampler_states(struct pipe_context *p, mesa_shader_stage sh, unsigned start, unsigned n, void **s)
+{
+   struct g9p_context *ctx = g9p_context(p);
+
+   if (sh != MESA_SHADER_FRAGMENT)
+      return;
+   for (unsigned i = 0; i < n && start + i < G9P_MAX_TEXTURES; i++)
+      ctx->samplers[start + i] = s ? s[i] : NULL;
+}
 
 static void *
 g9p_create_vertex_elements_state(struct pipe_context *p, unsigned count, const struct pipe_vertex_element *e)
@@ -374,10 +398,52 @@ static void g9p_set_stencil_ref(struct pipe_context *p, const struct pipe_stenci
 static void g9p_set_sample_mask(struct pipe_context *p, unsigned m) {}
 static void g9p_set_clip_state(struct pipe_context *p, const struct pipe_clip_state *c) {}
 static void g9p_set_polygon_stipple(struct pipe_context *p, const struct pipe_poly_stipple *s) {}
-static void g9p_set_constant_buffer(struct pipe_context *p, mesa_shader_stage s, uint i,
-                                    const struct pipe_constant_buffer *cb) {}
-static void g9p_set_sampler_views(struct pipe_context *p, mesa_shader_stage s, unsigned start, unsigned n,
-                                  unsigned trailing, struct pipe_sampler_view **v) {}
+static void
+g9p_set_constant_buffer(struct pipe_context *p, mesa_shader_stage s, uint i, const struct pipe_constant_buffer *cb)
+{
+   struct g9p_context *ctx = g9p_context(p);
+   struct pipe_constant_buffer *dst;
+
+   if (i != 0 || (s != MESA_SHADER_VERTEX && s != MESA_SHADER_FRAGMENT))
+      return;
+   dst = &ctx->cb[s == MESA_SHADER_FRAGMENT];
+   pipe_resource_reference(&dst->buffer, cb ? cb->buffer : NULL);
+   if (cb) {
+      dst->buffer_offset = cb->buffer_offset;
+      dst->buffer_size = cb->buffer_size;
+      dst->user_buffer = cb->user_buffer;
+   } else {
+      dst->buffer_size = 0;
+      dst->user_buffer = NULL;
+   }
+}
+
+static void
+g9p_set_sampler_views(struct pipe_context *p, mesa_shader_stage s, unsigned start, unsigned n,
+                      unsigned trailing, struct pipe_sampler_view **v)
+{
+   struct g9p_context *ctx = g9p_context(p);
+
+   if (s != MESA_SHADER_FRAGMENT)
+      return;
+   for (unsigned i = 0; i < n + trailing && start + i < G9P_MAX_TEXTURES; i++)
+      pipe_sampler_view_reference(&ctx->views[start + i], v && i < n ? v[i] : NULL);
+}
+
+/* the words of constant buffer 0 for a stage, and their count */
+static const void *
+cb_words(struct g9p_context *ctx, unsigned stage, unsigned *n)
+{
+   const struct pipe_constant_buffer *cb = &ctx->cb[stage];
+
+   *n = cb->buffer_size / 4;
+   if (cb->user_buffer)
+      return cb->user_buffer;
+   if (cb->buffer)
+      return g9p_resource(cb->buffer)->bo->map + cb->buffer_offset;
+   *n = 0;
+   return NULL;
+}
 static void g9p_texture_barrier(struct pipe_context *p, unsigned flags) {}
 static void g9p_memory_barrier(struct pipe_context *p, unsigned flags) {}
 
@@ -436,12 +502,19 @@ topology(enum mesa_prim mode)
 /* temps word of a DOUTU: registers in units of 4, << 3 */
 static uint32_t temps(unsigned nregs) { return MAX2(DIV_ROUND_UP(nregs, 4), 2) << 3; }
 
+/* a vertex shader's register budget: 8, 16 or 32 (its DOUTU temps and
+ * VDM_STATE5's unified size must agree: a 20-register shader with temps
+ * for 20 and a unified size of 32 crashed the firmware) */
+static unsigned vs_regs(unsigned nregs) { return nregs <= 8 ? 8 : nregs <= 16 ? 16 : 32; }
+
 /* VDM_STATE5 for a vertex shader of nregs registers: registers x instances
  * within 256 (G8.2) */
 static uint32_t
 state5(unsigned nregs, unsigned cs_dwords)
 {
-   uint32_t cs = DIV_ROUND_UP(4 * cs_dwords, 64) << 16;
+   /* (the common store's size is PDS_STATE0's: a size here crashed the
+    * firmware with 32 registers) */
+   uint32_t cs = 0;
 
    if (nregs <= 8)
       return 0x1081 | cs;
@@ -479,20 +552,44 @@ g9p_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info, unsig
          return;
       }
    }
-   struct g9p_options vo = { .attribs = attribs, .num_attribs = ve->count };
-   struct g9p_variant *vs = variant(ctx, ctx->vs, attribs, sizeof(attribs[0]) * ve->count, &vo, NULL);
+   /* the vertex shader's common store: the attributes' addresses, then
+    * the uniforms */
+   unsigned vu_n, fu_n;
+   const void *vu = cb_words(ctx, 0, &vu_n);
+   const void *fu = cb_words(ctx, 1, &fu_n);
+   const unsigned vubo = align(2 * ve->count, 4);
+   const unsigned vcs = vubo + vu_n;
+   struct {
+      struct g9p_vertex_attrib a[G9P_MAX_ATTRIBS];
+      unsigned ubo_dword, ubo_dwords;
+   } vkey;
+   memset(&vkey, 0, sizeof(vkey));
+   memcpy(vkey.a, attribs, sizeof(attribs[0]) * ve->count);
+   vkey.ubo_dword = vubo;
+   vkey.ubo_dwords = vu_n;
+   struct g9p_options vo = { .attribs = attribs, .num_attribs = ve->count, .ubo_dword = vubo, .ubo_dwords = vu_n };
+   struct g9p_variant *vs = variant(ctx, ctx->vs, &vkey, sizeof(vkey), &vo, NULL);
    if (!vs)
       return;
 
    /* the fragment shader for those varyings and this blend state */
+   /* the fragment shader's common store: texture states (8 dwords each),
+    * samplers (2 each), the uniforms */
+   const unsigned ntex = util_last_bit(ctx->fs->nir->info.textures_used[0]);
+   const unsigned nsamp = util_last_bit(ctx->fs->nir->info.samplers_used[0]);
+   const unsigned fsamp = 8 * ntex, fubo = align(fsamp + 2 * nsamp, 4), fcs = fubo + fu_n;
    struct {
       struct g9p_varyings vary;
       struct g9p_blend blend;
       unsigned colormask;
       bool blending;
+      unsigned ubo_dword, ubo_dwords, sampler_dword;
    } fkey;
    memset(&fkey, 0, sizeof(fkey));
    fkey.vary = vs->vary;
+   fkey.ubo_dword = fubo;
+   fkey.ubo_dwords = fu_n;
+   fkey.sampler_dword = fsamp;
    const struct pipe_rt_blend_state *rb = ctx->blend ? &ctx->blend->rt[0] : NULL;
    fkey.colormask = rb ? rb->colormask : 0xf;
    if (rb && (rb->blend_enable || fkey.colormask != 0xf)) {
@@ -506,7 +603,8 @@ g9p_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info, unsig
          rb->blend_enable ? rb->alpha_dst_factor : PIPE_BLENDFACTOR_ZERO,
          ctx->fb.cbufs[0].format };
    }
-   struct g9p_options fo = { .blend = fkey.blending ? &fkey.blend : NULL, .colormask = fkey.colormask };
+   struct g9p_options fo = { .blend = fkey.blending ? &fkey.blend : NULL, .colormask = fkey.colormask,
+                             .ubo_dword = fubo, .ubo_dwords = fu_n, .sampler_dword = fsamp };
    struct g9p_variant *fs = variant(ctx, ctx->fs, &fkey, sizeof(fkey), &fo, &vs->vary);
    if (!fs)
       return;
@@ -537,9 +635,12 @@ g9p_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info, unsig
 
       if (!dr->count)
          continue;
-      /* the attributes' addresses: common-store dwords 2i, 2i + 1 */
-      uint32_t cs = frame_alloc(ctx, 8 * MAX2(ve->count, 1), 16);
+      /* the attributes' addresses: common-store dwords 2i, 2i + 1; the
+       * uniforms from vubo */
+      uint32_t cs = frame_alloc(ctx, 4 * MAX2(vcs, 2), 16);
       uint64_t *addr = frame_ptr(ctx, cs);
+      if (vu_n)
+         memcpy((uint32_t *)addr + vubo, vu, 4 * vu_n);
       for (unsigned i = 0; i < ve->count; i++) {
          const struct pipe_vertex_buffer *vb = &ctx->vb[ve->e[i].vertex_buffer_index];
          uint64_t base = vb->buffer.resource ? g9p_resource(vb->buffer.resource)->bo->va : 0;
@@ -555,11 +656,46 @@ g9p_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info, unsig
          return;
       uint32_t *k = g9p_code_ptr(dev, vkick);
       k[0] = vs->code;
-      k[1] = temps(vs->nregs);
+      k[1] = temps(vs_regs(vs->nregs));
       k[2] = 0x80000000;
       k[3] = 0;
-      uint64_t cq[2] = { frame_va(ctx, cs), 0x90000000 | (2 * MAX2(ve->count, 1)) };
+      uint64_t cq[2] = { frame_va(ctx, cs), 0x90000000 | 0x10000000 | MAX2(vcs, 2) };
       memcpy(g9p_code_ptr(dev, csload), cq, 16);
+      /* the fragment's common store, DOUTD'd by the "texunicode" program */
+      uint32_t fq = 0;
+      if (fcs) {
+         uint32_t fimg = frame_alloc(ctx, 4 * fcs, 16);
+         uint32_t *fw = frame_ptr(ctx, fimg);
+         memset(fw, 0, 4 * fcs);
+         for (unsigned t = 0; t < ntex; t++) {
+            struct pipe_sampler_view *sv = ctx->views[t];
+            struct g9p_bo *tw = sv && sv->texture ? g9p_resource_twiddled(dev, g9p_resource(sv->texture)) : NULL;
+            if (!tw) {
+               mesa_logw_once("g9p: a texture other than 4-byte texels, or none bound (to do)");
+               continue;
+            }
+            const unsigned tw_ = sv->texture->width0, th = sv->texture->height0;
+            fw[8 * t] = 0x0344050a | (tw_ - 1) << 27;
+            fw[8 * t + 1] = (tw_ - 1) >> 5 | (th - 1) << 9;
+            fw[8 * t + 2] = (uint32_t)(tw->va >> 1);
+            fw[8 * t + 3] = (uint32_t)(tw->va >> 33);
+         }
+         for (unsigned s = 0; s < nsamp; s++) {
+            /* nearest, clamped: the only sampler words known so far */
+            const struct pipe_sampler_state *ss = ctx->samplers[s];
+            if (ss && (ss->min_img_filter != PIPE_TEX_FILTER_NEAREST || ss->mag_img_filter != PIPE_TEX_FILTER_NEAREST))
+               mesa_logw_once("g9p: linear filtering sampled nearest (to do)");
+            fw[fsamp + 2 * s] = 0x000e0000;
+            fw[fsamp + 2 * s + 1] = 0x00c00780;
+         }
+         if (fu_n)
+            memcpy(fw + fubo, fu, 4 * fu_n);
+         fq = g9p_code_frame(dev, 16, 16);
+         if (!fq)
+            return;
+         uint64_t q2[2] = { frame_va(ctx, fimg), 0x90000000 | 0x10000000 | fcs };
+         memcpy(g9p_code_ptr(dev, fq), q2, 16);
+      }
       k = g9p_code_ptr(dev, fkick);
       memset(k, 0, 0x40);
       k[0] = fs->code;
@@ -592,11 +728,18 @@ g9p_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info, unsig
 
       /* the VDM stream: vertex state, varyings, the common store's
        * program, the vertex kick, then the PPP state and the indices */
-      STREAM(ctx, 0x44002f80, G9P_PDS_VS_KICK, vs->noutputs, state5(vs->nregs, 2 * ve->count));
+      STREAM(ctx, 0x44002f80, G9P_PDS_VS_KICK, vs->noutputs, state5(vs->nregs, vcs));
       PPP(ctx, 0x001c0000, vy->total, 0, 0);
-      STREAM(ctx, 0x20020001, csload, G9P_PDS_DOUTD, 0x48002f80, vkick);
+      /* PDS_STATE0's common-store size: 20 dwords read crashed the
+       * firmware with 3, ran with 4 (its unit not Rogue's 64 bytes: to
+       * check); a unit of 16 bytes and one more */
+      STREAM(ctx, 0x20000001 | MAX2(DIV_ROUND_UP(vcs, 4) + 1, 2) << 16, csload, G9P_PDS_DOUTD, 0x48002f80, vkick);
       const uint32_t sz1 = 0x00800000 | (vpds_data / 16) << 10 | DIV_ROUND_UP(vy->total, 2) << 4;
-      PPP(ctx, 0x000000c0, fkick, 0xc0, sz1, 0, vpds ? vpds : 0xc0);
+      if (fq)
+         PPP(ctx, 0x000002c0, fkick, G9P_PDS_DOUTD, sz1, (DIV_ROUND_UP(fcs, 4) + 1) << 23,
+             vpds ? vpds : 0xc0, fq);
+      else
+         PPP(ctx, 0x000000c0, fkick, 0xc0, sz1, 0, vpds ? vpds : 0xc0);
       PPP(ctx, 0x00020000, vs->noutputs << 24 | 0x00010000);
       /* ISP: no depth yet (ALWAYS, no write), both faces; blending's
        * passes translucent (the hidden-surface removal would run only the
@@ -662,6 +805,10 @@ g9p_context_destroy(struct pipe_context *pctx)
    pipe_resource_reference(&ctx->frame.target, NULL);
    util_unreference_framebuffer_state(&ctx->fb);
    util_set_vertex_buffers_count(ctx->vb, &ctx->nvb, NULL, 0);
+   for (unsigned i = 0; i < 2; i++)
+      pipe_resource_reference(&ctx->cb[i].buffer, NULL);
+   for (unsigned i = 0; i < G9P_MAX_TEXTURES; i++)
+      pipe_sampler_view_reference(&ctx->views[i], NULL);
    if (pctx->stream_uploader)
       u_upload_destroy(pctx->stream_uploader);
    g9p_bo_destroy(ctx->dev, ctx->frame.bo);

@@ -104,6 +104,11 @@ tests["vpds_flatfs"] = dict(vs=vs(8), fs=flat_fs, cfg=cfg(8, 4, 0x00800420, 0, l
 for nm, st5 in (("vs16_u8", 0x2081), ("vs16_u8_i16", 0x2081 | 16 << 25), ("vs16_u8_i8", 0x2081 | 8 << 25)):
     tests[nm] = dict(vs=vs(8, 8), fs=tests["vcol"]["fs"], cfg=cfg(8, 4, 0x00800420, 0, len(data), state5=st5,
                                                                   vs_temps=0x20), vpds=data + code, model="vcol")
+# more: r16-r23 (24 registers) and r24-r31 (32)
+for nm, base, st5, tm in (("vs24_u12_i8", 16, 0x3081 | 8 << 25, 0x30), ("vs32_u16_i8", 24, 0x4081 | 8 << 25, 0x40),
+                          ("vs24_u16_i8", 16, 0x4081 | 8 << 25, 0x30), ("vs32_u16_i4", 24, 0x4081 | 4 << 25, 0x40)):
+    tests[nm] = dict(vs=vs(8, base), fs=tests["vcol"]["fs"], cfg=cfg(8, 4, 0x00800420, 0, len(data), state5=st5,
+                                                                     vs_temps=tm), vpds=data + code, model="vcol")
 
 TW = TH = 8
 

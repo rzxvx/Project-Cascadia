@@ -948,11 +948,53 @@ How it is built (the frame of `g9p-render`, generalised):
   (`nir_lower_blend`, the colour mask); the varying PDS program from their
   layout and interpolation.
 
-Not yet: uniforms, textures (the sampler's state DMA), depth and stencil,
+**G9.2 (2026-11-26): uniforms and textures.** `tools/gpu/gl/g9p-glcheck.c`
+(the same frame as `g9p-gltri`): a matrix in the vertex shader and a tint
+in the fragment shader (`uniform`, also one stage at a time), a texture
+over the whole target sampled nearest (`tex TW TH`), and a texture times a
+uniform colour (`texmod`) -- **every pixel right**: uniforms at 64x64,
+300x200 and 1620x2160 (3 484 620 pixels), textures 8x8, 16x4, 5x3,
+33x17, 64x64, 100x60 and 256x256 (non-powers of two too) into targets up
+to 1024x768.
+
+- **Uniforms are common-store operands**, as the offline compiler reads
+  them (`isa-check9`, and its fragment shaders with a `constant float4 &`
+  argument): an ALU's first source `0x81 | 4u` in W2's low byte with the
+  extension word `0x4100 | (u >> 5) << 1` reads common-store dword u --
+  the form `addr` takes its base in. The state tracker's uniforms are
+  constant buffer 0 (`lower_uniforms_to_ubo`); `load_ubo` at a constant
+  offset becomes `iadd d, u, r(zero)` per component.
+- **Each task's common store is one DOUTD** of an image the driver builds
+  per draw (the DOUTD control word is Rogue's: bit 31 last, bit 28 the
+  common store, bits 13-25 the destination dword, bits 0-11 the count --
+  the texture program's `0x90010002` = 2 dwords to dword 8): the vertex
+  task's = the attributes' addresses, then the uniforms (from dword
+  align(2 x attributes, 4)); the fragment task's = the texture states (8
+  dwords each), the samplers (2 each), the uniforms -- by the static DOUTD
+  program as the "texunicode" program (PPP pointer 3 = its data,
+  SIZEINFO2's shared size).
+- **The vertex task's common-store size is PDS_STATE0's** (bits 16-24): a
+  shader reading dwords up to 19 crashed the firmware with 3 there and ran
+  with 4, 5, 6 or 8 (the unit is not Rogue's 64 bytes: to check; the driver
+  gives a unit per 4 dwords and one more). A size in VDM_STATE5's common
+  field crashed it with a 32-register shader whatever PDS_STATE0 said: it
+  stays 0. **A vertex shader's DOUTU temps must be its budget's** (8, 16
+  or 32 registers, VDM_STATE5's unified size): temps for 20 with a unified
+  size of 32 crashed the firmware too. 24 and 32 registers with 8 (and 4)
+  instances a task ran in `render-check` (`vs24_*`, `vs32_*`).
+- **Textures**: sampled from a twiddled copy of level 0 (Morton order, y
+  bit first, up to the smaller side, the larger side's other bits above;
+  the sides rounded up to powers of two -- the state keeps the real ones),
+  made by the CPU when the texture changed (a CPU write, or a render into
+  it); BGRA swapped to RGBA, X made opaque. Nearest and clamped only: the
+  sampler words (`000e0000 00c00780`) do not follow Rogue's layout, their
+  filter and wrap fields are still to find.
+
+Not yet: linear filtering, wrap modes, mipmaps, depth and stencil,
 culling, points and lines, scissors, a frame that does not start with a
-clear (its background should load the target), vertex formats other than
-32-bit floats, instancing, KMS / Wayland (display), fences that do not
-wait, other targets than BGRA8.
+clear (its background should load the target), uniforms at variable
+indices, vertex formats other than 32-bit floats, instancing, KMS /
+Wayland (display), fences that do not wait, other targets than BGRA8.
 
 ## 2D on the GPU (2026-11-25/26): g9p2d and SuperTux
 

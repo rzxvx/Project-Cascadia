@@ -13,6 +13,7 @@ struct nir_shader;
 struct g9p_resource;
 
 #define G9P_MAX_ATTRIBS 16
+#define G9P_MAX_TEXTURES 8
 
 struct g9p_variant {
    struct g9p_variant *next;
@@ -62,6 +63,11 @@ struct g9p_context {
    struct pipe_rasterizer_state *rast;
    struct pipe_depth_stencil_alpha_state *dsa;
    struct pipe_viewport_state viewport;
+   /* constant buffer 0 (the uniforms) per stage: vertex, fragment */
+   struct pipe_constant_buffer cb[2];
+   /* the fragment shader's textures */
+   struct pipe_sampler_view *views[G9P_MAX_TEXTURES];
+   struct pipe_sampler_state *samplers[G9P_MAX_TEXTURES];
 
    struct g9p_frame frame;
 };

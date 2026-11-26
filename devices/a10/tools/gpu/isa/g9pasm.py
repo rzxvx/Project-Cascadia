@@ -95,6 +95,12 @@ def alu2(op, d, a, b, neg_b=False):
     return [BANKS | 0x0199, dst(d), _srcs(a, b), OPS2[op] | (NEG_B if neg_b else 0)]
 
 
+def alu2_uniform(op, d, u, b):
+    """d = common-store dword u OP r[b] (a uniform first source: W2's low
+    byte 0x81 | 4u and the extension word, the offline compiler's form)"""
+    return [0x1199, dst(d), 0x0100 | b << 10 | 0x81 | 4 * (u & 31), 0x4100 | (u >> 5) << 1, OPS2[op]]
+
+
 def alu3(op, d, a, b, c, neg_b=False):
     """d = a * b + c (ffma); c in the third word's bits 2-6"""
     return [BANKS | 0x0800 | 0x019a, dst(d), _srcs(a, b), 0x0100 | c << 2, OPS3[op] | (NEG_B if neg_b else 0)]

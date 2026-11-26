@@ -90,6 +90,15 @@ alu2_to_half(struct emit *e, uint16_t op, unsigned h, unsigned a, unsigned b)
    EMIT(e, banks(e) | 0x0189, dst_half(e, h), srcs(a, b), 0x0200 | op);
 }
 
+/* d = common-store dword u OP r[b]: the first source a uniform (W2's low
+ * byte 0x81 | 4u and an extension word, as `addr` takes its base and the
+ * offline compiler's uniform operands are) */
+static void
+alu2_uniform(struct emit *e, uint16_t op, unsigned d, unsigned u, unsigned b)
+{
+   EMIT(e, b12(e) | 0x0199, dst(e, d), 0x0100 | b << 10 | 0x81 | 4 * (u & 31), 0x4100 | (u >> 5) << 1, op);
+}
+
 static void
 ffma(struct emit *e, unsigned d, unsigned a, unsigned b, unsigned c)
 {
@@ -420,6 +429,7 @@ struct ctx {
    unsigned nattribs;
    const struct g9p_vertex_attrib *attribs;
    unsigned num_attribs;
+   unsigned ubo_dword, ubo_dwords, sampler_dword;
    nir_instr *last_output;          /* vertex: the store left for the frame's last output */
    nir_def *last_def;               /* its value, live to the end */
    unsigned last_reg, last_slot;
@@ -1032,6 +1042,27 @@ emit_intrinsic(struct ctx *c, nir_intrinsic_instr *in)
    case nir_intrinsic_store_output:
       emit_store_output(c, in);
       return;
+   case nir_intrinsic_load_ubo: {
+      /* constant buffer 0 from the common store, at constant offsets */
+      const unsigned n = in->def.num_components;
+      if (!nir_src_is_const(in->src[0]) || nir_src_as_uint(in->src[0]) || !nir_src_is_const(in->src[1]) ||
+          in->def.bit_size != 32) {
+         c->e.error = "a uniform at a variable index, or past constant buffer 0 (to do)";
+         return;
+      }
+      const unsigned off = nir_src_as_uint(in->src[1]) / 4;
+      if (off + n > c->ubo_dwords) {
+         c->e.error = "a uniform past the constant buffer the driver loads";
+         return;
+      }
+      unsigned z = scratch(c, 1);
+      unsigned d = D(c, &in->def, false);
+
+      mov_imm(e, z, 0);
+      for (unsigned k = 0; k < n; k++)
+         alu2_uniform(e, 0xa1, d + k, c->ubo_dword + off + k, z);
+      return;
+   }
    case nir_intrinsic_load_output: {
       /* blending's destination: the tile's colour */
       if (c->stage != MESA_SHADER_FRAGMENT || !nir_intrinsic_io_semantics(in).fb_fetch_output ||
@@ -1130,10 +1161,15 @@ emit_tex(struct ctx *c, nir_tex_instr *tex)
       return;
    }
    const unsigned ntex = MAX2(c->nir->info.num_textures, tex->texture_index + 1);
+   const unsigned samplers = c->sampler_dword ? c->sampler_dword : 8 * ntex;
    unsigned coord = R(c, tex->src[ci].src);
    unsigned d = D(c, &tex->def, false);
 
-   sample(&c->e, true, d, 8 * tex->texture_index, coord, 8 * ntex + 2 * tex->sampler_index);
+   if (8 * tex->texture_index >= 128 || samplers + 2 * tex->sampler_index >= 256) {
+      c->e.error = "a texture or sampler past the sample instruction's fields";
+      return;
+   }
+   sample(&c->e, true, d, 8 * tex->texture_index, coord, samplers + 2 * tex->sampler_index);
    wait(&c->e);
 }
 
@@ -1402,6 +1438,11 @@ g9p_compile(nir_shader *nir, bool print, const struct g9p_options *opts, struct 
    c.ssbo_binding = opts && opts->ssbo_binding ? opts->ssbo_binding : identity_binding;
    c.attribs = opts ? opts->attribs : NULL;
    c.num_attribs = opts ? opts->num_attribs : 0;
+   if (opts) {
+      c.ubo_dword = opts->ubo_dword;
+      c.ubo_dwords = opts->ubo_dwords;
+      c.sampler_dword = opts->sampler_dword;
+   }
    c.vary = opts && opts->varyings ? opts->varyings : &dummy_vary;
    memset(out, 0, sizeof(*out));
    out->stage = c.stage;

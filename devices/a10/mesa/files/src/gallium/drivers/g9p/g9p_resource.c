@@ -10,6 +10,7 @@
 #include "pipe/p_context.h"
 #include "pipe/p_screen.h"
 #include "util/format/u_format.h"
+#include "util/u_math.h"
 #include "util/u_inlines.h"
 #include "util/u_memory.h"
 #include "util/u_transfer.h"
@@ -52,6 +53,7 @@ g9p_resource_destroy(struct pipe_screen *pscreen, struct pipe_resource *prsc)
 {
    struct g9p_resource *res = g9p_resource(prsc);
 
+   g9p_bo_destroy(&g9p_screen(pscreen)->dev, res->tw);
    g9p_bo_destroy(&g9p_screen(pscreen)->dev, res->bo);
    FREE(res);
 }
@@ -85,6 +87,8 @@ g9p_transfer_map(struct pipe_context *pctx, struct pipe_resource *prsc, unsigned
 static void
 g9p_transfer_unmap(struct pipe_context *pctx, struct pipe_transfer *t)
 {
+   if (t->usage & PIPE_MAP_WRITE)
+      g9p_resource(t->resource)->seq++;
    pipe_resource_reference(&t->resource, NULL);
    slab_free(&g9p_context(pctx)->transfer_pool, t);
 }
@@ -92,6 +96,59 @@ g9p_transfer_unmap(struct pipe_context *pctx, struct pipe_transfer *t)
 static void
 g9p_transfer_flush_region(struct pipe_context *pctx, struct pipe_transfer *t, const struct pipe_box *box)
 {
+}
+
+/* the texel's place in a twiddled texture of 2^lw x 2^lh: x and y bits
+ * interleaved, y's first, up to the smaller side; the larger side's
+ * other bits above */
+static unsigned
+twiddle(unsigned x, unsigned y, unsigned lw, unsigned lh)
+{
+   const unsigned m = MIN2(lw, lh);
+   unsigned i = 0;
+
+   for (unsigned b = 0; b < m; b++)
+      i |= ((y >> b) & 1) << (2 * b) | ((x >> b) & 1) << (2 * b + 1);
+   if (lw > lh)
+      i |= (x >> m) << (2 * m);
+   else
+      i |= (y >> m) << (2 * m);
+   return i;
+}
+
+struct g9p_bo *
+g9p_resource_twiddled(struct g9p_device *dev, struct g9p_resource *res)
+{
+   const struct pipe_resource *p = &res->base;
+   const unsigned w = p->width0, h = p->height0;
+   const unsigned lw = util_logbase2_ceil(w), lh = util_logbase2_ceil(h);
+
+   if (util_format_get_blocksize(p->format) != 4)
+      return NULL;
+   if (!res->tw) {
+      if (!(res->tw = g9p_bo_create(dev, (uint64_t)4 << (lw + lh))))
+         return NULL;
+      res->tw_seq = res->seq - 1;
+   }
+   if (res->tw_seq == res->seq)
+      return res->tw;
+   /* RGBA8 in memory order R, G, B, A: BGRA swapped, X made opaque */
+   const bool bgr = p->format == PIPE_FORMAT_B8G8R8A8_UNORM || p->format == PIPE_FORMAT_B8G8R8X8_UNORM;
+   const bool x = p->format == PIPE_FORMAT_B8G8R8X8_UNORM || p->format == PIPE_FORMAT_R8G8B8X8_UNORM;
+   uint32_t *dst = (uint32_t *)res->tw->map;
+   for (unsigned yy = 0; yy < h; yy++) {
+      const uint32_t *src = (const uint32_t *)(res->bo->map + res->offset[0] + yy * res->stride[0]);
+      for (unsigned xx = 0; xx < w; xx++) {
+         uint32_t v = src[xx];
+         if (bgr)
+            v = (v & 0xff00ff00) | (v & 0xff) << 16 | (v >> 16 & 0xff);
+         if (x)
+            v |= 0xff000000;
+         dst[twiddle(xx, yy, lw, lh)] = v;
+      }
+   }
+   res->tw_seq = res->seq;
+   return res->tw;
 }
 
 void

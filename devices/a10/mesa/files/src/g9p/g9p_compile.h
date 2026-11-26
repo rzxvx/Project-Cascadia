@@ -51,6 +51,12 @@ struct g9p_options {
    unsigned colormask;                  /* fragment, with blend: RGBA bits */
    const struct g9p_vertex_attrib *attribs;   /* vertex: by load base; NULL: g9p-cc's one buffer */
    unsigned num_attribs;
+   /* the common store as the driver fills it: constant buffer 0 (the
+    * uniforms) from dword ubo_dword, ubo_dwords of it; fragment: the
+    * texture states from dword 0 (8 each), the samplers from
+    * sampler_dword (2 each; 0: after the states) */
+   unsigned ubo_dword, ubo_dwords;
+   unsigned sampler_dword;
 };
 
 struct g9p_shader {
