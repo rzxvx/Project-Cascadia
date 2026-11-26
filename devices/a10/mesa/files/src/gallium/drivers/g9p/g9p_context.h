@@ -42,6 +42,8 @@ struct g9p_frame {
    unsigned level;
    bool cleared;
    float clear[4];
+   float zclear;               /* the background's depth, stencil */
+   uint8_t sclear;
    unsigned ndraws;
    struct g9p_bo *bo;          /* per-render data: stream, PPP blocks, ... */
    uint32_t pos;               /* next free byte of bo */
@@ -63,6 +65,7 @@ struct g9p_context {
    struct pipe_rasterizer_state *rast;
    struct pipe_depth_stencil_alpha_state *dsa;
    struct pipe_viewport_state viewport;
+   struct pipe_stencil_ref stencil_ref;
    /* constant buffer 0 (the uniforms) per stage: vertex, fragment */
    struct pipe_constant_buffer cb[2];
    /* the fragment shader's textures */

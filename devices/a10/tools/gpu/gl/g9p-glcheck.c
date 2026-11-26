@@ -11,6 +11,14 @@
  *                                    with uniform mat4 mvp doing the same)
  *   g9p-glcheck tex TW TH [W H]      a TW x TH texture over the target, nearest
  *   g9p-glcheck texmod TW TH [W H]   the same times a uniform colour
+ *   g9p-glcheck depth FUNC [W H]     two overlapping triangles at different
+ *                                    depths (less, lequal, greater, gequal,
+ *                                    equal, notequal, always, never; nowrite)
+ *   g9p-glcheck cull FACE [W H]      a counter-clockwise and a clockwise
+ *                                    triangle, culling back / front / none
+ *                                    (frontcw: front faces clockwise, back culled)
+ *   g9p-glcheck stencil [W H]        a triangle writes 1 into the stencil, a
+ *                                    quad then draws where it is 1 (and 0)
  */
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
@@ -129,10 +137,218 @@ check(int x, int y, const unsigned char *got, const double *want)
              want[0] * 255, want[1] * 255, want[2] * 255, want[3] * 255);
 }
 
+/* the barycentric coordinates of pixel centre (x, y) in a triangle of
+ * clip-space corners v[i * stride], -1 when outside, 0 near an edge */
+static int
+inside(const float *v, int stride, int w, int h, int x, int y, double *b)
+{
+   double sx[3], sy[3];
+
+   for (int i = 0; i < 3; i++) {
+      sx[i] = (v[i * stride] + 1) * w / 2;
+      sy[i] = (v[i * stride + 1] + 1) * h / 2;
+   }
+   double d = (sy[1] - sy[2]) * (sx[0] - sx[2]) + (sx[2] - sx[1]) * (sy[0] - sy[2]);
+   double cx = x + 0.5, cy = y + 0.5;
+   b[0] = ((sy[1] - sy[2]) * (cx - sx[2]) + (sx[2] - sx[1]) * (cy - sy[2])) / d;
+   b[1] = ((sy[2] - sy[0]) * (cx - sx[2]) + (sx[0] - sx[2]) * (cy - sy[2])) / d;
+   b[2] = 1 - b[0] - b[1];
+   double m = fmin(b[0], fmin(b[1], b[2]));
+   if (fabs(m) < 2.0 / (w < h ? w : h))
+      return 0;
+   return m > 0 ? 1 : -1;
+}
+
+static const char *flat_vs = "attribute vec4 pos;\nattribute vec4 attr;\nvarying vec4 v;\n"
+                             "void main() { v = attr; gl_Position = pos; }\n";
+static const char *flat_fs = "precision mediump float;\nvarying vec4 v;\nvoid main() { gl_FragColor = v; }\n";
+
+/* depth / cull / stencil: triangles of 7 floats (x, y, z, r, g, b, a) */
+static void
+draw7(const float *v, int n)
+{
+   GLuint buf;
+
+   glGenBuffers(1, &buf);
+   glBindBuffer(GL_ARRAY_BUFFER, buf);
+   glBufferData(GL_ARRAY_BUFFER, n * 28, v, GL_STATIC_DRAW);
+   glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 28, (void *)0);
+   glVertexAttribPointer(1, 4, GL_FLOAT, GL_FALSE, 28, (void *)12);
+   glEnableVertexAttribArray(0);
+   glEnableVertexAttribArray(1);
+   glDrawArrays(GL_TRIANGLES, 0, n);
+}
+
+static int
+depth_pass(const char *f, double z, double stored)
+{
+   if (!strcmp(f, "less")) return z < stored;
+   if (!strcmp(f, "lequal")) return z <= stored;
+   if (!strcmp(f, "greater")) return z > stored;
+   if (!strcmp(f, "gequal")) return z >= stored;
+   if (!strcmp(f, "equal")) return z == stored;
+   if (!strcmp(f, "notequal")) return z != stored;
+   if (!strcmp(f, "never")) return 0;
+   return 1;
+}
+
+static GLenum
+depth_func(const char *f)
+{
+   static const struct { const char *n; GLenum e; } m[] = {
+      { "less", GL_LESS }, { "lequal", GL_LEQUAL }, { "greater", GL_GREATER }, { "gequal", GL_GEQUAL },
+      { "equal", GL_EQUAL }, { "notequal", GL_NOTEQUAL }, { "never", GL_NEVER }, { "always", GL_ALWAYS },
+      { "nowrite", GL_LESS } };
+   for (unsigned i = 0; i < sizeof(m) / sizeof(m[0]); i++)
+      if (!strcmp(f, m[i].n))
+         return m[i].e;
+   DIE("depth function %s?", f);
+}
+
+static int
+zs_main(const char *mode, const char *arg, int w, int h)
+{
+   unsigned char *px = malloc(4 * w * h);
+   static const double clear[4] = { 0.25, 0.5, 0.75, 1 };
+   GLuint fbo, rb, zs;
+
+   glGenFramebuffers(1, &fbo);
+   glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+   glGenRenderbuffers(1, &rb);
+   glBindRenderbuffer(GL_RENDERBUFFER, rb);
+   glRenderbufferStorage(GL_RENDERBUFFER, GL_RGBA8_OES, w, h);
+   glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, rb);
+   glGenRenderbuffers(1, &zs);
+   glBindRenderbuffer(GL_RENDERBUFFER, zs);
+   glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH24_STENCIL8_OES, w, h);
+   glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, zs);
+   glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_STENCIL_ATTACHMENT, GL_RENDERBUFFER, zs);
+   if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
+      DIE("framebuffer with depth / stencil incomplete");
+   glViewport(0, 0, w, h);
+   program(flat_vs, flat_fs);
+   glClearColor(clear[0], clear[1], clear[2], clear[3]);
+
+   if (!strcmp(mode, "depth")) {
+      /* red at z 0.2 (depth 0.6), then green at z -0.4 .. 0.8 (a slope:
+       * nearer on the left, further on the right) over it */
+      static const float t[6][7] = {
+         { -0.9f, -0.9f, 0.2f, 1, 0, 0, 1 }, { 0.6f, -0.9f, 0.2f, 1, 0, 0, 1 }, { -0.9f, 0.7f, 0.2f, 1, 0, 0, 1 },
+         { -0.6f, -0.7f, -0.4f, 0, 1, 0, 1 }, { 0.9f, -0.7f, 0.8f, 0, 1, 0, 1 }, { 0.2f, 0.9f, 0.2f, 0, 1, 0, 1 } };
+      const int greater = !strncmp(arg, "greater", 7) || !strcmp(arg, "gequal");
+      const double zc = greater ? 0.0 : 1.0;
+      glClearDepthf(zc);
+      glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+      glEnable(GL_DEPTH_TEST);
+      glDepthFunc(depth_func(arg));
+      glDepthMask(strcmp(arg, "nowrite") != 0);
+      draw7(&t[0][0], 6);
+      glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, px);
+      for (int y = 0; y < h; y++)
+         for (int x = 0; x < w; x++) {
+            static const double red[4] = { 1, 0, 0, 1 }, green[4] = { 0, 1, 0, 1 };
+            double b0[3], b1[3], want[4], stored = zc, zz;
+            int i0 = inside(&t[0][0], 7, w, h, x, y, b0), i1 = inside(&t[3][0], 7, w, h, x, y, b1);
+            const double *c = clear;
+            if (!i0 || !i1)
+               continue;
+            if (i0 > 0 && depth_pass(arg, zz = 0.6, stored)) {
+               c = red;
+               if (strcmp(arg, "nowrite"))
+                  stored = zz;
+            }
+            if (i1 > 0) {
+               zz = (b1[0] * -0.4 + b1[1] * 0.8 + b1[2] * 0.2) * 0.5 + 0.5;
+               if (fabs(zz - stored) < 0.01 || fabs(zz - zc) < 0.01)
+                  continue;                         /* the depths too close to call */
+               if (depth_pass(arg, zz, stored))
+                  c = green;
+            }
+            memcpy(want, c, sizeof(want));
+            check(x, y, px + 4 * (y * w + x), want);
+         }
+   } else if (!strcmp(mode, "cull")) {
+      /* left: counter-clockwise (red), right: clockwise (green), in GL's
+       * window coordinates */
+      static const float t[6][7] = {
+         { -0.9f, -0.8f, 0, 1, 0, 0, 1 }, { -0.1f, -0.8f, 0, 1, 0, 0, 1 }, { -0.5f, 0.8f, 0, 1, 0, 0, 1 },
+         { 0.1f, -0.8f, 0, 0, 1, 0, 1 }, { 0.5f, 0.8f, 0, 0, 1, 0, 1 }, { 0.9f, -0.8f, 0, 0, 1, 0, 1 } };
+      int keep_ccw = 1, keep_cw = 1;
+      glClear(GL_COLOR_BUFFER_BIT);
+      if (strcmp(arg, "none")) {
+         glEnable(GL_CULL_FACE);
+         glFrontFace(!strcmp(arg, "frontcw") ? GL_CW : GL_CCW);
+         glCullFace(!strcmp(arg, "front") ? GL_FRONT : GL_BACK);
+         if (!strcmp(arg, "back"))
+            keep_cw = 0;
+         else if (!strcmp(arg, "front"))
+            keep_ccw = 0;
+         else
+            keep_ccw = 0;                                   /* frontcw: back = counter-clockwise */
+      }
+      draw7(&t[0][0], 6);
+      glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, px);
+      for (int y = 0; y < h; y++)
+         for (int x = 0; x < w; x++) {
+            double b[3], want[4];
+            int i0 = inside(&t[0][0], 7, w, h, x, y, b), i1 = inside(&t[3][0], 7, w, h, x, y, b);
+            if (!i0 || !i1)
+               continue;
+            const double *c = i0 > 0 && keep_ccw ? (double[]){ 1, 0, 0, 1 }
+                              : i1 > 0 && keep_cw ? (double[]){ 0, 1, 0, 1 } : clear;
+            memcpy(want, c, sizeof(want));
+            check(x, y, px + 4 * (y * w + x), want);
+         }
+   } else {
+      /* stencil: a triangle writes 1 (red), then a quad over everything:
+       * green where the stencil is 1, then blue where it is 0 */
+      static const float tri[3][7] = { { -0.8f, -0.8f, 0, 1, 0, 0, 1 }, { 0.8f, -0.6f, 0, 1, 0, 0, 1 },
+                                       { -0.2f, 0.8f, 0, 1, 0, 0, 1 } };
+      static const float qg[6][7] = {
+         { -1, -1, 0, 0, 1, 0, 1 }, { 1, -1, 0, 0, 1, 0, 1 }, { 1, 1, 0, 0, 1, 0, 1 },
+         { -1, -1, 0, 0, 1, 0, 1 }, { 1, 1, 0, 0, 1, 0, 1 }, { -1, 1, 0, 0, 1, 0, 1 } };
+      static const float qb[6][7] = {
+         { -1, -1, 0, 0, 0, 1, 1 }, { 1, -1, 0, 0, 0, 1, 1 }, { 1, 1, 0, 0, 0, 1, 1 },
+         { -1, -1, 0, 0, 0, 1, 1 }, { 1, 1, 0, 0, 0, 1, 1 }, { -1, 1, 0, 0, 0, 1, 1 } };
+      glClearStencil(0);
+      glClear(GL_COLOR_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
+      glEnable(GL_STENCIL_TEST);
+      glStencilFunc(GL_ALWAYS, 1, 0xff);
+      glStencilOp(GL_KEEP, GL_KEEP, GL_REPLACE);
+      draw7(&tri[0][0], 3);
+      glStencilOp(GL_KEEP, GL_KEEP, GL_KEEP);
+      glStencilFunc(GL_EQUAL, 1, 0xff);
+      draw7(&qg[0][0], 6);
+      glStencilFunc(GL_EQUAL, 0, 0xff);
+      draw7(&qb[0][0], 6);
+      glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, px);
+      for (int y = 0; y < h; y++)
+         for (int x = 0; x < w; x++) {
+            double b[3], want[4];
+            int i = inside(&tri[0][0], 7, w, h, x, y, b);
+            if (!i)
+               continue;
+            memcpy(want, i > 0 ? (double[]){ 0, 1, 0, 1 } : (double[]){ 0, 0, 1, 1 }, sizeof(want));
+            check(x, y, px + 4 * (y * w + x), want);
+         }
+   }
+   if (glGetError())
+      DIE("GL error");
+   printf("%s: %s %s %dx%d, %d of %d pixels right\n", bad ? "FAIL" : "ok", mode, arg, w, h, total - bad, total);
+   return bad != 0;
+}
+
 int
 main(int argc, char **argv)
 {
    const char *mode = argc > 1 ? argv[1] : "uniform";
+
+   if (!strcmp(mode, "depth") || !strcmp(mode, "cull") || !strcmp(mode, "stencil")) {
+      const int a1 = strcmp(mode, "stencil") ? 3 : 2;
+      context();
+      return zs_main(mode, a1 == 3 && argc > 2 ? argv[2] : "", argc > a1 + 1 ? atoi(argv[a1]) : 64,
+                     argc > a1 + 1 ? atoi(argv[a1 + 1]) : 64);
+   }
    int tex = strncmp(mode, "uniform", 7) != 0;
    /* uniform: both; uniform-vs / uniform-fs: one stage's only */
    int uvs = strcmp(mode, "uniform-fs") != 0, ufs = strncmp(mode, "uniform-vs", 10) != 0;

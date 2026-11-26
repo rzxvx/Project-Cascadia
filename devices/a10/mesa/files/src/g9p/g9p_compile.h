@@ -57,6 +57,9 @@ struct g9p_options {
     * sampler_dword (2 each; 0: after the states) */
    unsigned ubo_dword, ubo_dwords;
    unsigned sampler_dword;
+   /* vertex: GL's clip-space depth (-w..w) made the hardware's (0..w):
+    * z = (z + w) / 2 */
+   bool clip_halfz;
 };
 
 struct g9p_shader {

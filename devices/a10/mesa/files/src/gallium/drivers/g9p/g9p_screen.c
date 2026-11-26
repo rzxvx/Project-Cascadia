@@ -110,8 +110,15 @@ g9p_is_format_supported(struct pipe_screen *pscreen, enum pipe_format format,
    if ((usage & (PIPE_BIND_RENDER_TARGET | PIPE_BIND_DISPLAY_TARGET | PIPE_BIND_SCANOUT |
                  PIPE_BIND_SHARED)) && !g9p_rt_format(format))
       return false;
-   if (usage & PIPE_BIND_DEPTH_STENCIL)
-      return false;                       /* (to do: the ISP's depth load / store) */
+   /* depth and stencil live in the tiles for one render (to do: their
+    * load / store between renders); the buffer itself is not written */
+   if ((usage & PIPE_BIND_DEPTH_STENCIL) && format != PIPE_FORMAT_Z16_UNORM &&
+       format != PIPE_FORMAT_Z24X8_UNORM && format != PIPE_FORMAT_Z24_UNORM_S8_UINT &&
+       format != PIPE_FORMAT_S8_UINT && format != PIPE_FORMAT_Z32_FLOAT &&
+       format != PIPE_FORMAT_Z32_FLOAT_S8X24_UINT)
+      return false;
+   if (util_format_is_depth_or_stencil(format) && (usage & ~PIPE_BIND_DEPTH_STENCIL & ~PIPE_BIND_SHARED))
+      return false;
    if ((usage & PIPE_BIND_SAMPLER_VIEW) && format != PIPE_FORMAT_R8G8B8A8_UNORM &&
        format != PIPE_FORMAT_B8G8R8A8_UNORM && format != PIPE_FORMAT_B8G8R8X8_UNORM &&
        format != PIPE_FORMAT_R8G8B8X8_UNORM)

@@ -191,8 +191,8 @@ g9p_flush_frame(struct g9p_context *ctx)
    bg[0] = (uint64_t)G9P_PDS_DOUTD << 32 | bg_pds;
    bg[1] = texu;
    bg[2] = 0x0080000000800000ULL;
-   f32p[1] = 0x3f800000;
-   f32p[2] = 0x300;
+   f32p[1] = f32b(f->zclear);                   /* ISP background depth */
+   f32p[2] = 0x300 | f->sclear;                 /* background stencil, mask, tag enable */
    f32p[3] = 0xf;
    f32p[4] = 0x0023000f;
    f32p[5] = 0x402;
@@ -203,6 +203,8 @@ g9p_flush_frame(struct g9p_context *ctx)
       g9p_render(dev, hw, geom, sizeof(geom), frag, sizeof(frag));
    rt->seq++;                                   /* (a texture's twiddled copy is old now) */
    f->cleared = false;
+   f->zclear = 1.0f;
+   f->sclear = 0;
    frame_reset(ctx);
 }
 
@@ -394,7 +396,7 @@ g9p_set_viewport_states(struct pipe_context *p, unsigned start, unsigned n, cons
 
 static void g9p_set_scissor_states(struct pipe_context *p, unsigned s, unsigned n, const struct pipe_scissor_state *x) {}
 static void g9p_set_blend_color(struct pipe_context *p, const struct pipe_blend_color *c) {}
-static void g9p_set_stencil_ref(struct pipe_context *p, const struct pipe_stencil_ref r) {}
+static void g9p_set_stencil_ref(struct pipe_context *p, const struct pipe_stencil_ref r) { g9p_context(p)->stencil_ref = r; }
 static void g9p_set_sample_mask(struct pipe_context *p, unsigned m) {}
 static void g9p_set_clip_state(struct pipe_context *p, const struct pipe_clip_state *c) {}
 static void g9p_set_polygon_stipple(struct pipe_context *p, const struct pipe_poly_stipple *s) {}
@@ -478,14 +480,67 @@ g9p_clear(struct pipe_context *pctx, unsigned buffers, uint32_t color_clear_mask
 {
    struct g9p_context *ctx = g9p_context(pctx);
 
-   if (!(buffers & PIPE_CLEAR_COLOR0) || !frame_target(ctx))
+   if (!frame_target(ctx))
       return;
    if (scissor)
       mesa_logw_once("g9p: a scissored clear cleared everything (to do)");
+   /* depth and stencil: the background's values (after draws: to do) */
+   if (buffers & (PIPE_CLEAR_DEPTH | PIPE_CLEAR_STENCIL)) {
+      if (ctx->frame.ndraws && !(buffers & PIPE_CLEAR_COLOR0))
+         mesa_logw_once("g9p: a depth / stencil clear after draws (to do)");
+      if (buffers & PIPE_CLEAR_DEPTH)
+         ctx->frame.zclear = depth;
+      if (buffers & PIPE_CLEAR_STENCIL)
+         ctx->frame.sclear = stencil;
+   }
+   if (!(buffers & PIPE_CLEAR_COLOR0))
+      return;
    /* the whole target: what was drawn so far goes */
    frame_reset(ctx);
    ctx->frame.cleared = true;
    memcpy(ctx->frame.clear, color->f, sizeof(ctx->frame.clear));
+}
+
+static uint32_t
+stencil_op(unsigned op)
+{
+   /* pipe: KEEP ZERO REPLACE INCR(sat) DECR(sat) INCR_WRAP DECR_WRAP INVERT;
+    * Rogue's ISPB: ... INCR_SAT DECR_SAT INVERT INCR DECR */
+   static const uint8_t map[8] = { 0, 1, 2, 3, 4, 6, 7, 5 };
+   return map[op & 7];
+}
+
+static uint32_t
+ispb_word(const struct pipe_stencil_state *s)
+{
+   if (!s->enabled)
+      return 0x0e000000;                                   /* ALWAYS, KEEP */
+   return s->func << 25 | stencil_op(s->fail_op) << 22 | stencil_op(s->zfail_op) << 19 |
+          stencil_op(s->zpass_op) << 16 | s->valuemask << 8 | s->writemask;
+}
+
+/* the ISP words of both faces: depth compare / write, stencil; returns
+ * whether the faces differ (ISPCTL two_sided) */
+static bool
+isp_state(struct g9p_context *ctx, bool translucent, uint32_t ispa[2], uint32_t ispb[2])
+{
+   const struct pipe_depth_stencil_alpha_state *dsa = ctx->dsa;
+   const struct pipe_surface *zs = &ctx->fb.zsbuf;
+   const bool has_z = zs->texture && util_format_has_depth(util_format_description(zs->format));
+   const bool has_s = zs->texture && util_format_has_stencil(util_format_description(zs->format));
+   uint32_t a = 0x00100f00 | (translucent ? 1u << 24 : 0);          /* dfbztestenable, line width */
+
+   if (has_z && dsa && dsa->depth_enabled)
+      a |= dsa->depth_func << 17 | (dsa->depth_writemask ? 0 : 1u << 21);
+   else
+      a |= 7u << 17 | 1u << 21;                                       /* ALWAYS, no write */
+   for (unsigned f = 0; f < 2; f++) {
+      const struct pipe_stencil_state *s = dsa ? &dsa->stencil[f && dsa->stencil[1].enabled] : NULL;
+
+      ispa[f] = a | (s && has_s ? ctx->stencil_ref.ref_value[f && dsa->stencil[1].enabled] : 0);
+      ispb[f] = s && has_s ? ispb_word(s) : 0x0e000000;
+   }
+   return ispa[0] != ispa[1] || ispb[0] != ispb[1];
 }
 
 static unsigned
@@ -538,6 +593,19 @@ g9p_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info, unsig
       mesa_logw_once("g9p: points and lines are not drawn yet");
       return;
    }
+   /* culling (PPP_CTRL cullmode: 1 clockwise, 2 counter-clockwise, as the
+    * hardware sees the triangle) */
+   uint32_t cull = 0;
+   if (ctx->rast && ctx->rast->cull_face) {
+      if (ctx->rast->cull_face == PIPE_FACE_FRONT_AND_BACK)
+         return;
+      /* the GL counter-clockwise face (in window coordinates, y up) is the
+       * hardware's counter-clockwise one when the viewport does not flip y
+       * (g9p-glcheck cull, framebuffer objects) */
+      const bool ccw_culled = (ctx->rast->cull_face == PIPE_FACE_FRONT) == ctx->rast->front_ccw;
+      const bool flip = ctx->viewport.scale[1] < 0;
+      cull = ccw_culled != flip ? 2 : 1;
+   }
    if (info->instance_count > 1)
       mesa_logw_once("g9p: instances past the first are not drawn yet");
 
@@ -559,15 +627,19 @@ g9p_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info, unsig
    const void *fu = cb_words(ctx, 1, &fu_n);
    const unsigned vubo = align(2 * ve->count, 4);
    const unsigned vcs = vubo + vu_n;
+   const bool halfz = !(ctx->rast && ctx->rast->clip_halfz);
    struct {
       struct g9p_vertex_attrib a[G9P_MAX_ATTRIBS];
       unsigned ubo_dword, ubo_dwords;
+      bool halfz;
    } vkey;
    memset(&vkey, 0, sizeof(vkey));
    memcpy(vkey.a, attribs, sizeof(attribs[0]) * ve->count);
    vkey.ubo_dword = vubo;
    vkey.ubo_dwords = vu_n;
-   struct g9p_options vo = { .attribs = attribs, .num_attribs = ve->count, .ubo_dword = vubo, .ubo_dwords = vu_n };
+   vkey.halfz = halfz;
+   struct g9p_options vo = { .attribs = attribs, .num_attribs = ve->count, .ubo_dword = vubo, .ubo_dwords = vu_n,
+                             .clip_halfz = halfz };
    struct g9p_variant *vs = variant(ctx, ctx->vs, &vkey, sizeof(vkey), &vo, NULL);
    if (!vs)
       return;
@@ -741,15 +813,20 @@ g9p_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info, unsig
       else
          PPP(ctx, 0x000000c0, fkick, 0xc0, sz1, 0, vpds ? vpds : 0xc0);
       PPP(ctx, 0x00020000, vs->noutputs << 24 | 0x00010000);
-      /* ISP: no depth yet (ALWAYS, no write), both faces; blending's
-       * passes translucent (the hidden-surface removal would run only the
-       * top object's shader) */
-      const uint32_t pass = fkey.blending ? 1u << 24 : 0;
-      PPP(ctx, 0x0000001f, 0x03c40000, 0x003e0f00 | pass, 0x0e000000, 0x003e0f00 | pass, 0);
+      /* ISP (Rogue's ISPCTL / ISPA / ISPB): the depth test and stencil of
+       * each face; blending's passes translucent (the hidden-surface
+       * removal would run only the top object's shader) */
+      uint32_t ispa[2], ispb[2];
+      const bool two_sided = isp_state(ctx, fkey.blending, ispa, ispb);
+      PPP(ctx, 0x0000001f, 0x03c40000 | (two_sided ? 1u << 19 : 0), ispa[0], ispb[0], ispa[1], ispb[1]);
       const struct pipe_viewport_state *vp = &ctx->viewport;
+      /* the hardware clips depth to 0..w: GL's -w..w was halved in the
+       * vertex shader (clip_halfz), its viewport z follows */
+      const float zt = halfz ? vp->translate[2] - vp->scale[2] : vp->translate[2];
+      const float zs = halfz ? 2 * vp->scale[2] : vp->scale[2];
       PPP(ctx, 0x00000c00, 0x80000000 | (tx - 1), ty - 1, f32b(vp->translate[0]), f32b(vp->scale[0]),
-          f32b(vp->translate[1]), f32b(vp->scale[1]), f32b(vp->translate[2]), f32b(vp->scale[2]));
-      PPP(ctx, 0x00210000, 0x1e3ce508, 0x000004a0);
+          f32b(vp->translate[1]), f32b(vp->scale[1]), f32b(zt), f32b(zs));
+      PPP(ctx, 0x00210000, 0x1e3ce508, 0x000004a0 | cull);
       PPP(ctx, 0x00000020, 0);
       if (info->index_size) {
          const uint64_t ia = index_va + (uint64_t)dr->start * info->index_size;
@@ -833,6 +910,7 @@ g9p_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
    }
    ctx->frame.stream = (uint32_t *)ctx->frame.bo->map;
    frame_reset(ctx);
+   ctx->frame.zclear = 1.0f;
    slab_create_child(&ctx->transfer_pool, &screen->transfer_pool);
 
    p->screen = pscreen;

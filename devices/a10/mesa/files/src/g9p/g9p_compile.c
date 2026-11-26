@@ -1311,6 +1311,25 @@ emit_cf_list(struct ctx *c, struct exec_list *list)
 
 /* ---- the pipeline --------------------------------------------------------------- */
 
+/* the position's z = (z + w) / 2 at an io-lowered vec4 store */
+static bool
+halfz_store(nir_builder *b, nir_intrinsic_instr *in, void *data)
+{
+   if (in->intrinsic != nir_intrinsic_store_output ||
+       nir_intrinsic_io_semantics(in).location != VARYING_SLOT_POS)
+      return false;
+   if (nir_intrinsic_component(in) || nir_src_num_components(in->src[0]) != 4 ||
+       (nir_intrinsic_write_mask(in) & 0xc) != 0xc) {
+      *(bool *)data = true;
+      return false;
+   }
+   b->cursor = nir_before_instr(&in->instr);
+   nir_def *p = in->src[0].ssa;
+   nir_def *z = nir_fmul_imm(b, nir_fadd(b, nir_channel(b, p, 2), nir_channel(b, p, 3)), 0.5);
+   nir_src_rewrite(&in->src[0], nir_vector_insert_imm(b, p, z, 2));
+   return true;
+}
+
 static void
 optimize(nir_shader *nir)
 {
@@ -1471,6 +1490,13 @@ g9p_compile(nir_shader *nir, bool print, const struct g9p_options *opts, struct 
       nir_assign_io_var_locations(nir, nir_var_shader_out);
       NIR_PASS(_, nir, nir_lower_io, nir_var_shader_in | nir_var_shader_out, type_size_vec4,
                nir_lower_io_use_interpolated_input_intrinsics);
+      }
+      if (c.stage == MESA_SHADER_VERTEX && opts && opts->clip_halfz) {
+         bool partial = false;
+
+         NIR_PASS(_, nir, nir_shader_intrinsics_pass, halfz_store, nir_metadata_control_flow, &partial);
+         if (partial)
+            return "a position written in parts (its depth not made 0..w: to do)";
       }
       if (c.stage == MESA_SHADER_VERTEX)
          NIR_PASS(_, nir, nir_lower_io_to_scalar, nir_var_shader_out, NULL, NULL);

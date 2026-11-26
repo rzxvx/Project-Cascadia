@@ -990,8 +990,37 @@ to 1024x768.
   sampler words (`000e0000 00c00780`) do not follow Rogue's layout, their
   filter and wrap fields are still to find.
 
-Not yet: linear filtering, wrap modes, mipmaps, depth and stencil,
-culling, points and lines, scissors, a frame that does not start with a
+**G9.3 (2026-11-26): depth, stencil, culling.** The ISP words the frame
+already used decode as Rogue's (Mesa `csbgen/rogue/ppp.xml`): ISPA
+`0x003e0f00` = compare ALWAYS, depth write off, the depth test enabled
+(bit 20), line width 0xf; ISPB `0x0e000000` = stencil ALWAYS; PPP_CTRL
+`0x4a0` = clip mode 1, flat shading from vertex 0, w clamp. So the driver
+writes them as Rogue's: ISPA `dcmpmode` / `dwritedisable` / `sref`, ISPB
+compare, the three stencil operations (Rogue's order: INCR_SAT, DECR_SAT,
+INVERT, INCR, DECR) and masks, ISPCTL `two_sided` with the back face's own
+words, PPP_CTRL `cullmode`; the clears go into the fragment job's
+background depth and stencil (`isp_bgobjdepth`, `bgobjvals` = 0x300 |
+stencil). `g9p-glcheck depth FUNC`, `cull FACE`, `stencil`: **every pixel
+right** -- all eight compare functions and a depth test without writes,
+two overlapping triangles (one sloped through the other) up to 1620x2160;
+back, front and no culling with either front face; a stencil written by a
+triangle and tested EQUAL 1 / EQUAL 0 by two quads.
+
+- **The hardware clips depth to 0..w** (as Direct3D / Vulkan): a triangle
+  at clip-space z -0.4 lost the part in front of z = 0. The vertex shader
+  makes GL's -w..w that (z = (z + w) / 2 at the position's store, the
+  compiler's `clip_halfz`), the viewport's z offset / scale become t - s /
+  2s; then the depth tests were right.
+- **The GL counter-clockwise face is the hardware's counter-clockwise one**
+  (cullmode 2) when the viewport does not flip y (framebuffer objects;
+  window-system buffers flip: the driver swaps then, to check on a
+  display).
+- Depth and stencil live in the tiles for one render: the depth buffer
+  itself is neither loaded nor stored yet (the ISP's ZLS), so a render
+  that is cut in two (a CPU read in the middle of a frame) loses them.
+
+Not yet: linear filtering, wrap modes, mipmaps, depth / stencil load and
+store between renders, points and lines, scissors, a frame that does not start with a
 clear (its background should load the target), uniforms at variable
 indices, vertex formats other than 32-bit floats, instancing, KMS /
 Wayland (display), fences that do not wait, other targets than BGRA8.
