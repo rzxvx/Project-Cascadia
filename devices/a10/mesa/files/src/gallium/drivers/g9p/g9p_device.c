@@ -6,6 +6,7 @@
 #include "g9p_device.h"
 
 #include <errno.h>
+#include <inttypes.h>
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
@@ -85,6 +86,7 @@ g9p_bo_create(struct g9p_device *dev, uint64_t size)
    /* (64 KiB: the kernel's 16 KiB pages and the GPU's 4 KiB both) */
    bo->size = align64(MAX2(size, 1), 0x10000);
    if (!(bo->map = gem_create(dev, bo->size, &bo->handle))) {
+      mesa_logw("g9p: a buffer of %" PRIu64 " bytes not created", bo->size);
       FREE(bo);
       return NULL;
    }
@@ -95,6 +97,7 @@ g9p_bo_create(struct g9p_device *dev, uint64_t size)
    if (bo->va + bo->size > dev->heap_gen + dev->heap_gen_size || !vm_map(dev, bo->handle, bo->va, bo->size)) {
       struct drm_gem_close cl = { .handle = bo->handle };
 
+      mesa_logw("g9p: a buffer of %" PRIu64 " bytes not mapped at %#" PRIx64, bo->size, bo->va);
       munmap(bo->map, bo->size);
       ioc(dev, DRM_IOCTL_GEM_CLOSE, &cl);
       FREE(bo);

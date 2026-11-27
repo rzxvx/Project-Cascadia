@@ -54,9 +54,8 @@ struct g9p_frame {
    /* the buffers the GPU reads during the render (vertices, indices):
     * a CPU map of one sends the render first; textures and constants are
     * copied at the draw */
-   struct pipe_resource *reads[64];
-   unsigned nreads;
-   bool reads_overflow;
+   struct pipe_resource **reads;   /* (grown as needed: textures too) */
+   unsigned nreads, reads_cap;
    bool loading;               /* the load draw is being recorded */
    /* the scissor table (ISP_SCISSOR_BASE): {xmin << 16 | xmax, ymin << 16 |
     * ymax} per rectangle, maxima exclusive; a draw picks one (DBSC) */

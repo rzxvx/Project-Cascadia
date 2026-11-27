@@ -31,12 +31,24 @@
  *                                    (green over 0.5), depth test on, in front
  *                                    of a green one: the discarded pixels
  *                                    neither coloured nor in the depth
+ *   g9p-glcheck discardif taken|untaken|hue [W H]
+ *                                    the same discard inside a branch of a
+ *                                    uniform, run or not (hue: not, after
+ *                                    SuperTuxKart's hue change)
  *   g9p-glcheck discardblend [W H]   the same discarding triangle blended (alpha
  *                                    0.5) over an opaque one, a third blended
  *                                    triangle sharing the tiles after it
  *   g9p-glcheck scissor [W H]        two full-target triangles, each in its own
  *                                    scissor rectangle (one partly off the
  *                                    target), and a scissored clear between them
+ *   g9p-glcheck nearclip above-first|below-first [W H]
+ *                                    a plane under another, large enough to
+ *                                    pass the near plane and the eye
+ *   g9p-glcheck ptblend [behind] [W H]
+ *                                    an opaque triangle whose shader can
+ *                                    discard (punch-through) in front of a
+ *                                    blended one drawn after it (behind:
+ *                                    before it)
  *   g9p-glcheck polyoffset F,U[,Z0,Z1[,C]] [W H]
  *                                    glPolygonOffset(F, U) on a plane of
  *                                    window depths Z0 .. Z1 (0.3 .. 0.7;
@@ -48,6 +60,9 @@
  *                                    face and level its own texels) over the
  *                                    target, all six faces; LOD: textureCubeLod
  *                                    (desktop GL context)
+ *   g9p-glcheck shader VS FS [W H]   an application's program on a textured
+ *                                    ground plane, for comparing drivers
+ *                                    (G9P_CHECK_U uniforms, G9P_CHECK_DUMP)
  *   g9p-glcheck array LAYERS,LEVELS[,BIAS]
  *                                    a 2D array texture (EXT_texture_array),
  *                                    bands at whole, fractional and
@@ -63,6 +78,7 @@
  *   g9p-glcheck stencil [W H]        a triangle writes 1 into the stencil, a
  *                                    quad then draws where it is 1 (and 0)
  */
+#define _GNU_SOURCE
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
 #include <GLES2/gl2.h>
@@ -414,9 +430,12 @@ zs_main(const char *mode, const char *arg, int w, int h)
                want = red;
             check(x, y, px + 4 * (y * w + x), want);
          }
-   } else if (!strcmp(mode, "discard")) {
+   } else if (!strcmp(mode, "discard") || !strcmp(mode, "discardif")) {
       /* red to yellow (green 0 -> 1 towards the top vertex) at z 0.2,
-       * discarding green > 0.5; then green at z 0.6 behind it */
+       * discarding green > 0.5; then green at z 0.6 behind it.
+       * discardif: the discard inside a branch of a uniform (as
+       * SuperTuxKart's material shader has it) -- ARG taken: discarding
+       * as before, untaken: the branch not run, nothing discarded */
       static const float t[6][7] = {
          { -0.9f, -0.9f, 0.2f, 1, 0, 0, 1 }, { 0.6f, -0.9f, 0.2f, 1, 0, 0, 1 }, { -0.9f, 0.8f, 0.2f, 1, 1, 0, 1 },
          { -0.7f, -0.8f, 0.6f, 0, 1, 0, 1 }, { 0.9f, -0.8f, 0.6f, 0, 1, 0, 1 }, { 0.1f, 0.9f, 0.6f, 0, 1, 0, 1 } };
@@ -424,9 +443,54 @@ zs_main(const char *mode, const char *arg, int w, int h)
                                    "void main() { if (v.g > 0.5) discard; gl_FragColor = v; }\n";
       glClearDepthf(1);
       glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+      /* (zeros computed and dropped before the branch: their registers,
+       * reused for the discard's, hold 0 where the branch does not run) */
+      static const char *discif_fs = "precision mediump float;\nvarying vec4 v;\nuniform int m;\n"
+                                     "void main() {\n  vec4 c = v;\n"
+                                     "  vec4 z = max(v - 2.0, 0.0) * v.yzwx;\n"
+                                     "  c.r += z.x + z.y; c.b += z.z * z.w;\n"
+                                     "  if (m == 1) { if (c.g > 0.5) discard; }\n"
+                                     "  else if (m == 2) { c.b = 1.0; if (c.r < 0.0) discard; }\n"
+                                     "  gl_FragColor = c;\n}\n";
+      /* hue: SuperTuxKart's hue change (RGB -> HSV -> RGB) run before the
+       * branches, the branch with the discard not run: the triangle whole */
+      static const char *dischue_fs = "precision mediump float;\nvarying vec4 v;\nuniform int m;\nuniform float hue;\n"
+         "vec3 rgbToHsv(vec3 c) {\n  vec4 K = vec4(0.0, -1.0 / 3.0, 2.0 / 3.0, -1.0);\n"
+         "  vec4 p = mix(vec4(c.bg, K.wz), vec4(c.gb, K.xy), step(c.b, c.g));\n"
+         "  vec4 q = mix(vec4(p.xyw, c.r), vec4(c.r, p.yzx), step(p.x, c.r));\n"
+         "  float d = q.x - min(q.w, q.y);\n  float e = 1.0e-10;\n"
+         "  return vec3(abs(q.z + (q.w - q.y) / (6.0 * d + e)), d / (q.x + e), q.x);\n}\n"
+         "vec3 hsvToRgb(vec3 c) {\n  vec4 K = vec4(1.0, 2.0 / 3.0, 1.0 / 3.0, 3.0);\n"
+         "  vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);\n"
+         "  return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);\n}\n"
+         "void main() {\n  vec4 c = v;\n"
+         "  if (hue > 0.0) { vec3 h = rgbToHsv(c.rgb); c.rgb = hsvToRgb(vec3(hue, max(h.y, 0.5), h.z)); }\n"
+         "  if (m == 1) { if (c.a < 0.5) discard; }\n"
+         "  else if (m == 2) { if (c.r < -1.0) discard; }\n"
+         "  gl_FragColor = vec4(c.rgb * 0.5 + 0.5, 1.0);\n}\n";
+      const int hue = !strcmp(arg, "hue");
+      const int dif = !strcmp(mode, "discardif"), taken = dif && !strcmp(arg, "taken");
       glEnable(GL_DEPTH_TEST);
       glDepthFunc(GL_LESS);
-      program(flat_vs, disc_fs);
+      if (dif) {
+         /* first a background at the clear's colour from a shader that
+          * leaves zeros in its registers (what the discard's register held
+          * where the branch did not run, in SuperTuxKart) */
+         static const char *zero_fs = "precision mediump float;\nvarying vec4 v;\nuniform float zz;\n"
+            "void main() {\n  vec4 a = v * zz, b = v.yzwx * zz, c = v.zwxy * zz, d = v.wxyz * zz;\n"
+            "  vec4 e = a * b + c * d, f = (a + c) * (b + d), g = e * f + a, h = g * e + b;\n"
+            "  gl_FragColor = vec4(0.25, 0.5, 0.75, 1.0) + e + f + g + h + a * d;\n}\n";
+         static const float bg[6][7] = { { -1, -1, 0.99f, 0, 0, 0, 1 }, { 1, -1, 0.99f, 0, 0, 0, 1 }, { 1, 1, 0.99f, 0, 0, 0, 1 },
+                                         { -1, -1, 0.99f, 0, 0, 0, 1 }, { 1, 1, 0.99f, 0, 0, 0, 1 }, { -1, 1, 0.99f, 0, 0, 0, 1 } };
+         const GLuint zp = program(flat_vs, zero_fs);
+         glUniform1f(glGetUniformLocation(zp, "zz"), 0.0f);
+         draw7(&bg[0][0], 6);
+      }
+      const GLuint dp = program(flat_vs, hue ? dischue_fs : dif ? discif_fs : disc_fs);
+      if (dif)
+         glUniform1i(glGetUniformLocation(dp, "m"), taken ? 1 : 0);
+      if (hue)
+         glUniform1f(glGetUniformLocation(dp, "hue"), 0.66f);
       draw7(&t[0][0], 3);
       program(flat_vs, flat_fs);
       draw7(&t[3][0], 3);
@@ -439,7 +503,16 @@ zs_main(const char *mode, const char *arg, int w, int h)
             int i0 = inside(&t[0][0], 7, w, h, x, y, b0), i1 = inside(&t[3][0], 7, w, h, x, y, b1);
             if (!i0 || !i1 || (i0 > 0 && fabs(b0[2] - 0.5) < 0.04))
                continue;
-            if (i0 > 0 && b0[2] <= 0.5) {
+            if (hue) {
+               /* the front triangle's colours are the hue's (>= 0.5 each):
+                * whole where it is, the green behind it elsewhere */
+               const unsigned char *g = px + 4 * (y * w + x);
+               total++;
+               if ((i0 > 0) != (g[0] >= 120 && g[2] >= 120) && bad++ < 5)
+                  printf("  (%d, %d): got %d %d %d, want %s\n", x, y, g[0], g[1], g[2], i0 > 0 ? "the triangle" : "behind it");
+               continue;
+            }
+            if (i0 > 0 && (b0[2] <= 0.5 || (dif && !taken))) {
                want[0] = 1, want[1] = b0[2], want[2] = 0, want[3] = 1;
             } else {
                memcpy(want, i1 > 0 ? green : clear, sizeof(want));
@@ -476,6 +549,123 @@ zs_main(const char *mode, const char *arg, int w, int h)
             const double *c = i0 > 0 && keep_ccw ? (double[]){ 1, 0, 0, 1 }
                               : i1 > 0 && keep_cw ? (double[]){ 0, 1, 0, 1 } : clear;
             memcpy(want, c, sizeof(want));
+            check(x, y, px + 4 * (y * w + x), want);
+         }
+   } else if (!strcmp(mode, "ptblend")) {
+      /* an opaque triangle in front (z 0.2) whose shader can discard (a
+       * uniform keeps it from doing so: drawn punch-through), then a
+       * blended one behind it (z 0.6), depth test LESS: the front one
+       * hides it where they overlap; ARG "behind": the blended one drawn
+       * first */
+      static const float t[6][7] = {
+         { -0.9f, -0.9f, 0.2f, 1, 0, 0, 1 }, { 0.6f, -0.9f, 0.2f, 1, 0, 0, 1 }, { -0.9f, 0.7f, 0.2f, 1, 0, 0, 1 },
+         { -0.6f, -0.7f, 0.6f, 0, 0, 1, 0.5f }, { 0.9f, -0.7f, 0.6f, 0, 0, 1, 0.5f }, { 0.2f, 0.9f, 0.6f, 0, 0, 1, 0.5f } };
+      static const char *pt_fs = "precision mediump float;\nvarying vec4 v;\nuniform float k;\n"
+                                 "void main() { if (v.a < k) discard; gl_FragColor = v; }\n";
+      const GLuint pp = program(flat_vs, pt_fs);
+      glUniform1f(glGetUniformLocation(pp, "k"), -1.0f);
+      const int first_blend = !strcmp(arg, "behind") || !strcmp(arg, "ptbehind");
+      /* pt, ptbehind: the second triangle punch-through too, opaque */
+      const int both_pt = !strncmp(arg, "pt", 2);
+      glClearDepthf(1);
+      glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+      glEnable(GL_DEPTH_TEST);
+      glDepthFunc(GL_LESS);
+      for (int pass = 0; pass < 2; pass++) {
+         const int blend = pass != first_blend;
+         if (blend && both_pt) {
+            static float o[3][7];
+            memcpy(o, &t[3][0], sizeof(o));
+            for (int k = 0; k < 3; k++)
+               o[k][6] = 1;
+            draw7(&o[0][0], 3);
+         } else if (blend) {
+            glEnable(GL_BLEND);
+            glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+            draw7(&t[3][0], 3);
+            glDisable(GL_BLEND);
+         } else {
+            draw7(&t[0][0], 3);
+         }
+         split();
+      }
+      glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, px);
+      dump(px, w, h);
+      for (int y = 0; y < h; y++)
+         for (int x = 0; x < w; x++) {
+            double b0[3], b1[3], want[4];
+            int i0 = inside(&t[0][0], 7, w, h, x, y, b0), i1 = inside(&t[3][0], 7, w, h, x, y, b1);
+            if (!i0 || !i1)
+               continue;
+            memcpy(want, clear, sizeof(want));
+            if (i1 > 0 && (i0 <= 0 || first_blend)) {
+               for (int k = 0; k < 4; k++)
+                  want[k] = (k == 2 ? 1.0 : 0.0) * 0.5 + clear[k] * 0.5;
+               want[3] = 0.5 * 0.5 + clear[3] * 0.5;
+               if (both_pt)
+                  memcpy(want, (double[]){ 0, 0, 1, 1 }, sizeof(want));
+            }
+            if (i0 > 0)
+               memcpy(want, (double[]){ 1, 0, 0, 1 }, sizeof(want));
+            check(x, y, px + 4 * (y * w + x), want);
+         }
+   } else if (!strcmp(mode, "nearclip")) {
+      /* seen in perspective (fov 90, near 0.1, far 100, the eye at 0
+       * looking down -z): a plane at y -1 (green, x -4..4, z -0.5..-30)
+       * and a large one below it at y -2 (blue, x -50..50, z 20..-60:
+       * past the near plane, behind the eye); depth test LESS. ARG
+       * "below-first": the large one drawn first. Expected: the upper
+       * plane wherever it is, the lower one elsewhere */
+      const float n0 = 0.1f, f0 = 100;
+      const float A = -(f0 + n0) / (f0 - n0), B = -2 * f0 * n0 / (f0 - n0);
+      const float up[4][3] = { { -4, -1, -0.5f }, { 4, -1, -0.5f }, { -4, -1, -30 }, { 4, -1, -30 } };
+      const float lo[4][3] = { { -50, -2, 20 }, { 50, -2, 20 }, { -50, -2, -60 }, { 50, -2, -60 } };
+      float vb[2][6][8];
+      static const int qi[6] = { 0, 1, 3, 0, 3, 2 };
+      for (int pl = 0; pl < 2; pl++)
+         for (int i = 0; i < 6; i++) {
+            const float *e = pl ? lo[qi[i]] : up[qi[i]];
+            const float v[8] = { e[0], e[1], A * e[2] + B, -e[2], 0, pl ? 0 : 1, pl ? 1 : 0, 1 };
+            memcpy(vb[pl][i], v, sizeof(v));
+         }
+      GLuint buf;
+      glGenBuffers(1, &buf);
+      glBindBuffer(GL_ARRAY_BUFFER, buf);
+      glBufferData(GL_ARRAY_BUFFER, sizeof(vb), vb, GL_STATIC_DRAW);
+      glVertexAttribPointer(0, 4, GL_FLOAT, GL_FALSE, 32, (void *)0);
+      glVertexAttribPointer(1, 4, GL_FLOAT, GL_FALSE, 32, (void *)16);
+      glEnableVertexAttribArray(0);
+      glEnableVertexAttribArray(1);
+      glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+      glEnable(GL_DEPTH_TEST);
+      glDepthFunc(GL_LESS);
+      const int below_first = !strcmp(arg, "below-first");
+      glDrawArrays(GL_TRIANGLES, below_first ? 6 : 0, 6);
+      split();
+      glDrawArrays(GL_TRIANGLES, below_first ? 0 : 6, 6);
+      glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, px);
+      dump(px, w, h);
+      for (int y = 0; y < h; y++)
+         for (int x = 0; x < w; x++) {
+            /* the eye ray through the pixel's centre; where it meets each plane */
+            const double dx = 2 * (x + 0.5) / w - 1, dy = 2 * (y + 0.5) / h - 1;
+            const double *want = clear;
+            int edge = 0;
+            if (dy < -1e-3) {
+               const double tu = -1 / dy, tl = -2 / dy;
+               const double ux = dx * tu, uz = -tu, lx = dx * tl, lz = -tl;
+               const int in_up = ux > -4 && ux < 4 && uz < -0.5 && uz > -30;
+               const int in_lo = lx > -50 && lx < 50 && lz < 20 && lz > -60;
+               edge = fabs(fabs(ux) - 4) < 0.15 * tu / 4 + 0.05 || fabs(uz + 0.5) < 0.05 || fabs(uz + 30) < 3 ||
+                      fabs(lz + 60) < 6 || fabs(fabs(lx) - 50) < 3;
+               static const double green[4] = { 0, 1, 0, 1 }, blue[4] = { 0, 0, 1, 1 };
+               if (in_up)
+                  want = green;
+               else if (in_lo)
+                  want = blue;
+            }
+            if (edge || fabs(dy) < 0.05)
+               continue;
             check(x, y, px + 4 * (y * w + x), want);
          }
    } else if (!strcmp(mode, "polyoffset")) {
@@ -909,11 +1099,175 @@ array_main(const char *arg)
    return bad != 0;
 }
 
+static char *
+slurp(const char *path)
+{
+   FILE *f = fopen(path, "rb");
+   if (!f)
+      DIE("%s?", path);
+   fseek(f, 0, SEEK_END);
+   long n = ftell(f);
+   fseek(f, 0, SEEK_SET);
+   char *b = malloc(n + 1);
+   if (fread(b, 1, n, f) != (size_t)n)
+      DIE("%s: short read", path);
+   b[n] = 0;
+   fclose(f);
+   return b;
+}
+
+/* shader VS FS [W H]: a program of the caller's (an application's) on a
+ * ground plane seen in perspective, with a 256 x 256 mipmapped, repeating
+ * texture (trilinear) on every sampler, for comparing drivers pixel by
+ * pixel (G9P_CHECK_DUMP, tools/gpu/gl/dump-diff.py). Attributes by name:
+ * a position (vec3/vec4; inVertexPosition, pos, a_position, ...), a normal,
+ * a colour (varying over the plane, alpha too) and texture coordinates
+ * (0..8, repeated). Uniforms: matrices the plane's projection, samplers
+ * unit 0.., the rest from G9P_CHECK_U="name=v[:v..],..." (0 otherwise). */
+static int
+shader_main(const char *vsf, const char *fsf, int w, int h)
+{
+   context();
+   target(w, h);
+   const char *vs = slurp(vsf), *fs = slurp(fsf);
+   GLuint p = glCreateProgram();
+   glAttachShader(p, shader(GL_VERTEX_SHADER, vs));
+   glAttachShader(p, shader(GL_FRAGMENT_SHADER, fs));
+   glLinkProgram(p);
+   GLint ok;
+   glGetProgramiv(p, GL_LINK_STATUS, &ok);
+   if (!ok)
+      DIE("link failed");
+   glUseProgram(p);
+   /* the texture: texel() with alpha varying, all levels (G9P_CHECK_TEX=rgb:
+    * GL_RGB, three bytes a texel; =rgb1: level 0 only) */
+   const char *tf = getenv("G9P_CHECK_TEX") ? getenv("G9P_CHECK_TEX") : "rgba";
+   /* bgra: GL_BGRA_EXT; gen: level 0 then glGenerateMipmap; sub: storage,
+    * then glTexSubImage2D */
+   const int rgb = !strncmp(tf, "rgb", 3) && tf[3] != 'a', one = strchr(tf, '1') != NULL;
+   const int bgra = strstr(tf, "bgra") != NULL, gen = strstr(tf, "gen") != NULL, sub = strstr(tf, "sub") != NULL;
+   GLuint tex;
+   glGenTextures(1, &tex);
+   glBindTexture(GL_TEXTURE_2D, tex);
+   glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+   for (int l = 0, n = 256; n >= 1 && (!(one || gen) || !l); l++, n /= 2) {
+      unsigned char *px = malloc(4 * n * n), *p3 = malloc(3 * n * n);
+      for (int y = 0; y < n; y++)
+         for (int x = 0; x < n; x++) {
+            const int X = x * (256 / n), Y = y * (256 / n);
+            texel(X / 8, Y / 8, px + 4 * (y * n + x));
+            px[4 * (y * n + x) + 3] = (unsigned char)(((X / 16 + Y / 16) & 1) ? 255 : 64);
+            memcpy(p3 + 3 * (y * n + x), px + 4 * (y * n + x), 3);
+         }
+      if (bgra)
+         for (int i = 0; i < n * n; i++) {
+            const unsigned char t = px[4 * i];
+            px[4 * i] = px[4 * i + 2];
+            px[4 * i + 2] = t;
+         }
+      const GLenum fmt = bgra ? 0x80E1 /* GL_BGRA_EXT */ : rgb ? GL_RGB : GL_RGBA;
+      const void *data = rgb ? (void *)p3 : (void *)px;
+      if (sub) {
+         glTexImage2D(GL_TEXTURE_2D, l, fmt, n, n, 0, fmt, GL_UNSIGNED_BYTE, NULL);
+         glTexSubImage2D(GL_TEXTURE_2D, l, 0, 0, n, n, fmt, GL_UNSIGNED_BYTE, data);
+      } else {
+         glTexImage2D(GL_TEXTURE_2D, l, fmt, n, n, 0, fmt, GL_UNSIGNED_BYTE, data);
+      }
+      free(px);
+      free(p3);
+   }
+   if (gen)
+      glGenerateMipmap(GL_TEXTURE_2D);
+   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, one ? GL_LINEAR : GL_LINEAR_MIPMAP_LINEAR);
+   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+   /* the plane: x -4..4, z -1..-20, y -1; perspective (fov 90, near 0.5) */
+   const float n0 = 0.5f, f0 = 50;
+   const float mvp[16] = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, -(f0 + n0) / (f0 - n0), -1, 0, 0, -2 * f0 * n0 / (f0 - n0), 0 };
+   const float quad[4][3] = { { -4, -1, -1 }, { 4, -1, -1 }, { -4, -1, -20 }, { 4, -1, -20 } };
+   const float uv[4][2] = { { 0, 0 }, { 8, 0 }, { 0, 8 }, { 8, 8 } };
+   const float col[4][4] = { { 1, 0.5f, 0.25f, 1 }, { 0.25f, 1, 0.5f, 0.5f }, { 0.5f, 0.25f, 1, 0.75f }, { 1, 1, 1, 0.25f } };
+   const float nrm[3] = { 0, 1, 0 };
+   GLint na = 0;
+   glGetProgramiv(p, GL_ACTIVE_ATTRIBUTES, &na);
+   for (GLint i = 0; i < na; i++) {
+      char name[128];
+      GLint size;
+      GLenum type;
+      glGetActiveAttrib(p, i, sizeof(name), NULL, &size, &type, name);
+      const GLint loc = glGetAttribLocation(p, name);
+      float data[4][4] = { { 0 } };
+      int comps = 4;
+      for (int v = 0; v < 4; v++) {
+         if (strcasestr(name, "pos")) {
+            memcpy(data[v], quad[v], 12);
+            data[v][3] = 1;
+         } else if (strcasestr(name, "norm")) {
+            memcpy(data[v], nrm, 12);
+         } else if (strcasestr(name, "col")) {
+            memcpy(data[v], col[v], 16);
+         } else if (strcasestr(name, "tex") || strcasestr(name, "uv")) {
+            memcpy(data[v], uv[v], 8);
+         }
+      }
+      GLuint buf;
+      glGenBuffers(1, &buf);
+      glBindBuffer(GL_ARRAY_BUFFER, buf);
+      glBufferData(GL_ARRAY_BUFFER, sizeof(data), data, GL_STATIC_DRAW);
+      glVertexAttribPointer(loc, comps, GL_FLOAT, GL_FALSE, 16, 0);
+      glEnableVertexAttribArray(loc);
+   }
+   GLint nu = 0, unit = 0;
+   glGetProgramiv(p, GL_ACTIVE_UNIFORMS, &nu);
+   const char *uset = getenv("G9P_CHECK_U");
+   for (GLint i = 0; i < nu; i++) {
+      char name[128];
+      GLint size;
+      GLenum type;
+      glGetActiveUniform(p, i, sizeof(name), NULL, &size, &type, name);
+      const GLint loc = glGetUniformLocation(p, name);
+      float v[16] = { 0 };
+      const char *q = uset ? strstr(uset, name) : NULL;
+      if (q && q[strlen(name)] == '=') {
+         q += strlen(name) + 1;
+         for (int k = 0; k < 16 && *q && *q != ','; k++) {
+            v[k] = strtof(q, (char **)&q);
+            if (*q == ':')
+               q++;
+         }
+      }
+      switch (type) {
+      case GL_FLOAT_MAT4: glUniformMatrix4fv(loc, 1, GL_FALSE, q ? v : mvp); break;
+      case GL_SAMPLER_2D: glUniform1i(loc, unit++); break;
+      case GL_INT: case GL_BOOL: glUniform1i(loc, (int)v[0]); break;
+      case GL_FLOAT: glUniform1f(loc, v[0]); break;
+      case GL_FLOAT_VEC2: glUniform2fv(loc, 1, v); break;
+      case GL_FLOAT_VEC3: glUniform3fv(loc, 1, v); break;
+      case GL_FLOAT_VEC4: glUniform4fv(loc, 1, v); break;
+      default: printf("  (uniform %s of type %#x left)\n", name, type);
+      }
+   }
+   glClearColor(0.1f, 0.2f, 0.3f, 1);
+   glClear(GL_COLOR_BUFFER_BIT);
+   glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+   unsigned char *px = malloc(4 * w * h);
+   glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, px);
+   dump(px, w, h);
+   if (glGetError())
+      DIE("GL error");
+   printf("ok: shader %s %s %dx%d drawn (compare the dumps)\n", vsf, fsf, w, h);
+   return 0;
+}
+
 int
 main(int argc, char **argv)
 {
    const char *mode = argc > 1 ? argv[1] : "uniform";
 
+   if (!strcmp(mode, "shader"))
+      return shader_main(argc > 3 ? argv[2] : "", argc > 3 ? argv[3] : "", argc > 5 ? atoi(argv[4]) : 256,
+                         argc > 5 ? atoi(argv[5]) : 256);
    if (!strcmp(mode, "array"))
       return array_main(argc > 2 ? argv[2] : "4,1");
    if (!strcmp(mode, "cube"))
@@ -1083,8 +1437,10 @@ main(int argc, char **argv)
       return 0;
    }
    if (!strcmp(mode, "depth") || !strcmp(mode, "cull") || !strcmp(mode, "stencil") || !strncmp(mode, "discard", 7) ||
-       !strcmp(mode, "scissor") || !strcmp(mode, "polyoffset")) {
-      const int a1 = strcmp(mode, "stencil") && strncmp(mode, "discard", 7) && strcmp(mode, "scissor") ? 3 : 2;
+       !strcmp(mode, "scissor") || !strcmp(mode, "polyoffset") || !strcmp(mode, "ptblend") ||
+       !strcmp(mode, "nearclip")) {
+      const int a1 = strcmp(mode, "stencil") && strcmp(mode, "discard") && strcmp(mode, "discardblend") &&
+                     strcmp(mode, "scissor") ? 3 : 2;
       context();
       return zs_main(mode, a1 == 3 && argc > 2 ? argv[2] : "", argc > a1 + 1 ? atoi(argv[a1]) : 64,
                      argc > a1 + 1 ? atoi(argv[a1 + 1]) : 64);

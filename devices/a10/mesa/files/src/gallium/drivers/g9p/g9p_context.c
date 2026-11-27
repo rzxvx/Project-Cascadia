@@ -121,7 +121,6 @@ frame_reset(struct g9p_context *ctx)
    for (unsigned i = 0; i < f->nreads; i++)
       pipe_resource_reference(&f->reads[i], NULL);
    f->nreads = 0;
-   f->reads_overflow = false;
    f->ndraws = 0;
    f->nstream = 0;
    f->nsc = 0;
@@ -313,10 +312,15 @@ frame_reads(struct g9p_context *ctx, struct pipe_resource *prsc)
    for (unsigned i = 0; i < f->nreads; i++)
       if (f->reads[i] == prsc)
          return;
-   if (f->nreads == ARRAY_SIZE(f->reads)) {
-      f->reads_overflow = true;
-      return;
+   if (f->nreads == f->reads_cap) {
+      const unsigned cap = MAX2(64, 2 * f->reads_cap);
+      struct pipe_resource **r = realloc(f->reads, cap * sizeof(*r));
+      if (!r)
+         return;
+      f->reads = r;
+      f->reads_cap = cap;
    }
+   f->reads[f->nreads] = NULL;
    pipe_resource_reference(&f->reads[f->nreads++], prsc);
 }
 
@@ -327,7 +331,7 @@ g9p_frame_uses(struct g9p_context *ctx, struct pipe_resource *prsc)
 
    if (!f->ndraws && !f->cleared)
       return false;
-   if (prsc == f->target || f->reads_overflow)
+   if (prsc == f->target)
       return true;
    for (unsigned i = 0; i < f->nreads; i++)
       if (f->reads[i] == prsc)
@@ -694,6 +698,13 @@ texture_state(struct g9p_context *ctx, struct pipe_sampler_view *sv, uint32_t *w
    struct g9p_resource *res = sv && sv->texture ? g9p_resource(sv->texture) : NULL;
    const struct util_format_description *d = res ? util_format_description(res->base.format) : NULL;
 
+   if (res && !res->logged && getenv("G9P_DEBUG") && atoi(getenv("G9P_DEBUG")) >= 5) {
+      res->logged = true;
+      mesa_logi("g9p: texture %p %s %ux%u levels %u view %s levels %u-%u swizzle %u%u%u%u target %u seq %u", (void *)res,
+                util_format_short_name(res->base.format), res->base.width0, res->base.height0,
+                res->base.last_level + 1, util_format_short_name(sv->format), sv->u.tex.first_level,
+                sv->u.tex.last_level, sv->swizzle_r, sv->swizzle_g, sv->swizzle_b, sv->swizzle_a, sv->target, res->seq);
+   }
    if (!res || util_format_get_blocksize(res->base.format) != 4 || d->channel[0].size != 8) {
       mesa_logw_once("g9p: a texture other than 4-byte texels, or none bound (to do)");
       return;
@@ -713,9 +724,16 @@ texture_state(struct g9p_context *ctx, struct pipe_sampler_view *sv, uint32_t *w
       return;
    }
    unsigned nlev = 1;
+   /* (the frame reads the twiddled copy: a CPU write to the texture sends
+    * the render first, else the next draw's new copy would replace what
+    * the earlier draws sample) */
+   frame_reads(ctx, &res->base);
    struct g9p_bo *tb = g9p_resource_twiddled(ctx->dev, res, &nlev);
-   if (!tb)
+   if (!tb) {
+      mesa_logw("g9p: no twiddled copy of a %s %ux%u texture", util_format_short_name(res->base.format),
+                res->base.width0, res->base.height0);
       return;
+   }
    /* the twiddled copy is RGBA in memory: the view's swizzle alone */
    const struct util_format_description *rgba = util_format_description(PIPE_FORMAT_R8G8B8A8_UNORM);
    const uint32_t tswz = tex_swizzle(rgba, sv->swizzle_r) << 15 | tex_swizzle(rgba, sv->swizzle_g) << 18 |
@@ -1116,6 +1134,7 @@ g9p_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info, unsig
    if (!fs)
       return;
 
+
    const struct g9p_varyings *vy = &fs->vary;
    const struct g9p_resource *rt = g9p_resource(ctx->frame.target);
    const unsigned w = u_minify(rt->base.width0, ctx->frame.level), h = u_minify(rt->base.height0, ctx->frame.level);
@@ -1482,6 +1501,8 @@ g9p_context_destroy(struct pipe_context *pctx)
    struct g9p_context *ctx = g9p_context(pctx);
 
    g9p_flush_frame(ctx);
+   frame_reset(ctx);
+   free(ctx->frame.reads);
    pipe_resource_reference(&ctx->frame.target, NULL);
    pipe_resource_reference(&ctx->frame.zs, NULL);
    pipe_resource_reference(&ctx->load_vb, NULL);

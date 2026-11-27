@@ -25,6 +25,9 @@ done
 for f in back front none frontcw; do run $C cull $f; done
 run $C stencil; run env G9P_CHECK_SPLIT=1 $C stencil
 run $C discard; run $C discard 1000 700; run $C discardblend; run $C scissor; run $C scissor 300 200
+for a in taken untaken hue; do run $C discardif $a; run $C discardif $a 300 200; done
+for a in front behind pt ptbehind; do run $C ptblend $a; done
+for a in above-first below-first; do run $C nearclip $a 128 128; done
 for f in ubyte short byte odd; do run $C vfmt $f; done
 run $C load; run $C load 200 100 4
 for a in 0,1000 0,1000,0.05,0.1 0,-300,0.6,0.9 3,0,0.05,0.9 -2,0,0.2,0.9 2,200 0,4 0,-4 \

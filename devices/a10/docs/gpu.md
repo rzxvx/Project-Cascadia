@@ -1393,6 +1393,54 @@ cubes and arrays, loading a layer's content, an unscaled depth bias on
 float depth, more than 31 registers (spilling), instancing, GL 3.x, frame
 pacing.
 
+**G9.12 (2026-11-27): SuperTuxKart drawn as softpipe draws it.** On
+Lighthouse the grass between the dirt tracks showed the sea bed, the
+start line was missing and the karts were grey. The reference: the same
+race on softpipe (`MESA_GLES_VERSION_OVERRIDE=2.0`, the same GLES 2
+renderer), frames matched by the race clock. The textures were not the
+cause: every one was B8G8R8A8 with its full chain and an upload of each
+kind (RGB, BGRA, `glGenerateMipmap`, `glTexSubImage2D`, compressed or
+not) matched softpipe in `g9p-glcheck shader` (below). Skipping draws by
+their texture's size showed it: the sea bed, drawn early, stayed in front
+of the grass drawn after it.
+
+- **Discard inside control flow.** SuperTuxKart's material shader (one
+  program, a uniform choosing the material) discards only in the
+  branches of its alpha-tested materials, which most objects never run;
+  every object it draws is punch-through. Compiled as written -- the
+  discard (`6104`) inside the branch, under the mask stack -- pixels of
+  objects that never took the branch were dropped where they should not
+  be: whole areas of grass, the start line, the karts' paint. The
+  compiler now turns a discard inside control flow into a flag and puts
+  one discard on it at the top level, before the colour's store (after
+  it the discard was not taken: alpha-tested trees kept their transparent
+  texels). Proven by an A/B on the game (the pass off: the sea bed back);
+  simple shaders with the same shape (`g9p-glcheck discardif
+  taken|untaken|hue`) were right either way, so which register state the
+  hardware's discard picks up in a masked-off branch is not pinned down.
+- **The frame's reads.** A texture sampled from its twiddled copy is now
+  one of the render's reads, as vertex buffers are: a CPU write to it
+  sends the render first (otherwise the next draw would rebuild the copy
+  under the earlier draws), and the render holds it while the GPU reads
+  it. The reads list grows as needed: at its old 64 entries every map of
+  any buffer sent the render, also in the middle of recording a draw --
+  with SuperTuxKart's textures in the list that broke the stream (an MMU
+  fault, the firmware restarted).
+- **Tools.** `g9p-glcheck shader VS FS [W H]` runs an application's
+  program on a perspective ground plane with a mipmapped, repeating
+  texture (uniforms from `G9P_CHECK_U`, texture upload kinds from
+  `G9P_CHECK_TEX`), its dump compared with softpipe's. `G9P_DEBUG=5`
+  logs every texture's format, size, levels and view once; a buffer the
+  kernel refuses is logged. New checks: `ptblend` (punch-through against
+  blended and punch-through objects, either order), `nearclip` (a plane
+  passing the near plane and the eye, under another), `discardif`; the
+  suite 134 checks.
+- softpipe is no oracle for nested discard: with the `discardif` shader
+  and its branch taken it drew the pixels it should have dropped.
+- Results: Lighthouse at the start and through the lap as on softpipe
+  (grass, start line, karts' colours, trees, beach), 116.6 frames per
+  second (`--profile-laps=1`), no GPU fault.
+
 ## 2D on the GPU (2026-11-25/26): g9p2d and SuperTux
 
 The first use of the G7 driver: SDL2's 2D renderer drawn by the GPU, as on

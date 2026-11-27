@@ -1571,6 +1571,77 @@ discard_to_tile(nir_shader *nir)
    return nir_progress(true, impl, nir_metadata_none);
 }
 
+/* discard inside control flow: a flag, set where the shader discards, and
+ * one discard on it at the top level, before the colour's store. The
+ * hardware's discard (`6104`) under the mask stack dropped pixels of
+ * objects that never ran the branch: SuperTuxKart's material shader
+ * discards in branches of a uniform most objects never take, and whole
+ * areas of them were missing (an A/B on the game; simple shaders of that
+ * shape, g9p-glcheck discardif, were right either way -- what the
+ * hardware reads in a masked-off branch is not pinned down). */
+static bool
+discard_to_end(nir_shader *nir)
+{
+   nir_function_impl *impl = nir_shader_get_entrypoint(nir);
+   bool nested = false;
+
+   nir_foreach_block(block, impl) {
+      nir_foreach_instr(instr, block) {
+         if (instr->type != nir_instr_type_intrinsic)
+            continue;
+         const nir_intrinsic_op op = nir_instr_as_intrinsic(instr)->intrinsic;
+         if ((op == nir_intrinsic_terminate_if || op == nir_intrinsic_demote_if || op == nir_intrinsic_terminate ||
+              op == nir_intrinsic_demote) &&
+             block->cf_node.parent != &impl->cf_node)
+            nested = true;
+      }
+   }
+   if (!nested)
+      return nir_no_progress(impl);
+   nir_builder b = nir_builder_at(nir_before_impl(impl));
+   nir_variable *flag = nir_local_variable_create(impl, glsl_bool_type(), "g9p_discard");
+   nir_store_var(&b, flag, nir_imm_false(&b), 1);
+   nir_foreach_block_safe(block, impl) {
+      nir_foreach_instr_safe(instr, block) {
+         if (instr->type != nir_instr_type_intrinsic)
+            continue;
+         nir_intrinsic_instr *in = nir_instr_as_intrinsic(instr);
+         b.cursor = nir_before_instr(instr);
+         switch (in->intrinsic) {
+         case nir_intrinsic_terminate_if:
+         case nir_intrinsic_demote_if:
+            nir_store_var(&b, flag, nir_ior(&b, nir_load_var(&b, flag), in->src[0].ssa), 1);
+            nir_instr_remove(instr);
+            break;
+         case nir_intrinsic_terminate:
+         case nir_intrinsic_demote:
+            nir_store_var(&b, flag, nir_imm_true(&b), 1);
+            nir_instr_remove(instr);
+            break;
+         default:
+            break;
+         }
+      }
+   }
+   /* before the colour's store: a discard after the emit was not taken
+    * (alpha-tested trees kept their transparent texels) */
+   b.cursor = nir_after_impl(impl);
+   nir_foreach_block(block, impl) {
+      if (block->cf_node.parent != &impl->cf_node)
+         continue;
+      nir_foreach_instr(instr, block) {
+         if (instr->type == nir_instr_type_intrinsic &&
+             nir_instr_as_intrinsic(instr)->intrinsic == nir_intrinsic_store_output) {
+            b.cursor = nir_before_instr(instr);
+            goto found;
+         }
+      }
+   }
+found:
+   nir_terminate_if(&b, nir_load_var(&b, flag));
+   return nir_progress(true, impl, nir_metadata_none);
+}
+
 /* gl_PointCoord's y turned over (1 - y) after its load */
 static bool
 flip_pntc(nir_builder *b, nir_intrinsic_instr *in, void *data)
@@ -1823,6 +1894,8 @@ g9p_compile(nir_shader *nir, bool print, const struct g9p_options *opts, struct 
          bo.rt[0].alpha = (nir_lower_blend_channel){ b->alpha_func, b->alpha_src, b->alpha_dst };
          NIR_PASS(_, nir, nir_lower_blend, &bo);
          NIR_PASS(_, nir, discard_to_tile);
+      } else if (c.stage == MESA_SHADER_FRAGMENT) {
+         NIR_PASS(_, nir, discard_to_end);
       }
    }
    NIR_PASS(_, nir, nir_lower_vars_to_ssa);
