@@ -7,7 +7,7 @@
 # $ORIGIN/../lib), so the iPad needs no packages for it.
 #   build.sh            -> build/supertux07/supertux-0.7.tar.gz
 #   build.sh install    and copy it to the iPad (HOST, default root@172.16.43.1)
-# Run it there: g9p-run /usr/local/supertux-0.7/bin/supertux2 [--renderer opengl]
+# Run it there: supertux07 [ARGS] (g9p-run /usr/local/supertux-0.7/bin/supertux2)
 set -e
 A10="$(cd "$(dirname "$0")/../.." && pwd)"
 HOST=${HOST:-root@172.16.43.1}
@@ -59,6 +59,9 @@ echo "==> $B/supertux-0.7.tar.gz"
 if [ "${1:-}" = install ]; then
     scp -q "$B/supertux-0.7.tar.gz" "$HOST:/tmp/supertux-0.7.tar.gz"
     ssh "$HOST" 'set -e; rm -rf /usr/local/supertux-0.7 && tar -C /usr/local -xzf /tmp/supertux-0.7.tar.gz &&
-      rm /tmp/supertux-0.7.tar.gz && du -sh /usr/local/supertux-0.7'
+      rm /tmp/supertux-0.7.tar.gz && du -sh /usr/local/supertux-0.7 &&
+      ln -sf /usr/local/supertux-0.7/bin/vkeys /usr/local/bin/vkeys &&
+      printf "#!/bin/sh\n# SuperTux 0.7 on the GPU (g9p): tools/supertux07/build.sh install\nexec /usr/local/g9p/bin/g9p-run /usr/local/supertux-0.7/bin/supertux2 \"\$@\"\n" \
+        > /usr/local/bin/supertux07 && chmod 755 /usr/local/bin/supertux07'
     echo "==> $HOST:/usr/local/supertux-0.7"
 fi

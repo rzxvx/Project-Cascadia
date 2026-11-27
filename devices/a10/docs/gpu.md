@@ -1448,7 +1448,9 @@ into `/usr/local/supertux-0.7`, beside the system's 0.6.3: musl has no
 `execinfo.h` (only the crash handler's stack trace uses it: a stub
 there), and the libraries it needs from Alpine but the GL ones are put
 in its `lib/` (RUNPATH), so the iPad needs no packages; 354 MB with its
-data. Run with `g9p-run /usr/local/supertux-0.7/bin/supertux2`.
+data. Run with `supertux07` (its install writes that launcher into
+`/usr/local/bin`; `mesa/install.sh` links `g9p-run` there too, so both are
+on PATH).
 
 - **Renderer**: both versions ask for an OpenGL 3.3 core context first
   (`--renderer opengl` stops there on this driver's GL 2.0); `--renderer
