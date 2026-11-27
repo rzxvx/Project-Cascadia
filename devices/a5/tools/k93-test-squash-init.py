@@ -18,6 +18,10 @@ source=source.replace('bb() { /bin/busybox "$@"; }',r'''bb() {
         [ "$K93_MODE" = network ]; return $?
     fi
     if [ "$*" = 'cat /root-run-limit' ]; then printf '%s\n' "$K93_RUN_LIMIT"; fi
+    if [ "$*" = 'cut -d. -f1 /proc/uptime' ]; then
+        # uptime advances 30 s per read, so the receive loop meets its deadline
+        t=$(cat "$K93_MOCK_CLOCK" 2>/dev/null || echo 0); echo $((t + 30)) >"$K93_MOCK_CLOCK"; echo "$t"
+    fi
     return 0
 }''')
 start=source.index('rescue() {');end=source.index('\ntrap rescue EXIT',start)
@@ -30,7 +34,9 @@ with tempfile.TemporaryDirectory(prefix='k93-squash-init-test-') as directory:
     log=Path(directory)/'commands'
     def run(failure,mode='embedded',limit='96'):
         if log.exists():log.unlink()
-        env=dict(os.environ,K93_MOCK_LOG=str(log),K93_FAIL=failure,K93_MODE=mode,K93_RUN_LIMIT=limit)
+        clock=Path(directory)/'clock'
+        if clock.exists():clock.unlink()
+        env=dict(os.environ,K93_MOCK_LOG=str(log),K93_MOCK_CLOCK=str(clock),K93_FAIL=failure,K93_MODE=mode,K93_RUN_LIMIT=limit)
         result=subprocess.run(['sh','-s'],input=source,text=True,env=env)
         return result.returncode,log.read_text().splitlines()
     status,commands=run('')
@@ -51,7 +57,11 @@ with tempfile.TemporaryDirectory(prefix='k93-squash-init-test-') as directory:
         assert observed==commands[:commands.index(failure)+1],failure
     status,network=run('',mode='network')
     assert status==0
-    receiver='timeout 80 /bin/busybox nc -l -n -p 48932 -s 10.93.0.2 -w 75 10.93.0.1'
+    # The receiver's timeout is what remains of its 80-second budget.
+    nc='/bin/busybox nc -l -n -p 48932 -s 10.93.0.2 -w 75 10.93.0.1'
+    receiver=next(c for c in network if c.endswith(nc))
+    budget=receiver.split()[1]
+    assert budget.isdigit() and 0<int(budget)<=80,receiver
     checksum='sha256sum -c /root.squashfs.sha256'
     loop='losetup -r /dev/loop0 /run/root.squashfs'
     assert network.index(receiver)<network.index(checksum)<network.index(loop)
@@ -62,7 +72,15 @@ with tempfile.TemporaryDirectory(prefix='k93-squash-init-test-') as directory:
     for bad in ['','0','193','96; echo bad']:
         status,observed=run('',mode='network',limit=bad)
         assert status==77 and observed[-1]=='cat /root-run-limit'
-    for failure in [receiver,checksum,loop]:
-        status,observed=run(failure,mode='network')
-        assert status==77 and observed==network[:network.index(failure)+1]
+    # A failed or short receive is not fatal by itself: the hash decides.
+    status,observed=run(receiver,mode='network')
+    assert status==0 and observed[-1]=='switch_root /newroot /k93-init'
+    # An image that keeps failing its hash is received again until the budget
+    # is spent, then the fail-closed rescue path runs as before.
+    status,observed=run(checksum,mode='network')
+    received=[c for c in observed if c.endswith(nc)]
+    assert status==77 and len(received)>1 and observed[-1]==checksum,observed
+    assert all(c.startswith('timeout ') for c in received)
+    status,observed=run(loop,mode='network')
+    assert status==77 and observed[-1]==loop
 print('PASS: actual bootstrap command order, hash/board/loop guards and fail-closed rescue; no hardware')

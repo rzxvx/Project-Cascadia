@@ -25,9 +25,10 @@
  *   - audio: a CS42L63 codec on I2S0, not CS35L19 amps behind MCA0
  *   - sensors: LIS331DLH accelerometer, AK8975 compass, TSL2581 light sensor,
  *     an "ap3gdl" gyro
- *   - the NAND: raw MLC behind H2FMI with its BCH engine (the ADT's FMIx-BCH
- *     clocks), not PPN -- the mini's mtd-apple-h2fmi does not apply and must
- *     never be pointed at this flash
+ *   - the NAND: H2FMI with its BCH engine (the ADT's FMIx-BCH clocks), and
+ *     iPad2,1 ships with two kinds of flash behind it: raw MLC on one unit,
+ *     PPN like the mini's on another (read ID 50 50 4e 01, ppn-device in
+ *     its ADT).  This tree has no node for the flash
  *
  * ADT GPIO numbers are (port << 8) | pin, eight to a port, so 0x0703 is
  * pin 59.  PMU GPIO n is configured through PMU register 0x61 + n.

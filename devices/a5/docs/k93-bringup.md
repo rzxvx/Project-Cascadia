@@ -7,7 +7,8 @@ word changed:
 ```bash
 ./cascadia k93 firmware   # the boot chain out of iPad2,1_8.4.1_12H321_Restore.ipsw,
                           # touch/Wi-Fi/BT files and the panel's calibration out of
-                          # the iPad's own jailbroken iOS (tools/k93-firmware.sh)
+                          # the iPad's own jailbroken iOS (tools/k93-firmware.sh);
+                          # without it, all but the calibration out of the IPSW
 ./cascadia k93 build      # the A5 kernel + config/k93ap.config, dts/k93ap.dts
 ./cascadia k93 flash --kdfu   # from the jailbroken iOS: kloader, iBEC, the bundle
 ```
