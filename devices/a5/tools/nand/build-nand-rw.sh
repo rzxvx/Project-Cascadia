@@ -120,8 +120,18 @@ arm-linux-gnueabihf-gcc -static -nostdlib -nostartfiles -O2 -I /out/loader-src \
 arm-linux-gnueabihf-objcopy -O binary /out/linux-boot.elf /out/linux-boot.bin
 BUILD
 
+overlay_tmp=$(mktemp -d)
+trap 'rm -rf "$overlay_tmp"' EXIT
+clone "$MAIN/build/overlay" "$overlay_tmp/overlay"
+# The overlay can replace the initramfs directory modes. Keep Dropbear's
+# authorized_keys path private even when the source tree is group-writable.
+for dir in root root/.ssh; do
+    [ ! -d "$overlay_tmp/overlay/$dir" ] || chmod 700 "$overlay_tmp/overlay/$dir"
+done
+keys="$overlay_tmp/overlay/root/.ssh/authorized_keys"
+[ ! -f "$keys" ] || chmod 600 "$keys"
 python3 "$MAIN/scripts/assemble.py" "$OUT/linux-boot.bin" "$OUT/zImage-dtb" \
-    "$MAIN/build/overlay" "$OUT/staging-bundle.bin"
+    "$overlay_tmp/overlay" "$OUT/staging-bundle.bin"
 cp "$OUT/linux-boot.bin" "$OUT/staging-loader.bin"
 ( cd "$OUT" && shasum -a 256 zImage-dtb staging-bundle.bin staging-loader.bin kernel-config > SHA256SUMS )
 cat "$OUT/bootargs.txt"
