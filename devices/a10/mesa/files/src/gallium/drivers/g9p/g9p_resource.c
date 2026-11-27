@@ -12,6 +12,8 @@
 #include "util/format/u_format.h"
 #include "util/u_math.h"
 #include "util/u_inlines.h"
+#include "util/log.h"
+#include "util/os_time.h"
 #include "util/u_memory.h"
 #include "util/u_transfer.h"
 
@@ -212,6 +214,24 @@ g9p_flush_frontbuffer(struct pipe_screen *pscreen, struct pipe_context *pctx, st
       memcpy(map + y * res->dt_stride, res->bo->map + res->offset[0] + y * res->stride[0], row);
    ws->displaytarget_unmap(ws, res->dt);
    ws->displaytarget_display(ws, res->dt, context_private, nboxes, sub_box);
+
+   /* G9P_FPS=1: the frames shown, each second */
+   static int fps = -1;
+   static unsigned frames;
+   static int64_t since;
+   if (fps < 0)
+      fps = getenv("G9P_FPS") && atoi(getenv("G9P_FPS"));
+   if (fps) {
+      const int64_t now = os_time_get_nano();
+      if (!since)
+         since = now;
+      frames++;
+      if (now - since >= 1000000000) {
+         mesa_logi("g9p: %.1f fps (%ux%u)", frames * 1e9 / (now - since), prsc->width0, prsc->height0);
+         frames = 0;
+         since = now;
+      }
+   }
 }
 
 void

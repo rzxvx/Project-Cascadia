@@ -1441,6 +1441,35 @@ of the grass drawn after it.
   (grass, start line, karts' colours, trees, beach), 116.6 frames per
   second (`--profile-laps=1`), no GPU fault.
 
+**G9.13 (2026-11-27): SuperTux 0.7 on the driver.** Alpine's package is
+still 0.6.3. `tools/supertux07/build.sh [install]` builds the 0.7.0.1
+release (source pinned by its sha256) in docker (`alpine:3.24`, arm64)
+into `/usr/local/supertux-0.7`, beside the system's 0.6.3: musl has no
+`execinfo.h` (only the crash handler's stack trace uses it: a stub
+there), and the libraries it needs from Alpine but the GL ones are put
+in its `lib/` (RUNPATH), so the iPad needs no packages; 354 MB with its
+data. Run with `g9p-run /usr/local/supertux-0.7/bin/supertux2`.
+
+- **Renderer**: both versions ask for an OpenGL 3.3 core context first
+  (`--renderer opengl` stops there on this driver's GL 2.0); `--renderer
+  auto` (the default) falls back to their OpenGL 2.0 renderer, which
+  draws menus and levels right.
+- **Measuring**: `G9P_FPS=1` makes the driver log the frames shown each
+  second (any program on the software window-system path); `vkeys` (built
+  with it, `tools/supertux07/vkeys.c`) is a uinput keyboard playing a key
+  script, to get past a level's intro and run through it hands-free.
+  SuperTux limits itself to its 66.7 logic steps a second (15 ms) unless
+  `frame_prediction` is on in its config.
+- **Results** on "The Journey Begins", Tux running right, Xwayland: 0.6.3
+  at its 66.7 cap (the cap stays with `frame_prediction`); 0.7.0.1 at 66.7
+  capped, uncapped 132 frames per second in an 800x600 window (median,
+  126-209) and 84 full screen (810x1080 logical, the pause overlay up:
+  full screen took the focus away). Uncapped the CPUs are not the limit
+  (supertux2 ~14 %, labwc ~29 %, Xwayland ~14 % of both, 28 % idle): the
+  synchronous render, its copy into the X server's shared memory and the
+  compositor's frame are -- a render sent without waiting for it is the
+  next step there.
+
 ## 2D on the GPU (2026-11-25/26): g9p2d and SuperTux
 
 The first use of the G7 driver: SDL2's 2D renderer drawn by the GPU, as on
