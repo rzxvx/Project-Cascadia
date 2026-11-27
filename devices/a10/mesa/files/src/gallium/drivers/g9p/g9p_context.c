@@ -238,8 +238,8 @@ g9p_flush_frame(struct g9p_context *ctx)
    memcpy(g9p_code_ptr(dev, texu), q, 16);
 
    /* the end of tile: the target's image state, DOUTD'd, and the store */
-   uint64_t va = rt->bo->va + rt->offset[f->level];
    unsigned pitch = rt->stride[f->level];
+   uint64_t va = rt->bo->va + rt->offset[f->level] + (uint64_t)f->layer * pitch * h;
    uint32_t img = frame_alloc(ctx, 32, 32);
    uint32_t im[8] = { 0x03050502 | ((w - 1) & 0x1f) << 27, ((w - 1) >> 5 & 0x1ff) | (h - 1) << 9,
                       (uint32_t)(va >> 1), 0x80000000 | (pitch / 64 - 1) << 15 | (uint32_t)(va >> 33),
@@ -343,10 +343,11 @@ frame_target(struct g9p_context *ctx)
 
    if (ctx->fb.nr_cbufs < 1 || !s->texture || !g9p_rt_format(s->format))
       return false;
-   if (ctx->frame.target != s->texture || ctx->frame.level != s->level) {
+   if (ctx->frame.target != s->texture || ctx->frame.level != s->level || ctx->frame.layer != s->first_layer) {
       g9p_flush_frame(ctx);
       pipe_resource_reference(&ctx->frame.target, s->texture);
       ctx->frame.level = s->level;
+      ctx->frame.layer = s->first_layer;
    }
    /* the depth / stencil buffer: another one sends the render first */
    struct pipe_resource *zt = ctx->fb.zsbuf.texture;
@@ -527,7 +528,7 @@ g9p_set_framebuffer_state(struct pipe_context *pctx, const struct pipe_framebuff
 
    util_copy_framebuffer_state(&ctx->fb, fb);
    if (ctx->frame.target && (fb->nr_cbufs < 1 || fb->cbufs[0].texture != ctx->frame.target ||
-                             fb->cbufs[0].level != ctx->frame.level)) {
+                             fb->cbufs[0].level != ctx->frame.level || fb->cbufs[0].first_layer != ctx->frame.layer)) {
       g9p_flush_frame(ctx);
       pipe_resource_reference(&ctx->frame.target, NULL);
    }
@@ -701,8 +702,8 @@ texture_state(struct g9p_context *ctx, struct pipe_sampler_view *sv, uint32_t *w
    const uint32_t swz = tex_swizzle(d, sv->swizzle_r) << 15 | tex_swizzle(d, sv->swizzle_g) << 18 |
                         tex_swizzle(d, sv->swizzle_b) << 21 | tex_swizzle(d, sv->swizzle_a) << 24;
 
-   if (!res->base.last_level) {
-      const uint64_t va = res->bo->va + res->offset[0];
+   if (!res->base.last_level && sv->target == PIPE_TEXTURE_2D) {
+      const uint64_t va = res->bo->va + res->offset[0] + (uint64_t)sv->u.tex.first_layer * res->stride[0] * th;
 
       frame_reads(ctx, &res->base);
       w[0] = 0x2 | 5 << 8 | swz | (tw - 1) << 27;
@@ -720,10 +721,17 @@ texture_state(struct g9p_context *ctx, struct pipe_sampler_view *sv, uint32_t *w
    const uint32_t tswz = tex_swizzle(rgba, sv->swizzle_r) << 15 | tex_swizzle(rgba, sv->swizzle_g) << 18 |
                          tex_swizzle(rgba, sv->swizzle_b) << 21 | tex_swizzle(rgba, sv->swizzle_a) << 24;
    const unsigned last = MIN2(sv->u.tex.last_level, nlev - 1), base = MIN2(sv->u.tex.first_level, last);
-   w[0] = 0x2 | 1 << 3 | 5 << 8 | tswz | (tw - 1) << 27;
+   /* the layout: 2 2D, 3 2D array (its layers less one from word 3 bit
+    * 15), 6 cube (six faces; that field made no difference); the view's
+    * first layer / face is where the state starts */
+   const bool cube = sv->target == PIPE_TEXTURE_CUBE, array = sv->target == PIPE_TEXTURE_2D_ARRAY;
+   const unsigned type = cube ? 6 : array ? 3 : 2;
+   const unsigned layers = array ? sv->u.tex.last_layer - sv->u.tex.first_layer + 1 : 1;
+   const uint64_t va = tb->va + (uint64_t)sv->u.tex.first_layer * res->tw_layer_stride;
+   w[0] = type | 1 << 3 | 5 << 8 | tswz | (tw - 1) << 27;
    w[1] = (tw - 1) >> 5 | (th - 1) << 9 | base << 25;
-   w[2] = (uint32_t)(tb->va >> 1) | (nlev > 1 ? 0x10 | last : 0);
-   w[3] = (uint32_t)(tb->va >> 33);
+   w[2] = (uint32_t)(va >> 1) | (nlev > 1 ? 0x10 | last : 0);
+   w[3] = (uint32_t)(va >> 33) | (layers - 1) << 15;
 }
 
 static unsigned
@@ -1364,8 +1372,8 @@ frame_load(struct g9p_context *ctx)
 {
    struct pipe_resource *rt = ctx->frame.target;
 
-   if (ctx->frame.level || rt->last_level) {
-      mesa_logw_once("g9p: a frame without a clear on a target of several levels: not loaded (to do)");
+   if (ctx->frame.level || ctx->frame.layer || rt->last_level || rt->target != PIPE_TEXTURE_2D) {
+      mesa_logw_once("g9p: a frame without a clear on a target of several levels or layers: not loaded (to do)");
       return;
    }
    if (!ctx->load_vs)

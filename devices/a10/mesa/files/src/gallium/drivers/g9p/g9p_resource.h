@@ -20,6 +20,7 @@ struct g9p_resource {
     * into it) has moved past tw_seq */
    struct g9p_bo *tw;
    unsigned seq, tw_seq;
+   unsigned tw_layer_stride;   /* bytes: a cube's face / an array's layer, its whole chain */
    /* depth / stencil: a render stored its values here (the next render
     * that does not clear them loads them) */
    bool zs_valid;

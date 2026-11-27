@@ -1349,6 +1349,50 @@ the layer -- the texture state's type and layer layout are to find), an
 unscaled depth bias on float depth, more than 31 registers (spilling),
 instancing, GL 3.x, frame pacing.
 
+**G9.11 (2026-11-27): cube maps and 2D arrays.** Tests first
+(`g9p-glcheck cube | array`, desktop GL contexts: `textureCubeLod` and
+`EXT_texture_array` are not in OpenGL ES 2.0), their CPU models checked
+against softpipe (every pixel the same) before the driver; the suite now
+122 checks.
+
+- **The texture state**: layout bits 0-2 **6 for a cube, 3 for a 2D
+  array** (2 for 2D: the other values gave a constant colour or nothing);
+  an array's **layers less one from word 3 bit 15** (the field a linear
+  image's pitch uses), which the hardware also clamps the layer to; for a
+  cube that field made no difference. Both are read twiddled: **each face
+  / layer holds its whole twiddled level chain, the next one starting
+  64-byte aligned** (a 4-byte or 16 KiB step put every face but the first
+  wrong). A view's first layer moves the state's address by layers.
+- **A cube sample needs its coordinates projected first**: with the
+  direction in the registers the sample (W0 bit 11, `fd18` / `fd1a`) read
+  face +X's corner texels. Apple's code runs the iterate unit's register
+  form with the cube projection before the sample of a computed
+  direction: `7d08 0100 8000` for r0..r2 -- whose W1 is not "destination
+  r0" alone: with another register it read garbage, and Apple's code with
+  the direction in r3 has `7d08 0d06 8000`: **W1 bits 9-15 the source and
+  bits 0-7 the destination, in halves** (in place). The compiler projects
+  a copy (the direction may have other uses), the sample follows without
+  a wait.
+- **A 2D array sample** (W0 bit 9, `f718` / `f71a`) takes u, v as floats
+  and **the layer as an integer** in the third register; the compiler
+  gives GL's `floor(r + 0.5)` (`f2u` after a floor), the hardware clamps
+  to the layers.
+- **Rendering into a face or layer** (framebuffer objects): the frame
+  keeps the surface's layer, the end of tile writes at the layer's
+  offset in the linear texture; a frame on a layer without a clear is not
+  loaded yet. The CPU's mipmap generation runs per face / layer.
+- Results: cube maps of 1-5 levels at every level (`textureCubeLod`) and
+  implicit, faces cleared through framebuffer objects, 128x64 to 300x100;
+  arrays of 1-32 layers and 1-6 levels, whole, fractional and
+  out-of-range layers: every pixel right. Cube filtering is the
+  hardware's, across faces (seamless); GL ES 2's own cube filtering is not
+  -- with linear filters a face's edge texels can differ from softpipe.
+
+Not yet: cube arrays, 3D textures, shadow samplers, depth / stencil
+cubes and arrays, loading a layer's content, an unscaled depth bias on
+float depth, more than 31 registers (spilling), instancing, GL 3.x, frame
+pacing.
+
 ## 2D on the GPU (2026-11-25/26): g9p2d and SuperTux
 
 The first use of the G7 driver: SDL2's 2D renderer drawn by the GPU, as on

@@ -144,9 +144,14 @@ g9p_resource_twiddled(struct g9p_device *dev, struct g9p_resource *res, unsigned
       return NULL;
    /* the levels one after the other, each a twiddled power-of-two
     * rectangle: level 0's sides rounded up, halved (a level's own sides
-    * rounded up put a 100x60 chain's last level in the wrong place) */
+    * rounded up put a 100x60 chain's last level in the wrong place); a
+    * cube's faces / an array's layers one chain each, 64-byte aligned */
    for (unsigned l = 0; l < levels; l++)
       size += (uint64_t)4 << (MAX2((int)lw - (int)l, 0) + MAX2((int)lh - (int)l, 0));
+   const unsigned layers = MAX2(p->array_size, 1);
+   const uint64_t lstride = align64(size, 64);    /* (4 or 16384: only the first face right) */
+   size = lstride * layers;
+   res->tw_layer_stride = lstride;
    *nlevels = levels;
    if (!res->tw) {
       if (!(res->tw = g9p_bo_create(dev, size)))
@@ -158,16 +163,18 @@ g9p_resource_twiddled(struct g9p_device *dev, struct g9p_resource *res, unsigned
    /* RGBA8 in memory order R, G, B, A: BGRA swapped, X made opaque */
    const bool bgr = p->format == PIPE_FORMAT_B8G8R8A8_UNORM || p->format == PIPE_FORMAT_B8G8R8X8_UNORM;
    const bool x = p->format == PIPE_FORMAT_B8G8R8X8_UNORM || p->format == PIPE_FORMAT_R8G8B8X8_UNORM;
-   uint32_t *dst = (uint32_t *)res->tw->map;
+   for (unsigned z = 0; z < layers; z++) {
+   uint32_t *dst = (uint32_t *)(res->tw->map + z * lstride);
    for (unsigned l = 0; l < levels; l++) {
       const unsigned w = u_minify(p->width0, l), h = u_minify(p->height0, l);
       const unsigned llw = MAX2((int)lw - (int)l, 0), llh = MAX2((int)lh - (int)l, 0);
+      const uint8_t *layer = res->bo->map + res->offset[l] + (size_t)z * res->stride[l] * h;
 
       /* the padding filled from the edges: the sampler reads past a
        * non-power-of-two level's last texel (black stripes at a 100x60
        * chain's small levels while it was left empty) */
       for (unsigned yy = 0; yy < 1u << llh; yy++) {
-         const uint32_t *src = (const uint32_t *)(res->bo->map + res->offset[l] + MIN2(yy, h - 1) * res->stride[l]);
+         const uint32_t *src = (const uint32_t *)(layer + MIN2(yy, h - 1) * res->stride[l]);
          for (unsigned xx = 0; xx < 1u << llw; xx++) {
             uint32_t v = src[MIN2(xx, w - 1)];
             if (bgr)
@@ -178,6 +185,7 @@ g9p_resource_twiddled(struct g9p_device *dev, struct g9p_resource *res, unsigned
          }
       }
       dst += 1u << (llw + llh);
+   }
    }
    res->tw_seq = res->seq;
    return res->tw;
@@ -224,16 +232,19 @@ g9p_generate_mipmap(struct pipe_context *pctx, struct pipe_resource *prsc, enum 
    struct g9p_resource *res = g9p_resource(prsc);
    const struct util_format_description *d = util_format_description(prsc->format);
 
-   if (prsc->target != PIPE_TEXTURE_2D || util_format_get_blocksize(prsc->format) != 4 ||
+   if ((prsc->target != PIPE_TEXTURE_2D && prsc->target != PIPE_TEXTURE_CUBE &&
+        prsc->target != PIPE_TEXTURE_2D_ARRAY) || util_format_get_blocksize(prsc->format) != 4 ||
        d->layout != UTIL_FORMAT_LAYOUT_PLAIN || d->channel[0].size != 8 || last_level > prsc->last_level)
       return false;
    if (g9p_frame_uses(g9p_context(pctx), prsc))
       g9p_flush_frame(g9p_context(pctx));
+   /* (a cube's faces / an array's layers each on its own) */
+   for (unsigned z = first_layer; z <= last_layer; z++)
    for (unsigned l = base_level + 1; l <= last_level; l++) {
       const unsigned sw = u_minify(prsc->width0, l - 1), sh = u_minify(prsc->height0, l - 1);
       const unsigned w = u_minify(prsc->width0, l), h = u_minify(prsc->height0, l);
-      const uint8_t *src = res->bo->map + res->offset[l - 1];
-      uint8_t *dst = res->bo->map + res->offset[l];
+      const uint8_t *src = res->bo->map + res->offset[l - 1] + (size_t)z * res->stride[l - 1] * sh;
+      uint8_t *dst = res->bo->map + res->offset[l] + (size_t)z * res->stride[l] * h;
 
       for (unsigned y = 0; y < h; y++) {
          const uint8_t *r0 = src + MIN2(2 * y, sh - 1) * res->stride[l - 1];

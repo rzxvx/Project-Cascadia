@@ -41,7 +41,7 @@ struct g9p_velems {
 /* the render being gathered: one target, a clear, the draws' VDM stream */
 struct g9p_frame {
    struct pipe_resource *target;
-   unsigned level;
+   unsigned level, layer;      /* (layer: a cube's face, an array's layer) */
    bool cleared;
    float clear[4];
    float zclear;               /* the background's depth, stencil */

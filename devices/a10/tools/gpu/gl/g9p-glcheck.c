@@ -43,6 +43,15 @@
  *                                    C: glPolygonOffsetClampEXT's clamp),
  *                                    measured by bands of planes in front of /
  *                                    behind it by fractions of the offset
+ *   g9p-glcheck cube LEVELS[,LOD] [W H]
+ *                                    a cube map (16 x 16, LEVELS levels, every
+ *                                    face and level its own texels) over the
+ *                                    target, all six faces; LOD: textureCubeLod
+ *                                    (desktop GL context)
+ *   g9p-glcheck array LAYERS,LEVELS[,BIAS]
+ *                                    a 2D array texture (EXT_texture_array),
+ *                                    bands at whole, fractional and
+ *                                    out-of-range layers (desktop GL context)
  *   g9p-glcheck lod KIND,V[,T[,F]] [W H]
  *                                    a texture of one colour per level, the
  *                                    LOD from the shader's bias (KIND bias),
@@ -65,6 +74,7 @@
 #include <string.h>
 
 #define MIN(a, b) ((a) < (b) ? (a) : (b))
+#define MAX(a, b) ((a) > (b) ? (a) : (b))
 #define DIE(...) do { fprintf(stderr, __VA_ARGS__); fprintf(stderr, "\n"); exit(1); } while (0)
 
 static GLuint
@@ -583,6 +593,8 @@ zs_main(const char *mode, const char *arg, int w, int h)
    return bad != 0;
 }
 
+static void context_gl(void);
+
 /* lod: a 64 x 64 texture of 7 levels, each one colour, over the target
  * (texture coordinates 0..1: the LOD log2(64 / W) along x, log2(64 / H)
  * along y); the shader's bias (KIND bias), its explicit LOD (level,
@@ -602,18 +614,7 @@ lod_main(const char *arg, int w, int h)
        (strcmp(kind, "bias") && strcmp(kind, "level") && strcmp(kind, "none")))
       DIE("lod bias|level|none,V[,T[,n|l]]");
    const int level = !strcmp(kind, "level"), lin = filt[0] == 'l';
-   PFNEGLGETPLATFORMDISPLAYEXTPROC gpd =
-      (PFNEGLGETPLATFORMDISPLAYEXTPROC)eglGetProcAddress("eglGetPlatformDisplayEXT");
-   EGLDisplay dpy;
-   EGLContext ctx;
-   EGLint maj, min;
-   if (!gpd || !(dpy = gpd(EGL_PLATFORM_SURFACELESS_MESA, EGL_DEFAULT_DISPLAY, NULL)) ||
-       !eglInitialize(dpy, &maj, &min))
-      DIE("no surfaceless EGL display");
-   eglBindAPI(EGL_OPENGL_API);
-   if (!(ctx = eglCreateContext(dpy, EGL_NO_CONFIG_KHR, EGL_NO_CONTEXT, NULL)) ||
-       !eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, ctx))
-      DIE("desktop GL context: %#x", eglGetError());
+   context_gl();
    target(w, h);
    char fs[512];
    snprintf(fs, sizeof(fs),
@@ -673,11 +674,250 @@ lod_main(const char *arg, int w, int h)
    return bad != 0;
 }
 
+/* a desktop GL context, surfaceless (lod, cube: not in OpenGL ES 2.0) */
+static void
+context_gl(void)
+{
+   PFNEGLGETPLATFORMDISPLAYEXTPROC gpd =
+      (PFNEGLGETPLATFORMDISPLAYEXTPROC)eglGetProcAddress("eglGetPlatformDisplayEXT");
+   EGLDisplay dpy;
+   EGLContext ctx;
+   EGLint maj, min;
+   if (!gpd || !(dpy = gpd(EGL_PLATFORM_SURFACELESS_MESA, EGL_DEFAULT_DISPLAY, NULL)) ||
+       !eglInitialize(dpy, &maj, &min))
+      DIE("no surfaceless EGL display");
+   eglBindAPI(EGL_OPENGL_API);
+   if (!(ctx = eglCreateContext(dpy, EGL_NO_CONFIG_KHR, EGL_NO_CONTEXT, NULL)) ||
+       !eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, ctx))
+      DIE("desktop GL context: %#x", eglGetError());
+}
+
+/* cube: the texel of face f (GL's order +X -X +Y -Y +Z -Z), level l of
+ * side n */
+static void
+cube_texel(int f, int l, int n, int x, int y, double *c)
+{
+   c[0] = (20 + 40 * f + 6 * l) / 255.0;
+   c[1] = n > 1 ? x * 240.0 / (n - 1) / 255.0 : 0.5;
+   c[2] = n > 1 ? y * 240.0 / (n - 1) / 255.0 : 0.5;
+   c[3] = 1;
+}
+
+/* cube LEVELS,LOD [W H]: a 16 x 16 cube map of LEVELS levels, nearest,
+ * over the target: the left half's directions (-1.5 .. 1.5, -1.5 .. 1.5,
+ * 1) from left to right / bottom to top, the right half's the same with z
+ * -1 -- all six faces. LOD < 0: textureCube (the LOD the hardware takes),
+ * else textureCubeLod at that LOD (an integer: that level). The face and
+ * texel from GL's table; pixels near a face's edge or a texel's are left
+ * out. */
+static int
+cube_main(const char *arg, int w, int h)
+{
+   int nlev = 1;
+   float lod = -1;
+   /* render: each face cleared through a framebuffer object to its own
+    * colour (the texel of a 1 x 1 level), then sampled */
+   const int render = !strcmp(arg, "render");
+   if (!render && (sscanf(arg, "%d,%f", &nlev, &lod) < 1 || nlev < 1 || nlev > 5))
+      DIE("cube LEVELS(1-5)[,LOD] | render");
+   const int explicit_lod = lod >= 0;
+   context_gl();
+   target(w, h);
+   char fs[512];
+   snprintf(fs, sizeof(fs),
+            "#version 110\n%suniform samplerCube s;\nuniform float v;\nvarying vec3 d;\n"
+            "void main() { gl_FragColor = %s; }\n",
+            explicit_lod ? "#extension GL_ARB_shader_texture_lod : require\n" : "",
+            explicit_lod ? "textureCubeLod(s, d, v)" : "textureCube(s, d)");
+   GLuint p = program("#version 110\nattribute vec4 pos;\nattribute vec4 attr;\nvarying vec3 d;\n"
+                      "void main() { d = attr.xyz; gl_Position = pos; }\n", fs);
+   glUniform1f(glGetUniformLocation(p, "v"), lod);
+   GLuint tex;
+   glGenTextures(1, &tex);
+   glBindTexture(GL_TEXTURE_CUBE_MAP, tex);
+   for (int f = 0; f < 6; f++)
+      for (int l = 0; l < nlev; l++) {
+         const int n = 16 >> l;
+         unsigned char *px = malloc(4 * n * n);
+         for (int y = 0; y < n; y++)
+            for (int x = 0; x < n; x++) {
+               double c[4];
+               cube_texel(f, l, n, x, y, c);
+               for (int k = 0; k < 4; k++)
+                  px[4 * (y * n + x) + k] = (unsigned char)lround(c[k] * 255);
+            }
+         glTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + f, l, GL_RGBA, n, n, 0, GL_RGBA, GL_UNSIGNED_BYTE, px);
+         free(px);
+      }
+   if (render) {
+      GLuint fbo;
+      glGenFramebuffers(1, &fbo);
+      glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+      for (int f = 0; f < 6; f++) {
+         double c[4];
+         cube_texel(f, 0, 1, 0, 0, c);
+         glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_CUBE_MAP_POSITIVE_X + f, tex, 0);
+         if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
+            DIE("a cube face's framebuffer incomplete");
+         glViewport(0, 0, 16, 16);
+         glClearColor(c[0], c[1], c[2], c[3]);
+         glClear(GL_COLOR_BUFFER_BIT);
+      }
+      glDeleteFramebuffers(1, &fbo);
+      target(w, h);
+   }
+   glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MIN_FILTER, nlev > 1 ? GL_NEAREST_MIPMAP_NEAREST : GL_NEAREST);
+   glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+   glTexParameteri(GL_TEXTURE_CUBE_MAP, 0x813D /* GL_TEXTURE_MAX_LEVEL */, nlev - 1);
+   glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+   glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+   /* two quads: x, y, then the direction (as attr, 3 of 4 floats) */
+   static const float q[12][6] = {
+      { -1, -1, -1.5f, -1.5f, 1, 0 }, { 0, -1, 1.5f, -1.5f, 1, 0 }, { 0, 1, 1.5f, 1.5f, 1, 0 },
+      { -1, -1, -1.5f, -1.5f, 1, 0 }, { 0, 1, 1.5f, 1.5f, 1, 0 }, { -1, 1, -1.5f, 1.5f, 1, 0 },
+      { 0, -1, -1.5f, -1.5f, -1, 0 }, { 1, -1, 1.5f, -1.5f, -1, 0 }, { 1, 1, 1.5f, 1.5f, -1, 0 },
+      { 0, -1, -1.5f, -1.5f, -1, 0 }, { 1, 1, 1.5f, 1.5f, -1, 0 }, { 0, 1, -1.5f, 1.5f, -1, 0 } };
+   attribs(&q[0][0], 12, 6);
+   glDrawArrays(GL_TRIANGLES, 0, 12);
+   unsigned char *px = malloc(4 * w * h);
+   glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, px);
+   dump(px, w, h);
+   const int l = explicit_lod ? MIN((int)lround(lod), nlev - 1) : 0, n = 16 >> l;
+   int faces[6] = { 0 };
+   for (int y = 0; y < h; y++)
+      for (int x = 0; x < w; x++) {
+         const int right = 2 * x >= w;
+         const double u = (x + 0.5 - (right ? w / 2.0 : 0)) / (w / 2.0), v = (y + 0.5) / h;
+         if (fabs(x + 0.5 - w / 2.0) < 1)
+            continue;                                   /* the quads' shared edge */
+         const double d[3] = { -1.5 + 3 * u, -1.5 + 3 * v, right ? -1 : 1 };
+         const double a[3] = { fabs(d[0]), fabs(d[1]), fabs(d[2]) };
+         const int ax = a[0] >= a[1] && a[0] >= a[2] ? 0 : a[1] >= a[2] ? 1 : 2;
+         const double second = ax == 0 ? fmax(a[1], a[2]) : ax == 1 ? fmax(a[0], a[2]) : fmax(a[0], a[1]);
+         if (a[ax] - second < 0.02)
+            continue;                                   /* a face's edge */
+         double sc, tc;
+         int f;
+         if (ax == 0) f = d[0] > 0 ? 0 : 1, sc = d[0] > 0 ? -d[2] : d[2], tc = -d[1];
+         else if (ax == 1) f = d[1] > 0 ? 2 : 3, sc = d[0], tc = d[1] > 0 ? d[2] : -d[2];
+         else f = d[2] > 0 ? 4 : 5, sc = d[2] > 0 ? d[0] : -d[0], tc = -d[1];
+         const double sx = (sc / a[ax] + 1) / 2 * n, ty = (tc / a[ax] + 1) / 2 * n;
+         if (fabs(sx - lround(sx)) < 0.05 || fabs(ty - lround(ty)) < 0.05)
+            continue;                                   /* a texel's edge */
+         double want[4];
+         if (render)
+            cube_texel(f, 0, 1, 0, 0, want);
+         else
+            cube_texel(f, l, n, MIN((int)sx, n - 1), MIN((int)ty, n - 1), want);
+         faces[f]++;
+         check(x, y, px + 4 * (y * w + x), want);
+      }
+   if (glGetError())
+      DIE("GL error");
+   printf("%s: cube %s %dx%d (level %d; pixels per face %d %d %d %d %d %d), %d of %d pixels right\n",
+          bad ? "FAIL" : "ok", arg, w, h, l, faces[0], faces[1], faces[2], faces[3], faces[4], faces[5],
+          total - bad, total);
+   return bad != 0;
+}
+
+/* array: the texel of layer z, level l of side n */
+static void
+array_texel(int z, int l, int n, int x, int y, double *c)
+{
+   c[0] = (16 + (28 * z + 9 * l) % 232) / 255.0;
+   c[1] = n > 1 ? x * 240.0 / (n - 1) / 255.0 : 0.5;
+   c[2] = n > 1 ? y * 240.0 / (n - 1) / 255.0 : 0.5;
+   c[3] = 1;
+}
+
+/* array LAYERS,LEVELS[,BIAS]: a 32 x 32 2D array texture
+ * (EXT_texture_array) of LAYERS layers and LEVELS levels, nearest, every
+ * layer and level its own texels; the target (32 high) in bands 32 wide,
+ * each band one quad over the texture (the LOD 0 exactly, BIAS picking
+ * the level) at another layer coordinate: whole, fractional, past both
+ * ends (GL: layer = clamp(floor(r + 0.5), 0, LAYERS - 1)) */
+static int
+array_main(const char *arg)
+{
+   int nl = 4, nlev = 1;
+   float bias = 0;
+   if (sscanf(arg, "%d,%d,%f", &nl, &nlev, &bias) < 2 || nl < 1 || nl > 32 || nlev < 1 || nlev > 6)
+      DIE("array LAYERS(1-32),LEVELS(1-6)[,BIAS]");
+   const float lz[] = { 0, 1, 2.4f, 2.6f, nl - 1.0f, -3, nl + 5.0f, 0.45f, nl - 1.6f };
+   const int nb = sizeof(lz) / sizeof(lz[0]), w = 32 * nb, h = 32;
+   context_gl();
+   target(w, h);
+   GLuint p = program("#version 110\nattribute vec4 pos;\nattribute vec4 attr;\nvarying vec3 c;\n"
+                      "void main() { c = attr.xyz; gl_Position = pos; }\n",
+                      "#version 110\n#extension GL_EXT_texture_array : require\n"
+                      "uniform sampler2DArray s;\nuniform float b;\nvarying vec3 c;\n"
+                      "void main() { gl_FragColor = texture2DArray(s, c, b); }\n");
+   glUniform1f(glGetUniformLocation(p, "b"), bias);
+   void (*teximage3d)(GLenum, GLint, GLint, GLsizei, GLsizei, GLsizei, GLint, GLenum, GLenum, const void *) =
+      (void (*)(GLenum, GLint, GLint, GLsizei, GLsizei, GLsizei, GLint, GLenum, GLenum, const void *))
+         eglGetProcAddress("glTexImage3D");
+   if (!teximage3d)
+      DIE("no glTexImage3D");
+   GLuint tex;
+   glGenTextures(1, &tex);
+   glBindTexture(0x8C1A /* GL_TEXTURE_2D_ARRAY */, tex);
+   for (int l = 0; l < nlev; l++) {
+      const int n = 32 >> l;
+      unsigned char *px = malloc((size_t)4 * n * n * nl);
+      for (int z = 0; z < nl; z++)
+         for (int y = 0; y < n; y++)
+            for (int x = 0; x < n; x++) {
+               double c[4];
+               array_texel(z, l, n, x, y, c);
+               for (int k = 0; k < 4; k++)
+                  px[4 * ((z * n + y) * n + x) + k] = (unsigned char)lround(c[k] * 255);
+            }
+      teximage3d(0x8C1A, l, GL_RGBA, n, n, nl, 0, GL_RGBA, GL_UNSIGNED_BYTE, px);
+      free(px);
+   }
+   glTexParameteri(0x8C1A, GL_TEXTURE_MIN_FILTER, nlev > 1 ? GL_NEAREST_MIPMAP_NEAREST : GL_NEAREST);
+   glTexParameteri(0x8C1A, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+   glTexParameteri(0x8C1A, 0x813D /* GL_TEXTURE_MAX_LEVEL */, nlev - 1);
+   float *q = malloc(sizeof(float) * 6 * 6 * nb);
+   for (int b = 0; b < nb; b++) {
+      const float x0 = -1 + 2.0f * b / nb, x1 = -1 + 2.0f * (b + 1) / nb;
+      const float v[6][6] = { { x0, -1, 0, 0, lz[b], 0 }, { x1, -1, 1, 0, lz[b], 0 }, { x1, 1, 1, 1, lz[b], 0 },
+                              { x0, -1, 0, 0, lz[b], 0 }, { x1, 1, 1, 1, lz[b], 0 }, { x0, 1, 0, 1, lz[b], 0 } };
+      memcpy(q + 36 * b, v, sizeof(v));
+   }
+   attribs(q, 6 * nb, 6);
+   glDrawArrays(GL_TRIANGLES, 0, 6 * nb);
+   unsigned char *px = malloc(4 * w * h);
+   glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, px);
+   dump(px, w, h);
+   const int l = MIN(MAX((int)lround(bias), 0), nlev - 1), n = 32 >> l;
+   if (fabs(bias - lround(bias)) > 0.3)
+      DIE("BIAS: near an integer (the level it picks)");
+   for (int b = 0; b < nb; b++) {
+      const int z = MIN(MAX((int)floor(lz[b] + 0.5), 0), nl - 1);
+      for (int y = 0; y < h; y++)
+         for (int x = 0; x < 32; x++) {
+            double want[4];
+            array_texel(z, l, n, x * n / 32, y * n / 32, want);
+            check(32 * b + x, y, px + 4 * (y * w + 32 * b + x), want);
+         }
+   }
+   if (glGetError())
+      DIE("GL error");
+   printf("%s: array %s %dx%d (level %d), %d of %d pixels right\n", bad ? "FAIL" : "ok", arg, w, h, l,
+          total - bad, total);
+   return bad != 0;
+}
+
 int
 main(int argc, char **argv)
 {
    const char *mode = argc > 1 ? argv[1] : "uniform";
 
+   if (!strcmp(mode, "array"))
+      return array_main(argc > 2 ? argv[2] : "4,1");
+   if (!strcmp(mode, "cube"))
+      return cube_main(argc > 2 ? argv[2] : "1", argc > 4 ? atoi(argv[3]) : 128, argc > 4 ? atoi(argv[4]) : 64);
    if (!strcmp(mode, "lod"))
       return lod_main(argc > 2 ? argv[2] : "none,0", argc > 4 ? atoi(argv[3]) : 64, argc > 4 ? atoi(argv[4]) : 64);
    if (!strcmp(mode, "load")) {

@@ -198,18 +198,34 @@ iterate_f32(struct emit *e, unsigned d, unsigned comp, unsigned n, bool persp)
  * Apple's code for Metal's bias() / level(); mode 3 takes gradients) */
 enum sample_lod { SAMPLE_LOD_AUTO = 0, SAMPLE_LOD_BIAS = 1, SAMPLE_LOD_LEVEL = 2 };
 
-/* sample a 2D texture: its state at common-store dword `state`, the
- * sampler at dword `samp`, f32 coordinates r[coord], r[coord + 1], the
+/* sample a 2D texture (a cube: W0 bit 11, the direction r[coord] ..
+ * r[coord + 2] projected first, as Apple's code for Metal's texturecube
+ * has it; a 2D array: W0 bit 9, the layer an integer in r[coord + 2], as
+ * for texture2d_array): its state
+ * at common-store dword `state`, the sampler at dword `samp`, f32
+ * coordinates r[coord], r[coord + 1], the
  * LOD from the derivatives (+ r[lod] with BIAS) or r[lod] (LEVEL); the
  * result as four f32 registers from r[d] (f32) or four f16 halves from half
  * 2d. Follow with wait(). */
 static void
-sample(struct emit *e, bool f32, unsigned d, unsigned state, unsigned coord, unsigned samp, enum sample_lod mode,
-       unsigned lod)
+sample(struct emit *e, bool f32, bool cube, bool array, unsigned d, unsigned state, unsigned coord, unsigned samp,
+       enum sample_lod mode, unsigned lod)
 {
    const uint16_t l = mode ? 0x80 | mode << 5 | (lod & 31) : 0;
-   EMIT(e, f32 ? 0xf51a : 0xf518, 0x0100 | state << 8 | 2 * d, 0x8100 | (2 * coord) << 8 | samp, 0x0700 | l,
-        0x0200 | (mode ? 0x80 : 0));
+   EMIT(e, (f32 ? 0xf51a : 0xf518) | (cube ? 0x0800 : 0) | (array ? 0x0200 : 0), 0x0100 | state << 8 | 2 * d,
+        0x8100 | (2 * coord) << 8 | samp, 0x0700 | l, 0x0200 | (mode ? 0x80 : 0));
+}
+
+/* a cube direction r[d] .. r[d + 2] made the cube sample's coordinates, in
+ * place: the iterate unit's register form with its cube projection, W1
+ * the source (bits 9-15) and destination (bits 0-7) in halves -- what
+ * Apple's code runs before a cube sample of a computed direction (`7d08
+ * 0100 8000` for r0, `7d08 0d06 8000` for r3); the sample follows it
+ * without a wait */
+static void
+cube_project(struct emit *e, unsigned d)
+{
+   EMIT(e, 0x7d08, 0x0100 | (2 * d) << 9 | 2 * d, 0x8000);
 }
 
 /* the tile's current colour into four f16 halves from half h (what blending
@@ -1224,10 +1240,11 @@ emit_tex(struct ctx *c, nir_tex_instr *tex)
    const bool has_lod = tex->op != nir_texop_tex;
 
    if ((tex->op != nir_texop_tex && tex->op != nir_texop_txb && tex->op != nir_texop_txl) ||
-       tex->sampler_dim != GLSL_SAMPLER_DIM_2D || tex->is_array || tex->is_shadow ||
+       (tex->sampler_dim != GLSL_SAMPLER_DIM_2D && tex->sampler_dim != GLSL_SAMPLER_DIM_CUBE) ||
+       (tex->is_array && tex->sampler_dim != GLSL_SAMPLER_DIM_2D) || tex->is_shadow ||
        tex->num_srcs != 1u + has_lod || ci < 0 || (has_lod && bi < 0) ||
        nir_alu_type_get_base_type(tex->dest_type) != nir_type_float) {
-      c->e.error = "a texture operation other than a 2D float sample (with a bias or LOD) (to do)";
+      c->e.error = "a texture operation other than a 2D / 2D array / cube float sample (with a bias or LOD) (to do)";
       return;
    }
    /* the LOD operand: the shader's bias / LOD, plus the sampler's bias
@@ -1262,11 +1279,31 @@ emit_tex(struct ctx *c, nir_tex_instr *tex)
       c->e.error = "a texture or sampler past the sample instruction's fields";
       return;
    }
+   if (tex->sampler_dim == GLSL_SAMPLER_DIM_CUBE) {
+      /* the projection on a copy: the direction may have other uses */
+      unsigned cc = scratch(c, 4);
+      for (unsigned k = 0; k < 3; k++)
+         alu2(&c->e, 0xce, cc + k, coord + k, coord + k);      /* mov */
+      cube_project(&c->e, cc);
+      coord = cc;
+   } else if (tex->is_array) {
+      /* the layer: GL's floor(r + 0.5) as an integer (past the ends the
+       * hardware clamps it: g9p-glcheck array) */
+      unsigned cc = scratch(c, 4), half = scratch(c, 1);
+      for (unsigned k = 0; k < 2; k++)
+         alu2(&c->e, 0xce, cc + k, coord + k, coord + k);      /* mov */
+      mov_imm(&c->e, half, 0x3f000000);
+      alu2(&c->e, 0x44, cc + 2, coord + 2, half);              /* fadd */
+      funary(&c->e, 0x40, cc + 2, cc + 2);                     /* ffloor */
+      convert(&c->e, 0x10, cc + 2, cc + 2);                    /* f2u */
+      coord = cc;
+   }
    if (mode && lod >= 32) {
       c->e.error = "a sample's LOD operand past r31";
       return;
    }
-   sample(&c->e, true, d, 8 * tex->texture_index, coord, samplers + 2 * tex->sampler_index, mode, lod);
+   sample(&c->e, true, tex->sampler_dim == GLSL_SAMPLER_DIM_CUBE, tex->is_array, d, 8 * tex->texture_index, coord,
+          samplers + 2 * tex->sampler_index, mode, lod);
    wait(&c->e);
 }
 

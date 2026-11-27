@@ -38,5 +38,8 @@ for a in none,0 bias,1 bias,2.2 bias,-1 bias,9 bias,1,1 bias,-0.7,1.9 bias,1.25,
   run $C lod $a
 done
 run $C lod none,0 32 32; run $C lod bias,1 32 32; run $C lod none,0,1.2 16 16
+for a in 1 5 5,0 5,1 5,2 5,3 5,4 render; do run $C cube $a; done
+run $C cube 5,2 300 100
+for a in 1,1 4,1 4,3,0 4,3,1 4,3,2 7,4,3 32,6,5; do run $C array $a; done
 echo "== $pass passed, $fail failed"
 [ "$fail" = 0 ]'

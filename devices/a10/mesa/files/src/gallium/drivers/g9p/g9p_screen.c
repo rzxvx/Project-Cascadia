@@ -109,7 +109,12 @@ g9p_is_format_supported(struct pipe_screen *pscreen, enum pipe_format format,
 
    if (MAX2(1, sample_count) != MAX2(1, storage_sample_count) || sample_count > 1)
       return false;
-   if (target != PIPE_BUFFER && target != PIPE_TEXTURE_2D)
+   if (target != PIPE_BUFFER && target != PIPE_TEXTURE_2D && target != PIPE_TEXTURE_CUBE &&
+       target != PIPE_TEXTURE_2D_ARRAY)
+      return false;
+   /* (a cube's faces, an array's layers: colour only, depth / stencil in
+    * 2D buffers) */
+   if ((target == PIPE_TEXTURE_CUBE || target == PIPE_TEXTURE_2D_ARRAY) && (usage & PIPE_BIND_DEPTH_STENCIL))
       return false;
    if (!desc || desc->layout != UTIL_FORMAT_LAYOUT_PLAIN)
       return false;
@@ -177,9 +182,9 @@ g9p_init_screen_caps(struct pipe_screen *pscreen)
    caps->uma = true;
    caps->max_render_targets = 1;
    caps->max_texture_2d_size = 4096;
-   caps->max_texture_cube_levels = 0;
+   caps->max_texture_cube_levels = 13;
    caps->max_texture_3d_levels = 0;
-   caps->max_texture_array_layers = 0;
+   caps->max_texture_array_layers = 2048;   /* (the state's layers from word 3 bit 15) */
    caps->max_varyings = 16;
    caps->fs_coord_origin_upper_left = true;
    caps->fs_coord_pixel_center_half_integer = true;
