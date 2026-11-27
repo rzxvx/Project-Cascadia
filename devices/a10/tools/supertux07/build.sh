@@ -1,4 +1,5 @@
 #!/bin/sh
+# SPDX-License-Identifier: MIT
 # SuperTux 0.7 for the iPad's Alpine (aarch64, musl; Alpine's own package is
 # still 0.6.3): the release source, pinned by its sha256, built in docker
 # (alpine:3.24, arm64) into /usr/local/supertux-0.7 -- beside the system's

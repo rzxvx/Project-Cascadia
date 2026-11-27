@@ -20,8 +20,11 @@ Linux on the 7th-generation iPad: **iPad7,11** (Wi-Fi, J171AP) and
 > only that partition is writable), and a Wayland desktop -- labwc, drawn by
 > the CPU (pixman), at twice the size, with wvkbd as the keyboard; Wi-Fi
 > (BCM4355C1, 2.4 and 5 GHz, the MAC and calibration from SysCfg) and
-> Bluetooth (BlueZ). Not yet: sound (no driver for the speakers), the
-> rotation sensors (behind the AOP), the GPU, the USB power source
+> Bluetooth (BlueZ); the GPU (2026-11-27) with Cascadia's own kernel
+> backend, shader compiler and Mesa driver -- OpenGL ES 2.0 / OpenGL 2.0,
+> SuperTuxKart at 117 frames per second ([docs/gpu.md](docs/gpu.md)). Not
+> yet: sound (no driver for the speakers), the
+> rotation sensors (behind the AOP), the USB power source
 > (`power_supply usb`: I2C NACK on J171). Photos:
 > [gallery/](../../gallery/README.md#ipad-7-a10).
 
@@ -209,4 +212,8 @@ iPad's serials and calibration: they stay in `build/`, out of git.
    battery. Rendered by pixman on the CPU until the GPU works.
 4. What the kernel source does not have yet: speakers, auto-rotation
    (accelerometer), J171 (Wi-Fi model) checks where only J172 was tested.
-5. The GPU (PowerVR-derived, Apple firmware on an RTKit coprocessor).
+5. The GPU (PowerVR-derived, Apple firmware on an RTKit coprocessor):
+   ~~the firmware under Linux, the powervr driver's Apple backend~~ ✓,
+   ~~own shader compiler and Gallium driver: OpenGL ES 2.0 / OpenGL 2.0~~ ✓
+   (2026-11-27); next: OpenGL 3 / ES 3, rendering without waiting, the
+   desktop (labwc) on the GPU.

@@ -1,6 +1,44 @@
 # GPU (Apple A10 / T8010, "G9P") -- plan and what is known
 
-Status 2026-11-25: **G0-G6 done (our own shaders and programs, the whole
+**Status 2026-11-27: OpenGL ES 2.0 and OpenGL 2.0 on the GPU, through
+drivers of Cascadia's own** (G7-G9.13 below):
+
+- **Kernel**: the `powervr` driver with an Apple backend
+  (`kernel/overlay/drivers/gpu/drm/imagination/pvr_apple*.c`, GPL-2.0):
+  it boots Apple's GFX firmware, keeps the host in charge of the GPU's
+  power, and turns the powervr UAPI (VMs, buffers, contexts, free lists,
+  render-target datasets, compute / geometry / fragment jobs with
+  syncobjs) into the firmware's commands; fault recovery, idle power-off.
+  A module: `./cascadia a10 modules gpu` rebuilds and reloads it.
+- **Shader compiler** (`mesa/files/src/g9p`, MIT): NIR to the A10's own
+  shader ISA, decoded with Apple's offline compiler as the oracle and
+  checked on the GPU -- vertex / fragment / compute, control flow and
+  loops, uniforms, varyings (smooth, flat, point coordinates), textures
+  (2D, cubes, arrays; bias and explicit LOD), discard, blending in the
+  shader.
+- **Gallium driver** (`mesa/files/src/gallium/drivers/g9p`, MIT; Mesa
+  26.1.8): EGL, GBM, GLX / libGL, OpenGL ES 2.0 and desktop OpenGL 2.0 --
+  depth / stencil (kept between renders), culling, scissors, depth bias,
+  points and lines, vertex formats, mipmapped textures with filtering,
+  wrap modes and LOD bias, cube maps and 2D arrays, blending,
+  framebuffer objects. On the desktop through Mesa's software
+  window-system path (labwc / Xwayland). `mesa/build.sh driver` +
+  `mesa/install.sh`; programs run with `g9p-run PROGRAM` (the system's
+  Mesa stays the default).
+- **Applications**: SuperTuxKart 1.5 (its GLES 2 renderer) races at 117
+  frames per second, drawn as softpipe draws it; SuperTux 0.6.3 and 0.7.0.1
+  (`supertux07`) at their 66.7 cap, 0.7 uncapped at 132 in an 800x600
+  window; glxgears ~430, es2gears ~500.
+- **Checks**: `tools/gpu/gl/g9p-suite.sh` -- 134 pixel checks against a
+  CPU model or softpipe (`g9p-glcheck`, `g9p-gltri`), all passing.
+- **Not yet**: OpenGL 3.x / ES 3 (SuperTux's and SuperTuxKart's modern
+  renderers), formats beyond 8-bit RGBA textures (float, half, RG,
+  compressed natively), MSAA, instancing, more than 31 registers in a
+  shader (spilling), a render sent without waiting for it (the frame
+  rate's limit now), Wayland clients by DMA-BUF, compute / OpenCL /
+  Vulkan.
+
+Status 2026-11-25 (G0-G7, kept for the history): **G0-G6 done (our own shaders and programs, the whole
 screen; the host owns the GPU's power state, P+0xd34 = 0xd3c = 0); G7 done
 in its core: the powervr driver's Apple backend runs the GPU through the
 powervr UAPI -- a user program creates VMs, BOs, contexts, free lists and
