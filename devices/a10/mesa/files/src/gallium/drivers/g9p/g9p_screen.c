@@ -171,6 +171,9 @@ g9p_init_screen_caps(struct pipe_screen *pscreen)
    caps->npot_textures = true;
    caps->generate_mipmap = true;      /* by the CPU: g9p_resource.c */
    caps->blend_equation_separate = true;
+   caps->polygon_offset_clamp = true;   /* the depth-bias table's clamp */
+   caps->max_texture_lod_bias = 16;     /* (the sampler's: added in the fragment shader) */
+   caps->fragment_shader_texture_lod = true;   /* the sample's explicit LOD */
    caps->uma = true;
    caps->max_render_targets = 1;
    caps->max_texture_2d_size = 4096;

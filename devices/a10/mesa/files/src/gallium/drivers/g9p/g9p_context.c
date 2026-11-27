@@ -126,6 +126,8 @@ frame_reset(struct g9p_context *ctx)
    f->nstream = 0;
    f->nsc = 0;
    f->sc_at = 0;
+   f->ndb = 0;
+   f->db_at = 0;
    f->zcleared = f->scleared = f->zs_discard = false;
    f->pos = 4 * STREAM_WORDS;
    ctx->dev->code_frame = G9P_CODE_FRAME;
@@ -265,6 +267,8 @@ g9p_flush_frame(struct g9p_context *ctx)
    *(uint32_t *)frag = sizeof(frag);
    if (f->nsc)
       *(uint64_t *)(frag + 8) = frame_va(ctx, f->sc_at);     /* isp_scissor_base */
+   if (f->ndb)
+      *(uint64_t *)(frag + 16) = frame_va(ctx, f->db_at);    /* isp_dbias_base */
    unsigned zfmt;
    const bool zs_stored = zls_state(ctx, f, tx, ty, frag, &zfmt);
    bg[0] = (uint64_t)G9P_PDS_DOUTD << 32 | bg_pds;
@@ -278,7 +282,10 @@ g9p_flush_frame(struct g9p_context *ctx)
                          : f32b(f->zclear);
    f32p[2] = 0x300 | f->sclear;                 /* background stencil, mask, tag enable */
    f32p[3] = 0xf;
-   f32p[4] = 0x0023000f;
+   /* ISP_CTL; bit 20 (Rogue's dbias_is_int) for unorm depth: the depth
+    * bias's constant added as it is (else scaled by 2^(e - 23), e the
+    * triangle's largest depth exponent: float depth's r) */
+   f32p[4] = 0x0023000f | (f->zs && f->zs->format != PIPE_FORMAT_Z32_FLOAT ? 1u << 20 : 0);
    f32p[5] = 0x402;
    f32p[7] = eot;
 
@@ -747,9 +754,9 @@ sampler_words(const struct pipe_sampler_state *ss, uint32_t *w)
           (ss->min_img_filter == PIPE_TEX_FILTER_LINEAR) << 25 |
           (ss->min_mip_filter == PIPE_TEX_MIPFILTER_NEAREST) << 27 |
           (ss->min_mip_filter == PIPE_TEX_MIPFILTER_LINEAR) << 28 | wrap_mode(ss->wrap_s) << 29;
+   /* (no LOD bias field known: the fragment shader adds the sampler's
+    * bias, lod_bias_mask) */
    w[1] = 0x00c00780 | wrap_mode(ss->wrap_t) | wrap_mode(ss->wrap_r) << 3;
-   if (ss->lod_bias != 0.0f)
-      mesa_logw_once("g9p: a LOD bias (to do)");
 }
 
 static uint32_t
@@ -923,12 +930,42 @@ scissor_index(struct g9p_context *ctx)
       return -2;
    if (f->nsc && !memcmp(frame_ptr(ctx, f->sc_at + 8 * (f->nsc - 1)), e, sizeof(e)))
       return f->nsc - 1;
-   if (f->nsc == G9P_MAX_SCISSORS)
-      g9p_flush_frame(ctx);
    if (!f->sc_at && !(f->sc_at = frame_alloc(ctx, 8 * G9P_MAX_SCISSORS, 16)))
       return -2;
    memcpy(frame_ptr(ctx, f->sc_at + 8 * f->nsc), e, sizeof(e));
    return f->nsc++;
+}
+
+#define G9P_MAX_DBIAS 512
+
+/* the draw's depth bias in the frame's table (ISPCTL dbenable, DBSC
+ * dbindex): its index, -1 without one. An entry is {constant, slope,
+ * clamp}: depth += constant + slope * max(|dz/dx|, |dz/dy|) (window depth
+ * per pixel), clamped to the clamp's side when it is not 0
+ * (g9p-glcheck polyoffset). The constant is in depth units for unorm
+ * depth (ISP_CTL dbias_is_int: the driver scales GL's units by r = 2^-24
+ * / 2^-16) and in units of 2^(e - 23) for float depth (GL's r there). */
+static int
+depth_bias_index(struct g9p_context *ctx, enum mesa_prim reduced)
+{
+   struct g9p_frame *f = &ctx->frame;
+   const struct pipe_rasterizer_state *r = ctx->rast;
+
+   if (!r || reduced != MESA_PRIM_TRIANGLES || !r->offset_tri || !f->zs ||
+       (r->offset_units == 0 && r->offset_scale == 0))
+      return -1;
+   const bool fdepth = f->zs->format == PIPE_FORMAT_Z32_FLOAT;
+   const float rr = f->zs->format == PIPE_FORMAT_Z16_UNORM ? 1.0f / 65536 : 1.0f / 16777216;
+   if (fdepth && r->offset_units_unscaled && r->offset_units != 0)
+      mesa_logw_once("g9p: an unscaled depth bias on float depth taken as scaled (to do)");
+   const float e[3] = { fdepth || r->offset_units_unscaled ? r->offset_units : r->offset_units * rr,
+                        r->offset_scale, r->offset_clamp };
+   if (f->ndb && !memcmp(frame_ptr(ctx, f->db_at + 12 * (f->ndb - 1)), e, sizeof(e)))
+      return f->ndb - 1;
+   if (!f->db_at && !(f->db_at = frame_alloc(ctx, 12 * G9P_MAX_DBIAS, 16)))
+      return -1;
+   memcpy(frame_ptr(ctx, f->db_at + 12 * f->ndb), e, sizeof(e));
+   return f->ndb++;
 }
 
 static void
@@ -944,9 +981,13 @@ g9p_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info, unsig
       return;
    if (draw_converted(ctx, info, drawid_offset, draws, num_draws))
       return;
+   /* a full scissor or depth-bias table sends the render first */
+   if (ctx->frame.nsc == G9P_MAX_SCISSORS || ctx->frame.ndb == G9P_MAX_DBIAS)
+      g9p_flush_frame(ctx);
    const int scindex = scissor_index(ctx);
    if (scindex == -2)
       return;
+   const int dbindex = depth_bias_index(ctx, u_reduced_prim(info->mode));
    /* a frame starting without a clear on a target with content: that
     * content first */
    if (!ctx->frame.ndraws && !ctx->frame.cleared && !ctx->frame.loading &&
@@ -1021,16 +1062,22 @@ g9p_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info, unsig
 
    /* the fragment shader for those varyings and this blend state */
    /* the fragment shader's common store: texture states (8 dwords each),
-    * samplers (2 each), the uniforms */
+    * samplers (2 each), with a sampler's LOD bias one float each, the
+    * uniforms */
    const unsigned ntex = util_last_bit(ctx->fs->nir->info.textures_used[0]);
    const unsigned nsamp = util_last_bit(ctx->fs->nir->info.samplers_used[0]);
-   const unsigned fsamp = 8 * ntex, fubo = align(fsamp + 2 * nsamp, 4), fcs = fubo + fu_n;
+   unsigned lod_bias_mask = 0;
+   for (unsigned s = 0; s < nsamp; s++)
+      if (ctx->samplers[s] && ctx->samplers[s]->lod_bias != 0.0f)
+         lod_bias_mask |= 1u << s;
+   const unsigned fsamp = 8 * ntex, fbias = fsamp + 2 * nsamp;
+   const unsigned fubo = align(fbias + (lod_bias_mask ? nsamp : 0), 4), fcs = fubo + fu_n;
    struct {
       struct g9p_varyings vary;
       struct g9p_blend blend;
       unsigned colormask;
       bool blending;
-      unsigned ubo_dword, ubo_dwords, sampler_dword;
+      unsigned ubo_dword, ubo_dwords, sampler_dword, lod_bias_mask;
       bool pntc_flip;
    } fkey;
    memset(&fkey, 0, sizeof(fkey));
@@ -1038,6 +1085,7 @@ g9p_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info, unsig
    fkey.ubo_dword = fubo;
    fkey.ubo_dwords = fu_n;
    fkey.sampler_dword = fsamp;
+   fkey.lod_bias_mask = lod_bias_mask;
    fkey.pntc_flip = ctx->rast && ctx->rast->sprite_coord_mode == PIPE_SPRITE_COORD_LOWER_LEFT &&
                     (ctx->fs->nir->info.inputs_read & VARYING_BIT_PNTC);
    const struct pipe_rt_blend_state *rb = ctx->blend ? &ctx->blend->rt[0] : NULL;
@@ -1055,7 +1103,7 @@ g9p_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info, unsig
    }
    struct g9p_options fo = { .blend = fkey.blending ? &fkey.blend : NULL, .colormask = fkey.colormask,
                              .ubo_dword = fubo, .ubo_dwords = fu_n, .sampler_dword = fsamp,
-                             .pntc_flip = fkey.pntc_flip };
+                             .lod_bias_mask = lod_bias_mask, .lod_bias_dword = fbias, .pntc_flip = fkey.pntc_flip };
    struct g9p_variant *fs = variant(ctx, ctx->fs, &fkey, sizeof(fkey), &fo, &vs->vary);
    if (!fs)
       return;
@@ -1136,6 +1184,9 @@ g9p_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info, unsig
             texture_state(ctx, ctx->views[t], fw + 8 * t);
          for (unsigned s = 0; s < nsamp; s++)
             sampler_words(ctx->samplers[s], fw + fsamp + 2 * s);
+         for (unsigned s = 0; s < nsamp; s++)
+            if (lod_bias_mask >> s & 1)
+               fw[fbias + s] = f32b(ctx->samplers[s]->lod_bias);
          if (fu_n)
             memcpy(fw + fubo, fu, 4 * fu_n);
          fq = g9p_code_frame(dev, 16, 16);
@@ -1218,8 +1269,9 @@ g9p_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info, unsig
        * the shader dropped pixels; 2 drew the same as 4) */
       const unsigned passtype = fkey.blending ? 1 : ctx->fs->nir->info.fs.uses_discard ? 4 : 0;
       const bool two_sided = isp_state(ctx, passtype, obj, ispa, ispb);
-      PPP(ctx, 0x0000001f, 0x03c40000 | (two_sided ? 1u << 19 : 0) | (scindex >= 0 ? 1u << 16 : 0), ispa[0],
-          ispb[0], ispa[1], ispb[1]);
+      PPP(ctx, 0x0000001f,
+          0x03c40000 | (two_sided ? 1u << 19 : 0) | (dbindex >= 0 ? 1u << 17 : 0) | (scindex >= 0 ? 1u << 16 : 0),
+          ispa[0], ispb[0], ispa[1], ispb[1]);
       const struct pipe_viewport_state *vp = &ctx->viewport;
       /* the hardware clips depth to 0..w: GL's -w..w was halved in the
        * vertex shader (clip_halfz), its viewport z follows */
@@ -1228,7 +1280,8 @@ g9p_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info, unsig
       PPP(ctx, 0x00000c00, 0x80000000 | (tx - 1), ty - 1, f32b(vp->translate[0]), f32b(vp->scale[0]),
           f32b(vp->translate[1]), f32b(vp->scale[1]), f32b(zt), f32b(zs));
       PPP(ctx, 0x00210000, 0x1e3ce508, 0x000004a0 | cull);
-      PPP(ctx, 0x00000020, scindex >= 0 ? scindex : 0);        /* ISP DBSC: the scissor's index */
+      /* ISP DBSC: the depth bias's index, the scissor's */
+      PPP(ctx, 0x00000020, (dbindex >= 0 ? dbindex : 0) << 16 | (scindex >= 0 ? scindex : 0));
       if (info->index_size) {
          const uint64_t ia = index_va + (uint64_t)dr->start * info->index_size;
          const uint32_t isz = info->index_size == 1 ? 0 : info->index_size == 2 ? 1 : 2;

@@ -193,14 +193,23 @@ iterate_f32(struct emit *e, unsigned d, unsigned comp, unsigned n, bool persp)
    EMIT(e, 0x0108 | (n % 4) << 11 | (persp ? 0x0200 : 0), (1 + comp) << 9 | 2 * d);
 }
 
+/* the sample's LOD operand (W3's low byte: bit 7 a register, bits 5-6 the
+ * mode, bits 0-4 the register, its low half an f16; W4 bit 7 with it --
+ * Apple's code for Metal's bias() / level(); mode 3 takes gradients) */
+enum sample_lod { SAMPLE_LOD_AUTO = 0, SAMPLE_LOD_BIAS = 1, SAMPLE_LOD_LEVEL = 2 };
+
 /* sample a 2D texture: its state at common-store dword `state`, the
- * sampler at dword `samp`, f32 coordinates r[coord], r[coord + 1]; the
+ * sampler at dword `samp`, f32 coordinates r[coord], r[coord + 1], the
+ * LOD from the derivatives (+ r[lod] with BIAS) or r[lod] (LEVEL); the
  * result as four f32 registers from r[d] (f32) or four f16 halves from half
  * 2d. Follow with wait(). */
 static void
-sample(struct emit *e, bool f32, unsigned d, unsigned state, unsigned coord, unsigned samp)
+sample(struct emit *e, bool f32, unsigned d, unsigned state, unsigned coord, unsigned samp, enum sample_lod mode,
+       unsigned lod)
 {
-   EMIT(e, f32 ? 0xf51a : 0xf518, 0x0100 | state << 8 | 2 * d, 0x8100 | (2 * coord) << 8 | samp, 0x0700, 0x0200);
+   const uint16_t l = mode ? 0x80 | mode << 5 | (lod & 31) : 0;
+   EMIT(e, f32 ? 0xf51a : 0xf518, 0x0100 | state << 8 | 2 * d, 0x8100 | (2 * coord) << 8 | samp, 0x0700 | l,
+        0x0200 | (mode ? 0x80 : 0));
 }
 
 /* the tile's current colour into four f16 halves from half h (what blending
@@ -434,6 +443,7 @@ struct ctx {
    const struct g9p_vertex_attrib *attribs;
    unsigned num_attribs;
    unsigned ubo_dword, ubo_dwords, sampler_dword;
+   unsigned lod_bias_mask, lod_bias_dword;
    nir_instr *last_output;          /* vertex: the store left for the frame's last output */
    nir_def *last_def;               /* its value, live to the end */
    unsigned last_reg, last_slot;
@@ -1210,11 +1220,38 @@ static void
 emit_tex(struct ctx *c, nir_tex_instr *tex)
 {
    int ci = nir_tex_instr_src_index(tex, nir_tex_src_coord);
+   int bi = nir_tex_instr_src_index(tex, tex->op == nir_texop_txl ? nir_tex_src_lod : nir_tex_src_bias);
+   const bool has_lod = tex->op != nir_texop_tex;
 
-   if (tex->op != nir_texop_tex || tex->sampler_dim != GLSL_SAMPLER_DIM_2D || tex->is_array ||
-       tex->is_shadow || tex->num_srcs != 1 || ci < 0 || nir_alu_type_get_base_type(tex->dest_type) != nir_type_float) {
-      c->e.error = "a texture operation other than a plain 2D float sample (to do)";
+   if ((tex->op != nir_texop_tex && tex->op != nir_texop_txb && tex->op != nir_texop_txl) ||
+       tex->sampler_dim != GLSL_SAMPLER_DIM_2D || tex->is_array || tex->is_shadow ||
+       tex->num_srcs != 1u + has_lod || ci < 0 || (has_lod && bi < 0) ||
+       nir_alu_type_get_base_type(tex->dest_type) != nir_type_float) {
+      c->e.error = "a texture operation other than a 2D float sample (with a bias or LOD) (to do)";
       return;
+   }
+   /* the LOD operand: the shader's bias / LOD, plus the sampler's bias
+    * from the common store */
+   const bool sbias = c->lod_bias_mask >> tex->sampler_index & 1;
+   const enum sample_lod mode = tex->op == nir_texop_txl ? SAMPLE_LOD_LEVEL
+                                : has_lod || sbias      ? SAMPLE_LOD_BIAS
+                                                        : SAMPLE_LOD_AUTO;
+   unsigned lod = has_lod ? R(c, tex->src[bi].src) : 0;
+   if (sbias) {
+      unsigned t = scratch(c, 1);
+      if (!has_lod) {
+         lod = scratch(c, 1);
+         mov_imm(&c->e, lod, 0);
+      }
+      alu2_uniform(&c->e, 0x44, t, c->lod_bias_dword + tex->sampler_index, lod);   /* fadd */
+      lod = t;
+   }
+   if (mode) {
+      /* the operand's f16: lod * 1.0 into a register's low half */
+      unsigned h = scratch(c, 1), one = scratch(c, 1);
+      mov_imm(&c->e, one, 0x3f800000);
+      alu2_to_half(&c->e, 0x48, 2 * h, lod, one);
+      lod = h;
    }
    const unsigned ntex = MAX2(c->nir->info.num_textures, tex->texture_index + 1);
    const unsigned samplers = c->sampler_dword ? c->sampler_dword : 8 * ntex;
@@ -1225,7 +1262,11 @@ emit_tex(struct ctx *c, nir_tex_instr *tex)
       c->e.error = "a texture or sampler past the sample instruction's fields";
       return;
    }
-   sample(&c->e, true, d, 8 * tex->texture_index, coord, samplers + 2 * tex->sampler_index);
+   if (mode && lod >= 32) {
+      c->e.error = "a sample's LOD operand past r31";
+      return;
+   }
+   sample(&c->e, true, d, 8 * tex->texture_index, coord, samplers + 2 * tex->sampler_index, mode, lod);
    wait(&c->e);
 }
 
@@ -1688,6 +1729,8 @@ g9p_compile(nir_shader *nir, bool print, const struct g9p_options *opts, struct 
       c.ubo_dword = opts->ubo_dword;
       c.ubo_dwords = opts->ubo_dwords;
       c.sampler_dword = opts->sampler_dword;
+      c.lod_bias_mask = opts->lod_bias_mask;
+      c.lod_bias_dword = opts->lod_bias_dword;
    }
    c.vary = opts && opts->varyings ? opts->varyings : &dummy_vary;
    memset(out, 0, sizeof(*out));

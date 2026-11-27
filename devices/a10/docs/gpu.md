@@ -1291,6 +1291,64 @@ load / store (ZLS) is now in use:
   every pixel right, 64x64 to 1620x2160. SuperTuxKart's race keeps its 117
   frames per second with the store in every render.
 
+**G9.10 (2026-11-27): depth bias, LOD bias and explicit LOD.** Each with a
+pixel test of its own first (`g9p-glcheck polyoffset | lod`), then the
+driver; the regression run is `tools/gpu/gl/g9p-suite.sh HOST` (106
+checks).
+
+- **Depth bias** (`glPolygonOffset`, `EXT_polygon_offset_clamp`): Rogue's
+  model holds. The ISP reads a **depth-bias table**, `{constant, slope,
+  clamp}` floats (12 bytes) per entry, when ISPCTL bit 17 (`dbenable`) is
+  set; DBSC's high 16 bits pick the entry (the scissor's index is the low
+  16). The table's base is **Start3D's 64-bit slot 2, register 0xfb8**:
+  found by trying the free slots with the test (a temporary hook took the
+  slot from an unused fragment-command field): slot 2 biased every pixel
+  by the expected amount, slots 3, 4, 12 and 15 not at all. The kernel
+  takes it from the fragment command's `isp_dbias_base`.
+- **The applied offset** is `constant + slope * max(|dz/dx|, |dz/dy|)`
+  (window depth per pixel), held to the clamp's side when the clamp is
+  not 0. By default the constant is scaled by `2^(e - 23)`, `e` the
+  triangle's largest depth exponent (measured: a constant of 1000 gave
+  1000 * 2^-24 on depths 0.3-0.99 and an eighth of that on 0.05-0.1) --
+  GL's `r` for float depth, but for unorm depth an offset that shrinks
+  towards the near plane. **ISP_CTL bit 20** (Rogue's `dbias_is_int`) adds
+  the constant as it is: the driver sets it for unorm depth and gives
+  GL's units times `r` (2^-24 for 24 bits, 2^-16 for 16); float depth
+  keeps the scaled form with the units as they are.
+- `g9p-glcheck polyoffset F,U[,Z0,Z1[,C]]` draws a plane of depths Z0..Z1
+  with the offset, then bands of planes without it at the same depths
+  plus 0, 0.5, 0.8, 0.9, 1.1, 1.25, 2 and 4 times the expected offset,
+  depth test LESS: each band must show the plane or the band as the
+  expected offset says. Constant, slope, both, negative, clamped either
+  way, 24 and 16 bits, with a render sent between the draws, 64x64 to
+  1620x1000: every pixel right.
+- **LOD in the sample instruction** (from Apple's code for Metal's
+  `bias()` / `level()`): W3's low byte is the LOD operand -- bit 7 a
+  register, bits 5-6 the mode (1 bias, 2 explicit LOD, 3 gradients),
+  bits 0-4 the register -- and W4 bit 7 goes with it. The value is an
+  **f16 in the register's low half** (Apple's code converts with an
+  f32 -> f16 multiply first; an f32 there was read as its low half). The
+  compiler takes `txb` and `txl` (GLSL's `texture2D(s, uv, bias)`,
+  `texture2DLod`; `fragment_shader_texture_lod` on).
+- **The sampler's LOD bias** (`GL_TEXTURE_LOD_BIAS`, the texture unit's):
+  no field for it is known in the sampler words, and Metal has no sampler
+  bias either. The driver puts each sampler's non-zero bias as a float in
+  the fragment shader's common store after the sampler words, and a bit
+  per such sampler in the shader key: those samples add it (one `fadd`
+  from the common store) to the shader's bias, or to the explicit LOD as
+  softpipe does; shaders whose samplers have none are unchanged.
+- `g9p-glcheck lod KIND,V[,T[,n|l]]` (a desktop GL context: the texture's
+  bias and `texture2DLod` are not in OpenGL ES 2.0) samples a 64x64
+  texture whose 7 levels are one colour each: the shader's bias, the
+  explicit LOD, the texture's bias and their sums, nearest level and two
+  levels mixed, LODs from -2 to 9 (clamped): every pixel right.
+
+Not yet: cube maps and 2D arrays (the sample's form for them is in
+Apple's code -- `fd18` with three coordinates for a cube, `f718` with
+the layer -- the texture state's type and layer layout are to find), an
+unscaled depth bias on float depth, more than 31 registers (spilling),
+instancing, GL 3.x, frame pacing.
+
 ## 2D on the GPU (2026-11-25/26): g9p2d and SuperTux
 
 The first use of the G7 driver: SDL2's 2D renderer drawn by the GPU, as on

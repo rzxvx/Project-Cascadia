@@ -59,6 +59,10 @@ struct g9p_options {
     * sampler_dword (2 each; 0: after the states) */
    unsigned ubo_dword, ubo_dwords;
    unsigned sampler_dword;
+   /* fragment: the samplers with a LOD bias of their own (bit i: sampler
+    * i), its float in common-store dword lod_bias_dword + i; their samples
+    * add it to the shader's bias / explicit LOD */
+   unsigned lod_bias_mask, lod_bias_dword;
    /* vertex: GL's clip-space depth (-w..w) made the hardware's (0..w):
     * z = (z + w) / 2 */
    bool clip_halfz;

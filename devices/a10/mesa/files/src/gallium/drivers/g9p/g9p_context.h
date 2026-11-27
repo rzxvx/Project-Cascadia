@@ -62,6 +62,10 @@ struct g9p_frame {
     * ymax} per rectangle, maxima exclusive; a draw picks one (DBSC) */
    uint32_t sc_at;
    unsigned nsc;
+   /* the depth-bias table (ISP_DBIAS_BASE): {constant, slope, clamp}
+    * floats per entry; a draw picks one (DBSC) */
+   uint32_t db_at;
+   unsigned ndb;
    /* the depth / stencil buffer, whether this render clears them, whether
     * their values are no longer needed (not stored) */
    struct pipe_resource *zs;

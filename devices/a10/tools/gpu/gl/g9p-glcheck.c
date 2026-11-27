@@ -37,6 +37,18 @@
  *   g9p-glcheck scissor [W H]        two full-target triangles, each in its own
  *                                    scissor rectangle (one partly off the
  *                                    target), and a scissored clear between them
+ *   g9p-glcheck polyoffset F,U[,Z0,Z1[,C]] [W H]
+ *                                    glPolygonOffset(F, U) on a plane of
+ *                                    window depths Z0 .. Z1 (0.3 .. 0.7;
+ *                                    C: glPolygonOffsetClampEXT's clamp),
+ *                                    measured by bands of planes in front of /
+ *                                    behind it by fractions of the offset
+ *   g9p-glcheck lod KIND,V[,T[,F]] [W H]
+ *                                    a texture of one colour per level, the
+ *                                    LOD from the shader's bias (KIND bias),
+ *                                    its explicit LOD (level), the texture's
+ *                                    GL_TEXTURE_LOD_BIAS T; F n nearest level,
+ *                                    l two levels mixed (desktop GL context)
  *   (G9P_CHECK_SPLIT=1: depth and stencil with a render sent between draws;
  *   G9P_CHECK_Z16=1: depth tests on a 16-bit depth buffer)
  *   g9p-glcheck stencil [W H]        a triangle writes 1 into the stencil, a
@@ -52,6 +64,7 @@
 #include <stdint.h>
 #include <string.h>
 
+#define MIN(a, b) ((a) < (b) ? (a) : (b))
 #define DIE(...) do { fprintf(stderr, __VA_ARGS__); fprintf(stderr, "\n"); exit(1); } while (0)
 
 static GLuint
@@ -455,6 +468,80 @@ zs_main(const char *mode, const char *arg, int w, int h)
             memcpy(want, c, sizeof(want));
             check(x, y, px + 4 * (y * w + x), want);
          }
+   } else if (!strcmp(mode, "polyoffset")) {
+      /* a blue plane, window depth z0 .. z1 from left to right (a slope in
+       * x only), drawn with glPolygonOffset(F, U); then per horizontal
+       * band k a green plane without the offset at the same depths plus
+       * delta_k = B * ratio_k, depth test LESS: green where delta_k < the
+       * offset the hardware applied. B = F * m + U * r (GL: m the
+       * plane's depth slope, r 2^-24 for 24-bit depth, 2^-16 for 16) */
+      static const double ratios[] = { 0, 0.5, 0.8, 0.9, 1.1, 1.25, 2, 4 };
+      const int nb = sizeof(ratios) / sizeof(ratios[0]);
+      float F = 0, U = 0, z0 = 0.3f, z1 = 0.7f, C = 0;
+      if (sscanf(arg, "%f,%f,%f,%f,%f", &F, &U, &z0, &z1, &C) < 2)
+         DIE("polyoffset F,U[,Z0,Z1[,CLAMP]]");
+      const double r = z16 ? 1.0 / 65536 : 1.0 / 16777216, m = fabs(z1 - z0) / w;
+      double B = F * m + U * r;
+      /* EXT_polygon_offset_clamp: the offset no further than CLAMP */
+      if (C > 0)
+         B = fmin(B, C);
+      else if (C < 0)
+         B = fmax(B, C);
+      void (*clampf)(GLfloat, GLfloat, GLfloat) =
+         (void (*)(GLfloat, GLfloat, GLfloat))eglGetProcAddress("glPolygonOffsetClampEXT");
+      if (C != 0 && !clampf)
+         DIE("no glPolygonOffsetClampEXT");
+      static const double green[4] = { 0, 1, 0, 1 }, blue[4] = { 0, 0, 1, 1 };
+      float q[6][7];
+      const float c[2][2] = { { -1, -1 }, { 1, 1 } };
+      static const int qi[6][2] = { { 0, 0 }, { 1, 0 }, { 1, 1 }, { 0, 0 }, { 1, 1 }, { 0, 1 } };
+#define PLANE(dz, R, G, Bl)                                                                        \
+      for (int i = 0; i < 6; i++) {                                                                \
+         const double zw = (qi[i][0] ? z1 : z0) + (dz);                                            \
+         const float v[7] = { c[qi[i][0]][0], c[qi[i][1]][1], (float)(2 * zw - 1), R, G, Bl, 1 }; \
+         memcpy(q[i], v, sizeof(v));                                                               \
+      }
+      glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+      glEnable(GL_DEPTH_TEST);
+      glDepthFunc(GL_ALWAYS);
+      glEnable(GL_POLYGON_OFFSET_FILL);
+      if (C != 0)
+         clampf(F, U, C);
+      else
+         glPolygonOffset(F, U);
+      PLANE(0, 0, 0, 1);
+      draw7(&q[0][0], 6);
+      glDisable(GL_POLYGON_OFFSET_FILL);
+      split();
+      glDepthFunc(GL_LESS);
+      glEnable(GL_SCISSOR_TEST);
+      for (int k = 0; k < nb; k++) {
+         PLANE(B * ratios[k], 0, 1, 0);
+         glScissor(0, k * h / nb, w, (k + 1) * h / nb - k * h / nb);
+         draw7(&q[0][0], 6);
+      }
+      glDisable(GL_SCISSOR_TEST);
+      glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, px);
+      dump(px, w, h);
+      /* the bands' outcome in the middle column: the applied offset
+       * between which ratios */
+      printf("  bands (ratio: green?):");
+      for (int k = 0; k < nb; k++)
+         printf(" %.2f:%c", ratios[k], px[4 * (((2 * k + 1) * h / nb / 2) * w + w / 2) + 1] > 128 ? 'g' : '-');
+      printf("  (B %.3g = %.3g LSB)\n", B, B / r);
+      for (int k = 0; k < nb; k++) {
+         const double d = B * ratios[k];
+         /* a tie (d = B, ratio 0 with a tiny B) too close to call */
+         if (fabs(d - B) < 4 * r || (ratios[k] == 0 && fabs(B) < 16 * r))
+            continue;
+         for (int y = k * h / nb; y < (k + 1) * h / nb; y++)
+            for (int x = 0; x < w; x++) {
+               double want[4];
+               memcpy(want, d < B ? green : blue, sizeof(want));
+               check(x, y, px + 4 * (y * w + x), want);
+            }
+      }
+#undef PLANE
    } else {
       /* stencil: a triangle writes 1 (red), then a quad over everything:
        * green where the stencil is 1, then blue where it is 0 */
@@ -496,11 +583,103 @@ zs_main(const char *mode, const char *arg, int w, int h)
    return bad != 0;
 }
 
+/* lod: a 64 x 64 texture of 7 levels, each one colour, over the target
+ * (texture coordinates 0..1: the LOD log2(64 / W) along x, log2(64 / H)
+ * along y); the shader's bias (KIND bias), its explicit LOD (level,
+ * texture2DLod), the texture object's GL_TEXTURE_LOD_BIAS T; FILT n: the
+ * nearest level (GL: lambda <= 0.5 level 0, else ceil(lambda + 0.5) - 1),
+ * l: the two nearest levels mixed. A desktop GL context (the texture
+ * object's bias and texture2DLod are not in OpenGL ES 2.0). */
+static const double lod_cols[7][4] = { { 1, 0, 0, 1 }, { 0, 1, 0, 1 }, { 0, 0, 1, 1 }, { 1, 1, 0, 1 },
+                                       { 0, 1, 1, 1 }, { 1, 0, 1, 1 }, { 1, 1, 1, 1 } };
+
+static int
+lod_main(const char *arg, int w, int h)
+{
+   char kind[16] = "", filt[4] = "n";
+   float v = 0, t = 0;
+   if (sscanf(arg, "%15[a-z],%f,%f,%3[a-z]", kind, &v, &t, filt) < 2 ||
+       (strcmp(kind, "bias") && strcmp(kind, "level") && strcmp(kind, "none")))
+      DIE("lod bias|level|none,V[,T[,n|l]]");
+   const int level = !strcmp(kind, "level"), lin = filt[0] == 'l';
+   PFNEGLGETPLATFORMDISPLAYEXTPROC gpd =
+      (PFNEGLGETPLATFORMDISPLAYEXTPROC)eglGetProcAddress("eglGetPlatformDisplayEXT");
+   EGLDisplay dpy;
+   EGLContext ctx;
+   EGLint maj, min;
+   if (!gpd || !(dpy = gpd(EGL_PLATFORM_SURFACELESS_MESA, EGL_DEFAULT_DISPLAY, NULL)) ||
+       !eglInitialize(dpy, &maj, &min))
+      DIE("no surfaceless EGL display");
+   eglBindAPI(EGL_OPENGL_API);
+   if (!(ctx = eglCreateContext(dpy, EGL_NO_CONFIG_KHR, EGL_NO_CONTEXT, NULL)) ||
+       !eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, ctx))
+      DIE("desktop GL context: %#x", eglGetError());
+   target(w, h);
+   char fs[512];
+   snprintf(fs, sizeof(fs),
+            "#version 110\n%suniform sampler2D s;\nuniform float v;\nvarying vec2 uv;\n"
+            "void main() { gl_FragColor = %s; }\n",
+            level ? "#extension GL_ARB_shader_texture_lod : require\n" : "",
+            level ? "texture2DLod(s, uv, v)" : !strcmp(kind, "bias") ? "texture2D(s, uv, v)" : "texture2D(s, uv)");
+   GLuint p = program("#version 110\nattribute vec4 pos;\nattribute vec4 attr;\nvarying vec2 uv;\n"
+                      "void main() { uv = attr.xy; gl_Position = pos; }\n", fs);
+   glUniform1f(glGetUniformLocation(p, "v"), v);
+   GLuint tex;
+   glGenTextures(1, &tex);
+   glBindTexture(GL_TEXTURE_2D, tex);
+   for (int l = 0; l < 7; l++) {
+      const int n = 64 >> l;
+      unsigned char *px = malloc(4 * n * n);
+      for (int i = 0; i < n * n; i++)
+         for (int k = 0; k < 4; k++)
+            px[4 * i + k] = (unsigned char)lround(lod_cols[l][k] * 255);
+      glTexImage2D(GL_TEXTURE_2D, l, GL_RGBA, n, n, 0, GL_RGBA, GL_UNSIGNED_BYTE, px);
+      free(px);
+   }
+   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, lin ? GL_NEAREST_MIPMAP_LINEAR : GL_NEAREST_MIPMAP_NEAREST);
+   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+   if (t != 0)
+      glTexParameterf(GL_TEXTURE_2D, 0x8501 /* GL_TEXTURE_LOD_BIAS */, t);
+   static const float q[4][4] = { { -1, -1, 0, 0 }, { 1, -1, 1, 0 }, { -1, 1, 0, 1 }, { 1, 1, 1, 1 } };
+   attribs(&q[0][0], 4, 4);
+   glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+   unsigned char *px = malloc(4 * w * h);
+   glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, px);
+   dump(px, w, h);
+   /* GL: lambda = (explicit LOD or log2(rho) + the shader's bias) + the
+    * object's bias, clamped to 0 .. 6 (min / max LOD defaults) */
+   const double rho = fmax(64.0 / w, 64.0 / h);
+   double lambda = (level ? v : log2(rho) + v) + t;
+   const double lc = fmin(fmax(lambda, 0), 6);
+   double want[4];
+   if (!lin && fabs(fabs(lambda - floor(lambda)) - 0.5) < 0.01)
+      DIE("lambda %.3f: on a nearest-level boundary, too close to call", lambda);
+   if (!lin) {
+      const int d = lambda <= 0.5 ? 0 : MIN(6, (int)ceil(lambda + 0.5) - 1);
+      memcpy(want, lod_cols[d], sizeof(want));
+   } else {
+      const int d0 = (int)floor(lc), d1 = MIN(6, d0 + 1);
+      const double f = lc - d0;
+      for (int k = 0; k < 4; k++)
+         want[k] = lambda <= 0 ? lod_cols[0][k] : (1 - f) * lod_cols[d0][k] + f * lod_cols[d1][k];
+   }
+   for (int y = 0; y < h; y++)
+      for (int x = 0; x < w; x++)
+         check(x, y, px + 4 * (y * w + x), want);
+   if (glGetError())
+      DIE("GL error");
+   printf("%s: lod %s %dx%d (lambda %.2f), %d of %d pixels right\n", bad ? "FAIL" : "ok", arg, w, h, lambda,
+          total - bad, total);
+   return bad != 0;
+}
+
 int
 main(int argc, char **argv)
 {
    const char *mode = argc > 1 ? argv[1] : "uniform";
 
+   if (!strcmp(mode, "lod"))
+      return lod_main(argc > 2 ? argv[2] : "none,0", argc > 4 ? atoi(argv[3]) : 64, argc > 4 ? atoi(argv[4]) : 64);
    if (!strcmp(mode, "load")) {
       const int w = argc > 3 ? atoi(argv[2]) : 64, h = argc > 3 ? atoi(argv[3]) : 64, n = argc > 4 ? atoi(argv[4]) : 2;
       static const float cols[4][4] = { { 0, 1, 0, 1 }, { 0, 0, 1, 1 }, { 1, 1, 0, 1 }, { 1, 0, 1, 1 } };
@@ -664,7 +843,7 @@ main(int argc, char **argv)
       return 0;
    }
    if (!strcmp(mode, "depth") || !strcmp(mode, "cull") || !strcmp(mode, "stencil") || !strncmp(mode, "discard", 7) ||
-       !strcmp(mode, "scissor")) {
+       !strcmp(mode, "scissor") || !strcmp(mode, "polyoffset")) {
       const int a1 = strcmp(mode, "stencil") && strncmp(mode, "discard", 7) && strcmp(mode, "scissor") ? 3 : 2;
       context();
       return zs_main(mode, a1 == 3 && argc > 2 ? argv[2] : "", argc > a1 + 1 ? atoi(argv[a1]) : 64,
