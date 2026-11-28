@@ -9,6 +9,7 @@
  * on the same overlay, as the kernel test modules run them on the device.
  */
 #define _GNU_SOURCE
+#include <dirent.h>
 #include <fcntl.h>
 #include <unistd.h>
 #include <stdio.h>
@@ -30,6 +31,7 @@
 #define OVERLAY_PAGES (1u << 20)
 
 static int checks_failed;
+static bool reference = true;	/* the w0c dump of the reference package */
 static int checks_passed;
 
 #define CHECK(cond, fmt, ...) do {					\
@@ -45,17 +47,27 @@ static int checks_passed;
 /* ---- dump + overlay device ------------------------------------------- */
 
 struct block_overlay {
-	u8 *pages[SFTL_MLC_PAGES];	/* 16448-byte images, NULL if erased */
-	u8 bad_status[SFTL_MLC_PAGES];	/* non-zero: a failed program, read with this status */
+	u8 *pages[SFTL_MAX_PAGES];	/* 16448-byte images, NULL if erased */
+	u8 bad_status[SFTL_MAX_PAGES];	/* non-zero: a failed program, read with this status */
 	int last;			/* highest programmed page, -1 if none */
 	unsigned int programmed;
 	unsigned int gaps;
 };
 
+/* One file of the dump: blocks first..first+n-1 of one bus and CAU. */
+struct dump_seg {
+	unsigned int first, n, pages;	/* pages per block in the file (MLC or SLC rows) */
+	int fd, st;
+};
+
+#define MAX_SEGS 16
+
 struct device {
-	int fd[2][2][3];
-	int st[2][2][3];
-	struct block_overlay *ov[SFTL_BANKS][SFTL_BLOCKS];
+	struct dump_seg seg[2][2][MAX_SEGS];	/* MLC-row files */
+	unsigned int nseg[2][2];
+	struct dump_seg slc[2][2][MAX_SEGS];	/* SLC-row files (dir/slc), if any */
+	unsigned int nslc[2][2];
+	struct block_overlay *ov[SFTL_BANKS][SFTL_MAX_BLOCKS];
 	unsigned long reads, progs, erases, pages_gapped;
 	bool writes_enabled;
 	const u16 *usage[SFTL_BANKS];	/* for the write gate */
@@ -69,14 +81,15 @@ struct device {
 	bool fail_erase_all;		/* every erase fails (a dead controller) */
 };
 
-static int seg_index(unsigned int block)
+static const struct dump_seg *seg_find(const struct dump_seg *segs, unsigned int n,
+				       unsigned int block)
 {
-	return block < 500 ? 0 : block < 1000 ? 1 : 2;
-}
+	unsigned int i;
 
-static unsigned int seg_base(unsigned int block)
-{
-	return block < 500 ? 0 : block < 1000 ? 500 : 1000;
+	for (i = 0; i < n; i++)
+		if (block >= segs[i].first && block < segs[i].first + segs[i].n)
+			return &segs[i];
+	return NULL;
 }
 
 /* SLC page k as it appears in an MLC-row dump. */
@@ -139,13 +152,25 @@ static int dev_read(void *hw, unsigned int bank, unsigned int block, unsigned in
 		return 0;
 	}
 	{
-		unsigned int mp = slc ? slc_to_mlc(page) : page;
-		off_t off = (off_t)((block - seg_base(block)) * 256 + mp);
-		int s = seg_index(block);
+		/*
+		 * An SLC read comes from an SLC-row dump when there is one; else from
+		 * the MLC-row dump at the MLC index the reference package puts it at.
+		 */
+		const struct dump_seg *sg = slc ? seg_find(d->slc[bus][cau], d->nslc[bus][cau], block) : NULL;
+		unsigned int mp = page;
+		off_t off;
 
-		if (pread(d->fd[bus][cau][s], raw, RAW_PAGE, off * RAW_PAGE) != RAW_PAGE)
+		if (!sg) {
+			sg = seg_find(d->seg[bus][cau], d->nseg[bus][cau], block);
+			if (slc)
+				mp = slc_to_mlc(page);
+		}
+		if (!sg)
 			return -EIO;
-		if (pread(d->st[bus][cau][s], &st, 1, off) != 1)
+		off = (off_t)(block - sg->first) * sg->pages + mp;
+		if (pread(sg->fd, raw, RAW_PAGE, off * RAW_PAGE) != RAW_PAGE)
+			return -EIO;
+		if (pread(sg->st, &st, 1, off) != 1)
 			return -EIO;
 	}
 	raw_to_data_meta(raw, data, meta);
@@ -259,35 +284,71 @@ static const struct sftl_ops dev_ops = {
 	.program = dev_program,
 };
 
+/* Every bus{B}-cau{C}.b{FIRST}.bin (+ .st) in dir; pages per block from the size. */
+static int dev_scan(const char *dir, struct dump_seg segs[2][2][MAX_SEGS],
+		    unsigned int nseg[2][2], unsigned int pages)
+{
+	DIR *dd = opendir(dir);
+	struct dirent *e;
+	char path[1024];
+
+	if (!dd)
+		return -1;
+	while ((e = readdir(dd))) {
+		unsigned int b, c, first;
+		char tail[8];
+		struct dump_seg *sg;
+		off_t len;
+
+		if (sscanf(e->d_name, "bus%u-cau%u.b%u.bi%1s", &b, &c, &first, tail) != 4 ||
+		    strcmp(tail, "n") || b > 1 || c > 1 || nseg[b][c] == MAX_SEGS ||
+		    strlen(e->d_name) < 4 || strcmp(e->d_name + strlen(e->d_name) - 4, ".bin"))
+			continue;
+		sg = &segs[b][c][nseg[b][c]++];
+		snprintf(path, sizeof(path), "%s/%s", dir, e->d_name);
+		sg->fd = open(path, O_RDONLY);
+		snprintf(path, sizeof(path), "%s/%s.st", dir, e->d_name);
+		sg->st = open(path, O_RDONLY);
+		if (sg->fd < 0 || sg->st < 0) {
+			perror(path);
+			closedir(dd);
+			return -1;
+		}
+		len = lseek(sg->fd, 0, SEEK_END);
+		sg->first = first;
+		sg->pages = pages;
+		sg->n = (unsigned int)(len / ((off_t)RAW_PAGE * pages));
+	}
+	closedir(dd);
+	return 0;
+}
+
 static int dev_open(struct device *d, const char *dir)
 {
-	static const int bases[3] = { 0, 500, 1000 };
-	int b, c, s;
 	char path[1024];
+	int b, c;
 
 	memset(d, 0, sizeof(*d));
 	d->fail_prog_nth = -1;
 	d->fail_prog_type = -1;
 	d->fail_erase_nth = -1;
 	d->fail_erase_all = false;
+	if (dev_scan(dir, d->seg, d->nseg, SFTL_MLC_PAGES))
+		return -1;
+	snprintf(path, sizeof(path), "%s/slc", dir);
+	dev_scan(path, d->slc, d->nslc, SFTL_SLC_PAGES);	/* optional */
 	for (b = 0; b < 2; b++)
-		for (c = 0; c < 2; c++)
-			for (s = 0; s < 3; s++) {
-				snprintf(path, sizeof(path), "%s/bus%d-cau%d.b%d.bin",
-					 dir, b, c, bases[s]);
-				d->fd[b][c][s] = open(path, O_RDONLY);
-				if (d->fd[b][c][s] < 0) {
-					perror(path);
-					return -1;
-				}
-				snprintf(path, sizeof(path), "%s/bus%d-cau%d.b%d.bin.st",
-					 dir, b, c, bases[s]);
-				d->st[b][c][s] = open(path, O_RDONLY);
-				if (d->st[b][c][s] < 0) {
-					perror(path);
-					return -1;
-				}
+		for (c = 0; c < 2; c++) {
+			unsigned int i, have = 0;
+
+			for (i = 0; i < d->nseg[b][c]; i++)
+				have += d->seg[b][c][i].n;
+			if (have < SFTL_BLOCKS) {
+				fprintf(stderr, "%s: bus %d cau %d has %u of %u blocks\n",
+					dir, b, c, have, SFTL_BLOCKS);
+				return -1;
 			}
+		}
 	return 0;
 }
 
@@ -349,20 +410,27 @@ static int compare_trees(const u8 *a, const u8 *b)
 	return 0;
 }
 
-/* Golden context: rebuild sb519's 14 pages from the loaded tables and compare. */
+/*
+ * Golden context: rebuild the loaded context (sb519's 14 pages on the
+ * reference dump) from the loaded tables and compare it with the media.
+ * Section offsets come from the package profile.
+ */
 static void golden_context(struct sftl *fs)
 {
 	u32 sb = fs->ctx_sb;
 	u8 *ours = malloc(SFTL_CTX_MAX_PAGES * (SFTL_PAGE_SIZE + SFTL_META_PAGE));
 	u8 *ours_meta = ours + SFTL_CTX_MAX_PAGES * SFTL_PAGE_SIZE;
+	u8 *media = malloc(SFTL_CTX_PAGES * SFTL_PAGE_SIZE);
 	u32 nlbas = 0;
-	u8 data[SFTL_PAGE_SIZE], meta[SFTL_META_PAGE];
+	u8 meta[SFTL_META_PAGE];
 	u32 i, used_runs = 0, used_lbas = 0;
-	static u8 dump_tree[8 * SFTL_PAGE_SIZE];
+	const u32 *sec = sftl_geo.sec_lbas;
+	u32 o_sbarr = sec[0] + sec[1], o_useq = o_sbarr + sec[2], o_reads = o_useq + sec[3];
 	int bad_meta = 0, bad_base = 0, bad_sbarr = 0, bad_useq = 0, bad_reads = 0, bad_tree = 0;
 
 	assert(!sftl_ctx_build(fs, sb, fs->ctx_weave, ours, ours_meta, &nlbas));
-	CHECK(nlbas == SFTL_CTX_LBAS, "context of a 26-LBA tree is %u LBAs (want 56)", nlbas);
+	CHECK(nlbas == SFTL_CTX_LBAS, "context of a %u-LBA tree is %u LBAs (want %u)",
+	      fs->tree_used, nlbas, SFTL_CTX_LBAS);
 	{
 		static u8 tree_tmp[SFTL_TREE_MAX_LBAS * SFTL_LBA_SIZE];
 
@@ -372,44 +440,47 @@ static void golden_context(struct sftl *fs)
 		u8 st;
 		u32 bank = fs->shape[sb].bank[i % 4];
 
-		assert(!fs->ops->read_page(fs->hw, bank, sb, i / 4, false, data, meta, &st));
+		assert(!fs->ops->read_page(fs->hw, bank, sb, i / 4, false,
+					   media + i * SFTL_PAGE_SIZE, meta, &st));
 		if (st != SFTL_ST_OK)
 			printf("  page %u status %02x\n", i, st);
 		if (memcmp(meta, ours_meta + i * SFTL_META_PAGE, SFTL_META_PAGE)) {
 			printf("  metadata differs on context page %u\n", i);
 			bad_meta++;
 		}
-		if (i == 0 && memcmp(data, page_of(ours, i), SFTL_PAGE_SIZE)) {
-			u32 w;
-
-			for (w = 0; w < SFTL_PAGE_SIZE / 4; w++)
-				if (sftl_get32(data + w * 4) != sftl_get32(page_of(ours, i) + w * 4)) {
-					printf("  base differs at word %u: dump %#x ours %#x\n", w,
-					       sftl_get32(data + w * 4),
-					       sftl_get32(page_of(ours, i) + w * 4));
-					bad_base++;
-				}
-		}
-		if (i == 1 && memcmp(data, page_of(ours, i), SFTL_PAGE_SIZE))
-			printf("  stats page differs\n");
-		if (i == 2 && memcmp(data, page_of(ours, i), 8 * SFTL_NUM_SB))
-			bad_sbarr++;
-		if ((i == 3 || i == 4) &&
-		    memcmp(data, page_of(ours, i), i == 3 ? SFTL_PAGE_SIZE :
-			   16 * SFTL_NUM_SB - SFTL_PAGE_SIZE))
-			bad_useq++;
-		if (i == 5 && memcmp(data, page_of(ours, i), 4 * SFTL_NUM_SB))
-			bad_reads++;
-		if (i >= 6)
-			memcpy(dump_tree + (i - 6) * SFTL_PAGE_SIZE, data, SFTL_PAGE_SIZE);
 	}
-	bad_tree = compare_trees(dump_tree, ours + 6 * SFTL_PAGE_SIZE);
-	CHECK(!bad_meta, "golden context metadata identical (14 pages)");
+	for (i = 0; i < SFTL_PAGE_SIZE / 4; i++)
+		if (sftl_get32(media + i * 4) != sftl_get32(ours + i * 4)) {
+			/*
+			 * 030800P: iOS lists its next context SB too ([2, this, next]);
+			 * a Linux context lists itself ([1, this]), as on the reference.
+			 */
+			if (!reference && (i == 0 || i == 2)) {
+				printf("  base word %u: iOS %#x, Linux %#x (context list; expected)\n", i,
+				       sftl_get32(media + i * 4), sftl_get32(ours + i * 4));
+				continue;
+			}
+			printf("  base differs at word %u: dump %#x ours %#x\n", i,
+			       sftl_get32(media + i * 4), sftl_get32(ours + i * 4));
+			bad_base++;
+		}
+	if (memcmp(media + SFTL_PAGE_SIZE, ours + SFTL_PAGE_SIZE, SFTL_PAGE_SIZE))
+		printf("  stats page differs\n");
+	bad_sbarr = !!memcmp(media + o_sbarr * SFTL_LBA_SIZE, ours + o_sbarr * SFTL_LBA_SIZE,
+			     8 * SFTL_NUM_SB);
+	bad_useq = !!memcmp(media + o_useq * SFTL_LBA_SIZE, ours + o_useq * SFTL_LBA_SIZE,
+			    16 * SFTL_NUM_SB);
+	bad_reads = !!memcmp(media + o_reads * SFTL_LBA_SIZE, ours + o_reads * SFTL_LBA_SIZE,
+			     4 * SFTL_NUM_SB);
+	bad_tree = compare_trees(media + SFTL_CTX_TREE_VBA * SFTL_LBA_SIZE,
+				 ours + SFTL_CTX_TREE_VBA * SFTL_LBA_SIZE);
+	CHECK(!bad_meta, "golden context metadata identical (%u pages)", SFTL_CTX_PAGES);
 	CHECK(!bad_base, "golden context base section identical");
 	CHECK(!bad_sbarr, "golden SB array identical");
 	CHECK(!bad_useq, "golden user sequences identical");
 	CHECK(!bad_reads, "golden read counts identical");
 	CHECK(!bad_tree, "golden tree identical (%u runs serialized, %u LBAs)", used_runs, used_lbas);
+	free(media);
 	free(ours);
 }
 
@@ -543,14 +614,21 @@ static void golden_btoc_and_stats(struct sftl *fs, int *closed_out)
 			valid_bad++;
 	}
 	*closed_out = closed;
-	CHECK(closed == 1033, "closed SBs = %d (want 1033)", closed);
-	CHECK(flag8 == 487 && flag16 == 390 && flag9 == 156 && !flag_other,
-	      "BTOC flags 8:%d 16:%d 9:%d other:%d (want 487/390/156/0)", flag8, flag16,
-	      flag9, flag_other);
+	if (reference) {
+		CHECK(closed == 1033, "closed SBs = %d (want 1033)", closed);
+		CHECK(flag8 == 487 && flag16 == 390 && flag9 == 156 && !flag_other,
+		      "BTOC flags 8:%d 16:%d 9:%d other:%d (want 487/390/156/0)", flag8, flag16,
+		      flag9, flag_other);
+	} else {
+		printf("  closed SBs %d, BTOC flags 8:%d 16:%d 9:%d other:%d\n", closed, flag8, flag16, flag9, flag_other);
+	}
 	CHECK(!btoc_bad, "golden BTOC: %d identical, %d differ only in user fields (%d entries), %d differ otherwise",
 	      btoc_ok, user_diff_sbs, user_diff_ents, btoc_bad);
 	CHECK(!useq_bad, "user sequence summaries match on all closed SBs (%d differ)", useq_bad);
-	CHECK(deletes == 339 && pads == 32, "tokens DELETE=%ld PAD=%ld (want 339/32)", deletes, pads);
+	if (reference)
+		CHECK(deletes == 339 && pads == 32, "tokens DELETE=%ld PAD=%ld (want 339/32)", deletes, pads);
+	else
+		printf("  tokens DELETE=%ld PAD=%ld\n", deletes, pads);
 	CHECK(!valid_bad, "btoc_flags in SB array match BTOCs (%d differ)", valid_bad);
 	printf("  note closed SBs with entry total != capacity - nb: %d (iOS always fills)\n", short_sb);
 	printf("  note PAD entries with count > 1: %d\n", multi_pad);
@@ -607,6 +685,10 @@ static void lwvm_check(struct sftl *fs)
 	CHECK(!ret, "LwVM header parses, CRC valid, primary = backup");
 	if (ret)
 		return;
+	if (!reference)
+		printf("  System %llu..%llu, Data ..%llu (%u parts)\n", (unsigned long long)lv.part[0].start,
+		       (unsigned long long)lv.part[0].end, (unsigned long long)lv.part[1].end, lv.nparts);
+	else
 	CHECK(lv.nparts == 2 && lv.part[0].start == 24576 && lv.part[0].end == 2224152576ull,
 	      "System %llu..%llu (%u parts)", (unsigned long long)lv.part[0].start,
 	      (unsigned long long)lv.part[0].end, lv.nparts);
@@ -710,7 +792,7 @@ static void fault_case_run(const char *dir, const struct fault_case *c, unsigned
 	struct sftl *fs;
 	u8 buf[SFTL_LBA_SIZE], want[SFTL_LBA_SIZE], *src;
 	u32 base = 300000 + nr * 20000, n = 3000, lba, done = 0, bad_lbas = 0, nbad = 0, sb;
-	u8 bad[(SFTL_NUM_SB + 7) / 8];
+	u8 bad[(SFTL_MAX_SB + 7) / 8];
 	unsigned int failures, b;
 	int ret = 0, rbad = 0;
 
@@ -747,7 +829,7 @@ static void fault_case_run(const char *dir, const struct fault_case *c, unsigned
 		CHECK(!ret, "checkpoint after it (%d)", ret);
 	}
 	failures = fs->wr->failures;
-	memcpy(bad, fs->wr->bad_map, sizeof(bad));
+	memcpy(bad, fs->wr->bad_map, (SFTL_NUM_SB + 7) / 8);
 	for (sb = 0; sb < SFTL_NUM_SB; sb++)
 		if ((bad[sb / 8] >> (sb % 8)) & 1)
 			nbad++;
@@ -1144,6 +1226,22 @@ int main(int argc, char **argv)
 	}
 	if (argc > 2 && !strcmp(argv[2], "--write"))
 		do_write = true;
+	{
+		unsigned int gb = 1064, gm = 256, gs = 128;
+		const char *g = getenv("NANDTEST_GEO");	/* blocks,mlc,slc */
+
+		if (g && sscanf(g, "%u,%u,%u", &gb, &gm, &gs) != 3) {
+			fprintf(stderr, "NANDTEST_GEO=blocks,mlc_pages,slc_pages\n");
+			return 2;
+		}
+		if (sftl_geo_select(gb, gm, gs)) {
+			fprintf(stderr, "no FTL profile for %u x %u (SLC %u)\n", gb, gm, gs);
+			return 2;
+		}
+		reference = gb == 1064;
+		printf("package profile %s: %u SBs of %u LBAs, context fixed %u LBAs, tree min %u\n",
+		       sftl_geo.name, SFTL_NUM_SB, SFTL_LBAS_PER_SB, SFTL_CTX_TREE_VBA, SFTL_TREE_LBAS);
+	}
 	d = malloc(sizeof(*d));
 	if (dev_open(d, argv[1]))
 		return 1;
@@ -1365,10 +1463,12 @@ int main(int argc, char **argv)
 	printf("== VFL\n");
 	ret = sftl_load_vfl(fs);
 	CHECK(!ret, "VFL context loads (%d)", ret);
-	CHECK(fs->vfl_block == 1063, "live VFL block %u (want 1063)", fs->vfl_block);
-	CHECK(fs->vfl_log_pages == 59, "%u log pages (want 59)", fs->vfl_log_pages);
+	CHECK(fs->vfl_block == sftl_geo.vfl_b || fs->vfl_block == sftl_geo.vfl_a,
+	      "live VFL block %u", fs->vfl_block);
+	if (reference)
+		CHECK(fs->vfl_log_pages == 59, "%u log pages (want 59)", fs->vfl_log_pages);
 	CHECK(fs->reported_lbas == 3906250, "reported LBAs %u", fs->reported_lbas);
-	{
+	if (reference) {
 		static const u32 want[SFTL_BANKS] = { 1053, 1053, 1051, 1054 };
 		u32 b, n;
 
@@ -1381,7 +1481,7 @@ int main(int argc, char **argv)
 			CHECK(c == want[b], "bank %u usable %u (want %u)", b, c, want[b]);
 		}
 	}
-	CHECK(fs->sig_bank == 2, "signature block on bank %u block %u", fs->sig_bank, fs->sig_block);
+	CHECK(fs->sig_bank < SFTL_BANKS, "signature block on bank %u block %u", fs->sig_bank, fs->sig_block);
 
 	printf("== scan + context\n");
 	ret = sftl_scan(fs);
@@ -1390,19 +1490,28 @@ int main(int argc, char **argv)
 	CHECK(!ret, "context loads (%d)", ret);
 	if (ret)
 		goto done;
-	CHECK(fs->ctx_sb == 519 && fs->ctx_weave == 372052037ull, "context sb %u weave %llu",
-	      fs->ctx_sb, (unsigned long long)fs->ctx_weave);
-	CHECK(fs->tree_runs == expected_tree_runs && fs->total_lbas == 3906266 &&
-	      fs->tree_used == 26, "tree: %u runs over %u LBAs, %u used", fs->tree_runs,
-	      fs->total_lbas, fs->tree_used);
-	CHECK(fs->mapped_before == 747503, "mapped before replay: %u", fs->mapped_before);
+	if (reference) {
+		CHECK(fs->ctx_sb == 519 && fs->ctx_weave == 372052037ull, "context sb %u weave %llu",
+		      fs->ctx_sb, (unsigned long long)fs->ctx_weave);
+		CHECK(fs->tree_runs == expected_tree_runs && fs->total_lbas == 3906266 &&
+		      fs->tree_used == 26, "tree: %u runs over %u LBAs, %u used", fs->tree_runs,
+		      fs->total_lbas, fs->tree_used);
+		CHECK(fs->mapped_before == 747503, "mapped before replay: %u", fs->mapped_before);
+	} else {
+		printf("  context sb %u weave %llu, ctx LBAs %u\n", fs->ctx_sb,
+		       (unsigned long long)fs->ctx_weave, fs->ctx_lbas);
+		CHECK(fs->total_lbas == 3906266, "tree: %u runs over %u LBAs, %u used, %u mapped",
+		      fs->tree_runs, fs->total_lbas, fs->tree_used, fs->mapped_before);
+	}
 
 	check_valid_counts(fs);
 
 	printf("== golden context\n");
 	golden_context(fs);
 
-	if (sftl_map_get(&fs->map, 3906265) != 0x9157b)
+	if (!reference)
+		printf("  hidden LBA 3906265 at %#x before replay\n", sftl_map_get(&fs->map, 3906265));
+	else if (sftl_map_get(&fs->map, 3906265) != 0x9157b)
 		CHECK(0, "hidden LBA at %#x (want 0x9157b)", sftl_map_get(&fs->map, 3906265));
 	else
 		CHECK(1, "hidden LBA 3906265 at 0x9157b before replay");
@@ -1419,9 +1528,14 @@ int main(int argc, char **argv)
 	{
 		u32 m = sftl_map_count_mapped(&fs->map, fs->total_lbas);
 
-		CHECK(m == 743683, "mapped after replay: %u (want 743683)", m);
-		CHECK(sftl_map_get(&fs->map, 3906265) == 0xa6513, "hidden LBA at %#x after replay",
-		      sftl_map_get(&fs->map, 3906265));
+		if (reference) {
+			CHECK(m == 743683, "mapped after replay: %u (want 743683)", m);
+			CHECK(sftl_map_get(&fs->map, 3906265) == 0xa6513, "hidden LBA at %#x after replay",
+			      sftl_map_get(&fs->map, 3906265));
+		} else {
+			printf("  mapped after replay: %u, hidden LBA at %#x\n", m,
+			       sftl_map_get(&fs->map, 3906265));
+		}
 	}
 
 	printf("== whole-map check\n");
